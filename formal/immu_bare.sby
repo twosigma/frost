@@ -1,0 +1,35 @@
+[tasks]
+bmc
+bmc_xlen32
+bmc_xlen72
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv dtlb.sv immu.sv
+read -formal -sv immu_bare_formal.sv
+bmc_xlen32: chparam -set XLEN 32 immu_bare_formal
+bmc_xlen72: chparam -set XLEN 72 immu_bare_formal
+hierarchy -check -top immu_bare_formal
+# Bare outputs are combinational. Remove physical-preservation attributes
+# and prune translation state; the oracle still observes actual IMMU ports.
+setattr -unset keep
+setattr -unset keep_hierarchy
+setattr -mod -unset keep
+setattr -mod -unset keep_hierarchy
+flatten
+proc
+opt -purge
+select -assert-none t:$mem* t:$*ff* t:$*latch* t:$fsm
+prep -top immu_bare_formal
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/immu.sv
+immu_bare_formal.sv

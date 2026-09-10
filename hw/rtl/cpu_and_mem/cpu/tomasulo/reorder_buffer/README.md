@@ -108,6 +108,14 @@ State names omit the RTL's `SERIAL_` prefix. In the labels, `SQ empty` means
 SFENCE.VMA, `permit` is the normal retirement permit, and `xRET` includes
 MRET, SRET, and DRET. Commas join conditions that must both hold.
 
+CSR and xRET start outputs use the head's stored `valid` and `done` bits.
+Their allocation classes exclude same-cycle CDB bypass, so this is exactly
+the original readiness predicate for those starts while keeping the CDB
+match/exception logic off trap and CSR control. Ordinary commit and exception
+readiness still include CDB bypass. RTL assertions retain both original start
+equations; `rob_start_cofactor` proves the allocation-class exclusion,
+one-hot head selection, and output equivalence by induction.
+
 Leaving IDLE requires a ready
 head and no commit hold, early recovery, or flush; exception handling has
 priority over the instruction class. Each state holds while its transition

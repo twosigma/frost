@@ -313,7 +313,7 @@ set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks 
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
 
 # NIC (Phase 4 slice 2, hw/rtl/peripherals/nic). Its MAC clock is the MMCM's
-# CLKOUT1 (1200 MHz / 7 = 171.43 MHz), a generated clock of the sysclk family,
+# CLKOUT1 (1200 MHz / 30 = 40 MHz for loopback), a generated clock of the sysclk family,
 # so every core <-> MAC crossing is timed synchronously unless an exception
 # below covers it: no blanket clock-group cut, a crossing the exceptions miss
 # fails loudly. Every exception names its launch registers explicitly (the

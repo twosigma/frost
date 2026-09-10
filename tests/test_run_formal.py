@@ -81,6 +81,11 @@ FORMAL_TARGETS = [
         "Reorder buffer - in-order commit with serialization",
     ),
     FormalTarget(
+        "rob_start_cofactor.sby",
+        "ROB CSR/xRET starts - allocation class exclusion and exact legacy equations",
+        tasks=("prove",),
+    ),
+    FormalTarget(
         "register_alias_table.sby",
         "Register alias table - rename mapping with checkpoints",
     ),
@@ -133,6 +138,51 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "c_ext_state_cofactor.sby",
+        "C-extension buffer state - handoff cofactor vs original priority for arbitrary controls",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "immu_bare.sby",
+        "IMMU Bare bypass - exact PMA/output equivalence at local XLEN 64, 32, and 72",
+        tasks=("bmc", "bmc_xlen32", "bmc_xlen72"),
+    ),
+    FormalTarget(
+        "fetch_pc_mux.sby",
+        "IF fetch PC - final prediction mux matches original one-hot and serial priority equations",
+        tasks=("bmc", "bmc_integrated"),
+    ),
+    FormalTarget(
+        "fetch_redirect.sby",
+        "IF registered provider redirect - original selector equation for arbitrary inputs/state",
+        tasks=("bmc", "prove", "cover"),
+    ),
+    FormalTarget(
+        "pc_register_mux.sby",
+        "IF architectural PC - original nested priority for arbitrary generic inputs",
+        tasks=("bmc", "bmc_integrated"),
+    ),
+    FormalTarget(
+        "pc_holdoff_cofactor.sby",
+        "IF pending fetch holdoff - arbitrary-state effective-enable factoring matches original equations",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "pc_holdoff_tag.sby",
+        "IF pending prediction holdoff - captured-tag producer induction and original equations",
+        tasks=("prove", "prove_xlen32", "prove_xlen72", "cover"),
+    ),
+    FormalTarget(
+        "branch_prediction_disable.sby",
+        "IF branch prediction - common guards, slot-1/slot-2 factoring, and staged/live disable exclusion",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "prediction_handoff.sby",
+        "IF pending handoff - integrated slot-2 veto elimination preserves generic priority",
+        tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
         "prediction_release.sby",
         "IF pending prediction - pending-state masking and stale-buffer handoff exclusion",
         tasks=("bmc", "cover", "prove"),
@@ -171,15 +221,31 @@ FORMAL_TARGETS = [
 SBY_TASKS = [
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
-    ("prove", "Unbounded safety proof (ABC PDR)"),
+    ("prove", "Unbounded safety proof (ABC PDR or temporal induction)"),
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded model checking in the 8-entry 2-port ITLB shape"),
     ("cover_itlb", "Cover checking in the 8-entry 2-port ITLB shape"),
+    ("bmc_xlen32", "Bounded Bare-output checking with local XLEN 32"),
+    ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),
+    ("bmc_integrated", "Bounded checking with the integrated IF handoff parameter"),
+    ("prove_xlen32", "Unbounded captured-tag checking with local XLEN 32"),
+    ("prove_xlen72", "Unbounded captured-tag checking with local XLEN 72"),
     (
         "fmul_repair_bmc",
         "Bounded model checking with production FMUL dispatch done repair enabled",
     ),
 ]
+
+
+def test_formal_target_tasks_are_registered() -> None:
+    """Every declared task must participate in CLI and pytest execution."""
+    registered = {name for name, _ in SBY_TASKS}
+    missing = {
+        target.name: sorted(set(target.tasks) - registered)
+        for target in FORMAL_TARGETS
+        if set(target.tasks) - registered
+    }
+    assert not missing, f"Formal tasks would be silently skipped: {missing}"
 
 
 class FormalRunner:

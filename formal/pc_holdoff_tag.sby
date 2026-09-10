@@ -1,0 +1,29 @@
+[tasks]
+prove proof
+prove_xlen32 proof
+prove_xlen72 proof
+cover
+
+[options]
+proof: mode prove
+proof: depth 3
+cover: mode cover
+cover: depth 4
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_HOLDOFF_TAG_PROOF -sv pc_controller.sv
+prove_xlen32: chparam -set XLEN 32 pc_controller
+prove_xlen72: chparam -set XLEN 72 pc_controller
+delete t:control_flow_tracker t:pc_increment_calculator
+proc
+setundef -undriven -anyseq
+opt
+prep -top pc_controller
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv

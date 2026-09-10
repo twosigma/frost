@@ -629,7 +629,10 @@ module load_queue #(
   logic cdb_stage_result_flushed;
   riscv_pkg::fu_complete_t issue_cdb_result;
   logic cdb_stage_valid;
-  riscv_pkg::fu_complete_t cdb_stage_data;
+  // This payload only has a capture enable. Keep writes of a zero cause on
+  // its data input instead of extracting a synchronous reset: that would
+  // send the late flush/grant-qualified capture cone to the reset pins.
+  (* extract_reset = "no" *) riscv_pkg::fu_complete_t cdb_stage_data;
   // Staged SQ-disambiguation candidate. This breaks the same-cycle
   // issue-scan -> SQ compare -> memory-launch loop by holding one
   // candidate load stable while SQ resolves it. Keep the candidate armed even

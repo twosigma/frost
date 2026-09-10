@@ -446,6 +446,14 @@ async def test_loopback_frames(dut: Any) -> None:
         assert s == DD | len(expected), f"RX descriptor {i}: {s:#x}"
         assert nic.rx_frame(i) == expected, f"frame {i} differs"
         assert desc_status(nic.mem, TX_RING, i) == DD
+    # The port model applies DD at request acceptance; counters and IRQs
+    # follow the later status-write response. Wait for both responses to
+    # drain before checking their completion events.
+    await nic.wait_status(
+        ST_RX_IDLE | ST_TX_IDLE,
+        ST_RX_IDLE | ST_TX_IDLE,
+        what="descriptor responses",
+    )
     assert await nic.rd(RX_HEAD) == 8 and await nic.rd(TX_HEAD) == 8
     assert await nic.rd64(COUNTERS + 8 * CNT_RX_FRAMES) == 8
     assert await nic.rd64(COUNTERS + 8 * CNT_TX_FRAMES) == 8

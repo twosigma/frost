@@ -117,8 +117,13 @@ drain invalidates the cache; a BASE/SIZE write also zeroes HEAD.
 empty ring holds the frame in the FIFO) and applies the filter to the
 first beat: promiscuous, a group address, or the station address. A
 rejected frame is consumed without a descriptor. An accepted one goes
-through `nic_byte_pack`, which rotates each beat by the buffer address
-modulo 8 and places it in a two-line window, issuing a line write with the
+through `nic_byte_pack`, whose two-beat input queue accepts one beat per
+cycle while writes flow and keeps RX FIFO ready independent of same-cycle
+byte placement and write backpressure. Sustained backpressure fills the queue
+and deasserts ready. The queue adds one initial cycle before
+byte placement; start, flush, and reset discard queued beats. It rotates each
+queued beat by the buffer address modulo 8 and places it in a two-line window,
+issuing a line write with the
 strobes it accumulated whenever the window's lower line is complete; bytes
 beyond the buffer length are dropped and the status carries TRUNC with the
 full received length. A buffer of length 0 or outside the aperture
@@ -142,7 +147,11 @@ always finds one, steers each response to its owner by entry, refuses
 addresses outside cached DDR with an error response instead of a port
 request, and under the drain withdraws its registered requests with error
 responses and waits for the fired ones. Every request an engine hands it
-gets exactly one response.
+gets exactly one response. Port eligibility is registered with the next
+request and entry occupancy, cutting the drain and free-entry logic out
+of the downstream valid/selection path without adding request latency.
+Both possible next eligibility values are computed before the sequencer's
+ready arrives; whether a request fires selects between them at the register.
 
 A MAC-domain reset that is not a NIC RESET is a stream epoch change: the
 engines see it as a level (`i_abort`), abandon the frame in progress
@@ -205,10 +214,12 @@ moderation and acknowledgement cases above. `test_nic_reset.py`
 clock, a lost clock, a stale acknowledgement, FIFO words and counter state
 across resets. `test_nic_dma_front.py` (`nic_dma_front`): response
 steering under out-of-order responses, the per-side cap, the grant bound,
-a refused line not blocking the other engine, aperture refusal, the drain.
+a refused line not blocking the other engine, aperture refusal, the drain
+including a request that fires at the edge registering the stop level.
 `test_nic_byte_pack.py` and `test_nic_byte_unpack.py`: the byte invariant
 (input byte j lands at, or comes from, address A + j) over every offset,
-lengths 1..100 and jumbo, truncation, stalls at line crossings.
+lengths 1..100 and jumbo, truncation, stalls at line crossings; the packer
+also checks sustained beat acceptance and flush/reset with queued beats.
 `test_nic_rx_engine.py` and `test_nic_tx_engine.py` run the engines
 against a memory model with out-of-order responses (`dma_model.py`): data
 byte-exact with nothing written outside the buffers and status words, the

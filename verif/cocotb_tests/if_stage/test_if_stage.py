@@ -1980,7 +1980,7 @@ async def test_collapsed_fetch_lead_live_slot2_fallback_redirects_both_pcs(
     assert bpc.o_slot2_live_target_used_for_pc_cofactor.value
     assert bpc.o_slot2_prediction_used_for_pc.value
     assert int(bpc.o_slot2_predicted_target.value) == slot2_target
-    assert int(pc_ctrl.next_pc_reg_if_slot2_alias.value) == slot2_target
+    assert pc_ctrl.live_slot2_pc_reg_override.value
     assert int(pc_ctrl.next_pc_reg.value) == slot2_target
 
     await _advance_cycle(dut)

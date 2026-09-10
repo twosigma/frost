@@ -24,7 +24,8 @@ bound (TX is served within the bound under continuous RX traffic); a
 refused RX request lets a TX request to another line through the next
 cycle; an address outside the aperture is refused locally with an error
 response and no port request; the RESET drain withdraws registered
-requests and reports idle once the fired ones returned.
+requests and reports idle once the fired ones returned, including a
+request that fires at the edge registering the drain level.
 """
 
 import random
@@ -450,3 +451,45 @@ async def test_stop_withdraws_and_drains(dut: Any) -> None:
     port.stop()
     rx.stop()
     tx.stop()
+
+
+@cocotb.test()
+async def test_stop_registration_edge_fire_drains_once(dut: Any) -> None:
+    """A request firing as stop is registered gets its real response exactly once."""
+    await _setup(dut)
+    bus = _ReqBus(dut)
+    rx = _Engine(dut, 0, bus)
+    await rx.request(BASE + 0x100, 2, 9)
+    rx.stop()
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_dma_req_valid.value) == 1
+    entry_id = int(dut.o_dma_req_id.value)
+    # The drain takes effect with its registered level on this rising edge.
+    # The request already presented before the edge may still fire there.
+    dut.i_stop.value = 1
+    dut.i_dma_req_ready.value = 1
+    await RisingEdge(dut.i_clk)
+    await Timer(1, unit="ps")
+    assert int(dut.o_dma_req_valid.value) == 0
+    await FallingEdge(dut.i_clk)
+    dut.i_dma_req_ready.value = 0
+    for _ in range(4):
+        await FallingEdge(dut.i_clk)
+        assert int(dut.o_idle.value) == 0, "the fired request was lost during stop"
+        assert int(dut.o_resp_valid.value) == 0, "the fired request was withdrawn"
+    dut.i_dma_resp_valid.value = 1
+    dut.i_dma_resp_id.value = entry_id
+    dut.i_dma_resp_rdata.value = _rdata(BASE + 0x100)
+    await Timer(1, unit="ps")
+    assert int(dut.o_resp_valid.value) == 1
+    assert int(dut.o_resp_kind.value) & 3 == 2
+    assert int(dut.o_resp_tag.value) & 15 == 9
+    assert int(dut.o_resp_error.value) == 0
+    assert int(dut.o_resp_rdata.value) == _rdata(BASE + 0x100)
+    await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    dut.i_dma_resp_valid.value = 0
+    await _idle(dut)
+    for _ in range(4):
+        await FallingEdge(dut.i_clk)
+        assert int(dut.o_resp_valid.value) == 0, "the request was answered twice"

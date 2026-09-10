@@ -23,7 +23,8 @@
  * and steers each response back to its owner with the kind and tag the
  * owner gave it. Each engine has one request register (its ready is that
  * register free and the engine below its share of the entries, SIDE_CAP,
- * so the other engine always finds an entry once responses return); the
+ * so the other engine always finds an entry once responses return). Port
+ * eligibility is registered alongside request and entry occupancy; the
  * registered requests are muxed onto the port every cycle: RX first, TX
  * once it has watched STARVATION_LIMIT grants go to RX while presenting
  * (a free entry is not a grant), and a request the port refuses in a cycle
@@ -39,9 +40,9 @@
  * An address outside the cached-DDR aperture is refused locally: the
  * request is not loaded, and the engine gets a response with o_resp_error
  * set for that kind and tag (delayed behind a real response of the same
- * cycle, the engine's ready staying low meanwhile). i_stop (the RESET
- * drain) withdraws the registered requests, which cannot have fired in
- * that cycle because valid toward the port is gated by it, answers each
+ * cycle, the engine's ready staying low meanwhile). The registered i_stop
+ * level (the RESET drain) withdraws the registered requests, which cannot
+ * fire while that level is set because port eligibility is cleared, answers each
  * with an error response, accepts nothing, and lets the fired ones drain;
  * o_idle then says every entry is free. Every request accepted here gets
  * exactly one response.
@@ -104,18 +105,15 @@ module nic_dma_front #(
   endfunction
 
   // ---- entries -----------------------------------------------------------------
-  logic [NUM_ENTRIES-1:0] ent_valid_q;
+  logic [NUM_ENTRIES-1:0] ent_valid_q, ent_valid_n;
   logic [NUM_ENTRIES-1:0] ent_owner_q;  // 0 RX, 1 TX
   logic [1:0] ent_kind_q[NUM_ENTRIES];
   logic [TAG_BITS-1:0] ent_tag_q[NUM_ENTRIES];
-  logic free_any;
   logic [IdBits-1:0] free_idx;
   always_comb begin
-    free_any = 1'b0;
     free_idx = '0;
     for (int k = int'(NUM_ENTRIES) - 1; k >= 0; k--) begin
       if (!ent_valid_q[k]) begin
-        free_any = 1'b1;
         free_idx = IdBits'(k);
       end
     end
@@ -138,7 +136,7 @@ module nic_dma_front #(
   end
 
   // ---- per-engine request registers and aperture refusals ---------------------
-  logic [1:0] rq_valid_q, rq_write_q;
+  logic [1:0] rq_valid_q, rq_valid_n, rq_write_q;
   logic [1:0][ADDR_WIDTH-1:0] rq_addr_q;
   logic [1:0][LINE_BYTES*8-1:0] rq_wdata_q;
   logic [1:0][LINE_BYTES-1:0] rq_wstrb_q;
@@ -159,28 +157,69 @@ module nic_dma_front #(
   end
 
   // ---- arbitration toward the port ----------------------------------------------
-  logic [1:0] present;  // registered requests that could fire
-  assign present = rq_valid_q & {2{free_any && !stop_q}};
+  // Register eligibility from the same next occupancy that the request and
+  // entry registers take. Thus it is exactly rq_valid_q & free_any & !stop_q
+  // without placing drain gating or the free-entry reduction on the DMA
+  // valid/selection path. Arbitration may still switch sides every cycle
+  // when a locked line is refused; no request payload is held at this seam.
+  logic [1:0] present_q;
   logic [WaitBits-1:0] tx_wait_q;
   logic tx_starved, prefer_tx_q, prefer_rx_q;
-  assign tx_starved = present[1] && (tx_wait_q == WaitBits'(STARVATION_LIMIT));
+  assign tx_starved = present_q[1] && (tx_wait_q == WaitBits'(STARVATION_LIMIT));
   // RX first; TX when it has watched STARVATION_LIMIT RX grants or RX was
   // just refused; and a refused TX presentation hands the next turn to RX
   // even while TX's priority is saturated, so a TX request to a locked line
   // never blocks RX for longer than a cycle at a time.
   logic sel;  // 0 RX, 1 TX
   always_comb begin
-    if (present[1] && (!present[0] || ((tx_starved || prefer_tx_q) && !prefer_rx_q))) sel = 1'b1;
+    if (present_q[1] && (!present_q[0] || ((tx_starved || prefer_tx_q) && !prefer_rx_q)))
+      sel = 1'b1;
     else sel = 1'b0;
   end
   logic fire;
-  assign o_dma_req_valid = |present;
+  assign o_dma_req_valid = |present_q;
   assign o_dma_req_write = rq_write_q[sel];
   assign o_dma_req_addr  = rq_addr_q[sel];
   assign o_dma_req_wdata = rq_wdata_q[sel];
   assign o_dma_req_wstrb = rq_wstrb_q[sel];
   assign o_dma_req_id    = free_idx;
   assign fire = o_dma_req_valid && i_dma_req_ready;
+
+  always_comb begin
+    ent_valid_n = ent_valid_q;
+    if (i_dma_resp_valid) ent_valid_n[i_dma_resp_id] = 1'b0;
+    if (fire) ent_valid_n[free_idx] = 1'b1;
+    rq_valid_n = rq_valid_q | load;
+    if (fire) rq_valid_n[sel] = 1'b0;
+    if (stop_q) rq_valid_n = '0;
+  end
+
+  // The DMA ready/fire arrives through the shared sequencer. Compute both
+  // possible next eligibility values first, leaving only the final select
+  // on that path. After a fire, a free entry remains if at least two were
+  // free already, or a response frees an entry other than the one allocated.
+  // The response-ID bound also preserves the ignored out-of-range write for
+  // non-power-of-two NUM_ENTRIES configurations.
+  logic free_any_now, free_two_now, resp_frees_entry;
+  logic free_if_fire0, free_if_fire1;
+  logic [1:0] pending_if_fire0, pending_if_fire1;
+  (* keep = "true" *) logic [1:0] present_if_fire0, present_if_fire1;
+  assign free_any_now = !(&ent_valid_q);
+  always_comb begin
+    free_two_now = 1'b0;
+    for (int k = 0; k < int'(NUM_ENTRIES); k++) begin
+      for (int j = 0; j < k; j++) begin
+        free_two_now |= !ent_valid_q[k] && !ent_valid_q[j];
+      end
+    end
+  end
+  assign resp_frees_entry = i_dma_resp_valid && (32'(i_dma_resp_id) < NUM_ENTRIES);
+  assign free_if_fire0 = free_any_now || resp_frees_entry;
+  assign free_if_fire1 = free_two_now || (resp_frees_entry && (i_dma_resp_id != free_idx));
+  assign pending_if_fire0 = (rq_valid_q | load) & {2{!stop_q && !i_stop}};
+  assign pending_if_fire1 = pending_if_fire0 & ~(2'b01 << sel);
+  assign present_if_fire0 = pending_if_fire0 & {2{free_if_fire0}};
+  assign present_if_fire1 = pending_if_fire1 & {2{free_if_fire1}};
 
   // ---- responses ---------------------------------------------------------------
   logic resp_owner;
@@ -215,13 +254,15 @@ module nic_dma_front #(
       ent_valid_q   <= '0;
       ent_owner_q   <= '0;
       rq_valid_q    <= '0;
+      present_q     <= '0;
       err_pending_q <= '0;
       tx_wait_q     <= '0;
       prefer_tx_q   <= 1'b0;
       prefer_rx_q   <= 1'b0;
     end else begin
-      // Responses free their entries.
-      if (i_dma_resp_valid) ent_valid_q[i_dma_resp_id] <= 1'b0;
+      ent_valid_q <= ent_valid_n;
+      rq_valid_q  <= rq_valid_n;
+      present_q   <= fire ? present_if_fire1 : present_if_fire0;
       // Refusals answered.
       for (int e = 0; e < 2; e++) begin
         if (o_resp_valid[e] && o_resp_error[e]) err_pending_q[e] <= 1'b0;
@@ -229,7 +270,6 @@ module nic_dma_front #(
       // Loads and refusals.
       for (int e = 0; e < 2; e++) begin
         if (load[e]) begin
-          rq_valid_q[e] <= 1'b1;
           rq_write_q[e] <= i_req_write[e];
           rq_addr_q[e]  <= i_req_addr[e];
           rq_wdata_q[e] <= i_req_wdata[e];
@@ -245,27 +285,24 @@ module nic_dma_front #(
       end
       // The fire allocates the entry and drains the register.
       if (fire) begin
-        ent_valid_q[free_idx] <= 1'b1;
         ent_owner_q[free_idx] <= sel;
         ent_kind_q[free_idx]  <= rq_kind_q[sel];
         ent_tag_q[free_idx]   <= rq_tag_q[sel];
-        rq_valid_q[sel]       <= 1'b0;
       end
       // Fairness: TX counts RX grants it watched; a refused presentation
       // hands the next cycle to the other engine.
-      if (fire && (sel == 1'b0) && present[1]) begin
+      if (fire && (sel == 1'b0) && present_q[1]) begin
         if (tx_wait_q != WaitBits'(STARVATION_LIMIT)) tx_wait_q <= tx_wait_q + 1'b1;
       end else if (fire && (sel == 1'b1)) begin
         tx_wait_q <= '0;
       end
-      prefer_tx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b0) && present[1];
-      prefer_rx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b1) && present[0];
+      prefer_tx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b0) && present_q[1];
+      prefer_rx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b1) && present_q[0];
       // The drain withdraws every registered request (none fired: valid
-      // toward the port is gated by i_stop) and answers it with an error,
+      // toward the port is cleared with stop_q) and answers it with an error,
       // so every request an engine had accepted gets exactly one response.
       for (int e = 0; e < 2; e++) begin
         if (stop_q && rq_valid_q[e]) begin
-          rq_valid_q[e]    <= 1'b0;
           err_pending_q[e] <= 1'b1;
           err_kind_q[e]    <= rq_kind_q[e];
           err_tag_q[e]     <= rq_tag_q[e];

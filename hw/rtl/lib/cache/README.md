@@ -182,6 +182,12 @@ id budget is headroom. Walks are read-only: the walker does not update PTE
 A/D bits in hardware. Accesses that need those bits set instead take page
 faults (Svade), so the walker has no PTE-write path.
 
+The walker precomputes its request-valid register from the next walk state,
+pointer-address check, and discard state. This preserves the original request
+cycles while removing those gates from the shared L2 capture-enable path. A
+read that fires in the cycle of a discard is still consumed, with no walk
+response delivered.
+
 PTEs live in cacheable memory and a walk reads through the L2 when present or
 directly through the bridge in the L1-only shape, not through the L1D, so a
 store to a page table that is still dirty in the L1D is not visible to a walk

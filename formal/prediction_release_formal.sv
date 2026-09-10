@@ -22,7 +22,9 @@
 // omitted lookup, buffer, and progress blockers, together with the broader
 // PD-redirect clear, admit extra behavior; that makes the safety proof harder
 // rather than assuming away a production trace.
-module prediction_release_formal (
+module prediction_release_formal #(
+    parameter bit PENDING_HANDOFF_EXCLUDES_SLOT2 = 1'b0
+) (
     input logic i_clk
 );
 
@@ -85,6 +87,8 @@ module prediction_release_formal (
   logic [XLEN-1:0] pending_prediction_prev_pc;
   logic [XLEN-1:0] pending_prediction_prev_native_pc;
   logic pending_prediction_target_handoff;
+  logic pending_prediction_holdoff_wcs0;
+  logic pending_prediction_holdoff_wcs;
   logic pending_prediction_target_holdoff;
   logic pending_prediction_fetch_holdoff;
   logic pending_prediction_fetch_holdoff_wcs0;
@@ -114,7 +118,12 @@ module prediction_release_formal (
 
   // Conservatively model the IF-stage boundary without importing the BTB, RAS,
   // or instruction aligner.  The request remains arbitrary and production-only
-  // blockers are omitted.
+  // blockers are omitted. The integrated-handoff variant restores IF's WCS=0
+  // pending-holdoff mask. WCS=1 uses its pending-holdoff cofactor here, which
+  // admits extra requests compared with IF's unconditional prediction disable.
+  // All other omitted blockers also conservatively admit extra requests.
+  // branch_prediction_disable separately proves that
+  // the production predictor applies this mask to every slot-2 source.
   assign prediction_used_for_pc =
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff;
@@ -122,7 +131,10 @@ module prediction_release_formal (
   assign prediction_used_from_buffer = prediction_used && i_use_instr_buffer;
   assign slot2_prediction_used_for_pc =
       i_slot2_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
-      !stall_registered && !any_holdoff_safe && !prediction_holdoff;
+      !stall_registered && !any_holdoff_safe && !prediction_holdoff &&
+      (!PENDING_HANDOFF_EXCLUDES_SLOT2 ||
+       !(i_window_cannot_serve_raw ? pending_prediction_holdoff_wcs :
+                                    pending_prediction_holdoff_wcs0));
   assign slot2_prediction_used = slot2_prediction_used_for_pc && !i_branch_taken && !i_stall;
 
   always_ff @(posedge i_clk) begin
@@ -158,7 +170,8 @@ module prediction_release_formal (
   end
 
   pc_controller #(
-      .XLEN(XLEN)
+      .XLEN(XLEN),
+      .PENDING_HANDOFF_EXCLUDES_SLOT2(PENDING_HANDOFF_EXCLUDES_SLOT2)
   ) u_pc_controller (
       .i_clk,
       .i_reset,
@@ -234,8 +247,8 @@ module prediction_release_formal (
       .o_pending_prediction_prev_native_pc(pending_prediction_prev_native_pc),
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(),
-      .o_pending_prediction_holdoff_wcs0(),
-      .o_pending_prediction_holdoff_wcs(),
+      .o_pending_prediction_holdoff_wcs0(pending_prediction_holdoff_wcs0),
+      .o_pending_prediction_holdoff_wcs(pending_prediction_holdoff_wcs),
       .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
       .o_pending_prediction_fetch_holdoff_wcs0(pending_prediction_fetch_holdoff_wcs0),
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
@@ -247,6 +260,7 @@ module prediction_release_formal (
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(),
+      .o_npc_cond(),
       .o_npc_sel(),
       .o_npc_seq(),
       .o_npc_cmp_val(),

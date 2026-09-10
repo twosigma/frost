@@ -324,8 +324,8 @@ module pc_increment_calculator #(
   assign seq_sel_pc_reg_hold =
       seq_sel_holdoff || (i_prediction_from_buffer_holdoff && !seq_sel_mid_32bit);
 
-  logic [XLEN-1:0] seq_next_pc_cof[NCof];
-  logic [XLEN-1:0] seq_next_pc_plus_2_cof[NCof];
+  (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_cof[NCof];
+  (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_plus_2_cof[NCof];
   riscv_pkg::fetch_verdict_t seq_next_pc_verdict_cof[NCof];
   riscv_pkg::fetch_verdict_t seq_next_pc_plus_2_verdict_cof[NCof];
   logic [XLEN-1:0] seq_next_pc_reg_cof[NCof];

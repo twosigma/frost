@@ -28,7 +28,11 @@
   prediction held commit without a redirect here.
 */
 module pc_controller #(
-    parameter int unsigned XLEN = riscv_pkg::XLEN
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
+    // IF feeds the WCS=0 pending holdoff into prediction-disable and always
+    // disables prediction for WCS=1, so readiness excludes every slot-2 hit.
+    // Standalone callers retain the generic slot-2 priority veto by default.
+    parameter bit PENDING_HANDOFF_EXCLUDES_SLOT2 = 1'b0
 ) (
     input logic i_clk,
 
@@ -202,11 +206,15 @@ module pc_controller #(
     output logic [XLEN-1:0] o_next_pc,
     output logic o_next_pc_holds,
     output logic o_pc_update_en,
-    // Selector classification.  if_stage consumes the winner and sequential
-    // mask to distinguish true provider retargets from ordinary PC advances.
+    // Selector classification. if_stage consumes raw requests and the
+    // sequential mask to distinguish provider retargets from ordinary advances.
+    // The winner remains public for observations and the integration oracle.
     // The wide comparator/value and verdict images are retained as an exact
     // observation interface for direct benches and equivalence assertions.
     // They are no longer part of the instruction-translation dataplane.
+    // Raw requests let the registered retarget classifier complete its
+    // prediction cofactors before the late prediction requests arrive.
+    output logic [riscv_pkg::PcNextArms-1:0] o_npc_cond,
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_sel,
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_seq,
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_cmp_val,
@@ -344,8 +352,8 @@ module pc_controller #(
   // next_pc_reg stays an explicit priority mux for the values which actually
   // load. Its served-window and fetch-progress self-holds are factored onto
   // o_pc_reg's clock enable below, keeping those late controls off the wide D
-  // cone. next_pc keeps the same arm order but uses a one-hot balanced form
-  // for timing; see the restructure note below.
+  // cone. The fetch-PC datum completes a prediction-free base before its
+  // final current-prediction mux; see the exact priority factors below.
 
   // next_pc_reg uses the registered prediction, one cycle delayed, because
   // o_pc_reg is the PC of the instruction being processed and lags o_pc (the
@@ -404,6 +412,7 @@ module pc_controller #(
   logic            pending_prediction_crossing_pc_reg;
   logic            pending_prediction_target_handoff;
   logic            pending_prediction_target_handoff_applies;
+  logic            pending_prediction_ready_without_effective;
   logic            pending_prediction_allow_cross;
   (* keep = "true", max_fanout = 16 *)logic            pending_prediction_allow_cross_pc_mux_q;
   logic            stale_pending_prediction;
@@ -548,15 +557,21 @@ module pc_controller #(
   // reaches the still-owed branch. The served-window guard then has priority
   // and resteers fetch to that branch. Consuming the pending state on the same
   // edge would lose the predicted control-flow instruction while next_pc_reg
-  // remains behind. The two remaining non-redirect arms above the
-  // pending-target arm defer it for the same reason. Keep the pending packet
-  // live and retry once the covering branch window arrives.
+  // remains behind. The other non-redirect arms above the pending-target arm
+  // defer it for the same reason. In integrated IF, readiness also asserts
+  // both pending prediction holdoff cofactors. IF uses the WCS=0 holdoff to
+  // disable prediction and disables WCS=1 unconditionally; both staged and
+  // live slot-2 paths therefore stop. The opt-in removes that redundant veto so
+  // the PMA/prediction cone cannot feed back into pending-state consumption.
+  // Generic callers keep every priority condition.
   assign pending_prediction_target_handoff_applies =
       pending_prediction_target_handoff && !fetch_stall &&
-      !i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
+      !i_window_cannot_serve &&
+      (PENDING_HANDOFF_EXCLUDES_SLOT2 || !i_slot2_prediction_used_for_pc) &&
       !o_pending_prediction_target_holdoff;
   assign use_pending_prediction_for_pc_reg =
-      pending_prediction_effective &&
+      pending_prediction_effective && pending_prediction_ready_without_effective;
+  assign pending_prediction_ready_without_effective =
       ((pending_prediction_allow_cross && pc_reg_before_pending && seq_reaches_pending) ||
        (pc_reg_at_pending &&
         (pending_prediction_allow_cross || pending_prediction_pc_ready_q ||
@@ -681,20 +696,42 @@ module pc_controller #(
       !use_pending_prediction_for_pc_reg_pc_mux &&
       !pc_reg_after_pending &&
       !pending_predecessor_release_wcs0;
+  // Readiness and the immediate-predecessor exception depend on effective
+  // pending state in several nested places. Factor that common enable out
+  // completely: E && ((!U && A && !exception) || U) reduces to
+  // E && (R || (A && !predecessor_exception)), where U=E&&R. These completed
+  // cofactors let a late recovery/redirect kill stop at the final AND.
+  (* keep = "true" *)logic pending_prediction_holdoff_without_effective;
+  (* keep = "true" *)logic pending_prediction_holdoff_wcs0_without_effective;
+  (* keep = "true" *)logic pending_prediction_holdoff_wcs_without_effective;
+  // Valid tags satisfy prev_pc = pc - 2 modulo XLEN. An exact owner is
+  // never its predecessor. At a predecessor, !after also implies before,
+  // including wraparound: a wrapped predecessor is after and is excluded.
+  // Thus crossing matters only when it cancels a predecessor exception.
+  // Complete that exception before applying the address comparisons, keeping
+  // the separate before comparator out of these prediction holdoffs.
+  // Fetch holdoffs below retain their original readiness equations.
+  (* keep = "true" *)logic pending_pred_block;
+  (* keep = "true" *)logic pending_pred_block_wcs0;
+  (* keep = "true" *)logic pending_pred_block_wcs;
+  assign pending_pred_block = pending_predecessor_needs_emit &&
+      !(pending_prediction_allow_cross && seq_reaches_pending);
+  assign pending_pred_block_wcs0 = (carve_out_engaged_q || i_prediction_holdoff) &&
+      !(pending_prediction_allow_cross && seq_reaches_pending);
+  assign pending_pred_block_wcs = !(pending_prediction_allow_cross && seq_reaches_pending);
+  assign pending_prediction_holdoff_without_effective =
+      !pc_reg_after_pending && !(pc_reg_at_pending_predecessor && pending_pred_block);
   assign o_pending_prediction_holdoff =
-      hold_pending_prediction_fetch || hold_pending_prediction_consume_fetch;
-  // Shannon cofactors of the hold above on the raw served-window verdict
-  // (pending_predecessor_needs_emit = raw WCS || carve_out_engaged_q ||
-  // i_prediction_holdoff).
+      pending_prediction_effective && pending_prediction_holdoff_without_effective;
+  // Raw-WCS cofactors preserve the completed predecessor exception above.
+  assign pending_prediction_holdoff_wcs0_without_effective =
+      !pc_reg_after_pending && !(pc_reg_at_pending_predecessor && pending_pred_block_wcs0);
+  assign pending_prediction_holdoff_wcs_without_effective =
+      !pc_reg_after_pending && !(pc_reg_at_pending_predecessor && pending_pred_block_wcs);
   assign o_pending_prediction_holdoff_wcs0 =
-      (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
-       !pc_reg_after_pending &&
-       !pending_predecessor_release_wcs0) ||
-      hold_pending_prediction_consume_fetch;
+      pending_prediction_effective && pending_prediction_holdoff_wcs0_without_effective;
   assign o_pending_prediction_holdoff_wcs =
-      (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
-       !pc_reg_after_pending && !pc_reg_at_pending_predecessor) ||
-      hold_pending_prediction_consume_fetch;
+      pending_prediction_effective && pending_prediction_holdoff_wcs_without_effective;
 `ifndef SYNTHESIS
   always_comb begin
     if (!$isunknown(
@@ -713,30 +750,42 @@ module pc_controller #(
   end
 `endif
   assign o_pending_prediction_target_handoff = pending_prediction_target_handoff_applies;
+  // Fetch suppression differs from prediction suppression only in which
+  // ready handoffs squash the current packet. Complete that decision without
+  // the late effective-pending enable too, so recovery does not traverse the
+  // nested predecessor exception and then sel_nop/slot-2 validity.
+  logic pending_prediction_ready_suppresses_fetch;
+  (* keep = "true" *)logic pending_prediction_fetch_holdoff_without_effective;
+  (* keep = "true" *)logic pending_prediction_fetch_holdoff_wcs0_without_effective;
+  (* keep = "true" *)logic pending_prediction_fetch_holdoff_wcs_without_effective;
+  assign pending_prediction_ready_suppresses_fetch =
+      pending_prediction_ready_without_effective && pending_prediction_allow_cross &&
+      (o_pc_reg != pending_prediction_pc);
+  assign pending_prediction_fetch_holdoff_without_effective =
+      (!pending_prediction_ready_without_effective && !pc_reg_after_pending &&
+       !(pc_reg_at_pending_predecessor && pending_predecessor_needs_emit)) ||
+      pending_prediction_ready_suppresses_fetch;
   assign o_pending_prediction_fetch_holdoff =
-      hold_pending_prediction_fetch ||
-      (hold_pending_prediction_consume_fetch &&
-       pending_prediction_allow_cross &&
-       (o_pc_reg != pending_prediction_pc));
+      pending_prediction_effective && pending_prediction_fetch_holdoff_without_effective;
   // Shannon cofactor for raw WCS=0. The immediate-predecessor carve-out then
   // depends only on registered state: its episode latch or the first
   // prediction-holdoff cycle. IF uses W | E(W) = W | E(0), so raw WCS no
   // longer traverses this pending-prediction priority cone on the
   // architectural sel_nop path.
+  assign pending_prediction_fetch_holdoff_wcs0_without_effective =
+      (!pending_prediction_ready_without_effective && !pc_reg_after_pending &&
+       !(pc_reg_at_pending_predecessor && (carve_out_engaged_q || i_prediction_holdoff))) ||
+      pending_prediction_ready_suppresses_fetch;
   assign o_pending_prediction_fetch_holdoff_wcs0 =
-      (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
-       !pc_reg_after_pending &&
-       !pending_predecessor_release_wcs0) ||
-      (hold_pending_prediction_consume_fetch && pending_prediction_allow_cross &&
-       (o_pc_reg != pending_prediction_pc));
+      pending_prediction_effective && pending_prediction_fetch_holdoff_wcs0_without_effective;
   // Shannon cofactor for raw WCS=1. In that cofactor
   // pending_predecessor_needs_emit is true, so the immediate-predecessor
   // carve-out removes the fetch hold regardless of carve_out_engaged_q.
+  assign pending_prediction_fetch_holdoff_wcs_without_effective =
+      (!pending_prediction_ready_without_effective && !pc_reg_after_pending &&
+       !pc_reg_at_pending_predecessor) || pending_prediction_ready_suppresses_fetch;
   assign o_pending_prediction_fetch_holdoff_wcs =
-      (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
-       !pc_reg_after_pending && !pc_reg_at_pending_predecessor) ||
-      (hold_pending_prediction_consume_fetch && pending_prediction_allow_cross &&
-       (o_pc_reg != pending_prediction_pc));
+      pending_prediction_effective && pending_prediction_fetch_holdoff_wcs_without_effective;
   assign o_pending_prediction_target_holdoff = pending_prediction_target_holdoff_q;
   assign halfword_target_lead_catchup =
       pending_prediction_target_holdoff_prev_q &&
@@ -832,6 +881,12 @@ module pc_controller #(
   // state independently. Keep the ready/apply distinction observable so a
   // later priority edit cannot reintroduce consume-without-apply.
   always_comb begin
+    if (PENDING_HANDOFF_EXCLUDES_SLOT2 && !$isunknown(
+            {pending_prediction_target_handoff, i_slot2_prediction_used_for_pc}
+        )) begin
+      p_integrated_pending_handoff_excludes_slot2 :
+      assert (!(pending_prediction_target_handoff && i_slot2_prediction_used_for_pc));
+    end
     if (pending_prediction_target_handoff && !fetch_stall && !i_reset && !$isunknown(
             {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
                      o_pending_prediction_target_holdoff}
@@ -895,24 +950,18 @@ module pc_controller #(
   end
 
   logic [XLEN-1:0] next_pc, next_pc_reg;
-  logic [XLEN-1:0] next_pc_reg_without_live_slot2;
+  (* keep = "true" *) logic [XLEN-1:0] pc_reg_nonseq_without_slot2;
+  (* keep = "true" *) logic [XLEN-1:0] pc_reg_nonseq_without_live_slot2;
   logic trap_or_mret;
   assign trap_or_mret = i_trap_taken || i_mret_taken;
 
   // ---------------------------------------------------------------------------
-  // next_pc: one-hot winner into a balanced mux, a timing restructure.
-  //
-  // This used to be a fourteen-arm serial if/else priority chain, which
-  // synthesises to a ~13-deep 2:1 mux cascade on a 64-bit datum. Historically
-  // next_pc also keyed the instruction MMU, placing that cascade before the
-  // ITLB and PA resolver. The MMU now starts from registered o_pc, but this
-  // balanced form remains the D path of the fetch-PC register.
-  //
-  // The arms and their order are unchanged; only the shape is. The kill term
-  // for each arm is the OR of the higher-priority conditions, which a tool
-  // can build as a balanced prefix tree, and the datum is an AND-OR reduce
-  // instead of a cascade. p_next_pc_onehot and p_next_pc_matches_priority
-  // below pin both properties against the original expression in simulation.
+  // next_pc: preserve the one-hot winner interface, then isolate predictions
+  // at a final completed-data mux. The fourteen original arm conditions,
+  // priority order, and observation outputs remain unchanged. Only the fetch
+  // register's data selection factors late sequential data and the two
+  // prediction requests out of the wider arm reduction. Local oracles compare it
+  // with both the original one-hot reduction and serial priority chain.
   // ---------------------------------------------------------------------------
   localparam int unsigned NPcArms = riscv_pkg::PcNextArms;
   logic [NPcArms-1:0] npc_cond;  // raw arm conditions, priority order
@@ -1014,6 +1063,7 @@ module pc_controller #(
     npc_seq_verdict[12] = seq_next_pc_verdict;
     npc_seq_verdict[13] = seq_next_pc_verdict;
   end
+  assign o_npc_cond = npc_cond;
   assign o_npc_sel = npc_sel;
   assign o_npc_seq = npc_seq;
   assign o_npc_cmp_val = npc_cmp_val;
@@ -1045,12 +1095,102 @@ module pc_controller #(
     end
   end
 
+  // Complete non-sequential fetch data with reset, window resteer, catch-up,
+  // and both current predictions disabled. Substitute o_pc for every sequential
+  // datum in this kept base, so late size selection enters only the final mux.
+  // This cofactor's winners select the sequential value, including consume
+  // and raw-WCS override cases. Complete slot-1 and served-window choices
+  // before the final canonical slot-2 selection below redirects, resteer and
+  // progress hold. The original observations stay unchanged.
+  logic [NPcArms-1:0] npc_cond_without_prediction;
+  logic [NPcArms-1:0] npc_sel_without_prediction;
+  logic [XLEN-1:0] npc_val_without_sequential[NPcArms];
+  (* keep = "true" *) logic [XLEN-1:0] next_pc_without_prediction_or_sequential;
+  (* keep = "true" *) logic [XLEN-1:0] next_pc_sequential_target;
+  logic npc_sequential_override, npc_slot1_override;
   always_comb begin
-    next_pc = '0;
+    npc_cond_without_prediction = npc_cond;
+    npc_cond_without_prediction[0] = 1'b0;
+    npc_cond_without_prediction[5] = 1'b0;
+    npc_cond_without_prediction[7] = 1'b0;
+    npc_cond_without_prediction[8] = 1'b0;
+    npc_cond_without_prediction[11] = 1'b0;
+    for (int unsigned k = 0; k < NPcArms; k++) npc_val_without_sequential[k] = npc_val[k];
+    npc_val_without_sequential[10] = npc_consume_is_seq ? o_pc : pending_prediction_target;
+    npc_val_without_sequential[11] = o_pc;
+    npc_val_without_sequential[12] = pending_wcs_seq_override_pc_mux ? o_pc :
+        (pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
+         pending_prediction_pc);
+    npc_val_without_sequential[13] = o_pc;
+    next_pc_without_prediction_or_sequential = '0;
     for (int unsigned k = 0; k < NPcArms; k++) begin
-      next_pc |= {XLEN{npc_sel[k]}} & npc_val[k];
+      npc_sel_without_prediction[k] = npc_cond_without_prediction[k] &&
+          !(|(npc_cond_without_prediction & ((1 << k) - 1)));
+      next_pc_without_prediction_or_sequential |=
+          {XLEN{npc_sel_without_prediction[k]}} & npc_val_without_sequential[k];
     end
   end
+  assign npc_sequential_override =
+      (npc_sel_without_prediction[10] && npc_consume_is_seq) ||
+      npc_sel_without_prediction[11] ||
+      (npc_sel_without_prediction[12] && pending_wcs_seq_override_pc_mux) ||
+      npc_sel_without_prediction[13];
+  assign npc_slot1_override = !(|npc_cond_without_prediction[6:1]) && npc_cond[8];
+  // Complete non-sequential data, including slot 1 and served-window resteer,
+  // independently of sequential and canonical slot-2 data. The final permission
+  // retains all six earlier arms. Reset stays outside the preserved datum.
+  (* keep = "true" *) logic [XLEN-1:0] next_pc_without_slot2_or_sequential;
+  (* keep = "true" *) logic npc_slot2_permission;
+  assign next_pc_without_slot2_or_sequential =
+      (i_window_cannot_serve && pc_reg_live_redirect_permission) ?
+      {o_pc_reg[XLEN-1:2], 2'b00} :
+      (npc_slot1_override ? npc_val[8] : next_pc_without_prediction_or_sequential);
+  assign npc_slot2_permission =
+      pc_reg_live_redirect_permission && !i_window_cannot_serve && i_fetch_progress;
+  // Catch-up follows every earlier arm, including slot 1 and pending consume.
+  // Complete its permission without late NOP, served-window or slot-1 control.
+  // Canonical slot 2 has higher final priority and therefore need not enter
+  // this permission. Keep reset outside the completed data operands.
+  (* keep = "true" *)logic npc_catchup_permission_without_nop_or_wcs;
+  (* keep = "true" *)logic npc_catchup_request_without_slot1;
+  assign npc_catchup_permission_without_nop_or_wcs =
+      !(|npc_cond[4:1]) && !npc_cond[6] && !(|npc_cond[10:9]) &&
+      !pending_prediction_effective &&
+      (o_fetch_lookup_is_lower_parcel ||
+       (pending_prediction_target_holdoff_prev_q &&
+        !pending_prediction_target_holdoff_q && i_is_compressed && o_pc_reg[1] &&
+        (o_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed))));
+  assign npc_catchup_request_without_slot1 =
+      npc_catchup_permission_without_nop_or_wcs && !i_window_cannot_serve && !i_sel_nop;
+  // The cofactor winners already carry every ordinary sequential priority
+  // except WCS and current predictions. Complete both requests without slot 1,
+  // then apply that common guard only to the combined request. Its true value
+  // proves slot 1 absent, so the data choice can use the unqualified catch-up
+  // request. Catch-up retains priority even when both requests are true.
+  // Canonical slot 2 retains highest final priority; neither sequential datum
+  // enters the kept non-sequential base.
+  (* keep = "true" *)logic npc_ordinary_sequential_request_without_slot1;
+  logic npc_combined_sequential_request;
+  assign npc_ordinary_sequential_request_without_slot1 =
+      !i_window_cannot_serve && npc_sequential_override;
+  assign npc_combined_sequential_request = !npc_cond[8] &&
+      (npc_ordinary_sequential_request_without_slot1 || npc_catchup_request_without_slot1);
+  assign next_pc_sequential_target =
+      npc_catchup_request_without_slot1 ? seq_next_pc_plus_2 : seq_next_pc;
+  // Preserve only the three final winners. Reset is part of these scalar
+  // controls, outside the completed data words. Their mutually exclusive
+  // masks leave one three-term data reduction after every completed datum.
+  (* keep = "true" *)logic npc_final_slot2_winner;
+  (* keep = "true" *)logic npc_final_sequential_winner;
+  (* keep = "true" *)logic npc_final_nonseq_winner;
+  assign npc_final_slot2_winner = !i_reset && npc_slot2_permission && npc_cond[7];
+  assign npc_final_sequential_winner =
+      !i_reset && !(npc_slot2_permission && npc_cond[7]) && npc_combined_sequential_request;
+  assign npc_final_nonseq_winner =
+      !i_reset && !(npc_slot2_permission && npc_cond[7]) && !npc_combined_sequential_request;
+  assign next_pc = ({XLEN{npc_final_slot2_winner}} & npc_val[7]) |
+      ({XLEN{npc_final_sequential_winner}} & next_pc_sequential_target) |
+      ({XLEN{npc_final_nonseq_winner}} & next_pc_without_slot2_or_sequential);
 
   // next_pc_reg uses the registered prediction handoff for both BTB and RAS
   // predictions. next_pc still redirects fetch immediately, but pc_reg is the
@@ -1061,23 +1201,15 @@ module pc_controller #(
   //   - cycle N+1 (registered): next_pc_reg = predicted_target_r, the branch
   //   - cycle N+2: o_pc_reg = predicted_target_r, the target instruction
   always_comb begin
-    if (i_reset) next_pc_reg_without_live_slot2 = '0;
-    else if (trap_or_mret) next_pc_reg_without_live_slot2 = i_trap_target;
-    else if (i_fence_i_flush) next_pc_reg_without_live_slot2 = i_fence_i_target;
-    else if (i_branch_taken) next_pc_reg_without_live_slot2 = i_branch_target;
-    else if (i_pd_redirect) next_pc_reg_without_live_slot2 = i_pd_redirect_target;
-    // Staged slot-2 BTB prediction: pc_reg jumps to the slot-2 target
-    // immediately (mirroring pd_redirect's pc_reg handoff).  The cycle
-    // after the redirect is NOP'd via the standard control_flow_holdoff
-    // path (seq_sel_holdoff holds pc_reg at the target), and BRAM data for
-    // the target arrives the cycle after that.
-    else if (i_slot2_staged_prediction_used_for_pc)
-      next_pc_reg_without_live_slot2 = i_slot2_staged_predicted_target;
+    if (trap_or_mret) pc_reg_nonseq_without_slot2 = i_trap_target;
+    else if (i_fence_i_flush) pc_reg_nonseq_without_slot2 = i_fence_i_target;
+    else if (i_branch_taken) pc_reg_nonseq_without_slot2 = i_branch_target;
+    else if (i_pd_redirect) pc_reg_nonseq_without_slot2 = i_pd_redirect_target;
     // After a non-cross pending handoff, the first target cycle is a bubble
     // while BRAM returns the target word. Hold pc_reg on the target during
     // that bubble; advancing here pairs the arriving target word with the next
     // halfword PC and corrupts C-extension alignment on loop back-edges.
-    else if (o_pending_prediction_target_holdoff) next_pc_reg_without_live_slot2 = o_pc_reg;
+    else if (o_pending_prediction_target_holdoff) pc_reg_nonseq_without_slot2 = o_pc_reg;
     // Pending-prediction load-drop fix: suppress the land-on-branch jump in the
     // immediate-predecessor carve-out so pc_reg advances sequentially
     // (seq_next_pc_reg, which equals pending_prediction_pc here) and the
@@ -1086,30 +1218,48 @@ module pc_controller #(
     // fires when pc_reg reaches the branch.
     else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
              !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
-      next_pc_reg_without_live_slot2 = pending_prediction_pc;
+      pc_reg_nonseq_without_slot2 = pending_prediction_pc;
     else if (pending_prediction_cross_handoff_pc_mux)
-      next_pc_reg_without_live_slot2 = pending_prediction_pc;
+      pc_reg_nonseq_without_slot2 = pending_prediction_pc;
     else if (pending_prediction_target_handoff_pc_mux)
-      next_pc_reg_without_live_slot2 = pending_prediction_target;
-    else if (sel_prediction_r) next_pc_reg_without_live_slot2 = i_predicted_target_r;
-    else next_pc_reg_without_live_slot2 = seq_next_pc_reg;
+      pc_reg_nonseq_without_slot2 = pending_prediction_target;
+    else if (sel_prediction_r) pc_reg_nonseq_without_slot2 = i_predicted_target_r;
+    // This value is unused when the final sequential arm wins.
+    else
+      pc_reg_nonseq_without_slot2 = o_pc_reg;
   end
 
-  // A live fallback has the same priority as the canonical slot-2 arm: below
-  // every architectural redirect and above all pending/registered/sequential
-  // choices. Its alias-free cofactor and both wide candidates settle in
-  // parallel. The full 64-bit candidate alias is consequently only the select
-  // of this last 2:1, rather than the head of the pc_reg priority cone.
-  logic live_slot2_pc_reg_override_cofactor;
-  logic [XLEN-1:0] next_pc_reg_if_slot2_alias;
-  assign live_slot2_pc_reg_override_cofactor =
-      i_slot2_live_target_used_for_pc_cofactor &&
-      !i_reset && !trap_or_mret && !i_fence_i_flush &&
-      !i_branch_taken && !i_pd_redirect;
-  assign next_pc_reg_if_slot2_alias = live_slot2_pc_reg_override_cofactor ?
-      i_slot2_live_predicted_target : next_pc_reg_without_live_slot2;
-  assign next_pc_reg = i_slot1_aliases_slot2_candidate ?
-      next_pc_reg_if_slot2_alias : next_pc_reg_without_live_slot2;
+  // Complete non-sequential data through the separate staged and live
+  // boundaries. Keep the no-live datum, leaving the final live selection free
+  // to combine with the last sequential mux. The late sequential datum never
+  // enters any earlier priority arm. Reset stays outside all KEEP values.
+  // Generic priority stays redirect > aliased live > staged > pending >
+  // registered > sequential, including inconsistent simultaneous requests.
+  (* keep = "true" *)logic pc_reg_live_redirect_permission;
+  logic live_slot2_pc_reg_override;
+  assign pc_reg_live_redirect_permission =
+      !trap_or_mret && !i_fence_i_flush && !i_branch_taken && !i_pd_redirect;
+  assign pc_reg_nonseq_without_live_slot2 =
+      (i_slot2_staged_prediction_used_for_pc && pc_reg_live_redirect_permission) ?
+      i_slot2_staged_predicted_target : pc_reg_nonseq_without_slot2;
+  assign live_slot2_pc_reg_override = i_slot1_aliases_slot2_candidate &&
+      i_slot2_live_target_used_for_pc_cofactor && pc_reg_live_redirect_permission;
+  logic [XLEN-1:0] pc_reg_nonseq_target;
+  (* keep = "true" *) logic pc_reg_seq_permission_without_slot2;
+  (* keep = "true" *) logic pc_reg_seq_override;
+  assign pc_reg_nonseq_target = live_slot2_pc_reg_override ?
+      i_slot2_live_predicted_target : pc_reg_nonseq_without_live_slot2;
+  assign pc_reg_seq_permission_without_slot2 =
+      pc_reg_live_redirect_permission && !o_pending_prediction_target_holdoff &&
+      !(pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
+        !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit) &&
+      !pending_prediction_cross_handoff_pc_mux && !pending_prediction_target_handoff_pc_mux &&
+      !sel_prediction_r;
+  assign pc_reg_seq_override = pc_reg_seq_permission_without_slot2 &&
+      !i_slot2_staged_prediction_used_for_pc &&
+      !(i_slot1_aliases_slot2_candidate && i_slot2_live_target_used_for_pc_cofactor);
+  assign next_pc_reg = i_reset ? '0 :
+      (pc_reg_seq_override ? seq_next_pc_reg : pc_reg_nonseq_target);
 
   // PC registers
   logic pc_update_en;
@@ -1432,7 +1582,7 @@ module pc_controller #(
 
   // Simulation-only equivalence oracle for the next_pc timing restructure.
   // npc_ref reproduces the original serial priority chain verbatim. None of it
-  // is synthesized. If the one-hot balanced form ever diverges from the
+  // is synthesized. If the factored data selection ever diverges from the
   // priority semantics, including the arm order that makes redirects beat
   // predictions, these assertions fire on every cycle of every existing
   // regression instead of surfacing as a fetch bug much later.
@@ -1482,7 +1632,134 @@ module pc_controller #(
   end
 `endif
 
+`ifdef PC_MUX_LOCAL_PROOF
+  // Exact pre-refactor nested mux, with all generic inputs left independent.
+  logic [XLEN-1:0] pc_mux_nested_reference_without_live_slot2;
+  logic [XLEN-1:0] pc_mux_nested_reference;
+  always_comb begin
+    if (i_reset) pc_mux_nested_reference_without_live_slot2 = '0;
+    else if (trap_or_mret) pc_mux_nested_reference_without_live_slot2 = i_trap_target;
+    else if (i_fence_i_flush) pc_mux_nested_reference_without_live_slot2 = i_fence_i_target;
+    else if (i_branch_taken) pc_mux_nested_reference_without_live_slot2 = i_branch_target;
+    else if (i_pd_redirect) pc_mux_nested_reference_without_live_slot2 = i_pd_redirect_target;
+    // Staged slot-2 BTB prediction: pc_reg jumps to the slot-2 target
+    // immediately (mirroring pd_redirect's pc_reg handoff).  The cycle
+    // after the redirect is NOP'd via the standard control_flow_holdoff
+    // path (seq_sel_holdoff holds pc_reg at the target), and BRAM data for
+    // the target arrives the cycle after that.
+    else if (i_slot2_staged_prediction_used_for_pc)
+      pc_mux_nested_reference_without_live_slot2 = i_slot2_staged_predicted_target;
+    // After a non-cross pending handoff, the first target cycle is a bubble
+    // while BRAM returns the target word. Hold pc_reg on the target during
+    // that bubble; advancing here pairs the arriving target word with the next
+    // halfword PC and corrupts C-extension alignment on loop back-edges.
+    else if (o_pending_prediction_target_holdoff)
+      pc_mux_nested_reference_without_live_slot2 = o_pc_reg;
+    // Pending-prediction load-drop fix: suppress the land-on-branch jump in the
+    // immediate-predecessor carve-out so pc_reg advances sequentially
+    // (seq_next_pc_reg, which equals pending_prediction_pc here) and the
+    // intervening older parcel emits first instead of being skipped.
+    // pending_prediction_valid stays live, so the target handoff below still
+    // fires when pc_reg reaches the branch.
+    else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
+             !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
+      pc_mux_nested_reference_without_live_slot2 = pending_prediction_pc;
+    else if (pending_prediction_cross_handoff_pc_mux)
+      pc_mux_nested_reference_without_live_slot2 = pending_prediction_pc;
+    else if (pending_prediction_target_handoff_pc_mux)
+      pc_mux_nested_reference_without_live_slot2 = pending_prediction_target;
+    else if (sel_prediction_r) pc_mux_nested_reference_without_live_slot2 = i_predicted_target_r;
+    else pc_mux_nested_reference_without_live_slot2 = seq_next_pc_reg;
+  end
+
+  // A live fallback has the same priority as the canonical slot-2 arm: below
+  // every architectural redirect and above all pending/registered/sequential
+  // choices. Its alias-free cofactor and both wide candidates settle in
+  // parallel. The full 64-bit candidate alias is consequently only the select
+  // of this last 2:1, rather than the head of the pc_reg priority cone.
+  logic pc_mux_nested_reference_live_override;
+  logic [XLEN-1:0] pc_mux_nested_reference_if_alias;
+  assign pc_mux_nested_reference_live_override =
+      i_slot2_live_target_used_for_pc_cofactor &&
+      !i_reset && !trap_or_mret && !i_fence_i_flush &&
+      !i_branch_taken && !i_pd_redirect;
+  assign pc_mux_nested_reference_if_alias = pc_mux_nested_reference_live_override ?
+      i_slot2_live_predicted_target : pc_mux_nested_reference_without_live_slot2;
+  assign pc_mux_nested_reference = i_slot1_aliases_slot2_candidate ?
+      pc_mux_nested_reference_if_alias : pc_mux_nested_reference_without_live_slot2;
+
+  always_comb begin
+    p_pc_register_slot2_mux_matches_nested_original :
+    assert (next_pc_reg == pc_mux_nested_reference);
+  end
+`endif
+
 `ifdef FORMAL
+  // Original nested output equations remain independent oracles. Prediction
+  // holdoffs additionally use the captured predecessor-tag invariant; their
+  // local target proves the actual producer from the valid bit's reset image.
+  // The three fetch identities remain exact for arbitrary register state.
+  always_comb begin
+`ifndef PC_FETCH_HOLDOFF_ONLY
+    // Before the first reset edge, valid/tags may be arbitrary. The producer
+    // invariant and these consumers apply after synchronous reset establishes
+    // the valid bit's reset image.
+    if (!i_reset) begin
+      p_pending_holdoff_effective_cofactor_matches_original :
+      assert (o_pending_prediction_holdoff ==
+            (hold_pending_prediction_fetch || hold_pending_prediction_consume_fetch));
+      p_pending_holdoff_wcs0_effective_cofactor_matches_original :
+      assert (o_pending_prediction_holdoff_wcs0 ==
+            ((pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
+              !pc_reg_after_pending && !pending_predecessor_release_wcs0) ||
+             hold_pending_prediction_consume_fetch));
+      p_pending_holdoff_wcs_effective_cofactor_matches_original :
+      assert (o_pending_prediction_holdoff_wcs ==
+            ((pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
+              !pc_reg_after_pending && !pc_reg_at_pending_predecessor) ||
+             hold_pending_prediction_consume_fetch));
+    end
+`endif
+    p_pending_fetch_holdoff_effective_cofactor_matches_original :
+    assert (o_pending_prediction_fetch_holdoff ==
+            (hold_pending_prediction_fetch ||
+             (hold_pending_prediction_consume_fetch && pending_prediction_allow_cross &&
+              (o_pc_reg != pending_prediction_pc))));
+    p_pending_fetch_holdoff_wcs0_effective_cofactor_matches_original :
+    assert (o_pending_prediction_fetch_holdoff_wcs0 ==
+            ((pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
+              !pc_reg_after_pending && !pending_predecessor_release_wcs0) ||
+             (hold_pending_prediction_consume_fetch && pending_prediction_allow_cross &&
+              (o_pc_reg != pending_prediction_pc))));
+    p_pending_fetch_holdoff_wcs_effective_cofactor_matches_original :
+    assert (o_pending_prediction_fetch_holdoff_wcs ==
+            ((pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
+              !pc_reg_after_pending && !pc_reg_at_pending_predecessor) ||
+             (hold_pending_prediction_consume_fetch && pending_prediction_allow_cross &&
+              (o_pc_reg != pending_prediction_pc))));
+  end
+
+`ifndef PC_HOLDOFF_LOCAL_PROOF
+  // After reset establishes the captured-tag invariant, readiness implies
+  // both public prediction holdoffs for either raw-WCS value and every
+  // immediate-predecessor exception.
+  always_comb begin
+    if (!i_reset) begin
+      p_pending_handoff_asserts_both_prediction_holdoffs :
+      assert (!pending_prediction_target_handoff ||
+            (o_pending_prediction_holdoff_wcs0 && o_pending_prediction_holdoff_wcs));
+      if (PENDING_HANDOFF_EXCLUDES_SLOT2) begin
+        p_formal_integrated_pending_handoff_excludes_slot2 :
+        assert (!(pending_prediction_target_handoff && i_slot2_prediction_used_for_pc));
+        p_formal_integrated_handoff_matches_generic_priority :
+        assert (pending_prediction_target_handoff_applies ==
+              (pending_prediction_target_handoff && !fetch_stall &&
+               !i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
+               !o_pending_prediction_target_holdoff));
+      end
+    end
+  end
+
   // pending_predecessor_needs_emit contains the raw served-window cofactor.
   // Every architectural consumer must be masked outside a live pending
   // episode, including the duplicated PC-mux arm. Check that contract directly
@@ -1539,6 +1816,74 @@ module pc_controller #(
       cover (pending_prediction_valid && o_pc_reg == pending_prediction_prev_native_pc);
       cover_lower_parcel_lookup : cover (o_fetch_lookup_is_lower_parcel);
     end
+  end
+`endif
+
+`endif
+
+`ifdef PC_HOLDOFF_TAG_PROOF
+  // The valid bit's real reset image is the only initial-state constraint.
+  initial assume (!pending_prediction_valid);
+  logic [XLEN-1:0] tag_capture_prev_reference;
+  assign tag_capture_prev_reference =
+      XLEN'(pending_prediction_pc - riscv_pkg::PcIncrementCompressed);
+  always_comb begin
+    p_tag_capture_relation :
+    assert (!pending_prediction_valid || pending_prediction_prev_pc == tag_capture_prev_reference);
+    p_tag_capture_distinct :
+    assert (!pending_prediction_valid || pending_prediction_prev_pc != pending_prediction_pc);
+    cover_tag_zero_owner :
+    cover (pending_prediction_valid && pending_prediction_pc == '0 && pc_reg_at_pending &&
+           o_pending_prediction_holdoff_wcs0 && o_pending_prediction_holdoff_wcs);
+    cover_tag_odd_wrapped_owner :
+    cover (pending_prediction_valid && pending_prediction_pc == XLEN'(1) && pc_reg_at_pending &&
+           pending_prediction_prev_pc == '1 && o_pending_prediction_holdoff_wcs0 &&
+           o_pending_prediction_holdoff_wcs);
+    cover_tag_wrapped_predecessor :
+    cover (pending_prediction_valid && pending_prediction_pc == '0 &&
+           pc_reg_at_pending_predecessor && !o_pending_prediction_holdoff_wcs);
+  end
+`endif
+
+
+`ifdef FETCH_MUX_LOCAL_PROOF
+  logic [XLEN-1:0] fetch_mux_onehot_reference;
+  logic [XLEN-1:0] fetch_ref;
+  logic fetch_mux_original_pending_hold;
+  assign fetch_mux_original_pending_hold =
+      pending_prediction_effective && !use_pending_prediction_for_pc_reg_pc_mux &&
+      !pc_reg_after_pending && !pending_imm_pred_emit;
+  always_comb begin
+    fetch_mux_onehot_reference = '0;
+    for (int unsigned k = 0; k < NPcArms; k++) begin
+      fetch_mux_onehot_reference |= {XLEN{npc_sel[k]}} & npc_val[k];
+    end
+  end
+  always_comb begin
+    if (i_reset) fetch_ref = '0;
+    else if (trap_or_mret) fetch_ref = i_trap_target;
+    else if (i_fence_i_flush) fetch_ref = i_fence_i_target;
+    else if (i_branch_taken) fetch_ref = i_branch_target;
+    else if (i_pd_redirect) fetch_ref = i_pd_redirect_target;
+    else if (i_window_cannot_serve) fetch_ref = {o_pc_reg[XLEN-1:2], 2'b00};
+    else if (!i_fetch_progress) fetch_ref = o_pc;
+    else if (i_slot2_prediction_used_for_pc) fetch_ref = i_slot2_predicted_target;
+    else if (i_prediction_used_for_pc) fetch_ref = i_predicted_target;
+    else if (o_pending_prediction_target_holdoff)
+      fetch_ref = pending_prediction_fetch_at_target ? pending_prediction_target_next_word : o_pc;
+    else if (use_pending_prediction_for_pc_reg_pc_mux) fetch_ref = npc_consume_val;
+    else if (halfword_target_lead_catchup || same_word_lower_parcel_catchup)
+      fetch_ref = seq_next_pc_plus_2;
+    else if (fetch_mux_original_pending_hold)
+      fetch_ref = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
+          pending_prediction_pc;
+    else fetch_ref = seq_next_pc;
+  end
+
+  always_comb begin
+    p_fetch_mux_matches_onehot_original : assert (next_pc == fetch_mux_onehot_reference);
+    p_fetch_mux_matches_priority_original : assert (next_pc == fetch_ref);
+    p_fetch_mux_preserves_onehot_winner : assert ($onehot(npc_sel));
   end
 `endif
 

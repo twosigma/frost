@@ -1,0 +1,18 @@
+[tasks]
+bmc
+
+[options]
+bmc: mode bmc
+bmc: depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -D C_EXT_STATE_LOCAL_PROOF -sv c_ext_state.sv
+prep -top c_ext_state
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv

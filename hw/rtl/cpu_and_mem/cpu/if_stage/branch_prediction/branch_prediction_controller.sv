@@ -531,14 +531,12 @@ module branch_prediction_controller #(
   // corrects any spurious RAS push/pop. Non-trap stalls have short paths that arrive
   // well before the clock edge regardless.
   logic prediction_common_wcs0, prediction_common_wcs;
-  assign prediction_common_wcs0 = !i_reset && !i_trap_taken && !i_mret_taken &&
-                                  !i_stall_registered && !i_any_holdoff_safe &&
-                                  !o_prediction_holdoff && !i_use_instr_buffer &&
-                                  !i_disable_branch_prediction_wcs0;
-  assign prediction_common_wcs = !i_reset && !i_trap_taken && !i_mret_taken &&
-                                 !i_stall_registered && !i_any_holdoff_safe &&
-                                 !o_prediction_holdoff && !i_use_instr_buffer &&
-                                 !i_disable_branch_prediction_wcs;
+  // Complete the common guards before the late pending/PMA disable inputs.
+  (* keep = "true" *) logic prediction_common_core;
+  assign prediction_common_core = !i_reset && !i_trap_taken && !i_mret_taken &&
+      !i_stall_registered && !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer;
+  assign prediction_common_wcs0 = prediction_common_core && !i_disable_branch_prediction_wcs0;
+  assign prediction_common_wcs = prediction_common_core && !i_disable_branch_prediction_wcs;
   assign prediction_common = i_window_cannot_serve_raw ? prediction_common_wcs :
                                                          prediction_common_wcs0;
 `ifndef SYNTHESIS
@@ -697,11 +695,19 @@ module branch_prediction_controller #(
   // gates to keep them out of the deep prediction_common → RAS → sel_prediction cone.
   logic prediction_used_effective;
   logic prediction_used_for_pc;
+  // Complete slot-1 candidate selection before the late common permission.
+  // Otherwise pending-PC equality/disable traverses the RAS and BTB gates,
+  // their merge, and the PC priority tree on the same cycle.
+  (* keep = "true" *)logic prediction_candidate_for_pc;
+  assign prediction_candidate_for_pc =
+      ras_valid || (!slot1_prediction_owned_by_slot2 && !i_fetch_lookup_is_lower_parcel &&
+                    (!i_pc[1] || btb_compressed) && dir_predicted_taken);
   // Mark a prediction used only when IF can consume it. A prediction that
   // fires on the first stall cycle is a hazard for halfword target handoff:
   // the branch bytes can keep moving through IF while the PC/metadata
   // bookkeeping stays behind by one instruction.
-  assign prediction_used_for_pc = sel_prediction && !i_branch_taken && !i_is_32bit_spanning;
+  assign prediction_used_for_pc = prediction_common && !i_branch_taken &&
+      !i_is_32bit_spanning && prediction_candidate_for_pc;
   assign prediction_used_effective = prediction_used_for_pc && !i_stall;
 
   // Combinational prediction for pc_controller.  RAS prediction takes priority
@@ -720,11 +726,13 @@ module branch_prediction_controller #(
   // pc==pc_reg. Since an address cannot simultaneously equal P and P+2/P+4,
   // that final predicate proves BTB ownership false and makes this cycle-exact
   // while keeping wide candidate-address compares off the IF->PD metadata path.
+  (* keep = "true" *) logic prediction_live_candidate;
+  assign prediction_live_candidate =
+      ras_valid || (!i_fetch_lookup_is_lower_parcel && (!i_pc[1] || btb_compressed) &&
+                    dir_predicted_taken);
   assign o_prediction_used_live_cofactor =
       prediction_common && !i_stall && !i_branch_taken && !i_is_32bit_spanning &&
-      (ras_valid ||
-       (!i_fetch_lookup_is_lower_parcel && (!i_pc[1] || btb_compressed) &&
-        dir_predicted_taken));
+      prediction_live_candidate;
 
   logic predicted_target_is_halfword;
   assign predicted_target_is_halfword = o_predicted_target[1];
@@ -1005,44 +1013,58 @@ module branch_prediction_controller #(
   logic slot2_live_fallback_used_for_pc_cofactor;
   logic slot2_live_target_used_for_pc;
   logic slot2_live_target_used_for_pc_cofactor;
+  // Prediction permission and full slot-2 validity can arrive through
+  // different late recovery, holdoff, and PMA paths. Complete the candidate
+  // and target choices independently. Also complete the shared permission
+  // without full slot-2 validity: that served-window-dependent input then
+  // selects each finished candidate at the final boundary.
+  logic slot2_prediction_permission;
+  (* keep = "true" *)logic slot2_prediction_permission_without_valid;
+  (* keep = "true" *)logic slot2_prediction_candidate_for_pc;
+  (* keep = "true" *)logic slot2_staged_prediction_candidate_for_pc;
+  (* keep = "true" *)logic slot2_live_fallback_candidate_for_pc_cofactor;
+  (* keep = "true" *)logic slot2_live_target_candidate_for_pc_cofactor;
   assign slot2_sel_btb_prediction =
       (slot2_prediction_common &&
        (slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken)) ||
       slot2_live_fallback_select;
 
-  // Final slot-2 prediction-used: same late-arrival gates as slot-1
-  // (i_branch_taken, i_is_32bit_spanning, !i_stall).  These keep prediction
-  // suppression aligned with the slot-1 path so a same-cycle branch
-  // resolution / spanning event takes priority over a slot-2 BTB hit.
-  // The RAS instruction is registered and therefore older than this live
-  // slot-2 candidate. If both predict together, let the older return own the
-  // redirect and its speculative pop; otherwise pc_controller's normal slot-2
-  // priority would steer to the younger target and discard the RAS metadata.
-  assign o_slot2_prediction_used_for_pc =
-      slot2_sel_btb_prediction && !ras_valid &&
+  // Full slot-2 validity remains authoritative. An older pipelined RAS,
+  // same-cycle branch recovery, or spanning event suppresses every staged and
+  // live slot-2 choice, exactly as in the original equations below.
+  assign slot2_prediction_permission_without_valid =
+      prediction_common && !ras_valid &&
       !i_branch_taken && !i_is_32bit_spanning;
+  assign slot2_prediction_permission = slot2_prediction_permission_without_valid && i_slot2_valid;
+  assign slot2_prediction_candidate_for_pc =
+      slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken ||
+      (i_lookup_lead_collapsed && slot1_prediction_owned_by_slot2 && !btb_hit_2 &&
+       btb_hit && slot2_live_fallback_size_safe && dir_predicted_taken);
+  assign o_slot2_prediction_used_for_pc =
+      slot2_prediction_permission && slot2_prediction_candidate_for_pc;
   // Split the canonical redirect into a staged image and an exact live-image
-  // Shannon cofactor.  Under i_lookup_lead_collapsed, the ownership equation
-  // above reduces from A&&(L||T) to A, so no ownership or full-validity
-  // approximation is involved.  Keep btb_hit in the target cofactor because
-  // it also makes the split exact for arbitrary binary candidate-valid inputs,
-  // even before the legal one-hot candidate contract below is applied.
+  // Shannon cofactor. Under collapsed lead the ownership equation reduces to
+  // the alias itself. Keep btb_hit in the target cofactor so arbitrary binary
+  // candidate-valid inputs retain the original selected target too.
+  assign slot2_staged_prediction_candidate_for_pc =
+      slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken;
   assign slot2_staged_prediction_used_for_pc =
-      slot2_prediction_common &&
-      (slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken) &&
-      !ras_valid && !i_branch_taken && !i_is_32bit_spanning;
+      slot2_prediction_permission && slot2_staged_prediction_candidate_for_pc;
   assign slot2_live_fallback_used_for_pc =
       slot2_live_fallback_select && !ras_valid &&
       !i_branch_taken && !i_is_32bit_spanning;
+  assign slot2_live_fallback_candidate_for_pc_cofactor =
+      i_lookup_lead_collapsed && !btb_hit_2 &&
+      slot2_live_fallback_size_safe && dir_predicted_taken;
   assign slot2_live_fallback_used_for_pc_cofactor =
-      prediction_common && i_lookup_lead_collapsed && i_slot2_valid &&
-      !btb_hit_2 && slot2_live_fallback_size_safe && dir_predicted_taken &&
-      !ras_valid && !i_branch_taken && !i_is_32bit_spanning;
+      slot2_prediction_permission && slot2_live_fallback_candidate_for_pc_cofactor;
   assign slot2_live_target_used_for_pc = o_slot2_prediction_used_for_pc && slot2_live_fallback_hit;
+  assign slot2_live_target_candidate_for_pc_cofactor =
+      i_lookup_lead_collapsed && !btb_hit_2 && btb_hit &&
+      (slot2_staged_prediction_candidate_for_pc ||
+       slot2_live_fallback_candidate_for_pc_cofactor);
   assign slot2_live_target_used_for_pc_cofactor =
-      i_lookup_lead_collapsed && i_slot2_valid && !btb_hit_2 && btb_hit &&
-      (slot2_staged_prediction_used_for_pc ||
-       slot2_live_fallback_used_for_pc_cofactor);
+      slot2_prediction_permission && slot2_live_target_candidate_for_pc_cofactor;
 
   assign o_slot2_staged_prediction_used_for_pc = slot2_staged_prediction_used_for_pc;
   assign o_slot2_live_target_used_for_pc_cofactor = slot2_live_target_used_for_pc_cofactor;
@@ -1199,6 +1221,62 @@ module branch_prediction_controller #(
         assert (!o_slot2_prediction_used_for_pc || !sel_ras_prediction);
       end
     end
+  end
+`endif
+
+`ifdef FORMAL
+  // Both the staged candidate and live fallback must obey the selected
+  // prediction-disable cofactor. Together with pc_controller's readiness
+  // implication, this makes a pending handoff and slot-2 prediction disjoint
+  // in integrated IF, without constraints on predictor contents or state.
+  always_comb begin
+    p_prediction_common_wcs0_matches_original :
+    assert (prediction_common_wcs0 ==
+            (!i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
+             !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer &&
+             !i_disable_branch_prediction_wcs0));
+    p_prediction_common_wcs_matches_original :
+    assert (prediction_common_wcs ==
+            (!i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
+             !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer &&
+             !i_disable_branch_prediction_wcs));
+    p_prediction_common_selected_matches_original :
+    assert (prediction_common ==
+            (!i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
+             !i_any_holdoff_safe && !o_prediction_holdoff && !i_use_instr_buffer &&
+             !(i_window_cannot_serve_raw ? i_disable_branch_prediction_wcs :
+                                          i_disable_branch_prediction_wcs0)));
+    p_slot1_pc_candidate_matches_original :
+    assert (prediction_used_for_pc == (sel_prediction && !i_branch_taken && !i_is_32bit_spanning));
+    p_slot1_live_candidate_matches_original :
+    assert (o_prediction_used_live_cofactor ==
+            (prediction_common && !i_stall && !i_branch_taken && !i_is_32bit_spanning &&
+             (ras_valid ||
+              (!i_fetch_lookup_is_lower_parcel && (!i_pc[1] || btb_compressed) &&
+               dir_predicted_taken))));
+    p_slot2_common_cofactor_matches_original :
+    assert (o_slot2_prediction_used_for_pc ==
+            (slot2_sel_btb_prediction && !ras_valid &&
+             !i_branch_taken && !i_is_32bit_spanning));
+    p_slot2_staged_common_cofactor_matches_original :
+    assert (slot2_staged_prediction_used_for_pc ==
+            (slot2_prediction_common &&
+             (slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken) &&
+             !ras_valid && !i_branch_taken && !i_is_32bit_spanning));
+    p_slot2_live_fallback_common_cofactor_matches_original :
+    assert (slot2_live_fallback_used_for_pc_cofactor ==
+            (prediction_common && i_lookup_lead_collapsed && i_slot2_valid &&
+             !btb_hit_2 && slot2_live_fallback_size_safe && dir_predicted_taken &&
+             !ras_valid && !i_branch_taken && !i_is_32bit_spanning));
+    p_slot2_live_target_common_cofactor_matches_original :
+    assert (slot2_live_target_used_for_pc_cofactor ==
+            (i_lookup_lead_collapsed && i_slot2_valid && !btb_hit_2 && btb_hit &&
+             (slot2_staged_prediction_used_for_pc ||
+              slot2_live_fallback_used_for_pc_cofactor)));
+    p_disabled_prediction_cofactor_blocks_every_slot2_source :
+    assert (!(i_window_cannot_serve_raw ? i_disable_branch_prediction_wcs :
+                                         i_disable_branch_prediction_wcs0) ||
+            !o_slot2_prediction_used_for_pc);
   end
 `endif
 
