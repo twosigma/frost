@@ -277,8 +277,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "(the shape that lost the stub's first instruction on X3 silicon while every "
             "BRAM-tier case passed there)"
         ),
-        # Case Z's 42 L1I-evicting runs of 16.5 KiB take the program close to
-        # the default 500k-cycle budget from DDR.
+        # Case Z's 17 variants each repeat six L1I-evicting runs of 16.5 KiB,
+        # exceeding the default 500k-cycle budget from DDR.
         extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
     "debug_test": CocotbRunConfig(

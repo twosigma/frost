@@ -2374,8 +2374,13 @@ module reorder_buffer #(
   // External Coordination Outputs
   // ===========================================================================
 
+  // CSR and xRET allocation explicitly excludes same-cycle CDB bypass. Read
+  // stored completion directly for these class-qualified starts, so the late
+  // CDB match/exception cone cannot feed trap/CSR control through head_ready.
+  // The original-equation assertions below check both starts cycle for cycle.
+  // Ordinary commit and exception readiness retain the CDB bypass.
   // CSR execution signal: asserted on entry to CSR_EXEC.
-  assign o_csr_start = (serial_state == riscv_pkg::SERIAL_IDLE) && head_ready &&
+  assign o_csr_start = (serial_state == riscv_pkg::SERIAL_IDLE) && head_valid && head_done &&
                        !i_commit_hold &&
                        !i_early_recovery_en &&
                        head_f_is_csr && !head_exception &&
@@ -2406,7 +2411,7 @@ module reorder_buffer #(
   // them creates an oscillating combinational loop.
   assign o_mret_start = ((serial_state == riscv_pkg::SERIAL_IDLE) ||
                          (serial_state == riscv_pkg::SERIAL_MRET_EXEC)) &&
-                        head_ready &&
+                        head_valid && head_done &&
                         !i_commit_hold &&
                         !i_early_recovery_en &&
                         head_f_is_mret && !head_exception &&
@@ -2912,6 +2917,36 @@ module reorder_buffer #(
   assign o_read_done = rob_valid[i_read_tag] && rob_done[i_read_tag];
   // u_rob_value_rat drives o_read_value.
 
+  // CSR/xRET cofactor: the allocation producer records both class bits and
+  // bypass eligibility together. These invariants preserve the legacy start
+  // equations, including xRET's sustained SQ-drain handshake and flush loop.
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      p_start_class_excludes_bypass :
+      assert ((rob_valid & rob_f_cdb_bypass_ok & (rob_f_is_csr | rob_f_is_mret)) == '0);
+      p_csr_start_legacy_equiv :
+      assert (o_csr_start == ((serial_state == riscv_pkg::SERIAL_IDLE) && head_ready &&
+              !i_commit_hold && !i_early_recovery_en && head_f_is_csr &&
+              !head_exception && !i_flush_en && !i_flush_all));
+      p_mret_start_legacy_equiv :
+      assert (o_mret_start == (((serial_state == riscv_pkg::SERIAL_IDLE) ||
+              (serial_state == riscv_pkg::SERIAL_MRET_EXEC)) && head_ready &&
+              !i_commit_hold && !i_early_recovery_en && head_f_is_mret &&
+              !head_exception && i_sq_committed_empty));
+    end
+  end
+`endif
+
+`ifdef ROB_START_LOCAL_PROOF
+  // Prove the actual producer FFs, one-hot selector, and start equations by
+  // induction. No dispatch/CDB/flush traffic contracts are needed here.
+  initial assume (!i_rst_n);
+  always @(posedge i_clk) begin
+    if (i_rst_n) p_start_head_mask_onehot : assert ($onehot(head_clear_mask));
+  end
+`endif
+
   // ===========================================================================
   // Assertions (Simulation Only)
   // ===========================================================================
@@ -3244,6 +3279,7 @@ module reorder_buffer #(
   // ===========================================================================
 
 `ifdef FORMAL
+`ifndef ROB_START_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -3624,6 +3660,7 @@ module reorder_buffer #(
     end
   end
 
+`endif  // ROB_START_LOCAL_PROOF
 `endif  // FORMAL
 
 endmodule : reorder_buffer

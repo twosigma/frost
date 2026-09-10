@@ -87,7 +87,7 @@ time/memory and retains complete logs, converted Verilog, a JSON netlist and
 `summary.json` under `sim_build/synthesis/`.
 
 At the default 9216-byte frame limit, the checked hierarchy retains five
-memories containing **423,488 bits**. This is a portable structural check;
+memories containing **538,176 bits**. This is a portable structural check;
 it does not establish RAM primitive mapping, 161.1328125 MHz timing, GTY
 operation, or hardware interoperability. Any future Vivado checks must run
 natively and use a separate output directory from the active CPU build.

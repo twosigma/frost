@@ -244,14 +244,36 @@ module frontend_validity_tracker (
   // metadata) → from_if_to_pd → front_end_control_flow_pending →
   // front_end_cf_serialize_stall → pipeline_ctrl.stall.  One cycle of latency
   // is harmless: the serialization fence is a performance hint.
+  // Keep the late BTB metadata bit out of the control-flow qualifier's D
+  // cone. Both factors sample every edge, so their conjunction is exactly the
+  // original registered predicate, including reset/flush and stalled cycles.
+  // The qualifier clears on reset/flush; the BTB factor needs no reset because
+  // it is masked while the qualifier is clear. Only synchronous pipeline
+  // control consumes the reconstructed predicate.
+  (* keep = "true" *)logic if_control_flow_without_btb_q;
+  (* keep = "true" *)logic if_btb_predicted_taken_q;
   logic if_unpredicted_control_flow_q;
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) if_unpredicted_control_flow_q <= 1'b0;
-    else
-      if_unpredicted_control_flow_q <= if_has_control_flow &&
-                                       !(from_if_to_pd.btb_predicted_taken ||
-                                         from_if_to_pd.ras_predicted);
+    if (i_rst || flush_pipeline) if_control_flow_without_btb_q <= 1'b0;
+    else if_control_flow_without_btb_q <= if_has_control_flow && !from_if_to_pd.ras_predicted;
+    if_btb_predicted_taken_q <= from_if_to_pd.btb_predicted_taken;
   end
+  assign if_unpredicted_control_flow_q = if_control_flow_without_btb_q && !if_btb_predicted_taken_q;
+
+`ifndef SYNTHESIS
+  // Retain the original single-register update as a settled-edge oracle.
+  logic if_unpredicted_control_flow_legacy_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) if_unpredicted_control_flow_legacy_q <= 1'b0;
+    else
+      if_unpredicted_control_flow_legacy_q <= if_has_control_flow &&
+          !(from_if_to_pd.btb_predicted_taken || from_if_to_pd.ras_predicted);
+    if (!$isunknown({if_unpredicted_control_flow_q, if_unpredicted_control_flow_legacy_q})) begin
+      p_split_unpredicted_control_flow_matches_original :
+      assert (if_unpredicted_control_flow_q == if_unpredicted_control_flow_legacy_q);
+    end
+  end
+`endif
   logic if_unpredicted_control_flow;
   logic if_unpredicted_indirect_control_flow;
   logic pd_unpredicted_control_flow;

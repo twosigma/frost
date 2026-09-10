@@ -341,6 +341,10 @@ prints the CSV as a cycle table with the mirror names.
 
 ## Building
 
+The [NIC post-opt setup record](build/x3_post_opt_nic_timing.md) documents
+the 300 MHz CPU / 40 MHz loopback MAC result, verification, checkpoint
+provenance and remaining implementation scope.
+
 `build/build.py` compiles `hello_world` into the board's initial BRAM
 contents, then runs the Vivado pipeline. Every step writes a checkpoint, so
 `--start-at` and `--stop-after` can resume from or stop after any step.
@@ -353,8 +357,10 @@ and retired `post_opt_fence_*` diagnostics from the work directory, so neither
 can be mistaken for evidence about the new DCP. Regenerate manual audits from
 the promoted checkpoint.
 
-The X3 flow carries no timing exceptions; every path is timed. A functional
-false path through the front end would be sound only if the released control
+The build flow adds no false-path or multicycle exceptions to the X3 CPU
+datapath. Existing board and IP crossing constraints remain active, including
+the NIC's per-bus max-delay and bus-skew limits. A functional false path
+through the front end would be sound only if the released control
 were stable across the cycle before every sensitive cycle, and the front-end
 recovery state does not guarantee that. The one cut that was tried was worth
 12 ps of post-opt WNS and was retired. The `prediction_release` formal target

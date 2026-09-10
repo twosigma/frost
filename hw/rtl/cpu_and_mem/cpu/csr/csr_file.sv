@@ -782,9 +782,9 @@ module csr_file #(
   // zero operand from a nonzero rs1 is folded into the no-write case: its
   // write-back of the unchanged value is indistinguishable from not writing
   // (the ROB already applied the exact rs1 test for read-only-CSR traps).
-  // The write data is muxed in front of the incrementer, not behind it, so
-  // the adder keeps its register-to-register carry-chain shape (the instret
-  // chain was a post-opt WNS cone before its retime, see below).
+  // The cycle counter preserves its completed register-only increment and
+  // selects writes/inhibition afterward. The retired counter uses its staged
+  // count below; neither counter adds an observation cycle here.
   logic csr_counter_write_intent;
   logic csr_counter_write;
   logic mcycle_write;
@@ -796,13 +796,18 @@ module csr_file #(
   assign minstret_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
 
   // cycle advances every cycle unless mcountinhibit.CY is set; a write
-  // installs the new value with no increment on the write edge.
+  // installs the new value with no increment on the write edge. Keep the
+  // increment boundary so late trap/write qualification cannot enter the
+  // low carry input and traverse all 64 bits before reaching the register.
+  (* keep = "true" *) logic [63:0] cycle_counter_incremented;
+  assign cycle_counter_incremented = cycle_counter + 64'd1;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       cycle_counter <= 64'd0;
-    end else begin
-      cycle_counter <= (mcycle_write ? csr_new_value : cycle_counter) +
-          ((mcycle_write || mcountinhibit_cy) ? 64'd0 : 64'd1);
+    end else if (mcycle_write) begin
+      cycle_counter <= csr_new_value;
+    end else if (!mcountinhibit_cy) begin
+      cycle_counter <= cycle_counter_incremented;
     end
   end
 

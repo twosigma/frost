@@ -432,7 +432,7 @@ async def test_slot2_prediction_redirects_immediately_and_pulses_bubble(
 async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     dut: Any,
 ) -> None:
-    """The slow live-candidate alias is the final exact pc_reg selector."""
+    """Late live permission and alias retain exact architectural PC priority."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
@@ -443,15 +443,15 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     dut.i_slot2_live_target_used_for_pc_cofactor.value = 1
     dut.i_slot2_live_predicted_target.value = SLOT2_TARGET
     await _settle()
-    assert dut.live_slot2_pc_reg_override_cofactor.value
-    assert int(dut.next_pc_reg_if_slot2_alias.value) == SLOT2_TARGET
+    assert dut.pc_reg_live_redirect_permission.value
+    assert not dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == BASE_PC + 4
 
     # Restore the exact alias and canonical combined interface. The live target
     # now wins in the same cycle, without a registered handoff.
     _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
     await _settle()
-    assert dut.live_slot2_pc_reg_override_cofactor.value
+    assert dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == SLOT2_TARGET
 
     # The producer's one-hot candidate contract makes a staged/live overlap
@@ -461,8 +461,8 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     dut.i_slot2_staged_prediction_used_for_pc.value = 1
     dut.i_slot2_staged_predicted_target.value = PRED_TARGET
     await _settle()
-    assert int(dut.next_pc_reg_without_live_slot2.value) == PRED_TARGET
-    assert int(dut.next_pc_reg_if_slot2_alias.value) == SLOT2_TARGET
+    assert int(dut.pc_reg_nonseq_without_live_slot2.value) == PRED_TARGET
+    assert dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == SLOT2_TARGET
 
     # Every older architectural redirect still outranks the final live mux,
@@ -484,7 +484,9 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
             getattr(dut, target_name).value = target
         await _settle()
 
-        assert not dut.live_slot2_pc_reg_override_cofactor.value
+        if active_name != "i_reset":
+            assert not dut.pc_reg_live_redirect_permission.value
+            assert not dut.live_slot2_pc_reg_override.value
         assert int(dut.next_pc_reg.value) == target
 
     # Sample one overlapping redirect through the register as well as the
@@ -667,6 +669,42 @@ async def test_pending_target_response_mismatch_retries_branch_handoff(
     _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=HALFWORD_PRED_TARGET)
     assert not dut.o_pending_prediction_active.value
     assert dut.o_pending_prediction_target_holdoff.value
+
+
+@cocotb.test()
+async def test_generic_slot2_prediction_vetoes_ready_pending_handoff(dut: Any) -> None:
+    """The standalone default preserves slot-2 priority for arbitrary callers.
+
+    Integrated IF cannot present both requests because pending readiness
+    disables its predictor. The generic controller still accepts independent
+    inputs, so its default parameter must retain the explicit slot-2 veto.
+    """
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    branch_pc = BASE_PC + 4
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=branch_pc)
+
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
+    assert dut.pending_prediction_target_handoff.value
+    assert dut.o_pending_prediction_target_handoff.value
+
+    _drive_staged_slot2_prediction(dut, target=SLOT2_TARGET)
+    await _settle()
+    assert dut.pending_prediction_target_handoff.value
+    assert not dut.pending_prediction_target_handoff_applies.value
+    assert not dut.o_pending_prediction_target_handoff.value
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=SLOT2_TARGET, pc_reg=SLOT2_TARGET)
+    assert dut.o_slot2_redirect_q.value
+    assert not dut.o_pending_prediction_target_holdoff.value
 
 
 async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:

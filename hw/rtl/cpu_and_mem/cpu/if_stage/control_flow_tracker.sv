@@ -133,10 +133,33 @@ module control_flow_tracker #(
     (i_prediction_used && i_predicted_target[1]) ||
     (i_slot2_prediction_used && i_slot2_predicted_target[1]);
 
+  // Complete both next-state cases before the late slot-2 decision arrives.
+  // A halfword target implies a redirect, so the no-slot-2 case is the target
+  // OR the held old flag when a stalled fetch has no redirect. With slot 2
+  // selected there is always a redirect, including during a stall. Preserve
+  // the original OR of simultaneous targets; these sources are not assumed
+  // exclusive. Reset stays outside both kept cores and wins over either case.
+  logic control_flow_without_slot2;
+  logic halfword_without_slot2;
+  (* keep = "true" *)logic halfword_next_without_slot2;
+  (* keep = "true" *)logic halfword_next_with_slot2;
+
+  assign control_flow_without_slot2 = i_trap_taken || i_mret_taken || i_branch_taken ||
+                                     i_pd_redirect || i_prediction_used;
+  assign halfword_without_slot2 =
+    (i_branch_taken && i_branch_target[1]) ||
+    ((i_trap_taken || i_mret_taken) && i_trap_target[1]) ||
+    (i_pd_redirect && i_pd_redirect_target[1]) ||
+    (i_prediction_used && i_predicted_target[1]);
+  assign halfword_next_without_slot2 = halfword_without_slot2 ||
+    (o_control_flow_to_halfword_r && fetch_stall && !control_flow_without_slot2);
+  assign halfword_next_with_slot2 = halfword_without_slot2 || i_slot2_predicted_target[1];
+
   always_ff @(posedge i_clk) begin
     if (i_reset) o_control_flow_to_halfword_r <= 1'b0;
-    else if (o_control_flow_change) o_control_flow_to_halfword_r <= o_control_flow_to_halfword;
-    else if (!fetch_stall) o_control_flow_to_halfword_r <= o_control_flow_to_halfword;
+    else
+      o_control_flow_to_halfword_r <= i_slot2_prediction_used ?
+        halfword_next_with_slot2 : halfword_next_without_slot2;
   end
 
 endmodule : control_flow_tracker

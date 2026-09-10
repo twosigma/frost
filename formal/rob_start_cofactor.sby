@@ -1,0 +1,25 @@
+[tasks]
+prove
+
+[options]
+mode prove
+depth 3
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -D ROB_START_LOCAL_PROOF -sv riscv_pkg.sv
+read_verilog -formal -D ROB_START_LOCAL_PROOF -sv reorder_buffer.sv
+# RAM payloads and serializer state cannot constrain the class cofactor.
+# Keep the actual allocation-class/valid FFs and one-hot mask transitions;
+# dangling leaf outputs become arbitrary before any optimization.
+delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread t:rob_serializer
+proc
+setundef -undriven -anyseq
+opt
+prep -top reorder_buffer
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv

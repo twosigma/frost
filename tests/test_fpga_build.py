@@ -1266,13 +1266,35 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "i_response_ready && !i_retarget" not in presenter
 
     if_stage = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv").read_text()
+    redirect_block_match = re.search(
+        r"fetch_redirect fetch_redirect_inst \((.*?)\n  \);", if_stage, re.S
+    )
+    assert redirect_block_match is not None
+    redirect_block = redirect_block_match.group(1)
+    for port, signal in (
+        ("i_clk", "i_clk"),
+        ("i_reset", "i_pipeline_ctrl.reset"),
+        ("i_pc_update_en", "pc_update_en"),
+        ("i_npc_cond", "npc_cond[riscv_pkg::PcNextArms-1:1]"),
+        ("i_npc_seq", "npc_seq[riscv_pkg::PcNextArms-1:1]"),
+        ("i_live_prediction_emits_with_output", "live_prediction_emits_with_output"),
+        ("o_fetch_redirect", "o_fetch_redirect"),
+    ):
+        assert f".{port}({signal})" in redirect_block
+    # The local helper proof checks arbitrary raw requests. IF separately
+    # checks its registered output against the original actual winner bus.
     assert re.search(
-        r"o_fetch_redirect\s*<=\s*pc_update_en\s*&&\s*"
-        r"\|\(npc_sel\s*&\s*~npc_seq\)\s*&&\s*"
+        r"fetch_redirect_reference_q\s*<=\s*!i_pipeline_ctrl.reset\s*&&\s*"
+        r"pc_update_en\s*&&\s*\|\(npc_sel\s*&\s*~npc_seq\)\s*&&\s*"
         r"!\(npc_sel\[PredictionNpcArm\]\s*&&\s*"
         r"!live_prediction_emits_with_output\);",
         if_stage,
     )
+    assert "assert (o_fetch_redirect == fetch_redirect_reference_q);" in if_stage
+    if_stage_files = (
+        REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.f"
+    ).read_text()
+    assert "cpu_and_mem/cpu/if_stage/fetch_redirect.sv" in if_stage_files
     assert "o_fetch_cached_retarget <=" in if_stage
     assert (
         "slot2_prediction_used_for_pc || live_prediction_emits_with_output ||"
@@ -1288,10 +1310,12 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
 
 
 def test_x3_flow_carries_no_timing_exceptions() -> None:
-    """Every X3 path is timed: no false, multicycle, or max-delay exceptions.
+    """The CPU build flow adds no false, multicycle, or max-delay exceptions.
 
-    A functional false path through the front end would need the released
-    control to be stable across the cycle before every sensitive cycle; the
+    Existing board, IP, and crossing constraints are separate from this
+    build_step.tcl guard. A functional false path through the front end would
+    need the released control to be stable across the cycle before every
+    sensitive cycle; the
     prediction-release companion can arm a pending episode in the very next
     cycle, so no such cut is sound. The one that was tried was worth 12 ps of
     post-opt WNS and was retired.

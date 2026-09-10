@@ -1,0 +1,24 @@
+[tasks]
+bmc
+
+[options]
+bmc: mode bmc
+bmc: depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -sv branch_prediction_controller.sv
+# Leaf predictor outputs are arbitrary: the property concerns only the
+# production controller's disable gates, independent of lookup contents.
+delete t:branch_predictor t:direction_predictor t:ras_detector t:return_address_stack
+proc
+setundef -undriven -anyseq
+opt
+prep -top branch_prediction_controller
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv

@@ -323,25 +323,71 @@ module c_ext_state #(
   // prediction_holdoff in the following cycle still clears the state before the
   // predicted target starts executing.
 
-  // Control register: must be reset and cleared on control flow changes
+  // The consumed pending-target handoff arrives after prediction arbitration.
+  // Compute the complete handoff=0 next state independently, then let that
+  // late handoff clear the final result. The pending-buffer capture implies
+  // i_prediction_holdoff, so it always belongs to the clear/override arm;
+  // removing only the handoff mask from that override is an exact cofactor.
+  // Keep the boundary so synthesis does not fold the handoff back through the
+  // state-preservation and ordinary-update priority logic.
+  (* keep = "true" *) logic prev_was_compressed_at_lo_without_handoff;
+  always_comb begin
+    prev_was_compressed_at_lo_without_handoff = o_prev_was_compressed_at_lo;
+    if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
+        prediction_reset_buffer_state) begin
+      prev_was_compressed_at_lo_without_handoff = capture_pending_prediction_buffer;
+    end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
+                 !pending_prediction_target_holdoff_needs_buffer &&
+                 !i_prediction_from_buffer_holdoff &&
+                 !o_use_buffer_after_prediction &&
+                 !i_pending_prediction_active) begin
+      // Slot 2 has already consumed the upper sibling when both parcels emit.
+      prev_was_compressed_at_lo_without_handoff =
+          is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
+    end
+  end
+
+  // Control register: must be reset and cleared on control flow changes.
   always_ff @(posedge i_clk) begin
+    o_prev_was_compressed_at_lo <=
+        prev_was_compressed_at_lo_without_handoff && !i_pending_prediction_target_handoff;
+  end
+
+`ifndef SYNTHESIS
+  // Preserve the original priority equation as an independent one-step
+  // oracle. This equality requires no assumptions about upstream controls or
+  // the current buffer state, including simultaneous reset/capture/handoff.
+  logic prev_was_compressed_at_lo_priority_ref;
+  always_comb begin
+    prev_was_compressed_at_lo_priority_ref = o_prev_was_compressed_at_lo;
     if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
         prediction_reset_buffer_state || i_pending_prediction_target_handoff) begin
-      o_prev_was_compressed_at_lo <= 1'b0;
+      prev_was_compressed_at_lo_priority_ref = 1'b0;
       if (capture_pending_prediction_buffer_state) begin
-        o_prev_was_compressed_at_lo <= 1'b1;
+        prev_was_compressed_at_lo_priority_ref = 1'b1;
       end
     end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
                  !i_prediction_from_buffer_holdoff &&
                  !o_use_buffer_after_prediction &&
                  !i_pending_prediction_active) begin
-      // 2-wide: when slot-1 is RVC at lo and slot-2 fired at hi, both halves
-      // of the current word are consumed this cycle so the buffer is not
-      // needed next cycle.  i_slot2_valid drops the buffer arm in that case.
-      o_prev_was_compressed_at_lo <= is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
+      prev_was_compressed_at_lo_priority_ref =
+          is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
+    end
+    if (!$isunknown(
+            {
+              prev_was_compressed_at_lo_priority_ref,
+              prev_was_compressed_at_lo_without_handoff,
+              i_pending_prediction_target_handoff
+            }
+        )) begin
+      p_buffer_handoff_cofactor_matches_priority :
+      assert (prev_was_compressed_at_lo_priority_ref ==
+              (prev_was_compressed_at_lo_without_handoff &&
+               !i_pending_prediction_target_handoff));
     end
   end
+`endif
 
   // Data register: no reset needed. o_prev_was_compressed_at_lo gates when
   // buffer data is used, and that signal is reset. After reset, buffer data
@@ -391,6 +437,7 @@ module c_ext_state #(
   end
 
 `ifdef FORMAL
+`ifndef C_EXT_STATE_LOCAL_PROOF
   // The integrated producer relationships keep both legacy buffer-release
   // history sources clear. In particular, an atomic target handoff may still
   // capture the raw owner word, but it must suppress the one-bit valid-state
@@ -420,6 +467,7 @@ module c_ext_state #(
              !capture_pending_prediction_buffer_state);
     end
   end
+`endif
 `endif
 
 endmodule : c_ext_state

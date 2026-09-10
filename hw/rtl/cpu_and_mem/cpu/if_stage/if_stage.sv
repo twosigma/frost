@@ -253,6 +253,7 @@ module if_stage #(
   logic pc_update_en;  // Fetch-PC load enable; qualifies the low-presenter retarget
   // Retained solely for exact sequential/nonsequential retarget classification.
   logic [riscv_pkg::PcNextArms-1:0] npc_sel;
+  logic [riscv_pkg::PcNextArms-1:0] npc_cond;
   logic [riscv_pkg::PcNextArms-1:0] npc_seq;
   // pc_controller's one-hot next-PC arm ordering; arm 8 is slot-1 prediction.
   localparam int unsigned PredictionNpcArm = 8;
@@ -554,23 +555,49 @@ module if_stage #(
   logic pc_pma_bad;
   logic served_fault_any;
   assign served_fault_any = i_instr_valid && (i_instr_fault0 || i_instr_fault1);
-  assign pc_pma_bad = (!i_fetch_translation_active && (!riscv_pkg::pma_fetch_ok(
+  // In Bare mode fetch_fault0_live already equals !pma_fetch_ok(pc).
+  // Its duplicate VA check is redundant; translated mode never checks a VA
+  // against the physical map. Settle the remaining disable causes separately
+  // so this late fault cannot be absorbed into the pc_reg range reduction.
+  logic prediction_pma_bad_without_fetch_fault;
+  assign prediction_pma_bad_without_fetch_fault = served_fault_any ||
+      (!i_fetch_translation_active && !riscv_pkg::pma_fetch_ok(
+      pc_reg
+  ));
+  assign pc_pma_bad = prediction_pma_bad_without_fetch_fault || fetch_fault0_live;
+  (* keep = "true" *)logic prediction_disable_without_fetch_fault;
+  (* keep = "true" *)logic prediction_disable_without_fetch_fault_wcs0;
+  assign prediction_disable_without_fetch_fault =
+      i_disable_branch_prediction || pending_prediction_holdoff ||
+      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
+      prediction_pma_bad_without_fetch_fault || window_cannot_serve_pc_reg;
+  assign disable_branch_prediction_effective =
+      prediction_disable_without_fetch_fault || fetch_fault0_live;
+  // The window-cover verdict is the latest input. Build the usable-window
+  // cofactor early and make the non-covering cofactor unconditionally disabled
+  // so the predictor can select between finished results in its final LUT.
+  assign prediction_disable_without_fetch_fault_wcs0 =
+      i_disable_branch_prediction || pending_prediction_holdoff_wcs0 ||
+      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
+      prediction_pma_bad_without_fetch_fault;
+  assign disable_branch_prediction_effective_wcs0 =
+      prediction_disable_without_fetch_fault_wcs0 || fetch_fault0_live;
+  assign disable_branch_prediction_effective_wcs = 1'b1;
+`ifndef SYNTHESIS
+  logic pc_pma_bad_ref;
+  assign pc_pma_bad_ref = (!i_fetch_translation_active && (!riscv_pkg::pma_fetch_ok(
       pc
   ) || !riscv_pkg::pma_fetch_ok(
       pc_reg
   ))) || fetch_fault0_live || served_fault_any;
-  assign disable_branch_prediction_effective =
-      i_disable_branch_prediction || pending_prediction_holdoff ||
-      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
-      pc_pma_bad || window_cannot_serve_pc_reg;
-  // The window-cover verdict is the latest input. Build the usable-window
-  // cofactor early and make the non-covering cofactor unconditionally disabled
-  // so the predictor can select between finished results in its final LUT.
-  assign disable_branch_prediction_effective_wcs0 =
-      i_disable_branch_prediction || pending_prediction_holdoff_wcs0 ||
-      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
-      pc_pma_bad;
-  assign disable_branch_prediction_effective_wcs = 1'b1;
+  always_comb begin
+    if (!$isunknown(
+            {pc, pc_reg, i_fetch_translation_active, fetch_fault0_live, served_fault_any}
+        )) begin
+      p_prediction_pma_fault_cofactor_exact : assert (pc_pma_bad == pc_pma_bad_ref);
+    end
+  end
+`endif
   assign ras_instruction_valid_live = !sel_nop &&
                                       (!prediction_holdoff || btb_only_prediction_holdoff);
 
@@ -836,7 +863,12 @@ module if_stage #(
   // PC Controller
   // ===========================================================================
   pc_controller #(
-      .XLEN(XLEN)
+      .XLEN(XLEN),
+      // A ready pending handoff asserts pending_prediction_holdoff_wcs0,
+      // which disables prediction_common; the WCS=1 cofactor is disabled
+      // unconditionally. Both staged and live slot-2 predictions use that
+      // common gate, so the controller may omit their redundant veto.
+      .PENDING_HANDOFF_EXCLUDES_SLOT2(1'b1)
   ) pc_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
@@ -930,6 +962,7 @@ module if_stage #(
       .o_next_pc_holds(),
       .o_pc_update_en(pc_update_en),
       .o_npc_sel(npc_sel),
+      .o_npc_cond(npc_cond),
       .o_npc_seq(npc_seq),
       .o_npc_cmp_val(),
       .o_npc_val(),
@@ -979,14 +1012,37 @@ module if_stage #(
   // EX/PD recovery, served-window resteers, and epoch-changing trap/xRET/FENCE
   // events likewise invalidate the old ask. pc_update_en makes each ordinary
   // landing literal across stalls.
+  // The helper preserves this register's waveform exactly. Its three completed
+  // priority cofactors leave late prediction permission at the final scalar mux.
+  fetch_redirect fetch_redirect_inst (
+      .i_clk(i_clk),
+      .i_reset(i_pipeline_ctrl.reset),
+      .i_pc_update_en(pc_update_en),
+      .i_npc_cond(npc_cond[riscv_pkg::PcNextArms-1:1]),
+      .i_npc_seq(npc_seq[riscv_pkg::PcNextArms-1:1]),
+      .i_live_prediction_emits_with_output(live_prediction_emits_with_output),
+      .o_fetch_redirect(o_fetch_redirect)
+  );
+`ifndef SYNTHESIS
+  logic fetch_redirect_reference_q;
+  logic fetch_redirect_reference_valid_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    fetch_redirect_reference_valid_q <= 1'b1;
+    fetch_redirect_reference_q <= !i_pipeline_ctrl.reset &&
+        pc_update_en && |(npc_sel & ~npc_seq) &&
+        !(npc_sel[PredictionNpcArm] && !live_prediction_emits_with_output);
+    if (fetch_redirect_reference_valid_q && !$isunknown(
+            {o_fetch_redirect, fetch_redirect_reference_q}
+        )) begin
+      p_fetch_redirect_original_registered_equation :
+      assert (o_fetch_redirect == fetch_redirect_reference_q);
+    end
+  end
+`endif
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
-      o_fetch_redirect        <= 1'b0;
       o_fetch_cached_retarget <= 1'b0;
     end else begin
-      o_fetch_redirect <=
-          pc_update_en && |(npc_sel & ~npc_seq) &&
-          !(npc_sel[PredictionNpcArm] && !live_prediction_emits_with_output);
       o_fetch_cached_retarget <=
           (pc_update_en &&
            (i_from_ex_comb.branch_taken || i_pd_redirect ||

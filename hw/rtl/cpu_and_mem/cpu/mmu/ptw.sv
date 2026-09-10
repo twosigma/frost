@@ -152,14 +152,18 @@ module ptw #(
   // safe in this fabric, because every slave on the walk path is stateless
   // before the fire. A read already outstanding is consumed in PTW_WAIT.
   //
-  // The request valid is a function of registered walk state only. It used to
-  // be masked by the live i_discard, which put the sfence window's whole
+  // Request valid is precomputed alongside each FSM transition. It is the
+  // exact registered twin of ISSUE && ptr_addr_ok_q && !discard_q, so the
+  // state decode and poison/address gates do not sit on the hierarchy's
+  // shared capture-enable path. It used to be masked by live i_discard,
+  // which put the sfence window's whole
   // decode (ROB head one-hot read -> csr -> tlb_invalidate) in front of the
   // hierarchy's walker-port arbitration and the shared L2 tag-request/T
   // capture logic, the X3 WNS edge. A read that fires in the discard cycle is
   // a poisoned walk: discard_q is set at that edge, the response is consumed
   // in PTW_WAIT like any other, and nothing is answered (p_discard_silent).
-  assign o_line_req_valid = (state_q == PTW_ISSUE) && ptr_addr_ok_q && !discard_q;
+  (* keep = "true" *) logic line_req_valid_q;
+  assign o_line_req_valid = line_req_valid_q;
   assign o_line_req_addr = {pte_pa32[31:LineAddrLow], {LineAddrLow{1'b0}}};
   assign o_line_req_id = '0;
 
@@ -215,10 +219,13 @@ module ptw #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      state_q   <= PTW_IDLE;
+      state_q <= PTW_IDLE;
       discard_q <= 1'b0;
+      line_req_valid_q <= 1'b0;
     end else begin
       if (i_discard) discard_q <= 1'b1;
+      // Only entry into ISSUE or a held ISSUE can present a read next cycle.
+      line_req_valid_q <= 1'b0;
 
       unique case (state_q)
         PTW_IDLE: begin
@@ -234,10 +241,12 @@ module ptw #(
           ptr_addr_ok_q <= ppn_addr_ok(i_root_ppn);
           if (i_req_valid && !i_discard) begin
             state_q <= PTW_ISSUE;
+            line_req_valid_q <= ppn_addr_ok(i_root_ppn);
           end
         end
 
         PTW_ISSUE: begin
+          line_req_valid_q <= ptr_addr_ok_q && !discard_q && !i_discard && !i_line_req_ready;
           // A walk poisoned on an earlier cycle has nothing in flight and
           // ends here. A discard arriving this cycle does not stop a read
           // that fires now, since the valid above no longer sees it: the
@@ -297,6 +306,7 @@ module ptw #(
               ptr_addr_ok_q <= ppn_addr_ok(pte_ppn);
               level_q <= level_q - 2'd1;
               state_q <= PTW_ISSUE;
+              line_req_valid_q <= ppn_addr_ok(pte_ppn) && !discard_q && !i_discard;
             end
           end
         end
@@ -310,6 +320,17 @@ module ptw #(
       endcase
     end
   end
+
+`ifndef SYNTHESIS
+  // Compare against the original state-derived valid, including the cycle
+  // in which live discard may coincide with a legal final request fire.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      p_line_req_valid_twin_exact :
+      assert (o_line_req_valid == ((state_q == PTW_ISSUE) && ptr_addr_ok_q && !discard_q));
+    end
+  end
+`endif
 
 `ifndef SYNTHESIS
 `ifndef FORMAL

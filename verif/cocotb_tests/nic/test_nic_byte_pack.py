@@ -22,6 +22,8 @@ frame lengths 1..100 and a set of long ones, a byte limit below the length
 falsifiers: offset 31 with length 2 (two one-byte writes), a limit of 1
 under a 60-byte frame, length 33, offset 63 with length 2, and a stall at a
 line crossing that coincides with the last beat.
+The input queue must sustain one beat per cycle and discard queued beats
+along with a stalled write on flush or reset.
 """
 
 import random
@@ -92,6 +94,7 @@ async def _run_frame(
     rng: random.Random,
     gap_prob: float = 0.3,
     beat_gap: float = 0.2,
+    max_beat_wait: int = 2000,
 ) -> list[tuple[int, int, int]]:
     writes: list[tuple[int, int, int]] = []
     stop = [False]
@@ -111,7 +114,7 @@ async def _run_frame(
         dut.i_beat_bytes.value = n
         dut.i_beat_last.value = 1 if pos + n == length else 0
         dut.i_beat_valid.value = 1
-        for _ in range(2000):
+        for _ in range(max_beat_wait):
             await RisingEdge(dut.i_clk)
             if int(dut.o_beat_ready.value) == 1:
                 break
@@ -226,3 +229,67 @@ async def test_review_falsifiers(dut: Any) -> None:
         _check(addr, length, 0xFFFF, payload, writes)
         if (offset, length) == (31, 2):
             assert len(writes) == 2 and all(bin(w[2]).count("1") == 1 for w in writes)
+
+
+@cocotb.test()
+async def test_sustained_beat_rate(dut: Any) -> None:
+    """Every beat fires on its first cycle when line writes keep flowing."""
+    await _setup(dut)
+    rng = random.Random(5)
+    for offset in (0, 1, 7, 31):
+        addr = BASE + 0x80000 + offset
+        payload = bytes(rng.getrandbits(8) for _ in range(1024))
+        writes = await _run_frame(
+            dut,
+            addr,
+            len(payload),
+            0xFFFF,
+            payload,
+            rng,
+            gap_prob=0.0,
+            beat_gap=0.0,
+            max_beat_wait=1,
+        )
+        _check(addr, len(payload), 0xFFFF, payload, writes)
+
+
+@cocotb.test()
+async def test_flush_and_reset_discard_queued_beats(dut: Any) -> None:
+    """A full input queue and stalled line leave no data behind after flush/reset."""
+    await _setup(dut)
+    rng = random.Random(6)
+    for control in (dut.i_flush, dut.i_rst):
+        dut.i_start.value = 1
+        dut.i_addr.value = BASE + 0xA001F
+        dut.i_limit.value = 512
+        dut.i_wr_ready.value = 0
+        await FallingEdge(dut.i_clk)
+        dut.i_start.value = 0
+        dut.i_beat_valid.value = 1
+        dut.i_beat_bytes.value = 8
+        dut.i_beat_last.value = 0
+        for beat in range(20):
+            dut.i_beat_data.value = 0xA5A5_A5A5_A5A5_A500 + beat
+            await RisingEdge(dut.i_clk)
+            blocked = int(dut.o_beat_ready.value) == 0
+            await FallingEdge(dut.i_clk)
+            if blocked:
+                break
+        else:
+            raise AssertionError("input never backpressured behind stalled writes")
+        dut.i_beat_valid.value = 0
+        assert int(dut.o_wr_valid.value) == 1
+        assert int(dut.o_busy.value) == 1
+        control.value = 1
+        await FallingEdge(dut.i_clk)
+        control.value = 0
+        dut.i_wr_ready.value = 1
+        for _ in range(6):
+            assert int(dut.o_busy.value) == 0, "abandoned beats kept the packer busy"
+            assert int(dut.o_wr_valid.value) == 0, "an abandoned write escaped"
+            assert int(dut.o_beat_ready.value) == 0, "a frame start is still required"
+            await FallingEdge(dut.i_clk)
+        addr = BASE + 0xC001F
+        payload = bytes(rng.getrandbits(8) for _ in range(99))
+        writes = await _run_frame(dut, addr, len(payload), 0xFFFF, payload, rng)
+        _check(addr, len(payload), 0xFFFF, payload, writes)
