@@ -25,7 +25,9 @@
  */
 module branch_prediction_controller #(
     // Set only when i_pc_2/alt are structurally i_pc_2_base + 2/+4.
-    parameter bit SLOT2_PC_FROM_BASE = 1'b0
+    parameter bit SLOT2_PC_FROM_BASE = 1'b0,
+    // Direct-mapped BTB index width. 8 => 256 entries.
+    parameter int unsigned BP_BTB_INDEX_BITS = 8
 ) (
     input logic i_clk,
     input logic i_reset,
@@ -284,7 +286,8 @@ module branch_prediction_controller #(
   end
 
   branch_predictor #(
-      .XLEN(XLEN)
+      .XLEN(XLEN),
+      .BTB_INDEX_BITS(BP_BTB_INDEX_BITS)
   ) branch_predictor_inst (
       .i_clk,
       .i_rst(i_reset),

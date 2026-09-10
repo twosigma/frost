@@ -2102,6 +2102,11 @@ package riscv_pkg;
     logic [ReorderBufferTagWidth-1:0] rob_tag;
     instr_op_e                        op;
     logic [FLEN-1:0]                  src1_value;
+    // Explicit issue-stage CDB bypass metadata for consumers that sit directly
+    // on the AGU path. This avoids forcing those consumers to rediscover the
+    // RS bypass decision from the already-muxed operand value.
+    logic                             src1_cdb_bypass;
+    logic [XLEN-1:0]                  src1_cdb_value;
     logic [FLEN-1:0]                  src2_value;
     logic [FLEN-1:0]                  src3_value;        // For FMA
     logic [XLEN-1:0]                  imm;

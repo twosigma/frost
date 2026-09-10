@@ -35,6 +35,8 @@ module cpu_and_mem #(
     // accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
+    // Branch-predictor experiment knob. 8 = 256-entry direct-mapped BTB.
+    parameter int unsigned BP_BTB_INDEX_BITS = 8,
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
@@ -50,6 +52,8 @@ module cpu_and_mem #(
     // axi_behavioral_memory.LATENCY_JITTER; mimics DDR refresh jitter to
     // expose completion-timing races that fixed latency hides).
     parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
+    // Deterministic seed for behavioral DDR latency jitter.
+    parameter int unsigned DDR_MODEL_JITTER_SEED = 32'h0000_ACE1,
     // 1 = the model completes transactions of different ids out of order
     // (see axi_behavioral_memory.REORDER); 0 = in issue order per channel.
     parameter int unsigned DDR_MODEL_REORDER = 0,
@@ -542,7 +546,8 @@ module cpu_and_mem #(
       .MMIO_ADDR(MmioAddr),
       .MMIO_SIZE_BYTES(MmioSizeBytes),
       .CACHED_BASE(CACHED_BASE),
-      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .BP_BTB_INDEX_BITS(BP_BTB_INDEX_BITS)
   ) cpu_inst (
       .i_clk,
       .i_rst(rst_core),
@@ -1665,6 +1670,7 @@ module cpu_and_mem #(
           .ID_BITS(DdrAxiIdBits),
           .LATENCY(DDR_MODEL_LATENCY),
           .LATENCY_JITTER(DDR_MODEL_LATENCY_JITTER),
+          .JITTER_SEED(16'(DDR_MODEL_JITTER_SEED[15:0])),
           .REORDER(DDR_MODEL_REORDER),
           .USE_INIT_FILE(1'b1),
           .INIT_FILE("sw_ddr.mem")

@@ -39,6 +39,9 @@ module load_queue #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
+    // Number of aligned dword lines in the persistent load-side L0. A larger
+    // L0 improves RV64 pointer-chase capacity without changing LQ ordering.
+    parameter int unsigned L0_DEPTH = 128,
     // Cached memory tier (high-address region). A load whose address falls in
     // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is served by the multi-cycle
     // cached tier. Up to riscv_pkg::CachedLoadSlots such loads are in flight
@@ -1640,7 +1643,7 @@ module load_queue #(
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
   lq_l0_cache #(
-      .DEPTH(128),
+      .DEPTH(L0_DEPTH),
       .XLEN (XLEN)
   ) u_l0_cache (
       .i_clk  (i_clk),

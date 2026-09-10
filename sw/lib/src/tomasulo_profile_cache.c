@@ -69,7 +69,7 @@ static CACHE_PROFILE_TEXT void read_cache_bank(uint64_t *cache_counters, uint32_
     uint32_t i;
 
     csr_write_imm(CSR_MPERFCTL, control);
-    for (i = 0; i < TOMASULO_PROFILE_CACHE_COUNTER_COUNT; i++) {
+    for (i = 0; i < TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT; i++) {
         csr_write_imm(CSR_MPERFSEL, TOMASULO_PROFILE_LEGACY_COUNTER_COUNT + i);
         cache_counters[i] = tomasulo_profile_read_selected_counter64();
     }
@@ -128,8 +128,8 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
                                          const tomasulo_profile_snapshot_t *end,
                                          const char *report_diagnostic_header)
 {
-    uint64_t start_local[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
-    uint64_t end_local[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
+    uint64_t start_local[TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT];
+    uint64_t end_local[TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT];
     const uint64_t *start_cache = (const uint64_t *) (uintptr_t) start->cache_counters_addr;
     const uint64_t *end_cache = (const uint64_t *) (uintptr_t) end->cache_counters_addr;
     uint64_t cycles = end->cycles - start->cycles;
@@ -229,6 +229,23 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     print_metric(l2_conflict_label, l2_conflict_stall, cycles);
     print_metric(l1d_overlap_label, l1d_overlap, cycles);
     print_metric(l2_overlap_label, l2_overlap, cycles);
+
+    print_metric("Fusion candidates",
+                 end_local[TOMASULO_PROFILE_FUSION_CANDIDATE] -
+                 start_local[TOMASULO_PROFILE_FUSION_CANDIDATE],
+                 cycles);
+    print_metric("Fusion LUI+ADDI",
+                 end_local[TOMASULO_PROFILE_FUSION_LUI_ADDI] -
+                 start_local[TOMASULO_PROFILE_FUSION_LUI_ADDI],
+                 cycles);
+    print_metric("Fusion AUIPC+JALR",
+                 end_local[TOMASULO_PROFILE_FUSION_AUIPC_JALR] -
+                 start_local[TOMASULO_PROFILE_FUSION_AUIPC_JALR],
+                 cycles);
+    print_metric("Fusion LUI+JALR",
+                 end_local[TOMASULO_PROFILE_FUSION_LUI_JALR] -
+                 start_local[TOMASULO_PROFILE_FUSION_LUI_JALR],
+                 cycles);
     uart_printf(report_diagnostic_header);
 }
 

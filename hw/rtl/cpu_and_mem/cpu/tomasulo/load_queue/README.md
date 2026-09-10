@@ -191,7 +191,7 @@ stalled active request.
 
 ## L0 cache
 
-The L0 is a 128-entry direct-mapped cache with dword-granule (aligned 8-byte)
+The L0 is a configurable direct-mapped cache (128 entries by default at the standalone LQ level; the integrated cpu_ooo defaults to 256) with dword-granule (aligned 8-byte)
 lines, filled one full beat per memory response, implemented inside the LQ by
 [`lq_l0_cache.sv`](lq_l0_cache.sv). It is a hit-path optimization: loads check
 it in parallel with SQ disambiguation, and a hit returns the result the same

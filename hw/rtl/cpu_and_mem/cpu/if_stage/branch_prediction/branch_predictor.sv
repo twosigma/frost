@@ -108,6 +108,13 @@ module branch_predictor #(
 
   // BTB parameters
   localparam int unsigned BtbEntries = 1 << BTB_INDEX_BITS;
+
+  initial begin
+    if (BTB_INDEX_BITS < 2)
+      $fatal(1, "branch_predictor: BTB_INDEX_BITS must be >= 2");
+    if (BTB_INDEX_BITS > XLEN-3)
+      $fatal(1, "branch_predictor: BTB_INDEX_BITS=%0d exceeds XLEN=%0d address width", BTB_INDEX_BITS, XLEN);
+  end
   // Tag includes PC[1] to distinguish halfword-aligned addresses under the C
   // extension. Without PC[1], 0x100 and 0x102 would alias to the same entry.
   localparam int unsigned TagBits = XLEN - BTB_INDEX_BITS - 1;  // 55 bits in RV64

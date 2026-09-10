@@ -62,6 +62,8 @@ module frost #(
     // Enable in directed/random sims (-G override) to expose completion-
     // timing races that a fixed latency structurally hides.
     parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
+    // Deterministic seed for behavioral DDR latency jitter.
+    parameter int unsigned DDR_MODEL_JITTER_SEED = 32'h0000_ACE1,
     // Out-of-order completion across ids in the model (0 = in order).
     parameter int unsigned DDR_MODEL_REORDER = 0,
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
@@ -231,6 +233,7 @@ module frost #(
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .BP_BTB_INDEX_BITS(BP_BTB_INDEX_BITS),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
@@ -239,6 +242,7 @@ module frost #(
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),
       .DDR_MODEL_LATENCY_JITTER(DDR_MODEL_LATENCY_JITTER),
+      .DDR_MODEL_JITTER_SEED(DDR_MODEL_JITTER_SEED),
       .DDR_MODEL_REORDER(DDR_MODEL_REORDER),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ),

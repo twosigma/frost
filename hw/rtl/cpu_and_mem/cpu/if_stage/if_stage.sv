@@ -26,7 +26,8 @@
  * OOO branch resolution redirects through i_from_ex_comb.
  */
 module if_stage #(
-    parameter int unsigned XLEN = riscv_pkg::XLEN
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
+    parameter int unsigned BP_BTB_INDEX_BITS = 8
 ) (
     input logic i_clk,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
@@ -697,7 +698,8 @@ module if_stage #(
       fetch_invalid_unstalled_q && i_instr_valid && !if_stage_stall_registered;
 
   branch_prediction_controller #(
-      .SLOT2_PC_FROM_BASE(XLEN == riscv_pkg::XLEN)
+      .SLOT2_PC_FROM_BASE(XLEN == riscv_pkg::XLEN),
+      .BP_BTB_INDEX_BITS(BP_BTB_INDEX_BITS)
   ) branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),

@@ -28,3 +28,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
 
 # Dispatch
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv
+
+# Macro-op fusion candidate detector
+
+# Macro-op fusion candidate detector
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fusion/macro_op_fusion.sv

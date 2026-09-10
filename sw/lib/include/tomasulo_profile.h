@@ -23,12 +23,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 130U
+#define TOMASULO_PROFILE_COUNTER_COUNT 134U
 #define TOMASULO_PROFILE_LEGACY_COUNTER_COUNT 106U
 #define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 24U
+#define TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT 28U
 /*
  * The original 106-counter snapshot layout and capture loop stay intact. The
- * 24 appended cache counters (indices 106-129) live in a caller-owned sidecar
+ * 24 appended appended counters (indices 106-133) live in a caller-owned sidecar
  * whose 32-bit address occupies the old four-byte alignment hole at offset
  * 20. Hardware retains the preceding cache snapshot, so software can drain
  * both cache endpoints after timing has stopped. Every legacy counter address
@@ -181,6 +182,10 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_L2_CONFLICT_STALL = 127,
     TOMASULO_PERF_L1D_MISS_OVERLAP_CYCLES = 128,
     TOMASULO_PERF_L2_MISS_OVERLAP_CYCLES = 129,
+    TOMASULO_PERF_FUSION_CANDIDATE = 130,
+    TOMASULO_PERF_FUSION_LUI_ADDI = 131,
+    TOMASULO_PERF_FUSION_AUIPC_JALR = 132,
+    TOMASULO_PERF_FUSION_LUI_JALR = 133,
 };
 
 typedef struct tomasulo_profile_snapshot {
@@ -209,7 +214,7 @@ static inline void tomasulo_profile_init_snapshot(tomasulo_profile_snapshot_t *s
 
 static inline void
 tomasulo_profile_bind_cache_counters(tomasulo_profile_snapshot_t *snapshot,
-                                     uint64_t cache_counters[TOMASULO_PROFILE_CACHE_COUNTER_COUNT])
+                                     uint64_t cache_counters[TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT])
 {
     snapshot->cache_counters_addr = (uint32_t) (uintptr_t) cache_counters;
 }
@@ -267,7 +272,7 @@ static inline uint64_t tomasulo_profile_delta(const tomasulo_profile_snapshot_t 
         uint32_t cache_idx = idx - TOMASULO_PROFILE_LEGACY_COUNTER_COUNT;
 
         if (idx >= TOMASULO_PROFILE_COUNTER_COUNT || start_cache == NULL || end_cache == NULL ||
-            cache_idx >= TOMASULO_PROFILE_CACHE_COUNTER_COUNT) {
+            cache_idx >= TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT) {
             return 0;
         }
         return end_cache[cache_idx] - start_cache[cache_idx];
