@@ -1,7 +1,7 @@
 # Performance counters
 
 FROST exposes 130 profiling counters through custom machine CSRs:
-42 top-level counters and 24 cache counters in `perf_counter_aggregator.sv`,
+42 top-level counters, 24 cache counters, and 4 macro-op fusion counters in `perf_counter_aggregator.sv`,
 plus 64 back-end counters in `tomasulo_perf_counters.sv`. This document
 defines their numbering, the CSR protocol, and the software API.
 
@@ -9,11 +9,11 @@ defines their numbering, the CSR protocol, and the software API.
 
 | CSR | Address | Access | Purpose |
 |-----|---------|--------|---------|
-| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–129) |
+| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–133) |
 | `mperfctl` | `0x7C1` | W | Bit 0 = snapshot capture; bit 1 = select preceding cache snapshot for reads (reads as 0) |
 | `mperfdata` | `0xFC0` | R | Selected counter, low 32 bits |
 | `mperfdatah` | `0xFC1` | R | Selected counter, high 32 bits |
-| `mperfcount` | `0xFC2` | R | Total number of counters (130) |
+| `mperfcount` | `0xFC2` | R | Total number of counters (134) |
 
 Every counter is 64 bits wide and free-running. Each live counter adds 0 or 1
 every cycle (occupancy and miss-cycle `sum` counters add the observed value)
@@ -58,7 +58,10 @@ The global index space is three concatenated blocks:
   `tomasulo_perf_counters.sv`, addressed there by the wrapper-local index
   (global − 42);
 - cache block:
-  `[PerfCacheBase, PerfCounterCount)` = 106–129, accumulated by
+  `[PerfCacheBase, PerfFusionBase)` = 106–129, accumulated by
+  `perf_counter_aggregator.sv`;
+- macro-op fusion block:
+  `[PerfFusionBase, PerfCounterCount)` = 130–133, accumulated by
   `perf_counter_aggregator.sv`.
 
 `PerfWrapperBase = PerfTopCounterCount` is 42 and
@@ -82,6 +85,20 @@ the numbering and must be audited in lockstep:
 4. `verif/cocotb_tests/cpu_ooo/perf/test_perf_counter_aggregator.py`
    (the three block counts/bases, `PERF_COUNTER_COUNT`, and the `PERF_*`
    constants)
+
+## Macro-op fusion counters (130–133)
+
+These counters are observational only. They count adjacent decoded instruction
+pairs that satisfy the conservative fusion detector; no architectural fusion is
+performed yet. This lets workload data determine whether fused execution is
+worth the ROB/retirement complexity.
+
+| Idx | Name | Type | Increments when |
+|-----|------|------|-----------------|
+| 130 | `FUSION_CANDIDATE` | event | A recognized fusion pair reaches ID without a bubble, fetch fault, or illegal instruction. |
+| 131 | `FUSION_LUI_ADDI` | event | `LUI rd` + `ADDI rd, rd, imm` candidate. |
+| 132 | `FUSION_AUIPC_JALR` | event | `AUIPC rd` + `JALR rd2, rd, imm` candidate. |
+| 133 | `FUSION_LUI_JALR` | event | `LUI rd` + `JALR rd2, rd, imm` candidate. |
 
 ## Counter reference
 

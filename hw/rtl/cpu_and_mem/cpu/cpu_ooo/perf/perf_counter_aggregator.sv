@@ -49,6 +49,8 @@ module perf_counter_aggregator (
     // >=3 FU completions requested the 2-lane CDB.  Registered inside the
     // tomasulo_wrapper.
     input logic                                       i_cdb_oversubscribed,
+    input logic                                       i_macro_fusion_candidate,
+    input logic                                 [1:0] i_macro_fusion_kind,
     input riscv_pkg::dispatch_status_t                i_dispatch_status,
     input riscv_pkg::reorder_buffer_commit_t          i_rob_commit_comb,
     input logic                                       i_flush_pipeline,
@@ -80,15 +82,18 @@ module perf_counter_aggregator (
   localparam int unsigned PerfTopCounterCount = 42;
   localparam int unsigned PerfWrapperCounterCount = 64;
   localparam int unsigned PerfCacheCounterCount = 24;
+  localparam int unsigned PerfFusionCounterCount = 4;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   // Cache counters form a third block instead of extending the top block.
   // Keeping the wrapper base fixed preserves every existing global index, so
   // old profiles, software enums, documentation, and bisects retain meaning.
   localparam int unsigned PerfCacheBase = PerfTopCounterCount + PerfWrapperCounterCount;
-  localparam int unsigned PerfCounterCount = PerfCacheBase + PerfCacheCounterCount;
+  localparam int unsigned PerfFusionBase = PerfCacheBase + PerfCacheCounterCount;
+  localparam int unsigned PerfCounterCount = PerfFusionBase + PerfFusionCounterCount;
   localparam logic [7:0] PerfTopCounterCountSel = 8'(PerfTopCounterCount);
   localparam logic [7:0] PerfWrapperBaseSel = 8'(PerfWrapperBase);
   localparam logic [7:0] PerfCacheBaseSel = 8'(PerfCacheBase);
+  localparam logic [7:0] PerfFusionBaseSel = 8'(PerfFusionBase);
   localparam logic [7:0] PerfCounterCountSel = 8'(PerfCounterCount);
   localparam int unsigned PerfDispatchFire = 0;
   localparam int unsigned PerfDispatchStall = 1;
@@ -167,6 +172,11 @@ module perf_counter_aggregator (
   localparam int unsigned PerfCacheL2MissOverlapCycles = 23;
   localparam int unsigned PerfCacheSnapshotBankSpan = (PerfCacheCounterCount + 3) / 4;
   localparam int unsigned PerfCacheSelBits = $clog2(PerfCacheCounterCount);
+  localparam int unsigned PerfFusionCandidate = 0;
+  localparam int unsigned PerfFusionLuiAddi = 1;
+  localparam int unsigned PerfFusionAuipcJalr = 2;
+  localparam int unsigned PerfFusionLuiJalr = 3;
+  localparam int unsigned PerfFusionSelBits = $clog2(PerfFusionCounterCount);
 
   // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
   riscv_pkg::reorder_buffer_alloc_req_t        rob_alloc_req;
@@ -221,6 +231,10 @@ module perf_counter_aggregator (
   logic [63:0] perf_cache_previous_snapshot[PerfCacheCounterCount];
   logic [63:0] perf_cache_inc[PerfCacheCounterCount];
   logic [63:0] perf_cache_inc_q[PerfCacheCounterCount];
+  logic [63:0] perf_fusion_live[PerfFusionCounterCount];
+  logic [63:0] perf_fusion_snapshot[PerfFusionCounterCount];
+  logic [63:0] perf_fusion_inc[PerfFusionCounterCount];
+  logic [63:0] perf_fusion_inc_q[PerfFusionCounterCount];
   logic [7:0] perf_counter_select_q;  // registered copy, breaks the fanout-513 cone
   logic perf_cache_previous_select_q;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank0;
@@ -232,6 +246,7 @@ module perf_counter_aggregator (
   logic [31:0] perf_counter_count;
   logic [7:0] wrapper_perf_counter_select;
   logic [7:0] cache_perf_counter_select;
+  logic [1:0] fusion_perf_counter_select;
 
   // Registering the selector breaks a fanout-513 timing cone: the raw mperfsel
   // value out of csr_file drove comparison and index decode both here and in
@@ -255,6 +270,10 @@ module perf_counter_aggregator (
       ((perf_counter_select_q >= PerfCacheBaseSel) &&
        (perf_counter_select_q < PerfCounterCountSel)) ?
       (perf_counter_select_q - PerfCacheBaseSel) : 8'd0;
+  assign fusion_perf_counter_select =
+      ((perf_counter_select_q >= PerfFusionBaseSel) &&
+       (perf_counter_select_q < PerfCounterCountSel)) ?
+      (perf_counter_select_q - PerfFusionBaseSel) : 2'd0;
   assign perf_counter_count = PerfCounterCount;
   // The capture trigger comes off the commit cone and fans into hundreds of
   // snapshot CE loads, so it is split into four registered bank copies, the
@@ -407,6 +426,19 @@ module perf_counter_aggregator (
     };
   end
 
+  always_comb begin
+    for (int i = 0; i < PerfFusionCounterCount; i++) begin
+      perf_fusion_inc[i] = '0;
+    end
+    perf_fusion_inc[PerfFusionCandidate] = {{63{1'b0}}, i_macro_fusion_candidate};
+    perf_fusion_inc[PerfFusionLuiAddi] = {{63{1'b0}},
+      i_macro_fusion_candidate && (i_macro_fusion_kind == 2'd1)};
+    perf_fusion_inc[PerfFusionAuipcJalr] = {{63{1'b0}},
+      i_macro_fusion_candidate && (i_macro_fusion_kind == 2'd2)};
+    perf_fusion_inc[PerfFusionLuiJalr] = {{63{1'b0}},
+      i_macro_fusion_candidate && (i_macro_fusion_kind == 2'd3)};
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int i = 0; i < PerfTopCounterCount; i++) begin
@@ -477,17 +509,46 @@ module perf_counter_aggregator (
     end
   end
 
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      for (int i = 0; i < PerfFusionCounterCount; i++) begin
+        perf_fusion_inc_q[i] <= '0;
+        perf_fusion_live[i] <= '0;
+        perf_fusion_snapshot[i] <= '0;
+      end
+    end else begin
+      for (int i = 0; i < PerfFusionCounterCount; i++) begin
+        perf_fusion_inc_q[i] <= perf_fusion_inc[i];
+        perf_fusion_live[i] <= perf_fusion_live[i] + perf_fusion_inc_q[i];
+        if (i < ((PerfFusionCounterCount + 3) / 4)) begin
+          if (perf_top_snapshot_capture_bank0)
+            perf_fusion_snapshot[i] <= perf_fusion_live[i] + perf_fusion_inc_q[i];
+        end else if (i < (2 * ((PerfFusionCounterCount + 3) / 4))) begin
+          if (perf_top_snapshot_capture_bank1)
+            perf_fusion_snapshot[i] <= perf_fusion_live[i] + perf_fusion_inc_q[i];
+        end else if (i < (3 * ((PerfFusionCounterCount + 3) / 4))) begin
+          if (perf_top_snapshot_capture_bank2)
+            perf_fusion_snapshot[i] <= perf_fusion_live[i] + perf_fusion_inc_q[i];
+        end else if (perf_top_snapshot_capture_bank3) begin
+          perf_fusion_snapshot[i] <= perf_fusion_live[i] + perf_fusion_inc_q[i];
+        end
+      end
+    end
+  end
+
   always_comb begin
     perf_counter_data_comb = '0;
     if (perf_counter_select_q < PerfTopCounterCountSel) begin
       perf_counter_data_comb = perf_top_snapshot[perf_counter_select_q[5:0]];
     end else if (perf_counter_select_q < PerfCacheBaseSel) begin
       perf_counter_data_comb = wrapper_perf_counter_data;
-    end else if (perf_counter_select_q < PerfCounterCountSel) begin
+    end else if (perf_counter_select_q < PerfFusionBaseSel) begin
       perf_counter_data_comb =
           perf_cache_previous_select_q ?
           perf_cache_previous_snapshot[cache_perf_counter_select[PerfCacheSelBits-1:0]] :
           perf_cache_snapshot[cache_perf_counter_select[PerfCacheSelBits-1:0]];
+    end else if (perf_counter_select_q < PerfCounterCountSel) begin
+      perf_counter_data_comb = perf_fusion_snapshot[fusion_perf_counter_select];
     end
   end
 

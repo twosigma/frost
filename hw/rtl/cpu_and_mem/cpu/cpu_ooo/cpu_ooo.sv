@@ -40,7 +40,14 @@ module cpu_ooo #(
     // one mandatory router stage, may then wait for
     // committed-store drain, and returns one cycle after terminal accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    // Persistent LQ L0 capacity. 256 dword lines restores pointer-chase
+    // working-set capacity lost when RV64 list heads grew from 8 to 16 bytes.
+    parameter int unsigned L0_DEPTH = 256,
+    // Branch-predictor geometry knobs. Keep the direction-index width fixed
+    // by riscv_pkg for architectural interface compatibility; BTB geometry is
+    // fully parameterized and can be swept without changing pipeline structs.
+    parameter int unsigned BP_BTB_INDEX_BITS = 8
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -225,6 +232,8 @@ module cpu_ooo #(
   logic perf_cache_previous_select;
   logic [63:0] perf_counter_data_q;
   logic [31:0] perf_counter_count;
+  logic macro_fusion_candidate;
+  logic [1:0] macro_fusion_kind;
   logic [7:0] wrapper_perf_counter_select;
   logic [63:0] wrapper_perf_counter_data;
   // Width-funnel perf observers from the tomasulo_wrapper (registered at
@@ -551,7 +560,8 @@ module cpu_ooo #(
   riscv_pkg::if_width_events_t if_width_events;
 
   if_stage #(
-      .XLEN(XLEN)
+      .XLEN(XLEN),
+      .BP_BTB_INDEX_BITS(BP_BTB_INDEX_BITS)
   ) if_stage_inst (
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
@@ -777,7 +787,9 @@ module cpu_ooo #(
       .i_from_pd_to_id_2(from_pd_to_id_2),
       .i_rf_to_id_2(rf_to_fwd_2),
       .i_fp_rf_to_id_2(fp_rf_to_fwd_2),
-      .o_from_id_to_ex_2(from_id_to_ex_2)
+      .o_from_id_to_ex_2(from_id_to_ex_2),
+      .o_macro_fusion_candidate(macro_fusion_candidate),
+      .o_macro_fusion_kind(macro_fusion_kind)
   );
 
   // ===========================================================================
@@ -1350,7 +1362,8 @@ module cpu_ooo #(
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
       .CACHED_BASE(CACHED_BASE),
-      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .L0_DEPTH(L0_DEPTH)
   ) u_tomasulo (
       .i_clk,
       .i_rst_n(rst_n),
@@ -3155,6 +3168,8 @@ module cpu_ooo #(
       .i_if_width_events(if_width_events),
       .i_mem_rs_two_ready_one_issued(perf_mem_rs_two_ready_one_issued),
       .i_cdb_oversubscribed(perf_cdb_oversubscribed),
+      .i_macro_fusion_candidate(macro_fusion_candidate),
+      .i_macro_fusion_kind(macro_fusion_kind),
       .i_dispatch_status(dispatch_status),
       .i_rob_commit_comb(rob_commit_comb),
       .i_flush_pipeline(flush_pipeline),

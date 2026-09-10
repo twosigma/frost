@@ -91,6 +91,11 @@ module lq_l0_cache #(
   // bits [XLEN-1:32] to zero before addresses reach the memory tier).
   localparam int unsigned TagWidth = 32 - 3 - IndexWidth;
 
+  initial begin
+    if (DEPTH < 2 || (DEPTH & (DEPTH - 1)) != 0)
+      $fatal(1, "lq_l0_cache: DEPTH must be a power of two >= 2");
+  end
+
   // ===========================================================================
   // Storage
   // ===========================================================================

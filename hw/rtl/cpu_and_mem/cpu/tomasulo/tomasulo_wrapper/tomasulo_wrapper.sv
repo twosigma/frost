@@ -45,6 +45,8 @@
 module tomasulo_wrapper #(
     parameter bit SPLIT_RS_DISPATCH = 1'b0,
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
+    // Persistent load-side L0 capacity in aligned dword lines.
+    parameter int unsigned L0_DEPTH = 128,
     // Cached memory tier (high-address region). The load queue uses these to
     // decode is_cached and give a cached load one of its tagged slots; the
     // store queue uses them to tag cached stores so the router can steer
@@ -3843,13 +3845,22 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Load Queue: Address Update from MEM_RS Issue
   // ===========================================================================
+  logic [riscv_pkg::XLEN-1:0] lq_agu_base;
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
+  // CDB -> AGU fast path: when the MEM_RS source became ready from a CDB
+  // broadcast in the issue cycle, consume the narrow XLEN CDB value directly.
+  // The RS has already resolved the tag match, so the AGU does not need to
+  // infer it again from the full FLEN operand mux. Non-dependent operands keep
+  // the normal stage2 value.
+  assign lq_agu_base = o_mem_rs_issue.src1_cdb_bypass ?
+      o_mem_rs_issue.src1_cdb_value :
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
   // Phase 3 M2: the AGU output flows full-width. An out-of-map address
   // raises the PMA access fault at the LQ's staged-entry check (beside the
   // misalignment test) before any launch, so downstream region decodes only
   // ever see launched, in-map addresses; the full value is kept for an
   // exact xtval.
-  assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
+  assign lq_effective_addr = lq_agu_base + o_mem_rs_issue.imm;
 
   // MMIO detection: the 01 address quadrant [0x4000_0000, 0x8000_0000).
   // The cached (DDR) region is the 10 quadrant [0x8000_0000, 0xC000_0000)
@@ -3886,7 +3897,8 @@ module tomasulo_wrapper #(
   load_queue #(
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
-      .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
+      .ENABLE_SQ_FORWARD_FAST_PATH(1'b1),
+      .L0_DEPTH(L0_DEPTH)
   ) u_lq (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -4325,7 +4337,7 @@ module tomasulo_wrapper #(
   // Effective address: base (src1) + immediate (declared above near SC pending).
   // Phase 3 M2: full-width like the LQ AGU output; an out-of-map store
   // faults at the issue check below before its SQ entry can ever drain.
-  assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
+  assign sq_effective_addr = lq_agu_base + o_mem_rs_issue.imm;
 
   logic sq_addr_is_mmio;
   // MMIO quadrant test; see lq_addr_is_mmio above.

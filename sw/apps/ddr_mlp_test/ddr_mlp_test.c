@@ -46,8 +46,8 @@
 
 static tomasulo_profile_snapshot_t snap_start;
 static tomasulo_profile_snapshot_t snap_end;
-static uint64_t cache_start[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
-static uint64_t cache_end[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
+static uint64_t cache_start[TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT];
+static uint64_t cache_end[TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT];
 
 static uint64_t cache_delta(uint32_t local_index)
 {

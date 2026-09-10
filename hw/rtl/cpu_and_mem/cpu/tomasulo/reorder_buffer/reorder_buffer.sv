@@ -2927,26 +2927,57 @@ module reorder_buffer #(
     end
   end
 
-  // Retire trace: log every committed instruction (for debugging). PCs and
-  // values print as full 16 hex digits; a %08x slice would truncate the
-  // artifact bring-up leans on.
+`ifndef SYNTHESIS
+  // Architectural retirement trace for differential verification.  The trace
+  // is deliberately emitted from the commit interface rather than internal
+  // ROB state so it observes the same ordering and writeback semantics that
+  // software sees.  Both retirement lanes are recorded, including FP writes,
+  // stores, branches, exceptions, and compressed instructions.
+  //
+  // Format (one instruction per line, key=value fields):
+  //   time=<t> slot=<0|1> pc=<16hex> rf=<I|F> rd=<0..31> rd_valid=<0|1>
+  //       val=<16hex> store=<0|1> branch=<0|1> taken=<0|1> exc=<0|1>
+  //       compressed=<0|1>
+  //
+  // Override the destination with +FROST_RETIRE_TRACE=<path>.  This keeps
+  // CI runs deterministic while avoiding a hard-coded path in test scripts.
   integer retire_trace_fd;
-  // The format must be a $fwrite literal. Verilator does not format through
-  // a localparam-string argument (it prints the format text itself), which
-  // mangles this trace, so the width is selected with branches instead.
+  string retire_trace_path;
+
   initial begin
-    retire_trace_fd = $fopen("retire_trace.log", "w");
-  end
-  always @(posedge i_clk) begin
-    if (i_rst_n && commit_en) begin
-      if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0) begin
-        $fwrite(retire_trace_fd, "%0t pc=%016x rd=x%0d val=%016x\n", $time, head_pc, head_dest_reg,
-                head_value_eff[riscv_pkg::XLEN-1:0]);
-      end else begin
-        $fwrite(retire_trace_fd, "%0t pc=%016x\n", $time, head_pc);
-      end
+    retire_trace_path = "retire_trace.log";
+    void'($value$plusargs("FROST_RETIRE_TRACE=%s", retire_trace_path));
+    retire_trace_fd = $fopen(retire_trace_path, "w");
+    if (retire_trace_fd == 0) begin
+      $fatal(1, "Unable to open retirement trace: %s", retire_trace_path);
     end
   end
+
+  final begin
+    if (retire_trace_fd != 0) begin
+      $fclose(retire_trace_fd);
+    end
+  end
+
+  task automatic write_retire_trace(
+      input int slot, input riscv_pkg::reorder_buffer_commit_t commit);
+    if (commit.valid) begin
+      $fwrite(retire_trace_fd,
+          "time=%0t slot=%0d pc=%016x rf=%s rd=%0d rd_valid=%0d val=%016x store=%0d branch=%0d taken=%0d exc=%0d compressed=%0d\n",
+          $time, slot, commit.pc, commit.dest_rf ? "F" : "I", commit.dest_reg,
+          commit.dest_valid, commit.value[riscv_pkg::XLEN-1:0], commit.is_store ||
+          commit.is_fp_store, commit.is_branch, commit.branch_taken, commit.exception,
+          commit.is_compressed);
+    end
+  endtask
+
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      write_retire_trace(0, o_commit_comb);
+      write_retire_trace(1, o_commit_comb_2);
+    end
+  end
+`endif
 
   // Dispatch must not allocate when full.
   always @(posedge i_clk) begin

@@ -46,7 +46,13 @@ module id_stage #(
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
     input riscv_pkg::rf_to_fwd_t i_rf_to_id_2,
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id_2,
-    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2,
+    // Profiling-only macro-op fusion candidate metadata. This is generated from
+    // the same decoded instructions that feed ID, so it does not introduce a
+    // second instruction decoder. It is deliberately observational: no ROB or
+    // retirement semantics depend on it yet.
+    output logic o_macro_fusion_candidate,
+    output logic [1:0] o_macro_fusion_kind
 );
 
   // Effective BTB metadata after applying the PD predicted-taken redirect override.
@@ -1016,6 +1022,31 @@ module id_stage #(
 
   logic is_illegal_instruction_2;
   assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction;
+
+  // Fusion candidate profiling is intentionally attached to the ID-stage
+  // decoded pair. The instructions are already decompressed/registered here,
+  // and inject_nop/fault/illegal state gates prevent wrong-path or fault bytes
+  // from being counted as useful candidates. ENABLE is fixed high because this
+  // detector is observational; actual fused execution remains disabled.
+  logic macro_fusion_candidate;
+  logic [1:0] macro_fusion_kind;
+  macro_op_fusion #(.ENABLE(1'b1)) macro_op_fusion_inst (
+      .i_valid_1(!i_from_pd_to_id.inject_nop && !i_from_pd_to_id.illegal_instruction &&
+                 !i_from_pd_to_id.fetch_fault && !decoder_illegal),
+      .i_valid_2(!i_from_pd_to_id_2.inject_nop && !i_from_pd_to_id_2.illegal_instruction &&
+                 !i_from_pd_to_id_2.fetch_fault && !decoder_illegal_2),
+      .i_op_1(instruction_operation),
+      .i_op_2(instruction_operation_2),
+      .i_rd_1(instruction.rd),
+      .i_rs1_2(instruction_2.rs1),
+      .i_rd_2(instruction_2.rd),
+      .o_candidate(macro_fusion_candidate),
+      .o_kind(macro_fusion_kind)
+  );
+
+  assign o_macro_fusion_candidate = macro_fusion_candidate;
+  assign o_macro_fusion_kind = macro_fusion_kind;
+
   logic is_fetch_fault_2;
   assign is_fetch_fault_2 = i_from_pd_to_id_2.fetch_fault;
   logic is_fetch_fault_page_2;

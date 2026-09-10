@@ -1337,6 +1337,8 @@ module reservation_station #(
   generate
     if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin : gen_primary_effective_operand_outputs
       assign o_issue.src1_value = stage2_src1_value;
+      assign o_issue.src1_cdb_bypass = 1'b0;
+      assign o_issue.src1_cdb_value = '0;
       assign o_issue.src2_value = stage2_src2_value;
     end else begin : gen_primary_legacy_operand_outputs
       // For CDB-bypassed sources, substitute the CDB value captured at issue
@@ -1349,6 +1351,15 @@ module reservation_station #(
           (stage2_src1_value & ~stage2_src1_bypass_mask & ~stage2_src1_bypass_mask_l1) |
           (stage2_cdb_value & stage2_src1_bypass_mask) |
           (stage2_cdb_value_l1 & stage2_src1_bypass_mask_l1);
+      // Export the already-decided bypass selection alongside src1. Memory
+      // address generation can consume the narrow XLEN bypass value directly
+      // instead of making a second dependency decision from the full operand
+      // mux output. This is the CDB -> AGU fast path.
+      assign o_issue.src1_cdb_bypass = |stage2_src1_bypass_mask ||
+                                        |stage2_src1_bypass_mask_l1;
+      assign o_issue.src1_cdb_value = stage2_src1_bypass_mask_l1[0] ?
+          stage2_cdb_value_l1[riscv_pkg::XLEN-1:0] :
+          stage2_cdb_value[riscv_pkg::XLEN-1:0];
       assign o_issue.src2_value =
           (stage2_src2_value & ~stage2_src2_bypass_mask & ~stage2_src2_bypass_mask_l1) |
           (stage2_cdb_value & stage2_src2_bypass_mask) |
@@ -1686,6 +1697,10 @@ module reservation_station #(
       // The effective operands were selected on the issue edge. Keep the
       // timing-critical ALU2/SQ/CDB launch path as direct stage2b register Q.
       assign o_issue_2.src1_value = stage2b_src1_value;
+      // Issue port 2 currently captures effective operands in its stage2b
+      // registers, so there is no separate live CDB -> AGU bypass metadata.
+      assign o_issue_2.src1_cdb_bypass = 1'b0;
+      assign o_issue_2.src1_cdb_value = '0;
       assign o_issue_2.src2_value = stage2b_src2_value;
       assign o_issue_2.src3_value = HAS_SRC3 ? stage2b_src3_value : '0;
       assign o_issue_2.imm = stage2b_imm;

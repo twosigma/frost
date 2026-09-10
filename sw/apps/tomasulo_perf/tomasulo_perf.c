@@ -47,8 +47,8 @@
 #endif
 
 #if TOMASULO_PERF_ENABLE_PROFILE
-static uint64_t bench_profile_start_cache[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
-static uint64_t bench_profile_end_cache[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
+static uint64_t bench_profile_start_cache[TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT];
+static uint64_t bench_profile_end_cache[TOMASULO_PROFILE_SIDECAR_COUNTER_COUNT];
 static tomasulo_profile_snapshot_t bench_profile_start;
 static tomasulo_profile_snapshot_t bench_profile_end;
 
