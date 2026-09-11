@@ -459,7 +459,10 @@ predecode metadata predicate on both parities.
 
 Placement rejects congestion estimates at
 `FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5). If every seed is rejected, the
-least-congested survive. The leading
+lowest reported levels survive. The `Cong` column shows the worst reported
+window level, or `none` when no windows are listed. The report's default
+threshold is 5: `none` does not mean zero congestion or rule out smaller
+congestion windows. `N/A` means the report could not be read. The leading
 `FROST_PLACE_QUICK_ROUTE_COUNT` candidates (default 3) by
 zero-uncertainty-equivalent WNS are quick-routed at real constraints; routed
 WNS selects the winner, with router congestion warnings last. A count of zero
