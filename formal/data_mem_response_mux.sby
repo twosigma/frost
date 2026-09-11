@@ -1,0 +1,26 @@
+[tasks]
+generic32 generic width32
+generic64 generic width64
+xilinx32 xilinx width32
+xilinx64 xilinx width64
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+xilinx: read_verilog -formal +/xilinx/cells_sim.v
+generic: read_verilog -formal -D DATA_MEM_RESPONSE_MUX_LOCAL_PROOF -sv data_mem_response_mux.sv
+xilinx: read_verilog -formal -D DATA_MEM_RESPONSE_MUX_LOCAL_PROOF -D FROST_XILINX_PRIMS -sv data_mem_response_mux.sv
+width32: chparam -set DATA_WIDTH 32 data_mem_response_mux
+width64: chparam -set DATA_WIDTH 64 data_mem_response_mux
+prep -top data_mem_response_mux -flatten
+select -assert-count 1 t:$check
+select -assert-none a:init t:$*ff* t:$*latch* t:$mem* t:$assume
+write_json prepared_model.json
+
+[files]
+../hw/rtl/cpu_and_mem/data_mem_response_mux.sv

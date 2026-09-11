@@ -70,6 +70,15 @@ Runs CPU/SoC Cocotb simulations directly or through pytest. `TEST_REGISTRY` in
 ./scripts/frost.py cocotb --help
 ```
 
+The `data_mem_response_mux` and `data_mem_response_mux_xilinx` targets compare
+the integrated complete-response helper against the original RAM/MMIO/cached
+selection, with the actual memory router on both sides. They check 32/64-bit
+payload selection, every binary selector combination, stale MMIO-valid,
+fast/cached overlap, IDs and all router controls across stalls, device-read
+arming, flush and reset. Both targets enable assertions; the Xilinx variant
+uses test-only LUT functional models. They add no firmware or full-CPU timing
+qualification claim.
+
 Applications compile automatically before simulation. The debug-module tests
 drive the design's JTAG pins from cocotb (`debug_test`) or hand them to a real
 `openocd` over `remote_bitbang` (`debug_openocd_test`). When `openocd` is not

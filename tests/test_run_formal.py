@@ -117,6 +117,11 @@ FORMAL_TARGETS = [
         "router cancellation/debt, CDB broadcast",
     ),
     FormalTarget(
+        "data_mem_response_mux.sby",
+        "Integrated response mux - arbitrary BRAM/MMIO/cached data and selectors, portable/Xilinx 32/64 bits",
+        tasks=("generic32", "generic64", "xilinx32", "xilinx64"),
+    ),
+    FormalTarget(
         "data_mem_request_router.sby",
         "Data-memory router - mandatory device stage, flush cancel, drain/effect containment",
     ),
@@ -222,6 +227,10 @@ SBY_TASKS = [
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
     ("prove", "Unbounded safety proof (ABC PDR or temporal induction)"),
+    ("generic32", "Arbitrary-input portable response-mux equivalence at 32 bits"),
+    ("generic64", "Arbitrary-input portable response-mux equivalence at 64 bits"),
+    ("xilinx32", "Arbitrary-input LUT5 response-mux equivalence at 32 bits"),
+    ("xilinx64", "Arbitrary-input LUT5 response-mux equivalence at 64 bits"),
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded model checking in the 8-entry 2-port ITLB shape"),
     ("cover_itlb", "Cover checking in the 8-entry 2-port ITLB shape"),

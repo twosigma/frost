@@ -187,6 +187,7 @@ backend notes.
 | `cpu_and_mem/low_bram_fetch_presenter.sv` | In use | One-entry low-BRAM request presenter: repeats the exact VA/PA/fault bundle for a slow metadata response, cancels it when a registered retarget invalidates the owed request, and holds or identity-suppresses publication across the front end's registered stall/replay cadence. A leading slot-1 prediction preserves its still-owed branch response before launching the target. |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, unaccepted-PC-movement redirect detection plus a separate landed recovery/already-emitted-prediction/resteer and trap/xRET/FENCE epoch retarget, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
+| `cpu_and_mem/data_mem_response_mux.sv` | In use | Exact fast-BRAM/MMIO/cached response selection at the integrated boundary; one LUT5 per data bit when `FROST_XILINX_PRIMS` is enabled, with a portable behavioral fallback |
 | `cpu_and_mem/plic.sv` | In use | Platform-level interrupt controller (PLIC spec 1.0, Phase 3 M6) at `0x4400_0000`: three sources, M and S contexts for hart 0, level-sensitive gateways, destructive claim read. See [Memory Map](#memory-map) |
 | `cpu_and_mem/dma_test_engine.sv` | In use | DMA master on the cache hierarchy's coherent DMA port (Phase 4 slice 1), driven from registers at `0x4002_0000`: line-by-line copy or pattern fill of cached DDR with byte strobes, an optional status word written only after every data write has completed, and an interrupt (PLIC source 3) raised only after the status write has completed. The second agent for the coherence litmus tests (`dma_torture`) and the completion-ordering reference for the NIC's ring engine |
 | `cpu_and_mem/hang_triage.sv` | In use | On-silicon boot-hang classifier (`ENABLE_HANG_TRIAGE`, default 0): when the console UART goes quiet it streams a state snapshot (commit count, timer state, cached read/write debt, recent PCs) over the UART and re-emits it periodically |
@@ -273,6 +274,18 @@ read responses behind the fast tier's fixed-latency beat.
 ordering gates so reads never pass an in-flight write; its registered pending
 Q also feeds directly back into the LQ bus-busy gate while a device read is
 parked.
+
+At the integrated top, `data_mem_response_mux` selects the complete payload
+using the router's existing `cached_read_ready = !fast_read_valid` output.
+Both CPU read-data inputs receive that payload, so the unchanged router mux
+selects identical data while all valid, ready, held, ID and side-effect
+behavior stays local to the router. Cached data wins whenever cached-ready
+is high, even with stale MMIO-valid. No payload-valid gating or extra cycle
+is added. The helper supports independent 32/64-bit data widths; the CPU's
+integrated width remains `riscv_pkg::MemDataBits` (64). Xilinx builds use one
+explicit LUT5 per bit; the portable fallback retains the original procedural
+MMIO selection before the outer cached/fast ternary, including its handling
+of unknown MMIO-valid in four-state simulation.
 
 Stores publish code via `fence.i`: the ROB serializer drains the store
 queue, then holds commit while the hierarchy writes back every dirty L1D

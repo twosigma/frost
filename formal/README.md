@@ -42,6 +42,18 @@ declares.
 The target list is not duplicated here. Its sources of truth are
 `FORMAL_TARGETS` in `tests/test_run_formal.py` and the `.sby` files.
 
+The `data_mem_response_mux` target compares the actual response helper with
+the original RAM/MMIO selection and fast/cached response expression, using
+arbitrary payloads and both selectors. Its `generic32`, `generic64`,
+`xilinx32` and `xilinx64` tasks check the two widths and implementation
+branches; Xilinx tasks use the installed Yosys LUT5 functional model. The
+`DATA_MEM_RESPONSE_MUX_LOCAL_PROOF` guard enables only this helper's local
+oracle. Each one-step model has no state, memory, initialization or
+assumptions, so this is complete two-state combinational equivalence for the
+selected width, not a temporal CPU/router proof or physical mapping check.
+The portable branch's original procedural MMIO behavior also remains intact
+for four-state simulation; the formal claim does not quantify X/Z values.
+
 The `immu_bare` target checks the production IMMU's public Bare outputs against
 the original package verdict and physical-address equations. Its one-step BMC
 leaves every PC bit arbitrary, including page crossings and address wrap. Local
