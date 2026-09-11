@@ -677,8 +677,9 @@ source $actual_script
     assert ("FROST_PROGRAM_COMPLETE" in result.stdout) is not failure
 
 
-def test_tcl_loader_missing_image_never_opens_manager(tmp_path: Path) -> None:
-    """Direct Tcl callers receive the same preflight protection."""
+@pytest.mark.parametrize("app", [*loader.VALID_APPS, "unregistered_app"])
+def test_tcl_loader_app_preflight_never_opens_manager(tmp_path: Path, app: str) -> None:
+    """Tcl accepts every Python-listed app, then rejects its missing image."""
     harness = tmp_path / "mock.tcl"
     harness.write_text("""
 set actual_script [lindex $argv 0]
@@ -693,7 +694,7 @@ source $actual_script
             str(harness),
             str(ROOT / "fpga/load_software/load_software.tcl"),
             str(tmp_path),
-            "debug_target",
+            app,
             TARGET,
             "",
             "1",
@@ -704,7 +705,12 @@ source $actual_script
         timeout=10,
     )
     assert result.returncode == 1
-    assert "BRAM image" in result.stderr and "SHOULD_NOT_OPEN" not in result.stdout
+    if app in loader.VALID_APPS:
+        assert "BRAM image" in result.stderr, result.stdout + result.stderr
+        assert "Invalid software app" not in result.stdout
+    else:
+        assert f"Invalid software app '{app}'" in result.stdout
+    assert "SHOULD_NOT_OPEN" not in result.stdout
 
 
 @pytest.mark.parametrize("failure", [False, True])
