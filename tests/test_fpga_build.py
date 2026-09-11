@@ -1610,3 +1610,394 @@ def test_ila_capture_trigger_value_masks_the_page_number() -> None:
     procs = (REPO_ROOT / "fpga/debug/fetch_ila_procs.tcl").read_text()
     for proc in ("frost_ila_attach", "frost_ila_arm", "frost_ila_wait_and_collect"):
         assert f"proc {proc} " in procs
+
+
+class _ScheduledVivado:
+    """A process whose first job is slow enough to expose batch barriers."""
+
+    def __init__(self, fleet: "_VivadoFleet", index: int, stdout: Any) -> None:
+        self.fleet = fleet
+        self.index = index
+        self.pid = 10000 + index
+        self.stdout = stdout
+        self.started = fleet.tick
+        self.finish = fleet.tick + (4 if index == 0 else 1)
+        if index in fleet.ignore_sigterm:
+            self.finish = fleet.tick + 1000
+        self.returncode: int | None = None
+        self.reaped = False
+
+    def poll(self) -> int | None:
+        if self.returncode is None and self.fleet.tick >= self.finish:
+            self.returncode = 1 if self.index in self.fleet.exit_failures else 0
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        result = self.poll()
+        if result is None:
+            raise fpga_build.subprocess.TimeoutExpired("unused-vivado", timeout)
+        self.reaped = True
+        return result
+
+
+class _VivadoFleet:
+    """Record actual overlap and make simulated jobs finish without sleeping."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, cap: int) -> None:
+        self.cap = cap
+        self.tick = 0
+        self.max_active = 0
+        self.attempts: list[Path] = []
+        self.processes: list[_ScheduledVivado] = []
+        self.launch_failures: set[int] = set()
+        self.exit_failures: set[int] = set()
+        self.ignore_sigterm: set[int] = set()
+        self.signals: list[tuple[int, int]] = []
+        self.handles: list[Any] = []
+        self.interrupt = False
+        monkeypatch.setattr(fpga_build.subprocess, "Popen", self.popen)
+        monkeypatch.setattr(fpga_build.time, "sleep", self.sleep)
+        monkeypatch.setattr(fpga_build.time, "monotonic", lambda: float(self.tick))
+        monkeypatch.setattr(fpga_build.os, "killpg", self.killpg)
+        monkeypatch.setattr(
+            fpga_build,
+            "extract_timing_from_report",
+            lambda path: {"wns_ns": float(path.read_text()), "tns_ns": -1.0},
+        )
+
+    def popen(self, command: list[str], **kwargs: Any) -> _ScheduledVivado:
+        assert kwargs["start_new_session"] is True
+        work_dir: Path = kwargs["cwd"]
+        index = len(self.attempts)
+        self.attempts.append(work_dir)
+        self.handles.append(kwargs["stdout"])
+        if index in self.launch_failures:
+            raise OSError("synthetic launch failure")
+        process = _ScheduledVivado(self, index, kwargs["stdout"])
+        self.processes.append(process)
+        active = sum(p.poll() is None for p in self.processes)
+        self.max_active = max(self.max_active, active)
+        assert active <= self.cap, "the build exceeded its Vivado job limit"
+        step = command[command.index("-tclargs") + 2]
+        prefix = "quick_route" if step == "quick_route" else f"post_{step}"
+        (work_dir / f"{prefix}.dcp").write_text(work_dir.name)
+        (work_dir / f"{prefix}_timing.rpt").write_text(str(-1.0 + index / 100.0))
+        (work_dir / "vivado.log").write_text("synthetic Vivado output\n")
+        return process
+
+    def sleep(self, _seconds: float) -> None:
+        if self.interrupt:
+            self.interrupt = False
+            raise KeyboardInterrupt
+        self.tick += 1
+        assert self.tick < 100, "the sweep stopped making progress"
+
+    def killpg(self, pid: int, signum: int) -> None:
+        self.signals.append((pid, signum))
+        for process in self.processes:
+            if process.pid == pid:
+                if (
+                    process.index in self.ignore_sigterm
+                    and signum == fpga_build.signal.SIGTERM
+                ):
+                    return
+                process.returncode = -signum
+                return
+        raise ProcessLookupError(pid)
+
+
+def _sweep_input(script_dir: Path, step: str) -> Path:
+    """Create only the checkpoint needed by this simulated stage."""
+    work_dir = script_dir / "x3/work"
+    work_dir.mkdir(parents=True)
+    (work_dir / fpga_build.STEP_REQUIRES_CHECKPOINT[step]).write_text("input\n")
+    return work_dir
+
+
+@pytest.mark.parametrize("max_jobs", (None, 1, 2))
+@pytest.mark.parametrize("step", ("place", "route", "second_route"))
+def test_sweep_limits_overlap_and_replenishes_without_a_batch_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    max_jobs: int | None,
+    step: str,
+) -> None:
+    """Every candidate competes; a slow first job cannot stall all other slots."""
+    cap = 12 if max_jobs is None else max_jobs
+    fleet = _VivadoFleet(monkeypatch, cap)
+    main_work = _sweep_input(tmp_path, step)
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    if step == "place":
+        select_place = fpga_build.select_x3_place_best_run
+
+        def select_with_cap(
+            script_dir: Path, runs: list[Any], vivado_path: str, max_jobs: int = 12
+        ) -> Any:
+            assert max_jobs == cap
+            return select_place(script_dir, runs, vivado_path, max_jobs=max_jobs)
+
+        monkeypatch.setattr(fpga_build, "select_x3_place_best_run", select_with_cap)
+    directives = [f"Candidate{index}" for index in range(15)]
+    options = {} if max_jobs is None else {"max_jobs": max_jobs}
+    result = fpga_build.run_x3_step_directive_sweep(
+        tmp_path, step, directives, "test", "unused-vivado", keep_temps=True, **options
+    )
+    assert result == (True, -0.86, f"post_{step}")
+    assert [path.name for path in fleet.attempts] == [
+        f"work_{step}_{directive}" for directive in directives
+    ]
+    assert fleet.max_active == cap
+    if cap > 1:
+        assert fleet.processes[cap].started < fleet.processes[0].finish
+    assert (main_work / f"post_{step}.dcp").read_text() == fleet.attempts[-1].name
+    assert all(handle.closed for handle in fleet.handles)
+    assert all(process.poll() == 0 for process in fleet.processes)
+
+
+def test_sweep_failures_release_slots_and_preserve_failed_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed launch and a nonzero exit neither deadlock nor win the sweep."""
+    fleet = _VivadoFleet(monkeypatch, 2)
+    fleet.launch_failures = {1}
+    fleet.exit_failures = {4}
+    main_work = _sweep_input(tmp_path, "route")
+    result = fpga_build.run_x3_step_directive_sweep(
+        tmp_path,
+        "route",
+        [f"Candidate{index}" for index in range(5)],
+        "router",
+        "unused-vivado",
+        max_jobs=2,
+    )
+    assert result == (True, -0.97, "post_route")
+    assert len(fleet.attempts) == 5
+    assert (main_work / "post_route.dcp").read_text() == fleet.attempts[3].name
+    assert [path.exists() for path in fleet.attempts] == [
+        False,
+        True,
+        False,
+        False,
+        True,
+    ]
+    assert all(handle.closed for handle in fleet.handles)
+
+
+def test_sweep_interrupt_terminates_active_groups_without_launching_queued_jobs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C leaves queued candidates untouched and closes both active logs."""
+    fleet = _VivadoFleet(monkeypatch, 2)
+    fleet.interrupt = True
+    main_work = _sweep_input(tmp_path, "route")
+    with pytest.raises(SystemExit) as interrupted:
+        fpga_build.run_x3_step_directive_sweep(
+            tmp_path,
+            "route",
+            [f"Candidate{index}" for index in range(5)],
+            "router",
+            "unused-vivado",
+            max_jobs=2,
+        )
+    assert interrupted.value.code == 130
+    assert len(fleet.attempts) == 2
+    assert fleet.signals == [
+        (process.pid, fpga_build.signal.SIGTERM) for process in fleet.processes
+    ]
+    assert all(handle.closed for handle in fleet.handles)
+    assert all(process.poll() is not None for process in fleet.processes)
+    assert not (main_work / "post_route.dcp").exists()
+    assert not (tmp_path / "x3/work_route_Candidate2").exists()
+
+
+def _quick_route_candidates(script_dir: Path, count: int = 15) -> list[Any]:
+    """Make complete placement seeds for the real quick-route scheduler."""
+    candidates = []
+    for index in range(count):
+        work_dir = script_dir / f"work_place_Candidate{index}"
+        work_dir.mkdir()
+        (work_dir / "post_place.dcp").write_text(f"placement {index}\n")
+        candidates.append(
+            fpga_build.DirectiveSweepRun(
+                directive=f"Candidate{index}",
+                label=f"Candidate{index}",
+                work_dir=work_dir,
+                stdout_path=work_dir / "build_step_stdout.log",
+                returncode=0,
+                wns=-1.0 + index / 100.0,
+            )
+        )
+    return candidates
+
+
+@pytest.mark.parametrize("max_jobs", (None, 1, 2))
+def test_quick_route_probes_share_the_job_cap_and_replenish_free_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, max_jobs: int | None
+) -> None:
+    """Quick-routing all selected seeds cannot bypass the placement job cap."""
+    cap = 12 if max_jobs is None else max_jobs
+    fleet = _VivadoFleet(monkeypatch, cap)
+    candidates = _quick_route_candidates(tmp_path)
+    options = {} if max_jobs is None else {"max_jobs": max_jobs}
+    fpga_build.run_x3_place_quick_route_probes(
+        tmp_path, candidates, "unused-vivado", **options
+    )
+    assert fleet.max_active == cap
+    assert fleet.attempts == [run.work_dir for run in candidates]
+    if cap > 1:
+        assert fleet.processes[cap].started < fleet.processes[0].finish
+    assert [run.quick_route_returncode for run in candidates] == [0] * len(candidates)
+    assert all(run.quick_route_wns is not None for run in candidates)
+    assert all(handle.closed for handle in fleet.handles)
+    assert [(run.work_dir / "post_place.dcp").read_text() for run in candidates] == [
+        f"placement {index}\n" for index in range(len(candidates))
+    ]
+
+
+def test_quick_route_missing_input_and_failures_do_not_consume_slots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Skipped, unlaunchable, and failed probes leave later seeds runnable."""
+    fleet = _VivadoFleet(monkeypatch, 2)
+    fleet.launch_failures = {1}
+    fleet.exit_failures = {2}
+    candidates = _quick_route_candidates(tmp_path, 5)
+    (candidates[0].work_dir / "post_place.dcp").unlink()
+    fpga_build.run_x3_place_quick_route_probes(
+        tmp_path, candidates, "unused-vivado", max_jobs=2
+    )
+    assert fleet.attempts == [run.work_dir for run in candidates[1:]]
+    assert [run.quick_route_returncode for run in candidates] == [-1, 0, -1, 1, 0]
+    assert [run.quick_route_wns is not None for run in candidates] == [
+        False,
+        True,
+        False,
+        False,
+        True,
+    ]
+    assert all(handle.closed for handle in fleet.handles)
+
+
+@pytest.mark.parametrize("stubborn_worker", (False, True))
+def test_quick_route_interrupt_terminates_active_groups_and_leaves_queue_idle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stubborn_worker: bool
+) -> None:
+    """A quick-route interrupt cannot leave processes or start queued probes."""
+    fleet = _VivadoFleet(monkeypatch, 2)
+    fleet.interrupt = True
+    if stubborn_worker:
+        fleet.ignore_sigterm = {0}
+    candidates = _quick_route_candidates(tmp_path, 5)
+    for index, run in enumerate(candidates):
+        run.elapsed_s = 31.0 + index
+    placement_metrics = [(run.returncode, run.elapsed_s) for run in candidates]
+    with pytest.raises(SystemExit) as interrupted:
+        fpga_build.run_x3_place_quick_route_probes(
+            tmp_path, candidates, "unused-vivado", max_jobs=2
+        )
+    assert interrupted.value.code == 130
+    assert len(fleet.attempts) == 2
+    expected_signals = [
+        (process.pid, fpga_build.signal.SIGTERM) for process in fleet.processes
+    ]
+    if stubborn_worker:
+        expected_signals.append((fleet.processes[0].pid, fpga_build.signal.SIGKILL))
+    assert fleet.signals == expected_signals
+    assert all(handle.closed for handle in fleet.handles)
+    assert all(process.poll() is not None for process in fleet.processes)
+    assert all(process.reaped for process in fleet.processes)
+    assert all(run.quick_route_returncode is None for run in candidates[2:])
+    assert [(run.returncode, run.elapsed_s) for run in candidates] == placement_metrics
+
+
+def test_placement_selection_forwards_job_limit_to_quick_route(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The selection stage preserves the caller's cap while scoring seeds."""
+    candidates = _quick_route_candidates(tmp_path, 3)
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    received: list[int] = []
+
+    def score_probes(
+        _script_dir: Path, runs: list[Any], _vivado_path: str, max_jobs: int
+    ) -> None:
+        received.append(max_jobs)
+        for index, run in enumerate(runs):
+            run.quick_route_returncode = 0
+            run.quick_route_wns = float(index)
+
+    monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", score_probes)
+    winner = fpga_build.select_x3_place_best_run(
+        tmp_path, candidates, "unused-vivado", max_jobs=1
+    )
+    assert received == [1]
+    assert winner is candidates[0]
+
+
+@pytest.mark.parametrize("step", ("place", "route", "second_route"))
+@pytest.mark.parametrize(
+    "options, expected", (([], 12), (["--jobs", "2"], 2), (["-j", "1"], 1))
+)
+def test_build_cli_forwards_job_limit_to_every_sweep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    step: str,
+    options: list[str],
+    expected: int,
+) -> None:
+    """The default, long flag, and short flag all reach each native sweep."""
+    _sweep_input(tmp_path, step)
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "x3", "--start-at", step, "--stop-after", step, *options],
+    )
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    received: list[int] = []
+
+    def finish_sweep(*_args: Any, **kwargs: Any) -> tuple[bool, float, str]:
+        received.append(kwargs["max_jobs"])
+        return True, -1.0, f"post_{step}"
+
+    monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", finish_sweep)
+    monkeypatch.setattr(
+        timing_util_summary, "update_readme_utilization", lambda *_args: False
+    )
+    fpga_build.main()
+    assert received == [expected]
+
+
+@pytest.mark.parametrize("jobs", ("0", "-1", "1.5", "unlimited"))
+def test_build_cli_rejects_invalid_job_limits_before_starting_work(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], jobs: str
+) -> None:
+    """A malformed limit must fail argument parsing, before any tool launch."""
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--jobs", jobs])
+    monkeypatch.setattr(
+        fpga_build,
+        "compile_hello_world",
+        lambda *_args: pytest.fail("invalid --jobs started a software build"),
+    )
+    with pytest.raises(SystemExit) as rejected:
+        fpga_build.main()
+    assert rejected.value.code == 2
+    assert "--jobs" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("max_jobs", (0, -1))
+def test_sweep_apis_reject_nonpositive_limits_before_creating_work(
+    tmp_path: Path, max_jobs: int
+) -> None:
+    """Programmatic callers cannot request a queue that will never advance."""
+    with pytest.raises(ValueError, match="positive"):
+        fpga_build.run_x3_step_directive_sweep(
+            tmp_path, "route", ["Explore"], "router", "unused-vivado", max_jobs=max_jobs
+        )
+    with pytest.raises(ValueError, match="positive"):
+        fpga_build.run_x3_place_quick_route_probes(
+            tmp_path, [], "unused-vivado", max_jobs=max_jobs
+        )
+    assert not list(tmp_path.iterdir())

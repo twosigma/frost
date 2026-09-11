@@ -34,7 +34,9 @@ with a retime-only pass (``FROST_PHYSOPT_SWEEP_ORDER`` overrides the order).
 Each sweep retains the best WNS, writes its checkpoint and reports, and stops
 on closure.
 
-X3 place and route sweeps run in parallel and promote one checkpoint. Both
+X3 place and route sweeps run up to twelve Vivado jobs at a time and promote one
+checkpoint. ``--jobs N`` changes this per-build cap, including placement's
+quick-route probes; queued candidates start as running jobs finish. Both
 route stages try every legal directive and rank by WNS. Placement defaults to
 four directives at six 50 ps-spaced setup uncertainties from 0.500 to 0.250 ns;
 these act as seeds because Vivado exposes no placer seed. ``--directives`` and
@@ -104,6 +106,11 @@ from typing import TextIO, TypedDict
 
 
 # Configuration
+
+# Bound full-design Vivado processes independently of each process's threads.
+# The 27-job NIC-enabled placement sweep exhausted the build host's RAM.
+# Twelve leaves room for growth beyond the observed ~8 GB per worker.
+DEFAULT_MAX_JOBS = 12
 
 # ``synth_directive`` is the board's default synthesis directive. On x3
 # PerformanceOptimized reaches -0.081 ns / 4 endpoints post-opt against
@@ -1032,55 +1039,64 @@ def run_x3_place_quick_route_probes(
     script_dir: Path,
     candidates: list[DirectiveSweepRun],
     vivado_path: str,
+    max_jobs: int = DEFAULT_MAX_JOBS,
 ) -> None:
     """Quick-route candidates at real constraints and record their timing.
 
     The cheapest router directive scores every seed equally. Probe results fill
     ``quick_route_*``; promotion still uses the untouched ``post_place.dcp``.
+    At most ``max_jobs`` probes run concurrently.
     """
+    if max_jobs < 1:
+        raise ValueError("max_jobs must be positive")
     active: list[tuple[DirectiveSweepRun, subprocess.Popen[bytes], TextIO, float]] = []
+    next_candidate = 0
     try:
-        for run in candidates:
-            checkpoint = run.work_dir / "post_place.dcp"
-            if not checkpoint.exists():
-                run.quick_route_returncode = -1
-                print(f"  quick-route skip {run.label}: missing {checkpoint}")
-                continue
-            stdout_path = run.work_dir / "quick_route_stdout.log"
-            command = [
-                vivado_path,
-                "-mode",
-                "batch",
-                "-source",
-                str(script_dir / "build_step.tcl"),
-                "-nojournal",
-                "-log",
-                "quick_route_vivado.log",
-                "-tclargs",
-                "x3",
-                "quick_route",
-                "RuntimeOptimized",
-                str(checkpoint),
-                "0",
-            ]
-            stdout_handle = stdout_path.open("w")
-            try:
-                process = subprocess.Popen(
-                    command,
-                    cwd=run.work_dir,
-                    stdout=stdout_handle,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
-            except OSError as e:
-                stdout_handle.close()
-                run.quick_route_returncode = -1
-                print(f"  quick-route launch failed for {run.label}: {e}")
-                continue
-            active.append((run, process, stdout_handle, time.monotonic()))
-            print(f"  quick-route {run.label:<30} pid={process.pid}")
+        while next_candidate < len(candidates) or active:
+            while next_candidate < len(candidates) and len(active) < max_jobs:
+                run = candidates[next_candidate]
+                next_candidate += 1
+                checkpoint = run.work_dir / "post_place.dcp"
+                if not checkpoint.exists():
+                    run.quick_route_returncode = -1
+                    print(f"  quick-route skip {run.label}: missing {checkpoint}")
+                    continue
+                stdout_path = run.work_dir / "quick_route_stdout.log"
+                command = [
+                    vivado_path,
+                    "-mode",
+                    "batch",
+                    "-source",
+                    str(script_dir / "build_step.tcl"),
+                    "-nojournal",
+                    "-log",
+                    "quick_route_vivado.log",
+                    "-tclargs",
+                    "x3",
+                    "quick_route",
+                    "RuntimeOptimized",
+                    str(checkpoint),
+                    "0",
+                ]
+                stdout_handle = None
+                try:
+                    stdout_handle = stdout_path.open("w")
+                    process = subprocess.Popen(
+                        command,
+                        cwd=run.work_dir,
+                        stdout=stdout_handle,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
+                except OSError as e:
+                    if stdout_handle is not None:
+                        stdout_handle.close()
+                    run.quick_route_returncode = -1
+                    print(f"  quick-route launch failed for {run.label}: {e}")
+                    continue
+                active.append((run, process, stdout_handle, time.monotonic()))
+                print(f"  quick-route {run.label:<30} pid={process.pid}")
 
-        while active:
             for entry in list(active):
                 run, process, stdout_handle, started = entry
                 returncode = process.poll()
@@ -1107,16 +1123,26 @@ def run_x3_place_quick_route_probes(
                     f"({format_sweep_elapsed(run.quick_route_elapsed_s)})"
                 )
                 active.remove(entry)
-            if active:
+            if active and (
+                next_candidate == len(candidates) or len(active) == max_jobs
+            ):
                 time.sleep(5)
     except KeyboardInterrupt:
-        print("\nTerminating active quick-route probes...")
-        for run, process, stdout_handle, _ in active:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            stdout_handle.close()
+        # Use separate runtime records so cleanup cannot overwrite the
+        # placement processes' return codes or elapsed times.
+        probe_runs = [
+            DirectiveSweepRun(
+                directive=run.directive,
+                label=run.label,
+                work_dir=run.work_dir,
+                stdout_path=run.work_dir / "quick_route_stdout.log",
+                process=process,
+                stdout_handle=stdout_handle,
+                start_time=started,
+            )
+            for run, process, stdout_handle, started in active
+        ]
+        terminate_x3_directive_sweep_runs(probe_runs, "quick-route probes")
         raise SystemExit(130)
 
 
@@ -1138,6 +1164,7 @@ def select_x3_place_best_run(
     script_dir: Path,
     runs: list[DirectiveSweepRun],
     vivado_path: str,
+    max_jobs: int = DEFAULT_MAX_JOBS,
 ) -> DirectiveSweepRun | None:
     """Select the best x3 place seed with congestion awareness.
 
@@ -1198,7 +1225,9 @@ def select_x3_place_best_run(
         f"\nQuick-route probing the top {len(candidates)} surviving seeds "
         f"(routed WNS decides):"
     )
-    run_x3_place_quick_route_probes(script_dir, candidates, vivado_path)
+    run_x3_place_quick_route_probes(
+        script_dir, candidates, vivado_path, max_jobs=max_jobs
+    )
 
     probed = [
         run
@@ -1396,8 +1425,9 @@ def run_x3_step_directive_sweep(
     keep_temps: bool = False,
     setup_uncertainties_ns: list[float] | None = None,
     include_extra_seeds: bool = True,
+    max_jobs: int = DEFAULT_MAX_JOBS,
 ) -> tuple[bool, float | None, str]:
-    """Run every x3 directive in parallel and promote the best run.
+    """Run every x3 candidate with bounded concurrency and promote the best run.
 
     Route sweeps promote the best-WNS run. The place sweep instead uses
     congestion-aware selection (congestion veto + quick-route probes; see
@@ -1408,7 +1438,11 @@ def run_x3_step_directive_sweep(
     Vivado's placer has no seed knob, so these overconstraint variants serve
     as extra placement "seeds" per directive. Eligible LOW integer-RS variants
     compete alongside their controls unless the caller sets a bloat variable.
+    At most ``max_jobs`` Vivado processes run at once, including the later
+    quick-route probes. The cap changes scheduling, not candidate selection.
     """
+    if max_jobs < 1:
+        raise ValueError("max_jobs must be positive")
     board_name = "x3"
     tcl_report_prefix = _TCL_REPORT_PREFIX[step]
     main_work = script_dir / board_name / "work"
@@ -1461,14 +1495,16 @@ def run_x3_step_directive_sweep(
         bloat_list = ", ".join(candidate.label for candidate in bloat_jobs)
         bloat_note = f" + LOW integer-RS variants ({bloat_list})" if bloat_jobs else ""
         print(
-            f"Launching {len(sweep_jobs)} parallel jobs: {len(directives)} "
+            f"Scheduling {len(sweep_jobs)} jobs: {len(directives)} "
             f"{sweep_kind} directives x {len(setup_uncertainties_ns)} "
             f"overconstraint seeds ({uncertainty_list} ns setup uncertainty)"
             f"{extra_note}{bloat_note}:"
         )
     else:
         sweep_jobs = [DirectiveSweepCandidate(directive) for directive in directives]
-        print(f"Launching {sweep_kind} directives in parallel:")
+        print(f"Scheduling {len(sweep_jobs)} {sweep_kind} directive jobs:")
+
+    print(f"  Up to {max_jobs} Vivado jobs at a time (--jobs); remaining jobs queue.")
 
     # A sweep of one job has nothing to compare, so its Vivado output streams
     # to the terminal instead of sitting silently in the work directory.
@@ -1476,81 +1512,88 @@ def run_x3_step_directive_sweep(
     stream_offset = 0
 
     runs: list[DirectiveSweepRun] = []
+    next_candidate = 0
+    pending: set[int] = set()
     try:
-        for candidate in sweep_jobs:
-            directive = candidate.directive
-            uncertainty_ns = candidate.setup_uncertainty_ns
-            pc_tail_guided = x3_place_uses_pc_tail_guidance(directive, uncertainty_ns)
-            label = candidate.label
-            job_env = (
-                candidate.environment(os.environ)
-                if uncertainty_ns is not None
-                else None
-            )
-
-            work_dir = script_dir / board_name / f"work_{step}_{label}"
-            if work_dir.exists():
-                shutil.rmtree(work_dir)
-            work_dir.mkdir(parents=True, exist_ok=True)
-
-            stdout_path = work_dir / "build_step_stdout.log"
-            vivado_command = [
-                vivado_path,
-                "-mode",
-                "batch",
-                "-source",
-                str(script_dir / "build_step.tcl"),
-                "-nojournal",
-                "-tclargs",
-                board_name,
-                step,
-                directive,
-                str(input_checkpoint),
-                "0",
-            ]
-
-            run = DirectiveSweepRun(
-                directive=directive,
-                label=label,
-                work_dir=work_dir,
-                stdout_path=stdout_path,
-                setup_uncertainty_ns=uncertainty_ns,
-                pc_tail_guided=pc_tail_guided,
-                cell_bloat_factor=candidate.cell_bloat_factor,
-                cell_bloat_cells=candidate.cell_bloat_cells,
-            )
-            runs.append(run)
-
-            stdout_handle = None
-            try:
-                stdout_handle = stdout_path.open("w")
-                process = subprocess.Popen(
-                    vivado_command,
-                    cwd=work_dir,
-                    stdout=stdout_handle,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                    env=job_env,
+        while next_candidate < len(sweep_jobs) or pending:
+            while next_candidate < len(sweep_jobs) and len(pending) < max_jobs:
+                candidate = sweep_jobs[next_candidate]
+                next_candidate += 1
+                directive = candidate.directive
+                uncertainty_ns = candidate.setup_uncertainty_ns
+                pc_tail_guided = x3_place_uses_pc_tail_guidance(
+                    directive, uncertainty_ns
                 )
-                run.process = process
-                run.stdout_handle = stdout_handle
-                run.start_time = time.monotonic()
-                print(
-                    f"  {label:<30} pid={process.pid:<8} "
-                    f"log={work_dir / 'vivado.log'}"
+                label = candidate.label
+                job_env = (
+                    candidate.environment(os.environ)
+                    if uncertainty_ns is not None
+                    else None
                 )
-            except OSError as e:
-                if stdout_handle is not None:
-                    stdout_handle.close()
-                run.returncode = -1
-                run.elapsed_s = 0.0
-                run.launch_error = str(e)
-                print(f"  {label:<30} launch failed: {e}")
 
-        pending = {idx for idx, run in enumerate(runs) if run.process is not None}
-        if stream_single_job and pending:
-            print(f"\n--- streaming {runs[0].label} ({runs[0].stdout_path}) ---")
-        while pending:
+                work_dir = script_dir / board_name / f"work_{step}_{label}"
+                if work_dir.exists():
+                    shutil.rmtree(work_dir)
+                work_dir.mkdir(parents=True, exist_ok=True)
+
+                stdout_path = work_dir / "build_step_stdout.log"
+                vivado_command = [
+                    vivado_path,
+                    "-mode",
+                    "batch",
+                    "-source",
+                    str(script_dir / "build_step.tcl"),
+                    "-nojournal",
+                    "-tclargs",
+                    board_name,
+                    step,
+                    directive,
+                    str(input_checkpoint),
+                    "0",
+                ]
+
+                run = DirectiveSweepRun(
+                    directive=directive,
+                    label=label,
+                    work_dir=work_dir,
+                    stdout_path=stdout_path,
+                    setup_uncertainty_ns=uncertainty_ns,
+                    pc_tail_guided=pc_tail_guided,
+                    cell_bloat_factor=candidate.cell_bloat_factor,
+                    cell_bloat_cells=candidate.cell_bloat_cells,
+                )
+                runs.append(run)
+
+                stdout_handle = None
+                try:
+                    stdout_handle = stdout_path.open("w")
+                    process = subprocess.Popen(
+                        vivado_command,
+                        cwd=work_dir,
+                        stdout=stdout_handle,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                        env=job_env,
+                    )
+                    run.process = process
+                    run.stdout_handle = stdout_handle
+                    run.start_time = time.monotonic()
+                    print(
+                        f"  {label:<30} pid={process.pid:<8} "
+                        f"log={work_dir / 'vivado.log'}"
+                    )
+                except OSError as e:
+                    if stdout_handle is not None:
+                        stdout_handle.close()
+                    run.returncode = -1
+                    run.elapsed_s = 0.0
+                    run.launch_error = str(e)
+                    print(f"  {label:<30} launch failed: {e}")
+
+                if run.process is not None:
+                    pending.add(len(runs) - 1)
+                    if stream_single_job:
+                        print(f"\n--- streaming {run.label} ({run.stdout_path}) ---")
             if stream_single_job:
                 text, stream_offset = read_log_tail(runs[0].stdout_path, stream_offset)
                 if text:
@@ -1637,7 +1680,9 @@ def run_x3_step_directive_sweep(
                 )
                 pending.remove(idx)
 
-            if pending:
+            if pending and (
+                next_candidate == len(sweep_jobs) or len(pending) == max_jobs
+            ):
                 time.sleep(1 if stream_single_job else 5)
     except KeyboardInterrupt:
         terminate_x3_directive_sweep_runs(runs, f"{sweep_kind} sweep")
@@ -1645,7 +1690,9 @@ def run_x3_step_directive_sweep(
         raise SystemExit(130)
 
     if step == "place":
-        best_run = select_x3_place_best_run(script_dir, runs, vivado_path)
+        best_run = select_x3_place_best_run(
+            script_dir, runs, vivado_path, max_jobs=max_jobs
+        )
     else:
         eligible_runs = [
             run for run in runs if run.returncode == 0 and run.wns is not None
@@ -1909,26 +1956,30 @@ Steps (in order):
   synth                       - Synthesis
   opt                         - Opt design
   place                       - Place design (x3 sweeps selected placer
-                                directives x configurable uncertainty seeds in
-                                parallel, then picks congestion-aware: veto
-                                congested seeds, quick-route survivors, keep
-                                the best ROUTED WNS)
+                                directives x uncertainty seeds, up to --jobs
+                                at a time; veto congested seeds, quick-route
+                                survivors, keep the best ROUTED WNS)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup; x3 sweeps all
-                                router directives in parallel and keeps the
-                                best-WNS result)
+                                router directives, up to --jobs at a time,
+                                and keeps the best-WNS result)
   post_route_physopt          - Phys_opt directive sweep plus retime pass (serial)
   second_route                - Route design (without -tns_cleanup; x3 sweeps
-                                all router directives in parallel and keeps the
-                                best-WNS result)
+                                all router directives, up to --jobs at a time,
+                                and keeps the best-WNS result)
   post_second_route_physopt   - Phys_opt directive sweep plus retime pass (serial);
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
+  * --jobs / -j limits simultaneous Vivado processes per build (default 12).
+    This covers X3 placement, quick-route probes, and both router sweeps.
+    Candidates queue and start as slots become free; every candidate still runs.
+    Separate build invocations have independent limits. Vivado's per-process
+    thread settings are unchanged. Use --jobs 1 for serial execution.
   * On x3, place ignores --place-directive. By default its grid runs
     ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
-    AltSpreadLogic_medium at six overconstraint seeds in parallel (0.500 down
+    AltSpreadLogic_medium at six overconstraint seeds (0.500 down
     to 0.250 ns pre-place setup uncertainty in 50 ps steps). The qualified
     ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid.
     LOW integer-RS cell-bloat variants are added beside the grid's
@@ -1962,9 +2013,9 @@ Behavior:
     uncertainty through post_place_physopt.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each runs every router directive,
-    including AlternateCLBRouting, in parallel and promotes only the best-WNS
-    checkpoint/reports. The route step still uses -tns_cleanup; second_route
-    does not.
+    including AlternateCLBRouting, subject to --jobs, and promotes only the
+    best-WNS checkpoint/reports. The route step still uses -tns_cleanup;
+    second_route does not.
   * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore
     and ending with one retime-only pass (phys_opt_design -retime). Each sweep
     preserves the best-WNS pass and stops early if a pass closes timing
@@ -2024,6 +2075,17 @@ Examples:
         help="Keep temporary work directories",
     )
     parser.add_argument(
+        "--jobs",
+        "-j",
+        type=int,
+        default=DEFAULT_MAX_JOBS,
+        metavar="N",
+        help="Maximum simultaneous Vivado jobs per build, including X3 place, "
+        "route, and quick-route sweeps. Remaining candidates queue; "
+        f"N must be positive (default: {DEFAULT_MAX_JOBS}; 1 runs serially). "
+        "Does not change Vivado's per-process thread count.",
+    )
+    parser.add_argument(
         "--synth-directive",
         choices=SYNTH_DIRECTIVES,
         default=None,
@@ -2071,7 +2133,7 @@ Examples:
         default="AggressiveExplore",
         help="Router directive for the first route step on non-x3 boards "
         "(with -tns_cleanup, default: AggressiveExplore). Ignored on x3, "
-        "which sweeps all router directives in parallel.",
+        "which sweeps all router directives subject to --jobs.",
     )
     parser.add_argument(
         "--second-route-directive",
@@ -2079,7 +2141,7 @@ Examples:
         default="Explore",
         help="Router directive for the second route step on non-x3 boards "
         "(without -tns_cleanup, default: Explore). Ignored on x3, which "
-        "sweeps all router directives in parallel.",
+        "sweeps all router directives subject to --jobs.",
     )
     parser.add_argument(
         "--route-directives",
@@ -2087,7 +2149,7 @@ Examples:
         choices=ROUTER_SWEEP_DIRECTIVES,
         metavar="DIRECTIVE",
         help="Restrict the x3 router sweep (both route stages) to these "
-        "directives, run in parallel. One directive is a single route run. "
+        "directives, subject to --jobs. One directive is a single route run. "
         "Default: every router directive.",
     )
     parser.add_argument(
@@ -2123,6 +2185,9 @@ Examples:
         "pass. Kept for backward compatibility.",
     )
     args = parser.parse_args()
+
+    if args.jobs < 1:
+        parser.error("--jobs must be positive")
 
     board_name = args.board_name
 
@@ -2249,6 +2314,7 @@ Examples:
     ]
     if directives_summary:
         print(f"# Directives: {', '.join(directives_summary)}")
+    print(f"# Vivado concurrency: up to {args.jobs} jobs at a time (--jobs)")
     if board_name == "x3" and "place" in steps_to_run:
         sweep_source = "custom" if placer_sweep_overridden else "default"
         print(
@@ -2326,6 +2392,7 @@ Examples:
                 keep_temps=args.keep_temps,
                 setup_uncertainties_ns=place_setup_uncertainties_ns,
                 include_extra_seeds=functional_policy.include_extra_seeds,
+                max_jobs=args.jobs,
             )
         elif board_name == "x3" and step in {"route", "second_route"}:
             success, wns, actual_prefix = run_x3_step_directive_sweep(
@@ -2335,6 +2402,7 @@ Examples:
                 "router",
                 args.vivado_path,
                 keep_temps=args.keep_temps,
+                max_jobs=args.jobs,
             )
         else:
             success, wns, actual_prefix = run_step(
