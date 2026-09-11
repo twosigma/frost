@@ -401,7 +401,7 @@ module cpu_and_mem #(
   logic [255:0] walk_line_resp_rdata;
   logic [31:0] data_memory_address;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_write_data, data_memory_write_data_registered;
-  logic [riscv_pkg::MemDataBits-1:0] data_memory_or_peripheral_read_data;  // From RAM or MMIO
+  logic [riscv_pkg::MemDataBits-1:0] data_memory_response_data;  // Complete router payload
   logic [riscv_pkg::MemDataBits-1:0] mmio_read_data_comb;
   logic [riscv_pkg::MemDataBits-1:0] mmio_read_data_reg;
   logic mmio_read_data_valid;
@@ -655,7 +655,7 @@ module cpu_and_mem #(
       .o_data_mem_cached_wr_data(data_memory_cached_write_data),
       .o_data_mem_cached_read_enable(data_memory_cached_read_enable),
       .o_data_mem_cached_read_id(data_memory_cached_read_id),
-      .i_cached_read_data(data_memory_cached_read_data),
+      .i_cached_read_data(data_memory_response_data),
       .i_cached_read_id(data_memory_cached_resp_id),
       .i_cached_read_valid(data_memory_cached_read_valid),
       .o_cached_read_ready(data_memory_cached_read_ready),
@@ -678,7 +678,7 @@ module cpu_and_mem #(
       .o_mmio_fifo0_read_pulse(mmio_fifo0_read_pulse),
       .o_mmio_fifo1_read_pulse(mmio_fifo1_read_pulse),
       .o_mmio_uart_rx_ready_pulse(mmio_uart_rx_ready_pulse),
-      .i_data_mem_rd_data(data_memory_or_peripheral_read_data),
+      .i_data_mem_rd_data(data_memory_response_data),
       .o_rst_done(/*not connected*/),
       .o_vld   (commit_vld),
       .o_pc_vld(/*not connected*/),
@@ -2156,11 +2156,20 @@ module cpu_and_mem #(
   // Destructive MMIO read side effects are decoded and registered inside the
   // memory router; this boundary stays direct routing to the peripherals.
 
-  // Multiplexer for read data - selects between RAM and registered MMIO data
-  always_comb begin
-    data_memory_or_peripheral_read_data = data_memory_read_data;  // Default: use RAM data
-    if (mmio_read_data_valid) data_memory_or_peripheral_read_data = mmio_read_data_reg;
-  end
+  // Select the complete response at this boundary, where all three payloads
+  // and the router's inverse registered fast owner are already available.
+  // Both CPU data inputs receive this value; its unchanged response mux thus
+  // selects identical payloads while retaining every valid/ready/ID decision.
+  data_mem_response_mux #(
+      .DATA_WIDTH(riscv_pkg::MemDataBits)
+  ) data_mem_response_mux_inst (
+      .i_bram_read_data(data_memory_read_data),
+      .i_mmio_read_data(mmio_read_data_reg),
+      .i_cached_read_data(data_memory_cached_read_data),
+      .i_mmio_read_valid(mmio_read_data_valid),
+      .i_cached_read_ready(data_memory_cached_read_ready),
+      .o_read_data(data_memory_response_data)
+  );
 
   // UART write: the native TX at 0x4000_0000, or the ns16550 THR at
   // 0x4000_1000 when DLAB is clear. Both funnel into the same TX byte stream.

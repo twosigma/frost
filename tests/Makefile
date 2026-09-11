@@ -144,6 +144,15 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/branch_resolution.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),data_mem_response_mux_tb)
+# Integrated response helper and actual router, legacy-versus-shared payload seam.
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/data_mem_response_mux.sv \
+        $(ROOT)/hw/sim/data_mem_response_mux_lut_models.sv \
+        $(ROOT)/hw/sim/data_mem_response_mux_tb.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),data_mem_request_router)
 # CPU OOO data-memory request router unit test
 COMPILE_ARGS := \

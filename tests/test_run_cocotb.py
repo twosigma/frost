@@ -1035,6 +1035,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="branch_resolution",
         description="CPU OOO branch resolution tests",
     ),
+    "data_mem_response_mux": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_response_mux",
+        hdl_toplevel_module="data_mem_response_mux_tb",
+        description="Portable 32/64-bit response selection and actual-router exact-cycle seam",
+        verilator_extra_args=("--assert",),
+    ),
+    "data_mem_response_mux_xilinx": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_response_mux",
+        hdl_toplevel_module="data_mem_response_mux_tb",
+        description="Xilinx LUT response selection and actual-router exact-cycle seam",
+        verilator_extra_args=("--assert", "+define+FROST_XILINX_PRIMS"),
+    ),
     "data_mem_request_router": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
         hdl_toplevel_module="data_mem_request_router",

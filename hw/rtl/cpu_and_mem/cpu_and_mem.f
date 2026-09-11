@@ -40,5 +40,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/dma_test_engine.sv
 # On-silicon hang triage (synthesizable boot-hang classifier over UART)
 $(ROOT)/hw/rtl/cpu_and_mem/hang_triage.sv
 
+# Complete fast-BRAM/MMIO/cached response selection at the integrated boundary
+$(ROOT)/hw/rtl/cpu_and_mem/data_mem_response_mux.sv
+
 # CPU and memory integration module
 $(ROOT)/hw/rtl/cpu_and_mem/cpu_and_mem.sv
