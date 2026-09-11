@@ -133,8 +133,12 @@ python3 fpga/build/build.py x3 --stop-after opt
 ```
 
 `build.py` regenerates the README utilization table on probes. The qualified
-checkpoint and initialization products are retained in `fpga/build/x3/work`.
-Continue implementation from that checkpoint with:
+checkpoint was initially installed in `fpga/build/x3/work`. That directory
+was subsequently reused for the passing 150 MHz build. The 300 MHz checkpoint
+and initialization products are now retained in the separate 300 MHz archive
+listed in the [hardware validation record](x3_nic_hardware_validation.md).
+Restore that archive's work directory into an isolated checkout before
+continuing this 300 MHz implementation with:
 
 ```bash
 python3 fpga/build/build.py x3 --start-at place

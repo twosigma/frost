@@ -306,6 +306,10 @@ FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_t
 FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 linux_boot
 ```
 
+The [NIC hardware validation record](build/x3_nic_hardware_validation.md)
+preserves the 42-stage passing 150 MHz run, its final timing, and the exact
+archived bitstream and software baseline used before resuming 300 MHz closure.
+
 ## Fetch-seam ILA captures
 
 `--debug-ila` instruments the fetch seam with a Vivado ILA: synthesis compiles
