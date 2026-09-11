@@ -1086,6 +1086,8 @@ if {$step eq "synth"} {
     write_failing_paths_csv $work_directory/post_place_failing_paths.csv $work_directory/post_place_timing.rpt
     # build.py vetoes seeds at the configured congestion level (default 5),
     # because overconstrained post-place WNS can favor unroutable density.
+    # This report also defaults to threshold 5. No listed windows does not
+    # measure zero congestion or exclude smaller congestion windows.
     report_design_analysis -congestion -file $work_directory/post_place_congestion.rpt
     if {$use_x3_pc_tail_group} {
         report_timing -from $x3_pc_compressed_tail_starts_score -to $x3_pc_compressed_tail_ends_score -delay_type max -max_paths 1000 -nworst 10 -file $work_directory/post_place_pc_compressed_tail_timing.rpt

@@ -44,7 +44,7 @@ these act as seeds because Vivado exposes no placer seed. ``--directives`` and
 ``ExtraPostPlacementOpt``/0.425 seed is always included: under the then-active
 fetch pblock it first passed the post-demolition gate (score -0.699, raw
 -0.199 on 2026-08-20) and routed to closure. It remains a competitive
-congestion-clean placement after that pblock's retirement. Every seed is
+placement after that pblock's retirement. Every seed is
 rescored at 0.500 ns and passes that constraint to post-place phys-opt.
 The default sweep also includes LOW integer-RS cell-bloat variants of
 ``ExtraNetDelay_high``/0.350 and ``ExtraPostPlacementOpt``/0.450, for 27 jobs
@@ -567,11 +567,12 @@ _ROUTER_CONGESTION_WARNING = "Congestion is preventing the router from routing a
 
 
 def extract_max_congestion_level(congestion_rpt_path: Path) -> int | None:
-    """Return the worst congestion window level from a congestion report.
+    """Return the worst reported congestion window level.
 
-    Parses report_design_analysis -congestion output. Returns 0 if the report
-    exists but lists no congested window, or None if the report is
-    missing/unreadable.
+    Parses report_design_analysis -congestion output. Zero is an internal
+    sentinel for no parsed window rows, NOT a measured congestion level.
+    The default report threshold is 5, so smaller windows remain unmeasured.
+    Returns None if the report is missing/unreadable.
     """
     if not congestion_rpt_path.exists():
         return None
@@ -1289,7 +1290,11 @@ def print_x3_directive_sweep_matrix(
         selected = "*" if best_run is run else ""
         if show_placement_wns:
             congestion = (
-                "N/A" if run.congestion_level is None else str(run.congestion_level)
+                "N/A"
+                if run.congestion_level is None
+                else "none"
+                if run.congestion_level == 0
+                else str(run.congestion_level)
             )
             route_wns = format_sweep_ns(run.quick_route_wns)
             if run.quick_route_warning:
@@ -1314,8 +1319,10 @@ def print_x3_directive_sweep_matrix(
 
     if show_placement_wns:
         print(
-            "    (Cong = worst placer congestion window level, CONGVETO = "
-            "disqualified by it; RouteWNS = quick-route probe at real "
+            "    (Cong = worst reported placer congestion window level; "
+            "none = no windows reported at the reporting threshold "
+            "(default 5), not zero congestion; CONGVETO = disqualified by "
+            "reported level; RouteWNS = quick-route probe at real "
             "constraints, '!' = router congestion warning)"
         )
 
@@ -1725,8 +1732,12 @@ def run_x3_step_directive_sweep(
                 f", quick-routed WNS={format_sweep_ns(best_run.quick_route_wns)} ns"
             )
         congestion_note = ""
-        if best_run.congestion_level is not None:
-            congestion_note = f", congestion level {best_run.congestion_level}"
+        if best_run.congestion_level == 0:
+            congestion_note = ", no congestion windows reported"
+        elif best_run.congestion_level is not None:
+            congestion_note = (
+                f", worst reported congestion level {best_run.congestion_level}"
+            )
         print(
             f"\nSelected x3 {sweep_kind} directive for {step}: {best_run.label} "
             f"(WNS@0={format_sweep_ns(directive_sweep_rank_wns(best_run))} ns, "
