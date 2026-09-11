@@ -774,7 +774,10 @@ hw_server -d  # port 3121
 
 2. Register the app name in both `VALID_APPS` in
    `load_software/load_software.py` and the `valid_apps` list in
-   `load_software/load_software.tcl` (the loader rejects unknown app names)
+   `load_software/load_software.tcl` (the loader rejects unknown app names).
+   The fast tests in `tests/test_fpga_managed_flows.py` exercise Tcl's app
+   validation for every Python-listed app to catch mismatches before a
+   hardware load.
 
 3. Load it (the loader compiles the app for the target board automatically):
    ```bash
