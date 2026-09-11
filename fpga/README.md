@@ -377,8 +377,18 @@ Assertions in `cpu_ooo` and `dispatch` check that the direct gate suppresses
 both slots and that the preceding recovery edge has cleared even the preflush
 candidates before the gate reopens.
 
-Both X3 route stages sweep every router directive in parallel unless
-`--route-directives` names a subset; a single directive is a single route run.
+`--jobs N` (or `-j N`) limits each build invocation to N concurrent Vivado
+sweep jobs; N must be a positive integer and defaults to 12. The same limit
+applies to X3 placement, its quick-route probes, and both route sweeps.
+Remaining candidates wait for a running job to finish. The full requested
+candidate grid, ranking, and winner promotion stay the same. This setting
+does not change Vivado's thread count within each process. Separate
+`build.py` invocations have independent limits, so account for their combined
+memory use when running multiple builds on one host.
+
+Both X3 route stages sweep every router directive within this concurrency
+limit unless `--route-directives` names a subset; a single directive is a
+single route run.
 A sweep of one job (placer or router) streams its Vivado output to the
 terminal instead of leaving it in the work directory's log.
 
@@ -459,8 +469,8 @@ routing.
 # Override the board's default synthesis directive (AlternateRoutability)
 ./fpga/build/build.py x3 --synth-directive PerformanceOptimized
 
-# Resume at the x3 placement sweep
-./fpga/build/build.py x3 --start-at place
+# Resume at the x3 placement sweep with at most twelve concurrent Vivado jobs
+./fpga/build/build.py x3 --start-at place --jobs 12
 
 # Run only placement with a 2×4 grid plus the off-grid seed (9 jobs)
 ./fpga/build/build.py x3 --start-at place --stop-after place \
