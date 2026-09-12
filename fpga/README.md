@@ -557,23 +557,6 @@ quick-route probes:
 ./fpga/build/build.py x3 --start-at place --stop-after place
 ```
 
-A single matching placement can also use the default automatic mode natively:
-
-```bash
-frost_root=$(pwd)
-fresh_opt=/absolute/path/to/current/post_opt.dcp
-place_run="$frost_root/fpga/build/x3/work/refined_place"
-mkdir -p "$place_run"
-(
-  cd "$place_run"
-  FROST_PLACE_SETUP_UNCERTAINTY=0.350 \
-  FROST_PLACE_CELL_BLOAT=LOW \
-  FROST_PLACE_CELL_BLOAT_CELLS='*u_tomasulo/u_int_rs' \
-    vivado -mode batch -source "$frost_root/fpga/build/build_step.tcl" \
-      -nojournal -tclargs x3 place ExtraNetDelay_high "$fresh_opt" 0
-)
-```
-
 Direct helper calls remain strict by default. To replay the retained matching
 historical raw checkpoint, which has 0.500 ns scoring uncertainty, use separate
 output paths in native Vivado Tcl:
@@ -586,12 +569,13 @@ write_checkpoint -force /absolute/path/to/replay/post_place.dcp
 report_timing_summary -file /absolute/path/to/replay/post_place_timing.rpt
 ```
 
-Passing `auto` as the helper's second argument enables its skip behavior.
+Passing `auto` explicitly as the helper's second argument enables its skip
+behavior for an unmatched diagnostic checkpoint. Production never calls it.
 The helper changes no timing constraints. Preserve the raw input, helper and
 flow hashes, invocation, pin audit, and independent clean-reopen timing audit
 with the refined checkpoint; distinguish its result from raw `place_design`.
-The automatic integration has bounded Tcl and cached-checkpoint validation;
-a fresh complete placement sweep has not been rerun for this follow-up.
+The historical timing record documents the retired integration's validation;
+that evidence does not qualify a current production placement.
 
 ## Programming the FPGA
 
