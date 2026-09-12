@@ -44,7 +44,11 @@ For memories, only the native external macro port is reconnected. Preflight
 checks its actual macro type, lower net, complete direct lower-pin group and
 leaf owner/type. Readback preserves every selected macro's internal primitive
 configuration and direct pin connections, every other external macro input and
-output, and direct write-clock net identity. The three named sideband bank
+output, and direct write-clock net identity. Unchanged macro inputs preserve
+exact local upper-net identities, including an unused disconnected input; their
+wider electrical alias sets are not traversed and no constant-source identity is
+inferred. The moved macro input and every selected leaf still require the exact
+singleton electrical driver. The three named sideband bank
 `DONT_TOUCH` values are released only around the four DPRA reconnects and restored
 exactly in a `finally` block. Other edited ancestor and net protections must be
 absent. No bank-wide primitive census or clock/constant fanout census is used.

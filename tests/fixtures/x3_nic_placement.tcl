@@ -17,6 +17,7 @@
 set scenario [lindex $argv 0]
 set helper [lindex $argv 1]
 set audit [lindex $argv 2]
+set unchanged_alias_walks 0
 set objects {}; set mutation_count 0; set cell_creates 0; set restored {}; set fault_done 0
 proc add_cell {name ref {init {}} {macro 0}} {
     global objects
@@ -85,7 +86,7 @@ proc expand_nets {seeds} {
     return [lsort -unique $out]
 }
 proc get_nets {args} {
-    global objects
+    global objects scenario unchanged_alias_walks
     set filter [arg $args -filter]
     if {$filter ne ""} {
         regexp {^NAME == "(.*)"$} $filter -> name
@@ -93,6 +94,15 @@ proc get_nets {args} {
         return {}
     }
     set from [arg $args -of_objects]; set result {}
+    if {"-segments" in $args && [file tail $from] eq {ADDRA[0]}} {
+        incr unchanged_alias_walks
+        # Only the immediate upper boundary is relevant to an unchanged input.
+        # Its electrical alias set deliberately exceeds the production cap.
+        if {$scenario eq "macro_large_alias"} {
+            set aliases {}; for {set i 0} {$i < 148} {incr i} {lappend aliases address_alias_$i}
+            return $aliases
+        }
+    }
     if {$from eq ""} {set from [lindex $args end]}
     foreach obj $from {
         if {[dict get $objects $obj type] eq "net"} {lappend result $obj; continue}
@@ -167,6 +177,11 @@ proc connect_net {args} {
         set fault_done 1; error "Injected sideband connect failure"
     }
     dict set objects $p net $n
+    if {$scenario eq "changed_other_upper" && !$fault_done && [expr {[file tail $p] eq {DPRA[3]}}]} {
+        set fault_done 1
+        set dma [lindex [dict keys [dict get $recipes DMA macros]] 0]
+        dict set objects $dma/ADDRA\[0\] net runtime/alternate
+    }
     if {$scenario in {changed_source changed_macro} && !$fault_done && [expr {[file tail $p] eq {DPRA[3]}}]} {
         set fault_done 1
         if {$scenario eq "changed_source"} {
@@ -207,10 +222,18 @@ dict for {role recipe} $recipes {
         set port [dict get $ms port]; set lower $mn/lower_selected
         add_pin $mn/$port IN $n $lower
         add_pin $mn/WCLK IN runtime/reset_net $mn/lower_clock
+        if {$role eq "DMA" && $scenario in {macro_large_alias unused_disconnected changed_other_upper}} {
+            set upper runtime/reset_net
+            if {$scenario eq "unused_disconnected"} {set upper {}}
+            add_pin $mn/ADDRA\[0\] IN $upper $mn/address_lower
+        }
         foreach leaf [dict get $ms leaves] {
             set lc [file dirname $leaf]; add_cell $lc [expr {$role eq "DMA" ? "RAMD32" : "RAMD64E"}] 64'h0123
             add_pin $leaf IN $lower
             add_pin $lc/WCLK IN $mn/lower_clock
+            if {$role eq "DMA" && $scenario in {macro_large_alias unused_disconnected changed_other_upper}} {
+                add_pin $lc/A0 IN $mn/address_lower
+            }
             add_pin $lc/O OUT $lc/data_out
         }
     }
@@ -231,7 +254,7 @@ dict for {role recipe} $recipes {
 }
 set mode auto
 switch -- $scenario {
-    positive - create_failure - connect_failure - release_failure - restore_failure - changed_source - changed_macro - native_error {}
+    macro_large_alias - unused_disconnected - changed_other_upper - positive - create_failure - connect_failure - release_failure - restore_failure - changed_source - changed_macro - native_error {}
     constant {dict set objects runtime/driver_L1I/I0 net runtime/zero_net}
     missing_last {dict unset objects [lindex [dict get $recipes SIDEBAND selected] end]}
     wrong_driver {dict set objects [lindex [dict get $recipes E04 selected] 0] net runtime/alternate}
@@ -254,7 +277,7 @@ switch -- $scenario {
 set original $objects
 set rc [catch {::frost_x3_nic_placement::post_opt $audit $mode} value options]
 set f [open $audit]; set record [read $f]; close $f
-if {$scenario in {positive constant}} {
+if {$scenario in {positive constant macro_large_alias unused_disconnected}} {
     if {$rc || $value != 1 || [dict get $record status] ne "APPLIED" || $cell_creates != 4} {error "Expected four-copy success: $value"}
     if {[dict get $record moved_leaves] != 40} {error "Wrong finite move count"}
     foreach bank [lsort -unique $banks] {if {[dict get $objects $bank props DONT_TOUCH] ne "true"} {error "Bank not restored"}}
@@ -278,4 +301,7 @@ if {$scenario in {positive constant}} {
     foreach bank [lsort -unique $banks] {if {[dict get $objects $bank props DONT_TOUCH] ne "true"} {error "Failed edit left bank released"}}
 }
 if {$scenario eq "restore_failure" && [llength $restored] != 3} {error "Did not attempt every restore"}
+if {$scenario in {macro_large_alias unused_disconnected changed_other_upper} && $unchanged_alias_walks} {
+    error "Traversed an unchanged macro input's electrical alias set"
+}
 puts "PASS $scenario"

@@ -162,7 +162,8 @@ proc ::frost_x3_nic_placement::controls {p} {
     }
     return $result
 }
-proc ::frost_x3_nic_placement::consumer {c macro} {
+proc ::frost_x3_nic_placement::consumer {c macro {moved_port {}}} {
+    if {$macro && $moved_port eq ""} {mismatch "Macro snapshot requires its declared moved port"}
     set result [dict create config [config $c] pins {}]
     foreach p [lsort [get_pins -of_objects $c]] {
         set key [get_property REF_PIN_NAME $p]
@@ -170,8 +171,13 @@ proc ::frost_x3_nic_placement::consumer {c macro} {
         set direct [get_nets -of_objects $p]
         if {$macro} {set direct [get_nets -boundary_type upper -of_objects $p]}
         set row [dict create direction $direction nets [names $direct] controls [controls $p]]
+        # Unchanged macro inputs retain their exact local upper net, including
+        # an unused disconnected port. Do not walk a potentially global alias
+        # set to infer their source. Internal direct nets are checked separately.
+        # The moved port still requires its exact singleton electrical driver.
         # No electrical clock fanout traversal or source-wide load census.
-        if {$direction eq "IN" && $key ni {C CLK WCLK} && [prop $p IS_CLOCK] ni {1 true}} {
+        if {$direction eq "IN" && $key ni {C CLK WCLK} && [prop $p IS_CLOCK] ni {1 true} &&
+            (!$macro || $key eq $moved_port)} {
             dict set row source [source $p]
         }
         dict set result pins $key $row
@@ -281,7 +287,7 @@ proc ::frost_x3_nic_placement::prepare {} {
                 set mc [cell $mn]; set port [dict get $ms port]; set p [pin $mn/$port]
                 protection $mc [dict get $recipe banks]
                 dict set macro_records $mn [macro_snapshot $mn $port [dict get $ms ref] [dict get $ms leaves]]
-                dict set consumers $mn [consumer $mc 1]
+                dict set consumers $mn [consumer $mc 1 $port]
                 set upper [one [get_nets -boundary_type upper -of_objects $p] "macro upper net"]
                 net_protection [list $upper]
                 lappend moving [dict create pin $mn/$port old_net [get_property NAME $upper] macro 1]
@@ -389,7 +395,9 @@ proc ::frost_x3_nic_placement::verify {states} {
         }
         dict for {name expected_consumer} $consumer_expected {
             set macro [dict exists [dict get $state recipe macros] $name]
-            if {[consumer [cell $name] $macro] ne $expected_consumer} {error "Changed consumer configuration/other pins $name"}
+            set moved_port {}
+            if {$macro} {set moved_port [dict get $state recipe macros $name port]}
+            if {[consumer [cell $name] $macro $moved_port] ne $expected_consumer} {error "Changed consumer configuration/other pins $name"}
         }
         dict for {name spec} [dict get $state recipe macros] {
             if {[macro_snapshot $name [dict get $spec port] [dict get $spec ref] [dict get $spec leaves]] ne [dict get $state macros $name]} {

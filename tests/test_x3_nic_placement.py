@@ -27,6 +27,9 @@ ROOT = Path(__file__).resolve().parents[1]
     (
         "positive",
         "constant",
+        "macro_large_alias",
+        "unused_disconnected",
+        "changed_other_upper",
         "missing_last",
         "wrong_driver",
         "bad_init",
