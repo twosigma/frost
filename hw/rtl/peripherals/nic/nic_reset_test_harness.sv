@@ -81,6 +81,7 @@ module nic_reset_test_harness #(
       .i_dma_idle     (i_dma_idle),
       .o_stop_dma     (o_stop_dma),
       .o_core_rst     (o_core_rst),
+      .o_core_rst_next(),
       .o_busy         (o_busy),
       .i_clk_ok       ({i_rx_clk_ok, i_tx_clk_ok}),
       .i_in_reset     (in_reset),

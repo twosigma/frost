@@ -81,13 +81,18 @@ module eth10g_mac_rx #(
   logic [CountWidth-1:0] descriptor_write_length;
   logic [MemoryAddrWidth:0] descriptor_write_words;
 
-  // Each of the eight byte lanes has one write port. Asynchronous reads are
-  // portable but generally infer distributed RAM; a future device-specific
-  // wrapper can replace these memories with synchronous block RAM.
-  logic [7:0] packet_memory[8][MemoryWords];
+  // Each of the eight byte lanes is one simple dual-port memory: a write port
+  // and a synchronous read port, so FPGA synthesis infers block RAM. The read
+  // port is addressed with next_read_word on every clock, so after each edge
+  // read_data holds the word at read_word. That equals the old asynchronous
+  // read: a word under read belongs to a published frame, and a frame is
+  // published (descriptor_count incremented) on the edge that writes its last
+  // word, at least seven edges after its first word completes, so no published
+  // word is written on or after the edge that fetched it.
   logic [7:0] memory_write_enable;
   logic [7:0] memory_write_data[8];
   logic [MemoryAddrWidth-1:0] memory_write_address[8];
+  logic [7:0] read_data[8];
 
   always_comb begin
     m_axis_tvalid = descriptor_count != 0;
@@ -100,7 +105,7 @@ module eth10g_mac_rx #(
       for (int lane = 0; lane < 8; lane++) begin
         if (int'(read_count) + lane < int'(packet_length[descriptor_read])) begin
           m_axis_tkeep[lane] = 1'b1;
-          m_axis_tdata[lane*8+:8] = packet_memory[lane][read_word];
+          m_axis_tdata[lane*8+:8] = read_data[lane];
         end
       end
     end
@@ -288,9 +293,11 @@ module eth10g_mac_rx #(
     end
   end
   for (genvar lane = 0; lane < 8; lane++) begin : g_memory_lane
+    (* ram_style = "block" *) logic [7:0] packet_memory[MemoryWords];
     always_ff @(posedge i_clk) begin
       if (!i_rst && memory_write_enable[lane])
-        packet_memory[lane][memory_write_address[lane]] <= memory_write_data[lane];
+        packet_memory[memory_write_address[lane]] <= memory_write_data[lane];
+      read_data[lane] <= packet_memory[next_read_word];
     end
   end
 endmodule : eth10g_mac_rx

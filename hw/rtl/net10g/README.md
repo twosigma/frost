@@ -124,15 +124,18 @@ MAC configurations require a limit of at least 60 bytes.
   rolled back. Subsequent valid frames recover without external reset.
 
 Default TX storage is two 9216-byte buffers with synchronous read prefetch,
-held in one array with the buffer select as the top address bit so that
-FPGA synthesis infers block RAM (a two-dimensional array of buffers falls
-back to registers).
+held in one array with the buffer select as the top address bit and read
+through one port behind a muxed address, so that FPGA synthesis infers
+block RAM (a two-dimensional array of buffers falls back to registers, and a
+second read port to distributed RAM).
 Default RX storage is a 32 KiB circular data buffer and 512 descriptors;
 frame starts are word-aligned, and the four FCS bytes consume storage until
-the corresponding frame drains. RX uses asynchronous memory reads, which
-generally imply distributed RAM. Selecting device RAM primitives and closing
-timing are later board work. Mixed jumbo/minimum packets with continuously
-ready output, wraparound, and concurrent reader/drop rollback are tested.
+the corresponding frame drains. Each byte lane of the data buffer is a
+simple dual-port memory with a synchronous read addressed by the reader's
+next word, so the registered data always equals the word under read; the
+lanes infer block RAM. Only the small descriptor arrays are read
+asynchronously. Mixed jumbo/minimum packets with continuously ready output,
+wraparound, and concurrent reader/drop rollback are tested.
 
 ## Link status and errors
 

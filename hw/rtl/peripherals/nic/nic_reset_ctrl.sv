@@ -45,11 +45,12 @@ module nic_reset_ctrl (
     input logic i_clk,
     input logic i_rst,
 
-    input  logic i_reset_req,  // CSR RESET write (level or pulse)
-    input  logic i_dma_idle,   // the DMA front-end owes no response
-    output logic o_stop_dma,   // stop issuing, drain
-    output logic o_core_rst,   // reset the core-domain NIC state (engines, caches, irq, rings)
-    output logic o_busy,       // RESET in progress (the CSR RESET readback)
+    input  logic i_reset_req,      // CSR RESET write (level or pulse)
+    input  logic i_dma_idle,       // the DMA front-end owes no response
+    output logic o_stop_dma,       // stop issuing, drain
+    output logic o_core_rst,       // reset the core-domain NIC state (engines, caches, irq, rings)
+    output logic o_core_rst_next,  // o_core_rst's value after the next clock edge
+    output logic o_busy,           // RESET in progress (the CSR RESET readback)
 
     // Per domain (index 0 = TX, 1 = RX).
     input  logic [1:0] i_clk_ok,         // core-domain levels (synchronized by the caller)
@@ -102,9 +103,25 @@ module nic_reset_ctrl (
       endcase
     end
   end
-  assign o_stop_dma    = (state_q != S_IDLE);
-  assign o_core_rst    = (state_q == S_RESET);
-  assign o_busy        = (state_q != S_IDLE);
+  assign o_stop_dma = (state_q != S_IDLE);
+  assign o_core_rst = (state_q == S_RESET);
+  assign o_busy = (state_q != S_IDLE);
+  // The next-edge value of o_core_rst, from the same transitions as the state
+  // register: nic_top registers its core-domain reset from it so that reset
+  // stays cycle-exact with o_core_rst while fanning out from a register.
+  assign o_core_rst_next = !i_rst &&
+      ((state_q == S_DRAIN && i_dma_idle) ||
+       (state_q == S_RESET && rst_cnt_q != 3'(CoreRstCycles - 1)));
+`ifndef SYNTHESIS
+  logic core_rst_next_q;
+  always_ff @(posedge i_clk) begin
+    core_rst_next_q <= o_core_rst_next;
+    if (!$isunknown({core_rst_next_q, o_core_rst})) begin
+      assert (o_core_rst == core_rst_next_q)
+      else $error("o_core_rst_next did not predict o_core_rst");
+    end
+  end
+`endif
   assign start_domains = (state_q == S_RESET) && (rst_cnt_q == '0);
 
   // ---- per-domain generation handshake ----------------------------------------

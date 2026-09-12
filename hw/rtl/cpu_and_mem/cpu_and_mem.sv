@@ -190,8 +190,12 @@ module cpu_and_mem #(
   // system reset it asks for. The caches' reset tag sweep makes ndmreset a
   // real reset.
   logic dbg_ndmreset;
-  (* max_fanout = 1000 *)logic rst_core;
-  always_ff @(posedge i_clk) rst_core <= i_rst || dbg_ndmreset;
+  // The NIC registers its own reset from rst_core's next value so that its
+  // reset register can fan out locally and still stay in step with rst_core.
+  logic rst_core_next;
+  assign rst_core_next = i_rst || dbg_ndmreset;
+  (* max_fanout = 1000 *) logic rst_core;
+  always_ff @(posedge i_clk) rst_core <= rst_core_next;
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
@@ -501,10 +505,19 @@ module cpu_and_mem #(
   // ---------------------------------------------------------------------------
   logic [1:0] plic_eip;
   logic [1:0] plic_claim_pulse;
+  // The register-bus window selects are registered beside the address they
+  // decode (the same unconditional capture as data_memory_address_registered),
+  // so each write enable is one AND of registered bits instead of a wide
+  // compare in front of the peripheral's own offset decode.
+  logic plic_sel_q, dma_engine_sel_q, nic_sel_q;
+  always_ff @(posedge i_clk) begin
+    plic_sel_q       <= (data_memory_address[31:22] == PlicWindowSel);
+    dma_engine_sel_q <= (data_memory_address[31:8] == DmaEngineBase[31:8]);
+    nic_sel_q        <= (data_memory_address[31:12] == NicBase[31:12]);
+  end
   logic plic_wr_en, plic_wr_hi;
   assign plic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  assign plic_wr_en = |data_memory_byte_write_enable_registered &&
-      (data_memory_address_registered[31:22] == PlicWindowSel);
+  assign plic_wr_en = |data_memory_byte_write_enable_registered && plic_sel_q;
   assign plic_claim_pulse[0] = mmio_read_capture && (mmio_load_addr == PlicClaimM);
   assign plic_claim_pulse[1] = mmio_read_capture && (mmio_load_addr == PlicClaimS);
   logic [63:0] plic_rd_pair;
@@ -512,14 +525,12 @@ module cpu_and_mem #(
   logic dma_engine_wr_en, dma_engine_wr_hi, dma_engine_irq;
   logic [63:0] dma_engine_rd_pair;
   assign dma_engine_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  assign dma_engine_wr_en = |data_memory_byte_write_enable_registered &&
-      (data_memory_address_registered[31:8] == DmaEngineBase[31:8]);
+  assign dma_engine_wr_en = |data_memory_byte_write_enable_registered && dma_engine_sel_q;
   // NIC register bus (same shape) and interrupt.
   logic nic_wr_en, nic_wr_hi, nic_irq;
   logic [63:0] nic_rd_pair;
   assign nic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
-  assign nic_wr_en = |data_memory_byte_write_enable_registered &&
-      (data_memory_address_registered[31:12] == NicBase[31:12]);
+  assign nic_wr_en = |data_memory_byte_write_enable_registered && nic_sel_q;
   plic #(
       .NUM_SOURCES (4),
       .NUM_CONTEXTS(2)
@@ -1740,7 +1751,7 @@ module cpu_and_mem #(
         .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000)
     ) nic (
         .i_clk(i_clk),
-        .i_rst(rst_core),
+        .i_rst(rst_core_next),  // registered inside nic_top; see its header
         .i_wr_en(nic_wr_en),
         .i_wr_offset({data_memory_address_registered[11:3], nic_wr_hi ? 3'b100 : 3'b000}),
         .i_wr_data(nic_wr_hi ? data_memory_write_data_registered[63:32] :
