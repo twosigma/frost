@@ -44,7 +44,7 @@ ROOT = Path(__file__).resolve().parents[1]
         "changed_macro",
     ),
 )
-def test_post_opt_copy_guards(scenario, tmp_path):
+def test_post_opt_copy_guards(scenario: str, tmp_path: Path) -> None:
     """Exercise complete ownership and failures before and during mutation."""
     result = subprocess.run(
         [
