@@ -934,6 +934,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GISSUE_CDB_TAG_SHADOW=1",
         ),
     ),
+    "rs_issue2_shamt": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.reservation_station.test_rs_issue2_shamt",
+        hdl_toplevel_module="reservation_station",
+        description=(
+            "Issue2 effective shift amount: all barrel op/amount combinations, "
+            "CDB capture, hold, refill, flush and reset"
+        ),
+        verilator_extra_args=(
+            "-GDUAL_ISSUE=1",
+            "-GHAS_SRC3=0",
+            "-GALLOC_INDEXED_REPAIR=1",
+            "-GDISPATCH_REPAIR_BYPASS=0",
+            "-GISSUE_REPAIR_BYPASS=0",
+            "-GSPECULATIVE_DATA_WRITES=1",
+            "-GBROADCAST_FREE_SOURCE_VALUES=1",
+            "-GISSUE_CDB_TAG_SHADOW=1",
+            "-GTRACK_INT_WRITEBACK_HINT=1",
+            "-GCAPTURE_PRIMARY_EFFECTIVE_OPERANDS=1",
+        ),
+    ),
     "cdb_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.cdb_arbiter.test_cdb_arbiter",
         hdl_toplevel_module="cdb_arbiter",
@@ -974,6 +994,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Integer ALU shim unit tests (arithmetic, full/word shift-rotate "
             "amount sweeps, LUI, AUIPC, JAL, CSR)"
         ),
+    ),
+    "int_alu_shim_shift_hint": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
+        hdl_toplevel_module="int_alu_shim",
+        description=(
+            "Secondary INT ALU with captured shift hint: existing arithmetic "
+            "and exhaustive full/word shift-rotate checks"
+        ),
+        verilator_extra_args=("-GUSE_SHIFT_AMOUNT_HINT=1",),
     ),
     "int_muldiv_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",

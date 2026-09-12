@@ -95,6 +95,11 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "alu_shift_hint.sby",
+        "Actual ALU - captured amount consumer equals generic path, arbitrary binary inputs",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "reservation_station.sby",
         "Reservation station - dispatch, wakeup, issue, flush",
     ),

@@ -1722,6 +1722,7 @@ module tomasulo_wrapper #(
   // Second INT issue pipe (ALU2): its own adapter back-pressure gate.
   riscv_pkg::rs_issue_t int_rs_issue_2_raw;
   riscv_pkg::rs_issue_t int_rs_issue_2_w;
+  logic [5:0] int_rs_issue_shift_amount_2;
   logic int_rs_fu_ready_2;
   logic int_rs_issue_writes_cdb_hint_2;
   logic alu2_fu_busy;
@@ -2874,6 +2875,7 @@ module tomasulo_wrapper #(
       .o_issue_2(int_rs_issue_2_raw),
       .i_fu_ready_2(int_rs_fu_ready_2),
       .o_issue_writes_cdb_hint_2(int_rs_issue_writes_cdb_hint_2),
+      .o_issue_shift_amount_2(int_rs_issue_shift_amount_2),
       .o_next_issue_valid(),
       .o_next_issue_is_sc(),  // unused: no SC ops in INT_RS
       .o_next_issue_needs_lq(),
@@ -2969,6 +2971,7 @@ module tomasulo_wrapper #(
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
       .o_issue_writes_cdb_hint_2(),
+      .o_issue_shift_amount_2(),
       .o_next_issue_valid(),
       .o_next_issue_is_sc(),  // unused: no SC ops in MUL_RS
       .o_next_issue_needs_lq(),
@@ -3056,6 +3059,7 @@ module tomasulo_wrapper #(
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
       .o_issue_writes_cdb_hint_2(),
+      .o_issue_shift_amount_2(),
       .o_next_issue_valid(mem_rs_next_issue_valid),
       .o_next_issue_is_sc(mem_rs_next_is_sc),
       .o_next_issue_needs_lq(mem_rs_next_issue_needs_lq),
@@ -3251,6 +3255,7 @@ module tomasulo_wrapper #(
       .o_issue_2                  (),
       .i_fu_ready_2               (1'b0),
       .o_issue_writes_cdb_hint_2  (),
+      .o_issue_shift_amount_2     (),
       .o_next_issue_valid         (),
       .o_next_issue_is_sc         (),                              // unused: no SC ops in FP_RS
       .o_next_issue_needs_lq      (),
@@ -3407,6 +3412,7 @@ module tomasulo_wrapper #(
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
       .o_issue_writes_cdb_hint_2(),
+      .o_issue_shift_amount_2(),
       .o_next_issue_valid(),
       .o_next_issue_is_sc(),  // unused: no SC ops in FMUL_RS
       .o_next_issue_needs_lq(),
@@ -3705,6 +3711,7 @@ module tomasulo_wrapper #(
       .o_issue_2(),
       .i_fu_ready_2(1'b0),
       .o_issue_writes_cdb_hint_2(),
+      .o_issue_shift_amount_2(),
       .o_next_issue_valid(),
       .o_next_issue_is_sc(),  // unused: no SC ops in FDIV_RS
       .o_next_issue_needs_lq(),
@@ -3736,6 +3743,7 @@ module tomasulo_wrapper #(
       .i_rst_n                (i_rst_n),
       .i_rs_issue             (int_rs_issue_w),
       .i_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
+      .i_shift_amount_hint    (6'b0),
       .i_csr_read_data        (i_csr_read_data),
       .o_fu_complete          (alu_shim_out),
       .o_fu_busy              (alu_fu_busy)
@@ -3769,11 +3777,14 @@ module tomasulo_wrapper #(
   // Branch-class entries are steered to port 0 inside the INT RS, so this
   // pipe never resolves a branch and needs no branch_resolution tap.
   // ===========================================================================
-  int_alu_shim u_alu2_shim (
+  int_alu_shim #(
+      .USE_SHIFT_AMOUNT_HINT(1'b1)
+  ) u_alu2_shim (
       .i_clk                  (i_clk),
       .i_rst_n                (i_rst_n),
       .i_rs_issue             (int_rs_issue_2_w),
       .i_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint_2),
+      .i_shift_amount_hint    (int_rs_issue_shift_amount_2),
       .i_csr_read_data        (i_csr_read_data),
       .o_fu_complete          (alu2_shim_out),
       .o_fu_busy              (alu2_fu_busy)

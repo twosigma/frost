@@ -356,3 +356,11 @@ retains its separate reset-based protocol assertions.
 The local proof also retains the four existing combinational free-tree
 consistency assertions; its preparation checks exactly 26 assertion/cover
 cells and rejects any assumptions.
+
+The `alu_shift_hint` target compares two actual RV64 ALUs at BMC depth 1, with
+arbitrary binary opcodes, instruction fields and operands. One ignores an
+arbitrary hint; the other receives the exact effective shift amount from the
+shared predicate. It checks result/write-enable equality and retains the ALU's
+symbolic enum assertions. It is a combinational consumer-contract check; the
+`rs_issue2_shamt` cocotb test and occupied-bank assertion check capture/hold
+phase, not an unbounded scheduler proof.
