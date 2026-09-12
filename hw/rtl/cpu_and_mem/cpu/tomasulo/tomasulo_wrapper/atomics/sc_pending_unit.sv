@@ -80,6 +80,10 @@ module sc_pending_unit (
     // admitted to a DMA write; expose the head SC's address for admission
     // and the successful fire that opens the SC window.
     input logic i_coh_sc_hold,
+    // Compare each pending address before selecting the head entry, avoiding
+    // a wide address mux followed by the coherence port's line comparison.
+    input logic [riscv_pkg::XLEN-1:0] i_coh_query_addr,
+    output logic o_sc_head_query_match,
     output logic o_sc_head_addr_valid,
     output logic [riscv_pkg::XLEN-1:0] o_sc_head_addr,
     output logic o_sc_fire_success,
@@ -144,16 +148,21 @@ module sc_pending_unit (
   logic [riscv_pkg::XLEN-1:0] sct_hit_addr;
   logic [   ScTableDepth-1:0] sct_hit_oh;
   always_comb begin
-    sct_hit            = 1'b0;
-    sct_hit_addr_valid = 1'b0;
-    sct_hit_addr       = '0;
-    sct_hit_oh         = '0;
+    sct_hit               = 1'b0;
+    sct_hit_addr_valid    = 1'b0;
+    sct_hit_addr          = '0;
+    sct_hit_oh            = '0;
+    o_sc_head_query_match = 1'b0;
     for (int i = 0; i < ScTableDepth; i++) begin
       if (sct_valid[i] && (sct_tag[i] == head_tag)) begin
-        sct_hit            = 1'b1;
+        sct_hit = 1'b1;
         sct_hit_addr_valid = sct_addr_valid[i];
-        sct_hit_addr       = sct_addr[i];
-        sct_hit_oh[i]      = 1'b1;
+        sct_hit_addr = sct_addr[i];
+        sct_hit_oh[i] = 1'b1;
+        // Keep the same highest-index priority, including an address-invalid
+        // winning entry. Coherence uses 32-byte lines, not LR/SC word granules.
+        o_sc_head_query_match = sct_addr_valid[i] &&
+            (sct_addr[i][riscv_pkg::XLEN-1:5] == i_coh_query_addr[riscv_pkg::XLEN-1:5]);
       end
     end
   end
@@ -228,6 +237,16 @@ module sc_pending_unit (
   end
   assign o_sc_head_addr_valid = sct_hit && sct_hit_addr_valid;
   assign o_sc_head_addr = sct_hit_addr;
+
+`ifdef FORMAL
+`ifdef SC_HEAD_QUERY_LOCAL_PROOF
+  always_comb begin
+    assert (o_sc_head_query_match ==
+            (o_sc_head_addr_valid &&
+             (o_sc_head_addr[riscv_pkg::XLEN-1:5] == i_coh_query_addr[riscv_pkg::XLEN-1:5])));
+  end
+`endif
+`endif
   assign o_sc_fire_success = sc_fire_now && sc_success;
 
   // Table valid bits: allocate on SC issue, free on fire, flush younger entries.

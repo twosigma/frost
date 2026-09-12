@@ -110,12 +110,13 @@ module lq_coherence_port #(
     input  logic [    XLEN-1:0]           i_observe_addr,
 
     // SC pending unit and the commit bus.
-    input  logic            i_sc_head_addr_valid,  // an SC at the head knows its address
+    input  logic            i_sc_head_addr_valid,   // an SC at the head knows its address
     input  logic [XLEN-1:0] i_sc_head_addr,
-    input  logic            i_sc_fire_success,     // a successful SC fired this cycle
-    input  logic            i_sc_commit,           // any SC committed this cycle
+    input  logic            i_sc_head_query_match,  // current head matches o_lq_query_addr
+    input  logic            i_sc_fire_success,      // a successful SC fired this cycle
+    input  logic            i_sc_commit,            // any SC committed this cycle
     input  logic            i_sq_committed_empty,
-    output logic            o_sc_hold,             // hold SC fires
+    output logic            o_sc_hold,              // hold SC fires
 
     // Retirement and flushes for the validation table.
     input logic                i_commit_valid,
@@ -185,9 +186,9 @@ module lq_coherence_port #(
 
   assign o_lq_query_addr = {adm_req_line_q, {LineLsb{1'b0}}};
   logic sc_conflict;
-  assign sc_conflict = (i_sc_head_addr_valid && (line_of(
-      i_sc_head_addr
-  ) == adm_req_line_q)) || (sc_fired_q && (sc_head_line_q == adm_req_line_q)) ||
+  // The SC unit compares pending entries with the registered query line before
+  // selecting the head. This is the same current-cycle qualified comparison.
+  assign sc_conflict = i_sc_head_query_match || (sc_fired_q && sc_head_line_q == adm_req_line_q) ||
       (sc_win_valid_q && (sc_win_line_q == adm_req_line_q));
   // The answer names the entry it was computed for; the sequencer presents
   // a latched entry, so a mismatch only means the entry has moved on.
@@ -348,6 +349,10 @@ module lq_coherence_port #(
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
+      assert (i_sc_head_query_match === (i_sc_head_addr_valid && (line_of(
+          i_sc_head_addr
+      ) == adm_req_line_q)))
+      else $error("lq_coherence_port: preselected SC query comparison differs");
       if (admit_fire && adm_valid_q[admit_ready_slot_q])
         $error("lq_coherence_port: slot %0d admitted while held", admit_ready_slot_q);
       if (i_inval_valid && (inval_phase_q == 2'd0) && !adm_valid_q[i_inval_slot])

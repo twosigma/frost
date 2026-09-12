@@ -122,6 +122,11 @@ FORMAL_TARGETS = [
         tasks=("generic32", "generic64", "xilinx32", "xilinx64"),
     ),
     FormalTarget(
+        "sc_head_query.sby",
+        "SC head coherence comparison - parallel per-entry line match equals selected-address comparison",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "data_mem_request_router.sby",
         "Data-memory router - mandatory device stage, flush cancel, drain/effect containment",
     ),
