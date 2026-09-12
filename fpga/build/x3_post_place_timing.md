@@ -1,5 +1,9 @@
 # X3 post-place timing validation — 2026-09-07
 
+For the current status, preserved experiments and working hardware baseline,
+see the [2026-09-12 timing handoff](../../TIMING_HANDOFF_2026-09-12.md).
+The measurements below describe the historical flow.
+
 This records the checkpoint qualified in commit `496c3727`. The default-flow
 follow-up below distinguishes its saved-checkpoint evidence from a new build.
 The uncertainty and quick-route defaults below are historical. The current
@@ -144,11 +148,13 @@ usual reliance on Vivado's logical-to-physical pin mapping and checkpoint
 semantics.
 
 
-The matching synth/opt/refined-place chain is installed in `x3/work/`.
-The generated repository README uses an explicit post-place stage override
-and records the refinement. Older route, separate-physopt, and final files
-in that work directory predate this chain and are not validation evidence
-for it. `promotion/main_promoted_manifest.json` records the installed hashes.
+When this experiment was recorded, its matching synth/opt/refined-place chain
+was installed in `x3/work/`, and the generated repository README used an
+explicit post-place stage override to record the refinement. Older route,
+separate-physopt and final files then present were not validation evidence for
+it. `promotion/main_promoted_manifest.json` records that historical promotion.
+The main checkout now retains the separate 150 MHz hardware build described
+in the [handoff](../../TIMING_HANDOFF_2026-09-12.md).
 
 ## Production retirement — 2026-09-12
 
