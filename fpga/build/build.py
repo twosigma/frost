@@ -47,12 +47,12 @@ fetch pblock it first passed the post-demolition gate (score -0.699, raw
 placement after that pblock's retirement. Every seed is
 reported at 0.000 ns added uncertainty; 0.500 ns remains the seed-grid origin.
 The default sweep also includes LOW integer-RS cell-bloat variants of
-``ExtraNetDelay_high``/0.350 and ``ExtraPostPlacementOpt``/0.450, plus a no-bloat
-``ExtraNetDelay_high``/0.300 flush-guidance incremental candidate, for 28 jobs
+``ExtraNetDelay_high``/0.350 and ``ExtraPostPlacementOpt``/0.450, for 27 jobs
 including the original 25 controls. Each variant is added only when its control
 exists in the requested grid. Explicit presence of either bloat environment
-variable disables automatic LOW additions. The fixed flush variant always
-clears bloat; ordinary candidates retain the manual override behavior.
+variable disables automatic LOW additions. Every candidate runs exactly one
+``place_design`` call, with supported physical controls applied beforehand.
+Production placement performs no subsequent netlist or input-pin edits.
 
 Three qualified directive/uncertainty pairs (``ExtraNetDelay_high``/0.500 and
 ``ExtraPostPlacementOpt``/0.450 or 0.425) use a temporary PC-tail cost group:
@@ -221,18 +221,16 @@ X3_PLACE_INT_RS_BLOAT_CANDIDATES = (
 )
 X3_PLACE_INT_RS_BLOAT_FACTOR = "LOW"
 X3_PLACE_INT_RS_BLOAT_CELLS = "*u_tomasulo/u_int_rs"
-X3_PLACE_FLUSH_INCREMENTAL_CANDIDATE = ("ExtraNetDelay_high", 0.300)
 
 
 @dataclass(frozen=True)
 class DirectiveSweepCandidate:
-    """One recipe; the fixed flush variant clears bloat and owns its enable flag."""
+    """One single-placement recipe with optional pre-place cell bloat."""
 
     directive: str
     setup_uncertainty_ns: float | None = None
     cell_bloat_factor: str | None = None
     cell_bloat_cells: str | None = None
-    flush_incremental: bool = False
 
     @property
     def label(self) -> str:
@@ -242,14 +240,14 @@ class DirectiveSweepCandidate:
             label += f"_u{self.setup_uncertainty_ns:.3f}"
         if self.cell_bloat_factor is not None:
             label += f"_bloat{self.cell_bloat_factor}_intRS"
-        if self.flush_incremental:
-            label += "_flush_incremental"
         return label
 
     def environment(self, inherited: Mapping[str, str]) -> dict[str, str]:
         """Copy environment settings without leaking a variant into controls."""
         environment = dict(inherited)
+        # Retired diagnostic toggles cannot re-enable production edits.
         environment.pop("FROST_PLACE_FLUSH_INCREMENTAL", None)
+        environment.pop("FROST_X3_PD_TARGET_PIN_SWAPS", None)
         if self.setup_uncertainty_ns is not None:
             environment["FROST_PLACE_SETUP_UNCERTAINTY"] = (
                 f"{self.setup_uncertainty_ns:.3f}"
@@ -259,10 +257,6 @@ class DirectiveSweepCandidate:
                 raise ValueError("a cell-bloat variant requires an explicit target")
             environment["FROST_PLACE_CELL_BLOAT"] = self.cell_bloat_factor
             environment["FROST_PLACE_CELL_BLOAT_CELLS"] = self.cell_bloat_cells
-        if self.flush_incremental:
-            environment.pop("FROST_PLACE_CELL_BLOAT", None)
-            environment.pop("FROST_PLACE_CELL_BLOAT_CELLS", None)
-            environment["FROST_PLACE_FLUSH_INCREMENTAL"] = "1"
         return environment
 
 
@@ -300,10 +294,10 @@ def make_x3_place_sweep_candidates(
     environment: Mapping[str, str],
     include_extra_seeds: bool = True,
 ) -> list[DirectiveSweepCandidate]:
-    """Retain the control grid and append eligible bloat and flush variants.
+    """Retain the control grid and append eligible bloat variants.
 
     ``include_extra_seeds`` False (functional-validation builds) keeps the
-    grid exactly as requested: no off-grid seed, bloat or flush variants.
+    grid exactly as requested: no off-grid seed or bloat variants.
     """
     candidates = [
         DirectiveSweepCandidate(directive, uncertainty)
@@ -341,14 +335,6 @@ def make_x3_place_sweep_candidates(
                         X3_PLACE_INT_RS_BLOAT_CELLS,
                     )
                 )
-    directive, uncertainty = X3_PLACE_FLUSH_INCREMENTAL_CANDIDATE
-    if directive in directives and any(
-        abs(grid_uncertainty - uncertainty) < 1.0e-9
-        for grid_uncertainty in setup_uncertainties_ns
-    ):
-        candidates.append(
-            DirectiveSweepCandidate(directive, uncertainty, flush_incremental=True)
-        )
     return candidates
 
 
@@ -579,10 +565,9 @@ class DirectiveSweepRun:
     quick_route_returncode: int | None = None
     quick_route_elapsed_s: float | None = None
     pc_tail_guided: bool = False
-    # Per-candidate settings; the fixed flush recipe clears inherited bloat.
+    # Per-candidate pre-place physical settings.
     cell_bloat_factor: str | None = None
     cell_bloat_cells: str | None = None
-    flush_incremental: bool = False
 
 
 # report_design_analysis congestion-table row, e.g.:
@@ -1021,22 +1006,6 @@ def file_sha256(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def x3_flush_incremental_result_is_valid(work_dir: Path, stdout_path: Path) -> bool:
-    """Require the executed two-place completion marker and its native audit."""
-    try:
-        log = stdout_path.read_text()
-        audit = (work_dir / "post_place_flush_guidance_audit.tcldict").read_text()
-    except (OSError, UnicodeError):
-        return False
-    return (
-        bool(audit.strip())
-        and len(
-            re.findall(r"^FROST_X3_FLUSH_INCREMENTAL=APPLIED[ \t]*$", log, re.MULTILINE)
-        )
-        == 1
-    )
-
-
 def bind_x3_place_gate(work_dir: Path, expected_wns: float | None = None) -> bool:
     """Bind a freshly completed native PASS to its exact checkpoint bytes."""
     binding_path = work_dir / "post_place_gate_binding.json"
@@ -1285,12 +1254,12 @@ def copy_results_to_main_work(
         source_gate = work_dir / "post_place_gate.txt"
         if checkpoint_promoted and source_gate.is_file():
             shutil.copy2(source_gate, destination)
-        flush_audit_name = "post_place_flush_guidance_audit.tcldict"
-        destination_audit = main_work / flush_audit_name
-        destination_audit.unlink(missing_ok=True)
-        source_audit = work_dir / flush_audit_name
-        if checkpoint_promoted and source_audit.is_file():
-            shutil.copy2(source_audit, destination_audit)
+        # Retired multi-place/pin-edit audits cannot describe this candidate.
+        for retired_audit in (
+            "post_place_flush_guidance_audit.tcldict",
+            "post_place_pin_swap_audit.txt",
+        ):
+            (main_work / retired_audit).unlink(missing_ok=True)
         for suffix in ("worst", "cpu", "below"):
             report_name = f"post_place_gate_{suffix}.rpt"
             destination_report = main_work / report_name
@@ -1307,7 +1276,6 @@ def copy_results_to_main_work(
         "_failing_paths.csv",
         "_congestion.rpt",
         "_group_audit.txt",
-        "_pin_swap_audit.txt",
         "_pc_compressed_tail_timing.rpt",
     ]:
         dst = main_work / f"{report_prefix}{suffix}"
@@ -1821,7 +1789,7 @@ def run_x3_step_directive_sweep(
     Vivado's placer has no seed knob, so these overconstraint variants serve
     as extra placement "seeds" per directive. Eligible LOW integer-RS variants
     compete alongside their controls unless the caller sets a bloat variable.
-    The flush variant generates fresh local guidance inside the same Tcl step.
+    Each candidate performs one placement without post-place netlist edits.
     At most ``max_jobs`` Vivado processes run at once, including the later
     quick-route probes. The cap changes scheduling, not candidate selection.
     """
@@ -1876,7 +1844,6 @@ def run_x3_step_directive_sweep(
             candidate
             for candidate in sweep_jobs
             if candidate.cell_bloat_factor is None
-            and not candidate.flush_incremental
             and not (
                 candidate.directive in directives
                 and candidate.setup_uncertainty_ns in setup_uncertainties_ns
@@ -1887,20 +1854,16 @@ def run_x3_step_directive_sweep(
             for candidate in sweep_jobs
             if candidate.cell_bloat_factor is not None
         ]
-        flush_jobs = [
-            candidate for candidate in sweep_jobs if candidate.flush_incremental
-        ]
         uncertainty_list = ", ".join(f"{u:.3f}" for u in setup_uncertainties_ns)
         extra_list = ", ".join(candidate.label for candidate in extra_jobs)
         extra_note = f" + vetted extra seeds ({extra_list})" if extra_jobs else ""
         bloat_list = ", ".join(candidate.label for candidate in bloat_jobs)
         bloat_note = f" + LOW integer-RS variants ({bloat_list})" if bloat_jobs else ""
-        flush_note = " + fresh flush-guidance incremental variant" if flush_jobs else ""
         print(
             f"Scheduling {len(sweep_jobs)} jobs: {len(directives)} "
             f"{sweep_kind} directives x {len(setup_uncertainties_ns)} "
             f"overconstraint seeds ({uncertainty_list} ns setup uncertainty)"
-            f"{extra_note}{bloat_note}{flush_note}:"
+            f"{extra_note}{bloat_note}:"
         )
     else:
         sweep_jobs = [DirectiveSweepCandidate(directive) for directive in directives]
@@ -1963,7 +1926,6 @@ def run_x3_step_directive_sweep(
                     pc_tail_guided=pc_tail_guided,
                     cell_bloat_factor=candidate.cell_bloat_factor,
                     cell_bloat_cells=candidate.cell_bloat_cells,
-                    flush_incremental=candidate.flush_incremental,
                 )
                 runs.append(run)
 
@@ -2052,21 +2014,6 @@ def run_x3_step_directive_sweep(
                         run.launch_error = (
                             "missing or invalid single-cell integer-RS bloat match"
                         )
-
-                if (
-                    returncode == 0
-                    and run.flush_incremental
-                    and not (
-                        x3_flush_incremental_result_is_valid(
-                            run.work_dir, run.stdout_path
-                        )
-                    )
-                ):
-                    returncode = -1
-                    run.returncode = returncode
-                    run.launch_error = (
-                        "missing flush-guidance audit or completion marker"
-                    )
 
                 if returncode == 0:
                     timing = extract_timing_from_report(timing_rpt)
@@ -2457,10 +2404,10 @@ Behavior:
     to 0.250 ns pre-place setup uncertainty in 50 ps steps). The qualified
     ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid.
     LOW integer-RS cell-bloat variants are added beside the grid's
-    ExtraNetDelay_high/0.350 and ExtraPostPlacementOpt/0.450 controls. A fixed
-    no-bloat ExtraNetDelay_high/0.300 variant generates fresh flush-guidance
-    placement, reopens the same post-opt input, then incrementally places it
-    at zero added uncertainty. These make 28 jobs with the original 25 controls.
+    ExtraNetDelay_high/0.350 and ExtraPostPlacementOpt/0.450 controls.
+    These make 27 jobs with the original 25 controls. Every candidate runs
+    exactly one place_design; supported physical controls precede it.
+    No automatic post-place netlist or input-pin edits run.
     Narrowed grids gain only variants whose matching control remains present.
     --directives sets the grid to any nonempty unique subset of legal placer
     directives, and --num-uncertainties changes its seed count while retaining
@@ -2592,7 +2539,7 @@ Examples:
         help="Set the x3 placer grid to one or more unique directives. "
         "Each runs at every configured uncertainty; the qualified off-grid "
         "seed is still appended unless already present, and eligible LOW "
-        "integer-RS and fixed flush variants are added beside matching grid controls. The run must include "
+        "integer-RS variants are added beside matching grid controls. The run must include "
         "the place step. Default directives: "
         f"{', '.join(X3_PLACER_SWEEP_DIRECTIVES)}.",
     )

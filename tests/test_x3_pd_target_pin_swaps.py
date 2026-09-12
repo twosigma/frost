@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Execute the production pin-refinement Tcl with bounded Vivado models."""
+"""Check the diagnostic pin helper and production single-placement boundary."""
 
 import os
 from pathlib import Path
@@ -236,6 +236,24 @@ HOOK_MODEL = r"""
 proc trace {cmd args} {
     set f [open $::env(HOOK_TRACE) a]; puts $f [list $cmd {*}$args]; close $f
 }
+rename proc original_proc
+original_proc proc {name arguments body} {
+    if {$name eq "validate_x3_pc_compressed_tail_scope"} {
+        set body {
+            trace validate_scope
+            set r [dict create compressed_starts start compressed_start_names start]
+            foreach family {selected state seq pending union} {
+                dict set r ${family}_ends end_$family
+                dict set r ${family}_end_names end_$family
+                dict set r ${family}_canonical_end_names end_$family
+                dict set r ${family}_bits 32
+            }
+            dict set r pending_canonical 1
+            return $r
+        }
+    }
+    uplevel 1 [list original_proc $name $arguments $body]
+}
 rename source original_source
 proc source {path} {
     if {[file tail $path] eq "x3_flush_guidance.tcl"} {
@@ -273,7 +291,16 @@ proc unknown {cmd args} {
     switch -- $cmd {
         get_clocks {return clock_from_mmcm}
         get_cells {return subsystem/u_tomasulo/u_int_rs}
-        get_timing_paths {return {}}
+        get_timing_paths {
+            if {"-from" in $args && "-to" in $args} {return path}
+            return {}
+        }
+        get_path_groups {return {}}
+        get_property {
+            if {[lindex $args 0] eq "GROUP"} {return clock_from_mmcm}
+            error "Unexpected property request $args"
+        }
+        group_path - report_timing {return {}}
         open_checkpoint - close_design - read_checkpoint - set_param -
         set_property - set_clock_uncertainty - place_design -
         write_checkpoint - report_timing_summary - report_utilization -
@@ -288,24 +315,30 @@ source $::env(HOOK_SOURCE)
 
 
 @pytest.mark.parametrize("mode", (None, "", "auto", "0", "1", "invalid"))
-def test_auto_hook_runs_after_scoring_and_clears_stale_audit(
-    tmp_path: Path, mode: str | None
+@pytest.mark.parametrize("guided", [False, True])
+def test_production_places_once_and_never_invokes_retired_hooks(
+    tmp_path: Path, mode: str | None, guided: bool
 ) -> None:
-    """Pin refinement uses zero scoring; checkpoint/reports precede gate and DONE."""
+    """Controls precede one place; zero scoring, reports and gate follow it."""
     script = tmp_path / "hook.tcl"
     script.write_text(HOOK_MODEL)
     trace = tmp_path / "trace.txt"
     trace.touch()
-    audit = tmp_path / "post_place_pin_swap_audit.txt"
-    audit.write_text("OLD_PASS\n")
+    stale = [
+        tmp_path / "post_place_pin_swap_audit.txt",
+        tmp_path / "post_place_flush_guidance_audit.tcldict",
+    ]
+    for path in stale:
+        path.write_text("OLD_PASS\n")
     env = {
         key: value for key, value in os.environ.items() if not key.startswith("FROST_")
     }
     env.update(
         HOOK_TRACE=str(trace),
         HOOK_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl"),
-        FROST_PLACE_SETUP_UNCERTAINTY="0.350",
+        FROST_PLACE_SETUP_UNCERTAINTY="0.500" if guided else "0.350",
         FROST_PLACE_CELL_BLOAT="LOW",
+        FROST_PLACE_FLUSH_INCREMENTAL="1",
     )
     if mode is not None:
         env["FROST_X3_PD_TARGET_PIN_SWAPS"] = mode
@@ -318,172 +351,110 @@ def test_auto_hook_runs_after_scoring_and_clears_stale_audit(
         timeout=10,
         check=False,
     )
-    commands = trace.read_text().splitlines()
-    if mode == "invalid":
-        assert result.returncode != 0
-        assert not commands
-        return
     assert result.returncode == 0, result.stdout + result.stderr
-    assert not audit.exists()
-    score_index = next(
-        index
-        for index, command in enumerate(commands)
+    commands = trace.read_text().splitlines()
+    assert not any(path.exists() for path in stale)
+    placements = [
+        i for i, command in enumerate(commands) if command.startswith("place_design")
+    ]
+    assert len(placements) == 1
+    place = placements[0]
+    assert commands[place] == "place_design -directive ExtraNetDelay_high"
+    bloat = next(
+        i
+        for i, command in enumerate(commands)
+        if command.startswith("set_property CELL_BLOAT_FACTOR")
+    )
+    assert bloat < place
+    assert not any(
+        command.startswith(
+            ("apply_helper", "prepare_flush", "verify_flush", "read_checkpoint")
+        )
+        for command in commands
+    )
+    assert not any(
+        command.startswith(
+            (
+                "set_property",
+                "unplace_cell",
+                "place_cell",
+                "connect_net",
+                "disconnect_net",
+                "create_cell",
+            )
+        )
+        for command in commands[place + 1 :]
+    )
+    score = next(
+        i
+        for i, command in enumerate(commands)
         if command.startswith("set_clock_uncertainty ") and "0.0 -setup" in command
     )
-    checkpoint_index = next(
-        index
-        for index, command in enumerate(commands)
+    checkpoints = [
+        i
+        for i, command in enumerate(commands)
         if command.startswith("write_checkpoint ")
-    )
-    timing_index = next(
-        index
-        for index, command in enumerate(commands)
+    ]
+    timing = next(
+        i
+        for i, command in enumerate(commands)
         if command.startswith("report_timing_summary ")
     )
-    report_indexes = [
-        index for index, command in enumerate(commands) if command.startswith("report_")
-    ]
-    assert [entry for entry in commands if entry.startswith("write_gate ")] == [
-        f"write_gate {tmp_path}"
-    ]
-    gate_index = commands.index(f"write_gate {tmp_path}")
-    assert score_index < checkpoint_index < timing_index <= max(report_indexes)
-    assert max(report_indexes) < commands.index("source_gate") < gate_index
+    reports = [i for i, command in enumerate(commands) if command.startswith("report_")]
+    gate = commands.index(f"write_gate {tmp_path}")
+    assert (
+        place
+        < score
+        < min(checkpoints)
+        <= max(checkpoints)
+        < timing
+        <= max(reports)
+        < gate
+    )
+    assert sum(command.startswith("write_gate ") for command in commands) == 1
     assert result.stdout.index("HOOK_GATE_WRITTEN") < result.stdout.index(
         "** DONE — place_design complete"
     )
-    helper_calls = [entry for entry in commands if entry.startswith("apply_helper ")]
-    if mode == "0":
-        assert not helper_calls
+    groups = [
+        i for i, command in enumerate(commands) if command.startswith("group_path")
+    ]
+    if guided:
+        assert len(groups) == 2 and groups[0] < place < groups[1] < score
+        assert commands.count("close_design") == 1
+        assert (
+            len(
+                [
+                    command
+                    for command in commands
+                    if command.startswith("open_checkpoint")
+                ]
+            )
+            == 2
+        )
+        assert (tmp_path / "post_place_group_audit.txt").is_file()
     else:
-        expected_mode = "strict" if mode == "1" else "auto"
-        assert helper_calls == [f"apply_helper {audit} {expected_mode}"]
-        apply_index = commands.index(helper_calls[0])
-        assert score_index < apply_index < checkpoint_index
+        assert not groups
+        assert commands.count("close_design") == 0
 
 
-@pytest.mark.parametrize("invalid_replica", [False, True])
-def test_flush_reference_is_generated_locally_before_final_placement(
-    tmp_path: Path, invalid_replica: bool
-) -> None:
-    """Only a verified current-build reference may enter incremental placement."""
-    script = tmp_path / "hook.tcl"
-    script.write_text(HOOK_MODEL)
-    trace = tmp_path / "trace.txt"
-    trace.touch()
-    env = {
-        key: value for key, value in os.environ.items() if not key.startswith("FROST_")
-    }
-    env.update(
-        HOOK_TRACE=str(trace),
-        HOOK_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl"),
-        FROST_PLACE_SETUP_UNCERTAINTY="0.300",
-        FROST_PLACE_FLUSH_INCREMENTAL="1",
-        FROST_X3_PD_TARGET_PIN_SWAPS="0",
-    )
-    if invalid_replica:
-        env["HOOK_FAIL_VERIFY"] = "1"
-    result = subprocess.run(
-        ["tclsh", str(script)],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    commands = trace.read_text().splitlines()
-    audit = tmp_path / "post_place_flush_guidance_audit.tcldict"
-    reference = tmp_path / "flush_guidance.dcp"
-    prepare = commands.index(f"prepare_flush {audit}")
-    guidance_place = commands.index("place_design -directive ExtraNetDelay_high")
-    verify = commands.index(f"verify_flush {audit}")
-    assert prepare < guidance_place < verify
-    if invalid_replica:
-        assert result.returncode != 0
-        assert not any(command.startswith("write_checkpoint ") for command in commands)
-        assert not any(command.startswith("read_checkpoint ") for command in commands)
-        assert not any(command.startswith("write_gate ") for command in commands)
-        return
-    assert result.returncode == 0, result.stdout + result.stderr
-    saved = commands.index(f"write_checkpoint -force {reference}")
-    imported = commands.index(
-        f"read_checkpoint -incremental -directive TimingClosure {reference}"
-    )
-    final_place = commands.index("place_design")
-    assert verify < saved < imported < final_place
-    assert commands[saved + 1 : saved + 3] == [
-        "close_design",
-        "open_checkpoint fresh_post_opt.dcp",
-    ]
-    assert [line for line in commands if line.startswith("open_checkpoint ")] == [
-        "open_checkpoint fresh_post_opt.dcp",
-        "open_checkpoint fresh_post_opt.dcp",
-    ]
-    assert commands[imported - 1] == (
-        "set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup"
-    )
-    assert commands.index(f"write_gate {tmp_path}") > final_place
-    assert sum(line.startswith("write_gate ") for line in commands) == 1
-    assert "FROST_X3_FLUSH_INCREMENTAL=APPLIED" in result.stdout
-
-
-def test_guided_hook_follows_complete_reopen_audit() -> None:
-    """Qualified seeds finish canonical group checks before measuring refinement timing."""
+def test_place_arm_has_no_second_placement_or_post_place_edit_commands() -> None:
+    """The production arm cannot dispatch diagnostic ECO helpers."""
     source = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     start = source.index('} elseif {$step eq "place"} {')
     end = source.index('} elseif {$step eq "quick_route"} {', start)
-    place = source[start:end]
-    assert place.index("close $x3_pc_tail_audit") < place.index(
-        "frost_x3_pd_target_pin_swaps::apply"
-    )
-    assert place.index("frost_x3_pd_target_pin_swaps::apply") < place.rindex(
-        "write_checkpoint -force"
-    )
-
-
-@pytest.mark.parametrize(
-    ("board", "mode", "expected"),
-    (
-        ("x3", None, "auto"),
-        ("other", None, "0"),
-        ("other", "0", "0"),
-        ("other", "auto", None),
-        ("other", "1", None),
-    ),
-)
-def test_pin_refinement_board_default_is_compatible(
-    tmp_path: Path, board: str, mode: str | None, expected: str | None
-) -> None:
-    """Adding a board must not require an opt-out from an X3-only default."""
-    source = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
-    start = source.index("    set default_pin_swaps ")
-    end = source.index("    open_checkpoint $checkpoint_path", start)
-    preflight = source[start:end]
-    script = tmp_path / "board.tcl"
-    script.write_text(
-        "proc getenv_default {name fallback} {\n"
-        '  if {[info exists ::env($name)] && $::env($name) ne ""} {return $::env($name)}\n'
-        "  return $fallback\n}\n"
-        f"set board_name {board}\nset work_directory [pwd]\n"
-        + preflight
-        + '\nputs "MODE=$x3_pd_target_pin_swaps"\n'
-    )
-    env = dict(os.environ)
-    env.pop("FROST_X3_PD_TARGET_PIN_SWAPS", None)
-    if mode is not None:
-        env["FROST_X3_PD_TARGET_PIN_SWAPS"] = mode
-    result = subprocess.run(
-        ["tclsh", str(script)],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=10,
-        check=False,
-    )
-    if expected is None:
-        assert result.returncode != 0
-    else:
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert f"MODE={expected}" in result.stdout
+    body = source[start:end]
+    assert body.count("place_design -directive $directive") == 1
+    assert "read_checkpoint" not in body
+    assert "x3_pd_target_pin_swaps.tcl" not in body
+    assert "x3_flush_guidance.tcl" not in body
+    after = body.split("place_design -directive $directive", 1)[1]
+    for command in (
+        "place_cell",
+        "unplace_cell",
+        "connect_net",
+        "disconnect_net",
+        "create_cell",
+        "remove_cell",
+        "phys_opt_design",
+    ):
+        assert command not in after

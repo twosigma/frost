@@ -402,37 +402,25 @@ X3 placement ignores `--place-directive`. By default it runs four directives
 24-job grid plus the off-grid `ExtraPostPlacementOpt`/0.425 seed preserves the
 original 25 controls. Two additional variants apply `CELL_BLOAT_FACTOR=LOW`
 to `*u_tomasulo/u_int_rs` at `ExtraNetDelay_high`/0.350 and
-`ExtraPostPlacementOpt`/0.450. One fixed no-bloat flush-guidance incremental
-variant at `ExtraNetDelay_high`/0.300 brings the default to 28 jobs. All
-candidates compete under the same scoring and selection rules.
+`ExtraPostPlacementOpt`/0.450, giving 27 jobs. Every candidate runs exactly
+one `place_design` call, with physical controls applied before that call.
+All candidates compete under the same scoring and selection rules.
 `--directives` accepts a nonempty unique subset of legal directives;
 `--num-uncertainties` accepts 1–10 values in 50 ps steps from 0.500 ns (the tenth
 is 0.050 ns). The grid size is the product of both counts; the qualified
 off-grid seed is appended unless the grid already contains it. A LOW variant
 is added only when its corresponding control remains in the requested grid.
-The flush variant likewise requires the END/0.300 control; divided-clock
-functional defaults omit all extra variants. Its label is
-`ExtraNetDelay_high_u0.300_flush_incremental`. Within the same native place
-step, it builds fresh flush-guidance placement from the current post-opt DCP,
-reopens that original post-opt input, imports only the newly generated local
-guidance with `TimingClosure`, and runs plain placement at zero added setup
-uncertainty before the normal reports and gate. It does not load a saved
-experimental DCP or run another synthesis. The candidate sets
-`FROST_PLACE_FLUSH_INCREMENTAL=1` and clears both cell-bloat overrides;
-ordinary candidates remove the flush flag and retain their existing bloat
-behavior. This variant must record its executed
-`FROST_X3_FLUSH_INCREMENTAL=APPLIED` marker and native
-`post_place_flush_guidance_audit.tcldict` before it can compete. Promotion
-retains that audit; another winning recipe clears any stale copy. The gate
-decides success; no timing benefit is assumed.
+Divided-clock functional defaults omit all extra variants. The former
+flush-guidance incremental candidate is retired: production placement neither
+builds another placement as guidance nor performs post-place netlist or input-pin
+edits. Its experimental helper remains available only for explicit diagnostics.
 
 Explicitly setting either `FROST_PLACE_CELL_BLOAT` or
 `FROST_PLACE_CELL_BLOAT_CELLS` disables the automatic LOW variants and preserves
 the manual override behavior for the original control sweep. The factor may
 be `LOW`, `MEDIUM`, or `HIGH`; the target defaults to `*u_tomasulo/u_int_rs`
 and accepts comma- or space-separated hierarchy patterns. An explicitly empty
-`FROST_PLACE_CELL_BLOAT` requests no bloat or automatic LOW variants; the
-matching fixed flush variant remains eligible. Every
+`FROST_PLACE_CELL_BLOAT` requests no bloat or automatic LOW variants. Every
 automatic LOW variant must record exactly one successful integer-RS hierarchy
 match before it can be ranked. Variant work-directory labels include
 `_bloatLOW_intRS`, and generated utilization provenance retains the applied
@@ -551,33 +539,16 @@ output and unchanged input chain. The post-place gate format remains unchanged.
 
 Run `./fpga/build/build.py --help` for the full list of directives and options.
 
-Normal X3 placement defaults to `FROST_X3_PD_TARGET_PIN_SWAPS=auto`. After
-placement, canonical group restoration, the 0.000 ns rescore, and any
-clean-reopen group audit, it checks whether two PD target LUTs match the
-recorded `ExtraNetDelay_high`/0.350 LOW placement. Matching candidates receive
-the measured physical input-pin refinement; unmatched seeds log `SKIPPED`
-and continue normally. No additional `place_design`, physical optimization,
-or routing command runs.
-
-Both LUTs must match their recorded primitive, INIT, location, original pin
-map, fixed flags, and unused paired BEL before either is changed. The helper
-preserves logical INIT/net connectivity and cell LOC/BEL/fixed flags. It
-measures global worst setup slack (WNS) and worst hold slack (WHS) before and
-after refinement at the same final scoring constraints. If either global
-minimum worsens, automatic mode restores the original pair and skips only
-after verifying exact snapshots and original WNS/WHS. This checks the two
-global timing minima; it does not claim that every individual path improves.
-Failed restoration or audit-file I/O aborts the run.
-
-Set `FROST_X3_PD_TARGET_PIN_SWAPS=0` to disable refinement, or `1` for strict
-replay that fails on a mapping mismatch or rejected refinement. Other boards
-default to disabled. A successful application records
-`post_place_pin_swap_audit.txt`, including before/after global timing;
-skipped and disabled runs clear stale pin audits. Promotion preserves the
-successful audit, and generated README provenance appends
-`+ PD target pin refinement` only after the helper's success message.
+Production placement does not invoke `x3_pd_target_pin_swaps.tcl` or
+`x3_flush_guidance.tcl`. `FROST_X3_PD_TARGET_PIN_SWAPS` and
+`FROST_PLACE_FLUSH_INCREMENTAL` no longer enable production behavior.
+The historical pin-refinement helper remains available for explicit diagnostic
+replay; its timing checks and rollback apply only when it is invoked directly.
+The normal gate and reports describe the single placer result after restoring
+canonical cost groups and zero added setup uncertainty. Retired diagnostic
+audits are cleared when publishing a new production placement.
 See the [post-place timing record](build/x3_post_place_timing.md) for the
-measured checkpoint chain, pin maps, timing, and validation.
+historical checkpoint chain, pin maps, timing, and validation.
 
 The normal placement sweep needs no refinement override and defaults to no
 quick-route probes:

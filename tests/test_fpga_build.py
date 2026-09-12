@@ -465,21 +465,19 @@ def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
 
 
 def test_default_x3_place_sweep_retains_controls_and_adds_low_variants() -> None:
-    """Three treatments get distinct directories beside all 25 controls."""
+    """Two LOW variants get distinct directories beside all 25 controls."""
     directives = fpga_build.X3_PLACER_SWEEP_DIRECTIVES
     uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(6)
     candidates = fpga_build.make_x3_place_sweep_candidates(
         directives, uncertainties, {}
     )
     controls = [
-        candidate
-        for candidate in candidates
-        if candidate.cell_bloat_factor is None and not candidate.flush_incremental
+        candidate for candidate in candidates if candidate.cell_bloat_factor is None
     ]
     variants = [
         candidate for candidate in candidates if candidate.cell_bloat_factor is not None
     ]
-    assert len(candidates) == len({candidate.label for candidate in candidates}) == 28
+    assert len(candidates) == len({candidate.label for candidate in candidates}) == 27
     assert [
         (candidate.directive, candidate.setup_uncertainty_ns) for candidate in controls
     ] == [
@@ -558,19 +556,13 @@ def test_explicit_x3_bloat_environment_preserves_manual_sweep(
         fpga_build.make_x3_place_setup_uncertainties_ns(6),
         inherited,
     )
-    assert len(candidates) == 26
+    assert len(candidates) == 25
     assert all(candidate.cell_bloat_factor is None for candidate in candidates)
     for candidate in candidates:
         child_environment = candidate.environment(inherited)
         assert child_environment is not inherited
         for key, value in inherited.items():
-            if candidate.flush_incremental and key in {
-                "FROST_PLACE_CELL_BLOAT",
-                "FROST_PLACE_CELL_BLOAT_CELLS",
-            }:
-                assert key not in child_environment
-            else:
-                assert child_environment[key] == value
+            assert child_environment[key] == value
     assert "FROST_PLACE_SETUP_UNCERTAINTY" not in inherited
 
 
@@ -852,7 +844,7 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
     )
 
     assert (main_work / "post_place_group_audit.txt").read_text() == "audit\n"
-    assert (main_work / "post_place_pin_swap_audit.txt").read_text() == "pin audit\n"
+    assert not (main_work / "post_place_pin_swap_audit.txt").exists()
     assert (main_work / "post_place_pc_compressed_tail_timing.rpt").read_text() == (
         "compressed timing\n"
     )
@@ -2404,67 +2396,50 @@ def test_missing_placement_checkpoint_cannot_defeat_complete_passing_seed(
     assert fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused") is None
 
 
-@pytest.mark.parametrize(
-    "directives,uncertainties,extras,expected",
-    (
-        (["ExtraNetDelay_high"], [0.300], True, True),
-        (["ExtraNetDelay_high"], [0.300, 0.350], True, True),
-        (["ExtraNetDelay_high"], [0.350], True, False),
-        (["ExtraPostPlacementOpt"], [0.300], True, False),
-        (["RuntimeOptimized"], [0.500], False, False),
-        (["ExtraNetDelay_high"], [0.300], False, False),
-    ),
-)
-def test_flush_incremental_variant_requires_matching_requested_control(
-    directives: list[str], uncertainties: list[float], extras: bool, expected: bool
+@pytest.mark.parametrize("extras", [False, True])
+def test_retired_toggles_cannot_add_or_modify_placement_candidates(
+    extras: bool,
 ) -> None:
-    """The fixed variant follows grid narrowing and functional-build exclusions."""
+    """Retired requests neither add a second-pass variant nor change manual bloat."""
+    inherited = {
+        "FROST_PLACE_FLUSH_INCREMENTAL": "1",
+        "FROST_X3_PD_TARGET_PIN_SWAPS": "auto",
+        "FROST_PLACE_CELL_BLOAT": "LOW",
+        "FROST_PLACE_CELL_BLOAT_CELLS": "manual_target",
+    }
     candidates = fpga_build.make_x3_place_sweep_candidates(
-        directives, uncertainties, {}, include_extra_seeds=extras
+        ["ExtraNetDelay_high"], [0.300], inherited, include_extra_seeds=extras
     )
-    variants = [candidate for candidate in candidates if candidate.flush_incremental]
-    assert len(variants) == int(expected)
-    if variants:
-        assert variants[0].label == "ExtraNetDelay_high_u0.300_flush_incremental"
-        assert variants[0].directive == "ExtraNetDelay_high"
-        assert variants[0].setup_uncertainty_ns == 0.300
-        assert not variants[0].cell_bloat_factor
-        assert any(
-            candidate.label == "ExtraNetDelay_high_u0.300" for candidate in candidates
-        )
+    assert [candidate.label for candidate in candidates] == (
+        ["ExtraNetDelay_high_u0.300", "ExtraPostPlacementOpt_u0.425"]
+        if extras
+        else ["ExtraNetDelay_high_u0.300"]
+    )
+    for candidate in candidates:
+        environment = candidate.environment(inherited)
+        assert "FROST_PLACE_FLUSH_INCREMENTAL" not in environment
+        assert "FROST_X3_PD_TARGET_PIN_SWAPS" not in environment
+        assert environment["FROST_PLACE_CELL_BLOAT"] == "LOW"
+        assert environment["FROST_PLACE_CELL_BLOAT_CELLS"] == "manual_target"
+    assert inherited["FROST_PLACE_FLUSH_INCREMENTAL"] == "1"
 
 
-@pytest.mark.parametrize(
-    "evidence", ("complete", "missing_audit", "echo_only", "duplicate")
-)
-def test_flush_incremental_worker_isolates_flag_and_clears_ambient_bloat(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str
+def test_retired_flags_do_not_launch_an_extra_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One worker owns fresh guidance; controls keep bloat and receive no flush flag."""
+    """Only the requested control and retained off-grid candidate launch."""
     monkeypatch.setenv("FROST_PLACE_FLUSH_INCREMENTAL", "1")
+    monkeypatch.setenv("FROST_X3_PD_TARGET_PIN_SWAPS", "1")
     monkeypatch.setenv("FROST_PLACE_CELL_BLOAT", "LOW")
     monkeypatch.setenv("FROST_PLACE_CELL_BLOAT_CELLS", "manual_target")
     monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
-    monkeypatch.setattr(
-        fpga_build, "x3_pc_tail_group_audit_is_valid", lambda *_args: True
-    )
+    monkeypatch.setattr(fpga_build, "x3_pc_tail_group_audit_is_valid", lambda *_: True)
     fleet = _VivadoFleet(monkeypatch, 1)
     popen = fleet.popen
     launches = []
 
     def record(command: list[str], **kwargs: Any) -> Any:
         launches.append((command, kwargs["cwd"], kwargs["env"]))
-        if kwargs["env"].get("FROST_PLACE_FLUSH_INCREMENTAL") == "1":
-            if evidence != "missing_audit":
-                (kwargs["cwd"] / "post_place_flush_guidance_audit.tcldict").write_text(
-                    "native audit fixture"
-                )
-            marker = "FROST_X3_FLUSH_INCREMENTAL=APPLIED\n"
-            if evidence == "echo_only":
-                marker = '# puts "FROST_X3_FLUSH_INCREMENTAL=APPLIED"\n'
-            elif evidence == "duplicate":
-                marker *= 2
-            kwargs["stdout"].write(marker)
         return popen(command, **kwargs)
 
     monkeypatch.setattr(fpga_build.subprocess, "Popen", record)
@@ -2480,32 +2455,17 @@ def test_flush_incremental_worker_isolates_flag_and_clears_ambient_bloat(
         keep_temps=True,
     )
     assert result[0]
-    assert len(launches) == 3  # Requested control, existing off-grid, new flush.
-    for command, work_dir, environment in launches:
+    assert len(launches) == 2
+    for command, _, environment in launches:
         args = command[command.index("-tclargs") + 1 :]
         assert args[0:2] == ["x3", "place"]
         assert args[3] == str(main_work / "post_opt.dcp")
-        if work_dir.name.endswith("_flush_incremental"):
-            assert environment["FROST_PLACE_FLUSH_INCREMENTAL"] == "1"
-            assert environment["FROST_PLACE_SETUP_UNCERTAINTY"] == "0.300"
-            assert "FROST_PLACE_CELL_BLOAT" not in environment
-            assert "FROST_PLACE_CELL_BLOAT_CELLS" not in environment
-            assert args[2] == "ExtraNetDelay_high"
-        else:
-            assert "FROST_PLACE_FLUSH_INCREMENTAL" not in environment
-            assert environment["FROST_PLACE_CELL_BLOAT"] == "LOW"
-            assert environment["FROST_PLACE_CELL_BLOAT_CELLS"] == "manual_target"
-    assert (main_work / "post_place.dcp").read_text().endswith(
-        "_flush_incremental"
-    ) is (evidence == "complete")
-    if evidence == "complete":
-        assert (main_work / "post_place_flush_guidance_audit.tcldict").read_text() == (
-            "native audit fixture"
-        )
-    else:
-        assert not (main_work / "post_place_flush_guidance_audit.tcldict").exists()
-    assert fpga_build.os.environ["FROST_PLACE_FLUSH_INCREMENTAL"] == "1"
-    assert fpga_build.os.environ["FROST_PLACE_CELL_BLOAT"] == "LOW"
+        assert "FROST_PLACE_FLUSH_INCREMENTAL" not in environment
+        assert "FROST_X3_PD_TARGET_PIN_SWAPS" not in environment
+        assert environment["FROST_PLACE_CELL_BLOAT"] == "LOW"
+        assert environment["FROST_PLACE_CELL_BLOAT_CELLS"] == "manual_target"
+    assert not (main_work / "post_place_flush_guidance_audit.tcldict").exists()
+    assert not (main_work / "post_place_pin_swap_audit.txt").exists()
 
 
 def test_new_300mhz_gate_cannot_authorize_retained_150mhz_physopt(
