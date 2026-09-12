@@ -834,27 +834,16 @@ if {$step eq "synth"} {
         puts "Error: place step requires checkpoint_path"
         exit 1
     }
-    set default_pin_swaps [expr {$board_name eq "x3" ? "auto" : "0"}]
-    set x3_pd_target_pin_swaps [getenv_default FROST_X3_PD_TARGET_PIN_SWAPS $default_pin_swaps]
-    if {$x3_pd_target_pin_swaps ni {auto 0 1} ||
-        ($x3_pd_target_pin_swaps ne "0" && $board_name ne "x3")} {
-        error "FROST_X3_PD_TARGET_PIN_SWAPS must be auto, 0 or 1 and is supported only on x3"
-    }
-    set x3_flush_incremental [getenv_default FROST_PLACE_FLUSH_INCREMENTAL 0]
-    if {$x3_flush_incremental ni {0 1} ||
-        ($x3_flush_incremental eq "1" && $board_name ne "x3")} {
-        error "FROST_PLACE_FLUSH_INCREMENTAL must be 0 or 1 and is supported only on x3"
-    }
+    # These diagnostics belonged to retired multi-place/pin-edit recipes.
+    # No environment toggle can enable them in a production placement.
     file delete $work_directory/post_place_pin_swap_audit.txt
+    file delete $work_directory/post_place_flush_guidance_audit.tcldict
     open_checkpoint $checkpoint_path
 
     # Optional UG904 CELL_BLOAT_FACTOR for wire-dense hierarchies. Enable with
     # FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH; FROST_PLACE_CELL_BLOAT_CELLS
     # overrides the default integer-RS hotspot glob.
     set cell_bloat [string toupper [getenv_default FROST_PLACE_CELL_BLOAT ""]]
-    if {$x3_flush_incremental eq "1" && $cell_bloat ne ""} {
-        error "The fixed flush-guidance candidate requires no cell bloat"
-    }
     if {$cell_bloat ne ""} {
         if {[lsearch -exact {LOW MEDIUM HIGH} $cell_bloat] < 0} {
             puts "Error: FROST_PLACE_CELL_BLOAT must be LOW, MEDIUM, or HIGH (got '$cell_bloat')"
@@ -925,32 +914,9 @@ if {$step eq "synth"} {
         group_path -name frost_pc_compressed_tail -from $x3_pc_compressed_tail_starts -to $x3_pc_compressed_tail_ends
     }
 
-    if {$x3_flush_incremental eq "1"} {
-        if {$directive ne "ExtraNetDelay_high" ||
-            abs(double($x3_place_uncertainty) - 0.300) > 1.0e-9 ||
-            $use_x3_pc_tail_group} {
-            error "The fixed flush-guidance candidate requires ExtraNetDelay_high/0.300 without a custom path group"
-        }
-        # Generate this candidate's reference from its own fresh optimized
-        # design. The intermediate reference is not a qualified placement.
-        set_param general.maxThreads 8
-        source [file join $script_directory x3_flush_guidance.tcl]
-        set flush_audit $work_directory/post_place_flush_guidance_audit.tcldict
-        frost_x3_flush_guidance::prepare $flush_audit
-        place_design -directive ExtraNetDelay_high
-        frost_x3_flush_guidance::verify $flush_audit
-        set_x3_setup_uncertainty $board_name 0.0 "fresh flush guidance"
-        set fresh_guidance $work_directory/flush_guidance.dcp
-        write_checkpoint -force $fresh_guidance
-        close_design
-        open_checkpoint $checkpoint_path
-        set_x3_setup_uncertainty $board_name 0.0 "fresh incremental placement"
-        read_checkpoint -incremental -directive TimingClosure $fresh_guidance
-        place_design
-        puts "FROST_X3_FLUSH_INCREMENTAL=APPLIED"
-    } else {
-        place_design -directive $directive
-    }
+    # One placement per candidate. All physical controls are already applied;
+    # the remaining commands restore scoring constraints, audit and report.
+    place_design -directive $directive
 
     if {$use_x3_pc_tail_group} {
         # Reacquire PSIP-created/removed/renamed replicas before restoring the
@@ -1114,13 +1080,6 @@ if {$step eq "synth"} {
         puts $x3_pc_tail_audit "LINGERING_CUSTOM_PATHS=0"
         puts $x3_pc_tail_audit "COMPRESSED_SCORED_GROUPS=$x3_pc_compressed_tail_scored_groups"
         close $x3_pc_tail_audit
-    }
-
-    # Refine only after canonical scoring and any clean-reopen group audit.
-    if {$x3_pd_target_pin_swaps ne "0"} {
-        source [file join $script_directory x3_pd_target_pin_swaps.tcl]
-        set pin_swap_mode [expr {$x3_pd_target_pin_swaps eq "auto" ? "auto" : "strict"}]
-        frost_x3_pd_target_pin_swaps::apply $work_directory/post_place_pin_swap_audit.txt $pin_swap_mode
     }
 
     # Guided candidates overwrite the temporary DCP only after the audit passes.

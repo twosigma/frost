@@ -12,6 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+# Diagnostic-only helper: never sourced by the production place step.
+
 # Fresh-netlist flush replication request and post-placement verification.
 # The caller owns design opening, placement, constraints and checkpoints.
 namespace eval ::frost_x3_flush_guidance {

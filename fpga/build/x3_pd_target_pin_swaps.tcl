@@ -12,6 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
+# Diagnostic-only helper: never sourced by the production place step.
+
 # Exact post-place input-pin refinement for the two X3 PD target LUTs.
 # This changes physical pin assignment only. It is intentionally specific to
 # the recorded placement; automatic mode skips unmatched implementations.

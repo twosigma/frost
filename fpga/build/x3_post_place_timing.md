@@ -150,10 +150,18 @@ and records the refinement. Older route, separate-physopt, and final files
 in that work directory predate this chain and are not validation evidence
 for it. `promotion/main_promoted_manifest.json` records the installed hashes.
 
-## Default-flow follow-up — 2026-09-08
+## Production retirement — 2026-09-12
+
+The normal build now runs exactly one placement per candidate and performs no
+post-place netlist or pin-map edits. The automatic pin-refinement hook and the
+chained flush-guidance candidate are retired; the helpers remain diagnostic
+only. The measured checkpoints in this record are historical evidence, not
+results of the current single-placement flow.
+
+## Historical default-flow follow-up — 2026-09-08
 
 The original opt-in default left the qualified refinement out of ordinary
-builds. X3 placement now defaults to `FROST_X3_PD_TARGET_PIN_SWAPS=auto`.
+builds. At that time X3 placement defaulted to `FROST_X3_PD_TARGET_PIN_SWAPS=auto`.
 The helper applies only when both recorded LUTs match all eligibility checks;
 unmatched placements continue without mutation. Explicit `0` disables the
 refinement, and `1` requires a matching implementation.
