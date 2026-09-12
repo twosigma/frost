@@ -188,9 +188,24 @@ module nic_byte_pack #(
   assign pos_after = pos_q + (OffsetBits + 1)'(beat_bytes);
   assign lower_complete_after = (pos_after >= (OffsetBits + 1)'(LINE_BYTES)) || beat_last;
   // A completed lower line is issued only when it holds a byte (after the
-  // limit, lines complete empty and are skipped).
+  // limit, lines complete empty and are skipped). The beat adds a byte to
+  // the lower line exactly when it keeps at least one byte (room left, a
+  // non-empty beat) and its first kept byte lands below LINE_BYTES: that
+  // byte goes to chunk_base + rot_q, which is below LINE_BYTES precisely when
+  // pos_q's top bit is clear. This keeps the wide placed-strobe merge off the
+  // issue decision, which enables every output and window register.
+  logic beat_adds_lower;
+  assign beat_adds_lower = !pos_q[OffsetBits] && (beat_bytes != '0) && (placed_q < limit_q);
   logic lower_issue;
-  assign lower_issue = lower_complete_after && (|win_strb_n[LINE_BYTES-1:0]);
+  assign lower_issue = lower_complete_after && ((|win_strb_q[LINE_BYTES-1:0]) || beat_adds_lower);
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && (|beat_count_q) && active_q) begin
+      assert (lower_issue == (lower_complete_after && (|win_strb_n[LINE_BYTES-1:0])))
+      else $error("lower_issue diverged from the placed-strobe form");
+    end
+  end
+`endif
   assign beat_fire = (|beat_count_q) && active_q && !flushing_q && (!lower_issue || out_free);
 
   assign o_busy = active_q || flushing_q || out_valid_q;
