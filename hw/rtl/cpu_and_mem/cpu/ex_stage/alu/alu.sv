@@ -33,12 +33,16 @@
  * This is purely combinational sharing: no issue or completion cycle changes.
  */
 module alu #(
-    parameter int unsigned XLEN = riscv_pkg::XLEN
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
+    // The caller may supply the same effective amount captured with its issue
+    // operands. The default computes it locally, preserving the generic ALU.
+    parameter bit USE_SHIFT_AMOUNT_HINT = 1'b0
 ) (
     input riscv_pkg::instr_t i_instruction,
     input riscv_pkg::instr_op_e i_instruction_operation,
     input logic [XLEN-1:0] i_operand_a,  // First operand (typically rs1 value)
     input logic [XLEN-1:0] i_operand_b,  // Second operand (typically rs2 value or immediate)
+    input logic [5:0] i_shift_amount_hint,
     input logic [XLEN-1:0] i_program_counter,
     input logic [XLEN-1:0] i_immediate_u_type,  // Upper immediate for LUI/AUIPC
     input logic [XLEN-1:0] i_immediate_i_type,  // I-type immediate
@@ -122,24 +126,14 @@ module alu #(
   // agree with the symbolic opcode tests on those domains; their values for
   // every other opcode are known 0/1 but unobserved. No opcode is renumbered.
   // The checks below pin this dependency on the established enum encoding.
-  // Return {full_left, full_rotate, full_arithmetic, word_left, word_rotate,
-  // word_arithmetic, immediate_amount}. The same helper is used by the
-  // unconditional symbolic enum-contract assertions below.
-  function automatic logic [6:0] projected_shift_controls(input riscv_pkg::instr_op_e op_bits);
-    projected_shift_controls[6] = !op_bits[1] && (op_bits[0] ^ (op_bits[4] || op_bits[6]));
-    projected_shift_controls[5] = op_bits[6];
-    projected_shift_controls[4] = op_bits[1] && (op_bits[0] || op_bits[4]);
-    projected_shift_controls[3] = !op_bits[2] && (op_bits[0] ~^ op_bits[1]);
-    projected_shift_controls[2] = op_bits[3] && op_bits[4];
-    projected_shift_controls[1] = (!op_bits[3] && op_bits[1]) || (op_bits[2] && op_bits[0]);
-    projected_shift_controls[0] = (op_bits[3] && op_bits[1]) ||
-        (op_bits[7] ? (op_bits[3] && op_bits[2]) : !op_bits[2]);
-  endfunction
+  // The shared package helper also forms the secondary INT issue hint. Its
+  // unchanged enum-contract assertions below cover every consuming operation.
   logic [6:0] shift_controls;
-  assign shift_controls = projected_shift_controls(i_instruction_operation);
+  assign shift_controls = riscv_pkg::projected_shift_controls(i_instruction_operation);
   assign shift_uses_immediate = shift_controls[0];
 
-  assign shared_shift_amount = shift_uses_immediate ? shamt_imm : i_operand_b[ShamtMsb:0];
+  assign shared_shift_amount = USE_SHIFT_AMOUNT_HINT ? i_shift_amount_hint :
+      (shift_uses_immediate ? shamt_imm : i_operand_b[ShamtMsb:0]);
 
   // Shared right-funnel barrel per width. Left shifts/rotates reverse bits
   // before and after the same barrel; logical, signed, and rotating forms
@@ -343,24 +337,24 @@ module alu #(
   // cannot silently change a projected predicate on a consuming operation.
   // Check every named consumer at time zero, even if no stimulus ever
   // executes that opcode. These are constants, not coverage-dependent checks.
-  localparam logic [6:0] ControlsSLL = projected_shift_controls(riscv_pkg::SLL);
-  localparam logic [6:0] ControlsSRL = projected_shift_controls(riscv_pkg::SRL);
-  localparam logic [6:0] ControlsSRA = projected_shift_controls(riscv_pkg::SRA);
-  localparam logic [6:0] ControlsSLLI = projected_shift_controls(riscv_pkg::SLLI);
-  localparam logic [6:0] ControlsSRLI = projected_shift_controls(riscv_pkg::SRLI);
-  localparam logic [6:0] ControlsSRAI = projected_shift_controls(riscv_pkg::SRAI);
-  localparam logic [6:0] ControlsROL = projected_shift_controls(riscv_pkg::ROL);
-  localparam logic [6:0] ControlsROR = projected_shift_controls(riscv_pkg::ROR);
-  localparam logic [6:0] ControlsRORI = projected_shift_controls(riscv_pkg::RORI);
-  localparam logic [6:0] ControlsSLLW = projected_shift_controls(riscv_pkg::SLLW);
-  localparam logic [6:0] ControlsSRLW = projected_shift_controls(riscv_pkg::SRLW);
-  localparam logic [6:0] ControlsSRAW = projected_shift_controls(riscv_pkg::SRAW);
-  localparam logic [6:0] ControlsSLLIW = projected_shift_controls(riscv_pkg::SLLIW);
-  localparam logic [6:0] ControlsSRLIW = projected_shift_controls(riscv_pkg::SRLIW);
-  localparam logic [6:0] ControlsSRAIW = projected_shift_controls(riscv_pkg::SRAIW);
-  localparam logic [6:0] ControlsROLW = projected_shift_controls(riscv_pkg::ROLW);
-  localparam logic [6:0] ControlsRORW = projected_shift_controls(riscv_pkg::RORW);
-  localparam logic [6:0] ControlsRORIW = projected_shift_controls(riscv_pkg::RORIW);
+  localparam logic [6:0] ControlsSLL = riscv_pkg::projected_shift_controls(riscv_pkg::SLL);
+  localparam logic [6:0] ControlsSRL = riscv_pkg::projected_shift_controls(riscv_pkg::SRL);
+  localparam logic [6:0] ControlsSRA = riscv_pkg::projected_shift_controls(riscv_pkg::SRA);
+  localparam logic [6:0] ControlsSLLI = riscv_pkg::projected_shift_controls(riscv_pkg::SLLI);
+  localparam logic [6:0] ControlsSRLI = riscv_pkg::projected_shift_controls(riscv_pkg::SRLI);
+  localparam logic [6:0] ControlsSRAI = riscv_pkg::projected_shift_controls(riscv_pkg::SRAI);
+  localparam logic [6:0] ControlsROL = riscv_pkg::projected_shift_controls(riscv_pkg::ROL);
+  localparam logic [6:0] ControlsROR = riscv_pkg::projected_shift_controls(riscv_pkg::ROR);
+  localparam logic [6:0] ControlsRORI = riscv_pkg::projected_shift_controls(riscv_pkg::RORI);
+  localparam logic [6:0] ControlsSLLW = riscv_pkg::projected_shift_controls(riscv_pkg::SLLW);
+  localparam logic [6:0] ControlsSRLW = riscv_pkg::projected_shift_controls(riscv_pkg::SRLW);
+  localparam logic [6:0] ControlsSRAW = riscv_pkg::projected_shift_controls(riscv_pkg::SRAW);
+  localparam logic [6:0] ControlsSLLIW = riscv_pkg::projected_shift_controls(riscv_pkg::SLLIW);
+  localparam logic [6:0] ControlsSRLIW = riscv_pkg::projected_shift_controls(riscv_pkg::SRLIW);
+  localparam logic [6:0] ControlsSRAIW = riscv_pkg::projected_shift_controls(riscv_pkg::SRAIW);
+  localparam logic [6:0] ControlsROLW = riscv_pkg::projected_shift_controls(riscv_pkg::ROLW);
+  localparam logic [6:0] ControlsRORW = riscv_pkg::projected_shift_controls(riscv_pkg::RORW);
+  localparam logic [6:0] ControlsRORIW = riscv_pkg::projected_shift_controls(riscv_pkg::RORIW);
   always_comb begin
     assert (riscv_pkg::InstrOpWidth == 8);
     assert ({ControlsSLL[6:4], ControlsSLL[0]} == 4'b1000);

@@ -40,13 +40,17 @@
  * resolution runs on its own path. JALR does complete here, so its link
  * address wakes dependents.
  */
-module int_alu_shim (
+module int_alu_shim #(
+    parameter bit USE_SHIFT_AMOUNT_HINT = 1'b0
+) (
     input logic i_clk,
     input logic i_rst_n,
 
     // From INT reservation station (issue output)
-    input riscv_pkg::rs_issue_t i_rs_issue,
-    input logic                 i_issue_writes_cdb_hint,
+    input riscv_pkg::rs_issue_t       i_rs_issue,
+    input logic                       i_issue_writes_cdb_hint,
+    // Used only by the secondary INT pipe; aligned with the same issue packet.
+    input logic                 [5:0] i_shift_amount_hint,
 
     // CSR read data from external CSR file
     input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
@@ -82,12 +86,14 @@ module int_alu_shim (
   logic [riscv_pkg::XLEN-1:0] alu_result;
 
   alu #(
-      .XLEN(riscv_pkg::XLEN)
+      .XLEN(riscv_pkg::XLEN),
+      .USE_SHIFT_AMOUNT_HINT(USE_SHIFT_AMOUNT_HINT)
   ) u_alu (
       .i_instruction(alu_instruction),
       .i_instruction_operation(i_rs_issue.op),
       .i_operand_a(i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
       .i_operand_b(i_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
+      .i_shift_amount_hint(i_shift_amount_hint),
       .i_program_counter(i_rs_issue.pc),
       .i_immediate_u_type(i_rs_issue.imm),
       .i_immediate_i_type(i_rs_issue.imm),

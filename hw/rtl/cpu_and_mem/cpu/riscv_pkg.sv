@@ -699,6 +699,22 @@ package riscv_pkg;
                                // MRET serial path; illegal outside Debug Mode
   } instr_op_e;
 
+  // Shared ALU barrel controls. Projections are exact on their consuming
+  // shift/rotate enum domains; alu.sv retains the symbolic enum assertions.
+  // {full_left, full_rotate, full_arithmetic, word_left, word_rotate,
+  //  word_arithmetic, immediate_amount}. The issue2 amount capture uses the
+  // same predicate as the generic ALU, independently of the use_imm field.
+  function automatic logic [6:0] projected_shift_controls(input instr_op_e op_bits);
+    projected_shift_controls[6] = !op_bits[1] && (op_bits[0] ^ (op_bits[4] || op_bits[6]));
+    projected_shift_controls[5] = op_bits[6];
+    projected_shift_controls[4] = op_bits[1] && (op_bits[0] || op_bits[4]);
+    projected_shift_controls[3] = !op_bits[2] && (op_bits[0] ~^ op_bits[1]);
+    projected_shift_controls[2] = op_bits[3] && op_bits[4];
+    projected_shift_controls[1] = (!op_bits[3] && op_bits[1]) || (op_bits[2] && op_bits[0]);
+    projected_shift_controls[0] = (op_bits[3] && op_bits[1]) ||
+        (op_bits[7] ? (op_bits[3] && op_bits[2]) : !op_bits[2]);
+  endfunction
+
   // ===========================================================================
   // Section 3: CSR Definitions
   // ===========================================================================

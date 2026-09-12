@@ -191,9 +191,11 @@ module reservation_station #(
     output logic                 [riscv_pkg::ReorderBufferTagWidth-1:0] o_branch_predicate_tag,
 
     // Second issue port (DUAL_ISSUE only; tied off otherwise).
-    output riscv_pkg::rs_issue_t o_issue_2,
-    input  logic                 i_fu_ready_2,
-    output logic                 o_issue_writes_cdb_hint_2,
+    output riscv_pkg::rs_issue_t       o_issue_2,
+    input  logic                       i_fu_ready_2,
+    output logic                       o_issue_writes_cdb_hint_2,
+    // Effective barrel amount captured on the same edge as port-2 operands.
+    output logic                 [5:0] o_issue_shift_amount_2,
 
     // =========================================================================
     // Current Issue Payload Peek (combinational, independent of i_fu_ready)
@@ -1472,6 +1474,7 @@ module reservation_station #(
       logic [FLEN-1:0] stage2b_src3_value;
       logic [XLEN-1:0] stage2b_imm;
       logic stage2b_use_imm;
+      logic [5:0] stage2b_shift_amount;
       logic stage2b_writes_cdb_hint;
       logic [2:0] stage2b_rm;
       logic [XLEN-1:0] stage2b_branch_target;
@@ -1507,6 +1510,8 @@ module reservation_station #(
       logic issue2_src3_cdb_bypass_l1_selected;
       logic issue2_use_imm_selected;
       logic issue2_writes_cdb_hint_selected;
+      logic [FLEN-1:0] issue2_src2_value_effective;
+      logic [6:0] issue2_shift_controls;
 
       logic stage2b_should_flush;
       logic stage2b_accept;
@@ -1563,6 +1568,17 @@ module reservation_station #(
         end
       end
 
+      // One expression feeds both the existing wide operand FFs and the six
+      // amount FFs. Live CDB selection and the capture/hold lifetime are exact.
+      assign issue2_src2_value_effective =
+          (issue2_src2_value_selected & {FLEN{!issue2_src2_cdb_bypass_selected &&
+                                              !issue2_src2_cdb_bypass_l1_selected}}) |
+          (i_cdb.value & {FLEN{issue2_src2_cdb_bypass_selected}}) |
+          (i_cdb_2.value & {FLEN{issue2_src2_cdb_bypass_l1_selected}});
+      assign issue2_shift_controls = riscv_pkg::projected_shift_controls(
+          riscv_pkg::instr_op_e'(pl2_op_bits)
+      );
+
       assign stage2b_should_flush = stage2b_valid &&
           (i_flush_all || (i_flush_en && should_flush_entry(
           stage2b_rob_tag, i_flush_tag, i_rob_head_tag
@@ -1591,11 +1607,9 @@ module reservation_station #(
                                                   !issue2_src1_cdb_bypass_l1_selected}}) |
               (i_cdb.value & {FLEN{issue2_src1_cdb_bypass_selected}}) |
               (i_cdb_2.value & {FLEN{issue2_src1_cdb_bypass_l1_selected}});
-          stage2b_src2_value <=
-              (issue2_src2_value_selected & {FLEN{!issue2_src2_cdb_bypass_selected &&
-                                                  !issue2_src2_cdb_bypass_l1_selected}}) |
-              (i_cdb.value & {FLEN{issue2_src2_cdb_bypass_selected}}) |
-              (i_cdb_2.value & {FLEN{issue2_src2_cdb_bypass_l1_selected}});
+          stage2b_src2_value <= issue2_src2_value_effective;
+          stage2b_shift_amount <= issue2_shift_controls[0] ? pl2_imm[5:0] :
+              issue2_src2_value_effective[5:0];
           if (HAS_SRC3) begin
             stage2b_src3_value <=
                 (issue2_src3_value_selected & {FLEN{!issue2_src3_cdb_bypass_selected &&
@@ -1712,6 +1726,23 @@ module reservation_station #(
       assign o_issue_2.is_jalr = stage2b_is_jalr;
       assign o_issue_2.branch_op = stage2b_branch_op;
       assign o_issue_writes_cdb_hint_2 = stage2b_writes_cdb_hint;
+      assign o_issue_shift_amount_2 = stage2b_shift_amount;
+
+`ifndef SYNTHESIS
+      // Check the captured relationship while occupied, including ready-low
+      // holds and the pre-flush cycle. Payload is intentionally unreset.
+      logic [6:0] stage2b_shift_controls_check;
+      assign stage2b_shift_controls_check = riscv_pkg::projected_shift_controls(stage2b_op);
+      always_ff @(posedge i_clk) begin
+        if (i_rst_n && stage2b_valid) begin
+          p_issue2_shift_amount_matches_payload :
+          assert (
+              stage2b_shift_amount == (stage2b_shift_controls_check[0] ?
+              stage2b_imm[5:0] : stage2b_src2_value[5:0]));
+        end
+      end
+`endif
+
       assign stage2b_head_query_match = stage2b_valid && (stage2b_rob_tag == i_head_query_tag);
 
       // No sideband is_sc mirror: SC issues via MEM_RS, never a DUAL_ISSUE
@@ -1741,6 +1772,7 @@ module reservation_station #(
       assign stage2b_head_query_match = 1'b0;
       assign o_issue_2 = '0;
       assign o_issue_writes_cdb_hint_2 = 1'b0;
+      assign o_issue_shift_amount_2 = '0;
       logic unused_fu_ready_2;
       assign unused_fu_ready_2 = i_fu_ready_2;
     end

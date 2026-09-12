@@ -43,6 +43,14 @@ _BRANCH_OPS = {
 }
 
 
+# Independent symbolic operation domain: values outside this set do not use
+# the shared amount's immediate arm in any observed barrel result.
+_IMMEDIATE_BARREL_OPS = {
+    _INSTR_OP[name]
+    for name in ("SLLI", "SRLI", "SRAI", "RORI", "SLLIW", "SRLIW", "SRAIW", "RORIW")
+}
+
+
 class IntAluShimInterface:
     """Interface to the int_alu_shim DUT."""
 
@@ -60,6 +68,7 @@ class IntAluShimInterface:
         self.dut.i_rs_issue.value = 0
         self.dut.i_issue_writes_cdb_hint.value = 0
         self.dut.i_csr_read_data.value = 0
+        self.dut.i_shift_amount_hint.value = 0
 
     async def reset(self, cycles: int = 3) -> None:
         """Reset the DUT for the given number of cycles.
@@ -112,6 +121,9 @@ class IntAluShimInterface:
             link_addr=link_addr,
         )
         self.dut.i_rs_issue.value = packed
+        self.dut.i_shift_amount_hint.value = (
+            imm if op in _IMMEDIATE_BARREL_OPS else src2_value
+        ) & 0x3F
         self.dut.i_issue_writes_cdb_hint.value = 0 if op in _BRANCH_OPS else 1
 
     def clear_issue(self) -> None:

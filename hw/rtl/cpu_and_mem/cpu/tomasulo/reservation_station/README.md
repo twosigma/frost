@@ -26,6 +26,26 @@ when backpressure keeps port 0 from firing, so the two ports can never claim
 one entry. The other five stations elaborate with the default `DUAL_ISSUE=0`
 and are structurally unchanged.
 
+The secondary INT bank also captures six effective barrel shift-amount bits
+in `o_issue_shift_amount_2`. The selector uses the same
+`riscv_pkg::projected_shift_controls` predicate as the ALU, the same selected
+op/immediate, and the exact CDB-selected `src2` D expression that feeds the
+wide operand register. It captures on `issue_fire_2` and holds with the
+existing packet; reset/flush clear ownership without resetting payload. The
+ALU2 hint input removes the immediate/register amount mux after this boundary.
+No mode flags, wide operands, priorities, or issue/completion cycles change.
+The primary ALU retains local amount selection. This requests a different
+logic partition; it adds a selector to the incoming RS D path, so fresh native
+placement must check that path as well as any ALU improvement.
+
+`rs_issue2_shamt` exercises all 18 full/word shift/rotate operations across 64
+amounts, mismatched `use_imm`, both live CDB lanes, ready-low holds, back-to-back
+refill, partial/full flush and reset. A clocked RTL assertion checks amount
+identity throughout occupied stage2b cycles. `alu_shift_hint` is a separate
+one-step combinational formal comparison of actual hinted/generic ALUs with
+arbitrary binary operands/opcodes; it does not prove the RS scheduler or
+unbounded capture lifecycle.
+
 Wakeup is a two-lane Tomasulo CDB snoop: each entry compares its source tags
 against both broadcast tags every cycle, and a match captures the value and
 marks the source ready. Both lanes also feed the combinational same-cycle

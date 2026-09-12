@@ -28,6 +28,13 @@ Each shim's structure follows the pipeline depth of the FU it wraps.
   reversal for left operations. Narrow operation-control projections are
   checked against every symbolic consuming enum value; no pipeline stage,
   issue latency, or completion latency is added.
+  Only `u_alu2_shim` enables `USE_SHIFT_AMOUNT_HINT`: its six-bit
+  `i_shift_amount_hint` is captured with the RS's existing issue2 operands.
+  The default shim/ALU ignores this port and keeps local amount selection.
+  Both use the shared package predicate and unchanged symbolic enum checks.
+  `int_alu_shim_shift_hint` runs the existing arithmetic/barrel suite with
+  the hint enabled; `alu_shift_hint` compares actual enabled/default ALUs
+  for arbitrary binary inputs, without making a physical timing claim.
 - `fp_add_shim` wraps the shallow FPU pipelines (2 to about 10 cycles) with
   one op in flight at a time: a single `in_flight` bit, a single `tag_reg`,
   and a one-hot `unit_sel_reg` that picks among the adder, compare,
