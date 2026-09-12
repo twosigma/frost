@@ -1,0 +1,184 @@
+#    Copyright 2026 Two Sigma Open Source, LLC
+#
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    you may not use this file except in compliance with the License.
+#    You may obtain a copy of the License at
+#
+#        http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS,
+#    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#    See the License for the specific language governing permissions and
+#    limitations under the License.
+
+"""Run the shipped flush-guidance Tcl with the finite netlist test API."""
+
+from pathlib import Path
+import subprocess
+
+import pytest
+
+from test_l1_control_repair import MOCK
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "fpga/build/x3_flush_guidance.tcl"
+# Reuse only native-API stubs, before the L1-specific netlist construction.
+API = MOCK.split("set r [::frost_l1_control_repair::recipe]", 1)[0]
+FLUSH = r"""
+namespace eval sim {variable netprops {}; variable clock_name clock_from_mmcm; variable period 3.333}
+rename get_property sim::base_get_property
+proc get_property {key objects} {
+    if {$objects eq "clock_from_mmcm" || $objects eq "wrong_clock"} {
+        if {$key eq "NAME"} {return $::sim::clock_name}
+        if {$key eq "PERIOD"} {return $::sim::period}
+    }
+    if {[dict exists $::sim::netprops $objects $key]} {return [dict get $::sim::netprops $objects $key]}
+    return [sim::base_get_property $key $objects]
+}
+rename list_property sim::base_list_property
+proc list_property {o} {
+    if {[dict exists $::sim::netprops $o]} {return [concat {NAME} [dict keys [dict get $::sim::netprops $o]]]}
+    return [sim::base_list_property $o]
+}
+rename set_property sim::unused_set_property
+proc set_property {key value object} {
+    if {![dict exists $::sim::netprops $object] || $key ni {MAX_FANOUT_MODE FORCE_MAX_FANOUT}} {error "Unexpected property write"}
+    incr ::sim::edits
+    if {![info exists ::bad_readback]} {dict set ::sim::netprops $object $key $value}
+}
+proc get_clocks {args} {return $::sim::clock_name}
+set driver $::frost_x3_flush_guidance::driver_name
+set net $::frost_x3_flush_guidance::net_name
+sim::add_cell $driver FDRE
+# KEEP=yes is a real source attribute; it must remain intact.
+dict set ::sim::cells $driver KEEP yes
+dict set ::sim::cells $driver IS_C_INVERTED 0
+foreach {port name ref pin} {C cpu_clock BUFGCE O CE enable VCC P D request LUT3 O R reset FDRE Q} {
+    sim::add_cell $name $ref
+    sim::wire "$name/$pin" "$driver/$port"
+}
+for {set i 0} {$i < 4} {incr i} {
+    set name "consumer_$i"; sim::add_cell $name LUT1
+    sim::wire "$driver/Q" "$name/I0"
+}
+set temporary [dict get $::sim::pins "$driver/Q" net]
+dict unset ::sim::nets $temporary; dict set ::sim::nets $net 1
+dict for {p data} $::sim::pins {
+    if {[dict get $data net] eq $temporary} {dict set ::sim::pins $p net $net}
+}
+dict set ::sim::netprops $net [dict create MAX_FANOUT_MODE {} FORCE_MAX_FANOUT {} DONT_TOUCH {} KEEP {}]
+proc sim::replica {name sinks} {
+    set original $::driver
+    set config [dict get $::sim::cells $original]
+    dict set config NAME $name; dict set config LOC SLICE_X1Y2; dict set config BEL SLICEL.AFF
+    dict set ::sim::cells $name $config
+    foreach port {C CE D R} {
+        set input [dict get $::sim::pins "$original/$port"]
+        dict set input NAME "$name/$port"; dict set ::sim::pins "$name/$port" $input
+    }
+    foreach sink $sinks {sim::wire "$name/Q" $sink}
+}
+set ::sim::edits 0
+"""
+
+
+def run_flush(tmp_path: Path, body: str) -> subprocess.CompletedProcess[str]:
+    """Execute actual prepare/verify without opening a native design."""
+    harness = tmp_path / "flush.tcl"
+    harness.write_text(API + FLUSH + body)
+    return subprocess.run(
+        ["tclsh", str(harness), str(SCRIPT), str(tmp_path / "audit.txt")],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("replicate", [False, True])
+def test_current_partition_not_historical_count(
+    tmp_path: Path, replicate: bool
+) -> None:
+    """Accept any equivalent complete partition, including one unchanged driver."""
+    result = run_flush(
+        tmp_path,
+        r"""
+set before [::frost_x3_flush_guidance::prepare $audit]
+if {$::sim::edits != 2} {error "Expected exactly two net-property writes"}
+"""
+        + (
+            "sim::replica renamed_by_placer {consumer_1/I0 consumer_3/I0}\n"
+            if replicate
+            else ""
+        )
+        + r"""
+set result [::frost_x3_flush_guidance::verify $audit]
+if {[dict get $result sinks] != 4 || $::sim::edits != 2} {error "Verify changed the netlist or lost a sink"}
+"""
+        + f'if {{[dict get $result drivers] != {2 if replicate else 1}}} {{error "Incorrect observed driver count"}}\n',
+    )
+    assert result.returncode == 0, result.stderr
+    assert "VERIFIED" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "dict set ::sim::cells $driver DONT_TOUCH true",
+        "dict set ::sim::cells $driver LUTNM 0",
+        "dict set ::sim::cells $driver REF_NAME FDSE",
+        "dict set ::sim::netprops $net MAX_FANOUT_MODE SLR",
+        "dict set ::sim::netprops $net FORCE_MAX_FANOUT 32",
+        "set ::sim::clock_name wrong_clock",
+        "set ::sim::period 6.666",
+    ],
+)
+def test_invalid_preflight_has_no_writes(tmp_path: Path, change: str) -> None:
+    """Reject conflicting or unsupported current designs before changing properties."""
+    result = run_flush(
+        tmp_path,
+        change
+        + r"""
+if {![catch {::frost_x3_flush_guidance::prepare $audit} message] || $::sim::edits != 0} {error "Preflight did not reject before writes"}
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("change", ["data", "init", "missing", "extra"])
+def test_changed_replica_or_partition_fails(tmp_path: Path, change: str) -> None:
+    """Detect changed register functions and missing or unexpected sink owners."""
+    mutation = {
+        "data": "sim::wire reset/Q renamed_by_placer/D",
+        "init": "dict set ::sim::cells renamed_by_placer INIT {1'b1}",
+        "missing": "dict unset ::sim::pins consumer_1/I0",
+        "extra": "sim::add_cell extra LUT1; sim::wire renamed_by_placer/Q extra/I0",
+    }[change]
+    result = run_flush(
+        tmp_path,
+        r"""
+::frost_x3_flush_guidance::prepare $audit
+sim::replica renamed_by_placer {consumer_1/I0 consumer_3/I0}
+"""
+        + mutation
+        + r"""
+if {![catch {::frost_x3_flush_guidance::verify $audit} message]} {error "Changed replica/partition passed"}
+set f [open $audit]; set data [read $f]; close $f
+if {[dict get $data status] ne "FAILED_AFTER_PLACE" || $::sim::edits != 2} {error "Wrong failure state or verify wrote native properties"}
+""",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_partial_property_failure_is_not_prepared(tmp_path: Path) -> None:
+    """A failed readback cannot produce a prepared or verified state."""
+    result = run_flush(
+        tmp_path,
+        r"""
+set ::bad_readback 1
+if {![catch {::frost_x3_flush_guidance::prepare $audit} message] || $::sim::edits != 1} {error "Expected one failed property update"}
+if {![catch {::frost_x3_flush_guidance::verify $audit} message]} {error "Failed preparation reached verification"}
+""",
+    )
+    assert result.returncode == 0, result.stderr
