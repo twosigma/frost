@@ -1539,7 +1539,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "pd_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.pd_stage.test_pd_stage",
         hdl_toplevel_module="pd_stage",
-        description="PD-stage unit tests including exact native/RVC redirect targets",
+        description="PD-stage unit tests including exact bit-20 selection and native/RVC redirect targets",
+        verilator_extra_args=("--assert",),
     ),
     "id_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.id_stage.test_id_stage",

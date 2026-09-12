@@ -239,7 +239,8 @@ module rvc_decompressor (
   // final residual slot-2 rs2[0] and non-source payload endpoints after the
   // source-hot and earlier bit-specific bypasses. Pairing the two outputs is
   // only an interface convenience; each case bit remains an independent
-  // one-bit function for synthesis.
+  // one-bit function for synthesis. Slot-1 PD also uses bit 20 alone before
+  // its existing compressed/native instruction selection.
   always_comb begin
     unique case (quadrant)
       2'b00: begin

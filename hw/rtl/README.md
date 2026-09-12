@@ -203,6 +203,15 @@ backend notes.
 | `lib/` | In use | Portable RAM/FIFO/stall helper primitives, `lib/cdc/` (two-flop synchronizer, asynchronous-assert reset, Gray-coded event counter) and `lib/fifo/async_fifo.sv` (Gray-pointer FIFO between unrelated clocks), plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model), `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays), and `lib/ram/sdp_packed_tag_uram.sv` (width-generic packed UltraRAM tags for the X3 L2) |
 | `peripherals/` | In use | UART TX/RX blocks; `peripherals/nic/` is the Phase 4 NIC on the coherent DMA port (see its README): `nic_top` sits in `cpu_and_mem.sv` at 0x4003_0000 with PLIC source 4, sharing the DMA port with the test engine through a `line_port_arbiter` |
 
+Slot-1 PD uses the decompressor's existing exact bit-20 cofactor for compressed
+instruction `rs2[0]`, as slot 2 already does. Every other expansion bit and the
+existing compressed/native selection, bubble qualification and register enables
+remain unchanged. The live IF selection and replay path still precedes PD;
+source extraction therefore does not have an assumed full cycle of slack.
+The cofactor test exhausts all 131,072 parcel/`rd_is_x2` combinations, and the PD
+suite checks the bit's native/RVC selection through stalls, flushes and reset.
+This substitution adds no latency; its placement effect requires measurement.
+
 ## Memory Map
 
 The low BRAM memory is 256 KiB (95 KiB ROM + the 1 KiB debug slice + 160 KiB

@@ -383,6 +383,118 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
 
 
 @cocotb.test()
+async def test_bit20_cofactor_preserves_selection_and_lifecycle(dut: Any) -> None:
+    """Only compressed bit 20 takes the cofactor; packet ownership is unchanged."""
+    await _setup_test(dut)
+    # Independent complete instruction encodings, including the bit-20 special
+    # cases where EBREAK is one, ADDI16SP is zero, and reserved arithmetic is zero.
+    compressed_cases = (
+        (0x0185, 0x00118193, False),  # C.ADDI x3, 1
+        (0x0189, 0x00218193, False),  # C.ADDI x3, 2
+        (0x7181, 0xFFFE01B7, False),  # C.LUI x3, -32
+        (0x7101, 0xE0010113, False),  # C.ADDI16SP -512 (rd == x2)
+        (0x9002, 0x00100073, False),  # C.EBREAK
+        (0x9C41, 0x00000000, True),  # Reserved RV64 arithmetic sub-op
+        (0xC004, 0x00942023, False),  # C.SW x9, 0(x8)
+        (0x8182, 0x00018067, False),  # C.JR x3
+        (0x9182, 0x000180E7, False),  # C.JALR x3
+    )
+
+    def drive_compressed(raw: int, expected: int, *, bubble: bool = False) -> None:
+        native_canary = _pack_r(
+            funct7=0x55,
+            rs2=6 | (1 ^ ((expected >> 20) & 1)),
+            rs1=17,
+            funct3=5,
+            rd=18,
+            opcode=OPC_OP,
+        )
+        assert ((native_canary ^ expected) >> 20) & 1
+        _drive_if_packet(
+            dut,
+            {
+                "raw_parcel": raw,
+                "effective_instr": native_canary,
+                "sel_nop": bubble,
+                "sel_compressed": False,  # PD must use its local raw classifier.
+                "source_hot_predecoded": _source_hot(expected),
+            },
+        )
+
+    for raw, expected, illegal in compressed_cases:
+        drive_compressed(raw, expected)
+        await _advance_cycle(dut)
+        packet = _read_pd_packet(dut)
+        assert packet["instruction"] == expected, hex(raw)
+        assert packet["source_reg_2_early"] == (expected >> 20) & 0x1F
+        assert packet["is_compressed"] is True
+        assert packet["illegal_instruction"] is illegal
+        assert packet["inject_nop"] is False
+
+    for rs2 in (6, 7):
+        native = _pack_r(funct7=0x21, rs2=rs2, rs1=13, funct3=0, rd=11, opcode=OPC_OP)
+        _drive_if_packet(
+            dut,
+            {
+                "raw_parcel": native & 0xFFFF,
+                "effective_instr": native,
+                "sel_nop": False,
+                "sel_compressed": True,  # The unused IF sideband cannot select RVC.
+            },
+        )
+        await _advance_cycle(dut)
+        packet = _read_pd_packet(dut)
+        assert packet["instruction"] == native
+        assert packet["source_reg_2_early"] == rs2
+        assert packet["is_compressed"] is False
+
+    drive_compressed(0x9002, 0x00100073)
+    await _advance_cycle(dut)
+    held = _read_pd_packet(dut)
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    drive_compressed(0x7101, 0xE0010113)
+    await _advance_cycle(dut)
+    assert _read_pd_packet(dut) == held
+    _drive_pipeline_ctrl(dut, {"stall": True, "flush": True})
+    await _advance_cycle(dut)
+    assert _read_pd_packet(dut) == held
+
+    _drive_pipeline_ctrl(dut, {"flush": True})
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut)
+    assert packet["instruction"] == 0xE0010113
+    assert packet["source_reg_2_early"] == 0
+    assert packet["inject_nop"] is True
+
+    _drive_pipeline_ctrl(dut, {})
+    drive_compressed(0x9002, 0x00100073, bubble=True)
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut)
+    assert packet["instruction"] == 0x00100073
+    assert packet["source_reg_2_early"] == 0
+    assert packet["inject_nop"] is True
+
+    drive_compressed(0x9002, 0x00100073)
+    await _advance_cycle(dut)
+    assert _read_pd_packet(dut)["source_reg_2_early"] == 1
+    _drive_pipeline_ctrl(dut, {"reset": True, "stall": True})
+    drive_compressed(0x7101, 0xE0010113)
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut)
+    assert packet["instruction"] == NOP_INSTR
+    assert packet["inject_nop"] is True
+    # Existing early-source FFs hold during stall even when reset clears the
+    # architectural packet. Their value is ignored under the bubble marker.
+    assert packet["source_reg_2_early"] == 1
+    _drive_pipeline_ctrl(dut, {})
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut)
+    assert packet["instruction"] == 0xE0010113
+    assert packet["source_reg_2_early"] == 0
+    assert packet["inject_nop"] is False
+
+
+@cocotb.test()
 async def test_sel_nop_overrides_instruction_and_sources(dut: Any) -> None:
     """The NOP select marks a bubble via inject_nop and zeroes source extraction."""
     await _setup_test(dut)
