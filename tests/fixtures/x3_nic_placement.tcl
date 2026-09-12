@@ -111,7 +111,19 @@ proc get_nets {args} {
         set n [dict get $objects $obj $key]
         if {$n ne ""} {lappend result $n}
     }
-    if {"-segments" in $args} {return [expand_nets $result]}
+    if {"-segments" in $args} {
+        set expanded [expand_nets $result]
+        if {$scenario eq "sideband_many_aliases" && "runtime/net_SIDEBAND" in $expanded} {
+            for {set i 0} {$i < 229} {incr i} {lappend expanded runtime/sideband_alias_$i}
+        }
+        if {$scenario eq "unrelated_input_many_aliases" && "runtime/source_DMA_0_net" in $expanded} {
+            for {set i 0} {$i < 128} {incr i} {lappend expanded unrelated_alias_$i}
+        }
+        if {$scenario eq "output_alias_overflow" && "runtime/net_SIDEBAND" in $expanded} {
+            for {set i 0} {$i < 4096} {incr i} {lappend expanded excessive_alias_$i}
+        }
+        return $expanded
+    }
     return [lsort -unique $result]
 }
 proc get_pins {args} {
@@ -252,9 +264,14 @@ dict for {role recipe} $recipes {
         lappend banks $bank
     }
 }
+if {$scenario eq "sideband_many_aliases"} {
+    for {set i 0} {$i < 229} {incr i} {add_net runtime/sideband_alias_$i}
+    set first [lindex [dict get $recipes SIDEBAND selected] 0]
+    if {[llength [get_nets -segments -of_objects $first]] != 234} {error "Wrong nominal alias count"}
+}
 set mode auto
 switch -- $scenario {
-    macro_large_alias - unused_disconnected - changed_other_upper - positive - create_failure - connect_failure - release_failure - restore_failure - changed_source - changed_macro - native_error {}
+    sideband_many_aliases - unrelated_input_many_aliases - output_alias_overflow - macro_large_alias - unused_disconnected - changed_other_upper - positive - create_failure - connect_failure - release_failure - restore_failure - changed_source - changed_macro - native_error {}
     constant {dict set objects runtime/driver_L1I/I0 net runtime/zero_net}
     missing_last {dict unset objects [lindex [dict get $recipes SIDEBAND selected] end]}
     wrong_driver {dict set objects [lindex [dict get $recipes E04 selected] 0] net runtime/alternate}
@@ -277,7 +294,7 @@ switch -- $scenario {
 set original $objects
 set rc [catch {::frost_x3_nic_placement::post_opt $audit $mode} value options]
 set f [open $audit]; set record [read $f]; close $f
-if {$scenario in {positive constant macro_large_alias unused_disconnected}} {
+if {$scenario in {positive constant macro_large_alias unused_disconnected sideband_many_aliases}} {
     if {$rc || $value != 1 || [dict get $record status] ne "APPLIED" || $cell_creates != 4} {error "Expected four-copy success: $value"}
     if {[dict get $record moved_leaves] != 40} {error "Wrong finite move count"}
     foreach bank [lsort -unique $banks] {if {[dict get $objects $bank props DONT_TOUCH] ne "true"} {error "Bank not restored"}}
@@ -292,7 +309,7 @@ if {$scenario in {positive constant macro_large_alias unused_disconnected}} {
         set ds [get_pins -leaf -of_objects [get_nets -segments -of_objects runtime/retained_$role/CE] -filter {DIRECTION == OUT}]
         if {$ds ne [list runtime/driver_$role/O]} {error "Retained driver changed"}
     }
-} elseif {$scenario in {missing_last wrong_driver bad_init placed protected case_zero case_flag_true packing_zero packing_false lock_zero location_zero split_group}} {
+} elseif {$scenario in {missing_last wrong_driver bad_init placed protected case_zero case_flag_true packing_zero packing_false lock_zero location_zero split_group unrelated_input_many_aliases output_alias_overflow}} {
     if {$rc || $value != 0 || $mutation_count || $objects ne $original} {error "Unsafe preflight skip: $value"}
 } elseif {$scenario in {native_error strict_missing}} {
     if {!$rc || $mutation_count || $objects ne $original} {error "Native/strict preflight error escaped: $value"}

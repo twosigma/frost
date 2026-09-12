@@ -38,7 +38,11 @@ INIT must match the supported role, and its current ordered input identities
 are copied and checked. Source driver names, reset replication names, net
 aliases and complete original output ownership are captured from the current
 netlist. Original consumers outside the selected partition retain their driver.
-No file from a previous experiment is read.
+No file from a previous experiment is read. Declared output distribution nets
+and their moved consumer ports have limits of 4096 aliases and 4096 leaf loads;
+the measured fresh sideband net's 234 aliases and 923 leaves fit that finite
+scope. Unrelated input-source resolution retains its separate 128-alias limit.
+Clock handling and the direct-constant fast path are unchanged.
 
 For memories, only the native external macro port is reconnected. Preflight
 checks its actual macro type, lower net, complete direct lower-pin group and
