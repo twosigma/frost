@@ -1,4 +1,8 @@
-# Fresh X3 flush guidance
+# Diagnostic X3 flush guidance
+
+This helper is diagnostic only. The normal build does not call it, and the
+former two-placement flush-guidance candidate is retired. Production candidates
+run exactly one placement; the examples below describe isolated diagnostics.
 
 `x3_flush_guidance.tcl` requests placement-time replication of the registered
 full-flush broadcast. It reads the current optimized design only. The caller
@@ -19,7 +23,7 @@ These are placer replication requests, not a guarantee of a particular replica
 count or final fanout. There are no hand-created registers, assigned sites,
 REUSE_STATUS changes, clock overrides or external reference inputs.
 
-Use both calls in the same Vivado session, sourcing the helper once per worker:
+For an isolated diagnostic, use both calls in the same Vivado session:
 
 ```tcl
 source [file join $script_directory x3_flush_guidance.tcl]
@@ -54,11 +58,11 @@ four input drivers. No global clock/reset load census or broad property dump
 is performed. Unexpected renamed, missing or added sink leaves cause a failed
 verification rather than an assumed equivalent mapping.
 
-The caller can save this placement as freshly generated guidance, reopen the
-same current-source optimized candidate, and run
-`read_checkpoint -incremental -directive TimingClosure $fresh_guidance` followed
-by plain `place_design`. This still needs native validation and the ordinary
-final gate; `VERIFIED` means register/ownership preservation, not timing closure.
+The retired historical experiment saved the first placement as guidance,
+reopened its optimized input, imported that guidance with `TimingClosure`, and
+ran a second placement. That sequence is not a supported production recipe.
+The helper's `VERIFIED` marker establishes register/ownership preservation,
+not timing closure or eligibility for production promotion.
 
 Test the actual helper with the repository's Docker image:
 
