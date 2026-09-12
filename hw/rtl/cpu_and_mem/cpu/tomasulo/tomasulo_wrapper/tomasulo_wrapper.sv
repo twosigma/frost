@@ -2250,6 +2250,7 @@ module tomasulo_wrapper #(
   // table and the ROB's replay mask.
   // ===========================================================================
   logic coh_sc_hold, coh_sc_head_addr_valid, coh_sc_fire_success;
+  logic coh_sc_head_query_match;
   logic [riscv_pkg::XLEN-1:0] coh_sc_head_addr;
   logic [riscv_pkg::XLEN-1:0] coh_lq_query_addr, coh_lq_inval_addr, coh_observe_addr;
   logic coh_lq_query_busy, coh_lq_inval_valid, coh_observe_valid;
@@ -2285,6 +2286,7 @@ module tomasulo_wrapper #(
       .i_observe_addr(coh_observe_addr),
       .i_sc_head_addr_valid(coh_sc_head_addr_valid),
       .i_sc_head_addr(coh_sc_head_addr),
+      .i_sc_head_query_match(coh_sc_head_query_match),
       .i_sc_fire_success(coh_sc_fire_success),
       .i_sc_commit(sc_clear_reservation),
       .i_sq_committed_empty(sq_committed_empty),
@@ -2324,6 +2326,8 @@ module tomasulo_wrapper #(
       .i_speculative_flush_en          (speculative_flush_en),
       .i_speculative_partial_flush     (speculative_partial_flush),
       .i_coh_sc_hold                   (coh_sc_hold),
+      .i_coh_query_addr                (coh_lq_query_addr),
+      .o_sc_head_query_match           (coh_sc_head_query_match),
       .o_sc_head_addr_valid            (coh_sc_head_addr_valid),
       .o_sc_head_addr                  (coh_sc_head_addr),
       .o_sc_fire_success               (coh_sc_fire_success),

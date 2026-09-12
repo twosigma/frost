@@ -249,6 +249,13 @@ module retains an L1-only topology for focused unit coverage, where the same
 port connects directly to the DDR bridge. Each level prefixes its port index
 to the ids, so requests from all four sources can be in flight together.
 
+For DMA admission, the SC pending table compares each entry's address with
+the coherence port's registered query line before selecting the current head.
+Selecting the one-bit comparison preserves the original highest-entry priority
+and address-valid qualification while avoiding a wide head-address mux followed
+by another line comparison. The admission registers and SC window timing are
+unchanged; the full head address remains available to capture that window.
+
 Low-BRAM fetch windows wholly below 64 KiB stay one-cycle; other low-BRAM
 windows repeat once to register their PC predicates. Expanding the former
 16 KiB overlay removes fallback bubbles for newly covered code without

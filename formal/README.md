@@ -42,6 +42,14 @@ declares.
 The target list is not duplicated here. Its sources of truth are
 `FORMAL_TARGETS` in `tests/test_run_formal.py` and the `.sby` files.
 
+The `sc_head_query` target compares the SC pending table's selected one-bit
+coherence result with the original selected-address line comparison. It checks
+the combinational identity from unconstrained table state, with no initial
+values or traffic assumptions, including duplicate matching tags and an
+address-invalid highest-priority entry. The wrapper's coherence regression
+separately exercises admission/SC races with the same identity checked at the
+connected coherence port.
+
 The `data_mem_response_mux` target compares the actual response helper with
 the original RAM/MMIO selection and fast/cached response expression, using
 arbitrary payloads and both selectors. Its `generic32`, `generic64`,
