@@ -513,6 +513,18 @@ old gate and binding. The CLI always sets `FROST_CPU_CLK_DIV`, including 1,
 so an inherited divider cannot silently override the requested 300 MHz build.
 Divided-clock builds must match their requested generated-clock period too.
 
+Every completed stage after placement also writes a checkpoint sidecar, such
+as `post_place_physopt.lineage.json`. It records the exact promoted DCP, the
+parent consumed before launch, and the qualified placement/gate identity.
+Resumed stages and bitstream generation verify this full parent chain. A new
+300 MHz placement therefore cannot authorize a retained 150 MHz phys-opt or
+route checkpoint. Missing or stale lineage requires restarting at
+`--start-at post_place_physopt` from the current qualified placement; existing
+DCPs and reports remain on disk. Starting a downstream stage invalidates its
+previous completion sidecars. Intermediate Tcl checkpoint publications stay
+unqualified until Python observes clean completion and verifies the promoted
+output and unchanged input chain. The post-place gate format remains unchanged.
+
 ```bash
 # Full build with default directives
 ./fpga/build/build.py x3

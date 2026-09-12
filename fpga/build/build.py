@@ -70,7 +70,10 @@ ranked at actual zero added uncertainty, with congestion vetoes at
 to zero; explicitly setting ``FROST_PLACE_QUICK_ROUTE_COUNT`` probes only
 passing seeds. If none passes, the best measured DCP/reports are preserved
 and the build exits nonzero. Resumed downstream stages require a native gate
-record bound to the exact post-place checkpoint. ``FROST_PLACE_CELL_BLOAT`` and
+record bound to the exact post-place checkpoint and a verified parent chain
+for any later checkpoint. Legacy descendants require a new run starting at
+``post_place_physopt``; their checkpoints and reports remain on disk.
+``FROST_PLACE_CELL_BLOAT`` and
 ``FROST_PLACE_CELL_BLOAT_CELLS`` can spread wire-dense hierarchies.
 
 Closure at steps 5-7 promotes ``final.dcp`` and skips to bitstream generation.
@@ -1073,6 +1076,151 @@ def require_x3_post_place_gate(main_work: Path) -> bool:
     return True
 
 
+@dataclass(frozen=True)
+class X3InputLineage:
+    """The consumed parent and qualified placement captured before a launch."""
+
+    parent: dict[str, str]
+    placement: dict[str, str]
+
+
+def _x3_downstream_outputs(step: str) -> set[str]:
+    outputs = {STEP_PRODUCES_CHECKPOINT[step]}
+    if step in FINAL_ELIGIBLE_STEPS:
+        outputs.add("final.dcp")
+    return outputs
+
+
+def capture_x3_input_lineage(
+    main_work: Path, checkpoint_name: str
+) -> X3InputLineage | None:
+    """Validate the actual consumed checkpoint's chain to the current gate.
+
+    Legacy or stale descendants remain on disk but cannot borrow a newer
+    placement's qualification. The existing gate binding stays version 1.
+    """
+    if not require_x3_post_place_gate(main_work):
+        return None
+    try:
+        gate_path = main_work / "post_place_gate_binding.json"
+        gate_binding = json.loads(gate_path.read_text())
+        placement = {
+            "checkpoint_sha256": gate_binding["checkpoint_sha256"],
+            "gate_sha256": gate_binding["gate_sha256"],
+            "binding_sha256": file_sha256(gate_path),
+        }
+        downstream = STEPS[STEPS.index("place") + 1 :]
+        allowed_names = {"post_place.dcp", "final.dcp"} | {
+            STEP_PRODUCES_CHECKPOINT[step] for step in downstream
+        }
+
+        def verify(name: str, visited: set[str]) -> dict[str, str]:
+            if name not in allowed_names or name in visited:
+                raise ValueError("invalid or cyclic checkpoint lineage")
+            digest = file_sha256(main_work / name)
+            if name == "post_place.dcp":
+                if digest != placement["checkpoint_sha256"]:
+                    raise ValueError("placement changed while reading lineage")
+                provenance = placement["binding_sha256"]
+            else:
+                raw = (main_work / name).with_suffix(".lineage.json").read_bytes()
+                record = json.loads(raw)
+                if (
+                    not isinstance(record, dict)
+                    or record.get("stage") not in downstream
+                ):
+                    raise ValueError("invalid downstream producer stage")
+                stage = record["stage"]
+                if name not in _x3_downstream_outputs(stage):
+                    raise ValueError("checkpoint does not belong to its producer stage")
+                parent = STEP_REQUIRES_CHECKPOINT[stage]
+                if parent is None:
+                    raise ValueError("downstream checkpoint has no parent")
+                expected = {
+                    "schema": "x3_checkpoint_lineage_v1",
+                    "stage": stage,
+                    "checkpoint": name,
+                    "checkpoint_sha256": digest,
+                    "parent": verify(parent, visited | {name}),
+                    "placement": placement,
+                }
+                if record != expected:
+                    raise ValueError("checkpoint, parent, or placement lineage changed")
+                provenance = hashlib.sha256(raw).hexdigest()
+            return {
+                "checkpoint": name,
+                "sha256": digest,
+                "provenance_sha256": provenance,
+            }
+
+        return X3InputLineage(verify(checkpoint_name, set()), placement)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print(
+            f"Error: x3 {checkpoint_name} has missing or stale provenance: {error}. "
+            "Rerun from post_place_physopt with the current qualified placement; "
+            "existing checkpoints and reports are retained."
+        )
+        return None
+
+
+def begin_x3_downstream_stage(main_work: Path, step: str) -> X3InputLineage | None:
+    """Capture the parent and invalidate only this stage's completion sidecars."""
+    parent = STEP_REQUIRES_CHECKPOINT[step]
+    if parent is None:
+        return None
+    lineage = capture_x3_input_lineage(main_work, parent)
+    if lineage is not None:
+        # Tcl may publish intermediate phys-opt DCPs directly into main_work.
+        # Only clean Python completion can qualify a newly produced checkpoint.
+        try:
+            for name in _x3_downstream_outputs(step):
+                (main_work / name).with_suffix(".lineage.json").unlink(missing_ok=True)
+        except OSError as error:
+            print(f"Error: cannot invalidate downstream completion provenance: {error}")
+            return None
+    return lineage
+
+
+def bind_x3_output_lineage(
+    main_work: Path,
+    step: str,
+    checkpoint_name: str,
+    source_checkpoint: Path,
+    consumed: X3InputLineage,
+) -> bool:
+    """Qualify a promoted output only if its prelaunch input remains unchanged."""
+    try:
+        if checkpoint_name not in _x3_downstream_outputs(step):
+            raise ValueError("unexpected downstream output name")
+        if consumed.parent["checkpoint"] != STEP_REQUIRES_CHECKPOINT[step]:
+            raise ValueError("captured parent does not belong to this stage")
+        if source_checkpoint.name != f"{_TCL_REPORT_PREFIX[step]}.dcp":
+            raise ValueError("unexpected completed worker checkpoint name")
+        current = capture_x3_input_lineage(main_work, consumed.parent["checkpoint"])
+        if current != consumed:
+            raise ValueError("consumed parent or placement changed during the stage")
+        digest = file_sha256(source_checkpoint)
+        if file_sha256(main_work / checkpoint_name) != digest:
+            raise ValueError(
+                "promoted checkpoint differs from the completed worker output"
+            )
+        record = {
+            "schema": "x3_checkpoint_lineage_v1",
+            "stage": step,
+            "checkpoint": checkpoint_name,
+            "checkpoint_sha256": digest,
+            "parent": consumed.parent,
+            "placement": consumed.placement,
+        }
+        (main_work / checkpoint_name).with_suffix(".lineage.json").write_text(
+            json.dumps(record, indent=2, sort_keys=True) + "\n"
+        )
+    except (OSError, ValueError) as error:
+        print(f"Error: downstream output remains unqualified: {error}")
+        return False
+    return True
+
+
 def copy_results_to_main_work(
     work_dir: Path,
     main_work: Path,
@@ -1701,6 +1849,12 @@ def run_x3_step_directive_sweep(
         print(f"Error: Required checkpoint not found: {input_checkpoint}")
         return False, None, ""
 
+    consumed_lineage = None
+    if step in STEPS[STEPS.index("place") + 1 :]:
+        consumed_lineage = begin_x3_downstream_stage(main_work, step)
+        if consumed_lineage is None:
+            return False, None, ""
+
     route_note = ""
     if step == "route":
         route_note = " (with -tns_cleanup)"
@@ -2046,6 +2200,15 @@ def run_x3_step_directive_sweep(
         )
         return False, best_run.wns, report_prefix
 
+    if consumed_lineage is not None and not bind_x3_output_lineage(
+        main_work,
+        step,
+        checkpoint_name,
+        best_run.work_dir / f"{tcl_report_prefix}.dcp",
+        consumed_lineage,
+    ):
+        return False, best_run.wns, report_prefix
+
     failed_runs = [run for run in runs if run.returncode not in (0, None)]
     failed_run_ids = {id(run) for run in failed_runs}
     if keep_temps:
@@ -2101,6 +2264,12 @@ def run_step(
             return False, None, ""
     else:
         input_checkpoint = None
+
+    consumed_lineage = None
+    if board_name == "x3" and step in STEPS[STEPS.index("place") + 1 :]:
+        consumed_lineage = begin_x3_downstream_stage(main_work, step)
+        if consumed_lineage is None:
+            return False, None, ""
 
     tcl_report_prefix = _TCL_REPORT_PREFIX[step]
     work_dir = script_dir / board_name / f"work_{step}_{directive}"
@@ -2182,6 +2351,15 @@ def run_step(
         print("Error: post-place gate failed; checkpoint and reports preserved.")
         return False, wns, report_prefix
 
+    if consumed_lineage is not None and not bind_x3_output_lineage(
+        main_work,
+        step,
+        checkpoint_name,
+        work_dir / f"{tcl_report_prefix}.dcp",
+        consumed_lineage,
+    ):
+        return False, wns, report_prefix
+
     # Remove the per-step directory unless debugging was requested.
     if not keep_temps:
         shutil.rmtree(work_dir)
@@ -2202,6 +2380,8 @@ def generate_bitstream(
         return False
     if not final_checkpoint.exists():
         print(f"Error: Final checkpoint not found: {final_checkpoint}")
+        return False
+    if board_name == "x3" and capture_x3_input_lineage(main_work, "final.dcp") is None:
         return False
 
     print(f"\n{'='*70}")
@@ -2307,6 +2487,8 @@ Behavior:
     The winning checkpoint/report have zero added setup uncertainty.
     A native post_place_gate.txt and its checkpoint/hash binding are required
     before quick routes or any downstream stage, including resumed builds.
+    Later input checkpoints also require their .lineage.json parent chain;
+    old or stale descendants must be rebuilt from post_place_physopt.
     If no seed passes -0.200 ns, preserve the best DCP/reports and exit nonzero.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each runs every router directive,
