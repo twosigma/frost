@@ -23,6 +23,12 @@
  * read pair by byte offset), one DMA line port (ids of IdBits), a level
  * interrupt, the MAC clocks, the raw PMA interface and the board's PHY
  * status and control lines.
+ *
+ * i_rst carries the next-cycle value of the caller's registered subsystem
+ * reset (the D input of cpu_and_mem's rst_core). nic_top registers it
+ * (rst_q) and so resets in the same cycle as the rest of the subsystem; the
+ * core-domain reset nic_rst_q, the OR of that reset and the RESET sequence's
+ * pulse, is likewise a register computed one cycle ahead.
  */
 module nic_top #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -76,24 +82,44 @@ module nic_top #(
   // ---- reset controller and the MAC domains -------------------------------------------
   logic reset_req, stop_dma, soft_rst, reset_busy, front_idle;
   logic [1:0] clk_ok, in_reset, applied_gen, applied_valid, req, gen, core_rst_dom, ready;
-  logic nic_rst;
-  assign nic_rst = i_rst || soft_rst;
+  // rst_q reproduces the caller's registered reset exactly (i_rst is its next
+  // value). nic_rst_q equals rst_q || soft_rst in every cycle, computed one
+  // cycle ahead from i_rst and the reset controller's next core-reset value.
+  // Both are registers with replication headroom: the OR gate they replace
+  // fanned out to about 1300 enables and write enables across the engines,
+  // served from wherever the CPU's reset replica sat.
+  logic core_rst_next;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)logic rst_q;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 128 *)logic nic_rst_q;
+  always_ff @(posedge i_clk) begin
+    rst_q     <= i_rst;
+    nic_rst_q <= i_rst || core_rst_next;
+  end
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!$isunknown({rst_q, soft_rst, nic_rst_q})) begin
+      assert (nic_rst_q == (rst_q || soft_rst))
+      else $error("nic_rst_q is not the registered reset OR the RESET pulse");
+    end
+  end
+`endif
 
   cdc_sync #(
       .WIDTH(2)
   ) u_clk_ok_sync (
       .i_clk  (i_clk),
-      .i_rst  (i_rst),
+      .i_rst  (rst_q),
       .i_async({i_rx_clk_ok, i_tx_clk_ok}),
       .o_sync (clk_ok)
   );
   nic_reset_ctrl u_reset (
       .i_clk          (i_clk),
-      .i_rst          (i_rst),
+      .i_rst          (rst_q),
       .i_reset_req    (reset_req),
       .i_dma_idle     (front_idle),
       .o_stop_dma     (stop_dma),
       .o_core_rst     (soft_rst),
+      .o_core_rst_next(core_rst_next),
       .o_busy         (reset_busy),
       .i_clk_ok       (clk_ok),
       .i_in_reset     (in_reset),
@@ -118,7 +144,7 @@ module nic_top #(
       .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
   ) u_mac (
       .i_clk            (i_clk),
-      .i_rst            (i_rst),
+      .i_rst            (rst_q),
       .i_soft_rst       (soft_rst),
       .i_req            (req),
       .i_gen            (gen),
@@ -168,7 +194,7 @@ module nic_top #(
       .WIDTH(5)
   ) u_phy_status_sync (
       .i_clk  (i_clk),
-      .i_rst  (i_rst),
+      .i_rst  (rst_q),
       .i_async(i_phy_status),
       .o_sync (phy_status)
   );
@@ -179,7 +205,7 @@ module nic_top #(
       .APERTURE_BYTES(APERTURE_BYTES)
   ) u_csr (
       .i_clk(i_clk),
-      .i_rst(i_rst),
+      .i_rst(rst_q),
       .i_soft_rst(soft_rst),
       .i_wr_en(i_wr_en),
       .i_wr_offset(i_wr_offset),
@@ -241,7 +267,7 @@ module nic_top #(
       .TICK_DEFAULT(TICK_DEFAULT)
   ) u_irq (
       .i_clk        (i_clk),
-      .i_rst        (nic_rst),
+      .i_rst        (nic_rst_q),
       .i_wr_en      (i_wr_en && !reset_busy && !reset_req),
       .i_wr_offset  (i_wr_offset),
       .i_wr_data    (i_wr_data),
@@ -275,7 +301,7 @@ module nic_top #(
       .APERTURE_BYTES(APERTURE_BYTES)
   ) u_rx (
       .i_clk           (i_clk),
-      .i_rst           (nic_rst),
+      .i_rst           (nic_rst_q),
       .i_enable        (rx_en),
       .i_base          (rx_base),
       .i_size_log2     (rx_size),
@@ -318,7 +344,7 @@ module nic_top #(
       .APERTURE_BYTES(APERTURE_BYTES)
   ) u_tx (
       .i_clk           (i_clk),
-      .i_rst           (nic_rst),
+      .i_rst           (nic_rst_q),
       .i_enable        (tx_en),
       .i_base          (tx_base),
       .i_size_log2     (tx_size),
@@ -361,7 +387,7 @@ module nic_top #(
       .APERTURE_BYTES(APERTURE_BYTES)
   ) u_front (
       .i_clk           (i_clk),
-      .i_rst           (nic_rst),
+      .i_rst           (nic_rst_q),
       .i_stop          (stop_dma),
       .o_idle          (front_idle),
       .i_req_valid     (req_valid),

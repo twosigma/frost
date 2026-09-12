@@ -61,9 +61,10 @@ module eth10g_mac_tx #(
   // Packet memory is deliberately not reset; buffer_full controls visibility.
   // The synchronous read is prefetched during preamble and each payload word.
   // One array holds both frame buffers, the buffer select as the top address
-  // bit: synthesis infers block RAM for it, where a two-dimensional array of
-  // buffers falls back to registers.
-  logic [63:0] frame_memory[2 << WordIndexWidth];
+  // bit, with one write port and one read port behind a muxed address:
+  // synthesis infers block RAM for it, where a two-dimensional array of
+  // buffers falls back to registers and a second read port to distributed RAM.
+  (* ram_style = "block" *) logic [63:0] frame_memory[2 << WordIndexWidth];
   logic [1:0] buffer_full;
   int unsigned frame_length[2];
   logic write_buffer;
@@ -126,14 +127,22 @@ module eth10g_mac_tx #(
   // RAM read port: prefetch word zero while /S/ and preamble are emitted,
   // then fetch each succeeding word one enabled clock before it is needed.
   // No reset on the data register, allowing FPGA block-RAM inference.
-  always_ff @(posedge i_clk) begin
+  logic read_enable;
+  logic [WordIndexWidth:0] read_address;
+  always_comb begin
+    read_enable  = 1'b0;
+    read_address = {read_buffer, WordIndexWidth'(0)};
     if (i_enable) begin
       if (tx_state == TX_IDLE && buffer_full[read_buffer]) begin
-        payload_word <= frame_memory[{read_buffer, WordIndexWidth'(0)}];
+        read_enable = 1'b1;
       end else if (tx_state == TX_DATA && tx_position + 8 < frame_length[read_buffer]) begin
-        payload_word <= frame_memory[{read_buffer, WordIndexWidth'((tx_position+8)>>3)}];
+        read_enable  = 1'b1;
+        read_address = {read_buffer, WordIndexWidth'((tx_position + 8) >> 3)};
       end
     end
+  end
+  always_ff @(posedge i_clk) begin
+    if (read_enable) payload_word <= frame_memory[read_address];
   end
 
   always_ff @(posedge i_clk) begin

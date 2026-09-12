@@ -819,6 +819,11 @@ module cpu_ooo #(
   logic step_armed_q;
   logic step_done_q;
   logic step_done_set;
+  // Physical twins of step_armed_q for its two wide consumers, the validity
+  // tracker's keep-NOPs term and the ROB's commit-width gate: the same next
+  // state, kept from merging so the placer can seat each beside its consumer.
+  (* keep = "true", equivalent_register_removal = "no" *)logic step_armed_fe_q;
+  (* keep = "true", equivalent_register_removal = "no" *)logic step_armed_rob_q;
 
   frontend_validity_tracker frontend_validity_tracker_inst (
       .i_clk,
@@ -834,7 +839,7 @@ module cpu_ooo #(
       .i_id_stall_q(id_stall_q),
       .i_replay_after_dispatch_stall_q(replay_after_dispatch_stall_q),
       .i_flush_pipeline(flush_pipeline),
-      .i_keep_nops(step_armed_q),
+      .i_keep_nops(step_armed_fe_q),
       .o_if_valid_q(if_valid_q),
       .o_pd_valid_q(pd_valid_q),
       .o_id_valid_preflush(id_valid_preflush),
@@ -1432,7 +1437,7 @@ module cpu_ooo #(
       .o_commit_2_store_like_raw(rob_commit_2_store_like_raw),
       // Single step (M3): retire one instruction at a time while a step is
       // armed so exactly one instruction executes before the halt.
-      .i_widen_commit_ok(widen_commit_ok && !step_armed_q),
+      .i_widen_commit_ok(widen_commit_ok && !step_armed_rob_q),
       // Commit-time branch recovery is registered for timing; hold the ROB
       // during that recovery cycle so younger wrong-path entries cannot retire.
       .i_commit_hold(csr_commit_fire || trap_mret_commit_hold_q || mispredict_recovery_pending),
@@ -1764,16 +1769,32 @@ module cpu_ooo #(
       (rob_commit_valid_raw || xret_taken || (trap_taken && !trap_to_d && !trap_no_csr));
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      step_armed_q <= 1'b0;
-      step_done_q  <= 1'b0;
+      step_armed_q     <= 1'b0;
+      step_armed_fe_q  <= 1'b0;
+      step_armed_rob_q <= 1'b0;
+      step_done_q      <= 1'b0;
     end else if (trap_taken && trap_to_d) begin
-      step_armed_q <= 1'b0;
-      step_done_q  <= 1'b0;
+      step_armed_q     <= 1'b0;
+      step_armed_fe_q  <= 1'b0;
+      step_armed_rob_q <= 1'b0;
+      step_done_q      <= 1'b0;
     end else begin
-      if (dret_taken && csr_dcsr_step) step_armed_q <= 1'b1;
+      if (dret_taken && csr_dcsr_step) begin
+        step_armed_q     <= 1'b1;
+        step_armed_fe_q  <= 1'b1;
+        step_armed_rob_q <= 1'b1;
+      end
       if (step_done_set) step_done_q <= 1'b1;
     end
   end
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      assert (step_armed_fe_q == step_armed_q && step_armed_rob_q == step_armed_q)
+      else $error("step_armed_q twins diverged");
+    end
+  end
+`endif
 
   // Debug Mode bookkeeping for the debug module: parked = in Debug Mode with
   // no command running (a go starts one; the re-park on its ebreak or

@@ -39,9 +39,12 @@ the port bit. `frost.sv` carries one MAC clock for both directions
 lines so simulation needs only the clock; `boards/x3/x3_frost.sv` derives
 that clock from the MMCM at 40 MHz (1200 MHz / 30) and ties the PHY status
 to "clock shared, transceiver ready". The loopback build runs the MAC well
-below the 10GBASE-R word rate on purpose: the post-opt probe put the MAC
-RX's worst path (its asynchronous distributed-RAM frame buffer) at 18.4 ns,
-so closing the MAC at line rate is part of the slice 4 transceiver work.
+below the 10GBASE-R word rate on purpose: closing the MAC at line rate is
+part of the slice 4 transceiver work. (The first post-opt probe put the MAC
+RX's worst path at 18.4 ns through an asynchronous distributed-RAM frame
+buffer; both MAC frame buffers have since moved to block RAM with
+synchronous reads, which also keeps their address fan-out out of the CPU's
+placement, but the MAC has not been timed at line rate since.)
 `boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
 buses with datapath and bus-skew bounds, single-bit levels, the reset
 assertion) rather than cutting the clock pair, so a crossing the

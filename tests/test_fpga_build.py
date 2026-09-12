@@ -1406,7 +1406,9 @@ def test_step_arm_state_is_declared_before_first_use() -> None:
     """Vivado must not infer an implicit step wire or warn on done-state use."""
     cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()
     first_uses = {
-        "step_armed_q": ".i_keep_nops(step_armed_q)",
+        "step_armed_q": "csr_debug_mode || step_armed_q",
+        "step_armed_fe_q": ".i_keep_nops(step_armed_fe_q)",
+        "step_armed_rob_q": "widen_commit_ok && !step_armed_rob_q",
         "step_done_q": "step_done_set || step_done_q",
         "step_done_set": "step_done_set || step_done_q",
     }
