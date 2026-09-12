@@ -41,7 +41,7 @@ proc add_pin {name direction net {lower {}}} {
     if {$lower ne ""} {add_net $lower}
     dict set objects $name [dict create type pin net $net lower $lower props [dict create \
         NAME $name REF_PIN_NAME [file tail $name] DIRECTION $direction PARENT [file dirname $name] \
-        IS_CLOCK [expr {[file tail $name] in {C CLK WCLK}}] CASE_VALUE {} IS_DISABLED 0]]
+        IS_CLOCK [expr {[file tail $name] in {C CLK WCLK}}] CASE_VALUE {} IS_CASE_ANALYSIS false HAS_CASE_ANALYSIS 0 IS_DISABLED 0]]
 }
 proc arg {args flag {default {}}} {
     set i [lsearch -exact $args $flag]
@@ -239,6 +239,11 @@ switch -- $scenario {
     placed {dict set objects runtime/driver_DMA props LOC FRESH_SITE}
     protected {dict set objects runtime props KEEP true}
     case_zero {dict set objects runtime/driver_DMA/I0 props CASE_VALUE 0}
+    case_flag_true {dict set objects runtime/driver_DMA/I0 props IS_CASE_ANALYSIS true}
+    packing_zero {dict set objects runtime/driver_DMA props LUTNM 0}
+    packing_false {dict set objects runtime/driver_DMA props HLUTNM false}
+    lock_zero {dict set objects runtime/driver_DMA props LOCK_PINS 0}
+    location_zero {dict set objects runtime/driver_DMA props LOC 0}
     split_group {
         set mn [lindex [dict keys [dict get $recipes DMA macros]] 0]
         add_cell $mn/EXTRA RAMD32 32'h0; add_pin $mn/EXTRA/WE IN $mn/lower_selected
@@ -264,7 +269,7 @@ if {$scenario in {positive constant}} {
         set ds [get_pins -leaf -of_objects [get_nets -segments -of_objects runtime/retained_$role/CE] -filter {DIRECTION == OUT}]
         if {$ds ne [list runtime/driver_$role/O]} {error "Retained driver changed"}
     }
-} elseif {$scenario in {missing_last wrong_driver bad_init placed protected case_zero split_group}} {
+} elseif {$scenario in {missing_last wrong_driver bad_init placed protected case_zero case_flag_true packing_zero packing_false lock_zero location_zero split_group}} {
     if {$rc || $value != 0 || $mutation_count || $objects ne $original} {error "Unsafe preflight skip: $value"}
 } elseif {$scenario in {native_error strict_missing}} {
     if {!$rc || $mutation_count || $objects ne $original} {error "Native/strict preflight error escaped: $value"}
