@@ -197,8 +197,13 @@ proc ::frost_l1_control_repair::configuration {name} {
 }
 proc ::frost_l1_control_repair::check_editable {name} {
     set c [cell $name]
-    foreach key {DONT_TOUCH KEEP IS_LOC_FIXED IS_BEL_FIXED LOCK_PINS RLOC HU_SET U_SET} {
-        if {[property $c $key] ni {{} 0 false FALSE}} {mismatch "Protected or packed cell: $name ($key)"}
+    foreach key {DONT_TOUCH KEEP IS_LOC_FIXED IS_BEL_FIXED} {
+        if {[string tolower [property $c $key]] ni {{} 0 false no}} {mismatch "Protected cell: $name ($key)"}
+    }
+    # Group names are strings: even a group named "0" is active. Missing
+    # properties and empty group names both mean no packing constraint.
+    foreach key {LOCK_PINS RLOC HU_SET U_SET H_SET LUTNM HLUTNM SOFT_HLUTNM} {
+        if {[property $c $key] ne {}} {mismatch "Packed cell: $name ($key)"}
     }
     if {[property $c LOC] ne {} || [property $c BEL] ne {}} {mismatch "L1 repair requires an unplaced optimized netlist: $name"}
     # Resolve real PARENT properties; no string-derived ownership assumption.
@@ -208,6 +213,30 @@ proc ::frost_l1_control_repair::check_editable {name} {
         lappend seen $parent; set c [cell $parent]
         if {[property $c DONT_TOUCH] ni {{} 0 false FALSE}} {mismatch "Protected ancestor: $parent"}
     }
+}
+# VALID is removed and recreated, so active controls on its old pins would
+# be lost. A literal case value 0 is active; an IS_CASE_ANALYSIS flag of 0
+# is inactive. Inspect only properties actually exposed by these six pins.
+proc ::frost_l1_control_repair::replacement_pin_controls {c} {
+    set result {}
+    foreach p [get_pins -quiet -of_objects $c] {
+        foreach key [list_property $p] {
+            if {[regexp -nocase {CASE} $key]} {
+                set value [get_property $key $p]
+                if {[regexp -nocase {^(IS_|HAS_)} $key]} {
+                    set active [expr {[string tolower $value] ni {{} 0 false no}}]
+                } else {
+                    set active [expr {$value ne {}}]
+                }
+            } elseif {[regexp -nocase {DISABLE.*TIMING|TIMING.*DISABLE} $key]} {
+                set value [get_property $key $p]
+                set active [expr {[string tolower $value] ni {{} 0 false no}}]
+            } else {continue}
+            if {$active} {mismatch "Active replacement pin control: [get_property NAME $p]/$key=$value"}
+            dict set result [get_property NAME $p] $key $value
+        }
+    }
+    return $result
 }
 proc ::frost_l1_control_repair::check_net {p} {
     foreach net [get_nets -quiet -segments -of_objects $p] {
@@ -262,10 +291,11 @@ proc ::frost_l1_control_repair::prove {actual proposed boundary} {
 proc ::frost_l1_control_repair::preflight {r} {
     set symbols [dict get $r boundary]
     dict for {role spec} [dict get $r old] {dict set symbols $role "[dict get $spec cell]/O"}
-    set actual {}; set snapshots {}; set consumer_inputs {}; set consumers {}
+    set actual {}; set snapshots {}; set consumer_inputs {}; set consumers {}; set valid_controls {}
     dict for {role spec} [dict get $r old] {
         dict set actual $role [read_node $spec $symbols]
         set name [dict get $spec cell]; check_editable $name
+        if {$role eq "VALID"} {set valid_controls [replacement_pin_controls [cell $name]]}
         if {[loads "$name/O"] ne [lsort [dict get $r outputs $role]]} {mismatch "Changed $role output ownership"}
         foreach leaf [dict get $r outputs $role] {lappend consumers [file dirname $leaf]}
     }
@@ -308,7 +338,7 @@ proc ::frost_l1_control_repair::preflight {r} {
     }
     foreach leaf $all {check_net [pin $leaf]}
     set ordered_t {}; foreach port {I0 I1 I2 I3} {lappend ordered_t [dict get $t_inputs $port]}
-    return [dict create proof $proof symbols $symbols snapshots $snapshots consumer_inputs $consumer_inputs t_inputs $ordered_t]
+    return [dict create proof $proof symbols $symbols snapshots $snapshots consumer_inputs $consumer_inputs t_inputs $ordered_t valid_pin_controls $valid_controls]
 }
 proc ::frost_l1_control_repair::attach {source destination} {
     set net [one [get_nets -quiet -of_objects [pin $source]] "source immediate net"]

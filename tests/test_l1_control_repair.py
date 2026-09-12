@@ -212,7 +212,10 @@ if {[::frost_l1_control_repair::apply $audit auto] != 0 || $before != $::sim::ed
     assert "PROOF=8192" in result.stdout
 
 
-@pytest.mark.parametrize("mutation", ["init", "source", "extra_load", "protection"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["init", "source", "extra_load", "protection", "lut_group", "soft_group_zero"],
+)
 def test_preflight_rejects_before_mutation(tmp_path: Path, mutation: str) -> None:
     """Reject altered source, function, ownership or protection before editing."""
     edits = {
@@ -220,6 +223,8 @@ def test_preflight_rejects_before_mutation(tmp_path: Path, mutation: str) -> Non
         "source": 'sim::wire fresh_reset_replica/Q "[dict get $r old READY cell]/I3"',
         "extra_load": 'sim::consumer extra/I0; sim::wire "$t/O" extra/I0',
         "protection": "dict set ::sim::cells [dict get $r old VALID cell] DONT_TOUCH 1",
+        "lut_group": "dict set ::sim::cells [dict get $r old VALID cell] LUTNM paired",
+        "soft_group_zero": "dict set ::sim::cells [dict get $r old VALID cell] SOFT_HLUTNM 0",
     }
     result = run_tcl(
         tmp_path,
@@ -256,5 +261,31 @@ dict set new FINAL init {64'h2020AAA000000001}
 if {![catch {::frost_l1_control_repair::prove $old $new [dict get $r boundary]} message] ||
     ![string match {*counterexample*} $message]} {error "Proof failed to detect mutation"}
 """,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ("port", "key", "value", "reject"),
+    [
+        ("I1", "CASE_VALUE", "0", True),
+        ("I1", "CASE_VALUE", "1", True),
+        ("I1", "CASE_VALUE", "", False),
+        ("I1", "IS_CASE_ANALYSIS", "false", False),
+        ("I1", "IS_CASE_ANALYSIS", "0", False),
+        ("I1", "IS_CASE_ANALYSIS", "true", True),
+        ("O", "IS_TIMING_DISABLED", "false", False),
+        ("O", "IS_TIMING_DISABLED", "true", True),
+    ],
+)
+def test_replacement_pin_controls(
+    tmp_path: Path, port: str, key: str, value: str, reject: bool
+) -> None:
+    """Distinguish literal case zero from inactive Boolean pin controls."""
+    result = run_tcl(
+        tmp_path,
+        f'dict set ::sim::pins "[dict get $r old VALID cell]/{port}" {key} {{{value}}}\n'
+        "set failed [catch {::frost_l1_control_repair::preflight $r} message]\n"
+        f'if {{$failed != {int(reject)} || $::sim::edits != 0}} {{error "Incorrect pin-control guard: $message"}}\n',
     )
     assert result.returncode == 0, result.stderr

@@ -24,7 +24,10 @@ other consumers, then replaces only the shared VALID LUT. The new network is:
 
 This puts R3 and R4 directly into the final LUT. Before editing, the module
 reads all original INITs and ordered input drivers, checks the original
-output owners, and exhaustively compares the actual four-node graph with the
+output owners, and rejects active packing/group constraints or pin controls
+that replacing VALID would discard. Explicit case value `0` is active, while
+Boolean `IS_CASE_ANALYSIS=false` is inactive; missing properties are allowed.
+It exhaustively compares the actual four-node graph with the
 replacement over 8,192 binary assignments (588 ones). This is a local
 combinational equivalence check, not a CPU state or four-state proof.
 
