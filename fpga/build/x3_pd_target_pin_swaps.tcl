@@ -91,9 +91,9 @@ namespace eval frost_x3_pd_target_pin_swaps {
         }
     }
 
-    # Direct calls remain strict. The normal placement flow passes auto, and
-    # calls only after restoring canonical groups and zero added uncertainty.
-    # Return 1 only when applied; automatic skips return 0 without a PASS audit.
+    # Direct diagnostic calls are strict unless the caller explicitly selects
+    # auto. Production placement never calls this helper. Return 1 only when
+    # applied; an explicit auto-mode skip returns 0 without a PASS audit.
     proc apply {audit_file {mode strict}} {
         if {$mode ni {auto strict}} {error "Pin refinement mode must be auto or strict"}
         file delete $audit_file
@@ -104,8 +104,8 @@ namespace eval frost_x3_pd_target_pin_swaps {
             [list ${prefix}/u_pd_target_compressed_candidate_i_2 LUT4 16'hBF80 SLICE_X67Y361 \
                 {I0:A5 I1:A6 I2:A4 I3:A3} {I0:A5 I1:A3 I2:A4 I3:A6}]]
         set states {}
-        # Check both recipes before mutation or timing queries. Unmatched
-        # seeds in the default sweep return immediately without timing work.
+        # Check both recipes before mutation or timing queries. An unmatched
+        # diagnostic in explicit auto mode returns without timing work.
         set code [catch {
             foreach recipe $recipes {
                 lassign $recipe name ref init site old_map new_map
