@@ -75,15 +75,18 @@ proc ::frost_x3_nic_placement::config {c} {
     }
     return $result
 }
-proc ::frost_x3_nic_placement::nets {p} {
+# Output distribution nets can have many hierarchy aliases (the measured
+# sideband source has 234 aliases / 923 leaves). Only declared outputs and
+# moved consumer ports use 4096; unrelated input-source walks retain 128.
+proc ::frost_x3_nic_placement::nets {p {alias_limit 128}} {
     set ns [get_nets -segments -of_objects $p]
-    if {![llength $ns] || [llength $ns] > 128} {mismatch "Disconnected or excessive net aliases: $p"}
+    if {![llength $ns] || [llength $ns] > $alias_limit} {mismatch "Disconnected or excessive net aliases: $p"}
     return $ns
 }
-proc ::frost_x3_nic_placement::driver {p} {
-    return [one [get_pins -leaf -of_objects [nets $p] -filter {DIRECTION == OUT}] "driver of $p"]
+proc ::frost_x3_nic_placement::driver {p {alias_limit 128}} {
+    return [one [get_pins -leaf -of_objects [nets $p $alias_limit] -filter {DIRECTION == OUT}] "driver of $p"]
 }
-proc ::frost_x3_nic_placement::source {p} {
+proc ::frost_x3_nic_placement::source {p {alias_limit 128}} {
     # Check immediate constant drivers first; never walk a global constant net.
     set direct [get_nets -of_objects $p]
     if {[llength $direct]} {
@@ -94,11 +97,11 @@ proc ::frost_x3_nic_placement::source {p} {
             if {$ref in {GND VCC}} {return @$ref}
         }
     }
-    return [get_property NAME [driver $p]]
+    return [get_property NAME [driver $p $alias_limit]]
 }
 proc ::frost_x3_nic_placement::leaves {p} {
-    set ns [nets $p]
-    if {[get_property NAME [driver $p]] ne [get_property NAME $p] ||
+    set ns [nets $p 4096]
+    if {[get_property NAME [driver $p 4096]] ne [get_property NAME $p] ||
         [llength [get_ports -quiet -of_objects $ns]]} {mismatch "Nonlocal or multiply driven output $p"}
     set ps [get_pins -leaf -of_objects $ns -filter {DIRECTION == IN}]
     set result [names $ps]
@@ -178,7 +181,7 @@ proc ::frost_x3_nic_placement::consumer {c macro {moved_port {}}} {
         # No electrical clock fanout traversal or source-wide load census.
         if {$direction eq "IN" && $key ni {C CLK WCLK} && [prop $p IS_CLOCK] ni {1 true} &&
             (!$macro || $key eq $moved_port)} {
-            dict set row source [source $p]
+            dict set row source [source $p [expr {$key eq $moved_port ? 4096 : 128}]]
         }
         dict set result pins $key $row
     }
@@ -249,7 +252,7 @@ proc ::frost_x3_nic_placement::prepare {} {
     dict for {role recipe} [recipes] {
         set selected [lsort [dict get $recipe selected]]
         set first [pin [lindex $selected 0]]
-        set out [driver $first]
+        set out [driver $first 4096]
         set c [one [get_cells -of_objects $out] "selected driver owner"]
         set name [get_property NAME $c]; set sig [signature $c]
         if {[get_property REF_PIN_NAME $out] ne "O" || [dict get $sig ref] ne [dict get $recipe ref] ||
@@ -276,11 +279,11 @@ proc ::frost_x3_nic_placement::prepare {} {
         }
         set all [leaves $out]
         if {[llength $all] <= [llength $selected]} {mismatch "$role must retain original consumers"}
-        net_protection [nets $out]
+        net_protection [nets $out 4096]
         set consumers {}; set moving {}; set macro_records {}
         foreach leaf $selected {
             set p [pin $leaf]
-            if {$leaf ni $all || [get_property NAME [driver $p]] ne "$name/O"} {mismatch "Selected consumer has another driver: $leaf"}
+            if {$leaf ni $all || [get_property NAME [driver $p 4096]] ne "$name/O"} {mismatch "Selected consumer has another driver: $leaf"}
         }
         if {[dict size [dict get $recipe macros]]} {
             dict for {mn ms} [dict get $recipe macros] {
@@ -298,7 +301,7 @@ proc ::frost_x3_nic_placement::prepare {} {
                 set expected [expr {$role eq "L1I" ? "FDRE" : "LUT3"}]
                 if {[get_property REF_NAME $lc] ne $expected} {mismatch "Unsupported $role consumer type"}
                 protection $lc {}
-                dict set consumers [get_property NAME $lc] [consumer $lc 0]
+                dict set consumers [get_property NAME $lc] [consumer $lc 0 [get_property REF_PIN_NAME $p]]
                 lappend moving [dict create pin $leaf old_net [get_property NAME [one [get_nets -of_objects $p] "selected immediate net"]] macro 0]
             }
         }
@@ -382,21 +385,21 @@ proc ::frost_x3_nic_placement::verify {states} {
         dict for {name expected_config} [dict get $state source_configs] {
             if {[config [cell $name]] ne $expected_config} {error "Changed upstream source configuration $name"}
         }
-        set consumer_expected [dict get $state consumers]
+        set consumer_expected [dict get $state consumers]; set moved_ports {}
         foreach move [dict get $state moving] {
             set pn [dict get $move pin]; set name [file dirname $pn]; set port [file tail $pn]
+            dict set moved_ports $name $port
             dict set consumer_expected $name pins $port source $copy/O
             # The replacement upper alias may be generated by connect_net.
             # Prove its electrical driver; preserve all other exact pin nets.
             set direct [get_nets -of_objects [pin $pn]]
             if {[dict get $move macro]} {set direct [get_nets -boundary_type upper -of_objects [pin $pn]]}
-            if {[llength $direct] != 1 || [get_property NAME [driver [pin $pn]]] ne "$copy/O"} {error "Changed copied consumer boundary"}
+            if {[llength $direct] != 1 || [get_property NAME [driver [pin $pn] 4096]] ne "$copy/O"} {error "Changed copied consumer boundary"}
             dict set consumer_expected $name pins $port nets [names $direct]
         }
         dict for {name expected_consumer} $consumer_expected {
             set macro [dict exists [dict get $state recipe macros] $name]
-            set moved_port {}
-            if {$macro} {set moved_port [dict get $state recipe macros $name port]}
+            set moved_port [dict get $moved_ports $name]
             if {[consumer [cell $name] $macro $moved_port] ne $expected_consumer} {error "Changed consumer configuration/other pins $name"}
         }
         dict for {name spec} [dict get $state recipe macros] {
