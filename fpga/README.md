@@ -402,20 +402,37 @@ X3 placement ignores `--place-directive`. By default it runs four directives
 24-job grid plus the off-grid `ExtraPostPlacementOpt`/0.425 seed preserves the
 original 25 controls. Two additional variants apply `CELL_BLOAT_FACTOR=LOW`
 to `*u_tomasulo/u_int_rs` at `ExtraNetDelay_high`/0.350 and
-`ExtraPostPlacementOpt`/0.450, for 27 default jobs. These alternatives compete
-under the same scoring and selection rules; they are not forced winners.
+`ExtraPostPlacementOpt`/0.450. One fixed no-bloat flush-guidance incremental
+variant at `ExtraNetDelay_high`/0.300 brings the default to 28 jobs. All
+candidates compete under the same scoring and selection rules.
 `--directives` accepts a nonempty unique subset of legal directives;
 `--num-uncertainties` accepts 1–10 values in 50 ps steps from 0.500 ns (the tenth
 is 0.050 ns). The grid size is the product of both counts; the qualified
 off-grid seed is appended unless the grid already contains it. A LOW variant
 is added only when its corresponding control remains in the requested grid.
+The flush variant likewise requires the END/0.300 control; divided-clock
+functional defaults omit all extra variants. Its label is
+`ExtraNetDelay_high_u0.300_flush_incremental`. Within the same native place
+step, it builds fresh flush-guidance placement from the current post-opt DCP,
+reopens that original post-opt input, imports only the newly generated local
+guidance with `TimingClosure`, and runs plain placement at zero added setup
+uncertainty before the normal reports and gate. It does not load a saved
+experimental DCP or run another synthesis. The candidate sets
+`FROST_PLACE_FLUSH_INCREMENTAL=1` and clears both cell-bloat overrides;
+ordinary candidates remove the flush flag and retain their existing bloat
+behavior. This variant must record its executed
+`FROST_X3_FLUSH_INCREMENTAL=APPLIED` marker and native
+`post_place_flush_guidance_audit.tcldict` before it can compete. Promotion
+retains that audit; another winning recipe clears any stale copy. The gate
+decides success; no timing benefit is assumed.
 
 Explicitly setting either `FROST_PLACE_CELL_BLOAT` or
 `FROST_PLACE_CELL_BLOAT_CELLS` disables the automatic LOW variants and preserves
 the manual override behavior for the original control sweep. The factor may
 be `LOW`, `MEDIUM`, or `HIGH`; the target defaults to `*u_tomasulo/u_int_rs`
 and accepts comma- or space-separated hierarchy patterns. An explicitly empty
-`FROST_PLACE_CELL_BLOAT` requests a control-only sweep with no bloat. Every
+`FROST_PLACE_CELL_BLOAT` requests no bloat or automatic LOW variants; the
+matching fixed flush variant remains eligible. Every
 automatic LOW variant must record exactly one successful integer-RS hierarchy
 match before it can be ranked. Variant work-directory labels include
 `_bloatLOW_intRS`, and generated utilization provenance retains the applied
@@ -451,23 +468,50 @@ launches cannot hide a disconnected source.
 Physical synthesis may change noncanonical replica names and counts, so they
 are reacquired after placement; the reopen must then preserve the complete
 post-place launch and endpoint-name sets. The custom group must own no paths,
-and the cone must return to `clock_from_mmcm`, before scoring at the restored
-0.500 ns uncertainty. The winning guided seed promotes its audit and cone
+and the cone must return to `clock_from_mmcm`, before scoring at zero
+added setup uncertainty. The winning guided seed promotes its audit and cone
 report; an unguided winner clears them. The historical `compressed` group,
 audit, and report names remain stable although the cone now covers every
 predecode metadata predicate on both parities.
 
-Placement rejects congestion estimates at
-`FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5). If every seed is rejected, the
-lowest reported levels survive. The `Cong` column shows the worst reported
+After X3 `opt_design`, the normal flow applies the guarded
+[L1D completion factoring and enable copies](build/l1_control_repair.md)
+and [four distribution copies](build/x3_nic_placement.md) to the current
+netlist before saving `post_opt.dcp`. These transformations verify the actual
+functions and connections before and after editing. An unmatched structure
+skips the complete affected transformation before any edit; an unexpected
+command error or partial edit stops the build. Their audit files accompany
+the optimized checkpoint. They require no experimental checkpoint or files
+outside the checkout. Fresh placement must still establish their timing benefit.
+
+Placement first requires a native global setup decision at the −0.200 ns
+gate, actual CPU clock, and zero added user setup uncertainty. A displayed
+−0.200 is decided by the strict calculated-slack query, not rounded text.
+Passing seeds compete; if none passes, the best measured DCP/reports are
+preserved and the command exits nonzero. No downstream stage starts.
+
+Among passing seeds, placement rejects congestion estimates at
+`FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5). If every passing seed is
+rejected, the lowest reported levels survive. The `Cong` column shows the worst reported
 window level, or `none` when no windows are listed. The report's default
 threshold is 5: `none` does not mean zero congestion or rule out smaller
 congestion windows. `N/A` means the report could not be read. The leading
-`FROST_PLACE_QUICK_ROUTE_COUNT` candidates (default 3) by
-zero-uncertainty-equivalent WNS are quick-routed at real constraints; routed
-WNS selects the winner, with router congestion warnings last. A count of zero
-uses post-place WNS. The promoted checkpoint retains 0.500 ns uncertainty until
-routing.
+`FROST_PLACE_QUICK_ROUTE_COUNT` defaults to zero, so `--stop-after place`
+performs no quick-route probe. An explicit positive count probes only passing
+seeds; routed WNS then selects the winner, with router congestion warnings
+last. Otherwise actual zero-uncertainty post-place WNS selects it. Seed WNS
+shown in the matrix is only an estimate because the limiting path may change.
+The 0.500 ns seed-grid origin is separate from the 0.000 ns report/checkpoint
+uncertainty and `TNS@0`.
+
+The native six-field `post_place_gate.txt` is promoted with the selected DCP.
+Python writes `post_place_gate_binding.json` with the exact gate/DCP SHA256
+values. Quick routes and every downstream stage—including resumed
+post-place phys-opt, routing and bitstream generation—require both a valid
+native PASS and matching hashes. New synthesis/opt promotion invalidates the
+old gate and binding. The CLI always sets `FROST_CPU_CLK_DIV`, including 1,
+so an inherited divider cannot silently override the requested 300 MHz build.
+Divided-clock builds must match their requested generated-clock period too.
 
 ```bash
 # Full build with default directives
@@ -496,7 +540,7 @@ routing.
 Run `./fpga/build/build.py --help` for the full list of directives and options.
 
 Normal X3 placement defaults to `FROST_X3_PD_TARGET_PIN_SWAPS=auto`. After
-placement, canonical group restoration, the 0.500 ns rescore, and any
+placement, canonical group restoration, the 0.000 ns rescore, and any
 clean-reopen group audit, it checks whether two PD target LUTs match the
 recorded `ExtraNetDelay_high`/0.350 LOW placement. Matching candidates receive
 the measured physical input-pin refinement; unmatched seeds log `SKIPPED`
@@ -523,12 +567,11 @@ successful audit, and generated README provenance appends
 See the [post-place timing record](build/x3_post_place_timing.md) for the
 measured checkpoint chain, pin maps, timing, and validation.
 
-The normal placement sweep needs no refinement override. Disable its
-quick-route probes to keep this run entirely within post-place:
+The normal placement sweep needs no refinement override and defaults to no
+quick-route probes:
 
 ```bash
-FROST_PLACE_QUICK_ROUTE_COUNT=0 ./fpga/build/build.py x3 \
-  --start-at place --stop-after place
+./fpga/build/build.py x3 --start-at place --stop-after place
 ```
 
 A single matching placement can also use the default automatic mode natively:
@@ -549,7 +592,7 @@ mkdir -p "$place_run"
 ```
 
 Direct helper calls remain strict by default. To replay the retained matching
-raw checkpoint, which already has 0.500 ns scoring uncertainty, use separate
+historical raw checkpoint, which has 0.500 ns scoring uncertainty, use separate
 output paths in native Vivado Tcl:
 
 ```tcl

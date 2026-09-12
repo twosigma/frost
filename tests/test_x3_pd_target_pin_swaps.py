@@ -238,10 +238,31 @@ proc trace {cmd args} {
 }
 rename source original_source
 proc source {path} {
+    if {[file tail $path] eq "x3_flush_guidance.tcl"} {
+        namespace eval frost_x3_flush_guidance {
+            proc prepare {audit} {trace prepare_flush $audit}
+            proc verify {audit} {
+                trace verify_flush $audit
+                if {[info exists ::env(HOOK_FAIL_VERIFY)]} {error "Injected invalid replica"}
+            }
+        }
+        return
+    }
     if {[file tail $path] eq "x3_pd_target_pin_swaps.tcl"} {
         trace source_helper
         namespace eval frost_x3_pd_target_pin_swaps {
             proc apply {audit mode} {trace apply_helper $audit $mode; return 0}
+        }
+        return
+    }
+    if {[file tail $path] eq "x3_post_place_gate.tcl"} {
+        trace source_gate
+        namespace eval frost_x3_post_place_gate {
+            proc write {work_directory} {
+                trace write_gate $work_directory
+                puts HOOK_GATE_WRITTEN
+                return 1
+            }
         }
         return
     }
@@ -253,7 +274,8 @@ proc unknown {cmd args} {
         get_clocks {return clock_from_mmcm}
         get_cells {return subsystem/u_tomasulo/u_int_rs}
         get_timing_paths {return {}}
-        open_checkpoint - set_property - set_clock_uncertainty - place_design -
+        open_checkpoint - close_design - read_checkpoint - set_param -
+        set_property - set_clock_uncertainty - place_design -
         write_checkpoint - report_timing_summary - report_utilization -
         report_high_fanout_nets - report_design_analysis {return {}}
         default {error "Unexpected command $cmd $args"}
@@ -269,7 +291,7 @@ source $::env(HOOK_SOURCE)
 def test_auto_hook_runs_after_scoring_and_clears_stale_audit(
     tmp_path: Path, mode: str | None
 ) -> None:
-    """Default auto and strict use the final scoring state; disabled clears stale PASS."""
+    """Pin refinement uses zero scoring; checkpoint/reports precede gate and DONE."""
     script = tmp_path / "hook.tcl"
     script.write_text(HOOK_MODEL)
     trace = tmp_path / "trace.txt"
@@ -303,6 +325,33 @@ def test_auto_hook_runs_after_scoring_and_clears_stale_audit(
         return
     assert result.returncode == 0, result.stdout + result.stderr
     assert not audit.exists()
+    score_index = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("set_clock_uncertainty ") and "0.0 -setup" in command
+    )
+    checkpoint_index = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("write_checkpoint ")
+    )
+    timing_index = next(
+        index
+        for index, command in enumerate(commands)
+        if command.startswith("report_timing_summary ")
+    )
+    report_indexes = [
+        index for index, command in enumerate(commands) if command.startswith("report_")
+    ]
+    assert [entry for entry in commands if entry.startswith("write_gate ")] == [
+        f"write_gate {tmp_path}"
+    ]
+    gate_index = commands.index(f"write_gate {tmp_path}")
+    assert score_index < checkpoint_index < timing_index <= max(report_indexes)
+    assert max(report_indexes) < commands.index("source_gate") < gate_index
+    assert result.stdout.index("HOOK_GATE_WRITTEN") < result.stdout.index(
+        "** DONE — place_design complete"
+    )
     helper_calls = [entry for entry in commands if entry.startswith("apply_helper ")]
     if mode == "0":
         assert not helper_calls
@@ -310,17 +359,73 @@ def test_auto_hook_runs_after_scoring_and_clears_stale_audit(
         expected_mode = "strict" if mode == "1" else "auto"
         assert helper_calls == [f"apply_helper {audit} {expected_mode}"]
         apply_index = commands.index(helper_calls[0])
-        score_index = next(
-            index
-            for index, command in enumerate(commands)
-            if command.startswith("set_clock_uncertainty ") and "0.5 -setup" in command
-        )
-        checkpoint_index = next(
-            index
-            for index, command in enumerate(commands)
-            if command.startswith("write_checkpoint ")
-        )
         assert score_index < apply_index < checkpoint_index
+
+
+@pytest.mark.parametrize("invalid_replica", [False, True])
+def test_flush_reference_is_generated_locally_before_final_placement(
+    tmp_path: Path, invalid_replica: bool
+) -> None:
+    """Only a verified current-build reference may enter incremental placement."""
+    script = tmp_path / "hook.tcl"
+    script.write_text(HOOK_MODEL)
+    trace = tmp_path / "trace.txt"
+    trace.touch()
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("FROST_")
+    }
+    env.update(
+        HOOK_TRACE=str(trace),
+        HOOK_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl"),
+        FROST_PLACE_SETUP_UNCERTAINTY="0.300",
+        FROST_PLACE_FLUSH_INCREMENTAL="1",
+        FROST_X3_PD_TARGET_PIN_SWAPS="0",
+    )
+    if invalid_replica:
+        env["HOOK_FAIL_VERIFY"] = "1"
+    result = subprocess.run(
+        ["tclsh", str(script)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    commands = trace.read_text().splitlines()
+    audit = tmp_path / "post_place_flush_guidance_audit.tcldict"
+    reference = tmp_path / "flush_guidance.dcp"
+    prepare = commands.index(f"prepare_flush {audit}")
+    guidance_place = commands.index("place_design -directive ExtraNetDelay_high")
+    verify = commands.index(f"verify_flush {audit}")
+    assert prepare < guidance_place < verify
+    if invalid_replica:
+        assert result.returncode != 0
+        assert not any(command.startswith("write_checkpoint ") for command in commands)
+        assert not any(command.startswith("read_checkpoint ") for command in commands)
+        assert not any(command.startswith("write_gate ") for command in commands)
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    saved = commands.index(f"write_checkpoint -force {reference}")
+    imported = commands.index(
+        f"read_checkpoint -incremental -directive TimingClosure {reference}"
+    )
+    final_place = commands.index("place_design")
+    assert verify < saved < imported < final_place
+    assert commands[saved + 1 : saved + 3] == [
+        "close_design",
+        "open_checkpoint fresh_post_opt.dcp",
+    ]
+    assert [line for line in commands if line.startswith("open_checkpoint ")] == [
+        "open_checkpoint fresh_post_opt.dcp",
+        "open_checkpoint fresh_post_opt.dcp",
+    ]
+    assert commands[imported - 1] == (
+        "set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup"
+    )
+    assert commands.index(f"write_gate {tmp_path}") > final_place
+    assert sum(line.startswith("write_gate ") for line in commands) == 1
+    assert "FROST_X3_FLUSH_INCREMENTAL=APPLIED" in result.stdout
 
 
 def test_guided_hook_follows_complete_reopen_audit() -> None:

@@ -90,7 +90,7 @@ namespace eval frost_x3_pd_target_pin_swaps {
     }
 
     # Direct calls remain strict. The normal placement flow passes auto, and
-    # calls only after restoring canonical groups and 0.500 ns scoring.
+    # calls only after restoring canonical groups and zero added uncertainty.
     # Return 1 only when applied; automatic skips return 0 without a PASS audit.
     proc apply {audit_file {mode strict}} {
         if {$mode ni {auto strict}} {error "Pin refinement mode must be auto or strict"}
