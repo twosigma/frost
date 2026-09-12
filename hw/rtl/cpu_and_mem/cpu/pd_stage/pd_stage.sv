@@ -62,10 +62,11 @@ module pd_stage #(
   // ===========================================================================
   // RVC Decompressor
   // ===========================================================================
-  // Expand the raw 16-bit parcel from IF. The parcel is registered at the
-  // IF/PD boundary, so decompression gets a full cycle.
+  // Expand the selected raw 16-bit parcel from IF. Its live path can include
+  // BRAM selection and stall replay before this combinational expansion.
 
   logic [31:0] decompressed_instr;
+  logic [ 1:0] decompressed_instr_bits20_9_fast;
   logic        decomp_is_compressed;
   logic        decomp_illegal;
 
@@ -75,7 +76,7 @@ module pd_stage #(
       .o_instr_expanded(decompressed_instr),
       .o_instr_expanded_bit8_fast(),
       .o_instr_expanded_bit15_fast(),
-      .o_instr_expanded_bits20_9_fast(),
+      .o_instr_expanded_bits20_9_fast(decompressed_instr_bits20_9_fast),
       .o_instr_expanded_bits27_25_fast(),
       .o_is_compressed(decomp_is_compressed),
       .o_illegal(decomp_illegal),
@@ -92,17 +93,20 @@ module pd_stage #(
   // ===========================================================================
   // Final Instruction Selection
   // ===========================================================================
-  // Select the final instruction from the IF selection signals, which are
-  // registered at the IF→PD boundary. These are priority muxes, so nothing
-  // here depends on the sel_* signals being one-hot.
+  // Select the final instruction from the IF packet. These are priority
+  // muxes, so nothing here depends on the sel_* signals being one-hot.
 
   logic [31:0] final_instruction;
   logic [31:0] instruction_non_nop;
   logic [31:0] instruction_non_nop_with_hot_rs1;
 
   always_comb begin
-    if (pd_sel_compressed) instruction_non_nop = decompressed_instr;
-    else instruction_non_nop = i_from_if_to_pd.effective_instr;
+    if (pd_sel_compressed) begin
+      instruction_non_nop = decompressed_instr;
+      // Only rs2[0] uses the existing exact bit cofactor; retain all other
+      // expansion bits and the same compressed/native selection.
+      instruction_non_nop[20] = decompressed_instr_bits20_9_fast[1];
+    end else instruction_non_nop = i_from_if_to_pd.effective_instr;
   end
 
   // The two slot-1 instruction endpoints in the current low-IMEM set are
@@ -124,12 +128,13 @@ module pd_stage #(
   // Early Source Register Extraction
   // ===========================================================================
   // Extract the source registers beside decompression, for forwarding and
-  // hazard detection. Inputs and outputs are both registered, so there is slack
-  // here. A compressed instruction takes its fields from the decompressor
+  // hazard detection. Timing includes the live IF parcel path. A compressed
+  // instruction takes its fields from the decompressor
   // output, a 32-bit instruction from effective_instr (spanning words are
   // assembled in IF), and a NOP reads x0. An earlier version extracted in IF
   // instead and was reverted; extracting from the already selected instruction
-  // here is shorter and off the critical path.
+  // here preserves that interface. The architectural rs2[0] path can still be
+  // critical; its exact bit-20 cofactor avoids the full expansion dependency.
 
   logic [4:0] source_reg_1;
   logic [4:0] source_reg_2;
@@ -638,9 +643,8 @@ module pd_stage #(
       // registered inject_nop bit and the consumers apply it: id_stage decode
       // and frontend_validity_tracker. That takes the deep frontend-stall-fed
       // sel_nop select off the 32-bit instruction D-mux, which is what x3
-      // timing needs. final_instruction still feeds the shallow 5-bit
-      // source-reg extraction below, where the sel_nop mux is off the critical
-      // path.
+      // timing needs. final_instruction still provides bubble-qualified early
+      // source fields below; their timing depends on the selected IF parcel.
       o_from_pd_to_id.instruction <= instruction_non_nop_with_hot_rs1;
       o_from_pd_to_id.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r ||
                                     i_from_if_to_pd.sel_nop;
