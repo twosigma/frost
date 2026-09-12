@@ -204,13 +204,15 @@ backend notes.
 | `peripherals/` | In use | UART TX/RX blocks; `peripherals/nic/` is the Phase 4 NIC on the coherent DMA port (see its README): `nic_top` sits in `cpu_and_mem.sv` at 0x4003_0000 with PLIC source 4, sharing the DMA port with the test engine through a `line_port_arbiter` |
 
 Slot-1 PD uses the decompressor's existing exact bit-20 cofactor for compressed
-instruction `rs2[0]`, as slot 2 already does. Every other expansion bit and the
+instruction `rs2[0]` and its exact illegal-flag cofactor, as slot 2 already does.
+Every other expansion bit and the
 existing compressed/native selection, bubble qualification and register enables
 remain unchanged. The live IF selection and replay path still precedes PD;
 source extraction therefore does not have an assumed full cycle of slack.
 The cofactor test exhausts all 131,072 parcel/`rd_is_x2` combinations, and the PD
-suite checks the bit's native/RVC selection through stalls, flushes and reset.
-This substitution adds no latency; its placement effect requires measurement.
+suite checks native/RVC selection and illegal-flag qualification through stalls,
+flushes, reset and NOP slots. These substitutions add no latency; their placement
+effect requires measurement.
 
 ## Memory Map
 

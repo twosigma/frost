@@ -579,6 +579,85 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_illegal_cofactor_preserves_qualification_and_lifecycle(dut: Any) -> None:
+    """The exact illegal cofactor retains PD's existing capture and clear rules."""
+    await _setup_test(dut)
+
+    def drive(raw: int, expected: int, *, bubble: bool = False) -> None:
+        _drive_if_packet(
+            dut,
+            {
+                "raw_parcel": raw,
+                "effective_instr": expected if raw & 3 == 3 else NOP_INSTR,
+                "sel_nop": bubble,
+                "sel_compressed": raw & 3 == 3,  # Oppose the local classifier.
+                "decomp_illegal": True,  # Slot 1 must not use slot 2's sideband.
+                "source_hot_predecoded": _source_hot(expected),
+            },
+        )
+
+    cases = (
+        (0x0004, 0x00010493, True),  # C.ADDI4SPN with reserved zero immediate.
+        (0x0185, 0x00118193, False),  # Legal C.ADDI x3, 1.
+        (0x9C41, 0x00000000, True),  # Reserved RV64 arithmetic sub-op.
+        (0x9002, 0x00100073, False),  # C.EBREAK remains legal here.
+        (0x0013, NOP_INSTR, False),  # Native ADDI; ignore compressed sidebands.
+    )
+    for raw, expected, illegal in cases:
+        drive(raw, expected)
+        await _advance_cycle(dut)
+        packet = _read_pd_packet(dut)
+        assert packet["instruction"] == expected
+        assert packet["illegal_instruction"] is illegal
+        assert packet["is_compressed"] is (raw & 3 != 3)
+        assert packet["inject_nop"] is False
+
+    drive(0x9C41, 0)
+    await _advance_cycle(dut)
+    held = _read_pd_packet(dut)
+    assert held["illegal_instruction"] is True
+    drive(0x9002, 0x00100073)
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    assert _read_pd_packet(dut) == held
+    _drive_pipeline_ctrl(dut, {"stall": True, "flush": True})
+    await _advance_cycle(dut)
+    assert _read_pd_packet(dut) == held
+
+    # Releasing the stall with flush suppresses even a currently illegal parcel.
+    drive(0x9C41, 0)
+    _drive_pipeline_ctrl(dut, {"flush": True})
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut)
+    assert packet["instruction"] == 0
+    assert packet["inject_nop"] is True
+    assert packet["illegal_instruction"] is False
+    _drive_pipeline_ctrl(dut, {})
+    drive(0x0004, 0x00010493, bubble=True)
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut)
+    assert packet["instruction"] == 0x00010493
+    assert packet["inject_nop"] is True
+    assert packet["illegal_instruction"] is False
+
+    drive(0x9C41, 0)
+    await _advance_cycle(dut)
+    assert _read_pd_packet(dut)["illegal_instruction"] is True
+    _drive_pipeline_ctrl(dut, {"reset": True, "stall": True})
+    await _advance_cycle(dut)
+    packet = _read_pd_packet(dut)
+    assert packet["instruction"] == NOP_INSTR
+    assert packet["inject_nop"] is True
+    assert packet["illegal_instruction"] is False
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    assert _read_pd_packet(dut) == packet
+    _drive_pipeline_ctrl(dut, {})
+    await _advance_cycle(dut)
+    assert _read_pd_packet(dut)["illegal_instruction"] is True
+
+
+@cocotb.test()
 async def test_slot2_registers_independently_and_flush_marks_both_slots(
     dut: Any,
 ) -> None:
