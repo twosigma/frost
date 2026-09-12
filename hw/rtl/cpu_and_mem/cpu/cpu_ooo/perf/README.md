@@ -44,6 +44,33 @@ once more, so a counter value reaches `mperfdata` three cycles after the
 execute serially at commit, so a `csrw mperfsel` / `csrr mperfdata` pair can
 never outrun it.
 
+In `cpu_ooo`, an optional 32-bit CSR payload selects the low/high half before
+the existing aggregator capture. It uses `rob_commit_comb.csr_addr`, the exact
+raw address captured by `commit_bus_pipeline` on that same edge. The CSR file
+still applies its current read enable and full address case, then captures its
+output on the next edge. Snapshot age, CSR latency, flush qualification and
+same-cycle FP-flag forwarding are unchanged. The aggregator's original 64-bit
+output remains available; `PreselectCsrHalf` and the CSR file's `UsePerfCsrHalf`
+both default off for generic users.
+
+For each capture edge, let `D` be the original counter mux value and `A` the
+raw commit address. Immediately afterward, the old payload is `P = D`, the
+registered commit address is `Q = A`, and the new payload is
+`H = (A == mperfdatah ? D[63:32] : D[31:0])`. Thus `H` is exactly the half of
+`P` selected by `Q`. Reset sets both payloads to zero; the commit payload can
+still capture its raw address. A flush masks only the current commit valid,
+which remains outside this identity and suppresses both CSR read paths. No
+stability assumption on the counter selector, snapshot, or raw commit bus is
+needed. This is a local phase argument, not a whole-CPU formal proof.
+
+The timing motivation is the measured performance-data-register to CSR-read
+path: one v2 placement had a 2.028 ns first net and -0.469 ns clock skew, with
+only 0.236 ns total logic delay. Moving the half selection does not itself fix
+that physical distance. It also adds a half mux/address decode before the
+performance capture, whose incoming timing must be checked. Native mapping and
+any improvement remain unmeasured; the normal flow uses one placement per
+candidate.
+
 Selecting an out-of-range index (130 or above) reads 0. The selector is 8
 bits wide, so 130 counters fit within its 0–255 index space.
 
@@ -457,7 +484,14 @@ prints a brief report per micro-benchmark.
 per-counter increment conditions (including width-funnel
 and cache events), snapshot capture and freeze-until-next-capture behavior,
 the cache preceding-snapshot bank, all three counter-select blocks, and
-out-of-range reads.
+out-of-range reads. `perf_csr_half` additionally compares the actual aggregator,
+commit pipeline and two CSR instances (default and enabled) across consecutive
+half reads, changing counter data/selector/snapshots, previous-cache-bank reads,
+reset, immediate flush, invalid/exception bubbles, ordinary CSRs and same-cycle
+FP-flag forwarding. The disabled CSR instance receives an intentionally wrong
+hint. The harness also checks registered and combinational equality over 1024
+deterministic randomized raw-commit histories; it is a focused simulation seam,
+not a full CPU regression.
 
 `verif/cocotb_tests/cache/test_frost_cache.py` covers both hierarchy
 shapes. It checks the per-instance `HIT + MISS = ACCESS` partition and known

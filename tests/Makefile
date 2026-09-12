@@ -178,6 +178,16 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),perf_csr_half_test_harness)
+# Actual performance capture / commit pipeline / CSR read equivalence seam.
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv \
+        $(ROOT)/hw/sim/perf_csr_half_test_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),ooo_pipeline_control)
 # CPU OOO pipeline-control unit test
 COMPILE_ARGS := \

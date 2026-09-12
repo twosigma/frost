@@ -143,7 +143,9 @@
     - CSRRC/CSRRCI: Atomic read and clear bits
 */
 module csr_file #(
-    parameter int unsigned XLEN = riscv_pkg::XLEN
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
+    // Optional cpu_ooo payload aligned with the current registered CSR address.
+    parameter bit UsePerfCsrHalf = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -328,6 +330,7 @@ module csr_file #(
     output logic        o_perf_snapshot_capture,
     output logic        o_perf_cache_previous_select,
     input  logic [63:0] i_perf_counter_data,
+    input  logic [31:0] i_perf_counter_csr_half,
     input  logic [31:0] i_perf_counter_count
 );
 
@@ -1421,8 +1424,14 @@ module csr_file #(
         riscv_pkg::CsrMperfCtl: csr_read_data_comb = '0;
         // Custom profiling CSRs stay split 32-bit halves even at rv64
         // (host-side tooling reads them pairwise); zero-extend to the bus.
-        riscv_pkg::CsrMperfData: csr_read_data_comb = XLEN'(i_perf_counter_data[31:0]);
-        riscv_pkg::CsrMperfDataH: csr_read_data_comb = XLEN'(i_perf_counter_data[63:32]);
+        // The optional half was selected alongside the commit-address capture;
+        // this case and i_csr_read_enable still qualify the current access.
+        riscv_pkg::CsrMperfData:
+        csr_read_data_comb = XLEN'(UsePerfCsrHalf ?
+                                  i_perf_counter_csr_half : i_perf_counter_data[31:0]);
+        riscv_pkg::CsrMperfDataH:
+        csr_read_data_comb = XLEN'(UsePerfCsrHalf ?
+                                  i_perf_counter_csr_half : i_perf_counter_data[63:32]);
         riscv_pkg::CsrMperfCount: csr_read_data_comb = XLEN'(i_perf_counter_count);
         // Debug Mode CSRs (Phase 3 M3)
         riscv_pkg::CsrDcsr: csr_read_data_comb = dcsr;

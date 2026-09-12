@@ -33,7 +33,11 @@
  * numbering contract and the CSR protocol.
  */
 
-module perf_counter_aggregator (
+module perf_counter_aggregator #(
+    // cpu_ooo's raw commit address is registered alongside the read payload.
+    // Generic users retain the full-width interface without this hint.
+    parameter bit PreselectCsrHalf = 1'b0
+) (
     input logic i_clk,
     input logic i_rst,
 
@@ -74,6 +78,7 @@ module perf_counter_aggregator (
     input  logic [63:0] i_wrapper_perf_counter_data,
     output logic [ 7:0] o_wrapper_perf_counter_select,
     output logic [63:0] o_perf_counter_data_q,
+    output logic [31:0] o_perf_counter_csr_half_q,
     output logic [31:0] o_perf_counter_count
 );
 
@@ -500,6 +505,23 @@ module perf_counter_aggregator (
     end else begin
       perf_counter_data_q <= perf_counter_data_comb;
     end
+  end
+
+  // The commit-bus pipeline captures this exact raw address at the same edge
+  // as perf_counter_data_q. Select the CSR half here, before that boundary;
+  // csr_file still owns current-cycle read/flush qualification and its output
+  // register. This changes neither the snapshot sampled nor CSR read latency.
+  if (PreselectCsrHalf) begin : gen_csr_half
+    always_ff @(posedge i_clk) begin
+      if (i_rst) o_perf_counter_csr_half_q <= '0;
+      else begin
+        o_perf_counter_csr_half_q <=
+            (i_rob_commit_comb.csr_addr == riscv_pkg::CsrMperfDataH) ?
+            perf_counter_data_comb[63:32] : perf_counter_data_comb[31:0];
+      end
+    end
+  end else begin : gen_no_csr_half
+    assign o_perf_counter_csr_half_q = '0;
   end
 
   // --- Output wiring.
