@@ -5678,8 +5678,10 @@ async def test_amo_swap_integration(dut: Any) -> None:
     # is set (cycle 1) before the response is captured (cycle 2).
     dut_if.drive_lq_mem_response(old_val)
     await dut_if.step()  # Cycle 1: mem_outstanding set via NB
-    await dut_if.step()  # Cycle 2: response captured, amo_state → AMO_WRITE_ACTIVE
+    await dut_if.step()  # Cycle 2: response captured, amo_state → AMO_COMPUTE
     dut_if.clear_lq_mem_response()
+    assert not dut_if.read_amo_mem_write()["en"], "AMOSWAP skipped COMPUTE"
+    await dut_if.step()  # Normal AMO result registered → AMO_WRITE_ACTIVE
 
     amo_write = dut_if.read_amo_mem_write()
     assert amo_write["en"], "AMO should request memory write"
@@ -6477,8 +6479,11 @@ async def _run_amo_test(
 
     dut_if.drive_lq_mem_response(old_val)
     await dut_if.step()  # mem_outstanding set
-    await dut_if.step()  # response captured → AMO_WRITE_ACTIVE
+    await dut_if.step()  # response captures operands; MIN/MAX write immediately
     dut_if.clear_lq_mem_response()
+    if op not in (OP_AMOMIN_W, OP_AMOMAX_W, OP_AMOMINU_W, OP_AMOMAXU_W):
+        assert not dut_if.read_amo_mem_write()["en"], f"{op_name} skipped COMPUTE"
+        await dut_if.step()  # Normal AMO result registered → AMO_WRITE_ACTIVE
 
     amo_write = dut_if.read_amo_mem_write()
     assert amo_write["en"], f"{op_name} should request memory write"

@@ -959,7 +959,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Load queue unit tests (allocation, disambiguation, router-pending "
             "cancellation/debt, dependency cleanup, conservative dispatch "
-            "back-pressure, memory, and CDB)"
+            "back-pressure, normal-AMO compute/kill/coherence, memory, and CDB)"
         ),
     ),
     "store_queue": CocotbRunConfig(

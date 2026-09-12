@@ -339,3 +339,20 @@ removed before optimization and their outputs become arbitrary; no dispatch,
 CDB, or flush traffic assumptions constrain the theorem. Only initial reset
 is assumed. The normal ROB simulation and formal targets retain the same
 legacy-equation assertions.
+
+The `load_queue_amo_compute` target reads the production LQ and selects only
+local assertions using `LQ_AMO_COMPUTE_LOCAL_PROOF`; it does not replace the
+FSM or datapath. Four-step BMC checks operand/owner capture, equivalence to
+the original normal-AMO response arithmetic after the extra cycle, normal
+versus MIN/MAX activation latency, compute kill/reset, coherence exclusion,
+no premature write or dependency release, and stalled write stability. A
+four-step cover reaches response → COMPUTE → ACTIVE. External inputs and
+uninitialized state are binary-symbolic, with no reset or admission
+assumptions. Production RAM initialization remains unchanged;
+the proof itself initializes only its past-valid history. This local proof
+excludes scheduler reachability, interrupt integration and liveness. The existing full LQ target
+retains its separate reset-based protocol assertions.
+
+The local proof also retains the four existing combinational free-tree
+consistency assertions; its preparation checks exactly 26 assertion/cover
+cells and rejects any assumptions.

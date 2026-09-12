@@ -114,7 +114,12 @@ FORMAL_TARGETS = [
     FormalTarget(
         "load_queue.sby",
         "Load queue - allocation/back-pressure, dependency cleanup, memory issue, "
-        "router cancellation/debt, CDB broadcast",
+        "router cancellation/debt, staged normal AMOs, CDB broadcast",
+    ),
+    FormalTarget(
+        "load_queue_amo_compute.sby",
+        "Actual LQ normal-AMO operand/compute/write transitions, original result, kill, coherence and stalled owner",
+        tasks=("bmc", "cover"),
     ),
     FormalTarget(
         "data_mem_response_mux.sby",
