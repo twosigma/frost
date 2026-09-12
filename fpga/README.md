@@ -306,10 +306,6 @@ FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_t
 FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 linux_boot
 ```
 
-The [NIC hardware validation record](build/x3_nic_hardware_validation.md)
-preserves the 42-stage passing 150 MHz run, its final timing, and the exact
-archived bitstream and software baseline used before resuming 300 MHz closure.
-
 ## Fetch-seam ILA captures
 
 `--debug-ila` instruments the fetch seam with a Vivado ILA: synthesis compiles
@@ -344,10 +340,6 @@ standalone form for a program that is already running. `fetch_ila_report.py`
 prints the CSV as a cycle table with the mirror names.
 
 ## Building
-
-The [NIC post-opt setup record](build/x3_post_opt_nic_timing.md) documents
-the 300 MHz CPU / 40 MHz loopback MAC result, verification, checkpoint
-provenance and remaining implementation scope.
 
 `build/build.py` compiles `hello_world` into the board's initial BRAM
 contents, then runs the Vivado pipeline. Every step writes a checkpoint, so
@@ -463,8 +455,8 @@ audit, and report names remain stable although the cone now covers every
 predecode metadata predicate on both parities.
 
 After X3 `opt_design`, the normal flow applies the guarded
-[L1D completion factoring and enable copies](build/l1_control_repair.md)
-and [four distribution copies](build/x3_nic_placement.md) to the current
+L1D completion factoring and enable copies
+and four distribution copies to the current
 netlist before saving `post_opt.dcp`. These transformations verify the actual
 functions and connections before and after editing. An unmatched structure
 skips the complete affected transformation before any edit; an unexpected
@@ -547,8 +539,6 @@ replay; its timing checks and rollback apply only when it is invoked directly.
 The normal gate and reports describe the single placer result after restoring
 canonical cost groups and zero added setup uncertainty. Retired diagnostic
 audits are cleared when publishing a new production placement.
-See the [post-place timing record](build/x3_post_place_timing.md) for the
-historical checkpoint chain, pin maps, timing, and validation.
 
 The normal placement sweep needs no refinement override and defaults to no
 quick-route probes:
@@ -556,26 +546,6 @@ quick-route probes:
 ```bash
 ./fpga/build/build.py x3 --start-at place --stop-after place
 ```
-
-Direct helper calls remain strict by default. To replay the retained matching
-historical raw checkpoint, which has 0.500 ns scoring uncertainty, use separate
-output paths in native Vivado Tcl:
-
-```tcl
-open_checkpoint /absolute/path/to/raw/post_place.dcp
-source /absolute/path/to/frost/fpga/build/x3_pd_target_pin_swaps.tcl
-frost_x3_pd_target_pin_swaps::apply /absolute/path/to/replay/post_place_pin_swap_audit.txt
-write_checkpoint -force /absolute/path/to/replay/post_place.dcp
-report_timing_summary -file /absolute/path/to/replay/post_place_timing.rpt
-```
-
-Passing `auto` explicitly as the helper's second argument enables its skip
-behavior for an unmatched diagnostic checkpoint. Production never calls it.
-The helper changes no timing constraints. Preserve the raw input, helper and
-flow hashes, invocation, pin audit, and independent clean-reopen timing audit
-with the refined checkpoint; distinguish its result from raw `place_design`.
-The historical timing record documents the retired integration's validation;
-that evidence does not qualify a current production placement.
 
 ## Programming the FPGA
 

@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 # Guarded X3 L1D completion factoring and final T clock-enable distribution.
-# See l1_control_repair.md for the source boundary, proof and flow contract.
+# See ../README.md for build integration and the failure policy.
 namespace eval ::frost_l1_control_repair {variable cells {}}
 
 proc ::frost_l1_control_repair::recipe {} {
