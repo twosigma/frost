@@ -811,6 +811,15 @@ if {$step eq "synth"} {
     # opt_design -merge_equivalent_drivers -hier_fanout_limit 512
     opt_design -directive $directive
 
+    if {$board_name eq "x3"} {
+        # Match and verify these local transformations against this run's
+        # optimized netlist. They never load an experimental checkpoint.
+        source [file join $script_directory l1_control_repair.tcl]
+        frost_l1_control_repair::apply $work_directory/l1_control_repair_audit.tcldict auto
+        source [file join $script_directory x3_nic_placement.tcl]
+        frost_x3_nic_placement::post_opt $work_directory/x3_nic_placement_post_opt_audit.tcldict auto
+    }
+
     write_checkpoint -force $work_directory/post_opt.dcp
     report_timing_summary -file $work_directory/post_opt_timing.rpt
     report_utilization -file $work_directory/post_opt_util.rpt
@@ -831,6 +840,11 @@ if {$step eq "synth"} {
         ($x3_pd_target_pin_swaps ne "0" && $board_name ne "x3")} {
         error "FROST_X3_PD_TARGET_PIN_SWAPS must be auto, 0 or 1 and is supported only on x3"
     }
+    set x3_flush_incremental [getenv_default FROST_PLACE_FLUSH_INCREMENTAL 0]
+    if {$x3_flush_incremental ni {0 1} ||
+        ($x3_flush_incremental eq "1" && $board_name ne "x3")} {
+        error "FROST_PLACE_FLUSH_INCREMENTAL must be 0 or 1 and is supported only on x3"
+    }
     file delete $work_directory/post_place_pin_swap_audit.txt
     open_checkpoint $checkpoint_path
 
@@ -838,6 +852,9 @@ if {$step eq "synth"} {
     # FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH; FROST_PLACE_CELL_BLOAT_CELLS
     # overrides the default integer-RS hotspot glob.
     set cell_bloat [string toupper [getenv_default FROST_PLACE_CELL_BLOAT ""]]
+    if {$x3_flush_incremental eq "1" && $cell_bloat ne ""} {
+        error "The fixed flush-guidance candidate requires no cell bloat"
+    }
     if {$cell_bloat ne ""} {
         if {[lsearch -exact {LOW MEDIUM HIGH} $cell_bloat] < 0} {
             puts "Error: FROST_PLACE_CELL_BLOAT must be LOW, MEDIUM, or HIGH (got '$cell_bloat')"
@@ -857,9 +874,11 @@ if {$step eq "synth"} {
 
     # X3 needs setup overconstraint for 300 MHz. build.py varies it downward
     # from 0.500 ns in 0.050 ns steps as surrogate seeds and to ease packing.
-    # Keep this baseline synchronized with X3_PLACE_BASELINE_UNCERTAINTY_NS.
-    set x3_place_baseline_uncertainty 0.5
-    set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_baseline_uncertainty]
+    # Guidance seeds retain their 0.500 ns starting point. Published checkpoints
+    # and scores use zero added uncertainty (X3_PLACE_REPORT_UNCERTAINTY_NS).
+    set x3_place_seed_baseline_uncertainty 0.5
+    set x3_place_baseline_uncertainty 0.0
+    set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_seed_baseline_uncertainty]
     set_x3_setup_uncertainty $board_name $x3_place_uncertainty "place overconstraint"
 
     # Qualified X3 seeds use one PC-tail placer cost group, not timing
@@ -876,7 +895,7 @@ if {$step eq "synth"} {
     set use_x3_pc_tail_group [expr {
         $board_name eq "x3" &&
         (($directive eq "ExtraNetDelay_high" &&
-          abs(double($x3_place_uncertainty) - double($x3_place_baseline_uncertainty)) < 1.0e-9) ||
+          abs(double($x3_place_uncertainty) - double($x3_place_seed_baseline_uncertainty)) < 1.0e-9) ||
          ($directive eq "ExtraPostPlacementOpt" &&
           (abs(double($x3_place_uncertainty) - 0.450) < 1.0e-9 ||
            abs(double($x3_place_uncertainty) - 0.425) < 1.0e-9)))
@@ -906,7 +925,32 @@ if {$step eq "synth"} {
         group_path -name frost_pc_compressed_tail -from $x3_pc_compressed_tail_starts -to $x3_pc_compressed_tail_ends
     }
 
-    place_design -directive $directive
+    if {$x3_flush_incremental eq "1"} {
+        if {$directive ne "ExtraNetDelay_high" ||
+            abs(double($x3_place_uncertainty) - 0.300) > 1.0e-9 ||
+            $use_x3_pc_tail_group} {
+            error "The fixed flush-guidance candidate requires ExtraNetDelay_high/0.300 without a custom path group"
+        }
+        # Generate this candidate's reference from its own fresh optimized
+        # design. The intermediate reference is not a qualified placement.
+        set_param general.maxThreads 8
+        source [file join $script_directory x3_flush_guidance.tcl]
+        set flush_audit $work_directory/post_place_flush_guidance_audit.tcldict
+        frost_x3_flush_guidance::prepare $flush_audit
+        place_design -directive ExtraNetDelay_high
+        frost_x3_flush_guidance::verify $flush_audit
+        set_x3_setup_uncertainty $board_name 0.0 "fresh flush guidance"
+        set fresh_guidance $work_directory/flush_guidance.dcp
+        write_checkpoint -force $fresh_guidance
+        close_design
+        open_checkpoint $checkpoint_path
+        set_x3_setup_uncertainty $board_name 0.0 "fresh incremental placement"
+        read_checkpoint -incremental -directive TimingClosure $fresh_guidance
+        place_design
+        puts "FROST_X3_FLUSH_INCREMENTAL=APPLIED"
+    } else {
+        place_design -directive $directive
+    }
 
     if {$use_x3_pc_tail_group} {
         # Reacquire PSIP-created/removed/renamed replicas before restoring the
@@ -953,8 +997,9 @@ if {$step eq "synth"} {
         group_path -default -from $x3_pc_compressed_tail_starts_after -to $x3_pc_compressed_tail_ends_after
     }
 
-    # Restore 0.5 ns for equal scoring and post-place phys-opt; route clears it.
-    set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "full place overconstraint for seed-fair scoring"
+    # Remove placer guidance before scoring, qualification and checkpointing.
+    # Derived jitter and existing CDC/IP constraints remain active.
+    set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "real post-place scoring"
 
     if {$use_x3_pc_tail_group} {
         # At the clean-reopen scoring boundary, test path ownership because
@@ -1091,6 +1136,11 @@ if {$step eq "synth"} {
     report_design_analysis -congestion -file $work_directory/post_place_congestion.rpt
     if {$use_x3_pc_tail_group} {
         report_timing -from $x3_pc_compressed_tail_starts_score -to $x3_pc_compressed_tail_ends_score -delay_type max -max_paths 1000 -nworst 10 -file $work_directory/post_place_pc_compressed_tail_timing.rpt
+    }
+
+    if {$board_name eq "x3"} {
+        source [file join $script_directory x3_post_place_gate.tcl]
+        frost_x3_post_place_gate::write $work_directory
     }
 
     puts "** DONE — place_design complete with directive: $directive"

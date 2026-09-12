@@ -2,6 +2,10 @@
 
 This records the checkpoint qualified in commit `496c3727`. The default-flow
 follow-up below distinguishes its saved-checkpoint evidence from a new build.
+The uncertainty and quick-route defaults below are historical. The current
+[build flow](../README.md) reports at zero added setup uncertainty, defaults
+to no quick-route probes, and requires the native −0.200 ns placement gate
+before downstream implementation.
 
 The accepted target is WNS >= -0.199 ns after placement at zero added CPU
 setup uncertainty, with the CPU period retained at 3.333 ns (300 MHz).

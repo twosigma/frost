@@ -41,6 +41,20 @@ def _load_fpga_build() -> Any:
 fpga_build: Any = _load_fpga_build()
 
 
+def _write_place_gate(work_dir: Path, wns: float = -0.1, *, bind: bool = False) -> None:
+    """Model the native gate producer; hashes are only added for promotions."""
+    passed = wns >= -0.2
+    (work_dir / "post_place_gate.txt").write_text(
+        f"STATUS={'PASS' if passed else 'FAIL'}\n"
+        "THRESHOLD_NS=-0.200\nCPU_PERIOD_NS=3.333\n"
+        "USER_SETUP_UNCERTAINTY_NS=0.000\n"
+        f"STRICT_BELOW_GATE_PATHS={0 if passed else 1}\n"
+        f"WORST_SLACK_NS={wns}\n"
+    )
+    if bind:
+        assert fpga_build.bind_x3_place_gate(work_dir, wns)
+
+
 def _load_timing_util_summary() -> Any:
     """Load the README report formatter as a standalone module."""
     module_path = REPO_ROOT / "fpga/build/extract_timing_and_util_summary.py"
@@ -193,6 +207,9 @@ def test_build_main_refreshes_actual_completed_report_stage(
     (work_dir / fpga_build.STEP_REQUIRES_CHECKPOINT[step]).write_text(
         "checkpoint fixture\n"
     )
+    if step == "route":
+        (work_dir / "post_place.dcp").write_text("qualified placement\n")
+        _write_place_gate(work_dir, bind=True)
     _write_stage_utilization(work_dir, "post_route", 900)
     _write_stage_utilization(work_dir, "final", 999)
     monkeypatch.setattr(fpga_build, "__file__", str(script_dir / "build.py"))
@@ -428,19 +445,21 @@ def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
 
 
 def test_default_x3_place_sweep_retains_controls_and_adds_low_variants() -> None:
-    """Both treatments get distinct directories beside all 25 controls."""
+    """Three treatments get distinct directories beside all 25 controls."""
     directives = fpga_build.X3_PLACER_SWEEP_DIRECTIVES
     uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(6)
     candidates = fpga_build.make_x3_place_sweep_candidates(
         directives, uncertainties, {}
     )
     controls = [
-        candidate for candidate in candidates if candidate.cell_bloat_factor is None
+        candidate
+        for candidate in candidates
+        if candidate.cell_bloat_factor is None and not candidate.flush_incremental
     ]
     variants = [
         candidate for candidate in candidates if candidate.cell_bloat_factor is not None
     ]
-    assert len(candidates) == len({candidate.label for candidate in candidates}) == 27
+    assert len(candidates) == len({candidate.label for candidate in candidates}) == 28
     assert [
         (candidate.directive, candidate.setup_uncertainty_ns) for candidate in controls
     ] == [
@@ -519,13 +538,19 @@ def test_explicit_x3_bloat_environment_preserves_manual_sweep(
         fpga_build.make_x3_place_setup_uncertainties_ns(6),
         inherited,
     )
-    assert len(candidates) == 25
+    assert len(candidates) == 26
     assert all(candidate.cell_bloat_factor is None for candidate in candidates)
     for candidate in candidates:
         child_environment = candidate.environment(inherited)
         assert child_environment is not inherited
         for key, value in inherited.items():
-            assert child_environment[key] == value
+            if candidate.flush_incremental and key in {
+                "FROST_PLACE_CELL_BLOAT",
+                "FROST_PLACE_CELL_BLOAT_CELLS",
+            }:
+                assert key not in child_environment
+            else:
+                assert child_environment[key] == value
     assert "FROST_PLACE_SETUP_UNCERTAINTY" not in inherited
 
 
@@ -581,6 +606,7 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
         environment = kwargs["env"]
         launches.append((work_dir, environment))
         (work_dir / "post_place.dcp").write_text(work_dir.name)
+        _write_place_gate(work_dir, -0.1 if "bloatLOW" in str(work_dir) else -0.15)
         (work_dir / "post_place_timing.rpt").write_text("timing fixture\n")
         (work_dir / "post_place_congestion.rpt").write_text("no congestion\n")
         (work_dir / "vivado.log").write_text("placement fixture\n")
@@ -599,7 +625,7 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
     monkeypatch.setattr(
         fpga_build,
         "extract_timing_from_report",
-        lambda path: {"wns_ns": -0.700 if "bloatLOW" in str(path) else -0.800},
+        lambda path: {"wns_ns": -0.1 if "bloatLOW" in str(path) else -0.15},
     )
     success, wns, prefix = fpga_build.run_x3_step_directive_sweep(
         tmp_path,
@@ -626,7 +652,7 @@ def test_x3_place_worker_isolates_and_validates_bloat_environment(
     assert "FROST_PLACE_CELL_BLOAT_CELLS" not in fpga_build.os.environ
     promoted = (main_work / "post_place.dcp").read_text()
     assert ("bloatLOW" in promoted) is bloat_match_valid
-    assert wns == (-0.700 if bloat_match_valid else -0.800)
+    assert wns == (-0.1 if bloat_match_valid else -0.15)
 
 
 def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
@@ -637,7 +663,7 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
             (
                 "DIRECTIVE=ExtraNetDelay_high",
                 "PLACE_UNCERTAINTY_NS=0.500",
-                "SCORE_UNCERTAINTY_NS=0.500",
+                "SCORE_UNCERTAINTY_NS=0.000",
                 "PRE_COMPRESSED_STARTS=14",
                 "PRE_ENDS=104",
                 "PRE_PC_BITS=64",
@@ -709,8 +735,8 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
         ),
         valid_audit.replace("PLACE_UNCERTAINTY_NS=0.500", "PLACE_UNCERTAINTY_NS=0.450"),
         valid_audit.replace("PLACE_UNCERTAINTY_NS=0.500", "PLACE_UNCERTAINTY_NS=0.5"),
-        valid_audit.replace("SCORE_UNCERTAINTY_NS=0.500", "SCORE_UNCERTAINTY_NS=0.450"),
-        valid_audit.replace("SCORE_UNCERTAINTY_NS=0.500\n", ""),
+        valid_audit.replace("SCORE_UNCERTAINTY_NS=0.000", "SCORE_UNCERTAINTY_NS=0.450"),
+        valid_audit.replace("SCORE_UNCERTAINTY_NS=0.000\n", ""),
         valid_audit.replace("POST_ENDS=183", "POST_ENDS=31"),
         valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=103"),
         valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=184"),
@@ -790,6 +816,7 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
     seed_work.mkdir()
     main_work.mkdir()
     (seed_work / "post_place.dcp").write_bytes(b"checkpoint")
+    (seed_work / "post_place_gate_cpu.rpt").write_text("CPU control\n")
     (seed_work / "post_place_group_audit.txt").write_text("audit\n")
     (seed_work / "post_place_pin_swap_audit.txt").write_text("pin audit\n")
     (seed_work / "post_place_pc_compressed_tail_timing.rpt").write_text(
@@ -810,6 +837,8 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
         "compressed timing\n"
     )
 
+    assert (main_work / "post_place_gate_cpu.rpt").read_text() == "CPU control\n"
+
 
 def test_non_guided_winner_clears_stale_guidance_evidence(tmp_path: Path) -> None:
     """Optional audit files may never describe a different promoted DCP."""
@@ -820,6 +849,9 @@ def test_non_guided_winner_clears_stale_guidance_evidence(tmp_path: Path) -> Non
     (seed_work / "post_place.dcp").write_bytes(b"new checkpoint")
     (main_work / "post_place_group_audit.txt").write_text("stale audit\n")
     (main_work / "post_place_pin_swap_audit.txt").write_text("stale pin audit\n")
+    (main_work / "post_place_flush_guidance_audit.tcldict").write_text(
+        "stale flush audit\n"
+    )
     (main_work / "post_place_pc_compressed_tail_timing.rpt").write_text(
         "stale compressed timing\n"
     )
@@ -835,6 +867,8 @@ def test_non_guided_winner_clears_stale_guidance_evidence(tmp_path: Path) -> Non
     assert not (main_work / "post_place_group_audit.txt").exists()
     assert not (main_work / "post_place_pin_swap_audit.txt").exists()
     assert not (main_work / "post_place_pc_compressed_tail_timing.rpt").exists()
+
+    assert not (main_work / "post_place_flush_guidance_audit.tcldict").exists()
 
 
 def test_post_opt_promotion_clears_stale_audits(tmp_path: Path) -> None:
@@ -888,7 +922,7 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert "x3_pc_tail_starts_after" not in tcl
     restore_scoring_uncertainty = tcl.index(
         "set_x3_setup_uncertainty $board_name "
-        '$x3_place_baseline_uncertainty "full place overconstraint',
+        '$x3_place_baseline_uncertainty "real post-place scoring',
         remove_compressed_group,
     )
     temporary_checkpoint = tcl.index(
@@ -1681,7 +1715,10 @@ class _VivadoFleet:
         step = command[command.index("-tclargs") + 2]
         prefix = "quick_route" if step == "quick_route" else f"post_{step}"
         (work_dir / f"{prefix}.dcp").write_text(work_dir.name)
-        (work_dir / f"{prefix}_timing.rpt").write_text(str(-1.0 + index / 100.0))
+        wns = round((-0.1 if step == "place" else -1.0) + index / 100.0, 3)
+        (work_dir / f"{prefix}_timing.rpt").write_text(str(wns))
+        if step == "place":
+            _write_place_gate(work_dir, wns)
         (work_dir / "vivado.log").write_text("synthetic Vivado output\n")
         return process
 
@@ -1707,10 +1744,13 @@ class _VivadoFleet:
 
 
 def _sweep_input(script_dir: Path, step: str) -> Path:
-    """Create only the checkpoint needed by this simulated stage."""
+    """Create the required checkpoint and qualified placement for later stages."""
     work_dir = script_dir / "x3/work"
     work_dir.mkdir(parents=True)
     (work_dir / fpga_build.STEP_REQUIRES_CHECKPOINT[step]).write_text("input\n")
+    if fpga_build.STEPS.index(step) > fpga_build.STEPS.index("place"):
+        (work_dir / "post_place.dcp").write_text("qualified placement\n")
+        _write_place_gate(work_dir, bind=True)
     return work_dir
 
 
@@ -1742,7 +1782,7 @@ def test_sweep_limits_overlap_and_replenishes_without_a_batch_barrier(
     result = fpga_build.run_x3_step_directive_sweep(
         tmp_path, step, directives, "test", "unused-vivado", keep_temps=True, **options
     )
-    assert result == (True, -0.86, f"post_{step}")
+    assert result == (True, 0.04 if step == "place" else -0.86, f"post_{step}")
     assert [path.name for path in fleet.attempts] == [
         f"work_{step}_{directive}" for directive in directives
     ]
@@ -1817,6 +1857,8 @@ def _quick_route_candidates(script_dir: Path, count: int = 15) -> list[Any]:
         work_dir = script_dir / f"work_place_Candidate{index}"
         work_dir.mkdir()
         (work_dir / "post_place.dcp").write_text(f"placement {index}\n")
+        wns = round(-0.1 + index / 100.0, 3)
+        _write_place_gate(work_dir, wns, bind=True)
         candidates.append(
             fpga_build.DirectiveSweepRun(
                 directive=f"Candidate{index}",
@@ -1824,7 +1866,7 @@ def _quick_route_candidates(script_dir: Path, count: int = 15) -> list[Any]:
                 work_dir=work_dir,
                 stdout_path=work_dir / "build_step_stdout.log",
                 returncode=0,
-                wns=-1.0 + index / 100.0,
+                wns=wns,
             )
         )
     return candidates
@@ -2001,3 +2043,437 @@ def test_sweep_apis_reject_nonpositive_limits_before_creating_work(
             tmp_path, [], "unused-vivado", max_jobs=max_jobs
         )
     assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("passed", (False, True))
+def test_native_gate_decides_rounded_boundary(tmp_path: Path, passed: bool) -> None:
+    """Identical displayed WNS can represent either native threshold decision."""
+    _write_place_gate(tmp_path, -0.2)
+    gate = tmp_path / "post_place_gate.txt"
+    if not passed:
+        gate.write_text(
+            gate.read_text()
+            .replace("STATUS=PASS", "STATUS=FAIL")
+            .replace("STRICT_BELOW_GATE_PATHS=0", "STRICT_BELOW_GATE_PATHS=1")
+        )
+    assert fpga_build.read_x3_place_gate(gate, -0.2).passed is passed
+    assert fpga_build.x3_place_gate_passes(gate, -0.2) is passed
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    (
+        ("STATUS=PASS", "STATUS=FAIL"),
+        ("STATUS=PASS", "STATUS=UNKNOWN"),
+        ("THRESHOLD_NS=-0.200", "THRESHOLD_NS=-0.201"),
+        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=6.666"),
+        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=3.334"),
+        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=NaN"),
+        ("USER_SETUP_UNCERTAINTY_NS=0.000", "USER_SETUP_UNCERTAINTY_NS=0.500"),
+        ("STRICT_BELOW_GATE_PATHS=0", "STRICT_BELOW_GATE_PATHS=2"),
+        ("WORST_SLACK_NS=-0.1", "WORST_SLACK_NS=-0.201"),
+        ("WORST_SLACK_NS=-0.1", "WORST_SLACK_NS=Infinity"),
+        ("WORST_SLACK_NS=-0.1\n", ""),
+        ("STATUS=PASS", "STATUS=PASS\nSTATUS=PASS"),
+        ("STATUS=PASS", "STATUS=PASS\nEXTRA=1"),
+        ("STATUS=PASS", "STATUS PASS"),
+    ),
+)
+def test_native_gate_rejects_invalid_or_wrong_clock_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, old: str, new: str
+) -> None:
+    """Malformed or incompatible evidence cannot authorize downstream work."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    _write_place_gate(tmp_path)
+    gate = tmp_path / "post_place_gate.txt"
+    gate.write_text(gate.read_text().replace(old, new))
+    assert not fpga_build.x3_place_gate_passes(gate)
+
+
+@pytest.mark.parametrize(
+    "divider,period,valid",
+    (
+        (2, "6.666", True),
+        (2, "6.667", True),
+        (2, "6.668", False),
+        (3, "9.999", True),
+        (4, "13.332", True),
+        (4, "13.334", False),
+    ),
+)
+def test_gate_checks_actual_divided_cpu_period(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    divider: int,
+    period: str,
+    valid: bool,
+) -> None:
+    """Allow only the documented one-picosecond divided-clock display range."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", str(divider))
+    _write_place_gate(tmp_path)
+    gate = tmp_path / "post_place_gate.txt"
+    gate.write_text(
+        gate.read_text().replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={period}")
+    )
+    assert fpga_build.x3_place_gate_passes(gate) is valid
+
+
+@pytest.mark.parametrize("changed", ("checkpoint", "gate", "binding", "unbound"))
+def test_promoted_gate_is_bound_to_exact_checkpoint_and_gate(
+    tmp_path: Path,
+    changed: str,
+) -> None:
+    """Changing either artifact or removing its binding requires fresh evidence."""
+    checkpoint = tmp_path / "post_place.dcp"
+    checkpoint.write_bytes(b"qualified checkpoint")
+    _write_place_gate(tmp_path, bind=True)
+    assert fpga_build.require_x3_post_place_gate(tmp_path)
+    if changed == "checkpoint":
+        checkpoint.write_bytes(b"different checkpoint")
+    elif changed == "gate":
+        with (tmp_path / "post_place_gate.txt").open("a") as stream:
+            stream.write("\n")  # Semantically equal still has different provenance.
+    elif changed == "binding":
+        (tmp_path / "post_place_gate_binding.json").write_text("{}")
+    else:
+        (tmp_path / "post_place_gate_binding.json").unlink()
+    assert not fpga_build.require_x3_post_place_gate(tmp_path)
+    if changed == "unbound":
+        assert not (tmp_path / "post_place_gate_binding.json").exists()
+
+
+@pytest.mark.parametrize("stage", ("post_synth", "post_opt", "post_place"))
+def test_new_checkpoint_promotion_cannot_retain_old_gate(
+    tmp_path: Path,
+    stage: str,
+) -> None:
+    """Promoting a new source or placement invalidates the old qualification."""
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    source.mkdir()
+    dest.mkdir()
+    (dest / "post_place.dcp").write_bytes(b"old qualified placement")
+    _write_place_gate(dest, bind=True)
+    (source / f"{stage}.dcp").write_bytes(b"new checkpoint")
+    (source / "stale_post_place_gate.txt").write_text("not this checkpoint")
+    fpga_build.copy_results_to_main_work(source, dest, f"{stage}.dcp", stage)
+    assert not (dest / "post_place_gate.txt").exists()
+    assert not (dest / "post_place_gate_binding.json").exists()
+
+
+def test_place_ranks_actual_zero_uncertainty_reports_and_defaults_to_no_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Placement selection uses measured WNS and performs no default routing."""
+    monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT", raising=False)
+    candidates = _quick_route_candidates(tmp_path, 2)
+    candidates[1].setup_uncertainty_ns = 0.5
+    assert fpga_build.directive_sweep_rank_wns(candidates[1]) == -0.09
+    assert fpga_build.placement_seed_wns(candidates[1]) == pytest.approx(-0.59)
+    monkeypatch.setattr(
+        fpga_build,
+        "run_x3_place_quick_route_probes",
+        lambda *_a, **_kw: pytest.fail("default placement launched quick routing"),
+    )
+    assert (
+        fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+        is candidates[1]
+    )
+
+
+def test_explicit_quick_route_only_receives_native_passing_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A better displayed score cannot bypass a missing native gate."""
+    candidates = _quick_route_candidates(tmp_path, 3)
+    # The best displayed score has no valid native decision and cannot compete.
+    (candidates[2].work_dir / "post_place_gate.txt").unlink()
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    received = []
+
+    def probes(_script: Path, runs: list[Any], _vivado: str, **_kwargs: Any) -> None:
+        received.extend(runs)
+
+    monkeypatch.setattr(fpga_build, "run_x3_place_quick_route_probes", probes)
+    assert (
+        fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+        is candidates[1]
+    )
+    assert received == [candidates[1], candidates[0]]
+
+
+def test_failed_place_preserves_best_checkpoint_but_cannot_launch_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed threshold keeps diagnostics and exits before downstream work."""
+    fleet = _VivadoFleet(monkeypatch, 1)
+    original_popen = fleet.popen
+
+    def failed_place(command: list[str], **kwargs: Any) -> Any:
+        process = original_popen(command, **kwargs)
+        work_dir = kwargs["cwd"]
+        wns = -0.21 if len(fleet.attempts) == 1 else -0.201
+        (work_dir / "post_place_timing.rpt").write_text(str(wns))
+        _write_place_gate(work_dir, wns)
+        return process
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", failed_place)
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    main_work = _sweep_input(tmp_path, "place")
+    result = fpga_build.run_x3_step_directive_sweep(
+        tmp_path,
+        "place",
+        ["First", "Better"],
+        "placer",
+        "unused",
+        max_jobs=1,
+    )
+    assert result == (False, -0.201, "post_place")
+    assert len(fleet.attempts) == 2
+    assert (main_work / "post_place.dcp").read_text() == "work_place_Better"
+    assert (main_work / "post_place_timing.rpt").read_text() == "-0.201"
+    assert not (main_work / "post_place_gate_binding.json").exists()
+    assert all(path.exists() for path in fleet.attempts)
+    assert (
+        fpga_build.run_step(tmp_path, "x3", "post_place_physopt", "Sweep", "unused")[0]
+        is False
+    )
+    assert len(fleet.attempts) == 2
+
+
+@pytest.mark.parametrize("step", ("post_place_physopt", "route", "second_route"))
+def test_downstream_resume_rejects_stale_gate_before_native_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    step: str,
+) -> None:
+    """Every resumed downstream entry point validates the placement binding."""
+    work = _sweep_input(tmp_path, step)
+    (work / "post_place.dcp").write_bytes(b"overwritten checkpoint")
+    monkeypatch.setattr(
+        fpga_build.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("stale gate launched"),
+    )
+    monkeypatch.setattr(
+        fpga_build.subprocess,
+        "Popen",
+        lambda *_a, **_k: pytest.fail("stale gate launched"),
+    )
+    if step == "post_place_physopt":
+        result = fpga_build.run_step(tmp_path, "x3", step, "Sweep", "unused")
+    else:
+        result = fpga_build.run_x3_step_directive_sweep(
+            tmp_path, step, ["Explore"], "router", "unused"
+        )
+    assert not result[0]
+    assert not fpga_build.generate_bitstream(tmp_path, "x3", "unused")
+
+
+def test_quick_route_rejects_stale_placement_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A probe cannot consume a changed placement under an old PASS record."""
+    candidates = _quick_route_candidates(tmp_path, 1)
+    (candidates[0].work_dir / "post_place.dcp").write_bytes(b"changed")
+    monkeypatch.setattr(
+        fpga_build.subprocess,
+        "Popen",
+        lambda *_a, **_k: pytest.fail("stale probe launched"),
+    )
+    fpga_build.run_x3_place_quick_route_probes(tmp_path, candidates, "unused")
+    assert candidates[0].quick_route_returncode == -1
+
+
+def test_default_cpu_cli_overrides_stale_environment_before_software_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CLI default full rate controls software and synthesis despite inherited env."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "2")
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--stop-after", "place"])
+    observed = []
+
+    def compile_firmware(_root: Path, _output: Path, clock: int) -> bool:
+        observed.append((clock, fpga_build.os.environ["FROST_CPU_CLK_DIV"]))
+        return False
+
+    monkeypatch.setattr(fpga_build, "compile_hello_world", compile_firmware)
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 1
+    assert observed == [(300_000_000, "1")]
+
+
+def test_place_gate_cannot_qualify_a_fallback_checkpoint(tmp_path: Path) -> None:
+    """A stray DCP cannot replace the checkpoint named by a native place gate."""
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    source.mkdir()
+    dest.mkdir()
+    (source / "stray.dcp").write_bytes(b"unrelated checkpoint")
+    _write_place_gate(source)
+    fpga_build.copy_results_to_main_work(
+        source, dest, "post_place.dcp", "post_place", source_report_prefix="post_place"
+    )
+    assert not (dest / "post_place.dcp").exists()
+    assert not (dest / "post_place_gate.txt").exists()
+    assert not fpga_build.bind_x3_place_gate(dest)
+
+
+@pytest.mark.parametrize("audits_present", (False, True))
+def test_post_opt_helper_audits_follow_promotion_before_worker_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audits_present: bool
+) -> None:
+    """Fresh native opt audits survive cleanup; absent audits cannot retain old ones."""
+    work = _sweep_input(tmp_path, "opt")
+    audit_names = (
+        "l1_control_repair_audit.tcldict",
+        "x3_nic_placement_post_opt_audit.tcldict",
+    )
+    for name in audit_names:
+        (work / name).write_text("old audit")
+
+    def complete_opt(_command: list[str], *, cwd: Path) -> Any:
+        (cwd / "post_opt.dcp").write_bytes(b"new optimized checkpoint")
+        _write_stage_utilization(cwd, "post_opt", 42)
+        if audits_present:
+            for name in audit_names:
+                (cwd / name).write_text(f"fresh {name}")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", complete_opt)
+    assert fpga_build.run_step(tmp_path, "x3", "opt", "Explore", "unused") == (
+        True,
+        -0.1,
+        "post_opt",
+    )
+    assert not (tmp_path / "x3/work_opt_Explore").exists()
+    assert (work / "post_opt.dcp").read_bytes() == b"new optimized checkpoint"
+    for name in audit_names:
+        if audits_present:
+            assert (work / name).read_text() == f"fresh {name}"
+        else:
+            assert not (work / name).exists()
+
+
+def test_missing_placement_checkpoint_cannot_defeat_complete_passing_seed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gate file without its output checkpoint is not a usable sweep result."""
+    monkeypatch.delenv("FROST_PLACE_QUICK_ROUTE_COUNT", raising=False)
+    candidates = _quick_route_candidates(tmp_path, 2)
+    (candidates[1].work_dir / "post_place.dcp").unlink()
+    assert (
+        fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+        is candidates[0]
+    )
+    (candidates[0].work_dir / "post_place.dcp").unlink()
+    assert fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused") is None
+
+
+@pytest.mark.parametrize(
+    "directives,uncertainties,extras,expected",
+    (
+        (["ExtraNetDelay_high"], [0.300], True, True),
+        (["ExtraNetDelay_high"], [0.300, 0.350], True, True),
+        (["ExtraNetDelay_high"], [0.350], True, False),
+        (["ExtraPostPlacementOpt"], [0.300], True, False),
+        (["RuntimeOptimized"], [0.500], False, False),
+        (["ExtraNetDelay_high"], [0.300], False, False),
+    ),
+)
+def test_flush_incremental_variant_requires_matching_requested_control(
+    directives: list[str], uncertainties: list[float], extras: bool, expected: bool
+) -> None:
+    """The fixed variant follows grid narrowing and functional-build exclusions."""
+    candidates = fpga_build.make_x3_place_sweep_candidates(
+        directives, uncertainties, {}, include_extra_seeds=extras
+    )
+    variants = [candidate for candidate in candidates if candidate.flush_incremental]
+    assert len(variants) == int(expected)
+    if variants:
+        assert variants[0].label == "ExtraNetDelay_high_u0.300_flush_incremental"
+        assert variants[0].directive == "ExtraNetDelay_high"
+        assert variants[0].setup_uncertainty_ns == 0.300
+        assert not variants[0].cell_bloat_factor
+        assert any(
+            candidate.label == "ExtraNetDelay_high_u0.300" for candidate in candidates
+        )
+
+
+@pytest.mark.parametrize(
+    "evidence", ("complete", "missing_audit", "echo_only", "duplicate")
+)
+def test_flush_incremental_worker_isolates_flag_and_clears_ambient_bloat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence: str
+) -> None:
+    """One worker owns fresh guidance; controls keep bloat and receive no flush flag."""
+    monkeypatch.setenv("FROST_PLACE_FLUSH_INCREMENTAL", "1")
+    monkeypatch.setenv("FROST_PLACE_CELL_BLOAT", "LOW")
+    monkeypatch.setenv("FROST_PLACE_CELL_BLOAT_CELLS", "manual_target")
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    monkeypatch.setattr(
+        fpga_build, "x3_pc_tail_group_audit_is_valid", lambda *_args: True
+    )
+    fleet = _VivadoFleet(monkeypatch, 1)
+    popen = fleet.popen
+    launches = []
+
+    def record(command: list[str], **kwargs: Any) -> Any:
+        launches.append((command, kwargs["cwd"], kwargs["env"]))
+        if kwargs["env"].get("FROST_PLACE_FLUSH_INCREMENTAL") == "1":
+            if evidence != "missing_audit":
+                (kwargs["cwd"] / "post_place_flush_guidance_audit.tcldict").write_text(
+                    "native audit fixture"
+                )
+            marker = "FROST_X3_FLUSH_INCREMENTAL=APPLIED\n"
+            if evidence == "echo_only":
+                marker = '# puts "FROST_X3_FLUSH_INCREMENTAL=APPLIED"\n'
+            elif evidence == "duplicate":
+                marker *= 2
+            kwargs["stdout"].write(marker)
+        return popen(command, **kwargs)
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", record)
+    main_work = _sweep_input(tmp_path, "place")
+    result = fpga_build.run_x3_step_directive_sweep(
+        tmp_path,
+        "place",
+        ["ExtraNetDelay_high"],
+        "placer",
+        "unused",
+        setup_uncertainties_ns=[0.300],
+        max_jobs=1,
+        keep_temps=True,
+    )
+    assert result[0]
+    assert len(launches) == 3  # Requested control, existing off-grid, new flush.
+    for command, work_dir, environment in launches:
+        args = command[command.index("-tclargs") + 1 :]
+        assert args[0:2] == ["x3", "place"]
+        assert args[3] == str(main_work / "post_opt.dcp")
+        if work_dir.name.endswith("_flush_incremental"):
+            assert environment["FROST_PLACE_FLUSH_INCREMENTAL"] == "1"
+            assert environment["FROST_PLACE_SETUP_UNCERTAINTY"] == "0.300"
+            assert "FROST_PLACE_CELL_BLOAT" not in environment
+            assert "FROST_PLACE_CELL_BLOAT_CELLS" not in environment
+            assert args[2] == "ExtraNetDelay_high"
+        else:
+            assert "FROST_PLACE_FLUSH_INCREMENTAL" not in environment
+            assert environment["FROST_PLACE_CELL_BLOAT"] == "LOW"
+            assert environment["FROST_PLACE_CELL_BLOAT_CELLS"] == "manual_target"
+    assert (main_work / "post_place.dcp").read_text().endswith(
+        "_flush_incremental"
+    ) is (evidence == "complete")
+    if evidence == "complete":
+        assert (main_work / "post_place_flush_guidance_audit.tcldict").read_text() == (
+            "native audit fixture"
+        )
+    else:
+        assert not (main_work / "post_place_flush_guidance_audit.tcldict").exists()
+    assert fpga_build.os.environ["FROST_PLACE_FLUSH_INCREMENTAL"] == "1"
+    assert fpga_build.os.environ["FROST_PLACE_CELL_BLOAT"] == "LOW"
