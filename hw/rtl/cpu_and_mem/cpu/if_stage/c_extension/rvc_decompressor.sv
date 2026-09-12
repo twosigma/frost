@@ -36,8 +36,8 @@
   only the selected instruction, rather than a bank of parallel expanders
   feeding a wide OR tree at the output. Expanded instruction bits 8, 9, 15,
   20, 25, and 27, plus the illegal flag, also have exact standalone cofactors.
-  Slot 2 consumes those copies so its critical captures do not inherit
-  unrelated logic from the full 32-bit case tree.
+  Slot 2 consumes those copies, and slot 1 consumes bit 20 and the illegal flag,
+  so these captures need not inherit unrelated logic from the full case tree.
 */
 module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,

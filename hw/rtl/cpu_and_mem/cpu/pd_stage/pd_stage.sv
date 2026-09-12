@@ -19,9 +19,9 @@
 
   PD expands the slot-1 compressed parcel (16-bit to 32-bit) and selects the
   final instruction for each slot. IF supplies the slot-1 raw parcel and the
-  selection signals, so decompression runs from registered values here rather
-  than extending the path from instruction-memory read through the expander into
-  a pipeline register. Slot 2 arrives already decompressed: the instruction
+  selection signals; the live instruction-memory selection and replay path can
+  precede decompression. Slot 1 uses the exact bit-20 and illegal cofactors beside
+  the complete expansion. Slot 2 arrives already decompressed: the instruction
   aligner expands the candidate parcels beside its position select (see
   instruction_aligner.sv), so PD takes slot 2's effective_instr and
   decomp_illegal as they stand. Both slots register the un-NOP'd instruction
@@ -79,8 +79,8 @@ module pd_stage #(
       .o_instr_expanded_bits20_9_fast(decompressed_instr_bits20_9_fast),
       .o_instr_expanded_bits27_25_fast(),
       .o_is_compressed(decomp_is_compressed),
-      .o_illegal(decomp_illegal),
-      .o_illegal_fast()
+      .o_illegal(),
+      .o_illegal_fast(decomp_illegal)
   );
 
   // Derive the PD-local compressed select from the raw parcel bits instead of
