@@ -539,11 +539,15 @@ module load_queue #(
   assign o_reservation_addr  = reservation_addr;
 
   // AMO FSM
-  typedef enum logic {
+  typedef enum logic [1:0] {
     AMO_IDLE,
-    AMO_WRITE_ACTIVE
+    AMO_WRITE_ACTIVE,
+    AMO_COMPUTE
   } amo_state_e;
   amo_state_e                              amo_state;
+  amo_kind_e                               amo_kind_q;
+  logic                                    amo_compute_owner_killed;
+  logic                                    amo_compute_commit;
   logic       [    XLEN-1:0]               amo_old_value;
   logic       [    XLEN-1:0]               amo_write_addr_q;
   logic       [    XLEN-1:0]               amo_write_data_q;
@@ -942,7 +946,7 @@ module load_queue #(
         o_coh_query_busy = 1'b1;
       end
     end
-    if ((amo_state == AMO_WRITE_ACTIVE) &&
+    if (((amo_state == AMO_COMPUTE) || (amo_state == AMO_WRITE_ACTIVE)) &&
         (amo_write_addr_q[XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb])) begin
       o_coh_query_busy = 1'b1;
     end
@@ -1696,6 +1700,16 @@ module load_queue #(
                                  (full_flush_response_drain ||
                                   resp_drop || issued_entry_flushed ||
                                   (resp_outstanding && !lq_valid[issued_idx]));
+
+  // The response slot has already been released during COMPUTE. Use the
+  // retained physical owner for a same-cycle recovery kill before launching
+  // any write; a live entry cannot be reused until a later allocation edge.
+  assign amo_compute_owner_killed = !lq_valid[amo_entry_idx] ||
+      (i_flush_en && (flush_all_entries || is_younger(
+      lq_rob_tag[amo_entry_idx], i_flush_tag, i_rob_head_tag
+  )));
+  assign amo_compute_commit = (amo_state == AMO_COMPUTE) && i_rst_n &&
+      !i_flush_all && !amo_compute_owner_killed;
 
   logic fast_resp_now;
   assign fast_resp_now = i_mem_read_valid && !i_mem_read_is_cached;
@@ -2820,10 +2834,12 @@ module load_queue #(
       end else if (accept_mem_response) begin
         if (!resp_from_slot) mem_outstanding <= 1'b0;
         if (issued_is_amo) begin
-          // AMO: start write phase (don't set data_valid yet);
-          // response identity/result and registered write payload are captured
-          // in the data-payload block below.
-          amo_state <= AMO_WRITE_ACTIVE;
+          // MIN/MAX retain their response-to-write timing. Normal operations
+          // first capture operands, then register arithmetic in COMPUTE.
+          // The IDLE guard also prevents an invalid overlapping response from
+          // advancing a current compute owner or replacing an active write.
+          if (amo_response_capture)
+            amo_state <= amo_response_is_minmax ? AMO_WRITE_ACTIVE : AMO_COMPUTE;
         end else begin
           // Non-AMO (LR, FLW, FLD, INT load): the completion bypass may have
           // captured this result directly into cdb_stage the same cycle via
@@ -2866,6 +2882,15 @@ module load_queue #(
       // behind a fast beat (one skipped launch opens the response port).
       cached_launch_hold_q <= (&cs_valid_next) || i_cached_resp_held;
       cs_any_q             <= |cs_valid_next;
+
+      // -----------------------------------------------------------------
+      // Normal AMO arithmetic consumes only response-captured operands.
+      // Killed, unlaunched owners can be canceled safely. Premature write_done
+      // is ignored here; the existing ACTIVE-only completion stays below.
+      // -----------------------------------------------------------------
+      if (amo_state == AMO_COMPUTE) begin
+        amo_state <= amo_compute_owner_killed ? AMO_IDLE : AMO_WRITE_ACTIVE;
+      end
 
       // -----------------------------------------------------------------
       // AMO Write Completion: latch old value as result, invalidate cache
@@ -3291,22 +3316,25 @@ module load_queue #(
   logic [XLEN-1:0] amo_old_word_sext;
   assign amo_old_word_sext = {{(XLEN - 32) {amo_beat_word[31]}}, amo_beat_word[31:0]};
   logic [XLEN-1:0] amo_response_old_value;
-  logic [XLEN-1:0] amo_response_normal_result;
+  logic [XLEN-1:0] amo_compute_result;
   logic amo_response_capture;
   logic amo_response_is_minmax;
   logic [1:0] amo_response_minmax_relation_d;
   logic [1:0] amo_response_minmax_relation_w;
   logic amo_response_minmax_is_unsigned;
   logic amo_response_minmax_is_max;
-  // AMO issue ordering makes an AMO response while WRITE_ACTIVE unreachable,
+  // AMO issue ordering makes a response while COMPUTE/WRITE_ACTIVE unreachable,
   // but make the hold contract local: even malformed/overlapped response input
   // cannot overwrite the stalled write owner's payload.
   assign amo_response_capture = accept_mem_response && issued_is_amo && (amo_state == AMO_IDLE);
   assign amo_response_old_value = issued_amo_is_d ? XLEN'(i_mem_read_data) : amo_old_word_sext;
-  assign amo_response_normal_result = issued_amo_is_d ? amo_non_minmax_compute(
-      issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
+  // Reuse the old-value and rs2 capture registers for normal arithmetic.
+  // .W's architectural old-value sign extension does not affect its low32
+  // result; keep the original separate width functions and zero extension.
+  assign amo_compute_result = amo_is_d_q ? amo_non_minmax_compute(
+      amo_kind_q, amo_old_value, amo_minmax_rs2_q
   ) : XLEN'(amo_non_minmax_compute32(
-      issued_amo_kind, amo_beat_word[31:0], issued_amo_rs2[31:0]
+      amo_kind_q, amo_old_value[31:0], amo_minmax_rs2_q[31:0]
   ));
   assign amo_response_is_minmax = is_amo_minmax_kind(issued_amo_kind);
   // Keep each raw relation bit independent: no width, signedness, or MIN/MAX
@@ -3325,7 +3353,7 @@ module load_queue #(
       amo_old_value            <= amo_response_old_value;
       amo_entry_idx            <= issued_idx;
       amo_write_addr_q         <= issued_addr;
-      amo_write_data_q         <= amo_response_normal_result;
+      amo_kind_q               <= issued_amo_kind;
       amo_minmax_rs2_q         <= issued_amo_rs2;
       amo_is_d_q               <= issued_amo_is_d;
       amo_is_minmax_q          <= amo_response_is_minmax;
@@ -3334,6 +3362,10 @@ module load_queue #(
       amo_minmax_is_unsigned_q <= amo_response_minmax_is_unsigned;
       amo_minmax_is_max_q      <= amo_response_minmax_is_max;
     end
+    // Payload-only capture: reset/recovery cancel control before observation.
+    // A killed COMPUTE may write dead data here; every subsequent normal owner
+    // overwrites it before ACTIVE. Keep flush/age/valid off this wide FF enable.
+    if (amo_state == AMO_COMPUTE) amo_write_data_q <= amo_compute_result;
   end
 
   // -----------------------------------------------------------------
@@ -3432,7 +3464,7 @@ module load_queue #(
       // AMO_IDLE capture guard also prevents an invalid overlapping response
       // from corrupting a stalled write in an unconstrained formal harness.
       if (accept_mem_response && issued_is_amo && (amo_state != AMO_IDLE))
-        $error("LQ: overlapping AMO response arrived while a write was active");
+        $error("LQ: overlapping AMO response arrived while an owner was active");
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
@@ -3484,6 +3516,8 @@ module load_queue #(
   ) && $stable(
       amo_minmax_rs2_q
   ) && $stable(
+      amo_kind_q
+  ) && $stable(
       amo_is_d_q
   ) && $stable(
       amo_is_minmax_q
@@ -3508,12 +3542,25 @@ module load_queue #(
   ))))
   else $error("LQ: AMO write payload changed while memory withheld write_done");
 
-  // The relation split is not a pipeline stage: an accepted AMO response in
-  // IDLE must expose the active write on the immediately following cycle.
+  // MIN/MAX keep next-cycle write activation; normal AMOs spend exactly one
+  // intervening COMPUTE cycle with no write, completion, or dependency release.
   assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
-      (accept_mem_response && issued_is_amo && (amo_state == AMO_IDLE))
+      (amo_response_capture && amo_response_is_minmax)
       |=> (amo_state == AMO_WRITE_ACTIVE && o_amo_mem_write_en))
-  else $error("LQ: AMO response-to-write latency changed");
+  else $error("LQ: MIN/MAX response-to-write latency changed");
+  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+      (amo_response_capture && !amo_response_is_minmax)
+      |=> (amo_state == AMO_COMPUTE && !o_amo_mem_write_en))
+  else $error("LQ: normal AMO did not capture before computing");
+  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+      amo_compute_commit |=> (amo_state == AMO_WRITE_ACTIVE &&
+                             amo_write_data_q == $past(
+      amo_compute_result
+  )))
+  else $error("LQ: normal AMO compute/result boundary changed");
+  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+      (amo_state == AMO_COMPUTE && amo_compute_owner_killed) |=> (amo_state == AMO_IDLE))
+  else $error("LQ: killed compute owner launched an AMO write");
 `endif
 `endif
 
@@ -3521,7 +3568,93 @@ module load_queue #(
   // Formal Verification
   // ===========================================================================
 `ifdef FORMAL
+`ifdef LQ_AMO_COMPUTE_LOCAL_PROOF
+  // Actual-module local transition proof. Only assertion scope changes;
+  // datapath, FSM, queues, and external inputs remain the production RTL.
+  // No admission/reset assumptions: local contracts start at a response or
+  // compute boundary, including otherwise unreachable binary owner states.
+  reg [1:0] f_amo_past_valid = 2'b00;
+  always @(posedge i_clk) f_amo_past_valid <= {f_amo_past_valid[0], 1'b1};
+  wire [XLEN-1:0] f_amo_response_result = issued_amo_is_d ? amo_non_minmax_compute(
+      issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
+  ) : XLEN'(amo_non_minmax_compute32(
+      issued_amo_kind, amo_beat_word[31:0], issued_amo_rs2[31:0]
+  ));
 
+  always @(posedge i_clk) begin
+    if (amo_state == AMO_COMPUTE) begin
+      p_local_no_compute_write : assert (!o_amo_mem_write_en);
+      p_local_no_compute_invalidate : assert (!amo_cache_inv);
+      p_local_no_compute_done : assert (dep_done_oh == '0);
+      p_local_no_compute_overwrite : assert (!amo_response_capture);
+    end
+    if ((amo_state == AMO_COMPUTE || amo_state == AMO_WRITE_ACTIVE) &&
+        amo_write_addr_q[XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb]) begin
+      p_local_retained_line_busy : assert (o_coh_query_busy);
+    end
+    if (f_amo_past_valid[0]) begin
+      if ($past(!i_rst_n || i_flush_all)) begin
+        p_local_reset_kill : assert (amo_state == AMO_IDLE && !o_amo_mem_write_en);
+      end
+      if ($past(amo_state == AMO_COMPUTE)) begin
+        // Dead payload capture is intentional even on reset/recovery.
+        p_local_compute_payload : assert (amo_write_data_q == $past(amo_compute_result));
+      end
+      if ($past(i_rst_n && !i_flush_all)) begin
+        if ($past(amo_response_capture)) begin
+          p_local_capture_old : assert (amo_old_value == $past(amo_response_old_value));
+          p_local_capture_rs2 : assert (amo_minmax_rs2_q == $past(issued_amo_rs2));
+          p_local_capture_kind : assert (amo_kind_q == $past(issued_amo_kind));
+          p_local_capture_width : assert (amo_is_d_q == $past(issued_amo_is_d));
+          p_local_capture_addr : assert (amo_write_addr_q == $past(issued_addr));
+          p_local_capture_index : assert (amo_entry_idx == $past(issued_idx));
+          p_local_capture_mode : assert (amo_is_minmax_q == $past(amo_response_is_minmax));
+          if ($past(amo_response_is_minmax)) begin
+            p_local_minmax_latency : assert (amo_state == AMO_WRITE_ACTIVE && o_amo_mem_write_en);
+          end else begin
+            p_local_normal_latency : assert (amo_state == AMO_COMPUTE && !o_amo_mem_write_en);
+          end
+        end
+        if ($past(amo_state == AMO_COMPUTE)) begin
+          p_local_compute_owner_hold :
+          assert ({amo_old_value, amo_minmax_rs2_q,
+              amo_kind_q, amo_is_d_q, amo_is_minmax_q, amo_write_addr_q, amo_entry_idx} ==
+              $past(
+              {amo_old_value, amo_minmax_rs2_q, amo_kind_q, amo_is_d_q,
+              amo_is_minmax_q, amo_write_addr_q, amo_entry_idx}
+          ));
+          if ($past(amo_compute_owner_killed)) begin
+            p_local_compute_kill : assert (amo_state == AMO_IDLE && !o_amo_mem_write_en);
+          end else begin
+            p_local_compute_activate : assert (amo_state == AMO_WRITE_ACTIVE && o_amo_mem_write_en);
+          end
+        end
+        if ($past(amo_state == AMO_WRITE_ACTIVE && !i_amo_mem_write_done)) begin
+          p_local_active_hold :
+          assert (amo_state == AMO_WRITE_ACTIVE &&
+              {amo_old_value, amo_write_data_q, amo_minmax_rs2_q, amo_kind_q,
+               amo_is_d_q, amo_is_minmax_q, amo_write_addr_q, amo_entry_idx,
+               amo_minmax_relation_d_q, amo_minmax_relation_w_q,
+               amo_minmax_is_unsigned_q, amo_minmax_is_max_q} ==
+              $past(
+              {amo_old_value, amo_write_data_q, amo_minmax_rs2_q, amo_kind_q,
+               amo_is_d_q, amo_is_minmax_q, amo_write_addr_q, amo_entry_idx,
+               amo_minmax_relation_d_q, amo_minmax_relation_w_q,
+               amo_minmax_is_unsigned_q, amo_minmax_is_max_q}
+          ));
+        end
+      end
+    end
+    if (f_amo_past_valid[1] && $past(
+            amo_response_capture && !amo_response_is_minmax, 2
+        ) && $past(
+            amo_compute_commit
+        )) begin
+      p_local_original_result : assert (amo_write_data_q == $past(f_amo_response_result, 2));
+      cover_local_normal_active : cover (amo_state == AMO_WRITE_ACTIVE && o_amo_mem_write_en);
+    end
+  end
+`else
   initial assume (!i_rst_n);
 
   reg f_past_valid;
@@ -4107,14 +4240,13 @@ module load_queue #(
         p_cached_response_frees_slot : assert (!cs_valid[$past(resp_slot)]);
       end
 
-      // The response edge is the only AMO-payload capture boundary. It must
-      // retain the exact response owner while moving directly into write-active.
+      // Response capture retains the owner/operands. Normal arithmetic is
+      // captured one cycle later; MIN/MAX keep immediate write activation.
       if ($past(amo_response_capture)) begin
         p_amo_old_capture : assert (amo_old_value == $past(amo_response_old_value));
         p_amo_entry_capture : assert (amo_entry_idx == $past(issued_idx));
         p_amo_addr_capture : assert (amo_write_addr_q == $past(issued_addr));
-        p_amo_normal_result_capture :
-        assert (amo_write_data_q == $past(amo_response_normal_result));
+        p_amo_operation_capture : assert (amo_kind_q == $past(issued_amo_kind));
         p_amo_rs2_capture : assert (amo_minmax_rs2_q == $past(issued_amo_rs2));
         p_amo_width_capture : assert (amo_is_d_q == $past(issued_amo_is_d));
         p_amo_kind_capture : assert (amo_is_minmax_q == $past(amo_response_is_minmax));
@@ -4126,9 +4258,22 @@ module load_queue #(
         assert (amo_minmax_is_unsigned_q == $past(amo_response_minmax_is_unsigned));
         p_amo_max_mode_capture : assert (amo_minmax_is_max_q == $past(amo_response_minmax_is_max));
         if ($past(amo_state == AMO_IDLE) && !i_flush_all) begin
-          p_amo_response_enters_write_active :
-          assert ((amo_state == AMO_WRITE_ACTIVE) && o_amo_mem_write_en);
+          if ($past(amo_response_is_minmax)) begin
+            p_amo_minmax_enters_write_active :
+            assert ((amo_state == AMO_WRITE_ACTIVE) && o_amo_mem_write_en);
+          end else begin
+            p_amo_normal_enters_compute :
+            assert ((amo_state == AMO_COMPUTE) && !o_amo_mem_write_en);
+          end
         end
+      end
+
+      if ($past(amo_compute_commit) && !i_flush_all) begin
+        p_amo_compute_enters_write_active : assert (amo_state == AMO_WRITE_ACTIVE);
+        p_amo_compute_result_capture : assert (amo_write_data_q == $past(amo_compute_result));
+      end
+      if ($past(amo_state == AMO_COMPUTE && amo_compute_owner_killed && !i_flush_all)) begin
+        p_amo_compute_kill_cancels : assert (amo_state == AMO_IDLE);
       end
 
       // write_done is the sole normal release from AMO_WRITE_ACTIVE. With it
@@ -4141,6 +4286,7 @@ module load_queue #(
         p_amo_stall_addr_stable : assert (amo_write_addr_q == $past(amo_write_addr_q));
         p_amo_stall_normal_result_stable : assert (amo_write_data_q == $past(amo_write_data_q));
         p_amo_stall_rs2_stable : assert (amo_minmax_rs2_q == $past(amo_minmax_rs2_q));
+        p_amo_stall_operation_stable : assert (amo_kind_q == $past(amo_kind_q));
         p_amo_stall_width_stable : assert (amo_is_d_q == $past(amo_is_d_q));
         p_amo_stall_kind_stable : assert (amo_is_minmax_q == $past(amo_is_minmax_q));
         p_amo_stall_relation_d_stable :
@@ -4268,6 +4414,7 @@ module load_queue #(
     end
   end
 
+`endif  // LQ_AMO_COMPUTE_LOCAL_PROOF
 `endif  // FORMAL
 
 endmodule : load_queue

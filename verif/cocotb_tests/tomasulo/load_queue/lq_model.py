@@ -20,6 +20,14 @@ SQ disambiguation, memory response handling, and CDB broadcast logic.
 
 from dataclasses import dataclass
 from config import MASK32, MASK64, MASK_XLEN, XLEN
+from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+
+_INSTR_OPS = _parse_instr_op_enum()
+_MINMAX_OPS = {
+    _INSTR_OPS[f"AMO{kind}_{width}"]
+    for kind in ("MIN", "MAX", "MINU", "MAXU")
+    for width in ("W", "D")
+}
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
@@ -146,7 +154,7 @@ class LQModel:
         self.reservation_valid = False
         self.reservation_addr = 0
         # AMO FSM
-        self.amo_state = 0  # 0=IDLE, 1=WRITE_ACTIVE
+        self.amo_state = 0  # 0=IDLE, 1=WRITE_ACTIVE, 2=COMPUTE
         self.amo_old_value = 0
         self.amo_entry_idx = 0
 
@@ -377,7 +385,7 @@ class LQModel:
                 old_word = (data >> (word_sel * 32)) & MASK32
                 self.amo_old_value = sign_extend_to_xlen(old_word, 32)
             self.amo_entry_idx = idx
-            self.amo_state = 1  # WRITE_ACTIVE
+            self.amo_state = 1 if e.amo_op in _MINMAX_OPS else 2
             self.mem_outstanding = False
         elif e.is_lr:
             # LR: normal data capture + set reservation
@@ -398,6 +406,11 @@ class LQModel:
             e.data = processed & MASK64
             e.data_valid = True
             self.mem_outstanding = False
+
+    def amo_compute_complete(self) -> None:
+        """Advance a normal AMO's extra cycle; killed owners never write."""
+        if self.amo_state == 2:
+            self.amo_state = 1 if self.entries[self.amo_entry_idx].valid else 0
 
     def amo_write_done(self) -> None:
         """Handle AMO write completion."""

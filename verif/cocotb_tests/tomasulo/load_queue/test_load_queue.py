@@ -17,8 +17,8 @@
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
 LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering (ROB-head
 handoff and registered-router-pending serialization), single-beat FLD, FLW
-NaN-boxing, flush, AMO dependency ordering, .W/.D MIN/MAX width, equality, and
-stall semantics, CDB back-pressure, and constrained random.
+NaN-boxing, flush, AMO dependency ordering, normal-AMO compute/cancel/coherence,
+.W/.D MIN/MAX width, equality, and stall semantics, CDB back-pressure, and constrained random.
 Registered dispatch-capacity tests additionally prove that completion/flush
 can cause only a conservative one-cycle stall, never a stale-low admission.
 
@@ -136,6 +136,15 @@ async def accept_fu_complete(dut_if: LQInterface) -> None:
     await dut_if.accept_fu_complete()
 
 
+async def advance_normal_amo_compute(dut_if: LQInterface) -> None:
+    """Require exactly one inert compute cycle before a normal AMO write."""
+    await Timer(1, unit="ns")
+    assert not dut_if.read_amo_mem_write()["en"], "Normal AMO skipped its compute cycle"
+    # The result must use captured operands, not the now-unowned response bus.
+    dut_if.dut.i_mem_read_data.value = MASK64 ^ int(dut_if.dut.i_mem_read_data.value)
+    await dut_if.step()
+
+
 async def complete_prepared_amo(
     dut_if: LQInterface,
     *,
@@ -147,8 +156,10 @@ async def complete_prepared_amo(
     size: int = MEM_SIZE_WORD,
     stall_cycles: int = 0,
     expect_equal_relation: bool = False,
+    is_minmax: bool = False,
+    response_beat: int | None = None,
 ) -> None:
-    """Issue one prepared AMO and check next-cycle writeback, stalls, and CDB."""
+    """Check exact normal/MINMAX write latency, payload stalls, and old-value CDB."""
     is_dword = size == MEM_SIZE_DOUBLE
     dut_if.drive_rob_head_tag(rob_tag)
     dut_if.drive_sq_all_older_known(True)
@@ -162,9 +173,14 @@ async def complete_prepared_amo(
     ), f"{description}: expected read address 0x{address:08x}, got 0x{mem_req['addr']:08x}"
     await dut_if.step()
 
-    dut_if.drive_mem_response(old_value, dword=is_dword)
+    dut_if.drive_mem_response(
+        old_value if response_beat is None else response_beat,
+        dword=is_dword or response_beat is not None,
+    )
     await dut_if.step()
     dut_if.clear_mem_response()
+    if not is_minmax:
+        await advance_normal_amo_compute(dut_if)
 
     await Timer(1, unit="ns")
     amo_write = dut_if.read_amo_mem_write()
@@ -3180,6 +3196,9 @@ async def test_amo_swap(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_mem_response()
 
+    await advance_normal_amo_compute(dut_if)
+    model.amo_compute_complete()
+
     # AMO write should fire (write rs2 to memory)
     await Timer(1, unit="ns")
     amo_write = dut_if.read_amo_mem_write()
@@ -3240,6 +3259,9 @@ async def test_amo_add(dut: Any) -> None:
     model.mem_response(old_val)
     await dut_if.step()
     dut_if.clear_mem_response()
+
+    await advance_normal_amo_compute(dut_if)
+    model.amo_compute_complete()
 
     # AMO write: old + rs2
     await Timer(1, unit="ns")
@@ -3306,6 +3328,9 @@ async def test_slot2_only_amo_uses_compact_staged_kind(dut: Any) -> None:
     model.mem_response(old_val)
     await dut_if.step()
     dut_if.clear_mem_response()
+
+    await advance_normal_amo_compute(dut_if)
+    model.amo_compute_complete()
 
     await Timer(1, unit="ns")
     amo_write = dut_if.read_amo_mem_write()
@@ -3419,6 +3444,7 @@ async def test_all_compact_amo_kinds_preserve_arithmetic(dut: Any) -> None:
             old_value=old_value,
             expected_write=expected_write,
             description=name,
+            is_minmax=amo_op in (AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W),
         )
 
 
@@ -3665,6 +3691,7 @@ async def test_amo_minmax_relation_split_width_equality_and_stall(dut: Any) -> N
             description=name,
             size=size,
             stall_cycles=3,
+            is_minmax=True,
             expect_equal_relation=(
                 (old_value & (MASK64 if size == MEM_SIZE_DOUBLE else MASK32))
                 == (rs2_value & (MASK64 if size == MEM_SIZE_DOUBLE else MASK32))
@@ -3954,6 +3981,9 @@ async def test_amo_write_invalidates_l0_cache(dut: Any) -> None:
     model.mem_response(orig_data)
     await dut_if.step()
     dut_if.clear_mem_response()
+
+    await advance_normal_amo_compute(dut_if)
+    model.amo_compute_complete()
 
     # AMO write phase
     await Timer(1, unit="ns")
@@ -4336,4 +4366,183 @@ async def test_cached_slots_full_blocks_launch_until_a_response(dut: Any) -> Non
     assert int(mem_req["id"]) == int(launches[2]["id"]), "freed slot was not reused"
     result = await wait_for_fu_complete(dut_if)
     assert result.valid and result.tag == 3
+    await accept_fu_complete(dut_if)
+
+
+async def enter_normal_amo_compute(
+    dut_if: LQInterface, *, address: int = 0x8000_0104, tag: int = 5
+) -> None:
+    """Accept a cached upper-word AMOADD response and stop in COMPUTE."""
+    from .lq_interface import AMOADD_W
+
+    dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD, is_amo=True, amo_op=AMOADD_W)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_addr_update(rob_tag=tag, address=address, amo_rs2=3)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_rob_head_tag(tag)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    request = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert request["en"] and request["addr"] == address
+    await dut_if.step()
+    dut_if.drive_mem_response(0xFFFF_FFFE_1234_5678, dword=True)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    assert int(dut_if.dut.amo_state.value) == 2
+    assert not dut_if.read_amo_mem_write()["en"]
+
+
+@cocotb.test()
+async def test_normal_amo_compute_widths_and_stalls(dut: Any) -> None:
+    """Every normal kind uses captured W/D operands, including both W lanes."""
+    dut_if, _ = await setup(dut)
+    from . import lq_interface as ops
+
+    functions = {
+        "SWAP": lambda old, rs2: rs2,
+        "ADD": lambda old, rs2: old + rs2,
+        "XOR": lambda old, rs2: old ^ rs2,
+        "AND": lambda old, rs2: old & rs2,
+        "OR": lambda old, rs2: old | rs2,
+    }
+    tag = 0
+    for kind, function in functions.items():
+        for size, lane in (
+            (MEM_SIZE_WORD, 0),
+            (MEM_SIZE_WORD, 1),
+            (MEM_SIZE_DOUBLE, 0),
+        ):
+            is_d = size == MEM_SIZE_DOUBLE
+            old = 0xFFFF_FFFF_FFFF_FFFE if is_d else 0xFFFF_FFFE
+            rs2 = 0x0123_4567_89AB_CDEF if kind != "ADD" else 3
+            mask = MASK64 if is_d else MASK32
+            address = 0xA000 + tag * 16 + lane * 4
+            response = (
+                old
+                if is_d
+                else ((old << 32) | 0x1234_5678 if lane else (0x1234_5678 << 32) | old)
+            )
+            dut_if.drive_alloc(
+                rob_tag=tag,
+                size=size,
+                is_amo=True,
+                amo_op=getattr(ops, f"AMO{kind}_{'D' if is_d else 'W'}"),
+            )
+            await dut_if.step()
+            dut_if.clear_alloc()
+            dut_if.drive_addr_update(rob_tag=tag, address=address, amo_rs2=rs2)
+            await dut_if.step()
+            dut_if.clear_addr_update()
+            await complete_prepared_amo(
+                dut_if,
+                rob_tag=tag,
+                address=address,
+                old_value=old,
+                expected_write=function(old, rs2) & mask,
+                size=size,
+                description=f"{kind} size{size} lane{lane}",
+                stall_cycles=3,
+                response_beat=response,
+            )
+            tag += 1
+
+
+@cocotb.test()
+async def test_amo_compute_retains_coherence_and_ignores_premature_done(
+    dut: Any,
+) -> None:
+    """A freed response slot leaves no DMA gap or premature AMO completion."""
+    dut_if, _ = await setup(dut)
+    address = 0x8000_0104
+    dut.i_coh_query_addr.value = address
+    await enter_normal_amo_compute(dut_if, address=address)
+    assert int(dut.cs_valid.value) == 0, "Response slot should already be free"
+    assert bool(dut.o_coh_query_busy.value), "Compute opened a DMA admission gap"
+    assert not dut_if.read_fu_complete().valid
+    assert not int(dut.lq_data_valid.value)
+    assert not bool(dut.amo_cache_inv.value)
+    assert not int(dut.dep_done_oh.value)
+
+    # Repeat the already-consumed response with hostile data and an early done.
+    # Neither has a live response/write owner, so neither may retire this AMO.
+    dut_if.drive_mem_response(0x1111_2222_3333_4444, dword=True)
+    dut_if.drive_amo_mem_write_done(True)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    dut_if.drive_amo_mem_write_done(False)
+    await Timer(1, unit="ns")
+    write = dut_if.read_amo_mem_write()
+    assert write["en"] and write["addr"] == address
+    assert write["data"] == wbeat(1), "Compute used a newer response operand"
+    assert not dut_if.read_fu_complete().valid
+    assert not int(dut.lq_data_valid.value), "Premature done released the owner"
+    assert bool(dut.o_coh_query_busy.value)
+    for _ in range(3):
+        await dut_if.step()
+        assert dut_if.read_amo_mem_write() == write
+        assert bool(dut.o_coh_query_busy.value)
+    dut_if.drive_amo_mem_write_done(True)
+    await dut_if.step()
+    dut_if.drive_amo_mem_write_done(False)
+    result = await wait_for_fu_complete(dut_if, max_cycles=8)
+    assert result.valid and result.tag == 5
+    assert result.value == sign_extend_to_xlen(0xFFFF_FFFE, 32)
+    await accept_fu_complete(dut_if)
+    await dut_if.step()
+    assert not bool(dut.o_coh_query_busy.value)
+
+
+@cocotb.test()
+async def test_amo_compute_canceled_before_write(dut: Any) -> None:
+    """Full/reset/partial kills cancel COMPUTE even with a premature done."""
+    dut_if, _ = await setup(dut)
+    for kill in ("full", "reset", "partial", "partial_all"):
+        await dut_if.reset_dut()
+        await enter_normal_amo_compute(dut_if)
+        dut_if.drive_amo_mem_write_done(True)
+        if kill == "full":
+            dut_if.drive_flush_all()
+        elif kill == "reset":
+            dut.i_rst_n.value = 0
+        elif kill == "partial":
+            # Exercise the local owner-kill contract independently of the
+            # integrated ROB-head guarantee (which normally protects this AMO).
+            dut_if.drive_rob_head_tag(4)
+            dut_if.drive_partial_flush(4, early_recovery=True)
+        else:
+            dut_if.drive_partial_flush(4)  # head5 == flush_tag+1: flush-all-entries
+        await dut_if.step()
+        dut_if.clear_flush_all()
+        dut_if.clear_partial_flush()
+        dut_if.drive_amo_mem_write_done(False)
+        dut.i_rst_n.value = 1
+        for _ in range(4):
+            await Timer(1, unit="ns")
+            assert not dut_if.read_amo_mem_write()["en"], f"{kill}: killed owner wrote"
+            assert (
+                not dut_if.read_fu_complete().valid
+            ), f"{kill}: killed owner completed"
+            assert not bool(dut.amo_cache_inv.value)
+            await dut_if.step()
+        assert dut_if.empty
+
+
+@cocotb.test()
+async def test_amo_compute_survives_younger_partial_flush(dut: Any) -> None:
+    """A younger recovery does not discard the surviving AMO head owner."""
+    dut_if, _ = await setup(dut)
+    await enter_normal_amo_compute(dut_if)
+    dut_if.drive_partial_flush(6, early_recovery=True)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    write = dut_if.read_amo_mem_write()
+    assert write["en"] and write["data"] == wbeat(1)
+    dut_if.drive_amo_mem_write_done(True)
+    await dut_if.step()
+    dut_if.drive_amo_mem_write_done(False)
+    result = await wait_for_fu_complete(dut_if, max_cycles=8)
+    assert result.valid and result.tag == 5
     await accept_fu_complete(dut_if)

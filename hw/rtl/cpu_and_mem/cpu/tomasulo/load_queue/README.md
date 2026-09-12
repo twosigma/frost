@@ -172,22 +172,44 @@ its candidate index aliases an accepted allocation. The address-update and
 SQ-check phases an AMO must pass before it can issue hide this delay. The
 staged indexed writes need neither replicated RAM banks nor a live-value table.
 The selected code and `rs2` are snapshotted at AMO read launch alongside the
-issued address. At response, SWAP/ADD/XOR/AND/OR produce a registered,
-comparator-free result. MIN/MAX instead register independent raw unsigned
-`{equal, old-less-than-rs2}` relations for `.W` and `.D`, both held operands,
-and narrow unsigned/MAX mode bits. `.W` compares exactly the low 32 bits even
-on RV64; `.D` compares all 64 bits. Width selection and signed ordering are
-reconstructed only from registered state. Preservation attributes keep the
-four relation bits and two mode bits as that boundary through synthesis and
-equivalent-register removal. The equality bit preserves the strict-comparison
-tie behavior in which either MIN or MAX selects `rs2`. `AMO_WRITE_ACTIVE`
-starts on the next cycle as before and performs a short relation decode plus
-the operand mux; other operations use the normal result register. Neither the
-queue select nor a compare-carry-to-wide-result cone reaches the memory BRAM's
-write pins, and memory-side stalls hold the entire request until `write_done`
-without changing AMO latency. Payload capture is `AMO_IDLE`-qualified as a
-local invariant, so even an invalid overlapping response cannot overwrite a
-stalled active request.
+issued address. At response, SWAP/ADD/XOR/AND/OR enter `AMO_COMPUTE` after
+capturing the old memory value, `rs2`, compact operation, width, address and
+entry index. The existing separate 32/64-bit arithmetic functions consume only
+these registers. One cycle later their result enters `amo_write_data_q` and
+`AMO_WRITE_ACTIVE` starts. `.W` uses the selected old word's low 32 bits and
+zero-extends the new result; its architectural old-value return still
+sign-extends. No additional wide operand or result register is needed.
+
+This adds exactly one response-to-write cycle for normal AMOs. Ordinary loads,
+LR/SC, and MIN/MAX retain their existing paths and latency; younger loads behind
+a normal AMO wait the additional cycle for its write to finish. AMO-heavy code
+may therefore lose throughput at the same clock. Splitting the BRAM-response
+and arithmetic paths is a timing hypothesis until measured after placement.
+
+MIN/MAX still register independent raw unsigned `{equal, old-less-than-rs2}`
+relations for `.W` and `.D`, both held operands, and narrow unsigned/MAX mode
+bits. `.W` compares exactly the low 32 bits even on RV64; `.D` compares all 64
+bits. Width selection and signed ordering are reconstructed only from
+registered state. Preservation attributes keep the four relation bits and two
+mode bits as that boundary. Equality preserves the strict-comparison tie
+behavior selecting `rs2`. MIN/MAX enter `AMO_WRITE_ACTIVE` immediately after
+the response capture, with the same relation decode and operand mux as before.
+
+Only `AMO_WRITE_ACTIVE` can launch or complete a write, deliver the old value,
+invalidate the L0, or release younger-AMO dependencies. `AMO_COMPUTE` retains
+the owner's DMA-coherence exclusion even though its response slot is already
+free, and ignores premature `write_done`. Reset/full flush or a partial flush
+killing the retained entry cancels an unlaunched compute owner. A younger
+partial flush preserves it. The existing upstream ROB-head interrupt shield
+and prohibition against flushing a launched write remain unchanged.
+
+Response capture and its state transition are `AMO_IDLE`-qualified: an invalid
+overlapping response cannot replace an owner or activate a stale result.
+The wide result FF enable depends only on `AMO_COMPUTE`; a canceled compute may
+capture dead payload while control cancels it. That value is unobservable and
+the next normal owner overwrites it before entering ACTIVE. This keeps
+reset/flush/age/valid terms off the result-register enable. Memory-side stalls
+retain the entire active write until `write_done`.
 
 ## L0 cache
 
@@ -235,7 +257,7 @@ hierarchy's admitted lines and drives four things here:
 
 - Admission query (`i_coh_query_addr` / `o_coh_query_busy`): a line is
   admitted to a DMA write only while no AMO or LR on it is staged, in flight
-  or in its write phase (`sq_check_*`, the cached slots, `amo_write_addr_q`)
+  or in its compute/write phases (`sq_check_*`, the cached slots, `amo_write_addr_q`)
   as the port's pipelined check samples the queue; an atomic captured on the
   decision edge is staged when the admission fires and is caught by the
   launch hold below, so an atomic's read and write are never split by the
@@ -380,7 +402,7 @@ router holding a cached response behind a fast beat for a cycle, so
 back-to-back fast launches cannot starve it. A cached AMO needs no window of
 its own: it issues only at the ROB head (older loads retired), and a pending
 AMO fences every younger load (`older_amo_block`) until its write completes,
-so no other load is in flight during its response or write phase. Every MMIO
+so no other load is in flight during its response, compute, or write phase. Every MMIO
 request instead raises the router's registered pending Q, which independently
 enters `i_mem_bus_busy` and blocks the next handoff through the terminal-accept
 cycle. The Q clears on that accept edge; the fixed fast response arrives the
@@ -511,7 +533,9 @@ the high-to-low drain-status race, pending-request flush cancellation versus
 accepted-response debt, single-beat FLD, FLW NaN-boxing, partial and full flush,
 partial-flush AMO-dependency cleanup through physical-slot reuse, AMO
 read-modify-write including `.W`/`.D` signed/unsigned extrema, exact equality,
-hostile ignored `.W` upper halves, and held writes, conservative
+hostile ignored `.W` upper halves, exact normal/MINMAX activation latency,
+compute-cycle coherence protection and premature-done rejection, killed versus
+surviving compute owners, and held writes, conservative
 dispatch-backpressure release after frees and flush-cycle requests, LR/SC
 reservation, and constrained-random stress. Bounded inline LQ checks cover
 pointer invariants, issue prerequisites,
@@ -519,3 +543,17 @@ cached-response ownership, dependency-row cleanup, and the cancellation/debt
 truth table; wrapper/router checks cover registered-pending feedback, request
 conservation, held-address stability, terminal drain qualification, and the
 requirement that no read side effect precede acceptance.
+
+The focused `load_queue_amo_compute` formal target uses the actual LQ RTL with
+only the assertion set selected by a macro. Four-step BMC checks captured
+operands/owner, the original response arithmetic after the added cycle,
+compute-to-write and kill/reset transitions, no premature write/dependency
+release, retained-line coherence, and active-payload stability. Its cover
+reaches accepted response → COMPUTE → ACTIVE with binary-symbolic inputs and
+uninitialized state. It makes no reset/admission assumptions; production RAM
+initialization remains unchanged. It does not prove scheduler reachability,
+interrupt integration, or unbounded progress; those remain the normal LQ/wrapper/router and system regression responsibilities.
+
+The local proof also retains the four existing combinational free-tree
+consistency assertions; its preparation checks exactly 26 assertion/cover
+cells and rejects any assumptions.
