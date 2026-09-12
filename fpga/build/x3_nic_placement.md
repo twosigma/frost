@@ -50,6 +50,9 @@ exactly in a `finally` block. Other edited ancestor and net protections must be
 absent. No bank-wide primitive census or clock/constant fanout census is used.
 The source LUT input identities/configuration, selected consumer configuration,
 other inputs, output connections and pin timing controls are also checked.
+Literal case values (including zero) are active controls, while false/zero
+`IS_CASE_ANALYSIS` and `HAS_CASE_ANALYSIS` flags are inactive. Placement and
+packing properties are names: a group or pin-lock value named `0` is not empty.
 
 This is an unplaced-netlist operation. It imports no checkpoint, sets no site,
 BEL, pin lock, reuse property, clock or timing exception, and performs no

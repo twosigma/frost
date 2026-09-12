@@ -62,6 +62,10 @@ proc ::frost_x3_nic_placement::prop {object key} {
 proc ::frost_x3_nic_placement::inactive {value} {
     return [expr {[string tolower $value] in {{} 0 false no @absent}}]
 }
+# Placement and packing values are names, not booleans. A name "0" is active.
+proc ::frost_x3_nic_placement::string_unset {object key} {
+    return [expr {$key ni [list_property $object] || [get_property $key $object] eq ""}]
+}
 proc ::frost_x3_nic_placement::config {c} {
     set result [dict create REF_NAME [get_property REF_NAME $c]]
     foreach key [lsort [list_property $c]] {
@@ -145,7 +149,14 @@ proc ::frost_x3_nic_placement::controls {p} {
     foreach key [lsort [list_property $p]] {
         if {[regexp -nocase {CASE|DISABLE.*TIMING|TIMING.*DISABLE} $key]} {
             set v [get_property $key $p]
-            if {([regexp -nocase {case} $key] && $v ne "") || [string tolower $v] ni {{} 0 false no}} {mismatch "Active pin control $p/$key"}
+            # Literal CASE_VALUE=0 constrains the pin. Boolean flags such as
+            # IS_CASE_ANALYSIS=false or HAS_CASE_ANALYSIS=0 do not.
+            if {[regexp -nocase {CASE} $key] && ![regexp -nocase {^(IS_|HAS_)} $key]} {
+                set active [expr {$v ne ""}]
+            } else {
+                set active [expr {[string tolower $v] ni {{} 0 false no}}]
+            }
+            if {$active} {mismatch "Active pin control $p/$key"}
             dict set result $key $v
         }
     }
@@ -241,8 +252,11 @@ proc ::frost_x3_nic_placement::prepare {} {
         }
         lappend seen $name
         protection $c {}
-        foreach key {LOC BEL IS_LOC_FIXED IS_BEL_FIXED LOCK_PINS LUTNM HLUTNM SOFT_HLUTNM RLOC U_SET HU_SET H_SET} {
-            if {![inactive [prop $c $key]]} {mismatch "Post-opt copy source has placement/packing $name/$key"}
+        foreach key {IS_LOC_FIXED IS_BEL_FIXED} {
+            if {![inactive [prop $c $key]]} {mismatch "Post-opt copy source has fixed placement $name/$key"}
+        }
+        foreach key {LOC BEL LOCK_PINS LUTNM HLUTNM SOFT_HLUTNM RLOC U_SET HU_SET H_SET} {
+            if {![string_unset $c $key]} {mismatch "Post-opt copy source has placement/packing $name/$key"}
         }
         set source_configs {}; set input_nets {}
         dict for {port identity} [dict get $sig inputs] {
@@ -352,8 +366,11 @@ proc ::frost_x3_nic_placement::verify {states} {
         foreach {kind name sinks} [list original [dict get $state cell] [dict get $state retained] copy $copy [dict get $state selected]] {
             set c [cell $name]
             if {[signature $c] ne $expected || [leaves [pin $name/O]] ne $sinks} {error "Changed $role/$kind function or complete ownership"}
-            foreach key {LOC BEL IS_LOC_FIXED IS_BEL_FIXED DONT_TOUCH KEEP LOCK_PINS} {
+            foreach key {IS_LOC_FIXED IS_BEL_FIXED DONT_TOUCH KEEP} {
                 if {![inactive [prop $c $key]]} {error "Unexpected new placement/protection $name/$key"}
+            }
+            foreach key {LOC BEL LOCK_PINS} {
+                if {![string_unset $c $key]} {error "Unexpected new placement/packing $name/$key"}
             }
         }
         dict for {name expected_config} [dict get $state source_configs] {
