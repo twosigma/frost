@@ -235,6 +235,7 @@ module cpu_ooo #(
   logic perf_snapshot_capture;
   logic perf_cache_previous_select;
   logic [63:0] perf_counter_data_q;
+  logic [31:0] perf_counter_csr_half_q;
   logic [31:0] perf_counter_count;
   logic [7:0] wrapper_perf_counter_select;
   logic [63:0] wrapper_perf_counter_data;
@@ -2776,7 +2777,8 @@ module cpu_ooo #(
           riscv_pkg::ExcEcallSmode[riscv_pkg::ExcCauseWidth-1:0] : rob_trap_cause;
 
   csr_file #(
-      .XLEN(XLEN)
+      .XLEN(XLEN),
+      .UsePerfCsrHalf(1'b1)
   ) csr_file_inst (
       .i_clk,
       .i_rst,
@@ -2855,6 +2857,7 @@ module cpu_ooo #(
       .o_perf_snapshot_capture(perf_snapshot_capture),
       .o_perf_cache_previous_select(perf_cache_previous_select),
       .i_perf_counter_data(perf_counter_data_q),
+      .i_perf_counter_csr_half(perf_counter_csr_half_q),
       .i_perf_counter_count(perf_counter_count)
   );
 
@@ -3188,7 +3191,9 @@ module cpu_ooo #(
   // ===========================================================================
   // Profiling Counter Aggregation
   // ===========================================================================
-  perf_counter_aggregator perf_counter_aggregator_inst (
+  perf_counter_aggregator #(
+      .PreselectCsrHalf(1'b1)
+  ) perf_counter_aggregator_inst (
       .i_clk,
       .i_rst,
       .i_rob_alloc_req(rob_alloc_req),
@@ -3217,6 +3222,7 @@ module cpu_ooo #(
       .i_wrapper_perf_counter_data(wrapper_perf_counter_data),
       .o_wrapper_perf_counter_select(wrapper_perf_counter_select),
       .o_perf_counter_data_q(perf_counter_data_q),
+      .o_perf_counter_csr_half_q(perf_counter_csr_half_q),
       .o_perf_counter_count(perf_counter_count)
   );
 

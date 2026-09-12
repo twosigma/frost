@@ -1470,6 +1470,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="perf_counter_aggregator",
         description="CPU OOO performance-counter aggregator tests",
     ),
+    "perf_csr_half": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_csr_half",
+        hdl_toplevel_module="perf_csr_half_test_harness",
+        description="Performance CSR half capture, commit phase and legacy read equivalence",
+        verilator_extra_args=("--assert",),
+    ),
     "ooo_pipeline_control": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.pipeline_control.test_ooo_pipeline_control",
         hdl_toplevel_module="ooo_pipeline_control",
