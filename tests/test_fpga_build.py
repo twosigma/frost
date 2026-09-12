@@ -15,6 +15,7 @@
 """Fast tests for the native FPGA build orchestration."""
 
 import importlib.util
+import json
 from pathlib import Path
 import re
 import sys
@@ -53,6 +54,25 @@ def _write_place_gate(work_dir: Path, wns: float = -0.1, *, bind: bool = False) 
     )
     if bind:
         assert fpga_build.bind_x3_place_gate(work_dir, wns)
+
+
+def _write_qualified_descendant(
+    work_dir: Path, stage: str, *, final: bool = False
+) -> Path:
+    """Create a simulated completed downstream output through the real binder."""
+    consumed = fpga_build.capture_x3_input_lineage(
+        work_dir, fpga_build.STEP_REQUIRES_CHECKPOINT[stage]
+    )
+    assert consumed is not None
+    source_dir = work_dir / f"fixture_{stage}"
+    source_dir.mkdir(exist_ok=True)
+    source = source_dir / f"{fpga_build._TCL_REPORT_PREFIX[stage]}.dcp"
+    source.write_bytes(f"completed {stage}".encode())
+    name = "final.dcp" if final else fpga_build.STEP_PRODUCES_CHECKPOINT[stage]
+    output = work_dir / name
+    output.write_bytes(source.read_bytes())
+    assert fpga_build.bind_x3_output_lineage(work_dir, stage, name, source, consumed)
+    return output
 
 
 def _load_timing_util_summary() -> Any:
@@ -1751,6 +1771,10 @@ def _sweep_input(script_dir: Path, step: str) -> Path:
     if fpga_build.STEPS.index(step) > fpga_build.STEPS.index("place"):
         (work_dir / "post_place.dcp").write_text("qualified placement\n")
         _write_place_gate(work_dir, bind=True)
+        for previous_stage in fpga_build.STEPS[
+            fpga_build.STEPS.index("place") + 1 : fpga_build.STEPS.index(step)
+        ]:
+            _write_qualified_descendant(work_dir, previous_stage)
     return work_dir
 
 
@@ -1790,6 +1814,11 @@ def test_sweep_limits_overlap_and_replenishes_without_a_batch_barrier(
     if cap > 1:
         assert fleet.processes[cap].started < fleet.processes[0].finish
     assert (main_work / f"post_{step}.dcp").read_text() == fleet.attempts[-1].name
+    if step != "place":
+        assert (
+            fpga_build.capture_x3_input_lineage(main_work, f"post_{step}.dcp")
+            is not None
+        )
     assert all(handle.closed for handle in fleet.handles)
     assert all(process.poll() == 0 for process in fleet.processes)
 
@@ -2477,3 +2506,174 @@ def test_flush_incremental_worker_isolates_flag_and_clears_ambient_bloat(
         assert not (main_work / "post_place_flush_guidance_audit.tcldict").exists()
     assert fpga_build.os.environ["FROST_PLACE_FLUSH_INCREMENTAL"] == "1"
     assert fpga_build.os.environ["FROST_PLACE_CELL_BLOAT"] == "LOW"
+
+
+def test_new_300mhz_gate_cannot_authorize_retained_150mhz_physopt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A valid new placement gate cannot lend its clock qualification to an old child."""
+    work = tmp_path / "x3/work"
+    work.mkdir(parents=True)
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "2")
+    (work / "post_place.dcp").write_bytes(b"150 MHz placement")
+    _write_place_gate(work)
+    gate = work / "post_place_gate.txt"
+    gate.write_text(
+        gate.read_text().replace("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=6.666")
+    )
+    assert fpga_build.bind_x3_place_gate(work)
+    child = _write_qualified_descendant(work, "post_place_physopt")
+    report = work / "post_place_physopt_timing.rpt"
+    report.write_text("preserved 150 MHz report")
+    old_child, old_report = child.read_bytes(), report.read_bytes()
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    (work / "post_place.dcp").write_bytes(b"new 300 MHz placement")
+    _write_place_gate(work, bind=True)
+    assert fpga_build.require_x3_post_place_gate(work)
+    monkeypatch.setattr(
+        fpga_build.subprocess,
+        "Popen",
+        lambda *_a, **_k: pytest.fail("stale descendant launched"),
+    )
+    assert not fpga_build.run_x3_step_directive_sweep(
+        tmp_path, "route", ["Explore"], "router", "unused"
+    )[0]
+    assert "Rerun from post_place_physopt" in capsys.readouterr().out
+    assert child.read_bytes() == old_child and report.read_bytes() == old_report
+
+
+@pytest.mark.parametrize(
+    "change", ("missing", "child_bytes", "parent_bytes", "wrong_stage", "gate_bytes")
+)
+def test_downstream_chain_rejects_missing_or_changed_provenance(
+    tmp_path: Path, change: str
+) -> None:
+    """Every consumed chain edge and the placement anchor must still match."""
+    work = _sweep_input(tmp_path, "post_route_physopt")
+    child = work / "post_route.dcp"
+    record_path = child.with_suffix(".lineage.json")
+    assert fpga_build.capture_x3_input_lineage(work, child.name) is not None
+    if change == "missing":
+        record_path.unlink()
+    elif change == "child_bytes":
+        child.write_bytes(b"replacement route")
+    elif change == "parent_bytes":
+        (work / "post_place_physopt.dcp").write_bytes(b"replacement parent")
+    elif change == "gate_bytes":
+        with (work / "post_place_gate.txt").open("a") as stream:
+            stream.write("\n")
+        assert fpga_build.bind_x3_place_gate(work)
+    else:
+        record = json.loads(record_path.read_text())
+        record["stage"] = "synth"
+        record_path.write_text(json.dumps(record))
+    assert fpga_build.capture_x3_input_lineage(work, child.name) is None
+    assert child.exists()
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ("route", "post_route_physopt", "second_route", "post_second_route_physopt"),
+)
+def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    """Each legal final producer qualifies only its exact output for bitstream use."""
+    work = _sweep_input(tmp_path, stage)
+    calls = []
+
+    def complete(command: list[str], *, cwd: Path) -> Any:
+        native_step = command[command.index("-tclargs") + 2]
+        calls.append(native_step)
+        if native_step == "bitstream":
+            assert command[command.index("-tclargs") + 4] == str(work / "final.dcp")
+            (cwd / "x3_frost.bit").write_bytes(b"bitstream fixture")
+        else:
+            prefix = fpga_build._TCL_REPORT_PREFIX[stage]
+            (cwd / f"{prefix}.dcp").write_bytes(b"completed final checkpoint")
+            _write_stage_utilization(cwd, prefix, 42)
+            report = cwd / f"{prefix}_timing.rpt"
+            report.write_text(report.read_text().replace("-0.100", "0.050"))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", complete)
+    assert fpga_build.run_step(tmp_path, "x3", stage, "Explore", "unused") == (
+        True,
+        0.05,
+        "final",
+    )
+    assert fpga_build.capture_x3_input_lineage(work, "final.dcp") is not None
+    assert fpga_build.generate_bitstream(tmp_path, "x3", "unused")
+    assert calls == [stage, "bitstream"]
+    (work / "final.dcp").write_bytes(b"different final checkpoint")
+    assert not fpga_build.generate_bitstream(tmp_path, "x3", "unused")
+    assert calls == [stage, "bitstream"]
+
+
+def test_intermediate_physopt_publication_cannot_inherit_prior_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed run retains intermediate DCP/report bytes with no valid lineage."""
+    work = _sweep_input(tmp_path, "route")
+    _write_qualified_descendant(work, "route", final=True)
+    assert fpga_build.capture_x3_input_lineage(work, "final.dcp") is not None
+    report = work / "post_place_physopt_timing.rpt"
+
+    def interrupted(_command: list[str], *, cwd: Path) -> Any:
+        assert not (work / "post_place_physopt.lineage.json").exists()
+        (work / "post_place_physopt.dcp").write_bytes(b"intermediate native checkpoint")
+        report.write_bytes(b"intermediate native report")
+        assert fpga_build.capture_x3_input_lineage(work, "final.dcp") is None
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", interrupted)
+    assert not fpga_build.run_step(
+        tmp_path, "x3", "post_place_physopt", "Sweep", "unused"
+    )[0]
+    assert (
+        work / "post_place_physopt.dcp"
+    ).read_bytes() == b"intermediate native checkpoint"
+    assert report.read_bytes() == b"intermediate native report"
+    assert (work / "final.dcp").exists()
+    assert fpga_build.capture_x3_input_lineage(work, "post_place_physopt.dcp") is None
+
+
+@pytest.mark.parametrize(
+    "change", ("parent", "missing_worker_output", "promoted_output")
+)
+def test_downstream_completion_rechecks_prelaunch_parent_and_promoted_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """Clean process exit cannot qualify changed inputs or an unrelated promoted DCP."""
+    work = _sweep_input(tmp_path, "route")
+
+    def complete(_command: list[str], *, cwd: Path) -> Any:
+        output_name = (
+            "stray.dcp" if change == "missing_worker_output" else "post_route.dcp"
+        )
+        (cwd / output_name).write_bytes(b"completed route")
+        _write_stage_utilization(cwd, "post_route", 42)
+        if change == "parent":
+            consumed = fpga_build.capture_x3_input_lineage(work, "post_place.dcp")
+            source = work / "replacement/phys_opt.dcp"
+            source.parent.mkdir()
+            source.write_bytes(b"new valid parent from same qualified placement")
+            (work / "post_place_physopt.dcp").write_bytes(source.read_bytes())
+            assert fpga_build.bind_x3_output_lineage(
+                work, "post_place_physopt", "post_place_physopt.dcp", source, consumed
+            )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", complete)
+    if change == "promoted_output":
+        original = fpga_build.copy_results_to_main_work
+
+        def corrupt(*args: Any, **kwargs: Any) -> None:
+            original(*args, **kwargs)
+            (work / "post_route.dcp").write_bytes(b"wrong promoted bytes")
+
+        monkeypatch.setattr(fpga_build, "copy_results_to_main_work", corrupt)
+    assert not fpga_build.run_step(tmp_path, "x3", "route", "Explore", "unused")[0]
+    assert (work / "post_route.dcp").exists()
+    assert not (work / "post_route.lineage.json").exists()
+    assert (tmp_path / "x3/work_route_Explore").exists()
