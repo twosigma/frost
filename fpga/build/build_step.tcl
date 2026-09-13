@@ -581,47 +581,6 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
         union_end_names $union_end_names]
 }
 
-# X3 placement: ask the placer's physical synthesis to replicate the drivers
-# of the CPU-clock nets whose fan-out exceeds the threshold, so that a
-# 300..1500-load control net (front-end stall and enable nets, BTB update
-# address, RS issue selects, packer and sequencer write enables) is served
-# by several nearby copies instead of one driver at the far end of the
-# design. Synthesis-time copies do not reach these nets: opt_design re-merges
-# LUT replicas, and FORCE_MAX_FANOUT is honored by the placer itself.
-# Excluded: constants, clock and reset trees (the reset already carries
-# max_fanout), the slow-domain instruction-memory loader address, the MAC
-# domains, the DDR IP, the debug hub, the pinned predecode scalar banks (the
-# PC-tail audit requires their launch names to stay unchanged) and any net or
-# driver marked DONT_TOUCH. Returns the number of nets marked.
-proc apply_x3_forced_replication {limit min_fanout record_file} {
-    set count 0
-    set skipped 0
-    set fh [open $record_file w]
-    foreach n [get_nets -hierarchical -top_net_of_hierarchical_group -filter "FLAT_PIN_COUNT > $min_fanout"] {
-        set drv [get_pins -quiet -leaf -filter {DIRECTION == OUT} -of_objects $n]
-        if {[llength $drv] != 1} continue
-        set dc [get_cells -of_objects $drv]
-        set typ [get_property PRIMITIVE_TYPE $dc]
-        set name [get_property NAME $n]
-        set dname [get_property NAME $dc]
-        if {![string match "CLB.LUT.*" $typ] && ![string match "REGISTER.SDR.*" $typ]} continue
-        # A hierarchical net's top segment can carry an unrelated name, so the
-        # exclusions test the driver cell's name as well as the net's.
-        set excluded 0
-        foreach pattern {"*instruction_memory/port_a_half*" "*/u_mac/*" "ddr_subsystem*" "dbg_hub*" "*rst_core*" "*instruction_memory/*bank*"} {
-            if {[string match $pattern $name] || [string match $pattern $dname]} { set excluded 1 }
-        }
-        if {$excluded} { incr skipped; continue }
-        if {[get_property -quiet DONT_TOUCH $dc] eq "1" || [get_property -quiet DONT_TOUCH $n] eq "1"} { incr skipped; continue }
-        set_property FORCE_MAX_FANOUT $limit $n
-        puts $fh "[get_property FLAT_PIN_COUNT $n] $typ $name"
-        incr count
-    }
-    close $fh
-    puts "X3 forced replication: FORCE_MAX_FANOUT $limit on $count nets with fan-out above $min_fanout ($skipped excluded)"
-    return $count
-}
-
 proc write_physopt_iteration_outputs {work_directory step board_name physopt_uncertainty best_wns continue_sweeps} {
     if {$physopt_uncertainty ne ""} {
         set_x3_setup_uncertainty $board_name 0.0 "$step report"
@@ -900,10 +859,6 @@ if {$step eq "synth"} {
             set_property CELL_BLOAT_FACTOR $cell_bloat $bloat_cells
             puts "Set CELL_BLOAT_FACTOR $cell_bloat on [llength $bloat_cells] cell(s) matching '$bloat_pattern'"
         }
-    }
-
-    if {$board_name eq "x3"} {
-        apply_x3_forced_replication 150 300 $work_directory/post_place_forced_replication.txt
     }
 
     # X3 needs setup overconstraint for 300 MHz. build.py varies it downward
