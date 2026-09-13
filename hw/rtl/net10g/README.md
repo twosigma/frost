@@ -132,8 +132,9 @@ Default RX storage is a 32 KiB circular data buffer and 512 descriptors;
 frame starts are word-aligned, and the four FCS bytes consume storage until
 the corresponding frame drains. Each byte lane of the data buffer is a
 simple dual-port memory with a synchronous read addressed by the reader's
-next word, so the registered data always equals the word under read; the
-lanes infer block RAM. Only the small descriptor arrays are read
+next word. For a valid output beat, the registered data equals the published
+word under read; empty-queue reads are invalid and may collide with writes.
+The byte lanes infer block RAM. Only the small descriptor arrays are read
 asynchronously. Mixed jumbo/minimum packets with continuously ready output,
 wraparound, and concurrent reader/drop rollback are tested.
 

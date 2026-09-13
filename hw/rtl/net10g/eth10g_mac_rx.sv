@@ -83,12 +83,12 @@ module eth10g_mac_rx #(
 
   // Each of the eight byte lanes is one simple dual-port memory: a write port
   // and a synchronous read port, so FPGA synthesis infers block RAM. The read
-  // port is addressed with next_read_word on every clock, so after each edge
-  // read_data holds the word at read_word. That equals the old asynchronous
-  // read: a word under read belongs to a published frame, and a frame is
-  // published (descriptor_count incremented) on the edge that writes its last
-  // word, at least seven edges after its first word completes, so no published
-  // word is written on or after the edge that fetched it.
+  // port samples next_read_word on every clock. For each valid output beat,
+  // read_data matches the published word at read_word: a frame is published
+  // on the edge that writes its last word, at least seven edges after its
+  // first word completes, so no valid word is written on or after its fetch.
+  // Reads while the descriptor queue is empty may collide with writes; their
+  // data is invalid and is refreshed before a frame becomes visible.
   logic [7:0] memory_write_enable;
   logic [7:0] memory_write_data[8];
   logic [MemoryAddrWidth-1:0] memory_write_address[8];

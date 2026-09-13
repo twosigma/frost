@@ -1407,33 +1407,6 @@ def test_x3_nic_fences_are_soft_and_cover_the_nic() -> None:
     )
 
 
-def test_x3_forced_replication_precedes_the_single_placement() -> None:
-    """The place step marks high-fanout nets before its one place_design call."""
-    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
-    definition = tcl.index(
-        "proc apply_x3_forced_replication {limit min_fanout record_file}"
-    )
-    call = tcl.index(
-        "apply_x3_forced_replication 150 300 "
-        "$work_directory/post_place_forced_replication.txt"
-    )
-    place = tcl.index("place_design -directive $directive", call)
-    assert definition < call < place
-    assert '$board_name eq "x3"' in tcl[call - 80 : call]
-    body = tcl[definition : tcl.index("proc write_physopt_iteration_outputs")]
-    assert "set_property FORCE_MAX_FANOUT $limit $n" in body
-    for excluded in (
-        "port_a_half",
-        "/u_mac/",
-        "ddr_subsystem",
-        "dbg_hub",
-        "rst_core",
-        "bank",
-    ):
-        assert excluded in body
-    assert "DONT_TOUCH" in body
-
-
 def test_board_ddr_generation_is_capability_gated() -> None:
     """A future BRAM-only board must not require a DDR block-design script."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()

@@ -464,19 +464,13 @@ command error or partial edit stops the build. Their audit files accompany
 the optimized checkpoint. They require no experimental checkpoint or files
 outside the checkout. Fresh placement must still establish their timing benefit.
 
-Before its single `place_design`, an X3 placement marks every CPU-clock net
-with more than 300 loads and a LUT or register driver with `FORCE_MAX_FANOUT`
-150, so the placer's own physical synthesis replicates the driver near its
-loads (front-end stall and enable nets, BTB update address bits, RS issue
-selects, packer and sequencer write enables). Synthesis-time replicas do not
-reach these nets: `opt_design` merges LUT copies again. Constants, the reset
-tree, the slow-clock instruction-memory loader address, the MAC domains, the
-DDR IP, the debug hub, the pinned predecode scalar banks and anything marked
-`DONT_TOUCH` are excluded; the marked nets are listed in
-`post_place_forced_replication.txt` beside the placement reports. Two soft
-pblocks in `boards/x3/constr/x3.xdc` keep the NIC's 300 MHz logic and the DMA
-test engine in one clock region below the cache row and the MAC in the next:
-without them the placer spreads those blocks through the CPU's core band.
+X3 uses the placer's ordinary timing-driven replication. A broad
+`FORCE_MAX_FANOUT` policy is not applied: controlled comparisons on the same
+optimized netlist found mixed WNS changes and worse TNS in three of four
+recipes. Two soft pblocks in `boards/x3/constr/x3.xdc` keep the NIC's 300 MHz
+logic and the DMA test engine in one clock region below the cache row and the
+MAC in the next. They limit interference with the CPU's core band while
+allowing the placer to move cells outside a fence when necessary.
 
 Placement first requires a native global setup decision at the −0.200 ns
 gate, actual CPU clock, and zero added user setup uncertainty. A displayed
