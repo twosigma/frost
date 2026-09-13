@@ -107,9 +107,11 @@ module cached_tier_adapter #(
   // ---- Read slots -------------------------------------------------------------
   logic [  READ_SLOTS-1:0] rd_valid_q;  // request accepted, response outstanding
   logic [  READ_SLOTS-1:0] rd_sent_q;  // line request fired
-  // Flops, not distributed RAM: the write enable is the load queue's launch
-  // pulse after the router's accept gate, a deep cone that meets timing into
-  // a flop CE but not into a LUTRAM WE (x3 post-opt probe, -0.33 ns).
+  // Flops, not distributed RAM. A free slot samples the request address on
+  // every clock (enable = the slot's own valid flop), so the load queue's
+  // launch pulse, a deep cone after the router's accept gate, enables only
+  // the slot's valid and sent flops; only the address of a valid slot is ever
+  // read, so the idle contents are unobservable.
   (* ram_style = "registers" *)
   logic [        XLEN-1:0] rd_addr_q                                             [READ_SLOTS];
 
@@ -198,12 +200,17 @@ module cached_tier_adapter #(
       o_write_done <= 1'b0;
 
       // Enqueue router requests. The load queue only launches into a free
-      // slot, asserted below, so the slot write is not qualified by the slot
-      // state. That keeps the launch pulse's cone out of a wider enable.
+      // slot, asserted below, so the valid/sent updates are not qualified by
+      // the slot state. Free slots sample the request address on every clock:
+      // on the accepting edge the launched slot holds i_req_addr, and
+      // rd_valid_q then freezes it. The launch pulse's cone (the load queue's
+      // L0 lookup) thus enables two flops per slot, not the address register.
+      for (int s = 0; s < int'(READ_SLOTS); s++) begin
+        if (!rd_valid_q[s]) rd_addr_q[s] <= i_req_addr;
+      end
       if (i_read_req) begin
         rd_valid_q[i_read_id] <= 1'b1;
         rd_sent_q[i_read_id]  <= 1'b0;
-        rd_addr_q[i_read_id]  <= i_req_addr;
       end
       if (write_fire && !pending_write_valid) begin
         pending_write_valid   <= 1'b1;
@@ -254,10 +261,20 @@ module cached_tier_adapter #(
   assign o_write_inflight = pending_write_valid;
 
 `ifndef SYNTHESIS
+  logic                launch_check_q;
+  logic [SlotBits-1:0] launch_id_q;
+  logic [    XLEN-1:0] launch_addr_q;
   always_ff @(posedge i_clk) begin
+    if (i_rst) launch_check_q <= 1'b0;
     if (!i_rst) begin
       if (i_read_req && rd_valid_q[i_read_id])
         $error("cached_tier_adapter: read request on slot %0d while it is pending", i_read_id);
+      // The free-slot sampling above captures the launched address exactly.
+      launch_check_q <= i_read_req;
+      launch_id_q    <= i_read_id;
+      launch_addr_q  <= i_req_addr;
+      if (launch_check_q && rd_addr_q[launch_id_q] !== launch_addr_q)
+        $error("cached_tier_adapter: slot %0d did not capture its launch address", launch_id_q);
       if (write_fire && pending_write_valid)
         $error("cached_tier_adapter: write request while a write is already pending");
       if (resp_is_write && !pending_write_sent)
