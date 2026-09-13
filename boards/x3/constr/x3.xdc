@@ -375,3 +375,38 @@ set_max_delay -datapath_only 3.0 -from $nic_core_clk -to $nic_sync_d
 set_max_delay -datapath_only 3.0 -from $nic_mac_clk  -to $nic_sync_d
 # The asynchronous assertion of the MAC-domain resets (cdc_reset_sync).
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]
+
+# ---------------------------------------------------------------------------
+# NIC placement fences (x3 300 MHz timing).
+#
+# Left free, the placer spreads the NIC's 300 MHz logic (register block, DMA
+# front-end, RX/TX engines and their byte packers) over four clock regions
+# of the CPU's core band, among the DDR interconnect, the L2, the L1D and the
+# fetch logic: the packer's issue cone then spans 2.5 ns of routing and the
+# CPU's cache cluster is displaced. The regions below the cache/arbiter row
+# are otherwise nearly empty. These are SOFT fences (no routing containment,
+# no exclusivity): they bias the initial placement and cannot make it
+# infeasible. Each region has 48 RAMB36 sites; the MAC's frame buffers use
+# 17.5 tiles. The 300 MHz NIC logic and the DMA test engine share one
+# region so the packers stay compact; the MAC (its own 40 MHz domains plus
+# the packet FIFOs) takes the next one.
+create_pblock frost_nic_core
+resize_pblock [get_pblocks frost_nic_core] -add CLOCKREGION_X1Y4:CLOCKREGION_X1Y4
+set_property IS_SOFT true [get_pblocks frost_nic_core]
+set_property CONTAIN_ROUTING false [get_pblocks frost_nic_core]
+set_property EXCLUDE_PLACEMENT false [get_pblocks frost_nic_core]
+add_cells_to_pblock [get_pblocks frost_nic_core] [get_cells -quiet [list \
+    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_rx \
+    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_tx \
+    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_front \
+    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_csr \
+    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_irq \
+    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_reset \
+    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.dma_engine]]
+create_pblock frost_nic_mac
+resize_pblock [get_pblocks frost_nic_mac] -add CLOCKREGION_X2Y4:CLOCKREGION_X2Y4
+set_property IS_SOFT true [get_pblocks frost_nic_mac]
+set_property CONTAIN_ROUTING false [get_pblocks frost_nic_mac]
+set_property EXCLUDE_PLACEMENT false [get_pblocks frost_nic_mac]
+add_cells_to_pblock [get_pblocks frost_nic_mac] [get_cells -quiet \
+    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_mac]

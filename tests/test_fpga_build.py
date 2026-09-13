@@ -1378,6 +1378,62 @@ def test_x3_fetch_cluster_pblock_stays_retired() -> None:
     assert "frost_fetch_cluster" not in xdc
 
 
+def test_x3_nic_fences_are_soft_and_cover_the_nic() -> None:
+    """The NIC fences bias placement only and hold every 300 MHz NIC block."""
+    xdc = (REPO_ROOT / "boards/x3/constr/x3.xdc").read_text()
+    for pblock, region in (
+        ("frost_nic_core", "CLOCKREGION_X1Y4:CLOCKREGION_X1Y4"),
+        ("frost_nic_mac", "CLOCKREGION_X2Y4:CLOCKREGION_X2Y4"),
+    ):
+        block = xdc[xdc.index(f"create_pblock {pblock}") :]
+        block = block[: block.index("add_cells_to_pblock") + 400]
+        assert f"resize_pblock [get_pblocks {pblock}] -add {region}" in block
+        assert f"set_property IS_SOFT true [get_pblocks {pblock}]" in block
+        assert f"set_property CONTAIN_ROUTING false [get_pblocks {pblock}]" in block
+        assert f"set_property EXCLUDE_PLACEMENT false [get_pblocks {pblock}]" in block
+    core = xdc[
+        xdc.index("create_pblock frost_nic_core") : xdc.index(
+            "create_pblock frost_nic_mac"
+        )
+    ]
+    for child in ("u_rx", "u_tx", "u_front", "u_csr", "u_irq", "u_reset"):
+        assert (
+            f"gen_cached_tier.nic/{child} " in core
+            or f"gen_cached_tier.nic/{child}]" in core
+        )
+    assert "gen_cached_tier.dma_engine" in core
+    assert (
+        "gen_cached_tier.nic/u_mac" in xdc[xdc.index("create_pblock frost_nic_mac") :]
+    )
+
+
+def test_x3_forced_replication_precedes_the_single_placement() -> None:
+    """The place step marks high-fanout nets before its one place_design call."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    definition = tcl.index(
+        "proc apply_x3_forced_replication {limit min_fanout record_file}"
+    )
+    call = tcl.index(
+        "apply_x3_forced_replication 150 300 "
+        "$work_directory/post_place_forced_replication.txt"
+    )
+    place = tcl.index("place_design -directive $directive", call)
+    assert definition < call < place
+    assert '$board_name eq "x3"' in tcl[call - 80 : call]
+    body = tcl[definition : tcl.index("proc write_physopt_iteration_outputs")]
+    assert "set_property FORCE_MAX_FANOUT $limit $n" in body
+    for excluded in (
+        "port_a_half",
+        "/u_mac/",
+        "ddr_subsystem",
+        "dbg_hub",
+        "rst_core",
+        "bank",
+    ):
+        assert excluded in body
+    assert "DONT_TOUCH" in body
+
+
 def test_board_ddr_generation_is_capability_gated() -> None:
     """A future BRAM-only board must not require a DDR block-design script."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
