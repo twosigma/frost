@@ -80,14 +80,10 @@ module x3_frost #(
       .CLKFBOUT_MULT_F (4.0),
       // Output clock: 1200MHz / (4 x CPU_CLK_DIV) = 300 MHz for FROST CPU
       .CLKOUT0_DIVIDE_F(CpuClkOutDivide),
-      // NIC MAC clock: 1200 MHz / 30 = 40 MHz for the loopback build. The
-      // net10g MAC RX reads its 32 KiB frame buffer asynchronously out of
-      // distributed RAM, and the X3 post-opt probe of 2026-09-09 put its
-      // worst path at 18.4 ns (83 logic levels), far from the 10GBASE-R
-      // word rate's 6.2 ns; a 25 ns period leaves that path a third of
-      // margin before routing. Closing the MAC at line rate (block RAM with
-      // registered reads) is the transceiver work of slice 4, which also
-      // brings its own recovered clocks.
+      // NIC MAC clock: 1200 MHz / 30 = 40 MHz for the loopback build.
+      // Both MAC frame buffers use block RAM with registered read prefetch.
+      // Line-rate timing remains to be qualified with the slice 4
+      // transceiver integration, which brings its own recovered clocks.
       .CLKOUT1_DIVIDE  (30)
   ) mixed_mode_clock_manager (
       .CLKIN1  (differential_clock_300mhz_buffered),
