@@ -220,7 +220,9 @@ probe slot (the withheld fills now fetch the ordered line) and pulses the
 release for the load queue's mirror. For a read: PROBE_CLEAN writes a dirty
 copy back and leaves it valid and clean, then the read is presented and the
 probe slot is released at its acceptance. The DMA port's response is the
-shared level's completion, forwarded.
+shared level's completion, forwarded through one register stage (the entry
+waits in its response state for that cycle; nothing else observes the
+response).
 
 The contract the sequencer gives the agent is coherence order, not wall
 clock: an acknowledged write is visible to every CPU load that observes

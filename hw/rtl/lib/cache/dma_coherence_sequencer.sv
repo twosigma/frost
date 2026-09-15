@@ -297,6 +297,23 @@ module dma_coherence_sequencer #(
   assign o_down_req_wstrb = out_wstrb_q;
   assign o_down_req_id    = out_id_q;
 
+  // Downstream response, registered before it is decoded.  The L2 presents
+  // its response port combinationally from its MSHR selection (a dozen levels
+  // from the MSHR state registers), so decoding it live put that cone on
+  // every entry's state enable.  The response is a one-cycle pulse that the
+  // L2 never waits on, so a plain register keeps every value and only adds
+  // one cycle to the DMA port's response latency; the entry stays in E_RESP
+  // for that cycle and nothing else observes the response.
+  logic                    down_resp_valid_q;
+  logic [     ID_BITS-1:0] down_resp_id_q;
+  logic [LINE_BYTES*8-1:0] down_resp_rdata_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) down_resp_valid_q <= 1'b0;
+    else down_resp_valid_q <= i_down_resp_valid;
+    down_resp_id_q    <= i_down_resp_id;
+    down_resp_rdata_q <= i_down_resp_rdata;
+  end
+
   // Downstream response decode: the DMA id names the entry in E_RESP.
   logic resp_hit;
   logic [LockBits-1:0] resp_sel;
@@ -304,7 +321,7 @@ module dma_coherence_sequencer #(
     resp_hit = 1'b0;
     resp_sel = '0;
     for (int k = 0; k < int'(NUM_LOCK); k++) begin
-      if (i_down_resp_valid && (state_q[k] == E_RESP) && (id_q[k] == i_down_resp_id)) begin
+      if (down_resp_valid_q && (state_q[k] == E_RESP) && (id_q[k] == down_resp_id_q)) begin
         resp_hit = 1'b1;
         resp_sel = LockBits'(k);
       end
@@ -369,7 +386,7 @@ module dma_coherence_sequencer #(
         state_q[resp_sel] <= E_FREE;
         o_dma_resp_valid  <= 1'b1;
         o_dma_resp_id     <= id_q[resp_sel];
-        o_dma_resp_rdata  <= i_down_resp_rdata;
+        o_dma_resp_rdata  <= down_resp_rdata_q;
       end
       if (dma_req_fire) begin
         state_q[free_idx] <= i_dma_req_write ? E_ADMIT : E_PROBE;
@@ -390,10 +407,10 @@ module dma_coherence_sequencer #(
             "dma_coherence_sequencer: probe acknowledgement %0d for no pending probe",
             i_probe_ack_id
         );
-      if (i_down_resp_valid && !resp_hit)
+      if (down_resp_valid_q && !resp_hit)
         $error(
             "dma_coherence_sequencer: downstream response id %0d for no waiting entry",
-            i_down_resp_id
+            down_resp_id_q
         );
       if (dma_req_fire && i_dma_req_write && (i_dma_req_wstrb == '0))
         $error("dma_coherence_sequencer: DMA write with empty strobes");
