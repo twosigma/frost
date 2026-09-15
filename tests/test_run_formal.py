@@ -259,6 +259,9 @@ SBY_TASKS = [
         "fmul_repair_bmc",
         "Bounded model checking with production FMUL dispatch done repair enabled",
     ),
+    # The INT reservation station's ROB-tag-indexed branch payload (side RAM).
+    ("bmc_tag_indexed", "Bounded model checking with the tag-indexed branch payload"),
+    ("cover_tag_indexed", "Cover checking with the tag-indexed branch payload"),
 ]
 
 
