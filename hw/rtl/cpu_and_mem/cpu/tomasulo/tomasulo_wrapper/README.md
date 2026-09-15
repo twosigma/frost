@@ -94,8 +94,11 @@ the extra hold for queried FMUL operands is cycle-neutral for that benchmark.
 The SC tracking table and its fire/success decode live in
 `atomics/sc_pending_unit.sv`. The surrounding store-misalign path and the
 MEM-adapter mux stay in the wrapper; the mux feeds the MEM adapter with, in
-priority order, the registered SC completion, the registered misaligned-store
-fault, and the LQ result.
+priority order, the registered misaligned-store fault, the registered SC
+completion, and the LQ result. The fault register cannot hold (a second fault
+can follow it one cycle later under data translation); the SC completion
+register holds while a fault is presenting, and the unit does not fire while
+a completion waits.
 
 Store-conditional execution is split between MEM_RS issue and ROB-head commit.
 MEM_RS issues the SC like a normal store; the LQ holds the LR reservation
@@ -119,8 +122,18 @@ Linux `_prb_commit` cmpxchg; SC issue must not be serialized that way.
 `sc_fu_complete_reg` adds one CDB cycle to the SC result but breaks the
 full-flush-to-MEM path; CoreMark executes no SCs, so its measured cycle count
 is unchanged. `sc_fire_now` is armed only when nothing else is presenting to
-the MEM adapter that cycle (no LQ result, no store-fault strobe, adapter not
-pending), so the registered handoff cannot lose an LQ completion. Downstream
+the MEM adapter that cycle (no LQ result, no registered store-fault strobe,
+adapter not pending, no SC completion still waiting), so the registered
+handoff cannot lose an LQ completion. A store that faults in the fire cycle
+is not consulted: its registered fault takes the MEM slot first and the SC
+completion waits until no registered fault is presenting (under data
+translation several faults can present in a row; the MEM_RS is not issuing
+meanwhile). `test_sc_fire_yields_to_colliding_store_fault` drives the
+collision. Consulting the live fault decision put the store address,
+misalignment and PMA cone on the SC table's write path; the unit now sees only
+the registered strobe, which blocks every fire in its cycle and kills the
+faulting SC's entry on the next edge, whenever that strobe arrives relative to
+the allocation. Downstream
 ownership uses the registered valid. The LQ's `i_adapter_result_pending`
 input, which folds in `sc_fu_complete_reg.valid`, is unread inside the LQ but
 kept for synthesis stability; the port comment in `load_queue.sv` explains

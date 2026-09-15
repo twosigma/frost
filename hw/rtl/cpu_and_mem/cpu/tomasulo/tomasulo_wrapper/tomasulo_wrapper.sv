@@ -2114,16 +2114,27 @@ module tomasulo_wrapper #(
   // rare (LR/SC atomic sequences only; 0 in CoreMark), so the resulting
   // 1-cycle delay on SC CDB broadcast is negligible. Plain loads still get
   // the fast combinational path via lq_fu_complete.
+  // A registered store fault presenting in the same cycle takes the MEM slot
+  // first (that register has no hold of its own, and under translation a
+  // second fault can follow it one cycle later), so the SC completion waits
+  // until no fault is presenting.  The unit does not fire while a completion
+  // waits, so the payload is captured at the fire only and held as is.  The
+  // fire used to be gated by the live store-fault decision instead, which put
+  // the store address, misalignment and PMA cone on the SC table's write path.
   riscv_pkg::fu_complete_t sc_fu_complete_reg;
+  logic sc_completion_held;
+  assign sc_completion_held = sc_fu_complete_reg.valid && store_misalign_fu_complete_reg.valid;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || speculative_flush_all) sc_fu_complete_reg.valid <= 1'b0;
-    else sc_fu_complete_reg.valid <= sc_fu_complete.valid;
+    else sc_fu_complete_reg.valid <= sc_fu_complete.valid || sc_completion_held;
 
-    sc_fu_complete_reg.tag <= sc_fu_complete.tag;
-    sc_fu_complete_reg.value <= sc_fu_complete.value;
-    sc_fu_complete_reg.exception <= sc_fu_complete.exception;
-    sc_fu_complete_reg.exc_cause <= sc_fu_complete.exc_cause;
-    sc_fu_complete_reg.fp_flags <= sc_fu_complete.fp_flags;
+    if (sc_fu_complete.valid) begin
+      sc_fu_complete_reg.tag <= sc_fu_complete.tag;
+      sc_fu_complete_reg.value <= sc_fu_complete.value;
+      sc_fu_complete_reg.exception <= sc_fu_complete.exception;
+      sc_fu_complete_reg.exc_cause <= sc_fu_complete.exc_cause;
+      sc_fu_complete_reg.fp_flags <= sc_fu_complete.fp_flags;
+    end
   end
 
   // Fault-kind echo and address from the dmmu (driven in its section below).
@@ -2208,13 +2219,13 @@ module tomasulo_wrapper #(
     store_misalign_fu_complete_reg.fp_flags <= store_misalign_fu_complete.fp_flags;
   end
 
-  // MUX: SC > misaligned store exception > LQ for MEM adapter input.
+  // MUX: misaligned store exception > SC > LQ for MEM adapter input.  The
+  // fault register cannot hold, the SC completion register can (above).
   // Aligned plain stores mark the ROB done directly and do not occupy CDB.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
-    if (sc_fu_complete_reg.valid) mem_fu_to_adapter = sc_fu_complete_reg;
-    else if (store_misalign_fu_complete_reg.valid)
-      mem_fu_to_adapter = store_misalign_fu_complete_reg;
+    if (store_misalign_fu_complete_reg.valid) mem_fu_to_adapter = store_misalign_fu_complete_reg;
+    else if (sc_fu_complete_reg.valid) mem_fu_to_adapter = sc_fu_complete_reg;
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
@@ -2313,8 +2324,7 @@ module tomasulo_wrapper #(
       .i_lq_reservation_addr           (lq_reservation_addr),
       .i_mem_adapter_result_pending    (mem_adapter_result_pending),
       .i_lq_fu_complete                (lq_fu_complete),
-      .i_store_misalign_issue          (store_misalign_issue),
-      .i_store_fault_tag               (store_misalign_fu_complete.tag),
+      .i_sc_completion_pending         (sc_fu_complete_reg.valid),
       .i_store_misalign_fu_complete_reg(store_misalign_fu_complete_reg),
       .i_mem_rs_issue                  (o_mem_rs_issue),
       .i_sq_effective_addr             (sq_effective_addr),
