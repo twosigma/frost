@@ -410,6 +410,19 @@ module store_queue #(
   logic                  slot1_alloc_en;
   logic                  slot2_alloc_en;
   logic [  IdxWidth-1:0] slot2_alloc_idx;
+  // Per-entry allocation pulses, expanded over the two late dispatch valids
+  // (they arrive through the dispatch fire tree).  The first target with room
+  // for one entry and the second target with room for two are
+  // request-independent cofactors kept as nets; each pulse is one gate of the
+  // valids against them.  Slot 1 owns the first target when present; slot 2
+  // owns the first target otherwise and the second in a pair.
+  logic [     DEPTH-1:0] first_target_oh;
+  logic [     DEPTH-1:0] second_target_oh;
+  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] first_room_oh;
+  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] second_room_oh;
+  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] slot1_alloc_oh;
+  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] slot2_alloc_oh;
+  (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] alloc_oh;
 
   // Memory write tracking.  Plain fast-tier drains (BRAM, non-MMIO,
   // single-beat FSD included) are pipelined: up to two writes may be in
@@ -489,11 +502,17 @@ module store_queue #(
   // wrote the no-reset payload flops; the gate silences those too.
   logic alloc_flush_ok;
   assign alloc_flush_ok = !i_flush_all && !i_flush_en;
-  assign slot1_alloc_en = TRUST_DISPATCH_VALID ? (i_alloc.valid && alloc_flush_ok)
-                                               : (i_alloc.valid && !full && alloc_flush_ok);
-  assign slot2_alloc_en = TRUST_DISPATCH_VALID ?
-      (i_alloc_2.valid && alloc_flush_ok) :
-      (i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full) && alloc_flush_ok);
+  // Room for a lone request (first target) and for a pair (first and second
+  // targets); the trusted variant relies on dispatch back-pressure for both.
+  // full implies full_for_2 (room for two implies room for one), so a slot-1
+  // request without room leaves slot 2 without room as well, and the valids
+  // select the room terms directly.
+  logic alloc_room_1;
+  logic alloc_room_2;
+  assign alloc_room_1   = alloc_flush_ok && (TRUST_DISPATCH_VALID || !full);
+  assign alloc_room_2   = alloc_flush_ok && (TRUST_DISPATCH_VALID || !full_for_2);
+  assign slot1_alloc_en = i_alloc.valid && alloc_room_1;
+  assign slot2_alloc_en = i_alloc_2.valid && (i_alloc.valid ? alloc_room_2 : alloc_room_1);
 
 `ifndef SYNTHESIS
   // TRUST_DISPATCH_VALID drops the local room re-checks from the alloc
@@ -931,6 +950,37 @@ module store_queue #(
   assign alloc_target = tail_ptr;
   assign alloc_target_2 = tail_ptr + PtrWidth'(1);
 
+  always_comb begin
+    first_target_oh                                = '0;
+    second_target_oh                               = '0;
+    first_target_oh[alloc_target[IdxWidth-1:0]]    = 1'b1;
+    second_target_oh[alloc_target_2[IdxWidth-1:0]] = 1'b1;
+  end
+  assign first_room_oh = first_target_oh & {DEPTH{alloc_room_1}};
+  assign second_room_oh = second_target_oh & {DEPTH{alloc_room_2}};
+  assign slot1_alloc_oh = first_room_oh & {DEPTH{i_alloc.valid}};
+  assign slot2_alloc_oh = i_alloc.valid ? (second_room_oh & {DEPTH{i_alloc_2.valid}})
+                                        : (first_room_oh & {DEPTH{i_alloc_2.valid}});
+  assign alloc_oh = (first_room_oh & {DEPTH{i_alloc.valid || i_alloc_2.valid}}) |
+                    (second_room_oh & {DEPTH{i_alloc.valid && i_alloc_2.valid}});
+
+`ifndef SYNTHESIS
+  // Enable-then-steer reference for the expanded pulses: the slot-2 enable
+  // chooses its room behind the slot-1 enable and the slot-2 pulse is
+  // steered by that enable.  Simulation and formal compare both forms.
+  logic             slot2_alloc_en_reference;
+  logic [DEPTH-1:0] slot2_alloc_oh_reference;
+  assign slot2_alloc_en_reference = TRUST_DISPATCH_VALID ?
+      (i_alloc_2.valid && alloc_flush_ok) :
+      (i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full) && alloc_flush_ok);
+  always_comb begin
+    slot2_alloc_oh_reference = '0;
+    slot2_alloc_oh_reference[slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
+                                            : alloc_target[IdxWidth-1:0]] =
+        slot2_alloc_en_reference;
+  end
+`endif
+
   // ===========================================================================
   // Flush Tail Pullback (retimed: applies the cycle after the flush)
   // ===========================================================================
@@ -1075,21 +1125,16 @@ module store_queue #(
       // -----------------------------------------------------------------
       // Allocation: write control signals for new entry at tail
       // -----------------------------------------------------------------
-      // Slot-1 alloc.  Slot-2 alloc (below) writes a different physical entry,
-      // so the non-blocking writes never collide on a bit.
-      if (slot1_alloc_en) begin
-        sq_addr_valid[alloc_target[IdxWidth-1:0]] <= i_alloc.addr_valid;
-        sq_data_valid[alloc_target[IdxWidth-1:0]] <= 1'b0;
-        sq_committed[alloc_target[IdxWidth-1:0]]  <= 1'b0;
-        sq_sent[alloc_target[IdxWidth-1:0]]       <= 1'b0;
-      end
-
-      // Slot-2 alloc.
-      if (slot2_alloc_en) begin
-        sq_addr_valid[slot2_alloc_idx] <= i_alloc_2.addr_valid;
-        sq_data_valid[slot2_alloc_idx] <= 1'b0;
-        sq_committed[slot2_alloc_idx]  <= 1'b0;
-        sq_sent[slot2_alloc_idx]       <= 1'b0;
+      // The merged pulse is the write enable; slot 1's own pulse selects the
+      // request (an entry slot 1 does not own in an allocating cycle is
+      // slot 2's).
+      for (int i = 0; i < DEPTH; i++) begin
+        if (alloc_oh[i]) begin
+          sq_addr_valid[i] <= slot1_alloc_oh[i] ? i_alloc.addr_valid : i_alloc_2.addr_valid;
+          sq_data_valid[i] <= 1'b0;
+          sq_committed[i]  <= 1'b0;
+          sq_sent[i]       <= 1'b0;
+        end
       end
 
       // tail_ptr advances past the highest slot consumed this cycle (when
@@ -1366,12 +1411,10 @@ module store_queue #(
         // always_ff (see Flush Tail Pullback).
       end
 
-      if (slot1_alloc_en) begin
-        sq_valid[alloc_target[IdxWidth-1:0]] <= 1'b1;
-      end
-      // Slot-2 alloc.
-      if (slot2_alloc_en) begin
-        sq_valid[slot2_alloc_idx] <= 1'b1;
+      for (int i = 0; i < DEPTH; i++) begin
+        if (alloc_oh[i]) begin
+          sq_valid[i] <= 1'b1;
+        end
       end
 
       // Failed SC invalidates its uncommitted SQ entry.
@@ -1405,24 +1448,15 @@ module store_queue #(
     // -----------------------------------------------------------------
     // Allocation: write per-entry data for new entry at tail
     // -----------------------------------------------------------------
-    if (slot1_alloc_en) begin
-      sq_rob_tag[alloc_target[IdxWidth-1:0]] <= i_alloc.rob_tag;
-      sq_size[alloc_target[IdxWidth-1:0]]    <= i_alloc.size;
-      sq_is_sc[alloc_target[IdxWidth-1:0]]   <= i_alloc.is_sc;
-      if (i_alloc.addr_valid) begin
-        sq_address[alloc_target[IdxWidth-1:0]] <= i_alloc.address;
-        sq_is_mmio[alloc_target[IdxWidth-1:0]] <= i_alloc.is_mmio;
-      end
-    end
-
-    // Slot-2 alloc.
-    if (slot2_alloc_en) begin
-      sq_rob_tag[slot2_alloc_idx] <= i_alloc_2.rob_tag;
-      sq_size[slot2_alloc_idx]    <= i_alloc_2.size;
-      sq_is_sc[slot2_alloc_idx]   <= i_alloc_2.is_sc;
-      if (i_alloc_2.addr_valid) begin
-        sq_address[slot2_alloc_idx] <= i_alloc_2.address;
-        sq_is_mmio[slot2_alloc_idx] <= i_alloc_2.is_mmio;
+    for (int i = 0; i < DEPTH; i++) begin
+      if (alloc_oh[i]) begin
+        sq_rob_tag[i] <= slot1_alloc_oh[i] ? i_alloc.rob_tag : i_alloc_2.rob_tag;
+        sq_size[i]    <= slot1_alloc_oh[i] ? i_alloc.size : i_alloc_2.size;
+        sq_is_sc[i]   <= slot1_alloc_oh[i] ? i_alloc.is_sc : i_alloc_2.is_sc;
+        if (slot1_alloc_oh[i] ? i_alloc.addr_valid : i_alloc_2.addr_valid) begin
+          sq_address[i] <= slot1_alloc_oh[i] ? i_alloc.address : i_alloc_2.address;
+          sq_is_mmio[i] <= slot1_alloc_oh[i] ? i_alloc.is_mmio : i_alloc_2.is_mmio;
+        end
       end
     end
 
@@ -1493,6 +1527,14 @@ module store_queue #(
         $error("SQ: allocation attempted during flush tail-pullback cycle");
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("SQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
+      if (slot2_alloc_en != slot2_alloc_en_reference)
+        $error("SQ: expanded slot-2 allocation enable differs from the reference");
+      if (slot2_alloc_oh != slot2_alloc_oh_reference)
+        $error("SQ: expanded slot-2 allocation pulses differ from the reference");
+      if ((|slot1_alloc_oh) != slot1_alloc_en || !$onehot0(slot1_alloc_oh))
+        $error("SQ: slot-1 allocation pulse lost or invented an accepted request");
+      if (alloc_oh != (slot1_alloc_oh | slot2_alloc_oh) || (|(slot1_alloc_oh & slot2_alloc_oh)))
+        $error("SQ: merged allocation pulses differ from the slot pulses");
     end
   end
 `endif
@@ -1548,6 +1590,21 @@ module store_queue #(
   always_comb begin
     if (i_rst_n && (i_flush_all || i_flush_en)) begin
       p_no_alloc_during_flush : assert (!slot1_alloc_en && !slot2_alloc_en);
+    end
+  end
+
+  // The expanded allocation pulses are exactly the enable-then-steer form.
+  always_comb begin
+    if (i_rst_n) begin
+`ifndef SYNTHESIS
+      // The enable-then-steer references are declared outside synthesis.
+      p_slot2_alloc_en_reference : assert (slot2_alloc_en == slot2_alloc_en_reference);
+      p_slot2_alloc_oh_reference : assert (slot2_alloc_oh == slot2_alloc_oh_reference);
+`endif
+      p_slot1_alloc_onehot0 : assert ($onehot0(slot1_alloc_oh));
+      p_slot1_alloc_preserved : assert ((|slot1_alloc_oh) == slot1_alloc_en);
+      p_alloc_onehots_disjoint : assert (!(|(slot1_alloc_oh & slot2_alloc_oh)));
+      p_alloc_oh_is_slot_union : assert (alloc_oh == (slot1_alloc_oh | slot2_alloc_oh));
     end
   end
 

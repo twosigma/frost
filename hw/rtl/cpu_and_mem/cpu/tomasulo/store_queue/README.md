@@ -153,6 +153,14 @@ a position drained before an older live entry. The registered
 two-store bundle when only one slot remains while still allowing a
 single-store dispatch to proceed.
 
+The per-entry allocation pulses are expanded over the two dispatch valids,
+which arrive last through the dispatch fire tree: the tail entry is written
+when either slot allocates and the entry after it only when both do, with the
+room terms (flush gate, and occupancy when dispatch is not trusted) kept as
+request-independent nets, so each pulse is one gate of the valids against
+them. Slot 1's own pulse selects the request. Simulation and formal compare
+the expanded pulses against the enable-then-steer form they replace.
+
 A partial flush kills a program-order suffix. The flush cycle clears valid
 bits while pointers hold; one cycle later the tail returns to just past the
 youngest survivor by rotating valid state around the head, selecting the
