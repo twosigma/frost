@@ -77,10 +77,12 @@ def pack_rs_issue(
     src3_value: int = 0,
     imm: int = 0,
     use_imm: bool = False,
+    jalr_imm: int = 0,
     rm: int = 0,
-    branch_target: int = 0,
     predicted_taken: bool = False,
     predicted_target: int = 0,
+    predicted_target_ok: bool = False,
+    is_compressed: bool = False,
     is_fp_mem: bool = False,
     mem_needs_lq: bool = False,
     mem_needs_sq: bool = False,
@@ -109,8 +111,8 @@ def pack_rs_issue(
     is_return(1) | is_call(1) | checkpoint_id(3) | has_checkpoint(1) |
     link_addr(XLEN) | pc(XLEN) | csr_imm(5) | csr_addr(12) | mem_signed(1) |
     mem_size(2) | mem_needs_sq(1) | mem_needs_lq(1) | is_fp_mem(1) |
-    predicted_target(XLEN) | predicted_taken(1) | branch_target(XLEN) |
-    rm(3) | use_imm(1) | imm(XLEN) | src3_value(FLEN) | src2_value(FLEN) |
+    is_compressed(1) | predicted_target_ok(1) | predicted_target(XLEN) |
+    predicted_taken(1) | rm(3) | jalr_imm(12) | use_imm(1) | imm(XLEN) | src3_value(FLEN) | src2_value(FLEN) |
     src1_value(FLEN) | op(INSTR_OP_WIDTH) | rob_tag(5) | valid(1)
     """
     val = 0
@@ -150,14 +152,18 @@ def pack_rs_issue(
     bit += 1
     val |= (1 if is_fp_mem else 0) << bit
     bit += 1
+    val |= (1 if is_compressed else 0) << bit
+    bit += 1
+    val |= (1 if predicted_target_ok else 0) << bit
+    bit += 1
     val |= (predicted_target & MASK32) << bit
     bit += XLEN
     val |= (1 if predicted_taken else 0) << bit
     bit += 1
-    val |= (branch_target & MASK32) << bit
-    bit += XLEN
     val |= (rm & 0x7) << bit
     bit += 3
+    val |= (jalr_imm & 0xFFF) << bit
+    bit += 12
     val |= (1 if use_imm else 0) << bit
     bit += 1
     val |= (imm & MASK32) << bit

@@ -105,8 +105,10 @@ class IntAluShimInterface:
     ) -> None:
         """Pack and drive an rs_issue_t onto i_rs_issue.
 
-        Exposes imm, use_imm, pc, and link_addr, which the ALU shim uses for
-        immediate operations, LUI/AUIPC, and JAL/JALR link results. The CDB
+        Exposes imm, use_imm, pc, and link_addr. The shim consumes imm and
+        use_imm; imm also carries the dispatch-precomputed AUIPC value and the
+        JAL/JALR link address. pc and link_addr are packed for completeness
+        only (the shim and ALU take no PC and read the link from imm). The CDB
         hint is driven low for branch ops and high otherwise, as the RS would.
         """
         packed = pack_rs_issue(

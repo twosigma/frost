@@ -932,6 +932,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSPECULATIVE_DATA_WRITES=1",
             "-GBROADCAST_FREE_SOURCE_VALUES=1",
             "-GISSUE_CDB_TAG_SHADOW=1",
+            "-GTAG_INDEXED_BRANCH_PAYLOAD=1",
         ),
     ),
     "rs_issue2_shamt": CocotbRunConfig(
@@ -943,6 +944,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=(
             "-GDUAL_ISSUE=1",
+            "-GTAG_INDEXED_BRANCH_PAYLOAD=1",
             "-GHAS_SRC3=0",
             "-GALLOC_INDEXED_REPAIR=1",
             "-GDISPATCH_REPAIR_BYPASS=0",

@@ -98,3 +98,20 @@ allocate a ROB entry only, and the ROB handles them at commit. JAL is marked
 done at allocation, since its link and target are known then; WFI and the
 xRETs go through the ROB's serializing FSM (see "Serializing instructions" in
 the same README).
+
+## Immediate reuse
+
+The RS immediate word also carries the values ID precomputes from the PC, so
+no station needs the PC at execute: a conditional branch carries
+`branch_target_precomputed` (JAL, which skips the RS, carries
+`jal_target_precomputed`), AUIPC carries PC + imm_u, the fetch-fault
+pseudo-ops carry their xtval (PC, or PC + 2 when only the second halfword of
+a page-straddling instruction faulted), and JALR carries its link address,
+with its 12-bit offset in `jalr_imm`. A direct branch also receives
+`predicted_target_ok`, ID's compare of the precomputed target against the
+prediction, selected from the same source as `predicted_target` (RAS over
+BTB), so branch resolution checks one bit; JALR compares its computed target
+against `predicted_target` at execute. A simulation oracle checks the bit
+against the full compare for every dispatched conditional branch that was
+predicted taken. The ROB allocation request keeps its own copies of the PC,
+link address and targets for commit-time recovery and training.

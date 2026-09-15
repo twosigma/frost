@@ -33,7 +33,10 @@
  *     the ALU's internal operand_b mux.
  *   - i_instruction.source_reg_2: imm[4:0], the shift amount for SLLI, SRLI,
  *     SRAI, BSETI, BCLRI, BINVI, BEXTI and RORI.
- *   - i_link_address: the pre-computed PC + 2 or PC + 4 for JALR.
+ *   - i_link_address: the pre-computed PC + 2 or PC + 4 for JALR, which
+ *     dispatch places in the immediate word (JALR's own I-immediate rides
+ *     jalr_imm for branch resolution).  AUIPC needs no PC here either:
+ *     dispatch precomputes PC + imm_u into the immediate.
  *
  * Conditional branches do not write the CDB: o_fu_complete.valid follows the
  * RS's predecoded i_issue_writes_cdb_hint, which is clear for them, and branch
@@ -94,10 +97,10 @@ module int_alu_shim #(
       .i_operand_a(i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
       .i_operand_b(i_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .i_shift_amount_hint(i_shift_amount_hint),
-      .i_program_counter(i_rs_issue.pc),
       .i_immediate_u_type(i_rs_issue.imm),
       .i_immediate_i_type(i_rs_issue.imm),
-      .i_link_address(i_rs_issue.link_addr),
+      // JALR's link address rides the immediate word (dispatch puts it there).
+      .i_link_address(i_rs_issue.imm),
       .i_csr_read_data(i_csr_read_data),
       .o_result(alu_result),
       .o_write_enable()
@@ -135,9 +138,9 @@ module int_alu_shim #(
   assign is_illegal_op = (i_rs_issue.op == riscv_pkg::ILLEGAL);
   // Fetch-fault pseudo-ops (Phase 3 M2/M5) carry an instruction access fault
   // (cause 1) or an instruction page fault (cause 12). epc is the entry's PC.
-  // xtval is PC + imm, where dispatch set imm to the offset of the faulting
-  // portion: 2 for a page-straddling instruction whose second halfword
-  // faulted, 0 otherwise. It rides the CDB value slot, like a data fault's VA.
+  // xtval arrives precomputed in imm: PC + the offset of the faulting
+  // portion (2 for a page-straddling instruction whose second halfword
+  // faulted, 0 otherwise). It rides the CDB value slot, like a data fault's VA.
   assign is_fetch_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_FAULT);
   assign is_fetch_page_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_PAGE_FAULT);
 
@@ -154,10 +157,10 @@ module int_alu_shim #(
     if (is_ecall_op || is_ebreak_op || is_illegal_op || is_fetch_fault_op ||
         is_fetch_page_fault_op) begin
       // Synchronous traps complete on CDB so the ROB can take them precisely at commit.
-      // Fetch faults park their xtval (PC + faulting-portion offset) in the
-      // value slot; the others leave it zero.
+      // Fetch faults park their precomputed xtval (imm) in the value slot;
+      // the others leave it zero.
       o_fu_complete.value = (is_fetch_fault_op || is_fetch_page_fault_op) ?
-          riscv_pkg::FLEN'(i_rs_issue.pc + i_rs_issue.imm) : '0;
+          riscv_pkg::FLEN'(i_rs_issue.imm) : '0;
       o_fu_complete.exception = 1'b1;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
           is_fetch_page_fault_op ? riscv_pkg::ExcInstrPageFault[riscv_pkg::ExcCauseWidth-1:0] :

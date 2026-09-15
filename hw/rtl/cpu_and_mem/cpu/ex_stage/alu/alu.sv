@@ -20,8 +20,9 @@
  * includes the 6-bit shift, rotate, and bit-index amounts, the W-form word
  * operations (32-bit operation, result sign-extended to XLEN), and the Zba
  * unsigned-word address forms. The unit also forwards the pre-computed link
- * address for JAL/JALR, materializes LUI/AUIPC values, and passes CSR read
- * data through for Zicsr ops. M-extension operations do not execute here.
+ * address for JAL/JALR, materializes LUI/AUIPC values (dispatch precomputes
+ * AUIPC's PC + imm_u into the U-immediate, so the unit has no PC input), and
+ * passes CSR read data through for Zicsr ops. M-extension operations do not execute here.
  * They run in the multiplier and divider behind int_muldiv_shim.
  *
  * The CLZ, CTZ, and CPOP helper trees live in riscv_pkg.sv (Section 10). The
@@ -43,7 +44,6 @@ module alu #(
     input logic [XLEN-1:0] i_operand_a,  // First operand (typically rs1 value)
     input logic [XLEN-1:0] i_operand_b,  // Second operand (typically rs2 value or immediate)
     input logic [5:0] i_shift_amount_hint,
-    input logic [XLEN-1:0] i_program_counter,
     input logic [XLEN-1:0] i_immediate_u_type,  // Upper immediate for LUI/AUIPC
     input logic [XLEN-1:0] i_immediate_i_type,  // I-type immediate
     input logic [XLEN-1:0] i_link_address,  // Pre-computed link address (PC+2 or PC+4)
@@ -238,7 +238,8 @@ module alu #(
       riscv_pkg::SRAIW: o_result = w_result(shared_word_arithmetic_right_result);
       // Base ISA U-type (upper immediate) operations
       riscv_pkg::LUI: o_result = XLEN'(signed'(i_immediate_u_type));
-      riscv_pkg::AUIPC: o_result = i_program_counter + XLEN'(signed'(i_immediate_u_type));
+      // AUIPC: the U-immediate slot already holds PC + imm_u.
+      riscv_pkg::AUIPC: o_result = XLEN'(signed'(i_immediate_u_type));
       // Jumps write the link address the ID stage precomputed: PC+2 for a
       // compressed instruction, PC+4 otherwise.
       riscv_pkg::JAL: o_result = i_link_address;

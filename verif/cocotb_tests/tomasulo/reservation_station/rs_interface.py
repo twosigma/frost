@@ -79,10 +79,12 @@ def pack_rs_dispatch(
     src3_value: int = 0,
     imm: int = 0,
     use_imm: bool = False,
+    jalr_imm: int = 0,
     rm: int = 0,
-    branch_target: int = 0,
     predicted_taken: bool = False,
     predicted_target: int = 0,
+    predicted_target_ok: bool = False,
+    is_compressed: bool = False,
     is_fp_mem: bool = False,
     mem_needs_lq: bool = False,
     mem_needs_sq: bool = False,
@@ -128,14 +130,18 @@ def pack_rs_dispatch(
     bit += 1
     val |= (1 if is_fp_mem else 0) << bit
     bit += 1
+    val |= (1 if is_compressed else 0) << bit
+    bit += 1
+    val |= (1 if predicted_target_ok else 0) << bit
+    bit += 1
     val |= (predicted_target & MASK32) << bit
     bit += XLEN
     val |= (1 if predicted_taken else 0) << bit
     bit += 1
-    val |= (branch_target & MASK32) << bit
-    bit += XLEN
     val |= (rm & 0x7) << bit
     bit += 3
+    val |= (jalr_imm & 0xFFF) << bit
+    bit += 12
     val |= (1 if use_imm else 0) << bit
     bit += 1
     val |= (imm & MASK32) << bit
@@ -241,14 +247,18 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
     bit += 1
     result["is_fp_mem"] = bool((raw >> bit) & 1)
     bit += 1
+    result["is_compressed"] = bool((raw >> bit) & 1)
+    bit += 1
+    result["predicted_target_ok"] = bool((raw >> bit) & 1)
+    bit += 1
     result["predicted_target"] = (raw >> bit) & MASK32
     bit += XLEN
     result["predicted_taken"] = bool((raw >> bit) & 1)
     bit += 1
-    result["branch_target"] = (raw >> bit) & MASK32
-    bit += XLEN
     result["rm"] = (raw >> bit) & 0x7
     bit += 3
+    result["jalr_imm"] = (raw >> bit) & 0xFFF
+    bit += 12
     result["use_imm"] = bool((raw >> bit) & 1)
     bit += 1
     result["imm"] = (raw >> bit) & MASK32
@@ -410,8 +420,12 @@ class RSInterface:
         d.i_dispatch_src3_value.value = int(kwargs.get("src3_value", 0)) & MASK64
         d.i_dispatch_imm.value = int(kwargs.get("imm", 0)) & MASK32
         d.i_dispatch_use_imm.value = 1 if kwargs.get("use_imm") else 0
+        d.i_dispatch_jalr_imm.value = int(kwargs.get("jalr_imm", 0)) & 0xFFF
         d.i_dispatch_rm.value = int(kwargs.get("rm", 0)) & 0x7
-        d.i_dispatch_branch_target.value = int(kwargs.get("branch_target", 0)) & MASK32
+        d.i_dispatch_predicted_target_ok.value = (
+            1 if kwargs.get("predicted_target_ok") else 0
+        )
+        d.i_dispatch_is_compressed.value = 1 if kwargs.get("is_compressed") else 0
         d.i_dispatch_predicted_taken.value = 1 if kwargs.get("predicted_taken") else 0
         d.i_dispatch_predicted_target.value = (
             int(kwargs.get("predicted_target", 0)) & MASK32
@@ -444,8 +458,10 @@ class RSInterface:
         d.i_dispatch_src3_value.value = 0
         d.i_dispatch_imm.value = 0
         d.i_dispatch_use_imm.value = 0
+        d.i_dispatch_jalr_imm.value = 0
         d.i_dispatch_rm.value = 0
-        d.i_dispatch_branch_target.value = 0
+        d.i_dispatch_predicted_target_ok.value = 0
+        d.i_dispatch_is_compressed.value = 0
         d.i_dispatch_predicted_taken.value = 0
         d.i_dispatch_predicted_target.value = 0
         d.i_dispatch_is_fp_mem.value = 0
@@ -527,8 +543,10 @@ class RSInterface:
             "src3_value": int(d.o_issue_src3_value.value),
             "imm": int(d.o_issue_imm.value),
             "use_imm": bool(d.o_issue_use_imm.value),
+            "jalr_imm": int(d.o_issue_jalr_imm.value),
             "rm": int(d.o_issue_rm.value),
-            "branch_target": int(d.o_issue_branch_target.value),
+            "predicted_target_ok": bool(d.o_issue_predicted_target_ok.value),
+            "is_compressed": bool(d.o_issue_is_compressed.value),
             "predicted_taken": bool(d.o_issue_predicted_taken.value),
             "predicted_target": int(d.o_issue_predicted_target.value),
             "is_fp_mem": bool(d.o_issue_is_fp_mem.value),

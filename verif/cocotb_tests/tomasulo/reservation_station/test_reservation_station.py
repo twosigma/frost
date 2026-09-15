@@ -127,16 +127,19 @@ def check_issue(dut_issue: dict, model_issue: dict | None, label: str) -> None:
         "src3_value",
         "imm",
         "use_imm",
+        "jalr_imm",
         "rm",
-        "branch_target",
         "predicted_taken",
         "predicted_target",
+        "predicted_target_ok",
+        "is_compressed",
         "is_fp_mem",
         "mem_size",
         "mem_signed",
         "csr_addr",
         "csr_imm",
         "pc",
+        "link_addr",
     ):
         assert (
             dut_issue[key] == model_issue[key]
@@ -344,10 +347,14 @@ async def test_dispatch_slot2_only_and_issue(dut: Any) -> None:
         "src3_ready": True,
         "src3_value": 0x5555_6666,
         "imm": 0x1234_5678,
+        "jalr_imm": 0x7A5,
         "rm": 2,
-        "branch_target": 0x8000_1000,
         "predicted_taken": True,
         "predicted_target": 0x8000_2000,
+        "predicted_target_ok": True,
+        "is_compressed": True,
+        "pc": 0x8000_0FF0,
+        "link_addr": 0x8000_0FF2,
         "is_fp_mem": True,
         "mem_size": 2,
         "mem_signed": True,
@@ -1598,10 +1605,14 @@ async def test_issue_output_fields(dut: Any) -> None:
         src3_value=0x5555_6666_7777_8888,
         imm=0xDEAD_BEEF,
         use_imm=False,
+        jalr_imm=0xABC,
         rm=3,
-        branch_target=0x1000_0000,
         predicted_taken=True,
         predicted_target=0x2000_0000,
+        predicted_target_ok=True,
+        is_compressed=False,
+        pc=0x3000_0000,
+        link_addr=0x3000_0004,
         is_fp_mem=True,
         mem_size=2,
         mem_signed=True,
@@ -1619,10 +1630,14 @@ async def test_issue_output_fields(dut: Any) -> None:
         src3_value=0x5555_6666_7777_8888,
         imm=0xDEAD_BEEF,
         use_imm=False,
+        jalr_imm=0xABC,
         rm=3,
-        branch_target=0x1000_0000,
         predicted_taken=True,
         predicted_target=0x2000_0000,
+        predicted_target_ok=True,
+        is_compressed=False,
+        pc=0x3000_0000,
+        link_addr=0x3000_0004,
         is_fp_mem=True,
         mem_size=2,
         mem_signed=True,
@@ -1649,9 +1664,9 @@ async def test_xlen_wide_issue_metadata(dut: Any) -> None:
 
     xlen_fields = {
         "imm": 0xF123_4567_89AB_CDEF,
-        "branch_target": 0x8123_4567_8000_1000,
         "predicted_target": 0x9234_5678_8000_2000,
         "pc": 0xA345_6789_8000_3000,
+        "link_addr": 0xA345_6789_8000_3004,
     }
     dispatch: dict[str, Any] = {
         "rob_tag": 9,
@@ -1968,6 +1983,7 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
     prev_model_issue: dict | None = None
     prev_model_issue_info: tuple[int, dict] | None = None
 
+    recent_issue_tags: list[int] = []
     for cycle in range(200):
         await Timer(1, unit="ps")
 
@@ -2006,9 +2022,19 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         model_issue_info = model.peek_issue(fu_ready=True)
         prev_model_issue = model_issue_info[1] if model_issue_info is not None else None
         prev_model_issue_info = model_issue_info
+        recent_issue_tags.append(
+            model_issue_info[1]["rob_tag"] if model_issue_info is not None else -1
+        )
+        del recent_issue_tags[:-3]
 
         if action == "dispatch" and not dut_full:
-            rob_tag = random.randint(0, 31)
+            # ROB allocation never hands out a tag that is still live, and the
+            # station's tag-indexed branch payload relies on that: keep the
+            # random tag away from resident entries and the packets still
+            # crossing stage2.
+            live_tags = {e.rob_tag for e in model.entries if e.valid}
+            live_tags.update(recent_issue_tags)
+            rob_tag = random.choice([t for t in range(32) if t not in live_tags])
             op = random.randint(0, 10)
             src1_ready = random.choice([True, False])
             src1_tag = random.randint(0, 31)
@@ -2085,6 +2111,7 @@ async def test_random_with_flush(dut: Any) -> None:
     prev_model_issue: dict | None = None
     prev_model_issue_info: tuple[int, dict] | None = None
 
+    recent_issue_tags: list[int] = []
     for cycle in range(200):
         await Timer(1, unit="ps")
 
@@ -2137,7 +2164,7 @@ async def test_random_with_flush(dut: Any) -> None:
         if flush_applied:
             prev_model_issue = None
             prev_model_issue_info = None
-
+            recent_issue_tags.clear()
         # Peek after the CDB snoop and flush, and before dispatch.
         if not flush_applied:
             model_issue_info = model.peek_issue(fu_ready=True)
@@ -2145,9 +2172,19 @@ async def test_random_with_flush(dut: Any) -> None:
                 model_issue_info[1] if model_issue_info is not None else None
             )
             prev_model_issue_info = model_issue_info
+            recent_issue_tags.append(
+                model_issue_info[1]["rob_tag"] if model_issue_info is not None else -1
+            )
+            del recent_issue_tags[:-3]
 
         if action == "dispatch" and not dut_full:
-            rob_tag = random.randint(0, 31)
+            # ROB allocation never hands out a tag that is still live, and the
+            # station's tag-indexed branch payload relies on that: keep the
+            # random tag away from resident entries and the packets still
+            # crossing stage2.
+            live_tags = {e.rob_tag for e in model.entries if e.valid}
+            live_tags.update(recent_issue_tags)
+            rob_tag = random.choice([t for t in range(32) if t not in live_tags])
             src1_ready = random.choice([True, False])
             src1_tag = random.randint(0, 31)
             src2_ready = random.choice([True, False])
@@ -2248,5 +2285,169 @@ async def test_next_issue_is_sc_output(dut: Any) -> None:
     await Timer(1, unit="ps")
     assert not int(sc_sig.value), "o_next_issue_is_sc should be low after SC issued"
     assert dut_if.empty, "RS should be empty after issue"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+# =============================================================================
+# Tag-indexed branch payload (INT configuration)
+# =============================================================================
+
+
+def _branch_payload_fields(tag: int, seed: int) -> dict[str, Any]:
+    """Dispatch fields whose pc/link/predicted_target identify one packet."""
+    return {
+        "rob_tag": tag,
+        "op": OP_ADD,
+        "src1_ready": True,
+        "src1_value": seed,
+        "src2_ready": True,
+        "src2_value": seed + 1,
+        "src3_ready": True,
+        "imm": 0x100 * seed,
+        "predicted_taken": True,
+        "predicted_target": 0x9000_0000 + 0x100 * seed,
+        "predicted_target_ok": bool(seed & 1),
+        "is_compressed": bool(seed & 2),
+        "pc": 0x8000_0000 + 0x100 * seed,
+        "link_addr": 0x8000_0004 + 0x100 * seed,
+    }
+
+
+@cocotb.test()
+async def test_tag_indexed_branch_payload_follows_the_packet(dut: Any) -> None:
+    """pc/link/predicted_target follow each packet's ROB tag across live rows, reuse, holds."""
+    cocotb.log.info("=== Test: Tag-Indexed Branch Payload ===")
+    dut_if, model = await setup_test(dut)
+
+    # Two live rows issue in index order; each packet reads its own row.
+    for tag, seed in ((5, 1), (9, 2)):
+        fields = _branch_payload_fields(tag, seed)
+        dut_if.drive_dispatch(**fields)
+        model.dispatch(**fields)
+        await dut_if.step()
+        dut_if.clear_dispatch()
+    dut_if.set_fu_ready(True)
+    for label in ("row 5", "row 9"):
+        await dut_if.step()
+        check_issue(dut_if.read_issue(), model.try_issue(fu_ready=True), label)
+
+    # Tag reuse after the first packet has left stage2 rewrites the row.
+    fields = _branch_payload_fields(5, 3)
+    dut_if.drive_dispatch(**fields)
+    model.dispatch(**fields)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    await dut_if.step()
+    check_issue(dut_if.read_issue(), model.try_issue(fu_ready=True), "row 5 reused")
+
+    # A packet held in stage2 keeps its row while another tag is written.
+    fields = _branch_payload_fields(7, 4)
+    dut_if.drive_dispatch(**fields)
+    model.dispatch(**fields)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    await dut_if.step()
+    held = model.try_issue(fu_ready=True)
+    check_issue(dut_if.read_issue(), held, "row 7 loaded")
+    dut_if.set_fu_ready(False)
+    fields = _branch_payload_fields(11, 5)
+    dut_if.drive_dispatch(**fields)
+    model.dispatch(**fields)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    await dut_if.step()
+    stalled = dut_if.read_issue()
+    assert held is not None
+    for key in ("rob_tag", "pc", "link_addr", "predicted_target", "imm"):
+        assert stalled[key] == held[key], (
+            f"held packet {key} changed under a foreign row write: "
+            f"{stalled[key]:#x} vs {held[key]:#x}"
+        )
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    check_issue(
+        dut_if.read_issue(), model.try_issue(fu_ready=True), "row 11 after hold"
+    )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_tag_indexed_branch_payload_two_slots_and_flushes(dut: Any) -> None:
+    """Both dispatch slots write distinct rows in one cycle; flushed tags are reusable."""
+    cocotb.log.info("=== Test: Tag-Indexed Branch Payload, Two Slots and Flushes ===")
+    dut_if, model = await setup_test(dut)
+
+    # One cycle, two slots, two rows (slot 2 lands through the other write
+    # bank); each issue reads its own row.
+    slot1 = _branch_payload_fields(2, 6)
+    slot2 = _branch_payload_fields(3, 7)
+    dut_if.drive_dispatch(**slot1)
+    dut_if.drive_dispatch_2(intent_1=True, **slot2)
+    model.dispatch(**slot1)
+    model.dispatch(**slot2)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_dispatch_2()
+    dut_if.set_fu_ready(True)
+    for label in ("two-slot row 2", "two-slot row 3"):
+        await dut_if.step()
+        check_issue(dut_if.read_issue(), model.try_issue(fu_ready=True), label)
+
+    # An older survivor and a younger victim of a partial flush (the boundary
+    # tag itself survives, so the flush tag sits between them): the victim's
+    # tag is reallocated with different words, and the survivor still reads
+    # its own row afterwards.
+    survivor = _branch_payload_fields(4, 8)
+    survivor.update({"src1_ready": False, "src1_tag": 30})
+    victim = _branch_payload_fields(20, 9)
+    victim.update({"src1_ready": False, "src1_tag": 31})
+    for fields in (survivor, victim):
+        dut_if.drive_dispatch(**fields)
+        model.dispatch(**fields)
+        await dut_if.step()
+        dut_if.clear_dispatch()
+    dut_if.drive_partial_flush(flush_tag=10, head_tag=4)
+    model.partial_flush(flush_tag=10, head_tag=4)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    assert dut_if.count == 1, f"only the survivor should remain, count={dut_if.count}"
+
+    reused = _branch_payload_fields(20, 10)
+    dut_if.drive_dispatch(**reused)
+    model.dispatch(**reused)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    await dut_if.step()
+    check_issue(
+        dut_if.read_issue(), model.try_issue(fu_ready=True), "reallocated row 20"
+    )
+
+    dut_if.drive_cdb(tag=30, value=0x55)
+    model.cdb_snoop(tag=30, value=0x55)
+    await dut_if.step()
+    dut_if.clear_cdb()
+    check_issue(dut_if.read_issue(), model.try_issue(fu_ready=True), "survivor row 4")
+
+    # A full flush frees every row; the same tags come back with new words.
+    fresh = _branch_payload_fields(2, 11)
+    dut_if.drive_dispatch(**fresh)
+    model.dispatch(**fresh)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.drive_flush_all()
+    model.flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    fresh2 = _branch_payload_fields(2, 12)
+    dut_if.drive_dispatch(**fresh2)
+    model.dispatch(**fresh2)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    await dut_if.step()
+    check_issue(
+        dut_if.read_issue(), model.try_issue(fu_ready=True), "row 2 after flush_all"
+    )
 
     cocotb.log.info("=== Test Passed ===")

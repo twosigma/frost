@@ -18,7 +18,10 @@ Each shim's structure follows the pipeline depth of the FU it wraps.
   write the CDB; `o_fu_complete.valid` follows the INT RS's predecoded
   `i_issue_writes_cdb_hint`, and branch resolution happens outside the shims,
   in `cpu_ooo`'s `branch_resolution` wrapper around `branch_jump_unit`. JALR
-  does write its link address through here. JAL is `RS_NONE`: it never reaches
+  does write its link address through here; dispatch places it in the
+  immediate word, and AUIPC and the fetch-fault pseudo-ops likewise arrive
+  with their PC-relative values precomputed by ID in the immediate, so
+  neither the shim nor the ALU takes a PC. JAL is `RS_NONE`: it never reaches
   an RS, and the ROB writes its link value at allocation. The wrapper
   instantiates two copies of this shim, `u_alu_shim` on CDB slot `FU_ALU` and
   `u_alu2_shim` on `FU_ALU2`, off the dual-issue INT RS's two issue ports. The

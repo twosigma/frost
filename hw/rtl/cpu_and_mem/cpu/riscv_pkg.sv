@@ -1458,6 +1458,15 @@ package riscv_pkg;
     // btb_expected_rs1, the same algebraic transformation as for the RAS.
     logic btb_correct_non_jalr;  // True if non-JALR target matches BTB prediction
     logic [XLEN-1:0] btb_expected_rs1;  // btb_predicted_target - imm_i (for JALR)
+    // The same PC-relative target check against the RAS prediction, so
+    // dispatch can forward the bit that matches its selected prediction
+    // source (rs_dispatch_t.predicted_target_ok).
+    logic ras_correct_non_jalr;
+    // PC-relative value for the ops whose execute-time result is a pure
+    // function of the PC and the instruction: PC + imm_u for AUIPC, PC + the
+    // faulting-halfword offset (the xtval) for the fetch-fault pseudo-ops.
+    // Dispatch carries it in the RS immediate, so the stations need no PC.
+    logic [XLEN-1:0] pc_relative_precomputed;
     // Pre-decoded operand-classification flags. Dispatch consumes these as
     // registered FF outputs instead of re-decoding `instruction_operation`
     // through case statements, which removes 3-4 LUT levels (and the
@@ -2079,8 +2088,8 @@ package riscv_pkg;
 
   // RS dispatch request (from dispatch unit to RS)
   typedef struct packed {
-    logic                             valid;             // Dispatch request valid
-    rs_type_e                         rs_type;           // Which RS to dispatch to
+    logic                             valid;                // Dispatch request valid
+    rs_type_e                         rs_type;              // Which RS to dispatch to
     logic [ReorderBufferTagWidth-1:0] rob_tag;
     instr_op_e                        op;
     // Source 1
@@ -2095,15 +2104,29 @@ package riscv_pkg;
     logic                             src3_ready;
     logic [ReorderBufferTagWidth-1:0] src3_tag;
     logic [FLEN-1:0]                  src3_value;
-    // Immediate
+    // Immediate.  Beyond the ordinary I/S/U immediates, dispatch also uses
+    // this word for values ID precomputed from the PC so the station carries
+    // no PC: the PC-relative target of a conditional branch (and of JAL,
+    // which never reaches a station), PC + imm_u for AUIPC, the xtval of a
+    // fetch-fault pseudo-op, and JALR's link address (its ALU result).
     logic [XLEN-1:0]                  imm;
     logic                             use_imm;
+    // JALR's 12-bit I-immediate for the execute-time target add, since imm
+    // carries its link address.  Unused by every other op.
+    logic [11:0]                      jalr_imm;
     // FP rounding mode
     logic [2:0]                       rm;
-    // Branch info
-    logic [XLEN-1:0]                  branch_target;
+    // Branch info (the precomputed target itself travels in imm, above)
     logic                             predicted_taken;
-    logic [XLEN-1:0]                  predicted_target;  // BTB/RAS predicted target
+    logic [XLEN-1:0]                  predicted_target;     // BTB/RAS predicted target
+    // Direct (non-JALR) branch-class ops: the selected prediction's target
+    // equals the precomputed PC-relative target.  ID computes the compare, so
+    // the resolving branch checks one bit instead of two XLEN targets; JALR
+    // compares its computed target against predicted_target at execute.
+    logic                             predicted_target_ok;
+    // Original instruction size before RVC decompression (BTB training image
+    // of an early-recovered branch).
+    logic                             is_compressed;
     // Memory info
     logic                             is_fp_mem;
     logic                             mem_needs_lq;
@@ -2113,9 +2136,11 @@ package riscv_pkg;
     // CSR info
     logic [11:0]                      csr_addr;
     logic [4:0]                       csr_imm;
-    // Program counter (for ALU: AUIPC, JAL/JALR link address)
+    // Program counter and pre-computed link address (PC+2 or PC+4).  The INT
+    // station keeps them, with predicted_target, in its ROB-tag-indexed side
+    // RAM instead of the per-entry payload; no station needs the PC for the
+    // ALU because dispatch precomputes AUIPC and fetch-fault results into imm.
     logic [XLEN-1:0]                  pc;
-    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
     logic [XLEN-1:0]                  link_addr;
     // Early misprediction recovery: checkpoint info and branch type
     logic                             has_checkpoint;
@@ -2131,13 +2156,20 @@ package riscv_pkg;
     instr_op_e                        op;
     logic [FLEN-1:0]                  src1_value;
     logic [FLEN-1:0]                  src2_value;
-    logic [FLEN-1:0]                  src3_value;        // For FMA
-    logic [XLEN-1:0]                  imm;
+    logic [FLEN-1:0]                  src3_value;           // For FMA
+    logic [XLEN-1:0]                  imm;                  // See rs_dispatch_t.imm
     logic                             use_imm;
-    logic [2:0]                       rm;                // Rounding mode
-    logic [XLEN-1:0]                  branch_target;     // Pre-computed target
+    logic [11:0]                      jalr_imm;             // JALR's I-immediate
+    logic [2:0]                       rm;                   // Rounding mode
+    // Branch info.  The precomputed PC-relative target rides imm (see
+    // rs_dispatch_t); predicted_target is meaningful only on the INT station's
+    // port 0, which reads it from a ROB-tag-indexed side RAM behind its stage2
+    // tag (JALR's execute-time target compare).  Direct branches carry the
+    // ID-computed one-bit check instead.
     logic                             predicted_taken;
-    logic [XLEN-1:0]                  predicted_target;  // BTB/RAS predicted target
+    logic [XLEN-1:0]                  predicted_target;
+    logic                             predicted_target_ok;
+    logic                             is_compressed;
     // Memory info (for MEM_RS)
     logic                             is_fp_mem;
     logic                             mem_needs_lq;
@@ -2147,9 +2179,12 @@ package riscv_pkg;
     // CSR info
     logic [11:0]                      csr_addr;
     logic [4:0]                       csr_imm;
-    // Program counter (for ALU: AUIPC, JAL/JALR link address)
+    // Program counter and pre-computed link address (PC+2 or PC+4): valid only
+    // on the INT station's port 0 (side RAM read behind the stage2 tag), for
+    // early recovery's redirect and BTB image; zero on port 1 and on every
+    // other station.  JALR's link result rides imm instead, so the side RAM
+    // never feeds a CDB completion path.
     logic [XLEN-1:0]                  pc;
-    // Pre-computed JAL/JALR link address (PC+2 or PC+4)
     logic [XLEN-1:0]                  link_addr;
     // Early misprediction recovery: checkpoint info and branch type
     logic                             has_checkpoint;
@@ -2161,7 +2196,7 @@ package riscv_pkg;
     // of re-decoding instr_op_e in the issue cycle (the op-decode
     // OR-tree + branch_taken_op_e case sat at the head of the 16-level
     // stage2_op -> branch_mispredicted -> early-mispredict-capture cone).
-    logic                             is_branch_class;   // BEQ..BGEU | JAL | JALR
+    logic                             is_branch_class;      // BEQ..BGEU | JAL | JALR
     logic                             is_jal;
     logic                             is_jalr;
     branch_taken_op_e                 branch_op;

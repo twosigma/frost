@@ -32,7 +32,11 @@
  *
  * Condition and target resolve from the registered class bits in parallel
  * with that qualification, which gates only update validity and the
- * misprediction flag. The checkpoint-owner and age predicates read
+ * misprediction flag. A conditional branch's precomputed target arrives in
+ * the issue immediate, and its target check is the one-bit compare ID made
+ * against the prediction; only JALR compares its computed target against
+ * predicted_target, which the INT station reads from its tag-indexed side
+ * RAM behind the stage2 tag. The checkpoint-owner and age predicates read
  * i_branch_predicate_tag, a same-edge twin of the INT stage2 tag. The branch
  * update and the ROB path keep the architectural issue tag.
  *
@@ -220,11 +224,14 @@ module branch_resolution #(
       .i_is_jump_and_link_register(rs_issue_int.is_jalr),
       .i_operand_a                (rs_issue_int.src1_value[XLEN-1:0]),
       .i_operand_b                (rs_issue_int.src2_value[XLEN-1:0]),
-      // Dispatch stores the correct pre-computed target in branch_target
-      // (jal_target_precomputed for JAL, branch_target_precomputed for branches)
-      .i_branch_target_precomputed(rs_issue_int.branch_target),
-      .i_jal_target_precomputed   (rs_issue_int.branch_target),
-      .i_immediate_i_type         (rs_issue_int.imm),
+      // Dispatch carries the precomputed PC-relative target in imm for
+      // conditional branches (and JAL, which never issues here).  JALR's imm
+      // holds its link address; the unit computes its target from jalr_imm.
+      .i_branch_target_precomputed(rs_issue_int.imm),
+      .i_jal_target_precomputed   (rs_issue_int.imm),
+      // JALR's I-immediate travels in its own 12-bit field; its imm word
+      // carries the link address for the ALU.
+      .i_immediate_i_type         (XLEN'(signed'(rs_issue_int.jalr_imm))),
       .o_branch_taken             (branch_taken_resolved),
       .o_branch_target_address    (branch_target_resolved)
   );
@@ -238,8 +245,13 @@ module branch_resolution #(
       // Direction misprediction (taken vs not-taken)
       prediction_wrong = 1'b1;
     end else if (branch_taken_resolved && rs_issue_int.predicted_taken &&
-                 branch_target_resolved != rs_issue_int.predicted_target) begin
-      // Target misprediction (both taken but different targets)
+                 (rs_issue_int.is_jalr ?
+                      (branch_target_resolved != rs_issue_int.predicted_target) :
+                      !rs_issue_int.predicted_target_ok)) begin
+      // Target misprediction (both taken but different targets).  A direct
+      // branch's target is PC-relative, so ID compared it with the prediction
+      // and dispatch forwarded the one-bit result; JALR compares its computed
+      // target against the side-RAM predicted_target here.
       prediction_wrong = 1'b1;
     end else begin
       prediction_wrong = 1'b0;
@@ -298,10 +310,34 @@ module branch_resolution #(
     end else if (branch_taken_resolved != rs_issue_int.predicted_taken) begin
       branch_mispredicted_reference = 1'b1;
     end else if (branch_taken_resolved && rs_issue_int.predicted_taken &&
-                 branch_target_resolved != rs_issue_int.predicted_target) begin
+                 (rs_issue_int.is_jalr ?
+                      (branch_target_resolved != rs_issue_int.predicted_target) :
+                      !rs_issue_int.predicted_target_ok)) begin
       branch_mispredicted_reference = 1'b1;
     end else begin
       branch_mispredicted_reference = 1'b0;
+    end
+  end
+
+  // The one-bit direct-branch target check must agree with the full compare
+  // against the side-RAM prediction for every qualified direct-branch update
+  // that was predicted taken: this ties the station's tag-indexed read to the
+  // packet it serves.
+  always_comb begin
+    if (!$isunknown(
+            {
+              is_branch_update_issue,
+              rs_issue_int.is_jalr,
+              rs_issue_int.predicted_taken,
+              rs_issue_int.predicted_target_ok,
+              rs_issue_int.imm,
+              rs_issue_int.predicted_target
+            }
+        )) begin
+      p_direct_target_check_matches_side_ram :
+      assert (!(is_branch_update_issue && !rs_issue_int.is_jalr && rs_issue_int.predicted_taken) ||
+              (rs_issue_int.predicted_target_ok ==
+               (rs_issue_int.imm == rs_issue_int.predicted_target)));
     end
   end
 

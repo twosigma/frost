@@ -354,6 +354,8 @@ FROM_ID_TO_EX_FIELDS = [
     ("ras_expected_rs1", XLEN),
     ("btb_correct_non_jalr", 1),
     ("btb_expected_rs1", XLEN),
+    ("ras_correct_non_jalr", 1),
+    ("pc_relative_precomputed", XLEN),
     # Pre-decoded operand-classification flags (timing optimization).
     # Dispatch reads these instead of re-decoding instruction_operation.
     ("has_int_dest", 1),
@@ -1209,10 +1211,12 @@ RS_DISPATCH_FIELDS = [
     ("src3_value", FLEN),
     ("imm", XLEN),
     ("use_imm", 1),
+    ("jalr_imm", 12),
     ("rm", 3),
-    ("branch_target", XLEN),
     ("predicted_taken", 1),
     ("predicted_target", XLEN),
+    ("predicted_target_ok", 1),
+    ("is_compressed", 1),
     ("is_fp_mem", 1),
     ("mem_needs_lq", 1),
     ("mem_needs_sq", 1),

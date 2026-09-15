@@ -128,6 +128,8 @@ ID_TO_EX_FIELDS = [
     ("ras_expected_rs1", XLEN),
     ("btb_correct_non_jalr", 1),
     ("btb_expected_rs1", XLEN),
+    ("ras_correct_non_jalr", 1),
+    ("pc_relative_precomputed", XLEN),
     ("has_int_dest", 1),
     ("has_fp_dest", 1),
     ("uses_int_rs1", 1),

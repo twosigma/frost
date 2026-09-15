@@ -106,6 +106,8 @@ module id_stage #(
   logic [XLEN-1:0] ras_expected_rs1_precomputed;
   logic [XLEN-1:0] btb_expected_rs1_precomputed;
   logic btb_correct_non_jalr_precomputed;
+  logic ras_correct_non_jalr_precomputed;
+  logic [XLEN-1:0] pc_relative_precomputed;
 
   // x3 TIMING: pd_stage passes the instruction through un-NOP'd and carries the
   // bubble in inject_nop.  The NOP is applied here, from registered inputs in
@@ -201,15 +203,20 @@ module id_stage #(
       .i_immediate_j_type(immediate_j_type),
       .i_ras_predicted_target(i_from_pd_to_id.ras_predicted_target),
       .i_btb_predicted_target(effective_btb_predicted_target),
+      .i_immediate_u_type(immediate_u_type),
       .i_is_jal(is_jal_direct),
+      .i_is_fetch_fault(is_fetch_fault),
+      .i_is_fetch_fault_hi(is_fetch_fault_hi),
       // Pre-computed target outputs
       .o_branch_target_precomputed(branch_target_precomputed),
       .o_jal_target_precomputed(jal_target_precomputed),
+      .o_pc_relative_precomputed(pc_relative_precomputed),
       // Pre-computed RAS verification
       .o_ras_expected_rs1(ras_expected_rs1_precomputed),
       // Pre-computed BTB verification
       .o_btb_expected_rs1(btb_expected_rs1_precomputed),
-      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed)
+      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed),
+      .o_ras_correct_non_jalr(ras_correct_non_jalr_precomputed)
   );
 
   // F extension: floating-point instruction detection, decoded from the opcode
@@ -797,6 +804,7 @@ module id_stage #(
       o_from_id_to_ex.is_ras_call               <= 1'b0;
       // Pre-computed BTB verification
       o_from_id_to_ex.btb_correct_non_jalr      <= 1'b0;
+      o_from_id_to_ex.ras_correct_non_jalr      <= 1'b0;
       // F extension
       o_from_id_to_ex.is_fp_instruction         <= 1'b0;
       o_from_id_to_ex.is_fp_load                <= 1'b0;
@@ -878,6 +886,8 @@ module id_stage #(
       // btb_expected_rs1 in EX, the same algebraic transformation as RAS.
       o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                               btb_correct_non_jalr_precomputed;
+      o_from_id_to_ex.ras_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
+                                              ras_correct_non_jalr_precomputed;
       // F extension, cleared on flush
       o_from_id_to_ex.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
       o_from_id_to_ex.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
@@ -917,6 +927,7 @@ module id_stage #(
       // Pre-computed branch/jump targets (computed here, used by EX stage)
       o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
       o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
+      o_from_id_to_ex.pc_relative_precomputed <= pc_relative_precomputed;
       o_from_id_to_ex.btb_predicted_target <= effective_btb_predicted_target;
       o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
       o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
@@ -997,6 +1008,8 @@ module id_stage #(
   logic                        [XLEN-1:0] btb_expected_rs1_precomputed_2;
   logic                                   btb_correct_non_jalr_precomputed_2;
 
+  logic                                   ras_correct_non_jalr_precomputed_2;
+  logic                        [XLEN-1:0] pc_relative_precomputed_2;
   assign instruction_2 = i_from_pd_to_id_2.inject_nop ? riscv_pkg::NOP :
                                                         i_from_pd_to_id_2.instruction;
   assign link_address_precomputed_2 =
@@ -1072,12 +1085,17 @@ module id_stage #(
       .i_immediate_j_type(immediate_j_type_2),
       .i_ras_predicted_target(i_from_pd_to_id_2.ras_predicted_target),
       .i_btb_predicted_target(i_from_pd_to_id_2.btb_predicted_target),
+      .i_immediate_u_type(immediate_u_type_2),
       .i_is_jal(is_jal_direct_2),
+      .i_is_fetch_fault(is_fetch_fault_2),
+      .i_is_fetch_fault_hi(is_fetch_fault_hi_2),
       .o_branch_target_precomputed(branch_target_precomputed_2),
       .o_jal_target_precomputed(jal_target_precomputed_2),
+      .o_pc_relative_precomputed(pc_relative_precomputed_2),
       .o_ras_expected_rs1(ras_expected_rs1_precomputed_2),
       .o_btb_expected_rs1(btb_expected_rs1_precomputed_2),
-      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed_2)
+      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed_2),
+      .o_ras_correct_non_jalr(ras_correct_non_jalr_precomputed_2)
   );
 
   // F extension: slot-2 floating-point instruction detection
@@ -1592,6 +1610,7 @@ module id_stage #(
       o_from_id_to_ex_2.is_ras_return             <= 1'b0;
       o_from_id_to_ex_2.is_ras_call               <= 1'b0;
       o_from_id_to_ex_2.btb_correct_non_jalr      <= 1'b0;
+      o_from_id_to_ex_2.ras_correct_non_jalr      <= 1'b0;
       o_from_id_to_ex_2.is_fp_instruction         <= 1'b0;
       o_from_id_to_ex_2.is_fp_load                <= 1'b0;
       o_from_id_to_ex_2.is_fp_store               <= 1'b0;
@@ -1664,6 +1683,8 @@ module id_stage #(
       o_from_id_to_ex_2.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
       o_from_id_to_ex_2.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                                 btb_correct_non_jalr_precomputed_2;
+      o_from_id_to_ex_2.ras_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
+                                                ras_correct_non_jalr_precomputed_2;
       o_from_id_to_ex_2.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                              is_fp_instruction_direct_2;
       o_from_id_to_ex_2.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
@@ -1696,6 +1717,7 @@ module id_stage #(
       o_from_id_to_ex_2.link_address <= link_address_precomputed_2;
       o_from_id_to_ex_2.branch_target_precomputed <= branch_target_precomputed_2;
       o_from_id_to_ex_2.jal_target_precomputed <= jal_target_precomputed_2;
+      o_from_id_to_ex_2.pc_relative_precomputed <= pc_relative_precomputed_2;
       o_from_id_to_ex_2.btb_predicted_target <= i_from_pd_to_id_2.btb_predicted_target;
       o_from_id_to_ex_2.ras_predicted_target <= i_from_pd_to_id_2.ras_predicted_target;
       o_from_id_to_ex_2.ras_checkpoint_tos <= i_from_pd_to_id_2.ras_checkpoint_tos;
