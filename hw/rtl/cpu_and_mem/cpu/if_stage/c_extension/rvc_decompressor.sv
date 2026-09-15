@@ -35,9 +35,12 @@
   For timing, the expansion is a quadrant/funct3 case tree that computes
   only the selected instruction, rather than a bank of parallel expanders
   feeding a wide OR tree at the output. Expanded instruction bits 8, 9, 15,
-  20, 25, and 27, plus the illegal flag, also have exact standalone cofactors.
-  Slot 2 consumes those copies, and slot 1 consumes bit 20 and the illegal flag,
-  so these captures need not inherit unrelated logic from the full case tree.
+  20, 25, and 27, plus the illegal flag, also have exact standalone cofactors,
+  and so do bits 31:28, 26, 19:18 and 14:12: with 27:25 and 15 they cover the
+  funct7, funct3 and rs1 fields of PD's instruction register. Slot 2 consumes
+  the first set, and slot 1 consumes bit 20, the field cofactors and the
+  illegal flag, so these captures need not inherit unrelated logic from the
+  full case tree.
 */
 module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,
@@ -52,6 +55,12 @@ module rvc_decompressor (
     output logic [ 1:0] o_instr_expanded_bits20_9_fast,
     // Pair ordering is {expanded[27], expanded[25]}.
     output logic [ 1:0] o_instr_expanded_bits27_25_fast,
+    // Field cofactors for PD's instruction register: expanded[31:28],
+    // expanded[26], expanded[19:18] and expanded[14:12], in bit order.
+    output logic [ 3:0] o_instr_expanded_bits31_28_fast,
+    output logic        o_instr_expanded_bit26_fast,
+    output logic [ 1:0] o_instr_expanded_bits19_18_fast,
+    output logic [ 2:0] o_instr_expanded_bits14_12_fast,
     output logic        o_is_compressed,
     output logic        o_illegal,
     output logic        o_illegal_fast
@@ -325,35 +334,42 @@ module rvc_decompressor (
   // cone into slot 2's illegal-instruction capture. This deliberately matches
   // the canonical output for every binary input, including an i_rd_is_x2 value
   // inconsistent with the parcel's rd field.
+  //
+  // The structure is fixed as three levels: the field zero tests, one legality
+  // verdict per quadrant, and the quadrant select. The kept nets stop synthesis
+  // from re-sharing the verdict with the expansion and field cofactors, which
+  // once mapped it as a six-table chain behind the fetched word.
+  (* keep = "true" *)logic illegal_rd_zero;
+  (* keep = "true" *)logic illegal_rs2_zero;
+  (* keep = "true" *)logic illegal_addi4spn_zero;
+  (* keep = "true" *)logic illegal_q0;
+  (* keep = "true" *)logic illegal_q1;
+  (* keep = "true" *)logic illegal_q2;
+  assign illegal_rd_zero       = !(|i_instr_compressed[11:7]);
+  assign illegal_rs2_zero      = !(|i_instr_compressed[6:2]);
+  assign illegal_addi4spn_zero = !(|i_instr_compressed[12:5]);
   always_comb begin
-    o_illegal_fast = 1'b0;
+    unique case (funct3)
+      3'b000:  illegal_q0 = illegal_addi4spn_zero;
+      3'b100:  illegal_q0 = 1'b1;
+      default: illegal_q0 = 1'b0;
+    endcase
+    unique case (funct3)
+      3'b001: illegal_q1 = illegal_rd_zero;
+      3'b011: illegal_q1 = !i_instr_compressed[12] && illegal_rs2_zero;
+      3'b100:
+      illegal_q1 = i_instr_compressed[12] && (&i_instr_compressed[11:10]) && i_instr_compressed[6];
+      default: illegal_q1 = 1'b0;
+    endcase
+    unique case (funct3)
+      3'b010, 3'b011: illegal_q2 = illegal_rd_zero;
+      3'b100:         illegal_q2 = !i_instr_compressed[12] && illegal_rd_zero && illegal_rs2_zero;
+      default:        illegal_q2 = 1'b0;
+    endcase
     unique case (quadrant)
-      2'b00: begin
-        unique case (funct3)
-          3'b000:  o_illegal_fast = !(|i_instr_compressed[12:5]);
-          3'b100:  o_illegal_fast = 1'b1;
-          default: o_illegal_fast = 1'b0;
-        endcase
-      end
-      2'b01: begin
-        unique case (funct3)
-          3'b001: o_illegal_fast = !(|i_instr_compressed[11:7]);
-          3'b011: o_illegal_fast = !(|{i_instr_compressed[12], i_instr_compressed[6:2]});
-          3'b100:
-          o_illegal_fast = i_instr_compressed[12] && (&i_instr_compressed[11:10]) &&
-              i_instr_compressed[6];
-          default: o_illegal_fast = 1'b0;
-        endcase
-      end
-      2'b10: begin
-        unique case (funct3)
-          3'b010, 3'b011: o_illegal_fast = !(|i_instr_compressed[11:7]);
-          3'b100:
-          o_illegal_fast = !i_instr_compressed[12] && !(|i_instr_compressed[11:7]) &&
-              !(|i_instr_compressed[6:2]);
-          default: o_illegal_fast = 1'b0;
-        endcase
-      end
+      2'b00:   o_illegal_fast = illegal_q0;
+      2'b01:   o_illegal_fast = illegal_q1;
+      2'b10:   o_illegal_fast = illegal_q2;
       default: o_illegal_fast = 1'b0;
     endcase
   end
@@ -399,6 +415,166 @@ module rvc_decompressor (
         endcase
       end
       default: o_instr_expanded_bits27_25_fast = 2'b00;
+    endcase
+  end
+
+  // Exact standalone cofactors of o_instr_expanded[31:28], [26], [19:18] and
+  // [14:12]. PD's instruction register takes its funct7, funct3 and rs1 fields
+  // from these (with [27:25] and [15] above) instead of the full expansion
+  // tree, which put the instruction memory read five lookup tables from those
+  // flops. Same domain rule as above: exact for every binary
+  // {parcel, i_rd_is_x2}, including an inconsistent predicate, and a reserved
+  // encoding contributes the zero expansion.
+  always_comb begin
+    unique case (quadrant)
+      2'b00: begin
+        // C.ADDI4SPN's immediate reaches bits 29:28; the loads and stores
+        // keep the upper immediate bits clear and address rs1'.
+        unique case (funct3)
+          3'b000: begin
+            o_instr_expanded_bits31_28_fast = {
+              2'b00, i_instr_compressed[10], i_instr_compressed[9]
+            };
+            o_instr_expanded_bit26_fast = i_instr_compressed[7];
+            o_instr_expanded_bits19_18_fast = 2'b00;
+            o_instr_expanded_bits14_12_fast = 3'b000;
+          end
+          3'b100: begin
+            o_instr_expanded_bits31_28_fast = 4'b0000;
+            o_instr_expanded_bit26_fast     = 1'b0;
+            o_instr_expanded_bits19_18_fast = 2'b00;
+            o_instr_expanded_bits14_12_fast = 3'b000;
+          end
+          default: begin
+            o_instr_expanded_bits31_28_fast = 4'b0000;
+            o_instr_expanded_bit26_fast     = i_instr_compressed[5];
+            o_instr_expanded_bits19_18_fast = 2'b01;
+            o_instr_expanded_bits14_12_fast = {1'b0, 1'b1, i_instr_compressed[13]};
+          end
+        endcase
+      end
+      2'b01: begin
+        unique case (funct3)
+          3'b000, 3'b001: begin  // C.ADDI, C.ADDIW: sign-extended immediate, rd as rs1
+            o_instr_expanded_bits31_28_fast = {4{i_instr_compressed[12]}};
+            o_instr_expanded_bit26_fast     = i_instr_compressed[12];
+            o_instr_expanded_bits19_18_fast = {i_instr_compressed[11], i_instr_compressed[10]};
+            o_instr_expanded_bits14_12_fast = 3'b000;
+          end
+          3'b010: begin  // C.LI: x0 as rs1
+            o_instr_expanded_bits31_28_fast = {4{i_instr_compressed[12]}};
+            o_instr_expanded_bit26_fast     = i_instr_compressed[12];
+            o_instr_expanded_bits19_18_fast = 2'b00;
+            o_instr_expanded_bits14_12_fast = 3'b000;
+          end
+          3'b011: begin  // C.ADDI16SP (x2 as rs1) or C.LUI (upper immediate in 31:12)
+            o_instr_expanded_bits31_28_fast = i_rd_is_x2 ?
+                {{3{i_instr_compressed[12]}}, i_instr_compressed[4]} : {4{i_instr_compressed[12]}};
+            o_instr_expanded_bit26_fast =
+                i_rd_is_x2 ? i_instr_compressed[5] : i_instr_compressed[12];
+            o_instr_expanded_bits19_18_fast = i_rd_is_x2 ? 2'b00 : {2{i_instr_compressed[12]}};
+            o_instr_expanded_bits14_12_fast = i_rd_is_x2 ? 3'b000 : i_instr_compressed[4:2];
+          end
+          3'b100: begin
+            // Shifts: funct7 0000000/0100000 with shamt[5] at bit 25; C.ANDI:
+            // sign-extended immediate; register ops: funct7 0100000 for
+            // C.SUB/C.SUBW, else zero; reserved bit12=1 forms expand to zero.
+            o_instr_expanded_bits31_28_fast = {
+              i_instr_compressed[12] && i_instr_compressed[11] && !i_instr_compressed[10],
+              (!i_instr_compressed[11] && i_instr_compressed[10]) ||
+                  (i_instr_compressed[11] && !i_instr_compressed[10] && i_instr_compressed[12]) ||
+                  (i_instr_compressed[11] && i_instr_compressed[10] &&
+                   !i_instr_compressed[6] && !i_instr_compressed[5]),
+              i_instr_compressed[12] && i_instr_compressed[11] && !i_instr_compressed[10],
+              i_instr_compressed[12] && i_instr_compressed[11] && !i_instr_compressed[10]
+            };
+            o_instr_expanded_bit26_fast =
+                i_instr_compressed[12] && i_instr_compressed[11] && !i_instr_compressed[10];
+            o_instr_expanded_bits19_18_fast = {
+              1'b0,
+              !(i_instr_compressed[12] && i_instr_compressed[11] && i_instr_compressed[10] &&
+                i_instr_compressed[6])
+            };
+            unique case (i_instr_compressed[11:10])
+              2'b00, 2'b01: o_instr_expanded_bits14_12_fast = 3'b101;
+              2'b10: o_instr_expanded_bits14_12_fast = 3'b111;
+              default:
+              o_instr_expanded_bits14_12_fast = i_instr_compressed[12] ? 3'b000 : {
+                i_instr_compressed[6] || i_instr_compressed[5],
+                i_instr_compressed[6],
+                i_instr_compressed[6] && i_instr_compressed[5]
+              };
+            endcase
+          end
+          3'b101: begin  // C.J: offset bits, sign in 19:12
+            o_instr_expanded_bits31_28_fast = {
+              i_instr_compressed[12],
+              i_instr_compressed[8],
+              i_instr_compressed[10],
+              i_instr_compressed[9]
+            };
+            o_instr_expanded_bit26_fast = i_instr_compressed[7];
+            o_instr_expanded_bits19_18_fast = {2{i_instr_compressed[12]}};
+            o_instr_expanded_bits14_12_fast = {3{i_instr_compressed[12]}};
+          end
+          default: begin  // C.BEQZ, C.BNEZ: sign in 31:28, rs1'
+            o_instr_expanded_bits31_28_fast = {4{i_instr_compressed[12]}};
+            o_instr_expanded_bit26_fast     = i_instr_compressed[5];
+            o_instr_expanded_bits19_18_fast = 2'b01;
+            o_instr_expanded_bits14_12_fast = {2'b00, i_instr_compressed[13]};
+          end
+        endcase
+      end
+      2'b10: begin
+        unique case (funct3)
+          3'b000: begin  // C.SLLI: rd as rs1
+            o_instr_expanded_bits31_28_fast = 4'b0000;
+            o_instr_expanded_bit26_fast     = 1'b0;
+            o_instr_expanded_bits19_18_fast = {i_instr_compressed[11], i_instr_compressed[10]};
+            o_instr_expanded_bits14_12_fast = 3'b001;
+          end
+          3'b010: begin  // C.LWSP
+            o_instr_expanded_bits31_28_fast = 4'b0000;
+            o_instr_expanded_bit26_fast     = i_instr_compressed[2];
+            o_instr_expanded_bits19_18_fast = 2'b00;
+            o_instr_expanded_bits14_12_fast = 3'b010;
+          end
+          3'b001, 3'b011: begin  // C.FLDSP, C.LDSP
+            o_instr_expanded_bits31_28_fast = {3'b000, i_instr_compressed[4]};
+            o_instr_expanded_bit26_fast     = i_instr_compressed[2];
+            o_instr_expanded_bits19_18_fast = 2'b00;
+            o_instr_expanded_bits14_12_fast = 3'b011;
+          end
+          3'b100: begin
+            // C.JR/C.JALR/C.ADD address rd as rs1; C.MV and C.EBREAK have
+            // rs1 = x0 (C.EBREAK's rd field is zero anyway).
+            o_instr_expanded_bits31_28_fast = 4'b0000;
+            o_instr_expanded_bit26_fast = 1'b0;
+            o_instr_expanded_bits19_18_fast =
+                (!i_instr_compressed[12] && (|i_instr_compressed[6:2])) ?
+                2'b00 : {i_instr_compressed[11], i_instr_compressed[10]};
+            o_instr_expanded_bits14_12_fast = 3'b000;
+          end
+          3'b110: begin  // C.SWSP
+            o_instr_expanded_bits31_28_fast = 4'b0000;
+            o_instr_expanded_bit26_fast     = i_instr_compressed[7];
+            o_instr_expanded_bits19_18_fast = 2'b00;
+            o_instr_expanded_bits14_12_fast = 3'b010;
+          end
+          default: begin  // C.FSDSP, C.SDSP
+            o_instr_expanded_bits31_28_fast = {3'b000, i_instr_compressed[9]};
+            o_instr_expanded_bit26_fast     = i_instr_compressed[7];
+            o_instr_expanded_bits19_18_fast = 2'b00;
+            o_instr_expanded_bits14_12_fast = 3'b011;
+          end
+        endcase
+      end
+      default: begin  // native: the upper half is zero, funct3 passes through
+        o_instr_expanded_bits31_28_fast = 4'b0000;
+        o_instr_expanded_bit26_fast     = 1'b0;
+        o_instr_expanded_bits19_18_fast = 2'b00;
+        o_instr_expanded_bits14_12_fast = i_instr_compressed[14:12];
+      end
     endcase
   end
 
