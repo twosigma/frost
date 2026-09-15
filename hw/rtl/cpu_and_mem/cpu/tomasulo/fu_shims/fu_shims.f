@@ -27,5 +27,5 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_add_shim.sv
 # FP multiply/FMA shim (FMUL_RS -> fpu_mult_unit/fpu_fma_unit -> fu_complete_t)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_mul_shim.sv
 
-# FP divide/sqrt shim (FDIV_RS -> fpu_div_sqrt_unit -> fu_complete_t)
+# FP divide/sqrt shim (FDIV_RS -> fp_div_sqrt_iter -> fu_complete_t)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_div_shim.sv

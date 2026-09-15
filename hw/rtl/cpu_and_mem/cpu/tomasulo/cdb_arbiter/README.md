@@ -79,8 +79,9 @@ dual-issue INT reservation station; either can win either lane, so a
 pure-ALU instruction stream can broadcast two results per cycle.
 
 FUs not selected by either lane are held in their per-FU `fu_cdb_adapter` and
-re-presented the next cycle. The deeply-pipelined units (MUL, DIV, FMUL, FDIV)
-have additional internal result FIFOs to absorb multi-cycle contention.
+re-presented the next cycle. The deeply-pipelined units (MUL, DIV, FMUL) have
+additional internal result FIFOs to absorb multi-cycle contention. FDIV runs
+one operation at a time and holds its single result instead.
 
 ## Full-flush kill
 

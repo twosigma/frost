@@ -20,10 +20,10 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert_sd.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_adder.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_multiplier.sv
 
-# Divide and square root. Both are fully pipelined, 36 stages at SP and
-# 65 at DP, so they accept a new operation every cycle.
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_divider.sv
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_sqrt.sv
+# Divide and square root on one iterative datapath, 36 cycles at SP and 65 at
+# DP, one operation at a time. The fully unrolled fp_divider and fp_sqrt it
+# replaced live in hw/sim as the equivalence bench's reference.
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_sqrt_iter.sv
 
 # Fused multiply-add (fully pipelined, 16 cycles)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma.sv
@@ -35,5 +35,4 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_fma_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_compare_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_sign_inject_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_classify_unit.sv
-$(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_div_sqrt_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_convert_unit.sv

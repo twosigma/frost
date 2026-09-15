@@ -17,6 +17,11 @@
 /*
   IEEE 754 floating-point square root, fully pipelined.
 
+  Simulation reference only. The core takes square roots on fp_div_sqrt_iter,
+  whose shared iterative datapath costs a fraction of the cells this unrolled
+  pipeline does; this file stays as the model the fp_div_sqrt_equiv bench
+  compares against, and is not in any synthesis file list.
+
   Accepts a new operation every cycle. Pipeline depth:
     SP (FP_WIDTH=32): RootBits + 9 = 27 + 9 = 36 stages
     DP (FP_WIDTH=64): RootBits + 9 = 56 + 9 = 65 stages

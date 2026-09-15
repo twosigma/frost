@@ -102,6 +102,20 @@ else ifeq ($(TOPLEVEL),fp_div_shim)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
 VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+else ifeq ($(TOPLEVEL),fp_div_sqrt_equiv_harness)
+# Iterative FP divide/sqrt unit against the fully unrolled reference pipelines
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_result_assembler.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_sqrt_iter.sv \
+        $(ROOT)/hw/sim/fp_divider.sv \
+        $(ROOT)/hw/sim/fp_sqrt.sv \
+        $(ROOT)/hw/sim/fp_div_sqrt_equiv_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),dispatch)
 # Dispatch unit test
 COMPILE_ARGS := \

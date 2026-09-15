@@ -17,6 +17,11 @@
 /*
   IEEE 754 floating-point divider, fully pipelined (FP_WIDTH 32 or 64).
 
+  Simulation reference only. The core divides on fp_div_sqrt_iter, whose
+  shared iterative datapath costs a fraction of the cells this unrolled
+  pipeline does; this file stays as the model the fp_div_sqrt_equiv bench
+  compares against, and is not in any synthesis file list.
+
   Accepts a new operation every cycle. Pipeline depth:
     SP (FP_WIDTH=32): DivCycles + 10 = 26 + 10 = 36 stages
     DP (FP_WIDTH=64): DivCycles + 10 = 55 + 10 = 65 stages
