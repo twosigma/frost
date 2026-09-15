@@ -56,11 +56,14 @@ module sc_pending_unit (
     input logic [riscv_pkg::XLEN-1:0] i_lq_reservation_addr,
     input logic i_mem_adapter_result_pending,
     input riscv_pkg::fu_complete_t i_lq_fu_complete,
-    input logic i_store_misalign_issue,
-    // Tag of the op the store-fault strobe is for: the issuing op's tag on
-    // the legacy same-cycle path, the MMU's one-cycle-later echo when data
-    // translation is active (Phase 3 M4).
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_store_fault_tag,
+    // The wrapper's registered SC completion is still waiting for the MEM
+    // adapter (a registered store fault took the slot first); no fire while
+    // it waits.
+    input logic i_sc_completion_pending,
+    // The registered store-fault strobe (misalign, PMA, or the MMU's page/
+    // access fault), one cycle after the fault decision.  It carries the
+    // faulting op's tag, blocks the fire in its cycle, and kills a faulting
+    // SC's entry; the live decision no longer reaches this unit.
     input riscv_pkg::fu_complete_t i_store_misalign_fu_complete_reg,
     input riscv_pkg::rs_issue_t i_mem_rs_issue,
     input logic [riscv_pkg::XLEN-1:0] i_sq_effective_addr,
@@ -101,7 +104,7 @@ module sc_pending_unit (
   logic [riscv_pkg::XLEN-1:0] lq_reservation_addr;
   logic mem_adapter_result_pending;
   riscv_pkg::fu_complete_t lq_fu_complete;
-  logic store_misalign_issue;
+  logic sc_completion_pending;
   riscv_pkg::fu_complete_t store_misalign_fu_complete_reg;
   riscv_pkg::rs_issue_t o_mem_rs_issue;
   logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
@@ -114,7 +117,7 @@ module sc_pending_unit (
   assign lq_reservation_addr = i_lq_reservation_addr;
   assign mem_adapter_result_pending = i_mem_adapter_result_pending;
   assign lq_fu_complete = i_lq_fu_complete;
-  assign store_misalign_issue = i_store_misalign_issue;
+  assign sc_completion_pending = i_sc_completion_pending;
   assign store_misalign_fu_complete_reg = i_store_misalign_fu_complete_reg;
   assign o_mem_rs_issue = i_mem_rs_issue;
   assign sq_effective_addr = i_sq_effective_addr;
@@ -187,10 +190,11 @@ module sc_pending_unit (
   assign sct_alloc = o_mem_rs_issue.valid && !speculative_flush_all &&
       ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
        (o_mem_rs_issue.op == riscv_pkg::SC_D)) &&
-      // A same-cycle store fault for this op completes through the fault
-      // strobe instead, so the table never tracks it. The legacy misalign/PMA
-      // path no longer excludes SCs.
-      !(i_store_misalign_issue && (i_store_fault_tag == o_mem_rs_issue.rob_tag)) &&
+      // An SC that faults in its own issue cycle is still captured; the
+      // registered fault strobe kills its entry one cycle later and blocks
+      // every fire in between, so the entry is never fired or completed.
+      // Consulting the live fault decision here would put the store address,
+      // misalignment and PMA cone on the allocation path.
       !(speculative_flush_en && is_younger(
           o_mem_rs_issue.rob_tag, i_flush_tag, head_tag
       ));
@@ -219,12 +223,17 @@ module sc_pending_unit (
       // The SC matches a reservation anywhere in the reserved doubleword
       // (the RV64A granule).
       && (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_hit_addr[riscv_pkg::XLEN-1:3]);
-  // Arm SC only when the MEM adapter has no competing same-cycle producer; the
-  // registered completion below owns the MEM adapter on the next cycle.
+  // Arm SC only when the MEM adapter has no competing producer: no result
+  // pending, no live LQ result, no registered store fault presenting, and no
+  // earlier SC completion still waiting in the wrapper.  A store that faults
+  // in the fire cycle is not consulted here: its registered fault takes the
+  // MEM slot first next cycle and the wrapper holds the SC completion until
+  // the slot is free.  Consulting the live decision put the store address,
+  // misalignment and PMA cone on this unit's write path.
   assign sc_fire_now = sc_can_fire && !i_coh_sc_hold &&
                        !mem_adapter_result_pending &&
                        !lq_fu_complete.valid &&
-                       !store_misalign_issue &&
+                       !sc_completion_pending &&
                        !store_misalign_fu_complete_reg.valid;
 
   // SC fu_complete generation: the firing SC matched head_tag, so that is its tag.
@@ -265,13 +274,16 @@ module sc_pending_unit (
           end
         end
       end
-      // Kill the entry of an SC that faulted at the store-fault strobe. It
-      // completes through the fault path, never via sc_fire. The data MMU
-      // delivers SC page/access/misalign faults one cycle after issue, by
-      // which time the entry has already allocated.
-      if (i_store_misalign_issue) begin
+      // Kill the entry of an SC that faulted, at the registered store-fault
+      // strobe. It completes through the fault path, never via sc_fire: the
+      // registered strobe blocks every fire in its own cycle (above) and the
+      // entry is gone on the next edge, so no address-valid faulting SC can
+      // fire in the one extra cycle it stays resident.
+      if (store_misalign_fu_complete_reg.valid) begin
         for (int i = 0; i < ScTableDepth; i++) begin
-          if (sct_valid[i] && (sct_tag[i] == i_store_fault_tag)) sct_valid[i] <= 1'b0;
+          if (sct_valid[i] && (sct_tag[i] == store_misalign_fu_complete_reg.tag)) begin
+            sct_valid[i] <= 1'b0;
+          end
         end
       end
       // Free the firing entry.

@@ -7503,6 +7503,182 @@ async def test_translated_store_raw_capture_partial_flush_stays_hidden(
 
 
 @cocotb.test()
+async def test_sc_fire_yields_to_colliding_store_fault(dut: Any) -> None:
+    """An SC that fires in a misaligned store's fault cycle completes after the fault.
+
+    The MEM adapter takes one completion per cycle.  The registered store
+    fault has no hold of its own, so it is presented first and the registered
+    SC completion waits; both reach the CDB exactly once, the fault first, and
+    the SC still succeeds.  The fire no longer consults the live fault
+    decision, so the collision is real here.  Sweeps the store's wake so one
+    iteration lands its fault decision on the SC's fire cycle.
+    """
+    cocotb.log.info("=== Test: SC Fire Yields To Colliding Store Fault ===")
+    collisions = 0
+    for producer_at in range(0, 6):
+        cocotb.log.info(f"--- producer completes at cycle {producer_at} ---")
+        dut_if, _model = await setup_test(dut)
+        dut_if.dut.i_trap_misaligned_accesses.value = 1
+        dut_if.set_fu_ready(RS_MEM, True)
+        addr = 0x1000
+
+        # LR sets the reservation and commits.
+        tag_lr = await dut_if.dispatch(
+            AllocationRequest(pc=0x8000, dest_reg=5, dest_valid=True, is_lr=True)
+        )
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=tag_lr,
+            op=OP_LR_W,
+            src1_ready=True,
+            src1_value=addr,
+            src2_ready=True,
+            src3_ready=True,
+            imm=0,
+            use_imm=True,
+            mem_size=2,
+            mem_signed=False,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+        mem_req = {"en": False}
+        for _ in range(8):
+            mem_req = dut_if.read_lq_mem_request()
+            if mem_req["en"]:
+                break
+            await dut_if.step()
+        assert mem_req["en"], "LQ should issue the LR memory read"
+        await dut_if.step()
+        dut_if.drive_lq_mem_response(0x1234_5678)
+        cdb = await wait_for_cdb(dut_if)
+        dut_if.clear_lq_mem_response()
+        assert cdb.tag == tag_lr
+        commit = await wait_for_commit(dut_if)
+        assert commit["tag"] == tag_lr
+
+        # A blocker ahead of the SC decides when the SC reaches the head; a
+        # producer ahead of the store decides when the misaligned SW issues.
+        blocker_tag = await dut_if.dispatch(make_int_req(pc=0x8004, rd=6))
+        tag_sc = await dut_if.dispatch(
+            AllocationRequest(
+                pc=0x8008, dest_reg=7, dest_valid=True, is_sc=True, is_store=True
+            )
+        )
+        producer_tag = await dut_if.dispatch(make_int_req(pc=0x800C, rd=8))
+        store_tag = await dut_if.dispatch(make_store_req(pc=0x8010))
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=tag_sc,
+            op=OP_SC_W,
+            src1_ready=True,
+            src1_value=addr,
+            src2_ready=True,
+            src2_value=0xAABB_CCDD,
+            src3_ready=True,
+            imm=0,
+            use_imm=True,
+            mem_size=2,
+            mem_signed=False,
+        )
+        await dut_if.step()
+        # Misaligned SW (addr = 0x2002, word store), waiting on the producer.
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=store_tag,
+            op=OP_SW,
+            src1_ready=False,
+            src1_tag=producer_tag,
+            src2_ready=True,
+            src2_value=0xCAFE,
+            src3_ready=True,
+            imm=2,
+            use_imm=True,
+            mem_size=2,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+        for _ in range(3):
+            await dut_if.step()
+
+        fault_at: int | None = None
+        sc_at: int | None = None
+        fault_count = 0
+        sc_count = 0
+        sc_value = None
+        sc_commits = 0
+        sc_commit_value = None
+        sc_commit_at: int | None = None
+        collided = False
+
+        def note_sc_commits(idx: int) -> None:
+            nonlocal sc_commits, sc_commit_value, sc_commit_at
+            for commit in (dut_if.read_commit(), dut_if.read_commit_2()):
+                if commit["valid"] and commit["tag"] == tag_sc:
+                    sc_commits += 1
+                    sc_commit_value = commit["value"]
+                    sc_commit_at = idx if sc_commit_at is None else sc_commit_at
+
+        def note_cdb(idx: int) -> None:
+            nonlocal fault_count, fault_at, sc_count, sc_value, sc_at
+            for cdb in _read_cdb_lanes(dut_if.dut):
+                if cdb.valid and cdb.tag == store_tag and cdb.exception:
+                    fault_count += 1
+                    fault_at = idx if fault_at is None else fault_at
+                if cdb.valid and cdb.tag == tag_sc:
+                    sc_count += 1
+                    sc_value = cdb.value
+                    sc_at = idx if sc_at is None else sc_at
+
+        for idx in range(28):
+            if idx == 0:
+                dut_if.drive_fu_complete(FU_FP_ADD, tag=blocker_tag, value=0x2000)
+            elif idx == 1:
+                dut_if.clear_fu_complete(FU_FP_ADD)
+            if idx == producer_at and producer_at != 0:
+                dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=0x2000)
+            elif idx == producer_at + 1 and producer_at != 0:
+                dut_if.clear_fu_complete(FU_FP_ADD)
+            if producer_at == 0 and idx == 2:
+                dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=0x2000)
+            elif producer_at == 0 and idx == 3:
+                dut_if.clear_fu_complete(FU_FP_ADD)
+            await RisingEdge(dut_if.clock)
+            # The SC commits inside this window; sample commits as
+            # wait_for_commit does, right after the edge.
+            note_sc_commits(idx)
+            await FallingEdge(dut_if.clock)
+            if int(dut.sc_pending_unit_inst.sc_fire_now.value) and int(
+                dut.store_misalign_issue.value
+            ):
+                collided = True
+            note_cdb(idx)
+        # Keep both monitors running through a grace window that ends a few
+        # cycles after the SC commit, so a repeated completion or commit
+        # right after the first one is still counted.
+        for idx in range(28, 56):
+            if sc_commit_at is not None and idx > sc_commit_at + 4:
+                break
+            await RisingEdge(dut_if.clock)
+            note_sc_commits(idx)
+            await FallingEdge(dut_if.clock)
+            note_cdb(idx)
+        assert fault_count == 1, f"store fault broadcast {fault_count} times"
+        assert sc_count == 1, f"SC completion broadcast {sc_count} times"
+        assert sc_value == 0, f"SC should succeed, got {sc_value}"
+        if collided:
+            collisions += 1
+            assert fault_at is not None and sc_at is not None
+            assert fault_at < sc_at, (
+                f"colliding fault must reach the CDB before the SC: fault {fault_at}, "
+                f"SC {sc_at}"
+            )
+        assert sc_commits == 1, f"SC committed {sc_commits} times"
+        assert sc_commit_value == 0, f"SC should commit success, got {sc_commit_value}"
+    assert collisions >= 1, "the sweep never landed a fault on the SC's fire cycle"
+    cocotb.log.info(f"=== Test Passed ({collisions} colliding iterations) ===")
+
+
+@cocotb.test()
 async def test_older_store_fault_survives_flush_of_held_younger_fault(dut: Any) -> None:
     """An older store's fault is kept when a partial flush kills the held younger one.
 
