@@ -291,6 +291,19 @@ explicit `--directives`, `--num-uncertainties` or `--route-directives` is
 honored instead. The README utilization table is left alone: a divided-clock
 build is not the reference implementation.
 
+## Profiling counters
+
+The profiling counters (the `mperf*` CSRs, about 24k cells beside the
+timing-critical core: 3.8k LUTs, 18.3k flops, 2.1k CARRY8 at post-opt) are a
+build option: `--perf-counters` exports
+`FROST_PERF_COUNTERS=1` and synthesis passes `PERF_COUNTERS=1` to the board
+top. A full-rate build leaves them out by default, a divided-clock build
+includes them, and `--no-perf-counters` overrides that. The CLI always sets
+`FROST_PERF_COUNTERS`, so an inherited value cannot change the netlist; a run
+that starts after synthesis keeps whatever the checkpoint holds, and the
+banner says so. Without the counters the `mperf*` CSRs read zero and the
+software profile reports say "Profiling counters: absent".
+
 Use it to separate RTL bugs from timing margin (a failure that survives at half
 clock is not a setup violation), to get a bitstream quickly for functional
 checks, and to run stress programs on hardware that simulation cannot afford.

@@ -6,7 +6,7 @@ the private submodules below.
 
 | Submodule | Dir | What it holds |
 |-----------|-----|---------------|
-| `tomasulo_perf_counters` | `perf/` | The 64 back-end performance counters: accumulate, snapshot into four banks, CSR-style readout. |
+| `tomasulo_perf_counters` | `perf/` | The 64 back-end performance counters: accumulate, snapshot into four banks, CSR-style readout. Left out when the wrapper's `PERF_COUNTERS` parameter is 0 (the production build). |
 | `commit_bus_pipeline` | `commit_bus/` | Registers both combinational ROB commit buses and the decomposed `commit_q_*` fields. |
 | `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage. It registers the dispatch base and immediate, adds them the next cycle off the dispatch critical path, and produces the two SQ early-address update packets. A store whose base is not ready at dispatch becomes a persistent repair candidate (below). |
 | `dispatch_rs_router` | `dispatch_routing/` | Decodes both dispatch packets into per-RS valid and slot-1 intent signals. |
@@ -296,8 +296,8 @@ injected, live, and held sources.
 ## Performance counters
 
 The wrapper owns 64 live performance counters (in
-`perf/tomasulo_perf_counters.sv`), snapshot-captured in four banks for
-end-of-test reporting. In rough groups:
+`perf/tomasulo_perf_counters.sv`, present when `PERF_COUNTERS` is 1),
+snapshot-captured in four banks for end-of-test reporting. In rough groups:
 
 - Head-wait partitions. The dominant `head_wait_total` bucket is decomposed
   into `Int / Branch / Mul / MemLoad / MemStore / MemAmo / Fp / Fmul / Fdiv`.

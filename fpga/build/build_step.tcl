@@ -779,6 +779,17 @@ if {$step eq "synth"} {
         lappend synth_args -generic CPU_CLK_DIV=$cpu_clk_div
         puts "CPU clock divider $cpu_clk_div (generic CPU_CLK_DIV)"
     }
+    # Profiling counters are a build option: build.py --perf-counters exports
+    # FROST_PERF_COUNTERS and the board top takes it as PERF_COUNTERS.
+    set perf_counters [getenv_default FROST_PERF_COUNTERS 0]
+    if {$perf_counters ne "0" && $perf_counters ne "1"} {
+        puts "Error: FROST_PERF_COUNTERS must be 0 or 1 (got '$perf_counters')"
+        exit 1
+    }
+    if {$perf_counters eq "1"} {
+        lappend synth_args -generic PERF_COUNTERS=1
+        puts "Profiling counters included (generic PERF_COUNTERS)"
+    }
     synth_design {*}$synth_args
 
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1"} {

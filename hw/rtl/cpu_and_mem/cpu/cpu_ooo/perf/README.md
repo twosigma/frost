@@ -5,6 +5,34 @@ FROST exposes 130 profiling counters through custom machine CSRs:
 plus 64 back-end counters in `tomasulo_perf_counters.sv`. This document
 defines their numbering, the CSR protocol, and the software API.
 
+## Build option
+
+The counters are a build option. `cpu_ooo`'s `PERF_COUNTERS` parameter (0 or
+1, plumbed from the board top through `frost` and `cpu_and_mem`, default 0)
+instantiates the aggregator, the wrapper's `tomasulo_perf_counters` and the
+CSR file's `mperf*` state. The 300 MHz production build leaves them out: they
+are about 24k cells beside the timing-critical core (post-opt on X3: 3.8k
+LUTs, 18.3k flops and 2.1k CARRY8 fewer without them). With
+`PERF_COUNTERS = 0` the five CSRs still decode (no new illegal-instruction
+trap; the three read-only ones trap on writes as always), all read zero,
+`mperfsel`/`mperfctl` ignore writes, and `tomasulo_profile_take_snapshot`
+records zero counters, so the software reports print "Profiling counters:
+absent" and zeros. The event sources keep their registers at their owners;
+synthesis removes the unread ones (the cache and fetch-provider observers
+are marked keep and stay). `build.py --perf-counters` (the default for
+`--cpu-clock-div N` analysis builds; a synthesis-time option, resumed runs
+keep the checkpoint's netlist) and the cocotb entries that read the counters
+(`-GPERF_COUNTERS=1`: `csr_rmw_test`, `tomasulo_perf`, `ddr_mlp_test`,
+`coremark_profile`; `tomasulo_perf` and `coremark_profile` fail unless the report
+shows the counters)
+include them; `perf_off_test` covers the absent case and the formal task
+`bmc_perf_off` proves the CSR file's absent-case semantics. CoreMark's tick
+count differs between the two configurations (305096 without, 305088 with)
+because the start snapshot's counter loop runs before the timed window and
+leaves the predictors in a different state; the timed instructions are the
+same. The count is also sensitive to code layout, so any change to the shared
+software moves both references together.
+
 ## CSR interface
 
 | CSR | Address | Access | Purpose |

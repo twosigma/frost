@@ -40,7 +40,12 @@ module cpu_ooo #(
     // one mandatory router stage, may then wait for
     // committed-store drain, and returns one cycle after terminal accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    // Profiling counters: perf_counter_aggregator, the wrapper's
+    // tomasulo_perf_counters and the CSR file's mperf* state. 0 = absent (the
+    // mperf* CSRs read zero and the event sources are unread); the production
+    // build leaves them out, analysis builds set the board top's generic.
+    parameter int unsigned PERF_COUNTERS = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -1366,6 +1371,7 @@ module cpu_ooo #(
   tomasulo_wrapper #(
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
+      .PERF_COUNTERS(PERF_COUNTERS),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) u_tomasulo (
@@ -2778,7 +2784,8 @@ module cpu_ooo #(
 
   csr_file #(
       .XLEN(XLEN),
-      .UsePerfCsrHalf(1'b1)
+      .UsePerfCsrHalf(1'b1),
+      .PERF_COUNTERS(PERF_COUNTERS)
   ) csr_file_inst (
       .i_clk,
       .i_rst,
@@ -3189,42 +3196,66 @@ module cpu_ooo #(
   assign o_debug_commit_valid = {rob_commit_2.valid, rob_commit.valid};
 
   // ===========================================================================
-  // Profiling Counter Aggregation
+  // Profiling Counter Aggregation (PERF_COUNTERS build option)
   // ===========================================================================
-  perf_counter_aggregator #(
-      .PreselectCsrHalf(1'b1)
-  ) perf_counter_aggregator_inst (
-      .i_clk,
-      .i_rst,
-      .i_rob_alloc_req(rob_alloc_req),
-      .i_dispatch_fire_2(rob_alloc_req_2.alloc_valid),
-      .i_if_width_events(if_width_events),
-      .i_mem_rs_two_ready_one_issued(perf_mem_rs_two_ready_one_issued),
-      .i_cdb_oversubscribed(perf_cdb_oversubscribed),
-      .i_dispatch_status(dispatch_status),
-      .i_rob_commit_comb(rob_commit_comb),
-      .i_flush_pipeline(flush_pipeline),
-      .i_post_flush_holdoff_q(post_flush_holdoff_q),
-      .i_csr_in_flight(csr_in_flight),
-      .i_csr_wb_pending(csr_wb_pending),
-      .i_serializing_alloc_fire(serializing_alloc_fire),
-      .i_front_end_cf_serialize_stall(front_end_cf_serialize_stall),
-      .i_rob_empty(rob_empty),
-      .i_disable_branch_prediction_ooo(disable_branch_prediction_ooo),
-      .i_disable_branch_prediction(i_disable_branch_prediction),
-      .i_prediction_fence_branch(prediction_fence_branch),
-      .i_prediction_fence_jal(prediction_fence_jal),
-      .i_prediction_fence_indirect(prediction_fence_indirect),
-      .i_cache_perf_events(i_cache_perf_events),
-      .i_perf_counter_select(perf_counter_select),
-      .i_perf_snapshot_capture(perf_snapshot_capture),
-      .i_perf_cache_previous_select(perf_cache_previous_select),
-      .i_wrapper_perf_counter_data(wrapper_perf_counter_data),
-      .o_wrapper_perf_counter_select(wrapper_perf_counter_select),
-      .o_perf_counter_data_q(perf_counter_data_q),
-      .o_perf_counter_csr_half_q(perf_counter_csr_half_q),
-      .o_perf_counter_count(perf_counter_count)
-  );
+  generate
+    if (PERF_COUNTERS != 0) begin : gen_perf_counters
+      perf_counter_aggregator #(
+          .PreselectCsrHalf(1'b1)
+      ) perf_counter_aggregator_inst (
+          .i_clk,
+          .i_rst,
+          .i_rob_alloc_req(rob_alloc_req),
+          .i_dispatch_fire_2(rob_alloc_req_2.alloc_valid),
+          .i_if_width_events(if_width_events),
+          .i_mem_rs_two_ready_one_issued(perf_mem_rs_two_ready_one_issued),
+          .i_cdb_oversubscribed(perf_cdb_oversubscribed),
+          .i_dispatch_status(dispatch_status),
+          .i_rob_commit_comb(rob_commit_comb),
+          .i_flush_pipeline(flush_pipeline),
+          .i_post_flush_holdoff_q(post_flush_holdoff_q),
+          .i_csr_in_flight(csr_in_flight),
+          .i_csr_wb_pending(csr_wb_pending),
+          .i_serializing_alloc_fire(serializing_alloc_fire),
+          .i_front_end_cf_serialize_stall(front_end_cf_serialize_stall),
+          .i_rob_empty(rob_empty),
+          .i_disable_branch_prediction_ooo(disable_branch_prediction_ooo),
+          .i_disable_branch_prediction(i_disable_branch_prediction),
+          .i_prediction_fence_branch(prediction_fence_branch),
+          .i_prediction_fence_jal(prediction_fence_jal),
+          .i_prediction_fence_indirect(prediction_fence_indirect),
+          .i_cache_perf_events(i_cache_perf_events),
+          .i_perf_counter_select(perf_counter_select),
+          .i_perf_snapshot_capture(perf_snapshot_capture),
+          .i_perf_cache_previous_select(perf_cache_previous_select),
+          .i_wrapper_perf_counter_data(wrapper_perf_counter_data),
+          .o_wrapper_perf_counter_select(wrapper_perf_counter_select),
+          .o_perf_counter_data_q(perf_counter_data_q),
+          .o_perf_counter_csr_half_q(perf_counter_csr_half_q),
+          .o_perf_counter_count(perf_counter_count)
+      );
+    end else begin : gen_no_perf_counters
+      // No counters: the CSR file reads zero for every mperf* address and
+      // never raises the snapshot pulse. The event sources keep their
+      // registers at their owners; nothing reads them, so synthesis drops
+      // them along with the counters, except the few observers marked keep
+      // (the cache and fetch-provider event registers).
+      assign wrapper_perf_counter_select = '0;
+      assign perf_counter_data_q = '0;
+      assign perf_counter_csr_half_q = '0;
+      assign perf_counter_count = '0;
+      logic unused_perf_events;
+      assign unused_perf_events = &{
+          1'b0, if_width_events, dispatch_status, perf_mem_rs_two_ready_one_issued,
+          perf_cdb_oversubscribed,
+          i_cache_perf_events, perf_counter_select, perf_snapshot_capture,
+          perf_cache_previous_select, wrapper_perf_counter_data, post_flush_holdoff_q,
+          csr_in_flight, csr_wb_pending, serializing_alloc_fire, front_end_cf_serialize_stall,
+          rob_empty, disable_branch_prediction_ooo, i_disable_branch_prediction,
+          prediction_fence_branch, prediction_fence_jal, prediction_fence_indirect
+      };
+    end
+  endgenerate
 
   // ===========================================================================
   // Reset Done

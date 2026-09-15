@@ -65,6 +65,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "csr_file.sby",
         "CSR file - control/status registers",
+        tasks=("bmc", "cover", "bmc_perf_off"),
     ),
     FormalTarget(
         "tlb.sby",
@@ -262,6 +263,7 @@ SBY_TASKS = [
     # The INT reservation station's ROB-tag-indexed branch payload (side RAM).
     ("bmc_tag_indexed", "Bounded model checking with the tag-indexed branch payload"),
     ("cover_tag_indexed", "Cover checking with the tag-indexed branch payload"),
+    ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
 ]
 
 

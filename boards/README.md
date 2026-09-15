@@ -172,6 +172,12 @@ that multiplies the MMCM output divide, so a functional-validation bitstream
 runs the CPU at 300/N MHz with the same RTL; the reference oscillator and the
 DDR4 controller clocking are unchanged.
 
+It also takes a `PERF_COUNTERS` parameter (`build.py --perf-counters`; left
+out of a full-rate build, included in a divided-clock build unless
+`--no-perf-counters`): 1 includes the profiling counters behind the `mperf*`
+CSRs, 0 leaves them out of the netlist, those CSRs read zero, and
+`mperfsel`/`mperfctl` ignore writes.
+
 Two `BUFGCE_DIV` instances share the MMCM output: divide-by-one supplies the
 CPU clock, and divide-by-four supplies the loader IP, UART, and reset timers.
 The /4 clock is 75 MHz by default and 75/N MHz when `CPU_CLK_DIV=N`. The
