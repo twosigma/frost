@@ -99,7 +99,8 @@ verif/
 │   │                      #   decompressor, immu, branch prediction, RAS, BTB, ...)
 │   ├── pd_stage/          # Predecode-stage top-level block tests
 │   ├── id_stage/          # Decode-stage top-level block tests
-│   ├── ex_stage/          # EX-stage block tests (branch/jump unit)
+│   ├── ex_stage/          # EX-stage block tests (branch/jump unit, FP
+│   │                      #   divide/sqrt equivalence)
 │   ├── predecode/         # Fetch provider + predecode-line block tests (L1I fetch seam)
 │   ├── cache/             # Cache hierarchy + line-port arbiter block tests
 │   ├── cpu_ooo/           # OOO block tests (commit, recovery, memory router,

@@ -13,11 +13,9 @@ smtbmc boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
-read -formal -sv sdp_dist_ram.sv
 read -formal -sv fp_div_shim.sv
 prep -top fp_div_shim
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_div_shim.sv

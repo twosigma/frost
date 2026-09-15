@@ -1027,7 +1027,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "fp_div_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_div_shim",
         hdl_toplevel_module="fp_div_shim",
-        description="FP div shim unit tests (FDIV, FSQRT, flush)",
+        description=(
+            "FP div shim unit tests (FDIV, FSQRT, one-at-a-time occupancy, "
+            "credit gate, full and partial flush)"
+        ),
+    ),
+    "fp_div_sqrt_equiv": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_fp_div_sqrt_equiv",
+        hdl_toplevel_module="fp_div_sqrt_equiv_harness",
+        description=(
+            "Iterative FP divide/sqrt unit against the unrolled fp_divider and "
+            "fp_sqrt references: directed corners plus a random sweep, result "
+            "and flags compared bit for bit"
+        ),
     ),
     "dispatch": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.dispatch.test_dispatch",

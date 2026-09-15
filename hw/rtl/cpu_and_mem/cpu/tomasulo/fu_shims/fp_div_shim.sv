@@ -17,13 +17,23 @@
 /*
  * FP Divide/Sqrt Shim (CDB Slot 6, FDIV_RS)
  *
- * Fully pipelined: 4 sub-units (div_s, div_d, sqrt_s, sqrt_d) each accept
- * a new operation every cycle. Per-sub-unit tag queues track in-flight ops.
- * Holding registers capture sub-unit completions. A priority arbiter drains
- * holding registers into a result FIFO. Credit-based back-pressure prevents
- * FIFO overflow.
+ * One fp_div_sqrt_iter handles FDIV.S, FDIV.D, FSQRT.S and FSQRT.D, one
+ * operation at a time: 36 cycles at single precision, 65 at double. The shim
+ * holds the ROB tag of the operation in the unit and the result the unit
+ * produced, and presents that result until the CDB adapter takes it.
  *
- * Pipeline depths: SP = 36 stages, DP = 65 stages.
+ * Credit gate: o_fu_busy is high whenever the unit holds an operation or the
+ * result register is occupied, so an operation is only accepted when both are
+ * free. That is the whole occupancy model; nothing else can hold state here,
+ * so no result can be produced with nowhere to put it.
+ *
+ * Flush: a full flush, or a partial flush whose tag comparison says the
+ * operation is younger than the boundary, kills the operation in the unit
+ * (i_kill) and clears a held result. A held result the partial flush kills is
+ * also suppressed combinationally on the flush cycle, because the clear only
+ * lands at the end of it. On the full-flush cycle the head may still be
+ * presented; the wrapper's CDB arbiter suppresses the broadcast with i_kill,
+ * as the fu_cdb_adapter header describes.
  */
 module fp_div_shim (
     input logic i_clk,
@@ -57,21 +67,6 @@ module fp_div_shim (
   function automatic logic [31:0] unbox32(input logic [FLEN-1:0] value);
     unbox32 = (&value[FLEN-1:32]) ? value[31:0] : riscv_pkg::FpCanonicalNan;
   endfunction
-
-  // Sub-unit indices
-  localparam int unsigned NumUnits = 4;
-  localparam int unsigned UDivS = 0;
-  localparam int unsigned UDivD = 1;
-  localparam int unsigned USqrtS = 2;
-  localparam int unsigned USqrtD = 3;
-
-  localparam int unsigned FifoDepth = 4;
-
-  // Pipeline depths per sub-unit (for tag queue shift registers)
-  localparam int unsigned DivSDepth = 36;
-  localparam int unsigned DivDDepth = 65;
-  localparam int unsigned SqrtSDepth = 36;
-  localparam int unsigned SqrtDDepth = 65;
 
   // ===========================================================================
   // Age comparison for partial flush
@@ -114,510 +109,156 @@ module fp_div_shim (
     endcase
   end
 
-  // Operand extraction
+  // Operand extraction. Single-precision operands are unboxed into the low
+  // half; the unit reads its operands at the width the op selects.
   wire [31:0] src1_s = unbox32(i_rs_issue.src1_value);
   wire [31:0] src2_s = unbox32(i_rs_issue.src2_value);
-  wire [63:0] src1_d = i_rs_issue.src1_value;
-  wire [63:0] src2_d = i_rs_issue.src2_value;
+
+  logic [63:0] unit_operand_a, unit_operand_b;
+  assign unit_operand_a = op_is_double ? i_rs_issue.src1_value : {32'b0, src1_s};
+  assign unit_operand_b = op_is_double ? i_rs_issue.src2_value : {32'b0, src2_s};
 
   // ===========================================================================
-  // Credit-based busy (forward declaration, computed below)
+  // Occupancy: one operation in the unit, one result waiting for the adapter
   // ===========================================================================
+  logic in_flight;
+  logic [TagW-1:0] tag_reg;
+  logic op_double_reg;
+
+  logic res_valid;
+  logic [TagW-1:0] res_tag;
+  logic [FLEN-1:0] res_value;
+  logic [FlagsW-1:0] res_flags;
+
   logic div_busy;
+  assign div_busy  = in_flight | res_valid;
+  assign o_fu_busy = div_busy;
 
-  // ===========================================================================
-  // Fire signals: route issue to exactly one sub-unit
-  // ===========================================================================
   logic fire;
   assign fire = i_rs_issue.valid & (use_div | use_sqrt) & ~div_busy;
 
-  logic fire_div_s, fire_div_d, fire_sqrt_s, fire_sqrt_d;
-  assign fire_div_s  = fire & use_div & ~op_is_double;
-  assign fire_div_d  = fire & use_div & op_is_double;
-  assign fire_sqrt_s = fire & use_sqrt & ~op_is_double;
-  assign fire_sqrt_d = fire & use_sqrt & op_is_double;
+  // ===========================================================================
+  // Flush terms
+  // ===========================================================================
+  logic flush_launching, flush_inflight;
+  logic res_partial_flushing, flush_result;
+
+  assign flush_launching = fire & (i_flush | (i_flush_en & is_younger(
+      i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+  )));
+  assign flush_inflight = in_flight & (i_flush | (i_flush_en & is_younger(
+      tag_reg, i_flush_tag, i_rob_head_tag
+  )));
+  assign res_partial_flushing = res_valid & i_flush_en & is_younger(
+      res_tag, i_flush_tag, i_rob_head_tag
+  );
+  assign flush_result = res_valid & (i_flush | res_partial_flushing);
+
+  // An operation the flush already covers never starts.
+  logic start;
+  assign start = fire & ~flush_launching;
 
   // ===========================================================================
-  // Sub-unit instantiation
+  // Divide/square-root unit
   // ===========================================================================
-  logic                 [31:0] div_s_result;
-  logic                        div_s_valid;
-  riscv_pkg::fp_flags_t        div_s_flags;
+  logic unit_ready;
+  logic unit_valid;
+  logic [63:0] unit_result;
+  riscv_pkg::fp_flags_t unit_flags;
 
 `ifdef FORMAL
-  // The shim proof covers tag/flush/FIFO control. Model the arithmetic
-  // sub-units as latency-matched valid pipelines so formal does not spend most
-  // of its time bit-blasting FP divide/sqrt datapaths.
-  logic [ DivSDepth-1:0] f_div_s_valid_pipe;
-  logic [ DivDDepth-1:0] f_div_d_valid_pipe;
-  logic [SqrtSDepth-1:0] f_sqrt_s_valid_pipe;
-  logic [SqrtDDepth-1:0] f_sqrt_d_valid_pipe;
+  // The shim proof covers tag, flush and credit control. The arithmetic unit
+  // becomes a model that completes at an arbitrary cycle while an operation is
+  // in flight, which covers every latency the real unit can produce and keeps
+  // completions reachable at small bounded depths.
+  (* anyseq *) logic f_unit_done;
+  (* anyseq *) logic [63:0] f_unit_result;
+  (* anyseq *) logic [FlagsW-1:0] f_unit_flags;
+
+  logic f_unit_busy;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) f_unit_busy <= 1'b0;
+    else if (start) f_unit_busy <= 1'b1;
+    else if (unit_valid || flush_inflight) f_unit_busy <= 1'b0;
+  end
+
+  assign unit_ready  = ~f_unit_busy;
+  assign unit_valid  = f_unit_busy & f_unit_done;
+  assign unit_result = f_unit_result;
+  assign unit_flags  = riscv_pkg::fp_flags_t'(f_unit_flags);
+`else
+  fp_div_sqrt_iter u_div_sqrt (
+      .i_clk(i_clk),
+      .i_rst(~i_rst_n),
+      .i_valid(start),
+      .i_is_sqrt(use_sqrt),
+      .i_is_double(op_is_double),
+      .i_operand_a(unit_operand_a),
+      .i_operand_b(unit_operand_b),
+      .i_rounding_mode(i_rs_issue.rm),
+      .i_kill(flush_inflight),
+      .o_ready(unit_ready),
+      .o_valid(unit_valid),
+      .o_result(unit_result),
+      .o_flags(unit_flags)
+  );
+`endif
+
+  // A completion the flush kills on the same cycle is dropped, not captured.
+  logic capture;
+  assign capture = unit_valid & ~flush_inflight;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      f_div_s_valid_pipe  <= '0;
-      f_div_d_valid_pipe  <= '0;
-      f_sqrt_s_valid_pipe <= '0;
-      f_sqrt_d_valid_pipe <= '0;
-    end else begin
-      f_div_s_valid_pipe  <= {f_div_s_valid_pipe[DivSDepth-2:0], fire_div_s};
-      f_div_d_valid_pipe  <= {f_div_d_valid_pipe[DivDDepth-2:0], fire_div_d};
-      f_sqrt_s_valid_pipe <= {f_sqrt_s_valid_pipe[SqrtSDepth-2:0], fire_sqrt_s};
-      f_sqrt_d_valid_pipe <= {f_sqrt_d_valid_pipe[SqrtDDepth-2:0], fire_sqrt_d};
-    end
-  end
-
-  assign div_s_valid  = f_div_s_valid_pipe[DivSDepth-1];
-  assign div_s_result = '0;
-  assign div_s_flags  = '0;
-`else
-  fp_divider #(
-      .FP_WIDTH(32)
-  ) u_div_s (
-      .i_clk(i_clk),
-      .i_rst(~i_rst_n),
-      .i_valid(fire_div_s),
-      .i_operand_a(src1_s),
-      .i_operand_b(src2_s),
-      .i_rounding_mode(i_rs_issue.rm),
-      .o_result(div_s_result),
-      .o_valid(div_s_valid),
-      .o_stall(),
-      .o_flags(div_s_flags)
-  );
-`endif
-
-  logic                 [63:0] div_d_result;
-  logic                        div_d_valid;
-  riscv_pkg::fp_flags_t        div_d_flags;
-
-`ifdef FORMAL
-  assign div_d_valid  = f_div_d_valid_pipe[DivDDepth-1];
-  assign div_d_result = '0;
-  assign div_d_flags  = '0;
-`else
-  fp_divider #(
-      .FP_WIDTH(64)
-  ) u_div_d (
-      .i_clk(i_clk),
-      .i_rst(~i_rst_n),
-      .i_valid(fire_div_d),
-      .i_operand_a(src1_d),
-      .i_operand_b(src2_d),
-      .i_rounding_mode(i_rs_issue.rm),
-      .o_result(div_d_result),
-      .o_valid(div_d_valid),
-      .o_stall(),
-      .o_flags(div_d_flags)
-  );
-`endif
-
-  logic                 [31:0] sqrt_s_result;
-  logic                        sqrt_s_valid;
-  riscv_pkg::fp_flags_t        sqrt_s_flags;
-
-`ifdef FORMAL
-  assign sqrt_s_valid  = f_sqrt_s_valid_pipe[SqrtSDepth-1];
-  assign sqrt_s_result = '0;
-  assign sqrt_s_flags  = '0;
-`else
-  fp_sqrt #(
-      .FP_WIDTH(32)
-  ) u_sqrt_s (
-      .i_clk(i_clk),
-      .i_rst(~i_rst_n),
-      .i_valid(fire_sqrt_s),
-      .i_operand(src1_s),
-      .i_rounding_mode(i_rs_issue.rm),
-      .o_result(sqrt_s_result),
-      .o_valid(sqrt_s_valid),
-      .o_stall(),
-      .o_flags(sqrt_s_flags)
-  );
-`endif
-
-  logic                 [63:0] sqrt_d_result;
-  logic                        sqrt_d_valid;
-  riscv_pkg::fp_flags_t        sqrt_d_flags;
-
-`ifdef FORMAL
-  assign sqrt_d_valid  = f_sqrt_d_valid_pipe[SqrtDDepth-1];
-  assign sqrt_d_result = '0;
-  assign sqrt_d_flags  = '0;
-`else
-  fp_sqrt #(
-      .FP_WIDTH(64)
-  ) u_sqrt_d (
-      .i_clk(i_clk),
-      .i_rst(~i_rst_n),
-      .i_valid(fire_sqrt_d),
-      .i_operand(src1_d),
-      .i_rounding_mode(i_rs_issue.rm),
-      .o_result(sqrt_d_result),
-      .o_valid(sqrt_d_valid),
-      .o_stall(),
-      .o_flags(sqrt_d_flags)
-  );
-`endif
-
-  // Collect sub-unit outputs into arrays for uniform handling
-  logic              unit_valid_out[NumUnits];
-  logic [  FLEN-1:0] unit_result   [NumUnits];
-  logic [FlagsW-1:0] unit_flags    [NumUnits];
-
-  // NaN-box SP results
-  assign unit_valid_out[UDivS]  = div_s_valid;
-  assign unit_result[UDivS]     = {32'hFFFF_FFFF, div_s_result};
-  assign unit_flags[UDivS]      = div_s_flags;
-
-  assign unit_valid_out[UDivD]  = div_d_valid;
-  assign unit_result[UDivD]     = div_d_result;
-  assign unit_flags[UDivD]      = div_d_flags;
-
-  assign unit_valid_out[USqrtS] = sqrt_s_valid;
-  assign unit_result[USqrtS]    = {32'hFFFF_FFFF, sqrt_s_result};
-  assign unit_flags[USqrtS]     = sqrt_s_flags;
-
-  assign unit_valid_out[USqrtD] = sqrt_d_valid;
-  assign unit_result[USqrtD]    = sqrt_d_result;
-  assign unit_flags[USqrtD]     = sqrt_d_flags;
-
-  // ===========================================================================
-  // Per-sub-unit tag queues
-  // Each queue is a shift register as deep as that sub-unit's pipeline latency.
-  // The arrays are sized to the deepest sub-unit, and a per-unit depth parameter
-  // bounds the shift range.
-  // ===========================================================================
-  localparam int unsigned MaxPipeDepth = 65;  // max(36, 65)
-
-  // Tag queue arrays stay flat for simple storage and waveform visibility.
-  logic            tq_valid  [NumUnits] [MaxPipeDepth];
-  logic [TagW-1:0] tq_tag    [NumUnits] [MaxPipeDepth];
-  logic            tq_flushed[NumUnits] [MaxPipeDepth];
-
-  // Fire signals as array for indexing
-  logic            fire_unit [NumUnits];
-  assign fire_unit[UDivS]  = fire_div_s;
-  assign fire_unit[UDivD]  = fire_div_d;
-  assign fire_unit[USqrtS] = fire_sqrt_s;
-  assign fire_unit[USqrtD] = fire_sqrt_d;
-
-  for (genvar u = 0; u < NumUnits; u++) begin : gen_tq
-    localparam int unsigned Depth = (u == UDivS)  ? DivSDepth  :
-                                    (u == UDivD)  ? DivDDepth  :
-                                    (u == USqrtS) ? SqrtSDepth : SqrtDDepth;
-
-    // Control: valid + flushed (with reset)
-    always_ff @(posedge i_clk) begin
-      if (!i_rst_n) begin
-        for (int i = 0; i < MaxPipeDepth; i++) begin
-          tq_valid[u][i]   <= 1'b0;
-          tq_flushed[u][i] <= 1'b0;
-        end
-      end else if (i_flush) begin
-        for (int i = 0; i < MaxPipeDepth; i++) begin
-          tq_valid[u][i] <= 1'b0;
-        end
-      end else begin
-        for (int i = Depth - 1; i >= 1; i--) begin
-          tq_valid[u][i] <= tq_valid[u][i-1];
-          if (tq_valid[u][i-1] && i_flush_en && is_younger(
-                  tq_tag[u][i-1], i_flush_tag, i_rob_head_tag
-              ))
-            tq_flushed[u][i] <= 1'b1;
-          else tq_flushed[u][i] <= tq_flushed[u][i-1];
-        end
-        if (fire_unit[u]) begin
-          tq_valid[u][0] <= 1'b1;
-          if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag))
-            tq_flushed[u][0] <= 1'b1;
-          else tq_flushed[u][0] <= 1'b0;
-        end else begin
-          tq_valid[u][0]   <= 1'b0;
-          tq_flushed[u][0] <= 1'b0;
-        end
-      end
-    end
-
-    // Data: tag shift register (no reset)
-    always_ff @(posedge i_clk) begin
-      for (int i = Depth - 1; i >= 1; i--) begin
-        tq_tag[u][i] <= tq_tag[u][i-1];
-      end
-      if (fire_unit[u]) tq_tag[u][0] <= i_rs_issue.rob_tag;
-    end
-  end
-
-  // ===========================================================================
-  // Per-sub-unit completion handling + holding registers
-  // ===========================================================================
-  // Tail index (output end of shift register) per unit
-  logic            tail_valid           [NumUnits];
-  logic [TagW-1:0] tail_tag             [NumUnits];
-  logic            tail_flushed         [NumUnits];
-  logic            tail_partial_flushing[NumUnits];
-  logic            completing           [NumUnits];
-
-  for (genvar u = 0; u < NumUnits; u++) begin : gen_tail
-    localparam int unsigned Depth = (u == UDivS)  ? DivSDepth  :
-                                    (u == UDivD)  ? DivDDepth  :
-                                    (u == USqrtS) ? SqrtSDepth : SqrtDDepth;
-    assign tail_valid[u] = tq_valid[u][Depth-1];
-    assign tail_tag[u] = tq_tag[u][Depth-1];
-    assign tail_flushed[u] = tq_flushed[u][Depth-1];
-    assign tail_partial_flushing[u] = tail_valid[u] && i_flush_en && is_younger(
-        tail_tag[u], i_flush_tag, i_rob_head_tag
-    );
-    assign completing[u] = tail_valid[u] && !tail_flushed[u] && !tail_partial_flushing[u];
-  end
-
-  // 2-deep hold buffers per sub-unit. The arbiter drains one entry per cycle, so
-  // a sub-unit with back-to-back output loses a result if another sub-unit
-  // completes in the same cycle. Depth 2 is sufficient: needing depth 3 would
-  // require 3 ops in one sub-unit + 3 higher-priority holds occupied, which is
-  // 6 credits > FifoDepth.
-  logic                        hold_valid            [NumUnits] [2];
-  logic [            TagW-1:0] hold_tag              [NumUnits] [2];
-  logic [            FLEN-1:0] hold_value            [NumUnits] [2];
-  logic [          FlagsW-1:0] hold_flags            [NumUnits] [2];
-  logic                        hold_flushed          [NumUnits] [2];
-  logic                        hold_rd               [NumUnits];
-  logic                        hold_wr               [NumUnits];
-  logic [                 1:0] hold_count            [NumUnits];
-
-  // Arbiter: fixed priority drain of hold buffers into FIFO
-  // Priority: DIV_S > DIV_D > SQRT_S > SQRT_D
-  logic                        arbiter_sel_valid;
-  logic [$clog2(NumUnits)-1:0] arbiter_sel;
-  logic                        arbiter_entry_flushed;
-
-  always_comb begin
-    arbiter_sel_valid = 1'b0;
-    arbiter_sel = '0;
-    for (int i = 0; i < NumUnits; i++) begin
-      if (hold_count[i] != 2'd0 && !arbiter_sel_valid) begin
-        arbiter_sel_valid = 1'b1;
-        arbiter_sel = i[$clog2(NumUnits)-1:0];
-      end
-    end
-  end
-
-  assign arbiter_entry_flushed = arbiter_sel_valid &&
-      hold_flushed[arbiter_sel][hold_rd[arbiter_sel]];
-
-  // FIFO push from the arbiter. Entries already marked flushed, and entries the
-  // partial flush kills this same cycle, are skipped instead of pushed. Pushing
-  // one would race the flush.
-  logic fifo_push;
-  logic push_partial_flushing;
-  assign push_partial_flushing = arbiter_sel_valid && !arbiter_entry_flushed &&
-      i_flush_en && is_younger(
-      hold_tag[arbiter_sel][hold_rd[arbiter_sel]], i_flush_tag, i_rob_head_tag
-  );
-  assign fifo_push = arbiter_sel_valid && !arbiter_entry_flushed && !push_partial_flushing;
-
-  // Hold buffer management (2-deep circular buffer per sub-unit)
-  for (genvar u = 0; u < NumUnits; u++) begin : gen_hold
-    always_ff @(posedge i_clk) begin
-      if (!i_rst_n) begin
-        hold_valid[u][0]   <= 1'b0;
-        hold_valid[u][1]   <= 1'b0;
-        hold_flushed[u][0] <= 1'b0;
-        hold_flushed[u][1] <= 1'b0;
-        hold_rd[u]         <= 1'b0;
-        hold_wr[u]         <= 1'b0;
-        hold_count[u]      <= 2'd0;
-      end else if (i_flush) begin
-        hold_valid[u][0]   <= 1'b0;
-        hold_valid[u][1]   <= 1'b0;
-        hold_flushed[u][0] <= 1'b0;
-        hold_flushed[u][1] <= 1'b0;
-        hold_rd[u]         <= 1'b0;
-        hold_wr[u]         <= 1'b0;
-        hold_count[u]      <= 2'd0;
-      end else begin
-        // Partial flush: mark younger hold entries as flushed
-        for (int s = 0; s < 2; s++) begin
-          if (hold_valid[u][s] && !hold_flushed[u][s] && i_flush_en && is_younger(
-                  hold_tag[u][s], i_flush_tag, i_rob_head_tag
-              )) begin
-            hold_flushed[u][s] <= 1'b1;
-          end
-        end
-
-        // Drain: arbiter pops from rd slot.
-        // Use explicit slot writes (no variable index) for formal friendliness.
-        if (arbiter_sel_valid && arbiter_sel == u[$clog2(NumUnits)-1:0]) begin
-          if (hold_rd[u]) begin
-            hold_valid[u][1]   <= 1'b0;
-            hold_flushed[u][1] <= 1'b0;
-          end else begin
-            hold_valid[u][0]   <= 1'b0;
-            hold_flushed[u][0] <= 1'b0;
-          end
-          hold_rd[u] <= ~hold_rd[u];
-        end
-
-        // Capture: push new completion to wr slot.
-        // Keep this after drain so same-slot push+pop keeps push data.
-        if (completing[u]) begin
-          if (hold_wr[u]) begin
-            hold_valid[u][1]   <= 1'b1;
-            hold_tag[u][1]     <= tail_tag[u];
-            hold_value[u][1]   <= unit_result[u];
-            hold_flags[u][1]   <= unit_flags[u];
-            hold_flushed[u][1] <= 1'b0;
-          end else begin
-            hold_valid[u][0]   <= 1'b1;
-            hold_tag[u][0]     <= tail_tag[u];
-            hold_value[u][0]   <= unit_result[u];
-            hold_flags[u][0]   <= unit_flags[u];
-            hold_flushed[u][0] <= 1'b0;
-          end
-          hold_wr[u] <= ~hold_wr[u];
-        end
-
-        case ({
-          arbiter_sel_valid && arbiter_sel == u[$clog2(NumUnits)-1:0], completing[u]
-        })
-          2'b10:   hold_count[u] <= hold_count[u] - 1;
-          2'b01:   hold_count[u] <= hold_count[u] + 1;
-          default: hold_count[u] <= hold_count[u];
-        endcase
-      end
-    end
-  end
-
-  // ===========================================================================
-  // Result FIFO (depth 4, FF control with LUTRAM payload)
-  // ===========================================================================
-  logic [               TagW-1:0] fifo_tag           [FifoDepth];
-  logic [               FLEN-1:0] fifo_value_rd;
-  logic [               FLEN-1:0] fifo_value_wr_data;
-  logic [             FlagsW-1:0] fifo_flags_rd;
-  logic [             FlagsW-1:0] fifo_flags_wr_data;
-  logic [          FifoDepth-1:0] fifo_valid;
-  logic [          FifoDepth-1:0] fifo_flushed;
-  logic [$clog2(FifoDepth+1)-1:0] fifo_count;
-  logic [  $clog2(FifoDepth)-1:0] fifo_wr_ptr;
-  logic [  $clog2(FifoDepth)-1:0] fifo_rd_ptr;
-
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(FifoDepth)),
-      .DATA_WIDTH(FLEN)
-  ) u_fifo_value (
-      .i_clk,
-      .i_write_enable (fifo_push),
-      .i_write_address(fifo_wr_ptr),
-      .i_write_data   (fifo_value_wr_data),
-      .i_read_address (fifo_rd_ptr),
-      .o_read_data    (fifo_value_rd)
-  );
-
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(FifoDepth)),
-      .DATA_WIDTH(FlagsW)
-  ) u_fifo_flags (
-      .i_clk,
-      .i_write_enable (fifo_push),
-      .i_write_address(fifo_wr_ptr),
-      .i_write_data   (fifo_flags_wr_data),
-      .i_read_address (fifo_rd_ptr),
-      .o_read_data    (fifo_flags_rd)
-  );
-
-  // Same-cycle partial flush of FIFO head
-  logic fifo_head_partial_flushing;
-  assign fifo_head_partial_flushing = (fifo_count != '0) &&
-      !fifo_flushed[fifo_rd_ptr] && i_flush_en &&
-      is_younger(
-      fifo_tag[fifo_rd_ptr], i_flush_tag, i_rob_head_tag
-  );
-
-  // FIFO pop: adapter consumed, or head is flushed (auto-drain)
-  logic fifo_pop;
-  logic fifo_head_flushed;
-  assign fifo_head_flushed = fifo_valid[fifo_rd_ptr] &&
-      (fifo_flushed[fifo_rd_ptr] || fifo_head_partial_flushing);
-  assign fifo_pop = (fifo_count != '0) && (i_div_accepted || fifo_head_flushed);
-
-  always_comb begin
-    fifo_value_wr_data = '0;
-    fifo_flags_wr_data = '0;
-    if (fifo_push) begin
-      fifo_value_wr_data = hold_value[arbiter_sel][hold_rd[arbiter_sel]];
-      fifo_flags_wr_data = hold_flags[arbiter_sel][hold_rd[arbiter_sel]];
+      in_flight <= 1'b0;
+    end else if (start) begin
+      in_flight <= 1'b1;
+    end else if (unit_valid || flush_inflight) begin
+      in_flight <= 1'b0;
     end
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      for (int i = 0; i < FifoDepth; i++) begin
-        fifo_valid[i]   <= 1'b0;
-        fifo_flushed[i] <= 1'b0;
-      end
-      fifo_wr_ptr <= '0;
-      fifo_rd_ptr <= '0;
-      fifo_count  <= '0;
-    end else if (i_flush) begin
-      for (int i = 0; i < FifoDepth; i++) begin
-        fifo_valid[i]   <= 1'b0;
-        fifo_flushed[i] <= 1'b0;
-      end
-      fifo_wr_ptr <= '0;
-      fifo_rd_ptr <= '0;
-      fifo_count  <= '0;
-    end else begin
-      // Partial flush: mark younger FIFO entries as flushed
-      if (i_flush_en) begin
-        for (int i = 0; i < FifoDepth; i++) begin
-          if (fifo_valid[i] && !fifo_flushed[i] && is_younger(
-                  fifo_tag[i], i_flush_tag, i_rob_head_tag
-              )) begin
-            fifo_flushed[i] <= 1'b1;
-          end
-        end
-      end
-
-      // Push from arbiter (reads from rd slot of selected hold buffer)
-      if (fifo_push) begin
-        fifo_tag[fifo_wr_ptr]     <= hold_tag[arbiter_sel][hold_rd[arbiter_sel]];
-        fifo_valid[fifo_wr_ptr]   <= 1'b1;
-        fifo_flushed[fifo_wr_ptr] <= 1'b0;
-        fifo_wr_ptr               <= fifo_wr_ptr + 1;
-      end
-
-      // Pop advances rd_ptr only. fifo_valid / fifo_flushed stay set. Every read
-      // of them is gated by fifo_count, which holds the occupancy, and the next
-      // push to this slot overwrites them. Clearing them here would drag
-      // i_div_accepted into the fifo register cone, and i_div_accepted comes
-      // off the arbiter grant, which sits behind mispredict_recovery_pending
-      // and the flush cone.
-      if (fifo_pop) begin
-        fifo_rd_ptr <= fifo_rd_ptr + 1;
-      end
-
-      case ({
-        fifo_push, fifo_pop
-      })
-        2'b10:   fifo_count <= fifo_count + 1;
-        2'b01:   fifo_count <= fifo_count - 1;
-        default: fifo_count <= fifo_count;
-      endcase
+    if (start) begin
+      tag_reg       <= i_rs_issue.rob_tag;
+      op_double_reg <= op_is_double;
     end
   end
 
   // ===========================================================================
-  // FIFO head output drives o_fu_complete
+  // Result register
+  // ===========================================================================
+  // Nothing new can start while this is occupied, so a capture never collides
+  // with a pop.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      res_valid <= 1'b0;
+    end else if (capture) begin
+      res_valid <= 1'b1;
+    end else if (res_valid && (i_div_accepted || flush_result)) begin
+      res_valid <= 1'b0;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (capture) begin
+      res_tag   <= tag_reg;
+      res_value <= op_double_reg ? unit_result : {32'hFFFF_FFFF, unit_result[31:0]};
+      res_flags <= unit_flags;
+    end
+  end
+
+  // ===========================================================================
+  // Result register drives o_fu_complete
   // ===========================================================================
   always_comb begin
-    if (fifo_count != '0 && !fifo_flushed[fifo_rd_ptr] && !fifo_head_partial_flushing) begin
+    if (res_valid && !res_partial_flushing) begin
       o_fu_complete.valid     = 1'b1;
-      o_fu_complete.tag       = fifo_tag[fifo_rd_ptr];
-      o_fu_complete.value     = fifo_value_rd;
+      o_fu_complete.tag       = res_tag;
+      o_fu_complete.value     = res_value;
       o_fu_complete.exception = 1'b0;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-      o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'(fifo_flags_rd);
+      o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'(res_flags);
     end else begin
       o_fu_complete.valid     = 1'b0;
       o_fu_complete.tag       = '0;
@@ -628,36 +269,26 @@ module fp_div_shim (
     end
   end
 
-  // ===========================================================================
-  // Busy signal: credit-based to prevent FIFO overflow
-  // ===========================================================================
-  // Count valid && !flushed entries across all tag queues
-  logic [7:0] total_inflight;
-  always_comb begin
-    total_inflight = '0;
-    for (int u = 0; u < NumUnits; u++) begin
-      for (int i = 0; i < MaxPipeDepth; i++) begin
-        // Only count entries within this unit's actual depth
-        if ((u == UDivS  && i < DivSDepth)  ||
-            (u == UDivD  && i < DivDDepth)  ||
-            (u == USqrtS && i < SqrtSDepth) ||
-            (u == USqrtD && i < SqrtDDepth)) begin
-          if (tq_valid[u][i] && !tq_flushed[u][i]) total_inflight = total_inflight + 1;
-        end
-      end
-    end
-    // Also count valid, non-flushed hold buffer entries
-    for (int u = 0; u < NumUnits; u++) begin
-      for (int s = 0; s < 2; s++) begin
-        if (hold_valid[u][s] && !hold_flushed[u][s]) total_inflight = total_inflight + 1;
-      end
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // An issue the shim cannot take would be lost: the RS retires its entry on
+  // the issue cycle. The wrapper's registered FDIV ready gate rules this out
+  // (it requires an idle shim on the previous cycle and no issue in between),
+  // so a hit here is a real hazard, not a back-pressure event.
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_rs_issue.valid && (use_div || use_sqrt) && div_busy) begin
+      $error("fp_div_shim: issue of tag %0d dropped while busy", i_rs_issue.rob_tag);
     end
   end
 
-  logic [7:0] total_occupancy;
-  assign total_occupancy = total_inflight + 8'(fifo_count);
-  assign div_busy = total_occupancy >= 8'(FifoDepth);
-  assign o_fu_busy = div_busy;
+  // The occupancy mirror must track the unit's own idle state.
+  always @(posedge i_clk) begin
+    if (i_rst_n && (unit_ready == in_flight)) begin
+      $error("fp_div_shim: unit ready %0b disagrees with in_flight %0b", unit_ready, in_flight);
+    end
+  end
+`endif
+`endif
 
   // ===========================================================================
   // Formal Verification
@@ -676,24 +307,30 @@ module fp_div_shim (
 
   always_comb begin
     if (i_rst_n && o_fu_complete.valid) begin
-      p_valid_has_tag : assert (o_fu_complete.tag == fifo_tag[fifo_rd_ptr]);
+      p_valid_has_tag : assert (o_fu_complete.tag == res_tag);
     end
   end
 
-  // hold_count never exceeds 2, the depth of the hold buffers. A violation means
-  // the credit accounting failed to keep them from overflowing.
-  for (genvar fu = 0; fu < NumUnits; fu++) begin : gen_hold_assert
-    always @(posedge i_clk) begin
-      if (i_rst_n) begin
-        assert (hold_count[fu] <= 2'd2);
-      end
+  // The credit gate is the whole occupancy model: busy exactly when the unit
+  // holds an operation or a result is waiting.
+  always_comb begin
+    if (i_rst_n) begin
+      p_busy_is_occupancy : assert (o_fu_busy == (in_flight | res_valid));
+      p_no_output_when_idle : assert (!o_fu_complete.valid || res_valid);
+    end
+  end
+
+  // A result is never captured on top of one still waiting for the adapter.
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      p_no_capture_over_result : assert (!(capture && res_valid));
     end
   end
 
   always @(posedge i_clk) begin
     if (i_rst_n) begin
-      cover_fire_div_s : cover (fire_div_s);
-      cover_fire_sqrt_s : cover (fire_sqrt_s);
+      cover_fire_div_s : cover (fire && use_div && !op_is_double);
+      cover_fire_sqrt_s : cover (fire && use_sqrt && !op_is_double);
       cover_complete : cover (o_fu_complete.valid);
     end
   end
@@ -705,38 +342,15 @@ module fp_div_shim (
   // here, so the tag stands for live work again. This is the producer-side
   // contract the ROB and RS rely on to rule out tag-ABA corruption from stale
   // deliveries landing >=2 cycles after reallocation (see the drain-window
-  // section of reorder_buffer.sv). The proof tracks one arbitrary (anyconst) tag
-  // through the tag queues, hold buffers, and result FIFO.
+  // section of reorder_buffer.sv). The proof tracks one arbitrary (anyconst)
+  // tag through the unit and the result register.
   // ---------------------------------------------------------------------------
   (* anyconst *) logic [TagW-1:0] f_watch_tag;
 
-  // Occupancy scan for the watched tag. FIFO membership comes from ring-buffer
-  // arithmetic because the valid/flushed bits persist after a pop.
   logic f_watch_inflight;
   always_comb begin
-    f_watch_inflight = 1'b0;
-    for (int u = 0; u < NumUnits; u++) begin
-      for (int i = 0; i < MaxPipeDepth; i++) begin
-        if ((u == UDivS  && i < DivSDepth)  ||
-            (u == UDivD  && i < DivDDepth)  ||
-            (u == USqrtS && i < SqrtSDepth) ||
-            (u == USqrtD && i < SqrtDDepth)) begin
-          if (tq_valid[u][i] && tq_tag[u][i] == f_watch_tag) f_watch_inflight = 1'b1;
-        end
-      end
-      for (int s = 0; s < 2; s++) begin
-        if (hold_valid[u][s] && hold_tag[u][s] == f_watch_tag) f_watch_inflight = 1'b1;
-      end
-    end
-    for (int i = 0; i < FifoDepth; i++) begin
-      if ((($clog2(
-              FifoDepth + 1
-          ))'(($clog2(
-              FifoDepth
-          ))'(i) - fifo_rd_ptr) < fifo_count) && fifo_tag[i] == f_watch_tag) begin
-        f_watch_inflight = 1'b1;
-      end
-    end
+    f_watch_inflight = (in_flight && tag_reg == f_watch_tag) ||
+        (res_valid && res_tag == f_watch_tag);
   end
 
   logic f_watch_fire;
@@ -764,9 +378,9 @@ module fp_div_shim (
     else if (f_watch_fire) f_watch_dead_q <= 1'b0;
   end
 
-  // Same cycle: the live kill terms (fifo_head_partial_flushing) suppress a
-  // partially-flushed head. The full-flush squash cycle is exempt at this
-  // boundary. The shim may present the head that cycle, and the wrapper's CDB
+  // Same cycle: the live kill term (res_partial_flushing) suppresses a
+  // partially-flushed result. The full-flush squash cycle is exempt at this
+  // boundary. The shim may present the result that cycle, and the wrapper's CDB
   // arbiter suppresses the broadcast with i_kill. Full-flush CDB suppression is
   // centralized at the arbiter, as the fu_cdb_adapter header describes.
   always_comb begin
