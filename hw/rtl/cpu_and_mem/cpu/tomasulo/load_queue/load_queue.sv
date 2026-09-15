@@ -492,12 +492,26 @@ module load_queue #(
   logic [IdxWidth-1:0] slot2_alloc_idx;
   logic [DEPTH-1:0] first_target_oh;
   logic [DEPTH-1:0] second_target_oh;
+  // Request-independent allocation cofactors: the first target with room for
+  // one entry and the second target with room for two.  Both are early (the
+  // occupancy count, the flush gate and the free-slot search), while the two
+  // dispatch valids arrive last through the dispatch fire tree.  Keeping the
+  // cofactors as nets makes every per-entry allocation pulse one gate of the
+  // valids against them instead of a chain of enable, steering and merge
+  // terms behind the late valids.
+  (* keep = "true", max_fanout = 16 *)
+  logic [DEPTH-1:0] first_room_oh;
+  (* keep = "true", max_fanout = 16 *)
+  logic [DEPTH-1:0] second_room_oh;
   // Preserve the entry-local steering boundary. Without it Vivado can factor
   // all indexed control/metadata writes into serial, high-fanout parity terms.
   (* keep = "true", max_fanout = 16 *)
   logic [DEPTH-1:0] slot1_alloc_oh;
   (* keep = "true", max_fanout = 16 *)
   logic [DEPTH-1:0] slot2_alloc_oh;
+  // Either slot allocates entry i: the control/payload write enable.
+  (* keep = "true", max_fanout = 16 *)
+  logic [DEPTH-1:0] alloc_oh;
 
   // Compact AMO-kind write staging. A newly allocated LQ entry cannot produce
   // a memory response in the following cycle: an address update must first
@@ -1046,9 +1060,16 @@ module load_queue #(
   // the no-reset payload RAMs; the gate silences those too.
   logic alloc_flush_ok;
   assign alloc_flush_ok = !i_flush_all && !i_flush_en;
-  assign slot1_alloc_en = i_alloc.valid && !full && alloc_flush_ok;
-  assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full) &&
-                          alloc_flush_ok;
+  // Room for a lone request (first target) and for a pair (first and second
+  // targets).  full implies full_for_2 (room for two implies room for one),
+  // so a slot-1 request that cannot allocate leaves slot 2 without room as
+  // well; the valids therefore select between the two room terms directly.
+  logic alloc_room_1;
+  logic alloc_room_2;
+  assign alloc_room_1 = alloc_flush_ok && !full;
+  assign alloc_room_2 = alloc_flush_ok && !full_for_2;
+  assign slot1_alloc_en = i_alloc.valid && alloc_room_1;
+  assign slot2_alloc_en = i_alloc_2.valid && (i_alloc.valid ? alloc_room_2 : alloc_room_1);
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
 
@@ -1066,13 +1087,37 @@ module load_queue #(
                           CountWidth'(dispatch_slot2_reserve);
   end
 
+  // The registered status is the reserved count compared against DEPTH,
+  // expanded over the two late dispatch valids so the D cone is one gate of
+  // the valids against early occupancy compares: any request reserves one
+  // entry when one fits, a pair reserves two when two fit and one when only
+  // one does.  dispatch_count_next above is the reference both simulation and
+  // formal compare against.
+  logic count_is_depth_m1;
+  logic count_is_depth_m2;
+  logic count_is_depth_m3;
+  logic dispatch_any_request;
+  logic dispatch_pair_request;
+  logic dispatch_full_next;
+  logic dispatch_full_for_2_next;
+  assign count_is_depth_m1 = (count == CountWidth'(DEPTH - 1));
+  assign count_is_depth_m2 = (count == CountWidth'(DEPTH - 2));
+  assign count_is_depth_m3 = (DEPTH >= 3) && (count == CountWidth'(DEPTH - 3));
+  assign dispatch_any_request = i_alloc.valid || i_alloc_2.valid;
+  assign dispatch_pair_request = i_alloc.valid && i_alloc_2.valid;
+  assign dispatch_full_next = full || (dispatch_any_request && count_is_depth_m1) ||
+                              (dispatch_pair_request && count_is_depth_m2);
+  assign dispatch_full_for_2_next = full || count_is_depth_m1 ||
+                                    (dispatch_any_request && count_is_depth_m2) ||
+                                    (dispatch_pair_request && count_is_depth_m3);
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       dispatch_full_q <= 1'b0;
       dispatch_full_for_2_q <= 1'b0;
     end else begin
-      dispatch_full_q <= dispatch_count_next == CountWidth'(DEPTH);
-      dispatch_full_for_2_q <= dispatch_count_next >= CountWidth'(DEPTH - 1);
+      dispatch_full_q <= dispatch_full_next;
+      dispatch_full_for_2_q <= dispatch_full_for_2_next;
     end
   end
 
@@ -2455,15 +2500,38 @@ module load_queue #(
   // Slot 2 takes the first target when slot 1 is absent, and the second target
   // for a dual allocation. Keeping these pulses prevents synthesis from
   // rebuilding one shared indexed-write decoder across every LQ field.
+  //
+  // The pulses are expanded over the two late dispatch valids: the first
+  // target with room for one is written whenever any slot allocates, and the
+  // second target with room for two only when both do.  Slot 1 owns the first
+  // target when it is present; slot 2 owns the first target otherwise and the
+  // second target in a pair.  This is exactly the enable-then-steer form the
+  // simulation and formal checks below compare against.
   always_comb begin
     first_target_oh                                = '0;
     second_target_oh                               = '0;
     first_target_oh[alloc_target[IdxWidth-1:0]]    = 1'b1;
     second_target_oh[alloc_target_2[IdxWidth-1:0]] = 1'b1;
   end
-  assign slot1_alloc_oh = first_target_oh & {DEPTH{slot1_alloc_en}};
-  assign slot2_alloc_oh = (slot1_alloc_en ? second_target_oh : first_target_oh) &
-                          {DEPTH{slot2_alloc_en}};
+  assign first_room_oh = first_target_oh & {DEPTH{alloc_room_1}};
+  assign second_room_oh = second_target_oh & {DEPTH{alloc_room_2}};
+  assign slot1_alloc_oh = first_room_oh & {DEPTH{i_alloc.valid}};
+  assign slot2_alloc_oh = i_alloc.valid ? (second_room_oh & {DEPTH{i_alloc_2.valid}})
+                                        : (first_room_oh & {DEPTH{i_alloc_2.valid}});
+  assign alloc_oh = (first_room_oh & {DEPTH{i_alloc.valid || i_alloc_2.valid}}) |
+                    (second_room_oh & {DEPTH{i_alloc.valid && i_alloc_2.valid}});
+
+`ifndef SYNTHESIS
+  // Enable-then-steer reference for the expanded pulses above: the slot-2
+  // enable chooses its room behind the slot-1 enable, and the slot-2 pulse is
+  // steered by that enable.  Simulation and formal compare both forms.
+  logic slot2_alloc_en_reference;
+  logic [DEPTH-1:0] slot2_alloc_oh_reference;
+  assign slot2_alloc_en_reference = i_alloc_2.valid && alloc_flush_ok &&
+                                    (slot1_alloc_en ? !full_for_2 : !full);
+  assign slot2_alloc_oh_reference = (slot1_alloc_en ? second_target_oh : first_target_oh) &
+                                    {DEPTH{slot2_alloc_en_reference}};
+`endif
 
   // ===========================================================================
   // Head Advancement (tree-based find-first-valid from head)
@@ -2924,7 +2992,7 @@ module load_queue #(
       // this priority also makes the local block fail-safe under unconstrained
       // formal recovery/AMO timing. Both allocation vectors are disjoint.
       for (int unsigned i = 0; i < DEPTH; i++) begin
-        if (slot1_alloc_oh[i] || slot2_alloc_oh[i]) begin
+        if (alloc_oh[i]) begin
           lq_valid[i]      <= 1'b1;
           lq_addr_valid[i] <= 1'b0;
           lq_issued[i]     <= 1'b0;
@@ -2953,22 +3021,17 @@ module load_queue #(
   // -----------------------------------------------------------------
   // Per-entry data: allocation writes
   // -----------------------------------------------------------------
+  // The write enable is the merged pulse; the payload select is slot 1's own
+  // pulse (an entry slot 1 does not own in an allocating cycle is slot 2's).
   always_ff @(posedge i_clk) begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (slot1_alloc_oh[i]) begin
-        lq_rob_tag[i]  <= i_alloc.rob_tag;
-        lq_size[i]     <= i_alloc.size;
-        lq_is_fp[i]    <= i_alloc.is_fp;
-        lq_sign_ext[i] <= i_alloc.sign_ext;
-        lq_is_lr[i]    <= i_alloc.is_lr;
-        lq_is_amo[i]   <= i_alloc.is_amo;
-      end else if (slot2_alloc_oh[i]) begin
-        lq_rob_tag[i]  <= i_alloc_2.rob_tag;
-        lq_size[i]     <= i_alloc_2.size;
-        lq_is_fp[i]    <= i_alloc_2.is_fp;
-        lq_sign_ext[i] <= i_alloc_2.sign_ext;
-        lq_is_lr[i]    <= i_alloc_2.is_lr;
-        lq_is_amo[i]   <= i_alloc_2.is_amo;
+      if (alloc_oh[i]) begin
+        lq_rob_tag[i]  <= slot1_alloc_oh[i] ? i_alloc.rob_tag : i_alloc_2.rob_tag;
+        lq_size[i]     <= slot1_alloc_oh[i] ? i_alloc.size : i_alloc_2.size;
+        lq_is_fp[i]    <= slot1_alloc_oh[i] ? i_alloc.is_fp : i_alloc_2.is_fp;
+        lq_sign_ext[i] <= slot1_alloc_oh[i] ? i_alloc.sign_ext : i_alloc_2.sign_ext;
+        lq_is_lr[i]    <= slot1_alloc_oh[i] ? i_alloc.is_lr : i_alloc_2.is_lr;
+        lq_is_amo[i]   <= slot1_alloc_oh[i] ? i_alloc.is_amo : i_alloc_2.is_amo;
       end
     end
   end
@@ -3474,6 +3537,16 @@ module load_queue #(
         $error("LQ: allocation steering lost or invented an accepted request");
       if (|(slot1_alloc_oh & slot2_alloc_oh))
         $error("LQ: slot-1 and slot-2 onehot allocation pulses overlap");
+      if (slot2_alloc_en != slot2_alloc_en_reference)
+        $error("LQ: expanded slot-2 allocation enable differs from the reference");
+      if (slot2_alloc_oh != slot2_alloc_oh_reference)
+        $error("LQ: expanded slot-2 allocation pulses differ from the reference");
+      if (alloc_oh != (slot1_alloc_oh | slot2_alloc_oh))
+        $error("LQ: merged allocation pulses differ from the slot pulses");
+      if (dispatch_full_next != (dispatch_count_next == CountWidth'(DEPTH)))
+        $error("LQ: expanded dispatch-full prediction differs from the count reference");
+      if (dispatch_full_for_2_next != (dispatch_count_next >= CountWidth'(DEPTH - 1)))
+        $error("LQ: expanded dispatch-full-for-2 prediction differs from the count reference");
       if (accept_mem_response && dep_replaced_oh[issued_idx])
         $error("LQ: memory response collided with a new physical generation");
       // The compact-kind write must have drained before launch snapshots it.
@@ -3725,6 +3798,16 @@ module load_queue #(
       p_slot1_alloc_preserved : assert ((|slot1_alloc_oh) == slot1_alloc_en);
       p_slot2_alloc_preserved : assert ((|slot2_alloc_oh) == slot2_alloc_en);
       p_alloc_onehots_disjoint : assert (!(|(slot1_alloc_oh & slot2_alloc_oh)));
+      p_alloc_oh_is_slot_union : assert (alloc_oh == (slot1_alloc_oh | slot2_alloc_oh));
+      p_dispatch_full_next_reference :
+      assert (dispatch_full_next == (dispatch_count_next == CountWidth'(DEPTH)));
+      p_dispatch_full_for_2_next_reference :
+      assert (dispatch_full_for_2_next == (dispatch_count_next >= CountWidth'(DEPTH - 1)));
+`ifndef SYNTHESIS
+      // The enable-then-steer references are declared outside synthesis.
+      p_slot2_alloc_en_reference : assert (slot2_alloc_en == slot2_alloc_en_reference);
+      p_slot2_alloc_oh_reference : assert (slot2_alloc_oh == slot2_alloc_oh_reference);
+`endif
       if (free_entry_en && lq_valid[free_entry_idx]) begin
         p_freed_entry_not_slot1_alloc_target : assert (!slot1_alloc_oh[free_entry_idx]);
         p_freed_entry_not_slot2_alloc_target : assert (!slot2_alloc_oh[free_entry_idx]);

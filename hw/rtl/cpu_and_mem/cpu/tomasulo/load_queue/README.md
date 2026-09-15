@@ -493,6 +493,14 @@ Allocation metadata has separate slot-1 and slot-2 write paths. When both slots
 allocate loads, slot 1 takes the older free entry and slot 2 takes the next free
 entry; when only slot 2 is a load, it takes the first free entry.
 
+The per-entry allocation pulses are expanded over the two dispatch valids,
+which arrive last through the dispatch fire tree. The first free target with
+room for one entry is written when either slot allocates, and the second target
+with room for two only when both do; both room terms are request-independent
+and kept as nets, so each pulse is one gate of the valids against them. Slot 1's
+own pulse selects the payload source. Simulation and formal compare the expanded
+pulses against the enable-then-steer form they replace.
+
 Both alloc enables carry the ROB's flush gate (`!i_flush_all &&
 !i_flush_en`). Dispatch presents alloc requests un-flush-gated: on
 trap/xRET/FENCE-class pulse cycles a straggler's fire can coincide with the
