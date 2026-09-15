@@ -26,7 +26,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, FallingEdge, Timer
+from cocotb.triggers import RisingEdge, FallingEdge, ReadOnly, Timer
 from config import MASK32, MASK_XLEN, XLEN
 
 from .tomasulo_interface import (
@@ -7500,3 +7500,116 @@ async def test_translated_store_raw_capture_partial_flush_stays_hidden(
     dut_if, _model = await setup_test(dut)
     await _exercise_translated_store_kill_capture(dut_if, full_flush=False)
     cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_older_store_fault_survives_flush_of_held_younger_fault(dut: Any) -> None:
+    """An older store's fault is kept when a partial flush kills the held younger one.
+
+    Two misaligned stores: the younger issues first, so its fault sits in the
+    registered MEM slot when the older store's fault arrives one cycle later.
+    A partial flush whose boundary lies between them lands in that cycle: it
+    kills the held younger packet (the adapter drops it) but the older store
+    survives, and its fault must still be captured and broadcast exactly
+    once.  The register used to be forced clear in that cycle, which dropped
+    the older fault and left that store without a completion.  Sweeps the
+    older store's wake so one iteration aligns exactly.
+    """
+    cocotb.log.info(
+        "=== Test: Older Store Fault Survives Flush Of Held Younger Fault ==="
+    )
+    collisions = 0
+    width = len(dut.store_misalign_fu_complete_reg)
+    tag_width = len(dut.i_flush_tag)
+    for wake_at in range(0, 6):
+        cocotb.log.info(f"--- older store wakes at cycle {wake_at} ---")
+        dut_if, _model = await setup_test(dut)
+        dut_if.dut.i_trap_misaligned_accesses.value = 1
+        dut_if.set_fu_ready(RS_MEM, True)
+
+        # Program order: producer P, older store O (waits on P), boundary D,
+        # younger store Y (ready).  The flush tag is D: Y is killed, O survives.
+        producer_tag = await dut_if.dispatch(make_int_req(pc=0x3000, rd=5))
+        older_tag = await dut_if.dispatch(make_store_req(pc=0x3004))
+        boundary_tag = await dut_if.dispatch(make_int_req(pc=0x3008, rd=6))
+        younger_tag = await dut_if.dispatch(make_store_req(pc=0x300C))
+
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=older_tag,
+            op=OP_SW,
+            src1_ready=False,
+            src1_tag=producer_tag,
+            src2_ready=True,
+            src2_value=0x1111,
+            src3_ready=True,
+            imm=2,
+            use_imm=True,
+            mem_size=2,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+        for _ in range(2):
+            await dut_if.step()
+
+        older_faults = 0
+        younger_faults = 0
+        flush_cycles = 0
+        collided = False
+        for idx in range(24):
+            # The younger store issues at cycle 2 (its fault registers two
+            # cycles later); the older store wakes at wake_at; the flush
+            # boundary D is driven for the one cycle in which the younger
+            # store's registered fault presents.
+            if idx == 2:
+                dut_if.drive_rs_dispatch(
+                    rs_type=RS_MEM,
+                    rob_tag=younger_tag,
+                    op=OP_SW,
+                    src1_ready=True,
+                    src1_value=0x2000,
+                    src2_ready=True,
+                    src2_value=0x2222,
+                    src3_ready=True,
+                    imm=2,
+                    use_imm=True,
+                    mem_size=2,
+                )
+            elif idx == 3:
+                dut_if.clear_rs_dispatch()
+            if idx == wake_at:
+                dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=0x1000)
+            elif idx == wake_at + 1:
+                dut_if.clear_fu_complete(FU_FP_ADD)
+            held = bool(int(dut.store_misalign_fu_complete_reg.value) >> (width - 1))
+            held_tag = (
+                int(dut.store_misalign_fu_complete_reg.value) >> (width - 1 - tag_width)
+            ) & ((1 << tag_width) - 1)
+            flushing = held and held_tag == younger_tag
+            if flushing:
+                dut_if.drive_flush_en(boundary_tag)
+                flush_cycles += 1
+            # Sample the settled cycle: the flush and wakes driven above are
+            # applied, so the combinational CDB lanes show exactly what the
+            # ROB consumes at the coming edge.
+            await ReadOnly()
+            if flushing and int(dut.store_misalign_issue.value):
+                collided = True
+            for cdb in _read_cdb_lanes(dut_if.dut):
+                if cdb.valid and cdb.exception and cdb.tag == older_tag:
+                    older_faults += 1
+                if cdb.valid and cdb.exception and cdb.tag == younger_tag:
+                    younger_faults += 1
+            await RisingEdge(dut_if.clock)
+            await FallingEdge(dut_if.clock)
+            if flushing:
+                dut_if.clear_flush_en()
+        assert flush_cycles == 1, f"younger fault held for {flush_cycles} cycles"
+        assert older_faults == 1, f"older store fault broadcast {older_faults} times"
+        assert younger_faults == 0, "the flushed younger fault must not broadcast"
+        if collided:
+            collisions += 1
+    assert (
+        collisions >= 1
+    ), "the sweep never aligned the older fault with the flush cycle"
+    cocotb.log.info(f"=== Test Passed ({collisions} colliding iterations) ===")
