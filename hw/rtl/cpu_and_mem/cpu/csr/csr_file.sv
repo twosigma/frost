@@ -861,7 +861,15 @@ module csr_file #(
   // instruction's own retirement stages at the write edge and lands on top
   // of the new value one edge later, so a read after `csrw minstret, V`
   // sees V + 1 + later retirements. The spec leaves both choices open.
-  logic [1:0] instruction_retired_count_q;
+  logic [ 1:0] instruction_retired_count_q;
+  // Register-to-register accumulate with the write select applied after it,
+  // the cycle counter's increment boundary above.  minstret_write carries the
+  // late trap and write qualification; selecting before the add put that cone
+  // on the low carry input of the 64-bit chain (18 levels from mideleg through
+  // the trap-take decision into instret[63]/D, the post-opt WNS at 300 MHz).
+  // The value is unchanged: (w ? V : C) + (w ? 0 : Q) == w ? V : C + Q.
+  (* keep = "true" *)logic [63:0] instret_counter_accumulated;
+  assign instret_counter_accumulated = instret_counter + 64'(instruction_retired_count_q);
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -869,8 +877,7 @@ module csr_file #(
       instret_counter <= 64'd0;
     end else begin
       instruction_retired_count_q <= mcountinhibit_ir ? 2'd0 : i_instruction_retired_count;
-      instret_counter <= (minstret_write ? csr_new_value : instret_counter) +
-          (minstret_write ? 64'd0 : 64'(instruction_retired_count_q));
+      instret_counter <= minstret_write ? csr_new_value : instret_counter_accumulated;
     end
   end
 
