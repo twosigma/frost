@@ -148,13 +148,33 @@ levels without feeding port 0's index into another priority encoder.
 
 Hybrid FF + LUTRAM. Control and operand fields stay in flip-flops because
 they need parallel CAM-style access for CDB tag comparison and flush scans
-across all entries. The read-once payload (operation, immediate, rounding
-mode, PC, branch target, prediction metadata, memory-op flags, CSR address,
-checkpoint id, branch-class pre-decode) is written once at dispatch and read
-once at issue, so it lives in distributed RAM (`mwp_dist_ram`) with two
+across all entries. The read-once payload (operation, immediate, JALR offset,
+rounding mode, prediction bits, memory-op flags, CSR address, checkpoint id,
+instruction size, branch-class pre-decode) is written once at dispatch and
+read once at issue, so it lives in distributed RAM (`mwp_dist_ram`) with two
 dispatch write ports, one per slot, and one issue read port per issue port.
 `DUAL_ISSUE` adds a second LUTRAM copy read at `issue_idx_2`. The FF valid
 bits gate every read, so stale payload behind an invalid entry is harmless.
+
+The payload carries no XLEN-wide branch word. Dispatch reuses `imm` for the
+values ID precomputes from the PC: a conditional branch's target, AUIPC's
+PC + imm_u, a fetch-fault pseudo-op's xtval, and JALR's link address (JALR's
+12-bit offset rides `jalr_imm`). The INT instance keeps the remaining three
+words, `pc`, `link_addr` and `predicted_target`, in a 32-entry ROB-tag-indexed
+`mwp_dist_ram` (`TAG_INDEXED_BRANCH_PAYLOAD`): both dispatch slots write their
+rows at their ROB tags, and port 0 reads the row of its stage2 tag through a
+protected same-edge twin, the predicate-anchor pattern, so the architectural
+tag's fanout is unchanged. The read feeds only early recovery's capture
+registers and branch resolution's JALR target compare; no CDB completion path
+starts at the RAM. Port 1 and the other stations drive zeros for the three
+fields. The mode relies on ROB allocation never dispatching a tag that is
+still live in the station (a resident entry or the stage2 packet). The
+standalone module assumes exactly that in formal runs; in simulation it
+checks the property the RAM needs, that a live row is never rewritten with
+different contents, which also tolerates benches that hold one dispatch
+packet valid across several cycles.
+Direct branches carry the ID-computed one-bit `predicted_target_ok` instead
+of comparing two XLEN targets at resolution.
 
 The RS reports both `full` and `full_for_2`; dispatch uses the latter when
 both slots target the same station.
@@ -194,7 +214,16 @@ replay coalescing, target reuse, and partial-flush survivors; issue priority;
 FU gating; `full_for_2`; and flushes. Its build passes `-G` overrides
 (`ALLOC_INDEXED_REPAIR=1`, both repair bypasses off,
 `SPECULATIVE_DATA_WRITES=1`, `BROADCAST_FREE_SOURCE_VALUES=1`,
-`ISSUE_CDB_TAG_SHADOW=1`) that the module defaults leave off.
+`ISSUE_CDB_TAG_SHADOW=1`, `TAG_INDEXED_BRANCH_PAYLOAD=1`) that the module
+defaults leave off. The tag-indexed payload tests cover live rows, tag reuse
+after issue, a held stage2 packet under a foreign row write, a two-slot
+dispatch, and reuse after partial and full flushes; the model-checked issue
+comparisons include `pc`, `link_addr` and `predicted_target`. Inside the
+station, a simulation-only oracle carries every packet's own three words
+beside it and checks that the stage2 side-RAM read reproduces them, in every
+bench and system simulation. The formal target's `bmc_tag_indexed` and
+`cover_tag_indexed` tasks build the side-RAM configuration under the ROB tag
+ownership assumption.
 
 Simulation-only oracles, one per issue port and matched to the stage2
 lifetime, recompute the former late-mux result and compare it with the

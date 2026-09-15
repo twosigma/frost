@@ -41,10 +41,12 @@ RS_ISSUE_FIELDS = [
     ("src3_value", FLEN),
     ("imm", XLEN),
     ("use_imm", 1),
+    ("jalr_imm", 12),
     ("rm", 3),
-    ("branch_target", XLEN),
     ("predicted_taken", 1),
     ("predicted_target", XLEN),
+    ("predicted_target_ok", 1),
+    ("is_compressed", 1),
     ("is_fp_mem", 1),
     ("mem_needs_lq", 1),
     ("mem_needs_sq", 1),
@@ -216,9 +218,12 @@ def _drive_issue(dut: Any, fields: Mapping[str, int | bool]) -> None:
         "op": OP_BEQ,
         "src1_value": 1,
         "src2_value": 1,
-        "branch_target": 0x200,
+        # Conditional branches carry their precomputed target in imm and the
+        # ID-computed one-bit target check in predicted_target_ok.
+        "imm": 0x200,
         "predicted_taken": True,
         "predicted_target": 0x200,
+        "predicted_target_ok": True,
     }
     issue.update(fields)
     # Derive the pre-decoded branch-class fields from op unless the caller set
@@ -256,9 +261,10 @@ async def test_correct_beq_branch_updates_rob_and_decrements(dut: Any) -> None:
             "op": OP_BEQ,
             "src1_value": 0x55,
             "src2_value": 0x55,
-            "branch_target": 0x80000180,
+            "imm": 0x80000180,
             "predicted_taken": True,
             "predicted_target": 0x80000180,
+            "predicted_target_ok": True,
         },
     )
     await _settle()
@@ -286,9 +292,10 @@ async def test_direction_and_target_mispredictions_are_flagged(dut: Any) -> None
             "op": OP_BNE,
             "src1_value": 0x10,
             "src2_value": 0x10,
-            "branch_target": 0x300,
+            "imm": 0x300,
             "predicted_taken": True,
             "predicted_target": 0x300,
+            "predicted_target_ok": True,
             "expected_taken": False,
             "expected_target": 0x300,
         },
@@ -296,9 +303,10 @@ async def test_direction_and_target_mispredictions_are_flagged(dut: Any) -> None
             "op": OP_BEQ,
             "src1_value": 0x20,
             "src2_value": 0x20,
-            "branch_target": 0x500,
+            "imm": 0x500,
             "predicted_taken": True,
             "predicted_target": 0x504,
+            "predicted_target_ok": False,
             "expected_taken": True,
             "expected_target": 0x500,
         },
@@ -330,10 +338,12 @@ async def test_jalr_resolves_computed_target_and_reports_issue(dut: Any) -> None
             "rob_tag": 9,
             "op": OP_JALR,
             "src1_value": 0x80000011,
-            "imm": 0x13,
-            "branch_target": 0xDEADBEEF,
+            "jalr_imm": 0x13,
+            "imm": 0x80000004,  # link address; not consumed here
             "predicted_taken": True,
             "predicted_target": 0x80000024,
+            # JALR ignores the direct-branch bit: its target compare is live.
+            "predicted_target_ok": False,
         },
     )
     await _settle()
@@ -360,9 +370,10 @@ async def test_jal_resolves_target_without_branch_update(dut: Any) -> None:
         {
             "rob_tag": 10,
             "op": OP_JAL,
-            "branch_target": 0x900,
+            "imm": 0x900,
             "predicted_taken": True,
             "predicted_target": 0x900,
+            "predicted_target_ok": True,
         },
     )
     await _settle()
@@ -412,7 +423,7 @@ async def test_checkpoint_qualification_is_late_to_raw_resolution(dut: Any) -> N
             "rob_tag": 13,
             "op": OP_JALR,
             "src1_value": 0x80000021,
-            "imm": 0x15,
+            "jalr_imm": 0x15,
             "predicted_taken": True,
             "predicted_target": 0x80000036,
             "has_checkpoint": True,
@@ -454,7 +465,7 @@ async def test_prediction_wrong_is_masked_only_at_branch_update(dut: Any) -> Non
             "op": OP_BEQ,
             "src1_value": 0x44,
             "src2_value": 0x44,
-            "branch_target": 0x700,
+            "imm": 0x700,
             "predicted_taken": False,
             "has_checkpoint": True,
             "checkpoint_id": 2,
@@ -556,3 +567,93 @@ async def test_commit_recovery_suppresses_all_branch_resolution(dut: Any) -> Non
     await _settle()
 
     _assert_no_branch_update(dut)
+
+
+@cocotb.test()
+async def test_jalr_target_check_ignores_direct_branch_bit(dut: Any) -> None:
+    """JALR compares its computed target with predicted_target; the direct bit is unused."""
+    await _setup_test(dut)
+
+    # Computed target 0x80000024 differs from the prediction: mispredicted
+    # even though the (irrelevant) direct-branch bit says the target matched.
+    _drive_issue(
+        dut,
+        {
+            "rob_tag": 15,
+            "op": OP_JALR,
+            "src1_value": 0x80000011,
+            "jalr_imm": 0x13,
+            "imm": 0x80000004,
+            "predicted_taken": True,
+            "predicted_target": 0x80000030,
+            "predicted_target_ok": True,
+        },
+    )
+    await _settle()
+
+    update = _read_branch_update(dut)
+    assert dut.o_is_jalr_issue.value
+    assert int(dut.o_branch_target_resolved.value) == 0x80000024
+    assert update["valid"]
+    assert update["mispredicted"]
+    assert not dut.o_branch_resolved_correct.value
+
+
+@cocotb.test()
+async def test_direct_branch_target_check_is_the_forwarded_bit(dut: Any) -> None:
+    """A direct branch's taken-target check is the one-bit ID compare, not an XLEN compare here."""
+    await _setup_test(dut)
+
+    # Same instruction, same prediction: the forwarded bit alone decides.
+    for ok, mispredicted in ((True, False), (False, True)):
+        _clear_inputs(dut)
+        predicted = 0x80000180 if ok else 0x80000184
+        _drive_issue(
+            dut,
+            {
+                "rob_tag": 3 if ok else 4,
+                "op": OP_BEQ,
+                "src1_value": 0x55,
+                "src2_value": 0x55,
+                "imm": 0x80000180,
+                "predicted_taken": True,
+                "predicted_target": predicted,
+                "predicted_target_ok": ok,
+            },
+        )
+        await _settle()
+
+        update = _read_branch_update(dut)
+        assert update["valid"]
+        assert update["taken"]
+        assert update["target"] == 0x80000180
+        assert update["mispredicted"] is mispredicted
+        assert bool(dut.o_branch_resolved_correct.value) is (not mispredicted)
+
+
+@cocotb.test()
+async def test_jalr_negative_offset_resolves_through_jalr_imm(dut: Any) -> None:
+    """A negative 12-bit JALR offset sign-extends from jalr_imm into the target add."""
+    await _setup_test(dut)
+
+    _drive_issue(
+        dut,
+        {
+            "rob_tag": 16,
+            "op": OP_JALR,
+            "src1_value": 0x80000025,
+            "jalr_imm": 0xFF0,  # -16
+            "imm": 0x80000104,  # link address; not consumed here
+            "predicted_taken": True,
+            "predicted_target": 0x80000014,
+        },
+    )
+    await _settle()
+
+    update = _read_branch_update(dut)
+    assert dut.o_is_jalr_issue.value
+    assert int(dut.o_branch_target_resolved.value) == 0x80000014
+    assert update["valid"]
+    assert update["taken"]
+    assert not update["mispredicted"]
+    assert dut.o_branch_resolved_correct.value

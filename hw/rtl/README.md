@@ -45,7 +45,7 @@ The front-end stages are IF, PD, and ID:
 |-------|------------|------|
 | IF | `cpu_and_mem/cpu/if_stage/` | 64-bit fetch window, PC control, BTB + bimodal direction predictor + RAS, staged slot-2 BTB lookup, RVC parcel alignment, slot-2 RVC decompression (per-candidate, in the aligner) |
 | PD | `cpu_and_mem/cpu/pd_stage/` | Slot-1 RVC decompression, instruction selection, PD-stage computed-target redirect for predicted-taken conditional BTB misses, early source extraction and narrow source-hot timing bypasses |
-| ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR address/zimm extraction (the CSR read/write itself fires at commit), two registered dispatch packets |
+| ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch-target and PC-relative value precompute (AUIPC, fetch-fault xtval, prediction checks), CSR address/zimm extraction (the CSR read/write itself fires at commit), two registered dispatch packets |
 
 The BTB supplies targets while a 1024-entry bimodal direction predictor trains
 from committed conditional branches. IF carries the direction and its index;

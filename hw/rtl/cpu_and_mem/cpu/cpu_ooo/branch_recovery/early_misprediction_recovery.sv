@@ -192,7 +192,9 @@ module early_misprediction_recovery #(
     if (early_mispredict_payload_capture) begin
       early_mispredict_tag <= branch_update.tag;
 
-      // Redirect PC: taken → actual target, not taken → fallthrough (link_addr)
+      // Redirect PC: taken → actual target, not taken → fallthrough (link_addr).
+      // pc and link_addr come from the INT station's tag-indexed side RAM,
+      // read behind its stage2 tag, so they are plain D inputs here.
       early_mispredict_redirect_pc <= branch_taken_resolved ?
           branch_target_resolved : rs_issue_int.link_addr;
 
@@ -203,7 +205,7 @@ module early_misprediction_recovery #(
       early_mispredict_pc <= rs_issue_int.pc;
       early_mispredict_branch_target <= branch_target_resolved;
       early_mispredict_branch_taken <= branch_taken_resolved;
-      early_mispredict_is_compressed <= (rs_issue_int.link_addr == rs_issue_int.pc + 64'd2);
+      early_mispredict_is_compressed <= rs_issue_int.is_compressed;
     end
   end
 

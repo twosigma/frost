@@ -413,7 +413,6 @@ module dispatch (
       riscv_pkg::FLW, riscv_pkg::FLD,
       riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
-      riscv_pkg::JALR,
       // B-ext immediate forms
       riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
       riscv_pkg::SLLI_UW, riscv_pkg::RORIW: begin
@@ -434,18 +433,43 @@ module dispatch (
         imm     = i_from_id_to_ex.immediate_u_type;
       end
 
+      // AUIPC: ID precomputed PC + imm_u, so the ALU materializes it like LUI
+      // and the station carries no PC.
       riscv_pkg::AUIPC: begin
         use_imm = 1'b1;
-        imm     = i_from_id_to_ex.immediate_u_type;
+        imm     = i_from_id_to_ex.pc_relative_precomputed;
       end
 
-      // Fetch-fault pseudo-ops (M5): the immediate carries the offset of the
+      // JALR: the link address (its ALU result) rides the immediate word, so
+      // the station's stage2 register feeds the ALU directly; the 12-bit
+      // I-immediate for the execute-time target add travels in jalr_imm.
+      riscv_pkg::JALR: begin
+        use_imm = 1'b1;
+        imm     = i_from_id_to_ex.link_address;
+      end
+
+      // Conditional branches: the precomputed PC-relative target rides the
+      // otherwise unused immediate; branch_jump_unit reads it there.
+      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT, riscv_pkg::BGE,
+      riscv_pkg::BLTU, riscv_pkg::BGEU: begin
+        use_imm = 1'b0;
+        imm     = i_from_id_to_ex.branch_target_precomputed;
+      end
+
+      // JAL is RS_NONE and never reaches a station; its packet carries the
+      // precomputed target for consistency with the branches.
+      riscv_pkg::JAL: begin
+        use_imm = 1'b0;
+        imm     = i_from_id_to_ex.jal_target_precomputed;
+      end
+
+      // Fetch-fault pseudo-ops (M5): ID precomputed PC + the offset of the
       // faulting portion within the instruction (2 when only the second
       // halfword of a page-straddling instruction faulted, else 0); the INT
-      // ALU shim reports PC + imm as the exception's xtval.
+      // ALU shim reports the immediate as the exception's xtval.
       riscv_pkg::FETCH_FAULT, riscv_pkg::FETCH_PAGE_FAULT: begin
         use_imm = 1'b0;
-        imm     = {{(riscv_pkg::XLEN - 2) {1'b0}}, i_from_id_to_ex.is_fetch_fault_hi, 1'b0};
+        imm     = i_from_id_to_ex.pc_relative_precomputed;
       end
 
       default: begin
@@ -471,6 +495,13 @@ module dispatch (
       predicted_target = '0;
     end
   end
+
+  // Direct-branch target check, selected from the same prediction source as
+  // predicted_target above.  ID compared its precomputed PC-relative target
+  // against both predictions; JALR resolves its own target at execute.
+  logic predicted_target_ok;
+  assign predicted_target_ok = i_from_id_to_ex.ras_predicted ?
+      i_from_id_to_ex.ras_correct_non_jalr : i_from_id_to_ex.btb_correct_non_jalr;
 
   // Branch target (pre-computed in ID stage)
   logic [riscv_pkg::XLEN-1:0] branch_target;
@@ -612,7 +643,6 @@ module dispatch (
       riscv_pkg::FLW, riscv_pkg::FLD,
       riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
-      riscv_pkg::JALR,
       riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
       riscv_pkg::SLLI_UW, riscv_pkg::RORIW: begin
         use_imm_2 = 1'b1;
@@ -630,15 +660,34 @@ module dispatch (
         imm_2     = i_from_id_to_ex_2.immediate_u_type;
       end
 
+      // AUIPC: precomputed PC + imm_u (see slot 1).
       riscv_pkg::AUIPC: begin
         use_imm_2 = 1'b1;
-        imm_2     = i_from_id_to_ex_2.immediate_u_type;
+        imm_2     = i_from_id_to_ex_2.pc_relative_precomputed;
       end
 
-      // Fetch-fault pseudo-ops: faulting-portion offset (see slot 1).
+      // JALR: link address in imm, I-immediate in jalr_imm (see slot 1).
+      riscv_pkg::JALR: begin
+        use_imm_2 = 1'b1;
+        imm_2     = i_from_id_to_ex_2.link_address;
+      end
+
+      // Conditional branches and JAL: precomputed PC-relative target (see slot 1).
+      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT, riscv_pkg::BGE,
+      riscv_pkg::BLTU, riscv_pkg::BGEU: begin
+        use_imm_2 = 1'b0;
+        imm_2     = i_from_id_to_ex_2.branch_target_precomputed;
+      end
+
+      riscv_pkg::JAL: begin
+        use_imm_2 = 1'b0;
+        imm_2     = i_from_id_to_ex_2.jal_target_precomputed;
+      end
+
+      // Fetch-fault pseudo-ops: precomputed xtval (see slot 1).
       riscv_pkg::FETCH_FAULT, riscv_pkg::FETCH_PAGE_FAULT: begin
         use_imm_2 = 1'b0;
-        imm_2     = {{(riscv_pkg::XLEN - 2) {1'b0}}, i_from_id_to_ex_2.is_fetch_fault_hi, 1'b0};
+        imm_2     = i_from_id_to_ex_2.pc_relative_precomputed;
       end
 
       default: begin
@@ -664,6 +713,11 @@ module dispatch (
       predicted_target_2 = '0;
     end
   end
+
+  // Slot-2 direct-branch target check (see slot 1).
+  logic predicted_target_ok_2;
+  assign predicted_target_ok_2 = i_from_id_to_ex_2.ras_predicted ?
+      i_from_id_to_ex_2.ras_correct_non_jalr : i_from_id_to_ex_2.btb_correct_non_jalr;
 
   // Slot-2 branch target.
   logic [riscv_pkg::XLEN-1:0] branch_target_2;
@@ -1388,54 +1442,60 @@ module dispatch (
   riscv_pkg::rs_dispatch_t rs_dispatch_base;
 
   always_comb begin
-    rs_dispatch_base                  = '0;
+    rs_dispatch_base                     = '0;
 
-    rs_dispatch_base.rs_type          = rs_type;
-    rs_dispatch_base.rob_tag          = i_rob_alloc_resp.alloc_tag;
-    rs_dispatch_base.op               = op;
+    rs_dispatch_base.rs_type             = rs_type;
+    rs_dispatch_base.rob_tag             = i_rob_alloc_resp.alloc_tag;
+    rs_dispatch_base.op                  = op;
 
     // Unused operands are ready constants.  Per-RS builders below overwrite
     // only the source slots that can be consumed by that RS family.
-    rs_dispatch_base.src1_ready       = 1'b1;
-    rs_dispatch_base.src2_ready       = 1'b1;
-    rs_dispatch_base.src3_ready       = 1'b1;
+    rs_dispatch_base.src1_ready          = 1'b1;
+    rs_dispatch_base.src2_ready          = 1'b1;
+    rs_dispatch_base.src3_ready          = 1'b1;
 
     // Immediate
-    rs_dispatch_base.imm              = imm;
-    rs_dispatch_base.use_imm          = use_imm;
+    rs_dispatch_base.imm                 = imm;
+    rs_dispatch_base.use_imm             = use_imm;
+    // Only JALR consumes this; every op forwards its I-immediate bits.
+    rs_dispatch_base.jalr_imm            = i_from_id_to_ex.immediate_i_type[11:0];
 
     // Rounding mode
-    rs_dispatch_base.rm               = resolved_rm;
+    rs_dispatch_base.rm                  = resolved_rm;
 
-    // Branch info
-    rs_dispatch_base.branch_target    = branch_target;
-    rs_dispatch_base.predicted_taken  = predicted_taken;
-    rs_dispatch_base.predicted_target = predicted_target;
+    // Branch info.  The precomputed target itself travels in imm (see the
+    // immediate selection above).
+    rs_dispatch_base.predicted_taken     = predicted_taken;
+    rs_dispatch_base.predicted_target    = predicted_target;
+    rs_dispatch_base.predicted_target_ok = predicted_target_ok;
+    rs_dispatch_base.is_compressed       = i_from_id_to_ex.is_compressed;
 
     // Memory info
-    rs_dispatch_base.is_fp_mem        = is_fp_load_flag || is_fp_store_flag;
-    rs_dispatch_base.mem_needs_lq     = need_lq;
-    rs_dispatch_base.mem_needs_sq     = need_sq;
-    rs_dispatch_base.mem_size         = mem_size;
-    rs_dispatch_base.mem_signed       = mem_signed;
+    rs_dispatch_base.is_fp_mem           = is_fp_load_flag || is_fp_store_flag;
+    rs_dispatch_base.mem_needs_lq        = need_lq;
+    rs_dispatch_base.mem_needs_sq        = need_sq;
+    rs_dispatch_base.mem_size            = mem_size;
+    rs_dispatch_base.mem_signed          = mem_signed;
 
     // CSR info
-    rs_dispatch_base.csr_addr         = i_from_id_to_ex.csr_address;
-    rs_dispatch_base.csr_imm          = i_from_id_to_ex.csr_imm;
+    rs_dispatch_base.csr_addr            = i_from_id_to_ex.csr_address;
+    rs_dispatch_base.csr_imm             = i_from_id_to_ex.csr_imm;
 
-    // PC and pre-computed link address for AUIPC/JAL/JALR handling.
-    rs_dispatch_base.pc               = i_from_id_to_ex.program_counter;
-    rs_dispatch_base.link_addr        = i_from_id_to_ex.link_address;
+    // PC and pre-computed link address.  The INT station keeps them in its
+    // tag-indexed side RAM for branch resolution and early recovery; JALR's
+    // link result rides imm, and the ALU itself needs no PC.
+    rs_dispatch_base.pc                  = i_from_id_to_ex.program_counter;
+    rs_dispatch_base.link_addr           = i_from_id_to_ex.link_address;
 
     // Early misprediction recovery: checkpoint info and branch type.
     // need_checkpoint is true for every branch/jump class instruction
     // (conditional branches, JAL and JALR).
     // When dispatch fires for a branch, a checkpoint is always available
     // (dispatch stalls otherwise), so has_checkpoint = need_checkpoint.
-    rs_dispatch_base.has_checkpoint   = need_checkpoint;
-    rs_dispatch_base.checkpoint_id    = i_checkpoint_alloc_id;
-    rs_dispatch_base.is_call          = is_call_flag;
-    rs_dispatch_base.is_return        = is_return_flag;
+    rs_dispatch_base.has_checkpoint      = need_checkpoint;
+    rs_dispatch_base.checkpoint_id       = i_checkpoint_alloc_id;
+    rs_dispatch_base.is_call             = is_call_flag;
+    rs_dispatch_base.is_return           = is_return_flag;
   end
 
   always_comb begin
@@ -1571,44 +1631,46 @@ module dispatch (
   riscv_pkg::rs_dispatch_t rs_dispatch_base_2;
 
   always_comb begin
-    rs_dispatch_base_2                  = '0;
+    rs_dispatch_base_2                     = '0;
 
-    rs_dispatch_base_2.rs_type          = rs_type_2;
-    rs_dispatch_base_2.rob_tag          = i_rob_alloc_resp_2.alloc_tag;
-    rs_dispatch_base_2.op               = op_2;
+    rs_dispatch_base_2.rs_type             = rs_type_2;
+    rs_dispatch_base_2.rob_tag             = i_rob_alloc_resp_2.alloc_tag;
+    rs_dispatch_base_2.op                  = op_2;
 
-    rs_dispatch_base_2.src1_ready       = 1'b1;
-    rs_dispatch_base_2.src2_ready       = 1'b1;
-    rs_dispatch_base_2.src3_ready       = 1'b1;
+    rs_dispatch_base_2.src1_ready          = 1'b1;
+    rs_dispatch_base_2.src2_ready          = 1'b1;
+    rs_dispatch_base_2.src3_ready          = 1'b1;
 
-    rs_dispatch_base_2.imm              = imm_2;
-    rs_dispatch_base_2.use_imm          = use_imm_2;
+    rs_dispatch_base_2.imm                 = imm_2;
+    rs_dispatch_base_2.use_imm             = use_imm_2;
+    rs_dispatch_base_2.jalr_imm            = i_from_id_to_ex_2.immediate_i_type[11:0];
 
-    rs_dispatch_base_2.rm               = resolved_rm_2;
+    rs_dispatch_base_2.rm                  = resolved_rm_2;
 
-    rs_dispatch_base_2.branch_target    = branch_target_2;
-    rs_dispatch_base_2.predicted_taken  = predicted_taken_2;
-    rs_dispatch_base_2.predicted_target = predicted_target_2;
+    rs_dispatch_base_2.predicted_taken     = predicted_taken_2;
+    rs_dispatch_base_2.predicted_target    = predicted_target_2;
+    rs_dispatch_base_2.predicted_target_ok = predicted_target_ok_2;
+    rs_dispatch_base_2.is_compressed       = i_from_id_to_ex_2.is_compressed;
 
-    rs_dispatch_base_2.is_fp_mem        = is_fp_load_flag_2 || is_fp_store_flag_2;
-    rs_dispatch_base_2.mem_needs_lq     = need_lq_2;
-    rs_dispatch_base_2.mem_needs_sq     = need_sq_2;
-    rs_dispatch_base_2.mem_size         = mem_size_2;
-    rs_dispatch_base_2.mem_signed       = mem_signed_2;
+    rs_dispatch_base_2.is_fp_mem           = is_fp_load_flag_2 || is_fp_store_flag_2;
+    rs_dispatch_base_2.mem_needs_lq        = need_lq_2;
+    rs_dispatch_base_2.mem_needs_sq        = need_sq_2;
+    rs_dispatch_base_2.mem_size            = mem_size_2;
+    rs_dispatch_base_2.mem_signed          = mem_signed_2;
 
-    rs_dispatch_base_2.csr_addr         = i_from_id_to_ex_2.csr_address;
-    rs_dispatch_base_2.csr_imm          = i_from_id_to_ex_2.csr_imm;
+    rs_dispatch_base_2.csr_addr            = i_from_id_to_ex_2.csr_address;
+    rs_dispatch_base_2.csr_imm             = i_from_id_to_ex_2.csr_imm;
 
-    rs_dispatch_base_2.pc               = i_from_id_to_ex_2.program_counter;
-    rs_dispatch_base_2.link_addr        = i_from_id_to_ex_2.link_address;
+    rs_dispatch_base_2.pc                  = i_from_id_to_ex_2.program_counter;
+    rs_dispatch_base_2.link_addr           = i_from_id_to_ex_2.link_address;
 
     // Slot-2 only ever needs a checkpoint when slot-2 is the branch.  A
     // bundle never holds two branches, so slot-1 is non-branch in that case
     // and the single checkpoint pool entry is available.
-    rs_dispatch_base_2.has_checkpoint   = need_checkpoint_2;
-    rs_dispatch_base_2.checkpoint_id    = i_checkpoint_alloc_id;
-    rs_dispatch_base_2.is_call          = is_call_flag_2;
-    rs_dispatch_base_2.is_return        = is_return_flag_2;
+    rs_dispatch_base_2.has_checkpoint      = need_checkpoint_2;
+    rs_dispatch_base_2.checkpoint_id       = i_checkpoint_alloc_id;
+    rs_dispatch_base_2.is_call             = is_call_flag_2;
+    rs_dispatch_base_2.is_return           = is_return_flag_2;
   end
 
   always_comb begin
@@ -1854,6 +1916,24 @@ module dispatch (
               !(o_rob_alloc_req_2.is_jal || o_rob_alloc_req_2.is_jalr ||
                 o_rob_alloc_req_2.is_fence || o_rob_alloc_req_2.is_fence_i ||
                 o_rob_alloc_req_2.is_wfi || o_rob_alloc_req_2.is_mret));
+    end
+  end
+`endif
+
+`ifndef SYNTHESIS
+  // The one-bit direct-branch target check forwarded to the INT station must
+  // agree with the XLEN compare it replaces, for every dispatched conditional
+  // branch that was predicted taken (the only case branch_resolution consults
+  // it).  Branches dispatch to the INT station only.
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && int_rs_dispatch_fire && is_branch_flag && !is_jalr_flag && predicted_taken) begin
+      assert (predicted_target_ok == (predicted_target == branch_target))
+      else $error("dispatch: slot-1 predicted_target_ok disagrees with the target compare");
+    end
+    if (i_rst_n && int_rs_dispatch_fire_2 && is_branch_flag_2 && !is_jalr_flag_2 &&
+        predicted_taken_2) begin
+      assert (predicted_target_ok_2 == (predicted_target_2 == branch_target_2))
+      else $error("dispatch: slot-2 predicted_target_ok disagrees with the target compare");
     end
   end
 `endif

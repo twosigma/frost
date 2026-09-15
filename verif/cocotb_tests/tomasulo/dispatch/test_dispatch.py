@@ -41,6 +41,8 @@ from .dispatch_interface import (
     DRET,
     SFENCE_VMA,
     ADDI,
+    AUIPC,
+    JALR,
     FADD_S,
     FMUL_S,
     FDIV_S,
@@ -1148,3 +1150,208 @@ async def test_dynamic_rounding_mode(dut: Any) -> None:
 
     rs = dut_if.read_rs_dispatch()
     assert rs["rm"] == 0b010, f"Expected resolved rm=0b010 (RDN), got {rs['rm']:#05b}"
+
+
+# =============================================================================
+# Immediate reuse: PC-relative values precomputed in ID ride the RS immediate
+# =============================================================================
+
+
+@cocotb.test()
+async def test_branch_target_rides_immediate(dut: Any) -> None:
+    """A conditional branch carries its precomputed target in imm with use_imm clear."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=BEQ,
+        branch_target_precomputed=0x8000_2080,
+        immediate_i_type=0x7FF,
+        btb_predicted_taken=1,
+        btb_predicted_target=0x8000_2080,
+        btb_correct_non_jalr=1,
+        instruction=_make_instr(opcode=OPC_BRANCH),
+    )
+    await dut_if.step()
+
+    rs = dut_if.read_rs_dispatch()
+    assert rs["use_imm"] == 0, "branches never use the immediate as an ALU operand"
+    assert rs["imm"] == 0x8000_2080, f"imm should carry the target, got {rs['imm']:#x}"
+    assert rs["predicted_taken"] == 1
+    assert rs["predicted_target"] == 0x8000_2080
+    assert rs["predicted_target_ok"] == 1, "BTB target matched the precomputed target"
+
+
+@cocotb.test()
+async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
+    """predicted_target_ok picks the RAS compare over the BTB compare, like predicted_target."""
+    dut_if = await _setup(dut)
+
+    # BTB-predicted branch whose BTB target is stale: the bit is clear.
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=BEQ,
+        branch_target_precomputed=0x8000_2080,
+        btb_predicted_taken=1,
+        btb_predicted_target=0x8000_2070,
+        btb_correct_non_jalr=0,
+        ras_correct_non_jalr=1,
+        instruction=_make_instr(opcode=OPC_BRANCH),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["predicted_target"] == 0x8000_2070
+    assert rs["predicted_target_ok"] == 0, "a stale BTB target must clear the bit"
+
+    # RAS prediction wins the selection, so the RAS compare supplies the bit.
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=BEQ,
+        branch_target_precomputed=0x8000_2080,
+        btb_predicted_taken=1,
+        btb_predicted_target=0x8000_2080,
+        btb_correct_non_jalr=1,
+        ras_predicted=1,
+        ras_predicted_target=0x8000_3000,
+        ras_correct_non_jalr=0,
+        instruction=_make_instr(opcode=OPC_BRANCH),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["predicted_target"] == 0x8000_3000, "RAS prediction selected"
+    assert (
+        rs["predicted_target_ok"] == 0
+    ), "the RAS compare, not the BTB compare, is forwarded"
+
+
+@cocotb.test()
+async def test_jalr_link_in_imm_and_offset_in_jalr_imm(dut: Any) -> None:
+    """JALR carries its link address in imm and its 12-bit offset in jalr_imm."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=JALR,
+        link_address=0x8000_1004,
+        immediate_i_type=0xFFFF_FFFF_FFFF_FF13,  # sign-extended -0xED
+        instruction=_make_instr(dest_reg=1, source_reg_1=5, opcode=OPC_JALR),
+    )
+    await dut_if.step()
+
+    rs = dut_if.read_rs_dispatch()
+    assert rs["use_imm"] == 1
+    assert (
+        rs["imm"] == 0x8000_1004
+    ), f"imm should carry the link address, got {rs['imm']:#x}"
+    assert (
+        rs["jalr_imm"] == 0xF13
+    ), f"jalr_imm should carry imm_i[11:0], got {rs['jalr_imm']:#x}"
+
+
+@cocotb.test()
+async def test_auipc_and_fetch_fault_immediates_are_precomputed(dut: Any) -> None:
+    """AUIPC and the fetch-fault pseudo-op carry ID's PC-relative value in imm."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=AUIPC,
+        immediate_u_type=0x0000_5000,
+        pc_relative_precomputed=0x8000_6000,
+        instruction=_make_instr(dest_reg=3, opcode=0b0010111),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["use_imm"] == 1, "AUIPC materializes its immediate like LUI"
+    assert (
+        rs["imm"] == 0x8000_6000
+    ), f"AUIPC imm should be PC + imm_u, got {rs['imm']:#x}"
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        is_fetch_fault=1,
+        is_fetch_fault_hi=1,
+        pc_relative_precomputed=0x8000_1002,
+        instruction=_make_instr(opcode=OPC_OP),
+    )
+    await dut_if.step()
+    rs = dut_if.read_rs_dispatch()
+    assert rs["use_imm"] == 0
+    assert (
+        rs["imm"] == 0x8000_1002
+    ), f"fetch-fault imm should be the xtval, got {rs['imm']:#x}"
+
+
+@cocotb.test()
+async def test_is_compressed_forwarded_to_rs(dut: Any) -> None:
+    """The instruction-size bit reaches the RS packet for the BTB training image."""
+    dut_if = await _setup(dut)
+
+    for compressed in (1, 0):
+        dut_if.drive_instruction(
+            valid=True,
+            instruction_operation=BEQ,
+            is_compressed=compressed,
+            branch_target_precomputed=0x8000_2000,
+            instruction=_make_instr(opcode=OPC_BRANCH),
+        )
+        await dut_if.step()
+        rs = dut_if.read_rs_dispatch()
+        assert rs["is_compressed"] == compressed
+
+
+@cocotb.test()
+async def test_slot2_precomputed_immediates(dut: Any) -> None:
+    """Slot 2 carries the same precomputed values in imm as slot 1 (AUIPC, then a branch)."""
+    dut_if = await _setup(dut)
+
+    dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=4, full=0)
+    dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=5, full=0)
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=8, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        instruction_operation=AUIPC,
+        immediate_u_type=0x0000_7000,
+        pc_relative_precomputed=0x8000_7004,
+        instruction=_make_instr(dest_reg=9, opcode=0b0010111),
+    )
+    await dut_if.step()
+    slot2_rs = dut_if.read_int_rs_dispatch_2()
+    assert slot2_rs["valid"] == 1
+    assert slot2_rs["use_imm"] == 1
+    assert slot2_rs["imm"] == 0x8000_7004
+
+    dut_if.drive_checkpoint(available=True, alloc_id=2)
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=8, opcode=OPC_OP),
+    )
+    dut_if.drive_instruction_2(
+        valid=True,
+        rs1_addr=1,
+        rs2_addr=2,
+        instruction_operation=BEQ,
+        program_counter=0x2004,
+        branch_target_precomputed=0x2080,
+        immediate_i_type=0x7C,
+        btb_predicted_taken=1,
+        btb_predicted_target=0x2080,
+        btb_correct_non_jalr=1,
+        is_compressed=1,
+        instruction=_make_instr(opcode=OPC_BRANCH, source_reg_1=1, source_reg_2=2),
+    )
+    await dut_if.step()
+    slot2_rs = dut_if.read_int_rs_dispatch_2()
+    assert slot2_rs["valid"] == 1
+    assert slot2_rs["use_imm"] == 0
+    assert (
+        slot2_rs["imm"] == 0x2080
+    ), f"slot-2 branch imm should be the target, got {slot2_rs['imm']:#x}"
+    assert slot2_rs["predicted_target_ok"] == 1
+    assert slot2_rs["is_compressed"] == 1

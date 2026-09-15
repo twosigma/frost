@@ -47,10 +47,12 @@ RS_ISSUE_FIELDS = [
     ("src3_value", FLEN),
     ("imm", XLEN),
     ("use_imm", 1),
+    ("jalr_imm", 12),
     ("rm", 3),
-    ("branch_target", XLEN),
     ("predicted_taken", 1),
     ("predicted_target", XLEN),
+    ("predicted_target_ok", 1),
+    ("is_compressed", 1),
     ("is_fp_mem", 1),
     ("mem_needs_lq", 1),
     ("mem_needs_sq", 1),
@@ -142,8 +144,13 @@ def _drive_mispredict(
     branch_taken: bool = True,
     mispredicted: bool = True,
     is_jalr: bool = False,
+    is_compressed: bool | None = None,
 ) -> None:
-    """Drive a coherent branch-resolution transaction."""
+    """Drive a coherent branch-resolution transaction.
+
+    The RS packet carries is_compressed as a dispatch-time bit; by default it
+    is derived from the link/pc pair the way the front end would set it.
+    """
     dut.i_branch_update.value = _pack_branch_update(
         {
             "valid": True,
@@ -158,9 +165,14 @@ def _drive_mispredict(
             "valid": True,
             "rob_tag": tag,
             "op": OP_BEQ,
-            "branch_target": branch_target,
+            "imm": branch_target,
             "pc": pc,
             "link_addr": link_addr,
+            "is_compressed": (
+                (link_addr == ((pc + 2) & ((1 << XLEN) - 1)))
+                if is_compressed is None
+                else is_compressed
+            ),
             "has_checkpoint": has_checkpoint,
             "checkpoint_id": checkpoint_id,
             "is_branch_class": True,

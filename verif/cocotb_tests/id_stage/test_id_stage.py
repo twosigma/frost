@@ -36,6 +36,7 @@ BASE_PC = 0x80001000
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
 OPC_BRANCH = 0b1100011
+OPC_AUIPC = 0b0010111
 OPC_LOAD = 0b0000011
 OPC_STORE = 0b0100011
 OPC_OP_IMM = 0b0010011
@@ -51,6 +52,7 @@ ADDI = _INSTR_OPS["ADDI"]
 JAL = _INSTR_OPS["JAL"]
 JALR = _INSTR_OPS["JALR"]
 BEQ = _INSTR_OPS["BEQ"]
+AUIPC = _INSTR_OPS["AUIPC"]
 LW = _INSTR_OPS["LW"]
 SW = _INSTR_OPS["SW"]
 FMADD_S = _INSTR_OPS["FMADD_S"]
@@ -198,6 +200,8 @@ ID_TO_EX_FIELDS = [
     ("ras_expected_rs1", XLEN),
     ("btb_correct_non_jalr", 1),
     ("btb_expected_rs1", XLEN),
+    ("ras_correct_non_jalr", 1),
+    ("pc_relative_precomputed", XLEN),
     ("has_int_dest", 1),
     ("has_fp_dest", 1),
     ("uses_int_rs1", 1),
@@ -877,3 +881,78 @@ async def test_fp_fma_decodes_sources_and_fp_wb_bypass(dut: Any) -> None:
     assert packet["fp_source_reg_1_data"] == 0x1111222233334444
     assert packet["fp_source_reg_2_data"] == 0x5555666677778888
     assert packet["fp_source_reg_3_data"] == 0xD0D1D2D3D4D5D6D7
+
+
+@cocotb.test()
+async def test_pc_relative_precompute_for_auipc_and_fetch_faults(dut: Any) -> None:
+    """ID precomputes AUIPC's PC + imm_u and a fetch fault's xtval for the RS immediate."""
+    await _setup_test(dut)
+    xlen_mask = (1 << XLEN) - 1
+    auipc = ((0xFFFFF & 0xFFFFF) << 12) | (3 << 7) | OPC_AUIPC  # imm_u = -4096
+    _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": auipc})
+    await _advance_cycle(dut)
+
+    packet = _read_id_packet(dut)
+    assert packet["instruction_operation"] == AUIPC
+    assert packet["pc_relative_precomputed"] == (BASE_PC - 0x1000) & xlen_mask
+
+    # Fetch-fault pseudo-op: the xtval is the PC, or PC + 2 when only the
+    # second halfword of a page-straddling instruction faulted.
+    for hi, expected in ((False, BASE_PC), (True, BASE_PC + 2)):
+        _drive_pd_packet(
+            dut,
+            {
+                "program_counter": BASE_PC,
+                "instruction": auipc,
+                "fetch_fault": True,
+                "fetch_fault_hi": hi,
+            },
+        )
+        await _advance_cycle(dut)
+        packet = _read_id_packet(dut)
+        assert packet["is_fetch_fault"] is True
+        assert packet["is_fetch_fault_hi"] is hi
+        assert packet["pc_relative_precomputed"] == expected & xlen_mask
+
+
+@cocotb.test()
+async def test_ras_and_btb_target_checks_for_direct_branches(dut: Any) -> None:
+    """Both prediction sources are compared against the precomputed direct target."""
+    await _setup_test(dut)
+    branch = _pack_b(imm=16, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
+    target = BASE_PC + 16
+
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC,
+            "instruction": branch,
+            "btb_hit": True,
+            "btb_predicted_taken": True,
+            "btb_predicted_target": target,
+            "ras_predicted": False,
+            "ras_predicted_target": target + 4,
+        },
+    )
+    await _advance_cycle(dut)
+    packet = _read_id_packet(dut)
+    assert packet["branch_target_precomputed"] == target
+    assert packet["btb_correct_non_jalr"] is True
+    assert packet["ras_correct_non_jalr"] is False
+
+    _drive_pd_packet(
+        dut,
+        {
+            "program_counter": BASE_PC,
+            "instruction": branch,
+            "btb_hit": True,
+            "btb_predicted_taken": True,
+            "btb_predicted_target": target + 8,
+            "ras_predicted": True,
+            "ras_predicted_target": target,
+        },
+    )
+    await _advance_cycle(dut)
+    packet = _read_id_packet(dut)
+    assert packet["btb_correct_non_jalr"] is False
+    assert packet["ras_correct_non_jalr"] is True

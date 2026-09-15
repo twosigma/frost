@@ -221,16 +221,18 @@ async def test_lui(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: AUIPC (pc + upper immediate)
+# Test 7: AUIPC (dispatch-precomputed pc + upper immediate, forwarded from imm)
 # ============================================================================
 @cocotb.test()
 async def test_auipc(dut: Any) -> None:
-    """AUIPC: pc + upper immediate."""
+    """AUIPC: the immediate carries PC + imm_u precomputed in ID; the ALU forwards it."""
     iface = await setup(dut)
 
     rob_tag = 6
     pc_val = 0x0000_1000
     imm_val = 0x0000_2000
+    # Dispatch precomputes the PC-relative value into imm; the packet's pc is
+    # not consumed by the ALU any more.
     expected = (pc_val + imm_val) & MASK_XLEN
 
     iface.drive_issue(
@@ -239,8 +241,8 @@ async def test_auipc(dut: Any) -> None:
         op=_op("AUIPC"),
         src1_value=0,
         src2_value=0,
-        imm=imm_val,
-        pc=pc_val,
+        imm=expected,
+        pc=0,
     )
     await iface.step()
 
@@ -261,34 +263,34 @@ async def test_auipc(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_jal_link(dut: Any) -> None:
-    """JAL produces the pre-computed link address on the CDB."""
+    """JAL/JALR return the pre-computed link address, which dispatch places in imm."""
     iface = await setup(dut)
 
-    rob_tag = 7
     pc_val = 0x0000_0100
     link_addr = (pc_val + 4) & MASK32
 
-    iface.drive_issue(
-        valid=True,
-        rob_tag=rob_tag,
-        op=_op("JAL"),
-        src1_value=0,
-        src2_value=0,
-        pc=pc_val,
-        link_addr=link_addr,
-    )
-    await iface.step()
+    for rob_tag, op_name in ((7, "JAL"), (8, "JALR")):
+        iface.drive_issue(
+            valid=True,
+            rob_tag=rob_tag,
+            op=_op(op_name),
+            src1_value=0x1234,
+            src2_value=0,
+            imm=link_addr,
+            pc=pc_val,
+        )
+        await iface.step()
 
-    result = iface.read_fu_complete()
-    assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == link_addr
-    ), f"Expected 0x{link_addr:08X}, got 0x{result['value']:016X}"
-    assert result["exception"] is False, "unexpected exception"
-    iface.clear_issue()
+        result = iface.read_fu_complete()
+        assert result["valid"] is True, "Expected valid completion"
+        assert (
+            result["tag"] == rob_tag
+        ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+        assert (
+            result["value"] == link_addr
+        ), f"{op_name}: expected 0x{link_addr:08X}, got 0x{result['value']:016X}"
+        assert result["exception"] is False, "unexpected exception"
+        iface.clear_issue()
 
 
 # ============================================================================

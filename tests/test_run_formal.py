@@ -102,6 +102,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "reservation_station.sby",
         "Reservation station - dispatch, wakeup, issue, flush",
+        tasks=("bmc", "cover", "bmc_tag_indexed", "cover_tag_indexed"),
     ),
     FormalTarget(
         "cdb_arbiter.sby",

@@ -27,7 +27,10 @@
  *
  * Control/source fields remain in FFs for parallel wakeup and flush scans.
  * Dispatch payloads use two-write-port distributed RAM and are read at issue;
- * FF valid bits make stale RAM contents harmless.
+ * FF valid bits make stale RAM contents harmless. The INT instance keeps the
+ * XLEN-wide pc, link address and predicted target in a ROB-tag-indexed side
+ * RAM read behind its port-0 stage2 tag (TAG_INDEXED_BRANCH_PAYLOAD), so the
+ * per-entry payload and both stage2 banks carry no XLEN branch words.
  */
 
 module reservation_station #(
@@ -97,7 +100,16 @@ module reservation_station #(
     // completions are common and the old one-cycle lane-1 penalty costs
     // more.  Disable it per instance if the wakeup cone becomes the WNS
     // limiter again.
-    parameter bit LANE1_ISSUE_BYPASS = 1'b1
+    parameter bit LANE1_ISSUE_BYPASS = 1'b1,
+    // INT only: keep pc, link_addr and predicted_target in a ROB-tag-indexed
+    // side RAM written at dispatch and read behind port 0's stage2 tag, so the
+    // per-entry payload RAM, the issue-index fanout and both stage2 banks
+    // carry none of those XLEN words.  Their consumers (branch resolution's
+    // JALR target compare, early recovery's redirect/BTB capture) see the
+    // same values in the same cycle.  Off, port 0 drives zeros for the three
+    // fields.  Contract: a dispatched ROB tag is never live in the station
+    // (resident or in stage2), as ROB allocation guarantees.
+    parameter bit TAG_INDEXED_BRANCH_PAYLOAD = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -358,11 +370,12 @@ module reservation_station #(
   wire [ReorderBufferTagWidth-1:0] dispatch_src3_tag = i_dispatch.src3_tag;
   wire [FLEN-1:0] dispatch_src3_value = i_dispatch.src3_value;
   wire [XLEN-1:0] dispatch_imm = i_dispatch.imm;
+  wire [11:0] dispatch_jalr_imm = i_dispatch.jalr_imm;
   wire dispatch_use_imm = i_dispatch.use_imm;
   wire [2:0] dispatch_rm = i_dispatch.rm;
-  wire [XLEN-1:0] dispatch_branch_target = i_dispatch.branch_target;
+  wire dispatch_predicted_target_ok = i_dispatch.predicted_target_ok;
+  wire dispatch_is_compressed = i_dispatch.is_compressed;
   wire dispatch_predicted_taken = i_dispatch.predicted_taken;
-  wire [XLEN-1:0] dispatch_predicted_target = i_dispatch.predicted_target;
   wire dispatch_is_fp_mem = i_dispatch.is_fp_mem;
   wire dispatch_mem_needs_lq = i_dispatch.mem_needs_lq;
   wire dispatch_mem_needs_sq = i_dispatch.mem_needs_sq;
@@ -371,8 +384,6 @@ module reservation_station #(
   wire dispatch_mem_signed = i_dispatch.mem_signed;
   wire [11:0] dispatch_csr_addr = i_dispatch.csr_addr;
   wire [4:0] dispatch_csr_imm = i_dispatch.csr_imm;
-  wire [XLEN-1:0] dispatch_pc = i_dispatch.pc;
-  wire [XLEN-1:0] dispatch_link_addr = i_dispatch.link_addr;
   wire dispatch_has_checkpoint = i_dispatch.has_checkpoint;
   wire [CheckpointIdWidth-1:0] dispatch_checkpoint_id = i_dispatch.checkpoint_id;
   wire dispatch_is_call = i_dispatch.is_call;
@@ -451,11 +462,12 @@ module reservation_station #(
   wire [ReorderBufferTagWidth-1:0] dispatch_src3_tag_2 = i_dispatch_2.src3_tag;
   wire [FLEN-1:0] dispatch_src3_value_2 = i_dispatch_2.src3_value;
   wire [XLEN-1:0] dispatch_imm_2 = i_dispatch_2.imm;
+  wire [11:0] dispatch_jalr_imm_2 = i_dispatch_2.jalr_imm;
   wire dispatch_use_imm_2 = i_dispatch_2.use_imm;
   wire [2:0] dispatch_rm_2 = i_dispatch_2.rm;
-  wire [XLEN-1:0] dispatch_branch_target_2 = i_dispatch_2.branch_target;
+  wire dispatch_predicted_target_ok_2 = i_dispatch_2.predicted_target_ok;
+  wire dispatch_is_compressed_2 = i_dispatch_2.is_compressed;
   wire dispatch_predicted_taken_2 = i_dispatch_2.predicted_taken;
-  wire [XLEN-1:0] dispatch_predicted_target_2 = i_dispatch_2.predicted_target;
   wire dispatch_is_fp_mem_2 = i_dispatch_2.is_fp_mem;
   wire dispatch_mem_needs_lq_2 = i_dispatch_2.mem_needs_lq;
   wire dispatch_mem_needs_sq_2 = i_dispatch_2.mem_needs_sq;
@@ -464,8 +476,6 @@ module reservation_station #(
   wire dispatch_mem_signed_2 = i_dispatch_2.mem_signed;
   wire [11:0] dispatch_csr_addr_2 = i_dispatch_2.csr_addr;
   wire [4:0] dispatch_csr_imm_2 = i_dispatch_2.csr_imm;
-  wire [XLEN-1:0] dispatch_pc_2 = i_dispatch_2.pc;
-  wire [XLEN-1:0] dispatch_link_addr_2 = i_dispatch_2.link_addr;
   wire dispatch_has_checkpoint_2 = i_dispatch_2.has_checkpoint;
   wire [CheckpointIdWidth-1:0] dispatch_checkpoint_id_2 = i_dispatch_2.checkpoint_id;
   wire dispatch_is_call_2 = i_dispatch_2.is_call;
@@ -539,12 +549,13 @@ module reservation_station #(
   logic [FLEN-1:0] stage2_src2_value;
   logic [FLEN-1:0] stage2_src3_value;
   logic [XLEN-1:0] stage2_imm;
+  logic [11:0] stage2_jalr_imm;
   logic stage2_use_imm;
   logic stage2_writes_cdb_hint;
   logic [2:0] stage2_rm;
-  logic [XLEN-1:0] stage2_branch_target;
   logic stage2_predicted_taken;
-  logic [XLEN-1:0] stage2_predicted_target;
+  logic stage2_predicted_target_ok;
+  logic stage2_is_compressed;
   logic stage2_is_fp_mem;
   logic stage2_mem_needs_lq;
   logic stage2_mem_needs_sq;
@@ -552,8 +563,6 @@ module reservation_station #(
   logic stage2_mem_signed;
   logic [11:0] stage2_csr_addr;
   logic [4:0] stage2_csr_imm;
-  logic [XLEN-1:0] stage2_pc;
-  logic [XLEN-1:0] stage2_link_addr;
   logic stage2_has_checkpoint;
   logic [CheckpointIdWidth-1:0] stage2_checkpoint_id;
   logic stage2_is_call;
@@ -736,8 +745,8 @@ module reservation_station #(
   // entry is harmless.
 
   localparam int unsigned PayloadWidth =
-      riscv_pkg::InstrOpWidth + XLEN + 3 + XLEN + 1 + XLEN + 1 + 1 + 1 + 2 + 1 + 12 +
-      5 + XLEN + XLEN + 1 + CheckpointIdWidth + 1 + 1 + 1 + 1 + 1 + 3;
+      riscv_pkg::InstrOpWidth + XLEN + 12 + 3 + 1 + 1 + 1 + 1 + 1 + 1 + 2 + 1 + 12 +
+      5 + 1 + CheckpointIdWidth + 1 + 1 + 1 + 1 + 1 + 3;
 
   // Dispatch-time branch-class pre-decode. Stored in the payload RAM so the
   // instr_op_e decode happens once at dispatch instead of in the
@@ -790,10 +799,11 @@ module reservation_station #(
   assign payload_wr_data = {
     dispatch_op,  // InstrOpWidth  op
     dispatch_imm,  // XLEN  imm
+    dispatch_jalr_imm,  // 12  jalr_imm
     dispatch_rm,  //  3  rm
-    dispatch_branch_target,  // XLEN  branch_target
     dispatch_predicted_taken,  //  1  predicted_taken
-    dispatch_predicted_target,  // XLEN  predicted_target
+    dispatch_predicted_target_ok,  //  1  predicted_target_ok
+    dispatch_is_compressed,  //  1  is_compressed
     dispatch_is_fp_mem,  //  1  is_fp_mem
     dispatch_mem_needs_lq,  //  1  mem_needs_lq
     dispatch_mem_needs_sq,  //  1  mem_needs_sq
@@ -801,8 +811,6 @@ module reservation_station #(
     dispatch_mem_signed,  //  1  mem_signed
     dispatch_csr_addr,  // 12  csr_addr
     dispatch_csr_imm,  //  5  csr_imm
-    dispatch_pc,  // XLEN  pc
-    dispatch_link_addr,  // XLEN  link_addr
     dispatch_has_checkpoint,  //  1  has_checkpoint
     dispatch_checkpoint_id,  //  CheckpointIdWidth  checkpoint_id
     dispatch_is_call,  //  1  is_call
@@ -816,10 +824,11 @@ module reservation_station #(
   assign payload_wr_data_2 = {
     dispatch_op_2,
     dispatch_imm_2,
+    dispatch_jalr_imm_2,
     dispatch_rm_2,
-    dispatch_branch_target_2,
     dispatch_predicted_taken_2,
-    dispatch_predicted_target_2,
+    dispatch_predicted_target_ok_2,
+    dispatch_is_compressed_2,
     dispatch_is_fp_mem_2,
     dispatch_mem_needs_lq_2,
     dispatch_mem_needs_sq_2,
@@ -827,8 +836,6 @@ module reservation_station #(
     dispatch_mem_signed_2,
     dispatch_csr_addr_2,
     dispatch_csr_imm_2,
-    dispatch_pc_2,
-    dispatch_link_addr_2,
     dispatch_has_checkpoint_2,
     dispatch_checkpoint_id_2,
     dispatch_is_call_2,
@@ -858,10 +865,11 @@ module reservation_station #(
   // Unpack LUTRAM read data (at issue_idx, combinational / zero-latency)
   logic [riscv_pkg::InstrOpWidth-1:0] pl_op_bits;
   logic [                   XLEN-1:0] pl_imm;
+  logic [                       11:0] pl_jalr_imm;
   logic [                        2:0] pl_rm;
-  logic [                   XLEN-1:0] pl_branch_target;
   logic                               pl_predicted_taken;
-  logic [                   XLEN-1:0] pl_predicted_target;
+  logic                               pl_predicted_target_ok;
+  logic                               pl_is_compressed;
   logic                               pl_is_fp_mem;
   logic                               pl_mem_needs_lq;
   logic                               pl_mem_needs_sq;
@@ -869,8 +877,6 @@ module reservation_station #(
   logic                               pl_mem_signed;
   logic [                       11:0] pl_csr_addr;
   logic [                        4:0] pl_csr_imm;
-  logic [                   XLEN-1:0] pl_pc;
-  logic [                   XLEN-1:0] pl_link_addr;
   logic                               pl_has_checkpoint;
   logic [      CheckpointIdWidth-1:0] pl_checkpoint_id;
   logic                               pl_is_call;
@@ -880,10 +886,11 @@ module reservation_station #(
   logic                               pl_is_jalr;
   logic [                        2:0] pl_branch_op_bits;
 
-  assign {pl_op_bits, pl_imm, pl_rm, pl_branch_target, pl_predicted_taken,
-          pl_predicted_target, pl_is_fp_mem, pl_mem_needs_lq, pl_mem_needs_sq,
+  assign {pl_op_bits, pl_imm, pl_jalr_imm, pl_rm, pl_predicted_taken,
+          pl_predicted_target_ok, pl_is_compressed,
+          pl_is_fp_mem, pl_mem_needs_lq, pl_mem_needs_sq,
           pl_mem_size_bits, pl_mem_signed,
-          pl_csr_addr, pl_csr_imm, pl_pc, pl_link_addr,
+          pl_csr_addr, pl_csr_imm,
           pl_has_checkpoint, pl_checkpoint_id, pl_is_call, pl_is_return,
           pl_is_branch_class, pl_is_jal, pl_is_jalr, pl_branch_op_bits} = payload_rd_data;
 
@@ -1268,6 +1275,164 @@ module reservation_station #(
     end
   endgenerate
 
+  // ===========================================================================
+  // Tag-indexed branch payload (INT only): pc, link_addr, predicted_target
+  // ===========================================================================
+  // Port-0 consumers of these three XLEN words are early recovery's
+  // redirect/BTB image capture registers and branch resolution's JALR target
+  // compare behind its adder (JALR's link result rides imm, so no CDB
+  // completion path starts here), so they need not ride the per-entry
+  // payload RAM behind the issue-index select.  Both dispatch
+  // slots write them at their ROB tag; port 0 reads the row of its stage2 tag
+  // through a protected same-edge twin (the predicate-anchor pattern), which
+  // leaves the architectural tag's fanout unchanged.  A row is read only
+  // through a valid stage2 packet whose own dispatch wrote it, and its tag
+  // cannot be reallocated while that packet is live (commit needs completion;
+  // a flush clears stage2_valid on the same edge), so stale rows are never
+  // observed.  The other stations, and port 1, never consume these fields.
+  generate
+    if (TAG_INDEXED_BRANCH_PAYLOAD) begin : gen_tag_indexed_branch_payload
+      localparam int unsigned BranchPayloadWidth = 3 * XLEN;
+
+      (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+      logic [ReorderBufferTagWidth-1:0] stage2_branch_payload_tag;
+
+      always_ff @(posedge i_clk) begin
+        // Same effective enable as stage2_rob_tag (see the predicate anchor).
+        if (i_rst_n && issue_fire) stage2_branch_payload_tag <= rs_rob_tag[issue_idx];
+      end
+
+      logic [BranchPayloadWidth-1:0] branch_payload_rd_data;
+      mwp_dist_ram #(
+          .ADDR_WIDTH     (ReorderBufferTagWidth),
+          .DATA_WIDTH     (BranchPayloadWidth),
+          .NUM_WRITE_PORTS(2)
+      ) u_branch_payload_ram (
+          .i_clk,
+          .i_write_enable({dispatch_fire_2, dispatch_fire}),
+          .i_write_address({dispatch_rob_tag_2, dispatch_rob_tag}),
+          .i_read_address(stage2_branch_payload_tag),
+          .i_write_data({
+            i_dispatch_2.pc,
+            i_dispatch_2.link_addr,
+            i_dispatch_2.predicted_target,
+            i_dispatch.pc,
+            i_dispatch.link_addr,
+            i_dispatch.predicted_target
+          }),
+          .o_read_data(branch_payload_rd_data)
+      );
+
+      assign o_issue.pc = branch_payload_rd_data[3*XLEN-1:2*XLEN];
+      assign o_issue.link_addr = branch_payload_rd_data[2*XLEN-1:XLEN];
+      assign o_issue.predicted_target = branch_payload_rd_data[XLEN-1:0];
+
+`ifndef SYNTHESIS
+      // Row ownership.  Rows are keyed by ROB tag, so the core relies on ROB
+      // allocation never handing out a tag that is still live here (a valid
+      // resident entry or the stage2 packet).  Formal runs assume exactly that.
+      // Simulation checks the property the RAM needs, which also tolerates
+      // benches that hold a dispatch packet valid for more than one cycle: a
+      // live row is never rewritten with different contents, and two slots
+      // naming one tag carry the same contents.  Flush cycles are exempt (the
+      // core never dispatches into a flush; the killed entries leave on that
+      // edge).
+      function automatic logic branch_payload_tag_live(input logic [ReorderBufferTagWidth-1:0] tag);
+        branch_payload_tag_live = stage2_valid && (stage2_rob_tag == tag);
+        for (int i = 0; i < DEPTH; i++) begin
+          if (rs_valid[i] && (rs_rob_tag[i] == tag)) branch_payload_tag_live = 1'b1;
+        end
+      endfunction
+      wire [BranchPayloadWidth-1:0] branch_payload_wr_data_1 = {
+        i_dispatch.pc, i_dispatch.link_addr, i_dispatch.predicted_target
+      };
+      wire [BranchPayloadWidth-1:0] branch_payload_wr_data_2 = {
+        i_dispatch_2.pc, i_dispatch_2.link_addr, i_dispatch_2.predicted_target
+      };
+`ifdef FORMAL
+      always_comb begin
+        if (dispatch_fire && !i_flush_all && !i_flush_en) begin
+          assume (!branch_payload_tag_live(dispatch_rob_tag));
+        end
+        if (dispatch_fire_2 && !i_flush_all && !i_flush_en) begin
+          assume (!branch_payload_tag_live(dispatch_rob_tag_2));
+        end
+        if (dispatch_fire && dispatch_fire_2) assume (dispatch_rob_tag != dispatch_rob_tag_2);
+      end
+`else
+      // Simulation shadow of the RAM, written in the RAM's port order (slot 2
+      // wins a same-tag collision, like the live-value table).
+      logic [BranchPayloadWidth-1:0] branch_payload_shadow[2**ReorderBufferTagWidth];
+      always_ff @(posedge i_clk) begin
+        if (dispatch_fire) branch_payload_shadow[dispatch_rob_tag] <= branch_payload_wr_data_1;
+        if (dispatch_fire_2) branch_payload_shadow[dispatch_rob_tag_2] <= branch_payload_wr_data_2;
+      end
+      always_ff @(posedge i_clk) begin
+        if (i_rst_n && !i_flush_all && !i_flush_en) begin
+          if (dispatch_fire && branch_payload_tag_live(dispatch_rob_tag)) begin
+            assert (branch_payload_shadow[dispatch_rob_tag] == branch_payload_wr_data_1)
+            else
+              $error(
+                  "reservation_station: slot-1 dispatch rewrites live ROB tag %0d's row",
+                  dispatch_rob_tag
+              );
+          end
+          if (dispatch_fire_2 && branch_payload_tag_live(dispatch_rob_tag_2)) begin
+            assert (branch_payload_shadow[dispatch_rob_tag_2] == branch_payload_wr_data_2)
+            else
+              $error(
+                  "reservation_station: slot-2 dispatch rewrites live ROB tag %0d's row",
+                  dispatch_rob_tag_2
+              );
+          end
+          if (dispatch_fire && dispatch_fire_2 && (dispatch_rob_tag == dispatch_rob_tag_2)) begin
+            assert (branch_payload_wr_data_1 == branch_payload_wr_data_2)
+            else
+              $error(
+                  "reservation_station: both slots dispatch ROB tag %0d with different rows",
+                  dispatch_rob_tag
+              );
+          end
+        end
+        if (i_rst_n && stage2_valid) begin
+          assert (stage2_branch_payload_tag == stage2_rob_tag)
+          else $error("reservation_station: branch payload tag lost phase identity");
+        end
+      end
+
+      // Row-identity oracle: every packet also carries its own three words
+      // beside it in simulation (per entry at dispatch, then through stage2),
+      // and the RAM read behind the stage2 tag must reproduce exactly them.
+      // This is the direct check that a stage2 packet never sees another
+      // instruction's row, in every bench and every system simulation.
+      logic [BranchPayloadWidth-1:0] branch_payload_entry_shadow  [DEPTH];
+      logic [BranchPayloadWidth-1:0] branch_payload_stage2_shadow;
+      always_ff @(posedge i_clk) begin
+        if (dispatch_fire) branch_payload_entry_shadow[free_idx] <= branch_payload_wr_data_1;
+        if (dispatch_fire_2) branch_payload_entry_shadow[alloc_idx_2] <= branch_payload_wr_data_2;
+        if (i_rst_n && issue_fire) begin
+          branch_payload_stage2_shadow <= branch_payload_entry_shadow[issue_idx];
+        end
+      end
+      always_ff @(posedge i_clk) begin
+        if (i_rst_n && stage2_valid) begin
+          assert (branch_payload_rd_data == branch_payload_stage2_shadow)
+          else
+            $error(
+                "reservation_station: side RAM row for ROB tag %0d differs from the stage2 packet",
+                stage2_rob_tag
+            );
+        end
+      end
+`endif
+`endif
+    end else begin : gen_no_tag_indexed_branch_payload
+      assign o_issue.pc = '0;
+      assign o_issue.link_addr = '0;
+      assign o_issue.predicted_target = '0;
+    end
+  endgenerate
+
   // --- Width-funnel perf observer (profiling only) ---
   // The stage-1 issue port fired while >=2 entries were ready: the single
   // issue port, not operand readiness, limited throughput this cycle.
@@ -1362,11 +1527,14 @@ module reservation_station #(
        (stage2_cdb_value & stage2_src3_bypass_mask) |
        (stage2_cdb_value_l1 & stage2_src3_bypass_mask_l1)) : '0;
   assign o_issue.imm = stage2_imm;
+  assign o_issue.jalr_imm = stage2_jalr_imm;
   assign o_issue.use_imm = stage2_use_imm;
   assign o_issue.rm = stage2_rm;
-  assign o_issue.branch_target = stage2_branch_target;
   assign o_issue.predicted_taken = stage2_predicted_taken;
-  assign o_issue.predicted_target = stage2_predicted_target;
+  assign o_issue.predicted_target_ok = stage2_predicted_target_ok;
+  assign o_issue.is_compressed = stage2_is_compressed;
+  // predicted_target, pc and link_addr come from the tag-indexed side RAM
+  // (generate block below), not from the payload RAM or stage2.
   assign o_issue.is_fp_mem = stage2_is_fp_mem;
   assign o_issue.mem_needs_lq = stage2_mem_needs_lq;
   assign o_issue.mem_needs_sq = stage2_mem_needs_sq;
@@ -1374,8 +1542,6 @@ module reservation_station #(
   assign o_issue.mem_signed = stage2_mem_signed;
   assign o_issue.csr_addr = stage2_csr_addr;
   assign o_issue.csr_imm = stage2_csr_imm;
-  assign o_issue.pc = stage2_pc;
-  assign o_issue.link_addr = stage2_link_addr;
   assign o_issue.has_checkpoint = stage2_has_checkpoint;
   assign o_issue.checkpoint_id = stage2_checkpoint_id;
   assign o_issue.is_call = stage2_is_call;
@@ -1434,10 +1600,11 @@ module reservation_station #(
 
       logic [riscv_pkg::InstrOpWidth-1:0] pl2_op_bits;
       logic [                   XLEN-1:0] pl2_imm;
+      logic [                       11:0] pl2_jalr_imm;
       logic [                        2:0] pl2_rm;
-      logic [                   XLEN-1:0] pl2_branch_target;
       logic                               pl2_predicted_taken;
-      logic [                   XLEN-1:0] pl2_predicted_target;
+      logic                               pl2_predicted_target_ok;
+      logic                               pl2_is_compressed;
       logic                               pl2_is_fp_mem;
       logic                               pl2_mem_needs_lq;
       logic                               pl2_mem_needs_sq;
@@ -1445,8 +1612,6 @@ module reservation_station #(
       logic                               pl2_mem_signed;
       logic [                       11:0] pl2_csr_addr;
       logic [                        4:0] pl2_csr_imm;
-      logic [                   XLEN-1:0] pl2_pc;
-      logic [                   XLEN-1:0] pl2_link_addr;
       logic                               pl2_has_checkpoint;
       logic [      CheckpointIdWidth-1:0] pl2_checkpoint_id;
       logic                               pl2_is_call;
@@ -1456,10 +1621,11 @@ module reservation_station #(
       logic                               pl2_is_jalr;
       logic [                        2:0] pl2_branch_op_bits;
 
-      assign {pl2_op_bits, pl2_imm, pl2_rm, pl2_branch_target, pl2_predicted_taken,
-              pl2_predicted_target, pl2_is_fp_mem, pl2_mem_needs_lq, pl2_mem_needs_sq,
+      assign {pl2_op_bits, pl2_imm, pl2_jalr_imm, pl2_rm, pl2_predicted_taken,
+              pl2_predicted_target_ok, pl2_is_compressed,
+              pl2_is_fp_mem, pl2_mem_needs_lq, pl2_mem_needs_sq,
               pl2_mem_size_bits, pl2_mem_signed,
-              pl2_csr_addr, pl2_csr_imm, pl2_pc, pl2_link_addr,
+              pl2_csr_addr, pl2_csr_imm,
               pl2_has_checkpoint, pl2_checkpoint_id, pl2_is_call, pl2_is_return,
               pl2_is_branch_class, pl2_is_jal, pl2_is_jalr, pl2_branch_op_bits} = payload_rd_data_b;
 
@@ -1473,13 +1639,14 @@ module reservation_station #(
       logic [FLEN-1:0] stage2b_src2_value;
       logic [FLEN-1:0] stage2b_src3_value;
       logic [XLEN-1:0] stage2b_imm;
+      logic [11:0] stage2b_jalr_imm;
       logic stage2b_use_imm;
       logic [5:0] stage2b_shift_amount;
       logic stage2b_writes_cdb_hint;
       logic [2:0] stage2b_rm;
-      logic [XLEN-1:0] stage2b_branch_target;
       logic stage2b_predicted_taken;
-      logic [XLEN-1:0] stage2b_predicted_target;
+      logic stage2b_predicted_target_ok;
+      logic stage2b_is_compressed;
       logic stage2b_is_fp_mem;
       logic stage2b_mem_needs_lq;
       logic stage2b_mem_needs_sq;
@@ -1487,8 +1654,6 @@ module reservation_station #(
       logic stage2b_mem_signed;
       logic [11:0] stage2b_csr_addr;
       logic [4:0] stage2b_csr_imm;
-      logic [XLEN-1:0] stage2b_pc;
-      logic [XLEN-1:0] stage2b_link_addr;
       logic stage2b_has_checkpoint;
       logic [CheckpointIdWidth-1:0] stage2b_checkpoint_id;
       logic stage2b_is_call;
@@ -1618,13 +1783,14 @@ module reservation_station #(
                 (i_cdb_2.value & {FLEN{issue2_src3_cdb_bypass_l1_selected}});
           end
           stage2b_imm <= pl2_imm;
+          stage2b_jalr_imm <= pl2_jalr_imm;
           stage2b_use_imm <= issue2_use_imm_selected;
           stage2b_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ?
               issue2_writes_cdb_hint_selected : 1'b0;
           stage2b_rm <= pl2_rm;
-          stage2b_branch_target <= pl2_branch_target;
           stage2b_predicted_taken <= pl2_predicted_taken;
-          stage2b_predicted_target <= pl2_predicted_target;
+          stage2b_predicted_target_ok <= pl2_predicted_target_ok;
+          stage2b_is_compressed <= pl2_is_compressed;
           stage2b_is_fp_mem <= pl2_is_fp_mem;
           stage2b_mem_needs_lq <= pl2_mem_needs_lq;
           stage2b_mem_needs_sq <= pl2_mem_needs_sq;
@@ -1632,8 +1798,6 @@ module reservation_station #(
           stage2b_mem_signed <= pl2_mem_signed;
           stage2b_csr_addr <= pl2_csr_addr;
           stage2b_csr_imm <= pl2_csr_imm;
-          stage2b_pc <= pl2_pc;
-          stage2b_link_addr <= pl2_link_addr;
           stage2b_has_checkpoint <= pl2_has_checkpoint;
           stage2b_checkpoint_id <= pl2_checkpoint_id;
           stage2b_is_call <= pl2_is_call;
@@ -1703,11 +1867,15 @@ module reservation_station #(
       assign o_issue_2.src2_value = stage2b_src2_value;
       assign o_issue_2.src3_value = HAS_SRC3 ? stage2b_src3_value : '0;
       assign o_issue_2.imm = stage2b_imm;
+      assign o_issue_2.jalr_imm = stage2b_jalr_imm;
       assign o_issue_2.use_imm = stage2b_use_imm;
       assign o_issue_2.rm = stage2b_rm;
-      assign o_issue_2.branch_target = stage2b_branch_target;
       assign o_issue_2.predicted_taken = stage2b_predicted_taken;
-      assign o_issue_2.predicted_target = stage2b_predicted_target;
+      assign o_issue_2.predicted_target_ok = stage2b_predicted_target_ok;
+      assign o_issue_2.is_compressed = stage2b_is_compressed;
+      // Branches never issue on port 1, so it carries no predicted target,
+      // pc or link address.
+      assign o_issue_2.predicted_target = '0;
       assign o_issue_2.is_fp_mem = stage2b_is_fp_mem;
       assign o_issue_2.mem_needs_lq = stage2b_mem_needs_lq;
       assign o_issue_2.mem_needs_sq = stage2b_mem_needs_sq;
@@ -1715,8 +1883,8 @@ module reservation_station #(
       assign o_issue_2.mem_signed = stage2b_mem_signed;
       assign o_issue_2.csr_addr = stage2b_csr_addr;
       assign o_issue_2.csr_imm = stage2b_csr_imm;
-      assign o_issue_2.pc = stage2b_pc;
-      assign o_issue_2.link_addr = stage2b_link_addr;
+      assign o_issue_2.pc = '0;
+      assign o_issue_2.link_addr = '0;
       assign o_issue_2.has_checkpoint = stage2b_has_checkpoint;
       assign o_issue_2.checkpoint_id = stage2b_checkpoint_id;
       assign o_issue_2.is_call = stage2b_is_call;
@@ -2189,12 +2357,13 @@ module reservation_station #(
       stage2_cdb_value <= i_cdb.value;
       stage2_cdb_value_l1 <= i_cdb_2.value;
       stage2_imm <= pl_imm;
+      stage2_jalr_imm <= pl_jalr_imm;
       stage2_use_imm <= rs_use_imm[issue_idx];
       stage2_writes_cdb_hint <= TRACK_INT_WRITEBACK_HINT ? rs_writes_cdb_hint[issue_idx] : 1'b0;
       stage2_rm <= pl_rm;
-      stage2_branch_target <= pl_branch_target;
       stage2_predicted_taken <= pl_predicted_taken;
-      stage2_predicted_target <= pl_predicted_target;
+      stage2_predicted_target_ok <= pl_predicted_target_ok;
+      stage2_is_compressed <= pl_is_compressed;
       stage2_is_fp_mem <= pl_is_fp_mem;
       stage2_mem_needs_lq <= pl_mem_needs_lq;
       stage2_mem_needs_sq <= pl_mem_needs_sq;
@@ -2202,8 +2371,6 @@ module reservation_station #(
       stage2_mem_signed <= pl_mem_signed;
       stage2_csr_addr <= pl_csr_addr;
       stage2_csr_imm <= pl_csr_imm;
-      stage2_pc <= pl_pc;
-      stage2_link_addr <= pl_link_addr;
       stage2_has_checkpoint <= pl_has_checkpoint;
       stage2_checkpoint_id <= pl_checkpoint_id;
       stage2_is_call <= pl_is_call;

@@ -2838,7 +2838,12 @@ module tomasulo_wrapper #(
       // rs_valid / count commit cones. The former csr_in_flight -> id_valid ->
       // bundle_fire_ok path is cut at pipeline control's local ID-stall owner.
       .TRUST_DISPATCH_VALID(1'b1),
-      .DUAL_ISSUE(1'b1)
+      .DUAL_ISSUE(1'b1),
+      // The branch pc/link/predicted-target words live in a ROB-tag-indexed
+      // side RAM read behind port 0's stage2 tag instead of the per-entry
+      // payload, which shrinks the payload RAM, the issue-index fanout and
+      // both stage2 banks by four XLEN words.
+      .TAG_INDEXED_BRANCH_PAYLOAD(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),

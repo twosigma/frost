@@ -59,11 +59,13 @@ class RSEntry:
 
     imm: int = 0
     use_imm: bool = False
+    jalr_imm: int = 0
     rm: int = 0
 
-    branch_target: int = 0
     predicted_taken: bool = False
     predicted_target: int = 0
+    predicted_target_ok: bool = False
+    is_compressed: bool = False
 
     is_fp_mem: bool = False
     mem_size: int = 0
@@ -72,6 +74,7 @@ class RSEntry:
     csr_addr: int = 0
     csr_imm: int = 0
     pc: int = 0
+    link_addr: int = 0
 
     def is_ready(self) -> bool:
         """Check if entry is ready to issue."""
@@ -171,16 +174,19 @@ class RSModel:
         src3_value: int = 0,
         imm: int = 0,
         use_imm: bool = False,
+        jalr_imm: int = 0,
         rm: int = 0,
-        branch_target: int = 0,
         predicted_taken: bool = False,
         predicted_target: int = 0,
+        predicted_target_ok: bool = False,
+        is_compressed: bool = False,
         is_fp_mem: bool = False,
         mem_size: int = 0,
         mem_signed: bool = False,
         csr_addr: int = 0,
         csr_imm: int = 0,
         pc: int = 0,
+        link_addr: int = 0,
         cdb_valid: bool = False,
         cdb_tag: int = 0,
         cdb_value: int = 0,
@@ -249,16 +255,19 @@ class RSModel:
 
         e.imm = imm & MASK_XLEN
         e.use_imm = use_imm
+        e.jalr_imm = jalr_imm & 0xFFF
         e.rm = rm & 0x7
-        e.branch_target = branch_target & MASK_XLEN
         e.predicted_taken = predicted_taken
         e.predicted_target = predicted_target & MASK_XLEN
+        e.predicted_target_ok = predicted_target_ok
+        e.is_compressed = is_compressed
         e.is_fp_mem = is_fp_mem
         e.mem_size = mem_size & 0x3
         e.mem_signed = mem_signed
         e.csr_addr = csr_addr & 0xFFF
         e.csr_imm = csr_imm & 0x1F
         e.pc = pc & MASK_XLEN
+        e.link_addr = link_addr & MASK_XLEN
 
         return idx
 
@@ -313,16 +322,19 @@ class RSModel:
             "src3_value": e.src3_value,
             "imm": e.imm,
             "use_imm": e.use_imm,
+            "jalr_imm": e.jalr_imm,
             "rm": e.rm,
-            "branch_target": e.branch_target,
             "predicted_taken": e.predicted_taken,
             "predicted_target": e.predicted_target,
+            "predicted_target_ok": e.predicted_target_ok,
+            "is_compressed": e.is_compressed,
             "is_fp_mem": e.is_fp_mem,
             "mem_size": e.mem_size,
             "mem_signed": e.mem_signed,
             "csr_addr": e.csr_addr,
             "csr_imm": e.csr_imm,
             "pc": e.pc,
+            "link_addr": e.link_addr,
         }
 
     def peek_issue(self, fu_ready: bool = True) -> tuple[int, dict] | None:
