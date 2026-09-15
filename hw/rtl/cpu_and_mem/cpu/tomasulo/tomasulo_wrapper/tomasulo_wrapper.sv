@@ -2177,25 +2177,24 @@ module tomasulo_wrapper #(
   // (CoreMark has none), so the resulting 1-cycle delay on the misalign-CDB
   // path is negligible.  Plain LQ results still take the fast combinational
   // path through mem_fu_to_adapter below.
-  // Partial-flush kill: if the misaligned store's tag is younger than a
-  // partial flush boundary, drop it.  Mirrors the partial_flush_input /
-  // partial_flush_held checks inside fu_cdb_adapter so the registered version
-  // never delivers a CDB completion for a flushed ROB entry.
+  // Partial-flush kill: an incoming fault younger than the partial flush
+  // boundary is not captured (the partial_flush_input check inside
+  // fu_cdb_adapter, mirrored).  A held packet that a partial flush kills in
+  // its presentation cycle is filtered by the adapter's own input check, so
+  // the register's next value is always the incoming strobe.  It used to be
+  // forced clear in that cycle as well, which dropped an OLDER store's fault
+  // arriving in the same cycle (under data translation a younger store's
+  // fault can precede an older store's), and that store then never
+  // completed.
   logic store_misalign_input_flushed;
-  logic store_misalign_held_flushed;
   assign store_misalign_input_flushed = speculative_flush_en &&
       store_misalign_fu_complete.valid &&
       is_younger(
       store_misalign_fu_complete.tag, i_flush_tag, head_tag
   );
   riscv_pkg::fu_complete_t store_misalign_fu_complete_reg;
-  assign store_misalign_held_flushed = speculative_flush_en &&
-      store_misalign_fu_complete_reg.valid &&
-      is_younger(
-      store_misalign_fu_complete_reg.tag, i_flush_tag, head_tag
-  );
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || speculative_flush_all || store_misalign_held_flushed) begin
+    if (!i_rst_n || speculative_flush_all) begin
       store_misalign_fu_complete_reg.valid <= 1'b0;
     end else begin
       store_misalign_fu_complete_reg.valid <=
