@@ -230,41 +230,68 @@ module prediction_metadata_tracker #(
   //
   // A NOP carries no prediction metadata, because stale metadata would trigger
   // a false misprediction in EX.
+  //
+  // The same-cycle live prediction (arm 5) arrives last: it is the BTB lookup
+  // on the current PC, the prediction controls and the IF output match. Every
+  // other select is registered state or a compare of registered PCs. The
+  // validity is therefore expanded over that term: arms 1-4 form a prefix
+  // that decides regardless of it, and the two cofactors (prefix else 1 when
+  // live, prefix else the registered metadata when not) are kept as nets so
+  // the outputs are one select of the late term against them. The legacy
+  // priority chain below is the simulation oracle.
+  logic validity_prefix_decides;
+  logic validity_prefix_hit;
+  logic validity_prefix_taken;
+  logic registered_hit;
+  logic registered_taken;
+  (* keep = "true" *)logic hit_when_live;
+  (* keep = "true" *)logic taken_when_live;
+  (* keep = "true" *)logic hit_when_not_live;
+  (* keep = "true" *)logic taken_when_not_live;
   always_comb begin
+    validity_prefix_decides = 1'b1;
+    validity_prefix_hit     = 1'b0;
+    validity_prefix_taken   = 1'b0;
     if (effective_sel_nop) begin
-      o_btb_hit             = 1'b0;
-      o_btb_predicted_taken = 1'b0;
+      validity_prefix_hit   = 1'b0;
+      validity_prefix_taken = 1'b0;
     end else if (effective_pending_prediction_replay) begin
       // The exact predicted branch/jump is finally reaching IF/PD after the
       // pending old-path handoff. Replay the saved BTB metadata only here.
-      o_btb_hit             = prediction_hit_pending_saved;
-      o_btb_predicted_taken = prediction_taken_pending_saved;
+      validity_prefix_hit   = prediction_hit_pending_saved;
+      validity_prefix_taken = prediction_taken_pending_saved;
     end else if (effective_pending_prediction_direct) begin
       // The exact owner arrived before a side-buffer capture was necessary.
       // pc_controller's active episode proves this registered packet is a
       // taken prediction; a concurrent stall captures it for release.
-      o_btb_hit             = 1'b1;
-      o_btb_predicted_taken = 1'b1;
+      validity_prefix_hit   = 1'b1;
+      validity_prefix_taken = 1'b1;
     end else if (prediction_pending_saved_valid || i_pending_prediction_active ||
                  i_pending_prediction_fetch_holdoff) begin
       // During the old-path handoff, registered BTB metadata belongs to a
       // younger predicted branch. The served-window immediate-predecessor
       // carve-out releases a real older packet with the fetch holdoff low, and
       // its PC mismatch neither stamps nor consumes the saved branch metadata.
-      o_btb_hit             = 1'b0;
-      o_btb_predicted_taken = 1'b0;
-    end else if (i_live_prediction_for_output) begin
-      // Normal BRAM timing predicts one request ahead and uses the registered
-      // path below. A delayed response can instead put lookup PC and emitted
-      // instruction PC on the same packet; using i_prediction_used_r there
-      // would record not-taken after the fetch stream already redirected.
-      o_btb_hit             = 1'b1;
-      o_btb_predicted_taken = 1'b1;
+      validity_prefix_hit   = 1'b0;
+      validity_prefix_taken = 1'b0;
     end else begin
-      o_btb_hit             = i_use_saved_values ? prediction_hit_saved : i_prediction_used_r;
-      o_btb_predicted_taken = i_use_saved_values ? prediction_taken_saved : i_prediction_used_r;
+      validity_prefix_decides = 1'b0;
     end
   end
+  assign registered_hit = i_use_saved_values ? prediction_hit_saved : i_prediction_used_r;
+  assign registered_taken = i_use_saved_values ? prediction_taken_saved : i_prediction_used_r;
+  // Normal BRAM timing predicts one request ahead and uses the registered
+  // metadata. A delayed response can instead put lookup PC and emitted
+  // instruction PC on the same packet; using i_prediction_used_r there would
+  // record not-taken after the fetch stream already redirected, so the live
+  // term marks the packet hit and taken.
+  assign hit_when_live = validity_prefix_decides ? validity_prefix_hit : 1'b1;
+  assign taken_when_live = validity_prefix_decides ? validity_prefix_taken : 1'b1;
+  assign hit_when_not_live = validity_prefix_decides ? validity_prefix_hit : registered_hit;
+  assign taken_when_not_live = validity_prefix_decides ? validity_prefix_taken : registered_taken;
+  assign o_btb_hit = i_live_prediction_for_output ? hit_when_live : hit_when_not_live;
+  assign o_btb_predicted_taken =
+      i_live_prediction_for_output ? taken_when_live : taken_when_not_live;
 
   // Target payload routing is separate from prediction validity: the
   // current-cycle stall/dispatch cone may clear hit/taken, but it does not
