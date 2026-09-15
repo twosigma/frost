@@ -35,7 +35,9 @@ module xilinx_frost_subsystem #(
     // parameter keeps cache-size experiments and future board wrappers simple.
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
-    parameter int unsigned ENABLE_HANG_TRIAGE = 0
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0,
+    // Profiling counters (see frost.sv); the board top passes its generic.
+    parameter int unsigned PERF_COUNTERS = 0
 ) (
     input logic i_clk,       // Main CPU clock
     input logic i_clk_div4,  // Divided clock for JTAG/UART (1/4 of main clock)
@@ -278,6 +280,7 @@ module xilinx_frost_subsystem #(
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
+      .PERF_COUNTERS(PERF_COUNTERS),
       .DEBUG_JTAG_TAP(0)
   ) frost_processor (
       .i_clk(i_clk),

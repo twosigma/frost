@@ -50,7 +50,13 @@ module tomasulo_wrapper #(
     // store queue uses them to tag cached stores so the router can steer
     // their write enables to the cached tier.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    // 0 leaves out the 64 back-end profiling counters: o_perf_counter_data
+    // reads zero and the event sources stay unread (synthesis removes what
+    // is not marked keep).
+    // cpu_ooo passes its build option; the unit default keeps the counters
+    // for the wrapper bench and the formal target.
+    parameter int unsigned PERF_COUNTERS = 1
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -4767,61 +4773,87 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Backend Profiling Counters
   // ===========================================================================
-  // The 64 back-end profiling counters live in tomasulo_perf_counters.
-  tomasulo_perf_counters tomasulo_perf_counters_inst (
-      .i_clk,
-      .i_rst_n,
-      .i_rob_perf_events(rob_perf_events),
-      .i_int_rs_fu_ready(int_rs_fu_ready),
-      .i_o_rs_empty(o_rs_empty),
-      .i_mul_rs_fu_ready(mul_rs_fu_ready),
-      .i_o_mul_rs_empty(o_mul_rs_empty),
-      .i_mem_fu_to_adapter(mem_fu_to_adapter),
-      .i_mem_adapter_result_pending(mem_adapter_result_pending),
-      .i_fp_rs_fu_ready(fp_rs_fu_ready),
-      .i_o_fp_rs_empty(o_fp_rs_empty),
-      .i_fmul_rs_fu_ready(fmul_rs_fu_ready),
-      .i_o_fmul_rs_empty(o_fmul_rs_empty),
-      .i_fdiv_rs_fu_ready(fdiv_rs_fu_ready),
-      .i_o_fdiv_rs_empty(o_fdiv_rs_empty),
-      .i_sq_check_valid(sq_check_valid),
-      .i_sq_all_older_addrs_known(sq_all_older_addrs_known),
-      .i_sq_committed_empty(sq_committed_empty),
-      .i_o_sq_mem_write_en(o_sq_mem_write_en),
-      .i_o_lq_mem_read_en(o_lq_mem_read_en),
-      .i_o_rob_count(o_rob_count),
-      .i_o_lq_count(o_lq_count),
-      .i_o_sq_count(o_sq_count),
-      .i_o_rs_count(o_rs_count),
-      .i_o_mul_rs_count(o_mul_rs_count),
-      .i_o_mem_rs_count(o_mem_rs_count),
-      .i_o_fp_rs_count(o_fp_rs_count),
-      .i_o_fmul_rs_count(o_fmul_rs_count),
-      .i_o_fdiv_rs_count(o_fdiv_rs_count),
-      .i_lq_l0_hit(lq_l0_hit),
-      .i_lq_l0_fill(lq_l0_fill),
-      .i_lq_mem_outstanding(lq_mem_outstanding),
-      .i_lq_head_load_addr_pending(lq_head_load_addr_pending),
-      .i_lq_head_load_sq_disambig(lq_head_load_sq_disambig),
-      .i_lq_head_load_bus_blocked(lq_head_load_bus_blocked),
-      .i_lq_head_load_cdb_wait(lq_head_load_cdb_wait),
-      .i_lq_head_load_post_lq(lq_head_load_post_lq),
-      .i_lq_head_load_bb_issued(lq_head_load_bb_issued),
-      .i_lq_head_load_bb_bus_busy(lq_head_load_bb_bus_busy),
-      .i_lq_head_load_bb_amo(lq_head_load_bb_amo),
-      .i_lq_head_load_bb_sq_wait(lq_head_load_bb_sq_wait),
-      .i_lq_head_load_bb_staging(lq_head_load_bb_staging),
-      .i_lq_head_load_bbs_other_in_staging(lq_head_load_bbs_other_in_staging),
-      .i_lq_head_load_bbs_launch_gated(lq_head_load_bbs_launch_gated),
-      .i_lq_head_load_bbs_slow_outstanding(lq_head_load_bbs_slow_outstanding),
-      .i_lq_head_load_bbs_capture_gap(lq_head_load_bbs_capture_gap),
-      .i_int_rs_head_in_rs(int_rs_head_in_rs),
-      .i_int_rs_head_rs_ready(int_rs_head_rs_ready),
-      .i_int_rs_head_in_stage2(int_rs_head_in_stage2),
-      .i_perf_snapshot_capture(i_perf_snapshot_capture),
-      .i_perf_counter_select(i_perf_counter_select),
-      .o_perf_counter_data(o_perf_counter_data)
-  );
+  // The 64 back-end profiling counters live in tomasulo_perf_counters when
+  // PERF_COUNTERS is set (the production build leaves them out).
+  generate
+    if (PERF_COUNTERS != 0) begin : gen_perf_counters
+      tomasulo_perf_counters tomasulo_perf_counters_inst (
+          .i_clk,
+          .i_rst_n,
+          .i_rob_perf_events(rob_perf_events),
+          .i_int_rs_fu_ready(int_rs_fu_ready),
+          .i_o_rs_empty(o_rs_empty),
+          .i_mul_rs_fu_ready(mul_rs_fu_ready),
+          .i_o_mul_rs_empty(o_mul_rs_empty),
+          .i_mem_fu_to_adapter(mem_fu_to_adapter),
+          .i_mem_adapter_result_pending(mem_adapter_result_pending),
+          .i_fp_rs_fu_ready(fp_rs_fu_ready),
+          .i_o_fp_rs_empty(o_fp_rs_empty),
+          .i_fmul_rs_fu_ready(fmul_rs_fu_ready),
+          .i_o_fmul_rs_empty(o_fmul_rs_empty),
+          .i_fdiv_rs_fu_ready(fdiv_rs_fu_ready),
+          .i_o_fdiv_rs_empty(o_fdiv_rs_empty),
+          .i_sq_check_valid(sq_check_valid),
+          .i_sq_all_older_addrs_known(sq_all_older_addrs_known),
+          .i_sq_committed_empty(sq_committed_empty),
+          .i_o_sq_mem_write_en(o_sq_mem_write_en),
+          .i_o_lq_mem_read_en(o_lq_mem_read_en),
+          .i_o_rob_count(o_rob_count),
+          .i_o_lq_count(o_lq_count),
+          .i_o_sq_count(o_sq_count),
+          .i_o_rs_count(o_rs_count),
+          .i_o_mul_rs_count(o_mul_rs_count),
+          .i_o_mem_rs_count(o_mem_rs_count),
+          .i_o_fp_rs_count(o_fp_rs_count),
+          .i_o_fmul_rs_count(o_fmul_rs_count),
+          .i_o_fdiv_rs_count(o_fdiv_rs_count),
+          .i_lq_l0_hit(lq_l0_hit),
+          .i_lq_l0_fill(lq_l0_fill),
+          .i_lq_mem_outstanding(lq_mem_outstanding),
+          .i_lq_head_load_addr_pending(lq_head_load_addr_pending),
+          .i_lq_head_load_sq_disambig(lq_head_load_sq_disambig),
+          .i_lq_head_load_bus_blocked(lq_head_load_bus_blocked),
+          .i_lq_head_load_cdb_wait(lq_head_load_cdb_wait),
+          .i_lq_head_load_post_lq(lq_head_load_post_lq),
+          .i_lq_head_load_bb_issued(lq_head_load_bb_issued),
+          .i_lq_head_load_bb_bus_busy(lq_head_load_bb_bus_busy),
+          .i_lq_head_load_bb_amo(lq_head_load_bb_amo),
+          .i_lq_head_load_bb_sq_wait(lq_head_load_bb_sq_wait),
+          .i_lq_head_load_bb_staging(lq_head_load_bb_staging),
+          .i_lq_head_load_bbs_other_in_staging(lq_head_load_bbs_other_in_staging),
+          .i_lq_head_load_bbs_launch_gated(lq_head_load_bbs_launch_gated),
+          .i_lq_head_load_bbs_slow_outstanding(lq_head_load_bbs_slow_outstanding),
+          .i_lq_head_load_bbs_capture_gap(lq_head_load_bbs_capture_gap),
+          .i_int_rs_head_in_rs(int_rs_head_in_rs),
+          .i_int_rs_head_rs_ready(int_rs_head_rs_ready),
+          .i_int_rs_head_in_stage2(int_rs_head_in_stage2),
+          .i_perf_snapshot_capture(i_perf_snapshot_capture),
+          .i_perf_counter_select(i_perf_counter_select),
+          .o_perf_counter_data(o_perf_counter_data)
+      );
+    end else begin : gen_no_perf_counters
+      // No counters: the read port is zero; the event sources keep their
+      // registers at their owners and nothing reads them.
+      assign o_perf_counter_data = '0;
+      logic unused_perf_events;
+      assign unused_perf_events = &{
+          1'b0, i_perf_snapshot_capture, i_perf_counter_select, rob_perf_events,
+          int_rs_fu_ready, o_rs_empty, mul_rs_fu_ready, o_mul_rs_empty, mem_fu_to_adapter,
+          mem_adapter_result_pending, fp_rs_fu_ready, o_fp_rs_empty, fmul_rs_fu_ready,
+          o_fmul_rs_empty, fdiv_rs_fu_ready, o_fdiv_rs_empty, sq_check_valid,
+          sq_all_older_addrs_known, sq_committed_empty, o_sq_mem_write_en, o_lq_mem_read_en,
+          o_rob_count, o_lq_count, o_sq_count, o_rs_count, o_mul_rs_count, o_mem_rs_count,
+          o_fp_rs_count, o_fmul_rs_count, o_fdiv_rs_count, lq_l0_hit, lq_l0_fill,
+          lq_mem_outstanding, lq_head_load_addr_pending, lq_head_load_sq_disambig,
+          lq_head_load_bus_blocked, lq_head_load_cdb_wait, lq_head_load_post_lq,
+          lq_head_load_bb_issued, lq_head_load_bb_bus_busy, lq_head_load_bb_amo,
+          lq_head_load_bb_sq_wait, lq_head_load_bb_staging, lq_head_load_bbs_other_in_staging,
+          lq_head_load_bbs_launch_gated, lq_head_load_bbs_slow_outstanding,
+          lq_head_load_bbs_capture_gap, int_rs_head_in_rs, int_rs_head_rs_ready,
+          int_rs_head_in_stage2
+      };
+    end
+  endgenerate
 
 `ifndef SYNTHESIS
 `ifndef FORMAL

@@ -22,7 +22,12 @@ module x3_frost #(
     // --cpu-clock-div exports it as FROST_CPU_CLK_DIV and synthesis passes
     // it as a generic): 1 = 300 MHz, 2 = 150 MHz. The 300 MHz reference,
     // the DDR4 controller and its clocking are unaffected.
-    parameter int unsigned CPU_CLK_DIV = 1
+    parameter int unsigned CPU_CLK_DIV = 1,
+
+    // Profiling counters (build.py --perf-counters exports FROST_PERF_COUNTERS
+    // and synthesis passes it as a generic): 0 = absent, the 300 MHz production
+    // build; 1 for analysis builds such as a divided-clock one.
+    parameter int unsigned PERF_COUNTERS = 0
 ) (
     input logic i_sysclk_n,  // Differential system clock negative
     input logic i_sysclk_p,  // Differential system clock positive (300 MHz)
@@ -230,7 +235,8 @@ module x3_frost #(
       // X3's L1 BRAM + L2 URAM hierarchy is backed by the DDR4 controller
       // through the AXI port below.
       .ENABLE_CACHED_TIER(1),
-      .USE_BEHAVIORAL_DDR(0)
+      .USE_BEHAVIORAL_DDR(0),
+      .PERF_COUNTERS(PERF_COUNTERS)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),

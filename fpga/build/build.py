@@ -93,6 +93,11 @@ utilization table alone. ``--route-directives`` restricts the router sweep
 of any build. ``--debug-ila`` instruments the fetch seam with a Vivado ILA
 (``FROST_DEBUG_FETCH_ILA`` mirrors, one debug core on the CPU clock, probes
 file beside the bitstream; capture with ``fpga/debug/capture_fetch_ila.py``).
+``--perf-counters`` includes the profiling counters (the ``mperf*`` CSRs, about
+24k cells: 3.8k LUTs, 18.3k flops, 2.1k CARRY8) through the board top's
+``PERF_COUNTERS`` generic. By default a
+full-rate build leaves them out and a divided-clock build includes them;
+``--no-perf-counters`` overrides the latter.
 Board software then needs the same clock:
 ``FROST_CPU_CLK_HZ=150000000`` for ``load_software.py`` and
 ``hw_regression.py`` (score checks are skipped under the override).
@@ -397,6 +402,8 @@ class FunctionalBuildPolicy:
     quick_route_count: int | None  # None: leave the environment's choice alone
     route_directives: list[str]
     update_readme: bool
+    # Profiling counters in the netlist (the board top's PERF_COUNTERS generic).
+    perf_counters: bool
 
 
 def resolve_functional_build_policy(
@@ -407,6 +414,7 @@ def resolve_functional_build_policy(
     placer_sweep_overridden: bool,
     route_directives: list[str],
     route_sweep_overridden: bool,
+    perf_counters: bool | None = None,
 ) -> FunctionalBuildPolicy:
     """Return the flow settings for ``--cpu-clock-div``.
 
@@ -416,9 +424,14 @@ def resolve_functional_build_policy(
     ``--route-directives`` keeps the requested router list, and everything
     else collapses to the single RuntimeOptimized runs a design with hundreds
     of picoseconds of margin needs.
+
+    ``perf_counters`` is ``--perf-counters``/``--no-perf-counters``; ``None``
+    leaves the counters out of a full-rate build and includes them in a
+    divided-clock build, where they are the point.
     """
     if cpu_clock_div not in CPU_CLOCK_DIV_CHOICES:
         raise ValueError(f"unsupported CPU clock divider: {cpu_clock_div}")
+    include_counters = (cpu_clock_div != 1) if perf_counters is None else perf_counters
     if cpu_clock_div == 1:
         return FunctionalBuildPolicy(
             1,
@@ -429,6 +442,7 @@ def resolve_functional_build_policy(
             None,
             list(route_directives),
             True,
+            include_counters,
         )
     return FunctionalBuildPolicy(
         cpu_clock_div,
@@ -443,6 +457,7 @@ def resolve_functional_build_policy(
         if route_sweep_overridden
         else [X3_FUNCTIONAL_ROUTE_DIRECTIVE],
         False,
+        include_counters,
     )
 
 
@@ -2603,6 +2618,15 @@ Examples:
         "FROST_CPU_CLK_HZ set to the divided clock.",
     )
     parser.add_argument(
+        "--perf-counters",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Include the profiling counters (the mperf* CSRs, about 24k cells) "
+        "through the board top's PERF_COUNTERS generic. Default: left out of a "
+        "full-rate build, included in a --cpu-clock-div N>1 build; "
+        "--no-perf-counters overrides the latter.",
+    )
+    parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
@@ -2676,6 +2700,7 @@ Examples:
         placer_sweep_overridden,
         route_sweep_directives,
         args.route_directives is not None,
+        perf_counters=args.perf_counters,
     )
     clock_freq = functional_policy.clock_freq
     place_sweep_directives = functional_policy.place_directives
@@ -2697,6 +2722,9 @@ Examples:
         # The CLI is authoritative even at divider 1; an inherited override
         # must not silently change synthesis/BD clocks while software says 300 MHz.
         os.environ["FROST_CPU_CLK_DIV"] = str(functional_policy.cpu_clock_div)
+    # The CLI is authoritative for the counters as well: synthesis reads
+    # FROST_PERF_COUNTERS, and an inherited value must not change the netlist.
+    os.environ["FROST_PERF_COUNTERS"] = "1" if functional_policy.perf_counters else "0"
     if functional_policy.cpu_clock_div != 1:
         # The Vivado steps (synthesis generic, block-design clock rates) and
         # the quick-route probe count read the environment.
@@ -2735,6 +2763,13 @@ Examples:
             f"{functional_policy.cpu_clock_div} (CPU_CLK_DIV generic); run the "
             f"board with FROST_CPU_CLK_HZ={clock_freq}"
         )
+    if "synth" not in steps_to_run:
+        print(
+            "# Note: the profiling counters follow the checkpoint's netlist; "
+            "--perf-counters takes effect at synthesis"
+        )
+    elif functional_policy.perf_counters:
+        print("# Profiling counters included (PERF_COUNTERS generic)")
     if args.debug_ila:
         print("# Fetch-seam ILA: FROST_DEBUG_FETCH_ILA mirrors + one ILA on main_clock")
     print(f"# UltraScale: {'Yes' if is_ultrascale else 'No'}")

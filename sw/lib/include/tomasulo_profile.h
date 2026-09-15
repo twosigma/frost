@@ -33,7 +33,9 @@
  * 20. Hardware retains the preceding cache snapshot, so software can drain
  * both cache endpoints after timing has stopped. Every legacy counter address
  * and the benchmark's pre-timer instruction/store sequence are preserved
- * while the architectural index space grows to 130.
+ * while the architectural index space grows to 130. A build without the
+ * counters (PERF_COUNTERS=0, the production configuration) reads mperfcount
+ * as 0: snapshots then hold no counters and every delta is 0.
  */
 
 enum tomasulo_profile_counter_idx {
@@ -580,6 +582,22 @@ static inline void tomasulo_profile_pick_top_backend_cause(const tomasulo_profil
         tomasulo_profile_delta(start, end, TOMASULO_PERF_SQ_COMMITTED_PENDING));
 }
 
+/*
+ * Every report starts by saying whether the build has the counters, so a
+ * run on a production image (PERF_COUNTERS=0) is visibly zero-data rather
+ * than silently zero, and the profiling simulations can require presence.
+ */
+static inline void tomasulo_profile_print_presence(void)
+{
+    uint32_t count = (uint32_t) csr_read_imm(CSR_MPERFCOUNT);
+
+    if (count == 0) {
+        uart_printf("Profiling counters: absent\n");
+    } else {
+        uart_printf("Profiling counters: %u\n", (unsigned) count);
+    }
+}
+
 static inline void tomasulo_profile_print_brief_report(const char *label,
                                                        const tomasulo_profile_snapshot_t *start,
                                                        const tomasulo_profile_snapshot_t *end)
@@ -599,6 +617,8 @@ static inline void tomasulo_profile_print_brief_report(const char *label,
     uint32_t dispatch_stall_pct_x10;
     uint32_t frontend_bubble_pct_x10;
     uint32_t no_retire_pct_x10;
+
+    tomasulo_profile_print_presence();
     uint32_t top_dispatch_pct_x10;
     uint32_t top_retire_pct_x10;
     uint32_t top_backend_pct_x10;
@@ -676,6 +696,7 @@ static inline void tomasulo_profile_print_report(const char *label,
     uint64_t head_wait_total;
     uint32_t ipc_x100;
 
+    tomasulo_profile_print_presence();
     if (start->counter_count == 0 || end->counter_count == 0) {
         return;
     }

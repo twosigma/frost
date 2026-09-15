@@ -136,6 +136,9 @@
       previous cache snapshot for readback; reads return 0
     - mperfdata/mperfdatah (0xFC0/0xFC1): Selected counter value (low/high 32 bits)
     - mperfcount (0xFC2): Number of profiling counters
+    With PERF_COUNTERS = 0 (the production build) the counters are absent:
+    all five read zero, mperfsel/mperfctl ignore writes (the three read-only
+    ones trap on writes as always), and the o_perf_* outputs stay constant.
 
   The module supports all six Zicsr instructions:
     - CSRRW/CSRRWI: Atomic read/write
@@ -145,7 +148,13 @@
 module csr_file #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     // Optional cpu_ooo payload aligned with the current registered CSR address.
-    parameter bit UsePerfCsrHalf = 1'b0
+    parameter bit UsePerfCsrHalf = 1'b0,
+    // 0 removes the profiling-counter state: mperfsel/mperfctl/mperfdata/
+    // mperfdatah/mperfcount read zero, the two writable ones ignore writes,
+    // and the o_perf_* outputs stay constant. cpu_ooo passes its build
+    // option; the unit default keeps the full interface for the benches and
+    // the formal target (bmc_perf_off proves the absent case).
+    parameter int unsigned PERF_COUNTERS = 1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -547,6 +556,7 @@ module csr_file #(
   logic [XLEN-1:0] mtval;  // Trap value
   logic [XLEN-1:0] perf_counter_select;
   logic perf_cache_previous_select;
+  localparam bit PerfCountersPresent = (PERF_COUNTERS != 0);
 
   // Supervisor trap CSRs (Phase 3).
   logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
@@ -1233,8 +1243,10 @@ module csr_file #(
         // stimecmp is the full 64-bit compare value.
         riscv_pkg::CsrMenvcfg: menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
         riscv_pkg::CsrStimecmp: stimecmp <= csr_new_value;
-        riscv_pkg::CsrMperfSel: perf_counter_select <= csr_new_value;
-        riscv_pkg::CsrMperfCtl: perf_cache_previous_select <= csr_new_value[1];
+        // Without counters the profiling state keeps its reset value.
+        riscv_pkg::CsrMperfSel: if (PerfCountersPresent) perf_counter_select <= csr_new_value;
+        riscv_pkg::CsrMperfCtl:
+        if (PerfCountersPresent) perf_cache_previous_select <= csr_new_value[1];
         default: ;
       endcase
     end
@@ -1433,13 +1445,15 @@ module csr_file #(
         // (host-side tooling reads them pairwise); zero-extend to the bus.
         // The optional half was selected alongside the commit-address capture;
         // this case and i_csr_read_enable still qualify the current access.
+        // Without counters (PERF_COUNTERS = 0) these read zero.
         riscv_pkg::CsrMperfData:
-        csr_read_data_comb = XLEN'(UsePerfCsrHalf ?
-                                  i_perf_counter_csr_half : i_perf_counter_data[31:0]);
+        csr_read_data_comb = !PerfCountersPresent ? '0 :
+            XLEN'(UsePerfCsrHalf ? i_perf_counter_csr_half : i_perf_counter_data[31:0]);
         riscv_pkg::CsrMperfDataH:
-        csr_read_data_comb = XLEN'(UsePerfCsrHalf ?
-                                  i_perf_counter_csr_half : i_perf_counter_data[63:32]);
-        riscv_pkg::CsrMperfCount: csr_read_data_comb = XLEN'(i_perf_counter_count);
+        csr_read_data_comb = !PerfCountersPresent ? '0 :
+            XLEN'(UsePerfCsrHalf ? i_perf_counter_csr_half : i_perf_counter_data[63:32]);
+        riscv_pkg::CsrMperfCount:
+        csr_read_data_comb = !PerfCountersPresent ? '0 : XLEN'(i_perf_counter_count);
         // Debug Mode CSRs (Phase 3 M3)
         riscv_pkg::CsrDcsr: csr_read_data_comb = dcsr;
         riscv_pkg::CsrDpc: csr_read_data_comb = dpc;
@@ -1464,7 +1478,8 @@ module csr_file #(
   assign o_csr_read_data_comb = csr_read_data_comb;
   assign o_perf_counter_select = perf_counter_select[7:0];
   assign o_perf_cache_previous_select = perf_cache_previous_select;
-  assign o_perf_snapshot_capture = i_csr_write_enable && i_csr_read_enable &&
+  assign o_perf_snapshot_capture = PerfCountersPresent && i_csr_write_enable &&
+                                   i_csr_read_enable &&
                                    (i_csr_address == riscv_pkg::CsrMperfCtl) &&
                                    csr_new_value[0];
 
@@ -1817,6 +1832,35 @@ module csr_file #(
       cover_instret : cover (f_past_valid && instret_counter > 64'd0);
     end
   end
+
+  // Counters absent (PERF_COUNTERS = 0, task bmc_perf_off): the profiling
+  // outputs never move and every mperf* read returns zero, whatever the
+  // inputs do (the app-level test cannot see a stray snapshot pulse).
+  generate
+    if (PERF_COUNTERS == 0) begin : gen_formal_perf_off
+      logic perf_csr_read;
+      assign perf_csr_read = i_csr_read_enable &&
+          (i_csr_address == riscv_pkg::CsrMperfSel ||
+           i_csr_address == riscv_pkg::CsrMperfCtl ||
+           i_csr_address == riscv_pkg::CsrMperfData ||
+           i_csr_address == riscv_pkg::CsrMperfDataH ||
+           i_csr_address == riscv_pkg::CsrMperfCount);
+      always @(posedge i_clk) begin
+        if (f_past_valid && !i_rst) begin
+          p_perf_off_no_snapshot : assert (!o_perf_snapshot_capture);
+          p_perf_off_select_zero : assert (o_perf_counter_select == '0);
+          p_perf_off_bank_zero : assert (!o_perf_cache_previous_select);
+          if (perf_csr_read) begin
+            p_perf_off_reads_zero : assert (o_csr_read_data_comb == '0);
+          end
+          // The registered read port one cycle after an enabled mperf* read.
+          if ($past(!i_rst) && $past(perf_csr_read)) begin
+            p_perf_off_reg_reads_zero : assert (o_csr_read_data == '0);
+          end
+        end
+      end
+    end
+  endgenerate
 
 `endif  // FORMAL
 

@@ -76,6 +76,9 @@ module cpu_and_mem #(
     // board's BSCANE2 primitives on the FPGA's own TAP (boards/) and the
     // i_jtag_* pins are ignored.
     parameter int unsigned DEBUG_JTAG_TAP = 1,
+    // Profiling counters in the CPU (see cpu_ooo): 0 = absent, the production
+    // build; 1 for analysis builds and the cocotb entries that read them.
+    parameter int unsigned PERF_COUNTERS = 0,
     // Core clock frequency: the NIC's TICK default (one microsecond).
     parameter int unsigned CLK_FREQ_HZ = 300000000
 ) (
@@ -603,7 +606,8 @@ module cpu_and_mem #(
       .MMIO_ADDR(MmioAddr),
       .MMIO_SIZE_BYTES(MmioSizeBytes),
       .CACHED_BASE(CACHED_BASE),
-      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .PERF_COUNTERS(PERF_COUNTERS)
   ) cpu_inst (
       .i_clk,
       .i_rst(rst_core),

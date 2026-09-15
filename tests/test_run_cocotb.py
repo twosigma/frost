@@ -122,7 +122,24 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="coremark",
-        description="Coremark benchmark",
+        description=(
+            "Coremark benchmark (production configuration: no profiling "
+            "counters, the report says so; its tick count differs from "
+            "coremark_profile because the snapshot loop before the timed "
+            "window is empty)"
+        ),
+    ),
+    "coremark_profile": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="coremark",
+        description=(
+            "Coremark benchmark with the profiling counters present: the "
+            "profile report is the simulated IPC reference and the run "
+            "fails unless the report shows the counters"
+        ),
+        verilator_extra_args=("-GPERF_COUNTERS=1",),
+        extra_env=(("FROST_EXPECT_PERF_COUNTERS", "1"),),
     ),
     **COREMARK_PRO_TESTS,
     "ddr_test": CocotbRunConfig(
@@ -199,7 +216,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "store burst over the cached region; requires overlapped L1D misses (counters). "
             "4 KiB L1D and L2 make the small working set churn through the full hierarchy"
         ),
-        verilator_extra_args=("-GL1_CACHE_BYTES=4096", "-GL2_CACHE_BYTES=4096"),
+        verilator_extra_args=(
+            "-GL1_CACHE_BYTES=4096",
+            "-GL2_CACHE_BYTES=4096",
+            "-GPERF_COUNTERS=1",
+        ),
     ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -382,7 +403,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="csr_rmw_test",
         description=(
             "CSR read-modify-write directed test "
-            "(csrrw/csrrs/csrrc; kernel trap path; mperfctl bank control)"
+            "(csrrw/csrrs/csrrc; kernel trap path; mperfctl bank control, "
+            "so the profiling counters are present)"
+        ),
+        verilator_extra_args=("-GPERF_COUNTERS=1",),
+    ),
+    "perf_off_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="perf_off_test",
+        description=(
+            "Production configuration without profiling counters "
+            "(PERF_COUNTERS=0): the mperf* CSRs read zero, mperfsel/mperfctl "
+            "ignore writes, and cycle and instret keep counting"
         ),
     ),
     "wfi_mepc_test": CocotbRunConfig(
@@ -794,7 +827,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="tomasulo_perf",
-        description="Tomasulo performance measurement (IPC benchmarks)",
+        description=(
+            "Tomasulo performance measurement (IPC benchmarks) with the "
+            "profiling counters present and the per-benchmark profile "
+            "reports compiled in; the run fails unless the reports show the "
+            "counters"
+        ),
+        verilator_extra_args=("-GPERF_COUNTERS=1",),
+        extra_env=(
+            ("FROST_EXPECT_PERF_COUNTERS", "1"),
+            ("EXTRA_CFLAGS", "-DTOMASULO_PERF_ENABLE_PROFILE=1"),
+        ),
     ),
     "uart_echo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1756,6 +1799,12 @@ class CocotbRunner:
         # environment so that both the app build (compile_app's make) and the
         # simulation build (setup_environment's os.environ copy) see them.
         self.extra_env = extra_env
+        # Remembered so run_simulation can put the process environment back:
+        # one pytest process runs many entries in turn, and an entry's
+        # expectation or build flag must not leak into the next entry.
+        self._environment_before_overrides = {
+            key: os.environ.get(key) for key, _ in extra_env
+        }
         for key, value in extra_env:
             os.environ[key] = value
         # Seed-sweep workers share sw/apps/<app> and the tests/sw*.mem
@@ -2027,10 +2076,29 @@ class CocotbRunner:
             tempfile.mkdtemp(prefix=prefix + "sim_build_", dir=tempfile.gettempdir())
         )
 
+    def restore_environment(self) -> None:
+        """Undo the registry environment overrides applied at construction."""
+        for key, previous in self._environment_before_overrides.items():
+            if previous is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = previous
+
     def run_simulation(
         self, check: bool = True, capture_output: bool = True
     ) -> subprocess.CompletedProcess[str]:
-        """Run the cocotb simulation."""
+        """Run the cocotb simulation, then restore the process environment."""
+        try:
+            return self._run_simulation_with_overrides(
+                check=check, capture_output=capture_output
+            )
+        finally:
+            self.restore_environment()
+
+    def _run_simulation_with_overrides(
+        self, check: bool = True, capture_output: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        """Run the cocotb simulation under the entry's environment overrides."""
         # Sweep workers skip the app compile; the sweep parent compiled once
         # before spawning them.
         if self.app_name and not self.skip_app_compile and not self._compile_app():

@@ -79,6 +79,11 @@ module frost #(
     // override these to fit the cycle budget.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd300_000_000,
+    // Profiling counters (the mperf* CSRs; about 24k cells at post-opt: 3.8k
+    // LUTs, 18.3k flops, 2.1k CARRY8): 0 = absent, the
+    // production build; 1 for analysis builds (build.py --perf-counters) and
+    // the cocotb entries that read them (-GPERF_COUNTERS=1).
+    parameter int unsigned PERF_COUNTERS = 0,
     // RISC-V debug transport (Phase 3 M3): 1 = generic JTAG TAP on the
     // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
     // bundle comes from the board's BSCANE2 primitives (i_dtm_bscan_*).
@@ -263,6 +268,7 @@ module frost #(
       .HANG_TRIAGE_QUIET_CYCLES(HANG_TRIAGE_QUIET_CYCLES),
       .HANG_TRIAGE_REEMIT_CYCLES(HANG_TRIAGE_REEMIT_CYCLES),
       .DEBUG_JTAG_TAP(DEBUG_JTAG_TAP),
+      .PERF_COUNTERS(PERF_COUNTERS),
       .CLK_FREQ_HZ(CLK_FREQ_HZ)
   ) cpu_and_memory_subsystem (
       .i_clk,

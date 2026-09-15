@@ -81,7 +81,7 @@ jobs:
         shard:
           - name: Real Programs (CoreMark)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: "[coremark]"
+            pytest_filter: "[coremark] or [coremark_profile]"
           - name: Real Programs (AMO torture)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: "[amo_irq_torture_sim]"
@@ -119,7 +119,7 @@ jobs:
           - name: Real Programs (Runtime and other)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
             pytest_filter: >-
-              not ([coremark] or [amo_irq_torture_sim] or [tick_torture_sim] or
+              not ([coremark] or [coremark_profile] or [amo_irq_torture_sim] or [tick_torture_sim] or
               [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
               [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard] or [csr_test] or
               [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or

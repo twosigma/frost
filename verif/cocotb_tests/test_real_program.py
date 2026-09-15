@@ -3567,6 +3567,15 @@ async def run_until_complete(
     print("\n")  # Newline after UART output
     cocotb.log.info(f"Run {run_number} completed after {cycle + 1} cycles")
 
+    if not test_failed and os.environ.get("FROST_EXPECT_PERF_COUNTERS") == "1":
+        # Profiling entries (-GPERF_COUNTERS=1) must not pass on zero data:
+        # the report's presence line carries the hardware's mperfcount.
+        presence = re.search(r"Profiling counters: (\d+)", uart_monitor.get_output())
+        if presence is None or int(presence.group(1)) == 0:
+            raise AssertionError(
+                f"Run {run_number}: FROST_EXPECT_PERF_COUNTERS=1 but the program "
+                "did not report present profiling counters"
+            )
     if test_failed:
         if is_coremark_like and coremark_return_events:
             cocotb.log.error(

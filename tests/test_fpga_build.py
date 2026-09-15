@@ -1602,6 +1602,72 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
     assert ".CLK_FREQ_HZ(CpuClkHz)," in top
 
 
+def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:
+    """--perf-counters reaches synthesis and every level down to cpu_ooo."""
+    root = Path(__file__).resolve().parent.parent
+    step_tcl = (root / "fpga" / "build" / "build_step.tcl").read_text()
+    assert "getenv_default FROST_PERF_COUNTERS 0" in step_tcl
+    assert "-generic PERF_COUNTERS=1" in step_tcl
+    for rel in (
+        "boards/x3/x3_frost.sv",
+        "boards/xilinx_frost_subsystem.sv",
+        "hw/rtl/frost.sv",
+        "hw/rtl/cpu_and_mem/cpu_and_mem.sv",
+    ):
+        text = (root / rel).read_text()
+        assert "parameter int unsigned PERF_COUNTERS = 0" in text, rel
+        assert ".PERF_COUNTERS(PERF_COUNTERS)" in text, rel
+    cpu = (
+        root / "hw" / "rtl" / "cpu_and_mem" / "cpu" / "cpu_ooo" / "cpu_ooo.sv"
+    ).read_text()
+    assert "parameter int unsigned PERF_COUNTERS = 0" in cpu
+    # The CSR file and the tomasulo_wrapper both take the option.
+    assert cpu.count(".PERF_COUNTERS(PERF_COUNTERS)") == 2
+    assert "if (PERF_COUNTERS != 0) begin : gen_perf_counters" in cpu
+
+
+@pytest.mark.parametrize(
+    "divider,override,expected",
+    ((1, None, False), (2, None, True), (1, True, True), (2, False, False)),
+)
+def test_perf_counters_default_follows_the_clock_divider(
+    divider: int, override: bool | None, expected: bool
+) -> None:
+    """Counters are left out at full rate and included in divided-clock builds."""
+    policy = fpga_build.resolve_functional_build_policy(
+        divider,
+        300_000_000,
+        ["RuntimeOptimized"],
+        1,
+        False,
+        ["RuntimeOptimized"],
+        False,
+        perf_counters=override,
+    )
+    assert policy.perf_counters is expected
+
+
+def test_perf_counters_cli_default_overrides_stale_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full-rate build exports FROST_PERF_COUNTERS=0 despite an inherited 1."""
+    monkeypatch.setenv("FROST_PERF_COUNTERS", "1")
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--stop-after", "place"])
+    observed = []
+
+    def compile_firmware(_root: Path, _output: Path, clock: int) -> bool:
+        observed.append((clock, fpga_build.os.environ["FROST_PERF_COUNTERS"]))
+        return False
+
+    monkeypatch.setattr(fpga_build, "compile_hello_world", compile_firmware)
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 1
+    assert observed == [(300_000_000, "0")]
+
+
 def test_read_log_tail_streams_appended_text_and_survives_truncation(
     tmp_path: Path,
 ) -> None:
