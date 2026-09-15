@@ -611,6 +611,10 @@ module instruction_aligner #(
       .o_instr_expanded_bit15_fast(slot2_decomp_cur_hi_bit15_fast),
       .o_instr_expanded_bits20_9_fast(slot2_decomp_cur_hi_bits20_9_fast),
       .o_instr_expanded_bits27_25_fast(slot2_decomp_cur_hi_bits27_25_fast),
+      .o_instr_expanded_bits31_28_fast(),
+      .o_instr_expanded_bit26_fast(),
+      .o_instr_expanded_bits19_18_fast(),
+      .o_instr_expanded_bits14_12_fast(),
       .o_is_compressed(),
       .o_illegal(),
       .o_illegal_fast(slot2_raw_illegal_cur_hi)
@@ -623,6 +627,10 @@ module instruction_aligner #(
       .o_instr_expanded_bit15_fast(slot2_decomp_next_lo_bit15_fast),
       .o_instr_expanded_bits20_9_fast(slot2_decomp_next_lo_bits20_9_fast),
       .o_instr_expanded_bits27_25_fast(slot2_decomp_next_lo_bits27_25_fast),
+      .o_instr_expanded_bits31_28_fast(),
+      .o_instr_expanded_bit26_fast(),
+      .o_instr_expanded_bits19_18_fast(),
+      .o_instr_expanded_bits14_12_fast(),
       .o_is_compressed(),
       .o_illegal(),
       .o_illegal_fast(slot2_raw_illegal_next_lo)
@@ -635,6 +643,10 @@ module instruction_aligner #(
       .o_instr_expanded_bit15_fast(slot2_decomp_next_hi_bit15_fast),
       .o_instr_expanded_bits20_9_fast(slot2_decomp_next_hi_bits20_9_fast),
       .o_instr_expanded_bits27_25_fast(slot2_decomp_next_hi_bits27_25_fast),
+      .o_instr_expanded_bits31_28_fast(),
+      .o_instr_expanded_bit26_fast(),
+      .o_instr_expanded_bits19_18_fast(),
+      .o_instr_expanded_bits14_12_fast(),
       .o_is_compressed(),
       .o_illegal(),
       .o_illegal_fast(slot2_raw_illegal_next_hi)

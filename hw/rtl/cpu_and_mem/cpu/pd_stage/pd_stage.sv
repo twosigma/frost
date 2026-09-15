@@ -66,7 +66,13 @@ module pd_stage #(
   // BRAM selection and stall replay before this combinational expansion.
 
   logic [31:0] decompressed_instr;
+  logic        decompressed_instr_bit15_fast;
   logic [ 1:0] decompressed_instr_bits20_9_fast;
+  logic [ 1:0] decompressed_instr_bits27_25_fast;
+  logic [ 3:0] decompressed_instr_bits31_28_fast;
+  logic        decompressed_instr_bit26_fast;
+  logic [ 1:0] decompressed_instr_bits19_18_fast;
+  logic [ 2:0] decompressed_instr_bits14_12_fast;
   logic        decomp_is_compressed;
   logic        decomp_illegal;
 
@@ -75,9 +81,13 @@ module pd_stage #(
       .i_rd_is_x2(i_from_if_to_pd.raw_parcel[11:7] == 5'd2),
       .o_instr_expanded(decompressed_instr),
       .o_instr_expanded_bit8_fast(),
-      .o_instr_expanded_bit15_fast(),
+      .o_instr_expanded_bit15_fast(decompressed_instr_bit15_fast),
       .o_instr_expanded_bits20_9_fast(decompressed_instr_bits20_9_fast),
-      .o_instr_expanded_bits27_25_fast(),
+      .o_instr_expanded_bits27_25_fast(decompressed_instr_bits27_25_fast),
+      .o_instr_expanded_bits31_28_fast(decompressed_instr_bits31_28_fast),
+      .o_instr_expanded_bit26_fast(decompressed_instr_bit26_fast),
+      .o_instr_expanded_bits19_18_fast(decompressed_instr_bits19_18_fast),
+      .o_instr_expanded_bits14_12_fast(decompressed_instr_bits14_12_fast),
       .o_is_compressed(decomp_is_compressed),
       .o_illegal(),
       .o_illegal_fast(decomp_illegal)
@@ -103,9 +113,18 @@ module pd_stage #(
   always_comb begin
     if (pd_sel_compressed) begin
       instruction_non_nop = decompressed_instr;
-      // Only rs2[0] uses the existing exact bit cofactor; retain all other
-      // expansion bits and the same compressed/native selection.
-      instruction_non_nop[20] = decompressed_instr_bits20_9_fast[1];
+      // rs2[0] and the funct7, funct3 and rs1 fields (rs1[2:1] come from the
+      // source-hot sideband below) use the decompressor's exact standalone
+      // cofactors; the immediate, rd and rs2 bits keep the full expansion and
+      // the same compressed/native selection.
+      instruction_non_nop[20]    = decompressed_instr_bits20_9_fast[1];
+      instruction_non_nop[31:28] = decompressed_instr_bits31_28_fast;
+      instruction_non_nop[27]    = decompressed_instr_bits27_25_fast[1];
+      instruction_non_nop[26]    = decompressed_instr_bit26_fast;
+      instruction_non_nop[25]    = decompressed_instr_bits27_25_fast[0];
+      instruction_non_nop[19:18] = decompressed_instr_bits19_18_fast;
+      instruction_non_nop[15]    = decompressed_instr_bit15_fast;
+      instruction_non_nop[14:12] = decompressed_instr_bits14_12_fast;
     end else instruction_non_nop = i_from_if_to_pd.effective_instr;
   end
 

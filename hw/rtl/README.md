@@ -203,16 +203,18 @@ backend notes.
 | `lib/` | In use | Portable RAM/FIFO/stall helper primitives, `lib/cdc/` (two-flop synchronizer, asynchronous-assert reset, Gray-coded event counter) and `lib/fifo/async_fifo.sv` (Gray-pointer FIFO between unrelated clocks), plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model), `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays), and `lib/ram/sdp_packed_tag_uram.sv` (width-generic packed UltraRAM tags for the X3 L2) |
 | `peripherals/` | In use | UART TX/RX blocks; `peripherals/nic/` is the Phase 4 NIC on the coherent DMA port (see its README): `nic_top` sits in `cpu_and_mem.sv` at 0x4003_0000 with PLIC source 4, sharing the DMA port with the test engine through a `line_port_arbiter` |
 
-Slot-1 PD uses the decompressor's existing exact bit-20 cofactor for compressed
-instruction `rs2[0]` and its exact illegal-flag cofactor, as slot 2 already does.
-Every other expansion bit and the
-existing compressed/native selection, bubble qualification and register enables
-remain unchanged. The live IF selection and replay path still precedes PD;
-source extraction therefore does not have an assumed full cycle of slack.
-The cofactor test exhausts all 131,072 parcel/`rd_is_x2` combinations, and the PD
-suite checks native/RVC selection and illegal-flag qualification through stalls,
-flushes, reset and NOP slots. These substitutions add no latency; their placement
-effect requires measurement.
+Slot-1 PD uses the decompressor's exact standalone cofactors for compressed
+instruction `rs2[0]` (bit 20), the funct7, funct3 and rs1 fields (bits 31:25,
+14:12, 19:18 and 15; rs1[2:1] come from the source-hot sideband) and the
+illegal flag, as slot 2 does for its own bits. The immediate, rd and rs2 bits
+keep the full expansion tree, and the compressed/native selection, bubble
+qualification and register enables remain unchanged. The live IF selection and
+replay path still precedes PD; source extraction therefore does not have an
+assumed full cycle of slack. The cofactor test exhausts all 131,072
+parcel/`rd_is_x2` combinations for every cofactor, and the PD suite checks
+native/RVC selection and illegal-flag qualification through stalls, flushes,
+reset and NOP slots. These substitutions add no latency; their placement effect
+requires measurement.
 
 ## Memory Map
 

@@ -231,7 +231,11 @@ def _assert_decode(
 
 @cocotb.test()
 async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
-    """All 131,072 parcel/predicate combinations have exact fast cofactors."""
+    """All 131,072 parcel/predicate combinations have exact fast cofactors.
+
+    Covers the slot-2 bit cofactors, the illegal flag and the PD field
+    cofactors (bits 31:28, 26, 19:18 and 14:12).
+    """
     for raw in range(1 << 16):
         dut.i_instr_compressed.value = raw
         for rd_is_x2 in (0, 1):
@@ -275,6 +279,35 @@ async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
                 f"fast bits {{27,25}}=0b{fast_bits27_25:02b}, "
                 f"expanded bits {{27,25}}=0b{expanded_bits27_25:02b}"
             )
+
+            expanded = int(dut.o_instr_expanded.value)
+            field_cofactors = (
+                (
+                    "bits 31:28",
+                    (expanded >> 28) & 0xF,
+                    int(dut.o_instr_expanded_bits31_28_fast.value),
+                ),
+                (
+                    "bit 26",
+                    (expanded >> 26) & 1,
+                    int(dut.o_instr_expanded_bit26_fast.value),
+                ),
+                (
+                    "bits 19:18",
+                    (expanded >> 18) & 0x3,
+                    int(dut.o_instr_expanded_bits19_18_fast.value),
+                ),
+                (
+                    "bits 14:12",
+                    (expanded >> 12) & 0x7,
+                    int(dut.o_instr_expanded_bits14_12_fast.value),
+                ),
+            )
+            for name, expected_bits, fast_bits in field_cofactors:
+                assert fast_bits == expected_bits, (
+                    f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
+                    f"fast {name}=0b{fast_bits:b}, expanded {name}=0b{expected_bits:b}"
+                )
 
             canonical_illegal = int(dut.o_illegal.value)
             fast_illegal = int(dut.o_illegal_fast.value)
