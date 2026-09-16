@@ -77,6 +77,7 @@ VALID_APPS = [
     "opensbi_smoke",
     "packet_parser",
     "pde_return_hazard",
+    "perf_off_test",
     "print_clock_speed",
     "ras_stress_test",
     "ras_test",

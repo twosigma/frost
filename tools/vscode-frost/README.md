@@ -174,7 +174,7 @@ settings and C/C++ 1.33.8; the original Default profile remained active.
 
 ## Debugging
 
-The repository currently advertises **50 of 52 loader applications** for
+The repository currently advertises **51 of 53 loader applications** for
 managed debugging. Both load-and-debug commands show the full app list and
 ask for application, layout, and actual clock. They save the completed
 selection for subsequent Attach operations, including `frost.coremarkProMode`

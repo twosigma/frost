@@ -48,7 +48,7 @@ set valid_apps [list amo_irq_torture branch_pred_test c_ext_test call_stress cf_
                      {*}$coremark_pro_apps csr_test debug_target ddr_atomic_test ddr_exec_test ddr_heap_test \
                      ddr_smc_test ddr_test dma_torture freertos_demo fpu_assembly_test fpu_test \
                      hello_world isa_test itlb_test linux_irq_active_ddr_test linux_boot linux_irq_ddr_test linux_irq_stack_slot_test memory_test \
-                     nic_echo nic_loopback opensbi_smoke packet_parser pde_return_hazard print_clock_speed ras_stress_test ras_test \
+                     nic_echo nic_loopback opensbi_smoke packet_parser pde_return_hazard perf_off_test print_clock_speed ras_stress_test ras_test \
                      smode_test spanning_test sprintf_test strings_test tick_torture tomasulo_perf \
                      tomasulo_test uart_echo umode_test vm_test]
 

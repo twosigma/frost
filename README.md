@@ -460,7 +460,7 @@ Open the repository and use the Command Palette (**Ctrl+Shift+P**):
    CPU to see new UART output.
 
 Plain loading offers the full repository application list. Debug commands
-currently enable 50 of 52 apps; `linux_boot` and `opensbi_smoke` are marked
+currently enable 51 of 53 apps; `linux_boot` and `opensbi_smoke` are marked
 **Load only**. See the [debugging guide](tools/vscode-frost/README.md#debugging)
 for startup behavior and the [debugger scope](tools/vscode-frost/README.md#debugger-scope)
 for supported features and hardware validation limits.

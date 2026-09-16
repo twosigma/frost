@@ -37,7 +37,11 @@ Buildroot build takes 30-60 min.
 caused intermittent boot corruption. Two apps are left out: ``debug_target``
 waits for a debugger to drive it, and ``nic_echo`` needs receive traffic over a
 transceiver that no board top integrates yet, so neither can pass unattended.
-``nic_loopback`` is the NIC stage.
+``nic_loopback`` is the NIC stage. ``perf_off_test`` checks the production
+netlist's absent profiling counters, so it runs only against a rated-clock
+bitstream: a ``--cpu-clock-div`` build includes the counters by default and
+drops the stage (``netlist_config.json`` in the build work directory records
+which way that bitstream was synthesized).
 
 Scores may fall at most ``--score-tolerance`` percent below the board baseline.
 A ``None`` baseline reports the measurement without failing. The regression
@@ -634,6 +638,13 @@ DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 # regression neither runs nor accepts them until a transceiver exists.
 EXTERNAL_LINK_APPS = frozenset({"nic_echo"})
 
+# Apps that assert the production netlist's absent profiling counters
+# (PERF_COUNTERS=0, build.py's default at the rated clock). A
+# functional-validation bitstream is built with --cpu-clock-div, which turns
+# the counters on by default, so these cannot pass against one; main() drops
+# them when FROST_CPU_CLK_HZ names such a build.
+PERF_COUNTERS_ABSENT_APPS = frozenset({"perf_off_test"})
+
 
 def regression_stages() -> list[str]:
     """Return every stage in canonical order: apps, the PRO sweep, then Linux.
@@ -642,7 +653,9 @@ def regression_stages() -> list[str]:
     VALID_APPS order, then the CoreMark-PRO sweep. linux_boot runs last because
     it is the longest, whole-system stage and should only run once everything
     else has passed. Debugger-driven apps (DEBUGGER_DRIVEN_APPS) and apps that
-    need an external link (EXTERNAL_LINK_APPS) are excluded.
+    need an external link (EXTERNAL_LINK_APPS) are excluded. Counters-absent
+    apps (PERF_COUNTERS_ABSENT_APPS) stay in: they hold for the rated-clock
+    bitstream, and main() drops them for a clock-override run.
     """
     phase1 = [
         app
@@ -746,6 +759,12 @@ def main() -> int:
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[board]
 
     all_stages = regression_stages()
+    divided_clock = board_clock_freq(board)[1]
+    if divided_clock:
+        # --cpu-clock-div builds include the profiling counters by default.
+        all_stages = [
+            stage for stage in all_stages if stage not in PERF_COUNTERS_ABSENT_APPS
+        ]
 
     if args.stages:
         requested = set(args.stages)
@@ -756,6 +775,15 @@ def main() -> int:
                 "a debugger; nic_echo needs receive traffic over a transceiver no "
                 "board top integrates yet; load_software.py can still run them)"
             )
+        if divided_clock:
+            counters_on = sorted(requested & PERF_COUNTERS_ABSENT_APPS)
+            if counters_on:
+                parser.error(
+                    f"not a regression stage under {CPU_CLK_ENV}: "
+                    f"{', '.join(counters_on)} requires the rated-clock netlist, "
+                    "whose profiling counters are absent; a --cpu-clock-div "
+                    "build includes them (see netlist_config.json)"
+                )
         unknown = sorted(requested - set(all_stages))
         if unknown:
             parser.error(

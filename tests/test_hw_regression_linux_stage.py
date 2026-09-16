@@ -220,3 +220,25 @@ def test_cpu_clock_override_reaches_the_loader_and_skips_score_checks() -> None:
     finally:
         hw.os.environ.clear()
         hw.os.environ.update(old)
+
+
+def test_counters_absent_stage_follows_the_bitstream_perf_configuration(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """perf_off_test is loadable and a stage, but only at the rated clock.
+
+    The production netlist leaves the profiling counters out, which is what
+    the app checks; a ``--cpu-clock-div`` bitstream includes them by default,
+    so the stage is dropped rather than failed there.
+    """
+    assert "perf_off_test" in hw.VALID_APPS
+    assert "perf_off_test" in hw.regression_stages()
+    assert hw.PERF_COUNTERS_ABSENT_APPS == frozenset({"perf_off_test"})
+    monkeypatch.setenv("FROST_CPU_CLK_HZ", "150000000")
+    monkeypatch.setattr(
+        hw.sys, "argv", ["hw_regression.py", "--board", "x3", "perf_off_test"]
+    )
+    with pytest.raises(SystemExit) as rejected:
+        hw.main()
+    assert rejected.value.code == 2
+    assert "requires the rated-clock netlist" in capsys.readouterr().err
