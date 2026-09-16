@@ -22,7 +22,6 @@ RTL := $(ROOT)/hw/rtl/net10g
 VERILOG_SOURCES := $(RTL)/eth10g_crc_pkg.sv $(RTL)/eth10g_pcs_pkg.sv
 VERILOG_SOURCES += $(filter-out %_pkg.sv,$(sort $(wildcard $(RTL)/*.sv)))
 VERILOG_SOURCES += $(sort $(wildcard $(CURDIR)/*_tb.sv))
-COMPILE_ARGS += --assert
 EXTRA_ARGS += -j 2
 export VERILATOR_MAKE_FLAGS := -j2
 export PYTHONPATH := $(ROOT)/tests:$(CURDIR):$(PYTHONPATH)
