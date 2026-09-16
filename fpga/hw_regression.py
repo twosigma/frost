@@ -34,8 +34,10 @@ before the login prompt, then logs in as root and runs ``perf stat`` on the
 cycle and instruction counters, which must both report a nonzero count. ``--linux-timeout`` covers build, DDR loading, and boot; a cold
 Buildroot build takes 30-60 min.
 ``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
-caused intermittent boot corruption. ``debug_target`` is left out: it waits
-for a debugger to drive it and cannot pass unattended.
+caused intermittent boot corruption. Two apps are left out: ``debug_target``
+waits for a debugger to drive it, and ``nic_echo`` needs receive traffic over a
+transceiver that no board top integrates yet, so neither can pass unattended.
+``nic_loopback`` is the NIC stage.
 
 Scores may fall at most ``--score-tolerance`` percent below the board baseline.
 A ``None`` baseline reports the measurement without failing. The regression

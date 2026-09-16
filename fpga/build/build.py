@@ -2393,8 +2393,9 @@ Steps (in order):
   opt                         - Opt design
   place                       - Place design (x3 sweeps selected placer
                                 directives x uncertainty seeds, up to --jobs
-                                at a time; veto congested seeds, quick-route
-                                survivors, keep the best ROUTED WNS)
+                                at a time; require the native post-place gate,
+                                veto congested seeds, keep the best post-place
+                                WNS; no quick-route probe by default)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup; x3 sweeps all

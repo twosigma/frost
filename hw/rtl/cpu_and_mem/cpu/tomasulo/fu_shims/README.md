@@ -67,10 +67,13 @@ Each shim's structure follows the pipeline depth of the FU it wraps.
   the RS sees a flop; a simulation tripwire checks it against the
   combinational form every cycle.
 - `fp_div_shim` wraps one `fp_div_sqrt_iter`, which runs FDIV.S/D and
-  FSQRT.S/D on a shared iterative datapath, one operation at a time. Latency
-  is 36 cycles at single precision and 65 at double, the counts the four
-  unrolled pipelines it replaced had, and the shim adds one cycle for its
-  result register, so a completion is visible 36 or 65 cycles after issue.
+  FSQRT.S/D on a shared iterative datapath, one operation at a time. A
+  completion is visible 36 cycles after issue at single precision and 65 at
+  double; the unit pulses its result one cycle earlier and the shim's result
+  register presents it. The shared datapath replaced four fully unrolled
+  pipelines whose completions were visible at 37 and 66 cycles, so a
+  completion now lands one cycle sooner, and the unit takes one operation at a
+  time instead of accepting one every cycle.
   State is a tag register for the operation in the unit and one result
   register that keeps presenting its result until `i_div_accepted`.
   `o_fu_busy` is exactly those two places occupied, which is why no tag

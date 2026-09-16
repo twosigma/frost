@@ -95,3 +95,8 @@ fpga/build/*/SUMMARY_*.md
 tools/vscode-frost/node_modules/
 tools/vscode-frost/out/
 tools/vscode-frost/*.vsix
+
+# Local timing notes and device captures. Working notes stay out of the
+# repository; keep them in a scratch directory instead.
+/TIMING_HANDOFF_*.md
+/device_view.png

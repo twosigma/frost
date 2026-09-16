@@ -1616,7 +1616,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "rvc_decompressor": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
-        description="IF-stage RVC decompressor tests",
+        description=(
+            "IF-stage RVC decompressor tests, including every fast expanded-bit "
+            "cofactor and the restructured illegal flag against the full "
+            "expansion over all 131,072 parcel/rd_is_x2 combinations"
+        ),
     ),
     "c_ext_state": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_c_ext_state",

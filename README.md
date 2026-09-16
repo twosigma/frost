@@ -36,6 +36,10 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
   signals, fork/exec, futex, LR/SC contention) must pass before the login
   prompt. The image boots on X3 hardware, and `fpga/linux_boot_soak.py` scores
   the same payload across repeated hardware boots.
+- Networking on the SoC. A 10 Gigabit Ethernet NIC wraps the in-tree
+  10GBASE-R MAC/PCS on a coherent DMA port, with a device-tree node for
+  Linux. Two full-system programs drive it in simulation, and `nic_loopback`
+  is a hardware regression stage.
 - Portable core RTL. The CPU provides portable implementations and passes
   generic Yosys coarse synthesis plus a full UltraScale+ synthesis target.
   Xilinx builds can select primitive-backed RAM and timing paths. The board
@@ -125,8 +129,15 @@ are drawn. Click the diagram to view it at full size.
   ahead of the load and store queues, and a hardware page-table walker that
   reads page tables through its own port on the cache hierarchy.
 - CLINT-compatible timer (mtime/mtimecmp) for preemptive scheduling, and a
-  PLIC with M and S contexts for hart 0 whose sources are the ns16550 UART
-  and the board's external-interrupt pin.
+  PLIC with M and S contexts for hart 0. Its four sources are the ns16550
+  UART, the board's external-interrupt pin, the DMA test engine's completion,
+  and the NIC.
+- 10 Gigabit Ethernet NIC. The portable 10GBASE-R MAC/PCS in `hw/rtl/net10g`
+  sits behind a register window at `0x4003_0000`, with RX and TX descriptor
+  rings on the coherent DMA port and one PLIC interrupt. Descriptors and
+  packet buffers need no cache maintenance. A device-tree node describes it
+  to Linux. The X3 build clocks the MAC from the MMCM; the transceiver
+  wrapper is still to come.
 - RISC-V debug over JTAG: a debug transport module (DTM) connects to the
   debug module for halt, resume, and single-step. X3 uses the FPGA's BSCAN
   USER chains; the portable integration provides a generic JTAG TAP.
@@ -141,18 +152,21 @@ are drawn. Click the diagram to view it at full size.
   line-port arbiters (priority D > walker > I > DMA, the DMA port
   starvation-bounded) with several transactions in flight; a coherence
   sequencer probes the L1D and hands the load queue its invalidations before
-  a DMA request reaches the shared level. A 2 MiB UltraRAM L2 with a
-  serialized three-cycle tag lookup sits below that tree. The hierarchy
-  reaches X3's DDR4 through a single-beat AXI bridge that keeps multiple
-  transactions outstanding.
+  a DMA request reaches the shared level. The NIC and the DMA test engine
+  share that port through another line-port arbiter, so device DMA is
+  coherent with the L1D and the load queue's L0 without software cache
+  maintenance. A 2 MiB UltraRAM L2 with a serialized three-cycle tag lookup
+  sits below that tree. The hierarchy reaches X3's DDR4 through a single-beat
+  AXI bridge that keeps multiple transactions outstanding.
 - One memory map everywhere. Software sees the same layout across board
   integrations and simulation: a 256 KiB uncached BRAM region for code, data,
-  and stack, the MMIO window at `0x4000_0000`, the PLIC at `0x4400_0000`, and
-  the 1 GiB cached region for execute-from-DDR code, heap, and large data.
-  Low-BRAM data accesses take one cycle. Instruction windows wholly inside
-  `[0, 64 KiB)` also take one cycle; later code windows repeat once to register
-  their timing-facing predecode metadata. The hierarchy shape is invisible to
-  software.
+  and stack, the MMIO window at `0x4000_0000` (UART, timer, the DMA test
+  engine at `0x4002_0000`, the NIC at `0x4003_0000`), the PLIC at
+  `0x4400_0000`, and the 1 GiB cached region for execute-from-DDR code, heap,
+  and large data. Low-BRAM data accesses take one cycle. Instruction windows
+  wholly inside `[0, 64 KiB)` also take one cycle; later code windows repeat
+  once to register their timing-facing predecode metadata. The hierarchy shape
+  is invisible to software.
 
 ## Prerequisites
 
@@ -258,9 +272,10 @@ frost/
 │   ├── rtl/                  # Synthesizable RTL source
 │   │   ├── frost.sv          # Top-level module
 │   │   ├── frost.f           # File list for synthesis/simulation
-│   │   ├── cpu_and_mem/      # CPU core, memory subsystem, PLIC, debug module
-│   │   ├── lib/              # Generic FPGA library (RAM, FIFO, cache)
-│   │   └── peripherals/      # UART receiver and transmitter
+│   │   ├── cpu_and_mem/      # CPU core, memory subsystem, PLIC, DMA engine, debug module
+│   │   ├── lib/              # Generic FPGA library (RAM, FIFO, CDC, cache)
+│   │   ├── net10g/           # 10GBASE-R Ethernet MAC and PCS
+│   │   └── peripherals/      # UART transmitter/receiver and the Ethernet NIC (nic/)
 │   └── sim/                  # Simulation-only files (testbenches)
 ├── sw/                       # Software
 │   ├── common/               # Build infrastructure (linker, startup)
@@ -274,6 +289,7 @@ frost/
 │       ├── coremark/         # CPU benchmark
 │       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (DDR-backed heap)
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
+│       ├── nic_loopback/     # NIC bring-up and rings through the MAC's loopback
 │       └── ...               # Other applications
 ├── linux/                    # Linux image build: Buildroot + OpenSBI submodules, external tree, firmware helper
 ├── verif/                    # Verification infrastructure
@@ -375,9 +391,15 @@ CI covers:
 - C compilation: every application compiles with the RISC-V toolchain.
 - Standalone Ethernet: the [Ethernet MAC/PCS job](.github/workflows/ci.yml) runs the
   isolated MAC/PCS cocotb suite and portable coarse synthesis through `frost`,
-  independently of the CPU test registry.
+  independently of the CPU test registry. The same MAC/PCS is also built into
+  the SoC's NIC and covered by the jobs below.
+- NIC: the NIC block benches and the clock-crossing library (registry targets
+  `nic_*`, `async_fifo`, `cdc_gray_count`) run in the unit-test job, and the
+  `nic_loopback` and `nic_echo` programs run with the other C programs in both
+  memory tiers.
 - Yosys synthesis: the RTL passes generic, vendor-agnostic coarse synthesis
-  and a full Xilinx UltraScale+ synthesis target matching X3's hierarchy.
+  and a full Xilinx UltraScale+ synthesis target matching X3's hierarchy,
+  including the NIC and its MAC/PCS.
 - Formal verification: SymbiYosys bounded model checking plus
   cover-reachability checks on selected modules verify control and datapath
   invariants over all inputs within their bounded windows (see `formal/`).
@@ -438,7 +460,7 @@ Open the repository and use the Command Palette (**Ctrl+Shift+P**):
    CPU to see new UART output.
 
 Plain loading offers the full repository application list. Debug commands
-currently enable 47 of 49 apps; `linux_boot` and `opensbi_smoke` are marked
+currently enable 50 of 52 apps; `linux_boot` and `opensbi_smoke` are marked
 **Load only**. See the [debugging guide](tools/vscode-frost/README.md#debugging)
 for startup behavior and the [debugger scope](tools/vscode-frost/README.md#debugger-scope)
 for supported features and hardware validation limits.
@@ -525,7 +547,7 @@ under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 | **CDB**         | Common Data Bus (2-lane result broadcast)        |
 | **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
-| **L1I / L1D**   | Split write-back line caches (16 KiB instruction, 128 KiB data on X3) over the cached DDR region, merged with the page-table walker port through a tree of 2:1 line-port arbiters |
+| **L1I / L1D**   | Split write-back line caches (16 KiB instruction, 128 KiB data on X3) over the cached DDR region, merged with the page-table walker and DMA ports through a 2:1 line-port arbiter under a starvation-bounded 3:1 one |
 | **L2 Cache**    | 2 MiB UltraRAM line cache below the L1s on X3        |
 | **Cached region** | `[0x8000_0000, +1 GiB)`: code (execute-from-DDR), heap, and large data, behind L1→L2→DDR |
 | **BTB**         | Branch Target Buffer (256-entry target predictor) |
@@ -534,4 +556,7 @@ under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 | **MMIO**        | Memory-Mapped I/O                                |
 | **CLINT**       | Core Local Interruptor (timer/software interrupts) |
 | **PLIC**        | Platform-Level Interrupt Controller (external interrupts, M and S contexts) |
+| **NIC**         | 10 Gigabit Ethernet controller at `0x4003_0000`: the `hw/rtl/net10g` MAC/PCS with descriptor rings on the coherent DMA port |
+| **DMA port**    | The cache hierarchy's fourth upstream line port, shared by the NIC and the DMA test engine |
+| **Coherence sequencer** | Walks each DMA request through the L1D and the load queue before the shared level orders it, so DMA needs no software cache maintenance |
 | **Cocotb**      | Python-based verification framework              |

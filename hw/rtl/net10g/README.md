@@ -3,8 +3,10 @@
 This directory implements a portable, single-port, full-duplex Ethernet MAC
 and normal-operation 10GBASE-R PCS. It prepares the Ethernet portion of
 [roadmap Phase 4](../../../ROADMAP.md#phase-4-system-io-and-distribution)
-independently of the Phase 3 CPU work. No existing CPU or board source list,
-constraints, software, or test registry includes these modules. A separate
+independently of the Phase 3 CPU work. `hw/rtl/peripherals/nic/` now wraps
+this MAC/PCS as FROST's NIC, so the CPU source list, the X3 constraints, the
+software and the test registry all reach these modules; they are unchanged by
+that integration and keep their standalone CI job. A separate
 [Ethernet MAC/PCS job in the existing CI workflow](../../../.github/workflows/ci.yml)
 runs their standalone simulations and portable synthesis check using the
 workflow's shared Docker image.

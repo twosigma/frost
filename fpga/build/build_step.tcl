@@ -1147,9 +1147,10 @@ if {$step eq "synth"} {
 
     # The phys-opt sweeps run under 0.5 ns of added setup uncertainty, the
     # overconstraint the placed checkpoint carried until it began to be
-    # written at zero (2026-09-11); every report and the checkpoint handed to
-    # routing are still taken at zero. Set FROST_PHYSOPT_SETUP_UNCERTAINTY=0
-    # to sweep without it.
+    # written at zero (2026-09-11). The initial and per-pass probe reports are
+    # taken under it; the promoted report and the checkpoint handed to routing
+    # are taken at zero. Set FROST_PHYSOPT_SETUP_UNCERTAINTY=0 to sweep
+    # without it.
     set physopt_uncertainty [getenv_default FROST_PHYSOPT_SETUP_UNCERTAINTY 0.5]
     if {$physopt_uncertainty ne ""} {
         set_x3_setup_uncertainty $board_name $physopt_uncertainty "$step overconstraint"

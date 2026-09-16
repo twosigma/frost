@@ -3,9 +3,9 @@
 Phase 4 slice 2 integrates the standalone 10GBASE-R MAC/PCS
 (`hw/rtl/net10g`) as FROST's NIC: a CSR window, RX and TX descriptor rings
 on the cache hierarchy's coherent DMA port, packet clock crossings to the
-MAC's ~161 MHz domains, and one PLIC interrupt. This directory holds the
-NIC's own blocks; the MAC/PCS is untouched and keeps its standalone CI job.
-The blocks land in slices: this README grows with them.
+MAC's own clock domains (~161 MHz at line rate; 40 MHz on the current
+loopback build), and one PLIC interrupt. This directory holds the NIC's own
+blocks; the MAC/PCS is untouched and keeps its standalone CI job.
 
 | Module | Domain | Responsibility |
 | --- | --- | --- |

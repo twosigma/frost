@@ -75,10 +75,13 @@ Persistent storage and networking for a stock riscv64 Debian. The X3 has no SD
 or on-card block device, so persistent state lives on a network peer: integrate
 the standalone 64-bit 10GBASE-R MAC/PCS (hw/rtl/net10g, its own CI job) as
 FROST's own NIC and boot Debian from NFS-root over it, with iSCSI+ext4 as a
-later variant if a workload needs local-disk filesystem semantics. The remaining
-NIC work is the board-level GTY wrapper (the soft MAC/PCS and the core stay
-vendor-primitive-free), the CSR/DMA/interrupt layer, and a Linux netdev driver;
-the small RX buffer with no PAUSE means DMA must drain independently of software.
+later variant if a workload needs local-disk filesystem semantics. The
+CSR/DMA/interrupt layer is in place: the NIC sits at `0x4003_0000` on a
+coherent DMA port with one PLIC source, a device-tree node, and two
+full-system programs. The remaining NIC work is the board-level GTY wrapper
+(the soft MAC/PCS and the core stay vendor-primitive-free) and a Linux netdev
+driver; the small RX buffer with no PAUSE means DMA must drain independently
+of software.
 A host-backed PCIe/virtio block path is kept as an optional deployment
 capability, not the Phase 4 storage mechanism.
 
@@ -86,8 +89,9 @@ CPU-device memory-sharing correctness is a first-class item here, not deferred
 to SMP: how descriptors and DMA buffers become visible across the CPU caches
 (including the LQ L0) and the DMA agent, when a completion or interrupt is
 observable relative to its data, and how reset prevents stale writes into reused
-buffers. Choose coherent DMA or a correct noncoherent strategy (Zicbom CMOs plus
-the right memory attributes); fences alone neither clean nor invalidate caches.
+buffers. Coherent DMA was chosen and implemented: a coherence sequencer walks
+every DMA request through the L1D and the load queue before the shared level
+orders it, so descriptors and buffers need no cache maintenance.
 
 Exit: log into Debian over SSH on hardware, install a package with apt, and
 survive a multi-day soak that exercises the storage/network path -- sustained

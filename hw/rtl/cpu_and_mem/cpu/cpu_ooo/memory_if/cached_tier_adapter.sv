@@ -107,11 +107,12 @@ module cached_tier_adapter #(
   // ---- Read slots -------------------------------------------------------------
   logic [  READ_SLOTS-1:0] rd_valid_q;  // request accepted, response outstanding
   logic [  READ_SLOTS-1:0] rd_sent_q;  // line request fired
-  // Flops, not distributed RAM. A free slot samples the request address on
-  // every clock (enable = the slot's own valid flop), so the load queue's
-  // launch pulse, a deep cone after the router's accept gate, enables only
-  // the slot's valid and sent flops; only the address of a valid slot is ever
-  // read, so the idle contents are unobservable.
+  // Flops, not distributed RAM: every free slot is written in the same cycle,
+  // which a distributed RAM's single write port cannot do. A free slot samples
+  // the request address on every clock (enable = the slot's own valid flop),
+  // so the load queue's launch pulse, a deep cone after the router's accept
+  // gate, enables only the slot's valid and sent flops; only the address of a
+  // valid slot is ever read, so the idle contents are unobservable.
   (* ram_style = "registers" *)
   logic [        XLEN-1:0] rd_addr_q                                             [READ_SLOTS];
 
