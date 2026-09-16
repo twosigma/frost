@@ -3520,6 +3520,9 @@ module load_queue #(
       // squashed instruction, and mepc would re-execute the AMO. The trap
       // unit's AMO interrupt shield (trap_unit.i_amo_at_head) prevents this.
       // The tripwire catches any future flush source that bypasses the shield.
+      // AMO_COMPUTE is deliberately not covered: no write has launched there,
+      // so cancelling an unlaunched compute owner is a supported module
+      // behaviour (see the README and test_amo_compute_canceled_before_write).
       if (i_flush_all && (amo_state == AMO_WRITE_ACTIVE || o_amo_mem_write_en))
         $error("LQ: full flush while an AMO memory write is in flight (orphaned write)");
       // The integrated scheduler permits only one AMO response/write owner at
@@ -3549,6 +3552,17 @@ module load_queue #(
         $error("LQ: expanded dispatch-full-for-2 prediction differs from the count reference");
       if (accept_mem_response && dep_replaced_oh[issued_idx])
         $error("LQ: memory response collided with a new physical generation");
+      // Same exposure one state later. AMO_COMPUTE has already released its
+      // response slot and keeps only the physical index in amo_entry_idx, and
+      // amo_compute_owner_killed reads lq_valid[amo_entry_idx] to decide
+      // whether to launch the write. An allocation into that index during the
+      // compute cycle would re-man the owner: lq_valid reads back 1 for a
+      // different instruction, the kill is missed, and the write lands with
+      // the new generation's entry as its destination. Allocation cannot reuse
+      // a slot that never went invalid, so this is unreachable; the tripwire
+      // holds the retained-index assumption the compute state depends on.
+      if ((amo_state == AMO_COMPUTE) && dep_replaced_oh[amo_entry_idx])
+        $error("LQ: AMO compute owner's entry %0d was reallocated under it", amo_entry_idx);
       // The compact-kind write must have drained before launch snapshots it.
       // This is guaranteed by the intervening address/SQ-check staging edge.
       if (o_mem_read_en && sq_check_is_amo_q) begin
