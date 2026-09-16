@@ -25,7 +25,12 @@ read -sv rob_serializer.sv
 read -sv reorder_buffer.sv
 read -sv register_alias_table.sv
 read -formal -sv rs_issue2_selector.sv
-read -sv reservation_station.sv
+# -formal: every station elaborates with FORMAL_STANDALONE_ENV=0, so this
+# brings in the reservation station's own assertions - including the
+# branch-payload side RAM's ROB-tag ownership contract, which only this proof
+# has a real allocator to check - without its standalone environment
+# assumptions or covers.
+read -formal -sv reservation_station.sv
 read -sv cdb_arbiter.sv
 read -sv fu_cdb_adapter.sv
 read -sv int_alu_shim.sv
