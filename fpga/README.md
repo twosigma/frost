@@ -529,6 +529,10 @@ native PASS and matching hashes. New synthesis/opt promotion invalidates the
 old gate and binding. The CLI always sets `FROST_CPU_CLK_DIV`, including 1,
 so an inherited divider cannot silently override the requested 300 MHz build.
 Divided-clock builds must match their requested generated-clock period too.
+Vivado reports periods and slack to three decimals, so the recorded period,
+the CPU path's printed requirement and the timing report's WNS are compared
+against the gate within half a printed digit: a value that displays as the
+expected one is accepted, a different printed number is not.
 
 Every completed stage after placement also writes a checkpoint sidecar, such
 as `post_place_physopt.lineage.json`. It records the exact promoted DCP, the
@@ -537,7 +541,10 @@ Resumed stages and bitstream generation verify this full parent chain. A new
 300 MHz placement therefore cannot authorize a retained 150 MHz phys-opt or
 route checkpoint. Missing or stale lineage requires restarting at
 `--start-at post_place_physopt` from the current qualified placement; existing
-DCPs and reports remain on disk. Starting a downstream stage invalidates its
+DCPs and reports remain on disk. A missing sidecar is reported by name, so a
+work directory moved or copied from elsewhere has to bring its
+`*.lineage.json` files and `post_place_gate_binding.json` with the
+checkpoints; a bare DCP cannot be qualified after the fact. Starting a downstream stage invalidates its
 previous completion sidecars. Intermediate Tcl checkpoint publications stay
 unqualified until Python observes clean completion and verifies the promoted
 output and unchanged input chain. The post-place gate format remains unchanged.

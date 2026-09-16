@@ -3086,3 +3086,69 @@ def test_congestion_veto_decides_on_real_report_levels(
         is candidates[1]
     )
     assert [run.congestion_vetoed for run in candidates] == [False, False, True]
+
+
+@pytest.mark.parametrize(
+    ("period", "valid"),
+    (
+        ("3.333", True),
+        # A clock object carrying more precision than the report prints.
+        ("3.3334", True),
+        ("3.3326", True),
+        # A different printed period is still wrong evidence.
+        ("3.334", False),
+        ("3.332", False),
+    ),
+)
+def test_full_rate_gate_period_allows_only_display_rounding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, period: str, valid: bool
+) -> None:
+    """A 300 MHz build cannot fail on digits Vivado never printed."""
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
+    _write_place_gate(tmp_path)
+    gate = tmp_path / "post_place_gate.txt"
+    gate.write_text(
+        gate.read_text().replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={period}")
+    )
+    assert fpga_build.x3_place_gate_passes(gate) is valid
+
+
+@pytest.mark.parametrize(
+    ("native", "reported", "valid"),
+    (
+        (-0.1, -0.1, True),
+        # The native SLACK property and the timing summary round the same
+        # path differently in the last printed digit.
+        (-0.1004, -0.1, True),
+        (-0.0996, -0.1, True),
+        (-0.101, -0.1, False),
+        (-0.1, -0.15, False),
+    ),
+)
+def test_gate_and_timing_report_agree_within_display_rounding(
+    tmp_path: Path, native: float, reported: float, valid: bool
+) -> None:
+    """Two native queries of one slack cannot disqualify a passing placement."""
+    _write_place_gate(tmp_path, native)
+    gate = tmp_path / "post_place_gate.txt"
+    assert fpga_build.x3_place_gate_passes(gate, reported) is valid
+    assert fpga_build.x3_place_gate_passes(gate) is True
+
+
+def test_missing_lineage_sidecar_names_the_file_and_the_recovery(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A checkpoint copied in without its sidecar fails readably, not by errno."""
+    work = _sweep_input(tmp_path, "post_route_physopt")
+    sidecar = work / "post_route.lineage.json"
+    assert fpga_build.capture_x3_input_lineage(work, "post_route.dcp") is not None
+    sidecar.unlink()
+    assert fpga_build.capture_x3_input_lineage(work, "post_route.dcp") is None
+    message = capsys.readouterr().out
+    assert "post_route.dcp has no post_route.lineage.json" in message
+    assert "Rerun from post_place_physopt" in message
+    assert "*.lineage.json" in message
+    # The placement's own binding sidecar reports itself by name too.
+    (work / "post_place_gate_binding.json").unlink()
+    assert not fpga_build.require_x3_post_place_gate(work)
+    assert "post_place_gate_binding.json is missing" in capsys.readouterr().out

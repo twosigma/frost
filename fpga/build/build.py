@@ -196,6 +196,11 @@ X3_PLACER_SWEEP_DIRECTIVES = [
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
 X3_PLACE_REPORT_UNCERTAINTY_NS = 0.0
 X3_POST_PLACE_GATE_NS = Decimal("-0.200")
+# Vivado reports slack and clock periods to three decimals, and the gate's
+# native queries carry more precision than the timing summary prints. Half a
+# printed digit accepts every value that displays as the expected one and
+# still rejects a different printed number (3.334 ns against 3.333 ns).
+X3_GATE_DISPLAY_TOLERANCE_NS = Decimal("0.0005")
 X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.050
 X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
@@ -955,6 +960,8 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
 
     The Tcl producer checks the actual unrestricted setup control before
     writing this six-field record. Displayed -0.200 alone never decides PASS.
+    Recorded numbers that differ only within Vivado's three-decimal display
+    rounding agree; a different printed number is still wrong evidence.
     """
     values: dict[str, str] = {}
     for line in path.read_text().splitlines():
@@ -993,7 +1000,9 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
         raise ValueError("unsupported CPU divider for post-place gate")
     period = numbers["CPU_PERIOD_NS"]
     expected_period = Decimal("3.333") * divider
-    tolerance = Decimal("0") if divider == 1 else Decimal("0.001")
+    # A divided clock's expectation is itself a product of the rounded base
+    # period, so it keeps the documented one-picosecond display range.
+    tolerance = X3_GATE_DISPLAY_TOLERANCE_NS if divider == 1 else Decimal("0.001")
     if abs(period - expected_period) > tolerance:
         raise ValueError("post-place CPU period does not match --cpu-clock-div")
     if numbers["THRESHOLD_NS"] != X3_POST_PLACE_GATE_NS or numbers[
@@ -1007,11 +1016,17 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
         raise ValueError("post-place gate status/count disagree")
     worst = numbers["WORST_SLACK_NS"]
     passed = count == "0"
-    if (passed and worst < X3_POST_PLACE_GATE_NS) or (
-        not passed and worst > X3_POST_PLACE_GATE_NS
+    # The native strict search, not this displayed value, decides PASS; the
+    # comparisons below only catch evidence that contradicts it beyond what
+    # three-decimal rounding can explain.
+    if (passed and worst < X3_POST_PLACE_GATE_NS - X3_GATE_DISPLAY_TOLERANCE_NS) or (
+        not passed and worst > X3_POST_PLACE_GATE_NS + X3_GATE_DISPLAY_TOLERANCE_NS
     ):
         raise ValueError("post-place gate contradicts displayed worst slack")
-    if expected_wns is not None and worst != Decimal(str(expected_wns)):
+    if (
+        expected_wns is not None
+        and abs(worst - Decimal(str(expected_wns))) > X3_GATE_DISPLAY_TOLERANCE_NS
+    ):
         raise ValueError("post-place gate and timing report disagree")
     return X3PlaceGate(passed, period, worst)
 
@@ -1056,7 +1071,15 @@ def require_x3_post_place_gate(main_work: Path) -> bool:
         gate = read_x3_place_gate(path)
         if not gate.passed:
             raise ValueError("native setup path remains below -0.200 ns")
-        binding = json.loads((main_work / "post_place_gate_binding.json").read_text())
+        binding_path = main_work / "post_place_gate_binding.json"
+        try:
+            binding = json.loads(binding_path.read_text())
+        except FileNotFoundError as error:
+            raise ValueError(
+                f"{binding_path.name} is missing, so the placement is "
+                "unqualified: rerun the placement step, or restore the "
+                "sidecar alongside the checkpoint it was written with"
+            ) from error
         if binding != {
             "schema": "x3_post_place_gate_binding_v1",
             "checkpoint_sha256": file_sha256(main_work / "post_place.dcp"),
@@ -1116,7 +1139,14 @@ def capture_x3_input_lineage(
                     raise ValueError("placement changed while reading lineage")
                 provenance = placement["binding_sha256"]
             else:
-                raw = (main_work / name).with_suffix(".lineage.json").read_bytes()
+                sidecar = (main_work / name).with_suffix(".lineage.json")
+                try:
+                    raw = sidecar.read_bytes()
+                except FileNotFoundError as error:
+                    raise ValueError(
+                        f"{name} has no {sidecar.name}: a checkpoint copied in "
+                        "without its sidecar carries no qualification"
+                    ) from error
                 record = json.loads(raw)
                 if (
                     not isinstance(record, dict)
@@ -1151,7 +1181,9 @@ def capture_x3_input_lineage(
         print(
             f"Error: x3 {checkpoint_name} has missing or stale provenance: {error}. "
             "Rerun from post_place_physopt with the current qualified placement; "
-            "existing checkpoints and reports are retained."
+            "existing checkpoints and reports are retained. A work directory "
+            "moved or copied from elsewhere must bring its *.lineage.json "
+            "sidecars and post_place_gate_binding.json with it."
         )
         return None
 
