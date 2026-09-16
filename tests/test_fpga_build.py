@@ -16,8 +16,10 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
+import subprocess
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -1602,17 +1604,230 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
     assert ".CLK_FREQ_HZ(CpuClkHz)," in top
 
 
-def test_physopt_stages_overconstrain_by_default_and_report_at_zero() -> None:
-    """Phys-opt sweeps overconstrain by 0.5 ns; the promoted report is at zero."""
+def test_only_post_place_physopt_overconstrains_by_default() -> None:
+    """Placement and the post-place sweep add 0.5 ns; post-route stages add none.
+
+    Every promoted report and checkpoint is taken at 0.000 ns regardless.
+    """
     script_dir = Path(__file__).resolve().parent.parent / "fpga" / "build"
     step_tcl = (script_dir / "build_step.tcl").read_text()
-    assert "getenv_default FROST_PHYSOPT_SETUP_UNCERTAINTY 0.5" in step_tcl
+    assert (
+        '    if {$step eq "post_place_physopt"} {\n'
+        "        set physopt_uncertainty_default 0.5\n"
+        "    } else {\n"
+        "        set physopt_uncertainty_default 0.0\n"
+        "    }\n"
+        "    set physopt_uncertainty [getenv_default "
+        "FROST_PHYSOPT_SETUP_UNCERTAINTY $physopt_uncertainty_default]\n"
+    ) in step_tcl
     assert 'set_x3_setup_uncertainty $board_name 0.0 "$step report"' in step_tcl
+    # Placement keeps its own separate 0.5 ns seed-grid origin.
+    assert "set x3_place_seed_baseline_uncertainty 0.5" in step_tcl
     # Routing never keeps an overconstraint.
     assert (
         "set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup"
         in step_tcl
     )
+
+
+# Bounded Vivado model for one phys-opt sweep. It tracks the added setup
+# uncertainty in force and answers every slack query with the true 0.000 ns
+# slack minus that uncertainty, so a stage sweeping overconstrained measures a
+# pessimistic WNS and one sweeping at 0.000 measures the real one. Checkpoints
+# remember the uncertainty they were written under, as Vivado's carry theirs.
+PHYSOPT_SWEEP_MODEL = r"""
+set true_wns [expr {double($::env(MODEL_TRUE_WNS))}]
+set uncertainty 0.0
+set checkpoint_uncertainty [dict create]
+
+proc record {line} {
+    set fh [open $::env(MODEL_TRACE) a]
+    puts $fh $line
+    close $fh
+}
+
+proc model_wns {} {
+    global true_wns uncertainty
+    return [expr {$true_wns - $uncertainty}]
+}
+
+proc write_timing_summary {path} {
+    set wns [model_wns]
+    if {$wns < 0.0} {
+        set tns [expr {$wns * 4.0}]
+        set failing 12
+    } else {
+        set tns 0.0
+        set failing 0
+    }
+    set fh [open $path w]
+    puts $fh "| WNS(ns) | TNS(ns) | TNS Failing Endpoints | TNS Total Endpoints |"
+    puts $fh "| ------- | ------- | --------------------- | ------------------- |"
+    puts $fh "| [format %.3f $wns] | [format %.3f $tns] | $failing | 264000 |"
+    close $fh
+}
+
+proc unknown {cmd args} {
+    global uncertainty checkpoint_uncertainty
+    switch -- $cmd {
+        get_clocks {return clock_from_mmcm}
+        close_design {return {}}
+        set_clock_uncertainty {
+            set index [lsearch -exact $args -setup]
+            set uncertainty [expr {double([lindex $args [expr {$index - 1}]])}]
+            record "uncertainty [format %.3f $uncertainty]"
+            return {}
+        }
+        open_checkpoint {
+            set path [lindex $args end]
+            set uncertainty 0.0
+            if {[dict exists $checkpoint_uncertainty $path]} {
+                set uncertainty [dict get $checkpoint_uncertainty $path]
+            }
+            record "open [file tail $path] at [format %.3f $uncertainty]"
+            return {}
+        }
+        write_checkpoint {
+            set path [lindex $args end]
+            dict set checkpoint_uncertainty $path $uncertainty
+            close [open $path w]
+            record "checkpoint [file tail $path] at [format %.3f $uncertainty]"
+            return {}
+        }
+        report_timing_summary {
+            set path [lindex $args end]
+            write_timing_summary $path
+            set taken "report [file tail $path] at [format %.3f $uncertainty]"
+            record "$taken wns [format %.3f [model_wns]]"
+            return {}
+        }
+        report_utilization - report_high_fanout_nets {
+            close [open [lindex $args end] w]
+            return {}
+        }
+        get_timing_paths {
+            if {[lsearch -exact $args -slack_lesser_than] >= 0} {return {}}
+            return worst_path
+        }
+        get_property {
+            if {[lindex $args 0] eq "SLACK"} {return [model_wns]}
+            error "Unexpected property request $args"
+        }
+        phys_opt_design {
+            record "phys_opt_design $args"
+            return {}
+        }
+        default {error "Unexpected command $cmd $args"}
+    }
+}
+
+set argv [list x3 $::env(MODEL_STEP) Sweep input.dcp 0]
+set argc [llength $argv]
+source $::env(MODEL_SOURCE)
+"""
+
+
+def _run_physopt_sweep_model(
+    tmp_path: Path,
+    step: str,
+    true_wns: float,
+    setup_uncertainty: str | None = None,
+) -> tuple[str, list[str], Path]:
+    """Sweep one phys-opt stage; return its stdout, trace and main work dir."""
+    model = tmp_path / "physopt_model.tcl"
+    model.write_text(PHYSOPT_SWEEP_MODEL)
+    work_dir = tmp_path / f"work_{step}_Sweep"
+    work_dir.mkdir()
+    trace = tmp_path / "physopt_trace.txt"
+    trace.touch()
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("FROST_")
+    }
+    env.update(
+        MODEL_SOURCE=str(REPO_ROOT / "fpga/build/build_step.tcl"),
+        MODEL_TRACE=str(trace),
+        MODEL_TRUE_WNS=str(true_wns),
+        MODEL_STEP=step,
+        # One directive plus the appended retime pass keeps the model short.
+        FROST_PHYSOPT_SWEEP_ORDER="Explore",
+    )
+    if setup_uncertainty is not None:
+        env["FROST_PHYSOPT_SETUP_UNCERTAINTY"] = setup_uncertainty
+    result = subprocess.run(
+        ["tclsh", str(model)],
+        cwd=work_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    return result.stdout, trace.read_text().splitlines(), tmp_path / "work"
+
+
+@pytest.mark.parametrize(
+    ("step", "probe_uncertainty", "probe_wns", "promoted"),
+    (
+        ("post_place_physopt", "0.500", "-0.488", "post_place_physopt"),
+        ("post_route_physopt", "0.000", "0.012", "final"),
+        ("post_second_route_physopt", "0.000", "0.012", "final"),
+    ),
+)
+def test_physopt_sweep_uncertainty_is_stage_scoped(
+    tmp_path: Path,
+    step: str,
+    probe_uncertainty: str,
+    probe_wns: str,
+    promoted: str,
+) -> None:
+    """Post-place probes 0.5 ns pessimistic; post-route decides at 0.000 ns.
+
+    A design 0.012 ns inside closure at 0.000 ns reads -0.488 ns under the
+    post-place overconstraint, so only the post-route stages see the real
+    slack that ends their sweep early and promotes final.dcp.
+    """
+    stdout, trace, main_work = _run_physopt_sweep_model(tmp_path, step, 0.012)
+
+    probes = [
+        line
+        for line in trace
+        if line.startswith(("report phys_opt_initial", "report phys_opt_probe"))
+    ]
+    assert probes
+    assert all(f"at {probe_uncertainty} wns {probe_wns}" in line for line in probes)
+    assert ("0.500" in "\n".join(trace)) is (probe_uncertainty == "0.500")
+
+    # The promoted report and the checkpoint handed on are always at 0.000.
+    assert "report phys_opt_timing.rpt at 0.000 wns 0.012" in trace
+    assert "checkpoint phys_opt.dcp at 0.000" in trace
+
+    # The early exit and the final.dcp promotion follow the measured WNS.
+    timing_met = probe_uncertainty == "0.000"
+    assert (f"Timing met; stopping {step} sweep early" in stdout) is timing_met
+    assert (main_work / f"{promoted}.dcp").exists()
+    assert (main_work / f"{promoted}_timing.rpt").exists()
+    stale = {"post_place_physopt", "post_route_physopt", "final"} - {promoted}
+    assert not any((main_work / f"{name}.dcp").exists() for name in stale)
+
+
+def test_physopt_uncertainty_override_still_reaches_a_post_route_stage(
+    tmp_path: Path,
+) -> None:
+    """FROST_PHYSOPT_SETUP_UNCERTAINTY overrides a stage default of 0.000 ns.
+
+    Overconstrained, post-route phys-opt neither stops early nor promotes
+    final.dcp for a design its own promoted report shows closing at 0.000.
+    """
+    stdout, trace, main_work = _run_physopt_sweep_model(
+        tmp_path, "post_route_physopt", 0.012, setup_uncertainty="0.5"
+    )
+
+    assert "report phys_opt_initial_timing.rpt at 0.500 wns -0.488" in trace
+    assert "report phys_opt_timing.rpt at 0.000 wns 0.012" in trace
+    assert "Timing met" not in stdout
+    assert (main_work / "post_route_physopt.dcp").exists()
+    assert not (main_work / "final.dcp").exists()
 
 
 def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:
