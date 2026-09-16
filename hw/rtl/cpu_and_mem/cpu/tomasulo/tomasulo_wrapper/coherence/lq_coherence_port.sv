@@ -131,7 +131,7 @@ module lq_coherence_port #(
     // ROB: entries to mark for replay (registered).
     output logic [RobDepth-1:0] o_replay_set_mask
 );
-  localparam int unsigned LineLsb = 5;  // 32-byte lines
+  localparam int unsigned LineLsb = riscv_pkg::DmaCoherenceLineLsb;  // 32-byte lines
   localparam int unsigned LineBits = XLEN - LineLsb;
 
   function automatic logic [LineBits-1:0] line_of(input logic [XLEN-1:0] addr);

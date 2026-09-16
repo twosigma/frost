@@ -163,9 +163,12 @@ module sc_pending_unit (
         sct_hit_addr = sct_addr[i];
         sct_hit_oh[i] = 1'b1;
         // Keep the same highest-index priority, including an address-invalid
-        // winning entry. Coherence uses 32-byte lines, not LR/SC word granules.
+        // winning entry. Coherence compares whole lines, not LR/SC word
+        // granules, so the split is riscv_pkg::DmaCoherenceLineLsb -- the same
+        // constant lq_coherence_port and the load queue compare on.
         o_sc_head_query_match = sct_addr_valid[i] &&
-            (sct_addr[i][riscv_pkg::XLEN-1:5] == i_coh_query_addr[riscv_pkg::XLEN-1:5]);
+            (sct_addr[i][riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb] ==
+             i_coh_query_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb]);
       end
     end
   end
