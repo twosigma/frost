@@ -203,7 +203,7 @@ This does not establish all-app or interactive Linux-shell coverage.
 
 Extension 0.3 uses one repository-backed application/layout/clock picker for
 Configure Target and both load-and-debug commands, saving completed debug
-choices for later Attach. The repository currently marks 50 of 52 loader apps
+choices for later Attach. The repository currently marks 51 of 53 loader apps
 as eligible. `linux_boot` and `opensbi_smoke` remain visible with load-only
 reasons because their composite images require multi-ELF debugging. Cancelling
 or rejecting a selection preserves an existing debug session before handoff.
@@ -238,6 +238,10 @@ unattended (`debug_target` waits for a debugger and `nic_echo` needs receive
 traffic over a transceiver that no board top integrates yet, so both are left
 out; `nic_loopback` is the NIC stage), runs all nine CoreMark-PRO workloads
 with per-board score gates, then boots Linux to the Buildroot login prompt.
+`perf_off_test` checks that the programmed netlist really has no profiling
+counters, which holds for the rated-clock production bitstream; a
+`--cpu-clock-div` build includes them by default, so the stage is dropped
+whenever `FROST_CPU_CLK_HZ` names such a bitstream.
 The Linux stage boots the OpenSBI + Sv39 image, requires the userspace stress
 token, logs in and runs `perf stat` on the cycle and instruction counters:
 
@@ -533,6 +537,13 @@ Vivado reports periods and slack to three decimals, so the recorded period,
 the CPU path's printed requirement and the timing report's WNS are compared
 against the gate within half a printed digit: a value that displays as the
 expected one is accepted, a different printed number is not.
+
+Promoting a post-synth checkpoint writes `netlist_config.json` beside it,
+recording the synthesis-time options that no later checkpoint, report or
+bitstream reveals: `perf_counters` says whether the profiling counters
+(`--perf-counters`) are in that netlist and in every checkpoint and bitstream
+derived from it. `perf_off_test` expects 0, `tomasulo_perf` expects 1. A work
+directory synthesized before this stamp existed carries no such file.
 
 Every completed stage after placement also writes a checkpoint sidecar, such
 as `post_place_physopt.lineage.json`. It records the exact promoted DCP, the

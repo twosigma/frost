@@ -27,8 +27,9 @@ keep the checkpoint's netlist) and the cocotb entries that read the counters
 (`-GPERF_COUNTERS=1`: `csr_rmw_test`, `tomasulo_perf`, `ddr_mlp_test`,
 `coremark_profile`; `tomasulo_perf` and `coremark_profile` fail unless the report
 shows the counters)
-include them; `perf_off_test` covers the absent case and the formal task
-`bmc_perf_off` proves the CSR file's absent-case semantics. CoreMark's tick
+include them; `perf_off_test` covers the absent case in simulation and, as a
+hardware-regression stage, against the rated-clock production bitstream, and
+the formal task `bmc_perf_off` proves the CSR file's absent-case semantics. CoreMark's tick
 count differs between the two configurations (305096 without, 305088 with)
 because the start snapshot's counter loop runs before the timed window and
 leaves the predictors in a different state; the timed instructions are the

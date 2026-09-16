@@ -3152,3 +3152,36 @@ def test_missing_lineage_sidecar_names_the_file_and_the_recovery(
     (work / "post_place_gate_binding.json").unlink()
     assert not fpga_build.require_x3_post_place_gate(work)
     assert "post_place_gate_binding.json is missing" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("perf_counters", ("0", "1"))
+def test_post_synth_promotion_stamps_the_netlist_perf_counters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, perf_counters: str
+) -> None:
+    """The synthesis-time counter option is recorded with its checkpoint."""
+    monkeypatch.setenv("FROST_PERF_COUNTERS", perf_counters)
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    source.mkdir()
+    dest.mkdir()
+    (source / "post_synth.dcp").write_bytes(b"synthesized netlist")
+    fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
+    stamp = dest / fpga_build.X3_NETLIST_CONFIG_NAME
+    assert json.loads(stamp.read_text()) == {
+        "schema": "x3_netlist_config_v1",
+        "perf_counters": int(perf_counters),
+    }
+    # Later stages inherit the netlist, so they must not restamp it: a resumed
+    # run's environment says nothing about the checkpoint it was handed.
+    monkeypatch.setenv("FROST_PERF_COUNTERS", "1" if perf_counters == "0" else "0")
+    (source / "post_opt.dcp").write_bytes(b"optimized netlist")
+    fpga_build.copy_results_to_main_work(source, dest, "post_opt.dcp", "post_opt")
+    assert json.loads(stamp.read_text())["perf_counters"] == int(perf_counters)
+
+
+def test_failed_synthesis_leaves_the_previous_netlist_stamp(tmp_path: Path) -> None:
+    """No promoted checkpoint means no claim about what the work dir holds."""
+    source, dest = tmp_path / "source", tmp_path / "dest"
+    source.mkdir()
+    dest.mkdir()
+    fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
+    assert not (dest / fpga_build.X3_NETLIST_CONFIG_NAME).exists()

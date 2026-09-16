@@ -97,7 +97,9 @@ file beside the bitstream; capture with ``fpga/debug/capture_fetch_ila.py``).
 24k cells: 3.8k LUTs, 18.3k flops, 2.1k CARRY8) through the board top's
 ``PERF_COUNTERS`` generic. By default a
 full-rate build leaves them out and a divided-clock build includes them;
-``--no-perf-counters`` overrides the latter.
+``--no-perf-counters`` overrides the latter. Synthesis records the value it
+used in ``netlist_config.json`` beside the promoted checkpoint, since nothing
+in a later checkpoint or bitstream says which way it went.
 Board software then needs the same clock:
 ``FROST_CPU_CLK_HZ=150000000`` for ``load_software.py`` and
 ``hw_regression.py`` (score checks are skipped under the override).
@@ -206,6 +208,8 @@ X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
     round(X3_PLACE_BASELINE_UNCERTAINTY_NS / X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS)
 )
+# Synthesis-time netlist options recorded beside the checkpoints they produced.
+X3_NETLIST_CONFIG_NAME = "netlist_config.json"
 # Only these pairs receive PC-tail guidance. Every seed, guided or not, is
 # reported at zero added uncertainty.
 X3_PC_TAIL_GUIDED_CANDIDATES = (
@@ -1329,6 +1333,8 @@ def copy_results_to_main_work(
     installing a new post-opt checkpoint so stale evidence cannot be mistaken
     for evidence about the new DCP. Preserve the two named native post-opt
     helper audits with their checkpoint before the worker directory is removed.
+    A promoted post-synth checkpoint also records the synthesis-time netlist
+    options (``netlist_config.json``) that nothing downstream can recover.
     """
     # Promote the checkpoint under its canonical name.
     checkpoint_candidates = []
@@ -1350,6 +1356,26 @@ def copy_results_to_main_work(
         checkpoint_promoted = True
         print(f"  Checkpoint: {dst}")
         break
+
+    if checkpoint_promoted and report_prefix == "post_synth":
+        # PERF_COUNTERS is decided here and inherited by every later
+        # checkpoint and the bitstream built from them, but nothing in a
+        # netlist, report or bitstream says which way it went. Record the
+        # value synthesis actually read, beside the checkpoints it produced,
+        # so a later run can tell whether the profiling counters are present
+        # (perf_off_test expects them absent; tomasulo_perf expects them).
+        perf_counters = int(os.environ.get("FROST_PERF_COUNTERS", "0") == "1")
+        (main_work / X3_NETLIST_CONFIG_NAME).write_text(
+            json.dumps(
+                {"schema": "x3_netlist_config_v1", "perf_counters": perf_counters},
+                indent=2,
+            )
+            + "\n"
+        )
+        print(
+            f"  Netlist options: PERF_COUNTERS={perf_counters} "
+            f"({main_work / X3_NETLIST_CONFIG_NAME})"
+        )
 
     if checkpoint_promoted and report_prefix == "post_opt":
         for stale_pattern in ("audit_post_opt_*", "post_opt_fence_*"):
