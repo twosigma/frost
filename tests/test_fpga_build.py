@@ -1602,6 +1602,19 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
     assert ".CLK_FREQ_HZ(CpuClkHz)," in top
 
 
+def test_physopt_stages_overconstrain_by_default_and_report_at_zero() -> None:
+    """Phys-opt sweeps run under 0.5 ns added uncertainty; reports stay at zero."""
+    script_dir = Path(__file__).resolve().parent.parent / "fpga" / "build"
+    step_tcl = (script_dir / "build_step.tcl").read_text()
+    assert "getenv_default FROST_PHYSOPT_SETUP_UNCERTAINTY 0.5" in step_tcl
+    assert 'set_x3_setup_uncertainty $board_name 0.0 "$step report"' in step_tcl
+    # Routing never keeps an overconstraint.
+    assert (
+        "set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup"
+        in step_tcl
+    )
+
+
 def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:
     """--perf-counters reaches synthesis and every level down to cpu_ooo."""
     root = Path(__file__).resolve().parent.parent
