@@ -508,13 +508,16 @@ seeds; routed WNS then selects the winner, with router congestion warnings
 last. Otherwise actual zero-uncertainty post-place WNS selects it. Seed WNS
 shown in the matrix is only an estimate because the limiting path may change.
 The 0.500 ns seed-grid origin is separate from the 0.000 ns report/checkpoint
-uncertainty and `TNS@0`. The three phys-opt stages sweep under 0.500 ns of
-added setup uncertainty (`FROST_PHYSOPT_SETUP_UNCERTAINTY`, 0 disables it).
-The initial and per-pass probe reports (`phys_opt_initial_timing.rpt`,
-`phys_opt_probe_sNN_pNN_*.rpt`) are taken under that overconstraint, so they
-read 0.500 ns pessimistic against the promoted report; only the promoted
-report and the checkpoint handed on are taken at 0.000 ns. Routing always
-runs at 0.000 ns.
+uncertainty and `TNS@0`. The added uncertainty ends with placement and the
+post-place phys-opt sweep. That sweep runs under 0.500 ns, so its initial and
+per-pass probe reports (`phys_opt_initial_timing.rpt`,
+`phys_opt_probe_sNN_pNN_*.rpt`) read 0.500 ns pessimistic on the CPU clock's
+own paths. Routing and the two post-route phys-opt stages run at 0.000 ns, so
+the WNS that ends a post-route sweep early and promotes `final.dcp` is the
+real one. Every promoted report and every checkpoint handed on is taken at
+0.000 ns. `FROST_PHYSOPT_SETUP_UNCERTAINTY` replaces the sweep default for all
+three stages at once, so setting it for a post-place experiment also
+overconstrains the post-route sweeps.
 
 The native six-field `post_place_gate.txt` is promoted with the selected DCP.
 Python writes `post_place_gate_binding.json` with the exact gate/DCP SHA256

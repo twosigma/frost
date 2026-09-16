@@ -620,7 +620,7 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
     puts "    [file join $main_work_directory $main_checkpoint_name]"
 
     if {$continue_sweeps && $physopt_uncertainty ne ""} {
-        set_x3_setup_uncertainty $board_name $physopt_uncertainty "$step overconstraint"
+        set_x3_setup_uncertainty $board_name $physopt_uncertainty "$step sweep"
     }
 }
 
@@ -1145,15 +1145,23 @@ if {$step eq "synth"} {
     }
     open_checkpoint $checkpoint_path
 
-    # The phys-opt sweeps run under 0.5 ns of added setup uncertainty, the
-    # overconstraint the placed checkpoint carried until it began to be
-    # written at zero (2026-09-11). The initial and per-pass probe reports are
-    # taken under it; the promoted report and the checkpoint handed to routing
-    # are taken at zero. Set FROST_PHYSOPT_SETUP_UNCERTAINTY=0 to sweep
-    # without it.
-    set physopt_uncertainty [getenv_default FROST_PHYSOPT_SETUP_UNCERTAINTY 0.5]
+    # The added setup uncertainty is stage-scoped. Post-place phys-opt sweeps
+    # under 0.5 ns, the overconstraint the placed checkpoint carried until it
+    # began to be written at zero (2026-09-11), so its initial and per-pass
+    # probe reports read pessimistic. The post-route sweeps run at 0.000 ns,
+    # the uncertainty route_design leaves in the checkpoint it writes, so the
+    # WNS driving their early exit and their promoted final.dcp decision is
+    # the real one. Every promoted report and every checkpoint handed on is
+    # taken at 0.000 ns either way. FROST_PHYSOPT_SETUP_UNCERTAINTY overrides
+    # the stage default.
+    if {$step eq "post_place_physopt"} {
+        set physopt_uncertainty_default 0.5
+    } else {
+        set physopt_uncertainty_default 0.0
+    }
+    set physopt_uncertainty [getenv_default FROST_PHYSOPT_SETUP_UNCERTAINTY $physopt_uncertainty_default]
     if {$physopt_uncertainty ne ""} {
-        set_x3_setup_uncertainty $board_name $physopt_uncertainty "$step overconstraint"
+        set_x3_setup_uncertainty $board_name $physopt_uncertainty "$step sweep"
     }
 
     set sweep_order_env [getenv_default FROST_PHYSOPT_SWEEP_ORDER ""]
