@@ -33,11 +33,12 @@ arbiter tree and its X3 L2 configuration.
 
 `frost.sv` wraps `cpu_and_mem.sv` and the UART clock-domain crossing FIFOs.
 `cpu_and_mem` integrates the low BRAM, fetch provider, cached-tier adapter,
-cache hierarchy, AXI bridge, MMIO and debug module. It instantiates
-`cpu_ooo.sv`, which owns IF/PD/ID, dispatch, `tomasulo_wrapper`, the CSR and
-trap units, and the shared page-table walker. The walker reaches the cache
-hierarchy through its own line port. The bridge connects to a behavioral
-DDR model in simulation or the board DDR controller on hardware.
+cache hierarchy, AXI bridge, MMIO, debug module, and the two DMA masters on
+the hierarchy's coherent DMA port: the NIC and the DMA test engine. It
+instantiates `cpu_ooo.sv`, which owns IF/PD/ID, dispatch, `tomasulo_wrapper`,
+the CSR and trap units, and the shared page-table walker. The walker reaches
+the cache hierarchy through its own line port. The bridge connects to a
+behavioral DDR model in simulation or the board DDR controller on hardware.
 
 The front-end stages are IF, PD, and ID:
 
@@ -70,7 +71,12 @@ for bubbles, flushes, and PD redirects, so invalid slots expose x0 without a
 final IMEM-data NOP mux. Per-word sideband carries `{rs2[1], rs1[2:1]}` for
 each RVC halfword. IF aligns these bits and PD substitutes them into the five
 timing-sensitive source fields. Instruction and early-source views remain
-bit-identical; latency and throughput are unchanged.
+bit-identical; latency and throughput are unchanged. Slot-1 PD likewise takes
+compressed `rs2[0]`, the funct7/funct3/rs1 fields and the illegal flag from the
+decompressor's exact standalone cofactors rather than its expansion tree, as
+slot 2 does for its own bits; the immediate, rd and rs2 bits keep the full
+expansion, and the compressed/native selection and register enables are
+unchanged.
 
 Slot-2 BTB data is read from the live fetch PC one cycle ahead and registered
 beside the instruction-memory request. Three single-address images hold the
@@ -170,8 +176,10 @@ lead in one cycle without adding a wide PC comparison.
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to
 `tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv`. The wrapper owns the ROB,
-RATs, reservation stations, load/store queues, CDB arbiter, FU shims, and
-profiling counters, with private glue modules under `tomasulo_wrapper/`. See
+RATs, reservation stations, load/store queues, CDB arbiter, FU shims, and the
+profiling counters, with private glue modules under `tomasulo_wrapper/`. The
+counters are a build option (`PERF_COUNTERS`) that the production build leaves
+out. See
 [cpu/README.md](cpu_and_mem/cpu/README.md)
 and [cpu/tomasulo/README.md](cpu_and_mem/cpu/tomasulo/README.md) for the detailed
 backend notes.
@@ -188,7 +196,7 @@ backend notes.
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, unaccepted-PC-movement redirect detection plus a separate landed recovery/already-emitted-prediction/resteer and trap/xRET/FENCE epoch retarget, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
 | `cpu_and_mem/data_mem_response_mux.sv` | In use | Exact fast-BRAM/MMIO/cached response selection at the integrated boundary; one LUT5 per data bit when `FROST_XILINX_PRIMS` is enabled, with a portable behavioral fallback |
-| `cpu_and_mem/plic.sv` | In use | Platform-level interrupt controller (PLIC spec 1.0, Phase 3 M6) at `0x4400_0000`: three sources, M and S contexts for hart 0, level-sensitive gateways, destructive claim read. See [Memory Map](#memory-map) |
+| `cpu_and_mem/plic.sv` | In use | Platform-level interrupt controller (PLIC spec 1.0, Phase 3 M6) at `0x4400_0000`: four sources, M and S contexts for hart 0, level-sensitive gateways, destructive claim read. See [Memory Map](#memory-map) |
 | `cpu_and_mem/dma_test_engine.sv` | In use | DMA master on the cache hierarchy's coherent DMA port (Phase 4 slice 1), driven from registers at `0x4002_0000`: line-by-line copy or pattern fill of cached DDR with byte strobes, an optional status word written only after every data write has completed, and an interrupt (PLIC source 3) raised only after the status write has completed. The second agent for the coherence litmus tests (`dma_torture`) and the completion-ordering reference for the NIC's ring engine |
 | `cpu_and_mem/hang_triage.sv` | In use | On-silicon boot-hang classifier (`ENABLE_HANG_TRIAGE`, default 0): when the console UART goes quiet it streams a state snapshot (commit count, timer state, cached read/write debt, recent PCs) over the UART and re-emits it periodically |
 | `cpu_and_mem/debug/` | In use | RISC-V Debug Spec 0.13.2 transport and module (Phase 3 M3): `jtag_tap` (generic 5-bit-IR TAP for simulation and portable synthesis), `dtm_core` (dtmcs/dmi with the sticky-busy rule, TCK<->core toggle-handshake CDC, a BSCAN-style pin bundle so the boards' BSCANE2 chains drive it), `debug_module` (halt/resume/step, abstract GPR access, an 8-word program buffer with impebreak, abstractauto, ndmreset; no system bus), `debug_slice_writer` (lands the module's words in the low BRAM through the div4 programming port and mirrors Debug-Mode stores into the instruction copy). See [Debug](#debug) |
@@ -203,19 +211,6 @@ backend notes.
 | `lib/` | In use | Portable RAM/FIFO/stall helper primitives, `lib/cdc/` (two-flop synchronizer, asynchronous-assert reset, Gray-coded event counter) and `lib/fifo/async_fifo.sv` (Gray-pointer FIFO between unrelated clocks), plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model), `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays), and `lib/ram/sdp_packed_tag_uram.sv` (width-generic packed UltraRAM tags for the X3 L2) |
 | `peripherals/` | In use | UART TX/RX blocks; `peripherals/nic/` is the Phase 4 NIC on the coherent DMA port (see its README): `nic_top` sits in `cpu_and_mem.sv` at 0x4003_0000 with PLIC source 4, sharing the DMA port with the test engine through a `line_port_arbiter` |
 
-Slot-1 PD uses the decompressor's exact standalone cofactors for compressed
-instruction `rs2[0]` (bit 20), the funct7, funct3 and rs1 fields (bits 31:25,
-14:12, 19:18 and 15; rs1[2:1] come from the source-hot sideband) and the
-illegal flag, as slot 2 does for its own bits. The immediate, rd and rs2 bits
-keep the full expansion tree, and the compressed/native selection, bubble
-qualification and register enables remain unchanged. The live IF selection and
-replay path still precedes PD; source extraction therefore does not have an
-assumed full cycle of slack. The cofactor test exhausts all 131,072
-parcel/`rd_is_x2` combinations for every cofactor, and the PD suite checks
-native/RVC selection and illegal-flag qualification through stalls, flushes,
-reset and NOP slots. These substitutions add no latency; their placement effect
-requires measurement.
-
 ## Memory Map
 
 The low BRAM memory is 256 KiB (95 KiB ROM + the 1 KiB debug slice + 160 KiB
@@ -227,8 +222,8 @@ also reach a 1 GiB cached region served by the cache hierarchy:
 | ROM | `0x0000_0000` | 95 KiB | Code and read-only data (fast BRAM) |
 | DEBUG | `0x0001_7C00` | 1 KiB | Debug-module execution slice (park loop, abstract-command and program-buffer words); reserved by every linker script, written only by the debug module |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, stack (fast BRAM) |
-| MMIO | `0x4000_0000` | 132 KiB | UART/FIFOs/timer; plus Linux-facing ns16550a UART (`0x4000_1000`), SiFive CLINT (`0x4001_0000`) and the DMA test engine (`0x4002_0000`) |
-| PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller (M and S contexts for hart 0; sources: 1 = ns16550, 2 = the board's external-interrupt pin, 3 = the DMA test engine's completion) |
+| MMIO | `0x4000_0000` | 196 KiB | UART/FIFOs/timer; plus Linux-facing ns16550a UART (`0x4000_1000`), SiFive CLINT (`0x4001_0000`), the DMA test engine (`0x4002_0000`) and the NIC (`0x4003_0000`) |
+| PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller (M and S contexts for hart 0; sources: 1 = ns16550, 2 = the board's external-interrupt pin, 3 = the DMA test engine's completion, 4 = the NIC) |
 | DDR | `0x8000_0000` | 1 GiB | Cached region: code (`.ddr_text`), heap and large data (see below) |
 
 The whole MMIO window is one strongly ordered I/O region: same-hart accesses
@@ -262,12 +257,10 @@ module retains an L1-only topology for focused unit coverage, where the same
 port connects directly to the DDR bridge. Each level prefixes its port index
 to the ids, so requests from all four sources can be in flight together.
 
-For DMA admission, the SC pending table compares each entry's address with
-the coherence port's registered query line before selecting the current head.
-Selecting the one-bit comparison preserves the original highest-entry priority
-and address-valid qualification while avoiding a wide head-address mux followed
-by another line comparison. The admission registers and SC window timing are
-unchanged; the full head address remains available to capture that window.
+For DMA admission, the SC pending table compares every entry's address with the
+coherence port's registered query line and then selects the head's one-bit
+result, rather than muxing the head address out and comparing it; the full head
+address stays available for the SC window.
 
 Low-BRAM fetch windows wholly below 64 KiB stay one-cycle; other low-BRAM
 windows repeat once to register their PC predicates. Expanding the former
@@ -340,6 +333,7 @@ MMIO registers:
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 | `0x4002_0000`–`0024` | DMA test engine | CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
+| `0x4003_0000`–`0FFF` | NIC | 4 KiB register window: control/status, station address, rings, link and PHY, 64-bit counters (`peripherals/nic/nic_pkg.sv`, `sw/lib/include/nic.h`) |
 
 The PLIC window (`0x4400_0000`, spec register layout: per-source priorities,
 pending, per-context enables at `0x2000 + 0x80*ctx`, threshold and

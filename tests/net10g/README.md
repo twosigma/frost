@@ -11,7 +11,9 @@ and pushes to `main`. It reuses the existing workflow's `build-docker` image
 artifact, loaded as `frost-dev:latest`, then invokes the commands shown below
 through `scripts/frost.py --image frost-dev:latest`. Submodule
 initialization is disabled because these checks do not need CPU/software
-dependencies. The CPU jobs and test registry remain unchanged.
+dependencies. The CPU jobs and test registry now reach the same MAC/PCS
+through the NIC that wraps it, so these benches are its isolated coverage
+rather than its only coverage.
 
 The `net10g-results` artifact retains simulation output, per-target XML
 results, and synthesis logs/source hashes/summary for seven days, including

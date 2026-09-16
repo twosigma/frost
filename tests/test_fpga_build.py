@@ -1603,7 +1603,7 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
 
 
 def test_physopt_stages_overconstrain_by_default_and_report_at_zero() -> None:
-    """Phys-opt sweeps run under 0.5 ns added uncertainty; reports stay at zero."""
+    """Phys-opt sweeps overconstrain by 0.5 ns; the promoted report is at zero."""
     script_dir = Path(__file__).resolve().parent.parent / "fpga" / "build"
     step_tcl = (script_dir / "build_step.tcl").read_text()
     assert "getenv_default FROST_PHYSOPT_SETUP_UNCERTAINTY 0.5" in step_tcl

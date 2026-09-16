@@ -781,7 +781,7 @@ class UartMmioDebugMonitor:
             dut, "cpu_and_memory_subsystem.mmio_read_data_comb"
         )
         self.data_mem_or_periph = _get_signal(
-            dut, "cpu_and_memory_subsystem.data_memory_or_peripheral_read_data"
+            dut, "cpu_and_memory_subsystem.data_memory_response_data"
         )
         # dc_fifo pointers and state
         self.fifo_read_ptr = _get_signal(

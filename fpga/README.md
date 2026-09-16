@@ -203,7 +203,7 @@ This does not establish all-app or interactive Linux-shell coverage.
 
 Extension 0.3 uses one repository-backed application/layout/clock picker for
 Configure Target and both load-and-debug commands, saving completed debug
-choices for later Attach. The repository currently marks 47 of 49 loader apps
+choices for later Attach. The repository currently marks 50 of 52 loader apps
 as eligible. `linux_boot` and `opensbi_smoke` remain visible with load-only
 reasons because their composite images require multi-ELF debugging. Cancelling
 or rejecting a selection preserves an existing debug session before handoff.
@@ -237,9 +237,9 @@ and [background task documentation](https://code.visualstudio.com/docs/debugtest
 unattended (`debug_target` waits for a debugger and `nic_echo` needs receive
 traffic over a transceiver that no board top integrates yet, so both are left
 out; `nic_loopback` is the NIC stage), runs all nine CoreMark-PRO workloads
-with per-board score gates, then boots Linux to the Buildroot login prompt. The Linux stage boots the OpenSBI + Sv39 image,
-requires the userspace stress token, logs in and runs `perf stat` on the cycle
-and instruction counters:
+with per-board score gates, then boots Linux to the Buildroot login prompt.
+The Linux stage boots the OpenSBI + Sv39 image, requires the userspace stress
+token, logs in and runs `perf stat` on the cycle and instruction counters:
 
 ```bash
 ./fpga/hw_regression.py --board x3
@@ -468,15 +468,19 @@ report; an unguided winner clears them. The historical `compressed` group,
 audit, and report names remain stable although the cone now covers every
 predecode metadata predicate on both parities.
 
-After X3 `opt_design`, the normal flow applies the guarded
-L1D completion factoring and enable copies
-and four distribution copies to the current
-netlist before saving `post_opt.dcp`. These transformations verify the actual
-functions and connections before and after editing. An unmatched structure
-skips the complete affected transformation before any edit; an unexpected
-command error or partial edit stops the build. Their audit files accompany
-the optimized checkpoint. They require no experimental checkpoint or files
-outside the checkout. Fresh placement must still establish their timing benefit.
+After X3 `opt_design`, `build_step.tcl` sources two guarded netlist
+transformations before saving `post_opt.dcp`. `fpga/build/l1_control_repair.tcl`
+refactors the L1D write-valid completion cone into cofactor LUTs and
+distributes the final T clock enable over copies. `x3_nic_placement.tcl` adds
+four distribution copies; despite the file name they drive the DMA coherence
+sequencer's write enables, the L1I MSHR data enables, the fetch
+instruction-buffer prefix and the predecode sideband banks, not NIC cells.
+Both verify the actual functions and connections before and after editing, and
+both run in `auto` mode: a netlist that does not match the recipe is caught in
+the preflight and the whole transformation is skipped before any edit, while
+any failure after the first edit is fatal. Their audit files accompany the
+optimized checkpoint. They require no experimental checkpoint or files outside
+the checkout.
 
 X3 uses the placer's ordinary timing-driven replication. A broad
 `FORCE_MAX_FANOUT` policy is not applied: controlled comparisons on the same
@@ -505,8 +509,11 @@ last. Otherwise actual zero-uncertainty post-place WNS selects it. Seed WNS
 shown in the matrix is only an estimate because the limiting path may change.
 The 0.500 ns seed-grid origin is separate from the 0.000 ns report/checkpoint
 uncertainty and `TNS@0`. The three phys-opt stages sweep under 0.500 ns of
-added setup uncertainty (`FROST_PHYSOPT_SETUP_UNCERTAINTY`, 0 disables it) and
-take every report and the checkpoint they hand on at 0.000 ns; routing always
+added setup uncertainty (`FROST_PHYSOPT_SETUP_UNCERTAINTY`, 0 disables it).
+The initial and per-pass probe reports (`phys_opt_initial_timing.rpt`,
+`phys_opt_probe_sNN_pNN_*.rpt`) are taken under that overconstraint, so they
+read 0.500 ns pessimistic against the promoted report; only the promoted
+report and the checkpoint handed on are taken at 0.000 ns. Routing always
 runs at 0.000 ns.
 
 The native six-field `post_place_gate.txt` is promoted with the selected DCP.
@@ -559,8 +566,9 @@ Run `./fpga/build/build.py --help` for the full list of directives and options.
 Production placement does not invoke `x3_pd_target_pin_swaps.tcl` or
 `x3_flush_guidance.tcl`. `FROST_X3_PD_TARGET_PIN_SWAPS` and
 `FROST_PLACE_FLUSH_INCREMENTAL` no longer enable production behavior.
-The historical pin-refinement helper remains available for explicit diagnostic
-replay; its timing checks and rollback apply only when it is invoked directly.
+The historical pin-refinement helper stays in the tree for diagnostics only. It
+has no production call site and no maintained replay recipe; its timing checks
+and rollback apply only when it is invoked directly.
 The normal gate and reports describe the single placer result after restoring
 canonical cost groups and zero added setup uncertainty. Retired diagnostic
 audits are cleared when publishing a new production placement.
@@ -640,7 +648,7 @@ Arguments:
   the same explicit server and selection contracts as the programmer above.
 - `--debug`: use the `FROST_DEBUG=1` profile (`-Og -g3`, normally with frame
   pointers and no loop unrolling; standalone assembly gets DWARF too).
-  Available for the repository's 47 single-ELF debug apps. `linux_boot` and
+  Available for the repository's 50 single-ELF debug apps. `linux_boot` and
   `opensbi_smoke` remain load-only composite image flows. The profile adds
   debugging information without a software startup wait loop. `isa_test`
   opts out of frame pointers because its instruction tests clobber `s0`;

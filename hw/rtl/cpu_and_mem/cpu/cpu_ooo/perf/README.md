@@ -1,9 +1,10 @@
 # Performance counters
 
-FROST exposes 130 profiling counters through custom machine CSRs:
+FROST can be built with 130 profiling counters behind custom machine CSRs:
 42 top-level counters and 24 cache counters in `perf_counter_aggregator.sv`,
-plus 64 back-end counters in `tomasulo_perf_counters.sv`. This document
-defines their numbering, the CSR protocol, and the software API.
+plus 64 back-end counters in `tomasulo_perf_counters.sv`. They are off by
+default and absent from the production build; see [Build option](#build-option).
+This document defines their numbering, the CSR protocol, and the software API.
 
 ## Build option
 
@@ -41,7 +42,7 @@ software moves both references together.
 | `mperfctl` | `0x7C1` | W | Bit 0 = snapshot capture; bit 1 = select preceding cache snapshot for reads (reads as 0) |
 | `mperfdata` | `0xFC0` | R | Selected counter, low 32 bits |
 | `mperfdatah` | `0xFC1` | R | Selected counter, high 32 bits |
-| `mperfcount` | `0xFC2` | R | Total number of counters (130) |
+| `mperfcount` | `0xFC2` | R | Total number of counters (130; zero without `PERF_COUNTERS`) |
 
 Every counter is 64 bits wide and free-running. Each live counter adds 0 or 1
 every cycle (occupancy and miss-cycle `sum` counters add the observed value)
