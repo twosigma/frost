@@ -1045,6 +1045,13 @@ package riscv_pkg;
   // the shared level has ordered it.
   localparam int unsigned DmaCoherenceLocks = 3;
   localparam int unsigned DmaCoherenceLockBits = 2;
+  // Address bit above which two addresses share a coherence line, i.e.
+  // $clog2(LINE_BYTES) for the cache hierarchy's 32-byte line (frost_cache
+  // LINE_BYTES). Every core-side comparison against a DMA line -- the load
+  // queue's invalidate/block/query hits, lq_coherence_port's line registers
+  // and sc_pending_unit's head-SC query match -- must use the same split, so
+  // it is named once here rather than repeated as a literal per module.
+  localparam int unsigned DmaCoherenceLineLsb = 5;
 
   // 8-lane strobe for a sub-beat access at the given offset (see the
   // contract above; DOUBLE covers the whole beat).

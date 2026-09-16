@@ -930,7 +930,7 @@ module load_queue #(
   // for a staged AMO/LR whose line is admitted (the staged entry cannot
   // launch before its second staging cycle, so the one-cycle hold is in
   // time), the admission query and the reservation's line match.
-  localparam int unsigned CohLineLsb = 5;
+  localparam int unsigned CohLineLsb = riscv_pkg::DmaCoherenceLineLsb;
   logic [CachedSlots-1:0] cs_coh_inval_now;
   logic [CachedSlots-1:0] cs_lr_suppress;  // in-flight LR: set no reservation
   logic coh_launch_hold_q;
