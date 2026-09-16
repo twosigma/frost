@@ -150,7 +150,10 @@ always finds one, steers each response to its owner by entry, refuses
 addresses outside cached DDR with an error response instead of a port
 request, and under the drain withdraws its registered requests with error
 responses and waits for the fired ones. Every request an engine hands it
-gets exactly one response. Port eligibility is registered with the next
+gets exactly one response. Response steering trusts the port to answer only
+the ids it was given, and asserts it in simulation: a response whose id is
+out of range, or names an entry the front end does not own, is an error
+rather than something the module filters. Port eligibility is registered with the next
 request and entry occupancy, cutting the drain and free-entry logic out
 of the downstream valid/selection path without adding request latency.
 Both possible next eligibility values are computed before the sequencer's
