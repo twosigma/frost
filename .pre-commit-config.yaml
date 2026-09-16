@@ -146,7 +146,9 @@ repos:
           - --license-filepath=.license-header.txt
           - --comment-style=#
 
-  # General file checks
+  # General file checks. Kernel patches (git format-patch output) keep a
+  # space on blank context lines and on the "-- " signature line, and end
+  # with a blank line, so neither text fixer may touch them.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
@@ -154,13 +156,15 @@ repos:
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
-            sw/apps/coremark/coremark/.*
+            sw/apps/coremark/coremark/.*|
+            linux/buildroot-external/board/frost/patches/.*
           )$
       - id: end-of-file-fixer
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
-            sw/apps/coremark/coremark/.*
+            sw/apps/coremark/coremark/.*|
+            linux/buildroot-external/board/frost/patches/.*
           )$
       - id: check-yaml
       - id: check-added-large-files

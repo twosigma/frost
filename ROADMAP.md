@@ -77,11 +77,11 @@ the standalone 64-bit 10GBASE-R MAC/PCS (hw/rtl/net10g, its own CI job) as
 FROST's own NIC and boot Debian from NFS-root over it, with iSCSI+ext4 as a
 later variant if a workload needs local-disk filesystem semantics. The
 CSR/DMA/interrupt layer is in place: the NIC sits at `0x4003_0000` on a
-coherent DMA port with one PLIC source, a device-tree node, and two
-full-system programs. The remaining NIC work is the board-level GTY wrapper
-(the soft MAC/PCS and the core stay vendor-primitive-free) and a Linux netdev
-driver; the small RX buffer with no PAUSE means DMA must drain independently
-of software.
+coherent DMA port with one PLIC source, a device-tree node, and two full-system
+programs. A Linux netdev driver is in place as well, validated on the X3
+through the NIC's internal loopback. The remaining NIC work is the board-level
+GTY wrapper (the soft MAC/PCS and the core stay vendor-primitive-free); the
+small RX buffer with no PAUSE means DMA must drain independently of software.
 A host-backed PCIe/virtio block path is kept as an optional deployment
 capability, not the Phase 4 storage mechanism.
 

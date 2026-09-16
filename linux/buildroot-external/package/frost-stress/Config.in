@@ -21,3 +21,8 @@ config BR2_PACKAGE_FROST_STRESS
 	  QEMU reports counters=unavailable because Zicntr is not U-readable.
 	  QEMU CI and the hardware soak check
 	  FROST_USERSPACE_STRESS_PASS/_FAIL.
+
+	  Also installs frost_sigprobe, the signal-return probe inittab
+	  runs, and frost_nettest, which runs the frost,net10g driver
+	  through the NIC's loopback and prints
+	  FROST_NET_LOOPBACK_PASS/_FAIL for the hardware regression.

@@ -28,11 +28,14 @@ Next, ``sweep_coremark_pro.py -v0`` runs all nine workloads with exclusive UART
 access; both its status and official mark are checked. The forwarded common
 timeout is a base budget; the sweep honors any larger per-workload minimum in
 the software registry. Linux runs last and requires the Buildroot banner and
-login prompt; traps or panics fail, but the bare-metal ``ERROR`` rule does not
-apply to kernel logs. The stage also requires the userspace stress token
-before the login prompt, then logs in as root and runs ``perf stat`` on the
-cycle and instruction counters, which must both report a nonzero count. ``--linux-timeout`` covers build, DDR loading, and boot; a cold
-Buildroot build takes 30-60 min.
+login prompt; traps, panics, and kernel ``Oops``, ``BUG:`` and ``Kernel BUG``
+reports fail, but the bare-metal ``ERROR`` rule does not apply to kernel logs.
+The stage also requires the userspace stress token before the login prompt,
+then logs in as root and runs ``perf stat`` on the cycle and instruction
+counters, which must both report a nonzero count, and then ``frost_nettest``,
+which runs the NIC driver through the raw loopback and must print
+``FROST_NET_LOOPBACK_PASS``. ``--linux-timeout`` covers build, DDR loading,
+boot, and both commands; a cold Buildroot build takes 30-60 min.
 ``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
 caused intermittent boot corruption. Two apps are left out: ``debug_target``
 waits for a debugger to drive it, and ``nic_echo`` needs receive traffic over a
@@ -135,7 +138,7 @@ ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
 # A healthy kernel log can contain ``ERROR``, so Linux is judged by these
 # markers instead of the bare-metal word rule.
 LINUX_SUCCESS_MARKERS = ("Welcome to Buildroot", "buildroot login:")
-LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic")
+LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic", "Oops", "BUG:", "Kernel BUG")
 
 # The kernel prints the userspace stress token from a sysinit entry, so it
 # precedes the getty. After the login prompt the stage types a root login (no
@@ -153,8 +156,16 @@ LINUX_PERF_ROW_RE = re.compile(
     r"^(\d+|<[^>\r\n]+>),,(cycles|instructions),", re.MULTILINE
 )
 
-# Covers a warm rebuild, multi-MB JTAG load, and boot to login.
-DEFAULT_LINUX_TIMEOUT = 300.0
+# At the next shell prompt the stage types frost_nettest (the frost-stress
+# package), which runs the frost,net10g driver through the NIC's raw loopback
+# and ends with one of these tokens.
+LINUX_NET_COMMAND = "frost_nettest"
+LINUX_NET_TOKEN = "FROST_NET_LOOPBACK_PASS"
+LINUX_NET_TOKEN_FAIL = "FROST_NET_LOOPBACK_FAIL"
+
+# Covers a warm rebuild, multi-MB JTAG load, and boot to login, plus 60 s for
+# perf stat and frost_nettest, whose waits are all bounded.
+DEFAULT_LINUX_TIMEOUT = 360.0
 
 # The FROST coremark port prints "Total 64-bit ticks : N" plus this formula;
 # see the module docstring for why Iterations/Sec is not trusted instead.
@@ -339,30 +350,33 @@ def perf_counts(serial_buf: str) -> dict[str, str]:
 
 
 def linux_stage() -> UartStage:
-    """Build the linux_boot stage: stress token, login prompt, then perf stat.
+    """Build the linux_boot stage: stress token, login, perf stat, frost_nettest.
 
-    The stage needs the token before the prompt and, after typing the root
-    login and the perf stat command, a nonzero count for every event in
-    ``LINUX_PERF_EVENTS``.
+    The stage needs the token before the prompt; after typing the root login
+    and the perf stat command, a nonzero count for every event in
+    ``LINUX_PERF_EVENTS``; and after typing ``frost_nettest`` at the next
+    prompt, its pass token. Either program's fail token fails the stage.
     """
-    failure_markers = LINUX_FAILURE_MARKERS + (LINUX_TOKEN_FAIL,)
+    failure_markers = LINUX_FAILURE_MARKERS + (LINUX_TOKEN_FAIL, LINUX_NET_TOKEN_FAIL)
 
     def lx_login(serial_buf: str) -> bool:
         """Return True once both Buildroot login markers have been captured."""
         return all(marker in serial_buf for marker in LINUX_SUCCESS_MARKERS)
 
     def lx_success(serial_buf: str) -> bool:
-        """Login prompt, plus every perf row."""
+        """Login prompt, every perf row, and the frost_nettest pass token."""
         if not lx_login(serial_buf):
             return False
-        return set(perf_counts(serial_buf)) >= set(LINUX_PERF_EVENTS)
+        if not set(perf_counts(serial_buf)) >= set(LINUX_PERF_EVENTS):
+            return False
+        return LINUX_NET_TOKEN in serial_buf
 
     def lx_failure(serial_buf: str) -> bool:
-        """Return True on a CPU trap, kernel panic, or failed stress payload."""
+        """Return True on a CPU trap, panic, Oops, BUG, or failed test program."""
         return any(marker in serial_buf for marker in failure_markers)
 
     def lx_judge(serial_buf: str) -> tuple[bool, str]:
-        """Fail on trap/panic, else require the markers, token and perf counts."""
+        """Fail on a failure marker, else require markers, tokens, perf counts."""
         hit = [m for m in failure_markers if m in serial_buf]
         if hit:
             return False, f"failure marker: {', '.join(hit)}"
@@ -382,8 +396,10 @@ def linux_stage() -> UartStage:
                 bad.append(f"{event}: {count}")
         if bad:
             return False, "perf stat: " + "; ".join(bad)
+        if LINUX_NET_TOKEN not in serial_buf:
+            return False, f"{LINUX_NET_COMMAND}: no {LINUX_NET_TOKEN!r}"
         summary = " ".join(f"{event}={counts[event]}" for event in LINUX_PERF_EVENTS)
-        return True, f"stress token, login, perf stat {summary}"
+        return True, f"stress token, login, perf stat {summary}, {LINUX_NET_COMMAND}"
 
     return UartStage(
         LINUX_STAGE,
@@ -393,6 +409,7 @@ def linux_stage() -> UartStage:
         stimuli=(
             (LINUX_LOGIN_PROMPT, "root\r"),
             (LINUX_SHELL_PROMPT, LINUX_PERF_COMMAND + "\r"),
+            (LINUX_SHELL_PROMPT, LINUX_NET_COMMAND + "\r"),
         ),
     )
 
@@ -714,7 +731,7 @@ def main() -> int:
         default=DEFAULT_LINUX_TIMEOUT,
         help=(
             "linux_boot timeout in seconds covering rebuild, JTAG DDR image "
-            f"load, and boot to the login prompt (default: "
+            "load, boot, and the perf stat and frost_nettest runs (default: "
             f"{DEFAULT_LINUX_TIMEOUT:.0f}; raise it for a cold Buildroot "
             "first build, which takes 30-60 min)"
         ),
