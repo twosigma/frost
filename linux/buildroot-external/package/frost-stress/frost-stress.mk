@@ -14,7 +14,9 @@
 
 ################################################################################
 #
-# frost-stress: FROST userspace boot stress payload (see src/frost_stress.c)
+# frost-stress: FROST userspace boot stress payload (src/frost_stress.c),
+# the signal-return probe (src/frost_sigprobe.c) and the NIC driver loopback
+# test (src/frost_nettest.c)
 #
 ################################################################################
 
@@ -32,6 +34,8 @@ define FROST_STRESS_BUILD_CMDS
 		-o $(@D)/frost_stress $(@D)/frost_stress.c
 	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
 		-o $(@D)/frost_sigprobe $(@D)/frost_sigprobe.c
+	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
+		-o $(@D)/frost_nettest $(@D)/frost_nettest.c
 endef
 
 define FROST_STRESS_INSTALL_TARGET_CMDS
@@ -39,6 +43,8 @@ define FROST_STRESS_INSTALL_TARGET_CMDS
 		$(TARGET_DIR)/usr/bin/frost_stress
 	$(INSTALL) -D -m 0755 $(@D)/frost_sigprobe \
 		$(TARGET_DIR)/usr/bin/frost_sigprobe
+	$(INSTALL) -D -m 0755 $(@D)/frost_nettest \
+		$(TARGET_DIR)/usr/bin/frost_nettest
 endef
 
 $(eval $(generic-package))

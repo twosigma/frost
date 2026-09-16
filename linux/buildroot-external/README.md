@@ -22,10 +22,10 @@
 This tree builds the FROST Linux lane and packages it into the memory images
 that the cocotb `linux_boot` test and the FPGA JTAG loader consume:
 
-- `frost_rv64_defconfig`: the mainline Sv39 kernel (6.18.7,
-  `board/frost/linux-frost.config`) under OpenSBI fw_jump, with a musl ELF
-  userspace (static busybox, `frost-stress`, `perf` with elfutils) on the
-  Bootlin riscv64 external toolchain, packed with
+- `frost_rv64_defconfig`: the mainline Sv39 kernel (6.18.7 plus the NIC
+  driver patch, `board/frost/linux-frost.config`) under OpenSBI fw_jump, with
+  a musl ELF userspace (static busybox, `frost-stress`, `perf` with elfutils)
+  on the Bootlin riscv64 external toolchain, packed with
   `board/frost/frost_boot_image.py` from `post-image-mmu.sh` (which also
   builds the firmware from the `linux/opensbi` submodule via
   `linux/opensbi_build.py`). Build it with `O=linux/build-mmu`.
@@ -45,18 +45,24 @@ linux/buildroot-external/
 ├── Config.in                              # package menu hook
 ├── configs/
 │   └── frost_rv64_defconfig               # Buildroot defconfig (OpenSBI + Sv39, musl, perf)
-├── package/frost-stress/                  # userspace boot stress payload (see below)
+├── package/frost-stress/                  # userspace boot stress payload and test programs (see below)
 │   ├── Config.in
 │   ├── frost-stress.mk
-│   └── src/frost_stress.c
+│   └── src/
+│       ├── frost_stress.c                 # boot stress payload (inittab)
+│       ├── frost_sigprobe.c               # signal-return probe (inittab)
+│       └── frost_nettest.c                # NIC driver loopback test (hardware regression)
 └── board/frost/
     ├── linux-frost.config                 # kernel mini-config (olddefconfig fills the rest)
     ├── busybox-mmu.fragment               # static busybox on top of Buildroot's default config
     ├── rootfs-overlay-mmu/etc/            # overlay: inittab (devtmpfs, rcS, frost_stress, getty), no-op S01seedrng
     ├── post-image-mmu.sh                  # post-image hook: OpenSBI build + frost_boot_image.py
     ├── frost_boot_image.py                # packer: fw_jump + payload/Image + DTB [+ initramfs] (see ../../README.md)
+    ├── frost,net10g.yaml                  # DT binding of the NIC node the packer emits
     └── patches/                           # BR2_GLOBAL_PATCH_DIR
-        └── linux/linux.hash               # sha256 for the custom linux-6.18.7 tarball (BR2_DOWNLOAD_FORCE_CHECK_HASHES)
+        └── linux/
+            ├── linux.hash                 # sha256 for the custom linux-6.18.7 tarball (BR2_DOWNLOAD_FORCE_CHECK_HASHES)
+            └── 0001-net-ethernet-add-the-FROST-net10g-driver.patch # the frost_net10g driver
 ```
 
 ## Buildroot pin
@@ -154,12 +160,20 @@ by CI.
 `board/frost/linux-frost.config`, a mini-config rather than a full defconfig:
 Buildroot runs `olddefconfig` over it, so unlisted symbols take their
 architecture defaults. It sets `CONFIG_MMU`, `CONFIG_RISCV_SBI`, the SBI PMU,
-emulated misaligned access, an external initramfs, ELF userspace and the
-8250 console, and it leaves `CONFIG_NONPORTABLE` and `CONFIG_RISCV_M_MODE`
-unset. `tests/test_linux_packaging.py` asserts those load-bearing symbols and
+emulated misaligned access, an external initramfs, ELF userspace, the
+8250 console, packet sockets and the NIC driver, and it leaves
+`CONFIG_NONPORTABLE` and `CONFIG_RISCV_M_MODE` unset.
+`tests/test_linux_packaging.py` asserts those load-bearing symbols and
 that the file uses Kconfig syntax `olddefconfig` understands. Each symbol is
 commented in the config itself; the contract is in
 [`../README.md`](../README.md), "Kernel configuration contract".
+
+The NIC driver (`CONFIG_FROST_NET10G`) is not in mainline:
+`board/frost/patches/linux/0001-net-ethernet-add-the-FROST-net10g-driver.patch`
+adds it, and Buildroot applies every `*.patch` in that directory when it
+extracts the kernel (`BR2_GLOBAL_PATCH_DIR`), so a changed patch needs the
+`linux-dirclean` target before the next build. Refresh the patch when the
+pinned kernel version changes.
 
 ## Notes, assumptions, and gaps
 
@@ -169,8 +183,8 @@ init-time exec is one page-fault storm cheaper in simulation) and packs it
 with `BR2_TARGET_ROOTFS_CPIO` and `BR2_TARGET_ROOTFS_CPIO_NONE`.
 `BR2_ROOTFS_OVERLAY` adds `board/frost/rootfs-overlay-mmu/`: the inittab
 (devtmpfs, `rcS`, `frost_stress`, getty) and a no-op `S01seedrng`. Edit those
-files to change userspace. The kernel has no network stack, so
-`BR2_PACKAGE_IFUPDOWN_SCRIPTS` stays unset; otherwise every boot prints
+files to change userspace. The kernel has no IP stack (packet sockets only),
+so `BR2_PACKAGE_IFUPDOWN_SCRIPTS` stays unset; otherwise every boot prints
 "Starting network: FAIL".
 
 The `frost-stress` package installs `/usr/bin/frost_stress`, which the overlay
@@ -185,7 +199,13 @@ token, so they test userspace rather than only the kernel banner. Under QEMU
 the counter phase reports `counters=unavailable`: QEMU resets `mcounteren` to
 0 (see [`../README.md`](../README.md), "Counters and mcounteren"). The
 hardware soak fails any boot that shows that degradation. The same package
-also installs `frost_sigprobe`, the vDSO signal-return bring-up probe.
+also installs `frost_sigprobe`, the vDSO signal-return bring-up probe, and
+`frost_nettest`, which the hardware regression's Linux stage types after
+logging in. It drives the `frost_net10g` driver through the NIC's raw loopback
+(MTU 9000, frame lengths 14 to 9014 bytes, a 300-frame burst, a down during a
+burst, loopback off and on again, the driver's statistics), leaves the
+interface down with loopback off, and prints `FROST_NET_LOOPBACK_PASS` or
+`FROST_NET_LOOPBACK_FAIL <reason>`.
 
 `post-image-mmu.sh` runs after the image stage. It locates
 `riscv64-linux-gcc` in `$HOST_DIR/bin`, finds `dtc` in `$HOST_DIR/bin`, then

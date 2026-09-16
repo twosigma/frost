@@ -150,7 +150,11 @@ def test_sbi_packer_recognizes_linux_image_header() -> None:
 
 
 def test_mmu_kernel_config_uses_kconfig_syntax() -> None:
-    """The MMU mini-config disables symbols the way olddefconfig understands."""
+    """The MMU mini-config uses Kconfig syntax olddefconfig understands.
+
+    It also keeps its load-bearing symbols, networking and the NIC driver
+    among them, and leaves out the M-mode build's.
+    """
     malformed = []
     for line_number, line in enumerate(MMU_KERNEL_CONFIG.read_text().splitlines(), 1):
         if re.match(r"# CONFIG_\w+ is not set", line) and not re.fullmatch(
@@ -167,6 +171,8 @@ def test_mmu_kernel_config_uses_kconfig_syntax() -> None:
         "CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS=y",
         "CONFIG_RISCV_PMU_SBI=y",
         "CONFIG_SERIAL_8250_CONSOLE=y",
+        "CONFIG_NET=y",
+        "CONFIG_FROST_NET10G=y",
     ):
         assert required in text, required
     for forbidden in ("CONFIG_NONPORTABLE=y", "CONFIG_RISCV_M_MODE=y"):

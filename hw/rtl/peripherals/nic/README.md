@@ -49,7 +49,7 @@ placement, but the MAC has not been timed at line rate since.)
 buses with datapath and bus-skew bounds, single-bit levels, the reset
 assertion) rather than cutting the clock pair, so a crossing the
 exceptions miss fails timing loudly. Two programs drive the NIC the way the
-driver will: `sw/apps/nic_loopback` (self-contained through the raw
+Linux driver does: `sw/apps/nic_loopback` (self-contained through the raw
 loopback: bring-up, rings and doorbells, completions, counters, the
 completion and link interrupts, moderation, the filter, RESET
 mid-traffic; also a hardware regression stage) and `sw/apps/nic_echo`
@@ -58,6 +58,12 @@ frames of every class into the raw RX interface with the net10g software
 encoder and decodes the raw TX interface; the program echoes every frame
 interrupt-driven, reposting descriptors through ring wraps, a burst beyond
 the ring, truncated jumbo frames and filtered foreign frames).
+
+The Linux driver, `frost_net10g`, is a kernel patch under
+`linux/buildroot-external/board/frost/patches/linux`
+(`0001-net-ethernet-add-the-FROST-net10g-driver.patch`).
+`frost_nettest` (in the `frost-stress` package) runs it through the raw
+loopback in the hardware regression's Linux stage.
 
 ## Reset and clock domains
 

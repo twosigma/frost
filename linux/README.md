@@ -69,7 +69,7 @@ transparent to software.
 | `[0x4000_0000, +196 KiB)` | Native FROST MMIO window: UART, FIFOs, timer (`sw/lib/include/mmio.h` is the authoritative register map), the DMA test engine at `+0x2_0000` and the NIC at `+0x3_0000`. |
 | `[0x4000_1000, +0x100)` | ns16550a UART face (`reg-shift = 2`, `reg-io-width = 4`) aliasing the native UART. Takes PLIC source 1. |
 | `[0x4001_0000, +0xC000)` | SiFive-layout CLINT alias (`sifive,clint0`): `msip` at `+0x0000`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8`. Same physical registers as the native timer block. The DTB node and the RTL's CLINT decode both end after `mtime`, at `0x4001_C000`; the MMIO window itself continues to `0x4003_1000`, past the DMA test engine and the NIC. |
-| `[0x4003_0000, +4 KiB)` | NIC registers. The DTB advertises `ethernet@40030000` (`frost,net10g`, `dma-coherent`, `local-mac-address`); the binding is in `buildroot-external/board/frost/frost,net10g.yaml`. |
+| `[0x4003_0000, +4 KiB)` | NIC registers. The DTB advertises `ethernet@40030000` (`frost,net10g`, `dma-coherent`, `local-mac-address`); the binding is in `buildroot-external/board/frost/frost,net10g.yaml`, and the kernel's `frost_net10g` driver binds to the node. |
 | `[0x4400_0000, +4 MiB)` | PLIC (M and S contexts for hart 0; source 1 is the ns16550 UART, source 2 the board's external-interrupt pin, source 3 the DMA test engine, source 4 the NIC). The DTB advertises both contexts and `riscv,ndev = 4`; OpenSBI hides the M context from the kernel. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises `memory@80000000` with 64 MiB (`MEM_SIZE` in `frost_boot_image.py`), not the full physical DDR. |
 
@@ -147,9 +147,11 @@ reports `counters=unavailable` there. On FROST the phase must run:
 
 ## Kernel configuration contract
 
-The kernel configuration is `board/frost/linux-frost.config` (under
-`buildroot-external/`), applied as Buildroot's custom kernel config. The
-load-bearing options:
+The kernel is mainline 6.18.7 with one patch, the NIC driver
+(`board/frost/patches/linux/0001-net-ethernet-add-the-FROST-net10g-driver.patch`).
+Its configuration is `board/frost/linux-frost.config`, applied as Buildroot's
+custom kernel config (both under `buildroot-external/`). The load-bearing
+options:
 
 | Option | Why |
 |---|---|
@@ -161,6 +163,8 @@ load-bearing options:
 | `CONFIG_BLK_DEV_INITRD` | External initramfs via `linux,initrd-*`. |
 | `CONFIG_SERIAL_8250[_CONSOLE]`, `CONFIG_SERIAL_OF_PLATFORM`, `NR_UARTS=1` | Console on the ns16550a face, bound from the DT. |
 | `CONFIG_OF`, `CONFIG_OF_EARLY_FLATTREE` | DT-driven probe; earlycon (`earlycon=uart8250,mmio32,0x40001000`). |
+| `CONFIG_NET`, `CONFIG_PACKET` | Packet sockets, which `frost_nettest` uses. `CONFIG_INET` stays off: no IP stack. |
+| `CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G` | The built-in `frost_net10g` driver for the `frost,net10g` node (from the kernel patch). |
 
 ## Bring-up probe
 
@@ -183,7 +187,9 @@ At boot, inittab runs `frost_stress --boot`, which prints the
 `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token before the login prompt; the
 QEMU CI job and `fpga/linux_boot_soak.py` assert it. On hardware the
 regression's Linux stage requires that token before the login prompt, then
-logs in as root and runs `perf stat` on the cycle and instruction counters.
+logs in as root, runs `perf stat` on the cycle and instruction counters, and
+runs `frost_nettest`, which drives the NIC driver through the raw loopback and
+must print `FROST_NET_LOOPBACK_PASS`.
 The payload's summary line carries per-boot Zicntr evidence for hardware
 performance tracking: `cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around
 a fixed workload (see "Counters and mcounteren").
