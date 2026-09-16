@@ -966,9 +966,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="reservation_station",
         description=(
             "Reservation Station unit tests (deferred dispatch-CDB delivery "
-            "and indexed repair)"
+            "and indexed repair) on the shipped INT elaboration"
         ),
         verilator_extra_args=(
+            # The shipped INT station is dual-issue; build the directed suite
+            # against that elaboration rather than the single-port default.
+            "-GDUAL_ISSUE=1",
             "-GALLOC_INDEXED_REPAIR=1",
             "-GDISPATCH_REPAIR_BYPASS=0",
             "-GISSUE_REPAIR_BYPASS=0",

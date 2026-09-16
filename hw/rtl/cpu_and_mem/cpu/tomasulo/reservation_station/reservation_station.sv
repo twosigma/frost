@@ -1047,8 +1047,12 @@ module reservation_station #(
   // commits, payload CEs) is clocked, so the contract binds at the capture
   // edge only.  Benches may deassert a refused valid between edges, which a
   // combinational check would flag as a harmless mid-cycle transient.
+  // A full flush is exempt: the station documents that a stale dispatch packet
+  // may ride one (the flush branch wins in the valid array and the count), so
+  // on that edge the trusted and untrusted fire terms are allowed to disagree
+  // on a result nothing keeps.
   always_ff @(posedge i_clk) begin
-    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+    if (TRUST_DISPATCH_VALID && i_rst_n && !i_flush_all && !$isunknown(
             {dispatch_valid, dispatch_valid_2, full, full_for_2}
         )) begin
       p_trusted_dispatch_fire_exact : assert (dispatch_fire == (dispatch_valid && !full));
