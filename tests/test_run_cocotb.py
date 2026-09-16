@@ -1081,7 +1081,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Iterative FP divide/sqrt unit against the unrolled fp_divider and "
             "fp_sqrt references: directed corners plus a random sweep, result "
-            "and flags compared bit for bit"
+            "and flags compared bit for bit, and a kill at every stage of the "
+            "sequence followed by the same vector replayed whole"
         ),
     ),
     "dispatch": CocotbRunConfig(

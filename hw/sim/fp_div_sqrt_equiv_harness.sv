@@ -30,10 +30,20 @@
   powers of two, tie patterns and the exponent extremes all appear at a useful
   rate alongside uniformly random bit patterns.
 
+  With i_kill_enable high the sequencer runs each vector twice. The first run
+  is killed: i_kill is pulsed i_kill_delay cycles after the launch (clamped
+  below the operation's completion cycle), the unit must produce no result and
+  must be idle again on the next cycle, and the reference -- which has no kill
+  input -- is left to finish and is discarded. The second run is the whole
+  vector, compared against the reference the ordinary way, so a kill that left
+  residue behind shows up as a mismatch. Only that second run counts as a
+  vector.
+
   Counters are the interface to the test: o_vectors, o_mismatches, o_skews (a
   completion pair that did not land on the same cycle, which the matched
-  latency rules out) and o_timeouts. The first mismatch is latched in the
-  o_fail_* outputs.
+  latency rules out), o_timeouts, and for the kill mode o_kills, o_kill_leaks
+  (a completion after the kill) and o_kill_stuck (the unit not idle again).
+  The first mismatch is latched in the o_fail_* outputs.
 */
 module fp_div_sqrt_equiv_harness #(
     // Vectors the internal generator produces before it stops and raises
@@ -59,6 +69,12 @@ module fp_div_sqrt_equiv_harness #(
     input  logic [ 2:0] i_ext_rm,
     output logic        o_ext_ready,
 
+    // Kill injection. Sampled when a vector starts; i_kill_delay counts
+    // cycles after the launch cycle and is clamped to the last cycle before
+    // the operation would complete (0 means 1).
+    input logic       i_kill_enable,
+    input logic [7:0] i_kill_delay,
+
     // Status
     output logic        o_done,
     output logic [31:0] o_vector_target,
@@ -66,6 +82,9 @@ module fp_div_sqrt_equiv_harness #(
     output logic [31:0] o_mismatches,
     output logic [31:0] o_skews,
     output logic [31:0] o_timeouts,
+    output logic [31:0] o_kills,
+    output logic [31:0] o_kill_leaks,
+    output logic [31:0] o_kill_stuck,
 
     // First mismatch
     output logic        o_fail_valid,
@@ -221,11 +240,13 @@ module fp_div_sqrt_equiv_harness #(
   // ===========================================================================
   // Sequencer
   // ===========================================================================
-  typedef enum logic [1:0] {
+  typedef enum logic [2:0] {
     SEQ_IDLE,
     SEQ_LAUNCH,
     SEQ_WAIT,
-    SEQ_COMPARE
+    SEQ_COMPARE,
+    SEQ_KILL_WAIT,
+    SEQ_KILL_DRAIN
   } seq_state_e;
 
   seq_state_e        seq_state;
@@ -242,16 +263,39 @@ module fp_div_sqrt_equiv_harness #(
   logic       [31:0] timeouts_q;
   logic       [31:0] wait_count;
 
+  logic       [31:0] kills_q;
+  logic       [31:0] kill_leaks_q;
+  logic       [31:0] kill_stuck_q;
+  logic       [ 7:0] kill_count;
+  logic       [ 7:0] kill_delay_eff;
+  logic              kill_armed;
+  logic              replay_q;
+
   logic              gen_ready;
   assign gen_ready = i_gen_enable && (vectors_q < 64'(VECTOR_TARGET));
 
   assign o_vector_target = 32'(VECTOR_TARGET);
-  assign o_ext_ready = (seq_state == SEQ_IDLE);
-  assign o_done = (vectors_q >= 64'(VECTOR_TARGET)) && (seq_state == SEQ_IDLE);
+  assign o_ext_ready = (seq_state == SEQ_IDLE) && !replay_q;
+  assign o_done = (vectors_q >= 64'(VECTOR_TARGET)) && (seq_state == SEQ_IDLE) && !replay_q;
   assign o_vectors = vectors_q;
   assign o_mismatches = mismatches_q;
   assign o_skews = skews_q;
   assign o_timeouts = timeouts_q;
+  assign o_kills = kills_q;
+  assign o_kill_leaks = kill_leaks_q;
+  assign o_kill_stuck = kill_stuck_q;
+
+  // The kill must land before the cycle the unit would complete on, which is
+  // 36 (single) or 65 (double) cycles after the launch.
+  function automatic logic [7:0] kill_delay_for(input logic [7:0] want, input logic is_double);
+    logic [7:0] limit;
+    begin
+      limit = is_double ? 8'd64 : 8'd35;
+      if (want == 8'd0) kill_delay_for = 8'd1;
+      else if (want > limit) kill_delay_for = limit;
+      else kill_delay_for = want;
+    end
+  endfunction
 
   // Unit and reference completion capture
   logic dut_seen, ref_seen;
@@ -286,6 +330,9 @@ module fp_div_sqrt_equiv_harness #(
   logic launch;
   assign launch = (seq_state == SEQ_LAUNCH);
 
+  logic dut_kill;
+  assign dut_kill = (seq_state == SEQ_KILL_WAIT) && ((kill_count + 8'd1) == kill_delay_eff);
+
   logic result_match;
   assign result_match = cur_is_double ? (dut_res == ref_res) : (dut_res[31:0] == ref_res[31:0]);
 
@@ -294,40 +341,82 @@ module fp_div_sqrt_equiv_harness #(
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      seq_state    <= SEQ_IDLE;
-      vectors_q    <= '0;
-      mismatches_q <= '0;
-      skews_q      <= '0;
-      timeouts_q   <= '0;
-      wait_count   <= '0;
-      dut_seen     <= 1'b0;
-      ref_seen     <= 1'b0;
-      o_fail_valid <= 1'b0;
+      seq_state      <= SEQ_IDLE;
+      vectors_q      <= '0;
+      mismatches_q   <= '0;
+      skews_q        <= '0;
+      timeouts_q     <= '0;
+      wait_count     <= '0;
+      dut_seen       <= 1'b0;
+      ref_seen       <= 1'b0;
+      o_fail_valid   <= 1'b0;
+      kills_q        <= '0;
+      kill_leaks_q   <= '0;
+      kill_stuck_q   <= '0;
+      kill_count     <= '0;
+      kill_delay_eff <= 8'd1;
+      kill_armed     <= 1'b0;
+      replay_q       <= 1'b0;
     end else begin
       case (seq_state)
         SEQ_IDLE: begin
           dut_seen   <= 1'b0;
           ref_seen   <= 1'b0;
           wait_count <= '0;
-          if (i_ext_valid) begin
-            seq_state     <= SEQ_LAUNCH;
-            cur_is_sqrt   <= i_ext_is_sqrt;
-            cur_is_double <= i_ext_is_double;
-            cur_rm        <= i_ext_rm;
-            cur_a         <= i_ext_a;
-            cur_b         <= i_ext_b;
+          kill_count <= '0;
+          kill_armed <= 1'b0;
+          if (replay_q) begin
+            // The same vector again, whole: residue a kill left behind in the
+            // unit shows up here as a mismatch against the reference.
+            replay_q  <= 1'b0;
+            seq_state <= SEQ_LAUNCH;
+          end else if (i_ext_valid) begin
+            seq_state      <= SEQ_LAUNCH;
+            cur_is_sqrt    <= i_ext_is_sqrt;
+            cur_is_double  <= i_ext_is_double;
+            cur_rm         <= i_ext_rm;
+            cur_a          <= i_ext_a;
+            cur_b          <= i_ext_b;
+            kill_armed     <= i_kill_enable;
+            kill_delay_eff <= kill_delay_for(i_kill_delay, i_ext_is_double);
           end else if (gen_ready) begin
-            seq_state     <= SEQ_LAUNCH;
-            cur_is_sqrt   <= rnd_c[0];
-            cur_is_double <= rnd_c[1];
-            cur_rm        <= rnd_c[4:2];
-            cur_a         <= shape_operand(rnd_a, rnd_c[11:8], rnd_c[1]);
-            cur_b         <= shape_operand(rnd_b, rnd_c[15:12], rnd_c[1]);
+            seq_state      <= SEQ_LAUNCH;
+            cur_is_sqrt    <= rnd_c[0];
+            cur_is_double  <= rnd_c[1];
+            cur_rm         <= rnd_c[4:2];
+            cur_a          <= shape_operand(rnd_a, rnd_c[11:8], rnd_c[1]);
+            cur_b          <= shape_operand(rnd_b, rnd_c[15:12], rnd_c[1]);
+            kill_armed     <= i_kill_enable;
+            kill_delay_eff <= kill_delay_for(i_kill_delay, rnd_c[1]);
           end
         end
 
         SEQ_LAUNCH: begin
-          seq_state <= SEQ_WAIT;
+          seq_state <= kill_armed ? SEQ_KILL_WAIT : SEQ_WAIT;
+        end
+
+        SEQ_KILL_WAIT: begin
+          kill_count <= kill_count + 8'd1;
+          // Nothing may complete before the kill either; the delay is clamped
+          // below the completion cycle, so this would be a latency fault.
+          if (unit_valid) kill_leaks_q <= kill_leaks_q + 32'd1;
+          if (dut_kill) seq_state <= SEQ_KILL_DRAIN;
+        end
+
+        SEQ_KILL_DRAIN: begin
+          wait_count <= wait_count + 32'd1;
+          // The unit is idle from the cycle after the kill and never completes
+          // the operation it dropped.
+          if ((wait_count == 32'd0) && !unit_ready) kill_stuck_q <= kill_stuck_q + 32'd1;
+          if (unit_valid) kill_leaks_q <= kill_leaks_q + 32'd1;
+          // The references have no kill input, so let the one this vector
+          // started retire before the replay reuses it.
+          if (ref_valid || (wait_count >= 32'(WAIT_LIMIT))) begin
+            if (!ref_valid) timeouts_q <= timeouts_q + 32'd1;
+            kills_q   <= kills_q + 32'd1;
+            replay_q  <= 1'b1;
+            seq_state <= SEQ_IDLE;
+          end
         end
 
         SEQ_WAIT: begin
@@ -393,7 +482,7 @@ module fp_div_sqrt_equiv_harness #(
       .i_operand_a(cur_a),
       .i_operand_b(cur_b),
       .i_rounding_mode(cur_rm),
-      .i_kill(1'b0),
+      .i_kill(dut_kill),
       .o_ready(unit_ready),
       .o_valid(unit_valid),
       .o_result(unit_result),
