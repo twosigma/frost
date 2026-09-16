@@ -37,6 +37,8 @@ static const char no_misses[] CACHE_PROFILE_RODATA = "  %s average miss latency:
 static const char miss_latency[] CACHE_PROFILE_RODATA =
     "  %s average miss latency: %lu.%02lu cycles\n";
 static const char cache_header[] CACHE_PROFILE_RODATA = "  Cache hierarchy:\n";
+static const char cache_absent[] CACHE_PROFILE_RODATA =
+    "  Cache hierarchy: n/a (cache counters absent)\n";
 static const char diagnostic_header[] CACHE_PROFILE_RODATA = "  Diagnostic counters:\n";
 static const char l1i[] CACHE_PROFILE_RODATA = "L1I";
 static const char l1i_access_label[] CACHE_PROFILE_RODATA = "L1I access";
@@ -64,12 +66,37 @@ static const char l2_conflict_label[] CACHE_PROFILE_RODATA = "L2 index-conflict 
 static const char l1d_overlap_label[] CACHE_PROFILE_RODATA = "L1D >=2 misses in flight";
 static const char l2_overlap_label[] CACHE_PROFILE_RODATA = "L2 >=2 misses in flight";
 
+/*
+ * Cache counters the hardware actually implements, clamped to the sidecar
+ * storage. The counters are a build option (PERF_COUNTERS) and mperfcount
+ * covers the whole bank, so anything the CPU does not implement must stay
+ * out of the fixed-size arrays rather than be selected and read back.
+ */
+static CACHE_PROFILE_TEXT uint32_t cache_bank_counter_count(void)
+{
+    uint32_t count = (uint32_t) csr_read_imm(CSR_MPERFCOUNT);
+
+    if (count <= TOMASULO_PROFILE_LEGACY_COUNTER_COUNT) {
+        return 0U;
+    }
+    count -= TOMASULO_PROFILE_LEGACY_COUNTER_COUNT;
+    if (count > TOMASULO_PROFILE_CACHE_COUNTER_COUNT) {
+        count = TOMASULO_PROFILE_CACHE_COUNTER_COUNT;
+    }
+    return count;
+}
+
 static CACHE_PROFILE_TEXT void read_cache_bank(uint64_t *cache_counters, uint32_t control)
 {
+    uint32_t available = cache_bank_counter_count();
     uint32_t i;
 
     csr_write_imm(CSR_MPERFCTL, control);
     for (i = 0; i < TOMASULO_PROFILE_CACHE_COUNTER_COUNT; i++) {
+        if (i >= available) {
+            cache_counters[i] = 0;
+            continue;
+        }
         csr_write_imm(CSR_MPERFSEL, TOMASULO_PROFILE_LEGACY_COUNTER_COUNT + i);
         cache_counters[i] = tomasulo_profile_read_selected_counter64();
     }
@@ -157,6 +184,18 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     uint64_t l2_conflict_stall;
     uint64_t l1d_overlap;
     uint64_t l2_overlap;
+
+    /*
+     * Every delta below indexes the whole bank, so report nothing unless the
+     * hardware implements all of it and both snapshots saw counters. A short
+     * bank would otherwise print differences of counters that do not exist.
+     */
+    if (start->counter_count == 0U || end->counter_count == 0U ||
+        cache_bank_counter_count() < TOMASULO_PROFILE_CACHE_COUNTER_COUNT) {
+        uart_printf(cache_absent);
+        uart_printf(report_diagnostic_header);
+        return;
+    }
 
     /*
      * Full-report users may omit sidecars. Drain into post-timing stack
