@@ -136,7 +136,9 @@ the corresponding frame drains. Each byte lane of the data buffer is a
 simple dual-port memory with a synchronous read addressed by the reader's
 next word. For a valid output beat, the registered data equals the published
 word under read; empty-queue reads are invalid and may collide with writes.
-The byte lanes infer block RAM. Only the small descriptor arrays are read
+A simulation-only tripwire in `eth10g_mac_rx` holds that argument: it latches
+a same-edge hit between the fetch address and any lane write and errors if the
+beat it produced is published. The byte lanes infer block RAM. Only the small descriptor arrays are read
 asynchronously. Mixed jumbo/minimum packets with continuously ready output,
 wraparound, and concurrent reader/drop rollback are tested.
 

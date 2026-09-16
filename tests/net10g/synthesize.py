@@ -226,6 +226,10 @@ def main() -> None:
     run_logged(
         [
             str(frontend),
+            # The usual guard that keeps simulation-only code ($error,
+            # assertions) out of a synthesized view, as the CPU's Yosys flow
+            # in tests/test_run_yosys.py also defines.
+            "-DSYNTHESIS",
             f"--top={TOP}",
             f"--write={converted}",
             *snapshots,

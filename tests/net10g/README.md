@@ -75,7 +75,8 @@ rerun when they do.
 
 The check converts the SystemVerilog package constructs with the image's
 **sv2v v0.0.13** before passing the result to Yosys 0.68's `read_verilog`
-frontend. This standalone script uses that binary when its version matches
+frontend. It converts with `SYNTHESIS` defined, as the CPU's Yosys flow does,
+so simulation-only checks stay out of the synthesized view. This standalone script uses that binary when its version matches
 the pin, so the CI step needs no network access. An image
 predating the sv2v layer falls back to the script's own pinned download: it
 fetches the upstream Linux archive, verifies the SHA256 pinned in the
