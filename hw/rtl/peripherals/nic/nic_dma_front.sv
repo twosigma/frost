@@ -313,8 +313,23 @@ module nic_dma_front #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  // The port answers only the ids it was given, and an accepted request owns
+  // its entry until its response, so every response names a live entry. That
+  // is a contract, not something this module filters: a response for an entry
+  // it does not own is steered by ent_owner_q to whichever engine last held
+  // the index and completes a transfer that engine still has outstanding.
+  // Clearing ent_valid_q for an already-free entry is idempotent, so the
+  // occupancy and the per-side counts survive a stray response; the engine's
+  // bookkeeping does not. Assert both halves of the contract. The range arm
+  // has to come first and stand alone: ent_valid_q[i_dma_resp_id] reads x for
+  // an out-of-range id, which the entry check would then pass silently, and
+  // NUM_ENTRIES need not be a power of two.
   always_ff @(posedge i_clk) begin
-    if (!i_rst && i_dma_resp_valid && !ent_valid_q[i_dma_resp_id])
+    if (!i_rst && i_dma_resp_valid && (32'(i_dma_resp_id) >= NUM_ENTRIES))
+      $error(
+          "nic_dma_front: response for id %0d, outside the %0d entries", i_dma_resp_id, NUM_ENTRIES
+      );
+    else if (!i_rst && i_dma_resp_valid && !ent_valid_q[i_dma_resp_id])
       $error("nic_dma_front: response for a free entry %0d", i_dma_resp_id);
   end
 `endif
