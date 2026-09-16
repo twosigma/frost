@@ -88,7 +88,8 @@ module eth10g_mac_rx #(
   // on the edge that writes its last word, at least seven edges after its
   // first word completes, so no valid word is written on or after its fetch.
   // Reads while the descriptor queue is empty may collide with writes; their
-  // data is invalid and is refreshed before a frame becomes visible.
+  // data is invalid and is refreshed before a frame becomes visible. The
+  // simulation check at the end of the file holds the argument to its word.
   logic [7:0] memory_write_enable;
   logic [7:0] memory_write_data[8];
   logic [MemoryAddrWidth-1:0] memory_write_address[8];
@@ -300,4 +301,34 @@ module eth10g_mac_rx #(
       read_data[lane] <= packet_memory[next_read_word];
     end
   end
+
+`ifndef SYNTHESIS
+  // Read-during-write tripwire for the lane memories. The lanes are simple
+  // dual-port RAMs with no read-during-write guarantee, which is legal only
+  // because a word published to the AXI Stream output was never written on
+  // the edge that fetched it (see the argument above the lane declarations).
+  // Latch a same-edge hit between the fetch address and any lane write, then
+  // complain if the beat that fetch produced is published. A hit while the
+  // descriptor queue is empty is the exempt case: that fetch is repeated
+  // every edge and refreshed before a frame becomes visible.
+  logic fetch_write_collision;
+  always_comb begin
+    fetch_write_collision = 1'b0;
+    for (int lane = 0; lane < 8; lane++) begin
+      if (memory_write_enable[lane] && (memory_write_address[lane] == next_read_word))
+        fetch_write_collision = 1'b1;
+    end
+  end
+
+  logic published_word_was_written;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) published_word_was_written <= 1'b0;
+    else published_word_was_written <= fetch_write_collision;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && m_axis_tvalid && published_word_was_written)
+      $error("eth10g_mac_rx: word %0d was written on the edge that fetched it", read_word);
+  end
+`endif
 endmodule : eth10g_mac_rx
