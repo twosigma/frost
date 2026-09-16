@@ -234,9 +234,10 @@ and [background task documentation](https://code.visualstudio.com/docs/debugtest
 ### Hardware regression
 
 `hw_regression.py` loads and UART-checks every bare-metal app that runs
-unattended (`debug_target` waits for a debugger, so it is left out), runs all
-nine CoreMark-PRO workloads with per-board score gates, then boots Linux to the
-Buildroot login prompt. The Linux stage boots the OpenSBI + Sv39 image,
+unattended (`debug_target` waits for a debugger and `nic_echo` needs receive
+traffic over a transceiver that no board top integrates yet, so both are left
+out; `nic_loopback` is the NIC stage), runs all nine CoreMark-PRO workloads
+with per-board score gates, then boots Linux to the Buildroot login prompt. The Linux stage boots the OpenSBI + Sv39 image,
 requires the userspace stress token, logs in and runs `perf stat` on the cycle
 and instruction counters:
 
