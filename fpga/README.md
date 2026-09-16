@@ -479,8 +479,10 @@ Both verify the actual functions and connections before and after editing, and
 both run in `auto` mode: a netlist that does not match the recipe is caught in
 the preflight and the whole transformation is skipped before any edit, while
 any failure after the first edit is fatal. Their audit files accompany the
-optimized checkpoint. They require no experimental checkpoint or files outside
-the checkout.
+optimized checkpoint, and `build.py` reads them to name each helper's outcome
+(`APPLIED` or `SKIPPED` with the check that failed) in the opt step's output.
+A skip stays advisory and never fails the build. They require no experimental
+checkpoint or files outside the checkout.
 
 X3 uses the placer's ordinary timing-driven replication. A broad
 `FORCE_MAX_FANOUT` policy is not applied: controlled comparisons on the same
