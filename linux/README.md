@@ -30,10 +30,14 @@ and packs it into `sw.mem`. The shim enters the firmware:
 
 ```asm
 li   a0, 0            # hart ID
-li   a1, 0x81000000   # physical address of the DTB
+li   a1, <dtb>        # physical address of the DTB
 li   t0, 0x80000000   # OpenSBI fw_jump entry
 jr   t0
 ```
+
+`<dtb>` is the DTB address the packer computes from the payload (see the DDR
+layout below): `0x81000000` for any payload up to 14 MiB, today's kernel
+included.
 
 The firmware is the unmodified OpenSBI v1.7 generic platform from the
 `linux/opensbi` submodule, built by `linux/opensbi_build.py` with the
@@ -84,9 +88,18 @@ DDR layout as packed by `buildroot-external/board/frost/frost_boot_image.py`
 (offsets from `0x8000_0000`): `fw_jump.bin` at `+0` (at most 1 MiB; its
 runtime rw/heap/scratch regions follow it and are reserved by OpenSBI's
 `reserved-memory` fixup), the S-mode payload or kernel `Image` at `+2 MiB`
-(the rv64 kernel's 2 MiB PMD alignment; a Linux `Image` is checked against its
-header's `image_size`), the DTB at `+16 MiB` in a 64 KiB slot (OpenSBI grows
-it in place), and the initramfs, when present, at `+16 MiB + 64 KiB`.
+(the rv64 kernel's 2 MiB PMD alignment), the DTB in a 64 KiB slot (OpenSBI
+grows it in place), and the initramfs, when present, right after that slot.
+The DTB goes on the first 2 MiB boundary at or above both `+16 MiB` and the
+payload's end (a Linux `Image` ends at its header's `image_size`, bss
+included; a raw payload at its length). With `STRICT_KERNEL_RWX` (the rv64
+default) Linux reserves its image up to the 2 MiB boundary past its end, and
+it drops an initramfs that overlaps a reservation, so the DTB and the
+initramfs start at or above that boundary.
+For payloads up to 14 MiB the floor wins: the DTB sits at `+16 MiB` and the
+initramfs at `+16 MiB + 64 KiB`. The floor only preserves that layout;
+neither Linux nor OpenSBI requires it. The packer fails if the DTB slot or the
+initramfs would end past the advertised memory.
 
 ## Interrupts and time
 
