@@ -341,6 +341,43 @@ module branch_resolution #(
     end
   end
 
+  // The JALR arm of the same idea.  JALR's predicted_target is the only word
+  // of the side-RAM row this module consumes, and the packet carries no
+  // independent copy of it, so it cannot be compared the way the direct
+  // branch's target is: a JALR whose prediction differs from its computed
+  // target is an ordinary misprediction, not a fault.  What the packet does
+  // carry twice is the link address -- in imm, from the per-entry payload,
+  // and in link_addr, from the same row predicted_target came out of -- and
+  // the row's own pc, a fixed instruction length below it.  Check both, so a
+  // JALR that resolves against a row whose words disagree with the packet
+  // beside them is caught here at the consumer.  Neither check pins
+  // predicted_target's value; the row-identity oracle that does (every
+  // packet's three words carried beside it from dispatch through issue) is in
+  // reservation_station.  No predicted_taken qualifier: both link copies are
+  // valid for every JALR, predicted or not.
+  always_comb begin
+    if (!$isunknown(
+            {
+              is_branch_update_issue,
+              rs_issue_int.is_jalr,
+              rs_issue_int.is_compressed,
+              rs_issue_int.imm,
+              rs_issue_int.pc,
+              rs_issue_int.link_addr
+            }
+        )) begin
+      p_jalr_link_matches_side_ram :
+      assert (!(is_branch_update_issue && rs_issue_int.is_jalr) ||
+              (rs_issue_int.link_addr == rs_issue_int.imm));
+      p_jalr_link_follows_row_pc :
+      assert (!(is_branch_update_issue && rs_issue_int.is_jalr) ||
+              (rs_issue_int.link_addr ==
+               (rs_issue_int.pc + (rs_issue_int.is_compressed ?
+                                       riscv_pkg::PcIncrementCompressed :
+                                       riscv_pkg::PcIncrement32bit))));
+    end
+  end
+
   always_comb begin
     if (!$isunknown(
             {

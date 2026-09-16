@@ -234,6 +234,15 @@ def _drive_issue(dut: Any, fields: Mapping[str, int | bool]) -> None:
     )
     for key, value in derived.items():
         issue.setdefault(key, value)
+    if issue["is_jalr"]:
+        # Dispatch puts JALR's link address in imm and the same word, with the
+        # PC it was computed from, in the INT station's tag-indexed side RAM.
+        # branch_resolution asserts that the row agrees with the packet, so
+        # build a consistent row unless the caller supplied one.
+        issue.setdefault("link_addr", int(issue["imm"]))
+        issue.setdefault(
+            "pc", int(issue["link_addr"]) - (2 if issue.get("is_compressed") else 4)
+        )
     dut.i_rs_issue_int.value = _pack_rs_issue(issue)
     # In production this is a same-edge FF twin of the INT stage2 rob_tag. Its
     # keep/dont_touch attributes stop synthesis from merging the two back.
@@ -655,5 +664,62 @@ async def test_jalr_negative_offset_resolves_through_jalr_imm(dut: Any) -> None:
     assert int(dut.o_branch_target_resolved.value) == 0x80000014
     assert update["valid"]
     assert update["taken"]
+    assert not update["mispredicted"]
+    assert dut.o_branch_resolved_correct.value
+
+
+@cocotb.test()
+async def test_jalr_side_ram_row_agrees_with_the_packet(dut: Any) -> None:
+    """A JALR's row link address matches imm and its own PC, mispredicted or not."""
+    await _setup_test(dut)
+
+    # Uncompressed JALR at 0x80000100, predicted somewhere else entirely: the
+    # target compare is a legitimate misprediction and the row checks still
+    # hold, which is the case a target-equality oracle would have rejected.
+    _drive_issue(
+        dut,
+        {
+            "rob_tag": 17,
+            "op": OP_JALR,
+            "src1_value": 0x80000200,
+            "jalr_imm": 0x8,
+            "pc": 0x80000100,
+            "link_addr": 0x80000104,
+            "imm": 0x80000104,
+            "predicted_taken": True,
+            "predicted_target": 0x80000900,
+        },
+    )
+    await _settle()
+
+    update = _read_branch_update(dut)
+    assert dut.o_is_jalr_issue.value
+    assert int(dut.o_branch_target_resolved.value) == 0x80000208
+    assert update["valid"]
+    assert update["mispredicted"]
+
+    # C.JALR: the row's link address is two bytes past the PC, not four.
+    _clear_inputs(dut)
+    _drive_issue(
+        dut,
+        {
+            "rob_tag": 18,
+            "op": OP_JALR,
+            "src1_value": 0x80000300,
+            "jalr_imm": 0x0,
+            "is_compressed": True,
+            "pc": 0x80000180,
+            "link_addr": 0x80000182,
+            "imm": 0x80000182,
+            "predicted_taken": True,
+            "predicted_target": 0x80000300,
+        },
+    )
+    await _settle()
+
+    update = _read_branch_update(dut)
+    assert dut.o_is_jalr_issue.value
+    assert int(dut.o_branch_target_resolved.value) == 0x80000300
+    assert update["valid"]
     assert not update["mispredicted"]
     assert dut.o_branch_resolved_correct.value
