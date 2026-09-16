@@ -503,7 +503,10 @@ seeds; routed WNS then selects the winner, with router congestion warnings
 last. Otherwise actual zero-uncertainty post-place WNS selects it. Seed WNS
 shown in the matrix is only an estimate because the limiting path may change.
 The 0.500 ns seed-grid origin is separate from the 0.000 ns report/checkpoint
-uncertainty and `TNS@0`.
+uncertainty and `TNS@0`. The three phys-opt stages sweep under 0.500 ns of
+added setup uncertainty (`FROST_PHYSOPT_SETUP_UNCERTAINTY`, 0 disables it) and
+take every report and the checkpoint they hand on at 0.000 ns; routing always
+runs at 0.000 ns.
 
 The native six-field `post_place_gate.txt` is promoted with the selected DCP.
 Python writes `post_place_gate_binding.json` with the exact gate/DCP SHA256
