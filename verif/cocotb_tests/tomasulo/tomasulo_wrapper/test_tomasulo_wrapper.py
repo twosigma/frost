@@ -7679,6 +7679,235 @@ async def test_sc_fire_yields_to_colliding_store_fault(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_sc_completion_release_under_cdb_contention(dut: Any) -> None:
+    """The held SC completion is released into a fully contended CDB.
+
+    Same collision as test_sc_fire_yields_to_colliding_store_fault - a
+    misaligned store's registered fault takes the MEM slot and the registered
+    SC completion holds behind it - but injected MUL and ALU completions
+    request both CDB lanes on every cycle from just before the fault onward.
+    MUL outranks MEM and ALU is below it, so lane 0 is taken by the injected
+    MUL and the MEM slot has to win lane 1 out from under the ALU on the
+    release cycle itself.
+
+    This is the case the wrapper's prose used to argue rather than check: if
+    the MEM adapter could be left pending across the release, the SC
+    completion would be dropped (the adapter is ALLOW_GRANT_REFILL = 0, so an
+    input arriving while it is pending is lost).  The wrapper's
+    p_sc_completion_release_adapter_idle / p_sc_completion_release_is_granted
+    / p_sc_completion_token_conserved assertions police that here; this test
+    supplies the interleaving; Verilator runs them in every build.
+    """
+    cocotb.log.info("=== Test: SC Completion Release Under CDB Contention ===")
+    collisions = 0
+    contended_releases = 0
+    for producer_at in range(0, 6):
+        cocotb.log.info(f"--- producer completes at cycle {producer_at} ---")
+        dut_if, _model = await setup_test(dut)
+        dut_if.dut.i_trap_misaligned_accesses.value = 1
+        dut_if.set_fu_ready(RS_MEM, True)
+        addr = 0x1000
+
+        # LR sets the reservation and commits.
+        tag_lr = await dut_if.dispatch(
+            AllocationRequest(pc=0x8000, dest_reg=5, dest_valid=True, is_lr=True)
+        )
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=tag_lr,
+            op=OP_LR_W,
+            src1_ready=True,
+            src1_value=addr,
+            src2_ready=True,
+            src3_ready=True,
+            imm=0,
+            use_imm=True,
+            mem_size=2,
+            mem_signed=False,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+        mem_req = {"en": False}
+        for _ in range(8):
+            mem_req = dut_if.read_lq_mem_request()
+            if mem_req["en"]:
+                break
+            await dut_if.step()
+        assert mem_req["en"], "LQ should issue the LR memory read"
+        await dut_if.step()
+        dut_if.drive_lq_mem_response(0x1234_5678)
+        cdb = await wait_for_cdb(dut_if)
+        dut_if.clear_lq_mem_response()
+        assert cdb.tag == tag_lr
+        commit = await wait_for_commit(dut_if)
+        assert commit["tag"] == tag_lr
+
+        # Same skeleton as the plain collision test, plus two jam entries
+        # dispatched behind the store.  Being younger than the SC they cannot
+        # commit while the SC sits at the head, so their injected completions
+        # stay addressed to live ROB entries for the whole window.
+        blocker_tag = await dut_if.dispatch(make_int_req(pc=0x8004, rd=6))
+        tag_sc = await dut_if.dispatch(
+            AllocationRequest(
+                pc=0x8008, dest_reg=7, dest_valid=True, is_sc=True, is_store=True
+            )
+        )
+        producer_tag = await dut_if.dispatch(make_int_req(pc=0x800C, rd=8))
+        store_tag = await dut_if.dispatch(make_store_req(pc=0x8010))
+        jam_mul_tag = await dut_if.dispatch(make_int_req(pc=0x8014, rd=9))
+        jam_alu_tag = await dut_if.dispatch(make_int_req(pc=0x8018, rd=10))
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=tag_sc,
+            op=OP_SC_W,
+            src1_ready=True,
+            src1_value=addr,
+            src2_ready=True,
+            src2_value=0xAABB_CCDD,
+            src3_ready=True,
+            imm=0,
+            use_imm=True,
+            mem_size=2,
+            mem_signed=False,
+        )
+        await dut_if.step()
+        # Misaligned SW (addr = 0x2002, word store), waiting on the producer.
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=store_tag,
+            op=OP_SW,
+            src1_ready=False,
+            src1_tag=producer_tag,
+            src2_ready=True,
+            src2_value=0xCAFE,
+            src3_ready=True,
+            imm=2,
+            use_imm=True,
+            mem_size=2,
+        )
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+        for _ in range(3):
+            await dut_if.step()
+
+        # The jam starts once the FP_ADD wake-ups below have been delivered:
+        # FP_ADD is the lowest-priority slot, so a jam running over it would
+        # starve the blocker and producer completions and the collision would
+        # never be set up at all.  The fault decision lands at least two
+        # cycles after the producer's completion, so the whole SC hold and
+        # release still sits inside the jammed window.
+        producer_drive_at = producer_at if producer_at != 0 else 2
+        jam_from = producer_drive_at + 1
+
+        fault_at: int | None = None
+        sc_at: int | None = None
+        fault_count = 0
+        sc_count = 0
+        sc_value = None
+        sc_commits = 0
+        sc_commit_value = None
+        sc_commit_at: int | None = None
+        collided = False
+        sc_had_lane_partner = False
+
+        def note_sc_commits(idx: int) -> None:
+            nonlocal sc_commits, sc_commit_value, sc_commit_at
+            for commit in (dut_if.read_commit(), dut_if.read_commit_2()):
+                if commit["valid"] and commit["tag"] == tag_sc:
+                    sc_commits += 1
+                    sc_commit_value = commit["value"]
+                    sc_commit_at = idx if sc_commit_at is None else sc_commit_at
+
+        def note_cdb(idx: int) -> None:
+            nonlocal fault_count, fault_at, sc_count, sc_value, sc_at
+            nonlocal sc_had_lane_partner
+            lanes = _read_cdb_lanes(dut_if.dut)
+            for lane, cdb in enumerate(lanes):
+                if cdb.valid and cdb.tag == store_tag and cdb.exception:
+                    fault_count += 1
+                    fault_at = idx if fault_at is None else fault_at
+                if cdb.valid and cdb.tag == tag_sc:
+                    sc_count += 1
+                    sc_value = cdb.value
+                    sc_at = idx if sc_at is None else sc_at
+                    # The SC won its lane against a simultaneous request on
+                    # the other one: the release really was contended.
+                    if lanes[1 - lane].valid:
+                        sc_had_lane_partner = True
+
+        for idx in range(28):
+            if idx == 0:
+                dut_if.drive_fu_complete(FU_FP_ADD, tag=blocker_tag, value=0x2000)
+            elif idx == 1:
+                dut_if.clear_fu_complete(FU_FP_ADD)
+            if idx == producer_at and producer_at != 0:
+                dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=0x2000)
+            elif idx == producer_at + 1 and producer_at != 0:
+                dut_if.clear_fu_complete(FU_FP_ADD)
+            if producer_at == 0 and idx == 2:
+                dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=0x2000)
+            elif producer_at == 0 and idx == 3:
+                dut_if.clear_fu_complete(FU_FP_ADD)
+            if idx == jam_from:
+                # Occupy both CDB lanes from here on.  MUL (slot 1) outranks
+                # MEM and owns lane 0; ALU (slot 0) is below MEM and only wins
+                # a lane while the MEM slot is idle.  Every MEM packet -
+                # including the released SC completion - therefore has to take
+                # lane 1 out from under a live ALU request.
+                dut_if.drive_fu_complete(FU_MUL, tag=jam_mul_tag, value=0xB)
+                dut_if.drive_fu_complete(FU_ALU, tag=jam_alu_tag, value=0xA)
+            await RisingEdge(dut_if.clock)
+            note_sc_commits(idx)
+            await FallingEdge(dut_if.clock)
+            if int(dut.sc_pending_unit_inst.sc_fire_now.value) and int(
+                dut.store_misalign_issue.value
+            ):
+                collided = True
+            # The release cycle proper: the SC completion wins the MEM lane
+            # while the injected jam is requesting the other one.
+            if int(dut.sc_cdb_transfer.value) and int(dut.o_cdb_grant.value) != (
+                1 << FU_MEM
+            ):
+                contended_releases += 1
+            note_cdb(idx)
+        for idx in range(28, 56):
+            if sc_commit_at is not None and idx > sc_commit_at + 4:
+                break
+            await RisingEdge(dut_if.clock)
+            note_sc_commits(idx)
+            await FallingEdge(dut_if.clock)
+            note_cdb(idx)
+        dut_if.clear_fu_complete(FU_MUL)
+        dut_if.clear_fu_complete(FU_ALU)
+        assert fault_count == 1, f"store fault broadcast {fault_count} times"
+        assert sc_count == 1, f"SC completion broadcast {sc_count} times"
+        assert sc_value == 0, f"SC should succeed, got {sc_value}"
+        if collided:
+            collisions += 1
+            assert fault_at is not None and sc_at is not None
+            assert fault_at < sc_at, (
+                f"colliding fault must reach the CDB before the SC: fault {fault_at}, "
+                f"SC {sc_at}"
+            )
+            # A colliding iteration broadcasts the SC after the fault, so
+            # after the jam has started: that broadcast is the contended
+            # release this test exists to produce.
+            assert sc_had_lane_partner, (
+                "the released SC broadcast never shared a cycle with the "
+                "injected jam - CDB contention was not in place across the "
+                "release"
+            )
+        assert sc_commits == 1, f"SC committed {sc_commits} times"
+        assert sc_commit_value == 0, f"SC should commit success, got {sc_commit_value}"
+    assert collisions >= 1, "the sweep never landed a fault on the SC's fire cycle"
+    assert contended_releases >= 1, "no SC completion was presented under contention"
+    cocotb.log.info(
+        f"=== Test Passed ({collisions} colliding iterations, "
+        f"{contended_releases} contended presentation cycles) ==="
+    )
+
+
+@cocotb.test()
 async def test_older_store_fault_survives_flush_of_held_younger_fault(dut: Any) -> None:
     """An older store's fault is kept when a partial flush kills the held younger one.
 

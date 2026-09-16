@@ -2127,6 +2127,13 @@ module tomasulo_wrapper #(
   // waits, so the payload is captured at the fire only and held as is.  The
   // fire used to be gated by the live store-fault decision instead, which put
   // the store address, misalignment and PMA cone on the SC table's write path.
+  //
+  // That the cycle in which this hold releases is always consumed is not an
+  // argument here any more: the checks below lq_result_accepted state it as
+  // p_sc_completion_release_adapter_idle and p_sc_completion_release_is_granted,
+  // and p_sc_completion_token_conserved pins the packet to exactly one CDB
+  // broadcast.  test_sc_completion_release_under_cdb_contention drives the
+  // release with both CDB lanes contended.
   riscv_pkg::fu_complete_t sc_fu_complete_reg;
   logic sc_completion_held;
   assign sc_completion_held = sc_fu_complete_reg.valid && store_misalign_fu_complete_reg.valid;
@@ -2227,6 +2234,9 @@ module tomasulo_wrapper #(
 
   // MUX: misaligned store exception > SC > LQ for MEM adapter input.  The
   // fault register cannot hold, the SC completion register can (above).
+  // Putting SC back on top would deliver it under a presenting fault and then
+  // hold it for a second delivery; p_sc_completion_token_conserved below
+  // catches that.
   // Aligned plain stores mark the ROB done directly and do not occupy CDB.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
@@ -2259,6 +2269,121 @@ module tomasulo_wrapper #(
                               !sc_fu_complete_reg.valid &&
                               !store_misalign_fu_complete_reg.valid &&
                               !mem_adapter_result_pending;
+
+`ifndef SYNTHESIS
+  // ---------------------------------------------------------------------------
+  // SC completion handoff: broadcast on the CDB exactly once.
+  //
+  // These checks replace the prose argument above that the cycle in which
+  // sc_completion_held releases is always consumed.  They are compiled for
+  // simulation (Verilator runs assertions in every cocotb build) and for the
+  // tomasulo_wrapper formal target (the .sby reads this file with
+  // read -formal), and left out of synthesis.
+  //
+  // The delivery event is taken from what the MEM slot actually broadcasts,
+  // not from the mux priority the argument assumes.  Deriving it from
+  // "the fault register is idle, so the SC must be the packet" would make the
+  // checks blind to the one mutation they most need to catch: restoring the
+  // old SC-above-fault mux order delivers the SC while the fault register is
+  // still valid, and a priority-derived observer would score that cycle as no
+  // delivery at all and the replay one cycle later as the first.
+  //
+  // The MEM adapter is instantiated with ALLOW_GRANT_REFILL = 0, so an input
+  // arriving while it is pending is neither latched nor re-armed - it is
+  // simply lost.  mem_adapter_to_arbiter is therefore the adapter's idle
+  // pass-through of mem_fu_to_adapter, valid-filtered by its own partial
+  // flush check, and a granted MEM broadcast carrying the SC's ROB tag is the
+  // handoff completing.  No other MEM-slot source can carry that tag: the
+  // fault register holds the faulting store's tag and the LQ result a load's,
+  // and an SC that faults in its issue cycle has its table entry killed
+  // before it can fire, so it never reaches sc_fu_complete_reg at all.
+  logic sc_cdb_transfer;
+  assign sc_cdb_transfer = sc_fu_complete_reg.valid && mem_adapter_to_arbiter.valid &&
+      o_cdb_grant[riscv_pkg::FU_MEM] &&
+      (mem_adapter_to_arbiter.tag == sc_fu_complete_reg.tag);
+
+  // Shadow copies rather than $past: this block is compiled by Verilator as
+  // well as by the formal front end.  sc_check_armed keeps an unconstrained
+  // initial state from failing a check before reset has been seen.
+  /* verilator lint_off MULTIDRIVEN */  // power-up value plus the reset arm below
+  logic sc_check_armed;
+  /* verilator lint_on MULTIDRIVEN */
+  logic sc_completion_valid_q;
+  logic sc_completion_fire_q;
+  logic sc_completion_flush_all_q;
+  logic sc_cdb_transfer_q;
+  initial sc_check_armed = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      sc_check_armed            <= 1'b1;
+      sc_completion_valid_q     <= 1'b0;
+      sc_completion_fire_q      <= 1'b0;
+      sc_completion_flush_all_q <= 1'b0;
+      sc_cdb_transfer_q         <= 1'b0;
+    end else begin
+      sc_completion_valid_q     <= sc_fu_complete_reg.valid;
+      sc_completion_fire_q      <= sc_fu_complete.valid;
+      sc_completion_flush_all_q <= speculative_flush_all;
+      sc_cdb_transfer_q         <= sc_cdb_transfer;
+    end
+  end
+
+  always @(posedge i_clk) begin
+    if (i_rst_n && sc_check_armed) begin
+      // 1. The unit never fires while a completion waits, so the payload
+      //    register is never overwritten under an undelivered packet and the
+      //    conservation law below has no re-arm case to disentangle.
+      if (sc_fu_complete.valid) begin
+        p_sc_fire_needs_free_completion_reg : assert (!sc_fu_complete_reg.valid);
+      end
+
+      // 2. The release never lands on a busy adapter, which is what "the
+      //    cycle is consumed" rests on.  The adapter is never pending: MEM
+      //    sits second in the CDB's fixed priority (MUL > MEM > ALU > ...) on
+      //    a two-lane bus, so a presented MEM packet always wins a lane, and
+      //    the one thing that withholds the grant - cdb_kill =
+      //    speculative_flush_all - is also the adapter's i_flush and clears
+      //    it on the same edge.  A CDB priority change, a third producer
+      //    ranked above MEM, or ALLOW_GRANT_REFILL coming back would surface
+      //    here rather than as a lost SC result.
+      if (sc_fu_complete_reg.valid && !store_misalign_fu_complete_reg.valid) begin
+        p_sc_completion_release_adapter_idle : assert (!mem_adapter_result_pending);
+      end
+
+      // 3. A partial flush can never squash a waiting SC completion, so
+      //    check 5 needs no escape hatch for one.  The SC resolves at the ROB
+      //    head and its entry cannot retire before this result arrives, so
+      //    head_tag still equals the packet's tag and a partial-flush
+      //    boundary is never older than the head.  Asserted rather than
+      //    assumed: an escape hatch here would let a genuinely dropped packet
+      //    pass as a legitimate squash.
+      if (sc_fu_complete_reg.valid && speculative_flush_en && !speculative_flush_all) begin
+        p_sc_completion_partial_flush_cannot_kill :
+        assert (!is_younger(sc_fu_complete_reg.tag, i_flush_tag, head_tag));
+      end
+
+      // 4. The release cycle is consumed: whenever no registered store fault
+      //    is presenting above it and no full flush is killing the broadcast,
+      //    the waiting SC completion is granted the MEM lane this cycle.
+      //    This is the prose claim itself, stated on the grant.
+      if (sc_fu_complete_reg.valid && !store_misalign_fu_complete_reg.valid &&
+          !speculative_flush_all) begin
+        p_sc_completion_release_is_granted : assert (sc_cdb_transfer);
+      end
+
+      // 5. Exactly once, as a conservation law on the register: the packet
+      //    stays exactly until it is broadcast, and a full flush is the only
+      //    other way for it to leave.  Releasing the hold early makes the
+      //    register clear with no transfer; restoring the old SC-above-fault
+      //    mux order makes it stay valid after one, and both are mismatches
+      //    here.
+      p_sc_completion_token_conserved :
+      assert (sc_fu_complete_reg.valid ==
+              (!sc_completion_flush_all_q &&
+               (sc_completion_fire_q || (sc_completion_valid_q && !sc_cdb_transfer_q))));
+    end
+  end
+`endif
 
   // SC resolution + pending-register FSM -> atomics/sc_pending_unit.sv.
   // store-misalign, the MEM mux, and lq_result_accepted stay in the wrapper.
