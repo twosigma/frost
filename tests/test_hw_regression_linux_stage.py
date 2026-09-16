@@ -168,6 +168,10 @@ def test_default_stages_skip_debugger_driven_apps() -> None:
     stages = hw.regression_stages()
     assert "debug_target" in hw.VALID_APPS
     assert "debug_target" not in stages
+    # nic_echo needs receive traffic over a transceiver no board top has yet.
+    assert "nic_echo" in hw.VALID_APPS
+    assert "nic_echo" not in stages
+    assert "nic_loopback" in stages
     assert stages[0] == "hello_world"
     assert stages[-2:] == [hw.SWEEP_STAGE, hw.LINUX_STAGE]
     assert not set(hw.COREMARK_PRO_APP_NAMES) & set(stages)

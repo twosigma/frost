@@ -625,6 +625,13 @@ def run_sweep_stage(
 # can load them; the regression leaves them out.
 DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 
+# Apps that need receive traffic over the 10G transceiver. No board top
+# integrates one yet (x3_frost ties the NIC's receive side off), so nic_echo
+# reports "no carrier" on every bitstream and cannot pass; nic_loopback is the
+# NIC stage. They stay in VALID_APPS so load_software.py can load them; the
+# regression neither runs nor accepts them until a transceiver exists.
+EXTERNAL_LINK_APPS = frozenset({"nic_echo"})
+
 
 def regression_stages() -> list[str]:
     """Return every stage in canonical order: apps, the PRO sweep, then Linux.
@@ -632,7 +639,8 @@ def regression_stages() -> list[str]:
     hello_world runs first as the bring-up smoke test, the remaining apps in
     VALID_APPS order, then the CoreMark-PRO sweep. linux_boot runs last because
     it is the longest, whole-system stage and should only run once everything
-    else has passed. Debugger-driven apps are excluded (DEBUGGER_DRIVEN_APPS).
+    else has passed. Debugger-driven apps (DEBUGGER_DRIVEN_APPS) and apps that
+    need an external link (EXTERNAL_LINK_APPS) are excluded.
     """
     phase1 = [
         app
@@ -640,6 +648,7 @@ def regression_stages() -> list[str]:
         if app != LINUX_STAGE
         and app not in COREMARK_PRO_APP_NAMES
         and app not in DEBUGGER_DRIVEN_APPS
+        and app not in EXTERNAL_LINK_APPS
     ]
     phase1.remove("hello_world")
     phase1.insert(0, "hello_world")
@@ -737,13 +746,20 @@ def main() -> int:
     all_stages = regression_stages()
 
     if args.stages:
-        unknown = sorted(set(args.stages) - set(all_stages))
+        requested = set(args.stages)
+        excluded = sorted(requested & (DEBUGGER_DRIVEN_APPS | EXTERNAL_LINK_APPS))
+        if excluded:
+            parser.error(
+                f"not a regression stage: {', '.join(excluded)} (debug_target needs "
+                "a debugger; nic_echo needs receive traffic over a transceiver no "
+                "board top integrates yet; load_software.py can still run them)"
+            )
+        unknown = sorted(requested - set(all_stages))
         if unknown:
             parser.error(
                 f"unknown stage(s): {', '.join(unknown)}\n"
                 f"valid stages: {', '.join(all_stages)}"
             )
-        requested = set(args.stages)
         selected = [stage for stage in all_stages if stage in requested]
     else:
         selected = all_stages
