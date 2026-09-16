@@ -40,11 +40,11 @@ lines so simulation needs only the clock; `boards/x3/x3_frost.sv` derives
 that clock from the MMCM at 40 MHz (1200 MHz / 30) and ties the PHY status
 to "clock shared, transceiver ready". The loopback build runs the MAC well
 below the 10GBASE-R word rate on purpose: closing the MAC at line rate is
-part of the slice 4 transceiver work. (The first post-opt probe put the MAC
-RX's worst path at 18.4 ns through an asynchronous distributed-RAM frame
-buffer; both MAC frame buffers have since moved to block RAM with
-synchronous reads, which also keeps their address fan-out out of the CPU's
-placement, but the MAC has not been timed at line rate since.)
+part of the slice 4 transceiver work. The receive MAC is staged for the
+word rate (see `hw/rtl/net10g/README.md`); routed timing at that rate, the
+transmit MAC included, comes with the transceiver integration. Both MAC
+frame buffers are block RAM, which keeps their address fan-out out of the
+CPU's placement.
 `boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
 buses with datapath and bus-skew bounds, single-bit levels, the reset
 assertion) rather than cutting the clock pair, so a crossing the
@@ -243,8 +243,8 @@ write completes nothing, a refused TX turn under saturated priority hands
 RX the next one). `test_nic_top.py` (`nic_top`) runs the whole NIC with
 three clocks: bring-up and register rules, frames around the raw loopback
 with completions, counters, interrupts and moderation, frames from the
-software wire through the filter with TX validated on the wire, and RESET
-mid-traffic. The full-system programs `nic_loopback` and `nic_echo`
-(above) run through `frost` in both memory tiers. `formal/async_fifo.sby` bounds the FIFO under free-running
+software wire through the filter, a bad FCS and a runt counted in the MAC
+totals without RX_DROP, TX validated on the wire, and RESET mid-traffic.
+The full-system programs `nic_loopback` and `nic_echo` (above) run through `frost` in both memory tiers. `formal/async_fifo.sby` bounds the FIFO under free-running
 unrelated clocks: occupancy, no underflow, Gray consistency, and a watched
 word delivered in order and intact.

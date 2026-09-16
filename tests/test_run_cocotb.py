@@ -1456,7 +1456,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "The whole NIC with the MAC/PCS in its own clocks: registers and "
             "bring-up, frames through the raw loopback into ring buffers with "
             "completions, counters and interrupts, frames from a software wire "
-            "with the filter, TX captured on the wire, RESET mid-traffic"
+            "with the filter and the MAC drop counters (bad FCS, runt), TX "
+            "captured on the wire, RESET mid-traffic"
         ),
     ),
     "nic_reset": CocotbRunConfig(
