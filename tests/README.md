@@ -70,14 +70,22 @@ Runs CPU/SoC Cocotb simulations directly or through pytest. `TEST_REGISTRY` in
 ./scripts/frost.py cocotb --help
 ```
 
+Every target runs the RTL's SystemVerilog assertions. Verilator has enabled
+immediate assertions, `assert property`, and `unique`/`priority` case checks by
+default since 5.038, and the pinned toolchain is 5.052, so no registry entry
+needs a `--assert` argument and the equivalence oracles the RTL carries under
+`` `ifndef SYNTHESIS `` are live in every bench. A failed assertion stops the
+simulation and fails the run. Oracles guarded by `` `ifdef FORMAL ``, such as
+the ones inside `fetch_redirect.sv`, are proved by `test_run_formal.py`
+instead and do not run here.
+
 The `data_mem_response_mux` and `data_mem_response_mux_xilinx` targets compare
 the integrated complete-response helper against the original RAM/MMIO/cached
 selection, with the actual memory router on both sides. They check 32/64-bit
 payload selection, every binary selector combination, stale MMIO-valid,
 fast/cached overlap, IDs and all router controls across stalls, device-read
-arming, flush and reset. Both targets enable assertions; the Xilinx variant
-uses test-only LUT functional models. They add no firmware or full-CPU timing
-qualification claim.
+arming, flush and reset. The Xilinx variant uses test-only LUT functional
+models. They add no firmware or full-CPU timing qualification claim.
 
 Applications compile automatically before simulation. The debug-module tests
 drive the design's JTAG pins from cocotb (`debug_test`) or hand them to a real

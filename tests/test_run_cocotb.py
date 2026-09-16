@@ -1125,13 +1125,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_response_mux",
         hdl_toplevel_module="data_mem_response_mux_tb",
         description="Portable 32/64-bit response selection and actual-router exact-cycle seam",
-        verilator_extra_args=("--assert",),
     ),
     "data_mem_response_mux_xilinx": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_response_mux",
         hdl_toplevel_module="data_mem_response_mux_tb",
         description="Xilinx LUT response selection and actual-router exact-cycle seam",
-        verilator_extra_args=("--assert", "+define+FROST_XILINX_PRIMS"),
+        verilator_extra_args=("+define+FROST_XILINX_PRIMS",),
     ),
     "data_mem_request_router": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
@@ -1531,7 +1530,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_csr_half",
         hdl_toplevel_module="perf_csr_half_test_harness",
         description="Performance CSR half capture, commit phase and legacy read equivalence",
-        verilator_extra_args=("--assert",),
     ),
     "ooo_pipeline_control": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.pipeline_control.test_ooo_pipeline_control",
@@ -1636,7 +1634,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.pd_stage.test_pd_stage",
         hdl_toplevel_module="pd_stage",
         description="PD-stage unit tests including exact bit-20/illegal cofactors and native/RVC redirects",
-        verilator_extra_args=("--assert",),
     ),
     "id_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.id_stage.test_id_stage",
