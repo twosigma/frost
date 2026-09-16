@@ -921,46 +921,6 @@ def test_post_opt_promotion_clears_stale_audits(tmp_path: Path) -> None:
     )
 
 
-def test_post_opt_helper_status_names_applied_skipped_and_missing(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """A skipped netlist repair must be named, with the check that failed."""
-    main_work = tmp_path / "main"
-    main_work.mkdir()
-    (main_work / fpga_build.POST_OPT_NETLIST_HELPERS["l1_control_repair"]).write_text(
-        "status APPLIED before {proof {assignments 8192 ones 1024}} "
-        "t_counts {48 42 35 3} t_leaves 128 valid_leaves 31\n"
-    )
-    (main_work / fpga_build.POST_OPT_NETLIST_HELPERS["x3_nic_placement"]).write_text(
-        "status SKIPPED_OR_PREFLIGHT_ERROR mode auto "
-        "reason {Unsupported or shared DMA LUT function}\n"
-    )
-
-    fpga_build.report_post_opt_helper_status(main_work)
-
-    lines = capsys.readouterr().out.splitlines()
-    assert lines == [
-        "  l1_control_repair: APPLIED",
-        "  x3_nic_placement: SKIPPED: Unsupported or shared DMA LUT function",
-    ]
-
-    # An aborted helper left an incomplete status behind; it is not a skip.
-    (main_work / fpga_build.POST_OPT_NETLIST_HELPERS["l1_control_repair"]).write_text(
-        "status PREFLIGHT\n"
-    )
-    fpga_build.report_post_opt_helper_status(main_work)
-    assert capsys.readouterr().out.splitlines()[0] == (
-        "  l1_control_repair: NOT APPLIED (PREFLIGHT)"
-    )
-
-    # A helper that never wrote an audit is reported, not silently treated as
-    # applied; reporting stays advisory and never raises.
-    for audit_name in fpga_build.POST_OPT_NETLIST_HELPERS.values():
-        (main_work / audit_name).unlink()
-    fpga_build.report_post_opt_helper_status(main_work)
-    assert all("NO AUDIT" in line for line in capsys.readouterr().out.splitlines())
-
-
 def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     """The tracked placement group is fail-closed and removed before scoring."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
@@ -2710,25 +2670,15 @@ def test_place_gate_cannot_qualify_a_fallback_checkpoint(tmp_path: Path) -> None
     assert not fpga_build.bind_x3_place_gate(dest)
 
 
-@pytest.mark.parametrize("audits_present", (False, True))
-def test_post_opt_helper_audits_follow_promotion_before_worker_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audits_present: bool
+def test_promoted_opt_checkpoint_survives_worker_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Fresh native opt audits survive cleanup; absent audits cannot retain old ones."""
+    """The optimized checkpoint reaches main work before the worker is removed."""
     work = _sweep_input(tmp_path, "opt")
-    audit_names = (
-        "l1_control_repair_audit.tcldict",
-        "x3_nic_placement_post_opt_audit.tcldict",
-    )
-    for name in audit_names:
-        (work / name).write_text("old audit")
 
     def complete_opt(_command: list[str], *, cwd: Path) -> Any:
         (cwd / "post_opt.dcp").write_bytes(b"new optimized checkpoint")
         _write_stage_utilization(cwd, "post_opt", 42)
-        if audits_present:
-            for name in audit_names:
-                (cwd / name).write_text(f"fresh {name}")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(fpga_build.subprocess, "run", complete_opt)
@@ -2739,11 +2689,6 @@ def test_post_opt_helper_audits_follow_promotion_before_worker_cleanup(
     )
     assert not (tmp_path / "x3/work_opt_Explore").exists()
     assert (work / "post_opt.dcp").read_bytes() == b"new optimized checkpoint"
-    for name in audit_names:
-        if audits_present:
-            assert (work / name).read_text() == f"fresh {name}"
-        else:
-            assert not (work / name).exists()
 
 
 def test_missing_placement_checkpoint_cannot_defeat_complete_passing_seed(

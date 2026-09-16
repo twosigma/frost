@@ -472,21 +472,8 @@ report; an unguided winner clears them. The historical `compressed` group,
 audit, and report names remain stable although the cone now covers every
 predecode metadata predicate on both parities.
 
-After X3 `opt_design`, `build_step.tcl` sources two guarded netlist
-transformations before saving `post_opt.dcp`. `fpga/build/l1_control_repair.tcl`
-refactors the L1D write-valid completion cone into cofactor LUTs and
-distributes the final T clock enable over copies. `x3_nic_placement.tcl` adds
-four distribution copies; despite the file name they drive the DMA coherence
-sequencer's write enables, the L1I MSHR data enables, the fetch
-instruction-buffer prefix and the predecode sideband banks, not NIC cells.
-Both verify the actual functions and connections before and after editing, and
-both run in `auto` mode: a netlist that does not match the recipe is caught in
-the preflight and the whole transformation is skipped before any edit, while
-any failure after the first edit is fatal. Their audit files accompany the
-optimized checkpoint, and `build.py` reads them to name each helper's outcome
-(`APPLIED` or `SKIPPED` with the check that failed) in the opt step's output.
-A skip stays advisory and never fails the build. They require no experimental
-checkpoint or files outside the checkout.
+X3 `opt_design` saves `post_opt.dcp` directly; no netlist edits run between
+them.
 
 X3 uses the placer's ordinary timing-driven replication. A broad
 `FORCE_MAX_FANOUT` policy is not applied: controlled comparisons on the same

@@ -546,15 +546,6 @@ _TCL_REPORT_PREFIX = {
 # stage always writes final output; post-place phys-opt does not promote final.
 FINAL_ELIGIBLE_STEPS = {"route", "post_route_physopt", "second_route"}
 
-# Native post-opt netlist helpers, mapped to the audit dict each one writes.
-# Both match the live netlist against a compiled-in recipe and skip themselves
-# before any edit when it no longer matches, so the promoted audit is the only
-# record of whether the repair reached this build's checkpoint.
-POST_OPT_NETLIST_HELPERS = {
-    "l1_control_repair": "l1_control_repair_audit.tcldict",
-    "x3_nic_placement": "x3_nic_placement_post_opt_audit.tcldict",
-}
-
 
 # Utilities
 
@@ -1250,74 +1241,6 @@ def bind_x3_output_lineage(
     return True
 
 
-def split_tcl_list(text: str) -> list[str]:
-    """Split a Tcl list into its top-level elements.
-
-    This covers the bare words and brace-quoted values the netlist helper
-    audits write. It is not a general Tcl parser.
-    """
-    elements: list[str] = []
-    index = 0
-    while index < len(text):
-        if text[index].isspace():
-            index += 1
-            continue
-        if text[index] == "{":
-            depth = 0
-            start = index + 1
-            while index < len(text):
-                if text[index] == "\\":
-                    index += 2
-                    continue
-                if text[index] == "{":
-                    depth += 1
-                elif text[index] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        break
-                index += 1
-            elements.append(text[start:index])
-            index += 1
-            continue
-        start = index
-        while index < len(text) and not text[index].isspace():
-            index += 2 if text[index] == "\\" else 1
-        elements.append(text[start:index])
-    return elements
-
-
-def read_netlist_helper_audit(audit_file: Path) -> dict[str, str]:
-    """Read one post-opt helper audit dict; an unreadable audit reads empty."""
-    try:
-        elements = split_tcl_list(audit_file.read_text())
-    except OSError:
-        return {}
-    return dict(zip(elements[0::2], elements[1::2]))
-
-
-def report_post_opt_helper_status(main_work: Path) -> None:
-    """Name each post-opt netlist helper's outcome for this build.
-
-    A helper that skips is not a build failure, so this never fails the step;
-    it only keeps a silently dropped netlist repair out of the build's blind
-    spot, since nothing downstream reads these audits.
-    """
-    for helper, audit_name in POST_OPT_NETLIST_HELPERS.items():
-        audit = read_netlist_helper_audit(main_work / audit_name)
-        status = audit.get("status", "")
-        reason = audit.get("reason", "")
-        detail = f": {reason}" if reason else ""
-        if status == "APPLIED":
-            print(f"  {helper}: APPLIED")
-        elif not status:
-            print(f"  {helper}: NO AUDIT ({audit_name} missing or unreadable)")
-        elif status.startswith("SKIPPED"):
-            print(f"  {helper}: SKIPPED{detail}")
-        else:
-            # Both helpers leave an incomplete status behind when they abort.
-            print(f"  {helper}: NOT APPLIED ({status}){detail}")
-
-
 def copy_results_to_main_work(
     work_dir: Path,
     main_work: Path,
@@ -1331,8 +1254,7 @@ def copy_results_to_main_work(
     promoted checkpoint. Retired ``post_opt_fence_*`` diagnostics described a
     setup exception that is no longer applied. Invalidate both families when
     installing a new post-opt checkpoint so stale evidence cannot be mistaken
-    for evidence about the new DCP. Preserve the two named native post-opt
-    helper audits with their checkpoint before the worker directory is removed.
+    for evidence about the new DCP.
     A promoted post-synth checkpoint also records the synthesis-time netlist
     options (``netlist_config.json``) that nothing downstream can recover.
     """
@@ -1382,12 +1304,6 @@ def copy_results_to_main_work(
             for stale_audit in main_work.glob(stale_pattern):
                 if stale_audit.is_file() or stale_audit.is_symlink():
                     stale_audit.unlink()
-        for audit_name in POST_OPT_NETLIST_HELPERS.values():
-            destination_audit = main_work / audit_name
-            destination_audit.unlink(missing_ok=True)
-            source_audit = work_dir / audit_name
-            if source_audit.is_file():
-                shutil.copy2(source_audit, destination_audit)
 
     if checkpoint_promoted and report_prefix in {"post_synth", "post_opt"}:
         (main_work / "post_place_gate.txt").unlink(missing_ok=True)
@@ -2436,9 +2352,6 @@ def run_step(
         report_prefix,
         source_report_prefix=tcl_report_prefix,
     )
-
-    if board_name == "x3" and step == "opt":
-        report_post_opt_helper_status(main_work)
 
     if (
         board_name == "x3"

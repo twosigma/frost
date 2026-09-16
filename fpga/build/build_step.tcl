@@ -822,15 +822,6 @@ if {$step eq "synth"} {
     # opt_design -merge_equivalent_drivers -hier_fanout_limit 512
     opt_design -directive $directive
 
-    if {$board_name eq "x3"} {
-        # Match and verify these local transformations against this run's
-        # optimized netlist. They never load an experimental checkpoint.
-        source [file join $script_directory l1_control_repair.tcl]
-        frost_l1_control_repair::apply $work_directory/l1_control_repair_audit.tcldict auto
-        source [file join $script_directory x3_nic_placement.tcl]
-        frost_x3_nic_placement::post_opt $work_directory/x3_nic_placement_post_opt_audit.tcldict auto
-    }
-
     write_checkpoint -force $work_directory/post_opt.dcp
     report_timing_summary -file $work_directory/post_opt_timing.rpt
     report_utilization -file $work_directory/post_opt_util.rpt
