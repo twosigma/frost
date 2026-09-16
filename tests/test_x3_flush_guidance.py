@@ -19,12 +19,115 @@ import subprocess
 
 import pytest
 
-from test_l1_control_repair import MOCK
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "fpga/build/x3_flush_guidance.tcl"
-# Reuse only native-API stubs, before the L1-specific netlist construction.
-API = MOCK.split("set r [::frost_l1_control_repair::recipe]", 1)[0]
+# Finite in-memory stand-ins for the native netlist commands the script calls.
+API = r"""
+source [lindex $argv 0]
+set audit [lindex $argv 1]
+namespace eval sim {variable cells {}; variable pins {}; variable nets {}; variable edits 0}
+proc sim::add_cell {name ref {init {1'b0}}} {
+    variable cells
+    dict set cells $name [dict create NAME $name REF_NAME $ref INIT $init IS_PRIMITIVE 1 \
+        PARENT {} LOC {} BEL {} DONT_TOUCH {} KEEP {} IS_LOC_FIXED 0 IS_BEL_FIXED 0 \
+        LOCK_PINS {} RLOC {} HU_SET {} U_SET {}]
+}
+proc sim::add_pin {name direction} {
+    variable pins
+    if {![dict exists $pins $name]} {dict set pins $name [dict create NAME $name \
+        REF_PIN_NAME [file tail $name] DIRECTION $direction net {}]}
+}
+proc sim::wire {source sink} {
+    variable pins; variable nets
+    add_pin $source OUT; add_pin $sink IN
+    set net [dict get $pins $source net]
+    if {$net eq {}} {set net "${source}_net"; dict set nets $net 1; dict set pins $source net $net}
+    dict set pins $sink net $net
+}
+proc sim::argument {args key {default {}}} {
+    set i [lsearch -exact $args $key]
+    if {$i < 0} {return $default}; return [lindex $args [expr {$i+1}]]
+}
+proc sim::filter {objects expression} {
+    if {$expression eq {}} {return $objects}
+    if {![regexp {^(NAME|REF_PIN_NAME|DIRECTION) == "?(.*?)"?$} $expression -> key value]} {error "Unsupported mock filter: $expression"}
+    set value [string map [list \\" \" \\\\ \\] $value]
+    set result {}; foreach o $objects {if {[get_property $key $o] eq $value} {lappend result $o}}
+    return $result
+}
+proc get_cells {args} {
+    set from [sim::argument $args -of_objects]
+    if {$from ne {}} {
+        set result {}; foreach p $from {lappend result [file dirname $p]}; return [lsort -unique $result]
+    }
+    return [sim::filter [dict keys $::sim::cells] [sim::argument $args -filter]]
+}
+proc get_pins {args} {
+    set result {}
+    foreach o [sim::argument $args -of_objects] {
+        dict for {p state} $::sim::pins {
+            if {([dict exists $::sim::cells $o] && [file dirname $p] eq $o) ||
+                ([dict exists $::sim::nets $o] && [dict get $state net] eq $o)} {lappend result $p}
+        }
+    }
+    return [sim::filter [lsort -unique $result] [sim::argument $args -filter]]
+}
+proc get_nets {args} {
+    set from [sim::argument $args -of_objects]
+    if {$from eq {}} {return [sim::filter [dict keys $::sim::nets] [sim::argument $args -filter]]}
+    set result {}
+    foreach p $from {set n [dict get $::sim::pins $p net]; if {$n ne {}} {lappend result $n}}
+    return [lsort -unique $result]
+}
+proc get_ports {args} {return {}}
+proc list_property {o} {
+    if {[dict exists $::sim::cells $o]} {return [dict keys [dict get $::sim::cells $o]]}
+    if {[dict exists $::sim::pins $o]} {return [dict keys [dict get $::sim::pins $o]]}
+    return {NAME DONT_TOUCH KEEP}
+}
+proc get_property {key objects} {
+    set result {}
+    foreach o $objects {
+        if {[dict exists $::sim::cells $o $key]} {lappend result [dict get $::sim::cells $o $key]
+        } elseif {[dict exists $::sim::pins $o $key]} {lappend result [dict get $::sim::pins $o $key]
+        } elseif {$key eq "NAME"} {lappend result $o
+        } else {lappend result {}}
+    }
+    if {[llength $result] == 1} {return [lindex $result 0]}; return $result
+}
+proc set_property {key value o} {incr ::sim::edits; dict set ::sim::cells $o $key $value}
+proc create_cell {args} {
+    incr ::sim::edits
+    set ref [sim::argument $args -reference]; set name [lindex $args end]
+    if {[dict exists $::sim::cells $name]} {error "Duplicate mock cell"}
+    sim::add_cell $name $ref
+    regexp {LUT([1-6])} $ref -> width
+    for {set i 0} {$i < $width} {incr i} {sim::add_pin "$name/I$i" IN}
+    sim::add_pin "$name/O" OUT
+}
+proc create_net {name} {incr ::sim::edits; dict set ::sim::nets $name 1}
+proc connect_net {args} {
+    incr ::sim::edits
+    if {[info exists ::inject_connect_failure]} {error "Injected connection failure"}
+    set n [sim::argument $args -net]
+    foreach p [sim::argument $args -objects] {dict set ::sim::pins $p net $n}
+}
+proc disconnect_net {args} {
+    incr ::sim::edits
+    foreach p [sim::argument $args -pinlist] {dict set ::sim::pins $p net {}}
+}
+proc remove_cell {name} {
+    incr ::sim::edits; dict unset ::sim::cells $name
+    foreach p [dict keys $::sim::pins] {if {[file dirname $p] eq $name} {dict unset ::sim::pins $p}}
+}
+proc sim::consumer {pin} {
+    set name [file dirname $pin]; set port [file tail $pin]
+    if {![dict exists $::sim::cells $name]} {
+        if {$port in {CE D}} {add_cell $name FDRE} else {add_cell $name LUT6 {64'hAAAAAAAAAAAAAAAA}}
+    }
+    add_pin $pin IN
+}
+"""
 FLUSH = r"""
 namespace eval sim {variable netprops {}; variable clock_name clock_from_mmcm; variable period 3.333}
 rename get_property sim::base_get_property
