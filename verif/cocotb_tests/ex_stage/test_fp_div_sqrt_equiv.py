@@ -34,6 +34,10 @@ CLOCK_PERIOD_NS = 10
 # harness's launch and compare cycles.
 VECTOR_CYCLES = 80
 
+# A killed vector runs the operation twice: up to the clamped kill delay, the
+# drain until the reference retires, then the whole replay.
+KILL_VECTOR_CYCLES = 220
+
 # The random sweep's vector count comes from the harness parameter. The test
 # polls in blocks and gives up after this many cycles per vector on average.
 SWEEP_CYCLE_MARGIN = 4
@@ -172,6 +176,8 @@ def _init_inputs(dut: Any) -> None:
     dut.i_ext_a.value = 0
     dut.i_ext_b.value = 0
     dut.i_ext_rm.value = 0
+    dut.i_kill_enable.value = 0
+    dut.i_kill_delay.value = 0
 
 
 async def setup(dut: Any, seed: int = 0x0123_4567_89AB_CDEF) -> None:
@@ -204,7 +210,13 @@ def _failure_text(dut: Any) -> str:
 
 
 async def _inject(
-    dut: Any, is_sqrt: bool, is_double: bool, operand_a: int, operand_b: int, rm: int
+    dut: Any,
+    is_sqrt: bool,
+    is_double: bool,
+    operand_a: int,
+    operand_b: int,
+    rm: int,
+    cycles: int = VECTOR_CYCLES,
 ) -> None:
     """Run one directed vector through the harness and wait for its compare."""
     start_count = int(dut.o_vectors.value)
@@ -218,12 +230,12 @@ async def _inject(
     await RisingEdge(dut.i_clk)
     dut.i_ext_valid.value = 0
 
-    for _ in range(VECTOR_CYCLES):
+    for _ in range(cycles):
         await RisingEdge(dut.i_clk)
         if int(dut.o_vectors.value) != start_count:
             return
     raise AssertionError(
-        f"vector did not complete in {VECTOR_CYCLES} cycles: "
+        f"vector did not complete in {cycles} cycles: "
         f"sqrt={is_sqrt} double={is_double} a=0x{operand_a:016X} b=0x{operand_b:016X}"
     )
 
@@ -240,6 +252,10 @@ def _check_counters(dut: Any, expected_vectors: int | None = None) -> None:
         f"first: {_failure_text(dut)}"
     )
     assert timeouts == 0, f"{timeouts} of {vectors} vectors never completed"
+    leaks = int(dut.o_kill_leaks.value)
+    stuck = int(dut.o_kill_stuck.value)
+    assert leaks == 0, f"{leaks} killed operations still produced a completion"
+    assert stuck == 0, f"{stuck} killed operations left the unit busy"
     assert skews == 0, (
         f"{skews} of {vectors} vectors completed on different cycles; the "
         "iterative unit must keep the reference's 36/65-cycle latency"
@@ -344,3 +360,67 @@ async def test_random_sweep(dut: Any) -> None:
 
     _check_counters(dut, target)
     dut._log.info("random sweep vectors: %d (seed 0x%X)", target, seed)
+
+
+# ============================================================================
+# Test 5: the kill path
+# ============================================================================
+@cocotb.test()
+async def test_kill_leaves_no_residue(dut: Any) -> None:
+    """Killing an operation mid-flight drops it and leaves the next one exact."""
+    await setup(dut)
+
+    dut.i_kill_enable.value = 1
+
+    # Every state of the sequence gets a kill: unpack, init, setup, the first
+    # and last iteration steps, and each of the rounding/output stages. The
+    # harness clamps a delay past the last cycle before completion, so the
+    # large values land on the final states of each precision.
+    delays = [1, 2, 3, 4, 5, 17, 33, 34, 35, 40, 50, 62, 63, 64, 90]
+    count = 0
+    for delay in delays:
+        dut.i_kill_delay.value = delay
+        for rm in (0, 1, 4):
+            await _inject(
+                dut,
+                False,
+                False,
+                SP_OPERANDS["all_frac_ones"],
+                SP_OPERANDS["three"],
+                rm,
+                cycles=KILL_VECTOR_CYCLES,
+            )
+            count += 1
+            await _inject(
+                dut,
+                False,
+                True,
+                DP_OPERANDS["one"],
+                DP_OPERANDS["three"],
+                rm,
+                cycles=KILL_VECTOR_CYCLES,
+            )
+            count += 1
+            await _inject(
+                dut,
+                True,
+                True,
+                DP_OPERANDS["max_subnormal"],
+                0,
+                rm,
+                cycles=KILL_VECTOR_CYCLES,
+            )
+            count += 1
+
+    dut.i_kill_enable.value = 0
+    await RisingEdge(dut.i_clk)
+
+    kills = int(dut.o_kills.value)
+    assert kills == count, f"expected {count} kills, harness counted {kills}"
+    _check_counters(dut, count)
+
+    # The replays after the kills must still agree with the reference, and a
+    # plain vector after the mode is switched off must too.
+    await _inject(dut, True, False, SP_OPERANDS["two"], 0, 0)
+    _check_counters(dut, count + 1)
+    dut._log.info("killed vectors: %d", kills)
