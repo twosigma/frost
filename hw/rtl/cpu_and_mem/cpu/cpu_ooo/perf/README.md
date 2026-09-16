@@ -18,7 +18,8 @@ LUTs, 18.3k flops and 2.1k CARRY8 fewer without them). With
 trap; the three read-only ones trap on writes as always), all read zero,
 `mperfsel`/`mperfctl` ignore writes, and `tomasulo_profile_take_snapshot`
 records zero counters, so the software reports print "Profiling counters:
-absent" and zeros. The event sources keep their registers at their owners;
+absent" and zeros, with the cache section replaced by "Cache hierarchy: n/a
+(cache counters absent)". The event sources keep their registers at their owners;
 synthesis removes the unread ones (the cache and fetch-provider observers
 are marked keep and stay). `build.py --perf-counters` (the default for
 `--cpu-clock-div N` analysis builds; a synthesis-time option, resumed runs
@@ -488,7 +489,10 @@ sidecar address.
 0–105 through `mperfsel` / `mperfdata` / `mperfdatah`.
 
 `tomasulo_profile_read_cache_pair()` drains the end/current and
-start/preceding cache snapshots into the bound 24-counter sidecars. Call it
+start/preceding cache snapshots into the bound 24-counter sidecars, reading
+only the counters `mperfcount` reports and zeroing the rest, so a build
+without the full bank cannot leave foreign values in them. The cache report
+prints "n/a" rather than differences of counters that do not exist. Call it
 after capturing the end snapshot and before taking another snapshot, since
 the next capture advances both cache banks. Deferring those extra CSR reads
 keeps the legacy pre-timer sequence byte-for-byte unchanged, so enabling the
