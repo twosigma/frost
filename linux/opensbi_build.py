@@ -23,8 +23,9 @@ v1.7), built for the FROST boot layout:
 * ``FW_JUMP_OFFSET=0x200000`` (the generic default): the next stage (a kernel
   Image or a bare S-mode payload) sits 2 MiB above the firmware.
 * ``FW_JUMP_FDT_OFFSET=`` (empty): fw_jump leaves ``a1`` alone, so the boot
-  shim's DTB address is passed to the next stage unchanged and no FDT copy
-  happens. The packer therefore owns the whole layout.
+  shim's DTB address, which the packer computes from the payload's size, is
+  passed to the next stage unchanged and no FDT copy happens. The packer
+  therefore owns the whole layout.
 * ``PLATFORM_DEFCONFIG`` = ``linux/opensbi_frost_defconfig``: only the
   drivers FROST has (uart8250, PLIC, ACLINT mswi/mtimer); see that file.
 * ``platform-cflags-y=-DFDT_ASSUME_MASK=7`` (libfdt ASSUME_VALID_DTB |

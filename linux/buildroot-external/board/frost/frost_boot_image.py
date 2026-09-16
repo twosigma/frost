@@ -24,12 +24,24 @@ Layout in cached DDR (offsets from 0x8000_0000; see linux/README.md):
   +0          OpenSBI fw_jump.bin (FW_TEXT_START), at most FW_MAX_BYTES
   +2 MiB      the S-mode payload: a Linux ``Image`` or a raw binary
               (2 MiB alignment is the rv64 kernel's PMD requirement)
-  +16 MiB     the DTB, in a 64 KiB slot (OpenSBI grows it in place)
-  +16 MiB+64K the initramfs cpio, when given (bounds via linux,initrd-*)
+  +D          the DTB, in a 64 KiB slot (OpenSBI grows it in place)
+  +D+64K      the initramfs cpio, when given (bounds via linux,initrd-*)
+
+  D = align_up(max(16 MiB, 2 MiB + footprint), 2 MiB)
+
+The footprint is a Linux ``Image``'s header ``image_size`` (text plus bss), or
+a raw payload's length. Linux (rv64, STRICT_KERNEL_RWX) reserves its image up
+to the next 2 MiB boundary and drops an initramfs that overlaps a reservation,
+so the DTB starts at or above that boundary and the initramfs follows the DTB
+slot. The 16 MiB floor
+(DTB_MIN_OFFSET) is for compatibility only: every payload of at most 14 MiB
+packs exactly as it did when the DTB offset was fixed. The DTB slot, and the
+initramfs when given, must end inside the MEM_SIZE memory node.
 
 The boot shim in low BRAM sets a0 = hart id, a1 = the DTB address and jumps to
-the firmware; fw_jump passes a1 through (it is built without an FDT offset), so
-the addresses here are the only copy of the layout.
+the firmware; fw_jump passes a1 through (it is built without an FDT offset).
+main() plans one Layout, and every address in the outputs comes from it: the
+shim's a1, the /chosen initramfs bounds and both DDR images.
 
 Outputs (in --out):
   sw.{mem,txt}      the low-BRAM shim
@@ -37,10 +49,10 @@ Outputs (in --out):
                     directives) and dense ``.txt`` (the JTAG loader's stream)
   frost.{dts,dtb}   the generated device tree
 
-A Linux ``Image`` is recognized by its header magic and checked against the
-header's ``image_size`` (text plus bss) rather than the file size. Every
-placement is asserted against the slot table, and the DTB is given growth
-slack for OpenSBI's reserved-memory and cpu fixups.
+A Linux ``Image`` is recognized by its header magic and placed by the header's
+``image_size`` rather than the file size. Every region is asserted to be
+ordered and inside the memory node, and the DTB is given growth slack for
+OpenSBI's reserved-memory and cpu fixups.
 """
 
 import argparse
@@ -49,17 +61,24 @@ import struct
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 DDR_BASE = 0x8000_0000
 FW_OFFSET = 0x0
 PAYLOAD_OFFSET = 0x20_0000
-DTB_OFFSET = 0x100_0000
+# The rv64 kernel's PMD: the Image loads on a PMD boundary, and Linux (with
+# STRICT_KERNEL_RWX) reserves it up to the next boundary past its end.
+PMD_BYTES = 0x20_0000
+# The lowest DTB offset. A compatibility floor, not a Linux or OpenSBI
+# requirement: it was the fixed DTB offset, so payloads that fit below it keep
+# their DTB and initramfs addresses and pack bit-identically.
+DTB_MIN_OFFSET = 0x100_0000
 DTB_SLOT_BYTES = 0x1_0000
-INITRD_OFFSET = DTB_OFFSET + DTB_SLOT_BYTES
 MEM_SIZE = 0x400_0000  # 64 MiB advertised in /memory (also the sim DDR model)
 
-# fw_jump.bin is ~270 KiB; its runtime rw/heap/scratch regions follow the
-# binary and OpenSBI reserves them below the payload (banner "Firmware Size").
+# fw_jump.bin is well under FW_MAX_BYTES; its runtime rw/heap/scratch regions
+# follow the binary and OpenSBI reserves them below the payload (banner
+# "Firmware Size").
 FW_MAX_BYTES = 0x10_0000
 # OpenSBI's fdt fixups each open the tree with +1 KiB of headroom; keep the
 # slot roomy beyond that.
@@ -126,6 +145,43 @@ def linux_image_size(payload: bytes) -> int | None:
     if len(payload) >= 0x40 and payload[0x30:0x38] == LINUX_IMAGE_MAGIC:
         return struct.unpack_from("<Q", payload, LINUX_IMAGE_SIZE_OFFSET)[0]
     return None
+
+
+class Layout(NamedTuple):
+    """Where the DTB and the initramfs go, as offsets from DDR_BASE."""
+
+    footprint: int  # the payload's size in memory (payload_footprint)
+    dtb_offset: int
+    initrd_offset: int
+
+
+def payload_footprint(payload: bytes) -> int:
+    """Return the payload's size in memory.
+
+    A Linux Image occupies its header's image_size (text plus bss); a raw
+    payload occupies its length.
+    """
+    image_size = linux_image_size(payload)
+    if image_size is None:
+        return len(payload)
+    assert image_size >= len(
+        payload
+    ), "Linux Image header image_size below the file size"
+    return image_size
+
+
+def plan_layout(footprint: int) -> Layout:
+    """Place the DTB and the initramfs above a payload of this footprint.
+
+    The DTB takes the first PMD boundary at or above both the payload's end
+    and DTB_MIN_OFFSET, and the initramfs follows the DTB slot. Linux (with
+    STRICT_KERNEL_RWX) reserves its image up to the PMD boundary past its end
+    and drops an initramfs that overlaps a reservation, so both regions start
+    clear of that reservation.
+    """
+    lowest = max(DTB_MIN_OFFSET, PAYLOAD_OFFSET + footprint)
+    dtb_offset = (lowest + PMD_BYTES - 1) // PMD_BYTES * PMD_BYTES
+    return Layout(footprint, dtb_offset, dtb_offset + DTB_SLOT_BYTES)
 
 
 def gen_dts(
@@ -263,13 +319,15 @@ def compile_dtb(dts: str, out_dir: Path, dtc: str) -> bytes:
     return dtb_path.read_bytes()
 
 
-def build_shim(out_dir: Path, cross: str, march: str, mabi: str) -> bytes:
+def build_shim(
+    out_dir: Path, layout: Layout, cross: str, march: str, mabi: str
+) -> bytes:
     """Assemble the low-BRAM boot shim and return its raw bytes."""
     src = out_dir / "frost_boot_shim.S"
     src.write_text(
         ".section .text\n.globl _start\n_start:\n"
         "    li   a0, 0\n"  # boot hart id (FROST is single-hart)
-        f"    li   a1, 0x{DDR_BASE + DTB_OFFSET:08x}\n"  # a1 = DTB physical address
+        f"    li   a1, 0x{DDR_BASE + layout.dtb_offset:08x}\n"  # a1 = DTB physical address
         f"    li   t0, 0x{DDR_BASE + FW_OFFSET:08x}\n"  # OpenSBI fw_jump entry
         "    jr   t0\n"
     )
@@ -289,38 +347,35 @@ def build_shim(out_dir: Path, cross: str, march: str, mabi: str) -> bytes:
 
 
 def check_layout(
-    firmware: bytes, payload: bytes, dtb: bytes, initrd: bytes | None
-) -> int:
-    """Assert every region fits its slot; return the payload's footprint."""
+    layout: Layout, firmware: bytes, dtb: bytes, initrd: bytes | None
+) -> None:
+    """Assert every region is ordered, fits its slot and ends inside memory."""
     assert len(firmware) <= FW_MAX_BYTES, (
         f"firmware is 0x{len(firmware):x} bytes; the slot below the payload holds "
         f"0x{FW_MAX_BYTES:x} plus OpenSBI's runtime regions"
     )
-    footprint = linux_image_size(payload)
-    if footprint is None:
-        footprint = len(payload)
-    else:
-        assert footprint >= len(
-            payload
-        ), "Linux Image header image_size below the file size"
-    assert PAYLOAD_OFFSET + footprint <= DTB_OFFSET, (
-        f"payload footprint 0x{footprint:x} at +0x{PAYLOAD_OFFSET:x} overruns the DTB "
-        f"slot at +0x{DTB_OFFSET:x}"
+    assert PAYLOAD_OFFSET + layout.footprint <= layout.dtb_offset, (
+        f"payload footprint 0x{layout.footprint:x} at +0x{PAYLOAD_OFFSET:x} overruns "
+        f"the DTB slot at +0x{layout.dtb_offset:x}"
     )
     assert len(dtb) + DTB_GROWTH_BYTES <= DTB_SLOT_BYTES, (
         f"DTB is 0x{len(dtb):x} bytes; the slot holds 0x{DTB_SLOT_BYTES:x} minus "
         f"0x{DTB_GROWTH_BYTES:x} of fixup growth"
     )
+    assert layout.dtb_offset + DTB_SLOT_BYTES <= MEM_SIZE, (
+        f"DTB slot at +0x{layout.dtb_offset:x}, above a payload footprint of "
+        f"0x{layout.footprint:x}, overruns the 0x{MEM_SIZE:x} memory node"
+    )
     if initrd is not None:
-        assert INITRD_OFFSET + len(initrd) <= MEM_SIZE, (
-            f"initramfs 0x{len(initrd):x} bytes at +0x{INITRD_OFFSET:x} overruns the "
-            f"0x{MEM_SIZE:x} memory node"
+        assert layout.initrd_offset + len(initrd) <= MEM_SIZE, (
+            f"initramfs 0x{len(initrd):x} bytes at +0x{layout.initrd_offset:x} "
+            f"overruns the 0x{MEM_SIZE:x} memory node"
         )
-    return footprint
 
 
 def write_images(
     out_dir: Path,
+    layout: Layout,
     shim: bytes,
     firmware: bytes,
     payload: bytes,
@@ -333,9 +388,9 @@ def write_images(
     (out_dir / "sw.txt").write_text("\n".join(sw) + "\n")
 
     regions = [(FW_OFFSET, to_words(firmware)), (PAYLOAD_OFFSET, to_words(payload)),
-               (DTB_OFFSET, to_words(dtb))]  # fmt: skip
+               (layout.dtb_offset, to_words(dtb))]  # fmt: skip
     if initrd is not None:
-        regions.append((INITRD_OFFSET, to_words(initrd)))
+        regions.append((layout.initrd_offset, to_words(initrd)))
 
     with (out_dir / "sw_ddr.mem").open("w") as f:
         for offset, words in regions:
@@ -402,11 +457,12 @@ def main(argv: list[str] | None = None) -> int:
     firmware = Path(args.firmware).read_bytes()
     payload = Path(args.payload).read_bytes()
     initrd = Path(args.initrd).read_bytes() if args.initrd else None
+    layout = plan_layout(payload_footprint(payload))
     initrd_range = None
     if initrd is not None:
         initrd_range = (
-            DDR_BASE + INITRD_OFFSET,
-            DDR_BASE + INITRD_OFFSET + len(initrd),
+            DDR_BASE + layout.initrd_offset,
+            DDR_BASE + layout.initrd_offset + len(initrd),
         )
     dtb = compile_dtb(
         gen_dts(
@@ -418,15 +474,15 @@ def main(argv: list[str] | None = None) -> int:
         out_dir,
         args.dtc,
     )
-    footprint = check_layout(firmware, payload, dtb, initrd)
-    shim = build_shim(out_dir, args.cross, args.shim_march, args.shim_mabi)
-    dense_words = write_images(out_dir, shim, firmware, payload, dtb, initrd)
+    check_layout(layout, firmware, dtb, initrd)
+    shim = build_shim(out_dir, layout, args.cross, args.shim_march, args.shim_mabi)
+    dense_words = write_images(out_dir, layout, shim, firmware, payload, dtb, initrd)
 
     kind = "Linux Image" if linux_image_size(payload) is not None else "raw payload"
     print(
         f"firmware {len(firmware)} B @ 0x{DDR_BASE + FW_OFFSET:08x}; {kind} {len(payload)} B "
-        f"(footprint 0x{footprint:x}) @ 0x{DDR_BASE + PAYLOAD_OFFSET:08x}; DTB {len(dtb)} B "
-        f"@ 0x{DDR_BASE + DTB_OFFSET:08x}"
+        f"(footprint 0x{layout.footprint:x}) @ 0x{DDR_BASE + PAYLOAD_OFFSET:08x}; DTB {len(dtb)} B "
+        f"@ 0x{DDR_BASE + layout.dtb_offset:08x}"
         + (
             f"; initrd {len(initrd)} B @ 0x{initrd_range[0]:08x} (end 0x{initrd_range[1]:08x})"
             if initrd is not None and initrd_range is not None

@@ -15,9 +15,12 @@
  */
 
 /* S-mode payload under OpenSBI fw_jump: the whole program lives in cached DDR
- * at the boot layout's payload slot (+2 MiB), below the DTB slot at +16 MiB
- * (linux/buildroot-external/board/frost/frost_boot_image.py). fw_jump enters
- * _start in S-mode with a0 = hart id and a1 = the DTB address. */
+ * at the boot layout's payload slot (+2 MiB). The packer
+ * (linux/buildroot-external/board/frost/frost_boot_image.py) places the DTB at
+ * +16 MiB or above, past the raw binary's length, but cannot see the NOLOAD
+ * bss and stack. LENGTH = 14M bounds the whole linked program, those
+ * included, so it stays below +16 MiB. fw_jump enters _start in S-mode with
+ * a0 = hart id and a1 = the DTB address. */
 
 OUTPUT_ARCH(riscv)
 ENTRY(_start)

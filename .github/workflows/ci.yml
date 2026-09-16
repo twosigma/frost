@@ -544,7 +544,8 @@ jobs:
   # MMU Linux lane (Phase 3): OpenSBI fw_jump + mainline Sv39 kernel + musl
   # userspace with perf. Built from the linux/opensbi and linux/buildroot
   # submodules through the FROST BR2_EXTERNAL tree; the images are packed by
-  # frost_boot_image.py (firmware +0, Image +2 MiB, DTB +16 MiB, initramfs).
+  # frost_boot_image.py (firmware +0, Image +2 MiB, DTB at +16 MiB or the first
+  # 2 MiB boundary past a larger Image, initramfs after it).
   build-frost-linux-mmu:
     name: Build FROST MMU Linux Image (Buildroot + OpenSBI)
     runs-on: ubuntu-24.04
