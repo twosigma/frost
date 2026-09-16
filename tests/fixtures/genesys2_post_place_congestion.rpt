@@ -1,0 +1,26 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2025.2 (lin64) Build 6299465 Fri Nov 14 12:34:56 MST 2025
+| Date         : Tue Sep  1 20:48:29 2026
+| Host         : build-host running 64-bit Ubuntu 25.10
+| Command      : report_design_analysis -congestion -file fpga/build/genesys2/work_place_ExtraTimingOpt/post_place_congestion.rpt
+| Design       : genesys2_frost
+| Device       : xc7k325t
+| Design State : Routed
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Report Design Analysis
+
+Table of Contents
+-----------------
+1. Placer Final Level Congestion Reporting
+
+1. Placer Final Level Congestion Reporting
+------------------------------------------
+
++-----------+--------+-------+------------+-----------------------------------+---------------+----------------+-----+--------+------+------+------+-----+-------+-----+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Direction |  Type  | Level | Congestion |               Window              | Combined LUTs | Avg LUT Inputs | LUT | LUTRAM | Flop | MUXF | RAMB | DSP | CARRY | SRL |                                                                                                                              Cell Names                                                                                                                             |
++-----------+--------+-------+------------+-----------------------------------+---------------+----------------+-----+--------+------+------+------+-----+-------+-----+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| East      | Global |     6 |       106% | (CLBLM_R_X15Y175,CLBLM_R_X79Y238) |            3% |          3.716 | 78% | 49%    |  16% |   0% | 48%  | 2%  |    2% |  0% | subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_int_rs(21%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo(18%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst(17%)                                   |
+| South     | Global |     6 |       108% | (CLBLM_L_X12Y139,CLBLL_L_X76Y202) |            3% |          3.859 | 86% | 23%    |  21% |   1% | 69%  | 11% |    3% |  0% | subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_fp_div_shim/u_sqrt_d(41%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo(18%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_int_rs(10%) |
++-----------+--------+-------+------------+-----------------------------------+---------------+----------------+-----+--------+------+------+------+-----+-------+-----+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+

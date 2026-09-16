@@ -1,0 +1,27 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2025.2 (lin64) Build 6299465 Fri Nov 14 12:34:56 MST 2025
+| Date         : Mon Sep  7 22:22:04 2026
+| Host         : build-host running 64-bit Ubuntu 25.10
+| Command      : report_design_analysis -congestion -file fpga/build/x3/work_place_ExtraNetDelay_high_u0.300_control/post_place_congestion.rpt
+| Design       : x3_frost
+| Device       : xcux35
+| Design State : Fully Placed
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Report Design Analysis
+
+Table of Contents
+-----------------
+1. Placer Final Level Congestion Reporting
+
+1. Placer Final Level Congestion Reporting
+------------------------------------------
+
++-----------+-------+-------+--------------------------------+---------------+----------------+-----+--------+------+------+------+------+-----+-------+-----+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| Direction |  Type | Level |             Window             | Combined LUTs | Avg LUT Inputs | LUT | LUTRAM | Flop | MUXF | RAMB | URAM | DSP | CARRY | SRL |                                                                                                                          Cell Names                                                                                                                         |
++-----------+-------+-------+--------------------------------+---------------+----------------+-----+--------+------+------+------+------+-----+-------+-----+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| South     | Long  |     5 | (CLEL_R_X9Y434,CLEL_R_X25Y465) |            0% |          3.331 | 64% | 17%    |   9% |   0% | 14%  | 100% | 85% |    3% |  0% | subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_mem_rs(25%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_rob(22%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_int_rs(19%) |
+| East      | Short |     5 | (CLEL_R_X5Y355,CLEL_R_X21Y386) |           12% |          3.435 | 66% | 39%    |  32% |   0% | NA   | 100% | NA  |    1% |  0% | ddr_subsystem/ddr_subsys_i/ddr_smc/inst(26%),subsystem/frost_processor/cpu_and_memory_subsystem(25%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo(24%)                                                                            |
+| West      | Short |     5 | (CLEL_R_X6Y431,CLEL_R_X22Y462) |            0% |          3.593 | 67% | 12%    |   9% |   0% | NA   | 100% | NA  |    0% |  0% | subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_mem_rs(28%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_int_rs(24%),subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/u_tomasulo/u_rob(20%) |
++-----------+-------+-------+--------------------------------+---------------+----------------+-----+--------+------+------+------+------+-----+-------+-----+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+

@@ -3002,3 +3002,87 @@ def test_downstream_completion_rechecks_prelaunch_parent_and_promoted_output(
     assert (work / "post_route.dcp").exists()
     assert not (work / "post_route.lineage.json").exists()
     assert (tmp_path / "x3/work_route_Explore").exists()
+
+
+# Trimmed but genuine ``report_design_analysis -congestion`` output kept beside
+# this file: two placements that reported windows (X3 Long/Short level 5,
+# genesys2 Global level 6) and one that reported none. Only the Host/Command
+# header lines were rewritten; the tables are as Vivado wrote them. A veto that
+# silently parses nothing is invisible, so the row regex is measured against
+# real reports instead of hand-written ones.
+CONGESTION_FIXTURES = REPO_ROOT / "tests/fixtures"
+
+
+@pytest.mark.parametrize(
+    ("fixture", "expected_levels", "expected_max"),
+    (
+        ("x3_post_place_congestion.rpt", [5, 5, 5], 5),
+        ("genesys2_post_place_congestion.rpt", [6, 6], 6),
+        ("x3_post_place_congestion_clear.rpt", [], 0),
+    ),
+)
+def test_congestion_regex_reads_real_vivado_reports(
+    tmp_path: Path, fixture: str, expected_levels: list[int], expected_max: int
+) -> None:
+    """Real report rows still yield their Level column, and only those rows."""
+    report = CONGESTION_FIXTURES / fixture
+    text = report.read_text()
+    assert [
+        int(match.group(1)) for match in fpga_build._CONGESTION_ROW_RE.finditer(text)
+    ] == expected_levels
+    # Parse the table independently so a regex that drifts into matching the
+    # header, a separator or the "no congestion windows" line is caught too.
+    table_rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in text.splitlines()
+        if line.startswith("|") and line.rstrip().endswith("|")
+    ]
+    data_rows = [
+        row
+        for row in table_rows
+        if row[0] in {"North", "South", "East", "West"} and row[2].isdigit()
+    ]
+    assert [int(row[2]) for row in data_rows] == expected_levels
+    assert all(row[1] in {"Global", "Long", "Short"} for row in data_rows)
+    copied = tmp_path / "post_place_congestion.rpt"
+    copied.write_text(text)
+    assert fpga_build.extract_max_congestion_level(copied) == expected_max
+    assert fpga_build.extract_max_congestion_level(tmp_path / "absent.rpt") is None
+
+
+def test_congestion_veto_decides_on_real_report_levels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Genuine level-5 and level-6 reports are vetoed; the clear seed wins."""
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    monkeypatch.delenv("FROST_PLACE_CONGESTION_VETO_LEVEL", raising=False)
+    candidates = _quick_route_candidates(tmp_path, 3)
+    for run, fixture in zip(
+        candidates,
+        (
+            "x3_post_place_congestion_clear.rpt",
+            "x3_post_place_congestion.rpt",
+            "genesys2_post_place_congestion.rpt",
+        ),
+    ):
+        (run.work_dir / "post_place_congestion.rpt").write_text(
+            (CONGESTION_FIXTURES / fixture).read_text()
+        )
+    # The congested seeds hold the better displayed WNS (-0.09 and -0.08).
+    assert (
+        fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+        is candidates[0]
+    )
+    assert [run.congestion_level for run in candidates] == [0, 5, 6]
+    assert [run.congestion_vetoed for run in candidates] == [False, True, True]
+    assert (
+        "Congestion veto (level >= 5) removed 2/3 place seeds"
+        in capsys.readouterr().out
+    )
+    # Raising the threshold admits the level-5 report and its better WNS.
+    monkeypatch.setenv("FROST_PLACE_CONGESTION_VETO_LEVEL", "6")
+    assert (
+        fpga_build.select_x3_place_best_run(tmp_path, candidates, "unused")
+        is candidates[1]
+    )
+    assert [run.congestion_vetoed for run in candidates] == [False, False, True]
