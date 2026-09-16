@@ -365,6 +365,19 @@ symbolic enum assertions. It is a combinational consumer-contract check; the
 `rs_issue2_shamt` cocotb test and occupied-bank assertion check capture/hold
 phase, not an unbounded scheduler proof.
 
+The `reservation_station` target runs two shapes. Its `bmc` and `cover` tasks
+use the module defaults, which are what the MUL, MEM, FP, FMUL and FDIV
+stations elaborate. Its `bmc_tag_indexed` and `cover_tag_indexed` tasks
+`chparam` the whole shipped INT configuration, every override `u_int_rs` in
+`tomasulo_wrapper.sv` carries: the ROB-tag-indexed branch payload, dual issue,
+the allocation-indexed repair, speculative and broadcast data writes, the
+issue-CDB tag shadows and meta anchors, the branch predicate tag anchor and
+trusted dispatch valid. Several station properties are gated on exactly those
+parameters and are vacuous in the default run. The INT model is roughly twice
+the size, and BMC step cost grows steeply with it, so `bmc_tag_indexed` runs to
+depth 7 while the default `bmc` keeps depth 12; the covers reach every point at
+depth 20 in both.
+
 The `tomasulo_wrapper` target reads `reservation_station.sv` with `-formal`
 and elaborates all six stations with `FORMAL_STANDALONE_ENV=0`. That keeps the
 station's own assertions in this proof while leaving its free-input

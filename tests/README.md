@@ -463,7 +463,9 @@ also uses BMC only, with depth 1 exhausting its state-free public alias cone.
 `prediction_release` and
 `prediction_metadata_tracker` also declare `prove` (unbounded proofs via
 ABC PDR); `tlb` adds
-`bmc_itlb` and `cover_itlb`, and `tomasulo_wrapper` adds `fmul_repair_bmc`.
+`bmc_itlb` and `cover_itlb`, `reservation_station` adds `bmc_tag_indexed` and
+`cover_tag_indexed` for the shipped INT station configuration, and
+`tomasulo_wrapper` adds `fmul_repair_bmc`.
 
 ```bash
 ./scripts/frost.py formal                          # All targets, all declared tasks

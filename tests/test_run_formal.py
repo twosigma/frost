@@ -102,7 +102,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "reservation_station.sby",
-        "Reservation station - dispatch, wakeup, issue, flush",
+        "Reservation station - dispatch, wakeup, issue, flush, at the module "
+        "defaults and in the shipped INT configuration",
         tasks=("bmc", "cover", "bmc_tag_indexed", "cover_tag_indexed"),
     ),
     FormalTarget(
@@ -260,9 +261,13 @@ SBY_TASKS = [
         "fmul_repair_bmc",
         "Bounded model checking with production FMUL dispatch done repair enabled",
     ),
-    # The INT reservation station's ROB-tag-indexed branch payload (side RAM).
-    ("bmc_tag_indexed", "Bounded model checking with the tag-indexed branch payload"),
-    ("cover_tag_indexed", "Cover checking with the tag-indexed branch payload"),
+    # The shipped INT reservation station: the ROB-tag-indexed branch payload
+    # (side RAM) and the rest of u_int_rs's overrides, dual issue included.
+    (
+        "bmc_tag_indexed",
+        "Bounded model checking in the shipped INT station configuration",
+    ),
+    ("cover_tag_indexed", "Cover checking in the shipped INT station configuration"),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
 ]
 

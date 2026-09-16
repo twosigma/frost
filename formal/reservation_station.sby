@@ -1,8 +1,8 @@
 [tasks]
 bmc
 cover
-bmc_tag_indexed
-cover_tag_indexed
+bmc_tag_indexed tag_indexed
+cover_tag_indexed tag_indexed
 
 [options]
 bmc: mode bmc
@@ -10,7 +10,15 @@ bmc: depth 12
 cover: mode cover
 cover: depth 20
 bmc_tag_indexed: mode bmc
-bmc_tag_indexed: depth 12
+# Shallower than the default-parameter bmc on purpose. The shipped INT_RS
+# configuration roughly doubles the model - a second payload bank, a second
+# stage2 bank and the balanced second-port selector - and boolector's per-step
+# cost grows steeply with it. On a fast desktop depth 7 is about 1.5 minutes;
+# step 8 alone then costs 6 more and step 9 another 6, so depth 12 runs past
+# the ceiling in tests/test_run_formal.py. The properties this task adds over
+# the default run bind within a few edges (dispatch, the two-cycle deferred
+# CDB delivery, tag ownership), and the default-parameter bmc still runs to 12.
+bmc_tag_indexed: depth 7
 cover_tag_indexed: mode cover
 cover_tag_indexed: depth 20
 
@@ -21,17 +29,31 @@ smtbmc boolector
 read -formal -sv riscv_pkg.sv
 read -sv sdp_dist_ram.sv
 read -sv mwp_dist_ram.sv
+# The second issue port's payload bank (DUAL_ISSUE, tag_indexed tasks).
+read -sv mwp_dist_ram_ohread.sv
 read -formal -sv rs_issue2_selector.sv
 read -formal -sv reservation_station.sv
-# The INT configuration's ROB-tag-indexed branch payload (side RAM + tag
-# ownership assumption).
-bmc_tag_indexed: chparam -set TAG_INDEXED_BRANCH_PAYLOAD 1 reservation_station
-cover_tag_indexed: chparam -set TAG_INDEXED_BRANCH_PAYLOAD 1 reservation_station
+# The tag_indexed tasks build the shipped INT_RS configuration, not just its
+# side RAM: u_int_rs in tomasulo_wrapper.sv is the only instance that enables
+# TAG_INDEXED_BRANCH_PAYLOAD, and it does so beside dual issue, the
+# allocation-indexed repair, speculative and broadcast data writes, the issue
+# tag shadows and meta anchors, the branch predicate tag anchor and trusted
+# dispatch valid.  Every -set below is one of that instance's overrides; DEPTH,
+# LANE1_ISSUE_BYPASS and DISPATCH_STATUS_RESERVE already match it at their
+# defaults.  One chparam call: yosys cannot reprocess a hierarchy once its top
+# has been chparam'd.
+#
+# The plain bmc/cover tasks stay on the module defaults.  That is the shape the
+# other five stations elaborate - src3 operands, the generic repair tag CAM,
+# a single issue port - and the INT configuration does not subsume it, so both
+# runs are kept.
+tag_indexed: chparam -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set DUAL_ISSUE 1 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 reservation_station
 prep -top reservation_station
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
