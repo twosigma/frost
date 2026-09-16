@@ -36,7 +36,7 @@ flowchart LR
 | Module | Responsibility |
 | --- | --- |
 | `eth10g_mac_tx` | Two complete-frame buffers, padding, preamble/SFD, CRC/FCS, termination, conservative IFG |
-| `eth10g_mac_rx` | Preamble validation, FCS/length checking, speculative circular packet storage, AXIS publication |
+| `eth10g_mac_rx` | Preamble validation, FCS/length checking, speculative circular packet storage, AXIS publication through a two-entry output register |
 | `eth10g_crc_pkg`, `eth10g_crc32_64` | Ethernet reflected CRC-32, byte and parallel-word operations |
 | `eth10g_encode`, `eth10g_decode`, `eth10g_pcs_pkg` | All 15 control-block formats, data blocks, nine C codes and both ordered-set codes |
 | `eth10g_scrambler`, `eth10g_descrambler` | Independent registered implementations of `1 + x^39 + x^58` |
@@ -120,10 +120,14 @@ MAC configurations require a limit of at least 60 bytes.
 - RX accepts starts on lanes zero and four, all eight termination positions,
   exact preamble/SFD, and frames of at least 64 bytes including FCS. It
   preserves received padding and does not enforce a minimum receive IFG.
+  An /S/ in the same word as a /T/ that ends a frame is ignored; no Clause 49
+  block carries both.
 - RX publishes only complete frames with valid CRC and length. `tuser` is
   therefore always zero. Data/keep/last remain stable while stalled.
 - RX storage exhaustion discards a whole frame; speculative writes are
   rolled back. Subsequent valid frames recover without external reset.
+  Storage and descriptors freed by an AXIS handshake serve XGMII words sampled
+  on later clocks, not a word sampled on the handshake's own clock.
 
 Default TX storage is two 9216-byte buffers with synchronous read prefetch,
 held in one array with the buffer select as the top address bit and read
@@ -134,13 +138,24 @@ Default RX storage is a 32 KiB circular data buffer and 512 descriptors;
 frame starts are word-aligned, and the four FCS bytes consume storage until
 the corresponding frame drains. Each byte lane of the data buffer is a
 simple dual-port memory with a synchronous read addressed by the reader's
-next word. For a valid output beat, the registered data equals the published
-word under read; empty-queue reads are invalid and may collide with writes.
-A simulation-only tripwire in `eth10g_mac_rx` holds that argument: it latches
-a same-edge hit between the fetch address and any lane write and errors if the
-beat it produced is published. The byte lanes infer block RAM. Only the small descriptor arrays are read
+next word. The reader copies beats of published packets into a two-entry
+output register, which alone sees `m_axis_tready`; a copied word was never
+written on the edge that fetched it, while fetches with nothing published may
+collide with writes and are not copied. A simulation-only tripwire in
+`eth10g_mac_rx` holds that argument: it latches a same-edge hit between the
+fetch address and any lane write and errors if the reader copies that fetch.
+The byte lanes infer block RAM. Only the small descriptor length array is read
 asynchronously. Mixed jumbo/minimum packets with continuously ready output,
 wraparound, and concurrent reader/drop rollback are tested.
+
+RX is staged for the word rate. A decode stage registers each enabled XGMII
+word with its symbol classes and CRC contributions, and a word stage decides
+the whole word from registers: each lane's candidate event is computed in
+parallel and the first one selects the outcome, so no byte count, CRC or
+free-space value passes from lane to lane. A word's events, and publication
+of a packet it completes, are registered on the clock after the word is
+sampled; the packet's first beat reaches `m_axis_*` at least one clock after
+publication.
 
 ## Link status and errors
 
@@ -188,7 +203,9 @@ Verilator/cocotb and checks the resulting XML for actual passing tests. See
 coverage, artifact paths, and the extra pinned synthesis frontend.
 
 The implementation has simulation, lint/type, and portable coarse synthesis
-evidence. It has not been placed/routed or tested against a physical link.
+evidence. Inside the NIC, the X3 loopback bitstream places and routes it with
+the MAC clocks at 40 MHz. Routed timing at the 161.1328125 MHz word rate and
+operation against a physical link are not yet established.
 There is no GTY instance, optical-module management, board constraint change,
 CPU/DMA interface, register bank, interrupt wiring, or Linux driver here.
 MAC address filtering, PAUSE/PFC handling, PTP, EEE state machines, MDIO and

@@ -26,7 +26,7 @@ Run **through frost**, from the repository root:
 ./scripts/frost.py run python3 tests/net10g/run.py all
 # Or select independent targets:
 ./scripts/frost.py run python3 tests/net10g/run.py codec scrambler
-./scripts/frost.py run python3 tests/net10g/run.py mac_tx mac_rx integration
+./scripts/frost.py run python3 tests/net10g/run.py mac_tx mac_rx mac_rx_60 mac_rx_124 integration
 ```
 
 `run.py` refuses host-native execution, runs `make clean` for each target
@@ -35,6 +35,12 @@ contains tests without failures/errors. The wrapper runs as the invoking
 UID/GID. Build products and `results.xml` live in `sim_build/<target>/`, so
 different targets can run concurrently. Do not run the same target twice
 concurrently. The tests use fixed random seeds.
+
+`mac_rx_60` and `mac_rx_124` run the receive MAC cases again with
+`NET10G_MAX_FRAME_BYTES` set, which the Makefile passes to the top's
+`MAX_FRAME_BYTES`. At those limits the storage corners take a few frames, and
+the largest frame plus FCS ends on a word boundary. A case that a limit cannot
+reach is reported as skipped.
 
 | Target | Coverage |
 | --- | --- |
@@ -46,7 +52,8 @@ concurrently. The tests use fixed random seeds.
 | `link` | Exact block-lock thresholds/windows; signal loss; BER thresholds and physical timer; LF/RF qualification and timeout |
 | `tx_reconcile` | Midframe faults, local priority, paused enable, idle-boundary recovery, suppression of packet tails |
 | `mac_tx` | Independent XGMII/FCS checking; lengths/padding/termination lanes; AXIS backpressure; malformed/oversized/aborted packets; resets |
-| `mac_rx` | Independent XGMII source and zlib FCS; both start lanes; malformed frames; stalls/overflow; data/descriptor wraparound and rollback; mixed sizes |
+| `mac_rx` | Independent XGMII source and zlib FCS; both start lanes, including across enable gaps; malformed frames at every preamble position and termination lane; stalls/overflow; data/descriptor wraparound and rollback; mixed sizes; restart after early drops; clock-exact handshake release and final-beat credit; reset of the decode stage and output register |
+| `mac_rx_60`, `mac_rx_124` | The `mac_rx` cases at small frame limits, adding the overlength/no-space tie and admission with an empty output register |
 | `integration` | Independent raw-bitstream peers in both directions; AXIS stalls from startup; every receive bit phase; invalid termination lookahead; CRC rejection; PMA loss midframe and relock |
 
 Integration tests use distinct clock phases but equal nominal periods; they
@@ -89,8 +96,8 @@ blackboxes, structural errors and out-of-range reads. It bounds subprocess
 time/memory and retains complete logs, converted Verilog, a JSON netlist and
 `summary.json` under `sim_build/synthesis/`.
 
-At the default 9216-byte frame limit, the checked hierarchy retains five
-memories containing **538,176 bits**. This is a portable structural check;
+At the default 9216-byte frame limit, the checked hierarchy retains eleven
+memories containing **531,520 bits**. This is a portable structural check;
 it does not establish RAM primitive mapping, 161.1328125 MHz timing, GTY
 operation, or hardware interoperability. Any future Vivado checks must run
 natively and use a separate output directory from the active CPU build.

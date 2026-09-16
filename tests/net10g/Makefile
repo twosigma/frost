@@ -23,6 +23,12 @@ VERILOG_SOURCES := $(RTL)/eth10g_crc_pkg.sv $(RTL)/eth10g_pcs_pkg.sv
 VERILOG_SOURCES += $(filter-out %_pkg.sv,$(sort $(wildcard $(RTL)/*.sv)))
 VERILOG_SOURCES += $(sort $(wildcard $(CURDIR)/*_tb.sv))
 EXTRA_ARGS += -j 2
+# A frame limit other than the default applies to the top's MAX_FRAME_BYTES
+# and to the tests that size their stimulus from it (run.py's mac_rx_* targets).
+ifdef NET10G_MAX_FRAME_BYTES
+COMPILE_ARGS += -GMAX_FRAME_BYTES=$(NET10G_MAX_FRAME_BYTES)
+export NET10G_MAX_FRAME_BYTES
+endif
 export VERILATOR_MAKE_FLAGS := -j2
 export PYTHONPATH := $(ROOT)/tests:$(CURDIR):$(PYTHONPATH)
 include $(shell cocotb-config --makefiles)/Makefile.sim

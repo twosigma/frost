@@ -34,6 +34,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from cocotb_tests.nic.dma_model import DD, EOP, SOP, Memory, desc_status, post_desc
 from net10g.test_codec import encode_reference
 from net10g.test_integration import WireReceiver, frame_words
+from net10g.test_mac_rx import frame_symbols, pack_symbols
 from net10g.test_scrambler import SerialReference
 
 CORE_PS = 3334
@@ -58,6 +59,7 @@ CNT_RX_FRAMES, CNT_RX_BYTES, CNT_RX_FILTERED, CNT_TX_FRAMES, CNT_TX_BYTES = (
     6,
     7,
 )
+CNT_RX_MAC_OVERFLOW, CNT_RX_MAC_BAD_FRAME, CNT_RX_MAC_BAD_FCS = 10, 11, 12
 
 RX_RING, TX_RING = 0x8010_0000, 0x8011_0000
 RX_SIZE_LOG2, TX_SIZE_LOG2 = 4, 4
@@ -484,7 +486,7 @@ async def test_loopback_frames(dut: Any) -> None:
 
 @cocotb.test()
 async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
-    """Frames from the software wire: station and group taken, another unicast filtered; TX seen on the wire."""
+    """Frames from the software wire: station and group taken, another unicast filtered, a bad FCS and a runt counted by the MAC; TX seen on the wire."""
     nic = await _start(dut, 3, loopback=False)
     await nic.program_rings()
     await nic.post_rx(6)
@@ -516,6 +518,29 @@ async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
     nic.wire.send([other])
     s = await nic.wait_dd(RX_RING, 2)
     assert s == DD | 120 and nic.rx_frame(2) == other
+    # MAC drops: a bad FCS and a CRC-correct runt only advance the MAC totals
+    # (neither is an overflow, so no RX_DROP); the next frame takes descriptor 3.
+    mac_totals = [
+        COUNTERS + 8 * i
+        for i in (CNT_RX_MAC_OVERFLOW, CNT_RX_MAC_BAD_FRAME, CNT_RX_MAC_BAD_FCS)
+    ]
+    before = [await nic.rd64(off) for off in mac_totals]
+    await nic.wr(IRQ_STATUS, IRQ_RX_DROP)
+    nic.wire.words.extend(frame_words(nic.frame(100), bad_crc=True))
+    nic.wire.words.extend(pack_symbols(frame_symbols(nic.frame(40))))
+    nic.wire.words.extend([nic.wire.IDLE] * 2)
+    good = nic.frame(130)
+    nic.wire.send([good])
+    s = await nic.wait_dd(RX_RING, 3)
+    assert s == DD | 130 and nic.rx_frame(3) == good
+    expected = [before[0], before[1] + 2, before[2] + 1]
+    for _ in range(50):
+        if [await nic.rd64(off) for off in mac_totals] == expected:
+            break
+        await nic.cycles(50)
+    after = [await nic.rd64(off) for off in mac_totals]
+    assert after == expected, f"MAC totals {before} -> {after}"
+    assert await nic.rd(IRQ_STATUS) & IRQ_RX_DROP == 0
     # TX: the wire receiver validates the frame independently.
     out = nic.frame(300, OTHER)
     idx = await nic.send_tx(out)
