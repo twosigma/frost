@@ -109,7 +109,19 @@ module reservation_station #(
     // same values in the same cycle.  Off, port 0 drives zeros for the three
     // fields.  Contract: a dispatched ROB tag is never live in the station
     // (resident or in stage2), as ROB allocation guarantees.
-    parameter bit TAG_INDEXED_BRANCH_PAYLOAD = 1'b0
+    parameter bit TAG_INDEXED_BRANCH_PAYLOAD = 1'b0,
+    // The standalone formal top (formal/reservation_station.sby) drives this
+    // station's inputs freely, so its `ifdef FORMAL` block assumes the
+    // dispatch contract the core guarantees and carries the station's own
+    // cover set.  formal/tomasulo_wrapper.sby also reads this file with
+    // `-formal` and sets this to 0 on every instance: there the routing,
+    // occupancy and flush logic that produces these inputs is present, so a
+    // submodule assumption would weaken that proof instead of constraining a
+    // free environment, and the station's covers belong to its own run.  With
+    // it off, the ROB-tag ownership contract the branch-payload side RAM needs
+    // becomes an assertion checked against the real allocator (see
+    // cdb_arbiter's FORMAL_ASSUME_VALUE_SOURCE_CONTRACT for the same split).
+    parameter bit FORMAL_STANDALONE_ENV = 1'b1
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -1350,14 +1362,37 @@ module reservation_station #(
         i_dispatch_2.pc, i_dispatch_2.link_addr, i_dispatch_2.predicted_target
       };
 `ifdef FORMAL
-      always_comb begin
-        if (dispatch_fire && !i_flush_all && !i_flush_en) begin
-          assume (!branch_payload_tag_live(dispatch_rob_tag));
+      // Row ownership as a formal property.  The standalone top has no
+      // allocator to derive it from, so it assumes it; the wrapper proof
+      // (FORMAL_STANDALONE_ENV=0) contains the real ROB and asserts exactly
+      // the same three conjuncts instead.
+      if (FORMAL_STANDALONE_ENV) begin : gen_assume_branch_payload_ownership
+        always_comb begin
+          if (dispatch_fire && !i_flush_all && !i_flush_en) begin
+            assume (!branch_payload_tag_live(dispatch_rob_tag));
+          end
+          if (dispatch_fire_2 && !i_flush_all && !i_flush_en) begin
+            assume (!branch_payload_tag_live(dispatch_rob_tag_2));
+          end
+          if (dispatch_fire && dispatch_fire_2) assume (dispatch_rob_tag != dispatch_rob_tag_2);
         end
-        if (dispatch_fire_2 && !i_flush_all && !i_flush_en) begin
-          assume (!branch_payload_tag_live(dispatch_rob_tag_2));
+      end else begin : gen_assert_branch_payload_ownership
+        // i_rst_n qualifies the live scan the same way the station's other
+        // state properties do: rs_valid and stage2_valid are reset-cleared, so
+        // only their post-reset contents mean anything.
+        always_comb begin
+          if (i_rst_n && dispatch_fire && !i_flush_all && !i_flush_en) begin
+            p_branch_payload_slot1_tag_not_live :
+            assert (!branch_payload_tag_live(dispatch_rob_tag));
+          end
+          if (i_rst_n && dispatch_fire_2 && !i_flush_all && !i_flush_en) begin
+            p_branch_payload_slot2_tag_not_live :
+            assert (!branch_payload_tag_live(dispatch_rob_tag_2));
+          end
+          if (i_rst_n && dispatch_fire && dispatch_fire_2) begin
+            p_branch_payload_slot_tags_distinct : assert (dispatch_rob_tag != dispatch_rob_tag_2);
+          end
         end
-        if (dispatch_fire && dispatch_fire_2) assume (dispatch_rob_tag != dispatch_rob_tag_2);
       end
 `else
       // Simulation shadow of the RAM, written in the RAM's port order (slot 2
@@ -2602,33 +2637,40 @@ module reservation_station #(
   // -------------------------------------------------------------------------
   // Assumptions
   // -------------------------------------------------------------------------
+  // Standalone only: these constrain a free environment.  In the wrapper proof
+  // the dispatch unit drives these inputs, so assuming them there would hide
+  // the very dispatch bugs that proof exists to find.
 
-  // Dispatch must not coincide with a partial flush.  Full flushes may coincide
-  // with stale dispatch packets; the flush branch below wins and clears valid
-  // state, so those packets are ignored.
-  always_comb begin
-    if (i_flush_en) assume (!dispatch_valid);
-  end
+  generate
+    if (FORMAL_STANDALONE_ENV) begin : gen_formal_dispatch_contract
+      // Dispatch must not coincide with a partial flush.  Full flushes may
+      // coincide with stale dispatch packets; the flush branch below wins and
+      // clears valid state, so those packets are ignored.
+      always_comb begin
+        if (i_flush_en) assume (!dispatch_valid);
+      end
 
-  // No dispatch when full
-  always_comb begin
-    if (full && !i_flush_all && !i_flush_en) assume (!dispatch_valid);
-  end
+      // No dispatch when full
+      always_comb begin
+        if (full && !i_flush_all && !i_flush_en) assume (!dispatch_valid);
+      end
 
-  // Slot-2 dispatch follows the same flush / capacity rules.
-  always_comb begin
-    if (i_flush_en) assume (!dispatch_valid_2);
-    // Slot-2 needs room for itself given whether slot-1 is also firing.
-    if (dispatch_valid && full_for_2 && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
-    if (!dispatch_valid && full && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
-  end
+      // Slot-2 dispatch follows the same flush / capacity rules.
+      always_comb begin
+        if (i_flush_en) assume (!dispatch_valid_2);
+        // Slot-2 needs room for itself given whether slot-1 is also firing.
+        if (dispatch_valid && full_for_2 && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
+        if (!dispatch_valid && full && !i_flush_all && !i_flush_en) assume (!dispatch_valid_2);
+      end
 
-  // The wrapper drives i_intent_1 from the same per-RS slot-1 decode that
-  // produces i_dispatch.valid.  The slot-2 alloc index relies on that contract
-  // to choose the second free entry when both slots target this RS.
-  always_comb begin
-    assume (i_intent_1 == dispatch_valid);
-  end
+      // The wrapper drives i_intent_1 from the same per-RS slot-1 decode that
+      // produces i_dispatch.valid.  The slot-2 alloc index relies on that
+      // contract to choose the second free entry when both slots target this RS.
+      always_comb begin
+        assume (i_intent_1 == dispatch_valid);
+      end
+    end
+  endgenerate
 
   // -------------------------------------------------------------------------
   // Combinational assertions
@@ -2637,10 +2679,15 @@ module reservation_station #(
   always_comb begin
     if (ALLOC_INDEXED_REPAIR) begin
       p_indexed_repair_mode_exclusive : assert (!DISPATCH_REPAIR_BYPASS && !ISSUE_REPAIR_BYPASS);
-      p_indexed_repair_slot1_onehot : assert ($onehot0(repair_slot1_target_q));
-      p_indexed_repair_slot2_onehot : assert ($onehot0(repair_slot2_target_q));
-      p_indexed_repair_targets_disjoint :
-      assert ((repair_slot1_target_q & repair_slot2_target_q) == '0);
+      // The targets are reset- and flush-cleared, so like every other state
+      // property here they are claimed only from the first post-reset cycle;
+      // the pre-reset register contents are arbitrary.
+      if (i_rst_n) begin
+        p_indexed_repair_slot1_onehot : assert ($onehot0(repair_slot1_target_q));
+        p_indexed_repair_slot2_onehot : assert ($onehot0(repair_slot2_target_q));
+        p_indexed_repair_targets_disjoint :
+        assert ((repair_slot1_target_q & repair_slot2_target_q) == '0);
+      end
     end
     if (BROADCAST_FREE_SOURCE_VALUES)
       p_broadcast_free_values_requires_speculation : assert (SPECULATIVE_DATA_WRITES);
@@ -2901,44 +2948,52 @@ module reservation_station #(
   // -------------------------------------------------------------------------
   // Cover properties
   // -------------------------------------------------------------------------
-  always @(posedge i_clk) begin
-    if (i_rst_n) begin
-      // Dispatch and issue in the same cycle
-      cover_dispatch_and_issue : cover (dispatch_fire && issue_fire);
+  // Standalone only.  These describe traffic the station's own top can drive
+  // directly; inside the wrapper proof the same traces would have to come
+  // through the whole front end, and its shallower cover depth cannot reach
+  // most of them.
+  generate
+    if (FORMAL_STANDALONE_ENV) begin : gen_formal_covers
+      always @(posedge i_clk) begin
+        if (i_rst_n) begin
+          // Dispatch and issue in the same cycle
+          cover_dispatch_and_issue : cover (dispatch_fire && issue_fire);
 
-      // CDB wakeup makes entry ready
-      cover_cdb_wakeup : cover (i_cdb.valid && |rs_valid);
+          // CDB wakeup makes entry ready
+          cover_cdb_wakeup : cover (i_cdb.valid && |rs_valid);
 
-      // RS is full
-      cover_full : cover (full);
+          // RS is full
+          cover_full : cover (full);
 
-      // Partial flush
-      cover_partial_flush : cover (i_flush_en && |rs_valid);
+          // Partial flush
+          cover_partial_flush : cover (i_flush_en && |rs_valid);
 
-      // Entry dispatched with CDB bypass
-      cover_cdb_bypass_at_dispatch :
-      cover (dispatch_fire && i_cdb.valid && !dispatch_src1_ready
-             && dispatch_src1_tag == i_cdb.tag);
+          // Entry dispatched with CDB bypass
+          cover_cdb_bypass_at_dispatch :
+          cover (dispatch_fire && i_cdb.valid && !dispatch_src1_ready
+                 && dispatch_src1_tag == i_cdb.tag);
 
-      // Deferred dispatch-CDB delivery cycle in flight
-      cover_deferred_cdb_delivery : cover (|src1_cdb_pend);
+          // Deferred dispatch-CDB delivery cycle in flight
+          cover_deferred_cdb_delivery : cover (|src1_cdb_pend);
 
-      // 2-wide dispatch fires both slots in the same cycle.
-      cover_dispatch_2_wide : cover (dispatch_fire && dispatch_fire_2);
+          // 2-wide dispatch fires both slots in the same cycle.
+          cover_dispatch_2_wide : cover (dispatch_fire && dispatch_fire_2);
 
-      // Slot-2 fires alone (slot-1 not valid this cycle).
-      cover_dispatch_2_only : cover (dispatch_fire_2 && !dispatch_fire);
+          // Slot-2 fires alone (slot-1 not valid this cycle).
+          cover_dispatch_2_only : cover (dispatch_fire_2 && !dispatch_fire);
 
-      // Stage2 back-to-back: consumed and refilled in the same cycle
-      cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
+          // Stage2 back-to-back: consumed and refilled in the same cycle
+          cover_stage2_back_to_back : cover (stage2_accept && issue_fire);
 
-      // Stage2 flush squash
-      cover_stage2_flush : cover (stage2_should_flush);
+          // Stage2 flush squash
+          cover_stage2_flush : cover (stage2_should_flush);
 
-      // Stage2 blocked (FU not ready)
-      cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
+          // Stage2 blocked (FU not ready)
+          cover_stage2_blocked : cover (stage2_valid && !i_fu_ready && !stage2_should_flush);
+        end
+      end
     end
-  end
+  endgenerate
 
 `endif  // FORMAL
 

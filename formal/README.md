@@ -364,3 +364,17 @@ shared predicate. It checks result/write-enable equality and retains the ALU's
 symbolic enum assertions. It is a combinational consumer-contract check; the
 `rs_issue2_shamt` cocotb test and occupied-bank assertion check capture/hold
 phase, not an unbounded scheduler proof.
+
+The `tomasulo_wrapper` target reads `reservation_station.sv` with `-formal`
+and elaborates all six stations with `FORMAL_STANDALONE_ENV=0`. That keeps the
+station's own assertions in this proof while leaving its free-input
+assumptions and covers to `reservation_station.sby`. The INT station's
+branch-payload side RAM needs a ROB tag that is never dispatched while it is
+still live in the station, and this is the only target that contains the real
+allocator, so here that contract is asserted rather than assumed. Three
+wrapper assumptions model the dispatch unit that sits outside this boundary:
+an RS dispatch always accompanies an allocation request, its `rob_tag` is that
+cycle's `alloc_tag`, and a partial flush names a live ROB entry. All three are
+exact restatements of `dispatch.sv` and the recovery controller. Depth 4
+cannot reach ROB tag wraparound, so this proves the near-term allocator
+behavior; the station's simulation oracles cover reuse after wrap.

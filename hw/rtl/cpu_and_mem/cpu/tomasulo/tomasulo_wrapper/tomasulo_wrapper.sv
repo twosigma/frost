@@ -2974,7 +2974,15 @@ module tomasulo_wrapper #(
       // side RAM read behind port 0's stage2 tag instead of the per-entry
       // payload, which shrinks the payload RAM, the issue-index fanout and
       // both stage2 banks by four XLEN words.
-      .TAG_INDEXED_BRANCH_PAYLOAD(1'b1)
+      .TAG_INDEXED_BRANCH_PAYLOAD(1'b1),
+      // The station's own formal top assumes its dispatch contract and owns
+      // its covers.  This proof carries the real ROB and the routing and
+      // occupancy logic behind those inputs, so tomasulo_wrapper.sby reads
+      // reservation_station.sv with -formal and this instance proves the
+      // branch-payload ROB-tag ownership contract rather than assuming it.
+      // The dispatch unit itself sits outside this boundary; its tag plumbing
+      // is modelled by the assumptions near "RS dispatch tag coordination".
+      .FORMAL_STANDALONE_ENV(1'b0)
   ) u_int_rs (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -3076,6 +3084,8 @@ module tomasulo_wrapper #(
       .ALLOC_INDEXED_REPAIR(1'b1),
       // SPECULATIVE_DATA_WRITES + i_intent_1 keep the data CE off the slow
       // dispatch_fire chain (same rationale as INT_RS / MEM_RS).
+      // Proved, not assumed, at this level (see u_int_rs).
+      .FORMAL_STANDALONE_ENV(1'b0),
       .SPECULATIVE_DATA_WRITES(1'b1)
   ) u_mul_rs (
       .i_clk(i_clk),
@@ -3164,6 +3174,8 @@ module tomasulo_wrapper #(
       // Dispatch has already checked MEM_RS exact full/full_for_2 status
       // before asserting these per-RS valid bits. Avoid re-feeding full into
       // the MEM_RS count update, which sits on the post-synth WNS path.
+      // Proved, not assumed, at this level (see u_int_rs).
+      .FORMAL_STANDALONE_ENV(1'b0),
       .TRUST_DISPATCH_VALID(1'b1)
   ) u_mem_rs (
       .i_clk(i_clk),
@@ -3353,6 +3365,8 @@ module tomasulo_wrapper #(
       // Registered ROB-done repair is captured in the pending packet before
       // insertion; later ordinary wakeups use the CDB. Keep the global repair
       // CAM out of the resident issue/stage2 source-value cone.
+      // Proved, not assumed, at this level (see u_int_rs).
+      .FORMAL_STANDALONE_ENV(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fp_rs (
       .i_clk                      (i_clk),
@@ -3515,6 +3529,8 @@ module tomasulo_wrapper #(
   reservation_station #(
       .DEPTH(riscv_pkg::FmulRsDepth),
       .HAS_SRC3(1'b1),
+      // Proved, not assumed, at this level (see u_int_rs).
+      .FORMAL_STANDALONE_ENV(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fmul_rs (
       .i_clk(i_clk),
@@ -3814,6 +3830,8 @@ module tomasulo_wrapper #(
       .HAS_SRC3(1'b0),
       // Registered ROB-done repair is captured in pending before insertion;
       // later ordinary wakeups use the CDB.
+      // Proved, not assumed, at this level (see u_int_rs).
+      .FORMAL_STANDALONE_ENV(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fdiv_rs (
       .i_clk(i_clk),
@@ -5390,6 +5408,34 @@ module tomasulo_wrapper #(
   always_comb begin
     if (i_alloc_req.alloc_valid && i_rat_alloc_valid) begin
       assume (i_rat_alloc_rob_tag == o_alloc_resp.alloc_tag);
+    end
+  end
+
+  // RS dispatch tag coordination.  dispatch.sv builds every rs_dispatch packet
+  // from the same cycle's allocation response
+  // (rs_dispatch_base.rob_tag = i_rob_alloc_resp.alloc_tag) and only routes a
+  // packet to an RS as part of an allocating bundle
+  // (o_rs_dispatch.valid = dispatch_fire = o_rob_alloc_req.alloc_valid).
+  // Modelling that plumbing is what turns the INT station's branch-payload
+  // ROB-tag ownership property into a statement about this proof's real
+  // allocator rather than about a free tag input.
+  always_comb begin
+    if (i_rs_dispatch.valid) begin
+      assume (i_alloc_req.alloc_valid);
+      assume (i_rs_dispatch.rob_tag == o_alloc_resp.alloc_tag);
+    end
+  end
+
+  // A partial flush always names a live ROB entry: it is the mispredicting or
+  // faulting instruction's own tag, and the recovery controller only raises
+  // i_flush_en while that entry is still in the window.  The ROB rewinds its
+  // tail to that tag + 1, so an out-of-window flush tag would rewind the
+  // allocator past entries the back end keeps - an aliasing the core cannot
+  // produce, but a free i_flush_tag can.
+  always_comb begin
+    if (i_flush_en && !i_flush_all) begin
+      assume (!o_rob_empty);
+      assume ({1'b0, i_flush_tag - head_tag} < o_rob_count);
     end
   end
 

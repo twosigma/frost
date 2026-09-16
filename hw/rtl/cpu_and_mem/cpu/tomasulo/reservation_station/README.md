@@ -169,7 +169,9 @@ registers and branch resolution's JALR target compare; no CDB completion path
 starts at the RAM. Port 1 and the other stations drive zeros for the three
 fields. The mode relies on ROB allocation never dispatching a tag that is
 still live in the station (a resident entry or the stage2 packet). The
-standalone module assumes exactly that in formal runs; in simulation it
+standalone formal target has no allocator to derive that from, so it assumes
+it; the wrapper target contains the real ROB and asserts it instead
+(`FORMAL_STANDALONE_ENV=0`). In simulation the station
 checks the property the RAM needs, that a live row is never rewritten with
 different contents, which also tolerates benches that hold one dispatch
 packet valid across several cycles.
@@ -223,7 +225,13 @@ station, a simulation-only oracle carries every packet's own three words
 beside it and checks that the stage2 side-RAM read reproduces them, in every
 bench and system simulation. The formal target's `bmc_tag_indexed` and
 `cover_tag_indexed` tasks build the side-RAM configuration under the ROB tag
-ownership assumption.
+ownership assumption. `formal/tomasulo_wrapper.sby` reads this file with
+`-formal` as well, and every station there elaborates with
+`FORMAL_STANDALONE_ENV=0`: the same ownership contract becomes an assertion
+checked against the real allocator, while the station's own environment
+assumptions and covers, which belong to its free-input top, stay out of that
+proof. The wrapper supplies the dispatch unit's tag plumbing as assumptions
+because that unit sits outside its boundary; `formal/README.md` lists them.
 
 Simulation-only oracles, one per issue port and matched to the stage2
 lifetime, recompute the former late-mux result and compare it with the
