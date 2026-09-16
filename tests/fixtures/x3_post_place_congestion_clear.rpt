@@ -1,0 +1,24 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved. Copyright 2022-2025 Advanced Micro Devices, Inc. All Rights Reserved.
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2025.2 (lin64) Build 6299465 Fri Nov 14 12:34:56 MST 2025
+| Date         : Tue Sep  8 02:42:26 2026
+| Host         : build-host running 64-bit Ubuntu 25.10
+| Command      : report_design_analysis -congestion -file fpga/build/x3/work_place_ExtraNetDelay_high_u0.500/post_place_congestion.rpt
+| Design       : x3_frost
+| Device       : xcux35
+| Design State : Fully Placed
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+Report Design Analysis
+
+Table of Contents
+-----------------
+1. Placer Final Level Congestion Reporting
+
+1. Placer Final Level Congestion Reporting
+------------------------------------------
+
++-----------+------+-------+--------+---------------+----------------+-----+--------+------+------+------+------+-----+-------+-----+------------+
+| Direction | Type | Level | Window | Combined LUTs | Avg LUT Inputs | LUT | LUTRAM | Flop | MUXF | RAMB | URAM | DSP | CARRY | SRL | Cell Names |
++-----------+------+-------+--------+---------------+----------------+-----+--------+------+------+------+------+-----+-------+-----+------------+
+* No congestion windows are found above level 5
