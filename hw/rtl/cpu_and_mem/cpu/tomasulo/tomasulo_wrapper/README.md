@@ -139,6 +139,22 @@ input, which folds in `sc_fu_complete_reg.valid`, is unread inside the LQ but
 kept for synthesis stability; the port comment in `load_queue.sv` explains
 why.
 
+That the cycle in which the hold releases is always consumed is checked, not
+argued. `p_sc_completion_release_adapter_idle` states that the release never
+lands on a pending MEM adapter, which is what "consumed" means for an adapter
+instantiated with `ALLOW_GRANT_REFILL = 0`;
+`p_sc_completion_release_is_granted` states that the released packet takes the
+MEM lane that same cycle; and `p_sc_completion_token_conserved` pins the
+register to exactly one CDB broadcast, so neither releasing the hold early nor
+reordering the mux above the fault can lose or duplicate the result unnoticed.
+The delivery event those checks use is the granted MEM broadcast carrying the
+SC's tag, not the mux arm the argument assumes, so a mux reorder is visible to
+them. They sit in the wrapper's `ifndef SYNTHESIS` region, so every
+`tomasulo_wrapper` cocotb run and the `tomasulo_wrapper` formal target
+compile them;
+`test_sc_completion_release_under_cdb_contention` supplies the interleaving,
+releasing the hold with both CDB lanes contended.
+
 ### Commit and CDB pipelining
 
 The ROB commit buses and both CDB lanes are registered locally. The visible
