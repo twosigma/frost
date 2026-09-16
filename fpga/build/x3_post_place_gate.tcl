@@ -31,6 +31,14 @@ namespace eval ::frost_x3_post_place_gate {
         return [regexp {^-?[0-9]+([.][0-9]+)?$} $value]
     }
 
+    # report_timing prints the requirement to three decimals while the clock
+    # object carries its full period, so a healthy build can differ in the
+    # digits Vivado never printed. Half a printed digit accepts exactly the
+    # values that display as the clock period, and no others.
+    proc displays_as {value expected} {
+        return [expr {abs($value - $expected) <= 0.0005}]
+    }
+
     proc validate_cpu_report {text period} {
         if {![regexp -line {^\| Design State\s*:\s*Fully Placed\s*$} $text] ||
             ![regexp -line {^\s*Path Type:\s*Setup \(Max} $text]} {
@@ -38,7 +46,7 @@ namespace eval ::frost_x3_post_place_gate {
         }
         if {[regexp -all {clocked by clock_from_mmcm  } $text] != 2 ||
             ![regexp -line {^\s*Requirement:\s*([0-9.]+)ns} $text -> requirement] ||
-            ![finite $requirement] || $requirement != $period} {
+            ![finite $requirement] || ![displays_as $requirement $period]} {
             error "Post-place gate CPU requirement differs from its real clock"
         }
         set explicit 0

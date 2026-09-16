@@ -66,7 +66,7 @@ proc report_timing {args} {
     set f [open [lindex $args 3] w]
     puts $f "| Design State : $env(STATE)"
     puts $f "Path Type: Setup (Max at Slow Process Corner)"
-    puts $f "Requirement: $env(PERIOD)ns"
+    puts $f "Requirement: $env(REQUIREMENT)ns"
     puts $f "clocked by clock_from_mmcm  period=$env(PERIOD)ns"
     puts $f "clocked by clock_from_mmcm  period=$env(PERIOD)ns"
     puts $f "Clock Uncertainty: 0.054ns ((TSJ^2 + DJ^2)^1/2) / 2 + PE"
@@ -97,6 +97,9 @@ def run_gate(tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[st
         "UU": "implicit",
         **overrides,
     }
+    # The printed requirement follows the clock unless a case overrides it to
+    # model Vivado printing a rounded period.
+    settings.setdefault("REQUIREMENT", settings["PERIOD"])
     return subprocess.run(
         [
             "tclsh",
@@ -167,3 +170,28 @@ def test_divided_clock_and_explicit_zero_uncertainty(tmp_path: Path) -> None:
     result = run_gate(tmp_path, PERIOD="6.666", SLACK="0.500", UU="0.000")
     assert result.returncode == 0, result.stderr
     assert "CPU_PERIOD_NS=6.666" in (tmp_path / "post_place_gate.txt").read_text()
+
+
+@pytest.mark.parametrize(
+    ("period", "requirement", "accepted"),
+    [
+        ("3.333", "3.333", True),
+        # A clock carrying more precision than report_timing prints.
+        ("3.3333", "3.333", True),
+        ("3.333", "3.3334", True),
+        # A genuinely different requirement, one printed digit away.
+        ("3.333", "3.334", False),
+        ("3.333", "6.666", False),
+    ],
+)
+def test_printed_requirement_is_compared_within_display_rounding(
+    tmp_path: Path, period: str, requirement: str, accepted: bool
+) -> None:
+    """Three-decimal reporting cannot fail a path timed at the real clock."""
+    result = run_gate(tmp_path, PERIOD=period, REQUIREMENT=requirement)
+    assert (result.returncode == 0) is accepted, result.stderr
+    audit = tmp_path / "post_place_gate.txt"
+    if accepted:
+        assert f"CPU_PERIOD_NS={period}" in audit.read_text()
+    else:
+        assert not audit.exists()
