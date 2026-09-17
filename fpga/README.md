@@ -234,9 +234,9 @@ and [background task documentation](https://code.visualstudio.com/docs/debugtest
 ### Hardware regression
 
 `hw_regression.py` loads and UART-checks every bare-metal app that runs
-unattended (`debug_target` waits for a debugger and `nic_echo` needs receive
-traffic over a transceiver that no board top integrates yet, so both are left
-out; `nic_loopback` is the NIC stage), runs all nine CoreMark-PRO workloads
+unattended (`debug_target` waits for a debugger and `nic_echo` needs a link
+partner sending the cocotb wire peer's frames, so both are left out;
+`nic_loopback` is the NIC stage), runs all nine CoreMark-PRO workloads
 with per-board score gates, then boots Linux to the Buildroot login prompt.
 `perf_off_test` checks that the programmed netlist really has no profiling
 counters, which holds for the rated-clock production bitstream; a
@@ -298,6 +298,23 @@ with `RuntimeOptimized` only, and finishes in a fraction of the time. An
 explicit `--directives`, `--num-uncertainties` or `--route-directives` is
 honored instead. The README utilization table is left alone: a divided-clock
 build is not the reference implementation.
+
+## NIC transceiver
+
+The X3 build puts the NIC's MAC on GTY channel X0Y28 (quad 231) through
+`../boards/x3/x3_nic_gty.sv`. The synth step creates the transceiver wizard
+core `x3_nic_gty_wiz` from `build/x3_gty_ip.tcl` (one channel, QPLL0 from the
+161.1328125 MHz reference clock, raw 64-bit words, reset and user clocking
+helpers in the core) and generates and synthesizes it with the other IP
+cores. The receive equalizer is LPM; `FROST_GTY_RX_EQ=DFE` in the synthesis
+environment builds DFE instead. The MAC clocks are the transceiver's TX and
+recovered RX user clocks, so they do not follow `--cpu-clock-div`; the NIC's
+self-test loopback on this build is the transceiver's near-end PMA loopback.
+Without block lock the wrapper retries every 100 ms with an RX PCS reset, and
+every tenth retry is a full RX reset (GTRXRESET, which UG578 recommends after
+the receive inputs are connected). The full RX reset drops the NIC's RX READY,
+so with no link partner receive is disabled about once a second; the Linux
+driver enables it again when the carrier returns.
 
 ## Profiling counters
 
@@ -768,20 +785,25 @@ hw_server -d  # port 3121
    - `constr/<board>.xdc`: pin assignments and timing constraints
    - `<board>_frost.f`: file list for synthesis, including the subsystem and core
 
-   The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) and, for a DDR-capable
-   board, its `ddr_subsys` block design are created during synthesis by
-   `build/build_step.tcl`, so no per-board `ip/` directory is needed.
+   The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`), for a DDR-capable
+   board its `ddr_subsys` block design, and for a board with a NIC transceiver
+   its wizard core are created during synthesis by `build/build_step.tcl`, so
+   no per-board `ip/` directory is needed.
 
 2. For a DDR-capable board, add `build/<board>_ddr_bd.tcl` to assemble the
    `ddr_subsys` block design (memory controller + SmartConnect + a JTAG-AXI
-   DDR-image-load master). A BRAM-only board does not need this file.
+   DDR-image-load master). A BRAM-only board does not need this file. For a
+   board with a NIC transceiver, add `build/<board>_gty_ip.tcl` with a
+   `create_<board>_gty_ip` procedure that creates its wizard core (the X3's is
+   `build/x3_gty_ip.tcl`).
 
 3. Register the board throughout the table-driven tool layer:
    - `BOARD_CONFIG` in `build/build.py` for its clock, FPGA family, and default
      synthesis directive, plus `BOARD_INFO` in
      `build/extract_timing_and_util_summary.py`
    - `board_build_configs` in `build/build_step.tcl` for its FPGA part and
-     `has_ddr` capability; its other per-board names derive from the board key
+     `has_ddr` and `has_gty` capabilities; its other per-board names derive
+     from the board key
    - `BOARD_CONFIG` in `load_software/load_software.py` for its clock, CoreMark
      iterations, and DDR capability
    - `BOARD_VENDOR_INFO` in `common/hw_target.py` and all three maps in

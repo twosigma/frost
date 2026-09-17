@@ -644,9 +644,11 @@ set software_mem_directory ""
 
 # Add future targets here. Board wrappers, file lists, and constraints follow
 # the <board>/<board>_frost conventions below. DDR-capable targets also provide
-# a <board>_ddr_bd.tcl script and create_<board>_ddr_bd procedure.
+# a <board>_ddr_bd.tcl script and create_<board>_ddr_bd procedure; targets with
+# a NIC transceiver provide a <board>_gty_ip.tcl script and
+# create_<board>_gty_ip procedure.
 set board_build_configs [dict create \
-    x3 [dict create part_number xcux35-vsva1365-3-e has_ddr 1] \
+    x3 [dict create part_number xcux35-vsva1365-3-e has_ddr 1 has_gty 1] \
 ]
 if {![dict exists $board_build_configs $board_name]} {
     puts "Error: Invalid board name '$board_name'"
@@ -658,6 +660,7 @@ if {![dict exists $board_build_configs $board_name]} {
 set board_build_config [dict get $board_build_configs $board_name]
 set fpga_part_number [dict get $board_build_config part_number]
 set board_has_ddr [dict get $board_build_config has_ddr]
+set board_has_gty [dict get $board_build_config has_gty]
 set top_level_module_name ${board_name}_frost
 
 set number_of_parallel_jobs 32
@@ -711,6 +714,15 @@ if {$step eq "synth"} {
         CONFIG.SINGLE_PORT_BRAM {1} \
         CONFIG.MEM_DEPTH {65536} \
     ] [get_ips axi_bram_ctrl_0]
+
+    if {$board_has_gty} {
+        # The NIC's transceiver wizard core; the board top's transceiver
+        # wrapper instantiates it. FROST_GTY_RX_EQ selects the receive
+        # equalizer (LPM by default, or DFE).
+        source [file join [file dirname [info script]] ${board_name}_gty_ip.tcl]
+        set create_gty_ip_proc create_${board_name}_gty_ip
+        $create_gty_ip_proc [getenv_default FROST_GTY_RX_EQ LPM]
+    }
 
     generate_target all [get_ips]
     synth_ip [get_ips]

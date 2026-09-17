@@ -3,8 +3,8 @@
 Phase 4 slice 2 integrates the standalone 10GBASE-R MAC/PCS
 (`hw/rtl/net10g`) as FROST's NIC: a CSR window, RX and TX descriptor rings
 on the cache hierarchy's coherent DMA port, packet clock crossings to the
-MAC's own clock domains (~161 MHz at line rate; 40 MHz on the current
-loopback build), and one PLIC interrupt. This directory holds the NIC's own
+MAC's own clock domains (the transceiver's 161.13 MHz TX and RX clocks on
+the X3), and one PLIC interrupt. This directory holds the NIC's own
 blocks; the MAC/PCS keeps its own directory and standalone CI job.
 
 | Module | Domain | Responsibility |
@@ -36,28 +36,60 @@ ahead of the DMA test engine: the NIC is port 0 with priority under the
 arbiter's grant bound, each agent presents 2-bit ids and the arbiter adds
 the port bit. `frost.sv` carries the TX and RX MAC clocks separately, each
 with its presence level (`i_nic_tx_clk`, `i_nic_rx_clk`, `i_nic_tx_clk_ok`,
-`i_nic_rx_clk_ok`), and defaults the PHY lines; `boards/x3/x3_frost.sv`
-drives both clocks from one MMCM output at 40 MHz (1200 MHz / 30), both
-presence levels from the MMCM lock, and ties the PHY status to "clock
-shared, transceiver ready". The `RAW_LOOPBACK` parameter (default 1, passed
-from `frost.sv` through `cpu_and_mem` and `nic_top` to `nic_mac_wrap`)
-builds the raw loopback behind PHY_CTRL's MAC_LOOPBACK. That path feeds the
-raw TX word into the RX PCS with no crossing logic, so it needs one clock on
-both MAC clock ports, as simulation and the X3's MMCM build provide. With 0,
-for a transceiver's independent TX and RX clocks, neither the mux nor its
-select synchronizer is built, raw RX comes only from the PHY inputs, and
-PHY_CTRL still stores MAC_LOOPBACK, which then selects nothing. Software
-chooses MAC_LOOPBACK from PHY_STATUS's CLK_SHARED, so that build reads
-CLK_SHARED as 0 whatever the board drives; the other PHY_STATUS bits follow
-the board.
+`i_nic_rx_clk_ok`), and defaults the PHY lines. The `RAW_LOOPBACK` parameter
+(default 1, passed from `frost.sv` through `cpu_and_mem` and `nic_top` to
+`nic_mac_wrap`) builds the raw loopback behind PHY_CTRL's MAC_LOOPBACK. That
+path feeds the raw TX word into the RX PCS with no crossing logic, so it
+needs one clock on both MAC clock ports, as simulation provides. With 0, for
+a transceiver's independent TX and RX clocks, neither the mux nor its select
+synchronizer is built, raw RX comes only from the PHY inputs, and PHY_CTRL
+still stores MAC_LOOPBACK, which then selects nothing. Software chooses
+MAC_LOOPBACK from PHY_STATUS's CLK_SHARED, so that build reads CLK_SHARED as
+0 whatever the board drives; the other PHY_STATUS bits follow the board.
 `o_nic_rx_block_lock` exports the PCS block lock (LINK's RX_LOCKED, already
-synchronized to the core clock) for a board's transceiver supervisor; the X3
-top leaves it open. The loopback build runs the MAC well below the 10GBASE-R
-word rate on purpose: closing the MAC at line rate is part of the slice 4
-transceiver work. The receive and transmit MACs are structured for the word
-rate (see `hw/rtl/net10g/README.md`); routed timing at that rate comes with
-the transceiver integration. Both MAC frame buffers are block RAM, which
-keeps their address fan-out out of the CPU's placement.
+synchronized to the core clock) for a board's transceiver supervisor.
+
+The X3 (`boards/x3/x3_frost.sv`, `RAW_LOOPBACK = 0`) puts the MAC on a GTY
+transceiver, `boards/x3/x3_nic_gty.sv`: channel 0 of quad 231
+(GTYE4_CHANNEL_X0Y28, lane 1 of the DSFP28 cage labelled 2) as a raw 64-bit
+10.3125 Gb/s PMA, QPLL0 from the card's 161.1328125 MHz Ethernet clock, its
+TX USRCLK2 and recovered RX USRCLK2 as the MAC clocks. The wrapper's
+supervisor runs on a free-running 150 MHz clock and owns the transceiver's
+resets. Clock-OK is a direction's user clock running with no reset of that
+direction pending, each low interval held for at least a millisecond;
+RX_SIGNAL_OK is the transceiver's RX reset done outside any loopback change
+or reset, and it drops before any reset that can stop the RX clock. When
+block lock stays absent for 100 ms the supervisor resets the transceiver's
+RX PCS, which keeps both clocks and READY, and retries every 100 ms while it
+stays absent. Every tenth retry in a row is a full RX reset (GTRXRESET)
+instead, which UG578 recommends after the receive inputs are connected or
+the far end powers up, so that a fiber plugged in later can lock; block
+lock, or any reset other than the PCS reset, restarts that count. A PLL
+lock loss, a reset done that drops or a reset that does not complete (all
+restart the whole transceiver), PHY_RESET (both directions), and a
+PMA_LOOPBACK change or a full RX reset (RX) take clock-OK down:
+the NIC then starts a new generation in those domains and disables those
+directions, as for any lost MAC clock. So while no link partner is present,
+RX READY drops about once a second and the NIC disables receive; the Linux
+driver enables it again when the carrier returns.
+
+On the X3, while PHY_CTRL's PHY_RESET is set the NIC sees both MAC clocks
+absent and no receive signal (the transceiver keeps running with its reset
+controller's reset-all held), and clearing it runs the transceiver's full
+reset sequence; PMA_LOOPBACK selects near-end PMA loopback, the
+NIC's self-test path on this build (the line TX still transmits), applied
+through an RX reset; TX_DISABLE has no effect, since the module's transmit
+disable is not an FPGA pin on this card. PHY_STATUS reads CLK_SHARED 0,
+GT_RESET_DONE as the transceiver's TX and RX reset done, CDR_LOCK as its RX
+reset done (the transceiver's own CDR lock output is reserved), and
+MODULE_PRESENT 1 with LOS 0, because no module status reaches the FPGA.
+
+The receive and transmit MACs are structured for the 10GBASE-R word rate
+(see `hw/rtl/net10g/README.md`); routed timing at that rate on the X3 and
+operation against a physical link are not yet established. Both MAC frame
+buffers are block RAM, which keeps their address fan-out out of the CPU's
+placement.
+
 `boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
 buses with datapath and bus-skew bounds, single-bit levels, the reset
 assertion) rather than cutting the clock pair, so a crossing the
@@ -85,8 +117,8 @@ loopback otherwise.
 ## Reset and clock domains
 
 The NIC has three clock domains: the core clock and the MAC's TX and RX
-clocks (one shared MMCM output on the loopback build, the transceiver's
-clocks with a GTY). Each MAC domain gets its reset from `nic_domain_reset`:
+clocks (one shared clock in simulation, the transceiver's clocks on the
+X3). Each MAC domain gets its reset from `nic_domain_reset`:
 `cdc_reset_sync` asserts it without a clock edge when the controller
 raises the request, so a domain whose clock is absent still sits in reset,
 and releases it aligned to the domain clock. The controller
@@ -107,7 +139,8 @@ its own, so nothing resumes on stale state when the clock returns.
 RESET (the CSR bit, and the core's reset) is: stop the engines and wait for
 the DMA front-end to owe no response, pulse the core-domain reset, start a
 new generation in both domains. `o_busy` covers exactly that and never
-waits for a MAC clock, so a build without a transceiver completes RESET.
+waits for a MAC clock, so RESET completes while the transceiver is in
+reset.
 
 `async_fifo` carries packets across: Gray-coded pointers through
 `cdc_sync`, storage in the dual-clock block RAM, and a two-entry output

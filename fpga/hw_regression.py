@@ -39,8 +39,9 @@ on a shared MAC clock, the transceiver's PMA loopback otherwise) and must print
 boot, and both commands; a cold Buildroot build takes 30-60 min.
 ``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
 caused intermittent boot corruption. Two apps are left out: ``debug_target``
-waits for a debugger to drive it, and ``nic_echo`` needs receive traffic over a
-transceiver that no board top integrates yet, so neither can pass unattended.
+waits for a debugger to drive it, and ``nic_echo`` needs a link partner that
+sends it the cocotb wire peer's frames, which the regression does not have, so
+neither can pass unattended.
 ``nic_loopback`` is the NIC stage. ``perf_off_test`` checks the production
 netlist's absent profiling counters, so it runs only against a rated-clock
 bitstream: a ``--cpu-clock-div`` build includes the counters by default and
@@ -650,11 +651,11 @@ def run_sweep_stage(
 # can load them; the regression leaves them out.
 DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 
-# Apps that need receive traffic over the 10G transceiver. No board top
-# integrates one yet (x3_frost ties the NIC's receive side off), so nic_echo
-# reports "no carrier" on every bitstream and cannot pass; nic_loopback is the
-# NIC stage. They stay in VALID_APPS so load_software.py can load them; the
-# regression neither runs nor accepts them until a transceiver exists.
+# Apps that need a link partner on the 10G port. nic_echo expects the frames
+# the cocotb wire peer sends, which no hardware regression setup provides, so
+# it cannot pass; nic_loopback is the NIC stage. They stay in VALID_APPS so
+# load_software.py can load them; the regression neither runs nor accepts them
+# until such a partner exists.
 EXTERNAL_LINK_APPS = frozenset({"nic_echo"})
 
 # Apps that assert the production netlist's absent profiling counters
@@ -791,8 +792,8 @@ def main() -> int:
         if excluded:
             parser.error(
                 f"not a regression stage: {', '.join(excluded)} (debug_target needs "
-                "a debugger; nic_echo needs receive traffic over a transceiver no "
-                "board top integrates yet; load_software.py can still run them)"
+                "a debugger; nic_echo needs a link partner sending the cocotb wire "
+                "peer's frames; load_software.py can still run them)"
             )
         if divided_clock:
             counters_on = sorted(requested & PERF_COUNTERS_ABSENT_APPS)

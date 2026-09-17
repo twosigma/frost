@@ -136,8 +136,9 @@ are drawn. Click the diagram to view it at full size.
   sits behind a register window at `0x4003_0000`, with RX and TX descriptor
   rings on the coherent DMA port and one PLIC interrupt. Descriptors and
   packet buffers need no cache maintenance. A device-tree node describes it
-  to Linux. The X3 build clocks the MAC from the MMCM; the transceiver
-  wrapper is still to come.
+  to Linux. The X3 build runs the MAC on a GTY transceiver (channel 0 of
+  quad 231, `boards/x3/x3_nic_gty.sv`), whose PMA loopback is the NIC's
+  self-test path there.
 - RISC-V debug over JTAG: a debug transport module (DTM) connects to the
   debug module for halt, resume, and single-step. X3 uses the FPGA's BSCAN
   USER chains; the portable integration provides a generic JTAG TAP.

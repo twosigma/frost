@@ -16,7 +16,8 @@ with paths relative to the repository root. Their one outside dependency is
 the two-flop synchronizer `cdc_sync` from `hw/rtl/lib/cdc`, which the
 including file list supplies (`cdc.f`). All datapaths are native 64-bit,
 with separate transmit and receive clock domains and a raw parallel interface
-intended for a future GTY wrapper. There are no vendor primitive instances.
+for a board's GTY wrapper (the X3's is `boards/x3/x3_nic_gty.sv`). There are
+no vendor primitive instances.
 
 ```mermaid
 flowchart LR
@@ -60,7 +61,8 @@ correct FCS alone cannot publish a frame with an invalid termination sequence.
 
 `i_tx_clk` and `i_rx_clk` are independent, nominally **161.1328125 MHz**.
 Each raw word carries 64 consecutive bits of the 10.3125 Gb/s encoded line.
-The receive clock comes from the eventual transceiver receive clocking path.
+The receive clock comes from the transceiver's receive clocking path (on the
+X3, the recovered clock).
 There is no clock crossing of packet data inside this top.
 
 | Interface | Clock | Contract |
@@ -222,9 +224,10 @@ Verilator/cocotb and checks the resulting XML for actual passing tests. See
 coverage, artifact paths, and the extra pinned synthesis frontend.
 
 The implementation has simulation, lint/type, and portable coarse synthesis
-evidence. Inside the NIC, the X3 loopback bitstream places and routes it with
-the MAC clocks at 40 MHz. Routed timing at the 161.1328125 MHz word rate and
-operation against a physical link are not yet established.
+evidence. Inside the NIC, an X3 bitstream with the MAC clocked at 40 MHz from
+the MMCM placed and routed it; the X3 build now clocks it from a GTY
+transceiver at the word rate, where routed timing and operation against a
+physical link are not yet established.
 There is no GTY instance, optical-module management, board constraint change,
 CPU/DMA interface, register bank, interrupt wiring, or Linux driver here.
 MAC address filtering, PAUSE/PFC handling, PTP, EEE state machines, MDIO and

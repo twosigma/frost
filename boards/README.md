@@ -25,9 +25,12 @@ releases the reset. All nine CoreMark-PRO workloads run on X3.
 ## Architecture Overview
 
 The X3 top instantiates the common `xilinx_frost_subsystem` beside the
-`ddr_subsys` block design. The common subsystem contains the low-BRAM
-loader, BSCAN chains, reset timers, and the `frost` wrapper; the DDR block
-design contains its own JTAG-AXI loader, SmartConnect, and DDR4 controller.
+`ddr_subsys` block design and the NIC's GTY transceiver wrapper
+(`x3/x3_nic_gty.sv`). The common subsystem contains the low-BRAM loader,
+BSCAN chains, reset timers, and the `frost` wrapper; the DDR block design
+contains its own JTAG-AXI loader, SmartConnect, and DDR4 controller; the
+transceiver wrapper holds the transceiver wizard core, its free-running clock
+and a supervisor for its resets, and supplies the NIC's MAC clocks.
 
 [![X3 board integration: CPU and divided clocks, separate BRAM and DDR loaders, BSCAN debug, shared DDR AXI, and reset sequencing](../docs/diagrams/x3-board-integration.svg)](../docs/diagrams/x3-board-integration.svg)
 
@@ -95,15 +98,17 @@ boards/
 ├── xilinx_frost_subsystem.sv    # Common subsystem (JTAG loader, BSCAN debug chains, BRAM, CPU, reset)
 └── x3/
     ├── x3_frost.sv              # Clocks, DDR integration, calibration/reset, common subsystem
+    ├── x3_nic_gty.sv            # NIC GTY transceiver: wizard core, free-running clock, reset supervisor
     ├── x3_frost.f               # File list for synthesis tools
     └── constr/
         └── x3.xdc               # Pin assignments & timing constraints
 ```
 
-The build flow generates the Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`)
-and, for DDR-capable boards, the `ddr_subsys` block design during synthesis
-(`fpga/build/build_step.tcl` sources `fpga/build/<board>_ddr_bd.tcl`), so no IP
-output tied to one Vivado release is checked in.
+The build flow generates the Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`),
+for DDR-capable boards the `ddr_subsys` block design, and for boards with a
+NIC transceiver its wizard core during synthesis (`fpga/build/build_step.tcl`
+sources `fpga/build/<board>_ddr_bd.tcl` and `fpga/build/<board>_gty_ip.tcl`),
+so no IP output tied to one Vivado release is checked in.
 
 ## Building
 
@@ -125,11 +130,13 @@ For manual Vivado project setup:
 2. Add the RTL sources:
    - The CPU core, as listed in `hw/rtl/frost.f`
    - `boards/xilinx_frost_subsystem.sv` (common subsystem)
-   - The board-specific wrapper (e.g., `x3/x3_frost.sv`)
+   - The board-specific wrappers (e.g., `x3/x3_nic_gty.sv` and `x3/x3_frost.sv`)
 3. Add the constraint file from `constr/`
-4. Generate the Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) and, when the
-   board has DDR, its `ddr_subsys` block design; `fpga/build/build_step.tcl`
-   and `fpga/build/<board>_ddr_bd.tcl` hold their configuration
+4. Generate the Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`), when the
+   board has DDR its `ddr_subsys` block design, and when it has a NIC
+   transceiver its wizard core; `fpga/build/build_step.tcl`,
+   `fpga/build/<board>_ddr_bd.tcl` and `fpga/build/<board>_gty_ip.tcl` hold
+   their configuration
 5. Set the top module (e.g., `x3_frost`)
 6. Run synthesis and implementation
 7. Generate the bitstream
@@ -155,6 +162,9 @@ After the FPGA is programmed with the bitstream:
 | `i_sysclk_n` | Input     | AL23 | 300 MHz differential clock (negative) |
 | `o_uart_tx`  | Output    | AP24 | UART transmit for debug console        |
 | `i_uart_rx`  | Input     | AR24 | UART receive for debug console input   |
+| `i_nic_refclk_p` / `i_nic_refclk_n` | Input | P9 / P8 | 161.1328125 MHz Ethernet reference clock (MGTREFCLK0, quad 231) |
+| `o_nic_txp` / `o_nic_txn` | Output | J7 / J6 | NIC transceiver TX (GTY X0Y28, DSFP28 cage labelled 2, lane 1) |
+| `i_nic_rxp` / `i_nic_rxn` | Input | K4 / K3 | NIC transceiver RX (GTY X0Y28) |
 
 Use 115200 baud, 8 data bits, no parity, and 1 stop bit (8N1) for the board
 UART debug console.
@@ -183,6 +193,13 @@ CPU clock, and divide-by-four supplies the loader IP, UART, and reset timers.
 The /4 clock is 75 MHz by default and 75/N MHz when `CPU_CLK_DIV=N`. The
 DDR controller's dedicated 300 MHz reference is independent of both.
 
+The NIC's MAC clocks come from its GTY transceiver (`x3_nic_gty.sv`): TX and
+recovered RX user clocks at 161.13 MHz, derived from the 161.1328125 MHz
+reference clock, unaffected by `CPU_CLK_DIV`. The transceiver's reset
+controller runs on a third `BUFGCE_DIV`, which halves the 300 MHz input
+before the MMCM (150 MHz), so it runs from configuration and depends on
+neither the MMCM nor the transceiver.
+
 ## Adding Support for New Boards
 
 To support another Xilinx FPGA board:
@@ -203,12 +220,14 @@ To support another Xilinx FPGA board:
    DDR-capable board, include the DDR pins unless they come from a MIG
    `.prj`/board interface
 6. Update the file list (`.f` file) to include the subsystem
-7. Add the board's FPGA part and `has_ddr` capability to
+7. Add the board's FPGA part and its `has_ddr` and `has_gty` capabilities to
    `board_build_configs` in `fpga/build/build_step.tcl`. For a DDR-capable
-   board, add `fpga/build/<board>_ddr_bd.tcl` for its `ddr_subsys` block design.
-   The Tcl flow derives the wrapper, file-list, constraint, DDR-script, and
-   DDR-creation procedure names from `<board>`; it skips the latter two for a
-   BRAM-only board
+   board, add `fpga/build/<board>_ddr_bd.tcl` for its `ddr_subsys` block design;
+   for a board with a NIC transceiver, add `fpga/build/<board>_gty_ip.tcl` for
+   its wizard core. The Tcl flow derives the wrapper, file-list, constraint,
+   DDR-script, DDR-creation, transceiver-script and transceiver-creation
+   procedure names from `<board>`; it skips the DDR pair for a BRAM-only board
+   and the transceiver pair for a board without a transceiver
 8. Register the board in the remaining FPGA-tool metadata:
    - `BOARD_CONFIG` in `fpga/build/build.py` for its clock, family, and tuned
      synthesis directive
