@@ -14,13 +14,19 @@
 
 """Tests for the whole NIC (hw/rtl/peripherals/nic/nic_top.sv).
 
-Three clocks: the core clock and the MAC's TX and RX clocks (one period,
-phase-aligned, as on the loopback build). The DMA line port is answered by
-a memory model with out-of-order responses; registers are driven the way
-the SoC does (32-bit lane writes, a 64-bit read pair by offset). Frames go
-around through the raw loopback inside nic_mac_wrap, or come from the
-net10g software wire model (an independent 64b/66b encoder) and go out to
-its receiver.
+Three clocks: the core clock and the MAC's TX and RX clocks. The DMA line
+port is answered by a memory model with out-of-order responses; registers
+are driven the way the SoC does (32-bit lane writes, a 64-bit read pair by
+offset). Frames go around through the raw loopback inside nic_mac_wrap, or
+come from the net10g software wire model (an independent 64b/66b encoder)
+and go out to its receiver.
+
+The module runs in two builds. With RAW_LOOPBACK = 1 (registry entry
+nic_top) the TX and RX clocks are one period and phase-aligned, as for one
+clock shared by both directions, and every case but the unrelated-clock one
+runs. With RAW_LOOPBACK = 0 (nic_top_unrelated_clocks) only that case runs:
+no shared clock in PHY_STATUS, unrelated TX and RX periods and phases, frames
+both ways over the wire.
 """
 
 import random
@@ -39,6 +45,10 @@ from net10g.test_scrambler import SerialReference
 
 CORE_PS = 3334
 MAC_PS = 6206
+# Unrelated MAC clocks: another RX period, and an RX start offset that is not
+# a fraction of either period.
+UNRELATED_RX_PS = 5818
+UNRELATED_RX_DELAY_PS = 2011
 LINE = 32
 
 # Register map (nic_pkg).
@@ -67,6 +77,19 @@ RX_BUF, TX_BUF = 0x8020_0000, 0x8030_0000
 STATION = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
 OTHER = bytes([0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE])
 BROADCAST = bytes([0xFF] * 6)
+
+
+def _raw_loopback_built() -> bool:
+    """Return whether the nic_top under simulation has the raw loopback.
+
+    Outside a simulation (an import for type checking or collection) there is
+    no top, and the default build is assumed.
+    """
+    top: Any = getattr(cocotb, "top", None)
+    return top is None or int(top.RAW_LOOPBACK.value) != 0
+
+
+RAW_LOOPBACK = _raw_loopback_built()
 
 
 class _LinePort:
@@ -320,10 +343,31 @@ class _Nic:
         return da + bytes(self.rng.getrandbits(8) for _ in range(length - 6))
 
 
-async def _start(dut: Any, seed: int, loopback: bool) -> _Nic:
+async def _start_clock_after(signal: Any, period_ps: int, delay_ps: int) -> None:
+    signal.value = 0
+    await Timer(delay_ps, unit="ps")
+    Clock(signal, period_ps, unit="ps").start()
+
+
+async def _start(
+    dut: Any,
+    seed: int,
+    loopback: bool,
+    rx_ps: int = MAC_PS,
+    rx_delay_ps: int = 0,
+    phy_status: int = 0xF,
+) -> _Nic:
+    """Clock, reset and bring up the NIC.
+
+    By default one MAC period, phase-aligned, and a board PHY status of
+    "clock shared, transceiver ready".
+    """
     Clock(dut.i_clk, CORE_PS, unit="ps").start()
     Clock(dut.i_tx_clk, MAC_PS, unit="ps").start()
-    Clock(dut.i_rx_clk, MAC_PS, unit="ps").start()
+    if rx_delay_ps:
+        cocotb.start_soon(_start_clock_after(dut.i_rx_clk, rx_ps, rx_delay_ps))
+    else:
+        Clock(dut.i_rx_clk, rx_ps, unit="ps").start()
     for sig in (
         dut.i_wr_en,
         dut.i_wr_offset,
@@ -339,7 +383,7 @@ async def _start(dut: Any, seed: int, loopback: bool) -> _Nic:
         sig.value = 0
     dut.i_tx_clk_ok.value = 1
     dut.i_rx_clk_ok.value = 1
-    dut.i_phy_status.value = 0xF
+    dut.i_phy_status.value = phy_status
     dut.i_rx_signal_ok.value = 1
     dut.i_rst.value = 1
     for _ in range(5):
@@ -358,6 +402,7 @@ async def _start(dut: Any, seed: int, loopback: bool) -> _Nic:
     return nic
 
 
+@cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
 @cocotb.test()
 async def test_registers_and_bringup(dut: Any) -> None:
     """ID, defaults, a refused enable, an accepted one, ring register rules, RESET."""
@@ -426,6 +471,7 @@ async def test_registers_and_bringup(dut: Any) -> None:
     nic.stop()
 
 
+@cocotb.skipif(not RAW_LOOPBACK, reason="needs the raw loopback")
 @cocotb.test()
 async def test_loopback_frames(dut: Any) -> None:
     """Frames around the raw loopback into RX buffers: data, status, counters, interrupts."""
@@ -484,6 +530,7 @@ async def test_loopback_frames(dut: Any) -> None:
     nic.stop()
 
 
+@cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
 @cocotb.test()
 async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
     """Frames from the software wire: station and group taken, another unicast filtered, a bad FCS and a runt counted by the MAC; TX seen on the wire."""
@@ -553,6 +600,7 @@ async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
     nic.stop()
 
 
+@cocotb.skipif(not RAW_LOOPBACK, reason="needs the raw loopback")
 @cocotb.test()
 async def test_reset_mid_traffic(dut: Any) -> None:
     """RESET while frames are in flight and the RX ring is empty: busy clears, state returns to defaults, the NIC works again."""
@@ -589,4 +637,69 @@ async def test_reset_mid_traffic(dut: Any) -> None:
     await nic.send_tx(f)
     s = await nic.wait_dd(RX_RING, 0)
     assert s == DD | 500 and nic.rx_frame(0) == f
+    nic.stop()
+
+
+@cocotb.skipif(RAW_LOOPBACK, reason="needs RAW_LOOPBACK = 0")
+@cocotb.test()
+async def test_unrelated_mac_clocks(dut: Any) -> None:
+    """No raw loopback, unrelated TX and RX clocks: no shared clock reported, MAC_LOOPBACK selects nothing, frames cross the wire both ways at once."""
+    nic = await _start(
+        dut,
+        5,
+        loopback=False,
+        rx_ps=UNRELATED_RX_PS,
+        rx_delay_ps=UNRELATED_RX_DELAY_PS,
+        phy_status=0xE,
+    )
+    # A transceiver board reports no shared clock, and PHY_STATUS shows none
+    # even when the board input claims one, since software picks MAC_LOOPBACK
+    # from CLK_SHARED and this build has no raw loopback. The other bits (LOS
+    # here) follow the board.
+    assert await nic.rd(PHY_STATUS) == 0xE
+    dut.i_phy_status.value = 0x1F
+    await nic.cycles(4)
+    assert await nic.rd(PHY_STATUS) == 0x1E
+    dut.i_phy_status.value = 0xE
+    await nic.cycles(4)
+    assert await nic.rd(PHY_STATUS) == 0xE
+    # PHY_CTRL still stores MAC_LOOPBACK and keeps it across RESET, but with
+    # no loopback path the RESET that would apply it leaves RX on the wire.
+    await nic.wr(PHY_CTRL, 1)
+    await nic.reset_and_ready()
+    assert await nic.rd(PHY_CTRL) == 1
+    await nic.program_rings()
+    await nic.post_rx(8)
+    await nic.wr(IRQ_MASK, 0x1F)
+    await nic.wr(CTRL, CTRL_RX_EN | CTRL_TX_EN)
+    await nic.wait_carrier()
+    incoming = [nic.frame(n) for n in (60, 1518, 9000, 64, 333, 1000)]
+    outgoing = [nic.frame(n, OTHER) for n in (61, 9000, 20, 1514, 128, 777)]
+    nic.wire.send(incoming)
+    for f in outgoing:
+        await nic.send_tx(f)
+    for i, f in enumerate(incoming):
+        s = await nic.wait_dd(RX_RING, i)
+        assert s == DD | len(f), f"RX descriptor {i}: {s:#x}"
+        assert nic.rx_frame(i) == f, f"RX frame {i} differs"
+    for _ in range(4000):
+        if len(nic.wire.frames) >= len(outgoing):
+            break
+        await nic.cycles(20)
+    assert nic.wire.frames == [f.ljust(60, b"\0") for f in outgoing], [
+        len(f) for f in nic.wire.frames
+    ]
+    for i in range(len(outgoing)):
+        assert desc_status(nic.mem, TX_RING, i) == DD, f"TX descriptor {i}"
+    await nic.wait_status(
+        ST_RX_IDLE | ST_TX_IDLE,
+        ST_RX_IDLE | ST_TX_IDLE,
+        what="descriptor responses",
+    )
+    assert await nic.rd(RX_HEAD) == len(incoming)
+    assert await nic.rd(TX_HEAD) == len(outgoing)
+    assert await nic.rd64(COUNTERS + 8 * CNT_RX_FRAMES) == len(incoming)
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_FRAMES) == len(outgoing)
+    assert await nic.rd64(COUNTERS + 8 * CNT_RX_BYTES) == sum(map(len, incoming))
+    assert await nic.rd64(COUNTERS + 8 * CNT_TX_BYTES) == sum(map(len, outgoing))
     nic.stop()

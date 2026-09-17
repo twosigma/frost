@@ -5,15 +5,15 @@ Phase 4 slice 2 integrates the standalone 10GBASE-R MAC/PCS
 on the cache hierarchy's coherent DMA port, packet clock crossings to the
 MAC's own clock domains (~161 MHz at line rate; 40 MHz on the current
 loopback build), and one PLIC interrupt. This directory holds the NIC's own
-blocks; the MAC/PCS is untouched and keeps its standalone CI job.
+blocks; the MAC/PCS keeps its own directory and standalone CI job.
 
 | Module | Domain | Responsibility |
 | --- | --- | --- |
 | `nic_pkg.sv` | - | the register map, interrupt bits, beat codes, request kinds and descriptor bits shared with the benches and `sw/lib/include/nic.h` |
-| `nic_top.sv` | all | the NIC: the core-domain blocks below around `nic_mac_wrap`; register window, DMA line port and interrupt toward the SoC, MAC clocks and the raw PMA interface toward the board |
+| `nic_top.sv` | all | the NIC: the core-domain blocks below around `nic_mac_wrap`; register window, DMA line port and interrupt toward the SoC, MAC clocks, the raw PMA interface and the PCS block lock toward the board |
 | `nic_csr.sv` | core | the register file: control, status, station address, rings, link and PHY registers, the 64-bit counters |
 | `nic_irq.sv` | core | interrupt status, mask, per-direction completion moderation |
-| `nic_mac_wrap.sv` | MAC + core | the MAC/PCS in its two domains, the packet FIFOs, the domain resets, status synchronizers, event counters, the raw loopback |
+| `nic_mac_wrap.sv` | MAC + core | the MAC/PCS in its two domains, the packet FIFOs, the domain resets, status synchronizers, event counters, the raw loopback (`RAW_LOOPBACK`) |
 | `nic_dma_front.sv` | core | the two engines' requests onto the one DMA line port: four entries with a three-per-side cap, RX priority with a grant-counted bound, response steering, aperture refusal, the drain |
 | `nic_desc_fetch.sv` | core | one ring's descriptor supply: prefetch cursor, two-line cache, eligibility captured at the read's acceptance |
 | `nic_rx_engine.sv` | core | frames from the RX FIFO into ring buffers: filter, `nic_byte_pack`, truncation, status writes |
@@ -34,24 +34,40 @@ inside the strongly ordered MMIO range) with PLIC source 4, and puts it on
 the cache hierarchy's coherent DMA port through a `line_port_arbiter`
 ahead of the DMA test engine: the NIC is port 0 with priority under the
 arbiter's grant bound, each agent presents 2-bit ids and the arbiter adds
-the port bit. `frost.sv` carries one MAC clock for both directions
-(`i_nic_mac_clk`, the loopback build's shared clock) and defaults the PHY
-lines so simulation needs only the clock; `boards/x3/x3_frost.sv` derives
-that clock from the MMCM at 40 MHz (1200 MHz / 30) and ties the PHY status
-to "clock shared, transceiver ready". The loopback build runs the MAC well
-below the 10GBASE-R word rate on purpose: closing the MAC at line rate is
-part of the slice 4 transceiver work. The receive and transmit MACs are
-structured for the word rate (see `hw/rtl/net10g/README.md`); routed timing
-at that rate comes with the transceiver integration. Both MAC frame buffers
-are block RAM, which keeps their address fan-out out of the CPU's placement.
+the port bit. `frost.sv` carries the TX and RX MAC clocks separately, each
+with its presence level (`i_nic_tx_clk`, `i_nic_rx_clk`, `i_nic_tx_clk_ok`,
+`i_nic_rx_clk_ok`), and defaults the PHY lines; `boards/x3/x3_frost.sv`
+drives both clocks from one MMCM output at 40 MHz (1200 MHz / 30), both
+presence levels from the MMCM lock, and ties the PHY status to "clock
+shared, transceiver ready". The `RAW_LOOPBACK` parameter (default 1, passed
+from `frost.sv` through `cpu_and_mem` and `nic_top` to `nic_mac_wrap`)
+builds the raw loopback behind PHY_CTRL's MAC_LOOPBACK. That path feeds the
+raw TX word into the RX PCS with no crossing logic, so it needs one clock on
+both MAC clock ports, as simulation and the X3's MMCM build provide. With 0,
+for a transceiver's independent TX and RX clocks, neither the mux nor its
+select synchronizer is built, raw RX comes only from the PHY inputs, and
+PHY_CTRL still stores MAC_LOOPBACK, which then selects nothing. Software
+chooses MAC_LOOPBACK from PHY_STATUS's CLK_SHARED, so that build reads
+CLK_SHARED as 0 whatever the board drives; the other PHY_STATUS bits follow
+the board.
+`o_nic_rx_block_lock` exports the PCS block lock (LINK's RX_LOCKED, already
+synchronized to the core clock) for a board's transceiver supervisor; the X3
+top leaves it open. The loopback build runs the MAC well below the 10GBASE-R
+word rate on purpose: closing the MAC at line rate is part of the slice 4
+transceiver work. The receive and transmit MACs are structured for the word
+rate (see `hw/rtl/net10g/README.md`); routed timing at that rate comes with
+the transceiver integration. Both MAC frame buffers are block RAM, which
+keeps their address fan-out out of the CPU's placement.
 `boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
 buses with datapath and bus-skew bounds, single-bit levels, the reset
 assertion) rather than cutting the clock pair, so a crossing the
 exceptions miss fails timing loudly. Two programs drive the NIC the way the
-Linux driver does: `sw/apps/nic_loopback` (self-contained through the raw
-loopback: bring-up, rings and doorbells, completions, counters, the
-completion and link interrupts, moderation, the filter, RESET
-mid-traffic; also a hardware regression stage) and `sw/apps/nic_echo`
+Linux driver does: `sw/apps/nic_loopback` (self-contained through a
+loopback, the raw loopback when PHY_STATUS reports a clock shared by both
+MAC directions and the transceiver's PMA loopback otherwise: bring-up,
+rings and doorbells, completions, counters, the completion and link
+interrupts, moderation, the filter, RESET mid-traffic; also a hardware
+regression stage) and `sw/apps/nic_echo`
 (what a real link looks like: the cocotb bench's wire-side peer encodes
 frames of every class into the raw RX interface with the net10g software
 encoder and decodes the raw TX interface; the program echoes every frame
@@ -61,8 +77,10 @@ the ring, truncated jumbo frames and filtered foreign frames).
 The Linux driver, `frost_net10g`, is a kernel patch under
 `linux/buildroot-external/board/frost/patches/linux`
 (`0001-net-ethernet-add-the-FROST-net10g-driver.patch`).
-`frost_nettest` (in the `frost-stress` package) runs it through the raw
-loopback in the hardware regression's Linux stage.
+`frost_nettest` (in the `frost-stress` package) runs it in the hardware
+regression's Linux stage through the driver's loopback feature: the raw
+loopback where both MAC directions share a clock, the transceiver's PMA
+loopback otherwise.
 
 ## Reset and clock domains
 
@@ -244,6 +262,12 @@ three clocks: bring-up and register rules, frames around the raw loopback
 with completions, counters, interrupts and moderation, frames from the
 software wire through the filter, a bad FCS and a runt counted in the MAC
 totals without RX_DROP, TX validated on the wire, and RESET mid-traffic.
+The `nic_top_unrelated_clocks` entry runs the same bench on a
+`RAW_LOOPBACK = 0` build with unrelated TX and RX clock periods and phases:
+CLK_SHARED read as 0 even when the board input claims a shared clock,
+MAC_LOOPBACK stored across a RESET without taking RX off the wire, and
+frames in both directions at once, checked in the ring buffers and by the
+wire's receiver.
 The full-system programs `nic_loopback` and `nic_echo` (above) run through `frost` in both memory tiers. `formal/async_fifo.sby` bounds the FIFO under free-running
 unrelated clocks: occupancy, no underflow, Gray consistency, and a watched
 word delivered in order and intact.

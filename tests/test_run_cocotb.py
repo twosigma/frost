@@ -1460,6 +1460,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "captured on the wire, RESET mid-traffic"
         ),
     ),
+    "nic_top_unrelated_clocks": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top",
+        hdl_toplevel_module="nic_top",
+        description=(
+            "The whole NIC built without the raw loopback (RAW_LOOPBACK=0), as "
+            "for a transceiver's independent clocks: PHY_STATUS never reporting "
+            "a shared clock, unrelated TX and RX clock periods and phases, "
+            "MAC_LOOPBACK stored but selecting nothing, frames both ways over "
+            "the software wire at once"
+        ),
+        verilator_extra_args=("-GRAW_LOOPBACK=0",),
+    ),
     "nic_reset": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_reset",
         hdl_toplevel_module="nic_reset_test_harness",

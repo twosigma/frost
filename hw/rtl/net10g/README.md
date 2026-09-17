@@ -11,9 +11,11 @@ that integration and keep their standalone CI job. A separate
 runs their standalone simulations and portable synthesis check using the
 workflow's shared Docker image.
 
-The top is `eth10g_mac_pcs`. The standalone `net10g.f` manifest uses paths
-relative to the repository root. All datapaths are native 64-bit, with
-separate transmit and receive clock domains and a raw parallel interface
+The top is `eth10g_mac_pcs`. The `net10g.f` manifest lists these modules
+with paths relative to the repository root. Their one outside dependency is
+the two-flop synchronizer `cdc_sync` from `hw/rtl/lib/cdc`, which the
+including file list supplies (`cdc.f`). All datapaths are native 64-bit,
+with separate transmit and receive clock domains and a raw parallel interface
 intended for a future GTY wrapper. There are no vendor primitive instances.
 
 ```mermaid
@@ -47,7 +49,7 @@ flowchart LR
 | `eth10g_fault_monitor` | Qualify four identical fault sequences, clear after 128 fault-free XGMII columns |
 | `eth10g_tx_reconcile` | Respond to local/remote faults and suppress interrupted frame tails through recovery |
 | `eth10g_pcs_tx`, `eth10g_pcs_rx` | Compose the coding, synchronization, monitoring and sequencing stages |
-| `eth10g_mac_pcs` | Compose the independent MAC/PCS directions and synchronize fault status into TX |
+| `eth10g_mac_pcs` | Compose the independent MAC/PCS directions and carry fault status into TX (an RX register, then `cdc_sync`) |
 
 The codec performs block-format conversion independently of frame sequencing.
 TX frame sequencing is supplied by the MAC and reconciliation logic. RX
@@ -169,6 +171,17 @@ length compare or CRC passes from lane to lane.
 belong to the receive clock domain. `o_tx_link_ready` belongs to TX and
 includes synchronized fault status plus recovery to a complete idle boundary.
 TX ingress is backpressured until it is ready, including during startup.
+
+The fault status is the only signal that crosses between the two domains.
+The fault monitor computes it combinationally, so an RX-clock register holds
+it first and the synchronizer's first stage sees one flop. `cdc_sync` then
+carries it into TX through two `ASYNC_REG` stages named `stage_q`, the
+synchronizer naming the board constraints match, and resets them to a local
+fault. TX therefore sees a fault change one RX clock plus two TX clocks after
+the fault monitor. While the RX clock is stopped the register holds its last
+value. The transmitter then keeps the last fault state until the RX clock
+returns, for example across a transceiver RX reset, even though the fault
+monitor's output follows `i_rx_signal_ok` combinationally.
 
 A local receive fault causes remote-fault ordered sets on TX; a received
 remote fault causes idles. A fault interrupts any packet already on the

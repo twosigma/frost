@@ -17,13 +17,16 @@
 /*
  * NIC loopback test (hw/rtl/peripherals/nic, sw/lib/include/nic.h).
  *
- * Drives the NIC the way the Linux driver will: bring-up through READY, the
- * raw loopback selected through a RESET, station address, rings in cached
- * DDR, descriptors posted with a TAIL doorbell, completions read from the
+ * Drives the NIC the way the Linux driver will: bring-up through READY, a
+ * loopback selected through a RESET, station address, rings in cached DDR,
+ * descriptors posted with a TAIL doorbell, completions read from the
  * descriptors (DD), counters, the completion and link interrupts, the
  * moderation registers, a RESET in the middle of traffic, and the filter.
- * Frames go out through TX, around the loopback inside the MAC wrapper and
- * back into RX buffers, where every byte is compared.
+ * The loopback follows PHY_STATUS.CLK_SHARED: with one clock shared by both
+ * MAC directions, the MAC wrapper's raw loopback (MAC_LOOPBACK); with a
+ * transceiver's independent clocks, its PMA loopback (PMA_LOOPBACK). Frames
+ * go out through TX, around the loopback and back into RX buffers, where
+ * every byte is compared.
  *
  * Prints <<PASS>> or <<FAIL>>. Runs in both memory tiers: rings and buffers
  * live at fixed DDR addresses above every image.
@@ -41,11 +44,19 @@
 
 /* Polling budgets in loop iterations (an MMIO read each, tens of cycles):
  * sized so a failed wait reports inside the simulation's cycle budget while
- * leaving the hardware (300 MHz) milliseconds. */
+ * leaving the hardware (300 MHz) milliseconds. A transceiver link
+ * (CLK_SHARED = 0) comes up through the transceiver's resets, CDR and block
+ * lock in hundreds of milliseconds, so there the waits for READY and CARRIER
+ * take WAIT_LINK_TRANSCEIVER instead: seconds at a 150 or 300 MHz CPU clock. */
 #define WAIT_READY 4000u
 #define WAIT_CARRIER 12000u
+#define WAIT_LINK_TRANSCEIVER 20000000u
 #define WAIT_DD 40000u
 #define WAIT_IRQ 4000u
+
+/* Bring-up's enable gets at most this many CTRL writes with a transceiver and
+ * one where the MAC clock is shared (bringup). */
+#define ENABLE_TRIES_TRANSCEIVER 3u
 
 #define REG32(a) (*(volatile uint32_t *) (uintptr_t) (a))
 #define PLIC_BASE 0x44000000ul
@@ -72,6 +83,13 @@ static const uint8_t other[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
 
 static uint32_t g_failures;
 static uint32_t g_rx_posted, g_rx_reaped, g_tx_posted;
+/* Set by select_loopback: whether the MAC clocks come from a transceiver,
+ * PHY_CTRL's loopback bit for this build (programmed in bring-up and expected
+ * back after the RESET in test_reset), and the READY and CARRIER budgets and
+ * enable tries that go with it. */
+static int g_transceiver;
+static uint32_t g_loopback_ctrl;
+static uint32_t g_wait_link_ready, g_wait_carrier, g_enable_tries;
 volatile uint32_t g_irq_count;
 volatile uint32_t g_irq_seen; /* IRQ_STATUS bits seen by the handler */
 volatile uint32_t g_spurious;
@@ -177,6 +195,60 @@ static int reap_rx(uint32_t len, const uint8_t *da, uint32_t seed, const char *w
     return 1;
 }
 
+/* The raw loopback inside the MAC wrapper feeds raw TX into the RX PCS with no
+ * crossing logic, so it needs one clock shared by both MAC directions; with a
+ * transceiver's independent clocks the transceiver loops back at its PMA. */
+static void select_loopback(void)
+{
+    uint32_t phy_status = nic_read(NIC_PHY_STATUS);
+    if (phy_status & NIC_PHY_STATUS_CLK_SHARED) {
+        g_transceiver = 0;
+        g_loopback_ctrl = NIC_PHY_CTRL_MAC_LOOPBACK;
+        g_wait_link_ready = WAIT_READY;
+        g_wait_carrier = WAIT_CARRIER;
+        g_enable_tries = 1u;
+    } else {
+        g_transceiver = 1;
+        g_loopback_ctrl = NIC_PHY_CTRL_PMA_LOOPBACK;
+        g_wait_link_ready = WAIT_LINK_TRANSCEIVER;
+        g_wait_carrier = WAIT_LINK_TRANSCEIVER;
+        g_enable_tries = ENABLE_TRIES_TRANSCEIVER;
+    }
+    uart_printf("PHY_STATUS %x: PHY_CTRL loopback %x\n", phy_status, g_loopback_ctrl);
+}
+
+/* READY can also fall after an accepted enable, since the transceiver restarts
+ * its receiver for a PMA loopback change on its own schedule. The NIC then
+ * disables that direction itself, keeping its ring registers and HEAD. The
+ * transceiver drops its signal before that restart, so the carrier is down
+ * across it and returns only after READY has; once the carrier is up, a
+ * direction that CTRL shows disabled and STATUS shows READY is enabled again,
+ * as the Linux driver does on a LINK event. The write carries both enables
+ * and CTRL's current PROMISC, because every CTRL write other than RESET
+ * reloads PROMISC. Returns 0 if a direction is still disabled afterwards,
+ * since the frame tests that follow need both. */
+static int reenable_after_ready_loss(void)
+{
+    const uint32_t enables = NIC_CTRL_RX_EN | NIC_CTRL_TX_EN;
+    uint32_t ctrl = nic_read(NIC_CTRL);
+    uint32_t status = nic_read(NIC_STATUS);
+    uint32_t lost = 0;
+    if (!(ctrl & NIC_CTRL_RX_EN) && (status & NIC_STATUS_RX_READY))
+        lost |= NIC_CTRL_RX_EN;
+    if (!(ctrl & NIC_CTRL_TX_EN) && (status & NIC_STATUS_TX_READY))
+        lost |= NIC_CTRL_TX_EN;
+    if (lost) {
+        nic_write(NIC_CTRL, enables | (ctrl & NIC_CTRL_PROMISC));
+        ctrl = nic_read(NIC_CTRL);
+        uart_printf("re-enabled %x after a READY loss: CTRL %x\n", lost, ctrl);
+    }
+    if ((ctrl & enables) != enables) {
+        uart_printf("enable lost: CTRL %x STATUS %x\n", ctrl, nic_read(NIC_STATUS));
+        return 0;
+    }
+    return 1;
+}
+
 static int bringup(int loopback)
 {
     if (nic_read(NIC_ID) != NIC_ID_VALUE) {
@@ -186,12 +258,12 @@ static int bringup(int loopback)
     uart_printf("STATUS %x LINK %x\n", nic_read(NIC_STATUS), nic_read(NIC_LINK));
     if (!wait_status(NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
                      NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
-                     WAIT_READY)) {
+                     g_wait_link_ready)) {
         uart_printf("not READY: STATUS %x LINK %x\n", nic_read(NIC_STATUS), nic_read(NIC_LINK));
         return 0;
     }
     if (loopback) {
-        nic_write(NIC_PHY_CTRL, NIC_PHY_CTRL_MAC_LOOPBACK);
+        nic_write(NIC_PHY_CTRL, g_loopback_ctrl);
         nic_write(NIC_CTRL, NIC_CTRL_RESET);
         if (!wait_status(NIC_STATUS_RESET_BUSY, 0, WAIT_READY)) {
             uart_printf("RESET stuck: %x\n", nic_read(NIC_STATUS));
@@ -199,7 +271,7 @@ static int bringup(int loopback)
         }
         if (!wait_status(NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
                          NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
-                         WAIT_READY)) {
+                         g_wait_link_ready)) {
             uart_printf("not READY after RESET: %x\n", nic_read(NIC_STATUS));
             return 0;
         }
@@ -219,21 +291,32 @@ static int bringup(int loopback)
     nic_write(NIC_RX_ITR, 0);
     nic_write(NIC_TX_ITR, 0);
     nic_write(NIC_IRQ_STATUS, NIC_IRQ_RX | NIC_IRQ_TX | NIC_IRQ_RX_DROP | NIC_IRQ_DESC_ERR);
-    nic_write(NIC_CTRL, NIC_CTRL_RX_EN | NIC_CTRL_TX_EN);
-    if ((nic_read(NIC_CTRL) & (NIC_CTRL_RX_EN | NIC_CTRL_TX_EN)) !=
-        (NIC_CTRL_RX_EN | NIC_CTRL_TX_EN)) {
-        uart_printf(
-            "enable refused: CTRL %x STATUS %x\n", nic_read(NIC_CTRL), nic_read(NIC_STATUS));
-        return 0;
+    /* An enable is refused (CONFIG_ERR) unless its direction is READY and its
+     * ring valid. With a transceiver, the receiver restart for the PMA
+     * loopback change can take READY down after the wait for it above, so a
+     * refused enable is written again once READY is back, up to
+     * g_enable_tries writes in all. A shared MAC clock gets one write. */
+    const uint32_t enables = NIC_CTRL_RX_EN | NIC_CTRL_TX_EN;
+    const uint32_t ready = NIC_STATUS_RX_READY | NIC_STATUS_TX_READY;
+    nic_write(NIC_CTRL, enables);
+    for (uint32_t tries = 1u; (nic_read(NIC_CTRL) & enables) != enables; tries++) {
+        if (tries >= g_enable_tries || !wait_status(ready, ready, g_wait_link_ready)) {
+            uart_printf(
+                "enable refused: CTRL %x STATUS %x\n", nic_read(NIC_CTRL), nic_read(NIC_STATUS));
+            return 0;
+        }
+        nic_write(NIC_CTRL, enables);
     }
     if (loopback) {
-        uint32_t budget = WAIT_CARRIER;
+        uint32_t budget = g_wait_carrier;
         while (budget-- && !(nic_read(NIC_LINK) & NIC_LINK_CARRIER))
             ;
         if (!(nic_read(NIC_LINK) & NIC_LINK_CARRIER)) {
             uart_printf("no carrier: LINK %x\n", nic_read(NIC_LINK));
             return 0;
         }
+        if (g_transceiver && !reenable_after_ready_loss())
+            return 0;
     }
     return 1;
 }
@@ -431,7 +514,7 @@ static void test_reset(void)
     if (nic_read(NIC_RX_BASE) != 0 || nic_read(NIC_TX_HEAD) != 0 ||
         nic_read_counter(NIC_CNT_RX_FRAMES) != 0)
         ok = 0;
-    if (nic_read(NIC_PHY_CTRL) != NIC_PHY_CTRL_MAC_LOOPBACK)
+    if (nic_read(NIC_PHY_CTRL) != g_loopback_ctrl)
         ok = 0;
     /* The LINK interrupt: RESET cleared the mask; enable LINK before the
      * link comes back so the carrier transition raises it. */
@@ -460,6 +543,7 @@ static void test_reset(void)
 int main(void)
 {
     uart_printf("nic_loopback\n");
+    select_loopback();
     if (!bringup(1)) {
         uart_printf("bringup FAIL\n<<FAIL>>\n");
         return 1;

@@ -21,6 +21,8 @@ ROOT := $(abspath ../..)
 RTL := $(ROOT)/hw/rtl/net10g
 VERILOG_SOURCES := $(RTL)/eth10g_crc_pkg.sv $(RTL)/eth10g_pcs_pkg.sv
 VERILOG_SOURCES += $(filter-out %_pkg.sv,$(sort $(wildcard $(RTL)/*.sv)))
+# The fault-status crossing uses the library's two-flop synchronizer.
+VERILOG_SOURCES += $(ROOT)/hw/rtl/lib/cdc/cdc_sync.sv
 VERILOG_SOURCES += $(sort $(wildcard $(CURDIR)/*_tb.sv))
 EXTRA_ARGS += -j 2
 # A frame limit other than the default applies to the top's MAX_FRAME_BYTES

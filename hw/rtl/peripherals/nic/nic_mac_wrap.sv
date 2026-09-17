@@ -23,16 +23,23 @@
  * {last, bytes - 1}). Each domain's reset comes from nic_domain_reset
  * under the core-side controller's generation handshake; the FIFO half in
  * a domain resets with that domain, the core-side half with
- * i_core_rst_dom. MAC_LOOPBACK (raw TX into raw RX; only meaningful with
- * one shared clock) is sampled by the RX domain while it is in reset, so
- * a change takes effect through a MAC-domain reset. Status levels are
- * two-flop synchronized; MAC event pulses become 64-bit totals in the
- * core domain through Gray-coded counters that rebase while the domain
- * is not ready.
+ * i_core_rst_dom. The raw loopback (MAC_LOOPBACK: raw TX into raw RX with
+ * no crossing logic, so only for one clock shared by both directions)
+ * exists with RAW_LOOPBACK = 1; its select is sampled by the RX domain
+ * while it is in reset, so a change takes effect through a MAC-domain
+ * reset. With RAW_LOOPBACK = 0 (independent TX and RX clocks, such as a
+ * transceiver's) neither the mux nor its select synchronizer is built, raw
+ * RX comes only from the PHY inputs and i_mac_loopback is ignored. Status
+ * levels are two-flop synchronized; MAC event pulses become 64-bit totals
+ * in the core domain through Gray-coded counters that rebase while the
+ * domain is not ready.
  */
 module nic_mac_wrap #(
     parameter int unsigned FIFO_DEPTH = 512,
-    parameter int MAX_FRAME_BYTES = 9216
+    parameter int MAX_FRAME_BYTES = 9216,
+    // 1 = the raw TX-to-RX loopback behind MAC_LOOPBACK (a shared MAC clock);
+    // 0 = no loopback path (independent TX and RX clocks).
+    parameter int unsigned RAW_LOOPBACK = 1
 ) (
     // Core domain.
     input  logic       i_clk,
@@ -155,21 +162,33 @@ module nic_mac_wrap #(
   assign o_rx_code = r_word[67:64];
 
   // ---- the raw loopback -------------------------------------------------------------------
-  logic loop_sync, loop_q;
-  cdc_sync u_loop_sync (
-      .i_clk  (i_rx_clk),
-      .i_rst  (1'b0),
-      .i_async(i_mac_loopback),
-      .o_sync (loop_sync)
-  );
-  always_ff @(posedge i_rx_clk) begin
-    if (rx_rst) loop_q <= loop_sync;
-  end
   logic [63:0] rx_raw_data;
   logic rx_raw_valid, rx_signal_ok;
-  assign rx_raw_data  = loop_q ? o_tx_raw_data : i_rx_raw_data;
-  assign rx_raw_valid = loop_q ? o_tx_raw_valid : i_rx_raw_valid;
-  assign rx_signal_ok = loop_q ? 1'b1 : i_rx_signal_ok;
+  if (RAW_LOOPBACK != 0) begin : gen_raw_loopback
+    logic loop_sync, loop_q;
+    cdc_sync u_loop_sync (
+        .i_clk  (i_rx_clk),
+        .i_rst  (1'b0),
+        .i_async(i_mac_loopback),
+        .o_sync (loop_sync)
+    );
+    always_ff @(posedge i_rx_clk) begin
+      if (rx_rst) loop_q <= loop_sync;
+    end
+    assign rx_raw_data  = loop_q ? o_tx_raw_data : i_rx_raw_data;
+    assign rx_raw_valid = loop_q ? o_tx_raw_valid : i_rx_raw_valid;
+    assign rx_signal_ok = loop_q ? 1'b1 : i_rx_signal_ok;
+  end else begin : gen_no_raw_loopback
+    // No TX-to-RX path: the PHY inputs alone feed the RX PCS, and PHY_CTRL's
+    // MAC_LOOPBACK bit is stored by the register block but selects nothing.
+    assign rx_raw_data  = i_rx_raw_data;
+    assign rx_raw_valid = i_rx_raw_valid;
+    assign rx_signal_ok = i_rx_signal_ok;
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic mac_loopback_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
+    assign mac_loopback_unused = i_mac_loopback;
+  end
 
   // ---- the MAC/PCS ------------------------------------------------------------------------
   logic rx_locked, rx_high_ber, rx_local_fault, rx_remote_fault, tx_link_ready;

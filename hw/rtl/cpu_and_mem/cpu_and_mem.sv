@@ -80,7 +80,10 @@ module cpu_and_mem #(
     // build; 1 for analysis builds and the cocotb entries that read them.
     parameter int unsigned PERF_COUNTERS = 0,
     // Core clock frequency: the NIC's TICK default (one microsecond).
-    parameter int unsigned CLK_FREQ_HZ = 300000000
+    parameter int unsigned CLK_FREQ_HZ = 300000000,
+    // The NIC's raw TX-to-RX loopback (see frost.sv): 1 for one MAC clock
+    // shared by both directions, 0 for independent TX and RX clocks.
+    parameter int unsigned RAW_LOOPBACK = 1
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -170,9 +173,9 @@ module cpu_and_mem #(
     input  logic         i_ddr_axi_rlast,
 
     // NIC (Phase 4 slice 2, hw/rtl/peripherals/nic): the MAC clocks and their
-    // presence levels, the raw PMA interface and the board's PHY lines. The
-    // NIC lives with the cached tier (its DMA port); without the tier its
-    // window reads zero.
+    // presence levels, the raw PMA interface, the board's PHY lines and the
+    // PCS block lock (synchronized to i_clk). The NIC lives with the cached
+    // tier (its DMA port); without the tier its window reads zero.
     input  logic        i_nic_tx_clk,
     input  logic        i_nic_rx_clk,
     input  logic        i_nic_tx_clk_ok,
@@ -183,7 +186,8 @@ module cpu_and_mem #(
     input  logic        i_nic_rx_raw_valid,
     input  logic        i_nic_rx_signal_ok,
     input  logic [ 4:0] i_nic_phy_status,
-    output logic [ 3:1] o_nic_phy_ctrl
+    output logic [ 3:1] o_nic_phy_ctrl,
+    output logic        o_nic_rx_block_lock
 );
 
   // Core reset (Phase 3 M3): the external reset OR the debug module's
@@ -1752,7 +1756,8 @@ module cpu_and_mem #(
         .LINE_BYTES(32),
         .APERTURE_BASE(CACHED_BASE),
         .APERTURE_BYTES(CACHED_SIZE_BYTES),
-        .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000)
+        .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000),
+        .RAW_LOOPBACK(RAW_LOOPBACK)
     ) nic (
         .i_clk(i_clk),
         .i_rst(rst_core_next),  // registered inside nic_top; see its header
@@ -1783,7 +1788,8 @@ module cpu_and_mem #(
         .i_rx_raw_valid(i_nic_rx_raw_valid),
         .i_rx_signal_ok(i_nic_rx_signal_ok),
         .i_phy_status(i_nic_phy_status),
-        .o_phy_ctrl(o_nic_phy_ctrl)
+        .o_phy_ctrl(o_nic_phy_ctrl),
+        .o_rx_block_lock(o_nic_rx_block_lock)
     );
 
     dma_test_engine #(
@@ -1983,6 +1989,7 @@ module cpu_and_mem #(
     assign o_nic_tx_raw_data = '0;
     assign o_nic_tx_raw_valid = 1'b0;
     assign o_nic_phy_ctrl = '0;
+    assign o_nic_rx_block_lock = 1'b0;
     // Generate-time zeroing keeps every cache counter known-zero when the
     // hierarchy is absent; no runtime shape mux reaches the observer path.
     assign cache_hierarchy_perf_events = '0;

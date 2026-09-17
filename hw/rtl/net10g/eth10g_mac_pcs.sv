@@ -20,7 +20,8 @@
 // Standalone full-duplex MAC/PCS with a raw 64-bit PMA-facing interface.
 // TX and RX clocks are independent, nominally 161.1328125 MHz. AXIS TX is
 // synchronous to i_tx_clk and AXIS RX to i_rx_clk. No packet CDC is hidden
-// here. The only crossing is a two-flop synchronization of fault status.
+// here. The only crossing is the fault status into TX: registered in the RX
+// domain, then two-flop synchronized by cdc_sync (hw/rtl/lib/cdc).
 module eth10g_mac_pcs #(
     parameter int MAX_FRAME_BYTES = 9216,
     parameter int unsigned BER_WINDOW_CYCLES = 20142
@@ -63,24 +64,31 @@ module eth10g_mac_pcs #(
   logic tx_enable, rx_enable, mac_tx_ready;
   logic [65:0] tx_block, rx_block;
   logic tx_block_valid, tx_block_ready, rx_block_valid, rx_slip;
-  (* ASYNC_REG = "TRUE" *) logic [1:0] local_fault_sync, remote_fault_sync;
-  always_ff @(posedge i_tx_clk) begin
-    if (i_tx_rst) begin
-      local_fault_sync  <= 2'b11;
-      remote_fault_sync <= '0;
-    end else begin
-      local_fault_sync  <= {local_fault_sync[0], o_rx_local_fault};
-      remote_fault_sync <= {remote_fault_sync[0], o_rx_remote_fault};
-    end
+  // Fault status into TX. The RX domain registers it (the fault monitor
+  // computes it combinationally), so the synchronizer's first stage sees one
+  // flop and nothing else. The synchronizer resets to a local fault.
+  logic rx_local_fault_q, rx_remote_fault_q, tx_local_fault, tx_remote_fault;
+  always_ff @(posedge i_rx_clk) begin
+    rx_local_fault_q  <= o_rx_local_fault;
+    rx_remote_fault_q <= o_rx_remote_fault;
   end
+  cdc_sync #(
+      .WIDTH(2),
+      .RESET_VALUE(2'b01)
+  ) fault_sync (
+      .i_clk  (i_tx_clk),
+      .i_rst  (i_tx_rst),
+      .i_async({rx_remote_fault_q, rx_local_fault_q}),
+      .o_sync ({tx_remote_fault, tx_local_fault})
+  );
   // Let MAC frames finish internally during a fault. The mux truncates a
   // frame on the wire, as RS fault signaling requires; it never pauses one.
   eth10g_tx_reconcile reconcile_tx (
       .i_clk(i_tx_clk),
       .i_rst(i_tx_rst),
       .i_enable(tx_enable),
-      .i_local_fault(local_fault_sync[1]),
-      .i_remote_fault(remote_fault_sync[1]),
+      .i_local_fault(tx_local_fault),
+      .i_remote_fault(tx_remote_fault),
       .i_xgmii_data(mac_tx_data),
       .i_xgmii_ctrl(mac_tx_ctrl),
       .o_xgmii_data(rs_tx_data),
