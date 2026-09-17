@@ -1429,7 +1429,57 @@ def test_board_ddr_generation_is_capability_gated() -> None:
     ):
         assert operation in guarded_body
     assert re.search(
-        r"x3 \[dict create part_number xcux35-vsva1365-3-e has_ddr 1\]", tcl
+        r"x3 \[dict create part_number xcux35-vsva1365-3-e has_ddr 1 has_gty 1\]", tcl
+    )
+
+
+def test_board_gty_generation_is_capability_gated() -> None:
+    """The NIC transceiver core is created only for boards that declare one.
+
+    It is created before the synth step generates and synthesizes the IP
+    cores, so it goes through the same generate_target and synth_ip calls.
+    """
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    registry = tcl.index("set board_build_configs")
+    capability = tcl.index(
+        "set board_has_gty [dict get $board_build_config has_gty]", registry
+    )
+    guard = re.search(r"    if \{\$board_has_gty\} \{\n(.*?)\n    \}", tcl, re.DOTALL)
+    assert guard is not None
+    assert registry < capability < guard.start()
+    guarded_body = guard.group(1)
+    for operation in (
+        "${board_name}_gty_ip.tcl",
+        "create_${board_name}_gty_ip",
+        "[getenv_default FROST_GTY_RX_EQ LPM]",
+    ):
+        assert operation in guarded_body
+    generate = tcl.index("generate_target all [get_ips]")
+    assert guard.end() < generate < tcl.index("synth_ip [get_ips]")
+
+    gty = (REPO_ROOT / "fpga/build/x3_gty_ip.tcl").read_text()
+    assert "proc create_x3_gty_ip {{rx_eq_mode LPM}}" in gty
+    for setting in (
+        "CONFIG.CHANNEL_ENABLE {X0Y28}",
+        "CONFIG.TX_REFCLK_SOURCE {X0Y28 clk0}",
+        "CONFIG.RX_REFCLK_SOURCE {X0Y28 clk0}",
+        "CONFIG.TX_REFCLK_FREQUENCY {161.1328125}",
+        "CONFIG.TX_DATA_ENCODING {RAW}",
+        "CONFIG.RX_BUFFER_MODE {1}",
+        "CONFIG.RX_OUTCLK_SOURCE {RXOUTCLKPMA}",
+        "CONFIG.FREERUN_FREQUENCY {150}",
+    ):
+        assert setting in gty
+
+    files = (REPO_ROOT / "boards/x3/x3_frost.f").read_text()
+    assert files.index("boards/x3/x3_nic_gty.sv") < files.index("boards/x3/x3_frost.sv")
+    top = (REPO_ROOT / "boards/x3/x3_frost.sv").read_text()
+    assert ".RAW_LOOPBACK(0)" in top
+    assert "CLKOUT1" not in top
+    xdc = (REPO_ROOT / "boards/x3/constr/x3.xdc").read_text()
+    assert (
+        "create_clock -period 6.206 -name nic_gty_refclk [get_ports i_nic_refclk_p]"
+        in xdc
     )
 
 

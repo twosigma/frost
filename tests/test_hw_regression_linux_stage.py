@@ -279,7 +279,7 @@ def test_default_stages_skip_debugger_driven_apps() -> None:
     stages = hw.regression_stages()
     assert "debug_target" in hw.VALID_APPS
     assert "debug_target" not in stages
-    # nic_echo needs receive traffic over a transceiver no board top has yet.
+    # nic_echo needs a link partner sending the cocotb wire peer's frames.
     assert "nic_echo" in hw.VALID_APPS
     assert "nic_echo" not in stages
     assert "nic_loopback" in stages

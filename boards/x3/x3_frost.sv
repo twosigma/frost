@@ -16,7 +16,8 @@
 
 // X3 board top level: UltraScale+ clock generation, the DDR4 memory subsystem
 // (the ddr_subsys block design, holding the DDR4 controller, a SmartConnect
-// and the JTAG DDR loader), and the common FROST subsystem.
+// and the JTAG DDR loader), the NIC's GTY transceiver (x3_nic_gty) and the
+// common FROST subsystem.
 module x3_frost #(
     // CPU clock divider for functional-validation builds (build.py
     // --cpu-clock-div exports it as FROST_CPU_CLK_DIV and synthesis passes
@@ -53,17 +54,27 @@ module x3_frost #(
     inout  wire  [ 8:0] ddr4_sdram_c0_dqs_c,
     inout  wire  [ 8:0] ddr4_sdram_c0_dqs_t,
     output logic        ddr4_sdram_c0_odt,
-    output logic        ddr4_sdram_c0_reset_n
+    output logic        ddr4_sdram_c0_reset_n,
+
+    // NIC transceiver, quad 231 (pins constrained in constr/x3.xdc): the
+    // 161.1328125 MHz Ethernet reference clock (MGTREFCLK0, P9/P8) and GTY
+    // channel X0Y28 (TX J7/J6, RX K4/K3), lane 1 of the DSFP28 cage
+    // labelled 2.
+    input  logic i_nic_refclk_p,
+    input  logic i_nic_refclk_n,
+    input  logic i_nic_rxp,
+    input  logic i_nic_rxn,
+    output logic o_nic_txp,
+    output logic o_nic_txn
 );
 
   // Clock generation using Xilinx MMCM and clock dividers. The 1200 MHz VCO
   // is divided by 4 x CPU_CLK_DIV for the CPU clock.
   localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;
   localparam int unsigned CpuClkHz = 300_000_000 / CPU_CLK_DIV;
-  logic main_clock, divided_clock_by_4, nic_clock;
+  logic main_clock, divided_clock_by_4;
   logic mmcm_locked;
   logic differential_clock_300mhz_buffered, clock_feedback, clock_from_mmcm;
-  logic nic_clock_from_mmcm;
 
   // Convert differential clock input to single-ended
   IBUFDS differential_input_buffer_300mhz (
@@ -79,23 +90,17 @@ module x3_frost #(
   //   .CLKFBOUT_MULT_F (34.375),  // VCO: 37.5MHz × 34.375 = 1289.0625 MHz
   //   .CLKOUT0_DIVIDE_F(4.0)      // Output: 1289.0625MHz / 4 = 322.265625 MHz
   MMCME2_ADV #(
-      .CLKIN1_PERIOD   (3.333),            // Input period: 1/300MHz = 3.333ns
-      .DIVCLK_DIVIDE   (1),                // Pre-divider: 300MHz / 1 = 300MHz
+      .CLKIN1_PERIOD   (3.333),           // Input period: 1/300MHz = 3.333ns
+      .DIVCLK_DIVIDE   (1),               // Pre-divider: 300MHz / 1 = 300MHz
       // VCO frequency: 300MHz × 4 = 1200 MHz
       .CLKFBOUT_MULT_F (4.0),
       // Output clock: 1200MHz / (4 x CPU_CLK_DIV) = 300 MHz for FROST CPU
-      .CLKOUT0_DIVIDE_F(CpuClkOutDivide),
-      // NIC MAC clock: 1200 MHz / 30 = 40 MHz for the loopback build.
-      // Both MAC frame buffers use block RAM with registered read prefetch.
-      // Line-rate timing remains to be qualified with the slice 4
-      // transceiver integration, which brings its own recovered clocks.
-      .CLKOUT1_DIVIDE  (30)
+      .CLKOUT0_DIVIDE_F(CpuClkOutDivide)
   ) mixed_mode_clock_manager (
       .CLKIN1  (differential_clock_300mhz_buffered),
       .CLKFBIN (clock_feedback),
       .CLKFBOUT(clock_feedback),
       .CLKOUT0 (clock_from_mmcm),
-      .CLKOUT1 (nic_clock_from_mmcm),
       .RST     (1'b0),                                // Don't reset MMCM
       .PWRDWN  (1'b0),                                // Don't power down
       .CLKIN2  (1'b0),
@@ -131,10 +136,35 @@ module x3_frost #(
       .I(clock_from_mmcm)
   );
 
-  // Global clock buffer for the NIC MAC clock.
-  BUFG nic_clock_buffer (
-      .O(nic_clock),
-      .I(nic_clock_from_mmcm)
+  // The NIC's 10GBASE-R transceiver. Its reset controller runs on a divided
+  // copy of the 300 MHz input taken before the MMCM, and it supplies both MAC
+  // clocks (TX and recovered RX USRCLK2, 161.13 MHz), their clock-OK levels,
+  // the raw words, the receive signal-OK and the PHY status.
+  logic nic_tx_clk, nic_rx_clk, nic_tx_clk_ok, nic_rx_clk_ok, nic_rx_signal_ok, nic_rx_raw_valid;
+  logic nic_tx_raw_valid, nic_rx_block_lock;
+  logic [63:0] nic_tx_raw_data, nic_rx_raw_data;
+  logic [3:1] nic_phy_ctrl;
+  logic [4:0] nic_phy_status;
+  x3_nic_gty nic_transceiver (
+      .i_sysclk_300   (differential_clock_300mhz_buffered),
+      .i_refclk_p     (i_nic_refclk_p),
+      .i_refclk_n     (i_nic_refclk_n),
+      .i_rxp          (i_nic_rxp),
+      .i_rxn          (i_nic_rxn),
+      .o_txp          (o_nic_txp),
+      .o_txn          (o_nic_txn),
+      .o_tx_clk       (nic_tx_clk),
+      .o_rx_clk       (nic_rx_clk),
+      .o_tx_clk_ok    (nic_tx_clk_ok),
+      .o_rx_clk_ok    (nic_rx_clk_ok),
+      .i_tx_raw_data  (nic_tx_raw_data),
+      .i_tx_raw_valid (nic_tx_raw_valid),
+      .o_rx_raw_data  (nic_rx_raw_data),
+      .o_rx_raw_valid (nic_rx_raw_valid),
+      .o_rx_signal_ok (nic_rx_signal_ok),
+      .i_phy_ctrl     (nic_phy_ctrl),
+      .o_phy_status   (nic_phy_status),
+      .i_rx_block_lock(nic_rx_block_lock)
   );
 
   // DDR AXI between the FROST cache-hierarchy bridge and the DDR4 subsystem
@@ -237,9 +267,10 @@ module x3_frost #(
       .ENABLE_CACHED_TIER(1),
       .USE_BEHAVIORAL_DDR(0),
       .PERF_COUNTERS(PERF_COUNTERS),
-      // One MMCM clock drives both MAC directions, so the NIC keeps its raw
-      // loopback.
-      .RAW_LOOPBACK(1)
+      // The transceiver's TX and RX clocks are independent, so the NIC has no
+      // raw loopback; its self-test loopback is the transceiver's PMA
+      // loopback (PHY_CTRL PMA_LOOPBACK).
+      .RAW_LOOPBACK(0)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
@@ -275,23 +306,20 @@ module x3_frost #(
       .i_ddr_axi_rdata(ddr_axi_rdata),
       .i_ddr_axi_rresp(ddr_axi_rresp),
       .i_ddr_axi_rlast(ddr_axi_rlast),
-      // NIC (slice 2): both MAC clocks from the one MMCM output, both present
-      // with its lock, no transceiver yet (the raw RX side idle, no signal),
-      // PHY status = clock shared, GT reset done, CDR locked, module present,
-      // no loss of signal; the PHY control bits and the block lock have
-      // nothing to drive.
-      .i_nic_tx_clk(nic_clock),
-      .i_nic_rx_clk(nic_clock),
-      .i_nic_tx_clk_ok(mmcm_locked),
-      .i_nic_rx_clk_ok(mmcm_locked),
-      .o_nic_tx_raw_data(),
-      .o_nic_tx_raw_valid(),
-      .i_nic_rx_raw_data('0),
-      .i_nic_rx_raw_valid(1'b0),
-      .i_nic_rx_signal_ok(1'b0),
-      .i_nic_phy_status(5'b01111),
-      .o_nic_phy_ctrl(),
-      .o_nic_rx_block_lock()
+      // NIC: the MAC clocks, raw words and PHY lines of the transceiver above;
+      // the PCS block lock goes back to its supervisor.
+      .i_nic_tx_clk(nic_tx_clk),
+      .i_nic_rx_clk(nic_rx_clk),
+      .i_nic_tx_clk_ok(nic_tx_clk_ok),
+      .i_nic_rx_clk_ok(nic_rx_clk_ok),
+      .o_nic_tx_raw_data(nic_tx_raw_data),
+      .o_nic_tx_raw_valid(nic_tx_raw_valid),
+      .i_nic_rx_raw_data(nic_rx_raw_data),
+      .i_nic_rx_raw_valid(nic_rx_raw_valid),
+      .i_nic_rx_signal_ok(nic_rx_signal_ok),
+      .i_nic_phy_status(nic_phy_status),
+      .o_nic_phy_ctrl(nic_phy_ctrl),
+      .o_nic_rx_block_lock(nic_rx_block_lock)
   );
 
 endmodule : x3_frost

@@ -164,7 +164,7 @@ async def generate_divided_clock(dut: Any) -> None:
 # The NIC's MAC clock period (frost.sv i_nic_tx_clk and i_nic_rx_clk): 1.75
 # core periods (5.25 ns against the 3 ns core clock), unrelated to the core
 # clock and near the ratio of the 10GBASE-R word clock (161.13 MHz) to the
-# rated 300 MHz core clock. The X3's MMCM-clocked build runs the MAC at 40 MHz.
+# rated 300 MHz core clock. The X3 build clocks the MAC from its transceiver.
 NIC_MAC_CLK_PERIOD_PS = 2 * int(CLK_PERIOD_NS * 875)
 
 

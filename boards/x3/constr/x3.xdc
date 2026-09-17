@@ -27,6 +27,23 @@ set_property -dict {PACKAGE_PIN AK23 IOSTANDARD LVDS} [get_ports i_sysclk_p]
 create_clock -period 3.333 -name sysclk [get_ports i_sysclk_p]
 
 # ================================================================
+# NIC transceiver - quad 231
+# ================================================================
+# The card's 161.1328125 MHz Ethernet reference clock (CLK1_LVDS_161) on
+# MGTREFCLK0 of quad 231, and GTY channel X0Y28, lane 1 of the DSFP28 cage
+# labelled 2. The transceiver wizard core's own XDC places the channel
+# (GTYE4_CHANNEL_X0Y28); these pins are that channel's. The period on the
+# reference clock is what the transceiver's TX, RX and user clocks derive
+# from.
+set_property PACKAGE_PIN P9 [get_ports i_nic_refclk_p]
+set_property PACKAGE_PIN P8 [get_ports i_nic_refclk_n]
+set_property PACKAGE_PIN J7 [get_ports o_nic_txp]
+set_property PACKAGE_PIN J6 [get_ports o_nic_txn]
+set_property PACKAGE_PIN K4 [get_ports i_nic_rxp]
+set_property PACKAGE_PIN K3 [get_ports i_nic_rxn]
+create_clock -period 6.206 -name nic_gty_refclk [get_ports i_nic_refclk_p]
+
+# ================================================================
 # UART - Serial communication for debug console
 # ================================================================
 set_property -dict {PACKAGE_PIN AP24 IOSTANDARD LVCMOS18} [get_ports o_uart_tx]
@@ -312,16 +329,26 @@ set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks 
 # silently selects nothing.
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
 
-# NIC (Phase 4 slice 2, hw/rtl/peripherals/nic). Its MAC clock is the MMCM's
-# CLKOUT1 (1200 MHz / 30 = 40 MHz for loopback), a generated clock of the sysclk family,
-# so every core <-> MAC crossing is timed synchronously unless an exception
-# below covers it: no blanket clock-group cut, a crossing the exceptions miss
-# fails loudly. Every exception names its launch registers explicitly (the
-# fan-in of the synchronizer's first stage, so a pointer bit synthesis merged
-# with its binary twin stays covered) and one clock pair at a time. XDC has
-# no loops, so the buses are written out one by one.
-set nic_core_clk [get_clocks -of_objects [get_pins mixed_mode_clock_manager/CLKOUT0]]
-set nic_mac_clk  [get_clocks -of_objects [get_pins mixed_mode_clock_manager/CLKOUT1]]
+# NIC (hw/rtl/peripherals/nic) and its transceiver (boards/x3/x3_nic_gty.sv).
+# Four clocks meet here: the core clock (MMCM CLKOUT0), the transceiver's TX
+# and RX USRCLK2 (the MAC domains, 161.13 MHz, generated from the reference
+# clock above; the RX one is recovered from the line) and the transceiver
+# supervisor's free-running clock (a BUFGCE_DIV halving the 300 MHz input,
+# a generated clock of the sysclk family). Vivado times every pair unless an
+# exception below covers the crossing: no blanket clock-group cut, so a
+# crossing the exceptions miss fails loudly. Every exception names its launch
+# registers or its launch clock explicitly (the Gray buses by the fan-in of
+# the synchronizer's first stage, so a pointer bit synthesis merged with its
+# binary twin stays covered). XDC has no loops, so the buses are written out
+# one by one. The transceiver clocks are found through the one GTYE4_CHANNEL
+# cell's user clock pins; the transceiver IP is a black box while the top is
+# synthesized, so these queries are empty there and resolve once its netlist
+# is linked.
+set nic_core_clk    [get_clocks -of_objects [get_pins mixed_mode_clock_manager/CLKOUT0]]
+set nic_gty_channel [get_cells -quiet -hierarchical -filter {REF_NAME == GTYE4_CHANNEL}]
+set nic_tx_clk      [get_clocks -quiet -of_objects [get_pins -quiet -of_objects $nic_gty_channel -filter {REF_PIN_NAME == TXUSRCLK2}]]
+set nic_rx_clk      [get_clocks -quiet -of_objects [get_pins -quiet -of_objects $nic_gty_channel -filter {REF_PIN_NAME == RXUSRCLK2}]]
+set nic_freerun_clk [get_clocks -of_objects [get_pins nic_transceiver/freerun_clock_buffer/O]]
 
 # Gray-coded buses: the FIFO pointers (one bus per FIFO and direction) and the
 # event counters. A datapath-only bound below the fastest source period and a
@@ -367,13 +394,20 @@ set nic_s9 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of
 set_max_delay -datapath_only 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 set_bus_skew 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 
-# Single-bit levels into cdc_sync's first stage in either direction (status,
-# clock-ok, the reset handshake's request and acknowledgement, the loopback
-# select, and inside the MAC/PCS the fault status from RX into TX): a
-# datapath-only bound from the launching clock, no skew requirement.
+# Single-bit levels into cdc_sync's first stage in either direction: in the
+# NIC the status, clock-OK and PHY status levels, the reset handshake's
+# request and acknowledgement, and inside the MAC/PCS the fault status from RX
+# into TX; in the transceiver supervisor its inputs (PLL lock, power good and
+# reset done, the user clocking helpers' active flags, the PCS block lock and
+# the PHY_CTRL bits) and its receive signal permission into the RX domain. A
+# datapath-only bound from the launching clock, no skew requirement. The
+# transceiver's raw RX reset done launches from RX USRCLK2; its PLL lock and
+# power good have no launch clock at all.
 set nic_sync_d [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
-set_max_delay -datapath_only 3.0 -from $nic_core_clk -to $nic_sync_d
-set_max_delay -datapath_only 3.0 -from $nic_mac_clk  -to $nic_sync_d
+set_max_delay -datapath_only 3.0 -from $nic_core_clk    -to $nic_sync_d
+set_max_delay -datapath_only 3.0 -from $nic_tx_clk      -to $nic_sync_d
+set_max_delay -datapath_only 3.0 -from $nic_rx_clk      -to $nic_sync_d
+set_max_delay -datapath_only 3.0 -from $nic_freerun_clk -to $nic_sync_d
 # The asynchronous assertion of the MAC-domain resets (cdc_reset_sync).
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]
 
@@ -389,8 +423,14 @@ set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"
 # no exclusivity): they bias the initial placement and cannot make it
 # infeasible. Each region has 48 RAMB36 sites; the MAC's frame buffers use
 # 17.5 tiles. The 300 MHz NIC logic and the DMA test engine share one
-# region so the packers stay compact; the MAC (its own 40 MHz domains plus
-# the packet FIFOs) takes the next one.
+# region so the packers stay compact; the MAC (its transceiver clock domains
+# plus the packet FIFOs) takes the next one. The MAC fence stays beside the
+# NIC core rather than beside the transceiver (quad 231, CLOCKREGION_X4Y7):
+# u_mac also holds the packet FIFOs' core-clock halves and the event totals,
+# whose 300 MHz paths to the RX and TX engines would otherwise cross three
+# columns and three rows of clock regions, while the MAC's own path to the
+# transceiver is one register hop at 161 MHz (the wrapper's raw data
+# registers, which are free to sit beside the transceiver).
 create_pblock frost_nic_core
 resize_pblock [get_pblocks frost_nic_core] -add CLOCKREGION_X1Y4:CLOCKREGION_X1Y4
 set_property IS_SOFT true [get_pblocks frost_nic_core]
