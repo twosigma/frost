@@ -244,8 +244,9 @@ counters, which holds for the rated-clock production bitstream; a
 whenever `FROST_CPU_CLK_HZ` names such a bitstream.
 The Linux stage boots the OpenSBI + Sv39 image, requires the userspace stress
 token, logs in, runs `perf stat` on the cycle and instruction counters, then
-runs `frost_nettest`, which drives the NIC driver through the raw loopback and
-must print `FROST_NET_LOOPBACK_PASS`:
+runs `frost_nettest`, which drives the NIC driver through its loopback feature
+(the NIC's raw loopback on a shared MAC clock, the transceiver's PMA loopback
+otherwise) and must print `FROST_NET_LOOPBACK_PASS`:
 
 ```bash
 ./fpga/hw_regression.py --board x3
