@@ -40,11 +40,10 @@ lines so simulation needs only the clock; `boards/x3/x3_frost.sv` derives
 that clock from the MMCM at 40 MHz (1200 MHz / 30) and ties the PHY status
 to "clock shared, transceiver ready". The loopback build runs the MAC well
 below the 10GBASE-R word rate on purpose: closing the MAC at line rate is
-part of the slice 4 transceiver work. The receive MAC is staged for the
-word rate (see `hw/rtl/net10g/README.md`); routed timing at that rate, the
-transmit MAC included, comes with the transceiver integration. Both MAC
-frame buffers are block RAM, which keeps their address fan-out out of the
-CPU's placement.
+part of the slice 4 transceiver work. The receive and transmit MACs are
+structured for the word rate (see `hw/rtl/net10g/README.md`); routed timing
+at that rate comes with the transceiver integration. Both MAC frame buffers
+are block RAM, which keeps their address fan-out out of the CPU's placement.
 `boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
 buses with datapath and bus-skew bounds, single-bit levels, the reset
 assertion) rather than cutting the clock pair, so a crossing the
