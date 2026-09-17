@@ -1,9 +1,11 @@
 # Standalone Ethernet verification
 
-These benches compile only the new `hw/rtl/net10g` modules and local harnesses.
-They do not depend on the CPU, software apps, the main test registry, or a
-GTY simulation model. See [the RTL README](../../hw/rtl/net10g/README.md) for
-interfaces, rates, packet behavior, and implementation limits.
+These benches compile only the `hw/rtl/net10g` modules, the two-flop
+synchronizer they take from `hw/rtl/lib/cdc` (`cdc_sync.sv`), and local
+harnesses. They do not depend on the CPU, software apps, the main test
+registry, or a GTY simulation model. See
+[the RTL README](../../hw/rtl/net10g/README.md) for interfaces, rates, packet
+behavior, and implementation limits.
 
 [The Ethernet MAC/PCS job](../../.github/workflows/ci.yml) runs every standalone
 target and the portable synthesis check on pull requests targeting `main`

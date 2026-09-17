@@ -1,4 +1,6 @@
 # net10g MAC/PCS file list (packages first). Build scripts expand $(ROOT).
+# Depends on cdc_sync from hw/rtl/lib/cdc/cdc.f, which an including list
+# supplies (listing it here too would define the module twice).
 $(ROOT)/hw/rtl/net10g/eth10g_crc_pkg.sv
 $(ROOT)/hw/rtl/net10g/eth10g_pcs_pkg.sv
 $(ROOT)/hw/rtl/net10g/eth10g_crc32_64.sv

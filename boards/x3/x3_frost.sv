@@ -236,7 +236,10 @@ module x3_frost #(
       // through the AXI port below.
       .ENABLE_CACHED_TIER(1),
       .USE_BEHAVIORAL_DDR(0),
-      .PERF_COUNTERS(PERF_COUNTERS)
+      .PERF_COUNTERS(PERF_COUNTERS),
+      // One MMCM clock drives both MAC directions, so the NIC keeps its raw
+      // loopback.
+      .RAW_LOOPBACK(1)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
@@ -272,19 +275,23 @@ module x3_frost #(
       .i_ddr_axi_rdata(ddr_axi_rdata),
       .i_ddr_axi_rresp(ddr_axi_rresp),
       .i_ddr_axi_rlast(ddr_axi_rlast),
-      // NIC (slice 2): the MAC clock from the MMCM, no transceiver yet (the
-      // raw RX side idle, no signal), PHY status = clock shared, GT reset
-      // done, CDR locked, module present, no loss of signal; the PHY control
-      // bits have nothing to drive.
-      .i_nic_mac_clk(nic_clock),
-      .i_nic_clk_ok(mmcm_locked),
+      // NIC (slice 2): both MAC clocks from the one MMCM output, both present
+      // with its lock, no transceiver yet (the raw RX side idle, no signal),
+      // PHY status = clock shared, GT reset done, CDR locked, module present,
+      // no loss of signal; the PHY control bits and the block lock have
+      // nothing to drive.
+      .i_nic_tx_clk(nic_clock),
+      .i_nic_rx_clk(nic_clock),
+      .i_nic_tx_clk_ok(mmcm_locked),
+      .i_nic_rx_clk_ok(mmcm_locked),
       .o_nic_tx_raw_data(),
       .o_nic_tx_raw_valid(),
       .i_nic_rx_raw_data('0),
       .i_nic_rx_raw_valid(1'b0),
       .i_nic_rx_signal_ok(1'b0),
       .i_nic_phy_status(5'b01111),
-      .o_nic_phy_ctrl()
+      .o_nic_phy_ctrl(),
+      .o_nic_rx_block_lock()
   );
 
 endmodule : x3_frost

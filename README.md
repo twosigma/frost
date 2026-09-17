@@ -289,7 +289,7 @@ frost/
 │       ├── coremark/         # CPU benchmark
 │       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (DDR-backed heap)
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
-│       ├── nic_loopback/     # NIC bring-up and rings through the MAC's loopback
+│       ├── nic_loopback/     # NIC bring-up and rings through a loopback
 │       └── ...               # Other applications
 ├── linux/                    # Linux image build: Buildroot + OpenSBI submodules, external tree, firmware helper
 ├── verif/                    # Verification infrastructure

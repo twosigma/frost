@@ -22,7 +22,11 @@
  * Toward the SoC: the register window (32-bit lane writes and a 64-bit
  * read pair by byte offset), one DMA line port (ids of IdBits), a level
  * interrupt, the MAC clocks, the raw PMA interface and the board's PHY
- * status and control lines.
+ * status and control lines, and the PCS block lock for a board-level
+ * transceiver supervisor. RAW_LOOPBACK selects whether the raw TX-to-RX
+ * loopback exists (nic_mac_wrap): 1 for one MAC clock shared by both
+ * directions, 0 for independent TX and RX clocks, where PHY_STATUS reads
+ * CLK_SHARED as 0.
  *
  * i_rst carries the next-cycle value of the caller's registered subsystem
  * reset (the D input of cpu_and_mem's rst_core). nic_top registers it
@@ -39,6 +43,7 @@ module nic_top #(
     parameter int unsigned FIFO_DEPTH = 512,
     parameter int MAX_FRAME_BYTES = 9216,
     parameter int unsigned STARVATION_LIMIT = 8,
+    parameter int unsigned RAW_LOOPBACK = 1,
     localparam int unsigned IdBits = 2
 ) (
     input logic i_clk,
@@ -75,7 +80,8 @@ module nic_top #(
     input  logic        i_rx_raw_valid,
     input  logic        i_rx_signal_ok,
     input  logic [ 4:0] i_phy_status,    // asynchronous levels, nic_pkg PhyStatusBit*
-    output logic [ 3:1] o_phy_ctrl       // PHY_RESET, PMA_LOOPBACK, TX_DISABLE
+    output logic [ 3:1] o_phy_ctrl,      // PHY_RESET, PMA_LOOPBACK, TX_DISABLE
+    output logic        o_rx_block_lock  // PCS block lock, synchronized to i_clk (a flop)
 );
   localparam int unsigned TagBits = 4;
 
@@ -141,7 +147,8 @@ module nic_top #(
 
   nic_mac_wrap #(
       .FIFO_DEPTH(FIFO_DEPTH),
-      .MAX_FRAME_BYTES(MAX_FRAME_BYTES)
+      .MAX_FRAME_BYTES(MAX_FRAME_BYTES),
+      .RAW_LOOPBACK(RAW_LOOPBACK)
   ) u_mac (
       .i_clk            (i_clk),
       .i_rst            (rst_q),
@@ -176,6 +183,8 @@ module nic_top #(
       .i_rx_raw_valid   (i_rx_raw_valid),
       .i_rx_signal_ok   (i_rx_signal_ok)
   );
+  // The block lock leaves as the status synchronizer's output register.
+  assign o_rx_block_lock = rx_locked;
 
   // ---- registers and interrupts ----------------------------------------------------------
   logic rx_en, tx_en, promisc, rx_restart, tx_restart;
@@ -189,15 +198,21 @@ module nic_top #(
   logic rx_complete, tx_complete, rx_filtered;
   logic [2:0] rx_complete_flags, tx_complete_flags;
   logic [15:0] rx_complete_bytes, tx_complete_bytes;
-  logic [4:0] phy_status;
+  logic [4:0] phy_status_sync, phy_status;
   cdc_sync #(
       .WIDTH(5)
   ) u_phy_status_sync (
       .i_clk  (i_clk),
       .i_rst  (rst_q),
       .i_async(i_phy_status),
-      .o_sync (phy_status)
+      .o_sync (phy_status_sync)
   );
+  // Software chooses MAC_LOOPBACK from CLK_SHARED, so a build without the raw
+  // loopback reports it as 0 whatever the board drives.
+  always_comb begin
+    phy_status = phy_status_sync;
+    if (RAW_LOOPBACK == 0) phy_status[nic_pkg::PhyStatusBitClkShared] = 1'b0;
+  end
 
   nic_csr #(
       .ADDR_WIDTH(ADDR_WIDTH),

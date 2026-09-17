@@ -12,6 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# NIC loopback: the NIC through its internal raw loopback, driven like the driver.
+# NIC loopback: the NIC through a loopback (its raw loopback on a shared MAC
+# clock, the transceiver's PMA loopback otherwise), driven like the driver.
 SRC_C   := ../../lib/src/uart.c main.c
 include ../../common/common.mk

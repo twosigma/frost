@@ -369,7 +369,8 @@ set_bus_skew 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
 
 # Single-bit levels into cdc_sync's first stage in either direction (status,
 # clock-ok, the reset handshake's request and acknowledgement, the loopback
-# select): a datapath-only bound from the launching clock, no skew requirement.
+# select, and inside the MAC/PCS the fault status from RX into TX): a
+# datapath-only bound from the launching clock, no skew requirement.
 set nic_sync_d [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
 set_max_delay -datapath_only 3.0 -from $nic_core_clk -to $nic_sync_d
 set_max_delay -datapath_only 3.0 -from $nic_mac_clk  -to $nic_sync_d

@@ -37,7 +37,10 @@ module xilinx_frost_subsystem #(
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.
-    parameter int unsigned PERF_COUNTERS = 0
+    parameter int unsigned PERF_COUNTERS = 0,
+    // The NIC's raw TX-to-RX loopback (see frost.sv): 1 when the board drives
+    // one clock on both MAC clock ports, 0 with independent TX and RX clocks.
+    parameter int unsigned RAW_LOOPBACK = 1
 ) (
     input logic i_clk,       // Main CPU clock
     input logic i_clk_div4,  // Divided clock for JTAG/UART (1/4 of main clock)
@@ -79,17 +82,20 @@ module xilinx_frost_subsystem #(
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 
-    // NIC (Phase 4 slice 2): the MAC clock (both directions), its presence,
-    // the raw PMA interface and the PHY lines (frost.sv).
-    input  logic        i_nic_mac_clk,
-    input  logic        i_nic_clk_ok,
+    // NIC (Phase 4): the TX and RX MAC clocks and their presence levels, the
+    // raw PMA interface, the PHY lines and the PCS block lock (frost.sv).
+    input  logic        i_nic_tx_clk,
+    input  logic        i_nic_rx_clk,
+    input  logic        i_nic_tx_clk_ok,
+    input  logic        i_nic_rx_clk_ok,
     output logic [63:0] o_nic_tx_raw_data,
     output logic        o_nic_tx_raw_valid,
     input  logic [63:0] i_nic_rx_raw_data,
     input  logic        i_nic_rx_raw_valid,
     input  logic        i_nic_rx_signal_ok,
     input  logic [ 4:0] i_nic_phy_status,
-    output logic [ 3:1] o_nic_phy_ctrl
+    output logic [ 3:1] o_nic_phy_ctrl,
+    output logic        o_nic_rx_block_lock
 );
 
   // AXI4-Lite interface signals between JTAG-to-AXI bridge and AXI-to-BRAM controller.
@@ -281,7 +287,8 @@ module xilinx_frost_subsystem #(
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .PERF_COUNTERS(PERF_COUNTERS),
-      .DEBUG_JTAG_TAP(0)
+      .DEBUG_JTAG_TAP(0),
+      .RAW_LOOPBACK(RAW_LOOPBACK)
   ) frost_processor (
       .i_clk(i_clk),
       .i_clk_div4(i_clk_div4),
@@ -338,15 +345,18 @@ module xilinx_frost_subsystem #(
       .i_ddr_axi_rdata(i_ddr_axi_rdata),
       .i_ddr_axi_rresp(i_ddr_axi_rresp),
       .i_ddr_axi_rlast(i_ddr_axi_rlast),
-      .i_nic_mac_clk(i_nic_mac_clk),
-      .i_nic_clk_ok(i_nic_clk_ok),
+      .i_nic_tx_clk(i_nic_tx_clk),
+      .i_nic_rx_clk(i_nic_rx_clk),
+      .i_nic_tx_clk_ok(i_nic_tx_clk_ok),
+      .i_nic_rx_clk_ok(i_nic_rx_clk_ok),
       .o_nic_tx_raw_data(o_nic_tx_raw_data),
       .o_nic_tx_raw_valid(o_nic_tx_raw_valid),
       .i_nic_rx_raw_data(i_nic_rx_raw_data),
       .i_nic_rx_raw_valid(i_nic_rx_raw_valid),
       .i_nic_rx_signal_ok(i_nic_rx_signal_ok),
       .i_nic_phy_status(i_nic_phy_status),
-      .o_nic_phy_ctrl(o_nic_phy_ctrl)
+      .o_nic_phy_ctrl(o_nic_phy_ctrl),
+      .o_nic_rx_block_lock(o_nic_rx_block_lock)
   );
 
 endmodule : xilinx_frost_subsystem

@@ -161,6 +161,60 @@ async def generate_divided_clock(dut: Any) -> None:
             dut.i_clk_div4.value = 0 if int(dut.i_clk_div4.value) else 1
 
 
+# The NIC's MAC clock period (frost.sv i_nic_tx_clk and i_nic_rx_clk): 1.75
+# core periods (5.25 ns against the 3 ns core clock), unrelated to the core
+# clock and near the ratio of the 10GBASE-R word clock (161.13 MHz) to the
+# rated 300 MHz core clock. The X3's MMCM-clocked build runs the MAC at 40 MHz.
+NIC_MAC_CLK_PERIOD_PS = 2 * int(CLK_PERIOD_NS * 875)
+
+
+def start_nic_mac_clocks(dut: Any) -> None:
+    """Start both NIC MAC clocks with identical edges and drive the PHY levels.
+
+    frost.sv builds the NIC's raw loopback (RAW_LOOPBACK = 1), which feeds the
+    raw TX word into the RX PCS with no crossing logic, so the TX and RX
+    clocks must be one clock: both start in the same step with one period,
+    and check_nic_mac_clocks_aligned, run from each clock toward the other,
+    confirms they toggle together. The port defaults in frost.sv apply to
+    instantiations that omit the ports, not to a simulation top, so every
+    level is driven here: both clocks present, PHY status "clock shared,
+    transceiver ready", no wire (the raw loopback carries frames for
+    nic_loopback; nic_echo's peer drives the wire).
+    """
+    for mac_clock in (dut.i_nic_tx_clk, dut.i_nic_rx_clk):
+        Clock(mac_clock, NIC_MAC_CLK_PERIOD_PS, unit="ps").start()
+    dut.i_nic_tx_clk_ok.value = 1
+    dut.i_nic_rx_clk_ok.value = 1
+    dut.i_nic_phy_status.value = 0b01111
+    dut.i_nic_rx_raw_data.value = 0
+    dut.i_nic_rx_raw_valid.value = 0
+    dut.i_nic_rx_signal_ok.value = 0
+    cocotb.start_soon(check_nic_mac_clocks_aligned(dut.i_nic_tx_clk, dut.i_nic_rx_clk))
+    cocotb.start_soon(check_nic_mac_clocks_aligned(dut.i_nic_rx_clk, dut.i_nic_tx_clk))
+
+
+async def check_nic_mac_clocks_aligned(
+    watched: Any, other: Any, cycles: int = 16
+) -> None:
+    """Fail unless the other clock changes in the same evaluation as the watched one.
+
+    An edge callback runs after the evaluation that moved the watched clock,
+    so a clock that moves in a later evaluation of the same step still reads
+    its old level here. Run once from each clock, the pair also catches a
+    clock that moves in an earlier evaluation. Both clocks have a fixed
+    period, so the first cycles decide.
+    """
+    for _ in range(cycles):
+        for edge, level in ((RisingEdge, 1), (FallingEdge, 0)):
+            await edge(watched)
+            other_level = int(other.value)
+            assert other_level == level, (
+                f"one NIC MAC clock is {other_level} at the other's edge to "
+                f"{level}: the raw loopback needs one clock edge for both "
+                "directions"
+            )
+
+
 # Cycle cap per run, so a hung program fails instead of running forever.
 # COCOTB_MAX_CYCLES raises it for tests that need more (e.g. the arch tests).
 MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
@@ -971,9 +1025,10 @@ class NicEchoPeer:
     """The wire-side peer of the NIC for the nic_echo app.
 
     Feeds a continuous 10GBASE-R stream (idles with frames spliced in, one
-    scrambler state for the run) into the raw RX interface at the MAC clock,
-    decodes the raw TX stream with the net10g software receiver (restarted
-    at every gap in valid: the PCS TX emits continuously once out of reset),
+    scrambler state for the run) into the raw RX interface on the RX MAC
+    clock, decodes the raw TX stream on the TX MAC clock with the net10g
+    software receiver (restarted at every gap in valid: the PCS TX emits
+    continuously once out of reset),
     and checks that every frame the app should echo comes back intact. The
     plan is fixed and known to the app (sw/apps/nic_echo/main.c): 24 frames
     that land in the ring, two of them longer than the buffers (truncated,
@@ -1061,7 +1116,7 @@ class NicEchoPeer:
     async def _feed(self) -> None:
         dut = self.dut
         while True:
-            await FallingEdge(dut.i_nic_mac_clk)
+            await FallingEdge(dut.i_nic_rx_clk)
             if not self.incoming:
                 self._encode_next()
             dut.i_nic_rx_raw_data.value = self.incoming.popleft()
@@ -1070,7 +1125,7 @@ class NicEchoPeer:
     async def _collect(self) -> None:
         dut = self.dut
         while True:
-            await FallingEdge(dut.i_nic_mac_clk)
+            await FallingEdge(dut.i_nic_tx_clk)
             if int(dut.o_nic_tx_raw_valid.value):
                 if not self._streaming:
                     self._receiver = self._receiver_cls()
@@ -3738,19 +3793,10 @@ async def test_real_program(dut: Any) -> None:
     # dc_fifo clock domain crossing needs a fixed phase relationship.
     if hasattr(dut, "i_clk_div4"):
         cocotb.start_soon(generate_divided_clock(dut))
-    # The NIC's MAC clock (frost.sv): unrelated to the core clock, at the
-    # hardware ratio (171.43 MHz against 300 MHz). The port defaults in
-    # frost.sv apply to instantiations that omit the ports, not to a
-    # simulation top, so the levels are driven here: clock present, PHY
-    # status "clock shared, transceiver ready", no wire (the NIC's internal
-    # loopback carries frames for the NIC apps).
-    if hasattr(dut, "i_nic_mac_clk"):
-        Clock(dut.i_nic_mac_clk, 2 * int(CLK_PERIOD_NS * 875), unit="ps").start()
-        dut.i_nic_clk_ok.value = 1
-        dut.i_nic_phy_status.value = 0b01111
-        dut.i_nic_rx_raw_data.value = 0
-        dut.i_nic_rx_raw_valid.value = 0
-        dut.i_nic_rx_signal_ok.value = 0
+        # frost.sv always has the NIC's ports. They are driven without a
+        # per-port check, so a renamed port fails here instead of silently
+        # leaving the MAC unclocked.
+        start_nic_mac_clocks(dut)
 
     disable_branch_prediction = int(
         os.environ.get("FROST_DISABLE_BRANCH_PREDICTION", "0")
