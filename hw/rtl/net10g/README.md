@@ -157,6 +157,12 @@ of a packet it completes, are registered on the clock after the word is
 sampled; the packet's first beat reaches `m_axis_*` at least one clock after
 publication.
 
+TX decides each word from registers without an added stage. Starting a frame
+loads its payload and padded lengths as word counts and end lanes, each word
+registers the lane classes of the next, and a word's FCS bytes select among
+its prefix CRCs, each bit one XOR of fixed seed and payload bits, so no
+length compare or CRC passes from lane to lane.
+
 ## Link status and errors
 
 `o_rx_locked`, `o_rx_high_ber`, `o_rx_local_fault`, and `o_rx_remote_fault`
