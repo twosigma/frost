@@ -201,8 +201,9 @@ At boot, inittab runs `frost_stress --boot`, which prints the
 QEMU CI job and `fpga/linux_boot_soak.py` assert it. On hardware the
 regression's Linux stage requires that token before the login prompt, then
 logs in as root, runs `perf stat` on the cycle and instruction counters, and
-runs `frost_nettest`, which drives the NIC driver through the raw loopback and
-must print `FROST_NET_LOOPBACK_PASS`.
+runs `frost_nettest`, which drives the NIC driver through its loopback feature
+(the NIC's raw loopback on a shared MAC clock, the transceiver's PMA loopback
+otherwise) and must print `FROST_NET_LOOPBACK_PASS`.
 The payload's summary line carries per-boot Zicntr evidence for hardware
 performance tracking: `cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around
 a fixed workload (see "Counters and mcounteren").

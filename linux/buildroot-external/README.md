@@ -201,10 +201,13 @@ the counter phase reports `counters=unavailable`: QEMU resets `mcounteren` to
 hardware soak fails any boot that shows that degradation. The same package
 also installs `frost_sigprobe`, the vDSO signal-return bring-up probe, and
 `frost_nettest`, which the hardware regression's Linux stage types after
-logging in. It drives the `frost_net10g` driver through the NIC's raw loopback
-(MTU 9000, frame lengths 14 to 9014 bytes, a 300-frame burst, a down during a
-burst, loopback off and on again, the driver's statistics), leaves the
-interface down with loopback off, and prints `FROST_NET_LOOPBACK_PASS` or
+logging in. It drives the `frost_net10g` driver through the driver's loopback
+feature (the NIC's raw MAC loopback when both MAC directions share a clock, the
+transceiver's PMA loopback otherwise): MTU 9000, frame lengths 14 to 9014
+bytes, a 300-frame burst, a down during a burst, loopback off and on again, and
+the driver's statistics. Nothing is judged while loopback is off, since a link
+partner may raise the carrier and send frames then. It leaves the interface
+down with loopback off and prints `FROST_NET_LOOPBACK_PASS` or
 `FROST_NET_LOOPBACK_FAIL <reason>`.
 
 `post-image-mmu.sh` runs after the image stage. It locates

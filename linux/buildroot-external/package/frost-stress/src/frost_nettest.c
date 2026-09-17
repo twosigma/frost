@@ -15,11 +15,14 @@
  */
 
 /*
- * frost_nettest: the frost,net10g driver through the NIC's raw loopback.
+ * frost_nettest: the frost,net10g driver through its loopback feature.
  *
  * The hardware regression's Linux stage types this at the root shell. It
- * uses the interface whose ETHTOOL_GDRVINFO driver is frost_net10g and prints
- * one progress line per step:
+ * uses the interface whose ETHTOOL_GDRVINFO driver is frost_net10g. The
+ * driver implements the loopback feature as the NIC's MAC loopback when both
+ * MAC directions share one clock and as the transceiver's PMA loopback
+ * otherwise; nothing here depends on which. It prints one progress line per
+ * step:
  *
  *   1. Find the interface and its "loopback" feature bit; take it down.
  *   2. MTU 9000; loopback on (ETHTOOL_SFEATURES on the "loopback" feature
@@ -29,11 +32,15 @@
  *   4. A burst of 300 frames before receiving, which wraps both rings: order,
  *      contents, no socket drops.
  *   5. A burst of 64 frames, then down at once (the drain; the tx_dropped and
- *      rx_packets deltas are printed, not judged). Loopback off, up: no
- *      carrier for 2 s. Down, loopback on, up: a burst of 64 verified.
+ *      rx_packets deltas are printed, not judged). Loopback off, up for 2 s,
+ *      down: nothing in that interval is judged, since the transceiver may
+ *      face a link partner that raises the carrier and sends frames
+ *      (broadcasts, say); when the carrier first read 1 is printed. Loopback
+ *      on, up: a burst of 64 verified.
  *   6. The driver's tx_packets and rx_packets cover the frames of steps 3, 4
  *      and 5's last burst, no frame is counted while none is being sent, and
- *      rx_errors and tx_errors are unchanged.
+ *      rx_errors and tx_errors are unchanged. The loopback-off interval is
+ *      left out of both the idle and the error checks.
  *   7. Down with loopback off (also after a failure), then the verdict:
  *
  *   FROST_NET_LOOPBACK_PASS
@@ -90,7 +97,7 @@
 #define RCVBUF_BYTES (8 << 20)
 #define STEP_MS 10000 /* sending and receiving one step's frames */
 #define CARRIER_MS 5000
-#define NO_CARRIER_MS 2000
+#define LOOPBACK_OFF_MS 2000
 #define SETTLE_MS 2000
 #define QUIET_MS 500
 #define POLL_MS 50
@@ -409,18 +416,22 @@ static int wait_carrier(uint64_t *elapsed_ms)
     }
 }
 
-static int hold_no_carrier(void)
+/* Loopback off with the interface up for LOOPBACK_OFF_MS. The transceiver then
+ * faces whatever it is cabled to, and a link partner may raise the carrier and
+ * send frames, so nothing about the carrier is judged here. When the carrier
+ * first read 1 is recorded for the progress line (UINT64_MAX: never). */
+static int loopback_off_interval(uint64_t *carrier_ms)
 {
     uint64_t start = now_ms();
+    *carrier_ms = UINT64_MAX;
     for (;;) {
         uint64_t carrier;
         if (read_sysfs_u64("carrier", &carrier) != 0)
             return -1;
-        if (carrier != 0)
-            return fail("%s: carrier after %llu ms with loopback off",
-                        g_ifname,
-                        (unsigned long long) (now_ms() - start));
-        if (now_ms() - start >= NO_CARRIER_MS)
+        uint64_t elapsed = now_ms() - start;
+        if (carrier != 0 && *carrier_ms == UINT64_MAX)
+            *carrier_ms = elapsed;
+        if (elapsed >= LOOPBACK_OFF_MS)
             return 0;
         sleep_ms(POLL_MS);
     }
@@ -706,8 +717,10 @@ static int check_idle(const char *what, const struct net_stats *start, const str
 
 static int run(void)
 {
-    struct net_stats start, a0, a1, d0, d1, b0, b1;
+    struct net_stats start, a0, a1, d0, d1, e1, b0, b1;
     uint64_t carrier_ms = 0;
+    uint64_t off_carrier_ms = UINT64_MAX;
+    char off_carrier[48];
     unsigned window_a = LENGTH_FRAMES + BURST_FRAMES;
 
     /* ---- Step 1: the driver's interface, down ---- */
@@ -766,33 +779,46 @@ static int run(void)
     if (set_up(0) != 0 || read_stats(&d1) != 0)
         return -1;
     close_socket();
-    if (set_loopback(0) != 0 || set_up(1) != 0 || hold_no_carrier() != 0 || set_up(0) != 0)
+    /* The loopback-off interval ends at the down after it: e1 starts the
+     * statistics again, so what a link partner sent meanwhile counts nowhere. */
+    if (set_loopback(0) != 0 || set_up(1) != 0 || loopback_off_interval(&off_carrier_ms) != 0 ||
+        set_up(0) != 0 || read_stats(&e1) != 0)
         return -1;
     if (set_loopback(1) != 0 || set_up(1) != 0 || wait_carrier(&carrier_ms) != 0 ||
         open_socket() != 0 || read_stats(&b0) != 0 ||
-        check_idle("between the drain and the last burst", &d1, &b0) != 0)
+        check_idle("between loopback on and the last burst", &e1, &b0) != 0)
         return -1;
     if (burst(FINAL_FRAMES, "after the drain") != 0 ||
         settle(&b0, FINAL_FRAMES, &b1, "after the drain") != 0)
         return -1;
-    progress("drain: %d sent, then down (tx_dropped %+lld, rx_packets %+lld); loopback off, up: "
-             "no carrier for %d ms; loopback on, up: %d frames verified",
+    if (off_carrier_ms == UINT64_MAX)
+        snprintf(off_carrier, sizeof(off_carrier), "no carrier");
+    else
+        snprintf(off_carrier,
+                 sizeof(off_carrier),
+                 "carrier after %llu ms",
+                 (unsigned long long) off_carrier_ms);
+    progress("drain: %d sent, then down (tx_dropped %+lld, rx_packets %+lld); loopback off, up "
+             "for %d ms (%s, not judged); loopback on, up: %d frames verified",
              DRAIN_FRAMES,
              (long long) (d1.tx_dropped - d0.tx_dropped),
              (long long) (d1.rx_packets - d0.rx_packets),
-             NO_CARRIER_MS,
+             LOOPBACK_OFF_MS,
+             off_carrier,
              FINAL_FRAMES);
 
-    /* ---- Step 6: the driver's statistics ---- */
+    /* ---- Step 6: the driver's statistics, loopback-off interval excluded ---- */
     if (check_window("steps 3-4", &a0, &a1, window_a) != 0 ||
         check_window("step 5", &b0, &b1, FINAL_FRAMES) != 0)
         return -1;
-    if (b1.rx_errors != start.rx_errors || b1.tx_errors != start.tx_errors)
-        return fail("statistics: rx_errors %+lld tx_errors %+lld",
-                    (long long) (b1.rx_errors - start.rx_errors),
-                    (long long) (b1.tx_errors - start.tx_errors));
+    uint64_t rx_errors = (d1.rx_errors - start.rx_errors) + (b1.rx_errors - e1.rx_errors);
+    uint64_t tx_errors = (d1.tx_errors - start.tx_errors) + (b1.tx_errors - e1.tx_errors);
+    if (rx_errors != 0 || tx_errors != 0)
+        return fail("statistics: rx_errors %+lld tx_errors %+lld with loopback on",
+                    (long long) rx_errors,
+                    (long long) tx_errors);
     progress("statistics: tx_packets %+lld rx_packets %+lld for %d verified frames; "
-             "rx_errors and tx_errors unchanged",
+             "rx_errors and tx_errors unchanged with loopback on",
              (long long) ((a1.tx_packets - a0.tx_packets) + (b1.tx_packets - b0.tx_packets)),
              (long long) ((a1.rx_packets - a0.rx_packets) + (b1.rx_packets - b0.rx_packets)),
              LENGTH_FRAMES + BURST_FRAMES + FINAL_FRAMES);

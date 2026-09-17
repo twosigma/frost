@@ -1,4 +1,4 @@
-From ad21952f23b1c72357ba732fc0f92d46a2aee970 Mon Sep 17 00:00:00 2001
+From 87bee5436f8853a4d62a77f9cd3faec46fb62d41 Mon Sep 17 00:00:00 2001
 From: Adam Bagley <adam.bagley@tssecurities.com>
 Date: Wed, 16 Sep 2026 11:03:32 -0400
 Subject: [PATCH] net: ethernet: add the FROST net10g driver
@@ -7,15 +7,17 @@ Add a driver for the Ethernet controller of the FROST RISC-V SoC
 (compatible "frost,net10g"): a soft 10GBASE-R MAC/PCS with RX and TX
 descriptor rings in system memory and one level interrupt. Open resets
 the NIC and posts 128-entry rings, NAPI reaps completions with BQL
-accounting, MAC loopback is an ethtool feature applied at open, and
-ring memory is freed only after RESET has drained the NIC's DMA path.
+accounting, the ethtool loopback feature selects the MAC or the
+transceiver PMA loopback from the NIC's PHY status and is applied at
+open, and ring memory is freed only after RESET has drained the NIC's
+DMA path.
 ---
  drivers/net/ethernet/Kconfig              |   1 +
  drivers/net/ethernet/Makefile             |   1 +
  drivers/net/ethernet/frost/Kconfig        |  30 +
  drivers/net/ethernet/frost/Makefile       |   6 +
- drivers/net/ethernet/frost/frost_net10g.c | 900 ++++++++++++++++++++++
- 5 files changed, 938 insertions(+)
+ drivers/net/ethernet/frost/frost_net10g.c | 990 ++++++++++++++++++++++
+ 5 files changed, 1028 insertions(+)
  create mode 100644 drivers/net/ethernet/frost/Kconfig
  create mode 100644 drivers/net/ethernet/frost/Makefile
  create mode 100644 drivers/net/ethernet/frost/frost_net10g.c
@@ -94,10 +96,10 @@ index 000000000..b449ea8c6
 +obj-$(CONFIG_FROST_NET10G) += frost_net10g.o
 diff --git a/drivers/net/ethernet/frost/frost_net10g.c b/drivers/net/ethernet/frost/frost_net10g.c
 new file mode 100644
-index 000000000..106e63aeb
+index 000000000..d0d1e3cd0
 --- /dev/null
 +++ b/drivers/net/ethernet/frost/frost_net10g.c
-@@ -0,0 +1,900 @@
+@@ -0,0 +1,990 @@
 +// SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
 +/*
 + * FROST net10g 10GBASE-R Ethernet driver
@@ -114,6 +116,23 @@ index 000000000..106e63aeb
 + * register bus replicates an 8- or 16-bit store over the whole 32-bit
 + * register (writeb(1, CTRL) would issue RESET), and a 64-bit store writes
 + * only the upper half.
++ *
++ * The loopback feature is the NIC's MAC loopback (its raw transmit stream
++ * into its own receiver) on a build whose two MAC directions share one clock,
++ * and the transceiver's near-end PMA loopback otherwise. Open applies it
++ * through RESET, so it changes only while the interface is down. A PMA
++ * loopback change restarts the transceiver's receiver on the transceiver's
++ * own schedule, which can take READY down after open has waited for it, so
++ * open retries a refused enable once READY is back.
++ *
++ * A MAC direction whose clock domain restarts outside RESET (its clock was
++ * lost, or the transceiver reset) drops READY, and the NIC disables that
++ * direction with no interrupt of its own: a frame still being passed to or
++ * from the MAC completes with ABORT, and the ring registers and HEAD are
++ * kept. The restart drops the carrier, and the LINK event for the
++ * carrier's return comes only after READY has returned, so the poll that
++ * handles that event re-enables every such direction, and the NIC resumes at
++ * the ring's HEAD.
 + *
 + * The driver assumes a uniprocessor kernel: xmit and NAPI never interleave,
 + * and open and stop touch the rings only while NAPI is disabled.
@@ -176,6 +195,7 @@ index 000000000..106e63aeb
 +
 +#define NET10G_LINK_CARRIER		BIT(8)
 +#define NET10G_PHY_CTRL_MAC_LOOPBACK	BIT(0)
++#define NET10G_PHY_CTRL_PMA_LOOPBACK	BIT(2)
 +#define NET10G_PHY_STATUS_CLK_SHARED	BIT(0)
 +
 +/* Descriptor word 1 (TX frame flags) and word 2 (status, written by the NIC) */
@@ -198,6 +218,7 @@ index 000000000..106e63aeb
 +#define FROST_MAX_MTU			9000
 +#define FROST_POLL_US			1000
 +#define FROST_RESET_TIMEOUT_US		USEC_PER_SEC
++#define FROST_ENABLE_TRIES		3
 +#define FROST_REFILL_MS			100
 +
 +/* One ring descriptor: 16 bytes, two per 32-byte line */
@@ -230,6 +251,7 @@ index 000000000..106e63aeb
 +
 +	bool link_refresh;	/* the next poll reads LINK */
 +	bool broken;		/* a RESET did not complete; never cleared */
++	unsigned long reenables;	/* CTRL rewrites after a READY loss */
 +
 +	unsigned int rx_buf_len;
 +	struct frost_desc *rx_ring;
@@ -456,6 +478,48 @@ index 000000000..106e63aeb
 +	return work;
 +}
 +
++/*
++ * Re-enable the directions the NIC disabled on its own. While the interface
++ * runs, CTRL shows a direction disabled only after its MAC domain lost READY.
++ * Once STATUS shows that direction READY again, one CTRL write with both
++ * enables and PROMISC is accepted for it, since its ring registers are still
++ * valid, and the NIC resumes fetching descriptors at HEAD. A direction that is
++ * disabled and still not READY is refused by that write (CONFIG_ERR and a
++ * masked DESC_ERR event) and is retried at the LINK event that follows its
++ * READY return. Only the poll calls this, and the poll never runs while open
++ * or stop has RESET in progress, so the write is never dropped as busy.
++ */
++static void frost_reenable(struct frost_priv *priv)
++{
++	u32 ctrl, status, lost = 0;
++
++	spin_lock(&priv->ctrl_lock);
++	if (priv->running) {
++		ctrl = readl(priv->base + NET10G_CTRL);
++		status = readl(priv->base + NET10G_STATUS);
++		if (!(ctrl & NET10G_CTRL_RX_EN) &&
++		    (status & NET10G_STATUS_RX_READY))
++			lost |= NET10G_CTRL_RX_EN;
++		if (!(ctrl & NET10G_CTRL_TX_EN) &&
++		    (status & NET10G_STATUS_TX_READY))
++			lost |= NET10G_CTRL_TX_EN;
++		if (lost)
++			writel(frost_ctrl_value(priv),
++			       priv->base + NET10G_CTRL);
++	}
++	spin_unlock(&priv->ctrl_lock);
++
++	if (!lost)
++		return;
++	priv->reenables++;
++	if (net_ratelimit())
++		netdev_info(priv->ndev,
++			    "re-enabled%s%s after a MAC domain reset (%lu)\n",
++			    (lost & NET10G_CTRL_RX_EN) ? " RX" : "",
++			    (lost & NET10G_CTRL_TX_EN) ? " TX" : "",
++			    priv->reenables);
++}
++
 +static int frost_poll(struct napi_struct *napi, int budget)
 +{
 +	struct frost_priv *priv = container_of(napi, struct frost_priv, napi);
@@ -499,7 +563,10 @@ index 000000000..106e63aeb
 +
 +	/*
 +	 * The carrier has one writer, this poll. LINK is read after the
-+	 * acknowledgment, so a later change raises the event again.
++	 * acknowledgment, so a later change raises the event again. A MAC
++	 * domain restart drops the carrier, and the event for its return comes
++	 * only after READY has returned, so the event is also where a direction
++	 * that lost READY is re-enabled.
 +	 */
 +	refresh = xchg(&priv->link_refresh, false);
 +	if ((st & NET10G_IRQ_LINK) || refresh) {
@@ -507,6 +574,7 @@ index 000000000..106e63aeb
 +			netif_carrier_on(ndev);
 +		else
 +			netif_carrier_off(ndev);
++		frost_reenable(priv);
 +	}
 +
 +	frost_tx_reap(priv, budget);
@@ -634,6 +702,7 @@ index 000000000..106e63aeb
 +	const u32 ready = NET10G_STATUS_RX_READY | NET10G_STATUS_TX_READY;
 +	const u32 enables = NET10G_CTRL_RX_EN | NET10G_CTRL_TX_EN;
 +	u32 phy_ctrl = 0;
++	unsigned int tries;
 +	u32 status;
 +	int err;
 +
@@ -652,14 +721,23 @@ index 000000000..106e63aeb
 +		return err;
 +
 +	/*
-+	 * PHY_CTRL before RESET: MAC_LOOPBACK is sampled while the RX MAC
-+	 * domain is in reset, so this RESET applies it. Nothing else is
-+	 * written until RESET_BUSY clears, because configuration writes are
-+	 * dropped while it is set; READY returns only after that and is
-+	 * awaited separately.
++	 * PHY_CTRL before RESET. MAC loopback needs one clock for both MAC
++	 * directions (PHY_STATUS.CLK_SHARED) and is sampled while the RX MAC
++	 * domain is in reset, so this RESET applies it. PMA loopback is the
++	 * transceiver's: a change restarts its receiver, which takes READY
++	 * down until the receiver is back, possibly only after the wait for
++	 * READY below has passed; the enable step allows for that. Nothing
++	 * else is written until RESET_BUSY clears, because configuration
++	 * writes are dropped while it is set; READY returns only after that
++	 * and is awaited separately.
 +	 */
-+	if (ndev->features & NETIF_F_LOOPBACK)
-+		phy_ctrl = NET10G_PHY_CTRL_MAC_LOOPBACK;
++	if (ndev->features & NETIF_F_LOOPBACK) {
++		if (readl(priv->base + NET10G_PHY_STATUS) &
++		    NET10G_PHY_STATUS_CLK_SHARED)
++			phy_ctrl = NET10G_PHY_CTRL_MAC_LOOPBACK;
++		else
++			phy_ctrl = NET10G_PHY_CTRL_PMA_LOOPBACK;
++	}
 +	writel(phy_ctrl, priv->base + NET10G_PHY_CTRL);
 +	writel(NET10G_CTRL_RESET, priv->base + NET10G_CTRL);
 +	if (readl_poll_timeout(priv->base + NET10G_STATUS, status,
@@ -719,16 +797,31 @@ index 000000000..106e63aeb
 +	writel(frost_ctrl_value(priv), priv->base + NET10G_CTRL);
 +	spin_unlock_bh(&priv->ctrl_lock);
 +
-+	/* An enable is refused unless the direction is READY, ring valid */
-+	if ((readl(priv->base + NET10G_CTRL) & enables) != enables) {
-+		netdev_err(ndev, "enable refused (STATUS %#x)\n",
-+			   readl(priv->base + NET10G_STATUS));
++	/*
++	 * An enable is refused unless its direction is READY and its ring
++	 * valid. The ring registers were read back above, but READY may have
++	 * fallen since the wait for it (a transceiver restarting its receiver
++	 * for a PMA loopback change), so wait for READY again and repeat the
++	 * write, a bounded number of times.
++	 */
++	for (tries = 1; (readl(priv->base + NET10G_CTRL) & enables) != enables;
++	     tries++) {
++		if (tries == FROST_ENABLE_TRIES ||
++		    readl_poll_timeout(priv->base + NET10G_STATUS, status,
++				       (status & ready) == ready,
++				       FROST_POLL_US, FROST_RESET_TIMEOUT_US)) {
++			netdev_err(ndev, "enable refused (STATUS %#x)\n",
++				   readl(priv->base + NET10G_STATUS));
++			spin_lock_bh(&priv->ctrl_lock);
++			priv->running = false;
++			spin_unlock_bh(&priv->ctrl_lock);
++			napi_disable(&priv->napi);
++			err = -EIO;
++			goto err_reset;
++		}
 +		spin_lock_bh(&priv->ctrl_lock);
-+		priv->running = false;
++		writel(frost_ctrl_value(priv), priv->base + NET10G_CTRL);
 +		spin_unlock_bh(&priv->ctrl_lock);
-+		napi_disable(&priv->napi);
-+		err = -EIO;
-+		goto err_reset;
 +	}
 +
 +	netif_start_queue(ndev);
@@ -837,9 +930,9 @@ index 000000000..106e63aeb
 +			      netdev_features_t features)
 +{
 +	/*
-+	 * MAC loopback takes effect through the RESET that only open issues.
-+	 * While down, the core records the new features and the next open
-+	 * applies them.
++	 * Loopback, MAC or PMA, takes effect through the RESET that only open
++	 * issues. While down, the core records the new features and the next
++	 * open applies them.
 +	 */
 +	if (((ndev->features ^ features) & NETIF_F_LOOPBACK) &&
 +	    netif_running(ndev))
@@ -958,9 +1051,8 @@ index 000000000..106e63aeb
 +	ndev->ethtool_ops = &frost_ethtool_ops;
 +	ndev->min_mtu = ETH_MIN_MTU;
 +	ndev->max_mtu = FROST_MAX_MTU;
-+	/* MAC loopback needs one clock shared by both MAC directions */
-+	if (readl(base + NET10G_PHY_STATUS) & NET10G_PHY_STATUS_CLK_SHARED)
-+		ndev->hw_features |= NETIF_F_LOOPBACK;
++	/* MAC or PMA loopback, chosen by open from PHY_STATUS.CLK_SHARED */
++	ndev->hw_features |= NETIF_F_LOOPBACK;
 +
 +	netif_napi_add(ndev, &priv->napi, frost_poll);
 +	timer_setup(&priv->refill_timer, frost_refill_timer, 0);

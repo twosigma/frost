@@ -33,7 +33,8 @@ reports fail, but the bare-metal ``ERROR`` rule does not apply to kernel logs.
 The stage also requires the userspace stress token before the login prompt,
 then logs in as root and runs ``perf stat`` on the cycle and instruction
 counters, which must both report a nonzero count, and then ``frost_nettest``,
-which runs the NIC driver through the raw loopback and must print
+which runs the NIC driver through its loopback feature (the NIC's raw loopback
+on a shared MAC clock, the transceiver's PMA loopback otherwise) and must print
 ``FROST_NET_LOOPBACK_PASS``. ``--linux-timeout`` covers build, DDR loading,
 boot, and both commands; a cold Buildroot build takes 30-60 min.
 ``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
@@ -157,8 +158,9 @@ LINUX_PERF_ROW_RE = re.compile(
 )
 
 # At the next shell prompt the stage types frost_nettest (the frost-stress
-# package), which runs the frost,net10g driver through the NIC's raw loopback
-# and ends with one of these tokens.
+# package), which runs the frost,net10g driver through its loopback feature
+# (the NIC's raw loopback or the transceiver's PMA loopback) and ends with one
+# of these tokens.
 LINUX_NET_COMMAND = "frost_nettest"
 LINUX_NET_TOKEN = "FROST_NET_LOOPBACK_PASS"
 LINUX_NET_TOKEN_FAIL = "FROST_NET_LOOPBACK_FAIL"
