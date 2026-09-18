@@ -198,7 +198,9 @@ loaded by the cocotb `linux_boot` simulation and by
 `sw64.mem`, the dword-paired copy of `sw.mem` for the 64-bit data BRAM,
 which the app Makefile derives. The images come from `linux/build-mmu` and
 the `frost_rv64_defconfig` Buildroot config
-([`buildroot-external/README.md`](buildroot-external/README.md)).
+([`buildroot-external/README.md`](buildroot-external/README.md)), unless
+`FROST_LINUX_KERNEL` or `FROST_LINUX_INITRD` names another kernel or
+initramfs (see "NFS root").
 
 At boot, inittab runs `frost_stress --boot`, which prints the
 `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token before the login prompt; the
@@ -215,8 +217,8 @@ a fixed workload (see "Counters and mcounteren").
 ## NFS root
 
 `sw/apps/linux_boot` packs the initramfs unless `FROST_LINUX_NFSROOT` names an
-NFS export as `<server-ip>:/<path>`. Then it packs no initramfs, and the DTB's
-bootargs are:
+NFS export as `<server-ip>:/<path>`. Then, unless `FROST_LINUX_INITRD` names
+an initramfs (below), it packs none, and the DTB's bootargs are:
 
 ```
 earlycon console=ttyS0 root=/dev/nfs nfsroot=<server-ip>:/<path>,vers=3,tcp,hard rw ip=<FROST_LINUX_IP>
@@ -224,15 +226,43 @@ earlycon console=ttyS0 root=/dev/nfs nfsroot=<server-ip>:/<path>,vers=3,tcp,hard
 
 `FROST_LINUX_IP` is the kernel's `ip=` parameter and defaults to `dhcp`; a
 static address is `<client>::<gateway>:<netmask>:<hostname>:<device>:off`,
-for example `192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off`. The kernel
-configures the interface, waits for its carrier, mounts the export read-write
-over NFSv3/TCP (nfsroot adds `nolock`, so file locks stay local) and runs its
-`/sbin/init`. The export must be a riscv64 root filesystem, such as Debian
-13's, shared read-write with the board's address without root squashing.
+for example `192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off`; set
+without `FROST_LINUX_NFSROOT`, it fails the pack. The kernel configures the
+interface, waits for its carrier, mounts the export read-write over NFSv3/TCP
+(nfsroot adds `nolock`, so file locks stay local) and runs its `/sbin/init`.
+The export must be a riscv64 root filesystem, such as Debian 13's, shared
+read-write with the board's address without root squashing.
 [`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md) builds, exports and
 boots such a root.
 Leave `FROST_LINUX_NFSROOT` unset for the hardware regression, whose Linux
 stage runs the initramfs programs above.
+
+`FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD` name a Linux `Image` and an
+initramfs, by absolute path, to pack in place of Buildroot's `Image` and
+`rootfs.cpio`; OpenSBI and the device tree stay this tree's. Like
+`FROST_LINUX_NFSROOT`, leave both unset for the hardware regression and the
+simulated boot, which run Buildroot's userspace. Debian's kernel,
+`/boot/vmlinux-<version>` in the Debian root, is such an `Image` but has no
+NFS root of its own (`CONFIG_IP_PNP` is off and NFS is a module), so the
+initramfs that Debian's initramfs-tools generates mounts the export instead.
+With `FROST_LINUX_NFSROOT` and `FROST_LINUX_INITRD` both set, the packer packs
+that initramfs, and `boot=nfs` selects initramfs-tools' NFS boot:
+
+```
+earlycon console=ttyS0 boot=nfs root=/dev/nfs nfsroot=<server-ip>:/<path>,vers=3,tcp,hard rw ip=<FROST_LINUX_IP>
+```
+
+The initramfs's klibc `ipconfig` reads `ip=` in the kernel's syntax, so
+`FROST_LINUX_IP` takes the same forms, and its `nfsmount` accepts the same
+options and adds `nolock`, but leaves `rsize` and `wsize` to the server, where
+the kernel's nfsroot asks for 4 KiB. The initramfs must hold the NFS client
+and the NIC driver. Without `FROST_LINUX_NFSROOT`, the default bootargs run a
+substitute initramfs's `/sbin/init`, as they do Buildroot's; an
+initramfs-tools initramfs, which starts at `/init`, boots only through the NFS
+root above. Debian 13's kernel puts the DTB at `0x82200000`, which leaves
+under 30 MiB of the 64 MiB default memory node for the initramfs; the packer
+fails when it does not fit, and `load_software.py` advertises the board's
+memory (see "Memory map").
 
 `FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff`, with or without an NFS root, replaces the
 NIC's `local-mac-address` in the DTB (default `02:11:22:33:44:55`); each board
