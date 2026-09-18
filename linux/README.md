@@ -229,6 +229,8 @@ configures the interface, waits for its carrier, mounts the export read-write
 over NFSv3/TCP (nfsroot adds `nolock`, so file locks stay local) and runs its
 `/sbin/init`. The export must be a riscv64 root filesystem, such as Debian
 13's, shared read-write with the board's address without root squashing.
+[`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md) builds, exports and
+boots such a root.
 Leave `FROST_LINUX_NFSROOT` unset for the hardware regression, whose Linux
 stage runs the initramfs programs above.
 

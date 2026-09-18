@@ -80,9 +80,11 @@ CSR/DMA/interrupt layer is in place: the NIC sits at `0x4003_0000` on a
 coherent DMA port with one PLIC source, a device-tree node, and two full-system
 programs. A Linux netdev driver is in place as well, validated on the X3 through
 the NIC's loopback modes. A board-level GTY wrapper connects the X3's NIC to a
-10GBASE-R fiber link (the soft MAC/PCS and the core stay vendor-primitive-free),
-where the bare-metal echo test passes against a host on a build with the CPU
-clock halved; the full-clock build has yet to close timing. The small RX buffer
+10GBASE-R fiber link (the soft MAC/PCS and the core stay vendor-primitive-free).
+On a build with the CPU clock halved, the bare-metal echo test passes against a
+host over that link, and Debian 13 boots from an NFS root over it, accepts SSH
+logins and installs packages with apt, leaving the soak as the remaining exit
+item; the full-clock build has yet to close timing. The small RX buffer
 with no PAUSE means DMA must drain independently of software.
 A host-backed PCIe/virtio block path is kept as an optional deployment
 capability, not the Phase 4 storage mechanism.
