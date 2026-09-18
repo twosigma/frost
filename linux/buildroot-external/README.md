@@ -108,7 +108,7 @@ The first build takes 30–60 min. Outputs land in `linux/build-mmu/images/`:
 | `Image` | Sv39 rv64 kernel (flat, uncompressed) |
 | `rootfs.cpio` | musl busybox initramfs, uncompressed (a gzip'd one costs the simulated core tens of cycles per byte to inflate) |
 | `fw_jump.bin` | OpenSBI firmware, built by `post-image-mmu.sh` from the `linux/opensbi` submodule |
-| `frost.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000, PLIC; clock/timebase = `FPGA_CPU_CLK_FREQ`, 300 MHz X3 default) |
+| `frost.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000, PLIC; clock/timebase = `FPGA_CPU_CLK_FREQ`, 300 MHz X3 default; 64 MiB of memory, the simulation DDR model's size) |
 | `sw.mem` / `sw.txt` | low-BRAM boot shim (`a0=0`, `a1=DTB`, jump to fw_jump) |
 | `sw_ddr.mem` / `sw_ddr.txt` | DDR image: firmware @ 0x8000_0000, Image @ +2 MiB, DTB @ the first 2 MiB boundary at or above +16 MiB and the Image's end, initramfs after it |
 
@@ -126,10 +126,27 @@ clock. After a Buildroot build the test therefore runs directly:
 ```
 
 The same Makefile is what `fpga/load_software/load_software.py <board>
-linux_boot` drives:
+linux_boot` drives. The loader sets the board's clock (`FPGA_CPU_CLK_FREQ`) and
+DDR size (`FROST_LINUX_MEM_SIZE`: the CPU's range in
+`fpga/build/<board>_ddr_bd.tcl`, 1 GiB on the X3); without them the Makefile
+packs for the X3 clock and the simulation model's 64 MiB, and cocotb builds
+never take a board's memory size (`sw/apps/compile_app.py`):
 
 ```bash
 ./scripts/frost.py run make -C sw/apps/linux_boot  # X3 (300 MHz) default
+```
+
+`FROST_LINUX_NFSROOT=<server-ip>:/<path>` packs an NFS-root image instead: no
+initramfs, and bootargs that mount that export as the root, with the
+interface configured from `FROST_LINUX_IP` (the kernel's `ip=`, `dhcp` by
+default). `FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff` sets the NIC's MAC address in
+either image; each board on a shared network needs its own locally
+administered address ([`../README.md`](../README.md), "NFS root").
+`load_software.py` passes all three through from the environment:
+
+```bash
+FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
+  ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
 To run images built elsewhere (another checkout, or the CI artifact) in a
@@ -160,9 +177,11 @@ by CI.
 `board/frost/linux-frost.config`, a mini-config rather than a full defconfig:
 Buildroot runs `olddefconfig` over it, so unlisted symbols take their
 architecture defaults. It sets `CONFIG_MMU`, `CONFIG_RISCV_SBI`, the SBI PMU,
-emulated misaligned access, an external initramfs, ELF userspace, the
-8250 console, packet sockets and the NIC driver, and it leaves
-`CONFIG_NONPORTABLE` and `CONFIG_RISCV_M_MODE` unset.
+emulated misaligned access, an external initramfs, the NFS root, ELF
+userspace, the cgroups and AF_UNIX sockets systemd requires, the 8250 console,
+packet sockets, IPv4 with `ip=` configuration (static or DHCP) and the NIC
+driver, and it leaves `CONFIG_IPV6`, `CONFIG_NONPORTABLE` and
+`CONFIG_RISCV_M_MODE` unset.
 `tests/test_linux_packaging.py` asserts those load-bearing symbols and
 that the file uses Kconfig syntax `olddefconfig` understands. Each symbol is
 commented in the config itself; the contract is in
@@ -183,9 +202,9 @@ init-time exec is one page-fault storm cheaper in simulation) and packs it
 with `BR2_TARGET_ROOTFS_CPIO` and `BR2_TARGET_ROOTFS_CPIO_NONE`.
 `BR2_ROOTFS_OVERLAY` adds `board/frost/rootfs-overlay-mmu/`: the inittab
 (devtmpfs, `rcS`, `frost_stress`, getty) and a no-op `S01seedrng`. Edit those
-files to change userspace. The kernel has no IP stack (packet sockets only),
-so `BR2_PACKAGE_IFUPDOWN_SCRIPTS` stays unset; otherwise every boot prints
-"Starting network: FAIL".
+files to change userspace. The initramfs does no IP networking
+(`frost_nettest` uses packet sockets), so `BR2_PACKAGE_IFUPDOWN_SCRIPTS` stays
+unset.
 
 The `frost-stress` package installs `/usr/bin/frost_stress`, which the overlay
 inittab runs once as a sysinit entry, before the getty. It runs a timer storm

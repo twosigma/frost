@@ -36,6 +36,10 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
     },
 }
 
+# linux_boot's device-tree memory size (sw/apps/linux_boot/Makefile), which
+# load_software.py sets to a board's DDR size.
+LINUX_MEM_SIZE_VAR = "FROST_LINUX_MEM_SIZE"
+
 # linux_boot may spend 30–60 minutes building its first toolchain/kernel/rootfs.
 DEFAULT_CLEAN_TIMEOUT_SECONDS = 30
 DEFAULT_BUILD_TIMEOUT_SECONDS = 120
@@ -128,6 +132,15 @@ def compile_app(
             env[key] = value
             if verbose:
                 print(f"  Setting {key}={value} for simulation")
+
+    if app_name == "linux_boot":
+        # The device tree must not advertise more memory than the simulated
+        # DDR model holds: never a board's size exported for load_software.py;
+        # DDR_MODEL_BYTES when it is set, else the packer's default, which is
+        # the model's default size.
+        env.pop(LINUX_MEM_SIZE_VAR, None)
+        if os.environ.get("DDR_MODEL_BYTES"):
+            env[LINUX_MEM_SIZE_VAR] = os.environ["DDR_MODEL_BYTES"]
 
     action = "Build"
     action_timeout = build_timeout

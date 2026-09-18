@@ -242,11 +242,13 @@ with per-board score gates, then boots Linux to the Buildroot login prompt.
 counters, which holds for the rated-clock production bitstream; a
 `--cpu-clock-div` build includes them by default, so the stage is dropped
 whenever `FROST_CPU_CLK_HZ` names such a bitstream.
-The Linux stage boots the OpenSBI + Sv39 image, requires the userspace stress
-token, logs in, runs `perf stat` on the cycle and instruction counters, then
-runs `frost_nettest`, which drives the NIC driver through its loopback feature
-(the NIC's raw loopback on a shared MAC clock, the transceiver's PMA loopback
-otherwise) and must print `FROST_NET_LOOPBACK_PASS`:
+The Linux stage boots the OpenSBI + Sv39 image with the X3's whole 1 GiB of
+DDR advertised (`load_software.py` passes the board's DDR size into
+`linux_boot`; see `linux/README.md`, "Memory map"), requires the userspace
+stress token, logs in, runs `perf stat` on the cycle and instruction counters,
+then runs `frost_nettest`, which drives the NIC driver through its loopback
+feature (the NIC's raw loopback on a shared MAC clock, the transceiver's PMA
+loopback otherwise) and must print `FROST_NET_LOOPBACK_PASS`:
 
 ```bash
 ./fpga/hw_regression.py --board x3
@@ -792,10 +794,11 @@ hw_server -d  # port 3121
 
 2. For a DDR-capable board, add `build/<board>_ddr_bd.tcl` to assemble the
    `ddr_subsys` block design (memory controller + SmartConnect + a JTAG-AXI
-   DDR-image-load master). A BRAM-only board does not need this file. For a
-   board with a NIC transceiver, add `build/<board>_gty_ip.tcl` with a
-   `create_<board>_gty_ip` procedure that creates its wizard core (the X3's is
-   `build/x3_gty_ip.tcl`).
+   DDR-image-load master). The range it assigns the CPU port (`S00_AXI`) is the
+   memory `load_software.py` has `linux_boot` advertise to Linux. A BRAM-only
+   board does not need this file. For a board with a NIC transceiver, add
+   `build/<board>_gty_ip.tcl` with a `create_<board>_gty_ip` procedure that
+   creates its wizard core (the X3's is `build/x3_gty_ip.tcl`).
 
 3. Register the board throughout the table-driven tool layer:
    - `BOARD_CONFIG` in `build/build.py` for its clock, FPGA family, and default

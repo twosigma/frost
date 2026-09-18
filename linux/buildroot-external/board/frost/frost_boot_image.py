@@ -36,7 +36,8 @@ so the DTB starts at or above that boundary and the initramfs follows the DTB
 slot. The 16 MiB floor
 (DTB_MIN_OFFSET) is for compatibility only: every payload of at most 14 MiB
 packs exactly as it did when the DTB offset was fixed. The DTB slot, and the
-initramfs when given, must end inside the MEM_SIZE memory node.
+initramfs when given, must end inside the memory node, whose size is
+--mem-size (MEM_SIZE, 64 MiB, by default).
 
 The boot shim in low BRAM sets a0 = hart id, a1 = the DTB address and jumps to
 the firmware; fw_jump passes a1 through (it is built without an FDT offset).
@@ -53,10 +54,16 @@ A Linux ``Image`` is recognized by its header magic and placed by the header's
 ``image_size`` rather than the file size. Every region is asserted to be
 ordered and inside the memory node, and the DTB is given growth slack for
 OpenSBI's reserved-memory and cpu fixups.
+
+With --nfsroot there is no initramfs: the bootargs (nfsroot_bootargs) have the
+kernel configure its interface from --ip (the kernel's ip= parameter, dhcp by
+default) and mount the NFS export as its root. --mac replaces the NIC's
+local-mac-address, which boards sharing a network must not share.
 """
 
 import argparse
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -74,7 +81,12 @@ PMD_BYTES = 0x20_0000
 # their DTB and initramfs addresses and pack bit-identically.
 DTB_MIN_OFFSET = 0x100_0000
 DTB_SLOT_BYTES = 0x1_0000
-MEM_SIZE = 0x400_0000  # 64 MiB advertised in /memory (also the sim DDR model)
+# The memory /memory advertises unless --mem-size names a board's: 64 MiB, the
+# simulation DDR model's default size (tests/Makefile DDR_MODEL_BYTES).
+MEM_SIZE = 0x400_0000
+# The cached DDR region at DDR_BASE (hw/rtl/cpu_and_mem/cpu_and_mem.sv
+# CACHED_SIZE_BYTES): the most memory the CPU, and so Linux, can reach.
+CACHED_REGION_BYTES = 0x4000_0000
 
 # fw_jump.bin is well under FW_MAX_BYTES; its runtime rw/heap/scratch regions
 # follow the binary and OpenSBI reserves them below the payload (banner
@@ -102,6 +114,8 @@ ISA_STRING = (
 )
 
 DEFAULT_BOOTARGS = "earlycon console=ttyS0 rdinit=/sbin/init"
+# The kernel's ip= for an NFS root when --ip is not given.
+DEFAULT_NFSROOT_IP = "dhcp"
 DEFAULT_MODEL = "FROST RV64 (Sv39, OpenSBI)"
 DEFAULT_CLK_HZ = 300_000_000  # X3
 DEFAULT_SHIM_MARCH = "rv64i_zicsr"
@@ -126,7 +140,9 @@ DMA_ENGINE_PLIC_SOURCE = 3
 NIC_BASE = 0x4003_0000
 NIC_SIZE = 0x1000
 NIC_PLIC_SOURCE = 4
-NIC_MAC_ADDRESS = "02 11 22 33 44 55"  # locally administered; the driver honors it
+# The default local-mac-address, as DT bytes: locally administered; the driver
+# honors it. --mac replaces it.
+NIC_MAC_ADDRESS = "02 11 22 33 44 55"
 UART_PLIC_SOURCE = 1
 
 
@@ -184,14 +200,68 @@ def plan_layout(footprint: int) -> Layout:
     return Layout(footprint, dtb_offset, dtb_offset + DTB_SLOT_BYTES)
 
 
+def nfsroot_bootargs(export: str, ip: str | None = None) -> str:
+    """Return bootargs that mount an NFS export (<server-ip>:/<path>) as root.
+
+    The kernel configures its interface from ip= (dhcp unless given), then
+    mounts the export read-write over NFSv3/TCP and runs its /sbin/init.
+    """
+    return (
+        "earlycon console=ttyS0 root=/dev/nfs "
+        f"nfsroot={export},vers=3,tcp,hard rw ip={ip or DEFAULT_NFSROOT_IP}"
+    )
+
+
+def mac_address(text: str) -> str:
+    """Return a unicast MAC address, aa:bb:cc:dd:ee:ff, as DT bytes.
+
+    The --mac argument type. A multicast or all-zero address is rejected like
+    a malformed one: the driver would replace it with a random address.
+    """
+    octets = text.split(":")
+    if len(octets) != 6 or not all(re.fullmatch(r"[0-9A-Fa-f]{2}", o) for o in octets):
+        raise argparse.ArgumentTypeError(f"{text!r} is not aa:bb:cc:dd:ee:ff")
+    if int(octets[0], 16) & 1:
+        raise argparse.ArgumentTypeError(
+            f"{text} is a multicast address (low bit of the first octet set)"
+        )
+    if not any(int(octet, 16) for octet in octets):
+        raise argparse.ArgumentTypeError(f"{text} is the all-zero address")
+    return " ".join(octets).lower()
+
+
+def memory_size(text: str) -> int:
+    """Return a memory size in bytes: a multiple of 2 MiB within the cached region.
+
+    The --mem-size argument type. check_layout then requires the packed
+    regions to fit inside it.
+    """
+    try:
+        size = int(text, 0)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a byte count") from None
+    if size <= 0 or size % PMD_BYTES or size > CACHED_REGION_BYTES:
+        raise argparse.ArgumentTypeError(
+            f"{text} is not a multiple of 2 MiB between 2 MiB and the "
+            f"0x{CACHED_REGION_BYTES:x}-byte cached region"
+        )
+    return size
+
+
 def gen_dts(
     *,
     clk_hz: int,
     initrd_range: tuple[int, int] | None,
     bootargs: str,
     model: str,
+    mac: str = NIC_MAC_ADDRESS,
+    mem_size: int = MEM_SIZE,
 ) -> str:
-    """Return the FROST device tree source for the OpenSBI + Sv39 boot."""
+    """Return the FROST device tree source for the OpenSBI + Sv39 boot.
+
+    mac is the NIC's local-mac-address as DT bytes ("02 11 22 33 44 55");
+    mem_size is the size of the memory node at DDR_BASE.
+    """
     ext_list = ",\n\t\t\t\t".join(
         ", ".join(f'"{e}"' for e in ISA_EXTENSIONS[i : i + 6])
         for i in range(0, len(ISA_EXTENSIONS), 6)
@@ -242,7 +312,7 @@ def gen_dts(
 
 \tmemory@{DDR_BASE:x} {{
 \t\tdevice_type = "memory";
-\t\treg = <0x{DDR_BASE:08x} 0x{MEM_SIZE:08x}>;
+\t\treg = <0x{DDR_BASE:08x} 0x{mem_size:08x}>;
 \t}};
 
 \tpmu {{
@@ -300,7 +370,7 @@ def gen_dts(
 \t\t\tinterrupt-parent = <&plic>;
 \t\t\tinterrupts = <{NIC_PLIC_SOURCE}>;
 \t\t\tdma-coherent;
-\t\t\tlocal-mac-address = [{NIC_MAC_ADDRESS}];
+\t\t\tlocal-mac-address = [{mac}];
 \t\t\tclock-frequency = <{clk_hz}>;
 \t\t}};
 \t}};
@@ -347,9 +417,17 @@ def build_shim(
 
 
 def check_layout(
-    layout: Layout, firmware: bytes, dtb: bytes, initrd: bytes | None
+    layout: Layout,
+    firmware: bytes,
+    dtb: bytes,
+    initrd: bytes | None,
+    mem_size: int = MEM_SIZE,
 ) -> None:
-    """Assert every region is ordered, fits its slot and ends inside memory."""
+    """Assert every region is ordered, fits its slot and ends inside memory.
+
+    mem_size is the memory node's size, the bound for the DTB slot and the
+    initramfs.
+    """
     assert len(firmware) <= FW_MAX_BYTES, (
         f"firmware is 0x{len(firmware):x} bytes; the slot below the payload holds "
         f"0x{FW_MAX_BYTES:x} plus OpenSBI's runtime regions"
@@ -362,14 +440,14 @@ def check_layout(
         f"DTB is 0x{len(dtb):x} bytes; the slot holds 0x{DTB_SLOT_BYTES:x} minus "
         f"0x{DTB_GROWTH_BYTES:x} of fixup growth"
     )
-    assert layout.dtb_offset + DTB_SLOT_BYTES <= MEM_SIZE, (
+    assert layout.dtb_offset + DTB_SLOT_BYTES <= mem_size, (
         f"DTB slot at +0x{layout.dtb_offset:x}, above a payload footprint of "
-        f"0x{layout.footprint:x}, overruns the 0x{MEM_SIZE:x} memory node"
+        f"0x{layout.footprint:x}, overruns the 0x{mem_size:x} memory node"
     )
     if initrd is not None:
-        assert layout.initrd_offset + len(initrd) <= MEM_SIZE, (
+        assert layout.initrd_offset + len(initrd) <= mem_size, (
             f"initramfs 0x{len(initrd):x} bytes at +0x{layout.initrd_offset:x} "
-            f"overruns the 0x{MEM_SIZE:x} memory node"
+            f"overruns the 0x{mem_size:x} memory node"
         )
 
 
@@ -431,8 +509,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--clk", type=int, default=int(env("FPGA_CPU_CLK_FREQ", str(DEFAULT_CLK_HZ)))
     )
-    parser.add_argument(
+    root = parser.add_mutually_exclusive_group()
+    root.add_argument(
         "--bootargs", default=DEFAULT_BOOTARGS, help='"" to omit bootargs'
+    )
+    root.add_argument(
+        "--nfsroot",
+        metavar="SERVER_IP:/PATH",
+        help="boot from this NFS export instead of an initramfs (sets the bootargs)",
+    )
+    parser.add_argument(
+        "--ip",
+        help=f"the kernel's ip= for --nfsroot (default: {DEFAULT_NFSROOT_IP})",
+    )
+    parser.add_argument(
+        "--mac",
+        type=mac_address,
+        help="the NIC's local-mac-address, aa:bb:cc:dd:ee:ff "
+        f"(default: {NIC_MAC_ADDRESS.replace(' ', ':')})",
+    )
+    parser.add_argument(
+        "--mem-size",
+        type=memory_size,
+        default=MEM_SIZE,
+        help="bytes of memory to advertise at the DDR base, a multiple of 2 MiB "
+        f"(default: 0x{MEM_SIZE:x}, the simulation DDR model's size)",
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
@@ -446,6 +547,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error(
             "--firmware and --payload are required (or FROST_FIRMWARE / FROST_IMAGE)"
         )
+    if args.nfsroot is not None:
+        if ":/" not in args.nfsroot:
+            parser.error("--nfsroot takes <server-ip>:/<path>")
+        if args.initrd:
+            parser.error("--nfsroot boots without an initramfs; drop --initrd")
+        args.bootargs = nfsroot_bootargs(args.nfsroot, args.ip)
+    elif args.ip is not None:
+        parser.error("--ip applies only with --nfsroot")
     return args
 
 
@@ -470,11 +579,13 @@ def main(argv: list[str] | None = None) -> int:
             initrd_range=initrd_range,
             bootargs=args.bootargs,
             model=args.model,
+            mac=args.mac or NIC_MAC_ADDRESS,
+            mem_size=args.mem_size,
         ),
         out_dir,
         args.dtc,
     )
-    check_layout(layout, firmware, dtb, initrd)
+    check_layout(layout, firmware, dtb, initrd, args.mem_size)
     shim = build_shim(out_dir, layout, args.cross, args.shim_march, args.shim_mabi)
     dense_words = write_images(out_dir, layout, shim, firmware, payload, dtb, initrd)
 
@@ -491,7 +602,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         f"sw_ddr.txt: {dense_words} dense words (~{dense_words * 4 / 1e6:.1f} MB), "
-        f"timebase/uart-clk = {args.clk} Hz; outputs in {out_dir}"
+        f"timebase/uart-clk = {args.clk} Hz, memory 0x{args.mem_size:x} B; "
+        f"outputs in {out_dir}"
     )
     return 0
 
