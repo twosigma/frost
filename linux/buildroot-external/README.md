@@ -136,16 +136,28 @@ never take a board's memory size (`sw/apps/compile_app.py`):
 ./scripts/frost.py run make -C sw/apps/linux_boot  # X3 (300 MHz) default
 ```
 
-`FROST_LINUX_NFSROOT=<server-ip>:/<path>` packs an NFS-root image instead: no
-initramfs, and bootargs that mount that export as the root, with the
-interface configured from `FROST_LINUX_IP` (the kernel's `ip=`, `dhcp` by
-default). `FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff` sets the NIC's MAC address in
-either image; each board on a shared network needs its own locally
-administered address ([`../README.md`](../README.md), "NFS root").
-`load_software.py` passes all three through from the environment:
+`FROST_LINUX_NFSROOT=<server-ip>:/<path>` packs an NFS-root image instead:
+bootargs that mount that export as the root, with the interface configured
+from `FROST_LINUX_IP` (`ip=` in the kernel's syntax, `dhcp` by default), and
+by default no initramfs, so the kernel mounts it. `FROST_LINUX_KERNEL` and
+`FROST_LINUX_INITRD` pack another kernel `Image` and initramfs, such as
+Debian's, in place of Buildroot's `Image` and `rootfs.cpio`; the firmware
+still comes from this build. Give them as absolute paths (under `/workspace`
+in `./scripts/frost.py run`, which sees only the checkout). With
+`FROST_LINUX_NFSROOT` too, that initramfs mounts the export through
+initramfs-tools' NFS boot (`boot=nfs`), which Debian's kernel needs.
+`FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff` sets the NIC's MAC address in any image;
+each board on a shared network needs its own locally administered address
+([`../README.md`](../README.md), "NFS root"). `load_software.py` passes them
+all through from the environment:
 
 ```bash
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
+  ./fpga/load_software/load_software.py x3 linux_boot
+# Debian's own kernel and initramfs, from the export's /boot:
+FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
+FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-<version> \
+FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-<version> \
   ./fpga/load_software/load_software.py x3 linux_boot
 ```
 

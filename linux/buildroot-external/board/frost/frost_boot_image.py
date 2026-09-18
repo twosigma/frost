@@ -55,10 +55,12 @@ A Linux ``Image`` is recognized by its header magic and placed by the header's
 ordered and inside the memory node, and the DTB is given growth slack for
 OpenSBI's reserved-memory and cpu fixups.
 
-With --nfsroot there is no initramfs: the bootargs (nfsroot_bootargs) have the
-kernel configure its interface from --ip (the kernel's ip= parameter, dhcp by
-default) and mount the NFS export as its root. --mac replaces the NIC's
-local-mac-address, which boards sharing a network must not share.
+With --nfsroot the root is an NFS export: the bootargs (nfsroot_bootargs)
+configure the interface from --ip (ip=, dhcp by default) and mount the export.
+Without --initrd the kernel does both itself; with one, the initramfs does,
+through initramfs-tools' NFS boot (boot=nfs), for a kernel with no NFS root of
+its own, such as Debian's. --mac replaces the NIC's local-mac-address, which
+boards sharing a network must not share.
 """
 
 import argparse
@@ -114,8 +116,13 @@ ISA_STRING = (
 )
 
 DEFAULT_BOOTARGS = "earlycon console=ttyS0 rdinit=/sbin/init"
-# The kernel's ip= for an NFS root when --ip is not given.
+# The ip= for an NFS root when --ip is not given.
 DEFAULT_NFSROOT_IP = "dhcp"
+# The NFS root's mount options: NFSv3 over TCP, a hard mount. The kernel's NFS
+# root and the klibc nfsmount that initramfs-tools' NFS boot runs both accept
+# these names; klibc rejects many of nfs(5)'s (proto=, for one) and any version
+# but 2 and 3.
+NFSROOT_OPTIONS = "vers=3,tcp,hard"
 DEFAULT_MODEL = "FROST RV64 (Sv39, OpenSBI)"
 DEFAULT_CLK_HZ = 300_000_000  # X3
 DEFAULT_SHIM_MARCH = "rv64i_zicsr"
@@ -200,15 +207,21 @@ def plan_layout(footprint: int) -> Layout:
     return Layout(footprint, dtb_offset, dtb_offset + DTB_SLOT_BYTES)
 
 
-def nfsroot_bootargs(export: str, ip: str | None = None) -> str:
+def nfsroot_bootargs(
+    export: str, ip: str | None = None, initramfs: bool = False
+) -> str:
     """Return bootargs that mount an NFS export (<server-ip>:/<path>) as root.
 
-    The kernel configures its interface from ip= (dhcp unless given), then
-    mounts the export read-write over NFSv3/TCP and runs its /sbin/init.
+    The interface is configured from ip= (dhcp unless given), the export is
+    mounted read-write over NFSv3/TCP, and its /sbin/init runs. Without an
+    initramfs the kernel does this itself (CONFIG_IP_PNP, CONFIG_ROOT_NFS). With
+    one, boot=nfs selects initramfs-tools' NFS boot, whose klibc ipconfig reads
+    ip= in the kernel's syntax and whose nfsmount takes the same options.
     """
+    boot = "boot=nfs " if initramfs else ""
     return (
-        "earlycon console=ttyS0 root=/dev/nfs "
-        f"nfsroot={export},vers=3,tcp,hard rw ip={ip or DEFAULT_NFSROOT_IP}"
+        f"earlycon console=ttyS0 {boot}root=/dev/nfs "
+        f"nfsroot={export},{NFSROOT_OPTIONS} rw ip={ip or DEFAULT_NFSROOT_IP}"
     )
 
 
@@ -442,12 +455,13 @@ def check_layout(
     )
     assert layout.dtb_offset + DTB_SLOT_BYTES <= mem_size, (
         f"DTB slot at +0x{layout.dtb_offset:x}, above a payload footprint of "
-        f"0x{layout.footprint:x}, overruns the 0x{mem_size:x} memory node"
+        f"0x{layout.footprint:x}, overruns the 0x{mem_size:x} memory node (its "
+        "size is --mem-size)"
     )
     if initrd is not None:
         assert layout.initrd_offset + len(initrd) <= mem_size, (
             f"initramfs 0x{len(initrd):x} bytes at +0x{layout.initrd_offset:x} "
-            f"overruns the 0x{mem_size:x} memory node"
+            f"overruns the 0x{mem_size:x} memory node (its size is --mem-size)"
         )
 
 
@@ -516,11 +530,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     root.add_argument(
         "--nfsroot",
         metavar="SERVER_IP:/PATH",
-        help="boot from this NFS export instead of an initramfs (sets the bootargs)",
+        help="boot from this NFS export (sets the bootargs): the kernel mounts it, "
+        "or with --initrd the initramfs (initramfs-tools' boot=nfs)",
     )
     parser.add_argument(
         "--ip",
-        help=f"the kernel's ip= for --nfsroot (default: {DEFAULT_NFSROOT_IP})",
+        help="ip= for --nfsroot, in the kernel's syntax "
+        f"(default: {DEFAULT_NFSROOT_IP})",
     )
     parser.add_argument(
         "--mac",
@@ -550,9 +566,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.nfsroot is not None:
         if ":/" not in args.nfsroot:
             parser.error("--nfsroot takes <server-ip>:/<path>")
-        if args.initrd:
-            parser.error("--nfsroot boots without an initramfs; drop --initrd")
-        args.bootargs = nfsroot_bootargs(args.nfsroot, args.ip)
+        args.bootargs = nfsroot_bootargs(args.nfsroot, args.ip, bool(args.initrd))
     elif args.ip is not None:
         parser.error("--ip applies only with --nfsroot")
     return args

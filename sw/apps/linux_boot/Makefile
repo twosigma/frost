@@ -19,7 +19,8 @@
 # low-BRAM shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that cocotb's
 # linux_boot test and fpga/load_software consume. There are no prebuilt artifacts
 # and no out-of-repo paths, so a fresh `git clone --recurse-submodules` can build
-# it.
+# it. FROST_LINUX_KERNEL and FROST_LINUX_INITRD (below) swap in a kernel and an
+# initramfs built elsewhere, such as Debian's.
 #
 # Two stages, split so that re-loading for a different board is cheap:
 #
@@ -30,14 +31,14 @@
 #
 #   Stage 2 (fast, board-dependent): frost_boot_image.py regenerates the DTB
 #     (timebase + UART clock = FPGA_CPU_CLK_FREQ, memory = FROST_LINUX_MEM_SIZE)
-#     and repacks the firmware, kernel and initramfs into the DDR image (or,
-#     with FROST_LINUX_NFSROOT, the firmware and kernel alone, booting from an
-#     NFS root; see below). `load_software.py <board> linux_boot` sets both per
-#     board and `make clean`s first, so the DDR image is always repacked for
-#     the target board without a kernel rebuild.
+#     and repacks the firmware, kernel and initramfs into the DDR image (with
+#     FROST_LINUX_NFSROOT, an image that boots from an NFS root; see below).
+#     `load_software.py <board> linux_boot` sets both per board and `make
+#     clean`s first, so the DDR image is always repacked for the target board
+#     without a kernel rebuild.
 #
-# sw_ddr.mem depends on the kernel Image and the packer, so a newer kernel or
-# packer forces a repack. It once had no prerequisites at all and never
+# sw_ddr.mem depends on the kernel Image, the initramfs and the packer, so a
+# newer one forces a repack. It once had no prerequisites at all and never
 # regenerated when the underlying image changed.
 
 # Repo-root-relative paths (this Makefile lives in sw/apps/linux_boot).
@@ -60,21 +61,34 @@ FW_JUMP      := $(IMAGES)/fw_jump.bin
 # `make` default matches X3.
 FPGA_CPU_CLK_FREQ ?= 300000000
 
-# Root filesystem and NIC address. Unset, the initramfs is packed with the
-# packer's default bootargs. FROST_LINUX_NFSROOT=<server-ip>:/<path> packs no
-# initramfs and has the kernel mount that NFS export as its root, configuring
-# its interface from FROST_LINUX_IP, the kernel's ip= parameter (dhcp when
-# unset). FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff replaces the NIC's default
-# local-mac-address in either case; each board on a shared network needs its
-# own. load_software.py passes all three through from the environment, like
+# Kernel, root filesystem and NIC address. Unset, Buildroot's kernel and
+# initramfs are packed with the packer's default bootargs.
+# FROST_LINUX_KERNEL=<path> packs that Linux Image in place of Buildroot's
+# kernel, and FROST_LINUX_INITRD=<path> that initramfs in place of rootfs.cpio;
+# the firmware still comes from the Buildroot build. Give absolute paths: make
+# runs in this directory.
+# FROST_LINUX_NFSROOT=<server-ip>:/<path> boots from that NFS export instead,
+# configuring the interface from FROST_LINUX_IP, an ip= parameter in the
+# kernel's syntax (dhcp when unset; an error without FROST_LINUX_NFSROOT).
+# Without FROST_LINUX_INITRD it packs no initramfs and the kernel mounts the
+# export; with it, that initramfs mounts the export through initramfs-tools'
+# NFS boot (boot=nfs), for a kernel with no NFS root of its own, such as
+# Debian's. FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff replaces the NIC's default
+# local-mac-address in every case; each board on a shared network needs its
+# own. load_software.py passes these through from the environment, like
 # FROST_LINUX_PREBUILT.
+PAYLOAD := $(or $(FROST_LINUX_KERNEL),$(KIMAGE))
 ifdef FROST_LINUX_NFSROOT
 PACK_ARGS := --nfsroot "$(FROST_LINUX_NFSROOT)" \
-  $(if $(FROST_LINUX_IP),--ip "$(FROST_LINUX_IP)")
+  $(if $(FROST_LINUX_INITRD),--initrd "$(FROST_LINUX_INITRD)")
 else
-PACK_ARGS := --initrd "$(INITRD_IMG)"
+PACK_ARGS := --initrd "$(or $(FROST_LINUX_INITRD),$(INITRD_IMG))"
 endif
+PACK_ARGS += $(if $(FROST_LINUX_IP),--ip "$(FROST_LINUX_IP)")
 PACK_ARGS += $(if $(FROST_LINUX_MAC),--mac "$(FROST_LINUX_MAC)")
+# The packer takes FROST_INITRD from the environment as its --initrd default,
+# which would give an NFS root an initramfs; only the variables above choose it.
+unexport FROST_INITRD
 
 # Memory size in bytes. load_software.py exports the board's DDR size (the
 # CPU's range in fpga/build/<board>_ddr_bd.tcl, 1 GiB on the X3). Unset, the
@@ -146,13 +160,14 @@ $(KIMAGE) $(INITRD_IMG) &:
 
 # Stage 2: pack for this board's clock. The firmware that Buildroot's
 # post-image hook built (images/fw_jump.bin) is packed with frost_boot_image.py.
-sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/frost_boot_image.py
+sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(FROST_LINUX_KERNEL) \
+    $(FROST_LINUX_INITRD) $(BOARD_DIR)/frost_boot_image.py
 	@test -f "$(FW_JUMP)" || { \
 	  echo "ERROR: $(FW_JUMP) is missing; the Buildroot post-image hook builds it."; \
 	  exit 1; }
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) $(SHIM_CROSS) \
 	  python3 "$(BOARD_DIR)/frost_boot_image.py" \
-	    --firmware "$(FW_JUMP)" --payload "$(KIMAGE)" $(PACK_ARGS) \
+	    --firmware "$(FW_JUMP)" --payload "$(PAYLOAD)" $(PACK_ARGS) \
 	    --out "$(CURDIR)"
 
 # Light clean: drop only the board-dependent pack outputs (Stage 2). The cached

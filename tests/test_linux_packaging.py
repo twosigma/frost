@@ -17,8 +17,10 @@
 Covers the OpenSBI boot-image packer and the kernel configuration.
 """
 
+import hashlib
 import importlib.util
 from types import ModuleType
+import os
 import re
 import struct
 import subprocess
@@ -104,6 +106,16 @@ def _decode_words(lines: str, start: int, length: int) -> bytes:
     return b"".join(struct.pack("<I", int(word, 16)) for word in words)[:length]
 
 
+def _ddr_records(path: Path) -> dict[int, bytes]:
+    """Decode a sparse sw_ddr.mem into its records' byte offsets and bytes, in order."""
+    fields = re.split(r"^@([0-9a-f]{8})\n", path.read_text(), flags=re.M)
+    assert fields[0] == ""
+    return {
+        int(address, 16) * 4: _decode_words(body, 0, len(body) // 9 * 4)
+        for address, body in zip(fields[1::2], fields[2::2])
+    }
+
+
 def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
     """The firmware and payload slots are fixed, ordered and aligned."""
     packer = _load_module(SBI_PACKER)
@@ -118,12 +130,19 @@ def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
     assert packer.DTB_MIN_OFFSET + packer.DTB_SLOT_BYTES < packer.MEM_SIZE
 
 
+# The header image_size of Debian 13's riscv64 kernel Image,
+# /boot/vmlinux-6.12.107+deb13-riscv64.
+DEBIAN_KERNEL_FOOTPRINT = 0x1E6B000
+
+
 # Payload footprints below, at and above the 14 MiB that fit under the former
 # fixed DTB offset: a small raw binary, the kernel packed when the rule came
-# in, exactly 14 MiB, one byte more, and a kernel with every option Buildroot's
-# systemd package enables.
+# in, exactly 14 MiB, one byte more, a kernel with every option Buildroot's
+# systemd package enables, and Debian's kernel.
 @pytest.mark.parametrize(
-    "footprint", [0x100, 0xCE7000, 0xE00000, 0xE00001, 0xF03000], ids=hex
+    "footprint",
+    [0x100, 0xCE7000, 0xE00000, 0xE00001, 0xF03000, DEBIAN_KERNEL_FOOTPRINT],
+    ids=hex,
 )
 def test_sbi_layout_rule_invariants(footprint: int) -> None:
     """The DTB takes the first PMD boundary at or above +16 MiB and the payload."""
@@ -332,7 +351,7 @@ STATIC_IP = "192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off"
 def test_sbi_packer_nfsroot_packs_no_initramfs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ip_args: list[str], ip: str
 ) -> None:
-    """--nfsroot packs NFS-root bootargs, ip=dhcp unless --ip names one.
+    """--nfsroot alone packs the kernel's NFS-root bootargs, ip=dhcp unless --ip.
 
     No initramfs is packed: /chosen has no linux,initrd-* and sw_ddr.mem holds
     the firmware, the payload and the DTB only. Needs dtc and the
@@ -369,21 +388,113 @@ def test_sbi_packer_nfsroot_packs_no_initramfs(
     assert records == [f"{offset // 4:08x}" for offset in offsets]
 
 
-def test_sbi_packer_nfsroot_arguments() -> None:
-    """--nfsroot takes <server-ip>:/<path> and replaces the initramfs and bootargs.
+def test_sbi_packer_nfsroot_arguments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--nfsroot takes <server-ip>:/<path> and replaces the bootargs.
 
-    --ip applies only with it.
+    --ip applies only with it, with or without an initramfs.
     """
+    monkeypatch.delenv("FROST_INITRD", raising=False)
     packer = _load_module(SBI_PACKER)
+    export = "192.0.2.1:/srv/nfs/debian"
     base = ["--firmware", "fw_jump.bin", "--payload", "Image"]
     for extra in (
         ["--nfsroot", "/srv/nfs/debian"],
-        ["--nfsroot", "192.0.2.1:/srv/nfs/debian", "--initrd", "rootfs.cpio"],
-        ["--nfsroot", "192.0.2.1:/srv/nfs/debian", "--bootargs", "quiet"],
+        ["--nfsroot", export, "--bootargs", "quiet"],
+        ["--nfsroot", export, "--initrd", "initrd.img", "--bootargs", "quiet"],
         ["--ip", "dhcp"],
+        ["--ip", "dhcp", "--initrd", "initrd.img"],
     ):
         with pytest.raises(SystemExit):
             packer.parse_args(base + extra)
+    args = packer.parse_args(base + ["--nfsroot", export])
+    assert args.bootargs == packer.nfsroot_bootargs(export)
+    args = packer.parse_args(base + ["--nfsroot", export, "--initrd", "initrd.img"])
+    assert args.bootargs == packer.nfsroot_bootargs(export, initramfs=True)
+
+
+# klibc 2.0.14 (Debian trixie's klibc-utils) nfsmount, which initramfs-tools'
+# NFS boot runs as `nfsmount -o nolock -o rw -o <nfsroot options>`
+# (scripts/nfs:76): the option names it accepts (usr/kinit/nfsmount/main.c
+# int_opts and bool_opts, lines 40-85). Any other name fails the mount with
+# "bad option", values must be integers (parse_int, lines 87-98), and vers= and
+# nfsvers= take only 2 or 3 (lines 136-149).
+KLIBC_NFSMOUNT_VALUE_OPTIONS = frozenset(
+    "port nfsvers vers rsize wsize timeo retrans acregmin acregmax acdirmin "
+    "acdirmax".split()
+)
+KLIBC_NFSMOUNT_FLAG_OPTIONS = frozenset(
+    "soft hard intr nointr posix noposix cto nocto ac noac lock nolock acl noacl "
+    "v2 v3 udp tcp broken_suid ro rw".split()
+)
+
+
+def test_sbi_nfsroot_options_suit_the_kernel_and_initramfs_tools() -> None:
+    """Both NFS roots mount NFSv3 over TCP, hard, with options klibc accepts.
+
+    The kernel's NFS root and initramfs-tools' NFS boot both split nfsroot= at
+    its first comma into the export and the mount options. initramfs-tools
+    hands the options to klibc's nfsmount, whose option names are not nfs(5)'s,
+    so every option must be one it knows.
+    """
+    packer = _load_module(SBI_PACKER)
+    assert packer.NFSROOT_OPTIONS == "vers=3,tcp,hard"
+    for option in packer.NFSROOT_OPTIONS.split(","):
+        name, _, value = option.partition("=")
+        if value:
+            assert name in KLIBC_NFSMOUNT_VALUE_OPTIONS and value.isdigit()
+            if name in {"vers", "nfsvers"}:
+                assert value in {"2", "3"}
+        else:
+            assert name in KLIBC_NFSMOUNT_FLAG_OPTIONS
+    export = "192.0.2.1:/srv/nfs/debian"
+    for initramfs in (False, True):
+        words = packer.nfsroot_bootargs(export, initramfs=initramfs).split()
+        assert f"nfsroot={export},{packer.NFSROOT_OPTIONS}" in words
+        assert ("boot=nfs" in words) == initramfs
+        # initramfs-tools mounts the root read-only unless rw is given.
+        assert {"root=/dev/nfs", "rw", "ip=dhcp"} <= set(words)
+
+
+@pytest.mark.parametrize(
+    ("ip_args", "ip"),
+    [([], "dhcp"), (["--ip", STATIC_IP], STATIC_IP)],
+    ids=["dhcp", "static"],
+)
+def test_sbi_packer_nfsroot_through_an_initramfs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ip_args: list[str], ip: str
+) -> None:
+    """--nfsroot with --initrd packs the initramfs and initramfs-tools NFS bootargs.
+
+    boot=nfs selects initramfs-tools' NFS boot; ip= and the nfsroot= options
+    are the ones the kernel's own NFS root gets. The initramfs is packed after
+    the DTB slot as usual. Needs dtc and the riscv-none-elf- toolchain (both in
+    the Docker image).
+    """
+    monkeypatch.delenv("FROST_INITRD", raising=False)
+    packer = _load_module(SBI_PACKER)
+    export = "192.0.2.1:/srv/nfs/debian"
+    initrd = bytes(range(7, 256)) * 13  # not a whole number of words
+    (tmp_path / "initrd.img").write_bytes(initrd)
+    extra = ["--nfsroot", export, "--initrd", str(tmp_path / "initrd.img")]
+    out = _pack_minimal(packer, tmp_path, *extra, *ip_args)
+
+    dts = (out / "frost.dts").read_text()
+    bootargs = (
+        "earlycon console=ttyS0 boot=nfs root=/dev/nfs "
+        f"nfsroot={export},vers=3,tcp,hard rw ip={ip}"
+    )
+    assert f'bootargs = "{bootargs}";' in dts
+    initrd_start = packer.DDR_BASE + FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES
+    assert f"linux,initrd-start = <0x{initrd_start:08x}>;" in dts
+    assert f"linux,initrd-end = <0x{initrd_start + len(initrd):08x}>;" in dts
+    records = _ddr_records(out / "sw_ddr.mem")
+    assert list(records) == [
+        packer.FW_OFFSET,
+        packer.PAYLOAD_OFFSET,
+        FORMER_DTB_OFFSET,
+        FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES,
+    ]
+    assert records[FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES][: len(initrd)] == initrd
 
 
 @pytest.mark.parametrize(
@@ -500,6 +611,26 @@ def test_sbi_layout_checks_use_the_memory_size(
     # 16 MiB cannot hold the DTB slot at +16 MiB.
     with pytest.raises(AssertionError, match=r"overruns the 0x1000000 memory node"):
         _pack_minimal(packer, tmp_path, "--mem-size", "0x1000000")
+
+
+def test_sbi_layout_fits_debian_kernel_and_initramfs_in_1_gib() -> None:
+    """Debian's kernel puts the DTB at +34 MiB; its initramfs needs a board's memory.
+
+    A 40 MB initramfs after it ends past the 64 MiB default memory node, and
+    the failure names the node's size and --mem-size. It fits the X3's 1 GiB,
+    which load_software.py advertises.
+    """
+    packer = _load_module(SBI_PACKER)
+    layout = packer.plan_layout(DEBIAN_KERNEL_FOOTPRINT)
+    assert (layout.dtb_offset, layout.initrd_offset) == (0x220_0000, 0x221_0000)
+    firmware, dtb, initrd = bytes(0x2_1000), bytes(0x900), bytes(40_000_000)
+    packer.check_layout(layout, firmware, dtb, initrd, packer.CACHED_REGION_BYTES)
+    overrun = (
+        r"initramfs 0x2625a00 bytes at \+0x2210000 overruns the 0x4000000 memory "
+        r"node \(its size is --mem-size\)"
+    )
+    with pytest.raises(AssertionError, match=overrun):
+        packer.check_layout(layout, firmware, dtb, initrd)
 
 
 def test_sbi_packer_rejects_bad_memory_sizes() -> None:
@@ -647,6 +778,252 @@ def test_simulation_never_packs_a_board_memory_size(
     compile_app.compile_app("linux_boot", clean_first=True)
     assert len(environments) == 2  # make clean, make
     assert all(env.get("FROST_LINUX_MEM_SIZE") == model for env in environments)
+
+
+def test_kernel_and_initramfs_reach_the_linux_boot_make(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """load_software and compile_app hand FROST_LINUX_KERNEL and _INITRD to make.
+
+    Both copy the caller's environment into make's, as for the other
+    FROST_LINUX_* variables.
+    """
+    substitutes = {
+        "FROST_LINUX_KERNEL": "/srv/images/vmlinux",
+        "FROST_LINUX_INITRD": "/srv/images/initrd.img",
+    }
+    for name, value in substitutes.items():
+        monkeypatch.setenv(name, value)
+    environments: list[dict[str, str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    loader = _load_script("linux_packaging_loader", LOADER)
+    monkeypatch.setattr(loader.subprocess, "run", run)
+    (tmp_path / "sw.mem").write_text("")
+    (tmp_path / "sw.txt").write_text("")
+    assert loader.compile_app_for_board("linux_boot", tmp_path, 1, 1, ddr_bytes=1 << 30)
+    compile_app = _load_script(
+        "linux_packaging_compile_app", APPS / "compile_app.py", APPS
+    )
+    monkeypatch.setattr(compile_app.subprocess, "run", run)
+    compile_app.compile_app("linux_boot", clean_first=True)
+    assert len(environments) == 4  # make clean and make, from each
+    for env in environments:
+        assert {name: env.get(name) for name in substitutes} == substitutes
+
+
+# --- linux_boot's Makefile ------------------------------------------------------
+
+
+LINUX_BOOT_MAKEFILE = APPS / "linux_boot" / "Makefile"
+DWORD_MEM_HELPER = REPO_ROOT / "sw" / "common" / "make_dword_mem.py"
+LINUX_BOOT_OUTPUTS = (
+    "sw.mem",
+    "sw.txt",
+    "sw64.mem",
+    "sw_ddr.mem",
+    "sw_ddr.txt",
+    "frost.dts",
+    "frost.dtb",
+    "frost_boot_shim.S",
+)
+NFS_EXPORT = "192.0.2.1:/srv/nfs/debian"
+
+
+def _linux_boot_tree(tmp_path: Path) -> Path:
+    """Lay out linux_boot's Makefile, the packer and Buildroot-like images.
+
+    The Makefile finds the packer and Buildroot's images (fw_jump.bin, Image,
+    rootfs.cpio, synthetic here) relative to the directory make runs in, not
+    its own file (a symlink here), so make packs those and writes only under
+    tmp_path. Returns the app directory.
+    """
+    packer = _load_module(SBI_PACKER)
+    app = tmp_path / "sw" / "apps" / "linux_boot"
+    board = tmp_path / "linux" / "buildroot-external" / "board" / "frost"
+    common = tmp_path / "sw" / "common"
+    images = tmp_path / "linux" / "build-mmu" / "images"
+    for directory in (app, board, common, images):
+        directory.mkdir(parents=True)
+    (app / "Makefile").symlink_to(LINUX_BOOT_MAKEFILE)
+    (board / SBI_PACKER.name).symlink_to(SBI_PACKER)
+    (common / DWORD_MEM_HELPER.name).symlink_to(DWORD_MEM_HELPER)
+    (images / "fw_jump.bin").write_bytes(bytes(range(256)))
+    (images / "Image").write_bytes(_linux_image(packer, image_size=0x1000))
+    (images / "rootfs.cpio").write_bytes(bytes(range(251)) * 3)
+    return app
+
+
+def _make_linux_boot(app: Path, **variables: str) -> subprocess.CompletedProcess[str]:
+    """Run make clean, then make, in the app with only these FROST_* variables set.
+
+    They go in the environment, and make cleans first, as load_software.py and
+    compile_app.py do. The shim builds with the packer's default cross prefix,
+    and the clock is the Makefile's default.
+    """
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("FROST_", "MAKE", "MFLAGS"))
+        and key not in {"RISCV_PREFIX", "FPGA_CPU_CLK_FREQ"}
+    }
+    env.update(variables)
+    subprocess.run(
+        ["make", "-C", str(app), "clean"],
+        env=env,
+        capture_output=True,
+        check=True,
+        timeout=60,
+    )
+    return subprocess.run(
+        ["make", "-C", str(app)], env=env, capture_output=True, text=True, timeout=120
+    )
+
+
+def _output_digests(app: Path) -> dict[str, str]:
+    return {
+        name: hashlib.sha256((app / name).read_bytes()).hexdigest()
+        for name in LINUX_BOOT_OUTPUTS
+    }
+
+
+def test_linux_boot_make_substitutes_the_kernel_and_initramfs(tmp_path: Path) -> None:
+    """FROST_LINUX_KERNEL and FROST_LINUX_INITRD replace Image and rootfs.cpio.
+
+    Substitutes with Buildroot's bytes pack every output exactly as Buildroot's
+    files do. Other files are packed in their place, the DTB placed by the
+    substituted Image's header, with the default bootargs. Needs make, dtc and
+    the riscv-none-elf- toolchain (all in the Docker image).
+    """
+    packer = _load_module(SBI_PACKER)
+    app = _linux_boot_tree(tmp_path)
+    images = tmp_path / "linux" / "build-mmu" / "images"
+    result = _make_linux_boot(app)
+    assert result.returncode == 0, result.stderr
+    buildroot = _output_digests(app)
+    copies = tmp_path / "copies"
+    copies.mkdir()
+    for name in ("Image", "rootfs.cpio"):
+        (copies / name).write_bytes((images / name).read_bytes())
+    result = _make_linux_boot(
+        app,
+        FROST_LINUX_KERNEL=str(copies / "Image"),
+        FROST_LINUX_INITRD=str(copies / "rootfs.cpio"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert _output_digests(app) == buildroot
+
+    # A bss past +16 MiB puts the DTB at +18 MiB.
+    kernel = _linux_image(packer, image_size=0xF03000) + bytes(range(256)) * 8
+    initrd = bytes(range(3, 256)) * 9  # not a whole number of words
+    (tmp_path / "vmlinux").write_bytes(kernel)
+    (tmp_path / "initrd.img").write_bytes(initrd)
+    result = _make_linux_boot(
+        app,
+        FROST_LINUX_KERNEL=str(tmp_path / "vmlinux"),
+        FROST_LINUX_INITRD=str(tmp_path / "initrd.img"),
+    )
+    assert result.returncode == 0, result.stderr
+    records = _ddr_records(app / "sw_ddr.mem")
+    assert list(records) == [0, 0x20_0000, 0x120_0000, 0x121_0000]
+    assert records[packer.PAYLOAD_OFFSET][: len(kernel)] == kernel
+    assert records[0x121_0000][: len(initrd)] == initrd
+    dts = (app / "frost.dts").read_text()
+    assert f'bootargs = "{packer.DEFAULT_BOOTARGS}";' in dts
+    assert "linux,initrd-start = <0x81210000>;" in dts
+    assert f"linux,initrd-end = <0x{0x8121_0000 + len(initrd):08x}>;" in dts
+    assert "li   a1, 0x81200000" in (app / "frost_boot_shim.S").read_text()
+
+
+@pytest.mark.parametrize(
+    ("variables", "initramfs", "ip"),
+    [
+        ({}, False, "dhcp"),
+        ({"FROST_LINUX_IP": STATIC_IP}, False, STATIC_IP),
+        ({"FROST_INITRD": "initrd.img"}, False, "dhcp"),
+        ({"FROST_LINUX_INITRD": "initrd.img"}, True, "dhcp"),
+        (
+            {"FROST_LINUX_INITRD": "initrd.img", "FROST_LINUX_IP": STATIC_IP},
+            True,
+            STATIC_IP,
+        ),
+    ],
+    ids=[
+        "kernel-dhcp",
+        "kernel-static",
+        "kernel-packer-env",
+        "initramfs-dhcp",
+        "initramfs-static",
+    ],
+)
+def test_linux_boot_make_nfsroot(
+    tmp_path: Path, variables: dict[str, str], initramfs: bool, ip: str
+) -> None:
+    """FROST_LINUX_NFSROOT boots from the export; FROST_LINUX_INITRD mounts it.
+
+    Without FROST_LINUX_INITRD nothing follows the DTB and the kernel mounts
+    the export, even with the packer's own FROST_INITRD in the environment;
+    with it, that initramfs is packed and mounts it (boot=nfs). Needs make,
+    dtc and the riscv-none-elf- toolchain (all in the Docker image).
+    """
+    packer = _load_module(SBI_PACKER)
+    app = _linux_boot_tree(tmp_path)
+    initrd = bytes(range(5, 256)) * 11
+    (tmp_path / "initrd.img").write_bytes(initrd)
+    environment = {"FROST_LINUX_NFSROOT": NFS_EXPORT, **variables}
+    for name in ("FROST_LINUX_INITRD", "FROST_INITRD"):
+        if name in environment:
+            environment[name] = str(tmp_path / "initrd.img")
+    result = _make_linux_boot(app, **environment)
+    assert result.returncode == 0, result.stderr
+    dts = (app / "frost.dts").read_text()
+    bootargs = packer.nfsroot_bootargs(NFS_EXPORT, ip, initramfs)
+    assert f'bootargs = "{bootargs}";' in dts
+    offsets = [packer.FW_OFFSET, packer.PAYLOAD_OFFSET, FORMER_DTB_OFFSET]
+    records = _ddr_records(app / "sw_ddr.mem")
+    if initramfs:
+        offsets.append(FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES)
+        assert records[offsets[-1]][: len(initrd)] == initrd
+        assert "linux,initrd-start = <0x81010000>;" in dts
+    else:
+        assert "initrd" not in dts
+    assert list(records) == offsets
+
+
+@pytest.mark.parametrize(
+    ("variables", "message"),
+    [
+        ({"FROST_LINUX_IP": STATIC_IP}, "--ip applies only with --nfsroot"),
+        (
+            {"FROST_LINUX_IP": "dhcp", "FROST_LINUX_INITRD": "rootfs.cpio"},
+            "--ip applies only with --nfsroot",
+        ),
+        ({"FROST_LINUX_KERNEL": "missing"}, "No rule to make target"),
+        (
+            {"FROST_LINUX_NFSROOT": NFS_EXPORT, "FROST_LINUX_INITRD": "missing"},
+            "No rule to make target",
+        ),
+    ],
+    ids=["ip", "ip-initrd", "missing-kernel", "missing-initrd"],
+)
+def test_linux_boot_make_rejects(
+    tmp_path: Path, variables: dict[str, str], message: str
+) -> None:
+    """Make packs nothing for ip= without an NFS root or a missing substitute."""
+    app = _linux_boot_tree(tmp_path)
+    images = tmp_path / "linux" / "build-mmu" / "images"
+    paths = {"FROST_LINUX_KERNEL", "FROST_LINUX_INITRD"}
+    environment = {
+        name: str(images / value) if name in paths else value
+        for name, value in variables.items()
+    }
+    result = _make_linux_boot(app, **environment)
+    assert result.returncode != 0
+    assert message in result.stderr
+    assert not (app / "sw_ddr.mem").exists()
 
 
 def test_mmu_kernel_config_uses_kconfig_syntax() -> None:
