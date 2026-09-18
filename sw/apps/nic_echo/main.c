@@ -62,8 +62,18 @@ static volatile struct nic_desc *const tx_ring =
 
 static const uint8_t station[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
 
+/* Polling budgets in loop iterations, sized so a failed wait reports inside
+ * the simulation's cycle budget. A transceiver link (PHY_STATUS.CLK_SHARED =
+ * 0) comes up through the transceiver's resets, block lock and the link
+ * partner's fault handshake in hundreds of milliseconds, so there the waits
+ * for READY and CARRIER (an MMIO read each, tens of cycles) take
+ * WAIT_LINK_TRANSCEIVER instead: seconds at a 150 or 300 MHz CPU clock.
+ * WAIT_IDLE needs no more there: an echo's TX descriptor completes once the
+ * frame has entered the NIC's TX FIFO, which the MAC drains while CARRIER
+ * holds. */
 #define WAIT_READY 4000u
 #define WAIT_CARRIER 12000u
+#define WAIT_LINK_TRANSCEIVER 20000000u
 #define WAIT_IDLE 40000u
 
 static uint32_t g_rx_next, g_rx_posted, g_tx_posted, g_tx_reaped;
@@ -124,13 +134,46 @@ static void post_rx_one(uint32_t i)
     rx_ring[i].status = 0;
 }
 
+/* A transceiver reset during the seconds-long wait for CARRIER drops READY
+ * for the directions it resets (the X3 resets its receiver about once a
+ * second while block lock is absent, for example until the link partner
+ * transmits). The NIC then disables those directions itself, keeping their
+ * ring registers and HEAD, and the carrier returns only after READY has; once
+ * the carrier is up, a direction that CTRL shows disabled and STATUS shows
+ * READY is enabled again, as sw/apps/nic_loopback and the Linux driver do.
+ * The write carries both enables and CTRL's current PROMISC, because every
+ * CTRL write other than RESET reloads PROMISC. Returns 0 if a direction is
+ * still disabled afterwards, since the echo needs both. */
+static int reenable_after_ready_loss(void)
+{
+    const uint32_t enables = NIC_CTRL_RX_EN | NIC_CTRL_TX_EN;
+    uint32_t ctrl = nic_read(NIC_CTRL);
+    uint32_t status = nic_read(NIC_STATUS);
+    uint32_t lost = 0;
+    if (!(ctrl & NIC_CTRL_RX_EN) && (status & NIC_STATUS_RX_READY))
+        lost |= NIC_CTRL_RX_EN;
+    if (!(ctrl & NIC_CTRL_TX_EN) && (status & NIC_STATUS_TX_READY))
+        lost |= NIC_CTRL_TX_EN;
+    if (lost) {
+        nic_write(NIC_CTRL, enables | (ctrl & NIC_CTRL_PROMISC));
+        ctrl = nic_read(NIC_CTRL);
+        uart_printf("re-enabled %x after a READY loss: CTRL %x\n", lost, ctrl);
+    }
+    if ((ctrl & enables) != enables) {
+        uart_printf("enable lost: CTRL %x STATUS %x\n", ctrl, nic_read(NIC_STATUS));
+        return 0;
+    }
+    return 1;
+}
+
 static int bringup(void)
 {
     if (nic_read(NIC_ID) != NIC_ID_VALUE)
         return 0;
+    const int transceiver = !(nic_read(NIC_PHY_STATUS) & NIC_PHY_STATUS_CLK_SHARED);
     if (!wait_status(NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
                      NIC_STATUS_RX_READY | NIC_STATUS_TX_READY,
-                     WAIT_READY)) {
+                     transceiver ? WAIT_LINK_TRANSCEIVER : WAIT_READY)) {
         uart_printf("not READY: STATUS %x\n", nic_read(NIC_STATUS));
         return 0;
     }
@@ -168,13 +211,15 @@ static int bringup(void)
         uart_printf("enable refused: STATUS %x\n", nic_read(NIC_STATUS));
         return 0;
     }
-    uint32_t budget = WAIT_CARRIER;
+    uint32_t budget = transceiver ? WAIT_LINK_TRANSCEIVER : WAIT_CARRIER;
     while (budget-- && !(nic_read(NIC_LINK) & NIC_LINK_CARRIER))
         ;
     if (!(nic_read(NIC_LINK) & NIC_LINK_CARRIER)) {
         uart_printf("no carrier: LINK %x\n", nic_read(NIC_LINK));
         return 0;
     }
+    if (transceiver && !reenable_after_ready_loss())
+        return 0;
     return 1;
 }
 
