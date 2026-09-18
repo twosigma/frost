@@ -21,8 +21,10 @@ import importlib.util
 from types import ModuleType
 import re
 import struct
+import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -45,6 +47,10 @@ SBI_PACKER = (
     / "frost_boot_image.py"
 )
 OPENSBI_HELPER = REPO_ROOT / "linux" / "opensbi_build.py"
+LOADER = REPO_ROOT / "fpga" / "load_software" / "load_software.py"
+X3_DDR_BD = REPO_ROOT / "fpga" / "build" / "x3_ddr_bd.tcl"
+APPS = REPO_ROOT / "sw" / "apps"
+TESTS_MAKEFILE = REPO_ROOT / "tests" / "Makefile"
 
 
 def _load_module(path: Path) -> ModuleType:
@@ -54,6 +60,20 @@ def _load_module(path: Path) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[path.stem] = module
     spec.loader.exec_module(module)
+    return module
+
+
+def _load_script(name: str, path: Path, *import_dirs: Path) -> ModuleType:
+    """Import a script that puts its own directories on sys.path; restore it."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    original = sys.path.copy()
+    sys.path[:0] = [str(directory) for directory in import_dirs]
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = original
     return module
 
 
@@ -100,7 +120,8 @@ def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
 
 # Payload footprints below, at and above the 14 MiB that fit under the former
 # fixed DTB offset: a small raw binary, the kernel packed when the rule came
-# in, exactly 14 MiB, one byte more, and a kernel with systemd's options.
+# in, exactly 14 MiB, one byte more, and a kernel with every option Buildroot's
+# systemd package enables.
 @pytest.mark.parametrize(
     "footprint", [0x100, 0xCE7000, 0xE00000, 0xE00001, 0xF03000], ids=hex
 )
@@ -300,11 +321,340 @@ def test_sbi_packer_places_the_dtb_by_image_size(tmp_path: Path) -> None:
     assert set(gap.split()) == {"00000000"}
 
 
+STATIC_IP = "192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off"
+
+
+@pytest.mark.parametrize(
+    ("ip_args", "ip"),
+    [([], "dhcp"), (["--ip", STATIC_IP], STATIC_IP)],
+    ids=["dhcp", "static"],
+)
+def test_sbi_packer_nfsroot_packs_no_initramfs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ip_args: list[str], ip: str
+) -> None:
+    """--nfsroot packs NFS-root bootargs, ip=dhcp unless --ip names one.
+
+    No initramfs is packed: /chosen has no linux,initrd-* and sw_ddr.mem holds
+    the firmware, the payload and the DTB only. Needs dtc and the
+    riscv-none-elf- toolchain (both in the Docker image).
+    """
+    monkeypatch.delenv("FROST_INITRD", raising=False)
+    packer = _load_module(SBI_PACKER)
+    export = "192.0.2.1:/srv/nfs/debian"
+    (tmp_path / "fw_jump.bin").write_bytes(bytes(range(256)))
+    (tmp_path / "Image").write_bytes(_linux_image(packer, image_size=0x1000))
+    out = tmp_path / "out"
+    argv = [
+        "--firmware",
+        str(tmp_path / "fw_jump.bin"),
+        "--payload",
+        str(tmp_path / "Image"),
+        "--out",
+        str(out),
+        "--nfsroot",
+        export,
+        *ip_args,
+    ]
+    assert packer.main(argv) == 0
+
+    dts = (out / "frost.dts").read_text()
+    bootargs = (
+        f"earlycon console=ttyS0 root=/dev/nfs nfsroot={export},vers=3,tcp,hard rw "
+        f"ip={ip}"
+    )
+    assert f'bootargs = "{bootargs}";' in dts
+    assert "initrd" not in dts
+    records = re.findall(r"^@([0-9a-f]{8})$", (out / "sw_ddr.mem").read_text(), re.M)
+    offsets = (packer.FW_OFFSET, packer.PAYLOAD_OFFSET, FORMER_DTB_OFFSET)
+    assert records == [f"{offset // 4:08x}" for offset in offsets]
+
+
+def test_sbi_packer_nfsroot_arguments() -> None:
+    """--nfsroot takes <server-ip>:/<path> and replaces the initramfs and bootargs.
+
+    --ip applies only with it.
+    """
+    packer = _load_module(SBI_PACKER)
+    base = ["--firmware", "fw_jump.bin", "--payload", "Image"]
+    for extra in (
+        ["--nfsroot", "/srv/nfs/debian"],
+        ["--nfsroot", "192.0.2.1:/srv/nfs/debian", "--initrd", "rootfs.cpio"],
+        ["--nfsroot", "192.0.2.1:/srv/nfs/debian", "--bootargs", "quiet"],
+        ["--ip", "dhcp"],
+    ):
+        with pytest.raises(SystemExit):
+            packer.parse_args(base + extra)
+
+
+@pytest.mark.parametrize(
+    ("mac_args", "mac"),
+    [([], "02:11:22:33:44:55"), (["--mac", "0A:bc:DE:01:23:45"], "0a:bc:de:01:23:45")],
+    ids=["default", "override"],
+)
+def test_sbi_packer_nic_mac_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mac_args: list[str], mac: str
+) -> None:
+    """The NIC's local-mac-address is 02:11:22:33:44:55 unless --mac names one.
+
+    Needs dtc and the riscv-none-elf- toolchain (both in the Docker image).
+    """
+    monkeypatch.delenv("FROST_INITRD", raising=False)
+    packer = _load_module(SBI_PACKER)
+    (tmp_path / "fw_jump.bin").write_bytes(bytes(range(256)))
+    (tmp_path / "Image").write_bytes(_linux_image(packer, image_size=0x1000))
+    out = tmp_path / "out"
+    argv = [
+        "--firmware",
+        str(tmp_path / "fw_jump.bin"),
+        "--payload",
+        str(tmp_path / "Image"),
+        "--out",
+        str(out),
+        *mac_args,
+    ]
+    assert packer.main(argv) == 0
+    dts = (out / "frost.dts").read_text()
+    assert f"local-mac-address = [{mac.replace(':', ' ')}];" in dts
+    assert bytes.fromhex(mac.replace(":", "")) in (out / "frost.dtb").read_bytes()
+
+
+def test_sbi_packer_rejects_bad_mac_addresses() -> None:
+    """--mac takes a unicast aa:bb:cc:dd:ee:ff; anything else is a usage error."""
+    packer = _load_module(SBI_PACKER)
+    base = ["--firmware", "fw_jump.bin", "--payload", "Image", "--mac"]
+    for bad in (
+        "02:11:22:33:44",
+        "02:11:22:33:44:55:66",
+        "02-11-22-33-44-55",
+        "021122334455",
+        "2:11:22:33:44:55",
+        "02:11:22:33:44:5g",
+        "03:11:22:33:44:55",  # multicast
+        "ff:ff:ff:ff:ff:ff",  # broadcast
+        "00:00:00:00:00:00",
+    ):
+        with pytest.raises(SystemExit):
+            packer.parse_args(base + [bad])
+
+
+def _pack_minimal(packer: ModuleType, tmp_path: Path, *extra: str) -> Path:
+    """Pack a small firmware and Linux Image (plus extra arguments); return --out."""
+    (tmp_path / "fw_jump.bin").write_bytes(bytes(range(256)))
+    (tmp_path / "Image").write_bytes(_linux_image(packer, image_size=0x1000))
+    out = tmp_path / "out"
+    argv = [
+        "--firmware",
+        str(tmp_path / "fw_jump.bin"),
+        "--payload",
+        str(tmp_path / "Image"),
+        "--out",
+        str(out),
+        *extra,
+    ]
+    assert packer.main(argv) == 0
+    return out
+
+
+@pytest.mark.parametrize(
+    ("mem_args", "size"),
+    [
+        ([], 0x0400_0000),
+        (["--mem-size", "0x40000000"], 0x4000_0000),
+        (["--mem-size", "1073741824"], 0x4000_0000),
+    ],
+    ids=["default", "hex", "decimal"],
+)
+def test_sbi_packer_memory_node_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mem_args: list[str], size: int
+) -> None:
+    """/memory advertises MEM_SIZE (64 MiB) unless --mem-size names a size.
+
+    Needs dtc and the riscv-none-elf- toolchain (both in the Docker image).
+    """
+    monkeypatch.delenv("FROST_INITRD", raising=False)
+    packer = _load_module(SBI_PACKER)
+    assert packer.MEM_SIZE == 0x0400_0000
+    out = _pack_minimal(packer, tmp_path, *mem_args)
+    assert f"reg = <0x80000000 0x{size:08x}>;" in (out / "frost.dts").read_text()
+
+
+def test_sbi_layout_checks_use_the_memory_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The memory size, not MEM_SIZE, bounds the DTB slot and the initramfs."""
+    monkeypatch.delenv("FROST_INITRD", raising=False)
+    packer = _load_module(SBI_PACKER)
+    firmware, dtb = bytes(0x1000), bytes(0x800)
+    # A payload whose DTB slot ends past 64 MiB fits a 1 GiB memory node.
+    beyond = packer.plan_layout(packer.MEM_SIZE)
+    with pytest.raises(AssertionError, match=r"overruns the 0x4000000 memory node"):
+        packer.check_layout(beyond, firmware, dtb, None)
+    packer.check_layout(beyond, firmware, dtb, None, packer.CACHED_REGION_BYTES)
+    # An 18 MiB node leaves room for the initramfs up to its end and not past it.
+    small = 0x120_0000
+    layout = packer.plan_layout(0x1000)
+    room = small - layout.initrd_offset
+    packer.check_layout(layout, firmware, dtb, bytes(room), small)
+    with pytest.raises(AssertionError, match=r"overruns the 0x1200000 memory node"):
+        packer.check_layout(layout, firmware, dtb, bytes(room + 1), small)
+    # 16 MiB cannot hold the DTB slot at +16 MiB.
+    with pytest.raises(AssertionError, match=r"overruns the 0x1000000 memory node"):
+        _pack_minimal(packer, tmp_path, "--mem-size", "0x1000000")
+
+
+def test_sbi_packer_rejects_bad_memory_sizes() -> None:
+    """--mem-size takes a multiple of 2 MiB within the 1 GiB cached region."""
+    packer = _load_module(SBI_PACKER)
+    base = ["--firmware", "fw_jump.bin", "--payload", "Image", "--mem-size"]
+    for bad in (
+        "0",
+        "-0x200000",
+        "0x100000",  # 1 MiB
+        "0x4000001",
+        "0x40200000",  # past the cached region
+        "0x80000000",
+        "64M",
+        "",
+    ):
+        with pytest.raises(SystemExit):
+            packer.parse_args(base + [bad])
+
+
+def test_sbi_memory_bounds_match_the_rtl_and_the_ddr_model() -> None:
+    """The cached region caps --mem-size, and the default is the DDR model's size.
+
+    Simulation packs the default, so it never advertises more memory than the
+    cocotb DDR model (tests/Makefile DDR_MODEL_BYTES) holds.
+    """
+    packer = _load_module(SBI_PACKER)
+    rtl = CPU_AND_MEM.read_text()
+    base = re.search(r"CACHED_BASE = 32'h([0-9A-Fa-f_]+)", rtl)
+    size = re.search(r"CACHED_SIZE_BYTES = 32'h([0-9A-Fa-f_]+)", rtl)
+    assert base is not None and size is not None
+    assert packer.DDR_BASE == int(base.group(1).replace("_", ""), 16)
+    assert packer.CACHED_REGION_BYTES == int(size.group(1).replace("_", ""), 16)
+    model = re.search(r"^DDR_MODEL_BYTES \?= (\d+)$", TESTS_MAKEFILE.read_text(), re.M)
+    assert model is not None and packer.MEM_SIZE == int(model.group(1))
+
+
+def test_load_software_takes_each_board_ddr_from_its_block_design(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The board's DDR size is the CPU port's range in fpga/build/<board>_ddr_bd.tcl.
+
+    Every board the loader runs linux_boot on (those with DDR) has one the
+    packer accepts; the X3 maps the whole 1 GiB cached region, as much as its
+    CPU port (S00_AXI) addresses. The range of the JTAG master's port does not
+    count.
+    """
+    loader = _load_script("linux_packaging_loader", LOADER)
+    packer = _load_module(SBI_PACKER)
+    ddr_boards = [board for board, cfg in loader.BOARD_CONFIG.items() if cfg["has_ddr"]]
+    assert "x3" in ddr_boards
+    for board in ddr_boards:
+        size = loader.board_ddr_bytes(board)
+        assert packer.memory_size(str(size)) == size
+    width = re.search(r"CONFIG\.ADDR_WIDTH \{(\d+)\}", X3_DDR_BD.read_text())
+    assert width is not None
+    assert loader.board_ddr_bytes("x3") == 1 << int(width.group(1))
+    assert loader.board_ddr_bytes("x3") == packer.CACHED_REGION_BYTES
+
+    build = tmp_path / "fpga" / "build"
+    build.mkdir(parents=True)
+    segment = "[get_bd_addr_segs ddr4_0/C0_DDR4_MEMORY_MAP/C0_DDR4_ADDRESS_BLOCK]"
+    (build / "two_ddr_bd.tcl").write_text(
+        "  assign_bd_address -offset 0x00000000 -range 0x40000000 \\\n"
+        "      -target_address_space [get_bd_addr_spaces jtag_axi_ddr/Data] \\\n"
+        f"      {segment} -force\n"
+        "  assign_bd_address -offset 0x00000000 -range 0x20000000 \\\n"
+        "      -target_address_space [get_bd_addr_spaces S00_AXI] \\\n"
+        f"      {segment} -force\n"
+    )
+    (build / "none_ddr_bd.tcl").write_text('create_bd_design "ddr_subsys"\n')
+    monkeypatch.setattr(loader, "PROJECT_ROOT", tmp_path)
+    assert loader.board_ddr_bytes("two") == 0x2000_0000
+    with pytest.raises(ValueError, match="S00_AXI"):
+        loader.board_ddr_bytes("none")
+
+
+def test_load_software_packs_linux_boot_for_the_board_ddr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """load_software hands linux_boot the board's DDR size as FROST_LINUX_MEM_SIZE."""
+    loader = _load_script("linux_packaging_loader", LOADER)
+    compile_app_for_board = loader.compile_app_for_board
+    monkeypatch.setattr(
+        sys, "argv", ["load_software.py", "x3", "linux_boot", "--build-only"]
+    )
+    monkeypatch.setattr(loader, "_linux_boot_preflight", lambda: None)
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    builds: list[dict[str, Any]] = []
+
+    def build(*args: Any, **kwargs: Any) -> bool:
+        builds.append(kwargs)
+        return True
+
+    monkeypatch.setattr(loader, "compile_app_for_board", build)
+    loader.main()
+    assert [kwargs["ddr_bytes"] for kwargs in builds] == [1 << 30]
+
+    monkeypatch.delenv("FROST_LINUX_MEM_SIZE", raising=False)
+    environments: list[dict[str, str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(loader.subprocess, "run", run)
+    (tmp_path / "sw.mem").write_text("")
+    (tmp_path / "sw.txt").write_text("")
+    assert compile_app_for_board("linux_boot", tmp_path, 1, 1, ddr_bytes=1 << 30)
+    assert compile_app_for_board("hello_world", tmp_path, 1, 1)
+    assert [env.get("FROST_LINUX_MEM_SIZE") for env in environments] == [
+        str(1 << 30),
+        str(1 << 30),
+        None,
+        None,
+    ]
+
+
+@pytest.mark.parametrize("model", [None, "134217728"], ids=["default", "model"])
+def test_simulation_never_packs_a_board_memory_size(
+    monkeypatch: pytest.MonkeyPatch, model: str | None
+) -> None:
+    """A simulation build of linux_boot packs for the DDR model, never a board.
+
+    A FROST_LINUX_MEM_SIZE exported for load_software.py is dropped: the build
+    gets DDR_MODEL_BYTES when that is set, else the packer's default.
+    """
+    compile_app = _load_script(
+        "linux_packaging_compile_app", APPS / "compile_app.py", APPS
+    )
+    monkeypatch.setenv("FROST_LINUX_MEM_SIZE", str(1 << 30))
+    if model is None:
+        monkeypatch.delenv("DDR_MODEL_BYTES", raising=False)
+    else:
+        monkeypatch.setenv("DDR_MODEL_BYTES", model)
+    environments: list[dict[str, str]] = []
+
+    def run(command: list[str], **kwargs: Any) -> Any:
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(compile_app.subprocess, "run", run)
+    compile_app.compile_app("linux_boot", clean_first=True)
+    assert len(environments) == 2  # make clean, make
+    assert all(env.get("FROST_LINUX_MEM_SIZE") == model for env in environments)
+
+
 def test_mmu_kernel_config_uses_kconfig_syntax() -> None:
     """The MMU mini-config uses Kconfig syntax olddefconfig understands.
 
-    It also keeps its load-bearing symbols, networking and the NIC driver
-    among them, and leaves out the M-mode build's.
+    It also keeps its load-bearing symbols, networking, the NFS root, systemd's
+    requirements and the NIC driver among them, keeps IPv6 off, and leaves out
+    the M-mode build's.
     """
     malformed = []
     for line_number, line in enumerate(MMU_KERNEL_CONFIG.read_text().splitlines(), 1):
@@ -323,6 +673,15 @@ def test_mmu_kernel_config_uses_kconfig_syntax() -> None:
         "CONFIG_RISCV_PMU_SBI=y",
         "CONFIG_SERIAL_8250_CONSOLE=y",
         "CONFIG_NET=y",
+        "CONFIG_INET=y",
+        "CONFIG_IP_PNP=y",
+        "CONFIG_IP_PNP_DHCP=y",
+        "# CONFIG_IPV6 is not set",
+        "CONFIG_NFS_FS=y",
+        "CONFIG_NFS_V3=y",
+        "CONFIG_ROOT_NFS=y",
+        "CONFIG_CGROUPS=y",
+        "CONFIG_UNIX=y",
         "CONFIG_FROST_NET10G=y",
     ):
         assert required in text, required

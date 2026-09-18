@@ -58,8 +58,8 @@
  * may arrive for half a second.
  *
  * Every wait the program makes is bounded (one step's frames get 10 s); a
- * system call that never returns is left to the caller's timeout. The kernel
- * has no IP stack: all control goes through ioctls and sysfs.
+ * system call that never returns is left to the caller's timeout. The test
+ * uses no IP: all control goes through ioctls and sysfs.
  */
 
 #include <arpa/inet.h>

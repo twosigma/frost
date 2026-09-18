@@ -75,7 +75,7 @@ transparent to software.
 | `[0x4001_0000, +0xC000)` | SiFive-layout CLINT alias (`sifive,clint0`): `msip` at `+0x0000`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8`. Same physical registers as the native timer block. The DTB node and the RTL's CLINT decode both end after `mtime`, at `0x4001_C000`; the MMIO window itself continues to `0x4003_1000`, past the DMA test engine and the NIC. |
 | `[0x4003_0000, +4 KiB)` | NIC registers. The DTB advertises `ethernet@40030000` (`frost,net10g`, `dma-coherent`, `local-mac-address`); the binding is in `buildroot-external/board/frost/frost,net10g.yaml`, and the kernel's `frost_net10g` driver binds to the node. |
 | `[0x4400_0000, +4 MiB)` | PLIC (M and S contexts for hart 0; source 1 is the ns16550 UART, source 2 the board's external-interrupt pin, source 3 the DMA test engine, source 4 the NIC). The DTB advertises both contexts and `riscv,ndev = 4`; OpenSBI hides the M context from the kernel. |
-| `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises `memory@80000000` with 64 MiB (`MEM_SIZE` in `frost_boot_image.py`), not the full physical DDR. |
+| `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises `memory@80000000` with the packer's `--mem-size`, 64 MiB by default (`MEM_SIZE` in `frost_boot_image.py`, the simulation DDR model's size), which a plain `make` and the CI images use. `load_software.py` passes the board's DDR, the range its block design (`fpga/build/<board>_ddr_bd.tcl`) maps for the CPU: all 1 GiB on the X3, so the hardware regression's Linux stage runs with 1 GiB. Simulation builds pack for the DDR model (`DDR_MODEL_BYTES` when set, else the default), never for a board. The NIC and the DMA test engine reach the whole region. |
 
 The PMA map has three regions: the BRAM, the device quadrant
 `[0x4000_0000, 0x8000_0000)`, and cached DDR. An access anywhere else,
@@ -174,9 +174,13 @@ options:
 | `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS` | Misaligned accesses once the supervisor takes FWFT delegation. |
 | `CONFIG_BINFMT_ELF` | Ordinary ELF userspace. |
 | `CONFIG_BLK_DEV_INITRD` | External initramfs via `linux,initrd-*`. |
+| `CONFIG_NFS_FS`, `CONFIG_NFS_V3`, `CONFIG_ROOT_NFS` | The NFS root (see "NFS root"): the kernel mounts an NFSv3 export as `/`. |
+| `CONFIG_CGROUPS`, `CONFIG_UNIX` | Required by systemd on the NFS root (it uses the cgroup v2 hierarchy with no controllers). |
+| `CONFIG_AUTOFS_FS`, `CONFIG_TMPFS_POSIX_ACL`, `CONFIG_TMPFS_XATTR` | Recommended by systemd. Its other requirements, and the seccomp filters it recommends, are kernel defaults. |
 | `CONFIG_SERIAL_8250[_CONSOLE]`, `CONFIG_SERIAL_OF_PLATFORM`, `NR_UARTS=1` | Console on the ns16550a face, bound from the DT. |
 | `CONFIG_OF`, `CONFIG_OF_EARLY_FLATTREE` | DT-driven probe; earlycon (`earlycon=uart8250,mmio32,0x40001000`). |
-| `CONFIG_NET`, `CONFIG_PACKET` | Packet sockets, which `frost_nettest` uses. `CONFIG_INET` stays off: no IP stack. |
+| `CONFIG_NET`, `CONFIG_PACKET` | Packet sockets, which `frost_nettest` uses. |
+| `CONFIG_INET`, `CONFIG_IP_PNP`, `CONFIG_IP_PNP_DHCP` | IPv4, the NFS root's transport, configured by the kernel from `ip=`: static, or DHCP, the NFS root's default (no BOOTP or RARP). `CONFIG_IPV6` stays off: nothing needs it, and the autoconfiguration frames it sends whenever the interface comes up could fail `frost_nettest`'s idle checks. |
 | `CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G` | The built-in `frost_net10g` driver for the `frost,net10g` node (from the kernel patch). |
 
 ## Bring-up probe
@@ -207,3 +211,29 @@ otherwise) and must print `FROST_NET_LOOPBACK_PASS`.
 The payload's summary line carries per-boot Zicntr evidence for hardware
 performance tracking: `cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around
 a fixed workload (see "Counters and mcounteren").
+
+## NFS root
+
+`sw/apps/linux_boot` packs the initramfs unless `FROST_LINUX_NFSROOT` names an
+NFS export as `<server-ip>:/<path>`. Then it packs no initramfs, and the DTB's
+bootargs are:
+
+```
+earlycon console=ttyS0 root=/dev/nfs nfsroot=<server-ip>:/<path>,vers=3,tcp,hard rw ip=<FROST_LINUX_IP>
+```
+
+`FROST_LINUX_IP` is the kernel's `ip=` parameter and defaults to `dhcp`; a
+static address is `<client>::<gateway>:<netmask>:<hostname>:<device>:off`,
+for example `192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off`. The kernel
+configures the interface, waits for its carrier, mounts the export read-write
+over NFSv3/TCP (nfsroot adds `nolock`, so file locks stay local) and runs its
+`/sbin/init`. The export must be a riscv64 root filesystem, such as Debian
+13's, shared read-write with the board's address without root squashing.
+Leave `FROST_LINUX_NFSROOT` unset for the hardware regression, whose Linux
+stage runs the initramfs programs above.
+
+`FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff`, with or without an NFS root, replaces the
+NIC's `local-mac-address` in the DTB (default `02:11:22:33:44:55`); each board
+on a shared network needs its own locally administered address. The packer
+rejects malformed, multicast and all-zero addresses, which the driver would
+replace with a random one.

@@ -29,11 +29,12 @@
 #     kernel Image is absent, so it does not re-run on every load.
 #
 #   Stage 2 (fast, board-dependent): frost_boot_image.py regenerates the DTB
-#     (timebase + UART clock = FPGA_CPU_CLK_FREQ) and repacks the firmware,
-#     kernel and initramfs into the DDR image.
-#     `load_software.py <board> linux_boot` sets FPGA_CPU_CLK_FREQ per board
-#     and `make clean`s first, so the DDR image is always repacked for the
-#     target board without a kernel rebuild.
+#     (timebase + UART clock = FPGA_CPU_CLK_FREQ, memory = FROST_LINUX_MEM_SIZE)
+#     and repacks the firmware, kernel and initramfs into the DDR image (or,
+#     with FROST_LINUX_NFSROOT, the firmware and kernel alone, booting from an
+#     NFS root; see below). `load_software.py <board> linux_boot` sets both per
+#     board and `make clean`s first, so the DDR image is always repacked for
+#     the target board without a kernel rebuild.
 #
 # sw_ddr.mem depends on the kernel Image and the packer, so a newer kernel or
 # packer forces a repack. It once had no prerequisites at all and never
@@ -58,6 +59,28 @@ FW_JUMP      := $(IMAGES)/fw_jump.bin
 # DTB timebase + UART clock. load_software.py exports this per board; the bare
 # `make` default matches X3.
 FPGA_CPU_CLK_FREQ ?= 300000000
+
+# Root filesystem and NIC address. Unset, the initramfs is packed with the
+# packer's default bootargs. FROST_LINUX_NFSROOT=<server-ip>:/<path> packs no
+# initramfs and has the kernel mount that NFS export as its root, configuring
+# its interface from FROST_LINUX_IP, the kernel's ip= parameter (dhcp when
+# unset). FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff replaces the NIC's default
+# local-mac-address in either case; each board on a shared network needs its
+# own. load_software.py passes all three through from the environment, like
+# FROST_LINUX_PREBUILT.
+ifdef FROST_LINUX_NFSROOT
+PACK_ARGS := --nfsroot "$(FROST_LINUX_NFSROOT)" \
+  $(if $(FROST_LINUX_IP),--ip "$(FROST_LINUX_IP)")
+else
+PACK_ARGS := --initrd "$(INITRD_IMG)"
+endif
+PACK_ARGS += $(if $(FROST_LINUX_MAC),--mac "$(FROST_LINUX_MAC)")
+
+# Memory size in bytes. load_software.py exports the board's DDR size (the
+# CPU's range in fpga/build/<board>_ddr_bd.tcl, 1 GiB on the X3). Unset, the
+# packer's default applies: 64 MiB, the simulation DDR model's size.
+# sw/apps/compile_app.py keeps simulation builds from inheriting a board's size.
+PACK_ARGS += $(if $(FROST_LINUX_MEM_SIZE),--mem-size "$(FROST_LINUX_MEM_SIZE)")
 
 # Cross prefix for the tiny boot shim. frost_boot_image.py defaults to
 # riscv-none-elf-, the xPack bare-metal toolchain that load_software.py and the
@@ -129,7 +152,7 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/frost_
 	  exit 1; }
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) $(SHIM_CROSS) \
 	  python3 "$(BOARD_DIR)/frost_boot_image.py" \
-	    --firmware "$(FW_JUMP)" --payload "$(KIMAGE)" --initrd "$(INITRD_IMG)" \
+	    --firmware "$(FW_JUMP)" --payload "$(KIMAGE)" $(PACK_ARGS) \
 	    --out "$(CURDIR)"
 
 # Light clean: drop only the board-dependent pack outputs (Stage 2). The cached

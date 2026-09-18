@@ -41,8 +41,8 @@ BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_NONE=y
 # BR2_TARGET_ROOTFS_TAR is not set
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FROST_PATH)/board/frost/rootfs-overlay-mmu"
-# No IP stack in the kernel (packet sockets only): drop the ifupdown boot
-# script, which would otherwise print "Starting network: FAIL" on every boot.
+# The initramfs does no IP networking (frost_nettest uses packet sockets):
+# leave out the ifupdown boot script.
 # BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
 
 # --- Boot payload packaging: OpenSBI build + frost_boot_image.py ---

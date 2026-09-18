@@ -163,6 +163,24 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
 }
 
 
+def board_ddr_bytes(board: str) -> int:
+    """Return the DDR the board maps into the CPU's cached region, in bytes.
+
+    The board's DDR block design, fpga/build/<board>_ddr_bd.tcl, states it once:
+    the address range it assigns the CPU's AXI port (S00_AXI). linux_boot
+    advertises that much memory in its device tree.
+    """
+    design = PROJECT_ROOT / "fpga" / "build" / f"{board}_ddr_bd.tcl"
+    match = re.search(
+        r"-range\s+(0x[0-9A-Fa-f]+)[\s\\]+"
+        r"-target_address_space\s+\[get_bd_addr_spaces\s+S00_AXI\]",
+        design.read_text(),
+    )
+    if match is None:
+        raise ValueError(f"{design} assigns the CPU port (S00_AXI) no DDR range")
+    return int(match.group(1), 16)
+
+
 def _linux_boot_preflight() -> None:
     """Check Linux build prerequisites and warn before a cold 30-60 min build."""
     buildroot_makefile = PROJECT_ROOT / "linux" / "buildroot" / "Makefile"
@@ -207,15 +225,22 @@ def compile_app_for_board(
     make_vars: dict[str, str] | None = None,
     mem_config: str | None = None,
     debug: bool = False,
+    ddr_bytes: int | None = None,
 ) -> bool:
-    """Compile an app with board settings and optional Make overrides."""
+    """Compile an app with board settings and optional Make overrides.
+
+    ddr_bytes, for linux_boot, is the board's DDR size (board_ddr_bytes), which
+    the device tree advertises in place of the simulation-sized default.
+    """
     # Start from the caller's toolchain environment.
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
         env["RISCV_PREFIX"] = "riscv-none-elf-"
 
-    # Apply board-dependent clock and CoreMark settings.
+    # Apply board-dependent clock, memory and CoreMark settings.
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
+    if ddr_bytes is not None:
+        env["FROST_LINUX_MEM_SIZE"] = str(ddr_bytes)
     if app_name == "coremark":
         env["ITERATIONS"] = str(coremark_iterations)
     # MEM_CONFIG relinks any app from the default BRAM into cached DDR; the
@@ -735,6 +760,13 @@ def main() -> None:
     if clock_overridden:
         print(f"CPU clock override: {CPU_CLK_ENV}={clock_freq} Hz")
     coremark_iterations = board_config["coremark_iterations"]
+    # linux_boot's device tree advertises all of the board's DDR.
+    board_memory: dict[str, int] = {}
+    if args.software_app == "linux_boot":
+        try:
+            board_memory["ddr_bytes"] = board_ddr_bytes(args.board)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
 
     tcl_script = SCRIPT_DIR / "load_software.tcl"
     app_dir_name = app_build_directory_name(args.software_app)
@@ -749,6 +781,8 @@ def main() -> None:
         print(f"Compiling {args.software_app} for {args.board} ({clock_freq} Hz)...")
     if args.software_app == "coremark":
         print(f"  CoreMark iterations: {coremark_iterations}")
+    if board_memory:
+        print(f"  Linux memory: {board_memory['ddr_bytes'] >> 20} MiB")
     make_vars = coremark_pro_make_vars(
         args.software_app,
         hardware=True,
@@ -807,6 +841,7 @@ def main() -> None:
         make_vars,
         mem_config="ddr" if args.ddr else None,
         debug=args.debug,
+        **board_memory,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)
