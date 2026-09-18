@@ -35,7 +35,9 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
   (`linux-boot-qemu-mmu`), where a boot-time stress payload (timer storm with
   signals, fork/exec, futex, LR/SC contention) must pass before the login
   prompt. The image boots on X3 hardware, and `fpga/linux_boot_soak.py` scores
-  the same payload across repeated hardware boots.
+  the same payload across repeated hardware boots. Debian 13 boots on the X3
+  from an NFS root over the NIC, so far on a build with the CPU clock halved
+  ([setup guide](docs/debian_nfsroot.md)).
 - Networking on the SoC. A 10 Gigabit Ethernet NIC wraps the in-tree
   10GBASE-R MAC/PCS on a coherent DMA port, with a device-tree node for
   Linux. Two full-system programs drive it in simulation, and `nic_loopback`
