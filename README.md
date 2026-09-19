@@ -30,13 +30,15 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
   compliance tests run in simulation.
 - 64-bit MMU Linux. An in-tree Buildroot flow (`linux/`) builds OpenSBI plus a
   mainline Sv39 kernel and userspace with the lp64d hard-float ABI. CI builds it
-  from source (`build-frost-linux-mmu`), boots it in cocotb RTL simulation
-  (`linux-boot-cocotb-mmu`), and runs it through full userspace in QEMU
-  (`linux-boot-qemu-mmu`), where a boot-time stress payload (timer storm with
-  signals, fork/exec, futex, LR/SC contention) must pass before the login
-  prompt. The image boots on X3 hardware, and `fpga/linux_boot_soak.py` scores
-  the same payload across repeated hardware boots. Debian 13 boots on the X3
-  from an NFS root over the NIC, so far on a build with the CPU clock halved
+  from source (`build-frost-linux-mmu`) and runs it through full userspace in
+  QEMU (`linux-boot-qemu-mmu`), where a boot-time stress payload (timer storm
+  with signals, fork/exec, futex, LR/SC contention) must pass before the login
+  prompt. Booting the kernel on the FROST RTL is validated on hardware, not in
+  simulation: the hardware regression's Linux stage (`fpga/hw_regression.py`)
+  boots the image on the X3 and requires that payload, a login, `perf` counters
+  and the NIC loopback, and `fpga/linux_boot_soak.py` scores the payload across
+  repeated board boots. Debian 13 boots on the X3 from an NFS root over the NIC,
+  so far on a build with the CPU clock halved
   ([setup guide](docs/debian_nfsroot.md)).
 - Networking on the SoC. A 10 Gigabit Ethernet NIC wraps the in-tree
   10GBASE-R MAC/PCS on a coherent DMA port, with a device-tree node for

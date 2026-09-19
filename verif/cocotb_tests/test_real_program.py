@@ -259,9 +259,6 @@ WFI_LOST_TICK_MAX_CYCLES = 800000
 # passes with every invariant green. Same treatment as wfi_lost_tick.
 RESTORE_WINDOW_STRESS_MAX_CYCLES = 1000000
 
-# Linux boot: reaching the kernel banner takes millions of cycles.
-LINUX_BOOT_MAX_CYCLES = int(os.environ.get("COCOTB_LINUX_MAX_CYCLES", 20000000))
-
 # amo_irq_torture boots entirely from cached DDR (MEM_CONFIG=ddr): cold-cache
 # boot plus zeroing the 320 KiB counter/evict .bss puts even the banner past
 # the generic 500k budget, and the sweep itself needs ~2.61M cycles/run at
@@ -1195,22 +1192,6 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
                 if app_name == "hello_world":
                     # Passes once the first hello message appears.
                     return (None, "Hello, world!", False, app_name)
-                if app_name == "linux_boot":
-                    if os.environ.get("FROST_LINUX_RUN_FULL") == "1":
-                        # Diagnostic / CI regression capture: the marker never
-                        # matches, so the run uses the full COCOTB_LINUX_MAX_CYCLES,
-                        # ends in the timeout assertion, and leaves all UART plus
-                        # CLINT/retire progress in the log. The CI linux-boot-cocotb-mmu
-                        # job runs in this mode and asserts boot health afterwards
-                        # with tests/check_mmu_linux_boot.py. The ~22M window
-                        # is silent mem_init after devtmpfs, so there is no deep
-                        # console marker to match on; progress plus a serviced timer
-                        # tick are the real timer-IRQ-hang regression signals.
-                        return ("<<__never_matches__>>", None, True, app_name)
-                    # Passes once the kernel reaches its boot banner. This is an
-                    # interim bring-up criterion. Tighten it to a userspace/shell
-                    # marker once Linux boots that far.
-                    return (None, "Linux version", False, app_name)
                 if app_name == "uart_echo":
                     # Interactive test handled separately (UART input injection)
                     return (None, None, False, app_name)
@@ -3583,8 +3564,8 @@ async def run_until_complete(
                 f"mtime=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtime')) or 0):016x} "
                 f"mtimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtimecmp')) or 0):016x} "
                 f"mtip={_read_bool(_get_signal(dut, 'cpu_and_memory_subsystem.mtip_registered'))} "
-                # Sstc: the S-mode timer compare the MMU Linux lane re-arms
-                # (tests/check_mmu_linux_boot.py counts its distinct values).
+                # Sstc: the S-mode timer compare an Sstc kernel or firmware
+                # re-arms (opensbi_smoke drives it from its S-mode payload).
                 f"stimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_file_inst.stimecmp')) or 0):016x} "
                 f"priv={_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_priv'))} "
                 f"mstatus=0x{(_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_mstatus')) or 0):08x}"
@@ -3839,8 +3820,6 @@ async def test_real_program(dut: Any) -> None:
         # 72 swept ticks with 30k-iteration sentinel spin-waits: ~510k cycles
         # at rv64, just over the generic default.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
-    elif app_name == "linux_boot":
-        max_cycles = LINUX_BOOT_MAX_CYCLES
     else:
         max_cycles = MAX_CYCLES
 

@@ -543,9 +543,15 @@ jobs:
   # ---------------------------------------------------------------------------
   # MMU Linux lane (Phase 3): OpenSBI fw_jump + mainline Sv39 kernel + musl
   # userspace with perf. Built from the linux/opensbi and linux/buildroot
-  # submodules through the FROST BR2_EXTERNAL tree; the images are packed by
-  # frost_boot_image.py (firmware +0, Image +2 MiB, DTB at +16 MiB or the first
-  # 2 MiB boundary past a larger Image, initramfs after it).
+  # submodules through the FROST BR2_EXTERNAL tree. The build's post-image hook
+  # also runs frost_boot_image.py (firmware +0, Image +2 MiB, DTB at +16 MiB or
+  # the first 2 MiB boundary past a larger Image, initramfs after it), so a
+  # broken packer fails this job. The artifact carries the pieces, not the
+  # packed images: a board loads through load_software.py, which packs them
+  # again from these. Booting this kernel on the RTL is retired
+  # (see tests/test_run_cocotb.py): the boot gate is the hardware regression's
+  # Linux stage plus fpga/linux_boot_soak.py, with the QEMU job below as the
+  # in-CI functional check.
   build-frost-linux-mmu:
     name: Build FROST MMU Linux Image (Buildroot + OpenSBI)
     runs-on: ubuntu-24.04
@@ -615,78 +621,8 @@ jobs:
             ${{ env.BUILD_DIR }}/images/fw_jump.bin
             ${{ env.BUILD_DIR }}/images/fw_jump.elf
             ${{ env.BUILD_DIR }}/images/frost.dtb
-            ${{ env.BUILD_DIR }}/images/sw.mem
-            ${{ env.BUILD_DIR }}/images/sw_ddr.mem
           retention-days: 7
           if-no-files-found: error
-
-  # Boot the MMU images on the RTL with the X3 cache shape to a bounded
-  # checkpoint: OpenSBI's banner (priv v1.12, sstc/svade), the kernel banner,
-  # the SBI probes, the firmware's reserved-memory nodes, devtmpfs, no faults,
-  # a re-armed stimecmp, and retire progress at the cap. The userspace token
-  # is the QEMU job's and the hardware soak's evidence.
-  linux-boot-cocotb-mmu:
-    name: Cocotb MMU Linux Boot (X3 shape)
-    runs-on: ubuntu-24.04
-    needs: [build-docker, build-frost-linux-mmu]
-    timeout-minutes: 300
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Download Docker image
-        uses: actions/download-artifact@v4
-        with:
-          name: frost-docker-image
-          path: /tmp
-
-      - name: Load Docker image
-        run: |
-          docker load --input /tmp/frost-dev.tar
-          rm -f /tmp/frost-dev.tar
-
-      - name: Download FROST MMU Linux boot images
-        uses: actions/download-artifact@v4
-        with:
-          name: frost-linux-boot-images-mmu
-          path: /tmp/frost-linux-images
-
-      - name: Stage boot images for the cocotb linux_boot test
-        run: |
-          mkdir -p sw/apps/linux_boot
-          cp /tmp/frost-linux-images/sw.mem     sw/apps/linux_boot/sw.mem
-          cp /tmp/frost-linux-images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
-
-      - name: Run cocotb linux_boot (MMU checkpoint)
-        run: |
-          docker run --rm \
-            -e FROST_LINUX_RUN_FULL=1 \
-            -e FROST_LINUX_PREBUILT=1 \
-            -e COCOTB_NUM_RUNS=1 \
-            -e COCOTB_LINUX_MAX_CYCLES=${{ env.LINUX_MMU_BOOT_CYCLES }} \
-            -e COCOTB_PROGRESS_INTERVAL=500000 \
-            -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            bash -c '
-              set -o pipefail
-              cd tests && make clean
-              ./test_run_cocotb.py linux_boot 2>&1 \
-                | tee /workspace/linux_boot_mmu_cocotb.log || true
-              python3 check_mmu_linux_boot.py /workspace/linux_boot_mmu_cocotb.log \
-                --min-cycle ${{ env.LINUX_MMU_MIN_CYCLE }}
-            '
-        env:
-          LINUX_MMU_BOOT_CYCLES: "30000000"
-          LINUX_MMU_MIN_CYCLE: "29000000"
-
-      - name: Upload cocotb boot log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-boot-mmu-cocotb-log
-          path: linux_boot_mmu_cocotb.log
-          if-no-files-found: ignore
 
   # Boot the same kernel and rootfs under QEMU twice: with QEMU's bundled
   # OpenSBI (an independent reference) and with the FROST-built fw_jump (the

@@ -16,9 +16,9 @@
 # this repo: OpenSBI, the Sv39 kernel and the initramfs come from the vendored
 # submodules (linux/opensbi, linux/buildroot) driven by the FROST BR2_EXTERNAL
 # tree (linux/buildroot-external), and frost_boot_image.py packs them into the
-# low-BRAM shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that cocotb's
-# linux_boot test and fpga/load_software consume. There are no prebuilt artifacts
-# and no out-of-repo paths, so a fresh `git clone --recurse-submodules` can build
+# low-BRAM shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that
+# fpga/load_software consumes. There are no prebuilt artifacts and no
+# out-of-repo paths, so a fresh `git clone --recurse-submodules` can build
 # it. FROST_LINUX_KERNEL and FROST_LINUX_INITRD (below) swap in a kernel and an
 # initramfs built elsewhere, such as Debian's.
 #
@@ -92,7 +92,7 @@ unexport FROST_INITRD
 
 # Memory size in bytes. load_software.py exports the board's DDR size (the
 # CPU's range in fpga/build/<board>_ddr_bd.tcl, 1 GiB on the X3). Unset, the
-# packer's default applies: 64 MiB, the simulation DDR model's size.
+# packer's default applies: 64 MiB (MEM_SIZE in frost_boot_image.py).
 # sw/apps/compile_app.py keeps simulation builds from inheriting a board's size.
 PACK_ARGS += $(if $(FROST_LINUX_MEM_SIZE),--mem-size "$(FROST_LINUX_MEM_SIZE)")
 
@@ -105,12 +105,12 @@ endif
 
 .PHONY: all clean distclean
 
-# --- Prebuilt-image mode (CI) -------------------------------------------------
-# The CI linux-boot-cocotb job downloads the images that build-frost-linux
-# produced and stages them here; the cocotb runner then does `make clean` +
-# `make` on this app (compile_app clean_first=True). Without a kernel build
+# --- Prebuilt-image mode ------------------------------------------------------
+# Images built elsewhere (another checkout, or a machine that has the kernel
+# build) can be staged here and loaded on a board. load_software.py does
+# `make clean` + `make` on this app before every load. Without a kernel build
 # tree in the clone, that clean would delete the staged images and the build
-# would kick off a full in-job Buildroot rebuild that overwrites them.
+# would kick off a full Buildroot rebuild that overwrites them.
 # FROST_LINUX_PREBUILT=1 declares the staged images authoritative: `make`
 # verifies they exist and touches nothing; `make clean` keeps them and only
 # removes packer scratch files.

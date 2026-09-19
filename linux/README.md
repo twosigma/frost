@@ -195,15 +195,26 @@ exit; see `buildroot-external/package/frost-stress/src/frost_sigprobe.c`.
 
 ## Consumers
 
-`sw.{mem,txt}` (shim, low BRAM) and `sw_ddr.{mem,txt}` (DDR image) are
-loaded by the cocotb `linux_boot` simulation and by
-`fpga/load_software/load_software.py` over JTAG. The simulation also reads
-`sw64.mem`, the dword-paired copy of `sw.mem` for the 64-bit data BRAM,
-which the app Makefile derives. The images come from `linux/build-mmu` and
-the `frost_rv64_defconfig` Buildroot config
+`sw.{mem,txt}` (shim, low BRAM) and `sw_ddr.{mem,txt}` (DDR image) are loaded by
+`fpga/load_software/load_software.py` over JTAG. The app Makefile also derives
+`sw64.mem`, the dword-paired copy of `sw.mem` for the 64-bit data BRAM's
+`$readmemh`. The images come from `linux/build-mmu` and the
+`frost_rv64_defconfig` Buildroot config
 ([`buildroot-external/README.md`](buildroot-external/README.md)), unless
 `FROST_LINUX_KERNEL` or `FROST_LINUX_INITRD` names another kernel or
 initramfs (see "NFS root").
+
+Booting this kernel is validated on hardware, not in RTL simulation: the
+simulated core reaches only early boot in hours, and both core bugs that
+Debian's kernel exposed (a load-queue stale slot, and a page-table walker that
+missed the L1D's dirty lines) were found on the board. The gates are the
+hardware regression's Linux stage (`fpga/hw_regression.py`) and the board soaks
+(`fpga/linux_boot_soak.py`), with CI's `linux-boot-qemu-mmu` job booting the
+same kernel and rootfs through userspace under QEMU. Simulation still covers
+the firmware half of this contract through the cocotb `opensbi_smoke` test, and
+the kernel's timer, trap, atomic and MMIO patterns through directed bare-metal
+apps (`linux_irq_*`, `linux_clksrc_faithful`, `tick_torture`, `amo_irq_torture`,
+`ns16550_test`, `clint_test`).
 
 At boot, inittab runs `frost_stress --boot`, which prints the
 `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token before the login prompt; the
@@ -241,11 +252,11 @@ stage runs the initramfs programs above.
 `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD` name a Linux `Image` and an
 initramfs, by absolute path, to pack in place of Buildroot's `Image` and
 `rootfs.cpio`; OpenSBI and the device tree stay this tree's. Like
-`FROST_LINUX_NFSROOT`, leave both unset for the hardware regression and the
-simulated boot, which run Buildroot's userspace. Debian's kernel,
-`/boot/vmlinux-<version>` in the Debian root, is such an `Image` but has no
-NFS root of its own (`CONFIG_IP_PNP` is off and NFS is a module), so the
-initramfs that Debian's initramfs-tools generates mounts the export instead.
+`FROST_LINUX_NFSROOT`, leave both unset for the hardware regression, which runs
+Buildroot's userspace. Debian's kernel, `/boot/vmlinux-<version>` in the Debian
+root, is such an `Image` but has no NFS root of its own (`CONFIG_IP_PNP` is off
+and NFS is a module), so the initramfs that Debian's initramfs-tools generates
+mounts the export instead.
 With `FROST_LINUX_NFSROOT` and `FROST_LINUX_INITRD` both set, the packer packs
 that initramfs, and `boot=nfs` selects initramfs-tools' NFS boot:
 

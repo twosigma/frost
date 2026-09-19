@@ -20,7 +20,7 @@
 > config requirements): see [`../README.md`](../README.md).
 
 This tree builds the FROST Linux lane and packages it into the memory images
-that the cocotb `linux_boot` test and the FPGA JTAG loader consume:
+that the FPGA JTAG loader consumes:
 
 - `frost_rv64_defconfig`: the mainline Sv39 kernel (6.18.7 with the NIC
   driver from `../frost-net10g`, `board/frost/linux-frost.config`) under
@@ -106,31 +106,22 @@ The first build takes 30–60 min. Outputs land in `linux/build-mmu/images/`:
 | File | Purpose |
 |---|---|
 | `Image` | Sv39 rv64 kernel (flat, uncompressed) |
-| `rootfs.cpio` | musl busybox initramfs, uncompressed (a gzip'd one costs the simulated core tens of cycles per byte to inflate) |
+| `rootfs.cpio` | musl busybox initramfs, uncompressed (inflating a gzip'd one costs the core tens of cycles per byte at boot) |
 | `fw_jump.bin` | OpenSBI firmware, built by `post-image-mmu.sh` from the `linux/opensbi` submodule |
-| `frost.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000, PLIC; clock/timebase = `FPGA_CPU_CLK_FREQ`, 300 MHz X3 default; 64 MiB of memory, the simulation DDR model's size) |
+| `frost.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000, PLIC; clock/timebase = `FPGA_CPU_CLK_FREQ`, 300 MHz X3 default; 64 MiB of memory by default, the board's DDR size when `load_software.py` packs it) |
 | `sw.mem` / `sw.txt` | low-BRAM boot shim (`a0=0`, `a1=DTB`, jump to fw_jump) |
 | `sw_ddr.mem` / `sw_ddr.txt` | DDR image: firmware @ 0x8000_0000, Image @ +2 MiB, DTB @ the first 2 MiB boundary at or above +16 MiB and the Image's end, initramfs after it |
 
-## Feeding the cocotb `linux_boot` test
+## Packing the images for a board
 
-`tests/test_run_cocotb.py` takes an app's images from `sw/apps/<app>/sw.mem`
-(plus `sw_ddr.mem`) and runs `make clean` then `make` in that app directory
-before every run. The `sw/apps/linux_boot` Makefile runs Buildroot if
+The `sw/apps/linux_boot` Makefile runs Buildroot if
 `linux/build-mmu/images/Image` is absent, then packs the images for the board
-clock. After a Buildroot build the test therefore runs directly:
-
-```bash
-# The wrapper runs in the pinned image and cleans tests/ before launching.
-./scripts/frost.py cocotb linux_boot
-```
-
-The same Makefile is what `fpga/load_software/load_software.py <board>
-linux_boot` drives. The loader sets the board's clock (`FPGA_CPU_CLK_FREQ`) and
-DDR size (`FROST_LINUX_MEM_SIZE`: the CPU's range in
-`fpga/build/<board>_ddr_bd.tcl`, 1 GiB on the X3); without them the Makefile
-packs for the X3 clock and the simulation model's 64 MiB, and cocotb builds
-never take a board's memory size (`sw/apps/compile_app.py`):
+clock. `fpga/load_software/load_software.py <board> linux_boot` drives that
+Makefile: the loader sets the board's clock (`FPGA_CPU_CLK_FREQ`) and DDR size
+(`FROST_LINUX_MEM_SIZE`: the CPU's range in `fpga/build/<board>_ddr_bd.tcl`,
+1 GiB on the X3). Without them the Makefile packs for the X3 clock and the
+packer's default 64 MiB, which is also what a plain `make` produces
+(`sw/apps/compile_app.py` keeps a board's memory size out of such a build):
 
 ```bash
 ./scripts/frost.py run make -C sw/apps/linux_boot  # X3 (300 MHz) default
@@ -161,27 +152,29 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-<version> \
   ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
-To run images built elsewhere (another checkout, or the CI artifact) in a
-tree with no kernel build, stage them and set `FROST_LINUX_PREBUILT=1`. The
-Makefile then checks that they exist and re-derives `sw64.mem` from `sw.mem`;
-its `make clean` keeps them instead of deleting them and starting a full
+To load images built elsewhere (another checkout, or a machine with the kernel
+build) in a tree with no kernel build, stage them and set
+`FROST_LINUX_PREBUILT=1`. The Makefile then checks that they exist and
+re-derives `sw64.mem` from `sw.mem`; its `make clean`, which the loader runs
+before every load, keeps them instead of deleting them and starting a full
 Buildroot build:
 
 ```bash
-cp linux/build-mmu/images/sw.mem     sw/apps/linux_boot/sw.mem
-cp linux/build-mmu/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
-FROST_LINUX_PREBUILT=1 ./scripts/frost.py cocotb linux_boot
+cp <elsewhere>/sw.mem     sw/apps/linux_boot/sw.mem
+cp <elsewhere>/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
+FROST_LINUX_PREBUILT=1 ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
-Three CI jobs cover Linux. `build-frost-linux-mmu` invokes Buildroot directly
-and uploads `frost-linux-boot-images-mmu`. `linux-boot-cocotb-mmu` downloads
-that artifact, stages it with `FROST_LINUX_PREBUILT=1`, and runs the
-`linux_boot` registry entry with the X3 hierarchy (16 KiB L1I and 2 MiB L2).
-`linux-boot-qemu-mmu` boots the same `Image` and `rootfs.cpio` under
-`qemu-system-riscv64 -M virt`, with both QEMU's bundled OpenSBI and the FROST
-firmware, and requires the stress token and the login prompt. The `linux_boot`
-entry sets `include_in_pytest=False` and runs only when selected explicitly or
-by CI.
+Two CI jobs cover Linux. `build-frost-linux-mmu` invokes Buildroot directly
+(its post-image hook packs the board images, so a broken packer fails the job)
+and uploads `frost-linux-boot-images-mmu`. `linux-boot-qemu-mmu` boots that
+artifact's `Image` and `rootfs.cpio` under `qemu-system-riscv64 -M virt`, with
+both QEMU's bundled OpenSBI and the FROST firmware, and requires the stress
+token and the login prompt. Booting this kernel on the FROST RTL is retired:
+the boot gate is the hardware regression's Linux stage
+(`fpga/hw_regression.py --board x3 linux_boot`) and the board soaks
+(`fpga/linux_boot_soak.py`), and there is no `linux_boot` cocotb entry
+([`../README.md`](../README.md), "Consumers").
 
 ## How the kernel config is assembled
 
@@ -224,8 +217,8 @@ driver directory agree.
 
 `rootfs.cpio` is not vendored. Buildroot builds it from its default BusyBox
 config plus `board/frost/busybox-mmu.fragment` (static busybox: every
-init-time exec is one page-fault storm cheaper in simulation) and packs it
-with `BR2_TARGET_ROOTFS_CPIO` and `BR2_TARGET_ROOTFS_CPIO_NONE`.
+init-time exec is one page-fault storm cheaper) and packs it with
+`BR2_TARGET_ROOTFS_CPIO` and `BR2_TARGET_ROOTFS_CPIO_NONE`.
 `BR2_ROOTFS_OVERLAY` adds `board/frost/rootfs-overlay-mmu/`: the inittab
 (devtmpfs, `rcS`, `frost_stress`, getty) and a no-op `S01seedrng`. Edit those
 files to change userspace. The initramfs does no IP networking

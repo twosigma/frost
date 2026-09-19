@@ -360,8 +360,8 @@ self-skip in the ddr tier.
 Common controls in `test_real_program.py` are `COCOTB_NUM_RUNS`
 (reset-and-rerun count, default 2) and `COCOTB_MAX_CYCLES` (the generic timeout
 budget). Application-specific budgets can take precedence: CoreMark-style
-benchmarks, Linux boot, AMO torture, and timer torture have their own timeout
-environment variables; several other directed apps use fixed larger budgets.
+benchmarks, AMO torture, and timer torture have their own timeout environment
+variables; several other directed apps use fixed larger budgets.
 
 ### Using another DUT hierarchy
 
