@@ -60,9 +60,10 @@ builds this directory for the kernels it is asked to, and, with
 installed: `/etc/kernel/postinst.d/dkms` builds the module before
 `/etc/kernel/postinst.d/initramfs-tools` builds the kernel's initramfs.
 
-As root on the board, or in a riscv64 root tree through `chroot` (under qemu
-user emulation, as [`../../docs/debian_nfsroot.md`](../../docs/debian_nfsroot.md)
-builds one), from a checkout of this repository:
+As root on the board, from a checkout of this repository (for a riscv64 root
+tree on another machine, steps 1 and 3 of
+[`../../docs/debian_nfsroot.md`](../../docs/debian_nfsroot.md) run these
+commands through `chroot`):
 
 ```bash
 apt install dkms linux-headers-<kernel version>
