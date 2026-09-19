@@ -10,8 +10,9 @@ simulation-only main memory.
 |------|------|
 | `cache_perf_pkg.sv` | Packed per-instance observer types: access/hit/miss/writeback and hit-under-miss pulses, the outstanding-miss count, and the two stall classes |
 | `frost_cache.sv` | Direct-mapped, write-back, write-allocate, non-blocking line cache (one module for every level); the L1D instance also takes per-line coherence probes |
-| `frost_cache_hierarchy.sv` | Per-board hierarchy: L1D + walker + L1I + DMA ports over a 2:1 sub-arbiter and a starvation-bounded 3:1 top arbiter, the DMA coherence sequencer, optional URAM-data/URAM-tag L2, fence.i sequencing |
+| `frost_cache_hierarchy.sv` | Per-board hierarchy: L1D + walker + L1I + DMA ports over a 2:1 sub-arbiter and a starvation-bounded 3:1 top arbiter, the DMA and walker coherence sequencers sharing one probe path into the L1D, optional URAM-data/URAM-tag L2, fence.i sequencing |
 | `dma_coherence_sequencer.sv` | Probes the L1D and hands the load queue its invalidations before a DMA request reaches the shared level; holds fills of a line between the probe and the write's ordering |
+| `walker_coherence_sequencer.sv` | Probes the L1D (PROBE_CLEAN) before a page-table walk read reaches the shared level, so a walk sees page-table stores still dirty in the L1D; one read in flight |
 | `line_port_arbiter.sv` | N:1 tagged arbiter; fixed priority by port index with an optional starvation bound, ids prefixed per port |
 | `line_port_axi_bridge.sv` | Tagged line port to single-beat AXI4 master; line ids become AXI ids |
 | `axi_behavioral_memory.sv` | Simulation-only AXI main memory: concurrent, latency/jitter knobs, optional out-of-order completion |
@@ -72,11 +73,15 @@ bytes are merged into its fill. Misses occupy `NUM_MSHR` miss-status slots that
 fetch downstream concurrently while dirty victims drain from `NUM_WB` writeback
 slots. A write to a line whose write-allocate slot is pending merges into it, a
 read takes the slot's single waiter seat, and anything else aimed at an index
-in transition waits and issues a fresh tag lookup before deciding again. A fill
-of a line still sitting in a writeback slot waits for that writeback's
-acknowledgement, so the cache never relies on the level below ordering a read
-against a write. Its downstream ids are `{type, slot}` (0 = fill of a miss
-slot, 1 = writeback slot).
+in transition waits and issues a fresh tag lookup before deciding again. A line
+still sitting in a writeback slot is neither fetched nor installed again until
+that writeback's acknowledgement: a fill waits before fetching, so the cache
+never relies on the level below ordering a read against a write; a
+whole-line write, which allocates without a fetch, waits before its install;
+and a store to a copy left valid and clean by a probe waits before
+re-dirtying it. No line therefore ever has two writebacks in flight, which
+the level below, or an AXI fabric, could apply older-last. Its downstream
+ids are `{type, slot}` (0 = fill of a miss slot, 1 = writeback slot).
 
 The L1D instance (`NUM_PROBE > 0`) also takes per-line coherence probes on
 its upstream seam: a read-shaped request flagged `probe`, either PROBE_CLEAN
@@ -108,8 +113,8 @@ classifying the line, writes dirty lines back through the writeback slots,
 and drains them before `o_maint_busy` falls. Invalidate-all clears the tag
 store directly, so it does not depend on tag-read latency. Maintenance and
 probes never overlap: maintenance waits for the probe slots to empty like any
-other in-flight work, and a probe waits for maintenance like any other
-request.
+other in-flight work, and a probe (DMA or walker) waits for maintenance like
+any other request, parked in the hierarchy's injection register.
 
 ## Hierarchy shapes
 
@@ -189,14 +194,53 @@ read that fires in the cycle of a discard is still consumed, with no walk
 response delivered.
 
 PTEs live in cacheable memory and a walk reads through the L2 when present or
-directly through the bridge in the L1-only shape, not through the L1D, so a
-store to a page table that is still dirty in the L1D is not visible to a walk
-until the L1D writes it back. The architectural `sfence.vma` is the point where
-software expects its page-table stores to be visible. The Phase 3
-implementation issues an L1D writeback-all
-(the existing fence.i maintenance path) before invalidating the TLBs, which
-drains every dirty line through the writeback slots before the next walk can
-start.
+directly through the bridge in the L1-only shape, not through the L1D, where
+a page-table store sits dirty like any other store. `walker_coherence_sequencer`
+makes those reads coherent: every walk read first probes the L1D (PROBE_CLEAN,
+the read-only single-entry sibling of the DMA sequencer's probe), so a dirty
+copy is written back and ordered at the shared level ahead of the read, and
+the copy stays valid and clean. The sequencer shares the probe injection
+register with the DMA sequencer (the walker wins it, since one read in flight
+presents at most one probe per round trip and cannot starve the DMA entries),
+carries the probe id above the DMA entries' ids, mans the probe slot the L1D
+elaborates beyond `NUM_DMA_LOCK`, and merges its release pulse with the DMA
+sequencer's through a one-deep holding flop. Its request boundaries are
+registers; the response passes through unregistered, as the bare port
+delivered it. A walk read costs a few more cycles than the bare port did
+(probe capture, tag lookup, acknowledgement, issue), which the miss it
+serves is insensitive to.
+
+This is needed because software publishes page tables without an
+`sfence.vma`: Linux fills a new table, executes `fence w,w`, stores the
+pointer to it, and uses the mapping before the closing `sfence.vma`. A walker
+reading the shared level alone could see the new pointer, evicted from the
+L1D, with the stale table below the L1D that it points at: a translation that
+never existed, which the architecture forbids (a walk may return any
+translation valid since the last `sfence.vma`, not a mixture). Stores still
+in the store queue are not covered, and need not be: they drain to the L1D in
+program order, so a walk that sees a later page-table store sees every
+earlier one, and a walk that sees neither returns the old, still-permitted
+translation. `sfence.vma` still runs the L1D writeback-all (the fence.i cache
+synchronisation), and the serializer's SFENCE window (`rob_serializer.sv`)
+holds both TLBs invalid and the walker poisoned for the whole synchronisation,
+so nothing that ran under the old tables can install while it runs; walks no
+longer depend on that writeback.
+`sw/apps/ptw_coherence_test` drives the published-without-sfence sequence
+from bare metal as the full-system regression; `test_frost_cache.py` and
+`test_frost_cache_dma.py` check the port at the fabric level.
+
+Progress: once accepted, a walk read completes on its own. The probe waits
+only on L1D transients that resolve through the shared level (a fill or
+writeback of the line already in flight) and on a probe slot, of which one is
+always free for the walker; the acknowledgement waits for the dirty
+writeback's acceptance below; the issue waits for the arbiter tree; the
+response is unconditional. Nothing waits on the walker, the pipeline, commit,
+the store queue, or cache maintenance, and the probe slot is released at the
+read's acceptance, so a writeback-all waiting for the probe slots to empty
+always gets them; a probe that arrives while maintenance is requested parks
+in the injection register, outside the L1D pipeline that maintenance drains.
+A walk discarded by `sfence.vma` or a `satp` write still consumes its
+response (`ptw.sv`).
 
 ## The DMA port and coherence
 
@@ -254,8 +298,16 @@ queue on the sequencer's handshake: writes to absent, clean and dirty lines
 probe behind a fill in flight, the held fill during a long load-queue
 invalidation, same-line serialization, a write racing fence.i's
 writeback-all, a request under a data-side miss flood, concurrent disjoint
-traffic, and a data-side reader that must see a DMA writer's sequence in
-coherence order (`frost_cache_dma*`, both shapes and out-of-order memory).
+traffic with walker reads of dirty data-side lines contending with the DMA
+probes, a data-side reader that must see a DMA writer's sequence in
+coherence order, and random mixed traffic with unfenced walker reads
+(`frost_cache_dma*`, both shapes and out-of-order memory). The walker port's
+coherence with a dirty L1D line, with no fence, is `test_frost_cache.py`'s
+`test_walker_sees_dirty_l1d_lines`; its two writeback-slot tests hold the
+shared level's miss slots full so a snapshot's writeback waits a memory
+round trip, drive a store (after a walk's probe) and a no-fetch rewrite
+(after an eviction) into that window, and require, through the L1D's own
+state, that the store was held and the install was kept out of the pick.
 `test_line_port_arbiter.py` plays two masters with several tagged transactions
 in flight each (`line_port_arbiter*`). `test_fence_speed.py` counts fence.i
 maintenance cycles at the production L1 geometry under the slow and fast

@@ -37,8 +37,10 @@ cache hierarchy, AXI bridge, MMIO, debug module, and the two DMA masters on
 the hierarchy's coherent DMA port: the NIC and the DMA test engine. It
 instantiates `cpu_ooo.sv`, which owns IF/PD/ID, dispatch, `tomasulo_wrapper`,
 the CSR and trap units, and the shared page-table walker. The walker reaches
-the cache hierarchy through its own line port. The bridge connects to a
-behavioral DDR model in simulation or the board DDR controller on hardware.
+the cache hierarchy through its own line port, which the hierarchy's walker
+coherence sequencer keeps coherent with the write-back L1D by probing it
+before each walk read. The bridge connects to a behavioral DDR model in
+simulation or the board DDR controller on hardware.
 
 The front-end stages are IF, PD, and ID:
 
@@ -252,7 +254,9 @@ protocol in [lib/cache/README.md](lib/cache/README.md)). A 2:1
 lock, the DMA port starvation-bounded) merges the L1D, page-table walker, L1I
 and DMA ports into the single downstream port consumed by the full-system L2;
 the DMA port goes through the coherence sequencer that probes the L1D and
-hands the load queue its invalidations first. The lower-level hierarchy
+hands the load queue its invalidations first, and the walker port through a
+read-only sequencer that probes the L1D so a walk sees page-table stores
+still dirty there. The lower-level hierarchy
 module retains an L1-only topology for focused unit coverage, where the same
 port connects directly to the DDR bridge. Each level prefixes its port index
 to the ids, so requests from all four sources can be in flight together.

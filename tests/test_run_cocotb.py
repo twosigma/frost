@@ -729,6 +729,32 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             ("COCOTB_NUM_RUNS", "1"),
         ),
     ),
+    "ptw_coherence_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ptw_coherence_test",
+        description=(
+            "Page-table-walker vs dirty-L1D coherence, the directed regression "
+            "for the X3 split_linear_mapping load fault. The walker reads PTEs "
+            "from the shared level (L2/memory), and the hierarchy's walker "
+            "coherence sequencer probes the write-back L1D ahead of each read, "
+            "so a new 4 KiB PTE table left dirty in the L1D while its PMD "
+            "pointer is evicted to L2 must still walk as one consistent table. "
+            "Sv39, M-mode/MPRV windows (extends vm_test); page tables in cached "
+            "DDR. Per iteration it seeds the old child page (V=0 for the "
+            "INVALID flavor, or legal A-set decoy leaves -> wrong data for the "
+            "DECOY flavor, which rejects a fault-only fix), sfences to publish "
+            "the old contents to L2, evicts R's DTLB entry via 24 distinct "
+            "superpages (no sfence), fills the new PTEs + publishes the PMD "
+            "pointer, evicts ONLY the PMD line with a +128 KiB-alias STORE and "
+            "confirms the writeback through the same-line interlock, then loads "
+            "R: the walk must return the P1 signature with no fault. A walker "
+            "reading the shared level alone page-faults (cause 13) or reads the "
+            "decoy signature. Runs in either tier; FROST_COCOTB_MEM_CONFIG=ddr "
+            "is the kernel-faithful cached tier. Cannot be reproduced by the "
+            "isolated DMMU/PTW benches (synthetic walk responses)"
+        ),
+    ),
     "ddr_atomic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
