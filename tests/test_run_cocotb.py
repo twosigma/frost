@@ -700,6 +700,35 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="linux_irq_find_next_slot_test",
         description="Linux _find_next_bit-shaped IRQ over a poisoned DDR return slot",
     ),
+    "lq_stale_slot_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="lq_stale_slot_probe",
+        description=(
+            "Load-queue cached-slot hazard: a flushed cached load keeps its "
+            "slot until its response drains, and a second partial flush "
+            "must not judge that slot by its stale ROB tag and clear the "
+            "issued bit of the live load now in its queue entry (the live "
+            "load can launch twice and the next occupant of the entry can "
+            "complete with its second response). Random B1/B2 directions "
+            "around signature-filled lines the probe wrote and evicted "
+            "itself. The load queue's live-slot identity assertion is the "
+            "detector (it fires the cycle after the flush and aborts the "
+            "run); a P load that reads N's -1 also fails. Slow (150-cycle), "
+            "jittered, reordering DDR model so the drained responses stay in "
+            "flight across the second recovery; either tier"
+        ),
+        verilator_extra_args=(
+            "-GDDR_MODEL_LATENCY=150",
+            "-GDDR_MODEL_LATENCY_JITTER=19",
+            "-GDDR_MODEL_REORDER=1",
+        ),
+        extra_env=(
+            ("EXTRA_CFLAGS", "-DSTALE_ITERS=512"),
+            ("COCOTB_MAX_CYCLES", "16000000"),
+            ("COCOTB_NUM_RUNS", "1"),
+        ),
+    ),
     "ddr_atomic_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

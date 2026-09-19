@@ -429,7 +429,33 @@ handler consumes are a mux: the answering slot's entry for a cached response,
 the fast snapshot otherwise. Each slot carries its own flush-kill (`cs_drop`:
 a partial flush marks the younger slots, a full flush all of them, and a
 marked slot's response is drained and frees it) and its own
-store-invalidation bit for the L0 fill guard. The fast owner's flush kill is
+store-invalidation bit for the L0 fill guard.
+
+A marked slot is dead until its response lands: the flush that marked it
+freed its load's entry, which a later load may occupy, while the slot still
+names that index and the dead load's ROB tag (the ROB reuses tags right
+after a partial flush, so the stale tag has no age). A later partial flush
+therefore never judges a marked slot (`cs_flushed` requires `!cs_drop`).
+Judging it by the stale tag cleared `lq_issued` on the live occupant, which
+could then launch a second time: its first response completed and freed the
+entry, and the next load allocated there could accept the second response
+as its own data, a wrong value under a correct tag. For a byte/half/word
+load the completion bypass can make it worse: `resp_bypass_fire` frees the
+entry and broadcasts `bypass_tag`, the slot's stale tag, so the ROB completes
+whichever instruction holds that tag with the foreign data and the entry's
+load never completes. `lq_stale_slot_probe` reproduces the double launch.
+The simulation assertions state the contract the fix restores: a live slot
+(`cs_valid && !cs_drop`) names a valid, issued entry holding its tag, no two
+live slots name one entry, no launch targets an entry a live slot names, and
+a response completes only the load that launched it. The launch check also
+covers the staged `sq_check` candidate, which is never re-validated against
+its entry after capture (`sq_check_entry_valid` is `sq_check_pending`): a
+staged copy of an entry that was freed and reallocated would still launch,
+and both launch snapshots take its old tag (`sq_check_rob_tag_q`), which the
+launch-tag check reports as disagreeing with the entry's current
+`lq_rob_tag`.
+
+The fast owner's flush kill is
 evaluated from the fast snapshot, never from the response-owner mux, so a
 cached response landing in the flush cycle cannot hide it. A cached load still
 parked in the router when a full flush cancels it is freed outright rather
