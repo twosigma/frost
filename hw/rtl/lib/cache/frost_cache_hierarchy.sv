@@ -18,14 +18,15 @@
  * frost_cache_hierarchy: the configurable cache hierarchy as one module.
  *
  * Instantiates the data-side L1, the instruction-side L1I, the arbiter tree
- * below them, the DMA coherence sequencer, and, when HAS_L2 != 0, L2 (URAM
+ * below them, the two coherence sequencers, and, when HAS_L2 != 0, L2 (URAM
  * data and tags) behind the arbiters. Four upstream line-port slaves feed one
  * downstream master. wup is the page-table walker's port, uncached at this
- * level; dma is the DMA agent's port, made coherent with the L1D and the
- * load queue by dma_coherence_sequencer before it reaches the shared level.
+ * level but made coherent with the L1D by walker_coherence_sequencer; dma is
+ * the DMA agent's port, made coherent with the L1D and the load queue by
+ * dma_coherence_sequencer before it reaches the shared level.
  *
  *   L1-only (HAS_L2=0):   up  -> L1(BRAM) <-probes-\
- *                         wup -------------\        \
+ *                         wup -> sequencer -\        \
  *                                           arbiter --> arbiter -> down
  *                         iup -> L1I(BRAM) /        /
  *                         dma -> sequencer --------/
@@ -57,14 +58,30 @@
  * lq_coherence_port (tomasulo_wrapper/coherence/); a system without the
  * core-side interface ties admit_ready and inval_done high.
  *
- * L1I and the walker sit above the shared level (L2 or main memory), so data
- * written back from the L1D is visible to instruction fetch and to
- * page-table walks once it reaches that level. fence.i relies on that for
- * code, and sfence.vma's L1D writeback-all relies on it for page-table
- * stores. The L1I is a plain frost_cache used read-only: the instruction
- * side never issues writes, so its dirty/evict logic stays idle. The walker
- * port is a bare line port with no cache in front of it, because walks are
- * short dependent reads that hit the L2 when one exists.
+ * Walker coherence. Page-table stores sit dirty in the L1D like any other
+ * store, and Linux publishes page tables without an sfence.vma (a new table
+ * is filled, fenced with fence w,w, pointed at, and used; the closing
+ * sfence.vma comes later). A walker that read the shared level alone could
+ * see the new pointer, evicted from the L1D, together with the table it
+ * points at still stale below the L1D: a translation that never existed,
+ * which the architecture forbids. walker_coherence_sequencer.sv (which also
+ * states the contract) therefore runs every walk read through a PROBE_CLEAN
+ * of the L1D before presenting it below: a dirty copy is written back and
+ * ordered at the shared level ahead of the read. It shares the probe
+ * injection register with the DMA sequencer (the walker wins it: with one
+ * read in flight it presents at most one probe per round trip, so it cannot
+ * starve the DMA entries, which can present back to back), takes the probe
+ * id above the DMA entries' ids and the L1D probe slot the L1D elaborates
+ * beyond NUM_DMA_LOCK, and merges its release pulse with the DMA sequencer's
+ * through a one-deep holding flop. sfence.vma's L1D writeback-all remains in
+ * place; walks no longer depend on it.
+ *
+ * L1I sits above the shared level (L2 or main memory), so data written back
+ * from the L1D is visible to instruction fetch once it reaches that level;
+ * fence.i relies on that for code. The L1I is a plain frost_cache used
+ * read-only: the instruction side never issues writes, so its dirty/evict
+ * logic stays idle. The walker port has no cache in front of it, because
+ * walks are short dependent reads that hit the L2 when one exists.
  *
  * Each cache exports a source-registered performance-event bundle. The L1D's
  * writeback-all requests carry passive maintenance provenance through the
@@ -148,9 +165,10 @@ module frost_cache_hierarchy #(
     output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
 
     // Upstream line port (slave): page-table walker. No cache in front of
-    // it, so requests go straight into the arbiter tree between the L1D and
-    // the L1I and read through the shared level. Read-only per the walker
-    // contract; the write pins exist for protocol symmetry. Its ids carry
+    // it: each read probes the L1D through walker_coherence_sequencer and
+    // then enters the arbiter tree between the L1D and the L1I to read
+    // through the shared level. Read-only per the walker contract; the write
+    // pins exist for protocol symmetry and are refused. Its ids carry
     // UP_ID_BITS-1 bits, the WalkIdBits localparam in the body.
     input  logic                    i_wup_req_valid,
     output logic                    o_wup_req_ready,
@@ -277,19 +295,31 @@ module frost_cache_hierarchy #(
 
   // ---------------------------------------------------------------------------
   // Probe injection in front of the L1D's upstream port. The L1D takes ids
-  // one bit wider than the up port; a probe carries {1'b1, entry} and the CPU
-  // adapter's request {1'b0, id}. The sequencer's probe is captured into a
-  // register stage (one probe at a time; its count is bounded by
-  // NUM_DMA_LOCK), which wins the port while it holds one; the adapter holds
-  // its request, as the protocol requires, and its ready is qualified by the
-  // stage's flop alone. Responses are steered by the top id bit: probe
-  // acknowledgements to the sequencer, the rest to the up port. wdata/wstrb
-  // need no mux: a probe never writes.
+  // with one more bit than the up port: a probe carries {1'b1, index}, the
+  // CPU adapter's request {1'b0, id}. The index field holds the DMA entries
+  // (ProbeIdBase + k) and, above them, the walker (WalkProbeId); it is as
+  // wide as UP_ID_BITS unless NUM_DMA_LOCK + 1 ids need more. A probe is
+  // captured into a register stage (one probe at a time; the walker wins the
+  // stage, see the header), which wins the port while it holds one; the
+  // adapter holds its request, as the protocol requires, and its ready is
+  // qualified by the stage's flop alone. Responses are steered by the top id
+  // bit: probe acknowledgements to the sequencer whose id they carry, the
+  // rest to the up port. wdata/wstrb need no mux: a probe never writes.
   // ---------------------------------------------------------------------------
-  localparam int unsigned L1dIdBits = UP_ID_BITS + 1;
-  logic probe_req_valid, probe_req_ready, probe_req_inval;
-  logic [ADDR_WIDTH-1:0] probe_req_addr;
-  logic [ L1dIdBits-1:0] probe_req_id;
+  localparam int unsigned ProbeIdxBitsMin = $clog2(NUM_DMA_LOCK + 1);
+  localparam int unsigned ProbeIdxBits =
+      (UP_ID_BITS > ProbeIdxBitsMin) ? UP_ID_BITS : ProbeIdxBitsMin;
+  localparam int unsigned L1dIdBits = ProbeIdxBits + 1;
+  localparam int unsigned ProbeIdBase = 1 << ProbeIdxBits;
+  localparam int unsigned WalkProbeId = ProbeIdBase + NUM_DMA_LOCK;
+  // L1D probe slots: one per DMA entry plus the walker's.
+  localparam int unsigned NumL1dProbe = NUM_DMA_LOCK + 1;
+  logic dma_probe_req_valid, dma_probe_req_ready, dma_probe_req_inval;
+  logic [ADDR_WIDTH-1:0] dma_probe_req_addr;
+  logic [ L1dIdBits-1:0] dma_probe_req_id;
+  logic walk_probe_req_valid, walk_probe_req_ready;
+  logic [ADDR_WIDTH-1:0] walk_probe_req_addr;
+  logic [ L1dIdBits-1:0] walk_probe_req_id;
   logic pinj_valid_q, pinj_inval_q;
   logic [ADDR_WIDTH-1:0] pinj_addr_q;
   logic [ L1dIdBits-1:0] pinj_id_q;
@@ -298,19 +328,27 @@ module frost_cache_hierarchy #(
   logic [L1dIdBits-1:0] l1d_up_req_id;
   logic l1d_up_resp_valid;
   logic [L1dIdBits-1:0] l1d_up_resp_id;
-  logic probe_ack_valid;
+  logic probe_ack_valid, dma_probe_ack_valid, walk_probe_ack_valid;
+  logic dma_probe_release_valid, walk_probe_release_valid;
+  logic [L1dIdBits-1:0] dma_probe_release_id;
   logic probe_release_valid;
   logic [L1dIdBits-1:0] probe_release_id;
-  assign probe_req_ready = !pinj_valid_q;
+  assign walk_probe_req_ready = !pinj_valid_q;
+  assign dma_probe_req_ready  = !pinj_valid_q && !walk_probe_req_valid;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       pinj_valid_q <= 1'b0;
     end else if (!pinj_valid_q) begin
-      if (probe_req_valid) begin
+      if (walk_probe_req_valid) begin
         pinj_valid_q <= 1'b1;
-        pinj_addr_q  <= probe_req_addr;
-        pinj_inval_q <= probe_req_inval;
-        pinj_id_q    <= probe_req_id;
+        pinj_addr_q  <= walk_probe_req_addr;
+        pinj_inval_q <= 1'b0;
+        pinj_id_q    <= walk_probe_req_id;
+      end else if (dma_probe_req_valid) begin
+        pinj_valid_q <= 1'b1;
+        pinj_addr_q  <= dma_probe_req_addr;
+        pinj_inval_q <= dma_probe_req_inval;
+        pinj_id_q    <= dma_probe_req_id;
       end
     end else if (l1d_up_req_ready) begin
       pinj_valid_q <= 1'b0;
@@ -318,12 +356,69 @@ module frost_cache_hierarchy #(
   end
   assign l1d_up_req_valid = pinj_valid_q || i_up_req_valid;
   assign l1d_up_req_write = !pinj_valid_q && i_up_req_write;
-  assign l1d_up_req_addr  = pinj_valid_q ? pinj_addr_q : i_up_req_addr;
-  assign l1d_up_req_id    = pinj_valid_q ? pinj_id_q : {1'b0, i_up_req_id};
-  assign o_up_req_ready   = l1d_up_req_ready && !pinj_valid_q;
-  assign probe_ack_valid  = l1d_up_resp_valid && l1d_up_resp_id[L1dIdBits-1];
-  assign o_up_resp_valid  = l1d_up_resp_valid && !l1d_up_resp_id[L1dIdBits-1];
-  assign o_up_resp_id     = l1d_up_resp_id[UP_ID_BITS-1:0];
+  assign l1d_up_req_addr = pinj_valid_q ? pinj_addr_q : i_up_req_addr;
+  assign l1d_up_req_id =
+      pinj_valid_q ? pinj_id_q : {{(L1dIdBits - UP_ID_BITS) {1'b0}}, i_up_req_id};
+  assign o_up_req_ready = l1d_up_req_ready && !pinj_valid_q;
+  assign probe_ack_valid = l1d_up_resp_valid && l1d_up_resp_id[L1dIdBits-1];
+  assign walk_probe_ack_valid = probe_ack_valid && (l1d_up_resp_id == L1dIdBits'(WalkProbeId));
+  assign dma_probe_ack_valid = probe_ack_valid && (l1d_up_resp_id != L1dIdBits'(WalkProbeId));
+  assign o_up_resp_valid = l1d_up_resp_valid && !l1d_up_resp_id[L1dIdBits-1];
+  assign o_up_resp_id = l1d_up_resp_id[UP_ID_BITS-1:0];
+
+  // Probe release merge onto the L1D's single release port. The DMA
+  // sequencer's registered pulse goes through at once; a walker pulse that
+  // collides with it waits one cycle in a holding flop. DMA pulses are at
+  // least two cycles apart (its request register refills only once empty)
+  // and the walker's a whole read apart, so the flop never has to hold two.
+  logic walk_release_hold_q, walk_release_pending;
+  assign walk_release_pending = walk_probe_release_valid || walk_release_hold_q;
+  assign probe_release_valid = dma_probe_release_valid || walk_release_pending;
+  assign probe_release_id =
+      dma_probe_release_valid ? dma_probe_release_id : L1dIdBits'(WalkProbeId);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) walk_release_hold_q <= 1'b0;
+    else walk_release_hold_q <= walk_release_pending && dma_probe_release_valid;
+  end
+
+  // The walker sequencer's downstream port into the walker/L1I sub-arbiter.
+  logic walk_down_req_valid, walk_down_req_ready;
+  logic [ADDR_WIDTH-1:0] walk_down_req_addr;
+  logic [WalkIdBits-1:0] walk_down_req_id;
+  logic walk_down_resp_valid;
+  logic [WalkIdBits-1:0] walk_down_resp_id;
+  logic [LINE_BYTES*8-1:0] walk_down_resp_rdata;
+
+  walker_coherence_sequencer #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .LINE_BYTES(LINE_BYTES),
+      .ID_BITS(WalkIdBits),
+      .PROBE_ID_BITS(L1dIdBits),
+      .PROBE_ID(WalkProbeId)
+  ) walk_sequencer (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_walk_req_valid(i_wup_req_valid),
+      .o_walk_req_ready(o_wup_req_ready),
+      .i_walk_req_addr(i_wup_req_addr),
+      .i_walk_req_id(i_wup_req_id),
+      .o_walk_resp_valid(o_wup_resp_valid),
+      .o_walk_resp_id(o_wup_resp_id),
+      .o_walk_resp_rdata(o_wup_resp_rdata),
+      .o_probe_req_valid(walk_probe_req_valid),
+      .i_probe_req_ready(walk_probe_req_ready),
+      .o_probe_req_addr(walk_probe_req_addr),
+      .o_probe_req_id(walk_probe_req_id),
+      .i_probe_ack_valid(walk_probe_ack_valid),
+      .o_probe_release_valid(walk_probe_release_valid),
+      .o_down_req_valid(walk_down_req_valid),
+      .i_down_req_ready(walk_down_req_ready),
+      .o_down_req_addr(walk_down_req_addr),
+      .o_down_req_id(walk_down_req_id),
+      .i_down_resp_valid(walk_down_resp_valid),
+      .i_down_resp_id(walk_down_resp_id),
+      .i_down_resp_rdata(walk_down_resp_rdata)
+  );
 
   // The sequencer's downstream port into the top arbiter.
   logic dma_down_req_valid, dma_down_req_ready, dma_down_req_write;
@@ -341,7 +436,7 @@ module frost_cache_hierarchy #(
       .ID_BITS(UP_ID_BITS),
       .NUM_LOCK(NUM_DMA_LOCK),
       .PROBE_ID_BITS(L1dIdBits),
-      .PROBE_ID_BASE(1 << UP_ID_BITS)
+      .PROBE_ID_BASE(ProbeIdBase)
   ) dma_sequencer (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -355,15 +450,15 @@ module frost_cache_hierarchy #(
       .o_dma_resp_valid(o_dma_resp_valid),
       .o_dma_resp_id(o_dma_resp_id),
       .o_dma_resp_rdata(o_dma_resp_rdata),
-      .o_probe_req_valid(probe_req_valid),
-      .i_probe_req_ready(probe_req_ready),
-      .o_probe_req_addr(probe_req_addr),
-      .o_probe_req_inval(probe_req_inval),
-      .o_probe_req_id(probe_req_id),
-      .i_probe_ack_valid(probe_ack_valid),
+      .o_probe_req_valid(dma_probe_req_valid),
+      .i_probe_req_ready(dma_probe_req_ready),
+      .o_probe_req_addr(dma_probe_req_addr),
+      .o_probe_req_inval(dma_probe_req_inval),
+      .o_probe_req_id(dma_probe_req_id),
+      .i_probe_ack_valid(dma_probe_ack_valid),
       .i_probe_ack_id(l1d_up_resp_id),
-      .o_probe_release_valid(probe_release_valid),
-      .o_probe_release_id(probe_release_id),
+      .o_probe_release_valid(dma_probe_release_valid),
+      .o_probe_release_id(dma_probe_release_id),
       .o_coh_admit_valid(o_coh_admit_valid),
       .o_coh_admit_slot(o_coh_admit_slot),
       .o_coh_admit_addr(o_coh_admit_addr),
@@ -396,11 +491,12 @@ module frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1_CACHE_BYTES),
       .LINE_BYTES(LINE_BYTES),
-      // One more upstream id bit than the up port: probes use the ids with
-      // that bit set (see the header), the CPU adapter the ids below.
+      // At least one more upstream id bit than the up port (L1dIdBits): probes
+      // use the ids with the top bit set (see the header), the CPU adapter
+      // the ids below.
       .UP_ID_BITS(L1dIdBits),
       .DOWN_ID_BITS(UP_ID_BITS),
-      .NUM_PROBE(NUM_DMA_LOCK),
+      .NUM_PROBE(NumL1dProbe),
       .TAG_MEMORY_PRIMITIVE("block"),
       .TAG_READ_LATENCY(1),
       .DATA_MEMORY_PRIMITIVE("block"),
@@ -498,9 +594,10 @@ module frost_cache_hierarchy #(
   // instances whose id prefixes compose to the prefix-free code in the
   // header.
   //
-  // Sub-arbiter: walker on port 0 (a walk unblocks a load that is stalling
-  // commit), instruction side on port 1 (fetch runs ahead through its
-  // buffer). Neither issues maintenance traffic.
+  // Sub-arbiter: the walker sequencer on port 0 (a walk unblocks a load that
+  // is stalling commit), instruction side on port 1 (fetch runs ahead through
+  // its buffer). Neither issues maintenance traffic, and the walker never
+  // writes.
   line_port_arbiter #(
       .NUM_PORTS (2),
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -509,17 +606,17 @@ module frost_cache_hierarchy #(
   ) walk_i_arbiter (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_up_req_valid({l1i_down_req_valid, i_wup_req_valid}),
-      .o_up_req_ready({l1i_down_req_ready, o_wup_req_ready}),
-      .i_up_req_write({l1i_down_req_write, i_wup_req_write}),
-      .i_up_req_addr({l1i_down_req_addr, i_wup_req_addr}),
-      .i_up_req_wdata({l1i_down_req_wdata, i_wup_req_wdata}),
-      .i_up_req_wstrb({l1i_down_req_wstrb, i_wup_req_wstrb}),
-      .i_up_req_id({l1i_down_req_id, i_wup_req_id}),
+      .i_up_req_valid({l1i_down_req_valid, walk_down_req_valid}),
+      .o_up_req_ready({l1i_down_req_ready, walk_down_req_ready}),
+      .i_up_req_write({l1i_down_req_write, 1'b0}),
+      .i_up_req_addr({l1i_down_req_addr, walk_down_req_addr}),
+      .i_up_req_wdata({l1i_down_req_wdata, {(LINE_BYTES * 8) {1'b0}}}),
+      .i_up_req_wstrb({l1i_down_req_wstrb, {LINE_BYTES{1'b0}}}),
+      .i_up_req_id({l1i_down_req_id, walk_down_req_id}),
       .i_up_req_maintenance({1'b0, 1'b0}),
-      .o_up_resp_valid({l1i_down_resp_valid, o_wup_resp_valid}),
-      .o_up_resp_id({l1i_down_resp_id, o_wup_resp_id}),
-      .o_up_resp_rdata({l1i_down_resp_rdata, o_wup_resp_rdata}),
+      .o_up_resp_valid({l1i_down_resp_valid, walk_down_resp_valid}),
+      .o_up_resp_id({l1i_down_resp_id, walk_down_resp_id}),
+      .o_up_resp_rdata({l1i_down_resp_rdata, walk_down_resp_rdata}),
       .o_down_req_valid(wi_down_req_valid),
       .i_down_req_ready(wi_down_req_ready),
       .o_down_req_write(wi_down_req_write),
@@ -676,6 +773,19 @@ module frost_cache_hierarchy #(
   end
 
 `ifndef SYNTHESIS
+  // The walker port is read-only; the sequencer in front of it has no write
+  // path, so a write here would be silently turned into a read.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && i_wup_req_valid && i_wup_req_write)
+      $error(
+          "frost_cache_hierarchy: write on the walker port (addr=0x%0h, wstrb=0x%0h)",
+          i_wup_req_addr,
+          i_wup_req_wstrb
+      );
+    if (!i_rst && walk_probe_release_valid && walk_release_hold_q)
+      $error("frost_cache_hierarchy: walker probe release while one is still held");
+  end
+
   // Seam watchdog: the data L1 holding a downstream request unaccepted for
   // this long means the level below wedged. Print every seam so the log alone
   // locates it.
@@ -689,8 +799,9 @@ module frost_cache_hierarchy #(
         $display("hierarchy SEAM STALL: l1d{v=%0d rdy=%0d w=%0d} l1i{v=%0d rdy=%0d w=%0d}",
                  l1_down_req_valid, l1_down_req_ready, l1_down_req_write, l1i_down_req_valid,
                  l1i_down_req_ready, l1i_down_req_write);
-        $display("  wup{v=%0d rdy=%0d} wi_down{v=%0d rdy=%0d id=%0d}", i_wup_req_valid,
-                 o_wup_req_ready, wi_down_req_valid, wi_down_req_ready, wi_down_req_id);
+        $display("  wup{v=%0d rdy=%0d} walk_down{v=%0d rdy=%0d} wi_down{v=%0d rdy=%0d id=%0d}",
+                 i_wup_req_valid, o_wup_req_ready, walk_down_req_valid, walk_down_req_ready,
+                 wi_down_req_valid, wi_down_req_ready, wi_down_req_id);
         $display("  arb_down{v=%0d rdy=%0d w=%0d id=%0d} down_resp{v=%0d id=%0d}",
                  arb_down_req_valid, arb_down_req_ready, arb_down_req_write, arb_down_req_id,
                  arb_down_resp_valid, arb_down_resp_id);

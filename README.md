@@ -561,5 +561,5 @@ under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 | **PLIC**        | Platform-Level Interrupt Controller (external interrupts, M and S contexts) |
 | **NIC**         | 10 Gigabit Ethernet controller at `0x4003_0000`: the `hw/rtl/net10g` MAC/PCS with descriptor rings on the coherent DMA port |
 | **DMA port**    | The cache hierarchy's fourth upstream line port, shared by the NIC and the DMA test engine |
-| **Coherence sequencer** | Walks each DMA request through the L1D and the load queue before the shared level orders it, so DMA needs no software cache maintenance |
+| **Coherence sequencers** | Walk each DMA request through the L1D and the load queue, and each page-table walk read through the L1D, before the shared level orders it, so neither DMA nor page-table publication needs software cache maintenance |
 | **Cocotb**      | Python-based verification framework              |

@@ -420,12 +420,13 @@ async def test_fill_waits_for_pending_writeback(dut: Any) -> None:
 async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
     """A tag lookup spanning a same-index fill install retries and then hits.
 
-    Three simultaneous reads of one cold line reach the shared level in a
-    deterministic order: the walker bypasses the L1s and allocates the line,
-    one cached-side request takes the MSHR's single waiter, and the other must
-    remain resident until the fill installs its tag.  With a multi-cycle L2
-    tag RAM, that last request can have an old tag response in flight across
-    the MSHR tag write.  It must discard/re-read that response, not allocate a
+    Three reads of one cold line reach the shared level in a deterministic
+    order: the walker, launched two cycles ahead because its read first
+    probes the L1D (a miss there), allocates the line, one cached-side
+    request takes the MSHR's single waiter, and the other must remain
+    resident until the fill installs its tag.  With a multi-cycle L2 tag RAM,
+    that last request can have an old tag response in flight across the MSHR
+    tag write.  It must discard/re-read that response, not allocate a
     duplicate miss from the stale tag contents.
 
     The exact L2 observer partition pins the intended path independently of
@@ -461,8 +462,15 @@ async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
         return await cols[port].wait_for(req_id)
 
     # Each _fire waits for its first falling edge before asserting valid, so
-    # starting all three now makes their upstream requests simultaneous.
-    tasks = [cocotb.start_soon(_read(port)) for port in ("up", "iup", "wup")]
+    # tasks started together make simultaneous upstream requests. The walker
+    # goes first by two cycles: its probe then decides (a miss, the line is
+    # cold everywhere) before the data-side read enters the L1D, so it does
+    # not wait behind that read's fill, and all three meet at the shared
+    # level in the order walker, L1I, L1D.
+    walker = cocotb.start_soon(_read("wup"))
+    for _ in range(2):
+        await FallingEdge(dut.i_clk)
+    tasks = [cocotb.start_soon(_read(port)) for port in ("up", "iup")] + [walker]
     for port, task in zip(("up", "iup", "wup"), tasks):
         _, got = await task
         assert got == data, f"{port} read mismatch: got 0x{got:064x}"

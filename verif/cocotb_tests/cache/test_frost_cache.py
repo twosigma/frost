@@ -141,8 +141,20 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_fence_sync.value = 0
 
 
+def _l2_sweeping(dut: Any) -> bool:
+    """Report whether the optional L2's reset tag sweep still refuses requests.
+
+    The walker port's ready used to reach the bench through the arbiter tree
+    from the L2, so it doubled as the L2's ready; the walker sequencer now
+    answers ready itself, so the L2's maintenance state is read directly.
+    """
+    if int(dut.o_has_l2.value) == 0:
+        return False
+    return int(dut.cache_hierarchy.gen_l2.l2_cache.o_maint_busy.value) == 1
+
+
 async def _setup(dut: Any) -> None:
-    """Start the clock, reset, and wait out the tag-invalidate sweep."""
+    """Start the clock, reset, and wait out every level's tag-invalidate sweep."""
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
     dut.i_rst.value = 1
@@ -156,6 +168,7 @@ async def _setup(dut: Any) -> None:
             int(dut.o_up_req_ready.value) == 1
             and int(dut.o_iup_req_ready.value) == 1
             and int(dut.o_wup_req_ready.value) == 1
+            and not _l2_sweeping(dut)
         ):
             return
     raise AssertionError("cache never became ready after reset (sweep stuck?)")
@@ -590,8 +603,8 @@ async def test_walker_port_reads_shared_level(dut: Any) -> None:
 
     A line written back from the L1D is visible to a walk; a repeat read
     returns the same data (there is no cache in front of the walker port,
-    so both reads go downstream and both must route their responses home by
-    id alone).
+    only the probe sequencer, so both reads go downstream and both must
+    route their responses home by id alone).
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -795,13 +808,17 @@ async def test_fence_sync_invalidates_stale_l1i(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_fence_sync_publishes_dirty_lines_to_walker(dut: Any) -> None:
-    """The sfence.vma coherence property, at the fabric level.
+async def test_walker_sees_dirty_l1d_lines(dut: Any) -> None:
+    """The walker port is coherent with the L1D without any fence.
 
-    A page-table store dirty in the L1D is invisible to a walk, because the
-    walker reads through the shared level, below the L1D. sfence.vma runs
-    that fence sync with the TLBs held invalid, so the walk after it sees
-    the store.
+    A page-table store dirty in the L1D is visible to the next walk read:
+    the walker sequencer probes the L1D (PROBE_CLEAN) before its read reaches
+    the shared level, so the dirty copy is written back and ordered ahead of
+    the read. The copy stays valid and clean, so a re-dirtying store hits and
+    the following walk sees that store too, and a fence afterwards changes
+    nothing a walk can observe. Linux publishes page tables without an
+    sfence.vma (fill, fence w,w, point, use), which is why the walk cannot
+    wait for the writeback-all.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -812,15 +829,224 @@ async def test_fence_sync_publishes_dirty_lines_to_walker(dut: Any) -> None:
     model.write_line(addr, wdata, full)
     await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
 
-    # Dirty in L1D, never written back: the walk sees the shared level's
-    # zeros. This is the stale-PTE hazard sfence.vma's writeback-all exists for.
+    # Dirty in the L1D, never written back, and the walk sees it anyway.
     got = await _port_transaction(dut, "wup", write=False, addr=addr)
-    assert got == 0, f"wup unexpectedly observed dirty L1D data @0x{addr:08x}"
+    assert got == model.read_line(addr), f"wup missed dirty L1D data @0x{addr:08x}"
+
+    # The probe left the line valid and clean: a partial store re-dirties it
+    # in place, and the next walk's probe finds a dirty hit again.
+    wdata2 = _line_int(bytes([(0x5A ^ b) & 0xFF for b in range(32)]))
+    wstrb2 = 0x0000_00F0  # bytes 4-7: one PTE's worth
+    model.write_line(addr, wdata2, wstrb2)
+    await _line_transaction(dut, write=True, addr=addr, wdata=wdata2, wstrb=wstrb2)
+    got = await _port_transaction(dut, "wup", write=False, addr=addr)
+    assert got == model.read_line(addr), f"wup missed the re-dirtied line @0x{addr:08x}"
 
     await _fence_sync(dut)
 
     got = await _port_transaction(dut, "wup", write=False, addr=addr)
     assert got == model.read_line(addr), f"wup stale after fence @0x{addr:08x}"
+
+
+class _WritebackHazardMonitor:
+    """Count, per cycle, the L1D states its writeback-slot rules act on.
+
+    hit_stalls: cycles a write hit was held in T because a writeback slot
+    still held its line (frost_cache.sv stall_wb_snapshot). install_waits:
+    cycles an MSHR sat in MS_WRITE with a writeback of its own line still
+    pending (mshr_wb_wait_q, which keeps it out of the install pick). The
+    tests below assert each happened, so they know they reached the state
+    the rule exists for rather than merely passing on quiet timing.
+    """
+
+    MS_WRITE = 4  # mshr_state_e ordinal: FREE, PEND, SENT, MERGE, WRITE, ...
+
+    def __init__(self, dut: Any) -> None:
+        self._dut = dut
+        self.hit_stalls = 0
+        self.install_waits = 0
+        self._task = cocotb.start_soon(self._run())
+
+    async def _run(self) -> None:
+        l1 = self._dut.cache_hierarchy.l1_cache
+        num_mshr = int(l1.NUM_MSHR.value)
+        while True:
+            await FallingEdge(self._dut.i_clk)
+            if int(l1.stall_wb_snapshot.value) == 1:
+                self.hit_stalls += 1
+            for i in range(num_mshr):
+                if (
+                    int(l1.mshr_state_q[i].value) == self.MS_WRITE
+                    and int(l1.mshr_wb_wait_q[i].value) != 0
+                ):
+                    self.install_waits += 1
+
+    def stop(self) -> None:
+        self._task.cancel()
+
+
+async def _fire_iup_read(dut: Any, addr: int) -> None:
+    """Present one instruction-side read and return once it has fired.
+
+    Its response is never collected: the read exists only to occupy a miss
+    slot of the shared level for one memory round trip.
+    """
+    req_id = next(_port_ids["iup"])
+    await FallingEdge(dut.i_clk)
+    dut.i_iup_req_valid.value = 1
+    dut.i_iup_req_write.value = 0
+    dut.i_iup_req_addr.value = addr
+    dut.i_iup_req_id.value = req_id
+    await Timer(1, unit="ns")
+    for _ in range(RESP_TIMEOUT_CYCLES):
+        if int(dut.o_iup_req_ready.value) == 1:
+            break
+        await FallingEdge(dut.i_clk)
+    else:
+        raise AssertionError(f"iup request never accepted (addr=0x{addr:08x})")
+    await FallingEdge(dut.i_clk)
+    dut.i_iup_req_valid.value = 0
+
+
+async def _hold_shared_level(
+    dut: Any, model: ReferenceModel, base: int, k: int
+) -> None:
+    """Fill the shared level's miss slots so its next miss stalls a round trip.
+
+    Three data-side partial-write misses, acknowledged at allocation, and two
+    instruction-side reads fired between them leave five fills in flight
+    (the shared level has four miss slots), so a writeback that misses there
+    right afterwards waits in its tag stage until the first fill returns from
+    memory. Every line has an L1 index of its own, never revisited, so none
+    of this evicts anything or writes anything back.
+    """
+    lines = [base + (8 + 3 * k + n) * LINE_BYTES for n in range(3)]
+    instr = [base + 0x800 + (2 * k + n) * LINE_BYTES for n in range(2)]
+    await _line_transaction(dut, write=True, addr=lines[0], wdata=0, wstrb=1)
+    model.write_line(lines[0], 0, 1)
+    for addr in instr:
+        await _fire_iup_read(dut, addr)
+    for addr in lines[1:]:
+        await _line_transaction(dut, write=True, addr=addr, wdata=0, wstrb=1)
+        model.write_line(addr, 0, 1)
+
+
+@cocotb.test()
+async def test_store_after_walker_probe_then_evict(dut: Any) -> None:
+    """A store right behind a walk's probe, then an eviction, keeps the store.
+
+    PROBE_CLEAN snapshots the dirty line into a writeback slot and leaves the
+    copy valid and clean. A store that re-dirties the copy while that
+    snapshot is still in its slot, followed by an eviction that snapshots the
+    newer copy into a second slot, would let the two writebacks reach the
+    shared level in either order; the L1D therefore holds such a store until
+    the first writeback has been acknowledged (stall_wb_snapshot), and its
+    protocol checks flag a write hit committing to a line a slot still holds.
+    Each round uses a page the shared level has never seen, so the snapshot
+    misses there and, with its miss slots held full, waits a memory round
+    trip before it is acknowledged; the store and the aliasing write follow
+    the probe as closely as the port allows; the monitor must see the store
+    held at least once; and every reader must then see the store.
+    """
+    await _setup(dut)
+    mon = _WritebackHazardMonitor(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    base = WALK_BASE + 0x30000
+    hold_base = base + 0x8000
+
+    for k in range(4):
+        addr = base + k * 0x1000 + 7 * LINE_BYTES
+        alias = addr + 1024  # same L1 index, another tag: evicts addr
+        wdata = _line_int(bytes([(0xC0 + 3 * k + b) & 0xFF for b in range(32)]))
+        model.write_line(addr, wdata, full)
+        await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+        await _hold_shared_level(dut, model, hold_base, k)
+
+        # The walk snapshots the dirty line; the store and the eviction chase it.
+        walk = cocotb.start_soon(_port_transaction(dut, "wup", write=False, addr=addr))
+        for _ in range(2 + k):
+            await FallingEdge(dut.i_clk)
+        store = _line_int(bytes([(0x11 * (k + 1) + b) & 0xFF for b in range(32)]))
+        model.write_line(addr, store, 0x0000_FF00)
+        await _line_transaction(
+            dut, write=True, addr=addr, wdata=store, wstrb=0x0000_FF00
+        )
+        evict = _line_int(bytes([0x3C ^ k] * 32))
+        model.write_line(alias, evict, full)
+        await _line_transaction(dut, write=True, addr=alias, wdata=evict, wstrb=full)
+        got = await walk
+        assert got in (wdata, model.read_line(addr)), f"walk read torn @0x{addr:08x}"
+
+        await _settle(dut)
+        await _check_read(dut, model, addr)
+        got = await _port_transaction(dut, "wup", write=False, addr=addr)
+        assert got == model.read_line(addr), f"store lost below the L1D @0x{addr:08x}"
+        await _check_read(dut, model, alias)
+
+    mon.stop()
+    assert (
+        mon.hit_stalls > 0
+    ), "no store was ever held behind its line's pending writeback"
+
+
+@cocotb.test()
+async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
+    """A whole-line write to a line whose eviction is still in flight waits.
+
+    Evicting a dirty line snapshots it into a writeback slot. A whole-line
+    write to that line allocates without a fetch and could install the new
+    copy dirty beside the older snapshot; a second eviction would then put
+    two writebacks of the line in flight, which the shared level may apply
+    older-last. The L1D keeps the install out of the pick until the first
+    writeback has been acknowledged (mshr_wb_wait_q), and its protocol
+    checks flag an install of a line a slot still holds. Each round uses a
+    page the shared level has never seen, so the snapshot misses there and,
+    with its miss slots held full, waits a memory round trip before it is
+    acknowledged; three tags rotate through one index; the monitor must see
+    the install held at least once; and every reader must see the last
+    write.
+    """
+    await _setup(dut)
+    mon = _WritebackHazardMonitor(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    base = WALK3_BASE + 0x20000
+    hold_base = base + 0x8000
+
+    for k in range(4):
+        a = base + k * 0x1000 + 5 * LINE_BYTES
+        x = a + 1024  # same L1 index, other tags
+        c = a + 2048
+        v0 = _line_int(bytes([(0x90 + 5 * k + b_) & 0xFF for b_ in range(32)]))
+        model.write_line(a, v0, full)
+        await _line_transaction(dut, write=True, addr=a, wdata=v0, wstrb=full)
+        await _hold_shared_level(dut, model, hold_base, k)
+
+        # X evicts A (its snapshot goes to a slot) and installs without a
+        # fetch; the whole-line write of A evicts X and must wait for A's
+        # snapshot to be acknowledged before it installs; C evicts A again.
+        vx = _line_int(bytes([(0x40 + k) ^ b_ for b_ in range(32)]))
+        model.write_line(x, vx, full)
+        await _line_transaction(dut, write=True, addr=x, wdata=vx, wstrb=full)
+        v1 = _line_int(bytes([(0x21 * (k + 1) + b_) & 0xFF for b_ in range(32)]))
+        model.write_line(a, v1, full)
+        await _line_transaction(dut, write=True, addr=a, wdata=v1, wstrb=full)
+        vc = _line_int(bytes([(0x70 + k) ^ b_ for b_ in range(32)]))
+        model.write_line(c, vc, full)
+        await _line_transaction(dut, write=True, addr=c, wdata=vc, wstrb=full)
+
+        await _settle(dut)
+        await _check_read(dut, model, a)
+        got = await _port_transaction(dut, "wup", write=False, addr=a)
+        assert got == model.read_line(a), f"older writeback landed last @0x{a:08x}"
+        await _check_read(dut, model, x)
+        await _check_read(dut, model, c)
+
+    mon.stop()
+    assert (
+        mon.install_waits > 0
+    ), "no install was ever held behind its line's pending writeback"
 
 
 @cocotb.test()

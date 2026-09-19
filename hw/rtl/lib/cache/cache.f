@@ -19,6 +19,10 @@ $(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
 # invalidations before a DMA request reaches the shared level.
 $(ROOT)/hw/rtl/lib/cache/dma_coherence_sequencer.sv
 
+# Walker coherence sequencer: probes the L1D before a page-table walk read
+# reaches the shared level.
+$(ROOT)/hw/rtl/lib/cache/walker_coherence_sequencer.sv
+
 # Configurable cache hierarchy wrapper (L1s + walker + DMA ports, optional URAM L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 

@@ -19,7 +19,10 @@
  *
  * One walk at a time. A request latches its vpn, and the FSM descends the
  * three levels with dependent full-line reads on the walker line port. That
- * is the hierarchy's wup port, below the L1D and above the L1I; see
+ * is the hierarchy's wup port, below the L1D and above the L1I in the
+ * arbiter order, and coherent with the L1D: the hierarchy probes the L1D
+ * before each read reaches the shared level, so a walk sees page-table
+ * stores still dirty there without an sfence.vma; see
  * hw/rtl/lib/cache/README.md "The page-table walker port". The PTE is
  * extracted from the 256-bit line response by the address's dword offset,
  * the way cached_tier_adapter extracts a beat.

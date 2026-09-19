@@ -80,6 +80,7 @@ VALID_APPS = [
     "pde_return_hazard",
     "perf_off_test",
     "print_clock_speed",
+    "ptw_coherence_test",
     "ras_stress_test",
     "ras_test",
     "smode_test",
@@ -161,6 +162,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "lq_stale_slot_probe",
     "opensbi_smoke",
     "pde_return_hazard",
+    "ptw_coherence_test",
     "tick_torture",
 }
 

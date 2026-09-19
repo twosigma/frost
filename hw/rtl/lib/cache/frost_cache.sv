@@ -39,8 +39,12 @@
  *                merges into it; a read takes the MSHR's single waiter seat;
  *                anything else that targets an index in transition waits.
  * Hits flow past pending misses; several MSHRs may be fetching at once and
- * writebacks drain independently, ordered only by the rule that a fill for a
- * line still sitting in a writeback slot waits for that writeback's ack.
+ * writebacks drain independently, ordered only by the rule that a line still
+ * sitting in a writeback slot is neither fetched nor installed again until
+ * that writeback's ack: a fill waits before fetching, an allocation that
+ * needs no fetch waits before its install, and (with the probe rule below)
+ * a store waits before re-dirtying a clean copy. No line therefore ever has
+ * two writebacks in flight, which the level below could apply older-last.
  *
  * Ordering contract (the slave side of the protocol): requests to the same
  * line take effect in acceptance order, so a write accepted before a read of
@@ -88,7 +92,10 @@
  * ordinary requests to the pipeline: a probe to an index in transition waits
  * like any other request, a probe to a line sitting in a writeback slot
  * waits for that writeback, and a probe never attaches as a merge or a
- * waiter. Each probe mans one probe slot from its decision until the
+ * waiter. A store to a line whose copy still sits in a writeback slot (left
+ * valid and clean by PROBE_CLEAN) waits for that writeback too, so no line
+ * ever has two writebacks in flight and the level below never receives an
+ * older copy after a newer one. Each probe mans one probe slot from its decision until the
  * requester releases it (i_probe_release_*, after the level below has
  * ordered the requester's own access). While a PROBE_INVAL slot is manned no
  * fill of its line is issued downstream (mshr_fill_held), so a miss that
@@ -395,7 +402,7 @@ module frost_cache #(
 
   // ---- Probe slots (NUM_PROBE > 0; see the header). ProbeSlots keeps the
   // arrays legal when the machinery is absent; every use is then constant.
-  logic [ProbeSlots-1:0] probe_valid_q;  // slot manned (decision to acknowledgement)
+  logic [ProbeSlots-1:0] probe_valid_q;  // slot manned (decision to the requester's release)
   logic [ProbeSlots-1:0] probe_ack_q;  // acknowledgement waiting for the response port
   logic [ProbeSlots-1:0] probe_inval_q;
   logic [LineAddrBits-1:0] probe_line_q[ProbeSlots];
@@ -663,8 +670,8 @@ module frost_cache #(
   logic t_stall, t_done;
   logic t_tag_write_collision, t_tag_response, t_tag_retry;
   logic t_is_read_hit, t_is_write_hit, t_is_alloc, t_is_merge, t_is_waiter;
-  logic t_plain, t_probe_wb_pending, t_is_probe_hit, t_is_probe_miss, t_probe_dirty;
-  logic stall_conflict, stall_full;
+  logic t_plain, t_wb_pending, t_is_probe_hit, t_is_probe_miss, t_probe_dirty;
+  logic stall_conflict, stall_full, stall_wb_snapshot;
 
   // A delayed tag response is usable only if no write to this exact logical
   // index crossed the request, including a fill's tag install in the response
@@ -701,24 +708,31 @@ module frost_cache #(
     t_is_merge = decide && t_plain && conflict && same_line && t_write_q;
     t_is_waiter = decide && t_plain && conflict && same_line && !t_write_q;
 
-    // Probes. A copy still sitting in a writeback slot (left clean by
-    // writeback-all or an earlier PROBE_CLEAN) must reach the level below
-    // before the probe is acknowledged, so the probe waits for that slot.
-    t_probe_wb_pending = |(t_wb_match_q & wb_valid);
-    t_is_probe_hit = decide && t_probe_q && !conflict && !t_probe_wb_pending && hit;
-    t_is_probe_miss = decide && t_probe_q && !conflict && !t_probe_wb_pending && !hit;
+    // A copy still sitting in a writeback slot (left valid and clean by
+    // writeback-all or a PROBE_CLEAN) must reach the level below before a
+    // probe of the line is acknowledged, so the probe waits for that slot.
+    // A store to such a line waits for the slot as well: it would re-dirty
+    // the copy, a later eviction would snapshot that into a second slot, and
+    // the slot pick below is lowest-index-first, so the two writebacks could
+    // reach the level below older-last and leave it holding the stale copy.
+    // Stores are the only way to re-dirty a valid line, so no line ever has
+    // two writebacks in flight (p_wb_slots_distinct_lines).
+    t_wb_pending = |(t_wb_match_q & wb_valid);
+    t_is_probe_hit = decide && t_probe_q && !conflict && !t_wb_pending && hit;
+    t_is_probe_miss = decide && t_probe_q && !conflict && !t_wb_pending && !hit;
     t_probe_dirty = t_is_probe_hit && victim_dirty;
 
     stall_conflict = decide && (t_plain ?
         (conflict && (!same_line || (t_write_q ? !match_mergeable : !match_waitable))) :
-        (conflict || t_probe_wb_pending));
+        (conflict || t_wb_pending));
     stall_full = (t_is_alloc && (!mshr_free_any || (victim_dirty && !wb_free_any))) ||
         ((t_is_probe_hit || t_is_probe_miss) && !probe_free_any) ||
         (t_probe_dirty && !wb_free_any);
+    stall_wb_snapshot = t_is_write_hit && t_wb_pending;
     // A pending probe acknowledgement holds off new read hits: hit data owns
     // the response port whenever it appears, so the port has to go quiet for
     // the acknowledgement to leave.
-    t_stall = stall_conflict || stall_full ||
+    t_stall = stall_conflict || stall_full || stall_wb_snapshot ||
         ((t_is_read_hit || (t_is_alloc && victim_dirty) || t_probe_dirty) && raw_hazard) ||
         (t_is_read_hit && probe_ack_any);
     t_done = decide && !t_stall;
@@ -944,7 +958,12 @@ module frost_cache #(
                                        (w_op_q == W_PROBE_CLEAN) || (w_op_q == W_PROBE_INVAL));
 
   // MSHR fill/allocate write: the lowest slot ready to write whose victim (if
-  // any) has been captured, when both ports are free this cycle.
+  // any) has been captured, when both ports are free this cycle. A slot
+  // still waiting for a writeback of its own line (mshr_wb_wait_q) is not
+  // ready: a fill already waited for it before fetching, and an allocation
+  // that needs no fetch must wait here, or it would install the line dirty
+  // beside its older copy and a later eviction could put a second writeback
+  // of the line in flight (p_wb_slots_distinct_lines).
   logic                mshr_write_any;
   logic [MshrBits-1:0] mshr_write_sel;
   logic                mshr_write_fire;
@@ -952,7 +971,7 @@ module frost_cache #(
     mshr_write_any = 1'b0;
     mshr_write_sel = '0;
     for (int i = int'(NUM_MSHR) - 1; i >= 0; i--) begin
-      if ((mshr_state_q[i] == MS_WRITE) &&
+      if ((mshr_state_q[i] == MS_WRITE) && (mshr_wb_wait_q[i] == '0) &&
           (!mshr_has_victim_q[i] || (wb_state_q[mshr_victim_wb_q[i]] != WB_FILLING))) begin
         mshr_write_any = 1'b1;
         mshr_write_sel = MshrBits'(i);
@@ -1446,7 +1465,7 @@ module frost_cache #(
       perf_events_q.hit_under_miss <= t_done && !t_maint_q && (t_is_read_hit || t_is_write_hit) &&
           (miss_count != '0);
       perf_events_q.slot_full_stall <= stall_full && t_plain;
-      perf_events_q.conflict_stall <= stall_conflict && t_plain;
+      perf_events_q.conflict_stall <= (stall_conflict || stall_wb_snapshot) && t_plain;
     end
   end
   assign o_perf_events = perf_events_q;
@@ -1491,6 +1510,32 @@ module frost_cache #(
       assert (!(t_tag_response && (t_tag_stale_q || t_tag_write_collision) && t_done));
       p_reread_owns_t_index : assert (!reread_q || ((mstate_q == M_IDLE) && t_valid_q));
       p_cache_perf_hit_miss_onehot : assert (!(perf_events_q.hit && perf_events_q.miss));
+      // No line has two writebacks in flight (see the T decision): the level
+      // below applies same-line writes in acceptance order, and the slot pick
+      // is lowest-index-first, so two snapshots could land older-last. The
+      // two rules that keep it so are checked at their effect: a write hit
+      // never commits to, and an install never fires for, a line a writeback
+      // slot still holds.
+      for (int j = 0; j < int'(NUM_WB); j++) begin
+        for (int k = j + 1; k < int'(NUM_WB); k++) begin
+          if (wb_valid[j] && wb_valid[k] && (wb_line_q[j] == wb_line_q[k]))
+            $error(
+                "frost_cache: writeback slots %0d and %0d both hold line 0x%0h", j, k, wb_line_q[j]
+            );
+        end
+        if (wb_valid[j] && w_valid_q && (w_op_q == W_WRITE_HIT) && (wb_line_q[j] == w_line_q))
+          $error(
+              "frost_cache: write hit commits to line 0x%0h while writeback slot %0d holds it",
+              w_line_q,
+              j
+          );
+        if (wb_valid[j] && mshr_write_fire && (wb_line_q[j] == mshr_line_q[fw_sel_q]))
+          $error(
+              "frost_cache: install of line 0x%0h while writeback slot %0d holds it",
+              mshr_line_q[fw_sel_q],
+              j
+          );
+      end
     end
   end
 

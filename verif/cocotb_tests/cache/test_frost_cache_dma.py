@@ -26,9 +26,12 @@ than resurrecting the pre-write one; same-line DMA requests serialize; the
 load-queue handshake fires admit, inval and release once per DMA write and
 never for a DMA read; a DMA write concurrent with fence.i's writeback-all; a
 DMA request under a data-side miss flood still completes; concurrent DMA and
-data-side traffic on disjoint lines stays exact; and a data-side reader of
+data-side traffic on disjoint lines stays exact, with walker reads of the
+data side's dirty lines contending with the DMA probes; a data-side reader of
 lines a DMA agent is writing only ever sees values in coherence order (the
-sequence it observes per line never goes backwards).
+sequence it observes per line never goes backwards); and random sequential
+CPU / DMA / walker / instruction traffic matches the model with no fence
+before any walker read.
 """
 
 import random
@@ -455,7 +458,12 @@ async def test_dma_completes_under_cpu_miss_flood(dut: Any) -> None:
 
 @cocotb.test()
 async def test_concurrent_disjoint_traffic(dut: Any) -> None:
-    """CPU and DMA traffic on disjoint line sets, each exact against its model."""
+    """CPU+walker and DMA traffic on disjoint line sets, each exact against its model.
+
+    The CPU side interleaves walker reads of its own lines, so walker probes
+    (absent, clean and dirty hits) contend with DMA probes for the L1D's
+    probe injection register and with DMA requests for the shared level.
+    """
     await _setup(dut)
     lq = LoadQueueStub(dut, admit_delay=1, inval_delay=2)
     rng = random.Random(0xD3A1)
@@ -465,12 +473,18 @@ async def test_concurrent_disjoint_traffic(dut: Any) -> None:
         r = random.Random(seed)
         for _ in range(count):
             addr = base + r.randrange(64) * LINE_BYTES
-            if r.random() < 0.6:
+            pick = r.random()
+            if pick < 0.5:
                 wdata = r.getrandbits(256)
                 wstrb = FULL if r.random() < 0.5 else (0xF << (4 * r.randrange(8)))
                 await _cpu_write(dut, model, addr, wdata, wstrb)
-            else:
+            elif pick < 0.75:
                 await _check_read(dut, model, addr)
+            else:
+                got = await _port_transaction(dut, "wup", write=False, addr=addr)
+                assert got == model.read_line(
+                    addr
+                ), f"walker read mismatch @0x{addr:08x}"
 
     async def dma_side(base: int, seed: int, count: int) -> None:
         model = ReferenceModel()
@@ -564,9 +578,8 @@ async def test_random_mixed_traffic_vs_model(dut: Any) -> None:
         elif pick < 0.9:
             await _check_dma_read(dut, model, addr)
         else:
-            # Walker reads go through the shared level: they see CPU data
-            # only after a writeback, which fence.i forces.
-            await _fence_sync(dut)
+            # Walker reads probe the L1D on their way to the shared level, so
+            # they see CPU and DMA data alike with no fence in between.
             got = await _port_transaction(dut, "wup", write=False, addr=addr)
             assert got == model.read_line(addr), f"walker read mismatch @0x{addr:08x}"
     lq.stop()
