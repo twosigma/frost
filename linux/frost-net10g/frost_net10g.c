@@ -600,6 +600,23 @@ static void frost_reset_and_free(struct frost_priv *priv)
 	netif_carrier_off(ndev);
 }
 
+/*
+ * Stop the poll, the refill timer and the interrupt, as frost_reset_and_free()
+ * requires. Stop does this, and so does open when it fails after enabling
+ * NAPI: busy polling can run the poll with no interrupt, and a poll can arm
+ * the refill timer and unmask the device.
+ */
+static void frost_quiesce(struct frost_priv *priv)
+{
+	/* The poll is the only place the refill timer is armed */
+	napi_disable(&priv->napi);
+	timer_delete_sync(&priv->refill_timer);
+
+	writel(NET10G_IRQ_ALL, priv->base + NET10G_IRQ_MASK_CLR);
+	readl(priv->base + NET10G_IRQ_MASK);
+	synchronize_irq(priv->irq);
+}
+
 static int frost_up(struct net_device *ndev)
 {
 	struct frost_priv *priv = netdev_priv(ndev);
@@ -719,7 +736,7 @@ static int frost_up(struct net_device *ndev)
 			spin_lock_bh(&priv->ctrl_lock);
 			priv->running = false;
 			spin_unlock_bh(&priv->ctrl_lock);
-			napi_disable(&priv->napi);
+			frost_quiesce(priv);
 			err = -EIO;
 			goto err_reset;
 		}
@@ -758,14 +775,7 @@ static int frost_down(struct net_device *ndev)
 	priv->running = false;
 	spin_unlock_bh(&priv->ctrl_lock);
 
-	/* The poll is the only place the refill timer is armed */
-	napi_disable(&priv->napi);
-	timer_delete_sync(&priv->refill_timer);
-
-	writel(NET10G_IRQ_ALL, priv->base + NET10G_IRQ_MASK_CLR);
-	readl(priv->base + NET10G_IRQ_MASK);
-	synchronize_irq(priv->irq);
-
+	frost_quiesce(priv);
 	frost_reset_and_free(priv);
 	return 0;
 }
