@@ -1718,10 +1718,19 @@ module load_queue #(
   // Per-slot flush kill for the cached slots: a partial flush marks the
   // younger ones; the slot answering this cycle is drained at once, the rest
   // drain their later response.
+  // A slot already marked to drain is dead: its load's entry was freed by the
+  // flush that marked it, and the entry may since have been reallocated to a
+  // live load (the slot still names that index and the dead load's ROB tag,
+  // which a later flush cannot age). Such a slot is never judged again; its
+  // response is drained by cs_drop. Without this guard a second partial flush
+  // that read the stale tag as younger cleared lq_issued on the live occupant,
+  // which could then launch a second time: its first response completed and
+  // freed the entry, and the next load allocated there could accept the second
+  // response as its own data (a load completing with another load's value).
   logic [CachedSlots-1:0] cs_flushed;
   always_comb begin
     for (int sl = 0; sl < int'(CachedSlots); sl++) begin
-      cs_flushed[sl] = i_flush_en && cs_valid[sl] && lq_valid[cs_idx[sl]] &&
+      cs_flushed[sl] = i_flush_en && cs_valid[sl] && !cs_drop[sl] && lq_valid[cs_idx[sl]] &&
           (flush_all_entries || is_younger(cs_rob_tag[sl], i_flush_tag, i_rob_head_tag));
     end
   end
@@ -3531,6 +3540,70 @@ module load_queue #(
       // from corrupting a stalled write in an unconstrained formal harness.
       if (accept_mem_response && issued_is_amo && (amo_state != AMO_IDLE))
         $error("LQ: overlapping AMO response arrived while an owner was active");
+      // Cached-slot ownership. A live slot (cs_valid, not drop-marked) names
+      // exactly the launched load it carries: its entry is valid and issued
+      // and holds the slot's ROB tag, no two live slots name one entry, a
+      // launch never targets an entry a live slot already names, and a
+      // response completes only the load that launched it (both tiers). A
+      // drained slot re-judged by a later flush broke this contract
+      // (cs_flushed's !cs_drop guard): the live occupant's issued bit was
+      // cleared, it could launch twice, and its second response could
+      // complete the entry's next load. The identity check fires on the
+      // posedge after that flush, the earliest point the corruption is
+      // visible: these checks sample the state before the edge's NBAs, and
+      // the flush clears lq_issued through one.
+      for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+        if (cs_valid[sl] && !cs_drop[sl] &&
+            !(lq_valid[cs_idx[sl]] && lq_issued[cs_idx[sl]] &&
+              (lq_rob_tag[cs_idx[sl]] == cs_rob_tag[sl])))
+          $error(
+              "LQ: live cached slot %0d (tag %0d) names entry %0d (valid %0d issued %0d tag %0d)",
+              sl,
+              cs_rob_tag[sl],
+              cs_idx[sl],
+              lq_valid[cs_idx[sl]],
+              lq_issued[cs_idx[sl]],
+              lq_rob_tag[cs_idx[sl]]
+          );
+        for (int sl2 = sl + 1; sl2 < int'(CachedSlots); sl2++) begin
+          if (cs_valid[sl] && !cs_drop[sl] && cs_valid[sl2] && !cs_drop[sl2] &&
+              (cs_idx[sl] == cs_idx[sl2]))
+            $error("LQ: live cached slots %0d and %0d both name entry %0d", sl, sl2, cs_idx[sl]);
+        end
+        if (o_mem_read_en && cs_valid[sl] && !cs_drop[sl] && (cs_idx[sl] == launch_mem_issue_idx))
+          $error(
+              "LQ: launch of entry %0d while live cached slot %0d still names it",
+              launch_mem_issue_idx,
+              sl
+          );
+      end
+      if (o_mem_read_en &&
+          !(lq_valid[launch_mem_issue_idx] && !lq_issued[launch_mem_issue_idx] &&
+            (lq_rob_tag[launch_mem_issue_idx] == sq_check_rob_tag_q)))
+        $error(
+            "LQ: launch of entry %0d (valid %0d issued %0d tag %0d) from a staged copy tagged %0d",
+            launch_mem_issue_idx,
+            lq_valid[launch_mem_issue_idx],
+            lq_issued[launch_mem_issue_idx],
+            lq_rob_tag[launch_mem_issue_idx],
+            sq_check_rob_tag_q
+        );
+      if (accept_mem_response && resp_from_slot &&
+          (cs_rob_tag[resp_slot] != lq_rob_tag[issued_idx]))
+        $error(
+            "LQ: cached response of slot %0d (tag %0d) accepted by entry %0d holding tag %0d",
+            resp_slot,
+            cs_rob_tag[resp_slot],
+            issued_idx,
+            lq_rob_tag[issued_idx]
+        );
+      if (accept_mem_response && !resp_from_slot && (fast_rob_tag != lq_rob_tag[fast_idx]))
+        $error(
+            "LQ: fast-tier response (tag %0d) accepted by entry %0d holding tag %0d",
+            fast_rob_tag,
+            fast_idx,
+            lq_rob_tag[fast_idx]
+        );
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
