@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+#
+# FROST network device configuration
+#
+
+config NET_VENDOR_FROST
+	bool "FROST devices"
+	default y
+	help
+	  If you have a network device belonging to the FROST RISC-V SoC,
+	  say Y.
+
+	  Note that the answer to this question doesn't directly affect the
+	  kernel: saying N will just cause the configurator to skip all
+	  the questions about FROST devices.
+
+if NET_VENDOR_FROST
+
+config FROST_NET10G
+	tristate "FROST net10g 10GBASE-R Ethernet"
+	depends on OF && HAS_IOMEM && HAS_DMA
+	help
+	  Driver for the 10GBASE-R Ethernet controller of the FROST SoC: a
+	  soft MAC/PCS with RX and TX descriptor rings in system memory
+	  and one interrupt.
+
+	  To compile this driver as a module, choose M here. The module
+	  will be called frost_net10g.
+
+endif # NET_VENDOR_FROST

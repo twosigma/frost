@@ -160,10 +160,13 @@ reports `counters=unavailable` there. On FROST the phase must run:
 
 ## Kernel configuration contract
 
-The kernel is mainline 6.18.7 with one patch, the NIC driver
-(`board/frost/patches/linux/0001-net-ethernet-add-the-FROST-net10g-driver.patch`).
+The kernel is mainline 6.18.7 with the NIC driver,
+[`frost-net10g/`](frost-net10g/README.md), which `external.mk` and one patch
+(`board/frost/patches/linux/0001-net-ethernet-hook-in-the-FROST-net10g-driver.patch`)
+add to it.
 Its configuration is `board/frost/linux-frost.config`, applied as Buildroot's
-custom kernel config (both under `buildroot-external/`). The load-bearing
+custom kernel config (the patch, `external.mk` and the config are under
+`buildroot-external/`). The load-bearing
 options:
 
 | Option | Why |
@@ -181,7 +184,7 @@ options:
 | `CONFIG_OF`, `CONFIG_OF_EARLY_FLATTREE` | DT-driven probe; earlycon (`earlycon=uart8250,mmio32,0x40001000`). |
 | `CONFIG_NET`, `CONFIG_PACKET` | Packet sockets, which `frost_nettest` uses. |
 | `CONFIG_INET`, `CONFIG_IP_PNP`, `CONFIG_IP_PNP_DHCP` | IPv4, the NFS root's transport, configured by the kernel from `ip=`: static, or DHCP, the NFS root's default (no BOOTP or RARP). `CONFIG_IPV6` stays off: nothing needs it, and the autoconfiguration frames it sends whenever the interface comes up could fail `frost_nettest`'s idle checks. |
-| `CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G` | The built-in `frost_net10g` driver for the `frost,net10g` node (from the kernel patch). |
+| `CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G` | The built-in `frost_net10g` driver for the `frost,net10g` node (`frost-net10g/`). |
 
 ## Bring-up probe
 
@@ -256,7 +259,9 @@ The initramfs's klibc `ipconfig` reads `ip=` in the kernel's syntax, so
 `FROST_LINUX_IP` takes the same forms, and its `nfsmount` accepts the same
 options and adds `nolock`, but leaves `rsize` and `wsize` to the server, where
 the kernel's nfsroot asks for 4 KiB. The initramfs must hold the NFS client
-and the NIC driver. Without `FROST_LINUX_NFSROOT`, the default bootargs run a
+and the NIC driver
+([`frost-net10g/README.md`](frost-net10g/README.md#an-nfs-root-needs-the-module-in-the-initramfs)).
+Without `FROST_LINUX_NFSROOT`, the default bootargs run a
 substitute initramfs's `/sbin/init`, as they do Buildroot's; an
 initramfs-tools initramfs, which starts at `/init`, boots only through the NFS
 root above. Debian 13's kernel puts the DTB at `0x82200000`, which leaves

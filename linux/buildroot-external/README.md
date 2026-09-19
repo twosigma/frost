@@ -22,10 +22,10 @@
 This tree builds the FROST Linux lane and packages it into the memory images
 that the cocotb `linux_boot` test and the FPGA JTAG loader consume:
 
-- `frost_rv64_defconfig`: the mainline Sv39 kernel (6.18.7 plus the NIC
-  driver patch, `board/frost/linux-frost.config`) under OpenSBI fw_jump, with
-  a musl ELF userspace (static busybox, `frost-stress`, `perf` with elfutils)
-  on the Bootlin riscv64 external toolchain, packed with
+- `frost_rv64_defconfig`: the mainline Sv39 kernel (6.18.7 with the NIC
+  driver from `../frost-net10g`, `board/frost/linux-frost.config`) under
+  OpenSBI fw_jump, with a musl ELF userspace (static busybox, `frost-stress`,
+  `perf` with elfutils) on the Bootlin riscv64 external toolchain, packed with
   `board/frost/frost_boot_image.py` from `post-image-mmu.sh` (which also
   builds the firmware from the `linux/opensbi` submodule via
   `linux/opensbi_build.py`). Build it with `O=linux/build-mmu`.
@@ -41,7 +41,7 @@ tree and carries no Buildroot source. Use the pinned submodule below.
 ```
 linux/buildroot-external/
 ├── external.desc                          # BR2_EXTERNAL manifest (name: FROST)
-├── external.mk                            # package include hook
+├── external.mk                            # package include hook; installs ../frost-net10g into the kernel tree
 ├── Config.in                              # package menu hook
 ├── configs/
 │   └── frost_rv64_defconfig               # Buildroot defconfig (OpenSBI + Sv39, musl, perf)
@@ -62,7 +62,7 @@ linux/buildroot-external/
     └── patches/                           # BR2_GLOBAL_PATCH_DIR
         └── linux/
             ├── linux.hash                 # sha256 for the custom linux-6.18.7 tarball (BR2_DOWNLOAD_FORCE_CHECK_HASHES)
-            └── 0001-net-ethernet-add-the-FROST-net10g-driver.patch # the frost_net10g driver
+            └── 0001-net-ethernet-hook-in-the-FROST-net10g-driver.patch # adds drivers/net/ethernet/frost/ to the kernel build
 ```
 
 ## Buildroot pin
@@ -199,12 +199,26 @@ that the file uses Kconfig syntax `olddefconfig` understands. Each symbol is
 commented in the config itself; the contract is in
 [`../README.md`](../README.md), "Kernel configuration contract".
 
-The NIC driver (`CONFIG_FROST_NET10G`) is not in mainline:
-`board/frost/patches/linux/0001-net-ethernet-add-the-FROST-net10g-driver.patch`
-adds it, and Buildroot applies every `*.patch` in that directory when it
-extracts the kernel (`BR2_GLOBAL_PATCH_DIR`), so a changed patch needs the
-`linux-dirclean` target before the next build. Refresh the patch when the
-pinned kernel version changes.
+The NIC driver (`CONFIG_FROST_NET10G`) is not in mainline. Its one source
+is [`../frost-net10g`](../frost-net10g/README.md), which is also the DKMS
+package that builds it as a module for Debian's kernels. Two pieces put it
+into this kernel. The patch
+`board/frost/patches/linux/0001-net-ethernet-hook-in-the-FROST-net10g-driver.patch`
+adds `drivers/net/ethernet/frost/` to the kernel's `drivers/net/ethernet`
+Kconfig and Makefile. Buildroot applies every `*.patch` in that directory
+when it extracts the kernel (`BR2_GLOBAL_PATCH_DIR`), so a changed patch
+needs the `linux-dirclean` target before the next build. Then `external.mk`
+installs the driver's `Kconfig`, `Makefile` and `frost_net10g.c` into that
+directory after patching (`LINUX_POST_PATCH_HOOKS`), and `frost_net10g.c` and
+`Makefile` again before every kernel build (`LINUX_PRE_BUILD_HOOKS`), so the
+`linux-rebuild` target picks up an edited driver. The kernel configuration
+reads `Kconfig` before any build step, so an edited `Kconfig`, like a changed
+patch, needs `linux-dirclean`. `legal-info` saves the three files and the
+driver's README next to the kernel's tarball and patches
+(`LINUX_POST_LEGAL_INFO_HOOKS`). Refresh the
+patch when the pinned kernel version changes.
+`tests/test_frost_net10g_driver.py` checks that the patch, the hooks and the
+driver directory agree.
 
 ## Notes, assumptions, and gaps
 
