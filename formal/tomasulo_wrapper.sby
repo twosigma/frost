@@ -13,7 +13,17 @@ fmul_repair_bmc: mode bmc
 fmul_repair_bmc: depth 4
 
 [engines]
-smtbmc boolector
+bmc: smtbmc boolector
+cover: smtbmc boolector
+# fmul_repair_bmc runs without smtbmc's presat query: the load queue's
+# dead-slot flush guard turned that query pathological for boolector, from
+# 1.5 minutes to past the runner's 40-minute ceiling, while the assertion
+# proof it precedes still finishes in 13 seconds. presat only checks that the
+# harness is satisfiable before the assertions are checked, and the bmc task
+# above runs it over the same harness and assumptions -- the tasks differ
+# only in ENABLE_DISPATCH_DONE_REPAIR, which is internal logic -- so a
+# harness that constrained itself into vacuity would still be caught there.
+fmul_repair_bmc: smtbmc --nopresat boolector
 
 [script]
 read -formal -sv riscv_pkg.sv
