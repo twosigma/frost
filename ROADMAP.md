@@ -6,9 +6,9 @@ riscv64 distribution, a multi-hart SMP system, and explicit RV64 performance
 parity with the best the former RV32 design could have reached. Phases are
 sequential; each one keeps every existing suite green (riscv-arch-test,
 riscv-tests, torture, formal, the cocotb program suites in both memory tiers,
-the Linux boot jobs), re-closes X3 timing at 300 MHz post-route before it is
-called done, keeps the core RTL vendor-primitive-free, and updates the
-documentation it makes stale.
+the Linux build and QEMU boot jobs, and the hardware regression's Linux stage),
+re-closes X3 timing at 300 MHz post-route before it is called done, keeps the
+core RTL vendor-primitive-free, and updates the documentation it makes stale.
 
 ## Phase 0: Harden the Linux substrate (done)
 
@@ -47,9 +47,9 @@ on hardware, with working `perf` basics; the debug module exercised once
 over its BSCANE2 transport on the board (OpenOCD attach, halt/step/resume) —
 the benches drive only the generic TAP, so this is the transport's first
 functional coverage; and the no-MMU Linux lane retired. The MMU lane already
-carries its own cocotb and QEMU boot jobs, so dropping the no-MMU build and its
+carried its own cocotb and QEMU boot jobs, so dropping the no-MMU build and its
 two boot jobs, the nommu defconfig and device tree, and the FROST_LINUX_LANE
-switch removes duplication rather than coverage, and leaves no default lane that
+switch removed duplication rather than coverage, and left no default lane that
 can silently validate the wrong kernel.
 
 Exit met 2026-09-08: mainline rv64 MMU Linux (6.18.7) boots unpatched in CI
@@ -86,6 +86,12 @@ host over that link, and Debian 13 boots from an NFS root over it, accepts SSH
 logins and installs packages with apt, leaving the soak as the remaining exit
 item; the full-clock build has yet to close timing. The small RX buffer
 with no PAUSE means DMA must drain independently of software.
+Booting the kernel on the RTL is retired with this phase's move to a
+distribution kernel: simulation reached only early boot in hours and missed both
+core bugs Debian's kernel exposed on the board, so the Linux gate is the hardware
+regression's Linux stage plus the board soaks, with the QEMU job covering
+userspace in CI. The kernel's timer, trap, atomic and MMIO patterns keep their
+directed cocotb apps, and OpenSBI keeps `opensbi_smoke`.
 A host-backed PCIe/virtio block path is kept as an optional deployment
 capability, not the Phase 4 storage mechanism.
 

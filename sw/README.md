@@ -366,7 +366,7 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `freertos_demo/` | FreeRTOS preemptive multitasking demo (requires `git submodule update --init`) |
 | `hello_world/` | Minimal UART/timer sanity check: prints a greeting every second |
 | `isa_test/` | ISA self-test for all Frost extensions (RV64GCB + M-mode) |
-| `linux_boot/` | Linux boot images: Buildroot builds OpenSBI, the Sv39 kernel and the initramfs from the vendored submodules, then `frost_boot_image.py` packs them into the low-BRAM boot shim (`sw.mem`) and the DDR image (`sw_ddr.mem`) (`linux/README.md`, "OpenSBI boot chain") |
+| `linux_boot/` | Linux boot images: Buildroot builds OpenSBI, the Sv39 kernel and the initramfs from the vendored submodules, then `frost_boot_image.py` packs them into the low-BRAM boot shim (`sw.mem`) and the DDR image (`sw_ddr.mem`) (`linux/README.md`, "OpenSBI boot chain"). A board app with no cocotb entry: `load_software.py` loads it, and the hardware regression's Linux stage and `fpga/linux_boot_soak.py` are where the kernel is validated (`linux/README.md`, "Consumers") |
 | `memory_test/` | Arena allocator and malloc/free test suite |
 | `opensbi_smoke/` | OpenSBI fw_jump (the `linux/opensbi` submodule, unmodified, built by `linux/opensbi_build.py`) boots a bare S-mode payload through the FROST boot layout (`frost_boot_image.py`): SBI probes, Sstc timers, IPI, console, the M-mode misaligned-access emulation under Sv39, FWFT delegation, and the SBI PMU counter sequence. The images are layout-fixed, so `MEM_CONFIG` is ignored |
 | `packet_parser/` | FIX protocol message parser demo with latency measurement |
@@ -650,10 +650,6 @@ cycles (the default `COCOTB_MAX_CYCLES`; some apps carry larger budgets).
 
 Special cases:
 - hello_world: open-ended (loops forever); passes when "Hello, world!" is printed
-- linux_boot: passes when the "Linux version" boot banner is printed; the CI
-  linux-boot-cocotb-mmu job instead runs the full window
-  (`FROST_LINUX_RUN_FULL=1`) and checks boot health afterwards with
-  `tests/check_mmu_linux_boot.py`
 - uart_echo: interactive; the harness injects UART input and passes when the prompt, echo, and response are observed (no `<<PASS>>` marker)
 
 ### Other details

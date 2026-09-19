@@ -564,13 +564,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "coverage of the loader write path"
         ),
     ),
-    "linux_boot": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="linux_boot",
-        description="No-MMU Linux boot (kernel Image in DDR)",
-        include_in_pytest=False,
-    ),
+    # Booting the Linux kernel on the RTL is retired: the simulated core only
+    # reached early boot in hours, and the two core bugs the kernel exposed
+    # (a load-queue stale slot, a page-table walker missing the L1D's dirty
+    # lines) were both found on hardware. Linux is gated by the hardware
+    # regression's Linux stage (fpga/hw_regression.py) and the board soaks
+    # (fpga/linux_boot_soak.py). The firmware half of the chain still runs
+    # here as opensbi_smoke, and the kernel's timer, trap and atomic patterns
+    # as the linux_irq_*, linux_clksrc_faithful and tick_torture apps.
     "opensbi_smoke": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

@@ -242,13 +242,16 @@ with per-board score gates, then boots Linux to the Buildroot login prompt.
 counters, which holds for the rated-clock production bitstream; a
 `--cpu-clock-div` build includes them by default, so the stage is dropped
 whenever `FROST_CPU_CLK_HZ` names such a bitstream.
-The Linux stage boots the OpenSBI + Sv39 image with the X3's whole 1 GiB of
-DDR advertised (`load_software.py` passes the board's DDR size into
-`linux_boot`; see `linux/README.md`, "Memory map"), requires the userspace
-stress token, logs in, runs `perf stat` on the cycle and instruction counters,
-then runs `frost_nettest`, which drives the NIC driver through its loopback
-feature (the NIC's raw loopback on a shared MAC clock, the transceiver's PMA
-loopback otherwise) and must print `FROST_NET_LOOPBACK_PASS`:
+The Linux stage is where booting the kernel is validated: nothing boots it in
+simulation (`linux/README.md`, "Consumers"), and `fpga/linux_boot_soak.py`
+repeats the boot for a soak. The stage boots the OpenSBI + Sv39 image with the
+X3's whole 1 GiB of DDR advertised (`load_software.py` passes the board's DDR
+size into `linux_boot`; see `linux/README.md`, "Memory map"), requires the
+userspace stress token, logs in, runs `perf stat` on the cycle and instruction
+counters, then runs `frost_nettest`, which drives the NIC driver through its
+loopback feature (the NIC's raw loopback on a shared MAC clock, the
+transceiver's PMA loopback otherwise) and must print
+`FROST_NET_LOOPBACK_PASS`:
 
 ```bash
 ./fpga/hw_regression.py --board x3
