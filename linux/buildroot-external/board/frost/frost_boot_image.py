@@ -142,8 +142,8 @@ DMA_ENGINE_PLIC_SOURCE = 3
 # The NIC (hw/rtl/peripherals/nic): its register window closes the strongly
 # ordered MMIO region (hw/rtl/cpu_and_mem/cpu_and_mem.sv MmioSizeBytes). The
 # node follows the binding in linux/buildroot-external/board/frost/
-# frost,net10g.yaml; the frost_net10g driver is the kernel patch
-# board/frost/patches/linux/0001-net-ethernet-add-the-FROST-net10g-driver.patch.
+# frost,net10g.yaml; the frost_net10g driver that binds it is
+# linux/frost-net10g.
 NIC_BASE = 0x4003_0000
 NIC_SIZE = 0x1000
 NIC_PLIC_SOURCE = 4

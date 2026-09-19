@@ -2,7 +2,7 @@
 
 This guide boots Debian 13 (trixie, riscv64) on the Alveo X3 with its root
 filesystem on an NFSv3 export, reached over the NIC's 10GBASE-R link. The
-kernel (Linux 6.18.7 with the `frost,net10g` driver patch), OpenSBI and the
+kernel (Linux 6.18.7 with the `frost,net10g` driver), OpenSBI and the
 device tree come from this repository's Buildroot-based build, which
 `sw/apps/linux_boot` packs when `load_software.py` loads it; Debian supplies
 only the root filesystem, so no Debian kernel or installer is involved. The

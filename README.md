@@ -294,7 +294,7 @@ frost/
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
 │       ├── nic_loopback/     # NIC bring-up and rings through a loopback
 │       └── ...               # Other applications
-├── linux/                    # Linux image build: Buildroot + OpenSBI submodules, external tree, firmware helper
+├── linux/                    # Linux image build: Buildroot + OpenSBI submodules, external tree, firmware helper, NIC driver (also a DKMS package)
 ├── verif/                    # Verification infrastructure
 │   ├── cocotb_tests/         # Cocotb test cases
 │   ├── models/               # Software reference models

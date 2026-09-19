@@ -1,0 +1,9 @@
+# An external module build in this directory (make -C <kernel build dir> M=$PWD)
+*.ko
+*.mod
+*.mod.c
+*.o
+.*.cmd
+.*.d
+Module.symvers
+modules.order

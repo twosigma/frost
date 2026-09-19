@@ -41,12 +41,16 @@ repos:
         types_or: [c, c++]
         # env_v/: the riscv-tests virtual-memory environment adapted from
         # upstream (its own license and form), like riscv_test.h.
+        # linux/frost-net10g/: a Linux driver in the kernel's coding style
+        # (scripts/checkpatch.pl) and the kernel's license, GPL-2.0-only OR
+        # BSD-2-Clause; the insert-license hooks below skip it too.
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             sw/apps/riscv_tests/riscv_test\.h|
-            sw/apps/riscv_tests/env_v/.*
+            sw/apps/riscv_tests/env_v/.*|
+            linux/frost-net10g/.*
           )$
 
   # C/C++ - clang-tidy via a wrapper script that sets the RISC-V target and
@@ -63,14 +67,16 @@ repos:
         types_or: [c, c++]
         # The buildroot package sources are Linux-userspace programs; the
         # wrapper compiles against the bare-metal RISC-V include paths, where
-        # Linux headers (sys/mman.h etc.) do not exist.
+        # Linux headers (sys/mman.h etc.) do not exist. linux/frost-net10g/
+        # is kernel code, which needs a kernel tree's headers.
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             sw/apps/riscv_tests/riscv_test\.h|
             sw/apps/riscv_tests/env_v/.*|
-            linux/buildroot-external/package/.*/src/.*
+            linux/buildroot-external/package/.*/src/.*|
+            linux/frost-net10g/.*
           )$
 
   # SystemVerilog/Verilog - Verible formatter and linter
@@ -122,7 +128,8 @@ repos:
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             sw/apps/riscv_tests/riscv_test\.h|
-            sw/apps/riscv_tests/env_v/.*
+            sw/apps/riscv_tests/env_v/.*|
+            linux/frost-net10g/.*
           )$
         args:
           - --license-filepath=.license-header.txt
@@ -142,6 +149,7 @@ repos:
       - id: insert-license
         name: insert-license (Tcl/Makefile/Shell)
         files: (\.tcl$|Makefile$|\.mk$|\.sh$)
+        exclude: ^linux/frost-net10g/
         args:
           - --license-filepath=.license-header.txt
           - --comment-style=#
