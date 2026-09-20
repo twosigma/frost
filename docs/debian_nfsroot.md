@@ -12,12 +12,12 @@ initramfs with this repository's OpenSBI and device tree
 `ip=` syntax, MAC address, advertised memory) is in
 [`linux/README.md`](../linux/README.md), "NFS root" and "Memory map".
 
-The steps were verified on an X3 whose bitstream was built with
-`--cpu-clock-div 2`, a 150 MHz CPU clock
-([`fpga/README.md`](../fpga/README.md), "Functional-validation builds"), with
-Debian's 6.12.107+deb13-riscv64 kernel; the full-clock build has yet to close
-timing. The examples use 192.0.2.1 for the server, 192.0.2.2 for the board and
-`/srv/nfs/debian` for the export; substitute your own.
+The steps were verified on an X3 at its rated 300 MHz clock with Debian's
+6.12.107+deb13-riscv64 kernel. A half-clock bitstream
+(`--cpu-clock-div 2`, [`fpga/README.md`](../fpga/README.md), "Functional-validation
+builds") boots the same way, roughly twice as slowly. The examples use 192.0.2.1
+for the server, 192.0.2.2 for the board and `/srv/nfs/debian` for the export;
+substitute your own.
 
 ## Requirements
 
@@ -126,8 +126,7 @@ EOF
   first.
 - `/etc/fstab` needs no root entry; the initramfs mounts `/`.
 - root has no usable password: log in over SSH, or use the autologin above
-  where the console getty starts; at 150 MHz it does not (see
-  Troubleshooting).
+  on the console.
 
 ## 3. Build the NIC driver into the initramfs
 
@@ -178,14 +177,13 @@ restart `nfs-server`.
 
 ## 5. Boot
 
-Build and program the half-clock bitstream, open the UART console, and load
-the tree's kernel and initramfs:
+Build and program the bitstream, open the UART console, and load the tree's
+kernel and initramfs:
 
 ```bash
-./fpga/build/build.py x3 --cpu-clock-div 2
+./fpga/build/build.py x3
 ./fpga/program_bitstream/program_bitstream.py x3
 K=6.12.107+deb13-riscv64   # step 3's K, the version in the tree's /boot
-FROST_CPU_CLK_HZ=150000000 \
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
 FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
 FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
@@ -221,20 +219,20 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
   at that version means one kernel is under test either way; a root on a
   different version still boots here, since these variables override the pin.
 
-At 150 MHz the console shows the following, and `systemd-analyze` then
-reports about 2 min 21 s in the kernel, initramfs included, and 3 min 20 s in
-userspace:
+At 300 MHz the console shows the following, and `systemd-analyze` then
+reports about 1 min 9 s in the kernel, initramfs included, and 1 min 42 s in
+userspace. A half-clock bitstream takes roughly twice as long at every step:
 
 | Kernel time | Console |
 |---|---|
-| ~23 s | `Freeing initrd memory:` |
-| ~40 s | `Run /init as init process`, then `Loading, please wait...` |
-| ~79 s | `frost_net10g 40030000.ethernet eth0: FROST net10g, IRQ <n>, MAC <board-mac>`, after two lines saying that the module taints the kernel |
-| ~85 s | `IP-Config: eth0 complete:` and the address |
-| ~110 s | `Begin: Running /scripts/nfs-bottom ... done.`, with no `Retrying nfs mount` lines before it |
-| ~148 s | the systemd banner, then `Welcome to Debian GNU/Linux 13 (trixie)!` |
-| ~4 min 45 s | `[ TIME ] Timed out waiting for device dev-ttyS0.device`: the console gets no login (see Troubleshooting) |
-| ~5 min 40 s | `Reached target multi-user.target`; SSH answers |
+| ~12 s | the serial console hands over: `printk: legacy console [ttyS0] enabled` |
+| ~20 s | `Run /init as init process`, then `Loading, please wait...` |
+| ~40 s | `frost_net10g 40030000.ethernet eth0: FROST net10g, IRQ <n>, MAC <board-mac>`, after two lines saying that the module taints the kernel |
+| ~45 s | `IP-Config: eth0 complete:` and the address |
+| ~55 s | `Begin: Running /scripts/nfs-bottom ... done.`, with no `Retrying nfs mount` lines before it |
+| ~81 s | the systemd banner, then `Welcome to Debian GNU/Linux 13 (trixie)!` |
+| ~2 min | `Found device dev-ttyS0.device`, then the console login |
+| ~3 min | `Reached target multi-user.target`; SSH answers |
 
 Two other messages look like errors but are expected. Early on, the kernel
 lists `boot=nfs`, `nfsroot=` and `ip=` as
@@ -291,7 +289,8 @@ An apt proxy replaces NAT: `Acquire::http::Proxy "http://<proxy>:<port>/";`
 in `/srv/nfs/debian/etc/apt/apt.conf.d/90proxy`.
 
 If no time source is reachable yet, set the clock once from a host whose
-clock is right, then update; at 150 MHz each apt step takes minutes:
+clock is right, then update. Each apt step takes minutes: the work is the
+board's, and the root filesystem is on the far side of the link:
 
 ```bash
 ssh root@192.0.2.2 date -s @$(date +%s)
@@ -340,7 +339,7 @@ A kernel update takes effect only after a new load (see "Operation").
 | Permission errors from systemd and services after the root mounts | The export squashes root: add `no_root_squash` and run `exportfs -ra`. |
 | `nfs: server 192.0.2.1 not responding, still trying` | The server or the link is down. The hard mount waits and logs `nfs: server 192.0.2.1 OK` when it returns. |
 | systemd stalls, or the root stops responding once userspace starts | Something renamed or reconfigured eth0: check the `99-default.link` mask and that no `interfaces` stanza, DHCP client, systemd-networkd or NetworkManager touches eth0. |
-| `[ TIME ] Timed out waiting for device dev-ttyS0.device - /dev/ttyS0.`, then `[DEPEND] Dependency failed for serial-getty…S0.service - Serial Getty on ttyS0.` | Expected at 150 MHz: udev reaches ttyS0 only after systemd has stopped waiting for the device (`DefaultDeviceTimeoutSec`, 90 s by default), so the console has no login prompt. SSH is unaffected. |
+| `[ TIME ] Timed out waiting for device dev-ttyS0.device - /dev/ttyS0.`, then `[DEPEND] Dependency failed for serial-getty…S0.service - Serial Getty on ttyS0.` | udev reached ttyS0 after systemd stopped waiting for it (`DefaultDeviceTimeoutSec`, 90 s by default), so the console has no login prompt; SSH is unaffected. At 300 MHz the device appears around 51 s and the getty starts, so this is a symptom of a slower bitstream or a slow server: raise the timeout with a drop-in under `/etc/systemd/system.conf.d` if you need the console login on one. |
 | `eth0: re-enabled RX after a MAC domain reset (N)` | Informational: the transceiver reset its receiver while the link was down, and the driver enabled receive again when the carrier returned. |
 | apt: `Release file for ... is not valid yet` | The clock is behind. Fix the time source, or set the date as in step 7. |
 | apt: `Temporary failure resolving ...` | No DNS: the tree's `/etc/resolv.conf`, or the board's route to that resolver. |
