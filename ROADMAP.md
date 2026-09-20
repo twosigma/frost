@@ -132,19 +132,20 @@ architectural instruction penalty. The former RV32 hardware also had 8-byte
 CoreMark list heads where lp64d has 16-byte heads. RTL cannot make those ABI
 facts disappear, but it can prevent them from costing cycles. The target is
 4 CoreMark/MHz at 322.265625 MHz, so 1289 CoreMark, single core, measured on
-the board. That clock is 10.3125 Gb/s over a 32-bit datapath, the NIC's own
-datapath rate, so the CPU shares its clock domain instead of crossing into
-it; it was this design's original clock, and 300 MHz is a retreat taken to
-make closure easier. Against what the design delivers today, 1015 CoreMark
+the board. That clock is this design's original target, reached by the MMCM
+recipe kept as a comment in `boards/x3/x3_frost.sv`: a 10GbE line-rate
+frequency, exactly twice the MAC's 161.1328125 MHz fabric word clock, though
+still a separate domain from it. The 300 MHz in place today is a retreat taken
+to make closure easier. Against what the design delivers today, 1015 CoreMark
 at 300 MHz measured on the board, 3.38 CoreMark/MHz, the target is a 1.27x
-step: 7.4% from the clock and 18.2% from work per cycle. It replaces an earlier planning bar
-of approximately 1,100 CoreMark, which was a counterfactual from instruction
-counts rather than a measurement. For outside reference, the highest
-soft-core CoreMark measured on FPGA fabric that a survey of vendor,
-academic and EEMBC sources could identify is 452 at 100 MHz, and no soft-core
-CoreMark has been published above 200 MHz; per-MHz figures up to 4.5 exist
-at those clocks, which is why the bar here is work per second at a clock the
-design closes, with CoreMark/MHz recorded beside it as a diagnostic.
+step: 7.4% from the clock and 18.2% from work per cycle. It replaces an
+earlier planning bar of approximately 1,100 CoreMark, which was a
+counterfactual from instruction counts rather than a measurement. For outside reference, the highest soft-core CoreMark measured on FPGA fabric
+that a survey of vendor, academic and EEMBC sources could identify is 452 at
+100 MHz, and no soft-core CoreMark has been published above 200 MHz; per-MHz
+figures up to 4.5 exist at those clocks, which is why the bar here is work per
+second at a clock the design closes, with CoreMark/MHz recorded beside it as a
+diagnostic.
 Immediate regression recovery was completed in Phase 3. With the former
 16 KiB low-memory predecode overlay, a matched two-run build A/B averaged
 361,535 stock versus 353,923 tuned cycles: tuning removed 11.7% of retired

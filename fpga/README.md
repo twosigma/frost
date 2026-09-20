@@ -203,7 +203,7 @@ This does not establish all-app or interactive Linux-shell coverage.
 
 Extension 0.3 uses one repository-backed application/layout/clock picker for
 Configure Target and both load-and-debug commands, saving completed debug
-choices for later Attach. The repository currently marks 51 of 53 loader apps
+choices for later Attach. The repository currently marks 53 of 55 loader apps
 as eligible. `linux_boot` and `opensbi_smoke` remain visible with load-only
 reasons because their composite images require multi-ELF debugging. Cancelling
 or rejecting a selection preserves an existing debug session before handoff.
@@ -750,7 +750,7 @@ Arguments:
   the same explicit server and selection contracts as the programmer above.
 - `--debug`: use the `FROST_DEBUG=1` profile (`-Og -g3`, normally with frame
   pointers and no loop unrolling; standalone assembly gets DWARF too).
-  Available for the repository's 50 single-ELF debug apps. `linux_boot` and
+  Available for the repository's 53 single-ELF debug apps. `linux_boot` and
   `opensbi_smoke` remain load-only composite image flows. The profile adds
   debugging information without a software startup wait loop. `isa_test`
   opts out of frame pointers because its instruction tests clobber `s0`;

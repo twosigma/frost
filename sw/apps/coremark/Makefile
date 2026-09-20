@@ -107,9 +107,9 @@ FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zi
 # 64 KiB overlay recovers 305,059 / 304,727 cycles with the exact same tuned
 # executable, a 13.85% cycle reduction from the regressed RTL. This is an RTL
 # recovery, not another compiler retune. ROADMAP Phase 3 tracks it; see the
-# X3 baseline note in fpga/hw_regression.py. The updated board score is not
-# measured yet. The original compiler-retune checks validated both seed sets
-# on the tuned build (performance 0xe9f5 and validation 0x18f2 ->
+# X3 baseline note in fpga/hw_regression.py, armed from the board
+# measurement. The original compiler-retune checks validated both seed sets on
+# the tuned build (performance 0xe9f5 and validation 0x18f2 ->
 # crclist 0xe3c1, crcmatrix 0x0747, crcstate 0x8d84).
 #
 # 2026-09-20 software-only sweep at this RTL: 186 configurations against the
