@@ -215,8 +215,8 @@ def _linux_boot_preflight() -> None:
         print(
             "Note: no cached test initramfs found -- linux_boot will build the "
             "userspace + OpenSBI from source now.\n"
-            "  The FIRST build compiles a full rv64 cross toolchain and can take "
-            "30-60 min; later loads reuse\n"
+            "  The FIRST build downloads an rv64 cross toolchain and takes a few "
+            "minutes; later loads reuse\n"
             "  the cached build and only re-pack the DDR image for this board "
             "(seconds).",
             file=sys.stderr,
@@ -267,9 +267,10 @@ def compile_app_for_board(
     if mem_config:
         env["MEM_CONFIG"] = mem_config
 
-    # A cold linux_boot build includes the cross toolchain and takes 30-60 min.
-    # Its clean target preserves the cached Buildroot build and the Debian
-    # kernel cache, and removes only board-specific packed output.
+    # A cold linux_boot build downloads the cross toolchain and Debian's kernel
+    # packages, a few minutes; the timeout stays generous for a slow link. Its
+    # clean target preserves the cached Buildroot build and the Debian kernel
+    # cache, and removes only board-specific packed output.
     is_linux_boot = app_name == "linux_boot"
     clean_timeout = 300 if is_linux_boot else 30
     build_timeout = 5400 if is_linux_boot else 120

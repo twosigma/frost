@@ -71,9 +71,10 @@ sw/apps/*/sw.S
 # The test initramfs with the NIC module appended, composed for each pack.
 /sw/apps/linux_boot/rootfs.cpio
 
-# FROST MMU Linux: out-of-tree Buildroot build output + download/ccache
-# caches. Regenerated from the linux/buildroot submodule + linux/buildroot-external
-# tree by `make -C sw/apps/linux_boot` (and the CI build-frost-linux-mmu job).
+# FROST MMU Linux: out-of-tree Buildroot build output (firmware + test
+# userspace; no kernel is built) + download/ccache caches. Regenerated from the
+# linux/buildroot submodule + linux/buildroot-external tree by
+# `make -C sw/apps/linux_boot` (and the CI build-frost-linux-mmu job).
 # /linux/build/ was the retired rv32 lane's output dir; the entry stays so
 # checkouts that still carry that local tree keep a quiet git status.
 /linux/build/

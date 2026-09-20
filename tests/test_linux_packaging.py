@@ -14,7 +14,8 @@
 
 """Static contracts for the Linux configurations, device trees, and boot images.
 
-Covers the OpenSBI boot-image packer and the kernel configuration.
+Covers the OpenSBI boot-image packer, the pinned Debian kernel and the images
+built around it.
 """
 
 import hashlib
@@ -33,14 +34,6 @@ from typing import Any
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-MMU_KERNEL_CONFIG = (
-    REPO_ROOT
-    / "linux"
-    / "buildroot-external"
-    / "board"
-    / "frost"
-    / "linux-frost.config"
-)
 CPU_AND_MEM = REPO_ROOT / "hw" / "rtl" / "cpu_and_mem" / "cpu_and_mem.sv"
 SBI_PACKER = (
     REPO_ROOT
@@ -262,8 +255,9 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING
     assert "bootargs" not in dts and "initrd" not in dts
     # The SBI-v3 EVENT_GET_INFO probe only reports events present in OpenSBI's
-    # hw_event_map, which comes from this node; without it perf reports even
-    # the fixed cycle/instret counters as unsupported.
+    # hw_event_map, which comes from this node; without it perf_event_open, which
+    # is how frost_stress reads the counters, reports even the fixed
+    # cycle/instret counters as unsupported.
     assert 'compatible = "riscv,pmu";' in dts
     assert "riscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>" in dts
     assert "<0x00000002 0x00000002 0x00000004>" in dts
@@ -1061,46 +1055,42 @@ def test_linux_boot_make_rejects(
     assert not (app / "sw_ddr.mem").exists()
 
 
-def test_mmu_kernel_config_uses_kconfig_syntax() -> None:
-    """Buildroot's kernel mini-config uses syntax olddefconfig understands.
+def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
+    tmp_path: Path,
+) -> None:
+    """A Buildroot directory configured before the kernel removal is reported.
 
-    It also keeps its load-bearing symbols, networking, the NFS root, systemd's
-    requirements and the NIC driver among them, keeps IPv6 off, and leaves out
-    the M-mode build's. Nothing boots this kernel any more -- FROST boots
-    Debian's (linux/debian_kernel.py) -- so this guards the retained
-    configuration rather than the booted one; it goes when the file does.
+    Its .config still selects BR2_LINUX_KERNEL and points BR2_GLOBAL_PATCH_DIR at
+    board/frost/patches, which no longer exists, so Buildroot would stop with
+    "BR2_GLOBAL_PATCH_DIR contains nonexistent directory" before running any
+    target. The Makefile has to catch that first and name the fix, and it must
+    not invoke Buildroot: re-running the defconfig would clear the symbols but
+    leave the deselected perf and elfutils installed in target/.
     """
-    malformed = []
-    for line_number, line in enumerate(MMU_KERNEL_CONFIG.read_text().splitlines(), 1):
-        if re.match(r"# CONFIG_\w+ is not set", line) and not re.fullmatch(
-            r"# CONFIG_\w+ is not set", line
-        ):
-            malformed.append((line_number, line))
-        if re.match(r"CONFIG_\w+=", line) and "#" in line:
-            malformed.append((line_number, line))
-    assert not malformed, f"malformed Kconfig lines: {malformed}"
-    text = MMU_KERNEL_CONFIG.read_text()
-    for required in (
-        "CONFIG_MMU=y",
-        "CONFIG_RISCV_SBI=y",
-        "CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS=y",
-        "CONFIG_RISCV_PMU_SBI=y",
-        "CONFIG_SERIAL_8250_CONSOLE=y",
-        "CONFIG_NET=y",
-        "CONFIG_INET=y",
-        "CONFIG_IP_PNP=y",
-        "CONFIG_IP_PNP_DHCP=y",
-        "# CONFIG_IPV6 is not set",
-        "CONFIG_NFS_FS=y",
-        "CONFIG_NFS_V3=y",
-        "CONFIG_ROOT_NFS=y",
-        "CONFIG_CGROUPS=y",
-        "CONFIG_UNIX=y",
-        "CONFIG_FROST_NET10G=y",
-    ):
-        assert required in text, required
-    for forbidden in ("CONFIG_NONPORTABLE=y", "CONFIG_RISCV_M_MODE=y"):
-        assert forbidden not in text, forbidden
+    app = _linux_boot_tree(tmp_path)
+    # A frost-stress source newer than the images, so the Buildroot stage runs.
+    sources = (
+        tmp_path / "linux" / "buildroot-external" / "package" / "frost-stress" / "src"
+    )
+    sources.mkdir(parents=True)
+    (sources / "frost_stress.c").write_text("int main(void) { return 0; }\n")
+    # A Buildroot that shouts if it is invoked at all.
+    buildroot = tmp_path / "linux" / "buildroot"
+    buildroot.mkdir()
+    (buildroot / "Makefile").write_text("%:\n\t@echo BUILDROOT_INVOKED\n")
+    external = tmp_path / "linux" / "buildroot-external"
+    (tmp_path / "linux" / "build-mmu" / ".config").write_text(
+        f'BR2_EXTERNAL_FROST_PATH="{external}"\n'
+        "BR2_LINUX_KERNEL=y\n"
+        f'BR2_GLOBAL_PATCH_DIR="{external}/board/frost/patches"\n'
+    )
+
+    result = _make_linux_boot(app)
+    assert result.returncode != 0
+    assert "still built a" in result.stdout
+    assert "make -C sw/apps/linux_boot distclean" in result.stdout
+    assert "BUILDROOT_INVOKED" not in result.stdout
+    assert not (app / "sw_ddr.mem").exists()
 
 
 # --- Debian's kernel ------------------------------------------------------------
@@ -1728,7 +1718,11 @@ def test_default_bootargs_disable_ipv6() -> None:
 
 
 def test_post_image_packs_debian_kernel_and_the_composed_initramfs() -> None:
-    """Buildroot's post-image hook packs Debian's Image, not the one it built."""
+    """Buildroot's post-image hook packs Debian's Image and the NIC module with it.
+
+    ``Image`` is what a Buildroot kernel would be called, and this tree builds
+    none, so the payload has to stay the staged ``Image-debian``.
+    """
     text = POST_IMAGE.read_text()
     assert "debian_kernel.py" in text
     assert '--payload "${BINARIES_DIR}/Image-debian"' in text

@@ -154,9 +154,11 @@ ENV RISCV_PREFIX=riscv-none-elf-
 # Permit a bind-mounted checkout owned by the invoking host user.
 RUN git config --global --add safe.directory /workspace
 
-# Buildroot host dependencies and QEMU for the Linux image build and the QEMU
-# boot lane. This also supports ``load_software.py <board> linux_boot``. Keep
-# the layer late to preserve the expensive tool-build cache above.
+# Buildroot host dependencies and QEMU for the Linux image build (OpenSBI, the
+# test userspace and the NIC module built against Debian's kernel headers -- no
+# kernel is compiled here) and the QEMU boot lane. This also supports
+# ``load_software.py <board> linux_boot``. Keep the layer late to preserve the
+# expensive tool-build cache above.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     patch \

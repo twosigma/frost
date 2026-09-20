@@ -36,9 +36,9 @@
  * built uniprocessor or SMP: xmit and NAPI never interleave, and open and stop
  * touch the rings only while NAPI is disabled.
  *
- * The same source is built into the FROST Buildroot kernel (6.18) and, through
- * DKMS, as a module for Debian 13's kernel (6.12), so it uses only interfaces
- * both kernels provide.
+ * The source is built as a module for Debian's kernel (6.12 on Debian 13),
+ * through DKMS on a Debian root and the same way for the kernel FROST packs, so
+ * it uses only long-standing interfaces rather than the newest spelling of one.
  */
 
 #include <linux/dma-mapping.h>

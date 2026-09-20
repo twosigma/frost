@@ -214,31 +214,28 @@ To bump the pin, put the new snapshot, version, sizes and checksums in
 kernel release appears in the boot banner the hardware regression requires and
 in the module's vermagic, so a half-finished bump fails rather than boots.
 
-The kernel Buildroot still builds, mainline 6.18.7 with the NIC driver built in
-(`board/frost/linux-frost.config`, `external.mk` and
-`board/frost/patches/linux/0001-net-ethernet-hook-in-the-FROST-net10g-driver.patch`),
-is no longer packed or booted. It is kept only until the Buildroot kernel
-configuration is removed. Its load-bearing options were:
+Nothing here builds a kernel any more. What a kernel packed by this tree has to
+provide, whether it is the pin or one named by `FROST_LINUX_KERNEL`:
 
 | Option | Why |
 |---|---|
-| `CONFIG_MMU`, `CONFIG_ARCH_RV64I` + `CONFIG_64BIT` | Sv39 rv64 kernel. `CONFIG_NONPORTABLE` and `CONFIG_RISCV_M_MODE` must stay unset: this is an ordinary S-mode kernel, not the retired M-mode build. |
+| `CONFIG_MMU`, `CONFIG_ARCH_RV64I` + `CONFIG_64BIT` | Sv39 rv64 kernel. `CONFIG_RISCV_M_MODE` (behind the `CONFIG_NONPORTABLE` gate) must stay unset: OpenSBI hands this kernel S-mode, not the retired M-mode build's entry. |
 | `CONFIG_RISCV_SBI` | Boots under OpenSBI and calls the SBI interface. |
-| `CONFIG_RISCV_PMU`, `CONFIG_RISCV_PMU_SBI` | `perf` over the SBI PMU's cycle and instret counters. |
-| `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS` | Misaligned accesses once the supervisor takes FWFT delegation. |
-| `CONFIG_BINFMT_ELF` | Ordinary ELF userspace. |
-| `CONFIG_BLK_DEV_INITRD` | External initramfs via `linux,initrd-*`. |
-| `CONFIG_NFS_FS`, `CONFIG_NFS_V3`, `CONFIG_ROOT_NFS` | The NFS root (see "NFS root"): the kernel mounts an NFSv3 export as `/`. |
-| `CONFIG_CGROUPS`, `CONFIG_UNIX` | Required by systemd on the NFS root (it uses the cgroup v2 hierarchy with no controllers). |
-| `CONFIG_AUTOFS_FS`, `CONFIG_TMPFS_POSIX_ACL`, `CONFIG_TMPFS_XATTR` | Recommended by systemd. Its other requirements, and the seccomp filters it recommends, are kernel defaults. |
-| `CONFIG_SERIAL_8250[_CONSOLE]`, `CONFIG_SERIAL_OF_PLATFORM`, `NR_UARTS=1` | Console on the ns16550a face, bound from the DT. |
+| `CONFIG_RISCV_PMU`, `CONFIG_RISCV_PMU_SBI` | The SBI PMU's cycle and instret counters, which `frost_stress` reads and the gates require. |
+| `CONFIG_RISCV_MISALIGNED` | Misaligned accesses once the supervisor takes FWFT delegation. Either choice provides it: the pin's `CONFIG_RISCV_PROBE_UNALIGNED_ACCESS` or `CONFIG_RISCV_EMULATED_UNALIGNED_ACCESS`. |
+| `CONFIG_BINFMT_ELF`, `CONFIG_FPU` | Ordinary ELF userspace, lp64d hard-float. |
+| `CONFIG_BLK_DEV_INITRD` | External initramfs via `linux,initrd-*`. A compressed replacement also needs its `CONFIG_RD_*` decompressor; the test initramfs is uncompressed. |
+| `CONFIG_DEVTMPFS`, `CONFIG_TMPFS`, `CONFIG_PROC_FS`, `CONFIG_SYSFS` | What the test initramfs's inittab mounts. It mounts devtmpfs itself, so `CONFIG_DEVTMPFS_MOUNT` is not needed (the pin leaves it unset). |
+| `CONFIG_SERIAL_8250[_CONSOLE]`, `CONFIG_SERIAL_OF_PLATFORM` | Console on the ns16550a face, bound from the DT. Built in: the test initramfs carries no serial modules. |
 | `CONFIG_OF`, `CONFIG_OF_EARLY_FLATTREE` | DT-driven probe; earlycon (`earlycon=uart8250,mmio32,0x40001000`). |
-| `CONFIG_NET`, `CONFIG_PACKET` | Packet sockets, which `frost_nettest` uses. |
-| `CONFIG_INET`, `CONFIG_IP_PNP`, `CONFIG_IP_PNP_DHCP` | IPv4, the NFS root's transport, configured by the kernel from `ip=`: static, or DHCP, the NFS root's default (no BOOTP or RARP). `CONFIG_IPV6` stays off: nothing needs it, and the autoconfiguration frames it sends whenever the interface comes up could fail `frost_nettest`'s idle checks. |
-| `CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G` | The built-in `frost_net10g` driver for the `frost,net10g` node (`frost-net10g/`). |
+| `CONFIG_NET`, `CONFIG_INET`, `CONFIG_PACKET` | Packet sockets, which `frost_nettest` uses, and IPv4 for any NFS root. |
+| `CONFIG_MODULES`, or the driver built in (`CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G`) | The `frost_net10g` driver for the `frost,net10g` node (`frost-net10g/`). The pin takes it as a module (see "NIC module"). |
+| `CONFIG_NFS_FS`, `CONFIG_NFS_V3` | The kernel's NFS client, for either NFS root (see "NFS root"): the mount is a kernel mount even when an initramfs asks for it. The pin builds them as modules, which that initramfs carries. |
+| `CONFIG_ROOT_NFS`, `CONFIG_IP_PNP` (`CONFIG_IP_PNP_DHCP` for `ip=dhcp`) | Only for a kernel that mounts the NFS root itself, from `ip=` and `nfsroot=`; that kernel also needs the NFS client and the NIC driver built in. The pin has neither symbol. |
+| `CONFIG_CGROUPS`, `CONFIG_UNIX` | Required by systemd on the NFS root (it uses the cgroup v2 hierarchy with no controllers). `CONFIG_AUTOFS_FS`, `CONFIG_TMPFS_POSIX_ACL` and `CONFIG_TMPFS_XATTR` are recommended; its other requirements, and the seccomp filters it recommends, are kernel defaults. |
 
-Debian's kernel satisfies the same contract with three differences that the
-boot accounts for. It builds `CONFIG_IPV6` in, so the packer's default bootargs
+Debian's kernel meets that contract with three differences the boot accounts
+for. It builds `CONFIG_IPV6` in, so the packer's default bootargs
 carry `ipv6.disable=1`: the autoconfiguration frames IPv6 sends whenever an
 interface comes up return through the NIC's loopback and fail
 `frost_nettest`'s idle checks. It has no `CONFIG_IP_PNP` or `CONFIG_ROOT_NFS`,
@@ -332,10 +329,10 @@ measured through an exec must both be nonzero, and runs
 `frost_nettest`, which drives the NIC driver through its loopback feature
 (the NIC's raw loopback on a shared MAC clock, the transceiver's PMA loopback
 otherwise) and must print `FROST_NET_LOOPBACK_PASS`. The counter command
-replaced `perf stat`: Buildroot's `perf` is built against the kernel Buildroot
-builds, which nothing boots. The stage requires the kernel banner and the module
-line to name the pinned release exactly, so a kernel this one's release is only a
-prefix of fails rather than passes.
+replaced `perf stat`: `perf` builds only against a kernel tree, and this tree
+builds no kernel, so nothing packs it for the target. The stage requires the
+kernel banner and the module line to name the pinned release exactly, so a
+kernel this one's release is only a prefix of fails rather than passes.
 The payload's summary line carries per-boot Zicntr evidence for hardware
 performance tracking: `cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around
 a fixed workload (see "Counters and mcounteren").
@@ -393,7 +390,7 @@ substitute initramfs's `/sbin/init`, as they do the test initramfs's; an
 initramfs-tools initramfs, which starts at `/init`, boots only through the NFS
 root above. Debian's kernel puts the DTB at `0x82200000`, which leaves
 under 30 MiB of the 64 MiB default memory node for the initramfs (the test one
-is about 10 MiB); the packer fails when it does not fit, and `load_software.py`
+is about 5 MiB); the packer fails when it does not fit, and `load_software.py`
 advertises the board's memory (see "Memory map").
 
 `FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff`, with or without an NFS root, replaces the

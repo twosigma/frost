@@ -235,9 +235,10 @@ include ../../common/standalone_asm.mk
 3. `build_all_apps.py` discovers non-hidden app directories that contain a
    `Makefile`, so an ordinary standalone app needs no registration for the
    build sweep. It skips the parameterized `arch_test`, `riscv_tests`, and
-   `riscv_torture` suites, and skips the 30-60 minute `linux_boot` build
-   (Buildroot, plus the fetch of Debian's kernel and the NIC module built for
-   it) unless `--include-linux-boot` is passed. `--list` shows the build
+   `riscv_torture` suites, and skips the first-time `linux_boot` build
+   (Buildroot's userspace and firmware, plus the fetch of Debian's kernel and
+   the NIC module built for it -- a few minutes, mostly downloads) unless
+   `--include-linux-boot` is passed. `--list` shows the build
    and skip decisions without building.
 
 4. Register the app where it must run; neither registry is auto-discovered.

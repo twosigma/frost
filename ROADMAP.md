@@ -94,9 +94,9 @@ userspace in CI. The kernel's timer, trap, atomic and MMIO patterns keep their
 directed cocotb apps, and OpenSBI keeps `opensbi_smoke`.
 That move is complete: Debian's pinned kernel is the only kernel FROST boots,
 on the NFS root and with the test initramfs alike, so every gate exercises the
-kernel users get, and the in-tree Buildroot kernel configuration is on its way
-out. Buildroot keeps building the test userspace, and the NIC driver is built as
-a module for the pinned kernel, the same way the DKMS package builds it on a
+kernel users get, and the in-tree Buildroot kernel build is gone. Buildroot
+builds the test userspace and the OpenSBI firmware, and the NIC driver is built
+as a module for the pinned kernel, the same way the DKMS package builds it on a
 Debian root.
 A host-backed PCIe/virtio block path is kept as an optional deployment
 capability, not the Phase 4 storage mechanism.

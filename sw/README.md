@@ -432,8 +432,8 @@ make
 The CLI runs `make clean` first and stops if it fails, preventing reuse of an
 image linked for another memory tier.
 Most app builds have a two-minute timeout; `linux_boot` allows up to 90 minutes
-because a fresh checkout builds its Buildroot toolchain, kernel, and initramfs
-before packing the images.
+because a fresh checkout downloads a cross toolchain and Debian's kernel and
+builds the firmware and initramfs before packing the images.
 
 ### Build Ordinary Standalone Applications
 
@@ -445,8 +445,8 @@ before packing the images.
 
 The script discovers non-hidden directories with a `Makefile`. It skips the
 parameterized `arch_test`, `riscv_tests`, and `riscv_torture` suites, whose
-runners select a source, and skips the 30-60 minute first `linux_boot` build
-unless opted in. It prints each skip reason.
+runners select a source, and skips the first `linux_boot` build, with its
+toolchain and kernel downloads, unless opted in. It prints each skip reason.
 
 ### Clean All Applications
 

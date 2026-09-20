@@ -16,12 +16,12 @@
 
 # Buildroot post-image hook for the FROST MMU Linux lane (frost_rv64_defconfig).
 #
-# Buildroot runs this after the image stage with BINARIES_DIR, HOST_DIR, and
-# BUILD_DIR exported. It builds the OpenSBI firmware from the linux/opensbi
-# submodule with the lane's own (PIE-capable) toolchain, stages Debian's pinned
-# kernel and the test initramfs with the FROST NIC module appended
-# (linux/debian_kernel.py), then packs firmware + Image + DTB + initramfs into
-# the boot images with frost_boot_image.py:
+# Buildroot runs this after the image stage with BINARIES_DIR and HOST_DIR
+# exported. It builds the OpenSBI firmware from the linux/opensbi submodule with
+# the lane's own (PIE-capable) toolchain, stages Debian's pinned kernel and the
+# test initramfs with the FROST NIC module appended (linux/debian_kernel.py),
+# then packs firmware + Image + DTB + initramfs into the boot images with
+# frost_boot_image.py:
 #
 #   $BINARIES_DIR/fw_jump.bin        OpenSBI fw_jump
 #   $BINARIES_DIR/Image-debian       Debian's riscv64 kernel, the packed payload
@@ -30,11 +30,8 @@
 #   $BINARIES_DIR/sw_ddr.{mem,txt}   firmware + Image + DTB + initramfs in DDR
 #   $BINARIES_DIR/frost.{dts,dtb}    the generated device tree
 #
-# Buildroot's own images/Image is left in place but is not packed: FROST boots
-# Debian's kernel everywhere (linux/README.md, "Kernel").
-#
-# Nothing is patched afterwards. CI stages sw.mem/sw_ddr.mem in
-# sw/apps/linux_boot/; see linux/README.md for the boot ABI.
+# CI stages sw.mem/sw_ddr.mem in sw/apps/linux_boot/; see linux/README.md for
+# the boot ABI.
 
 set -euo pipefail
 
@@ -52,16 +49,16 @@ if [ -z "${gcc_path}" ]; then
 fi
 cross_compile="${gcc_path%gcc}"
 
-# Prefer the host dtc, then the kernel copy, then PATH.
+# Prefer the host dtc, then PATH. This build has no kernel tree to borrow
+# scripts/dtc from, so a host without dtc needs BR2_PACKAGE_HOST_DTC=y (the
+# frost image installs device-tree-compiler).
 dtc_path="${HOST_DIR}/bin/dtc"
 if [ ! -x "${dtc_path}" ]; then
-    dtc_path="$(ls "${BUILD_DIR:-}"/linux-*/scripts/dtc/dtc 2>/dev/null | head -n1 || true)"
-fi
-if [ -z "${dtc_path}" ] || [ ! -x "${dtc_path}" ]; then
     dtc_path="$(command -v dtc || true)"
 fi
 if [ -z "${dtc_path}" ]; then
-    echo "post-image-mmu.sh: no dtc found (HOST_DIR/bin, kernel scripts/dtc, or PATH)" >&2
+    echo "post-image-mmu.sh: no dtc found (HOST_DIR/bin or PATH; set" \
+        "BR2_PACKAGE_HOST_DTC=y to have Buildroot build one)" >&2
     exit 1
 fi
 

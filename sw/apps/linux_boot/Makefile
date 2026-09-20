@@ -24,10 +24,11 @@
 #
 # Three stages, split so that re-loading for a different board is cheap:
 #
-#   Stage 1a (slow, board-independent): Buildroot builds its own cross
-#     toolchain, OpenSBI and the rootfs.cpio userspace. ~30-60 min the first
-#     time; cached in the build dir afterwards. Only runs when that initramfs
-#     or the firmware is absent, so it does not re-run on every load.
+#   Stage 1a (board-independent): Buildroot downloads its cross toolchain and
+#     builds OpenSBI and the rootfs.cpio userspace -- no kernel, which is
+#     Debian's. A few minutes the first time, mostly the download; cached in
+#     the build dir afterwards. Only runs when that initramfs or the firmware
+#     is absent, so it does not re-run on every load.
 #
 #   Stage 1b (board-independent): linux/debian_kernel.py fetches Debian's
 #     pinned kernel and builds the NIC driver as a module for it, then appends
@@ -138,10 +139,10 @@ endif
 .PHONY: all clean distclean
 
 # --- Prebuilt-image mode ------------------------------------------------------
-# Images built elsewhere (another checkout, or a machine that has the kernel
-# build) can be staged here and loaded on a board. load_software.py does
-# `make clean` + `make` on this app before every load. Without a kernel build
-# tree in the clone, that clean would delete the staged images and the build
+# Images built elsewhere (another checkout, or a machine that can run Buildroot)
+# can be staged here and loaded on a board. load_software.py does
+# `make clean` + `make` on this app before every load. Without a Buildroot build
+# in the clone, that clean would delete the staged images and the build
 # would kick off a full Buildroot rebuild that overwrites them.
 # FROST_LINUX_PREBUILT=1 declares the staged images authoritative: `make`
 # verifies they exist and touches nothing; `make clean` keeps them and only
@@ -201,19 +202,37 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 # move it, and that is not something to do behind someone's back, so a
 # directory configured elsewhere (a container build reached from a native
 # loader, or the reverse) is reported rather than reconfigured.
+#
+# A directory configured before this tree stopped building a kernel is reported
+# too. Its .config still selects BR2_LINUX_KERNEL and points BR2_GLOBAL_PATCH_DIR
+# at board/frost/patches, which no longer exists, so Buildroot stops with
+# "BR2_GLOBAL_PATCH_DIR contains nonexistent directory" before any target runs.
+# Re-running the defconfig over it would clear those symbols but leave perf and
+# elfutils installed in target/ -- Buildroot does not uninstall a deselected
+# package -- so the fix is to start over, and the message says so.
 FROST_STRESS_SRC := $(wildcard $(BR2_EXTERNAL)/package/frost-stress/src/*.c)
 BR2_OVERLAY := $(wildcard $(BOARD_DIR)/rootfs-overlay-mmu/etc/inittab)
 BR2_RECORDED = $(patsubst "%",%,$(shell sed -n \
   's/^BR2_EXTERNAL_FROST_PATH=//p' "$(BR2_OUT)/.config" 2>/dev/null))
+BR2_STALE_KERNEL = $(shell sed -n 's/^BR2_LINUX_KERNEL=y$$/y/p' \
+  "$(BR2_OUT)/.config" 2>/dev/null)
 $(BR2_INITRD) $(FW_JUMP) &: $(FROST_STRESS_SRC) $(BR2_OVERLAY)
 	@test -f "$(BR2_SRC)/Makefile" || { \
 	  echo "ERROR: buildroot submodule not initialized."; \
 	  echo "  Run: git submodule update --init linux/buildroot"; \
 	  exit 1; }
 	@if [ ! -f "$(BR2_OUT)/.config" ]; then \
-	  echo ">>> linux_boot: building the test initramfs + OpenSBI via Buildroot (first build ~30-60 min)..."; \
+	  echo ">>> linux_boot: building the test initramfs + OpenSBI via Buildroot (first build a few minutes)..."; \
 	  $(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" \
 	    $(BR2_DEFCONFIG) || exit 1; \
+	elif [ -n "$(BR2_STALE_KERNEL)" ]; then \
+	  echo "ERROR: $(BR2_OUT) was configured when this tree still built a"; \
+	  echo "       kernel (its .config has BR2_LINUX_KERNEL=y and a"; \
+	  echo "       BR2_GLOBAL_PATCH_DIR that no longer exists). FROST boots"; \
+	  echo "       Debian's kernel now, and Buildroot cannot reuse that"; \
+	  echo "       configuration. Start over:"; \
+	  echo "         make -C sw/apps/linux_boot distclean"; \
+	  exit 1; \
 	elif [ "$(BR2_RECORDED)" != "$(BR2_EXTERNAL)" ]; then \
 	  echo "ERROR: $(BR2_OUT) was configured for"; \
 	  echo "         $(BR2_RECORDED)"; \
