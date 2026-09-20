@@ -219,8 +219,11 @@ notice an edit to the package's sources on its own, so the `sw/apps/linux_boot`
 Makefile names them as prerequisites of `rootfs.cpio` and runs
 `frost-stress-rebuild` when they are newer; editing them by hand in a Buildroot
 build needs that target too, or the cached `rootfs.cpio` keeps the old programs.
-The packer refuses an archive whose `frost_stress` predates the counter mode the
-hardware regression types, so a stale one cannot reach a board.
+The packer refuses an archive whose `frost_stress` predates the counter mode, so
+a stale one cannot reach a board soak or CI. The hardware regression boots the
+Debian NFS root instead, and cross-compiles these same sources into it before
+every run ([`../../fpga/README.md`](../../fpga/README.md), "Hardware
+regression"), so an edit here reaches that stage without any Buildroot step.
 
 A build directory configured before this tree stopped building a kernel cannot
 be reused. Its `.config` still selects `BR2_LINUX_KERNEL` and points
@@ -256,9 +259,11 @@ counters; see [`../README.md`](../README.md), "Counters and mcounteren"), and
 the hardware soak fails any boot that reports `counters=unavailable`.
 `frost_stress --counters` prints the same counters for a child measured from its
 exec to its exit, as the `perf stat <command>` it replaced did; the hardware
-regression's Linux stage types it after logging in and requires that scope. The
-same package also installs `frost_sigprobe`, the vDSO signal-return bring-up
-probe, and `frost_nettest`, which the stage types next.
+regression's Linux stage types it after logging in and requires that scope, from
+a static build of this source installed on the Debian root -- the binaries here
+are linked against musl, which that root has no loader for. The same package also
+installs `frost_sigprobe`, the vDSO signal-return bring-up probe, and
+`frost_nettest`, which the stage types last.
 It drives the `frost_net10g` driver through the driver's loopback
 feature (the NIC's raw MAC loopback when both MAC directions share a clock, the
 transceiver's PMA loopback otherwise): MTU 9000, frame lengths 14 to 9014

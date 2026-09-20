@@ -109,7 +109,9 @@ echo 'nameserver <resolver-ip>' > ${R:?}/etc/resolv.conf
 mkdir -p ${R:?}/etc/systemd/timesyncd.conf.d
 printf '[Time]\nNTP=<ntp-server>\n' > ${R:?}/etc/systemd/timesyncd.conf.d/ntp.conf
 
-# Optional: console autologin as root, for debugging.
+# Console autologin as root: for debugging, and required by the hardware
+# regression, which logs in on this console ("Hardware regression"). Root has no
+# usable password, so the getty has to log it in by itself.
 mkdir -p ${R:?}/etc/systemd/system/serial-getty@ttyS0.service.d
 cat > ${R:?}/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf <<'EOF'
 [Service]
@@ -212,11 +214,11 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
   not `raw payload`, and `memory 0x40000000 B`. With this kernel it puts the
   DTB at `0x82200000` and the initramfs at `0x82210000`. The image is about
   78 MB, and the load takes several minutes.
-- Leave the `FROST_LINUX_*` variables unset for the hardware regression, which
-  boots the same kernel version -- the one `linux/debian_kernel.py` pins and
-  fetches -- with the Buildroot test initramfs in place of this root
-  ([`linux/README.md`](../linux/README.md), "Kernel"). Keeping the root's kernel
-  at that version means one kernel is under test either way; a root on a
+- The hardware regression's Linux stage boots this root, with these same
+  variables ("Hardware regression" below). Its preflight requires the kernel to
+  be the version `linux/debian_kernel.py` pins, so that one kernel is under test
+  whether the board boots this root or the test initramfs
+  ([`linux/README.md`](../linux/README.md), "Kernel"); by hand, a root on a
   different version still boots here, since these variables override the pin.
 
 At 300 MHz the console shows the following, and `systemd-analyze` then
@@ -254,6 +256,68 @@ findmnt /                      # 192.0.2.1:/srv/nfs/debian, nfs, vers=3 ... hard
 systemctl is-system-running    # running; systemctl --failed lists any failed unit
 free -m                        # ~940 MiB of the X3's 1 GiB
 ```
+
+## Hardware regression
+
+`fpga/hw_regression.py`'s Linux stage boots this root: it is the gate an RTL
+change has to pass, so it runs what the board ships rather than a test image
+([`../fpga/README.md`](../fpga/README.md), "Hardware regression"). The same four
+variables select it, and the whole regression or the stage alone takes them:
+
+```bash
+K=6.12.107+deb13-riscv64
+FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
+FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
+FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
+FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
+  ./fpga/hw_regression.py --board x3 linux_boot
+```
+
+What the stage needs beyond a root that boots by hand:
+
+| Need | Why, and where it comes from |
+|---|---|
+| The export directory on the host that runs the loader | The stage reads the tree's console configuration and installs into it. With the server elsewhere, mount the export on that host at the same path, or run the regression on the server. |
+| A console autologin | The stage logs in over the UART, and this root's root has no usable password: the `serial-getty@ttyS0` drop-in from step 2 is required, not optional. |
+| `usr/local/bin` writable by the user that runs the regression | The stage cross-compiles `frost_stress` and `frost_nettest` from `linux/buildroot-external/package/frost-stress` and installs them there before each run, so the programs it types are this checkout's. The tree belongs to root, so give that one directory away: `install -d -m 755 -o <user> /srv/nfs/debian/usr/local/bin`. |
+| A riscv64 Linux cross compiler on that host | For those two programs, statically linked. Debian's `gcc-riscv64-linux-gnu`, a `FROST_LINUX_CROSS_COMPILE` prefix, or the toolchain Buildroot's own build leaves in `linux/build-mmu/host/bin`. |
+| The pinned kernel version | The stage requires that release's banner, and its preflight reads the release out of the packed `Image` first. Keep the root on the version `linux/debian_kernel.py` pins, with `frost_net10g` in its initramfs for that version (step 3). |
+| NFSv3 over TCP | Step 4. The preflight makes an NFSv3 NULL call to the server before any stage runs. |
+| A server on the board's own subnet | `frost_nettest` takes the root's interface down. The kernel brings that interface's connected route back by itself, but not a route through the gateway, so a server reached through one may leave the root stranded. The preflight says which case this is, and the stage checks that the root came back. |
+| The initramfs rebuilt after a driver change | The stage boots the initramfs it is given, and the driver in it is the DKMS build made in step 3. After editing `linux/frost-net10g`, redo step 3 -- otherwise the run exercises the module built last time. |
+
+The preflight runs before the first stage, and every failure it reports begins
+`environment not ready (not a board failure)` and shows as `ENV_FAIL` rather
+than a stage failure, so a server that is down or an export that is not
+prepared never reads as an RTL regression.
+
+The stage's own budget (`--linux-timeout`, 1200 s by default) covers the JTAG
+load of the ~78 MB image, the boot, systemd's startup and every program it
+types. A half-clock bitstream takes roughly twice as long at every step, so
+raise it there.
+
+On the board the stage checks the root mount and systemd's state, runs the
+stress payload and the counter run, and ends with `frost_nettest`. That program
+puts the NIC into loopback, which takes down the interface the root is mounted
+over and raises its MTU, so the line around it:
+
+- runs the program from a copy in `/dev/shm`, statically linked, so nothing has
+  to be read from the root while its link is down;
+- turns IPv6 off on the interface first, because the autoconfiguration frames a
+  link-up sends come back through the loopback and fail the program's idle
+  checks (the packer's own bootargs carry `ipv6.disable=1` for that reason, and
+  an NFS root's do not);
+- restores the MTU, the interface flags and that setting through sysfs;
+- and writes a file on the root and syncs, bounded, with a status the stage
+  requires: creating a file is a round trip to the server, so that status is
+  what proves the link, the route and the server all came back instead of
+  reporting a pass over a root that is gone. A stranded root fails the stage
+  with `the root did not come back after frost_nettest`.
+
+Two traces are left in the tree: the two programs in `/usr/local/bin`, and
+nothing else -- the stress payload creates `/frost_stress.shm` for its futex
+phase and unlinks it. `reboot` is still not a thing on this SoC, so load again
+for the next boot ("Operation").
 
 ## 7. apt
 
@@ -345,3 +409,7 @@ A kernel update takes effect only after a new load (see "Operation").
 | apt: `Temporary failure resolving ...` | No DNS: the tree's `/etc/resolv.conf`, or the board's route to that resolver. |
 | On the board, `modprobe` fails with `Module ... not found in directory /lib/modules/<version>` | `ls /lib/modules` must list `uname -r`. If it does not, the running kernel's package was removed while the board still boots it, by `apt autoremove` in a chroot for example: reinstall that package, or load an installed kernel (step 5). If it does, the module is not built for this kernel; for `frost_net10g`, check `dkms status` and install it as in step 3. |
 | ssh: `Permission denied (publickey)` | `/root/.ssh` must be mode 700 and `authorized_keys` 600, both owned by root, holding the client's public key. |
+| The hardware regression's `linux_boot` stage times out at the login prompt, or `Login incorrect` | The console getty is not logging root in: add the step 2 drop-in. If the prompt never appears at all, the getty never started (the `dev-ttyS0.device` row above). |
+| That stage stops with `systemd is degraded, not running` | A unit failed. The capture lists them immediately above, from the same command; on the board, `systemctl --failed` and `systemctl status <unit>`. |
+| That stage reports `/dev/shm/frost_nettest: Permission denied` | `/dev/shm` is mounted `noexec` in this tree. The stage runs the program from tmpfs because the program takes the root's own link down; drop `noexec` from that mount. |
+| That stage prints `environment not ready (not a board failure)` and runs nothing | The preflight rejected this host's view of the root -- the export, the server's NFSv3, the kernel or initramfs paths, the kernel's release, the writable `usr/local/bin`, or the cross compiler. The message names which and what to do ("Hardware regression"). |

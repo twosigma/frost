@@ -157,7 +157,11 @@ repos:
           - --license-filepath=.license-header.txt
           - --comment-style=#
 
-  # General file checks.
+  # General file checks. tests/fixtures/*.log are captures kept byte for byte --
+  # a board's UART console, carriage returns, terminal escapes, the trailing
+  # space of a shell prompt and all -- because the parsers under test are
+  # measured against what a board really sends. Both fixers would rewrite those
+  # bytes, so the captures are exempt; the reports and other fixtures are not.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
@@ -165,13 +169,15 @@ repos:
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
-            sw/apps/coremark/coremark/.*
+            sw/apps/coremark/coremark/.*|
+            tests/fixtures/.*\.log
           )$
       - id: end-of-file-fixer
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
-            sw/apps/coremark/coremark/.*
+            sw/apps/coremark/coremark/.*|
+            tests/fixtures/.*\.log
           )$
       - id: check-yaml
       - id: check-added-large-files

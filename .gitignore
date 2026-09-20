@@ -93,6 +93,9 @@ sw/apps/*/sw.S
 # Vivado
 *.jou
 *.log
+# ... except the console captures kept as test fixtures: a board's UART output is
+# a log, and tests/fixtures holds it byte for byte for the parsers that read it.
+!tests/fixtures/*.log
 *.str
 .Xil/
 fpga/build/*/work*

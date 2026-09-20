@@ -1754,9 +1754,9 @@ def test_debian_kernel_refuses_a_base_that_cannot_drive_the_gates(
     """A base archive whose frost_stress predates the counter mode is refused.
 
     Buildroot does not notice an edited package source, so an archive built
-    before ``--counters`` existed would pack happily, boot happily, and leave the
-    hardware regression waiting out its whole deadline for a line the program
-    cannot print. The refusal names the rebuild.
+    before ``--counters`` existed would pack happily, boot happily, and quietly
+    cost the board soak the counter evidence it scores. The refusal names the
+    rebuild.
     """
     helper = _load_module(DEBIAN_KERNEL)
     module = tmp_path / "frost_net10g.ko"

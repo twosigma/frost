@@ -38,11 +38,12 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
   must pass before the login prompt. Booting the kernel on the FROST RTL is
   validated on hardware, not in
   simulation: the hardware regression's Linux stage (`fpga/hw_regression.py`)
-  boots the image on the X3 and requires the kernel banner, the module, that
-  payload, a login, the cycle and instruction counters
-  and the NIC loopback, and `fpga/linux_boot_soak.py` scores the payload across
-  repeated board boots. Debian 13 boots on the X3 from an NFS root over the NIC,
-  on the same kernel ([setup guide](docs/debian_nfsroot.md)).
+  boots Debian 13 on the X3 from its NFS root over the NIC
+  ([setup guide](docs/debian_nfsroot.md)) and requires the kernel banner, the
+  NIC driver, the root mounted over NFS, a running systemd, a login, that
+  payload, the cycle and instruction counters and the NIC loopback, while
+  `fpga/linux_boot_soak.py` scores the payload across repeated board boots of
+  the test image.
 - Networking on the SoC. A 10 Gigabit Ethernet NIC wraps the in-tree
   10GBASE-R MAC/PCS on a coherent DMA port, with a device-tree node for
   Linux. On the X3 a board GTY wrapper puts it on a fiber link: the bare-metal
