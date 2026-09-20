@@ -1558,14 +1558,26 @@ def test_store_queue_drain_fire_selects_parallel_priority_scans_late() -> None:
     assert "p_parallel_drain_scans_match_legacy" in sq
 
 
-def test_route_directives_restrict_the_x3_router_sweep() -> None:
-    """--route-directives keeps order, drops duplicates, defaults to the sweep."""
+def test_route_directives_override_the_x3_router_sweep() -> None:
+    """Default to four candidates while allowing any legal explicit override."""
     full = fpga_build.resolve_x3_route_sweep_directives(None)
-    assert full == fpga_build.ROUTER_SWEEP_DIRECTIVES
+    assert full == [
+        "Explore",
+        "AggressiveExplore",
+        "NoTimingRelaxation",
+        "AlternateCLBRouting",
+    ]
     assert full is not fpga_build.ROUTER_SWEEP_DIRECTIVES
+    excluded = [
+        "RuntimeOptimized",
+        "Default",
+        "AdvancedSkewModeling",
+        "MoreGlobalIterations",
+        "HigherDelayCost",
+    ]
     assert fpga_build.resolve_x3_route_sweep_directives(
-        ["RuntimeOptimized", "Explore", "RuntimeOptimized"]
-    ) == ["RuntimeOptimized", "Explore"]
+        [*excluded, "Explore", "RuntimeOptimized"]
+    ) == [*excluded, "Explore"]
     with pytest.raises(ValueError):
         fpga_build.resolve_x3_route_sweep_directives(["NoSuchDirective"])
 

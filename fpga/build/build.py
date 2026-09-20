@@ -37,7 +37,8 @@ on closure.
 X3 place and route sweeps run up to twelve Vivado jobs at a time and promote one
 checkpoint. ``--jobs N`` changes this per-build cap, including placement's
 quick-route probes; queued candidates start as running jobs finish. Both
-route stages try every legal directive and rank by WNS. Placement defaults to
+route stages default to Explore, AggressiveExplore, NoTimingRelaxation, and
+AlternateCLBRouting, ranking by WNS. Placement defaults to
 four directives at six 50 ps-spaced setup uncertainties from 0.500 to 0.250 ns;
 these act as seeds because Vivado exposes no placer seed. ``--directives`` and
 ``--num-uncertainties`` override the grid. The qualified off-grid
@@ -385,16 +386,26 @@ ULTRASCALE_ROUTER_DIRECTIVES = [
     "AlternateCLBRouting",
 ]
 
-ROUTER_SWEEP_DIRECTIVES = ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES
+ALL_ROUTER_DIRECTIVES = ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES
+
+# Keep the sweep focused on the competitive full-rate X3 candidates. Other
+# legal directives remain available explicitly, including RuntimeOptimized
+# for the divided-clock functional-validation flow.
+ROUTER_SWEEP_DIRECTIVES = [
+    "Explore",
+    "AggressiveExplore",
+    "NoTimingRelaxation",
+    "AlternateCLBRouting",
+]
 
 
 def resolve_x3_route_sweep_directives(requested: list[str] | None) -> list[str]:
-    """Return the x3 router sweep: the full list, or a unique requested subset."""
+    """Return the default x3 sweep or unique explicitly requested legal directives."""
     if not requested:
         return list(ROUTER_SWEEP_DIRECTIVES)
     unique: list[str] = []
     for directive in requested:
-        if directive not in ROUTER_SWEEP_DIRECTIVES:
+        if directive not in ALL_ROUTER_DIRECTIVES:
             raise ValueError(f"unknown router directive: {directive}")
         if directive not in unique:
             unique.append(directive)
@@ -2642,12 +2653,12 @@ Steps (in order):
                                 WNS; no quick-route probe by default)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
-  route                       - Route design (with -tns_cleanup; x3 sweeps all
+  route                       - Route design (with -tns_cleanup; x3 sweeps selected
                                 router directives, up to --jobs at a time,
                                 and keeps the best-WNS result)
   post_route_physopt          - Phys_opt directive sweep plus retime pass (serial)
   second_route                - Route design (without -tns_cleanup; x3 sweeps
-                                all router directives, up to --jobs at a time,
+                                selected router directives, up to --jobs at a time,
                                 and keeps the best-WNS result)
   post_second_route_physopt   - Phys_opt directive sweep plus retime pass (serial);
                                 always writes final.dcp + final_*.rpt + bitstream
@@ -2698,10 +2709,11 @@ Behavior:
     old or stale descendants must be rebuilt from post_place_physopt.
     If no seed passes -0.200 ns, preserve the best DCP/reports and exit nonzero.
   * On x3, route and second_route ignore --route-directive and
-    --second-route-directive, respectively. Each runs every router directive,
-    including AlternateCLBRouting, subject to --jobs, and promotes only the
-    best-WNS checkpoint/reports. The route step still uses -tns_cleanup;
-    second_route does not.
+    --second-route-directive, respectively. Each defaults to Explore,
+    AggressiveExplore, NoTimingRelaxation, and AlternateCLBRouting, subject
+    to --jobs, and promotes only the best-WNS checkpoint/reports.
+    --route-directives overrides this list with any legal router directives.
+    The route step still uses -tns_cleanup; second_route does not.
   * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore
     and ending with one retime-only pass (phys_opt_design -retime). Each sweep
     preserves the best-WNS pass and stops early if a pass closes timing
@@ -2829,28 +2841,30 @@ Examples:
     )
     parser.add_argument(
         "--route-directive",
-        choices=ROUTER_SWEEP_DIRECTIVES,
+        choices=ALL_ROUTER_DIRECTIVES,
         default="AggressiveExplore",
         help="Router directive for the first route step on non-x3 boards "
         "(with -tns_cleanup, default: AggressiveExplore). Ignored on x3, "
-        "which sweeps all router directives subject to --jobs.",
+        "which uses --route-directives or its default four-directive sweep, "
+        "subject to --jobs.",
     )
     parser.add_argument(
         "--second-route-directive",
-        choices=ROUTER_SWEEP_DIRECTIVES,
+        choices=ALL_ROUTER_DIRECTIVES,
         default="Explore",
         help="Router directive for the second route step on non-x3 boards "
         "(without -tns_cleanup, default: Explore). Ignored on x3, which "
-        "sweeps all router directives subject to --jobs.",
+        "uses --route-directives or its default four-directive sweep, "
+        "subject to --jobs.",
     )
     parser.add_argument(
         "--route-directives",
         nargs="+",
-        choices=ROUTER_SWEEP_DIRECTIVES,
+        choices=ALL_ROUTER_DIRECTIVES,
         metavar="DIRECTIVE",
-        help="Restrict the x3 router sweep (both route stages) to these "
+        help="Set the x3 router sweep (both route stages) to these legal "
         "directives, subject to --jobs. One directive is a single route run. "
-        "Default: every router directive.",
+        "Default: " + ", ".join(ROUTER_SWEEP_DIRECTIVES) + ".",
     )
     parser.add_argument(
         "--debug-ila",
