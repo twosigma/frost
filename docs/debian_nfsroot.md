@@ -177,6 +177,30 @@ showmount -e localhost       # lists the export
 If version 3 is missing, set `vers3=y` under `[nfsd]` in `/etc/nfs.conf` and
 restart `nfs-server`.
 
+Give the export a filesystem of its own, rather than leaving it a directory on
+the server's root. The board has write access to it, so anything that fills it
+-- a runaway log, an apt cache, a mistyped `dd` -- otherwise fills the
+server's root filesystem and takes the rest of that machine down with it. NFS
+also reports the server's free space to the board, so `df` there describes the
+server rather than anything the board owns. A partition or a logical volume
+works; so does a file the server mounts as a filesystem, which costs only the
+space it holds and makes the board's whole root one file to copy or snapshot:
+
+```bash
+truncate -s 20G /srv/nfs/debian.img          # sparse: no space used yet
+mkfs.ext4 -q -F -L frost-root /srv/nfs/debian.img
+# with the board stopped, move the tree into it and mount it in its place
+mkdir /mnt/img && mount -o loop /srv/nfs/debian.img /mnt/img
+cp -a /srv/nfs/debian/. /mnt/img/ && umount /mnt/img
+mv /srv/nfs/debian /srv/nfs/debian.old && mkdir /srv/nfs/debian
+echo '/srv/nfs/debian.img /srv/nfs/debian ext4 loop,nofail,defaults 0 2' >> /etc/fstab
+mount /srv/nfs/debian && exportfs -ra
+```
+
+`nofail` keeps a missing image from blocking the server's own boot. Reboot the
+board afterwards: the server identifies an exported filesystem internally, and
+that identity changes with the swap.
+
 ## 5. Boot
 
 Build and program the bitstream, open the UART console, and load the tree's
