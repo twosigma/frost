@@ -17,10 +17,12 @@
 # FROST Linux boot ABI
 
 Boot contract between the FROST SoC/loaders and the Sv39 Linux kernel that
-boots through OpenSBI. For the build flow, see
-[`buildroot-external/README.md`](buildroot-external/README.md); this file
-defines what a kernel or other supervisor payload can rely on. The no-MMU
-M-mode lane was retired in Phase 3; this is the only lane.
+boots through OpenSBI. The kernel is Debian's own riscv64 kernel, pinned by
+[`debian_kernel.py`](debian_kernel.py) (see "Kernel"); the build flow around it
+is in [`buildroot-external/README.md`](buildroot-external/README.md), which
+builds the firmware and the test initramfs. This file defines what a kernel or
+other supervisor payload can rely on. The no-MMU M-mode lane was retired in
+Phase 3; this is the only lane.
 
 ## Boot chain and entry state
 
@@ -36,8 +38,8 @@ jr   t0
 ```
 
 `<dtb>` is the DTB address the packer computes from the payload (see the DDR
-layout below): `0x81000000` for any payload up to 14 MiB, today's kernel
-included.
+layout below): `0x81000000` for any payload up to 14 MiB, and `0x82200000` for
+today's kernel, whose footprint is about 31 MiB.
 
 The firmware is the unmodified OpenSBI v1.7 generic platform from the
 `linux/opensbi` submodule, built by `linux/opensbi_build.py` with the
@@ -151,23 +153,72 @@ gate access from below M-mode: S-mode needs the counter's bit set in
   CSR is an illegal instruction (mcause=2, mtval=0).
 
 The kernel reaches the same counters through the SBI PMU
-(`CONFIG_RISCV_PMU_SBI`), which is what `perf stat -e cycles,instructions`
-uses; a `riscv,pmu` device-tree node maps those two events onto the fixed
-counters. QEMU resets `mcounteren` to 0, so direct userspace reads raise an
-illegal-instruction signal under `linux-boot-qemu-mmu`, and `frost_stress`
-reports `counters=unavailable` there. On FROST the phase must run:
-`linux_boot_soak.py` fails a boot that reports counters unavailable.
+(`CONFIG_RISCV_PMU_SBI`), which is what `perf_event_open` on
+`PERF_COUNT_HW_CPU_CYCLES` and `PERF_COUNT_HW_INSTRUCTIONS` gets; a `riscv,pmu`
+device-tree node maps those two events onto the fixed counters. That is how
+`frost_stress` reads them, at boot and in its `--counters` mode, since direct
+userspace reads are what the kernel gates rather than what it offers. The counts
+come out on FROST and under QEMU alike, so `counters=unavailable` is a
+degradation rather than a platform difference. Two gates reject it:
+`linux_boot_soak.py` fails a boot whose payload reports it, and the hardware
+regression fails a `--counters` run that does. CI's `linux-boot-qemu-mmu` job
+does not look at the counters at all -- it requires the module, stress and login
+markers -- so a counter regression is caught on the board, not in CI.
 
-## Kernel configuration contract
+`--counters` measures a child from its exec to its exit, which its `scope=`
+field names and the hardware regression requires: `enable_on_exec` arms the
+events at the child's exec and `inherit` follows its descendants, so the
+measurement covers a task that execs and then exits, as the `perf stat
+<command>` it replaced did. The boot payload's own phase 5 measures itself.
 
-The kernel is mainline 6.18.7 with the NIC driver,
-[`frost-net10g/`](frost-net10g/README.md), which `external.mk` and one patch
-(`board/frost/patches/linux/0001-net-ethernet-hook-in-the-FROST-net10g-driver.patch`)
-add to it.
-Its configuration is `board/frost/linux-frost.config`, applied as Buildroot's
-custom kernel config (the patch, `external.mk` and the config are under
-`buildroot-external/`). The load-bearing
-options:
+## Kernel
+
+FROST boots Debian's own riscv64 kernel everywhere: the hardware regression's
+Linux stage, the board soaks, and CI's QEMU boot job.
+[`debian_kernel.py`](debian_kernel.py) is the one place that names it -- the
+snapshot.debian.org timestamp, the package version, and each package's size and
+sha256 -- and it fetches, verifies and extracts the packages into
+`linux/debian-kernel`, a download cache like `linux/dl`. Today's pin is
+`6.12.107+deb13-riscv64`, and its `/boot/vmlinux-<release>` is an uncompressed
+flat `Image` the packer takes as its payload. It is the same version
+[`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md) installs on the NFS
+root, so a board runs one kernel whichever root it boots.
+
+Nothing FROST-specific is patched into it. The one piece it lacks is the NIC
+driver, which is built as a module for exactly that kernel (see "NIC module")
+and travels in the initramfs.
+
+`debian_kernel.py`'s subcommands are `fetch`, `release`, `image`, `module` and
+`initramfs`, and each prints just its answer on stdout with progress on stderr,
+so a shell substitution around one is the path even on a cold cache.
+`FROST_DEBIAN_KERNEL_CACHE` moves the cache, and `FROST_NET10G_MODULE` names a
+module built elsewhere, for a tree with no kernel headers or cross toolchain.
+The consumers are the `sw/apps/linux_boot` Makefile and Buildroot's post-image
+hook (see "Consumers").
+
+The cache holds immutable directories named after a digest of their inputs --
+the pin for the extracted tree, the pin and the toolchain for the module
+objects, since kbuild records the compiler by Debian's `riscv64-linux-gnu-gcc`
+name and would not otherwise notice a different toolchain behind it. Each is
+built under `staging/` and published with one rename, downloads land in a
+per-process temporary first, and mutations hold `.lock`, so a native loader and
+a container build over the same checkout cannot see a half-built tree or tear
+down each other's work. A published tree is validated against the manifest
+stored with it before it is reused, so a truncated or partly deleted one is
+rebuilt instead of trusted. Changing the pin leaves the old directories in
+place, because removing them could pull the ground from under a concurrent
+reader; delete `linux/debian-kernel` to reclaim the space.
+
+To bump the pin, put the new snapshot, version, sizes and checksums in
+`debian_kernel.py`, delete `linux/debian-kernel`, and re-run the gates: the
+kernel release appears in the boot banner the hardware regression requires and
+in the module's vermagic, so a half-finished bump fails rather than boots.
+
+The kernel Buildroot still builds, mainline 6.18.7 with the NIC driver built in
+(`board/frost/linux-frost.config`, `external.mk` and
+`board/frost/patches/linux/0001-net-ethernet-hook-in-the-FROST-net10g-driver.patch`),
+is no longer packed or booted. It is kept only until the Buildroot kernel
+configuration is removed. Its load-bearing options were:
 
 | Option | Why |
 |---|---|
@@ -186,6 +237,59 @@ options:
 | `CONFIG_INET`, `CONFIG_IP_PNP`, `CONFIG_IP_PNP_DHCP` | IPv4, the NFS root's transport, configured by the kernel from `ip=`: static, or DHCP, the NFS root's default (no BOOTP or RARP). `CONFIG_IPV6` stays off: nothing needs it, and the autoconfiguration frames it sends whenever the interface comes up could fail `frost_nettest`'s idle checks. |
 | `CONFIG_NETDEVICES`, `CONFIG_ETHERNET`, `CONFIG_NET_VENDOR_FROST`, `CONFIG_FROST_NET10G` | The built-in `frost_net10g` driver for the `frost,net10g` node (`frost-net10g/`). |
 
+Debian's kernel satisfies the same contract with three differences that the
+boot accounts for. It builds `CONFIG_IPV6` in, so the packer's default bootargs
+carry `ipv6.disable=1`: the autoconfiguration frames IPv6 sends whenever an
+interface comes up return through the NIC's loopback and fail
+`frost_nettest`'s idle checks. It has no `CONFIG_IP_PNP` or `CONFIG_ROOT_NFS`,
+so it cannot mount an NFS root itself and does so from an initramfs instead (see
+"NFS root"). And it has no FROST driver, so the driver is a module.
+
+## NIC module
+
+`debian_kernel.py module` builds [`frost-net10g/`](frost-net10g/README.md) as a
+module for the pinned kernel, and `debian_kernel.py initramfs` appends it, a
+one-line `modules.dep`, and `/etc/init.d/S03frost-net10g` to Buildroot's
+`rootfs.cpio`. The kernel unpacks concatenated cpio archives -- each newc member
+is four-byte aligned and the unpacker only requires the gap between two archives
+to keep that alignment, so GNU cpio's 512-byte block padding is padding, not a
+requirement -- and so Buildroot's own archive is untouched and no Buildroot
+rebuild is needed to change any of this.
+Buildroot's `/etc/init.d/rcS`, which the overlay inittab runs as a sysinit
+entry, runs that script, so the module is loaded before the getty and before any
+network test. It prints `FROST_NET10G_MODULE_PASS <release>`, or
+`FROST_NET10G_MODULE_FAIL <reason>`, which the hardware regression's Linux
+stage, `fpga/linux_boot_soak.py` and CI's QEMU boot job all require.
+
+That the module loaded is not by itself evidence of which kernel is running. The
+pin sets `CONFIG_MODVERSIONS`, and once a module carries symbol CRCs Linux
+compares vermagic with its first field -- the release -- skipped, so this module
+would load into any ABI-compatible kernel. The script therefore compares
+`uname -r` with the pinned release before it loads anything, and prints the
+release it read; the gates require that line, with the release, exactly. The
+release strings say which kernel booted, not which bytes were packed: two builds
+of one version share a release, and only the pinned `.deb`'s sha256 fixes the
+`Image`'s contents.
+
+What the module build itself checks, before anything is published: the module's
+`vermagic` names the pinned release exactly, it was built with modversions, and
+every symbol CRC it recorded matches the pinned tree's `Module.symvers`. The
+last one is what a build against another kernel's headers fails.
+
+The build needs no new tool. It uses Debian's own `linux-headers` tree for
+riscv64, whose kbuild host tools come from `linux-kbuild` (`Multi-Arch:
+foreign`, so the amd64 build of it drives the riscv64 tree), and a
+Linux-targeted riscv64 cross toolchain: Buildroot's own, which the same build
+produced, when the `sw/apps/linux_boot` Makefile and the post-image hook drive
+it, so a host with none installed needs nothing; otherwise the one the Docker
+image carries for OpenSBI (`FROST_LINUX_CROSS_COMPILE`), or `--cross`. Two
+details make that work: Debian's
+headers tree hard-overrides `CROSS_COMPILE` to `riscv64-linux-gnu-`, so the
+helper generates wrapper scripts under that prefix around the installed
+toolchain; and the headers tree's BTF base `vmlinux` is left unextracted, so
+kbuild skips module BTF generation instead of demanding `pahole`, which the
+image does not ship.
+
 ## Bring-up probe
 
 The initramfs also runs `frost_sigprobe` from inittab, one line per
@@ -198,11 +302,12 @@ exit; see `buildroot-external/package/frost-stress/src/frost_sigprobe.c`.
 `sw.{mem,txt}` (shim, low BRAM) and `sw_ddr.{mem,txt}` (DDR image) are loaded by
 `fpga/load_software/load_software.py` over JTAG. The app Makefile also derives
 `sw64.mem`, the dword-paired copy of `sw.mem` for the 64-bit data BRAM's
-`$readmemh`. The images come from `linux/build-mmu` and the
+`$readmemh`. The kernel comes from `linux/debian-kernel` (see "Kernel"); the
+firmware and the test initramfs from `linux/build-mmu` and the
 `frost_rv64_defconfig` Buildroot config
-([`buildroot-external/README.md`](buildroot-external/README.md)), unless
-`FROST_LINUX_KERNEL` or `FROST_LINUX_INITRD` names another kernel or
-initramfs (see "NFS root").
+([`buildroot-external/README.md`](buildroot-external/README.md)), with the NIC
+module appended to that initramfs. `FROST_LINUX_KERNEL` or `FROST_LINUX_INITRD`
+names another kernel or initramfs in their place (see "NFS root").
 
 Booting this kernel is validated on hardware, not in RTL simulation: the
 simulated core reaches only early boot in hours, and both core bugs that
@@ -216,14 +321,21 @@ the kernel's timer, trap, atomic and MMIO patterns through directed bare-metal
 apps (`linux_irq_*`, `linux_clksrc_faithful`, `tick_torture`, `amo_irq_torture`,
 `ns16550_test`, `clint_test`).
 
-At boot, inittab runs `frost_stress --boot`, which prints the
-`FROST_USERSPACE_STRESS_PASS`/`_FAIL` token before the login prompt; the
-QEMU CI job and `fpga/linux_boot_soak.py` assert it. On hardware the
-regression's Linux stage requires that token before the login prompt, then
-logs in as root, runs `perf stat` on the cycle and instruction counters, and
-runs `frost_nettest`, which drives the NIC driver through its loopback feature
+At boot, `rcS` loads the NIC module (`FROST_NET10G_MODULE_PASS`, see "NIC
+module") and inittab runs `frost_stress --boot`, which prints the
+`FROST_USERSPACE_STRESS_PASS`/`_FAIL` token; both precede the login prompt, and
+the QEMU CI job and `fpga/linux_boot_soak.py` assert both. On hardware the
+regression's Linux stage requires the kernel's own version banner and both
+tokens before the login prompt, then logs in as root, runs
+`frost_stress --counters`, whose cycle and instruction counts for a child
+measured through an exec must both be nonzero, and runs
+`frost_nettest`, which drives the NIC driver through its loopback feature
 (the NIC's raw loopback on a shared MAC clock, the transceiver's PMA loopback
-otherwise) and must print `FROST_NET_LOOPBACK_PASS`.
+otherwise) and must print `FROST_NET_LOOPBACK_PASS`. The counter command
+replaced `perf stat`: Buildroot's `perf` is built against the kernel Buildroot
+builds, which nothing boots. The stage requires the kernel banner and the module
+line to name the pinned release exactly, so a kernel this one's release is only a
+prefix of fails rather than passes.
 The payload's summary line carries per-boot Zicntr evidence for hardware
 performance tracking: `cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around
 a fixed workload (see "Counters and mcounteren").
@@ -245,18 +357,22 @@ without `FROST_LINUX_NFSROOT`, it fails the pack. The kernel configures the
 interface, waits for its carrier, mounts the export read-write over NFSv3/TCP
 (nfsroot adds `nolock`, so file locks stay local) and runs its `/sbin/init`.
 The export must be a riscv64 root filesystem, such as Debian 13's, shared
-read-write with the board's address without root squashing.
+read-write with the board's address without root squashing. Without an
+initramfs the packed kernel mounts the export itself, which needs
+`CONFIG_IP_PNP` and `CONFIG_ROOT_NFS`; Debian's has neither, so that form needs
+`FROST_LINUX_KERNEL` as well.
 Leave `FROST_LINUX_NFSROOT` unset for the hardware regression, whose Linux
 stage runs the initramfs programs above.
 
 `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD` name a Linux `Image` and an
-initramfs, by absolute path, to pack in place of Buildroot's `Image` and
-`rootfs.cpio`; OpenSBI and the device tree stay this tree's. Like
+initramfs, by absolute path, to pack in place of Debian's `Image` and the test
+initramfs; OpenSBI and the device tree stay this tree's. Like
 `FROST_LINUX_NFSROOT`, leave both unset for the hardware regression, which runs
-Buildroot's userspace. Debian's kernel, `/boot/vmlinux-<version>` in the Debian
-root, is such an `Image` but has no NFS root of its own (`CONFIG_IP_PNP` is off
-and NFS is a module), so the initramfs that Debian's initramfs-tools generates
-mounts the export instead.
+Buildroot's userspace on the pinned kernel. The Debian root's own
+`/boot/vmlinux-<version>` and `/boot/initrd.img-<version>` are what
+[`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md) passes: the same kernel
+version as the pin, with the initramfs that Debian's initramfs-tools generates
+mounting the export, since the kernel cannot.
 With `FROST_LINUX_NFSROOT` and `FROST_LINUX_INITRD` both set, the packer packs
 that initramfs, and `boot=nfs` selects initramfs-tools' NFS boot:
 
@@ -273,12 +389,12 @@ and the NIC driver
 [`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md) builds, exports and
 boots a Debian root this way, on Debian's own kernel.
 Without `FROST_LINUX_NFSROOT`, the default bootargs run a
-substitute initramfs's `/sbin/init`, as they do Buildroot's; an
+substitute initramfs's `/sbin/init`, as they do the test initramfs's; an
 initramfs-tools initramfs, which starts at `/init`, boots only through the NFS
-root above. Debian 13's kernel puts the DTB at `0x82200000`, which leaves
-under 30 MiB of the 64 MiB default memory node for the initramfs; the packer
-fails when it does not fit, and `load_software.py` advertises the board's
-memory (see "Memory map").
+root above. Debian's kernel puts the DTB at `0x82200000`, which leaves
+under 30 MiB of the 64 MiB default memory node for the initramfs (the test one
+is about 10 MiB); the packer fails when it does not fit, and `load_software.py`
+advertises the board's memory (see "Memory map").
 
 `FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff`, with or without an NFS root, replaces the
 NIC's `local-mac-address` in the DTB (default `02:11:22:33:44:55`); each board

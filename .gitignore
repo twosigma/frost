@@ -68,6 +68,8 @@ sw_ddr.txt
 sw_ddr.bin
 sw_imem_*.mem
 sw/apps/*/sw.S
+# The test initramfs with the NIC module appended, composed for each pack.
+/sw/apps/linux_boot/rootfs.cpio
 
 # FROST MMU Linux: out-of-tree Buildroot build output + download/ccache
 # caches. Regenerated from the linux/buildroot submodule + linux/buildroot-external
@@ -79,6 +81,10 @@ sw/apps/*/sw.S
 /linux/build-mmu/
 /linux/dl/
 /linux/ccache/
+
+# Debian's kernel packages, the tree they extract into, and the NIC module built
+# against it: a download cache, refilled from the pin in linux/debian_kernel.py.
+/linux/debian-kernel/
 
 # mypy
 .mypy_cache/

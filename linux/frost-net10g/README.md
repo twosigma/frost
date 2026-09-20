@@ -22,9 +22,13 @@ tree node with `compatible = "frost,net10g"`
 the descriptor, interrupt and RESET contract it follows are in
 [`../../hw/rtl/peripherals/nic/README.md`](../../hw/rtl/peripherals/nic/README.md).
 
-This directory is the driver's only source. The FROST Buildroot kernel builds
-it in, and it is also a DKMS package that builds it as a module for Debian's
-kernels, including each kernel update the system installs.
+This directory is the driver's only source. FROST boots it as a module, because
+the kernel it boots is Debian's
+([`../README.md`](../README.md), "Kernel"): this directory is the DKMS package
+that builds it for Debian's kernels, including each kernel update the system
+installs, and `../debian_kernel.py` builds it the same way for the pinned
+kernel and puts it in the test initramfs. The kernel Buildroot builds takes it
+in as a built-in, but nothing boots that kernel.
 
 | File | What |
 |---|---|
@@ -33,7 +37,20 @@ kernels, including each kernel update the system installs.
 | `Makefile` | the kbuild file: `drivers/net/ethernet/frost/Makefile` in the kernel tree, and an external module build (`make -C <kernel build dir> M=$PWD`), where it always builds a module |
 | `dkms.conf` | the DKMS package `frost-net10g`; its `PACKAGE_VERSION` is the driver's `MODULE_VERSION` |
 
-## Built into the FROST kernel
+## In the FROST test initramfs
+
+`../debian_kernel.py module` builds this directory for the pinned Debian kernel,
+and `../debian_kernel.py initramfs` puts the module in the test initramfs with
+an `/etc/init.d` script that `insmod`s it at boot; the boot gates require the
+token that script prints. The build is DKMS's own command, `make -C <kernel
+build dir> M=<build dir>`, against Debian's `linux-headers` tree, so the module
+the gates load is the module DKMS would build.
+[`../README.md`](../README.md), "NIC module", has the mechanism.
+
+## Built into the Buildroot kernel
+
+Nothing boots that kernel; this is kept until the Buildroot kernel
+configuration is removed.
 
 The Buildroot kernel (6.18.7) takes the driver as `CONFIG_FROST_NET10G=y`
 (`../buildroot-external/board/frost/linux-frost.config`). The kernel patch

@@ -16,10 +16,14 @@
 
 """Repeatedly load and score Linux boots from the board UART.
 
-A boot requires the ``FROST_USERSPACE_STRESS_PASS`` token followed by the
-login prompt; ``--login-only`` requires only the prompt. Crash signatures,
-timeout, or ``counters=unavailable`` fail. The counter result is mandatory
-because FROST resets ``mcounteren`` to 0x7, making Zicntr U-readable.
+The boot is Debian's pinned riscv64 kernel with the Buildroot test initramfs
+(``linux/debian_kernel.py``). A boot requires the NIC module's
+``FROST_NET10G_MODULE_PASS <release>`` line -- Debian's kernel has no FROST
+driver built in, and that line names the release the board is running -- and the
+``FROST_USERSPACE_STRESS_PASS`` token, both before the login prompt;
+``--login-only`` requires only the prompt. Crash signatures, timeout, or
+``counters=unavailable`` fail. The counter result is mandatory because FROST
+resets ``mcounteren`` to 0x7, making Zicntr U-readable.
 
 The script reads 115200 8N1 directly through termios and reasserts the speed
 after every load because Vivado hw_server FTDI probes can corrupt the UART
@@ -32,6 +36,7 @@ Usage:
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import termios
@@ -40,11 +45,26 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "fpga" / "common"))
+sys.path.insert(0, str(REPO_ROOT / "linux"))
 
+from debian_kernel import (  # noqa: E402
+    MODULE_FAIL_TOKEN,
+    MODULE_PASS_LINE,
+    MODULE_PASS_RE,
+)
 from hw_defaults import DEFAULT_SERIALS  # noqa: E402
 
 PASS_TOKEN = "FROST_USERSPACE_STRESS_PASS"
 FAIL_TOKEN = "FROST_USERSPACE_STRESS_FAIL"
+# Both are printed from sysinit entries, so both precede the login prompt. The
+# module line carries the release its init script read from ``uname -r``, and
+# the whole line is required, matched with a boundary so that a longer release
+# does not satisfy it: the pin sets CONFIG_MODVERSIONS, so Linux ignores
+# vermagic's release field and a bare insmod does not identify the kernel.
+BOOT_TOKENS = (
+    (MODULE_PASS_LINE, MODULE_PASS_RE),
+    (PASS_TOKEN, re.compile(re.escape(PASS_TOKEN))),
+)
 LOGIN_MARKER = "login:"
 CRASH_MARKERS = (
     "Attempted to kill init",
@@ -54,6 +74,7 @@ CRASH_MARKERS = (
     "Bad trap",
     "SIGILL",
     FAIL_TOKEN,
+    MODULE_FAIL_TOKEN,
 )
 
 
@@ -112,7 +133,7 @@ def score_boot(fd: int, expect_stress: bool, timeout_s: int) -> tuple[str, str]:
     """Watch the UART until the boot passes, crashes, or times out.
 
     Returns (verdict, transcript). PASS requires the login prompt and, when
-    expect_stress, the payload token before it.
+    expect_stress, every BOOT_TOKENS token before it.
     """
     deadline = time.monotonic() + timeout_s
     transcript = b""
@@ -123,10 +144,16 @@ def score_boot(fd: int, expect_stress: bool, timeout_s: int) -> tuple[str, str]:
             if marker in text:
                 return (f"FAIL({marker})", text)
         if LOGIN_MARKER in text:
-            if not expect_stress or PASS_TOKEN in text:
+            if not expect_stress:
                 return ("PASS", text)
-            # Missing token means the payload was skipped or its output was lost.
-            return ("FAIL(login-without-stress-token)", text)
+            missing = [
+                label for label, pattern in BOOT_TOKENS if not pattern.search(text)
+            ]
+            if not missing:
+                return ("PASS", text)
+            # A missing line means the entry was skipped, its output was lost,
+            # or the kernel is not the one the module was built for.
+            return (f"FAIL(login-without-{'-and-'.join(missing)})", text)
         time.sleep(0.5)
     return (f"TIMEOUT({timeout_s}s)", transcript.decode("utf-8", errors="replace"))
 

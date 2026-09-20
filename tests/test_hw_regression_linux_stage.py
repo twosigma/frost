@@ -17,11 +17,12 @@
 """Unit tests for hw_regression's Linux stage and ordered UART stimuli.
 
 The board is not needed: the stage's predicates, judge, and stimulus
-sequencing are exercised against a console transcript captured from the Linux
-image booting in QEMU (login as root, ``perf stat`` over the SBI PMU
-counters), with the CRLF pairs the getty and busybox shell emit. QEMU has no
-frost,net10g device, so the ``frost_nettest`` lines that follow are written in
-the program's output format rather than captured.
+sequencing are exercised against a console transcript captured from Debian's
+kernel booting the test initramfs in QEMU (the NIC module's load, login as
+root, ``frost_stress --counters`` over the SBI PMU counters), with the CRLF
+pairs the getty and busybox shell emit. QEMU has no frost,net10g device, so the
+``frost_nettest`` lines that follow are written in the program's output format
+rather than captured.
 """
 
 import importlib.util
@@ -38,6 +39,7 @@ for extra in (
     FPGA_DIR / "common",
     FPGA_DIR / "load_software",
     REPO_ROOT / "sw" / "apps",
+    REPO_ROOT / "linux",
 ):
     if str(extra) not in sys.path:
         sys.path.insert(0, str(extra))
@@ -56,12 +58,17 @@ def _load_hw_regression() -> ModuleType:
 
 hw = _load_hw_regression()
 
-# Captured from qemu-system-riscv64 booting fw_jump + the frost_rv64_defconfig
-# image (2026-09-05), trimmed to the lines the stage cares about; the counts
-# are QEMU's, not FROST's.
+# Captured from qemu-system-riscv64 booting fw_jump + Debian's kernel with the
+# test initramfs (2026-09-19), trimmed to the lines the stage cares about; the
+# counts are QEMU's, not FROST's.
 BOOT_TO_LOGIN = (
-    "[    0.000000] Linux version 6.18.7 (buildroot)\r\r\n"
+    f"[    0.000000] {hw.KERNEL_BANNER}"
+    "(debian-kernel@debian) (riscv64-linux-gnu-gcc-14 (Debian 14.2.0-19) "
+    "14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP Debian "
+    "6.12.107-1 (2026-08-29)\r\r\n"
     "[    0.000000] SBI implementation ID=0x1 Version=0x10007\r\r\n"
+    "[    1.049415] frost_net10g: loading out-of-tree module taints kernel.\r\r\n"
+    f"{hw.LINUX_MODULE_LINE}\r\r\n"
     "Starting crond: OK\r\r\n"
     "FROST_USERSPACE_STRESS: starting\r\r\n"
     "FROST_USERSPACE_STRESS: forks=2 pages=256 ticks=60 vforks=12 futex=64 "
@@ -72,9 +79,16 @@ BOOT_TO_LOGIN = (
     "\rbuildroot login: "
 )
 LOGIN_TO_SHELL = "root\r\r\nlogin[79]: root login on 'console'\r\r\n# "
-PERF_ECHO = "perf stat -x, -e cycles,instructions /bin/true\r\r\r\n"
-PERF_ROWS = "422523756,,cycles,105848600,100.00,,\r\r\n421771240,,instructions,106473200,100.00,1.00,insn per cycle\r\r\n# "
-PERF_TRANSCRIPT = BOOT_TO_LOGIN + LOGIN_TO_SHELL + PERF_ECHO + PERF_ROWS
+COUNTER_ECHO = "frost_stress --counters\r\r\r\n"
+COUNTER_LINE = (
+    "FROST_COUNTERS: scope=exec-child cycles=4433680 instret=3275440 time=42321 "
+    "ipc_x1000=1012 verdict=PASS\r\r\n# "
+)
+# What the program prints when perf_event_open on the child fails.
+COUNTER_FAIL_LINE = (
+    "FROST_COUNTERS: scope=exec-child counters=unavailable verdict=FAIL\r\r\n# "
+)
+COUNTER_TRANSCRIPT = BOOT_TO_LOGIN + LOGIN_TO_SHELL + COUNTER_ECHO + COUNTER_LINE
 # frost_nettest's first and last lines around its verdict (trimmed).
 NET_ECHO = "frost_nettest\r\r\r\n"
 NET_START = (
@@ -89,45 +103,98 @@ NET_FAIL = (
     "FROST_NET_LOOPBACK_FAIL burst: expected frame 250, received frame 251 "
     "(lost or reordered)\r\r\n# "
 )
-FULL_MMU_TRANSCRIPT = PERF_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS
+FULL_MMU_TRANSCRIPT = COUNTER_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS
 
 
-def test_mmu_lane_passes_on_token_login_perf_rows_and_nettest() -> None:
-    """The full transcript passes: token, login, both perf rows, frost_nettest's pass."""
+def test_mmu_lane_passes_on_tokens_login_counters_and_nettest() -> None:
+    """The full transcript passes: tokens, login, both counters, nettest's pass."""
     stage = hw.linux_stage()
     assert stage.success_done(FULL_MMU_TRANSCRIPT)
     assert not stage.failure_done(FULL_MMU_TRANSCRIPT)
     ok, note = stage.judge(FULL_MMU_TRANSCRIPT)
     assert ok, note
-    assert "cycles=422523756" in note and "instructions=421771240" in note
+    assert "cycles=4433680" in note and "instret=3275440" in note
+    assert hw.KERNEL_RELEASE in note
     assert "frost_nettest" in note
 
 
-def test_perf_rows_no_longer_end_the_stage() -> None:
-    """The perf-only transcript is not terminal: frost_nettest has not passed yet."""
+def test_counters_no_longer_end_the_stage() -> None:
+    """The counters-only transcript is not terminal: nettest has not passed yet."""
     stage = hw.linux_stage()
-    for transcript in (PERF_TRANSCRIPT, PERF_TRANSCRIPT + NET_ECHO + NET_START):
+    for transcript in (COUNTER_TRANSCRIPT, COUNTER_TRANSCRIPT + NET_ECHO + NET_START):
         assert not stage.success_done(transcript)
         assert not stage.failure_done(transcript)
-    ok, note = stage.judge(PERF_TRANSCRIPT)
+    ok, note = stage.judge(COUNTER_TRANSCRIPT)
     assert not ok and "FROST_NET_LOOPBACK_PASS" in note
 
 
 def test_mmu_lane_is_not_done_at_the_login_prompt() -> None:
-    """The MMU lane keeps capturing until perf stat has printed both rows."""
+    """The MMU lane keeps capturing until the counter line has printed."""
     stage = hw.linux_stage()
     assert not stage.success_done(BOOT_TO_LOGIN)
-    assert not stage.success_done(BOOT_TO_LOGIN + LOGIN_TO_SHELL + PERF_ECHO)
-    ok, note = stage.judge(BOOT_TO_LOGIN + LOGIN_TO_SHELL + PERF_ECHO)
-    assert not ok and "no perf stat row" in note
+    assert not stage.success_done(BOOT_TO_LOGIN + LOGIN_TO_SHELL + COUNTER_ECHO)
+    ok, note = stage.judge(BOOT_TO_LOGIN + LOGIN_TO_SHELL + COUNTER_ECHO)
+    assert not ok and "no FROST_COUNTERS: count" in note
 
 
-def test_mmu_lane_requires_the_token_before_the_prompt() -> None:
-    """A boot that reaches login without the stress token fails."""
-    transcript = FULL_MMU_TRANSCRIPT.replace("FROST_USERSPACE_STRESS_PASS\r\r\n", "")
+def test_mmu_lane_requires_the_boot_lines_before_the_prompt() -> None:
+    """A boot that reaches login without a sysinit line fails."""
     stage = hw.linux_stage()
+    for line in (hw.LINUX_TOKEN, hw.LINUX_MODULE_LINE):
+        transcript = FULL_MMU_TRANSCRIPT.replace(line + "\r\r\n", "")
+        ok, note = stage.judge(transcript)
+        assert not ok and line.split()[0] in note
+
+
+def test_mmu_lane_requires_the_module_line_to_name_the_pinned_release() -> None:
+    """The module loading is not enough: its line must name the running kernel.
+
+    The pin sets CONFIG_MODVERSIONS, and with symbol CRCs present Linux skips
+    vermagic's release field, so this module loads into any ABI-compatible
+    kernel. The release the init script read from ``uname -r`` is the evidence.
+    """
+    stage = hw.linux_stage()
+    assert hw.LINUX_MODULE_LINE.endswith(hw.KERNEL_RELEASE)
+    other = FULL_MMU_TRANSCRIPT.replace(
+        hw.LINUX_MODULE_LINE, f"{hw.LINUX_MODULE_LINE}-debug"
+    )
+    # The bare token is still there, and the release is still a prefix: neither
+    # may be enough.
+    assert hw.LINUX_MODULE_LINE.split()[0] in other
+    ok, note = stage.judge(other)
+    assert not ok and "not printed before the login prompt" in note
+
+
+@pytest.mark.parametrize(
+    "banner",
+    ["Linux version 6.18.7 ", f"Linux version {hw.KERNEL_RELEASE}-debug "],
+    ids=["other-kernel", "release-with-a-suffix"],
+)
+def test_mmu_lane_requires_the_kernel_banner(banner: str) -> None:
+    """Booting any kernel but the pinned Debian one fails, userspace markers or not.
+
+    The marker ends in a space, so a release the pinned one is a prefix of --
+    a -debug build of the same version, say -- does not satisfy it.
+    """
+    stage = hw.linux_stage()
+    assert hw.KERNEL_BANNER == f"Linux version {hw.KERNEL_RELEASE} "
+    transcript = FULL_MMU_TRANSCRIPT.replace(hw.KERNEL_BANNER, banner)
+    assert not stage.success_done(transcript)
     ok, note = stage.judge(transcript)
-    assert not ok and "FROST_USERSPACE_STRESS_PASS" in note
+    assert not ok and hw.KERNEL_BANNER in note
+
+
+def test_mmu_lane_fails_on_the_module_fail_token() -> None:
+    """A module that will not load into the booted kernel ends capture and fails."""
+    stage = hw.linux_stage()
+    transcript = BOOT_TO_LOGIN.replace(
+        hw.LINUX_MODULE_LINE,
+        f"{hw.LINUX_MODULE_TOKEN_FAIL} insmod "
+        f"/lib/modules/{hw.KERNEL_RELEASE}/frost_net10g.ko",
+    )
+    assert stage.failure_done(transcript)
+    ok, note = stage.judge(transcript)
+    assert not ok and hw.LINUX_MODULE_TOKEN_FAIL in note
 
 
 def test_mmu_lane_fails_on_the_stress_fail_token() -> None:
@@ -139,32 +206,59 @@ def test_mmu_lane_fails_on_the_stress_fail_token() -> None:
     assert not ok and "FROST_USERSPACE_STRESS_FAIL" in note
 
 
-@pytest.mark.parametrize(
-    "count,expect",
-    [
-        ("<not supported>", "cycles: <not supported>"),
-        ("<not counted>", "cycles: <not counted>"),
-        ("0", "cycles: 0"),
-    ],
-)
-def test_mmu_lane_rejects_unsupported_or_zero_counts(count: str, expect: str) -> None:
-    """A perf row without a positive count fails the stage."""
-    transcript = FULL_MMU_TRANSCRIPT.replace("422523756,,cycles,", f"{count},,cycles,")
+def test_mmu_lane_rejects_a_zero_count() -> None:
+    """A counter line without a positive count fails the stage."""
+    transcript = FULL_MMU_TRANSCRIPT.replace("cycles=4433680", "cycles=0")
     stage = hw.linux_stage()
-    assert stage.success_done(transcript)  # a printed row ends capture ...
+    assert stage.success_done(transcript)  # a printed line ends capture ...
     ok, note = stage.judge(transcript)  # ... and the judge rejects it
-    assert not ok and expect in note
+    assert not ok and "cycles: 0" in note
 
 
-def test_perf_rows_are_not_matched_inside_the_command_echo() -> None:
-    """The typed command names both events; only real CSV rows count."""
-    assert hw.perf_counts(BOOT_TO_LOGIN + LOGIN_TO_SHELL + PERF_ECHO) == {}
+def test_mmu_lane_ends_the_capture_on_an_unavailable_counter_run() -> None:
+    """A failed counter verdict is terminal, not something to wait out.
+
+    It matches no success predicate, so without being a failure predicate too it
+    ran the stage to its whole deadline and then reported nothing terminal. The
+    capture predicates are what this checks, not only the judge.
+    """
+    stage = hw.linux_stage()
+    transcript = BOOT_TO_LOGIN + LOGIN_TO_SHELL + COUNTER_ECHO + COUNTER_FAIL_LINE
+    assert not stage.success_done(transcript)
+    assert stage.failure_done(transcript), "the stage would run to the timeout"
+    ok, note = stage.judge(transcript)
+    assert not ok
+    assert "counters=unavailable" in note and "verdict=FAIL" in note
+
+
+def test_mmu_lane_requires_the_child_through_exec_scope() -> None:
+    """The counters must cover a child measured from its exec, as perf stat did.
+
+    A narrower measurement is a failure rather than a silent loss of coverage.
+    """
+    stage = hw.linux_stage()
+    assert hw.LINUX_COUNTER_SCOPE == "exec-child"
+    assert hw.counter_values(FULL_MMU_TRANSCRIPT)["scope"] == "exec-child"
+    transcript = FULL_MMU_TRANSCRIPT.replace("scope=exec-child", "scope=self")
+    assert stage.success_done(transcript)  # the counts are there ...
+    ok, note = stage.judge(transcript)  # ... but not the scope
+    assert not ok and "scope: self is not exec-child" in note
+
+
+def test_counters_are_not_matched_in_the_echo_or_the_boot_summary() -> None:
+    """Only the counter run's own line counts.
+
+    The typed command and the boot payload's summary line, which carries
+    ``cycles=`` and ``instret=`` of its own, must not stand in for it.
+    """
+    assert hw.counter_values(BOOT_TO_LOGIN + LOGIN_TO_SHELL + COUNTER_ECHO) == {}
+    assert "cycles=" in BOOT_TO_LOGIN and "instret=" in BOOT_TO_LOGIN
 
 
 def test_nettest_fail_token_fails_the_stage_and_wins_over_pass() -> None:
     """frost_nettest's fail token ends capture and fails the stage, pass token or not."""
     stage = hw.linux_stage()
-    failed = PERF_TRANSCRIPT + NET_ECHO + NET_START + NET_FAIL
+    failed = COUNTER_TRANSCRIPT + NET_ECHO + NET_START + NET_FAIL
     assert stage.failure_done(failed)
     assert not stage.success_done(failed)
     ok, note = stage.judge(failed)
@@ -175,24 +269,24 @@ def test_nettest_fail_token_fails_the_stage_and_wins_over_pass() -> None:
     assert not ok and "FROST_NET_LOOPBACK_FAIL" in note
 
 
-def test_nettest_pass_cannot_bypass_the_stress_token_or_perf_rows() -> None:
+def test_nettest_pass_cannot_bypass_the_boot_tokens_or_the_counters() -> None:
     """frost_nettest's pass token does not excuse a failed earlier check."""
     stage = hw.linux_stage()
     no_token = FULL_MMU_TRANSCRIPT.replace("FROST_USERSPACE_STRESS_PASS\r\r\n", "")
     ok, note = stage.judge(no_token)
     assert not ok and "FROST_USERSPACE_STRESS_PASS" in note
-    no_rows = (
+    no_counts = (
         BOOT_TO_LOGIN
         + LOGIN_TO_SHELL
-        + PERF_ECHO
+        + COUNTER_ECHO
         + "# "
         + NET_ECHO
         + NET_START
         + NET_PASS
     )
-    assert not stage.success_done(no_rows)
-    ok, note = stage.judge(no_rows)
-    assert not ok and "no perf stat row" in note
+    assert not stage.success_done(no_counts)
+    ok, note = stage.judge(no_counts)
+    assert not ok and "no FROST_COUNTERS: count" in note
 
 
 def test_kernel_panic_fails_the_stage() -> None:
@@ -237,7 +331,7 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
     stage = hw.linux_stage()
     assert stage.stimuli == (
         ("buildroot login:", "root\r"),
-        ("# ", hw.LINUX_PERF_COMMAND + "\r"),
+        ("# ", hw.LINUX_COUNTER_COMMAND + "\r"),
         ("# ", "frost_nettest\r"),
     )
     # Nothing to type before the prompt, even though "# " could occur in a log.
@@ -250,27 +344,27 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
     # The shell prompt is only searched after the login trigger.
     assert hw.next_stimulus(stage, BOOT_TO_LOGIN, 1, after) is None
     text2, after2 = hw.next_stimulus(stage, BOOT_TO_LOGIN + LOGIN_TO_SHELL, 1, after)
-    assert text2 == hw.LINUX_PERF_COMMAND + "\r"
+    assert text2 == hw.LINUX_COUNTER_COMMAND + "\r"
     assert after2 == len(BOOT_TO_LOGIN + LOGIN_TO_SHELL)
-    text3, after3 = hw.next_stimulus(stage, PERF_TRANSCRIPT, 2, after2)
+    text3, after3 = hw.next_stimulus(stage, COUNTER_TRANSCRIPT, 2, after2)
     assert text3 == "frost_nettest\r"
-    assert after3 == len(PERF_TRANSCRIPT)
+    assert after3 == len(COUNTER_TRANSCRIPT)
     assert hw.next_stimulus(stage, FULL_MMU_TRANSCRIPT, 3, after3) is None
 
 
-def test_nettest_waits_for_the_prompt_after_perf_stat() -> None:
-    """The prompt that took the perf stat command cannot also fire frost_nettest."""
+def test_nettest_waits_for_the_prompt_after_the_counter_run() -> None:
+    """The prompt that took the counter command cannot also fire frost_nettest."""
     stage = hw.linux_stage()
     login_and_shell = BOOT_TO_LOGIN + LOGIN_TO_SHELL
     _, after_login = hw.next_stimulus(stage, BOOT_TO_LOGIN, 0, 0)
-    _, after_perf = hw.next_stimulus(stage, login_and_shell, 1, after_login)
-    assert hw.next_stimulus(stage, login_and_shell, 2, after_perf) is None
-    # perf stat is still running: neither its echo nor its rows are a prompt.
-    running = login_and_shell + PERF_ECHO + PERF_ROWS[: -len("# ")]
-    assert hw.next_stimulus(stage, running, 2, after_perf) is None
-    assert hw.next_stimulus(stage, PERF_TRANSCRIPT, 2, after_perf) == (
+    _, after_counters = hw.next_stimulus(stage, login_and_shell, 1, after_login)
+    assert hw.next_stimulus(stage, login_and_shell, 2, after_counters) is None
+    # The counter run is still going: neither its echo nor its line is a prompt.
+    running = login_and_shell + COUNTER_ECHO + COUNTER_LINE[: -len("# ")]
+    assert hw.next_stimulus(stage, running, 2, after_counters) is None
+    assert hw.next_stimulus(stage, COUNTER_TRANSCRIPT, 2, after_counters) == (
         "frost_nettest\r",
-        len(PERF_TRANSCRIPT),
+        len(COUNTER_TRANSCRIPT),
     )
 
 

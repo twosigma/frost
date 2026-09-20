@@ -34,6 +34,15 @@
  * counters cannot be read, the counter fields become
  * ``counters=unavailable`` (phase 5).
  *
+ * ``--counters`` prints its own line, which the hardware regression's Linux
+ * stage types after logging in. Like the ``perf stat <command>`` it replaced,
+ * the MMU edition measures a child from its exec to its exit
+ * (scope=exec-child); the no-MMU edition has no perf_event_open and measures
+ * its own workload (scope=self):
+ *
+ *   FROST_COUNTERS: scope=.. cycles=.. instret=.. time=.. ipc_x1000=.. verdict=PASS
+ *   FROST_COUNTERS: scope=.. counters=unavailable verdict=FAIL
+ *
  * Phases:
  *   1. A 5 ms SIGALRM storm covers timer traps and signal delivery.
  *   2. Repeated vfork+exec exercises no-MMU process creation, bFLT loading,
@@ -48,8 +57,8 @@
  *      rdcycle/rdinstret/rdtime (FROST resets mcounteren to 0x7; QEMU leaves
  *      the counters U-inaccessible, and a SIGILL guard reports them
  *      unavailable). MMU: cycles and instructions through perf_event_open
- *      (the SBI PMU on the fixed counters; the 6.18 kernel keeps direct
- *      rdcycle from userspace disabled), plus rdtime.
+ *      (the SBI PMU on the fixed counters; the kernel keeps direct rdcycle
+ *      from userspace disabled), plus rdtime.
  *
  * Exit code 0 means PASS. Failures print verdict=FAIL(reason) and exit nonzero;
  * inittab ignores the status, so consumers must check the token.
@@ -113,7 +122,7 @@ static void alarm_handler(int sig)
     })
 
 /* Full-width CSRs; the rv32 *h addresses trap on FROST. time is readable
- * from userspace in both editions (the 6.18 kernel leaves scounteren.TM set). */
+ * from userspace in both editions (the kernel leaves scounteren.TM set). */
 static uint64_t read_time64(void)
 {
     return RD_CSR(0xc01);
@@ -320,11 +329,207 @@ static int perf_open(uint32_t config)
     return (int) syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0);
 }
 
+/* A counter on another task, armed to start at its exec and to follow the
+ * children it makes. This is the shape perf stat uses for `perf stat <command>`,
+ * and the shape the hardware regression's counter check needs: the measured
+ * work happens in a task that execs and then exits. */
+static int perf_open_child(uint32_t config, pid_t pid)
+{
+    struct perf_event_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.type = PERF_TYPE_HARDWARE;
+    attr.size = sizeof(attr);
+    attr.config = config;
+    attr.disabled = 1;
+    attr.inherit = 1;        /* count the task's descendants too */
+    attr.enable_on_exec = 1; /* start counting when it execs, not before */
+    return (int) syscall(SYS_perf_event_open, &attr, pid, -1, -1, 0);
+}
+
 static int perf_read(int fd, uint64_t *value)
 {
     return read(fd, value, sizeof(*value)) == (ssize_t) sizeof(*value) ? 0 : -1;
 }
 #endif
+
+/* Cycle, instret and time deltas around counter_workload(). Returns 1 with the
+ * three deltas written, or 0 when the counters cannot be read. Phase 5 of the
+ * boot payload and the --counters mode below share this. */
+static int counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *time)
+{
+    *cycles = 0;
+    *instret = 0;
+    *time = 0;
+#ifdef FROST_STRESS_MMU
+    int ok = 0;
+    int fd_cycles = perf_open(PERF_COUNT_HW_CPU_CYCLES);
+    int fd_instr = perf_open(PERF_COUNT_HW_INSTRUCTIONS);
+    if (fd_cycles >= 0 && fd_instr >= 0) {
+        uint64_t c1 = 0, i1 = 0;
+        ioctl(fd_cycles, PERF_EVENT_IOC_RESET, 0);
+        ioctl(fd_instr, PERF_EVENT_IOC_RESET, 0);
+        ioctl(fd_cycles, PERF_EVENT_IOC_ENABLE, 0);
+        ioctl(fd_instr, PERF_EVENT_IOC_ENABLE, 0);
+        uint64_t t0 = read_time64();
+        counter_workload();
+        uint64_t t1 = read_time64();
+        ioctl(fd_cycles, PERF_EVENT_IOC_DISABLE, 0);
+        ioctl(fd_instr, PERF_EVENT_IOC_DISABLE, 0);
+        if (perf_read(fd_cycles, &c1) == 0 && perf_read(fd_instr, &i1) == 0) {
+            *cycles = c1;
+            *instret = i1;
+            *time = t1 - t0;
+            ok = 1;
+        }
+    }
+    if (fd_cycles >= 0)
+        close(fd_cycles);
+    if (fd_instr >= 0)
+        close(fd_instr);
+    return ok;
+#else
+    struct sigaction ill_sa;
+    memset(&ill_sa, 0, sizeof(ill_sa));
+    ill_sa.sa_handler = illegal_insn_handler;
+    if (sigaction(SIGILL, &ill_sa, NULL) != 0)
+        return 0;
+    int ok = 0;
+    if (sigsetjmp(g_counter_jmp, 1) == 0) {
+        uint64_t c0 = read_cycle64();
+        uint64_t t0 = read_time64();
+        uint64_t i0 = read_instret64();
+        counter_workload();
+        *cycles = read_cycle64() - c0;
+        *time = read_time64() - t0;
+        *instret = read_instret64() - i0;
+        ok = 1;
+    }
+    signal(SIGILL, SIG_DFL);
+    return ok;
+#endif
+}
+
+#ifdef FROST_STRESS_MMU
+/* Cycles and instructions retired by a child, counted from its exec to its
+ * exit. Returns 1 with the counts and the elapsed time written, 0 on any
+ * failure.
+ *
+ * This is what `perf stat -e cycles,instructions /bin/true` measured, and the
+ * coverage is in the shape, not the numbers: the events are created on a task
+ * that has not exec'd yet, enable_on_exec arms them at the exec (so the
+ * pre-exec fork and the dynamic loader are excluded), inherit follows the
+ * descendants, and the counts are read after the task has exited, which only
+ * works if the kernel propagated them out of a dead task. A pipe each way
+ * sequences it: the child announces itself, waits for the parent to open the
+ * events, then execs. */
+static int child_counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *time)
+{
+    int ready[2], go[2];
+    if (pipe(ready) != 0)
+        return 0;
+    if (pipe(go) != 0) {
+        close(ready[0]);
+        close(ready[1]);
+        return 0;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(ready[0]);
+        close(ready[1]);
+        close(go[0]);
+        close(go[1]);
+        return 0;
+    }
+    if (pid == 0) {
+        char byte = 0;
+        close(ready[0]);
+        close(go[1]);
+        if (write(ready[1], &byte, 1) != 1 || read(go[0], &byte, 1) != 1)
+            _exit(126);
+        close(ready[1]);
+        close(go[0]);
+        /* execvp, not execv: the stage types the program's name, so argv[0]
+         * may have no slash. --child does a fixed loop and a 1 ms sleep. */
+        char *argv[4];
+        argv[0] = (char *) g_self;
+        argv[1] = (char *) "--child";
+        argv[2] = (char *) "7";
+        argv[3] = NULL;
+        execvp(g_self, argv);
+        _exit(127);
+    }
+
+    int ok = 0;
+    char byte = 0;
+    close(ready[1]);
+    close(go[0]);
+    int fd_cycles = -1, fd_instr = -1;
+    if (read(ready[0], &byte, 1) == 1) {
+        fd_cycles = perf_open_child(PERF_COUNT_HW_CPU_CYCLES, pid);
+        fd_instr = perf_open_child(PERF_COUNT_HW_INSTRUCTIONS, pid);
+    }
+    uint64_t t0 = read_time64();
+    /* Release the child whether or not the events opened: it must not be left
+     * blocked on the pipe. A closed write end ends its read with 0. */
+    int released = write(go[1], &byte, 1) == 1;
+    close(go[1]);
+    int status = 0;
+    if (waitpid(pid, &status, 0) == pid && WIFEXITED(status) && released && fd_cycles >= 0 &&
+        fd_instr >= 0) {
+        uint64_t c = 0, i = 0;
+        uint64_t t1 = read_time64();
+        /* Disable first: the counts of an exited child are already folded in,
+         * and this stops anything else being added while they are read. */
+        ioctl(fd_cycles, PERF_EVENT_IOC_DISABLE, 0);
+        ioctl(fd_instr, PERF_EVENT_IOC_DISABLE, 0);
+        if (perf_read(fd_cycles, &c) == 0 && perf_read(fd_instr, &i) == 0) {
+            *cycles = c;
+            *instret = i;
+            *time = t1 - t0;
+            ok = 1;
+        }
+    }
+    if (fd_cycles >= 0)
+        close(fd_cycles);
+    if (fd_instr >= 0)
+        close(fd_instr);
+    close(ready[0]);
+    return ok;
+}
+#endif
+
+/* Counters only: what the hardware regression's Linux stage types at the shell
+ * prompt after logging in, in place of ``perf stat``, whose Buildroot build is
+ * compiled against a kernel FROST no longer boots. Like perf stat, it measures
+ * a child through an exec (see child_counter_deltas); the no-MMU edition, which
+ * has no perf_event_open, measures its own fixed workload. Its own token keeps
+ * the line distinct from the boot payload's summary, so the stage cannot
+ * mistake that earlier line for this run's counts. */
+static int run_counters(void)
+{
+    uint64_t cycles = 0, instret = 0, time = 0;
+#ifdef FROST_STRESS_MMU
+    const char *scope = "exec-child";
+    int ok = child_counter_deltas(&cycles, &instret, &time);
+#else
+    const char *scope = "self";
+    int ok = counter_deltas(&cycles, &instret, &time);
+#endif
+    if (!ok || cycles == 0 || instret == 0 || time == 0) {
+        printf("FROST_COUNTERS: scope=%s counters=unavailable verdict=FAIL\n", scope);
+        fflush(stdout);
+        return 1;
+    }
+    printf("FROST_COUNTERS: scope=%s cycles=%llu instret=%llu time=%llu "
+           "ipc_x1000=%u verdict=PASS\n",
+           scope,
+           (unsigned long long) cycles,
+           (unsigned long long) instret,
+           (unsigned long long) time,
+           (unsigned) (instret * 1000u / cycles));
+    fflush(stdout);
+    return 0;
+}
 
 static int fail(const char *reason)
 {
@@ -341,6 +546,8 @@ int main(int argc, char **argv)
         return run_exec_child(argv[2]);
     if (argc >= 2 && strcmp(argv[1], "--stress-child") == 0)
         return run_stress_child();
+    if (argc >= 2 && strcmp(argv[1], "--counters") == 0)
+        return run_counters();
 
     printf("FROST_USERSPACE_STRESS: starting\n");
     fflush(stdout);
@@ -427,53 +634,7 @@ int main(int argc, char **argv)
     /* ---- Phase 5: counter deltas around a fixed workload ---- */
     /* Measure after disarming the timer and reaping children. */
     uint64_t dc = 0, dt = 0, di = 0;
-    int counters_ok = 0;
-#ifdef FROST_STRESS_MMU
-    int fd_cycles = perf_open(PERF_COUNT_HW_CPU_CYCLES);
-    int fd_instr = perf_open(PERF_COUNT_HW_INSTRUCTIONS);
-    if (fd_cycles >= 0 && fd_instr >= 0) {
-        uint64_t c0 = 0, c1 = 0, i0 = 0, i1 = 0;
-        ioctl(fd_cycles, PERF_EVENT_IOC_RESET, 0);
-        ioctl(fd_instr, PERF_EVENT_IOC_RESET, 0);
-        ioctl(fd_cycles, PERF_EVENT_IOC_ENABLE, 0);
-        ioctl(fd_instr, PERF_EVENT_IOC_ENABLE, 0);
-        uint64_t t0 = read_time64();
-        counter_workload();
-        uint64_t t1 = read_time64();
-        ioctl(fd_cycles, PERF_EVENT_IOC_DISABLE, 0);
-        ioctl(fd_instr, PERF_EVENT_IOC_DISABLE, 0);
-        if (perf_read(fd_cycles, &c1) == 0 && perf_read(fd_instr, &i1) == 0) {
-            dc = c1 - c0;
-            di = i1 - i0;
-            dt = t1 - t0;
-            counters_ok = 1;
-        }
-    }
-    if (fd_cycles >= 0)
-        close(fd_cycles);
-    if (fd_instr >= 0)
-        close(fd_instr);
-#else
-    struct sigaction ill_sa;
-    memset(&ill_sa, 0, sizeof(ill_sa));
-    ill_sa.sa_handler = illegal_insn_handler;
-    if (sigaction(SIGILL, &ill_sa, NULL) != 0)
-        return fail("sigaction-counters");
-    if (sigsetjmp(g_counter_jmp, 1) == 0) {
-        uint64_t c0 = read_cycle64();
-        uint64_t t0 = read_time64();
-        uint64_t i0 = read_instret64();
-        counter_workload();
-        uint64_t c1 = read_cycle64();
-        uint64_t t1 = read_time64();
-        uint64_t i1 = read_instret64();
-        dc = c1 - c0;
-        dt = t1 - t0;
-        di = i1 - i0;
-        counters_ok = 1;
-    }
-    signal(SIGILL, SIG_DFL);
-#endif
+    int counters_ok = counter_deltas(&dc, &di, &dt);
     if (counters_ok) {
         /* Readable counters require sane deltas. */
         if (dc == 0)

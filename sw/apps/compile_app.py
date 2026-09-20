@@ -40,7 +40,8 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
 # load_software.py sets to a board's DDR size.
 LINUX_MEM_SIZE_VAR = "FROST_LINUX_MEM_SIZE"
 
-# linux_boot may spend 30–60 minutes building its first toolchain/kernel/rootfs.
+# linux_boot may spend 30-60 minutes building its first toolchain and rootfs,
+# and downloading Debian's kernel.
 DEFAULT_CLEAN_TIMEOUT_SECONDS = 30
 DEFAULT_BUILD_TIMEOUT_SECONDS = 120
 APP_TIMEOUTS_SECONDS: dict[str, tuple[int, int]] = {

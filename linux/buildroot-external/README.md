@@ -19,16 +19,22 @@
 > Boot ABI (entry state, memory map, DT contract, interrupt model, kernel
 > config requirements): see [`../README.md`](../README.md).
 
-This tree builds the FROST Linux lane and packages it into the memory images
-that the FPGA JTAG loader consumes:
+This tree builds the FROST Linux lane's firmware and test userspace, and
+packages them, with Debian's kernel, into the memory images that the FPGA JTAG
+loader consumes:
 
-- `frost_rv64_defconfig`: the mainline Sv39 kernel (6.18.7 with the NIC
-  driver from `../frost-net10g`, `board/frost/linux-frost.config`) under
-  OpenSBI fw_jump, with a musl ELF userspace (static busybox, `frost-stress`,
-  `perf` with elfutils) on the Bootlin riscv64 external toolchain, packed with
-  `board/frost/frost_boot_image.py` from `post-image-mmu.sh` (which also
-  builds the firmware from the `linux/opensbi` submodule via
-  `linux/opensbi_build.py`). Build it with `O=linux/build-mmu`.
+- `frost_rv64_defconfig`: OpenSBI fw_jump and a musl ELF userspace (static
+  busybox, `frost-stress`, `perf` with elfutils) on the Bootlin riscv64
+  external toolchain, packed with `board/frost/frost_boot_image.py` from
+  `post-image-mmu.sh` (which also builds the firmware from the `linux/opensbi`
+  submodule via `linux/opensbi_build.py`, and stages Debian's kernel and the NIC
+  module built for it via `../debian_kernel.py`). Build it with
+  `O=linux/build-mmu`.
+
+The kernel it also builds, mainline 6.18.7 with the NIC driver built in, is not
+packed or booted: FROST boots Debian's own kernel
+([`../README.md`](../README.md), "Kernel"). That configuration is kept only
+until it is removed, and so is `perf`, which is built against it.
 
 The no-MMU M-mode lane was retired in Phase 3, along with its defconfig,
 kernel configs, packer and CI jobs; this is the only lane.
@@ -105,17 +111,21 @@ The first build takes 30–60 min. Outputs land in `linux/build-mmu/images/`:
 
 | File | Purpose |
 |---|---|
-| `Image` | Sv39 rv64 kernel (flat, uncompressed) |
+| `Image-debian` | Debian's Sv39 rv64 kernel (flat, uncompressed), staged from `../debian-kernel` by `post-image-mmu.sh`: the packed payload |
+| `rootfs-frost.cpio` | `rootfs.cpio` with the NIC module and the `/etc/init.d` script that insmods it appended: the packed initramfs |
 | `rootfs.cpio` | musl busybox initramfs, uncompressed (inflating a gzip'd one costs the core tens of cycles per byte at boot) |
 | `fw_jump.bin` | OpenSBI firmware, built by `post-image-mmu.sh` from the `linux/opensbi` submodule |
 | `frost.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000, PLIC; clock/timebase = `FPGA_CPU_CLK_FREQ`, 300 MHz X3 default; 64 MiB of memory by default, the board's DDR size when `load_software.py` packs it) |
 | `sw.mem` / `sw.txt` | low-BRAM boot shim (`a0=0`, `a1=DTB`, jump to fw_jump) |
 | `sw_ddr.mem` / `sw_ddr.txt` | DDR image: firmware @ 0x8000_0000, Image @ +2 MiB, DTB @ the first 2 MiB boundary at or above +16 MiB and the Image's end, initramfs after it |
+| `Image` | the kernel Buildroot builds, which nothing packs or boots |
 
 ## Packing the images for a board
 
 The `sw/apps/linux_boot` Makefile runs Buildroot if
-`linux/build-mmu/images/Image` is absent, then packs the images for the board
+`linux/build-mmu/images/rootfs.cpio` is absent, fetches Debian's kernel and
+builds the NIC module into a copy of that initramfs if
+`linux/debian-kernel` has no kernel, then packs the images for the board
 clock. `fpga/load_software/load_software.py <board> linux_boot` drives that
 Makefile: the loader sets the board's clock (`FPGA_CPU_CLK_FREQ`) and DDR size
 (`FROST_LINUX_MEM_SIZE`: the CPU's range in `fpga/build/<board>_ddr_bd.tcl`,
@@ -130,13 +140,14 @@ packer's default 64 MiB, which is also what a plain `make` produces
 `FROST_LINUX_NFSROOT=<server-ip>:/<path>` packs an NFS-root image instead:
 bootargs that mount that export as the root, with the interface configured
 from `FROST_LINUX_IP` (`ip=` in the kernel's syntax, `dhcp` by default), and
-by default no initramfs, so the kernel mounts it. `FROST_LINUX_KERNEL` and
-`FROST_LINUX_INITRD` pack another kernel `Image` and initramfs, such as
-Debian's, in place of Buildroot's `Image` and `rootfs.cpio`; the firmware
+by default no initramfs, so the kernel mounts it -- which needs a kernel with
+`CONFIG_IP_PNP` and `CONFIG_ROOT_NFS`, not Debian's. `FROST_LINUX_KERNEL` and
+`FROST_LINUX_INITRD` pack another kernel `Image` and initramfs in place of
+Debian's `Image` and the test initramfs; the firmware
 still comes from this build. Give them as absolute paths (under `/workspace`
 in `./scripts/frost.py run`, which sees only the checkout). With
 `FROST_LINUX_NFSROOT` too, that initramfs mounts the export through
-initramfs-tools' NFS boot (`boot=nfs`), which Debian's kernel needs.
+initramfs-tools' NFS boot (`boot=nfs`), which is how a Debian root boots.
 `FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff` sets the NIC's MAC address in any image;
 each board on a shared network needs its own locally administered address
 ([`../README.md`](../README.md), "NFS root"). `load_software.py` passes them
@@ -166,11 +177,13 @@ FROST_LINUX_PREBUILT=1 ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
 Two CI jobs cover Linux. `build-frost-linux-mmu` invokes Buildroot directly
-(its post-image hook packs the board images, so a broken packer fails the job)
-and uploads `frost-linux-boot-images-mmu`. `linux-boot-qemu-mmu` boots that
-artifact's `Image` and `rootfs.cpio` under `qemu-system-riscv64 -M virt`, with
-both QEMU's bundled OpenSBI and the FROST firmware, and requires the stress
-token and the login prompt. Booting this kernel on the FROST RTL is retired:
+(its post-image hook fetches Debian's kernel and packs the board images, so a
+broken packer fails the job) and uploads `frost-linux-boot-images-mmu`.
+`linux-boot-qemu-mmu` boots that artifact's `Image-debian` and
+`rootfs-frost.cpio` under `qemu-system-riscv64 -M virt`, with
+both QEMU's bundled OpenSBI and the FROST firmware, and requires the NIC
+module's load token, the stress token and the login prompt. Booting the kernel
+on the FROST RTL is retired:
 the boot gate is the hardware regression's Linux stage
 (`fpga/hw_regression.py --board x3 linux_boot`) and the board soaks
 (`fpga/linux_boot_soak.py`), and there is no `linux_boot` cocotb entry
@@ -178,7 +191,8 @@ the boot gate is the hardware regression's Linux stage
 
 ## How the kernel config is assembled
 
-`BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG` points at
+Nothing boots this kernel any more; the configuration is kept until it is
+removed. `BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG` points at
 `board/frost/linux-frost.config`, a mini-config rather than a full defconfig:
 Buildroot runs `olddefconfig` over it, so unlisted symbols take their
 architecture defaults. It sets `CONFIG_MMU`, `CONFIG_RISCV_SBI`, the SBI PMU,
@@ -190,11 +204,12 @@ driver, and it leaves `CONFIG_IPV6`, `CONFIG_NONPORTABLE` and
 `tests/test_linux_packaging.py` asserts those load-bearing symbols and
 that the file uses Kconfig syntax `olddefconfig` understands. Each symbol is
 commented in the config itself; the contract is in
-[`../README.md`](../README.md), "Kernel configuration contract".
+[`../README.md`](../README.md), "Kernel".
 
 The NIC driver (`CONFIG_FROST_NET10G`) is not in mainline. Its one source
 is [`../frost-net10g`](../frost-net10g/README.md), which is also the DKMS
-package that builds it as a module for Debian's kernels. Two pieces put it
+package that builds it as a module for Debian's kernels -- how FROST boots it
+([`../README.md`](../README.md), "NIC module"). Two pieces put it
 into this kernel. The patch
 `board/frost/patches/linux/0001-net-ethernet-hook-in-the-FROST-net10g-driver.patch`
 adds `drivers/net/ethernet/frost/` to the kernel's `drivers/net/ethernet`
@@ -226,20 +241,41 @@ files to change userspace. The initramfs does no IP networking
 unset.
 
 The `frost-stress` package installs `/usr/bin/frost_stress`, which the overlay
-inittab runs once as a sysinit entry, before the getty. It runs a timer storm
+inittab runs once as a sysinit entry, before the getty. Buildroot does not
+notice an edit to the package's sources on its own, so the `sw/apps/linux_boot`
+Makefile names them as prerequisites of `rootfs.cpio` and runs
+`frost-stress-rebuild` when they are newer; editing them by hand in a Buildroot
+build needs that target too, or the cached `rootfs.cpio` keeps the old programs.
+The packer refuses an archive whose `frost_stress` predates the counter mode the
+hardware regression types, so a stale one cannot reach a board.
+
+One build directory belongs to one view of the checkout. `make <defconfig>`
+writes `BR2_EXTERNAL_FROST_PATH` into `.config` as an absolute path, and passing
+`BR2_EXTERNAL` later does not move it, so a directory configured in the
+container (`/workspace/...`) cannot be built from a native loader or the
+reverse. Every Buildroot invocation still has to pass `BR2_EXTERNAL`: the
+directory's record of it is regenerated from that variable, and one call without
+it leaves the tree with no external tree at all. The `linux_boot` Makefile does
+both -- it passes the variable everywhere and reports a directory configured
+elsewhere rather than silently reconfiguring it.
+
+`frost_stress` runs a timer storm
 with signal delivery, `fork`+`exec` and a copy-on-write child, `mmap` phases,
 futex ping-pong, two processes contending on an LR/SC counter, and counter
 deltas (`cycles=`, `instret=`, `time=`, `ipc_x1000=`) around a fixed workload,
 read through `perf_event_open`. It prints one stats line followed by
 `FROST_USERSPACE_STRESS_PASS` or `FROST_USERSPACE_STRESS_FAIL`. The
 `linux-boot-qemu-mmu` CI job and `fpga/linux_boot_soak.py` require the pass
-token, so they test userspace rather than only the kernel banner. Under QEMU
-the counter phase reports `counters=unavailable`: QEMU resets `mcounteren` to
-0 (see [`../README.md`](../README.md), "Counters and mcounteren"). The
-hardware soak fails any boot that shows that degradation. The same package
-also installs `frost_sigprobe`, the vDSO signal-return bring-up probe, and
-`frost_nettest`, which the hardware regression's Linux stage types after
-logging in. It drives the `frost_net10g` driver through the driver's loopback
+token, so they test userspace rather than only the kernel banner. The counter
+phase reports counts on FROST and under QEMU alike (the SBI PMU's fixed
+counters; see [`../README.md`](../README.md), "Counters and mcounteren"), and
+the hardware soak fails any boot that reports `counters=unavailable`.
+`frost_stress --counters` prints the same counters for a child measured from its
+exec to its exit, as the `perf stat <command>` it replaced did; the hardware
+regression's Linux stage types it after logging in and requires that scope. The
+same package also installs `frost_sigprobe`, the vDSO signal-return bring-up
+probe, and `frost_nettest`, which the stage types next.
+It drives the `frost_net10g` driver through the driver's loopback
 feature (the NIC's raw MAC loopback when both MAC directions share a clock, the
 transceiver's PMA loopback otherwise): MTU 9000, frame lengths 14 to 9014
 bytes, a 300-frame burst, a down during a burst, loopback off and on again, and
@@ -251,7 +287,9 @@ down with loopback off and prints `FROST_NET_LOOPBACK_PASS` or
 `post-image-mmu.sh` runs after the image stage. It locates
 `riscv64-linux-gcc` in `$HOST_DIR/bin`, finds `dtc` in `$HOST_DIR/bin`, then
 the kernel's `scripts/dtc/dtc`, then `$PATH`, builds the firmware through
-`linux/opensbi_build.py`, and packs `fw_jump.bin`, the kernel `Image`, the
-generated DTB and the initramfs with `frost_boot_image.py`. Set
+`linux/opensbi_build.py`, stages `Image-debian` and composes
+`rootfs-frost.cpio` through `../debian_kernel.py` (which builds the NIC module
+with the toolchain it just located), and packs `fw_jump.bin`, `Image-debian`,
+the generated DTB and `rootfs-frost.cpio` with `frost_boot_image.py`. Set
 `BR2_PACKAGE_HOST_DTC=y` to guarantee a host `dtc` that does not depend on the
 kernel build.

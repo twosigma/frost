@@ -31,7 +31,8 @@ PARAMETERIZED_APP_SKIP_REASONS = {
 }
 
 LINUX_BOOT_SKIP_REASON = (
-    "first build runs Buildroot for 30-60 minutes; pass --include-linux-boot to opt in"
+    "first build runs Buildroot for 30-60 minutes and downloads Debian's kernel; "
+    "pass --include-linux-boot to opt in"
 )
 
 

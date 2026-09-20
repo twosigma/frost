@@ -541,19 +541,21 @@ jobs:
               -m "not cocotb and not synthesis and not formal and not slow" -v
 
   # ---------------------------------------------------------------------------
-  # MMU Linux lane (Phase 3): OpenSBI fw_jump + mainline Sv39 kernel + musl
-  # userspace with perf. Built from the linux/opensbi and linux/buildroot
-  # submodules through the FROST BR2_EXTERNAL tree. The build's post-image hook
-  # also runs frost_boot_image.py (firmware +0, Image +2 MiB, DTB at +16 MiB or
-  # the first 2 MiB boundary past a larger Image, initramfs after it), so a
-  # broken packer fails this job. The artifact carries the pieces, not the
-  # packed images: a board loads through load_software.py, which packs them
-  # again from these. Booting this kernel on the RTL is retired
+  # MMU Linux lane: OpenSBI fw_jump + Debian's pinned riscv64 kernel + the musl
+  # test-initramfs userspace. OpenSBI and the userspace come from the
+  # linux/opensbi and linux/buildroot submodules through the FROST BR2_EXTERNAL
+  # tree; the kernel and the NIC module built for it come from
+  # linux/debian_kernel.py, which its post-image hook invokes. That hook also
+  # runs frost_boot_image.py (firmware +0, Image +2 MiB, DTB at +16 MiB or the
+  # first 2 MiB boundary past a larger Image, initramfs after it), so a broken
+  # packer fails this job. The artifact carries the pieces, not the packed
+  # images: a board loads through load_software.py, which packs them again from
+  # these. Booting this kernel on the RTL is retired
   # (see tests/test_run_cocotb.py): the boot gate is the hardware regression's
   # Linux stage plus fpga/linux_boot_soak.py, with the QEMU job below as the
   # in-CI functional check.
   build-frost-linux-mmu:
-    name: Build FROST MMU Linux Image (Buildroot + OpenSBI)
+    name: Build FROST MMU Linux Image (Debian kernel + Buildroot + OpenSBI)
     runs-on: ubuntu-24.04
     needs: build-docker
     timeout-minutes: 150
@@ -594,6 +596,16 @@ jobs:
           restore-keys: |
             br2-ccache-mmu-
 
+      # Debian's kernel packages, keyed on the file that pins them, so a bumped
+      # pin fetches once and every later run reuses the download.
+      - name: Cache the Debian kernel packages
+        uses: actions/cache@v4
+        with:
+          path: linux/debian-kernel/dl
+          key: debian-kernel-dl-${{ hashFiles('linux/debian_kernel.py') }}
+          restore-keys: |
+            debian-kernel-dl-
+
       - name: Build kernel + initramfs + firmware + FROST boot images
         run: |
           docker run --rm \
@@ -611,23 +623,30 @@ jobs:
               ls -l ${{ env.BUILD_DIR }}/images/
             '
 
+      # Image-debian and rootfs-frost.cpio are exactly what the post-image hook
+      # packed, so the QEMU job below boots the packed pair rather than
+      # reassembling it. Buildroot's own images/Image is not uploaded: nothing
+      # boots it any more.
       - name: Upload FROST MMU Linux boot images
         uses: actions/upload-artifact@v4
         with:
           name: frost-linux-boot-images-mmu
           path: |
-            ${{ env.BUILD_DIR }}/images/Image
+            ${{ env.BUILD_DIR }}/images/Image-debian
             ${{ env.BUILD_DIR }}/images/rootfs.cpio
+            ${{ env.BUILD_DIR }}/images/rootfs-frost.cpio
             ${{ env.BUILD_DIR }}/images/fw_jump.bin
             ${{ env.BUILD_DIR }}/images/fw_jump.elf
             ${{ env.BUILD_DIR }}/images/frost.dtb
           retention-days: 7
           if-no-files-found: error
 
-  # Boot the same kernel and rootfs under QEMU twice: with QEMU's bundled
+  # Boot the same kernel and initramfs under QEMU twice: with QEMU's bundled
   # OpenSBI (an independent reference) and with the FROST-built fw_jump (the
-  # firmware artifact on a second platform). Both must reach the stress token
-  # and the login prompt.
+  # firmware artifact on a second platform). Both must reach the NIC module's
+  # load token -- which is what proves the module built against Debian's
+  # headers actually loads into Debian's kernel, since its vermagic must match
+  # exactly -- the stress token and the login prompt.
   linux-boot-qemu-mmu:
     name: QEMU MMU Linux Boot (bundled and FROST OpenSBI)
     runs-on: ubuntu-24.04
@@ -657,14 +676,18 @@ jobs:
           docker run --rm -v /tmp/frost-linux-images:/img frost-dev:latest \
             bash -c '
               set -euo pipefail
+              # The -append string is frost_boot_image.py's DEFAULT_BOOTARGS,
+              # which tests/test_linux_packaging.py keeps the two in step on.
               boot() {
                 timeout -k5 180 qemu-system-riscv64 -M virt -m 256M -nographic \
                   -cpu rv64,sv57=off,sv48=off,zicbom=false,zicboz=false,v=false,h=false \
-                  -bios "$1" -kernel /img/Image -initrd /img/rootfs.cpio \
-                  -append "earlycon console=ttyS0 rdinit=/sbin/init" \
+                  -bios "$1" -kernel /img/Image-debian \
+                  -initrd /img/rootfs-frost.cpio \
+                  -append "earlycon console=ttyS0 rdinit=/sbin/init ipv6.disable=1" \
                   </dev/null >"$2" 2>&1 || true
                 echo "===== QEMU boot log ($1, tail) ====="
                 tail -n 20 "$2"
+                grep -q "FROST_NET10G_MODULE_PASS" "$2"
                 grep -q "FROST_USERSPACE_STRESS_PASS" "$2"
                 grep -q "buildroot login:" "$2"
               }

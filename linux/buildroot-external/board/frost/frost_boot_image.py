@@ -115,7 +115,11 @@ ISA_STRING = (
     "rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause_sstc_svade"
 )
 
-DEFAULT_BOOTARGS = "earlycon console=ttyS0 rdinit=/sbin/init"
+# ipv6.disable=1 because Debian's kernel builds IPv6 in: the autoconfiguration
+# frames it sends whenever an interface comes up return through the NIC's
+# loopback and fail frost_nettest's idle checks, which require that no frame is
+# counted while none is being sent. Nothing in the initramfs needs IPv6.
+DEFAULT_BOOTARGS = "earlycon console=ttyS0 rdinit=/sbin/init ipv6.disable=1"
 # The ip= for an NFS root when --ip is not given.
 DEFAULT_NFSROOT_IP = "dhcp"
 # The NFS root's mount options: NFSv3 over TCP, a hard mount. The kernel's NFS

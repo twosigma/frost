@@ -12,22 +12,28 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Builds the FROST memory images for the MMU Linux boot straight from source in
-# this repo: OpenSBI, the Sv39 kernel and the initramfs come from the vendored
-# submodules (linux/opensbi, linux/buildroot) driven by the FROST BR2_EXTERNAL
-# tree (linux/buildroot-external), and frost_boot_image.py packs them into the
+# Builds the FROST memory images for the MMU Linux boot: Debian's own riscv64
+# kernel, the OpenSBI firmware from the linux/opensbi submodule, and the test
+# initramfs from the linux/buildroot submodule driven by the FROST BR2_EXTERNAL
+# tree (linux/buildroot-external). frost_boot_image.py packs them into the
 # low-BRAM shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that
-# fpga/load_software consumes. There are no prebuilt artifacts and no
-# out-of-repo paths, so a fresh `git clone --recurse-submodules` can build
-# it. FROST_LINUX_KERNEL and FROST_LINUX_INITRD (below) swap in a kernel and an
-# initramfs built elsewhere, such as Debian's.
+# fpga/load_software consumes. Everything is fetched or built from pinned
+# sources, so a fresh `git clone --recurse-submodules` can build it.
+# FROST_LINUX_KERNEL and FROST_LINUX_INITRD (below) swap in a kernel and an
+# initramfs built elsewhere.
 #
-# Two stages, split so that re-loading for a different board is cheap:
+# Three stages, split so that re-loading for a different board is cheap:
 #
-#   Stage 1 (slow, board-independent): Buildroot builds its own cross toolchain,
-#     OpenSBI, the kernel Image and the rootfs.cpio. ~30-60 min the first
-#     time; cached in the build dir afterwards. Only runs when the
-#     kernel Image is absent, so it does not re-run on every load.
+#   Stage 1a (slow, board-independent): Buildroot builds its own cross
+#     toolchain, OpenSBI and the rootfs.cpio userspace. ~30-60 min the first
+#     time; cached in the build dir afterwards. Only runs when that initramfs
+#     or the firmware is absent, so it does not re-run on every load.
+#
+#   Stage 1b (board-independent): linux/debian_kernel.py fetches Debian's
+#     pinned kernel and builds the NIC driver as a module for it, then appends
+#     that module and the init script that insmods it to Buildroot's
+#     rootfs.cpio. Debian's kernel has no FROST driver built in, and
+#     frost_nettest needs one. Cached under linux/debian-kernel.
 #
 #   Stage 2 (fast, board-dependent): frost_boot_image.py regenerates the DTB
 #     (timebase + UART clock = FPGA_CPU_CLK_FREQ, memory = FROST_LINUX_MEM_SIZE)
@@ -52,37 +58,63 @@ BOARD_DIR    := $(BR2_EXTERNAL)/board/frost
 # this is the only lane.
 BR2_OUT      := $(FROST_ROOT)/linux/build-mmu
 BR2_DEFCONFIG := frost_rv64_defconfig
-INITRD_IMG   := $(BR2_OUT)/images/rootfs.cpio
 IMAGES       := $(BR2_OUT)/images
-KIMAGE       := $(IMAGES)/Image
+BR2_INITRD   := $(IMAGES)/rootfs.cpio
 FW_JUMP      := $(IMAGES)/fw_jump.bin
+
+# Debian's kernel and the NIC module built for it (linux/debian_kernel.py holds
+# the snapshot URL, version and checksums). The Image path is a pure query, so
+# it costs no download; the rule below fetches when the file is absent.
+# INITRD_IMG is Buildroot's userspace with that module and its loader appended.
+DEBIAN_KERNEL := $(FROST_ROOT)/linux/debian_kernel.py
+DEBIAN_IMAGE  := $(shell python3 "$(DEBIAN_KERNEL)" image --no-fetch)
+DRIVER_DIR    := $(FROST_ROOT)/linux/frost-net10g
+INITRD_IMG    := $(CURDIR)/rootfs.cpio
+# The module is built with a Linux-target riscv64 cross toolchain. Prefer the
+# one Buildroot's build just produced, so a host that has none installed (the
+# Vivado host runs the loader natively) still builds it; the helper falls back
+# to FROST_LINUX_CROSS_COMPILE, which the Docker image sets. Expanded when the
+# recipe runs, by which time Buildroot has been built.
+BR2_CROSS      = $(BR2_OUT)/host/bin/riscv64-linux-
+MODULE_CROSS   = $(if $(wildcard $(BR2_CROSS)gcc),--cross "$(BR2_CROSS)")
+ifeq ($(DEBIAN_IMAGE),)
+$(error python3 "$(DEBIAN_KERNEL)" image --no-fetch printed no path; run it by \
+hand to see why)
+endif
 
 # DTB timebase + UART clock. load_software.py exports this per board; the bare
 # `make` default matches X3.
 FPGA_CPU_CLK_FREQ ?= 300000000
 
-# Kernel, root filesystem and NIC address. Unset, Buildroot's kernel and
+# Kernel, root filesystem and NIC address. Unset, Debian's kernel and the test
 # initramfs are packed with the packer's default bootargs.
-# FROST_LINUX_KERNEL=<path> packs that Linux Image in place of Buildroot's
-# kernel, and FROST_LINUX_INITRD=<path> that initramfs in place of rootfs.cpio;
-# the firmware still comes from the Buildroot build. Give absolute paths: make
+# FROST_LINUX_KERNEL=<path> packs that Linux Image in place of Debian's, and
+# FROST_LINUX_INITRD=<path> that initramfs in place of the test one; the
+# firmware still comes from the Buildroot build. Give absolute paths: make
 # runs in this directory.
 # FROST_LINUX_NFSROOT=<server-ip>:/<path> boots from that NFS export instead,
 # configuring the interface from FROST_LINUX_IP, an ip= parameter in the
 # kernel's syntax (dhcp when unset; an error without FROST_LINUX_NFSROOT).
 # Without FROST_LINUX_INITRD it packs no initramfs and the kernel mounts the
-# export; with it, that initramfs mounts the export through initramfs-tools'
-# NFS boot (boot=nfs), for a kernel with no NFS root of its own, such as
-# Debian's. FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff replaces the NIC's default
+# export -- which the packed kernel must be able to do, so this combination
+# needs a kernel with CONFIG_IP_PNP and CONFIG_ROOT_NFS, not Debian's; with it,
+# that initramfs mounts the export through initramfs-tools' NFS boot
+# (boot=nfs), which is how Debian's kernel boots its own root.
+# FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff replaces the NIC's default
 # local-mac-address in every case; each board on a shared network needs its
 # own. load_software.py passes these through from the environment, like
 # FROST_LINUX_PREBUILT.
-PAYLOAD := $(or $(FROST_LINUX_KERNEL),$(KIMAGE))
+PAYLOAD := $(or $(FROST_LINUX_KERNEL),$(DEBIAN_IMAGE))
+# What to pack as the initramfs, empty for an NFS root that the kernel mounts
+# itself. Naming it once keeps it out of the prerequisites when an override
+# supplies it: neither the Debian fetch nor the module build then runs.
 ifdef FROST_LINUX_NFSROOT
+PACK_INITRD := $(FROST_LINUX_INITRD)
 PACK_ARGS := --nfsroot "$(FROST_LINUX_NFSROOT)" \
-  $(if $(FROST_LINUX_INITRD),--initrd "$(FROST_LINUX_INITRD)")
+  $(if $(PACK_INITRD),--initrd "$(PACK_INITRD)")
 else
-PACK_ARGS := --initrd "$(or $(FROST_LINUX_INITRD),$(INITRD_IMG))"
+PACK_INITRD := $(or $(FROST_LINUX_INITRD),$(INITRD_IMG))
+PACK_ARGS := --initrd "$(PACK_INITRD)"
 endif
 PACK_ARGS += $(if $(FROST_LINUX_IP),--ip "$(FROST_LINUX_IP)")
 PACK_ARGS += $(if $(FROST_LINUX_MAC),--mac "$(FROST_LINUX_MAC)")
@@ -145,40 +177,95 @@ all: sw_ddr.mem sw64.mem
 sw64.mem: sw.mem ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
-# Stage 1: kernel Image + rootfs via Buildroot. Skipped when already built.
-# Grouped target (&:): one Buildroot invocation produces both files. A plain
-# multi-target rule would run the recipe once per missing file, and under -j it
-# could run two Buildroot makes concurrently in the same O= dir.
-$(KIMAGE) $(INITRD_IMG) &:
+# Stage 1a: the test initramfs + OpenSBI via Buildroot. Skipped when already
+# built and no newer than the userspace it packs. Grouped target (&:): one
+# Buildroot invocation produces both files. A plain multi-target rule would run
+# the recipe once per missing file, and under -j it could run two Buildroot
+# makes concurrently in the same O= dir.
+#
+# The prerequisites matter for more than freshness. Buildroot does not notice an
+# edited package source by itself, so an existing archive would keep the old
+# programs -- and the hardware regression's Linux stage types one of them
+# (frost_stress --counters), so a stale archive turns a healthy boot into a
+# stage timeout. Naming the sources here rebuilds just that package; the
+# packer's own check on the archive (debian_kernel.py, check_base_initramfs) is
+# the backstop for an archive whose timestamps lie.
+#
+# BR2_EXTERNAL goes on every Buildroot invocation, not just the defconfig:
+# Buildroot regenerates the build directory's record of it from this variable,
+# so omitting it once leaves the tree with no external tree at all.
+#
+# The build directory still belongs to one view of the checkout: its .config
+# stores BR2_EXTERNAL_FROST_PATH as an absolute path, which a command-line
+# BR2_EXTERNAL does not override. Re-running the defconfig is the only way to
+# move it, and that is not something to do behind someone's back, so a
+# directory configured elsewhere (a container build reached from a native
+# loader, or the reverse) is reported rather than reconfigured.
+FROST_STRESS_SRC := $(wildcard $(BR2_EXTERNAL)/package/frost-stress/src/*.c)
+BR2_OVERLAY := $(wildcard $(BOARD_DIR)/rootfs-overlay-mmu/etc/inittab)
+BR2_RECORDED = $(patsubst "%",%,$(shell sed -n \
+  's/^BR2_EXTERNAL_FROST_PATH=//p' "$(BR2_OUT)/.config" 2>/dev/null))
+$(BR2_INITRD) $(FW_JUMP) &: $(FROST_STRESS_SRC) $(BR2_OVERLAY)
 	@test -f "$(BR2_SRC)/Makefile" || { \
 	  echo "ERROR: buildroot submodule not initialized."; \
 	  echo "  Run: git submodule update --init linux/buildroot"; \
 	  exit 1; }
-	@echo ">>> linux_boot: building kernel + rootfs via Buildroot (first build ~30-60 min)..."
-	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" $(BR2_DEFCONFIG)
-	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)"
+	@if [ ! -f "$(BR2_OUT)/.config" ]; then \
+	  echo ">>> linux_boot: building the test initramfs + OpenSBI via Buildroot (first build ~30-60 min)..."; \
+	  $(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" \
+	    $(BR2_DEFCONFIG) || exit 1; \
+	elif [ "$(BR2_RECORDED)" != "$(BR2_EXTERNAL)" ]; then \
+	  echo "ERROR: $(BR2_OUT) was configured for"; \
+	  echo "         $(BR2_RECORDED)"; \
+	  echo "       but this build sees the tree as"; \
+	  echo "         $(BR2_EXTERNAL)"; \
+	  echo "       Its .config stores that path, so it cannot be built from here."; \
+	  echo "       Rebuild the test userspace from the other view, or start over:"; \
+	  echo "         make -C sw/apps/linux_boot distclean"; \
+	  exit 1; \
+	else \
+	  echo ">>> linux_boot: the test userspace changed; rebuilding frost-stress..."; \
+	  $(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" \
+	    frost-stress-rebuild || exit 1; \
+	fi
+	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)"
+
+# Stage 1b: Debian's kernel, cached under linux/debian-kernel. No prerequisites,
+# so the fetch runs only when the Image is absent; a changed pin changes this
+# path, and the helper re-checks its own cache whenever it is invoked.
+$(DEBIAN_IMAGE):
+	python3 "$(DEBIAN_KERNEL)" fetch
+
+# Stage 1b: the test initramfs with the NIC module for Debian's kernel, and the
+# init script that insmods it, appended. The driver's sources are prerequisites
+# so an edited driver is rebuilt into the module.
+$(INITRD_IMG): $(BR2_INITRD) $(DEBIAN_KERNEL) $(DRIVER_DIR)/frost_net10g.c \
+    $(DRIVER_DIR)/Makefile | $(DEBIAN_IMAGE)
+	python3 "$(DEBIAN_KERNEL)" $(MODULE_CROSS) initramfs \
+	  --base "$(BR2_INITRD)" --out "$@"
 
 # Stage 2: pack for this board's clock. The firmware that Buildroot's
 # post-image hook built (images/fw_jump.bin) is packed with frost_boot_image.py.
-sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(FROST_LINUX_KERNEL) \
-    $(FROST_LINUX_INITRD) $(BOARD_DIR)/frost_boot_image.py
-	@test -f "$(FW_JUMP)" || { \
-	  echo "ERROR: $(FW_JUMP) is missing; the Buildroot post-image hook builds it."; \
-	  exit 1; }
+sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(PAYLOAD) $(PACK_INITRD) $(FW_JUMP) \
+    $(BOARD_DIR)/frost_boot_image.py
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) $(SHIM_CROSS) \
 	  python3 "$(BOARD_DIR)/frost_boot_image.py" \
 	    --firmware "$(FW_JUMP)" --payload "$(PAYLOAD)" $(PACK_ARGS) \
 	    --out "$(CURDIR)"
 
-# Light clean: drop only the board-dependent pack outputs (Stage 2). The cached
-# Buildroot kernel/rootfs (Stage 1) survive, so a re-pack for another board is
-# fast. This is what load_software.py runs before every load.
+# Light clean: drop only the board-dependent pack outputs (Stage 2) and the
+# composed initramfs, which is cheap to rebuild once the module is cached. The
+# Buildroot build and the Debian kernel cache (Stage 1) survive, so a re-pack
+# for another board is fast. This is what load_software.py runs before every
+# load.
 clean:
-	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt \
+	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt rootfs.cpio \
 	      shim.elf shim.bin frost_boot_shim.S \
 	      frost.dts frost.dtb
 
-# Full clean: also wipe the (slow) Buildroot build tree, forcing a Stage 1 rebuild.
+# Full clean: also wipe the (slow) Buildroot build tree, forcing a Stage 1a
+# rebuild. The Debian kernel cache is a download cache, like linux/dl, and is
+# left alone; remove linux/debian-kernel by hand to force a refetch.
 distclean: clean
 	rm -rf "$(BR2_OUT)"
 
