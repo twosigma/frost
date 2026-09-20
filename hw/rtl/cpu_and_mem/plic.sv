@@ -18,7 +18,7 @@
  * Platform-Level Interrupt Controller (RISC-V PLIC spec 1.0, Phase 3 M6,
  * plan D11), memory-mapped in the device quadrant at 0x4400_0000. The
  * contexts are {hart0 M, hart0 S} today, and the context array is
- * parameterized for the harts Phase 5 adds.
+ * parameterized for the harts Phase 6 adds.
  *
  * Sources (1-based per the spec; source 0 means "none"):
  *   1 = ns16550 UART interrupt (the meip OR-tap that used to feed mip.MEIP

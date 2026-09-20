@@ -518,8 +518,8 @@ controller calibrates, so software never observes uninitialized main memory.
 
 FROST is an RV64GCB-only core; rv32 support was retired after Phase 1.
 [ROADMAP.md](ROADMAP.md) lists the phases from the RV64 substrate through
-S-mode and Sv39 with MMU Linux, system I/O with a stock distribution, SMP,
-and RV64 performance parity with the former RV32 design, each with its exit
+S-mode and Sv39 with MMU Linux, system I/O with a stock distribution, RV64
+performance parity with the former RV32 design, and SMP, each with its exit
 criteria.
 
 ## CPU Internals
