@@ -1950,8 +1950,8 @@ module tomasulo_wrapper #(
   // classification of the base page runs in parallel.  The legal data pages
   // are [0, 0x3f] and [0x40000, 0xbffff].  Moving one page changes membership
   // only at the four interval entry/exit boundaries in each direction, so the
-  // XORs below are exactly pma_data_ok(src1 + sext12(imm)) without putting the
-  // PMA/ROB and PMA/SC-table paths behind the 64-bit carry chain.  Keep the
+  // page choices below are exactly pma_data_ok(src1 + sext12(imm)) without
+  // putting the PMA/ROB and PMA/SC-table paths behind the 64-bit carry chain. Keep the
   // 13-bit tap explicit so synthesis cannot re-expand this predicate through
   // sq_effective_addr; that full-width sum remains the architectural SQ/xtval
   // payload below.
@@ -1973,10 +1973,10 @@ module tomasulo_wrapper #(
   logic store_base_page_eq_bffff;
   logic store_base_page_eq_c0000;
   logic store_base_page_eq_max;
-  logic store_page_inc;
-  logic store_page_dec;
   logic store_page_inc_toggle;
   logic store_page_dec_toggle;
+  (* keep = "true" *) logic store_pma_without_page_carry;
+  (* keep = "true" *) logic store_pma_with_page_carry;
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
 
@@ -2007,15 +2007,20 @@ module tomasulo_wrapper #(
       (o_mem_rs_issue.src1_value[31:30] == 2'b11) && store_base_page_tail_zero;
   assign store_base_page_eq_max = &o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12];
 
-  assign store_page_inc = !o_mem_rs_issue.imm[11] && store_page_offset_sum[12];
-  assign store_page_dec = o_mem_rs_issue.imm[11] && !store_page_offset_sum[12];
   assign store_page_inc_toggle = store_base_page_eq_max || store_base_page_eq_3f ||
       store_base_page_eq_3ffff || store_base_page_eq_bffff;
   assign store_page_dec_toggle = store_base_page_eq_0 || store_base_page_eq_40 ||
       store_base_page_eq_40000 || store_base_page_eq_c0000;
-  assign store_addr_pma_ok = store_base_pma_ok ^
-      (store_page_inc && store_page_inc_toggle) ^
-      (store_page_dec && store_page_dec_toggle);
+  // Complete both page classifications before the offset carry selects one.
+  // With no carry, only a negative immediate can leave the base page; with
+  // carry, only a nonnegative immediate can do so. Keep these scalar results
+  // so the wide base-page comparisons and the offset adder meet at one mux.
+  assign store_pma_without_page_carry = store_base_pma_ok ^
+      (o_mem_rs_issue.imm[11] && store_page_dec_toggle);
+  assign store_pma_with_page_carry = store_base_pma_ok ^
+      (!o_mem_rs_issue.imm[11] && store_page_inc_toggle);
+  assign store_addr_pma_ok = store_page_offset_sum[12] ? store_pma_with_page_carry :
+      store_pma_without_page_carry;
   assign store_addr_misaligned = is_mem_access_misaligned(
       riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size),
       {
@@ -2043,13 +2048,19 @@ module tomasulo_wrapper #(
   // Exception generation still uses store_misalign_issue above, so
   // PMA-over-misalignment priority and all fault behavior remain unchanged;
   // only the ROB "done" pulse gets the shallower, Boolean-equivalent form.
-  assign store_issue_fire = i_translation_active ?
-      (dmmu_store_ok && !dmmu_out_is_sc) :
-      (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
-       (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
-       store_addr_pma_ok &&
-       (!i_trap_misaligned_accesses || !store_addr_misaligned));
+  // Finish both eligibility arms independently of the late PMA result. Keep
+  // them so PMA reaches the ROB through one final gate instead of being
+  // absorbed into the valid, opcode, alignment and translation priority cone.
+  (* keep = "true" *) logic store_issue_translated;
+  (* keep = "true" *) logic store_issue_untranslated_without_pma;
+  assign store_issue_translated = dmmu_store_ok && !dmmu_out_is_sc;
+  assign store_issue_untranslated_without_pma =
+      o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+      (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
+      (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
+      (!i_trap_misaligned_accesses || !store_addr_misaligned);
+  assign store_issue_fire = i_translation_active ? store_issue_translated :
+      (store_issue_untranslated_without_pma && store_addr_pma_ok);
   assign store_complete_tag = i_translation_active ? dmmu_out_tag : o_mem_rs_issue.rob_tag;
 
 `ifndef SYNTHESIS

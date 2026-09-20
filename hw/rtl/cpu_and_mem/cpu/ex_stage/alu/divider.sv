@@ -23,6 +23,12 @@
  * quotient when the operand signs differ, and the remainder when the
  * dividend is negative.
  *
+ * Stage s has consumed only 2*s dividend bits, so its incoming remainder
+ * fits in 2*s bits. Its two subtractors need only 2*s+3 bits, including
+ * borrow. A divisor with any higher bit set cannot fit either shifted
+ * remainder. Testing those bits separately avoids carrying through the
+ * unused upper part of the early stages without changing their latency.
+ *
  * RISC-V special cases:
  *   - Divide by zero: quotient = -1 (all 1s), remainder = dividend
  *   - Signed overflow (MIN_INT / -1): quotient = MIN_INT, remainder = 0,
@@ -68,7 +74,10 @@ module divider #(
   // Stage-boundary registers: entry 0 is the initialized input, entry
   // NumPipelineStages the finished division.
   logic [WIDTH-1:0] remainder_pipeline     [NumPipelineStages+1];
-  logic [WIDTH-1:0] quotient_pipeline      [NumPipelineStages+1];
+  // Keep existing registers at both ends of each quotient delay SRL, so
+  // stage arithmetic can end at a local flip-flop instead of an SRL input.
+  // Extraction shortens the SRL accordingly; the pipeline depth is unchanged.
+  (* srl_style = "reg_srl_reg" *)logic [WIDTH-1:0] quotient_pipeline      [NumPipelineStages+1];
   logic [WIDTH-1:0] divisor_pipeline       [NumPipelineStages+1];
   (* srl_style = "srl_reg" *)logic [WIDTH-1:0] dividend_pipeline      [NumPipelineStages+1];
   (* srl_style = "srl_reg" *)logic             quotient_sign_pipeline [NumPipelineStages+1];
@@ -94,30 +103,43 @@ module divider #(
     for (
         genvar stage_index = 0; stage_index < NumPipelineStages; ++stage_index
     ) begin : gen_division_stages
-      logic [WIDTH:0] remainder_shifted;
-      logic [WIDTH:0] subtraction_result;
+      localparam int unsigned RemainderWidth = 2 * (stage_index + 1);
+      logic [RemainderWidth:0] remainder_shifted;
+      logic [RemainderWidth:0] subtraction_result;
       logic subtraction_is_negative;
-      logic [WIDTH:0] next_remainder;
+      logic [RemainderWidth:0] next_remainder;
       logic [1:0] quotient_bits;
+      logic divisor_exceeds_remainder_width;
+
+      // The remainder never exceeds the dividend prefix consumed so far,
+      // including division by zero. Neither iteration can accept a divisor
+      // with bits above this stage's two-bit-longer prefix. The final stage
+      // uses all WIDTH bits, making this test constant false there.
+      assign divisor_exceeds_remainder_width = |(divisor_pipeline[stage_index] >> RemainderWidth);
 
       // Two restoring iterations run back to back before the next stage register.
       always_comb begin
         // First iteration: shift the remainder left and pull in the next
         // dividend bit from the top of quotient_pipeline.
         remainder_shifted = {
-          remainder_pipeline[stage_index][WIDTH-1:0], quotient_pipeline[stage_index][WIDTH-1]
+          remainder_pipeline[stage_index][RemainderWidth-1:0],
+          quotient_pipeline[stage_index][WIDTH-1]
         };
-        subtraction_result = remainder_shifted - divisor_pipeline[stage_index];
-        // Bit WIDTH is the borrow. Set means the divisor did not fit, so the
-        // shifted remainder is restored and the quotient bit stays 0.
-        subtraction_is_negative = subtraction_result[WIDTH];
+        subtraction_result = remainder_shifted - divisor_pipeline[stage_index][RemainderWidth-1:0];
+        // A borrow or any omitted divisor bit means the full divisor did not
+        // fit: restore the shifted remainder and leave the quotient bit zero.
+        subtraction_is_negative = subtraction_result[RemainderWidth] |
+            divisor_exceeds_remainder_width;
         next_remainder = subtraction_is_negative ? remainder_shifted : subtraction_result;
         quotient_bits[1] = ~subtraction_is_negative;
 
         // Second iteration: the same step on the next dividend bit down.
-        remainder_shifted = {WIDTH'(next_remainder), quotient_pipeline[stage_index][WIDTH-2]};
-        subtraction_result = remainder_shifted - divisor_pipeline[stage_index];
-        subtraction_is_negative = subtraction_result[WIDTH];
+        remainder_shifted = {
+          RemainderWidth'(next_remainder), quotient_pipeline[stage_index][WIDTH-2]
+        };
+        subtraction_result = remainder_shifted - divisor_pipeline[stage_index][RemainderWidth-1:0];
+        subtraction_is_negative = subtraction_result[RemainderWidth] |
+            divisor_exceeds_remainder_width;
         next_remainder = subtraction_is_negative ? remainder_shifted : subtraction_result;
         quotient_bits[0] = ~subtraction_is_negative;
       end
@@ -136,6 +158,35 @@ module divider #(
         divide_by_zero_pipeline[stage_index+1] <= divide_by_zero_pipeline[stage_index];
         valid_pipeline[stage_index+1] <= i_rst ? 1'b0 : valid_pipeline[stage_index];
       end
+
+`ifdef DIVIDER_PREFIX_LOCAL_PROOF
+      // Compositional lemma against the original full-width restoring steps.
+      // Entry 0 initializes each transaction's remainder to zero. Each stage
+      // assumes the preceding prefix bound and proves the next one, so the
+      // lemmas compose for valid results, including a zero divisor. Invalid
+      // data left in the pipeline after reset need not obey this bound;
+      // reset clears every valid bit independently of the data registers.
+      logic [WIDTH:0] reference_remainder;
+      logic [WIDTH:0] reference_shifted;
+      logic [WIDTH:0] reference_subtraction;
+      logic [1:0] reference_bits;
+      always_comb begin
+        assume ((remainder_pipeline[stage_index] >> (2 * stage_index)) == '0);
+        reference_remainder = {1'b0, remainder_pipeline[stage_index]};
+        for (int iteration = 0; iteration < 2; iteration++) begin
+          reference_shifted = {
+            WIDTH'(reference_remainder), quotient_pipeline[stage_index][WIDTH-1-iteration]
+          };
+          reference_subtraction = reference_shifted - {1'b0, divisor_pipeline[stage_index]};
+          reference_bits[1-iteration] = !reference_subtraction[WIDTH];
+          reference_remainder = reference_subtraction[WIDTH] ? reference_shifted :
+              reference_subtraction;
+        end
+        assert (WIDTH'(next_remainder) == WIDTH'(reference_remainder));
+        assert (quotient_bits == reference_bits);
+        assert ((next_remainder >> RemainderWidth) == '0);
+      end
+`endif
     end
   endgenerate
 

@@ -26,7 +26,7 @@
   chains off the BRAM-dependent select path and leaves o_pc_reg with a single
   priority expression.
 
-  Fetch candidates include every registered holdoff and mid-instruction
+  Fetch candidates include every holdoff and mid-instruction
   correction before the late bundle-size mux. The run/NOP size cofactors pick
   complete PC and PC+2 words, then the NOP selector chooses the final pair.
 */
@@ -92,7 +92,8 @@ module pc_increment_calculator #(
 
   // Final PC increment select, in priority order: redirect/reset holdoff,
   // prediction holdoff, halfword control flow, then the default bundle advance.
-  // i_any_holdoff_safe is registered, which keeps branch_taken off this path.
+  // pc_controller qualifies its registered holdoff with the live pending-
+  // predecessor comparison before driving i_any_holdoff_safe.
   //
   // Prediction holdoff and redirect/reset holdoff need different
   // treatment for halfword PCs.
@@ -183,7 +184,7 @@ module pc_increment_calculator #(
   end
 
   // Preserve the candidate-verdict path for each cofactor. The holdoff arms
-  // use registered selects; only the default bundle-size arm differs.
+  // share the same selects; only the default bundle-size arm differs.
   riscv_pkg::fetch_verdict_t next_sequential_verdict_cof[NCof];
   riscv_pkg::fetch_verdict_t next_sequential_verdict_plus_2_cof[NCof];
   always_comb begin
@@ -289,7 +290,7 @@ module pc_increment_calculator #(
   // Final Sequential PC Selection (used by final PC mux in pc_controller)
   // ===========================================================================
   // Select from pre-computed options based on holdoff/correction state.
-  // All conditions use registered signals for timing.
+  // The holdoff input also includes the live pending-predecessor qualifier.
   logic seq_sel_holdoff, seq_sel_mid_32bit, seq_sel_spanning_hw;
   logic seq_sel_pc_reg_hold;
   assign seq_sel_holdoff = i_any_holdoff_safe;
@@ -300,7 +301,7 @@ module pc_increment_calculator #(
   assign seq_sel_pc_reg_hold =
       seq_sel_holdoff || (i_prediction_from_buffer_holdoff && !seq_sel_mid_32bit);
 
-  // Resolve the registered holdoff/correction controls separately for every
+  // Resolve the holdoff/correction controls separately for every
   // bundle size. The late advance selector then chooses a COMPLETE fetch PC;
   // it no longer precedes the holdoff and correction muxes. Keep the candidate
   // words so synthesis cannot fold those muxes back behind the size selection.

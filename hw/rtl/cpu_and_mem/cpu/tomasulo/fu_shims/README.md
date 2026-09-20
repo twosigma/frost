@@ -26,18 +26,19 @@ Each shim's structure follows the pipeline depth of the FU it wraps.
   instantiates two copies of this shim, `u_alu_shim` on CDB slot `FU_ALU` and
   `u_alu2_shim` on `FU_ALU2`, off the dual-issue INT RS's two issue ports. The
   RS steers branch-class entries to issue port 0, so only the first pipe
-  carries branch and JALR traffic. Its ALU shares a combinational shift/rotate
-  barrel for each of the full-width and 32-bit word domains, using bit
-  reversal for left operations. Narrow operation-control projections are
-  checked against every symbolic consuming enum value; no pipeline stage,
-  issue latency, or completion latency is added.
+  carries branch and JALR traffic. Its ALU uses separate left and right
+  shift/rotate funnels in the full-width and 32-bit word domains, keeping
+  direction reversal out of the shift tree. Narrow fill/amount control
+  projections are checked against every symbolic consuming enum value;
+  no pipeline stage, issue latency, or completion latency is added.
   Only `u_alu2_shim` enables `USE_SHIFT_AMOUNT_HINT`: its six-bit
   `i_shift_amount_hint` is captured with the RS's existing issue2 operands.
   The default shim/ALU ignores this port and keeps local amount selection.
-  Both use the shared package predicate and unchanged symbolic enum checks.
+  Both use the shared package amount predicate and symbolic enum checks.
   `int_alu_shim_shift_hint` runs the existing arithmetic/barrel suite with
   the hint enabled; `alu_shift_hint` compares actual enabled/default ALUs
-  for arbitrary binary inputs, without making a physical timing claim.
+  for arbitrary binary inputs and checks a literal shift/rotate reference,
+  without making a physical timing claim.
 - `fp_add_shim` wraps the shallow FPU pipelines (2 to about 10 cycles) with
   one op in flight at a time: a single `in_flight` bit, a single `tag_reg`,
   and a one-hot `unit_sel_reg` that picks among the adder, compare,
@@ -59,13 +60,23 @@ Each shim's structure follows the pipeline depth of the FU it wraps.
 - `int_muldiv_shim` drives both the multiplier and the divider off the same
   MUL_RS issue port. Both units are fully pipelined: the multiplier is
   `riscv_pkg::MulPipeDepth` stages deep (6 at XLEN=64) and the divider is
-  XLEN/2+1 stages (33). Each path has a shift-register tag queue alongside
-  its pipeline and a 4-entry result FIFO, with credit-based back-pressure
-  that compares `fifo_count + inflight_count` against the FIFO depth, so at
+  XLEN/2+1 stages (33). Each divider stage consumes two dividend bits and
+  narrows its subtractors to the prefix consumed so far; a separate check
+  rejects divisors with higher bits set. This preserves latency and avoids
+  full-width carry chains in the early stages. Quotient delay SRLs retain
+  their first and last registers so stage arithmetic ends at a flip-flop;
+  extraction preserves the total pipeline depth. Each path has a shift-register
+  tag queue alongside its pipeline and a 4-entry result FIFO, with credit-based
+  back-pressure that compares `fifo_count + inflight_count` against the FIFO depth, so at
   most four unflushed ops sit between a path's pipeline and its FIFO. The
   DIV gate is a registered copy computed from the next-state counts, so
   the RS sees a flop; a simulation tripwire checks it against the
   combinational form every cycle.
+  The MUL completion tag is the unqualified FIFO-head tag, including invalid
+  cycles. Its adapter qualifies all tag uses and payload captures with valid;
+  removing the invalid-cycle zero mux keeps head-valid out of the adapter's
+  partial-flush age comparison. Completion latency and every valid payload
+  are unchanged.
 - `fp_div_shim` wraps one `fp_div_sqrt_iter`, which runs FDIV.S/D and
   FSQRT.S/D on a shared iterative datapath, one operation at a time. A
   completion is visible 36 cycles after issue at single precision and 65 at

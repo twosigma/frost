@@ -147,9 +147,13 @@ reset.
 `async_fifo` carries packets across: Gray-coded pointers through
 `cdc_sync`, storage in the dual-clock block RAM, and a two-entry output
 skid over the RAM's registered read so no word is presented twice or
-skipped. Each side's reset clears its pointer, synchronizer copies and (on
-the read side) the skid and any read in flight; the controller sequences
-the two sides so a reset window overlaps. `cdc_gray_count` crosses MAC
+skipped. The write side registers the decoded synchronized read pointer,
+adding one write-clock cycle to free-space credit return and separating
+Gray conversion from the occupancy/write-enable path. This can prolong
+backpressure near full; it does not add latency to a word's read path.
+Each side's reset clears its pointer, synchronizer copies, the write-side
+decode and (on the read side) the skid and any read in flight; the controller
+sequences the two sides so a reset window overlaps. `cdc_gray_count` crosses MAC
 event counts (registered Gray in the source, decoded and accumulated in the
 core domain); its rebase input, driven from the domain's not-ready state,
 keeps a source reset from reading as a wrap.
@@ -304,5 +308,5 @@ MAC_LOOPBACK stored across a RESET without taking RX off the wire, and
 frames in both directions at once, checked in the ring buffers and by the
 wire's receiver.
 The full-system programs `nic_loopback` and `nic_echo` (above) run through `frost` in both memory tiers. `formal/async_fifo.sby` bounds the FIFO under free-running
-unrelated clocks: occupancy, no underflow, Gray consistency, and a watched
-word delivered in order and intact.
+unrelated clocks: occupancy, conservative free-space credit and ready margin,
+no underflow, Gray consistency, and a watched word delivered in order and intact.

@@ -1108,6 +1108,24 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("-GUSE_SHIFT_AMOUNT_HINT=1",),
     ),
+    "divider": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_divider",
+        hdl_toplevel_module="divider",
+        description=(
+            "64-bit pipelined DIV/REM: prefix-width boundaries, signed corners, "
+            "consecutive inputs, bubbles, exact latency, and reset in flight"
+        ),
+        verilator_extra_args=("-GWIDTH=64",),
+    ),
+    "divider_rv32": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_divider",
+        hdl_toplevel_module="divider",
+        description=(
+            "32-bit pipelined DIV/REM: prefix-width boundaries, signed corners, "
+            "consecutive inputs, bubbles, exact latency, and reset in flight"
+        ),
+        verilator_extra_args=("-GWIDTH=32",),
+    ),
     "int_muldiv_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",

@@ -1,0 +1,19 @@
+[tasks]
+bmc
+bmc_xlen32
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -D DIVIDER_PREFIX_LOCAL_PROOF -sv divider.sv
+bmc: chparam -set WIDTH 64 divider
+bmc_xlen32: chparam -set WIDTH 32 divider
+prep -top divider
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv

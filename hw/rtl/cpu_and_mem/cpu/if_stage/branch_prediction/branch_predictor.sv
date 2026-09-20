@@ -455,7 +455,34 @@ module branch_predictor #(
   wire [XLEN-1:0] lookup_target = {i_pc[XLEN-1:TargetBits], btb_target_lookup};
   wire [1:0] lookup_counter = btb_counter_lookup;
 
-  assign o_btb_hit = lookup_valid && (lookup_tag_stored == lookup_tag);
+  // Compare the complete architectural tag in parallel groups before the
+  // final reduction. Preserve these boundaries so the async lookup does not
+  // feed a single long carry-chain equality. Fourteen-bit groups make four
+  // partial matches at the default 55-bit tag width, leaving LUT6 inputs for
+  // the valid and taken bits. No tag bits or lookup cycles are removed,
+  // including the halfword discriminator in bit zero.
+  localparam int unsigned TagCompareChunkBits = 14;
+  localparam int unsigned TagCompareChunks =
+      (TagBits + TagCompareChunkBits - 1) / TagCompareChunkBits;
+  (* keep = "true" *) logic [TagCompareChunks-1:0] lookup_tag_equal_chunks;
+  for (genvar chunk = 0; chunk < TagCompareChunks; chunk++) begin : gen_lookup_tag_compare
+    localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
+    localparam int unsigned ChunkWidth =
+        (TagBits - FirstBit < TagCompareChunkBits) ? TagBits - FirstBit : TagCompareChunkBits;
+    assign lookup_tag_equal_chunks[chunk] =
+        lookup_tag_stored[FirstBit+:ChunkWidth] == lookup_tag[FirstBit+:ChunkWidth];
+  end
+  assign o_btb_hit = lookup_valid && (&lookup_tag_equal_chunks);
+
+`ifdef BTB_TAG_COMPARE_LOCAL_PROOF
+  // The local formal target makes the RAM outputs arbitrary. This proves the
+  // actual comparison against the original full-width expression without a
+  // reset, valid-bit, reachable-address, or table-content assumption.
+  always_comb begin
+    p_lookup_tag_comparison_exact :
+    assert ((&lookup_tag_equal_chunks) == (lookup_tag_stored == lookup_tag));
+  end
+`endif
 
   assign o_predicted_taken = o_btb_hit && lookup_counter[1];
   assign o_predicted_target = lookup_target;

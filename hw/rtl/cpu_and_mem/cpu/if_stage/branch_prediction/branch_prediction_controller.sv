@@ -392,6 +392,7 @@ module branch_prediction_controller #(
   logic slot2_live_fallback_hit;
   logic slot2_live_fallback_size_safe;
   logic slot2_live_fallback_select;
+  (* keep = "true" *) logic [XLEN-1:0] slot2_target_without_valid;
   generate
     if (SLOT2_PC_FROM_BASE) begin : gen_local_alias_compare
       // For A == B + 2**k (modulo XLEN), bits below k are equal and bit k
@@ -1036,9 +1037,12 @@ module branch_prediction_controller #(
       prediction_common && !ras_valid &&
       !i_branch_taken && !i_is_32bit_spanning;
   assign slot2_prediction_permission = slot2_prediction_permission_without_valid && i_slot2_valid;
+  // Under collapsed lead, ownership reduces exactly to the alias. Use that
+  // cofactor here so live direction need not pass through the shared ownership
+  // LUT before qualifying this fallback. Keep both hit and direction checks.
   assign slot2_prediction_candidate_for_pc =
       slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken ||
-      (i_lookup_lead_collapsed && slot1_prediction_owned_by_slot2 && !btb_hit_2 &&
+      (i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && !btb_hit_2 &&
        btb_hit && slot2_live_fallback_size_safe && dir_predicted_taken);
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
@@ -1075,8 +1079,15 @@ module branch_prediction_controller #(
       (btb_hit_2 && i_slot2_valid && slot2_candidate_valid) ||
       slot2_live_fallback_hit;
   assign o_slot2_predicted_taken = o_slot2_prediction_used;
+  // Complete the live/staged target choice before IF's late full packet
+  // validity arrives. Invalid slots still expose the original staged target;
+  // keeping the completed candidate prevents the valid gate from folding
+  // back into the live-fallback select ahead of this wide mux.
+  assign slot2_target_without_valid =
+      (i_lookup_lead_collapsed && slot1_prediction_owned_by_slot2 && !btb_hit_2 && btb_hit) ?
+      btb_predicted_target : btb_predicted_target_2;
   assign o_slot2_predicted_target =
-      slot2_live_fallback_hit ? btb_predicted_target : btb_predicted_target_2;
+      i_slot2_valid ? slot2_target_without_valid : btb_predicted_target_2;
 
 `ifndef SYNTHESIS
   // The split ports are a timing representation only.  Pin both their select
@@ -1273,6 +1284,10 @@ module branch_prediction_controller #(
             (i_lookup_lead_collapsed && i_slot2_valid && !btb_hit_2 && btb_hit &&
              (slot2_staged_prediction_used_for_pc ||
               slot2_live_fallback_used_for_pc_cofactor)));
+    p_slot2_target_valid_cofactor_matches_original :
+    assert (o_slot2_predicted_target ==
+            ((i_lookup_lead_collapsed && i_slot2_valid && slot1_prediction_owned_by_slot2 &&
+              !btb_hit_2 && btb_hit) ? btb_predicted_target : btb_predicted_target_2));
     p_disabled_prediction_cofactor_blocks_every_slot2_source :
     assert (!(i_window_cannot_serve_raw ? i_disable_branch_prediction_wcs :
                                          i_disable_branch_prediction_wcs0) ||

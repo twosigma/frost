@@ -25,15 +25,18 @@
  * later, o_data/o_valid come from the skid's head and stay stable while
  * i_ready is low, and a word is never presented twice or skipped.
  *
- * o_ready is computed from the write pointer and the synchronized read
- * pointer, which lags: the writer sees at most the true occupancy, never
- * less, so the FIFO cannot overflow. READY_MARGIN entries are kept free
- * below full for a writer whose valid trails its ready decision.
+ * o_ready is computed from the write pointer and a registered decode of
+ * the synchronized read pointer. The decode adds one write-clock cycle to
+ * free-space credit return, separating Gray conversion from the occupancy
+ * and RAM write-enable path. The writer sees at least the true occupancy,
+ * never less, so the FIFO cannot overflow. READY_MARGIN entries are kept
+ * free below full for a writer whose valid trails its ready decision.
  *
  * Resets are per side and synchronous in their domain; each side's reset
- * clears its pointer, its synchronizer copies, and (on the read side) the
- * skid and any read in flight, so no old word can reappear. Both sides
- * must be reset for one overlapping window with no traffic, which the
+ * clears its pointer, its synchronizer copies, the write-side read-pointer
+ * decode, and (on the read side) the skid and any read in flight, so no old
+ * word can reappear. Both sides must be reset for one overlapping window
+ * with no traffic, which the
  * NIC's reset controller sequences (a side that leaves reset first sees the
  * other's pointer at zero and its own at zero: empty).
  */
@@ -86,7 +89,10 @@ module async_fifo #(
       .i_async(rptr_gray_q),
       .o_sync (rptr_gray_w)
   );
-  assign rptr_bin_w = gray2bin(rptr_gray_w);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) rptr_bin_w <= '0;
+    else rptr_bin_w <= gray2bin(rptr_gray_w);
+  end
   logic [PtrBits-1:0] occupancy_w;
   assign occupancy_w = wptr_bin_q - rptr_bin_w;
   assign o_ready = !i_rst && (occupancy_w < PtrBits'(DEPTH - READY_MARGIN));
@@ -207,6 +213,7 @@ module async_fifo #(
     wptr_gray_q  = '0;
     rptr_bin_q   = '0;
     rptr_gray_q  = '0;
+    rptr_bin_w   = '0;
     rd_issued_q  = 1'b0;
     skid_valid_q = '0;
   end
@@ -226,6 +233,10 @@ module async_fifo #(
       // Never more words in the RAM than it holds, never a read of an
       // empty RAM (the synchronized write pointer only lags the true one).
       f_occupancy_bound : assert (f_occupancy <= PtrBits'(DEPTH));
+      // Delayed credit may stall a writer, but must never overstate free
+      // space or allow a write to consume the reserved ready margin.
+      f_credit_is_conservative : assert (occupancy_w >= f_occupancy);
+      f_ready_margin : assert (occupancy_w <= PtrBits'(DEPTH - READY_MARGIN));
       f_no_underflow : assert (!(rd_issue && (wptr_bin_q == rptr_bin_q)));
       // Gray codes always decode back to the binary pointers.
       f_wgray : assert (wptr_gray_q == bin2gray(wptr_bin_q));

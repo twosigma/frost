@@ -19,9 +19,9 @@
 // pending-state consumer is masked outside a live episode. It keeps the
 // production pc_controller and c_ext_state state machines intact. Predictor
 // lookup details are conservatively abstracted to arbitrary requests. The
-// omitted lookup, buffer, and progress blockers, together with the broader
-// PD-redirect clear, admit extra behavior; that makes the safety proof harder
-// rather than assuming away a production trace.
+// omitted lookup, buffer, and progress blockers admit extra requests. The
+// modeled prediction registers retain the production delivery enables and
+// matching-target PD-redirect exception.
 module prediction_release_formal #(
     parameter bit PENDING_HANDOFF_EXCLUDES_SLOT2 = 1'b0
 ) (
@@ -46,7 +46,9 @@ module prediction_release_formal #(
   (* anyseq *) logic i_mret_taken;
   (* anyseq *) logic [XLEN-1:0] i_trap_target;
   (* anyseq *) logic i_is_compressed;
+  (* anyseq *) logic i_is_compressed_for_pc;
   (* anyseq *) logic i_slot2_valid;
+  (* anyseq *) logic i_slot2_valid_for_pc;
   (* anyseq *) logic i_slot2_is_compressed;
   (* anyseq *) logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel;
   (* anyseq *) logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel;
@@ -57,6 +59,7 @@ module prediction_release_formal #(
   (* anyseq *) logic i_use_instr_buffer;
   (* anyseq *) logic i_prediction_already_emitted;
   (* anyseq *) logic i_sel_nop;
+  (* anyseq *) logic i_sel_nop_for_pc;
   (* anyseq *) logic i_slot2_prediction_request;
   (* anyseq *) logic [XLEN-1:0] i_slot2_predicted_target;
 
@@ -73,6 +76,7 @@ module prediction_release_formal #(
   logic [XLEN-1:0] predicted_target_r;
   logic slot2_prediction_used;
   logic slot2_prediction_used_for_pc;
+  logic pd_redirect_kills_prediction_metadata;
   logic i_flush;
   logic i_window_cannot_serve;
 
@@ -136,15 +140,19 @@ module prediction_release_formal #(
        !(i_window_cannot_serve_raw ? pending_prediction_holdoff_wcs :
                                     pending_prediction_holdoff_wcs0));
   assign slot2_prediction_used = slot2_prediction_used_for_pc && !i_branch_taken && !i_stall;
+  // Match the production predictor's matching-target exception. A PD redirect
+  // always kills the registered handoff, but may preserve prediction metadata
+  // and its holdoff while a matching-target packet is stalled.
+  assign pd_redirect_kills_prediction_metadata =
+      i_pd_redirect &&
+      (!prediction_used_r || (predicted_target_r != i_pd_redirect_target));
 
   always_ff @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     stall_registered <= i_stall;
 
-    // One startup reset edge is sufficient to initialize every state element.
-    if (f_past_valid) assume (!i_reset);
-
-    if (i_reset || i_flush || i_pd_redirect) begin
+    // Only the startup reset is assumed; subsequent resets remain arbitrary.
+    if (i_reset || i_flush || pd_redirect_kills_prediction_metadata) begin
       prediction_holdoff <= 1'b0;
     end else if (!i_stall && i_fetch_progress) begin
       prediction_holdoff <= prediction_used;
@@ -159,14 +167,20 @@ module prediction_release_formal #(
     if (i_reset) prediction_reset_state <= 1'b0;
     else prediction_reset_state <= prediction_used || slot2_prediction_used;
 
-    if (i_reset || i_flush || i_pd_redirect || slot2_prediction_used) begin
+    if (i_reset || i_flush) begin
       prediction_used_r <= 1'b0;
       sel_prediction_r  <= 1'b0;
+    end else if (i_pd_redirect || slot2_prediction_used) begin
+      sel_prediction_r <= 1'b0;
+      if (pd_redirect_kills_prediction_metadata || slot2_prediction_used) prediction_used_r <= 1'b0;
+      else if (!i_stall && i_fetch_progress) prediction_used_r <= prediction_used;
     end else if (!i_stall && i_fetch_progress) begin
       prediction_used_r <= prediction_used;
       sel_prediction_r  <= prediction_used;
     end
     if (!i_stall && i_fetch_progress) predicted_target_r <= i_predicted_target;
+    cover (f_past_valid && i_reset);
+    cover (f_past_valid && i_pd_redirect && !pd_redirect_kills_prediction_metadata && i_stall);
   end
 
   pc_controller #(
@@ -190,9 +204,11 @@ module prediction_release_formal #(
       .i_trap_taken,
       .i_mret_taken,
       .i_trap_target,
-      .i_is_compressed,
+      // IF's fast size, PC squash, and replay-aware slot-2 validity differ
+      // from the canonical C-extension inputs. Keep each pair independent.
+      .i_is_compressed(i_is_compressed_for_pc),
       .i_is_compressed_for_pc(is_compressed_for_pc),
-      .i_slot2_valid,
+      .i_slot2_valid(i_slot2_valid_for_pc),
       .i_slot2_is_compressed,
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
@@ -214,7 +230,7 @@ module prediction_release_formal #(
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_prediction_used_from_buffer(prediction_used_from_buffer),
       .i_prediction_already_emitted,
-      .i_sel_nop,
+      .i_sel_nop(i_sel_nop_for_pc),
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target,

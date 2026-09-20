@@ -54,8 +54,10 @@
  * the ROB head it was computed for, so an SC whose address became known
  * since waits for its own compare. Invalidation is
  * applied from flops as well and takes four cycles: register the line,
- * apply it (L0 clear, slot marks, reservation), compare the validation table
- * and the observation still in the pipeline register, report done.
+ * apply it (L0 clear, slot marks, reservation) while capturing local line
+ * copies, compare the validation table and the observation still in the
+ * pipeline register, report done. The replay comparators use the local copies
+ * for groups of eight ROB rows; they need no additional handshake cycle.
  *
  * Validation table. One entry per ROB tag, written from a pipeline register
  * one cycle after the load queue reports a cached load's memory observation
@@ -223,15 +225,80 @@ module lq_coherence_port #(
   logic [RobDepth-1:0] obs_valid_q;
   logic [LineBits-1:0] obs_line_q[RobDepth];
   logic [RobDepth-1:0] replay_mask_d, replay_mask_q;
+  // Phase 1 already separates the line capture from the phase-2 replay comparison.
+  // Capture local copies during that cycle without moving the comparison or done pulse.
+  localparam int unsigned ReplayCompareGroupSize = 8;
+  localparam int unsigned ReplayCompareGroups =
+      (RobDepth + ReplayCompareGroupSize - 1) / ReplayCompareGroupSize;
+  // Preserve the row groups so the load-queue launch and the replay compares
+  // can place independently, with only a register-to-register hop between.
+  (* dont_touch = "true" *) logic [LineBits-1:0] inval_compare_line_q[ReplayCompareGroups];
+  for (
+      genvar group_index = 0; group_index < ReplayCompareGroups; group_index++
+  ) begin : gen_compare_line
+    always_ff @(posedge i_clk) inval_compare_line_q[group_index] <= inval_line_q;
+  end
+  // Complete small equality groups before their final reduction, avoiding
+  // column-bound carry chains across the distributed validation rows.
+  localparam int unsigned LineCompareBits = 15;
+  localparam int unsigned LineCompareChunks = (LineBits + LineCompareBits - 1) / LineCompareBits;
+  (* keep = "true" *) logic [RobDepth-1:0][LineCompareChunks-1:0] observed_equal_chunks;
+  (* keep = "true" *) logic [LineCompareChunks-1:0] pending_equal_chunks;
+  for (genvar chunk = 0; chunk < LineCompareChunks; chunk++) begin : gen_line_compare_chunk
+    localparam int unsigned FirstBit = chunk * LineCompareBits;
+    localparam int unsigned ChunkBits = ((LineBits - FirstBit) < LineCompareBits) ?
+        (LineBits - FirstBit) : LineCompareBits;
+    assign pending_equal_chunks[chunk] =
+        obs_pend_line_q[FirstBit+:ChunkBits] == inval_compare_line_q[0][FirstBit+:ChunkBits];
+    for (genvar row = 0; row < RobDepth; row++) begin : gen_row
+      assign observed_equal_chunks[row][chunk] =
+          obs_line_q[row][FirstBit+:ChunkBits] ==
+              inval_compare_line_q[row/ReplayCompareGroupSize][FirstBit+:ChunkBits];
+    end
+  end
+
   always_comb begin
     for (int i = 0; i < int'(RobDepth); i++) begin
       replay_mask_d[i] = (inval_phase_q == 2'd2) &&
-          ((obs_valid_q[i] && (obs_line_q[i] == inval_line_q)) ||
+          ((obs_valid_q[i] && (&observed_equal_chunks[i])) ||
            (obs_pend_valid_q && (obs_pend_tag_q == TagWidth'(i)) &&
-            (obs_pend_line_q == inval_line_q)));
+            (&pending_equal_chunks)));
     end
   end
   assign o_replay_set_mask = replay_mask_q;
+
+`ifdef COHERENCE_REPLAY_LOCAL_PROOF
+  // Only the first reset is assumed. The phase invariant and exact original
+  // replay next-state equation compose with all unchanged state transitions.
+  // Observation, commit, flush and later reset inputs remain unrestricted.
+  logic f_past_valid = 1'b0;
+  always_ff @(posedge i_clk) begin
+    f_past_valid <= 1'b1;
+    if (!f_past_valid) assume (!i_rst_n);
+    if (f_past_valid) begin
+      if (inval_phase_q == 2'd2 || inval_phase_q == 2'd3) begin
+        for (int group_index = 0; group_index < ReplayCompareGroups; group_index++)
+        assert (inval_compare_line_q[group_index] == inval_line_q);
+      end
+      for (int row = 0; row < RobDepth; row++) begin
+        assert (replay_mask_d[row] == ((inval_phase_q == 2'd2) &&
+            ((obs_valid_q[row] && (obs_line_q[row] == inval_line_q)) ||
+             (obs_pend_valid_q && (obs_pend_tag_q == TagWidth'(row)) &&
+              (obs_pend_line_q == inval_line_q)))));
+      end
+      cover (inval_phase_q == 2'd2 && obs_pend_valid_q && (&pending_equal_chunks));
+      cover (inval_phase_q == 2'd2 && obs_valid_q[0] && (&observed_equal_chunks[0]));
+      cover (!i_rst_n);
+    end
+  end
+  always_comb begin
+    assert ((&pending_equal_chunks) == (obs_pend_line_q == inval_compare_line_q[0]));
+    for (int row = 0; row < RobDepth; row++)
+    assert ((&observed_equal_chunks[row]) ==
+          (obs_line_q[row] == inval_compare_line_q[row/ReplayCompareGroupSize]));
+  end
+`endif
+
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
