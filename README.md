@@ -42,12 +42,13 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
   payload, a login, the cycle and instruction counters
   and the NIC loopback, and `fpga/linux_boot_soak.py` scores the payload across
   repeated board boots. Debian 13 boots on the X3 from an NFS root over the NIC,
-  on the same kernel, so far on a build with the CPU clock halved
-  ([setup guide](docs/debian_nfsroot.md)).
+  on the same kernel ([setup guide](docs/debian_nfsroot.md)).
 - Networking on the SoC. A 10 Gigabit Ethernet NIC wraps the in-tree
   10GBASE-R MAC/PCS on a coherent DMA port, with a device-tree node for
-  Linux. Two full-system programs drive it in simulation, and `nic_loopback`
-  is a hardware regression stage.
+  Linux. On the X3 a board GTY wrapper puts it on a fiber link: the bare-metal
+  echo test round-trips every frame class against a host, and Debian 13 runs
+  its root filesystem over it from an NFS server. `nic_loopback` is also a
+  hardware regression stage.
 - Portable core RTL. The CPU provides portable implementations and passes
   generic Yosys coarse synthesis plus a full UltraScale+ synthesis target.
   Xilinx builds can select primitive-backed RAM and timing paths. The board
