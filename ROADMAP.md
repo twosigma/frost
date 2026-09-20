@@ -78,13 +78,13 @@ FROST's own NIC and boot Debian from NFS-root over it, with iSCSI+ext4 as a
 later variant if a workload needs local-disk filesystem semantics. The
 CSR/DMA/interrupt layer is in place: the NIC sits at `0x4003_0000` on a
 coherent DMA port with one PLIC source, a device-tree node, and two full-system
-programs. A Linux netdev driver is in place as well, validated on the X3 through
-the NIC's loopback modes. A board-level GTY wrapper connects the X3's NIC to a
-10GBASE-R fiber link (the soft MAC/PCS and the core stay vendor-primitive-free).
-On a build with the CPU clock halved, the bare-metal echo test passes against a
-host over that link, and Debian 13 boots from an NFS root over it, accepts SSH
-logins and installs packages with apt, leaving the soak as the remaining exit
-item; the full-clock build has yet to close timing. The small RX buffer
+programs. A Linux netdev driver carries it: first validated on the X3 through
+the NIC's loopback modes, and now serving Debian's NFS root over the link. A
+board-level GTY wrapper connects the X3's NIC to a 10GBASE-R fiber link (the
+soft MAC/PCS and the core stay vendor-primitive-free). The bare-metal echo test
+passes against a host over that link, and Debian 13 boots from an NFS root over
+it, accepts SSH logins and installs packages with apt, leaving the soak as the
+remaining exit item; the full-clock build has yet to close timing. The small RX buffer
 with no PAUSE means DMA must drain independently of software.
 Booting the kernel on the RTL is retired with this phase's move to a
 distribution kernel: simulation reached only early boot in hours and missed both
