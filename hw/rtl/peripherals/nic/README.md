@@ -107,9 +107,10 @@ encoder and decodes the raw TX interface; the program echoes every frame
 interrupt-driven, reposting descriptors through ring wraps, a burst beyond
 the ring, truncated jumbo frames and filtered foreign frames).
 
-The Linux driver, `frost_net10g`, is in `linux/frost-net10g`: the Buildroot
-kernel builds it in, and the directory is also a DKMS package that builds it
-as a module for Debian's kernels.
+The Linux driver, `frost_net10g`, is in `linux/frost-net10g`: FROST boots
+Debian's kernel, which has no driver of its own, so the directory is a DKMS
+package that builds it as a module, and `linux/debian_kernel.py` builds it the
+same way for the pinned kernel and puts it in the test initramfs.
 `frost_nettest` (in the `frost-stress` package) runs it in the hardware
 regression's Linux stage through the driver's loopback feature: the raw
 loopback where both MAC directions share a clock, the transceiver's PMA

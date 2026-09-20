@@ -39,8 +39,9 @@ Vivado that programs the X3 and runs `load_software.py`
 build, so that host's checkout needs the `linux/buildroot` submodule and the
 Buildroot images, built once
 ([`linux/buildroot-external/README.md`](../linux/buildroot-external/README.md),
-"Build"); without the images, the loader starts that build itself. The loader
-reads Debian's kernel and initramfs by path (step 5).
+"Build"); without the images, the loader starts that build itself. That build
+also fetches the pinned Debian kernel, which this boot then overrides with the
+export's own; the loader reads Debian's kernel and initramfs by path (step 5).
 
 ## 1. Build the root filesystem
 
@@ -66,7 +67,10 @@ chroot ${R:?} apt-get install -y --no-install-recommends \
 ```
 
 mmdebstrap takes a few minutes and leaves a tree of about 200 MB; the kernel,
-its headers and the compiler DKMS uses bring it to about 1.1 GB. Naming the
+its headers and the compiler DKMS uses bring it to about 1.1 GB.
+`linux-image-riscv64` installs whatever trixie currently holds, so the version
+it lands can be newer than the one `linux/debian_kernel.py` pins for the test
+initramfs; both boot, and step 5 notes what keeping them equal buys. Naming the
 mirror leaves only `trixie main` in the tree's apt sources; without it,
 mmdebstrap also adds `trixie-updates` and `trixie-security`. The chroot's apt
 resolves names through the tree's `/etc/resolv.conf`, which is still the
@@ -211,7 +215,11 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
   DTB at `0x82200000` and the initramfs at `0x82210000`. The image is about
   78 MB, and the load takes several minutes.
 - Leave the `FROST_LINUX_*` variables unset for the hardware regression, which
-  boots the Buildroot test image.
+  boots the same kernel version -- the one `linux/debian_kernel.py` pins and
+  fetches -- with the Buildroot test initramfs in place of this root
+  ([`linux/README.md`](../linux/README.md), "Kernel"). Keeping the root's kernel
+  at that version means one kernel is under test either way; a root on a
+  different version still boots here, since these variables override the pin.
 
 At 150 MHz the console shows the following, and `systemd-analyze` then
 reports about 2 min 21 s in the kernel, initramfs included, and 3 min 20 s in

@@ -14,21 +14,26 @@
 
 """Static contracts for the frost_net10g NIC driver's one source.
 
-linux/frost-net10g is built into the Buildroot kernel, through the kernel
-patch that hooks drivers/net/ethernet/frost/ into the kernel build and the
-external.mk hook that installs the directory's files there, and it is the
-DKMS package that builds the driver as a module for Debian's kernels.
+linux/frost-net10g is the DKMS package that builds the driver as a module for
+Debian's kernels, which is how FROST boots it: linux/debian_kernel.py builds
+that module for the pinned kernel and puts it in the test initramfs. The same
+directory is still hooked into the Buildroot kernel, through the kernel patch
+that adds drivers/net/ethernet/frost/ and the external.mk hook that installs
+the directory's files there, but nothing boots that kernel any more.
 """
 
+import importlib.util
 import os
 import re
 import subprocess
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER_DIR = REPO_ROOT / "linux" / "frost-net10g"
+DEBIAN_KERNEL = REPO_ROOT / "linux" / "debian_kernel.py"
 DRIVER_SOURCE = DRIVER_DIR / "frost_net10g.c"
 DKMS_CONF = DRIVER_DIR / "dkms.conf"
 KBUILD_MAKEFILE = DRIVER_DIR / "Makefile"
@@ -281,3 +286,31 @@ def test_driver_license_is_gpl_compatible() -> None:
     assert DRIVER_SOURCE.read_text().splitlines()[0] == f"// {SPDX}"
     for path in (KCONFIG, KBUILD_MAKEFILE, DKMS_CONF):
         assert path.read_text().splitlines()[0] == f"# {SPDX}", path.name
+
+
+def _debian_kernel() -> ModuleType:
+    """Import linux/debian_kernel.py by path (it is a script, not a package)."""
+    spec = importlib.util.spec_from_file_location("debian_kernel", DEBIAN_KERNEL)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_debian_module_build_matches_the_dkms_package() -> None:
+    """The module FROST boots is this directory, built the way DKMS builds it.
+
+    linux/debian_kernel.py runs DKMS's default command, ``make -C <kernel build
+    dir> M=<build dir> modules``, over copies of the files DKMS would build, and
+    installs the module DKMS names.
+    """
+    helper = _debian_kernel()
+    conf = _dkms_conf()
+    assert helper.DRIVER_DIR == DRIVER_DIR
+    assert helper.MODULE_NAME == DRIVER_SOURCE.stem == conf["BUILT_MODULE_NAME[0]"]
+    source = DEBIAN_KERNEL.read_text()
+    assert 'f"M={build}"' in source and '"modules"' in source
+    # Only the files external.mk refreshes before a kernel build are needed: the
+    # Kconfig is for an in-tree build, which an external module build bypasses.
+    assert 'for name in ("Makefile", f"{MODULE_NAME}.c")' in source
+    assert helper.MODULE_INIT_SCRIPT.startswith("etc/init.d/S")

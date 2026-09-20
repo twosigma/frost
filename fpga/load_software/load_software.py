@@ -35,6 +35,8 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 # Import shared target selection and the software registry.
 sys.path.insert(0, str(SCRIPT_DIR.parent / "common"))
 sys.path.insert(0, str(PROJECT_ROOT / "sw" / "apps"))
+sys.path.insert(0, str(PROJECT_ROOT / "linux"))
+from debian_kernel import kernel_image  # noqa: E402
 from hw_target import add_target_args, select_target, validate_target_args  # noqa: E402
 from software_registry import (  # noqa: E402
     COREMARK_PRO_APP_NAMES,
@@ -186,7 +188,7 @@ def board_ddr_bytes(board: str) -> int:
 
 
 def _linux_boot_preflight() -> None:
-    """Check Linux build prerequisites and warn before a cold 30-60 min build."""
+    """Check Linux build prerequisites and warn before a cold build or fetch."""
     buildroot_makefile = PROJECT_ROOT / "linux" / "buildroot" / "Makefile"
     if not buildroot_makefile.exists():
         print(
@@ -208,15 +210,28 @@ def _linux_boot_preflight() -> None:
         )
         sys.exit(1)
 
-    kimage = PROJECT_ROOT / "linux" / "build-mmu" / "images" / "Image"
-    if not kimage.exists():
+    initramfs = PROJECT_ROOT / "linux" / "build-mmu" / "images" / "rootfs.cpio"
+    if not initramfs.exists():
         print(
-            "Note: no cached kernel image found -- linux_boot will build the "
-            "kernel + rootfs from source now.\n"
+            "Note: no cached test initramfs found -- linux_boot will build the "
+            "userspace + OpenSBI from source now.\n"
             "  The FIRST build compiles a full rv64 cross toolchain and can take "
             "30-60 min; later loads reuse\n"
             "  the cached build and only re-pack the DDR image for this board "
             "(seconds).",
+            file=sys.stderr,
+        )
+
+    # The kernel itself is Debian's, fetched and cached by linux/debian_kernel.py
+    # (linux/README.md, "Kernel"). A cold cache downloads about 130 MB. The
+    # helper names the cache entry after the pin, so this asks it rather than
+    # guessing a path.
+    if not kernel_image().exists():
+        print(
+            "Note: no cached Debian kernel found -- linux_boot will download it "
+            "now (about 130 MB, needs\n"
+            "  network access) and build the NIC module for it. Later loads "
+            "reuse linux/debian-kernel.",
             file=sys.stderr,
         )
 
@@ -253,8 +268,8 @@ def compile_app_for_board(
         env["MEM_CONFIG"] = mem_config
 
     # A cold linux_boot build includes the cross toolchain and takes 30-60 min.
-    # Its clean target preserves the cached kernel/rootfs and removes only
-    # board-specific packed output.
+    # Its clean target preserves the cached Buildroot build and the Debian
+    # kernel cache, and removes only board-specific packed output.
     is_linux_boot = app_name == "linux_boot"
     clean_timeout = 300 if is_linux_boot else 30
     build_timeout = 5400 if is_linux_boot else 120

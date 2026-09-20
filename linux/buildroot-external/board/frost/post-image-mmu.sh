@@ -18,14 +18,20 @@
 #
 # Buildroot runs this after the image stage with BINARIES_DIR, HOST_DIR, and
 # BUILD_DIR exported. It builds the OpenSBI firmware from the linux/opensbi
-# submodule with the lane's own (PIE-capable) toolchain, then packs
-# firmware + Image + DTB + initramfs into the boot images with
-# frost_boot_image.py:
+# submodule with the lane's own (PIE-capable) toolchain, stages Debian's pinned
+# kernel and the test initramfs with the FROST NIC module appended
+# (linux/debian_kernel.py), then packs firmware + Image + DTB + initramfs into
+# the boot images with frost_boot_image.py:
 #
 #   $BINARIES_DIR/fw_jump.bin        OpenSBI fw_jump
+#   $BINARIES_DIR/Image-debian       Debian's riscv64 kernel, the packed payload
+#   $BINARIES_DIR/rootfs-frost.cpio  rootfs.cpio + the NIC module and its loader
 #   $BINARIES_DIR/sw.{mem,txt}       low-BRAM boot shim
 #   $BINARIES_DIR/sw_ddr.{mem,txt}   firmware + Image + DTB + initramfs in DDR
 #   $BINARIES_DIR/frost.{dts,dtb}    the generated device tree
+#
+# Buildroot's own images/Image is left in place but is not packed: FROST boots
+# Debian's kernel everywhere (linux/README.md, "Kernel").
 #
 # Nothing is patched afterwards. CI stages sw.mem/sw_ddr.mem in
 # sw/apps/linux_boot/; see linux/README.md for the boot ABI.
@@ -65,10 +71,26 @@ python3 "${REPO_ROOT}/linux/opensbi_build.py" \
 cp "${BINARIES_DIR}/opensbi/platform/generic/firmware/fw_jump.bin" "${BINARIES_DIR}/fw_jump.bin"
 cp "${BINARIES_DIR}/opensbi/platform/generic/firmware/fw_jump.elf" "${BINARIES_DIR}/fw_jump.elf"
 
+echo "post-image-mmu.sh: staging Debian's kernel and the NIC module"
+debian_kernel="${REPO_ROOT}/linux/debian_kernel.py"
+# The helper keeps stdout for the answer and reports progress on stderr, so this
+# is one path even when it downloads and extracts first. Check it anyway: a
+# stray line here would turn into a confusing cp failure.
+debian_image="$(python3 "${debian_kernel}" image)"
+if [ ! -f "${debian_image}" ]; then
+    echo "post-image-mmu.sh: 'debian_kernel.py image' did not print one existing" \
+        "path: ${debian_image}" >&2
+    exit 1
+fi
+cp "${debian_image}" "${BINARIES_DIR}/Image-debian"
+python3 "${debian_kernel}" --cross "${cross_compile}" initramfs \
+    --base "${BINARIES_DIR}/rootfs.cpio" \
+    --out "${BINARIES_DIR}/rootfs-frost.cpio"
+
 echo "post-image-mmu.sh: packing the FROST boot image"
 echo "  firmware = ${BINARIES_DIR}/fw_jump.bin"
-echo "  Image    = ${BINARIES_DIR}/Image"
-echo "  initrd   = ${BINARIES_DIR}/rootfs.cpio"
+echo "  Image    = ${BINARIES_DIR}/Image-debian ($(python3 "${debian_kernel}" release))"
+echo "  initrd   = ${BINARIES_DIR}/rootfs-frost.cpio"
 echo "  cross    = ${cross_compile}"
 echo "  dtc      = ${dtc_path}"
 echo "  clock    = ${FPGA_CPU_CLK_FREQ:-300000000} Hz"
@@ -77,8 +99,8 @@ echo "  clock    = ${FPGA_CPU_CLK_FREQ:-300000000} Hz"
 FROST_SHIM_MARCH="" FROST_SHIM_MABI="" \
 python3 "${BOARD_DIR}/frost_boot_image.py" \
     --firmware "${BINARIES_DIR}/fw_jump.bin" \
-    --payload "${BINARIES_DIR}/Image" \
-    --initrd "${BINARIES_DIR}/rootfs.cpio" \
+    --payload "${BINARIES_DIR}/Image-debian" \
+    --initrd "${BINARIES_DIR}/rootfs-frost.cpio" \
     --out "${BINARIES_DIR}" \
     --cross "${cross_compile}" \
     --dtc "${dtc_path}" \

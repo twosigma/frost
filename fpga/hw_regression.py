@@ -27,12 +27,14 @@ greetings, and ``uart_echo`` must return a typed probe. CoreMark uses
 Next, ``sweep_coremark_pro.py -v0`` runs all nine workloads with exclusive UART
 access; both its status and official mark are checked. The forwarded common
 timeout is a base budget; the sweep honors any larger per-workload minimum in
-the software registry. Linux runs last and requires the Buildroot banner and
-login prompt; traps, panics, and kernel ``Oops``, ``BUG:`` and ``Kernel BUG``
-reports fail, but the bare-metal ``ERROR`` rule does not apply to kernel logs.
-The stage also requires the userspace stress token before the login prompt,
-then logs in as root and runs ``perf stat`` on the cycle and instruction
-counters, which must both report a nonzero count, and then ``frost_nettest``,
+the software registry. Linux runs last: it boots Debian's pinned riscv64 kernel
+(``linux/debian_kernel.py``) with the Buildroot test initramfs, and requires
+that kernel's own version banner, the Buildroot banner and the login prompt;
+traps, panics, and kernel ``Oops``, ``BUG:`` and ``Kernel BUG`` reports fail,
+but the bare-metal ``ERROR`` rule does not apply to kernel logs. The stage also
+requires the NIC module's load token and the userspace stress token before the
+login prompt, then logs in as root and runs ``frost_stress --counters``, whose
+cycle and instret counts must both be nonzero, and then ``frost_nettest``,
 which runs the NIC driver through its loopback feature (the NIC's raw loopback
 on a shared MAC clock, the transceiver's PMA loopback otherwise) and must print
 ``FROST_NET_LOOPBACK_PASS``. ``--linux-timeout`` covers build, DDR loading,
@@ -85,6 +87,15 @@ sys.path.insert(0, str(SCRIPT_DIR))
 sys.path.insert(0, str(SCRIPT_DIR / "common"))
 sys.path.insert(0, str(SCRIPT_DIR / "load_software"))
 sys.path.insert(0, str(REPO_DEFAULT / "sw" / "apps"))
+sys.path.insert(0, str(REPO_DEFAULT / "linux"))
+from debian_kernel import (  # noqa: E402
+    INITRAMFS_COUNTER_TOKEN,
+    KERNEL_BANNER,
+    KERNEL_RELEASE,
+    MODULE_FAIL_TOKEN,
+    MODULE_PASS_LINE,
+    MODULE_PASS_RE,
+)
 from hw_defaults import (  # noqa: E402
     DEFAULT_SERIALS,
     DEFAULT_TARGETS,
@@ -138,24 +149,48 @@ ECHO_PROBE = "FROST_HW_REGRESSION_ECHO_PROBE"
 ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
 
 # A healthy kernel log can contain ``ERROR``, so Linux is judged by these
-# markers instead of the bare-metal word rule.
-LINUX_SUCCESS_MARKERS = ("Welcome to Buildroot", "buildroot login:")
+# markers instead of the bare-metal word rule. The kernel's own banner is one
+# of them: FROST boots Debian's kernel (linux/debian_kernel.py names it), and
+# packing any other one must fail rather than pass on the userspace markers,
+# which come from the Buildroot test initramfs and would appear either way. The
+# banner ends in a space, so a release this one is a prefix of does not match.
+LINUX_SUCCESS_MARKERS = (KERNEL_BANNER, "Welcome to Buildroot", "buildroot login:")
 LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic", "Oops", "BUG:", "Kernel BUG")
 
-# The kernel prints the userspace stress token from a sysinit entry, so it
-# precedes the getty. After the login prompt the stage types a root login (no
-# password) and a perf stat run over the SBI PMU's cycle and instret counters;
-# perf's CSV rows read "<count>,,<event>,<run ns>,<run %>,...", or
-# "<not supported>" / "<not counted>" in the count column when the PMU is
-# broken.
+# The initramfs prints these from sysinit entries, so they precede the getty:
+# the NIC module's load and the userspace stress token. The module line carries
+# the release its init script read from ``uname -r``, and the whole line is
+# required: the pin sets CONFIG_MODVERSIONS, and with symbol CRCs present Linux
+# ignores vermagic's release field, so a bare insmod would load into any
+# ABI-compatible kernel.
+LINUX_MODULE_LINE = MODULE_PASS_LINE
+LINUX_MODULE_LINE_RE = MODULE_PASS_RE
+LINUX_MODULE_TOKEN_FAIL = MODULE_FAIL_TOKEN
 LINUX_TOKEN = "FROST_USERSPACE_STRESS_PASS"
 LINUX_TOKEN_FAIL = "FROST_USERSPACE_STRESS_FAIL"
 LINUX_LOGIN_PROMPT = "buildroot login:"
 LINUX_SHELL_PROMPT = "# "
-LINUX_PERF_EVENTS = ("cycles", "instructions")
-LINUX_PERF_COMMAND = "perf stat -x, -e " + ",".join(LINUX_PERF_EVENTS) + " /bin/true"
-LINUX_PERF_ROW_RE = re.compile(
-    r"^(\d+|<[^>\r\n]+>),,(cycles|instructions),", re.MULTILINE
+
+# After the login prompt the stage types a root login (no password) and
+# ``frost_stress --counters``, which reads the SBI PMU's cycle and instret
+# counters through perf_event_open and prints them on its own line. This
+# replaced ``perf stat``: Buildroot's perf is built against the kernel
+# Buildroot builds, which FROST no longer boots. Like perf stat, the counters
+# cover a child measured from its exec to its exit, which ``scope`` names; the
+# stage requires that scope, so a narrower measurement is a failure rather than
+# a quiet loss of coverage.
+LINUX_COUNTER_EVENTS = ("cycles", "instret")
+LINUX_COUNTER_SCOPE = "exec-child"
+LINUX_COUNTER_COMMAND = "frost_stress --counters"
+LINUX_COUNTER_LINE = f"{INITRAMFS_COUNTER_TOKEN}:"
+LINUX_COUNTER_RE = re.compile(
+    LINUX_COUNTER_LINE + r"((?: \w+=[\w.+-]+)+) verdict=PASS", re.MULTILINE
+)
+# A run that could not read the counters prints its own verdict. Without this
+# the stage matched neither success nor failure and ran to the timeout, which
+# reported no terminal output at all.
+LINUX_COUNTER_FAIL_RE = re.compile(
+    LINUX_COUNTER_LINE + r"(?: \w+=[\w.+-]+)* verdict=FAIL", re.MULTILINE
 )
 
 # At the next shell prompt the stage types frost_nettest (the frost-stress
@@ -166,9 +201,10 @@ LINUX_NET_COMMAND = "frost_nettest"
 LINUX_NET_TOKEN = "FROST_NET_LOOPBACK_PASS"
 LINUX_NET_TOKEN_FAIL = "FROST_NET_LOOPBACK_FAIL"
 
-# Covers a warm rebuild, multi-MB JTAG load, and boot to login, plus 60 s for
-# perf stat and frost_nettest, whose waits are all bounded.
-DEFAULT_LINUX_TIMEOUT = 360.0
+# Covers a warm rebuild, the JTAG load of a ~45 MB DDR image (Debian's kernel
+# is over twice the size of the one Buildroot built), and boot to login, plus
+# 60 s for the counter and frost_nettest runs, whose waits are all bounded.
+DEFAULT_LINUX_TIMEOUT = 600.0
 
 # The FROST coremark port prints "Total 64-bit ticks : N" plus this formula;
 # see the module docstring for why Iterations/Sec is not trusted instead.
@@ -347,62 +383,99 @@ def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
     )
 
 
-def perf_counts(serial_buf: str) -> dict[str, str]:
-    """Return the count column of perf stat's CSV rows, keyed by event."""
-    return {event: count for count, event in LINUX_PERF_ROW_RE.findall(serial_buf)}
+def counter_values(serial_buf: str) -> dict[str, str]:
+    """Return the fields of a passing ``frost_stress --counters`` line, by name.
+
+    The line reads ``FROST_COUNTERS: scope=exec-child cycles=N instret=N time=N
+    ipc_x1000=N verdict=PASS``; a run that could not read the counters prints
+    ``counters=unavailable verdict=FAIL`` instead and matches nothing here, so
+    ``LINUX_COUNTER_FAIL_RE`` is what ends the capture for it.
+    """
+    counts: dict[str, str] = {}
+    for fields in LINUX_COUNTER_RE.findall(serial_buf):
+        counts.update(field.split("=", 1) for field in fields.split())
+    return counts
 
 
 def linux_stage() -> UartStage:
-    """Build the linux_boot stage: stress token, login, perf stat, frost_nettest.
+    """Build the linux_boot stage: boot tokens, login, counters, frost_nettest.
 
-    The stage needs the token before the prompt; after typing the root login
-    and the perf stat command, a nonzero count for every event in
-    ``LINUX_PERF_EVENTS``; and after typing ``frost_nettest`` at the next
-    prompt, its pass token. Either program's fail token fails the stage.
+    The stage needs the kernel's own banner, the NIC module's load line and
+    the stress token before the login prompt; after typing the root login and
+    the counter command, the measured scope and a nonzero count for every name
+    in ``LINUX_COUNTER_EVENTS``; and after typing ``frost_nettest`` at the next
+    prompt, its pass token. Any program's failure verdict fails the stage, and
+    ends the capture rather than leaving it to the timeout.
     """
-    failure_markers = LINUX_FAILURE_MARKERS + (LINUX_TOKEN_FAIL, LINUX_NET_TOKEN_FAIL)
+    failure_markers = LINUX_FAILURE_MARKERS + (
+        LINUX_MODULE_TOKEN_FAIL,
+        LINUX_TOKEN_FAIL,
+        LINUX_NET_TOKEN_FAIL,
+    )
+    # Lines the initramfs prints from sysinit entries, before the getty, each
+    # with the pattern that requires it. The module line is matched with a
+    # boundary: it is a prefix of the same line for a longer release, which a
+    # plain substring test would accept.
+    boot_lines = (
+        (LINUX_MODULE_LINE, LINUX_MODULE_LINE_RE),
+        (LINUX_TOKEN, re.compile(re.escape(LINUX_TOKEN))),
+    )
 
     def lx_login(serial_buf: str) -> bool:
-        """Return True once both Buildroot login markers have been captured."""
+        """Return True once the kernel and login markers have been captured."""
         return all(marker in serial_buf for marker in LINUX_SUCCESS_MARKERS)
 
+    def lx_reasons(serial_buf: str) -> list[str]:
+        """Return every terminal failure the output shows, most specific first."""
+        hit = [m for m in failure_markers if m in serial_buf]
+        counter_fail = LINUX_COUNTER_FAIL_RE.search(serial_buf)
+        if counter_fail:
+            hit.append(counter_fail.group(0).strip())
+        return hit
+
     def lx_success(serial_buf: str) -> bool:
-        """Login prompt, every perf row, and the frost_nettest pass token."""
+        """Login prompt, both counters, and the frost_nettest pass token."""
         if not lx_login(serial_buf):
             return False
-        if not set(perf_counts(serial_buf)) >= set(LINUX_PERF_EVENTS):
+        if not set(counter_values(serial_buf)) >= set(LINUX_COUNTER_EVENTS):
             return False
         return LINUX_NET_TOKEN in serial_buf
 
     def lx_failure(serial_buf: str) -> bool:
-        """Return True on a CPU trap, panic, Oops, BUG, or failed test program."""
-        return any(marker in serial_buf for marker in failure_markers)
+        """Return True on a trap, panic, Oops, BUG, or a program's failed verdict."""
+        return bool(lx_reasons(serial_buf))
 
     def lx_judge(serial_buf: str) -> tuple[bool, str]:
-        """Fail on a failure marker, else require markers, tokens, perf counts."""
-        hit = [m for m in failure_markers if m in serial_buf]
+        """Fail on a failure marker, else require markers, lines and counts."""
+        hit = lx_reasons(serial_buf)
         if hit:
             return False, f"failure marker: {', '.join(hit)}"
         missing = [m for m in LINUX_SUCCESS_MARKERS if m not in serial_buf]
         if missing:
             return False, f"missing: {', '.join(repr(m) for m in missing)}"
         prompt_at = serial_buf.find(LINUX_LOGIN_PROMPT)
-        if LINUX_TOKEN not in serial_buf[:prompt_at]:
-            return False, f"{LINUX_TOKEN!r} not printed before the login prompt"
-        counts = perf_counts(serial_buf)
+        for line, pattern in boot_lines:
+            if not pattern.search(serial_buf[:prompt_at]):
+                return False, f"{line!r} not printed before the login prompt"
+        counts = counter_values(serial_buf)
         bad = []
-        for event in LINUX_PERF_EVENTS:
+        if counts.get("scope") != LINUX_COUNTER_SCOPE:
+            bad.append(f"scope: {counts.get('scope')} is not {LINUX_COUNTER_SCOPE}")
+        for event in LINUX_COUNTER_EVENTS:
             count = counts.get(event)
             if count is None:
-                bad.append(f"{event}: no perf stat row")
+                bad.append(f"{event}: no {LINUX_COUNTER_LINE} count")
             elif not count.isdigit() or int(count) == 0:
                 bad.append(f"{event}: {count}")
         if bad:
-            return False, "perf stat: " + "; ".join(bad)
+            return False, f"{LINUX_COUNTER_COMMAND}: " + "; ".join(bad)
         if LINUX_NET_TOKEN not in serial_buf:
             return False, f"{LINUX_NET_COMMAND}: no {LINUX_NET_TOKEN!r}"
-        summary = " ".join(f"{event}={counts[event]}" for event in LINUX_PERF_EVENTS)
-        return True, f"stress token, login, perf stat {summary}, {LINUX_NET_COMMAND}"
+        summary = " ".join(f"{event}={counts[event]}" for event in LINUX_COUNTER_EVENTS)
+        return True, (
+            f"{KERNEL_RELEASE}, module and stress tokens, login, "
+            f"counters ({LINUX_COUNTER_SCOPE}) {summary}, {LINUX_NET_COMMAND}"
+        )
 
     return UartStage(
         LINUX_STAGE,
@@ -411,7 +484,7 @@ def linux_stage() -> UartStage:
         judge=lx_judge,
         stimuli=(
             (LINUX_LOGIN_PROMPT, "root\r"),
-            (LINUX_SHELL_PROMPT, LINUX_PERF_COMMAND + "\r"),
+            (LINUX_SHELL_PROMPT, LINUX_COUNTER_COMMAND + "\r"),
             (LINUX_SHELL_PROMPT, LINUX_NET_COMMAND + "\r"),
         ),
     )
@@ -734,9 +807,10 @@ def main() -> int:
         default=DEFAULT_LINUX_TIMEOUT,
         help=(
             "linux_boot timeout in seconds covering rebuild, JTAG DDR image "
-            "load, boot, and the perf stat and frost_nettest runs (default: "
+            "load, boot, and the counter and frost_nettest runs (default: "
             f"{DEFAULT_LINUX_TIMEOUT:.0f}; raise it for a cold Buildroot "
-            "first build, which takes 30-60 min)"
+            "first build, which takes 30-60 min, or a cold Debian kernel "
+            "fetch)"
         ),
     )
     parser.add_argument(

@@ -19,13 +19,15 @@ Covers the OpenSBI boot-image packer and the kernel configuration.
 
 import hashlib
 import importlib.util
-from types import ModuleType
+import io
 import os
 import re
 import struct
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -49,10 +51,16 @@ SBI_PACKER = (
     / "frost_boot_image.py"
 )
 OPENSBI_HELPER = REPO_ROOT / "linux" / "opensbi_build.py"
+DEBIAN_KERNEL = REPO_ROOT / "linux" / "debian_kernel.py"
+DRIVER_DIR = REPO_ROOT / "linux" / "frost-net10g"
 LOADER = REPO_ROOT / "fpga" / "load_software" / "load_software.py"
 X3_DDR_BD = REPO_ROOT / "fpga" / "build" / "x3_ddr_bd.tcl"
 APPS = REPO_ROOT / "sw" / "apps"
 TESTS_MAKEFILE = REPO_ROOT / "tests" / "Makefile"
+CI_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+POST_IMAGE = (
+    REPO_ROOT / "linux" / "buildroot-external" / "board" / "frost" / "post-image-mmu.sh"
+)
 
 
 def _load_module(path: Path) -> ModuleType:
@@ -131,7 +139,7 @@ def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
 
 
 # The header image_size of Debian 13's riscv64 kernel Image,
-# /boot/vmlinux-6.12.107+deb13-riscv64.
+# /boot/vmlinux-6.12.107+deb13-riscv64, which FROST boots everywhere.
 DEBIAN_KERNEL_FOOTPRINT = 0x1E6B000
 
 
@@ -834,26 +842,47 @@ NFS_EXPORT = "192.0.2.1:/srv/nfs/debian"
 
 
 def _linux_boot_tree(tmp_path: Path) -> Path:
-    """Lay out linux_boot's Makefile, the packer and Buildroot-like images.
+    """Lay out linux_boot's Makefile, the packer, and synthetic build inputs.
 
-    The Makefile finds the packer and Buildroot's images (fw_jump.bin, Image,
-    rootfs.cpio, synthetic here) relative to the directory make runs in, not
-    its own file (a symlink here), so make packs those and writes only under
-    tmp_path. Returns the app directory.
+    The Makefile finds the packer, Buildroot's images (fw_jump.bin,
+    rootfs.cpio) and the Debian kernel helper relative to the directory make
+    runs in, not its own file (a symlink here), so make packs those and writes
+    only under tmp_path. The Debian cache holds a synthetic kernel Image and
+    the NIC module a synthetic .ko, so no make in these tests downloads
+    anything or needs a cross toolchain. Returns the app directory.
     """
     packer = _load_module(SBI_PACKER)
+    helper = _load_module(DEBIAN_KERNEL)
     app = tmp_path / "sw" / "apps" / "linux_boot"
     board = tmp_path / "linux" / "buildroot-external" / "board" / "frost"
     common = tmp_path / "sw" / "common"
     images = tmp_path / "linux" / "build-mmu" / "images"
-    for directory in (app, board, common, images):
+    driver = tmp_path / "linux" / "frost-net10g"
+    for directory in (app, board, common, images, driver):
         directory.mkdir(parents=True)
     (app / "Makefile").symlink_to(LINUX_BOOT_MAKEFILE)
     (board / SBI_PACKER.name).symlink_to(SBI_PACKER)
     (common / DWORD_MEM_HELPER.name).symlink_to(DWORD_MEM_HELPER)
+    (tmp_path / "linux" / DEBIAN_KERNEL.name).symlink_to(DEBIAN_KERNEL)
+    for name in ("Makefile", "frost_net10g.c"):
+        (driver / name).symlink_to(DRIVER_DIR / name)
     (images / "fw_jump.bin").write_bytes(bytes(range(256)))
-    (images / "Image").write_bytes(_linux_image(packer, image_size=0x1000))
-    (images / "rootfs.cpio").write_bytes(bytes(range(251)) * 3)
+    # A real newc archive, with the frost_stress the Makefile's preflight looks
+    # inside for the counter mode it has to type.
+    (images / "rootfs.cpio").write_bytes(_newc_archive(BASE_ENTRIES))
+    # A complete Debian cache entry, so no make in these tests reaches the
+    # network: the helper names the directory and says what has to be in it.
+    cache = tmp_path / "debian-kernel"
+    root = helper.sysroot(cache)
+    for name, path in helper.required_files(root).items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(
+            _linux_image(packer, image_size=0x1000)
+            if name == "image"
+            else f"# synthetic {name}\n".encode()
+        )
+    helper.write_manifest(root)
+    (tmp_path / "frost_net10g.ko").write_bytes(bytes(range(97)) * 5)
     return app
 
 
@@ -862,14 +891,18 @@ def _make_linux_boot(app: Path, **variables: str) -> subprocess.CompletedProcess
 
     They go in the environment, and make cleans first, as load_software.py and
     compile_app.py do. The shim builds with the packer's default cross prefix,
-    and the clock is the Makefile's default.
+    and the clock is the Makefile's default. The Debian cache and the prebuilt
+    module are the synthetic ones _linux_boot_tree laid down.
     """
+    tree = app.parents[2]
     env = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("FROST_", "MAKE", "MFLAGS"))
         and key not in {"RISCV_PREFIX", "FPGA_CPU_CLK_FREQ"}
     }
+    env["FROST_DEBIAN_KERNEL_CACHE"] = str(tree / "debian-kernel")
+    env["FROST_NET10G_MODULE"] = str(tree / "frost_net10g.ko")
     env.update(variables)
     subprocess.run(
         ["make", "-C", str(app), "clean"],
@@ -891,30 +924,32 @@ def _output_digests(app: Path) -> dict[str, str]:
 
 
 def test_linux_boot_make_substitutes_the_kernel_and_initramfs(tmp_path: Path) -> None:
-    """FROST_LINUX_KERNEL and FROST_LINUX_INITRD replace Image and rootfs.cpio.
+    """FROST_LINUX_KERNEL and _INITRD replace Debian's Image and the initramfs.
 
-    Substitutes with Buildroot's bytes pack every output exactly as Buildroot's
-    files do. Other files are packed in their place, the DTB placed by the
+    Substitutes with the default inputs' bytes pack every output exactly as the
+    defaults do. Other files are packed in their place, the DTB placed by the
     substituted Image's header, with the default bootargs. Needs make, dtc and
     the riscv-none-elf- toolchain (all in the Docker image).
     """
     packer = _load_module(SBI_PACKER)
+    helper = _load_module(DEBIAN_KERNEL)
     app = _linux_boot_tree(tmp_path)
-    images = tmp_path / "linux" / "build-mmu" / "images"
     result = _make_linux_boot(app)
     assert result.returncode == 0, result.stderr
-    buildroot = _output_digests(app)
+    defaults = _output_digests(app)
     copies = tmp_path / "copies"
     copies.mkdir()
-    for name in ("Image", "rootfs.cpio"):
-        (copies / name).write_bytes((images / name).read_bytes())
+    debian_image = helper.kernel_image(tmp_path / "debian-kernel")
+    (copies / "Image").write_bytes(debian_image.read_bytes())
+    # The composed initramfs make just wrote; the next make clean removes it.
+    (copies / "rootfs.cpio").write_bytes((app / "rootfs.cpio").read_bytes())
     result = _make_linux_boot(
         app,
         FROST_LINUX_KERNEL=str(copies / "Image"),
         FROST_LINUX_INITRD=str(copies / "rootfs.cpio"),
     )
     assert result.returncode == 0, result.stderr
-    assert _output_digests(app) == buildroot
+    assert _output_digests(app) == defaults
 
     # A bss past +16 MiB puts the DTB at +18 MiB.
     kernel = _linux_image(packer, image_size=0xF03000) + bytes(range(256)) * 8
@@ -1027,11 +1062,13 @@ def test_linux_boot_make_rejects(
 
 
 def test_mmu_kernel_config_uses_kconfig_syntax() -> None:
-    """The MMU mini-config uses Kconfig syntax olddefconfig understands.
+    """Buildroot's kernel mini-config uses syntax olddefconfig understands.
 
     It also keeps its load-bearing symbols, networking, the NFS root, systemd's
     requirements and the NIC driver among them, keeps IPv6 off, and leaves out
-    the M-mode build's.
+    the M-mode build's. Nothing boots this kernel any more -- FROST boots
+    Debian's (linux/debian_kernel.py) -- so this guards the retained
+    configuration rather than the booted one; it goes when the file does.
     """
     malformed = []
     for line_number, line in enumerate(MMU_KERNEL_CONFIG.read_text().splitlines(), 1):
@@ -1064,3 +1101,749 @@ def test_mmu_kernel_config_uses_kconfig_syntax() -> None:
         assert required in text, required
     for forbidden in ("CONFIG_NONPORTABLE=y", "CONFIG_RISCV_M_MODE=y"):
         assert forbidden not in text, forbidden
+
+
+# --- Debian's kernel ------------------------------------------------------------
+
+
+def test_debian_kernel_pin_is_self_consistent() -> None:
+    """Every pinned package names one snapshot, version, size and sha256.
+
+    The pin is the only place the kernel is named, so a hand edit that leaves a
+    filename and a release disagreeing has to fail here rather than at a
+    download that returns the wrong kernel.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    assert helper.KERNEL_RELEASE.startswith(helper.KERNEL_ABI + "-")
+    # The banner ends at the release: the kernel prints "Linux version <release>
+    # (<builder>) ...", and without the trailing space the marker would also
+    # match a release this one is only a prefix of.
+    assert helper.KERNEL_BANNER == f"Linux version {helper.KERNEL_RELEASE} "
+    assert not f"Linux version {helper.KERNEL_RELEASE}-debug (x)".startswith(
+        helper.KERNEL_BANNER
+    )
+    assert f"Linux version {helper.KERNEL_RELEASE} (deb)".startswith(
+        helper.KERNEL_BANNER
+    )
+    assert helper.SOURCE_VERSION.split("-")[0] == helper.KERNEL_ABI.split("+")[0]
+    assert re.fullmatch(r"\d{8}T\d{6}Z", helper.SNAPSHOT)
+    names = set()
+    for package in helper.PACKAGES:
+        assert re.fullmatch(r"[0-9a-f]{64}", package.sha256), package.name
+        assert package.size > 0
+        assert package.members
+        assert package.filename.endswith(f"_{helper.SOURCE_VERSION}_{package.arch}.deb")
+        assert package.url.startswith(helper.SNAPSHOT_BASE + "/")
+        assert helper.SNAPSHOT in package.url
+        names.add(package.name)
+    assert helper.KERNEL_PACKAGE.name == f"linux-image-{helper.KERNEL_RELEASE}"
+    assert f"linux-headers-{helper.KERNEL_RELEASE}" in names
+    assert f"linux-headers-{helper.KERNEL_ABI}-common" in names
+    # linux-kbuild is Multi-Arch: foreign, so the host build of it drives the
+    # riscv64 headers tree; every other package is riscv64 or architecture-less.
+    kbuild = next(p for p in helper.PACKAGES if p.name.startswith("linux-kbuild"))
+    assert kbuild.arch == "amd64"
+    assert {p.arch for p in helper.PACKAGES} == {"riscv64", "all", "amd64"}
+
+
+def test_debian_kernel_paths_need_no_network() -> None:
+    """The path queries are pure: no download, and they honor the cache override.
+
+    Every published directory is named after a digest of its inputs, so a
+    changed pin or extraction revision names a new one instead of rewriting the
+    one a concurrent reader is using.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    cache = Path("/tmp/frost-debian-cache")
+    assert helper.cache_dir(cache) == cache
+    key = helper.pin_digest()
+    assert re.fullmatch(r"[0-9a-f]{16}", key)
+    assert helper.sysroot(cache) == cache / f"sysroot-{key}"
+    assert helper.kernel_image(cache) == (
+        helper.sysroot(cache) / "boot" / f"vmlinux-{helper.KERNEL_RELEASE}"
+    )
+    assert helper.kernel_build_dir(cache) == (
+        helper.sysroot(cache) / "usr" / "src" / f"linux-headers-{helper.KERNEL_RELEASE}"
+    )
+    assert helper.symvers(cache) == helper.kernel_build_dir(cache) / "Module.symvers"
+
+
+def test_debian_kernel_entries_are_keyed_on_their_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed pin, extraction revision or toolchain names a new directory.
+
+    kbuild records the compiler by Debian's riscv64-linux-gnu-gcc name and the
+    headers by path, so nothing inside a build directory changes when the
+    toolchain behind that name does; keying the directory is what keeps stale
+    objects out.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    cache = Path("/tmp/frost-debian-cache")
+    monkeypatch.setattr(
+        helper, "toolchain_identity", lambda cross=None: (Path("gcc"), "A")
+    )
+    first_sysroot, first_module = helper.sysroot(cache), helper.module_dir(cache)
+    monkeypatch.setattr(
+        helper, "toolchain_identity", lambda cross=None: (Path("gcc"), "B")
+    )
+    assert helper.sysroot(cache) == first_sysroot  # the pin did not change
+    assert helper.module_dir(cache) != first_module  # the toolchain did
+    monkeypatch.setattr(helper, "EXTRACT_VERSION", helper.EXTRACT_VERSION + 1)
+    assert helper.sysroot(cache) != first_sysroot
+    assert helper.module_dir(cache) != first_module
+
+
+# --- a cold cache, offline ------------------------------------------------------
+# The packages are rebuilt here rather than downloaded: verifying the CLI's
+# contract on a cold cache is the point (a warm one hides it), and the real .debs
+# are 128 MB and need the network.
+
+
+def _ar_archive(members: list[tuple[str, bytes]]) -> bytes:
+    """Return an ar archive of (name, bytes), the container format of a .deb."""
+    out = b"!<arch>\n"
+    for name, data in members:
+        header = (
+            f"{name:<16}{0:<12}{0:<6}{0:<6}{0o100644:<8o}{len(data):<10}".encode()
+            + b"`\n"
+        )
+        assert len(header) == 60, len(header)
+        out += header + data + (b"\n" if len(data) % 2 else b"")
+    return out
+
+
+def _data_tar(entries: list[tuple[str, str, bytes]]) -> bytes:
+    """Return a data.tar.xz of (kind, name, payload); kinds: dir, file, link."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:xz") as tar:
+        for kind, name, payload in entries:
+            info = tarfile.TarInfo("./" + name)  # Debian's own spelling
+            if kind == "dir":
+                info.type = tarfile.DIRTYPE
+                info.mode = 0o755
+                tar.addfile(info)
+            elif kind == "link":
+                info.type = tarfile.SYMTYPE
+                info.linkname = payload.decode()
+                tar.addfile(info)
+            else:
+                info.size = len(payload)
+                info.mode = 0o755 if name.endswith(("fixdep", "modpost")) else 0o644
+                tar.addfile(info, io.BytesIO(payload))
+    return buffer.getvalue()
+
+
+def _synthetic_packages(helper: ModuleType) -> dict[str, bytes]:
+    """Return one synthetic .deb per pinned package, keyed by file name.
+
+    Each carries exactly the members the extraction selects, including the two
+    the fixups rewrite and check, so a cold run exercises them for real.
+    """
+    release, abi = helper.KERNEL_RELEASE, helper.KERNEL_ABI
+    headers = f"usr/src/linux-headers-{release}"
+    common = f"usr/src/linux-headers-{abi}-common"
+    kbuild = f"usr/lib/linux-kbuild-{abi}"
+    contents: dict[str, list[tuple[str, str, bytes]]] = {
+        f"linux-image-{release}": [
+            ("dir", "boot", b""),
+            ("file", f"boot/vmlinux-{release}", b"Image" * 100),
+            ("file", f"boot/config-{release}", b"CONFIG_MODVERSIONS=y\n"),
+            # Skipped by the member filter: the modules FROST never loads.
+            ("file", f"usr/lib/modules/{release}/kernel/drivers/x.ko", b"x" * 1000),
+        ],
+        f"linux-headers-{abi}-common": [
+            ("dir", common, b""),
+            ("file", f"{common}/Makefile", b"VERSION = 6\n"),
+            ("dir", f"{common}/include", b""),
+            ("file", f"{common}/include/linux/kernel.h", b"/* h */\n"),
+        ],
+        f"linux-headers-{release}": [
+            ("dir", headers, b""),
+            (
+                "file",
+                f"{headers}/Makefile",
+                f"include /usr/src/linux-headers-{abi}-common/Makefile\n".encode(),
+            ),
+            (
+                "file",
+                f"{headers}/.kernelvariables",
+                f"override ARCH = riscv\noverride CROSS_COMPILE = "
+                f"{helper.DEBIAN_CROSS_COMPILE}\n".encode(),
+            ),
+            ("file", f"{headers}/.config", b"CONFIG_MODVERSIONS=y\n"),
+            ("file", f"{headers}/Module.symvers", b"0x12345678\tfoo\tvmlinux\n"),
+            ("dir", f"{headers}/arch", b""),
+            ("file", f"{headers}/arch/riscv/Makefile", b"# arch\n"),
+            ("dir", f"{headers}/include", b""),
+            ("file", f"{headers}/include/generated/autoconf.h", b"/* c */\n"),
+            (
+                "link",
+                f"{headers}/scripts",
+                f"../../lib/linux-kbuild-{abi}/scripts".encode(),
+            ),
+            (
+                "link",
+                f"{headers}/tools",
+                f"../../lib/linux-kbuild-{abi}/tools".encode(),
+            ),
+            # Deliberately not selected: the BTF base, whose absence makes
+            # kbuild skip module BTF instead of demanding pahole.
+            ("file", f"{headers}/vmlinux", b"btf-base"),
+        ],
+        f"linux-kbuild-{abi}": [
+            ("dir", kbuild, b""),
+            ("file", f"{kbuild}/scripts/basic/fixdep", b"\x7fELF-fixdep"),
+            ("file", f"{kbuild}/scripts/mod/modpost", b"\x7fELF-modpost"),
+        ],
+    }
+    debs = {}
+    for package in helper.PACKAGES:
+        debs[package.filename] = _ar_archive(
+            [
+                ("debian-binary", b"2.0\n"),
+                ("control.tar.xz", _data_tar([("file", "control", b"Package: x\n")])),
+                ("data.tar.xz", _data_tar(contents[package.name])),
+            ]
+        )
+    return debs
+
+
+def _offline_download(helper: ModuleType, monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Serve the synthetic packages in place of the network; return a fetch log."""
+    debs = _synthetic_packages(helper)
+    fetched: list[str] = []
+
+    def download(package: Any, dl_dir: Path) -> Path:
+        dl_dir.mkdir(parents=True, exist_ok=True)
+        path = dl_dir / package.filename
+        if not path.exists():
+            fetched.append(package.filename)
+            path.write_bytes(debs[package.filename])
+        return path
+
+    monkeypatch.setattr(helper, "download", download)
+    return fetched
+
+
+def test_debian_kernel_cli_prints_only_the_path_on_a_cold_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Stdout is the answer; the work it had to do first goes to stderr.
+
+    Buildroot's post-image hook captures `image` in a shell substitution, so a
+    progress line on stdout would make the captured value a multiline blob and
+    the next command fail. A warm cache hides that, which is why this runs cold.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    fetched = _offline_download(helper, monkeypatch)
+    cache = tmp_path / "cache"
+    assert helper.main(["--cache", str(cache), "image"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == f"{helper.kernel_image(cache)}\n"
+    assert Path(captured.out.strip()).is_file()
+    assert len(fetched) == len(helper.PACKAGES)  # it really was cold
+    assert "extracted into" in captured.err  # the progress went the other way
+
+    # Warm: same single line, no work, and no re-download.
+    assert helper.main(["--cache", str(cache), "image"]) == 0
+    warm = capsys.readouterr()
+    assert warm.out == f"{helper.kernel_image(cache)}\n"
+    assert warm.err == ""
+    assert len(fetched) == len(helper.PACKAGES)
+
+    for command in (["fetch"], ["release"], ["image", "--no-fetch"]):
+        assert helper.main(["--cache", str(cache), *command]) == 0
+        assert len(capsys.readouterr().out.splitlines()) == 1, command
+
+
+def test_debian_kernel_cold_extraction_selects_and_fixes_the_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The extraction keeps what the module build needs and drops the rest.
+
+    The arch Makefile's absolute include is rewritten relative to itself, so the
+    tree builds outside /usr/src, and the BTF-base vmlinux is left out so kbuild
+    skips module BTF rather than demanding pahole.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    _offline_download(helper, monkeypatch)
+    cache = tmp_path / "cache"
+    root = helper.fetch(cache)
+    assert root == helper.sysroot(cache)
+    for path in helper.required_files(root).values():
+        assert path.is_file(), path
+    build = helper.kernel_build_dir(cache)
+    assert not (build / "vmlinux").exists()
+    assert not (root / "usr" / "lib" / "modules").exists()
+    makefile = (build / "Makefile").read_text()
+    assert "/usr/src/" not in makefile
+    assert "$(dir $(lastword $(MAKEFILE_LIST)))" in makefile
+    # The relative include resolves, and the kbuild symlinks resolve inside.
+    assert (build / makefile.split("include ", 1)[1].strip().split(")))")[1]).exists()
+    assert (build / "scripts" / "basic" / "fixdep").exists()
+
+
+def test_debian_kernel_rejects_packaging_that_moved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed include line or cross prefix fails loudly, not silently."""
+    helper = _load_module(DEBIAN_KERNEL)
+    _offline_download(helper, monkeypatch)
+    root = tmp_path / "root"
+    headers = root / "usr" / "src" / f"linux-headers-{helper.KERNEL_RELEASE}"
+    headers.mkdir(parents=True)
+    (headers / "Makefile").write_text("include /somewhere/else/Makefile\n")
+    (headers / ".kernelvariables").write_text(
+        "override CROSS_COMPILE = riscv64-linux-\n"
+    )
+    with pytest.raises(RuntimeError, match="expected an include"):
+        helper.fix_headers_tree(root)
+    (headers / "Makefile").write_text(
+        f"include /usr/src/linux-headers-{helper.KERNEL_ABI}-common/Makefile\n"
+    )
+    with pytest.raises(RuntimeError, match="DEBIAN_CROSS_COMPILE"):
+        helper.fix_headers_tree(root)
+
+
+def test_debian_kernel_revalidates_a_damaged_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated or partly deleted extraction is replaced, not trusted.
+
+    The published directory is the only record that the work finished, and it is
+    validated against the manifest written with it, so an interrupted run or a
+    stray delete cannot be mistaken for a complete tree.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    fetched = _offline_download(helper, monkeypatch)
+    cache = tmp_path / "cache"
+    root = helper.fetch(cache)
+    assert helper.manifest_holds(root)
+    downloads = len(fetched)
+
+    image = helper.kernel_image(cache)
+    image.write_bytes(image.read_bytes()[:-1])  # truncated
+    assert not helper.manifest_holds(root)
+    assert helper.fetch(cache) == root
+    assert helper.manifest_holds(root)
+    assert len(fetched) == downloads  # the verified .debs were reused
+
+    (root / helper.MANIFEST_NAME).unlink()  # an interrupted publish
+    assert not helper.manifest_holds(root)
+    helper.fetch(cache)
+    assert helper.manifest_holds(root)
+
+    image.unlink()
+    assert not helper.manifest_holds(root)
+    helper.fetch(cache)
+    assert helper.kernel_image(cache).is_file()
+
+
+def test_debian_kernel_publishes_whole_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reader sees a complete entry or none: staging is private and renamed.
+
+    A failure part-way leaves nothing published, and nothing under staging.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    _offline_download(helper, monkeypatch)
+    cache = tmp_path / "cache"
+
+    def boom(root: Path) -> None:
+        raise RuntimeError("extraction interrupted")
+
+    monkeypatch.setattr(helper, "fix_headers_tree", boom)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        helper.fetch(cache)
+    assert not helper.sysroot(cache).exists()
+    assert list((cache / "staging").iterdir()) == []
+    # No stray partial downloads either.
+    assert [p.name for p in (cache / "dl").iterdir() if p.name.startswith(".")] == []
+
+
+def test_debian_kernel_download_rejects_a_wrong_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A truncated or substituted download is refused and leaves nothing behind."""
+    helper = _load_module(DEBIAN_KERNEL)
+    package = helper.KERNEL_PACKAGE
+    dl_dir = tmp_path / "dl"
+
+    class Response(io.BytesIO):
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        helper.urllib.request, "urlopen", lambda url, timeout=0: Response(b"not it")
+    )
+    with pytest.raises(RuntimeError, match="expected 112012420 bytes"):
+        helper.download(package, dl_dir)
+    assert list(dl_dir.iterdir()) == []
+
+
+def test_debian_kernel_verifies_the_module_it_builds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A module is published only if its metadata and symbol CRCs are the pin's.
+
+    With CONFIG_MODVERSIONS the kernel ignores vermagic's release field, so the
+    release is checked here; the CRCs then tie the module to the pinned tree's
+    exported symbols, which a build against other headers would not match.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    release = helper.KERNEL_RELEASE
+    good_magic = f"{release} SMP mod_unload modversions riscv"
+    symvers = tmp_path / "Module.symvers"
+    symvers.write_text("0x0800473f\t__cond_resched\tvmlinux\tEXPORT_SYMBOL\t\n")
+    monkeypatch.setattr(helper, "symvers", lambda cache=None: symvers)
+    assert helper.kernel_symbol_crcs(symvers) == {"__cond_resched": 0x0800473F}
+
+    def stub(magic: str, crcs: dict[str, int], name: str = "frost_net10g") -> None:
+        monkeypatch.setattr(
+            helper,
+            "module_info",
+            lambda module, objcopy: {"name": [name], "vermagic": [magic]},
+        )
+        monkeypatch.setattr(helper, "module_symbol_crcs", lambda module, objcopy: crcs)
+
+    module = tmp_path / "frost_net10g.ko"
+    module.write_bytes(b"ko")
+    stub(good_magic, {"__cond_resched": 0x0800473F})
+    helper.verify_module(module, None, "objcopy")  # the pinned kernel's module
+
+    # A release this one is a prefix of must not pass.
+    stub(f"{release}-debug SMP mod_unload modversions riscv", {})
+    with pytest.raises(RuntimeError, match="is not .*'s"):
+        helper.verify_module(module, None, "objcopy")
+    stub("6.18.7 SMP mod_unload modversions riscv", {})
+    with pytest.raises(RuntimeError, match="is not"):
+        helper.verify_module(module, None, "objcopy")
+    stub(f"{release} SMP mod_unload riscv", {})  # no modversions
+    with pytest.raises(RuntimeError, match="modversions"):
+        helper.verify_module(module, None, "objcopy")
+    stub(good_magic, {"__cond_resched": 0xDEADBEEF})  # another kernel's CRC
+    with pytest.raises(RuntimeError, match="symbol CRCs do not match"):
+        helper.verify_module(module, None, "objcopy")
+    stub(good_magic, {"not_exported": 0x1})  # a symbol the pin does not export
+    with pytest.raises(RuntimeError, match="symbol CRCs do not match"):
+        helper.verify_module(module, None, "objcopy")
+    stub(good_magic, {"__cond_resched": 0x0800473F}, name="something_else")
+    with pytest.raises(RuntimeError, match="modinfo name"):
+        helper.verify_module(module, None, "objcopy")
+
+
+def _parse_versions(
+    helper: ModuleType, monkeypatch: pytest.MonkeyPatch, blob: bytes
+) -> dict[str, int]:
+    """Run module_symbol_crcs over a given __versions section."""
+    monkeypatch.setattr(helper, "elf_section", lambda module, section, objcopy: blob)
+    return dict(helper.module_symbol_crcs(Path("x.ko"), "objcopy"))
+
+
+@pytest.mark.parametrize("blob", [b"", b"\x00" * 65], ids=["empty", "truncated"])
+def test_debian_kernel_module_versions_section_must_parse(
+    blob: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module with no symbol CRCs, or a truncated section, is refused."""
+    helper = _load_module(DEBIAN_KERNEL)
+    with pytest.raises(RuntimeError, match="__versions"):
+        _parse_versions(helper, monkeypatch, blob)
+
+
+def test_debian_kernel_module_versions_entries_decode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A well-formed __versions section decodes to name/CRC pairs.
+
+    The layout is struct modversion_info: an unsigned long CRC then a 56-byte
+    name, which is what the pinned kernel's modpost emits.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    names = ("__platform_driver_register", "memcpy")
+    blob = b"".join(
+        struct.pack("<Q", crc) + name.encode().ljust(56, b"\0")
+        for crc, name in zip((0xF5150B14, 0x69ACDF38), names)
+    )
+    assert _parse_versions(helper, monkeypatch, blob) == {
+        "__platform_driver_register": 0xF5150B14,
+        "memcpy": 0x69ACDF38,
+    }
+    assert helper.MODVERSION_ENTRY == 64
+
+
+def _newc_archive(entries: list[tuple[str, int, bytes]]) -> bytes:
+    """Return a real newc cpio archive, padded to 512 as GNU cpio writes one."""
+    helper = _load_module(DEBIAN_KERNEL)
+    out = b""
+    for index, (name, mode, data) in enumerate(entries, start=1):
+        out += helper.cpio_entry(name, mode, data, ino=index)
+    out += helper.cpio_entry(helper.CPIO_TRAILER, 0)
+    return out + b"\0" * (-len(out) % helper.CPIO_BLOCK)
+
+
+# A base archive shaped like Buildroot's: the programs the gates type, one of
+# which the initramfs check looks inside.
+BASE_ENTRIES = [
+    ("etc", 0o040755, b""),
+    ("etc/init.d", 0o040755, b""),
+    ("etc/init.d/rcS", 0o100755, b"#!/bin/sh\nfor i in /etc/init.d/S??*; do\n"),
+    ("usr", 0o040755, b""),
+    ("usr/bin", 0o040755, b""),
+    (
+        "usr/bin/frost_stress",
+        0o100755,
+        b"ELF...FROST_COUNTERS...FROST_USERSPACE_STRESS",
+    ),
+]
+
+
+def test_debian_kernel_initramfs_appends_a_second_real_archive(
+    tmp_path: Path,
+) -> None:
+    """The composed initramfs is two real cpio archives, base first, unmodified.
+
+    The kernel unpacks concatenated archives in order, which is how the module
+    reaches Buildroot's userspace without rebuilding it; the base must come
+    through byte for byte, and both archives' members must still parse.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    base_bytes = _newc_archive(BASE_ENTRIES)
+    base = tmp_path / "rootfs.cpio"
+    base.write_bytes(base_bytes)
+    module = tmp_path / "frost_net10g.ko"
+    module.write_bytes(bytes(range(211)) * 3)
+    out = helper.compose_initramfs(base, tmp_path / "composed.cpio", module=module)
+    composed = out.read_bytes()
+    assert composed.startswith(base_bytes)
+    assert len(composed) % helper.CPIO_ALIGN == 0
+
+    members = dict(
+        (name, (mode, data)) for name, mode, data in helper.cpio_members(composed)
+    )
+    # Both archives' members are visible, in one walk.
+    for name, mode, data in BASE_ENTRIES:
+        assert members[name] == (mode, data)
+    release = helper.KERNEL_RELEASE
+    assert members[f"lib/modules/{release}/frost_net10g.ko"] == (
+        0o100644,
+        module.read_bytes(),
+    )
+    assert members[f"lib/modules/{release}/modules.dep"][1] == b"frost_net10g.ko:\n"
+    mode, script = members[helper.MODULE_INIT_SCRIPT]
+    assert mode == 0o100755, "rcS runs /etc/init.d/S??* as programs"
+    for directory in ("lib", "lib/modules", f"lib/modules/{release}"):
+        assert members[directory][0] == 0o040755, directory
+
+
+def test_debian_kernel_loader_script_checks_the_running_release(
+    tmp_path: Path,
+) -> None:
+    """The script compares uname -r before it loads, and says so when it differs.
+
+    CONFIG_MODVERSIONS makes the kernel skip vermagic's release field once a
+    module carries symbol CRCs, so a successful insmod does not identify the
+    kernel; this test is what keeps the release check in the script.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    members = dict(
+        (name, data) for name, _, data in helper.cpio_members(helper.module_cpio(b"ko"))
+    )
+    script = members[helper.MODULE_INIT_SCRIPT].decode()
+    assert script.startswith("#!/bin/sh\n")
+    assert "$(uname -r)" in script
+    assert f"EXPECT={helper.KERNEL_RELEASE}" in script
+    assert '"$RUNNING" != "$EXPECT"' in script
+    assert f'echo "{helper.MODULE_PASS_TOKEN} $RUNNING"' in script
+    assert helper.MODULE_FAIL_TOKEN in script
+    assert helper.MODULE_PASS_LINE == (
+        f"{helper.MODULE_PASS_TOKEN} {helper.KERNEL_RELEASE}"
+    )
+    # It is a shell script the target's /bin/sh will run, and it never fails rcS.
+    path = tmp_path / "S03frost-net10g"
+    path.write_text(script)
+    subprocess.run(["sh", "-n", str(path)], check=True)
+
+    # Run it with a stub uname on PATH: a mismatch prints the fail token and the
+    # release it saw, and never reaches insmod.
+    stubs = tmp_path / "bin"
+    stubs.mkdir()
+    (stubs / "uname").write_text("#!/bin/sh\necho 6.12.107+deb13-riscv64-debug\n")
+    (stubs / "insmod").write_text("#!/bin/sh\necho INSMOD-RAN\n")
+    for stub in stubs.iterdir():
+        stub.chmod(0o755)
+    path.chmod(0o755)
+    done = subprocess.run(
+        ["sh", str(path), "start"],
+        capture_output=True,
+        text=True,
+        env={"PATH": f"{stubs}:/usr/bin:/bin"},
+        check=True,
+    )
+    assert helper.MODULE_FAIL_TOKEN in done.stdout
+    assert "6.12.107+deb13-riscv64-debug" in done.stdout
+    assert "INSMOD-RAN" not in done.stdout
+    assert helper.MODULE_PASS_TOKEN not in done.stdout
+
+
+def test_debian_kernel_initramfs_rejects_an_unaligned_base(tmp_path: Path) -> None:
+    """A base whose length is not a multiple of four breaks the kernel's padding.
+
+    init/initramfs.c's do_reset walks the NULs between two archives and then
+    requires the remainder to be four-byte aligned -- four, not the 512 GNU cpio
+    happens to pad a whole archive to.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    assert helper.CPIO_ALIGN == 4
+    module = tmp_path / "frost_net10g.ko"
+    module.write_bytes(b"ko")
+    base = tmp_path / "rootfs.cpio"
+
+    # A complete archive with no block padding: every newc member is already
+    # four-byte aligned, so this is acceptable even though 512 does not divide
+    # it. Requiring 512 would have refused an archive the kernel accepts.
+    unpadded = _newc_archive(BASE_ENTRIES).rstrip(b"\0")
+    unpadded += b"\0" * (-len(unpadded) % helper.CPIO_ALIGN)
+    assert len(unpadded) % helper.CPIO_ALIGN == 0
+    assert len(unpadded) % helper.CPIO_BLOCK != 0
+    base.write_bytes(unpadded)
+    composed = helper.compose_initramfs(base, tmp_path / "ok.cpio", module=module)
+    assert composed.read_bytes().startswith(unpadded)
+
+    # One byte more is not aligned, and the kernel's unpacker would reject it.
+    base.write_bytes(unpadded + b"\0")
+    with pytest.raises(RuntimeError, match="multiple of 4"):
+        helper.compose_initramfs(base, tmp_path / "no.cpio", module=module)
+
+
+def test_default_bootargs_disable_ipv6() -> None:
+    """Debian's kernel builds IPv6 in; its frames would fail frost_nettest's idle."""
+    packer = _load_module(SBI_PACKER)
+    assert "ipv6.disable=1" in packer.DEFAULT_BOOTARGS
+    assert "rdinit=/sbin/init" in packer.DEFAULT_BOOTARGS
+
+
+def test_post_image_packs_debian_kernel_and_the_composed_initramfs() -> None:
+    """Buildroot's post-image hook packs Debian's Image, not the one it built."""
+    text = POST_IMAGE.read_text()
+    assert "debian_kernel.py" in text
+    assert '--payload "${BINARIES_DIR}/Image-debian"' in text
+    assert '--initrd "${BINARIES_DIR}/rootfs-frost.cpio"' in text
+    assert '--payload "${BINARIES_DIR}/Image"' not in text
+
+
+def test_qemu_ci_job_boots_the_packed_debian_pair() -> None:
+    """CI's QEMU job boots the post-image hook's own files with its bootargs.
+
+    The -append string has to stay the packer's DEFAULT_BOOTARGS, or the job
+    stops testing the boot the board gets.
+    """
+    packer = _load_module(SBI_PACKER)
+    helper = _load_module(DEBIAN_KERNEL)
+    text = CI_WORKFLOW.read_text()
+    assert "-kernel /img/Image-debian" in text
+    assert "-initrd /img/rootfs-frost.cpio" in text
+    assert f'-append "{packer.DEFAULT_BOOTARGS}"' in text
+    assert f'grep -q "{helper.MODULE_PASS_TOKEN}"' in text
+    assert "images/Image-debian" in text and "images/rootfs-frost.cpio" in text
+    # The Debian packages are cached like Buildroot's downloads.
+    assert "linux/debian-kernel/dl" in text
+
+
+def test_debian_kernel_refuses_a_base_that_cannot_drive_the_gates(
+    tmp_path: Path,
+) -> None:
+    """A base archive whose frost_stress predates the counter mode is refused.
+
+    Buildroot does not notice an edited package source, so an archive built
+    before ``--counters`` existed would pack happily, boot happily, and leave the
+    hardware regression waiting out its whole deadline for a line the program
+    cannot print. The refusal names the rebuild.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    module = tmp_path / "frost_net10g.ko"
+    module.write_bytes(b"ko")
+    base = tmp_path / "rootfs.cpio"
+
+    stale = [
+        (
+            name,
+            mode,
+            b"ELF...FROST_USERSPACE_STRESS" if "frost_stress" in name else data,
+        )
+        for name, mode, data in BASE_ENTRIES
+    ]
+    base.write_bytes(_newc_archive(stale))
+    with pytest.raises(RuntimeError, match="predates FROST_COUNTERS"):
+        helper.compose_initramfs(base, tmp_path / "out.cpio", module=module)
+    try:
+        helper.compose_initramfs(base, tmp_path / "out.cpio", module=module)
+    except RuntimeError as refused:
+        assert "frost-stress-rebuild" in str(refused)
+
+    without = [entry for entry in BASE_ENTRIES if "frost_stress" not in entry[0]]
+    base.write_bytes(_newc_archive(without))
+    with pytest.raises(RuntimeError, match="holds no /usr/bin/frost_stress"):
+        helper.compose_initramfs(base, tmp_path / "out.cpio", module=module)
+
+    # The current archive passes, and nothing was written for the refusals.
+    base.write_bytes(_newc_archive(BASE_ENTRIES))
+    assert helper.compose_initramfs(base, tmp_path / "out.cpio", module=module).exists()
+
+
+def test_counter_token_matches_the_program_that_prints_it() -> None:
+    """The token the initramfs check looks for is the one frost_stress prints."""
+    helper = _load_module(DEBIAN_KERNEL)
+    source = (
+        REPO_ROOT
+        / "linux"
+        / "buildroot-external"
+        / "package"
+        / "frost-stress"
+        / "src"
+        / "frost_stress.c"
+    ).read_text()
+    assert f'printf("{helper.INITRAMFS_COUNTER_TOKEN}:' in source
+    assert helper.INITRAMFS_COUNTER_PROGRAM.endswith("frost_stress")
+    # The mode the stage types, and the scope it requires, are implemented.
+    assert '"--counters"' in source
+    assert 'scope = "exec-child"' in source
+    assert "enable_on_exec = 1" in source
+    assert "attr.inherit = 1" in source
+
+
+def test_linux_boot_make_rebuilds_a_stale_test_userspace() -> None:
+    """The Makefile names the userspace sources, so an edit rebuilds the archive.
+
+    Buildroot has no idea a package source changed; without this the cached
+    rootfs.cpio keeps the old programs and a healthy boot fails the stage.
+    """
+    text = LINUX_BOOT_MAKEFILE.read_text()
+    assert "FROST_STRESS_SRC := $(wildcard" in text
+    assert "package/frost-stress/src/*.c" in text
+    assert "$(BR2_INITRD) $(FW_JUMP) &: $(FROST_STRESS_SRC)" in text
+    assert "frost-stress-rebuild" in text
+    # The cold path runs the defconfig; a warm one must not, or it would discard
+    # what the build directory already carries (CI appends to that config).
+    assert 'if [ ! -f "$(BR2_OUT)/.config" ]' in text
+    # A build directory configured for another view of the checkout is reported,
+    # not reconfigured: its .config stores that path.
+    assert 'elif [ "$(BR2_RECORDED)" != "$(BR2_EXTERNAL)" ]' in text
+    assert "BR2_EXTERNAL_FROST_PATH" in text
+
+
+def test_linux_boot_make_passes_br2_external_to_every_buildroot_call() -> None:
+    """Buildroot regenerates its record of BR2_EXTERNAL from this variable.
+
+    Omitting it on one invocation leaves the build directory with no external
+    tree at all, which breaks every later call until it is reconfigured.
+    """
+    text = LINUX_BOOT_MAKEFILE.read_text()
+    calls = [line for line in text.splitlines() if '$(MAKE) -C "$(BR2_SRC)"' in line]
+    assert len(calls) == 3, calls  # defconfig, frost-stress-rebuild, the build
+    for call in calls:
+        assert 'BR2_EXTERNAL="$(BR2_EXTERNAL)"' in call, call
