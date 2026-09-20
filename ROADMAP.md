@@ -83,8 +83,8 @@ the NIC's loopback modes, and now serving Debian's NFS root over the link. A
 board-level GTY wrapper connects the X3's NIC to a 10GBASE-R fiber link (the
 soft MAC/PCS and the core stay vendor-primitive-free). The bare-metal echo test
 passes against a host over that link, and Debian 13 boots from an NFS root over
-it, accepts SSH logins and installs packages with apt, leaving the soak as the
-remaining exit item; the full-clock build has yet to close timing. The small RX buffer
+it, accepts SSH logins and installs packages with apt. The full-clock build
+runs the hardware regression, Linux stage included. The small RX buffer
 with no PAUSE means DMA must drain independently of software.
 Booting the kernel on the RTL is retired with this phase's move to a
 distribution kernel: simulation reached only early boot in hours and missed both
