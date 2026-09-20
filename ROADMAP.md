@@ -110,9 +110,13 @@ every DMA request through the L1D and the load queue before the shared level
 orders it, so descriptors and buffers need no cache maintenance.
 
 Exit: log into Debian over SSH on hardware, install a package with apt, and
-survive a multi-day soak that exercises the storage/network path -- sustained
-root I/O, NFS server-restart and carrier-loss recovery on a hard mount, and
-RX-exhaustion recovery -- not merely an idle machine staying up.
+soak the storage/network path under sustained root I/O until every recovery
+path has been exercised and verified several times over -- NFS server restart
+and carrier loss on a hard mount, and RX exhaustion -- with no kernel errors.
+Hours of that, not an idle machine staying up, and not days: the faults this
+phase found on silicon appeared within minutes of boot, so a longer wall clock
+buys slow-accumulating failures (leaks, first-touch ECC, NFS state across many
+reconnects) rather than more of the same evidence.
 
 ## Phase 5: SMP
 
@@ -127,7 +131,8 @@ saturation -- probe data and acknowledgements must be able to escape, not merely
 enter a queue. Freeze those safety and progress obligations and the parameter
 bounds they require; defer only performance-oriented capacity and lane sizing to
 Phase 6. Exit: 2-hart SMP Debian with measurable scaling, timing held, and a
-multi-day soak.
+soak sized the way Phase 4's is, long enough to exercise each recovery path
+repeatedly under load.
 
 ## Phase 6: RV64 performance parity
 
