@@ -244,22 +244,49 @@ counters, which holds for the rated-clock production bitstream; a
 whenever `FROST_CPU_CLK_HZ` names such a bitstream.
 The Linux stage is where booting the kernel is validated: nothing boots it in
 simulation (`linux/README.md`, "Consumers"), and `fpga/linux_boot_soak.py`
-repeats the boot for a soak. The stage boots OpenSBI plus Debian's own riscv64
-kernel (`linux/README.md`, "Kernel") with the test initramfs, and the
-X3's whole 1 GiB of DDR advertised (`load_software.py` passes the board's DDR
-size into `linux_boot`; see `linux/README.md`, "Memory map"). It requires that
-kernel's version banner, the NIC module's load token and the
-userspace stress token before the prompt, logs in, runs
-`frost_stress --counters` on the cycle and instruction counters of a child
-measured through an exec,
-then runs `frost_nettest`, which drives the NIC driver through its
-loopback feature (the NIC's raw loopback on a shared MAC clock, the
-transceiver's PMA loopback otherwise) and must print
-`FROST_NET_LOOPBACK_PASS`:
+repeats the boot for a soak. It boots the real system -- OpenSBI plus Debian's
+own riscv64 kernel (`linux/README.md`, "Kernel") and Debian 13 from its NFSv3
+root over the NIC, with the X3's whole 1 GiB of DDR advertised
+(`load_software.py` passes the board's DDR size into `linux_boot`; see
+`linux/README.md`, "Memory map"). The small Buildroot test initramfs it booted
+before loads no module, runs no real userspace and mounts no root filesystem, so
+it passed every stage on bitstreams that panicked Debian within six minutes; CI
+keeps booting it under QEMU, which cannot mount this export.
+
+The export, the board's address and the two files to pack are site-specific, so
+the stage takes them from the environment with no defaults and checks them
+before any stage runs. `docs/debian_nfsroot.md` builds, exports and prepares the
+root; its "Hardware regression" section lists what the stage needs from it.
+A preflight failure is reported as `ENV_FAIL` and stops the run without
+touching the board, so a server that is down never reads as an RTL regression:
 
 ```bash
-./fpga/hw_regression.py --board x3
+K=6.12.107+deb13-riscv64            # the export's kernel version
+FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
+FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
+FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
+FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
+  ./fpga/hw_regression.py --board x3
 ```
+
+The stage requires that kernel's version banner and the NIC driver's probe line
+before the login prompt, then logs in on the console and types four programs:
+`findmnt`, whose line must show `/` mounted from that export over NFSv3;
+`systemctl`, which must report `running` with no failed unit; the stress
+payload, whose pass token must follow the login; and `frost_stress --counters`
+on the cycle and instruction counters of a child measured through an exec. Last
+is `frost_nettest`, which drives the NIC driver through its loopback feature
+(the NIC's raw loopback on a shared MAC clock, the transceiver's PMA loopback
+otherwise) and must print `FROST_NET_LOOPBACK_PASS`. Because that interface
+carries the root filesystem, the stage runs it from a tmpfs copy, restores the
+link's MTU, flags and IPv6 setting afterwards, and then requires a bounded write
+and `sync` on the root to succeed: the pass token alone is printed with the link
+still down, so the stage also has to see the root come back. The two programs
+come from
+`../linux/buildroot-external/package/frost-stress`: the preflight
+cross-compiles them statically and installs them in the export's
+`/usr/local/bin`, since Buildroot builds them against musl for the test
+initramfs and a glibc root cannot run those copies.
 
 The regression's `--timeout` is a common end-to-end base (build and load
 included). The CoreMark-PRO sweep raises it when a workload has a larger
@@ -274,6 +301,12 @@ interval; this budget does not alter the workload or its reported score.
 - Python 3
 - JTAG cable connected to the target board
 - For remote programming: Vivado Hardware Server running on the remote host
+- For `hw_regression.py`'s Linux stage: the board's Debian NFS root, prepared as
+  [`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md) describes, with its
+  export directory reachable on this host, and a riscv64 Linux cross compiler
+  (Debian's `gcc-riscv64-linux-gnu`, `FROST_LINUX_CROSS_COMPILE`, or the one
+  Buildroot's own build produces) for the two programs the stage installs into
+  it
 
 ## Supported Boards
 

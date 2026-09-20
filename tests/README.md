@@ -494,6 +494,7 @@ Every target x task pair is a separate parametrized case, and the whole
 | File                       | Purpose                                   |
 |----------------------------|-------------------------------------------|
 | `conftest.py`              | Pytest configuration and fixtures         |
+| `fixtures/`                | Real tool and board output, kept byte for byte, for the parsers measured against it: Vivado congestion reports, and `x3_linux_boot_console.log`, a board's UART console from `hw_regression.py`'s Linux stage. The `*.log` captures are exempt from the whitespace fixers (`.pre-commit-config.yaml`) because their carriage returns, terminal escapes and trailing prompt space are the point |
 | `Makefile`                 | Cocotb simulation build rules             |
 | `test_arch_compliance.py`  | riscv-arch-test compliance runner         |
 | `test_riscv_tests.py`      | riscv-tests ISA regression runner         |

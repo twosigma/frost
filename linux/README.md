@@ -212,7 +212,12 @@ reader; delete `linux/debian-kernel` to reclaim the space.
 To bump the pin, put the new snapshot, version, sizes and checksums in
 `debian_kernel.py`, delete `linux/debian-kernel`, and re-run the gates: the
 kernel release appears in the boot banner the hardware regression requires and
-in the module's vermagic, so a half-finished bump fails rather than boots.
+in the module's vermagic, so a half-finished bump fails rather than boots. A
+bump also moves each board's NFS root, which the hardware regression boots: its
+kernel has to reach the new version, with `frost_net10g` in the new initramfs
+([`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md), "Operation"). The
+stage's preflight reads the release out of the `Image` it is given and refuses a
+version that is not the pin, so the two cannot drift apart unnoticed.
 
 Nothing here builds a kernel any more. What a kernel packed by this tree has to
 provide, whether it is the pin or one named by `FROST_LINUX_KERNEL`:
@@ -255,8 +260,11 @@ rebuild is needed to change any of this.
 Buildroot's `/etc/init.d/rcS`, which the overlay inittab runs as a sysinit
 entry, runs that script, so the module is loaded before the getty and before any
 network test. It prints `FROST_NET10G_MODULE_PASS <release>`, or
-`FROST_NET10G_MODULE_FAIL <reason>`, which the hardware regression's Linux
-stage, `fpga/linux_boot_soak.py` and CI's QEMU boot job all require.
+`FROST_NET10G_MODULE_FAIL <reason>`, which `fpga/linux_boot_soak.py` and CI's
+QEMU boot job both require. The hardware regression boots the NFS root instead,
+whose initramfs modprobes the DKMS build of the same driver quietly, so there it
+is the driver's own probe message that says the module is in the kernel, and the
+kernel's banner that says which kernel it went into.
 
 That the module loaded is not by itself evidence of which kernel is running. The
 pin sets `CONFIG_MODVERSIONS`, and once a module carries symbol CRCs Linux
@@ -318,21 +326,30 @@ the kernel's timer, trap, atomic and MMIO patterns through directed bare-metal
 apps (`linux_irq_*`, `linux_clksrc_faithful`, `tick_torture`, `amo_irq_torture`,
 `ns16550_test`, `clint_test`).
 
-At boot, `rcS` loads the NIC module (`FROST_NET10G_MODULE_PASS`, see "NIC
-module") and inittab runs `frost_stress --boot`, which prints the
+In the test initramfs, `rcS` loads the NIC module (`FROST_NET10G_MODULE_PASS`,
+see "NIC module") and inittab runs `frost_stress --boot`, which prints the
 `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token; both precede the login prompt, and
-the QEMU CI job and `fpga/linux_boot_soak.py` assert both. On hardware the
-regression's Linux stage requires the kernel's own version banner and both
-tokens before the login prompt, then logs in as root, runs
-`frost_stress --counters`, whose cycle and instruction counts for a child
-measured through an exec must both be nonzero, and runs
-`frost_nettest`, which drives the NIC driver through its loopback feature
-(the NIC's raw loopback on a shared MAC clock, the transceiver's PMA loopback
-otherwise) and must print `FROST_NET_LOOPBACK_PASS`. The counter command
-replaced `perf stat`: `perf` builds only against a kernel tree, and this tree
-builds no kernel, so nothing packs it for the target. The stage requires the
-kernel banner and the module line to name the pinned release exactly, so a
-kernel this one's release is only a prefix of fails rather than passes.
+the QEMU CI job and `fpga/linux_boot_soak.py` assert both.
+
+The hardware regression's Linux stage boots the NFS root instead (see "NFS
+root"), where no init script of this tree's runs, so it requires the kernel's own
+version banner and the driver's probe line before the login prompt and then types
+the programs itself: `findmnt`, which must show `/` mounted from the packed
+export over NFSv3; `systemctl`, which must report a finished startup with no
+failed unit; `frost_stress --boot` for the same token; `frost_stress --counters`,
+whose cycle and instruction counts for a child measured through an exec must both
+be nonzero; and `frost_nettest`, which drives the NIC driver through its loopback
+feature (the NIC's raw loopback on a shared MAC clock, the transceiver's PMA
+loopback otherwise) and must print `FROST_NET_LOOPBACK_PASS` and then let the
+root come back, since that test takes the interface the root is mounted over
+down. Those two programs
+come from the `frost-stress` package, cross-compiled statically and installed in
+the export by the stage's own preflight, since the copies in the test initramfs
+are linked against musl. The counter command replaced `perf stat`: `perf` builds
+only against a kernel tree, and this tree builds no kernel, so nothing packs it
+for the target. The stage requires the kernel banner to name the pinned release
+exactly, so a kernel this one's release is only a prefix of fails rather than
+passes.
 The payload's summary line carries per-boot Zicntr evidence for hardware
 performance tracking: `cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around
 a fixed workload (see "Counters and mcounteren").
@@ -358,18 +375,22 @@ read-write with the board's address without root squashing. Without an
 initramfs the packed kernel mounts the export itself, which needs
 `CONFIG_IP_PNP` and `CONFIG_ROOT_NFS`; Debian's has neither, so that form needs
 `FROST_LINUX_KERNEL` as well.
-Leave `FROST_LINUX_NFSROOT` unset for the hardware regression, whose Linux
-stage runs the initramfs programs above.
 
 `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD` name a Linux `Image` and an
 initramfs, by absolute path, to pack in place of Debian's `Image` and the test
-initramfs; OpenSBI and the device tree stay this tree's. Like
-`FROST_LINUX_NFSROOT`, leave both unset for the hardware regression, which runs
-Buildroot's userspace on the pinned kernel. The Debian root's own
+initramfs; OpenSBI and the device tree stay this tree's. The Debian root's own
 `/boot/vmlinux-<version>` and `/boot/initrd.img-<version>` are what
 [`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md) passes: the same kernel
 version as the pin, with the initramfs that Debian's initramfs-tools generates
 mounting the export, since the kernel cannot.
+The hardware regression's Linux stage is that combination: it requires all four
+of `FROST_LINUX_NFSROOT`, `FROST_LINUX_IP`, `FROST_LINUX_KERNEL` and
+`FROST_LINUX_INITRD` from the environment, with no defaults, and checks them
+before it loads anything (`fpga/hw_regression.py`, and
+[`../docs/debian_nfsroot.md`](../docs/debian_nfsroot.md), "Hardware
+regression"). `fpga/linux_boot_soak.py` and CI leave them unset and boot the
+test initramfs, which is why the pin and the root's kernel are kept at the same
+version.
 With `FROST_LINUX_NFSROOT` and `FROST_LINUX_INITRD` both set, the packer packs
 that initramfs, and `boot=nfs` selects initramfs-tools' NFS boot:
 

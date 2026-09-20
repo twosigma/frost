@@ -90,7 +90,10 @@ Booting the kernel on the RTL is retired with this phase's move to a
 distribution kernel: simulation reached only early boot in hours and missed both
 core bugs Debian's kernel exposed on the board, so the Linux gate is the hardware
 regression's Linux stage plus the board soaks, with the QEMU job covering
-userspace in CI. The kernel's timer, trap, atomic and MMIO patterns keep their
+userspace in CI. That stage boots the NFS root itself -- the whole system, with
+modules, a real userspace and a root filesystem over the NIC -- because the small
+test initramfs it used to boot passed every stage on the bitstreams both of those
+bugs were found on. The kernel's timer, trap, atomic and MMIO patterns keep their
 directed cocotb apps, and OpenSBI keeps `opensbi_smoke`.
 That move is complete: Debian's pinned kernel is the only kernel FROST boots,
 on the NFS root and with the test initramfs alike, so every gate exercises the

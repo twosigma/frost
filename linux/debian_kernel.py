@@ -265,11 +265,13 @@ MODULE_PASS_RE = re.compile(re.escape(MODULE_PASS_LINE) + r"(?![\w.+-])")
 # network test. S03 puts it after the stock S01/S02 scripts.
 MODULE_INIT_SCRIPT = "etc/init.d/S03frost-net10g"
 
-# What the hardware regression types after logging in, and the program in the
-# base archive that has to answer it. An archive built before the counter mode
-# existed runs the boot payload instead and prints nothing the stage matches,
-# which used to surface as a timeout after a healthy boot; composing an
-# initramfs from such a base is refused instead.
+# The counter line's token, and the program in the base archive that prints it.
+# Its presence is how a current test userspace is recognized: an archive built
+# before the counter mode existed boots happily and reports no counters at all,
+# quietly costing the board soak the counter evidence it scores. Composing an
+# initramfs from such a base is refused instead. The hardware regression types
+# the same token's command, but on the Debian NFS root it boots, from a build of
+# the same source installed there (fpga/hw_regression.py).
 INITRAMFS_COUNTER_TOKEN = "FROST_COUNTERS"
 INITRAMFS_COUNTER_PROGRAM = "usr/bin/frost_stress"
 # Buildroot does not notice an edited package source on its own.
@@ -964,9 +966,9 @@ def check_base_initramfs(base: Path, payload: bytes) -> None:
     """Fail unless the base archive can be appended to and drives the gates.
 
     Two ways a stale archive would otherwise reach a board: its length may not
-    suit a second archive, and its ``frost_stress`` may predate the counter mode
-    the hardware regression types, which the boot would survive and the stage
-    would then wait out as a timeout.
+    suit a second archive, and its ``frost_stress`` may predate the counter mode,
+    which the boot would survive while reporting none of the counters the board
+    soak scores.
     """
     if len(payload) % CPIO_ALIGN:
         raise RuntimeError(
@@ -987,8 +989,8 @@ def check_base_initramfs(base: Path, payload: bytes) -> None:
     if INITRAMFS_COUNTER_TOKEN.encode() not in program:
         raise RuntimeError(
             f"{base}: its /{INITRAMFS_COUNTER_PROGRAM} predates "
-            f"{INITRAMFS_COUNTER_TOKEN}, so the hardware regression's counter "
-            f"check would time out on it. Rebuild the test userspace:\n"
+            f"{INITRAMFS_COUNTER_TOKEN}, so it is older than the counter "
+            f"evidence the board soak scores. Rebuild the test userspace:\n"
             f"  {FROST_STRESS_REBUILD}"
         )
 
