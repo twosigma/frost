@@ -21,6 +21,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import zipfile
 from types import SimpleNamespace
 from typing import Any
 
@@ -1782,12 +1783,17 @@ def _run_physopt_sweep_model(
     step: str,
     true_wns: float,
     setup_uncertainty: str | None = None,
+    launch_token: str | None = None,
 ) -> tuple[str, list[str], Path]:
     """Sweep one phys-opt stage; return its stdout, trace and main work dir."""
     model = tmp_path / "physopt_model.tcl"
     model.write_text(PHYSOPT_SWEEP_MODEL)
     work_dir = tmp_path / f"work_{step}_Sweep"
     work_dir.mkdir()
+    if launch_token is not None:
+        (work_dir / "phys_opt_launch.json").write_text(
+            json.dumps({"run_id": launch_token})
+        )
     trace = tmp_path / "physopt_trace.txt"
     trace.touch()
     env = {
@@ -2895,14 +2901,21 @@ def test_downstream_chain_rejects_missing_or_changed_provenance(
     "stage",
     ("route", "post_route_physopt", "second_route", "post_second_route_physopt"),
 )
+@pytest.mark.parametrize("custom_directory", (False, True))
 def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, custom_directory: bool
 ) -> None:
     """Each legal final producer qualifies only its exact output for bitstream use."""
     work = _sweep_input(tmp_path, stage)
+    script_dir = tmp_path / "scripts" if custom_directory else tmp_path
+    options = {"build_dir": work.parent} if custom_directory else {}
     calls = []
 
     def complete(command: list[str], *, cwd: Path) -> Any:
+        assert command[command.index("-source") + 1] == str(
+            script_dir / "build_step.tcl"
+        )
+        assert cwd == work or cwd.parent == work.parent
         native_step = command[command.index("-tclargs") + 2]
         calls.append(native_step)
         if native_step == "bitstream":
@@ -2917,16 +2930,18 @@ def test_completed_final_producer_binds_chain_and_bitstream_checks_actual_file(
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(fpga_build.subprocess, "run", complete)
-    assert fpga_build.run_step(tmp_path, "x3", stage, "Explore", "unused") == (
+    assert fpga_build.run_step(
+        script_dir, "x3", stage, "Explore", "unused", **options
+    ) == (
         True,
         0.05,
         "final",
     )
     assert fpga_build.capture_x3_input_lineage(work, "final.dcp") is not None
-    assert fpga_build.generate_bitstream(tmp_path, "x3", "unused")
+    assert fpga_build.generate_bitstream(script_dir, "x3", "unused", **options)
     assert calls == [stage, "bitstream"]
     (work / "final.dcp").write_bytes(b"different final checkpoint")
-    assert not fpga_build.generate_bitstream(tmp_path, "x3", "unused")
+    assert not fpga_build.generate_bitstream(script_dir, "x3", "unused", **options)
     assert calls == [stage, "bitstream"]
 
 
@@ -3180,3 +3195,313 @@ def test_failed_synthesis_leaves_the_previous_netlist_stamp(tmp_path: Path) -> N
     dest.mkdir()
     fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
     assert not (dest / fpga_build.X3_NETLIST_CONFIG_NAME).exists()
+
+
+def _live_physopt_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    """Model a running producer with a complete sweep and no stage sidecar."""
+    source = _sweep_input(tmp_path, "post_place_physopt")
+    worker = source.parent / "work_post_place_physopt_Sweep"
+    worker.mkdir()
+    consumed = fpga_build.capture_x3_input_lineage(source, "post_place.dcp")
+    token = "a" * 32
+    (worker / "phys_opt_launch.json").write_text(
+        json.dumps(
+            {
+                "schema": "x3_physopt_launch_v1",
+                "run_id": token,
+                "parent": consumed.parent,
+                "placement": consumed.placement,
+            }
+        )
+    )
+    with zipfile.ZipFile(worker / "phys_opt.dcp", "w") as archive:
+        archive.writestr("netlist", "first completed sweep")
+    (worker / "phys_opt_iteration.json").write_text(
+        json.dumps(
+            {
+                "schema": "x3_physopt_iteration_v1",
+                "run_id": token,
+                "sweep": 1,
+                "checkpoint_sha256": fpga_build.file_sha256(worker / "phys_opt.dcp"),
+            }
+        )
+    )
+    _write_stage_utilization(worker, "phys_opt", 42)
+    (source / fpga_build.X3_NETLIST_CONFIG_NAME).write_text('{"perf_counters": 0}\n')
+    return source, worker
+
+
+def test_physopt_tcl_publishes_completed_sweep_identity(tmp_path: Path) -> None:
+    """The real Tcl producer binds its launch token to the exact finished DCP."""
+    token = "b" * 32
+    _run_physopt_sweep_model(tmp_path, "post_place_physopt", 0.012, launch_token=token)
+    worker = tmp_path / "work_post_place_physopt_Sweep"
+    record = json.loads((worker / "phys_opt_iteration.json").read_text())
+    assert record == {
+        "schema": "x3_physopt_iteration_v1",
+        "run_id": token,
+        "sweep": 1,
+        "checkpoint_sha256": fpga_build.file_sha256(worker / "phys_opt.dcp"),
+    }
+    assert not (worker / "phys_opt_iteration.json.tmp").exists()
+    assert not (tmp_path / "work/post_place_physopt.dcp.tmp").exists()
+
+
+def test_live_physopt_snapshot_survives_source_replacement(tmp_path: Path) -> None:
+    """A completed sweep is usable before stage exit and stays independent."""
+    source, worker = _live_physopt_fixture(tmp_path)
+    before = {p: p.read_bytes() for p in source.parent.rglob("*") if p.is_file()}
+    fork = tmp_path / "early_route"
+    assert fpga_build.snapshot_x3_physopt(source, fork)
+    assert all(p.read_bytes() == contents for p, contents in before.items())
+    assert not (source / "post_place_physopt.lineage.json").exists()
+    consumed = fpga_build.capture_x3_input_lineage(
+        fork / "work", "post_place_physopt.dcp"
+    )
+    assert consumed is not None
+    assert json.loads((fork / "work/physopt_snapshot.json").read_text())["sweep"] == 1
+    assert (fork / "work/netlist_config.json").read_bytes() == (
+        source / "netlist_config.json"
+    ).read_bytes()
+    (worker / "phys_opt.dcp").write_bytes(b"next sweep being written")
+    (source / "post_place.dcp").write_bytes(b"a later placement")
+    assert (
+        fpga_build.capture_x3_input_lineage(fork / "work", "post_place_physopt.dcp")
+        == consumed
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        "missing_launch",
+        "missing_iteration",
+        "wrong_token",
+        "wrong_parent",
+        "wrong_clock",
+        "changed_checkpoint",
+        "broken_zip",
+        "existing_destination",
+    ),
+)
+def test_physopt_snapshot_rejects_unqualified_or_incomplete_input(
+    tmp_path: Path,
+    change: str,
+) -> None:
+    """Missing completion evidence and reused or torn files never launch work."""
+    source, worker = _live_physopt_fixture(tmp_path)
+    fork = tmp_path / "early_route"
+    if change == "missing_launch":
+        (worker / "phys_opt_launch.json").unlink()
+    elif change == "missing_iteration":
+        (worker / "phys_opt_iteration.json").unlink()
+    elif change == "wrong_token":
+        path = worker / "phys_opt_iteration.json"
+        path.write_text(path.read_text().replace("a" * 32, "b" * 32))
+    elif change == "wrong_parent":
+        (source / "post_place.dcp").write_bytes(b"new placement")
+        _write_place_gate(source, bind=True)
+    elif change == "wrong_clock":
+        gate = source / "post_place_gate.txt"
+        gate.write_text(gate.read_text().replace("3.333", "6.666"))
+    elif change in ("changed_checkpoint", "broken_zip"):
+        (worker / "phys_opt.dcp").write_bytes(b"incomplete ZIP data")
+        if change == "broken_zip":
+            path = worker / "phys_opt_iteration.json"
+            record = json.loads(path.read_text())
+            record["checkpoint_sha256"] = fpga_build.file_sha256(
+                worker / "phys_opt.dcp"
+            )
+            path.write_text(json.dumps(record))
+    else:
+        fork.mkdir()
+        (fork / "keep.txt").write_text("existing user output")
+    assert not fpga_build.snapshot_x3_physopt(source, fork)
+    if change == "existing_destination":
+        assert (fork / "keep.txt").read_text() == "existing user output"
+    else:
+        assert not fork.exists()
+    assert not (source / "post_place_physopt.lineage.json").exists()
+
+
+@pytest.mark.parametrize("change", ("checkpoint", "iteration", "placement"))
+def test_physopt_snapshot_detects_publication_during_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    """A new sweep or placement arriving mid-copy cannot create mixed ancestry."""
+    source, worker = _live_physopt_fixture(tmp_path)
+    fork = tmp_path / "early_route"
+    original = fpga_build.shutil.copy2
+
+    def copy_then_publish(src: Path, dst: Path) -> Any:
+        result = original(src, dst)
+        if src == worker / "phys_opt.dcp":
+            if change == "checkpoint":
+                src.write_bytes(b"new sweep")
+            elif change == "iteration":
+                path = worker / "phys_opt_iteration.json"
+                path.write_text(path.read_text() + "\n")
+            else:
+                (source / "post_place.dcp").write_bytes(b"new placement")
+                _write_place_gate(source, bind=True)
+        return result
+
+    monkeypatch.setattr(fpga_build.shutil, "copy2", copy_then_publish)
+    assert not fpga_build.snapshot_x3_physopt(source, fork)
+    assert not fork.exists()
+
+
+def test_completed_physopt_stage_can_be_snapshotted_without_launch_manifest(
+    tmp_path: Path,
+) -> None:
+    """Legacy runs become forkable on clean completion without being restarted."""
+    source, worker = _live_physopt_fixture(tmp_path)
+    consumed = fpga_build.capture_x3_input_lineage(source, "post_place.dcp")
+    (source / "post_place_physopt.dcp").write_bytes(
+        (worker / "phys_opt.dcp").read_bytes()
+    )
+    assert fpga_build.bind_x3_output_lineage(
+        source,
+        "post_place_physopt",
+        "post_place_physopt.dcp",
+        worker / "phys_opt.dcp",
+        consumed,
+    )
+    (worker / "phys_opt_launch.json").unlink()
+    fork = tmp_path / "early_route"
+    assert fpga_build.snapshot_x3_physopt(source, fork)
+    assert (
+        fpga_build.capture_x3_input_lineage(fork / "work", "post_place_physopt.dcp")
+        is not None
+    )
+
+
+def test_route_sweep_uses_only_custom_build_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All route workers and their output chain use the frozen parent directory."""
+    source, _worker = _live_physopt_fixture(tmp_path)
+    fork = tmp_path / "early_route"
+    assert fpga_build.snapshot_x3_physopt(source, fork)
+    fleet = _VivadoFleet(monkeypatch, 2)
+    result = fpga_build.run_x3_step_directive_sweep(
+        tmp_path,
+        "route",
+        ["Explore", "Default"],
+        "router",
+        "unused",
+        build_dir=fork,
+        max_jobs=2,
+        keep_temps=True,
+    )
+    assert result[0]
+    assert all(path.parent == fork for path in fleet.attempts)
+    assert (
+        fpga_build.capture_x3_input_lineage(fork / "work", "post_route.dcp") is not None
+    )
+    assert not (source / "post_route.dcp").exists()
+
+
+def test_snapshot_cli_isolates_route_bitstream_and_readme(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI carries the selected directory through closure and bitstream."""
+    source, _worker = _live_physopt_fixture(tmp_path)
+    fork = tmp_path / "early_route"
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "build.py",
+            "x3",
+            "--start-at",
+            "route",
+            "--stop-after",
+            "route",
+            "--snapshot-physopt-from",
+            str(source),
+            "--build-dir",
+            str(fork),
+        ],
+    )
+    calls = []
+
+    def route(*_args: Any, **kwargs: Any) -> tuple[bool, float, str]:
+        assert kwargs["build_dir"] == fork
+        assert (
+            fpga_build.capture_x3_input_lineage(fork / "work", "post_place_physopt.dcp")
+            is not None
+        )
+        calls.append("route")
+        return True, 0.05, "final"
+
+    def bitstream(*_args: Any, **kwargs: Any) -> bool:
+        assert kwargs["build_dir"] == fork
+        calls.append("bitstream")
+        return True
+
+    monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", route)
+    monkeypatch.setattr(fpga_build, "generate_bitstream", bitstream)
+    monkeypatch.setattr(
+        fpga_build,
+        "compile_hello_world",
+        lambda *_: pytest.fail("unexpected software rebuild"),
+    )
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    monkeypatch.setattr(
+        timing_util_summary,
+        "update_readme_utilization",
+        lambda *_: pytest.fail("reference README changed"),
+    )
+    fpga_build.main()
+    assert calls == ["route", "bitstream"]
+
+
+def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Launch replaces stale sweep evidence before the native process starts."""
+    source, worker = _live_physopt_fixture(tmp_path)
+    consumed = fpga_build.capture_x3_input_lineage(source, "post_place.dcp")
+    fork = tmp_path / "early_route"
+
+    def running(_command: list[str], *, cwd: Path) -> Any:
+        assert cwd == worker
+        launch = json.loads((cwd / "phys_opt_launch.json").read_text())
+        assert launch["run_id"] != "a" * 32
+        assert launch["parent"] == consumed.parent
+        assert launch["placement"] == consumed.placement
+        assert not (cwd / "phys_opt_iteration.json").exists()
+        assert not fpga_build.snapshot_x3_physopt(source, fork)
+        (cwd / "phys_opt_iteration.json").write_text(
+            json.dumps(
+                {
+                    "schema": "x3_physopt_iteration_v1",
+                    "run_id": launch["run_id"],
+                    "sweep": 1,
+                    "checkpoint_sha256": fpga_build.file_sha256(cwd / "phys_opt.dcp"),
+                }
+            )
+        )
+        assert fpga_build.snapshot_x3_physopt(source, fork)
+        # An interruption after this completed sweep cannot invalidate the
+        # fork or incorrectly qualify the unfinished canonical stage.
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", running)
+    assert not fpga_build.run_step(
+        tmp_path, "x3", "post_place_physopt", "Sweep", "unused"
+    )[0]
+    assert not (source / "post_place_physopt.lineage.json").exists()
+    assert (
+        fpga_build.capture_x3_input_lineage(fork / "work", "post_place_physopt.dcp")
+        is not None
+    )
