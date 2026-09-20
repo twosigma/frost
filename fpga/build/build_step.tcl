@@ -581,7 +581,7 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
         union_end_names $union_end_names]
 }
 
-proc write_physopt_iteration_outputs {work_directory step board_name physopt_uncertainty best_wns continue_sweeps} {
+proc write_physopt_iteration_outputs {work_directory step board_name physopt_uncertainty best_wns continue_sweeps {sweep_num 0}} {
     if {$physopt_uncertainty ne ""} {
         set_x3_setup_uncertainty $board_name 0.0 "$step report"
     }
@@ -609,9 +609,32 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
         set main_report_prefix final
     }
 
-    file copy -force $checkpoint_file [file join $main_work_directory $main_checkpoint_name]
+    set published_checkpoint [file join $main_work_directory $main_checkpoint_name]
+    file copy -force $checkpoint_file ${published_checkpoint}.tmp
+    file rename -force ${published_checkpoint}.tmp $published_checkpoint
     foreach suffix [list _timing.rpt _util.rpt _high_fanout.rpt _failing_paths.csv] {
         file copy -force [file join $work_directory "phys_opt$suffix"] [file join $main_work_directory "$main_report_prefix$suffix"]
+    }
+
+    # A running post-place sweep may be forked into a separate build directory.
+    # Publish its exact completed checkpoint identity only after all reports
+    # are written. The launch token prevents an earlier run's iteration record
+    # from authorizing a reused worker directory. Canonical lineage is still
+    # written by Python only when the entire stage exits successfully.
+    set launch_file [file join $work_directory phys_opt_launch.json]
+    if {$board_name eq "x3" && $step eq "post_place_physopt" && [file exists $launch_file]} {
+        set launch_handle [open $launch_file r]
+        set launch_json [read $launch_handle]
+        close $launch_handle
+        if {![regexp {"run_id"\s*:\s*"([a-f0-9]+)"} $launch_json unused run_id]} {
+            error "Invalid phys-opt launch token in $launch_file"
+        }
+        set checkpoint_sha256 [lindex [exec sha256sum $checkpoint_file] 0]
+        set iteration_file [file join $work_directory phys_opt_iteration.json]
+        set iteration_handle [open ${iteration_file}.tmp w]
+        puts $iteration_handle [format {{"schema":"x3_physopt_iteration_v1","run_id":"%s","sweep":%d,"checkpoint_sha256":"%s"}} $run_id $sweep_num $checkpoint_sha256]
+        close $iteration_handle
+        file rename -force ${iteration_file}.tmp $iteration_file
     }
 
     puts ""
@@ -1430,7 +1453,7 @@ if {$step eq "synth"} {
             open_checkpoint $best_checkpoint
         }
 
-        write_physopt_iteration_outputs $work_directory $step $board_name $physopt_uncertainty $best_wns $continue_sweeps
+        write_physopt_iteration_outputs $work_directory $step $board_name $physopt_uncertainty $best_wns $continue_sweeps $sweep_num
 
         if {!$continue_sweeps} {
             break

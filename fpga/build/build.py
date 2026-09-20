@@ -73,6 +73,11 @@ and the build exits nonzero. Resumed downstream stages require a native gate
 record bound to the exact post-place checkpoint and a verified parent chain
 for any later checkpoint. Legacy descendants require a new run starting at
 ``post_place_physopt``; their checkpoints and reports remain on disk.
+For an early route while phys-opt continues, ``--snapshot-physopt-from WORK``
+copies a completed sweep and its qualified placement into a new ``--build-dir``.
+Its workers, reports and bitstream stay separate from the continuing build;
+later sweeps cannot replace the snapshot's parent. Custom build directories
+do not update the repository's reference README utilization table.
 ``FROST_PLACE_CELL_BLOAT`` and
 ``FROST_PLACE_CELL_BLOAT_CELLS`` can spread wire-dense hierarchies.
 
@@ -118,6 +123,8 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
+import zipfile
 from pathlib import Path
 from typing import TextIO, TypedDict
 
@@ -1139,8 +1146,8 @@ def capture_x3_input_lineage(
                     raw = sidecar.read_bytes()
                 except FileNotFoundError as error:
                     raise ValueError(
-                        f"{name} has no {sidecar.name}: a checkpoint copied in "
-                        "without its sidecar carries no qualification"
+                        f"{name} has no {sidecar.name}: its producing stage may "
+                        "still be running, or it was copied without its sidecar"
                     ) from error
                 record = json.loads(raw)
                 if (
@@ -1178,7 +1185,10 @@ def capture_x3_input_lineage(
             "Rerun from post_place_physopt with the current qualified placement; "
             "existing checkpoints and reports are retained. A work directory "
             "moved or copied from elsewhere must bring its *.lineage.json "
-            "sidecars and post_place_gate_binding.json with it."
+            "sidecars and post_place_gate_binding.json with it. If post-place "
+            "phys-opt is still running, wait for stage completion or use "
+            "--snapshot-physopt-from WORK --build-dir NEW_DIRECTORY to route "
+            "a completed sweep independently."
         )
         return None
 
@@ -1239,6 +1249,168 @@ def bind_x3_output_lineage(
         print(f"Error: downstream output remains unqualified: {error}")
         return False
     return True
+
+
+def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
+    """Freeze a completed phys-opt stage or sweep for an independent route.
+
+    A sweep's launch manifest and completed-iteration digest replace the
+    canonical completion sidecar only while making this private copy. No
+    live file is qualified or modified, and subsequent stages verify the
+    ordinary lineage chain against the copied placement and gate.
+    """
+    source_work = source_work.resolve()
+    build_dir = build_dir.resolve()
+    created = False
+    try:
+        if build_dir.exists() or build_dir.is_relative_to(source_work):
+            raise ValueError("the snapshot build directory must be new and separate")
+        consumed = capture_x3_input_lineage(source_work, "post_place.dcp")
+        if consumed is None:
+            raise ValueError("the source placement is not qualified")
+        sidecar = source_work / "post_place_physopt.lineage.json"
+        watched_records: dict[Path, bytes] = {}
+        metadata: dict[str, object] = {
+            "schema": "x3_physopt_snapshot_v1",
+            "source_work": str(source_work),
+        }
+        if sidecar.exists():
+            qualified = capture_x3_input_lineage(source_work, "post_place_physopt.dcp")
+            if qualified is None:
+                raise ValueError("the completed source stage has stale lineage")
+            source_dir, prefix = source_work, "post_place_physopt"
+            expected_digest = qualified.parent["sha256"]
+            watched_records[sidecar] = sidecar.read_bytes()
+            metadata["source_kind"] = "completed_stage"
+        else:
+            source_dir = source_work.parent / "work_post_place_physopt_Sweep"
+            prefix = "phys_opt"
+            launch_path = source_dir / "phys_opt_launch.json"
+            iteration_path = source_dir / "phys_opt_iteration.json"
+            if not launch_path.exists():
+                raise ValueError(
+                    "the running phys-opt was started before snapshot support; "
+                    "its launch manifest is absent. Let that stage finish; "
+                    "no restart is needed"
+                )
+            if not iteration_path.exists():
+                raise ValueError(
+                    "phys-opt has not published a completed sweep yet; retry "
+                    "after the first sweep finishes"
+                )
+            for path in (launch_path, iteration_path):
+                watched_records[path] = path.read_bytes()
+            launch = json.loads(watched_records[launch_path])
+            iteration = json.loads(watched_records[iteration_path])
+            run_id = launch.get("run_id")
+            if (
+                not isinstance(run_id, str)
+                or re.fullmatch(r"[0-9a-f]{32}", run_id) is None
+                or launch
+                != {
+                    "schema": "x3_physopt_launch_v1",
+                    "run_id": run_id,
+                    "parent": consumed.parent,
+                    "placement": consumed.placement,
+                }
+                or iteration.get("schema") != "x3_physopt_iteration_v1"
+                or iteration.get("run_id") != run_id
+                or not isinstance(iteration.get("sweep"), int)
+                or iteration["sweep"] < 1
+            ):
+                raise ValueError(
+                    "the completed sweep does not match its qualified launch"
+                )
+            expected_digest = iteration["checkpoint_sha256"]
+            metadata.update(
+                source_kind="completed_sweep", run_id=run_id, sweep=iteration["sweep"]
+            )
+
+        source_checkpoint = source_dir / f"{prefix}.dcp"
+        if file_sha256(source_checkpoint) != expected_digest:
+            raise ValueError(
+                "the source sweep is being replaced; retry after publication"
+            )
+        sources = {
+            name: source_work / name
+            for name in (
+                "post_place.dcp",
+                "post_place_gate.txt",
+                "post_place_gate_binding.json",
+            )
+        }
+        config = source_work / X3_NETLIST_CONFIG_NAME
+        if config.exists():
+            sources[config.name] = config
+        for suffix in (
+            "_timing.rpt",
+            "_util.rpt",
+            "_high_fanout.rpt",
+            "_failing_paths.csv",
+        ):
+            report = source_dir / f"{prefix}{suffix}"
+            if report.exists():
+                sources[f"post_place_physopt{suffix}"] = report
+        digests = {name: file_sha256(path) for name, path in sources.items()}
+
+        # Real copies are essential: the older Tcl publisher rewrites the same
+        # inode, so a hard link or symlink would not freeze its checkpoint.
+        build_dir.mkdir(parents=True, exist_ok=False)
+        created = True
+        work = build_dir / "work"
+        work.mkdir()
+        temporary_checkpoint = build_dir / "phys_opt.dcp"
+        shutil.copy2(source_checkpoint, temporary_checkpoint)
+        if file_sha256(temporary_checkpoint) != expected_digest:
+            raise ValueError("the checkpoint changed while copying; retry the snapshot")
+        with zipfile.ZipFile(temporary_checkpoint) as checkpoint_archive:
+            if checkpoint_archive.testzip() is not None:
+                raise ValueError("the completed checkpoint archive is corrupt")
+        for name, path in sources.items():
+            shutil.copy2(path, work / name)
+            if (
+                file_sha256(work / name) != digests[name]
+                or file_sha256(path) != digests[name]
+            ):
+                raise ValueError(f"{name} changed while copying; retry the snapshot")
+        if (
+            file_sha256(source_checkpoint) != expected_digest
+            or any(path.read_bytes() != raw for path, raw in watched_records.items())
+            or capture_x3_input_lineage(source_work, "post_place.dcp") != consumed
+            or capture_x3_input_lineage(work, "post_place.dcp") != consumed
+        ):
+            raise ValueError(
+                "the source generation changed while copying; retry the snapshot"
+            )
+        shutil.copy2(temporary_checkpoint, work / "post_place_physopt.dcp")
+        if not bind_x3_output_lineage(
+            work,
+            "post_place_physopt",
+            "post_place_physopt.dcp",
+            temporary_checkpoint,
+            consumed,
+        ):
+            raise ValueError("could not qualify the frozen checkpoint")
+        temporary_checkpoint.unlink()
+        metadata["checkpoint_sha256"] = expected_digest
+        (work / "physopt_snapshot.json").write_text(
+            json.dumps(metadata, indent=2) + "\n"
+        )
+        print(f"Frozen phys-opt snapshot: {work / 'post_place_physopt.dcp'}")
+        print(f"Snapshot SHA256: {expected_digest}")
+        return True
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        zipfile.BadZipFile,
+    ) as error:
+        if created:
+            shutil.rmtree(build_dir)
+        print(f"Error: cannot snapshot phys-opt: {error}")
+        return False
 
 
 def copy_results_to_main_work(
@@ -1840,6 +2012,7 @@ def run_x3_step_directive_sweep(
     setup_uncertainties_ns: list[float] | None = None,
     include_extra_seeds: bool = True,
     max_jobs: int = DEFAULT_MAX_JOBS,
+    build_dir: Path | None = None,
 ) -> tuple[bool, float | None, str]:
     """Run every x3 candidate with bounded concurrency and promote the best run.
 
@@ -1860,7 +2033,8 @@ def run_x3_step_directive_sweep(
         raise ValueError("max_jobs must be positive")
     board_name = "x3"
     tcl_report_prefix = _TCL_REPORT_PREFIX[step]
-    main_work = script_dir / board_name / "work"
+    board_build = build_dir if build_dir is not None else script_dir / board_name
+    main_work = board_build / "work"
     main_work.mkdir(parents=True, exist_ok=True)
 
     # Validate the input checkpoint before launching Vivado.
@@ -1959,7 +2133,7 @@ def run_x3_step_directive_sweep(
                     else None
                 )
 
-                work_dir = script_dir / board_name / f"work_{step}_{label}"
+                work_dir = board_build / f"work_{step}_{label}"
                 if work_dir.exists():
                     shutil.rmtree(work_dir)
                 work_dir.mkdir(parents=True, exist_ok=True)
@@ -2248,6 +2422,7 @@ def run_step(
     software_mem_dir: Path | None = None,
     retiming: bool = False,
     keep_temps: bool = False,
+    build_dir: Path | None = None,
 ) -> tuple[bool, float | None, str]:
     """Run a single build step with the given directive.
 
@@ -2256,7 +2431,8 @@ def run_step(
     (final-eligible step + WNS>=0, or post_second_route_physopt unconditionally),
     otherwise the step's non-final canonical prefix.
     """
-    main_work = script_dir / board_name / "work"
+    board_build = build_dir if build_dir is not None else script_dir / board_name
+    main_work = board_build / "work"
     main_work.mkdir(parents=True, exist_ok=True)
 
     # Validate the step's required input checkpoint.
@@ -2282,7 +2458,7 @@ def run_step(
             return False, None, ""
 
     tcl_report_prefix = _TCL_REPORT_PREFIX[step]
-    work_dir = script_dir / board_name / f"work_{step}_{directive}"
+    work_dir = board_build / f"work_{step}_{directive}"
     work_dir.mkdir(parents=True, exist_ok=True)
     if board_name == "x3" and step == "place":
         for directory in (main_work, work_dir):
@@ -2310,6 +2486,24 @@ def run_step(
     if software_mem_dir is not None:
         vivado_command.append(str(software_mem_dir))
 
+    if step == "post_place_physopt" and consumed_lineage is not None:
+        # The running process keeps its own captured input. A completed sweep
+        # can be forked before this process exits, without qualifying a mutable
+        # canonical checkpoint for a concurrent build in the same directory.
+        (work_dir / "phys_opt_launch.json").write_text(
+            json.dumps(
+                {
+                    "schema": "x3_physopt_launch_v1",
+                    "run_id": uuid.uuid4().hex,
+                    "parent": consumed_lineage.parent,
+                    "placement": consumed_lineage.placement,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        (work_dir / "phys_opt_iteration.json").unlink(missing_ok=True)
     result = subprocess.run(vivado_command, cwd=work_dir)
 
     if result.returncode != 0:
@@ -2381,9 +2575,11 @@ def generate_bitstream(
     script_dir: Path,
     board_name: str,
     vivado_path: str,
+    build_dir: Path | None = None,
 ) -> bool:
     """Generate bitstream from final checkpoint."""
-    main_work = script_dir / board_name / "work"
+    board_build = build_dir if build_dir is not None else script_dir / board_name
+    main_work = board_build / "work"
     final_checkpoint = main_work / "final.dcp"
 
     if board_name == "x3" and not require_x3_post_place_gate(main_work):
@@ -2550,6 +2746,20 @@ Examples:
         help="Stop after this step",
     )
     parser.add_argument(
+        "--build-dir",
+        type=Path,
+        help="Board build directory containing work/ and per-stage workers "
+        "(default: fpga/build/<board>). Custom directories leave README alone.",
+    )
+    parser.add_argument(
+        "--snapshot-physopt-from",
+        type=Path,
+        metavar="WORK",
+        help="Freeze a completed post-place phys-opt sweep from WORK into a "
+        "new --build-dir before routing. Requires --start-at route; the "
+        "source phys-opt may continue running in its original directory.",
+    )
+    parser.add_argument(
         "--retiming",
         action="store_true",
         help="Enable global retiming during synthesis",
@@ -2687,6 +2897,14 @@ Examples:
 
     if args.jobs < 1:
         parser.error("--jobs must be positive")
+    if args.snapshot_physopt_from is not None and (
+        args.build_dir is None or args.start_at != "route"
+    ):
+        parser.error(
+            "--snapshot-physopt-from requires --build-dir and --start-at route"
+        )
+    if args.build_dir is not None:
+        args.build_dir = args.build_dir.resolve()
 
     board_name = args.board_name
 
@@ -2861,7 +3079,17 @@ Examples:
         print(f"# X3 router sweep (custom): {', '.join(route_sweep_directives)}")
     print(f"{'#'*70}")
 
-    main_work = script_dir / board_name / "work"
+    build_options = {"build_dir": args.build_dir} if args.build_dir is not None else {}
+    board_build = (
+        args.build_dir if args.build_dir is not None else script_dir / board_name
+    )
+    main_work = board_build / "work"
+    if args.snapshot_physopt_from is not None and not snapshot_x3_physopt(
+        args.snapshot_physopt_from, board_build
+    ):
+        sys.exit(1)
+    if args.build_dir is not None:
+        print(f"Build directory: {board_build}")
     software_mem_dir = main_work / "hello_world"
 
     # A synthesis start needs fresh board-local BRAM contents.
@@ -2913,6 +3141,7 @@ Examples:
                 setup_uncertainties_ns=place_setup_uncertainties_ns,
                 include_extra_seeds=functional_policy.include_extra_seeds,
                 max_jobs=args.jobs,
+                **build_options,
             )
         elif board_name == "x3" and step in {"route", "second_route"}:
             success, wns, actual_prefix = run_x3_step_directive_sweep(
@@ -2923,6 +3152,7 @@ Examples:
                 args.vivado_path,
                 keep_temps=args.keep_temps,
                 max_jobs=args.jobs,
+                **build_options,
             )
         else:
             success, wns, actual_prefix = run_step(
@@ -2934,6 +3164,7 @@ Examples:
                 software_mem_dir=software_mem_dir if step == "synth" else None,
                 retiming=retiming,
                 keep_temps=args.keep_temps,
+                **build_options,
             )
         if not success:
             print(f"\nError: Step '{step}' failed!")
@@ -2954,7 +3185,9 @@ Examples:
             break
 
     if final_produced:
-        if not generate_bitstream(script_dir, board_name, args.vivado_path):
+        if not generate_bitstream(
+            script_dir, board_name, args.vivado_path, **build_options
+        ):
             sys.exit(1)
         bitstream_generated = True
 
@@ -2965,7 +3198,7 @@ Examples:
         update_readme_utilization,
     )
 
-    if functional_policy.update_readme:
+    if functional_policy.update_readme and args.build_dir is None:
         all_util = collect_all_board_utilization(
             script_dir,
             stage_overrides={board_name: last_report_prefix}
@@ -2976,8 +3209,8 @@ Examples:
             update_readme_utilization(script_dir, all_util)
     else:
         print(
-            "\nREADME utilization table left alone: a divided-clock build is "
-            "not the reference implementation."
+            "\nREADME utilization table left alone: custom-directory and "
+            "divided-clock builds are not the reference implementation."
         )
 
     # Summarize the last completed step, including partial/resumed runs.

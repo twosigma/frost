@@ -576,6 +576,32 @@ previous completion sidecars. Intermediate Tcl checkpoint publications stay
 unqualified until Python observes clean completion and verifies the promoted
 output and unchanged input chain. The post-place gate format remains unchanged.
 
+To route a completed phys-opt sweep while further sweeps continue, fork it
+into a separate board build directory:
+
+```bash
+./fpga/build/build.py x3 --start-at route --stop-after route \
+  --snapshot-physopt-from fpga/build/x3/work \
+  --build-dir fpga/build/x3/work_early_route --jobs 2
+```
+
+The destination must be new. The snapshot copies the completed sweep, its
+qualified placement and gate, reports, and netlist configuration. It validates
+the completed-sweep digest against the launch manifest and checks that the
+source remains unchanged during the copy. A completed stage with its normal
+lineage sidecar can also be snapshotted. Builds already running when this
+support was added have no launch manifest; they become eligible when the
+stage finishes, without restarting phys-opt.
+
+`--build-dir` selects the directory containing `work/` and all per-stage
+worker directories. The fork's reports and bitstream stay there, and it leaves
+the reference README utilization table alone. Later source sweeps cannot
+invalidate the copied parent or collide with the fork's route workers. Resume
+the fork with `--build-dir` alone; omit `--snapshot-physopt-from` once it exists.
+As in the normal flow, closing route timing promotes `final.dcp` and generates
+a bitstream even with `--stop-after route`. The source build continues its
+own requested pipeline independently.
+
 ```bash
 # Full build with default directives
 ./fpga/build/build.py x3
