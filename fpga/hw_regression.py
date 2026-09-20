@@ -129,16 +129,9 @@ from sweep_coremark_pro import (  # noqa: E402
 # baselines below were re-armed from the 2026-09-05 X3 board sweep of the
 # recovered build (the first silicon measurement after the retune and the
 # 64 KiB overlay).
-# The 2026-09-20 software-only sweep added -fselective-scheduling
-# -fno-crossjumping -freorder-blocks-and-partition and -flto with complete
-# peeling capped to that Makefile, worth -2.84% of timed-region cycles in
-# simulation (305,096 -> 296,416 per iteration), and an opt-in COREMARK_PGO=1
-# worth a further -0.6% (294,640). Neither has been measured on silicon, so
-# the baseline below is still the 2026-09-05 figure: check_score only fails on
-# a regression, so a faster build passes and merely reports a positive delta
-# until the next board sweep re-arms it.
+# Armed from the 2026-09-20 X3 board sweep at 300 MHz.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 986.34, "coremark_pro": 144.98},
+    "x3": {"coremark": 1014.86, "coremark_pro": 144.65},
 }
 
 # FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.
