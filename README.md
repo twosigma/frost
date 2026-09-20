@@ -15,7 +15,7 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
 - Native SystemVerilog.
 - [VS Code extension](tools/vscode-frost/README.md) for X3 bitstream programming,
   software loading, source debugging, and an integrated serial console.
-- Performance: 986 CoreMark at 300 MHz (3.29 CoreMark/MHz), measured on X3 FPGA.
+- Performance: 1015 CoreMark at 300 MHz (3.38 CoreMark/MHz), measured on X3 FPGA.
   The core uses a Tomasulo out-of-order back-end with 2-wide dispatch/rename and commit,
   branch prediction (BTB, bimodal direction predictor, RAS), an L0 cache, and a
   two-cycle conditional-branch misprediction recovery path.
