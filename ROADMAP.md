@@ -132,9 +132,9 @@ facts disappear, but it can prevent them from costing cycles. The target is
 the board. That clock is 10.3125 Gb/s over a 32-bit datapath, the NIC's own
 datapath rate, so the CPU shares its clock domain instead of crossing into
 it; it was this design's original clock, and 300 MHz is a retreat taken to
-make closure easier. Against what the design delivers per clock today,
-3.29 CoreMark/MHz measured on hardware, the target is a 1.3x step: 7.4% from
-the clock and 21.6% from work per cycle. It replaces an earlier planning bar
+make closure easier. Against what the design delivers today, 1015 CoreMark
+at 300 MHz measured on the board, 3.38 CoreMark/MHz, the target is a 1.27x
+step: 7.4% from the clock and 18.2% from work per cycle. It replaces an earlier planning bar
 of approximately 1,100 CoreMark, which was a counterfactual from instruction
 counts rather than a measurement. For outside reference, the highest
 soft-core CoreMark measured on FPGA fabric that a survey of vendor,
