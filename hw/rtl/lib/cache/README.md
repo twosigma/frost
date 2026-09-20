@@ -52,7 +52,7 @@ the hierarchy sees `{port bits…, local id}` and ids stay unique across every
 upstream master without a global plan. Arbiters compose: a tree of them yields
 a prefix-free id code whose per-master widths need not be uniform, which is
 how the hierarchy fits the walker port. The DMA port (Phase 4) is the fourth
-port; a second hart (Phase 5) is one more.
+port; a second hart (Phase 6) is one more.
 
 The `maintenance` bit is present on the cache and arbiter ports, not on the
 hierarchy's upstream ports or the bridge. It is a passive observer

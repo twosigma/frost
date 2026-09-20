@@ -2,8 +2,8 @@
 
 FROST is evolving from its original RV32GCB M/U-mode design into an RV64GCB
 core with S-mode and Sv39 that boots mainline MMU Linux, followed by a stock
-riscv64 distribution, a multi-hart SMP system, and explicit RV64 performance
-parity with the best the former RV32 design could have reached. Phases are
+riscv64 distribution, explicit RV64 performance parity with the best the former
+RV32 design could have reached, and a multi-hart SMP system. Phases are
 sequential; each one keeps every existing suite green (riscv-arch-test,
 riscv-tests, torture, formal, the cocotb program suites in both memory tiers,
 the Linux build and QEMU boot jobs, and the hardware regression's Linux stage),
@@ -67,7 +67,7 @@ sweep re-armed the hw_regression baselines at the measured scores, within
 about one percent of the pre-Phase-3 CoreMark-PRO baseline. Benchmark
 sources, compiler settings, workloads, and baselines stay fixed; the broader
 RV32-counterfactual parity, fusion, capacity, and width work remains in
-Phase 6.
+Phase 5.
 
 ## Phase 4: System I/O and distribution
 
@@ -118,23 +118,7 @@ phase found on silicon appeared within minutes of boot, so a longer wall clock
 buys slow-accumulating failures (leaks, first-touch ECC, NFS state across many
 reconnects) rather than more of the same evidence.
 
-## Phase 5: SMP
-
-Two harts on the X3 sharing an L2 as the point of coherence, IPIs, per-hart
-PLIC contexts, and litmus-test coverage of RVWMO across harts. Before the second
-hart, establish the coherence contract -- including the Phase 4 DMA model --
-over resident LQ L0 data, outstanding fills, executed-but-unretired loads (the
-LQ frees an entry at CDB capture, before retirement, so a snoop of live entries
-does not cover them), AMOs, and LR/SC reservations, and validate a baseline
-whose admission and service rules keep coherence traffic making progress at
-saturation -- probe data and acknowledgements must be able to escape, not merely
-enter a queue. Freeze those safety and progress obligations and the parameter
-bounds they require; defer only performance-oriented capacity and lane sizing to
-Phase 6. Exit: 2-hart SMP Debian with measurable scaling, timing held, and a
-soak sized the way Phase 4's is, long enough to exercise each recovery path
-repeatedly under load.
-
-## Phase 6: RV64 performance parity
+## Phase 5: RV64 performance parity
 
 Make RV64 match or exceed the score that an equally tuned RV32 build could
 have reached, rather than comparing tuned RV64 with the retired untuned RV32
@@ -157,20 +141,29 @@ were aligner/BRAM transients, versus 21.0% stock. The 64 KiB overlay recovers
 bubbles, not by removing the remaining transient width kills. Keep those two
 limitations distinct when planning further width work.
 
-Sequencing: this phase runs after SMP, and its structural changes are chosen
-against the integrated resource, timing, and memory-latency envelope (shared L2,
-coherence, NIC DMA), not an isolated single hart -- a widened hart that just
-closes 300 MHz alone can lose its return once duplicated. Tune capacity and lanes
-within the Phase 5 coherence contract and revalidate each change; anything that
-alters transaction semantics, tracking coverage, or resource dependencies is a
-renewed coherence review, not a capacity tweak. Measure single-hart parity and
-SMP scaling separately: parity is a single-hart result against the locked RV32
-reference (one active hart in the SMP design counts), reported apart from
-two-hart throughput and interference.
+Sequencing: this phase runs before SMP by choice -- single-hart performance is
+wanted sooner than a second hart -- so its structural changes are chosen against
+one hart's envelope, which already carries the Phase 4 NIC DMA traffic, not
+against the two-hart resource, timing, and memory-latency envelope Phase 6 adds
+(a shared L2 as the point of coherence, and coherence traffic between harts).
+That is a known cost of the order, not a reason the integrated envelope stops
+mattering: a widened hart that just closes 300 MHz alone can lose its return
+once duplicated, so every capacity and lane size chosen here is revalidated when
+the second hart lands, and some of it may have to be given back to hold timing
+and coherence then. The Phase 4 DMA coherence contract is not deferred along
+with the inter-hart one: anything that alters transaction semantics, tracking
+coverage, or resource dependencies is a renewed coherence review against it,
+not a free capacity tweak; record with it the parameter bounds and the
+admission and service dependencies the change relies on, so Phase 6 can
+establish the inter-hart contract over a structure it can enumerate. Measure
+single-hart parity and SMP scaling separately: parity is a single-hart result
+against the locked RV32 reference (a measurement with one active hart in the
+SMP design also counts), reported apart from the two-hart throughput and
+interference Phase 6 adds.
 
 Work in measured order:
 
-- Lock the reference: preserve it now, finalize it before Phase 6 evaluation.
+- Lock the reference: preserve it now, finalize it before Phase 5 evaluation.
   Archive the selected dual-XLEN revision with its matching environment (image
   identity and bytes, compiler, Vivado version), benchmark inputs, ELF, run
   commands, and existing results and X3 timing evidence -- git keeps sources, not
@@ -240,8 +233,26 @@ best rule-compliant RV64 build to meet or beat the locked tuned-RV32 reference
 in cycle-exact simulation and in an official-length X3 run, with both CoreMark
 seed sets validated and the complete reporting metadata retained.
 
+## Phase 6: SMP
+
+Two harts on the X3 sharing an L2 as the point of coherence, IPIs, per-hart
+PLIC contexts, and litmus-test coverage of RVWMO across harts. Before the second
+hart, establish the coherence contract -- including the Phase 4 DMA model --
+over resident LQ L0 data, outstanding fills, executed-but-unretired loads (the
+LQ frees an entry at CDB capture, before retirement, so a snoop of live entries
+does not cover them), AMOs, and LR/SC reservations, and validate a baseline
+whose admission and service rules keep coherence traffic making progress at
+saturation -- probe data and acknowledgements must be able to escape, not merely
+enter a queue. This phase inherits the capacity and lane sizing Phase 5 chose
+for single-hart performance instead of setting them: the safety and progress
+obligations have to be re-established over that structure as it stands, and
+holding them may mean giving some of it back. Freeze those obligations and the
+parameter bounds they require. Exit: 2-hart SMP Debian with measurable
+scaling, timing held, and a soak sized the way Phase 4's is, long enough to
+exercise each recovery path repeatedly under load.
+
 ## Deferred
 
-A general 3-wide redesign beyond the measured Phase 6 fallback, an ASIC
+A general 3-wide redesign beyond the measured Phase 5 fallback, an ASIC
 tape-out, the V/H/crypto extensions, and Sv32 are out of scope until the phases
 above are complete and there is demand for them.
