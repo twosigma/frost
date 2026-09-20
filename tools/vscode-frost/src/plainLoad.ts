@@ -181,7 +181,7 @@ async function pickApplication(settings: PickerSettings, metadata: RepositoryMet
         description: debug && !metadata.debugApps.includes(value) ? 'Load only'
             : metadata.ddrApps.includes(value) ? 'Uses DDR in its application layout' : undefined,
         detail: debug && metadata.debugUnsupported[value] ? metadata.debugUnsupported[value]
-            : value === 'linux_boot' ? 'Linux cold builds can take 30–60 minutes; allow enough time in the load timeout setting.' : undefined,
+            : value === 'linux_boot' ? 'A Linux cold build downloads a cross toolchain and the pinned Debian kernel; allow enough time in the load timeout setting.' : undefined,
     }));
     apps.sort((a, b) => Number(b.value === settings.app) - Number(a.value === settings.app));
     const app = await prompt(signal, token => ui.showQuickPick(apps, {

@@ -12,6 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# FROST-specific Buildroot packages. The kernel, toolchain and base rootfs are
-# selected by configs/frost_nommu_rv64_defconfig.
+# FROST-specific Buildroot packages. The toolchain and the base rootfs are
+# selected by configs/frost_rv64_defconfig, which builds no kernel: FROST boots
+# Debian's pinned one (../README.md, "Kernel").
 source "$BR2_EXTERNAL_FROST_PATH/package/frost-stress/Config.in"

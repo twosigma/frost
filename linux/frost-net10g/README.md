@@ -27,13 +27,13 @@ the kernel it boots is Debian's
 ([`../README.md`](../README.md), "Kernel"): this directory is the DKMS package
 that builds it for Debian's kernels, including each kernel update the system
 installs, and `../debian_kernel.py` builds it the same way for the pinned
-kernel and puts it in the test initramfs. The kernel Buildroot builds takes it
-in as a built-in, but nothing boots that kernel.
+kernel and puts it in the test initramfs. Nothing builds it into a kernel: this
+tree builds none.
 
 | File | What |
 |---|---|
 | `frost_net10g.c` | the driver (GPL-2.0-only OR BSD-2-Clause; `MODULE_LICENSE("Dual BSD/GPL")`) |
-| `Kconfig` | `NET_VENDOR_FROST` and `FROST_NET10G`, as the kernel tree's `drivers/net/ethernet/frost/Kconfig` |
+| `Kconfig` | `NET_VENDOR_FROST` and `FROST_NET10G` in kernel-tree form, for an in-tree build of this directory; `dkms.conf`'s `BUILD_EXCLUSIVE_CONFIG` is the dependencies it declares |
 | `Makefile` | the kbuild file: `drivers/net/ethernet/frost/Makefile` in the kernel tree, and an external module build (`make -C <kernel build dir> M=$PWD`), where it always builds a module |
 | `dkms.conf` | the DKMS package `frost-net10g`; its `PACKAGE_VERSION` is the driver's `MODULE_VERSION` |
 
@@ -46,28 +46,6 @@ token that script prints. The build is DKMS's own command, `make -C <kernel
 build dir> M=<build dir>`, against Debian's `linux-headers` tree, so the module
 the gates load is the module DKMS would build.
 [`../README.md`](../README.md), "NIC module", has the mechanism.
-
-## Built into the Buildroot kernel
-
-Nothing boots that kernel; this is kept until the Buildroot kernel
-configuration is removed.
-
-The Buildroot kernel (6.18.7) takes the driver as `CONFIG_FROST_NET10G=y`
-(`../buildroot-external/board/frost/linux-frost.config`). The kernel patch
-`../buildroot-external/board/frost/patches/linux/0001-net-ethernet-hook-in-the-FROST-net10g-driver.patch`
-adds `drivers/net/ethernet/frost/` to the kernel's `drivers/net/ethernet`
-Kconfig and Makefile, and `../buildroot-external/external.mk` installs this
-directory's `Kconfig`, `Makefile` and `frost_net10g.c` there once the kernel
-is patched. Before every kernel build it installs `frost_net10g.c` and
-`Makefile` again, rewriting only a file whose contents changed, so an edited
-driver needs only Buildroot's `linux-rebuild` target, run the way the build
-runs ([`../buildroot-external/README.md`](../buildroot-external/README.md),
-"Build"), and an unchanged one is not recompiled. The kernel configuration
-reads `Kconfig` before any build step, so an edited `Kconfig`, like a changed
-patch, needs the `linux-dirclean` target. Buildroot's `legal-info` saves
-these files and this README with the kernel's sources. That kernel has no
-module support, so the DKMS
-package is for other kernels.
 
 ## As a DKMS module on Debian
 
@@ -137,19 +115,20 @@ update-initramfs -u -k all
 
 ## Changing the driver
 
-- One source serves both kernels, so a change must build and behave the same
-  on Debian's 6.12 and on the Buildroot kernel's 6.18. The driver uses only
-  interfaces both provide (`container_of()` for the refill timer rather than
-  6.16's `timer_container_of()`, for example) and has no version
-  conditionals. If a change needs an interface one of them lacks, put the
-  difference behind `LINUX_VERSION_CODE` and name the kernel version that
-  changed it. CI builds only the Buildroot kernel, so also build a changed
-  driver against Debian's headers (`dkms build`, as above, in a Debian
-  riscv64 root).
+- One source serves every kernel it is built for, today Debian's 6.12 and
+  whatever series Debian moves to next. It uses only long-standing interfaces
+  (`container_of()` for the refill timer rather than 6.16's
+  `timer_container_of()`, for example) and has no version conditionals. If a
+  change needs an interface an older series lacks, put the difference behind
+  `LINUX_VERSION_CODE` and name the kernel version that changed it. CI builds
+  the module against the pinned kernel's headers, the way the gates load it, so
+  a driver change is covered there; a change aimed at another series still has
+  to be built against its headers (`dkms build`, as above, in a Debian riscv64
+  root).
 - Bump `MODULE_VERSION` in `frost_net10g.c` and `PACKAGE_VERSION` in
   `dkms.conf` together whenever the driver changes;
   `tests/test_frost_net10g_driver.py` checks that they match and that the
-  Buildroot hook, the kernel patch and this directory agree.
+  driver, its DKMS packaging and the module build agree.
 - Keep the kernel's coding style: run the kernel's `scripts/checkpatch.pl
   --no-tree -f` on the changed files. The repository's C formatter and
   license-header hooks skip this directory.

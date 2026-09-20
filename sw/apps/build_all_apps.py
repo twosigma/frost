@@ -31,8 +31,8 @@ PARAMETERIZED_APP_SKIP_REASONS = {
 }
 
 LINUX_BOOT_SKIP_REASON = (
-    "first build runs Buildroot for 30-60 minutes and downloads Debian's kernel; "
-    "pass --include-linux-boot to opt in"
+    "first build runs Buildroot and downloads a cross toolchain and Debian's "
+    "kernel, a few minutes; pass --include-linux-boot to opt in"
 )
 
 
@@ -53,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--include-linux-boot",
         action="store_true",
-        help="include the 30-60 minute first-time Buildroot/Linux image build",
+        help="include the first-time Buildroot/Linux image build and its downloads",
     )
     parser.add_argument(
         "--list",

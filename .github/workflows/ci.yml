@@ -542,23 +542,25 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # MMU Linux lane: OpenSBI fw_jump + Debian's pinned riscv64 kernel + the musl
-  # test-initramfs userspace. OpenSBI and the userspace come from the
-  # linux/opensbi and linux/buildroot submodules through the FROST BR2_EXTERNAL
-  # tree; the kernel and the NIC module built for it come from
-  # linux/debian_kernel.py, which its post-image hook invokes. That hook also
-  # runs frost_boot_image.py (firmware +0, Image +2 MiB, DTB at +16 MiB or the
-  # first 2 MiB boundary past a larger Image, initramfs after it), so a broken
-  # packer fails this job. The artifact carries the pieces, not the packed
-  # images: a board loads through load_software.py, which packs them again from
-  # these. Booting this kernel on the RTL is retired
-  # (see tests/test_run_cocotb.py): the boot gate is the hardware regression's
-  # Linux stage plus fpga/linux_boot_soak.py, with the QEMU job below as the
-  # in-CI functional check.
+  # test-initramfs userspace. Buildroot builds no kernel here; OpenSBI and the
+  # userspace come from the linux/opensbi and linux/buildroot submodules through
+  # the FROST BR2_EXTERNAL tree, and the kernel and the NIC module built for it
+  # come from linux/debian_kernel.py, which its post-image hook invokes. That
+  # hook also runs frost_boot_image.py (firmware +0, Image +2 MiB, DTB at
+  # +16 MiB or the first 2 MiB boundary past a larger Image, initramfs after
+  # it), so a broken packer fails this job. The artifact carries the pieces, not
+  # the packed images: a board loads through load_software.py, which packs them
+  # again from these. Booting this kernel on the RTL is retired (see
+  # tests/test_run_cocotb.py): the boot gate is the hardware regression's Linux
+  # stage plus fpga/linux_boot_soak.py, with the QEMU job below as the in-CI
+  # functional check.
   build-frost-linux-mmu:
-    name: Build FROST MMU Linux Image (Debian kernel + Buildroot + OpenSBI)
+    name: Build FROST MMU Linux Image (Debian kernel + Buildroot userspace + OpenSBI)
     runs-on: ubuntu-24.04
     needs: build-docker
-    timeout-minutes: 150
+    # No kernel is built here any more: the work is the Bootlin toolchain and
+    # Debian package downloads, the userspace, OpenSBI and the NIC module.
+    timeout-minutes: 60
     env:
       BR2_DEFCONFIG_NAME: frost_rv64_defconfig
       BUILD_DIR: linux/build-mmu
@@ -588,7 +590,7 @@ jobs:
             br2-dl-mmu-
             br2-dl-
 
-      - name: Cache Buildroot ccache (kernel and perf object cache)
+      - name: Cache Buildroot ccache (host and target package objects)
         uses: actions/cache@v4
         with:
           path: linux/ccache
@@ -606,7 +608,7 @@ jobs:
           restore-keys: |
             debian-kernel-dl-
 
-      - name: Build kernel + initramfs + firmware + FROST boot images
+      - name: Build initramfs + firmware + FROST boot images
         run: |
           docker run --rm \
             -e BR2_DL_DIR=/workspace/linux/dl \
@@ -625,8 +627,7 @@ jobs:
 
       # Image-debian and rootfs-frost.cpio are exactly what the post-image hook
       # packed, so the QEMU job below boots the packed pair rather than
-      # reassembling it. Buildroot's own images/Image is not uploaded: nothing
-      # boots it any more.
+      # reassembling it.
       - name: Upload FROST MMU Linux boot images
         uses: actions/upload-artifact@v4
         with:

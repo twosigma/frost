@@ -38,7 +38,8 @@ cycle and instret counts must both be nonzero, and then ``frost_nettest``,
 which runs the NIC driver through its loopback feature (the NIC's raw loopback
 on a shared MAC clock, the transceiver's PMA loopback otherwise) and must print
 ``FROST_NET_LOOPBACK_PASS``. ``--linux-timeout`` covers build, DDR loading,
-boot, and both commands; a cold Buildroot build takes 30-60 min.
+boot, and both commands; a cold Buildroot build and Debian kernel fetch take a
+few minutes, mostly downloads.
 ``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
 caused intermittent boot corruption. Two apps are left out: ``debug_target``
 waits for a debugger to drive it, and ``nic_echo`` needs a link partner that
@@ -174,8 +175,8 @@ LINUX_SHELL_PROMPT = "# "
 # After the login prompt the stage types a root login (no password) and
 # ``frost_stress --counters``, which reads the SBI PMU's cycle and instret
 # counters through perf_event_open and prints them on its own line. This
-# replaced ``perf stat``: Buildroot's perf is built against the kernel
-# Buildroot builds, which FROST no longer boots. Like perf stat, the counters
+# replaced ``perf stat``: perf builds only against a kernel tree, and this tree
+# builds no kernel, so it is not packed for the target. Like perf stat, the counters
 # cover a child measured from its exec to its exit, which ``scope`` names; the
 # stage requires that scope, so a narrower measurement is a failure rather than
 # a quiet loss of coverage.
@@ -809,8 +810,8 @@ def main() -> int:
             "linux_boot timeout in seconds covering rebuild, JTAG DDR image "
             "load, boot, and the counter and frost_nettest runs (default: "
             f"{DEFAULT_LINUX_TIMEOUT:.0f}; raise it for a cold Buildroot "
-            "first build, which takes 30-60 min, or a cold Debian kernel "
-            "fetch)"
+            "first build or a cold Debian kernel fetch, a few minutes of "
+            "downloads each)"
         ),
     )
     parser.add_argument(

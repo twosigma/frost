@@ -499,8 +499,8 @@ static int child_counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *t
 #endif
 
 /* Counters only: what the hardware regression's Linux stage types at the shell
- * prompt after logging in, in place of ``perf stat``, whose Buildroot build is
- * compiled against a kernel FROST no longer boots. Like perf stat, it measures
+ * prompt after logging in, in place of ``perf stat``, which builds only against
+ * a kernel tree and so is not packed for the target. Like perf stat, it measures
  * a child through an exec (see child_counter_deltas); the no-MMU edition, which
  * has no perf_event_open, measures its own fixed workload. Its own token keeps
  * the line distinct from the boot payload's summary, so the stage cannot
