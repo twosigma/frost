@@ -176,7 +176,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     device-tree-compiler \
     qemu-system-misc \
     openocd \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && command -v qemu-system-riscv64 > /dev/null
 
 # Python test and pre-commit dependencies. Do not install standalone ruff or
 # mypy: pre-commit creates the pinned hook environments used by CI. Standalone
