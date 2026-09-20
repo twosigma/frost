@@ -429,9 +429,13 @@ does not change Vivado's thread count within each process. Separate
 `build.py` invocations have independent limits, so account for their combined
 memory use when running multiple builds on one host.
 
-Both X3 route stages sweep every router directive within this concurrency
-limit unless `--route-directives` names a subset; a single directive is a
-single route run.
+Both X3 route stages default to `Explore`, `AggressiveExplore`,
+`NoTimingRelaxation`, and `AlternateCLBRouting` within this concurrency limit.
+`--route-directives` overrides the list with any legal router directives;
+a single directive is a single route run. `RuntimeOptimized`, `Default`,
+`AdvancedSkewModeling`, `MoreGlobalIterations`, and `HigherDelayCost` are
+excluded from the default sweep. Divided-clock functional-validation builds
+continue to use their single `RuntimeOptimized` route by default.
 A sweep of one job (placer or router) streams its Vivado output to the
 terminal instead of leaving it in the work directory's log.
 
