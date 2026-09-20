@@ -31,8 +31,17 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
     "coremark": {
         # Keep simulation short.
         "ITERATIONS": "1",
-        # Avoid timing-calculation overflow.
-        "FPGA_CPU_CLK_FREQ": "30000",
+        # Avoid timing-calculation overflow, and keep the single simulated
+        # iteration above CoreMark's own "must execute for at least 10 secs"
+        # check: the program divides its tick count by this clock, so a build
+        # faster than 10x this value makes core_main count an error, suppress
+        # the "CoreMark 1.0 :" reporting line and print "Errors detected".
+        # 30000 was already within 2% of that edge at 305k ticks/iteration and
+        # tripped it as soon as the 2026-09-20 tuning landed. 20000 keeps the
+        # simulated report valid down to 200k ticks/iteration, past the
+        # ROADMAP Phase 5 target of 4 CoreMark/MHz (250k). Board runs are
+        # unaffected: they use the real clock and ITERATIONS=11000.
+        "FPGA_CPU_CLK_FREQ": "20000",
     },
 }
 

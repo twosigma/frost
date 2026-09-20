@@ -64,8 +64,39 @@ FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zi
 #       is type-punned by construction, but the regions are disjoint and the
 #       run's CRC check covers it. Drop this one flag to keep the blanket
 #       -fno-strict-aliasing guarantee for 1.8%.
+#   -fselective-scheduling -fno-crossjumping -freorder-blocks-and-partition
+#       -0.76% (305,096 -> 302,764 ticks/iteration cold at the current RTL),
+#       and only as a set: -fno-crossjumping alone is +1.49%, the pair without
+#       the selective scheduler +1.43%, -fselective-scheduling alone -0.23%,
+#       and -freorder-blocks-and-partition alone -0.01%. Crossjumping buys code
+#       size by routing duplicate tails through extra jumps, and every control
+#       transfer ends a bundle on this front end; the selective scheduler is
+#       what makes the resulting straight-line code pay for itself. Four
+#       different spellings of the same set land within 28 ticks of each other,
+#       against a 0.045% placement floor (same code, .text shifted by
+#       0/64/128/256/512/1024 bytes). This is the live part of NaxRiscv's
+#       published flag set: its -fno-if-conversion2 costs +0.66% here, and its
+#       -falign-{functions,jumps,loops}=4 and -finline-limit=1000 are no-ops
+#       against the settings above. -fselective-scheduling is GCC's
+#       experimental scheduler, not enabled by any -O level; it replaces the
+#       first scheduler pass, and dropping scheduling entirely costs +3.28%.
+#   -flto --param max-completely-peeled-insns=0
+#         --param max-completely-peel-times=0
+#       the set above plus these three is -2.85% (296,416), and the ROM image
+#       drops from 60,620 to 38,380 bytes. The peel caps are not optional and
+#       not independent: -flto on its own is +8.0%, the caps on their own are
+#       neutral (305,010), and only together do they help. What plain LTO
+#       loses is GCC's CRC idiom -- the baseline recognises crcu8, crcu16,
+#       crcu32 and crc16, plain LTO only crcu16, and static rev8+brev8 falls
+#       48 -> 18 -- which costs more than the cross-TU inlining gains, and
+#       matches -fno-optimize-crc's own +10.3%. Capping the peel budget keeps
+#       both: rev8+brev8 rises to 138 and the four routines stay recognised.
+#       max-completely-peeled-insns=0 alone is enough (297,904 against the
+#       pair's 297,915); both are set so a future GCC cannot reach the same
+#       shape through the times budget.
 #
-# Together with the -march change above at revision 7bddb24: 363,677 -> 305,064
+# Together with the -march change above, the first three of those at revision
+# 7bddb24 (the fourth is 2026-09-20, at the current RTL): 363,677 -> 305,064
 # ticks/iteration cold, and 362,727 -> 304,116 steady state (ITERATIONS=1/3/8
 # marginal cost, linear to 0.02% between (t3-t1)/2 and (t8-t3)/5) -- -16.2%.
 # At that RTL this projected to ~987 CoreMark at 300 MHz against the 827.32
@@ -80,9 +111,106 @@ FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zi
 # measured yet. The original compiler-retune checks validated both seed sets
 # on the tuned build (performance 0xe9f5 and validation 0x18f2 ->
 # crclist 0xe3c1, crcmatrix 0x0747, crcstate 0x8d84).
+#
+# 2026-09-20 software-only sweep at this RTL: 186 configurations against the
+# 305,096-tick baseline, every one that built validating seedcrc 0xe9f5 /
+# crcfinal 0xe714, plus 27 warm-slope runs at ITERATIONS=1/3/8. The rest of the GCC flag space is empty: the four settings
+# above are the only ones that clear the measurement floor, and dropping any of
+# the first three costs between 1.8% and 12.5%. The negatives are the useful
+# part, because they are what a reader would try next:
+#
+#   -ftracer +11.3%. Its superblock formation turns core_state_transition into
+#       a jump table inside core_bench_state, and an unpredicted indirect jump
+#       behind an unresolved branch is the one thing that hard-stalls this
+#       front end (ooo_pipeline_control.sv): the Control-flow serialize counter
+#       goes 0 -> 14,192 cycles and Pred fence indirect 536 -> 17,943.
+#       --param tracer-dynamic-coverage=10 avoids the jump table and is then
+#       merely neutral.
+#   -fno-optimize-crc +10.3%. GCC 15 recognises all four of CoreMark's CRC
+#       routines and replaces the bit loops with table lookups; that is worth
+#       more than every tuning flag in this file combined.
+#   -flto +8.0%, and it is the same mechanism: LTO loses the CRC idiom in
+#       crcu8/crcu32/crc16 (static rev8+brev8 drop 48 -> 18) and adds 4.5%
+#       timed-region instructions. Its 15 KiB ROM saving is almost all cold
+#       .cache_profile_text; .text itself grows.
+#   -falign-* +1.3% at 8 and +4.1% at 16. The fetch window is PC-relative, not
+#       8-byte aligned -- imem_predecode.sv takes two independent word
+#       addresses -- so with C dropped every window already delivers two
+#       consecutive instructions and alignment padding is executed NOPs.
+#       GCC's RISC-V defaults are already minimal; forcing =1 changes nothing.
+#   Re-enabling C +6.3%, -Os +72.7%, --param max-inline-insns-auto=30 (GCC's
+#       default) +12.5%, -freorder-blocks-algorithm=simple +4.0%,
+#       -fno-reorder-blocks +8.1%, -fno-guess-branch-probability +11.0%.
+#
+# Measured neutral inside the 0.045% placement floor, so worth not retrying:
+# -mmovcc; raised RTL if-conversion budgets (454 czero instructions against the
+# baseline's 7, for -0.04%, so trading a branch for a Zicond data dependency is
+# a wash here); -fipa-pta; -fsched-spec-load; every -fira-region setting;
+# -mno-strict-align; -mshorten-memrefs; MEM_METHOD=MEM_STATIC; stack-top shifts
+# of 64..2048 bytes (the 2,000-byte workspace self-conflicts in the 1 KiB
+# direct-mapped LQ L0 wherever it sits); --param max-inline-insns-auto above
+# 200 (300/400/800 are bit-identical); and -fno-unroll-loops -fno-peel-loops
+# -fno-unswitch-loops, which scores within one tick with 4.1 KiB less .text --
+# common.mk's global -funroll-loops earns nothing for this program.
+#
 # Overridable for A/B runs.
-APP_TUNE_FLAGS ?= --param max-inline-insns-auto=200 -fira-algorithm=priority \
-                  -fstrict-aliasing
+COREMARK_BASE_TUNE := --param max-inline-insns-auto=200 -fira-algorithm=priority \
+                      -fstrict-aliasing -fselective-scheduling
+# Compensation for GCC's static branch-probability guesses; see above. With a
+# real profile there is nothing left to compensate for, so the PGO lane drops
+# them: keeping them there measures 301,116 against 294,640.
+COREMARK_STATIC_LAYOUT_TUNE := -fno-crossjumping -freorder-blocks-and-partition
+# Link-time optimization with complete peeling capped; see above. Excluded
+# from the PGO lane because -flto and -fbranch-probabilities together are an
+# internal compiler error on the pinned GCC 15.2 ("lto1: internal compiler
+# error: Segmentation fault"), with or without the caps.
+COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
+                     --param max-completely-peel-times=0
+
+# Profile-guided optimization, off by default. CoreMark's run rules permit it
+# when the profile comes from the official profile data set (TOTAL_DATA_SIZE
+# 1200, seeds 8/8/8 -- what core_portme.h calls PROFILE_RUN), and the reporting
+# string discloses it by itself, because COMPILER_FLAGS carries APP_TUNE_FLAGS.
+# Vendors generally do not publish PGO scores, so this stays opt-in; it is here
+# because it is the largest software effect measured on this core and the
+# number should be reproducible.
+#
+# COREMARK_PGO=1 measures 294,640 ticks/iteration against 305,096 (-3.43%) and
+# holds warm: at ITERATIONS=8 the marginal cost is 294,180 against the
+# baseline's 304,276, -3.32%, linear to 0.008% between (t3-t1)/2 and
+# (t8-t3)/5. Against the default lane above (296,416) it is worth a further
+# 0.6% for 23 KiB more ROM image and a committed profile, which is why the
+# default does not use it. It
+# works by reallocating the inlining budget rather than enlarging it -- the
+# comparator and core_list_mergesort go back out of line while core_bench_matrix
+# and core_bench_state grow -- for 252,302 -> 234,090 retired instructions
+# (-7.2%) and 308,386 -> 297,948 cycles on the counter build.
+# -fbranch-probabilities, not -fprofile-use: the full -fprofile-use turns on
+# -ftracer (+6.6% here), and even with -fno-tracer it measures 296,500. Reading
+# the edge counts is the entire win.
+#
+# iss/generate_profile.py regenerates the five .gcda files under Spike; see
+# iss/README.md. Only the five benchmark translation units carry a profile (the
+# Spike port layer differs from this one), hence -Wno-missing-profile and the
+# explicit existence check -- without it a deleted profile would quietly
+# degrade the build instead of failing it.
+COREMARK_PGO_TUNE := -fbranch-probabilities -fprofile-correction \
+                     -Wno-missing-profile
+COREMARK_PGO ?= 0
+COREMARK_PGO_PROFILES :=
+ifeq ($(COREMARK_PGO),1)
+COREMARK_PGO_PROFILES := $(addsuffix .gcda,$(addprefix sw.elf-,\
+    core_list_join core_main core_matrix core_state core_util))
+$(foreach profile,$(COREMARK_PGO_PROFILES),\
+    $(if $(wildcard $(profile)),,$(error COREMARK_PGO=1 needs $(profile); run \
+    ./scripts/frost.py run sw/apps/coremark/iss/generate_profile.py)))
+APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_PGO_TUNE)
+else ifeq ($(COREMARK_PGO),0)
+APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_STATIC_LAYOUT_TUNE) \
+                  $(COREMARK_LTO_TUNE)
+else
+$(error COREMARK_PGO must be 0 or 1)
+endif
 
 # 11000 iterations is about a 10 second run on X3 at 300 MHz. Boards at a
 # different clock override this from the environment.
@@ -105,3 +233,7 @@ EXTRA_CFLAGS = '-DITERATIONS=$(ITERATIONS)' -DUART_PRINTF_ENABLE_FLOAT=1 \
 EXTRA_LDFLAGS = -lgcc $(COREMARK_EXTRA_LDFLAGS)
 
 include ../../common/common.mk
+
+# A regenerated profile must relink: common.mk's build-config stamp hashes the
+# flags, not the profile bytes.
+$(EXECUTABLE_ELF_FILE): $(COREMARK_PGO_PROFILES)
