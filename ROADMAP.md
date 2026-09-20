@@ -127,11 +127,22 @@ settings with C retained in both ABI lanes, Spike still measures 251,089
 timed-region instructions for lp64d against 221,578 for ilp32d, a 13.3%
 architectural instruction penalty. The former RV32 hardware also had 8-byte
 CoreMark list heads where lp64d has 16-byte heads. RTL cannot make those ABI
-facts disappear, but it can prevent them from costing cycles. The initial
-planning bar is approximately 1,100 CoreMark at 300 MHz; that is a
-counterfactual estimate from instruction counts, not a measured result, and
-must be replaced by a reproducible reference before it becomes an exit
-criterion. Immediate regression recovery was completed in Phase 3. With the former
+facts disappear, but it can prevent them from costing cycles. The target is
+4 CoreMark/MHz at 322.265625 MHz, so 1289 CoreMark, single core, measured on
+the board. That clock is 10.3125 Gb/s over a 32-bit datapath, the NIC's own
+datapath rate, so the CPU shares its clock domain instead of crossing into
+it; it was this design's original clock, and 300 MHz is a retreat taken to
+make closure easier. Against what the design delivers per clock today,
+3.29 CoreMark/MHz measured on hardware, the target is a 1.3x step: 7.4% from
+the clock and 21.6% from work per cycle. It replaces an earlier planning bar
+of approximately 1,100 CoreMark, which was a counterfactual from instruction
+counts rather than a measurement. For outside reference, the highest
+soft-core CoreMark measured on FPGA fabric that a survey of vendor,
+academic and EEMBC sources could identify is 452 at 100 MHz, and no soft-core
+CoreMark has been published above 200 MHz; per-MHz figures up to 4.5 exist
+at those clocks, which is why the bar here is work per second at a clock the
+design closes, with CoreMark/MHz recorded beside it as a diagnostic.
+Immediate regression recovery was completed in Phase 3. With the former
 16 KiB low-memory predecode overlay, a matched two-run build A/B averaged
 361,535 stock versus 353,923 tuned cycles: tuning removed 11.7% of retired
 instructions but only 2.11% of cycles as IPC fell from about 0.78 to 0.71.
@@ -223,15 +234,17 @@ Work in measured order:
   isolation, then consider a third dispatch/commit/integer lane. Width-aware
   storage should first reclaim the FPGA area and timing lost to mechanically
   doubling every RV32 payload, so none of these changes buys score by lowering
-  the 300 MHz clock target.
+  the clock target.
 
 No mechanism may recognize CoreMark functions, PCs, data patterns, or the
 benchmark binary. Each step must improve a generic microarchitectural event,
-survive the full verification matrix, re-close X3 timing at 300 MHz, and show
-no material regression in CoreMark-PRO or Linux workloads. Exit requires the
-best rule-compliant RV64 build to meet or beat the locked tuned-RV32 reference
-in cycle-exact simulation and in an official-length X3 run, with both CoreMark
-seed sets validated and the complete reporting metadata retained.
+survive the full verification matrix, re-close X3 timing at the target clock,
+and show no material regression in CoreMark-PRO or Linux workloads. Exit
+requires 1289 CoreMark, single core, from an official-length X3 run at
+322.265625 MHz with routed timing met there, and the best rule-compliant RV64
+build meeting or beating the locked tuned-RV32 reference in cycle-exact
+simulation, with both CoreMark seed sets validated and the complete reporting
+metadata retained.
 
 ## Phase 6: SMP
 
