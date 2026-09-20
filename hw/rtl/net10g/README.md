@@ -226,9 +226,10 @@ coverage, artifact paths, and the extra pinned synthesis frontend.
 The implementation has simulation, lint/type, and portable coarse synthesis
 evidence. Inside the NIC, an X3 bitstream with the MAC clocked at 40 MHz from
 the MMCM placed and routed it; the X3 build now clocks it from a GTY
-transceiver at the word rate, where a build with the CPU clock halved meets
-routed timing and `sw/apps/nic_echo` passes against a host over a fiber link.
-The full-clock build has yet to close timing.
+transceiver at the word rate, where it meets routed timing beside the CPU at
+its rated clock and carries a Debian NFS root over a fiber link.
+`sw/apps/nic_echo`, which needs a link partner sending to it, was passed
+against a host on a build with the CPU clock halved.
 There is no GTY instance, optical-module management, board constraint change,
 CPU/DMA interface, register bank, interrupt wiring, or Linux driver here.
 MAC address filtering, PAUSE/PFC handling, PTP, EEE state machines, MDIO and

@@ -86,10 +86,11 @@ MODULE_PRESENT 1 with LOS 0, because no module status reaches the FPGA.
 
 The receive and transmit MACs are structured for the 10GBASE-R word rate
 (see `hw/rtl/net10g/README.md`). On the X3 they meet routed timing at that
-rate in a build with the CPU clock halved, where `sw/apps/nic_echo` passes
-against a host over a fiber link; the full-clock build has yet to close
-timing. Both MAC frame buffers are block RAM, which keeps their address
-fan-out out of the CPU's placement.
+rate beside the CPU at its rated clock, where the link carries a Debian NFS
+root over fiber; `sw/apps/nic_echo`, which needs a link partner sending to it,
+was passed against a host on a build with the CPU clock halved. Both MAC frame
+buffers are block RAM, which keeps their address fan-out out of the CPU's
+placement.
 
 `boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
 buses with datapath and bus-skew bounds, single-bit levels, the reset
