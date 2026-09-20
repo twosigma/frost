@@ -74,11 +74,24 @@ final IMEM-data NOP mux. Per-word sideband carries `{rs2[1], rs1[2:1]}` for
 each RVC halfword. IF aligns these bits and PD substitutes them into the five
 timing-sensitive source fields. Instruction and early-source views remain
 bit-identical; latency and throughput are unchanged. Slot-1 PD likewise takes
-compressed `rs2[0]`, the funct7/funct3/rs1 fields and the illegal flag from the
+compressed rs2, funct7/funct3/rs1 fields and the illegal flag from the
 decompressor's exact standalone cofactors rather than its expansion tree, as
-slot 2 does for its own bits; the immediate, rd and rs2 bits keep the full
-expansion, and the compressed/native selection and register enables are
-unchanged.
+slot 2 does for its own bits. The rs2 field has a kept result per quadrant,
+including immediate bits and reserved encodings; the remaining immediate and
+rd bits keep the full expansion. The compressed/native selection, register
+enables, latency and throughput are unchanged.
+
+Fetch-PC increment candidates apply registered holdoff and mid-instruction
+correction before selecting the bundle size. Both the ordinary sequential PC
+and its catch-up `+2` companion therefore select complete data words with the
+late size control. The run/NOP cofactor choice stays last; the architectural
+PC's priority and all increment arithmetic remain unchanged.
+
+The registered halfword-target flag likewise selects four complete next-state
+candidates using the two prediction-used flags. This keeps both the live BTB
+tag comparison and slot-2 validity out of the target OR and stalled-state hold
+logic. Every candidate includes reset; simultaneous redirects still OR their
+target bits, and only the case without either prediction can retain old state.
 
 Slot-2 BTB data is read from the live fetch PC one cycle ahead and registered
 beside the instruction-memory request. Three single-address images hold the

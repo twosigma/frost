@@ -383,8 +383,8 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
 
 
 @cocotb.test()
-async def test_bit20_cofactor_preserves_selection_and_lifecycle(dut: Any) -> None:
-    """Only compressed bit 20 takes the cofactor; packet ownership is unchanged."""
+async def test_field_cofactors_preserve_selection_and_lifecycle(dut: Any) -> None:
+    """Compressed field cofactors preserve native selection and packet ownership."""
     await _setup_test(dut)
     # Independent complete instruction encodings, including the bit-20 special
     # cases where EBREAK is one, ADDI16SP is zero, and reserved arithmetic is zero.

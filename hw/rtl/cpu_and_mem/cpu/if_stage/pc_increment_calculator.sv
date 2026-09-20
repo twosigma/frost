@@ -25,6 +25,10 @@
   results before pc_controller's final priority mux, which keeps the CARRY8
   chains off the BRAM-dependent select path and leaves o_pc_reg with a single
   priority expression.
+
+  Fetch candidates include every registered holdoff and mid-instruction
+  correction before the late bundle-size mux. The run/NOP size cofactors pick
+  complete PC and PC+2 words, then the NOP selector chooses the final pair.
 */
 module pc_increment_calculator #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -151,23 +155,6 @@ module pc_increment_calculator #(
   assign reg_advance_sel_cof[0]   = i_pc_reg_advance_sel_run;
   assign reg_advance_sel_cof[1]   = i_pc_reg_advance_sel_nop;
 
-  logic [XLEN-1:0] fetch_seq_next_pc_cof[NCof];
-  logic [XLEN-1:0] fetch_seq_next_pc_plus_2_cof[NCof];
-  for (genvar c = 0; c < NCof; c++) begin : gen_fetch_advance_cof
-    pc_fetch_advance_mux #(
-        .XLEN(XLEN)
-    ) u_pc_fetch_advance_mux (
-        .i_next_pc_plus_2(next_pc_plus_2),
-        .i_next_pc_plus_4(next_pc_plus_4),
-        .i_next_pc_plus_6(next_pc_plus_6),
-        .i_next_pc_plus_8(next_pc_plus_8),
-        .i_next_pc_plus_10(next_pc_plus_10),
-        .i_advance_sel(fetch_advance_sel_cof[c]),
-        .o_fetch_seq_next_pc(fetch_seq_next_pc_cof[c]),
-        .o_fetch_seq_next_pc_plus_2(fetch_seq_next_pc_plus_2_cof[c])
-    );
-  end
-
   // Candidate fetch verdicts and their copy of the advance mux. They preserve
   // the retained observation outputs without entering the live IMMU path.
   localparam int unsigned VerdictBits = riscv_pkg::FetchVerdictBits;
@@ -195,11 +182,8 @@ module pc_increment_calculator #(
     );
   end
 
-  // Compute next_sequential_pc (raw sequential PC before corrections), per
-  // cofactor. The holdoff arms use registered selects and the same
-  // candidates, so only the default arm differs between the cofactors.
-  logic [XLEN-1:0] next_sequential_pc_cof[NCof];
-  logic [XLEN-1:0] next_sequential_pc_plus_2_cof[NCof];
+  // Preserve the candidate-verdict path for each cofactor. The holdoff arms
+  // use registered selects; only the default bundle-size arm differs.
   riscv_pkg::fetch_verdict_t next_sequential_verdict_cof[NCof];
   riscv_pkg::fetch_verdict_t next_sequential_verdict_plus_2_cof[NCof];
   always_comb begin
@@ -208,26 +192,18 @@ module pc_increment_calculator #(
         pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
       })
         3'b1??: begin
-          next_sequential_pc_cof[c]             = next_pc_plus_4;
-          next_sequential_pc_plus_2_cof[c]      = next_pc_plus_6;
           next_sequential_verdict_cof[c]        = verdict_plus_4;
           next_sequential_verdict_plus_2_cof[c] = verdict_plus_6;
         end
         3'b01?: begin
-          next_sequential_pc_cof[c]             = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
-          next_sequential_pc_plus_2_cof[c]      = !i_pc[1] ? next_pc_plus_6 : next_pc_plus_4;
           next_sequential_verdict_cof[c]        = !i_pc[1] ? verdict_plus_4 : verdict_plus_2;
           next_sequential_verdict_plus_2_cof[c] = !i_pc[1] ? verdict_plus_6 : verdict_plus_4;
         end
         3'b001: begin
-          next_sequential_pc_cof[c]             = next_pc_plus_2;  // halfword: +2
-          next_sequential_pc_plus_2_cof[c]      = next_pc_plus_4;
           next_sequential_verdict_cof[c]        = verdict_plus_2;
           next_sequential_verdict_plus_2_cof[c] = verdict_plus_4;
         end
         default: begin
-          next_sequential_pc_cof[c]             = fetch_seq_next_pc_cof[c];
-          next_sequential_pc_plus_2_cof[c]      = fetch_seq_next_pc_plus_2_cof[c];
           next_sequential_verdict_cof[c]        = fetch_seq_verdict_cof[c];
           next_sequential_verdict_plus_2_cof[c] = fetch_seq_verdict_plus_2_cof[c];
         end
@@ -324,6 +300,46 @@ module pc_increment_calculator #(
   assign seq_sel_pc_reg_hold =
       seq_sel_holdoff || (i_prediction_from_buffer_holdoff && !seq_sel_mid_32bit);
 
+  // Resolve the registered holdoff/correction controls separately for every
+  // bundle size. The late advance selector then chooses a COMPLETE fetch PC;
+  // it no longer precedes the holdoff and correction muxes. Keep the candidate
+  // words so synthesis cannot fold those muxes back behind the size selection.
+  // Both members of a pair reuse the existing fixed-increment adders, including
+  // their XLEN wraparound. Mid-correction still outranks prediction holdoff.
+  localparam int unsigned NAdvance = 4;
+  logic [XLEN-1:0] fetch_advance_pc[NAdvance];
+  logic [XLEN-1:0] fetch_advance_pc_plus_2[NAdvance];
+  assign fetch_advance_pc[0] = next_pc_plus_2;
+  assign fetch_advance_pc[1] = next_pc_plus_4;
+  assign fetch_advance_pc[2] = next_pc_plus_6;
+  assign fetch_advance_pc[3] = next_pc_plus_8;
+  assign fetch_advance_pc_plus_2[0] = next_pc_plus_4;
+  assign fetch_advance_pc_plus_2[1] = next_pc_plus_6;
+  assign fetch_advance_pc_plus_2[2] = next_pc_plus_8;
+  assign fetch_advance_pc_plus_2[3] = next_pc_plus_10;
+  (* keep = "true" *) logic [XLEN-1:0] seq_pc_candidate[NAdvance];
+  (* keep = "true" *) logic [XLEN-1:0] seq_pc_plus_2_candidate[NAdvance];
+  always_comb begin
+    for (int unsigned k = 0; k < NAdvance; k++) begin
+      if (seq_sel_holdoff) begin
+        seq_pc_candidate[k] = next_pc_plus_4;
+        seq_pc_plus_2_candidate[k] = next_pc_plus_6;
+      end else if (seq_sel_mid_32bit) begin
+        seq_pc_candidate[k] = pc_mid_32bit_correction;
+        seq_pc_plus_2_candidate[k] = pc_mid_32bit_correction_plus_2;
+      end else if (pc_inc_sel_prediction_holdoff) begin
+        seq_pc_candidate[k] = i_pc[1] ? next_pc_plus_2 : next_pc_plus_4;
+        seq_pc_plus_2_candidate[k] = i_pc[1] ? next_pc_plus_4 : next_pc_plus_6;
+      end else if (pc_inc_sel_2) begin
+        seq_pc_candidate[k] = next_pc_plus_2;
+        seq_pc_plus_2_candidate[k] = next_pc_plus_4;
+      end else begin
+        seq_pc_candidate[k] = fetch_advance_pc[k];
+        seq_pc_plus_2_candidate[k] = fetch_advance_pc_plus_2[k];
+      end
+    end
+  end
+
   (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_cof[NCof];
   (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_plus_2_cof[NCof];
   riscv_pkg::fetch_verdict_t seq_next_pc_verdict_cof[NCof];
@@ -331,26 +347,36 @@ module pc_increment_calculator #(
   logic [XLEN-1:0] seq_next_pc_reg_cof[NCof];
   always_comb begin
     for (int unsigned c = 0; c < NCof; c++) begin
+      unique case (fetch_advance_sel_cof[c])
+        riscv_pkg::PcAdvancePlus4: begin
+          seq_next_pc_cof[c] = seq_pc_candidate[1];
+          seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[1];
+        end
+        riscv_pkg::PcAdvancePlus6: begin
+          seq_next_pc_cof[c] = seq_pc_candidate[2];
+          seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[2];
+        end
+        riscv_pkg::PcAdvancePlus8: begin
+          seq_next_pc_cof[c] = seq_pc_candidate[3];
+          seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[3];
+        end
+        default: begin
+          seq_next_pc_cof[c] = seq_pc_candidate[0];
+          seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[0];
+        end
+      endcase
       if (seq_sel_holdoff) begin
-        seq_next_pc_cof[c] = next_sequential_pc_cof[c];
-        seq_next_pc_plus_2_cof[c] = next_sequential_pc_plus_2_cof[c];
         seq_next_pc_verdict_cof[c] = next_sequential_verdict_cof[c];
         seq_next_pc_plus_2_verdict_cof[c] = next_sequential_verdict_plus_2_cof[c];
       end else if (seq_sel_mid_32bit) begin
-        seq_next_pc_cof[c] = pc_mid_32bit_correction;
-        seq_next_pc_plus_2_cof[c] = pc_mid_32bit_correction_plus_2;
         seq_next_pc_verdict_cof[c] = riscv_pkg::fetch_verdict(pc_mid_32bit_correction);
         seq_next_pc_plus_2_verdict_cof[c] =
             riscv_pkg::fetch_verdict(pc_mid_32bit_correction_plus_2);
       end else if (seq_sel_spanning_hw) begin
-        seq_next_pc_cof[c] = pc_spanning_to_halfword;
-        seq_next_pc_plus_2_cof[c] = pc_spanning_to_halfword_plus_2;
         seq_next_pc_verdict_cof[c] = riscv_pkg::fetch_verdict(pc_spanning_to_halfword);
         seq_next_pc_plus_2_verdict_cof[c] =
             riscv_pkg::fetch_verdict(pc_spanning_to_halfword_plus_2);
       end else begin
-        seq_next_pc_cof[c] = next_sequential_pc_cof[c];
-        seq_next_pc_plus_2_cof[c] = next_sequential_pc_plus_2_cof[c];
         seq_next_pc_verdict_cof[c] = next_sequential_verdict_cof[c];
         seq_next_pc_plus_2_verdict_cof[c] = next_sequential_verdict_plus_2_cof[c];
       end
@@ -374,6 +400,7 @@ module pc_increment_calculator #(
   // Reference: the former single chain steered by the merged selects.
   logic [XLEN-1:0] fetch_seq_next_pc_ref, fetch_seq_next_pc_plus_2_ref;
   logic [XLEN-1:0] next_sequential_pc_ref, seq_next_pc_ref, seq_next_pc_reg_ref;
+  logic [XLEN-1:0] next_sequential_pc_plus_2_ref, seq_next_pc_plus_2_ref;
   logic [XLEN-1:0] pc_reg_normal_ref;
   pc_fetch_advance_mux #(
       .XLEN(XLEN)
@@ -406,6 +433,18 @@ module pc_increment_calculator #(
       3'b001:  next_sequential_pc_ref = next_pc_plus_2;
       default: next_sequential_pc_ref = fetch_seq_next_pc_ref;
     endcase
+    casez ({
+      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
+    })
+      3'b1??:  next_sequential_pc_plus_2_ref = next_pc_plus_6;
+      3'b01?:  next_sequential_pc_plus_2_ref = !i_pc[1] ? next_pc_plus_6 : next_pc_plus_4;
+      3'b001:  next_sequential_pc_plus_2_ref = next_pc_plus_4;
+      default: next_sequential_pc_plus_2_ref = fetch_seq_next_pc_plus_2_ref;
+    endcase
+    if (seq_sel_holdoff) seq_next_pc_plus_2_ref = next_sequential_pc_plus_2_ref;
+    else if (seq_sel_mid_32bit) seq_next_pc_plus_2_ref = pc_mid_32bit_correction_plus_2;
+    else if (seq_sel_spanning_hw) seq_next_pc_plus_2_ref = pc_spanning_to_halfword_plus_2;
+    else seq_next_pc_plus_2_ref = next_sequential_pc_plus_2_ref;
     if (seq_sel_holdoff) seq_next_pc_ref = next_sequential_pc_ref;
     else if (seq_sel_mid_32bit) seq_next_pc_ref = pc_mid_32bit_correction;
     else if (seq_sel_spanning_hw) seq_next_pc_ref = pc_spanning_to_halfword;
@@ -432,7 +471,9 @@ module pc_increment_calculator #(
                (i_sel_nop ? i_pc_reg_advance_sel_nop : i_pc_reg_advance_sel_run)));
       // ... and the split chain equals the former single chain every cycle.
       p_seq_next_pc_split_exact :
-      assert ((o_seq_next_pc == seq_next_pc_ref) && (o_seq_next_pc_reg == seq_next_pc_reg_ref));
+      assert ((o_seq_next_pc == seq_next_pc_ref) &&
+              (o_seq_next_pc_plus_2 == seq_next_pc_plus_2_ref) &&
+              (o_seq_next_pc_reg == seq_next_pc_reg_ref));
     end
   end
 `endif

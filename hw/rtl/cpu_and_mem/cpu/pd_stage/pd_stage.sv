@@ -20,8 +20,8 @@
   PD expands the slot-1 compressed parcel (16-bit to 32-bit) and selects the
   final instruction for each slot. IF supplies the slot-1 raw parcel and the
   selection signals; the live instruction-memory selection and replay path can
-  precede decompression. Slot 1 uses the exact bit-20 and illegal cofactors beside
-  the complete expansion. Slot 2 arrives already decompressed: the instruction
+  precede decompression. Slot 1 uses exact instruction-field and illegal
+  cofactors beside the complete expansion. Slot 2 arrives already decompressed: the instruction
   aligner expands the candidate parcels beside its position select (see
   instruction_aligner.sv), so PD takes slot 2's effective_instr and
   decomp_illegal as they stand. Both slots register the un-NOP'd instruction
@@ -67,7 +67,7 @@ module pd_stage #(
 
   logic [31:0] decompressed_instr;
   logic        decompressed_instr_bit15_fast;
-  logic [ 1:0] decompressed_instr_bits20_9_fast;
+  logic [ 4:0] decompressed_instr_bits24_20_fast;
   logic [ 1:0] decompressed_instr_bits27_25_fast;
   logic [ 3:0] decompressed_instr_bits31_28_fast;
   logic        decompressed_instr_bit26_fast;
@@ -82,12 +82,13 @@ module pd_stage #(
       .o_instr_expanded(decompressed_instr),
       .o_instr_expanded_bit8_fast(),
       .o_instr_expanded_bit15_fast(decompressed_instr_bit15_fast),
-      .o_instr_expanded_bits20_9_fast(decompressed_instr_bits20_9_fast),
+      .o_instr_expanded_bits20_9_fast(),
       .o_instr_expanded_bits27_25_fast(decompressed_instr_bits27_25_fast),
       .o_instr_expanded_bits31_28_fast(decompressed_instr_bits31_28_fast),
       .o_instr_expanded_bit26_fast(decompressed_instr_bit26_fast),
       .o_instr_expanded_bits19_18_fast(decompressed_instr_bits19_18_fast),
       .o_instr_expanded_bits14_12_fast(decompressed_instr_bits14_12_fast),
+      .o_instr_expanded_bits24_20_fast(decompressed_instr_bits24_20_fast),
       .o_is_compressed(decomp_is_compressed),
       .o_illegal(),
       .o_illegal_fast(decomp_illegal)
@@ -113,11 +114,11 @@ module pd_stage #(
   always_comb begin
     if (pd_sel_compressed) begin
       instruction_non_nop = decompressed_instr;
-      // rs2[0] and the funct7, funct3 and rs1 fields (rs1[2:1] come from the
+      // The rs2, funct7, funct3 and rs1 fields (rs1[2:1] come from the
       // source-hot sideband below) use the decompressor's exact standalone
-      // cofactors; the immediate, rd and rs2 bits keep the full expansion and
+      // cofactors; the remaining immediate and rd bits keep the full expansion and
       // the same compressed/native selection.
-      instruction_non_nop[20]    = decompressed_instr_bits20_9_fast[1];
+      instruction_non_nop[24:20] = decompressed_instr_bits24_20_fast;
       instruction_non_nop[31:28] = decompressed_instr_bits31_28_fast;
       instruction_non_nop[27]    = decompressed_instr_bits27_25_fast[1];
       instruction_non_nop[26]    = decompressed_instr_bit26_fast;
@@ -152,8 +153,8 @@ module pd_stage #(
   // output, a 32-bit instruction from effective_instr (spanning words are
   // assembled in IF), and a NOP reads x0. An earlier version extracted in IF
   // instead and was reverted; extracting from the already selected instruction
-  // here preserves that interface. The architectural rs2[0] path can still be
-  // critical; its exact bit-20 cofactor avoids the full expansion dependency.
+  // here preserves that interface. The architectural rs2 field uses exact
+  // quadrant cofactors to avoid the full expansion dependency.
 
   logic [4:0] source_reg_1;
   logic [4:0] source_reg_2;

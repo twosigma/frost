@@ -37,8 +37,9 @@
   feeding a wide OR tree at the output. Expanded instruction bits 8, 9, 15,
   20, 25, and 27, plus the illegal flag, also have exact standalone cofactors,
   and so do bits 31:28, 26, 19:18 and 14:12: with 27:25 and 15 they cover the
-  funct7, funct3 and rs1 fields of PD's instruction register. Slot 2 consumes
-  the first set, and slot 1 consumes bit 20, the field cofactors and the
+  funct7, funct3 and rs1 fields of PD's instruction register. Bits 24:20 have
+  a separate field cofactor with a kept result for each quadrant. Slot 2 consumes
+  the first set, and slot 1 consumes the field cofactors and the
   illegal flag, so these captures need not inherit unrelated logic from the
   full case tree.
 */
@@ -61,6 +62,7 @@ module rvc_decompressor (
     output logic        o_instr_expanded_bit26_fast,
     output logic [ 1:0] o_instr_expanded_bits19_18_fast,
     output logic [ 2:0] o_instr_expanded_bits14_12_fast,
+    output logic [ 4:0] o_instr_expanded_bits24_20_fast,
     output logic        o_is_compressed,
     output logic        o_illegal,
     output logic        o_illegal_fast
@@ -248,8 +250,8 @@ module rvc_decompressor (
   // final residual slot-2 rs2[0] and non-source payload endpoints after the
   // source-hot and earlier bit-specific bypasses. Pairing the two outputs is
   // only an interface convenience; each case bit remains an independent
-  // one-bit function for synthesis. Slot-1 PD also uses bit 20 alone before
-  // its existing compressed/native instruction selection.
+  // one-bit function for synthesis. Slot-1 PD uses the complete bits-24:20
+  // field cofactor below before its compressed/native instruction selection.
   always_comb begin
     unique case (quadrant)
       2'b00: begin
@@ -293,6 +295,54 @@ module rvc_decompressor (
         endcase
       end
       default: o_instr_expanded_bits20_9_fast = {1'b0, i_instr_compressed[9]};
+    endcase
+  end
+
+  // Complete rs2-field cofactors, including the immediate bits that occupy
+  // this field in non-R-type expansions. Keep each quadrant's result so the
+  // selected parcel does not inherit the full expansion's shared case tree
+  // before PD captures these bits. Reserved encodings retain the canonical
+  // zero expansion; i_rd_is_x2 remains an independent input.
+  (* keep = "true" *) logic [4:0] rs2_field_q0;
+  (* keep = "true" *) logic [4:0] rs2_field_q1;
+  (* keep = "true" *) logic [4:0] rs2_field_q2;
+  (* keep = "true" *) logic rs2_arithmetic_reserved;
+  (* keep = "true" *) logic rs2_ebreak;
+  assign rs2_arithmetic_reserved =
+      i_instr_compressed[12] && (&i_instr_compressed[11:10]) && i_instr_compressed[6];
+  assign rs2_ebreak = i_instr_compressed[12] && illegal_rd_zero && illegal_rs2_zero;
+  always_comb begin
+    unique case (funct3)
+      3'b000:
+      rs2_field_q0 = {i_instr_compressed[11], i_instr_compressed[5], i_instr_compressed[6], 2'b00};
+      3'b001, 3'b011: rs2_field_q0 = {i_instr_compressed[11:10], 3'b000};
+      3'b010: rs2_field_q0 = {i_instr_compressed[11:10], i_instr_compressed[6], 2'b00};
+      3'b101, 3'b110, 3'b111: rs2_field_q0 = {2'b01, i_instr_compressed[4:2]};
+      default: rs2_field_q0 = 5'b00000;
+    endcase
+    unique case (funct3)
+      3'b000, 3'b001, 3'b010: rs2_field_q1 = i_instr_compressed[6:2];
+      3'b011:
+      rs2_field_q1 = i_rd_is_x2 ? {i_instr_compressed[6], 4'b0000} : {5{i_instr_compressed[12]}};
+      3'b100:
+      rs2_field_q1 = rs2_arithmetic_reserved ? 5'b00000 :
+          ((&i_instr_compressed[11:10]) ? {2'b01, i_instr_compressed[4:2]} :
+                                          i_instr_compressed[6:2]);
+      3'b101:
+      rs2_field_q1 = {i_instr_compressed[11], i_instr_compressed[5:3], i_instr_compressed[12]};
+      default: rs2_field_q1 = 5'b00000;
+    endcase
+    unique case (funct3)
+      3'b001, 3'b011: rs2_field_q2 = {i_instr_compressed[6:5], 3'b000};
+      3'b010: rs2_field_q2 = {i_instr_compressed[6:4], 2'b00};
+      3'b100: rs2_field_q2 = {i_instr_compressed[6:3], i_instr_compressed[2] || rs2_ebreak};
+      default: rs2_field_q2 = i_instr_compressed[6:2];
+    endcase
+    unique case (quadrant)
+      2'b00:   o_instr_expanded_bits24_20_fast = rs2_field_q0;
+      2'b01:   o_instr_expanded_bits24_20_fast = rs2_field_q1;
+      2'b10:   o_instr_expanded_bits24_20_fast = rs2_field_q2;
+      default: o_instr_expanded_bits24_20_fast = 5'b00000;
     endcase
   end
 

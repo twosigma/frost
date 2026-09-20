@@ -1650,12 +1650,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "control_flow_tracker": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_control_flow_tracker",
         hdl_toplevel_module="control_flow_tracker",
-        description="IF-stage control-flow holdoff tracker tests",
+        description="IF-stage control-flow holdoff tracker tests, including exhaustive halfword-target next-state priority",
     ),
     "pc_increment_calculator": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_pc_increment_calculator",
         hdl_toplevel_module="pc_increment_calculator",
-        description="IF-stage PC increment calculator tests",
+        description="IF-stage PC increment calculator tests, including overlapping holdoffs, run/NOP size cofactors and XLEN wraparound",
     ),
     "pc_controller": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_pc_controller",
@@ -1706,7 +1706,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "pd_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.pd_stage.test_pd_stage",
         hdl_toplevel_module="pd_stage",
-        description="PD-stage unit tests including exact bit-20/illegal cofactors and native/RVC redirects",
+        description="PD-stage unit tests including exact instruction-field/illegal cofactors and native/RVC redirects",
     ),
     "id_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.id_stage.test_id_stage",
