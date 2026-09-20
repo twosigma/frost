@@ -73,7 +73,15 @@ void portable_init(core_portable *p, int *argc, char *argv[])
     p->portable_id = 1;
 }
 
+#ifdef FROST_PGO_DUMP
+void pgo_dump(void);
+#endif
+
 void portable_fini(core_portable *p)
 {
     p->portable_id = 0;
+#ifdef FROST_PGO_DUMP
+    /* PGO training build only: stream this run's gcda out over HTIF. */
+    pgo_dump();
+#endif
 }
