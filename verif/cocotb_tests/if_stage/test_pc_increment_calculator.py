@@ -63,10 +63,71 @@ async def _setup_test(dut: Any) -> None:
 
 
 def _assert_next(dut: Any, *, pc: int, pc_reg: int) -> None:
-    """Assert next fetch PC and instruction PC outputs."""
+    """Assert both fetch candidates and the instruction PC outputs."""
     assert int(dut.o_seq_next_pc.value) == pc
+    assert int(dut.o_seq_next_pc_plus_2.value) == (pc + 2) & ((1 << 64) - 1)
     assert int(dut.o_seq_next_pc_reg.value) == pc_reg
     assert int(dut.o_seq_next_pc_reg_neq_pc.value) == int(pc_reg != int(dut.i_pc.value))
+
+
+@cocotb.test()
+async def test_fetch_candidate_priority_and_wraparound(dut: Any) -> None:
+    """Sweep overlapping controls and both size cofactors at carry boundaries."""
+    await _setup_test(dut)
+    mask = (1 << 64) - 1
+    # Different low bits in the two PCs catch accidental use of pc_reg[1] for
+    # the prediction-holdoff arm. Include odd inputs and XLEN wraparound: the
+    # combinational interface promises exact arithmetic beyond aligned fetches.
+    pc_pairs = [(PC + low, PC_REG + (3 - low)) for low in range(4)]
+    pc_pairs += [(mask - 7 + low, mask - 3 + low) for low in range(4)]
+    pc_pairs += [(0xFFFFFFFF, 0xFFFFFFFE), (0x7FFFFFFFFE, 0x7FFFFFFFFC)]
+    for pc, pc_reg in pc_pairs:
+        dut.i_pc.value = pc
+        dut.i_pc_reg.value = pc_reg
+        for controls in range(32):
+            holdoff, prediction, buffered, halfword, correction = (
+                (controls >> bit) & 1 for bit in range(5)
+            )
+            dut.i_any_holdoff_safe.value = holdoff
+            dut.i_prediction_holdoff.value = prediction
+            dut.i_prediction_from_buffer_holdoff.value = buffered
+            dut.i_control_flow_to_halfword_r.value = halfword
+            dut.i_mid_32bit_correction.value = correction
+            for run_sel in range(4):
+                for nop_sel in range(4):
+                    reg_run_sel = (run_sel + 1) % 4
+                    reg_nop_sel = (nop_sel + 2) % 4
+                    dut.i_pc_fetch_advance_sel_run.value = run_sel
+                    dut.i_pc_fetch_advance_sel_nop.value = nop_sel
+                    dut.i_pc_reg_advance_sel_run.value = reg_run_sel
+                    dut.i_pc_reg_advance_sel_nop.value = reg_nop_sel
+                    for nop in range(2):
+                        fetch_sel = nop_sel if nop else run_sel
+                        reg_sel = reg_nop_sel if nop else reg_run_sel
+                        dut.i_sel_nop.value = nop
+                        dut.i_pc_fetch_advance_sel.value = fetch_sel
+                        dut.i_pc_reg_advance_sel.value = reg_sel
+                        # Independent scalar version of the original two
+                        # priority chains: choose an increment, then correct.
+                        increment = 2 + 2 * fetch_sel
+                        if holdoff:
+                            increment = 4
+                        elif prediction:
+                            increment = 2 if pc & 2 else 4
+                        elif halfword:
+                            increment = 2
+                        expected_pc = (pc + increment) & mask
+                        if correction and not holdoff:
+                            expected_pc = ((((pc_reg + 2) & mask) & ~3) + 4) & mask
+                        expected_reg = (pc_reg + 2 + 2 * reg_sel) & mask
+                        if correction:
+                            expected_reg = (pc_reg + 2) & mask
+                        elif buffered:
+                            expected_reg = pc_reg
+                        if holdoff:
+                            expected_reg = pc_reg
+                        await _settle()
+                        _assert_next(dut, pc=expected_pc, pc_reg=expected_reg)
 
 
 @cocotb.test()

@@ -14,6 +14,7 @@
 
 """Unit tests for the IF-stage control-flow holdoff tracker."""
 
+from itertools import product
 from typing import Any, Literal
 
 import cocotb
@@ -334,3 +335,64 @@ async def test_word_aligned_redirect_does_not_latch_halfword_state(dut: Any) -> 
     await _settle()
 
     assert not dut.o_control_flow_to_halfword_r.value
+
+
+@cocotb.test()
+async def test_halfword_next_state_exhaustive(dut: Any) -> None:
+    """All redirect/target combinations preserve reset and stalled-state priority."""
+    await _setup_test(dut)
+    sources = (
+        dut.i_branch_taken,
+        dut.i_trap_taken,
+        dut.i_mret_taken,
+        dut.i_pd_redirect,
+        dut.i_prediction_used,
+        dut.i_slot2_prediction_used,
+    )
+    target_ports = (
+        dut.i_branch_target,
+        dut.i_trap_target,
+        dut.i_pd_redirect_target,
+        dut.i_predicted_target,
+        dut.i_slot2_predicted_target,
+    )
+    for previous, stall, progress, reset, enabled, targets in product(
+        range(2), range(2), range(2), range(2), range(64), range(32)
+    ):
+        # Seed either old state with a real redirect before checking one step.
+        _clear_inputs(dut)
+        dut.i_reset.value = 0
+        _drive_redirect(dut, "branch", WORD_TARGET | (previous << 1))
+        await _advance_cycle(dut)
+        assert int(dut.o_control_flow_to_halfword_r.value) == previous
+
+        _clear_inputs(dut)
+        dut.i_reset.value = reset
+        dut.i_stall.value = stall
+        dut.i_fetch_progress.value = progress
+        for bit, port in enumerate(sources):
+            port.value = (enabled >> bit) & 1
+        for bit, port in enumerate(target_ports):
+            port.value = WORD_TARGET | (((targets >> bit) & 1) << 1)
+        # Both flush inputs remain independent of halfword-target tracking.
+        dut.i_flush.value = (enabled >> 2) & 1
+        dut.i_fence_i_flush.value = targets & 1
+        source_targets = (0, 1, 1, 2, 3, 4)  # MRET and traps share a target.
+        halfword = any(
+            ((enabled >> bit) & 1) and ((targets >> target) & 1)
+            for bit, target in enumerate(source_targets)
+        )
+        await _settle()
+        assert bool(dut.o_control_flow_to_halfword.value) == halfword
+        expected = not reset and (
+            halfword or (previous and (stall or not progress) and not enabled)
+        )
+        await _advance_cycle(dut)
+        assert bool(dut.o_control_flow_to_halfword_r.value) == bool(expected), (
+            previous,
+            stall,
+            progress,
+            reset,
+            enabled,
+            targets,
+        )

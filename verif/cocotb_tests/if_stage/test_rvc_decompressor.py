@@ -234,7 +234,7 @@ async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
     """All 131,072 parcel/predicate combinations have exact fast cofactors.
 
     Covers the slot-2 bit cofactors, the illegal flag and the PD field
-    cofactors (bits 31:28, 26, 19:18 and 14:12).
+    cofactors (bits 31:28, 26, 24:20, 19:18 and 14:12).
     """
     for raw in range(1 << 16):
         dut.i_instr_compressed.value = raw
@@ -282,6 +282,11 @@ async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
 
             expanded = int(dut.o_instr_expanded.value)
             field_cofactors = (
+                (
+                    "bits 24:20",
+                    (expanded >> 20) & 0x1F,
+                    int(dut.o_instr_expanded_bits24_20_fast.value),
+                ),
                 (
                     "bits 31:28",
                     (expanded >> 28) & 0xF,
