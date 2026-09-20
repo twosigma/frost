@@ -97,8 +97,14 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "alu_shift_hint.sby",
-        "Actual ALU - captured amount consumer equals generic path, arbitrary binary inputs",
+        "Actual ALU - literal shift/rotate reference and captured amount equivalence",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "divider_prefix.sby",
+        "Divider - each narrowed stage equals full-width restoring division and "
+        "preserves the consumed-prefix bound, at 64 and 32 bits",
+        tasks=("bmc", "bmc_xlen32"),
     ),
     FormalTarget(
         "reservation_station.sby",
@@ -120,6 +126,12 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "mul_completion_tag.sby",
+        "MUL completion tag - unqualified invalid tag preserves adapter state, "
+        "valid results, and exact wrapper arbiter input",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
         "load_queue.sby",
         "Load queue - allocation/back-pressure, dependency cleanup, memory issue, "
         "router cancellation/debt, staged normal AMOs, CDB broadcast",
@@ -138,6 +150,12 @@ FORMAL_TARGETS = [
         "sc_head_query.sby",
         "SC head coherence comparison - parallel per-entry line match equals selected-address comparison",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "coherence_replay_compare.sby",
+        "Coherence replay - local line copies preserve phase timing and exact "
+        "replay masks; full-width equality at 32, 64 and 66 bits",
+        tasks=("prove", "prove_xlen32", "prove_xlen66", "cover"),
     ),
     FormalTarget(
         "data_mem_request_router.sby",
@@ -196,13 +214,18 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_xlen32", "prove_xlen72", "cover"),
     ),
     FormalTarget(
+        "btb_tag_compare.sby",
+        "BTB tag lookup - grouped equality matches full architectural tags, arbitrary RAM outputs",
+        tasks=("bmc", "bmc_small_btb"),
+    ),
+    FormalTarget(
         "branch_prediction_disable.sby",
         "IF branch prediction - common guards, slot-1/slot-2 factoring, and staged/live disable exclusion",
         tasks=("bmc",),
     ),
     FormalTarget(
         "prediction_handoff.sby",
-        "IF pending handoff - integrated slot-2 veto elimination preserves generic priority",
+        "IF pending handoff - slot-2 veto equivalence and raw buffer-release invariants",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
@@ -229,8 +252,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "async_fifo.sby",
-        "Asynchronous FIFO - occupancy bound, no underflow, in-order delivery of a "
-        "watched word under free-running unrelated clocks (multiclock)",
+        "Asynchronous FIFO - occupancy bound, conservative credits, ready margin, "
+        "no underflow, in-order delivery of a watched word under free-running "
+        "unrelated clocks (multiclock)",
     ),
     FormalTarget(
         "tomasulo_wrapper.sby",
@@ -252,10 +276,18 @@ SBY_TASKS = [
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded model checking in the 8-entry 2-port ITLB shape"),
     ("cover_itlb", "Cover checking in the 8-entry 2-port ITLB shape"),
-    ("bmc_xlen32", "Bounded Bare-output checking with local XLEN 32"),
+    ("bmc_xlen32", "Bounded checking with a local 32-bit datapath"),
+    (
+        "bmc_small_btb",
+        "Bounded tag comparison with a 16-entry BTB and partial final group",
+    ),
     ("bmc_xlen72", "Bounded Bare-output checking with local XLEN 72"),
     ("bmc_integrated", "Bounded checking with the integrated IF handoff parameter"),
-    ("prove_xlen32", "Unbounded captured-tag checking with local XLEN 32"),
+    ("prove_xlen32", "Unbounded safety checking with a local 32-bit datapath"),
+    (
+        "prove_xlen66",
+        "Unbounded replay comparison at XLEN 66, including a one-bit final group",
+    ),
     ("prove_xlen72", "Unbounded captured-tag checking with local XLEN 72"),
     (
         "fmul_repair_bmc",

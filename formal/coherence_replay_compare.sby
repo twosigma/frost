@@ -1,0 +1,26 @@
+[tasks]
+prove
+prove_xlen32
+prove_xlen66
+cover
+
+[options]
+prove: mode prove
+prove_xlen32: mode prove
+prove_xlen66: mode prove
+cover: mode cover
+depth 12
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D COHERENCE_REPLAY_LOCAL_PROOF -sv lq_coherence_port.sv
+prove_xlen32: chparam -set XLEN 32 lq_coherence_port
+prove_xlen66: chparam -set XLEN 66 lq_coherence_port
+prep -top lq_coherence_port
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv

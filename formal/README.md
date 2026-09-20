@@ -42,6 +42,42 @@ declares.
 The target list is not duplicated here. Its sources of truth are
 `FORMAL_TARGETS` in `tests/test_run_formal.py` and the `.sby` files.
 
+The `btb_tag_compare` target checks the production slot-1 tag comparison
+against its original full-width equality. RAM outputs are arbitrary words;
+there are no reset, validity, address, or table-content assumptions. It checks
+the default 55-bit tag and a 59-bit tag, including their partial final groups.
+The grouping changes only the combinational mapping and adds no lookup cycle.
+
+The `divider_prefix` target checks every production divider stage against two
+full-width restoring iterations, at widths 64 and 32. Its one-step lemma
+assumes the incoming remainder fits the dividend prefix already consumed,
+then proves exact quotient bits, exact remainder, and the next prefix bound.
+Stage zero starts each transaction with remainder zero, so these lemmas
+compose for valid pipeline results, including a zero divisor. Invalid data
+remaining after reset need not satisfy the bound; reset clears all validity
+bits. The `DIVIDER_PREFIX_LOCAL_PROOF` guard
+enables this arithmetic oracle; the streaming cocotb tests separately check
+signed results, fixed latency, bubbles, and reset with outstanding operations.
+
+The `mul_completion_tag` target compares two production MUL adapters fed the
+same symbolic packet, with either a zeroed or unqualified invalid-cycle tag.
+After one synchronous reset edge, induction proves equal pending state, valid
+results, and the exact wrapper arbiter input including test injection. Grants,
+flushes, and subsequent resets remain arbitrary. The adapter is read without
+its separate temporal harness, so only the miter's initial reset assumption
+applies. Covers exercise pass-through, held grants, input/held partial kills,
+full flush while pending, and the differing invalid tag.
+
+The `coherence_replay_compare` target checks the production coherence port's
+local invalidation-line copies and grouped equality comparisons. Induction
+proves that every local copy equals the original line in replay phases 2 and
+3, and that the replay mask's next-state equation exactly matches the original
+full-width comparisons. The other state transitions and four-cycle invalidation
+handshake are unchanged. Only the first reset edge is assumed; observations,
+commits, flushes and subsequent resets remain arbitrary. It checks widths 32,
+64 and 66 (including a one-bit final chunk). Covers reach pending and table
+matches and a later reset.
+
 The `sc_head_query` target compares the SC pending table's selected one-bit
 coherence result with the original selected-address line comparison. It checks
 the combinational identity from unconstrained table state, with no initial
@@ -82,7 +118,15 @@ abstraction of `pc_increment_calculator`. It proves that an atomic pending
 target handoff cannot leave stale old-path buffer state selectable, and that
 pending-state consumers are masked outside a live episode. Its covers reach
 both raw-capture cofactors, which keeps the clear-dominance proof from passing
-vacuously. It runs `bmc`, `cover`, and an ABC-PDR `prove` task.
+vacuously. The harness models the predictor's matching-target PD metadata
+exception, permits repeated resets, and independently varies the canonical
+and PC-control compression, NOP, and slot-2-valid inputs. Stall, fetch progress,
+and frontend flush are shared because the production wiring aliases those
+nets. Covers also reach a repeated reset and a stalled matching-target redirect.
+
+Both release-history bits and their raw edge remain clear after reset under
+this producer contract. The targets run `bmc`, `cover`, and an ABC-PDR `prove`
+task. The production buffer-release outputs retain their generic equations.
 
 The `prediction_handoff` variant enables the integrated IF optimization that
 removes the redundant slot-2 veto from pending-target consumption. It restores
@@ -97,6 +141,9 @@ also compares all four completed slot-2 candidate cofactors and their final
 prediction-common, full-validity, RAS, branch, and spanning permission gate
 against the original selection equations, including the public live-target
 cofactor.
+It also compares the canonical slot-2 target with its original live/staged
+selection for arbitrary target bits and full-validity inputs, including
+invalid slots, after moving that late validity gate to the final target mux.
 Together these checks establish the structural contract used by IF's opt-in.
 The same proof checks the canonical slot-1 PC-use and owner-free live-metadata
 candidate cores against their original equations, including all final common,
@@ -361,7 +408,10 @@ The `alu_shift_hint` target compares two actual RV64 ALUs at BMC depth 1, with
 arbitrary binary opcodes, instruction fields and operands. One ignores an
 arbitrary hint; the other receives the exact effective shift amount from the
 shared predicate. It checks result/write-enable equality and retains the ALU's
-symbolic enum assertions. It is a combinational consumer-contract check; the
+symbolic enum assertions. An independent literal shift/rotate reference also
+checks every full-width and word operation, including zero amounts, signed
+fill, both rotate directions, immediate selection and word sign extension.
+It is a combinational consumer-contract check; the
 `rs_issue2_shamt` cocotb test and occupied-bank assertion check capture/hold
 phase, not an unbounded scheduler proof.
 

@@ -384,17 +384,21 @@ module int_muldiv_shim (
   // cone. During the flush cycle the adapter's own partial_flush_input filter
   // (direct i_flush_en) catches younger results. By the next cycle the
   // always_ff marking pass has set the flushed bit on any young entry.
+  // Leave the tag unqualified: the adapter consumes it only with valid, and
+  // its partial-flush comparison must not wait for head-valid to zero this
+  // tag before producing the qualified completion-valid bit. An invalid
+  // completion's tag is unspecified; valid payloads and capture cycles are
+  // unchanged.
   always_comb begin
+    o_mul_fu_complete.tag = mul_fifo_tag[mul_fifo_rd_ptr];
     if (mul_fifo_count != '0 && !mul_fifo_flushed[mul_fifo_rd_ptr]) begin
       o_mul_fu_complete.valid     = 1'b1;
-      o_mul_fu_complete.tag       = mul_fifo_tag[mul_fifo_rd_ptr];
       o_mul_fu_complete.value     = mul_fifo_value_rd;
       o_mul_fu_complete.exception = 1'b0;
       o_mul_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
       o_mul_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
     end else begin
       o_mul_fu_complete.valid     = 1'b0;
-      o_mul_fu_complete.tag       = '0;
       o_mul_fu_complete.value     = '0;
       o_mul_fu_complete.exception = 1'b0;
       o_mul_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);

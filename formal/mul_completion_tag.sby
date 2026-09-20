@@ -1,0 +1,24 @@
+[tasks]
+prove
+cover
+
+[options]
+prove: mode prove
+prove: depth 5
+cover: mode cover
+cover: depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+# Read the production adapter without FORMAL: its temporal harness must not
+# constrain the miter's arbitrary grant, flush, and payload inputs.
+read -sv riscv_pkg.sv fu_cdb_adapter.sv
+read -formal -sv mul_completion_tag.sv
+prep -top mul_completion_tag
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv
+mul_completion_tag.sv

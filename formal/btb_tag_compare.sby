@@ -1,0 +1,29 @@
+[tasks]
+bmc
+bmc_small_btb
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D BTB_TAG_COMPARE_LOCAL_PROOF -sv branch_predictor.sv
+bmc_small_btb: chparam -set BTB_INDEX_BITS 4 branch_predictor
+# This is the combinational comparison contract. Cut all RAMs so their
+# outputs are independent arbitrary words, including the canonical tag.
+delete t:sdp_dist_ram t:sdp_block_ram
+proc
+setundef -undriven -anyseq
+opt
+prep -top branch_predictor
+select -assert-count 1 t:$check
+select -assert-none t:$assume a:init
+write_json prepared_model.json
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
