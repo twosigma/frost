@@ -13,8 +13,9 @@ with 10 Gigabit Ethernet and 1 GiB of DDR4 memory.
   and a root filesystem served over NFS. [Setup guide](docs/debian_nfsroot.md).
 - **10 Gigabit Ethernet:** an integrated NIC with a Linux driver and coherent DMA.
 - **Real workloads:** FreeRTOS and all nine EEMBC CoreMark-PRO benchmarks.
-- **Open tools:** simulate with Verilator and run formal checks with SymbiYosys.
-  FPGA bitstreams are built with Vivado.
+- **Open-source tools:** Verilator for simulation, Yosys for synthesis checks,
+  and SymbiYosys for formal verification, all included in the Docker image.
+  Full FPGA bitstreams require proprietary Vivado on the host.
 - **Portable RTL:** generic SystemVerilog with separate board integrations.
 - **VS Code support:** program the FPGA, load software, debug, and use the
   serial console with the [FROST extension](tools/vscode-frost/README.md).
@@ -59,8 +60,8 @@ The diagram shows the X3 configuration. Click to view it at full size.
   and 8-entry return stack; roughly two-cycle conditional-branch recovery.
 - Sv39 virtual memory with hardware page-table walks and separate instruction
   and data TLBs.
-- On X3: 16 KiB L1I, 128 KiB L1D, 2 MiB L2, and a load-queue L0 cache.
-  DMA is coherent with the data caches.
+- Separate instruction and data ports. On X3: 16 KiB L1I, 128 KiB L1D,
+  2 MiB L2, and a load-queue L0 cache. DMA is coherent with the data caches.
 - 256 KiB of local BRAM and 1 GiB of cached DDR, with the same [memory map](sw/README.md#memory-map)
   in simulation and on hardware.
 - UART, CLINT-compatible timer, PLIC interrupt controller, and 10GBASE-R Ethernet.
@@ -71,8 +72,9 @@ See the [RTL guide](hw/rtl/README.md) and
 
 ## Prerequisites
 
-Install Docker for simulation, formal verification, and linting. FPGA builds
-also require Vivado on the host. The tool versions used by the project are:
+The Docker image includes RISC-V GCC and tools for simulation, open-source
+synthesis, formal verification, and linting. Full FPGA bitstreams require
+proprietary Vivado, installed separately on the host. Tool versions:
 
 | Category      | Tool              | Version |
 |---------------|-------------------|---------|
@@ -122,8 +124,9 @@ Run the `Lint` and `Fast Python Tests` CI gates with:
 ```
 
 The lint hooks may modify files; review the resulting diff. Use
-`./scripts/frost.py lint` for lint alone. Simulation and formal checks run
-separately; see the [test guide](tests/README.md).
+`./scripts/frost.py lint` for lint alone, or add `--fail-fast` to `check` to
+stop after the first failing phase. Simulation and formal checks run separately;
+see the [test guide](tests/README.md).
 
 ## Quick Start
 

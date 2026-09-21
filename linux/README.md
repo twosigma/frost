@@ -42,7 +42,9 @@ today's kernel, whose footprint is about 31 MiB.
 
 The firmware is OpenSBI v1.7's generic platform from `linux/opensbi`, built
 by `linux/opensbi_build.py` with the Linux-targeted toolchain in the Docker
-image. Build settings:
+image. OpenSBI requires a PIE-capable linker; the bare-metal xPack linker
+cannot build it. Use `FROST_LINUX_CROSS_COMPILE` or `--cross` to select another
+Linux-targeted toolchain. Build settings:
 
 - `FW_TEXT_START=0x80000000` and `FW_JUMP_OFFSET=0x200000`.
 - Empty `FW_JUMP_FDT_OFFSET` to preserve the DTB address in `a1`.
@@ -144,7 +146,8 @@ gate access from below M-mode: S-mode needs the counter's bit set in
 - With a bit clear in either register, a U-mode access to that counter's
   CSR is an illegal instruction (mcause=2, mtval=0).
 
-Linux exposes cycle and instruction counts through the SBI PMU and
+Linux can restrict direct userspace `rdcycle`/`rdinstret` access. It exposes
+cycle and instruction counts through the SBI PMU and
 `perf_event_open` (`PERF_COUNT_HW_CPU_CYCLES` and
 `PERF_COUNT_HW_INSTRUCTIONS`). The `riscv,pmu` device-tree node maps these
 events to the fixed counters. `frost_stress --counters` measures a child
@@ -244,10 +247,9 @@ The export must allow read-write access from the board without root squashing.
 | `FROST_LINUX_MAC` | Board MAC address; defaults to `02:11:22:33:44:55` |
 
 For Debian, use the NFS root's `/boot/vmlinux-<version>` and
-`/boot/initrd.img-<version>`, matching the pinned kernel release. The
-[hardware regression](../docs/debian_nfsroot.md#hardware-regression) requires
-all four `FROST_LINUX_NFSROOT`, `FROST_LINUX_IP`, `FROST_LINUX_KERNEL`, and
-`FROST_LINUX_INITRD` settings explicitly.
+`/boot/initrd.img-<version>`, matching the pinned kernel release. For the
+hardware regression's site configuration and automatic image selection,
+see the [setup guide](../docs/debian_nfsroot.md#hardware-regression).
 
 A static IP uses `<client>::<gateway>:<netmask>:<hostname>:<device>:off`, for
 example `192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off`.

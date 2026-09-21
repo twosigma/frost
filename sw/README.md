@@ -550,6 +550,11 @@ Defined in `common/link.ld`:
 | MMIO   | `0x40000000` | 44 B    | Native UART/FIFO/timer/MSIP registers (the linker's window); the NS16550 UART at `0x40001000` and the SiFive CLINT alias at `0x40010000` sit above it |
 | DDR    | `0x80000000` | 1 GiB   | Cached region: execute-from-DDR code, heap, large `.ddr_*` data |
 
+Low BRAM has separate instruction and data copies: ordinary stores do not
+update fetched instructions. Put self-modifying code in DDR and use
+`fence.i` after writes. Debugger writes can update BRAM code through the
+debug module's instruction-copy mirror.
+
 Within the DDR region, opt-in `.ddr_text` code comes first, then the loaded
 `.ddr_rodata` and `.ddr_data` sections, then `.ddr_bss`, then the heap to the
 end of the gigabyte. An object reaches `.ddr_rodata` either through a
@@ -644,8 +649,11 @@ Special cases:
 - Optimization: `-O3` by default; an app may override `OPT_LEVEL` (isa_test uses `-O2`)
 - Source debugging: `make FROST_DEBUG=1` adds DWARF information and uses
   `-Og -g3` with frame pointers for common C apps and CoreMark-PRO.
-  `isa_test` reserves `s0` for instruction tests and omits frame pointers.
+  `FROST_DEBUG_FRAME_POINTER=0` disables frame pointers; `isa_test` uses this
+  because its instruction tests clobber `s0`.
   Assembly apps provide source-line information and start at `_start`.
+  Stack unwinding is not guaranteed through custom assembly, trap handlers,
+  or FreeRTOS task switches.
   Debug builds are unsuitable for benchmark measurements.
 - The FPGA loader's `--debug` supports single-ELF apps. `linux_boot` and
   `opensbi_smoke` use separate firmware-image flows. FreeRTOS debugging
