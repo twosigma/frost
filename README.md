@@ -8,7 +8,7 @@ with 10 Gigabit Ethernet and 1 GiB of DDR4 memory.
 
 ## Why FROST?
 
-- **Performance:** 1015 CoreMark at 300 MHz (3.38 CoreMark/MHz) on the X3.
+- **Performance:** 1020 CoreMark at 300 MHz (3.4 CoreMark/MHz) on the X3.
 - **Full Debian Linux:** Debian 13 with its stock riscv64 kernel, systemd,
   and a root filesystem served over NFS. [Setup guide](docs/debian_nfsroot.md).
 - **10 Gigabit Ethernet:** an integrated NIC with a Linux driver and coherent DMA.
