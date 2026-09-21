@@ -118,6 +118,18 @@ cat > ${R:?}/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf <<'E
 ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noreset --noclear --keep-baud 115200,57600,38400,9600 - ${TERM}
 EOF
+
+# That getty waits for udev to produce /dev/ttyS0, and systemd stops waiting
+# after DefaultDeviceTimeoutSec. At the rated clock the device appears around
+# 51s and the default 90s is ample, but a divided-clock bitstream is slow
+# enough to miss it, and the console then has no login prompt at all
+# ("Troubleshooting"). Raising it costs nothing on a board that was going to
+# make the default anyway.
+mkdir -p ${R:?}/etc/systemd/system.conf.d
+cat > ${R:?}/etc/systemd/system.conf.d/device-timeout.conf <<'EOF'
+[Manager]
+DefaultDeviceTimeoutSec=300s
+EOF
 ```
 
 - The initramfs configures eth0 and mounts the root over it before Debian
@@ -437,7 +449,7 @@ A kernel update takes effect only after a new load (see "Operation").
 | Permission errors from systemd and services after the root mounts | The export squashes root: add `no_root_squash` and run `exportfs -ra`. |
 | `nfs: server 192.0.2.1 not responding, still trying` | The server or the link is down. The hard mount waits and logs `nfs: server 192.0.2.1 OK` when it returns. |
 | systemd stalls, or the root stops responding once userspace starts | Something renamed or reconfigured eth0: check the `99-default.link` mask and that no `interfaces` stanza, DHCP client, systemd-networkd or NetworkManager touches eth0. |
-| `[ TIME ] Timed out waiting for device dev-ttyS0.device - /dev/ttyS0.`, then `[DEPEND] Dependency failed for serial-getty…S0.service - Serial Getty on ttyS0.` | udev reached ttyS0 after systemd stopped waiting for it (`DefaultDeviceTimeoutSec`, 90 s by default), so the console has no login prompt; SSH is unaffected. At 300 MHz the device appears around 51 s and the getty starts, so this is a symptom of a slower bitstream or a slow server: raise the timeout with a drop-in under `/etc/systemd/system.conf.d` if you need the console login on one. |
+| `[ TIME ] Timed out waiting for device dev-ttyS0.device - /dev/ttyS0.`, then `[DEPEND] Dependency failed for serial-getty…S0.service - Serial Getty on ttyS0.` | udev reached ttyS0 after systemd stopped waiting for it (`DefaultDeviceTimeoutSec`, 90 s by default), so the console has no login prompt; SSH is unaffected. At 300 MHz the device appears around 51 s and the getty starts, so this is a symptom of a slower bitstream or a slow server: step 2's `device-timeout.conf` raises the wait to 300 s, which is enough for a divided-clock build. |
 | `eth0: re-enabled RX after a MAC domain reset (N)` | Informational: the transceiver reset its receiver while the link was down, and the driver enabled receive again when the carrier returned. |
 | apt: `Release file for ... is not valid yet` | The clock is behind. Fix the time source, or set the date as in step 7. |
 | apt: `Temporary failure resolving ...` | No DNS: the tree's `/etc/resolv.conf`, or the board's route to that resolver. |
