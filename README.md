@@ -256,19 +256,19 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraNetDelay_high`/0.450 post-place report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; final report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 173,262 | 1,029,600 | 16.8% |
-|   LUT as Logic | 156,303 | 1,029,600 | 15.2% |
-|   LUT as Distributed RAM | 15,888 | — | — |
+| CLB LUTs | 173,711 | 1,029,600 | 16.9% |
+|   LUT as Logic | 156,756 | 1,029,600 | 15.2% |
+|   LUT as Distributed RAM | 15,884 | — | — |
 |   LUT as Shift Register | 1,071 | — | — |
-| CLB Registers | 108,014 | 2,059,200 | 5.2% |
+| CLB Registers | 109,257 | 2,059,200 | 5.3% |
 | Block RAM Tile | 246 | 2,112 | 11.7% |
 | URAM | 68 | 352 | 19.3% |
 | DSPs | 47 | 1,320 | 3.6% |
-| CARRY8 | 2,578 | 128,700 | 2.0% |
+| CARRY8 | 2,601 | 128,700 | 2.0% |
 | F7 Muxes | 1,962 | 514,800 | 0.4% |
 | F8 Muxes | 926 | 257,400 | 0.4% |
 | Bonded IOB | 132 | 364 | 36.3% |
