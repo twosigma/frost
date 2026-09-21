@@ -76,22 +76,34 @@ The Docker image includes RISC-V GCC and tools for simulation, open-source
 synthesis, formal verification, and linting. Full FPGA bitstreams require
 proprietary Vivado, installed separately on the host. Tool versions:
 
-| Category      | Tool              | Version |
-|---------------|-------------------|---------|
-| **Compiler**  | RISC-V GCC        | 15.2.0  |
-| **Testbench** | Cocotb            | 2.1.0   |
-|               | pytest            | 9.1.1   |
-| **Simulator** | Verilator         | 5.052   |
-| **Synthesis** | Yosys             | 0.68    |
-|               | sv2v              | 0.0.13  |
-| **Formal**    | SymbiYosys        | 0.68    |
-|               | Z3                | 4.15.0  |
-|               | Boolector         | 3.2.4   |
-| **FPGA**      | Vivado (optional) | 2025.2  |
-| **Linting**   | pre-commit        | 4.6.0   |
-|               | clang-format      | 19.1.6  |
-|               | clang-tidy        | 18.1.3  |
-|               | Verible           | 0.0-4051|
+| Category | Tool | Version |
+|----------|------|---------|
+| **Image** | Ubuntu | 26.04 |
+| **Runtime** | Python | 3.14.7 (native scripts support 3.12+) |
+| | Node.js / npm | 26.9.0 / 12.0.2 |
+| **Compiler** | Native GCC / G++ | 16.2.0 |
+| | Clang / clang-tidy / clang-format | 23.1.1 |
+| | RISC-V bare-metal GCC (xPack) | 15.2.0-1 |
+| | RISC-V Linux GCC (Bootlin stable musl) | 15.3.0 (2026.08-1) |
+| | pip / setuptools / wheel | 26.2.1 / 84.0.0 / 0.48.0 |
+| **Build** | CMake / Meson / Ninja | 4.4.3 / 1.12.0 / 1.13.2 |
+| | Buildroot / OpenSBI | 2026.08 / 1.9 |
+| **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
+| **Simulator** | Verilator / QEMU | 5.052 / 11.1.1 |
+| | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
+| **Synthesis** | Yosys / sv2v | 0.69 / 0.0.13 |
+| **Formal** | SymbiYosys / Z3 / Boolector | 0.69 / 5.1.0 / 3.2.4 |
+| **Debug** | OpenOCD | 0.12.0 |
+| **FPGA** | Vivado (native, separately installed and validated) | 2025.2 |
+| **Linting** | pre-commit / Ruff / mypy | 4.6.2 / 0.16.8 / 2.3.1 |
+| | Verible | 0.0-4294-gc1d8f5e8 |
+| **CLI** | Click | 8.5.0 |
+| **Extension** | TypeScript / vsce | 7.0.2 / 4.0.0 |
+
+Pins were checked against upstream stable releases on 2026-09-21; see the
+[tooling update notes](docs/tooling.md) for sources, compatibility constraints,
+and validation commands. Ubuntu supplies the remaining system utilities and
+libraries with its current security updates.
 
 ## Docker Development Environment
 

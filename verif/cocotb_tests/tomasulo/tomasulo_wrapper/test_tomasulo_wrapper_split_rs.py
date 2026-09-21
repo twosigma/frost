@@ -106,9 +106,9 @@ def assert_rs_counts(
     for rs_type in ALL_RS_TYPES:
         expected = expected_counts.get(rs_type, 0)
         actual = dut_if.rs_count_for(rs_type)
-        assert (
-            actual == expected
-        ), f"{RS_NAMES[rs_type]} count mismatch: got {actual}, expected {expected}"
+        assert actual == expected, (
+            f"{RS_NAMES[rs_type]} count mismatch: got {actual}, expected {expected}"
+        )
 
 
 def read_cdb_lanes(dut: Any) -> list[CdbBroadcast]:
@@ -332,9 +332,9 @@ async def test_split_rs_int_depth8_accepts_pair_at_count6(dut: Any) -> None:
 
     assert_rs_counts(dut_if, {RS_INT: 6})
     assert not dut_if.rs_full_for(RS_INT), "INT_RS must not be full at count 6"
-    assert not bool(
-        dut.o_int_rs_full_for_2.value
-    ), "INT_RS must admit a two-slot bundle at count 6"
+    assert not bool(dut.o_int_rs_full_for_2.value), (
+        "INT_RS must admit a two-slot bundle at count 6"
+    )
 
     boundary_payloads = (
         {
@@ -362,9 +362,9 @@ async def test_split_rs_int_depth8_accepts_pair_at_count6(dut: Any) -> None:
 
     assert_rs_counts(dut_if, {RS_INT: 8})
     assert dut_if.rs_full_for(RS_INT), "INT_RS must be full at count 8"
-    assert bool(
-        dut.o_int_rs_full_for_2.value
-    ), "A full INT_RS must also assert full_for_2"
+    assert bool(dut.o_int_rs_full_for_2.value), (
+        "A full INT_RS must also assert full_for_2"
+    )
 
     # With both ALU pipes held, neither high-index payload may disappear.
     await dut_if.step()
@@ -420,9 +420,9 @@ async def test_split_rs_int_depth8_accepts_pair_at_count6(dut: Any) -> None:
     await step_and_clear_dispatch(dut_if)
     assert_rs_counts(dut_if, {RS_INT: 7})
     assert not dut_if.rs_full_for(RS_INT), "Count 7 must leave one INT_RS slot"
-    assert bool(
-        dut.o_int_rs_full_for_2.value
-    ), "Count 7 must advertise that a two-slot INT bundle cannot fit"
+    assert bool(dut.o_int_rs_full_for_2.value), (
+        "Count 7 must advertise that a two-slot INT bundle cannot fit"
+    )
 
     cocotb.log.info("=== Test Passed ===")
 

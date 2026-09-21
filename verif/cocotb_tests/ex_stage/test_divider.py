@@ -75,14 +75,14 @@ async def test_streaming_division(dut: Any) -> None:
             expected = pending.popleft()
         await RisingEdge(dut.i_clk)
         await ReadOnly()
-        assert bool(dut.o_valid_output.value) == (
-            expected is not None
-        ), f"cycle {cycle}: valid misaligned at latency {latency}"
+        assert bool(dut.o_valid_output.value) == (expected is not None), (
+            f"cycle {cycle}: valid misaligned at latency {latency}"
+        )
         if expected is not None:
             actual = (int(dut.o_quotient.value), int(dut.o_remainder.value))
-            assert (
-                actual == expected
-            ), f"cycle {cycle}: got q/r {actual}, expected {expected}"
+            assert actual == expected, (
+                f"cycle {cycle}: got q/r {actual}, expected {expected}"
+            )
             checked += 1
         cycle += 1
 

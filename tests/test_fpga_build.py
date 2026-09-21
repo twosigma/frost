@@ -1025,9 +1025,7 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert '"SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=1"' in tcl
     assert '"DIRECTIVE=$directive"' in tcl
     assert '"PLACE_UNCERTAINTY_NS=[format %.3f $x3_place_uncertainty]"' in tcl
-    assert (
-        '"SCORE_UNCERTAINTY_NS=[format %.3f ' '$x3_place_baseline_uncertainty]"' in tcl
-    )
+    assert '"SCORE_UNCERTAINTY_NS=[format %.3f $x3_place_baseline_uncertainty]"' in tcl
     assert add_compressed_group < place
     assert place < remove_compressed_group < temporary_checkpoint
     assert remove_compressed_group < restore_scoring_uncertainty

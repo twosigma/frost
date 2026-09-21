@@ -214,18 +214,18 @@ async def test_absent_clock_does_not_block_reset(dut: Any) -> None:
     clocks = await _setup(dut, tx_clk=True, rx_clk=False)
     await _wait_for(dut, lambda: _ready(dut)[0] == 1, "tx ready")
     assert _ready(dut)[1] == 0
-    assert (
-        int(dut.o_rx_domain_rst.value) == 1
-    ), "an absent-clock domain must sit in reset"
+    assert int(dut.o_rx_domain_rst.value) == 1, (
+        "an absent-clock domain must sit in reset"
+    )
     dut.i_reset_req.value = 1
     await FallingEdge(dut.i_clk)
     dut.i_reset_req.value = 0
     await _wait_for(dut, lambda: int(dut.o_busy.value) == 0, "busy clear", 200)
     await _wait_for(dut, lambda: _ready(dut)[0] == 1, "tx ready again")
     assert _ready(dut)[1] == 0
-    assert (
-        int(dut.o_rx_req.value) == 1
-    ), "the request must stay up while the clock is absent"
+    assert int(dut.o_rx_req.value) == 1, (
+        "the request must stay up while the clock is absent"
+    )
     # The clock returns: the far side applies the pending generation.
     clocks.start(rx=True)
     await _core(dut, 4)
@@ -247,9 +247,9 @@ async def test_clock_loss_in_operation_restarts_generation(dut: Any) -> None:
     await _core(dut, 3)
     assert _ready(dut)[0] == 0
     assert int(dut.o_tx_req.value) == 1 and int(dut.o_tx_gen.value) != gen_before
-    assert (
-        int(dut.o_tx_domain_rst.value) == 1
-    ), "the request must reset the domain without a clock"
+    assert int(dut.o_tx_domain_rst.value) == 1, (
+        "the request must reset the domain without a clock"
+    )
     await _core(dut, 50)
     assert _ready(dut)[0] == 0, "ready without a clock"
     clocks.start(tx=True)
@@ -334,9 +334,9 @@ async def test_rx_to_core_fifo_and_counter_across_domain_reset(dut: Any) -> None
     dut.i_rx_clk_ok.value = 1
     await _wait_for(dut, lambda: _ready(dut)[1] == 1, "rx ready")
     await _core(dut, 10)
-    assert (
-        int(dut.o_c_total.value) == n_events
-    ), "the domain reset invented or lost events"
+    assert int(dut.o_c_total.value) == n_events, (
+        "the domain reset invented or lost events"
+    )
     # More events count on from there; a RESET clears the total.
     for _ in range(4):
         await FallingEdge(dut.i_rx_clk)

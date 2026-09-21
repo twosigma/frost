@@ -187,7 +187,8 @@ run_in_umode:
     la      t0, g_umode_saved_sp
     sd      sp, 0(t0)
     csrw    sepc, a0
-    li      t0, 0x120               // SPP=0 (U) and SPIE=0: interrupts stay off in U
+    // SPP=0 (U), SPIE=0. S interrupt delivery in U-mode is controlled by sie.
+    li      t0, 0x120
     csrc    sstatus, t0
     csrw    sscratch, sp            // S stack for the trap entry while U runs
     mv      sp, a2

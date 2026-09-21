@@ -976,9 +976,9 @@ async def test_memory_size_byte(dut: Any) -> None:
     await dut_if.step()
 
     rs = dut_if.read_rs_dispatch()
-    assert (
-        rs["mem_size"] == MEM_SIZE_BYTE
-    ), f"Expected MEM_SIZE_BYTE, got {rs['mem_size']}"
+    assert rs["mem_size"] == MEM_SIZE_BYTE, (
+        f"Expected MEM_SIZE_BYTE, got {rs['mem_size']}"
+    )
 
 
 @cocotb.test()
@@ -1121,9 +1121,9 @@ async def test_predicted_target_from_btb(dut: Any) -> None:
 
     rs = dut_if.read_rs_dispatch()
     assert rs["predicted_taken"] == 1, "predicted_taken should be 1"
-    assert (
-        rs["predicted_target"] == btb_target
-    ), f"predicted_target mismatch: {rs['predicted_target']:#x}"
+    assert rs["predicted_target"] == btb_target, (
+        f"predicted_target mismatch: {rs['predicted_target']:#x}"
+    )
 
 
 # =============================================================================
@@ -1219,9 +1219,9 @@ async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
     await dut_if.step()
     rs = dut_if.read_rs_dispatch()
     assert rs["predicted_target"] == 0x8000_3000, "RAS prediction selected"
-    assert (
-        rs["predicted_target_ok"] == 0
-    ), "the RAS compare, not the BTB compare, is forwarded"
+    assert rs["predicted_target_ok"] == 0, (
+        "the RAS compare, not the BTB compare, is forwarded"
+    )
 
 
 @cocotb.test()
@@ -1240,12 +1240,12 @@ async def test_jalr_link_in_imm_and_offset_in_jalr_imm(dut: Any) -> None:
 
     rs = dut_if.read_rs_dispatch()
     assert rs["use_imm"] == 1
-    assert (
-        rs["imm"] == 0x8000_1004
-    ), f"imm should carry the link address, got {rs['imm']:#x}"
-    assert (
-        rs["jalr_imm"] == 0xF13
-    ), f"jalr_imm should carry imm_i[11:0], got {rs['jalr_imm']:#x}"
+    assert rs["imm"] == 0x8000_1004, (
+        f"imm should carry the link address, got {rs['imm']:#x}"
+    )
+    assert rs["jalr_imm"] == 0xF13, (
+        f"jalr_imm should carry imm_i[11:0], got {rs['jalr_imm']:#x}"
+    )
 
 
 @cocotb.test()
@@ -1263,9 +1263,9 @@ async def test_auipc_and_fetch_fault_immediates_are_precomputed(dut: Any) -> Non
     await dut_if.step()
     rs = dut_if.read_rs_dispatch()
     assert rs["use_imm"] == 1, "AUIPC materializes its immediate like LUI"
-    assert (
-        rs["imm"] == 0x8000_6000
-    ), f"AUIPC imm should be PC + imm_u, got {rs['imm']:#x}"
+    assert rs["imm"] == 0x8000_6000, (
+        f"AUIPC imm should be PC + imm_u, got {rs['imm']:#x}"
+    )
 
     dut_if.drive_instruction(
         valid=True,
@@ -1278,9 +1278,9 @@ async def test_auipc_and_fetch_fault_immediates_are_precomputed(dut: Any) -> Non
     await dut_if.step()
     rs = dut_if.read_rs_dispatch()
     assert rs["use_imm"] == 0
-    assert (
-        rs["imm"] == 0x8000_1002
-    ), f"fetch-fault imm should be the xtval, got {rs['imm']:#x}"
+    assert rs["imm"] == 0x8000_1002, (
+        f"fetch-fault imm should be the xtval, got {rs['imm']:#x}"
+    )
 
 
 @cocotb.test()
@@ -1350,8 +1350,8 @@ async def test_slot2_precomputed_immediates(dut: Any) -> None:
     slot2_rs = dut_if.read_int_rs_dispatch_2()
     assert slot2_rs["valid"] == 1
     assert slot2_rs["use_imm"] == 0
-    assert (
-        slot2_rs["imm"] == 0x2080
-    ), f"slot-2 branch imm should be the target, got {slot2_rs['imm']:#x}"
+    assert slot2_rs["imm"] == 0x2080, (
+        f"slot-2 branch imm should be the target, got {slot2_rs['imm']:#x}"
+    )
     assert slot2_rs["predicted_target_ok"] == 1
     assert slot2_rs["is_compressed"] == 1

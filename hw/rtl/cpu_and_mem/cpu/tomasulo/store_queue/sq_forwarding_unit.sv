@@ -207,7 +207,7 @@ module sq_forwarding_unit #(
   // assumes a power-of-two DEPTH: its ring pointers index the entry arrays
   // directly.)
   localparam int unsigned FwdTreeLevels = $clog2(DEPTH);
-  localparam int unsigned FwdTreeWidth = 1 << FwdTreeLevels;
+  localparam int unsigned FwdTreeWidth  = 1 << FwdTreeLevels;
   fwd_winner_t fwd_node[2*FwdTreeWidth];
   fwd_winner_t fwd_winner;
 `endif

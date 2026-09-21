@@ -181,9 +181,9 @@ async def test_device_read_shield_defers_interrupt_until_released(dut: Any) -> N
     for _ in range(8):
         await RisingEdge(dut.i_clk)
         await Timer(1, unit="ns")
-        assert (
-            int(dut.o_trap_taken.value) == 0
-        ), "interrupt escaped the device-read shield"
+        assert int(dut.o_trap_taken.value) == 0, (
+            "interrupt escaped the device-read shield"
+        )
         # Boundedness: the drain is open, so commit must not be held here.
         assert int(dut.o_trap_drain_wait.value) == 0, "shield window held commit"
 

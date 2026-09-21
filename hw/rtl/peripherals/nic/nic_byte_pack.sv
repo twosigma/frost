@@ -70,7 +70,7 @@ module nic_byte_pack #(
 
     output logic o_busy  // a frame is in the packer (until its last write left)
 );
-  localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
+  localparam int unsigned OffsetBits  = $clog2(LINE_BYTES);
   localparam int unsigned WindowBytes = 2 * LINE_BYTES;
 
   // ---- frame state ---------------------------------------------------------------

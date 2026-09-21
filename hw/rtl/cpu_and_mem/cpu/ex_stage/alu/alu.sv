@@ -336,23 +336,23 @@ module alu #(
   // cannot silently change a projected predicate on a consuming operation.
   // Check every named consumer at time zero, even if no stimulus ever
   // executes that opcode. These are constants, not coverage-dependent checks.
-  localparam logic [6:0] ControlsSLL = riscv_pkg::projected_shift_controls(riscv_pkg::SLL);
-  localparam logic [6:0] ControlsSRL = riscv_pkg::projected_shift_controls(riscv_pkg::SRL);
-  localparam logic [6:0] ControlsSRA = riscv_pkg::projected_shift_controls(riscv_pkg::SRA);
-  localparam logic [6:0] ControlsSLLI = riscv_pkg::projected_shift_controls(riscv_pkg::SLLI);
-  localparam logic [6:0] ControlsSRLI = riscv_pkg::projected_shift_controls(riscv_pkg::SRLI);
-  localparam logic [6:0] ControlsSRAI = riscv_pkg::projected_shift_controls(riscv_pkg::SRAI);
-  localparam logic [6:0] ControlsROL = riscv_pkg::projected_shift_controls(riscv_pkg::ROL);
-  localparam logic [6:0] ControlsROR = riscv_pkg::projected_shift_controls(riscv_pkg::ROR);
-  localparam logic [6:0] ControlsRORI = riscv_pkg::projected_shift_controls(riscv_pkg::RORI);
-  localparam logic [6:0] ControlsSLLW = riscv_pkg::projected_shift_controls(riscv_pkg::SLLW);
-  localparam logic [6:0] ControlsSRLW = riscv_pkg::projected_shift_controls(riscv_pkg::SRLW);
-  localparam logic [6:0] ControlsSRAW = riscv_pkg::projected_shift_controls(riscv_pkg::SRAW);
+  localparam logic [6:0] ControlsSLL   = riscv_pkg::projected_shift_controls(riscv_pkg::SLL);
+  localparam logic [6:0] ControlsSRL   = riscv_pkg::projected_shift_controls(riscv_pkg::SRL);
+  localparam logic [6:0] ControlsSRA   = riscv_pkg::projected_shift_controls(riscv_pkg::SRA);
+  localparam logic [6:0] ControlsSLLI  = riscv_pkg::projected_shift_controls(riscv_pkg::SLLI);
+  localparam logic [6:0] ControlsSRLI  = riscv_pkg::projected_shift_controls(riscv_pkg::SRLI);
+  localparam logic [6:0] ControlsSRAI  = riscv_pkg::projected_shift_controls(riscv_pkg::SRAI);
+  localparam logic [6:0] ControlsROL   = riscv_pkg::projected_shift_controls(riscv_pkg::ROL);
+  localparam logic [6:0] ControlsROR   = riscv_pkg::projected_shift_controls(riscv_pkg::ROR);
+  localparam logic [6:0] ControlsRORI  = riscv_pkg::projected_shift_controls(riscv_pkg::RORI);
+  localparam logic [6:0] ControlsSLLW  = riscv_pkg::projected_shift_controls(riscv_pkg::SLLW);
+  localparam logic [6:0] ControlsSRLW  = riscv_pkg::projected_shift_controls(riscv_pkg::SRLW);
+  localparam logic [6:0] ControlsSRAW  = riscv_pkg::projected_shift_controls(riscv_pkg::SRAW);
   localparam logic [6:0] ControlsSLLIW = riscv_pkg::projected_shift_controls(riscv_pkg::SLLIW);
   localparam logic [6:0] ControlsSRLIW = riscv_pkg::projected_shift_controls(riscv_pkg::SRLIW);
   localparam logic [6:0] ControlsSRAIW = riscv_pkg::projected_shift_controls(riscv_pkg::SRAIW);
-  localparam logic [6:0] ControlsROLW = riscv_pkg::projected_shift_controls(riscv_pkg::ROLW);
-  localparam logic [6:0] ControlsRORW = riscv_pkg::projected_shift_controls(riscv_pkg::RORW);
+  localparam logic [6:0] ControlsROLW  = riscv_pkg::projected_shift_controls(riscv_pkg::ROLW);
+  localparam logic [6:0] ControlsRORW  = riscv_pkg::projected_shift_controls(riscv_pkg::RORW);
   localparam logic [6:0] ControlsRORIW = riscv_pkg::projected_shift_controls(riscv_pkg::RORIW);
   always_comb begin
     assert (riscv_pkg::InstrOpWidth == 8);

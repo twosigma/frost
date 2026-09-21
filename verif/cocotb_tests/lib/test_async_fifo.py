@@ -107,9 +107,9 @@ async def _reader(
             await RisingEdge(dut.o_clk)
             got.append(data)
             held = None
-            assert (
-                data == expected[len(got) - 1]
-            ), f"word {len(got) - 1}: got {data:#x} expected {expected[len(got) - 1]:#x}"
+            assert data == expected[len(got) - 1], (
+                f"word {len(got) - 1}: got {data:#x} expected {expected[len(got) - 1]:#x}"
+            )
             await Timer(1, unit="ps")
             dut.i_ready.value = 0
         else:

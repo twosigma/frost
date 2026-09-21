@@ -52,28 +52,28 @@ def assert_output_match(
     dut_out = dut_if.read_fu_complete()
     dut_pending = dut_if.read_result_pending()
 
-    assert (
-        dut_out.valid == expected.fu_complete.valid
-    ), f"{prefix}valid: DUT={dut_out.valid} model={expected.fu_complete.valid}"
+    assert dut_out.valid == expected.fu_complete.valid, (
+        f"{prefix}valid: DUT={dut_out.valid} model={expected.fu_complete.valid}"
+    )
     if expected.fu_complete.valid:
-        assert (
-            dut_out.tag == expected.fu_complete.tag
-        ), f"{prefix}tag: DUT={dut_out.tag} model={expected.fu_complete.tag}"
-        assert (
-            dut_out.value == expected.fu_complete.value
-        ), f"{prefix}value: DUT=0x{dut_out.value:x} model=0x{expected.fu_complete.value:x}"
-        assert (
-            dut_out.exception == expected.fu_complete.exception
-        ), f"{prefix}exception: DUT={dut_out.exception} model={expected.fu_complete.exception}"
-        assert (
-            dut_out.exc_cause == expected.fu_complete.exc_cause
-        ), f"{prefix}exc_cause: DUT={dut_out.exc_cause} model={expected.fu_complete.exc_cause}"
-        assert (
-            dut_out.fp_flags == expected.fu_complete.fp_flags
-        ), f"{prefix}fp_flags: DUT={dut_out.fp_flags} model={expected.fu_complete.fp_flags}"
-    assert (
-        dut_pending == expected.result_pending
-    ), f"{prefix}result_pending: DUT={dut_pending} model={expected.result_pending}"
+        assert dut_out.tag == expected.fu_complete.tag, (
+            f"{prefix}tag: DUT={dut_out.tag} model={expected.fu_complete.tag}"
+        )
+        assert dut_out.value == expected.fu_complete.value, (
+            f"{prefix}value: DUT=0x{dut_out.value:x} model=0x{expected.fu_complete.value:x}"
+        )
+        assert dut_out.exception == expected.fu_complete.exception, (
+            f"{prefix}exception: DUT={dut_out.exception} model={expected.fu_complete.exception}"
+        )
+        assert dut_out.exc_cause == expected.fu_complete.exc_cause, (
+            f"{prefix}exc_cause: DUT={dut_out.exc_cause} model={expected.fu_complete.exc_cause}"
+        )
+        assert dut_out.fp_flags == expected.fu_complete.fp_flags, (
+            f"{prefix}fp_flags: DUT={dut_out.fp_flags} model={expected.fu_complete.fp_flags}"
+        )
+    assert dut_pending == expected.result_pending, (
+        f"{prefix}result_pending: DUT={dut_pending} model={expected.result_pending}"
+    )
 
 
 # ============================================================================
@@ -197,18 +197,18 @@ async def test_value_propagation(dut: Any) -> None:
 
         # Pass-through
         dut_out = dut_if.read_fu_complete()
-        assert (
-            dut_out.value == val
-        ), f"pass-through: DUT=0x{dut_out.value:016x} expected=0x{val:016x}"
+        assert dut_out.value == val, (
+            f"pass-through: DUT=0x{dut_out.value:016x} expected=0x{val:016x}"
+        )
 
         # Latch
         model.step(fu_result, grant=False, flush=False)
         await dut_if.step()
 
         dut_out = dut_if.read_fu_complete()
-        assert (
-            dut_out.value == val
-        ), f"pending: DUT=0x{dut_out.value:016x} expected=0x{val:016x}"
+        assert dut_out.value == val, (
+            f"pending: DUT=0x{dut_out.value:016x} expected=0x{val:016x}"
+        )
 
 
 # ============================================================================
@@ -254,18 +254,18 @@ async def test_fp_flags_propagation(dut: Any) -> None:
         await Timer(1, unit="ns")
 
         dut_out = dut_if.read_fu_complete()
-        assert (
-            dut_out.fp_flags == fp_flags
-        ), f"bit {flag_bit}: DUT=0x{dut_out.fp_flags:02x} expected=0x{fp_flags:02x}"
+        assert dut_out.fp_flags == fp_flags, (
+            f"bit {flag_bit}: DUT=0x{dut_out.fp_flags:02x} expected=0x{fp_flags:02x}"
+        )
 
         # Latch and check
         model.step(fu_result, grant=False, flush=False)
         await dut_if.step()
 
         dut_out = dut_if.read_fu_complete()
-        assert (
-            dut_out.fp_flags == fp_flags
-        ), f"pending bit {flag_bit}: DUT=0x{dut_out.fp_flags:02x} expected=0x{fp_flags:02x}"
+        assert dut_out.fp_flags == fp_flags, (
+            f"pending bit {flag_bit}: DUT=0x{dut_out.fp_flags:02x} expected=0x{fp_flags:02x}"
+        )
 
     # All flags set
     model.reset()
@@ -364,9 +364,9 @@ async def test_back_to_back(dut: Any) -> None:
     assert dut_if.read_result_pending(), "Should remain pending with new result"
     dut_out = dut_if.read_fu_complete()
     assert dut_out.tag == 2, f"Should hold new tag=2, got {dut_out.tag}"
-    assert (
-        dut_out.value == 0xBBBB
-    ), f"Should hold new value=0xBBBB, got 0x{dut_out.value:x}"
+    assert dut_out.value == 0xBBBB, (
+        f"Should hold new value=0xBBBB, got 0x{dut_out.value:x}"
+    )
 
 
 # ============================================================================
@@ -506,9 +506,9 @@ async def test_input_ignored_while_pending(dut: Any) -> None:
     # Output should still be the held result (tag=1), not the new input
     dut_out = dut_if.read_fu_complete()
     assert dut_out.tag == 1, f"Should still show held tag=1, got {dut_out.tag}"
-    assert (
-        dut_out.value == 0x1111
-    ), f"Should still show held value, got 0x{dut_out.value:x}"
+    assert dut_out.value == 0x1111, (
+        f"Should still show held value, got 0x{dut_out.value:x}"
+    )
 
 
 # ============================================================================

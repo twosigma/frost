@@ -304,14 +304,14 @@ def _check_sideband_word(got: int, expected_word: int, label: str) -> None:
     """Check full predecode plus every field supplied by the fast mirror."""
     expected = _GENERATOR.make_sideband(expected_word)
     hex_digits = (SIDEBAND_WIDTH + 3) // 4
-    assert (
-        got == expected
-    ), f"{label} sideband 0x{got:0{hex_digits}x}, want 0x{expected:0{hex_digits}x}"
+    assert got == expected, (
+        f"{label} sideband 0x{got:0{hex_digits}x}, want 0x{expected:0{hex_digits}x}"
+    )
 
     expected_compressed = _expected_compressed(expected_word)
-    assert (
-        got & 0x3 == expected_compressed
-    ), f"{label} compressed mirror 0b{got & 0x3:02b}, want 0b{expected_compressed:02b}"
+    assert got & 0x3 == expected_compressed, (
+        f"{label} compressed mirror 0b{got & 0x3:02b}, want 0b{expected_compressed:02b}"
+    )
     assert got & FAST_SIDEBAND_MASK == expected & FAST_SIDEBAND_MASK, (
         f"{label} fast-sideband mirror 0x{got & FAST_SIDEBAND_MASK:03x}, "
         f"want 0x{expected & FAST_SIDEBAND_MASK:03x}"
@@ -364,9 +364,9 @@ def _check_fetch_window_outputs(
     next_word = words[(current_index + 1) % len(words)]
     got_data = int(dut.o_port_b_read_data.value)
     expected_data = (next_word << 32) | current
-    assert (
-        got_data == expected_data
-    ), f"{window_label}: data 0x{got_data:016x}, want 0x{expected_data:016x}"
+    assert got_data == expected_data, (
+        f"{window_label}: data 0x{got_data:016x}, want 0x{expected_data:016x}"
+    )
     got_hi_rd_is_x2 = int(dut.o_port_b_hi_rd_is_x2.value)
     expected_hi_rd_is_x2 = int(((current >> 23) & 0x1F) == 2) | (
         int(((next_word >> 23) & 0x1F) == 2) << 1

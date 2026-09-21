@@ -241,9 +241,9 @@ async def test_pipelined_hits(dut: Any) -> None:
     last = 0
     for req_id, line in ids:
         cycle, data = await col.wait_for(req_id)
-        assert data == model.read_line(
-            PIPE_BASE + line * LINE_BYTES
-        ), f"line {line} mismatch"
+        assert data == model.read_line(PIPE_BASE + line * LINE_BYTES), (
+            f"line {line} mismatch"
+        )
         last = max(last, cycle)
     elapsed = last - start
     dut._log.info(f"{n} pipelined hits completed in {elapsed} cycles")
@@ -278,9 +278,9 @@ async def test_hit_under_miss(dut: Any) -> None:
     hit_cycle, hit_got = await col.wait_for(hit_id)
     miss_cycle, miss_got = await col.wait_for(miss_id)
     assert hit_got == hit_data and miss_got == miss_data
-    assert (
-        hit_cycle < miss_cycle
-    ), f"hit ({hit_cycle}) did not pass the miss ({miss_cycle})"
+    assert hit_cycle < miss_cycle, (
+        f"hit ({hit_cycle}) did not pass the miss ({miss_cycle})"
+    )
     col.stop()
 
 
@@ -342,15 +342,15 @@ async def test_write_miss_early_ack_and_merge(dut: Any) -> None:
     ack1, _ = await col.wait_for(id1)
     ack2, _ = await col.wait_for(id2)
     read_cycle, got = await col.wait_for(id3)
-    assert (
-        ack1 - start < MEM_LATENCY
-    ), f"write miss ack waited for the fill ({ack1 - start})"
-    assert (
-        ack2 - start < MEM_LATENCY
-    ), f"merged write ack waited for the fill ({ack2 - start})"
-    assert got == model.read_line(
-        addr
-    ), "read did not see both merged writes over the fill"
+    assert ack1 - start < MEM_LATENCY, (
+        f"write miss ack waited for the fill ({ack1 - start})"
+    )
+    assert ack2 - start < MEM_LATENCY, (
+        f"merged write ack waited for the fill ({ack2 - start})"
+    )
+    assert got == model.read_line(addr), (
+        "read did not see both merged writes over the fill"
+    )
     assert read_cycle >= ack2
     col.stop()
 

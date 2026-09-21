@@ -83,7 +83,7 @@ char *_sbrk(int incr)
 arena_t arena_alloc(uint32_t size)
 {
     char *start = heap_grow(size);
-    return (arena_t) {.start = start, .pos = 0, .capacity = start != NULL ? size : 0};
+    return (arena_t){.start = start, .pos = 0, .capacity = start != NULL ? size : 0};
 }
 
 /* Malloc alignment granule. It must hold a struct free_slot (pointer + size),
@@ -239,7 +239,7 @@ void *malloc(size_t size)
     }
 
     struct metadata *md = (struct metadata *) result - 1;
-    *md = (struct metadata) {.size = block_size};
+    *md = (struct metadata){.size = block_size};
 
     return result;
 }

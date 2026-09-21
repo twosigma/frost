@@ -127,6 +127,6 @@ async def test_source_reset_without_rebase_is_wrong(dut: Any) -> None:
     dut.i_src_rst.value = 0
     after = await _settle(dut)
     width = int(dut.WIDTH.value)
-    assert after == before + (
-        (-100) % (1 << width)
-    ), f"expected the documented wrap error, got {after - before}"
+    assert after == before + ((-100) % (1 << width)), (
+        f"expected the documented wrap error, got {after - before}"
+    )

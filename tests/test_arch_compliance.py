@@ -526,7 +526,7 @@ Examples:
   %(prog)s --all
   %(prog)s --test rv64i_m/I/src/addw-01.S
 
-Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
+Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
 """,
     )
     group = parser.add_mutually_exclusive_group(required=True)

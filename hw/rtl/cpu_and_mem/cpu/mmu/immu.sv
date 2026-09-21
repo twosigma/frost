@@ -80,7 +80,7 @@ module immu #(
 );
 
   localparam int unsigned VpnBits = riscv_pkg::Sv39VpnBits;
-  localparam int unsigned NpBits = XLEN - riscv_pkg::Sv39PageOffsetBits;
+  localparam int unsigned NpBits  = XLEN - riscv_pkg::Sv39PageOffsetBits;
 
   // ---------------------------------------------------------------------------
   // Bare bypass: this is the default low-memory/CoreMark path.
@@ -91,7 +91,7 @@ module immu #(
   // or truncation for a caller with a different local XLEN. Keep the high
   // zero reduction separate from Sv39 canonicality/miss logic: sharing those
   // partial reductions can serialize the Bare fault into seven LUT levels.
-  localparam int unsigned PmaHighBits = riscv_pkg::XLEN - 32;
+  localparam int unsigned PmaHighBits   = riscv_pkg::XLEN - 32;
   localparam int unsigned PmaHighChunks = (PmaHighBits + 5) / 6;
   logic [riscv_pkg::XLEN-1:0] bare_pma_pc;
   assign bare_pma_pc = riscv_pkg::XLEN'(i_pc);

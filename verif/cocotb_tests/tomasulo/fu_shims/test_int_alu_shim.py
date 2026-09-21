@@ -92,9 +92,9 @@ async def test_add_basic(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 30, f"Expected 30, got {result['value']}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
@@ -122,9 +122,9 @@ async def test_addi_basic(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 150, f"Expected 150, got {result['value']}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
@@ -150,9 +150,9 @@ async def test_sub_basic(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 20, f"Expected 20, got {result['value']}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
@@ -180,9 +180,9 @@ async def test_slli(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 16, f"Expected 16, got {result['value']}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
@@ -210,12 +210,12 @@ async def test_lui(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == imm_val
-    ), f"Expected 0x{imm_val:08X}, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == imm_val, (
+        f"Expected 0x{imm_val:08X}, got 0x{result['value']:016X}"
+    )
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -248,12 +248,12 @@ async def test_auipc(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:08X}, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == expected, (
+        f"Expected 0x{expected:08X}, got 0x{result['value']:016X}"
+    )
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -283,12 +283,12 @@ async def test_jal_link(dut: Any) -> None:
 
         result = iface.read_fu_complete()
         assert result["valid"] is True, "Expected valid completion"
-        assert (
-            result["tag"] == rob_tag
-        ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-        assert (
-            result["value"] == link_addr
-        ), f"{op_name}: expected 0x{link_addr:08X}, got 0x{result['value']:016X}"
+        assert result["tag"] == rob_tag, (
+            f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+        )
+        assert result["value"] == link_addr, (
+            f"{op_name}: expected 0x{link_addr:08X}, got 0x{result['value']:016X}"
+        )
         assert result["exception"] is False, "unexpected exception"
         iface.clear_issue()
 
@@ -313,13 +313,13 @@ async def test_sext_h(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     expected = alu_model.sext_h(0x0000_8001)
-    assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:X}, got 0x{result['value']:X}"
+    assert result["value"] == expected, (
+        f"Expected 0x{expected:X}, got 0x{result['value']:X}"
+    )
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -344,13 +344,13 @@ async def test_pack_zext_h(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     expected = alu_model.pack(0xAABB_CCDD, 0)
-    assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:X}, got 0x{result['value']:X}"
+    assert result["value"] == expected, (
+        f"Expected 0x{expected:X}, got 0x{result['value']:X}"
+    )
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -375,9 +375,9 @@ async def test_sh2add(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 16, f"Expected 16, got {result['value']}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
@@ -403,13 +403,13 @@ async def test_rev8(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     expected = alu_model.rev8(0x1122_3344)
-    assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:X}, got 0x{result['value']:X}"
+    assert result["value"] == expected, (
+        f"Expected 0x{expected:X}, got 0x{result['value']:X}"
+    )
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -434,12 +434,12 @@ async def test_brev8(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == 0x80C4_A2E6
-    ), f"Expected 0x80C4A2E6, got 0x{result['value']:08X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == 0x80C4_A2E6, (
+        f"Expected 0x80C4A2E6, got 0x{result['value']:08X}"
+    )
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -466,9 +466,9 @@ async def test_bexti(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 1, f"Expected 1, got {result['value']}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
@@ -494,9 +494,9 @@ async def test_czero_eqz(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 0, f"Expected 0, got 0x{result['value']:08X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
@@ -522,9 +522,9 @@ async def test_czero_nez(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 0, f"Expected 0, got 0x{result['value']:08X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
@@ -550,13 +550,13 @@ async def test_pack_general(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     expected = alu_model.pack(0xAABB_CCDD, 0x1122_3344)
-    assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:X}, got 0x{result['value']:X}"
+    assert result["value"] == expected, (
+        f"Expected 0x{expected:X}, got 0x{result['value']:X}"
+    )
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -604,9 +604,9 @@ async def test_branch_no_valid(dut: Any) -> None:
     await iface.step()
 
     result = iface.read_fu_complete()
-    assert (
-        result["valid"] is False
-    ), "BEQ should not produce valid writeback (branch resolution is separate)"
+    assert result["valid"] is False, (
+        "BEQ should not produce valid writeback (branch resolution is separate)"
+    )
     iface.clear_issue()
 
 
@@ -632,12 +632,12 @@ async def test_csr_read(dut: Any) -> None:
 
     result = iface.read_fu_complete()
     assert result["valid"] is True, "Expected valid completion for CSRRS"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == rs1_val
-    ), f"Expected 0x{rs1_val:08X}, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == rs1_val, (
+        f"Expected 0x{rs1_val:08X}, got 0x{result['value']:016X}"
+    )
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -677,9 +677,9 @@ async def _check_op(
     await iface.step()
     result = iface.read_fu_complete()
     assert result["valid"] is True, f"{op_name}: expected valid completion"
-    assert (
-        result["value"] == expected
-    ), f"{op_name}: expected 0x{expected:X}, got 0x{result['value']:X}"
+    assert result["value"] == expected, (
+        f"{op_name}: expected 0x{expected:X}, got 0x{result['value']:X}"
+    )
     iface.clear_issue()
 
 
@@ -839,8 +839,7 @@ async def _sweep_shift_rotate_amounts(dut: Any, *, word: bool) -> None:
                     await iface.step()
                     result = iface.read_fu_complete()
                     context = (
-                        f"{op_name} a={operand:#018x} amount={amount} "
-                        f"use_imm={use_imm}"
+                        f"{op_name} a={operand:#018x} amount={amount} use_imm={use_imm}"
                     )
                     assert result["valid"] is True, context
                     assert result["tag"] == tag, context

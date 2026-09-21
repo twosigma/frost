@@ -205,9 +205,9 @@ def _check(dut: Any, op: Op, leaf: Leaf) -> None:
     }
     for name, expected in outputs.items():
         actual = int(getattr(dut, name).value)
-        assert (
-            actual == expected
-        ), f"{name}: got 0x{actual:x}, expected 0x{expected:x}; {op=}, {leaf=}"
+        assert actual == expected, (
+            f"{name}: got 0x{actual:x}, expected 0x{expected:x}; {op=}, {leaf=}"
+        )
 
 
 @cocotb.test()
@@ -249,18 +249,18 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
                 await _install(dut, leaf)
             _issue(dut, op)
             await _cycle(dut)
-            assert not int(
-                dut.o_iss_out_valid.value
-            ), "result arrived before second edge"
+            assert not int(dut.o_iss_out_valid.value), (
+                "result arrived before second edge"
+            )
             assert int(dut.o_pre_rob_tag.value) == op.tag
             assert int(dut.o_pre_needs_lq.value) == 1 - op.needs_sq
             dut.i_iss_valid.value = 0
             if via_walk:
                 _response(dut, leaf)
             await Timer(1, unit="ns")
-            assert not int(
-                dut.o_walk_req_valid.value
-            ), "locally resolved op asked walker"
+            assert not int(dut.o_walk_req_valid.value), (
+                "locally resolved op asked walker"
+            )
             await _cycle(dut)
             _check(dut, op, leaf)
             dut.i_walk_resp_valid.value = 0
@@ -381,9 +381,9 @@ async def test_flush_drops_phantom_issue_and_tag_reuse(dut: Any) -> None:
             _response(dut, Leaf(vpn=0, fault=PAGE))
             for _ in range(3):
                 await _cycle(dut)
-                assert not int(
-                    dut.o_iss_out_valid.value
-                ), "squashed op escaped recovery"
+                assert not int(dut.o_iss_out_valid.value), (
+                    "squashed op escaped recovery"
+                )
                 assert not int(dut.o_walk_req_valid.value), "phantom issue asked walker"
             dut.i_walk_resp_valid.value = 0
             _issue(dut, correct)

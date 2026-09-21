@@ -101,29 +101,29 @@ def assert_cdb_match(
 ) -> None:
     """Assert DUT CDB output matches model."""
     prefix = f"[{context}] " if context else ""
-    assert (
-        dut_cdb.valid == model_cdb.valid
-    ), f"{prefix}valid: DUT={dut_cdb.valid} model={model_cdb.valid}"
+    assert dut_cdb.valid == model_cdb.valid, (
+        f"{prefix}valid: DUT={dut_cdb.valid} model={model_cdb.valid}"
+    )
     if not model_cdb.valid:
         return
-    assert (
-        dut_cdb.tag == model_cdb.tag
-    ), f"{prefix}tag: DUT={dut_cdb.tag} model={model_cdb.tag}"
-    assert (
-        dut_cdb.value == model_cdb.value
-    ), f"{prefix}value: DUT=0x{dut_cdb.value:x} model=0x{model_cdb.value:x}"
-    assert (
-        dut_cdb.exception == model_cdb.exception
-    ), f"{prefix}exception: DUT={dut_cdb.exception} model={model_cdb.exception}"
-    assert (
-        dut_cdb.exc_cause == model_cdb.exc_cause
-    ), f"{prefix}exc_cause: DUT={dut_cdb.exc_cause} model={model_cdb.exc_cause}"
-    assert (
-        dut_cdb.fp_flags == model_cdb.fp_flags
-    ), f"{prefix}fp_flags: DUT={dut_cdb.fp_flags} model={model_cdb.fp_flags}"
-    assert (
-        dut_cdb.fu_type == model_cdb.fu_type
-    ), f"{prefix}fu_type: DUT={dut_cdb.fu_type} model={model_cdb.fu_type}"
+    assert dut_cdb.tag == model_cdb.tag, (
+        f"{prefix}tag: DUT={dut_cdb.tag} model={model_cdb.tag}"
+    )
+    assert dut_cdb.value == model_cdb.value, (
+        f"{prefix}value: DUT=0x{dut_cdb.value:x} model=0x{model_cdb.value:x}"
+    )
+    assert dut_cdb.exception == model_cdb.exception, (
+        f"{prefix}exception: DUT={dut_cdb.exception} model={model_cdb.exception}"
+    )
+    assert dut_cdb.exc_cause == model_cdb.exc_cause, (
+        f"{prefix}exc_cause: DUT={dut_cdb.exc_cause} model={model_cdb.exc_cause}"
+    )
+    assert dut_cdb.fp_flags == model_cdb.fp_flags, (
+        f"{prefix}fp_flags: DUT={dut_cdb.fp_flags} model={model_cdb.fp_flags}"
+    )
+    assert dut_cdb.fu_type == model_cdb.fu_type, (
+        f"{prefix}fu_type: DUT={dut_cdb.fu_type} model={model_cdb.fu_type}"
+    )
 
 
 def assert_grants_match(
@@ -131,9 +131,9 @@ def assert_grants_match(
 ) -> None:
     """Assert DUT grant vector matches model."""
     prefix = f"[{context}] " if context else ""
-    assert (
-        dut_grants == model_grants
-    ), f"{prefix}grants: DUT={dut_grants} model={model_grants}"
+    assert dut_grants == model_grants, (
+        f"{prefix}grants: DUT={dut_grants} model={model_grants}"
+    )
 
 
 # ============================================================================
@@ -152,9 +152,9 @@ async def test_reset_no_output(dut: Any) -> None:
 
     assert not cdb.valid, "CDB should be invalid when no FU is valid"
     assert cdb.value == 0, "Cleared invalid lane-0 payload should remain zero"
-    assert (
-        dut_if.read_cdb_2_output().value == 0
-    ), "Cleared invalid lane-1 payload should remain zero"
+    assert dut_if.read_cdb_2_output().value == 0, (
+        "Cleared invalid lane-1 payload should remain zero"
+    )
     assert grants == [False] * NUM_FUS, f"All grants should be 0, got {grants}"
 
 
@@ -175,9 +175,9 @@ async def test_kill_blocks_output_and_grants(dut: Any) -> None:
     grants = dut_if.read_grant()
 
     assert not cdb.valid, "CDB should be invalid while i_kill is asserted"
-    assert (
-        grants == [False] * NUM_FUS
-    ), f"All grants should be 0 under kill, got {grants}"
+    assert grants == [False] * NUM_FUS, (
+        f"All grants should be 0 under kill, got {grants}"
+    )
     assert dut_if.read_grant_raw() == (1 << FU_ALU) | (1 << FU_FP_DIV)
     assert cdb.value == 0x5678, "Kill must not alter the raw-selected live payload"
 
@@ -247,9 +247,9 @@ async def test_single_fu_each(dut: Any) -> None:
 
         assert_cdb_match(dut_cdb, model_cdb, f"single_{name}")
         assert_grants_match(dut_grants, model_grants, f"single_{name}")
-        assert (
-            dut_cdb.fu_type == fu_idx
-        ), f"{name}: fu_type={dut_cdb.fu_type} expected={fu_idx}"
+        assert dut_cdb.fu_type == fu_idx, (
+            f"{name}: fu_type={dut_cdb.fu_type} expected={fu_idx}"
+        )
 
         dut_if.clear_all_fu_completes()
         await Timer(1, unit="ns")
@@ -650,9 +650,9 @@ async def test_value_propagation(dut: Any) -> None:
         await Timer(1, unit="ns")
 
         dut_cdb = dut_if.read_cdb_output()
-        assert (
-            dut_cdb.value == val
-        ), f"value: DUT=0x{dut_cdb.value:016x} expected=0x{val:016x}"
+        assert dut_cdb.value == val, (
+            f"value: DUT=0x{dut_cdb.value:016x} expected=0x{val:016x}"
+        )
 
         dut_if.clear_all_fu_completes()
         await Timer(1, unit="ns")
@@ -677,9 +677,9 @@ async def test_fp_flags_propagation(dut: Any) -> None:
         await Timer(1, unit="ns")
 
         dut_cdb = dut_if.read_cdb_output()
-        assert (
-            dut_cdb.fp_flags == fp_flags
-        ), f"flag bit {flag_bit}: DUT=0x{dut_cdb.fp_flags:02x} expected=0x{fp_flags:02x}"
+        assert dut_cdb.fp_flags == fp_flags, (
+            f"flag bit {flag_bit}: DUT=0x{dut_cdb.fp_flags:02x} expected=0x{fp_flags:02x}"
+        )
 
         dut_if.clear_all_fu_completes()
         await Timer(1, unit="ns")
@@ -801,9 +801,9 @@ async def test_sequential_different_fus(dut: Any) -> None:
         await Timer(1, unit="ns")
         dut_cdb = dut_if.read_cdb_output()
         assert dut_cdb.valid, f"cycle {cycle}: CDB should be valid"
-        assert (
-            dut_cdb.fu_type == fu_idx
-        ), f"cycle {cycle}: fu_type={dut_cdb.fu_type} expected={fu_idx}"
+        assert dut_cdb.fu_type == fu_idx, (
+            f"cycle {cycle}: fu_type={dut_cdb.fu_type} expected={fu_idx}"
+        )
         assert dut_cdb.tag == cycle
 
 

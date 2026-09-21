@@ -127,9 +127,9 @@ class _LinePort:
             ):
                 dut.i_dma_req_ready.value = 1
                 addr = int(dut.o_dma_req_addr.value)
-                assert (
-                    0x8000_0000 <= addr < 0xC000_0000
-                ), f"request outside the aperture: {addr:#x}"
+                assert 0x8000_0000 <= addr < 0xC000_0000, (
+                    f"request outside the aperture: {addr:#x}"
+                )
                 rid = int(dut.o_dma_req_id.value)
                 rdata = 0
                 if int(dut.o_dma_req_write.value):

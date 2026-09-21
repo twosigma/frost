@@ -108,7 +108,7 @@ module walker_coherence_sequencer #(
     input  logic [     ID_BITS-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata
 );
-  localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
+  localparam int unsigned OffsetBits   = $clog2(LINE_BYTES);
   localparam int unsigned LineAddrBits = ADDR_WIDTH - OffsetBits;
 
   initial begin

@@ -260,7 +260,7 @@ async def test_debug_openocd(dut: Any) -> None:
     assert value("FROST_STEP2_PC") == bp + 6
     assert value("FROST_PRIV") == 0, "the halt after flag=1 should land in U-mode"
     assert value("FROST_RESET_PC") < 0x1000
-    assert monitor.contains(BANNER_PHASE_U) and monitor.contains(
-        BANNER_PASS
-    ), monitor.get_output()
+    assert monitor.contains(BANNER_PHASE_U) and monitor.contains(BANNER_PASS), (
+        monitor.get_output()
+    )
     assert "<<FAIL>>" not in monitor.get_output()

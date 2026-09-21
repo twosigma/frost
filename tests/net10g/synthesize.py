@@ -18,7 +18,7 @@
 Run from the repository root:
     ./scripts/frost.py run python3 tests/net10g/synthesize.py
 
-The frost image supplies Yosys 0.68 and the pinned upstream sv2v v0.0.13
+The frost image supplies Yosys 0.69 and the pinned upstream sv2v v0.0.13
 release as ``sv2v`` on PATH. This check converts the package-based RTL with
 sv2v before invoking Yosys's ``read_verilog`` frontend. It uses the installed
 binary when its version matches the pin and otherwise downloads the same
@@ -137,9 +137,9 @@ def inspect_netlist(path: Path) -> dict[str, int]:
     assert binary_value(top_parameters["MAX_FRAME_BYTES"]) == MAX_FRAME_BYTES
     for name, module in modules.items():
         for attribute in ("blackbox", "whitebox"):
-            assert (
-                binary_value(module.get("attributes", {}).get(attribute, 0)) == 0
-            ), f"Unexpected {attribute}: {name}"
+            assert binary_value(module.get("attributes", {}).get(attribute, 0)) == 0, (
+                f"Unexpected {attribute}: {name}"
+            )
         for cell in module["cells"].values():
             kind = cell["type"]
             assert "latch" not in kind.lower(), f"Inferred latch in {name}: {kind}"
@@ -164,12 +164,12 @@ def inspect_netlist(path: Path) -> dict[str, int]:
         return counts
 
     counts = count_module(TOP)
-    assert (
-        counts["memory_cells"] > 0
-    ), "Coarse synthesis unexpectedly eliminated every memory"
-    assert (
-        counts["memory_bits"] >= 4 * MAX_FRAME_BYTES * 8
-    ), "Expected at least two full frames of buffering in each direction"
+    assert counts["memory_cells"] > 0, (
+        "Coarse synthesis unexpectedly eliminated every memory"
+    )
+    assert counts["memory_bits"] >= 4 * MAX_FRAME_BYTES * 8, (
+        "Expected at least two full frames of buffering in each direction"
+    )
     return counts
 
 
@@ -201,7 +201,7 @@ def main() -> None:
         "yosys": subprocess.check_output(["yosys", "-V"], text=True).strip(),
     }
     assert versions["sv2v"].startswith(f"sv2v {SV2V_VERSION}")
-    assert versions["yosys"].startswith("Yosys 0.68")
+    assert versions["yosys"].startswith("Yosys 0.69")
     print(json.dumps(versions, indent=2), flush=True)
 
     rtl = root / "hw/rtl/net10g"
@@ -260,9 +260,9 @@ def main() -> None:
     run_logged(
         ["yosys", "-Q", "-T", "-s", str(script)], directory / "yosys.log", args.timeout
     )
-    assert (
-        "out of bounds" not in (directory / "yosys.log").read_text().lower()
-    ), "Synthesis reported an out-of-range bit selection; inspect yosys.log"
+    assert "out of bounds" not in (directory / "yosys.log").read_text().lower(), (
+        "Synthesis reported an out-of-range bit selection; inspect yosys.log"
+    )
     counts = inspect_netlist(netlist)
     summary = {"top": TOP, "max_frame_bytes": MAX_FRAME_BYTES, **versions, **counts}
     (directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")

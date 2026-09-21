@@ -669,12 +669,12 @@ async def test_simple_sw(dut: Any) -> None:
     write_req = await commit_and_write(dut_if, model, rob_tag=7)
 
     assert write_req.addr == 0x2000, f"Expected addr=0x2000, got 0x{write_req.addr:x}"
-    assert write_req.data == wbeat(
-        0xCAFEBABE
-    ), f"Expected replicated 0xCAFEBABE beat, got 0x{write_req.data:x}"
-    assert (
-        write_req.byte_en == 0x0F
-    ), f"Expected byte_en=0x0F for SW at addr[2]=0, got 0x{write_req.byte_en:x}"
+    assert write_req.data == wbeat(0xCAFEBABE), (
+        f"Expected replicated 0xCAFEBABE beat, got 0x{write_req.data:x}"
+    )
+    assert write_req.byte_en == 0x0F, (
+        f"Expected byte_en=0x0F for SW at addr[2]=0, got 0x{write_req.byte_en:x}"
+    )
     assert dut_if.empty, "SQ should be empty after write completes"
 
 
@@ -692,13 +692,13 @@ async def test_sh_lower(dut: Any) -> None:
     write_req = await commit_and_write(dut_if, model, rob_tag=1)
 
     assert write_req.addr == 0x1000
-    assert (
-        write_req.byte_en == 0x03
-    ), f"Expected byte_en=0x03, got 0x{write_req.byte_en:x}"
+    assert write_req.byte_en == 0x03, (
+        f"Expected byte_en=0x03, got 0x{write_req.byte_en:x}"
+    )
     # Data is replicated across the beat: {4{data[15:0]}}
-    assert write_req.data == hbeat(
-        0x1234
-    ), f"Expected replicated 0x1234 beat, got 0x{write_req.data:x}"
+    assert write_req.data == hbeat(0x1234), (
+        f"Expected replicated 0x1234 beat, got 0x{write_req.data:x}"
+    )
 
 
 # ============================================================================
@@ -715,12 +715,12 @@ async def test_sh_upper(dut: Any) -> None:
     write_req = await commit_and_write(dut_if, model, rob_tag=2)
 
     assert write_req.addr == 0x1002
-    assert (
-        write_req.byte_en == 0x0C
-    ), f"Expected byte_en=0x0C, got 0x{write_req.byte_en:x}"
-    assert write_req.data == hbeat(
-        0xABCD
-    ), f"Expected replicated 0xABCD beat, got 0x{write_req.data:x}"
+    assert write_req.byte_en == 0x0C, (
+        f"Expected byte_en=0x0C, got 0x{write_req.byte_en:x}"
+    )
+    assert write_req.data == hbeat(0xABCD), (
+        f"Expected replicated 0xABCD beat, got 0x{write_req.data:x}"
+    )
 
 
 # ============================================================================
@@ -737,12 +737,12 @@ async def test_sb(dut: Any) -> None:
     write_req = await commit_and_write(dut_if, model, rob_tag=3)
 
     assert write_req.addr == 0x1001
-    assert (
-        write_req.byte_en == 0x02
-    ), f"Expected byte_en=0x02, got 0x{write_req.byte_en:x}"
-    assert write_req.data == bbeat(
-        0x42
-    ), f"Expected replicated 0x42 beat, got 0x{write_req.data:x}"
+    assert write_req.byte_en == 0x02, (
+        f"Expected byte_en=0x02, got 0x{write_req.byte_en:x}"
+    )
+    assert write_req.data == bbeat(0x42), (
+        f"Expected replicated 0x42 beat, got 0x{write_req.data:x}"
+    )
 
 
 # ============================================================================
@@ -765,9 +765,9 @@ async def test_fsw(dut: Any) -> None:
     write_req = await commit_and_write(dut_if, model, rob_tag=4)
 
     assert write_req.addr == 0x3000
-    assert write_req.data == wbeat(
-        0x40490FDB
-    ), f"Expected replicated FP word beat, got 0x{write_req.data:x}"
+    assert write_req.data == wbeat(0x40490FDB), (
+        f"Expected replicated FP word beat, got 0x{write_req.data:x}"
+    )
     assert write_req.byte_en == 0x0F
 
 
@@ -798,9 +798,9 @@ async def test_fsd_single_beat(dut: Any) -> None:
     # Single beat: full dword at addr with an all-lanes strobe
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "FSD write expected"
-    assert (
-        write_req.addr == 0x4000
-    ), f"FSD addr should be 0x4000, got 0x{write_req.addr:x}"
+    assert write_req.addr == 0x4000, (
+        f"FSD addr should be 0x4000, got 0x{write_req.addr:x}"
+    )
     assert write_req.data == fp64_data, "FSD beat data mismatch"
     assert write_req.byte_en == 0xFF, "FSD must strobe all 8 lanes"
 
@@ -1179,9 +1179,9 @@ async def test_forward_metadata_survives_flush_capture_edge(dut: Any) -> None:
     await dut_if.step()
 
     fwd = dut_if.read_sq_forward()
-    assert (
-        fwd.match and fwd.can_forward
-    ), "Flush-edge probe should be captured coherently"
+    assert fwd.match and fwd.can_forward, (
+        "Flush-edge probe should be captured coherently"
+    )
     assert fwd.data == store_data, (
         "Captured image reconstruction must survive the flush edge "
         "(the LQ extracts the probe's word from the dword image): "
@@ -1306,12 +1306,12 @@ async def test_in_order_write(dut: Any) -> None:
     writes = await drain_pipelined_writes(dut_if, model, 3)
     assert len(writes) == 3, f"Expected 3 drain writes, got {len(writes)}"
     for i, (addr, data) in enumerate(zip(addrs, datas)):
-        assert (
-            writes[i].addr == addr
-        ), f"Write {i}: expected addr 0x{addr:x}, got 0x{writes[i].addr:x}"
-        assert writes[i].data == wbeat(
-            data
-        ), f"Write {i}: expected beat 0x{wbeat(data):x}, got 0x{writes[i].data:x}"
+        assert writes[i].addr == addr, (
+            f"Write {i}: expected addr 0x{addr:x}, got 0x{writes[i].addr:x}"
+        )
+        assert writes[i].data == wbeat(data), (
+            f"Write {i}: expected beat 0x{wbeat(data):x}, got 0x{writes[i].data:x}"
+        )
 
     assert dut_if.empty, "SQ should be empty after all writes"
 
@@ -1404,9 +1404,9 @@ async def test_cache_invalidation(dut: Any) -> None:
     # By the write-done cycle the pulse is gone (it tracked the launch).
     dut_if.drive_mem_write_done()
     await Timer(1, unit="ns")
-    assert not dut_if.read_cache_invalidate()[
-        "valid"
-    ], "Invalidate must be a launch-cycle pulse, not a done-cycle one"
+    assert not dut_if.read_cache_invalidate()["valid"], (
+        "Invalidate must be a launch-cycle pulse, not a done-cycle one"
+    )
 
     model.mem_write_done()
     model.advance_head()
@@ -1592,9 +1592,9 @@ async def test_fsd_cache_invalidation_single_beat(dut: Any) -> None:
     assert write_req.en, "FSD write expected"
     inv = dut_if.read_cache_invalidate()
     assert inv["valid"], "Cache invalidation expected at launch"
-    assert (
-        inv["addr"] == base_addr
-    ), f"Should invalidate at base 0x{base_addr:x}, got 0x{inv['addr']:x}"
+    assert inv["addr"] == base_addr, (
+        f"Should invalidate at base 0x{base_addr:x}, got 0x{inv['addr']:x}"
+    )
 
     model.mem_write_initiate()
     await dut_if.step()
@@ -1697,9 +1697,9 @@ async def test_forward_lb_at_fsd_base(dut: Any) -> None:
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LB at FSD base should match"
     assert fwd.can_forward, "FSD covers a byte load anywhere in its dword"
-    assert (
-        fwd.data == fp64_data
-    ), f"Expected the full dword image (LQ extracts byte 0), got 0x{fwd.data:x}"
+    assert fwd.data == fp64_data, (
+        f"Expected the full dword image (LQ extracts byte 0), got 0x{fwd.data:x}"
+    )
     dut_if.clear_sq_check()
 
 
@@ -1776,9 +1776,9 @@ async def test_constrained_random(dut: Any) -> None:
             await dut_if.step()
 
         if cycle % 50 == 0:
-            assert (
-                dut_if.count == model.count
-            ), f"Cycle {cycle}: count mismatch DUT={dut_if.count} model={model.count}"
+            assert dut_if.count == model.count, (
+                f"Cycle {cycle}: count mismatch DUT={dut_if.count} model={model.count}"
+            )
 
     # Drain remaining entries
     for _ in range(SQ_DEPTH + 20):
@@ -1806,9 +1806,9 @@ async def test_constrained_random(dut: Any) -> None:
         else:
             await dut_if.step()
 
-    assert (
-        dut_if.count == model.count
-    ), f"Final count mismatch DUT={dut_if.count} model={model.count}"
+    assert dut_if.count == model.count, (
+        f"Final count mismatch DUT={dut_if.count} model={model.count}"
+    )
 
 
 # ============================================================================
@@ -1864,9 +1864,9 @@ async def test_committed_empty_signal(dut: Any) -> None:
     dut_if.clear_data_update()
 
     await Timer(1, unit="ns")
-    assert bool(
-        dut_if.committed_empty
-    ), "committed_empty should be true with only uncommitted entries"
+    assert bool(dut_if.committed_empty), (
+        "committed_empty should be true with only uncommitted entries"
+    )
 
     dut_if.drive_commit(3)
     model.commit(3)
@@ -1874,17 +1874,17 @@ async def test_committed_empty_signal(dut: Any) -> None:
     dut_if.clear_commit()
 
     await Timer(1, unit="ns")
-    assert not bool(
-        dut_if.committed_empty
-    ), "committed_empty should be false with committed entry"
+    assert not bool(dut_if.committed_empty), (
+        "committed_empty should be false with committed entry"
+    )
 
     write_req = await complete_mem_write(dut_if, model)
     assert write_req.en, "Expected memory write after commit"
 
     await Timer(1, unit="ns")
-    assert bool(
-        dut_if.committed_empty
-    ), "committed_empty should be true after write completes"
+    assert bool(dut_if.committed_empty), (
+        "committed_empty should be true after write completes"
+    )
 
 
 # ============================================================================
@@ -1917,9 +1917,9 @@ async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
 
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "FLD at FSW address should match"
-    assert (
-        not fwd.can_forward
-    ), "WORD store cannot forward to DOUBLE load (size mismatch)"
+    assert not fwd.can_forward, (
+        "WORD store cannot forward to DOUBLE load (size mismatch)"
+    )
     dut_if.clear_sq_check()
 
 
@@ -1951,9 +1951,9 @@ async def test_forward_lh_from_fsd_both_words(dut: Any) -> None:
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LH at FSD base should match"
     assert fwd.can_forward, "FSD covers a half load anywhere in its dword"
-    assert (
-        fwd.data == fp64_data
-    ), f"Expected the full dword image (LQ extracts half 0), got 0x{fwd.data:x}"
+    assert fwd.data == fp64_data, (
+        f"Expected the full dword image (LQ extracts half 0), got 0x{fwd.data:x}"
+    )
     dut_if.clear_sq_check()
     await dut_if.step()
 
@@ -1964,9 +1964,9 @@ async def test_forward_lh_from_fsd_both_words(dut: Any) -> None:
     fwd = dut_if.read_sq_forward()
     assert fwd.match, "LH in FSD high word should match"
     assert fwd.can_forward, "FSD covers a half load anywhere in its dword"
-    assert (
-        fwd.data == fp64_data
-    ), f"Expected the full dword image (LQ extracts half 3), got 0x{fwd.data:x}"
+    assert fwd.data == fp64_data, (
+        f"Expected the full dword image (LQ extracts half 3), got 0x{fwd.data:x}"
+    )
     dut_if.clear_sq_check()
 
 
@@ -2025,9 +2025,9 @@ async def test_no_forward_while_older_addr_unknown(dut: Any) -> None:
     fwd = dut_if.read_sq_forward()
     assert dut_if.read_all_older_addrs_known(), "All older addresses resolved"
     assert fwd.match and fwd.can_forward, "Resolved same-address stores forward"
-    assert (
-        fwd.data == 0xBBBB1111
-    ), f"Newest older store must win: expected 0xBBBB1111, got 0x{fwd.data:x}"
+    assert fwd.data == 0xBBBB1111, (
+        f"Newest older store must win: expected 0xBBBB1111, got 0x{fwd.data:x}"
+    )
     dut_if.clear_sq_check()
 
 
@@ -2304,6 +2304,6 @@ async def test_commit_cycle_registered_guard_survives_flush_after_head(
         "flush_all_uncommitted (missing registered-commit guard)"
     )
     write_req = await wait_for_mem_write(dut_if, max_cycles=8)
-    assert (
-        write_req.en and write_req.addr == 0x3000
-    ), "flush-cycle-committed store never drained after the flush"
+    assert write_req.en and write_req.addr == 0x3000, (
+        "flush-cycle-committed store never drained after the flush"
+    )

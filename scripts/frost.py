@@ -18,7 +18,7 @@
 The container runs as the invoking user's UID and GID.  Files created in the
 bind-mounted checkout therefore remain writable by native tools such as Vivado.
 A host-owned cache directory, mounted at the container's ``~/.cache``, keeps
-pre-commit hook environments across container runs.
+pre-commit hook environments and npm downloads across container runs.
 """
 
 import argparse
@@ -88,7 +88,21 @@ TOOL_VERSION_ARGUMENTS = {
     "boolector": "BOOLECTOR_VERSION",
     "riscv_gcc": "XPACK_RISCV_VERSION",
     "riscv64_linux_gcc": "BOOTLIN_RISCV64_MUSL_VERSION",
-    "clang_tidy": "CLANG_TIDY_VERSION",
+    "clang": "LLVM_VERSION",
+    "clang_tidy": "LLVM_VERSION",
+    "clang_format": "LLVM_VERSION",
+    "python": "PYTHON_VERSION",
+    "gcc": "GCC_VERSION",
+    "cmake": "CMAKE_VERSION",
+    "meson": "MESON_VERSION",
+    "ninja": "NINJA_VERSION",
+    "qemu": "QEMU_VERSION",
+    "node": "NODE_VERSION",
+    "npm": "NPM_VERSION",
+    "pip": "PIP_VERSION",
+    "setuptools": "SETUPTOOLS_VERSION",
+    "wheel": "WHEEL_VERSION",
+    "openocd": "OPENOCD_VERSION",
     "verible": "VERIBLE_VERSION",
     "cocotb": "COCOTB_VERSION",
     "pytest": "PYTEST_VERSION",
@@ -96,7 +110,15 @@ TOOL_VERSION_ARGUMENTS = {
     "pre_commit": "PRE_COMMIT_VERSION",
     "click": "CLICK_VERSION",
 }
-PACKAGE_VERSION_TOOLS = {"cocotb", "pytest", "pytest_cov", "pre_commit", "click"}
+PACKAGE_VERSION_TOOLS = {
+    "cocotb",
+    "pytest",
+    "pytest_cov",
+    "pre_commit",
+    "click",
+    "setuptools",
+    "wheel",
+}
 
 IMAGE_PROBE_SCRIPT = r"""
 import hashlib
@@ -144,7 +166,19 @@ tools = {
     "boolector": command_output(["boolector", "--version"]),
     "riscv_gcc": command_output(["riscv-none-elf-gcc", "--version"]),
     "riscv64_linux_gcc": install_path("riscv64-linux-gcc"),
+    "clang": command_output(["clang", "--version"]),
     "clang_tidy": command_output(["clang-tidy", "--version"]),
+    "clang_format": command_output(["clang-format", "--version"]),
+    "python": {"version": platform.python_version()},
+    "gcc": command_output(["gcc", "-dumpfullversion"]),
+    "cmake": command_output(["cmake", "--version"]),
+    "meson": command_output(["meson", "--version"]),
+    "ninja": command_output(["ninja", "--version"]),
+    "qemu": command_output(["qemu-system-riscv64", "--version"]),
+    "node": command_output(["node", "--version"]),
+    "npm": command_output(["npm", "--version"]),
+    "pip": command_output(["python3", "-m", "pip", "--version"]),
+    "openocd": command_output(["openocd", "--version"]),
     "verible": command_output(["verible-verilog-lint", "--version"]),
 }
 try:
@@ -158,6 +192,8 @@ for key, distribution in {
     "pytest_cov": "pytest-cov",
     "pre_commit": "pre-commit",
     "click": "click",
+    "setuptools": "setuptools",
+    "wheel": "wheel",
 }.items():
     try:
         tools[key] = {"version": importlib.metadata.version(distribution)}
@@ -364,6 +400,13 @@ def build_docker_command(
     """Build the host-side Docker invocation for a workflow command."""
     validate_image_reference(image)
     overrides = environment_overrides or {}
+    # Docker creates HOME as a root-owned parent of the cache mount. npm's
+    # default ~/.npm would be unwritable to the invoking UID.
+    npm_cache = (
+        f"/tmp/frost-home-{uid}/.cache/npm"
+        if cache_directory is not None
+        else f"/tmp/frost-npm-{uid}"
+    )
     command = [
         "docker",
         "run",
@@ -374,6 +417,8 @@ def build_docker_command(
         f"{uid}:{gid}",
         "--env",
         f"HOME=/tmp/frost-home-{uid}",
+        "--env",
+        f"npm_config_cache={npm_cache}",
     ]
     for name in forwarded_environment_names(environment):
         if name in suppressed_environment_names or name in overrides:
@@ -508,6 +553,10 @@ def tool_version_problems(
             problems.append(f"{tool} is unavailable ({error})")
             continue
         version = report.get("version")
+        if tool == "ninja" and isinstance(version, str):
+            # The PyPI wheel carries Kitware's GNU make jobserver patch. Its
+            # CLI includes that build suffix after the pinned release version.
+            version = re.sub(r"\.git\.kitware\.jobserver(?:-pipe)?-\d+$", "", version)
         expected = _expected_tool_version(tool, configured)
         if tool in PACKAGE_VERSION_TOOLS:
             matches = version == expected
@@ -534,8 +583,8 @@ def image_runtime_problems(probe: Mapping[str, object]) -> list[str]:
         )
 
     python_version = probe.get("python")
-    if not isinstance(python_version, str) or not python_version.startswith("3.12."):
-        problems.append(f"expected Python 3.12, got {python_version or 'no version'}")
+    if not isinstance(python_version, str) or not python_version.startswith("3.14."):
+        problems.append(f"expected Python 3.14, got {python_version or 'no version'}")
 
     entrypoint_mode = probe.get("entrypoint_mode")
     if entrypoint_mode != 0o755:
@@ -950,7 +999,7 @@ def run_doctor(
                             "Image runtime",
                             "; ".join(runtime_problems)
                             if runtime_problems
-                            else "x86_64, Python 3.12, and non-root entrypoint mode match",
+                            else "x86_64, Python 3.14, and non-root entrypoint mode match",
                         )
                     )
                     try:

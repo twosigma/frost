@@ -564,8 +564,7 @@ def main() -> int:
             timeout = coremark_pro_hardware_timeout(app, args.board, base_timeout)
             if timeout > base_timeout:
                 print(
-                    f"timeout: {timeout:g}s (registry minimum; "
-                    f"base {base_timeout:g}s)",
+                    f"timeout: {timeout:g}s (registry minimum; base {base_timeout:g}s)",
                     flush=True,
                 )
             result = run_one(

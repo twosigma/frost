@@ -541,8 +541,8 @@ Examples:
   %(prog)s --all-benchmarks
   %(prog)s --list
 
-Available ISA test suites: {', '.join(ISA_TEST_SUITES.keys())}
-Available benchmarks: {', '.join(BENCHMARKS.keys())}
+Available ISA test suites: {", ".join(ISA_TEST_SUITES.keys())}
+Available benchmarks: {", ".join(BENCHMARKS.keys())}
 """,
     )
     group = parser.add_mutually_exclusive_group(required=True)

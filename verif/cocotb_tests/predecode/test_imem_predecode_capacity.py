@@ -88,12 +88,12 @@ async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
 
     async def check_window(address: int, *, fast: bool) -> None:
         await reference._present_fetch_pair(dut, address, address + 4)
-        assert int(dut.o_port_b_window_overlay_hit.value) == int(
-            fast
-        ), f"Wrong default predecode coverage at {address:#x}"
-        assert int(dut.o_port_b_response_ready.value) == int(
-            fast
-        ), f"Unexpected first-response latency at {address:#x}"
+        assert int(dut.o_port_b_window_overlay_hit.value) == int(fast), (
+            f"Wrong default predecode coverage at {address:#x}"
+        )
+        assert int(dut.o_port_b_response_ready.value) == int(fast), (
+            f"Unexpected first-response latency at {address:#x}"
+        )
         if not fast:
             await reference._present_fetch_pair(dut, address, address + 4)
             assert int(dut.o_port_b_response_ready.value) == 1

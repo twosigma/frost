@@ -39,15 +39,23 @@ For the boot ABI, memory map, and kernel requirements, see the
 
 ## Buildroot pin
 
-The `linux/buildroot` submodule is pinned to `67449130` (`2026.08-git`).
+The `linux/buildroot` submodule is pinned to `d5180309` (`2026.08`).
 Initialize it after checkout:
 
 ```bash
 git submodule update --init linux/buildroot
 ```
 
-When updating the gitlink, check that the new revision still provides
-`BR2_TOOLCHAIN_EXTERNAL_BOOTLIN_RISCV64_LP64D_MUSL_STABLE`.
+The defconfig downloads Bootlin's `2026.08-1` stable musl toolchain (GCC
+15.3, Linux 5.10 headers) through Buildroot's custom external-toolchain
+support. Buildroot's built-in Bootlin choice still selects `2025.08-1`.
+Keep the URL and `patches/toolchain-external-custom/` hash aligned with the
+Dockerfile's Bootlin version and SHA-256. Native Vivado hosts can download
+this same toolchain without a preinstalled `/opt` tree.
+
+After changing Buildroot or the toolchain, use a fresh output directory (or
+remove the old `linux/build-mmu` build artifacts) before rebuilding. Buildroot
+does not support changing compilers inside an existing output tree.
 
 ## Build
 

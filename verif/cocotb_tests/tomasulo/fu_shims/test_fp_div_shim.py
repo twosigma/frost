@@ -177,14 +177,13 @@ async def expect_completion_at_cycle(
         result = iface.read_fu_complete()
         if cycle < expected_cycle:
             assert not result["valid"], (
-                f"Completion appeared at cycle {cycle}, expected cycle "
-                f"{expected_cycle}"
+                f"Completion appeared at cycle {cycle}, expected cycle {expected_cycle}"
             )
 
     assert result["valid"], f"No completion at expected cycle {expected_cycle}"
-    assert (
-        result["tag"] == expected_tag
-    ), f"Tag mismatch: expected {expected_tag}, got {result['tag']}"
+    assert result["tag"] == expected_tag, (
+        f"Tag mismatch: expected {expected_tag}, got {result['tag']}"
+    )
     assert result["value"] == expected_value, (
         f"Value mismatch: expected 0x{expected_value:016X}, "
         f"got 0x{result['value']:016X}"
@@ -256,15 +255,15 @@ async def test_double_precision_ops(dut: Any) -> None:
 
     result = await run_one(iface, 7, OP_FDIV_D, DP_6_0, DP_2_0)
     assert result["tag"] == 7
-    assert (
-        result["value"] == EXPECTED_3_0_DP
-    ), f"FDIV_D: expected 0x{EXPECTED_3_0_DP:016X}, got 0x{result['value']:016X}"
+    assert result["value"] == EXPECTED_3_0_DP, (
+        f"FDIV_D: expected 0x{EXPECTED_3_0_DP:016X}, got 0x{result['value']:016X}"
+    )
 
     result = await run_one(iface, 8, OP_FSQRT_D, DP_16_0)
     assert result["tag"] == 8
-    assert (
-        result["value"] == EXPECTED_4_0_DP
-    ), f"FSQRT_D: expected 0x{EXPECTED_4_0_DP:016X}, got 0x{result['value']:016X}"
+    assert result["value"] == EXPECTED_4_0_DP, (
+        f"FSQRT_D: expected 0x{EXPECTED_4_0_DP:016X}, got 0x{result['value']:016X}"
+    )
 
     result = await run_one(iface, 9, OP_FSQRT_D, DP_25_0)
     assert result["tag"] == 9
@@ -290,9 +289,9 @@ async def test_busy_tracks_occupancy(dut: Any) -> None:
     for cycle in range(SP_VISIBLE_CYCLES):
         await ReadOnly()
         assert iface.read_busy(), f"busy dropped at cycle {cycle}"
-        assert not iface.read_fu_complete()[
-            "valid"
-        ], f"completion appeared at cycle {cycle}, expected {SP_VISIBLE_CYCLES}"
+        assert not iface.read_fu_complete()["valid"], (
+            f"completion appeared at cycle {cycle}, expected {SP_VISIBLE_CYCLES}"
+        )
         await RisingEdge(iface.clock)
 
     await ReadOnly()
@@ -358,12 +357,11 @@ async def test_unit_completion_pairs_with_tag(dut: Any) -> None:
         await wait_until_idle(iface)
         result = await run_one(iface, tag, op, src1, src2)
         assert result["tag"] == tag, f"expected tag {tag}, got {result['tag']}"
-        assert (
-            result["value"] == value
-        ), f"tag {tag}: expected 0x{value:016X}, got 0x{result['value']:016X}"
+        assert result["value"] == value, (
+            f"tag {tag}: expected 0x{value:016X}, got 0x{result['value']:016X}"
+        )
         assert result["fp_flags"] == flags, (
-            f"tag {tag}: expected flags 0x{flags:02X}, "
-            f"got 0x{result['fp_flags']:02X}"
+            f"tag {tag}: expected flags 0x{flags:02X}, got 0x{result['fp_flags']:02X}"
         )
 
 
@@ -386,9 +384,9 @@ async def test_interleaved_div_sqrt(dut: Any) -> None:
         await wait_until_idle(iface)
         result = await run_one(iface, tag, op, src1, src2)
         assert result["tag"] == tag
-        assert (
-            result["value"] == expected
-        ), f"tag {tag}: expected 0x{expected:016X}, got 0x{result['value']:016X}"
+        assert result["value"] == expected, (
+            f"tag {tag}: expected 0x{expected:016X}, got 0x{result['value']:016X}"
+        )
 
 
 # ============================================================================
@@ -445,16 +443,14 @@ async def test_rounding_mode_passthrough(dut: Any) -> None:
 
     result = await run_one(iface, 14, OP_FDIV_S, SP_1_0, SP_3_0, rm=RM_RNE)
     assert result["value"] == EXPECTED_THIRD_RNE_SP, (
-        f"RNE: expected 0x{EXPECTED_THIRD_RNE_SP:016X}, "
-        f"got 0x{result['value']:016X}"
+        f"RNE: expected 0x{EXPECTED_THIRD_RNE_SP:016X}, got 0x{result['value']:016X}"
     )
     assert result["fp_flags"] == FP_FLAG_NX
 
     await wait_until_idle(iface)
     result = await run_one(iface, 15, OP_FDIV_S, SP_1_0, SP_3_0, rm=RM_RTZ)
     assert result["value"] == EXPECTED_THIRD_RTZ_SP, (
-        f"RTZ: expected 0x{EXPECTED_THIRD_RTZ_SP:016X}, "
-        f"got 0x{result['value']:016X}"
+        f"RTZ: expected 0x{EXPECTED_THIRD_RTZ_SP:016X}, got 0x{result['value']:016X}"
     )
     assert result["fp_flags"] == FP_FLAG_NX
 
@@ -606,9 +602,9 @@ async def test_partial_flush_held_result(dut: Any) -> None:
     iface.drive_partial_flush(flush_tag=3, head_tag=0)
     await RisingEdge(iface.clock)
     await ReadOnly()
-    assert not iface.read_fu_complete()[
-        "valid"
-    ], "a younger held result must be suppressed on the flush cycle"
+    assert not iface.read_fu_complete()["valid"], (
+        "a younger held result must be suppressed on the flush cycle"
+    )
     await FallingEdge(iface.clock)
     iface.clear_partial_flush()
 
@@ -688,9 +684,9 @@ async def test_unit_pulse_precedes_result(dut: Any) -> None:
             break
 
     assert pulses == 1, f"expected exactly one unit completion pulse, saw {pulses}"
-    assert (
-        seen_at == SP_VISIBLE_CYCLES - 1
-    ), f"unit pulsed at cycle {seen_at}, expected {SP_VISIBLE_CYCLES - 1}"
+    assert seen_at == SP_VISIBLE_CYCLES - 1, (
+        f"unit pulsed at cycle {seen_at}, expected {SP_VISIBLE_CYCLES - 1}"
+    )
 
 
 # ============================================================================
@@ -730,9 +726,9 @@ async def test_full_flush_on_completion_cycle(dut: Any) -> None:
     for _ in range(SP_VISIBLE_CYCLES - 1):
         await RisingEdge(iface.clock)
     await ReadOnly()
-    assert int(
-        dut.u_div_sqrt.o_valid.value
-    ), "expected the unit to complete on this cycle"
+    assert int(dut.u_div_sqrt.o_valid.value), (
+        "expected the unit to complete on this cycle"
+    )
 
     await FallingEdge(iface.clock)
     iface.drive_flush()
@@ -761,9 +757,9 @@ async def test_partial_flush_on_completion_cycle(dut: Any) -> None:
     for _ in range(SP_VISIBLE_CYCLES - 1):
         await RisingEdge(iface.clock)
     await ReadOnly()
-    assert int(
-        dut.u_div_sqrt.o_valid.value
-    ), "expected the unit to complete on this cycle"
+    assert int(dut.u_div_sqrt.o_valid.value), (
+        "expected the unit to complete on this cycle"
+    )
 
     await FallingEdge(iface.clock)
     iface.drive_partial_flush(flush_tag=4, head_tag=0)
@@ -805,9 +801,9 @@ async def test_partial_flushes_around_capture(dut: Any) -> None:
     iface.drive_partial_flush(flush_tag=1, head_tag=0)
     await RisingEdge(iface.clock)
     await ReadOnly()
-    assert not iface.read_fu_complete()[
-        "valid"
-    ], "the held result must be suppressed on the flush cycle"
+    assert not iface.read_fu_complete()["valid"], (
+        "the held result must be suppressed on the flush cycle"
+    )
 
     await FallingEdge(iface.clock)
     iface.clear_partial_flush()

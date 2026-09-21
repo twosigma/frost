@@ -877,17 +877,17 @@ async def test_prediction_buffer_timing_cofactor_only_changes_timing_replicas(
         "fast compressed replica"
     )
     assert not dut.o_sel_nop_2.value
-    assert (
-        dut.o_slot2_valid_for_pc.value
-    ), "canonical packet validity and PC advance must retain the live native-led pair"
+    assert dut.o_slot2_valid_for_pc.value, (
+        "canonical packet validity and PC advance must retain the live native-led pair"
+    )
     _assert_slot2_btb_candidate_valids(dut, plus2_valid=False, plus4_valid=True)
     assert not dut.o_slot2_plus2_candidate_valid_timing.value
-    assert (
-        not dut.o_slot2_plus4_candidate_valid_timing.value
-    ), "the timing candidate pair must follow the peeled buffer-at-low-PC punt"
-    assert (
-        dut.o_is_compressed_fast.value
-    ), "the peeled fast-size cofactor must select the buffered compressed parcel"
+    assert not dut.o_slot2_plus4_candidate_valid_timing.value, (
+        "the timing candidate pair must follow the peeled buffer-at-low-PC punt"
+    )
+    assert dut.o_is_compressed_fast.value, (
+        "the peeled fast-size cofactor must select the buffered compressed parcel"
+    )
 
 
 @cocotb.test()
@@ -1211,9 +1211,9 @@ async def test_slot2_fast_decompressor_outputs_cover_all_candidate_positions(
                 compressed=True,
                 sel_nop=False,
             )
-            assert (
-                bool(dut.o_slot2_decomp_illegal.value) is illegal
-            ), f"{position} parcel 0x{raw:04x}: expected illegal={illegal}"
+            assert bool(dut.o_slot2_decomp_illegal.value) is illegal, (
+                f"{position} parcel 0x{raw:04x}: expected illegal={illegal}"
+            )
 
 
 @cocotb.test()

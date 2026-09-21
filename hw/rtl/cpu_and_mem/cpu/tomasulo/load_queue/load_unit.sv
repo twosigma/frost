@@ -61,9 +61,9 @@ module load_unit #(
   // address (from a CARRY8 chain) controls only the final muxes and not the
   // sign-extension logic. This shape carries over from the 32-bit version.
 
-  localparam int unsigned BeatBytes = riscv_pkg::MemStrbBits;
+  localparam int unsigned BeatBytes  = riscv_pkg::MemStrbBits;
   localparam int unsigned BeatHalves = riscv_pkg::MemDataBits / 16;
-  localparam int unsigned BeatWords = riscv_pkg::MemDataBits / 32;
+  localparam int unsigned BeatWords  = riscv_pkg::MemDataBits / 32;
 
   // Byte lanes, sign- or zero-extended per i_is_load_unsigned
   logic [XLEN-1:0] byte_ext[BeatBytes];

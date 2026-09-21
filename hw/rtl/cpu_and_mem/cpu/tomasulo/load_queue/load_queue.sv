@@ -2409,7 +2409,7 @@ module load_queue #(
   // right subtree. This preserves ascending tail-relative order exactly in
   // ceil(log2(DEPTH)) merge levels.
   localparam int unsigned AllocTreeLeaves = 1 << $clog2(DEPTH);
-  localparam int unsigned AllocTreeNodes = 2 * AllocTreeLeaves - 1;
+  localparam int unsigned AllocTreeNodes  = 2 * AllocTreeLeaves - 1;
   logic [AllocTreeNodes-1:0] lq_free_tree_any;
   logic [AllocTreeNodes-1:0] lq_free_tree_second_found;
   logic [      IdxWidth-1:0] lq_free_tree_first_idx    [AllocTreeNodes];
@@ -2431,7 +2431,7 @@ module load_queue #(
   end
 
   for (genvar node = 0; node < AllocTreeLeaves - 1; node++) begin : gen_lq_free_merge
-    localparam int unsigned LeftNode = 2 * node + 1;
+    localparam int unsigned LeftNode  = 2 * node + 1;
     localparam int unsigned RightNode = 2 * node + 2;
 
     assign lq_free_tree_any[node] = lq_free_tree_any[LeftNode] || lq_free_tree_any[RightNode];

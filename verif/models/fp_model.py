@@ -157,9 +157,9 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
 
             power_low = two**exp_estimate
             power_high = two ** (exp_estimate + 1)
-            assert (
-                power_low <= d_abs < power_high
-            ), f"Exponent calc error: {power_low} <= {d_abs} < {power_high}"
+            assert power_low <= d_abs < power_high, (
+                f"Exponent calc error: {power_low} <= {d_abs} < {power_high}"
+            )
 
             # float32: bias 127, 23 explicit mantissa bits (24 with the implicit
             # 1), biased exponent 1-254 for normals and 0 for subnormals.

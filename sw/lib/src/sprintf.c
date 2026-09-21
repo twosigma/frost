@@ -149,7 +149,7 @@ static FPC fpclass(double d)
     uint64_t b = dbits(d);
     int e = (int) ((b >> 52) & 0x7FF);
     uint64_t m = b & 0xFFFFFFFFFFFFFULL;
-    return (FPC) {(b >> 63) != 0, e == 0x7FF && m != 0, e == 0x7FF && m == 0};
+    return (FPC){(b >> 63) != 0, e == 0x7FF && m != 0, e == 0x7FF && m == 0};
 }
 
 /* floor(log10(|d|)) for d>0 */

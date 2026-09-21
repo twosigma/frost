@@ -129,12 +129,12 @@ def assert_completion(result: dict, *, tag: int, value: int, fp_flags: int = 0) 
     """Check all payload fields that the result queues must keep aligned."""
     assert result["valid"], "expected a valid completion"
     assert result["tag"] == tag, f"expected tag {tag}, got {result['tag']}"
-    assert (
-        result["value"] == value
-    ), f"expected value 0x{value:016X}, got 0x{result['value']:016X}"
-    assert (
-        result["fp_flags"] == fp_flags
-    ), f"expected flags 0x{fp_flags:02X}, got 0x{result['fp_flags']:02X}"
+    assert result["value"] == value, (
+        f"expected value 0x{value:016X}, got 0x{result['value']:016X}"
+    )
+    assert result["fp_flags"] == fp_flags, (
+        f"expected flags 0x{fp_flags:02X}, got 0x{result['fp_flags']:02X}"
+    )
 
 
 async def wait_for_complete(dut: Any, iface: FpMulShimInterface) -> dict:
@@ -206,7 +206,7 @@ async def test_fmul_s_basic(dut: Any) -> None:
     assert result["valid"], "Expected valid completion"
     assert result["tag"] == 1, f"Expected tag=1, got {result['tag']}"
     assert result["value"] == RES_6_0, (
-        f"Expected NaN-boxed 6.0f (0x{RES_6_0:016X}), " f"got 0x{result['value']:016X}"
+        f"Expected NaN-boxed 6.0f (0x{RES_6_0:016X}), got 0x{result['value']:016X}"
     )
 
 
@@ -236,7 +236,7 @@ async def test_fmadd_s_basic(dut: Any) -> None:
     assert result["valid"], "Expected valid completion"
     assert result["tag"] == 2, f"Expected tag=2, got {result['tag']}"
     assert result["value"] == RES_7_0, (
-        f"Expected NaN-boxed 7.0f (0x{RES_7_0:016X}), " f"got 0x{result['value']:016X}"
+        f"Expected NaN-boxed 7.0f (0x{RES_7_0:016X}), got 0x{result['value']:016X}"
     )
 
 
@@ -266,7 +266,7 @@ async def test_fmsub_s_basic(dut: Any) -> None:
     assert result["valid"], "Expected valid completion"
     assert result["tag"] == 3, f"Expected tag=3, got {result['tag']}"
     assert result["value"] == RES_5_0, (
-        f"Expected NaN-boxed 5.0f (0x{RES_5_0:016X}), " f"got 0x{result['value']:016X}"
+        f"Expected NaN-boxed 5.0f (0x{RES_5_0:016X}), got 0x{result['value']:016X}"
     )
 
 
@@ -293,9 +293,9 @@ async def test_single_operation_does_not_assert_busy(dut: Any) -> None:
     # Clear issue after one cycle
     iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
 
-    assert (
-        not iface.read_busy()
-    ), "busy should remain 0 while pipeline credits are available"
+    assert not iface.read_busy(), (
+        "busy should remain 0 while pipeline credits are available"
+    )
 
     result = await wait_for_complete(dut, iface)
     assert result["valid"], "Expected valid completion"
@@ -368,9 +368,9 @@ async def test_back_to_back_fmul_s_tags(dut: Any) -> None:
     tags = [result["tag"] for result in results]
     assert tags == [8, 9, 10, 11], f"unexpected completion tags: {tags}"
     for result in results:
-        assert (
-            result["value"] == RES_6_0
-        ), f"Expected NaN-boxed 6.0f (0x{RES_6_0:016X}), got 0x{result['value']:016X}"
+        assert result["value"] == RES_6_0, (
+            f"Expected NaN-boxed 6.0f (0x{RES_6_0:016X}), got 0x{result['value']:016X}"
+        )
 
 
 # ============================================================================

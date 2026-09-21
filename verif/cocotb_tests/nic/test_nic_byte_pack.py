@@ -148,9 +148,9 @@ def _check(
     expected = {addr + j: payload[j] for j in range(kept)}
     seen: dict[int, int] = {}
     lines = [w[0] for w in writes]
-    assert len(lines) == len(
-        set(lines)
-    ), f"a line was issued twice: {[hex(a) for a in lines]}"
+    assert len(lines) == len(set(lines)), (
+        f"a line was issued twice: {[hex(a) for a in lines]}"
+    )
     for line_addr, wdata, wstrb in writes:
         assert line_addr % LINE == 0
         assert wstrb != 0, f"empty write at {line_addr:#x}"

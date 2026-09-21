@@ -40,7 +40,7 @@ jr   t0
 layout below): `0x81000000` for any payload up to 14 MiB, and `0x82200000` for
 today's kernel, whose footprint is about 31 MiB.
 
-The firmware is OpenSBI v1.7's generic platform from `linux/opensbi`, built
+The firmware is OpenSBI v1.9's generic platform from `linux/opensbi`, built
 by `linux/opensbi_build.py` with the Linux-targeted toolchain in the Docker
 image. OpenSBI requires a PIE-capable linker; the bare-metal xPack linker
 cannot build it. Use `FROST_LINUX_CROSS_COMPILE` or `--cross` to select another
@@ -52,9 +52,10 @@ Linux-targeted toolchain. Build settings:
 
 The payload enters S-mode with `satp` Bare and `sstatus.SIE=0`. OpenSBI
 delegates SSI/STI/SEI interrupts and misaligned-fetch, breakpoint, U-ecall,
-and page-fault exceptions. It sets `mcounteren=scounteren=0x7` and
-`menvcfg.STCE=1`. Misaligned loads and stores are emulated in M-mode until
-the supervisor requests FWFT delegation.
+and page-fault exceptions. It sets `mcounteren=0x7`, `scounteren=0x2` and
+`menvcfg.STCE=1`. S-mode can read all three fixed counters; U-mode initially
+has access only to `time`. Misaligned loads and stores are emulated in M-mode
+until the supervisor requests FWFT delegation.
 
 ## Memory map
 
@@ -140,13 +141,14 @@ gate access from below M-mode: S-mode needs the counter's bit set in
   M-mode writes. Both are what OpenSBI's SBI PMU uses to stop, start and
   preload the fixed counters, and the inhibit CSR is also what its
   privileged-version probe requires before it programs `menvcfg.STCE`.
-- Both registers reset to `0x7`, and OpenSBI hands the kernel `mcounteren`
-  and `scounteren` = 0x7 (see the entry state above), so userspace can use
-  `rdcycle`/`rdtime`/`rdinstret`.
+- Both registers reset to `0x7`. OpenSBI 1.9 hands the kernel
+  `mcounteren=0x7` and `scounteren=0x2` (see the entry state above), so
+  userspace initially has only `rdtime`; the supervisor controls whether
+  it also permits direct `rdcycle`/`rdinstret` access.
 - With a bit clear in either register, a U-mode access to that counter's
   CSR is an illegal instruction (mcause=2, mtval=0).
 
-Linux can restrict direct userspace `rdcycle`/`rdinstret` access. It exposes
+Linux controls direct userspace `rdcycle`/`rdinstret` access. It exposes
 cycle and instruction counts through the SBI PMU and
 `perf_event_open` (`PERF_COUNT_HW_CPU_CYCLES` and
 `PERF_COUNT_HW_INSTRUCTIONS`). The `riscv,pmu` device-tree node maps these

@@ -260,9 +260,9 @@ def _check_counters(dut: Any, expected_vectors: int | None = None) -> None:
         f"{skews} of {vectors} vectors completed on different cycles; the "
         "iterative unit must keep the reference's 36/65-cycle latency"
     )
-    assert (
-        expected_vectors is None or vectors == expected_vectors
-    ), f"expected {expected_vectors} vectors, harness counted {vectors}"
+    assert expected_vectors is None or vectors == expected_vectors, (
+        f"expected {expected_vectors} vectors, harness counted {vectors}"
+    )
 
 
 # ============================================================================

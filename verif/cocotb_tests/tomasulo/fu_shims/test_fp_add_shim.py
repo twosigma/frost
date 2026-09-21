@@ -192,11 +192,11 @@ async def test_fadd_s_basic(dut: Any) -> None:
     result = await wait_for_complete(iface)
 
     expected = nan_box_f32(F32_3_0)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == expected, (
-        f"value mismatch: got 0x{result['value']:016X}, " f"expected 0x{expected:016X}"
+        f"value mismatch: got 0x{result['value']:016X}, expected 0x{expected:016X}"
     )
     assert result["exception"] is False, "unexpected exception"
 
@@ -224,11 +224,11 @@ async def test_fsub_s_basic(dut: Any) -> None:
     result = await wait_for_complete(iface)
 
     expected = nan_box_f32(F32_2_0)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == expected, (
-        f"value mismatch: got 0x{result['value']:016X}, " f"expected 0x{expected:016X}"
+        f"value mismatch: got 0x{result['value']:016X}, expected 0x{expected:016X}"
     )
     assert result["exception"] is False, "unexpected exception"
 
@@ -330,13 +330,13 @@ async def test_feq_s_equal(dut: Any) -> None:
 
     result = await wait_for_complete(iface)
 
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     # FEQ returns an integer 0 or 1 (not NaN-boxed); result is XLEN value
-    assert (
-        result["value"] == 1
-    ), f"FEQ_S(1.0, 1.0) should be 1, got 0x{result['value']:016X}"
+    assert result["value"] == 1, (
+        f"FEQ_S(1.0, 1.0) should be 1, got 0x{result['value']:016X}"
+    )
     assert result["exception"] is False, "unexpected exception"
 
 
@@ -362,14 +362,13 @@ async def test_fclass_s_positive_normal(dut: Any) -> None:
 
     result = await wait_for_complete(iface)
 
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     # FCLASS bit 6 = positive normal number
     expected_class = 0x40
     assert result["value"] == expected_class, (
-        f"FCLASS_S(1.0) should be 0x{expected_class:X}, "
-        f"got 0x{result['value']:016X}"
+        f"FCLASS_S(1.0) should be 0x{expected_class:X}, got 0x{result['value']:016X}"
     )
     assert result["exception"] is False, "unexpected exception"
 
@@ -399,12 +398,11 @@ async def test_fsgnj_s(dut: Any) -> None:
     # FSGNJ takes magnitude of rs1 and sign of rs2
     # magnitude(1.0) = 0x3F800000, sign(-1.0) = 1 -> -1.0 = 0xBF800000
     expected = nan_box_f32(F32_NEG_1_0)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == expected, (
-        f"FSGNJ_S(1.0, -1.0) should be 0x{expected:016X}, "
-        f"got 0x{result['value']:016X}"
+        f"FSGNJ_S(1.0, -1.0) should be 0x{expected:016X}, got 0x{result['value']:016X}"
     )
     assert result["exception"] is False, "unexpected exception"
 
@@ -433,15 +431,15 @@ async def test_fmax_d_snan_sets_invalid(dut: Any) -> None:
 
     result = await wait_for_complete(iface)
 
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert result["value"] == one_d, (
-        f"FMAX_D(sNaN, 1.0) should be 0x{one_d:016X}, " f"got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     )
-    assert (
-        result["fp_flags"] == 0x10
-    ), f"FMAX_D(sNaN, 1.0) should raise NV only, got 0x{result['fp_flags']:02X}"
+    assert result["value"] == one_d, (
+        f"FMAX_D(sNaN, 1.0) should be 0x{one_d:016X}, got 0x{result['value']:016X}"
+    )
+    assert result["fp_flags"] == 0x10, (
+        f"FMAX_D(sNaN, 1.0) should raise NV only, got 0x{result['fp_flags']:02X}"
+    )
     assert result["exception"] is False, "unexpected exception"
 
 

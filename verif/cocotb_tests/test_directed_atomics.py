@@ -387,9 +387,9 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     cocotb.log.info(
         f"DEBUG: After LR.W + NOPs, x5 = 0x{x5_value:08X} (expected 0x12345678)"
     )
-    assert (
-        x5_value == 0x12345678
-    ), f"LR.W failed: x5 = 0x{x5_value:08X}, expected 0x12345678"
+    assert x5_value == 0x12345678, (
+        f"LR.W failed: x5 = 0x{x5_value:08X}, expected 0x12345678"
+    )
     cocotb.log.info("=== LR.W TEST PASSED! ===")
 
     # Drive SC.W x6, x12, (x10) - store test_data to test_address_1
@@ -410,9 +410,9 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         dut, dut_if, state, 6, "Test Case 1 SC.W x6 to commit"
     )
     x6_value = dut_if.read_register(6)
-    assert (
-        x6_value == 0
-    ), f"SC.W Test Case 1 failed: x6 = {x6_value}, expected 0 (success)"
+    assert x6_value == 0, (
+        f"SC.W Test Case 1 failed: x6 = {x6_value}, expected 0 (success)"
+    )
     cocotb.log.info(f"SC.W x6 = {x6_value} (success)")
 
     # The successful SC.W also stores test_data to test_address_1; wait for
@@ -444,9 +444,9 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         dut, dut_if, state, 7, "Test Case 2 SC.W x7 to commit"
     )
     x7_value = dut_if.read_register(7)
-    assert (
-        x7_value == 1
-    ), f"SC.W Test Case 2 failed: x7 = {x7_value}, expected 1 (failure)"
+    assert x7_value == 1, (
+        f"SC.W Test Case 2 failed: x7 = {x7_value}, expected 1 (failure)"
+    )
     cocotb.log.info(f"SC.W x7 = {x7_value} (failed as expected)")
 
     # ========================================================================
@@ -486,9 +486,9 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         dut, dut_if, state, 9, "Test Case 3 SC.W x9 to commit"
     )
     x9_value = dut_if.read_register(9)
-    assert (
-        x9_value == 1
-    ), f"SC.W Test Case 3 failed: x9 = {x9_value}, expected 1 (failure)"
+    assert x9_value == 1, (
+        f"SC.W Test Case 3 failed: x9 = {x9_value}, expected 1 (failure)"
+    )
     cocotb.log.info(f"SC.W x9 = {x9_value} (failed due to address mismatch)")
 
     # ========================================================================
@@ -527,9 +527,9 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         dut, dut_if, state, 14, "Test Case 4 SC.W x14 to commit"
     )
     x14_value = dut_if.read_register(14)
-    assert (
-        x14_value == 0
-    ), f"SC.W Test Case 4 failed: x14 = {x14_value}, expected 0 (success)"
+    assert x14_value == 0, (
+        f"SC.W Test Case 4 failed: x14 = {x14_value}, expected 0 (success)"
+    )
     cocotb.log.info(f"SC.W x14 = {x14_value} (back-to-back success via forwarding)")
 
     # Wait for the successful SC.W's store to test_address_2 to drain.
@@ -577,9 +577,9 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         dut, dut_if, state, 16, "Test Case 5 SC.W x16 to commit"
     )
     x16_value = dut_if.read_register(16)
-    assert (
-        x16_value == 0
-    ), f"SC.W Test Case 5 failed: x16 = {x16_value}, expected 0 (success)"
+    assert x16_value == 0, (
+        f"SC.W Test Case 5 failed: x16 = {x16_value}, expected 0 (success)"
+    )
     cocotb.log.info(f"SC.W x16 = {x16_value} (success after NOPs)")
 
     # Wait for the successful SC.W's store to test_address_1 to drain.

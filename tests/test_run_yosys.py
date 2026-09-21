@@ -73,7 +73,7 @@ def _hierarchy_command(synth_command: str) -> str:
 
     Apply the parameters with `chparam -set`, rather than `hierarchy -chparam`:
     the latter triggers a duplicate-module assertion in Yosys 0.64 when the
-    cache/walker hierarchy is reprocessed. Yosys 0.68 may still specialize
+    cache/walker hierarchy is reprocessed. Yosys may still specialize
     and rename this top, so later checks must follow its top attribute.
     """
     family = _xilinx_family(synth_command)
@@ -413,9 +413,9 @@ class TestYosysSynthesis:
                 pytest.fail(
                     "Yosys not found or failed to run - required for synthesis tests"
                 )
-            assert (
-                "Yosys" in result.stdout or "yosys" in result.stdout.lower()
-            ), "Yosys version output not as expected"
+            assert "Yosys" in result.stdout or "yosys" in result.stdout.lower(), (
+                "Yosys version output not as expected"
+            )
         except FileNotFoundError:
             pytest.fail("Yosys not installed - required for synthesis tests")
         except subprocess.TimeoutExpired:

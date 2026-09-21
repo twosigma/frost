@@ -40,9 +40,9 @@ module rs_issue2_selector #(
     output logic [        DEPTH-1:0] o_issue_2_onehot
 );
 
-  localparam int unsigned IdxWidth = $clog2(DEPTH);
+  localparam int unsigned IdxWidth   = $clog2(DEPTH);
   localparam int unsigned TreeLeaves = 1 << $clog2(DEPTH);
-  localparam int unsigned TreeNodes = 2 * TreeLeaves - 1;
+  localparam int unsigned TreeNodes  = 2 * TreeLeaves - 1;
 
   // Heap layout: root [0], children of node n at [2*n+1]/[2*n+2], and padded
   // leaves at [TreeLeaves-1 .. 2*TreeLeaves-2]. The node state lives in
@@ -84,7 +84,7 @@ module rs_issue2_selector #(
   end
 
   for (genvar node = 0; node < TreeLeaves - 1; node++) begin : gen_select_merge
-    localparam int unsigned LeftNode = 2 * node + 1;
+    localparam int unsigned LeftNode  = 2 * node + 1;
     localparam int unsigned RightNode = 2 * node + 2;
 
     assign tree_any_ready[node] = tree_any_ready[LeftNode] || tree_any_ready[RightNode];

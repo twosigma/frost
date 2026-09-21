@@ -164,16 +164,16 @@ async def _serve_amo(
     dut_if.drive_lq_mem_response(0x0)
     for label in ("before the AMO's response", "in the AMO's response cycle"):
         if admit_presented:
-            assert not (
-                int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)
-            ), f"admitted {label}"
+            assert not (int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)), (
+                f"admitted {label}"
+            )
         await dut_if.step()
     dut_if.clear_lq_mem_response()
     for _ in range(12):
         if admit_presented:
-            assert not (
-                int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)
-            ), "admitted with the AMO in flight"
+            assert not (int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)), (
+                "admitted with the AMO in flight"
+            )
         if dut_if.read_amo_mem_write()["en"]:
             break
         await dut_if.step()
@@ -182,9 +182,9 @@ async def _serve_amo(
     for _ in range(3):  # the write phase also refuses the admission
         await dut_if.step()
         if admit_presented:
-            assert not (
-                int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)
-            ), "admitted in the AMO's write phase"
+            assert not (int(dut.o_coh_admit_ready.value) or _mirror_holds(dut)), (
+                "admitted in the AMO's write phase"
+            )
     dut_if.drive_amo_mem_write_done()
     await dut_if.step()
     dut_if.clear_amo_mem_write_done()
@@ -270,21 +270,21 @@ async def _amo_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int)
         return "amo-first"
 
     assert admit_seen is not None, f"offset {offset}: nothing happened"
-    assert (
-        launched_at != admit_seen
-    ), f"offset {offset}: AMO launched on the admission edge"
-    assert (
-        launched_at is None
-    ), f"offset {offset}: AMO launched at {launched_at} after admission at {admit_seen}"
+    assert launched_at != admit_seen, (
+        f"offset {offset}: AMO launched on the admission edge"
+    )
+    assert launched_at is None, (
+        f"offset {offset}: AMO launched at {launched_at} after admission at {admit_seen}"
+    )
     # Admitted first: the AMO stays staged until the release.
     if not dropped:
         await dut_if.step()  # the fire edge
         _drop_admit(dut)
     for _ in range(OBSERVE_CYCLES):
         await dut_if.step()
-        assert not dut_if.read_lq_mem_request()[
-            "en"
-        ], f"offset {offset}: AMO launched on an admitted line"
+        assert not dut_if.read_lq_mem_request()["en"], (
+            f"offset {offset}: AMO launched on an admitted line"
+        )
     await _release(dut, dut_if)
     for _ in range(12):
         await dut_if.step()
@@ -426,9 +426,9 @@ async def _sc_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int) 
             _present_admit(dut)
         for _ in range(4):
             await dut_if.step()
-            assert not int(
-                dut.o_coh_admit_ready.value
-            ), f"offset {offset}: admitted before the SC's store drained"
+            assert not int(dut.o_coh_admit_ready.value), (
+                f"offset {offset}: admitted before the SC's store drained"
+            )
         await _drain_one_store(dut, dut_if)
         await _wait_admitted(dut, dut_if)
         await _release(dut, dut_if)
@@ -436,23 +436,23 @@ async def _sc_admission_trial(dut: Any, dut_if: TomasuloInterface, offset: int) 
 
     assert admit_seen is not None, f"offset {offset}: nothing happened"
     assert fired_at != admit_seen, f"offset {offset}: SC fired on the admission edge"
-    assert (
-        fired_at is None
-    ), f"offset {offset}: SC fired at {fired_at} after admission at {admit_seen}"
+    assert fired_at is None, (
+        f"offset {offset}: SC fired at {fired_at} after admission at {admit_seen}"
+    )
     if not dropped:
         await dut_if.step()  # the fire edge
         _drop_admit(dut)
     for _ in range(OBSERVE_CYCLES):
         await dut_if.step()
         cdb = dut_if.read_cdb_output()
-        assert not (
-            cdb.valid and cdb.tag == tag_sc
-        ), f"offset {offset}: SC fired on an admitted line"
+        assert not (cdb.valid and cdb.tag == tag_sc), (
+            f"offset {offset}: SC fired on an admitted line"
+        )
     await _release(dut, dut_if)
     cdb = await wait_for_cdb(dut_if)
-    assert (
-        cdb.tag == tag_sc and cdb.value == 0
-    ), "SC should still succeed after the release"
+    assert cdb.tag == tag_sc and cdb.value == 0, (
+        "SC should still succeed after the release"
+    )
     commit = await wait_for_commit(dut_if)
     assert commit["tag"] == tag_sc
     await _drain_one_store(dut, dut_if)
@@ -537,9 +537,9 @@ async def test_forwarded_load_is_validated(dut: Any) -> None:
     dut_if.clear_rs_dispatch()
     for _ in range(20):
         await dut_if.step()
-        assert not dut_if.read_lq_mem_request()[
-            "en"
-        ], "the load should forward, not launch"
+        assert not dut_if.read_lq_mem_request()["en"], (
+            "the load should forward, not launch"
+        )
         cdb = dut_if.read_cdb_output()
         if cdb.valid and cdb.tag == tag_lw:
             assert cdb.value == 0x1111_2222
@@ -551,9 +551,9 @@ async def test_forwarded_load_is_validated(dut: Any) -> None:
     await _admit_now(dut, dut_if)
     await _invalidate_now(dut, dut_if)
     assert (int(dut.u_rob.rob_replay.value) >> tag_lw) & 1, "forwarded load not flagged"
-    assert (
-        int(dut.u_rob.rob_exception.value) >> tag_lw
-    ) & 1, "flag did not make the entry exceptional"
+    assert (int(dut.u_rob.rob_exception.value) >> tag_lw) & 1, (
+        "flag did not make the entry exceptional"
+    )
     await _release(dut, dut_if)
 
     # Let the store commit and drain; the load then reaches the head as a replay.
@@ -627,9 +627,9 @@ async def test_flushed_forward_is_not_observed(dut: Any) -> None:
 
         await _admit_now(dut, dut_if)
         await _invalidate_now(dut, dut_if)
-        assert not (
-            (int(dut.u_rob.rob_replay.value) >> tag_new) & 1
-        ), f"offset {offset}: the flushed forward's observation flagged the reused tag"
+        assert not ((int(dut.u_rob.rob_replay.value) >> tag_new) & 1), (
+            f"offset {offset}: the flushed forward's observation flagged the reused tag"
+        )
         await _release(dut, dut_if)
         dut_if.set_commit_hold(False)
         dut_if.set_fu_ready(RS_MEM, False)
@@ -689,9 +689,9 @@ async def test_surviving_forward_is_observed(dut: Any) -> None:
 
         await _admit_now(dut, dut_if)
         await _invalidate_now(dut, dut_if)
-        assert (
-            int(dut.u_rob.rob_replay.value) >> tag_lw
-        ) & 1, f"offset {offset}: the surviving forwarded load was not validated"
+        assert (int(dut.u_rob.rob_replay.value) >> tag_lw) & 1, (
+            f"offset {offset}: the surviving forwarded load was not validated"
+        )
         await _release(dut, dut_if)
         dut_if.set_commit_hold(False)
         dut_if.set_fu_ready(RS_MEM, False)

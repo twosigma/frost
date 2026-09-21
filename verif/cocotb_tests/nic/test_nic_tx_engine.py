@@ -222,16 +222,16 @@ async def test_frames_out(dut: Any) -> None:
     await env.wait_idle()
     assert env.sink.frames == [p[2] for p in plan]
     for i, (addr, length, _) in enumerate(plan):
-        assert (
-            desc_status(env.mem, RING, i) == DD
-        ), f"desc {i}: {desc_status(env.mem, RING, i):#x}"
+        assert desc_status(env.mem, RING, i) == DD, (
+            f"desc {i}: {desc_status(env.mem, RING, i):#x}"
+        )
     assert env.completions == [(0, p[1]) for p in plan]
     expected = [
         line for addr, length, _ in plan for line in _expected_lines(addr, length)
     ]
-    assert sorted(env.lines_read()) == sorted(
-        expected
-    ), "the lines read are not exactly the buffers' lines"
+    assert sorted(env.lines_read()) == sorted(expected), (
+        "the lines read are not exactly the buffers' lines"
+    )
     assert int(dut.o_head.value) == len(plan)
     assert not env.model.violations, env.model.violations
     env.stop()
@@ -263,9 +263,9 @@ async def test_one_status_write_in_flight(dut: Any) -> None:
     assert env.sink.frames == plan
     status_cycles = [r["cycle"] for r in env.model.log if r["kind"] == 2]
     assert len(status_cycles) == 4
-    assert all(
-        b - a >= 150 for a, b in zip(status_cycles, status_cycles[1:])
-    ), status_cycles
+    assert all(b - a >= 150 for a, b in zip(status_cycles, status_cycles[1:])), (
+        status_cycles
+    )
     assert not env.model.violations, env.model.violations
     env.stop()
 
@@ -285,9 +285,9 @@ async def test_invalid_descriptors(dut: Any) -> None:
     await env.wait_completions(7)
     await env.wait_idle()
     for i in range(6):
-        assert (
-            desc_status(env.mem, RING, i) == DD | ERR
-        ), f"desc {i}: {desc_status(env.mem, RING, i):#x}"
+        assert desc_status(env.mem, RING, i) == DD | ERR, (
+            f"desc {i}: {desc_status(env.mem, RING, i):#x}"
+        )
     assert desc_status(env.mem, RING, 6) == DD
     assert env.sink.frames == [good]
     assert [c[0] for c in env.completions] == [2] * 6 + [0]
@@ -338,9 +338,9 @@ async def test_withdrawn_status_write_completes_nothing(dut: Any) -> None:
             break
     for _ in range(40):
         await FallingEdge(dut.i_clk)
-    assert (
-        env.completions == []
-    ), f"a withdrawn status write completed: {env.completions}"
+    assert env.completions == [], (
+        f"a withdrawn status write completed: {env.completions}"
+    )
     env.model.withdraw_status = False
     second = env.place(1, BUF + 0x3000 + 5, 70)
     await env.doorbell(2)

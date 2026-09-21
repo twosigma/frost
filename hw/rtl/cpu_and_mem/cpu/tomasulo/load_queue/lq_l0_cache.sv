@@ -93,7 +93,7 @@ module lq_l0_cache #(
   // in a compare that sits on the historically critical lookup-hit cone, so
   // the tag stays 32-bit-relative at any XLEN (D3: producers canonicalize
   // bits [XLEN-1:32] to zero before addresses reach the memory tier).
-  localparam int unsigned TagWidth = 32 - 3 - IndexWidth;
+  localparam int unsigned TagWidth   = 32 - 3 - IndexWidth;
 
   // ===========================================================================
   // Storage

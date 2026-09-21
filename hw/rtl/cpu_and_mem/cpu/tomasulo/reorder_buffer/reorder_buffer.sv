@@ -380,7 +380,7 @@ module reorder_buffer #(
       input logic [ReorderBufferDepth-1:0] mask, input logic advance_two);
     advance_onehot_mask = '0;
     for (int unsigned i = 0; i < ReorderBufferDepth; i++) begin
-      advance_onehot_mask[(i+(advance_two?2 : 1))%ReorderBufferDepth] = mask[i];
+      advance_onehot_mask[(i+(advance_two ? 2 : 1))%ReorderBufferDepth] = mask[i];
     end
   endfunction
 
