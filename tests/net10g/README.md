@@ -7,20 +7,9 @@ registry, or a GTY simulation model. See
 [the RTL README](../../hw/rtl/net10g/README.md) for interfaces, rates, packet
 behavior, and implementation limits.
 
-[The Ethernet MAC/PCS job](../../.github/workflows/ci.yml) runs every standalone
-target and the portable synthesis check on pull requests targeting `main`
-and pushes to `main`. It reuses the existing workflow's `build-docker` image
-artifact, loaded as `frost-dev:latest`, then invokes the commands shown below
-through `scripts/frost.py --image frost-dev:latest`. Submodule
-initialization is disabled because these checks do not need CPU/software
-dependencies. The CPU jobs and test registry now reach the same MAC/PCS
-through the NIC that wraps it, so these benches are its isolated coverage
-rather than its only coverage.
-
-The `net10g-results` artifact retains simulation output, per-target XML
-results, and synthesis logs/source hashes/summary for seven days, including
-diagnostics from failed runs. A failed runner remains a failed CI step even
-though its output is also captured with `tee`.
+CI runs these benches and the portable synthesis check in the pinned image.
+The `net10g-results` artifact contains simulation results and synthesis logs,
+including failed runs.
 
 Run **through frost**, from the repository root:
 
@@ -31,18 +20,12 @@ Run **through frost**, from the repository root:
 ./scripts/frost.py run python3 tests/net10g/run.py mac_tx mac_rx mac_rx_60 mac_rx_124 integration
 ```
 
-`run.py` refuses host-native execution, runs `make clean` for each target
-before building, propagates subprocess failures, and checks that the XML
-contains tests without failures/errors. The wrapper runs as the invoking
-UID/GID. Build products and `results.xml` live in `sim_build/<target>/`, so
-different targets can run concurrently. Do not run the same target twice
-concurrently. The tests use fixed random seeds.
+`run.py` requires Docker and cleans each target before building. Results and
+build products are under `sim_build/<target>/`. Different targets can run
+concurrently; do not run the same target twice at once. Random seeds are fixed.
 
-`mac_rx_60` and `mac_rx_124` run the receive MAC cases again with
-`NET10G_MAX_FRAME_BYTES` set, which the Makefile passes to the top's
-`MAX_FRAME_BYTES`. At those limits the storage corners take a few frames, and
-the largest frame plus FCS ends on a word boundary. A case that a limit cannot
-reach is reported as skipped.
+`mac_rx_60` and `mac_rx_124` rerun RX tests with smaller `MAX_FRAME_BYTES`
+limits to exercise storage boundaries; unreachable cases are skipped.
 
 | Target | Coverage |
 | --- | --- |
@@ -58,10 +41,9 @@ reach is reported as skipped.
 | `mac_rx_60`, `mac_rx_124` | The `mac_rx` cases at small frame limits, adding the overlength/no-space tie and admission with an empty output register |
 | `integration` | Independent raw-bitstream peers in both directions; AXIS stalls from startup; every receive bit phase; invalid termination lookahead; CRC rejection; PMA loss midframe and relock |
 
-Integration tests use distinct clock phases but equal nominal periods; they
-do not claim a metastability or board clocking proof. Each packet interface
-belongs to its corresponding TX or RX domain. The only internal crossing is
-the fault-status synchronizer. A future CPU integration needs packet CDC.
+Integration tests use equal nominal clock periods with distinct phases;
+they do not validate metastability or board clocking. Packet CDC belongs to
+the enclosing NIC, not the MAC/PCS.
 
 To check new files with the repository's pinned hooks without running
 auto-fixers over unrelated files:
@@ -82,24 +64,14 @@ rerun when they do.
 ./scripts/frost.py run python3 tests/net10g/synthesize.py
 ```
 
-The check converts the SystemVerilog package constructs with the image's
-**sv2v v0.0.13** before passing the result to Yosys 0.68's `read_verilog`
-frontend. It converts with `SYNTHESIS` defined, as the CPU's Yosys flow does,
-so simulation-only checks stay out of the synthesized view. This standalone script uses that binary when its version matches
-the pin, so the CI step needs no network access. An image
-predating the sv2v layer falls back to the script's own pinned download: it
-fetches the upstream Linux archive, verifies the SHA256 pinned in the
-script, and extracts only into `sim_build/synthesis`; neither the host nor
-the image is modified. Later runs can reuse the verified archive.
+The check uses the image's pinned sv2v frontend and Yosys for coarse
+synthesis. An older image without sv2v downloads and verifies the pinned
+archive under `sim_build/synthesis/`.
 
-The script snapshots and hashes the RTL, converts it, runs coarse synthesis
-with memories retained and FSM recoding disabled, and rejects latches,
-blackboxes, structural errors and out-of-range reads. It bounds subprocess
-time/memory and retains complete logs, converted Verilog, a JSON netlist and
-`summary.json` under `sim_build/synthesis/`.
+It rejects latches, blackboxes, structural errors, and out-of-range reads.
+Logs, RTL hashes, converted Verilog, a JSON netlist, and `summary.json` are
+retained under `sim_build/synthesis/`.
 
-At the default 9216-byte frame limit, the checked hierarchy retains eleven
-memories containing **531,520 bits**. This is a portable structural check;
-it does not establish RAM primitive mapping, 161.1328125 MHz timing, GTY
-operation, or hardware interoperability. Any future Vivado checks must run
-natively and use a separate output directory from the active CPU build.
+This checks RTL structure, not FPGA RAM mapping, timing, transceiver
+operation, or hardware interoperability. Run Vivado checks natively in a
+separate output directory from any active CPU build.

@@ -49,85 +49,25 @@ privilege modes. `verif/config.py` pins `XLEN` to 64 to match `riscv_pkg`;
 the shared integer arithmetic and signedness helpers use that setting. See the
 [root README](../README.md) for the full ISA extension table.
 
-The DUT has:
-- 32 general-purpose registers plus a separate FP register file
-- Harvard architecture with separate instruction and data memory interfaces
-- 2-wide in-order IF/PD/ID front-end feeding a Tomasulo OOO back-end
-- 2-wide dispatch/rename, 2-lane CDB completion broadcast, and precise in-order commit through the ROB, with branch/trap recovery paths
-
 ### Verification Methodology
 
-1. Block-level testing: directed and randomized benches check individual
-   pipeline, Tomasulo, cache, MMU, control, and debug modules.
-2. Directed CPU testing: `directed_traps` checks machine-mode traps and
-   interrupts in CI. The ported atomic and compressed suites remain CLI-only;
-   the multi-cycle suite still needs an OOO port.
-3. Real-program integration: complete compiled applications (Hello World,
-   CoreMark, CoreMark-PRO) run with UART pass/fail detection
-   (`test_real_program.py`). These suites exercise the BRAM and cached DDR
-   tiers according to the runner's registry and tier exclusions.
-4. Legacy random CPU harness: `test_cpu.py` generates constrained-random
-   instructions and tracks a minimum execution count per instruction type
-   (`min_coverage_count`). Its fixed-latency scoreboard still needs an OOO
-   port; current ISA coverage comes from the riscv-tests, architecture
-   compliance, and real-program suites.
+- Block benches check pipeline, memory, control, and debug modules.
+- Directed CPU tests exercise traps, atomics, and compressed instructions.
+  The table under [Running Tests](#running-tests) identifies supported targets.
+- Compiled applications use UART pass/fail detection and exercise BRAM and
+  cached DDR. ISA compliance and torture have separate runners in `tests/`.
 
 ## Directory Structure
 
-```
-verif/
-├── config.py              # Central configuration constants
-├── verification_types.py  # Type aliases for type safety
-├── exceptions.py          # Custom exception hierarchy
-├── cocotb_tests/          # Cocotb test cases
-│   ├── test_cpu.py        # Legacy random CPU harness (OOO port pending)
-│   ├── test_common.py     # Shared test utilities (TestConfig, branch flush)
-│   ├── test_directed_atomics.py  # LR.W/SC.W atomic operation tests
-│   ├── test_directed_traps.py    # ECALL, EBREAK, MRET, interrupt tests
-│   ├── test_dmmu.py       # Data-MMU resolution, hit throughput, miss skid, recovery
-│   ├── test_compressed.py # C extension compressed instruction tests
-│   ├── test_directed_multicycle.py  # Back-to-back DIV/FP-DIV and load-use hazard tests
-│   ├── test_bram_reload.py  # JTAG image-load (port-A) reload test
-│   ├── test_sdp_packed_tag_uram.py  # Packed tag UltraRAM wrapper tests
-│   ├── test_state.py      # Test state management (pipeline tracking)
-│   ├── cpu_model.py       # CPU software reference model
-│   ├── instruction_generator.py  # Random instruction generation
-│   ├── instruction_executor.py  # Execute-and-model helper (encode/model/drive)
-│   ├── test_real_program.py  # Integration tests with real programs (UART-driven)
-│   ├── test_helpers.py    # Test infrastructure helpers
-│   ├── if_stage/          # IF-stage block tests (PC controller, aligner, RVC
-│   │                      #   decompressor, immu, branch prediction, RAS, BTB, ...)
-│   ├── pd_stage/          # Predecode-stage top-level block tests
-│   ├── id_stage/          # Decode-stage top-level block tests
-│   ├── ex_stage/          # EX-stage block tests (branch/jump unit, FP
-│   │                      #   divide/sqrt equivalence)
-│   ├── predecode/         # Fetch provider + predecode-line block tests (L1I fetch seam)
-│   ├── cache/             # Cache hierarchy + line-port arbiter block tests
-│   ├── cpu_ooo/           # OOO block tests (commit, recovery, memory router,
-│   │                      #   register files, perf counters, pipeline control,
-│   │                      #   frontend validity tracker)
-│   ├── control/           # Control tests (trap/MRET/exception + store-drain arbitration)
-│   ├── debug/             # RISC-V debug module: JTAG/DTM/DM driver, the directed
-│   │                      #   bench and the OpenOCD-in-the-loop (remote_bitbang) bench
-│   └── tomasulo/          # Block-level cocotb tests for Tomasulo submodules
-│                          #   (ROB, RAT, RS, dispatch, CDB arbiter, LQ/SQ, FU shims)
-├── models/                # Reference models for verification
-│   ├── alu_model.py       # ALU operations reference model
-│   ├── branch_model.py    # Branch decision model
-│   ├── fp_model.py        # IEEE 754 single/double-precision FP model
-│   └── memory_model.py    # Memory subsystem model
-├── encoders/              # RISC-V instruction encoding
-│   ├── instruction_encode.py  # Binary instruction encoders
-│   ├── compressed_encode.py   # RVC compressed (16-bit) encoders
-│   └── op_tables.py       # Instruction mapping tables
-├── monitors/              # Runtime verification monitors
-│   └── monitors.py        # Integer/FP register and PC monitors
-└── utils/                 # Utility functions
-    ├── riscv_utils.py     # RISC-V data type utilities
-    ├── memory_utils.py    # Memory alignment and address helpers
-    ├── instruction_logger.py  # Structured logging
-    └── validation.py      # Assertions with structured failure context
-```
+| Path | Purpose |
+| --- | --- |
+| `cocotb_tests/` | CPU harnesses, directed tests, compiled-program tests, and block benches |
+| `models/` | Integer, branch, floating-point, and memory reference models |
+| `encoders/` | Instruction encoders and operation tables |
+| `monitors/` | Integer/FP register and PC monitors |
+| `utils/` | Alignment, data types, logging, and assertions |
+| `config.py` | Shared constants and DUT signal paths |
+| `verification_types.py`, `exceptions.py` | Type aliases and test exceptions |
 
 ## Components
 
@@ -169,13 +109,9 @@ into 32-bit binary, and can constrain addresses to allocated memory.
 
 #### Integration test (`test_real_program.py`)
 
-Runs compiled programs (Hello World, CoreMark, and all nine CoreMark-PRO
-workload sims `coremark_pro_{core,cjpeg,linear_alg,loops,nnet,parser,radix2,
-sha,zip}`) and detects pass/fail over the UART. This covers system-level
-behavior, including the cached memory tier: CoreMark-PRO heaps live in the
-1 GiB DDR-backed region behind the L1/L2 cache hierarchy, and the behavioral
-DDR model loads each program's `sw_ddr.mem` image, mirroring the hardware JTAG
-DDR loader.
+Runs compiled applications and detects pass/fail over UART. CoreMark-PRO
+uses DDR-backed heaps; the behavioral DDR model loads `sw_ddr.mem` like the
+hardware loader. Use the test registry to select an application.
 
 #### Test helpers (`test_helpers.py`)
 - `DUTInterface`: DUT signal access behind configurable hierarchy paths
@@ -184,21 +120,11 @@ DDR loader.
 ### Reference Models (`/models`)
 
 #### ALU Model (`alu_model.py`)
-Implements the arithmetic and logical operations:
-- Base operations: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU
-- M-extension: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU
-- A-extension (AMO evaluators): AMOSWAP.W, AMOADD.W, AMOXOR.W, AMOAND.W, AMOOR.W, AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W
-  (no LR.W/SC.W evaluator: LR.W reuses `lw` for the loaded value, and
-  `TestState` models the reservation and the SC.W outcome)
-- Load operations: LW, LD, LH, LHU, LB, LBU
-- B extension (Zba): SH1ADD, SH2ADD, SH3ADD
-- B extension (Zbb): ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU, ROL, ROR, RORI, SEXT.B, SEXT.H, ZEXT.H, ORC.B, REV8
-- B extension (Zbs): BSET, BCLR, BINV, BEXT (and immediate variants)
-- Zicond extension: CZERO.EQZ, CZERO.NEZ
-- Zbkb extension: PACK, PACKH, BREV8 (RV32-only ZIP/UNZIP are unsupported)
-- RV64 word forms: ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW, ADD.UW, SH1ADD.UW, SH2ADD.UW, SH3ADD.UW, SLLI.UW, ROLW, RORW, CLZW, CTZW, CPOPW, PACKW
-- The `mask_to_xlen` and `limit_shift_amount` decorators mask results to XLEN
-  and shift amounts to `SHIFT_AMOUNT_BITS`
+Models integer arithmetic, multiplication/division, loads, word AMOs,
+bit-manipulation, Zicond, and RV64 word operations. `op_tables.py` lists the supported
+instructions; it is a subset of the CPU ISA. RV32 ZIP/UNZIP are unsupported.
+LR.W uses the load evaluator; `TestState` models reservations and SC.W results.
+Results and shift amounts are masked to the configured XLEN.
 
 #### Branch Model (`branch_model.py`)
 `branch_taken_decision()` models the taken/not-taken decision for BEQ, BNE,
@@ -282,13 +208,6 @@ config = TestConfig(
 await run_random_regression(dut, config=config)
 ```
 
-Structured logging output example:
-```
-[Cycle   123] add    PC: 0x00000310 → 0x00000314 x5 ← 0x00001234 (x3, x4)
-[Cycle   124] lw     PC: 0x00000314 → 0x00000318 x6 ← 0x87654321 (x1, x2) imm=16 @0x00001010
-[Cycle   125] beq    PC: 0x00000318 → 0x0000031c (x5, x6) imm=8 [NOT-TAKEN]
-```
-
 ### Running Tests
 
 Run these commands from the repository root through `./scripts/frost.py`.
@@ -298,15 +217,13 @@ use `./scripts/frost.py cocotb <name>`; pass `--list-tests` for the canonical
 target list. The single source of truth is `TEST_REGISTRY` in
 `tests/test_run_cocotb.py`.
 
-The random and directed CPU tests use the `cpu_tb` testbench and these
-`test_run_cocotb.py` registry targets: `directed_traps` (pytest-collected, in
-CI) plus `directed_atomics`, `directed_multicycle`, `compressed`, and
-`cpu_random` (registered CLI-only). `directed_atomics` and `compressed` have
-been ported to the maintained `DUTInterface` commit-event helpers and pass; they
-stay CLI-only pending a decision to add them to CI. `directed_multicycle` and
-`cpu_random` still assume in-order fixed latencies and fail on the OOO core
-until ported. Their ISA coverage is meanwhile carried by the riscv-tests,
-arch-compliance, and real-program suites.
+CPU harness targets use `cpu_tb`:
+
+| Target | Status |
+| --- | --- |
+| `directed_traps` | Supported; runs in CI |
+| `directed_atomics`, `compressed` | Supported; CLI-only |
+| `directed_multicycle`, `cpu_random` | Fixed-latency harnesses awaiting an OOO port; expected to fail |
 
 Bare `make` in `tests/` builds the `Makefile` default (`TOPLEVEL=cpu_tb`,
 `COCOTB_TEST_MODULES=cocotb_tests.test_cpu`), which loads only the unported

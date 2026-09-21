@@ -1,14 +1,8 @@
 # Standalone 10GBASE-R MAC/PCS
 
-This directory implements a portable, single-port, full-duplex Ethernet MAC
-and normal-operation 10GBASE-R PCS. It was written independently of the CPU,
-to carry FROST's networking. `hw/rtl/peripherals/nic/` now wraps
-this MAC/PCS as FROST's NIC, so the CPU source list, the X3 constraints, the
-software and the test registry all reach these modules; they are unchanged by
-that integration and keep their standalone CI job. A separate
-[Ethernet MAC/PCS job in the existing CI workflow](../../../.github/workflows/ci.yml)
-runs their standalone simulations and portable synthesis check using the
-workflow's shared Docker image.
+Portable, single-port, full-duplex Ethernet MAC and normal-operation
+10GBASE-R PCS. The [FROST NIC](../peripherals/nic/README.md) connects it to
+the CPU, coherent DMA, and Linux. It also supports standalone use and testing.
 
 The top is `eth10g_mac_pcs`. The `net10g.f` manifest lists these modules
 with paths relative to the repository root. Their one outside dependency is
@@ -132,39 +126,14 @@ MAC configurations require a limit of at least 60 bytes.
   Storage and descriptors freed by an AXIS handshake serve XGMII words sampled
   on later clocks, not a word sampled on the handshake's own clock.
 
-Default TX storage is two 9216-byte buffers with synchronous read prefetch,
-held in one array with the buffer select as the top address bit and read
-through one port behind a muxed address, so that FPGA synthesis infers
-block RAM (a two-dimensional array of buffers falls back to registers, and a
-second read port to distributed RAM).
-Default RX storage is a 32 KiB circular data buffer and 512 descriptors;
-frame starts are word-aligned, and the four FCS bytes consume storage until
-the corresponding frame drains. Each byte lane of the data buffer is a
-simple dual-port memory with a synchronous read addressed by the reader's
-next word. The reader copies beats of published packets into a two-entry
-output register, which alone sees `m_axis_tready`; a copied word was never
-written on the edge that fetched it, while fetches with nothing published may
-collide with writes and are not copied. A simulation-only tripwire in
-`eth10g_mac_rx` holds that argument: it latches a same-edge hit between the
-fetch address and any lane write and errors if the reader copies that fetch.
-The byte lanes infer block RAM. Only the small descriptor length array is read
-asynchronously. Mixed jumbo/minimum packets with continuously ready output,
-wraparound, and concurrent reader/drop rollback are tested.
+Default TX storage is two 9216-byte buffers; RX has a 32 KiB circular data
+buffer and 512 descriptors. Both data stores use synchronous reads suitable
+for block RAM. RX frame starts are word-aligned, and FCS bytes consume
+storage until the frame drains. A two-entry output register decouples the
+RX storage from AXIS backpressure.
 
-RX is staged for the word rate. A decode stage registers each enabled XGMII
-word with its symbol classes and CRC contributions, and a word stage decides
-the whole word from registers: each lane's candidate event is computed in
-parallel and the first one selects the outcome, so no byte count, CRC or
-free-space value passes from lane to lane. A word's events, and publication
-of a packet it completes, are registered on the clock after the word is
-sampled; the packet's first beat reaches `m_axis_*` at least one clock after
-publication.
-
-TX decides each word from registers without an added stage. Starting a frame
-loads its payload and padded lengths as word counts and end lanes, each word
-registers the lane classes of the next, and a word's FCS bytes select among
-its prefix CRCs, each bit one XOR of fixed seed and payload bits, so no
-length compare or CRC passes from lane to lane.
+RX publishes a completed packet on the clock after its final XGMII word is
+sampled; its first AXIS beat appears at least one clock after publication.
 
 ## Link status and errors
 
@@ -189,8 +158,8 @@ remote fault causes idles. A fault interrupts any packet already on the
 wire. Frames accepted before a later link failure can be lost; there is no
 per-packet delivery acknowledgment. The MAC continues its internal frame
 progress so recovery cannot expose an old packet tail or deadlock a partially
-received AXIS packet. Packet-level CDC, DMA completion semantics and retry
-policy belong to later integration.
+received AXIS packet. Packet-level CDC, DMA completion semantics, and retry
+policy belong to the surrounding NIC.
 
 Error outputs are event indications, not accumulated counters:
 
@@ -222,15 +191,11 @@ Verilator/cocotb and checks the resulting XML for actual passing tests. See
 [the verification README](../../../tests/net10g/README.md) for targets,
 coverage, artifact paths, and the extra pinned synthesis frontend.
 
-The implementation has simulation, lint/type, and portable coarse synthesis
-evidence. Inside the NIC, an X3 bitstream with the MAC clocked at 40 MHz from
-the MMCM placed and routed it; the X3 build now clocks it from a GTY
-transceiver at the word rate, where it meets routed timing beside the CPU at
-its rated clock and carries a Debian NFS root over a fiber link.
-`sw/apps/nic_echo`, which needs a link partner sending to it, was passed
-against a host on a build with the CPU clock halved.
-There is no GTY instance, optical-module management, board constraint change,
-CPU/DMA interface, register bank, interrupt wiring, or Linux driver here.
+On X3, the MAC/PCS runs at the transceiver word rate alongside the 300 MHz
+CPU and carries Debian's NFS root over fiber. Board transceiver control,
+packet CDC, DMA, registers, interrupts, and the Linux driver are provided by
+the surrounding NIC and board integration.
+
 MAC address filtering, PAUSE/PFC handling, PTP, EEE state machines, MDIO and
 PCS compliance test-pattern modes are not implemented. Recognizing a control
 code does not implement its optional protocol. The target is normal

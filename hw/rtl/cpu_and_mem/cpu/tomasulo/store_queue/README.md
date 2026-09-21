@@ -256,15 +256,10 @@ lower- or upper-half compares before the winner tree.
 
 ## Verification
 
-Cocotb covers allocation including 2-wide cases, address/data update,
-every store size, single-beat FSD, store-to-load forwarding, MMIO bypass,
-payload-only capture and coincident-update priority, partial/full flush, SC
-discard, same-edge drain removal plus 2-wide allocation,
-overlapping flush/discard removal, back-to-back drains with per-cycle sampling
-in `drain_pipelined_writes`, and constrained random.
-Inline formal properties cover pointer/live-count consistency across allocation and
-all removal causes, write prerequisites
-(asserted on the staged on-bus entry), the in-flight bound and
-specials-fly-alone discipline, the committed-survives-flush invariant, and
-forwarding; a cover property witnesses two writes in flight
-(`cover_pipelined_drain`).
+The `store_queue` cocotb target covers two-wide allocation, updates,
+forwarding, pipelined drain, flushes, and SC discard. Inline formal
+properties check live-count consistency, write prerequisites, in-flight
+bounds, forwarding, and that committed stores survive a flush.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

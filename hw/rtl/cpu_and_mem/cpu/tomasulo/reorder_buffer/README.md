@@ -289,16 +289,10 @@ back-pressure rather than by the hazard gate.
 
 ## Verification
 
-Cocotb (the `reorder_buffer` target in `tests/test_run_cocotb.py`) covers
-allocation, dual-lane CDB writes, branch updates, serialization, flushes,
-simultaneous allocation/commit, and full-buffer handling. Directed
-six-port bypass checks rotate independent read addresses within one clock
-phase, verify both allocation banks before and after staged-LVT drain, and
-exercise tag31-to0 reuse with every allocation-port/CDB-lane stale-write
-collision pairing. They preserve the allocation+1 no-completion contract and
-the one-branch-per-bundle rule, then check a legal later completion. Directed
-serializer cases pin the translation CSR's captured done pulse, SQ drain,
-commit-hold behavior, event/shadow/final-flush phasing, and the non-writing
-`mstatus` exclusion. Inline formal properties, run by
-`formal/reorder_buffer.sby`, prove pointer, allocation/commit,
-serializer-state ownership, drain, and event-delay invariants.
+The `reorder_buffer` cocotb target covers allocation, completion, branch
+updates, serialization, flushes, and tag reuse. Its formal target checks
+pointer/ownership, allocation/commit, store drain, and serializer event
+timing invariants.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

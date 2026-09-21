@@ -34,15 +34,10 @@ the controller's 512-bit memory AXI interface. The first 1 GiB is mapped at
 CPU address `0x8000_0000`; the controller's ECC management interface is
 reachable only from the DDR JTAG master, at region offset `0x4000_0000`.
 
-The DDR is 72 bits wide, so the controller checks ECC on every read, and a
-location nothing has written since power-up carries a check code unrelated to
-its data. The controller has no initialization of its own, so `x3_ddr_init`
-writes zeros over the region once calibration completes, in bursts wide enough
-that the width converter hands the controller whole 512-bit words and it never
-reads the array to recompute a check code. It takes about 110 ms at the rated
-clock. `fpga/ddr_ecc/ddr_ecc_status.py` reads the controller's error counters
-over the DDR JTAG master and is what shows this worked; the hardware regression
-runs it as a last stage.
+The 72-bit DDR interface uses ECC. After calibration, `x3_ddr_init` zeroes
+the exposed region using full-width writes so every location has valid ECC
+before any read. This takes about 110 ms at the rated clock. Read the
+controller's error state with `fpga/ddr_ecc/ddr_ecc_status.py`.
 
 DDR calibration passes through a two-flop synchronizer in `x3_frost`, and
 that, the MMCM lock and the region writer's completion together release the
@@ -214,16 +209,17 @@ To support another Xilinx FPGA board:
    and hold the CPU in reset until `mem_ok` (DDR calibrated), and, on a board
    whose memory is ECC-checked, until the region has been written. Pass
    `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`; the full-system hierarchy
-   includes the UltraRAM L2. A BRAM-only board leaves the cached tier disabled
-   and needs no DDR block design
+   includes a 2 MiB UltraRAM L2, so the board must have sufficient UltraRAM.
+   A BRAM-only board leaves the cached tier disabled and needs no DDR block design
 5. Create a constraint file with the board's pin assignments. For a
    DDR-capable board, include the DDR pins unless they come from a MIG
    `.prj`/board interface
 6. Update the file list (`.f` file) to include the subsystem
 7. Add the board's FPGA part and its `has_ddr` and `has_gty` capabilities to
    `board_build_configs` in `fpga/build/build_step.tcl`. For a DDR-capable
-   board, add `fpga/build/<board>_ddr_bd.tcl` for its `ddr_subsys` block design;
-   for a board with a NIC transceiver, add `fpga/build/<board>_gty_ip.tcl` for
+   board, add `fpga/build/<board>_ddr_bd.tcl` for its `ddr_subsys` block design.
+   The CPU port's `S00_AXI` range determines the memory advertised to Linux.
+   For a board with a NIC transceiver, add `fpga/build/<board>_gty_ip.tcl` for
    its wizard core. The Tcl flow derives the wrapper, file-list, constraint,
    DDR-script, DDR-creation, transceiver-script and transceiver-creation
    procedure names from `<board>`; it skips the DDR pair for a BRAM-only board
@@ -241,8 +237,9 @@ To support another Xilinx FPGA board:
      `BOARD_VENDOR_INFO`; the regression, soak, and sweep tools likewise derive
      their choices from the registries above
 9. Calibrate the board's CoreMark-PRO `hardware_iterations` entries in
-   `sw/apps/software_registry.py`. Optionally record silicon score gates in
-   `BASELINE_SCORES` in `fpga/hw_regression.py`
+   `sw/apps/software_registry.py`. Set `hardware_timeout_minimums` if untimed
+   setup exceeds the board's default timeout. Optionally record score gates
+   in `BASELINE_SCORES` in `fpga/hw_regression.py`
 10. Update this README with the new board's specifications
 
 Before building, check that the MMCM VCO frequency produces the target CPU

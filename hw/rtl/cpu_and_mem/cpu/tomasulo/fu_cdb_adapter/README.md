@@ -87,17 +87,11 @@ extra cycle.
 
 ## Verification
 
-The `` `ifdef FORMAL `` block asserts every state transition, stability of
-tag, value and exception fields while pending, pass-through correctness (and
-the registered-output mode's idle-invalid output), the flush semantics, and
-that `o_result_pending` mirrors the state bit. A flushed-tag discipline check
-watches an arbitrary tag: once a partial or full flush squashes it, as held
-state or as a same-cycle input including the grant-refill case, that tag must
-not reappear on `o_fu_complete` until a new input re-presents it. Cover
-properties reach the multi-cycle pending case, back-to-back grants, and the
-squashed-refill case. `formal/fu_cdb_adapter.sby` runs BMC and cover with the
-default parameters. `formal/fu_cdb_adapter_payload_no_refill.sby` runs BMC
-with `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`, assuming the no-input-while-pending
-contract and checking that every valid input is captured. The cocotb tests
-`fu_cdb_adapter` and `fu_cdb_adapter_payload_no_refill` cover the same two
-configurations.
+Cocotb and formal targets `fu_cdb_adapter` and
+`fu_cdb_adapter_payload_no_refill` cover the default and no-refill
+configurations: pass-through, held results, flushes, and tag reuse.
+The no-refill proof assumes no new input while pending, as required by
+`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

@@ -106,17 +106,11 @@ port is driven but unused.
 
 ## Verification
 
-Under `` `ifdef FORMAL `` the module carries an independent flat reference:
-the previous topology's primary encoder, lane-0 subtraction, and secondary
-encoder. Assertions prove the tree's metadata and fallback values, both
-reconstructed output payloads, the one-hot identities, raw-grant payload
-selection, and the kill-gated outputs equivalent to that reference
-(`formal/cdb_arbiter.sby`). The cocotb test (`cdb_arbiter`) exhausts all 256
-request-valid vectors with kill low and high, drives the inactive live and
-fallback arms with different data so a wrong selection cannot hide behind
-identical values, and adds directed live and fallback cases for both ALUs on
-both lanes. The wrapper's formal target (`formal/tomasulo_wrapper.sby`) proves
-the live/fallback interface contract itself, instantiating the arbiter with
-`FORMAL_ASSUME_VALUE_SOURCE_CONTRACT = 0` so the standalone assumptions are
-not inherited. Wrapper cocotb tests also cover both ALU effective packets in
-the injection, live, and held source states.
+The `cdb_arbiter` cocotb and formal targets check grant priority, payload
+selection, and flush kills against an independent reference. Wrapper tests
+also check live, held, and injected ALU packets. The wrapper formal target
+asserts the value-source contract with
+`FORMAL_ASSUME_VALUE_SOURCE_CONTRACT=0`, rather than assuming it.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

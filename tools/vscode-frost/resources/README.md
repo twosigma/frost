@@ -1,11 +1,8 @@
 # FROST core register description
 
 `frost-core.xml` is an opt-in GDB target description for FROST's RV64 core.
-It limits the native Registers pane to 68 named registers. The OpenOCD build
-used in the September 7, 2026 X3 spike advertised unsupported optional CSRs,
-including `vcsr`; GDB's bulk register read then failed on that register.
-This resource keeps the CPU and FPU features from that session's actual target
-description and omits the remaining CSR and virtual-register features.
+It exposes 68 core and floating-point registers, avoiding unsupported optional
+CSRs such as `vcsr` that can make GDB's bulk register reads fail.
 
 | Registers | OpenOCD remote register numbers | Wire width |
 | --- | --- | --- |
@@ -51,26 +48,9 @@ string; do not separately quote the filename inside it.
 
 ## Validation and limits
 
-Offline validation with xPack GDB 16.3 checked that both XML features exactly
-preserve the captured OpenOCD register metadata, that GDB accepts and prints the
-description without warnings, and that MI register discovery returns exactly
-the 68 intended names. The same check passed with a resource filename containing
-spaces. GDB still reserves 4,194 internal register-number slots, most with empty
-names; those empty slots are expected and do not represent extra exposed CSRs.
-
-The extension's X3 hardware session subsequently expanded Registers → CPU
-successfully. An actual MI bulk register-value request returned all 68 selected
-registers, including the 32 FPRs and `fflags`, `frm`, and `fcsr`, without the
-previous `vcsr` failure. These checks establish live register-read availability
-as well as parser and numbering compatibility. Subsequent source stepping also
-refreshed all 68 register values: SP changed from `0x40000` to `0x3ffd0`, and
-PC advanced through `0x6a8`, `0x6b6`, `0x6bc`, and `0x6be`. This verifies
-register-pane refresh during the BRAM debug session.
-
-The managed DDR session also successfully read the complete core-register
-set while debugging code at `0x80000000`. Its source breakpoint stopped
-at `0x800006be`, and native instruction stepping advanced through both
-32-bit and 16-bit instructions to `0x800006d4`.
+The description supports register reads and refreshes while stepping code in
+BRAM or DDR. GDB may reserve thousands of unnamed internal register slots;
+these are not extra exposed CSRs.
 
 FROST's debug module implements abstract GPR access; OpenOCD uses its program
 buffer fallback for floating-point and CSR access. Individual register Watches

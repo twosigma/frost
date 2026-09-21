@@ -1,11 +1,9 @@
 # NIC (net10g on the coherent DMA port)
 
-Phase 4 slice 2 integrates the standalone 10GBASE-R MAC/PCS
-(`hw/rtl/net10g`) as FROST's NIC: a CSR window, RX and TX descriptor rings
-on the cache hierarchy's coherent DMA port, packet clock crossings to the
-MAC's own clock domains (the transceiver's 161.13 MHz TX and RX clocks on
-the X3), and one PLIC interrupt. This directory holds the NIC's own
-blocks; the MAC/PCS keeps its own directory and standalone CI job.
+FROST's NIC connects the [10GBASE-R MAC/PCS](../../net10g/README.md) to a
+CSR window, RX/TX descriptor rings on coherent DMA, and one PLIC interrupt.
+Packet FIFOs cross between the CPU and MAC clocks; X3 uses the transceiver's
+161.13 MHz TX and RX clocks.
 
 | Module | Domain | Responsibility |
 | --- | --- | --- |
@@ -84,29 +82,14 @@ GT_RESET_DONE as the transceiver's TX and RX reset done, CDR_LOCK as its RX
 reset done (the transceiver's own CDR lock output is reserved), and
 MODULE_PRESENT 1 with LOS 0, because no module status reaches the FPGA.
 
-The receive and transmit MACs are structured for the 10GBASE-R word rate
-(see `hw/rtl/net10g/README.md`). On the X3 they meet routed timing at that
-rate beside the CPU at its rated clock, where the link carries a Debian NFS
-root over fiber; `sw/apps/nic_echo`, which needs a link partner sending to it,
-was passed against a host on a build with the CPU clock halved. Both MAC frame
-buffers are block RAM, which keeps their address fan-out out of the CPU's
-placement.
+Constrain clock crossings individually, as in the
+[X3 constraints](../../../../boards/x3/constr/x3.xdc): Gray-bus delay and
+skew, single-bit synchronizers, and reset assertion. Cutting the entire
+clock pair would hide unconstrained crossings.
 
-`boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
-buses with datapath and bus-skew bounds, single-bit levels, the reset
-assertion) rather than cutting the clock pair, so a crossing the
-exceptions miss fails timing loudly. Two programs drive the NIC the way the
-Linux driver does: `sw/apps/nic_loopback` (self-contained through a
-loopback, the raw loopback when PHY_STATUS reports a clock shared by both
-MAC directions and the transceiver's PMA loopback otherwise: bring-up,
-rings and doorbells, completions, counters, the completion and link
-interrupts, moderation, the filter, RESET mid-traffic; also a hardware
-regression stage) and `sw/apps/nic_echo`
-(what a real link looks like: the cocotb bench's wire-side peer encodes
-frames of every class into the raw RX interface with the net10g software
-encoder and decodes the raw TX interface; the program echoes every frame
-interrupt-driven, reposting descriptors through ring wraps, a burst beyond
-the ring, truncated jumbo frames and filtered foreign frames).
+The X3 link carries Debian's NFS root over fiber. Bare-metal examples are
+`sw/apps/nic_loopback` (internal loopback) and `sw/apps/nic_echo` (echoes
+frames from a link partner). Both have full-system simulation tests.
 
 The Linux driver, `frost_net10g`, is in `linux/frost-net10g`: FROST boots
 Debian's kernel, which has no driver of its own, so the directory is a DKMS
@@ -174,9 +157,8 @@ TAIL. Which descriptors of that line may be used is decided when the read
 is accepted by the port, never when it returns: the cursor's, and the next
 one when it is in the same line and below TAIL at that moment. A
 descriptor posted later is therefore always read again after its
-doorbell, which is what makes the slice 1 doorbell argument (cached
-descriptor stores ordered before the MMIO TAIL store, the read's probe
-writing the dirty line back) deliver the posted image. A disable or the
+doorbell, so cached descriptor stores ordered before the MMIO TAIL write are visible
+to the read through the coherent DMA port. A disable or the
 drain invalidates the cache; a BASE/SIZE write also zeroes HEAD.
 
 `nic_rx_engine` admits a frame only with an eligible descriptor cached (an
@@ -273,41 +255,19 @@ acknowledge before scanning the rings, never after the final scan.
 
 ## Verification
 
-`verif/cocotb_tests/lib/test_async_fifo.py` (`async_fifo`): order and
-completeness across clock ratios and phases, full then drain, a reader that
-outruns the writer, both-side reset. `test_cdc_gray_count.py`
-(`cdc_gray_count`): bursts, wrap, a source reset with and without the
-rebase. `verif/cocotb_tests/nic/test_nic_irq.py` (`nic_irq`): the
-moderation and acknowledgement cases above. `test_nic_reset.py`
-(`nic_reset`): the startup handshake, RESET's drain and busy, an absent
-clock, a lost clock, a stale acknowledgement, FIFO words and counter state
-across resets. `test_nic_dma_front.py` (`nic_dma_front`): response
-steering under out-of-order responses, the per-side cap, the grant bound,
-a refused line not blocking the other engine, aperture refusal, the drain
-including a request that fires at the edge registering the stop level.
-`test_nic_byte_pack.py` and `test_nic_byte_unpack.py`: the byte invariant
-(input byte j lands at, or comes from, address A + j) over every offset,
-lengths 1..100 and jumbo, truncation, stalls at line crossings; the packer
-also checks sustained beat acceptance and flush/reset with queued beats.
-`test_nic_rx_engine.py` and `test_nic_tx_engine.py` run the engines
-against a memory model with out-of-order responses (`dma_model.py`): data
-byte-exact with nothing written outside the buffers and status words, the
-filter, truncation and bad descriptors, the ring-empty hold, the doorbell
-re-read, status after data and in ring order, abort and the drain,
-including the review's cases (an abort after the last beat completes the
-frame normally, no write accepted in the abort cycle, a withdrawn status
-write completes nothing, a refused TX turn under saturated priority hands
-RX the next one). `test_nic_top.py` (`nic_top`) runs the whole NIC with
-three clocks: bring-up and register rules, frames around the raw loopback
-with completions, counters, interrupts and moderation, frames from the
-software wire through the filter, a bad FCS and a runt counted in the MAC
-totals without RX_DROP, TX validated on the wire, and RESET mid-traffic.
-The `nic_top_unrelated_clocks` entry runs the same bench on a
-`RAW_LOOPBACK = 0` build with unrelated TX and RX clock periods and phases:
-CLK_SHARED read as 0 even when the board input claims a shared clock,
-MAC_LOOPBACK stored across a RESET without taking RX off the wire, and
-frames in both directions at once, checked in the ring buffers and by the
-wire's receiver.
-The full-system programs `nic_loopback` and `nic_echo` (above) run through `frost` in both memory tiers. `formal/async_fifo.sby` bounds the FIFO under free-running
-unrelated clocks: occupancy, conservative free-space credit and ready margin,
-no underflow, Gray consistency, and a watched word delivered in order and intact.
+| Cocotb target | Coverage |
+| --- | --- |
+| `async_fifo`, `cdc_gray_count` | Clock crossings, ordering, reset, and event counts |
+| `nic_irq`, `nic_reset` | Interrupt moderation, reset/drain, and absent or lost clocks |
+| `nic_dma_front` | Tagged responses, fairness, aperture errors, and drain |
+| `nic_byte_pack`, `nic_byte_unpack` | Byte placement, alignment, truncation, and backpressure |
+| `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer/status ordering, malformed descriptors, and aborts |
+| `nic_top` | Whole NIC with three clocks and raw loopback |
+| `nic_top_unrelated_clocks` | Independent TX/RX clocks with `RAW_LOOPBACK=0` |
+| `nic_loopback`, `nic_echo` | Full-system software tests in both memory tiers |
+
+Run with `./scripts/frost.py cocotb <target>`. The
+[NIC benches](../../../../verif/cocotb_tests/nic/) contain the detailed cases.
+The `async_fifo` formal target checks bounded ordering and occupancy under
+unrelated clocks. Linux driver testing uses `frost_nettest`; see the
+[driver guide](../../../../linux/frost-net10g/README.md).

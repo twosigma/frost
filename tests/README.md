@@ -54,9 +54,7 @@ with `docker build -t frost .`, run the read-only preflight:
 ./scripts/frost.py doctor
 ```
 
-The preflight reports `PASS`, `WARN`, `FAIL`, or dependency-gated `SKIP` and
-returns nonzero on failure. It does not modify the checkout, and its artifact
-ownership scan skips `.git/` and `hw/`.
+The preflight is read-only and returns nonzero on failure.
 
 ## Test Files
 
@@ -70,22 +68,10 @@ Runs CPU/SoC Cocotb simulations directly or through pytest. `TEST_REGISTRY` in
 ./scripts/frost.py cocotb --help
 ```
 
-Every target runs the RTL's SystemVerilog assertions. Verilator has enabled
-immediate assertions, `assert property`, and `unique`/`priority` case checks by
-default since 5.038, and the pinned toolchain is 5.052, so no registry entry
-needs a `--assert` argument and the equivalence oracles the RTL carries under
-`` `ifndef SYNTHESIS `` are live in every bench. A failed assertion stops the
-simulation and fails the run. Oracles guarded by `` `ifdef FORMAL ``, such as
-the ones inside `fetch_redirect.sv`, are proved by `test_run_formal.py`
-instead and do not run here.
-
-The `data_mem_response_mux` and `data_mem_response_mux_xilinx` targets compare
-the integrated complete-response helper against the original RAM/MMIO/cached
-selection, with the actual memory router on both sides. They check 32/64-bit
-payload selection, every binary selector combination, stale MMIO-valid,
-fast/cached overlap, IDs and all router controls across stalls, device-read
-arming, flush and reset. The Xilinx variant uses test-only LUT functional
-models. They add no firmware or full-CPU timing qualification claim.
+RTL assertions are enabled; a failed assertion fails the simulation.
+Properties guarded by `` `ifdef FORMAL `` run only in the formal flow.
+For the portable and Xilinx response-path targets, see the
+[memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md).
 
 Applications compile automatically before simulation. The debug-module tests
 drive the design's JTAG pins from cocotb (`debug_test`) or hand them to a real
@@ -115,32 +101,13 @@ installed, `debug_openocd_test` logs a warning and passes; setting
   --testcase test_random_multi_fu_stress
 ```
 
-`--seed-sweep N` runs N random seeds in parallel to find intermittent
-failures. Each worker gets its own `SIM_BUILD` and `COCOTB_RESULTS_FILE`.
-App-based tests compile once, and the workers share read-only `sw*.mem`
-symlinks, so nothing races in the shared working directory. The summary lists
-each seed's status, the tail of each failure's output, and reproduction
-commands:
+`--seed-sweep N` runs N random seeds in isolated build directories. The
+summary lists results and commands to reproduce failures. From the host,
+pass those arguments through `./scripts/frost.py cocotb`, for example:
 
+```bash
+./scripts/frost.py cocotb cdb_arbiter --random-seed=987654321
 ```
-============================================================
-SEED SWEEP REPORT
-============================================================
-Total runs: 10
-Passed: 9
-Failed: 1
-
-Passing seeds: [123456789, 234567890, ...]
-Failing seeds: [987654321]
-
-To reproduce a failure, run:
-  ./test_run_cocotb.py cdb_arbiter --random-seed=987654321
-============================================================
-```
-
-The report prints the command as seen inside the container. From the host,
-pass the same arguments to the wrapper:
-`./scripts/frost.py cocotb cdb_arbiter --random-seed=987654321`.
 
 Options:
 - `--seed-sweep N`: number of random seeds to test.
@@ -158,11 +125,6 @@ Through pytest:
 ./scripts/frost.py pytest -s                        # Show live output
 ```
 
-The standalone `./scripts/frost.py cocotb dmmu` target checks hit/walk
-resolution priority, Sv39 permissions and physical-address composition,
-PMA faults and MMIO, two-cycle hit latency and one-result-per-cycle throughput,
-miss skid handling, and recovery with ROB-tag reuse.
-
 Real-program tests default to the `bram` tier, which normally places code and
 data in low BRAM. `FROST_COCOTB_MEM_CONFIG=ddr` selects cached-DDR linking to
 exercise the L1I and the D-side cached tier. Some apps override this choice:
@@ -174,13 +136,9 @@ FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py pytest -k test_real_program
 ```
 
-Tests in `DDR_TIER_EXCLUDE` skip themselves in the `ddr` tier: the
-`*_fetch_fuzz` fetch fuzzers, which are a different `-G` build and
-independent of the tier, and the `ddr_*` programs (`ddr_test`,
-`ddr_exec_test`, `ddr_smc_test`, `ddr_heap_test`, `ddr_mlp_test`,
-`ddr_atomic_test`), which already target DDR and whose fixed-address writes a
-whole-program relocation would clobber. Unit benches are tier-independent and
-run once, in the `bram` job.
+`*_fetch_fuzz` and `ddr_*` programs are excluded from the `ddr` tier: they
+use custom builds or already place data at fixed DDR addresses. Unit benches
+are tier-independent. See `DDR_TIER_EXCLUDE` for the full list.
 
 ### `test_arch_compliance.py`
 
@@ -396,8 +354,7 @@ In CI, the corpus runs as a memory tier (`[bram, ddr]`) matrix plus `ddr`
 paged.
 
 The corpus and its Spike references are checked in under `tests_rv64/` and
-`references_rv64/` (the `_rv64` suffix dates from when an rv32 corpus existed
-beside them). To regenerate:
+`references_rv64/`. To regenerate:
 
 ```bash
 cd sw/apps/riscv_torture
@@ -421,24 +378,19 @@ addresses to those four, and Frost's link map differs from Spike's.
 
 ### `test_run_yosys.py`
 
-Runs Yosys synthesis checks. The generic target stops after Yosys coarse
-synthesis, which verifies vendor-agnostic elaboration, procedural lowering,
-memory inference, and structural checks without defining Xilinx primitives. It
-does not prove that the full CPU maps to ASIC gates or a non-Xilinx FPGA
-fabric. The Xilinx UltraScale+ target runs full Yosys synthesis with the X3
-cached hierarchy, AXI memory export and coherent NIC/MAC/PCS. Both targets
-read the complete `hw/rtl/frost.f` source list while retaining `cpu_and_mem`
-as the synthesis top. The image's pinned `sv2v` frontend lowers the NIC and
-MAC/PCS packages and packed ports before Yosys reads them; their combinational
-blocks use `always @*` in the temporary conversion to avoid unsupported array
-sensitivity lists and unused loop-index latch errors.
-The CPU and library sources continue through Yosys's SystemVerilog frontend.
-The RX parser retains its state encoding to avoid excessive FSM extraction.
-Both targets reject unresolved modules and surviving latch cells after
-synthesis, including mapped Xilinx latches.
-The full Xilinx CPU/NIC target has a two-hour timeout, allowing CI variation
-around a roughly 50-minute local run. Override it with
-`FROST_YOSYS_XILINX_TIMEOUT_SEC` when needed.
+Runs two Yosys synthesis checks:
+
+- `generic`: coarse synthesis of portable RTL, including elaboration, memory
+  inference, and structural checks. It does not establish ASIC or non-Xilinx
+  FPGA mapping.
+- Xilinx UltraScale+: full synthesis of the X3 cached hierarchy, AXI memory
+  interface, and coherent NIC/MAC/PCS.
+
+Both use `hw/rtl/frost.f` with `cpu_and_mem` as the top and reject unresolved
+modules and latches. The image's pinned sv2v frontend handles the NIC/MAC/PCS
+sources; Yosys reads the CPU and library SystemVerilog directly.
+The Xilinx target has a two-hour timeout, overridable with
+`FROST_YOSYS_XILINX_TIMEOUT_SEC`.
 
 ```bash
 ./scripts/frost.py synthesis                       # Run default targets
@@ -455,17 +407,11 @@ Through pytest:
 
 ### `test_run_formal.py`
 
-Runs the SymbiYosys targets in `formal/`. The registry is `FORMAL_TARGETS` in
-`test_run_formal.py`: one entry per `.sby` file, each declaring the task types
-it supports. Most targets declare `bmc` and `cover`. `rs_issue2_selector` and
-`fu_cdb_adapter_payload_no_refill` are BMC-only. `branch_prediction_alias`
-also uses BMC only, with depth 1 exhausting its state-free public alias cone.
-`prediction_release` and
-`prediction_metadata_tracker` also declare `prove` (unbounded proofs via
-ABC PDR); `tlb` adds
-`bmc_itlb` and `cover_itlb`, `reservation_station` adds `bmc_tag_indexed` and
-`cover_tag_indexed` for the shipped INT station configuration, and
-`tomasulo_wrapper` adds `fmul_repair_bmc`.
+Runs the SymbiYosys targets in `formal/`. Each target declares its supported
+tasks in `FORMAL_TARGETS`; use `--list-targets` to see them. Tasks include
+bounded checks (`bmc`), reachability (`cover`), unbounded safety proofs
+(`prove`), and parameter variants. See the [formal guide](../formal/README.md)
+for proof scope and assumptions.
 
 ```bash
 ./scripts/frost.py formal                          # All targets, all declared tasks
@@ -494,7 +440,7 @@ Every target x task pair is a separate parametrized case, and the whole
 | File                       | Purpose                                   |
 |----------------------------|-------------------------------------------|
 | `conftest.py`              | Pytest configuration and fixtures         |
-| `fixtures/`                | Real tool and board output, kept byte for byte, for the parsers measured against it: Vivado congestion reports, and `x3_linux_boot_console.log`, a board's UART console from `hw_regression.py`'s Linux stage. The `*.log` captures are exempt from the whitespace fixers (`.pre-commit-config.yaml`) because their carriage returns, terminal escapes and trailing prompt space are the point |
+| `fixtures/` | Captured tool and board output for parser tests; preserve bytes, including terminal escapes and trailing whitespace in `*.log` files |
 | `Makefile`                 | Cocotb simulation build rules             |
 | `test_arch_compliance.py`  | riscv-arch-test compliance runner         |
 | `test_riscv_tests.py`      | riscv-tests ISA regression runner         |
@@ -585,62 +531,23 @@ See the [main README](../README.md#prerequisites) for validated tool versions.
 
 ## CI Integration
 
-CI (`.github/workflows/ci.yml`) runs the CPU, tooling, and Ethernet categories
-in the shared pinned image. Its separate
-[Ethernet MAC/PCS job](../.github/workflows/ci.yml) runs all
-[standalone MAC/PCS benches](net10g/README.md) and their portable synthesis
-check through `scripts/frost.py`, without extending the CPU registry.
-Missing required tools are failures rather than silent skips. The `Fast Python Tests`
-job runs the default/unmarked tests as the host UID and GID with `HOME=/tmp`,
-which also guards the non-root execution model used by `scripts/frost.py`.
+The [CI workflow](../.github/workflows/ci.yml) runs the following checks in
+the pinned Docker image:
 
-The riscv-tests, torture, and Cocotb real-program suites run separate `bram`
-and `ddr` jobs. These select low-BRAM and cached-DDR linking for apps that
-honor `MEM_CONFIG`; dedicated DDR apps and fixed boot layouts keep their own
-placement, as described above.
-Architecture compliance uses both tiers for most extensions; F/D DDR is
-disabled because it times out on GitHub-hosted runners:
+| Suite | Configurations |
+| --- | --- |
+| Cocotb applications | BRAM and DDR where supported; each CoreMark-PRO workload runs separately |
+| Cocotb unit benches, DDR probes, fetch fuzzers, OpenSBI smoke | Tier-independent or fixed-layout runs |
+| Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR |
+| riscv-tests | Physical mode in BRAM/DDR, user-level Sv39 tests in DDR, and benchmarks |
+| Torture | BRAM, DDR, and paged DDR |
+| Ethernet | Standalone MAC/PCS simulation and portable synthesis |
+| Tooling | Lint, fast Python tests, synthesis, and formal verification |
 
-- Cocotb: a shared shard x memory tier (`[bram, ddr]`) matrix with
-  `fail-fast: false`. Each tier has eight non-CoreMark-PRO shards: CoreMark,
-  AMO torture, timer torture, cache stress, privilege and MMU, interrupts,
-  CPU and fetch, and runtime/other programs. The cache-stress shard groups
-  tests with matching custom Verilator settings so they reuse compilation.
-  Each CoreMark-PRO workload (`core`, `cjpeg`, `linear_alg`, `loops`, `nnet`,
-  `parser`, `radix2`, `sha`, and `zip`) also gets its own job in each tier.
-  Additional `bram` jobs cover the DDR probes/fetch-fuzz variants (which
-  already exercise DDR or use a separate fetch-fuzz build), fixed-layout
-  OpenSBI smoke, and the tier-independent unit benches. Each job uses
-  `scripts/frost.py pytest` to clean before running in the shared pinned
-  image as the runner UID/GID, with `FROST_COCOTB_MEM_CONFIG` selecting the
-  tier (20 `bram` jobs and 17 `ddr` jobs in total). Pytest prints all test
-  durations to help rebalance the shards.
-- Arch compliance: an extension x memory tier (`[bram, ddr]`) matrix
-  (`Arch Tests`) with `fail-fast: false`. Zifencei is excluded from the
-  `bram` tier and F/D from the `ddr` tier, as described above; there is no
-  F_Zcf batch. The matrix is separate from the Cocotb jobs so long-running FP
-  tests do not block them.
-- riscv-tests: a suite x memory tier matrix in the physical (`p`)
-  environment, plus the user-level suites in DDR's Sv39 virtual (`v`)
-  environment and a benchmark x memory tier matrix.
-- riscv-torture: a memory tier (`[bram, ddr]`) matrix plus `ddr` paged.
-- Fast Python tests: default/unmarked tests, selected by excluding the
-  `cocotb`, `synthesis`, `formal`, and `slow` markers; run non-root in the
-  pinned image.
-
-The `icache` arch config (code in DDR, data and signature in BRAM) is a local
-diagnostic, not a CI job.
-
-Cocotb shard filters use bracketed pytest parameter IDs (for example,
-`[coremark]`) to select exact tests without also matching variants such as
-`coremark_pro_core`. The runtime/other shard is the complement of the named
-non-CoreMark-PRO shards, so newly registered non-CoreMark-PRO programs stay
-in CI. When moving a test into a named shard, update that complement in
-`ci.yml` too.
-The existing DDR exclusions in `tests/test_run_cocotb.py` still apply to
-new DDR-probe or fetch-fuzz tests until they are moved into the BRAM-only
-shard. A shard can be inspected without simulation using its marker and
-filter expressions:
+The runner sections above explain exclusions and local-only configurations.
+Use the workflow for exact job filters. When changing Cocotb shards, update
+both the named shard and the runtime/other complement so no test is lost.
+Inspect a selection without simulation using `--collect-only`:
 
 ```bash
 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py pytest --collect-only -q \

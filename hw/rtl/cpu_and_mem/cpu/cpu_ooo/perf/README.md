@@ -514,20 +514,10 @@ prints a brief report per micro-benchmark.
 
 ## Verification
 
-`verif/cocotb_tests/cpu_ooo/perf/test_perf_counter_aggregator.py` covers
-per-counter increment conditions (including width-funnel
-and cache events), snapshot capture and freeze-until-next-capture behavior,
-the cache preceding-snapshot bank, all three counter-select blocks, and
-out-of-range reads. `perf_csr_half` additionally compares the actual aggregator,
-commit pipeline and two CSR instances (default and enabled) across consecutive
-half reads, changing counter data/selector/snapshots, previous-cache-bank reads,
-reset, immediate flush, invalid/exception bubbles, ordinary CSRs and same-cycle
-FP-flag forwarding. The disabled CSR instance receives an intentionally wrong
-hint. The harness also checks registered and combinational equality over 1024
-deterministic randomized raw-commit histories; it is a focused simulation seam,
-not a full CPU regression.
+Cocotb targets `perf_counter_aggregator` and `perf_csr_half` check event
+counting, snapshots, selector bounds, and CSR reads with counters enabled
+and disabled. Cache benches check hit/miss accounting, maintenance exclusion,
+and zero L2 counters in the L1-only configuration.
 
-`verif/cocotb_tests/cache/test_frost_cache.py` covers both hierarchy
-shapes. It checks the per-instance `HIT + MISS = ACCESS` partition and known
-hit/miss splits, that maintenance does not pollute ordinary-traffic counts,
-and that every L2 field is a known 0 in the L1-only shape.
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

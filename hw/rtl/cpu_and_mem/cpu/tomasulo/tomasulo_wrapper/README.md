@@ -358,25 +358,12 @@ software.
 
 ## Verification hooks
 
-Each FU slot has a test-injection input (`i_fu_complete_0` through
-`i_fu_complete_7`) that lets cocotb drive synthetic completions into the
-wrapper without exercising the FU shims, which is how the top-two CDB
-arbitration and the CDB/RS/ROB interaction are unit-tested in isolation. The
-`tomasulo_wrapper` cocotb target enables the production dispatch done-repair
-parameter (`ENABLE_DISPATCH_DONE_REPAIR=1`) and directly covers the
-FP/FDIV/FMUL E0 packet capture, E1 registered repair hold, and E2 dequeue. It
-also checks the no-bubble initially-ready path, retention under recovery
-hold, producer commit on E0, and rejection of a later ABA-shaped same-tag
-response after the repair phase expires. FMUL-specific probes cover three
-simultaneous source repairs, source 3 after producer commit, both CDB lanes
-while held, replacement-packet ownership, the initially-ready no-bubble path,
-and an E1 repair/full-flush collision. The `tomasulo_wrapper_split_rs` target
-checks the production repair path with split-RS dispatch. FP and FDIV are
-two-source, slot-1-only dispatches, so their pending buffers use only
-done-repair channels 1 and 2; FMUL uses channel 3 as well, while the INT,
-MUL, MEM, and SQ consumers keep all six channels. Capture-phase assertions
-check the fixed channel/source alignment and reject a dequeue or refill
-during an unresolved FMUL response window. The `fmul_repair_bmc` task of the
-`tomasulo_wrapper.sby` formal target enables the production repair parameter
-and proves the one-cycle phase, packet retention, CDB priority, and exact
-captured values for all three FMUL sources.
+Inputs `i_fu_complete_0` through `i_fu_complete_7` let tests inject
+completions without running FU shims. The `tomasulo_wrapper` and
+`tomasulo_wrapper_split_rs` cocotb targets enable
+`ENABLE_DISPATCH_DONE_REPAIR=1` and check repair capture/hold/dequeue,
+CDB priority, recovery, and same-tag reuse. The `fmul_repair_bmc` formal task
+checks repair timing and captured values for all three FMUL operands.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
