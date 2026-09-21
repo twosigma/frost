@@ -52,6 +52,9 @@ Use the JTAG loader for whole images. Debugger memory access uses the program
 buffer and is slower. Software breakpoints work in BRAM and DDR; hardware
 breakpoints and data watchpoints are not supported.
 
+`debug/openocd_sim.cfg` connects OpenOCD to RTL simulation over `remote_bitbang`;
+the `debug_openocd_test` cocotb target exercises this interface.
+
 ### VS Code debugging
 
 The [FROST extension](../tools/vscode-frost/README.md) handles programming,
@@ -109,16 +112,28 @@ own -- `--clear` resets the latched state first, which is how to start a
 measurement from a known point without reprogramming.
 
 Prepare the export with the [Debian setup guide](../docs/debian_nfsroot.md#hardware-regression),
-then supply the board's network settings and matching kernel/initramfs:
+then state the two things a checkout cannot know -- which host exports the
+root, and which address the board takes on that network -- in `fpga/site.env`.
+Git ignores that file; write it once per lab:
+
+```
+FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian
+FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off
+```
+
+The whole run is then:
 
 ```bash
-K=6.12.107+deb13-riscv64            # the export's kernel version
-FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
-FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
-FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
-FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
-  ./fpga/hw_regression.py --board x3
+./fpga/hw_regression.py --board x3
 ```
+
+The kernel and the initramfs are not site facts and are not asked for: the
+release is pinned in this repository, the kernel is the image
+`linux/debian_kernel.py` computes, and the initramfs is that release's image
+inside the export above. `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD`
+override them, which is how a replacement kernel is tested, and the same two
+site values can be given in the environment instead of the file, which wins
+over it.
 
 Preflight failures report `ENV_FAIL` before touching the board. The run
 excludes `debug_target` and `nic_echo`, which need external interaction.
@@ -174,6 +189,9 @@ with `RuntimeOptimized` only, and finishes in a fraction of the time. An
 explicit `--directives`, `--num-uncertainties` or `--route-directives` is
 honored instead. The README utilization table is left alone: a divided-clock
 build is not the reference implementation.
+
+Use the CLI option to set the clock; `build.py` overrides any inherited
+`FROST_CPU_CLK_DIV` value.
 
 ## NIC transceiver
 
@@ -309,10 +327,15 @@ Passing candidates are ranked by congestion and timing:
 
 Keep `post_place_gate.txt`, `post_place_gate_binding.json`, and
 `*.lineage.json` alongside their checkpoints when copying a build directory.
-Resumed stages verify this metadata against their inputs. If it is missing
-or stale, restart at `--start-at post_place_physopt` from the current
-qualified placement. `netlist_config.json` records whether the synthesized
-netlist includes profiling counters.
+Resumed stages verify this metadata against their inputs. A new synthesis or
+optimization result invalidates the previous placement approval, so rerun
+placement before resuming downstream stages. Missing or stale downstream
+lineage requires `--start-at post_place_physopt` from a qualified placement.
+`netlist_config.json` records whether the netlist includes profiling counters.
+
+Promoting a new post-opt checkpoint removes `audit_post_opt_*` and
+`post_opt_fence_*` reports from the work directory. Save any reports you need
+before rerunning optimization.
 
 The build updates the root README's utilization table from its last completed
 stage. The standalone `build/extract_timing_and_util_summary.py` instead uses

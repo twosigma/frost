@@ -31,11 +31,15 @@ the software registry.
 
 Linux runs last, and it boots the real system: Debian 13 from its NFSv3 root
 over the NIC, with Debian's pinned riscv64 kernel (``linux/debian_kernel.py``)
-and the initramfs that mounts that export (``docs/debian_nfsroot.md``). The
-export, the board's address, the kernel and the initramfs are site-specific, so
-``FROST_LINUX_NFSROOT``, ``FROST_LINUX_IP``, ``FROST_LINUX_KERNEL`` and
-``FROST_LINUX_INITRD`` come from the environment with nothing defaulted, and a
-preflight checks them before any stage runs: the export has to be a directory
+and the initramfs that mounts that export (``docs/debian_nfsroot.md``). Two
+values are site facts no checkout knows -- which host exports the root
+(``FROST_LINUX_NFSROOT``) and which address the board takes
+(``FROST_LINUX_IP``) -- and they come from ``fpga/site.env``, an ignored file
+written once per lab, or from the environment, which wins over it. The kernel
+and the initramfs are derived from the release this repository pins and the
+export just named; ``FROST_LINUX_KERNEL`` and ``FROST_LINUX_INITRD`` override
+them, which is how a replacement kernel is tested. A preflight checks them all
+before any stage runs: the export has to be a directory
 on this host, its server has to answer an NFSv3 NULL call over TCP, and the
 kernel and initramfs have to exist, with the kernel carrying the pinned
 release's banner. A preflight failure is reported as ``ENV_FAIL``, never as a
@@ -95,12 +99,11 @@ Examples (from the repo root):
     # Re-run a subset (stage names = app names plus coremark_pro/linux_boot)
     ./fpga/hw_regression.py --board x3 uart_echo coremark_pro linux_boot
 
-    # The Linux stage alone, against this site's NFS root (see the block above)
-    K=6.12.107+deb13-riscv64
+    # The Linux stage alone. With fpga/site.env written, this is the whole
+    # command; without it, the two site values can be given here instead.
+    ./fpga/hw_regression.py --board x3 linux_boot
     FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
     FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
-    FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
-    FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
       ./fpga/hw_regression.py --board x3 linux_boot
 """
 
@@ -134,6 +137,7 @@ from debian_kernel import (  # noqa: E402
     INITRAMFS_COUNTER_TOKEN,
     KERNEL_BANNER,
     KERNEL_RELEASE,
+    kernel_image,
 )
 from hw_defaults import (  # noqa: E402
     DEFAULT_SERIALS,
@@ -199,20 +203,63 @@ ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
 # device and cannot mount this export -- so the small image stays the in-CI
 # functional check and this stage boots the real system.
 #
-# Every value the boot needs is site-specific: the server, the board's address,
-# the export and the two files in it. They come from the environment with no
-# defaults, and a missing one is an environment failure reported before any
-# stage runs (docs/debian_nfsroot.md builds the root and names each variable).
+# Two of the boot's values are site facts that no checkout can know: which
+# host exports the root, and which address the board takes on that network.
+# The other two are not. The kernel is the release this repository pins, at
+# the path debian_kernel.py computes, and the initramfs is that release's
+# image inside the export just named -- so both are derived unless something
+# overrides them, and the only values anyone has to supply are the two that
+# describe the site.
+#
+# Those two are read from SITE_ENV_FILE, an ignored file beside this script,
+# so a lab sets them once instead of prefixing every run. The environment
+# still wins over the file, and a missing value is an environment failure
+# reported before any stage runs (docs/debian_nfsroot.md builds the root).
 LINUX_NFSROOT_ENV = "FROST_LINUX_NFSROOT"
 LINUX_IP_ENV = "FROST_LINUX_IP"
 LINUX_KERNEL_ENV = "FROST_LINUX_KERNEL"
 LINUX_INITRD_ENV = "FROST_LINUX_INITRD"
+# What a caller has to supply. The other two are derived; both stay
+# overridable, which is how a replacement kernel is tested.
 LINUX_ROOT_ENV_VARS = (
     LINUX_NFSROOT_ENV,
     LINUX_IP_ENV,
+)
+LINUX_DERIVED_ENV_VARS = (
     LINUX_KERNEL_ENV,
     LINUX_INITRD_ENV,
 )
+SITE_ENV_FILE = SCRIPT_DIR / "site.env"
+
+
+def read_site_env(path: Path | None = None) -> dict[str, str]:
+    """Read ``NAME=value`` lines from the ignored site file, if it exists.
+
+    Only the site variables are taken from it: it exists so the two values a
+    checkout cannot know are stated once, not so a run's whole environment can
+    be rewritten from a file nobody reads. Blank lines and ``#`` comments are
+    skipped, and a malformed line is ignored rather than failing a run that
+    may not need the file at all.
+    """
+    # Resolved per call, not bound as a default, so the file the lookup reads
+    # can be pointed elsewhere.
+    path = SITE_ENV_FILE if path is None else path
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    wanted = set(LINUX_ROOT_ENV_VARS) | set(LINUX_DERIVED_ENV_VARS)
+    values: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, separator, value = line.partition("=")
+        name = name.strip()
+        if separator and name in wanted:
+            values[name] = value.strip().strip('"').strip("'")
+    return values
+
 
 # Every preflight message starts with this, and the stage result that carries
 # one is not a FAIL: a server that is down, an export that is not prepared or a
@@ -604,23 +651,37 @@ def nfs_interface(ip_spec: str) -> str:
     return DEFAULT_NIC_INTERFACE
 
 
-def linux_root_from_env(environment: Mapping[str, str] = os.environ) -> LinuxRoot:
-    """Build the LinuxRoot from the four variables, or say which are unset.
+def linux_root_from_env(
+    environment: Mapping[str, str] = os.environ,
+    site: Mapping[str, str] | None = None,
+) -> LinuxRoot:
+    """Build the LinuxRoot, deriving what the checkout already knows.
 
-    Nothing is defaulted: a wrong guess here boots a board against somebody
-    else's export. ``FROST_LINUX_NFSROOT`` must read ``<server>:/<path>``, the
-    form the packer and the initramfs both take.
+    Only the two site values have to be supplied, and the site file supplies
+    them when the environment does not. A wrong guess at those would boot a
+    board against somebody else's export, so they are never defaulted. The
+    kernel and the initramfs are a different matter: the release is pinned in
+    this repository and the initramfs is that release's image inside the
+    export just named, so both are derived and both remain overridable.
+    ``FROST_LINUX_NFSROOT`` must read ``<server>:/<path>``, the form the packer
+    and the initramfs both take.
     """
-    missing = [name for name in LINUX_ROOT_ENV_VARS if not environment.get(name, "")]
+    site = read_site_env() if site is None else site
+    values = {
+        name: (environment.get(name, "") or site.get(name, "")).strip()
+        for name in (*LINUX_ROOT_ENV_VARS, *LINUX_DERIVED_ENV_VARS)
+    }
+    missing = [name for name in LINUX_ROOT_ENV_VARS if not values[name]]
     if missing:
         raise LinuxEnvironmentError(
             f"{ENV_NOT_READY}: {', '.join(missing)} unset. The {LINUX_STAGE} stage "
-            "boots Debian from its NFS root over the NIC, and those values are "
-            "site-specific. Set all of "
-            f"{', '.join(LINUX_ROOT_ENV_VARS)} as docs/debian_nfsroot.md "
-            '("Boot") describes.'
+            "boots Debian from its NFS root over the NIC, and which host exports "
+            "that root and which address the board takes are site facts no "
+            f"checkout knows. Set {', '.join(LINUX_ROOT_ENV_VARS)} in "
+            f"{SITE_ENV_FILE.name} beside hw_regression.py, or in the "
+            'environment, as docs/debian_nfsroot.md ("Boot") describes.'
         )
-    nfsroot = environment[LINUX_NFSROOT_ENV].strip()
+    nfsroot = values[LINUX_NFSROOT_ENV]
     server, separator, path = nfsroot.partition(":")
     if not separator or not server or not path.startswith("/"):
         raise LinuxEnvironmentError(
@@ -628,15 +689,28 @@ def linux_root_from_env(environment: Mapping[str, str] = os.environ) -> LinuxRoo
             "<server-ip>:/<path>, the form the bootargs and the initramfs's "
             "nfsmount take."
         )
-    ip_spec = environment[LINUX_IP_ENV].strip()
+    ip_spec = values[LINUX_IP_ENV]
+    export = Path(path)
+    # The pinned release's own image, at the path debian_kernel.py computes,
+    # and that release's initramfs in the export. The preflight checks both
+    # exist and that the kernel carries the pinned banner, so a derivation
+    # that is wrong for a site is reported rather than booted.
+    kernel = (
+        Path(values[LINUX_KERNEL_ENV]) if values[LINUX_KERNEL_ENV] else kernel_image()
+    )
+    initrd = (
+        Path(values[LINUX_INITRD_ENV])
+        if values[LINUX_INITRD_ENV]
+        else export / "boot" / f"initrd.img-{KERNEL_RELEASE}"
+    )
     return LinuxRoot(
         nfsroot=nfsroot,
         server=server,
-        export=Path(path),
+        export=export,
         ip=ip_spec,
         interface=nfs_interface(ip_spec),
-        kernel=Path(environment[LINUX_KERNEL_ENV].strip()),
-        initrd=Path(environment[LINUX_INITRD_ENV].strip()),
+        kernel=kernel,
+        initrd=initrd,
     )
 
 
