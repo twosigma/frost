@@ -10,7 +10,8 @@ and pin constraints. Xilinx IP generation lives under `fpga/build/`.
 | [X3](x3/) | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz   | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
 
 X3 provides 256 KiB of local BRAM and 1 GiB of cached DDR at `0x8000_0000`.
-The CPU starts after DDR calibration completes.
+The CPU starts after DDR calibration completes and the region has been
+written once.
 
 ## Architecture Overview
 
@@ -33,10 +34,21 @@ the controller's 512-bit memory AXI interface. The first 1 GiB is mapped at
 CPU address `0x8000_0000`; the controller's ECC management interface is
 reachable only from the DDR JTAG master, at region offset `0x4000_0000`.
 
-DDR calibration passes through a two-flop synchronizer in `x3_frost` before
-releasing the common subsystem reset. DDR transport reset depends on MMCM
-lock; startup and image-load holds apply separately inside the common
-subsystem. The diagram selects the board-level connections; see the
+The DDR is 72 bits wide, so the controller checks ECC on every read, and a
+location nothing has written since power-up carries a check code unrelated to
+its data. The controller has no initialization of its own, so `x3_ddr_init`
+writes zeros over the region once calibration completes, in bursts wide enough
+that the width converter hands the controller whole 512-bit words and it never
+reads the array to recompute a check code. It takes about 110 ms at the rated
+clock. `fpga/ddr_ecc/ddr_ecc_status.py` reads the controller's error counters
+over the DDR JTAG master and is what shows this worked; the hardware regression
+runs it as a last stage.
+
+DDR calibration passes through a two-flop synchronizer in `x3_frost`, and
+that, the MMCM lock and the region writer's completion together release the
+common subsystem reset and the DDR JTAG master, so nothing reads or writes the
+array before it has been written. DDR transport reset depends on MMCM lock;
+startup and image-load holds apply separately inside the common subsystem. The diagram selects the board-level connections; see the
 [CPU architecture diagram](../docs/diagrams/frost-architecture.svg) for the
 core and cache hierarchy.
 
@@ -84,6 +96,7 @@ boards/
 ├── xilinx_frost_subsystem.sv    # Common subsystem (JTAG loader, BSCAN debug chains, BRAM, CPU, reset)
 └── x3/
     ├── x3_frost.sv              # Clocks, DDR integration, calibration/reset, common subsystem
+    ├── x3_ddr_init.sv           # Writes the DDR region once after calibration (the array is ECC-checked)
     ├── x3_nic_gty.sv            # NIC GTY transceiver: wizard core, free-running clock, reset supervisor
     ├── x3_frost.f               # File list for synthesis tools
     └── constr/
@@ -198,7 +211,8 @@ To support another Xilinx FPGA board:
      global clock divider for the target family
 4. Instantiate `xilinx_frost_subsystem`. For a DDR-capable board, also
    instantiate its `ddr_subsys` block design, wire the FROST cache-bridge AXI,
-   and hold the CPU in reset until `mem_ok` (DDR calibrated). Pass
+   and hold the CPU in reset until `mem_ok` (DDR calibrated), and, on a board
+   whose memory is ECC-checked, until the region has been written. Pass
    `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`; the full-system hierarchy
    includes the UltraRAM L2. A BRAM-only board leaves the cached tier disabled
    and needs no DDR block design
