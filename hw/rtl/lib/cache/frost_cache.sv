@@ -45,6 +45,13 @@
  * needs no fetch waits before its install, and (with the probe rule below)
  * a store waits before re-dirtying a clean copy. No line therefore ever has
  * two writebacks in flight, which the level below could apply older-last.
+ * The downstream request register is loaded fills first, then writebacks,
+ * with a bound: a writeback that has lost WbStarveLimit loads to fills takes
+ * the next one, so a pending writeback is loaded within WbStarveLimit + 1
+ * loads however slowly the level below accepts (fills that complete and
+ * re-allocate between its acceptances would otherwise keep a fill pending at
+ * every load), and the writeback slots take turns, so any one slot is loaded
+ * within NUM_WB times that. The waits above depend on those bounds.
  *
  * Ordering contract (the slave side of the protocol): requests to the same
  * line take effect in acceptance order, so a write accepted before a read of
@@ -713,8 +720,9 @@ module frost_cache #(
     // probe of the line is acknowledged, so the probe waits for that slot.
     // A store to such a line waits for the slot as well: it would re-dirty
     // the copy, a later eviction would snapshot that into a second slot, and
-    // the slot pick below is lowest-index-first, so the two writebacks could
-    // reach the level below older-last and leave it holding the stale copy.
+    // the slot pick below takes no account of age, so the two writebacks
+    // could reach the level below older-last and leave it holding the stale
+    // copy.
     // Stores are the only way to re-dirty a valid line, so no line ever has
     // two writebacks in flight (p_wb_slots_distinct_lines).
     t_wb_pending = |(t_wb_match_q & wb_valid);
@@ -874,11 +882,13 @@ module frost_cache #(
   assign o_up_resp_rdata = resp_data_now ? data_rdata : mshr_data_q[mshr_resp_sel];
 
   // ===========================================================================
-  // Downstream request arbitration: fills first, then writebacks
+  // Downstream request arbitration: fills first, then writebacks, with a
+  // bounded turn for a writeback that fills keep out
   // ===========================================================================
   logic fill_req_any, wb_req_any;
   logic [MshrBits-1:0] fill_req_sel;
   logic [  WbBits-1:0] wb_req_sel;
+  logic [  WbBits-1:0] wb_next_q;  // the writeback slot the pick starts from
   always_comb begin
     fill_req_any = 1'b0;
     fill_req_sel = '0;
@@ -888,15 +898,49 @@ module frost_cache #(
         fill_req_sel = MshrBits'(i);
       end
     end
+    // Between writeback slots the pick rotates: the scan starts at the slot
+    // after the last one loaded (wb_next_q), then wraps, so a pending slot is
+    // loaded within NUM_WB writeback loads. Lowest-index-first would let a
+    // slot lose every writeback load to a neighbour that the level below
+    // acknowledges, and a parked dirty-victim miss re-mans, in between. The
+    // lower-priority slots (below wb_next_q) are scanned first so the later
+    // assignment, from wb_next_q upward, wins.
     wb_req_any = 1'b0;
     wb_req_sel = '0;
     for (int j = int'(NUM_WB) - 1; j >= 0; j--) begin
-      if (wb_state_q[j] == WB_PEND) begin
+      if ((j < int'(wb_next_q)) && (wb_state_q[j] == WB_PEND)) begin
+        wb_req_any = 1'b1;
+        wb_req_sel = WbBits'(j);
+      end
+    end
+    for (int j = int'(NUM_WB) - 1; j >= 0; j--) begin
+      if ((j >= int'(wb_next_q)) && (wb_state_q[j] == WB_PEND)) begin
         wb_req_any = 1'b1;
         wb_req_sel = WbBits'(j);
       end
     end
   end
+
+  // Fills first is not starvation-free on its own. A slot leaves WB_PEND only
+  // by being loaded, and a load goes to a fill whenever one is pending, so
+  // under a level below that accepts slowly, fills that complete and
+  // re-allocate between its acceptances keep a fill pending at every load
+  // and a pending writeback never leaves its slot; a store to its line, an
+  // install of its line, a probe of it and a fill of it (the waits in the
+  // header) then wait with it. wb_lost_q counts the loads a pending
+  // writeback has lost to fills; at WbStarveLimit the registered wb_turn_q
+  // hands the next load to a writeback, and both clear when a writeback
+  // loads. Bound: a writeback loses at most WbStarveLimit loads and takes the
+  // next, so it is loaded within WbStarveLimit + 1 loads of becoming pending
+  // and fires on the acceptance after that. Only wb_turn_q, a flop, reaches
+  // the pick, as one more input to dq_load_is_wb; the count stays off it.
+  // With the rotation above, any one slot is loaded within
+  // NUM_WB * (WbStarveLimit + 1) loads. Between fills the pick stays
+  // lowest-index-first.
+  localparam int unsigned WbStarveLimit = 3;
+  localparam int unsigned WbStarveBits = $clog2(WbStarveLimit + 1);
+  logic [WbStarveBits-1:0] wb_lost_q;
+  logic                    wb_turn_q;
 
   // The winner is loaded into a request register and presented from there,
   // so the downstream port (and everything it fans into: the arbiter, the
@@ -909,9 +953,27 @@ module frost_cache #(
   logic [DOWN_ID_BITS-1:0] dq_id_q;
   logic                    dq_maint_q;
   logic down_fire, dq_load, dq_load_is_wb;
-  assign down_fire              = dq_valid_q && i_down_req_ready;
-  assign dq_load                = (fill_req_any || wb_req_any) && (!dq_valid_q || down_fire);
-  assign dq_load_is_wb          = !fill_req_any && wb_req_any;
+  assign down_fire     = dq_valid_q && i_down_req_ready;
+  assign dq_load       = (fill_req_any || wb_req_any) && (!dq_valid_q || down_fire);
+  assign dq_load_is_wb = wb_req_any && (wb_turn_q || !fill_req_any);
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      wb_lost_q <= '0;
+      wb_turn_q <= 1'b0;
+      wb_next_q <= '0;
+    end else if (dq_load && dq_load_is_wb) begin
+      wb_lost_q <= '0;
+      wb_turn_q <= 1'b0;
+      wb_next_q <= (wb_req_sel == WbBits'(NUM_WB - 1)) ? '0 : wb_req_sel + 1'b1;
+    end else if (dq_load && wb_req_any) begin
+      // A fill loaded over a pending writeback. wb_turn_q is clear here (set,
+      // it would have made this load a writeback's), so the count is below
+      // the limit and cannot wrap.
+      wb_lost_q <= wb_lost_q + 1'b1;
+      if (wb_lost_q == WbStarveBits'(WbStarveLimit - 1)) wb_turn_q <= 1'b1;
+    end
+  end
 
   assign o_down_req_valid       = dq_valid_q;
   assign o_down_req_write       = dq_is_wb_q;
@@ -1512,7 +1574,7 @@ module frost_cache #(
       p_cache_perf_hit_miss_onehot : assert (!(perf_events_q.hit && perf_events_q.miss));
       // No line has two writebacks in flight (see the T decision): the level
       // below applies same-line writes in acceptance order, and the slot pick
-      // is lowest-index-first, so two snapshots could land older-last. The
+      // takes no account of age, so two snapshots could land older-last. The
       // two rules that keep it so are checked at their effect: a write hit
       // never commits to, and an install never fires for, a line a writeback
       // slot still holds.
@@ -1535,6 +1597,42 @@ module frost_cache #(
               mshr_line_q[fw_sel_q],
               j
           );
+      end
+      // The writeback turn follows its count exactly and is never owed with
+      // no writeback pending: a slot leaves WB_PEND only through the load
+      // that clears both.
+      if (wb_turn_q != (wb_lost_q == WbStarveBits'(WbStarveLimit)))
+        $error(
+            "frost_cache: writeback turn %0d disagrees with its count %0d", wb_turn_q, wb_lost_q
+        );
+      if (wb_turn_q && !wb_req_any) $error("frost_cache: writeback turn owed with none pending");
+      if (dq_load && dq_load_is_wb && (wb_state_q[wb_req_sel] != WB_PEND))
+        $error("frost_cache: writeback load picked slot %0d, which is not pending", wb_req_sel);
+    end
+  end
+
+  // Writeback progress tripwire: a slot pending through more loads of the
+  // downstream request register than this is starved. The pick bounds a
+  // slot's wait at NUM_WB * (WbStarveLimit + 1) loads (8 with two slots), so
+  // the threshold is four times anything it allows. Backpressure alone never
+  // trips it: it counts loads, not cycles; the cycles are for the log.
+  localparam int unsigned WbStarveTripLoads = 8 * (WbStarveLimit + 1);
+  int unsigned wb_pend_loads [NUM_WB];
+  int unsigned wb_pend_cycles[NUM_WB];
+  always_ff @(posedge i_clk) begin
+    for (int j = 0; j < int'(NUM_WB); j++) begin
+      if (i_rst || (wb_state_q[j] != WB_PEND)) begin
+        wb_pend_loads[j]  <= 0;
+        wb_pend_cycles[j] <= 0;
+      end else begin
+        wb_pend_cycles[j] <= wb_pend_cycles[j] + 1;
+        if (dq_load && !(dq_load_is_wb && (wb_req_sel == WbBits'(j)))) begin
+          wb_pend_loads[j] <= wb_pend_loads[j] + 1;
+          if (wb_pend_loads[j] == WbStarveTripLoads) begin
+            $error("frost_cache: writeback slot %0d (line 0x%0h) starved: %0d loads, %0d cycles",
+                   j, wb_line_q[j], wb_pend_loads[j] + 1, wb_pend_cycles[j] + 1);
+          end
+        end
       end
     end
   end

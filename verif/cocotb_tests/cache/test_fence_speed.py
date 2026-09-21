@@ -59,6 +59,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_iup_req_wdata.value = 0
     dut.i_iup_req_wstrb.value = 0
     dut.i_fence_sync.value = 0
+    dut.i_down_hold.value = 0
 
 
 async def _setup(dut: Any) -> None:
