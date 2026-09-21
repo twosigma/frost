@@ -821,20 +821,37 @@ def test_ecc_parse_splits_before_and_after_clearing() -> None:
 
 
 def test_ecc_verdict_named_every_way_the_board_can_be_dirty() -> None:
-    """Clean is both registers zero; each error is reported in its own words."""
-    assert ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 0}) == (True, [])
+    """Clean needs checking on and both registers zero; each fault is named."""
+    assert ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 0, "ECC_ON_OFF": 1}) == (True, [])
 
     # The state a 2026-09-20 board actually reported before initialization.
-    clean, problems = ecc.verdict({"ECC_STATUS": 0x3, "CE_CNT": 0xFF})
+    clean, problems = ecc.verdict({"ECC_STATUS": 0x3, "CE_CNT": 0xFF, "ECC_ON_OFF": 1})
     assert not clean
-    assert any("correctable" in p and "uncorrectable" not in p for p in problems)
-    assert any("uncorrectable" in p for p in problems)
     assert any("saturated" in p for p in problems)
 
+    # The status bits are the controller's order: bit 0 uncorrectable, bit 1
+    # correctable. Tested one at a time, so swapping them cannot pass.
+    clean, problems = ecc.verdict(
+        {"ECC_STATUS": ecc.ECC_STATUS_UE, "CE_CNT": 0, "ECC_ON_OFF": 1}
+    )
+    assert not clean and problems == ["an uncorrectable error is latched in ECC_STATUS"]
+    clean, problems = ecc.verdict(
+        {"ECC_STATUS": ecc.ECC_STATUS_CE, "CE_CNT": 0, "ECC_ON_OFF": 1}
+    )
+    assert not clean and problems == ["a correctable error is latched in ECC_STATUS"]
+    assert (ecc.ECC_STATUS_UE, ecc.ECC_STATUS_CE) == (0x1, 0x2)
+
     # A counter below saturation is reported exactly, not as "at least".
-    clean, problems = ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 3})
+    clean, problems = ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 3, "ECC_ON_OFF": 1})
     assert not clean and problems == ["CE_CNT is 3"]
 
+    # Zeros with checking disabled are the absence of a measurement, not a
+    # clean one: the controller captures nothing while ECC_ON_OFF is clear.
+    clean, problems = ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 0, "ECC_ON_OFF": 0})
+    assert not clean and problems == [
+        "ECC checking is disabled, so the counters mean nothing"
+    ]
+
     # A register the controller did not return is not a clean report.
-    clean, problems = ecc.verdict({"ECC_STATUS": 0})
+    clean, problems = ecc.verdict({"ECC_STATUS": 0, "ECC_ON_OFF": 1})
     assert not clean and problems == ["CE_CNT was not read"]

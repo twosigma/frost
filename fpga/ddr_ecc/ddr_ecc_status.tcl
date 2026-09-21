@@ -19,7 +19,8 @@
 # register offsets are the controller's own; ddr_ecc_status.py names them.
 #
 # Reading is free of side effects. Clearing is not, and only happens when the
-# caller asks: ECC_STATUS and CE_CNT are write-to-clear, and the failing-address
+# caller asks. A one written to an ECC_STATUS bit clears it; CE_CNT takes
+# whatever is written, so it is cleared by writing zero. The failing-address
 # and failing-data captures reload on the next error after the status clears.
 
 if {$argc < 3} {
@@ -107,9 +108,10 @@ frost_hw_session $remote_host $server_url $hw_target {
     }
 
     if {$do_clear eq "1"} {
-        # Writing a one to a latched status bit clears it; CE_CNT clears on any
-        # write. The failing captures are read-only and reload with the next
-        # error, so clearing the status is what re-arms them.
+        # A one written to a latched status bit clears it. CE_CNT is loaded
+        # with what is written, so zero clears it. The failing captures are
+        # read-only and reload with the next error, so clearing the status is
+        # what re-arms them.
         ecc_write $ddr_axi 0x00C 00000000
         ecc_write $ddr_axi 0x000 00000003
         puts "FROST_ECC_CLEARED"

@@ -1457,7 +1457,10 @@ def test_ecc_stage_verdict_follows_the_script_exit(monkeypatch: Any) -> None:
     result = hw.run_ecc_stage(ROOT, "x3", "some:target", 60.0)
     assert result["status"] == "PASS" and result["stage"] == hw.ECC_STAGE
     assert result["note"] == ""
-    assert "--target-exact" in calls[0] and "some:target" in calls[0]
+    # The runner's target is a pattern, as the loader stages take it, so an
+    # index or a serial substring keeps working for this stage too.
+    assert "--target" in calls[0] and "some:target" in calls[0]
+    assert "--target-exact" not in calls[0]
 
     reply["returncode"] = hw.ECC_DIRTY_EXIT
     reply["stdout"] = (

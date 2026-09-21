@@ -91,7 +91,11 @@ class WriteSlave:
         self.beats: list[tuple[int, int, int]] = []  # data, strobe, last
         self.max_outstanding = 0
         self._queued: list[int] = []  # cycles remaining before each response
+        self._addresses_accepted = 0
+        self._bursts_with_data = 0
         self._responses_sent = 0
+        # Last cycle's request-channel state, for the persistence checks.
+        self._held: dict[str, tuple[int, ...] | None] = {"aw": None, "w": None}
         self._task = cocotb.start_soon(self._run())
 
     @property
@@ -102,6 +106,34 @@ class WriteSlave:
     def stop(self) -> None:
         """Stop driving; the next test resets the module from scratch."""
         self._task.cancel()
+
+    def _check_persistence(self, dut: Any) -> None:
+        """Require an unaccepted request to be offered again unchanged.
+
+        Without this, a module that gated its own valid with the slave's
+        ready would satisfy every handshake these tests count and pass.
+        """
+        for channel, valid, ready, payload in (
+            (
+                "aw",
+                dut.o_awvalid,
+                dut.i_awready,
+                (dut.o_awaddr, dut.o_awlen, dut.o_awsize, dut.o_awburst, dut.o_awid),
+            ),
+            ("w", dut.o_wvalid, dut.i_wready, (dut.o_wdata, dut.o_wstrb, dut.o_wlast)),
+        ):
+            held = self._held[channel]
+            now = tuple(int(signal.value) for signal in payload)
+            if held is not None:
+                assert int(
+                    valid.value
+                ), f"{channel.upper()}VALID dropped before its handshake"
+                assert (
+                    now == held
+                ), f"the {channel.upper()} payload changed while waiting for ready"
+            self._held[channel] = (
+                now if int(valid.value) and not int(ready.value) else None
+            )
 
     async def _run(self) -> None:
         dut = self._dut
@@ -121,6 +153,7 @@ class WriteSlave:
             dut.i_bresp.value = RESP_OKAY
 
             await ReadOnly()
+            self._check_persistence(dut)
             aw_fire = int(dut.o_awvalid.value) and int(dut.i_awready.value)
             w_fire = int(dut.o_wvalid.value) and int(dut.i_wready.value)
             w_last = w_fire and int(dut.o_wlast.value)
@@ -149,10 +182,17 @@ class WriteSlave:
 
             await RisingEdge(dut.i_clk)
             self._queued = [max(0, delay - 1) for delay in self._queued]
-            # A response only exists once the burst's write data is complete,
-            # which is what the protocol requires and what the module's own
-            # completion rule must not depend on the timing of.
+            # A response exists only once BOTH the address and the whole
+            # burst's data have been accepted. Queuing on the data alone would
+            # let a response precede its address, which the protocol forbids
+            # and which would let the module's completion rule be tested
+            # against something no real slave does.
+            if aw_fire:
+                self._addresses_accepted += 1
             if w_last:
+                self._bursts_with_data += 1
+            ready_to_respond = min(self._addresses_accepted, self._bursts_with_data)
+            while len(self._queued) + self._responses_sent + bvalid < ready_to_respond:
                 self._queued.append(self._b_delay)
             if b_fire:
                 self._responses_sent += 1
@@ -169,7 +209,7 @@ def _idle_inputs(dut: Any) -> None:
 
 
 async def _reset(dut: Any) -> None:
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _idle_inputs(dut)
     for _ in range(5):
         await RisingEdge(dut.i_clk)
@@ -309,3 +349,36 @@ async def test_address_may_wait_for_data(dut: Any) -> None:
     _check_coverage(slave)
     assert slave.responses_sent == TOTAL_BURSTS, "o_done with writes unacknowledged"
     slave.stop()
+
+
+@cocotb.test()
+async def test_requests_do_not_wait_for_ready(dut: Any) -> None:
+    """Both request channels must offer while the level below never accepts.
+
+    A valid gated by its own ready satisfies every handshake the other tests
+    count -- it just completes each one in the cycle ready happens to be high
+    -- and is never seen waiting, so no persistence check can catch it. Holding
+    both readys low does: the module still has to present its request.
+    """
+    await _reset(dut)
+    dut.i_awready.value = 0
+    dut.i_wready.value = 0
+    dut.i_bvalid.value = 0
+    await FallingEdge(dut.i_clk)
+    dut.i_start.value = 1
+
+    # Address is offered first; data follows it by a cycle at the earliest.
+    for _ in range(4):
+        await RisingEdge(dut.i_clk)
+    for cycle in range(40):
+        await RisingEdge(dut.i_clk)
+        await ReadOnly()
+        assert int(
+            dut.o_awvalid.value
+        ), f"no write address offered at cycle {cycle} with AWREADY held low"
+        assert int(
+            dut.o_wvalid.value
+        ), f"no write data offered at cycle {cycle} with WREADY held low"
+        assert int(dut.o_busy.value) and not int(
+            dut.o_done.value
+        ), "the module reported done without writing anything"
