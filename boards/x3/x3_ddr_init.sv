@@ -51,11 +51,17 @@
  * in-order counters give. At 256 bits and 300 MHz a gibibyte takes about
  * 110 ms, once, before the first instruction.
  *
- * Completion does not test the write responses. This controller's B channel
- * reports OKAY unconditionally, so a check on it would be logic that can
- * never fire, and an error it could report would not be the failure that
- * matters anyway: a write can be acknowledged and still leave a bad check
- * code behind. What the counters afterwards show is the complement of that:
+ * A write that is refused never counts as one that happened. The memory
+ * controller's own B channel reports OKAY unconditionally, but it is not the
+ * only thing on this path: the interconnect answers a request it cannot route
+ * with DECERR, and a run that took one of those has not written what it
+ * thinks it has. Any response other than OKAY therefore latches an error that
+ * withholds o_done for good, which stops the board in the same way as a write
+ * that never came back.
+ *
+ * A response says nothing about the check code left behind, though: a write
+ * can be acknowledged and still leave a bad one. What the counters afterwards
+ * show is the complement of that:
  * they report the reads that did happen, so they catch a region left
  * unwritten and then read, and they cannot speak for an address nobody read
  * (fpga/ddr_ecc/ddr_ecc_status.py, and the hardware regression's last
@@ -128,6 +134,8 @@ module x3_ddr_init #(
   logic [ADDR_BITS-1:0] addr_q;
   logic [ BeatBits-1:0] beat_q;
   logic                 done_q;
+  // A response other than OKAY means some of the region was not written.
+  logic                 resp_error_q;
 
   // i_start is latched rather than used directly. A request channel may not
   // drop its valid before the handshake, and every valid below is qualified
@@ -168,13 +176,14 @@ module x3_ddr_init #(
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      aw_q      <= '0;
-      w_q       <= '0;
-      b_q       <= '0;
-      addr_q    <= '0;
-      beat_q    <= '0;
-      done_q    <= 1'b0;
-      started_q <= 1'b0;
+      aw_q         <= '0;
+      w_q          <= '0;
+      b_q          <= '0;
+      addr_q       <= '0;
+      beat_q       <= '0;
+      done_q       <= 1'b0;
+      started_q    <= 1'b0;
+      resp_error_q <= 1'b0;
     end else begin
       if (i_start) started_q <= 1'b1;
       if (aw_fire) begin
@@ -183,13 +192,17 @@ module x3_ddr_init #(
       end
       if (w_fire) beat_q <= w_burst_last ? '0 : beat_q + 1'b1;
       if (w_burst_last) w_q <= w_q + 1'b1;
-      if (b_fire) b_q <= b_q + 1'b1;
+      if (b_fire) begin
+        b_q <= b_q + 1'b1;
+        if (i_bresp != 2'b00) resp_error_q <= 1'b1;
+      end
       // Done is read off the counters rather than off the last response, so
       // it needs no assumption about which cycle the level below returns
       // that response in: the region is written when every burst's data has
       // been sent and every burst has been acknowledged. It follows the
       // counters by a cycle, which the board top spends in reset anyway.
-      if ((w_q == BurstBits'(TotalBursts)) && (b_q == BurstBits'(TotalBursts))) done_q <= 1'b1;
+      if ((w_q == BurstBits'(TotalBursts)) && (b_q == BurstBits'(TotalBursts)) && !resp_error_q)
+        done_q <= 1'b1;
     end
   end
 
@@ -207,8 +220,9 @@ module x3_ddr_init #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
-      if (b_fire && (i_bresp != 2'b00))
-        $error("x3_ddr_init: write response %0d for a region write", i_bresp);
+      // A response other than OKAY is handled rather than asserted against:
+      // it latches the error above, which withholds completion for good.
+      if (resp_error_q && done_q) $error("x3_ddr_init: completed although a write was refused");
       if ((aw_q - b_q) > BurstBits'(OutstandingCap))
         $error(
             "x3_ddr_init: %0d writes outstanding, above the %0d cap", aw_q - b_q, OutstandingCap
