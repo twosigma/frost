@@ -2502,6 +2502,9 @@ def test_native_gate_rejects_invalid_or_wrong_clock_evidence(
     gate = tmp_path / "post_place_gate.txt"
     gate.write_text(gate.read_text().replace(old, new))
     assert not fpga_build.x3_place_gate_passes(gate)
+    (tmp_path / "post_place.dcp").write_bytes(b"placement checkpoint")
+    assert not fpga_build.bind_x3_place_gate(tmp_path)
+    assert not (tmp_path / "post_place_gate_binding.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -2533,14 +2536,16 @@ def test_gate_checks_actual_divided_cpu_period(
 
 
 @pytest.mark.parametrize("changed", ("checkpoint", "gate", "binding", "unbound"))
+@pytest.mark.parametrize("wns", (-0.1, -0.201))
 def test_promoted_gate_is_bound_to_exact_checkpoint_and_gate(
     tmp_path: Path,
     changed: str,
+    wns: float,
 ) -> None:
     """Changing either artifact or removing its binding requires fresh evidence."""
     checkpoint = tmp_path / "post_place.dcp"
     checkpoint.write_bytes(b"qualified checkpoint")
-    _write_place_gate(tmp_path, bind=True)
+    _write_place_gate(tmp_path, wns, bind=True)
     assert fpga_build.require_x3_post_place_gate(tmp_path)
     if changed == "checkpoint":
         checkpoint.write_bytes(b"different checkpoint")
@@ -2617,11 +2622,14 @@ def test_explicit_quick_route_only_receives_native_passing_candidates(
     assert received == [candidates[1], candidates[0]]
 
 
-def test_failed_place_preserves_best_checkpoint_but_cannot_launch_route(
+@pytest.mark.parametrize("sweep", (False, True))
+def test_below_threshold_place_warns_and_allows_physopt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    sweep: bool,
 ) -> None:
-    """A failed threshold keeps diagnostics and exits before downstream work."""
+    """Below-threshold placement succeeds and can resume through phys-opt."""
     fleet = _VivadoFleet(monkeypatch, 1)
     original_popen = fleet.popen
 
@@ -2635,26 +2643,53 @@ def test_failed_place_preserves_best_checkpoint_but_cannot_launch_route(
 
     monkeypatch.setattr(fpga_build.subprocess, "Popen", failed_place)
     monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "3")
+    calls = []
+
+    def complete(command: list[str], *, cwd: Path) -> Any:
+        step = command[command.index("-tclargs") + 2]
+        calls.append(step)
+        prefix = fpga_build._TCL_REPORT_PREFIX[step]
+        wns = -0.201 if step == "place" else -0.1
+        (cwd / f"{prefix}.dcp").write_text(cwd.name)
+        (cwd / f"{prefix}_timing.rpt").write_text(str(wns))
+        if step == "place":
+            _write_place_gate(cwd, wns)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", complete)
     main_work = _sweep_input(tmp_path, "place")
-    result = fpga_build.run_x3_step_directive_sweep(
-        tmp_path,
-        "place",
-        ["First", "Better"],
-        "placer",
-        "unused",
-        max_jobs=1,
-    )
-    assert result == (False, -0.201, "post_place")
-    assert len(fleet.attempts) == 2
+    if sweep:
+        result = fpga_build.run_x3_step_directive_sweep(
+            tmp_path,
+            "place",
+            ["First", "Better"],
+            "placer",
+            "unused",
+            max_jobs=1,
+        )
+    else:
+        result = fpga_build.run_step(tmp_path, "x3", "place", "Better", "unused")
+    assert result == (True, -0.201, "post_place")
+    assert len(fleet.attempts) == (2 if sweep else 0)
     assert (main_work / "post_place.dcp").read_text() == "work_place_Better"
     assert (main_work / "post_place_timing.rpt").read_text() == "-0.201"
-    assert not (main_work / "post_place_gate_binding.json").exists()
-    assert all(path.exists() for path in fleet.attempts)
-    assert (
-        fpga_build.run_step(tmp_path, "x3", "post_place_physopt", "Sweep", "unused")[0]
-        is False
+    assert (main_work / "post_place_gate_binding.json").exists()
+    assert "Warning: post-place WNS -0.201 ns is below -0.200 ns" in (
+        capsys.readouterr().out
     )
-    assert len(fleet.attempts) == 2
+    assert fpga_build.run_step(
+        tmp_path, "x3", "post_place_physopt", "Sweep", "unused"
+    ) == (True, -0.1, "post_place_physopt")
+    assert calls == (
+        ["post_place_physopt"] if sweep else ["place", "post_place_physopt"]
+    )
+    assert "Warning: post-place WNS -0.201 ns is below -0.200 ns" in (
+        capsys.readouterr().out
+    )
+    assert (
+        fpga_build.capture_x3_input_lineage(main_work, "post_place_physopt.dcp")
+        is not None
+    )
 
 
 @pytest.mark.parametrize("step", ("post_place_physopt", "route", "second_route"))

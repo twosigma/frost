@@ -65,12 +65,12 @@ invariants. The group is removed after placement; a clean reopen audit must
 restore all paths to the CPU clock group before zero-uncertainty scoring. The LOW
 variant at a qualifying pair requires the same guidance and audit.
 
-Placement first requires the native -0.200 ns setup gate. Passing seeds are
+The native -0.200 ns setup threshold is advisory. Passing seeds are
 ranked at actual zero added uncertainty, with congestion vetoes at
 ``FROST_PLACE_CONGESTION_VETO_LEVEL`` (default 5). Quick-route probes default
 to zero; explicitly setting ``FROST_PLACE_QUICK_ROUTE_COUNT`` probes only
-passing seeds. If none passes, the best measured DCP/reports are preserved
-and the build exits nonzero. Resumed downstream stages require a native gate
+passing seeds. If none passes, the build warns and continues with the best
+measured DCP/reports. Resumed downstream stages require a native gate
 record bound to the exact post-place checkpoint and a verified parent chain
 for any later checkpoint. Legacy descendants require a new run starting at
 ``post_place_physopt``; their checkpoints and reports remain on disk.
@@ -1059,31 +1059,33 @@ def file_sha256(path: Path) -> str:
 
 
 def bind_x3_place_gate(work_dir: Path, expected_wns: float | None = None) -> bool:
-    """Bind a freshly completed native PASS to its exact checkpoint bytes."""
+    """Bind valid native timing evidence, regardless of the advisory threshold."""
     binding_path = work_dir / "post_place_gate_binding.json"
     binding_path.unlink(missing_ok=True)
     gate_path = work_dir / "post_place_gate.txt"
-    if not x3_place_gate_passes(gate_path, expected_wns):
-        return False
     try:
+        gate = read_x3_place_gate(gate_path, expected_wns)
         binding = {
             "schema": "x3_post_place_gate_binding_v1",
             "checkpoint_sha256": file_sha256(work_dir / "post_place.dcp"),
             "gate_sha256": file_sha256(gate_path),
         }
-    except OSError:
+    except (OSError, ValueError):
         return False
     binding_path.write_text(json.dumps(binding, indent=2) + "\n")
+    if not gate.passed:
+        print(
+            f"Warning: post-place WNS {gate.worst_slack_ns} ns is below "
+            "-0.200 ns; continuing with downstream optimization."
+        )
     return True
 
 
 def require_x3_post_place_gate(main_work: Path) -> bool:
-    """Block resumed and in-process downstream work without a native PASS."""
+    """Require valid bound timing evidence; below-threshold slack only warns."""
     path = main_work / "post_place_gate.txt"
     try:
         gate = read_x3_place_gate(path)
-        if not gate.passed:
-            raise ValueError("native setup path remains below -0.200 ns")
         binding_path = main_work / "post_place_gate_binding.json"
         try:
             binding = json.loads(binding_path.read_text())
@@ -1102,6 +1104,11 @@ def require_x3_post_place_gate(main_work: Path) -> bool:
     except (OSError, ValueError) as error:
         print(f"Error: x3 downstream work requires a valid {path}: {error}")
         return False
+    if not gate.passed:
+        print(
+            f"Warning: post-place WNS {gate.worst_slack_ns} ns is below "
+            "-0.200 ns; continuing with downstream optimization."
+        )
     return True
 
 
@@ -1740,7 +1747,7 @@ def select_x3_place_best_run(
     """Select the best x3 place seed with congestion awareness.
 
     Gate-passing seeds compete first. Optional quick-route probes only receive
-    those seeds. If none passes, preserve the best measured failure for review.
+    those seeds. If none passes, continue with the best measured placement.
     """
     eligible = [
         run
@@ -1763,9 +1770,7 @@ def select_x3_place_best_run(
         if x3_place_gate_passes(run.work_dir / "post_place_gate.txt", run.wns)
     ]
     if not passing:
-        print(
-            "\nNo placement passes the native -0.200 ns gate; preserving the best measured result."
-        )
+        print("\nNo placement meets -0.200 ns; selecting the best measured result.")
         return min(eligible, key=directive_sweep_rank_key)
     eligible = passing
 
@@ -2391,7 +2396,7 @@ def run_x3_step_directive_sweep(
 
     if step == "place" and not bind_x3_place_gate(main_work, best_run.wns):
         print(
-            "Error: selected post-place result failed or lacks a valid native gate; checkpoint and reports preserved. No downstream work started."
+            "Error: could not bind post-place timing evidence; checkpoint and reports preserved. No downstream work started."
         )
         return False, best_run.wns, report_prefix
 
@@ -2563,7 +2568,9 @@ def run_step(
         and step == "place"
         and not bind_x3_place_gate(main_work, wns)
     ):
-        print("Error: post-place gate failed; checkpoint and reports preserved.")
+        print(
+            "Error: could not bind post-place timing evidence; checkpoint and reports preserved."
+        )
         return False, wns, report_prefix
 
     if consumed_lineage is not None and not bind_x3_output_lineage(
@@ -2648,7 +2655,7 @@ Steps (in order):
   opt                         - Opt design
   place                       - Place design (x3 sweeps selected placer
                                 directives x uncertainty seeds, up to --jobs
-                                at a time; require the native post-place gate,
+                                at a time; warn below -0.200 ns,
                                 veto congested seeds, keep the best post-place
                                 WNS; no quick-route probe by default)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
@@ -2707,7 +2714,7 @@ Behavior:
     before quick routes or any downstream stage, including resumed builds.
     Later input checkpoints also require their .lineage.json parent chain;
     old or stale descendants must be rebuilt from post_place_physopt.
-    If no seed passes -0.200 ns, preserve the best DCP/reports and exit nonzero.
+    If no seed meets -0.200 ns, warn and continue with the best DCP/reports.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each defaults to Explore,
     AggressiveExplore, NoTimingRelaxation, and AlternateCLBRouting, subject
