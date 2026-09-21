@@ -37,7 +37,7 @@ import struct
 import sys
 import threading
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -1435,9 +1435,44 @@ def test_default_stages_skip_debugger_driven_apps() -> None:
     assert "nic_echo" not in stages
     assert "nic_loopback" in stages
     assert stages[0] == "hello_world"
-    assert stages[-2:] == [hw.SWEEP_STAGE, hw.LINUX_STAGE]
+    assert stages[-3:] == [hw.SWEEP_STAGE, hw.LINUX_STAGE, hw.ECC_STAGE]
     assert not set(hw.COREMARK_PRO_APP_NAMES) & set(stages)
     assert len(stages) == len(set(stages))
+
+
+def test_ecc_stage_verdict_follows_the_script_exit(monkeypatch: Any) -> None:
+    """A clean report passes; a dirty one fails and carries its reasons."""
+    calls: list[list[str]] = []
+    reply: dict[str, Any] = {"returncode": 0, "stdout": ""}
+
+    def fake_run(command: list[str], **kwargs: Any) -> Any:
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=reply["returncode"], stdout=reply["stdout"], stderr=""
+        )
+
+    monkeypatch.setattr(hw.subprocess, "run", fake_run)
+
+    reply["stdout"] = "Clean: no ECC error has been reported since the last clear.\n"
+    result = hw.run_ecc_stage(ROOT, "x3", "some:target", 60.0)
+    assert result["status"] == "PASS" and result["stage"] == hw.ECC_STAGE
+    assert result["note"] == ""
+    assert "--target-exact" in calls[0] and "some:target" in calls[0]
+
+    reply["returncode"] = hw.ECC_DIRTY_EXIT
+    reply["stdout"] = (
+        "DDR4 ECC state (read over hw_axi_1):\n"
+        "Not clean: an uncorrectable error is latched in ECC_STATUS\n"
+        "Not clean: CE_CNT is 3\n"
+    )
+    result = hw.run_ecc_stage(ROOT, "x3", "some:target", 60.0)
+    assert result["status"] == "FAIL"
+    assert "uncorrectable" in result["note"] and "CE_CNT is 3" in result["note"]
+
+    # A read that failed is not a clean report either.
+    reply["returncode"] = 1
+    reply["stdout"] = "ECC read failed\n"
+    assert hw.run_ecc_stage(ROOT, "x3", "some:target", 60.0)["status"] == "FAIL"
 
 
 def test_uart_echo_stage_keeps_its_single_probe() -> None:

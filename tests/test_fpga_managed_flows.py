@@ -49,6 +49,7 @@ loader = load_module("managed_loader", "fpga/load_software/load_software.py")
 programmer = load_module(
     "managed_programmer", "fpga/program_bitstream/program_bitstream.py"
 )
+ecc = load_module("managed_ddr_ecc", "fpga/ddr_ecc/ddr_ecc_status.py")
 
 
 @pytest.mark.parametrize("url", ["localhost:3121", "127.0.0.1:3219", "[::1]:3219"])
@@ -780,3 +781,60 @@ source $actual_script
     assert "CONNECT:-url 127.0.0.1:3219" in result.stdout
     assert result.stdout.endswith("CLOSE_TARGET\nDISCONNECT_SERVER\nCLOSE_MANAGER\n")
     assert ("FROST_LOAD_COMPLETE" in result.stdout) is not failure
+
+
+# --- DDR4 ECC state ----------------------------------------------------------
+#
+# The register offsets and the verdict rule are what the hardware regression's
+# last stage trusts, and both are read back from a board rather than computed,
+# so they get their own coverage here.
+
+
+def test_ecc_register_offsets_match_the_controller() -> None:
+    """The offsets are the controller's own map, and the verdict pair is in it."""
+    offsets = dict(ecc.ECC_REGISTERS)
+    assert offsets["ECC_STATUS"] == 0x000
+    assert offsets["ECC_EN_IRQ"] == 0x004
+    assert offsets["ECC_ON_OFF"] == 0x008
+    assert offsets["CE_CNT"] == 0x00C
+    assert offsets["CE_FFA_31_00"] == 0x1C0
+    assert offsets["UE_FFA_31_00"] == 0x2C0
+    for name in ecc.VERDICT_REGISTERS:
+        assert name in offsets
+    assert len(offsets) == len(ecc.ECC_REGISTERS)
+
+
+def test_ecc_parse_splits_before_and_after_clearing() -> None:
+    """The transcript carries the master, the read values, and the cleared ones."""
+    before, after, master = ecc.parse_report(
+        "FROST_ECC_MASTER hw_axi_1\n"
+        "FROST_ECC ECC_STATUS=00000003\n"
+        "FROST_ECC CE_CNT=000000ff\n"
+        "FROST_ECC_CLEARED\n"
+        "FROST_ECC_AFTER ECC_STATUS=00000000\n"
+        "FROST_ECC_AFTER CE_CNT=00000000\n"
+        "FROST_ECC_DONE\n"
+    )
+    assert master == "hw_axi_1"
+    assert before == {"ECC_STATUS": 0x3, "CE_CNT": 0xFF}
+    assert after == {"ECC_STATUS": 0, "CE_CNT": 0}
+
+
+def test_ecc_verdict_named_every_way_the_board_can_be_dirty() -> None:
+    """Clean is both registers zero; each error is reported in its own words."""
+    assert ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 0}) == (True, [])
+
+    # The state a 2026-09-20 board actually reported before initialization.
+    clean, problems = ecc.verdict({"ECC_STATUS": 0x3, "CE_CNT": 0xFF})
+    assert not clean
+    assert any("correctable" in p and "uncorrectable" not in p for p in problems)
+    assert any("uncorrectable" in p for p in problems)
+    assert any("saturated" in p for p in problems)
+
+    # A counter below saturation is reported exactly, not as "at least".
+    clean, problems = ecc.verdict({"ECC_STATUS": 0, "CE_CNT": 3})
+    assert not clean and problems == ["CE_CNT is 3"]
+
+    # A register the controller did not return is not a clean report.
+    clean, problems = ecc.verdict({"ECC_STATUS": 0})
+    assert not clean and problems == ["CE_CNT was not read"]

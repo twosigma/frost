@@ -196,6 +196,75 @@ module x3_frost #(
   logic cpu_side_aresetn;
   assign cpu_side_aresetn = mmcm_locked;
 
+  // Power-up DDR4 initialization. The array is ECC-checked, so a read of a
+  // location nothing has written since power-up reports an error against a
+  // check code that was never computed. x3_ddr_init writes the region once
+  // after calibration, and until it reports done the FROST subsystem and the
+  // JTAG image loader are both held in reset, so nothing else can read or
+  // write the array first. The SmartConnect's own reset is not gated: the
+  // initializer writes through it.
+  logic ddr_init_busy, ddr_init_done;
+  logic init_awvalid, init_wvalid, init_wlast, init_bready;
+  logic [  4:0] init_awid;
+  logic [ 29:0] init_awaddr;
+  logic [  7:0] init_awlen;
+  logic [  2:0] init_awsize;
+  logic [  1:0] init_awburst;
+  logic [255:0] init_wdata;
+  logic [ 31:0] init_wstrb;
+
+  x3_ddr_init #(
+      .ADDR_BITS(30),
+      .DATA_BITS(256),
+      .ID_BITS  (5)
+  ) ddr_initializer (
+      .i_clk    (main_clock),
+      .i_rst_n  (mmcm_locked),
+      .i_start  (mem_ok_synced),
+      .o_busy   (ddr_init_busy),
+      .o_done   (ddr_init_done),
+      .o_awvalid(init_awvalid),
+      .i_awready(ddr_axi_awready),
+      .o_awid   (init_awid),
+      .o_awaddr (init_awaddr),
+      .o_awlen  (init_awlen),
+      .o_awsize (init_awsize),
+      .o_awburst(init_awburst),
+      .o_wvalid (init_wvalid),
+      .i_wready (ddr_axi_wready),
+      .o_wdata  (init_wdata),
+      .o_wstrb  (init_wstrb),
+      .o_wlast  (init_wlast),
+      .i_bvalid (ddr_axi_bvalid),
+      .o_bready (init_bready),
+      .i_bresp  (ddr_axi_bresp)
+  );
+
+  // The write channels into the block design belong to the initializer until
+  // it is done, and to the cache hierarchy's bridge after. Only the request
+  // side is selected: the subsystem is in reset for the whole initializing
+  // window, so its own write requests are idle and the controller's ready and
+  // response lines can go to both readers unchanged.
+  logic s00_awvalid, s00_wvalid, s00_wlast, s00_bready;
+  logic [  4:0] s00_awid;
+  logic [ 29:0] s00_awaddr;
+  logic [  7:0] s00_awlen;
+  logic [  2:0] s00_awsize;
+  logic [  1:0] s00_awburst;
+  logic [255:0] s00_wdata;
+  logic [ 31:0] s00_wstrb;
+  assign s00_awvalid = ddr_init_busy ? init_awvalid : ddr_axi_awvalid;
+  assign s00_awid = ddr_init_busy ? init_awid : ddr_axi_awid;
+  assign s00_awaddr = ddr_init_busy ? init_awaddr : ddr_axi_awaddr[29:0];
+  assign s00_awlen = ddr_init_busy ? init_awlen : ddr_axi_awlen;
+  assign s00_awsize = ddr_init_busy ? init_awsize : ddr_axi_awsize;
+  assign s00_awburst = ddr_init_busy ? init_awburst : ddr_axi_awburst;
+  assign s00_wvalid = ddr_init_busy ? init_wvalid : ddr_axi_wvalid;
+  assign s00_wdata = ddr_init_busy ? init_wdata : ddr_axi_wdata;
+  assign s00_wstrb = ddr_init_busy ? init_wstrb : ddr_axi_wstrb;
+  assign s00_wlast = ddr_init_busy ? init_wlast : ddr_axi_wlast;
+  assign s00_bready = ddr_init_busy ? init_bready : ddr_axi_bready;
+
   // DDR4 subsystem block design: the controller (reference CONFIG) and a
   // SmartConnect whose S00 is the FROST bridge below and S01 the JTAG
   // DDR-image loader. Addresses are region-relative. The X3 has no push-button
@@ -207,22 +276,22 @@ module x3_frost #(
       .default_300mhz_clk0_clk_n(default_300mhz_clk0_clk_n),
       .sys_reset(~mmcm_locked),
       .cpu_aresetn(cpu_side_aresetn),
-      .jtag_aresetn(cpu_side_aresetn),
+      .jtag_aresetn(cpu_side_aresetn & ddr_init_done),
       .mem_ok(mem_ok),
-      .S00_AXI_awvalid(ddr_axi_awvalid),
+      .S00_AXI_awvalid(s00_awvalid),
       .S00_AXI_awready(ddr_axi_awready),
-      .S00_AXI_awid(ddr_axi_awid),
-      .S00_AXI_awaddr(ddr_axi_awaddr[29:0]),
-      .S00_AXI_awlen(ddr_axi_awlen),
-      .S00_AXI_awsize(ddr_axi_awsize),
-      .S00_AXI_awburst(ddr_axi_awburst),
-      .S00_AXI_wvalid(ddr_axi_wvalid),
+      .S00_AXI_awid(s00_awid),
+      .S00_AXI_awaddr(s00_awaddr),
+      .S00_AXI_awlen(s00_awlen),
+      .S00_AXI_awsize(s00_awsize),
+      .S00_AXI_awburst(s00_awburst),
+      .S00_AXI_wvalid(s00_wvalid),
       .S00_AXI_wready(ddr_axi_wready),
-      .S00_AXI_wdata(ddr_axi_wdata),
-      .S00_AXI_wstrb(ddr_axi_wstrb),
-      .S00_AXI_wlast(ddr_axi_wlast),
+      .S00_AXI_wdata(s00_wdata),
+      .S00_AXI_wstrb(s00_wstrb),
+      .S00_AXI_wlast(s00_wlast),
       .S00_AXI_bvalid(ddr_axi_bvalid),
-      .S00_AXI_bready(ddr_axi_bready),
+      .S00_AXI_bready(s00_bready),
       .S00_AXI_bid(ddr_axi_bid),
       .S00_AXI_bresp(ddr_axi_bresp),
       .S00_AXI_arvalid(ddr_axi_arvalid),
@@ -274,7 +343,7 @@ module x3_frost #(
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
-      .i_rst_n(mmcm_locked & mem_ok_synced),
+      .i_rst_n(mmcm_locked & mem_ok_synced & ddr_init_done),
       .o_uart_tx,
       .i_uart_rx,
       .o_ddr_axi_awvalid(ddr_axi_awvalid),
