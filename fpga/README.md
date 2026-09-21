@@ -11,6 +11,7 @@ natively on the host; Vivado is not included in the Docker image.
 | `program_bitstream/` | Program FPGA with bitstream via JTAG       |
 | `load_software/`     | Load software images into low BRAM and optional DDR without reprogramming |
 | `debug/`             | OpenOCD configurations for the RISC-V debug module (simulation and X3) |
+| `ddr_ecc/`           | Read the DDR4 controller's ECC error state over JTAG |
 
 ```mermaid
 flowchart LR
@@ -95,8 +96,17 @@ with read side effects. For register and disassembly workarounds, see the
 ### Hardware regression
 
 `hw_regression.py` runs unattended bare-metal apps, all nine CoreMark-PRO
-workloads, and Debian 13 from an NFS root. It checks console output,
-benchmark scores, Linux startup, counters, and networking.
+workloads, and Debian 13 from an NFS root, then reads the memory
+controller's ECC error state. It checks console output, benchmark scores,
+Linux startup, counters, networking, and that none of that traffic was ever
+reported as an ECC error.
+
+The `ddr_ecc` stage runs last because its reading covers everything before
+it: the counters have been accumulating since the board was programmed, so a
+clean report means the whole run read nothing the array had never been
+written with. It is `ddr_ecc/ddr_ecc_status.py`, which can also be run on its
+own -- `--clear` resets the latched state first, which is how to start a
+measurement from a known point without reprogramming.
 
 Prepare the export with the [Debian setup guide](../docs/debian_nfsroot.md#hardware-regression),
 then supply the board's network settings and matching kernel/initramfs:
