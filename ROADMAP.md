@@ -13,34 +13,6 @@ regression's Linux stage), re-closes X3 timing post-route before it is called
 done, keeps the core RTL vendor-primitive-free, and updates the documentation
 it makes stale.
 
-## Phase 4.5: Carried defects and stale diagrams
-
-Two defects the networking and distribution work found and did not fix, and
-the diagrams it left behind. Deliberately small, and it changes no clock, so
-the cache and DRAM work is measured against the tree that closed at 300 MHz.
-
-The cache loads its downstream request register fills first, which is not
-starvation-free on its own. A writeback slot leaves its pending state only by
-being loaded, and a load goes to a fill whenever one is pending, so under a
-level below that accepts slowly -- fills completing and re-allocating between
-its acceptances -- a fill is pending at every load and a writeback keeps its
-slot for as long as the stream lasts. A store to that line, an install of it, a
-probe of it and a fill of it all wait with it. Bound the wait rather than leave
-it to luck, and check the bound in simulation.
-
-DDR4 powers up holding whatever was last written to it, so the first read of a
-line nothing has written returns undefined data with an ECC syndrome to match.
-Initialize the array before software can read it. The proof is the controller's
-ECC counters read over the JTAG control port after a cold power cycle, not an
-argument that initialization happened.
-
-The diagrams predate the NIC: the architecture view has no NIC, the board view
-has neither the NIC nor the transceiver that carries it, and the cache view
-draws one coherence sequencer where there are two.
-
-Exit: a rated-clock bitstream with timing closed, and one full hardware
-regression green on the board, Linux stage included.
-
 ## Phase 5: RV64 performance parity
 
 Make RV64 match or exceed the score that an equally tuned RV32 build could
