@@ -55,6 +55,7 @@ OUTSTANDING_CAP = min(MAX_OUTSTANDING, TOTAL_BURSTS)
 FULL_STRB = (1 << BYTES_PER_BEAT) - 1
 AW_SIZE = (BYTES_PER_BEAT - 1).bit_length()
 RESP_OKAY = 0
+RESP_DECERR = 3
 
 # Generous: the ideal run is about TOTAL_BURSTS * BEATS_PER_BURST cycles.
 RUN_TIMEOUT_CYCLES = 200 * TOTAL_BURSTS + 1000
@@ -80,6 +81,7 @@ class WriteSlave:
         w_ready_p: float = 1.0,
         b_delay: int = 0,
         address_waits_for_data: bool = False,
+        bresp: int = RESP_OKAY,
     ) -> None:
         self._dut = dut
         self._rng = rng
@@ -87,6 +89,7 @@ class WriteSlave:
         self._w_ready_p = w_ready_p
         self._b_delay = b_delay
         self._address_waits_for_data = address_waits_for_data
+        self._bresp = bresp
         self.addresses: list[int] = []
         self.beats: list[tuple[int, int, int]] = []  # data, strobe, last
         self.max_outstanding = 0
@@ -150,7 +153,7 @@ class WriteSlave:
                 self._queued.pop(0)
                 bvalid = 1
             dut.i_bvalid.value = bvalid
-            dut.i_bresp.value = RESP_OKAY
+            dut.i_bresp.value = self._bresp
 
             await ReadOnly()
             self._check_persistence(dut)
@@ -382,3 +385,28 @@ async def test_requests_do_not_wait_for_ready(dut: Any) -> None:
         assert int(dut.o_busy.value) and not int(
             dut.o_done.value
         ), "the module reported done without writing anything"
+
+
+@cocotb.test()
+async def test_a_refused_write_never_completes(dut: Any) -> None:
+    """A response other than OKAY must withhold done for good.
+
+    The memory controller answers OKAY unconditionally, but the interconnect
+    between it and this module answers a request it cannot route with DECERR,
+    and a run that took one has not written what it thinks it has. Reporting
+    done there would release the board onto memory nobody established.
+    """
+    await _reset(dut)
+    slave = WriteSlave(dut, random.Random(41), bresp=RESP_DECERR)
+    for _ in range(4):
+        await RisingEdge(dut.i_clk)
+    await FallingEdge(dut.i_clk)
+    dut.i_start.value = 1
+    # Long enough that an unrefused run of this region would have finished
+    # several times over.
+    for _ in range(RUN_TIMEOUT_CYCLES // 4):
+        await RisingEdge(dut.i_clk)
+        await ReadOnly()
+        assert not int(dut.o_done.value), "done was reported after a refused write"
+        assert int(dut.o_busy.value), "busy dropped after a refused write"
+    slave.stop()
