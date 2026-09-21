@@ -69,7 +69,7 @@ sources, compiler settings, workloads, and baselines stay fixed; the broader
 RV32-counterfactual parity, fusion, capacity, and width work remains in
 Phase 5.
 
-## Phase 4: System I/O and distribution
+## Phase 4: System I/O and distribution (done)
 
 Persistent storage and networking for a stock riscv64 Debian. The X3 has no SD
 or on-card block device, so persistent state lives on a network peer: integrate
@@ -120,6 +120,16 @@ Hours of that, not an idle machine staying up, and not days: the faults this
 phase found on silicon appeared within minutes of boot, so a longer wall clock
 buys slow-accumulating failures (leaks, first-touch ECC, NFS state across many
 reconnects) rather than more of the same evidence.
+
+Exit met 2026-09-20: Debian 13 boots from an NFS root over the link on the X3,
+takes SSH logins and installs packages with apt, and the storage and network
+path soaked for hours under sustained root I/O with NFS server restarts,
+carrier loss on a hard mount and RX exhaustion each exercised repeatedly and no
+kernel errors. X3 timing closed at 300 MHz post-route and the full hardware
+regression passed. Two core bugs appeared only once a real distribution was
+booting and are fixed and hardware-validated: a load queue that kept a stale
+cached slot through a flush, and a page-table walker that read below the L1D
+without probing it.
 
 ## Phase 4.5: Carried defects and stale diagrams
 
