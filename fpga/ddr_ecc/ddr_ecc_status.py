@@ -25,10 +25,19 @@ calibration to prevent exactly that, and a clean report from this tool after
 a cold power cycle and a run is what shows it worked, rather than an
 argument that it must have.
 
-A clean report is ECC_STATUS zero and CE_CNT zero. CE_CNT saturates at 255,
-so a full counter means at least that many correctable errors, not exactly
-that many. There is no UE counter: an uncorrectable error shows in
-ECC_STATUS bit 1 and in the UE capture registers.
+A clean report is ECC_STATUS zero and CE_CNT zero, with checking enabled.
+ECC_ON_OFF gates the controller's own error capture, so zero counters with
+it clear say nothing at all and are reported as a failure rather than a
+pass. In ECC_STATUS bit 0 is the uncorrectable error and bit 1 the
+correctable one, which is the controller's order and not the intuitive one.
+CE_CNT saturates at 255, so a full counter means at least that many
+correctable errors, not exactly that many. There is no UE counter: an
+uncorrectable error shows in the status bit and in the UE captures.
+
+What this can and cannot show: it is the controller's account of the reads
+that actually happened, so it catches a region that was left uninitialized
+and then read. It cannot prove a region was covered, because nothing reports
+an address nobody read.
 
 Exits nonzero when the report is not clean, so a caller can gate on it.
 """
@@ -69,9 +78,14 @@ ECC_REGISTERS: tuple[tuple[str, int], ...] = (
     ("UE_FFE", 0x280),
 )
 
-# The two that decide the verdict. The captures describe an error; these say
-# whether one happened.
-VERDICT_REGISTERS = ("ECC_STATUS", "CE_CNT")
+# The three that decide the verdict. The captures describe an error; these
+# say whether one happened, and whether the controller was watching at all.
+VERDICT_REGISTERS = ("ECC_STATUS", "CE_CNT", "ECC_ON_OFF")
+
+# ECC_STATUS bit order is the controller's: bit 0 uncorrectable, bit 1
+# correctable (mem_v1_4_axi_ctrl_reg_bank.sv, the ECC_STATUS write logic).
+ECC_STATUS_UE = 0x1
+ECC_STATUS_CE = 0x2
 
 CE_CNT_SATURATION = 0xFF
 
@@ -104,10 +118,15 @@ def verdict(values: dict[str, int]) -> tuple[bool, list[str]]:
     if missing:
         return False, [f"{name} was not read" for name in missing]
 
+    if not values["ECC_ON_OFF"] & 0x1:
+        # Without this the controller captures nothing, so the zeros below
+        # would be the absence of a measurement rather than a clean one.
+        problems.append("ECC checking is disabled, so the counters mean nothing")
+
     status = values["ECC_STATUS"]
-    if status & 0x1:
+    if status & ECC_STATUS_CE:
         problems.append("a correctable error is latched in ECC_STATUS")
-    if status & 0x2:
+    if status & ECC_STATUS_UE:
         problems.append("an uncorrectable error is latched in ECC_STATUS")
 
     count = values["CE_CNT"]
@@ -135,7 +154,7 @@ def main() -> int:
         epilog=(
             "examples:\n"
             "  ddr_ecc_status.py\n"
-            "  ddr_ecc_status.py --clear        # clear the latched state first\n"
+            "  ddr_ecc_status.py --clear        # report, then clear for a fresh start\n"
             "  ddr_ecc_status.py --json\n"
         ),
     )
@@ -143,7 +162,10 @@ def main() -> int:
     parser.add_argument(
         "--clear",
         action="store_true",
-        help="Clear ECC_STATUS and CE_CNT after reading, and report both states",
+        help=(
+            "After reading and judging, clear ECC_STATUS and CE_CNT and report "
+            "the cleared state too. The verdict is the state before clearing"
+        ),
     )
     parser.add_argument("--json", action="store_true", help="Print the values as JSON")
     parser.add_argument(

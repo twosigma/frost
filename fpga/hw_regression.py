@@ -1323,7 +1323,9 @@ def run_ecc_stage(
     the verdict, so the two agree on what clean means.
     """
     started = time.monotonic()
-    command = [ECC_STAGE_SCRIPT, board, "--target-exact", target, "--non-interactive"]
+    # ``target`` is a pattern here, the same one the loader stages take, so it
+    # is passed as one: an index or a serial substring has to keep working.
+    command = [ECC_STAGE_SCRIPT, board, "--target", target, "--non-interactive"]
     try:
         proc = subprocess.run(
             command,

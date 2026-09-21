@@ -55,15 +55,20 @@
  * reports OKAY unconditionally, so a check on it would be logic that can
  * never fire, and an error it could report would not be the failure that
  * matters anyway: a write can be acknowledged and still leave a bad check
- * code behind. The initialization is proved afterwards, by reading the
- * controller's own ECC counters (fpga/ddr_ecc/ddr_ecc_status.py, and the
- * hardware regression's last stage). Simulation still checks the responses.
+ * code behind. What the counters afterwards show is the complement of that:
+ * they report the reads that did happen, so they catch a region left
+ * unwritten and then read, and they cannot speak for an address nobody read
+ * (fpga/ddr_ecc/ddr_ecc_status.py, and the hardware regression's last
+ * stage). Coverage is the counters here. Simulation checks the responses.
  *
- * There is no timeout. If the level below stops accepting, this never
- * finishes and the board stays in reset, which is the same outcome as the
- * memory not working. The controller's only reset is the board MMCM's lock,
- * which resets this module too, so it cannot restart underneath a run in
- * progress and strand these counters.
+ * This is fail-stop, with no timeout and no retry. If the level below stops
+ * accepting, or loses a response it had already taken -- the controller has
+ * its own PLL and resets its AXI interface on losing lock, independently of
+ * the board clock that resets this module -- the counters keep a debt that
+ * never retires, o_done never asserts, and the board stays held in reset.
+ * That is deliberate: the alternative to a stopped board is a running one on
+ * memory whose state nobody established. It is also indistinguishable from
+ * the memory not working, which it very likely means.
  *
  * REGION_BYTES exists so a bench can cover the whole region in a short run.
  */
