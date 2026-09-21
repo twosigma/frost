@@ -20,17 +20,20 @@ by id in whatever order the cache completes them. Checked: pipelined hits
 (one per cycle), hit-under-miss, miss-under-miss overlap at every level,
 early acknowledgement of write misses with merging into the pending fill,
 the read waiter, index conflicts, a fill of a line whose writeback is still
-pending, a delayed tag response racing a same-index fill install, a read
-racing an MSHR slot re-manned for another line, fence.i with pending misses,
-and random mixed traffic with same-line sequences checked against a reference
-model in acceptance order.
+pending, the downstream pick's progress bounds under a bench-paced downstream
+(a writeback against a fill stream that would otherwise starve it, and one
+writeback slot against a dirty-victim stream recycling the other), a delayed
+tag response racing a same-index fill install, a read racing an MSHR slot
+re-manned for another line, fence.i with pending misses, and random mixed
+traffic with same-line sequences checked against a reference model in
+acceptance order.
 """
 
 import random
 from typing import Any
 
 import cocotb
-from cocotb.triggers import FallingEdge, ReadOnly
+from cocotb.triggers import FallingEdge, Lock, ReadOnly
 
 from cocotb_tests.cache.test_frost_cache import (
     BASE_ADDR,
@@ -62,7 +65,29 @@ WBFILL_BASE = BASE_ADDR + 0x580000
 FENCE_BASE = BASE_ADDR + 0x5C0000
 RANDOM_BASE = BASE_ADDR + 0x600000
 TAG_INSTALL_BASE = BASE_ADDR + 0x640000
+STARVE_BASE = BASE_ADDR + 0x6C0000
 RESP_TIMEOUT_CYCLES = 5_000
+
+# frost_cache.sv WbStarveLimit: the loads of the downstream request register
+# a pending writeback may lose to fills before the next load is a
+# writeback's. A writeback that becomes pending while the register holds a
+# fill therefore fires after at most WB_STARVE_LIMIT + 1 fill acceptances.
+WB_STARVE_LIMIT = 3
+# The writeback slots take turns (the pick rotates from the slot after the
+# last one loaded), so a pending slot is loaded within NUM_WB writeback loads:
+# NUM_WB * (WB_STARVE_LIMIT + 1) loads of the register. NUM_WB is 2.
+WB_SLOT_TURN_BOUND = 2 * (WB_STARVE_LIMIT + 1)
+WB_FREE = 0  # wb_state_e ordinals: FREE, FILLING, PEND, SENT
+WB_PEND = 2
+# Acceptances are spaced so that the fill accepted at one completes, responds,
+# and its reader re-issues into a re-allocated miss slot before the next, and
+# so that a writeback's acknowledgement (one memory latency) frees its slot
+# well before the next acceptance.
+STARVE_GRANT_SPACING = 64
+# The bench gives up on a writeback after this many acceptances. The cache's
+# own tripwire (32 lost loads) is below it, so a pick that starves the
+# writeback stops the run there first.
+STARVE_GIVE_UP_FILLS = 48
 
 
 class _Ids:
@@ -413,6 +438,409 @@ async def test_fill_waits_for_pending_writeback(dut: Any) -> None:
     assert got == seed, f"fill overtook the writeback: 0x{got:064x}"
     # The alias is dirty in L1D now; read it back too.
     assert await _transaction(dut, "up", col, write=False, addr=alias) == w
+    col.stop()
+
+
+def _bottom_cache(dut: Any) -> Any:
+    """Return the cache whose downstream port is the bridge: the L2, else the L1D."""
+    if int(dut.o_has_l2.value) != 0:
+        return dut.cache_hierarchy.gen_l2.l2_cache
+    return dut.cache_hierarchy.l1_cache
+
+
+class _WritebackPendingMonitor:
+    """Record, per writeback slot of one cache, the first cycle it is WB_PEND."""
+
+    def __init__(self, dut: Any, cache: Any) -> None:
+        self._dut = dut
+        self._cache = cache
+        self.cycle = 0
+        self.num_wb = int(cache.NUM_WB.value)
+        self.pend_cycle: list[int | None] = [None] * self.num_wb
+        self._task = cocotb.start_soon(self._run())
+
+    async def _run(self) -> None:
+        while True:
+            await FallingEdge(self._dut.i_clk)
+            self.cycle += 1
+            for j in range(self.num_wb):
+                if (
+                    self.pend_cycle[j] is None
+                    and int(self._cache.wb_state_q[j].value) == WB_PEND
+                ):
+                    self.pend_cycle[j] = self.cycle
+
+    def any_pending(self) -> bool:
+        return any(cycle is not None for cycle in self.pend_cycle)
+
+    def all_pending(self) -> bool:
+        return all(cycle is not None for cycle in self.pend_cycle)
+
+    def stop(self) -> None:
+        self._task.cancel()
+
+
+class _FreshLines:
+    """Lines never touched before, on L1 indices no reader holds in flight.
+
+    Each line is a new tag on its index, so every read misses at every level
+    with a clean victim; in-flight lines take distinct L1 indices, and with
+    them distinct L2 indices, so none waits on another's miss slot. `skip`
+    holds the indices the test uses for its own lines.
+    """
+
+    def __init__(self, base: int, skip: frozenset[int]) -> None:
+        self._base = base
+        self._skip = skip
+        self._tag = [0] * L1_LINES
+        self.in_flight: set[int] = set()
+
+    def take(self) -> tuple[int, int | None]:
+        """Return (addr, index) of a fresh line and mark its index in flight."""
+        for index in range(L1_LINES):
+            if index not in self._skip and index not in self.in_flight:
+                break
+        else:
+            raise AssertionError("every L1 index is in flight")
+        addr = self._base + self._tag[index] * 1024 + index * LINE_BYTES
+        self._tag[index] += 1
+        self.in_flight.add(index)
+        return addr, index
+
+    def release(self, index: int | None) -> None:
+        if index is not None:
+            self.in_flight.discard(index)
+
+
+class _LinesThen:
+    """Serve the caller's lines in order, then (if given) fresh ones."""
+
+    def __init__(self, first: list[int], then: _FreshLines | None) -> None:
+        self._first = list(first)
+        self._then = then
+
+    def take(self) -> tuple[int, int | None]:
+        if self._first:
+            return self._first.pop(0), None
+        if self._then is None:
+            raise AssertionError("the reader's lines are exhausted")
+        return self._then.take()
+
+    def release(self, index: int | None) -> None:
+        if self._then is not None:
+            self._then.release(index)
+
+
+async def _stream_reader(
+    dut: Any,
+    col: _Collector,
+    model: ReferenceModel,
+    lines: _FreshLines | _LinesThen,
+    port_lock: Lock,
+    ids: tuple[int, int],
+    stop: list[bool],
+) -> None:
+    """Keep one read miss in flight, re-issuing as each fill returns.
+
+    Readers alternate between two ids of their own, so ids never repeat
+    among in-flight requests however unevenly the fills complete.
+    """
+    issued = 0
+    while not stop[0]:
+        addr, index = lines.take()
+        req_id = ids[issued % 2]
+        issued += 1
+        async with port_lock:
+            await _fire(dut, "up", write=False, addr=addr, req_id=req_id)
+        _, got = await col.wait_for(req_id)
+        lines.release(index)
+        assert got == model.read_line(addr), f"stream read mismatch @0x{addr:08x}"
+
+
+async def _dirty_victim_reader(
+    dut: Any,
+    col: _Collector,
+    model: ReferenceModel,
+    cache: Any,
+    aliases: list[int],
+    port_lock: Lock,
+    ids: tuple[int, int],
+    stop: list[bool],
+) -> None:
+    """Read the aliases of dirty lines, one whenever a writeback slot is free.
+
+    A dirty-victim miss that finds no free slot parks in the decision stage
+    and holds every request behind it, which would dry up the fill stream
+    the test needs; gated on a free slot, each miss allocates at once and
+    takes slot 0 the moment its acknowledgement frees it. Two ids let a read
+    whose fill the pick keeps waiting stay in flight while the next issues.
+    """
+    num_wb = int(cache.NUM_WB.value)
+    pending: list[tuple[int, int]] = []  # (id, addr)
+    issued = 0
+    for addr in aliases:
+        for _ in range(RESP_TIMEOUT_CYCLES):
+            while pending and col.pending.get(pending[0][0]):
+                req_id, done = pending.pop(0)
+                _, got = await col.wait_for(req_id)
+                assert got == model.read_line(done), f"dirty-victim read @0x{done:08x}"
+            if stop[0] or (
+                len(pending) < 2
+                and any(
+                    int(cache.wb_state_q[j].value) == WB_FREE for j in range(num_wb)
+                )
+            ):
+                break
+            await FallingEdge(dut.i_clk)
+        else:
+            raise AssertionError("no writeback slot freed for the next dirty victim")
+        if stop[0]:
+            break
+        req_id = ids[issued % 2]
+        issued += 1
+        async with port_lock:
+            await _fire(dut, "up", write=False, addr=addr, req_id=req_id)
+        pending.append((req_id, addr))
+        await _settle(
+            dut, 24
+        )  # the miss takes its slot before the slots are judged again
+    for req_id, done in pending:
+        _, got = await col.wait_for(req_id)
+        assert got == model.read_line(done), f"dirty-victim read @0x{done:08x}"
+
+
+async def _release_downstream_once(dut: Any) -> tuple[bool, bool, int]:
+    """Let the bridge accept for one cycle; report (fired, write, addr)."""
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 0
+    await ReadOnly()
+    fired = (
+        int(dut.stack_down_req_valid.value) == 1
+        and int(dut.stack_down_req_ready.value) == 1
+    )
+    write = int(dut.stack_down_req_write.value) == 1
+    addr = int(dut.stack_down_req_addr.value)
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 1
+    return fired, write, addr
+
+
+@cocotb.test()
+async def test_writeback_wins_within_bound_under_fill_stream(dut: Any) -> None:
+    """A writeback that fills keep beating is loaded within the pick's bound.
+
+    The downstream request register takes a pending fill ahead of a pending
+    writeback. Under a level below that accepts slowly, fills that complete
+    and re-allocate between its acceptances keep a fill pending at every load
+    of the register, and a writeback would sit in its slot for as long as the
+    stream lasts, with the store, install, probe or fill waiting for its
+    acknowledgement (frost_cache.sv) waiting behind it. The cache bounds the
+    loss: after WbStarveLimit loads to fills, the next load is a writeback's.
+    The bench builds the stream at the cache whose downstream is the bridge
+    (the L2 in the X3 shape, the L1D otherwise): it holds the bridge through
+    the harness's i_down_hold, releasing one acceptance every
+    STARVE_GRANT_SPACING cycles, while four readers keep a miss of a fresh
+    line in flight on every miss slot, each re-issuing as soon as its fill
+    returns. The first read aliases a line dirty at that cache (pushed down
+    from the L1D first in the X3 shape), so its fill evicts the line into a
+    writeback slot behind the fill the register holds. The writeback must
+    lose at least one acceptance, so the contention the bound exists for was
+    reached, and must fire within WB_STARVE_LIMIT + 1 fill acceptances of
+    becoming pending. Without the bound, the cache's tripwire stops the run
+    once the writeback has lost 32 loads; the bench's STARVE_GIVE_UP_FILLS is
+    the backstop. The lines then read back through the drained hierarchy.
+    """
+    await _setup(dut)
+    col = _Collector(dut, "up")
+    model = ReferenceModel()
+    cache = _bottom_cache(dut)
+    has_l2 = int(dut.o_has_l2.value) != 0
+
+    a = STARVE_BASE + 7 * LINE_BYTES
+    v0 = _line_int(bytes([(0xA5 + b) & 0xFF for b in range(32)]))
+    model.write_line(a, v0, FULL)
+    await _transaction(dut, "up", col, write=True, addr=a, wdata=v0, wstrb=FULL)
+    if has_l2:
+        # Push the dirty line into the L2 with a read of its L1 alias, and let
+        # the L1D's writeback and its acknowledgement drain.
+        await _transaction(dut, "up", col, write=False, addr=a + 1024)
+        evictor = a + 4096  # same L2 index, new tag
+    else:
+        evictor = a + 1024  # same L1 index, new tag
+    await _settle(dut)
+
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 1
+    mon = _WritebackPendingMonitor(dut, cache)
+    fresh = _FreshLines(STARVE_BASE + 0x10000, skip=frozenset({7}))
+    port_lock = Lock()
+    stop = [False]
+    readers = [
+        cocotb.start_soon(
+            _stream_reader(
+                dut,
+                col,
+                model,
+                _LinesThen([evictor], fresh) if r == 0 else fresh,
+                port_lock,
+                (r, r + 4),
+                stop,
+            )
+        )
+        for r in range(4)
+    ]
+
+    # The evicting fill leaves the line in a writeback slot behind the fill
+    # the register already holds; the stream then fills the miss slots.
+    for _ in range(RESP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if mon.any_pending():
+            break
+    else:
+        raise AssertionError("the evicting fill never left a writeback pending")
+    await _settle(dut, STARVE_GRANT_SPACING)
+
+    fills_before_wb = 0
+    wb_fired = False
+    while fills_before_wb < STARVE_GIVE_UP_FILLS:
+        fired, write, addr = await _release_downstream_once(dut)
+        assert fired, "a released acceptance found no request presented"
+        if write:
+            assert addr == a, f"unexpected write fired downstream @0x{addr:08x}"
+            wb_fired = True
+            break
+        fills_before_wb += 1
+        await _settle(dut, STARVE_GRANT_SPACING)
+    stop[0] = True
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 0
+    dut._log.info(
+        f"writeback fired after {fills_before_wb} fill acceptances (has_l2={has_l2})"
+    )
+    assert wb_fired, f"writeback still pending after {fills_before_wb} fill acceptances"
+    assert fills_before_wb >= 1, "the writeback never lost an acceptance to a fill"
+    assert fills_before_wb <= WB_STARVE_LIMIT + 1, (
+        f"writeback fired only after {fills_before_wb} fill acceptances; "
+        f"the bound is {WB_STARVE_LIMIT + 1}"
+    )
+    for reader in readers:
+        await reader
+    mon.stop()
+    await _settle(dut)
+
+    assert await _transaction(dut, "up", col, write=False, addr=a) == v0
+    assert await _transaction(dut, "up", col, write=False, addr=evictor) == 0
+    col.stop()
+
+
+@cocotb.test()
+async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) -> None:
+    """A slot whose neighbour is recycled between writeback loads still gets its turn.
+
+    The fill bound alone says some writeback loads within four loads of the
+    register, not which: picked lowest-index-first, slot 1 would lose every
+    writeback load to a slot 0 that the level below acknowledges, and a
+    parked dirty-victim miss re-mans, before the next one. The pick therefore
+    rotates from the slot after the last one loaded, so a pending slot is
+    loaded within NUM_WB writeback loads, WB_SLOT_TURN_BOUND loads in all.
+    The bench builds the recycling at the cache whose downstream is the
+    bridge (the L2 in the X3 shape, the L1D otherwise): it dirties a run of
+    lines there, holds the bridge, and reads their aliases one at a time,
+    each as a slot frees, so the first two fill both slots and every later
+    one takes slot 0 the moment its acknowledgement (one memory latency)
+    frees it, without parking in that cache's decision stage where it would
+    hold up the fills behind it; two readers of fresh lines keep fills
+    pending so that writeback loads are three loads apart, time enough for
+    the recycling. Slot 1's line must lose at least one writeback load to slot 0,
+    so the contention the rotation exists for was reached, and must fire
+    within WB_SLOT_TURN_BOUND + 1 acceptances of the first release. Without
+    the rotation, the cache's tripwire stops the run once slot 1 has lost 32
+    loads; STARVE_GIVE_UP_FILLS is the backstop. Every line then reads back
+    through the drained hierarchy.
+    """
+    await _setup(dut)
+    col = _Collector(dut, "up")
+    model = ReferenceModel()
+    cache = _bottom_cache(dut)
+    has_l2 = int(dut.o_has_l2.value) != 0
+
+    base = STARVE_BASE + 0x20000
+    n_dirty = 16
+    dirty = [base + i * LINE_BYTES for i in range(n_dirty)]  # L1 indices 0..15
+    for i, d in enumerate(dirty):
+        v = _line_int(bytes([(0x30 + 9 * i + b) & 0xFF for b in range(32)]))
+        model.write_line(d, v, FULL)
+        await _transaction(dut, "up", col, write=True, addr=d, wdata=v, wstrb=FULL)
+        if has_l2:
+            # Push the dirty line into the L2 with a read of its L1 alias.
+            await _transaction(dut, "up", col, write=False, addr=d + 1024)
+    await _settle(dut)
+    # Same index as its line at the bottom cache (and at the L1D), new tag.
+    aliases = [d + 4096 for d in dirty]
+
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 1
+    mon = _WritebackPendingMonitor(dut, cache)
+    assert mon.num_wb == 2, "WB_SLOT_TURN_BOUND assumes two writeback slots"
+    port_lock = Lock()
+    stop = [False]
+    dirty_reader = cocotb.start_soon(
+        _dirty_victim_reader(dut, col, model, cache, aliases, port_lock, (2, 6), stop)
+    )
+    for _ in range(RESP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if mon.all_pending():
+            break
+    else:
+        raise AssertionError("the two evictions never left both slots pending")
+    # Both slots hold a writeback and the register holds the first fill;
+    # the fresh reads now keep a fill pending at every load.
+    fresh = _FreshLines(base + 0x10000, skip=frozenset(range(n_dirty)))
+    clean_readers = [
+        cocotb.start_soon(
+            _stream_reader(dut, col, model, fresh, port_lock, (r, r + 4), stop)
+        )
+        for r in range(2)
+    ]
+    await _settle(dut, STARVE_GRANT_SPACING)
+
+    target = dirty[1]  # the second eviction's line: slot 1
+    fires = 0
+    other_wb_fires = 0
+    target_fired = False
+    while fires < STARVE_GIVE_UP_FILLS:
+        fired, write, addr = await _release_downstream_once(dut)
+        assert fired, "a released acceptance found no request presented"
+        fires += 1
+        if write and addr == target:
+            target_fired = True
+            break
+        if write:
+            other_wb_fires += 1
+        await _settle(dut, STARVE_GRANT_SPACING)
+    stop[0] = True
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 0
+    dut._log.info(
+        f"slot 1's writeback fired as acceptance {fires} after {other_wb_fires} "
+        f"other writebacks (has_l2={has_l2})"
+    )
+    assert target_fired, f"slot 1's writeback still pending after {fires} acceptances"
+    assert other_wb_fires >= 1, "slot 1 never lost a writeback load to slot 0"
+    assert fires <= WB_SLOT_TURN_BOUND + 1, (
+        f"slot 1's writeback fired only as acceptance {fires}; "
+        f"the bound is {WB_SLOT_TURN_BOUND + 1}"
+    )
+    await dirty_reader
+    for reader in clean_readers:
+        await reader
+    mon.stop()
+    await _settle(dut)
+
+    for d in dirty:
+        assert await _transaction(
+            dut, "up", col, write=False, addr=d
+        ) == model.read_line(d)
     col.stop()
 
 

@@ -16,7 +16,7 @@ simulation-only main memory.
 | `line_port_arbiter.sv` | N:1 tagged arbiter; fixed priority by port index with an optional starvation bound, ids prefixed per port |
 | `line_port_axi_bridge.sv` | Tagged line port to single-beat AXI4 master; line ids become AXI ids |
 | `axi_behavioral_memory.sv` | Simulation-only AXI main memory: concurrent, latency/jitter knobs, optional out-of-order completion |
-| `*_test_harness.sv` | cocotb unit-bench tops (hierarchy + bridge + memory; arbiter + bridge + memory) |
+| `*_test_harness.sv` | cocotb unit-bench tops (hierarchy + bridge + memory, with a bench-paced hold on the bridge's acceptance; arbiter + bridge + memory) |
 
 ## Line protocol
 
@@ -80,7 +80,22 @@ never relies on the level below ordering a read against a write; a
 whole-line write, which allocates without a fetch, waits before its install;
 and a store to a copy left valid and clean by a probe waits before
 re-dirtying it. No line therefore ever has two writebacks in flight, which
-the level below, or an AXI fabric, could apply older-last. Its downstream
+the level below, or an AXI fabric, could apply older-last. The downstream
+request register takes a pending fill ahead of a pending writeback, since a
+fill is what a stalled load or store waits for, but not without bound: a
+writeback that has lost `WbStarveLimit` (3) loads of the register to fills
+takes the next one, and between the writeback slots the pick rotates from
+the slot after the last one loaded, so a pending writeback is loaded within
+four loads and any particular slot within eight, however slowly the level
+below accepts. The waits above depend on those bounds. Without them, a
+stream of fills completing and re-allocating between the level below's
+acceptances would keep a fill pending at every load and hold a writeback,
+and whatever waits for its acknowledgement, for as long as the stream lasts;
+and a slot picked lowest-index-first would lose every writeback load to a
+neighbour that is acknowledged and re-manned by a parked dirty-victim miss
+in between. Simulation checks the bounds: a slot pending through more than
+32 loads is an error, and the concurrency bench paces the bridge to build
+both streams and requires each writeback within its bound. Its downstream
 ids are `{type, slot}` (0 = fill of a miss slot, 1 = writeback slot).
 
 The L1D instance (`NUM_PROBE > 0`) also takes per-line coherence probes on

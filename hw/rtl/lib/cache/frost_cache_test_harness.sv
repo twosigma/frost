@@ -26,6 +26,11 @@
  * reference model. -G parameters select the optional L2 topology (HAS_L2),
  * shrink the caches so eviction/thrash paths are cheap to hit, and can make
  * the memory model complete transactions out of order (MEM_REORDER).
+ * i_down_hold lets the bench pace the bridge: while it is high the bridge
+ * sees no request and the hierarchy sees no ready, so the bottom cache's
+ * downstream fires only on the cycles the bench releases. The writeback
+ * starvation regression uses it to space acceptances so that fills complete
+ * and re-allocate between them.
  */
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -110,6 +115,8 @@ module frost_cache_test_harness #(
     output logic                                         [ DmaLockBits-1:0] o_coh_release_slot,
     input  logic                                                            i_fence_sync,
     output logic                                                            o_fence_done,
+    // Bench-paced downstream: masks the bridge's acceptance (see the header).
+    input  logic                                                            i_down_hold,
     // Source-registered cache observers exposed directly to cocotb.
     output cache_perf_pkg::cache_hierarchy_perf_events_t                    o_perf_events,
     // Elaborated topology, exposed so one test can require exact L2 values.
@@ -126,6 +133,13 @@ module frost_cache_test_harness #(
   logic stack_down_resp_valid;
   logic [UP_ID_BITS+1:0] stack_down_resp_id;
   logic [LINE_BYTES*8-1:0] stack_down_resp_rdata;
+
+  // The hold masks both sides of the seam so neither party sees a fire the
+  // other did not: the bridge acts only on the fire, and the hierarchy's
+  // request stays presented until a released cycle accepts it.
+  logic bridge_req_valid, bridge_req_ready;
+  assign bridge_req_valid = stack_down_req_valid && !i_down_hold;
+  assign stack_down_req_ready = bridge_req_ready && !i_down_hold;
 
   frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -229,8 +243,8 @@ module frost_cache_test_harness #(
   ) bridge (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_req_valid(stack_down_req_valid),
-      .o_req_ready(stack_down_req_ready),
+      .i_req_valid(bridge_req_valid),
+      .o_req_ready(bridge_req_ready),
       .i_req_write(stack_down_req_write),
       .i_req_addr(stack_down_req_addr),
       .i_req_wdata(stack_down_req_wdata),
