@@ -163,8 +163,23 @@ parameter bounds they require. Exit: 2-hart SMP Debian with measurable
 scaling, timing held, and a soak sized the way the networking one was: hours
 under sustained load, long enough to exercise each recovery path repeatedly.
 
+## Unscheduled
+
+Memory errors reach nobody. The DDR4 is ECC-checked, but the controller's
+interrupt is unconnected, `ECC_EN_IRQ` is clear, and the AXI bridge ignores the
+error responses it is given (`line_port_axi_bridge.sv` checks them only in
+simulation), so an uncorrectable error is consumed as data. Nothing scrubs, so
+correctable errors sit until they become uncorrectable, which matters most
+across the long soaks. `CE_CNT` saturates at 255 and means nothing unless it is
+read and cleared; the regression's `ddr_ecc` stage reads it once a run, which
+catches gross breakage but is not reporting.
+
 ## Deferred
 
 A general 3-wide redesign beyond the measured Phase 5 fallback, an ASIC
 tape-out, the V/H/crypto extensions, and Sv32 are out of scope until the phases
 above are complete and there is demand for them.
+
+Two storage paths are optional and unscheduled: iSCSI with ext4 if a workload
+needs local-disk filesystem semantics, and a host-backed PCIe/virtio block
+device as a deployment capability. Neither replaces the NFS root.
