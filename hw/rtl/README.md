@@ -1,12 +1,13 @@
 # FROST RTL
 
 Synthesizable SystemVerilog for the RV64GCB CPU, memory system, and
-peripherals. The CPU has Tomasulo out-of-order execution, up to two
+peripherals. The RV64-only CPU has Tomasulo out-of-order execution, up to two
 instructions per cycle through decode, rename, and commit, M/S/U privilege
 modes, and Sv39 virtual memory.
 
-The core uses portable RTL; Xilinx board integration lives in `boards/` and
-`fpga/`. `frost.f` defines the source list and compilation order.
+The core uses portable RTL, with optional Xilinx primitive implementations
+selected by `FROST_XILINX_PRIMS`. Xilinx board integration lives in `boards/`
+and `fpga/`. `frost.f` defines the source list and compilation order.
 
 ## Top-Level Shape
 
@@ -35,6 +36,12 @@ See the [CPU guide](cpu_and_mem/cpu/README.md) for front-end integration and
 branch prediction, and the [Tomasulo guide](cpu_and_mem/cpu/tomasulo/README.md)
 for scheduling, execution, and commit.
 
+Sv39 uses an 8-entry instruction TLB, a 16-entry data TLB, and a shared
+read-only page-table walker. It supports 4 KiB, 2 MiB, and 1 GiB pages.
+Accessed/dirty bits are managed by software (Svade); an access that needs
+them set raises a page fault. There is no ASID tagging: `sfence.vma` and
+`satp` writes invalidate both TLBs.
+
 ## Directory Map
 
 | Path | Purpose |
@@ -46,7 +53,7 @@ for scheduling, execution, and commit.
 | `cpu_and_mem/fetch_provider.sv` | Cached instruction fetch buffer and `fence.i` invalidation |
 | `cpu_and_mem/plic.sv` | Four-source interrupt controller with M/S contexts |
 | `cpu_and_mem/dma_test_engine.sv` | Coherent DMA copy/fill engine |
-| `cpu_and_mem/hang_triage.sv` | Optional UART diagnostics for hardware hangs |
+| `cpu_and_mem/hang_triage.sv` | UART diagnostics for hardware hangs (`ENABLE_HANG_TRIAGE=1`; default 0) |
 | `cpu_and_mem/debug/` | JTAG transport and RISC-V debug module |
 | `cpu_and_mem/cpu/cpu_ooo/` | CPU integration and pipeline control |
 | `cpu_and_mem/cpu/tomasulo/` | Dispatch, ROB, rename tables, queues, and functional-unit adapters |
@@ -143,6 +150,7 @@ Halt and single-step requests use the trap machinery to drain stores and
 protect atomic operations and device reads. Debug Mode saves `dpc`/`dcsr`,
 masks interrupts, and runs commands from the reserved low-BRAM debug slice.
 The module supports abstract GPR access and an eight-word program buffer.
+Debugger memory access uses that buffer; there is no system-bus access port.
 
 `debug_slice_writer` mirrors debugger writes into low BRAM's instruction
 copy. OpenOCD executes `fence.i` to publish DDR code changes. Debug CSRs and
@@ -218,12 +226,15 @@ container via the wrapper; Vivado builds run natively):
 ./scripts/frost.py cocotb tomasulo_test
 ./scripts/frost.py cocotb --list-tests    # show all registered tests
 
-# Open-source RTL synthesis checks
+# Yosys RTL synthesis checks
 ./scripts/frost.py synthesis
 
 # Vivado FPGA builds
 ./fpga/build/build.py x3
 ```
+
+Yosys runs generic coarse synthesis and full Xilinx UltraScale+ synthesis.
+See the [synthesis guide](../../tests/README.md#test_run_yosyspy) for target options.
 
 The top-level simulation file list is `frost.f`; the CPU build file list is
 `cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f`.
