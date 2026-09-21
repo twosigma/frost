@@ -22,13 +22,9 @@ tree node with `compatible = "frost,net10g"`
 the descriptor, interrupt and RESET contract it follows are in
 [`../../hw/rtl/peripherals/nic/README.md`](../../hw/rtl/peripherals/nic/README.md).
 
-This directory is the driver's only source. FROST boots it as a module, because
-the kernel it boots is Debian's
-([`../README.md`](../README.md), "Kernel"): this directory is the DKMS package
-that builds it for Debian's kernels, including each kernel update the system
-installs, and `../debian_kernel.py` builds it the same way for the pinned
-kernel and puts it in the test initramfs. Nothing builds it into a kernel: this
-tree builds none.
+The driver is packaged as an out-of-tree module for Debian's kernel. DKMS
+rebuilds it for installed kernels with matching headers; `debian_kernel.py`
+also builds it for the FROST test initramfs.
 
 | File | What |
 |---|---|
@@ -39,21 +35,14 @@ tree builds none.
 
 ## In the FROST test initramfs
 
-`../debian_kernel.py module` builds this directory for the pinned Debian kernel,
-and `../debian_kernel.py initramfs` puts the module in the test initramfs with
-an `/etc/init.d` script that `insmod`s it at boot; the boot gates require the
-token that script prints. The build is DKMS's own command, `make -C <kernel
-build dir> M=<build dir>`, against Debian's `linux-headers` tree, so the module
-the gates load is the module DKMS would build.
-[`../README.md`](../README.md), "NIC module", has the mechanism.
+`../debian_kernel.py module` builds against the pinned Debian kernel's
+headers. `../debian_kernel.py initramfs` adds the module and a boot script
+that loads it. See [NIC module commands](../README.md#nic-module).
 
 ## As a DKMS module on Debian
 
-Debian 13's kernel (6.12, `linux-image-riscv64`) has no FROST driver. DKMS
-builds this directory for the kernels it is asked to, and, with
-`AUTOINSTALL="yes"`, for every kernel installed later whose headers are
-installed: `/etc/kernel/postinst.d/dkms` builds the module before
-`/etc/kernel/postinst.d/initramfs-tools` builds the kernel's initramfs.
+Debian's kernel does not include the FROST driver. Install it with DKMS so
+kernel updates rebuild the module automatically when headers are available.
 
 As root on the board, from a checkout of this repository (for a riscv64 root
 tree on another machine, steps 1 and 3 of
@@ -115,16 +104,9 @@ update-initramfs -u -k all
 
 ## Changing the driver
 
-- One source serves every kernel it is built for, today Debian's 6.12 and
-  whatever series Debian moves to next. It uses only long-standing interfaces
-  (`container_of()` for the refill timer rather than 6.16's
-  `timer_container_of()`, for example) and has no version conditionals. If a
-  change needs an interface an older series lacks, put the difference behind
-  `LINUX_VERSION_CODE` and name the kernel version that changed it. CI builds
-  the module against the pinned kernel's headers, the way the gates load it, so
-  a driver change is covered there; a change aimed at another series still has
-  to be built against its headers (`dkms build`, as above, in a Debian riscv64
-  root).
+- Keep one source compatible with the Debian kernels you deploy. Guard newer
+  kernel APIs with `LINUX_VERSION_CODE` and test against each target kernel's
+  headers with `dkms build`; CI covers the pinned kernel only.
 - Bump `MODULE_VERSION` in `frost_net10g.c` and `PACKAGE_VERSION` in
   `dkms.conf` together whenever the driver changes;
   `tests/test_frost_net10g_driver.py` checks that they match and that the

@@ -104,17 +104,13 @@ controller's ECC error state. It checks console output, benchmark scores,
 Linux startup, counters, networking, and that none of that traffic was ever
 reported as an ECC error.
 
-The `ddr_ecc` stage runs last because its reading covers everything before
-it: the counters have been accumulating since the board was programmed, so a
-clean report means the whole run read nothing the array had never been
-written with. It is `ddr_ecc/ddr_ecc_status.py`, which can also be run on its
-own -- `--clear` resets the latched state first, which is how to start a
-measurement from a known point without reprogramming.
+The final `ddr_ecc` stage reports errors accumulated since programming.
+Run `ddr_ecc/ddr_ecc_status.py` separately to inspect them; `--clear` resets
+the latched state before a new measurement.
 
 Prepare the export with the [Debian setup guide](../docs/debian_nfsroot.md#hardware-regression),
-then state the two things a checkout cannot know -- which host exports the
-root, and which address the board takes on that network -- in `fpga/site.env`.
-Git ignores that file; write it once per lab:
+then set the NFS export and board network address in the Git-ignored
+`fpga/site.env`:
 
 ```
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian
@@ -127,13 +123,9 @@ The whole run is then:
 ./fpga/hw_regression.py --board x3
 ```
 
-The kernel and the initramfs are not site facts and are not asked for: the
-release is pinned in this repository, the kernel is the image
-`linux/debian_kernel.py` computes, and the initramfs is that release's image
-inside the export above. `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD`
-override them, which is how a replacement kernel is tested, and the same two
-site values can be given in the environment instead of the file, which wins
-over it.
+The runner selects the repository's pinned kernel and the matching initramfs
+in the export. Use `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD` to override them.
+Environment variables take precedence over `fpga/site.env`.
 
 Preflight failures report `ENV_FAIL` before touching the board. The run
 excludes `debug_target` and `nic_echo`, which need external interaction.
@@ -178,20 +170,27 @@ Use `linux_boot_soak.py` for repeated boots of the smaller test image.
 
 ## Functional-validation builds
 
-`--cpu-clock-div N` builds the same RTL for 300/N MHz. The board top's
-`CPU_CLK_DIV` generic scales the MMCM output divide and the `CLK_FREQ_HZ` the
-subsystem derives its UART and timer constants from, the DDR block design
-declares the divided CPU and JTAG clocks, and `hello_world` is compiled for the
-divided clock. At half rate the design closes timing with hundreds of
-picoseconds to spare, so the build runs one `RuntimeOptimized` placement at the
-baseline uncertainty without quick-route probes or the off-grid seed, routes
-with `RuntimeOptimized` only, and finishes in a fraction of the time. An
-explicit `--directives`, `--num-uncertainties` or `--route-directives` is
-honored instead. The README utilization table is left alone: a divided-clock
-build is not the reference implementation.
+`--cpu-clock-div N` builds the same RTL for 300/N MHz and adjusts the UART,
+timer, JTAG loader clocks, and initial software accordingly. DDR controller
+and Ethernet MAC clocks are unchanged. Divided-clock builds use a single
+`RuntimeOptimized` placement and route by default for faster functional testing; explicit
+`--directives`, `--num-uncertainties`, and `--route-directives` override this.
+They do not update the reference utilization table in the root README.
 
 Use the CLI option to set the clock; `build.py` overrides any inherited
 `FROST_CPU_CLK_DIV` value.
+
+Board software must match the programmed clock: set `FROST_CPU_CLK_HZ` (Hz)
+for `load_software.py` and `hw_regression.py`, which then build apps and the
+Linux device tree for that clock and skip the CoreMark score checks (baselines
+are recorded at the rated clock).
+
+```bash
+./fpga/build/build.py x3 --cpu-clock-div 2
+./fpga/program_bitstream/program_bitstream.py x3
+FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_test
+FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 linux_boot
+```
 
 ## NIC transceiver
 
@@ -212,42 +211,18 @@ driver enables it again when the carrier returns.
 
 ## Profiling counters
 
-The profiling counters (the `mperf*` CSRs, about 24k cells beside the
-timing-critical core: 3.8k LUTs, 18.3k flops, 2.1k CARRY8 at post-opt) are a
-build option: `--perf-counters` exports
-`FROST_PERF_COUNTERS=1` and synthesis passes `PERF_COUNTERS=1` to the board
-top. A full-rate build leaves them out by default, a divided-clock build
-includes them, and `--no-perf-counters` overrides that. The CLI always sets
-`FROST_PERF_COUNTERS`, so an inherited value cannot change the netlist; a run
-that starts after synthesis keeps whatever the checkpoint holds, and the
-banner says so. Without the counters the `mperf*` CSRs read zero and the
-software profile reports say "Profiling counters: absent".
-
-Use it to separate RTL bugs from timing margin (a failure that survives at half
-clock is not a setup violation), to get a bitstream quickly for functional
-checks, and to run stress programs on hardware that simulation cannot afford.
-Board software must match the programmed clock: set `FROST_CPU_CLK_HZ` (Hz)
-for `load_software.py` and `hw_regression.py`, which then build apps and the
-Linux device tree for that clock and skip the CoreMark score checks (baselines
-are recorded at the rated clock).
-
-```bash
-./fpga/build/build.py x3 --cpu-clock-div 2
-./fpga/program_bitstream/program_bitstream.py x3
-FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_test
-FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 linux_boot
-```
+`--perf-counters` includes the `mperf*` profiling CSRs; `--no-perf-counters`
+omits them. Counters are off by default at full rate and on in divided-clock
+builds. The CLI sets `FROST_PERF_COUNTERS`; inherited values do not change the
+netlist. Resuming after synthesis keeps the checkpoint's setting.
+Without counters, the CSRs read zero and software reports
+"Profiling counters: absent".
 
 ## Fetch-seam ILA captures
 
-`--debug-ila` instruments the fetch seam with a Vivado ILA: synthesis compiles
-the `FROST_DEBUG_FETCH_ILA` mirror nets in (IF stage, fetch provider, immu,
-the IF-to-PD and PD-to-ID packets, commit and trap pulses; the low 16 PC bits
-of each), inserts one debug core on the CPU clock over every marked net, and
-the bitstream step writes the probes file beside the bitstream. Combine it with
-`--cpu-clock-div 2` for a fast build with timing to spare. The capture is
-scripted so the JTAG target is never held while the loader and the boot use
-it:
+`--debug-ila` adds a Vivado ILA for fetch, translation, commit, and trap
+signals, including the low 16 PC bits, and writes a probes file beside the
+bitstream. Combine it with `--cpu-clock-div 2` for a faster build.
 
 ```bash
 ./fpga/build/build.py x3 --cpu-clock-div 2 --debug-ila
@@ -390,22 +365,9 @@ own requested pipeline independently.
 
 Run `./fpga/build/build.py --help` for the full list of directives and options.
 
-Production placement does not invoke `x3_pd_target_pin_swaps.tcl` or
-`x3_flush_guidance.tcl`. `FROST_X3_PD_TARGET_PIN_SWAPS` and
-`FROST_PLACE_FLUSH_INCREMENTAL` no longer enable production behavior.
-The historical pin-refinement helper stays in the tree for diagnostics only. It
-has no production call site and no maintained replay recipe; its timing checks
-and rollback apply only when it is invoked directly.
-The normal gate and reports describe the single placer result after restoring
-canonical cost groups and zero added setup uncertainty. Retired diagnostic
-audits are cleared when publishing a new production placement.
-
-The normal placement sweep needs no refinement override and defaults to no
-quick-route probes:
-
-```bash
-./fpga/build/build.py x3 --start-at place --stop-after place
-```
+The retired `FROST_X3_PD_TARGET_PIN_SWAPS` and
+`FROST_PLACE_FLUSH_INCREMENTAL` variables have no effect on production
+placement. Normal sweeps need no refinement override.
 
 ## Programming the FPGA
 
@@ -570,53 +532,8 @@ hw_server -d  # port 3121
 
 ### Adding a New Board
 
-1. Create `../boards/<board>/` with:
-   - `<board>_frost.sv`: top-level wrapper. It generates the CPU clock and the
-     /4 clock with an MMCM and instantiates `xilinx_frost_subsystem`
-     (`../boards/xilinx_frost_subsystem.sv`). A DDR-capable target also
-     instantiates the `ddr_subsys` block design built by
-     `build/<board>_ddr_bd.tcl`, wires the cache-bridge AXI and `mem_ok`, and
-     enables the cached tier. That full-system hierarchy includes the 2 MiB
-     UltraRAM L2, so a DDR-capable target must provide sufficient UltraRAM. A
-     BRAM-only target leaves the cached tier disabled.
-   - `constr/<board>.xdc`: pin assignments and timing constraints
-   - `<board>_frost.f`: file list for synthesis, including the subsystem and core
-
-   The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`), for a DDR-capable
-   board its `ddr_subsys` block design, and for a board with a NIC transceiver
-   its wizard core are created during synthesis by `build/build_step.tcl`, so
-   no per-board `ip/` directory is needed.
-
-2. For a DDR-capable board, add `build/<board>_ddr_bd.tcl` to assemble the
-   `ddr_subsys` block design (memory controller + SmartConnect + a JTAG-AXI
-   DDR-image-load master). The range it assigns the CPU port (`S00_AXI`) is the
-   memory `load_software.py` has `linux_boot` advertise to Linux. A BRAM-only
-   board does not need this file. For a board with a NIC transceiver, add
-   `build/<board>_gty_ip.tcl` with a `create_<board>_gty_ip` procedure that
-   creates its wizard core (the X3's is `build/x3_gty_ip.tcl`).
-
-3. Register the board throughout the table-driven tool layer:
-   - `BOARD_CONFIG` in `build/build.py` for its clock, FPGA family, and default
-     synthesis directive, plus `BOARD_INFO` in
-     `build/extract_timing_and_util_summary.py`
-   - `board_build_configs` in `build/build_step.tcl` for its FPGA part and
-     `has_ddr` and `has_gty` capabilities; its other per-board names derive
-     from the board key
-   - `BOARD_CONFIG` in `load_software/load_software.py` for its clock, CoreMark
-     iterations, and DDR capability
-   - `BOARD_VENDOR_INFO` in `common/hw_target.py` and all three maps in
-     `common/hw_defaults.py` for JTAG, UART, and timeout defaults
-   - `supported_boards` in `program_bitstream/program_bitstream.tcl` for direct
-     Tcl use. The Python build/load/programming and hardware-regression CLIs
-     derive their choices from the registries above
-
-4. Calibrate every CoreMark-PRO workload's `hardware_iterations` entry in
-   `../sw/apps/software_registry.py`. If a workload's untimed setup can exceed
-   the board's common timeout, also set its `hardware_timeout_minimums` entry.
-   Optionally record silicon score gates in `BASELINE_SCORES` in
-   `hw_regression.py`.
-
-5. See `../boards/README.md` for the complete board-integration checklist.
+Follow the [board-integration checklist](../boards/README.md#adding-support-for-new-boards)
+for RTL, constraints, IP generation, tool registration, and benchmark settings.
 
 ### Adding a New Application
 
@@ -628,9 +545,6 @@ hw_server -d  # port 3121
 2. Register the app name in both `VALID_APPS` in
    `load_software/load_software.py` and the `valid_apps` list in
    `load_software/load_software.tcl` (the loader rejects unknown app names).
-   The fast tests in `tests/test_fpga_managed_flows.py` exercise Tcl's app
-   validation for every Python-listed app to catch mismatches before a
-   hardware load.
 
 3. Load it (the loader compiles the app for the target board automatically):
    ```bash
@@ -651,9 +565,11 @@ hw_server -d  # port 3121
 **Timing failures**
 - Try different directives for the failing step (see `./fpga/build/build.py --help`)
 - Check `build/<board>/work/final_timing.rpt` for failing paths
-- Lowering the CPU clock means changing the MMCM parameters in
-  `../boards/<board>/<board>_frost.sv` and the `clock_freq` entries in
-  `build/build.py` and `load_software/load_software.py`
+- For a divided-clock build, use `--cpu-clock-div N` and set
+  `FROST_CPU_CLK_HZ` when loading software (see
+  [functional-validation builds](#functional-validation-builds))
+- To change the board's rated clock, update its MMCM parameters and the
+  `clock_freq` entries in `build/build.py` and `load_software/load_software.py`
 
 **Software not running after load**
 - Verify the hex file format (one 32-bit word per line, no address prefix)

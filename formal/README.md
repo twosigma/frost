@@ -39,218 +39,54 @@ declares.
 
 ## Targets
 
-The target list is not duplicated here. Its sources of truth are
-`FORMAL_TARGETS` in `tests/test_run_formal.py` and the `.sby` files.
+Use `--list-targets` for the full list and supported tasks. The registry is
+`FORMAL_TARGETS` in `tests/test_run_formal.py`; each `.sby` file defines its
+parameters, assumptions, engines, and proof depth.
 
-The `btb_tag_compare` target checks the production slot-1 tag comparison
-against its original full-width equality. RAM outputs are arbitrary words;
-there are no reset, validity, address, or table-content assumptions. It checks
-the default 55-bit tag and a 59-bit tag, including their partial final groups.
-The grouping changes only the combinational mapping and adds no lookup cycle.
+The focused targets below check local equivalence or integration contracts.
+A local combinational check does not establish whole-CPU behavior, timing,
+or liveness. These proofs use binary values; they do not cover simulation
+X/Z behavior.
 
-The `divider_prefix` target checks every production divider stage against two
-full-width restoring iterations, at widths 64 and 32. Its one-step lemma
-assumes the incoming remainder fits the dividend prefix already consumed,
-then proves exact quotient bits, exact remainder, and the next prefix bound.
-Stage zero starts each transaction with remainder zero, so these lemmas
-compose for valid pipeline results, including a zero divisor. Invalid data
-remaining after reset need not satisfy the bound; reset clears all validity
-bits. The `DIVIDER_PREFIX_LOCAL_PROOF` guard
-enables this arithmetic oracle; the streaming cocotb tests separately check
-signed results, fixed latency, bubbles, and reset with outstanding operations.
+| Target | Scope and limits |
+| --- | --- |
+| `btb_tag_compare` | Full-width tag equality at 55 and 59 bits, with arbitrary RAM outputs |
+| `divider_prefix` | Each 32/64-bit divider stage matches two restoring iterations, assuming the incoming remainder's prefix bound; valid transactions start with remainder zero, including division by zero |
+| `mul_completion_tag` | MUL adapter behavior with qualified versus unqualified invalid tags; assumes one initial reset edge |
+| `coherence_replay_compare` | Invalidation-line copies and replay masks at widths 32, 64, and 66; assumes one initial reset edge |
+| `sc_head_query` | Selected SC coherence result versus a full line-address comparison, from arbitrary table state |
+| `data_mem_response_mux` | RAM/MMIO/cached payload selection at 32/64 bits, for portable and Xilinx implementations; Xilinx tasks use Yosys's LUT5 model |
+| `immu_bare` | Bare-mode physical addresses and verdicts; 32/72-bit variants check width conversion only, not Sv39 at those widths |
+| `c_ext_state_cofactor` | Buffer-valid next state from arbitrary inputs and state; producer relationships are checked by `prediction_release` |
+| `branch_prediction_disable` | Prediction permissions and live/staged target selection against the original equations, with arbitrary predictor outputs |
+| `fetch_redirect` | Redirect priority and registered waveform, with arbitrary controls and initial state |
+| `fetch_pc_mux`, `pc_register_mux` | Fetch and architectural-PC priority, including generic and integrated handoff configurations, from arbitrary controls and state |
+| `pc_holdoff_cofactor` | Fetch holdoff equations from arbitrary controls and state; temporal integration is covered separately |
+| `pc_holdoff_tag` | Prediction holdoffs at widths 32, 64, and 72, including wraparound; assumes initial pending-valid=0, not arbitrary corrupt valid state |
+| `branch_prediction_alias` | Public alias outputs under IF's base+2/base+4 wiring; requires the width-equality opt-in guard and does not prove full-controller sequential equivalence |
+| `rob_start_cofactor` | ROB head ownership and CSR/xRET starts; assumes initial reset and abstracts payload RAMs and serializer outputs |
+| `load_queue_amo_compute` | Four-step AMO operand capture, arithmetic, kill/reset, coherence exclusion, and write stability; no reset/admission assumptions and no scheduler, interrupt, or liveness claim |
+| `alu_shift_hint` | Hint-enabled and default RV64 ALUs agree when the hint supplies the exact effective shift amount; checked against an independent shift/rotate reference. `rs_issue2_shamt` simulation covers capture and hold |
 
-The `mul_completion_tag` target compares two production MUL adapters fed the
-same symbolic packet, with either a zeroed or unqualified invalid-cycle tag.
-After one synchronous reset edge, induction proves equal pending state, valid
-results, and the exact wrapper arbiter input including test injection. Grants,
-flushes, and subsequent resets remain arbitrary. The adapter is read without
-its separate temporal harness, so only the miter's initial reset assumption
-applies. Covers exercise pass-through, held grants, input/held partial kills,
-full flush while pending, and the differing invalid tag.
+Integration targets have narrower environment contracts:
 
-The `coherence_replay_compare` target checks the production coherence port's
-local invalidation-line copies and grouped equality comparisons. Induction
-proves that every local copy equals the original line in replay phases 2 and
-3, and that the replay mask's next-state equation exactly matches the original
-full-width comparisons. The other state transitions and four-cycle invalidation
-handshake are unchanged. Only the first reset edge is assumed; observations,
-commits, flushes and subsequent resets remain arbitrary. It checks widths 32,
-64 and 66 (including a one-bit final chunk). Covers reach pending and table
-matches and a later reset.
-
-The `sc_head_query` target compares the SC pending table's selected one-bit
-coherence result with the original selected-address line comparison. It checks
-the combinational identity from unconstrained table state, with no initial
-values or traffic assumptions, including duplicate matching tags and an
-address-invalid highest-priority entry. The wrapper's coherence regression
-separately exercises admission/SC races with the same identity checked at the
-connected coherence port.
-
-The `data_mem_response_mux` target compares the actual response helper with
-the original RAM/MMIO selection and fast/cached response expression, using
-arbitrary payloads and both selectors. Its `generic32`, `generic64`,
-`xilinx32` and `xilinx64` tasks check the two widths and implementation
-branches; Xilinx tasks use the installed Yosys LUT5 functional model. The
-`DATA_MEM_RESPONSE_MUX_LOCAL_PROOF` guard enables only this helper's local
-oracle. Each one-step model has no state, memory, initialization or
-assumptions, so this is complete two-state combinational equivalence for the
-selected width, not a temporal CPU/router proof or physical mapping check.
-The portable branch's original procedural MMIO behavior also remains intact
-for four-state simulation; the formal claim does not quantify X/Z values.
-
-The `immu_bare` target checks the production IMMU's public Bare outputs against
-the original package verdict and physical-address equations. Its one-step BMC
-leaves every PC bit arbitrary, including page crossings and address wrap. Local
-XLEN 32 and 72 variants check the original package-input extension/truncation
-contract; they make no claim about Sv39 support at those widths. The script
-prunes unobserved translation state and asserts that no memory or sequential
-cells remain in the observed cone.
-
-The `c_ext_state_cofactor` target exhaustively checks the buffer-valid
-next-state equation against its original priority logic in one step, with
-arbitrary inputs and register state. `C_EXT_STATE_LOCAL_PROOF` excludes only
-the separate integration assertions that require legal producer relationships;
-`prediction_release` continues to prove those relationships and invariants.
-
-The `prediction_release` target integrates the production `c_ext_state` and
-`pc_controller` state machines with a formal-only harness and a conservative
-abstraction of `pc_increment_calculator`. It proves that an atomic pending
-target handoff cannot leave stale old-path buffer state selectable, and that
-pending-state consumers are masked outside a live episode. Its covers reach
-both raw-capture cofactors, which keeps the clear-dominance proof from passing
-vacuously. The harness models the predictor's matching-target PD metadata
-exception, permits repeated resets, and independently varies the canonical
-and PC-control compression, NOP, and slot-2-valid inputs. Stall, fetch progress,
-and frontend flush are shared because the production wiring aliases those
-nets. Covers also reach a repeated reset and a stalled matching-target redirect.
-
-Both release-history bits and their raw edge remain clear after reset under
-this producer contract. The targets run `bmc`, `cover`, and an ABC-PDR `prove`
-task. The production buffer-release outputs retain their generic equations.
-
-The `prediction_handoff` variant enables the integrated IF optimization that
-removes the redundant slot-2 veto from pending-target consumption. It restores
-the production WCS=0 pending-holdoff mask in the abstract predictor requests.
-For WCS=1 it uses the pending-holdoff cofactor, conservatively admitting extra
-requests compared with IF's unconditional prediction disable. It proves the
-optimized handoff still matches the generic priority equation.
-The `branch_prediction_disable` one-step proof separately checks the actual
-prediction controller with arbitrary leaf predictor outputs: its selected
-disable cofactor blocks both staged and live-fallback slot-2 predictions. It
-also compares all four completed slot-2 candidate cofactors and their final
-prediction-common, full-validity, RAS, branch, and spanning permission gate
-against the original selection equations, including the public live-target
-cofactor.
-It also compares the canonical slot-2 target with its original live/staged
-selection for arbitrary target bits and full-validity inputs, including
-invalid slots, after moving that late validity gate to the final target mux.
-Together these checks establish the structural contract used by IF's opt-in.
-The same proof checks the canonical slot-1 PC-use and owner-free live-metadata
-candidate cores against their original equations, including all final common,
-branch, spanning, and stall gates. Separate unconditional assertions expand
-all seven original common guards and both raw-WCS disable inputs, comparing
-the actual common cofactors and selected common permission directly. This
-checks the kept common precondition core without reusing it in the oracle.
-The completed slot-2 permission excludes the late full-validity input; the
-original equations still check every permission guard and the final validity
-qualification for all four slot-2 outputs.
-
-The `fetch_redirect` target checks the production registered low-provider
-redirect helper against the original full NPC selector/reduction expression.
-Every non-reset arm condition, sequence flag, load enable, and slot-1 emission
-flag is arbitrary, including simultaneous requests and no winning arm. Reset
-is the original highest-priority arm and synchronous output clear. The proof
-checks both the combinational next value and the original registered waveform
-without assumptions on inputs or initial output state; covers exercise slot-2
-priority, the leading-slot-1 exception, and a higher-priority redirect. IF also
-retains a clocked integration oracle against the actual PC controller's
-original selector bus. Three completed scalar cases isolate late prediction
-permission without adding a cycle.
-
-The `fetch_pc_mux` one-step proof compares the actual fetch-PC datum with
-both the original one-hot reduction and the older serial priority equation,
-including the raw-WCS predecessor exception. All external inputs and register
-state remain arbitrary, with no reset or captured-tag assumptions. Default
-and integrated handoff-parameter tasks both preserve redirects, served-window
-recovery, and fetch-progress hold above slot 2, then slot 1, then the completed
-prediction-free base. The kept base substitutes `o_pc` for sequential data and
-excludes catch-up. The completed non-sequential no-slot-2 datum includes slot 1
-and the served-window resteer, which remains below architectural redirects;
-raw WCS keeps its separate original effects. An exact ordinary-sequential
-request covers winning consume, raw-WCS override and default arms, with
-served-window suppression. Both ordinary and catch-up request cores exclude
-slot 1; its common veto qualifies their combined request. The separately
-completed catch-up permission excludes late NOP and served-window controls,
-which qualify its request. When the combined request is true, slot 1 is
-absent, so the catch-up core can select `seq_next_pc_plus_2` over ordinary
-`seq_next_pc` independently of the late slot-1 veto. This completed sequential
-target is kept and reset-free; the combined request remains unpreserved.
-Three kept scalar winners encode the original priority of canonical slot 2,
-then combined sequential data, then completed non-sequential data. Canonical
-slot 2 retains its original redirect, window and progress permission. Reset
-clears all three winners, and a three-term masked OR produces the actual
-fetch datum. The masks are disjoint for arbitrary controls, and reset never
-enters a kept data word.
-The calculator preserves its existing run/NOP fetch data cofactors so NOP
-selects completed data. These calculator attributes change no equation or
-interface; the local mux proof abstracts the calculator outputs.
-The original `npc_sel` and
-arm observation outputs are unchanged; `o_npc_cond` additionally exposes the
-existing raw requests for the registered retarget classifier. KEEP boundaries
-add no state or cycle.
-
-The `pc_register_mux` one-step proof checks the architectural PC's retained
-nested priority. Both slot-2 requests, the canonical request, and the alias
-input remain independent, including inconsistent generic combinations.
-Default and integrated handoff-parameter tasks preserve architectural
-redirects above aliased live slot 2, then staged slot 2, then pending,
-registered, and sequential choices. A completed reset-free datum excludes both
-slot-2 requests and substitutes the current architectural PC for sequential
-data. An independent earlier-redirect permission lets staged use select its
-target below redirects, followed by the aliased-live choice. The exact
-sequential winner selects the sequential datum last, so late instruction-size
-data bypasses the other selections. Reset remains outermost and outside all
-KEEP values.
-The original nested priority oracle is unchanged, including generic staged
-and aliased-live disagreement.
-
-The `pc_holdoff_cofactor` one-step proof compares all three production pending
-fetch holdoff outputs with their original nested equations for arbitrary
-controls and register state. `PC_FETCH_HOLDOFF_ONLY` excludes the separate
-prediction holdoff equations from that arbitrary-state proof and the local
-PC-register mux proof. `PC_HOLDOFF_LOCAL_PROOF` excludes unrelated temporal
-integration properties, which remain enabled in both prediction-release targets.
-
-The `pc_holdoff_tag` target uses the actual pending valid/tag producers to prove
-that a valid episode retains `prev_pc = pc - 2` modulo XLEN. It assumes only
-initial pending-valid=0, the real reset image, and leaves external inputs and
-other initial state unconstrained. Temporal induction then proves the three
-prediction holdoffs match their original equations after removing redundant
-exact-owner readiness. An exact owner cannot equal its captured predecessor,
-so the existing non-stale/non-predecessor arm already holds prediction there.
-Crossing is then factored into a completed predecessor exception: when a
-captured predecessor is not after its owner, it must be before it. A wrapped
-predecessor is rejected by the final not-after gate. This removes the separate
-before comparator from prediction holdoffs while retaining crossing's exact
-exception and leaving fetch readiness unchanged. Induction at widths 32, 64,
-and 72 covers modular arithmetic. Cover goals at the default 64-bit width
-exercise zero, odd wrapped owners, and wrapped predecessors. This theorem does
-not claim equivalence for arbitrary corrupt initial valid state. No handoff
-priority or observation cycle changes.
-
-The `prediction_metadata_tracker` target follows the same pattern. Its harness
-models the registered predictor target and leaves the pending owner and output
-PCs arbitrary, so the proof covers both exact-owner replay and a non-owner
-predecessor. It proves the tracker's validity equivalence and payload
-provenance contract.
-
-The `branch_prediction_alias` target compares the production controller's
-default and optimized public alias outputs under IF's structural base+2/base+4
-PC wiring. Both PCs and candidate-valid inputs are arbitrary. The one-step BMC
-is exhaustive for this combinational cone: its script prunes unobserved logic
-and asserts that no memory or sequential cells remain. It makes no claim about
-full-controller sequential equivalence. IF must retain its width-equality
-opt-in guard so mismatched IF/package widths use the default comparator.
+- `prediction_release` checks the production buffer and PC controllers with
+  a conservative PC-increment abstraction. It proves safe pending-target
+  handoff and metadata masking under the production producer relationships,
+  including repeated resets and stalled redirects. `prediction_handoff`
+  checks the optimized handoff under the same contract. Both provide `bmc`,
+  `cover`, and ABC-PDR `prove` tasks.
+- `prediction_metadata_tracker` proves validity and payload provenance with
+  a modeled registered predictor target and arbitrary pending/output PCs.
+- `reservation_station` checks the default configuration at BMC depth 12
+  and the complete shipped INT configuration with `bmc_tag_indexed` at
+  depth 7. Both have depth-20 cover tasks. The INT variant enables properties
+  that are inactive at default parameters and assumes ROB-tag ownership.
+- `tomasulo_wrapper` checks station ownership against the real allocator.
+  Its environment assumes dispatch accompanies allocation, uses that cycle's
+  allocated tag, and flushes only to a live ROB entry. Depth 4 does not reach
+  tag wraparound; simulation covers reuse after wrap. Station assertions
+  remain enabled, with standalone station assumptions disabled.
 
 ```bash
 # List all targets and their supported tasks
@@ -263,9 +99,8 @@ opt-in guard so mismatched IF/package widths use the default comparator.
 ## Running
 
 Run formal workflows from the repository root through `./scripts/frost.py`.
-The wrapper runs the pinned `frost` image as your UID and GID with `HOME`
-under `/tmp`, so the sby output directories stay writable on the host and the
-tool versions match CI.
+The wrapper uses the pinned `frost` image and leaves output directories
+writable by your host user.
 
 ```bash
 # Run all formal targets
@@ -376,68 +211,3 @@ formal/
 
 Formal-only harness and abstraction files live beside their `.sby` target and
 are not part of production synthesis.
-
-The `rob_start_cofactor` induction proof keeps the production ROB allocation
-class and valid flip-flops, one-hot head-mask transitions, and CSR/xRET start
-equations. It proves that live CSR/xRET entries exclude CDB bypass, the head
-mask stays one-hot, and both starts equal their original `head_ready`
-equations on every cycle. Payload RAMs and the serializer instance are
-removed before optimization and their outputs become arbitrary; no dispatch,
-CDB, or flush traffic assumptions constrain the theorem. Only initial reset
-is assumed. The normal ROB simulation and formal targets retain the same
-legacy-equation assertions.
-
-The `load_queue_amo_compute` target reads the production LQ and selects only
-local assertions using `LQ_AMO_COMPUTE_LOCAL_PROOF`; it does not replace the
-FSM or datapath. Four-step BMC checks operand/owner capture, equivalence to
-the original normal-AMO response arithmetic after the extra cycle, normal
-versus MIN/MAX activation latency, compute kill/reset, coherence exclusion,
-no premature write or dependency release, and stalled write stability. A
-four-step cover reaches response → COMPUTE → ACTIVE. External inputs and
-uninitialized state are binary-symbolic, with no reset or admission
-assumptions. Production RAM initialization remains unchanged;
-the proof itself initializes only its past-valid history. This local proof
-excludes scheduler reachability, interrupt integration and liveness. The existing full LQ target
-retains its separate reset-based protocol assertions.
-
-The local proof also retains the four existing combinational free-tree
-consistency assertions; its preparation checks exactly 26 assertion/cover
-cells and rejects any assumptions.
-
-The `alu_shift_hint` target compares two actual RV64 ALUs at BMC depth 1, with
-arbitrary binary opcodes, instruction fields and operands. One ignores an
-arbitrary hint; the other receives the exact effective shift amount from the
-shared predicate. It checks result/write-enable equality and retains the ALU's
-symbolic enum assertions. An independent literal shift/rotate reference also
-checks every full-width and word operation, including zero amounts, signed
-fill, both rotate directions, immediate selection and word sign extension.
-It is a combinational consumer-contract check; the
-`rs_issue2_shamt` cocotb test and occupied-bank assertion check capture/hold
-phase, not an unbounded scheduler proof.
-
-The `reservation_station` target runs two shapes. Its `bmc` and `cover` tasks
-use the module defaults, which are what the MUL, MEM, FP, FMUL and FDIV
-stations elaborate. Its `bmc_tag_indexed` and `cover_tag_indexed` tasks
-`chparam` the whole shipped INT configuration, every override `u_int_rs` in
-`tomasulo_wrapper.sv` carries: the ROB-tag-indexed branch payload, dual issue,
-the allocation-indexed repair, speculative and broadcast data writes, the
-issue-CDB tag shadows and meta anchors, the branch predicate tag anchor and
-trusted dispatch valid. Several station properties are gated on exactly those
-parameters and are vacuous in the default run. The INT model is roughly twice
-the size, and BMC step cost grows steeply with it, so `bmc_tag_indexed` runs to
-depth 7 while the default `bmc` keeps depth 12; the covers reach every point at
-depth 20 in both.
-
-The `tomasulo_wrapper` target reads `reservation_station.sv` with `-formal`
-and elaborates all six stations with `FORMAL_STANDALONE_ENV=0`. That keeps the
-station's own assertions in this proof while leaving its free-input
-assumptions and covers to `reservation_station.sby`. The INT station's
-branch-payload side RAM needs a ROB tag that is never dispatched while it is
-still live in the station, and this is the only target that contains the real
-allocator, so here that contract is asserted rather than assumed. Three
-wrapper assumptions model the dispatch unit that sits outside this boundary:
-an RS dispatch always accompanies an allocation request, its `rob_tag` is that
-cycle's `alloc_tag`, and a partial flush names a live ROB entry. All three are
-exact restatements of `dispatch.sv` and the recovery controller. Depth 4
-cannot reach ROB tag wraparound, so this proves the near-term allocator
-behavior; the station's simulation oracles cover reuse after wrap.

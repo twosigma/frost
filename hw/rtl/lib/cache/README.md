@@ -51,8 +51,7 @@ Each arbiter prefixes its port index to the ids it forwards, so the bottom of
 the hierarchy sees `{port bits…, local id}` and ids stay unique across every
 upstream master without a global plan. Arbiters compose: a tree of them yields
 a prefix-free id code whose per-master widths need not be uniform, which is
-how the hierarchy fits the walker port. The DMA port (Phase 4) is the fourth
-port; a second hart (Phase 6) is one more.
+how the hierarchy fits the walker port.
 
 The `maintenance` bit is present on the cache and arbiter ports, not on the
 hierarchy's upstream ports or the bridge. It is a passive observer
@@ -87,16 +86,9 @@ writeback that has lost `WbStarveLimit` (3) loads of the register to fills
 takes the next one, and between the writeback slots the pick rotates from
 the slot after the last one loaded, so a pending writeback is loaded within
 four loads and any particular slot within eight, however slowly the level
-below accepts. The waits above depend on those bounds. Without them, a
-stream of fills completing and re-allocating between the level below's
-acceptances would keep a fill pending at every load and hold a writeback,
-and whatever waits for its acknowledgement, for as long as the stream lasts;
-and a slot picked lowest-index-first would lose every writeback load to a
-neighbour that is acknowledged and re-manned by a parked dirty-victim miss
-in between. Simulation checks the bounds: a slot pending through more than
-32 loads is an error, and the concurrency bench paces the bridge to build
-both streams and requires each writeback within its bound. Its downstream
-ids are `{type, slot}` (0 = fill of a miss slot, 1 = writeback slot).
+below accepts. The waits above depend on those bounds.
+Downstream ids are `{type, slot}` (0 = fill of a miss slot,
+1 = writeback slot).
 
 The L1D instance (`NUM_PROBE > 0`) also takes per-line coherence probes on
 its upstream seam: a read-shaped request flagged `probe`, either PROBE_CLEAN
@@ -173,7 +165,7 @@ response has returned.
 
 ## The page-table walker port
 
-The hardware page-table walker (Phase 3) attaches as the hierarchy's third
+The hardware page-table walker attaches as the hierarchy's third
 upstream port (`wup`), between the L1D and the L1I in the arbiter tree, on
 the same line protocol. The tree's fixed priority and no-grant-lock flow mean
 a walk never waits for an L1I fill to complete once it is ready to issue. The
@@ -201,12 +193,6 @@ a time, so the port never carries more than one read at once; the 2-bit local
 id budget is headroom. Walks are read-only: the walker does not update PTE
 A/D bits in hardware. Accesses that need those bits set instead take page
 faults (Svade), so the walker has no PTE-write path.
-
-The walker precomputes its request-valid register from the next walk state,
-pointer-address check, and discard state. This preserves the original request
-cycles while removing those gates from the shared L2 capture-enable path. A
-read that fires in the cycle of a discard is still consumed, with no walk
-response delivered.
 
 PTEs live in cacheable memory and a walk reads through the L2 when present or
 directly through the bridge in the L1-only shape, not through the L1D, where
@@ -259,7 +245,7 @@ response (`ptw.sv`).
 
 ## The DMA port and coherence
 
-The DMA agent (Phase 4) attaches as the hierarchy's fourth upstream port
+The DMA agent attaches as the hierarchy's fourth upstream port
 (`dma`), on the same line protocol, through `dma_coherence_sequencer`. The
 L1D is write-back and the load queue keeps its own dword copies of loaded
 data, so a DMA agent that simply joined the tree below the L1D would neither
@@ -300,38 +286,17 @@ invalidation), so nothing combinational crosses the hierarchy.
 
 ## Benches
 
-`verif/cocotb_tests/cache/test_frost_cache.py` drives tagged transactions on
-the data, instruction and walker ports against a byte-granular reference
-model (registry: `frost_cache*`, both shapes, fast-maintenance and
-out-of-order-memory variants). `test_frost_cache_concurrency.py` keeps several
-transactions in flight per port and checks the non-blocking paths: pipelined
-hits, hit- and miss-under-miss, merges, waiters, index conflicts, a fill behind
-a pending writeback, and fence.i under misses (`frost_cache_concurrency*`).
-`test_frost_cache_dma.py` drives the DMA port with the bench playing the load
-queue on the sequencer's handshake: writes to absent, clean and dirty lines
-(partial strobes keep the CPU's dirty neighbours), reads of dirty CPU data, a
-probe behind a fill in flight, the held fill during a long load-queue
-invalidation, same-line serialization, a write racing fence.i's
-writeback-all, a request under a data-side miss flood, concurrent disjoint
-traffic with walker reads of dirty data-side lines contending with the DMA
-probes, a data-side reader that must see a DMA writer's sequence in
-coherence order, and random mixed traffic with unfenced walker reads
-(`frost_cache_dma*`, both shapes and out-of-order memory). The walker port's
-coherence with a dirty L1D line, with no fence, is `test_frost_cache.py`'s
-`test_walker_sees_dirty_l1d_lines`; its two writeback-slot tests hold the
-shared level's miss slots full so a snapshot's writeback waits a memory
-round trip, drive a store (after a walk's probe) and a no-fetch rewrite
-(after an eviction) into that window, and require, through the L1D's own
-state, that the store was held and the install was kept out of the pick.
-`test_line_port_arbiter.py` plays two masters with several tagged transactions
-in flight each (`line_port_arbiter*`). `test_fence_speed.py` counts fence.i
-maintenance cycles at the production L1 geometry under the slow and fast
-maintenance paths (`fence_speed_slow`, `fence_speed_fast`; not in the pytest
-sweep). `test_dma_envelope.py` measures the DMA port's service envelope:
-cycles per line, latency tail and the residence of a request in each
-sequencer phase, per scenario (absent, clean, dirty and L2-only lines,
-partial strobes, reads, a data-side miss flood, a stream beyond the L2)
-and producer depth, one build per candidate lock count
-(`dma_envelope_lock3`..`lock8`, `dma_envelope_lock3_mem30`; not in the
-pytest sweep). `formal/line_port_axi_bridge.sby` proves the bridge's AXI handshake
-legality, id conservation and stale-response drop.
+| Target family | Coverage |
+| --- | --- |
+| `frost_cache*` | Tagged data/instruction/walker traffic, hierarchy variants, maintenance, and dirty-L1D walker coherence |
+| `frost_cache_concurrency*` | Hits/misses under outstanding misses, merge/waiter paths, writeback progress, and fence.i |
+| `frost_cache_dma*` | Coherent reads/writes, invalidations, ordering, and concurrent CPU/walker traffic |
+| `line_port_arbiter*` | Arbitration and tagged responses |
+| `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |
+| `dma_envelope_lock3` through `dma_envelope_lock8`, `dma_envelope_lock3_mem30` | DMA throughput and latency by lock count/scenario; CLI-only |
+
+Run a target through `./scripts/frost.py cocotb <target>`; use `--list-tests`
+for exact names. Benches live in
+[`verif/cocotb_tests/cache`](../../../../verif/cocotb_tests/cache/).
+The `line_port_axi_bridge` formal target checks AXI handshakes, ID
+conservation, and stale-response handling.

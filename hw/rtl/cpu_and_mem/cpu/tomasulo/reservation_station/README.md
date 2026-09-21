@@ -209,59 +209,19 @@ the back-end. Older entries survive.
 
 ## Verification
 
-The `reservation_station` cocotb test covers one- and two-slot dispatch;
-indexed repair across both slots and all sources; CDB-over-repair priority;
-stale-target flush and same-tag ABA protection; lane wakeup and live bypass;
-replay coalescing, target reuse, and partial-flush survivors; issue priority;
-FU gating; `full_for_2`; and flushes. Its build passes `-G` overrides
-(`DUAL_ISSUE=1`, `ALLOC_INDEXED_REPAIR=1`, both repair bypasses off,
-`SPECULATIVE_DATA_WRITES=1`, `BROADCAST_FREE_SOURCE_VALUES=1`,
-`ISSUE_CDB_TAG_SHADOW=1`, `TAG_INDEXED_BRANCH_PAYLOAD=1`) that the module
-defaults leave off. `DUAL_ISSUE` puts the whole directed suite on the shipped
-elaboration - second payload bank, second stage2 bank, balanced second-port
-selector - and checks that port 0 behaves identically beside them; the bench
-holds `i_fu_ready_2` low, so port-1 issue itself stays with the
-`rs_issue2_selector` and `rs_issue2_shamt` tests. The shipped instance also
-sets `TRUST_DISPATCH_VALID` and `ISSUE_CDB_META_ANCHORS`, which this bench
-cannot take: it deliberately dispatches into a full station, and it does not
-drive the narrow issue-CDB anchor ports. The tag-indexed payload tests cover live rows, tag reuse
-after issue, a held stage2 packet under a foreign row write, a two-slot
-dispatch, and reuse after partial and full flushes; the model-checked issue
-comparisons include `pc`, `link_addr` and `predicted_target`. Inside the
-station, a simulation-only oracle carries every packet's own three words
-beside it and checks that the stage2 side-RAM read reproduces them, in every
-bench and system simulation. The formal target's `bmc_tag_indexed` and
-`cover_tag_indexed` tasks build the whole shipped INT configuration - not just
-the side RAM but dual issue, the allocation-indexed repair, the speculative and
-broadcast data writes, the issue tag shadows and meta anchors, the branch
-predicate tag anchor and trusted dispatch valid - under the ROB tag ownership
-assumption. That model is roughly twice the default one, so `bmc_tag_indexed`
-runs to depth 7 rather than 12; the default-parameter `bmc` keeps the deeper
-window. `formal/tomasulo_wrapper.sby` reads this file with
-`-formal` as well, and every station there elaborates with
-`FORMAL_STANDALONE_ENV=0`: the same ownership contract becomes an assertion
-checked against the real allocator, while the station's own environment
-assumptions and covers, which belong to its free-input top, stay out of that
-proof. The wrapper supplies the dispatch unit's tag plumbing as assumptions
-because that unit sits outside its boundary; `formal/README.md` lists them.
+The `reservation_station` cocotb target covers dispatch, repair, wakeup,
+issue, stalls, flushes, and tag reuse. It enables dual-issue storage but holds
+port 1 unavailable; `rs_issue2_selector` and `rs_issue2_shamt` check that
+port's selection and shift-operand handling separately. The main bench does
+not enable `TRUST_DISPATCH_VALID` or `ISSUE_CDB_META_ANCHORS`: it dispatches
+into a full station and does not drive the anchor ports.
 
-Simulation-only oracles, one per issue port and matched to the stage2
-lifetime, recompute the former late-mux result and compare it with the
-captured effective operand across stalls, flushes, and back-to-back refill.
-The INT-only branch predicate tag assertion likewise covers hold,
-flush-invalid, and refill behavior at the shared stage2 boundary.
+Formal `bmc`/`cover` tasks check default parameters. The `bmc_tag_indexed`
+and `cover_tag_indexed` tasks check the full shipped INT configuration,
+including its parameter-gated properties, under a ROB-tag ownership
+assumption. The wrapper proof checks ownership against the real allocator.
+Simulation assertions also check packet payloads and operands through
+stalls, flushes, and refill.
 
-Inline formal properties in the default formal target
-(`reservation_station.sby`) prove the dispatch, issue, wakeup, and flush
-invariants, registered CDB lane-value capture, per-entry pending/lane capture,
-and pending-to-ready handoff. The indexed-repair response-alignment,
-valid-entry shadow-tag-equality and trusted-dispatch-valid properties are
-parameter-gated (`ALLOC_INDEXED_REPAIR`, `ISSUE_CDB_TAG_SHADOW` and
-`TRUST_DISPATCH_VALID` all default to 0), so they are vacuous in the `bmc` and
-`cover` tasks; the `tag_indexed` tasks turn them on with the rest of the
-shipped configuration, and the cocotb build's `-G` overrides exercise them in
-simulation.
-
-The second-port selector has a direct cocotb reference test
-(`rs_issue2_selector`) and a depth-one formal miter (`rs_issue2_selector.sby`)
-against the serial specification over unconstrained ready/branch inputs.
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

@@ -66,26 +66,13 @@ bits for cycles where slot 2 alone holds the bundle, so the perf counter
 aggregator (`../../cpu_ooo/perf/perf_counter_aggregator.sv`) can count each
 cause without re-deriving the conditions.
 
-`o_stall` is the validity-qualified dispatch backpressure
-(`dispatch_valid && !bundle_fire_ok`): it asserts only while a valid presented
-bundle is blocked. The qualifier has to stay. Pipeline control registers
-`o_stall` into `replay_after_dispatch_stall_q`, whose replay pulse overrides
-`id_stall_q` and re-validates the held ID image, so this source must mean "a
-valid dispatch was blocked". A resource-only form
-(`!i_flush && !bundle_resource_ok`) once broke this: a valid instruction X
-dispatched while another front-end stall held ID; the next cycle `id_stall_q`
-invalidated X; X's now-stale decoded resource was full, so the resource-only
-stall manufactured a replay pulse that re-validated X once room returned, and
-X allocated twice. The fire gate (`slot1_can_fire`, `dispatch_fire`, the RS
-writes) keeps the `dispatch_valid` qualifier, and `o_status.stall` reports the
-same qualified value, so the dispatch-backpressure perf counter counts real
-backpressure only.
-
-If the `replay -> id_valid -> o_stall` timing cone has to be re-closed, split
-the signals: a resource-only term may drive only the high-fanout front-end
-hold, while the replay pulse keeps the validity-qualified term. Or add a
-one-entry ID-to-dispatch skid buffer. A registered stall without capture
-capacity is not enough.
+`o_stall` is validity-qualified backpressure
+(`dispatch_valid && !bundle_fire_ok`). Pipeline control uses it to replay a
+blocked ID packet; a resource-only stall can replay an already dispatched
+instruction and allocate it twice. `o_status.stall` uses the same qualified
+value. If separating the front-end hold for timing, keep replay
+validity-qualified; registering the stall requires capture capacity, such
+as an ID-to-dispatch skid buffer.
 
 ## RS routing
 

@@ -70,11 +70,9 @@ a per-slot port.
 
 ## Verification
 
-Cocotb tests cover lookup, slot-2 lookup, rename (including overwrite,
-slot-2 rename, slot-2-wins collisions, and rename-over-commit precedence),
-slot-1/slot-2 commit clear, checkpoint save/restore/free, slot-2 checkpoint
-overlay, checkpoint bulk-free masks, checkpoint exhaustion, flush-all,
-regfile value passthrough, and x0 invariants. Inline formal properties prove
-the x0 invariant, the slot-1 and slot-2 rename state transitions, the INT
-commit-clear state transition, and that flush/reset clear the active RATs
-and checkpoint valid bits.
+The `register_alias_table` cocotb target covers two-slot renaming and commit,
+checkpoint management, flushes, and x0. Inline formal properties check rename
+and commit-clear transitions, reset/flush behavior, and the x0 invariant.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

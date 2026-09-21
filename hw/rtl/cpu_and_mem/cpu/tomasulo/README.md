@@ -23,7 +23,7 @@ The diagram shows selected logical paths rather than pipeline timing; matching
 | Submodule                                                          | Role |
 |--------------------------------------------------------------------|------|
 | [`tomasulo_wrapper/`](tomasulo_wrapper/README.md)                  | Glue: instantiates everything below; back-end integration. Its extracted glue submodules live in `perf/`, `commit_bus/`, `dispatch_routing/`, `store_addr/`, `atomics/` |
-| [`../mmu/`](../mmu/)                                               | Sv39 data translation (Phase 3): `dmmu` (the D4 translation stage + 16-entry FA `dtlb`) sits in the wrapper between the AGU adds and the LQ/SQ address updates, bypassed combinationally while translation is inactive; the read-only `ptw` lives in `cpu_ooo` behind a walk seam and reads page tables through the hierarchy's walker port |
+| [`../mmu/`](../mmu/)                                               | Sv39 data translation: `dmmu` (the D4 translation stage + 16-entry FA `dtlb`) sits in the wrapper between the AGU adds and the LQ/SQ address updates, bypassed combinationally while translation is inactive; the read-only `ptw` lives in `cpu_ooo` behind a walk seam and reads page tables through the hierarchy's walker port |
 | [`dispatch/`](dispatch/README.md)                                  | 2-wide combinational rename + resource allocation hub |
 | [`reorder_buffer/`](reorder_buffer/README.md)                      | In-order commit, precise exceptions, serializing instructions |
 | [`register_alias_table/`](register_alias_table/README.md)          | INT + FP rename tables, branch checkpoints |
@@ -133,14 +133,7 @@ from the new instruction's completion (tag ABA). Every producer therefore
 kills squashed work at its own boundary. The shims flush-mark their tag
 queues, hold buffers, and result FIFOs. The adapters age-kill held and
 pass-through results. The LQ drops in-flight responses for squashed loads.
-The arbiter kills full-flush cycles. This discipline is pinned by directed
-stale-CDB probes in the `tomasulo_wrapper` bench (flush alignment swept
-across issue and pipeline depth, with the killed tag reallocated at the
-earliest legal cycle), by an anyconst flushed-tag assert in the `fp_div_shim`
-formal target, and by always-on stale-delivery diagnostics in the wrapper
-(which report the producing `fu_type`) and in the ROB. The one arrival with
-no consumer-side defense, the cycle after reallocation, is a fatal sim
-tripwire in the ROB (see `reorder_buffer.sv`, drain-window section).
+The arbiter kills full-flush cycles. The ROB also rejects a completion in the cycle after tag reallocation.
 
 The same tag-reuse argument requires each completion to broadcast exactly
 once: a duplicate delivery that lands after the first one committed the
@@ -150,28 +143,22 @@ always wins a CDB lane in the same cycle, because only MUL outranks it and the
 CDB is 2-wide, so it pops the LQ `cdb_stage` that cycle
 (`lq_result_accepted`). A misaligned-store issue that collides with it
 captures into its registered exception slot in parallel and owns the MEM slot
-the next cycle. The single-delivery collision test in the `tomasulo_wrapper`
-bench pins this; it reproduces the duplicate that the old accept gating caused
-about once per few hundred thousand cycles of Linux boot.
+the next cycle.
 
 The allocation side upholds the same argument: the LQ/SQ slot alloc enables
 carry the ROB's flush gate (`!i_flush_all && !i_flush_en`), so an alloc
 request presented on a flush pulse is suppressed everywhere that cycle.
 Dispatch may present a straggler on trap/xRET/FENCE-class pulses because the
 front-end kill is edge-delayed. Without this gate, the queue could retain a tag
-the ROB rejected and later form a duplicate-tag pair after tail rewind. This is
-pinned by ghost-alloc probes in the `tomasulo_wrapper` bench and by
-`p_no_alloc_during_flush` asserts in the LQ/SQ formal contracts, which leave
-alloc-valid unconstrained during flushes rather than assuming it away.
+the ROB rejected and later form a duplicate-tag pair after tail rewind.
 
 The deep FP shims (`fp_mul_shim`, `fp_div_shim`) consume a registered
 one-cycle flush snapshot (pulse, flush tag, and head, all captured on the
-pulse cycle) instead of the live broadcast, because their per-entry marking
-fanout was the dominant post-place failing-path population on x3. The
+pulse cycle) instead of the live broadcast. The
 live-flushed adapters still cover the pulse+0 boundary (they are
 REGISTER_OUTPUT, so nothing passes through combinationally), and the FP
 adapters' full-flush window is extended one cycle to cover the shim FIFO
-turnaround. The stale-CDB probes check this timing contract end to end.
+turnaround.
 
 ### Instruction → reservation station routing
 

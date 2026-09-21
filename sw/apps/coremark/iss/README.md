@@ -9,15 +9,9 @@ runs only on demand.
 
 ## Why it exists
 
-The core is RV64-only — the rv32 lane was retired in `c0be5bc` — so a question
-like "how much of CoreMark's lp64 cost is the ABI, and how much is codegen we
-left on the table?" cannot be answered on the RTL any more. Instruction counts,
-unlike cycles, depend only on the toolchain, so they *can* still be measured
-across both ABIs. That is all this harness does.
-
-It answers the "how many instructions" half. The "how fast does the machine
-retire them" half still needs `./scripts/frost.py cocotb coremark`, which is
-the only thing that produces a CoreMark score.
+Compare compiler options and the RV32/ILP32D and RV64/LP64D ABIs by retired
+instruction count. FROST itself is RV64-only. Spike does not model cycles or
+IPC; use simulation or hardware to measure a CoreMark score.
 
 ## Usage
 
@@ -52,18 +46,10 @@ selects as `PROFILE_RUN` -- and that is what the script builds.
 ./scripts/frost.py run sw/apps/coremark/iss/generate_profile.py
 ```
 
-It compiles the five benchmark translation units plus this directory's port
-layer with `-fprofile-generate -fprofile-info-section`, runs the result under
-Spike, and streams the gcda out over HTIF. `pgo_dump.c` walks the `.gcov_info`
-table that `link_spike_pgo.ld` bounds and hands each entry to libgcov's
-`__gcov_info_to_gcda()`; `riscv-none-elf-gcov-tool merge-stream` turns the
-stream back into files.
+The script runs an instrumented benchmark under Spike and converts its
+profile stream to gcda files using `riscv-none-elf-gcov-tool merge-stream`.
 
-Spike rather than the RTL because execution counts are architectural, so both
-agree on them, while printing the ~5 KB stream over the modelled UART would
-cost tens of millions of simulated cycles.
-
-Two build details are easy to get wrong and both are fatal rather than subtle:
+When changing the training build:
 
 * The benchmark sources must be compiled from the app directory with the same
   relative path spellings `../Makefile` uses. GCC folds the source path into
@@ -87,34 +73,20 @@ riscv-none-elf-gcov-dump -l sw.elf-core_state.gcda | sed '/stamp/d'
 
 ## How it works, and what it is not
 
-`core_portme.c` here replaces the app's port layer: no MMIO, no timer.
-`start_time()` and `stop_time()` each execute one `csrr x0, cycle`, and nothing
-else in the program reads that CSR, so `count_instructions.py` slices Spike's
-`--log-commits` trace to exactly the timed region. `uart.h` is a shim that lets
-the app's own `../core_portme.h` compile unchanged (the real MMIO header is
-never on the include path), and `stub.c` supplies the few libc entry points GCC
-can synthesize calls to. `crt0_spike.S` enables `mstatus.FS` — Spike resets it
-to Off, and CoreMark's prologue stores an FP register.
+The counting harness replaces MMIO and timer access with a Spike port. It
+uses two `cycle` CSR reads as markers around the timed region and counts the
+instructions between them in Spike's commit trace.
 
 The UART implementation is a sink, so this tool cannot observe CoreMark's CRC
 or error report. Seeing both markers proves only that execution crossed the
 timed region. Pair every count used in an analysis with a cocotb or board run
 that prints and validates the required CRCs.
 
-**Calibration.** `full` is the 2026-08-27 tuning set, which is what the
-`../Makefile` ablation quotes; `APP_TUNE_FLAGS` has since gained scheduling and
-block-layout options that do not change the ABI ratio this matrix measures. The
-matrix keeps C enabled in every row and ABI lane so its only changes are the
-compiler options named in the first column. The shipped
-app additionally drops C for cycle-level front-end reasons; on the tuning
-branch's base RTL that changed timed `instret` by only 6 instructions. With the
-remaining full tuning flags, this harness lands within about 0.5% of the cocotb
-profiled-region `instret` at both XLENs, and the offset has the same sign and
-similar magnitude in both lanes (the difference is port instrumentation around
-the timer boundary). Absolute counts and ratios remain estimates, but the
-matched ratios are more informative than the absolute counts.
+**Calibration.** The matrix's `full` row is the tuning set recorded in
+`../Makefile`, not the app's current `APP_TUNE_FLAGS`. Every matrix row keeps
+C enabled; the shipped app disables it for front-end timing. Port
+instrumentation also affects the timed-region boundary, so absolute counts
+and ABI ratios are estimates.
 
-**It cannot tell you about IPC, cycles, or a score.** Spike is functional only.
-Fetch-window behaviour, branch prediction, cache effects and the 2-wide bundler
-— which is where most of FROST's CoreMark headroom turned out to be — are
-invisible here.
+Spike does not model fetch, branch prediction, caches, or two-wide issue.
+Fewer instructions do not necessarily mean a faster FROST run.

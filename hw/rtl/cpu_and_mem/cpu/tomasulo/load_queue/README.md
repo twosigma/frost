@@ -561,33 +561,17 @@ parent counter `head_wait_mem_load` stays live alongside the decomposition.
 
 ## Verification
 
-Cocotb tests cover allocation including slot-2-only and paired slot-1/slot-2
-cases, address update, every load size, SQ forwarding, mandatory MMIO staging,
-the high-to-low drain-status race, pending-request flush cancellation versus
-accepted-response debt, single-beat FLD, FLW NaN-boxing, partial and full flush,
-partial-flush AMO-dependency cleanup through physical-slot reuse, AMO
-read-modify-write including `.W`/`.D` signed/unsigned extrema, exact equality,
-hostile ignored `.W` upper halves, exact normal/MINMAX activation latency,
-compute-cycle coherence protection and premature-done rejection, killed versus
-surviving compute owners, and held writes, conservative
-dispatch-backpressure release after frees and flush-cycle requests, LR/SC
-reservation, and constrained-random stress. Bounded inline LQ checks cover
-pointer invariants, issue prerequisites,
-cached-response ownership, dependency-row cleanup, and the cancellation/debt
-truth table; wrapper/router checks cover registered-pending feedback, request
-conservation, held-address stability, terminal drain qualification, and the
-requirement that no read side effect precede acceptance.
+Cocotb covers allocation, load sizes, forwarding, MMIO acceptance,
+flush/response ownership, atomics, and LR/SC. Inline bounded properties check
+queue and request invariants; wrapper/router tests check the connected
+handshakes and side-effect ordering.
 
-The focused `load_queue_amo_compute` formal target uses the actual LQ RTL with
-only the assertion set selected by a macro. Four-step BMC checks captured
-operands/owner, the original response arithmetic after the added cycle,
-compute-to-write and kill/reset transitions, no premature write/dependency
-release, retained-line coherence, and active-payload stability. Its cover
-reaches accepted response → COMPUTE → ACTIVE with binary-symbolic inputs and
-uninitialized state. It makes no reset/admission assumptions; production RAM
-initialization remains unchanged. It does not prove scheduler reachability,
-interrupt integration, or unbounded progress; those remain the normal LQ/wrapper/router and system regression responsibilities.
+The focused `load_queue_amo_compute` formal target checks the production AMO
+datapath over four steps with no reset/admission assumptions. It covers
+capture, arithmetic, compute/write transitions, kill/reset, and coherence
+exclusion. It does not establish scheduler reachability, interrupt integration,
+or unbounded progress. The normal LQ formal target retains its separate
+reset-based protocol checks.
 
-The local proof also retains the four existing combinational free-tree
-consistency assertions; its preparation checks exactly 26 assertion/cover
-cells and rejects any assumptions.
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
