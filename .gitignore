@@ -110,3 +110,6 @@ tools/vscode-frost/*.vsix
 # repository; keep them in a scratch directory instead.
 /TIMING_HANDOFF_*.md
 /device_view.png
+
+# Site-specific hardware-regression values (NFS root, board address).
+fpga/site.env

@@ -212,7 +212,6 @@ kernel and initramfs:
 K=6.12.107+deb13-riscv64   # step 3's K, the version in the tree's /boot
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
 FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
-FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
 FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
   ./fpga/load_software/load_software.py x3 linux_boot
 ```
@@ -223,9 +222,11 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
   kernel's syntax, and `dhcp` when unset. Its gateway field (192.0.2.1 here)
   is the board's default route, which step 7 uses. `FROST_LINUX_MAC=<board-mac>`
   sets the NIC's address when other FROST boards share the network.
-- `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD` are absolute paths, on the host
-  that runs the loader, to the kernel and initramfs of one version; if that
-  host is not the server, copy both files to it. The packer takes the kernel
+- The loader packs Debian's pinned kernel unless `FROST_LINUX_KERNEL` names
+  another; `FROST_LINUX_INITRD` is needed here because the default is the test
+  initramfs, which mounts no NFS root. Both are absolute paths, on the host
+  that runs the loader, to a kernel and initramfs of one version; if that host
+  is not the server, copy the files to it. The packer takes the kernel
   as an uncompressed Linux `Image`, which it recognizes by its header, and
   decompresses nothing. Debian installs its riscv64 kernel that way, as
   `/boot/vmlinux-<version>`; the tree's `/vmlinuz` links to it, and `file`
@@ -285,17 +286,26 @@ free -m                        # ~940 MiB of the X3's 1 GiB
 
 `fpga/hw_regression.py`'s Linux stage boots this root: it is the gate an RTL
 change has to pass, so it runs what the board ships rather than a test image
-([`../fpga/README.md`](../fpga/README.md), "Hardware regression"). The same four
-variables select it, and the whole regression or the stage alone takes them:
+([`../fpga/README.md`](../fpga/README.md), "Hardware regression"). It asks for
+only the two values this guide's network decided -- the export and the board's
+address -- and takes them from `fpga/site.env`, which git ignores:
+
+```
+FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian
+FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off
+```
+
+The whole regression, or the stage alone, is then the command by itself:
 
 ```bash
-K=6.12.107+deb13-riscv64
-FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
-FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
-FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
-FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
-  ./fpga/hw_regression.py --board x3 linux_boot
+./fpga/hw_regression.py --board x3 linux_boot
 ```
+
+The stage derives the rest: the kernel is the pinned release's image that
+`linux/debian_kernel.py` computes, and the initramfs is that release's
+`boot/initrd.img-<version>` inside the export above. `FROST_LINUX_KERNEL` and
+`FROST_LINUX_INITRD` override either, and the two site values can be given in
+the environment instead, which wins over the file.
 
 What the stage needs beyond a root that boots by hand:
 

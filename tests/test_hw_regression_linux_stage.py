@@ -711,14 +711,27 @@ def test_the_restored_interface_is_the_one_ip_names(
 # --- The environment and the preflight ---------------------------------------
 
 
-def test_every_root_variable_is_required_and_named_when_unset() -> None:
-    """Nothing is defaulted: a guess here boots a board against another export."""
+def _no_site_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave the site values unset however this machine would supply them.
+
+    A developer box has fpga/site.env; CI does not. Without pointing the
+    lookup at a file that is not there, these tests would assert an
+    environment failure that only happens on the machines lacking one.
+    """
+    for name in hw.LINUX_ROOT_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(hw, "SITE_ENV_FILE", Path("/nonexistent/site.env"))
+
+
+def test_only_the_site_variables_are_required_and_are_named_when_unset() -> None:
+    """A guess at the site would boot a board against somebody else's export."""
     with pytest.raises(hw.LinuxEnvironmentError) as unset:
-        hw.linux_root_from_env({})
+        hw.linux_root_from_env({}, site={})
     message = str(unset.value)
     assert message.startswith(hw.ENV_NOT_READY)
     for name in hw.LINUX_ROOT_ENV_VARS:
         assert name in message
+    assert hw.SITE_ENV_FILE.name in message
     full = {
         hw.LINUX_NFSROOT_ENV: NFSROOT,
         hw.LINUX_IP_ENV: BOARD_IP,
@@ -729,9 +742,59 @@ def test_every_root_variable_is_required_and_named_when_unset() -> None:
         one_missing = dict(full)
         del one_missing[name]
         with pytest.raises(hw.LinuxEnvironmentError, match=name):
-            hw.linux_root_from_env(one_missing)
-    assert hw.linux_root_from_env(full) == ROOT
+            hw.linux_root_from_env(one_missing, site={})
+    assert hw.linux_root_from_env(full, site={}) == ROOT
     assert hw.linux_loader_env(ROOT) == full
+
+
+def test_the_kernel_and_initramfs_are_derived_when_unset() -> None:
+    """Neither is a site fact: the release is pinned and the export is named."""
+    site_only = {hw.LINUX_NFSROOT_ENV: NFSROOT, hw.LINUX_IP_ENV: BOARD_IP}
+    derived = hw.linux_root_from_env(site_only, site={})
+    # The pinned release's own image, at the path debian_kernel.py computes.
+    assert derived.kernel == hw.kernel_image()
+    assert hw.KERNEL_RELEASE in derived.kernel.name
+    # That release's initramfs, inside the export just named.
+    assert derived.initrd == derived.export / "boot" / f"initrd.img-{hw.KERNEL_RELEASE}"
+    # Both stay overridable, which is how a replacement kernel is tested.
+    overridden = hw.linux_root_from_env(
+        {
+            **site_only,
+            hw.LINUX_KERNEL_ENV: "/elsewhere/vmlinux",
+            hw.LINUX_INITRD_ENV: "/elsewhere/initrd",
+        },
+        site={},
+    )
+    assert overridden.kernel == Path("/elsewhere/vmlinux")
+    assert overridden.initrd == Path("/elsewhere/initrd")
+
+
+def test_the_site_file_supplies_what_the_environment_does_not() -> None:
+    """A lab states its two values once; the environment still wins."""
+    site = {hw.LINUX_NFSROOT_ENV: NFSROOT, hw.LINUX_IP_ENV: BOARD_IP}
+    assert hw.linux_root_from_env({}, site=site).nfsroot == NFSROOT
+    other = "198.51.100.9:/srv/other"
+    overridden = hw.linux_root_from_env({hw.LINUX_NFSROOT_ENV: other}, site=site)
+    assert overridden.nfsroot == other
+    assert overridden.ip == BOARD_IP
+
+
+def test_the_site_file_is_parsed_and_ignores_what_it_should(tmp_path: Any) -> None:
+    """Comments, blanks and stray names are skipped; quotes are stripped."""
+    path = tmp_path / "site.env"
+    path.write_text(
+        "# a comment\n"
+        "\n"
+        f'{hw.LINUX_NFSROOT_ENV}="{NFSROOT}"\n'
+        f"{hw.LINUX_IP_ENV}={BOARD_IP}\n"
+        "PATH=/should/not/be/taken\n"
+        "malformed line without an equals\n",
+        encoding="utf-8",
+    )
+    values = hw.read_site_env(path)
+    assert values == {hw.LINUX_NFSROOT_ENV: NFSROOT, hw.LINUX_IP_ENV: BOARD_IP}
+    # A file that is not there is not an error: most runs do not need one.
+    assert hw.read_site_env(tmp_path / "absent.env") == {}
 
 
 @pytest.mark.parametrize(
@@ -1235,8 +1298,7 @@ def test_keep_going_records_env_fail_and_still_runs_the_other_stages(
 ) -> None:
     """--keep-going means the app stages still run; linux_boot is not a FAIL."""
     seen = _stub_board(monkeypatch)
-    for name in hw.LINUX_ROOT_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    _no_site_values(monkeypatch)
     monkeypatch.setattr(
         hw.sys,
         "argv",
@@ -1260,9 +1322,8 @@ def test_keep_going_records_env_fail_and_still_runs_the_other_stages(
 def test_the_regression_does_not_touch_the_board_when_the_root_is_unset(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A missing variable stops the run before any stage, and is not a FAIL."""
-    for name in hw.LINUX_ROOT_ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
+    """A missing value stops the run before any stage, and is not a FAIL."""
+    _no_site_values(monkeypatch)
     monkeypatch.setattr(
         hw.sys, "argv", ["hw_regression.py", "--board", "x3", "linux_boot"]
     )
