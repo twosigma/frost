@@ -35,7 +35,7 @@ module imem_predecode_line #(
     output logic [(LINE_BYTES/4)*riscv_pkg::ImemSidebandWidth-1:0] o_sideband
 );
 
-  localparam int unsigned WordsPerLine = LINE_BYTES / 4;
+  localparam int unsigned WordsPerLine  = LINE_BYTES / 4;
   localparam int unsigned SidebandWidth = riscv_pkg::ImemSidebandWidth;
 
   for (genvar gw = 0; gw < int'(WordsPerLine); gw++) begin : gen_word_sideband

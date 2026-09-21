@@ -938,7 +938,7 @@ module frost_cache #(
   // NUM_WB * (WbStarveLimit + 1) loads. Between fills the pick stays
   // lowest-index-first.
   localparam int unsigned WbStarveLimit = 3;
-  localparam int unsigned WbStarveBits = $clog2(WbStarveLimit + 1);
+  localparam int unsigned WbStarveBits  = $clog2(WbStarveLimit + 1);
   logic [WbStarveBits-1:0] wb_lost_q;
   logic                    wb_turn_q;
 

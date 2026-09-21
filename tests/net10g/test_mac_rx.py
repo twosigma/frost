@@ -292,9 +292,9 @@ async def bad_packets_and_recovery(dut: Any) -> None:
         for word in pack_symbols(symbols):
             await bench.step(word)
         await bench.drain(32)
-        assert (
-            bench.bad_frames == before_bad + 1
-        ), f"Missing drop event for case {index}"
+        assert bench.bad_frames == before_bad + 1, (
+            f"Missing drop event for case {index}"
+        )
         assert len(bench.received) == before_received, f"Corrupt case {index} escaped"
         good = rng.randbytes(min(60 + index, MAX_FRAME_BYTES))
         expected.append(good)
@@ -389,9 +389,9 @@ async def ring_wrap_and_mixed_line_rate(dut: Any) -> None:
         await bench.step(word)
     await bench.drain(MAX_FRAME_BYTES // 8 + 64)
     assert bench.received == expected
-    assert (
-        bench.overflows == 0
-    ), "Continuously ready output must sustain mixed-size traffic"
+    assert bench.overflows == 0, (
+        "Continuously ready output must sustain mixed-size traffic"
+    )
     assert (
         bench.bad_frames
         == bench.bad_fcs

@@ -524,9 +524,9 @@ async def test_served_window_registered_tags_match_base_shape_oracle(dut: Any) -
             assert bool(dut.served_eq_pc_word.value) == expected_same, context
             assert bool(dut.served_last_eq_pc_word.value) == expected_m1, context
             assert bool(dut.served_eq_pc_word_p1.value) == expected_p1, context
-            assert (
-                bool(dut.served_window_covers_pc_reg.value) == expected_covers
-            ), context
+            assert bool(dut.served_window_covers_pc_reg.value) == expected_covers, (
+                context
+            )
 
 
 @cocotb.test()
@@ -1489,9 +1489,9 @@ async def test_high_half_target_ignores_preceding_low_half_btb_entry(
     assert int(bpc.o_dir_idx_live.value) == word_idx
     assert not bpc.o_prediction_used.value
     assert not bpc.o_prediction_used_for_pc.value
-    assert not slot1[
-        "bp_dir_taken"
-    ], "the preceding low parcel's taken direction leaked onto the P+2 branch"
+    assert not slot1["bp_dir_taken"], (
+        "the preceding low parcel's taken direction leaked onto the P+2 branch"
+    )
     assert slot1["bp_dir_idx"] == target_idx
     assert int(pc_ctrl.o_npc_sel.value) == 1 << 11
     assert int(dut.o_pc.value) == word_pc
@@ -1570,9 +1570,9 @@ async def test_slot2_collision_holdoff_stays_inside_stretched_redirect_bubble(
     assert bpc.o_prediction_holdoff.value
     assert bpc.o_btb_only_prediction_holdoff.value
     assert dut.slot2_redirect_q.value
-    assert (
-        dut.prediction_reset_c_ext.value
-    ), "a consumed slot prediction must arm the registered C-state reset"
+    assert dut.prediction_reset_c_ext.value, (
+        "a consumed slot prediction must arm the registered C-state reset"
+    )
     assert dut.control_flow_holdoff.value
     assert dut.any_holdoff_safe.value, (
         "prediction reset must coincide with the registered holdoff that masks "
@@ -2684,9 +2684,9 @@ async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> 
     # handoff walks pc_reg toward jal_pc.
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == callee, "prediction consume did not redirect fetch"
-    assert (
-        int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
-    ), "pending pc_reg handoff never armed; the capture under test cannot occur"
+    assert int(dut.pc_controller_inst.pending_prediction_valid.value) == 1, (
+        "pending pc_reg handoff never armed; the capture under test cannot occur"
+    )
 
     # The PD redirect for the older unpredicted taken branch: computed target
     # = the predicted instruction itself.  This cycle is exactly the
@@ -2717,7 +2717,7 @@ async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> 
             )
         await _advance_cycle(dut)
     assert jal_packets_seen, (
-        "the re-fetched instruction never presented; the metadata check " "was vacuous"
+        "the re-fetched instruction never presented; the metadata check was vacuous"
     )
 
 

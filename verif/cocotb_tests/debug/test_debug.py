@@ -212,9 +212,9 @@ async def test_debug(dut: Any) -> None:
     ), f"hartsel/hasel must be WARL 0: dmcontrol={dmcontrol:#x}"
     await dtm.write(DM_DMCONTROL, DMCONTROL_DMACTIVE)
     hartinfo = await dtm.read(DM_HARTINFO)
-    assert (
-        hartinfo & 0xFFF == 0x7B4 and (hartinfo >> 16) & 1 == 0
-    ), f"hartinfo {hartinfo:#x}"
+    assert hartinfo & 0xFFF == 0x7B4 and (hartinfo >> 16) & 1 == 0, (
+        f"hartinfo {hartinfo:#x}"
+    )
     assert (await dtm.read(DM_SBCS)) == 0
     cs = await dm.abstractcs()
     assert (cs >> 24) & 0x1F == 8 and cs & 0xF == 2, f"abstractcs {cs:#x}"
@@ -230,9 +230,9 @@ async def test_debug(dut: Any) -> None:
 
     await _wait_text(monitor, dut, BANNER_START)
     status = await dm.dmstatus()
-    assert (
-        status & DMSTATUS_ALLRUNNING and not status & DMSTATUS_ALLHALTED
-    ), f"dmstatus {status:#x}"
+    assert status & DMSTATUS_ALLRUNNING and not status & DMSTATUS_ALLHALTED, (
+        f"dmstatus {status:#x}"
+    )
 
     # ---- Halt in M-mode ------------------------------------------------------
     await dm.halt()
@@ -244,9 +244,9 @@ async def test_debug(dut: Any) -> None:
     log.info(f"halted: dcsr={dcsr:#x} dpc={dpc:#x}")
     counter_at_halt = await dm.read_mem(syms["counter"], 8)
     await ClockCycles(dut.i_clk, 200)
-    assert (
-        await dm.read_mem(syms["counter"], 8)
-    ) == counter_at_halt, "counter moved while halted"
+    assert (await dm.read_mem(syms["counter"], 8)) == counter_at_halt, (
+        "counter moved while halted"
+    )
 
     # ---- GPRs: both sizes, x0, unsupported forms ------------------------------
     assert (await dm.read_gpr(0)) == 0
@@ -345,9 +345,9 @@ async def test_debug(dut: Any) -> None:
     await dm.wait_status(DMSTATUS_ALLHALTED)
     dcsr = await dm.read_dcsr()
     dpc = await dm.read_dpc()
-    assert (
-        _cause(dcsr) == DCSR_CAUSE_EBREAK and dpc == bp
-    ), f"breakpoint: dcsr={dcsr:#x} dpc={dpc:#x}"
+    assert _cause(dcsr) == DCSR_CAUSE_EBREAK and dpc == bp, (
+        f"breakpoint: dcsr={dcsr:#x} dpc={dpc:#x}"
+    )
     await dm.write_mem(bp, 4, original)
     assert (await dm.read_mem(bp, 4)) == original
 
@@ -357,9 +357,9 @@ async def test_debug(dut: Any) -> None:
     for expected in (bp + 4, bp + 6, bp + 8, ra):
         dpc = await dm.step()
         dcsr = await dm.read_dcsr()
-        assert (
-            dpc == expected and _cause(dcsr) == DCSR_CAUSE_STEP
-        ), f"step: dpc={dpc:#x} expected {expected:#x} dcsr={dcsr:#x}"
+        assert dpc == expected and _cause(dcsr) == DCSR_CAUSE_STEP, (
+            f"step: dpc={dpc:#x} expected {expected:#x} dcsr={dcsr:#x}"
+        )
     await dm.set_step(False)
 
     # ---- Halfword c.ebreak breakpoint ----------------------------------------
@@ -370,9 +370,9 @@ async def test_debug(dut: Any) -> None:
     await dm.wait_status(DMSTATUS_ALLHALTED)
     dcsr = await dm.read_dcsr()
     dpc = await dm.read_dpc()
-    assert (
-        _cause(dcsr) == DCSR_CAUSE_EBREAK and dpc == rvc
-    ), f"c.ebreak: dcsr={dcsr:#x} dpc={dpc:#x}"
+    assert _cause(dcsr) == DCSR_CAUSE_EBREAK and dpc == rvc, (
+        f"c.ebreak: dcsr={dcsr:#x} dpc={dpc:#x}"
+    )
     await dm.write_mem(rvc, 2, original_half)
     assert (await dm.read_mem(rvc, 2)) == original_half
 
@@ -401,9 +401,9 @@ async def test_debug(dut: Any) -> None:
         )
         prv = dcsr & DCSR_PRV_MASK
         log.info(f"U-phase halt attempt {_attempt}: dcsr={dcsr:#x} dpc={dpc:#x}")
-        assert (prv == 0 and in_loop) or (
-            prv == 3 and in_handler
-        ), f"U-phase halt: dcsr={dcsr:#x} dpc={dpc:#x}"
+        assert (prv == 0 and in_loop) or (prv == 3 and in_handler), (
+            f"U-phase halt: dcsr={dcsr:#x} dpc={dpc:#x}"
+        )
         if prv == 0:
             break
         await dm.resume()
@@ -437,9 +437,9 @@ async def test_debug(dut: Any) -> None:
     await ClockCycles(dut.i_clk, 500)
     await dm.halt()
     dcsr = await dm.read_dcsr()
-    assert (
-        _cause(dcsr) == DCSR_CAUSE_HALTREQ and dcsr & DCSR_PRV_MASK == 3
-    ), f"wfi halt dcsr={dcsr:#x}"
+    assert _cause(dcsr) == DCSR_CAUSE_HALTREQ and dcsr & DCSR_PRV_MASK == 3, (
+        f"wfi halt dcsr={dcsr:#x}"
+    )
     log.info(f"halted out of wfi at dpc={await dm.read_dpc():#x}")
     await dm.resume()
 
@@ -452,9 +452,9 @@ async def test_debug(dut: Any) -> None:
     await dm.ndmreset(False)
     await _wait_text(monitor, dut, BANNER_START)
     status = await dm.dmstatus()
-    assert (
-        status & DMSTATUS_ALLHAVERESET and status & DMSTATUS_ALLRUNNING
-    ), f"after ndmreset {status:#x}"
+    assert status & DMSTATUS_ALLHAVERESET and status & DMSTATUS_ALLRUNNING, (
+        f"after ndmreset {status:#x}"
+    )
     await dm.ack_havereset()
     assert not (await dm.dmstatus()) & DMSTATUS_ALLHAVERESET
     await dm.halt()
@@ -465,7 +465,7 @@ async def test_debug(dut: Any) -> None:
     log.info(
         f"DTM sticky-busy retries exercised: {dtm.busy_retries}, final idle={dtm.idle_cycles}"
     )
-    assert (
-        dtm.busy_retries > 0
-    ), "expected the sticky-busy protocol to be exercised at idle=0"
+    assert dtm.busy_retries > 0, (
+        "expected the sticky-busy protocol to be exercised at idle=0"
+    )
     assert "<<FAIL>>" not in monitor.get_output()

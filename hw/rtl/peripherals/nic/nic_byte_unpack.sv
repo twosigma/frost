@@ -57,7 +57,7 @@ module nic_byte_unpack #(
 
     output logic o_busy
 );
-  localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
+  localparam int unsigned OffsetBits  = $clog2(LINE_BYTES);
   localparam int unsigned WindowBytes = 2 * LINE_BYTES;
 
   logic active_q;

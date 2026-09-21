@@ -28,7 +28,7 @@ compares writes with the expected queues but drives nothing back to the CPU.
 
 from abc import ABC, abstractmethod
 from cocotb.triggers import RisingEdge, ReadOnly
-from typing import Any, Generic, TypeVar
+from typing import Any
 from config import (
     MASK64,
     MASK_XLEN,
@@ -38,10 +38,8 @@ from config import (
 )
 from cocotb_tests.test_helpers import read_port_ram_entry
 
-T = TypeVar("T")
 
-
-class Monitor(ABC, Generic[T]):
+class Monitor[T](ABC):
     """Common monitor run loop.
 
     1. Wait for a valid signal
@@ -214,9 +212,7 @@ class FPRegisterFileMonitor(Monitor[list[int]]):
             hw_val = actual[reg]
             sw_val = expected[reg] & MASK64
             if hw_val != sw_val:
-                return (
-                    f"FP Register f{reg}: DUT 0x{hw_val:016x} " f"EXP 0x{sw_val:016x}"
-                )
+                return f"FP Register f{reg}: DUT 0x{hw_val:016x} EXP 0x{sw_val:016x}"
         return None
 
 

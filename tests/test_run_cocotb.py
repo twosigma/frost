@@ -579,7 +579,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "OpenSBI fw_jump (linux/opensbi, unmodified) boots a bare S-mode "
             "payload through the FROST boot layout: SBI base/HSM probes, "
-            "entry state (scounteren, stimecmp reachable => menvcfg.STCE), "
+            "entry state (time-only U-mode counter access, stimecmp reachable => menvcfg.STCE), "
             "S-timer via stimecmp and sbi_set_timer, self IPI, RFENCE, DBCN "
             "console, OpenSBI's M-mode misaligned emulation (scalar, "
             "compressed, FP; satp Bare, Sv39 identity and non-identity "
@@ -591,8 +591,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "so a reset without a memory reload is a warm boot to it (the "
             "hart loses the lottery and parks in the HSM wait)"
         ),
-        # OpenSBI's own boot is ~1.7M instructions of device-tree probing
-        # (about 4.5M cycles here), then the payload's phases.
+        # OpenSBI 1.9 plus the payload measured ~5.3M cycles with Bootlin
+        # 2026.08-1 and the default DDR latency; retain boot/probe headroom.
         extra_env=(("COCOTB_MAX_CYCLES", "10000000"), ("COCOTB_NUM_RUNS", "1")),
     ),
     "linux_irq_ddr_test": CocotbRunConfig(
@@ -1012,7 +1012,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "rs_issue2_selector": CocotbRunConfig(
         python_test_module=(
-            "cocotb_tests.tomasulo.reservation_station." "test_rs_issue2_selector"
+            "cocotb_tests.tomasulo.reservation_station.test_rs_issue2_selector"
         ),
         hdl_toplevel_module="rs_issue2_selector",
         description="Balanced INT-RS second-port selector reference equivalence",
@@ -1070,8 +1070,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "fu_cdb_adapter_payload_no_refill": CocotbRunConfig(
         python_test_module=(
-            "cocotb_tests.tomasulo.fu_cdb_adapter."
-            "test_fu_cdb_adapter_payload_no_refill"
+            "cocotb_tests.tomasulo.fu_cdb_adapter.test_fu_cdb_adapter_payload_no_refill"
         ),
         hdl_toplevel_module="fu_cdb_adapter",
         description="FU CDB adapter simplified payload-write-enable contract",
@@ -1682,8 +1681,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "branch_prediction_controller": CocotbRunConfig(
         python_test_module=(
-            "cocotb_tests.if_stage.branch_prediction."
-            "test_branch_prediction_controller"
+            "cocotb_tests.if_stage.branch_prediction.test_branch_prediction_controller"
         ),
         hdl_toplevel_module="branch_prediction_controller",
         description="IF-stage branch prediction controller tests",
@@ -2445,11 +2443,11 @@ def run_seed_sweep(
     """
     seeds = [random.randint(0, 2**31 - 1) for _ in range(num_seeds)]
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"Seed Sweep: Running {num_seeds} simulations in parallel")
     print(f"Test: {test_name}")
     print(f"Seeds: {seeds}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     # Compile the app once up front and create the shared sw*.mem symlinks.
     # Workers run with skip_app_compile: per-worker clean_first compiles race
@@ -2502,9 +2500,9 @@ def run_seed_sweep(
     passed_seeds = [s for s, (p, _) in results.items() if p]
     failed_seeds = [s for s, (p, _) in results.items() if not p]
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("SEED SWEEP REPORT")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"Total runs: {num_seeds}")
     print(f"Passed: {len(passed_seeds)}")
     print(f"Failed: {len(failed_seeds)}")
@@ -2527,11 +2525,10 @@ def run_seed_sweep(
         print("\nTo reproduce a failure, run:")
         for seed in sorted(failed_seeds):
             print(
-                f"  ./test_run_cocotb.py {test_name}{testcase_arg} "
-                f"--random-seed={seed}"
+                f"  ./test_run_cocotb.py {test_name}{testcase_arg} --random-seed={seed}"
             )
 
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     return {
         "total": num_seeds,

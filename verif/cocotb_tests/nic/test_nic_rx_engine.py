@@ -179,9 +179,9 @@ class _Env:
         stray = sorted(
             a for a in self.mem.bytes if a not in allowed and a not in self.pre
         )
-        assert (
-            not stray
-        ), f"bytes written outside the buffers: {[hex(a) for a in stray[:8]]}"
+        assert not stray, (
+            f"bytes written outside the buffers: {[hex(a) for a in stray[:8]]}"
+        )
 
 
 async def _setup(
@@ -248,9 +248,9 @@ async def test_frames_into_buffers(dut: Any) -> None:
     await env.wait_completions(ENTRIES - 1)
     await env.wait_idle()
     for i, (addr, f) in enumerate(frames):
-        assert desc_status(env.mem, RING, i) == DD | len(
-            f
-        ), f"desc {i} status {desc_status(env.mem, RING, i):#x}"
+        assert desc_status(env.mem, RING, i) == DD | len(f), (
+            f"desc {i} status {desc_status(env.mem, RING, i):#x}"
+        )
         assert env.mem.read_bytes(addr, len(f)) == f, f"frame {i} data differs"
     assert [c for c in env.completions] == [(0, len(f)) for _, f in frames]
     env.check_written(ranges)
@@ -298,9 +298,9 @@ async def test_one_status_write_in_flight(dut: Any) -> None:
     await env.wait_completions(4)
     status_cycles = [r["cycle"] for r in env.model.log if r["kind"] == 2]
     assert len(status_cycles) == 4
-    assert all(
-        b - a >= 150 for a, b in zip(status_cycles, status_cycles[1:])
-    ), status_cycles
+    assert all(b - a >= 150 for a, b in zip(status_cycles, status_cycles[1:])), (
+        status_cycles
+    )
     assert not env.model.violations, env.model.violations
     env.stop()
 
@@ -352,9 +352,9 @@ async def test_truncation_and_bad_descriptors(dut: Any) -> None:
     await env.wait_completions(len(cases))
     await env.wait_idle()
     for i, (addr, buf_len, length, status) in enumerate(cases):
-        assert (
-            desc_status(env.mem, RING, i) == status
-        ), f"desc {i}: {desc_status(env.mem, RING, i):#x} != {status:#x}"
+        assert desc_status(env.mem, RING, i) == status, (
+            f"desc {i}: {desc_status(env.mem, RING, i):#x} != {status:#x}"
+        )
     assert env.mem.read_bytes(BUF + 5, 100) == frames[0][:100]
     assert env.mem.read_bytes(BUF + 0x2000 + 31, 200) == frames[4]
     env.check_written([(BUF + 5, 100), (BUF + 0x2000 + 31, 200)])
@@ -408,14 +408,14 @@ async def test_doorbell_rereads_posted_descriptor(dut: Any) -> None:
     assert await env.push_frame(f0)
     assert await env.push_frame(f1)
     await env.wait_completions(2)
-    assert (
-        env.mem.read_bytes(real, 90) == f1
-    ), "frame 1 did not land at the posted buffer"
+    assert env.mem.read_bytes(real, 90) == f1, (
+        "frame 1 did not land at the posted buffer"
+    )
     assert desc_status(env.mem, RING, 1) == DD | 90
     env.check_written([(BUF + 1, 80), (real, 90)])
-    assert (
-        len([r for r in env.model.log if r["kind"] == KIND_DESC]) >= 2
-    ), "the line was not re-read after the doorbell"
+    assert len([r for r in env.model.log if r["kind"] == KIND_DESC]) >= 2, (
+        "the line was not re-read after the doorbell"
+    )
     assert not env.model.violations, env.model.violations
     env.stop()
 
@@ -519,9 +519,9 @@ async def test_abort_cycle_accepts_no_write(dut: Any) -> None:
     assert await push is False
     for _ in range(40):
         await FallingEdge(dut.i_clk)
-    assert (
-        len([r for r in env.model.log if r["kind"] == 0]) == writes_before
-    ), "a write was accepted in the abort cycle"
+    assert len([r for r in env.model.log if r["kind"] == 0]) == writes_before, (
+        "a write was accepted in the abort cycle"
+    )
     await env.wait_completions(1)
     assert env.completions[0][0] & 0b110 == 0b110
     dut.i_abort.value = 0
@@ -548,9 +548,9 @@ async def test_withdrawn_status_write_completes_nothing(dut: Any) -> None:
             break
     for _ in range(40):
         await FallingEdge(dut.i_clk)
-    assert (
-        env.completions == []
-    ), f"a withdrawn status write completed: {env.completions}"
+    assert env.completions == [], (
+        f"a withdrawn status write completed: {env.completions}"
+    )
     env.model.withdraw_status = False
     f1 = env.frame(65)
     assert await env.push_frame(f1, gap=0.0)

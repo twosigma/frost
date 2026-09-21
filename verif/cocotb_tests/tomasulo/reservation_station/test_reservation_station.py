@@ -141,9 +141,9 @@ def check_issue(dut_issue: dict, model_issue: dict | None, label: str) -> None:
         "pc",
         "link_addr",
     ):
-        assert (
-            dut_issue[key] == model_issue[key]
-        ), f"{label}: {key} mismatch DUT={dut_issue[key]:#x} model={model_issue[key]:#x}"
+        assert dut_issue[key] == model_issue[key], (
+            f"{label}: {key} mismatch DUT={dut_issue[key]:#x} model={model_issue[key]:#x}"
+        )
 
 
 # =============================================================================
@@ -432,9 +432,9 @@ async def test_dispatch_slot1_slot2_same_cycle_issue_order(dut: Any) -> None:
         issue = dut_if.read_issue()
         model_issue = model.try_issue(fu_ready=True)
         check_issue(issue, model_issue, f"dual dispatch issue tag={expected_tag}")
-        assert (
-            issue["rob_tag"] == expected_tag
-        ), f"Expected tag {expected_tag}, got {issue['rob_tag']}"
+        assert issue["rob_tag"] == expected_tag, (
+            f"Expected tag {expected_tag}, got {issue['rob_tag']}"
+        )
         await dut_if.step()
 
     assert dut_if.empty, "Should be empty after issuing both dual-dispatch entries"
@@ -716,9 +716,9 @@ async def test_full_for_2_blocks_slot2_of_dual_dispatch(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_dispatch_2()
 
-    assert (
-        dut_if.count == RS_DEPTH
-    ), f"Only slot 1 should be accepted, got {dut_if.count}"
+    assert dut_if.count == RS_DEPTH, (
+        f"Only slot 1 should be accepted, got {dut_if.count}"
+    )
     full_after_slot1 = dut_if.full
     assert full_after_slot1, "Should be full after accepting slot 1"
 
@@ -772,9 +772,9 @@ async def test_partial_flush_after_dual_dispatch(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_partial_flush()
 
-    assert (
-        dut_if.count == 1
-    ), f"Only the older slot-1 entry should remain, got {dut_if.count}"
+    assert dut_if.count == 1, (
+        f"Only the older slot-1 entry should remain, got {dut_if.count}"
+    )
 
     dut_if.set_fu_ready(True)
     await dut_if.step()
@@ -1493,9 +1493,9 @@ async def test_issue_priority(dut: Any) -> None:
         issue = dut_if.read_issue()
         model_issue = model.try_issue(fu_ready=True)
         check_issue(issue, model_issue, f"priority issue tag={expected_tag}")
-        assert (
-            issue["rob_tag"] == expected_tag
-        ), f"Expected tag {expected_tag}, got {issue['rob_tag']}"
+        assert issue["rob_tag"] == expected_tag, (
+            f"Expected tag {expected_tag}, got {issue['rob_tag']}"
+        )
         await dut_if.step()  # consume current, back-to-back refill with next
 
     assert dut_if.empty, "Should be empty after issuing all"
@@ -1693,9 +1693,9 @@ async def test_xlen_wide_issue_metadata(dut: Any) -> None:
             f"model {name} mismatch: got {getattr(entry, name):#x}, "
             f"expected {expected:#x}"
         )
-    assert all(
-        value >> 32 for value in expected_fields.values()
-    ), "RV64 directed metadata vectors must exercise every upper half"
+    assert all(value >> 32 for value in expected_fields.values()), (
+        "RV64 directed metadata vectors must exercise every upper half"
+    )
 
     await dut_if.step()
     dut_if.clear_dispatch()
@@ -1706,9 +1706,9 @@ async def test_xlen_wide_issue_metadata(dut: Any) -> None:
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "XLEN-wide metadata")
     for name, expected in expected_fields.items():
-        assert (
-            issue[name] == expected
-        ), f"DUT {name} mismatch: got {issue[name]:#x}, expected {expected:#x}"
+        assert issue[name] == expected, (
+            f"DUT {name} mismatch: got {issue[name]:#x}, expected {expected:#x}"
+        )
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -1799,9 +1799,9 @@ async def test_partial_flush(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_partial_flush()
 
-    assert (
-        dut_if.count == 2
-    ), f"Count should be 2 after partial flush, got {dut_if.count}"
+    assert dut_if.count == 2, (
+        f"Count should be 2 after partial flush, got {dut_if.count}"
+    )
     assert model.count() == 2, "Model count should be 2"
 
     cocotb.log.info("=== Test Passed ===")
@@ -2090,9 +2090,9 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         check_issue(issue, prev_model_issue, "final drain")
         model.consume_issue(prev_model_issue_info[0])
 
-    assert (
-        dut_if.count == model.count()
-    ), f"Final count mismatch: DUT={dut_if.count} model={model.count()}"
+    assert dut_if.count == model.count(), (
+        f"Final count mismatch: DUT={dut_if.count} model={model.count()}"
+    )
 
     cocotb.log.info(f"=== Test Passed ({issued_count} issues) ===")
 
@@ -2235,9 +2235,9 @@ async def test_random_with_flush(dut: Any) -> None:
         assert issue["valid"], "Final drain: model issued but DUT did not"
         model.consume_issue(prev_model_issue_info[0])
 
-    assert (
-        dut_if.count == model.count()
-    ), f"Final count mismatch: DUT={dut_if.count} model={model.count()}"
+    assert dut_if.count == model.count(), (
+        f"Final count mismatch: DUT={dut_if.count} model={model.count()}"
+    )
 
     cocotb.log.info("=== Test Passed ===")
 

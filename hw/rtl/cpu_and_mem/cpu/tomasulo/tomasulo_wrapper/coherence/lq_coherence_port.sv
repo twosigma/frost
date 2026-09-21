@@ -133,7 +133,7 @@ module lq_coherence_port #(
     // ROB: entries to mark for replay (registered).
     output logic [RobDepth-1:0] o_replay_set_mask
 );
-  localparam int unsigned LineLsb = riscv_pkg::DmaCoherenceLineLsb;  // 32-byte lines
+  localparam int unsigned LineLsb  = riscv_pkg::DmaCoherenceLineLsb;  // 32-byte lines
   localparam int unsigned LineBits = XLEN - LineLsb;
 
   function automatic logic [LineBits-1:0] line_of(input logic [XLEN-1:0] addr);
@@ -240,7 +240,7 @@ module lq_coherence_port #(
   end
   // Complete small equality groups before their final reduction, avoiding
   // column-bound carry chains across the distributed validation rows.
-  localparam int unsigned LineCompareBits = 15;
+  localparam int unsigned LineCompareBits   = 15;
   localparam int unsigned LineCompareChunks = (LineBits + LineCompareBits - 1) / LineCompareBits;
   (* keep = "true" *) logic [RobDepth-1:0][LineCompareChunks-1:0] observed_equal_chunks;
   (* keep = "true" *) logic [LineCompareChunks-1:0] pending_equal_chunks;

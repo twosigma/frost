@@ -20,7 +20,8 @@
  * supervisor's point of view, everything Linux will rely on the firmware for:
  *
  *   A. SBI base: spec/impl ids, extension probes, mvendorid/marchid/mimpid.
- *   B. Entry state: satp Bare, scounteren, time/cycle readable, stimecmp
+ *   B. Entry state: satp Bare, time-only U-mode scounteren policy,
+ *      S-mode time/cycle readable, U-mode time allowed and cycle/instret denied, stimecmp
  *      accessible (menvcfg.STCE set by the firmware: the mcountinhibit
  *      privileged-version probe), sfence.vma forms, HSM status.
  *   C. Timers: an S-timer interrupt through stimecmp, and through
@@ -406,6 +407,16 @@ static void __attribute__((noinline, naked)) ubody_compressed(void)
                      "j .\n");
 }
 
+static void __attribute__((noinline, naked)) ubody_time(void)
+{
+    __asm__ volatile("rdtime a0\necall\nj .\n");
+}
+
+static void __attribute__((noinline, naked)) ubody_blocked_counters(void)
+{
+    __asm__ volatile("rdcycle t0\nrdinstret t0\necall\nj .\n");
+}
+
 static uint8_t g_buf[128] __attribute__((aligned(16)));
 static uint8_t g_ustack[8192] __attribute__((aligned(16)));
 
@@ -569,7 +580,8 @@ int main(unsigned long hartid, unsigned long fdt)
     /* B: entry state. */
     puts_("B: entry state\n");
     check_eq("satp is Bare", csr_read(satp), 0);
-    check_eq("scounteren opened by the firmware", csr_read(scounteren), 7);
+    /* OpenSBI 1.9 leaves U-mode CY/IR disabled; S-mode counters stay open. */
+    check_eq("firmware enables only U-mode time", csr_read(scounteren), 0x2);
     uint64_t t0 = csr_read(time);
     uint64_t c0 = csr_read(cycle);
     for (volatile int i = 0; i < 100; i++)
@@ -582,6 +594,17 @@ int main(unsigned long hartid, unsigned long fdt)
     check("stimecmp accessible from S (menvcfg.STCE set)", g_illegal_count == 0);
     __asm__ volatile("sfence.vma\n sfence.vma x0, %0\n sfence.vma %0, x0\n" ::"r"(0ul) : "memory");
     check("sfence.vma operand forms accepted", g_illegal_count == 0);
+    g_trap_count = 0;
+    t0 = csr_read(time);
+    uint64_t ut =
+        run_in_umode((unsigned long) ubody_time, 0, (unsigned long) (g_ustack + sizeof(g_ustack)));
+    check("U-mode time readable",
+          g_illegal_count == 0 && g_trap_count == 1 && ut >= t0 && ut <= csr_read(time));
+    g_trap_count = 0;
+    run_in_umode(
+        (unsigned long) ubody_blocked_counters, 0, (unsigned long) (g_ustack + sizeof(g_ustack)));
+    check_eq("U-mode cycle and instret raise illegal instruction", g_illegal_count, 2);
+    check_eq("only two illegal instructions and the final ecall trapped to S", g_trap_count, 3);
 
     /* C: timers. */
     puts_("C: timers\n");

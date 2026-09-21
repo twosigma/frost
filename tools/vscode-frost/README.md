@@ -13,6 +13,17 @@ workspace and Microsoft C/C++ (`ms-vscode.cpptools`).
 
 ## Build and install locally
 
+The Docker image includes Node.js 26.9.0 and npm 12.0.2. Build tools
+are pinned to TypeScript 7.0.2 and vsce 4.0.0. The VS Code 1.106 API floor
+is retained; `@types/vscode` describes that supported API, and the Node type
+baseline is 22 to match the extension host rather than the build runtime.
+
+From the repository root, validate and package with the pinned image:
+
+```bash
+./scripts/frost.py run bash -c 'cd tools/vscode-frost && npm ci && npm run check && npm test && npm run package'
+```
+
 From `tools/vscode-frost`, with Node.js 22 or newer:
 
 ```bash

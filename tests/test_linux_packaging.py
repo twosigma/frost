@@ -56,6 +56,30 @@ POST_IMAGE = (
 )
 
 
+def test_native_and_container_linux_toolchains_match() -> None:
+    """Native Buildroot downloads the same verified compiler as the image."""
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text()
+    version = re.search(r"^ARG BOOTLIN_RISCV64_MUSL_VERSION=(\S+)$", dockerfile, re.M)
+    digest = re.search(r"^ARG BOOTLIN_RISCV64_MUSL_SHA256=(\S+)$", dockerfile, re.M)
+    assert version is not None and digest is not None
+    archive = f"riscv64-lp64d--musl--stable-{version[1]}.tar.xz"
+    external = REPO_ROOT / "linux" / "buildroot-external"
+    config = (external / "configs" / "frost_rv64_defconfig").read_text()
+    assert "BR2_TOOLCHAIN_EXTERNAL_CUSTOM=y" in config
+    assert "BR2_TOOLCHAIN_EXTERNAL_DOWNLOAD=y" in config
+    assert f'/tarballs/{archive}"' in config
+    assert 'BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_FROST_PATH)/patches"' in config
+    hashes = (
+        external
+        / "patches"
+        / "toolchain-external-custom"
+        / "toolchain-external-custom.hash"
+    ).read_text()
+    assert ["sha256", digest[1], archive] in [
+        line.split() for line in hashes.splitlines()
+    ]
+
+
 def _load_module(path: Path) -> ModuleType:
     """Import a script by path (the packers are CLI tools, not packages)."""
     spec = importlib.util.spec_from_file_location(path.stem, path)

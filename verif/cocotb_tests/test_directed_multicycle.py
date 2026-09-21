@@ -591,11 +591,11 @@ async def test_lh_bext_load_use_hazard(dut: Any) -> None:
     cocotb.log.info(f"Final x27 = 0x{x27_hw:08X} (expected 0x00000000)")
     cocotb.log.info(f"Final x3  = 0x{x3_hw:08X} (expected 0x{bext_expected:08X})")
 
-    assert (
-        x27_hw == 0x00000000
-    ), f"x27 mismatch: got 0x{x27_hw:08X}, expected 0x00000000"
-    assert (
-        x3_hw == bext_expected
-    ), f"x3 mismatch: got 0x{x3_hw:08X}, expected 0x{bext_expected:08X}"
+    assert x27_hw == 0x00000000, (
+        f"x27 mismatch: got 0x{x27_hw:08X}, expected 0x00000000"
+    )
+    assert x3_hw == bext_expected, (
+        f"x3 mismatch: got 0x{x3_hw:08X}, expected 0x{bext_expected:08X}"
+    )
 
     cocotb.log.info("=== PASSED: LH -> BEXT integer load-use hazard ===")

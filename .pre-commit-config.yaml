@@ -15,27 +15,27 @@
 repos:
   # Python - Ruff linter and formatter
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+    rev: v0.16.8
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format
 
   # Python - Type checking with mypy
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.14.1
+    rev: v2.3.1
     hooks:
       - id: mypy
         # Match the simulator/test environment; a floating cocotb here can
         # expose different typing APIs from the version exercised by CI.
-        additional_dependencies: [pytest, cocotb==2.1.0]
+        additional_dependencies: [pytest==9.1.1, cocotb==2.1.0]
         args: [--config-file=pyproject.toml]
         pass_filenames: false
         entry: mypy verif tests
 
   # C/C++ - clang-format
   - repo: https://github.com/pre-commit/mirrors-clang-format
-    rev: v19.1.6
+    rev: v23.1.1
     hooks:
       - id: clang-format
         types_or: [c, c++]
@@ -109,7 +109,7 @@ repos:
 
   # Copyright header check/insert
   - repo: https://github.com/Lucas-C/pre-commit-hooks
-    rev: v1.5.5
+    rev: v1.5.6
     hooks:
       - id: insert-license
         name: insert-license (Python)
@@ -163,7 +163,7 @@ repos:
   # measured against what a board really sends. Both fixers would rewrite those
   # bytes, so the captures are exempt; the reports and other fixtures are not.
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
         exclude: |

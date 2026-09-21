@@ -92,7 +92,7 @@ module nic_dma_front #(
     input  logic [LINE_BYTES*8-1:0] i_dma_resp_rdata
 );
   localparam int unsigned CountBits = $clog2(NUM_ENTRIES + 2);
-  localparam int unsigned WaitBits = $clog2(STARVATION_LIMIT + 1);
+  localparam int unsigned WaitBits  = $clog2(STARVATION_LIMIT + 1);
 
   initial begin
     if (SIDE_CAP >= NUM_ENTRIES)

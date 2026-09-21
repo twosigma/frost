@@ -191,8 +191,7 @@ def _check_window(dut: Any, addr: int) -> None:
     want1 = _word_at(base + 4)
     got = int(dut.o_instr.value)
     assert got == ((want1 << 32) | want0), (
-        f"window @0x{addr:08x}: got 0x{got:016x} "
-        f"want 0x{((want1 << 32) | want0):016x}"
+        f"window @0x{addr:08x}: got 0x{got:016x} want 0x{((want1 << 32) | want0):016x}"
     )
     sb = int(dut.o_instr_sideband.value)
     width = _GENERATOR.SIDEBAND_WIDTH
@@ -584,9 +583,9 @@ async def test_victim_store_serves_reentered_lines(dut: Any) -> None:
     # pass must be served from the slots and the store.
     _drive_pc(dut, DDR_BASE)
     await _walk_lines(dut, DDR_BASE, 6)
-    assert (
-        len(reqs) == first_pass
-    ), f"re-entry refetched lines: {[hex(r) for r in reqs[first_pass:]]}"
+    assert len(reqs) == first_pass, (
+        f"re-entry refetched lines: {[hex(r) for r in reqs[first_pass:]]}"
+    )
 
     # The re-entry is quick: a third jump back publishes within a few cycles.
     _drive_pc(dut, DDR_BASE)
@@ -634,9 +633,9 @@ async def test_invalidate_drops_the_victim_store(dut: Any) -> None:
     before = reqs.count(DDR_BASE)
     _drive_pc(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
-    assert (
-        reqs.count(DDR_BASE) == before + 1
-    ), f"stale line served after invalidate: {reqs}"
+    assert reqs.count(DDR_BASE) == before + 1, (
+        f"stale line served after invalidate: {reqs}"
+    )
 
 
 @cocotb.test()

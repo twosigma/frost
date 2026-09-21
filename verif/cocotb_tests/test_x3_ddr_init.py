@@ -128,12 +128,12 @@ class WriteSlave:
             held = self._held[channel]
             now = tuple(int(signal.value) for signal in payload)
             if held is not None:
-                assert int(
-                    valid.value
-                ), f"{channel.upper()}VALID dropped before its handshake"
-                assert (
-                    now == held
-                ), f"the {channel.upper()} payload changed while waiting for ready"
+                assert int(valid.value), (
+                    f"{channel.upper()}VALID dropped before its handshake"
+                )
+                assert now == held, (
+                    f"the {channel.upper()} payload changed while waiting for ready"
+                )
             self._held[channel] = (
                 now if int(valid.value) and not int(ready.value) else None
             )
@@ -246,7 +246,7 @@ def _check_coverage(slave: WriteSlave) -> None:
             f"bursts of {TOTAL_BURSTS}, first difference at burst {mismatch}"
         )
     assert len(slave.beats) == TOTAL_BURSTS * BEATS_PER_BURST, (
-        f"{len(slave.beats)} beats for {TOTAL_BURSTS} bursts of " f"{BEATS_PER_BURST}"
+        f"{len(slave.beats)} beats for {TOTAL_BURSTS} bursts of {BEATS_PER_BURST}"
     )
     for index, (data, strobe, last) in enumerate(slave.beats):
         assert strobe == FULL_STRB, (
@@ -376,15 +376,15 @@ async def test_requests_do_not_wait_for_ready(dut: Any) -> None:
     for cycle in range(40):
         await RisingEdge(dut.i_clk)
         await ReadOnly()
-        assert int(
-            dut.o_awvalid.value
-        ), f"no write address offered at cycle {cycle} with AWREADY held low"
-        assert int(
-            dut.o_wvalid.value
-        ), f"no write data offered at cycle {cycle} with WREADY held low"
-        assert int(dut.o_busy.value) and not int(
-            dut.o_done.value
-        ), "the module reported done without writing anything"
+        assert int(dut.o_awvalid.value), (
+            f"no write address offered at cycle {cycle} with AWREADY held low"
+        )
+        assert int(dut.o_wvalid.value), (
+            f"no write data offered at cycle {cycle} with WREADY held low"
+        )
+        assert int(dut.o_busy.value) and not int(dut.o_done.value), (
+            "the module reported done without writing anything"
+        )
 
 
 @cocotb.test()

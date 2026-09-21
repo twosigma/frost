@@ -59,7 +59,7 @@ module async_fifo #(
     input  logic                  i_ready
 );
   localparam int unsigned AddrBits = $clog2(DEPTH);
-  localparam int unsigned PtrBits = AddrBits + 1;
+  localparam int unsigned PtrBits  = AddrBits + 1;
 
   initial begin
     if ((1 << AddrBits) != DEPTH) $fatal(1, "async_fifo: DEPTH must be a power of two");

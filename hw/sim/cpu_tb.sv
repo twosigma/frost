@@ -338,7 +338,7 @@ module cpu_tb
   assign i_walk_line_resp_rdata = '0;
 
   // Memory addressing parameters
-  localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
+  localparam int unsigned MemByteAddrWidth  = $clog2(MEM_SIZE_BYTES);
   localparam int unsigned MemDwordAddrWidth = MemByteAddrWidth - 3;
 
   // Data memory (dual-port RAM, only port B used for data access): one

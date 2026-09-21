@@ -153,9 +153,9 @@ async def test_cached_sq_write_handshake(dut: Any) -> None:
     dut.i_sq_mem_write_byte_en.value = 0b0011
     dut.i_sq_mem_write_is_cached.value = 1
     await _settle()
-    assert (
-        int(dut.o_data_mem_bram_byte_wr_en.value) == 0
-    ), "cached store must not hit BRAM"
+    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0, (
+        "cached store must not hit BRAM"
+    )
     assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0b0011
     await _advance_cycle(dut)
     dut.i_sq_mem_write_en.value = 0
@@ -186,9 +186,9 @@ async def test_load_queued_behind_cached_write_inflight(dut: Any) -> None:
     dut.i_lq_mem_read_addr.value = FAST_ADDR
     dut.i_lq_mem_addr_valid.value = 1
     await _settle()
-    assert (
-        int(dut.o_data_mem_read_enable.value) == 0
-    ), "load must wait for the cached store"
+    assert int(dut.o_data_mem_read_enable.value) == 0, (
+        "load must wait for the cached store"
+    )
     await _advance_cycle(dut)
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_addr_valid.value = 0
@@ -238,9 +238,9 @@ async def test_cached_read_handshake(dut: Any) -> None:
     await _settle()
     assert int(dut.o_data_mem_read_enable.value) == 1
     assert int(dut.o_data_mem_cached_read_enable.value) == 1
-    assert (
-        int(dut.o_data_mem_cached_read_id.value) == 2
-    ), "slot id not forwarded to the cached tier"
+    assert int(dut.o_data_mem_cached_read_id.value) == 2, (
+        "slot id not forwarded to the cached tier"
+    )
     assert int(dut.o_cached_read_ready.value) == 1
     await _advance_cycle(dut)
     dut.i_lq_mem_read_en.value = 0
@@ -281,9 +281,9 @@ async def test_parked_cached_read_keeps_its_slot_id(dut: Any) -> None:
     dut.i_lq_mem_read_id.value = 3
     dut.i_lq_mem_addr_valid.value = 1
     await _settle()
-    assert (
-        int(dut.o_data_mem_cached_read_enable.value) == 0
-    ), "load must wait for the cached store"
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0, (
+        "load must wait for the cached store"
+    )
     await _advance_cycle(dut)
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_addr_valid.value = 0
@@ -333,16 +333,16 @@ async def test_fast_response_holds_a_concurrent_cached_response(dut: Any) -> Non
     dut.i_cached_read_data.value = 0xCAC4_ED01
     await _settle()
     assert int(dut.o_lq_mem_read_valid.value) == 1
-    assert (
-        int(dut.o_lq_mem_read_is_cached.value) == 0
-    ), "fast beat must win the response port"
+    assert int(dut.o_lq_mem_read_is_cached.value) == 0, (
+        "fast beat must win the response port"
+    )
     assert int(dut.o_lq_mem_read_data.value) == 0xFA57_0001
     assert int(dut.o_cached_read_ready.value) == 0, "cached response must be held"
     # The hold is flagged in the same cycle; the load queue registers it into
     # its launch hold so the next launch is skipped (starvation bound).
-    assert (
-        int(dut.o_cached_read_held.value) == 1
-    ), "held flag not raised in the hold cycle"
+    assert int(dut.o_cached_read_held.value) == 1, (
+        "held flag not raised in the hold cycle"
+    )
     await _advance_cycle(dut)
     # Next cycle the held cached response goes through.
     await _settle()
@@ -1048,9 +1048,9 @@ async def test_amo_cached_write_handshake(dut: Any) -> None:
     await _settle()
     # Launch cycle: masked off BRAM, single word-wide strobe to the cache, with
     # the AMO new value on the cached write-data bus. No done yet.
-    assert (
-        int(dut.o_data_mem_bram_byte_wr_en.value) == 0
-    ), "cached AMO must not hit BRAM"
+    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0, (
+        "cached AMO must not hit BRAM"
+    )
     # Word-lane strobe on the 64-bit beat: CACHED_ADDR has addr[2]=1, so the
     # AMO word occupies the high lanes (hw/rtl/README.md, "Data-tier bus contract").
     assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0xF0
@@ -1060,9 +1060,9 @@ async def test_amo_cached_write_handshake(dut: Any) -> None:
     # Adapter is now busy; the held enable must not re-pulse the cached strobe.
     dut.i_cached_write_inflight.value = 1
     await _settle()
-    assert (
-        int(dut.o_data_mem_cached_byte_wr_en.value) == 0
-    ), "cached AMO strobe must be a single-cycle pulse"
+    assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0, (
+        "cached AMO strobe must be a single-cycle pulse"
+    )
     assert int(dut.o_amo_mem_write_done.value) == 0
     for _ in range(4):
         await _advance_cycle(dut)
@@ -1073,9 +1073,9 @@ async def test_amo_cached_write_handshake(dut: Any) -> None:
     dut.i_cached_write_inflight.value = 0
     await _settle()
     assert int(dut.o_amo_mem_write_done.value) == 1
-    assert (
-        int(dut.o_sq_mem_write_done.value) == 0
-    ), "cached AMO done must not hit the SQ"
+    assert int(dut.o_sq_mem_write_done.value) == 0, (
+        "cached AMO done must not hit the SQ"
+    )
     dut.i_amo_mem_write_en.value = 0
     dut.i_cached_write_done.value = 0
     await _advance_cycle(dut)

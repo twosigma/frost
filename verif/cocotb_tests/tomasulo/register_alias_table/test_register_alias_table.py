@@ -89,20 +89,20 @@ async def setup_test(dut: Any) -> tuple[RATInterface, RATModel]:
 
 def check_lookup(actual: Any, expected: Any, label: str) -> None:
     """Assert that a lookup result matches expected values."""
-    assert (
-        actual.renamed == expected.renamed
-    ), f"{label}: renamed mismatch: got {actual.renamed}, expected {expected.renamed}"
+    assert actual.renamed == expected.renamed, (
+        f"{label}: renamed mismatch: got {actual.renamed}, expected {expected.renamed}"
+    )
     if expected.renamed:
-        assert (
-            actual.tag == expected.tag
-        ), f"{label}: tag mismatch: got {actual.tag}, expected {expected.tag}"
+        assert actual.tag == expected.tag, (
+            f"{label}: tag mismatch: got {actual.tag}, expected {expected.tag}"
+        )
     else:
-        assert (
-            actual.tag == 0
-        ), f"{label}: tag should be 0 when not renamed, got {actual.tag}"
-    assert (
-        actual.value == expected.value
-    ), f"{label}: value mismatch: got {actual.value:#x}, expected {expected.value:#x}"
+        assert actual.tag == 0, (
+            f"{label}: tag should be 0 when not renamed, got {actual.tag}"
+        )
+    assert actual.value == expected.value, (
+        f"{label}: value mismatch: got {actual.value:#x}, expected {expected.value:#x}"
+    )
 
 
 # =============================================================================
@@ -675,12 +675,12 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_checkpoint_restore()
 
-    assert (
-        actual_tos == ras_tos
-    ), f"RAS TOS mismatch: got {actual_tos}, expected {ras_tos}"
-    assert (
-        actual_count == ras_valid_count
-    ), f"RAS valid count mismatch: got {actual_count}, expected {ras_valid_count}"
+    assert actual_tos == ras_tos, (
+        f"RAS TOS mismatch: got {actual_tos}, expected {ras_tos}"
+    )
+    assert actual_count == ras_valid_count, (
+        f"RAS valid count mismatch: got {actual_count}, expected {ras_valid_count}"
+    )
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -698,9 +698,9 @@ async def test_checkpoint_free(dut: Any) -> None:
 
     # Checkpoint 0 should now be in use; next free should be 1
     await RisingEdge(dut_if.clock)
-    assert (
-        dut_if.checkpoint_available
-    ), "Checkpoint should still be available (1-3 free)"
+    assert dut_if.checkpoint_available, (
+        "Checkpoint should still be available (1-3 free)"
+    )
     assert dut_if.checkpoint_alloc_id == 1, "Next free should be 1"
 
     # Free checkpoint 0
@@ -872,9 +872,9 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
 
     dut_if.set_int_src1(1, 0)
     await RisingEdge(dut_if.clock)
-    assert (
-        not dut_if.read_int_src1().renamed
-    ), "x1 should not be renamed after first restore"
+    assert not dut_if.read_int_src1().renamed, (
+        "x1 should not be renamed after first restore"
+    )
 
     # Free checkpoint 0
     await dut_if.checkpoint_free(0)
@@ -905,9 +905,9 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
     dut_if.set_int_src1(5, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
-    assert (
-        result.renamed and result.tag == 15
-    ), f"x5 should have tag 15, got {result.tag}"
+    assert result.renamed and result.tag == 15, (
+        f"x5 should have tag 15, got {result.tag}"
+    )
 
     # f0 was renamed after the checkpoint, so it is cleared
     dut_if.set_fp_src1(0, 0)
@@ -1039,12 +1039,12 @@ async def test_flush_all_priority_over_commit_save_free(dut: Any) -> None:
         assert not result.renamed, f"x{reg} should not be renamed after flush collision"
 
     # Checkpoint save/free in collision cycle must not matter: flush leaves all free.
-    assert (
-        dut_if.checkpoint_available
-    ), "Checkpoint should be available after flush collision"
-    assert (
-        dut_if.checkpoint_alloc_id == 0
-    ), "All checkpoints should be free after flush collision"
+    assert dut_if.checkpoint_available, (
+        "Checkpoint should be available after flush collision"
+    )
+    assert dut_if.checkpoint_alloc_id == 0, (
+        "All checkpoints should be free after flush collision"
+    )
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -1087,9 +1087,9 @@ async def test_checkpoint_restore_priority_over_commit(dut: Any) -> None:
     expected = model.lookup_int(5, 0x77)
     check_lookup(result, expected, "INT x5 after restore+commit collision")
     assert result.renamed, "x5 should remain renamed after restore+commit collision"
-    assert (
-        result.tag == 1
-    ), f"x5 tag should be 1 after restore+commit collision, got {result.tag}"
+    assert result.tag == 1, (
+        f"x5 tag should be 1 after restore+commit collision, got {result.tag}"
+    )
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -1112,12 +1112,12 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
     model.checkpoint_free(0)
     model.checkpoint_save(0, 1, 0, 0)
 
-    assert (
-        dut_if.checkpoint_available
-    ), "Other checkpoint slots should still be available after same-slot save+free"
-    assert (
-        dut_if.checkpoint_alloc_id == 1
-    ), "Slot 0 should remain allocated when save+free target the same slot"
+    assert dut_if.checkpoint_available, (
+        "Other checkpoint slots should still be available after same-slot save+free"
+    )
+    assert dut_if.checkpoint_alloc_id == 1, (
+        "Slot 0 should remain allocated when save+free target the same slot"
+    )
 
     # Different slots: save slot 1 and free slot 0 in same cycle.
     # Slot 0 is already valid from the previous save+free collision.
@@ -1132,12 +1132,12 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
     model.checkpoint_save(1, 3, 0, 0)
 
     # Slot 0 should now be free, slot 1 should be in use, so next free is 0.
-    assert (
-        dut_if.checkpoint_available
-    ), "Checkpoint should be available after save/free on different slots"
-    assert (
-        dut_if.checkpoint_alloc_id == 0
-    ), "Slot 0 should be next free after save(slot1)+free(slot0)"
+    assert dut_if.checkpoint_available, (
+        "Checkpoint should be available after save/free on different slots"
+    )
+    assert dut_if.checkpoint_alloc_id == 0, (
+        "Slot 0 should be next free after save(slot1)+free(slot0)"
+    )
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -1752,13 +1752,13 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
 
     # Verify checkpoint availability matches model
     avail_model, id_model = model.checkpoint_available()
-    assert (
-        dut_if.checkpoint_available == avail_model
-    ), f"Checkpoint available mismatch: DUT={dut_if.checkpoint_available}, model={avail_model}"
+    assert dut_if.checkpoint_available == avail_model, (
+        f"Checkpoint available mismatch: DUT={dut_if.checkpoint_available}, model={avail_model}"
+    )
     if avail_model:
-        assert (
-            dut_if.checkpoint_alloc_id == id_model
-        ), f"Checkpoint alloc_id mismatch: DUT={dut_if.checkpoint_alloc_id}, model={id_model}"
+        assert dut_if.checkpoint_alloc_id == id_model, (
+            f"Checkpoint alloc_id mismatch: DUT={dut_if.checkpoint_alloc_id}, model={id_model}"
+        )
 
     cocotb.log.info(f"=== Test Passed ({num_ops} random ops, seed={seed}) ===")
 

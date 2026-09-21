@@ -714,13 +714,13 @@ async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
     ):
         _drive(dut, raw)
         await _settle()
-        assert (
-            bool(dut.o_illegal.value) is False
-        ), f"{name} ({raw:#06x}) flagged illegal"
+        assert bool(dut.o_illegal.value) is False, (
+            f"{name} ({raw:#06x}) flagged illegal"
+        )
         # Expanded instruction must target x0 (rd = bits[11:7]) -> nop.
-        assert (
-            (int(dut.o_instr_expanded.value) >> 7) & 0x1F
-        ) == 0, f"{name} ({raw:#06x}) expansion does not write x0"
+        assert ((int(dut.o_instr_expanded.value) >> 7) & 0x1F) == 0, (
+            f"{name} ({raw:#06x}) expansion does not write x0"
+        )
 
 
 # ============================================================================

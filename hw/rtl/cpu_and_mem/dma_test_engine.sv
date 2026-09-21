@@ -99,7 +99,7 @@ module dma_test_engine #(
     input  logic [     ID_BITS-1:0] i_dma_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_dma_resp_rdata
 );
-  localparam int unsigned LineBits = LINE_BYTES * 8;
+  localparam int unsigned LineBits   = LINE_BYTES * 8;
   localparam int unsigned OffsetBits = $clog2(LINE_BYTES);
 
   // ---------------------------------------------------------------------------

@@ -528,7 +528,7 @@ module fetch_provider #(
   // refetched. Lookups use the registered candidate lines only, so nothing
   // here touches the window path. Each line lives in one place: a copied
   // entry is invalidated, and a slot's old line is stored when replaced.
-  localparam int unsigned VictimLines = (VICTIM_LINES > 0) ? VICTIM_LINES : 1;
+  localparam int unsigned VictimLines   = (VICTIM_LINES > 0) ? VICTIM_LINES : 1;
   localparam int unsigned VictimPtrBits = (VictimLines > 1) ? $clog2(VictimLines) : 1;
   logic [VictimLines-1:0] vs_valid_q;
   logic [LineAddrBits-1:0] vs_line_q[VictimLines];

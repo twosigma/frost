@@ -314,9 +314,9 @@ async def test_allocation_full(dut: Any) -> None:
 
     # Verify full
     assert dut_if.full, "Should be full after DEPTH allocations"
-    assert (
-        dut_if.count == REORDER_BUFFER_DEPTH
-    ), f"Count should be {REORDER_BUFFER_DEPTH}"
+    assert dut_if.count == REORDER_BUFFER_DEPTH, (
+        f"Count should be {REORDER_BUFFER_DEPTH}"
+    )
     assert model.full, "Model should also be full"
 
     ready, _, full = dut_if.read_alloc_response()
@@ -343,9 +343,9 @@ async def test_slot2_dual_allocation_adjacent_tags(dut: Any) -> None:
     assert ready_2 and not full_2, "Slot 2 should be ready"
     assert tag_1 == 0, f"Slot 1 should allocate tag 0, got {tag_1}"
     assert tag_2 == 1, f"Slot 2 should allocate tag 1, got {tag_2}"
-    assert (
-        dut_if.count == 2
-    ), f"Dual allocation should leave count=2, got {dut_if.count}"
+    assert dut_if.count == 2, (
+        f"Dual allocation should leave count=2, got {dut_if.count}"
+    )
     assert dut_if.head_tag == 0
     assert dut_if.tail_ptr & (REORDER_BUFFER_DEPTH - 1) == 2
 
@@ -835,9 +835,9 @@ async def test_slot2_branch_checkpoint_metadata_and_no_widen_commit(dut: Any) ->
     commit_1 = dut_if.read_commit()
     commit_2 = dut_if.read_commit_2()
     assert commit_1["valid"] and commit_1["tag"] == tag_3
-    assert not commit_2[
-        "valid"
-    ], "Mispredicted branch at head+1 must block widen commit"
+    assert not commit_2["valid"], (
+        "Mispredicted branch at head+1 must block widen commit"
+    )
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
@@ -981,9 +981,9 @@ async def test_store_complete_marks_done(dut: Any) -> None:
     dut_if.clear_alloc_request()
 
     assert dut_if.count == 1, "Should have 1 entry"
-    assert (
-        int(dut.o_head_done.value) == 0
-    ), "Store should not be done immediately after allocation"
+    assert int(dut.o_head_done.value) == 0, (
+        "Store should not be done immediately after allocation"
+    )
 
     dut_if.drive_store_complete(0)
     model.store_complete(0)
@@ -991,9 +991,9 @@ async def test_store_complete_marks_done(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_store_complete()
 
-    assert (
-        int(dut.o_head_done.value) == 1
-    ), "Direct store completion should mark the head entry done"
+    assert int(dut.o_head_done.value) == 1, (
+        "Direct store completion should mark the head entry done"
+    )
 
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
@@ -1166,9 +1166,9 @@ async def test_branch_misprediction_not_taken(dut: Any) -> None:
     if model.can_commit():
         expected = model.commit()
         assert expected.misprediction, "Should be mispredicted"
-        assert (
-            expected.redirect_pc == branch_pc + 4
-        ), f"Redirect should be pc+4={branch_pc + 4:#x}, got {expected.redirect_pc:#x}"
+        assert expected.redirect_pc == branch_pc + 4, (
+            f"Redirect should be pc+4={branch_pc + 4:#x}, got {expected.redirect_pc:#x}"
+        )
 
     # Poll for the DUT commit; it arrives within a few cycles.
     for _ in range(5):
@@ -1216,9 +1216,9 @@ async def test_xlen_wide_branch_metadata(dut: Any) -> None:
     assert entry.pc == (branch_pc & MASK_XLEN)
     assert entry.predicted_target == (predicted_target & MASK_XLEN)
     assert entry.pc >> 32, "RV64 model discarded the PC upper half"
-    assert (
-        entry.predicted_target >> 32
-    ), "RV64 model discarded the predicted-target upper half"
+    assert entry.predicted_target >> 32, (
+        "RV64 model discarded the predicted-target upper half"
+    )
 
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
@@ -1239,9 +1239,9 @@ async def test_xlen_wide_branch_metadata(dut: Any) -> None:
     assert expected.pc == (branch_pc & MASK_XLEN)
     assert expected.branch_target == (resolved_target & MASK_XLEN)
     assert expected.redirect_pc == (resolved_target & MASK_XLEN)
-    assert (
-        expected.branch_target >> 32
-    ), "RV64 model discarded the resolved-target upper half"
+    assert expected.branch_target >> 32, (
+        "RV64 model discarded the resolved-target upper half"
+    )
     assert expected.redirect_pc >> 32, "RV64 model discarded the redirect-PC upper half"
 
     await RisingEdge(dut_if.clock)
@@ -1441,9 +1441,9 @@ async def test_fence_i_flush_pulse(dut: Any) -> None:
 
     await FallingEdge(dut_if.clock)  # type: ignore[unreachable]
     await RisingEdge(dut_if.clock)
-    assert (
-        not dut_if.fence_i_flush
-    ), "fence_i_flush should be deasserted after one cycle"
+    assert not dut_if.fence_i_flush, (
+        "fence_i_flush should be deasserted after one cycle"
+    )
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -1611,8 +1611,7 @@ async def test_mret_handshake(dut: Any) -> None:
     assert commit["valid"], "MRET commit should have occurred"
     assert commit["is_mret"], "Commit should be MRET"
     assert commit["redirect_pc"] == mepc_value, (
-        f"redirect_pc should be mepc={mepc_value:#x}, "
-        f"got {commit['redirect_pc']:#x}"
+        f"redirect_pc should be mepc={mepc_value:#x}, got {commit['redirect_pc']:#x}"
     )
 
     await FallingEdge(dut_if.clock)
@@ -2521,9 +2520,9 @@ async def test_random_allocation_commit(dut: Any) -> None:
     await ClockCycles(dut_if.clock, REORDER_BUFFER_DEPTH + 10)
     await FallingEdge(dut_if.clock)
 
-    assert (
-        dut_if.empty
-    ), f"Buffer should be empty after draining all entries (count={dut_if.count})"
+    assert dut_if.empty, (
+        f"Buffer should be empty after draining all entries (count={dut_if.count})"
+    )
 
     cocotb.log.info(f"Completed {total_allocated} allocations")
     cocotb.log.info("=== Test Passed ===")
@@ -2626,7 +2625,7 @@ async def test_random_branch_flush(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
 
     cocotb.log.info(
-        f"Tested {num_sequences} sequences, " f"{total_mispredictions} mispredictions"
+        f"Tested {num_sequences} sequences, {total_mispredictions} mispredictions"
     )
     cocotb.log.info("=== Test Passed ===")
 
@@ -2657,9 +2656,9 @@ async def test_stress_full_empty(dut: Any) -> None:
             dut_if.clear_alloc_request()
 
         assert dut_if.full, f"Cycle {cycle}: DUT should be full"
-        assert (
-            len(pending_tags) == REORDER_BUFFER_DEPTH
-        ), f"Cycle {cycle}: Should have {REORDER_BUFFER_DEPTH} entries"
+        assert len(pending_tags) == REORDER_BUFFER_DEPTH, (
+            f"Cycle {cycle}: Should have {REORDER_BUFFER_DEPTH} entries"
+        )
 
         for tag in pending_tags:
             cdb = CDBWrite(tag=tag, value=random.randint(0, MASK64))

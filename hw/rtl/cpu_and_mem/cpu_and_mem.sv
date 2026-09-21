@@ -384,8 +384,8 @@ module cpu_and_mem #(
   // hierarchy's downstream port two more (the top arbiter's port bits over
   // L1D / walker+L1I / DMA), and the board AXI id is fixed at DdrAxiIdBits
   // (zero-extended).
-  localparam int unsigned LineIdBits = 3;
-  localparam int unsigned DownIdBits = LineIdBits + 2;
+  localparam int unsigned LineIdBits   = 3;
+  localparam int unsigned DownIdBits   = LineIdBits + 2;
   localparam int unsigned DdrAxiIdBits = 5;
 
   // DMA coherence handshake between the hierarchy's sequencer and the core.

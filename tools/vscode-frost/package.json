@@ -44,10 +44,10 @@
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
-    "@types/node": "20.19.43",
+    "@types/node": "22.20.4",
     "@types/vscode": "1.106.0",
-    "@vscode/vsce": "3.9.2",
-    "typescript": "5.9.3"
+    "@vscode/vsce": "4.0.0",
+    "typescript": "7.0.2"
   },
   "contributes": {
     "commands": [

@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# GitHub CI environment; Ubuntu 24.04 supplies Python 3.12.
-FROM ubuntu:24.04
+# GitHub CI environment. Core tools below use pinned upstream stable releases.
+FROM ubuntu:26.04
 
 # Disable interactive package prompts.
 ENV DEBIAN_FRONTEND=noninteractive
@@ -21,21 +21,22 @@ ENV DEBIAN_FRONTEND=noninteractive
 # cocotb 2.1 requires Verilator 5.036 or newer.
 ARG VERILATOR_VERSION=5.052
 
-# Ubuntu ships Yosys 0.33; FROST needs 0.64+.
-ARG YOSYS_VERSION=0.68
+# Yosys and SymbiYosys are released together.
+ARG YOSYS_VERSION=0.69
 
 # Keep SymbiYosys aligned with Yosys; older SBY used the removed ABC -fast option.
-ARG SBY_VERSION=0.68
+ARG SBY_VERSION=0.69
 
-ARG Z3_VERSION=4.15.0
+ARG Z3_VERSION=5.1.0
 
 ARG BOOLECTOR_VERSION=3.2.4
 
 # Bare-metal toolchain with newlib.
 ARG XPACK_RISCV_VERSION=15.2.0-1
 
-# Pin Ubuntu clang-tidy so package drift cannot change the lint gate.
-ARG CLANG_TIDY_VERSION=18.1.3
+# LLVM supplies clang, clang-format and clang-tidy from the same release.
+ARG LLVM_VERSION=23.1.1
+ARG LLVM_SHA256=832aeb58d105de1cabc7b982dd2c65de0610f7377df48ae8fc2dd8e97420a15c
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -45,7 +46,6 @@ RUN apt-get update && apt-get install -y \
     python3-pip \
     # Build tools (shared by Verilator, Yosys, and Boolector)
     make \
-    cmake \
     git \
     xxd \
     gawk \
@@ -53,10 +53,23 @@ RUN apt-get update && apt-get install -y \
     flex \
     bison \
     g++ \
-    clang \
-    clang-format \
-    clang-tidy \
     pkg-config \
+    # Python, GCC and QEMU source-build dependencies
+    ca-certificates \
+    libbz2-dev \
+    liblzma-dev \
+    libsqlite3-dev \
+    libzstd-dev \
+    uuid-dev \
+    libgdbm-dev \
+    libgmp-dev \
+    libmpfr-dev \
+    libmpc-dev \
+    libglib2.0-dev \
+    libpixman-1-dev \
+    libssl-dev \
+    libncurses-dev \
+    texinfo \
     # Downloads and archive extraction
     curl \
     xz-utils \
@@ -74,12 +87,72 @@ RUN apt-get update && apt-get install -y \
     # Cleanup apt cache
     && rm -rf /var/lib/apt/lists/*
 
-RUN clang-tidy --version | grep -F "version ${CLANG_TIDY_VERSION}"
+# Build a released native GCC; Ubuntu's gcc-16 package is a prerelease.
+ARG GCC_VERSION=16.2.0
+ARG GCC_SHA256=e6738e29597f733270731aa90600f37ffdc045079dfc27ec7e8192cc81085c3e
+RUN curl -fL -o /tmp/gcc.tar.xz https://ftp.gnu.org/gnu/gcc/gcc-${GCC_VERSION}/gcc-${GCC_VERSION}.tar.xz \
+    && echo "${GCC_SHA256}  /tmp/gcc.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/gcc.tar.xz -C /tmp \
+    && mkdir /tmp/gcc-build \
+    && cd /tmp/gcc-build \
+    && /tmp/gcc-${GCC_VERSION}/configure --prefix=/opt/gcc \
+        --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
+    && make -j$(nproc) \
+    && make install-strip \
+    && ln -sf /opt/gcc/bin/gcc /opt/gcc/bin/cc \
+    && ln -sf /opt/gcc/bin/g++ /opt/gcc/bin/c++ \
+    && echo /opt/gcc/lib64 > /etc/ld.so.conf.d/frost-gcc.conf \
+    && ldconfig \
+    && rm -rf /tmp/gcc*
+ENV PATH="/opt/gcc/bin:${PATH}"
+
+# cocotb embeds Python, so install the shared library and register it with ld.so.
+# Keep /usr/bin/python3 for distribution utilities; repo commands use /usr/local.
+ARG PYTHON_VERSION=3.14.7
+ARG PYTHON_SHA256=3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81
+RUN curl -fL -o /tmp/python.tar.xz https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tar.xz \
+    && echo "${PYTHON_SHA256}  /tmp/python.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/python.tar.xz -C /tmp \
+    && cd /tmp/Python-${PYTHON_VERSION} \
+    && ./configure --enable-shared --with-ensurepip=install \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/Python-* /tmp/python.tar.xz
+
+# Install the three tools used by the repo and Clang's builtin headers/runtime.
+# These upstream executables statically link LLVM; the archive's other tools
+# and shared LLVM libraries would add several GB to every CI image transfer.
+RUN curl -fL -o /tmp/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-${LLVM_VERSION}/LLVM-${LLVM_VERSION}-Linux-X64.tar.xz \
+    && echo "${LLVM_SHA256}  /tmp/llvm.tar.xz" | sha256sum -c - \
+    && mkdir -p /opt/llvm \
+    && tar -xJf /tmp/llvm.tar.xz -C /opt/llvm --strip-components=1 --wildcards \
+        '*/bin/clang' '*/bin/clang++' '*/bin/clang-[0-9]*' \
+        '*/bin/clang-format' '*/bin/clang-tidy' '*/lib/clang/*' \
+    && rm /tmp/llvm.tar.xz
+ENV PATH="/opt/llvm/bin:${PATH}"
+# Ubuntu also has a prerelease GCC directory without C++ libraries. Tell both
+# native Clang drivers to use the complete, released GCC installed above.
+RUN echo '--gcc-toolchain=/opt/gcc' > /opt/llvm/bin/clang.cfg \
+    && cp /opt/llvm/bin/clang.cfg /opt/llvm/bin/clang++.cfg \
+    && clang --version | grep -F "version ${LLVM_VERSION}" \
+    && clang-tidy --version | grep -F "version ${LLVM_VERSION}" \
+    && clang-format --version | grep -F "version ${LLVM_VERSION}"
+
+ARG PIP_VERSION=26.2.1
+ARG CMAKE_VERSION=4.4.3
+ARG MESON_VERSION=1.12.0
+ARG NINJA_VERSION=1.13.2
+RUN python3 -m pip install --no-cache-dir \
+    "pip==${PIP_VERSION}" "cmake==${CMAKE_VERSION}" "meson==${MESON_VERSION}" "ninja==${NINJA_VERSION}"
 
 # Install Verible (SystemVerilog formatter and linter)
-ARG VERIBLE_VERSION=0.0-4051-g9fdb4057
-RUN curl -L https://github.com/chipsalliance/verible/releases/download/v${VERIBLE_VERSION}/verible-v${VERIBLE_VERSION}-linux-static-x86_64.tar.gz \
-    | tar -xz -C /usr/local --strip-components=1
+ARG VERIBLE_VERSION=0.0-4294-gc1d8f5e8
+ARG VERIBLE_SHA256=64499cf72cfe88911a015b707a06e18a47effbc0296348b7ca13331d94db6940
+RUN curl -fL -o /tmp/verible.tar.gz https://github.com/chipsalliance/verible/releases/download/v${VERIBLE_VERSION}/verible-v${VERIBLE_VERSION}-linux-static-x86_64.tar.gz \
+    && echo "${VERIBLE_SHA256}  /tmp/verible.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/verible.tar.gz -C /usr/local --strip-components=1 \
+    && rm /tmp/verible.tar.gz
 
 # Build Verilator from source
 RUN git clone https://github.com/verilator/verilator.git /tmp/verilator \
@@ -121,7 +194,9 @@ RUN git clone https://github.com/Z3Prover/z3.git /tmp/z3 \
     && rm -rf /tmp/z3
 
 # Lingeling needs -Wno-error=incompatible-pointer-types with GCC 14+, so build
-# it directly instead of using contrib/setup-lingeling.sh.
+# it directly instead of using contrib/setup-lingeling.sh, with C17 rather
+# than GCC 15+'s C23 default. Boolector and its
+# bundled btor2tools predate CMake 4; scope the policy compatibility to them.
 RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
     && cd /tmp/boolector \
     && git checkout ${BOOLECTOR_VERSION} \
@@ -131,13 +206,13 @@ RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
     && cd lingeling \
     && git checkout 7d5db72420b95ab356c98ca7f7a4681ed2c59c70 \
     && ./configure.sh -fPIC \
-    && sed -i 's/^CFLAGS=\(.*\)/CFLAGS=\1 -Wno-error=incompatible-pointer-types/' makefile \
+    && sed -i 's/^CFLAGS=\(.*\)/CFLAGS=\1 -std=gnu17 -Wno-error=incompatible-pointer-types/' makefile \
     && make -j$(nproc) \
     && cp liblgl.a ../install/lib/ \
     && cp lglib.h ../install/include/ \
     && cd /tmp/boolector \
-    && ./contrib/setup-btor2tools.sh \
-    && ./configure.sh \
+    && CMAKE_POLICY_VERSION_MINIMUM=3.5 ./contrib/setup-btor2tools.sh \
+    && CMAKE_POLICY_VERSION_MINIMUM=3.5 ./configure.sh \
     && cd build \
     && make -j$(nproc) \
     && make install \
@@ -154,7 +229,9 @@ ENV RISCV_PREFIX=riscv-none-elf-
 # Permit a bind-mounted checkout owned by the invoking host user.
 RUN git config --global --add safe.directory /workspace
 
-# Buildroot host dependencies and QEMU for the Linux image build (OpenSBI, the
+ARG OPENOCD_VERSION=0.12.0
+
+# Buildroot host dependencies for the Linux image build (OpenSBI, the
 # test userspace and the NIC module built against Debian's kernel headers -- no
 # kernel is compiled here) and the QEMU boot lane. This also supports
 # ``load_software.py <board> linux_boot``. Keep the layer late to preserve the
@@ -174,39 +251,65 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libelf-dev \
     libncurses-dev \
     device-tree-compiler \
-    qemu-system-misc \
+    libfdt-dev \
     openocd \
-    && rm -rf /var/lib/apt/lists/* \
-    && command -v qemu-system-riscv64 > /dev/null
+    libslirp-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Python test and pre-commit dependencies. Do not install standalone ruff or
-# mypy: pre-commit creates the pinned hook environments used by CI. Standalone
-# versions have drifted from the gate (ruff 0.15.20 vs pinned 0.8.4 on
-# 2026-07-11).
+# Python's ensurepip no longer supplies setuptools or wheel. QEMU's offline
+# build environment needs them to install its bundled qemu.qmp wheel.
+ARG SETUPTOOLS_VERSION=84.0.0
+ARG WHEEL_VERSION=0.48.0
+RUN python3 -m pip install --no-cache-dir \
+    "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
+
+# QEMU's RISC-V system emulator and bundled firmware for the Debian boot gate.
+ARG QEMU_VERSION=11.1.1
+ARG QEMU_SHA256=079ffbff8a7111bbc89022107cbabf3bbfd614d5fc9d7cc675991196aca12482
+RUN curl -fL -o /tmp/qemu.tar.xz https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz \
+    && echo "${QEMU_SHA256}  /tmp/qemu.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/qemu.tar.xz -C /tmp \
+    && cd /tmp/qemu-${QEMU_VERSION} \
+    && ./configure --target-list=riscv64-softmmu --disable-docs --disable-werror \
+        --disable-gtk --disable-sdl --disable-opengl --disable-virglrenderer \
+        --disable-download \
+    && make -j$(nproc) \
+    && make install \
+    && qemu-system-riscv64 --version | grep -F "${QEMU_VERSION}" \
+    && test -f /usr/local/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin \
+    && rm -rf /tmp/qemu*
+
+# Python test and pre-commit dependencies. Ruff and mypy live in the pinned
+# pre-commit hook environments, so the lint gate has only one version of each.
 ARG COCOTB_VERSION=2.1.0
 ARG PYTEST_VERSION=9.1.1
 ARG PYTEST_COV_VERSION=7.1.0
-ARG PRE_COMMIT_VERSION=4.6.0
-ARG CLICK_VERSION=8.4.2
-RUN pip install --no-cache-dir --break-system-packages \
+ARG PRE_COMMIT_VERSION=4.6.2
+ARG CLICK_VERSION=8.5.0
+RUN python3 -m pip install --no-cache-dir \
     "cocotb==${COCOTB_VERSION}" \
     "pytest==${PYTEST_VERSION}" \
     "pytest-cov==${PYTEST_COV_VERSION}" \
     "pre-commit==${PRE_COMMIT_VERSION}" \
     "click==${CLICK_VERSION}"
 
+# Spike's bundled libfdt needs C17: C23 makes memchr preserve const qualifiers.
 # Pinned Spike generates reproducible architecture-test signatures. ``dtc``
 # comes from the apt layer. Keep this late
 # to preserve earlier tool-build caches.
-ARG SPIKE_VERSION=3d8eb089bd289c59dcb506f197a172e02beb7b5b
+ARG SPIKE_VERSION=02b1dc182164bb73b19b050676dd89f0834f8b2e
 RUN git clone https://github.com/riscv-software-src/riscv-isa-sim.git /tmp/riscv-isa-sim \
     && cd /tmp/riscv-isa-sim \
     && git checkout ${SPIKE_VERSION} \
     && mkdir build \
     && cd build \
-    && ../configure --prefix=/usr/local \
+    && CFLAGS="-O2 -std=gnu17" ../configure --prefix=/usr/local \
     && make -j$(nproc) \
     && make install \
+    && strip --strip-debug /usr/local/bin/spike /usr/local/bin/spike-log-parser \
+        /usr/local/bin/xspike /usr/local/bin/termios-xspike \
+        /usr/local/lib/libriscv.so /usr/local/lib/libcustomext.so \
+        /usr/local/lib/libsoftfloat.so \
     && rm -rf /tmp/riscv-isa-sim
 
 # SystemVerilog conversion for the portable Ethernet synthesis check, which
@@ -230,12 +333,10 @@ RUN curl -fL -o /tmp/sv2v-Linux.zip https://github.com/zachjs/sv2v/releases/down
 # Linux-targeted RISC-V toolchain: the Bootlin riscv64 musl release that the
 # Buildroot MMU Linux lane uses as its external toolchain. It also builds the
 # OpenSBI firmware (linux/opensbi_build.py): OpenSBI links as a PIE, which the
-# bare-metal xPack linker above cannot do. Pinned to the release Buildroot's
-# BR2_TOOLCHAIN_EXTERNAL_BOOTLIN_RISCV64_LP64D_MUSL_STABLE selects, with the
-# hash from toolchain-external-bootlin.hash. Keep this late to preserve the
-# earlier tool-build caches.
-ARG BOOTLIN_RISCV64_MUSL_VERSION=2025.08-1
-ARG BOOTLIN_RISCV64_MUSL_SHA256=2c5155ce133c9c8dddde8f69b0715aa07e0520d99b1fd0131d915357c6fbce39
+# bare-metal xPack linker above cannot do. Keep the release and upstream hash
+# aligned with frost_rv64_defconfig and the external tree's toolchain hash.
+ARG BOOTLIN_RISCV64_MUSL_VERSION=2026.08-1
+ARG BOOTLIN_RISCV64_MUSL_SHA256=747286a6aec5def762a68491a884195a3a415352c76f70140e36eac48c77b73c
 RUN curl -fL -o /tmp/bootlin-riscv64.tar.xz \
         https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION}.tar.xz \
     && echo "${BOOTLIN_RISCV64_MUSL_SHA256}  /tmp/bootlin-riscv64.tar.xz" | sha256sum -c - \
@@ -243,11 +344,26 @@ RUN curl -fL -o /tmp/bootlin-riscv64.tar.xz \
     && rm -f /tmp/bootlin-riscv64.tar.xz \
     && ln -s /opt/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION} /opt/riscv64-linux-musl
 
-# Prefix consumed by linux/opensbi_build.py and the Buildroot lane's
-# preinstalled-toolchain path (BR2_TOOLCHAIN_EXTERNAL_PATH).
+# Prefix consumed by linux/opensbi_build.py. Buildroot downloads the same
+# release itself so native Vivado loaders can build the userspace too.
 ENV PATH="/opt/riscv64-linux-musl/bin:${PATH}"
 ENV FROST_LINUX_CROSS_COMPILE=riscv64-linux-
 ENV FROST_LINUX_TOOLCHAIN_PATH=/opt/riscv64-linux-musl
+
+# Reproducible VS Code extension build/test/package tooling.
+ARG NODE_VERSION=26.9.0
+ARG NPM_VERSION=12.0.2
+ARG NODE_SHA256=c6ecd8efc1c1d395265891675319da7a7b3785c6be174bd78933cf4f057624d1
+RUN curl -fL -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.xz \
+    && npm install --global --ignore-scripts "npm@${NPM_VERSION}"
+
+# Buildroot rejects Ubuntu 26.04's uutils install (upstream issue #12166).
+# GNU install is supplied by coreutils alongside it; select that implementation
+# for the native host-package and target-rootfs installs at container runtime.
+RUN update-alternatives --install /usr/bin/install install /usr/bin/gnuinstall 100
 
 # Use the bind-mounted repository as the workspace.
 WORKDIR /workspace
@@ -260,6 +376,7 @@ COPY Dockerfile docker_entrypoint.py /usr/local/share/frost-image-inputs/
 COPY docker_entrypoint.py /usr/local/bin/
 # Some source installs leave /usr/local/bin too private for ``docker run --user``.
 RUN chmod 0755 /usr/local/bin \
+    && chmod 0755 /usr/local/lib /usr/local/share /usr/local/include \
     && chmod 0755 /usr/local/bin/docker_entrypoint.py \
     && chmod 0444 /usr/local/share/frost-image-inputs/*
 ENTRYPOINT ["/usr/local/bin/docker_entrypoint.py"]

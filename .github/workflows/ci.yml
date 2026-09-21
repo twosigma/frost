@@ -32,23 +32,23 @@ concurrency:
 env:
   # Keep in sync with Dockerfile.
   VERILATOR_VERSION: "5.052"
-  YOSYS_VERSION: "0.68"
-  SBY_VERSION: "0.68"
+  YOSYS_VERSION: "0.69"
+  SBY_VERSION: "0.69"
 
 jobs:
   # Shared image for all jobs.
   build-docker:
     name: Build Docker Image
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4.4.1
 
       - name: Build and export Docker image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7.4.0
         with:
           context: .
           tags: frost-dev:latest
@@ -61,7 +61,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: frost-docker-image
           path: /tmp/frost-dev.tar
@@ -72,7 +72,7 @@ jobs:
   # Unit benches and DDR probes/fetch fuzz run only on the BRAM axis.
   test-verilator:
     name: Cocotb ${{ matrix.shard.name }} (Verilator / ${{ matrix.mem_config }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
       fail-fast: false
@@ -186,18 +186,20 @@ jobs:
               pytest_filter: test_unit
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run Cocotb ${{ matrix.shard.name }} with Verilator (${{ matrix.mem_config }})
         env:
@@ -212,7 +214,7 @@ jobs:
   # Standalone Ethernet uses the shared image but has no CPU/software dependencies.
   test-net10g:
     name: Ethernet MAC/PCS (cocotb and synthesis)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     timeout-minutes: 35
     env:
@@ -222,16 +224,18 @@ jobs:
         shell: bash
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run all standalone Ethernet simulations
         timeout-minutes: 15
@@ -248,7 +252,7 @@ jobs:
 
       - name: Upload Ethernet results and diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: net10g-results
           retention-days: 7
@@ -270,7 +274,7 @@ jobs:
   # it is diagnostic, not a compliance target.
   test-arch-compliance:
     name: Arch Tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Headroom beyond per-test timeouts for slow extension batches.
     timeout-minutes: 300
     needs: build-docker
@@ -294,18 +298,20 @@ jobs:
             mem_config: ddr
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
         run: |
@@ -319,7 +325,7 @@ jobs:
   # page faults, Svade A/D handling); v runs on DDR only, user-level suites only.
   test-riscv-tests:
     name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
       fail-fast: false
@@ -340,18 +346,20 @@ jobs:
           - {suite: rv64uzbkb, mem_config: ddr, env: v}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run riscv-tests ISA suite (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
         run: |
@@ -362,7 +370,7 @@ jobs:
   # riscv-tests benchmarks by memory tier.
   test-riscv-benchmarks:
     name: riscv-tests Benchmarks (${{ matrix.benchmark }} / ${{ matrix.mem_config }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
       fail-fast: false
@@ -371,18 +379,20 @@ jobs:
         mem_config: [bram, ddr]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run riscv-tests benchmark (${{ matrix.benchmark }} / ${{ matrix.mem_config }})
         run: |
@@ -395,7 +405,7 @@ jobs:
   # data access of the random stream translated; ddr only).
   test-riscv-torture:
     name: riscv-torture Tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     strategy:
       fail-fast: false
@@ -406,18 +416,20 @@ jobs:
           - {mem_config: ddr, paged: true}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run riscv-torture tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
         run: |
@@ -428,22 +440,24 @@ jobs:
   # Yosys synthesis.
   test-synthesis:
     name: Yosys Synthesis Check
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run synthesis tests
         run: |
@@ -453,22 +467,24 @@ jobs:
   # SymbiYosys formal verification.
   test-formal:
     name: Formal Verification
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run formal verification
         run: |
@@ -478,11 +494,11 @@ jobs:
   # Run the pinned pre-commit environment in Docker.
   lint:
     name: Lint
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       # Fetch only submodules needed by clang-tidy includes; skip entrypoint
       # auto-init so lint does not fetch Buildroot.
@@ -495,13 +511,15 @@ jobs:
             sw/apps/riscv_tests/riscv-tests
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run pre-commit hooks
         run: |
@@ -512,20 +530,22 @@ jobs:
   # Python/tooling tests only. The runner UID/GID also tests non-root containers.
   test-python:
     name: Fast Python Tests
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Run fast Python tests as the host user
         run: |
@@ -556,7 +576,7 @@ jobs:
   # functional check.
   build-frost-linux-mmu:
     name: Build FROST MMU Linux Image (Debian kernel + Buildroot userspace + OpenSBI)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: build-docker
     # No kernel is built here any more: the work is the Bootlin toolchain and
     # Debian package downloads, the userspace, OpenSBI and the NIC module.
@@ -566,12 +586,12 @@ jobs:
       BUILD_DIR: linux/build-mmu
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           submodules: recursive
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
@@ -582,7 +602,7 @@ jobs:
           rm -f /tmp/frost-dev.tar
 
       - name: Cache Buildroot downloads (source tarballs and the toolchain)
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: linux/dl
           key: br2-dl-mmu-${{ hashFiles('linux/buildroot-external/configs/**', 'linux/buildroot-external/board/frost/**') }}
@@ -591,17 +611,17 @@ jobs:
             br2-dl-
 
       - name: Cache Buildroot ccache (host and target package objects)
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: linux/ccache
-          key: br2-ccache-mmu-${{ github.sha }}
+          key: br2-ccache-mmu-${{ hashFiles('Dockerfile', 'linux/buildroot-external/configs/**') }}-${{ github.sha }}
           restore-keys: |
-            br2-ccache-mmu-
+            br2-ccache-mmu-${{ hashFiles('Dockerfile', 'linux/buildroot-external/configs/**') }}-
 
       # Debian's kernel packages, keyed on the file that pins them, so a bumped
       # pin fetches once and every later run reuses the download.
       - name: Cache the Debian kernel packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: linux/debian-kernel/dl
           key: debian-kernel-dl-${{ hashFiles('linux/debian_kernel.py') }}
@@ -629,7 +649,7 @@ jobs:
       # packed, so the QEMU job below boots the packed pair rather than
       # reassembling it.
       - name: Upload FROST MMU Linux boot images
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: frost-linux-boot-images-mmu
           path: |
@@ -650,24 +670,26 @@ jobs:
   # exactly -- the stress token and the login prompt.
   linux-boot-qemu-mmu:
     name: QEMU MMU Linux Boot (bundled and FROST OpenSBI)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     needs: [build-docker, build-frost-linux-mmu]
     timeout-minutes: 20
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       - name: Download Docker image
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-docker-image
           path: /tmp
 
       - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
+        run: |
+          docker load --input /tmp/frost-dev.tar
+          rm -f /tmp/frost-dev.tar
 
       - name: Download FROST MMU Linux boot images
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8.0.1
         with:
           name: frost-linux-boot-images-mmu
           path: /tmp/frost-linux-images
@@ -684,8 +706,7 @@ jobs:
               if ! command -v qemu-system-riscv64; then
                 echo "qemu-system-riscv64 missing from this image"
                 echo "PATH=$PATH"
-                ls -l /usr/bin/qemu-system-* 2>&1 | head -20 || true
-                dpkg -l 2>/dev/null | grep -i qemu || echo "(no qemu packages)"
+                ls -l /usr/local/bin/qemu-system-* /usr/local/share/qemu/opensbi* 2>&1 || true
                 exit 1
               fi
               # The -append string is frost_boot_image.py'"'"'s DEFAULT_BOOTARGS,

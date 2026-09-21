@@ -332,6 +332,7 @@ MASK32: Final[int] = 0xFFFF_FFFF
 # Classes
 # ============================================================================
 
+
 @dataclass
 class TestConfig:
     """Configuration for test execution.
@@ -340,6 +341,7 @@ class TestConfig:
         num_instructions: Number of random instructions to generate.
         seed: Random seed for reproducibility.
     """
+
     num_instructions: int = 1000
     seed: int | None = None
 
@@ -347,6 +349,7 @@ class TestConfig:
 # ============================================================================
 # Functions
 # ============================================================================
+
 
 def encode_instruction(opcode: int, rd: int, rs1: int) -> int:
     """Encode a RISC-V instruction.

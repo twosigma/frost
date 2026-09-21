@@ -122,9 +122,9 @@ class LoadQueueStub:
             await Timer(1, unit="ns")
             if admit_valid:
                 if admit_wait >= self.admit_delay:
-                    assert (
-                        admit_slot not in self.open_slots
-                    ), f"slot {admit_slot} admitted twice"
+                    assert admit_slot not in self.open_slots, (
+                        f"slot {admit_slot} admitted twice"
+                    )
                     self.open_slots[admit_slot] = admit_addr
                     self.admits.append((admit_slot, admit_addr))
                     dut.i_coh_admit_ready.value = 1
@@ -135,9 +135,9 @@ class LoadQueueStub:
                 admit_wait = 0
             if inval_valid:
                 if inval_wait >= self.inval_delay:
-                    assert (
-                        inval_slot in self.open_slots
-                    ), f"inval of slot {inval_slot} never admitted"
+                    assert inval_slot in self.open_slots, (
+                        f"inval of slot {inval_slot} never admitted"
+                    )
                     self.invals.append(inval_slot)
                     dut.i_coh_inval_done.value = 1
                     inval_wait = 0
@@ -181,9 +181,9 @@ async def _dma_write(
 async def _check_dma_read(dut: Any, model: ReferenceModel, addr: int) -> None:
     got = await _dma(dut, write=False, addr=addr)
     expected = model.read_line(addr)
-    assert (
-        got == expected
-    ), f"DMA read mismatch @0x{addr:08x}: got 0x{got:064x} expected 0x{expected:064x}"
+    assert got == expected, (
+        f"DMA read mismatch @0x{addr:08x}: got 0x{got:064x} expected 0x{expected:064x}"
+    )
 
 
 def _l1d_tag_state(dut: Any, addr: int) -> tuple[bool, bool]:
@@ -281,9 +281,9 @@ async def test_dma_read_sees_dirty_cpu_data(dut: Any) -> None:
     ), "PROBE_CLEAN must leave a clean copy"
     await _check_read(dut, model, addr)  # still a hit
     await _check_dma_read(dut, model, addr)  # clean hit: no writeback needed
-    assert (
-        lq.admits == [] and lq.invals == [] and lq.releases == []
-    ), "a DMA read must not touch the load-queue handshake"
+    assert lq.admits == [] and lq.invals == [] and lq.releases == [], (
+        "a DMA read must not touch the load-queue handshake"
+    )
     lq.stop()
 
 
@@ -482,9 +482,9 @@ async def test_concurrent_disjoint_traffic(dut: Any) -> None:
                 await _check_read(dut, model, addr)
             else:
                 got = await _port_transaction(dut, "wup", write=False, addr=addr)
-                assert got == model.read_line(
-                    addr
-                ), f"walker read mismatch @0x{addr:08x}"
+                assert got == model.read_line(addr), (
+                    f"walker read mismatch @0x{addr:08x}"
+                )
 
     async def dma_side(base: int, seed: int, count: int) -> None:
         model = ReferenceModel()
@@ -537,12 +537,12 @@ async def test_cpu_reads_dma_writes_in_coherence_order(dut: Any) -> None:
             addr = lines[r.randrange(len(lines))]
             before = issued[addr]
             seen = await _line_transaction(dut, write=False, addr=addr) & 0xFFFF_FFFF
-            assert (
-                seen >= last[addr]
-            ), f"line 0x{addr:08x}: saw sequence {seen} after {last[addr]}"
-            assert (
-                seen <= issued[addr]
-            ), f"line 0x{addr:08x}: saw sequence {seen} before it was issued"
+            assert seen >= last[addr], (
+                f"line 0x{addr:08x}: saw sequence {seen} after {last[addr]}"
+            )
+            assert seen <= issued[addr], (
+                f"line 0x{addr:08x}: saw sequence {seen} before it was issued"
+            )
             # A value that was never written to this line is impossible: the
             # writer's own model is the sequence of values issued to addr.
             del before

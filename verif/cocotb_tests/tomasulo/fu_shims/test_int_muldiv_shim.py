@@ -145,9 +145,9 @@ async def test_mul_basic(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_mul_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 42, f"Expected 42, got {result['value']}"
     assert result["exception"] is False, "unexpected exception"
 
@@ -176,12 +176,12 @@ async def test_mulh_basic(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_mul_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == expected_high
-    ), f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == expected_high, (
+        f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -208,12 +208,12 @@ async def test_mulhsu_basic(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_mul_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == expected_high
-    ), f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == expected_high, (
+        f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -240,12 +240,12 @@ async def test_mulhu_basic(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_mul_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == expected_high
-    ), f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == expected_high, (
+        f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -268,9 +268,9 @@ async def test_div_basic(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 6, f"Expected 6, got {result['value']}"
     assert result["exception"] is False, "unexpected exception"
 
@@ -299,12 +299,12 @@ async def test_divu_basic(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == expected, (
+        f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -327,13 +327,13 @@ async def test_rem_basic(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     expected = 0xFFFF_FFFF_FFFF_FFFF
-    assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
+    assert result["value"] == expected, (
+        f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
+    )
     assert result["exception"] is False, "unexpected exception"
 
 
@@ -482,9 +482,9 @@ async def test_remu_basic(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 1, f"Expected 1, got {result['value']}"
 
 
@@ -508,12 +508,12 @@ async def test_div_by_zero(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert result["value"] == alu_model.div(
-        42, 0
-    ), f"DIV by zero should return all ones, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == alu_model.div(42, 0), (
+        f"DIV by zero should return all ones, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -536,12 +536,12 @@ async def test_divu_by_zero(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert result["value"] == alu_model.divu(
-        100, 0
-    ), f"DIVU by zero should return all ones, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == alu_model.divu(100, 0), (
+        f"DIVU by zero should return all ones, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -565,12 +565,12 @@ async def test_rem_by_zero(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == dividend
-    ), f"REM by zero should return dividend ({dividend}), got {result['value']}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == dividend, (
+        f"REM by zero should return dividend ({dividend}), got {result['value']}"
+    )
 
 
 # ============================================================================
@@ -595,12 +595,12 @@ async def test_rem_by_zero_negative_dividend(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == dividend
-    ), f"REM by zero should return 0x{dividend:016X}, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == dividend, (
+        f"REM by zero should return 0x{dividend:016X}, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -626,13 +626,13 @@ async def test_div_negative_dividend(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     expected = 0xFFFF_FFFF_FFFF_FFF2  # -14
-    assert (
-        result["value"] == expected
-    ), f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
+    assert result["value"] == expected, (
+        f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -658,12 +658,12 @@ async def test_rem_signed_overflow(dut: Any) -> None:
     iface.clear_issue()
 
     result = await wait_for_div_complete(iface)
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == 0
-    ), f"REM overflow should return 0, got 0x{result['value']:016X}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
+    assert result["value"] == 0, (
+        f"REM overflow should return 0, got 0x{result['value']:016X}"
+    )
 
 
 # ============================================================================
@@ -694,9 +694,9 @@ async def test_partial_flush_suppresses_younger(dut: Any) -> None:
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
         result = iface.read_mul_fu_complete()
-        assert (
-            result["valid"] is False
-        ), "MUL result should be suppressed after partial flush of younger tag"
+        assert result["valid"] is False, (
+            "MUL result should be suppressed after partial flush of younger tag"
+        )
 
 
 # ============================================================================
@@ -725,9 +725,9 @@ async def test_partial_flush_keeps_older(dut: Any) -> None:
 
     result = await wait_for_mul_complete(iface)
     assert result["valid"], "MUL result should NOT be suppressed (tag is older)"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 42, f"Expected 42, got {result['value']}"
 
 
@@ -759,9 +759,9 @@ async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
         result = iface.read_div_fu_complete()
-        assert (
-            result["valid"] is False
-        ), "DIV result should be suppressed after partial flush of younger tag"
+        assert result["valid"] is False, (
+            "DIV result should be suppressed after partial flush of younger tag"
+        )
 
 
 # ============================================================================
@@ -790,9 +790,9 @@ async def test_partial_flush_keeps_older_div(dut: Any) -> None:
 
     result = await wait_for_div_complete(iface)
     assert result["valid"], "DIV result should NOT be suppressed (tag is older)"
-    assert (
-        result["tag"] == rob_tag
-    ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    assert result["tag"] == rob_tag, (
+        f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    )
     assert result["value"] == 6, f"Expected 6, got {result['value']}"
 
 
@@ -821,12 +821,12 @@ async def test_back_to_back_mul_acceptance(dut: Any) -> None:
 
     for tc in test_cases:
         result = await wait_for_mul_complete(iface)
-        assert (
-            result["tag"] == tc["rob_tag"]
-        ), f"tag mismatch: got {result['tag']}, expected {tc['rob_tag']}"
-        assert (
-            result["value"] == tc["expected"]
-        ), f"value mismatch: got {result['value']}, expected {tc['expected']}"
+        assert result["tag"] == tc["rob_tag"], (
+            f"tag mismatch: got {result['tag']}, expected {tc['rob_tag']}"
+        )
+        assert result["value"] == tc["expected"], (
+            f"value mismatch: got {result['value']}, expected {tc['expected']}"
+        )
 
 
 # ============================================================================
@@ -860,12 +860,12 @@ async def test_back_to_back_div(dut: Any) -> None:
     # Collect all 4 results in order
     for tc in test_cases:
         result = await wait_for_div_complete(iface)
-        assert (
-            result["tag"] == tc["rob_tag"]
-        ), f"tag mismatch: got {result['tag']}, expected {tc['rob_tag']}"
-        assert (
-            result["value"] == tc["expected"]
-        ), f"Expected {tc['expected']}, got {result['value']} for tag {tc['rob_tag']}"
+        assert result["tag"] == tc["rob_tag"], (
+            f"tag mismatch: got {result['tag']}, expected {tc['rob_tag']}"
+        )
+        assert result["value"] == tc["expected"], (
+            f"Expected {tc['expected']}, got {result['value']} for tag {tc['rob_tag']}"
+        )
 
 
 # ============================================================================
@@ -935,9 +935,9 @@ async def test_flush_multiple_inflight_divs(dut: Any) -> None:
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
         result = iface.read_div_fu_complete()
-        assert (
-            result["valid"] is False
-        ), "All DIV results should be suppressed after flush"
+        assert result["valid"] is False, (
+            "All DIV results should be suppressed after flush"
+        )
 
 
 # ============================================================================
@@ -1003,9 +1003,9 @@ async def test_fifo_backpressure(dut: Any) -> None:
     iface.clear_issue()
     await FallingEdge(iface.clock)
 
-    assert (
-        iface.read_busy()
-    ), "busy should be 1 with 4 DIVs in-flight (FIFO_DEPTH reached)"
+    assert iface.read_busy(), (
+        "busy should be 1 with 4 DIVs in-flight (FIFO_DEPTH reached)"
+    )
 
     result = await wait_for_div_complete(iface)
     assert result["valid"], "Expected valid completion"
@@ -1089,9 +1089,9 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
         if result["valid"]:
             break
 
-    assert (
-        result is not None and result["valid"]
-    ), "DIV result should appear before flush"
+    assert result is not None and result["valid"], (
+        "DIV result should appear before flush"
+    )
 
     # Do not pop (no i_div_accepted); the result sits at the FIFO head.
     # Partial-flush with flush_tag=5, head=0 => tag 10 is younger.
@@ -1102,9 +1102,9 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
 
     # The FIFO head should now be suppressed (auto-drained as flushed).
     result = iface.read_div_fu_complete()
-    assert (
-        result["valid"] is False
-    ), "FIFO head should be suppressed after partial flush of younger tag"
+    assert result["valid"] is False, (
+        "FIFO head should be suppressed after partial flush of younger tag"
+    )
 
     for _ in range(5):
         await RisingEdge(iface.clock)
@@ -1130,9 +1130,9 @@ async def _check_muldiv_op(
         result = await wait_for_div_complete(iface)
     else:
         result = await wait_for_mul_complete(iface)
-    assert (
-        result["value"] == expected
-    ), f"{op_name}: expected 0x{expected:X}, got 0x{result['value']:X}"
+    assert result["value"] == expected, (
+        f"{op_name}: expected 0x{expected:X}, got 0x{result['value']:X}"
+    )
 
 
 @cocotb.test()

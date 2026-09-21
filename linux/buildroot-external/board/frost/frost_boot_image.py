@@ -191,9 +191,9 @@ def payload_footprint(payload: bytes) -> int:
     image_size = linux_image_size(payload)
     if image_size is None:
         return len(payload)
-    assert image_size >= len(
-        payload
-    ), "Linux Image header image_size below the file size"
+    assert image_size >= len(payload), (
+        "Linux Image header image_size below the file size"
+    )
     return image_size
 
 

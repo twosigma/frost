@@ -119,12 +119,13 @@ def test_docker_command_runs_as_host_user_and_mounts_checkout() -> None:
     assert command[:5] == ["docker", "run", "--rm", "--init", "--pull=never"]
     assert ["--user", "1234:5678"] == command[5:7]
     assert "HOME=/tmp/frost-home-1234" in command
-    assert ["--env", "FROST_FORMAL_JOBS"] == command[9:11]
+    assert "npm_config_cache=/tmp/frost-home-1234/.cache/npm" in command
+    assert ["--env", "FROST_FORMAL_JOBS"] == command[11:13]
     assert [
         "--volume",
         "/tmp/frost-cache:/tmp/frost-home-1234/.cache",
-    ] == command[11:13]
-    assert ["--volume", "/work/frost:/workspace"] == command[13:15]
+    ] == command[13:15]
+    assert ["--volume", "/work/frost:/workspace"] == command[15:17]
     assert command[-4:] == [
         "frost:test",
         "python3",
@@ -202,19 +203,31 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
         "\n".join(
             (
                 "ARG VERILATOR_VERSION=5.052",
-                "ARG YOSYS_VERSION=0.68",
-                "ARG SBY_VERSION=0.68",
-                "ARG Z3_VERSION=4.15.0",
+                "ARG YOSYS_VERSION=0.69",
+                "ARG SBY_VERSION=0.69",
+                "ARG Z3_VERSION=5.1.0",
                 "ARG BOOLECTOR_VERSION=3.2.4",
                 "ARG XPACK_RISCV_VERSION=15.2.0-1",
-                "ARG CLANG_TIDY_VERSION=18.1.3",
-                "ARG VERIBLE_VERSION=0.0-4051-g9fdb4057",
+                "ARG LLVM_VERSION=23.1.1",
+                "ARG PYTHON_VERSION=3.14.7",
+                "ARG GCC_VERSION=16.2.0",
+                "ARG CMAKE_VERSION=4.4.3",
+                "ARG MESON_VERSION=1.12.0",
+                "ARG NINJA_VERSION=1.13.2",
+                "ARG QEMU_VERSION=11.1.1",
+                "ARG NODE_VERSION=26.9.0",
+                "ARG NPM_VERSION=12.0.2",
+                "ARG PIP_VERSION=26.2.1",
+                "ARG SETUPTOOLS_VERSION=84.0.0",
+                "ARG WHEEL_VERSION=0.48.0",
+                "ARG OPENOCD_VERSION=0.12.0",
+                "ARG VERIBLE_VERSION=0.0-4294-gc1d8f5e8",
                 "ARG COCOTB_VERSION=2.1.0",
                 "ARG PYTEST_VERSION=9.1.1",
                 "ARG PYTEST_COV_VERSION=7.1.0",
-                "ARG PRE_COMMIT_VERSION=4.6.0",
-                "ARG CLICK_VERSION=8.4.2",
-                "ARG BOOTLIN_RISCV64_MUSL_VERSION=2025.08-1",
+                "ARG PRE_COMMIT_VERSION=4.6.2",
+                "ARG CLICK_VERSION=8.5.0",
+                "ARG BOOTLIN_RISCV64_MUSL_VERSION=2026.08-1",
             )
         )
         + "\n"
@@ -234,7 +247,7 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
     }
     probe: dict[str, object] = {
         "architecture": "x86_64",
-        "python": "3.12.10",
+        "python": "3.14.7",
         "entrypoint_mode": 0o755,
         "fingerprints": {
             "Dockerfile": sha256_file(dockerfile),
@@ -246,6 +259,11 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
     assert image_fingerprint_problems(tmp_path, probe) == []
     assert tool_version_problems(probe, pins) == []
     assert image_runtime_problems(probe) == []
+    tools["ninja"] = {"version": "1.13.2.git.kitware.jobserver-pipe-1"}
+    assert tool_version_problems(probe, pins) == []
+    tools["ninja"] = {"version": "1.13.20.git.kitware.jobserver-pipe-1"}
+    assert tool_version_problems(probe, pins) == ["ninja expected 1.13.2, got 1.13.20"]
+    tools["ninja"] = {"version": pins["NINJA_VERSION"]}
 
     probe["fingerprints"] = {"Dockerfile": "stale"}
     assert image_fingerprint_problems(tmp_path, probe) == [
@@ -253,11 +271,11 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
         "image does not embed docker_entrypoint.py",
     ]
     tools["yosys"] = {"version": "Yosys 0.64"}
-    assert tool_version_problems(probe, pins) == ["yosys expected 0.68, got Yosys 0.64"]
-    tools["yosys"] = {"version": "Yosys 0.680"}
+    assert tool_version_problems(probe, pins) == ["yosys expected 0.69, got Yosys 0.64"]
+    tools["yosys"] = {"version": "Yosys 0.690"}
     tools["pytest"] = {"version": "9.1.10"}
     assert tool_version_problems(probe, pins) == [
-        "yosys expected 0.68, got Yosys 0.680",
+        "yosys expected 0.69, got Yosys 0.690",
         "pytest expected 9.1.1, got 9.1.10",
     ]
     probe.update(architecture="aarch64", python="3.11.9", entrypoint_mode=0o700)
@@ -508,19 +526,31 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
     """A fully compatible image and healthy checkout produce a zero status."""
     versions = {
         "VERILATOR_VERSION": "5.052",
-        "YOSYS_VERSION": "0.68",
-        "SBY_VERSION": "0.68",
-        "Z3_VERSION": "4.15.0",
+        "YOSYS_VERSION": "0.69",
+        "SBY_VERSION": "0.69",
+        "Z3_VERSION": "5.1.0",
         "BOOLECTOR_VERSION": "3.2.4",
         "XPACK_RISCV_VERSION": "15.2.0-1",
-        "CLANG_TIDY_VERSION": "18.1.3",
-        "VERIBLE_VERSION": "0.0-4051-g9fdb4057",
+        "LLVM_VERSION": "23.1.1",
+        "PYTHON_VERSION": "3.14.7",
+        "GCC_VERSION": "16.2.0",
+        "CMAKE_VERSION": "4.4.3",
+        "MESON_VERSION": "1.12.0",
+        "NINJA_VERSION": "1.13.2",
+        "QEMU_VERSION": "11.1.1",
+        "NODE_VERSION": "26.9.0",
+        "NPM_VERSION": "12.0.2",
+        "PIP_VERSION": "26.2.1",
+        "SETUPTOOLS_VERSION": "84.0.0",
+        "WHEEL_VERSION": "0.48.0",
+        "OPENOCD_VERSION": "0.12.0",
+        "VERIBLE_VERSION": "0.0-4294-gc1d8f5e8",
         "COCOTB_VERSION": "2.1.0",
         "PYTEST_VERSION": "9.1.1",
         "PYTEST_COV_VERSION": "7.1.0",
-        "PRE_COMMIT_VERSION": "4.6.0",
-        "CLICK_VERSION": "8.4.2",
-        "BOOTLIN_RISCV64_MUSL_VERSION": "2025.08-1",
+        "PRE_COMMIT_VERSION": "4.6.2",
+        "CLICK_VERSION": "8.5.0",
+        "BOOTLIN_RISCV64_MUSL_VERSION": "2026.08-1",
     }
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(
@@ -541,7 +571,7 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
     probe = json.dumps(
         {
             "architecture": "x86_64",
-            "python": "3.12.3",
+            "python": "3.14.7",
             "entrypoint_mode": 0o755,
             "fingerprints": {
                 "Dockerfile": sha256_file(dockerfile),

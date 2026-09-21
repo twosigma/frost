@@ -344,9 +344,9 @@ async def test_refused_rx_does_not_block_tx(dut: Any) -> None:
     await tx.request(BASE + 0x3000, 3, 2, limit=40)
     for _ in range(6):
         await FallingEdge(dut.i_clk)
-    assert (
-        len([r for r in port.accepted if r["addr"] == BASE + 0x3000]) == 1
-    ), "TX not served past the refused RX"
+    assert len([r for r in port.accepted if r["addr"] == BASE + 0x3000]) == 1, (
+        "TX not served past the refused RX"
+    )
     port.locked.clear()
     await rx_task
     await _idle(dut)
@@ -385,9 +385,9 @@ async def test_refused_tx_under_saturated_priority_does_not_block_rx(dut: Any) -
     for _ in range(100):
         await FallingEdge(dut.i_clk)
     rx_grants = len(port.accepted) - before
-    assert (
-        rx_grants >= 20
-    ), f"RX blocked behind a refused TX request: {rx_grants} grants in 100 cycles"
+    assert rx_grants >= 20, (
+        f"RX blocked behind a refused TX request: {rx_grants} grants in 100 cycles"
+    )
     port.locked.clear()
     await tx_task
     stop[0] = True

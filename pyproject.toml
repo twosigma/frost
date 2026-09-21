@@ -13,7 +13,7 @@
 # limitations under the License.
 
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -21,14 +21,14 @@ name = "frost"
 version = "0.1.0"
 description = "FROST: FPGA RISC-V Open-sourced in SystemVerilog by TwoSigma"
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 requires-python = ">=3.12"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.14",
 ]
 
 dependencies = [
@@ -37,11 +37,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest",
-    "pytest-cov",
-    "mypy",
-    "ruff",
-    "pre-commit",
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "mypy==2.3.1",
+    "ruff==0.16.8",
+    "pre-commit==4.6.2",
 ]
 
 [tool.setuptools.packages.find]
@@ -66,6 +66,8 @@ markers = [
 ]
 
 [tool.mypy]
+# Native Vivado workflows retain Python 3.12 support.
+python_version = "3.12"
 exclude = ["sw/FreeRTOS-Kernel", "sw/apps/coremark/coremark", "sw/apps/arch_test/riscv-arch-test"]
 files = ["verif", "tests"]
 mypy_path = ["verif", "sw/apps", "stubs", "tests"]
@@ -81,6 +83,8 @@ module = ["cocotb.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
+# Formatting and fixes must also run on native Vivado hosts.
+target-version = "py312"
 # Exclude vendored FreeRTOS and upstream CoreMark sources.
 extend-exclude = ["sw/FreeRTOS-Kernel", "sw/apps/coremark/coremark"]
 

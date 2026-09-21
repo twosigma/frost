@@ -214,9 +214,9 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
 
     mepc_value = dut_if.read_register(2)
     cocotb.log.info(f"mepc = 0x{mepc_value:08X} (expected 0x{ecall_pc:08X})")
-    assert (
-        mepc_value == ecall_pc
-    ), f"mepc mismatch: got 0x{mepc_value:X}, expected ECALL PC 0x{ecall_pc:X}"
+    assert mepc_value == ecall_pc, (
+        f"mepc mismatch: got 0x{mepc_value:X}, expected ECALL PC 0x{ecall_pc:X}"
+    )
 
     # Read mcause into x3: CSRRS x3, mcause, x0
     instr_read_mcause = enc_csrrs(3, CSRAddress.MCAUSE, 0)  # rd=x3, csr=mcause, rs1=x0
@@ -626,12 +626,12 @@ async def run_directed_interrupt_trap_test(
         await execute_nop(dut_if, state)
 
     trap_unit = dut.device_under_test.trap_unit_inst
-    assert (
-        int(trap_unit.m_int_pending.value) == 0
-    ), "machine interrupt remained pending after its source cleared"
-    assert (
-        int(trap_unit.o_trap_taken.value) == 0
-    ), "trap re-fired after the timer source cleared"
+    assert int(trap_unit.m_int_pending.value) == 0, (
+        "machine interrupt remained pending after its source cleared"
+    )
+    assert int(trap_unit.o_trap_taken.value) == 0, (
+        "trap re-fired after the timer source cleared"
+    )
 
     cocotb.log.info("=== Interrupt trap mstatus test PASSED! ===")
 
@@ -1031,12 +1031,12 @@ async def run_directed_csrsi_enable_mie_test(
                 f"mstatus=0x{mstatus_final:08X}"
             )
 
-        assert (
-            mie_final == 0
-        ), f"CSRSI+TRAP BUG: MIE should be 0 after trap! Got mstatus=0x{mstatus_final:08X}"
-        assert (
-            mpie_final == 1
-        ), f"CSRSI+TRAP BUG: MPIE should be 1! Got mstatus=0x{mstatus_final:08X}"
+        assert mie_final == 0, (
+            f"CSRSI+TRAP BUG: MIE should be 0 after trap! Got mstatus=0x{mstatus_final:08X}"
+        )
+        assert mpie_final == 1, (
+            f"CSRSI+TRAP BUG: MPIE should be 1! Got mstatus=0x{mstatus_final:08X}"
+        )
 
         cocotb.log.info("SUCCESS: MIE correctly cleared after CSRSI + trap!")
 
@@ -1247,9 +1247,9 @@ async def run_directed_illegal_instruction_test(
         # Verify mcause is 2 (Illegal instruction)
         mcause_value = dut_if.read_register(3)
         cocotb.log.info(f"mcause = {mcause_value} (expected 2 for illegal instruction)")
-        assert (
-            mcause_value == 2
-        ), f"mcause mismatch for '{name}': got {mcause_value}, expected 2"
+        assert mcause_value == 2, (
+            f"mcause mismatch for '{name}': got {mcause_value}, expected 2"
+        )
         cocotb.log.info(f"mcause verification PASSED for '{name}'")
 
         # Execute MRET to return from trap handler
@@ -1522,9 +1522,9 @@ async def run_directed_interrupt_commit_race_test(
         assert not missing, f"calibration missed regfile writes for {missing}: {reg_pc}"
         stream_pcs = [reg_pc[base_reg + i] for i in range(n_stream)]
         for i in range(1, n_stream):
-            assert (
-                stream_pcs[i] == stream_pcs[0] + 4 * i
-            ), f"stream PCs not contiguous: {[hex(p) for p in stream_pcs]}"
+            assert stream_pcs[i] == stream_pcs[0] + 4 * i, (
+                f"stream PCs not contiguous: {[hex(p) for p in stream_pcs]}"
+            )
         for i in range(n_stream):
             v = read_reg(base_reg + i)
             assert v == expected_val(i, gen), (
@@ -1666,7 +1666,7 @@ async def run_directed_interrupt_commit_race_test(
         cocotb.log.error(
             f"--- VIOLATION fire_offset={fo} mepc=0x{r['mepc']:08x} "
             f"resume_pc@trap="
-            f"{f'0x{r['resume_at_trap']:08x}' if r['resume_at_trap'] is not None else None} ---"
+            f"{f'0x{r["resume_at_trap"]:08x}' if r['resume_at_trap'] is not None else None} ---"
         )
         for i in an["lost"]:
             reg = base_reg + i
@@ -1696,7 +1696,7 @@ async def run_directed_interrupt_commit_race_test(
         an = r["an"]
         cocotb.log.info(
             f"  offset={r['fire_offset']:2d} "
-            f"mepc={f'0x{r['mepc']:08x}' if r['mepc'] is not None else None} "
+            f"mepc={f'0x{r["mepc"]:08x}' if r['mepc'] is not None else None} "
             f"committed={an['ncommit']} prefix={an['longest_prefix']} "
             f"violation={an['violation']}"
         )

@@ -223,9 +223,9 @@ async def _port_transaction(
     for cycle in range(RESP_TIMEOUT_CYCLES):
         if int(resp_valid.value) == 1:
             got_id = int(resp_id.value)
-            assert (
-                got_id == req_id
-            ), f"{port} response id {got_id} != request id {req_id} (addr=0x{addr:08x})"
+            assert got_id == req_id, (
+                f"{port} response id {got_id} != request id {req_id} (addr=0x{addr:08x})"
+            )
             return int(resp_rdata.value)
         await FallingEdge(dut.i_clk)
     raise AssertionError(f"no {port} response (addr=0x{addr:08x}, write={write})")
@@ -310,9 +310,9 @@ def _copy_perf_counts(
 async def _check_read(dut: Any, model: ReferenceModel, addr: int) -> None:
     got = await _line_transaction(dut, write=False, addr=addr)
     expected = model.read_line(addr)
-    assert (
-        got == expected
-    ), f"read mismatch @0x{addr:08x}: got 0x{got:064x} expected 0x{expected:064x}"
+    assert got == expected, (
+        f"read mismatch @0x{addr:08x}: got 0x{got:064x} expected 0x{expected:064x}"
+    )
 
 
 @cocotb.test()
@@ -593,9 +593,9 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
     if int(dut.o_has_l2.value) == 0:
         # Both fills were in flight at once: the second response cannot trail
         # the first by a whole memory round trip.
-        assert (
-            spread < MEM_LATENCY_CYCLES
-        ), f"misses did not overlap: {spread} cycles apart"
+        assert spread < MEM_LATENCY_CYCLES, (
+            f"misses did not overlap: {spread} cycles apart"
+        )
 
 
 @cocotb.test()
@@ -679,9 +679,9 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
         f"3-port overlap: responses {spread} cycles apart (has_l2={int(dut.o_has_l2.value)})"
     )
     if int(dut.o_has_l2.value) == 0:
-        assert (
-            spread < MEM_LATENCY_CYCLES
-        ), f"misses did not overlap: {spread} cycles apart"
+        assert spread < MEM_LATENCY_CYCLES, (
+            f"misses did not overlap: {spread} cycles apart"
+        )
 
 
 @cocotb.test()
@@ -986,9 +986,9 @@ async def test_store_after_walker_probe_then_evict(dut: Any) -> None:
         await _check_read(dut, model, alias)
 
     mon.stop()
-    assert (
-        mon.hit_stalls > 0
-    ), "no store was ever held behind its line's pending writeback"
+    assert mon.hit_stalls > 0, (
+        "no store was ever held behind its line's pending writeback"
+    )
 
 
 @cocotb.test()
@@ -1045,9 +1045,9 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
         await _check_read(dut, model, c)
 
     mon.stop()
-    assert (
-        mon.install_waits > 0
-    ), "no install was ever held behind its line's pending writeback"
+    assert mon.install_waits > 0, (
+        "no install was ever held behind its line's pending writeback"
+    )
 
 
 @cocotb.test()

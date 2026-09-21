@@ -2082,9 +2082,9 @@ def run_x3_step_directive_sweep(
     elif step == "second_route":
         route_note = " (without -tns_cleanup)"
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"STEP: {step.upper()} - X3 {sweep_kind} directive sweep{route_note}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     if setup_uncertainties_ns:
         sweep_jobs = make_x3_place_sweep_candidates(
@@ -2481,9 +2481,9 @@ def run_step(
             (directory / "post_place_gate.txt").unlink(missing_ok=True)
             (directory / "post_place_gate_binding.json").unlink(missing_ok=True)
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"STEP: {step.upper()} — Directive: {directive}")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     vivado_command = [
         vivado_path,
@@ -2608,9 +2608,9 @@ def generate_bitstream(
     if board_name == "x3" and capture_x3_input_lineage(main_work, "final.dcp") is None:
         return False
 
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("Generating bitstream...")
-    print(f"{'='*70}\n")
+    print(f"{'=' * 70}\n")
 
     vivado_command = [
         vivado_path,
@@ -3042,7 +3042,7 @@ Examples:
         "post_second_route_physopt": "Sweep",
     }
 
-    print(f"\n{'#'*70}")
+    print(f"\n{'#' * 70}")
     print(f"# FROST FPGA Build — {board_name.upper()}")
     print(f"# Clock: {clock_freq:,} Hz")
     if functional_policy.cpu_clock_div != 1:
@@ -3098,7 +3098,7 @@ Examples:
         )
     if board_name == "x3" and route_sweep_directives != ROUTER_SWEEP_DIRECTIVES:
         print(f"# X3 router sweep (custom): {', '.join(route_sweep_directives)}")
-    print(f"{'#'*70}")
+    print(f"{'#' * 70}")
 
     build_options = {"build_dir": args.build_dir} if args.build_dir is not None else {}
     board_build = (
@@ -3235,9 +3235,9 @@ Examples:
         )
 
     # Summarize the last completed step, including partial/resumed runs.
-    print(f"\n{'#'*70}")
+    print(f"\n{'#' * 70}")
     print("# BUILD COMPLETE!")
-    print(f"{'#'*70}")
+    print(f"{'#' * 70}")
 
     if last_report_prefix:
         last_timing_rpt = main_work / f"{last_report_prefix}_timing.rpt"

@@ -240,12 +240,12 @@ async def test_each_port_smoke(dut: Any) -> None:
     for collector in collectors:
         collector.stop()
     # Two transactions per port, one response pulse each, none cross-routed.
-    assert (
-        collectors[0].pulses == 2
-    ), f"port 0 saw {collectors[0].pulses} pulses, expected 2"
-    assert (
-        collectors[1].pulses == 2
-    ), f"port 1 saw {collectors[1].pulses} pulses, expected 2"
+    assert collectors[0].pulses == 2, (
+        f"port 0 saw {collectors[0].pulses} pulses, expected 2"
+    )
+    assert collectors[1].pulses == 2, (
+        f"port 1 saw {collectors[1].pulses} pulses, expected 2"
+    )
 
 
 @cocotb.test()
@@ -324,9 +324,9 @@ async def test_no_grant_lock(dut: Any) -> None:
     await task0
     counter.cancel()
     gap = fired_at[0] - fired_at[1]
-    assert (
-        0 < gap < MEM_LATENCY_CYCLES
-    ), f"port 0 fired {gap} cycles after port 1 (lock?)"
+    assert 0 < gap < MEM_LATENCY_CYCLES, (
+        f"port 0 fired {gap} cycles after port 1 (lock?)"
+    )
     for collector in collectors:
         collector.stop()
 
@@ -357,11 +357,11 @@ async def test_multiple_outstanding_per_port(dut: Any) -> None:
     for req_id, line in ids:
         got = await collectors[0].wait_for(req_id)
         expected = model.read_line(BURST_BASE[0] + line * LINE_BYTES)
-        assert (
-            got == expected
-        ), f"id {req_id} line {line}: got 0x{got:064x} expected 0x{expected:064x}"
+        assert got == expected, (
+            f"id {req_id} line {line}: got 0x{got:064x} expected 0x{expected:064x}"
+        )
 
-    dut._log.info(f"burst completion order by id: {collectors[0].order[-len(lines):]}")
+    dut._log.info(f"burst completion order by id: {collectors[0].order[-len(lines) :]}")
     assert collectors[1].pulses == 0, "port 1 saw a cross-routed response"
     for collector in collectors:
         collector.stop()
@@ -428,9 +428,9 @@ async def test_random_interleaved_traffic(dut: Any) -> None:
 
     expected = transactions_per_port + len(range(0, WINDOW_LINES, 13))
     for port in (0, 1):
-        assert (
-            collectors[port].pulses == expected
-        ), f"port {port} saw {collectors[port].pulses} response pulses, expected {expected}"
+        assert collectors[port].pulses == expected, (
+            f"port {port} saw {collectors[port].pulses} response pulses, expected {expected}"
+        )
     for collector in collectors:
         collector.stop()
 

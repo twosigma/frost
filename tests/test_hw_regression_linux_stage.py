@@ -166,7 +166,7 @@ NET_START = (
     "loopback feature bit 42, run 5b3f1d07; down\r\r\n"
 )
 NET_PASS = (
-    "FROST_NET_LOOPBACK: eth0 down, loopback off\r\r\n" f"{hw.LINUX_NET_TOKEN}\r\r\n"
+    f"FROST_NET_LOOPBACK: eth0 down, loopback off\r\r\n{hw.LINUX_NET_TOKEN}\r\r\n"
 )
 # The rest of that typed line: the MTU, flags and IPv6 restore print nothing,
 # and the bounded sync prints its status, which is how the stage learns that the
