@@ -287,18 +287,3 @@ The [CPU README](hw/rtl/cpu_and_mem/cpu/README.md) and
 [Tomasulo README](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md) describe the OOO
 design and cross-cutting decisions. Each Tomasulo submodule also has a README
 under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
-
-## Glossary
-
-| Term | Meaning |
-|------|---------|
-| **Tomasulo** | Out-of-order scheduling with register renaming |
-| **Sv39** | 39-bit virtual addressing with three-level page tables |
-| **BTB** | Branch target buffer |
-| **L1I / L1D** | Level-1 instruction and data caches |
-| **BRAM / URAM** | FPGA block RAM / UltraRAM |
-| **MMIO** | Memory-mapped I/O |
-| **CLINT** | Core-local interruptor |
-| **PLIC** | Platform-level interrupt controller |
-| **NIC** | Network interface controller |
-| **DMA** | Direct memory access by a peripheral |
