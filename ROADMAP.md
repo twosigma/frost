@@ -1,141 +1,23 @@
 # FROST Roadmap
 
-FROST is evolving from its original RV32GCB M/U-mode design into an RV64GCB
-core with S-mode and Sv39 that boots mainline MMU Linux, followed by a stock
-riscv64 distribution, explicit RV64 performance parity with the best the former
-RV32 design could have reached, and a multi-hart SMP system. Phases are
-sequential; each one keeps every existing suite green (riscv-arch-test,
-riscv-tests, torture, formal, the cocotb program suites in both memory tiers,
-the Linux build and QEMU boot jobs, and the hardware regression's Linux stage),
-re-closes X3 timing at 300 MHz post-route before it is called done, keeps the
-core RTL vendor-primitive-free, and updates the documentation it makes stale.
+What is left to build. Work that is finished is described by the thing itself
+and recorded in the git history; it is not repeated here.
 
-## Phase 0: Harden the Linux substrate (done)
-
-Retire the post-link kernel mutation the no-MMU boot relied on, prove the
-unpatched kernel boots in simulation and on hardware, add a userspace stress
-payload to the boot jobs, document the boot ABI, and expose Zicntr to
-userspace through `mcounteren`.
-
-## Phase 1: RV64GCB (done)
-
-Widen the core to XLEN=64 (still M/U, still no-MMU) before changing the
-privilege architecture, so the MMU is built once for Sv39: a native 64-bit
-data tier, RV64 I/M/A/F/D/C, 64-bit CSRs and traps, the rv64 test matrices
-and an rv64 no-MMU Linux image in CI. Exit met 2026-08-12 with X3 timing
-closed at 300 MHz; rv32 support was retired once the RV64 design and X3
-hardware flow were established.
-
-## Phase 2: Memory-level parallelism (done)
-
-Tagged line transactions with several in flight through the adapter,
-arbiter and AXI bridge; a non-blocking cache at every level; four cached
-loads in flight at the load queue; two line fills in flight at the fetch
-provider behind a victim store; ids composed per port so a walker or a
-second hart is one more port. Exit met 2026-08-23: overlapped demand misses
-measured by the new counters, CoreMark-PRO improved on X3, and the
-page-table-walk account in hw/rtl/lib/cache/README.md.
-
-## Phase 3: S-mode, Sv39, and MMU Linux (done)
-
-S-mode CSRs and delegation, Sv39 with ITLB/DTLB and a hardware page-table
-walker, PIPT translation ahead of the cached tier, PLIC, OpenSBI as the
-M-mode firmware, and a RISC-V debug module early in the phase. Verification
-adds the privilege/VM suites, torture with paging, and directed TLB tests.
-Exit: mainline rv64 MMU Linux (Buildroot userspace) boots unpatched in CI and
-on hardware, with working `perf` basics; the debug module exercised once
-over its BSCANE2 transport on the board (OpenOCD attach, halt/step/resume) —
-the benches drive only the generic TAP, so this is the transport's first
-functional coverage; and the no-MMU Linux lane retired. The MMU lane already
-carried its own cocotb and QEMU boot jobs, so dropping the no-MMU build and its
-two boot jobs, the nommu defconfig and device tree, and the FROST_LINUX_LANE
-switch removed duplication rather than coverage, and left no default lane that
-can silently validate the wrong kernel.
-
-Exit met 2026-09-08: mainline rv64 MMU Linux (6.18.7) boots unpatched in CI
-and on the X3, logs in and reports nonzero `perf` cycle and instruction
-counts over the SBI PMU; the debug module was exercised over BSCANE2 on the
-board (OpenOCD attach, halt, register read, single-step and resume against
-the running kernel); the no-MMU lane is retired; X3 timing closed at 300 MHz
-post-route and the full hardware regression passed. Along the way the phase
-recovered its own hardware performance regression: expanding the low-BRAM
-scalar predecode overlay from 16 to 64 KiB roughly halved frontend bubbles
-and brought the tuned CoreMark build from ~354k back to ~305k mean
-timed-region cycles with identical executable bytes (all nine CoreMark-PRO
-binaries' executable sections fit under that coverage), and the 2026-09-05 X3
-sweep re-armed the hw_regression baselines at the measured scores, within
-about one percent of the pre-Phase-3 CoreMark-PRO baseline. Benchmark
-sources, compiler settings, workloads, and baselines stay fixed; the broader
-RV32-counterfactual parity, fusion, capacity, and width work remains in
-Phase 5.
-
-## Phase 4: System I/O and distribution (done)
-
-Persistent storage and networking for a stock riscv64 Debian. The X3 has no SD
-or on-card block device, so persistent state lives on a network peer: integrate
-the standalone 64-bit 10GBASE-R MAC/PCS (hw/rtl/net10g, its own CI job) as
-FROST's own NIC and boot Debian from NFS-root over it, with iSCSI+ext4 as a
-later variant if a workload needs local-disk filesystem semantics. The
-CSR/DMA/interrupt layer is in place: the NIC sits at `0x4003_0000` on a
-coherent DMA port with one PLIC source, a device-tree node, and two full-system
-programs. A Linux netdev driver carries it: first validated on the X3 through
-the NIC's loopback modes, and now serving Debian's NFS root over the link. A
-board-level GTY wrapper connects the X3's NIC to a 10GBASE-R fiber link (the
-soft MAC/PCS and the core stay vendor-primitive-free). The bare-metal echo test
-passes against a host over that link, and Debian 13 boots from an NFS root over
-it, accepts SSH logins and installs packages with apt. The full-clock build
-runs the hardware regression, Linux stage included. The small RX buffer
-with no PAUSE means DMA must drain independently of software.
-Booting the kernel on the RTL is retired with this phase's move to a
-distribution kernel: simulation reached only early boot in hours and missed both
-core bugs Debian's kernel exposed on the board, so the Linux gate is the hardware
-regression's Linux stage plus the board soaks, with the QEMU job covering
-userspace in CI. That stage boots the NFS root itself -- the whole system, with
-modules, a real userspace and a root filesystem over the NIC -- because the small
-test initramfs it used to boot passed every stage on the bitstreams both of those
-bugs were found on. The kernel's timer, trap, atomic and MMIO patterns keep their
-directed cocotb apps, and OpenSBI keeps `opensbi_smoke`.
-That move is complete: Debian's pinned kernel is the only kernel FROST boots,
-on the NFS root and with the test initramfs alike, so every gate exercises the
-kernel users get, and the in-tree Buildroot kernel build is gone. Buildroot
-builds the test userspace and the OpenSBI firmware, and the NIC driver is built
-as a module for the pinned kernel, the same way the DKMS package builds it on a
-Debian root.
-A host-backed PCIe/virtio block path is kept as an optional deployment
-capability, not the Phase 4 storage mechanism.
-
-CPU-device memory-sharing correctness is a first-class item here, not deferred
-to SMP: how descriptors and DMA buffers become visible across the CPU caches
-(including the LQ L0) and the DMA agent, when a completion or interrupt is
-observable relative to its data, and how reset prevents stale writes into reused
-buffers. Coherent DMA was chosen and implemented: a coherence sequencer walks
-every DMA request through the L1D and the load queue before the shared level
-orders it, so descriptors and buffers need no cache maintenance.
-
-Exit: log into Debian over SSH on hardware, install a package with apt, and
-soak the storage/network path under sustained root I/O until every recovery
-path has been exercised and verified several times over -- NFS server restart
-and carrier loss on a hard mount, and RX exhaustion -- with no kernel errors.
-Hours of that, not an idle machine staying up, and not days: the faults this
-phase found on silicon appeared within minutes of boot, so a longer wall clock
-buys slow-accumulating failures (leaks, first-touch ECC, NFS state across many
-reconnects) rather than more of the same evidence.
-
-Exit met 2026-09-20: Debian 13 boots from an NFS root over the link on the X3,
-takes SSH logins and installs packages with apt, and the storage and network
-path soaked for hours under sustained root I/O with NFS server restarts,
-carrier loss on a hard mount and RX exhaustion each exercised repeatedly and no
-kernel errors. X3 timing closed at 300 MHz post-route and the full hardware
-regression passed. Two core bugs appeared only once a real distribution was
-booting and are fixed and hardware-validated: a load queue that kept a stale
-cached slot through a flush, and a page-table walker that read below the L1D
-without probing it.
+FROST today is an RV64GCB out-of-order core with S-mode and Sv39 on an Alveo
+X3522PV, booting a stock Debian 13 riscv64 from an NFS root over its own
+10GbE NIC, closing routed timing at 300 MHz and scoring 1015 CoreMark on the
+board. Phases are sequential; each one keeps every existing suite green
+(riscv-arch-test, riscv-tests, torture, formal, the cocotb program suites in
+both memory tiers, the Linux build and QEMU boot jobs, and the hardware
+regression's Linux stage), re-closes X3 timing post-route before it is called
+done, keeps the core RTL vendor-primitive-free, and updates the documentation
+it makes stale.
 
 ## Phase 4.5: Carried defects and stale diagrams
 
-Two defects Phase 4 found and did not fix, and the diagrams it left behind.
-Deliberately small, and it changes no clock, so the cache and DRAM work is
-measured against the tree Phase 4 closed.
+Two defects the networking and distribution work found and did not fix, and
+the diagrams it left behind. Deliberately small, and it changes no clock, so
+the cache and DRAM work is measured against the tree that closed at 300 MHz.
 
 The cache loads its downstream request register fills first, which is not
 starvation-free on its own. A writeback slot leaves its pending state only by
@@ -184,7 +66,9 @@ that a survey of vendor, academic and EEMBC sources could identify is 452 at
 figures up to 4.5 exist at those clocks, which is why the bar here is work per
 second at a clock the design closes, with CoreMark/MHz recorded beside it as a
 diagnostic.
-Immediate regression recovery was completed in Phase 3. With the former
+The immediate regression this replaced has already been recovered, by
+expanding the low-BRAM scalar predecode overlay from 16 to 64 KiB. With the
+former
 16 KiB low-memory predecode overlay, a matched two-run build A/B averaged
 361,535 stock versus 353,923 tuned cycles: tuning removed 11.7% of retired
 instructions but only 2.11% of cycles as IPC fell from about 0.78 to 0.71.
@@ -196,15 +80,16 @@ limitations distinct when planning further width work.
 
 Sequencing: this phase runs before SMP by choice -- single-hart performance is
 wanted sooner than a second hart -- so its structural changes are chosen against
-one hart's envelope, which already carries the Phase 4 NIC DMA traffic, not
+one hart's envelope, which already carries the NIC's DMA traffic, not
 against the two-hart resource, timing, and memory-latency envelope Phase 6 adds
 (a shared L2 as the point of coherence, and coherence traffic between harts).
 That is a known cost of the order, not a reason the integrated envelope stops
 mattering: a widened hart that just closes 300 MHz alone can lose its return
 once duplicated, so every capacity and lane size chosen here is revalidated when
 the second hart lands, and some of it may have to be given back to hold timing
-and coherence then. The Phase 4 DMA coherence contract is not deferred along
-with the inter-hart one: anything that alters transaction semantics, tracking
+and coherence then. The DMA coherence contract -- a coherence sequencer walks
+every DMA request through the L1D and the load queue before the shared level
+orders it -- is not deferred along with the inter-hart one: anything that alters transaction semantics, tracking
 coverage, or resource dependencies is a renewed coherence review against it,
 not a free capacity tweak; record with it the parameter bounds and the
 admission and service dependencies the change relies on, so Phase 6 can
@@ -233,7 +118,7 @@ Work in measured order:
   flags, memory/cache ratios, ELF hash, and a minimum-ten-second X3 run with
   every published result. Use link-order ensembles whenever C is enabled so
   placement luck is not mistaken for RTL improvement.
-- Build on the Phase 3 front-end recovery. Out-of-overlay low-BRAM instruction
+- Build on that front-end recovery. Out-of-overlay low-BRAM instruction
   windows repeat once for registered predecode metadata, making a larger tuned
   binary pay a penalty that the old RTL and smaller stock binary largely avoid.
   The 64 KiB scalar overlay has recovered the initial simulation checkpoint:
@@ -292,7 +177,7 @@ metadata retained.
 
 Two harts on the X3 sharing an L2 as the point of coherence, IPIs, per-hart
 PLIC contexts, and litmus-test coverage of RVWMO across harts. Before the second
-hart, establish the coherence contract -- including the Phase 4 DMA model --
+hart, establish the coherence contract -- including the DMA model above --
 over resident LQ L0 data, outstanding fills, executed-but-unretired loads (the
 LQ frees an entry at CDB capture, before retirement, so a snoop of live entries
 does not cover them), AMOs, and LR/SC reservations, and validate a baseline
@@ -303,8 +188,8 @@ for single-hart performance instead of setting them: the safety and progress
 obligations have to be re-established over that structure as it stands, and
 holding them may mean giving some of it back. Freeze those obligations and the
 parameter bounds they require. Exit: 2-hart SMP Debian with measurable
-scaling, timing held, and a soak sized the way Phase 4's is, long enough to
-exercise each recovery path repeatedly under load.
+scaling, timing held, and a soak sized the way the networking one was: hours
+under sustained load, long enough to exercise each recovery path repeatedly.
 
 ## Deferred
 
