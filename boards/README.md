@@ -9,28 +9,14 @@ and pin constraints. Xilinx IP generation lives under `fpga/build/`.
 |-----------|------------------------------------|-----------|--------------------------------------------------------|
 | [X3](x3/) | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz   | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
 
-X3 ships the RV64GCB configuration and exposes 256 KiB of uncached low BRAM
-plus a 1 GiB cached region at `0x8000_0000` for execute-from-DDR code, heap,
-and large data. Low-BRAM data access is 1-cycle. Instruction metadata is
-1-cycle for windows wholly in `[0, 64 KiB)` and takes one request repeat otherwise.
-
-The DDR controller lives in a small `ddr_subsys` block design that the build
-flow assembles from `fpga/build/x3_ddr_bd.tcl`. The design holds the DDR4
-controller IP, a SmartConnect front end that carries the FROST cache-bridge AXI
-and a JTAG-AXI master for DDR image loading, and the calibration and reset
-sequencing. The board top holds the CPU in reset until the controller
-calibrates; `mem_ok` is synchronized into the core clock domain before it
-releases the reset. All nine CoreMark-PRO workloads run on X3.
+X3 provides 256 KiB of local BRAM and 1 GiB of cached DDR at `0x8000_0000`.
+The CPU starts after DDR calibration completes.
 
 ## Architecture Overview
 
-The X3 top instantiates the common `xilinx_frost_subsystem` beside the
-`ddr_subsys` block design and the NIC's GTY transceiver wrapper
-(`x3/x3_nic_gty.sv`). The common subsystem contains the low-BRAM loader,
-BSCAN chains, reset timers, and the `frost` wrapper; the DDR block design
-contains its own JTAG-AXI loader, SmartConnect, and DDR4 controller; the
-transceiver wrapper holds the transceiver wizard core, its free-running clock
-and a supervisor for its resets, and supplies the NIC's MAC clocks.
+The X3 wrapper connects three blocks: `xilinx_frost_subsystem` for the CPU,
+BRAM, loading, and debug; `ddr_subsys` for DDR4 and its JTAG loader; and
+`x3_nic_gty` for the Ethernet transceiver and MAC clocks.
 
 [![X3 board integration: CPU and divided clocks, separate BRAM and DDR loaders, BSCAN debug, shared DDR AXI, and reset sequencing](../docs/diagrams/x3-board-integration.svg)](../docs/diagrams/x3-board-integration.svg)
 
@@ -80,7 +66,7 @@ CPU and /4 domains.
 
 ## RISC-V debug over BSCAN (OpenOCD)
 
-The RISC-V debug module's transport (Phase 3 M3) shares the FPGA's own JTAG
+The RISC-V debug module's transport shares the FPGA's own JTAG
 TAP. `xilinx_frost_subsystem` instantiates two `BSCANE2` USER chains, USER3
 for the DTM's `dtmcs` register and USER4 for `dmi`; the Vivado debug hub
 behind `jtag_axi` keeps USER1. The subsystem passes the BSCAN bundle into

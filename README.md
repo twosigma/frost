@@ -2,68 +2,29 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-FROST is an out-of-order 64-bit RISC-V processor. It implements RV64GCB
-(G = IMAFD) with a Tomasulo back-end, M/S/U privilege modes with trap
-delegation, and Sv39 virtual memory. It runs mainline MMU Linux and RTOS workloads
-at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs.
+FROST is an out-of-order 64-bit RISC-V (RV64GCB) processor written in
+SystemVerilog for FPGAs. It runs Debian 13 Linux and FreeRTOS on the Alveo X3,
+with 10 Gigabit Ethernet and 1 GiB of DDR4 memory.
 
 ## Why FROST?
 
-- Open-source verification flow. Verilator and Yosys cover simulation, formal,
-  and RTL synthesis checks. Production FPGA builds target Xilinx boards through
-  Vivado.
-- Native SystemVerilog.
-- [VS Code extension](tools/vscode-frost/README.md) for X3 bitstream programming,
-  software loading, source debugging, and an integrated serial console.
-- Performance: 1015 CoreMark at 300 MHz (3.38 CoreMark/MHz), measured on X3 FPGA.
-  The core uses a Tomasulo out-of-order back-end with 2-wide dispatch/rename and commit,
-  branch prediction (BTB, bimodal direction predictor, RAS), an L0 cache, and a
-  two-cycle conditional-branch misprediction recovery path.
-- Layered verification. Directed tests, real C programs, the official
-  [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test)
-  compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests)
-  ISA tests, and Spike-referenced random instruction torture tests all run in
-  cocotb simulation, alongside formal verification.
-- Real workloads. All nine official EEMBC CoreMark-PRO workloads use the X3 DDR
-  cache hierarchy. The FreeRTOS demo, CoreMark, and the ISA test
-  application run in simulation and on hardware; the 260+ riscv-arch-test
-  compliance tests run in simulation.
-- 64-bit MMU Linux. The kernel is Debian's own riscv64 kernel, pinned by
-  `linux/debian_kernel.py`; an in-tree Buildroot flow (`linux/`) builds OpenSBI
-  and the test userspace around it, with the lp64d hard-float ABI, and the NIC
-  driver is built as a module for that kernel. CI assembles the image
-  (`build-frost-linux-mmu`) and runs it through full userspace in
-  QEMU (`linux-boot-qemu-mmu`), where the module must load and a boot-time
-  stress payload (timer storm with signals, fork/exec, futex, LR/SC contention)
-  must pass before the login prompt. Booting the kernel on the FROST RTL is
-  validated on hardware, not in
-  simulation: the hardware regression's Linux stage (`fpga/hw_regression.py`)
-  boots Debian 13 on the X3 from its NFS root over the NIC
-  ([setup guide](docs/debian_nfsroot.md)) and requires the kernel banner, the
-  NIC driver, the root mounted over NFS, a running systemd, a login, that
-  payload, the cycle and instruction counters and the NIC loopback, while
-  `fpga/linux_boot_soak.py` scores the payload across repeated board boots of
-  the test image.
-- Networking on the SoC. A 10 Gigabit Ethernet NIC wraps the in-tree
-  10GBASE-R MAC/PCS on a coherent DMA port, with a device-tree node for
-  Linux. On the X3 a board GTY wrapper puts it on a fiber link: the bare-metal
-  echo test round-trips every frame class against a host, and Debian 13 runs
-  its root filesystem over it from an NFS server. `nic_loopback` is also a
-  hardware regression stage.
-- Portable core RTL. The CPU provides portable implementations and passes
-  generic Yosys coarse synthesis plus a full UltraScale+ synthesis target.
-  Xilinx builds can select primitive-backed RAM and timing paths. The board
-  integration keeps board-specific wrappers separate from the common Xilinx
-  subsystem.
-- Apache 2.0 license, suitable for commercial and academic use.
+- **Performance:** 1015 CoreMark at 300 MHz (3.38 CoreMark/MHz) on the X3.
+- **Full Debian Linux:** Debian 13 with its stock riscv64 kernel, systemd,
+  and a root filesystem served over NFS. [Setup guide](docs/debian_nfsroot.md).
+- **10 Gigabit Ethernet:** an integrated NIC with a Linux driver and coherent DMA.
+- **Real workloads:** FreeRTOS and all nine EEMBC CoreMark-PRO benchmarks.
+- **Open tools:** simulate with Verilator and run formal checks with SymbiYosys.
+  FPGA bitstreams are built with Vivado.
+- **Portable RTL:** generic SystemVerilog with separate board integrations.
+- **VS Code support:** program the FPGA, load software, debug, and use the
+  serial console with the [FROST extension](tools/vscode-frost/README.md).
+- **Apache 2.0 license** for commercial and academic use.
 
 ## Features
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 
-Matching **I** (instruction) and **D** (data) badges connect the CPU and system
-views. Cache capacities show the X3 configuration; only selected connections
-are drawn. Click the diagram to view it at full size.
+The diagram shows the X3 configuration. Click to view it at full size.
 
 ### Supported RISC-V Extensions
 
@@ -71,12 +32,12 @@ are drawn. Click the diagram to view it at full size.
 
 | Extension        | Description                                    |
 |------------------|------------------------------------------------|
-| **RV64I**        | Base integer instruction set, including the W-suffixed 32-bit-result ops |
+| **RV64I**        | Base 64-bit integer instruction set |
 | **M**            | Integer multiply/divide                        |
 | **A**            | Atomic memory operations (LR/SC, AMO; word and doubleword) |
 | **F**            | Single-precision floating-point (32-bit)       |
 | **D**            | Double-precision floating-point (64-bit)       |
-| **C**            | Compressed instructions (16-bit encodings, RV64C recoding: C.ADDIW/C.LD/C.SD) |
+| **C**            | Compressed instructions (16-bit encodings) |
 | **B**            | Bit manipulation (B = Zba + Zbb + Zbs)         |
 | **Zicsr**        | CSR access instructions                        |
 | **Zicntr**       | Base counters (cycle, time, instret)           |
@@ -85,104 +46,33 @@ are drawn. Click the diagram to view it at full size.
 | **Zbkb**         | Bit manipulation for crypto                    |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
-| **Supervisor Mode** | S-mode privilege: sret, medeleg/mideleg trap delegation, Sv39 translation (satp, sfence.vma), Sstc (stimecmp) |
-| **User Mode**    | U-mode privilege (ecall traps to M-mode, or to S-mode when delegated) |
+| **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
+| **User Mode**    | U-mode privilege and system calls |
 
 ### Architecture Highlights
 
-- In-order front-end (IF, PD, ID) with a 64-bit instruction fetch window,
-  C-extension decompression, dual decode packets, and CSR decode. The CSR
-  access itself is serialized and executed at commit. Bundle formation pairs
-  any non-control, non-serializing slot-1 instruction with the one that
-  follows it (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b, with the PC advancing up
-  to +8). The remaining 1-wide cases are a slot-2 that would start a
-  serializing (CSR, MISC-MEM, AMO) or native FP-compute instruction, and a
-  misaligned 32b+32b pair that would span beyond the fetch window.
-- Tomasulo out-of-order back-end with register renaming, dynamic scheduling,
-  in-order commit, and precise exceptions.
-- 2-wide dispatch and rename: up to two ROB entries per cycle, with
-  intra-bundle RAW handling, second-slot resource checks, and branch
-  checkpointing.
-- 32-entry ROB shared by INT and FP, with separate INT and FP register alias
-  tables and 8 branch checkpoint slots.
-- 2-wide commit: up to two ROB entries per cycle (head and head+1) through
-  INT and FP register files with two write ports each. Correctly predicted
-  branches retire in either slot; a second checkpoint-free port and held
-  BTB/bimodal training captures serve head+1.
-- Six reservation stations (INT, MUL, MEM, FP, FMUL, FDIV). Long-latency FP
-  divide has its own station so it cannot block FP_RS. The INT station issues
-  two operations per cycle to two single-cycle ALU pipes; branches steer to
-  pipe 0, which owns branch resolution.
-- 2-lane CDB result broadcast. Fixed-priority arbitration tuned for common
-  integer traffic (`MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD`)
-  grants the top two FU completions per cycle, with a one-deep holding
-  register per FU.
-- Conservative memory disambiguation: a load waits until every older store
-  address is known, and takes its data from the SQ by store-to-load
-  forwarding when an older store covers its bytes.
-- Two-tier branch recovery. A mispredicted conditional branch takes a fast
-  path of about two cycles that redirects the front-end and restores the RAT
-  in the same cycle. JALR mispredictions and exceptions take the slower
-  commit-time path.
-- Branch prediction uses a 256-entry BTB with 2-bit direction counters
-  (trained for conditional branches and JAL, with slot-2 lookup), a 1024-entry
-  bimodal direction predictor, an 8-entry return address stack, and PD-stage
-  computed-target redirects for conditional branches that miss the BTB but
-  are predicted taken.
-- L0 cache inside the load queue, cutting load-use latency: 128 entries,
-  direct-mapped, dword-granular, filled from load responses. A store
-  invalidates its dword line when its memory write launches.
-- M/S/U privilege modes with trap delegation, for RTOS and supervisor
-  software: traps enter M-mode through mtvec, or S-mode through stvec when
-  medeleg/mideleg delegate them.
-- Sv39 virtual memory: an 8-entry ITLB in the fetch stage, a 16-entry DTLB
-  ahead of the load and store queues, and a hardware page-table walker that
-  reads page tables through its own port on the cache hierarchy.
-- CLINT-compatible timer (mtime/mtimecmp) for preemptive scheduling, and a
-  PLIC with M and S contexts for hart 0. Its four sources are the ns16550
-  UART, the board's external-interrupt pin, the DMA test engine's completion,
-  and the NIC.
-- 10 Gigabit Ethernet NIC. The portable 10GBASE-R MAC/PCS in `hw/rtl/net10g`
-  sits behind a register window at `0x4003_0000`, with RX and TX descriptor
-  rings on the coherent DMA port and one PLIC interrupt. Descriptors and
-  packet buffers need no cache maintenance. A device-tree node describes it
-  to Linux. The X3 build runs the MAC on a GTY transceiver (channel 0 of
-  quad 231, `boards/x3/x3_nic_gty.sv`), whose PMA loopback is the NIC's
-  self-test path there.
-- RISC-V debug over JTAG: a debug transport module (DTM) connects to the
-  debug module for halt, resume, and single-step. X3 uses the FPGA's BSCAN
-  USER chains; the portable integration provides a generic JTAG TAP.
-- Separate instruction and data memory ports (Harvard).
-- Write-back cache hierarchy over DDR. A 1 GiB cached region at `0x8000_0000`
-  is served by `frost_cache` instances: direct-mapped, 32 B lines, write-back
-  and write-allocate, non-blocking, so L1 hits stream one per cycle past
-  outstanding misses and stores are acknowledged once the L1D has ordered
-  them. On X3, a 16 KiB read-only L1I serves instruction fetch and a 128 KiB
-  L1D serves data, so code can execute from DDR as well as from low BRAM. The
-  L1D, page-table walker, L1I and DMA ports merge through a tagged tree of
-  line-port arbiters (priority D > walker > I > DMA, the DMA port
-  starvation-bounded) with several transactions in flight; a coherence
-  sequencer probes the L1D and hands the load queue its invalidations before
-  a DMA request reaches the shared level. The NIC and the DMA test engine
-  share that port through another line-port arbiter, so device DMA is
-  coherent with the L1D and the load queue's L0 without software cache
-  maintenance. A 2 MiB UltraRAM L2 with a serialized three-cycle tag lookup
-  sits below that tree. The hierarchy reaches X3's DDR4 through a single-beat
-  AXI bridge that keeps multiple transactions outstanding.
-- One memory map everywhere. Software sees the same layout across board
-  integrations and simulation: a 256 KiB uncached BRAM region for code, data,
-  and stack, the MMIO window at `0x4000_0000` (UART, timer, the DMA test
-  engine at `0x4002_0000`, the NIC at `0x4003_0000`), the PLIC at
-  `0x4400_0000`, and the 1 GiB cached region for execute-from-DDR code, heap,
-  and large data. Low-BRAM data accesses take one cycle. Instruction windows
-  wholly inside `[0, 64 KiB)` also take one cycle; later code windows repeat
-  once to register their timing-facing predecode metadata. The hierarchy shape
-  is invisible to software.
+- Tomasulo out-of-order execution with 2-wide decode, rename, and commit,
+  a 32-entry reorder buffer, and precise exceptions.
+- Six reservation stations, two integer ALUs, and hardware single- and
+  double-precision floating point.
+- Branch prediction with a 256-entry BTB, 1024-entry direction predictor,
+  and 8-entry return stack; roughly two-cycle conditional-branch recovery.
+- Sv39 virtual memory with hardware page-table walks and separate instruction
+  and data TLBs.
+- On X3: 16 KiB L1I, 128 KiB L1D, 2 MiB L2, and a load-queue L0 cache.
+  DMA is coherent with the data caches.
+- 256 KiB of local BRAM and 1 GiB of cached DDR, with the same [memory map](sw/README.md#memory-map)
+  in simulation and on hardware.
+- UART, CLINT-compatible timer, PLIC interrupt controller, and 10GBASE-R Ethernet.
+- JTAG debugging with halt, resume, and single-step.
+
+See the [RTL guide](hw/rtl/README.md) and
+[CPU internals](hw/rtl/cpu_and_mem/cpu/README.md) for implementation details.
 
 ## Prerequisites
 
-The Docker image provides every validated tool below except Vivado, so
-simulation, formal verification, and linting need no host tool installation.
+Install Docker for simulation, formal verification, and linting. FPGA builds
+also require Vivado on the host. The tool versions used by the project are:
 
 | Category      | Tool              | Version |
 |---------------|-------------------|---------|
@@ -210,7 +100,7 @@ container outputs owned by the invoking UID/GID:
 # Build the Docker image
 docker build -t frost .
 
-# Diagnose the local Docker/image/submodule setup
+# Check the local setup (read-only)
 ./scripts/frost.py doctor
 
 # Run a clean Hello World cocotb simulation
@@ -220,19 +110,8 @@ docker build -t frost .
 ./scripts/frost.py shell
 ```
 
-The Docker image includes:
-- Verilator, Yosys, SymbiYosys, Z3, and Boolector built from source at the
-  versions pinned above, plus the xPack bare-metal RISC-V GCC toolchain and
-  Python 3.12 with Cocotb and pytest
-- Pre-commit plus system clang-tidy/Verible; pinned Ruff, mypy, and
-  clang-format hook environments install on the first lint run and are cached
-
-`doctor` is a read-only preflight. It reports each diagnostic as `PASS`,
-`WARN`, `FAIL`, or dependency-gated `SKIP`, then returns a nonzero status if
-any check failed. It checks Docker access, image compatibility, submodules,
-the persistent hook cache, and generated-artifact ownership. The ownership
-scan skips `./hw`. The hook cache lives at `$XDG_CACHE_HOME/frost/container`
-when that variable is set, or at `~/.cache/frost/container` otherwise.
+The wrapper initializes submodules automatically. Use it for all cocotb runs
+to match CI's tools and clean stale simulation builds.
 
 ## Running Code-Quality Checks
 
@@ -242,11 +121,9 @@ Run the `Lint` and `Fast Python Tests` CI gates with:
 ./scripts/frost.py check
 ```
 
-`check` runs both gates even if the first fails, so one invocation reports all
-fast feedback; pass `--fail-fast` to stop at the first failure. This is not the
-full simulator/formal/synthesis regression. The lint hooks include automatic
-formatters and fixers, so `check` may modify files; review the resulting diff.
-Use `./scripts/frost.py lint` when you only want the lint phase.
+The lint hooks may modify files; review the resulting diff. Use
+`./scripts/frost.py lint` for lint alone. Simulation and formal checks run
+separately; see the [test guide](tests/README.md).
 
 ## Quick Start
 
@@ -264,62 +141,23 @@ The output should include "Hello, world!".
 ./scripts/frost.py cocotb directed_traps   # directed M-mode trap/interrupt tests
 ```
 
-The pytest run covers the registry's unit benches and real programs. The
-riscv-tests, riscv-arch-test, and torture matrices have dedicated runners; see
-`tests/README.md` for their pinned-container commands. The legacy
-constrained-random `cpu_tb` regression is registered as the CLI-only
-`cpu_random` target. Its harness plumbing is OOO-aware (register-file hierarchy
-paths, LVT-aware banked-RAM reads), but its scoreboard still assumes
-single-wide in-order retirement with fixed fetch-to-writeback offsets, and it
-needs a commit-indexed redesign before it passes on the current core. Until
-then the Spike-referenced torture runner provides the randomized coverage.
+This runs unit tests and real programs. See the [test guide](tests/README.md)
+for ISA compliance suites, randomized instruction tests, and individual targets.
 
 ## Directory Structure
 
-```
-frost/
-├── README.md                 # This file
-├── hw/                       # Hardware (RTL)
-│   ├── rtl/                  # Synthesizable RTL source
-│   │   ├── frost.sv          # Top-level module
-│   │   ├── frost.f           # File list for synthesis/simulation
-│   │   ├── cpu_and_mem/      # CPU core, memory subsystem, PLIC, DMA engine, debug module
-│   │   ├── lib/              # Generic FPGA library (RAM, FIFO, CDC, cache)
-│   │   ├── net10g/           # 10GBASE-R Ethernet MAC and PCS
-│   │   └── peripherals/      # UART transmitter/receiver and the Ethernet NIC (nic/)
-│   └── sim/                  # Simulation-only files (testbenches)
-├── sw/                       # Software
-│   ├── common/               # Build infrastructure (linker, startup)
-│   ├── lib/                  # Bare-metal runtime library (uart, string, sprintf, timer, trap)
-│   └── apps/                 # Applications
-│       ├── hello_world/      # Simple test program
-│       ├── isa_test/         # ISA compliance suite
-│       ├── arch_test/        # riscv-arch-test compliance (260+ tests)
-│       ├── riscv_tests/      # riscv-tests ISA tests (rv64 suites)
-│       ├── riscv_torture/    # Random instruction torture tests (20-test corpus)
-│       ├── coremark/         # CPU benchmark
-│       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (DDR-backed heap)
-│       ├── freertos_demo/    # FreeRTOS RTOS demo
-│       ├── nic_loopback/     # NIC bring-up and rings through a loopback
-│       └── ...               # Other applications
-├── linux/                    # Linux image build: pinned Debian kernel fetch, Buildroot + OpenSBI submodules, external tree, firmware helper, NIC driver (also a DKMS package)
-├── verif/                    # Verification infrastructure
-│   ├── cocotb_tests/         # Cocotb test cases
-│   ├── models/               # Software reference models
-│   ├── encoders/             # Instruction encoding
-│   └── monitors/             # Runtime verification
-├── formal/                   # Formal verification (SymbiYosys)
-├── tests/                    # Test runners (pytest integration)
-├── scripts/                  # Container wrapper (frost.py) and clang-tidy wrapper
-├── tools/
-│   └── vscode-frost/         # VS Code FPGA debugger and serial console extension
-├── fpga/                     # FPGA build and programming scripts
-│   ├── build/                # Vivado synthesis scripts
-│   ├── program_bitstream/    # FPGA programming
-│   └── load_software/        # Software loading via JTAG
-└── boards/                   # Board-specific wrappers
-    └── x3/                   # Alveo X3522PV
-```
+| Directory | Contents |
+|-----------|----------|
+| [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
+| [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
+| [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
+| [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |
+| [boards/](boards/README.md) | Board wrappers and pin constraints |
+| [tests/](tests/README.md) | Test runners |
+| [verif/](verif/README.md) | Cocotb tests, reference models, and monitors |
+| [formal/](formal/README.md) | Formal verification |
+| [tools/vscode-frost/](tools/vscode-frost/README.md) | VS Code extension |
+| [scripts/](scripts/) | Docker wrapper and development tools |
 
 ## User Guide
 
@@ -347,9 +185,7 @@ git submodule update --init --recursive
 ./scripts/frost.py cocotb hello_world      # Hello World program
 ./scripts/frost.py cocotb isa_test         # ISA compliance application
 ./scripts/frost.py cocotb coremark         # CoreMark benchmark
-./scripts/frost.py cocotb coremark_pro_core  # CoreMark-PRO (also _cjpeg,
-                                             # _linear_alg, _loops, _nnet,
-                                             # _parser, _radix2, _sha, _zip)
+./scripts/frost.py cocotb coremark_pro_core # CoreMark-PRO core workload
 ./scripts/frost.py cocotb ddr_test         # Cached-region (DDR) tier test
 ./scripts/frost.py cocotb ddr_heap_test    # Multi-MB malloc through the caches
 ./scripts/frost.py cocotb frost_cache      # Cache-hierarchy unit bench (X3 shape)
@@ -371,57 +207,9 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 ### CI Test Coverage
 
-CI covers:
-
-- Directed tests: M-mode trap/interrupt handling (`directed_traps` on the
-  cpu_tb harness). LR/SC and compressed-instruction coverage comes from the
-  rv64ua/rv64uc riscv-tests, the arch-compliance suite, and the
-  ddr_atomic_test/c_ext_test programs. The other cpu_tb suites are CLI-only:
-  directed_atomics and compressed are ported to the OOO core and pass but are
-  not wired into CI; directed_multicycle and the constrained-random cpu_random
-  still assume in-order fixed latencies and need porting (cpu_random via a
-  commit-indexed scoreboard).
-- Architecture compliance: the official
-  [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite
-  (the rv64i_m batches, 260+ tests) across the I, M, A, F, D, C, B, K, Zicond,
-  Zifencei, privilege, D_Zcd, and hints extensions, with signature comparison
-  against Spike golden references (Verilator only, one CI job per extension
-  and memory tier).
-- ISA pipeline tests: self-checking tests from
-  [riscv-tests](https://github.com/riscv-software-src/riscv-tests) (172 tests
-  in the DDR tier across the twelve rv64 suites: ui/um/ua/uf/ud/uc/mi/si plus
-  the four Zb* suites; the BRAM tier skips two that need cached DDR),
-  exercising rename, wakeup, CDB arbitration, and OOO commit. The user-level
-  suites also run under the paged `v` environment on the DDR tier (Verilator
-  only).
-- Random instruction torture tests: a randomly generated RV64IMAFDC
-  instruction corpus (20 tests: ALU, multiply/divide, memory, branch, FP, AMO)
-  checked against Spike golden register signatures (Verilator only).
-- C program simulation: the registered applications (hello_world, coremark,
-  freertos_demo, and the rest) run in simulation with pass/fail detection.
-- C compilation: every application compiles with the RISC-V toolchain.
-- Standalone Ethernet: the [Ethernet MAC/PCS job](.github/workflows/ci.yml) runs the
-  isolated MAC/PCS cocotb suite and portable coarse synthesis through `frost`,
-  independently of the CPU test registry. The same MAC/PCS is also built into
-  the SoC's NIC and covered by the jobs below.
-- NIC: the NIC block benches and the clock-crossing library (registry targets
-  `nic_*`, `async_fifo`, `cdc_gray_count`) run in the unit-test job, and the
-  `nic_loopback` and `nic_echo` programs run with the other C programs in both
-  memory tiers.
-- Yosys synthesis: the RTL passes generic, vendor-agnostic coarse synthesis
-  and a full Xilinx UltraScale+ synthesis target matching X3's hierarchy,
-  including the NIC and its MAC/PCS.
-- Formal verification: SymbiYosys bounded model checking plus
-  cover-reachability checks on selected modules verify control and datapath
-  invariants over all inputs within their bounded windows (see `formal/`).
-
-Most program suites run as separate memory-tier jobs: `bram` places the whole
-program in low BRAM for ISA checks; `ddr` relocates it to cached DDR to
-exercise the L1I and the D-side cache. Architecture compliance uses the same
-tiers but skips three jobs: the slow F and D DDR batches (the F/D BRAM jobs
-cover FPU conformance and the other DDR jobs cover the caches) and the
-Zifencei BRAM batch, whose self-modifying code needs cached DDR because low
-BRAM is Harvard.
+CI runs RISC-V compliance suites, Spike-referenced random instruction tests,
+C programs, peripheral tests, synthesis checks, and formal verification.
+See the [test guide](tests/README.md#ci-integration) for coverage and commands.
 
 ### FPGA Deployment
 
@@ -437,10 +225,7 @@ BRAM is Harvard.
 ./fpga/load_software/load_software.py x3 coremark
 ./fpga/load_software/load_software.py x3 isa_test
 
-# CoreMark-PRO workloads (-v1 = validation, -v0 = performance run
-# with calibrated iterations from sw/apps/software_registry.py). Workloads with
-# data in the cached region (e.g. radix2's FFT tables) are loaded into DDR over
-# JTAG automatically before the low-BRAM image.
+# CoreMark-PRO (-v1 = validation, -v0 = performance)
 ./fpga/load_software/load_software.py x3 coremark_pro_core -v1
 ./fpga/load_software/load_software.py x3 coremark_pro_radix2 -v1
 ```
@@ -451,30 +236,10 @@ integrated **FROST Serial** terminal below.
 
 ### VS Code Extension
 
-The [FROST FPGA Debugger](tools/vscode-frost/README.md) provides X3 bitstream
-programming, application loading, source and instruction stepping, breakpoints,
-register inspection, and a bidirectional UART console in VS Code.
-
-Follow the [build and installation instructions](tools/vscode-frost/README.md#build-and-install-locally)
-to install the local VSIX. Use official VS Code on the Linux FPGA host, directly
-or through Remote-SSH, with Microsoft's C/C++ extension and the native FPGA
-and RISC-V tools described in the guide.
-
-Open the repository and use the Command Palette (**Ctrl+Shift+P**):
-
-1. Run **FROST: Configure Target** to select the cable, Vivado target,
-   application, memory layout, and actual bitstream CPU clock.
-2. Run **FROST: Program Bitstream** if the FPGA needs programming.
-3. Run **FROST: Load Software** for a normal run, or **FROST: Load Software
-   and Debug** to build with debug symbols and start the debugger. The
-   **FROST Serial** terminal opens automatically by default; resume a halted
-   CPU to see new UART output.
-
-Plain loading offers the full repository application list. Debug commands
-enable every app except `linux_boot` and `opensbi_smoke`, which are marked
-**Load only**. See the [debugging guide](tools/vscode-frost/README.md#debugging)
-for startup behavior and the [debugger scope](tools/vscode-frost/README.md#debugger-scope)
-for supported features and hardware validation limits.
+The [FROST FPGA Debugger](tools/vscode-frost/README.md) provides programming,
+software loading, source breakpoints, stepping, register inspection, and a
+serial console. Follow its [installation guide](tools/vscode-frost/README.md#build-and-install-locally),
+then run **FROST: Configure Target** from the Command Palette.
 
 ## Supported FPGA Boards
 
@@ -482,14 +247,7 @@ for supported features and hardware validation limits.
 |--------------------|----------------------|------------|---------------------------------------------|
 | Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz    | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
 
-Board integrations preserve the same software-visible memory map so another
-target can be added without changing software. X3 carries a 256 KiB uncached
-low BRAM region at `[0, 256 KiB)` and cached DDR at
-`[0x8000_0000, +1 GiB)`. Low-BRAM data accesses and instruction
-windows wholly below 64 KiB take one cycle; later instruction windows repeat
-once for registered predecode metadata. The CPU is held in reset until the DDR
-controller calibrates, so software never observes uninitialized main memory.
-
+See the [board guide](boards/README.md) for pinouts, clocking, and adding a board.
 
 <!-- FPGA_UTILIZATION_START -->
 
@@ -518,11 +276,7 @@ controller calibrates, so software never observes uninitialized main memory.
 
 ## Roadmap
 
-FROST is an RV64GCB-only core; rv32 support was retired after Phase 1.
-[ROADMAP.md](ROADMAP.md) lists the phases from the RV64 substrate through
-S-mode and Sv39 with MMU Linux, system I/O with a stock distribution, RV64
-performance parity with the former RV32 design, and SMP, each with its exit
-criteria.
+See [ROADMAP.md](ROADMAP.md) for current work and planned features, including SMP.
 
 ## CPU Internals
 
@@ -533,41 +287,15 @@ under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 
 ## Glossary
 
-| Term            | Definition                                       |
-|-----------------|--------------------------------------------------|
-| **RV64I**       | RISC-V 64-bit base integer instruction set          |
-| **XLEN**        | Register/datapath width, fixed at 64 in FROST       |
-| **M extension** | Multiply/divide instructions                     |
-| **A extension** | Atomic memory operations (LR/SC, AMO)            |
-| **B extension** | Bit manipulation (Zba + Zbb + Zbs)               |
-| **C extension** | Compressed 16-bit instructions                   |
-| **F extension** | Single-precision floating-point (32-bit IEEE 754)|
-| **D extension** | Double-precision floating-point (64-bit IEEE 754)|
-| **G extension** | Shorthand for IMAFD                              |
-| **Sv39**        | 39-bit virtual addressing with three-level page tables (satp, ITLB/DTLB, page-table walker) |
-| **IF**          | Instruction Fetch stage                          |
-| **PD**          | Pre-Decode stage (C extension decompression)     |
-| **ID**          | Instruction Decode feeding 2-wide dispatch       |
-| **OOO**         | Out-of-order execution                           |
-| **Tomasulo**    | OOO scheduling algorithm with register renaming  |
-| **ROB**         | Reorder Buffer (32-entry, in-order commit)       |
-| **RAT**         | Register Alias Table (INT + FP rename, 8 ckpts)  |
-| **RS**          | Reservation Station (per-FU instruction window)  |
-| **LQ**          | Load Queue (in-flight loads, L0 cache, MMIO)     |
-| **SQ**          | Store Queue (non-speculative, store-to-load fwd) |
-| **CDB**         | Common Data Bus (2-lane result broadcast)        |
-| **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
-| **L0 Cache**    | Level-0 cache for load-use bypass                |
-| **L1I / L1D**   | Split write-back line caches (16 KiB instruction, 128 KiB data on X3) over the cached DDR region, merged with the page-table walker and DMA ports through a 2:1 line-port arbiter under a starvation-bounded 3:1 one |
-| **L2 Cache**    | 2 MiB UltraRAM line cache below the L1s on X3        |
-| **Cached region** | `[0x8000_0000, +1 GiB)`: code (execute-from-DDR), heap, and large data, behind L1→L2→DDR |
-| **BTB**         | Branch Target Buffer (256-entry target predictor) |
-| **DirPred**     | 1024-entry bimodal branch-direction predictor    |
-| **RAS**         | Return Address Stack (8-entry return predictor)  |
-| **MMIO**        | Memory-Mapped I/O                                |
-| **CLINT**       | Core Local Interruptor (timer/software interrupts) |
-| **PLIC**        | Platform-Level Interrupt Controller (external interrupts, M and S contexts) |
-| **NIC**         | 10 Gigabit Ethernet controller at `0x4003_0000`: the `hw/rtl/net10g` MAC/PCS with descriptor rings on the coherent DMA port |
-| **DMA port**    | The cache hierarchy's fourth upstream line port, shared by the NIC and the DMA test engine |
-| **Coherence sequencers** | Walk each DMA request through the L1D and the load queue, and each page-table walk read through the L1D, before the shared level orders it, so neither DMA nor page-table publication needs software cache maintenance |
-| **Cocotb**      | Python-based verification framework              |
+| Term | Meaning |
+|------|---------|
+| **Tomasulo** | Out-of-order scheduling with register renaming |
+| **Sv39** | 39-bit virtual addressing with three-level page tables |
+| **BTB** | Branch target buffer |
+| **L1I / L1D** | Level-1 instruction and data caches |
+| **BRAM / URAM** | FPGA block RAM / UltraRAM |
+| **MMIO** | Memory-mapped I/O |
+| **CLINT** | Core-local interruptor |
+| **PLIC** | Platform-level interrupt controller |
+| **NIC** | Network interface controller |
+| **DMA** | Direct memory access by a peripheral |

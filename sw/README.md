@@ -353,22 +353,22 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 
 | App | Description |
 |-----|-------------|
-| `arch_test/` | RISC-V Architecture Compliance suite (riscv-arch-test, 260+ tests against Spike references, Verilator only) |
+| `arch_test/` | RISC-V architecture compliance tests against Spike references; Verilator only |
 | `branch_pred_test/` | Assembly-level branch predictor verification (45 BTB tests) |
 | `c_ext_test/` | Compressed (C ext) instruction test: JAL/JALR/JR alignment cases |
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
-| `cf_ext_test/` | Compressed double-precision FP (Zcd) test: C.FLD/C.FSD. Zcf is rv32-only; at rv64 those slots encode C.LD/C.SD, covered by `c_ext_test` |
-| `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark. The only app that narrows `FROST_MARCH_EXTENSIONS` (it builds without C) and sets `APP_TUNE_FLAGS`; its Makefile records the measured reason for each setting |
-| `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule). All nine official workloads run on X3, with per-workload iteration counts calibrated in `apps/software_registry.py`. Builds use the unified linker script, so the malloc heap and large datasets such as radix2's FFT tables sit in the 1 GiB cached DDR region |
+| `cf_ext_test/` | Compressed double-precision floating-point (Zcd) instruction tests |
+| `coremark/` | EEMBC CoreMark CPU benchmark |
+| `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, using DDR for the heap and large datasets |
 | `csr_test/` | CSR access and M-mode trap handling verification |
 | `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |
 | `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
 | `freertos_demo/` | FreeRTOS preemptive multitasking demo (requires `git submodule update --init`) |
 | `hello_world/` | Minimal UART/timer sanity check: prints a greeting every second |
 | `isa_test/` | ISA self-test for all Frost extensions (RV64GCB + M-mode) |
-| `linux_boot/` | Linux boot images: Buildroot builds OpenSBI and the test initramfs from the vendored submodules, `linux/debian_kernel.py` fetches Debian's pinned kernel and builds the NIC module into that initramfs, then `frost_boot_image.py` packs them into the low-BRAM boot shim (`sw.mem`) and the DDR image (`sw_ddr.mem`) (`linux/README.md`, "Boot chain and entry state", "Kernel"). A board app with no cocotb entry: `load_software.py` loads it, and the hardware regression's Linux stage and `fpga/linux_boot_soak.py` are where the kernel is validated (`linux/README.md`, "Consumers") |
+| `linux_boot/` | Debian kernel, OpenSBI, and root filesystem images for FPGA loading. See the [Linux guide](../linux/README.md) |
 | `memory_test/` | Arena allocator and malloc/free test suite |
-| `opensbi_smoke/` | OpenSBI fw_jump (the `linux/opensbi` submodule, unmodified, built by `linux/opensbi_build.py`) boots a bare S-mode payload through the FROST boot layout (`frost_boot_image.py`): SBI probes, Sstc timers, IPI, console, the M-mode misaligned-access emulation under Sv39, FWFT delegation, and the SBI PMU counter sequence. The images are layout-fixed, so `MEM_CONFIG` is ignored |
+| `opensbi_smoke/` | OpenSBI boot and SBI tests with a bare supervisor payload; fixed layout, ignores `MEM_CONFIG` |
 | `packet_parser/` | FIX protocol message parser demo with latency measurement |
 | `print_clock_speed/` | Clock frequency measurement utility |
 | `ras_stress_test/` | BTB+RAS stress test mixing loops, branches, and function pointers |
@@ -381,17 +381,17 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `tomasulo_perf/` | IPC measurement across dependent/independent workloads to quantify OOO benefit |
 | `tomasulo_test/` | Tomasulo correctness test: RAW/WAR/WAW hazards, renaming, OOO execution |
 | `uart_echo/` | Interactive UART RX demo with echo, hex, and count commands |
-| `ddr_exec_test/` | Execute-from-DDR test: runs `.ddr_text` functions through the L1I fetch path (leaf/loop/recursion, cross-quadrant calls, bodies larger than the fetch buffer, warm-vs-cold) |
+| `ddr_exec_test/` | Execution from DDR, including calls, recursion, and fetch-buffer boundaries |
 | `ddr_heap_test/` | Multi-MB malloc capacity test through the cache hierarchy into DDR |
-| `ddr_smc_test/` | Self-modifying-code / `fence.i` test: writes instruction words into a DDR buffer and executes them, exercising the full L1D-writeback then L1I-invalidate sync chain |
-| `ddr_test/` | Cached-region bring-up test (stores/loads, byte strobes, eviction sweeps, and the preloaded `.ddr_rodata` image path) |
-| `amo_irq_torture/` | Machine-timer IRQs swept across cached-DDR AMO bursts; a counter-array sum check catches any double-applied or lost atomic. This is the directed regression for the interrupt-orphaned AMO write that made `linux_boot` flaky |
-| `tick_torture/` | Linux-faithful CLINT tick re-arm (hi=-1/lo/hi order, torn-read mtime loop, catch-up) under multi-MB DDR thrash, with re-arm readback verify, a lost-tick watchdog, and a bounded-WFI wake check |
-| `lq_stale_slot_probe/` | Two random-direction branches around cached-DDR line loads, timed so a second partial flush arrives while a flushed load's response is still in flight; per-line signatures catch a load that returns another load's data. This is the directed regression for the load queue's stale cached-slot double launch |
-| `ptw_coherence_test/` | Page-table-walker vs dirty-L1D coherence (Sv39, M-mode/MPRV windows). Publishes a new 4 KiB PTE table the way Linux does, without an sfence.vma: the table is left dirty in the L1D while its PMD pointer is evicted to L2, and the walk that follows must still see one consistent table, which the hierarchy's walker coherence sequencer guarantees by probing the L1D ahead of each walk read. INVALID and legal-A-set-decoy child seeds catch the load page fault and the wrong-data variant of a torn walk. This is the directed regression for the X3 `split_linear_mapping` load fault |
-| `dma_torture/` | DMA coherence torture (Phase 4 slice 1): the DMA test engine against the CPU caches, copy/fill visibility, coherence order, message passing with and without fences, LR/SC and AMO against DMA, the completion interrupt, abort and reuse, the aperture |
-| `nic_loopback/` | The NIC driven like the Linux driver through a loopback (the MAC wrapper's raw loopback when PHY_STATUS reports a shared MAC clock, the transceiver's PMA loopback otherwise): bring-up, rings and doorbells, DD completions, counters, the completion and link interrupts, moderation, the filter, RESET mid-traffic; a hardware regression stage |
-| `nic_echo/` | The NIC on a link: the cocotb bench's wire-side peer sends frames of every class into the raw RX interface and decodes the raw TX interface; the program echoes them interrupt-driven, reposting descriptors through ring wraps, a burst beyond the ring, truncated and filtered frames |
+| `ddr_smc_test/` | Self-modifying code and `fence.i` across the instruction and data caches |
+| `ddr_test/` | Cached-DDR loads, stores, byte strobes, evictions, and preloaded data |
+| `amo_irq_torture/` | Atomic DDR operations under timer interrupts; checks for lost or duplicate updates |
+| `tick_torture/` | CLINT timer rearming, lost-tick detection, and WFI wakeup under DDR traffic |
+| `lq_stale_slot_probe/` | Load-data correctness when branch flushes overlap outstanding DDR reads |
+| `ptw_coherence_test/` | Sv39 page-table walks with dirty L1D page tables |
+| `dma_torture/` | DMA coherence, CPU atomics, completion ordering, interrupts, and abort/reuse |
+| `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
+| `nic_echo/` | Interrupt-driven Ethernet echo; requires a link partner |
 
 ## Building
 
@@ -480,11 +480,8 @@ make RISCV_PREFIX=riscv-none-elf-
 
 ### Architecture Constants (`common/arch.mk`)
 
-The core is RV64-only; rv32 support was retired after Phase 1.
-`common/arch.mk` defines the constants every build backend composes its flags
-from: the `-march` prefix `rv64`, the integer ABI `lp64`, the FP ABI `lp64d`,
-and the linker emulation `elf64lriscv`. Apps and backends share this one
-definition of the target.
+`common/arch.mk` defines the shared target settings: `rv64`, integer ABI
+`lp64`, floating-point ABI `lp64d`, and linker emulation `elf64lriscv`.
 
 `common.mk` adds two per-app hooks on top of those constants, both `?=` so an
 app sets them before its `include`:
@@ -505,38 +502,26 @@ app sets them before its `include`:
 program is linked into:
 
 ```bash
-make                    # MEM_CONFIG=bram (default): whole program in low BRAM
+make                    # MEM_CONFIG=bram: default layout
 make MEM_CONFIG=ddr     # whole program relocated to the cached DDR region
 ```
 
-Each backend records a fingerprint of its tools, flags, and linker settings, so
-a plain `make` rebuilds after a tracked header, the memory tier, or (for
-CoreMark-PRO) the workload changes. C apps use `common.mk`, self-starting
-assembly apps use `standalone_asm.mk`, and the CoreMark-PRO Makefile also
-tracks its workload object graph and included headers. Unknown `MEM_CONFIG`
-values are rejected. The `compile_app.py` CLI still runs `make clean` first.
+Builds track tool, flag, header, memory-layout, and workload changes and
+rebuild as needed. `compile_app.py` always cleans first.
 
 - `bram` (default): the program lives in low BRAM; only opt-in `.ddr_*` sections
   (and the malloc heap) sit in the cached DDR region. Every board integration
-  uses this configuration in the FPGA flow.
+  uses this configuration by default in the FPGA flow.
 - `ddr`: the program is linked at `0x8000_0000` behind a ROM boot stub
   (`common/crt0_ddr_boot.S`) that far-jumps to the DDR-resident `_start`, so the
   L1I fetch path and the D-side cached load/store path are both exercised. This
   selects `common/link_ddr.ld` and splits all loadable sections into the DDR
   image (`sw_ddr.mem`), leaving only the boot stub in `sw.mem`.
 
-CI runs the cocotb real-program, riscv-tests, and riscv-torture suites in both
-the `bram` and `ddr` tiers as separate jobs. Arch compliance uses the same
-tier matrix, but CI skips the F/D DDR batches, which exceed the hosted-runner
-budget; the F/D BRAM jobs cover FPU conformance and the other DDR jobs cover
-the cache hierarchy. The suite runners take `--mem-config`
-(`test_arch_compliance.py`, `test_riscv_tests.py`, `test_riscv_torture.py`);
-`test_run_cocotb.py` reads `FROST_COCOTB_MEM_CONFIG=ddr`, and `compile_app.py`
-takes `--mem-config ddr`. Four suites keep their own per-tier linker scripts:
-`riscv_tests`, `arch_test`, `riscv_torture`, and `freertos_demo`. The first
-three also keep their own boot stubs; `freertos_demo` uses
-`common/crt0_ddr_boot.S`. File names differ per suite; see each app's
-Makefile.
+For simulation, use `FROST_COCOTB_MEM_CONFIG=ddr` with the cocotb wrapper.
+The compliance and torture runners take `--mem-config ddr`; see the
+[test guide](../tests/README.md). `riscv_tests`, `arch_test`, `riscv_torture`,
+and `freertos_demo` use their own linker scripts for the same memory map.
 
 ### Clock Frequency
 
@@ -559,8 +544,8 @@ Defined in `common/link.ld`:
 
 | Region | Address      | Size    | Description                                        |
 |--------|--------------|---------|----------------------------------------------------|
-| ROM    | `0x00000000` | 95 KiB  | Code and small read-only data in uncached BRAM; fetch windows wholly below 64 KiB are 1-cycle, while later windows repeat once for registered predecode metadata |
-| DEBUG  | `0x00017C00` | 1 KiB   | Debug-module execution slice (park loop, abstract-command and program-buffer words); reserved by every linker script, never allocated, written only by the debug module |
+| ROM    | `0x00000000` | 95 KiB  | Code and small read-only data in uncached BRAM |
+| DEBUG  | `0x00017C00` | 1 KiB   | Reserved for the debug module |
 | RAM    | `0x00018000` | 160 KiB | Variables, BSS, and stack in uncached BRAM; data accesses remain 1-cycle |
 | MMIO   | `0x40000000` | 44 B    | Native UART/FIFO/timer/MSIP registers (the linker's window); the NS16550 UART at `0x40001000` and the SiFive CLINT alias at `0x40010000` sit above it |
 | DDR    | `0x80000000` | 1 GiB   | Cached region: execute-from-DDR code, heap, large `.ddr_*` data |
@@ -571,9 +556,8 @@ end of the gigabyte. An object reaches `.ddr_rodata` either through a
 per-object rule in the linker script (radix2's ~800 KiB FFT tables) or an
 explicit `__attribute__((section(".ddr_rodata")))`. The dense `sw_ddr.txt`
 loader image starts at the lowest `.ddr_*` LMA, which must stay exactly at the
-region base. The low-BRAM stack carries a 112 KiB reserve sized from measured
-per-workload high-water marks (parser's recursive XML cleanup is the deepest
-user at 112 KiB); a link-time assert keeps data+bss from growing into it.
+region base. The low-BRAM stack has a 112 KiB reserve; a link-time assertion
+prevents data and BSS from growing into it.
 
 Image delivery is split: `sw.mem`/`sw.txt` carry the low-BRAM image, and
 `sw_ddr.mem`/`sw_ddr.txt` carry the cached-region image (region-relative,
@@ -658,22 +642,12 @@ Special cases:
 - Floating point: hardware F and D extensions (IEEE 754 single and double precision)
 - No OS or libc: bare-metal programs with minimal dependencies
 - Optimization: `-O3` by default; an app may override `OPT_LEVEL` (isa_test uses `-O2`)
-- Source debugging: `make FROST_DEBUG=1` uses `-Og -g3`, disables loop unrolling,
-  and retains frame pointers for common C apps and CoreMark-PRO. These final
-  profile flags take precedence over ordinary tuning flags. `isa_test` opts out
-  of frame pointers with `FROST_DEBUG_FRAME_POINTER=0` because its instruction
-  tests explicitly clobber `s0`; its DWARF and `-Og` remain enabled. Handwritten
-  standalone assembly uses GNU as DWARF line information and stops at `_start`,
-  with no `main` or C frame-pointer contract. Its BRAM/DDR builds now also emit
-  `sw_ddr.txt`, empty when there are no loaded DDR sections.
-  `ddr_smc_test` uses `-mcmodel=large` only in its debug profile so small BRAM
-  functions can address its DDR code buffer across the rounded medany boundary.
-  The effective build configuration tracks the debug profile and actual CPU
-  clock, so switching back to `FROST_DEBUG=0` rebuilds the ELF/objects. CoreMark-PRO
-  also records the selected workload, run arguments, and diagnostic options;
-  debug timings do not represent the normal performance profile.
-  The FPGA loader's `--debug` covers its ordinary single-ELF applications;
-  `linux_boot` and `opensbi_smoke` retain their separate firmware-image build
-  flows. Startup behavior is unchanged; no debugger wait gate is added. Frame
-  pointers do not guarantee unwinding through custom assembly, trap handlers,
-  or FreeRTOS task switches; CPU-level FreeRTOS debugging has no task awareness.
+- Source debugging: `make FROST_DEBUG=1` adds DWARF information and uses
+  `-Og -g3` with frame pointers for common C apps and CoreMark-PRO.
+  `isa_test` reserves `s0` for instruction tests and omits frame pointers.
+  Assembly apps provide source-line information and start at `_start`.
+  Debug builds are unsuitable for benchmark measurements.
+- The FPGA loader's `--debug` supports single-ELF apps. `linux_boot` and
+  `opensbi_smoke` use separate firmware-image flows. FreeRTOS debugging
+  supports source and CPU inspection without task awareness. See the
+  [debugger guide](../tools/vscode-frost/README.md#debugging).

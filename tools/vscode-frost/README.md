@@ -135,17 +135,10 @@ that exact device. `frost.serial.baudRate` defaults to 115200; the backend
 accepts Linux's standard baud rates. Large pastes are bounded to a 64 KiB
 pending input queue; send smaller chunks if it reports that the queue is full.
 
-The console owns its descriptor and keeps it open across managed JTAG work.
-It reapplies raw mode and baud after JTAG activity, including loader cleanup,
-without flushing received input. An already open external terminal is
-reported and left untouched; an automatic console connection failure does
-not by itself prevent the requested FPGA operation. Close the external
-terminal through its owner before reopening FROST Serial. Ownership checks
-cover visible Linux process descriptors, with an exclusive-open ioctl and
-an advisory lock. Linux can hide descriptors even for same-user processes;
-permission-denied entries are skipped. These checks cannot detect an existing
-hidden reader, and `CAP_SYS_ADMIN` can bypass exclusive-open mode. Close any
-external terminal before opening FROST Serial.
+The console stays open during managed JTAG work and restores its serial
+settings afterward. Close external serial terminals before opening FROST
+Serial; it refuses connections when it detects another reader. An automatic
+console connection failure does not prevent the requested FPGA operation.
 No `pyserial` installation is required.
 
 ## Optional focused workspace
@@ -174,24 +167,16 @@ settings and C/C++ 1.33.8; the original Default profile remained active.
 
 ## Debugging
 
-The repository advertises managed debugging for every loader application except
-the two composite images named below. Both load-and-debug commands show the
-full app list and ask for application, layout, and actual clock. They save the
-completed selection for subsequent Attach operations, including
-`frost.coremarkProMode` for CoreMark-PRO. Cancelled or unsupported selections
-leave an existing debug session connected. `linux_boot` and `opensbi_smoke`
-remain load-only: their composite firmware/payload images need a separate
-multi-ELF debugging flow. Their rows explain this restriction and are rejected
-before hardware handoff.
+Both load-and-debug commands offer the loader's application list and save
+your application, layout, clock, and CoreMark-PRO mode for later Attach.
+`linux_boot` and `opensbi_smoke` are load-only because their composite images
+need multi-ELF debugging. Cancelling a selection leaves the current session
+connected.
 
-Attach validates the saved application's eligibility and halts the loaded
-application at its current PC using its matching ELF. The load-and-debug
-commands build with the repository's `--debug` profile, validate its ELF,
-image files, and Make configuration, then load the resulting images. The
-extension copies that ELF for the session and binds the load to the build's
-configuration hash. Aliases use the registry's build directory throughout.
-Avoid concurrent builds of the same application or another alias sharing
-its directory; these checks do not prove source freshness.
+Attach halts the loaded application at its current PC using a matching ELF.
+Load-and-debug builds with `--debug`, loads the images, and keeps a private
+ELF copy for the session. Avoid concurrent builds of the same application
+or aliases that share its build directory.
 
 `freertos_demo` supports source and CPU debugging without task-aware thread
 views or RTOS inspection. Debug CoreMark/CoreMark-PRO runs use different
@@ -199,16 +184,11 @@ compiler settings and debugger pauses; their timings are not reportable
 benchmark scores, even when the picker selects Performance (-v0).
 Use normal **FROST: Load Software** runs for benchmark measurements.
 
-After the loader exits, managed loads wait
-`ceil(4 * 2^27 * 1000 / frost.cpuClockHz) + 250` milliseconds before starting
-OpenOCD: 3830 ms at 150 MHz or 2040 ms at 300 MHz. The 27-bit image-reset
-counter runs at CPU clock/4, holding both the CPU and debug module in reset
-for about 3.579 seconds at 150 MHz. Hardware testing found that issuing DMI
-while this reset was active could leave the transport persistently busy.
-The clock setting must match the bitstream for this guard to be effective.
-This wait allows the existing load reset to expire; it introduces no RTL
-change or software startup gate. For an externally loaded image, complete
-the same interval before using **FROST: Attach Debugger**.
+Managed loads wait for the image-load reset before starting OpenOCD:
+2040 ms at 300 MHz or 3830 ms at 150 MHz. Set `frost.cpuClockHz` to the
+actual bitstream clock; an early debug request can leave the transport busy.
+After an external load, wait
+`ceil(4 * 2^27 * 1000 / frost.cpuClockHz) + 250` milliseconds before Attach.
 
 The loader selects startup behavior from the actual ELF:
 
@@ -259,74 +239,21 @@ cross-process cable lock against unrelated applications.
 
 ## Debugger scope
 
-The extension launches public `cppdbg` sessions; it provides no custom DAP
-adapter or replacement stepping engine. FROST uses software code
-breakpoints. It has no hardware code breakpoints or data watchpoints;
-`cppdbg` can still show a data-breakpoint action, which should remain
-unused. GDB access is limited to low BRAM and DDR to keep automatic memory
-prefetch away from device registers with read side effects.
+FROST supports software code breakpoints, source and instruction stepping,
+registers, locals, and the call stack. Hardware code breakpoints and data
+watchpoints are unavailable, even if C/C++ displays those actions. GDB
+memory access is limited to BRAM and DDR to avoid device-register side effects.
 
-The direct C/C++ 1.29.3 hardware spike verified source breakpoints,
-step into/over/out, locals, call stack, selected-register Watches, and DDR
-instruction disassembly/stepping. MIEngine still warns that it assumes
-`x86_64` despite GDB identifying `riscv:rv64`; the extension supplies no
-false `targetArchitecture` override. Initial BRAM disassembly underflow
-and stale displayed breakpoint bytes are documented in `fpga/README.md`
-in the repository. Console `-exec x/16i $pc` and
-`-exec info registers pc sp ra a0` remain available.
+If the Registers pane fails on an optional CSR such as `vcsr`, set
+`frost.registerDescription` to `core` to use the bundled FROST CPU/FPU
+register layout. See the [resource notes](resources/README.md).
+MIEngine may still warn that it assumes `x86_64` despite GDB reporting RV64.
 
-The default target description can make the native Registers pane fail on
-unsupported optional CSRs such as `vcsr`. `frost.registerDescription: core`
-opts into the bundled CPU/FPU description, preserving the captured
-OpenOCD register numbers and excluding optional CSR/vector enumeration.
-It is specific to the tested FROST RV64 register layout. Its parser and
-numbering passed offline checks. On hardware, the native Registers → CPU
-pane expanded successfully and an MI bulk read returned all 68 selected
-registers, including the FPRs, `fflags`, `frm`, and `fcsr`, without the
-`vcsr` error. Reads refreshed after stepping, with changing PC and stack
-pointer values. See [the resource notes](resources/README.md).
+For disassembly or register-view problems, use `-exec x/16i $pc` or
+`-exec info registers pc sp ra a0` in the Debug Console. Native disassembly
+can prefetch below BRAM or retain stale breakpoint bytes in its display.
 
-Hardware checks passed for **Program Bitstream**, the guarded
-program/load/OpenOCD/`cppdbg` startup sequence, and **Attach Debugger** at
-the current PC with its private ELF copy. **Disconnect and Resume**
-resumed UART output through seconds 0–7 at 150 MHz and stopped the owned
-OpenOCD process. The initial unguarded examination failure also confirmed
-owned-process cleanup without starting GDB; reprogramming restored access.
-
-BRAM load-and-debug automatically stopped at `main` (`0x6a8`) without an
-extra Continue. Source step-over, a source breakpoint, step into
-`uart_printf`, and step back out to `main` all passed. Native register
-refresh returned all 68 values after stepping; SP changed from `0x40000`
-to `0x3ffd0`, and PC followed the stepped instructions.
-
-Managed DDR load-and-debug also passed: after the 3830 ms guard, the
-debugger halted at the current PC (`0x800006d4`) with `.text` in
-`0x80000000`–`0x80000710`. A source breakpoint at `hello_world.c:37`
-stopped at `0x800006be`; native disassembly and instruction stepping
-covered both 16-bit and 32-bit instructions. A RAM round trip at
-`0x80010000` wrote/read `0x0123456789abcdef` and restored the original
-`0x00ff00ff00ff00ff`. Core-register bulk reads also passed in DDR.
-Managed detach resumed UART seconds 2–7 at approximately 150 million
-ticks per second and stopped the owned OpenOCD process. This proves the
-current-PC DDR attach flow, with the startup/data limitation above.
-
-These hardware results establish the 0.1 debugger flow. The 0.2 update had
-88 passing TypeScript tests and 24 passing Docker Python tests. Actual
-workbench checks passed for focus Apply/Zen/Restore and importing a separate
-profile. On X3 at 150 MHz, the integrated console displayed live hello-world
-output, a typed `Z` reached the target receive FIFO, and managed load/debug,
-Continue, and detach kept the console available. Plain Load Software loaded
-CoreMark with its normal `-O3` profile and produced validation and `<<PASS>>`
-without a debugger. This is representative hardware coverage, not a test of
-every application or an interactive Linux shell. Program Bitstream also
-reopened the closed console automatically and restored live 150 MHz output.
-A separate serial-reader fixture caused the expected refusal without changing
-its termios; reconnect succeeded after it closed. Final cleanup released the
-owned console, native tools, and cable while preserving the independent
-timing build.
-The 0.3 update expands the shared picker and repository debug-build contract;
-the earlier hardware results do not establish hardware coverage of its new
-applications or startup strategies. Those checks are still pending.
-Loading Linux through the normal loader does not add Linux debugging.
-FreeRTOS support is limited to source and CPU debugging without task awareness.
-Profiling/ILA views and persistent flash programming remain deferred.
+Linux loading is supported; Linux debugging is not. FreeRTOS debugging has
+no task awareness. Profiling/ILA views and persistent flash programming are
+not implemented. The expanded application and startup support in 0.3 still
+awaits hardware testing.
