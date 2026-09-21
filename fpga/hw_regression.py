@@ -167,6 +167,17 @@ DEFAULT_SCORE_TOLERANCE_PCT = 1.0
 # Non-app stage names; linux_boot also names its loader app.
 SWEEP_STAGE = "coremark_pro"
 LINUX_STAGE = "linux_boot"
+ECC_STAGE = "ddr_ecc"
+
+# The ECC stage reads the DDR4 controller's own error state over JTAG rather
+# than running a program. It runs last because its reading covers everything
+# before it: every stage's DRAM traffic has already happened, so a clean
+# report means the whole run read nothing the array had never been written
+# with. A dirty one names the first failing address the controller captured.
+ECC_STAGE_SCRIPT = "./fpga/ddr_ecc/ddr_ecc_status.py"
+ECC_STAGE_TIMEOUT_S = 600.0
+# ddr_ecc_status.py exits 2 for a dirty report and 1 for a read that failed.
+ECC_DIRTY_EXIT = 2
 
 # Two greetings prove boot and the one-second timer; no pass marker is printed.
 HELLO_GREETING = "Frost: Hello, world!"
@@ -1302,6 +1313,53 @@ def send_uart_probe(serial_fd: int, text: str) -> None:
         time.sleep(0.002)
 
 
+def run_ecc_stage(
+    repo: Path, board: str, target: str, timeout_s: float
+) -> dict[str, Any]:
+    """Read the DDR4 controller's ECC state and pass only on a clean report.
+
+    No program and no UART: the controller counted the errors itself while the
+    stages above ran, and this reads that count. The script's own exit code is
+    the verdict, so the two agree on what clean means.
+    """
+    started = time.monotonic()
+    command = [ECC_STAGE_SCRIPT, board, "--target-exact", target, "--non-interactive"]
+    try:
+        proc = subprocess.run(
+            command,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "stage": ECC_STAGE,
+            "status": "TIMEOUT",
+            "elapsed": time.monotonic() - started,
+            "note": f"{ECC_STAGE_SCRIPT} did not finish in {timeout_s:.0f}s",
+        }
+    output = (proc.stdout or "") + (proc.stderr or "")
+    print(output, end="", flush=True)
+    if proc.returncode == 0:
+        note = ""
+    elif proc.returncode == ECC_DIRTY_EXIT:
+        note = "; ".join(
+            line.strip()
+            for line in output.splitlines()
+            if line.strip().startswith("Not clean:")
+        )
+    else:
+        note = f"{ECC_STAGE_SCRIPT} exited {proc.returncode}"
+    return {
+        "stage": ECC_STAGE,
+        "status": "PASS" if proc.returncode == 0 else "FAIL",
+        "elapsed": time.monotonic() - started,
+        "note": note,
+    }
+
+
 def run_uart_stage(
     repo: Path,
     serial_fd: int,
@@ -1551,9 +1609,9 @@ def regression_stages() -> list[str]:
     """Return every stage in canonical order: apps, the PRO sweep, then Linux.
 
     hello_world runs first as the bring-up smoke test, the remaining apps in
-    VALID_APPS order, then the CoreMark-PRO sweep. linux_boot runs last because
-    it is the longest, whole-system stage and should only run once everything
-    else has passed. Debugger-driven apps (DEBUGGER_DRIVEN_APPS) and apps that
+    VALID_APPS order, then the CoreMark-PRO sweep. linux_boot is the longest,
+    whole-system stage and runs once everything else has passed, and ddr_ecc
+    reads the memory controller's error state after all of it. Debugger-driven apps (DEBUGGER_DRIVEN_APPS) and apps that
     need an external link (EXTERNAL_LINK_APPS) are excluded. Counters-absent
     apps (PERF_COUNTERS_ABSENT_APPS) stay in: they hold for the rated-clock
     bitstream, and main() drops them for a clock-override run.
@@ -1568,7 +1626,7 @@ def regression_stages() -> list[str]:
     ]
     phase1.remove("hello_world")
     phase1.insert(0, "hello_world")
-    return [*phase1, SWEEP_STAGE, LINUX_STAGE]
+    return [*phase1, SWEEP_STAGE, LINUX_STAGE, ECC_STAGE]
 
 
 def main() -> int:
@@ -1749,6 +1807,8 @@ def main() -> int:
                     "elapsed": 0.0,
                     "note": linux_env_error,
                 }
+            elif stage_name == ECC_STAGE:
+                result = run_ecc_stage(args.repo, board, target, ECC_STAGE_TIMEOUT_S)
             elif stage_name == SWEEP_STAGE:
                 # Release the UART before the sweep requests exclusive access.
                 if serial_fd is not None:

@@ -19,7 +19,9 @@
 # requires S_AXI_CTRL, exposed only to JTAG at region offset 0x4000_0000.
 # ui_clk_sync_rst drives inverted c0_ddr4_aresetn; calibration drives mem_ok.
 # The external CPU bridge is 256-bit at core clock with 5-bit transaction
-# ids; JTAG loads DDR images.
+# ids; JTAG loads DDR images. ECC also means the array has to be written
+# before it is read, which boards/x3/x3_ddr_init.sv does through S00_AXI
+# after calibration.
 # boards/x3/constr/x3.xdc constrains matching external interface names.
 #
 # build_step.tcl creates the design; x3_frost.sv instantiates its wrapper.
@@ -48,10 +50,13 @@ proc create_x3_ddr_bd {} {
   set_property CONFIG.POLARITY ACTIVE_LOW $jtag_aresetn
   create_bd_port -dir O mem_ok
 
-  # External single-beat 256-bit CPU bridge; 5-bit ids carry the cache
-  # hierarchy's line-transaction tags (L1D / walker+L1I / DMA under the top
-  # arbiter) so several transactions can be in flight and complete in any
-  # order across ids.
+  # External 256-bit CPU bridge; 5-bit ids carry the cache hierarchy's
+  # line-transaction tags (L1D / walker+L1I / DMA under the top arbiter) so
+  # several transactions can be in flight and complete in any order across
+  # ids. The cache bridge issues single beats; two is for the power-up region
+  # writer (boards/x3/x3_ddr_init.sv), whose two beats are one 512-bit
+  # controller word, so its writes are whole words and the controller never
+  # reads the uninitialized array to recompute a check code.
   set s00 [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 S00_AXI]
   set_property -dict [list \
     CONFIG.PROTOCOL {AXI4} \
@@ -67,7 +72,7 @@ proc create_x3_ddr_bd {} {
     CONFIG.HAS_WSTRB {1} \
     CONFIG.HAS_BRESP {1} \
     CONFIG.HAS_RRESP {1} \
-    CONFIG.MAX_BURST_LENGTH {1} \
+    CONFIG.MAX_BURST_LENGTH {2} \
   ] $s00
   set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_ports cpu_clk]
 

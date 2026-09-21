@@ -437,6 +437,11 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),x3_ddr_init)
+# X3 power-up DDR4 region writer unit bench (AXI write master only)
+COMPILE_ARGS := \
+	$(ROOT)/boards/x3/x3_ddr_init.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),imem_predecode_line)
 # Per-line predecode sideband unit bench (cross-check vs the python generator)
 COMPILE_ARGS := \

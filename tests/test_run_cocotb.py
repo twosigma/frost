@@ -1569,6 +1569,34 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tagged line-port arbiter unit tests with out-of-order DDR completion",
         verilator_extra_args=("-GMEM_REORDER=1",),
     ),
+    "x3_ddr_init": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_x3_ddr_init",
+        hdl_toplevel_module="x3_ddr_init",
+        description=(
+            "X3 power-up DDR4 region writer: full coverage of the region in "
+            "full controller words, under an accepting and a stalling level "
+            "below, and quiet after it reports done"
+        ),
+        verilator_extra_args=("-GREGION_BYTES=4096", "-GMAX_OUTSTANDING=4"),
+        extra_env=(
+            ("DDR_INIT_REGION_BYTES", "4096"),
+            ("DDR_INIT_MAX_OUTSTANDING", "4"),
+        ),
+    ),
+    "x3_ddr_init_shallow": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_x3_ddr_init",
+        hdl_toplevel_module="x3_ddr_init",
+        description=(
+            "X3 power-up DDR4 region writer with the module's own outstanding "
+            "cap against a region small enough that an unclamped cap would "
+            "truncate to zero and start nothing"
+        ),
+        verilator_extra_args=("-GREGION_BYTES=512",),
+        extra_env=(
+            ("DDR_INIT_REGION_BYTES", "512"),
+            ("DDR_INIT_MAX_OUTSTANDING", "16"),
+        ),
+    ),
     "imem_predecode_line": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_line",
         hdl_toplevel_module="imem_predecode_line",
