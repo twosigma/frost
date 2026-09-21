@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1632" viewBox="0 0 1200 1632" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1960" viewBox="0 0 1200 1960" role="img" aria-labelledby="title desc">
   <title id="title">X3 FPGA board integration</title>
   <desc id="desc">
     The x3_frost FPGA top contains clock generation, a common
@@ -15,13 +15,20 @@
     DDR JTAG-AXI master at SmartConnect. SmartConnect converts clocks and
     widths between the CPU, divide-by-four and independent DDR UI domains.
     A dedicated 300 MHz differential reference drives the DDR4 controller,
-    whose memory AXI interface is 512 bits. DDR calibration status mem_ok
+    whose memory AXI interface is 512 bits. The array is ECC-checked, so a
+    region writer inside x3_frost zeroes it after calibration and the
+    subsystem and the DDR JTAG master stay in reset until it finishes. DDR calibration status mem_ok
     crosses through a two-flop synchronizer in x3_frost before releasing the
     common subsystem reset. The DDR transport reset depends on MMCM lock,
     and the DDR AXI reset is derived from its UI reset. The common subsystem
     adds startup and software-image reset holds before FROST synchronizes
     reset into its clock domains. External DDR4 chips expose a 1 GiB mapped
-    region to the CPU at 0x80000000. Selected connections are drawn;
+    region to the CPU at 0x80000000. FROST's NIC reaches the network through
+    x3_nic_gty, a transceiver wrapper with no vendor reset IP: a 161.1328125
+    MHz MGTREFCLK0 on quad 231, GTY channel X0Y28, and a supervisor that owns
+    the transceiver's resets, lock retries and loopback. The channel drives
+    lane 1 of the card's DSFP28 cage over 10GBASE-R fiber. The N badge links
+    the NIC's MAC/PCS inside frost to that transceiver. Selected connections are drawn;
     memory arrows follow requests, and responses and most clock/reset wires
     are omitted. Boxes identify module boundaries, not clock-domain boundaries.
   </desc>
@@ -34,6 +41,9 @@
         16-bit startup timer, 27-bit image-load timer, BSCAN USER3/4, frost.
       fpga/build/x3_ddr_bd.tcl: dedicated DDR reference, DDR4/SmartConnect IP,
         three clocks, separate DDR JTAG-AXI, 256/512-bit AXI, reset/address map.
+      boards/x3/x3_ddr_init.sv: the power-up region writer and what it gates.
+      boards/x3/x3_nic_gty.sv: transceiver wrapper and supervisor.
+      boards/x3/constr/x3.xdc: MGTREFCLK0, GTY channel and DSFP28 lane pins.
       hw/rtl/frost.sv: reset synchronization and CPU/div4 UART CDC FIFOs.
       hw/rtl/cpu_and_mem/cpu_and_mem.sv: BRAM, caches and debug integration.
     The DTM/debug box groups TCK transport and CPU-domain debug logic; it
@@ -75,10 +85,12 @@
       .memlink { fill: none; stroke: #7ed8bc; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
       .ctl { fill: none; stroke: #edc37d; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
       .clock { fill: none; stroke: #edc37d; stroke-width: 2; stroke-dasharray: 6 5; stroke-linejoin: round; }
+      .port { fill: #7ed8bc; stroke: #101d30; stroke-width: 2; }
+      .port-text { font-size: 16px; font-weight: 750; fill: #0a221c; text-anchor: middle; }
     </style>
   </defs>
 
-  <rect width="1200" height="1632" rx="24" fill="url(#background)"/>
+  <rect width="1200" height="1960" rx="24" fill="url(#background)"/>
   <rect x="44" y="37" width="5" height="57" rx="2.5" fill="url(#accent)"/>
   <text x="66" y="68" font-size="36" font-weight="750">X3</text>
   <text x="135" y="67" font-size="29">Board integration</text>
@@ -93,7 +105,7 @@
   </g>
 
   <!-- The outer boundary is FPGA RTL, excluding the external DDR4 chips. -->
-  <rect x="28" y="122" width="1144" height="1328" rx="20" class="boundary"/>
+  <rect x="28" y="122" width="1144" height="1556" rx="20" class="boundary"/>
   <text x="52" y="156" class="section">x3_frost / FPGA TOP</text>
   <text x="1148" y="156" class="small" text-anchor="end">Module boundaries shown · selected connections</text>
 
@@ -183,8 +195,12 @@
   <text x="534" y="1065" class="body center">CPU clock domain</text>
   <text x="534" y="1093" class="body center">256-bit AXI bridge</text>
   <text x="534" y="1118" class="small center">5-bit transaction IDs</text>
-  <rect x="100" y="1160" width="554" height="42" rx="9" fill="#19273b"/>
-  <text x="377" y="1187" class="body center">UART TX / RX · /4 clock · 115200 baud · board pins</text>
+  <rect x="100" y="1160" width="262" height="42" rx="9" fill="#19273b"/>
+  <text x="231" y="1187" class="body center">UART TX / RX · /4 · 115200 baud</text>
+  <rect x="380" y="1160" width="274" height="42" rx="9" fill="#19273b"/>
+  <text x="510" y="1187" class="body center">NIC · 10GbE MAC/PCS</text>
+  <circle cx="654" cy="1181" r="13" class="port"/>
+  <text x="654" y="1187" class="port-text">N</text>
 
   <!-- DDR block design: two initiators, three clocks, two target interfaces. -->
   <rect x="730" y="416" width="418" height="834" rx="16" class="panel"/>
@@ -226,14 +242,37 @@
   <text x="754" y="1324" class="body">MMCM lock releases</text>
   <text x="754" y="1350" class="body">DDR sys_reset, SmartConnect</text>
   <text x="754" y="1376" class="body">and the DDR JTAG master.</text>
-  <path d="M 1094 1208 V 1482" class="memlink" marker-end="url(#memory-arrow)"/>
+  <path d="M 1094 1208 V 1710" class="memlink" marker-end="url(#memory-arrow)"/>
   <text x="1078" y="1420" class="small" text-anchor="end">DDR4 pins · 72 physical bits</text>
 
-  <rect x="754" y="1482" width="370" height="88" rx="14" class="memory"/>
-  <text x="939" y="1514" class="label center">External DDR4 memory</text>
-  <text x="939" y="1544" class="body center">1 GiB mapped at CPU 0x8000_0000</text>
-  <text x="52" y="1499" class="body">FPGA TAP is shared by Vivado and OpenOCD.</text>
-  <text x="52" y="1526" class="body">DDR AXI addresses are relative to the cached region.</text>
-  <text x="52" y="1553" class="small">CPU internals and cache capacities: frost-architecture.svg</text>
-  <text x="52" y="1606" class="small">Memory arrows follow requests; responses and most clock/reset wiring are omitted. Module boxes can span clock domains.</text>
+  <text x="52" y="1492" class="section">NIC TRANSCEIVER / 10GBASE-R</text>
+  <rect x="76" y="1512" width="300" height="120" rx="12" class="control"/>
+  <text x="226" y="1546" class="label center">MGTREFCLK0</text>
+  <text x="226" y="1575" class="body center">161.1328125 MHz · diff.</text>
+  <text x="226" y="1603" class="small center">Quad 231 · P9 / P8</text>
+  <path d="M 376 1572 H 414" class="clock" marker-end="url(#control-arrow)"/>
+  <rect x="428" y="1512" width="340" height="120" rx="12" class="signal"/>
+  <text x="598" y="1546" class="label center">x3_nic_gty</text>
+  <text x="598" y="1575" class="body center">GTY channel X0Y28</text>
+  <text x="598" y="1603" class="small center">TX J7 / J6 · RX K4 / K3 · 161.13 MHz</text>
+  <circle cx="598" cy="1512" r="13" class="port"/>
+  <text x="598" y="1518" class="port-text">N</text>
+  <path d="M 768 1572 H 806" class="flow" marker-end="url(#signal-arrow)"/>
+  <rect x="820" y="1512" width="300" height="120" rx="12" class="control"/>
+  <text x="970" y="1546" class="label center">Transceiver supervisor</text>
+  <text x="970" y="1575" class="body center">Resets · lock retries</text>
+  <text x="970" y="1603" class="small center">Free-running clock · own reset FSM</text>
+
+  <path d="M 598 1632 V 1710" class="flow" marker-end="url(#signal-arrow)"/>
+  <rect x="428" y="1710" width="300" height="88" rx="14" class="signal"/>
+  <text x="578" y="1742" class="label center">DSFP28 cage · lane 1</text>
+  <text x="578" y="1772" class="body center">10GBASE-R over fiber</text>
+
+  <rect x="754" y="1710" width="370" height="88" rx="14" class="memory"/>
+  <text x="939" y="1742" class="label center">External DDR4 memory</text>
+  <text x="939" y="1772" class="body center">1 GiB mapped at CPU 0x8000_0000</text>
+  <text x="52" y="1846" class="body">FPGA TAP is shared by Vivado and OpenOCD.</text>
+  <text x="52" y="1873" class="body">DDR AXI addresses are relative to the cached region.</text>
+  <text x="52" y="1900" class="small">N links the NIC's MAC/PCS to its transceiver. CPU internals and cache capacities: frost-architecture.svg</text>
+  <text x="52" y="1936" class="small">Memory arrows follow requests; responses and most clock/reset wiring are omitted. Module boxes can span clock domains.</text>
 </svg>

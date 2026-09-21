@@ -137,7 +137,7 @@ The full-system integration fixes `HAS_L2=1`, matching X3. `HAS_L2=0` remains
 available at the lower-level `frost_cache_hierarchy` boundary for focused unit
 coverage and future reuse; it is not a supported board shape.
 
-[![FROST cache hierarchy: L1D, walker and L1I arbitration into L2 and DDR, with the L1-only unit configuration below](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
+[![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration into L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer, with the L1-only unit configuration below](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 
 The main view shows X3 capacities and the arbiter instances separately. The
 lower view shows the L2 bypass exercised by unit benches. Arrows follow
