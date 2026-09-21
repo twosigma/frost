@@ -283,10 +283,10 @@ and `AlternateCLBRouting`. Override with `--route-directives`; a single
 directive runs once and streams output to the terminal. Divided-clock builds
 use one `RuntimeOptimized` route by default.
 
-Placement must meet the −0.200 ns setup-slack gate at the actual CPU clock
-with zero added setup uncertainty. If no candidate passes, the build stops
-and preserves the best checkpoint and reports. The X3 CPU datapath uses no
-false-path or multicycle timing exceptions.
+Placement below −0.200 ns setup slack at the actual CPU clock with zero added
+setup uncertainty produces a warning. If no candidate meets that threshold,
+the build continues with the best checkpoint and reports into post-place
+phys-opt. The X3 CPU datapath uses no false-path or multicycle timing exceptions.
 
 Passing candidates are ranked by congestion and timing:
 
