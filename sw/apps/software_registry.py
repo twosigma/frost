@@ -78,15 +78,17 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_cjpeg",
         workload="cjpeg-rose7-preset",
         description="CoreMark-PRO JPEG compression workload",
-        # -O3: X3 5.176 iter/s (71 iters measured 13.717s) -> 54 ~= 10.4s.
-        hardware_iterations={"x3": 54},
+        # -O3: X3 5.857 iter/s (54 iters measured 9.219s, under the floor
+        # once the workload got faster than its last calibration) -> 62 ~= 10.6s.
+        hardware_iterations={"x3": 62},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_linear_alg",
         workload="linear_alg-mid-100x100-sp",
         description="CoreMark-PRO LINPACK single-precision workload",
-        # -O3: X3 3.091 iter/s (37 iters measured 11.970s) -> 32 ~= 10.4s.
-        hardware_iterations={"x3": 32},
+        # -O3: X3 3.230 iter/s (32 iters measured 9.908s, just under the
+        # floor) -> 34 ~= 10.5s.
+        hardware_iterations={"x3": 34},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_loops",
@@ -111,8 +113,9 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO XML parser workload",
         # Parser runtime is heap-size sensitive (per-iteration isn't constant),
         # so this count keeps extra margin above the usual ~10.4s target.
-        # -O3: X3 1.786 iter/s (26 iters measured 14.555s) -> 19 ~= 10.6s.
-        hardware_iterations={"x3": 19},
+        # -O3: X3 1.934 iter/s (19 iters measured 9.825s, under the floor)
+        # -> 21 ~= 10.9s.
+        hardware_iterations={"x3": 21},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_radix2",
@@ -120,10 +123,10 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO radix-2 FFT workload",
         # The ~800 KiB of constant FFT data is placed in the cached region
         # (.ddr_rodata via the unified linker) and delivered through the
-        # sw_ddr.mem image. -O3: X3 10.475 iter/s (98 iters measured 9.356s,
-        # under the floor after the 64-bit data tier and -O3 sped this 1.69x)
-        # -> 110 ~= 10.5s.
-        hardware_iterations={"x3": 110},
+        # sw_ddr.mem image. -O3: X3 14.011 iter/s (110 iters measured 7.851s,
+        # the furthest under the floor of any workload once this sped up again)
+        # -> 148 ~= 10.6s.
+        hardware_iterations={"x3": 148},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_sha",
@@ -137,12 +140,13 @@ COREMARK_PRO_PROGRAMS = (
         workload="zip-test",
         description="CoreMark-PRO zlib workload",
         # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
-        # -O3: X3 2.083 iter/s (30 iters measured 14.401s) -> 22 ~= 10.6s.
+        # -O3: X3 2.516 iter/s (22 iters measured 8.744s, under the floor)
+        # -> 27 ~= 10.7s.
         # Before that measured interval, the official 1 MiB input generator
         # repeatedly appends with strcat and therefore spends several minutes
         # in correct O(n^2) setup on X3. Keep the source conforming and give the
         # end-to-end hardware run enough time to reach the scored workload.
-        hardware_iterations={"x3": 22},
+        hardware_iterations={"x3": 27},
         hardware_timeout_minimums={"x3": 600.0},
     ),
 )
