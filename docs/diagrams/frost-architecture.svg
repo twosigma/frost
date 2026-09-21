@@ -19,14 +19,19 @@
     Matching I and D badges connect the CPU to the system view below.
     Cached instruction fetch uses a two-line fetch buffer and 16 KiB L1I;
     cached data uses a 128 KiB L1D. One shared page-table walker serves both
-    TLBs and bypasses the L1 caches. Two tagged 2:1 line-port arbiters merge
-    L1D, walker and L1I traffic in that priority order into a 2 MiB UltraRAM
-    L2, then a 256-bit AXI bridge and the board DDR4 controller. Software sees
-    a 1 GiB cached region at 0x80000000. Uncached instruction/data accesses
-    use 256 KiB low BRAM; the data port also reaches UART, FIFO0/1, CLINT and
-    PLIC MMIO. JTAG connects through the DTM to the debug module for halt,
-    resume and single-step. Capacities show the X3 configuration. Only selected
-    connections are drawn; memory arrows follow requests, with responses omitted.
+    TLBs and reads below them through a coherence sequencer that probes the
+    L1D first. The 10GbE NIC's descriptor and buffer traffic enters as a
+    fourth port through a coherence sequencer of its own, so its rings need no
+    cache maintenance. A tagged 2:1 arbiter merges the walker and L1I, and a
+    3:1 arbiter admits L1D first, then that merged port, then the NIC's DMA,
+    whose wait is bounded, into a 2 MiB UltraRAM L2, then a 256-bit AXI bridge
+    and the board DDR4 controller. Software sees a 1 GiB cached region at
+    0x80000000. Uncached instruction/data accesses use 256 KiB low BRAM; the
+    data port also reaches UART, FIFO0/1, CLINT, PLIC and the NIC's register
+    window MMIO, and the NIC raises one PLIC source. JTAG connects through the
+    DTM to the debug module for halt, resume and single-step. Capacities show
+    the X3 configuration. Only selected connections are drawn; memory arrows
+    follow requests, with responses omitted.
   </desc>
   <!--
     Self-contained SVG; edit the text, boxes and paths directly.
@@ -39,7 +44,10 @@
       hw/rtl/cpu_and_mem/cpu/mmu/{immu,dmmu}.sv: ITLB/DTLB integration.
       hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv: L0 geometry.
       hw/rtl/cpu_and_mem/cpu_and_mem.sv: fetch buffer, memory, MMIO, debug.
-      hw/rtl/lib/cache/frost_cache_hierarchy.sv: D > walker > I tree and L2.
+      hw/rtl/lib/cache/frost_cache_hierarchy.sv: D > walker > I > DMA tree
+        and L2; {dma,walker}_coherence_sequencer.sv: the two probing entries.
+      hw/rtl/peripherals/nic/nic_top.sv: the NIC's register window, rings,
+        DMA front and interrupt.
       hw/rtl/frost.sv, boards/{xilinx_frost_subsystem,x3/x3_frost}.sv:
         X3 cache/BRAM capacities and hardware DDR configuration.
     Functional overview, not an exhaustive netlist or pipeline timing diagram.
@@ -267,30 +275,36 @@
 
   <circle cx="80" cy="990" r="13" class="port"/>
   <text x="80" y="996" class="port-text">I</text>
-  <text x="104" y="996" class="body">Cached instruction fetch</text>
-  <text x="600" y="996" class="body center">ITLB + DTLB misses</text>
-  <circle cx="830" cy="990" r="13" class="port"/>
-  <text x="830" y="996" class="port-text">D</text>
-  <text x="854" y="996" class="body">Cached loads / stores</text>
+  <text x="104" y="996" class="body">Cached fetch</text>
+  <text x="462" y="996" class="body center">ITLB + DTLB misses</text>
+  <circle cx="632" cy="990" r="13" class="port"/>
+  <text x="632" y="996" class="port-text">D</text>
+  <text x="656" y="996" class="body">Cached loads / stores</text>
+  <text x="1014" y="996" class="body center">10GbE rings + buffers</text>
 
   <g id="l1-and-walker" class="center">
-    <rect x="64" y="1016" width="324" height="100" rx="12" class="memory"/>
-    <text x="226" y="1048" class="heading">Fetch buffer → L1I</text>
-    <text x="226" y="1075" class="body">2-line buffer · 16 KiB L1I</text>
-    <text x="226" y="1101" class="small">Read-only · BRAM</text>
-    <rect x="438" y="1016" width="324" height="100" rx="12" class="memory"/>
-    <text x="600" y="1048" class="heading">Shared Sv39 walker</text>
-    <text x="600" y="1075" class="body">Core page-table walker</text>
-    <text x="600" y="1101" class="small">Read-only port · bypasses L1</text>
-    <rect x="812" y="1016" width="324" height="100" rx="12" class="memory"/>
-    <text x="974" y="1048" class="heading">L1D · 128 KiB</text>
-    <text x="974" y="1075" class="body">Write-back + write-allocate</text>
-    <text x="974" y="1101" class="small">Non-blocking · BRAM</text>
+    <rect x="64" y="1016" width="244" height="100" rx="12" class="memory"/>
+    <text x="186" y="1048" class="heading">Fetch buf. → L1I</text>
+    <text x="186" y="1075" class="body">2-line · 16 KiB L1I</text>
+    <text x="186" y="1101" class="small">Read-only · BRAM</text>
+    <rect x="340" y="1016" width="244" height="100" rx="12" class="memory"/>
+    <text x="462" y="1048" class="heading">Sv39 walker</text>
+    <text x="462" y="1075" class="body">Shared · one walk</text>
+    <text x="462" y="1101" class="small">Sequencer probes L1D</text>
+    <rect x="616" y="1016" width="244" height="100" rx="12" class="memory"/>
+    <text x="738" y="1048" class="heading">L1D · 128 KiB</text>
+    <text x="738" y="1075" class="body">Write-back, allocate</text>
+    <text x="738" y="1101" class="small">Non-blocking · BRAM</text>
+    <rect x="892" y="1016" width="244" height="100" rx="12" class="memory"/>
+    <text x="1014" y="1048" class="heading">NIC DMA</text>
+    <text x="1014" y="1075" class="body">10GbE MAC/PCS rings</text>
+    <text x="1014" y="1101" class="small">Sequencer probes L1D + LQ</text>
   </g>
   <g class="memlink" marker-end="url(#memory-arrow)">
-    <path d="M 226 1116 V 1144"/>
-    <path d="M 600 1116 V 1144"/>
-    <path d="M 974 1116 V 1144"/>
+    <path d="M 186 1116 V 1144"/>
+    <path d="M 462 1116 V 1144"/>
+    <path d="M 738 1116 V 1144"/>
+    <path d="M 1014 1116 V 1144"/>
   </g>
   <rect x="64" y="1144" width="1072" height="50" rx="10" class="memory"/>
   <text x="600" y="1176" class="label center">Tagged line-port arbitration · L1D &gt; walker &gt; L1I &gt; DMA · 2:1 under a bounded 3:1</text>
@@ -319,8 +333,8 @@
     <text x="84" y="1495" class="small">Base address: 0x0000_0000</text>
     <rect x="438" y="1404" width="324" height="112" rx="12" class="system"/>
     <text x="458" y="1437" class="heading">D → MMIO</text>
-    <text x="458" y="1467" class="body">UART / ns16550 · FIFO0/1</text>
-    <text x="458" y="1495" class="small">CLINT + PLIC → M/S interrupts</text>
+    <text x="458" y="1467" class="body">UART · FIFO0/1 · NIC 0x4003_0000</text>
+    <text x="458" y="1495" class="small">CLINT + PLIC (NIC source) → M/S</text>
     <rect x="812" y="1404" width="324" height="112" rx="12" class="system"/>
     <text x="832" y="1437" class="heading">JTAG debug</text>
     <text x="832" y="1467" class="body">DTM → debug module → core</text>
