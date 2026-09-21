@@ -174,14 +174,15 @@ settings and C/C++ 1.33.8; the original Default profile remained active.
 
 ## Debugging
 
-The repository currently advertises **53 of 55 loader applications** for
-managed debugging. Both load-and-debug commands show the full app list and
-ask for application, layout, and actual clock. They save the completed
-selection for subsequent Attach operations, including `frost.coremarkProMode`
-for CoreMark-PRO. Cancelled or unsupported selections leave an existing debug
-session connected. `linux_boot` and `opensbi_smoke` remain load-only: their
-composite firmware/payload images need a separate multi-ELF debugging flow.
-Their rows explain this restriction and are rejected before hardware handoff.
+The repository advertises managed debugging for every loader application except
+the two composite images named below. Both load-and-debug commands show the
+full app list and ask for application, layout, and actual clock. They save the
+completed selection for subsequent Attach operations, including
+`frost.coremarkProMode` for CoreMark-PRO. Cancelled or unsupported selections
+leave an existing debug session connected. `linux_boot` and `opensbi_smoke`
+remain load-only: their composite firmware/payload images need a separate
+multi-ELF debugging flow. Their rows explain this restriction and are rejected
+before hardware handoff.
 
 Attach validates the saved application's eligibility and halts the loaded
 application at its current PC using its matching ELF. The load-and-debug

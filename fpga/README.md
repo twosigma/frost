@@ -203,10 +203,10 @@ This does not establish all-app or interactive Linux-shell coverage.
 
 Extension 0.3 uses one repository-backed application/layout/clock picker for
 Configure Target and both load-and-debug commands, saving completed debug
-choices for later Attach. The repository currently marks 53 of 55 loader apps
-as eligible. `linux_boot` and `opensbi_smoke` remain visible with load-only
-reasons because their composite images require multi-ELF debugging. Cancelling
-or rejecting a selection preserves an existing debug session before handoff.
+choices for later Attach. Every loader app is eligible except `linux_boot` and
+`opensbi_smoke`, which remain visible with load-only reasons because their
+composite images require multi-ELF debugging. Cancelling or rejecting a
+selection preserves an existing debug session before handoff.
 CoreMark-PRO aliases resolve to their shared build directory and retain the
 selected workload/run mode. Their debug-build timings are not benchmark scores.
 `freertos_demo` offers source/CPU debugging without RTOS task awareness.
@@ -750,9 +750,9 @@ Arguments:
   the same explicit server and selection contracts as the programmer above.
 - `--debug`: use the `FROST_DEBUG=1` profile (`-Og -g3`, normally with frame
   pointers and no loop unrolling; standalone assembly gets DWARF too).
-  Available for the repository's 53 single-ELF debug apps. `linux_boot` and
-  `opensbi_smoke` remain load-only composite image flows. The profile adds
-  debugging information without a software startup wait loop. `isa_test`
+  Available for every single-ELF app. `linux_boot` and `opensbi_smoke` remain
+  load-only composite image flows. The profile adds debugging information
+  without a software startup wait loop. `isa_test`
   opts out of frame pointers because its instruction tests clobber `s0`;
   `ddr_smc_test` uses a debug-only large code model to address its DDR code.
 - `--build-only`: clean/build without invoking Vivado or touching JTAG. Prints
