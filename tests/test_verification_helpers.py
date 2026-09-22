@@ -29,6 +29,8 @@ if str(VERIF_DIR) not in sys.path:
 alu_model = importlib.import_module("models.alu_model")
 branch_model = importlib.import_module("models.branch_model")
 memory_utils = importlib.import_module("utils.memory_utils")
+packed_structs = importlib.import_module("utils.packed_structs")
+cpu_structs = importlib.import_module("cocotb_tests.cpu_structs")
 monitors = importlib.import_module("monitors.monitors")
 compressed_encode = importlib.import_module("encoders.compressed_encode")
 instruction_generator = importlib.import_module("cocotb_tests.instruction_generator")
@@ -39,7 +41,70 @@ rat_interface = importlib.import_module(
 tomasulo_interface = importlib.import_module(
     "cocotb_tests.tomasulo.tomasulo_wrapper.tomasulo_interface"
 )
+rob_interface = importlib.import_module(
+    "cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface"
+)
 config = importlib.import_module("config")
+
+
+def test_pack_struct_keeps_declaration_order_and_wide_values() -> None:
+    """The first declared field is the MSB, including on wide RV64 packets."""
+    fields = [("op", 3), ("valid", 1), ("value", 64), ("tail", 4)]
+    values = {"op": 5, "valid": True, "value": 0xFEDC_BA98_7654_3210, "tail": 10}
+
+    assert packed_structs.pack_struct(fields, values) == 0xB_FEDC_BA98_7654_3210_A
+    assert packed_structs.pack_struct(fields, {"tail": 5, "unused": 123}) == 5
+
+
+def test_pack_struct_masks_signed_and_oversized_fields() -> None:
+    """Each field truncates independently; one-bit integers use their low bit."""
+    fields = [("signed", 4), ("flag", 1), ("byte", 8)]
+
+    assert (
+        packed_structs.pack_struct(fields, {"signed": -2, "flag": 2, "byte": 0x1FF})
+        == 0b1110_0_11111111
+    )
+    assert packed_structs.pack_struct(fields, {"signed": 16, "flag": -1}) == 0x100
+
+
+def test_unpack_struct_keeps_bool_types_and_ignores_high_bits() -> None:
+    """Unpacking preserves every value bit and returns only one-bit fields as bool."""
+    fields = [("op", 3), ("valid", 1), ("value", 64), ("tail", 4)]
+    unpacked = packed_structs.unpack_struct(fields, 0xFB_FEDC_BA98_7654_3210_A)
+
+    assert unpacked == {
+        "op": 5,
+        "valid": True,
+        "value": 0xFEDC_BA98_7654_3210,
+        "tail": 10,
+    }
+    assert unpacked["valid"] is True
+    assert type(unpacked["op"]) is int
+    assert packed_structs.unpack_struct(fields, 0)["valid"] is False
+
+
+def test_empty_struct_has_no_bits() -> None:
+    """Empty schemas neither consume values nor expose bits from the input."""
+    assert packed_structs.pack_struct([], {"unused": 1}) == 0
+    assert packed_structs.unpack_struct([], -1) == {}
+
+
+def test_rob_allocation_schema_matches_manual_driver() -> None:
+    """Check every allocation field against the independently written ROB packer."""
+    assert sum(width for _, width in cpu_structs.ROB_ALLOC_REQ_FIELDS) == (
+        rob_interface.ALLOC_REQ_WIDTH
+    )
+    for name, default in vars(rob_interface.AllocationRequest()).items():
+        for pattern in (1, -1, 0x12345_FEDC_BA98_7654_3210):
+            request = rob_interface.AllocationRequest()
+            setattr(
+                request, name, bool(pattern) if isinstance(default, bool) else pattern
+            )
+            expected = packed_structs.pack_struct(
+                cpu_structs.ROB_ALLOC_REQ_FIELDS,
+                {"alloc_valid": True, **vars(request)},
+            )
+            assert rob_interface.pack_alloc_request(request) == expected, name
 
 
 @pytest.mark.parametrize(

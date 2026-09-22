@@ -1,0 +1,25 @@
+[tasks]
+prove
+prove_unrestricted
+cover
+
+[options]
+prove: mode prove
+prove_unrestricted: mode prove
+depth 6
+cover: mode cover
+cover: depth 20
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+prove: read_verilog -formal -D SYNTHESIS -D COHERENCE_OBSERVATION_PROOF -sv lq_coherence_port.sv
+prove_unrestricted: read_verilog -formal -D SYNTHESIS -D COHERENCE_OBSERVATION_PROOF -D COHERENCE_OBSERVATION_UNRESTRICTED -sv lq_coherence_port.sv
+cover: read_verilog -formal -D SYNTHESIS -D COHERENCE_OBSERVATION_PROOF -sv lq_coherence_port.sv
+prep -top lq_coherence_port
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv

@@ -20,7 +20,16 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
-from config import MASK_XLEN, XLEN
+from config import MASK_XLEN
+from cocotb_tests.cpu_structs import (
+    PIPELINE_CTRL_FIELDS,
+    IF_TO_PD_FIELDS,
+    PD_TO_ID_FIELDS,
+)
+from utils.packed_structs import (
+    pack_struct as _pack_struct,
+    unpack_struct as _unpack_struct,
+)
 
 
 CLOCK_PERIOD_NS = 10
@@ -35,85 +44,6 @@ OPC_OP_IMM = 0b0010011
 OPC_OP = 0b0110011
 
 BASE_PC = 0x80001000
-
-PIPELINE_CTRL_FIELDS = [
-    ("reset", 1),
-    ("stall", 1),
-    ("stall_registered", 1),
-    ("stall_for_trap_check", 1),
-    ("flush", 1),
-    ("trap_taken_registered", 1),
-    ("mret_taken_registered", 1),
-]
-
-IF_TO_PD_FIELDS = [
-    ("program_counter", XLEN),
-    ("raw_parcel", 16),
-    ("sel_nop", 1),
-    ("sel_compressed", 1),
-    ("effective_instr", 32),
-    ("source_hot_predecoded", 3),
-    ("btb_hit", 1),
-    ("btb_predicted_taken", 1),
-    ("btb_predicted_target", XLEN),
-    ("ras_predicted", 1),
-    ("ras_predicted_target", XLEN),
-    ("ras_checkpoint_tos", RAS_PTR_BITS),
-    ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
-    ("bp_dir_taken", 1),
-    ("bp_dir_idx", BP_DIR_IDX_BITS),
-    ("fetch_fault", 1),
-    ("fetch_fault_page", 1),
-    ("fetch_fault_hi", 1),
-    ("decomp_illegal", 1),
-]
-
-PD_TO_ID_FIELDS = [
-    ("program_counter", XLEN),
-    ("instruction", 32),
-    ("inject_nop", 1),
-    ("is_compressed", 1),
-    ("source_reg_1_early", 5),
-    ("source_reg_2_early", 5),
-    ("fp_source_reg_3_early", 5),
-    ("illegal_instruction", 1),
-    ("fetch_fault", 1),
-    ("fetch_fault_page", 1),
-    ("fetch_fault_hi", 1),
-    ("btb_hit", 1),
-    ("btb_predicted_taken", 1),
-    ("btb_predicted_target", XLEN),
-    ("ras_predicted", 1),
-    ("ras_predicted_target", XLEN),
-    ("ras_checkpoint_tos", RAS_PTR_BITS),
-    ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
-    ("bp_dir_idx", BP_DIR_IDX_BITS),
-]
-
-
-def _pack_struct(
-    fields: list[tuple[str, int]],
-    values: Mapping[str, int | bool],
-) -> int:
-    """Pack a SystemVerilog packed struct from declaration-ordered fields."""
-    packed = 0
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = int(values.get(name, 0))
-        packed |= (raw & ((1 << width) - 1)) << offset
-    return packed
-
-
-def _unpack_struct(fields: list[tuple[str, int]], packed: int) -> dict[str, int | bool]:
-    """Unpack a SystemVerilog packed struct into named Python values."""
-    result: dict[str, int | bool] = {}
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = (packed >> offset) & ((1 << width) - 1)
-        result[name] = bool(raw) if width == 1 else raw
-    return result
 
 
 def _pack_pipeline_ctrl(fields: Mapping[str, int | bool]) -> int:

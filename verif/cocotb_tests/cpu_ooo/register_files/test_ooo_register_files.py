@@ -20,164 +20,22 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
-from config import FLEN, INSTR_OP_WIDTH, STORE_OP_WIDTH, XLEN
+from cocotb_tests.cpu_structs import (
+    PD_TO_ID_FIELDS,
+    RF_TO_FWD_FIELDS,
+    FP_RF_TO_FWD_FIELDS,
+    ID_TO_EX_FIELDS,
+)
+from utils.packed_structs import (
+    pack_struct as _pack_struct,
+    unpack_struct as _unpack_struct,
+)
 
 
 CLOCK_PERIOD_NS = 10
 BRANCH_OP_WIDTH = 3
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
-
-PD_TO_ID_FIELDS = [
-    ("program_counter", XLEN),
-    ("instruction", 32),
-    ("inject_nop", 1),
-    ("is_compressed", 1),
-    ("source_reg_1_early", 5),
-    ("source_reg_2_early", 5),
-    ("fp_source_reg_3_early", 5),
-    ("illegal_instruction", 1),
-    ("fetch_fault", 1),
-    ("fetch_fault_page", 1),
-    ("fetch_fault_hi", 1),
-    ("btb_hit", 1),
-    ("btb_predicted_taken", 1),
-    ("btb_predicted_target", XLEN),
-    ("ras_predicted", 1),
-    ("ras_predicted_target", XLEN),
-    ("ras_checkpoint_tos", RAS_PTR_BITS),
-    ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
-    ("bp_dir_idx", BP_DIR_IDX_BITS),
-]
-
-ID_TO_EX_FIELDS = [
-    ("program_counter", XLEN),
-    ("immediate_i_type", XLEN),
-    ("immediate_s_type", XLEN),
-    ("immediate_b_type", XLEN),
-    ("immediate_u_type", XLEN),
-    ("immediate_j_type", XLEN),
-    ("source_reg_1_data", XLEN),
-    ("source_reg_2_data", XLEN),
-    ("source_reg_1_is_x0", 1),
-    ("source_reg_2_is_x0", 1),
-    ("is_load_instruction", 1),
-    ("is_load_byte", 1),
-    ("is_load_halfword", 1),
-    ("is_load_unsigned", 1),
-    ("instruction_operation", INSTR_OP_WIDTH),
-    ("branch_operation", BRANCH_OP_WIDTH),
-    ("store_operation", STORE_OP_WIDTH),
-    ("rs_type", 3),
-    ("is_int_store", 1),
-    ("is_branch_or_jump", 1),
-    ("is_fence", 1),
-    ("is_fence_i", 1),
-    ("is_csr_imm", 1),
-    ("has_fp_flags", 1),
-    ("is_jump_and_link", 1),
-    ("is_jump_and_link_register", 1),
-    ("is_multiply", 1),
-    ("is_divide", 1),
-    ("is_csr_instruction", 1),
-    ("csr_address", 12),
-    ("csr_imm", 5),
-    ("is_amo_instruction", 1),
-    ("is_lr", 1),
-    ("is_sc", 1),
-    ("is_mret", 1),
-    ("is_sret", 1),
-    ("is_dret", 1),
-    ("is_sfence_vma", 1),
-    ("is_wfi", 1),
-    ("is_ecall", 1),
-    ("is_ebreak", 1),
-    ("is_illegal_instruction", 1),
-    ("is_fetch_fault", 1),
-    ("is_fetch_fault_page", 1),
-    ("is_fetch_fault_hi", 1),
-    ("is_fp_instruction", 1),
-    ("is_fp_load", 1),
-    ("is_fp_store", 1),
-    ("is_fp_load_double", 1),
-    ("is_fp_store_double", 1),
-    ("is_fp_compute", 1),
-    ("is_pipelined_fp_op", 1),
-    ("fp_rm", 3),
-    ("is_fp_to_int", 1),
-    ("is_int_to_fp", 1),
-    ("fp_source_reg_1_data", FLEN),
-    ("fp_source_reg_2_data", FLEN),
-    ("fp_source_reg_3_data", FLEN),
-    ("link_address", XLEN),
-    ("is_compressed", 1),
-    ("branch_target_precomputed", XLEN),
-    ("jal_target_precomputed", XLEN),
-    ("instruction", 32),
-    ("btb_hit", 1),
-    ("btb_predicted_taken", 1),
-    ("btb_predicted_target", XLEN),
-    ("ras_predicted", 1),
-    ("ras_predicted_target", XLEN),
-    ("ras_checkpoint_tos", RAS_PTR_BITS),
-    ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
-    ("bp_dir_idx", BP_DIR_IDX_BITS),
-    ("is_ras_return", 1),
-    ("is_ras_call", 1),
-    ("ras_predicted_target_nonzero", 1),
-    ("ras_expected_rs1", XLEN),
-    ("btb_correct_non_jalr", 1),
-    ("btb_expected_rs1", XLEN),
-    ("ras_correct_non_jalr", 1),
-    ("pc_relative_precomputed", XLEN),
-    ("has_int_dest", 1),
-    ("has_fp_dest", 1),
-    ("uses_int_rs1", 1),
-    ("uses_int_rs2", 1),
-    ("uses_fp_rs1", 1),
-    ("uses_fp_rs2", 1),
-    ("uses_fp_rs3", 1),
-    ("is_not_nop", 1),
-]
-
-RF_TO_FWD_FIELDS = [
-    ("source_reg_1_data", XLEN),
-    ("source_reg_2_data", XLEN),
-]
-
-FP_RF_TO_FWD_FIELDS = [
-    ("fp_source_reg_1_data", FLEN),
-    ("fp_source_reg_2_data", FLEN),
-    ("fp_source_reg_3_data", FLEN),
-]
-
-
-def _pack_struct(
-    fields: list[tuple[str, int]],
-    values: Mapping[str, int | bool],
-) -> int:
-    """Pack a SystemVerilog packed struct from declaration-ordered fields."""
-    packed = 0
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = int(values.get(name, 0))
-        packed |= (raw & ((1 << width) - 1)) << offset
-    return packed
-
-
-def _unpack_struct(
-    fields: list[tuple[str, int]],
-    packed: int,
-) -> dict[str, int | bool]:
-    """Unpack a SystemVerilog packed struct into named Python values."""
-    result: dict[str, int | bool] = {}
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = (packed >> offset) & ((1 << width) - 1)
-        result[name] = bool(raw) if width == 1 else raw
-    return result
 
 
 def _pack_pd_to_id(fields: Mapping[str, int | bool]) -> int:

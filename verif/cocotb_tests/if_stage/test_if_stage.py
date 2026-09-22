@@ -21,6 +21,15 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from config import XLEN
+from cocotb_tests.cpu_structs import (
+    PIPELINE_CTRL_FIELDS,
+    IF_TO_PD_FIELDS,
+    FROM_EX_FIELDS,
+)
+from utils.packed_structs import (
+    pack_struct as _pack_struct,
+    unpack_struct as _unpack_struct,
+)
 
 
 CLOCK_PERIOD_NS = 10
@@ -59,85 +68,12 @@ SB_RVC_SOURCE_HOT_LO_LSB = 12
 SB_RVC_SOURCE_HOT_HI_LSB = 15
 SIDEBAND_WIDTH = 18
 
-PIPELINE_CTRL_FIELDS = [
-    ("reset", 1),
-    ("stall", 1),
-    ("stall_registered", 1),
-    ("stall_for_trap_check", 1),
-    ("flush", 1),
-    ("trap_taken_registered", 1),
-    ("mret_taken_registered", 1),
-]
-
-FROM_EX_FIELDS = [
-    ("branch_taken", 1),
-    ("branch_target_address", XLEN),
-    ("btb_update", 1),
-    ("btb_update_pc", XLEN),
-    ("btb_update_target", XLEN),
-    ("btb_update_taken", 1),
-    ("btb_update_compressed", 1),
-    ("btb_update_requires_pc_reg_handoff", 1),
-    ("ras_misprediction", 1),
-    ("ras_restore_tos", RAS_PTR_BITS),
-    ("ras_restore_valid_count", RAS_PTR_BITS + 1),
-    ("ras_pop_after_restore", 1),
-    ("ras_push_after_restore", 1),
-    ("ras_push_address_after_restore", XLEN),
-]
 
 TRAP_CTRL_FIELDS = [
     ("trap_taken", 1),
     ("mret_taken", 1),
     ("trap_target", XLEN),
 ]
-
-IF_TO_PD_FIELDS = [
-    ("program_counter", XLEN),
-    ("raw_parcel", 16),
-    ("sel_nop", 1),
-    ("sel_compressed", 1),
-    ("effective_instr", 32),
-    ("source_hot_predecoded", 3),
-    ("btb_hit", 1),
-    ("btb_predicted_taken", 1),
-    ("btb_predicted_target", XLEN),
-    ("ras_predicted", 1),
-    ("ras_predicted_target", XLEN),
-    ("ras_checkpoint_tos", RAS_PTR_BITS),
-    ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
-    ("bp_dir_taken", 1),
-    ("bp_dir_idx", BP_DIR_IDX_BITS),
-    ("fetch_fault", 1),
-    ("fetch_fault_page", 1),
-    ("fetch_fault_hi", 1),
-    ("decomp_illegal", 1),
-]
-
-
-def _pack_struct(
-    fields: list[tuple[str, int]],
-    values: Mapping[str, int | bool],
-) -> int:
-    """Pack a SystemVerilog packed struct from declaration-ordered fields."""
-    packed = 0
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = int(values.get(name, 0))
-        packed |= (raw & ((1 << width) - 1)) << offset
-    return packed
-
-
-def _unpack_struct(fields: list[tuple[str, int]], packed: int) -> dict[str, Any]:
-    """Unpack a SystemVerilog packed struct into named Python values."""
-    result: dict[str, Any] = {}
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = (packed >> offset) & ((1 << width) - 1)
-        result[name] = bool(raw) if width == 1 else raw
-    return result
 
 
 def _word(*, lo: int, hi: int) -> int:

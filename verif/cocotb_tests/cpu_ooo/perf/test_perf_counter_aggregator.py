@@ -20,7 +20,13 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
-from config import FLEN, XLEN
+from cocotb_tests.cpu_structs import (
+    COMMIT_FIELDS,
+    ROB_ALLOC_REQ_FIELDS as ALLOC_REQ_FIELDS,
+)
+from utils.packed_structs import (
+    pack_struct as _pack_struct,
+)
 
 
 CLOCK_PERIOD_NS = 10
@@ -96,84 +102,6 @@ PERF_L1I_FETCH_MISS_STALL = 118
 PERF_L1D_MISS_CYCLES_SUM = 119
 PERF_L2_MISS_CYCLES_SUM = 120
 
-ALLOC_REQ_FIELDS = [
-    ("alloc_valid", 1),
-    ("pc", XLEN),
-    ("rs_type", RS_TYPE_WIDTH),
-    ("dest_rf", 1),
-    ("dest_reg", REG_ADDR_WIDTH),
-    ("dest_valid", 1),
-    ("is_store", 1),
-    ("is_fp_store", 1),
-    ("is_fp_instruction", 1),
-    ("is_branch", 1),
-    ("predicted_taken", 1),
-    ("predicted_target", XLEN),
-    ("branch_target", XLEN),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("link_addr", XLEN),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("is_csr", 1),
-    ("is_fence", 1),
-    ("is_fence_i", 1),
-    ("is_wfi", 1),
-    ("is_mret", 1),
-    ("is_sret", 1),
-    ("is_dret", 1),
-    ("is_sfence_vma", 1),
-    ("is_amo", 1),
-    ("is_lr", 1),
-    ("is_sc", 1),
-    ("is_compressed", 1),
-    ("csr_write_intent", 1),
-    ("csr_addr", 12),
-    ("csr_op", 3),
-    ("csr_write_data", XLEN),
-    ("has_fp_flags", 1),
-]
-
-COMMIT_FIELDS = [
-    ("valid", 1),
-    ("tag", ROB_TAG_WIDTH),
-    ("dest_rf", 1),
-    ("dest_reg", REG_ADDR_WIDTH),
-    ("dest_valid", 1),
-    ("value", FLEN),
-    ("is_store", 1),
-    ("is_fp_store", 1),
-    ("exception", 1),
-    ("pc", XLEN),
-    ("exc_cause", EXC_CAUSE_WIDTH),
-    ("fp_flags", FP_FLAGS_WIDTH),
-    ("has_fp_flags", 1),
-    ("misprediction", 1),
-    ("early_recovered", 1),
-    ("has_checkpoint", 1),
-    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
-    ("redirect_pc", XLEN),
-    ("predicted_taken", 1),
-    ("branch_taken", 1),
-    ("branch_target", XLEN),
-    ("is_branch", 1),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("csr_addr", 12),
-    ("csr_op", 3),
-    ("csr_write_data", XLEN),
-    ("is_csr", 1),
-    ("is_fence", 1),
-    ("is_fence_i", 1),
-    ("is_wfi", 1),
-    ("is_mret", 1),
-    ("is_amo", 1),
-    ("is_lr", 1),
-    ("is_sc", 1),
-    ("is_compressed", 1),
-]
 
 DISPATCH_STATUS_FIELDS = [
     ("dispatch_valid", 1),
@@ -239,20 +167,6 @@ CACHE_PERF_EVENTS_FIELDS = [
 
 QUIESCENT_DISPATCH_STATUS: dict[str, int | bool] = {"dispatch_valid": True}
 QUIESCENT_COMMIT: dict[str, int | bool] = {"valid": True}
-
-
-def _pack_struct(
-    fields: list[tuple[str, int]],
-    values: Mapping[str, int | bool],
-) -> int:
-    """Pack a SystemVerilog packed struct from declaration-ordered fields."""
-    packed = 0
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = int(values.get(name, 0))
-        packed |= (raw & ((1 << width) - 1)) << offset
-    return packed
 
 
 def _pack_alloc_req(fields: Mapping[str, int | bool]) -> int:

@@ -16,9 +16,8 @@
 
 """Run SymbiYosys targets directly or through pytest.
 
-Runs bounded model checking (BMC) and cover checks on RTL modules that contain
-`ifdef FORMAL` assertion blocks. Each .sby file in formal/ defines a verification
-target with its own set of properties.
+Runs bounded checks, unbounded proofs and cover searches. Each .sby file in
+formal/ defines its properties, assumptions and supported tasks.
 """
 
 import subprocess
@@ -152,6 +151,12 @@ FORMAL_TARGETS = [
         tasks=("prove", "prove_xlen32", "prove_xlen66", "cover"),
     ),
     FormalTarget(
+        "coherence_observation.sby",
+        "Coherence observation ownership, both commit lanes, flush/reuse and "
+        "registered replay provenance under the load-to-commit timing contract",
+        tasks=("prove", "prove_unrestricted", "cover"),
+    ),
+    FormalTarget(
         "data_mem_request_router.sby",
         "Data-memory router - mandatory device stage, flush cancel, drain/effect containment",
     ),
@@ -263,6 +268,10 @@ SBY_TASKS = [
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
     ("prove", "Unbounded safety proof (ABC PDR or temporal induction)"),
+    (
+        "prove_unrestricted",
+        "Unbounded observation cleanup with only the initial-reset assumption",
+    ),
     ("generic32", "Arbitrary-input portable response-mux equivalence at 32 bits"),
     ("generic64", "Arbitrary-input portable response-mux equivalence at 64 bits"),
     ("xilinx32", "Arbitrary-input LUT5 response-mux equivalence at 32 bits"),
@@ -531,7 +540,7 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s                           # Run all targets (bmc + cover)
+  %(prog)s                           # Run every target's declared tasks
   %(prog)s --target trap_unit        # Run specific target
   %(prog)s --task bmc                # Run only BMC (skip cover)
   %(prog)s --verbose                 # Show full sby output

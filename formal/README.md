@@ -32,6 +32,7 @@ X/Z behavior.
 | `divider_prefix` | Each 32/64-bit divider stage matches two restoring iterations, assuming the incoming remainder's prefix bound; valid transactions start with remainder zero, including division by zero |
 | `mul_completion_tag` | MUL adapter behavior with qualified versus unqualified invalid tags; assumes one initial reset edge |
 | `coherence_replay_compare` | Invalidation-line copies and replay masks at widths 32, 64, and 66; assumes one initial reset edge |
+| `coherence_observation` | Unbounded observation-table ownership, line provenance, retirement/flush cleanup and registered replay timing for all 32 ROB tags at XLEN=64; producer timing contract below |
 | `sc_head_query` | Selected SC coherence result versus a full line-address comparison, from arbitrary table state |
 | `data_mem_response_mux` | RAM/MMIO/cached payload selection at 32/64 bits, for portable and Xilinx implementations; Xilinx tasks use Yosys's LUT5 model |
 | `immu_bare` | Bare-mode physical addresses and verdicts; 32/72-bit variants check width conversion only, not Sv39 at those widths |
@@ -48,6 +49,22 @@ X/Z behavior.
 
 Integration targets have narrower environment contracts:
 
+- `coherence_observation` tracks an arbitrary ROB tag from external observation
+  history through the pending register and validation table. It assumes an
+  initial reset edge and that neither commit lane retires a tag observed in
+  the current or preceding cycle. The LQ observes before completion/CDB/ROB
+  retirement, but this isolated proof does not establish that producer timing.
+  Later resets, flushes, head tags and DMA controls are unrestricted; repeated
+  observations may even use different lines. Covers exercise both commit
+  lanes, full/partial flush, circular tag order, persistence, tag reuse with a
+  changed line, and replay from both the pending register and table. A replay
+  mask can name an observation cleared at the comparison edge because the
+  output is registered. ROB acceptance and allocation timing must keep such
+  a mask from affecting a new owner; that integration, DMA progress and atomic
+  exclusion are outside this target. `prove_unrestricted` removes the producer
+  assumption, retaining only the initial reset, and proves flush cleanup,
+  commit cleanup when no observation overlaps, and the pending write's
+  priority over a colliding commit.
 - `prediction_release` checks the production buffer and PC controllers with
   a conservative PC-increment abstraction. It proves safe pending-target
   handoff and metadata masking under the production producer relationships,
@@ -85,7 +102,8 @@ production synthesis.
    `read -sv` compiles its assertions out, and a proof can then pass
    vacuously.
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
-   `tasks` when the `.sby` defines it:
+   `tasks` when the `.sby` defines it. Register any new task names in
+   `SBY_TASKS` so CLI and pytest runs include them:
 
 ```python
 FORMAL_TARGETS = [
