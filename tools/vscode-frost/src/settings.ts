@@ -93,7 +93,7 @@ export function getSettings(folder: vscode.WorkspaceFolder): FrostSettings {
     repoRoot,
     pythonPath: requiredText(config, "pythonPath", "python3"),
     openocdPath: requiredText(config, "openocdPath", "openocd"),
-    gdbPath: requiredText(config, "gdbPath", "riscv-none-elf-gdb"),
+    gdbPath: requiredText(config, "gdbPath", "riscv64-linux-gdb"),
     vivadoPath: requiredText(config, "vivadoPath", "vivado"),
     hwServerPath: requiredText(config, "hwServerPath", "hw_server"),
     jtagSerial,

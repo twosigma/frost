@@ -435,7 +435,7 @@ uint32_t process_value(uint32_t value)
 
 ```makefile
 # RISC-V toolchain configuration
-RISCV_PREFIX ?= riscv-none-elf-
+RISCV_PREFIX ?= riscv64-linux-
 CC := $(RISCV_PREFIX)gcc
 
 # Architecture constants: provides FROST_XLEN_PREFIX / FROST_INT_ABI (rv64 / lp64)

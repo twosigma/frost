@@ -61,6 +61,8 @@ SECTIONS
         __data_load_start = .;
         __data_start      = .;
         *(.data*)
+        /* Include static PIC library pointers in the emitted DDR data image. */
+        *(.got .got.*)
         . = ALIGN(4);
     } > DDR
 

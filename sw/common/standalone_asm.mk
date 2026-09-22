@@ -33,7 +33,7 @@ endif
 # and ABI from its variables, and FROST_LD_EMULATION feeds LINK_FLAGS below.
 include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
 
-RISCV_PREFIX ?= riscv-none-elf-
+RISCV_PREFIX ?= riscv64-linux-
 FPGA_CPU_CLK_FREQ ?= 300000000
 AS      := $(RISCV_PREFIX)as
 LD      := $(RISCV_PREFIX)ld
@@ -73,7 +73,7 @@ BUILD_CONFIG_FILE    := .frost-build-config.bin
 # cannot use #if. Conditional code would have to use gas .if directives.
 ASM_FLAGS       := -march=$(ARCH) -mabi=$(ABI)
 # The boot stub compiles through $(CC) (which preprocesses).
-BOOT_CFLAGS     := -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles
+BOOT_CFLAGS     := -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector
 LINK_FLAGS      := -m $(FROST_LD_EMULATION) -T $(LINKER_SCRIPT)
 BUILD_MAKEFILES := $(MAKEFILE_LIST)
 

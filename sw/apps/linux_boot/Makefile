@@ -130,8 +130,8 @@ unexport FROST_INITRD
 PACK_ARGS += $(if $(FROST_LINUX_MEM_SIZE),--mem-size "$(FROST_LINUX_MEM_SIZE)")
 
 # Cross prefix for the tiny boot shim. frost_boot_image.py defaults to
-# riscv-none-elf-, the xPack bare-metal toolchain that load_software.py and the
-# Docker image provide. RISCV_PREFIX from the environment overrides it.
+# riscv64-linux-, the shared Bootlin toolchain. The shim explicitly disables
+# PIE. RISCV_PREFIX from the environment overrides the compiler prefix.
 ifdef RISCV_PREFIX
 SHIM_CROSS := FROST_CROSS_COMPILE=$(RISCV_PREFIX)
 endif

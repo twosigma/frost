@@ -520,9 +520,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--out", default=env("FROST_OUTDIR", "."), help="output directory"
     )
-    parser.add_argument(
-        "--cross", default=env("FROST_CROSS_COMPILE", "riscv-none-elf-")
-    )
+    parser.add_argument("--cross", default=env("FROST_CROSS_COMPILE", "riscv64-linux-"))
     parser.add_argument("--dtc", default=env("FROST_DTC", "dtc"))
     parser.add_argument(
         "--clk", type=int, default=int(env("FPGA_CPU_CLK_FREQ", str(DEFAULT_CLK_HZ)))

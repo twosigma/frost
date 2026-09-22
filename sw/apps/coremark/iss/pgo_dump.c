@@ -28,6 +28,7 @@
 #include <gcov.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/mman.h>
 
 extern volatile uint64_t tohost;
 extern volatile uint64_t fromhost;
@@ -80,11 +81,34 @@ static void *allocate_callback(unsigned length, void *arg)
  * sized well above what one CoreMark training run asks for, and abort()
  * reports rather than spins so an undersized arena is visible instead of
  * looking like a hung Spike run. */
-void abort(void);
+void abort(void) __attribute__((noreturn));
 void *calloc(size_t count, size_t size);
 void *malloc(size_t size);
 void free(void *pointer);
 size_t fread(void *pointer, size_t size, size_t count, void *stream);
+
+/* Streaming a fresh edge-count profile neither merges existing files nor
+ * allocates Linux mappings. Resolve these unused libgcov references locally
+ * rather than linking its filesystem/TLS driver. Fail visibly if a future
+ * libgcov starts using either facility on this path.
+ */
+void __gcov_merge_add(long long *counters, unsigned count)
+{
+    (void) counters;
+    (void) count;
+    abort();
+}
+
+void *mmap(void *address, size_t length, int protection, int flags, int descriptor, off_t offset)
+{
+    (void) address;
+    (void) length;
+    (void) protection;
+    (void) flags;
+    (void) descriptor;
+    (void) offset;
+    abort();
+}
 
 static unsigned char libc_arena[65536];
 static size_t libc_arena_used;

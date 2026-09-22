@@ -16,7 +16,7 @@ SRC_C   := ../../lib/src/uart.c coremark/core_list_join.c coremark/core_main.c c
 INCLUDE_DIR = ./coremark
 
 # lp64d ABI per the Phase 1 plan (M6). There is no ABI retreat from the 32-bit
-# data this benchmark keeps: the pinned GCC 15.2 rejects every -mabi=ilp32*
+# data this benchmark keeps: GCC 15.2 in the original study rejects -mabi=ilp32*
 # spelling on rv64 with "ABI requires '-march=rv32'" (RV64ILP32 exists only as
 # a psABI proposal, unsupported here), so the cost is paid down in codegen. The
 # residual is measured rather than assumed: running the same sources through
@@ -41,7 +41,8 @@ MABI := lp64d
 # 96 KiB ROM region) and no instructions: instret moves by 6 out of 285,711.
 FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 
-# Codegen tuning, appended last so it wins over common.mk's defaults. Measured
+# Historical xPack GCC 15.2 tuning, followed below by the Bootlin 15.3 retune.
+# Flags are appended last so they win over common.mk's defaults. Measured
 # in cycle-exact simulation as timed-region ticks per iteration; the untuned
 # build of this source order is 363k, which is the shipped 827 CoreMark at
 # 300 MHz:
@@ -114,10 +115,10 @@ FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zi
 #
 # 2026-09-20 software-only sweep at this RTL: 186 configurations against the
 # 305,096-tick baseline, every one that built validating seedcrc 0xe9f5 /
-# crcfinal 0xe714, plus 27 warm-slope runs at ITERATIONS=1/3/8. The rest of the GCC flag space is empty: the four settings
-# above are the only ones that clear the measurement floor, and dropping any of
-# the first three costs between 1.8% and 12.5%. The negatives are the useful
-# part, because they are what a reader would try next:
+# crcfinal 0xe714, plus 27 warm-slope runs at ITERATIONS=1/3/8. In that sweep,
+# the four settings above were the only ones that cleared the measurement floor.
+# Dropping any of the first three costs between 1.8% and 12.5%. The negatives
+# are the useful part, because they are what a reader would try next:
 #
 #   -ftracer +11.3%. Its superblock formation turns core_state_transition into
 #       a jump table inside core_bench_state, and an unpredicted indirect jump
@@ -153,8 +154,19 @@ FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zi
 # -fno-unswitch-loops, which scores within one tick with 4.1 KiB less .text --
 # common.mk's global -funroll-loops earns nothing for this program.
 #
+# 2026-09-21 Bootlin 2026.08-1 / GCC 15.3 retune at RTL 0c0be1ec:
+# copied xPack flags regressed score by 0.78-0.79%. A 31-case screen found
+# that CB register allocation plus the sifive-7-series tuning model removes
+# that regression without changing the ISA, ABI, source, or enabling PGO.
+# First-boot / reset ITERATIONS=1: 295,639 / 295,205 cycles versus xPack's
+# 296,400 / 295,941. ITERATIONS=8: 2,359,773 versus 2,366,130. Both official
+# seed sets passed before and after reset. See docs/tooling.md for the gate.
+# The scheduling model is a compiler cost model; FROST retains its own ISA.
+# Keep its flag last to preserve the qualified build's exact flag string.
+COREMARK_CPU_TUNE := -mtune=sifive-7-series
+
 # Overridable for A/B runs.
-COREMARK_BASE_TUNE := --param max-inline-insns-auto=200 -fira-algorithm=priority \
+COREMARK_BASE_TUNE := --param max-inline-insns-auto=200 -fira-algorithm=CB \
                       -fstrict-aliasing -fselective-scheduling
 # Compensation for GCC's static branch-probability guesses; see above. With a
 # real profile there is nothing left to compensate for, so the PGO lane drops
@@ -162,7 +174,7 @@ COREMARK_BASE_TUNE := --param max-inline-insns-auto=200 -fira-algorithm=priority
 COREMARK_STATIC_LAYOUT_TUNE := -fno-crossjumping -freorder-blocks-and-partition
 # Link-time optimization with complete peeling capped; see above. Excluded
 # from the PGO lane because -flto and -fbranch-probabilities together are an
-# internal compiler error on the pinned GCC 15.2 ("lto1: internal compiler
+# internal compiler error in the original GCC 15.2 study ("lto1: internal compiler
 # error: Segmentation fault"), with or without the caps.
 COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
                      --param max-completely-peel-times=0
@@ -175,9 +187,9 @@ COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
 # because it is the largest software effect measured on this core and the
 # number should be reproducible.
 #
-# COREMARK_PGO=1 measures 294,640 ticks/iteration against 305,096 (-3.43%) and
-# holds warm: at ITERATIONS=8 the marginal cost is 294,180 against the
-# baseline's 304,276, -3.32%, linear to 0.008% between (t3-t1)/2 and
+# Historical GCC 15.2 COREMARK_PGO=1 measurements: 294,640 ticks/iteration
+# against 305,096 (-3.43%). This holds warm: at ITERATIONS=8 the marginal cost
+# is 294,180 against the baseline's 304,276, -3.32%, linear to 0.008% between (t3-t1)/2 and
 # (t8-t3)/5. Against the default lane above (296,416) it is worth a further
 # 0.6% for 23 KiB more ROM image and a committed profile, which is why the
 # default does not use it. It
@@ -204,10 +216,10 @@ COREMARK_PGO_PROFILES := $(addsuffix .gcda,$(addprefix sw.elf-,\
 $(foreach profile,$(COREMARK_PGO_PROFILES),\
     $(if $(wildcard $(profile)),,$(error COREMARK_PGO=1 needs $(profile); run \
     ./scripts/frost.py run sw/apps/coremark/iss/generate_profile.py)))
-APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_PGO_TUNE)
+APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_PGO_TUNE) $(COREMARK_CPU_TUNE)
 else ifeq ($(COREMARK_PGO),0)
 APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_STATIC_LAYOUT_TUNE) \
-                  $(COREMARK_LTO_TUNE)
+                  $(COREMARK_LTO_TUNE) $(COREMARK_CPU_TUNE)
 else
 $(error COREMARK_PGO must be 0 or 1)
 endif

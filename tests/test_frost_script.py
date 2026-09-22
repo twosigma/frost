@@ -207,7 +207,6 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
                 "ARG SBY_VERSION=0.69",
                 "ARG Z3_VERSION=5.1.0",
                 "ARG BOOLECTOR_VERSION=3.2.4",
-                "ARG XPACK_RISCV_VERSION=15.2.0-1",
                 "ARG LLVM_VERSION=23.1.1",
                 "ARG PYTHON_VERSION=3.14.7",
                 "ARG GCC_VERSION=16.2.0",
@@ -236,13 +235,7 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
     entrypoint.write_text("#!/usr/bin/env python3\n")
     pins = dockerfile_version_pins(dockerfile)
     tools = {
-        tool: {
-            "version": (
-                pins[argument].rsplit("-", maxsplit=1)[0]
-                if tool == "riscv_gcc"
-                else pins[argument]
-            )
-        }
+        tool: {"version": pins[argument]}
         for tool, argument in frost.TOOL_VERSION_ARGUMENTS.items()
     }
     probe: dict[str, object] = {
@@ -530,7 +523,6 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
         "SBY_VERSION": "0.69",
         "Z3_VERSION": "5.1.0",
         "BOOLECTOR_VERSION": "3.2.4",
-        "XPACK_RISCV_VERSION": "15.2.0-1",
         "LLVM_VERSION": "23.1.1",
         "PYTHON_VERSION": "3.14.7",
         "GCC_VERSION": "16.2.0",
@@ -559,13 +551,7 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
     entrypoint = tmp_path / "docker_entrypoint.py"
     entrypoint.write_text("#!/usr/bin/env python3\n")
     tools = {
-        tool: {
-            "version": (
-                versions[argument].rsplit("-", maxsplit=1)[0]
-                if tool == "riscv_gcc"
-                else versions[argument]
-            )
-        }
+        tool: {"version": versions[argument]}
         for tool, argument in frost.TOOL_VERSION_ARGUMENTS.items()
     }
     probe = json.dumps(

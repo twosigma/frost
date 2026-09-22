@@ -162,7 +162,7 @@ EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "privilege": {"menvcfg_m"},
 }
 
-RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv-none-elf-")
+RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 
 
 def discover_tests(extension: str) -> list[Path]:
@@ -230,6 +230,9 @@ def generate_one_reference(
             f"-march={test_march(test_name)}",
             f"-mabi={FROST_ABI}",
             "-static",
+            "-fno-pie",
+            "-no-pie",
+            "-fno-stack-protector",
             "-mcmodel=medany",
             "-fvisibility=hidden",
             "-nostdlib",

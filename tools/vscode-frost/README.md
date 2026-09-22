@@ -64,7 +64,7 @@ The extension uses loopback ports 3121 for its hardware server and 3333
 for OpenOCD, and fails if a port is already owned by another process.
 
 Set tool paths under **Settings → FROST** if `python3`, `openocd`,
-`riscv-none-elf-gdb`, `vivado`, and `hw_server` are absent from VS Code's
+`riscv64-linux-gdb`, `vivado`, and `hw_server` are absent from VS Code's
 host environment `PATH`. These settings contain executable paths, without
 extra shell arguments. Tool paths and cable identities use machine-scoped
 settings so they remain outside the repository and Settings Sync.

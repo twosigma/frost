@@ -66,8 +66,8 @@ repos:
         verbose: true
         types_or: [c, c++]
         # The buildroot package sources are Linux-userspace programs; the
-        # wrapper compiles against the bare-metal RISC-V include paths, where
-        # Linux headers (sys/mman.h etc.) do not exist. linux/frost-net10g/
+        # wrapper uses bare-metal flags and FROST runtime include paths rather
+        # than those packages' Linux build configuration. linux/frost-net10g/
         # is kernel code, which needs a kernel tree's headers. pgo_dump.c
         # includes GCC's own gcov.h and walks the __gcov_info_* symbols the
         # compiler emits, none of which clang resolves.

@@ -199,7 +199,7 @@ static void latch_benchmark_errors(const char *s)
 /*   clock_gettime(CLOCK_REALTIME, &ts)                                       */
 /* with NSECS_PER_SEC == 1000000000. Wall-clock time is derived from the      */
 /* cycle counter assuming a fixed FPGA_CPU_CLK_FREQ. The prototype must       */
-/* match newlib's <time.h> declaration exactly.                               */
+/* match the toolchain's <time.h> declaration exactly.                        */
 /* ========================================================================== */
 int clock_gettime(clockid_t clk_id, struct timespec *ts)
 {
@@ -241,7 +241,7 @@ int vprintf(const char *fmt, va_list ap)
 /* th_al.c's al_exit() calls exit(code). exit() writes a PASS/FAIL marker so  */
 /* a simulation harness watching the UART can detect the self-verifying       */
 /* result, then spins forever (there is no OS to return to). Prototypes match */
-/* newlib's noreturn exit()/abort().                                          */
+/* the toolchain's noreturn exit()/abort().                                   */
 /* ========================================================================== */
 void exit(int code)
 {
@@ -267,6 +267,7 @@ void abort(void)
 /* because FAKE_FILEIO=1 turns every al_* file op into a no-op stub. So the   */
 /* members only need to be readable, not valid FILE handles.                  */
 /* ========================================================================== */
+#if __has_include(<sys/reent.h>)
 #include <sys/reent.h>
 static struct _reent frost_impure_reent;
 struct _reent *_impure_ptr = &frost_impure_reent;
@@ -285,6 +286,41 @@ int *__errno(void)
 {
     return &_impure_ptr->_errno;
 }
+#else
+/* Bootlin's musl headers expose stdio pointers directly. FAKE_FILEIO records
+ * these handles but never dereferences them. Keep errno in ordinary storage:
+ * our bare-metal startup does not initialize Linux thread-local data. Defining
+ * these symbols here avoids pulling musl's stdio/TLS startup into the program
+ * when its math objects are selected from libc.a.
+ */
+#include <stdio.h>
+FILE *const stdin = NULL;
+FILE *const stdout = NULL;
+FILE *const stderr = NULL;
+static int frost_errno;
+
+int *__errno_location(void)
+{
+    return &frost_errno;
+}
+/* musl's internal objects call this alias rather than the public symbol. */
+int *___errno_location(void) __attribute__((alias("__errno_location")));
+
+/* Some prebuilt musl math objects have stack checking enabled. Supply its
+ * small bare-metal runtime explicitly, including a nonzero guard initialized
+ * by our normal .data copy. This is a corruption check, not an entropy source.
+ */
+uintptr_t __stack_chk_guard = UINT64_C(0x92e137c65ab04800);
+
+void __stack_chk_fail(void) __attribute__((noreturn));
+void __stack_chk_fail(void)
+{
+    uart_puts("CoreMark-PRO stack check failed\n");
+    exit(1);
+}
+
+void __stack_chk_fail_local(void) __attribute__((alias("__stack_chk_fail"), noreturn));
+#endif
 
 /* ========================================================================== */
 /* Environment: getenv()                                                      */
@@ -338,12 +374,13 @@ int al_item_setaffinity(int kernel_id, int instance_id, int item_id, uint32_t co
 /* newlib character-class table: _ctype_                                      */
 /*                                                                            */
 /* Several benchmark kernels (e.g. darkmark/parser's ezxml.c, zlib) include   */
-/* the toolchain's <ctype.h>, whose isspace()/isalpha()/... are macros that   */
+/* newlib's <ctype.h>, whose isspace()/isalpha()/... are macros that         */
 /* index newlib's global _ctype_[] classification table:                      */
 /*     #define isspace(c) ((_ctype_+1)[(int)(c)] & _S)                        */
 /* The FROST sw/lib ctype.c provides is*() as functions, but the system-      */
 /* header macros shadow them at the call sites in MITH code, so the link      */
-/* needs the _ctype_ symbol itself. Provide the standard newlib ASCII table.  */
+/* needs the _ctype_ symbol itself. Retain the newlib ASCII table for external */
+/* toolchain overrides; musl builds leave it unreferenced and discard it.    */
 /*                                                                            */
 /* Layout: 257 bytes. Index 0 is the EOF (-1) slot (0); indices 1..256 map    */
 /* characters 0..255. Bit flags: _U=0x01 _L=0x02 _N(digit)=0x04 _S(space)=    */
@@ -378,7 +415,7 @@ const char _ctype_[257] = {
 /* memory buffers in the minimal pgo configs, so al_fsize() is never called   */
 /* at runtime, but it is still referenced and must link. With FAKE_FILEIO=1   */
 /* there is no filesystem, so report "no such file": stat() returns -1 and    */
-/* al_fsize() yields 0. Prototype matches newlib's <sys/stat.h>.              */
+/* al_fsize() yields 0. Prototype matches the toolchain's <sys/stat.h>.       */
 /* ========================================================================== */
 #include <sys/stat.h>
 int stat(const char *path, struct stat *buf)
@@ -398,11 +435,11 @@ int stat(const char *path, struct stat *buf)
 /*   - zip's define_params_zip() calls fclose() only in the "-f=<file>" branch*/
 /*     (it generates its input in memory instead).                            */
 /* These are dead at runtime but must resolve at link time. The toolchain's   */
-/* newlib provides full scanf/stdio, but pulling it in would drag in the      */
-/* _impure_ptr FILE machinery that the -nostdlib build avoids. Provide inert  */
+/* libc provides full scanf/stdio, but pulling it in would drag in the        */
+/* FILE machinery that the -nostdlib build avoids. Provide inert             */
 /* stubs: vsscanf/sscanf convert nothing (return 0) and fclose succeeds       */
 /* (return 0).                                                                */
-/* Prototypes match newlib's <stdio.h>.                                       */
+/* Prototypes match the toolchain's <stdio.h>.                                */
 /* ========================================================================== */
 #include <stdio.h>
 int vsscanf(const char *str, const char *fmt, va_list ap)

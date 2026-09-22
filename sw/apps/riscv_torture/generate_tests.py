@@ -59,7 +59,7 @@ REFERENCES_DIR = SCRIPT_DIR / "references_rv64"
 # Frost ISA string for Spike
 FROST_ISA = "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
 
-RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv-none-elf-")
+RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 ARCH = "rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
 ABI = "lp64"
 
@@ -376,6 +376,9 @@ def generate_one_reference(
             f"-march={ARCH}",
             f"-mabi={ABI}",
             "-static",
+            "-fno-pie",
+            "-no-pie",
+            "-fno-stack-protector",
             # lp64 needs PC-relative addressing for the 0x8xxx_xxxx Spike
             # link (medlow's absolute lui cannot form those addresses at
             # 64-bit).

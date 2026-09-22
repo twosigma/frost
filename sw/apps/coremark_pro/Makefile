@@ -55,7 +55,7 @@
 # Header shadowing. Read this before editing the include paths.
 #
 # The MITH and workload sources need the toolchain's <string.h>/<stdlib.h>/
-# <time.h> for the full newlib declarations. The FROST sw/lib headers are named
+# <time.h> for the full libc declarations. The FROST sw/lib headers are named
 # string.h / stdlib.h / ... and would shadow the toolchain headers if their
 # directory were on the MITH compile include path, so compilation is split:
 #
@@ -81,7 +81,7 @@ FROST_MALLOC_EVICT_FREE ?= 0
 FROST_MEMORY_FENCE_WRITES ?= 0
 
 # --- Toolchain -------------------------------------------------------------
-RISCV_PREFIX ?= riscv-none-elf-
+RISCV_PREFIX ?= riscv64-linux-
 CC      := $(RISCV_PREFIX)gcc
 OBJCOPY := $(RISCV_PREFIX)objcopy
 OBJDUMP := $(RISCV_PREFIX)objdump
@@ -133,6 +133,7 @@ endif
 # Base flags shared by every translation unit and the final link.
 BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) $(FROST_CMODEL) $(OPT_LEVEL) \
               -nostdlib -nostartfiles -ffreestanding \
+              -static -fno-pie -no-pie -fno-stack-protector \
               -ffunction-sections -fdata-sections -fno-strict-aliasing \
               -DCOREMARK_PRO_TRACE=$(COREMARK_PRO_TRACE)
 
@@ -472,7 +473,7 @@ MITH_COMPAT := -std=gnu11 -w -fsigned-char \
                -Wno-error=implicit-function-declaration
 
 # Keep -ffreestanding for the bare-metal port, but still let FP benchmark code
-# use hardware sqrt instructions instead of tail-calling newlib's software sqrt.
+# use hardware sqrt instructions instead of tail-calling libc's software sqrt.
 MITH_MATH_BUILTINS := -fno-math-errno \
                       -Dsqrtf=__builtin_sqrtf -Dsqrt=__builtin_sqrt
 
@@ -534,7 +535,11 @@ endif
 # -lm covers libm symbols (cos/sin/pow/sqrt/log10) used by the FP workloads
 # (linpack/loops/nnet/radix2); harmless for the integer workloads. -lgcc
 # supplies soft helpers (64-bit divide in the timing math, soft float helpers).
-LDFLAGS := $(BASE_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections -lm -lgcc
+# Bootlin's musl keeps math in libc.a; its libm.a is an empty archive. The
+# group resolves math dependencies after the FROST runtime objects. FROST's
+# port supplies stdio/errno/stack checking so Linux startup and TLS stay absent.
+FROST_BAREMETAL_LIBS ?= -Wl,--start-group -lm -lc -lgcc -Wl,--end-group
+LDFLAGS := $(BASE_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections $(FROST_BAREMETAL_LIBS)
 
 # --- Source sets -----------------------------------------------------------
 CRT0 := crt0_coremark_pro.S

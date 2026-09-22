@@ -31,9 +31,6 @@ ARG Z3_VERSION=5.1.0
 
 ARG BOOLECTOR_VERSION=3.2.4
 
-# Bare-metal toolchain with newlib.
-ARG XPACK_RISCV_VERSION=15.2.0-1
-
 # LLVM supplies clang, clang-format and clang-tidy from the same release.
 ARG LLVM_VERSION=23.1.1
 ARG LLVM_SHA256=832aeb58d105de1cabc7b982dd2c65de0610f7377df48ae8fc2dd8e97420a15c
@@ -218,14 +215,6 @@ RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
     && make install \
     && rm -rf /tmp/boolector
 
-# Install the xPack bare-metal RISC-V toolchain.
-RUN curl -fL https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_RISCV_VERSION}/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}-linux-x64.tar.gz \
-    | tar -xz -C /opt \
-    && ln -s /opt/xpack-riscv-none-elf-gcc-${XPACK_RISCV_VERSION}/bin/* /usr/local/bin/
-
-# Prefix consumed by the software Makefiles.
-ENV RISCV_PREFIX=riscv-none-elf-
-
 # Permit a bind-mounted checkout owned by the invoking host user.
 RUN git config --global --add safe.directory /workspace
 
@@ -330,11 +319,10 @@ RUN curl -fL -o /tmp/sv2v-Linux.zip https://github.com/zachjs/sv2v/releases/down
     && chmod 0444 /usr/local/share/doc/sv2v/* \
     && rm -f /tmp/sv2v-Linux.zip
 
-# Linux-targeted RISC-V toolchain: the Bootlin riscv64 musl release that the
-# Buildroot MMU Linux lane uses as its external toolchain. It also builds the
-# OpenSBI firmware (linux/opensbi_build.py): OpenSBI links as a PIE, which the
-# bare-metal xPack linker above cannot do. Keep the release and upstream hash
-# aligned with frost_rv64_defconfig and the external tree's toolchain hash.
+# One RISC-V toolchain for bare-metal apps, OpenSBI and Linux. Bare-metal
+# Makefiles explicitly disable PIE and use FROST's startup/runtime; OpenSBI
+# retains its PIE link and Linux userspace uses musl. Keep this archive aligned
+# with frost_rv64_defconfig and the external tree's toolchain hash.
 ARG BOOTLIN_RISCV64_MUSL_VERSION=2026.08-1
 ARG BOOTLIN_RISCV64_MUSL_SHA256=747286a6aec5def762a68491a884195a3a415352c76f70140e36eac48c77b73c
 RUN curl -fL -o /tmp/bootlin-riscv64.tar.xz \
@@ -344,9 +332,10 @@ RUN curl -fL -o /tmp/bootlin-riscv64.tar.xz \
     && rm -f /tmp/bootlin-riscv64.tar.xz \
     && ln -s /opt/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION} /opt/riscv64-linux-musl
 
-# Prefix consumed by linux/opensbi_build.py. Buildroot downloads the same
-# release itself so native Vivado loaders can build the userspace too.
+# Shared compiler prefix. Buildroot downloads the same release itself so
+# native Vivado loaders can build the userspace too.
 ENV PATH="/opt/riscv64-linux-musl/bin:${PATH}"
+ENV RISCV_PREFIX=riscv64-linux-
 ENV FROST_LINUX_CROSS_COMPILE=riscv64-linux-
 ENV FROST_LINUX_TOOLCHAIN_PATH=/opt/riscv64-linux-musl
 

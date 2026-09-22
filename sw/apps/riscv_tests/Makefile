@@ -32,7 +32,7 @@ ABI  = $(FROST_INT_ABI)
 CMODEL = -mcmodel=medany
 
 # Tools - use same prefix as common.mk
-RISCV_PREFIX ?= riscv-none-elf-
+RISCV_PREFIX ?= riscv64-linux-
 CC      = $(RISCV_PREFIX)gcc
 OBJCOPY = $(RISCV_PREFIX)objcopy
 OBJDUMP = $(RISCV_PREFIX)objdump
@@ -113,7 +113,7 @@ $(EXECUTABLE_ELF_FILE): $(TEST_SRC) riscv_test.h $(BOOT_STUB) $(LINKER_SCRIPT) $
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles $(ENV_CFLAGS) \
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector $(ENV_CFLAGS) \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(ENV_SRC) $(TEST_SRC)
 
 # Low BRAM image: everything not split out to DDR (the bram config keeps the

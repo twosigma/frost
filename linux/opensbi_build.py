@@ -42,12 +42,10 @@ the submodule stays unmodified.
 
 Outputs land in ``<out>/platform/generic/firmware/fw_jump.{bin,elf}``.
 
-OpenSBI links itself as a position-independent executable, which the
-bare-metal xPack linker (``riscv-none-elf-ld``) refuses (``-pie not
-supported``), so the Docker image also carries the Linux-targeted Bootlin
-toolchain the Buildroot lane uses (``riscv64-linux-``, see the Dockerfile),
-and that is the default here; ``FROST_LINUX_CROSS_COMPILE`` or ``--cross``
-override the prefix.
+OpenSBI links itself as a position-independent executable using the shared
+Bootlin toolchain (``riscv64-linux-``, see the Dockerfile). Bare-metal apps
+use the same compiler with PIE explicitly disabled. ``FROST_LINUX_CROSS_COMPILE``
+or ``--cross`` override the firmware compiler prefix.
 
 Usage: ``opensbi_build.py --out <dir> [--jobs N] [--cross PREFIX]``
 """

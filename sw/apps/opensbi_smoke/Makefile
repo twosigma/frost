@@ -27,7 +27,7 @@
 
 FROST_ROOT := $(abspath $(CURDIR)/../../..)
 BOARD_DIR  := $(FROST_ROOT)/linux/buildroot-external/board/frost
-RISCV_PREFIX ?= riscv-none-elf-
+RISCV_PREFIX ?= riscv64-linux-
 FPGA_CPU_CLK_FREQ ?= 300000000
 
 CC      := $(RISCV_PREFIX)gcc
@@ -39,7 +39,7 @@ FW_BIN      := $(OPENSBI_OUT)/platform/generic/firmware/fw_jump.bin
 
 CFLAGS := -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause \
           -mabi=lp64d -mcmodel=medany -O2 -Wall -Wextra \
-          -nostdlib -nostartfiles -ffreestanding -fno-builtin \
+          -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector -ffreestanding -fno-builtin \
           -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-strict-aliasing
 
 .PHONY: all clean distclean

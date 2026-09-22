@@ -96,6 +96,8 @@ SECTIONS
         __data_load_start = LOADADDR(.data);   /* Source address in ROM */
         __data_start      = .;                 /* Destination address in RAM */
         *(.data*)
+        /* Static PIC library objects still use a GOT. Copy it with .data. */
+        *(.got .got.*)
         . = ALIGN(4);
     } > RAM
 

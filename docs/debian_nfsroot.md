@@ -35,7 +35,7 @@ What the board needs from the network:
 Also needed: a terminal on the board's UART at 115200 8N1, and a host with
 Vivado that programs the X3 and runs `load_software.py`
 ([`fpga/README.md`](../fpga/README.md)) with `make`, `dtc` and the
-`riscv-none-elf-` toolchain. OpenSBI comes from this repository's Buildroot
+`riscv64-linux-` toolchain. OpenSBI comes from this repository's Buildroot
 build, so that host's checkout needs the `linux/buildroot` submodule and the
 Buildroot images, built once
 ([`linux/buildroot-external/README.md`](../linux/buildroot-external/README.md),

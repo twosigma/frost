@@ -15,10 +15,9 @@
 
 """Count CoreMark's timed-region instructions under Spike, at either XLEN.
 
-The FROST core is RV64-only, so the retired rv32 lane cannot be re-measured on
-the RTL.  Instruction counts, however, depend only on the toolchain, and this
-harness runs the identical CoreMark sources through ilp32d and lp64d with
-matched flags.  Use it to separate "the compiler emits more instructions" from
+The FROST core and pinned Bootlin toolchain are RV64-only. The matrix defaults
+to RV64; an optional RV32 measurement requires an external multilib compiler
+selected with RISCV_PREFIX. Use it to separate "the compiler emits more instructions" from
 "the machine retires them more slowly" -- the latter still needs the cocotb
 run.  It is a measurement tool, not part of any build or test flow.
 
@@ -29,13 +28,14 @@ small, similarly directed port-instrumentation offset makes matched ratios more
 informative than absolute counts, but both remain estimates.
 
     ./count_instructions.py --xlen 64
-    ./count_instructions.py --xlen 32 -- --param max-inline-insns-auto=200
+    ./count_instructions.py --xlen 64 -- --param max-inline-insns-auto=200
     ./count_instructions.py --matrix
 
 Runs inside the pinned image:  ./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --matrix
 """
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -46,6 +46,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 APP_DIR = HERE.parent
 COREMARK_DIR = APP_DIR / "coremark"
+RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 
 # Matches common.mk's default extension set. The matrix deliberately retains C
 # in every row and ABI lane; CoreMark's shipped no-C choice targets FROST fetch
@@ -58,6 +59,10 @@ BASE_FLAGS = [
     "-nostdlib",
     "-nostartfiles",
     "-ffreestanding",
+    "-static",
+    "-fno-pie",
+    "-no-pie",
+    "-fno-stack-protector",
     "-fno-unwind-tables",
     "-fno-asynchronous-unwind-tables",
     "-ffunction-sections",
@@ -92,7 +97,7 @@ def build(xlen: int, extra_flags: list[str], elf_path: Path) -> None:
     march = f"rv{xlen}{EXTENSIONS}"
     mabi = "ilp32d" if xlen == 32 else "lp64d"
     command = [
-        "riscv-none-elf-gcc",
+        f"{RISCV_PREFIX}gcc",
         f"-march={march}",
         f"-mabi={mabi}",
         *BASE_FLAGS,
@@ -178,14 +183,14 @@ def main() -> int:
     parser.add_argument(
         "--matrix",
         action="store_true",
-        help="measure the flag ablation at both XLENs and print the ABI penalty",
+        help="measure the flag ablation at --xlen (default: 64)",
     )
     parser.add_argument(
         "flags", nargs="*", help="extra compiler flags (after --) for --xlen mode"
     )
     arguments = parser.parse_args()
 
-    for tool in ("riscv-none-elf-gcc", "spike"):
+    for tool in (f"{RISCV_PREFIX}gcc", "spike"):
         if shutil.which(tool) is None:
             print(
                 f"error: {tool} not found; run this inside the pinned image "
@@ -194,15 +199,28 @@ def main() -> int:
             )
             return 1
 
+    if arguments.xlen == 32:
+        multilibs = subprocess.check_output(
+            [f"{RISCV_PREFIX}gcc", "-print-multi-lib"], text=True
+        )
+        target = subprocess.check_output(
+            [f"{RISCV_PREFIX}gcc", "-dumpmachine"], text=True
+        )
+        if "mabi=ilp32d" not in multilibs and not target.startswith("riscv32"):
+            parser.error(
+                "the selected toolchain has no RV32/ILP32D libraries; "
+                "Bootlin is RV64-only. Use --xlen 64 or set RISCV_PREFIX "
+                "to an external compiler that supports RV32/ILP32D"
+            )
+
     with tempfile.TemporaryDirectory(prefix="coremark_iss_") as temporary:
         work_dir = Path(temporary)
         if arguments.matrix:
-            print(f"{'flags':<38}{'rv32/ilp32d':>13}{'rv64/lp64d':>13}{'lp64':>8}")
+            xlen = arguments.xlen or 64
+            print(f"{'flags':<38}{f'rv{xlen} instructions':>20}")
             for name, flags in MATRIX:
-                rv32, _ = measure(32, flags, work_dir)
-                rv64, _ = measure(64, flags, work_dir)
-                penalty = (rv64 / rv32 - 1.0) * 100.0
-                print(f"{name:<38}{rv32:>13,}{rv64:>13,}{penalty:>7.1f}%")
+                timed, _ = measure(xlen, flags, work_dir)
+                print(f"{name:<38}{timed:>20,}")
             return 0
 
         if arguments.xlen is None:

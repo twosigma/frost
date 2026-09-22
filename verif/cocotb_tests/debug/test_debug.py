@@ -108,7 +108,7 @@ def _read_symbols() -> dict[str, int]:
         if sw_mem.is_symlink()
         else Path("../sw/apps/debug_target/sw.elf")
     )
-    prefix = os.environ.get("RISCV_PREFIX", "riscv-none-elf-")
+    prefix = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
     out = subprocess.run(
         [f"{prefix}nm", str(elf)], check=True, capture_output=True, text=True
     ).stdout

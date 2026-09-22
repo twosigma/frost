@@ -36,6 +36,10 @@ synthesis. Software reload uses `load_software/load_software.py`, which
 rebuilds the selected app by default and loads `sw.txt` plus any
 `sw_ddr.txt`; `--skip-build` reuses eligible existing artifacts.
 
+Both helpers use the shared Bootlin compiler from PATH or the existing
+`linux/build-mmu/host/bin` cache. See [native toolchain setup](../docs/tooling.md#shared-risc-v-toolchain)
+for host installation and GDB configuration.
+
 The loader holds the CPU in reset while loading DDR and BRAM, then releases
 it to run the program. See the [board guide](../boards/README.md#jtag-based-software-loading)
 for the loading interface and reset timing.
@@ -45,7 +49,7 @@ OpenOCD; only one tool can own the cable:
 
 ```bash
 openocd -f fpga/debug/openocd_x3.cfg
-riscv-none-elf-gdb sw/apps/hello_world/sw.elf -ex 'target extended-remote :3333'
+riscv64-linux-gdb sw/apps/hello_world/sw.elf -ex 'target extended-remote :3333'
 ```
 
 Use the JTAG loader for whole images. Debugger memory access uses the program

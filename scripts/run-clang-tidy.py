@@ -244,7 +244,10 @@ def get_riscv_sysroot(root_dir: Path) -> str:
     """Return the C library sysroot used by the RISC-V GCC toolchain."""
     try:
         result = subprocess.run(
-            ["riscv-none-elf-gcc", "-print-sysroot"],
+            [
+                os.environ.get("RISCV_PREFIX", "riscv64-linux-") + "gcc",
+                "-print-sysroot",
+            ],
             cwd=root_dir,
             capture_output=True,
             text=True,
@@ -279,7 +282,7 @@ def run_clang_tidy(
     # --warnings-as-errors setting below makes fatal. Add the clock only when
     # the flags lack it (the common.mk fallback context).
     resolved_flags = shlex.split(riscv_flags) if riscv_flags else []
-    clang_tidy_flags = ["--target=riscv64-unknown-elf"]
+    clang_tidy_flags = ["--target=riscv64-unknown-linux-musl"]
     if not any(flag.startswith("-DFPGA_CPU_CLK_FREQ=") for flag in resolved_flags):
         clang_tidy_flags.append(f"-DFPGA_CPU_CLK_FREQ={fpga_clk_freq}")
     clang_tidy_flags.extend(resolved_flags)

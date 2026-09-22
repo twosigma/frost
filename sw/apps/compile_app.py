@@ -24,6 +24,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from riscv_toolchain import default_riscv_prefix
 from software_registry import app_build_directory_name, coremark_pro_make_vars
 
 # Simulation-only Make overrides.
@@ -135,7 +136,7 @@ def compile_app(
 
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
-        env["RISCV_PREFIX"] = "riscv-none-elf-"
+        env["RISCV_PREFIX"] = default_riscv_prefix(apps_dir.parents[1])
 
     if app_name in APP_SIM_SETTINGS:
         for key, value in APP_SIM_SETTINGS[app_name].items():
