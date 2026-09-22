@@ -39,18 +39,27 @@ OPS = _parse_instr_op_enum()
 
 @cocotb.test()
 async def test_load_wakeup_dispatch_and_recovery(dut: Any) -> None:
-    """An early load wakes dependent loads/stores without losing registered CDBs."""
+    """An early load wakes dependent loads/stores without losing registered CDBs.
+
+    Recovery does not qualify the early token: MEM_RS cannot issue in a
+    recovery cycle, and a flushed consumer must never issue afterwards,
+    whether recovery keeps the producer ("partial") or discards it too
+    ("producer", "full"). A consumer that survives recovery ("survivor")
+    keeps the early value and issues exactly once, after recovery.
+    """
     iface, _ = await setup_test(dut)
     for store in (False, True):
         for occupied in range(3):
             for delay, flush in [(d, "") for d in range(-3, 3)] + [
                 (-3, "partial"),
+                (-3, "producer"),
+                (-3, "survivor"),
                 (-3, "full"),
             ]:
                 await iface.reset_dut()
                 iface.set_fu_ready(RS_MEM, True)
                 # Keep results unretired while observing both copies of the CDB.
-                await iface.dispatch(make_int_req(rd=1))
+                oldest_tag = await iface.dispatch(make_int_req(rd=1))
                 fillers = [await iface.dispatch(make_int_req(rd=r)) for r in (2, 3)]
                 load_tag = await iface.dispatch(make_int_req(rd=4))
                 dependent_tag = await iface.dispatch(
@@ -105,23 +114,28 @@ async def test_load_wakeup_dispatch_and_recovery(dut: Any) -> None:
                     if cycle == 1 and flush:
                         if flush == "full":
                             iface.drive_flush_all()
+                        elif flush == "producer":
+                            iface.drive_flush_en(oldest_tag)
+                        elif flush == "survivor":
+                            iface.drive_flush_en(dependent_tag)
                         else:
                             iface.drive_flush_en(load_tag)
                     await Timer(1, unit="ps")
                     if cycle == 1:
                         assert bool(dut.mem_rs_early_load_injected.value) == (
-                            occupied < 2 and not flush
+                            occupied < 2
                         ), (store, occupied, delay, flush)
                     issue = iface.read_rs_issue_for(RS_MEM)
                     if issue["valid"] and issue["rob_tag"] == dependent_tag:
-                        assert not flush
+                        assert flush in ("", "survivor")
+                        assert not (flush and cycle <= 1)
                         assert issue["src2_value" if store else "src1_value"] == value
                         issues.append(cycle)
                     await iface.step()
                     if cycle == 1:
                         iface.clear_flush_all()
                         iface.clear_flush_en()
-                assert len(issues) == (0 if flush else 1), (
+                assert len(issues) == (1 if flush in ("", "survivor") else 0), (
                     store,
                     occupied,
                     delay,

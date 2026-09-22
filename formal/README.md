@@ -32,7 +32,7 @@ X/Z behavior.
 | `divider_prefix` | Each 32/64-bit divider stage matches two restoring iterations, assuming the incoming remainder's prefix bound; valid transactions start with remainder zero, including division by zero |
 | `mul_completion_tag` | MUL adapter behavior with qualified versus unqualified invalid tags; assumes one initial reset edge |
 | `int_muldiv_shim` | Shared full/word completion ownership and credits, plus separate physical-pipeline alignment proofs, with short word paths enabled and disabled; assumes one initial reset followed by deasserted reset. Arithmetic values and liveness are outside these tasks |
-| `mem_wakeup_merge` | Exhaustive combinational preservation, duplicate suppression and idle-lane injection; no assumptions. Accepted-load eligibility and eventual CDB delivery require wrapper integration checks |
+| `mem_wakeup_merge` | Exhaustive combinational preservation and idle-lane injection. Standalone, assumes the staged load never carries a valid registered lane's tag; integrated (`FORMAL_STANDALONE_ENV=0`) that contract is asserted. Accepted-load eligibility and eventual CDB delivery require wrapper integration checks |
 | `coherence_replay_compare` | Invalidation-line copies and replay masks at widths 32, 64, and 66; assumes one initial reset edge |
 | `coherence_observation` | Unbounded observation-table ownership, line provenance, retirement/flush cleanup and registered replay timing for all 32 ROB tags at XLEN=64; producer timing contract below |
 | `sc_head_query` | Selected SC coherence result versus a full line-address comparison, from arbitrary table state |
@@ -133,9 +133,12 @@ Yosys supports a subset of SystemVerilog Assertions:
 `decoded_bundle_queue` proves FIFO ordering and arbitrary payload preservation
 at depths four and two (`prove`, `prove_depth2`) and covers bypass, full,
 wraparound, simultaneous push/pop and live flush (`cover`). Its eight-bit
-symbolic payload checks the control independently of decode fields. It assumes
-an initial reset, legal consumer pops and no producer overwrite before
-acceptance; integration assertions enforce the last two contracts in simulation.
+symbolic payload checks the control independently of decode fields. The proof
+also covers the registered head mirror and the three-bit registered shadow,
+tied to the payload's low bits, which must equal the output packet's slice.
+It assumes an initial reset, legal consumer pops, no producer overwrite before
+acceptance, and that the producer's announced next value (`i_shadow_next`)
+arrives; integration assertions enforce the last three contracts in simulation.
 This is not a proof of whole-core CSR/debug/branch behavior.
 `load_queue` also has `bmc_prepare_busy`/`cover_prepare_busy` tasks for inert
 candidate preparation while another client owns the memory port.

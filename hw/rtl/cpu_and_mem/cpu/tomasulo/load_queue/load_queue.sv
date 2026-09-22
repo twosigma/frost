@@ -161,6 +161,10 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
+    // Registered CDB-stage occupancy without o_fu_complete's partial-flush
+    // qualification. It observes a final staged result (tag/value/exception
+    // in o_fu_complete) that recovery may still discard this cycle.
+    output logic o_fu_complete_staged,
     // Unused input retained for Vivado mapping stability. Remove it and its
     // wrapper driver only with a fresh X3 synth+opt run proving post-opt WNS >= 0.
     input logic i_adapter_result_pending,  // unused (back-pressure comes from i_result_accepted)
@@ -2259,6 +2263,7 @@ module load_queue #(
     o_fu_complete       = cdb_stage_data;
     o_fu_complete.valid = cdb_stage_valid && !i_flush_en && !cdb_stage_result_flushed;
   end
+  assign o_fu_complete_staged = cdb_stage_valid;
 
   // ===========================================================================
   // Completion Fast-Path Bypass

@@ -18,9 +18,18 @@
 // Preserve every registered broadcast, and use at most one idle lane. The
 // following cycle's registered copy is harmless: source-ready and pending
 // delivery bits already protect the captured value. No ROB completion is
-// generated here. The caller must establish that the early packet really
-// broadcasts this cycle, and suppress it during recovery.
-module mem_wakeup_merge (
+// generated here. Outside recovery, the caller must establish that the early
+// packet really broadcasts this cycle.
+//
+// Contract: an early packet never carries the tag of a valid registered lane.
+// In-flight ROB tags are unique, and an accepted load leaves the LQ's staged
+// register before its registered broadcast, so the caller's staged load and
+// a registered lane never name the same tag. Checking it here put a tag
+// comparator ahead of every MEM_RS wakeup; simulation asserts it, and formal
+// assumes it standalone (FORMAL_STANDALONE_ENV=1) and asserts it integrated.
+module mem_wakeup_merge #(
+    parameter bit FORMAL_STANDALONE_ENV = 1'b1
+) (
     input logic i_enable,
     input riscv_pkg::fu_complete_t i_load,
     input riscv_pkg::cdb_broadcast_t i_registered_0,
@@ -37,9 +46,7 @@ module mem_wakeup_merge (
     early_packet.tag = i_load.tag;
     early_packet.value = i_load.value;
     early_packet.fu_type = riscv_pkg::FU_MEM;
-    eligible = i_enable && i_load.valid && !i_load.exception &&
-        !(i_registered_0.valid && i_registered_0.tag == i_load.tag) &&
-        !(i_registered_1.valid && i_registered_1.tag == i_load.tag);
+    eligible = i_enable && i_load.valid && !i_load.exception;
     o_wakeup_0 = i_registered_0;
     o_wakeup_1 = i_registered_1;
     o_injected = 1'b0;
@@ -57,6 +64,26 @@ module mem_wakeup_merge (
       o_injected = eligible;
     end
   end
+
+`ifndef SYNTHESIS
+  logic duplicates_registered_lane;
+  assign duplicates_registered_lane = i_enable && i_load.valid &&
+      ((i_registered_0.valid && i_registered_0.tag == i_load.tag) ||
+       (i_registered_1.valid && i_registered_1.tag == i_load.tag));
+`ifdef FORMAL
+  always_comb begin
+    if (FORMAL_STANDALONE_ENV)
+      assume (!duplicates_registered_lane);
+      else assert (!duplicates_registered_lane);
+  end
+`else
+  always_comb begin
+    if (!$isunknown(duplicates_registered_lane)) begin
+      p_early_load_tag_not_registered : assert (!duplicates_registered_lane);
+    end
+  end
+`endif
+`endif
 
 `ifdef FORMAL
   always_comb begin
@@ -77,9 +104,7 @@ module mem_wakeup_merge (
       assert (!(o_wakeup_0.valid && o_wakeup_1.valid && o_wakeup_0.tag == o_wakeup_1.tag));
     end
     if (i_enable && i_load.valid && !i_load.exception &&
-        (!i_registered_0.valid || !i_registered_1.valid) &&
-        !(i_registered_0.valid && i_registered_0.tag == i_load.tag) &&
-        !(i_registered_1.valid && i_registered_1.tag == i_load.tag))
+        (!i_registered_0.valid || !i_registered_1.valid))
       assert (o_injected);
   end
 `endif

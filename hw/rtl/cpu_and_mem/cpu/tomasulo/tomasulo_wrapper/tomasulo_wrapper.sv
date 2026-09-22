@@ -1775,6 +1775,7 @@ module tomasulo_wrapper #(
   // MEM (Load) Pipeline: LQ → adapter → CDB arbiter slot 3
   // ===========================================================================
   riscv_pkg::fu_complete_t lq_fu_complete;  // LQ → adapter
+  logic lq_fu_complete_staged;  // registered LQ CDB-stage occupancy, flush-free
   // mem_adapter_to_arbiter declared above (forward declaration)
   logic mem_adapter_result_pending;
   logic lq_result_accepted;
@@ -2930,6 +2931,7 @@ module tomasulo_wrapper #(
       // tags use the existing speculative indexed writes, differ only for
       // non-targeting slots, and equal the architectural tags for every valid
       // entry.
+      .ISSUE2_WINDOW(riscv_pkg::IntRsDepth),
       .ISSUE_CDB_TAG_SHADOW(1'b1),
       .ISSUE_CDB_META_ANCHORS(1'b1),
       .CAPTURE_PRIMARY_EFFECTIVE_OPERANDS(1'b1),
@@ -3136,10 +3138,30 @@ module tomasulo_wrapper #(
   // invalid payloads, so the default builds synthesize the original wires.
   assign mem_rs_cdb_0 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_0 : cdb_bus_mem_qualified;
   assign mem_rs_cdb_1 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_1 : cdb_bus_2_mem_qualified;
-  mem_wakeup_merge u_mem_wakeup_merge (
-      .i_enable(EARLY_LOAD_WAKEUP && i_rst_n && lq_result_accepted &&
-                !speculative_flush_all && !speculative_flush_en),
-      .i_load(lq_fu_complete),
+  // TIMING: the early token is formed from registered state only. It is
+  // lq_result_accepted without the recovery terms carried by
+  // lq_fu_complete.valid, and recovery does not qualify it either: those
+  // pulses sat ahead of every MEM_RS tag comparator, the issue selector and
+  // the LQ pre-issue CAM. Recovery needs no qualification here. MEM_RS
+  // suppresses issue and dispatch whenever speculative_flush_all/en is high,
+  // so a token delivered in a recovery cycle can only set source-ready state
+  // (and capture the staged value) in surviving entries. A surviving
+  // consumer is older than the recovery point, so its producer load is too:
+  // that load is not discarded, only delayed, and its staged value is final
+  // (cdb_stage clears only on acceptance or recovery). A consumer of a
+  // discarded load is younger than it and is discarded in the same cycle.
+  // In-flight ROB tags are unique, so no survivor can name a discarded tag.
+  riscv_pkg::fu_complete_t lq_early_wakeup_load;
+  always_comb begin
+    lq_early_wakeup_load       = lq_fu_complete;
+    lq_early_wakeup_load.valid = lq_fu_complete_staged;
+  end
+  mem_wakeup_merge #(
+      .FORMAL_STANDALONE_ENV(1'b0)
+  ) u_mem_wakeup_merge (
+      .i_enable(EARLY_LOAD_WAKEUP && i_rst_n && !sc_fu_complete_reg.valid &&
+                !store_misalign_fu_complete_reg.valid && !mem_adapter_result_pending),
+      .i_load(lq_early_wakeup_load),
       .i_registered_0(cdb_bus_mem_qualified),
       .i_registered_1(cdb_bus_2_mem_qualified),
       .o_wakeup_0(mem_rs_wakeup_0),
@@ -3148,10 +3170,18 @@ module tomasulo_wrapper #(
   );
 
 `ifndef SYNTHESIS
-  // The early token is an observation of a real CDB broadcast, never a
-  // speculative prediction of a result or a second producer completion.
+  // Outside recovery, the early token is an observation of a real CDB
+  // broadcast, never a speculative prediction of a result or a second
+  // producer completion. During recovery it may precede a delayed broadcast
+  // of the same final value (see above), and MEM_RS cannot issue.
   always @(posedge i_clk) begin
     if (i_rst_n && mem_rs_early_load_injected) begin
+      p_early_load_accepted_or_recovering :
+      assert (lq_result_accepted || speculative_flush_all || speculative_flush_en ||
+              lq_partial_flush_en);
+    end
+    if (i_rst_n && mem_rs_early_load_injected && !speculative_flush_all &&
+        !speculative_flush_en && !lq_partial_flush_en) begin
       p_early_load_really_broadcasts :
       assert (
           (cdb_bus_comb.valid && cdb_bus_comb.tag == lq_fu_complete.tag &&
@@ -4209,6 +4239,7 @@ module tomasulo_wrapper #(
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
+      .o_fu_complete_staged(lq_fu_complete_staged),
       // Dead hint kept for timing; see the i_adapter_result_pending port
       // comment in load_queue.sv (removing this pair regresses closed x3
       // post-opt timing).

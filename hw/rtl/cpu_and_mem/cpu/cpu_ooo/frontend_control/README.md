@@ -26,6 +26,17 @@ fence. Full and partial frontend recovery discard all queued bundles and
 clear producer ownership. Debug stepping keeps user NOP bundles through the
 same existing `step_armed_fe_q` validity exception.
 
+Dispatch never reads the queue's LUTRAM directly. The oldest queued bundle
+is mirrored in flops (`head_packet_q`), and the output selects it or the
+empty-queue bypass with one registered select. The instruction words and the
+shallow dispatch-classification flags (`riscv_pkg::id_dispatch_flags_t`) go
+further: `id_stage` exports their next-edge register values, and the queue
+keeps a registered copy of exactly what dispatch sees next cycle, bypass
+included (`o_shadow`). The RAT, register-file and rename addresses and the
+LQ/SQ/CSR/fence routing therefore start at a flop. Fields decoded late in ID
+(`rs_type`, `has_*_dest`) stay on the select, since a shadow would lengthen
+their ID register paths.
+
 The standalone formal target proves order, arbitrary payload preservation,
 held-image ownership, occupancy and flush behavior at depths two and four.
 It uses an eight-bit arbitrary payload and assumes legal consumer pops and

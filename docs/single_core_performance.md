@@ -22,14 +22,20 @@ build still misses timing; this result is not a 322 MHz score.
   and thirty-three cycles. Each pair shares four completion credits and a
   tracker; a word operation waits if its completion cycle is already reserved.
   `int_muldiv_shim.SHORT_WORD_OPS=0` retains the full-width fallback.
-* `EARLY_LOAD_WAKEUP=1` lets an accepted load wake a dependent memory operation
-  through an idle registered CDB lane. Both occupied lanes are preserved;
-  exceptions and recovery suppress injection. This option defaults to **0**
-  because its added combinational path has not met the target clock.
+* `EARLY_LOAD_WAKEUP=1` lets the LQ's staged load wake a dependent memory
+  operation through an idle registered CDB lane. Both occupied lanes are
+  preserved and exceptions suppress injection. The token is formed from
+  registered state only; recovery does not qualify it (MEM_RS cannot issue or
+  dispatch during recovery), and the merge relies on an asserted tag-uniqueness
+  contract instead of a lane-tag comparison. See the
+  [wrapper README](../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/README.md).
+  This option defaults to **0**.
 * `DECODED_QUEUE_DEPTH=4` adds an optional fall-through queue of decoded
   two-instruction bundles. It decouples frontend replacement from dispatch,
   retains prediction metadata, re-reads operands/RAT state at dispatch, and
-  preserves CSR/debug/recovery ownership. The default is **0**. See the
+  preserves CSR/debug/recovery ownership. Dispatch reads a flop mirror of the
+  head bundle, and a registered shadow of the instruction words and shallow
+  routing flags, never the queue LUTRAM. The default is **0**. See the
   [frontend contract](../hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/README.md).
 * `PREPARE_LOAD_WHILE_BUSY=1` permits inert address staging while another
   client owns the shared port. SQ probes, L0 consumption and memory requests
@@ -37,6 +43,9 @@ build still misses timing; this result is not a 322 MHz score.
 * `INT_RS_DEPTH` defaults to **8**. Sixteen entries help the queued frontend;
   thirty-two add negligible benefit. The parameter is bounded by the existing
   32-entry ROB and changes neither memory capacity nor retirement observation.
+  The second INT issue port selects only among the lowest eight entries at any
+  depth (`ISSUE2_WINDOW`), which keeps its selector and operand muxes at the
+  eight-entry size. This costs 0.5% CoreMark cycles at depth sixteen (below).
 * `L0_CACHE_DEPTH` is exposed from `frost` through the LQ. The default remains
   **128**: the measured benefit from 256 entries was negligible. Tested depths
   are 128 and 256. The unchanged coherence/admission bounds and retirement
@@ -129,6 +138,12 @@ reproduces the inline prototype's first-reset counts exactly.
 | Add INT RS 16 (integrated experimental profile) | 256,353 | 260,413 | **3.9009** |
 | Above with L0 256 | 256,218 | 260,195 | 3.9029 |
 | INT RS 32, L0 128 | 256,330 | 260,385 | 3.9012 |
+
+After the 322 MHz timing changes below, the integrated profile was re-measured
+with the same flags. The early-wakeup and queue changes reproduce 256,353 and
+260,413 cycles exactly. Adding the eight-entry issue-port-2 window gives
+257,702 performance and 262,144 validation cycles (**3.8805** diagnostic
+CoreMark/MHz). Both seed sets pass all CRCs. Other rows were not re-measured.
 
 The integrated profile's second-reset counts are 256,457 performance and
 260,318 validation. Its first DDR run takes 337,423 performance and 341,594
@@ -359,6 +374,32 @@ Their checkpoints, commands and reports are retained. A separate prototype
 mirroring the decoded queue head in a register passes FIFO formal/unit checks
 but makes best placement slack worse (-0.902 ns versus -0.827 ns). It is not
 integrated, and placement is not routed signoff.
+
+### Post-optimization timing at 322 MHz
+
+Synthesis plus `opt_design` only (`build.py x3 --cpu-base-clock-hz 322265625
+--single-core-performance --stop-after opt`), Vivado 2025.2, zero added
+uncertainty. Post-opt delays are estimates, and unchanged paths move by up to
+about 0.15 ns between netlists, so compare path families, not single runs.
+
+| Configuration | WNS (ns) | TNS (ns) | Failing endpoints |
+| --- | ---: | ---: | ---: |
+| Hardware defaults, 300 MHz | +0.070 | 0 | 0 |
+| Hardware defaults, 322 MHz | -0.173 | -88 | 1,021 |
+| Integrated profile as first integrated | -1.395 | -1,301 | 7,238 |
+| Registered-only early wakeup, queue head mirror | -0.569 | -609 | 4,446 |
+| Plus registered instruction-word shadow | -0.444 | -130 | 1,503 |
+| Plus INT port-2 pre-bypass/shift fields, no merge tag compare | -0.362 | -251 | 1,988 |
+| Plus port-2 window, dispatch-flag shadow | -0.471 | -112 | 1,723 |
+
+The first profile's worst paths ran from full-flush recovery through the
+early-wakeup qualifier, MEM_RS wakeup and issue selection into the LQ
+pre-issue CAM, and from the queue's LUTRAM head through rename into every
+reservation station. With the changes above, the remaining worst paths are
+mostly shared with the 322 MHz defaults: instruction memory to predecode,
+full-flush kill to FU adapters and LQ SQ-check state, the IF prediction
+holdoff, and L1-to-L2 requests. Queue-select paths into SQ/MUL_RS dispatch
+state remain at about -0.2 ns. Post-opt closure is not routed signoff.
 
 ### Sustained hardware measurement
 

@@ -360,6 +360,11 @@ module cpu_ooo #(
   logic [XLEN-1:0] pd_redirect_target;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
   riscv_pkg::from_id_to_ex_t decoded_packet, decoded_packet_2;
+  // The ID instruction registers' next-edge values (queued frontend only).
+  /* verilator lint_off UNUSEDSIGNAL */
+  riscv_pkg::instr_t decoded_instruction_next, decoded_instruction_next_2;
+  riscv_pkg::id_dispatch_flags_t decoded_flags_next, decoded_flags_next_2;
+  /* verilator lint_on UNUSEDSIGNAL */
 
   // Slot-2 inter-stage signals (2-wide dispatch). IF extracts a real slot-2
   // instruction whenever the bundle allows it and from_if_to_pd_2 carries it,
@@ -800,6 +805,8 @@ module cpu_ooo #(
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),
       .o_from_id_to_ex(decoded_packet),
+      .o_instruction_next(decoded_instruction_next),
+      .o_dispatch_flags_next(decoded_flags_next),
       // Slot-2 (2-wide dispatch). i_from_pd_to_id_2 carries the second
       // instruction payload plus its inject_nop invalidation marker; ID applies
       // the marker before producing o_from_id_to_ex_2, and dispatch raises
@@ -807,7 +814,9 @@ module cpu_ooo #(
       .i_from_pd_to_id_2(from_pd_to_id_2),
       .i_rf_to_id_2(rf_to_fwd_2),
       .i_fp_rf_to_id_2(fp_rf_to_fwd_2),
-      .o_from_id_to_ex_2(decoded_packet_2)
+      .o_from_id_to_ex_2(decoded_packet_2),
+      .o_instruction_next_2(decoded_instruction_next_2),
+      .o_dispatch_flags_next_2(decoded_flags_next_2)
   );
 
   // ===========================================================================
@@ -879,6 +888,32 @@ module cpu_ooo #(
     if (DECODED_QUEUE_DEPTH != 0) begin : gen_decoded_queue
       logic queue_valid;
       logic input_indirect;
+      riscv_pkg::from_id_to_ex_t queue_packet, queue_packet_2;
+      riscv_pkg::instr_t queue_instruction, queue_instruction_2;
+      riscv_pkg::id_dispatch_flags_t queue_flags, queue_flags_2;
+      riscv_pkg::id_dispatch_flags_t producer_flags, producer_flags_2;
+      always_comb begin
+        producer_flags.is_lr = decoded_packet.is_lr;
+        producer_flags.is_sc = decoded_packet.is_sc;
+        producer_flags.is_amo_instruction = decoded_packet.is_amo_instruction;
+        producer_flags.is_load_instruction = decoded_packet.is_load_instruction;
+        producer_flags.is_fp_load = decoded_packet.is_fp_load;
+        producer_flags.is_fp_store = decoded_packet.is_fp_store;
+        producer_flags.is_int_store = decoded_packet.is_int_store;
+        producer_flags.is_csr_instruction = decoded_packet.is_csr_instruction;
+        producer_flags.is_fence = decoded_packet.is_fence;
+        producer_flags.is_branch_or_jump = decoded_packet.is_branch_or_jump;
+        producer_flags_2.is_lr = decoded_packet_2.is_lr;
+        producer_flags_2.is_sc = decoded_packet_2.is_sc;
+        producer_flags_2.is_amo_instruction = decoded_packet_2.is_amo_instruction;
+        producer_flags_2.is_load_instruction = decoded_packet_2.is_load_instruction;
+        producer_flags_2.is_fp_load = decoded_packet_2.is_fp_load;
+        producer_flags_2.is_fp_store = decoded_packet_2.is_fp_store;
+        producer_flags_2.is_int_store = decoded_packet_2.is_int_store;
+        producer_flags_2.is_csr_instruction = decoded_packet_2.is_csr_instruction;
+        producer_flags_2.is_fence = decoded_packet_2.is_fence;
+        producer_flags_2.is_branch_or_jump = decoded_packet_2.is_branch_or_jump;
+      end
       assign input_indirect =
           (decoded_packet.is_jump_and_link_register &&
            !(decoded_packet.ras_predicted || decoded_packet.btb_predicted_taken)) ||
@@ -886,7 +921,8 @@ module cpu_ooo #(
            !(decoded_packet_2.ras_predicted || decoded_packet_2.btb_predicted_taken));
       decoded_bundle_queue #(
           .DEPTH(DECODED_QUEUE_DEPTH),
-          .WIDTH(2 * $bits(decoded_packet))
+          .WIDTH(2 * $bits(decoded_packet)),
+          .SHADOW_WIDTH(2 * ($bits(riscv_pkg::instr_t) + $bits(riscv_pkg::id_dispatch_flags_t)))
       ) u_queue (
           .i_clk(i_clk),
           .i_rst(i_rst),
@@ -895,13 +931,56 @@ module cpu_ooo #(
           .i_valid(pd_valid_q &&
               (decoded_packet.is_not_nop || decoded_packet_2.is_not_nop || step_armed_fe_q)),
           .i_packet({decoded_packet_2, decoded_packet}),
+          .i_shadow({
+            producer_flags_2,
+            decoded_packet_2.instruction,
+            producer_flags,
+            decoded_packet.instruction
+          }),
+          .i_shadow_next({
+            decoded_flags_next_2,
+            decoded_instruction_next_2,
+            decoded_flags_next,
+            decoded_instruction_next
+          }),
           .i_indirect(input_indirect),
           .i_pop(rob_alloc_req.alloc_valid),
           .o_full(decoded_queue_full),
           .o_valid(queue_valid),
-          .o_packet({from_id_to_ex_2, from_id_to_ex}),
+          .o_packet({queue_packet_2, queue_packet}),
+          .o_shadow({queue_flags_2, queue_instruction_2, queue_flags, queue_instruction}),
           .o_indirect_pending(decoded_queue_indirect_pending)
       );
+      // TIMING: the instruction words carry the RAT, register-file and
+      // rename addresses (hundreds of loads per bit), and the shallow
+      // dispatch-classification flags gate dispatch_fire. Take both from the
+      // queue's registered shadow, which equals the same queue_packet fields.
+      always_comb begin
+        from_id_to_ex = queue_packet;
+        from_id_to_ex.instruction = queue_instruction;
+        from_id_to_ex.is_lr = queue_flags.is_lr;
+        from_id_to_ex.is_sc = queue_flags.is_sc;
+        from_id_to_ex.is_amo_instruction = queue_flags.is_amo_instruction;
+        from_id_to_ex.is_load_instruction = queue_flags.is_load_instruction;
+        from_id_to_ex.is_fp_load = queue_flags.is_fp_load;
+        from_id_to_ex.is_fp_store = queue_flags.is_fp_store;
+        from_id_to_ex.is_int_store = queue_flags.is_int_store;
+        from_id_to_ex.is_csr_instruction = queue_flags.is_csr_instruction;
+        from_id_to_ex.is_fence = queue_flags.is_fence;
+        from_id_to_ex.is_branch_or_jump = queue_flags.is_branch_or_jump;
+        from_id_to_ex_2 = queue_packet_2;
+        from_id_to_ex_2.instruction = queue_instruction_2;
+        from_id_to_ex_2.is_lr = queue_flags_2.is_lr;
+        from_id_to_ex_2.is_sc = queue_flags_2.is_sc;
+        from_id_to_ex_2.is_amo_instruction = queue_flags_2.is_amo_instruction;
+        from_id_to_ex_2.is_load_instruction = queue_flags_2.is_load_instruction;
+        from_id_to_ex_2.is_fp_load = queue_flags_2.is_fp_load;
+        from_id_to_ex_2.is_fp_store = queue_flags_2.is_fp_store;
+        from_id_to_ex_2.is_int_store = queue_flags_2.is_int_store;
+        from_id_to_ex_2.is_csr_instruction = queue_flags_2.is_csr_instruction;
+        from_id_to_ex_2.is_fence = queue_flags_2.is_fence;
+        from_id_to_ex_2.is_branch_or_jump = queue_flags_2.is_branch_or_jump;
+      end
       assign id_valid_preflush = queue_valid &&
           !(csr_in_flight || csr_wb_pending || serializing_alloc_fire);
       assign id_valid_2_preflush = id_valid_preflush && from_id_to_ex_2.is_not_nop;

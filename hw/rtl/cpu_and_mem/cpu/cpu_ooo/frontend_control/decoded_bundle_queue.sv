@@ -19,9 +19,22 @@
 // accepted once, even while an unrelated frontend stall prevents replacement.
 // The consumer re-reads architectural operands and rename state at dispatch;
 // queued payloads contain decode/prediction metadata, not renamed operands.
+//
+// TIMING: the oldest queued bundle is mirrored in head_packet_q, so dispatch
+// sees a flop (or the producer's register on the empty bypass) behind one
+// 2:1 mux with a registered select, not a LUTRAM read addressed by head_q.
+// The mirror's D mux is selected by the pop, whose other inputs are
+// registered state and the producer register.
+//
+// A narrow shadow slice (for the CPU: the rename/regfile addressing fields)
+// goes further: o_shadow is a register holding exactly the slice of o_packet
+// the consumer sees, bypass included, so the consumer's highest-fanout
+// address bits start at a flop with no select LUT. That needs the producer
+// register's next-edge value (i_shadow_next); i_shadow is its current value.
 module decoded_bundle_queue #(
     parameter int unsigned DEPTH = 4,
-    parameter int unsigned WIDTH = 32
+    parameter int unsigned WIDTH = 32,
+    parameter int unsigned SHADOW_WIDTH = 1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -29,15 +42,25 @@ module decoded_bundle_queue #(
     input logic i_advance,
     input logic i_valid,
     input logic [WIDTH-1:0] i_packet,
+    input logic [SHADOW_WIDTH-1:0] i_shadow,
+    input logic [SHADOW_WIDTH-1:0] i_shadow_next,
     input logic i_indirect,
     input logic i_pop,
     output logic o_full,
     output logic o_valid,
     output logic [WIDTH-1:0] o_packet,
+    output logic [SHADOW_WIDTH-1:0] o_shadow,
     output logic o_indirect_pending
 );
   localparam int unsigned PtrBits = $clog2(DEPTH);
   logic [WIDTH-1:0] packet_q[DEPTH];
+  // Mirror of packet_q[head_q] whenever the queue is nonempty.
+  logic [WIDTH-1:0] head_packet_q;
+  logic [WIDTH-1:0] head_packet_if_pop, head_packet_if_hold;
+  (* max_fanout = 64 *) logic nonempty_q;
+  logic nonempty_next;
+  logic [SHADOW_WIDTH-1:0] shadow_q[DEPTH];
+  logic [SHADOW_WIDTH-1:0] head_shadow_q, head_shadow_next, out_shadow_q;
   logic [DEPTH-1:0] indirect_q, live_q;
   logic [PtrBits-1:0] head_q, tail_q;
   logic [PtrBits:0] count_q;
@@ -51,22 +74,40 @@ module decoded_bundle_queue #(
 
   assign o_full = count_q == (PtrBits + 1)'(DEPTH);
   assign input_valid = i_valid && !consumed_q;
-  assign o_valid = (count_q != '0) || input_valid;
-  assign o_packet = (count_q != '0) ? packet_q[head_q] : i_packet;
+  assign o_valid = nonempty_q || input_valid;
+  assign o_packet = nonempty_q ? head_packet_q : i_packet;
   assign o_indirect_pending = |(indirect_q & live_q);
   // Full uses registered occupancy only: no dispatch-to-fetch ready path.
   assign accept = input_valid && !o_full && !i_flush;
   assign push = accept && ((count_q != '0) || !i_pop);
   assign pop = i_pop && (count_q != '0);
 
+  // After a pop the next entry is live in the RAM, or it is this cycle's
+  // push (count 1), or the queue empties (count 0: the pop consumed the
+  // bypassed input, which is not stored, so the mirror is unused). Without
+  // a pop, an empty queue can only receive this cycle's push at the head.
+  assign head_packet_if_pop = (count_q > (PtrBits + 1)'(1)) ? packet_q[PtrBits'(head_q + 1'b1)] :
+      i_packet;
+  assign head_packet_if_hold = (count_q == '0) ? i_packet : head_packet_q;
+  // The same selection for the shadow slice, then the output-side bypass
+  // select one edge early: nonempty_next is nonempty_q's D.
+  assign head_shadow_next = i_pop ?
+      ((count_q > (PtrBits + 1)'(1)) ? shadow_q[PtrBits'(head_q + 1'b1)] : i_shadow) :
+      ((count_q == '0) ? i_shadow : head_shadow_q);
+  assign nonempty_next = !(i_rst || i_flush) &&
+      ((count_q + (PtrBits + 1)'(push) - (PtrBits + 1)'(pop)) != '0);
+  assign o_shadow = out_shadow_q;
+
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush) begin
       head_q <= '0;
       tail_q <= '0;
       count_q <= '0;
+      nonempty_q <= 1'b0;
       live_q <= '0;
       consumed_q <= 1'b0;
     end else begin
+      nonempty_q <= nonempty_next;
       if (i_advance) consumed_q <= 1'b0;
       else if (accept) consumed_q <= 1'b1;
       case ({
@@ -87,15 +128,61 @@ module decoded_bundle_queue #(
     end
     if (push) begin
       packet_q[tail_q]   <= i_packet;
+      shadow_q[tail_q]   <= i_shadow;
       indirect_q[tail_q] <= i_indirect;
     end
+    // Payload only: nonempty_q qualifies every use, so reset/flush need not.
+    head_packet_q <= i_pop ? head_packet_if_pop : head_packet_if_hold;
+    head_shadow_q <= head_shadow_next;
+    // Unconditional: after reset/flush the queue is empty and the shadow
+    // follows the producer register.
+    out_shadow_q  <= nonempty_next ? head_shadow_next : i_shadow_next;
   end
 
 `ifndef SYNTHESIS
+  // Shadow contract: i_shadow is the producer register whose previous-edge
+  // D was i_shadow_next. Given that, o_shadow is exactly o_packet's slice.
+  logic shadow_armed_q = 1'b0;
+  logic [SHADOW_WIDTH-1:0] shadow_next_q;
+  always_ff @(posedge i_clk) begin
+    shadow_next_q <= i_shadow_next;
+    if (i_rst) shadow_armed_q <= 1'b1;
+  end
+`ifdef FORMAL
+  always_comb begin
+    if (shadow_armed_q) begin
+      assume (i_shadow == shadow_next_q);
+      assert (o_shadow == (nonempty_q ? head_shadow_q : i_shadow));
+      // Inductive strengthening: state-only forms of the above, and the
+      // harness's shadow/packet tie for every stored copy.
+      assert (out_shadow_q == (nonempty_q ? head_shadow_q : shadow_next_q));
+      assert (nonempty_q == (count_q != '0));
+      if (nonempty_q) begin
+        assert (head_shadow_q == shadow_q[head_q]);
+        assert (head_shadow_q == head_packet_q[SHADOW_WIDTH-1:0]);
+      end
+      for (int k = 0; k < DEPTH; k++) begin
+        if (live_q[k]) assert (shadow_q[k] == packet_q[k][SHADOW_WIDTH-1:0]);
+      end
+    end
+  end
+`else
+  // Sampled on the edge: every operand is its pre-edge value.
+  always_ff @(posedge i_clk) begin
+    if (shadow_armed_q) begin
+      assert (i_shadow == shadow_next_q);
+      assert (o_shadow == (nonempty_q ? head_shadow_q : i_shadow));
+    end
+  end
+`endif
+
   always_ff @(posedge i_clk) begin
     if (!i_rst && !i_flush) begin
       assert (count_q <= (PtrBits + 1)'(DEPTH));
       assert (count_q == $countones(live_q));
+      assert (nonempty_q == (count_q != '0));
+      if (count_q != '0) assert (head_packet_q == packet_q[head_q]);
+      if (count_q != '0) assert (head_shadow_q == shadow_q[head_q]);
       // Integration contracts: consume only a candidate and never overwrite
       // an unaccepted producer image. Flush/reset independently kill both.
 `ifdef FORMAL
@@ -123,6 +210,7 @@ module decoded_bundle_queue #(
     f_consumed = 1'b0;
   end
   always_comb if ($initstate) assume (i_rst);
+  always_comb assume (i_shadow == i_packet[SHADOW_WIDTH-1:0]);
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush) begin
       f_count <= '0;
@@ -133,6 +221,9 @@ module decoded_bundle_queue #(
       assert (consumed_q == f_consumed);
       assert (o_valid == ((f_count != 0) || (i_valid && !f_consumed)));
       if (o_valid) assert (o_packet == ((f_count != 0) ? f_packets[0] : i_packet));
+      // The harness ties the shadow to the packet's low bits, so the proven
+      // FIFO order carries over to the registered shadow output.
+      if (o_valid && shadow_armed_q) assert (o_shadow == o_packet[SHADOW_WIDTH-1:0]);
       assert (o_indirect_pending == |f_indirect);
       for (int k = 0; k < DEPTH; k++) begin
         if (k < f_count) begin

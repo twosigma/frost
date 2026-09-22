@@ -37,6 +37,10 @@ module id_stage #(
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id,  // FP regfile read data (F extension)
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
+    // Next-edge value of o_from_id_to_ex.instruction (its register D), for a
+    // consumer that registers a copy of the rename/regfile address fields.
+    output riscv_pkg::instr_t o_instruction_next,
+    output riscv_pkg::id_dispatch_flags_t o_dispatch_flags_next,
     // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
     // Slot-2 does not receive the PD predicted-taken redirect override; that
     // heuristic is slot-1 only (see pd_stage.sv).  Slot-2 carries its own BTB
@@ -46,7 +50,9 @@ module id_stage #(
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
     input riscv_pkg::rf_to_fwd_t i_rf_to_id_2,
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id_2,
-    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2,
+    output riscv_pkg::instr_t o_instruction_next_2,
+    output riscv_pkg::id_dispatch_flags_t o_dispatch_flags_next_2
 );
 
   // Effective BTB metadata after applying the PD predicted-taken redirect override.
@@ -753,6 +759,14 @@ module id_stage #(
   // LUT6 survived the first cap-only attempt).
   (* keep = "true", max_fanout = 64 *) logic id_advance;
   assign id_advance = ~i_pipeline_ctrl.stall;
+
+  // Exactly the instruction-register update below. TIMING: inject_nop joins
+  // the flush select here instead of reusing `instruction`, so this output
+  // adds no load to the NOP-substituted net the decoders hang off.
+  assign o_instruction_next = i_pipeline_ctrl.reset ? riscv_pkg::NOP :
+      !id_advance ? o_from_id_to_ex.instruction :
+      (i_pipeline_ctrl.flush || i_from_pd_to_id.inject_nop) ? riscv_pkg::NOP :
+      i_from_pd_to_id.instruction;
 
   always_ff @(posedge i_clk) begin
     // Reset loads a NOP into the pipeline register.
@@ -1566,6 +1580,12 @@ module id_stage #(
     endcase
   end
 
+  // Exactly the slot-2 instruction-register update below (see above).
+  assign o_instruction_next_2 = i_pipeline_ctrl.reset ? riscv_pkg::NOP :
+      !id_advance ? o_from_id_to_ex_2.instruction :
+      (i_pipeline_ctrl.flush || i_from_pd_to_id_2.inject_nop) ? riscv_pkg::NOP :
+      i_from_pd_to_id_2.instruction;
+
   // Slot-2 Pipeline Register
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
@@ -1742,5 +1762,56 @@ module id_stage #(
       o_from_id_to_ex_2.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed_2;
     end
   end
+
+  // Next-edge values of the id_dispatch_flags_t fields: exactly their
+  // register updates above (0 on reset and flush).
+  riscv_pkg::id_dispatch_flags_t dispatch_flags_decoded, dispatch_flags_decoded_2;
+  riscv_pkg::id_dispatch_flags_t dispatch_flags_q, dispatch_flags_q_2;
+  always_comb begin
+    dispatch_flags_decoded.is_lr = is_lr;
+    dispatch_flags_decoded.is_sc = is_sc;
+    dispatch_flags_decoded.is_amo_instruction = is_amo_instruction;
+    dispatch_flags_decoded.is_load_instruction = is_load_instruction;
+    dispatch_flags_decoded.is_fp_load = is_fp_load_direct;
+    dispatch_flags_decoded.is_fp_store = is_fp_store_direct;
+    dispatch_flags_decoded.is_int_store = is_int_store_pre;
+    dispatch_flags_decoded.is_csr_instruction = is_csr_instruction;
+    dispatch_flags_decoded.is_fence = is_fence_pre;
+    dispatch_flags_decoded.is_branch_or_jump = is_branch_or_jump_pre;
+    dispatch_flags_q.is_lr = o_from_id_to_ex.is_lr;
+    dispatch_flags_q.is_sc = o_from_id_to_ex.is_sc;
+    dispatch_flags_q.is_amo_instruction = o_from_id_to_ex.is_amo_instruction;
+    dispatch_flags_q.is_load_instruction = o_from_id_to_ex.is_load_instruction;
+    dispatch_flags_q.is_fp_load = o_from_id_to_ex.is_fp_load;
+    dispatch_flags_q.is_fp_store = o_from_id_to_ex.is_fp_store;
+    dispatch_flags_q.is_int_store = o_from_id_to_ex.is_int_store;
+    dispatch_flags_q.is_csr_instruction = o_from_id_to_ex.is_csr_instruction;
+    dispatch_flags_q.is_fence = o_from_id_to_ex.is_fence;
+    dispatch_flags_q.is_branch_or_jump = o_from_id_to_ex.is_branch_or_jump;
+    dispatch_flags_decoded_2.is_lr = is_lr_2;
+    dispatch_flags_decoded_2.is_sc = is_sc_2;
+    dispatch_flags_decoded_2.is_amo_instruction = is_amo_instruction_2;
+    dispatch_flags_decoded_2.is_load_instruction = is_load_instruction_2;
+    dispatch_flags_decoded_2.is_fp_load = is_fp_load_direct_2;
+    dispatch_flags_decoded_2.is_fp_store = is_fp_store_direct_2;
+    dispatch_flags_decoded_2.is_int_store = is_int_store_pre_2;
+    dispatch_flags_decoded_2.is_csr_instruction = is_csr_instruction_2;
+    dispatch_flags_decoded_2.is_fence = is_fence_pre_2;
+    dispatch_flags_decoded_2.is_branch_or_jump = is_branch_or_jump_pre_2;
+    dispatch_flags_q_2.is_lr = o_from_id_to_ex_2.is_lr;
+    dispatch_flags_q_2.is_sc = o_from_id_to_ex_2.is_sc;
+    dispatch_flags_q_2.is_amo_instruction = o_from_id_to_ex_2.is_amo_instruction;
+    dispatch_flags_q_2.is_load_instruction = o_from_id_to_ex_2.is_load_instruction;
+    dispatch_flags_q_2.is_fp_load = o_from_id_to_ex_2.is_fp_load;
+    dispatch_flags_q_2.is_fp_store = o_from_id_to_ex_2.is_fp_store;
+    dispatch_flags_q_2.is_int_store = o_from_id_to_ex_2.is_int_store;
+    dispatch_flags_q_2.is_csr_instruction = o_from_id_to_ex_2.is_csr_instruction;
+    dispatch_flags_q_2.is_fence = o_from_id_to_ex_2.is_fence;
+    dispatch_flags_q_2.is_branch_or_jump = o_from_id_to_ex_2.is_branch_or_jump;
+  end
+  assign o_dispatch_flags_next = i_pipeline_ctrl.reset ? '0 : !id_advance ? dispatch_flags_q :
+      i_pipeline_ctrl.flush ? '0 : dispatch_flags_decoded;
+  assign o_dispatch_flags_next_2 = i_pipeline_ctrl.reset ? '0 : !id_advance ? dispatch_flags_q_2 :
+      i_pipeline_ctrl.flush ? '0 : dispatch_flags_decoded_2;
 
 endmodule : id_stage

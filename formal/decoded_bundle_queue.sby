@@ -17,6 +17,7 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv decoded_bundle_queue.sv
 chparam -set WIDTH 8 decoded_bundle_queue
+chparam -set SHADOW_WIDTH 3 decoded_bundle_queue
 prove_depth2: chparam -set DEPTH 2 decoded_bundle_queue
 prep -top decoded_bundle_queue
 

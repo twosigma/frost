@@ -1500,6 +1500,23 @@ package riscv_pkg;
     logic is_not_nop;
   } from_id_to_ex_t;
 
+  // Dispatch-classification flags of from_id_to_ex_t whose ID decode is
+  // shallow. id_stage exports their next-edge values so the decoded-bundle
+  // queue can hold them in its registered shadow with the instruction word.
+  // Each is 0 on reset and flush.
+  typedef struct packed {
+    logic is_lr;
+    logic is_sc;
+    logic is_amo_instruction;
+    logic is_load_instruction;
+    logic is_fp_load;
+    logic is_fp_store;
+    logic is_int_store;
+    logic is_csr_instruction;
+    logic is_fence;
+    logic is_branch_or_jump;
+  } id_dispatch_flags_t;
+
   // Control-flow feedback consumed by the front-end.
   typedef struct packed {
     logic branch_taken;  // Whether branch or jump should be taken

@@ -1564,13 +1564,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_decoded_bundle_queue",
         hdl_toplevel_module="decoded_bundle_queue",
         description="Decoded bundle ordering, held producer ownership, backpressure and flush",
-        verilator_extra_args=("-GWIDTH=32",),
+        verilator_extra_args=("-GWIDTH=32", "-GSHADOW_WIDTH=12"),
     ),
     "decoded_bundle_queue_depth2": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_decoded_bundle_queue",
         hdl_toplevel_module="decoded_bundle_queue",
         description="Two-entry decoded queue ownership and pointer wraparound",
-        verilator_extra_args=("-GWIDTH=32", "-GDEPTH=2"),
+        verilator_extra_args=("-GWIDTH=32", "-GSHADOW_WIDTH=12", "-GDEPTH=2"),
     ),
     "perf_counter_aggregator": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_counter_aggregator",

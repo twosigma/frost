@@ -23,9 +23,11 @@ and are structurally unchanged.
 
 The secondary INT bank also captures six effective barrel shift-amount bits
 in `o_issue_shift_amount_2`. The selector uses the same
-`riscv_pkg::projected_shift_controls` predicate as the ALU, the same selected
-op/immediate, and the exact CDB-selected `src2` D expression that feeds the
-wide operand register. It captures on `issue_fire_2` and holds with the
+`riscv_pkg::projected_shift_controls` predicate as the ALU, evaluated at
+dispatch and kept per entry with immediate bits [5:0]
+(`rs_shift_uses_imm`, `rs_shift_imm`), and the exact CDB-selected `src2` D
+expression that feeds the wide operand register. The per-entry copies keep
+the payload LUTRAM read off this endpoint. It captures on `issue_fire_2` and holds with the
 existing packet; reset/flush clear ownership without resetting payload. The
 ALU2 hint input removes the immediate/register amount mux after this boundary.
 No mode flags, wide operands, priorities, or issue/completion cycles change.
@@ -131,6 +133,18 @@ The architectural stage2 tag still drives `branch_update.tag`, ROB writes,
 early-recovery capture, and the ALU adapter. A simulation assertion checks
 phase identity whenever stage2 is valid, so the anchor changes fanout and
 placement but not issue or resolution cycles.
+
+Port 1 resolves each entry's operands (live CDB lane, else resident or
+repair value) before its one-hot select, so the late selector drives only the
+final AND-OR into the stage2b operand registers.
+
+`ISSUE2_WINDOW` limits port 1 to entries below that index (0, the default,
+means all). Port 0 still sees every entry. Allocation takes the lowest free
+index, so the window holds the longest-resident work. The selector's own
+first-ready exclusion still equals port 0's winner whenever the window holds a
+ready entry, because port 0 picks the lowest ready index overall. The wrapper
+sets the window to `riscv_pkg::IntRsDepth` (eight). It changes nothing at the
+default depth, and at `INT_RS_DEPTH=16` halves the port-1 selector and muxes.
 
 Port 0 selects the lowest-index ready entry; physical index is not strict
 age. [`rs_issue2_selector.sv`](rs_issue2_selector.sv) computes only port 1,

@@ -272,19 +272,37 @@ injected, live, and held sources.
 
 ## Early dependent memory wakeup
 
-`EARLY_LOAD_WAKEUP=1` lets an accepted, non-faulting LQ completion use an idle
-registered CDB lane at MEM_RS one cycle early. Both occupied lanes retain
+`EARLY_LOAD_WAKEUP=1` lets the LQ's staged, non-faulting completion use an
+idle registered CDB lane at MEM_RS one cycle early. Both occupied lanes retain
 their original packets; if both are occupied, the normal registered copy
-performs the wakeup. The option defaults off pending target-clock timing.
+performs the wakeup. The option defaults off.
 The merge never changes ROB completion, SQ delivery, retirement, or DMA
-observation lifetime. Full and partial recovery suppress the early copy.
+observation lifetime.
+
+The early token is formed from registered state only: the LQ's CDB-stage
+occupancy (`o_fu_complete_staged`) and the non-recovery terms of
+`lq_result_accepted`. Recovery does not qualify it, which keeps the flush
+pulses and the LQ's age compare out of the MEM_RS wakeup, issue-select and LQ
+pre-issue CAM path. MEM_RS neither issues nor dispatches during recovery, so
+a token in a recovery cycle only sets source state in surviving entries. A
+surviving consumer's producer is older than the recovery point and is only
+delayed; its staged value is final. A discarded load's consumers are younger
+and are discarded in the same cycle.
+
+The merge also does not compare the staged tag with the registered lanes. An
+accepted load leaves the LQ stage before its registered broadcast, and
+in-flight tags are unique, so the staged load never duplicates a registered
+lane. `mem_wakeup_merge` asserts that contract in simulation and formal
+integration, and assumes it only in its standalone proof.
 
 The reservation station captures the value when a tag matches, including
 dispatch in that cycle. Source-ready and pending-delivery state ignore the
-following registered duplicate. A wrapper assertion checks that each early
-packet is also an actual same-cycle CDB broadcast. `mem_wakeup_merge` formal
-checks the combinational merge; `tomasulo_load_wakeup` exercises dependent
-load addresses and store data across dispatch, CDB contention, and recovery.
+later registered duplicate. Outside recovery, a wrapper assertion checks that
+each early packet is also an actual same-cycle CDB broadcast; during recovery,
+that it was accepted or is recovering. `mem_wakeup_merge` formal checks the
+combinational merge; `tomasulo_load_wakeup` exercises dependent load addresses
+and store data across dispatch, CDB contention, and recovery that discards the
+consumer, the producer, or neither.
 
 ## Performance counters
 
@@ -315,3 +333,5 @@ The existing RS full/full-for-two admission checks still reserve space before
 dispatch, and service still requires operand readiness, an issue port and FU
 readiness. Occupancy counters use the selected depth's width. Sixteen helps
 the decoded-queue/early-load configuration; thirty-two adds negligible benefit.
+INT_RS's second issue port keeps an eight-entry window (`ISSUE2_WINDOW`; see
+the [reservation station](../reservation_station/README.md)) at any depth.

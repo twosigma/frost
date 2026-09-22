@@ -49,6 +49,11 @@ async def test_ownership_order_and_flush(dut: Any) -> None:
         dut.i_advance.value = advance
         dut.i_valid.value = valid
         dut.i_packet.value = packet
+        shadow_mask = (1 << len(dut.i_shadow)) - 1
+        dut.i_shadow.value = packet & shadow_mask
+        dut.i_shadow_next.value = (
+            packet + 1 if advance or reset or flush else packet
+        ) & shadow_mask
         dut.i_indirect.value = indirect
         dut.i_pop.value = pop
         await Timer(5, unit="ns")
@@ -58,6 +63,10 @@ async def test_ownership_order_and_flush(dut: Any) -> None:
             if candidate:
                 expected = queued[0][0] if queued else packet
                 assert int(dut.o_packet.value) == expected, f"packet at cycle {cycle}"
+                if cycle > 0:
+                    assert int(dut.o_shadow.value) == expected & shadow_mask, (
+                        f"shadow at cycle {cycle}"
+                    )
             assert bool(dut.o_indirect_pending.value) == any(item[1] for item in queued)
         if reset or flush:
             counts["flush_live"] += bool(queued)

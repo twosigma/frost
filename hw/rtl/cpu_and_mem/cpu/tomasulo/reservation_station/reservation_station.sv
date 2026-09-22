@@ -93,6 +93,11 @@ module reservation_station #(
     // a second payload-RAM copy, and a full second stage2 bank feeding
     // o_issue_2 / i_fu_ready_2.
     parameter bit DUAL_ISSUE = 1'b0,
+    // DUAL_ISSUE port 1 selects only among entries [0, ISSUE2_WINDOW); 0
+    // means the whole station. Port 0 still sees every entry. Allocation
+    // takes the lowest free index, so the window holds the oldest-resident
+    // work; it shortens the port-1 selector and operand/payload muxes.
+    parameter int unsigned ISSUE2_WINDOW = 0,
     // Symmetric lane-1 wakeup: include i_cdb_2 in the combinational
     // same-cycle issue-bypass cone (readiness + issue-time value
     // substitution), so lane-1 results wake dependents in the same cycle,
@@ -635,6 +640,16 @@ module reservation_station #(
   logic [DEPTH-1:0] rs_src3_ready_q;
   logic [DEPTH-1:0] rs_src3_ready;
   logic [DEPTH-1:0] rs_use_imm;
+  // DUAL_ISSUE port 1 only: the stage2b shift amount's payload inputs, kept
+  // per entry so that endpoint reads flops through the one-hot select rather
+  // than the payload LUTRAM behind the late selector.
+  logic [DEPTH-1:0] rs_shift_uses_imm;
+  logic [5:0] rs_shift_imm[DEPTH];
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic [6:0] dispatch_shift_controls, dispatch_shift_controls_2;  // bit 0 only
+  /* verilator lint_on UNUSEDSIGNAL */
+  assign dispatch_shift_controls   = riscv_pkg::projected_shift_controls(i_dispatch.op);
+  assign dispatch_shift_controls_2 = riscv_pkg::projected_shift_controls(i_dispatch_2.op);
   logic [DEPTH-1:0] rs_writes_cdb_hint;
   // Branch-class pre-decode in FFs (also stored in the payload RAM): the
   // DUAL_ISSUE port-1 select must skip branch-class entries before the
@@ -1602,15 +1617,27 @@ module reservation_station #(
       // tree. The helper tracks the global first ready entry inside its own
       // tree, so its result stays the exact legacy "lowest ready nonbranch
       // excluding port 0's winner" under backpressure.
+      // With a window, the selector's own first-ready exclusion still equals
+      // port 0's winner whenever the window holds a ready entry (port 0 picks
+      // the lowest ready index overall), and port 1 is idle otherwise.
+      localparam int unsigned Issue2Window =
+          (ISSUE2_WINDOW == 0 || ISSUE2_WINDOW > DEPTH) ? DEPTH : ISSUE2_WINDOW;
+      logic [$clog2(Issue2Window)-1:0] issue_idx_2_window;
+      logic [Issue2Window-1:0] issue_sel_2_window;
       rs_issue2_selector #(
-          .DEPTH(DEPTH)
+          .DEPTH(Issue2Window)
       ) u_issue2_selector (
-          .i_ready         (entry_ready),
-          .i_branch_class  (rs_is_branch_class),
+          .i_ready         (entry_ready[Issue2Window-1:0]),
+          .i_branch_class  (rs_is_branch_class[Issue2Window-1:0]),
           .o_issue_2_valid (any_ready_2),
-          .o_issue_2_idx   (issue_idx_2),
-          .o_issue_2_onehot(issue_sel_2)
+          .o_issue_2_idx   (issue_idx_2_window),
+          .o_issue_2_onehot(issue_sel_2_window)
       );
+      assign issue_idx_2 = $clog2(DEPTH)'(issue_idx_2_window);
+      always_comb begin
+        issue_sel_2 = '0;
+        issue_sel_2[Issue2Window-1:0] = issue_sel_2_window;
+      end
 
       always_comb begin
         issue_sel_2_ohread = '0;
@@ -1714,8 +1741,11 @@ module reservation_station #(
       logic issue2_src3_cdb_bypass_l1_selected;
       logic issue2_use_imm_selected;
       logic issue2_writes_cdb_hint_selected;
+      logic [FLEN-1:0] issue2_src1_value_effective;
       logic [FLEN-1:0] issue2_src2_value_effective;
-      logic [6:0] issue2_shift_controls;
+      logic [FLEN-1:0] issue2_src3_value_effective;
+      logic issue2_shift_uses_imm_selected;
+      logic [5:0] issue2_shift_imm_selected;
 
       logic stage2b_should_flush;
       logic stage2b_accept;
@@ -1734,6 +1764,35 @@ module reservation_station #(
 `endif
 `endif
 
+      // TIMING: each entry's operand is resolved (live CDB lane over the
+      // resident or done-repair value) before the one-hot issue select, so
+      // the late selector drives only the final AND-OR. The *_selected
+      // bypass bits below remain for the simulation oracle. At most one live
+      // lane matches a source, so the per-entry priority is immaterial.
+      always_comb begin
+        issue2_src1_value_effective = '0;
+        issue2_src2_value_effective = '0;
+        issue2_src3_value_effective = '0;
+        for (int i = 0; i < DEPTH; i++) begin
+          issue2_src1_value_effective |= (src1_cdb_bypass[i] ? i_cdb.value :
+              src1_cdb_bypass_l1[i] ? i_cdb_2.value :
+              (src1_repair_sel[i] != 3'd0) ? repair_value_for_sel(
+              src1_repair_sel[i]
+          ) : rs_src1_value[i]) & {FLEN{issue_sel_2[i]}};
+          issue2_src2_value_effective |= (src2_cdb_bypass[i] ? i_cdb.value :
+              src2_cdb_bypass_l1[i] ? i_cdb_2.value :
+              (src2_repair_sel[i] != 3'd0) ? repair_value_for_sel(
+              src2_repair_sel[i]
+          ) : rs_src2_value[i]) & {FLEN{issue_sel_2[i]}};
+          if (HAS_SRC3) begin
+            issue2_src3_value_effective |= (src3_cdb_bypass[i] ? i_cdb.value :
+                src3_cdb_bypass_l1[i] ? i_cdb_2.value :
+                (src3_repair_sel[i] != 3'd0) ? repair_value_for_sel(src3_repair_sel[i]) :
+                rs_src3_value[i]) & {FLEN{issue_sel_2[i]}};
+          end
+        end
+      end
+
       always_comb begin
         issue2_rob_tag_selected = '0;
         issue2_src1_value_selected = '0;
@@ -1748,8 +1807,12 @@ module reservation_station #(
         issue2_use_imm_selected = 1'b0;
         issue2_writes_cdb_hint_selected = 1'b0;
 
+        issue2_shift_uses_imm_selected = 1'b0;
+        issue2_shift_imm_selected = '0;
         for (int i = 0; i < DEPTH; i++) begin
           issue2_rob_tag_selected |= rs_rob_tag[i] & {ReorderBufferTagWidth{issue_sel_2[i]}};
+          issue2_shift_uses_imm_selected |= rs_shift_uses_imm[i] & issue_sel_2[i];
+          issue2_shift_imm_selected |= rs_shift_imm[i] & {6{issue_sel_2[i]}};
           issue2_src1_value_selected |= ((src1_repair_sel[i] != 3'd0) ? repair_value_for_sel(
               src1_repair_sel[i]
           ) : rs_src1_value[i]) & {FLEN{issue_sel_2[i]}};
@@ -1774,14 +1837,6 @@ module reservation_station #(
 
       // One expression feeds both the existing wide operand FFs and the six
       // amount FFs. Live CDB selection and the capture/hold lifetime are exact.
-      assign issue2_src2_value_effective =
-          (issue2_src2_value_selected & {FLEN{!issue2_src2_cdb_bypass_selected &&
-                                              !issue2_src2_cdb_bypass_l1_selected}}) |
-          (i_cdb.value & {FLEN{issue2_src2_cdb_bypass_selected}}) |
-          (i_cdb_2.value & {FLEN{issue2_src2_cdb_bypass_l1_selected}});
-      assign issue2_shift_controls = riscv_pkg::projected_shift_controls(
-          riscv_pkg::instr_op_e'(pl2_op_bits)
-      );
 
       assign stage2b_should_flush = stage2b_valid &&
           (i_flush_all || (i_flush_en && should_flush_entry(
@@ -1806,20 +1861,12 @@ module reservation_station #(
           // the capture edge. The CDB lanes carry distinct tags, so at most one
           // live term is selected; either live lane overrides the resident /
           // done-repair-selected value.
-          stage2b_src1_value <=
-              (issue2_src1_value_selected & {FLEN{!issue2_src1_cdb_bypass_selected &&
-                                                  !issue2_src1_cdb_bypass_l1_selected}}) |
-              (i_cdb.value & {FLEN{issue2_src1_cdb_bypass_selected}}) |
-              (i_cdb_2.value & {FLEN{issue2_src1_cdb_bypass_l1_selected}});
+          stage2b_src1_value <= issue2_src1_value_effective;
           stage2b_src2_value <= issue2_src2_value_effective;
-          stage2b_shift_amount <= issue2_shift_controls[0] ? pl2_imm[5:0] :
+          stage2b_shift_amount <= issue2_shift_uses_imm_selected ? issue2_shift_imm_selected :
               issue2_src2_value_effective[5:0];
           if (HAS_SRC3) begin
-            stage2b_src3_value <=
-                (issue2_src3_value_selected & {FLEN{!issue2_src3_cdb_bypass_selected &&
-                                                    !issue2_src3_cdb_bypass_l1_selected}}) |
-                (i_cdb.value & {FLEN{issue2_src3_cdb_bypass_selected}}) |
-                (i_cdb_2.value & {FLEN{issue2_src3_cdb_bypass_l1_selected}});
+            stage2b_src3_value <= issue2_src3_value_effective;
           end
           stage2b_imm <= pl2_imm;
           stage2b_jalr_imm <= pl2_jalr_imm;
@@ -2070,6 +2117,8 @@ module reservation_station #(
             rs_src3_ready_q[free_idx] <= dispatch_src3_ready || dispatch_src3_repair_match;
           end
           rs_use_imm[free_idx] <= dispatch_use_imm;
+          rs_shift_uses_imm[free_idx] <= dispatch_shift_controls[0];
+          rs_shift_imm[free_idx] <= dispatch_imm[5:0];
           // Deferred dispatch-CDB capture flags.  Written on every committed
           // dispatch (0 when no match) so a re-allocation of this index can
           // never inherit a stale pend.
@@ -2097,6 +2146,8 @@ module reservation_station #(
             rs_src3_ready_q[alloc_idx_2] <= dispatch_src3_ready_2 || dispatch_src3_repair_match_2;
           end
           rs_use_imm[alloc_idx_2] <= dispatch_use_imm_2;
+          rs_shift_uses_imm[alloc_idx_2] <= dispatch_shift_controls_2[0];
+          rs_shift_imm[alloc_idx_2] <= dispatch_imm_2[5:0];
           src1_cdb_pend[alloc_idx_2] <= dispatch_src1_cdb_defer_2;
           src1_cdb_pend_lane[alloc_idx_2] <= dispatch_src1_cdb_defer_lane_2;
           src2_cdb_pend[alloc_idx_2] <= dispatch_src2_cdb_defer_2;
