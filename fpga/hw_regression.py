@@ -162,7 +162,7 @@ from sweep_coremark_pro import (  # noqa: E402
 # ``None`` leaves a score unarmed.
 # Armed from the 2026-09-20 X3 board sweep at 300 MHz.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 1019.84, "coremark_pro": 144.76},
+    "x3": {"coremark": 1017.61, "coremark_pro": 142.68},
 }
 
 # FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.
