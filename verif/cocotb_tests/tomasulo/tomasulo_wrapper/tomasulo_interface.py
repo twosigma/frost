@@ -321,7 +321,7 @@ class TomasuloInterface:
         self.dut.i_priv_is_u.value = 0
         self.dut.i_mcounteren.value = 7
         self.dut.i_mstatus_fs_off.value = 0
-        # Data translation off (Phase 3 M4): the whole MMU stays on its
+        # Data translation off: the whole MMU stays on its
         # combinational bypass arms and the D10 flush pulse never fires.
         self.dut.i_translation_active.value = 0
         self.dut.i_mmu_sum.value = 0
@@ -448,7 +448,7 @@ class TomasuloInterface:
         self.dut.i_lq_mem_request_pending.value = 0
         self.dut.i_cached_read_held.value = 0
 
-        # DMA coherence handshake (Phase 4): idle.
+        # DMA coherence handshake: idle.
         self.dut.i_coh_admit_valid.value = 0
         self.dut.i_coh_admit_slot.value = 0
         self.dut.i_coh_admit_addr.value = 0

@@ -15,7 +15,7 @@
  */
 
 /*
- * Debug slice writer (Phase 3 M3). The low BRAM's instruction copy is written
+ * Debug slice writer. The low BRAM's instruction copy is written
  * only through the div4-clock programming port (the JTAG loader's), so this
  * block is how the debug module lands words in its execution slice and how
  * a debugger's stores into BRAM code become fetchable: core-domain requests

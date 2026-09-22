@@ -455,7 +455,7 @@ module sq_early_addr_pipeline (
   end
 
   // The adders run on registered inputs, off the dispatch critical path.
-  // Phase 3 M2: all six store-AGU adder outputs flow full-width, unmasked.  An
+  // all six store-AGU adder outputs flow full-width, unmasked.  An
   // out-of-map store faults at the wrapper's issue-time PMA check before its
   // entry can drain, so downstream consumers only ever act on launched,
   // in-map addresses.

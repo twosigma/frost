@@ -80,7 +80,7 @@ def _drive_pc(dut: Any, pc: int) -> None:
 
 def _clear_inputs(dut: Any) -> None:
     _drive_pc(dut, 0)
-    # Physical side of the ask (Phase 3 M5): resolved, clean, contiguous.
+    # Physical side of the ask: resolved, clean, contiguous.
     dut.i_pa_valid.value = 1
     dut.i_fault0.value = 0
     dut.i_fault0_page.value = 0

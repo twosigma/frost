@@ -232,7 +232,7 @@ module misprediction_flush_controller #(
   // FENCE.I commits before its flush pulse reaches IF. Capture the precise
   // fallthrough PC so the front-end can restart from the architectural next
   // instruction instead of from speculative fetch state that was already
-  // ahead. CSR commits latch the same way (Phase 3 M4, plan D10): a
+  // ahead. CSR commits latch the same way: a
   // translation-class CSR recovery consumes the same target when its delayed
   // fence_i_flush pulse follows; latching every CSR commit is harmless when no
   // recovery follows.

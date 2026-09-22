@@ -159,13 +159,8 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
-    // i_adapter_result_pending is retained even though nothing in this
-    // module reads it. Deleting the port (and its driver expression in
-    // tomasulo_wrapper) perturbs Vivado's global synthesis mapping enough to
-    // cost the closed x3 build its post-opt WNS (+0.082 -> -0.073 ns, measured
-    // 2026-07-25) in an untouched RAT -> int-RS dispatch cone; restoring these
-    // four lines verbatim restores +0.082. Remove only with a fresh x3
-    // synth+opt run proving post-opt WNS >= 0.
+    // Unused input retained for Vivado mapping stability. Remove it and its
+    // wrapper driver only with a fresh X3 synth+opt run proving post-opt WNS >= 0.
     input logic i_adapter_result_pending,  // unused (back-pressure comes from i_result_accepted)
     input logic i_result_accepted,  // staged result advanced toward adapter
 
@@ -214,7 +209,7 @@ module load_queue #(
     input logic i_cache_invalidate_valid,
     input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
     // =========================================================================
-    // DMA coherence (Phase 4, from the wrapper's lq_coherence_port)
+    // DMA coherence (from the wrapper's lq_coherence_port)
     // =========================================================================
     // Line invalidation for an admitted DMA write, applied on this edge: drop
     // the L0's dword copies of the line, mark in-flight loads of it
@@ -299,12 +294,8 @@ module load_queue #(
   // reliably. mem_size_e is logic [1:0].
   localparam int unsigned MemSizeWidth = 2;
 
-  // The eighteen W/D instr_op_e encodings reaching the AMO arithmetic unit
-  // collapse to nine semantic operations. Keeping the full 8-bit package enum
-  // per entry wastes storage and, with two allocation ports, previously
-  // required a banked multi-write RAM plus a live-value table. This compact
-  // semantic code reproduces every AMO result; INVALID preserves the old-value
-  // default for malformed input.
+  // The eighteen W/D opcodes reduce to nine semantic AMO operations stored
+  // per entry. INVALID returns the old value for malformed input.
   typedef enum logic [3:0] {
     AMO_KIND_SWAP    = 4'd0,
     AMO_KIND_ADD     = 4'd1,
@@ -461,7 +452,7 @@ module load_queue #(
   logic [DEPTH-1:0] lq_is_amo;
 
   // Per-entry multi-bit fields
-  // Translation-stage fault kind (Phase 3 M4): parked by the addr update
+  // Translation-stage fault kind: parked by the addr update
   // for an op the data MMU refused; the entry's address is then the VA
   // (xtval) and the staged check completes it through the misalign bypass
   // with the kind-derived cause. DFAULT_NONE for every untranslated entry.
@@ -925,7 +916,7 @@ module load_queue #(
     end
   end
 
-  // DMA coherence (Phase 4). Line-granular (32-byte) hits of a DMA-write
+  // DMA coherence. Line-granular (32-byte) hits of a DMA-write
   // invalidation on the in-flight cached slots, the registered launch hold
   // for a staged AMO/LR whose line is admitted (the staged entry cannot
   // launch before its second staging cycle, so the one-cycle hold is in
@@ -1499,7 +1490,7 @@ module load_queue #(
   logic misalign_bypass_fire;
   logic sq_check_is_cached_region;
   logic sq_commit_check_block;
-  // Phase 3 M2: PMA access faults fold into the same staged-entry trap
+  // PMA access faults fold into the same staged-entry trap
   // strobe as misalignment. Every completion and launch path already
   // yields to it, so a wild-addressed entry can never reach the L0 fast
   // path, a forward, or a memory launch. The PMA term is not gated by
@@ -1508,7 +1499,7 @@ module load_queue #(
   // faults outrank misalignment per the privileged spec's exception
   // priority, and an AMO's fault is the store/AMO access fault.
   logic sq_check_pma_fault;
-  // Phase 3 M4: a parked translation-stage fault (lq_fault_kind, staged
+  // a parked translation-stage fault (lq_fault_kind, staged
   // into sq_check_fault_kind_q) outranks both recomputed checks: the
   // entry's address is then a virtual address parked for xtval, and
   // re-deriving PMA or alignment on it would be meaningless. The parked
@@ -1595,7 +1586,7 @@ module load_queue #(
   // Port-split replicas drive entries 2..3, 4..5, and 6..7 respectively;
   // the primary drives entries 0..1. All four values are identical. The
   // split is only a physical placement boundary.
-  // Phase 3 M2: the disambiguation-CAM feeds are masked to the 32-bit
+  // the disambiguation-CAM feeds are masked to the 32-bit
   // physical space so the forwarding compares stay narrow. Safe under the
   // PMA invariant: a wild-addressed load faults before any forward result
   // is consumed, and a wild-addressed store faults at the head before it
@@ -2295,10 +2286,8 @@ module load_queue #(
                                  !resp_bypass_fire && !misalign_bypass_fire &&
                                  cache_hit_fast_path;
 
-  // SQ-forward completion bypass: forwarded loads previously took the
-  // standard data_valid -> Phase-A selector -> cdb_stage path (+2 cycles vs
-  // the bypassed L0/response completions).  Capture the forward result into
-  // cdb_stage the cycle sq_do_forward fires instead.  sq_do_forward and
+  // SQ-forward completion bypass: capture into cdb_stage when sq_do_forward
+  // fires, avoiding two cycles through data_valid and the Phase-A selector.  sq_do_forward and
   // cache_hit_fast_path are mutually exclusive (forward requires
   // !sq_no_older_store and can_forward, hence i_sq_forward.match; a cache hit
   // with older stores resident can only pass sq_can_issue via the !match
@@ -3480,7 +3469,7 @@ module load_queue #(
         cdb_stage_data.tag <= bypass_tag;
         cdb_stage_data.value <= bypass_value;
         cdb_stage_data.exception <= misalign_bypass_data_sel;
-        // Cause select. A parked translation-stage kind (Phase 3 M4) wins:
+        // Cause select. A parked translation-stage kind wins:
         // {MISALIGN, PAGE, ACCESS} map to load causes {4, 13, 5}, promoted
         // to the store/AMO family {6, 15, 7} for AMOs (an AMO's fault is
         // always the store/AMO one, misalignment included, matching Spike

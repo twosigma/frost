@@ -135,7 +135,7 @@ module id_stage #(
 
   logic is_illegal_instruction;
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction;
-  // Phase 3 M2: a fetch (PMA) fault overrides decode entirely.  The bytes are
+  // a fetch (PMA) fault overrides decode entirely.  The bytes are
   // aliased garbage and may even decode as a NOP, so the dispatch-valid and
   // op paths both key on this flag, with priority over illegal.
   logic is_fetch_fault;
@@ -912,7 +912,7 @@ module id_stage #(
       // Registered NOP detect.  After a flush or reset the register holds the
       // NOP pattern, so is_not_nop is 0 there too, which matches NOP semantics.
       // A fault-tagged bundle must dispatch even when its garbage bytes happen
-      // to encode a NOP (Phase 3 M2).
+      // to encode a NOP.
       o_from_id_to_ex.is_not_nop <= i_pipeline_ctrl.flush ? 1'b0 :
           ((instruction != riscv_pkg::NOP) || is_fetch_fault);
     end

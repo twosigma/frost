@@ -18,7 +18,7 @@
  * First in-order front-end stage. pc_controller selects the next PC;
  * branch_prediction handles the BTB, direction predictor, RAS, and metadata;
  * c_extension aligns parcels and tracks the instruction buffer; the
- * instruction MMU (mmu/immu, Phase 3 M5) translates the fetch PC into the
+ * instruction MMU (mmu/immu) translates the fetch PC into the
  * physical window addresses the seam presents beside the virtual o_pc.
  *
  * Slot 1 stays compressed until PD, keeping decompression off the memory path.
@@ -542,7 +542,7 @@ module if_stage #(
   // redirect cycle are cleaned up by redirect_kill_pending_q (pc_controller)
   // and pd_redirect_q.
   //
-  // Phase 3 M2/M5: suppress every prediction source while a live window is
+  // suppress every prediction source while a live window is
   // faulted or does not cover pc_reg. Garbage bytes (or a false BTB tag hit on
   // a wild PC) must never redirect the front end. A non-covering response is
   // likewise a squashed packet, so it cannot mutate prediction/RAS state or
@@ -2077,7 +2077,7 @@ module if_stage #(
                                            instruction_pc;
 
   // ===========================================================================
-  // Fetch-fault tags (Phase 3 M2/M5)
+  // Fetch-fault tags
   // ===========================================================================
   // The served window's per-word flags (word 0 / word 1, each {fault, page
   // kind}) are mapped onto the aligner's current and next word exactly like

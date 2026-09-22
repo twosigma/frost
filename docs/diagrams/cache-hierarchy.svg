@@ -1,28 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1016" viewBox="0 0 1200 1016" role="img" aria-labelledby="title desc">
   <title id="title">FROST cache hierarchy and tagged arbitration</title>
   <desc id="desc">
-    The X3 configuration has a 128 KiB L1D and a read-only 16 KiB L1I, both
-    using BRAM, and a shared 2 MiB L2 with UltraRAM data and packed tags.
-    The shared Sv39 page-table walker serves ITLB and DTLB misses, keeps one
-    walk in flight and reads below both L1 caches through a coherence
-    sequencer that probes the L1D first, so a walk sees page-table stores
-    still dirty there. It and the DMA port have a sequencer each: they probe
-    for different reasons and are separate modules. A first two-input arbiter prioritizes the walker over
-    L1I; a second, three-input arbiter prioritizes L1D over that merged port
-    and both over the DMA port, whose wait is bounded. Together they
-    implement priority L1D, then walker, then L1I, then DMA. The DMA port
-    reaches the top arbiter through its own coherence sequencer, which probes
-    the L1D and invalidates the load queue's copies before a DMA write is
-    ordered.
-    Requests reach L2, the tagged-line-to-AXI4 bridge and X3 DDR4. Software
-    sees a 1 GiB cached region starting at 0x80000000. The arbiters prefix
-    transaction IDs so responses route to their source, and requests from
-    different ports can be outstanding together. All cache levels are
-    direct-mapped with 32-byte lines; L1D and L2 are write-back, write-allocate.
-    The separate L1-only unit-test configuration uses the same L1s, walker
-    port and arbiters, but bypasses L2 and connects the bridge to behavioral
-    memory. Full-system integration uses HAS_L2=1. Arrows follow requests;
-    the return paths and cache-maintenance control are omitted.
+    The X3 uses separate L1I and L1D caches, a shared Sv39 walker, and coherent
+    DMA from the NIC/test engine. Tagged arbiters prioritize L1D, walker, L1I,
+    then DMA with bounded starvation. A shared 2 MiB L2 feeds the AXI bridge
+    and DDR4. All caches are direct-mapped with 32-byte lines. The L1-only
+    configuration is used by unit tests. Request paths are shown; responses
+    route by transaction ID.
   </desc>
   <!--
     Self-contained SVG; edit the text, boxes and paths directly.
@@ -87,7 +71,7 @@
     <rect x="832" y="185" width="304" height="110" rx="12" class="memory"/>
     <text x="984" y="220" class="heading">L1I · 16 KiB</text>
     <text x="984" y="250" class="body">Read-only · BRAM</text>
-    <text x="984" y="277" class="small">Two-line fetch buffer upstream</text>
+    <text x="984" y="277" class="small">2 active + 6 victim fetch lines</text>
   </g>
 
   <path d="M 600 295 V 352" class="link"/>

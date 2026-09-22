@@ -14,97 +14,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-r"""Run all hardware apps, CoreMark-PRO, and Linux on a FROST board.
+"""Run board applications, CoreMark-PRO, Debian NFS boot, and DDR ECC checks.
 
-Each bare-metal app is rebuilt, JTAG-loaded, and checked from UART output:
-``<<PASS>>`` must appear; ``<<FAIL>>``, ``<<TRAP>>``, ``ERROR``, or nonzero
-``:fails=N`` counters fail. ``hello_world`` instead requires two one-second
-greetings, and ``uart_echo`` must return a typed probe. CoreMark uses
-``ITERATIONS * FPGA_CPU_CLK_FREQ / Total 64-bit ticks`` because its printed
-``Iterations/Sec`` uses a 32-bit tick count that overflows after about 14 s at
-300 MHz and can hide slowdowns.
+Apps rebuild and load through JTAG; UART checks and score gates determine pass.
+CoreMark scores use 64-bit ticks. Interactive apps are excluded, and
+``perf_off_test`` runs only for the rated-clock configuration.
 
-Next, ``sweep_coremark_pro.py -v0`` runs all nine workloads with exclusive UART
-access; both its status and official mark are checked. The forwarded common
-timeout is a base budget; the sweep honors any larger per-workload minimum in
-the software registry.
+Linux setup comes from ``fpga/site.env`` or overriding environment variables.
+Preflight validates NFS, the pinned kernel/initramfs, console autologin, and
+cross-compilation before board access; setup errors report ``ENV_FAIL``.
+The Linux stage checks systemd, stress, counters, NIC loopback, and NFS recovery.
+ECC errors are checked after all application traffic.
 
-Linux runs last, and it boots the real system: Debian 13 from its NFSv3 root
-over the NIC, with Debian's pinned riscv64 kernel (``linux/debian_kernel.py``)
-and the initramfs that mounts that export (``docs/debian_nfsroot.md``). Two
-values are site facts no checkout knows -- which host exports the root
-(``FROST_LINUX_NFSROOT``) and which address the board takes
-(``FROST_LINUX_IP``) -- and they come from ``fpga/site.env``, an ignored file
-written once per lab, or from the environment, which wins over it. The kernel
-and the initramfs are derived from the release this repository pins and the
-export just named; ``FROST_LINUX_KERNEL`` and ``FROST_LINUX_INITRD`` override
-them, which is how a replacement kernel is tested. A preflight checks them all
-before any stage runs: the export has to be a directory
-on this host, its server has to answer an NFSv3 NULL call over TCP, and the
-kernel and initramfs have to exist, with the kernel carrying the pinned
-release's banner. A preflight failure is reported as ``ENV_FAIL``, never as a
-stage failure. The preflight also cross-compiles ``frost_stress`` and
-``frost_nettest`` statically from
-``linux/buildroot-external/package/frost-stress`` and installs them in the
-export's ``/usr/local/bin``: Buildroot builds them against musl for the test
-initramfs, which a glibc root cannot run.
-
-The stage requires the kernel's own version banner, the NIC driver's probe line
-before the login prompt, the distribution's name and a console login; traps,
-panics,
-and kernel ``Oops``, ``BUG:`` and ``Kernel BUG`` reports fail, but the
-bare-metal ``ERROR`` rule does not apply to kernel logs. It then logs in as root
-and types four programs: ``findmnt``, whose line must show ``/`` mounted from
-the packed export over NFSv3; ``systemctl``, which must report ``running`` with
-no failed unit; the stress payload, whose pass token must follow the login; and
-``frost_stress --counters``, whose cycle and instret counts for a child measured
-through an exec must both be nonzero. Last is ``frost_nettest``, which runs the
-NIC driver through its loopback feature (the NIC's raw loopback on a shared MAC
-clock, the transceiver's PMA loopback otherwise) and must print
-``FROST_NET_LOOPBACK_PASS``; the interface it takes down is the one the root is
-mounted over, so it runs from a tmpfs copy, and the line around it gives the
-link back and then requires a bounded ``sync`` to succeed -- the pass token
-alone is printed over a root that is still gone. ``--linux-timeout`` covers build, DDR loading, boot and
-every typed program; a cold Buildroot build (for OpenSBI) and Debian kernel
-fetch take a few minutes, mostly downloads.
-
-CI keeps booting the Buildroot test initramfs instead: its QEMU job has no
-frost,net10g device and cannot mount this export. That image is why this stage
-changed -- it loads no module, runs no real userspace and mounts no root, and it
-passed 44 of 44 stages on bitstreams that panicked Debian within six minutes.
-``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
-caused intermittent boot corruption. Two apps are left out: ``debug_target``
-waits for a debugger to drive it, and ``nic_echo`` needs a link partner that
-sends it the cocotb wire peer's frames, which the regression does not have, so
-neither can pass unattended.
-``nic_loopback`` is the NIC stage. ``perf_off_test`` checks the production
-netlist's absent profiling counters, so it runs only against a rated-clock
-bitstream: a ``--cpu-clock-div`` build includes the counters by default and
-drops the stage (``netlist_config.json`` in the build work directory records
-which way that bitstream was synthesized).
-
-Scores may fall at most ``--score-tolerance`` percent below the board baseline.
-A ``None`` baseline reports the measurement without failing. The regression
-stops at the first failure unless ``--keep-going`` and exits zero only when all
-selected stages pass.
-
-Examples (from the repo root):
-
-    # Full regression on X3
-    ./fpga/hw_regression.py --board x3
-
-    # Run everything even past failures, with a looser score gate
-    ./fpga/hw_regression.py --board x3 --keep-going --score-tolerance 2
-
-    # Re-run a subset (stage names = app names plus coremark_pro/linux_boot)
-    ./fpga/hw_regression.py --board x3 uart_echo coremark_pro linux_boot
-
-    # The Linux stage alone. With fpga/site.env written, this is the whole
-    # command; without it, the two site values can be given here instead.
-    ./fpga/hw_regression.py --board x3 linux_boot
-    FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
-    FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
-      ./fpga/hw_regression.py --board x3 linux_boot
+Run natively: ``./fpga/hw_regression.py --board x3 [stage ...]``.
+See ``fpga/README.md`` and ``docs/debian_nfsroot.md`` for setup and limits.
 """
 
 import argparse
@@ -160,7 +83,7 @@ from sweep_coremark_pro import (  # noqa: E402
 )
 
 # ``None`` leaves a score unarmed.
-# Armed from the 2026-09-20 X3 board sweep at 300 MHz.
+# Rated-clock X3 measurements.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 1017.61, "coremark_pro": 142.68},
 }
@@ -194,14 +117,7 @@ ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
 
 # --- Linux stage: Debian 13 on its NFS root over the NIC ---------------------
 #
-# The stage boots what FROST ships. It used to boot the Buildroot test
-# initramfs, which loads no module, runs no real userspace and mounts no root
-# filesystem, so it passed 44 of 44 stages on bitstreams that panicked Debian
-# within six minutes: both core bugs found in 2026-09 (a load-queue stale slot
-# and a page-table walker that missed the L1D's dirty lines) went straight
-# through it. CI keeps that initramfs -- its QEMU job has no frost,net10g
-# device and cannot mount this export -- so the small image stays the in-CI
-# functional check and this stage boots the real system.
+# Hardware regression boots Debian over NFS; CI separately checks the test initramfs.
 #
 # Two of the boot's values are site facts that no checkout can know: which
 # host exports the root, and which address the board takes on that network.
@@ -300,23 +216,11 @@ def console_text(serial_buf: str) -> str:
     return ANSI_ESCAPE_RE.sub("", serial_buf)
 
 
-# A healthy kernel log can contain ``ERROR``, so Linux is judged by these
-# markers instead of the bare-metal word rule. The kernel's own banner is one
-# of them: FROST boots Debian's kernel (linux/debian_kernel.py names it, and
-# the NFS root installs the same version), and packing any other one must fail
-# rather than pass on the userspace markers, which would appear either way. The
-# banner ends in a space, so a release this one is a prefix of does not match.
-# The other two are the distribution's own name and the console login prompt,
-# which stand where the Buildroot banner and ``buildroot login:`` used to: the
-# export has to be a Debian root, and the console has to offer a login.
-#
-# The name, and not systemd's whole greeting: on the board that greeting reads
-# ``ESC[0;1;39mWelcome to ESC[0mESC[1mDebian GNU/Linux 13 (trixie)ESC[0m…``, so
-# the name is the part that survives whether or not the escapes were stripped,
-# and the console getty's /etc/issue carries it too. Either source is the
-# evidence wanted here -- that the tree that booted is a Debian system -- while
-# the release comes from the kernel banner above and the state of its init from
-# the systemd check below.
+# Healthy kernel logs can contain ERROR. Require the pinned kernel banner,
+# Debian's name, and a console login instead of the bare-metal word rule.
+# The banner's trailing space prevents matching a longer release with the
+# same prefix. Match the distribution name alone so ANSI greeting escapes
+# do not affect detection; systemd readiness is checked separately.
 DEBIAN_OS_NAME = "Debian GNU/Linux"
 LINUX_LOGIN_PROMPT = "login: "
 LINUX_SUCCESS_MARKERS = (KERNEL_BANNER, DEBIAN_OS_NAME, LINUX_LOGIN_PROMPT)

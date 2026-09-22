@@ -688,14 +688,14 @@ package riscv_pkg;
     // Phase 3 privileged instructions (appended after ILLEGAL per the
     // established-ordinal constraint above; ILLEGAL keeps 8'd206).
     SRET,                      // Return from supervisor-mode trap
-    SFENCE_VMA,                // Supervisor fence.vma (operands ignored: flush-all, plan D8)
-    FETCH_FAULT,               // Fetch access-fault pseudo-op (Phase 3 M2/M5): injected
+    SFENCE_VMA,                // Supervisor fence.vma (operands ignored: flush-all)
+    FETCH_FAULT,               // Fetch access-fault pseudo-op: injected
                                // by decode for a fault-tagged fetch bundle; raises the
                                // precise instruction access fault (cause 1) through
                                // the ILLEGAL/ECALL completion path
-    FETCH_PAGE_FAULT,          // Fetch page-fault pseudo-op (Phase 3 M5): the
+    FETCH_PAGE_FAULT,          // Fetch page-fault pseudo-op: the
                                // translated-fetch twin of FETCH_FAULT (cause 12)
-    DRET                       // Return from Debug Mode (Phase 3 M3): rides the
+    DRET                       // Return from Debug Mode: rides the
                                // MRET serial path; illegal outside Debug Mode
   } instr_op_e;
 
@@ -755,14 +755,14 @@ package riscv_pkg;
   localparam bit [11:0] CsrMie = 12'h304;  // Machine interrupt enable
   localparam bit [11:0] CsrMtvec = 12'h305;  // Machine trap vector base
   localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR)
-  // mcountinhibit (Phase 3 M7): CY (bit 0) and IR (bit 2) stop cycle/instret;
+  // mcountinhibit: CY (bit 0) and IR (bit 2) stop cycle/instret;
   // TM (bit 1) is read-only 0 and the HPM bits are WARL-0. OpenSBI's
   // privileged-version probe needs this CSR to exist (v1.11) before it
   // programs menvcfg (v1.12), which is what turns Sstc on for S-mode.
   localparam bit [11:0] CsrMcountinhibit = 12'h320;
   localparam bit [11:0] CsrMenvcfg = 12'h30A;  // Machine environment configuration
   // menvcfg.STCE (bit 63, Sstc): S-mode stimecmp enable. WARL {0,1}; the
-  // only implemented menvcfg field (Phase 3 M6, plan D12).
+  // only implemented menvcfg field.
   localparam int unsigned MenvcfgStceBit = 63;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
@@ -770,7 +770,7 @@ package riscv_pkg;
   localparam bit [11:0] CsrMtval = 12'h343;  // Machine trap value
   localparam bit [11:0] CsrMip = 12'h344;  // Machine interrupt pending
 
-  // Supervisor-mode CSR addresses (Phase 3, plan D1). sstatus/sie/sip are
+  // Supervisor-mode CSR addresses. sstatus/sie/sip are
   // restricted views of the mstatus/mie/mip storage (mideleg gates the
   // sie/sip visibility); the rest are dedicated registers.
   localparam bit [11:0] CsrSstatus = 12'h100;  // Supervisor status (mstatus view)
@@ -787,7 +787,7 @@ package riscv_pkg;
   localparam bit [11:0] CsrSatp = 12'h180;  // Supervisor address translation and protection
   // Machine information CSRs (read-only)
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
-  // Debug-mode CSRs (RISC-V Debug Spec 0.13.2, Phase 3 M3). Accessible only
+  // Debug-mode CSRs (RISC-V Debug Spec 0.13.2). Accessible only
   // in Debug Mode (the ROB captures illegal-instruction at allocation
   // otherwise). ddata is the custom shadow of the debug module's data0/data1
   // pair (hartinfo dataaccess=0, dataaddr=0x7B4): the abstract GPR-access
@@ -872,7 +872,7 @@ package riscv_pkg;
   // mstatus.MPP occupies [12:11]; mstatus.MPRV is bit 17.
   localparam int unsigned MstatusMppLo = 11;
   localparam int unsigned MstatusMprvBit = 17;
-  // Trap-virtualization / speculation-relevant fields (Phase 3, plan D1).
+  // Trap-virtualization / speculation-relevant fields.
   localparam int unsigned MstatusSumBit = 18;  // permit Supervisor User Memory access
   localparam int unsigned MstatusMxrBit = 19;  // Make eXecutable Readable
   localparam int unsigned MstatusTvmBit = 20;  // Trap Virtual Memory (satp/sfence.vma in S)
@@ -905,7 +905,7 @@ package riscv_pkg;
   localparam bit [XLEN-1:0] ExcEcallUmode = XLEN'(8);
   localparam bit [XLEN-1:0] ExcEcallSmode = XLEN'(9);
   localparam bit [XLEN-1:0] ExcEcallMmode = XLEN'(11);
-  // Sv39 page faults (Phase 3 M4/M5). All three are medeleg-delegable
+  // Sv39 page faults. All three are medeleg-delegable
   // (MedelegMask bits 12/13/15 have been set since M1).
   localparam bit [XLEN-1:0] ExcInstrPageFault = XLEN'(12);
   localparam bit [XLEN-1:0] ExcLoadPageFault = XLEN'(13);
@@ -984,7 +984,7 @@ package riscv_pkg;
 
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
 
-  // The core is RV64GCB (rv32 support was retired after Phase 1). This
+  // The core is RV64GCB. This
   // localparam is the single source of truth for the core's width:
   // module-level XLEN parameters default to it and exist only so unit
   // benches can elaborate standalone.
@@ -995,7 +995,7 @@ package riscv_pkg;
   // cached DDR at 0x8000_0000). Region decodes therefore key on fixed
   // physical bit positions (bit 31 selects the cached region,
   // addr[31:30]==01 is MMIO), never on XLEN-relative positions like
-  // [XLEN-1], which go dead at XLEN=64. Since Phase 3 M2, architectural
+  // [XLEN-1], which go dead at XLEN=64. Architectural
   // PCs, targets and AGU outputs flow full-width, and out-of-map addresses
   // raise PMA access faults before reaching any memory tier (see
   // pma_fetch_ok/pma_data_ok). Bits [XLEN-1:32] of every launched memory
@@ -1004,7 +1004,7 @@ package riscv_pkg;
   localparam int unsigned PhysAddrBits = 32;
   localparam int unsigned CachedRegionBit = 31;
 
-  // Debug-module execution slice (Phase 3 M3): the top 1 KiB of the 96 KiB
+  // Debug-module execution slice: the top 1 KiB of the 96 KiB
   // low-BRAM ROM window, reserved by every linker script (DEBUG region) and
   // written only by the debug module through the programming port. The
   // hart executes here in Debug Mode: the park loop, the abstract-command
@@ -1039,7 +1039,7 @@ package riscv_pkg;
   localparam int unsigned CachedLoadSlots = 4;
   localparam int unsigned CachedLoadSlotBits = 2;
 
-  // DMA coherence (Phase 4): lock entries of the cache hierarchy's DMA
+  // DMA coherence: lock entries of the cache hierarchy's DMA
   // sequencer (frost_cache_hierarchy NUM_DMA_LOCK), mirrored by the core's
   // lq_coherence_port; a DMA write to a line holds one from admission until
   // the shared level has ordered it.
@@ -1066,7 +1066,7 @@ package riscv_pkg;
   endfunction
 
   // Canonicalize an address to the physical space: zero-extends the low
-  // 32 bits. Since Phase 3 M2 this is applied only at physical consumers
+  // 32 bits. Apply only at physical consumers
   // (the fetch machinery's serve-matching view); architectural PCs, targets
   // and AGU outputs flow full-width, and out-of-map addresses raise PMA
   // access faults instead of aliasing (pma_fetch_ok / pma_data_ok below).
@@ -1074,7 +1074,7 @@ package riscv_pkg;
     canonical_paddr = XLEN'(addr[PhysAddrBits-1:0]);
   endfunction
 
-  // PMA region checks (Phase 3 M2). The physical map:
+  // PMA region checks. The physical map:
   //   [0x0000_0000, 0x0004_0000)  256 KiB BRAM      fetch + data
   //   [0x4000_0000, 0x8000_0000)  device quadrant   data only (no fetch)
   //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR  fetch + data
@@ -1135,7 +1135,7 @@ package riscv_pkg;
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Sv39 translation (Phase 3 M4 data side, M5 fetch side)
+  // Sv39 data and instruction translation
   // ---------------------------------------------------------------------------
   // A virtual address is 39 bits: three 9-bit VPN levels over a 4 KiB page
   // offset. Bits [63:39] must equal bit 38 (canonical form); a non-canonical
@@ -1210,7 +1210,7 @@ package riscv_pkg;
 
   // XLEN-wide DIV/REM special-case values (overflow and divide-by-zero).
   // The RV64M W forms need no 32-bit variants: int_muldiv_shim shares the
-  // XLEN divider with sign/zero-extended operands (plan D8).
+  // XLEN divider with sign/zero-extended operands.
   localparam bit [XLEN-1:0] SignedIntMin = {1'b1, {(XLEN - 1) {1'b0}}};  // -2^(XLEN-1)
   localparam bit [XLEN-1:0] SignedIntMax = {1'b0, {(XLEN - 1) {1'b1}}};  // 2^(XLEN-1) - 1
   localparam bit [XLEN-1:0] UnsignedIntMax = '1;  // All ones
@@ -1292,7 +1292,7 @@ package riscv_pkg;
     // commit to train the entry the prediction read (carried all the way to
     // commit, unlike bp_dir_taken, which PD consumes).
     logic [BpDirIdxBits-1:0] bp_dir_idx;
-    // Fetch fault (Phase 3 M2/M5): the bundle's instruction bytes could not
+    // Fetch fault: the bundle's instruction bytes could not
     // be fetched. Either its word's physical address fails pma_fetch_ok
     // (Bare), or under Sv39 the page missed permissions, the walk was
     // refused, the VA is non-canonical, or the translated PA is out of the

@@ -12,56 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Cocotb tests and shared infrastructure for the Frost CPU.
+"""Cocotb block, directed CPU, and compiled-program tests.
 
-Test Modules
-------------
-
-Random Regression Tests:
-    test_cpu
-        Main random instruction regression test (16,000+ instructions).
-        Tests all instruction types with coverage tracking.
-
-Directed Tests:
-    test_directed_atomics
-        LR.W/SC.W atomic memory operation tests
-
-    test_directed_traps
-        ECALL, EBREAK, MRET, and interrupt handling tests
-
-    test_compressed
-        C extension compressed (16-bit) instruction tests
-
-Integration Tests:
-    test_real_program
-        Full system tests with compiled programs (Hello World, CoreMark)
-
-Infrastructure:
-    test_common
-        Shared utilities (TestConfig, handle_branch_flush, execute_nop)
-
-    test_state
-        TestState class for tracking CPU state across pipeline stages
-
-    test_helpers
-        DUTInterface and TestStatistics helper classes
-
-    instruction_executor
-        InstructionExecutor class for simplified directed test writing
-
-    cpu_model
-        Software reference model for instruction execution
-
-    instruction_generator
-        Random instruction generation with constraints
-
-Running Tests
--------------
-Run a ``TEST_REGISTRY`` target from the repository root::
-
-    ./scripts/frost.py cocotb directed_traps
-    ./scripts/frost.py cocotb hello_world
-    ./scripts/frost.py cocotb --list-tests
+Use targets in ``tests/test_run_cocotb.py`` through ``scripts/frost.py cocotb``.
+The random CPU and directed-multicycle harnesses need an OOO scoreboard port;
+see ``verif/README.md`` for supported targets and shared helpers.
 """
 
 from cocotb_tests.test_common import TestConfig

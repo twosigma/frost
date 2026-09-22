@@ -30,9 +30,7 @@ does not change the selected payloads.
 Each node carries the highest two valid packets and their one-hot source IDs.
 Each merge concatenates the higher-priority list before the lower and keeps its
 first two valid packets. The pair, four-entry, and root merges bound both
-selection cones to three stages. The previous design picked the lane-0 winner
-first, masked it out, and ran a second encoder for lane 1, so the lane-1 cone
-was serial with lane 0.
+selection cones to three stages. Both lanes are selected in parallel.
 
 Live, non-pending results from the two single-cycle integer ALUs take a
 different value path. Their valid, tag, exception metadata, and one-hot
@@ -92,17 +90,10 @@ copy of `speculative_flush_all`. The kill is applied here once rather than
 inside every `fu_cdb_adapter` output cone, so the high-fanout flush signal
 does not route through each adapter's critical path.
 
-The arbiter also exports `o_grant_raw`, the same top-two grant before the kill
-gate. It stays active during kill while `o_grant` is forced to zero. It was
-added as a flush-independent "would be granted" signal for FU shims that pop
-their result FIFOs under kill: popping is harmless because the shim's own
-flush input clears the entries on the same edge, and using the raw grant keeps
-`cdb_kill` out of the shim FIFO next-state cone. The wrapper leaves
-`o_grant_raw` unconnected today. Shims pop when their adapter's registered
-`result_pending` bit is clear (the wrapper's `*_result_accepted` signals) and
-auto-drain flushed FIFO heads on their own. The kill-gated `o_grant` only
-updates that flop, so it reaches the shim pop logic one cycle removed. The
-port is driven but unused.
+`o_grant_raw` exposes the top-two grants before kill but is unused by the
+wrapper. Shims pop when the adapter's registered pending bit is clear and
+auto-drain flushed FIFO heads. Kill affects that pending state one cycle
+before it can affect shim pop logic.
 
 ## Verification
 

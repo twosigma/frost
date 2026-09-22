@@ -88,7 +88,7 @@ transmission order, so in these packed vectors:
 | Data | `0`, `1` | `2'b10` |
 | Control | `1`, `0` | `2'b01` |
 
-Headers bypass scrambling. A future wrapper must honor this bit contract;
+Headers bypass scrambling. A board wrapper must honor this bit contract;
 the interface is not an implicit mapping to GTY `TXHEADER`/`RXHEADER` ports.
 With a raw bypass configuration, the soft gearboxes own block packing and
 alignment. Using a GTY hard gearbox instead would require a separate adapter.
@@ -176,7 +176,7 @@ Events may remain asserted on consecutive cycles for consecutive errors.
 The BER timer advances independently of block-valid pauses; its default
 `BER_WINDOW_CYCLES=20142` corresponds to approximately 125 us at the raw clock.
 
-## Verification and remaining integration
+## Verification and scope
 
 From the repository root:
 

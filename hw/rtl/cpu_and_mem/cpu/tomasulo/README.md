@@ -75,8 +75,7 @@ Conditional-branch mispredictions resolve in `branch_jump_unit` and
 trigger a fast two-phase recovery in the `early_misprediction_recovery`
 submodule (under `cpu_ooo/branch_recovery/`): the
 front-end redirects and the RAT restores in the same cycle, then the
-OOO back-end's partial flush fires one cycle later. This cuts the
-typical penalty from ~15 cycles to ~2.
+OOO back-end's partial flush fires one cycle later. Typical recovery takes about two cycles.
 
 JALR mispredictions use the commit-time recovery path. Like early conditional
 branch recovery, they use an age-based partial flush to discard younger work.
@@ -88,13 +87,19 @@ trap entry also applies the privilege and delegation rules.
 A small FSM in the ROB pins most of these instructions at the commit head
 (atomics are instead ordered at LQ/SQ issue, see the last row):
 
-| Class               | Behavior |
-|---------------------|----------|
-| WFI                 | Stalls at head until an interrupt is pending. |
-| CSR                 | The CDB completion carries only the write operand (rs1 or the zero-extended immediate) so the entry is done when it reaches the head; the read result does not ride the CDB. At the commit head, a `csr_file` execution handshake performs the read and computes the architectural update, and `commit_actions` writes the read result to the destination register through its delayed writeback port. A conservatively classified translation CSR then enters `SERIAL_CSR_TRANSLATION_DRAIN`, retains the completed handshake, and waits for committed stores to drain and for the retirement permit before retiring and applying the architectural write. Ordinary CSRs keep their original completion/retire cycle. |
-| FENCE / FENCE.I / SFENCE.VMA | Drains committed SQ entries before commit. FENCE.I and SFENCE.VMA then enter `SERIAL_FENCE_I_SYNC`: the cache-sync request holds the head until both the hierarchy reports done (L1D writeback-all, then L1I invalidate-all) and retirement is permitted. SFENCE.VMA also opens the TLB/PTW invalidation window. The serializer-owned event produces the pipeline + fetch-buffer flush so the front-end refills from post-writeback memory. |
-| MRET                | Handshakes with `trap_unit`; redirect PC = `mepc`. SRET and DRET ride the same machinery with `sepc` and `dpc`. |
-| AMO / LR / SC       | Head-ordered atomics; the ROB FSM does not stall them. AMO and SC fire only at the ROB head with the SQ committed-empty (no older stores in flight): the AMO gate is at LQ issue, the SC gate at the wrapper's reservation check. LR fires at the head. While an AMO owns the head, interrupt delivery is shielded (`trap_unit.i_amo_at_head`, fed by the ROB's `o_head_is_amo`). A normal (non-MIN/MAX) AMO spends one cycle in the load queue's `AMO_COMPUTE` state between capturing the read response and entering `AMO_WRITE_ACTIVE`, computing the new value from the captured old value and rs2; MIN/MAX enters `AMO_WRITE_ACTIVE` directly. A trap flush once the AMO's memory write has launched would orphan it: memory mutated by a squashed instruction that then re-executes, a double-applied atomic. The shield is head-granular rather than state-granular, so the pending interrupt is held for the whole [response capture, commit] window; the load queue cancels an unlaunched `AMO_COMPUTE` owner cleanly, which is what makes the coarse hold safe rather than necessary. Exceptions stay ungated, since a faulting AMO never issues its memory ops. Device (MMIO) loads carry the mirror-image shield on the read side (`trap_unit.i_device_read_at_head`, fed from the router's `o_device_request_pending`): their terminal accept pops a destructive device register, so interrupt delivery is held from before the accept until the load commits, and the router refuses to arm until that hold is established. |
+| Class | Ordering |
+|-------|----------|
+| WFI | Wait at head for a pending interrupt. |
+| CSR | Execute the CSR read/update handshake at head; write the read result through delayed architectural writeback. Translation CSRs also drain committed stores before retirement. |
+| FENCE / FENCE.I / SFENCE.VMA | Drain committed stores. FENCE.I/SFENCE.VMA additionally wait for L1D writeback and L1I invalidation, then flush fetch; SFENCE.VMA also invalidates TLB/PTW state. |
+| xRET | Handshake with the trap unit; return to mepc, sepc, or dpc. |
+| AMO / LR / SC | Issue at ROB head; AMO and SC also require committed-empty SQ. Atomics have no ROB serial state. |
+
+AMOs hold interrupts from head ownership through commit so a launched write
+cannot be squashed and replayed. MMIO reads likewise establish an interrupt
+shield before destructive acceptance and retain it through commit. Exceptions
+remain enabled: faulting operations perform no memory side effect. See the
+[load queue](load_queue/README.md) for acceptance and AMO timing.
 
 The translation class is captured in the ROB at allocation: any `satp` access
 counts, and `mstatus`/`sstatus` count only with write intent. Its retirement

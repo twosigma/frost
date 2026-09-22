@@ -12,35 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software reference models used to predict DUT results.
+"""Software reference models for integer, branch, FP, and memory behavior.
 
-Modules
--------
-alu_model
-    Reference implementations of the ALU operations: base integer (add, sub,
-    and, or, xor, shifts, comparisons), M (mul, mulh, div, rem), Zba address
-    generation, Zbb bit manipulation (clz, ctz, cpop, rotations), Zbs
-    single-bit ops, Zicond (conditional zero) and Zbkb (pack, brev8).
-    Decorators mask results to XLEN and limit shift amounts.
-
-branch_model
-    Taken decision for BEQ, BNE, BLT, BGE, BLTU and BGEU, signed or unsigned
-    as the mnemonic requires.
-
-memory_model
-    Byte-addressable, little-endian data memory with byte, word and dword
-    accesses, plus a driver/monitor coroutine that checks DUT stores.
-
-fp_model
-    IEEE 754 reference models for the F and D extensions.
-
-``CPUModel`` uses these models to compute instruction results::
-
-    from models.alu_model import add, sub
-    from models.branch_model import branch_taken_decision
-
-    result = add(operand_a=10, operand_b=20)  # Returns 30
-    taken = branch_taken_decision("beq", 5, 5)  # Returns True
+ALU helpers mask results and shifts to XLEN. MemoryModel stores little-endian
+bytes; its monitor checks DUT stores without driving memory responses.
 """
 
 from models.alu_model import add, sub, and_rv, or_rv, xor

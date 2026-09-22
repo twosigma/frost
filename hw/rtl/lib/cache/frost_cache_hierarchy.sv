@@ -42,7 +42,7 @@
  * starvation bound (DMA_STARVATION_LIMIT) so the DMA port keeps a progress
  * guarantee under a sustained stream of CPU-side misses.
  *
- * DMA coherence (Phase 4). The L1D is write-back and the load queue keeps
+ * DMA coherence. The L1D is write-back and the load queue keeps
  * its own dword copies, so a DMA agent below the L1D would neither see the
  * CPU's dirty data nor invalidate the CPU's stale copies. The sequencer
  * (dma_coherence_sequencer.sv, which also states the contract) probes the
@@ -180,7 +180,7 @@ module frost_cache_hierarchy #(
     output logic                    o_wup_resp_valid,
     output logic [  UP_ID_BITS-2:0] o_wup_resp_id,
     output logic [LINE_BYTES*8-1:0] o_wup_resp_rdata,
-    // DMA port (Phase 4): a fourth upstream line-port slave with UP_ID_BITS
+    // DMA port: a fourth upstream line-port slave with UP_ID_BITS
     // ids, coherent with the L1D and the load queue (see the header).
     input  logic                    i_dma_req_valid,
     output logic                    o_dma_req_ready,

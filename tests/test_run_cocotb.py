@@ -248,10 +248,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pma_fault_test",
         description=(
-            "PMA access-fault directed test (Phase 3 M2): out-of-map "
-            "fetch/load/store/AMO/LR raise causes 1/5/7 with exact mepc/mtval "
-            "(replacing the pre-M2 silent aliasing); access outranks misalign; "
-            "in-map behavior unchanged"
+            "PMA faults for out-of-map fetch/load/store/AMO/LR; exact mepc/mtval and "
+            "access-fault priority over misalignment."
         ),
     ),
     "vm_test": CocotbRunConfig(
@@ -259,21 +257,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="vm_test",
         description=(
-            "Sv39 data-translation directed test (Phase 3 M4): MPRV-window "
-            "translated accesses — 4K/2M/1G mappings, the R/W/X/U×SUM/MXR "
-            "permission matrix, Svade A/D traps, malformed PTEs, walker PMA "
-            "refusals, non-canonical VAs, sfence.vma visibility, satp-switch "
-            "retargeting, translated LR/SC/AMO faults, a device page, the "
-            "Bare-domain misaligned-SC/AMO cause fixes, and (case W) squashed "
-            "wrong-path loads/stores from NULL+offset whose tags the correct "
-            "path reuses: a memory op that issued in the recovery-flush cycle "
-            "used to survive in the translation stage and park its page "
-            "fault on the correct-path op (the M7 Linux boot's Oops; the "
-            "case fails against that RTL with cause 13, mtval 0x20/0x88 and "
-            "mepc at the correct-path load, and its store variant, which "
-            "flushes the TLB so the early prefill drops, with cause 15, "
-            "mtval 0x20 and the correct-path store never landing); exact "
-            "cause/mtval checks throughout"
+            "Sv39 data translation: MPRV, page sizes, permissions, Svade, malformed PTEs, "
+            "PMA, non-canonical VAs, sfence.vma/satp retargeting, atomics, MMIO, and "
+            "flush/tag reuse. Checks exact causes and mtval."
         ),
     ),
     "itlb_test": CocotbRunConfig(
@@ -281,22 +267,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="itlb_test",
         description=(
-            "Sv39 fetch-translation directed test (Phase 3 M5): S/U-mode "
-            "execution through non-identity 4K pages and identity superpages, "
-            "page-crossing windows and page-straddling instructions (hit and "
-            "fault, exact epc/tval), X/U/A permission faults, fetch PMA on the "
-            "translated PA, walker refusals, non-canonical targets, ITLB "
-            "replacement, sfence.vma and satp-switch retargeting; (case X) an indirect jump into a cold page at six "
-            "offsets, cold and warm, from U and S: the vDSO sigreturn trampoline shape "
-            "on which busybox died on the MMU lane's first board boot (a skipped first "
-            "instruction would report a0 = 0); (case Y) the kernel's lazy vDSO map: fetch "
-            "fault, PTE install, sfence.vma, xret back to the same PC; and (case Z) the Linux "
-            "signal return replayed from DDR-resident pages through the cached fetch tier: "
-            "an S-mode kernel emulation srets to a U handler whose ret lands on the "
-            "`li a7, 139; ecall` stub at 0x5E0 with the stub's line evicted from the L1I "
-            "and its translation from the ITLB first, plus line-offset/warm/jalr controls "
-            "(the shape that lost the stub's first instruction on X3 silicon while every "
-            "BRAM-tier case passed there)"
+            "Sv39 S/U fetch translation: pages and superpages, crossing/straddling "
+            "instructions, permissions, PMA, replacement, sfence.vma/satp, cold indirect "
+            "jumps, lazy mappings, and signal-return trampolines through cached DDR."
         ),
         # Case Z's 17 variants each repeat six L1I-evicting runs of 16.5 KiB,
         # exceeding the default 500k-cycle budget from DDR.
@@ -307,13 +280,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="debug_target",
         description=(
-            "RISC-V debug module directed test (Phase 3 M3): a cocotb JTAG "
-            "bit-bang debugger drives the DTM/DM through halt, dcsr/dpc, "
-            "abstract GPR access, progbuf CSR/memory access (BRAM, MMIO, DDR), "
-            "abstractauto, progbuf exceptions, software breakpoints in BRAM "
-            "code (32-bit and c.ebreak via the store mirror), single step incl. "
-            "over an ecall, halt in U-mode with dcsr.prv round-trip, halt in "
-            "wfi, resume, and ndmreset/havereset against debug_target"
+            "JTAG DTM/DM halt/resume, debug CSRs, GPR and program-buffer access, "
+            "exceptions, software breakpoints, single-step, U-mode/WFI halt, and "
+            "ndmreset/havereset."
         ),
     ),
     "debug_openocd_test": CocotbRunConfig(
@@ -321,10 +290,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="debug_target",
         description=(
-            "OpenOCD in the loop (Phase 3 M3): the bench serves OpenOCD's "
-            "remote_bitbang protocol and a real openocd examines, halts, reads "
-            "and writes registers and memory, sets a breakpoint, steps and "
-            "resumes debug_target; skips when openocd is not installed"
+            "OpenOCD remote_bitbang integration: examine, halt, registers/memory, "
+            "breakpoints, step, and resume. Skips if OpenOCD is unavailable."
         ),
     ),
     "satp_drain_test": CocotbRunConfig(
@@ -386,15 +353,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="smode_test",
         description=(
-            "S-mode directed test: delegation matrix (medeleg/mideleg), sret "
-            "round-trips, TSR/TVM/TW gates, sstatus/sie/sip views, scounteren "
-            "chain, unimplemented-CSR traps, delegated interrupts with sret resume; and (case V) the "
-            "Linux signal-return restart sequence: a delegated U ecall is "
-            "interrupted by the S handler, which saves a0-a7 and SRETs into a U "
-            "handler with ra at a trampoline; the trampoline's ecall restores the "
-            "registers and SRETs back onto the original ecall, which must trap with "
-            "its own PC and registers (busybox died on this sequence on the MMU "
-            "lane's first board boot)"
+            "S-mode delegation, sret, TSR/TVM/TW, supervisor CSR views, counter "
+            "permissions, illegal CSRs, interrupts, and signal-return restart with exact "
+            "PC/register restoration."
         ),
     ),
     "csr_rmw_test": CocotbRunConfig(
@@ -434,11 +395,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="drain_trapframe_test",
-        description="Trap-frame store-visibility under L1D eviction (Bug B relocated to pt_regs s2)",
-        # A small but present L2 plus slow main memory preserves store-drain
-        # pressure while exercising the supported L1 -> L2 topology.
-        # Mutation-validated 2026-09-05: a scoped dirty-writeback drop on the
-        # frame's line fails all 256 swept margins under these args.
+        description=(
+            "Trap-frame store visibility under L1D eviction, including the pt_regs s2 "
+            "slot."
+        ),
+        # Small L2 and slow memory preserve store-drain pressure on the supported
+        # L1 -> L2 topology. Dropping a dirty writeback of the frame line fails
+        # all 256 swept margins with these settings.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mret_timer_resume_test": CocotbRunConfig(
@@ -451,30 +414,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="restore_window_stress",
-        description="M-mode ret_from_exception restore-window stress (phase-swept; kernel-patch retirement evidence)",
-        # A small but present L2 plus slow main memory keeps the window's cold
-        # SC/loads and store drain long enough to exercise the old interleaving.
-        # Falsification-replayed 2026-09-05: reverting the interrupt-resume-PC
-        # fix (9bceb4db class) fails in <2k cycles here. Caveat: this shape
-        # exercises about half the window-crossing held ticks of the retired
-        # L2-off shape (140 vs 290 per run) — teeth confirmed, margin reduced.
+        description=(
+            "Phase-swept M-mode exception-return restore window under timer interrupts."
+        ),
+        # Small L2 and slow memory extend cold SC/load and store-drain windows.
+        # These settings detect a stale interrupt resume PC during restoration.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mtimer_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="mtimer_stress",
-        description="M-mode machine-timer + MRET deadlock stress (phase-swept; flaky-hang repro)",
+        description=("Phase-swept machine-timer and MRET progress."),
     ),
     "mret_drain_deadlock": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="mret_drain_deadlock",
-        description="MRET-vs-draining-cached-store deadlock (one-shot o_mret_start; deterministic hang repro)",
-        # Falsification-replayed 2026-09-05: reverting the o_mret_start fix
-        # (39977c76) hangs this test under exactly these args. The retired
-        # claim that only an L2-off shape exposes the race was disproven in
-        # the same replay.
+        description=(
+            "MRET progress with draining cached stores; o_mret_start must pulse once."
+        ),
+        # Small L2 and slow memory expose repeated o_mret_start while stores drain.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "wfi_lost_tick": CocotbRunConfig(
@@ -506,14 +466,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="jal_target_seam",
         description=(
-            "fetch-seam directed repro: 4-byte jal entered as a taken-branch "
-            "target at dword offset 4 / line offset 0x2c (the Linux "
-            "of_core_init call-skip bug, XLEN-independent -- stale "
-            "pending-saved BTB metadata replayed onto the re-fetched jal made "
-            "the ROB see a correctly predicted jal while the redirect was "
-            "lost); run with FROST_COCOTB_MEM_CONFIG=ddr for the "
-            "kernel-faithful variable-latency L1I fetch path (bram never "
-            "arms the pending walk and passes)"
+            "Taken-branch target JAL at dword offset 4 / line offset 0x2c: pending "
+            "prediction metadata and redirect delivery. Use FROST_COCOTB_MEM_CONFIG=ddr; "
+            "BRAM does not exercise the pending-fetch path."
         ),
     ),
     "writecount_probe": CocotbRunConfig(
@@ -521,14 +476,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="writecount_probe",
         description=(
-            "ETXTBSY directed probe: replays the Linux deny_write_access "
-            "lr.w/bgtz/sc.w.rl scene (exec1 count 0->-1, exec2 count -1->-2) "
-            "word-exact on both dword lanes with a positive neighbor pattern, "
-            "plus amoadd.w allow path and line-pressure variants; caught the "
-            "rv64 LR.W zero-extension hole (mem_signed excluded OPC_AMO, so "
-            "negative counts read positive and exec of a running inode "
-            "failed Text-file-busy on hardware); run with "
-            "FROST_COCOTB_MEM_CONFIG=ddr for the kernel-faithful cached tier"
+            "LR.W sign extension for Linux inode write counts on both dword halves, with "
+            "positive neighboring data, SC.W, AMOADD.W, and line pressure. Use "
+            "FROST_COCOTB_MEM_CONFIG=ddr for cached-tier coverage."
         ),
     ),
     "mem_divergence_probe": CocotbRunConfig(
@@ -536,18 +486,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="mem_divergence_probe",
         description=(
-            "cached-DDR cold-vs-warm read divergence probe (rv64 Linux "
-            "hardware bring-up debug 2026-08-04): evict/refill sweeps over "
-            "32/64-bit reads at both dword halves plus store-forward "
-            "interleavings; a FAIL is the hunted reproduction. "
-            "Mutation-validated 2026-09-05: 3/3 injected cache defects "
-            "(dropped dirty writeback, refill half-swap, alias-tag "
-            "corruption) caught by the cold/warm compare. Known blind spot: "
-            "cross-line stale-match via a re-manned MSHR (the b11de000 "
-            "class) — it dirties the alias region but never reads it back; "
-            "that class is covered by p_secondary_targets_own_line and the "
-            "-v suites. Candidate strengthening: alias read-back plus a "
-            "second-index buffer."
+            "Cached-DDR cold/warm comparisons for 32/64-bit reads, both dword halves, and "
+            "store forwarding. Detects dropped writebacks, swapped refill halves, and "
+            "alias-tag corruption. Does not cover cross-line stale MSHR matches; see "
+            "p_secondary_targets_own_line and the -v suites."
         ),
         include_in_pytest=False,
         extra_env=(("EXTRA_CFLAGS", "-DN_ROUNDS=8"),),
@@ -577,19 +519,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="opensbi_smoke",
         description=(
-            "OpenSBI fw_jump (linux/opensbi, unmodified) boots a bare S-mode "
-            "payload through the FROST boot layout: SBI base/HSM probes, "
-            "entry state (time-only U-mode counter access, stimecmp reachable => menvcfg.STCE), "
-            "S-timer via stimecmp and sbi_set_timer, self IPI, RFENCE, DBCN "
-            "console, OpenSBI's M-mode misaligned emulation (scalar, "
-            "compressed, FP; satp Bare, Sv39 identity and non-identity "
-            "aliases, U-mode, a SUM=0 page fault redirected to S), FWFT "
-            "misaligned delegation, and the SBI PMU stop/match/start-with-"
-            "init-value/read sequence on cycle and instret. Layout-fixed "
-            "images: the mem-config axis is a no-op for it. Single run: "
-            "OpenSBI's boot lottery and boot-status words live in its .data, "
-            "so a reset without a memory reload is a warm boot to it (the "
-            "hart loses the lottery and parks in the HSM wait)"
+            "OpenSBI boots an S-mode payload: SBI calls, timers/IPIs, entry state, "
+            "misaligned emulation across privilege/translation modes, FWFT, and PMU "
+            "counters. Fixed memory layout ignores mem-config. Reload memory before "
+            "rerunning; reset alone leaves OpenSBI boot state initialized."
         ),
         # OpenSBI 1.9 plus the payload measured ~5.3M cycles with Bootlin
         # 2026.08-1 and the default DDR latency; retain boot/probe headroom.
@@ -653,7 +586,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="amo_irq_torture",
         description=(
             "CI-scale amo_irq_torture: ITERS=256 (~2.61M cycles) against the "
-            "bench's 6M amo budget — the 2026-07-10-validated configuration"
+            "bench's 6M-cycle AMO budget"
         ),
         extra_env=(("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=256"),),
     ),
@@ -706,18 +639,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="lq_stale_slot_probe",
         description=(
-            "Load-queue cached-slot hazard: a flushed cached load keeps its "
-            "slot until its response drains, and a second partial flush "
-            "must not judge that slot by its stale ROB tag and clear the "
-            "issued bit of the live load now in its queue entry (the live "
-            "load can launch twice and the next occupant of the entry can "
-            "complete with its second response). Random B1/B2 directions "
-            "around signature-filled lines the probe wrote and evicted "
-            "itself. The load queue's live-slot identity assertion is the "
-            "detector (it fires the cycle after the flush and aborts the "
-            "run); a P load that reads N's -1 also fails. Slow (150-cycle), "
-            "jittered, reordering DDR model so the drained responses stay in "
-            "flight across the second recovery; either tier"
+            "Cached-load slot identity across two partial flushes and ROB-tag reuse. "
+            "Checks live-slot assertions and data signatures with slow (150-cycle), "
+            "jittered, reordered DDR responses; runs in either tier."
         ),
         verilator_extra_args=(
             "-GDDR_MODEL_LATENCY=150",
@@ -735,25 +659,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="ptw_coherence_test",
         description=(
-            "Page-table-walker vs dirty-L1D coherence, the directed regression "
-            "for the X3 split_linear_mapping load fault. The walker reads PTEs "
-            "from the shared level (L2/memory), and the hierarchy's walker "
-            "coherence sequencer probes the write-back L1D ahead of each read, "
-            "so a new 4 KiB PTE table left dirty in the L1D while its PMD "
-            "pointer is evicted to L2 must still walk as one consistent table. "
-            "Sv39, M-mode/MPRV windows (extends vm_test); page tables in cached "
-            "DDR. Per iteration it seeds the old child page (V=0 for the "
-            "INVALID flavor, or legal A-set decoy leaves -> wrong data for the "
-            "DECOY flavor, which rejects a fault-only fix), sfences to publish "
-            "the old contents to L2, evicts R's DTLB entry via 24 distinct "
-            "superpages (no sfence), fills the new PTEs + publishes the PMD "
-            "pointer, evicts ONLY the PMD line with a +128 KiB-alias STORE and "
-            "confirms the writeback through the same-line interlock, then loads "
-            "R: the walk must return the P1 signature with no fault. A walker "
-            "reading the shared level alone page-faults (cause 13) or reads the "
-            "decoy signature. Runs in either tier; FROST_COCOTB_MEM_CONFIG=ddr "
-            "is the kernel-faithful cached tier. Cannot be reproduced by the "
-            "isolated DMMU/PTW benches (synthetic walk responses)"
+            "Sv39 walker coherence with dirty L1D page tables: publish a new child table, "
+            "evict only its parent pointer, and require a consistent walk without "
+            "sfence.vma. Checks invalid and valid-decoy old tables in cached DDR. Runs in "
+            "either tier; isolated MMU benches do not cover this fabric interaction."
         ),
     ),
     "ddr_atomic_test": CocotbRunConfig(
@@ -768,21 +677,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pde_return_hazard",
         description="pde_subdir_find epilogue return-value hazard reproducer",
-        # No cache-shape args: the app executes entirely from low BRAM and
-        # never touches the cached tier, so L2/DDR -G args are inert here
-        # (verified 2026-09-05). The original fix (39977c76's
-        # window_cannot_serve guard) is rv32-era and unreplayable on today's
-        # RTL; the guard's own SVA lock is the standing protection.
+        # This app stays in low BRAM, so L2/DDR parameters do not affect it.
+        # The window_cannot_serve guard also has an SVA check.
     ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="freertos_demo",
-        description=(
-            "FreeRTOS demo (rv64 port from the M7 hardware bring-up: D13's "
-            "deferral was retired by XLEN-splitting the port's context-switch "
-            "assembly and types; the heap scales for XLEN-wide stack cells)"
-        ),
+        description=("FreeRTOS RV64 scheduling, synchronization, and interrupt demo."),
     ),
     "fpu_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -966,20 +868,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="window_skip_repro",
         description=(
-            "Directed 'skipped fall-through fetch window' rv64 hardware repro from "
-            "coremark_pro_zip / zlib longest_match: a trained-taken loop-back "
-            "branch resolves not-taken on exit and early recovery redirects to "
-            "the fall-through; the front end skips the aligned 8-byte "
-            "fall-through window (the callee-saved restores) and runs the next "
-            "window (sp-pop + ret), leaving s0/s1 STALE. Every victim's window "
-            "layout is objdump-verified (bltu at its window+4, restores in one "
-            "8B window, addi16sp+ret in the next). v2 subtests: A/B/C fast BRAM "
-            "/ cached-DDR-latency / divu-backpressure; D/E loop-back TARGET at "
-            "window+4 and window+2 (rvc head); F a 32-bit op spanning a window "
-            "boundary (instruction-buffer covers arm); G the "
-            "longest_match reload tail + epilogue lifted byte-for-byte. "
-            "Normally <<PASS>>; a canary mismatch or the if_stage "
-            "p_bram_served_window_covers_pc_reg assertion is the reproduction."
+            "Fall-through fetch after a trained-taken branch resolves not-taken: preserve "
+            "callee-saved restores. Checks BRAM, cached DDR, divide backpressure, varied "
+            "target offsets, straddling instructions, and a zlib epilogue with "
+            "objdump-verified layouts."
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
@@ -1371,7 +1263,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
     ),
-    # DMA-port service envelope measurement (Phase 4 slice 2, S0): one build
+    # DMA-port service envelope measurement (S0): one build
     # per candidate lock count so producer depth can be swept against the
     # sequencer's capacity, plus one at the full-system DDR model latency.
     # Measurement only, not part of the pytest sweep.
@@ -2389,10 +2281,8 @@ def _run_single_seed(
     os.environ["SIM"] = "verilator"
     os.environ["COCOTB_RANDOM_SEED"] = str(seed)
     os.environ["SIM_BUILD"] = os.path.join(temp_dir, f"sim_build_{seed}")
-    # Per-worker results file. cocotb's default is results.xml in the shared
-    # tests/ CWD, which concurrent workers rm/write/check over each other.
-    # The clobbering shows up as phantom FAILs (44/100 in the 2026-07-11
-    # tomasulo_wrapper sweep; every "failing" seed passed in isolation).
+    # Use a per-worker results file; the default results.xml in the shared
+    # working directory lets concurrent workers overwrite each other's results.
     os.environ["COCOTB_RESULTS_FILE"] = os.path.join(temp_dir, f"results_{seed}.xml")
 
     if testcase:

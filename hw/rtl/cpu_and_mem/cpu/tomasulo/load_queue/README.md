@@ -29,10 +29,9 @@ an accepted request whose coincident response must be drained or whose delayed
 response must remain owed.
 
 The SQ forwarding result register follows a capture-then-kill contract: it is
-captured first and killed afterwards rather than gated at capture. Gating at
-capture cost timing, because the flush terms and the commit_en-derived
-`sq_commit_check_block` term carried the registered trap/MRET pulse into every
-capture bit's D. Its capture enable is the trap-cone-free
+captured first and killed afterwards rather than gated at capture. The flush
+and commit-block terms must stay off the wide capture D/enable cone. Its
+capture enable is the trap-cone-free
 `o_sq_check_capture_valid`. A result captured on a flushed or commit-blocked
 cycle cannot be consumed, because `sq_check_phase2` advances only from the
 fully-gated `o_sq_check_valid`, and every consumer of the captured result
@@ -156,12 +155,8 @@ interrupt is already latched, so `o_trap_drain_wait` does not hold commit. The
 load commits, the shield drops, and the interrupt follows. A cpu_ooo watchdog
 errors after 4096 shielded cycles.
 
-Dword loads (FLD and RV64 LD) complete through the same size-keyed path in a
-single beat: the 64-bit data tier
-(the data-tier bus contract in [hw/rtl/README.md](../../../../README.md))
-returns the aligned dword at `addr[31:3]` and the entry's FLEN-wide
-data slot captures it whole. The old 32-bit-bus two-phase FLD machinery
-(per-entry phase bit, split lo/hi data halves, `+4` re-issue) is gone.
+Dword loads (FLD and LD) capture one aligned 64-bit response beat; see the
+[data-tier contract](../../../../README.md#data-tier-bus-contract).
 
 The per-entry AMO opcode is compacted from the 8-bit `instr_op_e` to a 4-bit
 semantic code and stored in per-entry FFs. Accepted slot-1 and slot-2
@@ -180,20 +175,17 @@ these registers. One cycle later their result enters `amo_write_data_q` and
 zero-extends the new result; its architectural old-value return still
 sign-extends. No additional wide operand or result register is needed.
 
-This adds exactly one response-to-write cycle for normal AMOs. Ordinary loads,
-LR/SC, and MIN/MAX retain their existing paths and latency; younger loads behind
-a normal AMO wait the additional cycle for its write to finish. AMO-heavy code
-may therefore lose throughput at the same clock. Splitting the BRAM-response
-and arithmetic paths is a timing hypothesis until measured after placement.
+Normal AMOs spend one response-to-write cycle in `AMO_COMPUTE`; younger loads
+wait until the write completes. LR/SC and MIN/MAX use their separate paths.
 
-MIN/MAX still register independent raw unsigned `{equal, old-less-than-rs2}`
+MIN/MAX register independent raw unsigned `{equal, old-less-than-rs2}`
 relations for `.W` and `.D`, both held operands, and narrow unsigned/MAX mode
 bits. `.W` compares exactly the low 32 bits even on RV64; `.D` compares all 64
 bits. Width selection and signed ordering are reconstructed only from
 registered state. Preservation attributes keep the four relation bits and two
 mode bits as that boundary. Equality preserves the strict-comparison tie
 behavior selecting `rs2`. MIN/MAX enter `AMO_WRITE_ACTIVE` immediately after
-the response capture, with the same relation decode and operand mux as before.
+the response capture, using registered relation decode and operand selection.
 
 Only `AMO_WRITE_ACTIVE` can launch or complete a write, deliver the old value,
 invalidate the L0, or release younger-AMO dependencies. `AMO_COMPUTE` retains
@@ -231,9 +223,7 @@ Three things the cache does not do:
 
 - Flush on branch mispredict. The L0 holds only architectural state (committed
   stores invalidate as they drain, loads fill with memory's view), so there is
-  nothing speculative to throw away. Leaving cached lines hot across mispredict
-  recovery roughly doubles the steady-state hit rate on CoreMark
-  (36.5% → 72.4%). For the same reason, an ordinary non-MMIO response that
+  nothing speculative to throw away. An ordinary non-MMIO response that
   arrives exactly with a partial flush may still fill L0 even when its killed
   LQ owner discards the completion. Full flushes, already-pending
   stale-response drains, LR/AMO responses, and responses made stale by a
@@ -243,7 +233,7 @@ Three things the cache does not do:
   cycle is treated as a drained response for a killed load and may not install
   a new L0 line.
 - Bypass a same-cycle fill into the lookup. Forwarding the in-flight fill into
-  a same-cycle lookup dragged the back-end flush cone (`i_flush_en` →
+  a same-cycle lookup would put the back-end flush cone (`i_flush_en` →
   `accept_mem_response` → fill → bypass → hit → `o_mem_read_en`) into
   `data_memory`'s address read pin. A same-cycle hit on the just-filled line
   becomes a one-cycle-delayed hit instead; the LUTRAM is current next cycle
@@ -251,7 +241,7 @@ Three things the cache does not do:
 
 ## DMA coherence port
 
-A DMA agent below the L1D (Phase 4) reaches the load queue through
+A DMA agent below the L1D reaches the load queue through
 `tomasulo_wrapper/coherence/lq_coherence_port.sv`, which mirrors the cache
 hierarchy's admitted lines and drives four things here:
 
@@ -314,9 +304,8 @@ The block may therefore remain conservatively high for one cycle only while
 that row is invalid. Allocation cannot reuse a slot on its flush/free edge, so
 the complete invalid gap drains old-generation state before a new identity can
 issue. A separate registered row reduction drives the selector directly. This
-removes both the former live `ROB head → age subtractors → min tree → compares`
-issue cone and load-result-free/recovery-age control from dependency-register
-D. AMO write completion remains a direct source-column prune.
+keeps live ROB-age selection and completion/recovery control off
+dependency-register D. AMO write completion remains a direct source-column prune.
 
 The allocation stage supports both ports and compares tags rather than
 assuming physical or request order, including sparse/adversarial tag layouts.
@@ -325,8 +314,7 @@ older than an entry already resident in `sq_check`; the registered update is
 therefore complete before that entry can need a new dependency. A head AMO is
 admitted to the head-priority scans whenever the SQ committed queue is empty.
 At ROB head everything else in the LQ is younger (and fenced), so preemption is
-always safe. This subsumed the old 512-cycle deadlock breaker, which has been
-removed.
+always safe.
 
 The sparse allocator's `tail_ptr` is a free-search cursor, not occupancy or
 age state. It advances when the registered valid-generation detector observes
@@ -341,8 +329,8 @@ The ROB-head priority scan admits every head load class, including MMIO and
 LR; AMOs are admitted only when the committed queue is also empty. The normal
 stored-address scan redundantly admits an MMIO entry only when it is also at
 the ROB head. The dedicated head result always wins the final selector, so
-this restores the prior Boolean shape without changing selection or cycle
-timing. A same-cycle address update may still stage an MMIO load before it
+the stored-address result cannot override an eligible head. A same-cycle
+address update may still stage an MMIO load before it
 reaches the head. In every case the LQ handoff occurs only at ROB head; the
 downstream router always parks that request for one cycle, then keeps it
 parked until the full committed queue becomes empty. A flush in that
@@ -357,7 +345,7 @@ ROB-head entry's physical slot. Without head priority, an eligible ROB-head
 MMIO/LR load can lose the single `sq_check` staging slot to a ring-earlier
 younger load. If that younger load is fenced behind an un-drainable
 (uncommitted, non-forwardable) older store, it camps there indefinitely and
-starves the head (the `call_stress` UART poll-load wedge). Admitting the head
+starves the head. Admitting the head
 is safe and live. The head is the oldest architectural load, so only
 committed, and therefore draining, older stores can fence it, never the
 younger wrong-path stores that create the hog. `sq_check_replace` evicts the
@@ -371,9 +359,8 @@ and exports it directly to the `sq_check` capture controller. The found bit is
 a reduction of the eligible mask, while index and tag are encoded in parallel
 from the registered head-match mask before eligibility. There is no serial
 physical-entry priority scan and no index-to-one-hot decode on the capture
-feedback path. This is cycle-identical to the old scan while keeping
-`lq_addr_valid` out of both the payload-identity encoder and its old long
-priority ripple.
+feedback path. This keeps `lq_addr_valid` off the payload-identity encoder
+and priority path.
 
 ## Issue and completion bypasses
 
@@ -394,7 +381,7 @@ Two bypass paths each shave a cycle off the load critical latency.
 
 ## Back-to-back issue
 
-In steady state the LQ issues one low-BRAM load per cycle. The historical
+In steady state the LQ issues one low-BRAM load per cycle. The
 `launch_mem_issue` cone is gated only by the flush pulses, `i_mem_bus_busy`,
 and the registered cached launch hold, not by the previous launch's
 `mem_outstanding`. The hold covers two cases: every slot in flight, or the
@@ -410,7 +397,7 @@ following cycle and may overlap a new handoff. Low-BRAM traffic therefore
 keeps the original back-to-back cadence, while MMIO pays the mandatory staging
 cycle.
 
-Back-to-back issue without dropped results took three coupled pieces: the
+Back-to-back issue requires three constraints: the
 priority encoder masks out entries already in flight, SQ-check capture fires
 the same cycle the previous candidate launches, and `lq_data` port 0 is
 reserved for the memory response while port 1 handles cache hits, SQ forwards,
@@ -431,29 +418,16 @@ a partial flush marks the younger slots, a full flush all of them, and a
 marked slot's response is drained and frees it) and its own
 store-invalidation bit for the L0 fill guard.
 
-A marked slot is dead until its response lands: the flush that marked it
-freed its load's entry, which a later load may occupy, while the slot still
-names that index and the dead load's ROB tag (the ROB reuses tags right
-after a partial flush, so the stale tag has no age). A later partial flush
-therefore never judges a marked slot (`cs_flushed` requires `!cs_drop`).
-Judging it by the stale tag cleared `lq_issued` on the live occupant, which
-could then launch a second time: its first response completed and freed the
-entry, and the next load allocated there could accept the second response
-as its own data, a wrong value under a correct tag. For a byte/half/word
-load the completion bypass can make it worse: `resp_bypass_fire` frees the
-entry and broadcasts `bypass_tag`, the slot's stale tag, so the ROB completes
-whichever instruction holds that tag with the foreign data and the entry's
-load never completes. `lq_stale_slot_probe` reproduces the double launch.
-The simulation assertions state the contract the fix restores: a live slot
-(`cs_valid && !cs_drop`) names a valid, issued entry holding its tag, no two
-live slots name one entry, no launch targets an entry a live slot names, and
-a response completes only the load that launched it. The launch check also
-covers the staged `sq_check` candidate, which is never re-validated against
-its entry after capture (`sq_check_entry_valid` is `sq_check_pending`): a
-staged copy of an entry that was freed and reallocated would still launch,
-and both launch snapshots take its old tag (`sq_check_rob_tag_q`), which the
-launch-tag check reports as disagreeing with the entry's current
-`lq_rob_tag`.
+A drop-marked slot stays dead until its response arrives; its queue index and
+ROB tag may already belong to another load. Later partial flushes must not
+age-judge that stale identity (`cs_flushed` requires `!cs_drop`). Assertions
+and `lq_stale_slot_probe` check:
+
+- A live slot names a valid, issued queue entry with the same ROB tag.
+- Live slots never share a queue entry, and a launch cannot reuse one.
+- A response completes only its issuing load.
+- A staged `sq_check` launch still matches the current entry/tag; the staged
+  payload is not independently revalidated after capture.
 
 The fast owner's flush kill is
 evaluated from the fast snapshot, never from the response-owner mux, so a
@@ -527,14 +501,10 @@ and kept as nets, so each pulse is one gate of the valids against them. Slot 1's
 own pulse selects the payload source. Simulation and formal compare the expanded
 pulses against the enable-then-steer form they replace.
 
-Both alloc enables carry the ROB's flush gate (`!i_flush_all &&
-!i_flush_en`). Dispatch presents alloc requests un-flush-gated: on
-trap/xRET/FENCE-class pulse cycles a straggler's fire can coincide with the
-flush, so the LQ must reach the ROB's reject verdict on the same cycle.
-Without the gate, a partial-flush-cycle alloc wrote a ghost entry: the alloc
-arm runs after the invalidate loop in the same `always_ff` (last-write-wins),
-leaving a valid entry whose tag the ROB never allocated. That was a slot leak,
-then a duplicate-tag pair once the rewound tail re-issued the tag.
+Dispatch does not flush-gate its allocation requests. Both LQ allocation
+enables therefore carry `!i_flush_all && !i_flush_en`, matching the ROB's
+rejection on a flush cycle. Otherwise the allocation arm could overwrite
+invalidation and leave a queue entry with an unallocated or reused ROB tag.
 
 The registered dispatch back-pressure flags use a conservative reservation
 count. They include each raw slot request that would fit the pre-edge exact
@@ -548,9 +518,8 @@ stale-low capacity decision.
 
 ## Performance counters
 
-The LQ emits pulses for the wrapper's performance counters so the head-load
-wait bucket, historically a large fraction of CoreMark idle time, can be
-attributed. L0 hits and fills are counted directly. The head-load wait is
+The LQ emits performance events for the wrapper. L0 hits and fills are counted
+directly. The head-load wait is
 split into five sub-buckets (`addr_pending`, `sq_disambig`, `bus_blocked`,
 `cdb_wait`, `post_lq`), and the `bus_blocked` bucket is further split into
 five mutually exclusive causes (`bb_issued`, `bb_bus_busy`, `bb_amo`,

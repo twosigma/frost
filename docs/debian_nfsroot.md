@@ -1,23 +1,13 @@
 # Debian on an NFS root
 
-This guide boots Debian 13 (trixie, riscv64) on the Alveo X3 with Debian's own
-kernel and its root filesystem on an NFSv3 export, reached over the NIC's
-10GBASE-R link. The export holds the kernel (`linux-image-riscv64`), the NIC
-driver built as a DKMS module from
-[`linux/frost-net10g`](../linux/frost-net10g/README.md), and the initramfs that
-Debian's initramfs-tools generates, which loads the driver, configures the
-interface and mounts the export. `load_software.py` packs that kernel and
-initramfs with this repository's OpenSBI and device tree
-(`sw/apps/linux_boot`) and loads them over JTAG. The boot contract (bootargs,
-`ip=` syntax, MAC address, advertised memory) is in
-[`linux/README.md`](../linux/README.md), "NFS root" and "Memory map".
+Boot Debian 13 (trixie, riscv64) on the Alveo X3 from an NFSv3 root over
+10GBASE-R. Debian's initramfs loads the FROST NIC module and mounts the export;
+the JTAG loader packs it with the kernel, OpenSBI, and device tree.
+See the [Linux boot contract](../linux/README.md).
 
-The steps were verified on an X3 at its rated 300 MHz clock with Debian's
-6.12.107+deb13-riscv64 kernel. A half-clock bitstream
-(`--cpu-clock-div 2`, [`fpga/README.md`](../fpga/README.md), "Functional-validation
-builds") boots the same way, roughly twice as slowly. The examples use 192.0.2.1
-for the server, 192.0.2.2 for the board and `/srv/nfs/debian` for the export;
-substitute your own.
+Examples use server `192.0.2.1`, board `192.0.2.2`, and export
+`/srv/nfs/debian`; substitute your own values. Set the software clock to match
+the bitstream; divided-clock builds take longer to boot.
 
 ## Requirements
 
@@ -32,16 +22,11 @@ What the board needs from the network:
 | Firewall | TCP from the board to the server's rpcbind (111), mountd and nfsd (2049). mountd's port is dynamic unless `port=` is set under `[mountd]` in `/etc/nfs.conf`. |
 | apt (optional) | DNS, a route to a Debian mirror or an apt proxy, and a time source: the board has no RTC. |
 
-Also needed: a terminal on the board's UART at 115200 8N1, and a host with
-Vivado that programs the X3 and runs `load_software.py`
-([`fpga/README.md`](../fpga/README.md)) with `make`, `dtc` and the
-`riscv64-linux-` toolchain. OpenSBI comes from this repository's Buildroot
-build, so that host's checkout needs the `linux/buildroot` submodule and the
-Buildroot images, built once
-([`linux/buildroot-external/README.md`](../linux/buildroot-external/README.md),
-"Build"); without the images, the loader starts that build itself. That build
-also fetches the pinned Debian kernel, which this boot then overrides with the
-export's own; the loader reads Debian's kernel and initramfs by path (step 5).
+The loading host needs Vivado, Python, Make, dtc, the
+[native RISC-V compiler](tooling.md#shared-risc-v-toolchain), and access to the
+kernel/initramfs files. Open a UART terminal at 115200 baud, 8N1.
+The loader builds missing [firmware/test-image components](../linux/buildroot-external/README.md#build)
+automatically.
 
 ## 1. Build the root filesystem
 
@@ -66,18 +51,11 @@ chroot ${R:?} apt-get install -y --no-install-recommends \
   linux-image-riscv64 linux-headers-riscv64 dkms
 ```
 
-mmdebstrap takes a few minutes and leaves a tree of about 200 MB; the kernel,
-its headers and the compiler DKMS uses bring it to about 1.1 GB.
-`linux-image-riscv64` installs whatever trixie currently holds, so the version
-it lands can be newer than the one `linux/debian_kernel.py` pins for the test
-initramfs; both boot, and step 5 notes what keeping them equal buys. Naming the
-mirror leaves only `trixie main` in the tree's apt sources; without it,
-mmdebstrap also adds `trixie-updates` and `trixie-security`. The chroot's apt
-resolves names through the tree's `/etc/resolv.conf`, which is still the
-server's copy until step 2 replaces it. Installing the kernel builds an
-initramfs without the NIC driver, which step 3 rebuilds, and prints
-`W: No zstd in /usr/bin:/sbin:/bin, using gzip`: zstd is only a
-recommendation, and the kernel reads gzip as well.
+The tree needs about 1.1 GB including kernel headers and build tools.
+The installed kernel may differ from the repository pin; always load its
+matching initramfs. Hardware regression requires the pinned release.
+The explicit mirror selects `trixie main`; configure updates/security sources
+as needed. The chroot initially uses the server's copied resolver settings.
 
 ## 2. Configure the tree
 
@@ -109,9 +87,7 @@ echo 'nameserver <resolver-ip>' > ${R:?}/etc/resolv.conf
 mkdir -p ${R:?}/etc/systemd/timesyncd.conf.d
 printf '[Time]\nNTP=<ntp-server>\n' > ${R:?}/etc/systemd/timesyncd.conf.d/ntp.conf
 
-# Console autologin as root: for debugging, and required by the hardware
-# regression, which logs in on this console ("Hardware regression"). Root has no
-# usable password, so the getty has to log it in by itself.
+# Console root autologin, required by hardware regression.
 mkdir -p ${R:?}/etc/systemd/system/serial-getty@ttyS0.service.d
 cat > ${R:?}/etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf <<'EOF'
 [Service]
@@ -119,12 +95,7 @@ ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noreset --noclear --keep-baud 115200,57600,38400,9600 - ${TERM}
 EOF
 
-# That getty waits for udev to produce /dev/ttyS0, and systemd stops waiting
-# after DefaultDeviceTimeoutSec. At the rated clock the device appears around
-# 51s and the default 90s is ample, but a divided-clock bitstream is slow
-# enough to miss it, and the console then has no login prompt at all
-# ("Troubleshooting"). Raising it costs nothing on a board that was going to
-# make the default anyway.
+# Allow slower bitstreams enough time for udev to create ttyS0.
 mkdir -p ${R:?}/etc/systemd/system.conf.d
 cat > ${R:?}/etc/systemd/system.conf.d/device-timeout.conf <<'EOF'
 [Manager]
@@ -144,13 +115,9 @@ EOF
 
 ## 3. Build the NIC driver into the initramfs
 
-Debian's kernel has no FROST driver and mounts an NFS root only from its
-initramfs, so the driver is built as a DKMS module and listed for the
-initramfs, as [`linux/frost-net10g/README.md`](../linux/frost-net10g/README.md)
-describes ("As a DKMS module on Debian"). In the chroot, `uname -r` is the
-server's kernel, so every command below names the tree's kernel with `-k`.
-Run them from the top of a checkout of this repository on the server, after
-step 2:
+Build the [DKMS module](../linux/frost-net10g/README.md) and include it in
+the initramfs. Run from the repository root on the server. Explicit `-k`
+selects the target kernel because chroot's `uname -r` reports the host kernel.
 
 ```bash
 R=/srv/nfs/debian
@@ -168,12 +135,9 @@ chroot ${R:?} update-initramfs -u -k "$K"
 chroot ${R:?} lsinitramfs "/boot/initrd.img-$K" | grep frost_net10g
 ```
 
-A fresh tree has one kernel in `/lib/modules`; with more, set `K` to the one
-to boot. The last command must print
-`usr/lib/modules/<version>/updates/dkms/frost_net10g.ko.xz`. Nothing else in
-`/etc/initramfs-tools` changes: `initramfs.conf` keeps Debian's defaults, whose
-`MODULES=most` carries the NFS client, and the bootargs that step 5 packs
-select the NFS boot, the export and the interface.
+With multiple kernels installed, set `K` explicitly. `lsinitramfs` must show
+`frost_net10g.ko` (possibly compressed) under that version's module directory.
+Keep `MODULES=most` to include the NFS client.
 
 ## 4. Export it
 
@@ -189,14 +153,9 @@ showmount -e localhost       # lists the export
 If version 3 is missing, set `vers3=y` under `[nfsd]` in `/etc/nfs.conf` and
 restart `nfs-server`.
 
-Give the export a filesystem of its own, rather than leaving it a directory on
-the server's root. The board has write access to it, so anything that fills it
--- a runaway log, an apt cache, a mistyped `dd` -- otherwise fills the
-server's root filesystem and takes the rest of that machine down with it. NFS
-also reports the server's free space to the board, so `df` there describes the
-server rather than anything the board owns. A partition or a logical volume
-works; so does a file the server mounts as a filesystem, which costs only the
-space it holds and makes the board's whole root one file to copy or snapshot:
+Use a separate filesystem or size-limited image for the export so filling the
+board's root cannot fill the server's root. For a file-backed filesystem, with
+the board stopped:
 
 ```bash
 truncate -s 20G /srv/nfs/debian.img          # sparse: no space used yet
@@ -224,60 +183,26 @@ kernel and initramfs:
 K=6.12.107+deb13-riscv64   # step 3's K, the version in the tree's /boot
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
 FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
+FROST_LINUX_KERNEL=/srv/nfs/debian/boot/vmlinux-$K \
 FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
   ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
-- `FROST_CPU_CLK_HZ` must match the programmed bitstream's CPU clock; unset,
-  it is the rated 300 MHz.
-- `FROST_LINUX_IP` is the `ip=` that the initramfs's `ipconfig` reads, in the
-  kernel's syntax, and `dhcp` when unset. Its gateway field (192.0.2.1 here)
-  is the board's default route, which step 7 uses. `FROST_LINUX_MAC=<board-mac>`
-  sets the NIC's address when other FROST boards share the network.
-- The loader packs Debian's pinned kernel unless `FROST_LINUX_KERNEL` names
-  another; `FROST_LINUX_INITRD` is needed here because the default is the test
-  initramfs, which mounts no NFS root. Both are absolute paths, on the host
-  that runs the loader, to a kernel and initramfs of one version; if that host
-  is not the server, copy the files to it. The packer takes the kernel
-  as an uncompressed Linux `Image`, which it recognizes by its header, and
-  decompresses nothing. Debian installs its riscv64 kernel that way, as
-  `/boot/vmlinux-<version>`; the tree's `/vmlinuz` links to it, and `file`
-  reports `Linux kernel RISC-V boot executable Image, little-endian`. The
-  initramfs is packed as it is and the kernel unpacks it, so initramfs-tools'
-  output needs no conversion. `file` reports it as an ASCII cpio archive
-  because its first segment holds the already-compressed modules uncompressed;
-  the rest is compressed.
-- Before loading, the packer prints a summary that must read `Linux Image`,
-  not `raw payload`, and `memory 0x40000000 B`. With this kernel it puts the
-  DTB at `0x82200000` and the initramfs at `0x82210000`. The image is about
-  78 MB, and the load takes several minutes.
-- The hardware regression's Linux stage boots this root, with these same
-  variables ("Hardware regression" below). Its preflight requires the kernel to
-  be the version `linux/debian_kernel.py` pins, so that one kernel is under test
-  whether the board boots this root or the test initramfs
-  ([`linux/README.md`](../linux/README.md), "Kernel"); by hand, a root on a
-  different version still boots here, since these variables override the pin.
+- Set `FROST_CPU_CLK_HZ` for a clock other than 300 MHz and use a unique
+  `FROST_LINUX_MAC` for each board.
+- `FROST_LINUX_IP` uses the kernel `ip=` syntax; unset defaults to DHCP.
+- Kernel and initramfs paths must be absolute and readable on the loading host.
+  Debian's `vmlinux-<version>` is an uncompressed RISC-V `Image`; no conversion
+  is needed. The kernel unpacks the initramfs.
+- Check the packer's summary: `Linux Image` and `memory 0x40000000 B` for X3.
+  Loading the image takes several minutes.
 
-At 300 MHz the console shows the following, and `systemd-analyze` then
-reports about 1 min 9 s in the kernel, initramfs included, and 1 min 42 s in
-userspace. A half-clock bitstream takes roughly twice as long at every step:
-
-| Kernel time | Console |
-|---|---|
-| ~12 s | the serial console hands over: `printk: legacy console [ttyS0] enabled` |
-| ~20 s | `Run /init as init process`, then `Loading, please wait...` |
-| ~40 s | `frost_net10g 40030000.ethernet eth0: FROST net10g, IRQ <n>, MAC <board-mac>`, after two lines saying that the module taints the kernel |
-| ~45 s | `IP-Config: eth0 complete:` and the address |
-| ~55 s | `Begin: Running /scripts/nfs-bottom ... done.`, with no `Retrying nfs mount` lines before it |
-| ~81 s | the systemd banner, then `Welcome to Debian GNU/Linux 13 (trixie)!` |
-| ~2 min | `Found device dev-ttyS0.device`, then the console login |
-| ~3 min | `Reached target multi-user.target`; SSH answers |
-
-Two other messages look like errors but are expected. Early on, the kernel
-lists `boot=nfs`, `nfsroot=` and `ip=` as
-`Unknown kernel command line parameters`: the initramfs reads them. With a
-static address, the initramfs prints
-`no search or nameservers found in /run/net-eth0.conf`.
+At 300 MHz, allow about three minutes after loading for multi-user startup.
+The console should show the NIC, `IP-Config: eth0 complete`, the NFS mount,
+and Debian/systemd startup. Divided-clock builds take roughly proportionally
+longer. `Unknown kernel command line parameters` for `boot=nfs`, `nfsroot`,
+and `ip` is expected: the initramfs consumes them. Static IP setup can also
+report missing search/nameserver values; configure DNS in the root tree.
 
 ## 6. Verify
 
@@ -296,11 +221,8 @@ free -m                        # ~940 MiB of the X3's 1 GiB
 
 ## Hardware regression
 
-`fpga/hw_regression.py`'s Linux stage boots this root: it is the gate an RTL
-change has to pass, so it runs what the board ships rather than a test image
-([`../fpga/README.md`](../fpga/README.md), "Hardware regression"). It asks for
-only the two values this guide's network decided -- the export and the board's
-address -- and takes them from `fpga/site.env`, which git ignores:
+The Linux stage boots this Debian root. Configure the export and board
+address in the Git-ignored `fpga/site.env`:
 
 ```
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian
@@ -332,38 +254,16 @@ What the stage needs beyond a root that boots by hand:
 | A server on the board's own subnet | `frost_nettest` takes the root's interface down. The kernel brings that interface's connected route back by itself, but not a route through the gateway, so a server reached through one may leave the root stranded. The preflight says which case this is, and the stage checks that the root came back. |
 | The initramfs rebuilt after a driver change | The stage boots the initramfs it is given, and the driver in it is the DKMS build made in step 3. After editing `linux/frost-net10g`, redo step 3 -- otherwise the run exercises the module built last time. |
 
-The preflight runs before the first stage, and every failure it reports begins
-`environment not ready (not a board failure)` and shows as `ENV_FAIL` rather
-than a stage failure, so a server that is down or an export that is not
-prepared never reads as an RTL regression.
+Preflight runs before any stage and reports setup failures as `ENV_FAIL`.
+`--linux-timeout` defaults to 1200 seconds for loading, booting, systemd, and
+tests; increase it for slower bitstreams.
 
-The stage's own budget (`--linux-timeout`, 1200 s by default) covers the JTAG
-load of the ~78 MB image, the boot, systemd's startup and every program it
-types. A half-clock bitstream takes roughly twice as long at every step, so
-raise it there.
-
-On the board the stage checks the root mount and systemd's state, runs the
-stress payload and the counter run, and ends with `frost_nettest`. That program
-puts the NIC into loopback, which takes down the interface the root is mounted
-over and raises its MTU, so the line around it:
-
-- runs the program from a copy in `/dev/shm`, statically linked, so nothing has
-  to be read from the root while its link is down;
-- turns IPv6 off on the interface first, because the autoconfiguration frames a
-  link-up sends come back through the loopback and fail the program's idle
-  checks (the packer's own bootargs carry `ipv6.disable=1` for that reason, and
-  an NFS root's do not);
-- restores the MTU, the interface flags and that setting through sysfs;
-- and writes a file on the root and syncs, bounded, with a status the stage
-  requires: creating a file is a round trip to the server, so that status is
-  what proves the link, the route and the server all came back instead of
-  reporting a pass over a root that is gone. A stranded root fails the stage
-  with `the root did not come back after frost_nettest`.
-
-Two traces are left in the tree: the two programs in `/usr/local/bin`, and
-nothing else -- the stress payload creates `/frost_stress.shm` for its futex
-phase and unlinks it. `reboot` is still not a thing on this SoC, so load again
-for the next boot ("Operation").
+The stage checks NFS and systemd, runs stress and counter tests, then runs
+`frost_nettest` from executable `/dev/shm` because loopback temporarily removes
+the root's network link. It disables IPv6 during the test, restores the MTU,
+interface flags, and IPv6 setting, then requires a bounded write-and-sync to
+NFS to prove recovery. The test tools remain in `/usr/local/bin`.
+Reload the image for the next boot; the SoC has no software reset.
 
 ## 7. apt
 
@@ -439,23 +339,23 @@ A kernel update takes effect only after a new load (see "Operation").
 
 ## Troubleshooting
 
-| Console shows | Cause and fix |
-|---|---|
-| `Begin: Waiting up to 180 secs for eth0 to become available ... Failure: Network device did not appear in time` (`for any network device` with DHCP), then `ipconfig:` errors such as `eth0: SIOCGIFINDEX: No such device` | The initramfs has no NIC driver for the running kernel, and the `frost_net10g ... eth0: FROST net10g` line is missing. The initramfs's `modprobe` is quiet, so run step 3's `lsinitramfs` check on the packed initramfs: it must list `frost_net10g.ko.xz` under `usr/lib/modules/<version>`, for the version on the console's `Linux version` line. Nothing listed means the module was not listed in `/etc/initramfs-tools/modules` or DKMS never built it for that kernel (`dkms status` in the chroot): redo step 3. Another version means `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD` name different versions. |
-| `IP-Config: no response after N secs - giving up`, repeated | With DHCP: no answer. Fix the DHCP server or the reservation, check that the partner port has a link, or set a static `FROST_LINUX_IP`. |
-| After `IP-Config: eth0 complete`, errors such as `connect: No route to host` or `NFS over TCP not available from 192.0.2.1`, and a `Begin: Retrying nfs mount ...` line per attempt | The board cannot reach the server's rpcbind, mountd or nfsd over TCP: no link (an SFP+ 10GBASE-R module in the DSFP28 cage labelled 2, fiber from each end's TX to the other's RX, and the partner port up at 10GBASE-R), a wrong server address in `FROST_LINUX_NFSROOT`, or the firewall. `NFS over TCP not available` with no error line before it means rpcbind answered but lists no NFSv3 over TCP (step 4's `rpcinfo` check). |
-| `mount call failed - server replied: Permission denied.`, then `Begin: Retrying nfs mount ...` | The server refused the mount: check the export's path and client address (`exportfs -v`). |
-| `Target filesystem doesn't have requested /sbin/init.`, `No init found. Try passing init= bootarg.` and an `(initramfs)` prompt | After mount errors, the initramfs gave up on the mount (the rows above). With none, the export mounted but is not a complete riscv64 root: a wrong path, an empty directory, or an interrupted mmdebstrap. |
-| Permission errors from systemd and services after the root mounts | The export squashes root: add `no_root_squash` and run `exportfs -ra`. |
-| `nfs: server 192.0.2.1 not responding, still trying` | The server or the link is down. The hard mount waits and logs `nfs: server 192.0.2.1 OK` when it returns. |
-| systemd stalls, or the root stops responding once userspace starts | Something renamed or reconfigured eth0: check the `99-default.link` mask and that no `interfaces` stanza, DHCP client, systemd-networkd or NetworkManager touches eth0. |
-| `[ TIME ] Timed out waiting for device dev-ttyS0.device - /dev/ttyS0.`, then `[DEPEND] Dependency failed for serial-getty…S0.service - Serial Getty on ttyS0.` | udev reached ttyS0 after systemd stopped waiting for it (`DefaultDeviceTimeoutSec`, 90 s by default), so the console has no login prompt; SSH is unaffected. At 300 MHz the device appears around 51 s and the getty starts, so this is a symptom of a slower bitstream or a slow server: step 2's `device-timeout.conf` raises the wait to 300 s, which is enough for a divided-clock build. |
-| `eth0: re-enabled RX after a MAC domain reset (N)` | Informational: the transceiver reset its receiver while the link was down, and the driver enabled receive again when the carrier returned. |
-| apt: `Release file for ... is not valid yet` | The clock is behind. Fix the time source, or set the date as in step 7. |
-| apt: `Temporary failure resolving ...` | No DNS: the tree's `/etc/resolv.conf`, or the board's route to that resolver. |
-| On the board, `modprobe` fails with `Module ... not found in directory /lib/modules/<version>` | `ls /lib/modules` must list `uname -r`. If it does not, the running kernel's package was removed while the board still boots it, by `apt autoremove` in a chroot for example: reinstall that package, or load an installed kernel (step 5). If it does, the module is not built for this kernel; for `frost_net10g`, check `dkms status` and install it as in step 3. |
-| ssh: `Permission denied (publickey)` | `/root/.ssh` must be mode 700 and `authorized_keys` 600, both owned by root, holding the client's public key. |
-| The hardware regression's `linux_boot` stage times out at the login prompt, or `Login incorrect` | The console getty is not logging root in: add the step 2 drop-in. If the prompt never appears at all, the getty never started (the `dev-ttyS0.device` row above). |
-| That stage stops with `systemd is degraded, not running` | A unit failed. The capture lists them immediately above, from the same command; on the board, `systemctl --failed` and `systemctl status <unit>`. |
-| That stage reports `/dev/shm/frost_nettest: Permission denied` | `/dev/shm` is mounted `noexec` in this tree. The stage runs the program from tmpfs because the program takes the root's own link down; drop `noexec` from that mount. |
-| That stage prints `environment not ready (not a board failure)` and runs nothing | The preflight rejected this host's view of the root -- the export, the server's NFSv3, the kernel or initramfs paths, the kernel's release, the writable `usr/local/bin`, or the cross compiler. The message names which and what to do ("Hardware regression"). |
+| Symptom | Check |
+|---------|-------|
+| eth0 never appears; `SIOCGIFINDEX: No such device` | Run `lsinitramfs` and `dkms status`: the loaded initramfs needs `frost_net10g` for the loaded kernel. Rebuild as in step 3. |
+| DHCP `IP-Config: no response` | Check link and DHCP reservation, or select a static IP. |
+| Repeated NFS mount retries; `No route to host` / `NFS over TCP not available` | Check the 10G optical link, server address, firewall, and `rpcinfo -p` for NFSv3/TCP. |
+| NFS `Permission denied` | Check export path/client address with `exportfs -v`. |
+| No `/sbin/init` after mount attempts | Resolve mount errors first; otherwise check that the export is a complete riscv64 root. |
+| Service permission errors after mounting | Set `no_root_squash` and re-export. |
+| `nfs: server ... not responding` | Restore the server/link; the hard mount resumes when it returns. |
+| Root stops responding after userspace starts | Prevent renaming/reconfiguration of eth0; check step 2's mask and network managers. |
+| ttyS0 device timeout; no console login | Increase `DefaultDeviceTimeoutSec` as in step 2; SSH can still work. |
+| `eth0: re-enabled RX after a MAC domain reset` | Informational link-recovery message. |
+| apt metadata is not valid yet | Set the clock or fix NTP. |
+| apt cannot resolve names | Check `/etc/resolv.conf` and the route to its resolver. |
+| Module missing under `/lib/modules/<version>` | Keep the running kernel installed; install its module or reload an installed kernel. Chroot autoremove sees the host kernel. |
+| SSH public-key rejection | Check key contents, root ownership, mode 700 on `.ssh`, and mode 600 on `authorized_keys`. |
+| Regression waits at login / `Login incorrect` | Add the console autologin drop-in from step 2. |
+| Regression reports degraded systemd | Inspect `systemctl --failed` and `systemctl status <unit>`. |
+| `/dev/shm/frost_nettest: Permission denied` | Remove `noexec` from the tmpfs used by the regression. |
+| Regression `ENV_FAIL` | Follow the reported export, NFSv3, kernel/initramfs, write-permission, or compiler error. |

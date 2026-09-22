@@ -84,8 +84,7 @@ module x3_frost #(
   );
 
   // Mixed-Mode Clock Manager (MMCM) for PLL-based clock generation.
-  // The target is 300 MHz for timing closure. 322 MHz may be worth revisiting.
-  // The original 322.265625 MHz configuration, kept for reference:
+  // Rated clock: 300 MHz. The roadmap's 322.265625 MHz target uses:
   //   .DIVCLK_DIVIDE   (8),       // Pre-divider: 300MHz / 8 = 37.5MHz
   //   .CLKFBOUT_MULT_F (34.375),  // VCO: 37.5MHz × 34.375 = 1289.0625 MHz
   //   .CLKOUT0_DIVIDE_F(4.0)      // Output: 1289.0625MHz / 4 = 322.265625 MHz
@@ -324,11 +323,10 @@ module x3_frost #(
   );
 
   // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU).
-  // Clock: 300 MHz / CPU_CLK_DIV (300 was reduced from 322.265625 MHz for
-  // timing closure)
+  // Clock: 300 MHz / CPU_CLK_DIV.
   // X3 has no push-button reset, so the subsystem stays in reset until the
-  // MMCM locks and the DDR4 controller reports calibration (mem_ok). The
-  // cached tier then works from the first instruction.
+  // MMCM locks, DDR4 calibrates, and ECC initialization completes. The
+  // cached tier is ready for the first instruction.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(CpuClkHz),
       // X3's L1 BRAM + L2 URAM hierarchy is backed by the DDR4 controller

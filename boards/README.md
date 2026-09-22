@@ -1,154 +1,71 @@
-# FROST FPGA Board Support
+# FPGA Board Support
 
-Each board subdirectory holds its top-level RTL wrapper, synthesis file list,
-and pin constraints. Xilinx IP generation lives under `fpga/build/`.
-
-## Supported Boards
-
-| Board     | FPGA                               | CPU Clock | Cache hierarchy → main memory                          |
-|-----------|------------------------------------|-----------|--------------------------------------------------------|
-| [X3](x3/) | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz   | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-
-X3 provides 256 KiB of local BRAM and 1 GiB of cached DDR at `0x8000_0000`.
-The CPU starts after DDR calibration completes and the region has been
-written once.
+The supported board is the **Alveo X3522PV (X3)**, with a 300 MHz CPU,
+256 KiB BRAM, 16 KiB L1I, 128 KiB L1D, 2 MiB URAM L2, and 1 GiB DDR4.
+See the [FPGA guide](../fpga/README.md) for build, programming, and loading commands.
 
 ## Architecture Overview
 
-The X3 wrapper connects three blocks: `xilinx_frost_subsystem` for the CPU,
-BRAM, loading, and debug; `ddr_subsys` for DDR4 and its JTAG loader; and
-`x3_nic_gty` for the Ethernet transceiver and MAC clocks.
+[![X3 clocks, memory, loading, and debug connections](../docs/diagrams/x3-board-integration.svg)](../docs/diagrams/x3-board-integration.svg)
 
-[![X3 board integration: CPU and divided clocks, separate BRAM and DDR loaders, BSCAN debug, shared DDR AXI, and reset sequencing](../docs/diagrams/x3-board-integration.svg)](../docs/diagrams/x3-board-integration.svg)
+| Module | Role |
+|--------|------|
+| `xilinx_frost_subsystem.sv` | CPU/BRAM, JTAG software loader, BSCAN debug, reset timers |
+| `x3/x3_frost.sv` | Board clocks, DDR and NIC integration, reset sequencing |
+| `x3/x3_ddr_init.sv` | Initialize the exposed DDR region with valid ECC |
+| `x3/x3_nic_gty.sv` | Ethernet transceiver, MAC clocks, reset supervisor |
+| `x3/constr/x3.xdc` | Pins and timing constraints |
 
-Module boundaries are shown; individual modules span several clock domains.
-The core and runtime memory ports use the CPU clock, while UART, software
-loading, and the common subsystem's reset timers use CPU clock/4. BSCAN and
-the DTM transport use JTAG TCK and cross into the CPU domain. SmartConnect
-bridges the CPU, /4, and independent DDR UI clocks; the DDR controller has a
-separate 300 MHz reference input.
+`x3/x3_frost.f` lists board RTL. The Vivado flow generates loader, DDR, and
+transceiver IP using `fpga/build/build_step.tcl`, `x3_ddr_bd.tcl`, and
+`x3_gty_ip.tcl`.
 
-The cache bridge presents 256-bit AXI with addresses relative to the cached
-region. SmartConnect combines it with the DDR JTAG master and converts to
-the controller's 512-bit memory AXI interface. The first 1 GiB is mapped at
-CPU address `0x8000_0000`; the controller's ECC management interface is
-reachable only from the DDR JTAG master, at region offset `0x4000_0000`.
+The cache bridge sends 256-bit AXI with region-relative addresses.
+SmartConnect combines it with the DDR JTAG master, crosses the CPU, CPU/4,
+and DDR UI clocks, and converts to the controller's 512-bit interface.
+CPU address `0x80000000` maps the first 1 GiB. Only the DDR JTAG master can
+reach ECC management, at region offset `0x40000000`.
 
-The 72-bit DDR interface uses ECC. After calibration, `x3_ddr_init` zeroes
-the exposed region using full-width writes so every location has valid ECC
-before any read. This takes about 110 ms at the rated clock. Read the
-controller's error state with `fpga/ddr_ecc/ddr_ecc_status.py`.
+After calibration, `x3_ddr_init` zeroes the region with full-width writes
+before reads are allowed (about 110 ms at the rated clock). Synchronized
+calibration, MMCM lock, and initialization completion release the common
+subsystem and DDR loader. DDR transport reset depends on MMCM lock;
+startup and image-load holds are separate. Inspect ECC with
+`fpga/ddr_ecc/ddr_ecc_status.py`.
 
-DDR calibration passes through a two-flop synchronizer in `x3_frost`, and
-that, the MMCM lock and the region writer's completion together release the
-common subsystem reset and the DDR JTAG master, so nothing reads or writes the
-array before it has been written. DDR transport reset depends on MMCM lock;
-startup and image-load holds apply separately inside the common subsystem. The diagram selects the board-level connections; see the
-[CPU architecture diagram](../docs/diagrams/frost-architecture.svg) for the
-core and cache hierarchy.
+## Clock Generation
+
+| Domain | Clock |
+|--------|-------|
+| CPU | 300 MHz input × 4 / 1 / 4 = 300 MHz |
+| Loader, UART, reset timers | CPU/4 = 75 MHz |
+| DDR reference | Independent 300 MHz |
+| Ethernet TX / recovered RX | GTY user clocks, about 161.13 MHz |
+| GTY reset controller | Input/2 = 150 MHz, independent of MMCM and link |
+
+`CPU_CLK_DIV=N` divides the CPU and CPU/4 domains by N; DDR and Ethernet
+clocks are unchanged. Use `build.py --cpu-clock-div N`, and match the software
+clock when loading. `PERF_COUNTERS` is controlled by `--perf-counters` and
+`--no-perf-counters`; it defaults off at full rate and on in divided-clock builds.
 
 ## JTAG-based software loading
 
-Programs load over JTAG without reprogramming the FPGA bitstream. Program the
-bitstream once, then run `fpga/load_software/load_software.py` (a Vivado
-hardware-manager Tcl flow) for each new image. One load runs as follows:
-
-1. If the app emitted a non-empty `sw_ddr.txt`, the loader writes the first
-   word of the low-BRAM image to address 0 to assert the image-load reset,
-   then bursts the cached-region image into DDR through the board's second
-   JTAG-AXI master (`jtag_axi_ddr` inside `ddr_subsys`). A multi-MB image
-   outlasts the reset counter, so the loader repeats that low-BRAM write
-   between bursts to re-arm it.
-2. The loader writes the full low-BRAM image (`sw.txt`) from address 0.
-3. The CPU starts when the image-load reset counter expires after the last
-   write.
-
-The image-load reset in `xilinx_frost_subsystem` runs on the /4 clock. Every
-low-BRAM write asserts the CPU reset and restarts a 27-bit cycle counter, so
-the CPU is released about 1.8 s after the last write on X3's 75 MHz /4 clock
-with the loading sequence above keeping it in reset throughout the transfer.
-A 16-bit startup counter also delays the programming IP and CPU after the
-board reset releases. `frost` then synchronizes its combined reset into the
-CPU and /4 domains.
+The loader resets the CPU with a low-BRAM write, bursts any `sw_ddr.txt`
+image through `jtag_axi_ddr`, then writes `sw.txt` to BRAM. Keepalive BRAM
+writes during DDR transfer re-arm reset. Every BRAM write restarts a 27-bit
+CPU/4 counter; execution starts about 1.8 seconds after the last write at
+300 MHz. A separate 16-bit startup counter delays programming IP and CPU
+release after board reset. `frost` synchronizes resets into both clock domains.
 
 ## RISC-V debug over BSCAN (OpenOCD)
 
-The RISC-V debug module's transport shares the FPGA's own JTAG
-TAP. `xilinx_frost_subsystem` instantiates two `BSCANE2` USER chains, USER3
-for the DTM's `dtmcs` register and USER4 for `dmi`; the Vivado debug hub
-behind `jtag_axi` keeps USER1. The subsystem passes the BSCAN bundle into
-`frost` with `DEBUG_JTAG_TAP=0`. OpenOCD reaches the DTM through the FPGA's
-IDCODE and USER instructions (`riscv set_ir idcode 0x09`, `dtmcs 0x22`,
-`dmi 0x23`; six-bit FPGA IR). The configurations live in
-`fpga/debug/`. The cable has one owner: close Vivado's hw_server (the
-loader/programmer) before starting OpenOCD, and vice versa.
-
-## Directory Structure
-
-```
-boards/
-├── README.md                    # This file
-├── xilinx_frost_subsystem.sv    # Common subsystem (JTAG loader, BSCAN debug chains, BRAM, CPU, reset)
-└── x3/
-    ├── x3_frost.sv              # Clocks, DDR integration, calibration/reset, common subsystem
-    ├── x3_ddr_init.sv           # Writes the DDR region once after calibration (the array is ECC-checked)
-    ├── x3_nic_gty.sv            # NIC GTY transceiver: wizard core, free-running clock, reset supervisor
-    ├── x3_frost.f               # File list for synthesis tools
-    └── constr/
-        └── x3.xdc               # Pin assignments & timing constraints
-```
-
-The build flow generates the Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`),
-for DDR-capable boards the `ddr_subsys` block design, and for boards with a
-NIC transceiver its wizard core during synthesis (`fpga/build/build_step.tcl`
-sources `fpga/build/<board>_ddr_bd.tcl` and `fpga/build/<board>_gty_ip.tcl`),
-so no IP output tied to one Vivado release is checked in.
-
-## Building
-
-### Prerequisites
-
-- Xilinx Vivado (see [main README](../README.md#prerequisites) for validated versions)
-- Target FPGA development board
-- USB cable for JTAG programming
-
-### Synthesis
-
-For automated builds, use:
-```bash
-./fpga/build/build.py x3
-```
-
-For manual Vivado project setup:
-1. Create a new Vivado project targeting your board's FPGA
-2. Add the RTL sources:
-   - The CPU core, as listed in `hw/rtl/frost.f`
-   - `boards/xilinx_frost_subsystem.sv` (common subsystem)
-   - The board-specific wrappers (e.g., `x3/x3_nic_gty.sv` and `x3/x3_frost.sv`)
-3. Add the constraint file from `constr/`
-4. Generate the Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`), when the
-   board has DDR its `ddr_subsys` block design, and when it has a NIC
-   transceiver its wizard core; `fpga/build/build_step.tcl`,
-   `fpga/build/<board>_ddr_bd.tcl` and `fpga/build/<board>_gty_ip.tcl` hold
-   their configuration
-5. Set the top module (e.g., `x3_frost`)
-6. Run synthesis and implementation
-7. Generate the bitstream
-
-### Programming Software
-
-After the FPGA is programmed with the bitstream:
-
-1. Run `fpga/load_software/load_software.py <board> <app>`. It rebuilds the
-   application for the selected board by default.
-2. The loader bursts the cached-region image (`sw_ddr.txt`, when non-empty)
-   into DDR, then writes `sw.txt` to low BRAM; the CPU leaves reset once the
-   image-load counter expires (see
-   [JTAG-based software loading](#jtag-based-software-loading)).
+Debug shares the FPGA TAP: BSCANE2 USER3 carries `dtmcs`, USER4 carries `dmi`,
+and the Vivado debug hub uses USER1. The subsystem selects `DEBUG_JTAG_TAP=0`.
+The six-bit IR uses IDCODE `0x09`, DTMCS `0x22`, and DMI `0x23`; configurations
+live in `fpga/debug/`. Only one process can own the cable: stop the owning
+Vivado hardware server before OpenOCD, and vice versa.
 
 ## I/O Connections
-
-### X3
 
 | Signal       | Direction | Pin  | Description                            |
 |--------------|-----------|------|----------------------------------------|
@@ -160,39 +77,7 @@ After the FPGA is programmed with the bitstream:
 | `o_nic_txp` / `o_nic_txn` | Output | J7 / J6 | NIC transceiver TX (GTY X0Y28, DSFP28 cage labelled 2, lane 1) |
 | `i_nic_rxp` / `i_nic_rxn` | Input | K4 / K3 | NIC transceiver RX (GTY X0Y28) |
 
-Use 115200 baud, 8 data bits, no parity, and 1 stop bit (8N1) for the board
-UART debug console.
-
-## Clock Generation
-
-An MMCM generates each CPU clock from the board reference oscillator:
-
-| Board | Input Clock | VCO Freq | CPU Clock | Calculation     |
-|-------|-------------|----------|-----------|-----------------|
-| X3    | 300 MHz     | 1200 MHz | 300 MHz   | 300 × 4 / 1 / 4 |
-
-The X3 top takes a `CPU_CLK_DIV` parameter (`build.py --cpu-clock-div N`)
-that multiplies the MMCM output divide, so a functional-validation bitstream
-runs the CPU at 300/N MHz with the same RTL; the reference oscillator and the
-DDR4 controller clocking are unchanged.
-
-It also takes a `PERF_COUNTERS` parameter (`build.py --perf-counters`; left
-out of a full-rate build, included in a divided-clock build unless
-`--no-perf-counters`): 1 includes the profiling counters behind the `mperf*`
-CSRs, 0 leaves them out of the netlist, those CSRs read zero, and
-`mperfsel`/`mperfctl` ignore writes.
-
-Two `BUFGCE_DIV` instances share the MMCM output: divide-by-one supplies the
-CPU clock, and divide-by-four supplies the loader IP, UART, and reset timers.
-The /4 clock is 75 MHz by default and 75/N MHz when `CPU_CLK_DIV=N`. The
-DDR controller's dedicated 300 MHz reference is independent of both.
-
-The NIC's MAC clocks come from its GTY transceiver (`x3_nic_gty.sv`): TX and
-recovered RX user clocks at 161.13 MHz, derived from the 161.1328125 MHz
-reference clock, unaffected by `CPU_CLK_DIV`. The transceiver's reset
-controller runs on a third `BUFGCE_DIV`, which halves the 300 MHz input
-before the MMCM (150 MHz), so it runs from configuration and depends on
-neither the MMCM nor the transceiver.
+The UART console uses 115200 baud, 8N1.
 
 ## Adding Support for New Boards
 

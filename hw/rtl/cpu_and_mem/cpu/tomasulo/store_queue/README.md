@@ -88,7 +88,7 @@ strobe selecting the addressed lanes.
 ## Registered memory-write outputs
 
 The memory-write outputs (`o_mem_write_en`, `_addr`, `_data`, `_byte_en`,
-`_is_mmio`, `_is_cached`) are registered. This bounds the formerly critical
+`_is_mmio`, `_is_cached`) are registered. This bounds the critical
 `head_ptr → drain_ready → BRAM address` path at the SQ source.
 
 ## Pipelined drain
@@ -109,20 +109,20 @@ The bookkeeping:
 - `sq_sent` is set at launch (the fire cycle) for completing writes, so the
   drain cursor moves to the next entry immediately; the done side only frees
   entries (`sq_valid` clear).
-- A 2-bit in-flight counter plus a 2-deep in-order metadata FIFO (entry index
-  + completes flag, popped one per done) replace the old single
-  `write_outstanding` bit. Dones arrive in launch order on the single write
+- A 2-bit in-flight counter and 2-deep in-order metadata FIFO track entry
+  index and completion, popping once per done. Dones arrive in launch order
+  on the single write
   port, so FIFO slot 0 is always the oldest in-flight write. The launch gate
   credits a coincident done before deciding whether the next plain write
   fits, so a simultaneous FIFO pop/push can sustain one launch per cycle. If
   a done stalls, the same occupancy bound throttles the drain instead of
   overflowing the FIFO.
 - Cached / MMIO writes stay strictly single-outstanding
-  (`write_inflight_special`): they launch only through the legacy serial
+  (`write_inflight_special`): they launch only through the serial
   gate, and nothing else launches until their done. A cached write's done
   means the L1D has ordered the store (a hit applied, or a miss absorbed into
-  a miss-status slot that merges it into the fill), so a store miss no longer
-  holds the drain for its fill round trip.
+  a miss-status slot that merges it into the fill), so a store miss does not
+  hold the drain for its fill round trip.
 - `head_ptr` keeps its freed-at-done semantics. Capacity is the ring window
   (`tail_ptr - head_ptr`), so the head may only pass entries whose writes
   have fully completed. The drain cursor exists so that launches can run
@@ -132,8 +132,8 @@ The bookkeeping:
 The registered `o_mem_write_is_mmio` flag lets `data_mem_request_router.sv`
 (under `cpu_ooo/memory_if/`) gate the BRAM byte-write-enable at the SQ source
 instead of recomputing the MMIO address range on the muxed data-memory
-address. That recomputation used to pull the LQ issue cone into the BRAM
-write enable whenever no store was firing. The parallel
+address. This keeps the LQ address cone off BRAM write enable when no store
+fires. The parallel
 `o_mem_write_is_cached` flag (set when the committed store's address falls in
 the cached DDR region `[0x8000_0000, 0xC000_0000)`) is registered the same
 way, so the router can steer the store's byte-write enables to the cached
@@ -206,8 +206,8 @@ Slot 2 only ever retires plain stores: the ROB's widen-commit hazard gate
 forces SC / AMO onto slot 1, so no SC-discard path is shared with slot 2.
 Forwarding scans both slot 1 and slot 2 commits in the same cycle.
 The wrapper drives the combinational twin (`i_commit_valid_comb_2` /
-`i_commit_rob_tag_comb_2`). An earlier version tied it to `1'b0`, and an
-architectural drain consumer (for example a machine-timer trap or a
+`i_commit_rob_tag_comb_2`). Without this guard, an architectural drain consumer
+(for example a machine-timer trap or a
 terminally accepted MMIO read) could then observe committed-empty before the
 SQ saw a head+1 store on the registered commit path.
 

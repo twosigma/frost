@@ -16,7 +16,7 @@
 
 /*
  * Generic IEEE 1149.1 test access port for the RISC-V debug transport module
- * (Phase 3 M3, plan D14). Five-bit instruction register with the standard
+ *. Five-bit instruction register with the standard
  * DTM encodings (IDCODE 0x01, DTMCS 0x10, DMI 0x11, BYPASS 0x1F; every other
  * code selects BYPASS), so any RISC-V-aware JTAG debugger drives it without
  * configuration. This TAP is what simulation and the portable synthesis

@@ -181,7 +181,7 @@ the 5-bit AXI id space the block design provides. With the default
 `UP_ID_BITS=3`, the walker and L1I each keep a 2-bit local ID field. L1I
 reserves one bit to distinguish fills from writebacks, leaving 2 miss slots.
 The walker keeps one walk in flight and uses ID zero. The L1I loses nothing,
-since its master, the two-line fetch provider, never has more than 2
+since its master, the fetch provider, never has more than 2
 requests in flight.
 
 A walk is a short chain of dependent 8-byte PTE reads, one per level, each a
@@ -235,7 +235,7 @@ only on L1D transients that resolve through the shared level (a fill or
 writeback of the line already in flight) and on a probe slot, of which one is
 always free for the walker; the acknowledgement waits for the dirty
 writeback's acceptance below; the issue waits for the arbiter tree; the
-response is unconditional. Nothing waits on the walker, the pipeline, commit,
+response is unconditional. No step waits on the walker, the pipeline, commit,
 the store queue, or cache maintenance, and the probe slot is released at the
 read's acceptance, so a writeback-all waiting for the probe slots to empty
 always gets them; a probe that arrives while maintenance is requested parks
@@ -257,7 +257,8 @@ release); PROBE_INVAL writes a dirty copy back and invalidates every copy,
 and from its decision until the release the L1D issues no fill of the line,
 because it holds no copy and a miss that fetched before the write is
 ordered would carry the pre-write line back in; the load queue then drops
-its dword copies, flags executed-but-unretired loads of the line for replay,
+its dword copies, flags observed-but-unretired loads in the coherence port's
+validation table for replay,
 marks in-flight loads as not-to-fill and in-flight LRs as
 reservation-suppressed, and clears a matching reservation; finally the write
 is presented downstream, and its acceptance orders it, releases the L1D's

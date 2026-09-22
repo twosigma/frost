@@ -4,18 +4,13 @@ A generic reservation station instantiated for INT (8 entries), MUL (4), MEM
 (8), FP (6), FMUL (4), and FDIV (2). Each accepts both dispatch slots, tracks
 operand readiness, and issues when all required sources are ready.
 
-Eight INT entries cost 0.125%/0.059% in paired RV64 CoreMark runs versus 12,
-with identical results and retired-instruction counts. The smaller station
-removes a second-issue selector level and halves padded payload storage. Other
-entry arrays and port-0 selection scale with the parameter.
-
 INT_RS is also built with `DUAL_ISSUE=1`: a second issue port (`o_issue_2` /
 `i_fu_ready_2`) with its own selector, payload-RAM copy, and stage2 pipeline
 register, feeding the second single-cycle ALU pipe. Its operand registers
 capture the effective value (CDB, resident, or repair) on the issue edge, so
 the second ALU, the SQ, and the CDB all launch from a register Q. INT port 0
 uses the same boundary: its existing stage2 operand registers capture the
-former three-arm lane-0/lane-1 CDB bypass expression on the issue edge and
+three-arm lane-0/lane-1 CDB bypass expression on the issue edge and
 drive the primary ALU directly from Q. That capture is
 `CAPTURE_PRIMARY_EFFECTIVE_OPERANDS`, default off, so the other five stations
 keep the late mux. Port 0 keeps its serial priority encoder. A separate

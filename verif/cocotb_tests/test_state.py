@@ -14,38 +14,9 @@
 
 """CPU reference state and expected-value queues.
 
-Kept separate from ``test_cpu.py`` to avoid a circular import.
-
-Pipeline timing model:
-    State is held at several points in the pipeline so the monitors know when
-    a result becomes visible:
-
-    - register_file_previous: Values at instruction decode (cycle N-1)
-    - register_file_current: Values after writeback (cycle N)
-    - program_counter_two_cycles_ago: PC of instr in writeback stage
-    - program_counter_previous: PC of instr in execute stage
-    - program_counter_current: PC of instr in fetch stage
-
-    These stage names are historical. The DUT is now cpu_ooo, which has no
-    fixed IF/EX/WB residency: architectural effects land at ROB commit a
-    variable number of cycles after cpu_tb feeds an instruction, and up to two
-    instructions retire per cycle. Read the names as "one/two instructions
-    earlier", not as concrete pipeline stages.
-
-CSR counter tracking (Zicsr + Zicntr):
-    The CPU implements the Zicntr performance counters:
-    - cycle/cycleh: Clock cycles since reset
-    - instret/instreth: Instructions retired since reset
-    - time/timeh: Aliased to cycle, since there is no separate RTC
-
-    Shadow copies here verify what a CSR read returns:
-    - csr_cycle_counter: Incremented every clock edge
-    - csr_instret_counter: Incremented when instruction retires (o_vld)
-
-Queue management:
-    The expected-value queues hold predicted results, checked when they
-    emerge from the pipeline. A monitor pops its queue when the hardware
-    signals valid output.
+Previous/current fields describe instruction history, not fixed OOO pipeline
+residency. Monitors consume queued expectations on DUT valid signals. Counter
+shadows support CSR checks; RV64 counters are 64-bit and have no high-half CSRs.
 """
 
 from config import (

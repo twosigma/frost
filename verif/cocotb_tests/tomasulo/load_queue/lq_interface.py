@@ -69,7 +69,7 @@ AMOMAXU_D = _INSTR_OPS["AMOMAXU_D"]
 
 # lq_addr_update_t packed layout:
 # valid(1) | rob_tag(5) | address(XLEN) | is_mmio(1) | fault_kind(2) | amo_rs2(XLEN)
-# = 137 bits at RV64 (fault_kind: riscv_pkg::data_fault_kind_e, Phase 3 M4)
+# = 137 bits at RV64 (fault_kind: riscv_pkg::data_fault_kind_e)
 
 # sq_forward_result_t packed layout:
 # data(64) | can_forward(1) | match(1) = 66 bits
@@ -253,7 +253,7 @@ class LQInterface:
         self.dut.i_sq_committed_empty.value = 1
         self.dut.i_trap_misaligned_accesses.value = 0
         self.dut.i_amo_mem_write_done.value = 0
-        # DMA coherence port (Phase 4): idle.
+        # DMA coherence port: idle.
         self.dut.i_coh_inval_valid.value = 0
         self.dut.i_coh_inval_addr.value = 0
         self.dut.i_coh_block_valid.value = 0

@@ -15,7 +15,7 @@
  */
 
 /*
- * ns16550 interrupt-driven console test (Phase 3 M6, plan D11's console
+ * ns16550 interrupt-driven console test (plan D11's console
  * item). The entire message is transmitted from the external-interrupt
  * handler. THRE raises PLIC source 1; the handler claims, writes exactly
  * one byte to the THR, completes, and returns. The next THRE level

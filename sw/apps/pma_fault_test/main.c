@@ -15,7 +15,7 @@
  */
 
 /*
- * PMA access-fault directed test (Phase 3 M2).
+ * PMA access-fault directed test.
  *
  * Before M2, out-of-map physical addresses aliased onto the map because bits
  * [63:32] were masked at every producer. Now they raise precise access faults

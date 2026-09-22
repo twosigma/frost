@@ -19,10 +19,7 @@ wrapper instantiates one adapter per FU slot.
   boundary is dropped, and a same-cycle pass-through of a younger result is
   suppressed locally. The same input-side filter gates the grant-refill
   capture, so a flushed result issued on the flush cycle cannot be captured
-  into `held_result` and re-presented after the flush. Without that filter
-  the ALU slot did exactly this in CoreMark: the refilled result lost
-  arbitration for about 20 cycles and then broadcast to a ROB entry that had
-  long since been freed. The kill gates only `o_fu_complete.valid`; the
+  into `held_result` and re-presented after the flush. The kill gates only `o_fu_complete.valid`; the
   payload (value, tag, exception) passes through unsquashed. Every consumer
   qualifies the payload with valid, and the arbiter never grants or
   lane-selects an invalid input, so a killed result's payload is dead data

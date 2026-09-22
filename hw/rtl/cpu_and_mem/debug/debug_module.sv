@@ -15,7 +15,7 @@
  */
 
 /*
- * RISC-V Debug Module (Debug Spec 0.13.2 chapter 3, Phase 3 M3, plan D14),
+ * RISC-V Debug Module (Debug Spec 0.13.2 chapter 3),
  * minimal profile: one hart (the hartsel plumbing is WARL-0 for now; Phase 6
  * widens it), halt/resume/single-step through the core's Debug Mode take
  * class, abstract "access register" commands for the GPRs, an 8-word program

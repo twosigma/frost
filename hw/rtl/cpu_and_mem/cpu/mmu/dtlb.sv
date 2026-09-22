@@ -15,7 +15,7 @@
  */
 
 /*
- * dtlb: fully-associative, superpage-aware Sv39 TLB (Phase 3 M4/M5). The
+ * dtlb: fully-associative, superpage-aware Sv39 TLB. The
  * data MMU instantiates it as the 16-entry DTLB; the instruction MMU
  * (mmu/immu) instantiates the same module as the 8-entry ITLB.
  *

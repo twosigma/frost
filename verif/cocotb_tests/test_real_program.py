@@ -237,46 +237,22 @@ NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 1
 # more than the generic budget.
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
-# pde_return_hazard runs PDE_VIS_ITERATIONS(16) x 5 lookups x 2 variants (one with
-# cache churn) plus the s2l sub-tests; the full pass takes ~1.12M cycles (it used to
-# bail early on the unreachable-"maps" tree bug, masking the real budget).
+# Cover the complete lookup/cache-churn and store-forwarding sweep.
 PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
 
-# wfi_lost_tick sweeps ITERS(3000) idle/WFI iterations, each taking exactly one
-# deferred timer trap. On the bram axis the whole sweep finishes in ~345k cycles.
-# On the ddr axis (FROST_COCOTB_MEM_CONFIG=ddr) the .text and g_jiffies live in
-# DDR, and a ~70k-cycle cold-boot I-cache fill plus a slightly slower per-tick
-# round trip push the 3000-tick sweep just past the 500k default cap. That is a
-# timeout, not a lost tick: the tick rate stays flat to the end. Give it room
-# like the other long tests rather than shrinking the phase-sweep coverage.
+# The 3000-iteration sweep includes DDR cold-fetch and per-tick latency.
 WFI_LOST_TICK_MAX_CYCLES = 800000
 
-# restore_window_stress sweeps 800 restore-window iterations and evicts their
-# frames to cold DDR every pass. On the ddr axis the sweep plus the final report
-# land at ~500.4k cycles, a few hundred past the 500k default cap. That is a
-# timeout, not a hang: the on-silicon hang classifier armed in sim shows
-# commits, reads and writes all advancing to the end, and given room the run
-# passes with every invariant green. Same treatment as wfi_lost_tick.
+# Cover 800 restore-window iterations with cold-DDR frame eviction.
 RESTORE_WINDOW_STRESS_MAX_CYCLES = 1000000
 
-# amo_irq_torture boots entirely from cached DDR (MEM_CONFIG=ddr): cold-cache
-# boot plus zeroing the 320 KiB counter/evict .bss puts even the banner past
-# the generic 500k budget, and the sweep itself needs ~2.61M cycles/run at
-# EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=256 (~3.9M at 384). Runs that omit this
-# budget time out with zero UART output, which looks exactly like a pre-banner
-# hang. That ghost was chased as a "seeded" flake on 2026-07-10; the seed was
-# irrelevant. Also covers amo_irq_torture_jitter (same app).
+# DDR boot and BSS clearing exceed the generic budget before the first banner.
+# This budget also covers the jitter variant.
 AMO_IRQ_TORTURE_MAX_CYCLES = int(
     os.environ.get("COCOTB_AMO_TORTURE_MAX_CYCLES", 6000000)
 )
 
-# tick_torture has the same DDR-boot shape as amo_irq_torture, and its
-# pre-banner cost is dominated by crt0 zeroing the workset .bss through the
-# cached tier: ~10M cycles at the hardware-scale 2 MiB workset. Runs budgeted
-# at 2M and 8M both timed out with zero UART, the same pre-banner ghost the amo
-# comment above documents. At the CI scale pinned by tick_torture_sim
-# (TARGET_TICKS=64, 256 KiB workset) the run is ~2.5M cycles, so 6M gives
-# the same headroom amo gets.
+# Cover DDR BSS clearing and the simulation-scale timer-torture workset.
 TICK_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_TICK_TORTURE_MAX_CYCLES", 6000000))
 
 # mem_divergence_probe sweeps evict/refill rounds over cached DDR; the

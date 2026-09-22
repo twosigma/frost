@@ -1,355 +1,121 @@
-# Frost Software
+# FROST Software
 
-Bare-metal libraries and applications for the Frost RISC-V processor.
+Bare-metal applications and runtime libraries for RV64/LP64D. See
+[Linux](../linux/README.md) for OS images and [CONTRIBUTING.md](CONTRIBUTING.md)
+for adding applications or libraries.
 
-## Directory Structure
+## Building
 
-```
-sw/
-├── common/           # Shared build infrastructure
-│   ├── arch.mk       # rv64/lp64 architecture strings shared by every build backend
-│   ├── common.mk     # Common Makefile definitions (MEM_CONFIG bram|ddr)
-│   ├── standalone_asm.mk # Shared rules for apps that define their own _start
-│   ├── crt0.S        # C runtime startup (runs before main)
-│   ├── crt0_ddr_boot.S # ROM boot stub: far-jumps to a DDR-resident _start (MEM_CONFIG=ddr)
-│   ├── generate_imem_predecode_init.py # Split-bank IMEM init generator (opt-in)
-│   ├── link.ld       # Unified linker script (low BRAM + 1 GiB cached DDR)
-│   ├── link_ddr.ld   # DDR-tier linker: whole program in the cached DDR region (MEM_CONFIG=ddr)
-│   └── make_dword_mem.py # Pairs sw.mem words into sw64.mem for the 64-bit data BRAM
-├── lib/              # Reusable libraries
-│   ├── include/      # Header files
-│   └── src/          # Source files
-├── FreeRTOS-Kernel/  # FreeRTOS kernel (submodule)
-└── apps/             # Application programs
-    ├── compile_app.py    # Clean and compile a single application
-    ├── build_all_apps.py # Clean and compile ordinary standalone apps
-    ├── clean_all_apps.py # Clean all build artifacts
-    ├── <app_name>/       # One directory per software app
-    └── ...
+Simulations and the FPGA loader compile applications automatically. For a
+manual build, use the [pinned toolchain](../docs/tooling.md):
+
+```bash
+./scripts/frost.py run python3 sw/apps/compile_app.py hello_world
+./scripts/frost.py run python3 sw/apps/compile_app.py hello_world --mem-config ddr
+./scripts/frost.py run python3 sw/apps/build_all_apps.py
 ```
 
-The [Applications](#applications) table summarizes the main apps. For the
-complete inventory: `find sw/apps -maxdepth 1 -type d | sort`.
+`compile_app.py` cleans first. `build_all_apps.py` discovers app Makefiles;
+`--list` shows its decisions, and `--include-linux-boot` includes the long
+Linux image build. Parameterized compliance and torture suites have their own
+[test runners](../tests/README.md). `clean_all_apps.py` cleans all app builds.
+
+With the native toolchain on PATH, `make -C sw/apps/<app>` also works.
+Builds track compiler, flag, header, layout, and workload changes.
+
+### Build options
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `RISCV_PREFIX` | `riscv64-linux-` | Toolchain prefix |
+| `MEM_CONFIG` | `bram` | Application placement: `bram` or `ddr` |
+| `OPT_LEVEL` | `-O3` | Optimization level |
+| `UNROLL_LOOPS` | `-funroll-loops` | Set empty to disable loop unrolling |
+| `MABI` | `lp64d` | ABI |
+| `FPGA_CPU_CLK_FREQ` | `300000000` | Actual CPU clock in Hz |
+| `FROST_DEBUG` | `0` | Set to 1 for `-Og -g3` and source debugging |
+| `FROST_DEBUG_FRAME_POINTER` | `1` | Frame pointers in debug C builds |
+| `EXTRA_CFLAGS` / `EXTRA_LDFLAGS` | empty | Additional compile/link flags |
+| `EXTRA_ASM_SRC` | empty | Assembly sources linked with C startup |
+| `GENERATE_IMEM_INIT` | `0` | Generate split instruction-BRAM init files |
+
+`common/arch.mk` defines `rv64`, `lp64`, `lp64d`, and `elf64lriscv`.
+`common.mk` defaults to
+`rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause`.
+Apps can set `FROST_MARCH_EXTENSIONS` and `APP_TUNE_FLAGS` before including it;
+tuning flags follow common flags and are recorded in the build fingerprint.
+Debug-profile flags take precedence over app tuning.
+
+### Memory Configuration (BRAM vs DDR tier)
+
+- `bram`: code and small data use low BRAM; opt-in `.ddr_*` sections and the
+  malloc heap use cached DDR.
+- `ddr`: `common/link_ddr.ld` places the program in DDR. A low-BRAM boot stub
+  jumps to the DDR `_start`, exercising both instruction and data caches.
+
+Use `FROST_COCOTB_MEM_CONFIG=ddr` for simulation or the FPGA loader's `--ddr`
+option. Apps with dedicated linker scripts can retain fixed layouts.
+`LINKER_SCRIPT` overrides the common linker's selection.
+
+Board loaders set the software clock automatically. For a divided-clock
+bitstream, pass `FROST_CPU_CLK_HZ` to the loader as described in the
+[FPGA guide](../fpga/README.md#functional-validation-builds).
+
+### Build Outputs
+
+| File | Contents |
+|------|----------|
+| `sw.elf` | Executable; DWARF information when `FROST_DEBUG=1` |
+| `sw.mem` / `sw64.mem` | Low-BRAM simulation image, 32-/64-bit words |
+| `sw.txt` / `sw.bin` | Low-BRAM JTAG image / raw binary |
+| `sw_ddr.mem` / `sw_ddr.txt` / `sw_ddr.bin` | DDR simulation / JTAG / raw image, relative to `0x80000000` |
+| `sw.S` | Disassembly |
+| `sw_imem_*.mem` | Split-bank Vivado init files when enabled |
+
+The DDR simulation image contains one zero word when no sections use DDR.
+JTAG images contain dense 32-bit hex words with no address prefixes.
 
 ## Libraries
 
-### UART (`lib/include/uart.h`, `lib/src/uart.c`)
-
-Serial console I/O driver with printf-style formatting and character input.
-On hardware, use 115200 baud, 8 data bits, no parity, and 1 stop bit (8N1).
-
-```c
-#include "uart.h"
-
-// Transmit
-uart_putchar('A');                         // Single character
-uart_puts("Hello\n");                     // String
-uart_printf("Value: %d (0x%08X)\n", x, x); // Formatted output
-
-// Receive
-if (uart_rx_available()) { ... }           // Data available
-char c = uart_getchar();                   // Blocking
-int c = uart_getchar_nonblocking();        // -1 if no data
-size_t n = uart_getline(buf, sizeof(buf)); // Echo and backspace handling
-```
-
-Supported printf format specifiers:
-- `%c`: character
-- `%s`: string
-- `%d`, `%ld`, `%lld`: signed decimal
-- `%u`, `%lu`, `%llu`: unsigned decimal
-- `%x`, `%lx`, `%llx` (and uppercase variants): hexadecimal
-- `%f`: floating point when compiled with `UART_PRINTF_ENABLE_FLOAT=1`;
-  finite magnitudes of 2^64 or more print as `ovf` or `-ovf`
-- `%%`: literal percent sign
-- Right-aligned field width (up to 255) and integer zero-padding: `%8d`, `%04x`
-- Floating-point precision is capped at 9 digits
-
-### String (`lib/include/string.h`, `lib/src/string.c`)
-
-Minimal libc string and memory functions.
-
-```c
-#include "string.h"
-
-memset(buffer, 0, sizeof(buffer));         // Fill memory
-memcpy(dest, src, len);                   // Non-overlapping regions
-memmove(dest, src, len);                  // Overlap-safe
-int cmp = memcmp(a, b, len);              // Compare memory
-size_t len = strlen(str);                 // String length
-size_t len = strnlen(str, n);             // Bounded length
-strcpy(dest, src);                        // Copy
-strncpy(dest, src, n);                    // Bounded copy
-strcat(dest, src);                        // Concatenate
-int cmp = strcmp(a, b);                   // Compare strings
-int cmp = strncmp(a, b, n);               // Bounded compare
-char *p = strchr(str, 'x');               // Find first character
-char *p = strrchr(str, 'x');              // Find last character
-char *p = strstr(haystack, needle);       // Find substring
-size_t n = strspn(s, accept);             // Accepted prefix length
-size_t n = strcspn(s, reject);            // Prefix before rejection
-char *p = strpbrk(s, accept);             // Find character from set
-char *dup = strdup(s);                    // Heap duplicate
-```
-
-### Ctype (`lib/include/ctype.h`, `lib/src/ctype.c`)
-
-Character classification and case conversion.
-
-```c
-#include "ctype.h"
-
-if (isdigit(c)) { ... }                   // Decimal digit
-if (isalpha(c)) { ... }                   // Letter
-if (isupper(c)) { ... }                   // Uppercase letter
-if (islower(c)) { ... }                   // Lowercase letter
-if (isspace(c)) { ... }                   // Whitespace
-char upper = toupper('a');                // 'A'
-char lower = tolower('Z');                // 'z'
-```
-
-### Stdlib (`lib/include/stdlib.h`, `lib/src/stdlib.c`)
-
-String-to-number conversion and integer helpers.
-
-```c
-#include "stdlib.h"
-
-long val = strtol("123", &endptr, 10);    // Explicit base
-long hex = strtol("0xff", NULL, 16);      // Hexadecimal
-long oct = strtol("077", NULL, 0);        // Auto-detect base
-int i = atoi("-42");                      // String to int
-long l = atol("12345");                   // String to long
-int a = abs(-7);                          // Absolute value
-```
-
-`strtol` accepts base 0 or bases 2 through 36. It saturates to `LONG_MIN` or
-`LONG_MAX` on overflow. Invalid bases and inputs with no digits return zero and
-leave `endptr` pointing at the original input.
-
-### Memory (`lib/include/memory.h`, `lib/src/memory.c`)
-
-Arena and first-fit freelist allocators.
-
-```c
-#include "memory.h"
-
-// Bump arena with manual lifetime
-arena_t arena = arena_alloc(4096);        // Create 4 KiB arena from heap
-void *p1 = arena_push(&arena, 64);        // Allocate 64 bytes, 8-byte aligned
-void *p2 = arena_push_zero(&arena, 32);   // Allocate and zero-initialize
-char *p3 = arena_push_align(&arena, 16, 32); // Allocate with 32-byte alignment
-arena_pop(&arena, 16);                    // Deallocate from end
-arena_clear(&arena);                      // Reset arena (free all at once)
-
-// First-fit, coalescing freelist
-void *ptr = malloc(128);                  // Allocate 128 bytes
-void *arr = calloc(16, 8);                // Allocate and zero 16x8 bytes
-ptr = realloc(ptr, 256);                  // Grow/shrink an allocation
-free(ptr);                                // Return to freelist
-```
-
-An arena allocates fast, frees everything at once, and never fragments, at the
-cost of a fixed lifetime. `malloc`/`free` give each block its own lifetime;
-adjacent free blocks are coalesced to limit fragmentation.
-
-Arena allocation failure is represented by `arena.start == NULL` and zero
-capacity. Oversized requests and size-arithmetic overflow return `NULL` from
-`malloc`, `calloc`, and `realloc` without consuming or corrupting the heap.
-
-### Sprintf (`lib/include/sprintf.h`, `lib/src/sprintf.c`)
-
-`sprintf`/`snprintf` without `<stdio.h>`, using integer-scaled floating-point
-formatting to avoid cascading rounding errors.
-
-```c
-#include "sprintf.h"
-
-char buf[128];
-sprintf(buf, "x=%d y=%s", 42, "hello");       // Unbounded format
-snprintf(buf, sizeof(buf), "%.2f", 3.14159);   // Bounded (C99 semantics)
-```
-
-Supported format specifiers:
-- `%d`/`%i`, `%u`, `%o`, `%x`/`%X`: integer (signed/unsigned, octal, hex)
-- `%f`/`%F`, `%e`/`%E`, `%g`/`%G`: floating-point (fixed, scientific, shortest)
-- `%c` (character), `%s` (string), `%p` (pointer), `%%` (literal percent)
-- Flags: `-` `+` `space` `0` `#`
-- Width/precision: literal or `*`
-- Length modifiers: `hh` `h` `l` `ll` `z` `t`
-
-Large widths and floating-point precisions are counted and truncated directly
-into the caller's destination; they do not allocate precision-sized scratch
-buffers. If the would-be output length cannot fit in `int`, the function returns
-`-1` while still terminating a non-empty destination buffer.
-
-The internal 64-bit arithmetic requires `-lgcc` before the Makefile include:
-```makefile
-EXTRA_LDFLAGS := -lgcc
-SRC_C := ../../lib/src/uart.c ../../lib/src/sprintf.c your_app.c
-include ../../common/common.mk
-```
-
-### Limits (`lib/include/limits.h`)
-
-Integer limits for the LP64 ABI: 32-bit `int`, 64-bit `long` and pointers.
-
-```c
-#include "limits.h"
-
-INT_MIN   // -2147483648
-INT_MAX   // 2147483647
-LONG_MIN  // -9223372036854775808L
-LONG_MAX  // 9223372036854775807L
-```
-
-### Timer (`lib/include/timer.h`)
-
-Zicntr timing and delay helpers.
-
-```c
-#include "timer.h"
-
-uint32_t start = read_timer();            // Low 32 bits
-// ... do work ...
-uint32_t elapsed = read_timer() - start;  // Elapsed cycles
-
-uint64_t start64 = read_timer64();        // Full counter
-// ... long-running work ...
-uint64_t elapsed64 = read_timer64() - start64;  // For benchmarks >14 seconds
-
-delay_ticks(1000);                        // Busy-wait in cycles
-delay_1_second();                         // Approximate one second
-```
-
-These use the single-instruction Zicntr cycle CSR, not MMIO. Use
-`read_timer64()` beyond the 32-bit wrap interval (~14 seconds at 300 MHz).
-
-### FIFO (`lib/include/fifo.h`)
-
-Memory-mapped inter-module FIFOs.
-
-```c
-#include "fifo.h"
-
-fifo0_write(0x12345678);                  // Write one word
-uint32_t data = fifo0_read();             // Read one word
-```
-
-### Synchronization (`lib/include/sync.h`)
-
-Memory and instruction synchronization barriers (Zifencei extension).
-
-```c
-#include "sync.h"
-
-fence();                                  // Memory ordering fence
-fence_i();                                // Instruction fetch fence
-```
-
-`fence()` orders memory operations. `fence_i()` synchronizes modified code by
-writing L1D back through the line port, then invalidating L1I and the fetch
-buffer. Cached self-modifying code requires it; see `apps/ddr_smc_test/`.
-
-### CSR Access (`lib/include/csr.h`)
-
-Zicsr/Zicntr counter and machine-mode CSR access.
-
-```c
-#include "csr.h"
-
-// Read counter low words
-uint32_t cycles_lo = rdcycle();           // Low 32 bits of cycle counter
-uint32_t instret_lo = rdinstret();        // Low 32 bits of instructions retired
-uint32_t time_lo = rdtime();              // Low 32 bits of time (backed by CLINT mtime)
-
-// Read full 64-bit counters atomically
-uint64_t start = rdcycle64();
-// ... code to benchmark ...
-uint64_t elapsed = rdcycle64() - start;
-
-uint64_t instructions = rdinstret64();    // Total instructions retired
-
-// Direct CSR access macros (for M-mode CSRs)
-unsigned long status = csr_read(mstatus); // Read any CSR by name (XLEN-wide)
-csr_write(mtvec, handler_addr);           // Write to CSR
-csr_set(mie, MIE_MTIE);                   // Set bits in CSR
-csr_clear(mstatus, MSTATUS_MIE);          // Clear bits in CSR
-```
-
-Available counters:
-- `cycle`: Clock cycles since reset (64-bit)
-- `time`: Wall-clock time (backed by CLINT mtime, which ticks at the core clock on Frost)
-- `instret`: Instructions retired since reset (64-bit)
-
-Each counter is a single 64-bit CSR. The rv32-style `*h` high-half aliases do
-not exist at rv64; accessing one raises an illegal-instruction trap. The
-`rd*64()` helpers read the full value; the plain `rd*()` forms return the low
-32 bits.
-
-M-mode CSRs (for RTOS support):
-- `mstatus`: Machine status (global interrupt enable, privilege state)
-- `mie`/`mip`: Interrupt enable and pending bits
-- `mtvec`: Trap vector base address
-- `mepc`: Exception program counter
-- `mcause`: Trap cause (interrupt bit + cause code)
-- `mtval`: Trap value (faulting address/instruction)
-- `mscratch`: Scratch register for trap handlers
-
-### Trap Handling (`lib/include/trap.h`)
-
-Machine-mode trap handling utilities for RTOS support.
-
-```c
-#include "trap.h"
-
-// Set up trap handler
-set_trap_handler(&my_trap_handler);
-
-// Interrupt control
-enable_interrupts();                      // Set mstatus.MIE
-unsigned long prev = disable_interrupts(); // Clear MIE, return previous state
-restore_interrupts(prev);                 // Restore previous state
-
-// Timer interrupt (CLINT-compatible)
-enable_timer_interrupt();                 // Set mie.MTIE
-uint64_t now = rdmtime();                 // Read 64-bit machine timer
-set_timer_cmp(now + 1000000);             // Set timer compare value
-
-// Software interrupt
-enable_software_interrupt();              // Set mie.MSIE
-trigger_software_interrupt();             // Set MSIP (causes interrupt)
-clear_software_interrupt();               // Clear MSIP
-
-// Privileged instructions
-wfi();                                    // Wait for interrupt (low-power idle)
-ecall();                                  // Environment call (syscall)
-ebreak();                                 // Breakpoint exception
-```
-
-CLINT-compatible timer registers (memory-mapped at `0x40000010`-`0x40000020`):
-- `mtime`: 64-bit free-running timer counter
-- `mtimecmp`: 64-bit timer compare value (interrupt when mtime >= mtimecmp)
-- `msip`: Machine software interrupt pending bit
-
-### FIX Protocol (`lib/include/fix.h`, `lib/src/fix.c`)
-
-Parser for FIX (Financial Information eXchange) protocol fields.
-
-```c
-#include "fix.h"
-
-// Parse timestamp: "20250807-19:36:55.528" -> nanoseconds
-uint64_t ts = parse_timestamp("20250807-19:36:55.528");
-
-// Parse price: "94.5000" -> fixed-point {amount=9450000000, scale=8}
-fix_price_t price = parse_price("94.5000");
-```
+Headers under [lib/include/](lib/include/) document the APIs. Add required
+implementations from `lib/src/` to `SRC_C`; this is a freestanding runtime.
+
+| Header | Purpose |
+|--------|---------|
+| [uart.h](lib/include/uart.h) | Console I/O and `uart_printf`; hardware uses 115200 baud, 8N1 |
+| [string.h](lib/include/string.h), [ctype.h](lib/include/ctype.h) | String/memory operations and character classification |
+| [stdlib.h](lib/include/stdlib.h), [limits.h](lib/include/limits.h) | Numeric conversion and LP64 integer limits |
+| [memory.h](lib/include/memory.h) | Arena allocator and coalescing `malloc`/`free` heap in DDR |
+| [sprintf.h](lib/include/sprintf.h) | `sprintf`/`snprintf` without stdio; link with `EXTRA_LDFLAGS := -lgcc` |
+| [timer.h](lib/include/timer.h), [csr.h](lib/include/csr.h) | Cycle timing, counters, and CSR access |
+| [trap.h](lib/include/trap.h) | Trap handlers, interrupts, `mtime`/`mtimecmp`, and software interrupts |
+| [sync.h](lib/include/sync.h) | Memory and instruction fences |
+| [fifo.h](lib/include/fifo.h) | MMIO FIFOs |
+| [nic.h](lib/include/nic.h), [dma_engine.h](lib/include/dma_engine.h) | Ethernet and coherent DMA |
+| [fix.h](lib/include/fix.h) | FIX timestamp and price parsing |
+| [tomasulo_profile.h](lib/include/tomasulo_profile.h) | [Performance-counter API](../hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md) |
+
+Library limits:
+
+- `uart_printf` supports characters, strings, signed/unsigned decimal, hex,
+  field widths through 255, and integer zero-padding. `%f` requires
+  `UART_PRINTF_ENABLE_FLOAT=1`, caps precision at 9, and prints `ovf`/`-ovf`
+  for finite magnitudes at least 2^64.
+- `snprintf` supports integer, floating-point, string, character, and pointer
+  formatting, flags, `*` width/precision, and `hh/h/l/ll/z/t` modifiers. It
+  returns `-1` if the full output length exceeds `int`, while terminating a
+  nonempty destination. Large precisions do not allocate large scratch buffers.
+- `strtol` accepts base 0 or 2–36 and saturates on overflow. Invalid bases or
+  no digits return zero and leave `endptr` at the original input.
+- Failed arena creation yields `start == NULL` and zero capacity. Heap size
+  overflow and oversized allocations return `NULL` without consuming the heap.
+- `rd*64()` reads an entire 64-bit counter; plain `rd*()` returns its low word.
+  Use 64-bit timing beyond about 14 seconds at 300 MHz. RV32 high-half CSR aliases
+  are illegal. `time` follows CLINT `mtime`; cycle timing uses `cycle`.
 
 ## Applications
 
-Source comments document each app in detail; this table is a summary.
-Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
+List runnable targets with `./scripts/frost.py cocotb --list-tests`.
 
 | App | Description |
 |-----|-------------|
@@ -358,7 +124,7 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `c_ext_test/` | Compressed (C ext) instruction test: JAL/JALR/JR alignment cases |
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
 | `cf_ext_test/` | Compressed double-precision floating-point (Zcd) instruction tests |
-| `coremark/` | EEMBC CoreMark CPU benchmark |
+| `coremark/` | EEMBC CoreMark CPU benchmark; disables compressed instructions for throughput |
 | `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, using DDR for the heap and large datasets |
 | `csr_test/` | CSR access and M-mode trap handling verification |
 | `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |
@@ -373,8 +139,8 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `print_clock_speed/` | Clock frequency measurement utility |
 | `ras_stress_test/` | BTB+RAS stress test mixing loops, branches, and function pointers |
 | `ras_test/` | Return Address Stack verification (deep nesting, coroutines, alignment) |
-| `riscv_tests/` | Upstream riscv-tests ISA suite + benchmark harness (parameterized by `TEST_SRC`; run via `./tests/test_riscv_tests.py`) |
-| `riscv_torture/` | Randomized riscv-torture harness; signatures compared against Spike (run via `./tests/test_riscv_torture.py`) |
+| `riscv_tests/` | Upstream riscv-tests ISA suite + benchmark harness (parameterized by `TEST_SRC`) |
+| `riscv_torture/` | Randomized riscv-torture harness; signatures compared against Spike |
 | `spanning_test/` | 32-bit instruction fetch across word boundary verification |
 | `sprintf_test/` | sprintf/snprintf formatting test suite (~200 cases) |
 | `strings_test/` | String/ctype/stdlib library test suite |
@@ -393,186 +159,28 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
 | `nic_echo/` | Interrupt-driven Ethernet echo; requires a link partner |
 
-## Building
-
-### Automatic compilation
-
-These flows compile the application themselves:
-- `./scripts/frost.py cocotb <test>`: cleans, then compiles before simulation
-- `./fpga/load_software/load_software.py`: compiles before loading to the FPGA;
-  `--build-only` separates compilation from cable access, and `--skip-build`
-  loads validated existing files for its registered single-ELF applications
-  without rebuilding (`linux_boot` and `opensbi_smoke` use separate packed
-  firmware-image flows)
-- `./fpga/build/build.py`: compiles hello_world for the initial BRAM contents
-
-### Prerequisites
-
-- The pinned Bootlin RV64/LP64D musl toolchain (`riscv64-linux-gcc`); see
-  [toolchain setup](../docs/tooling.md#shared-risc-v-toolchain). Docker includes it.
-- GNU Make
-
-### Manual compilation
-
-From the repository root:
-
-```bash
-cd sw/apps/hello_world
-make clean
-make
-```
-
-### Compile a Single Application
-
-```bash
-./sw/apps/compile_app.py hello_world        # Compile hello_world
-./sw/apps/compile_app.py coremark -v        # Compile with verbose output
-./sw/apps/compile_app.py hello_world --mem-config ddr
-```
-
-The CLI runs `make clean` first and stops if it fails, preventing reuse of an
-image linked for another memory tier.
-Most app builds have a two-minute timeout; `linux_boot` allows up to 90 minutes
-because a fresh checkout downloads a cross toolchain and Debian's kernel and
-builds the firmware and initramfs before packing the images.
-
-### Build Ordinary Standalone Applications
-
-```bash
-./sw/apps/build_all_apps.py                       # Clean and build ordinary apps
-./sw/apps/build_all_apps.py --list                # Show build/skip decisions
-./sw/apps/build_all_apps.py --include-linux-boot  # Opt in to the long Linux build
-```
-
-The script discovers non-hidden directories with a `Makefile`. It skips the
-parameterized `arch_test`, `riscv_tests`, and `riscv_torture` suites, whose
-runners select a source, and skips the first `linux_boot` build, with its
-toolchain and kernel downloads, unless opted in. It prints each skip reason.
-
-### Clean All Applications
-
-```bash
-./sw/apps/clean_all_apps.py
-```
-
-This runs `make clean` in every app directory that has a `Makefile`, which
-removes `sw.elf`, `sw.mem`, `sw64.mem`, `sw.bin`, `sw.txt`, `sw.S`,
-`sw_ddr.{mem,txt,bin}`, `sw_imem_*.mem`, and the build-config and dependency
-stamps.
-
-### Build Outputs
-
-Compilation produces:
-- `sw.elf`: ELF executable; includes DWARF source-debug information with
-  `FROST_DEBUG=1` (release builds do not enable `-g` by default)
-- `sw.mem`: Verilog hex format for `$readmemh` (low BRAM image, 32-bit words)
-- `sw64.mem`: dword-paired copy of `sw.mem` for the 64-bit data BRAM's `$readmemh` (hw/rtl/README.md, "Data-tier bus contract")
-- `sw.bin`: raw binary (low BRAM image)
-- `sw.txt`: BRAM initialization for Vivado
-- `sw_ddr.mem`: cached-region (DDR) image for `$readmemh`, region-relative (offset 0 = `0x8000_0000`); a single zero word when the program puts nothing in the cached region
-- `sw_ddr.txt`: cached-region (DDR) image for the JTAG loader (dense words)
-- `sw.S`: disassembly listing
-
-### Toolchain Override
-
-```bash
-make RISCV_PREFIX=riscv64-linux-
-```
-
-### Architecture Constants (`common/arch.mk`)
-
-`common/arch.mk` defines the shared target settings: `rv64`, integer ABI
-`lp64`, floating-point ABI `lp64d`, and linker emulation `elf64lriscv`.
-
-`common.mk` adds two per-app hooks on top of those constants, both `?=` so an
-app sets them before its `include`:
-
-- `FROST_MARCH_EXTENSIONS` — the extension string appended to the `rv64` prefix
-  (default `imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause`).
-  Only `coremark/` narrows it, dropping `c`.
-- `APP_TUNE_FLAGS` — codegen flags appended *after* everything `common.mk`
-  composes, so they win over its defaults (`coremark/` uses this to restore
-  `-fstrict-aliasing`). Additive flags that need no override belong in
-  `EXTRA_CFLAGS` instead. The value is part of the build fingerprint and of the
-  `COMPILER_FLAGS` string a program can print, so changing it forces a rebuild
-  and stays visible in benchmark output.
-
-### Memory Configuration (BRAM vs DDR tier)
-
-`common.mk` takes a `MEM_CONFIG` knob selecting which memory tier the *whole*
-program is linked into:
-
-```bash
-make                    # MEM_CONFIG=bram: default layout
-make MEM_CONFIG=ddr     # whole program relocated to the cached DDR region
-```
-
-Builds track tool, flag, header, memory-layout, and workload changes and
-rebuild as needed. `compile_app.py` always cleans first.
-
-- `bram` (default): the program lives in low BRAM; only opt-in `.ddr_*` sections
-  (and the malloc heap) sit in the cached DDR region. Every board integration
-  uses this configuration by default in the FPGA flow.
-- `ddr`: the program is linked at `0x8000_0000` behind a ROM boot stub
-  (`common/crt0_ddr_boot.S`) that far-jumps to the DDR-resident `_start`, so the
-  L1I fetch path and the D-side cached load/store path are both exercised. This
-  selects `common/link_ddr.ld` and splits all loadable sections into the DDR
-  image (`sw_ddr.mem`), leaving only the boot stub in `sw.mem`.
-
-For simulation, use `FROST_COCOTB_MEM_CONFIG=ddr` with the cocotb wrapper.
-The compliance and torture runners take `--mem-config ddr`; see the
-[test guide](../tests/README.md). `riscv_tests`, `arch_test`, `riscv_torture`,
-and `freertos_demo` use their own linker scripts for the same memory map.
-
-### Clock Frequency
-
-The default CPU clock is 300 MHz. Override for different hardware:
-
-```bash
-make FPGA_CPU_CLK_FREQ=100000000  # 100 MHz
-```
-
-Board-aware loaders set `FPGA_CPU_CLK_FREQ` automatically so timing printouts
-and benchmark normalization match the target board.
-
 ## Memory Map
 
-The memory map is identical across board integrations and simulation. The
-cache hierarchy behind it is opaque to software. The current X3 hierarchy has
-a 128 KiB L1D, a 16 KiB L1I, and a 2 MiB UltraRAM L2 before the board's DDR4.
+The board and simulation use the same address map. The default
+[linker script](common/link.ld) reserves:
 
-Defined in `common/link.ld`:
+| Region | Address | Size | Use |
+|--------|---------|------|-----|
+| ROM | `0x00000000` | 95 KiB | Code and read-only data |
+| DEBUG | `0x00017C00` | 1 KiB | Reserved debug-module execution area |
+| RAM | `0x00018000` | 160 KiB | Data, BSS, and stack |
+| DDR | `0x80000000` | 1 GiB | Cached code/data and heap |
 
-| Region | Address      | Size    | Description                                        |
-|--------|--------------|---------|----------------------------------------------------|
-| ROM    | `0x00000000` | 95 KiB  | Code and small read-only data in uncached BRAM |
-| DEBUG  | `0x00017C00` | 1 KiB   | Reserved for the debug module |
-| RAM    | `0x00018000` | 160 KiB | Variables, BSS, and stack in uncached BRAM; data accesses remain 1-cycle |
-| MMIO   | `0x40000000` | 44 B    | Native UART/FIFO/timer/MSIP registers (the linker's window); the NS16550 UART at `0x40001000` and the SiFive CLINT alias at `0x40010000` sit above it |
-| DDR    | `0x80000000` | 1 GiB   | Cached region: execute-from-DDR code, heap, large `.ddr_*` data |
+The low-BRAM stack has a 112 KiB reserve enforced by a linker assertion.
+DDR sections are `.ddr_text`, `.ddr_rodata`, `.ddr_data`, and `.ddr_bss`, followed
+by the heap. The lowest loaded DDR address must remain the region base because
+the JTAG image is region-relative. Large objects can use
+`__attribute__((section(".ddr_rodata")))` or per-object linker rules.
 
 Low BRAM has separate instruction and data copies: ordinary stores do not
-update fetched instructions. Put self-modifying code in DDR and use
-`fence.i` after writes. Debugger writes can update BRAM code through the
-debug module's instruction-copy mirror.
-
-Within the DDR region, opt-in `.ddr_text` code comes first, then the loaded
-`.ddr_rodata` and `.ddr_data` sections, then `.ddr_bss`, then the heap to the
-end of the gigabyte. An object reaches `.ddr_rodata` either through a
-per-object rule in the linker script (radix2's ~800 KiB FFT tables) or an
-explicit `__attribute__((section(".ddr_rodata")))`. The dense `sw_ddr.txt`
-loader image starts at the lowest `.ddr_*` LMA, which must stay exactly at the
-region base. The low-BRAM stack has a 112 KiB reserve; a link-time assertion
-prevents data and BSS from growing into it.
-
-Image delivery is split: `sw.mem`/`sw.txt` carry the low-BRAM image, and
-`sw_ddr.mem`/`sw_ddr.txt` carry the cached-region image (region-relative,
-offset 0 = `0x8000_0000`), consumed by the behavioral DDR model in simulation
-and by the JTAG DDR loader on hardware.
-
-The suites with their own linker scripts (`riscv_tests`, `arch_test`,
-`riscv_torture`, `freertos_demo`) lay out their own sections on the same
-256 KiB low-BRAM map.
+modify fetched code. Put self-modifying code in DDR and execute `fence.i`
+after writes. It writes back L1D and invalidates L1I and the fetch buffer.
+Debugger writes can update the BRAM instruction copy.
 
 ### Peripheral Addresses
 
@@ -591,72 +199,35 @@ The suites with their own linker scripts (`riscv_tests`, `arch_test`,
 | UART_TX_STATUS | `0x40000028` | UART TX status (bit 0 = can accept byte) |
 | NS16550        | `0x40001000` | NS16550-compatible UART registers (`0x40001000`-`0x4000101C`) |
 | CLINT alias    | `0x40010000` | SiFive CLINT-compatible alias of MSIP/mtimecmp/mtime (for Linux) |
+| DMA test engine | `0x40020000` | Coherent DMA copy/fill engine |
+| NIC | `0x40030000` | 10G Ethernet descriptor rings and control |
 | PLIC           | `0x44000000` | Platform-level interrupt controller (4 MiB window; M and S contexts for hart 0) |
 
-Simple timing uses the Zicntr `cycle`/`instret` CSRs (`csr.h`, `timer.h`).
-RTOS timer interrupts use CLINT-compatible `mtime`/`mtimecmp` (`trap.h`).
+Use `volatile` accesses and naturally aligned addresses. Misaligned loads and
+stores trap. See the [RTL bus contract](../hw/rtl/README.md#data-tier-bus-contract)
+for access widths, ordering, and device-read side effects.
 
 ## Startup Sequence
 
-The C runtime (`common/crt0.S`) executes before `main()`:
+`common/crt0.S` sets `sp` and `gp`, copies initialized data from ROM to RAM,
+zeros BSS (including `.ddr_bss`), calls `main()`, and loops if it returns.
+Standalone assembly supplies its own `_start`. Compliance suites and FreeRTOS
+use dedicated linker scripts on the same memory map.
 
-1. Initialize stack pointer (`sp`) to top of RAM
-2. Initialize global pointer (`gp`) for small data access
-3. Copy `.data`/`.sdata` section from ROM to RAM
-4. Zero-initialize `.sbss` and `.bss` sections
-5. Zero-initialize the cached-region `.ddr_bss` (empty unless a program places zero-init data there)
-6. Call `main()`
-7. Loop forever if `main()` returns
+## Testing and debugging
 
-## Adding a New Application
+Test apps normally print `<<PASS>>` or `<<FAIL>>` over UART. The real-program
+harness fails on `<<FAIL>>` or timeout (default 500,000 cycles, overridden per
+app). Hello World passes on its greeting; the UART echo test injects input
+and checks responses.
 
-1. Create a new directory under `apps/`
-2. Add your C source file(s)
-3. Create a `Makefile`:
-
-```makefile
-SRC_C := ../../lib/src/uart.c your_app.c
-include ../../common/common.mk
+```bash
+./scripts/frost.py cocotb hello_world
+FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
+./fpga/load_software/load_software.py x3 hello_world --debug
 ```
 
-4. Build with `make`
-
-## Architecture Notes
-
-Frost implements RV64GCB with Machine, Supervisor, and User privilege modes;
-traps can be delegated to S-mode. See the [root README](../README.md) for the
-complete extension table.
-
-### Test Result Markers
-
-Test apps print one of two markers on the UART:
-
-- `<<PASS>>`: all tests passed
-- `<<FAIL>>`: a test failed
-
-`verif/cocotb_tests/test_real_program.py` monitors the UART and fails the run
-if `<<FAIL>>` appears, or if `<<PASS>>` has not appeared within 500,000 clock
-cycles (the default `COCOTB_MAX_CYCLES`; some apps carry larger budgets).
-
-Special cases:
-- hello_world: open-ended (loops forever); passes when "Hello, world!" is printed
-- uart_echo: interactive; the harness injects UART input and passes when the prompt, echo, and response are observed (no `<<PASS>>` marker)
-
-### Other details
-
-- ABI: LP64D (64-bit `long` and pointers, hardware double-precision float)
-- Floating point: hardware F and D extensions (IEEE 754 single and double precision)
-- No OS or libc: bare-metal programs with minimal dependencies
-- Optimization: `-O3` by default; an app may override `OPT_LEVEL` (isa_test uses `-O2`)
-- Source debugging: `make FROST_DEBUG=1` adds DWARF information and uses
-  `-Og -g3` with frame pointers for common C apps and CoreMark-PRO.
-  `FROST_DEBUG_FRAME_POINTER=0` disables frame pointers; `isa_test` uses this
-  because its instruction tests clobber `s0`.
-  Assembly apps provide source-line information and start at `_start`.
-  Stack unwinding is not guaranteed through custom assembly, trap handlers,
-  or FreeRTOS task switches.
-  Debug builds are unsuitable for benchmark measurements.
-- The FPGA loader's `--debug` supports single-ELF apps. `linux_boot` and
-  `opensbi_smoke` use separate firmware-image flows. FreeRTOS debugging
-  supports source and CPU inspection without task awareness. See the
-  [debugger guide](../tools/vscode-frost/README.md#debugging).
+Debug builds are unsuitable for benchmark measurements. `isa_test` disables
+frame pointers because tests use `s0`; custom assembly, traps, and FreeRTOS
+context switches can limit unwinding. The [debugger guide](../tools/vscode-frost/README.md)
+covers supported applications and startup behavior.

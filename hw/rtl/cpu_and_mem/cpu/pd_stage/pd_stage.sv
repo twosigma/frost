@@ -676,7 +676,7 @@ module pd_stage #(
                                               (!i_from_if_to_pd.sel_nop &&
                                               pd_sel_compressed &&
                                               decomp_is_compressed && decomp_illegal);
-      // Phase 3 M2: the fetch PMA fault rides the illegal-instruction shape,
+      // the fetch PMA fault rides the illegal-instruction shape,
       // with the same flush/redirect clears and the same !sel_nop gate. Decode
       // overrides the garbage bytes with the FETCH_FAULT pseudo-op.
       o_from_pd_to_id.fetch_fault <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
@@ -762,7 +762,7 @@ module pd_stage #(
       o_from_pd_to_id_2.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                                 (!i_from_if_to_pd_2.sel_nop &&
                                                 i_from_if_to_pd_2.decomp_illegal);
-      // Phase 3 M2: slot-2 fetch-fault pass-through (see slot-1).
+      // slot-2 fetch-fault pass-through (see slot-1).
       o_from_pd_to_id_2.fetch_fault <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                         (!i_from_if_to_pd_2.sel_nop &&
                                          i_from_if_to_pd_2.fetch_fault);

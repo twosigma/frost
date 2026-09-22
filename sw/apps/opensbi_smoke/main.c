@@ -16,7 +16,7 @@
 
 /*
  * OpenSBI smoke test: a bare S-mode payload booted by the real fw_jump
- * firmware through the FROST boot layout (Phase 3 M7). It checks, from the
+ * firmware through the FROST boot layout. It checks, from the
  * supervisor's point of view, everything Linux will rely on the firmware for:
  *
  *   A. SBI base: spec/impl ids, extension probes, mvendorid/marchid/mimpid.

@@ -63,7 +63,7 @@ ISA_TEST_SUITES = {
     "rv64uzbs": "RV64 Zbs Extension",
     "rv64uzbkb": "RV64 Zbkb Extension",
     "rv64mi": "RV64 Machine-Mode",
-    "rv64si": "RV64 Supervisor-Mode",  # S-mode (Phase 3 M1)
+    "rv64si": "RV64 Supervisor-Mode",  # S-mode
     # rv64uzbc: skipped, Frost does not implement Zbc
     # rv64uzbkx: skipped, Frost does not implement Zbkx
     # rv64uzfh: skipped, Frost does not implement Zfh
@@ -107,18 +107,16 @@ PARALLEL_UNSAFE_MESSAGE = (
     "symlinks, and simulator build/results paths; use --parallel 1"
 )
 
-# ISA tests skipped in every tier: unsupported on Frost.
+# ISA exclusions applied in every tier.
 ISA_SKIP_TESTS: dict[str, set[str]] = {
     "rv64ui": {
         "ma_data",  # Frost traps on misaligned access rather than handling in hardware
     },
-    # Machine-mode tests that require specific trap behaviors not supported
-    # (csr runs since D15: FS=Off FP ops and read-only-CSR writes trap).
     "rv64mi": {
         "breakpoint",  # Requires debug trigger module
         "pmpaddr",  # PMP not implemented on Frost
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
-        "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
+        "instret_overflow",  # Excluded pending revalidation with writable machine counters
     },
     "rv64si": {
         # Expects the hardware to set the PTE A/D bits; Frost is Svade (A=0 /

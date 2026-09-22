@@ -13,27 +13,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check the default standalone MAC/PCS with portable coarse synthesis in frost.
+"""Check portable MAC/PCS synthesis in the pinned frost image.
 
-Run from the repository root:
-    ./scripts/frost.py run python3 tests/net10g/synthesize.py
+Run ``./scripts/frost.py run python3 tests/net10g/synthesize.py``.
+The pinned sv2v converts a source snapshot for Yosys. If the matching binary
+is absent, a checksummed archive is cached in the isolated build directory.
+Logs, source hashes, Verilog, and netlist JSON remain in sim_build/synthesis.
 
-The frost image supplies Yosys 0.69 and the pinned upstream sv2v v0.0.13
-release as ``sv2v`` on PATH. This check converts the package-based RTL with
-sv2v before invoking Yosys's ``read_verilog`` frontend. It uses the installed
-binary when its version matches the pin and otherwise downloads the same
-release into its isolated build directory, checking the pinned archive
-SHA256. Only an image predating the sv2v layer needs GitHub, and later runs
-reuse the checked archive. That additional frontend converts
-an exact snapshot of the RTL; the check itself installs nothing anywhere.
-Logs, source hashes, converted Verilog and netlist JSON remain under
-tests/net10g/sim_build/synthesis for inspection.
-
-Coarse synthesis retains memories, checks the elaborated hierarchy and
-drivers, and rejects inferred latches and blackboxes. It does not establish
-FPGA timing, place/route, RAM primitive selection, or GTY interoperability.
-FSM recoding is disabled: extracting a transition table from the eight-lane
-receive parser expands its symbolic next-state logic unnecessarily.
+Rejects latches, blackboxes, and structural errors; does not establish device
+mapping, timing, or GTY interoperability. FSM recoding stays disabled to avoid
+expanding the eight-lane RX parser's symbolic transition logic.
 """
 
 import argparse

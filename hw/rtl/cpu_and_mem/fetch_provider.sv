@@ -47,7 +47,7 @@
  *   payload wires without being accepted as the new ask's instruction, while
  *   the wide tag comparison stays off the same-cycle fetch-progress -> PC path.
  *
- *   Physical side (Phase 3 M5). i_pc is the virtual fetch address and stays
+ *   Physical side. i_pc is the virtual fetch address and stays
  *   the window's identity: the ask and served tags, and the retarget compare.
  *   The core's current physical result is latched with the ask, and is what
  *   the buffer lookup and the fills use. That result is i_pa0/i_pa1 for the
@@ -106,7 +106,7 @@ module fetch_provider #(
     // update, because o_pc stays frozen at it through any stall the replay
     // bundle survives.
     input logic [31:0] i_pc,
-    // Physical side of the ask (Phase 3 M5, see the contract above).
+    // Physical side of the ask (see the contract above).
     input logic [31:0] i_pa0,
     input logic [31:0] i_pa1,
     input logic i_pa_valid,
@@ -210,7 +210,7 @@ module fetch_provider #(
   // served-window movement are explicit, because they can follow an accepted
   // window, where accepted_prev_q masks movement.
   //
-  // The third arm re-syncs the ask (Phase 3 M5). The owed-ask contract is that
+  // The third arm re-syncs the ask. The owed-ask contract is that
   // while unserved the core holds o_pc at the ask. A cross-tier page-straddle
   // can break it. o_pc runs one word ahead into a faulting second page, this
   // provider serves the covering straddle window and advances its ask to that

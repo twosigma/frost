@@ -82,7 +82,7 @@ module xilinx_frost_subsystem #(
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 
-    // NIC (Phase 4): the TX and RX MAC clocks and their presence levels, the
+    // NIC: the TX and RX MAC clocks and their presence levels, the
     // raw PMA interface, the PHY lines and the PCS block lock (frost.sv).
     input  logic        i_nic_tx_clk,
     input  logic        i_nic_rx_clk,
@@ -238,7 +238,7 @@ module xilinx_frost_subsystem #(
       image_load_reset_n <= 1'b1;
     end
 
-  // RISC-V debug transport (Phase 3 M3): the DTM's dtmcs and dmi registers
+  // RISC-V debug transport: the DTM's dtmcs and dmi registers
   // hang off the FPGA's own TAP through two BSCANE2 USER chains, USER3 for
   // dtmcs and USER4 for dmi. The Vivado debug hub behind jtag_axi keeps USER1.
   // OpenOCD retargets the three DTM registers with

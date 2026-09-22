@@ -217,27 +217,10 @@ every linker script under `sw/` reserves it as the `DEBUG` region.
 
 ## Build and Simulation
 
-From the repo root (simulation and synthesis checks run in the pinned
-container via the wrapper; Vivado builds run natively):
-
-```bash
-# Cocotb/Verilator simulation
-./scripts/frost.py cocotb hello_world
-./scripts/frost.py cocotb tomasulo_test
-./scripts/frost.py cocotb --list-tests    # show all registered tests
-
-# Yosys RTL synthesis checks
-./scripts/frost.py synthesis
-
-# Vivado FPGA builds
-./fpga/build/build.py x3
-```
-
-Yosys runs generic coarse synthesis and full Xilinx UltraScale+ synthesis.
-See the [synthesis guide](../../tests/README.md#test_run_yosyspy) for target options.
-
-The top-level simulation file list is `frost.f`; the CPU build file list is
-`cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f`.
+Use the [test guide](../../tests/README.md) for pinned-container simulation,
+formal, and Yosys commands, and the [FPGA guide](../../fpga/README.md) for native
+Vivado builds. `frost.f` is the system source list;
+`cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f` is the CPU list.
 
 ## Parameters
 

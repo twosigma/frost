@@ -12,27 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Constrained-random RISC-V instruction generator.
+"""Generate RISC-V instruction parameters with valid registers and immediates.
 
-Generated instructions satisfy:
-    - Register indices in 0-31
-    - Immediate ranges (12-bit signed for most, 5-bit for shifts)
-    - Alignment requirements (2-byte for halfword, 4-byte for word)
-    - Even offsets for branches and jumps
-
-Constrained-random streams reach operand and register combinations the
-directed tests do not.
-
-Example::
-
-    >>> # Generate a random instruction
-    >>> regfile = [random.randint(0, 0xFFFFFFFF) for _ in range(32)]
-    >>> params = InstructionGenerator.generate_random_instruction(regfile)
-    >>>
-    >>> # Encode to binary
-    >>> instruction_bits = InstructionGenerator.encode_instruction(*params)
-    >>> 0 <= instruction_bits <= 0xFFFFFFFF
-    True
+Enforces access alignment and even branch/jump offsets; optional constraints
+keep addresses inside allocated memory.
 """
 
 import random

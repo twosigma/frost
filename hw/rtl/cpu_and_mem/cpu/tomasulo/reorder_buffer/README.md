@@ -54,8 +54,7 @@ The nine `value` instances run their two alloc write ports in the RAM
 modules' register-staged LVT mode (`NUM_STAGED_LVT_PORTS(2)`). The late
 alloc enables still write the banks in the alloc cycle, but the Live Value
 Table update runs one cycle later from staging registers. This keeps the
-dispatch-gate cone off every LVT bit of every replica, which was the x3
-post-opt WNS. Reads stay cycle-exact through a per-entry effective-LVT
+dispatch-gate cone off every LVT bit of every replica, to bound allocation fanout. Reads stay cycle-exact through a per-entry effective-LVT
 correction inside the RAM modules. The load-bearing case is JAL, which is
 done at alloc and whose link value may be read at alloc+1.
 
@@ -128,7 +127,7 @@ from IDLE if the SQ is already committed-empty. A plain FENCE with a drained
 SQ, or WFI with an interrupt already pending, can retire without leaving IDLE.
 
 Each owned state asserts `commit_stall` until its release condition is met.
-An ordinary CSR drops the stall on `i_csr_done` and retires on its historical
+An ordinary CSR drops the stall on `i_csr_done` and retires on its
 completion cycle. Translation-class ownership is captured at allocation:
 every `satp` access qualifies conservatively, while `mstatus` and `sstatus`
 qualify only when the instruction has architectural write intent. When
@@ -161,7 +160,7 @@ asserted while the registered commit bus writes the CSR file. The full flush
 follows one cycle after that. A native FENCE.I/SFENCE.VMA instead produces
 the serializer-owned semantic event directly on retirement. For either owner,
 `o_fence_i_flush` is the one-cycle registered image of
-`o_fence_class_flush_event`, so the historical `o_fence_i_flush` name covers
+`o_fence_class_flush_event`, so `o_fence_i_flush` covers
 both native fences and translation-class CSR recovery. The CSR file
 separately generates its registered TLB/PTW invalidate request for every
 enabled committed `satp` access, or for an `mstatus`/`sstatus` commit whose
@@ -235,7 +234,7 @@ Exceptions, branch / JAL / JALR, CSR, FENCE / FENCE.I / SFENCE.VMA, WFI, and xRE
 through to the existing serial / branch-update / trap
 paths; the bypass applies only to ordinary completions.
 
-## Three commit views
+## Commit interfaces
 
 The ROB exposes a combinational commit bus (`o_commit_comb`), a
 registered commit bus (`o_commit`), and parallel slot 2 variants

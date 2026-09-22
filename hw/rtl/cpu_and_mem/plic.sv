@@ -15,17 +15,14 @@
  */
 
 /*
- * Platform-Level Interrupt Controller (RISC-V PLIC spec 1.0, Phase 3 M6,
- * plan D11), memory-mapped in the device quadrant at 0x4400_0000. The
- * contexts are {hart0 M, hart0 S} today, and the context array is
- * parameterized for the harts Phase 6 adds.
+ * Platform-Level Interrupt Controller (RISC-V PLIC spec 1.0) at 0x4400_0000.
+ * Two contexts serve hart0 M and S; the context array is parameterized.
  *
  * Sources (1-based per the spec; source 0 means "none"):
- *   1 = ns16550 UART interrupt (the meip OR-tap that used to feed mip.MEIP
- *       directly moves in here),
+ *   1 = ns16550 UART interrupt,
  *   2 = the board's i_external_interrupt pin,
- *   3 = the DMA test engine's completion (Phase 4 slice 1),
- *   4 = the NIC (Phase 4 slice 2).
+ *   3 = the DMA test engine's completion,
+ *   4 = the NIC.
  *
  * Gateways carry level semantics: a source is requestable while its level
  * is high and it has no claim in flight; the claim clears its pending bit,

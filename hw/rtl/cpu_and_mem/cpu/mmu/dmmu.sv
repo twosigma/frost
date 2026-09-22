@@ -15,7 +15,7 @@
  */
 
 /*
- * dmmu: the data-side Sv39 translation stage (Phase 3 M4, plan D4).
+ * dmmu: the data-side Sv39 translation stage.
  *
  * Sits between the AGU adds and the LQ/SQ address-update writes, and runs
  * only while data translation is active: satp.MODE = Sv39 and the effective

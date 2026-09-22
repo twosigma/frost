@@ -15,7 +15,7 @@
  */
 
 /**
- * DMA coherence torture (Phase 4 slice 1). The DMA test engine
+ * DMA coherence torture. The DMA test engine
  * (hw/rtl/cpu_and_mem/dma_test_engine.sv) is a second agent reading and
  * writing cached DDR behind the CPU's caches; every check here is a
  * coherence or ordering obligation the cache hierarchy's DMA sequencer and
