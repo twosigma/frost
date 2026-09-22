@@ -8,7 +8,7 @@
       "program": "${workspaceFolder}/sw/apps/hello_world/sw.elf",
       "cwd": "${workspaceFolder}",
       "MIMode": "gdb",
-      "miDebuggerPath": "riscv-none-elf-gdb",
+      "miDebuggerPath": "riscv64-linux-gdb",
       "miDebuggerServerAddress": "127.0.0.1:3333",
       "useExtendedRemote": true,
       "stopAtConnect": true,

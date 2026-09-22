@@ -408,7 +408,8 @@ These flows compile the application themselves:
 
 ### Prerequisites
 
-- RISC-V GCC toolchain (`riscv-none-elf-gcc` from [xPack](https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack), or similar)
+- The pinned Bootlin RV64/LP64D musl toolchain (`riscv64-linux-gcc`); see
+  [toolchain setup](../docs/tooling.md#shared-risc-v-toolchain). Docker includes it.
 - GNU Make
 
 ### Manual compilation
@@ -475,7 +476,7 @@ Compilation produces:
 ### Toolchain Override
 
 ```bash
-make RISCV_PREFIX=riscv-none-elf-
+make RISCV_PREFIX=riscv64-linux-
 ```
 
 ### Architecture Constants (`common/arch.mk`)

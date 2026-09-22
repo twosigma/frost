@@ -18,7 +18,7 @@
 CoreMark's run rules allow profile-guided optimization when the profile comes
 from the official profile data set: ``TOTAL_DATA_SIZE`` 1200 with seeds
 8/8/8, which ``core_portme.h`` selects as ``PROFILE_RUN``.  This builds the
-benchmark sources against the Spike port layer with ``-fprofile-generate
+benchmark sources against the Spike port layer with ``-fprofile-arcs
 -fprofile-info-section``, runs it under Spike, streams the gcda out over the
 HTIF syscall proxy, and installs the five benchmark-source ``.gcda`` files
 next to the app Makefile.
@@ -44,6 +44,8 @@ Runs inside the pinned image:
 """
 
 import argparse
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -53,6 +55,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 APP_DIR = HERE.parent
 COREMARK_DIR = APP_DIR / "coremark"
+RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 EXTENSIONS = "imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
 # The five benchmark translation units; the port layer is deliberately excluded.
 PROFILED_SOURCES = (
@@ -71,6 +74,10 @@ BASE_FLAGS = (
     "-nostdlib",
     "-nostartfiles",
     "-ffreestanding",
+    "-static",
+    "-fno-pie",
+    "-no-pie",
+    "-fno-stack-protector",
     "-fno-unwind-tables",
     "-fno-asynchronous-unwind-tables",
     "-ffunction-sections",
@@ -82,8 +89,10 @@ BASE_FLAGS = (
 DEFAULT_TUNE_FLAGS = (
     "--param",
     "max-inline-insns-auto=200",
-    "-fira-algorithm=priority",
+    "-fira-algorithm=CB",
     "-fstrict-aliasing",
+    "-fselective-scheduling",
+    "-mtune=sifive-7-series",
 )
 
 
@@ -91,7 +100,7 @@ def build(work_dir: Path, tune_flags: list[str]) -> Path:
     """Compile the instrumented training image and return its path."""
     elf_path = work_dir / "sw.elf"
     command = [
-        "riscv-none-elf-gcc",
+        f"{RISCV_PREFIX}gcc",
         f"-march=rv64{EXTENSIONS}",
         "-mabi=lp64d",
         *BASE_FLAGS,
@@ -116,7 +125,9 @@ def build(work_dir: Path, tune_flags: list[str]) -> Path:
         "iss/link_spike_pgo.ld",
         "-Wl,--gc-sections",
         "-Wl,--no-warn-rwx-segments",
-        "-fprofile-generate",
+        # The measured build consumes edge counts via -fbranch-probabilities.
+        # Value profiling adds a Linux TLS runtime to Bootlin's libgcov.
+        "-fprofile-arcs",
         "-fprofile-info-section",
         "-fprofile-update=single",
         *tune_flags,
@@ -126,6 +137,18 @@ def build(work_dir: Path, tune_flags: list[str]) -> Path:
         str(elf_path),
     ]
     subprocess.run(command, cwd=APP_DIR, check=True)
+    # Bootlin's libgcov was built for Linux. Only its freestanding streaming
+    # objects belong here: reject accidental TLS, dynamic loading or syscalls.
+    headers = subprocess.check_output(
+        [f"{RISCV_PREFIX}readelf", "-lW", str(elf_path)], text=True
+    )
+    assembly = subprocess.check_output(
+        [f"{RISCV_PREFIX}objdump", "-d", str(elf_path)], text=True
+    )
+    if re.search(r"^\s+(TLS|INTERP|DYNAMIC)\s", headers, re.MULTILINE) or re.search(
+        r"\becall\b", assembly
+    ):
+        raise RuntimeError("training image unexpectedly contains a Linux runtime")
     return elf_path
 
 
@@ -141,7 +164,7 @@ def run_and_merge(elf_path: Path, work_dir: Path) -> None:
     if b"GCOV-ABORT" in stream_path.read_bytes():
         raise RuntimeError("the gcov dumper aborted; see iss/pgo_dump.c")
     subprocess.run(
-        ["riscv-none-elf-gcov-tool", "merge-stream", stream_path.name],
+        [f"{RISCV_PREFIX}gcov-tool", "merge-stream", stream_path.name],
         cwd=work_dir,
         check=True,
     )
@@ -159,7 +182,7 @@ def main() -> int:
     )
     arguments = parser.parse_args()
 
-    for tool in ("riscv-none-elf-gcc", "riscv-none-elf-gcov-tool", "spike"):
+    for tool in (f"{RISCV_PREFIX}gcc", f"{RISCV_PREFIX}gcov-tool", "spike"):
         if shutil.which(tool) is None:
             print(
                 f"error: {tool} not found; run this inside the pinned image "

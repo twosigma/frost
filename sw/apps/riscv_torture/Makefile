@@ -33,7 +33,7 @@ ABI  = $(FROST_INT_ABI)
 CMODEL = -mcmodel=medany
 
 # Tools
-RISCV_PREFIX ?= riscv-none-elf-
+RISCV_PREFIX ?= riscv64-linux-
 CC      = $(RISCV_PREFIX)gcc
 OBJCOPY = $(RISCV_PREFIX)objcopy
 OBJDUMP = $(RISCV_PREFIX)objdump
@@ -99,7 +99,7 @@ $(EXECUTABLE_ELF_FILE): $(TEST_SRC) frost_header.S frost_footer.S $(BOOT_STUB) $
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=tests_rv64/test_001.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles $(PAGED_FLAGS) \
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector $(PAGED_FLAGS) \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(TEST_SRC)
 
 # Low BRAM image: everything not split out to DDR (the bram config keeps the

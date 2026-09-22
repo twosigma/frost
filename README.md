@@ -83,8 +83,7 @@ proprietary Vivado, installed separately on the host. Tool versions:
 | | Node.js / npm | 26.9.0 / 12.0.2 |
 | **Compiler** | Native GCC / G++ | 16.2.0 |
 | | Clang / clang-tidy / clang-format | 23.1.1 |
-| | RISC-V bare-metal GCC (xPack) | 15.2.0-1 |
-| | RISC-V Linux GCC (Bootlin stable musl) | 15.3.0 (2026.08-1) |
+| | RISC-V GCC for bare metal, OpenSBI and Linux (Bootlin musl) | 15.3.0 (2026.08-1) |
 | | pip / setuptools / wheel | 26.2.1 / 84.0.0 / 0.48.0 |
 | **Build** | CMake / Meson / Ninja | 4.4.3 / 1.12.0 / 1.13.2 |
 | | Buildroot / OpenSBI | 2026.08 / 1.9 |

@@ -38,6 +38,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "sw" / "apps"))
 sys.path.insert(0, str(PROJECT_ROOT / "linux"))
 from debian_kernel import kernel_image  # noqa: E402
 from hw_target import add_target_args, select_target, validate_target_args  # noqa: E402
+from riscv_toolchain import default_riscv_prefix  # noqa: E402
 from software_registry import (  # noqa: E402
     COREMARK_PRO_APP_NAMES,
     app_build_directory_name,
@@ -254,7 +255,7 @@ def compile_app_for_board(
     # Start from the caller's toolchain environment.
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
-        env["RISCV_PREFIX"] = "riscv-none-elf-"
+        env["RISCV_PREFIX"] = default_riscv_prefix(PROJECT_ROOT)
 
     # Apply board-dependent clock, memory and CoreMark settings.
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)

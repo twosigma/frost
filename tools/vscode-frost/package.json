@@ -151,7 +151,7 @@
         },
         "frost.gdbPath": {
           "type": "string",
-          "default": "riscv-none-elf-gdb",
+          "default": "riscv64-linux-gdb",
           "scope": "machine",
           "description": "RISC-V GDB executable on the FPGA host, as a path or executable name on PATH."
         },

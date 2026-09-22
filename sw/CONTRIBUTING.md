@@ -5,7 +5,8 @@ This covers bare-metal software. For RTL, verification, or FPGA work, see the
 
 ## Getting Started
 
-Install a RISC-V cross-compiler such as `riscv-none-elf-gcc`, then verify it:
+Use the pinned Bootlin `riscv64-linux-gcc` from Docker, or follow the
+[native toolchain setup](../docs/tooling.md#shared-risc-v-toolchain), then verify it:
 
 ```bash
 cd sw/apps/hello_world
@@ -275,7 +276,7 @@ Set these before `include ../../common/common.mk`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RISCV_PREFIX` | `riscv-none-elf-` | Toolchain prefix |
+| `RISCV_PREFIX` | `riscv64-linux-` | Toolchain prefix |
 | `OPT_LEVEL` | `-O3` | Optimization level |
 | `UNROLL_LOOPS` | `-funroll-loops` | Loop unrolling (set empty to disable) |
 | `MABI` | `lp64d` | ABI |

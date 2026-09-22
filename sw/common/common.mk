@@ -15,7 +15,7 @@
 # Shared FROST bare-metal toolchain and build rules.
 
 # Overridable RISC-V toolchain prefix.
-RISCV_PREFIX ?= riscv-none-elf-
+RISCV_PREFIX ?= riscv64-linux-
 
 # Toolchain executables
 CC      := $(RISCV_PREFIX)gcc      # C compiler
@@ -74,9 +74,11 @@ MABI ?= $(FROST_FP_ABI)
 # every 2-wide bundle inside the 64-bit fetch window; see its Makefile.
 FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 
-# Bare-metal builds omit libc/start files and runtime unwind metadata. The debug
-# profile emits DWARF for GDB. Per-function/data
-# sections allow --gc-sections; -fno-strict-aliasing is a blanket guard for
+# Bare-metal builds omit libc/start files and runtime unwind metadata. Explicit
+# static/non-PIE linking and disabled stack protection also permit Linux-targeted
+# GCC: our startup supplies neither a dynamic loader nor a stack-check runtime.
+# The debug profile emits DWARF for GDB. Per-function/data sections allow
+# --gc-sections; -fno-strict-aliasing is a blanket guard for
 # type-punned pointer casts (mmio.h's own accessors now carry may_alias and are
 # safe without it, but app code may still pun).
 # LP64 defaults to medany because medlow cannot form positive 0x8xxx_xxxx DDR
@@ -94,6 +96,7 @@ APP_TUNE_FLAGS ?=
 
 RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)$(FROST_MARCH_EXTENSIONS) -mabi=$(MABI) $(FROST_CMODEL) -Wall -Wextra \
                -nostdlib -nostartfiles -ffreestanding \
+               -static -fno-pie -no-pie -fno-stack-protector \
                -fno-unwind-tables -fno-asynchronous-unwind-tables \
                -ffunction-sections -fdata-sections \
                $(OPT_LEVEL) $(UNROLL_LOOPS) -fno-strict-aliasing

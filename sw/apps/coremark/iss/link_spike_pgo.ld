@@ -19,7 +19,7 @@ SECTIONS
     KEEP(*(.gcov_info))
     PROVIDE(__gcov_info_end = .);
   }
-  .data : { *(.data .data.*) }
+  .data : { *(.data .data.*) *(.got .got.*) }
   . = ALIGN(8);
   __global_pointer$ = . + 0x800;
   .sdata : { *(.sdata .sdata.*) }

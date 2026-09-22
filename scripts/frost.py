@@ -86,8 +86,8 @@ TOOL_VERSION_ARGUMENTS = {
     "sby": "SBY_VERSION",
     "z3": "Z3_VERSION",
     "boolector": "BOOLECTOR_VERSION",
-    "riscv_gcc": "XPACK_RISCV_VERSION",
-    "riscv64_linux_gcc": "BOOTLIN_RISCV64_MUSL_VERSION",
+    "riscv_gcc": "BOOTLIN_RISCV64_MUSL_VERSION",
+    "riscv_gdb": "BOOTLIN_RISCV64_MUSL_VERSION",
     "clang": "LLVM_VERSION",
     "clang_tidy": "LLVM_VERSION",
     "clang_format": "LLVM_VERSION",
@@ -148,14 +148,17 @@ def command_output(command):
 
 
 def install_path(command):
-    # The Bootlin toolchain's --version banner carries its Buildroot build,
-    # not the release; the release is the install directory's name.
+    # Verify that the program runs as well as identifying its Bootlin archive.
+    # GDB's banner contains its own version, not the toolchain release.
     import shutil
 
     resolved = shutil.which(command)
     if not resolved:
         return {"error": f"{command} not found"}
-    return {"version": os.path.realpath(resolved)}
+    report = command_output([command, "--version"])
+    if "error" in report:
+        return report
+    return {"version": os.path.realpath(resolved) + "\n" + report["version"]}
 
 
 tools = {
@@ -164,8 +167,8 @@ tools = {
     "sby": command_output(["sby", "--version"]),
     "z3": command_output(["z3", "--version"]),
     "boolector": command_output(["boolector", "--version"]),
-    "riscv_gcc": command_output(["riscv-none-elf-gcc", "--version"]),
-    "riscv64_linux_gcc": install_path("riscv64-linux-gcc"),
+    "riscv_gcc": install_path("riscv64-linux-gcc"),
+    "riscv_gdb": install_path("riscv64-linux-gdb"),
     "clang": command_output(["clang", "--version"]),
     "clang_tidy": command_output(["clang-tidy", "--version"]),
     "clang_format": command_output(["clang-format", "--version"]),
@@ -524,13 +527,6 @@ def image_fingerprint_problems(
     return problems
 
 
-def _expected_tool_version(tool: str, configured: str) -> str:
-    """Normalize packaging suffixes that are absent from command output."""
-    if tool == "riscv_gcc":
-        return configured.rsplit("-", maxsplit=1)[0]
-    return configured
-
-
 def tool_version_problems(
     probe: Mapping[str, object], pins: Mapping[str, str]
 ) -> list[str]:
@@ -557,7 +553,7 @@ def tool_version_problems(
             # The PyPI wheel carries Kitware's GNU make jobserver patch. Its
             # CLI includes that build suffix after the pinned release version.
             version = re.sub(r"\.git\.kitware\.jobserver(?:-pipe)?-\d+$", "", version)
-        expected = _expected_tool_version(tool, configured)
+        expected = configured
         if tool in PACKAGE_VERSION_TOOLS:
             matches = version == expected
         else:

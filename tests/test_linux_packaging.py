@@ -306,7 +306,7 @@ def test_sbi_packer_places_the_dtb_by_image_size(tmp_path: Path) -> None:
     to +18 MiB. The shim's a1, the /chosen initramfs bounds, the sparse
     sw_ddr.mem that simulation reads and the dense sw_ddr.txt that the JTAG
     loader streams must all carry that one layout. Needs dtc and the
-    riscv-none-elf- toolchain (both in the Docker image).
+    riscv64-linux- toolchain (both in the Docker image).
     """
     packer = _load_module(SBI_PACKER)
     image = _linux_image(packer, image_size=0xE01000, length=0xE00000)
@@ -381,7 +381,7 @@ def test_sbi_packer_nfsroot_packs_no_initramfs(
 
     No initramfs is packed: /chosen has no linux,initrd-* and sw_ddr.mem holds
     the firmware, the payload and the DTB only. Needs dtc and the
-    riscv-none-elf- toolchain (both in the Docker image).
+    riscv64-linux- toolchain (both in the Docker image).
     """
     monkeypatch.delenv("FROST_INITRD", raising=False)
     packer = _load_module(SBI_PACKER)
@@ -493,7 +493,7 @@ def test_sbi_packer_nfsroot_through_an_initramfs(
 
     boot=nfs selects initramfs-tools' NFS boot; ip= and the nfsroot= options
     are the ones the kernel's own NFS root gets. The initramfs is packed after
-    the DTB slot as usual. Needs dtc and the riscv-none-elf- toolchain (both in
+    the DTB slot as usual. Needs dtc and the riscv64-linux- toolchain (both in
     the Docker image).
     """
     monkeypatch.delenv("FROST_INITRD", raising=False)
@@ -533,7 +533,7 @@ def test_sbi_packer_nic_mac_address(
 ) -> None:
     """The NIC's local-mac-address is 02:11:22:33:44:55 unless --mac names one.
 
-    Needs dtc and the riscv-none-elf- toolchain (both in the Docker image).
+    Needs dtc and the riscv64-linux- toolchain (both in the Docker image).
     """
     monkeypatch.delenv("FROST_INITRD", raising=False)
     packer = _load_module(SBI_PACKER)
@@ -606,7 +606,7 @@ def test_sbi_packer_memory_node_size(
 ) -> None:
     """/memory advertises MEM_SIZE (64 MiB) unless --mem-size names a size.
 
-    Needs dtc and the riscv-none-elf- toolchain (both in the Docker image).
+    Needs dtc and the riscv64-linux- toolchain (both in the Docker image).
     """
     monkeypatch.delenv("FROST_INITRD", raising=False)
     packer = _load_module(SBI_PACKER)
@@ -947,7 +947,7 @@ def test_linux_boot_make_substitutes_the_kernel_and_initramfs(tmp_path: Path) ->
     Substitutes with the default inputs' bytes pack every output exactly as the
     defaults do. Other files are packed in their place, the DTB placed by the
     substituted Image's header, with the default bootargs. Needs make, dtc and
-    the riscv-none-elf- toolchain (all in the Docker image).
+    the riscv64-linux- toolchain (all in the Docker image).
     """
     packer = _load_module(SBI_PACKER)
     helper = _load_module(DEBIAN_KERNEL)
@@ -1020,7 +1020,7 @@ def test_linux_boot_make_nfsroot(
     Without FROST_LINUX_INITRD nothing follows the DTB and the kernel mounts
     the export, even with the packer's own FROST_INITRD in the environment;
     with it, that initramfs is packed and mounts it (boot=nfs). Needs make,
-    dtc and the riscv-none-elf- toolchain (all in the Docker image).
+    dtc and the riscv64-linux- toolchain (all in the Docker image).
     """
     packer = _load_module(SBI_PACKER)
     app = _linux_boot_tree(tmp_path)

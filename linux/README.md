@@ -41,10 +41,10 @@ layout below): `0x81000000` for any payload up to 14 MiB, and `0x82200000` for
 today's kernel, whose footprint is about 31 MiB.
 
 The firmware is OpenSBI v1.9's generic platform from `linux/opensbi`, built
-by `linux/opensbi_build.py` with the Linux-targeted toolchain in the Docker
-image. OpenSBI requires a PIE-capable linker; the bare-metal xPack linker
-cannot build it. Use `FROST_LINUX_CROSS_COMPILE` or `--cross` to select another
-Linux-targeted toolchain. Build settings:
+by `linux/opensbi_build.py` with the shared Bootlin toolchain in the Docker
+image. OpenSBI retains its PIE link; bare-metal apps explicitly disable PIE.
+Use `FROST_LINUX_CROSS_COMPILE` or `--cross` to select another Linux-targeted
+toolchain. Build settings:
 
 - `FW_TEXT_START=0x80000000` and `FW_JUMP_OFFSET=0x200000`.
 - Empty `FW_JUMP_FDT_OFFSET` to preserve the DTB address in `a1`.

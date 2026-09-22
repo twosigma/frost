@@ -2,15 +2,15 @@
 
 Two Spike-hosted tools over the unmodified CoreMark sources in `../coremark/`.
 `count_instructions.py` reports how many instructions the timed region retires
-at **either XLEN**, and is not part of any build, test or board flow.
+at RV64 with the pinned Bootlin compiler, and is not part of any build, test or board flow.
 `generate_profile.py` produces the profile data `../Makefile` reads when
 `COREMARK_PGO=1`, so its output *is* a build input; the harness itself still
 runs only on demand.
 
 ## Why it exists
 
-Compare compiler options and the RV32/ILP32D and RV64/LP64D ABIs by retired
-instruction count. FROST itself is RV64-only. Spike does not model cycles or
+Compare compiler options by retired instruction count. FROST and its pinned
+Bootlin toolchain are RV64-only. Spike does not model cycles or
 IPC; use simulation or hardware to measure a CoreMark score.
 
 ## Usage
@@ -20,11 +20,14 @@ Needs the pinned toolchain and Spike, so run it inside the image:
 ```bash
 ./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --matrix
 ./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --xlen 64
-./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --xlen 32 \
+./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --xlen 64 \
     -- --param max-inline-insns-auto=200
 ```
 
-`--matrix` reproduces the ablation quoted in `../Makefile`:
+`--matrix` measures the historical flag ablation at RV64. `--xlen 32` remains
+available for experiments with an external RV32/ILP32D compiler selected via
+`RISCV_PREFIX`; that compiler is not included in the image. The original
+xPack GCC 15.2 ABI comparison quoted in `../Makefile` was:
 
 ```
 flags                                   rv32/ilp32d   rv64/lp64d    lp64
@@ -47,7 +50,15 @@ selects as `PROFILE_RUN` -- and that is what the script builds.
 ```
 
 The script runs an instrumented benchmark under Spike and converts its
-profile stream to gcda files using `riscv-none-elf-gcov-tool merge-stream`.
+profile stream to gcda files using `riscv64-linux-gcov-tool merge-stream`.
+Training uses `-fprofile-arcs`: the measured build reads edge counts with
+`-fbranch-probabilities`, so Linux TLS-based value profiling is unnecessary.
+The streaming dumper supplies fail-fast stubs for unused merge/mapping hooks
+instead of linking libgcov's filesystem runtime. The generator rejects a
+training ELF containing TLS, dynamic loading or Linux syscalls. Regenerate the
+committed profiles whenever the compiler or training flags change; old compiler
+profiles are not migration evidence. PGO remains opt-in and is separate from
+the qualified default CoreMark tuning.
 
 When changing the training build:
 
@@ -68,7 +79,7 @@ fresh per-build stamp into every gcda. Before believing a regenerated profile
 has changed, compare with the stamp removed:
 
 ```bash
-riscv-none-elf-gcov-dump -l sw.elf-core_state.gcda | sed '/stamp/d'
+riscv64-linux-gcov-dump -l sw.elf-core_state.gcda | sed '/stamp/d'
 ```
 
 ## How it works, and what it is not

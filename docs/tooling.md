@@ -22,8 +22,7 @@ its Python, GCC, LLVM, CMake, QEMU and Node checks also catch stale images.
 | Boolector / btormc | 3.2.4 | [Final release](https://github.com/Boolector/boolector/releases/tag/3.2.4) |
 | Verible | 0.0-4294-gc1d8f5e8 | [Release](https://github.com/chipsalliance/verible/releases/tag/v0.0-4294-gc1d8f5e8) |
 | sv2v | 0.0.13 | [Release](https://github.com/zachjs/sv2v/releases/tag/v0.0.13) |
-| xPack bare-metal RISC-V GCC | 15.2.0-1 | [Release](https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/tag/v15.2.0-1) |
-| Bootlin stable musl RISC-V GCC | 2026.08-1 (GCC 15.3.0) | [Downloads and checksums](https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/) |
+| Bootlin musl RISC-V GCC (bare metal, OpenSBI and Linux) | 2026.08-1 (GCC 15.3.0) | [Downloads and checksums](https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/) |
 | Buildroot / OpenSBI | 2026.08 / 1.9 | [Buildroot](https://buildroot.org/news.html), [OpenSBI](https://github.com/riscv-software-src/opensbi/releases/tag/v1.9) |
 | QEMU | 11.1.1 | [Downloads](https://www.qemu.org/download/) |
 | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` | [Pinned commit](https://github.com/riscv-software-src/riscv-isa-sim/commit/02b1dc182164bb73b19b050676dd89f0834f8b2e) |
@@ -92,6 +91,59 @@ the regression tests.
 - Vivado remains a separately installed native tool. Its documented validated
   version and hardware regression results are not changed by this image.
   Architecture-test, benchmark and FreeRTOS source pins are also retained.
+
+## Shared RISC-V toolchain
+
+The image has two supported GCC toolchains: native GCC/G++ for host tools
+and Verilator's C++ model, and Bootlin 2026.08-1 / GCC 15.3.0 for all RISC-V
+software. Bootlin's `riscv64-linux-` prefix builds bare-metal applications,
+OpenSBI, and Linux userspace. Its GDB is `riscv64-linux-gdb`. The separate
+xPack installation has been removed.
+
+Bare-metal builds retain FROST startup, linker scripts and runtime. They pass
+`-static -fno-pie -no-pie -fno-stack-protector` explicitly. The linker scripts
+include any static-library GOT in initialized data. CoreMark-PRO selects musl
+math objects from `libc.a` and supplies its own inert stdio handles, non-TLS
+errno, and stack-check runtime; it does not use Linux startup or syscalls.
+OpenSBI continues to link as PIE and Linux userspace uses musl normally.
+
+The Python application and FPGA build/load helpers use Bootlin from PATH,
+falling back to `linux/build-mmu/host/bin` when that existing Buildroot cache
+is available. For manual Make and debugger commands, put the pinned Bootlin
+toolchain's `bin` directory on the host's PATH; from the repository root:
+
+```bash
+export PATH="$PWD/linux/build-mmu/host/bin:$PATH"
+riscv64-linux-gcc --version
+riscv64-linux-gdb --version
+```
+
+Alternatively, extract the same checksummed Bootlin archive pinned in the
+Dockerfile and add its `bin` directory to PATH. `RISCV_PREFIX` still overrides
+bare-metal builds, and `FROST_LINUX_CROSS_COMPILE` overrides OpenSBI/Linux.
+VS Code's `frost.gdbPath` can name the GDB executable explicitly. Vivado and
+board programming remain native host workflows.
+
+### CoreMark performance gate
+
+The copied xPack tuning regressed Bootlin's simulated score by about 0.79%.
+A 31-case screen at RTL `0c0be1ec` found that changing the register allocator
+to `-fira-algorithm=CB` and adding `-mtune=sifive-7-series` recovered the loss.
+The default Makefile now uses that combination with the existing ISA, ABI,
+LTO and peel caps; PGO is not enabled.
+
+| Simulation case | xPack GCC 15.2 cycles | Bootlin GCC 15.3 cycles | Score change |
+|---|---:|---:|---:|
+| First boot, one iteration | 296,400 | 295,639 | +0.2574% |
+| After reset, one iteration | 295,941 | 295,205 | +0.2493% |
+| First boot, eight iterations | 2,366,130 | 2,359,773 | +0.2694% |
+
+Both official seed sets passed CRC validation before and after reset. All
+runs used the pinned Docker tools and identical unprofiled RTL, with BRAM
+code, the cached tier enabled, and the same DDR model settings. These are
+timed-region cycle comparisons, not new board measurements. The optional
+PGO profiles are regenerated with Bootlin and remain a separate build lane;
+see [the Spike harness](../sw/apps/coremark/iss/README.md).
 
 ## Validation
 

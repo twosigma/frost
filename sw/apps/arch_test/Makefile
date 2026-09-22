@@ -51,7 +51,7 @@ ARCH := $(subst imafdc,imafd,$(ARCH))
 endif
 
 # Same toolchain prefix as common.mk.
-RISCV_PREFIX ?= riscv-none-elf-
+RISCV_PREFIX ?= riscv64-linux-
 CC      = $(RISCV_PREFIX)gcc
 OBJCOPY = $(RISCV_PREFIX)objcopy
 OBJDUMP = $(RISCV_PREFIX)objdump
@@ -115,7 +115,7 @@ $(EXECUTABLE_ELF_FILE): $(TEST_SRC) $(CRT0) model_test.h $(LINKER_SCRIPT)
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv64i_m/I/src/addw-01.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector \
 		$(XLEN_DEFINE) -DFLEN=64 $(TEST_DEFINES) \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(CRT0) $(TEST_SRC)
 

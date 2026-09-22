@@ -143,7 +143,7 @@ def test_run_clang_tidy_builds_resolved_command(
             "--warnings-as-errors=clang-diagnostic-*",
             "sw/apps/demo/main.c",
             "--",
-            "--target=riscv64-unknown-elf",
+            "--target=riscv64-unknown-linux-musl",
             "-DFPGA_CPU_CLK_FREQ=300000000",
             "-march=rv64imafdc",
             "-mabi=lp64d",

@@ -129,6 +129,9 @@ import zipfile
 from pathlib import Path
 from typing import TextIO, TypedDict
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "sw" / "apps"))
+from riscv_toolchain import default_riscv_prefix  # noqa: E402
+
 
 # Configuration
 
@@ -920,7 +923,7 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
 
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
-        env["RISCV_PREFIX"] = "riscv-none-elf-"
+        env["RISCV_PREFIX"] = default_riscv_prefix(project_root)
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
 
     try:

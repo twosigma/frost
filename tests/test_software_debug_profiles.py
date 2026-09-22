@@ -60,7 +60,7 @@ def build(app_dir: Path, *variables: str) -> subprocess.CompletedProcess[str]:
             "make",
             "--no-print-directory",
             "-s",
-            "RISCV_PREFIX=riscv-none-elf-",
+            "RISCV_PREFIX=riscv64-linux-",
             "FPGA_CPU_CLK_FREQ=150000000",
             "GENERATE_IMEM_INIT=0",
             *variables,
