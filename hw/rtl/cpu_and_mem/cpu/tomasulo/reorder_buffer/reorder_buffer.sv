@@ -206,7 +206,7 @@ module reorder_buffer #(
     // split the trap unit's i_mret_start/i_sret_start.
     output logic                       o_mret_start,          // Signal trap unit to handle xRET
     output logic                       o_mret_start_is_sret,
-    output logic                       o_mret_start_is_dret,  // ...DRET (Phase 3 M3)
+    output logic                       o_mret_start_is_dret,  // ...DRET
     input  logic                       i_mret_done,           // xRET handling complete
     input  logic [riscv_pkg::XLEN-1:0] i_mepc,                // MRET return PC from csr_file
     input  logic [riscv_pkg::XLEN-1:0] i_sepc,                // SRET return PC from csr_file
@@ -232,7 +232,7 @@ module reorder_buffer #(
     input logic i_sfence_illegal,
     input logic i_wfi_illegal,
     input logic i_priv_is_u,
-    // Debug Mode (Phase 3 M3): DRET and the debug CSRs (dcsr/dpc/dscratch/
+    // Debug Mode: DRET and the debug CSRs (dcsr/dpc/dscratch/
     // ddata) are legal only in Debug Mode. The allocation legality check
     // samples this registered bit; it changes only through a flushing
     // trap/DRET.
@@ -415,7 +415,7 @@ module reorder_buffer #(
     };
   endfunction
 
-  // CSR existence map (Phase 3, plan D1): accessing an address outside this
+  // CSR existence map: accessing an address outside this
   // set raises illegal-instruction at every privilege, per the privileged
   // spec. This replaced the historical RAZ/WI convention for unimplemented
   // CSRs. S-mode firmware (OpenSBI) probes optional CSRs by catching the
@@ -558,7 +558,7 @@ module reorder_buffer #(
   (* max_fanout = 32 *) logic [ReorderBufferDepth-1:0] rob_valid;
   logic [ReorderBufferDepth-1:0] rob_done;
   logic [ReorderBufferDepth-1:0] rob_exception;
-  logic [ReorderBufferDepth-1:0] rob_replay;  // memory-order replay flags (Phase 4)
+  logic [ReorderBufferDepth-1:0] rob_replay;  // memory-order replay flags
   logic [ReorderBufferDepth-1:0] rob_branch_taken;
   logic [ReorderBufferDepth-1:0] rob_mispredicted;
   logic [ReorderBufferDepth-1:0] rob_early_recovered;
@@ -601,7 +601,7 @@ module reorder_buffer #(
   // Phase 3 sidebands retained after the allocation-time legality fold: SRET
   // steers the xRET start, while SFENCE.VMA steers the serializer window.
   logic [ReorderBufferDepth-1:0] rob_f_is_sret;
-  // Phase 3 M3: DRET rides is_mret and steers the xRET start.
+  // DRET rides is_mret and steers the xRET start.
   logic [ReorderBufferDepth-1:0] rob_f_is_dret;
   logic [ReorderBufferDepth-1:0] rob_f_is_sfence;
   // Conservative allocation-time ownership for CSR writes that can affect
@@ -2004,7 +2004,7 @@ module reorder_buffer #(
       rob_done      <= '0;
       rob_exception <= '0;
     end else begin
-      // Memory-order replay flags (Phase 4) make their entries exceptional
+      // Memory-order replay flags make their entries exceptional
       // through the same stored bit as execution exceptions.
       rob_exception <= rob_exception | (i_replay_set_mask & rob_valid);
       // ---------------------------------------------------------------------
@@ -2085,7 +2085,7 @@ module reorder_buffer #(
     end
   end
 
-  // Memory-order replay flags (Phase 4): set by the wrapper's validation
+  // Memory-order replay flags: set by the wrapper's validation
   // table for live entries without a stored exception (an exceptional
   // completion clears the flag again), cleared with the entry (allocation,
   // commit, flush), the same shape as rob_valid below. The flag selects the

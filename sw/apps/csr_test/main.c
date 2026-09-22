@@ -20,7 +20,7 @@
  * Tests 1-3: writes mstatus with MIE=1 and checks that execution continues
  * past the write.
  *
- * Tests 4-7 (Phase 3 M7): the M-mode counter controls that OpenSBI's SBI PMU
+ * Tests 4-7: the M-mode counter controls that OpenSBI's SBI PMU
  * and Sstc setup depend on. mcountinhibit exists and is WARL over {CY, IR};
  * CY stops cycle and IR stops instret while set; mcycle and minstret accept
  * full 64-bit M-mode writes that the user views (cycle/instret) then reflect;

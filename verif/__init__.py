@@ -12,43 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Cocotb verification framework for the Frost RISC-V CPU.
+"""Cocotb tests, encoders, reference models, and monitors for FROST.
 
-Subpackages:
-    encoders
-        Instruction encoders for the supported extensions
-        (RV64IMAFDCB + Zicsr, Zicntr, Zba, Zbb, Zbs, Zbkb, Zicond)
-
-    models
-        Software reference models for ALU, FP, memory, and branch logic
-
-    monitors
-        Runtime monitors for the integer and FP register files and the PC
-
-    cocotb_tests
-        Random and directed test cases, plus the infrastructure they share
-
-    utils
-        Data conversion, logging, and validation helpers
-
-Modules:
-    config
-        Shared constants (bit masks, pipeline offsets) and DUT signal paths
-
-    verification_types
-        ``NewType`` aliases such as Address and RegisterIndex
-
-    exceptions
-        Exception hierarchy for verification failures
-
-Run a target from ``TEST_REGISTRY`` in ``tests/test_run_cocotb.py`` through
-the repository wrapper::
-
-    ./scripts/frost.py cocotb hello_world
-    ./scripts/frost.py cocotb directed_traps
-    ./scripts/frost.py cocotb --list-tests
-
-See ``verif/README.md`` for details.
+Run named targets through ``scripts/frost.py cocotb``; see ``verif/README.md``.
 """
 
 from verification_types import Address, RegisterIndex, Instruction

@@ -12,42 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Encoders for 32-bit RISC-V instruction formats.
+"""Encode 32-bit RISC-V instructions from register and immediate fields.
 
-Each encoder packs registers, immediates, and offsets according to the ISA.
-
-Instruction formats:
-    R-type: register-register operations (ADD, SUB, AND, MUL)
-    I-type: immediate operations and loads (ADDI, LW, JALR)
-    S-type: stores (SW, SH, SB)
-    B-type: conditional branches (BEQ, BNE, BLT)
-    U-type: upper immediates (LUI, AUIPC)
-    J-type: unconditional jumps (JAL)
-    AMO, R4, and FP forms cover the A, F, and D extensions.
-
-Field positions:
-    All formats are 32 bits wide with fields at fixed positions:
-    - opcode[6:0]: instruction category
-    - rd[11:7]: destination register (absent in S-type and B-type)
-    - funct3[14:12]: sub-operation
-    - rs1[19:15]: first source register
-    - rs2[24:20]: second source register (R-type, S-type, B-type)
-    - funct7[31:25]: extra operation bits (R-type)
-    - imm: immediate, laid out differently per format
-
-Example::
-
-    >>> # Encode ADD x5, x3, x4 (R-type: add rd, rs1, rs2)
-    >>> instruction = RType.encode(
-    ...     funct7_code=0x00,           # ADD function
-    ...     source_register_2=4,        # x4
-    ...     source_register_1=3,        # x3
-    ...     funct3_code=0x0,            # ADD function
-    ...     destination_register=5,     # x5
-    ...     opcode=0x33                 # ALU register-register
-    ... )
-    >>> hex(instruction)
-    '0x4182b3'
+Includes R/I/S/B/U/J, atomic, R4, and floating-point formats. Use
+``encoders.op_tables`` to select an encoder by mnemonic.
 """
 
 from dataclasses import dataclass

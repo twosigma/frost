@@ -15,7 +15,7 @@
  */
 
 /*
- * RISC-V Debug Transport Module core (Debug Spec 0.13.2 §6.1, Phase 3 M3):
+ * RISC-V Debug Transport Module core (Debug Spec 0.13.2 §6.1):
  * the dtmcs and dmi JTAG data registers, and the clock-domain crossing that
  * turns a dmi Update-DR into one request on the core-side Debug Module
  * Interface. The JTAG side is a BSCAN-style pin bundle in the TCK domain

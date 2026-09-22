@@ -12,29 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Execute instructions and model their effects for directed tests.
+"""Encode, model, queue, and drive instructions for directed tests.
 
-``InstructionExecutor`` applies the shared sequence:
-
-1. Wait for DUT ready
-2. Encode instruction to binary
-3. Model expected behavior
-4. Queue expected values for monitors
-5. Drive instruction to DUT
-6. Advance software state
-
-Centralizing this sequence keeps the directed suites consistent.
-
-Usage::
-
-    from cocotb_tests.instruction_executor import InstructionExecutor
-
-    executor = InstructionExecutor(dut_if, state, mem_model)
-    await executor.execute_alu("add", rd=1, rs1=2, rs2=3)
-    await executor.execute_load("lw", rd=5, rs1=10, imm=16)
-    await executor.execute_store("sw", rs1=10, rs2=5, imm=0)
-    await executor.execute_nop()
-    await executor.flush_pipeline(cycles=6)
+``InstructionExecutor`` waits for DUT readiness and advances reference state
+after each instruction. It also provides NOP and pipeline-drain helpers.
 """
 
 import cocotb

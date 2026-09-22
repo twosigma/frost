@@ -59,7 +59,7 @@ _start:
     csrw mtvec, t0
 
 #ifdef FROST_PAGED
-    // Paged environment (Phase 3 M5): run the test body, and the footer's
+    // Paged environment: run the test body, and the footer's
     // signature dump, in S-mode under an Sv39 identity map, so every fetch
     // and data access translates through the ITLB/DTLB and the walker over
     // 1 GiB leaves. The root table sits in .data, 4 KiB-aligned. The ddr

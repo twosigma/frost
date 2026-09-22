@@ -25,20 +25,18 @@ The sections below document the boot ABI, memory map, and kernel requirements.
 
 ## Boot chain and entry state
 
-After DDR calibration, the CPU leaves reset and fetches the boot shim from
-address `0` in low BRAM. `frost_boot_image.py` writes the shim, assembles it,
-and packs it into `sw.mem`. The shim enters the firmware:
-
-```asm
-li   a0, 0            # hart ID
-li   a1, <dtb>        # physical address of the DTB
-li   t0, 0x80000000   # OpenSBI fw_jump entry
-jr   t0
+```mermaid
+flowchart LR
+    BRAM[BRAM boot shim] --> SBI[OpenSBI in DDR]
+    SBI --> Kernel[Debian kernel]
+    Kernel --> Init[Initramfs loads NIC]
+    Init --> Root[Debian NFS root]
+    Init --> Test[Buildroot test userspace]
 ```
 
-`<dtb>` is the DTB address the packer computes from the payload (see the DDR
-layout below): `0x81000000` for any payload up to 14 MiB, and `0x82200000` for
-today's kernel, whose footprint is about 31 MiB.
+After DDR initialization, the shim at address zero enters OpenSBI at
+`0x80000000` in M-mode with `a0=0` (hart ID) and `a1` pointing to the DTB.
+The packer places the DTB after the payload as specified below.
 
 The firmware is OpenSBI v1.9's generic platform from `linux/opensbi`, built
 by `linux/opensbi_build.py` with the shared Bootlin toolchain in the Docker
@@ -59,12 +57,11 @@ until the supervisor requests FWFT delegation.
 
 ## Memory map
 
-The map is identical across board integrations and simulation; caches are
-transparent to software.
+The board and simulation use the same physical map.
 
 | Range | What |
 |---|---|
-| `[0x0000_0000, 256 KiB)` | Uncached BRAM for the boot shim; available to the supervisor after boot. |
+| `[0x0000_0000, 256 KiB)` | Uncached boot BRAM, outside Linux's DDR memory node. The debug module owns `[0x17C00, 0x18000)`. |
 | `[0x4000_0000, 0x4003_1000)` | Native MMIO: UART, FIFOs, timer, DMA test engine, and NIC. See `sw/lib/include/mmio.h`. |
 | `[0x4000_1000, +0x100)` | ns16550a UART alias, PLIC source 1; `reg-shift=2`, `reg-io-width=4`. |
 | `[0x4001_0000, +0xC000)` | SiFive CLINT alias: `msip` at `+0`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8`. |
@@ -114,12 +111,8 @@ Sstc (`stimecmp`) rather than an SBI timer call.
 
 ## Advertised ISA
 
-The DTB advertises
-`rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause` plus
-`sstc` and `svade`, and the cpu node carries `mmu-type = "riscv,sv39"`, so the
-DT describes an M/S/U hart with Sv39 translation. Userspace is ordinary ELF
-(`CONFIG_BINFMT_ELF`) with a full address space: `fork`, `mmap` and shared
-memory behave normally.
+The generated DTB declares the [implemented extensions](../README.md#supported-risc-v-extensions),
+Sstc, Svade, and `mmu-type = "riscv,sv39"`. Userspace uses RV64 ELF and LP64D.
 
 ## Counters and mcounteren
 
@@ -168,7 +161,6 @@ subcommands. Each prints its result on stdout and progress on stderr.
 `FROST_DEBIAN_KERNEL_CACHE` overrides the default `linux/debian-kernel` cache;
 `FROST_NET10G_MODULE` selects a prebuilt NIC module. The cache supports
 concurrent native and container builds and rebuilds incomplete entries.
-Old versions remain cached until removed manually.
 
 To update the kernel, change the pin and checksums in `debian_kernel.py`,
 rebuild the images, and update each board's NFS kernel and initramfs using
@@ -212,11 +204,6 @@ Buildroot's `rootfs.cpio` without rebuilding Buildroot. The script checks
 
 For Debian NFS boots, install the driver through DKMS and include it in
 Debian's initramfs. See the [driver guide](frost-net10g/README.md#an-nfs-root-needs-the-module-in-the-initramfs).
-
-## Bring-up probe
-
-The test initramfs runs `frost_sigprobe` to check signal return, printing
-`FROST_SIGPROBE v<n> ...: ok` for each variant.
 
 ## Consumers
 

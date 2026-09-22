@@ -15,7 +15,7 @@
  */
 
 /*
- * PLIC directed test (Phase 3 M6, plan D11). Exercises the register file
+ * PLIC directed test. Exercises the register file
  * (priority/enable/threshold WARL widths), the level gateway (claim /
  * complete / re-raise / spurious claim), threshold masking, priority-0
  * never-interrupts, both contexts' EIP lines through the mip.MEIP and

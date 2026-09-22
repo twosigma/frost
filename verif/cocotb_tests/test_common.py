@@ -12,26 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Shared test configuration, pipeline, and commit-wait helpers.
+"""Shared configuration, instruction-driving, and commit-wait helpers.
 
-Contents:
-    TestConfig: Dataclass for test configuration parameters
-    handle_branch_flush: Handle pipeline flush after taken branches
-    flush_remaining_outputs: Drain pipeline after test completion
-    warmup_pipeline: Feed PIPELINE_DEPTH NOPs before the first checked output
-    execute_nop: Execute a NOP instruction and model its effects
-    drive_nops_until: Event-based wait (OOO retirement is not fixed-latency)
-    rob_commit_writes_int_reg: Commit-bus probe for a specific x-register write
-    wait_for_int_reg_commit: Wait until an instruction writing x<reg> retires
-
-Usage::
-
-    from cocotb_tests.test_common import (
-        TestConfig,
-        handle_branch_flush,
-        flush_remaining_outputs,
-        execute_nop,
-    )
+Use event-based waits for OOO retirement. ``TestConfig`` controls generation;
+``DUTSignalPaths`` in config.py controls hierarchy access.
 """
 
 import cocotb

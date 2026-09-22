@@ -1,26 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1440" viewBox="0 0 1120 1440" role="img" aria-labelledby="title desc">
   <title id="title">FROST Tomasulo back-end: allocation, execution, completion and commit</title>
   <desc id="desc">
-    Two-wide dispatch renames INT and FP registers using eight checkpoints,
-    allocates the 32-entry ROB, and allocates the required reservation station
-    and load or store queue entries in parallel. Six reservation stations issue
-    independently: INT has eight entries and two ALU issue ports, MUL has four
-    entries for integer multiply and divide, FP has six entries, FMUL has four,
-    FDIV has two, and MEM has eight. Arithmetic shims feed completion adapters
-    independently of the memory path. Memory issue computes an address and
-    passes through the Sv39 DMMU with its 16-entry DTLB when translation is
-    active. The shared page-table walker lives outside the wrapper in cpu_ooo.
-    Loads use an eight-entry LQ with a 128 by 8-byte L0 cache. The eight-entry SQ
-    forwards older matching stores to loads and drains only committed stores.
-    The data-memory router serves caches, BRAM and MMIO. Load and atomic
-    results, and store faults, use the MEM completion slot. Ordinary successful
-    stores complete the ROB directly, bypassing the two CDB lanes. The CDB
-    broadcasts tags and results to wake all reservation stations and mark ROB
-    entries complete. The ROB retires up to two eligible instructions in order,
-    updating architectural registers, releasing stores and coordinating precise
-    CSR, trap and return effects. A badges mark entries allocated by dispatch;
-    S badges connect store retirement to SQ drain permission. Arrows show
-    selected logical paths, not pipeline latency or every handshake.
+    Two-wide dispatch renames registers and allocates ROB and reservation-station
+    entries; memory issue allocates load and store queue entries. Six stations issue independently; INT has two ALUs. Arithmetic
+    completions and translated memory results feed two CDB lanes. Successful
+    ordinary stores complete the ROB directly. Up to two instructions retire
+    in order, updating registers and releasing stores. A and S badges mark
+    allocation and store-commit paths. Arrows do not imply pipeline latency.
   </desc>
   <!--
     Self-contained editable SVG. Source map, relative to repository root:
@@ -111,7 +97,7 @@
   <rect x="356" y="162" width="694" height="102" rx="13" class="station"/>
   <text x="380" y="196" class="heading">Dispatch + INT / FP register alias tables</text>
   <text x="380" y="227" class="body">2-wide rename · 8 branch checkpoints</text>
-  <text x="380" y="252" class="small">Allocates ROB and required RS / LQ / SQ entries together</text>
+  <text x="380" y="252" class="small">Allocates ROB / RS entries; checks LQ / SQ space</text>
   <circle cx="1024" cy="188" r="15" class="allocation"/><text x="1024" y="194" class="badge-text">A</text>
 
   <!-- Dispatch allocates the six stations independently of ROB completion. -->
@@ -249,7 +235,7 @@
   <text x="808" y="1377" class="small center">Serializing effects hold the ROB head</text>
 
   <circle cx="83" cy="1339" r="14" class="allocation"/><text x="83" y="1345" class="badge-text">A</text>
-  <text x="107" y="1345" class="small">Entry allocated by dispatch</text>
+  <text x="107" y="1345" class="small">Entry allocation</text>
   <circle cx="83" cy="1373" r="14" class="release"/><text x="83" y="1379" class="badge-text">S</text>
   <text x="107" y="1379" class="small">Store retirement permits SQ drain</text>
   <text x="70" y="1420" class="small">Selected logical paths; arrows do not imply pipeline latency. Shared PTW and data router live in cpu_ooo.</text>

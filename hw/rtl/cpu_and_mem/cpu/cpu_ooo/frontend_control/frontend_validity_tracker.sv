@@ -49,7 +49,7 @@ module frontend_validity_tracker (
     input logic                            i_id_stall_q,
     input logic                            i_replay_after_dispatch_stall_q,
     input logic                            i_flush_pipeline,
-    // Debug Mode single step (Phase 3 M3): allocate user NOP bundles too, so
+    // Debug Mode single step: allocate user NOP bundles too, so
     // a step over a nop retires exactly that nop. Outside stepping FROST
     // drops all-NOP bundles at ID and never retires them.
     input logic                            i_keep_nops,

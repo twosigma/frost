@@ -15,7 +15,7 @@
  */
 
 /*
- * A/D-transition fault test (Phase 3, bug-2 triage). FROST's page walker is
+ * A/D-transition fault test (bug-2 triage). FROST's page walker is
  * read-only (plan D7): hardware never sets PTE A or D, so software takes a
  * page fault and sets them itself. The riscv-tests demand pager depends on
  * one sequence that no other directed test covers:

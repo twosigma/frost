@@ -117,16 +117,11 @@ module commit_actions #(
     end
   end
 
-  // Timing: the write data is presented unconditionally. It carries the CSR
-  // delayed writeback's value while that is pending, else the commit value. It
-  // used to default to zero unless the write fired, which put the killed commit
-  // valid in front of every regfile bypass data mux and so of every dispatched
-  // RS operand. That kill is the full-flush kill of the commit bus, a ~250-load
-  // broadcast, and it showed up in the post-place x3 WNS-edge families, ~12k
-  // paths. Without a write the RAM ignores the data. The regfile's bypass
-  // network keys on its pre-registered qualifiers, which differ from the write
-  // enables only in a full-flush cycle, and there the forwarded value feeds a
-  // dispatch that the same flush squashes (see ooo_register_files).
+  // Present CSR delayed-writeback or commit data unconditionally to keep
+  // full-flush-qualified commit valid off the regfile bypass data cone.
+  // The RAM ignores data without a write. Bypass qualifiers differ from write
+  // enables only during full flush, which also squashes the consuming dispatch
+  // (see ooo_register_files).
   always_comb begin
     port0_int_we   = 1'b0;
     port0_int_addr = '0;

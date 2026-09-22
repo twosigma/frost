@@ -70,7 +70,7 @@ module cpu_and_mem #(
     // arm the classifier with thresholds sized to the sim budget instead.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd300_000_000,
-    // RISC-V debug transport (Phase 3 M3): 1 = the generic 5-bit-IR JTAG TAP
+    // RISC-V debug transport: 1 = the generic 5-bit-IR JTAG TAP
     // inside this module drives the DTM from the i_jtag_* pins (simulation,
     // portable synthesis); 0 = the DTM's BSCAN-style bundle comes from the
     // board's BSCANE2 primitives on the FPGA's own TAP (boards/) and the
@@ -122,7 +122,7 @@ module cpu_and_mem #(
     // The PLIC's M-context line is registered one cycle before driving MEIP.
     input logic i_external_interrupt,
 
-    // RISC-V debug transport pins (Phase 3 M3, see DEBUG_JTAG_TAP).
+    // RISC-V debug transport pins (see DEBUG_JTAG_TAP).
     input  logic i_jtag_tck,
     input  logic i_jtag_tms,
     input  logic i_jtag_tdi,
@@ -172,7 +172,7 @@ module cpu_and_mem #(
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 
-    // NIC (Phase 4 slice 2, hw/rtl/peripherals/nic): the MAC clocks and their
+    // NIC (hw/rtl/peripherals/nic): the MAC clocks and their
     // presence levels, the raw PMA interface, the board's PHY lines and the
     // PCS block lock (synchronized to i_clk). The NIC lives with the cached
     // tier (its DMA port); without the tier its window reads zero.
@@ -190,7 +190,7 @@ module cpu_and_mem #(
     output logic        o_nic_rx_block_lock
 );
 
-  // Core reset (Phase 3 M3): the external reset OR the debug module's
+  // Core reset: the external reset OR the debug module's
   // ndmreset. It is registered because it is a high-fanout net and the OR
   // must stay off the reset tree's timing. The debug module, the DTM and the
   // slice writer use the external reset alone, so a debugger survives the
@@ -254,11 +254,11 @@ module cpu_and_mem #(
   localparam int unsigned ClintMtimeLo = 32'h4001_BFF8;  // mtime[31:0]
   localparam int unsigned ClintMtimeHi = 32'h4001_BFFC;  // mtime[63:32]
 
-  // DMA test engine (Phase 4 slice 1) @ 0x4002_0000, a 256-byte window of
+  // DMA test engine @ 0x4002_0000, a 256-byte window of
   // 32-bit registers (dma_test_engine.sv). Its DMA port is the cache
   // hierarchy's coherent DMA port; its completion interrupt is PLIC source 3.
   localparam int unsigned DmaEngineBase = 32'h4002_0000;
-  // NIC (Phase 4 slice 2) @ 0x4003_0000, a 4 KiB window of 32-bit registers
+  // NIC @ 0x4003_0000, a 4 KiB window of 32-bit registers
   // (hw/rtl/peripherals/nic/nic_pkg.sv). It shares the coherent DMA port with
   // the test engine through a line-port arbiter; its interrupt is PLIC
   // source 4.
@@ -268,7 +268,7 @@ module cpu_and_mem #(
   // programs it.
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
 
-  // PLIC (Phase 3 M6, plan D11) @ 0x4400_0000, a 4 MiB device-quadrant
+  // PLIC @ 0x4400_0000, a 4 MiB device-quadrant
   // window (addr[31:22] == 10'h110). Sources: 1 = ns16550 irq, 2 =
   // i_external_interrupt, 3 = the DMA test engine's completion. Contexts:
   // 0 = hart0 M, 1 = hart0 S. The claim
@@ -402,7 +402,7 @@ module cpu_and_mem #(
   logic [LineIdBits-1:0] iup_resp_id;
   logic [255:0] iup_resp_rdata;
 
-  // Page-table walker line port (Phase 3 M4): core-side ptw master to the
+  // Page-table walker line port: core-side ptw master to the
   // hierarchy's wup port. LineIdBits-1 = 2-bit local ids per the id tree.
   logic walk_line_req_valid, walk_line_req_ready;
   logic [31:0] walk_line_req_addr;
@@ -593,7 +593,7 @@ module cpu_and_mem #(
   // these pins. The fetch PC is the exception: it is a virtual address whose
   // low 32 bits are the window identity, and the core's physical fetch
   // results (o_fetch_pa0/pa1) carry the addresses the memories are read at
-  // (Phase 3 M5).
+  //.
   logic [riscv_pkg::XLEN-1:0] cpu_pc_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_data_mem_addr_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_mmio_load_addr_xlen;
@@ -680,7 +680,7 @@ module cpu_and_mem #(
       .o_cached_read_ready(data_memory_cached_read_ready),
       .i_cached_write_done(data_memory_cached_write_done),
       .i_cached_write_inflight(data_memory_cached_write_inflight),
-      // DMA coherence handshake (Phase 4)
+      // DMA coherence handshake
       .i_coh_admit_valid(coh_admit_valid),
       .i_coh_admit_slot(coh_admit_slot),
       .i_coh_admit_addr({{(riscv_pkg::XLEN - 32) {1'b0}}, coh_admit_addr}),
@@ -711,7 +711,7 @@ module cpu_and_mem #(
       .o_debug_commit_valid(cpu_debug_commit_valid),
       // Branch prediction enabled by default in production
       .i_disable_branch_prediction(1'b0),
-      // Debug module seam (Phase 3 M3)
+      // Debug module seam
       .i_dbg_haltreq(dbg_haltreq),
       .i_dbg_go(dbg_go),
       .i_dbg_go_addr(dbg_go_addr),
@@ -1246,7 +1246,7 @@ module cpu_and_mem #(
 `endif
 
   // ===========================================================================
-  // RISC-V debug module (Phase 3 M3, plan D14): JTAG TAP / DTM / DM, the slice
+  // RISC-V debug module: JTAG TAP / DTM / DM, the slice
   // writer that lands the module's words in the low BRAM through the
   // programming port, and the Debug-Mode store mirror that keeps BRAM code a
   // debugger writes (software breakpoints, loads) fetchable. The instruction
@@ -1488,7 +1488,7 @@ module cpu_and_mem #(
   // ask's fault flags register beside them while the presenter owns PA
   // validity.
   always_ff @(posedge i_clk) begin
-    // Phase 3 M5: the parity is that of the word imem reads (fetch_pa_word0),
+    // the parity is that of the word imem reads (fetch_pa_word0),
     // not of the virtual fetch address. A visible result shares bit 2 with
     // its VA because the page offset is common to both; while a tagged Sv39
     // result is invisible, fetch_pa_ok keeps that transient address from
@@ -1549,7 +1549,7 @@ module cpu_and_mem #(
       .i_port_a_write_data({2{prog_port_data}}),
       .i_port_a_byte_write_enable(instr_mem_dword_we),
       // Read side: the debug slice writer's mirror reads the row it copies
-      // into the instruction copy (Phase 3 M3).
+      // into the instruction copy.
       .o_port_a_read_data(dmem_port_a_rd_data),
       // Port B: Data memory for loads and stores
       .i_port_b_byte_address(riscv_pkg::MemDataBits'(data_memory_address)),
@@ -1682,7 +1682,7 @@ module cpu_and_mem #(
         .o_wup_resp_valid(walk_line_resp_valid),
         .o_wup_resp_id(walk_line_resp_id),
         .o_wup_resp_rdata(walk_line_resp_rdata),
-        // DMA port: the DMA test engine (Phase 4 slice 1). The load-queue
+        // DMA port: the DMA test engine. The load-queue
         // coherence handshake is tied off until the core-side interface lands.
         .i_dma_req_valid(dma_req_valid),
         .o_dma_req_ready(dma_req_ready),

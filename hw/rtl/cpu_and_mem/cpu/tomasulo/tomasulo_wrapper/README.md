@@ -73,21 +73,11 @@ with the global repair ports tied off.
 
 ### FMUL operand-repair queue
 
-FMUL_RS is the only station with three sources. Every FMUL/FMA packet spends
-at least one cycle in the one-entry queue. The queue launches the registered
-dispatch-time ROB queries on channels 1, 2, and 3 and captures each aligned
-response into the pending packet. An unresolved packet is held through that E1
-edge under the production query-valid contract above, and only the registered
-packet reaches the RS on E2. This replaces three packet-tag-driven copies of
-the ROB value RAM and the wide live ROB-to-RS path they created. Either CDB
-lane can still wake a packet retained by RS back-pressure or recovery; lane 0
-has priority over lane 1, and both have priority over an aligned done-repair
-response. Dequeue and refill in the same cycle resume only after the one-cycle
-response window, so a stale response is never written into the replacement
-packet.
-
-The default BRAM CoreMark path is integer-only and never dispatches FMUL, so
-the extra hold for queried FMUL operands is cycle-neutral for that benchmark.
+FMUL adds a third source/query channel to the pending-buffer contract above.
+CDB lane 0 has priority over lane 1, and both beat aligned done-repair data.
+Dequeue/refill waits until the response window has passed so an old query
+cannot update a replacement packet. Only the registered repaired packet enters
+the RS; no packet-tag-driven ROB read replicas are needed.
 
 ### SC state machine
 
@@ -111,49 +101,21 @@ reservation to be valid and its address to match the SC's own doubleword, the
 RV64A reservation granule. On failure the wrapper sends a discard signal to
 the SQ, which drops the SC's entry without writing memory.
 
-Branch speculation can put several SCs in flight out of order, so
-`sc_pending_unit` keeps a `NumCheckpoints + 1` entry table keyed by ROB tag
-and fires the entry that matches the head; a partial flush drops only the
-younger entries. A single pending register deadlocks when a younger SC
-occupies it before the older head SC has issued. A single-SC serialization
-gate on `mem_rs_fu_ready_base` (since removed) caused exactly this in the
-Linux `_prb_commit` cmpxchg; SC issue must not be serialized that way.
+Out-of-order issue requires a `NumCheckpoints + 1` table keyed by ROB tag;
+a single pending slot can deadlock when a younger SC arrives before the head
+SC. Partial flush removes only younger entries.
 
-`sc_fu_complete_reg` adds one CDB cycle to the SC result but breaks the
-full-flush-to-MEM path; CoreMark executes no SCs, so its measured cycle count
-is unchanged. `sc_fire_now` is armed only when nothing else is presenting to
-the MEM adapter that cycle (no LQ result, no registered store-fault strobe,
-adapter not pending, no SC completion still waiting), so the registered
-handoff cannot lose an LQ completion. A store that faults in the fire cycle
-is not consulted: its registered fault takes the MEM slot first and the SC
-completion waits until no registered fault is presenting (under data
-translation several faults can present in a row; the MEM_RS is not issuing
-meanwhile). `test_sc_fire_yields_to_colliding_store_fault` drives the
-collision. Consulting the live fault decision put the store address,
-misalignment and PMA cone on the SC table's write path; the unit now sees only
-the registered strobe, which blocks every fire in its cycle and kills the
-faulting SC's entry on the next edge, whenever that strobe arrives relative to
-the allocation. Downstream
-ownership uses the registered valid. The LQ's `i_adapter_result_pending`
-input, which folds in `sc_fu_complete_reg.valid`, is unread inside the LQ but
-kept for synthesis stability; the port comment in `load_queue.sv` explains
-why.
+`sc_fu_complete_reg` adds one CDB cycle and holds behind registered store
+faults. Fire requires no LQ result, store-fault strobe, pending MEM adapter,
+or waiting SC completion. A fault captured on the fire edge takes priority
+next cycle; the SC result waits. Use only the registered fault strobe here
+to keep live address/misalignment/PMA logic off the SC table's write path.
+The strobe also kills the faulting SC entry, regardless of allocation timing.
 
-That the cycle in which the hold releases is always consumed is checked, not
-argued. `p_sc_completion_release_adapter_idle` states that the release never
-lands on a pending MEM adapter, which is what "consumed" means for an adapter
-instantiated with `ALLOW_GRANT_REFILL = 0`;
-`p_sc_completion_release_is_granted` states that the released packet takes the
-MEM lane that same cycle; and `p_sc_completion_token_conserved` pins the
-register to exactly one CDB broadcast, so neither releasing the hold early nor
-reordering the mux above the fault can lose or duplicate the result unnoticed.
-The delivery event those checks use is the granted MEM broadcast carrying the
-SC's tag, not the mux arm the argument assumes, so a mux reorder is visible to
-them. They sit in the wrapper's `ifndef SYNTHESIS` region, so every
-`tomasulo_wrapper` cocotb run and the `tomasulo_wrapper` formal target
-compile them;
-`test_sc_completion_release_under_cdb_contention` supplies the interleaving,
-releasing the hold with both CDB lanes contended.
+Release assertions require an idle adapter, a same-cycle MEM grant, and exactly
+one broadcast of the SC tag. Wrapper tests cover store-fault collisions and
+CDB contention. `i_adapter_result_pending` remains an unused LQ compatibility
+port; its source comment records the physical constraint on removing it.
 
 ### Commit and CDB pipelining
 
@@ -225,8 +187,7 @@ effect while the back-end is being squashed.
 
 The wrapper also drives the SQ slot-2 combinational commit guard from the raw
 head+1 store-commit pulse (`i_commit_valid_comb_2 = commit_2_store_like_raw`,
-`i_commit_rob_tag_comb_2 = commit_bus_2.tag`; these were once tied to
-`1'b0`/`'0`). Slot 2 has the same raw-commit race as slot 1:
+`i_commit_rob_tag_comb_2 = commit_bus_2.tag`). Slot 2 has the same raw-commit race as slot 1:
 `commit_bus_2_q_valid` reaches the SQ one cycle late, so without the guard a
 full-flush trap such as a machine-timer IRQ could observe
 `sq_committed_empty` and squash a store the SQ does not yet own.
@@ -267,7 +228,7 @@ pulses for loads and stores (`dmmu_out_lq_capture_valid`,
 still-hidden address/data storage; `dmmu_out_valid` remains the sole owner of
 SQ valid bits, faults, completion, and SC state. A capture on a recovery edge
 is therefore dead once the SQ control array clears, and the wide 8x64
-forwarding mirror and drain RAM no longer inherit the full-flush kill cone.
+forwarding mirror and drain RAM avoid the full-flush kill cone.
 
 Full-flush CDB suppression is centralized at the CDB arbiter's `i_kill`
 input, driven by a local `cdb_kill` copy of `speculative_flush_all`, instead
@@ -311,50 +272,11 @@ injected, live, and held sources.
 
 ## Performance counters
 
-The wrapper owns 64 live performance counters (in
-`perf/tomasulo_perf_counters.sv`, present when `PERF_COUNTERS` is 1),
-snapshot-captured in four banks for end-of-test reporting. In rough groups:
-
-- Head-wait partitions. The dominant `head_wait_total` bucket is decomposed
-  into `Int / Branch / Mul / MemLoad / MemStore / MemAmo / Fp / Fmul / Fdiv`.
-  The ROB stores the final `Int` and `MemLoad` classifications in
-  allocation-time FF vectors and reads them with its registered one-hot head
-  mask; the live done/bypass/flush qualifier is unchanged, so this is a
-  timing-only implementation detail. `head_wait_int` is split further into
-  four sub-buckets fed by the INT_RS diagnostic port (`operand_wait`,
-  `rs_ready_not_issued`, `stage2`, `post_rs`). `head_wait_mem_load` is first
-  split by whether the LQ has a memory response in flight
-  (`load_outstanding`, real miss latency, versus `load_no_outstanding`); the
-  `load_no_outstanding` half is then split into five sub-buckets
-  (`addr_pending`, `sq_disambig`, `bus_blocked`, `cdb_wait`, `post_lq`), and
-  `bus_blocked` into five mutually exclusive causes. The `staging` cause is
-  itself decomposed into four buckets (`other_in_staging`, `launch_gated`,
-  `slow_outstanding`, `capture_gap`) that partition it exactly.
-- Commit stalls. `commit_blocked_{csr, fence, wfi, mret, trap}` attribute
-  cycles where the head sits in the serializing FSM.
-- Widen-commit profile. `head_and_next_done` (a 1-wide commit fired while
-  head+1 was also retirable: a missed-2-wide diagnostic),
-  `head_plus_one_done` (ungated head+1 done), `commit_2_opportunity`
-  (pre-FIFO-back-pressure, hazard gate already applied),
-  `commit_2_fire_actual` (2-wide fires), and a four-way `commit_2_blocked`
-  decomposition (`head_serial`, `next_serial`, `next_branch_mispred`,
-  `next_branch_correct`).
-- FU back-pressure. Six counters: `Int`, `Mul`, `FpAdd`, `Fmul`, and `Fdiv`
-  count cycles where that RS is non-empty but its `fu_ready` is deasserted
-  (issue blocked), and `MemResult` counts cycles where a MEM result is held
-  because the MEM adapter is still pending. MUL and DIV share the muldiv
-  shim, so there is no separate DIV counter.
-- Memory and queue activity. `mem_disambiguation_wait`,
-  `sq_committed_pending`, `sq_mem_write_fire`, `lq_mem_read_fire`,
-  `lq_l0_hit`, `lq_l0_fill`.
-- Occupancy sums. Per-cycle occupancy of the ROB, LQ, SQ, and each of the six
-  RSes, so the software side can compute average depth.
-
-Snapshot capture fans out through four per-bank capture registers annotated
-`max_fanout = 768`, so one capture-enable strobe does not drive all 64
-counters from a single source. The capture lands one cycle after the
-`mperfctl` trigger commit, which CSR serialization makes invisible to
-software.
+With `PERF_COUNTERS=1`, `perf/tomasulo_perf_counters.sv` owns 64 counters for
+head waits, commit stalls, FU pressure, memory activity, and occupancy.
+See the [counter reference](../../cpu_ooo/perf/README.md) for indices and
+partition rules. Four capture banks with `max_fanout=768` snapshot one cycle
+after the trigger, aligned with the top-level and cache banks.
 
 ## Verification hooks
 

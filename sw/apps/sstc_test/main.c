@@ -15,7 +15,7 @@
  */
 
 /*
- * Sstc directed test (Phase 3 M6, plan D12). Covers menvcfg.STCE, the only
+ * Sstc directed test. Covers menvcfg.STCE, the only
  * implemented menvcfg field, and the stimecmp CSR. While STCE=1 the registered
  * mtime >= stimecmp compare drives the STIP readback and the software STIP bit
  * is dormant. With STCE=0 an S-mode stimecmp access takes an illegal-instruction

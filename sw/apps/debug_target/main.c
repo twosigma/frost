@@ -15,7 +15,7 @@
  */
 
 /*
- * Debug-module target program (Phase 3 M3). A debuggee with known landmarks:
+ * Debug-module target program. A debuggee with known landmarks:
  *
  *   - phase M: an M-mode loop that bumps `counter` and calls `bp_target`
  *     (target.S: a 32-bit instruction followed by two c.nop, the software

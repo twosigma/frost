@@ -14,101 +14,26 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Build FPGA bitstreams with per-step directive selection.
+"""Build FPGA bitstreams through checkpointed Vivado stages.
 
-Steps:
-1. Synthesis                          (post_synth.dcp)
-2. Opt                                (post_opt.dcp)
-3. Place                              (post_place.dcp; x3 sweeps selected placer
-                                       directives x configurable seeds)
-4. Post-place phys_opt sweep          (post_place_physopt.dcp)
-5. Route (with -tns_cleanup)          (post_route.dcp / final.dcp*)
-6. Post-route phys_opt sweep          (post_route_physopt.dcp / final.dcp*)
-7. Second route (no -tns_cleanup)     (post_second_route.dcp / final.dcp*)
-8. Post-second-route phys_opt sweep   (final.dcp)
-9. Bitstream generation
+Pipeline: synth, opt, place, post-place phys-opt, route, post-route phys-opt,
+second route, post-second-route phys-opt, bitstream. Closure at route through
+second route promotes final.dcp and skips to bitstream; post-place closure
+does not. The last phys-opt stage always writes the final checkpoint.
 
-Phys-opt stages 4, 6, and 8 run build_step.tcl's own sweep over the
-``PHYS_OPT_DIRECTIVES`` set, beginning with ``AggressiveExplore`` and ending
-with a retime-only pass (``FROST_PHYSOPT_SWEEP_ORDER`` overrides the order).
-Each sweep retains the best WNS, writes its checkpoint and reports, and stops
-on closure.
+Place/route sweeps promote the best qualified candidate. Phys-opt retains the
+best WNS and stops on closure. Placement scoring uses zero added uncertainty;
+resumed stages require checkpoint-bound placement and parent metadata.
+Temporary PC-tail cost groups must be removed and audited on reopen before
+scoring, including for cell-bloat variants.
 
-X3 place and route sweeps run up to twelve Vivado jobs at a time and promote one
-checkpoint. ``--jobs N`` changes this per-build cap, including placement's
-quick-route probes; queued candidates start as running jobs finish. Both
-route stages default to Explore, AggressiveExplore, NoTimingRelaxation, and
-AlternateCLBRouting, ranking by WNS. Placement defaults to
-four directives at six 50 ps-spaced setup uncertainties from 0.500 to 0.250 ns;
-these act as seeds because Vivado exposes no placer seed. ``--directives`` and
-``--num-uncertainties`` override the grid. The qualified off-grid
-``ExtraPostPlacementOpt``/0.425 seed is always included: under the then-active
-fetch pblock it first passed the post-demolition gate (score -0.699, raw
--0.199 on 2026-08-20) and routed to closure. It remains a competitive
-placement after that pblock's retirement. Every seed is
-reported at 0.000 ns added uncertainty; 0.500 ns remains the seed-grid origin.
-The default sweep also includes LOW integer-RS cell-bloat variants of
-``ExtraNetDelay_high``/0.350 and ``ExtraPostPlacementOpt``/0.450, for 27 jobs
-including the original 25 controls. Each variant is added only when its control
-exists in the requested grid. Explicit presence of either bloat environment
-variable disables automatic LOW additions. Every candidate runs exactly one
-``place_design`` call, with supported physical controls applied beforehand.
-Production placement performs no subsequent netlist or input-pin edits.
+``--jobs`` limits concurrent Vivado jobs. ``--build-dir`` isolates outputs;
+``--snapshot-physopt-from`` copies a completed, qualified sweep for early route.
+Divided-clock builds default to RuntimeOptimized placement/route and profiling
+counters; full-rate builds default to counters off. Software must match the
+bitstream clock. ``netlist_config.json`` records synthesis-time options.
 
-Three qualified directive/uncertainty pairs (``ExtraNetDelay_high``/0.500 and
-``ExtraPostPlacementOpt``/0.450 or 0.425) use a temporary PC-tail cost group:
-the fourteen pinned scalar LUTRAM overlay output-FF launches of the predecode
-metadata (seven sideband predicates on both parities) to the selected, state,
-sequential, and pending-valid PC consumers. Topology-derived replica queries
-enforce exact launch, endpoint-family, PC-bit, FD, and clock-domain
-invariants. The group is removed after placement; a clean reopen audit must
-restore all paths to the CPU clock group before zero-uncertainty scoring. The LOW
-variant at a qualifying pair requires the same guidance and audit.
-
-The native -0.200 ns setup threshold is advisory. Passing seeds are
-ranked at actual zero added uncertainty, with congestion vetoes at
-``FROST_PLACE_CONGESTION_VETO_LEVEL`` (default 5). Quick-route probes default
-to zero; explicitly setting ``FROST_PLACE_QUICK_ROUTE_COUNT`` probes only
-passing seeds. If none passes, the build warns and continues with the best
-measured DCP/reports. Resumed downstream stages require a native gate
-record bound to the exact post-place checkpoint and a verified parent chain
-for any later checkpoint. Legacy descendants require a new run starting at
-``post_place_physopt``; their checkpoints and reports remain on disk.
-For an early route while phys-opt continues, ``--snapshot-physopt-from WORK``
-copies a completed sweep and its qualified placement into a new ``--build-dir``.
-Its workers, reports and bitstream stay separate from the continuing build;
-later sweeps cannot replace the snapshot's parent. Custom build directories
-do not update the repository's reference README utilization table.
-``FROST_PLACE_CELL_BLOAT`` and
-``FROST_PLACE_CELL_BLOAT_CELLS`` can spread wire-dense hierarchies.
-
-Closure at steps 5-7 promotes ``final.dcp`` and skips to bitstream generation.
-Step 4 does not end the pipeline on closure. Step 8
-always writes the final checkpoint.
-
-``--cpu-clock-div N`` builds a functional-validation bitstream at 300/N MHz:
-the board top's ``CPU_CLK_DIV`` generic scales the MMCM output divide and
-the subsystem's ``CLK_FREQ_HZ``, the DDR block design declares the divided
-CPU and JTAG clocks, and hello_world is compiled for the divided clock. Such
-a build closes timing with hundreds of picoseconds to spare in minutes, so it
-separates RTL bugs from timing margin on silicon and gives long stress
-programs a board to run on. Unless overridden, it runs one ``RuntimeOptimized``
-placement at the baseline uncertainty, skips the quick-route probes and the
-off-grid seed, routes with ``RuntimeOptimized`` only, and leaves the README
-utilization table alone. ``--route-directives`` restricts the router sweep
-of any build. ``--debug-ila`` instruments the fetch seam with a Vivado ILA
-(``FROST_DEBUG_FETCH_ILA`` mirrors, one debug core on the CPU clock, probes
-file beside the bitstream; capture with ``fpga/debug/capture_fetch_ila.py``).
-``--perf-counters`` includes the profiling counters (the ``mperf*`` CSRs, about
-24k cells: 3.8k LUTs, 18.3k flops, 2.1k CARRY8) through the board top's
-``PERF_COUNTERS`` generic. By default a
-full-rate build leaves them out and a divided-clock build includes them;
-``--no-perf-counters`` overrides the latter. Synthesis records the value it
-used in ``netlist_config.json`` beside the promoted checkpoint, since nothing
-in a later checkpoint or bitstream says which way it went.
-Board software then needs the same clock:
-``FROST_CPU_CLK_HZ=150000000`` for ``load_software.py`` and
-``hw_regression.py`` (score checks are skipped under the override).
+Run natively; see ``fpga/README.md`` and ``--help`` for commands and tuning.
 """
 
 import argparse
@@ -229,11 +154,8 @@ X3_PC_TAIL_GUIDED_CANDIDATES = (
     ("ExtraPostPlacementOpt", 0.425),
 )
 
-# This off-grid seed first met the post-demolition gate with PC-tail groups and
-# the then-active fetch pblock (score -0.699, raw -0.199; 2026-08-20), then
-# closed at 300 MHz. The pblock is retired, but this seed remains competitive
-# without it. Neighbors were worse (0.4125: -0.841; 0.4375: -0.764). It
-# competes under the same veto, probe, and rescoring rules as grid seeds.
+# The off-grid seed competes under the same veto, probe, and rescoring
+# rules as grid seeds.
 X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
 
 # Keep the unbloated controls and compare only the measured integer-RS
@@ -800,9 +722,8 @@ def x3_pc_tail_group_audit_is_valid(
     for phase in ("PRE", "POST", "SCORE"):
         if counts[f"{phase}_COMPRESSED_STARTS"] != X3_PC_TAIL_SCALAR_LAUNCH_COUNT:
             return False
-        # Phase 3 M2 retired producer-side PC masking, so the selected and
-        # state PC families cover all 64 architectural bits. The sequential PC
-        # register holds 63 bits.
+        # Selected and state PC families cover all 64 architectural bits.
+        # The sequential PC register holds 63 bits.
         if counts[f"{phase}_PC_BITS"] != 64:
             return False
         if counts[f"{phase}_STATE_PC_BITS"] != 64:

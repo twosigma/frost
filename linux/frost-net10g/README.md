@@ -16,11 +16,9 @@
 
 # `frost_net10g`: the NIC's Linux driver
 
-The Linux driver for the FROST NIC (`hw/rtl/peripherals/nic`), the device
-tree node with `compatible = "frost,net10g"`
-(`../buildroot-external/board/frost/frost,net10g.yaml`). The register map and
-the descriptor, interrupt and RESET contract it follows are in
-[`../../hw/rtl/peripherals/nic/README.md`](../../hw/rtl/peripherals/nic/README.md).
+Driver for the `frost,net10g` device-tree node. See the
+[NIC contract](../../hw/rtl/peripherals/nic/README.md) for registers,
+descriptors, interrupts, and reset behavior.
 
 The driver is packaged as an out-of-tree module for Debian's kernel. DKMS
 rebuilds it for installed kernels with matching headers; `debian_kernel.py`

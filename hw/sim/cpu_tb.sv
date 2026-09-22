@@ -113,7 +113,7 @@ module cpu_tb
   logic i_cached_write_done;
   logic i_cached_write_inflight;
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
-  // Translated-fetch seam (Phase 3 M2/M5). This bench models the production
+  // Translated-fetch seam. This bench models the production
   // low-BRAM overlay fast path with a fixed 1-cycle response, so the served
   // window is never the high tier. The fault verdict the core computes for an
   // ask comes back registered with the window one cycle later. Translation
@@ -135,7 +135,7 @@ module cpu_tb
   logic i_instr_fault1_page;
   logic i_served_high;
   logic tb_fault0_q, tb_fault0_page_q, tb_fault1_q, tb_fault1_page_q;
-  // Page-table walker line port (Phase 3 M4). No page-table memory sits behind
+  // Page-table walker line port. No page-table memory sits behind
   // this bench, so the port has no slave, exactly like cpu_and_mem's
   // no-cached-tier stub. A walk would stall, and the directed programs stay in
   // Bare mode.
@@ -146,7 +146,7 @@ module cpu_tb
   logic i_walk_line_resp_valid;
   logic [1:0] i_walk_line_resp_id;
   logic [255:0] i_walk_line_resp_rdata;
-  // Debug module seam (Phase 3 M3): no debugger in this bench; the request
+  // Debug module seam: no debugger in this bench; the request
   // inputs idle low and the status outputs are unobserved.
   logic i_dbg_haltreq;
   logic i_dbg_go;
@@ -166,7 +166,7 @@ module cpu_tb
   assign i_dbg_go_addr = '0;
   assign i_dbg_data = '0;
 
-  // Coherence seam (Phase 4 slice 1): no DMA agent in this bench, so the
+  // Coherence seam: no DMA agent in this bench, so the
   // sequencer's admit / inval / release handshake stays idle and the core's
   // answers are left unconnected.
   logic i_coh_admit_valid;

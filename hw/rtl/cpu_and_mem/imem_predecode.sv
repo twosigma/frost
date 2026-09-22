@@ -222,7 +222,7 @@ module imem_predecode #(
     input logic i_port_b_clk,
     input logic i_port_b_enable,
     input logic [31:0] i_port_b_byte_address,
-    // Byte address of the window's second aligned word (Phase 3 M5): the
+    // Byte address of the window's second aligned word: the
     // aligned successor of word 0 with translation off or inside a page, and
     // the mapped next page's base across a page boundary. Replaces the even
     // bank's +1 address increment, so the second word can come from anywhere

@@ -15,7 +15,7 @@
  */
 
 /*
- * ptw: Sv39 page-table walker (Phase 3 M4).
+ * ptw: Sv39 page-table walker.
  *
  * One walk at a time. A request latches its vpn, and the FSM descends the
  * three levels with dependent full-line reads on the walker line port. That
@@ -158,11 +158,9 @@ module ptw #(
   // Request valid is precomputed alongside each FSM transition. It is the
   // exact registered twin of ISSUE && ptr_addr_ok_q && !discard_q, so the
   // state decode and poison/address gates do not sit on the hierarchy's
-  // shared capture-enable path. It used to be masked by live i_discard,
-  // which put the sfence window's whole
-  // decode (ROB head one-hot read -> csr -> tlb_invalidate) in front of the
-  // hierarchy's walker-port arbitration and the shared L2 tag-request/T
-  // capture logic, the X3 WNS edge. A read that fires in the discard cycle is
+  // shared capture-enable path. Do not gate with live i_discard: that would
+  // put the ROB/CSR sfence decode on walker arbitration and L2 capture.
+  // A read that fires in the discard cycle is
   // a poisoned walk: discard_q is set at that edge, the response is consumed
   // in PTW_WAIT like any other, and nothing is answered (p_discard_silent).
   (* keep = "true" *) logic line_req_valid_q;

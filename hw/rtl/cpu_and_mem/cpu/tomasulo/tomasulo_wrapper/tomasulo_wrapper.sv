@@ -189,7 +189,7 @@ module tomasulo_wrapper #(
     input logic       i_trap_misaligned_accesses,
 
     // =========================================================================
-    // Data translation (Phase 3 M4). The state bundle is registered and
+    // Data translation. The state bundle is registered and
     // quasi-static in csr_file (changes only alongside a D10/trap/xret
     // flush); the walker itself lives in cpu_ooo behind this seam.
     // =========================================================================
@@ -248,7 +248,7 @@ module tomasulo_wrapper #(
     // cannot be mistaken for an owed stale response.
     input logic                                        i_lq_mem_request_pending,
 
-    // DMA coherence handshake (Phase 4): the cache hierarchy's sequencer to
+    // DMA coherence handshake: the cache hierarchy's sequencer to
     // lq_coherence_port. Admit fires on ready, inval fires on done, release
     // is a pulse.
     input  logic                                       i_coh_admit_valid,
@@ -854,13 +854,9 @@ module tomasulo_wrapper #(
   riscv_pkg::cdb_broadcast_t sq_cdb_bus_2;
   // same-cycle INT_RS-local copy
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
-  // TIMING: these four INT_RS-local copies previously carried dont_touch,
-  // which makes Vivado ignore the max_fanout on the same declaration (it
-  // does not replicate dont_touch nets).  They routed as single flops into
-  // the whole INT_RS wakeup/capture fabric and were the worst path of the
-  // rv64 X3 route.  keep + equivalent_register_removal="no" retain the
-  // anti-merge intent; the tightened cap lets synthesis replicate per
-  // entry bank.
+  // TIMING: keep + equivalent_register_removal="no" preserve separate INT_RS
+  // copies while max_fanout permits replication per entry bank. Do not use
+  // dont_touch here: it prevents Vivado from honoring max_fanout.
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_int_rs_tag;
   // XLEN wide, not FLEN: INT_RS only consumes value[XLEN-1:0] (its ops are
@@ -1927,13 +1923,13 @@ module tomasulo_wrapper #(
   // The may-fail-for-any-reason allowance covers only the retired failure
   // result, never exception suppression; Spike agrees, and Linux's futex
   // COW break depends on it.
-  // Phase 3 M2: a store's PMA access fault (cause 7) folds into the same
+  // a store's PMA access fault (cause 7) folds into the same
   // issue-time trap strobe as misalignment.  The store completes with an
   // exception instead of being marked done, so its SQ entry can never drain
   // (the launched-implies-in-map invariant). Access faults outrank
   // misalignment per the privileged spec; the PMA term is ungated by
   // i_trap_misaligned_accesses so the invariant holds unconditionally.
-  // Phase 3 M4: while data translation is active, every store-family fault
+  // while data translation is active, every store-family fault
   // (misalign on the VA, page fault, access fault on the translated PA)
   // fires from the data MMU one cycle after issue instead; the legacy comb
   // strobe is gated off, and launched-implies-in-map holds because the SQ
@@ -2122,29 +2118,16 @@ module tomasulo_wrapper #(
 `endif
 `endif
 
-  // TIMING: sc_fu_complete is registered before reaching mem_fu_to_adapter.
-  // The combinational chain
-  //   fence_i_committed_reg → speculative_flush_all → sc_fire_now
-  //     → mem_fu_to_adapter → MEM adapter bypass → cdb_arb_in[3]
-  //     → cdb_bus_reg[tag][3]
-  // was the post-IntRsDepth-bump worst-violating path (-0.710 ns WNS). SC is
-  // rare (LR/SC atomic sequences only; 0 in CoreMark), so the resulting
-  // 1-cycle delay on SC CDB broadcast is negligible. Plain loads still get
-  // the fast combinational path via lq_fu_complete.
-  // A registered store fault presenting in the same cycle takes the MEM slot
-  // first (that register has no hold of its own, and under translation a
-  // second fault can follow it one cycle later), so the SC completion waits
-  // until no fault is presenting.  The unit does not fire while a completion
-  // waits, so the payload is captured at the fire only and held as is.  The
-  // fire used to be gated by the live store-fault decision instead, which put
-  // the store address, misalignment and PMA cone on the SC table's write path.
+  // TIMING: register SC completion to keep the fence/flush/fire cone off the
+  // MEM adapter and CDB. SC pays one cycle; plain loads keep their bypass.
+  // A presenting registered store fault takes priority because it cannot hold
+  // and another fault may follow next cycle. SC holds its captured payload
+  // and cannot fire again until that completion is consumed. Gate on the
+  // registered fault presentation, keeping live address/PMA logic off SC writes.
   //
-  // That the cycle in which this hold releases is always consumed is not an
-  // argument here any more: the checks below lq_result_accepted state it as
-  // p_sc_completion_release_adapter_idle and p_sc_completion_release_is_granted,
-  // and p_sc_completion_token_conserved pins the packet to exactly one CDB
-  // broadcast.  test_sc_completion_release_under_cdb_contention drives the
-  // release with both CDB lanes contended.
+  // p_sc_completion_release_adapter_idle, p_sc_completion_release_is_granted,
+  // and p_sc_completion_token_conserved check exactly one CDB delivery.
+  // test_sc_completion_release_under_cdb_contention checks contended release.
   riscv_pkg::fu_complete_t sc_fu_complete_reg;
   logic sc_completion_held;
   assign sc_completion_held = sc_fu_complete_reg.valid && store_misalign_fu_complete_reg.valid;
@@ -2203,24 +2186,11 @@ module tomasulo_wrapper #(
     end
   end
 
-  // TIMING: Mirror the sc_fu_complete_reg pattern.  The combinational chain
-  //   stage2_src1_bypassed → low-page sum / PMA boundary check
-  //     → store_misalign_fu_complete.valid → mem_fu_to_adapter
-  //     → mem adapter passthrough → cdb_arb_in[3]
-  //   → cdb_bus_reg[tag]
-  // was the second-worst path family on x3.  Misaligned stores are exceptions
-  // (CoreMark has none), so the resulting 1-cycle delay on the misalign-CDB
-  // path is negligible.  Plain LQ results still take the fast combinational
-  // path through mem_fu_to_adapter below.
-  // Partial-flush kill: an incoming fault younger than the partial flush
-  // boundary is not captured (the partial_flush_input check inside
-  // fu_cdb_adapter, mirrored).  A held packet that a partial flush kills in
-  // its presentation cycle is filtered by the adapter's own input check, so
-  // the register's next value is always the incoming strobe.  It used to be
-  // forced clear in that cycle as well, which dropped an OLDER store's fault
-  // arriving in the same cycle (under data translation a younger store's
-  // fault can precede an older store's), and that store then never
-  // completed.
+  // TIMING: register store faults to keep address/PMA logic off the MEM
+  // adapter and CDB. Faults pay one cycle; plain LQ results keep their bypass.
+  // Reject incoming faults younger than a partial flush. The adapter filters
+  // a killed held packet, so always capture the next incoming strobe: an
+  // older store fault may arrive on the same cycle that a younger one dies.
   logic store_misalign_input_flushed;
   assign store_misalign_input_flushed = speculative_flush_en &&
       store_misalign_fu_complete.valid &&
@@ -2256,26 +2226,13 @@ module tomasulo_wrapper #(
     else mem_fu_to_adapter = lq_fu_complete;
   end
 
-  // LQ is blocked while the registered SC completion owns MEM.  SC arming only
-  // occurs when LQ is not presenting a result, avoiding a combinational SC
-  // head-tag compare on the LQ/CDB backpressure cone.
+  // LQ yields MEM to a registered SC completion. Arm SC only while LQ has no
+  // result, keeping live SC head-tag comparison off LQ/CDB backpressure.
   //
-  // The accept term must match the presentation mux above exactly: whenever
-  // the LQ result is the one presented, it is also granted that cycle (MEM
-  // outranks everything but MUL and the CDB is 2-wide, so a presented MEM
-  // result always wins a lane), so it must pop.  A live store_misalign_issue
-  // used to block the accept here without blocking the presentation.  The
-  // granted-and-broadcast load then stayed in cdb_stage, the registered
-  // misalign exception took the next cycle, and the leftover load was
-  // presented and granted a second time one cycle later.  The duplicate
-  // broadcast landed after the first delivery had already committed the load
-  // through the CDB->head-done bypass, writing a freed ROB entry.  These
-  // were the "stale CDB delivery" events observed in Linux boot, one per few
-  // hundred k cycles; a duplicate landing after the entry's index is
-  // reallocated would corrupt the new instruction (the tag-ABA hazard).  The
-  // same-cycle misalign capture into store_misalign_fu_complete_reg needs no
-  // yield from the load: it owns the MEM slot the next cycle via the register
-  // either way.
+  // Acceptance must match the presentation mux exactly. A presented MEM result
+  // always wins one of the two CDB lanes (only MUL has higher priority) and
+  // must pop once; retaining it would rebroadcast a tag that may be recycled.
+  // A live store fault needs no yield: its register owns MEM on the next cycle.
   assign lq_result_accepted = lq_fu_complete.valid &&
                               !sc_fu_complete_reg.valid &&
                               !store_misalign_fu_complete_reg.valid &&
@@ -2399,7 +2356,7 @@ module tomasulo_wrapper #(
   // SC resolution + pending-register FSM -> atomics/sc_pending_unit.sv.
   // store-misalign, the MEM mux, and lq_result_accepted stay in the wrapper.
   // ===========================================================================
-  // DMA coherence port (Phase 4): admitted-line mirror, SC window, validation
+  // DMA coherence port: admitted-line mirror, SC window, validation
   // table and the ROB's replay mask.
   // ===========================================================================
   logic coh_sc_hold, coh_sc_head_addr_valid, coh_sc_fire_success;
@@ -2559,16 +2516,11 @@ module tomasulo_wrapper #(
   logic mem_rs_fu_ready_base;
   logic mem_rs_fu_ready;
 
-  // Do not gate SC issue on (sc_pending && next_is_sc). That single-SC
-  // serialization deadlocked Linux: under speculation a younger SC issued
-  // out of order and set sc_pending, and the gate then blocked the older head
-  // SC from ever issuing, so it never fired, sc_pending never cleared, and
-  // the core hung at _prb_commit. sc_pending_unit now tracks multiple
-  // in-flight SCs (a table keyed by ROB tag), so several SCs may be in flight
-  // at once.
-  // dmmu_stall (Phase 3 M4): a DTLB miss holds the translation stage, and
-  // MEM_RS issue with it, until the walk resolves. Constant 0 while
-  // translation is inactive, so the historical ready cone is unchanged.
+  // Multiple SCs may issue out of order; sc_pending_unit tracks each by ROB
+  // tag. Gating all SC issue on sc_pending would let a younger SC block the
+  // older head SC that must complete first.
+  // dmmu_stall holds translation and MEM_RS issue during a DTLB walk. It is
+  // zero while translation is inactive.
   logic dmmu_stall;
   assign mem_rs_fu_ready_base = i_mem_rs_fu_ready &&
                                 !sc_fu_complete_reg.valid &&
@@ -4108,7 +4060,7 @@ module tomasulo_wrapper #(
   // Load Queue: Address Update from MEM_RS Issue
   // ===========================================================================
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
-  // Phase 3 M2: the AGU output flows full-width. An out-of-map address
+  // the AGU output flows full-width. An out-of-map address
   // raises the PMA access fault at the LQ's staged-entry check (beside the
   // misalignment test) before any launch, so downstream region decodes only
   // ever see launched, in-map addresses; the full value is kept for an
@@ -4137,8 +4089,8 @@ module tomasulo_wrapper #(
   end
 
   // Forward declarations (assigned in the data-MMU section below): the
-  // packet and pre-issue pair the LQ consumes.  This is the historical
-  // combinational flavor when translation is inactive and the MMU's
+  // packet and pre-issue pair the LQ consumes.  This is the
+  // combinational path when translation is inactive and the MMU's
   // one-cycle-later translated flavor when active.
   riscv_pkg::lq_addr_update_t lq_addr_update_final;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag_final;
@@ -4397,10 +4349,10 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // Data MMU (Phase 3 M4): the D4 translation stage. Everything here is
+  // Data MMU translation stage. Everything here is
   // inert while i_translation_active is low: the *_final packet muxes
-  // below select the historical combinational paths byte-for-byte, and the
-  // quasi-static active select only changes under a D10/trap/xret flush.
+  // below select the combinational bypass paths, and the
+  // quasi-static active select only changes under a translation-CSR/trap/xRET flush.
   // ===========================================================================
   // The issue feed fires exactly when the wrapper's MEM issue fires: the
   // LQ leg is the lq_addr_update peek expression, the SQ leg the RS
@@ -4537,7 +4489,7 @@ module tomasulo_wrapper #(
     end
   end
 
-  // Final early packets: historical comb pass-through when inactive; the
+  // Final early packets: combinational pass-through when inactive; the
   // twice-delayed packet with the MMU's PA when its opportunistic lookup
   // fully succeeded (store permission, D set, in-map), silently dropped
   // otherwise.  The issue port re-translates and owns every fault.
@@ -4599,7 +4551,7 @@ module tomasulo_wrapper #(
   // Store Queue: Address + Data Update from MEM_RS Issue
   // ===========================================================================
   // Effective address: base (src1) + immediate (declared above near SC pending).
-  // Phase 3 M2: full-width like the LQ AGU output; an out-of-map store
+  // full-width like the LQ AGU output; an out-of-map store
   // faults at the issue check below before its SQ entry can ever drain.
   assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
@@ -4607,7 +4559,7 @@ module tomasulo_wrapper #(
   // MMIO quadrant test; see lq_addr_is_mmio above.
   assign sq_addr_is_mmio = (sq_effective_addr[31:30] == 2'b01);
 
-  // Phase 3 M4: while translation is active, the issue-time SQ writes come
+  // while translation is active, the issue-time SQ writes come
   // from the data MMU one cycle later: the PA-verified address, and the
   // data held in the MMU-aligned sideband register. A faulted store never
   // writes the SQ (dmmu_store_ok excludes it), which is the translated
@@ -5030,12 +4982,9 @@ module tomasulo_wrapper #(
 
   initial assume (!i_rst_n);
 
-  // Phase 3 M4 formal scope: the wrapper target proves the historical
-  // (translation-inactive) surface, where every M4 mux selects its legacy
-  // arm bit-for-bit. The translated mode's building blocks have their own
-  // targets (tlb.sby, ptw.sby), FENCE-class event ownership is proven at the
-  // reorder_buffer target, and the composed translated-mode behavior is
-  // covered by the vm_test battery in simulation.
+  // The wrapper formal target covers translation-inactive bypass paths.
+  // TLB and PTW have separate targets; reorder_buffer proves FENCE-class
+  // event ownership. vm_test covers composed translation in simulation.
   always_comb assume (!i_translation_active);
   always_comb assume (!i_csr_translation_flush_req);
 

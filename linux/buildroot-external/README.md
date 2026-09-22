@@ -37,25 +37,12 @@ For the boot ABI, memory map, and kernel requirements, see the
 | `board/frost/frost_boot_image.py` | Packs firmware, kernel, device tree, and optional initramfs for the JTAG loader |
 | `board/frost/frost,net10g.yaml` | NIC device-tree binding |
 
-## Buildroot pin
+## Toolchain
 
-The `linux/buildroot` submodule is pinned to `d5180309` (`2026.08`).
-Initialize it after checkout:
-
-```bash
-git submodule update --init linux/buildroot
-```
-
-The defconfig downloads Bootlin's `2026.08-1` stable musl toolchain (GCC
-15.3, Linux 5.10 headers) through Buildroot's custom external-toolchain
-support. Buildroot's built-in Bootlin choice still selects `2025.08-1`.
-Keep the URL and `patches/toolchain-external-custom/` hash aligned with the
-Dockerfile's Bootlin version and SHA-256. Native Vivado hosts can download
-this same toolchain without a preinstalled `/opt` tree.
-
-After changing Buildroot or the toolchain, use a fresh output directory (or
-remove the old `linux/build-mmu` build artifacts) before rebuilding. Buildroot
-does not support changing compilers inside an existing output tree.
+Initialize submodules before native builds. The defconfig and custom-toolchain
+checksum must match the Dockerfile's Bootlin musl archive. Use a fresh output
+directory after changing Buildroot or the compiler; Buildroot does not support
+switching compilers inside an existing tree.
 
 ## Build
 
@@ -152,9 +139,8 @@ there is no Linux-kernel cocotb target.
 - Each Buildroot output directory records absolute paths. Do not share it
   between Docker and host-native builds, or between checkouts. Pass
   `BR2_EXTERNAL` on every direct Buildroot invocation.
-- Recreate output directories from older configurations that built a kernel:
-  run `make -C sw/apps/linux_boot distclean` or delete the `O=` directory.
-  Rerunning the defconfig alone leaves obsolete packages in the rootfs.
+- Recreate the output tree after removing packages from the configuration;
+  rerunning defconfig alone leaves obsolete packages in the rootfs.
 - Image packing needs `dtc`. It is in the `frost` image; for other build
   environments, install it or enable `BR2_PACKAGE_HOST_DTC=y`.
 

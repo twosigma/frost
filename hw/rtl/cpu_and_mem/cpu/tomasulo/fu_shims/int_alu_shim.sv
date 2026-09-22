@@ -136,7 +136,7 @@ module int_alu_shim #(
   assign is_ecall_op = (i_rs_issue.op == riscv_pkg::ECALL);
   assign is_ebreak_op = (i_rs_issue.op == riscv_pkg::EBREAK);
   assign is_illegal_op = (i_rs_issue.op == riscv_pkg::ILLEGAL);
-  // Fetch-fault pseudo-ops (Phase 3 M2/M5) carry an instruction access fault
+  // Fetch-fault pseudo-ops carry an instruction access fault
   // (cause 1) or an instruction page fault (cause 12). epc is the entry's PC.
   // xtval arrives precomputed in imm: PC + the offset of the faulting
   // portion (2 for a page-straddling instruction whose second halfword

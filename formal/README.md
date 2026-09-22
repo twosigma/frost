@@ -1,41 +1,19 @@
 # Formal Verification
 
-The formal targets check properties over all possible inputs within a bounded
-window. The targets that define a `prove` task also carry unbounded safety
-proofs.
+Run through the pinned Docker image:
 
-## Tools
+```bash
+./scripts/frost.py formal --list-targets
+./scripts/frost.py formal --target trap_unit
+./scripts/frost.py formal --target prediction_release --task prove
+./scripts/frost.py formal
+```
 
-| Tool | Purpose |
-|------|---------|
-| SymbiYosys (sby) | Runs Yosys and the solvers as each `.sby` file directs |
-| Yosys | Reads the RTL and prepares it for the solver encoding (SMT2 or BTOR) |
-| Boolector / Z3 | SMT solvers behind the `smtbmc` engine; each `.sby` picks one |
-| btormc | BTOR model checker behind the `btor` engine; faster on some targets, such as ROB BMC |
-
-## How It Works
-
-Block-local assertions live in `ifdef FORMAL` blocks inside the RTL module
-they check. Integration targets add a formal-only harness under `formal/`,
-plus a conservative helper abstraction where one is needed. The harness
-instantiates the production modules and may carry properties of its own, but
-the module-level properties stay in the production RTL. Yosys defines `FORMAL`
-per file, only for sources read with `read -formal`. A plain `read` defines
-`SYNTHESIS` instead, and no simulation or synthesis flow defines `FORMAL`, so
-the blocks compile away everywhere else. Each `.sby` script chooses which
-production modules, harnesses, and helpers are read with `-formal`.
-
-Each `.sby` defines some of these tasks:
-
-- `bmc` checks every `assert` for N cycles across all input combinations.
-- `cover` finds a trace that reaches each `cover` property.
-- `prove` is an unbounded safety proof. `prediction_release`,
-  `prediction_handoff`, and `prediction_metadata_tracker` run ABC PDR;
-  other targets use their configured temporal-induction engine.
-
-Parameter-shape variants (`bmc_itlb`, `cover_itlb`, `fmul_repair_bmc`) rerun a
-task on a `chparam`'d top. `--list-targets` shows which tasks each target
-declares.
+Each `.sby` selects its engines, parameters, and assumptions. `bmc` checks
+assertions to a bounded depth, `cover` finds reachable witnesses, and `prove`
+establishes unbounded safety under the stated assumptions. Width/parameter
+variants are separate tasks. `--task` filters declared tasks; `--verbose`
+shows solver output.
 
 ## Targets
 
@@ -88,82 +66,14 @@ Integration targets have narrower environment contracts:
   tag wraparound; simulation covers reuse after wrap. Station assertions
   remain enabled, with standalone station assumptions disabled.
 
-```bash
-# List all targets and their supported tasks
-./scripts/frost.py formal --list-targets
-
-# See CLI help (includes --target choices)
-./scripts/frost.py formal --help
-```
-
-## Running
-
-Run formal workflows from the repository root through `./scripts/frost.py`.
-The wrapper uses the pinned `frost` image and leaves output directories
-writable by your host user.
-
-```bash
-# Run all formal targets
-./scripts/frost.py formal
-
-# Discover and select targets/tasks
-./scripts/frost.py formal --list-targets
-./scripts/frost.py formal --target trap_unit
-./scripts/frost.py formal --target prediction_release
-./scripts/frost.py formal --target prediction_release --task prove
-./scripts/frost.py formal --task bmc
-./scripts/frost.py formal --verbose
-
-# Direct SymbiYosys invocation
-./scripts/frost.py run bash -c 'cd formal && sby -f trap_unit.sby bmc'
-./scripts/frost.py run bash -c 'cd formal && sby -f trap_unit.sby cover'
-./scripts/frost.py run bash -c 'cd formal && sby -f reorder_buffer.sby bmc'
-```
-
 ## Property Style
 
-Properties state falsifiable contracts rather than restating the RTL. Most
-relate inputs to outputs, either in the same cycle or across clock edges with
-`$past()`. `assume` statements rule out input combinations the pipeline cannot
-produce, such as `!(trap && mret)`. Wiring guards check that each output port
-carries the internal signal it should, which catches cut-and-paste errors.
-
-## Adding Properties to an Existing Module
-
-Add an `ifdef FORMAL` block at the end of the module (before `endmodule`):
-
-```systemverilog
-`ifdef FORMAL
-  // Assume reset at startup
-  initial assume (i_rst);
-
-  // Track $past validity
-  reg f_past_valid;
-  initial f_past_valid = 1'b0;
-  always @(posedge i_clk) f_past_valid <= 1'b1;
-
-  always @(posedge i_clk) begin
-    if (!i_rst) begin
-      // Combinational properties (use boolean implication: !a || b)
-      my_property: assert (!(signal_a && signal_b));
-    end
-
-    // Sequential properties (require f_past_valid)
-    if (f_past_valid && !i_rst && $past(!i_rst)) begin
-      if ($past(some_condition)) begin
-        my_seq_property: assert (!some_signal);
-      end
-    end
-  end
-
-  // Cover properties (prove reachability)
-  always @(posedge i_clk) begin
-    if (!i_rst) begin
-      cover_interesting_case: cover (interesting_condition);
-    end
-  end
-`endif
-```
+State input/output, ordering, or temporal contracts that can fail. Guard
+`$past()` with a past-valid bit and the relevant reset conditions. Assumptions
+must describe inputs the real environment guarantees, and be recorded with
+the proof scope. Keep block assertions under `ifdef FORMAL` in their module;
+formal-only integration harnesses live beside `.sby` files and stay outside
+production synthesis.
 
 ## Adding a New Formal Target
 
@@ -195,19 +105,5 @@ Yosys supports a subset of SystemVerilog Assertions:
 - Use `$past(signal)` for sequential properties.
 - No hierarchical references (`u_sub.signal`): assertions must sit inside the
   module they check.
-- Use `initial assume(i_rst)` so registers start in a known state.
-
-## File organization
-
-```
-formal/
-├── README.md                               # This file
-├── .gitignore                              # Ignores sby working directories
-├── *.sby                                   # Formal target configurations
-├── prediction_metadata_tracker_formal.sv   # Formal-only harness
-├── prediction_release_formal.sv            # Formal-only integration harness
-└── prediction_release_pc_increment.sv      # Conservative helper abstraction
-```
-
-Formal-only harness and abstraction files live beside their `.sby` target and
-are not part of production synthesis.
+- Assume initial reset only when it is part of the target contract; otherwise
+  prove the property from arbitrary state.

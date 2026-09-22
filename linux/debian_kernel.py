@@ -14,60 +14,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Fetch Debian's riscv64 kernel and build the FROST NIC module for it.
+"""Fetch the pinned Debian RISC-V kernel and build its FROST NIC module.
 
-FROST boots Debian's own kernel everywhere: the hardware regression's Linux
-stage, the board soaks, and CI's QEMU boot job. This module is the single
-place that names the kernel -- snapshot, package version, file size and
-sha256 below -- fetches it, and produces the two things the boot needs:
+Produces a flat Linux Image and a module matched to its Debian headers; the
+initramfs command adds the module and startup script to the test image.
+Host kbuild tools drive the riscv64 headers using the Linux cross compiler.
 
-* ``boot/vmlinux-<release>``, an uncompressed flat Linux ``Image`` that
-  ``buildroot-external/board/frost/frost_boot_image.py`` packs as the payload;
-* ``frost_net10g.ko``, the NIC driver built as a module for exactly that
-  kernel, injected into the Buildroot test initramfs together with an
-  ``/etc/init.d`` script that ``insmod``s it at boot. Debian's kernel has no
-  FROST driver built in, and ``frost_nettest`` needs one.
+Cache entries are immutable and keyed by input digest. Builders hold an
+exclusive lock, stage work privately, and publish by rename. Manifests validate
+reuse; incomplete entries rebuild. Old entries remain for concurrent readers.
+``FROST_DEBIAN_KERNEL_CACHE`` changes the default ``linux/debian-kernel`` path;
+``FROST_NET10G_MODULE`` selects a prebuilt module.
 
-Everything lands in a cache directory (``linux/debian-kernel`` by default,
-gitignored) so repeated builds and CI runs do not refetch. See
-``README.md`` and ``frost-net10g/README.md``.
-
-The module is built with the Debian ``linux-headers`` tree for riscv64, whose
-kbuild host tools come from ``linux-kbuild`` -- ``Multi-Arch: foreign``, so the
-amd64 build of it drives the riscv64 headers tree -- and the Linux-targeted
-riscv64 cross toolchain the Docker image already carries for OpenSBI
-(``FROST_LINUX_CROSS_COMPILE``). No new tool is needed in the image.
-
-Cache discipline, because a native loader and a container build can run at the
-same time over one bind-mounted checkout:
-
-* every directory the cache publishes is immutable and named after a digest of
-  its inputs (the pin, the toolchain), so a reader never sees a half-built tree
-  and a changed input never rewrites a directory someone else is reading;
-* work happens under ``staging/`` and is published by one ``rename``, and
-  downloads go to a per-process temporary and are published the same way;
-* mutations hold an exclusive lock on the cache, so two builders neither
-  duplicate the work nor tear down each other's staging;
-* a published directory is validated against the manifest written with it
-  before it is reused, so a truncated or partly deleted one is rebuilt rather
-  than trusted. A pin change leaves the old directories behind: removing them
-  could pull the ground from under a concurrent reader. Delete the whole cache
-  to reclaim the space.
-
-Stdout carries only the answer a caller asked for -- a path, or the release
-string. Progress goes to stderr, so ``$(debian_kernel.py image)`` is the path
-even on a cold cache.
-
-``FROST_DEBIAN_KERNEL_CACHE`` moves the cache; ``FROST_NET10G_MODULE`` names a
-module built elsewhere, for a tree with no kernel headers or cross toolchain.
-
-Usage:
-    ./linux/debian_kernel.py fetch            # download, verify, extract
-    ./linux/debian_kernel.py image            # print the kernel Image path
-    ./linux/debian_kernel.py image --no-fetch # ... without touching the network
-    ./linux/debian_kernel.py release          # print the kernel release string
-    ./linux/debian_kernel.py module           # build and print frost_net10g.ko
-    ./linux/debian_kernel.py initramfs --base rootfs.cpio --out rootfs-frost.cpio
+Commands: fetch, release, image, module, initramfs. Results go to stdout and
+progress to stderr. See ``linux/README.md`` and ``--help``.
 """
 
 import argparse

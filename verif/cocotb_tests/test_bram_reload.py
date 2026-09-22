@@ -12,32 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed port-A (JTAG image-load) reload test.
+"""Check JTAG-style BRAM programming independently of readmemh initialization.
 
-Mirrors the board flow in fpga/load_software/file_to_bram.tcl: the power-on
-image boots normally, then the test holds reset (standing in for the board's
-image_load_reset one-shot), streams an image into the programming port
-word-by-word exactly like file2bram (ascending byte addresses, one 32-bit
-word per transaction on the i_clk_div4 domain, bounded 64-word batches with
-the word-0 rearm rewrite between batches), releases reset, and asserts the
-outcome over the UART.
-
-Three phases:
-
-  0. Power-on boot from the $readmemh init image -> banner (sanity: proves
-     the app/harness, isolating later failures to the programming port).
-  1. Clobber: overwrite the head of the image with all-zero (guaranteed
-     illegal) words via port A -> the core must not boot. Proves the writes
-     land, so phase 2 cannot false-pass on the untouched original.
-  2. Reload: stream the full original image via port A -> banner again.
-     Proves the programming path reproduces a bootable image end to end:
-     instruction rows, the write-time predecode sideband recompute, and the
-     half-row steering into the dword-wide data BRAM.
-
-This is the only simulation coverage of the programming path: every other
-test initializes the memories through $readmemh, so a broken port-A
-conversion is invisible to the rest of the suite (found the hard way on
-first rv64 hardware bring-up, 2026-08-04: power-on ran, JTAG reload broke).
+Boot the initial image, overwrite its head with illegal zero words and require
+no boot, then reload the full image and require the UART banner. Port-A writes
+match file_to_bram.tcl: ascending 32-bit words on i_clk_div4, 64-word batches,
+and word-zero reset rearm between batches. This covers instruction rows,
+predecode regeneration, and half-row steering into 64-bit data BRAM.
 """
 
 from __future__ import annotations

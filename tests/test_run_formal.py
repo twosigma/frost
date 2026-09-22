@@ -32,12 +32,7 @@ import pytest
 # Path to the formal/ directory relative to the repository root
 FORMAL_DIR = "formal"
 
-# Per-task sby timeout (seconds). Sized as a hang backstop, not a performance
-# gate: the ROB BMC (formal/reorder_buffer.sby), historically the slowest task,
-# was cut to depth 12 after the alloc-time pre-decoded commit-class vectors grew
-# depth 16 to ~11.5 min on a fast desktop and timed this ceiling out in CI.
-# The serializer ownership contracts added for FENCE-class event extraction
-# bring depth 12 to ~6 min locally, well under this ceiling.
+# Per-task hang backstop in seconds; proof depth is set by each .sby file.
 SBY_TASK_TIMEOUT_S = 2400
 
 
@@ -69,13 +64,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "tlb.sby",
-        "TLB - lookup/insert/invalidate conservation in the DTLB (16x3) and ITLB (8x2) shapes "
-        "(Phase 3 M4/M5)",
+        "TLB - lookup/insert/invalidate conservation in DTLB (16x3) and ITLB (8x2) shapes",
         tasks=("bmc", "cover", "bmc_itlb", "cover_itlb"),
     ),
     FormalTarget(
         "ptw.sby",
-        "Page-table walker - walk FSM vs golden PTE classification (Phase 3 M4)",
+        "Page-table walker - walk FSM vs golden PTE classification",
     ),
     FormalTarget(
         "reorder_buffer.sby",

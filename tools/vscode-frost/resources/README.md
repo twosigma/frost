@@ -18,12 +18,8 @@ interpretations. The floating-point CSRs retain `save-restore="no"` and their
 and `fcsr` as `{frm, fflags}` in bits 7:0; the remaining bits read zero. See
 [the CSR implementation](../../../hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv).
 
-GDB requires the complete `org.gnu.gdb.riscv.cpu` feature. If the optional FPU
-feature is present, it requires all 32 floating-point registers plus `fflags`,
-`frm`, and `fcsr`. A CPU-only description can be used for a separate diagnostic
-experiment, but it would remove floating-point register inspection from that
-session. These requirements come from
-[GDB's RISC-V target feature documentation](https://sourceware.org/gdb/current/onlinedocs/gdb.html/RISC_002dV-Features.html).
+Keep all CPU and FPU registers required by the target-description features;
+pruning individual members can make GDB reject the description.
 
 ## Loading the description
 
@@ -41,7 +37,7 @@ target-supplied descriptions. Start a fresh debug session when changing this
 option because the adapter caches register metadata.
 
 GDB's `set tdesc filename` takes the entire remaining text as the filename,
-including spaces. Do not add quotation marks around the filename: GDB 16.3
+including spaces. Do not add quotation marks around the filename: GDB
 includes those marks in the filename and only emits a warning when opening it
 fails. When using `-interpreter-exec console`, escape the whole command as an MI
 string; do not separately quote the filename inside it.
@@ -49,10 +45,7 @@ string; do not separately quote the filename inside it.
 ## Validation and limits
 
 The description supports register reads and refreshes while stepping code in
-BRAM or DDR. GDB may reserve thousands of unnamed internal register slots;
-these are not extra exposed CSRs.
-
-FROST's debug module implements abstract GPR access; OpenOCD uses its program
+BRAM or DDR. FROST's debug module implements abstract GPR access; OpenOCD uses its program
 buffer fallback for floating-point and CSR access. Individual register Watches
 and explicit `info registers pc sp ra a0` also remain available.
 

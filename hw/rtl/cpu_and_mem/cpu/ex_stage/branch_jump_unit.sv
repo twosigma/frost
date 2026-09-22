@@ -79,7 +79,7 @@ module branch_jump_unit #(
       default: target_selected = i_branch_target_precomputed;  // Branch: use pre-computed
     endcase
 
-    // Phase 3 M2: the resolved target flows at full width, with no masking.
+    // the resolved target flows at full width, with no masking.
     // A wild JALR target reaches the PC unchanged and page/PMA-faults at
     // fetch instead of aliasing, and predictor-trained targets compare
     // against the full architectural value.

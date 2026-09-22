@@ -15,7 +15,7 @@
  */
 
 /*
- * Code pages for the Sv39 fetch-translation test (Phase 3 M5).
+ * Code pages for the Sv39 fetch-translation test.
  *
  * Each page is 4 KiB-aligned and position-independent: it holds constants and
  * ecall only, and the page-crossing jump is a raw relative JAL. The driver can

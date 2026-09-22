@@ -39,14 +39,3 @@ extension API does not expose this inheritance. Apply/Restore refuse managed
 settings marked **Apply Setting to all Profiles**, and Restore refuses a backup
 copied from another profile storage location. Imported focus settings are the
 new profile's initial settings; Restore only undoes changes made by Apply.
-
-The template uses VS Code 1.106's profile format: its `settings` field contains
-a serialized settings resource, and `extensions` contains a serialized list.
-The format follows the upstream [settings resource](https://github.com/microsoft/vscode/blob/1.106.3/src/vs/workbench/services/userDataProfile/browser/settingsResource.ts)
-and [extensions resource](https://github.com/microsoft/vscode/blob/1.106.3/src/vs/workbench/services/userDataProfile/browser/extensionsResource.ts).
-
-The 0.2 workbench check exercised Apply, Zen, and Restore. Restore removed all
-11 added overrides and preserved the remaining settings. Importing this file
-through the public Profiles UI created a separate FROST Debug profile containing
-exactly the 11 intended settings and C/C++ 1.33.8. The original Default profile
-remained active; installing FROST into the new profile is still a separate step.

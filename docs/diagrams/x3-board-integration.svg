@@ -1,36 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1960" viewBox="0 0 1200 1960" role="img" aria-labelledby="title desc">
   <title id="title">X3 FPGA board integration</title>
   <desc id="desc">
-    The x3_frost FPGA top contains clock generation, a common
-    xilinx_frost_subsystem and a separate ddr_subsys block design. A 300 MHz
-    differential system reference feeds IBUFDS and an MMCM; two BUFGCE_DIV
-    buffers produce the CPU clock and its divide-by-four companion. With
-    CPU_CLK_DIV equal to one these are 300 and 75 MHz. The low-BRAM JTAG-AXI
-    loader, AXI-to-BRAM controller, startup and image-reset timers, and UART
-    run at the divided clock. The FROST core, runtime memory ports and cache
-    hierarchy run at the CPU clock. BSCAN USER3 and USER4 connect the FPGA
-    TAP to the DTM; the transport crosses from JTAG TCK to the CPU-clocked
-    debug module. The core reaches uncached low BRAM and the L1I/L1D/L2
-    cache hierarchy. Its 256-bit AXI bridge joins the separate burst-capable
-    DDR JTAG-AXI master at SmartConnect. SmartConnect converts clocks and
-    widths between the CPU, divide-by-four and independent DDR UI domains.
-    A dedicated 300 MHz differential reference drives the DDR4 controller,
-    whose memory AXI interface is 512 bits. The array is ECC-checked, so a
-    region writer inside x3_frost zeroes it after calibration and the
-    subsystem and the DDR JTAG master stay in reset until it finishes. DDR calibration status mem_ok
-    crosses through a two-flop synchronizer in x3_frost before releasing the
-    common subsystem reset. The DDR transport reset depends on MMCM lock,
-    and the DDR AXI reset is derived from its UI reset. The common subsystem
-    adds startup and software-image reset holds before FROST synchronizes
-    reset into its clock domains. External DDR4 chips expose a 1 GiB mapped
-    region to the CPU at 0x80000000. FROST's NIC reaches the network through
-    x3_nic_gty, a transceiver wrapper with no vendor reset IP: a 161.1328125
-    MHz MGTREFCLK0 on quad 231, GTY channel X0Y28, and a supervisor that owns
-    the transceiver's resets, lock retries and loopback. The channel drives
-    lane 1 of the card's DSFP28 cage over 10GBASE-R fiber. The N badge links
-    the NIC's MAC/PCS inside frost to that transceiver. Selected connections are drawn;
-    memory arrows follow requests, and responses and most clock/reset wires
-    are omitted. Boxes identify module boundaries, not clock-domain boundaries.
+    The X3 integrates a CPU/BRAM/debug subsystem, a DDR4 block design, and an
+    Ethernet GTY transceiver. The CPU runs at 300/N MHz and UART/loaders at
+    75/N MHz; DDR and Ethernet clocks are independent. SmartConnect merges CPU
+    and JTAG memory traffic across clock and width boundaries. DDR calibration
+    and an ECC-initialization write pass complete before CPU and DDR-loader
+    release. BSCAN shares the FPGA TAP with Vivado. Module boxes can span clock
+    domains; only selected connections are shown.
   </desc>
   <!--
     Self-contained SVG; editable text, shapes and paths, without external assets.
@@ -235,14 +212,14 @@
   <path d="M 754 1162 H 716 V 1310 H 702" class="ctl" marker-end="url(#control-arrow)"/>
   <rect x="52" y="1280" width="650" height="146" rx="14" class="control"/>
   <text x="76" y="1313" class="label">Board reset release</text>
-  <text x="76" y="1343" class="body">DDR mem_ok → 2-flop synchronizer at CPU clock</text>
-  <text x="76" y="1372" class="body">MMCM locked &amp; mem_ok_synced → subsystem i_rst_n</text>
+  <text x="76" y="1343" class="body">Synchronize DDR calibration; initialize region with ECC</text>
+  <text x="76" y="1372" class="body">Release CPU after lock, calibration, and x3_ddr_init done</text>
   <text x="76" y="1402" class="small">The common subsystem adds startup and software-image reset holds.</text>
   <text x="754" y="1296" class="small">DDR transport reset:</text>
-  <text x="754" y="1324" class="body">MMCM lock releases</text>
-  <text x="754" y="1350" class="body">DDR sys_reset, SmartConnect</text>
-  <text x="754" y="1376" class="body">and the DDR JTAG master.</text>
-  <path d="M 1094 1208 V 1710" class="memlink" marker-end="url(#memory-arrow)"/>
+  <text x="754" y="1324" class="body">MMCM lock: DDR transport</text>
+  <text x="754" y="1350" class="body">DDR JTAG additionally waits</text>
+  <text x="754" y="1376" class="body">for x3_ddr_init completion.</text>
+  <path d="M 1094 1208 V 1232 H 1156 V 1688 H 1094 V 1710" class="memlink" marker-end="url(#memory-arrow)"/>
   <text x="1078" y="1420" class="small" text-anchor="end">DDR4 pins · 72 physical bits</text>
 
   <text x="52" y="1492" class="section">NIC TRANSCEIVER / 10GBASE-R</text>

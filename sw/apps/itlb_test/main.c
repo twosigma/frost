@@ -15,7 +15,7 @@
  */
 
 /*
- * Sv39 fetch-translation directed test (Phase 3 M5, plan D15 itlb_test).
+ * Sv39 fetch-translation directed test (plan D15 itlb_test).
  *
  * The driver runs in M-mode, where fetch is untranslated. Each case sets MPP
  * and mrets to a virtual target in S- or U-mode, and ends in a trap back to

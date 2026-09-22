@@ -8,33 +8,15 @@ This document defines their numbering, the CSR protocol, and the software API.
 
 ## Build option
 
-The counters are a build option. `cpu_ooo`'s `PERF_COUNTERS` parameter (0 or
-1, plumbed from the board top through `frost` and `cpu_and_mem`, default 0)
-instantiates the aggregator, the wrapper's `tomasulo_perf_counters` and the
-CSR file's `mperf*` state. The 300 MHz production build leaves them out: they
-are about 24k cells beside the timing-critical core (post-opt on X3: 3.8k
-LUTs, 18.3k flops and 2.1k CARRY8 fewer without them). With
-`PERF_COUNTERS = 0` the five CSRs still decode (no new illegal-instruction
-trap; the three read-only ones trap on writes as always), all read zero,
-`mperfsel`/`mperfctl` ignore writes, and `tomasulo_profile_take_snapshot`
-records zero counters, so the software reports print "Profiling counters:
-absent" and zeros, with the cache section replaced by "Cache hierarchy: n/a
-(cache counters absent)". The event sources keep their registers at their owners;
-synthesis removes the unread ones (the cache and fetch-provider observers
-are marked keep and stay). `build.py --perf-counters` (the default for
-`--cpu-clock-div N` analysis builds; a synthesis-time option, resumed runs
-keep the checkpoint's netlist) and the cocotb entries that read the counters
-(`-GPERF_COUNTERS=1`: `csr_rmw_test`, `tomasulo_perf`, `ddr_mlp_test`,
-`coremark_profile`; `tomasulo_perf` and `coremark_profile` fail unless the report
-shows the counters)
-include them; `perf_off_test` covers the absent case in simulation and, as a
-hardware-regression stage, against the rated-clock production bitstream, and
-the formal task `bmc_perf_off` proves the CSR file's absent-case semantics. CoreMark's tick
-count differs between the two configurations (305096 without, 305088 with)
-because the start snapshot's counter loop runs before the timed window and
-leaves the predictors in a different state; the timed instructions are the
-same. The count is also sensitive to code layout, so any change to the shared
-software moves both references together.
+`PERF_COUNTERS=1` includes the aggregator, wrapper counters, and `mperf*`
+state. Use `build.py --perf-counters`; counters default off at full rate and
+on in divided-clock builds. Resumed builds keep the checkpoint's setting.
+
+With counters absent, all five CSRs read zero and writable ones ignore writes;
+writes to read-only CSRs still trap. Software reports zero counters and an
+absent cache section. `perf_off_test` and formal `bmc_perf_off` check this mode.
+Profiling targets explicitly enable counters. Snapshot code before a timed
+region can change predictor state, so compare runs with matched settings.
 
 ## CSR interface
 
@@ -84,23 +66,10 @@ same-cycle FP-flag forwarding are unchanged. The aggregator's original 64-bit
 output remains available; `PreselectCsrHalf` and the CSR file's `UsePerfCsrHalf`
 both default off for generic users.
 
-For each capture edge, let `D` be the original counter mux value and `A` the
-raw commit address. Immediately afterward, the old payload is `P = D`, the
-registered commit address is `Q = A`, and the new payload is
-`H = (A == mperfdatah ? D[63:32] : D[31:0])`. Thus `H` is exactly the half of
-`P` selected by `Q`. Reset sets both payloads to zero; the commit payload can
-still capture its raw address. A flush masks only the current commit valid,
-which remains outside this identity and suppresses both CSR read paths. No
-stability assumption on the counter selector, snapshot, or raw commit bus is
-needed. This is a local phase argument, not a whole-CPU formal proof.
-
-The timing motivation is the measured performance-data-register to CSR-read
-path: one v2 placement had a 2.028 ns first net and -0.469 ns clock skew, with
-only 0.236 ns total logic delay. Moving the half selection does not itself fix
-that physical distance. It also adds a half mux/address decode before the
-performance capture, whose incoming timing must be checked. Native mapping and
-any improvement remain unmeasured; the normal flow uses one placement per
-candidate.
+The half-width payload must capture the half selected by the raw address
+registered on the same edge. Flush gating remains on the CSR read, and reset
+clears both payloads. This is a local phase contract, not a whole-CPU proof;
+check incoming and outgoing timing when changing the capture boundary.
 
 Selecting an out-of-range index (130 or above) reads 0. The selector is 8
 bits wide, so 130 counters fit within its 0–255 index space.
@@ -121,10 +90,8 @@ The global index space is three concatenated blocks:
 
 `PerfWrapperBase = PerfTopCounterCount` is 42 and
 `PerfCacheBase = PerfTopCounterCount + PerfWrapperCounterCount` is 106.
-The cache counters were appended as a third block so that existing indices
-kept their meaning. The 42-counter top block, the 64-counter wrapper block,
-and their bases are compatibility invariants: append future families rather
-than inserting them.
+Counter indices and block bases are a software compatibility contract:
+append future families without renumbering existing counters.
 
 There is no global enum in `riscv_pkg`. Four places hold independent views of
 the numbering and must be audited in lockstep:
@@ -133,8 +100,7 @@ the numbering and must be audited in lockstep:
    (`PerfTopCounterCount`, `PerfWrapperCounterCount`,
    `PerfCacheCounterCount`, the bases, and the `Perf*` localparams)
 2. `hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv`
-   (`WrapperPerfCounterCount` + the wrapper-local `Perf*` localparams, both
-   unchanged by an appended cache block)
+   (`WrapperPerfCounterCount` + the wrapper-local `Perf*` localparams, the wrapper-local numbering)
 3. `sw/lib/include/tomasulo_profile.h`
    (`TOMASULO_PROFILE_COUNTER_COUNT` + the `tomasulo_profile_counter_idx` enum)
 4. `verif/cocotb_tests/cpu_ooo/perf/test_perf_counter_aggregator.py`
@@ -486,7 +452,7 @@ automatic object would carry a garbage value that later gets used as the
 sidecar address.
 
 `tomasulo_profile_take_snapshot()` writes `mperfctl` bit 0, records
-`rdcycle64()` / `rdinstret64()`, then reads the unchanged legacy indices
+`rdcycle64()` / `rdinstret64()`, then reads indices
 0–105 through `mperfsel` / `mperfdata` / `mperfdatah`.
 
 `tomasulo_profile_read_cache_pair()` drains the end/current and
@@ -495,9 +461,8 @@ only the counters `mperfcount` reports and zeroing the rest, so a build
 without the full bank cannot leave foreign values in them. The cache report
 prints "n/a" rather than differences of counters that do not exist. Call it
 after capturing the end snapshot and before taking another snapshot, since
-the next capture advances both cache banks. Deferring those extra CSR reads
-keeps the legacy pre-timer sequence byte-for-byte unchanged, so enabling the
-cache observers does not perturb the measured benchmark.
+the next capture advances both cache banks. Reading the cache banks after the end snapshot avoids extra CSR reads before
+the timed region.
 
 `tomasulo_profile_delta(&start, &stop, idx)` returns one counter's delta;
 the `TOMASULO_PERF_*` enum names the indices.

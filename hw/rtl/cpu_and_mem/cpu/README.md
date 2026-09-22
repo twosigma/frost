@@ -109,10 +109,8 @@ writes. One copy is addressed by the independently formed lower-priority
 commit/recovery transaction; the other is addressed directly by the captured
 early-mispredict PC. Neither read address depends on the early-active
 qualifier. Both saturating-counter results are computed in parallel, and early
-recovery selects only the final 2-bit write value. The original prioritized
-transaction remains the sole source of BTB writes, so the write edge,
-address, tag, target, metadata, replacement policy, and counter hysteresis are
-unchanged. The whole update transaction is registered once at the prediction
+recovery selects only the final 2-bit write value. The prioritized transaction owns BTB address, tag, target, metadata,
+replacement, and counter writes. The update transaction is registered at the prediction
 controller before it reaches the BTB, so training lands one cycle after the
 commit or recovery event that produced it; consecutive updates keep their
 relative order, and only a lookup made in that one cycle sees the pre-update
@@ -215,24 +213,43 @@ post-prediction buffer qualification on their final MUXF8 and consume a
 factored no-buffer served-last verdict on the earlier MUXF7. PC-low accepts the
 served last word unconditionally; PC-high accepts it only for a compressed
 high parcel. If the final buffer select is high, that earlier verdict is
-unobservable. This removes `prediction_holdoff` from the coverage size cone
-without changing acceptance.
+unobservable. This keeps `prediction_holdoff` out of the coverage-size cone.
 
 A no-lead prediction, whose branch packet has already emitted, never arms this
 pending state, even for a halfword target. It uses its held registered target
 handoff when fetch progress resumes.
 
+## Fetch and translation
+
+`cpu_and_mem` selects low BRAM or `fetch_provider`. IF supports variable latency
+with NOP bubbles and a one-deep owed request. Low BRAM's `[0, 64 KiB)` predecode
+overlay is one cycle; later windows repeat once. IF explicitly retargets owed
+BRAM requests when PC movement invalidates them. The cached provider uses two
+active and six victim lines, predecodes on fill, and detects unaccepted redirects.
+
+Both providers take recovery, emitted-prediction, resteer, and trap/xRET/fence
+epoch retargets. A leading slot-1 prediction is excluded while its branch
+response is still owed; slot 2 and no-lead slot 1 have already been accepted.
+A non-covering response is squashed and predictor-ineligible, then fetch is
+resteered to the owed word.
+
+`if_stage` uses `mmu/immu` to translate the virtual PC into two physical
+word addresses and fault flags. Bare/M-mode bypass is combinational. Sv39
+exposes only matching `{VA, privilege}` results; PC movement costs one
+translation bubble, potentially two at a page crossing, plus any ITLB miss.
+The shared read-only PTW supports Svade: software handles A/D-bit faults.
+
 ## Directory contents
 
-| Path                                | Status        | What it is |
-|-------------------------------------|---------------|------------|
-| [`cpu_ooo/`](cpu_ooo/)              | In use        | `cpu_ooo.sv` (top-level integration) and the OOO-core glue submodules extracted from the top level (see the table above). |
-| [`tomasulo/`](tomasulo/README.md)   | In use        | The OOO back-end. The wrapper and the larger modules (store/load queues, ROB) nest their extracted glue/datapath submodules; see its README and the per-module READMEs for everything inside. |
-| `if_stage/`, `pd_stage/`, `id_stage/` | In use      | Reused front-end stages, including BTB/direction/RAS prediction, PD BTB-miss redirects, and RVC handling. IF drives a stall-capable, variable-latency fetch seam (NOP bubbles plus a one-deep owed ask while unserved) so code can run from cached DDR as well as low BRAM. The low-BRAM source has a one-cycle `[0, 64 KiB)` metadata overlay and an exact one-repeat presenter above it; because that presenter has no PC-movement detector, IF explicitly retargets it when movement invalidates its owed request. When the cached tier is enabled, `fetch_provider` supplies a two-line L1I fetch buffer with predecode-on-fill for the cached region and detects ordinary unaccepted redirects from PC movement. Both providers take landed recovery, already-emitted-prediction, resteer, and trap/xRET/FENCE epoch retargets. A leading slot-1 prediction is excluded from those retargets so it cannot abandon the branch response still owed to `pc_reg`; slot 2 and no-lead slot 1 are included because their branch packet was already accepted. A valid response whose served window does not cover `pc_reg` is predictor-ineligible as well as squashed; fetch is then resteered to the owed word. `cpu_and_mem.sv`, one level up, selects the sources. The fetch PC is virtual: the instruction MMU (`mmu/immu`, instantiated in `if_stage`) resolves the registered selected VA into the window's two physical word addresses and fault flags. Bare/M-mode fetch is a combinational, no-bubble bypass. Sv39 exposes only a matching `{VA, privilege}`-tagged result, so each PC movement costs one translation bubble (possibly a second at a 4 KiB crossing) and an ITLB miss holds the front end longer. The seam carries the physical pair beside the virtual PC. |
-| `mmu/`                              | In use        | Sv39 translation: `dtlb` (the generic fully-associative superpage-aware TLB, instantiated as the 16-entry DTLB and the 8-entry ITLB), `dmmu` (the data-side translation stage inside the wrapper), `immu` (the Bare bypass and tagged selected-VA fetch result in `if_stage`), and `ptw` (the read-only walker, Svade). |
-| `wb_stage/`                         | In use        | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
-| `csr/`                              | In use        | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. The CSR file emits the registered TLB/PTW invalidate request, while the ROB independently owns conservative translation-class drain and pipeline recovery. |
-| `control/trap_unit.sv`               | In use        | M/S/U exception/interrupt handling with delegation (traps taken in M or S) used by `cpu_ooo.sv`. |
-| `ex_stage/`                         | In use        | `branch_jump_unit.sv` is instantiated inside `cpu_ooo/branch_recovery/branch_resolution.sv`. ALU/MUL/DIV/FPU are used via the FU shims in `tomasulo/fu_shims/`. |
+| Path | Purpose |
+|------|---------|
+| `cpu_ooo/` | Core integration, commit, recovery, memory routing, profiling |
+| [tomasulo/](tomasulo/README.md) | Rename, scheduling, queues, execution adapters, retirement |
+| `if_stage/`, `pd_stage/`, `id_stage/` | Prediction, alignment, predecode, dual decode |
+| `mmu/` | 8-entry ITLB, 16-entry DTLB, translation stages, shared PTW |
+| `wb_stage/` | Generic INT/FP architectural register files |
+| `csr/` | Privileged and FP CSRs; accesses execute at commit |
+| `control/trap_unit.sv` | M/S/U traps, delegation, debug entry |
+| `ex_stage/` | ALU, multiply/divide, FPU, branch execution |
 
-`cpu_ooo.f` is the authoritative filelist for what gets compiled.
+`cpu_ooo/cpu_ooo.f` is the authoritative CPU source list.

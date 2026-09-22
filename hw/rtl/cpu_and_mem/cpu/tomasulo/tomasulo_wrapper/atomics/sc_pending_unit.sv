@@ -67,7 +67,7 @@ module sc_pending_unit (
     input riscv_pkg::fu_complete_t i_store_misalign_fu_complete_reg,
     input riscv_pkg::rs_issue_t i_mem_rs_issue,
     input logic [riscv_pkg::XLEN-1:0] i_sq_effective_addr,
-    // Phase 3 M4: the reservation compare is in the PA domain, so under
+    // the reservation compare is in the PA domain, so under
     // active data translation the issue-time capture (a VA) is a placeholder.
     // The entry's address becomes usable only when the MMU's PA fills it one
     // cycle later, matched by tag, and sc_fire waits for that. When
@@ -79,7 +79,7 @@ module sc_pending_unit (
     input logic i_speculative_flush_all,
     input logic i_speculative_flush_en,
     input logic i_speculative_partial_flush,
-    // DMA coherence (Phase 4): hold SC fires while the head SC's line is
+    // DMA coherence: hold SC fires while the head SC's line is
     // admitted to a DMA write; expose the head SC's address for admission
     // and the successful fire that opens the SC window.
     input logic i_coh_sc_hold,

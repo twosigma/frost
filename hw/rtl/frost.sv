@@ -84,7 +84,7 @@ module frost #(
     // production build; 1 for analysis builds (build.py --perf-counters) and
     // the cocotb entries that read them (-GPERF_COUNTERS=1).
     parameter int unsigned PERF_COUNTERS = 0,
-    // RISC-V debug transport (Phase 3 M3): 1 = generic JTAG TAP on the
+    // RISC-V debug transport: 1 = generic JTAG TAP on the
     // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
     // bundle comes from the board's BSCANE2 primitives (i_dtm_bscan_*).
     parameter int unsigned DEBUG_JTAG_TAP = 1,
@@ -112,7 +112,7 @@ module frost #(
     // Optional: tie to 0 if not used
     input logic i_external_interrupt = 1'b0,
 
-    // RISC-V debug transport pins (Phase 3 M3, see DEBUG_JTAG_TAP). Boards
+    // RISC-V debug transport pins (see DEBUG_JTAG_TAP). Boards
     // leave the i_jtag_* pins idle and feed the BSCAN bundle instead.
     input  logic i_jtag_tck = 1'b0,
     input  logic i_jtag_tms = 1'b0,
@@ -163,7 +163,7 @@ module frost #(
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 
-    // NIC (Phase 4). The TX and RX MAC clocks, each with its presence level
+    // NIC. The TX and RX MAC clocks, each with its presence level
     // (asynchronous), so that a transceiver's independent clocks can drive
     // them; a build with the raw loopback (RAW_LOOPBACK = 1) drives one clock
     // on both. The defaults serve instantiations that omit the ports; a
@@ -342,7 +342,7 @@ module frost #(
       .o_fifo1_rd_en(mmio_fifo1_read_enable),
       // External interrupt (directly triggers machine external interrupt)
       .i_external_interrupt(i_external_interrupt),
-      // Debug transport (Phase 3 M3)
+      // Debug transport
       .i_jtag_tck,
       .i_jtag_tms,
       .i_jtag_tdi,

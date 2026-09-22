@@ -51,7 +51,7 @@ module cpu_ooo #(
     input logic i_rst,
     // Instruction memory interface. o_pc is the virtual fetch address (the
     // providers tag and match windows by it); the o_fetch_* results below are
-    // its physical side (Phase 3 M5, see if_stage / mmu/immu).
+    // its physical side (see if_stage / mmu/immu).
     output logic [XLEN-1:0] o_pc,
     output logic [31:0] o_fetch_pa0,  // PA of the window's word 0
     output logic [31:0] o_fetch_pa1,  // PA of the window's aligned successor word
@@ -116,7 +116,7 @@ module cpu_ooo #(
     output logic o_fence_i_sync_req,
     input logic i_fence_i_sync_done,
     output logic o_fence_i_flush,
-    // Page-table walker line port (Phase 3 M4): read-only master to the
+    // Page-table walker line port: read-only master to the
     // hierarchy's wup port (cpu_and_mem wires it through). 2-bit local ids
     // per the fabric's id tree; the walker issues one walk at a time.
     output logic o_walk_line_req_valid,
@@ -161,7 +161,7 @@ module cpu_ooo #(
     output logic o_cached_read_ready,
     input logic i_cached_write_done,
     input logic i_cached_write_inflight,
-    // DMA coherence handshake (Phase 4): the cache hierarchy's sequencer to
+    // DMA coherence handshake: the cache hierarchy's sequencer to
     // the load queue's coherence port inside tomasulo_wrapper.
     input logic i_coh_admit_valid,
     input logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot,
@@ -197,7 +197,7 @@ module cpu_ooo #(
     // Debug
     input logic i_disable_branch_prediction,
 
-    // Debug module seam (Phase 3 M3, plan D14). All core-clock levels/pulses.
+    // Debug module seam. All core-clock levels/pulses.
     input  logic        i_dbg_haltreq,          // dmcontrol.haltreq
     input  logic        i_dbg_go,               // redirect a parked hart to i_dbg_go_addr
     input  logic [31:0] i_dbg_go_addr,
@@ -334,7 +334,7 @@ module cpu_ooo #(
   // ===========================================================================
   // Inter-stage signals
   // ===========================================================================
-  // Phase 3 M5: live fetch mode/privilege state and the instruction MMU's
+  // live fetch mode/privilege state and the instruction MMU's
   // walker seam, muxed below onto the shared ptw with the data MMU's (declared
   // beside the CSR wiring further down).
   logic csr_fetch_translation_active, csr_fetch_priv_u;
@@ -2646,7 +2646,7 @@ module cpu_ooo #(
   // for satp, change-sensitive for mstatus/sstatus). It invalidates the
   // DTLB/walker; the ROB serializer independently owns pipeline recovery.
   logic csr_translation_flush_req;
-  // Phase 3 M4: the registered quasi-static translation-state bundle and
+  // the registered quasi-static translation-state bundle and
   // the walker seam between the wrapper's data MMU and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
   logic [43:0] csr_satp_root_ppn;
@@ -2731,12 +2731,12 @@ module cpu_ooo #(
     unique case (rob_trap_cause)
       // Breakpoint: tval = the breakpoint instruction's own (virtual) address.
       riscv_pkg::ExcBreakpoint[$bits(rob_trap_cause)-1:0]: csr_trap_value = rob_trap_pc;
-      // Instruction access/page faults (Phase 3 M2/M5): tval = the virtual
+      // Instruction access/page faults: tval = the virtual
       // address of the faulting portion of the instruction (the PC, or PC + 2
       // for a page-straddling instruction whose second halfword faulted),
       // parked in the value slot by the INT ALU shim.
-      // Misaligned and PMA access faults on data (Phase 3 M2), and data
-      // page faults (Phase 3 M4): tval = the faulting data virtual
+      // Misaligned and PMA access faults on data, and data
+      // page faults: tval = the faulting data virtual
       // address, parked in the entry's value slot by the LQ bypass or the
       // store fault strobe.
       riscv_pkg::ExcInstrAccessFault[$bits(
@@ -2869,7 +2869,7 @@ module cpu_ooo #(
   );
 
   // ===========================================================================
-  // Page-table walker (Phase 3 M4/M5): one ptw serves the wrapper's data
+  // Page-table walker: one ptw serves the wrapper's data
   // MMU and if_stage's instruction MMU. The data side wins the requester
   // mux (plan D6); the owner of the walk in flight is remembered so each
   // response reaches exactly its requester (the vpn echo alone would let

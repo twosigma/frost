@@ -591,7 +591,7 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         base_value = (0x1234_5678 << 32) | low_base
         immediate = 0x34 + target_lane * 0x10
         store_data = 0xCAFE_1000 + target_lane
-        # Phase 3 M2: the early store-address adders carry the full width.
+        # the early store-address adders carry the full width.
         # The producer-side canonical_paddr masking was retired; out-of-map
         # addresses fault instead of aliasing.
         expected_addr = (base_value + immediate) & MASK_XLEN

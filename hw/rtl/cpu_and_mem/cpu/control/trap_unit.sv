@@ -15,8 +15,8 @@
  */
 
 /*
- * Privileged trap handling for M/S/U-mode sources with delegation (Phase 3,
- * plan D2). Traps enter M through mtvec, or S through stvec when delegated
+ * Privileged trap handling for M/S/U-mode sources with delegation. Traps
+ * enter M through mtvec, or S through stvec when delegated
  * (medeleg[cause] for exceptions from priv < M; mideleg[i] retargets the
  * supervisor interrupt classes to S). Interrupt-take gating covers
  * committed-store drain, irrevocable device reads, and AMOs that own the ROB
@@ -45,7 +45,7 @@
  *   MODE=1 (Vectored): Interrupts → BASE + 4*cause_code
  *                      Exceptions → BASE
  *
- * Debug Mode (RISC-V Debug Spec 0.13.2, Phase 3 M3) is a third take class,
+ * Debug Mode (RISC-V Debug Spec 0.13.2) is a third take class,
  * D, with the same latch/arm/shield/drain shape as M and S:
  *   halt sources (dmcontrol.haltreq, the single-step completion request)
  *     are eligible only outside Debug Mode and take precedence over both
@@ -149,7 +149,7 @@ module trap_unit #(
     // WFI wait request
     input logic i_wfi_start,
 
-    // Debug Mode (Phase 3 M3). All are registered core-side state or levels
+    // Debug Mode. All are registered core-side state or levels
     // held until acknowledged by the take they request.
     input logic            i_debug_mode,
     input logic            i_dbg_haltreq,     // dmcontrol.haltreq (level)
@@ -173,7 +173,7 @@ module trap_unit #(
     output logic [XLEN-1:0] o_trap_cause,  // Cause to save to mcause/scause
     output logic [XLEN-1:0] o_trap_value,  // Value to save to mtval/stval
 
-    // Debug Mode take qualifiers (Phase 3 M3), valid with o_trap_taken:
+    // Debug Mode take qualifiers, valid with o_trap_taken:
     //   o_trap_to_d:   Debug Mode entry (csr_file saves dpc/dcsr, priv <- M)
     //   o_trap_no_csr: a Debug Mode redirect with no CSR side effect (go, or
     //                  an exception re-parking the hart); cpu_ooo withholds
@@ -539,15 +539,10 @@ module trap_unit #(
     else s_int_cause_comb = '0;
   end
 
-  // Held-cause source-pending recheck: the registered cause may only be held
-  // while its own source is still pending (and still targeting this class).
-  // The class latch is held by an aggregate source-live OR, so without this
-  // per-cause term a latched cause whose source dropped could ride a
-  // different still-pending source through a globally-disabled window and be
-  // taken later as a spurious stale cause (independent-review finding,
-  // 2026-08-24). With it, a dropped source zeroes the held cause; the comb
-  // priority re-resolves to the live source as soon as the class is
-  // globally enabled again, so the held-tick delivery shape is preserved.
+  // A held cause remains valid only while its own source is pending and
+  // still targets this class. The aggregate source-live latch alone cannot
+  // protect against a different source keeping a stale cause alive. Clear
+  // the dropped cause so priority resolves to a live source on re-enable.
   logic m_int_cause_source_pending;
   always_comb begin
     unique case (m_int_cause)
@@ -630,9 +625,8 @@ module trap_unit #(
   // which lands in the registered commit hold, so on the take cycle no new
   // ROB commit can fire, and any store-like commit from the arming cycle has
   // already pessimistically cleared the SQ's registered committed-empty
-  // status. This removes the need for the same-cycle raw commit guards
-  // (formerly sq_committed_empty_for_trap in cpu_ooo) on the take_trap cone,
-  // at the cost of one extra cycle of interrupt entry latency.
+  // status. The take_trap cone therefore needs no same-cycle raw commit
+  // guards; interrupt entry pays one arming cycle.
   // Exceptions need no arming: an exception at the ROB head already blocks
   // every commit (commit_ready_early), so no store commit can race the take.
   logic m_take_armed_q, s_take_armed_q;
@@ -796,7 +790,7 @@ module trap_unit #(
       trap_target_selected = '0;
     end
 
-    // Phase 3 M2: the redirect flows full-width. A wild xtvec/xepc reaches
+    // the redirect flows full-width. A wild xtvec/xepc reaches
     // the PC unchanged and raises a precise instruction access fault at
     // fetch (a wild trap vector then loops on that fault, which is the
     // architecturally correct outcome of the software bug).
@@ -932,7 +926,7 @@ module trap_unit #(
       p_mret_waits_drain : assert (!o_mret_taken || i_sq_committed_empty);
       p_sret_waits_drain : assert (!o_sret_taken || i_sq_committed_empty);
 
-      // xRET targets are exactly xepc (Phase 3 M2: full-width, unmasked).
+      // xRET targets are exactly xepc (full-width, unmasked).
       p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
       p_sret_target : assert (!o_sret_taken || (o_trap_target == i_sepc));
 

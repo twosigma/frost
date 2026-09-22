@@ -12,46 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Binary encoders for Frost's supported RISC-V instructions.
+"""RISC-V instruction encoders and mnemonic-to-evaluator tables.
 
-Supported Extensions
---------------------
-- RV64I: Base integer instruction set
-- M: Integer multiply/divide
-- A: Atomic memory operations (LR.W, SC.W, AMO*)
-- F: Single-precision floating point (fadd.s, fmul.s, fmadd.s, flw/fsw, fclass)
-- D: Double-precision floating point (fadd.d, fsqrt.d, fld/fsd, fcvt.s.d/fcvt.d.s)
-- B: Bit manipulation (Zba + Zbb + Zbs)
-- C: Compressed 16-bit instructions
-- Zicsr: CSR access instructions
-- Zicntr: Base counters (cycle, time, instret)
-- Zba: Address generation (sh1add, sh2add, sh3add)
-- Zbb: Basic bit manipulation (clz, ctz, cpop, etc.)
-- Zbs: Single-bit operations (bset, bclr, binv, bext)
-- Zbkb: Crypto bit manipulation (pack, packh, brev8, packw)
-- Zicond: Conditional zero (czero.eqz, czero.nez)
-
-Modules
--------
-instruction_encode
-    Encoders for 32-bit instruction formats (R, I, S, B, U, J types)
-
-compressed_encode
-    Encoders for 16-bit compressed instruction formats
-
-op_tables
-    Mapping tables from instruction mnemonics to encoders and evaluators.
-    This is the primary interface for instruction generation.
-
-Encode by mnemonic::
-
-    from encoders.op_tables import R_ALU, I_ALU, LOADS, STORES
-
-    enc_add, eval_add = R_ALU["add"]
-    binary = enc_add(rd=1, rs1=2, rs2=3)  # add x1, x2, x3
-
-    enc_lw, eval_lw = LOADS["lw"]
-    binary = enc_lw(rd=5, rs1=10, imm=16)  # lw x5, 16(x10)
+``instruction_encode`` handles 32-bit formats; ``compressed_encode`` handles
+16-bit formats. ``op_tables`` defines the subset used by the Python generator.
 """
 
 from encoders.op_tables import (
