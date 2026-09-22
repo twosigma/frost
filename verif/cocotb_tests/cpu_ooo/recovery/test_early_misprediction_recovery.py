@@ -20,7 +20,14 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
-from config import FLEN, INSTR_OP_WIDTH, XLEN
+from config import XLEN
+from cocotb_tests.cpu_structs import (
+    BRANCH_UPDATE_FIELDS,
+    RS_ISSUE_FIELDS,
+)
+from utils.packed_structs import (
+    pack_struct as _pack_struct,
+)
 
 
 CLOCK_PERIOD_NS = 10
@@ -29,62 +36,6 @@ CHECKPOINT_ID_WIDTH = 3
 MEM_SIZE_WIDTH = 2
 
 OP_BEQ = 23
-
-BRANCH_UPDATE_FIELDS = [
-    ("valid", 1),
-    ("tag", ROB_TAG_WIDTH),
-    ("taken", 1),
-    ("target", XLEN),
-    ("mispredicted", 1),
-]
-
-RS_ISSUE_FIELDS = [
-    ("valid", 1),
-    ("rob_tag", ROB_TAG_WIDTH),
-    ("op", INSTR_OP_WIDTH),
-    ("src1_value", FLEN),
-    ("src2_value", FLEN),
-    ("src3_value", FLEN),
-    ("imm", XLEN),
-    ("use_imm", 1),
-    ("jalr_imm", 12),
-    ("rm", 3),
-    ("predicted_taken", 1),
-    ("predicted_target", XLEN),
-    ("predicted_target_ok", 1),
-    ("is_compressed", 1),
-    ("is_fp_mem", 1),
-    ("mem_needs_lq", 1),
-    ("mem_needs_sq", 1),
-    ("mem_size", MEM_SIZE_WIDTH),
-    ("mem_signed", 1),
-    ("csr_addr", 12),
-    ("csr_imm", 5),
-    ("pc", XLEN),
-    ("link_addr", XLEN),
-    ("has_checkpoint", 1),
-    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("is_branch_class", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("branch_op", 3),
-]
-
-
-def _pack_struct(
-    fields: list[tuple[str, int]],
-    values: Mapping[str, int | bool],
-) -> int:
-    """Pack a SystemVerilog packed struct from declaration-ordered fields."""
-    packed = 0
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = int(values.get(name, 0))
-        packed |= (raw & ((1 << width) - 1)) << offset
-    return packed
 
 
 def _pack_branch_update(fields: Mapping[str, int | bool]) -> int:

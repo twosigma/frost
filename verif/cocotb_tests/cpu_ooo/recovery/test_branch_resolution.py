@@ -19,7 +19,15 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
-from config import FLEN, INSTR_OP_WIDTH, XLEN
+from cocotb_tests.cpu_structs import (
+    MISPREDICT_COMMIT_FIELDS,
+    BRANCH_UPDATE_FIELDS,
+    RS_ISSUE_FIELDS,
+)
+from utils.packed_structs import (
+    pack_struct as _pack_struct,
+    unpack_struct as _unpack_struct,
+)
 
 
 ROB_TAG_WIDTH = 5
@@ -32,39 +40,6 @@ OP_JALR = 22
 OP_BEQ = 23
 OP_BNE = 24
 
-RS_ISSUE_FIELDS = [
-    ("valid", 1),
-    ("rob_tag", ROB_TAG_WIDTH),
-    ("op", INSTR_OP_WIDTH),
-    ("src1_value", FLEN),
-    ("src2_value", FLEN),
-    ("src3_value", FLEN),
-    ("imm", XLEN),
-    ("use_imm", 1),
-    ("jalr_imm", 12),
-    ("rm", 3),
-    ("predicted_taken", 1),
-    ("predicted_target", XLEN),
-    ("predicted_target_ok", 1),
-    ("is_compressed", 1),
-    ("is_fp_mem", 1),
-    ("mem_needs_lq", 1),
-    ("mem_needs_sq", 1),
-    ("mem_size", MEM_SIZE_WIDTH),
-    ("mem_signed", 1),
-    ("csr_addr", 12),
-    ("csr_imm", 5),
-    ("pc", XLEN),
-    ("link_addr", XLEN),
-    ("has_checkpoint", 1),
-    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("is_branch_class", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("branch_op", 3),
-]
 
 # branch_taken_op_e encodings (riscv_pkg)
 BR_OP = {
@@ -107,55 +82,6 @@ _BRANCH_CLASS_BY_OP = {
         "branch_op": BR_OP["BRNE"],
     },
 }
-
-BRANCH_UPDATE_FIELDS = [
-    ("valid", 1),
-    ("tag", ROB_TAG_WIDTH),
-    ("taken", 1),
-    ("target", XLEN),
-    ("mispredicted", 1),
-]
-
-MISPREDICT_COMMIT_FIELDS = [
-    ("tag", ROB_TAG_WIDTH),
-    ("has_checkpoint", 1),
-    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
-    ("redirect_pc", XLEN),
-    ("pc", XLEN),
-    ("branch_target", XLEN),
-    ("branch_taken", 1),
-    ("is_branch", 1),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("is_compressed", 1),
-]
-
-
-def _pack_struct(
-    fields: list[tuple[str, int]],
-    values: Mapping[str, int | bool],
-) -> int:
-    """Pack a SystemVerilog packed struct from declaration-ordered fields."""
-    packed = 0
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = int(values.get(name, 0))
-        packed |= (raw & ((1 << width) - 1)) << offset
-    return packed
-
-
-def _unpack_struct(fields: list[tuple[str, int]], packed: int) -> dict[str, Any]:
-    """Unpack a SystemVerilog packed struct into named Python values."""
-    result: dict[str, Any] = {}
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = (packed >> offset) & ((1 << width) - 1)
-        result[name] = bool(raw) if width == 1 else raw
-    return result
 
 
 def _pack_rs_issue(fields: Mapping[str, int | bool]) -> int:

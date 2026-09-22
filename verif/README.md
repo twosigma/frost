@@ -31,7 +31,7 @@ references.
 | `models/` | Integer, branch, floating-point, and memory models |
 | `encoders/` | Instruction encoders and operation tables |
 | `monitors/` | Register and PC monitors for the CPU reference harness |
-| `utils/` | Alignment, data types, logging, assertions |
+| `utils/` | Alignment, data types, struct packing, logging, assertions |
 | `config.py` | Constants (`XLEN=64`) and configurable DUT signal paths |
 | `verification_types.py`, `exceptions.py` | Shared types and exceptions |
 
@@ -90,4 +90,6 @@ own driving and checks.
 - Override `DUTSignalPaths` for hierarchy differences instead of hardcoding
   paths in test logic.
 - Keep shared constants in `config.py` and per-run behavior in `TestConfig`.
+- Reuse CPU port layouts from `cocotb_tests/cpu_structs.py` and serialization
+  helpers from `utils/packed_structs.py`; keep stimulus defaults in each bench.
 - Register new benches using the [contribution guide](../CONTRIBUTING.md#adding-new-components).

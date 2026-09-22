@@ -22,66 +22,20 @@ from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import COMMIT_FIELDS
-from config import XLEN
+from cocotb_tests.cpu_structs import (
+    MISPREDICT_COMMIT_FIELDS,
+    CORRECT_BRANCH_COMMIT_FIELDS,
+)
+from utils.packed_structs import (
+    pack_struct as _pack_struct,
+    unpack_struct as _unpack_struct,
+)
 
 
 CLOCK_PERIOD_NS = 10
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 NUM_CHECKPOINTS = 8
-
-MISPREDICT_COMMIT_FIELDS = [
-    ("tag", ROB_TAG_WIDTH),
-    ("has_checkpoint", 1),
-    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
-    ("redirect_pc", XLEN),
-    ("pc", XLEN),
-    ("branch_target", XLEN),
-    ("branch_taken", 1),
-    ("is_branch", 1),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("is_compressed", 1),
-]
-
-CORRECT_BRANCH_COMMIT_FIELDS = [
-    ("tag", ROB_TAG_WIDTH),
-    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
-    ("pc", XLEN),
-    ("branch_target", XLEN),
-    ("branch_taken", 1),
-    ("is_branch", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("is_compressed", 1),
-]
-
-
-def _pack_struct(
-    fields: list[tuple[str, int]],
-    values: Mapping[str, int | bool],
-) -> int:
-    """Pack a SystemVerilog packed struct from declaration-ordered fields."""
-    packed = 0
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = int(values.get(name, 0))
-        packed |= (raw & ((1 << width) - 1)) << offset
-    return packed
-
-
-def _unpack_struct(fields: list[tuple[str, int]], packed: int) -> dict[str, Any]:
-    """Unpack a SystemVerilog packed struct into named Python values."""
-    result: dict[str, Any] = {}
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = (packed >> offset) & ((1 << width) - 1)
-        result[name] = bool(raw) if width == 1 else raw
-    return result
 
 
 def _pack_commit(fields: Mapping[str, int | bool]) -> int:

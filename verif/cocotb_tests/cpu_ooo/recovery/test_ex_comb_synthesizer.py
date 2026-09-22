@@ -20,82 +20,21 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 from config import XLEN
+from cocotb_tests.cpu_structs import (
+    FROM_EX_FIELDS,
+    MISPREDICT_COMMIT_FIELDS,
+    CORRECT_BRANCH_COMMIT_FIELDS,
+)
+from utils.packed_structs import (
+    pack_struct as _pack_struct,
+    unpack_struct as _unpack_struct,
+)
 
 
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3
 MASK32 = (1 << XLEN) - 1
-
-FROM_EX_FIELDS = [
-    ("branch_taken", 1),
-    ("branch_target_address", XLEN),
-    ("btb_update", 1),
-    ("btb_update_pc", XLEN),
-    ("btb_update_target", XLEN),
-    ("btb_update_taken", 1),
-    ("btb_update_compressed", 1),
-    ("btb_update_requires_pc_reg_handoff", 1),
-    ("ras_misprediction", 1),
-    ("ras_restore_tos", RAS_PTR_BITS),
-    ("ras_restore_valid_count", RAS_PTR_BITS + 1),
-    ("ras_pop_after_restore", 1),
-    ("ras_push_after_restore", 1),
-    ("ras_push_address_after_restore", XLEN),
-]
-
-MISPREDICT_COMMIT_FIELDS = [
-    ("tag", ROB_TAG_WIDTH),
-    ("has_checkpoint", 1),
-    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
-    ("redirect_pc", XLEN),
-    ("pc", XLEN),
-    ("branch_target", XLEN),
-    ("branch_taken", 1),
-    ("is_branch", 1),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("is_compressed", 1),
-]
-
-CORRECT_BRANCH_COMMIT_FIELDS = [
-    ("tag", ROB_TAG_WIDTH),
-    ("checkpoint_id", CHECKPOINT_ID_WIDTH),
-    ("pc", XLEN),
-    ("branch_target", XLEN),
-    ("branch_taken", 1),
-    ("is_branch", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("is_compressed", 1),
-]
-
-
-def _pack_struct(
-    fields: list[tuple[str, int]],
-    values: Mapping[str, int | bool],
-) -> int:
-    """Pack a SystemVerilog packed struct from declaration-ordered fields."""
-    packed = 0
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = int(values.get(name, 0))
-        packed |= (raw & ((1 << width) - 1)) << offset
-    return packed
-
-
-def _unpack_struct(fields: list[tuple[str, int]], packed: int) -> dict[str, Any]:
-    """Unpack a SystemVerilog packed struct into named Python values."""
-    result: dict[str, Any] = {}
-    offset = sum(width for _, width in fields)
-    for name, width in fields:
-        offset -= width
-        raw = (packed >> offset) & ((1 << width) - 1)
-        result[name] = bool(raw) if width == 1 else raw
-    return result
 
 
 def _pack_mispredict_commit(fields: Mapping[str, int | bool]) -> int:

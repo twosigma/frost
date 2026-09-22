@@ -299,6 +299,165 @@ module lq_coherence_port #(
   end
 `endif
 
+`ifdef COHERENCE_OBSERVATION_PROOF
+  // Track one arbitrary ROB tag from input history. No LQ slot ownership is
+  // needed: an observation stays live until this port sees retirement or a
+  // flush. This is a port contract, not a proof of the producing LQ/ROB.
+  (* anyconst *) logic [TagWidth-1:0] f_observation_tag;
+  logic f_observation_past_valid = 1'b0;
+  logic f_observed_q, f_accepted_q, f_had_observation_q, f_observe_previous_q;
+  logic [LineBits-1:0] f_latest_line_q, f_previous_line_q;
+  logic f_expected_replay_q;
+  wire f_observe = i_observe_valid && i_observe_rob_tag == f_observation_tag;
+  wire f_commit_1 = i_commit_valid && i_commit_tag == f_observation_tag;
+  wire f_commit_2 = i_commit_valid_2 && i_commit_tag_2 == f_observation_tag;
+  wire f_commit = f_commit_1 || f_commit_2;
+  // Independently order the two segments of the circular ROB: tags below
+  // head follow tags at or above head; within a segment numeric order holds.
+  wire f_younger = ((f_observation_tag < i_head_tag) == (i_flush_tag < i_head_tag)) ?
+      (f_observation_tag > i_flush_tag) : (f_observation_tag < i_head_tag);
+  wire f_kill = i_flush_all || (i_flush_en && f_younger);
+  wire f_accept = f_observe && !f_kill;
+  wire f_pending = obs_pend_valid_q && obs_pend_tag_q == f_observation_tag;
+  // A first observation exists only in the pipeline for one cycle. Later
+  // observations may overlap an older table value; even different lines are
+  // allowed here, so the proof does not assume one observation per load.
+  wire f_table_expected = f_observed_q && (!f_accepted_q || f_had_observation_q);
+  wire [LineBits-1:0] f_table_line = f_accepted_q ? f_previous_line_q : f_latest_line_q;
+  wire f_replay_expected = (inval_phase_q == 2'd2) &&
+      ((f_accepted_q && f_latest_line_q == inval_line_q) ||
+       (f_table_expected && f_table_line == inval_line_q));
+
+  always_ff @(posedge i_clk) begin
+    f_observation_past_valid <= 1'b1;
+    if (!f_observation_past_valid) assume (!i_rst_n);
+`ifndef COHERENCE_OBSERVATION_UNRESTRICTED
+    if (i_rst_n && f_observation_past_valid) begin
+      // A load observes before completion, CDB acceptance and ROB retirement;
+      // this port receives registered commit lanes. Proving that integration
+      // timing is a separate obligation. Use input history, not DUT validity,
+      // to exclude retirement overlapping the current or previous observation.
+      if (f_commit) assume (!f_observe && !f_observe_previous_q);
+    end
+`endif
+
+    if (!i_rst_n) begin
+      f_observed_q <= 1'b0;
+      f_accepted_q <= 1'b0;
+      f_had_observation_q <= 1'b0;
+      f_observe_previous_q <= 1'b0;
+      f_expected_replay_q <= 1'b0;
+    end else begin
+      f_observe_previous_q <= f_observe;
+      f_accepted_q <= f_accept;
+      if (f_kill || f_commit) begin
+        f_observed_q <= 1'b0;
+        f_had_observation_q <= 1'b0;
+      end else if (f_observe) begin
+        f_observed_q <= 1'b1;
+        f_had_observation_q <= f_observed_q;
+      end
+      if (f_accept) begin
+        f_previous_line_q <= f_latest_line_q;
+        f_latest_line_q   <= line_of(i_observe_addr);
+      end
+      f_expected_replay_q <= f_replay_expected;
+    end
+
+    if (f_observation_past_valid) begin
+      assert (f_pending == f_accepted_q);
+      assert (!f_accepted_q || f_observe_previous_q);
+      if (f_pending) assert (obs_pend_line_q == f_latest_line_q);
+`ifndef COHERENCE_OBSERVATION_UNRESTRICTED
+      assert (obs_valid_q[f_observation_tag] == f_table_expected);
+      assert ((obs_valid_q[f_observation_tag] || f_pending) == f_observed_q);
+      if (obs_valid_q[f_observation_tag]) assert (obs_line_q[f_observation_tag] == f_table_line);
+      assert (o_replay_set_mask[f_observation_tag] == f_expected_replay_q);
+      if (o_replay_set_mask[f_observation_tag])
+        assert ($past(i_rst_n && f_observed_q && inval_phase_q == 2'd2));
+`endif
+      // Strengthen induction across the actual invalidation pipeline. The
+      // observation proof uses the captured line, not the optimized compares.
+      if (inval_phase_q == 2'd2 || inval_phase_q == 2'd3) begin
+        for (int group_index = 0; group_index < ReplayCompareGroups; group_index++)
+        assert (inval_compare_line_q[group_index] == inval_line_q);
+      end
+      // These checks also run with the producer assumption disabled. Pending
+      // writes take priority over commit cleanup, but never over a flush kill.
+      if (!$past(i_rst_n) || $past(f_kill) || $past(f_commit && !f_observe && !f_accepted_q)) begin
+        assert (!f_pending);
+        assert (!obs_valid_q[f_observation_tag]);
+      end
+      if ($past(i_rst_n && f_accepted_q && !f_kill)) begin
+        assert (obs_valid_q[f_observation_tag]);
+        assert (obs_line_q[f_observation_tag] == $past(f_latest_line_q));
+      end
+    end
+  end
+
+  // Reachability checks exercise cleanup, wraparound and re-observation of a
+  // reused tag. They do not assert that the DMA or ROB environment progresses.
+  logic [2:0] f_quiet_cycles_q;
+  logic f_released_q, f_reused_q, f_released_by_commit_q, f_inval_admitted_q;
+  logic [LineBits-1:0] f_released_line_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      f_quiet_cycles_q <= '0;
+      f_released_q <= 1'b0;
+      f_reused_q <= 1'b0;
+      f_released_by_commit_q <= 1'b0;
+      f_inval_admitted_q <= 1'b0;
+    end else begin
+      if (inval_phase_q == 2'd0 && i_inval_valid)
+        f_inval_admitted_q <= (int'(i_inval_slot) < int'(NUM_LOCK)) && adm_valid_q[i_inval_slot];
+      if (!f_observed_q || f_observe || f_kill || f_commit) f_quiet_cycles_q <= '0;
+      else if (!(&f_quiet_cycles_q)) f_quiet_cycles_q <= f_quiet_cycles_q + 1'b1;
+      if (f_observed_q && (f_kill || f_commit)) begin
+        f_released_q <= 1'b1;
+        f_released_line_q <= f_latest_line_q;
+        f_released_by_commit_q <= f_commit && !f_kill;
+        f_reused_q <= 1'b0;
+      end
+      if (f_released_q && f_accept && line_of(i_observe_addr) != f_released_line_q)
+        f_reused_q <= 1'b1;
+    end
+    if (f_observation_past_valid && i_rst_n) begin
+      cover (f_quiet_cycles_q >= 3'd4 && obs_valid_q[f_observation_tag]);
+      cover (f_observed_q && f_commit_1);
+      cover (f_observed_q && f_commit_2 && i_commit_valid &&
+          i_commit_tag == TagWidth'(f_observation_tag - 1'b1));
+      cover (f_observed_q && f_commit && i_observe_valid && !f_observe);
+      cover ($past(i_rst_n && f_pending && i_flush_all) && !f_observed_q);
+      cover ($past(
+          i_rst_n && f_pending && i_flush_en && !i_flush_all &&
+          f_observation_tag < i_head_tag && i_flush_tag >= i_head_tag
+      ) && !f_observed_q);
+      cover ($past(i_rst_n && f_observe && i_flush_all) && !f_pending);
+      cover ($past(i_rst_n && f_observe && i_flush_en && !i_flush_all && f_younger) && !f_pending);
+      cover ($past(
+          i_rst_n && f_accept && i_flush_en && f_observation_tag == i_flush_tag
+      ) && f_pending);
+      cover ($past(
+          i_rst_n && f_accept && i_flush_en && f_observation_tag != i_flush_tag
+      ) && f_pending);
+      cover (f_reused_q && obs_valid_q[f_observation_tag] && !f_pending &&
+          obs_line_q[f_observation_tag] != f_released_line_q && f_released_by_commit_q);
+      cover (f_reused_q && obs_valid_q[f_observation_tag] && !f_pending &&
+          obs_line_q[f_observation_tag] != f_released_line_q && !f_released_by_commit_q);
+      cover (f_inval_admitted_q && o_replay_set_mask[f_observation_tag] && $past(
+          f_pending && !obs_valid_q[f_observation_tag]
+      ));
+      cover (f_inval_admitted_q && o_replay_set_mask[f_observation_tag] && $past(!f_pending));
+      cover (f_inval_admitted_q && o_replay_set_mask[f_observation_tag] && !f_observed_q);
+      cover (f_inval_admitted_q && o_replay_set_mask[f_observation_tag] && $past(
+          i_rst_n && f_pending && obs_valid_q[f_observation_tag] &&
+          obs_pend_line_q != obs_line_q[f_observation_tag] &&
+          obs_line_q[f_observation_tag] == inval_line_q
+      ));
+    end
+  end
+`endif
+
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin

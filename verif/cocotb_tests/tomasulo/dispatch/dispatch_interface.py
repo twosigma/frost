@@ -21,9 +21,13 @@ and unpacks their fields.
 from typing import Any
 
 from cocotb.triggers import RisingEdge, FallingEdge
-from config import FLEN, INSTR_OP_WIDTH, STORE_OP_WIDTH, XLEN
+from config import FLEN, INSTR_OP_WIDTH, XLEN
 
 from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+from cocotb_tests.cpu_structs import (
+    ID_TO_EX_FIELDS as FROM_ID_TO_EX_FIELDS,
+    ROB_ALLOC_REQ_FIELDS as ROB_ALLOC_REQ_FIELDS,
+)
 
 # =============================================================================
 # Width constants from riscv_pkg
@@ -50,8 +54,6 @@ MEM_SIZE_WIDTH = 2
 
 # branch_taken_op_e: 3 bits
 BRANCH_OP_WIDTH = 3
-
-# store_op_e: STORE_OP_WIDTH comes from config (3 bits since M2's STD)
 
 # instr_t: 32 bits packed struct
 INSTR_WIDTH = 32
@@ -270,103 +272,12 @@ FMV_D_X = _INSTR_OPS["FMV_D_X"]
 
 
 # =============================================================================
-# from_id_to_ex_t field table
+# from_id_to_ex_t field offsets
 # =============================================================================
 # (field_name, bit_width) in declaration order. SystemVerilog packed structs
 # place the first-declared field at the highest bit positions, so offsets are
 # computed from the LSB and the last field sits at offset 0.
 
-FROM_ID_TO_EX_FIELDS = [
-    ("program_counter", XLEN),
-    ("immediate_i_type", XLEN),
-    ("immediate_s_type", XLEN),
-    ("immediate_b_type", XLEN),
-    ("immediate_u_type", XLEN),
-    ("immediate_j_type", XLEN),
-    ("source_reg_1_data", XLEN),
-    ("source_reg_2_data", XLEN),
-    ("source_reg_1_is_x0", 1),
-    ("source_reg_2_is_x0", 1),
-    ("is_load_instruction", 1),
-    ("is_load_byte", 1),
-    ("is_load_halfword", 1),
-    ("is_load_unsigned", 1),
-    ("instruction_operation", OP_WIDTH),
-    ("branch_operation", BRANCH_OP_WIDTH),
-    ("store_operation", STORE_OP_WIDTH),
-    ("rs_type", RS_TYPE_WIDTH),
-    ("is_int_store", 1),
-    ("is_branch_or_jump", 1),
-    ("is_fence", 1),
-    ("is_fence_i", 1),
-    ("is_csr_imm", 1),
-    ("has_fp_flags", 1),
-    ("is_jump_and_link", 1),
-    ("is_jump_and_link_register", 1),
-    ("is_multiply", 1),
-    ("is_divide", 1),
-    ("is_csr_instruction", 1),
-    ("csr_address", 12),
-    ("csr_imm", 5),
-    ("is_amo_instruction", 1),
-    ("is_lr", 1),
-    ("is_sc", 1),
-    ("is_mret", 1),
-    ("is_sret", 1),
-    ("is_dret", 1),
-    ("is_sfence_vma", 1),
-    ("is_wfi", 1),
-    ("is_ecall", 1),
-    ("is_ebreak", 1),
-    ("is_illegal_instruction", 1),
-    ("is_fetch_fault", 1),
-    ("is_fetch_fault_page", 1),
-    ("is_fetch_fault_hi", 1),
-    ("is_fp_instruction", 1),
-    ("is_fp_load", 1),
-    ("is_fp_store", 1),
-    ("is_fp_load_double", 1),
-    ("is_fp_store_double", 1),
-    ("is_fp_compute", 1),
-    ("is_pipelined_fp_op", 1),
-    ("fp_rm", 3),
-    ("is_fp_to_int", 1),
-    ("is_int_to_fp", 1),
-    ("fp_source_reg_1_data", FLEN),
-    ("fp_source_reg_2_data", FLEN),
-    ("fp_source_reg_3_data", FLEN),
-    ("link_address", XLEN),
-    ("is_compressed", 1),
-    ("branch_target_precomputed", XLEN),
-    ("jal_target_precomputed", XLEN),
-    ("instruction", INSTR_WIDTH),
-    ("btb_hit", 1),
-    ("btb_predicted_taken", 1),
-    ("btb_predicted_target", XLEN),
-    ("ras_predicted", 1),
-    ("ras_predicted_target", XLEN),
-    ("ras_checkpoint_tos", RAS_PTR_BITS),
-    ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
-    ("bp_dir_idx", BP_DIR_IDX_BITS),
-    ("is_ras_return", 1),
-    ("is_ras_call", 1),
-    ("ras_predicted_target_nonzero", 1),
-    ("ras_expected_rs1", XLEN),
-    ("btb_correct_non_jalr", 1),
-    ("btb_expected_rs1", XLEN),
-    ("ras_correct_non_jalr", 1),
-    ("pc_relative_precomputed", XLEN),
-    # Pre-decoded operand-classification flags (timing optimization).
-    # Dispatch reads these instead of re-decoding instruction_operation.
-    ("has_int_dest", 1),
-    ("has_fp_dest", 1),
-    ("uses_int_rs1", 1),
-    ("uses_int_rs2", 1),
-    ("uses_fp_rs1", 1),
-    ("uses_fp_rs2", 1),
-    ("uses_fp_rs3", 1),
-    ("is_not_nop", 1),
-]
 
 _FROM_ID_TO_EX_TOTAL_WIDTH = sum(w for _, w in FROM_ID_TO_EX_FIELDS)
 
@@ -1092,46 +1003,9 @@ def pack_instr_t(
 
 
 # =============================================================================
-# ROB alloc_req_t field table (for unpacking output)
+# ROB alloc_req_t field offsets (for unpacking output)
 # =============================================================================
 # reorder_buffer_alloc_req_t: MSB-first packed struct
-ROB_ALLOC_REQ_FIELDS = [
-    ("alloc_valid", 1),
-    ("pc", XLEN),
-    ("rs_type", 3),
-    ("dest_rf", 1),
-    ("dest_reg", REG_ADDR_WIDTH),
-    ("dest_valid", 1),
-    ("is_store", 1),
-    ("is_fp_store", 1),
-    ("is_fp_instruction", 1),
-    ("is_branch", 1),
-    ("predicted_taken", 1),
-    ("predicted_target", XLEN),
-    ("branch_target", XLEN),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("link_addr", XLEN),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("is_csr", 1),
-    ("is_fence", 1),
-    ("is_fence_i", 1),
-    ("is_wfi", 1),
-    ("is_mret", 1),
-    ("is_sret", 1),
-    ("is_dret", 1),
-    ("is_sfence_vma", 1),
-    ("is_amo", 1),
-    ("is_lr", 1),
-    ("is_sc", 1),
-    ("is_compressed", 1),
-    ("csr_write_intent", 1),
-    ("csr_addr", 12),
-    ("csr_op", 3),
-    ("csr_write_data", XLEN),
-    ("has_fp_flags", 1),
-]
 
 ROB_ALLOC_REQ_WIDTH = sum(w for _, w in ROB_ALLOC_REQ_FIELDS)
 

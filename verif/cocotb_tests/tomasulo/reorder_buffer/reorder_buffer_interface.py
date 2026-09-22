@@ -29,6 +29,9 @@ from .reorder_buffer_model import (
     CDBWrite,
     BranchUpdate,
 )
+from cocotb_tests.cpu_structs import (
+    COMMIT_FIELDS as COMMIT_FIELDS,
+)
 
 
 # =============================================================================
@@ -239,47 +242,6 @@ def unpack_rob_perf_events(val: int) -> dict[str, bool]:
         for index, name in enumerate(ROB_PERF_EVENT_FIELDS)
     }
 
-
-COMMIT_FIELDS = [
-    ("valid", 1),
-    ("tag", ROB_TAG_WIDTH),
-    ("dest_rf", 1),
-    ("dest_reg", 5),
-    ("dest_valid", 1),
-    ("value", FLEN),
-    ("is_store", 1),
-    ("is_fp_store", 1),
-    ("exception", 1),
-    ("pc", XLEN),
-    ("exc_cause", 5),
-    ("fp_flags", 5),
-    ("has_fp_flags", 1),
-    ("misprediction", 1),
-    ("early_recovered", 1),
-    ("has_checkpoint", 1),
-    ("checkpoint_id", 3),
-    ("redirect_pc", XLEN),
-    ("predicted_taken", 1),
-    ("branch_taken", 1),
-    ("branch_target", XLEN),
-    ("is_branch", 1),
-    ("is_call", 1),
-    ("is_return", 1),
-    ("is_jal", 1),
-    ("is_jalr", 1),
-    ("csr_addr", 12),
-    ("csr_op", 3),
-    ("csr_write_data", XLEN),
-    ("is_csr", 1),
-    ("is_fence", 1),
-    ("is_fence_i", 1),
-    ("is_wfi", 1),
-    ("is_mret", 1),
-    ("is_amo", 1),
-    ("is_lr", 1),
-    ("is_sc", 1),
-    ("is_compressed", 1),
-]
 
 # reorder_buffer_commit_t contains four XLEN fields and one FLEN result; all
 # flags, tags, CSR metadata, and register identifiers occupy another 64 bits.
