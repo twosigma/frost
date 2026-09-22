@@ -78,7 +78,7 @@ directory. `linux_boot` and `opensbi_smoke` are composite, load-only images.
 
 ## Functional-validation builds
 
-`--cpu-clock-div N` runs the CPU at 300/N MHz and adjusts UART, timers, loader,
+`--cpu-clock-div N` divides the selected CPU base rate and adjusts UART, timers, loader,
 and initial software. DDR and Ethernet clocks remain unchanged. These builds
 use one `RuntimeOptimized` placement/route unless overridden and do not update
 the reference utilization table.
@@ -93,6 +93,24 @@ benchmark score gates.
 FROST_CPU_CLK_HZ=150000000 ./fpga/load_software/load_software.py x3 hello_world
 FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_test
 ```
+
+The experimental roadmap clock is selectable with
+`--cpu-base-clock-hz 322265625` (default: `300000000`). It chooses the matching
+MMCM recipe, updates the block-design and initial software clocks, and requires
+timing evidence for that rate. Use a separate `--build-dir` and set
+`FROST_CPU_CLK_HZ=322265625` for subsequent loads and hardware regression
+(divide that value too when using `--cpu-clock-div`). Selecting the rate does
+not establish routed timing or a benchmark result. Target-clock builds leave
+the rated utilization table unchanged.
+
+`--single-core-performance` selects the experimental single-core configuration
+at synthesis: a four-bundle decoded queue, sixteen-entry INT RS, load
+preparation while the shared port is busy, and early memory wakeup. It is
+independent of `--cpu-base-clock-hz`; for the roadmap experiment use both
+`--single-core-performance --cpu-base-clock-hz 322265625`. This configuration
+has not met routed timing and cannot update the rated README table, even at
+300 MHz. A resumed checkpoint keeps its existing configuration; changing it
+requires synthesis.
 
 ## Profiling counters
 
@@ -219,7 +237,11 @@ Resumed stages verify this metadata against their inputs. A new synthesis or
 optimization result invalidates the previous placement approval, so rerun
 placement before resuming downstream stages. Missing or stale downstream
 lineage requires `--start-at post_place_physopt` from a qualified placement.
-`netlist_config.json` records whether the netlist includes profiling counters.
+`netlist_config.json` records profiling counters, the single-core profile,
+the base clock and its divider at synthesis. Resumed builds use this record
+when deciding whether to update the rated table; omitting experimental flags
+cannot relabel a checkpoint. Older checkpoints without recorded clock/profile
+settings need a new synthesis before they can update that table.
 
 Promoting a new post-opt checkpoint removes `audit_post_opt_*` and
 `post_opt_fence_*` reports from the work directory. Save any reports you need

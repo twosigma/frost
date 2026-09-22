@@ -27,7 +27,9 @@
  * cycle invisible to software.
  */
 
-module tomasulo_perf_counters (
+module tomasulo_perf_counters #(
+    parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -59,7 +61,7 @@ module tomasulo_perf_counters (
     input logic [  riscv_pkg::ReorderBufferTagWidth:0] i_o_rob_count,
     input logic [    $clog2(riscv_pkg::LqDepth+1)-1:0] i_o_lq_count,
     input logic [    $clog2(riscv_pkg::SqDepth+1)-1:0] i_o_sq_count,
-    input logic [ $clog2(riscv_pkg::IntRsDepth+1)-1:0] i_o_rs_count,
+    input logic [          $clog2(INT_RS_DEPTH+1)-1:0] i_o_rs_count,
     input logic [ $clog2(riscv_pkg::MulRsDepth+1)-1:0] i_o_mul_rs_count,
     input logic [ $clog2(riscv_pkg::MemRsDepth+1)-1:0] i_o_mem_rs_count,
     input logic [  $clog2(riscv_pkg::FpRsDepth+1)-1:0] i_o_fp_rs_count,
@@ -108,7 +110,7 @@ module tomasulo_perf_counters (
   logic [riscv_pkg::ReorderBufferTagWidth:0] o_rob_count;
   logic [$clog2(riscv_pkg::LqDepth+1)-1:0] o_lq_count;
   logic [$clog2(riscv_pkg::SqDepth+1)-1:0] o_sq_count;
-  logic [$clog2(riscv_pkg::IntRsDepth+1)-1:0] o_rs_count;
+  logic [$clog2(INT_RS_DEPTH+1)-1:0] o_rs_count;
   logic [$clog2(riscv_pkg::MulRsDepth+1)-1:0] o_mul_rs_count;
   logic [$clog2(riscv_pkg::MemRsDepth+1)-1:0] o_mem_rs_count;
   logic [$clog2(riscv_pkg::FpRsDepth+1)-1:0] o_fp_rs_count;

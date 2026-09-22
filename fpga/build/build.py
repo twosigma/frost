@@ -340,6 +340,7 @@ def resolve_x3_route_sweep_directives(requested: list[str] | None) -> list[str]:
 X3_FUNCTIONAL_PLACE_DIRECTIVE = "RuntimeOptimized"
 X3_FUNCTIONAL_ROUTE_DIRECTIVE = "RuntimeOptimized"
 CPU_CLOCK_DIV_CHOICES = (1, 2, 3, 4)
+CPU_BASE_CLOCK_CHOICES = (300_000_000, 322_265_625)
 
 
 @dataclass(frozen=True)
@@ -356,6 +357,7 @@ class FunctionalBuildPolicy:
     update_readme: bool
     # Profiling counters in the netlist (the board top's PERF_COUNTERS generic).
     perf_counters: bool
+    single_core_performance: bool = False
 
 
 def resolve_functional_build_policy(
@@ -367,11 +369,12 @@ def resolve_functional_build_policy(
     route_directives: list[str],
     route_sweep_overridden: bool,
     perf_counters: bool | None = None,
+    single_core_performance: bool = False,
 ) -> FunctionalBuildPolicy:
     """Return the flow settings for ``--cpu-clock-div``.
 
     A divider of 1 keeps every setting as resolved by the caller. A larger
-    divider builds for 300/N MHz: an explicit ``--directives`` or
+    divider builds for the selected base clock divided by N: an explicit ``--directives`` or
     ``--num-uncertainties`` keeps the requested placer grid, an explicit
     ``--route-directives`` keeps the requested router list, and everything
     else collapses to the single RuntimeOptimized runs a design with hundreds
@@ -393,8 +396,9 @@ def resolve_functional_build_policy(
             True,
             None,
             list(route_directives),
-            True,
+            base_clock_freq == 300_000_000 and not single_core_performance,
             include_counters,
+            single_core_performance,
         )
     return FunctionalBuildPolicy(
         cpu_clock_div,
@@ -410,6 +414,7 @@ def resolve_functional_build_policy(
         else [X3_FUNCTIONAL_ROUTE_DIRECTIVE],
         False,
         include_counters,
+        single_core_performance,
     )
 
 
@@ -929,19 +934,24 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
             )
         }
         divider = int(os.environ.get("FROST_CPU_CLK_DIV", "1"))
+        base_clock = int(os.environ.get("FROST_CPU_BASE_CLK_HZ", "300000000"))
     except (InvalidOperation, ValueError) as error:
         raise ValueError("invalid post-place gate number or CPU divider") from error
     if not all(value.is_finite() for value in numbers.values()):
         raise ValueError("nonfinite post-place gate number")
     if divider not in CPU_CLOCK_DIV_CHOICES:
         raise ValueError("unsupported CPU divider for post-place gate")
+    if base_clock not in CPU_BASE_CLOCK_CHOICES:
+        raise ValueError("unsupported CPU base clock for post-place gate")
     period = numbers["CPU_PERIOD_NS"]
-    expected_period = Decimal("3.333") * divider
+    expected_period = Decimal("3.333") * 300_000_000 * divider / base_clock
     # A divided clock's expectation is itself a product of the rounded base
     # period, so it keeps the documented one-picosecond display range.
     tolerance = X3_GATE_DISPLAY_TOLERANCE_NS if divider == 1 else Decimal("0.001")
     if abs(period - expected_period) > tolerance:
-        raise ValueError("post-place CPU period does not match --cpu-clock-div")
+        raise ValueError(
+            "post-place CPU period does not match the selected clock and divider"
+        )
     if numbers["THRESHOLD_NS"] != X3_POST_PLACE_GATE_NS or numbers[
         "USER_SETUP_UNCERTAINTY_NS"
     ] != Decimal(str(X3_PLACE_REPORT_UNCERTAINTY_NS)):
@@ -1355,6 +1365,21 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
         return False
 
 
+def is_reference_x3_netlist(main_work: Path) -> bool:
+    """Use synthesis provenance, not a resumed invocation's default options."""
+    try:
+        config = json.loads((main_work / X3_NETLIST_CONFIG_NAME).read_text())
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(config, dict)
+        and config.get("schema") == "x3_netlist_config_v2"
+        and config.get("single_core_performance") == 0
+        and config.get("cpu_base_clock_hz") == 300_000_000
+        and config.get("cpu_clock_div") == 1
+    )
+
+
 def copy_results_to_main_work(
     work_dir: Path,
     main_work: Path,
@@ -1403,7 +1428,17 @@ def copy_results_to_main_work(
         perf_counters = int(os.environ.get("FROST_PERF_COUNTERS", "0") == "1")
         (main_work / X3_NETLIST_CONFIG_NAME).write_text(
             json.dumps(
-                {"schema": "x3_netlist_config_v1", "perf_counters": perf_counters},
+                {
+                    "schema": "x3_netlist_config_v2",
+                    "perf_counters": perf_counters,
+                    "single_core_performance": int(
+                        os.environ.get("FROST_SINGLE_CORE_PERFORMANCE", "0") == "1"
+                    ),
+                    "cpu_base_clock_hz": int(
+                        os.environ.get("FROST_CPU_BASE_CLK_HZ", "300000000")
+                    ),
+                    "cpu_clock_div": int(os.environ.get("FROST_CPU_CLK_DIV", "1")),
+                },
                 indent=2,
             )
             + "\n"
@@ -2807,12 +2842,28 @@ Examples:
         "includes synthesis. Capture with fpga/debug/capture_fetch_ila.py.",
     )
     parser.add_argument(
+        "--single-core-performance",
+        action="store_true",
+        help="X3 experimental decoded queue, INT RS 16, busy-port load preparation "
+        "and early memory wakeup. Requires synthesis; clock is selected separately. "
+        "This configuration cannot update the rated README table.",
+    )
+    parser.add_argument(
+        "--cpu-base-clock-hz",
+        type=int,
+        choices=CPU_BASE_CLOCK_CHOICES,
+        default=300_000_000,
+        help="X3 MMCM base rate before --cpu-clock-div: rated 300000000 or "
+        "experimental roadmap target 322265625. Keeps software, block-design "
+        "clocks and timing evidence consistent; does not establish timing closure.",
+    )
+    parser.add_argument(
         "--cpu-clock-div",
         type=int,
         choices=CPU_CLOCK_DIV_CHOICES,
         default=1,
         metavar="N",
-        help="Functional-validation build at 300/N MHz (x3): the board top's "
+        help="Functional-validation build at the selected base rate divided by N (x3): the board top's "
         "CPU_CLK_DIV generic divides the MMCM output, the DDR block design "
         "declares the divided clocks, and hello_world is compiled for it. "
         "Unless --directives/--num-uncertainties/--route-directives say "
@@ -2899,11 +2950,15 @@ Examples:
 
     # Resolve board-specific clock and implementation settings.
     board_config = BOARD_CONFIG[board_name]
-    clock_freq = board_config["clock_freq"]
+    clock_freq = args.cpu_base_clock_hz
     is_ultrascale = board_config["is_ultrascale"]
     route_sweep_directives = resolve_x3_route_sweep_directives(args.route_directives)
     if args.cpu_clock_div != 1 and board_name != "x3":
         parser.error("--cpu-clock-div is only supported for x3")
+    if args.single_core_performance and board_name != "x3":
+        parser.error("--single-core-performance is only supported for x3")
+    if args.single_core_performance and "synth" not in steps_to_run:
+        parser.error("--single-core-performance requires a run that includes synthesis")
     functional_policy = resolve_functional_build_policy(
         args.cpu_clock_div,
         clock_freq,
@@ -2913,6 +2968,7 @@ Examples:
         route_sweep_directives,
         args.route_directives is not None,
         perf_counters=args.perf_counters,
+        single_core_performance=args.single_core_performance,
     )
     clock_freq = functional_policy.clock_freq
     place_sweep_directives = functional_policy.place_directives
@@ -2932,11 +2988,15 @@ Examples:
         os.environ["FROST_DEBUG_ILA"] = "1"
     if board_name == "x3":
         # The CLI is authoritative even at divider 1; an inherited override
-        # must not silently change synthesis/BD clocks while software says 300 MHz.
+        # must not silently change synthesis/BD clocks away from the selected rate.
         os.environ["FROST_CPU_CLK_DIV"] = str(functional_policy.cpu_clock_div)
+        os.environ["FROST_CPU_BASE_CLK_HZ"] = str(args.cpu_base_clock_hz)
     # The CLI is authoritative for the counters as well: synthesis reads
     # FROST_PERF_COUNTERS, and an inherited value must not change the netlist.
     os.environ["FROST_PERF_COUNTERS"] = "1" if functional_policy.perf_counters else "0"
+    os.environ["FROST_SINGLE_CORE_PERFORMANCE"] = (
+        "1" if args.single_core_performance else "0"
+    )
     if functional_policy.cpu_clock_div != 1:
         # The Vivado steps (synthesis generic, block-design clock rates) and
         # the quick-route probe count read the environment.
@@ -3143,7 +3203,8 @@ Examples:
         update_readme_utilization,
     )
 
-    if functional_policy.update_readme and args.build_dir is None:
+    reference_netlist = board_name != "x3" or is_reference_x3_netlist(main_work)
+    if functional_policy.update_readme and args.build_dir is None and reference_netlist:
         all_util = collect_all_board_utilization(
             script_dir,
             stage_overrides={board_name: last_report_prefix}
@@ -3155,7 +3216,8 @@ Examples:
     else:
         print(
             "\nREADME utilization table left alone: custom-directory and "
-            "divided-clock builds are not the reference implementation."
+            "experimental builds, and checkpoints without recorded reference "
+            "clock/profile settings, are not the reference implementation."
         )
 
     # Summarize the last completed step, including partial/resumed runs.

@@ -36,6 +36,7 @@ submodule, not at top level.
 | `early_misprediction_recovery` | `branch_recovery/` | Redirects fetch and restores the RAT for checkpointed conditional-branch mispredictions before commit. |
 | `misprediction_flush_controller` | `branch_recovery/` | Handles commit-time mispredictions, full and partial flush priority, and checkpoint restore/free operations. |
 | `ooo_pipeline_control` | `pipeline_control/` | Controls front-end stalls, serialization, CSR/branch in-flight state, post-flush holds, trap/MRET redirects, and prediction disable. |
+| `decoded_bundle_queue` | `frontend_control/` | Optional fall-through queue between ID and dispatch; preserves held-image ownership, bundle order, prediction metadata and flushes. Disabled by default. |
 
 The branch-recovery, commit, and `from_ex_comb` submodules share two capture
 structs, `mispredict_commit_capture_t` and `correct_branch_commit_capture_t`,

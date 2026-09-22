@@ -146,6 +146,9 @@ def test_cocotb_runner_removes_every_program_memory_symlink(
     ) -> subprocess.CompletedProcess[str]:
         for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
             assert (test_directory / mem_name).is_symlink()
+        (test_directory / "results.xml").write_text(
+            '<testsuites><testsuite><testcase name="sample"/></testsuite></testsuites>'
+        )
         return subprocess.CompletedProcess(args=["make"], returncode=0)
 
     monkeypatch.setattr(subprocess, "run", simulation_run)
@@ -155,3 +158,44 @@ def test_cocotb_runner_removes_every_program_memory_symlink(
     for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
         assert not (test_directory / mem_name).exists()
         assert not (test_directory / mem_name).is_symlink()
+
+
+@pytest.mark.parametrize(
+    "fresh_report",
+    (
+        None,
+        "invalid XML",
+        "<testsuites/>",
+        "<testsuites><testsuite><testcase><failure/></testcase></testsuite></testsuites>",
+        "<testsuites><testsuite><testcase><error/></testcase></testsuite></testsuites>",
+    ),
+)
+def test_cocotb_runner_rejects_zero_exit_without_fresh_passing_tests(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fresh_report: str | None
+) -> None:
+    """A stale pass and zero make exit cannot stand in for a simulator run."""
+    report_path = tmp_path / "custom-results.xml"
+    report_path.write_text(
+        '<testsuites><testsuite><testcase name="stale"/></testsuite></testsuites>'
+    )
+    runner = test_run_cocotb.CocotbRunner(
+        python_test_module="cocotb_tests.test_sample",
+        hdl_toplevel_module="cdb_arbiter",
+    )
+    runner.test_directory = tmp_path
+    monkeypatch.setattr(
+        runner, "setup_environment", lambda: {"COCOTB_RESULTS_FILE": str(report_path)}
+    )
+    monkeypatch.setattr(runner, "_verilator_needs_rebuild", lambda _path: False)
+
+    def simulation_run(
+        *_args: object, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        assert not report_path.exists()
+        if fresh_report is not None:
+            report_path.write_text(fresh_report)
+        return subprocess.CompletedProcess(args=["make"], returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", simulation_run)
+    with pytest.raises(RuntimeError, match="report"):
+        runner.run_simulation()

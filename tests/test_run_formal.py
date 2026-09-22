@@ -53,6 +53,27 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "decoded_bundle_queue.sby",
+        "Decoded bundles: FIFO order, once-only held-image ownership, flush, bypass and wraparound",
+        tasks=("prove", "prove_depth2", "cover"),
+    ),
+    FormalTarget(
+        "int_muldiv_shim.sby",
+        "Mixed-width MUL/DIV completion-slot ownership, data-valid alignment, and FIFO credits",
+        tasks=(
+            "prove",
+            "prove_alignment",
+            "prove_fallback",
+            "prove_alignment_fallback",
+            "cover",
+        ),
+    ),
+    FormalTarget(
+        "mem_wakeup_merge.sby",
+        "Early load wakeup preserves both registered broadcasts and injects at most one exact value",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "trap_unit.sby",
         "Trap unit - exception and interrupt handling",
     ),
@@ -128,6 +149,13 @@ FORMAL_TARGETS = [
         "load_queue.sby",
         "Load queue - allocation/back-pressure, dependency cleanup, memory issue, "
         "router cancellation/debt, staged normal AMOs, CDB broadcast",
+        tasks=(
+            "bmc",
+            "cover",
+            "prove_pre_match",
+            "bmc_prepare_busy",
+            "cover_prepare_busy",
+        ),
     ),
     FormalTarget(
         "load_queue_amo_compute.sby",
@@ -170,7 +198,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "lq_l0_cache.sby",
-        "L0 data cache - direct-mapped word cache for load queue",
+        "L0 data cache - 128/256-entry dword cache, fill data and DMA invalidation",
+        tasks=("bmc", "cover", "bmc_256", "cover_256"),
     ),
     FormalTarget(
         "branch_prediction_alias.sby",
@@ -268,6 +297,19 @@ SBY_TASKS = [
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
     ("prove", "Unbounded safety proof (ABC PDR or temporal induction)"),
+    ("prove_depth2", "Two-entry decoded bundle queue ordering and ownership"),
+    (
+        "bmc_prepare_busy",
+        "Load queue with side-effect-free preparation during port ownership",
+    ),
+    ("cover_prepare_busy", "Load queue busy-port preparation reachability"),
+    ("prove_alignment", "Unbounded mixed-width tracker and physical FU alignment"),
+    ("prove_fallback", "Unbounded full-width fallback ownership and credits"),
+    ("prove_alignment_fallback", "Unbounded full-width fallback FU alignment"),
+    (
+        "prove_pre_match",
+        "Unrestricted equivalence of split LQ pre-issue match registers",
+    ),
     (
         "prove_unrestricted",
         "Unbounded observation cleanup with only the initial-reset assumption",
@@ -304,6 +346,8 @@ SBY_TASKS = [
     ),
     ("cover_tag_indexed", "Cover checking in the shipped INT station configuration"),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
+    ("bmc_256", "Bounded checking with a 256-entry L0 cache"),
+    ("cover_256", "Cover checking with a 256-entry L0 cache"),
 ]
 
 

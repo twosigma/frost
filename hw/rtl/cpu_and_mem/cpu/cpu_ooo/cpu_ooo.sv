@@ -41,6 +41,11 @@ module cpu_ooo #(
     // committed-store drain, and returns one cycle after terminal accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter bit EARLY_LOAD_WAKEUP = 1'b0,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
+    parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
+    parameter int unsigned DECODED_QUEUE_DEPTH = 0,
     // Profiling counters: perf_counter_aggregator, the wrapper's
     // tomasulo_perf_counters and the CSR file's mperf* state. 0 = absent (the
     // mperf* CSRs read zero and the event sources are unread); the production
@@ -225,6 +230,10 @@ module cpu_ooo #(
 
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
   logic dispatch_stall;
+  logic direct_id_valid_preflush, direct_id_valid_2_preflush;
+  logic direct_id_valid, direct_id_valid_2;
+  logic decoded_queue_full;
+  logic decoded_queue_indirect_pending;
   (* max_fanout = 32 *) logic flush_pipeline;
   logic dispatch_flush;
   logic full_flush_side_effect_kill;
@@ -292,6 +301,7 @@ module cpu_ooo #(
   logic [XLEN-1:0] trap_target_reg;
 
   ooo_pipeline_control #(
+      .QUEUED_FRONTEND(DECODED_QUEUE_DEPTH != 0),
       .XLEN(XLEN)
   ) ooo_pipeline_control_inst (
       .i_clk,
@@ -307,9 +317,11 @@ module cpu_ooo #(
       .i_mret_taken(xret_taken),
       .i_trap_target(trap_target),
       .i_dispatch_stall(dispatch_stall),
+      .i_frontend_resource_stall(decoded_queue_full),
       .i_csr_wb_pending(csr_wb_pending),
       .i_branch_unresolved_decrement(branch_unresolved_decrement),
-      .i_front_end_indirect_control_flow_pending(front_end_indirect_control_flow_pending),
+      .i_front_end_indirect_control_flow_pending(
+          front_end_indirect_control_flow_pending || decoded_queue_indirect_pending),
       .i_pd_unpredicted_control_flow(pd_unpredicted_control_flow),
       .i_id_unpredicted_control_flow(id_unpredicted_control_flow),
       .i_disable_branch_prediction(i_disable_branch_prediction),
@@ -347,6 +359,7 @@ module cpu_ooo #(
   logic pd_redirect;
   logic [XLEN-1:0] pd_redirect_target;
   riscv_pkg::from_id_to_ex_t from_id_to_ex;
+  riscv_pkg::from_id_to_ex_t decoded_packet, decoded_packet_2;
 
   // Slot-2 inter-stage signals (2-wide dispatch). IF extracts a real slot-2
   // instruction whenever the bundle allows it and from_if_to_pd_2 carries it,
@@ -786,7 +799,7 @@ module cpu_ooo #(
       .i_rf_to_id(rf_to_fwd),
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),
-      .o_from_id_to_ex(from_id_to_ex),
+      .o_from_id_to_ex(decoded_packet),
       // Slot-2 (2-wide dispatch). i_from_pd_to_id_2 carries the second
       // instruction payload plus its inject_nop invalidation marker; ID applies
       // the marker before producing o_from_id_to_ex_2, and dispatch raises
@@ -794,7 +807,7 @@ module cpu_ooo #(
       .i_from_pd_to_id_2(from_pd_to_id_2),
       .i_rf_to_id_2(rf_to_fwd_2),
       .i_fp_rf_to_id_2(fp_rf_to_fwd_2),
-      .o_from_id_to_ex_2(from_id_to_ex_2)
+      .o_from_id_to_ex_2(decoded_packet_2)
   );
 
   // ===========================================================================
@@ -838,8 +851,8 @@ module cpu_ooo #(
       .i_from_if_to_pd(from_if_to_pd),
       .i_if_has_control_flow(if_slot1_has_control_flow),
       .i_from_pd_to_id(from_pd_to_id),
-      .i_from_id_to_ex(from_id_to_ex),
-      .i_from_id_to_ex_2(from_id_to_ex_2),
+      .i_from_id_to_ex(decoded_packet),
+      .i_from_id_to_ex_2(decoded_packet_2),
       .i_post_flush_holdoff_q(post_flush_holdoff_q),
       .i_dispatch_flush(dispatch_flush),
       .i_id_stall_q(id_stall_q),
@@ -848,10 +861,10 @@ module cpu_ooo #(
       .i_keep_nops(step_armed_fe_q),
       .o_if_valid_q(if_valid_q),
       .o_pd_valid_q(pd_valid_q),
-      .o_id_valid_preflush(id_valid_preflush),
-      .o_id_valid_2_preflush(id_valid_2_preflush),
-      .o_id_valid(id_valid),
-      .o_id_valid_2(id_valid_2),
+      .o_id_valid_preflush(direct_id_valid_preflush),
+      .o_id_valid_2_preflush(direct_id_valid_2_preflush),
+      .o_id_valid(direct_id_valid),
+      .o_id_valid_2(direct_id_valid_2),
       .o_pd_unpredicted_control_flow(pd_unpredicted_control_flow),
       .o_id_unpredicted_control_flow(id_unpredicted_control_flow),
       .o_front_end_indirect_control_flow_pending(front_end_indirect_control_flow_pending),
@@ -859,6 +872,74 @@ module cpu_ooo #(
       .o_prediction_fence_jal(prediction_fence_jal),
       .o_prediction_fence_indirect(prediction_fence_indirect)
   );
+
+  // Decode can run ahead of dispatch without caching operand values. The
+  // register-file/RAT ports below are addressed by the queue head each cycle.
+  generate
+    if (DECODED_QUEUE_DEPTH != 0) begin : gen_decoded_queue
+      logic queue_valid;
+      logic input_indirect;
+      assign input_indirect =
+          (decoded_packet.is_jump_and_link_register &&
+           !(decoded_packet.ras_predicted || decoded_packet.btb_predicted_taken)) ||
+          (decoded_packet_2.is_not_nop && decoded_packet_2.is_jump_and_link_register &&
+           !(decoded_packet_2.ras_predicted || decoded_packet_2.btb_predicted_taken));
+      decoded_bundle_queue #(
+          .DEPTH(DECODED_QUEUE_DEPTH),
+          .WIDTH(2 * $bits(decoded_packet))
+      ) u_queue (
+          .i_clk(i_clk),
+          .i_rst(i_rst),
+          .i_flush(flush_pipeline),
+          .i_advance(!pipeline_ctrl.stall),
+          .i_valid(pd_valid_q &&
+              (decoded_packet.is_not_nop || decoded_packet_2.is_not_nop || step_armed_fe_q)),
+          .i_packet({decoded_packet_2, decoded_packet}),
+          .i_indirect(input_indirect),
+          .i_pop(rob_alloc_req.alloc_valid),
+          .o_full(decoded_queue_full),
+          .o_valid(queue_valid),
+          .o_packet({from_id_to_ex_2, from_id_to_ex}),
+          .o_indirect_pending(decoded_queue_indirect_pending)
+      );
+      assign id_valid_preflush = queue_valid &&
+          !(csr_in_flight || csr_wb_pending || serializing_alloc_fire);
+      assign id_valid_2_preflush = id_valid_preflush && from_id_to_ex_2.is_not_nop;
+      assign id_valid = id_valid_preflush && !dispatch_flush;
+      assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
+`ifndef SYNTHESIS
+      always_ff @(posedge i_clk) begin
+        if (!i_rst) begin
+          p_queue_dispatch_recovery_discards_producer : assert (!dispatch_flush || flush_pipeline);
+          if (!flush_pipeline) begin
+            p_queue_full_holds_id : assert (!decoded_queue_full || pipeline_ctrl.stall);
+            p_queue_pop_has_candidate : assert (!rob_alloc_req.alloc_valid || queue_valid);
+            p_queue_pop_has_resources : assert (!rob_alloc_req.alloc_valid || !dispatch_stall);
+            p_queue_bundle_is_atomic :
+            assert (!(rob_alloc_req.alloc_valid && id_valid_2_preflush) ||
+                    rob_alloc_req_2.alloc_valid);
+          end
+        end
+      end
+`ifndef FORMAL
+      p_queue_held_id_is_stable :
+      assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
+          pipeline_ctrl.stall |=> $stable(
+          {decoded_packet, decoded_packet_2, pd_valid_q}
+      ));
+`endif
+`endif
+    end else begin : gen_no_decoded_queue
+      assign decoded_queue_full = 1'b0;
+      assign decoded_queue_indirect_pending = 1'b0;
+      assign from_id_to_ex = decoded_packet;
+      assign from_id_to_ex_2 = decoded_packet_2;
+      assign id_valid_preflush = direct_id_valid_preflush;
+      assign id_valid_2_preflush = direct_id_valid_2_preflush;
+      assign id_valid = direct_id_valid;
+      assign id_valid_2 = direct_id_valid_2;
+    end
+  endgenerate
 
   assign dbg_if_valid_q = if_valid_q;
   assign dbg_pd_valid_q = pd_valid_q;
@@ -1358,7 +1439,7 @@ module cpu_ooo #(
   logic [$clog2(riscv_pkg::LqDepth+1)-1:0] lq_count;
   logic [$clog2(riscv_pkg::SqDepth+1)-1:0] sq_count;
   logic rs_empty;
-  logic [$clog2(riscv_pkg::IntRsDepth+1)-1:0] rs_count;
+  logic [$clog2(INT_RS_DEPTH+1)-1:0] rs_count;
 
   // FRM CSR
   logic [2:0] frm_csr;
@@ -1372,6 +1453,10 @@ module cpu_ooo #(
       .SPLIT_RS_DISPATCH(1'b1),
       .ENABLE_DISPATCH_DONE_REPAIR(1'b1),
       .PERF_COUNTERS(PERF_COUNTERS),
+      .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
+      .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
+      .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
+      .INT_RS_DEPTH(INT_RS_DEPTH),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) u_tomasulo (

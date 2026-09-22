@@ -2,6 +2,13 @@
 
 ## Single-core performance
 
+Implementation measurements and remaining gates are recorded in
+[the single-core performance report](docs/single_core_performance.md).
+The target below remains open; short simulation results are not rated scores.
+The opt-in profile currently measures **3.9071 CoreMark/MHz at 161.1328125 MHz**
+in an official-length hardware run and meets the equally tuned RV32 cycle
+parity gate. It has not met timing at 322.265625 MHz.
+
 Target **4 CoreMark/MHz at 322.265625 MHz**: 1289 CoreMark on one X3 hart.
 The target clock is twice the MAC word clock; its MMCM recipe is documented
 in [x3_frost.sv](boards/x3/x3_frost.sv).
@@ -20,6 +27,8 @@ Priorities, guided by counters and post-route timing:
 1. Reduce front-end bubbles beyond the 64 KiB BRAM predecode overlay. Compare
    more overlay capacity with a tagged predecode cache or stream buffer and a
    decoded-instruction queue; preserve variable-latency fetch behavior.
+   A four-bundle decoded queue is implemented and functionally validated as an
+   opt-in profile; target-clock physical qualification remains open.
 2. Remove the fixed 64-bit fetch-window limit so any two consecutive legal
    instructions can issue, including a pair crossing the window. Evaluate
    compressed-code throughput across placements. CoreMark currently disables C;
@@ -28,12 +37,19 @@ Priorities, guided by counters and post-route timing:
    general fusion or rename-time elimination, and evaluate dedicated 32-bit
    multiply/divide paths. Preserve precise exceptions, retirement counts,
    and debug single-step semantics; formally verify transformations.
+   Dedicated three-cycle MULW and seventeen-cycle word division/remainder
+   paths are implemented. Fusion and rename-time elimination are not used.
 4. Improve pointer-chase capacity and latency. Evaluate a 256-entry LQ L0,
    associativity if conflict counters justify it, and CDB-to-memory wakeup/AGU
    bypass. Consider dependent-load prefetching only after measuring these changes.
+   Full-dword response bypass is implemented. Early memory wakeup and inert
+   load preparation during bus ownership are opt-in; doubling L0 to 256
+   entries did not justify changing its 128-entry default.
 5. Increase ROB, reservation-station, or LQ capacity separately where counters
    justify it. Consider a third lane only if front-end and memory improvements
    leave a measured throughput limit.
+   The queued profile uses INT RS 16. Further INT-RS expansion adds negligible
+   benefit; measured ROB/LQ pressure does not justify increasing those queues.
 
 Changes must improve general workloads without recognizing benchmark code,
 PCs, or data patterns. Run the full regression matrix in both memory tiers,

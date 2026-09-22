@@ -270,6 +270,22 @@ registered CDB D paths without a new wide register bank or a cycle change.
 Assertions, formal contracts, and split-RS tests cover phase identity and the
 injected, live, and held sources.
 
+## Early dependent memory wakeup
+
+`EARLY_LOAD_WAKEUP=1` lets an accepted, non-faulting LQ completion use an idle
+registered CDB lane at MEM_RS one cycle early. Both occupied lanes retain
+their original packets; if both are occupied, the normal registered copy
+performs the wakeup. The option defaults off pending target-clock timing.
+The merge never changes ROB completion, SQ delivery, retirement, or DMA
+observation lifetime. Full and partial recovery suppress the early copy.
+
+The reservation station captures the value when a tag matches, including
+dispatch in that cycle. Source-ready and pending-delivery state ignore the
+following registered duplicate. A wrapper assertion checks that each early
+packet is also an actual same-cycle CDB broadcast. `mem_wakeup_merge` formal
+checks the combinational merge; `tomasulo_load_wakeup` exercises dependent
+load addresses and store data across dispatch, CDB contention, and recovery.
+
 ## Performance counters
 
 With `PERF_COUNTERS=1`, `perf/tomasulo_perf_counters.sv` owns 64 counters for
@@ -289,3 +305,13 @@ checks repair timing and captured values for all three FMUL operands.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
+
+`INT_RS_DEPTH` defaults to eight and propagates from `frost` through the CPU.
+Its supported bounds are powers of two from two through the 32-entry ROB
+capacity; measured capacity experiments use eight, sixteen and thirty-two.
+The RS alone grows: ROB tags, two-wide dispatch/issue, completion credits,
+LQ/SQ sizes, retirement observation and DMA coherence bounds are unchanged.
+The existing RS full/full-for-two admission checks still reserve space before
+dispatch, and service still requires operand readiness, an issue port and FU
+readiness. Occupancy counters use the selected depth's width. Sixteen helps
+the decoded-queue/early-load configuration; thirty-two adds negligible benefit.

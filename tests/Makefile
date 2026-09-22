@@ -545,6 +545,12 @@ endif
 # Include Cocotb simulation makefile rules
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
+# Cocotb's sim target makes result cleanup and regression sibling prerequisites.
+# With parallel make, regression can see the previous XML before cleanup and
+# skip this simulation. Make cleanup a normal prerequisite of the result itself
+# so every invocation runs the simulator, after removing the preceding report.
+$(COCOTB_RESULTS_FILE): _rm_results
+
 clean:: clean-local
 
 .PHONY: clean-local

@@ -48,6 +48,12 @@ clocks are unchanged. Use `build.py --cpu-clock-div N`, and match the software
 clock when loading. `PERF_COUNTERS` is controlled by `--perf-counters` and
 `--no-perf-counters`; it defaults off at full rate and on in divided-clock builds.
 
+The default CPU base clock is 300 MHz. The experimental
+`--cpu-base-clock-hz 322265625` selects `CPU_BASE_CLK_HZ=322265625`, using
+300 MHz / 8 × 34.375 / 4 before `CPU_CLK_DIV`. It changes neither the DDR
+reference nor the Ethernet clocks. See the [performance report](../docs/single_core_performance.md)
+for measured configurations and outstanding timing gates.
+
 ## JTAG-based software loading
 
 The loader resets the CPU with a low-BRAM write, bursts any `sw_ddr.txt`

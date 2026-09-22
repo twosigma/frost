@@ -12,15 +12,37 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-SRC_C   := ../../lib/src/uart.c coremark/core_list_join.c coremark/core_main.c coremark/core_matrix.c coremark/core_state.c coremark/core_util.c core_portme.c ../../lib/src/tomasulo_profile_cache.c
+# Reorder complete, unmodified translation units for placement ensembles.
+COREMARK_SOURCES := core_list_join core_main core_matrix core_state core_util
+COREMARK_SOURCE_ORDER ?= $(COREMARK_SOURCES)
+ifneq ($(sort $(COREMARK_SOURCE_ORDER)),$(sort $(COREMARK_SOURCES)))
+$(error COREMARK_SOURCE_ORDER must contain each benchmark source exactly once)
+endif
+ifneq ($(words $(COREMARK_SOURCE_ORDER)),5)
+$(error COREMARK_SOURCE_ORDER must contain five sources)
+endif
+SRC_C := ../../lib/src/uart.c $(addprefix coremark/,$(addsuffix .c,$(COREMARK_SOURCE_ORDER))) core_portme.c ../../lib/src/tomasulo_profile_cache.c
 INCLUDE_DIR = ./coremark
 
 # Use the RV64 hard-float ABI.
 MABI := lp64d
 
-# Disable compressed code here to avoid slot-2 losses when native pairs cross
-# the 64-bit fetch window. Other applications still exercise C instructions.
-FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+# C remains opt-in until link-order ensembles show stable throughput despite
+# the 64-bit fetch-window limit. scripts/coremark_sweep.py records both modes.
+COREMARK_COMPRESSED ?= 0
+ifeq ($(filter $(COREMARK_COMPRESSED),0 1),)
+$(error COREMARK_COMPRESSED must be 0 or 1)
+endif
+FROST_MARCH_EXTENSIONS := imafd$(if $(filter 1,$(COREMARK_COMPRESSED)),c)_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+
+COREMARK_SEED_SET ?= performance
+ifeq ($(COREMARK_SEED_SET),performance)
+COREMARK_SEED_FLAGS := -DPERFORMANCE_RUN=1
+else ifeq ($(COREMARK_SEED_SET),validation)
+COREMARK_SEED_FLAGS := -DVALIDATION_RUN=1
+else
+$(error COREMARK_SEED_SET must be performance or validation)
+endif
 
 # Compiler tuning for the pinned Bootlin toolchain. Inlining reduces hot calls;
 # CB allocation and selective scheduling control spills and instruction order.
@@ -66,8 +88,9 @@ else
 $(error COREMARK_PGO must be 0 or 1)
 endif
 
-# 11000 iterations is about a 10 second run on X3 at 300 MHz. Boards at a
-# different clock override this from the environment.
+# 11000 iterations is about ten seconds at the rated 300 MHz baseline.
+# Faster implementations need more iterations; use at least 14000 when
+# evaluating the 4 CoreMark/MHz, 322.265625 MHz target and check elapsed time.
 ITERATIONS ?= 11000
 
 # CoreMark allocates its workspace on the stack. Both settings stay
@@ -83,7 +106,7 @@ COREMARK_EXTRA_LDFLAGS ?=
 EXTRA_CFLAGS = '-DITERATIONS=$(ITERATIONS)' -DUART_PRINTF_ENABLE_FLOAT=1 \
                -DMEM_METHOD=$(COREMARK_MEM_METHOD) \
                '-DMEM_LOCATION=$(COREMARK_MEM_LOCATION)' \
-               $(COREMARK_EXTRA_CFLAGS)
+               $(COREMARK_SEED_FLAGS) $(COREMARK_EXTRA_CFLAGS)
 EXTRA_LDFLAGS = -lgcc $(COREMARK_EXTRA_LDFLAGS)
 
 include ../../common/common.mk

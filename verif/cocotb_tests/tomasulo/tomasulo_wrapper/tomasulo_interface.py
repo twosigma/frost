@@ -144,11 +144,14 @@ _LQ_OPS = {
         "LB",
         "LH",
         "LW",
+        "LD",
+        "LWU",
         "LBU",
         "LHU",
         "FLW",
         "FLD",
         "LR_W",
+        "LR_D",
         "AMOSWAP_W",
         "AMOADD_W",
         "AMOXOR_W",
@@ -158,14 +161,44 @@ _LQ_OPS = {
         "AMOMAX_W",
         "AMOMINU_W",
         "AMOMAXU_W",
+        "AMOSWAP_D",
+        "AMOADD_D",
+        "AMOXOR_D",
+        "AMOAND_D",
+        "AMOOR_D",
+        "AMOMIN_D",
+        "AMOMAX_D",
+        "AMOMINU_D",
+        "AMOMAXU_D",
     )
 }
-_SQ_OPS = {_INSTR_OPS[name] for name in ("SB", "SH", "SW", "FSW", "FSD", "SC_W")}
+_SQ_OPS = {
+    _INSTR_OPS[name] for name in ("SB", "SH", "SW", "SD", "FSW", "FSD", "SC_W", "SC_D")
+}
 _FP_MEM_OPS = {_INSTR_OPS[name] for name in ("FLW", "FLD", "FSW", "FSD")}
 _SIGNED_LOAD_OPS = {_INSTR_OPS[name] for name in ("LB", "LH")}
 _BYTE_OPS = {_INSTR_OPS[name] for name in ("LB", "LBU", "SB")}
 _HALF_OPS = {_INSTR_OPS[name] for name in ("LH", "LHU", "SH")}
-_DOUBLE_OPS = {_INSTR_OPS[name] for name in ("FLD", "FSD")}
+_DOUBLE_OPS = {
+    _INSTR_OPS[name]
+    for name in (
+        "LD",
+        "SD",
+        "FLD",
+        "FSD",
+        "LR_D",
+        "SC_D",
+        "AMOSWAP_D",
+        "AMOADD_D",
+        "AMOXOR_D",
+        "AMOAND_D",
+        "AMOOR_D",
+        "AMOMIN_D",
+        "AMOMAX_D",
+        "AMOMINU_D",
+        "AMOMAXU_D",
+    )
+}
 
 
 def _mem_size_for_op(op: int) -> int:

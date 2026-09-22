@@ -51,6 +51,10 @@ module tomasulo_wrapper #(
     // their write enables to the cached tier.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter bit EARLY_LOAD_WAKEUP = 1'b0,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
+    parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     // 0 leaves out the 64 back-end profiling counters: o_perf_counter_data
     // reads zero and the event sources stay unread (synthesis removes what
     // is not marked keep).
@@ -451,10 +455,10 @@ module tomasulo_wrapper #(
     // =========================================================================
     // RS Status (INT_RS)
     // =========================================================================
-    output logic                                       o_int_rs_full,
-    output logic                                       o_int_rs_full_for_2,
-    output logic                                       o_rs_empty,
-    output logic [$clog2(riscv_pkg::IntRsDepth+1)-1:0] o_rs_count,
+    output logic                              o_int_rs_full,
+    output logic                              o_int_rs_full_for_2,
+    output logic                              o_rs_empty,
+    output logic [$clog2(INT_RS_DEPTH+1)-1:0] o_rs_count,
 
     // =========================================================================
     // MUL_RS (Integer multiply/divide, depth 4)
@@ -575,6 +579,12 @@ module tomasulo_wrapper #(
     output logic o_perf_mem_rs_two_ready_one_issued,
     output logic o_perf_cdb_oversubscribed
 );
+
+  initial begin
+    if (INT_RS_DEPTH < 2 || INT_RS_DEPTH > riscv_pkg::ReorderBufferDepth ||
+        (INT_RS_DEPTH & (INT_RS_DEPTH - 1)) != 0)
+      $fatal(1, "INT_RS_DEPTH must be a power of two between 2 and ROB depth");
+  end
 
   // ===========================================================================
   // Internal commit bus: ROB -> RAT / SQ / SC
@@ -2887,7 +2897,7 @@ module tomasulo_wrapper #(
   end
 
   reservation_station #(
-      .DEPTH(riscv_pkg::IntRsDepth),
+      .DEPTH(INT_RS_DEPTH),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
       // ISSUE_REPAIR_BYPASS disabled on INT_RS: the in-issue
@@ -3119,6 +3129,39 @@ module tomasulo_wrapper #(
   logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
   logic                                                           mem_rs_pre_issue_needs_lq;
 
+  riscv_pkg::cdb_broadcast_t mem_rs_wakeup_0, mem_rs_wakeup_1;
+  riscv_pkg::cdb_broadcast_t mem_rs_cdb_0, mem_rs_cdb_1;
+  logic mem_rs_early_load_injected;
+  // Bypass the merger structurally when disabled, including unspecified
+  // invalid payloads, so the default builds synthesize the original wires.
+  assign mem_rs_cdb_0 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_0 : cdb_bus_mem_qualified;
+  assign mem_rs_cdb_1 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_1 : cdb_bus_2_mem_qualified;
+  mem_wakeup_merge u_mem_wakeup_merge (
+      .i_enable(EARLY_LOAD_WAKEUP && i_rst_n && lq_result_accepted &&
+                !speculative_flush_all && !speculative_flush_en),
+      .i_load(lq_fu_complete),
+      .i_registered_0(cdb_bus_mem_qualified),
+      .i_registered_1(cdb_bus_2_mem_qualified),
+      .o_wakeup_0(mem_rs_wakeup_0),
+      .o_wakeup_1(mem_rs_wakeup_1),
+      .o_injected(mem_rs_early_load_injected)
+  );
+
+`ifndef SYNTHESIS
+  // The early token is an observation of a real CDB broadcast, never a
+  // speculative prediction of a result or a second producer completion.
+  always @(posedge i_clk) begin
+    if (i_rst_n && mem_rs_early_load_injected) begin
+      p_early_load_really_broadcasts :
+      assert (
+          (cdb_bus_comb.valid && cdb_bus_comb.tag == lq_fu_complete.tag &&
+           cdb_bus_comb.value == lq_fu_complete.value) ||
+          (cdb_bus_2_comb.valid && cdb_bus_2_comb.tag == lq_fu_complete.tag &&
+           cdb_bus_2_comb.value == lq_fu_complete.value));
+    end
+  end
+`endif
+
   always_comb begin
     mem_rs_dispatch         = SPLIT_RS_DISPATCH ? i_mem_rs_dispatch : i_rs_dispatch;
     mem_rs_dispatch.valid   = mem_rs_dispatch_valid;
@@ -3148,12 +3191,12 @@ module tomasulo_wrapper #(
       .i_intent_1(mem_rs_intent_1),
       .o_full(mem_rs_full_w),
       .o_full_for_2(mem_rs_full_for_2_w),
-      .i_cdb(cdb_bus_mem_qualified),
-      .i_cdb_2(cdb_bus_2_mem_qualified),
-      .i_issue_cdb_valid(cdb_bus_mem_qualified.valid),
-      .i_issue_cdb_tag(cdb_bus_mem_qualified.tag),
-      .i_issue_cdb_2_valid(cdb_bus_2_mem_qualified.valid),
-      .i_issue_cdb_2_tag(cdb_bus_2_mem_qualified.tag),
+      .i_cdb(mem_rs_cdb_0),
+      .i_cdb_2(mem_rs_cdb_1),
+      .i_issue_cdb_valid(mem_rs_cdb_0.valid),
+      .i_issue_cdb_tag(mem_rs_cdb_0.tag),
+      .i_issue_cdb_2_valid(mem_rs_cdb_1.valid),
+      .i_issue_cdb_2_tag(mem_rs_cdb_1.tag),
       .i_repair_valid_1(done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
@@ -4100,6 +4143,8 @@ module tomasulo_wrapper #(
   // Load Queue Instance
   // ===========================================================================
   load_queue #(
+      .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
+      .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
@@ -4883,7 +4928,9 @@ module tomasulo_wrapper #(
   // PERF_COUNTERS is set (the production build leaves them out).
   generate
     if (PERF_COUNTERS != 0) begin : gen_perf_counters
-      tomasulo_perf_counters tomasulo_perf_counters_inst (
+      tomasulo_perf_counters #(
+          .INT_RS_DEPTH(INT_RS_DEPTH)
+      ) tomasulo_perf_counters_inst (
           .i_clk,
           .i_rst_n,
           .i_rob_perf_events(rob_perf_events),

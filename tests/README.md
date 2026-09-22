@@ -199,6 +199,9 @@ hang timeout and a separate pytest case. Use `--verbose` for solver output.
 | `COCOTB_COREMARK_MAX_CYCLES` | CoreMark timeout |
 
 Build products live in `tests/sim_build/`; `results.xml` records JUnit results.
+The runner removes the previous report and requires a fresh, nonempty test
+report before accepting success. Parallel make orders report cleanup before
+simulation, including when the compiled RTL is reused.
 Use the wrapper to clear stale builds. Rebuild the image for missing or
 mismatched tools; raise the appropriate app budget for expected long runs.
 Captured parser fixtures in `tests/fixtures/` must retain their bytes,

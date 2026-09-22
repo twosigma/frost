@@ -1,6 +1,9 @@
 [tasks]
-bmc
-cover
+bmc queue
+cover queue
+bmc_prepare_busy queue prepare_busy
+cover_prepare_busy queue prepare_busy
+prove_pre_match
 
 [options]
 bmc: mode bmc
@@ -8,8 +11,14 @@ bmc: mode bmc
 # 12 grew past the CI per-task ceiling (~15 min on a fast desktop). Every
 # counterexample this bench has produced appeared by step 7.
 bmc: depth 10
+bmc_prepare_busy: mode bmc
+bmc_prepare_busy: depth 10
 cover: mode cover
 cover: depth 20
+cover_prepare_busy: mode cover
+cover_prepare_busy: depth 20
+prove_pre_match: mode prove
+prove_pre_match: depth 3
 
 [engines]
 smtbmc boolector
@@ -21,8 +30,11 @@ read -sv mwp_dist_ram.sv
 read -sv load_unit.sv
 read -sv lq_l0_cache.sv
 read -sv lq_issue_selector.sv
-read -formal -sv load_queue.sv
+queue: read -formal -sv load_queue.sv
+prove_pre_match: read -formal -D F_LQ_PREMATCH_ONLY -sv load_queue.sv
+prepare_busy: chparam -set PREPARE_LOAD_WHILE_BUSY 1 load_queue
 prep -top load_queue
+prove_pre_match: select -assert-none t:$assume
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

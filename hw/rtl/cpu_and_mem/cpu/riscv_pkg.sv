@@ -1039,6 +1039,10 @@ package riscv_pkg;
   localparam int unsigned CachedLoadSlots = 4;
   localparam int unsigned CachedLoadSlotBits = 2;
 
+  // Direct-mapped, eight-byte LQ L0 entries. The top-level parameter permits
+  // capacity experiments without changing queue or coherence-table capacity.
+  localparam int unsigned LqL0Depth = 128;
+
   // DMA coherence: lock entries of the cache hierarchy's DMA
   // sequencer (frost_cache_hierarchy NUM_DMA_LOCK), mirrored by the core's
   // lq_coherence_port; a DMA write to a line holds one from admission until

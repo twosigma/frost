@@ -52,11 +52,24 @@ Each shim's structure follows the pipeline depth of the FU it wraps.
 - `int_muldiv_shim` drives both the multiplier and the divider off the same
   MUL_RS issue port. Both units are fully pipelined: the multiplier is
   `riscv_pkg::MulPipeDepth` stages deep (6 at XLEN=64) and the divider is
-  XLEN/2+1 stages (33). Each path has a tag queue and a 4-entry result FIFO.
+  XLEN/2+1 stages (33). Dedicated 32-bit pipes reduce MULW to 3 cycles and
+  DIVW/DIVUW/REMW/REMUW to 17; all word results are sign-extended. Each path
+  shares its tag tracker and 4-entry result FIFO between the two widths.
+  Word operations enter partway down the tracker. If a live full-width
+  operation is shifting into that slot, the word operation waits one cycle;
+  full-width operations can still issue. The RS holds its registered opcode
+  independently of ready, so this opcode-dependent busy signal has no
+  ready/valid loop. `SHORT_WORD_OPS=0` retains the full-width implementation
+  for comparison.
   Credit-based backpressure limits `fifo_count + inflight_count` to the FIFO
   depth, allowing at most four unflushed operations per path. The MUL
   completion tag may be arbitrary on invalid cycles; its adapter must qualify
   tag use and payload capture with valid.
+  The `int_muldiv_shim` formal target checks completion-slot ownership,
+  data-valid alignment, and credits with unbounded proofs under arbitrary
+  flush/backpressure, for both short-word and full-width configurations.
+  Arithmetic tests cover both configurations, including mixed widths,
+  overflow, and division by zero.
 - `fp_div_shim` wraps one `fp_div_sqrt_iter`, which runs FDIV.S/D and
   FSQRT.S/D on a shared iterative datapath, one operation at a time. A
   completion is visible 36 cycles after issue at single precision and 65 at

@@ -43,6 +43,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/recovery/ex_comb_synthesizer.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/frontend_validity_tracker.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/decoded_bundle_queue.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/commit/commit_actions.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/branch_resolution.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv

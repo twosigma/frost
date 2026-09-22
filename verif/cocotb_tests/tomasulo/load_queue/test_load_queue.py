@@ -27,6 +27,7 @@ Bus contract (hw/rtl/README.md, "Data-tier bus contract"): memory responses are 
 word across both beat lanes (correct at either addr[2]) unless dword=True.
 """
 
+import os
 import random
 from typing import Any
 
@@ -918,6 +919,13 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     dut_if.drive_mem_response(0xA55A_1234)
     model.mem_response(0xA55A_1234)
     await Timer(1, unit="ns")
+    # An already prepared younger load may launch on the response edge.
+    # Observe that edge as well as the later cycles; sampling only after it
+    # incorrectly requires an extra preparation bubble on router release.
+    release_request = dut_if.read_mem_request()
+    younger_seen = release_request["en"]
+    if younger_seen:
+        assert release_request["addr"] == younger_addr
     await dut_if.step()
     dut_if.clear_mem_response()
     dut_if.drive_sq_committed_empty(False)
@@ -925,7 +933,6 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     # Sample both signals before every edge so the younger request's one-cycle
     # pulse cannot be hidden by waiting for the independently held CDB result.
     result = dut_if.read_fu_complete()
-    younger_seen = False
     for _ in range(10):
         mem_req = dut_if.read_mem_request()
         if mem_req["en"]:
@@ -1182,6 +1189,178 @@ async def test_fld_single_beat(dut: Any) -> None:
         f"Expected 0x{fld_beat:016x}, got 0x{result.value:016x}"
     )
     await accept_fu_complete(dut_if)
+
+
+@cocotb.test()
+async def test_dword_response_bypass(dut: Any) -> None:
+    """LD/FLD/LR.D complete at response capture in both tiers, exactly once."""
+    from .lq_interface import LR_D
+
+    dut_if, _ = await setup(dut)
+    for cached in (False, True):
+        for kind in ("ld", "fld", "lr.d"):
+            await dut_if.reset_dut()
+            address = (0x8000_0000 if cached else 0) + 0x6800
+            value = 0x8765_4321_FEDC_BA98
+            dut_if.drive_rob_head_tag(3)
+            dut_if.drive_alloc(
+                3,
+                is_fp=kind == "fld",
+                size=MEM_SIZE_DOUBLE,
+                is_lr=kind == "lr.d",
+                amo_op=LR_D if kind == "lr.d" else 0,
+            )
+            await dut_if.step()
+            dut_if.clear_alloc()
+            dut_if.drive_addr_update(3, address)
+            await dut_if.step()
+            dut_if.clear_addr_update()
+            dut_if.drive_sq_all_older_known(True)
+            dut_if.drive_sq_forward(match=False, can_forward=False)
+            request = await wait_for_mem_request(dut_if)
+            assert request["en"] and request["addr"] == address
+            await dut_if.step()
+            dut_if.drive_mem_response(value, dword=True)
+            await dut_if.step()
+            dut_if.clear_mem_response()
+
+            # No polling here: the latency itself is the contract under test.
+            result = dut_if.read_fu_complete()
+            assert result.valid, f"{kind}, cached={cached}: missed response bypass"
+            assert result.tag == 3 and result.value == value and not result.exception
+            assert bool(dut.o_reservation_valid.value) == (kind == "lr.d")
+            for _ in range(3):
+                await dut_if.step()
+                assert dut_if.read_fu_complete() == result, "blocked result changed"
+                assert not dut_if.read_mem_request()["en"], "duplicate memory read"
+            await accept_fu_complete(dut_if)
+            for _ in range(5):
+                await dut_if.step()
+                assert not dut_if.read_fu_complete().valid, "duplicate completion"
+            assert dut_if.empty
+
+
+@cocotb.test()
+async def test_dword_response_backpressure_and_reordering(dut: Any) -> None:
+    """A held younger dword completion forces the older response to the RAM path."""
+    dut_if, model = await setup(dut)
+    requests = []
+    values = {1: 0x0123_4567_89AB_CDEF, 2: 0xFEDC_BA98_7654_3210}
+    for tag in (1, 2):
+        await alloc_and_addr(
+            dut_if,
+            model,
+            tag,
+            0x8000_7000 + tag * 8,
+            is_fp=tag == 2,
+            size=MEM_SIZE_DOUBLE,
+        )
+        dut_if.drive_sq_all_older_known(True)
+        dut_if.drive_sq_forward(match=False, can_forward=False)
+        request = await wait_for_mem_request(dut_if)
+        assert request["en"]
+        requests.append(request)
+        await dut_if.step()
+    assert requests[0]["id"] != requests[1]["id"]
+
+    dut_if.drive_mem_response(
+        values[2], dword=True, cached=True, slot=int(requests[1]["id"])
+    )
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = dut_if.read_fu_complete()
+    assert result.valid and result.tag == 2 and result.value == values[2]
+
+    dut_if.drive_mem_response(
+        values[1], dword=True, cached=True, slot=int(requests[0]["id"])
+    )
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    for _ in range(3):
+        assert dut_if.read_fu_complete() == result, "response overwrote held CDB result"
+        await dut_if.step()
+    await accept_fu_complete(dut_if)
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 1 and result.value == values[1]
+    await accept_fu_complete(dut_if)
+    for _ in range(5):
+        await dut_if.step()
+        assert not dut_if.read_fu_complete().valid, "response completed twice"
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_dword_response_flush_boundary(dut: Any) -> None:
+    """Full/partial flushes kill dword responses; an older owner still completes."""
+    dut_if, _ = await setup(dut)
+    for cached in (False, True):
+        for flush in ("full", "younger", "older"):
+            await dut_if.reset_dut()
+            model = LQModel()
+            address = (0x8000_0000 if cached else 0) + 0x7400
+            await alloc_and_addr(dut_if, model, 4, address, size=MEM_SIZE_DOUBLE)
+            dut_if.drive_sq_all_older_known(True)
+            dut_if.drive_sq_forward(match=False, can_forward=False)
+            request = await wait_for_mem_request(dut_if)
+            assert request["en"]
+            await dut_if.step()
+            if flush == "full":
+                dut_if.drive_flush_all()
+            else:
+                dut_if.drive_partial_flush(
+                    2 if flush == "younger" else 6, early_recovery=True
+                )
+            value = 0x9876_5432_10FE_DCBA
+            dut_if.drive_mem_response(value, dword=True)
+            await dut_if.step()
+            dut_if.clear_mem_response()
+            dut_if.clear_flush_all()
+            dut_if.clear_partial_flush()
+            result = await wait_for_fu_complete(dut_if)
+            if flush == "older":
+                assert result.valid and result.tag == 4 and result.value == value
+                await accept_fu_complete(dut_if)
+            else:
+                assert not result.valid, f"{flush} flush leaked a dword completion"
+            for _ in range(5):
+                await dut_if.step()
+                assert not dut_if.read_fu_complete().valid
+
+
+@cocotb.test()
+async def test_lr_d_response_dma_invalidation(dut: Any) -> None:
+    """DMA invalidation on LR.D response suppresses reservation, not its value."""
+    from .lq_interface import LR_D
+
+    dut_if, _ = await setup(dut)
+    address = 0x8000_7800
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_alloc(1, size=MEM_SIZE_DOUBLE, is_lr=True, amo_op=LR_D)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_addr_update(1, address)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    request = await wait_for_mem_request(dut_if)
+    assert request["en"]
+    await dut_if.step()
+    dut.i_coh_inval_valid.value = 1
+    dut.i_coh_inval_addr.value = address
+    value = 0xABCD_EF01_2345_6789
+    dut_if.drive_mem_response(value, dword=True)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    dut.i_coh_inval_valid.value = 0
+    result = dut_if.read_fu_complete()
+    assert result.valid and result.tag == 1 and result.value == value
+    assert not bool(dut.o_reservation_valid.value)
+    await accept_fu_complete(dut_if)
+    for _ in range(5):
+        await dut_if.step()
+        assert not dut_if.read_fu_complete().valid
+        assert not bool(dut.o_reservation_valid.value)
 
 
 # ============================================================================
@@ -4546,3 +4725,39 @@ async def test_amo_compute_survives_younger_partial_flush(dut: Any) -> None:
     result = await wait_for_fu_complete(dut_if, max_cycles=8)
     assert result.valid and result.tag == 5
     await accept_fu_complete(dut_if)
+
+
+@cocotb.test(skip=os.environ.get("FROST_TEST_PREPARE_LOAD_WHILE_BUSY") != "1")
+async def test_busy_port_prepares_load_without_probe_or_launch(dut: Any) -> None:
+    """Port ownership blocks scans and reads but permits inert staging."""
+    dut_if, model = await setup(dut)
+    address = 0x1800
+    dut_if.drive_mem_bus_busy(True)
+    dut_if.drive_sq_empty(False)
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    await alloc_and_addr(dut_if, model, rob_tag=3, address=address)
+    for _ in range(6):
+        assert not dut_if.read_mem_request()["en"]
+        assert not dut_if.read_sq_check()["valid"]
+        assert not int(dut.o_sq_check_capture_valid.value)
+        assert not dut_if.read_fu_complete().valid
+        await dut_if.step()
+    assert int(dut.sq_check_pending.value), "Busy port prevented inert load staging"
+    assert int(dut.sq_check_addr_q.value) == address
+
+    dut_if.drive_mem_bus_busy(False)
+    await Timer(1, unit="ns")
+    check = dut_if.read_sq_check()
+    assert check["valid"] and check["addr"] == address
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    await dut_if.step()
+    request = dut_if.read_mem_request()
+    assert request["en"] and request["addr"] == address
+    await dut_if.step()
+    dut_if.drive_mem_response(0x1234ABCD)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 3 and result.value == 0x1234ABCD

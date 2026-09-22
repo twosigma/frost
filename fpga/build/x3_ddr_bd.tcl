@@ -37,7 +37,11 @@ proc create_x3_ddr_bd {} {
   if {[info exists ::env(FROST_CPU_CLK_DIV)] && $::env(FROST_CPU_CLK_DIV) ne ""} {
     set cpu_clk_div $::env(FROST_CPU_CLK_DIV)
   }
-  set cpu_clk_hz [expr {300000000 / $cpu_clk_div}]
+  set cpu_base_clk_hz 300000000
+  if {[info exists ::env(FROST_CPU_BASE_CLK_HZ)] && $::env(FROST_CPU_BASE_CLK_HZ) ne ""} {
+    set cpu_base_clk_hz $::env(FROST_CPU_BASE_CLK_HZ)
+  }
+  set cpu_clk_hz [expr {$cpu_base_clk_hz / $cpu_clk_div}]
   set cpu_clk [create_bd_port -dir I -type clk -freq_hz $cpu_clk_hz cpu_clk]
   set jtag_clk [create_bd_port -dir I -type clk -freq_hz [expr {$cpu_clk_hz / 4}] jtag_clk]
 

@@ -205,7 +205,7 @@ retain the entire active write until `write_done`.
 
 ## L0 cache
 
-The L0 is a 128-entry direct-mapped cache with dword-granule (aligned 8-byte)
+The L0 defaults to a 128-entry direct-mapped cache with dword-granule (aligned 8-byte)
 lines, filled one full beat per memory response, implemented inside the LQ by
 [`lq_l0_cache.sv`](lq_l0_cache.sv). It is a hit-path optimization: loads check
 it in parallel with SQ disambiguation, and a hit returns the result the same
@@ -218,6 +218,24 @@ The first two sources use separate invalidate ports so the late AMO
 write-done acknowledge is not muxed in front of the tag read and compare; AMO
 serialization keeps them mutually exclusive, which the LQ asserts. That keeps
 the cache coherent without a write-through path of its own.
+
+`L0_CACHE_DEPTH` is forwarded from `frost` through the CPU to this cache.
+Simulation can compare capacities with `FROST_VERILATOR_EXTRA_ARGS=-GL0_CACHE_DEPTH=256`.
+The implementation requires a power of two from 8 through 2^28: at least one
+index bit above the four-dword coherence line and one physical tag bit.
+The regression configurations are 128 and 256 entries; larger values need
+their own resource and timing evaluation. Addresses remain canonical physical
+32-bit addresses, with the device quadrant excluded from hits.
+
+Changing L0 depth changes neither the eight LQ entries, four cached response
+slots, 32 ROB observation slots, nor three DMA admission locks. A line still
+invalidates four dword indices in one edge, with no cache scan or response
+needed from L0. In-flight fill suppression and the coherence observation table
+continue to cover loads after LQ release through retirement. DMA admission
+still waits for overlapping AMO/LR/SC ownership; admitted lines hold new
+atomic launches while invalidation and the hierarchy's probe/acknowledgement
+service progress independently of L0 occupancy. Capacity must not introduce
+an admission dependency on a load waiting for that same DMA service.
 
 Three things the cache does not do:
 
@@ -370,14 +388,19 @@ Two bypass paths each shave a cycle off the load critical latency.
   cycle before the real issue (`o_pre_issue_rob_tag` + `o_pre_issue_needs_lq`).
   The LQ pre-registers the CAM match against that tag, so the entry appears
   addr-valid the same cycle MEM_RS issues (`entry_addr_valid_now`). This
-  removes the flop between RS issue and SQ disambiguation.
+  removes the flop between RS issue and SQ disambiguation. Tag matches and
+  the issue-valid qualifier are captured in parallel and combined after
+  their registers, keeping late RS readiness/classification off the CAM
+  register inputs. `load_queue:prove_pre_match` proves unrestricted
+  equivalence to the original combined register, including reset and flush.
 - `cdb_stage` completion bypass. On a memory response, L0 fast-path hit, or SQ
   forward, the LQ writes `cdb_stage` directly from the response, cache, or
   forward data path instead of routing through `lq_data_valid` and a priority
-  encoder. The entry frees and the CDB broadcast arms the same cycle. AMOs
-  stay on the standard path, as do DOUBLE-size memory responses; L0-hit and
-  forwarded FLDs bypass, since both deliver the full 64-bit payload in a
-  single probe.
+  encoder. The entry frees and the CDB broadcast arms the same cycle. LD,
+  FLD and LR.D responses bypass with the complete 64-bit beat, as do L0 hits
+  and SQ forwards. LR still establishes its reservation at response capture.
+  AMOs wait for their write phase. An occupied CDB stage or an older ready
+  completion sends the response through the ordinary per-entry data path.
 
 ## Back-to-back issue
 
@@ -544,3 +567,19 @@ reset-based protocol checks.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
+
+### Preparing a load while the shared port is busy
+
+`PREPARE_LOAD_WHILE_BUSY=1` allows the existing candidate-address register to
+capture or replace its load while `i_mem_bus_busy` is asserted. The default
+is zero. Preparation itself neither probes the SQ nor observes memory: the
+SQ check and capture outputs, L0-hit consumption, and physical memory handoff
+retain their bus-busy gates. Flush, response-debt, age and admission rules
+are unchanged. No new request credit or coherence observation is created;
+loads remain covered by the existing observation table through retirement.
+
+`load_queue_prepare_busy` runs the full LQ suite and a directed test requiring
+inert staging during port ownership, no SQ/read/result side effect, and
+immediate SQ checking on release. The formal BMC and cover tasks also run
+with the option enabled. Enabling SQ probes or L0 hits while busy is a
+separate, unmerged experiment and is not the meaning of this parameter.

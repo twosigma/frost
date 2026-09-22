@@ -38,6 +38,8 @@
 module load_queue #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
+    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
     // Cached memory tier (high-address region). A load whose address falls in
     // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is served by the multi-cycle
@@ -1147,22 +1149,48 @@ module load_queue #(
   end
 
   // Pre-computed CAM match: registered 1 cycle early from MEM_RS look-ahead.
+  // Capture the late issue-valid qualifier separately from the tag matches.
+  // It includes RS readiness and payload classification; distributing it
+  // across the pre-match D cones serialized that path with the LQ CAM.
+  // Both registers have the same reset/flush and edge, so their post-Q AND
+  // equals registering the original qualified match, without an added cycle.
   logic [DEPTH-1:0] addr_update_pre_match;
+  logic [DEPTH-1:0] addr_update_pre_match_tags_q;
+  logic addr_update_pre_issue_valid_q;
   logic [DEPTH-1:0] addr_update_pre_match_q;
 
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      addr_update_pre_match[i] = i_pre_issue_needs_lq &&
-                                 lq_valid[i] &&
+      addr_update_pre_match[i] = lq_valid[i] &&
                                  !lq_addr_valid[i] &&
                                  (lq_rob_tag[i] == i_pre_issue_rob_tag);
     end
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) addr_update_pre_match_q <= '0;
-    else addr_update_pre_match_q <= addr_update_pre_match;
+    if (!i_rst_n || i_flush_all) begin
+      addr_update_pre_match_tags_q  <= '0;
+      addr_update_pre_issue_valid_q <= 1'b0;
+    end else begin
+      addr_update_pre_match_tags_q  <= addr_update_pre_match;
+      addr_update_pre_issue_valid_q <= i_pre_issue_needs_lq;
+    end
   end
+  assign addr_update_pre_match_q = addr_update_pre_match_tags_q &
+      {DEPTH{addr_update_pre_issue_valid_q}};
+
+`ifdef FORMAL
+  // Independent old-shape register proves the retiming for arbitrary tag,
+  // valid, reset and full-flush inputs, not just legal issue sequences.
+  logic [DEPTH-1:0] f_pre_match_unsplit_q;
+  logic f_pre_match_initialized = 1'b0;
+  always @(posedge i_clk) begin
+    f_pre_match_initialized <= 1'b1;
+    if (!i_rst_n || i_flush_all) f_pre_match_unsplit_q <= '0;
+    else f_pre_match_unsplit_q <= addr_update_pre_match & {DEPTH{i_pre_issue_needs_lq}};
+    if (f_pre_match_initialized) assert (addr_update_pre_match_q == f_pre_match_unsplit_q);
+  end
+`endif
 
   // Head-priority uses the registered match: for ordinary loads it is a
   // fairness/performance hint, and for head MMIO/LR loads it is the
@@ -1550,7 +1578,10 @@ module load_queue #(
   // partial-flush term must remain because recovery selectively preserves LQ
   // rows and does not bulk-reset the staged SQ-check controls.
   logic sq_check_gate_early;
-  assign sq_check_gate_early = !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_en;
+  // Preparing an address has no externally visible effect. SQ probe/capture,
+  // L0 hits and memory handoff retain their independent bus-ownership gates.
+  assign sq_check_gate_early = !drop_mem_response_pending &&
+      (PREPARE_LOAD_WHILE_BUSY || !i_mem_bus_busy) && !i_flush_en;
 
   assign sq_check_capture = (!sq_check_pending || sq_check_will_clear) &&
       issue_mem_found && sq_check_gate_early;
@@ -1790,7 +1821,7 @@ module load_queue #(
   logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
   lq_l0_cache #(
-      .DEPTH(128),
+      .DEPTH(L0_CACHE_DEPTH),
       .XLEN (XLEN)
   ) u_l0_cache (
       .i_clk  (i_clk),
@@ -2101,7 +2132,7 @@ module load_queue #(
   // to install in the persistent L0: branch recovery does not change
   // architectural memory, and the L0 already survives partial flushes.
   // Keeping issued_entry_flushed out of this predicate also prevents the
-  // early-flush tag/age comparison from feeding all 128 L0 valid-bit Ds.
+  // early-flush tag/age comparison from feeding every L0 valid-bit D.
   //
   // Full-flush-cycle and already-pending stale responses remain ineligible.
   // MMIO/LR/AMO exclusions and the cached-tier store-invalidation guards below
@@ -2237,9 +2268,9 @@ module load_queue #(
   // otherwise idle.  Drives cdb_stage directly from the response-side formatted
   // result, shaving one head-wait cycle per eligible load.  Falls back to the
   // standard data_valid path when cdb_stage is busy or when an older entry is
-  // already firing through issue_cdb_fire.  AMOs (need write phase) and
-  // DOUBLE-size memory responses stay on the standard path (the L0-hit and
-  // SQ-forward bypasses below do carry DOUBLE payloads).
+  // already firing through issue_cdb_fire. AMOs still need their write phase.
+  // LD, FLD and LR.D return a complete dword in one response beat, so they
+  // use the same bypass as smaller loads; no second beat is outstanding.
   logic resp_bypass_ok;
   logic resp_bypass_fire;
   logic cache_hit_bypass_fire;
@@ -2250,9 +2281,7 @@ module load_queue #(
   logic [FLEN-1:0] resp_bypass_value;
   logic [FLEN-1:0] cache_hit_bypass_value;
 
-  assign resp_bypass_ok =
-      accept_mem_response && !issued_is_amo &&
-      !(riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE);
+  assign resp_bypass_ok = accept_mem_response && !issued_is_amo;
 
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                             resp_bypass_ok && !i_flush_en;
@@ -2277,8 +2306,7 @@ module load_queue #(
   logic resp_bypass_data_sel;
   logic misalign_bypass_data_sel;
   assign resp_bypass_data_sel = i_mem_read_valid && resp_outstanding &&
-      !resp_drop && lq_valid[issued_idx] && !issued_is_amo &&
-      !(riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE);
+      !resp_drop && lq_valid[issued_idx] && !issued_is_amo;
   assign misalign_bypass_data_sel = !resp_bypass_data_sel && sq_check_misaligned;
 
   // cache_hit_fast_path is already flush-gated at its own assign.
@@ -2305,9 +2333,11 @@ module load_queue #(
 
   // Mirror issue_cdb_result formatting, but sourced from the response-side
   // signals (lu_data_out / lu_cache_out / image beat) instead of the LUTRAM.
-  // DOUBLE responses never reach this arm (resp_bypass_ok excludes them).
   always_comb begin
-    if (issued_is_fp) begin
+    if (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE) begin
+      // LD / FLD / LR.D: preserve all 64 response bits, including FP payloads.
+      resp_bypass_value = i_mem_read_data;
+    end else if (issued_is_fp) begin
       // FLW: NaN-box the addressed raw word (lu_data_out's word arm)
       resp_bypass_value = {32'hFFFF_FFFF, lu_data_out[31:0]};
     end else begin
@@ -3717,6 +3747,7 @@ module load_queue #(
   // Formal Verification
   // ===========================================================================
 `ifdef FORMAL
+`ifndef F_LQ_PREMATCH_ONLY
 `ifdef LQ_AMO_COMPUTE_LOCAL_PROOF
   // Actual-module local transition proof. Only assertion scope changes;
   // datapath, FSM, queues, and external inputs remain the production RTL.
@@ -4574,6 +4605,7 @@ module load_queue #(
   end
 
 `endif  // LQ_AMO_COMPUTE_LOCAL_PROOF
+`endif  // F_LQ_PREMATCH_ONLY
 `endif  // FORMAL
 
 endmodule : load_queue

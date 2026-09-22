@@ -227,6 +227,16 @@ def test_build_main_refreshes_actual_completed_report_stage(
     script_dir = tmp_path / "fpga/build"
     work_dir = script_dir / "x3/work"
     work_dir.mkdir(parents=True)
+    (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
+        json.dumps(
+            {
+                "schema": "x3_netlist_config_v2",
+                "single_core_performance": 0,
+                "cpu_base_clock_hz": 300000000,
+                "cpu_clock_div": 1,
+            }
+        )
+    )
     (work_dir / fpga_build.STEP_REQUIRES_CHECKPOINT[step]).write_text(
         "checkpoint fixture\n"
     )
@@ -1529,8 +1539,10 @@ def test_mispredict_dispatch_recovery_has_one_structural_gate() -> None:
     assert "p_id_valid_gate_matches_legacy" in pipeline_control
 
     cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()
-    assert ".o_id_valid_preflush(id_valid_preflush)" in cpu
-    assert ".o_id_valid_2_preflush(id_valid_2_preflush)" in cpu
+    assert ".o_id_valid_preflush(direct_id_valid_preflush)" in cpu
+    assert "assign id_valid_preflush = direct_id_valid_preflush;" in cpu
+    assert ".o_id_valid_2_preflush(direct_id_valid_2_preflush)" in cpu
+    assert "assign id_valid_2_preflush = direct_id_valid_2_preflush;" in cpu
     assert ".i_valid(id_valid_preflush)" in cpu
     assert ".i_valid_2(id_valid_2_preflush)" in cpu
     assert ".i_flush(dispatch_flush)" in cpu
@@ -1660,9 +1672,35 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
     ).read_text()
     assert "parameter int unsigned CPU_CLK_DIV = 1" in top
     assert "localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;" in top
-    assert "localparam int unsigned CpuClkHz = 300_000_000 / CPU_CLK_DIV;" in top
+    assert "localparam int unsigned CpuClkHz = CPU_BASE_CLK_HZ / CPU_CLK_DIV;" in top
     assert ".CLKOUT0_DIVIDE_F(CpuClkOutDivide)" in top
     assert ".CLK_FREQ_HZ(CpuClkHz)," in top
+
+
+@pytest.mark.parametrize("divider", (1, 2, 3, 4))
+def test_roadmap_clock_rejects_rated_clock_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, divider: int
+) -> None:
+    """A target-clock build must never reuse a passing 300 MHz clock report."""
+    monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", "322265625")
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", str(divider))
+    _write_place_gate(tmp_path)
+    gate = tmp_path / "post_place_gate.txt"
+    text = gate.read_text()
+    gate.write_text(
+        text.replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={3.333 * divider:.3f}")
+    )
+    assert not fpga_build.x3_place_gate_passes(gate)
+    target_period = 3.333 * 300_000_000 * divider / 322_265_625
+    gate.write_text(
+        text.replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={target_period:.3f}")
+    )
+    assert fpga_build.x3_place_gate_passes(gate)
+    policy = fpga_build.resolve_functional_build_policy(
+        divider, 322_265_625, ["ExtraNetDelay_high"], 6, False, ["Explore"], False
+    )
+    assert policy.clock_freq == 322_265_625 // divider
+    assert not policy.update_readme
 
 
 def test_only_post_place_physopt_overconstrains_by_default() -> None:
@@ -3210,11 +3248,23 @@ def test_missing_lineage_sidecar_names_the_file_and_the_recovery(
 
 
 @pytest.mark.parametrize("perf_counters", ("0", "1"))
+@pytest.mark.parametrize("single_core_performance", ("0", "1"))
+@pytest.mark.parametrize(
+    "base_clock, divider", (("300000000", "1"), ("322265625", "2"))
+)
 def test_post_synth_promotion_stamps_the_netlist_perf_counters(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, perf_counters: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    perf_counters: str,
+    single_core_performance: str,
+    base_clock: str,
+    divider: str,
 ) -> None:
-    """The synthesis-time counter option is recorded with its checkpoint."""
+    """Synthesis options are recorded once with their checkpoint."""
     monkeypatch.setenv("FROST_PERF_COUNTERS", perf_counters)
+    monkeypatch.setenv("FROST_SINGLE_CORE_PERFORMANCE", single_core_performance)
+    monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", base_clock)
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", divider)
     source, dest = tmp_path / "source", tmp_path / "dest"
     source.mkdir()
     dest.mkdir()
@@ -3222,15 +3272,25 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
     stamp = dest / fpga_build.X3_NETLIST_CONFIG_NAME
     assert json.loads(stamp.read_text()) == {
-        "schema": "x3_netlist_config_v1",
+        "schema": "x3_netlist_config_v2",
         "perf_counters": int(perf_counters),
+        "single_core_performance": int(single_core_performance),
+        "cpu_base_clock_hz": int(base_clock),
+        "cpu_clock_div": int(divider),
     }
     # Later stages inherit the netlist, so they must not restamp it: a resumed
     # run's environment says nothing about the checkpoint it was handed.
     monkeypatch.setenv("FROST_PERF_COUNTERS", "1" if perf_counters == "0" else "0")
+    monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", "123")
+    monkeypatch.setenv("FROST_CPU_CLK_DIV", "123")
     (source / "post_opt.dcp").write_bytes(b"optimized netlist")
     fpga_build.copy_results_to_main_work(source, dest, "post_opt.dcp", "post_opt")
     assert json.loads(stamp.read_text())["perf_counters"] == int(perf_counters)
+    assert json.loads(stamp.read_text())["single_core_performance"] == int(
+        single_core_performance
+    )
+    assert json.loads(stamp.read_text())["cpu_base_clock_hz"] == int(base_clock)
+    assert json.loads(stamp.read_text())["cpu_clock_div"] == int(divider)
 
 
 def test_failed_synthesis_leaves_the_previous_netlist_stamp(tmp_path: Path) -> None:
@@ -3550,3 +3610,117 @@ def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
         fpga_build.capture_x3_input_lineage(fork / "work", "post_place_physopt.dcp")
         is not None
     )
+
+
+@pytest.mark.parametrize("divider", (1, 2))
+def test_experimental_performance_profile_does_not_publish_rating(divider: int) -> None:
+    """Even at the rated clock, an experimental netlist cannot rewrite the rating."""
+    policy = fpga_build.resolve_functional_build_policy(
+        divider,
+        300_000_000,
+        ["ExtraNetDelay_high"],
+        1,
+        False,
+        ["Explore"],
+        False,
+        single_core_performance=True,
+    )
+    assert policy.single_core_performance
+    assert not policy.update_readme
+
+
+@pytest.mark.parametrize("enabled", (False, True))
+def test_performance_cli_overrides_inherited_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool
+) -> None:
+    """The selected synthesis profile overrides a stale opposite environment."""
+    monkeypatch.setenv("FROST_SINGLE_CORE_PERFORMANCE", "0" if enabled else "1")
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "x3", "--stop-after", "synth"]
+        + (["--single-core-performance"] if enabled else []),
+    )
+    observed = []
+
+    def compile_firmware(_root: Path, _output: Path, _clock: int) -> bool:
+        observed.append(fpga_build.os.environ["FROST_SINGLE_CORE_PERFORMANCE"])
+        return False
+
+    monkeypatch.setattr(fpga_build, "compile_hello_world", compile_firmware)
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 1
+    assert observed == ["1" if enabled else "0"]
+
+
+def test_performance_profile_requires_synthesis(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resumed checkpoint cannot be silently relabeled as another architecture."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "x3", "--start-at", "place", "--single-core-performance"],
+    )
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "overrides, publish",
+    [
+        ({}, True),
+        ({"single_core_performance": 1}, False),
+        ({"cpu_base_clock_hz": 322265625}, False),
+        ({"cpu_clock_div": 2}, False),
+        ({"schema": "x3_netlist_config_v1"}, False),
+        (None, False),
+    ],
+)
+def test_resumed_build_uses_recorded_profile_for_readme(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overrides: dict | None,
+    publish: bool,
+) -> None:
+    """Default CLI options cannot publish an experimental checkpoint as rated."""
+    work = _sweep_input(tmp_path, "place")
+    if overrides is not None:
+        config = {
+            "schema": "x3_netlist_config_v2",
+            "single_core_performance": 0,
+            "cpu_base_clock_hz": 300000000,
+            "cpu_clock_div": 1,
+            **overrides,
+        }
+        (work / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(json.dumps(config))
+    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["build.py", "x3", "--start-at", "place", "--stop-after", "place"],
+    )
+    monkeypatch.setattr(
+        fpga_build,
+        "run_x3_step_directive_sweep",
+        lambda *_args, **_kwargs: (True, -1.0, "post_place"),
+    )
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+    calls = []
+    monkeypatch.setattr(
+        timing_util_summary,
+        "collect_all_board_utilization",
+        lambda *_args, **_kwargs: {"x3": {}},
+    )
+    monkeypatch.setattr(
+        timing_util_summary,
+        "update_readme_utilization",
+        lambda *_args: calls.append("publish"),
+    )
+    fpga_build.main()
+    assert bool(calls) is publish

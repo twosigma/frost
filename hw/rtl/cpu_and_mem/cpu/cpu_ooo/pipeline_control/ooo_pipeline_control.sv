@@ -31,6 +31,7 @@
  */
 
 module ooo_pipeline_control #(
+    parameter bit QUEUED_FRONTEND = 1'b0,
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
@@ -47,6 +48,7 @@ module ooo_pipeline_control #(
     input logic i_mret_taken,
     input logic [XLEN-1:0] i_trap_target,
     input logic i_dispatch_stall,
+    input logic i_frontend_resource_stall,
     input logic i_csr_wb_pending,
     input logic i_branch_unresolved_decrement,
     input logic i_front_end_indirect_control_flow_pending,
@@ -268,7 +270,8 @@ module ooo_pipeline_control #(
   // CSR twice.
   logic csr_alloc_held_id_q;
   assign frontend_stall =
-      (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
+      ((QUEUED_FRONTEND ? i_frontend_resource_stall : dispatch_stall) ||
+       csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
        front_end_cf_serialize_stall || i_fetch_pa_hold) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
@@ -351,10 +354,14 @@ module ooo_pipeline_control #(
   // A CSR allocated while ID was independently held must get one release
   // cycle in which ID advances but dispatch remains invalid. Pin that exact
   // contract so a later id_stall priority change cannot duplicate the CSR.
-  p_held_csr_release_is_advance_only :
-  assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
+  // Queued dispatch removes a CSR immediately, independently of ID advance;
+  // its consumed-image guard replaces the held-ID release contract.
+  if (!QUEUED_FRONTEND) begin : gen_direct_csr_release
+    p_held_csr_release_is_advance_only :
+    assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
       (replay_after_serialize_stall_next && csr_alloc_held_id_q)
       |=> (id_stall_q && !serializing_alloc_fire_comb));
+  end
 `endif
 `endif
 

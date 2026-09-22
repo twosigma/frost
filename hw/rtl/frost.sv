@@ -48,6 +48,11 @@ module frost #(
     // boards/xilinx_frost_subsystem.sv, and simulation enables it via -G (see
     // tests/Makefile).
     parameter int unsigned ENABLE_CACHED_TIER = 0,
+    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter bit EARLY_LOAD_WAKEUP = 1'b0,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
+    parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
+    parameter int unsigned DECODED_QUEUE_DEPTH = 0,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
@@ -281,6 +286,11 @@ module frost #(
       .HANG_TRIAGE_REEMIT_CYCLES(HANG_TRIAGE_REEMIT_CYCLES),
       .DEBUG_JTAG_TAP(DEBUG_JTAG_TAP),
       .PERF_COUNTERS(PERF_COUNTERS),
+      .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
+      .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
+      .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
+      .INT_RS_DEPTH(INT_RS_DEPTH),
+      .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH),
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
       .RAW_LOOPBACK(RAW_LOOPBACK)
   ) cpu_and_memory_subsystem (

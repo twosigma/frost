@@ -810,6 +810,11 @@ if {$step eq "synth"} {
     # --cpu-clock-div exports FROST_CPU_CLK_DIV, and the board top takes it
     # as its CPU_CLK_DIV parameter (MMCM output divide, CLK_FREQ_HZ).
     set cpu_clk_div [getenv_default FROST_CPU_CLK_DIV 1]
+    set cpu_base_clk_hz [getenv_default FROST_CPU_BASE_CLK_HZ 300000000]
+    if {$cpu_base_clk_hz ni {300000000 322265625}} {
+        error "Unsupported X3 CPU base clock: $cpu_base_clk_hz"
+    }
+    lappend synth_args -generic CPU_BASE_CLK_HZ=$cpu_base_clk_hz
     if {$cpu_clk_div ne "1"} {
         lappend synth_args -generic CPU_CLK_DIV=$cpu_clk_div
         puts "CPU clock divider $cpu_clk_div (generic CPU_CLK_DIV)"
@@ -825,6 +830,11 @@ if {$step eq "synth"} {
         lappend synth_args -generic PERF_COUNTERS=1
         puts "Profiling counters included (generic PERF_COUNTERS)"
     }
+    set single_core_performance [getenv_default FROST_SINGLE_CORE_PERFORMANCE 0]
+    if {$single_core_performance ni {0 1}} {
+        error "FROST_SINGLE_CORE_PERFORMANCE must be 0 or 1"
+    }
+    lappend synth_args -generic SINGLE_CORE_PERFORMANCE=$single_core_performance
     synth_design {*}$synth_args
 
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1"} {

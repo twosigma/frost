@@ -58,8 +58,9 @@ payload.bin: payload.elf
 payload.S: payload.elf
 	$(OBJDUMP) -d $< > $@
 
-# One packer run writes every image; sw.mem is the representative target.
-sw.mem sw.txt sw_ddr.mem sw_ddr.txt: payload.bin $(FW_BIN) $(BOARD_DIR)/frost_boot_image.py
+# One packer run writes every image. Group the outputs so parallel make cannot
+# launch competing packers that overwrite the shared DTS/DTB and shim files.
+sw.mem sw.txt sw_ddr.mem sw_ddr.txt &: payload.bin $(FW_BIN) $(BOARD_DIR)/frost_boot_image.py
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) python3 $(BOARD_DIR)/frost_boot_image.py \
 	    --firmware $(FW_BIN) --payload payload.bin --out . --cross $(RISCV_PREFIX) \
 	    --bootargs "" --model "FROST OpenSBI smoke"

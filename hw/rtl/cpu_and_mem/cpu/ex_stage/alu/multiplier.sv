@@ -18,9 +18,10 @@
  * Integer multiplier for the RISC-V M-extension: a sign-correction wrapper
  * around the shared dsp_tiled_multiplier_unsigned core, run at (XLEN+1)-bit
  * operands (plan decision D7). One operation may enter every cycle, and
- * latency is the same for every op: MUL, MULH, MULHSU, MULHU, and at XLEN=64
- * MULW. There are no early-outs, so the shim's shift-register tracker stays
- * simple.
+ * latency is the same for every op sent here: MUL, MULH, MULHSU and MULHU.
+ * At XLEN=64 this also handles MULW when the shim's SHORT_WORD_OPS fallback
+ * is selected; otherwise MULW uses a separate 32-bit tiled core. There are
+ * no early-outs in this full-width path.
  *
  * Pipeline:
  *   S0:         convert the signed operands to (XLEN+1)-bit magnitudes and

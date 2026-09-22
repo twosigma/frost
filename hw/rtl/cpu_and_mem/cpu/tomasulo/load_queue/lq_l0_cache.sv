@@ -39,7 +39,7 @@
  */
 
 module lq_l0_cache #(
-    parameter int unsigned DEPTH = 128,
+    parameter int unsigned DEPTH = riscv_pkg::LqL0Depth,
     parameter int unsigned XLEN  = riscv_pkg::XLEN
 ) (
     input logic i_clk,
@@ -94,6 +94,14 @@ module lq_l0_cache #(
   // the tag stays 32-bit-relative at any XLEN (D3: producers canonicalize
   // bits [XLEN-1:32] to zero before addresses reach the memory tier).
   localparam int unsigned TagWidth   = 32 - 3 - IndexWidth;
+
+  // Four adjacent dwords form one DMA line. The index needs at least one
+  // bit above that line, and at least one physical tag bit must remain.
+  initial begin
+    if (DEPTH < 8 || DEPTH > 2 ** 28 || (DEPTH & (DEPTH - 1)) != 0)
+      $fatal(1, "L0 DEPTH must be a power of two in [8, 2**28]");
+    if (XLEN < 32) $fatal(1, "L0 requires at least 32 physical address bits");
+  end
 
   // ===========================================================================
   // Storage
@@ -320,8 +328,9 @@ module lq_l0_cache #(
 
   // A fill followed by a lookup at the same dword-aligned address hits.
   // The fill address is tracked across one cycle so the assertion can name it.
-  reg [XLEN-1:0] f_fill_addr_q;
-  reg            f_fill_valid_q;
+  reg [                  XLEN-1:0] f_fill_addr_q;
+  reg [riscv_pkg::MemDataBits-1:0] f_fill_data_q;
+  reg                              f_fill_valid_q;
   always @(posedge i_clk) begin
     if (!i_rst_n) begin
       f_fill_valid_q <= 1'b0;
@@ -333,6 +342,7 @@ module lq_l0_cache #(
                           (i_invalidate_line_addr[5+:(IndexWidth-2)] ==
                            i_fill_addr[5+:(IndexWidth-2)]));
       f_fill_addr_q <= i_fill_addr;
+      f_fill_data_q <= i_fill_data;
     end
   end
 
@@ -353,6 +363,24 @@ module lq_l0_cache #(
              && i_fill_addr[(3+IndexWidth)+:TagWidth]
                 != f_fill_addr_q[(3+IndexWidth)+:TagWidth])) begin
       p_fill_then_hit : assert (o_lookup_hit);
+      p_fill_data_preserved : assert (o_lookup_data == f_fill_data_q);
+    end
+  end
+
+  // DMA invalidation is tag-blind and wins even over a simultaneous fill.
+  // Check each dword independently at every supported capacity.
+  for (genvar k = 0; k < 4; k++) begin : gen_formal_line_invalidate
+    always @(posedge i_clk) begin
+      if (f_past_valid && $past(i_rst_n && i_invalidate_line_valid)) begin
+        assert (!valid[{$past(i_invalidate_line_addr[5+:(IndexWidth-2)]), 2'(k)}]);
+      end
+    end
+  end
+
+  always_comb begin
+    if (i_invalidate_line_valid &&
+        (i_lookup_addr[5+:(IndexWidth-2)] == i_invalidate_line_addr[5+:(IndexWidth-2)])) begin
+      p_dma_suppresses_same_cycle_lookup : assert (!o_lookup_hit);
     end
   end
 

@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from collections.abc import Mapping
+from xml.etree import ElementTree
 
 import pytest
 import cocotb
@@ -974,9 +975,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Load queue unit tests (allocation, disambiguation, router-pending "
             "cancellation/debt, dependency cleanup, conservative dispatch "
-            "back-pressure, normal-AMO compute/kill/coherence, memory, and CDB)"
+            "back-pressure, normal-AMO compute/kill/coherence, single-beat "
+            "dword completion bypass, memory, and CDB)"
         ),
     ),
+    "load_queue_prepare_busy": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
+        hdl_toplevel_module="load_queue",
+        description="Load queue with inert preparation during bus ownership; probes and launches remain gated",
+        verilator_extra_args=("-GPREPARE_LOAD_WHILE_BUSY=1",),
+        extra_env=(("FROST_TEST_PREPARE_LOAD_WHILE_BUSY", "1"),),
+    ),
+    **{
+        f"lq_l0_cache_{depth}": CocotbRunConfig(
+            python_test_module="cocotb_tests.tomasulo.load_queue.test_lq_l0_cache",
+            hdl_toplevel_module="lq_l0_cache",
+            description=f"{depth}-entry L0: capacity, replacement, fill data and DMA invalidation",
+            verilator_extra_args=(f"-GDEPTH={depth}",),
+            extra_env=(("FROST_TEST_L0_DEPTH", str(depth)),),
+        )
+        for depth in (128, 256)
+    },
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
         hdl_toplevel_module="store_queue",
@@ -1020,7 +1039,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "int_muldiv_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",
-        description="Integer MUL/DIV shim unit tests (MUL, MULH, DIV, REM, flush)",
+        description=(
+            "Integer MUL/DIV shim: mixed 32/64-bit arithmetic, short word latency, "
+            "completion collisions, credits, backpressure, and flushes"
+        ),
+    ),
+    "int_muldiv_shim_full_width": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
+        hdl_toplevel_module="int_muldiv_shim",
+        description="Full-width word-op fallback: arithmetic, latency, credits, and recovery",
+        verilator_extra_args=("-GSHORT_WORD_OPS=0",),
+        extra_env=(("FROST_TEST_SHORT_WORD_OPS", "0"),),
     ),
     "fp_add_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_add_shim",
@@ -1531,6 +1560,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frontend_validity_tracker",
         description="CPU OOO frontend validity/control-flow tracker tests",
     ),
+    "decoded_bundle_queue": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.frontend.test_decoded_bundle_queue",
+        hdl_toplevel_module="decoded_bundle_queue",
+        description="Decoded bundle ordering, held producer ownership, backpressure and flush",
+        verilator_extra_args=("-GWIDTH=32",),
+    ),
+    "decoded_bundle_queue_depth2": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.frontend.test_decoded_bundle_queue",
+        hdl_toplevel_module="decoded_bundle_queue",
+        description="Two-entry decoded queue ownership and pointer wraparound",
+        verilator_extra_args=("-GWIDTH=32", "-GDEPTH=2"),
+    ),
     "perf_counter_aggregator": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_counter_aggregator",
         hdl_toplevel_module="perf_counter_aggregator",
@@ -1655,6 +1696,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tomasulo integration tests with production dispatch done repair",
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
     ),
+    "tomasulo_wrapper_early_load": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description="Tomasulo integration with early load wakeup and production done repair",
+        verilator_extra_args=(
+            "-GENABLE_DISPATCH_DONE_REPAIR=1",
+            "-GEARLY_LOAD_WAKEUP=1",
+        ),
+    ),
+    "tomasulo_load_wakeup": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_load_wakeup",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description=(
+            "Early load wakeup: load-address/store-data dependencies across dispatch, "
+            "registered CDB contention, duplicate delivery, and recovery"
+        ),
+        verilator_extra_args=(
+            "-GENABLE_DISPATCH_DONE_REPAIR=1",
+            "-GEARLY_LOAD_WAKEUP=1",
+        ),
+    ),
     "tomasulo_coherence": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_coherence",
         hdl_toplevel_module="tomasulo_wrapper",
@@ -1663,6 +1725,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "invalidation and release against AMO launches, SC fires, a flushed SC "
             "and a store-queue-forwarded load, swept across the race window"
         ),
+    ),
+    "tomasulo_coherence_l0_256": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_coherence",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description=(
+            "DMA coherence races with the 256-entry L0 and early load wakeup, "
+            "including executed loads tracked through retirement"
+        ),
+        verilator_extra_args=("-GL0_CACHE_DEPTH=256", "-GEARLY_LOAD_WAKEUP=1"),
     ),
     "tomasulo_wrapper_split_rs": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_split_rs",
@@ -1960,8 +2031,8 @@ class CocotbRunner:
         if simulation_result.returncode != 0:
             return True
 
-        # Without captured output (standalone mode) the return code is all
-        # there is.
+        # run_simulation has already validated the fresh XML report. Without
+        # captured output there are no additional log indicators to inspect.
         has_captured_output = (
             simulation_result.stdout is not None
             and simulation_result.stderr is not None
@@ -2148,6 +2219,11 @@ class CocotbRunner:
             pythonpath = env.get("PYTHONPATH", "")
             cmd = f"export PYTHONPATH='{pythonpath}' && make COCOTB_TEST_MODULES='{self.python_test_module}' TOPLEVEL={self.hdl_toplevel_module}"
 
+            # Never accept a preceding run's report when make skips execution.
+            # Sweep workers already assign distinct result paths.
+            report_path = Path(env.get("COCOTB_RESULTS_FILE", "results.xml"))
+            report_path.unlink(missing_ok=True)
+
             if capture_output:
                 result = subprocess.run(
                     ["bash", "-c", cmd],
@@ -2170,6 +2246,20 @@ class CocotbRunner:
             # Record the build markers only after a successful run, so a failed
             # compile is never recorded as built.
             if result.returncode == 0:
+                try:
+                    report = ElementTree.parse(report_path)
+                except (OSError, ElementTree.ParseError) as exc:
+                    raise RuntimeError(
+                        f"Simulator returned success without a valid fresh report: {report_path}"
+                    ) from exc
+                cases = report.findall(".//testcase")
+                if not cases or any(
+                    case.find("failure") is not None or case.find("error") is not None
+                    for case in cases
+                ):
+                    raise RuntimeError(
+                        f"Simulator report has no tests or contains failures: {report_path}"
+                    )
                 self._update_verilator_toplevel_marker(sim_build_dir)
 
             return result

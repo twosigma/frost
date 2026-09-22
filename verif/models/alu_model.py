@@ -268,6 +268,12 @@ def mulhu(operand_a: int, operand_b: int) -> int:
     return product >> XLEN
 
 
+def _trunc_div(dividend: int, divisor: int) -> int:
+    """Exact integer division toward zero, without float rounding at RV64 width."""
+    magnitude = abs(dividend) // abs(divisor)
+    return -magnitude if (dividend < 0) != (divisor < 0) else magnitude
+
+
 # M-extension division and remainder operations
 class DivisionOperations:
     """Division and remainder operations with RISC-V spec-compliant edge cases.
@@ -292,7 +298,7 @@ class DivisionOperations:
         ):
             return DIVISION_OVERFLOW_DIVIDEND & MASK_XLEN
 
-        return int(signed_dividend / signed_divisor) & MASK_XLEN
+        return _trunc_div(signed_dividend, signed_divisor) & MASK_XLEN
 
     @classmethod
     def divu(cls, dividend: int, divisor: int) -> int:
@@ -320,8 +326,7 @@ class DivisionOperations:
         ):
             return 0
 
-        # int() truncates toward zero; // would floor and give the wrong sign.
-        quotient = int(signed_dividend / signed_divisor)
+        quotient = _trunc_div(signed_dividend, signed_divisor)
         # Remainder follows sign of dividend (RISC-V spec)
         remainder = signed_dividend - signed_divisor * quotient
         return remainder & MASK_XLEN
@@ -740,7 +745,7 @@ def divw(dividend: int, divisor: int) -> int:
         return MASK_XLEN  # -1
     if sd == -(1 << 31) and sv == -1:
         return _sext32_to_xlen(1 << 31)
-    return _sext32_to_xlen(int(sd / sv) & MASK32)
+    return _sext32_to_xlen(_trunc_div(sd, sv) & MASK32)
 
 
 def divuw(dividend: int, divisor: int) -> int:
@@ -760,7 +765,7 @@ def remw(dividend: int, divisor: int) -> int:
         return _sext32_to_xlen(sd & MASK32)
     if sd == -(1 << 31) and sv == -1:
         return 0
-    quotient = int(sd / sv)
+    quotient = _trunc_div(sd, sv)
     return _sext32_to_xlen((sd - sv * quotient) & MASK32)
 
 

@@ -124,7 +124,7 @@ List runnable targets with `./scripts/frost.py cocotb --list-tests`.
 | `c_ext_test/` | Compressed (C ext) instruction test: JAL/JALR/JR alignment cases |
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
 | `cf_ext_test/` | Compressed double-precision floating-point (Zcd) instruction tests |
-| `coremark/` | EEMBC CoreMark CPU benchmark; disables compressed instructions for throughput |
+| `coremark/` | EEMBC CoreMark CPU benchmark; C disabled by default, with optional C/seed/link-order [measurement sweeps](../docs/single_core_performance.md#reproducing-and-retaining-measurements) |
 | `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, using DDR for the heap and large datasets |
 | `csr_test/` | CSR access and M-mode trap handling verification |
 | `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |

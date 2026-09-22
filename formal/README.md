@@ -31,6 +31,8 @@ X/Z behavior.
 | `btb_tag_compare` | Full-width tag equality at 55 and 59 bits, with arbitrary RAM outputs |
 | `divider_prefix` | Each 32/64-bit divider stage matches two restoring iterations, assuming the incoming remainder's prefix bound; valid transactions start with remainder zero, including division by zero |
 | `mul_completion_tag` | MUL adapter behavior with qualified versus unqualified invalid tags; assumes one initial reset edge |
+| `int_muldiv_shim` | Shared full/word completion ownership and credits, plus separate physical-pipeline alignment proofs, with short word paths enabled and disabled; assumes one initial reset followed by deasserted reset. Arithmetic values and liveness are outside these tasks |
+| `mem_wakeup_merge` | Exhaustive combinational preservation, duplicate suppression and idle-lane injection; no assumptions. Accepted-load eligibility and eventual CDB delivery require wrapper integration checks |
 | `coherence_replay_compare` | Invalidation-line copies and replay masks at widths 32, 64, and 66; assumes one initial reset edge |
 | `coherence_observation` | Unbounded observation-table ownership, line provenance, retirement/flush cleanup and registered replay timing for all 32 ROB tags at XLEN=64; producer timing contract below |
 | `sc_head_query` | Selected SC coherence result versus a full line-address comparison, from arbitrary table state |
@@ -45,6 +47,8 @@ X/Z behavior.
 | `branch_prediction_alias` | Public alias outputs under IF's base+2/base+4 wiring; requires the width-equality opt-in guard and does not prove full-controller sequential equivalence |
 | `rob_start_cofactor` | ROB head ownership and CSR/xRET starts; assumes initial reset and abstracts payload RAMs and serializer outputs |
 | `load_queue_amo_compute` | Four-step AMO operand capture, arithmetic, kill/reset, coherence exclusion, and write stability; no reset/admission assumptions and no scheduler, interrupt, or liveness claim |
+| `load_queue` (`prove_pre_match`) | Unbounded equivalence of the split pre-issue tag/valid registers against the original predicate, without environment assumptions; the separate queue BMC/cover tasks retain their existing scope |
+| `lq_l0_cache` | Bounded hit, fill and invalidation checks at 128 and 256 entries; this local cache target does not prove coherence of executed loads through retirement |
 | `alu_shift_hint` | Hint-enabled and default RV64 ALUs agree when the hint supplies the exact effective shift amount; checked against an independent shift/rotate reference. `rs_issue2_shamt` simulation covers capture and hold |
 
 Integration targets have narrower environment contracts:
@@ -125,3 +129,13 @@ Yosys supports a subset of SystemVerilog Assertions:
   module they check.
 - Assume initial reset only when it is part of the target contract; otherwise
   prove the property from arbitrary state.
+
+`decoded_bundle_queue` proves FIFO ordering and arbitrary payload preservation
+at depths four and two (`prove`, `prove_depth2`) and covers bypass, full,
+wraparound, simultaneous push/pop and live flush (`cover`). Its eight-bit
+symbolic payload checks the control independently of decode fields. It assumes
+an initial reset, legal consumer pops and no producer overwrite before
+acceptance; integration assertions enforce the last two contracts in simulation.
+This is not a proof of whole-core CSR/debug/branch behavior.
+`load_queue` also has `bmc_prepare_busy`/`cover_prepare_busy` tasks for inert
+candidate preparation while another client owns the memory port.

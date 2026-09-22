@@ -1,0 +1,25 @@
+[tasks]
+prove
+prove_depth2
+cover
+
+[options]
+prove: mode prove
+prove: depth 8
+prove_depth2: mode prove
+prove_depth2: depth 8
+cover: mode cover
+cover: depth 16
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv riscv_pkg.sv decoded_bundle_queue.sv
+chparam -set WIDTH 8 decoded_bundle_queue
+prove_depth2: chparam -set DEPTH 2 decoded_bundle_queue
+prep -top decoded_bundle_queue
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/decoded_bundle_queue.sv

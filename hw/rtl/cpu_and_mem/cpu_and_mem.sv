@@ -36,6 +36,11 @@ module cpu_and_mem #(
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
     parameter int unsigned ENABLE_CACHED_TIER = 1,
+    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter bit EARLY_LOAD_WAKEUP = 1'b0,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
+    parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
+    parameter int unsigned DECODED_QUEUE_DEPTH = 0,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
@@ -611,7 +616,12 @@ module cpu_and_mem #(
       .MMIO_SIZE_BYTES(MmioSizeBytes),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
-      .PERF_COUNTERS(PERF_COUNTERS)
+      .PERF_COUNTERS(PERF_COUNTERS),
+      .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
+      .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
+      .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
+      .INT_RS_DEPTH(INT_RS_DEPTH),
+      .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH)
   ) cpu_inst (
       .i_clk,
       .i_rst(rst_core),

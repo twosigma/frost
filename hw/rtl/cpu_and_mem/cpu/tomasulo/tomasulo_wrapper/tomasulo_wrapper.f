@@ -45,6 +45,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_p
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/dispatch_routing/dispatch_rs_router.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/wakeup/mem_wakeup_merge.sv
 
 # Wrapper
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv
