@@ -37,10 +37,9 @@ module id_stage #(
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id,  // FP regfile read data (F extension)
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
-    // Next-edge value of o_from_id_to_ex.instruction (its register D), for a
-    // consumer that registers a copy of the rename/regfile address fields.
-    output riscv_pkg::instr_t o_instruction_next,
-    output riscv_pkg::id_dispatch_flags_t o_dispatch_flags_next,
+    // Next-edge value of o_from_id_to_ex (its register D), for a consumer
+    // that keeps a registered copy of fields it selects against this output.
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next,
     // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
     // Slot-2 does not receive the PD predicted-taken redirect override; that
     // heuristic is slot-1 only (see pd_stage.sv).  Slot-2 carries its own BTB
@@ -51,8 +50,7 @@ module id_stage #(
     input riscv_pkg::rf_to_fwd_t i_rf_to_id_2,
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id_2,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2,
-    output riscv_pkg::instr_t o_instruction_next_2,
-    output riscv_pkg::id_dispatch_flags_t o_dispatch_flags_next_2
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_2
 );
 
   // Effective BTB metadata after applying the PD predicted-taken redirect override.
@@ -760,13 +758,6 @@ module id_stage #(
   (* keep = "true", max_fanout = 64 *) logic id_advance;
   assign id_advance = ~i_pipeline_ctrl.stall;
 
-  // Exactly the instruction-register update below. TIMING: inject_nop joins
-  // the flush select here instead of reusing `instruction`, so this output
-  // adds no load to the NOP-substituted net the decoders hang off.
-  assign o_instruction_next = i_pipeline_ctrl.reset ? riscv_pkg::NOP :
-      !id_advance ? o_from_id_to_ex.instruction :
-      (i_pipeline_ctrl.flush || i_from_pd_to_id.inject_nop) ? riscv_pkg::NOP :
-      i_from_pd_to_id.instruction;
 
   always_ff @(posedge i_clk) begin
     // Reset loads a NOP into the pipeline register.
@@ -970,6 +961,220 @@ module id_stage #(
       o_from_id_to_ex.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed;
     end
   end
+
+  // next-edge register value: the update above, generated verbatim with a
+  // hold default. The register itself is unchanged; the check below pins it.
+  riscv_pkg::from_id_to_ex_t id_next;
+  assign o_from_id_to_ex_next = id_next;
+  always_comb begin
+    id_next = o_from_id_to_ex;
+    // Reset loads a NOP into the pipeline register.
+    if (i_pipeline_ctrl.reset) begin
+      id_next.instruction = riscv_pkg::NOP;
+      id_next.is_compressed = 1'b0;
+      id_next.instruction_operation = riscv_pkg::ADDI;  // ADDI x0, x0, 0 (NOP)
+      id_next.is_load_instruction = 1'b0;
+      id_next.is_load_byte = 1'b0;
+      id_next.is_load_halfword = 1'b0;
+      id_next.is_load_unsigned = 1'b0;
+      id_next.is_multiply = 1'b0;
+      id_next.is_divide = 1'b0;
+      id_next.branch_operation = riscv_pkg::NULL;
+      id_next.store_operation = riscv_pkg::STN;  // Store nothing
+      id_next.rs_type = riscv_pkg::RS_INT;
+      id_next.is_int_store = 1'b0;
+      id_next.is_branch_or_jump = 1'b0;
+      id_next.is_fence = 1'b0;
+      id_next.is_fence_i = 1'b0;
+      id_next.is_csr_imm = 1'b0;
+      id_next.has_fp_flags = 1'b0;
+      id_next.is_jump_and_link = 1'b0;
+      id_next.is_jump_and_link_register = 1'b0;
+      id_next.is_csr_instruction = 1'b0;
+      // A extension (atomics)
+      id_next.is_amo_instruction = 1'b0;
+      id_next.is_lr = 1'b0;
+      id_next.is_sc = 1'b0;
+      // Privileged instructions (trap handling)
+      id_next.is_mret = 1'b0;
+      id_next.is_sret = 1'b0;
+      id_next.is_dret = 1'b0;
+      id_next.is_sfence_vma = 1'b0;
+      id_next.is_wfi = 1'b0;
+      id_next.is_ecall = 1'b0;
+      id_next.is_ebreak = 1'b0;
+      id_next.is_illegal_instruction = 1'b0;
+      id_next.is_fetch_fault = 1'b0;
+      id_next.is_fetch_fault_page = 1'b0;
+      id_next.is_fetch_fault_hi = 1'b0;
+      // Branch prediction metadata
+      id_next.btb_hit = 1'b0;
+      id_next.btb_predicted_taken = 1'b0;
+      // RAS prediction metadata
+      id_next.ras_predicted = 1'b0;
+      // Pre-computed RAS instruction type flags
+      id_next.is_ras_return = 1'b0;
+      id_next.is_ras_call = 1'b0;
+      // Pre-computed BTB verification
+      id_next.btb_correct_non_jalr = 1'b0;
+      id_next.ras_correct_non_jalr = 1'b0;
+      // F extension
+      id_next.is_fp_instruction = 1'b0;
+      id_next.is_fp_load = 1'b0;
+      id_next.is_fp_store = 1'b0;
+      id_next.is_fp_load_double = 1'b0;
+      id_next.is_fp_store_double = 1'b0;
+      id_next.is_fp_compute = 1'b0;
+      id_next.is_pipelined_fp_op = 1'b0;
+      id_next.is_fp_to_int = 1'b0;
+      id_next.is_int_to_fp = 1'b0;
+      // Pre-decoded operand-classification flags
+      id_next.has_int_dest = 1'b0;
+      id_next.has_fp_dest = 1'b0;
+      id_next.uses_int_rs1 = 1'b0;
+      id_next.uses_int_rs2 = 1'b0;
+      id_next.uses_fp_rs1 = 1'b0;
+      id_next.uses_fp_rs2 = 1'b0;
+      id_next.uses_fp_rs3 = 1'b0;
+      id_next.is_not_nop = 1'b0;
+    end else if (id_advance) begin
+      // While the pipeline advances, pass the decoded instruction on, or a NOP
+      // when flushing.
+      id_next.instruction = i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction;
+      id_next.is_compressed = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.is_compressed;
+      id_next.instruction_operation = i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
+                                                                       instruction_operation;
+      id_next.is_load_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction;
+      // Load size and sign extension, from direct decode for timing
+      id_next.is_load_byte = i_pipeline_ctrl.flush ? 1'b0 : is_load_byte_direct;
+      id_next.is_load_halfword = i_pipeline_ctrl.flush ? 1'b0 : is_load_halfword_direct;
+      id_next.is_load_unsigned = i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
+      id_next.is_multiply = i_pipeline_ctrl.flush ? 1'b0 : is_multiply_direct;
+      id_next.is_divide = i_pipeline_ctrl.flush ? 1'b0 : is_divide_direct;
+      id_next.branch_operation = i_pipeline_ctrl.flush ? riscv_pkg::NULL : branch_operation;
+      id_next.store_operation = i_pipeline_ctrl.flush ? riscv_pkg::STN : store_operation;
+      id_next.rs_type = i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre;
+      id_next.is_int_store = i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre;
+      id_next.is_branch_or_jump = i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre;
+      id_next.is_fence = i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre;
+      id_next.is_fence_i = i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre;
+      id_next.is_csr_imm = i_pipeline_ctrl.flush ? 1'b0 : is_csr_imm_pre;
+      id_next.has_fp_flags = i_pipeline_ctrl.flush ? 1'b0 : has_fp_flags_pre;
+      id_next.is_jump_and_link = i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct;
+      id_next.is_jump_and_link_register = i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct;
+      // CSR instruction fields (Zicsr extension)
+      id_next.is_csr_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction;
+      // A extension (atomics)
+      id_next.is_amo_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction;
+      id_next.is_lr = i_pipeline_ctrl.flush ? 1'b0 : is_lr;
+      id_next.is_sc = i_pipeline_ctrl.flush ? 1'b0 : is_sc;
+      // Privileged instructions (trap handling)
+      // is_mret carries any xRET (SRET and DRET ride the MRET machinery); is_sret
+      // qualifies which one for the trap-unit/CSR side and the priv gates.
+      id_next.is_mret = i_pipeline_ctrl.flush ? 1'b0 : (is_mret || is_sret || is_dret);
+      id_next.is_sret = i_pipeline_ctrl.flush ? 1'b0 : is_sret;
+      id_next.is_dret = i_pipeline_ctrl.flush ? 1'b0 : is_dret;
+      id_next.is_sfence_vma = i_pipeline_ctrl.flush ? 1'b0 : is_sfence_vma_pre;
+      id_next.is_wfi = i_pipeline_ctrl.flush ? 1'b0 : is_wfi;
+      id_next.is_ecall = i_pipeline_ctrl.flush ? 1'b0 : is_ecall;
+      id_next.is_ebreak = i_pipeline_ctrl.flush ? 1'b0 : is_ebreak;
+      id_next.is_illegal_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_illegal_instruction;
+      id_next.is_fetch_fault = i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault;
+      id_next.is_fetch_fault_page = is_fetch_fault_page;
+      id_next.is_fetch_fault_hi = is_fetch_fault_hi;
+      // Branch prediction metadata, cleared on flush (it belongs to a flushed instruction)
+      id_next.btb_hit = i_pipeline_ctrl.flush ? 1'b0 : effective_btb_hit;
+      id_next.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 : effective_btb_predicted_taken;
+      // RAS prediction metadata, cleared on flush for the same reason
+      id_next.ras_predicted = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
+      // Pre-computed RAS instruction type flags; they keep the comparisons off
+      // the EX-stage critical path.
+      id_next.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
+      id_next.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
+      // Pre-computed BTB verification.  For non-JALR the target comparison is
+      // done here in ID (no forwarding dependency); JALR compares
+      // btb_expected_rs1 in EX, the same algebraic transformation as RAS.
+      id_next.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
+                                              btb_correct_non_jalr_precomputed;
+      id_next.ras_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
+                                              ras_correct_non_jalr_precomputed;
+      // F extension, cleared on flush
+      id_next.is_fp_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
+      id_next.is_fp_load = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
+      id_next.is_fp_store = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct;
+      id_next.is_fp_load_double = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_double_direct;
+      id_next.is_fp_store_double = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_double_direct;
+      id_next.is_fp_compute = i_pipeline_ctrl.flush ? 1'b0 :
+                                       (is_fp_compute_direct | is_fp_fma_direct);
+      id_next.is_pipelined_fp_op = i_pipeline_ctrl.flush ? 1'b0 : is_pipelined_fp_op_direct;
+      id_next.is_fp_to_int = i_pipeline_ctrl.flush ? 1'b0 : is_fp_to_int_direct;
+      id_next.is_int_to_fp = i_pipeline_ctrl.flush ? 1'b0 : is_int_to_fp_direct;
+      // Pre-decoded operand-classification flags, cleared on flush
+      id_next.has_int_dest = i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre;
+      id_next.has_fp_dest = i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre;
+      id_next.uses_int_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs1_pre;
+      id_next.uses_int_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs2_pre;
+      id_next.uses_fp_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre;
+      id_next.uses_fp_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre;
+      id_next.uses_fp_rs3 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre;
+      // Registered NOP detect.  After a flush or reset the register holds the
+      // NOP pattern, so is_not_nop is 0 there too, which matches NOP semantics.
+      // A fault-tagged bundle must dispatch even when its garbage bytes happen
+      // to encode a NOP.
+      id_next.is_not_nop = i_pipeline_ctrl.flush ? 1'b0 :
+          ((instruction != riscv_pkg::NOP) || is_fetch_fault);
+    end
+    // Datapath payload (immediates, targets, regfile data): not reset, only stalled.
+    if (id_advance) begin
+      id_next.program_counter = i_from_pd_to_id.program_counter;
+      id_next.csr_address = csr_address;
+      id_next.csr_imm = csr_imm;
+      // Compute link address from registered PD inputs instead of the live IF
+      // sideband path.
+      id_next.link_address = link_address_precomputed;
+      // Pre-computed branch/jump targets (computed here, used by EX stage)
+      id_next.branch_target_precomputed = branch_target_precomputed;
+      id_next.jal_target_precomputed = jal_target_precomputed;
+      id_next.pc_relative_precomputed = pc_relative_precomputed;
+      id_next.btb_predicted_target = effective_btb_predicted_target;
+      id_next.ras_predicted_target = i_from_pd_to_id.ras_predicted_target;
+      id_next.ras_checkpoint_tos = i_from_pd_to_id.ras_checkpoint_tos;
+      id_next.ras_checkpoint_valid_count = i_from_pd_to_id.ras_checkpoint_valid_count;
+      // Carry the predict-time bimodal index through to commit.
+      id_next.bp_dir_idx = i_from_pd_to_id.bp_dir_idx;
+      id_next.ras_predicted_target_nonzero = |i_from_pd_to_id.ras_predicted_target;
+      // Pre-computed expected rs1 values for branch/RAS verification.
+      id_next.ras_expected_rs1 = ras_expected_rs1_precomputed;
+      id_next.btb_expected_rs1 = btb_expected_rs1_precomputed;
+      id_next.fp_rm = fp_rm_direct;
+      id_next.immediate_u_type = immediate_u_type;
+      id_next.immediate_s_type = immediate_s_type;
+      id_next.immediate_i_type = immediate_i_type;
+      id_next.immediate_b_type = immediate_b_type;
+      id_next.immediate_j_type = immediate_j_type;
+      // Regfile read data (read in ID stage, with WB bypass, registered here for EX stage)
+      id_next.source_reg_1_data = source_reg_1_data_bypassed;
+      id_next.source_reg_2_data = source_reg_2_data_bypassed;
+      // Pre-computed x0 check flags
+      id_next.source_reg_1_is_x0 = source_reg_1_is_x0;
+      id_next.source_reg_2_is_x0 = source_reg_2_is_x0;
+      // F extension: FP register file read data (with WB bypass)
+      id_next.fp_source_reg_1_data = fp_source_reg_1_data_bypassed;
+      id_next.fp_source_reg_2_data = fp_source_reg_2_data_bypassed;
+      id_next.fp_source_reg_3_data = fp_source_reg_3_data_bypassed;
+    end
+  end
+`ifndef SYNTHESIS
+  logic o_from_id_to_ex_next_checks_armed = 1'b0;
+  riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_q;
+  always_ff @(posedge i_clk) begin
+    o_from_id_to_ex_next_q <= o_from_id_to_ex_next;
+    o_from_id_to_ex_next_checks_armed <= 1'b1;
+    if (o_from_id_to_ex_next_checks_armed && !$isunknown(o_from_id_to_ex_next_q)) begin
+      p_next_state_matches_register : assert (o_from_id_to_ex == o_from_id_to_ex_next_q);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Slot-2: Decoders + FP Detect + WB Bypass + x0 Check + Pipeline Register
@@ -1580,11 +1785,6 @@ module id_stage #(
     endcase
   end
 
-  // Exactly the slot-2 instruction-register update below (see above).
-  assign o_instruction_next_2 = i_pipeline_ctrl.reset ? riscv_pkg::NOP :
-      !id_advance ? o_from_id_to_ex_2.instruction :
-      (i_pipeline_ctrl.flush || i_from_pd_to_id_2.inject_nop) ? riscv_pkg::NOP :
-      i_from_pd_to_id_2.instruction;
 
   // Slot-2 Pipeline Register
   always_ff @(posedge i_clk) begin
@@ -1763,55 +1963,182 @@ module id_stage #(
     end
   end
 
-  // Next-edge values of the id_dispatch_flags_t fields: exactly their
-  // register updates above (0 on reset and flush).
-  riscv_pkg::id_dispatch_flags_t dispatch_flags_decoded, dispatch_flags_decoded_2;
-  riscv_pkg::id_dispatch_flags_t dispatch_flags_q, dispatch_flags_q_2;
+  // Slot-2 next-edge register value: the update above, generated verbatim with a
+  // hold default. The register itself is unchanged; the check below pins it.
+  riscv_pkg::from_id_to_ex_t id_next_2;
+  assign o_from_id_to_ex_next_2 = id_next_2;
   always_comb begin
-    dispatch_flags_decoded.is_lr = is_lr;
-    dispatch_flags_decoded.is_sc = is_sc;
-    dispatch_flags_decoded.is_amo_instruction = is_amo_instruction;
-    dispatch_flags_decoded.is_load_instruction = is_load_instruction;
-    dispatch_flags_decoded.is_fp_load = is_fp_load_direct;
-    dispatch_flags_decoded.is_fp_store = is_fp_store_direct;
-    dispatch_flags_decoded.is_int_store = is_int_store_pre;
-    dispatch_flags_decoded.is_csr_instruction = is_csr_instruction;
-    dispatch_flags_decoded.is_fence = is_fence_pre;
-    dispatch_flags_decoded.is_branch_or_jump = is_branch_or_jump_pre;
-    dispatch_flags_q.is_lr = o_from_id_to_ex.is_lr;
-    dispatch_flags_q.is_sc = o_from_id_to_ex.is_sc;
-    dispatch_flags_q.is_amo_instruction = o_from_id_to_ex.is_amo_instruction;
-    dispatch_flags_q.is_load_instruction = o_from_id_to_ex.is_load_instruction;
-    dispatch_flags_q.is_fp_load = o_from_id_to_ex.is_fp_load;
-    dispatch_flags_q.is_fp_store = o_from_id_to_ex.is_fp_store;
-    dispatch_flags_q.is_int_store = o_from_id_to_ex.is_int_store;
-    dispatch_flags_q.is_csr_instruction = o_from_id_to_ex.is_csr_instruction;
-    dispatch_flags_q.is_fence = o_from_id_to_ex.is_fence;
-    dispatch_flags_q.is_branch_or_jump = o_from_id_to_ex.is_branch_or_jump;
-    dispatch_flags_decoded_2.is_lr = is_lr_2;
-    dispatch_flags_decoded_2.is_sc = is_sc_2;
-    dispatch_flags_decoded_2.is_amo_instruction = is_amo_instruction_2;
-    dispatch_flags_decoded_2.is_load_instruction = is_load_instruction_2;
-    dispatch_flags_decoded_2.is_fp_load = is_fp_load_direct_2;
-    dispatch_flags_decoded_2.is_fp_store = is_fp_store_direct_2;
-    dispatch_flags_decoded_2.is_int_store = is_int_store_pre_2;
-    dispatch_flags_decoded_2.is_csr_instruction = is_csr_instruction_2;
-    dispatch_flags_decoded_2.is_fence = is_fence_pre_2;
-    dispatch_flags_decoded_2.is_branch_or_jump = is_branch_or_jump_pre_2;
-    dispatch_flags_q_2.is_lr = o_from_id_to_ex_2.is_lr;
-    dispatch_flags_q_2.is_sc = o_from_id_to_ex_2.is_sc;
-    dispatch_flags_q_2.is_amo_instruction = o_from_id_to_ex_2.is_amo_instruction;
-    dispatch_flags_q_2.is_load_instruction = o_from_id_to_ex_2.is_load_instruction;
-    dispatch_flags_q_2.is_fp_load = o_from_id_to_ex_2.is_fp_load;
-    dispatch_flags_q_2.is_fp_store = o_from_id_to_ex_2.is_fp_store;
-    dispatch_flags_q_2.is_int_store = o_from_id_to_ex_2.is_int_store;
-    dispatch_flags_q_2.is_csr_instruction = o_from_id_to_ex_2.is_csr_instruction;
-    dispatch_flags_q_2.is_fence = o_from_id_to_ex_2.is_fence;
-    dispatch_flags_q_2.is_branch_or_jump = o_from_id_to_ex_2.is_branch_or_jump;
+    id_next_2 = o_from_id_to_ex_2;
+    if (i_pipeline_ctrl.reset) begin
+      id_next_2.instruction = riscv_pkg::NOP;
+      id_next_2.is_compressed = 1'b0;
+      id_next_2.instruction_operation = riscv_pkg::ADDI;
+      id_next_2.is_load_instruction = 1'b0;
+      id_next_2.is_load_byte = 1'b0;
+      id_next_2.is_load_halfword = 1'b0;
+      id_next_2.is_load_unsigned = 1'b0;
+      id_next_2.is_multiply = 1'b0;
+      id_next_2.is_divide = 1'b0;
+      id_next_2.branch_operation = riscv_pkg::NULL;
+      id_next_2.store_operation = riscv_pkg::STN;
+      id_next_2.rs_type = riscv_pkg::RS_INT;
+      id_next_2.is_int_store = 1'b0;
+      id_next_2.is_branch_or_jump = 1'b0;
+      id_next_2.is_fence = 1'b0;
+      id_next_2.is_fence_i = 1'b0;
+      id_next_2.is_csr_imm = 1'b0;
+      id_next_2.has_fp_flags = 1'b0;
+      id_next_2.is_jump_and_link = 1'b0;
+      id_next_2.is_jump_and_link_register = 1'b0;
+      id_next_2.is_csr_instruction = 1'b0;
+      id_next_2.is_amo_instruction = 1'b0;
+      id_next_2.is_lr = 1'b0;
+      id_next_2.is_sc = 1'b0;
+      id_next_2.is_mret = 1'b0;
+      id_next_2.is_sret = 1'b0;
+      id_next_2.is_dret = 1'b0;
+      id_next_2.is_sfence_vma = 1'b0;
+      id_next_2.is_wfi = 1'b0;
+      id_next_2.is_ecall = 1'b0;
+      id_next_2.is_ebreak = 1'b0;
+      id_next_2.is_illegal_instruction = 1'b0;
+      id_next_2.is_fetch_fault = 1'b0;
+      id_next_2.is_fetch_fault_page = 1'b0;
+      id_next_2.is_fetch_fault_hi = 1'b0;
+      id_next_2.btb_hit = 1'b0;
+      id_next_2.btb_predicted_taken = 1'b0;
+      id_next_2.ras_predicted = 1'b0;
+      id_next_2.is_ras_return = 1'b0;
+      id_next_2.is_ras_call = 1'b0;
+      id_next_2.btb_correct_non_jalr = 1'b0;
+      id_next_2.ras_correct_non_jalr = 1'b0;
+      id_next_2.is_fp_instruction = 1'b0;
+      id_next_2.is_fp_load = 1'b0;
+      id_next_2.is_fp_store = 1'b0;
+      id_next_2.is_fp_load_double = 1'b0;
+      id_next_2.is_fp_store_double = 1'b0;
+      id_next_2.is_fp_compute = 1'b0;
+      id_next_2.is_pipelined_fp_op = 1'b0;
+      id_next_2.is_fp_to_int = 1'b0;
+      id_next_2.is_int_to_fp = 1'b0;
+      // Pre-decoded operand-classification flags
+      id_next_2.has_int_dest = 1'b0;
+      id_next_2.has_fp_dest = 1'b0;
+      id_next_2.uses_int_rs1 = 1'b0;
+      id_next_2.uses_int_rs2 = 1'b0;
+      id_next_2.uses_fp_rs1 = 1'b0;
+      id_next_2.uses_fp_rs2 = 1'b0;
+      id_next_2.uses_fp_rs3 = 1'b0;
+      id_next_2.is_not_nop = 1'b0;
+    end else if (id_advance) begin
+      id_next_2.instruction = i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction_2;
+      id_next_2.is_compressed = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.is_compressed;
+      id_next_2.instruction_operation = i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
+                                                                         instruction_operation_2;
+      id_next_2.is_load_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction_2;
+      id_next_2.is_load_byte = i_pipeline_ctrl.flush ? 1'b0 : is_load_byte_direct_2;
+      id_next_2.is_load_halfword = i_pipeline_ctrl.flush ? 1'b0 : is_load_halfword_direct_2;
+      id_next_2.is_load_unsigned = i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct_2;
+      id_next_2.is_multiply = i_pipeline_ctrl.flush ? 1'b0 : is_multiply_direct_2;
+      id_next_2.is_divide = i_pipeline_ctrl.flush ? 1'b0 : is_divide_direct_2;
+      id_next_2.branch_operation = i_pipeline_ctrl.flush ? riscv_pkg::NULL : branch_operation_2;
+      id_next_2.store_operation = i_pipeline_ctrl.flush ? riscv_pkg::STN : store_operation_2;
+      id_next_2.rs_type = i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre_2;
+      id_next_2.is_int_store = i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre_2;
+      id_next_2.is_branch_or_jump = i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre_2;
+      id_next_2.is_fence = i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre_2;
+      id_next_2.is_fence_i = i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre_2;
+      id_next_2.is_csr_imm = i_pipeline_ctrl.flush ? 1'b0 : is_csr_imm_pre_2;
+      id_next_2.has_fp_flags = i_pipeline_ctrl.flush ? 1'b0 : has_fp_flags_pre_2;
+      id_next_2.is_jump_and_link = i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct_2;
+      id_next_2.is_jump_and_link_register = i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct_2;
+      id_next_2.is_csr_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction_2;
+      id_next_2.is_amo_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction_2;
+      id_next_2.is_lr = i_pipeline_ctrl.flush ? 1'b0 : is_lr_2;
+      id_next_2.is_sc = i_pipeline_ctrl.flush ? 1'b0 : is_sc_2;
+      id_next_2.is_mret = i_pipeline_ctrl.flush ? 1'b0 : (is_mret_2 || is_sret_2 || is_dret_2);
+      id_next_2.is_sret = i_pipeline_ctrl.flush ? 1'b0 : is_sret_2;
+      id_next_2.is_dret = i_pipeline_ctrl.flush ? 1'b0 : is_dret_2;
+      id_next_2.is_sfence_vma = i_pipeline_ctrl.flush ? 1'b0 : is_sfence_vma_pre_2;
+      id_next_2.is_wfi = i_pipeline_ctrl.flush ? 1'b0 : is_wfi_2;
+      id_next_2.is_ecall = i_pipeline_ctrl.flush ? 1'b0 : is_ecall_2;
+      id_next_2.is_ebreak = i_pipeline_ctrl.flush ? 1'b0 : is_ebreak_2;
+      id_next_2.is_illegal_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_illegal_instruction_2;
+      id_next_2.is_fetch_fault = i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault_2;
+      id_next_2.is_fetch_fault_page = is_fetch_fault_page_2;
+      id_next_2.is_fetch_fault_hi = is_fetch_fault_hi_2;
+      id_next_2.btb_hit = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.btb_hit;
+      id_next_2.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 :
+                                               i_from_pd_to_id_2.btb_predicted_taken;
+      id_next_2.ras_predicted = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.ras_predicted;
+      id_next_2.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed_2;
+      id_next_2.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
+      id_next_2.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
+                                                btb_correct_non_jalr_precomputed_2;
+      id_next_2.ras_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
+                                                ras_correct_non_jalr_precomputed_2;
+      id_next_2.is_fp_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct_2;
+      id_next_2.is_fp_load = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
+      id_next_2.is_fp_store = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct_2;
+      id_next_2.is_fp_load_double = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_double_direct_2;
+      id_next_2.is_fp_store_double = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_double_direct_2;
+      id_next_2.is_fp_compute = i_pipeline_ctrl.flush ? 1'b0 :
+                                         (is_fp_compute_direct_2 | is_fp_fma_direct_2);
+      id_next_2.is_pipelined_fp_op = i_pipeline_ctrl.flush ? 1'b0 : is_pipelined_fp_op_direct_2;
+      id_next_2.is_fp_to_int = i_pipeline_ctrl.flush ? 1'b0 : is_fp_to_int_direct_2;
+      id_next_2.is_int_to_fp = i_pipeline_ctrl.flush ? 1'b0 : is_int_to_fp_direct_2;
+      // Pre-decoded operand-classification flags, cleared on flush
+      id_next_2.has_int_dest = i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre_2;
+      id_next_2.has_fp_dest = i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre_2;
+      id_next_2.uses_int_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs1_pre_2;
+      id_next_2.uses_int_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs2_pre_2;
+      id_next_2.uses_fp_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre_2;
+      id_next_2.uses_fp_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre_2;
+      id_next_2.uses_fp_rs3 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre_2;
+      id_next_2.is_not_nop = i_pipeline_ctrl.flush ? 1'b0 : (instruction_2 != riscv_pkg::NOP);
+    end
+    if (id_advance) begin
+      id_next_2.program_counter = i_from_pd_to_id_2.program_counter;
+      id_next_2.csr_address = csr_address_2;
+      id_next_2.csr_imm = csr_imm_2;
+      id_next_2.link_address = link_address_precomputed_2;
+      id_next_2.branch_target_precomputed = branch_target_precomputed_2;
+      id_next_2.jal_target_precomputed = jal_target_precomputed_2;
+      id_next_2.pc_relative_precomputed = pc_relative_precomputed_2;
+      id_next_2.btb_predicted_target = i_from_pd_to_id_2.btb_predicted_target;
+      id_next_2.ras_predicted_target = i_from_pd_to_id_2.ras_predicted_target;
+      id_next_2.ras_checkpoint_tos = i_from_pd_to_id_2.ras_checkpoint_tos;
+      id_next_2.ras_checkpoint_valid_count = i_from_pd_to_id_2.ras_checkpoint_valid_count;
+      // Carry the predict-time bimodal index through to commit.
+      id_next_2.bp_dir_idx = i_from_pd_to_id_2.bp_dir_idx;
+      id_next_2.ras_predicted_target_nonzero = |i_from_pd_to_id_2.ras_predicted_target;
+      id_next_2.ras_expected_rs1 = ras_expected_rs1_precomputed_2;
+      id_next_2.btb_expected_rs1 = btb_expected_rs1_precomputed_2;
+      id_next_2.fp_rm = fp_rm_direct_2;
+      id_next_2.immediate_u_type = immediate_u_type_2;
+      id_next_2.immediate_s_type = immediate_s_type_2;
+      id_next_2.immediate_i_type = immediate_i_type_2;
+      id_next_2.immediate_b_type = immediate_b_type_2;
+      id_next_2.immediate_j_type = immediate_j_type_2;
+      id_next_2.source_reg_1_data = source_reg_1_data_bypassed_2;
+      id_next_2.source_reg_2_data = source_reg_2_data_bypassed_2;
+      id_next_2.source_reg_1_is_x0 = source_reg_1_is_x0_2;
+      id_next_2.source_reg_2_is_x0 = source_reg_2_is_x0_2;
+      id_next_2.fp_source_reg_1_data = fp_source_reg_1_data_bypassed_2;
+      id_next_2.fp_source_reg_2_data = fp_source_reg_2_data_bypassed_2;
+      id_next_2.fp_source_reg_3_data = fp_source_reg_3_data_bypassed_2;
+    end
   end
-  assign o_dispatch_flags_next = i_pipeline_ctrl.reset ? '0 : !id_advance ? dispatch_flags_q :
-      i_pipeline_ctrl.flush ? '0 : dispatch_flags_decoded;
-  assign o_dispatch_flags_next_2 = i_pipeline_ctrl.reset ? '0 : !id_advance ? dispatch_flags_q_2 :
-      i_pipeline_ctrl.flush ? '0 : dispatch_flags_decoded_2;
+`ifndef SYNTHESIS
+  logic o_from_id_to_ex_next_2_checks_armed = 1'b0;
+  riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_2_q;
+  always_ff @(posedge i_clk) begin
+    o_from_id_to_ex_next_2_q <= o_from_id_to_ex_next_2;
+    o_from_id_to_ex_next_2_checks_armed <= 1'b1;
+    if (o_from_id_to_ex_next_2_checks_armed && !$isunknown(o_from_id_to_ex_next_2_q)) begin
+      p_slot2_next_state_matches_register : assert (o_from_id_to_ex_2 == o_from_id_to_ex_next_2_q);
+    end
+  end
+`endif
 
 endmodule : id_stage

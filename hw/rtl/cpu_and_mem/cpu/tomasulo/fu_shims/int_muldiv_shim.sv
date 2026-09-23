@@ -805,11 +805,41 @@ module int_muldiv_shim #(
     endcase
   end
 
+  // TIMING: the new-entry term of div_inflight_count_next is the late MUL RS
+  // issue valid. Evaluate the compare for both of its values from the
+  // survivor count and select last; the result equals the expression above.
+  logic [$clog2(DivPipeDepth+1)-1:0] div_survivor_count_next;
+  logic div_new_entry_counts;
+  logic div_busy_if_new, div_busy_if_none;
+  always_comb begin
+    div_survivor_count_next = '0;
+    for (int i = 0; i < DivPipeDepth - 1; i++) begin
+      if (div_trk_valid[i] && !div_trk_flushed[i] && !(i_flush_en && is_younger(
+              div_trk_tag[i], i_flush_tag, i_rob_head_tag
+          )))
+        div_survivor_count_next = div_survivor_count_next + 1;
+    end
+  end
+  assign div_new_entry_counts = divider_valid_input && !(i_flush_en && is_younger(
+      i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+  ));
+  assign div_busy_if_new =
+      (6'(fifo_count_next) + 6'(div_survivor_count_next) + 6'd1) >= 6'(FifoDepth);
+  assign div_busy_if_none = (6'(fifo_count_next) + 6'(div_survivor_count_next)) >= 6'(FifoDepth);
+
   logic div_busy_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush) div_busy_q <= 1'b0;
-    else div_busy_q <= (6'(fifo_count_next) + 6'(div_inflight_count_next)) >= 6'(FifoDepth);
+    else div_busy_q <= div_new_entry_counts ? div_busy_if_new : div_busy_if_none;
   end
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown({div_new_entry_counts, div_busy_if_new, div_busy_if_none})) begin
+      assert ((div_new_entry_counts ? div_busy_if_new : div_busy_if_none) ==
+              ((6'(fifo_count_next) + 6'(div_inflight_count_next)) >= 6'(FifoDepth)));
+    end
+  end
+`endif
   assign div_busy  = div_busy_q ||
       (div_is_short_word && div_trk_valid[WordDivInsert-1] &&
        !div_trk_flushed[WordDivInsert-1]);

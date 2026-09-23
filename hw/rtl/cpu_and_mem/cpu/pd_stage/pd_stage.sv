@@ -134,14 +134,26 @@ module pd_stage #(
   // source-hot metadata IF carries instead. Every other instruction bit, and
   // all early-source bits, keep their existing cones.
   assign instruction_non_nop_with_hot_rs1 = {
-    instruction_non_nop[31:18],
+    instruction_non_nop[31:25],
+    i_from_if_to_pd.bits24_20_predecoded,
+    instruction_non_nop[19:18],
     i_from_if_to_pd.source_hot_predecoded[1:0],
     instruction_non_nop[15:0]
   };
 
+  // TIMING: bits [24:20] (rs2 for register formats) come from IF's
+  // predecoded field: the IMEM sideband's RVC expansion or the native word,
+  // already selected. The decompressor's rs2 cofactors and the fetched-parcel
+  // select leave the IMEM-to-PD rs2 path; the check below pins equality.
+  logic [31:0] instruction_non_nop_predecoded_rs2;
+  always_comb begin
+    instruction_non_nop_predecoded_rs2 = instruction_non_nop;
+    instruction_non_nop_predecoded_rs2[24:20] = i_from_if_to_pd.bits24_20_predecoded;
+  end
+
   always_comb begin
     if (i_from_if_to_pd.sel_nop) final_instruction = riscv_pkg::NOP;
-    else final_instruction = instruction_non_nop;
+    else final_instruction = instruction_non_nop_predecoded_rs2;
   end
 
   // ===========================================================================
@@ -204,19 +216,17 @@ module pd_stage #(
   // Extract the payload bits before NOP injection.  The dedicated registered
   // clear below carries slot invalidation on the FDRE reset pin, keeping the
   // final bubble/flush mux off these 15 timing-facing D inputs.
-  // The three slot-2 low-IMEM endpoints are early rs1[2:1] and rs2[1].
-  // The early fields are slot 2's canonical instruction-source
-  // registers, so this also keeps its reconstructed instruction coherent.
+  // Early rs1[2:1] come from the source-hot sideband bits and all of rs2
+  // from IF's predecoded bits [24:20]. The early fields are slot 2's
+  // canonical instruction-source registers, so this also keeps its
+  // reconstructed instruction coherent.
   assign source_reg_1_2 = {
     instruction_non_nop_2[19:18],
     i_from_if_to_pd_2.source_hot_predecoded[1:0],
     instruction_non_nop_2[15]
   };
-  assign source_reg_2_2 = {
-    instruction_non_nop_2[24:22],
-    i_from_if_to_pd_2.source_hot_predecoded[2],
-    instruction_non_nop_2[20]
-  };
+  // rs2 comes entirely from IF's per-candidate predecoded bits [24:20].
+  assign source_reg_2_2 = i_from_if_to_pd_2.bits24_20_predecoded;
   assign fp_source_reg_3_2 = instruction_non_nop_2[31:27];
   // Keep the bubble select off the remaining 22 instruction D inputs, just as
   // slot 1 does for its full instruction register.  The registered
@@ -253,6 +263,7 @@ module pd_stage #(
               i_from_if_to_pd.sel_nop,
               i_from_if_to_pd.fetch_fault,
               i_from_if_to_pd.source_hot_predecoded,
+              i_from_if_to_pd.bits24_20_predecoded,
               instruction_non_nop
             }
         ) && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault) begin
@@ -261,6 +272,8 @@ module pd_stage #(
           i_from_if_to_pd.source_hot_predecoded ==
           {instruction_non_nop[21], instruction_non_nop[17:16]}
       );
+      p_slot1_bits24_20_match_instruction :
+      assert (i_from_if_to_pd.bits24_20_predecoded == instruction_non_nop[24:20]);
     end
     if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
             {
@@ -277,6 +290,8 @@ module pd_stage #(
       );
       p_slot2_early_rs1_matches_instruction :
       assert (source_reg_1_2 == instruction_non_nop_2[19:15]);
+      p_slot2_early_rs2_matches_instruction :
+      assert (source_reg_2_2 == instruction_non_nop_2[24:20]);
       p_slot2_early_rs1_hot_bits_are_direct :
       assert (source_reg_1_2[2:1] == i_from_if_to_pd_2.source_hot_predecoded[1:0]);
     end

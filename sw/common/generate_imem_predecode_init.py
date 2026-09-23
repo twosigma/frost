@@ -18,8 +18,9 @@
 
 The runtime instruction memory is split into even and odd banks. Each data
 bank is then split into a 28-bit cold block-RAM image and a four-bit
-frontend-hot image for architectural word bits ``{15, 10, 7, 6}``. The 18-bit
-predecode sideband (including six RVC source-hot bits) and the five-lane
+frontend-hot image for architectural word bits ``{15, 10, 7, 6}``. The 28-bit
+predecode sideband (including six RVC source-hot bits and ten RVC-expanded
+bits [24:20]) and the five-lane
 high-parcel block-RAM replica have their own images, and every sideband
 predicate on the IF PC feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar
 LUTRAM overlay image per parity bank. The generator emits the full overlay
@@ -29,7 +30,7 @@ Simulation can derive all of these memories inside SystemVerilog from sw.mem.
 Vivado initializes each synthesized memory more reliably from its own file,
 which is why this generator exists. The predecode functions below mirror
 their riscv_pkg counterparts (``imem_compressed_control``, ``imem_native_*``,
-``imem_rvc_source_hot``, ``imem_make_sideband``); the imem_predecode_line
+``imem_rvc_source_hot``, ``imem_rvc_bits24_20``, ``imem_make_sideband``); the imem_predecode_line
 cocotb bench cross-checks the RTL against this script.
 """
 
@@ -49,7 +50,7 @@ OPC_OP_FP = 0b1010011
 OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
-SIDEBAND_WIDTH = 18
+SIDEBAND_WIDTH = 28
 FAST_REPLICA_WIDTH = 5
 PC_METADATA_REPLICA_WIDTH = 4
 COLD_DATA_WIDTH = 28
@@ -68,6 +69,8 @@ SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
 SB_RVC_SOURCE_HOT_LO_LSB = 12
 SB_RVC_SOURCE_HOT_HI_LSB = 15
+SB_RVC_BITS24_20_LO_LSB = 18
+SB_RVC_BITS24_20_HI_LSB = 23
 # Sideband predicates mirrored into per-parity scalar LUTRAM overlays
 # (imem_sideband_scalar_bank); the image is ``sw_imem_<parity>_<name>.mem``.
 SCALAR_REPLICA_BITS = (
@@ -131,6 +134,62 @@ def native_fp_compute(opcode: int) -> bool:
 def native_control(opcode: int) -> bool:
     """Return whether a native instruction opcode is control flow."""
     return opcode in {OPC_BRANCH, OPC_JAL, OPC_JALR}
+
+
+def rvc_bits24_20(parcel: int) -> int:
+    """Return bits [24:20] of one RVC parcel's 32-bit expansion.
+
+    This is rs2 for register formats and immediate bits otherwise, including
+    reserved encodings' canonical zero expansion. It mirrors
+    ``riscv_pkg::imem_rvc_bits24_20`` and ``rvc_decompressor``'s
+    ``rs2_field_q0/q1/q2``. A native (quadrant 3) parcel returns zero.
+    """
+    c = parcel & 0xFFFF
+
+    def bits(hi: int, lo: int) -> int:
+        return (c >> lo) & ((1 << (hi - lo + 1)) - 1)
+
+    def bit(i: int) -> int:
+        return (c >> i) & 1
+
+    quadrant = bits(1, 0)
+    funct3 = bits(15, 13)
+    if quadrant == 0:
+        if funct3 == 0b000:
+            return (bit(11) << 4) | (bit(5) << 3) | (bit(6) << 2)
+        if funct3 in (0b001, 0b011):
+            return bits(11, 10) << 3
+        if funct3 == 0b010:
+            return (bits(11, 10) << 3) | (bit(6) << 2)
+        if funct3 in (0b101, 0b110, 0b111):
+            return 0b01000 | bits(4, 2)
+        return 0
+    if quadrant == 1:
+        if funct3 in (0b000, 0b001, 0b010):
+            return bits(6, 2)
+        if funct3 == 0b011:
+            if bits(11, 7) == 2:
+                return bit(6) << 4
+            return 0b11111 if bit(12) else 0
+        if funct3 == 0b100:
+            if bit(12) and bits(11, 10) == 0b11 and bit(6):
+                return 0
+            if bits(11, 10) == 0b11:
+                return 0b01000 | bits(4, 2)
+            return bits(6, 2)
+        if funct3 == 0b101:
+            return (bit(11) << 4) | (bits(5, 3) << 1) | bit(12)
+        return 0
+    if quadrant == 2:
+        if funct3 in (0b001, 0b011):
+            return bits(6, 5) << 3
+        if funct3 == 0b010:
+            return bits(6, 4) << 2
+        if funct3 == 0b100:
+            ebreak = bit(12) and bits(11, 7) == 0 and bits(6, 2) == 0
+            return (bits(6, 3) << 1) | (1 if (bit(2) or ebreak) else 0)
+        return bits(6, 2)
+    return 0
 
 
 def rvc_source_hot(parcel: int) -> int:
@@ -320,6 +379,8 @@ def make_sideband(word: int) -> int:
         sideband |= 1 << SB_PAIRABLE_NATIVE_HI
     sideband |= rvc_source_hot(lo) << SB_RVC_SOURCE_HOT_LO_LSB
     sideband |= rvc_source_hot(hi) << SB_RVC_SOURCE_HOT_HI_LSB
+    sideband |= rvc_bits24_20(lo) << SB_RVC_BITS24_20_LO_LSB
+    sideband |= rvc_bits24_20(hi) << SB_RVC_BITS24_20_HI_LSB
 
     return sideband
 

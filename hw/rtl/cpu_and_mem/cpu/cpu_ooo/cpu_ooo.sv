@@ -362,8 +362,7 @@ module cpu_ooo #(
   riscv_pkg::from_id_to_ex_t decoded_packet, decoded_packet_2;
   // The ID instruction registers' next-edge values (queued frontend only).
   /* verilator lint_off UNUSEDSIGNAL */
-  riscv_pkg::instr_t decoded_instruction_next, decoded_instruction_next_2;
-  riscv_pkg::id_dispatch_flags_t decoded_flags_next, decoded_flags_next_2;
+  riscv_pkg::from_id_to_ex_t decoded_packet_next, decoded_packet_next_2;
   /* verilator lint_on UNUSEDSIGNAL */
 
   // Slot-2 inter-stage signals (2-wide dispatch). IF extracts a real slot-2
@@ -805,8 +804,7 @@ module cpu_ooo #(
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),
       .o_from_id_to_ex(decoded_packet),
-      .o_instruction_next(decoded_instruction_next),
-      .o_dispatch_flags_next(decoded_flags_next),
+      .o_from_id_to_ex_next(decoded_packet_next),
       // Slot-2 (2-wide dispatch). i_from_pd_to_id_2 carries the second
       // instruction payload plus its inject_nop invalidation marker; ID applies
       // the marker before producing o_from_id_to_ex_2, and dispatch raises
@@ -815,8 +813,7 @@ module cpu_ooo #(
       .i_rf_to_id_2(rf_to_fwd_2),
       .i_fp_rf_to_id_2(fp_rf_to_fwd_2),
       .o_from_id_to_ex_2(decoded_packet_2),
-      .o_instruction_next_2(decoded_instruction_next_2),
-      .o_dispatch_flags_next_2(decoded_flags_next_2)
+      .o_from_id_to_ex_next_2(decoded_packet_next_2)
   );
 
   // ===========================================================================
@@ -889,30 +886,263 @@ module cpu_ooo #(
       logic queue_valid;
       logic input_indirect;
       riscv_pkg::from_id_to_ex_t queue_packet, queue_packet_2;
-      riscv_pkg::instr_t queue_instruction, queue_instruction_2;
-      riscv_pkg::id_dispatch_flags_t queue_flags, queue_flags_2;
-      riscv_pkg::id_dispatch_flags_t producer_flags, producer_flags_2;
+      riscv_pkg::id_dispatch_ctrl_t queue_ctrl, queue_ctrl_2;
+      riscv_pkg::id_dispatch_ctrl_t producer_ctrl, producer_ctrl_2;
+      riscv_pkg::id_dispatch_ctrl_t producer_ctrl_next, producer_ctrl_next_2;
       always_comb begin
-        producer_flags.is_lr = decoded_packet.is_lr;
-        producer_flags.is_sc = decoded_packet.is_sc;
-        producer_flags.is_amo_instruction = decoded_packet.is_amo_instruction;
-        producer_flags.is_load_instruction = decoded_packet.is_load_instruction;
-        producer_flags.is_fp_load = decoded_packet.is_fp_load;
-        producer_flags.is_fp_store = decoded_packet.is_fp_store;
-        producer_flags.is_int_store = decoded_packet.is_int_store;
-        producer_flags.is_csr_instruction = decoded_packet.is_csr_instruction;
-        producer_flags.is_fence = decoded_packet.is_fence;
-        producer_flags.is_branch_or_jump = decoded_packet.is_branch_or_jump;
-        producer_flags_2.is_lr = decoded_packet_2.is_lr;
-        producer_flags_2.is_sc = decoded_packet_2.is_sc;
-        producer_flags_2.is_amo_instruction = decoded_packet_2.is_amo_instruction;
-        producer_flags_2.is_load_instruction = decoded_packet_2.is_load_instruction;
-        producer_flags_2.is_fp_load = decoded_packet_2.is_fp_load;
-        producer_flags_2.is_fp_store = decoded_packet_2.is_fp_store;
-        producer_flags_2.is_int_store = decoded_packet_2.is_int_store;
-        producer_flags_2.is_csr_instruction = decoded_packet_2.is_csr_instruction;
-        producer_flags_2.is_fence = decoded_packet_2.is_fence;
-        producer_flags_2.is_branch_or_jump = decoded_packet_2.is_branch_or_jump;
+        producer_ctrl.source_reg_1_is_x0 = decoded_packet.source_reg_1_is_x0;
+        producer_ctrl.source_reg_2_is_x0 = decoded_packet.source_reg_2_is_x0;
+        producer_ctrl.is_load_instruction = decoded_packet.is_load_instruction;
+        producer_ctrl.is_load_byte = decoded_packet.is_load_byte;
+        producer_ctrl.is_load_halfword = decoded_packet.is_load_halfword;
+        producer_ctrl.is_load_unsigned = decoded_packet.is_load_unsigned;
+        producer_ctrl.instruction_operation = decoded_packet.instruction_operation;
+        producer_ctrl.branch_operation = decoded_packet.branch_operation;
+        producer_ctrl.store_operation = decoded_packet.store_operation;
+        producer_ctrl.rs_type = decoded_packet.rs_type;
+        producer_ctrl.is_int_store = decoded_packet.is_int_store;
+        producer_ctrl.is_branch_or_jump = decoded_packet.is_branch_or_jump;
+        producer_ctrl.is_fence = decoded_packet.is_fence;
+        producer_ctrl.is_fence_i = decoded_packet.is_fence_i;
+        producer_ctrl.is_csr_imm = decoded_packet.is_csr_imm;
+        producer_ctrl.has_fp_flags = decoded_packet.has_fp_flags;
+        producer_ctrl.is_jump_and_link = decoded_packet.is_jump_and_link;
+        producer_ctrl.is_jump_and_link_register = decoded_packet.is_jump_and_link_register;
+        producer_ctrl.is_multiply = decoded_packet.is_multiply;
+        producer_ctrl.is_divide = decoded_packet.is_divide;
+        producer_ctrl.is_csr_instruction = decoded_packet.is_csr_instruction;
+        producer_ctrl.is_amo_instruction = decoded_packet.is_amo_instruction;
+        producer_ctrl.is_lr = decoded_packet.is_lr;
+        producer_ctrl.is_sc = decoded_packet.is_sc;
+        producer_ctrl.is_mret = decoded_packet.is_mret;
+        producer_ctrl.is_sret = decoded_packet.is_sret;
+        producer_ctrl.is_dret = decoded_packet.is_dret;
+        producer_ctrl.is_sfence_vma = decoded_packet.is_sfence_vma;
+        producer_ctrl.is_wfi = decoded_packet.is_wfi;
+        producer_ctrl.is_ecall = decoded_packet.is_ecall;
+        producer_ctrl.is_ebreak = decoded_packet.is_ebreak;
+        producer_ctrl.is_illegal_instruction = decoded_packet.is_illegal_instruction;
+        producer_ctrl.is_fetch_fault = decoded_packet.is_fetch_fault;
+        producer_ctrl.is_fetch_fault_page = decoded_packet.is_fetch_fault_page;
+        producer_ctrl.is_fetch_fault_hi = decoded_packet.is_fetch_fault_hi;
+        producer_ctrl.is_fp_instruction = decoded_packet.is_fp_instruction;
+        producer_ctrl.is_fp_load = decoded_packet.is_fp_load;
+        producer_ctrl.is_fp_store = decoded_packet.is_fp_store;
+        producer_ctrl.is_fp_load_double = decoded_packet.is_fp_load_double;
+        producer_ctrl.is_fp_store_double = decoded_packet.is_fp_store_double;
+        producer_ctrl.is_fp_compute = decoded_packet.is_fp_compute;
+        producer_ctrl.is_pipelined_fp_op = decoded_packet.is_pipelined_fp_op;
+        producer_ctrl.is_fp_to_int = decoded_packet.is_fp_to_int;
+        producer_ctrl.is_int_to_fp = decoded_packet.is_int_to_fp;
+        producer_ctrl.is_compressed = decoded_packet.is_compressed;
+        producer_ctrl.instruction = decoded_packet.instruction;
+        producer_ctrl.btb_hit = decoded_packet.btb_hit;
+        producer_ctrl.btb_predicted_taken = decoded_packet.btb_predicted_taken;
+        producer_ctrl.ras_predicted = decoded_packet.ras_predicted;
+        producer_ctrl.is_ras_return = decoded_packet.is_ras_return;
+        producer_ctrl.is_ras_call = decoded_packet.is_ras_call;
+        producer_ctrl.ras_predicted_target_nonzero = decoded_packet.ras_predicted_target_nonzero;
+        producer_ctrl.btb_correct_non_jalr = decoded_packet.btb_correct_non_jalr;
+        producer_ctrl.ras_correct_non_jalr = decoded_packet.ras_correct_non_jalr;
+        producer_ctrl.has_int_dest = decoded_packet.has_int_dest;
+        producer_ctrl.has_fp_dest = decoded_packet.has_fp_dest;
+        producer_ctrl.uses_int_rs1 = decoded_packet.uses_int_rs1;
+        producer_ctrl.uses_int_rs2 = decoded_packet.uses_int_rs2;
+        producer_ctrl.uses_fp_rs1 = decoded_packet.uses_fp_rs1;
+        producer_ctrl.uses_fp_rs2 = decoded_packet.uses_fp_rs2;
+        producer_ctrl.uses_fp_rs3 = decoded_packet.uses_fp_rs3;
+        producer_ctrl.is_not_nop = decoded_packet.is_not_nop;
+        producer_ctrl_2.source_reg_1_is_x0 = decoded_packet_2.source_reg_1_is_x0;
+        producer_ctrl_2.source_reg_2_is_x0 = decoded_packet_2.source_reg_2_is_x0;
+        producer_ctrl_2.is_load_instruction = decoded_packet_2.is_load_instruction;
+        producer_ctrl_2.is_load_byte = decoded_packet_2.is_load_byte;
+        producer_ctrl_2.is_load_halfword = decoded_packet_2.is_load_halfword;
+        producer_ctrl_2.is_load_unsigned = decoded_packet_2.is_load_unsigned;
+        producer_ctrl_2.instruction_operation = decoded_packet_2.instruction_operation;
+        producer_ctrl_2.branch_operation = decoded_packet_2.branch_operation;
+        producer_ctrl_2.store_operation = decoded_packet_2.store_operation;
+        producer_ctrl_2.rs_type = decoded_packet_2.rs_type;
+        producer_ctrl_2.is_int_store = decoded_packet_2.is_int_store;
+        producer_ctrl_2.is_branch_or_jump = decoded_packet_2.is_branch_or_jump;
+        producer_ctrl_2.is_fence = decoded_packet_2.is_fence;
+        producer_ctrl_2.is_fence_i = decoded_packet_2.is_fence_i;
+        producer_ctrl_2.is_csr_imm = decoded_packet_2.is_csr_imm;
+        producer_ctrl_2.has_fp_flags = decoded_packet_2.has_fp_flags;
+        producer_ctrl_2.is_jump_and_link = decoded_packet_2.is_jump_and_link;
+        producer_ctrl_2.is_jump_and_link_register = decoded_packet_2.is_jump_and_link_register;
+        producer_ctrl_2.is_multiply = decoded_packet_2.is_multiply;
+        producer_ctrl_2.is_divide = decoded_packet_2.is_divide;
+        producer_ctrl_2.is_csr_instruction = decoded_packet_2.is_csr_instruction;
+        producer_ctrl_2.is_amo_instruction = decoded_packet_2.is_amo_instruction;
+        producer_ctrl_2.is_lr = decoded_packet_2.is_lr;
+        producer_ctrl_2.is_sc = decoded_packet_2.is_sc;
+        producer_ctrl_2.is_mret = decoded_packet_2.is_mret;
+        producer_ctrl_2.is_sret = decoded_packet_2.is_sret;
+        producer_ctrl_2.is_dret = decoded_packet_2.is_dret;
+        producer_ctrl_2.is_sfence_vma = decoded_packet_2.is_sfence_vma;
+        producer_ctrl_2.is_wfi = decoded_packet_2.is_wfi;
+        producer_ctrl_2.is_ecall = decoded_packet_2.is_ecall;
+        producer_ctrl_2.is_ebreak = decoded_packet_2.is_ebreak;
+        producer_ctrl_2.is_illegal_instruction = decoded_packet_2.is_illegal_instruction;
+        producer_ctrl_2.is_fetch_fault = decoded_packet_2.is_fetch_fault;
+        producer_ctrl_2.is_fetch_fault_page = decoded_packet_2.is_fetch_fault_page;
+        producer_ctrl_2.is_fetch_fault_hi = decoded_packet_2.is_fetch_fault_hi;
+        producer_ctrl_2.is_fp_instruction = decoded_packet_2.is_fp_instruction;
+        producer_ctrl_2.is_fp_load = decoded_packet_2.is_fp_load;
+        producer_ctrl_2.is_fp_store = decoded_packet_2.is_fp_store;
+        producer_ctrl_2.is_fp_load_double = decoded_packet_2.is_fp_load_double;
+        producer_ctrl_2.is_fp_store_double = decoded_packet_2.is_fp_store_double;
+        producer_ctrl_2.is_fp_compute = decoded_packet_2.is_fp_compute;
+        producer_ctrl_2.is_pipelined_fp_op = decoded_packet_2.is_pipelined_fp_op;
+        producer_ctrl_2.is_fp_to_int = decoded_packet_2.is_fp_to_int;
+        producer_ctrl_2.is_int_to_fp = decoded_packet_2.is_int_to_fp;
+        producer_ctrl_2.is_compressed = decoded_packet_2.is_compressed;
+        producer_ctrl_2.instruction = decoded_packet_2.instruction;
+        producer_ctrl_2.btb_hit = decoded_packet_2.btb_hit;
+        producer_ctrl_2.btb_predicted_taken = decoded_packet_2.btb_predicted_taken;
+        producer_ctrl_2.ras_predicted = decoded_packet_2.ras_predicted;
+        producer_ctrl_2.is_ras_return = decoded_packet_2.is_ras_return;
+        producer_ctrl_2.is_ras_call = decoded_packet_2.is_ras_call;
+        producer_ctrl_2.ras_predicted_target_nonzero =
+            decoded_packet_2.ras_predicted_target_nonzero;
+        producer_ctrl_2.btb_correct_non_jalr = decoded_packet_2.btb_correct_non_jalr;
+        producer_ctrl_2.ras_correct_non_jalr = decoded_packet_2.ras_correct_non_jalr;
+        producer_ctrl_2.has_int_dest = decoded_packet_2.has_int_dest;
+        producer_ctrl_2.has_fp_dest = decoded_packet_2.has_fp_dest;
+        producer_ctrl_2.uses_int_rs1 = decoded_packet_2.uses_int_rs1;
+        producer_ctrl_2.uses_int_rs2 = decoded_packet_2.uses_int_rs2;
+        producer_ctrl_2.uses_fp_rs1 = decoded_packet_2.uses_fp_rs1;
+        producer_ctrl_2.uses_fp_rs2 = decoded_packet_2.uses_fp_rs2;
+        producer_ctrl_2.uses_fp_rs3 = decoded_packet_2.uses_fp_rs3;
+        producer_ctrl_2.is_not_nop = decoded_packet_2.is_not_nop;
+        producer_ctrl_next.source_reg_1_is_x0 = decoded_packet_next.source_reg_1_is_x0;
+        producer_ctrl_next.source_reg_2_is_x0 = decoded_packet_next.source_reg_2_is_x0;
+        producer_ctrl_next.is_load_instruction = decoded_packet_next.is_load_instruction;
+        producer_ctrl_next.is_load_byte = decoded_packet_next.is_load_byte;
+        producer_ctrl_next.is_load_halfword = decoded_packet_next.is_load_halfword;
+        producer_ctrl_next.is_load_unsigned = decoded_packet_next.is_load_unsigned;
+        producer_ctrl_next.instruction_operation = decoded_packet_next.instruction_operation;
+        producer_ctrl_next.branch_operation = decoded_packet_next.branch_operation;
+        producer_ctrl_next.store_operation = decoded_packet_next.store_operation;
+        producer_ctrl_next.rs_type = decoded_packet_next.rs_type;
+        producer_ctrl_next.is_int_store = decoded_packet_next.is_int_store;
+        producer_ctrl_next.is_branch_or_jump = decoded_packet_next.is_branch_or_jump;
+        producer_ctrl_next.is_fence = decoded_packet_next.is_fence;
+        producer_ctrl_next.is_fence_i = decoded_packet_next.is_fence_i;
+        producer_ctrl_next.is_csr_imm = decoded_packet_next.is_csr_imm;
+        producer_ctrl_next.has_fp_flags = decoded_packet_next.has_fp_flags;
+        producer_ctrl_next.is_jump_and_link = decoded_packet_next.is_jump_and_link;
+        producer_ctrl_next.is_jump_and_link_register =
+            decoded_packet_next.is_jump_and_link_register;
+        producer_ctrl_next.is_multiply = decoded_packet_next.is_multiply;
+        producer_ctrl_next.is_divide = decoded_packet_next.is_divide;
+        producer_ctrl_next.is_csr_instruction = decoded_packet_next.is_csr_instruction;
+        producer_ctrl_next.is_amo_instruction = decoded_packet_next.is_amo_instruction;
+        producer_ctrl_next.is_lr = decoded_packet_next.is_lr;
+        producer_ctrl_next.is_sc = decoded_packet_next.is_sc;
+        producer_ctrl_next.is_mret = decoded_packet_next.is_mret;
+        producer_ctrl_next.is_sret = decoded_packet_next.is_sret;
+        producer_ctrl_next.is_dret = decoded_packet_next.is_dret;
+        producer_ctrl_next.is_sfence_vma = decoded_packet_next.is_sfence_vma;
+        producer_ctrl_next.is_wfi = decoded_packet_next.is_wfi;
+        producer_ctrl_next.is_ecall = decoded_packet_next.is_ecall;
+        producer_ctrl_next.is_ebreak = decoded_packet_next.is_ebreak;
+        producer_ctrl_next.is_illegal_instruction = decoded_packet_next.is_illegal_instruction;
+        producer_ctrl_next.is_fetch_fault = decoded_packet_next.is_fetch_fault;
+        producer_ctrl_next.is_fetch_fault_page = decoded_packet_next.is_fetch_fault_page;
+        producer_ctrl_next.is_fetch_fault_hi = decoded_packet_next.is_fetch_fault_hi;
+        producer_ctrl_next.is_fp_instruction = decoded_packet_next.is_fp_instruction;
+        producer_ctrl_next.is_fp_load = decoded_packet_next.is_fp_load;
+        producer_ctrl_next.is_fp_store = decoded_packet_next.is_fp_store;
+        producer_ctrl_next.is_fp_load_double = decoded_packet_next.is_fp_load_double;
+        producer_ctrl_next.is_fp_store_double = decoded_packet_next.is_fp_store_double;
+        producer_ctrl_next.is_fp_compute = decoded_packet_next.is_fp_compute;
+        producer_ctrl_next.is_pipelined_fp_op = decoded_packet_next.is_pipelined_fp_op;
+        producer_ctrl_next.is_fp_to_int = decoded_packet_next.is_fp_to_int;
+        producer_ctrl_next.is_int_to_fp = decoded_packet_next.is_int_to_fp;
+        producer_ctrl_next.is_compressed = decoded_packet_next.is_compressed;
+        producer_ctrl_next.instruction = decoded_packet_next.instruction;
+        producer_ctrl_next.btb_hit = decoded_packet_next.btb_hit;
+        producer_ctrl_next.btb_predicted_taken = decoded_packet_next.btb_predicted_taken;
+        producer_ctrl_next.ras_predicted = decoded_packet_next.ras_predicted;
+        producer_ctrl_next.is_ras_return = decoded_packet_next.is_ras_return;
+        producer_ctrl_next.is_ras_call = decoded_packet_next.is_ras_call;
+        producer_ctrl_next.ras_predicted_target_nonzero =
+            decoded_packet_next.ras_predicted_target_nonzero;
+        producer_ctrl_next.btb_correct_non_jalr = decoded_packet_next.btb_correct_non_jalr;
+        producer_ctrl_next.ras_correct_non_jalr = decoded_packet_next.ras_correct_non_jalr;
+        producer_ctrl_next.has_int_dest = decoded_packet_next.has_int_dest;
+        producer_ctrl_next.has_fp_dest = decoded_packet_next.has_fp_dest;
+        producer_ctrl_next.uses_int_rs1 = decoded_packet_next.uses_int_rs1;
+        producer_ctrl_next.uses_int_rs2 = decoded_packet_next.uses_int_rs2;
+        producer_ctrl_next.uses_fp_rs1 = decoded_packet_next.uses_fp_rs1;
+        producer_ctrl_next.uses_fp_rs2 = decoded_packet_next.uses_fp_rs2;
+        producer_ctrl_next.uses_fp_rs3 = decoded_packet_next.uses_fp_rs3;
+        producer_ctrl_next.is_not_nop = decoded_packet_next.is_not_nop;
+        producer_ctrl_next_2.source_reg_1_is_x0 = decoded_packet_next_2.source_reg_1_is_x0;
+        producer_ctrl_next_2.source_reg_2_is_x0 = decoded_packet_next_2.source_reg_2_is_x0;
+        producer_ctrl_next_2.is_load_instruction = decoded_packet_next_2.is_load_instruction;
+        producer_ctrl_next_2.is_load_byte = decoded_packet_next_2.is_load_byte;
+        producer_ctrl_next_2.is_load_halfword = decoded_packet_next_2.is_load_halfword;
+        producer_ctrl_next_2.is_load_unsigned = decoded_packet_next_2.is_load_unsigned;
+        producer_ctrl_next_2.instruction_operation = decoded_packet_next_2.instruction_operation;
+        producer_ctrl_next_2.branch_operation = decoded_packet_next_2.branch_operation;
+        producer_ctrl_next_2.store_operation = decoded_packet_next_2.store_operation;
+        producer_ctrl_next_2.rs_type = decoded_packet_next_2.rs_type;
+        producer_ctrl_next_2.is_int_store = decoded_packet_next_2.is_int_store;
+        producer_ctrl_next_2.is_branch_or_jump = decoded_packet_next_2.is_branch_or_jump;
+        producer_ctrl_next_2.is_fence = decoded_packet_next_2.is_fence;
+        producer_ctrl_next_2.is_fence_i = decoded_packet_next_2.is_fence_i;
+        producer_ctrl_next_2.is_csr_imm = decoded_packet_next_2.is_csr_imm;
+        producer_ctrl_next_2.has_fp_flags = decoded_packet_next_2.has_fp_flags;
+        producer_ctrl_next_2.is_jump_and_link = decoded_packet_next_2.is_jump_and_link;
+        producer_ctrl_next_2.is_jump_and_link_register =
+            decoded_packet_next_2.is_jump_and_link_register;
+        producer_ctrl_next_2.is_multiply = decoded_packet_next_2.is_multiply;
+        producer_ctrl_next_2.is_divide = decoded_packet_next_2.is_divide;
+        producer_ctrl_next_2.is_csr_instruction = decoded_packet_next_2.is_csr_instruction;
+        producer_ctrl_next_2.is_amo_instruction = decoded_packet_next_2.is_amo_instruction;
+        producer_ctrl_next_2.is_lr = decoded_packet_next_2.is_lr;
+        producer_ctrl_next_2.is_sc = decoded_packet_next_2.is_sc;
+        producer_ctrl_next_2.is_mret = decoded_packet_next_2.is_mret;
+        producer_ctrl_next_2.is_sret = decoded_packet_next_2.is_sret;
+        producer_ctrl_next_2.is_dret = decoded_packet_next_2.is_dret;
+        producer_ctrl_next_2.is_sfence_vma = decoded_packet_next_2.is_sfence_vma;
+        producer_ctrl_next_2.is_wfi = decoded_packet_next_2.is_wfi;
+        producer_ctrl_next_2.is_ecall = decoded_packet_next_2.is_ecall;
+        producer_ctrl_next_2.is_ebreak = decoded_packet_next_2.is_ebreak;
+        producer_ctrl_next_2.is_illegal_instruction = decoded_packet_next_2.is_illegal_instruction;
+        producer_ctrl_next_2.is_fetch_fault = decoded_packet_next_2.is_fetch_fault;
+        producer_ctrl_next_2.is_fetch_fault_page = decoded_packet_next_2.is_fetch_fault_page;
+        producer_ctrl_next_2.is_fetch_fault_hi = decoded_packet_next_2.is_fetch_fault_hi;
+        producer_ctrl_next_2.is_fp_instruction = decoded_packet_next_2.is_fp_instruction;
+        producer_ctrl_next_2.is_fp_load = decoded_packet_next_2.is_fp_load;
+        producer_ctrl_next_2.is_fp_store = decoded_packet_next_2.is_fp_store;
+        producer_ctrl_next_2.is_fp_load_double = decoded_packet_next_2.is_fp_load_double;
+        producer_ctrl_next_2.is_fp_store_double = decoded_packet_next_2.is_fp_store_double;
+        producer_ctrl_next_2.is_fp_compute = decoded_packet_next_2.is_fp_compute;
+        producer_ctrl_next_2.is_pipelined_fp_op = decoded_packet_next_2.is_pipelined_fp_op;
+        producer_ctrl_next_2.is_fp_to_int = decoded_packet_next_2.is_fp_to_int;
+        producer_ctrl_next_2.is_int_to_fp = decoded_packet_next_2.is_int_to_fp;
+        producer_ctrl_next_2.is_compressed = decoded_packet_next_2.is_compressed;
+        producer_ctrl_next_2.instruction = decoded_packet_next_2.instruction;
+        producer_ctrl_next_2.btb_hit = decoded_packet_next_2.btb_hit;
+        producer_ctrl_next_2.btb_predicted_taken = decoded_packet_next_2.btb_predicted_taken;
+        producer_ctrl_next_2.ras_predicted = decoded_packet_next_2.ras_predicted;
+        producer_ctrl_next_2.is_ras_return = decoded_packet_next_2.is_ras_return;
+        producer_ctrl_next_2.is_ras_call = decoded_packet_next_2.is_ras_call;
+        producer_ctrl_next_2.ras_predicted_target_nonzero =
+            decoded_packet_next_2.ras_predicted_target_nonzero;
+        producer_ctrl_next_2.btb_correct_non_jalr = decoded_packet_next_2.btb_correct_non_jalr;
+        producer_ctrl_next_2.ras_correct_non_jalr = decoded_packet_next_2.ras_correct_non_jalr;
+        producer_ctrl_next_2.has_int_dest = decoded_packet_next_2.has_int_dest;
+        producer_ctrl_next_2.has_fp_dest = decoded_packet_next_2.has_fp_dest;
+        producer_ctrl_next_2.uses_int_rs1 = decoded_packet_next_2.uses_int_rs1;
+        producer_ctrl_next_2.uses_int_rs2 = decoded_packet_next_2.uses_int_rs2;
+        producer_ctrl_next_2.uses_fp_rs1 = decoded_packet_next_2.uses_fp_rs1;
+        producer_ctrl_next_2.uses_fp_rs2 = decoded_packet_next_2.uses_fp_rs2;
+        producer_ctrl_next_2.uses_fp_rs3 = decoded_packet_next_2.uses_fp_rs3;
+        producer_ctrl_next_2.is_not_nop = decoded_packet_next_2.is_not_nop;
       end
       assign input_indirect =
           (decoded_packet.is_jump_and_link_register &&
@@ -922,7 +1152,7 @@ module cpu_ooo #(
       decoded_bundle_queue #(
           .DEPTH(DECODED_QUEUE_DEPTH),
           .WIDTH(2 * $bits(decoded_packet)),
-          .SHADOW_WIDTH(2 * ($bits(riscv_pkg::instr_t) + $bits(riscv_pkg::id_dispatch_flags_t)))
+          .SHADOW_WIDTH(2 * $bits(riscv_pkg::id_dispatch_ctrl_t))
       ) u_queue (
           .i_clk(i_clk),
           .i_rst(i_rst),
@@ -931,55 +1161,148 @@ module cpu_ooo #(
           .i_valid(pd_valid_q &&
               (decoded_packet.is_not_nop || decoded_packet_2.is_not_nop || step_armed_fe_q)),
           .i_packet({decoded_packet_2, decoded_packet}),
-          .i_shadow({
-            producer_flags_2,
-            decoded_packet_2.instruction,
-            producer_flags,
-            decoded_packet.instruction
-          }),
-          .i_shadow_next({
-            decoded_flags_next_2,
-            decoded_instruction_next_2,
-            decoded_flags_next,
-            decoded_instruction_next
-          }),
+          .i_shadow({producer_ctrl_2, producer_ctrl}),
+          .i_shadow_next({producer_ctrl_next_2, producer_ctrl_next}),
           .i_indirect(input_indirect),
           .i_pop(rob_alloc_req.alloc_valid),
           .o_full(decoded_queue_full),
           .o_valid(queue_valid),
           .o_packet({queue_packet_2, queue_packet}),
-          .o_shadow({queue_flags_2, queue_instruction_2, queue_flags, queue_instruction}),
+          .o_shadow({queue_ctrl_2, queue_ctrl}),
           .o_indirect_pending(decoded_queue_indirect_pending)
       );
-      // TIMING: the instruction words carry the RAT, register-file and
-      // rename addresses (hundreds of loads per bit), and the shallow
-      // dispatch-classification flags gate dispatch_fire. Take both from the
-      // queue's registered shadow, which equals the same queue_packet fields.
+      // TIMING: every narrow control field (the RS route, the operation and
+      // classification flags that gate dispatch_fire, and the instruction
+      // word whose register fields address the RAT and register files) comes
+      // from the queue's registered shadow, which equals the same queue_packet
+      // fields. Only the wide payload keeps the bypass select.
       always_comb begin
         from_id_to_ex = queue_packet;
-        from_id_to_ex.instruction = queue_instruction;
-        from_id_to_ex.is_lr = queue_flags.is_lr;
-        from_id_to_ex.is_sc = queue_flags.is_sc;
-        from_id_to_ex.is_amo_instruction = queue_flags.is_amo_instruction;
-        from_id_to_ex.is_load_instruction = queue_flags.is_load_instruction;
-        from_id_to_ex.is_fp_load = queue_flags.is_fp_load;
-        from_id_to_ex.is_fp_store = queue_flags.is_fp_store;
-        from_id_to_ex.is_int_store = queue_flags.is_int_store;
-        from_id_to_ex.is_csr_instruction = queue_flags.is_csr_instruction;
-        from_id_to_ex.is_fence = queue_flags.is_fence;
-        from_id_to_ex.is_branch_or_jump = queue_flags.is_branch_or_jump;
         from_id_to_ex_2 = queue_packet_2;
-        from_id_to_ex_2.instruction = queue_instruction_2;
-        from_id_to_ex_2.is_lr = queue_flags_2.is_lr;
-        from_id_to_ex_2.is_sc = queue_flags_2.is_sc;
-        from_id_to_ex_2.is_amo_instruction = queue_flags_2.is_amo_instruction;
-        from_id_to_ex_2.is_load_instruction = queue_flags_2.is_load_instruction;
-        from_id_to_ex_2.is_fp_load = queue_flags_2.is_fp_load;
-        from_id_to_ex_2.is_fp_store = queue_flags_2.is_fp_store;
-        from_id_to_ex_2.is_int_store = queue_flags_2.is_int_store;
-        from_id_to_ex_2.is_csr_instruction = queue_flags_2.is_csr_instruction;
-        from_id_to_ex_2.is_fence = queue_flags_2.is_fence;
-        from_id_to_ex_2.is_branch_or_jump = queue_flags_2.is_branch_or_jump;
+        from_id_to_ex.source_reg_1_is_x0 = queue_ctrl.source_reg_1_is_x0;
+        from_id_to_ex.source_reg_2_is_x0 = queue_ctrl.source_reg_2_is_x0;
+        from_id_to_ex.is_load_instruction = queue_ctrl.is_load_instruction;
+        from_id_to_ex.is_load_byte = queue_ctrl.is_load_byte;
+        from_id_to_ex.is_load_halfword = queue_ctrl.is_load_halfword;
+        from_id_to_ex.is_load_unsigned = queue_ctrl.is_load_unsigned;
+        from_id_to_ex.instruction_operation = queue_ctrl.instruction_operation;
+        from_id_to_ex.branch_operation = queue_ctrl.branch_operation;
+        from_id_to_ex.store_operation = queue_ctrl.store_operation;
+        from_id_to_ex.rs_type = queue_ctrl.rs_type;
+        from_id_to_ex.is_int_store = queue_ctrl.is_int_store;
+        from_id_to_ex.is_branch_or_jump = queue_ctrl.is_branch_or_jump;
+        from_id_to_ex.is_fence = queue_ctrl.is_fence;
+        from_id_to_ex.is_fence_i = queue_ctrl.is_fence_i;
+        from_id_to_ex.is_csr_imm = queue_ctrl.is_csr_imm;
+        from_id_to_ex.has_fp_flags = queue_ctrl.has_fp_flags;
+        from_id_to_ex.is_jump_and_link = queue_ctrl.is_jump_and_link;
+        from_id_to_ex.is_jump_and_link_register = queue_ctrl.is_jump_and_link_register;
+        from_id_to_ex.is_multiply = queue_ctrl.is_multiply;
+        from_id_to_ex.is_divide = queue_ctrl.is_divide;
+        from_id_to_ex.is_csr_instruction = queue_ctrl.is_csr_instruction;
+        from_id_to_ex.is_amo_instruction = queue_ctrl.is_amo_instruction;
+        from_id_to_ex.is_lr = queue_ctrl.is_lr;
+        from_id_to_ex.is_sc = queue_ctrl.is_sc;
+        from_id_to_ex.is_mret = queue_ctrl.is_mret;
+        from_id_to_ex.is_sret = queue_ctrl.is_sret;
+        from_id_to_ex.is_dret = queue_ctrl.is_dret;
+        from_id_to_ex.is_sfence_vma = queue_ctrl.is_sfence_vma;
+        from_id_to_ex.is_wfi = queue_ctrl.is_wfi;
+        from_id_to_ex.is_ecall = queue_ctrl.is_ecall;
+        from_id_to_ex.is_ebreak = queue_ctrl.is_ebreak;
+        from_id_to_ex.is_illegal_instruction = queue_ctrl.is_illegal_instruction;
+        from_id_to_ex.is_fetch_fault = queue_ctrl.is_fetch_fault;
+        from_id_to_ex.is_fetch_fault_page = queue_ctrl.is_fetch_fault_page;
+        from_id_to_ex.is_fetch_fault_hi = queue_ctrl.is_fetch_fault_hi;
+        from_id_to_ex.is_fp_instruction = queue_ctrl.is_fp_instruction;
+        from_id_to_ex.is_fp_load = queue_ctrl.is_fp_load;
+        from_id_to_ex.is_fp_store = queue_ctrl.is_fp_store;
+        from_id_to_ex.is_fp_load_double = queue_ctrl.is_fp_load_double;
+        from_id_to_ex.is_fp_store_double = queue_ctrl.is_fp_store_double;
+        from_id_to_ex.is_fp_compute = queue_ctrl.is_fp_compute;
+        from_id_to_ex.is_pipelined_fp_op = queue_ctrl.is_pipelined_fp_op;
+        from_id_to_ex.is_fp_to_int = queue_ctrl.is_fp_to_int;
+        from_id_to_ex.is_int_to_fp = queue_ctrl.is_int_to_fp;
+        from_id_to_ex.is_compressed = queue_ctrl.is_compressed;
+        from_id_to_ex.instruction = queue_ctrl.instruction;
+        from_id_to_ex.btb_hit = queue_ctrl.btb_hit;
+        from_id_to_ex.btb_predicted_taken = queue_ctrl.btb_predicted_taken;
+        from_id_to_ex.ras_predicted = queue_ctrl.ras_predicted;
+        from_id_to_ex.is_ras_return = queue_ctrl.is_ras_return;
+        from_id_to_ex.is_ras_call = queue_ctrl.is_ras_call;
+        from_id_to_ex.ras_predicted_target_nonzero = queue_ctrl.ras_predicted_target_nonzero;
+        from_id_to_ex.btb_correct_non_jalr = queue_ctrl.btb_correct_non_jalr;
+        from_id_to_ex.ras_correct_non_jalr = queue_ctrl.ras_correct_non_jalr;
+        from_id_to_ex.has_int_dest = queue_ctrl.has_int_dest;
+        from_id_to_ex.has_fp_dest = queue_ctrl.has_fp_dest;
+        from_id_to_ex.uses_int_rs1 = queue_ctrl.uses_int_rs1;
+        from_id_to_ex.uses_int_rs2 = queue_ctrl.uses_int_rs2;
+        from_id_to_ex.uses_fp_rs1 = queue_ctrl.uses_fp_rs1;
+        from_id_to_ex.uses_fp_rs2 = queue_ctrl.uses_fp_rs2;
+        from_id_to_ex.uses_fp_rs3 = queue_ctrl.uses_fp_rs3;
+        from_id_to_ex.is_not_nop = queue_ctrl.is_not_nop;
+        from_id_to_ex_2.source_reg_1_is_x0 = queue_ctrl_2.source_reg_1_is_x0;
+        from_id_to_ex_2.source_reg_2_is_x0 = queue_ctrl_2.source_reg_2_is_x0;
+        from_id_to_ex_2.is_load_instruction = queue_ctrl_2.is_load_instruction;
+        from_id_to_ex_2.is_load_byte = queue_ctrl_2.is_load_byte;
+        from_id_to_ex_2.is_load_halfword = queue_ctrl_2.is_load_halfword;
+        from_id_to_ex_2.is_load_unsigned = queue_ctrl_2.is_load_unsigned;
+        from_id_to_ex_2.instruction_operation = queue_ctrl_2.instruction_operation;
+        from_id_to_ex_2.branch_operation = queue_ctrl_2.branch_operation;
+        from_id_to_ex_2.store_operation = queue_ctrl_2.store_operation;
+        from_id_to_ex_2.rs_type = queue_ctrl_2.rs_type;
+        from_id_to_ex_2.is_int_store = queue_ctrl_2.is_int_store;
+        from_id_to_ex_2.is_branch_or_jump = queue_ctrl_2.is_branch_or_jump;
+        from_id_to_ex_2.is_fence = queue_ctrl_2.is_fence;
+        from_id_to_ex_2.is_fence_i = queue_ctrl_2.is_fence_i;
+        from_id_to_ex_2.is_csr_imm = queue_ctrl_2.is_csr_imm;
+        from_id_to_ex_2.has_fp_flags = queue_ctrl_2.has_fp_flags;
+        from_id_to_ex_2.is_jump_and_link = queue_ctrl_2.is_jump_and_link;
+        from_id_to_ex_2.is_jump_and_link_register = queue_ctrl_2.is_jump_and_link_register;
+        from_id_to_ex_2.is_multiply = queue_ctrl_2.is_multiply;
+        from_id_to_ex_2.is_divide = queue_ctrl_2.is_divide;
+        from_id_to_ex_2.is_csr_instruction = queue_ctrl_2.is_csr_instruction;
+        from_id_to_ex_2.is_amo_instruction = queue_ctrl_2.is_amo_instruction;
+        from_id_to_ex_2.is_lr = queue_ctrl_2.is_lr;
+        from_id_to_ex_2.is_sc = queue_ctrl_2.is_sc;
+        from_id_to_ex_2.is_mret = queue_ctrl_2.is_mret;
+        from_id_to_ex_2.is_sret = queue_ctrl_2.is_sret;
+        from_id_to_ex_2.is_dret = queue_ctrl_2.is_dret;
+        from_id_to_ex_2.is_sfence_vma = queue_ctrl_2.is_sfence_vma;
+        from_id_to_ex_2.is_wfi = queue_ctrl_2.is_wfi;
+        from_id_to_ex_2.is_ecall = queue_ctrl_2.is_ecall;
+        from_id_to_ex_2.is_ebreak = queue_ctrl_2.is_ebreak;
+        from_id_to_ex_2.is_illegal_instruction = queue_ctrl_2.is_illegal_instruction;
+        from_id_to_ex_2.is_fetch_fault = queue_ctrl_2.is_fetch_fault;
+        from_id_to_ex_2.is_fetch_fault_page = queue_ctrl_2.is_fetch_fault_page;
+        from_id_to_ex_2.is_fetch_fault_hi = queue_ctrl_2.is_fetch_fault_hi;
+        from_id_to_ex_2.is_fp_instruction = queue_ctrl_2.is_fp_instruction;
+        from_id_to_ex_2.is_fp_load = queue_ctrl_2.is_fp_load;
+        from_id_to_ex_2.is_fp_store = queue_ctrl_2.is_fp_store;
+        from_id_to_ex_2.is_fp_load_double = queue_ctrl_2.is_fp_load_double;
+        from_id_to_ex_2.is_fp_store_double = queue_ctrl_2.is_fp_store_double;
+        from_id_to_ex_2.is_fp_compute = queue_ctrl_2.is_fp_compute;
+        from_id_to_ex_2.is_pipelined_fp_op = queue_ctrl_2.is_pipelined_fp_op;
+        from_id_to_ex_2.is_fp_to_int = queue_ctrl_2.is_fp_to_int;
+        from_id_to_ex_2.is_int_to_fp = queue_ctrl_2.is_int_to_fp;
+        from_id_to_ex_2.is_compressed = queue_ctrl_2.is_compressed;
+        from_id_to_ex_2.instruction = queue_ctrl_2.instruction;
+        from_id_to_ex_2.btb_hit = queue_ctrl_2.btb_hit;
+        from_id_to_ex_2.btb_predicted_taken = queue_ctrl_2.btb_predicted_taken;
+        from_id_to_ex_2.ras_predicted = queue_ctrl_2.ras_predicted;
+        from_id_to_ex_2.is_ras_return = queue_ctrl_2.is_ras_return;
+        from_id_to_ex_2.is_ras_call = queue_ctrl_2.is_ras_call;
+        from_id_to_ex_2.ras_predicted_target_nonzero = queue_ctrl_2.ras_predicted_target_nonzero;
+        from_id_to_ex_2.btb_correct_non_jalr = queue_ctrl_2.btb_correct_non_jalr;
+        from_id_to_ex_2.ras_correct_non_jalr = queue_ctrl_2.ras_correct_non_jalr;
+        from_id_to_ex_2.has_int_dest = queue_ctrl_2.has_int_dest;
+        from_id_to_ex_2.has_fp_dest = queue_ctrl_2.has_fp_dest;
+        from_id_to_ex_2.uses_int_rs1 = queue_ctrl_2.uses_int_rs1;
+        from_id_to_ex_2.uses_int_rs2 = queue_ctrl_2.uses_int_rs2;
+        from_id_to_ex_2.uses_fp_rs1 = queue_ctrl_2.uses_fp_rs1;
+        from_id_to_ex_2.uses_fp_rs2 = queue_ctrl_2.uses_fp_rs2;
+        from_id_to_ex_2.uses_fp_rs3 = queue_ctrl_2.uses_fp_rs3;
+        from_id_to_ex_2.is_not_nop = queue_ctrl_2.is_not_nop;
       end
       assign id_valid_preflush = queue_valid &&
           !(csr_in_flight || csr_wb_pending || serializing_alloc_fire);

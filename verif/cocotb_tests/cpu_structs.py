@@ -48,6 +48,7 @@ IF_TO_PD_FIELDS = [
     ("sel_compressed", 1),
     ("effective_instr", 32),
     ("source_hot_predecoded", 3),
+    ("bits24_20_predecoded", 5),
     ("btb_hit", 1),
     ("btb_predicted_taken", 1),
     ("btb_predicted_target", XLEN),

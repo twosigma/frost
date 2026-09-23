@@ -303,6 +303,7 @@ module if_stage #(
   logic sel_compressed;  // Select compressed instruction path
   logic use_instr_buffer;  // Use buffered instruction
   logic [2:0] rvc_source_hot;
+  logic [4:0] rvc_bits24_20;
 
   // Slot-2 outputs from instruction_aligner (2-wide dispatch).
   logic [15:0] raw_parcel_2;
@@ -313,6 +314,7 @@ module if_stage #(
   logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
   logic sel_compressed_2;
   logic [2:0] source_hot_2;
+  logic [4:0] bits24_20_2;
   logic slot2_valid_for_pc_live;
   logic slot2_is_compressed_for_pc_live;
   logic slot2_is_compressed_plus2_for_btb;
@@ -1180,6 +1182,7 @@ module if_stage #(
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer),
       .o_rvc_source_hot(rvc_source_hot),
+      .o_rvc_bits24_20(rvc_bits24_20),
 
       // Slot-2 outputs. sel_nop_2 already folds in slot-1 sel_nop,
       // slot-1 branch detection, and the doesn't-fit cases.
@@ -1190,6 +1193,7 @@ module if_stage #(
       .o_sel_nop_2(sel_nop_2_aligner),
       .o_sel_compressed_2(sel_compressed_2),
       .o_source_hot_2(source_hot_2),
+      .o_bits24_20_2(bits24_20_2),
       .o_slot2_valid_for_pc(slot2_valid_for_pc_live),
       .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
       .o_slot2_is_compressed_plus2_for_btb(slot2_is_compressed_plus2_for_btb),
@@ -1831,6 +1835,12 @@ module if_stage #(
   assign source_hot_predecoded_live = sel_compressed ?
       rvc_source_hot : {assembled_instr[21], assembled_instr[17:16]};
   assign source_hot_predecoded_2_live = source_hot_2;
+  // Slot 1's instruction bits [24:20] by the same construction: RVC values
+  // come from the sideband, so PD's rs2 path skips the decompressor.
+  logic [4:0] bits24_20_predecoded_live;
+  logic [4:0] bits24_20_predecoded_saved;
+  logic [4:0] bits24_20_predecoded_2_saved;
+  assign bits24_20_predecoded_live = sel_compressed ? rvc_bits24_20 : assembled_instr[24:20];
 
   // Capture the narrow values once on stall entry. Apply the replay select
   // only at the packet output so the live source path does not acquire the
@@ -1839,9 +1849,13 @@ module if_stage #(
     if (flush_for_c_ext_safe) begin
       source_hot_predecoded_saved   <= '0;
       source_hot_predecoded_2_saved <= '0;
+      bits24_20_predecoded_saved    <= '0;
+      bits24_20_predecoded_2_saved  <= '0;
     end else if (if_stage_stall & ~if_stage_stall_registered) begin
       source_hot_predecoded_saved   <= source_hot_predecoded_live;
       source_hot_predecoded_2_saved <= source_hot_predecoded_2_live;
+      bits24_20_predecoded_saved    <= bits24_20_predecoded_live;
+      bits24_20_predecoded_2_saved  <= bits24_20_2;
     end
   end
 
@@ -2002,6 +2016,8 @@ module if_stage #(
   assign o_from_if_to_pd.source_hot_predecoded =
       replay_saved_if_outputs ? source_hot_predecoded_saved :
                                 source_hot_predecoded_live;
+  assign o_from_if_to_pd.bits24_20_predecoded =
+      replay_saved_if_outputs ? bits24_20_predecoded_saved : bits24_20_predecoded_live;
 
   // Link address (the slot-1 fall-through PC, instruction_pc + 2 for a
   // compressed instruction or + 4 for a 32-bit one) feeding the RAS call
@@ -2706,6 +2722,8 @@ module if_stage #(
   assign o_from_if_to_pd_2.source_hot_predecoded =
       replay_saved_if_outputs ? source_hot_predecoded_2_saved :
                                 source_hot_predecoded_2_live;
+  assign o_from_if_to_pd_2.bits24_20_predecoded =
+      replay_saved_if_outputs ? bits24_20_predecoded_2_saved : bits24_20_2;
   assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
   // Slot-2 fault tag (see the slot-1 block): current word, plus the next
   // word for every position that reads it.

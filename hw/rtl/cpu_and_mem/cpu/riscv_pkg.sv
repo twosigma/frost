@@ -87,7 +87,7 @@ package riscv_pkg;
   // Instruction-memory predecode sideband bits, stored per 32-bit word.
   // The fetch interface returns two words, so its sideband bus is twice this
   // width: {next_word_sideband, current_word_sideband}.
-  localparam int unsigned ImemSidebandWidth = 18;
+  localparam int unsigned ImemSidebandWidth = 28;
   localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
   localparam int unsigned ImemSbIsCompressedLo = 0;
   localparam int unsigned ImemSbIsCompressedHi = 1;
@@ -108,6 +108,11 @@ package riscv_pkg;
   // endpoints are stored: {rs2[1], rs1[2:1]} for each halfword start.
   localparam int unsigned ImemSbRvcSourceHotLoLsb = 12;
   localparam int unsigned ImemSbRvcSourceHotHiLsb = 15;
+  // The RVC expansion's complete instruction bits [24:20] for each halfword
+  // start: rs2 for register formats, immediate bits otherwise. Slot 1 uses
+  // them for rs2 instead of decompressing the fetched parcel.
+  localparam int unsigned ImemSbRvcBits24To20LoLsb = 18;
+  localparam int unsigned ImemSbRvcBits24To20HiLsb = 23;
 
   // Predecode sideband generation: one sideband value per 32-bit
   // instruction-memory word, a pure function of that word (no lookahead:
@@ -369,6 +374,50 @@ package riscv_pkg;
     end
   endfunction
 
+  // Bits [24:20] of the RVC expansion of one parcel. Mirrors the
+  // rs2_field_q0/q1/q2 cofactors of rvc_decompressor exactly, including
+  // reserved encodings; a quadrant-3 (native) parcel returns zero.
+  function automatic logic [4:0] imem_rvc_bits24_20(input logic [15:0] c, input logic rd_is_x2);
+    logic arithmetic_reserved;
+    logic ebreak;
+    begin
+      arithmetic_reserved = c[12] && (&c[11:10]) && c[6];
+      ebreak = c[12] && (c[11:7] == 5'd0) && (c[6:2] == 5'd0);
+      imem_rvc_bits24_20 = 5'd0;
+      unique case (c[1:0])
+        2'b00: begin
+          unique case (c[15:13])
+            3'b000: imem_rvc_bits24_20 = {c[11], c[5], c[6], 2'b00};
+            3'b001, 3'b011: imem_rvc_bits24_20 = {c[11:10], 3'b000};
+            3'b010: imem_rvc_bits24_20 = {c[11:10], c[6], 2'b00};
+            3'b101, 3'b110, 3'b111: imem_rvc_bits24_20 = {2'b01, c[4:2]};
+            default: imem_rvc_bits24_20 = 5'd0;
+          endcase
+        end
+        2'b01: begin
+          unique case (c[15:13])
+            3'b000, 3'b001, 3'b010: imem_rvc_bits24_20 = c[6:2];
+            3'b011: imem_rvc_bits24_20 = rd_is_x2 ? {c[6], 4'b0000} : {5{c[12]}};
+            3'b100:
+            imem_rvc_bits24_20 = arithmetic_reserved ? 5'd0 :
+                ((&c[11:10]) ? {2'b01, c[4:2]} : c[6:2]);
+            3'b101: imem_rvc_bits24_20 = {c[11], c[5:3], c[12]};
+            default: imem_rvc_bits24_20 = 5'd0;
+          endcase
+        end
+        2'b10: begin
+          unique case (c[15:13])
+            3'b001, 3'b011: imem_rvc_bits24_20 = {c[6:5], 3'b000};
+            3'b010: imem_rvc_bits24_20 = {c[6:4], 2'b00};
+            3'b100: imem_rvc_bits24_20 = {c[6:3], c[2] || ebreak};
+            default: imem_rvc_bits24_20 = c[6:2];
+          endcase
+        end
+        default: imem_rvc_bits24_20 = 5'd0;
+      endcase
+    end
+  endfunction
+
   function automatic logic [ImemSidebandWidth-1:0] imem_make_sideband(input logic [31:0] word);
     logic [ImemSidebandWidth-1:0] sb;
     logic compressed_control_lo;
@@ -428,6 +477,8 @@ package riscv_pkg;
       sb[ImemSbPairableNativeHi] = !sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
       sb[ImemSbRvcSourceHotLoLsb+:3] = imem_rvc_source_hot(word[15:0], word[11:7] == 5'd2);
       sb[ImemSbRvcSourceHotHiLsb+:3] = imem_rvc_source_hot(word[31:16], word[27:23] == 5'd2);
+      sb[ImemSbRvcBits24To20LoLsb+:5] = imem_rvc_bits24_20(word[15:0], word[11:7] == 5'd2);
+      sb[ImemSbRvcBits24To20HiLsb+:5] = imem_rvc_bits24_20(word[31:16], word[27:23] == 5'd2);
       imem_make_sideband = sb;
     end
   endfunction
@@ -1273,6 +1324,9 @@ package riscv_pkg;
     // after spanning assembly. PD uses this narrow path for the current
     // low-IMEM/RVC source-field timing endpoints.
     logic [2:0] source_hot_predecoded;
+    // The selected instruction's bits [24:20]: the IMEM sideband's RVC
+    // expansion, or the native instruction's own bits.
+    logic [4:0] bits24_20_predecoded;
     // Branch prediction metadata (from BTB)
     logic btb_hit;  // BTB lookup hit
     logic btb_predicted_taken;  // BTB predicts taken
@@ -1500,22 +1554,75 @@ package riscv_pkg;
     logic is_not_nop;
   } from_id_to_ex_t;
 
-  // Dispatch-classification flags of from_id_to_ex_t whose ID decode is
-  // shallow. id_stage exports their next-edge values so the decoded-bundle
-  // queue can hold them in its registered shadow with the instruction word.
-  // Each is 0 on reset and flush.
+  // The narrow control fields of from_id_to_ex_t: every flag, the operation
+  // enums, the RS route and the instruction word (same names and types).
+  // The decoded-bundle queue keeps a registered copy of exactly what dispatch
+  // sees next cycle, built from id_stage's next-edge register values, so
+  // dispatch control and rename addressing start at a flop.
   typedef struct packed {
+    logic source_reg_1_is_x0;
+    logic source_reg_2_is_x0;
+    logic is_load_instruction;
+    logic is_load_byte;
+    logic is_load_halfword;
+    logic is_load_unsigned;
+    instr_op_e instruction_operation;
+    branch_taken_op_e branch_operation;
+    store_op_e store_operation;
+    logic [2:0] rs_type;
+    logic is_int_store;
+    logic is_branch_or_jump;
+    logic is_fence;
+    logic is_fence_i;
+    logic is_csr_imm;
+    logic has_fp_flags;
+    logic is_jump_and_link;
+    logic is_jump_and_link_register;
+    logic is_multiply;
+    logic is_divide;
+    logic is_csr_instruction;
+    logic is_amo_instruction;
     logic is_lr;
     logic is_sc;
-    logic is_amo_instruction;
-    logic is_load_instruction;
+    logic is_mret;
+    logic is_sret;
+    logic is_dret;
+    logic is_sfence_vma;
+    logic is_wfi;
+    logic is_ecall;
+    logic is_ebreak;
+    logic is_illegal_instruction;
+    logic is_fetch_fault;
+    logic is_fetch_fault_page;
+    logic is_fetch_fault_hi;
+    logic is_fp_instruction;
     logic is_fp_load;
     logic is_fp_store;
-    logic is_int_store;
-    logic is_csr_instruction;
-    logic is_fence;
-    logic is_branch_or_jump;
-  } id_dispatch_flags_t;
+    logic is_fp_load_double;
+    logic is_fp_store_double;
+    logic is_fp_compute;
+    logic is_pipelined_fp_op;
+    logic is_fp_to_int;
+    logic is_int_to_fp;
+    logic is_compressed;
+    instr_t instruction;
+    logic btb_hit;
+    logic btb_predicted_taken;
+    logic ras_predicted;
+    logic is_ras_return;
+    logic is_ras_call;
+    logic ras_predicted_target_nonzero;
+    logic btb_correct_non_jalr;
+    logic ras_correct_non_jalr;
+    logic has_int_dest;
+    logic has_fp_dest;
+    logic uses_int_rs1;
+    logic uses_int_rs2;
+    logic uses_fp_rs1;
+    logic uses_fp_rs2;
+    logic uses_fp_rs3;
+    logic is_not_nop;
+  } id_dispatch_ctrl_t;
 
   // Control-flow feedback consumed by the front-end.
   typedef struct packed {

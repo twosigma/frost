@@ -90,6 +90,9 @@ module instruction_aligner #(
     output logic o_use_instr_buffer,  // Using buffered instruction
     // Exact {rs2[1], rs1[2:1]} of the selected parcel's RVC expansion.
     output logic [2:0] o_rvc_source_hot,
+    // Slot 1's RVC-expanded instruction bits [24:20], selected like
+    // o_rvc_source_hot.
+    output logic [4:0] o_rvc_bits24_20,
 
     // ===========================================================================
     // Slot-2 outputs for two-wide dispatch.
@@ -116,6 +119,8 @@ module instruction_aligner #(
     // candidates use IMEM sideband metadata; native candidates use their
     // already-fixed instruction bits before the late position select.
     output logic [2:0] o_source_hot_2,
+    // Slot 2's instruction bits [24:20], resolved like o_source_hot_2.
+    output logic [4:0] o_bits24_20_2,
     // Early slot-2 metadata for the PC increment path.  This is equivalent to
     // the live, non-replay slot-2 decision below, but avoids routing the PC
     // path through the final IF->PD packet mux.
@@ -336,6 +341,18 @@ module instruction_aligner #(
       2'b10:   o_rvc_source_hot = rvc_source_hot_buf_lo;
       2'b11:   o_rvc_source_hot = rvc_source_hot_buf_hi;
       default: o_rvc_source_hot = 3'd0;
+    endcase
+  end
+
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00:   o_rvc_bits24_20 = aligned_current_sb[riscv_pkg::ImemSbRvcBits24To20LoLsb+:5];
+      2'b01:   o_rvc_bits24_20 = aligned_current_sb[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5];
+      2'b10:   o_rvc_bits24_20 = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcBits24To20LoLsb+:5];
+      2'b11:   o_rvc_bits24_20 = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5];
+      default: o_rvc_bits24_20 = 5'd0;
     endcase
   end
 
@@ -728,6 +745,27 @@ module instruction_aligner #(
     endcase
   end
 
+  // Bits [24:20] the same way: the sideband's RVC expansion or the native
+  // candidate's own bits (CURRENT_HI native: next-word bits [8:4]).
+  logic [4:0] slot2_bits24_20_cur_hi;
+  logic [4:0] slot2_bits24_20_next_lo;
+  logic [4:0] slot2_bits24_20_next_hi;
+  assign slot2_bits24_20_cur_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi] ?
+      aligned_current_sb[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5] : bram_next_word[8:4];
+  assign slot2_bits24_20_next_lo = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo] ?
+      aligned_next_sb[riscv_pkg::ImemSbRvcBits24To20LoLsb+:5] : bram_next_word[24:20];
+  assign slot2_bits24_20_next_hi = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] ?
+      aligned_next_sb[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5] : 5'd0;
+
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi: o_bits24_20_2 = slot2_bits24_20_cur_hi;
+      Slot2AtNextLo:    o_bits24_20_2 = slot2_bits24_20_next_lo;
+      Slot2AtNextHi:    o_bits24_20_2 = slot2_bits24_20_next_hi;
+      default:          o_bits24_20_2 = 5'd0;
+    endcase
+  end
+
   always_comb begin
     unique case (slot2_pos)
       Slot2AtCurrentHi: o_source_hot_2 = slot2_source_hot_cur_hi;
@@ -754,12 +792,32 @@ module instruction_aligner #(
   end
   assign slot2_source_hot_legacy = o_is_compressed_2 ?
       slot2_rvc_source_hot_legacy : {o_effective_instr_2[21], o_effective_instr_2[17:16]};
+  // Same oracle form for bits [24:20]: the selected RVC sideband field, or
+  // the selected native instruction's own bits.
+  logic [4:0] slot2_rvc_bits24_20_legacy;
+  logic [4:0] slot2_bits24_20_legacy;
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi:
+      slot2_rvc_bits24_20_legacy = aligned_current_sb[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5];
+      Slot2AtNextLo:
+      slot2_rvc_bits24_20_legacy = aligned_next_sb[riscv_pkg::ImemSbRvcBits24To20LoLsb+:5];
+      Slot2AtNextHi:
+      slot2_rvc_bits24_20_legacy = aligned_next_sb[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5];
+      default: slot2_rvc_bits24_20_legacy = 5'd0;
+    endcase
+  end
+  assign slot2_bits24_20_legacy = o_is_compressed_2 ?
+      slot2_rvc_bits24_20_legacy : o_effective_instr_2[24:20];
   assign slot2_candidate_compressed_selected = o_is_compressed ?
       o_slot2_is_compressed_plus2_for_btb : o_slot2_is_compressed_plus4_for_btb;
 
   always_comb begin
     if (!$isunknown({o_source_hot_2, slot2_source_hot_legacy})) begin
       p_slot2_source_hot_matches_legacy : assert (o_source_hot_2 == slot2_source_hot_legacy);
+    end
+    if (!$isunknown({o_bits24_20_2, slot2_bits24_20_legacy})) begin
+      p_slot2_bits24_20_matches_legacy : assert (o_bits24_20_2 == slot2_bits24_20_legacy);
     end
     if ((slot2_pos != Slot2InvalidPos) && !$isunknown(
             {o_is_compressed_2, slot2_candidate_compressed_selected}

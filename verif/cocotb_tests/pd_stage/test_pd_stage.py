@@ -92,6 +92,8 @@ def _drive_if_packet(
     packet.update(fields)
     if "source_hot_predecoded" not in fields:
         packet["source_hot_predecoded"] = _source_hot(int(packet["effective_instr"]))
+    if "bits24_20_predecoded" not in fields:
+        packet["bits24_20_predecoded"] = (int(packet["effective_instr"]) >> 20) & 0x1F
     value = _pack_if_to_pd(packet)
     if slot2:
         dut.i_from_if_to_pd_2.value = value
@@ -299,6 +301,7 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
             "sel_compressed": False,
             "effective_instr": 0xDEADBEEF,
             "source_hot_predecoded": _source_hot(expected),
+            "bits24_20_predecoded": (expected >> 20) & 0x1F,
         },
     )
     await _advance_cycle(dut)
@@ -348,6 +351,7 @@ async def test_field_cofactors_preserve_selection_and_lifecycle(dut: Any) -> Non
                 "sel_nop": bubble,
                 "sel_compressed": False,  # PD must use its local raw classifier.
                 "source_hot_predecoded": _source_hot(expected),
+                "bits24_20_predecoded": (expected >> 20) & 0x1F,
             },
         )
 
@@ -477,6 +481,7 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
             "sel_compressed": False,
             "effective_instr": 0,
             "source_hot_predecoded": _source_hot(expanded),
+            "bits24_20_predecoded": (expanded >> 20) & 0x1F,
         },
     )
     await _advance_cycle(dut)
@@ -523,6 +528,7 @@ async def test_illegal_cofactor_preserves_qualification_and_lifecycle(dut: Any) 
                 "sel_compressed": raw & 3 == 3,  # Oppose the local classifier.
                 "decomp_illegal": True,  # Slot 1 must not use slot 2's sideband.
                 "source_hot_predecoded": _source_hot(expected),
+                "bits24_20_predecoded": (expected >> 20) & 0x1F,
             },
         )
 

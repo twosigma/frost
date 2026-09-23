@@ -391,6 +391,31 @@ about 0.15 ns between netlists, so compare path families, not single runs.
 | Plus registered instruction-word shadow | -0.444 | -130 | 1,503 |
 | Plus INT port-2 pre-bypass/shift fields, no merge tag compare | -0.362 | -251 | 1,988 |
 | Plus port-2 window, dispatch-flag shadow | -0.471 | -112 | 1,723 |
+| Plus shared-path fixes below | -0.266 | -192 | 3,002 |
+
+The last row adds changes that also help the hardware defaults:
+
+* The IMEM predecode sideband carries each halfword's RVC-expanded
+  instruction bits [24:20] (28-bit sideband). IF selects them beside
+  source-hot, so both slots' rs2 fields skip the fetched-parcel
+  decompressor on the IMEM-to-PD path.
+* `id_stage` exports its next-edge register value, generated from the
+  register update, and the decoded queue's registered shadow covers every
+  narrow control field (`riscv_pkg::id_dispatch_ctrl_t`), not just the
+  instruction word and shallow flags.
+* The divider's registered busy flag compares both possible issue outcomes
+  and selects with the late MUL_RS issue valid.
+* The shared cache's T stage loads its request fields whenever it is not
+  holding a live entry, removing the accept decision from their enables.
+
+Synthesis restructures unchanged logic when unrelated RTL changes: the same
+IMEM-to-PD RTL mapped to 9 LUT levels in one netlist and 11 in another, and
+the decoded-queue dispatch family ranged from -0.22 to -0.58 ns across builds
+that did not touch it. Synthesis is deterministic for identical RTL, and
+global retiming changed nothing. The remaining worst paths (about -0.27 ns)
+are the IF next-PC and fetch-address loop (recovery and `satp` into the PC and
+IMEM overlay address), ID decode into the queue shadow, and the unreplicated
+full-flush register, which placement replicates by design.
 
 The first profile's worst paths ran from full-flush recovery through the
 early-wakeup qualifier, MEM_RS wakeup and issue selection into the LQ

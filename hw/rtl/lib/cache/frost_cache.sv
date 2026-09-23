@@ -1172,18 +1172,10 @@ module frost_cache #(
       // flight. Slot identities are refreshed every held cycle because a slot
       // can retire and be re-manned during a multi-cycle tag lookup.
       if (t_accept) begin
-        t_valid_q       <= 1'b1;
-        t_write_q       <= in_write;
-        t_addr_q        <= in_addr;
-        t_wdata_q       <= in_wdata;
-        t_wstrb_q       <= in_wstrb;
-        t_id_q          <= in_id;
-        t_maint_q       <= in_maint;
-        t_probe_q       <= in_probe;
-        t_probe_inval_q <= in_probe_inval;
-        t_idx_match_q   <= in_idx_match;
-        t_line_match_q  <= in_line_match;
-        t_wb_match_q    <= in_wb_match;
+        t_valid_q      <= 1'b1;
+        t_idx_match_q  <= in_idx_match;
+        t_line_match_q <= in_line_match;
+        t_wb_match_q   <= in_wb_match;
       end else if (t_done) begin
         t_valid_q <= 1'b0;
       end else if (t_valid_q) begin
@@ -1192,6 +1184,25 @@ module frost_cache #(
         t_wb_match_q   <= t_wb_live_match;
       end
       reread_q <= t_tag_retry || (decide && t_stall);
+
+      // T's request fields are read only while T holds a valid entry: every
+      // decision is qualified by t_valid_q (decide, a_hold, the retry and
+      // collision terms), W and the probe/ack/response captures take them on
+      // t_done, and an idle-cycle data-array address has no read enable. Load
+      // them whenever T is not holding a live entry: every accept is such a
+      // cycle, and any other load is dead because T is empty afterwards. This
+      // keeps the accept decision (the upstream request valid, the index hold
+      // and the tag decision) off these clock enables, as for the skid payload.
+      if (!t_valid_q || t_done) begin
+        t_write_q       <= in_write;
+        t_addr_q        <= in_addr;
+        t_wdata_q       <= in_wdata;
+        t_wstrb_q       <= in_wstrb;
+        t_id_q          <= in_id;
+        t_maint_q       <= in_maint;
+        t_probe_q       <= in_probe;
+        t_probe_inval_q <= in_probe_inval;
+      end
 
       // Read-first memory returns the old lane on a same-address write. Track
       // every exact-index write from issue through response and discard the

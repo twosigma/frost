@@ -342,6 +342,24 @@ async def test_all_rvc_source_hot_metadata_matches_decompressor(dut: Any) -> Non
 
 
 @cocotb.test()
+async def test_all_rvc_bits24_20_metadata_matches_decompressor(dut: Any) -> None:
+    """All 49,152 RVC parcels produce the sideband's exact expanded bits [24:20]."""
+    for raw in range(1 << 16):
+        if raw & 0x3 == 0x3:
+            continue
+
+        _drive(dut, raw)
+        await _settle()
+
+        got = (int(dut.o_instr_expanded.value) >> 20) & 0x1F
+        expected = _PREDECODE.rvc_bits24_20(raw)
+        assert got == expected, (
+            f"RVC 0x{raw:04x}: decompressor bits[24:20] 0b{got:05b}, "
+            f"sideband model 0b{expected:05b}"
+        )
+
+
+@cocotb.test()
 async def test_quadrant3_non_compressed_parcel_passes_through(dut: Any) -> None:
     """A quadrant-3 parcel is treated as uncompressed and zero-extended."""
     raw = 0xABCF

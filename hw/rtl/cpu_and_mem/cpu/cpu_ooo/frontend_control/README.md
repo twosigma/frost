@@ -28,14 +28,15 @@ same existing `step_armed_fe_q` validity exception.
 
 Dispatch never reads the queue's LUTRAM directly. The oldest queued bundle
 is mirrored in flops (`head_packet_q`), and the output selects it or the
-empty-queue bypass with one registered select. The instruction words and the
-shallow dispatch-classification flags (`riscv_pkg::id_dispatch_flags_t`) go
-further: `id_stage` exports their next-edge register values, and the queue
-keeps a registered copy of exactly what dispatch sees next cycle, bypass
-included (`o_shadow`). The RAT, register-file and rename addresses and the
-LQ/SQ/CSR/fence routing therefore start at a flop. Fields decoded late in ID
-(`rs_type`, `has_*_dest`) stay on the select, since a shadow would lengthen
-their ID register paths.
+empty-queue bypass with one registered select. Every narrow control field
+(`riscv_pkg::id_dispatch_ctrl_t`: the flags, operation enums, RS route and
+instruction word) goes further: `id_stage` exports its next-edge register
+value (`o_from_id_to_ex_next`, generated from the register update itself),
+and the queue keeps a registered copy of exactly what dispatch sees next
+cycle, bypass included (`o_shadow`). Dispatch control, the RAT, register-file
+and rename addresses therefore start at a flop; only the wide payload (values,
+immediates, targets) keeps the select. The shadow's own select sits after ID's
+decode, where ID's register already has its flush select.
 
 The standalone formal target proves order, arbitrary payload preservation,
 held-image ownership, occupancy and flush behavior at depths two and four.
