@@ -1,0 +1,25 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D FP_PAYLOAD_READ_LOCAL_PROOF -sv fp_mul_shim.sv
+delete t:fpu_mult_unit t:fpu_fma_unit t:sdp_block_ram
+proc
+setundef -undriven -anyseq
+opt
+prep -top fp_mul_shim -flatten
+select -assert-count 2 t:$check
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_mul_shim.sv

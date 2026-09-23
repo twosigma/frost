@@ -53,6 +53,71 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "sq_live_count.sby",
+        "SQ late removal subtraction preserves all allocation candidates and exact next occupancy",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "sq_committed_empty.sby",
+        "Store committed-empty status retains reset, flush and same-cycle commit priority",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "pc_pending_capture.sby",
+        "Pending prediction valid preserves clear/set/hold priority for arbitrary current state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rs_issue_clear.sby",
+        "RS accepted port-2 one-hot clear equals the original indexed clear, including actual INT default/profile parameters",
+        tasks=("bmc", "bmc4", "bmc8", "bmc16", "bmc32"),
+    ),
+    FormalTarget(
+        "rs_dispatch_defer.sby",
+        "Dispatch CDB deferral preserves all six source decisions with late ready qualification",
+        tasks=("bmc", "bmc_repair"),
+    ),
+    FormalTarget(
+        "control_flow_holdoff.sby",
+        "Prediction-late redirect/reset holdoffs match the original next state without assumptions",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rob_retire_stall.sby",
+        "Qualified ROB retirement strobes and all perf events retain canonical serializer behavior",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rob_control_next.sby",
+        "ROB per-entry done/exception/replay next state matches the original indexed-write priority",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "csr_commit_cofactor.sby",
+        "CSR commit cofactors preserve storage and translation invalidation under the integration contract",
+        tasks=("prove", "prove_integrated", "prove_perf_off"),
+    ),
+    FormalTarget(
+        "pc_increment_holdoff.sby",
+        "Late redirect/reset holdoff preserves both sequential fetch PCs for arbitrary selectors",
+        tasks=("bmc", "bmc_xilinx"),
+    ),
+    FormalTarget(
+        "rs_raw_pretag.sby",
+        "Raw-wakeup pre-issue candidates match the real merged-lane reservation-station winner",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "fp_payload_read.sby",
+        "FPU payload prefetch addresses match the original post-pop increment for arbitrary state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "lq_ram_payload.sby",
+        "Load-result RAM write enables and every enabled address/data match the original mux",
+        tasks=("bmc", "bmc_forward", "bmc_forward_only", "cover"),
+    ),
+    FormalTarget(
         "cache_mshr_payload.sby",
         "Per-entry MSHR byte updates match the indexed fill/store merge for arbitrary state",
         tasks=("bmc",),
@@ -95,7 +160,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "lq_prematch_cofactors.sby",
         "Registered candidate CAM results equal registering the selected-tag CAM",
-        tasks=("bmc", "prove"),
+        tasks=("bmc", "prove", "bmc_raw", "prove_raw"),
     ),
     FormalTarget(
         "lq_cached_hold.sby",
@@ -119,7 +184,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "dmmu_mmio.sby",
-        "DMMU parallel MMIO classification matches the complete fault/address resolution",
+        "DMMU parallel MMIO classification and captured next bit match original resolution/hold",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -349,7 +414,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "pc_register_mux.sby",
         "IF architectural PC - original nested priority for arbitrary generic inputs",
-        tasks=("bmc", "bmc_integrated"),
+        tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
     ),
     FormalTarget(
         "pc_holdoff_cofactor.sby",
@@ -414,6 +479,13 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
+    ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    ("prove_perf_off", "Unbounded proof with profiling counters absent"),
+    ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
+    ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),
+    ("bmc_forward", "Bounded equivalence with store forwarding enabled"),
+    ("bmc_forward_only", "Bounded equivalence with store forwarding and no L0"),
     ("bmc_integrated_xilinx", "Bounded integrated equivalence with Xilinx primitives"),
     ("bmc_int", "Bounded check of the dual-issue integer configuration"),
     ("prove_int", "Unbounded proof of the dual-issue integer configuration"),

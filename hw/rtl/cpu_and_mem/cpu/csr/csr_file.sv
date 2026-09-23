@@ -147,6 +147,9 @@
 */
 module csr_file #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
+    // cpu_ooo serializes CSR commits against every trap and xRET take. Other
+    // callers retain the fully qualified generic priority by default.
+    parameter bit COMMIT_EXCLUDES_CONTROL_TAKE = 1'b0,
     // Optional cpu_ooo payload aligned with the current registered CSR address.
     parameter bit UsePerfCsrHalf = 1'b0,
     // 0 removes the profiling-counter state: mperfsel/mperfctl/mperfdata/
@@ -788,7 +791,7 @@ module csr_file #(
   // ==========================================================================
   // Committed writes of the machine counter aliases (M7). Same qualification
   // as the main CSR write block (a same-cycle M/S trap entry drops the
-  // write), plus Zicsr write intent: the commit stage raises both enables for
+  // generic write; cpu_ooo guarantees it cannot coincide), plus Zicsr write intent: the commit stage raises both enables for
   // every CSR instruction, and a pure read that "wrote" the value it read
   // would swallow that cycle's increment. CSRRW/CSRRWI always write; the
   // set/clear forms write only with a nonzero rs1/uimm. A set/clear with a
@@ -804,13 +807,14 @@ module csr_file #(
   logic minstret_write;
   assign csr_counter_write_intent = (i_csr_op[1:0] == 2'b01) || (i_csr_write_data != '0);
   assign csr_counter_write = i_csr_write_enable && i_csr_read_enable &&
-      csr_counter_write_intent && !(i_trap_taken && !i_trap_to_d);
+      csr_counter_write_intent &&
+      (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_taken && !i_trap_to_d));
   assign mcycle_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
   assign minstret_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
 
   // cycle advances every cycle unless mcountinhibit.CY is set; a write
   // installs the new value with no increment on the write edge. Keep the
-  // increment boundary so late trap/write qualification cannot enter the
+  // increment boundary so late write qualification cannot enter the
   // low carry input and traverse all 64 bits before reaching the register.
   (* keep = "true" *) logic [63:0] cycle_counter_incremented;
   assign cycle_counter_incremented = cycle_counter + 64'd1;
@@ -869,7 +873,7 @@ module csr_file #(
   logic [ 1:0] instruction_retired_count_q;
   // Register-to-register accumulate with the write select applied after it,
   // the cycle counter's increment boundary above.  minstret_write carries the
-  // late trap and write qualification; selecting before the add put that cone
+  // write qualification (and generic trap exclusion); selecting before the add put that cone
   // on the low carry input of the 64-bit chain (18 levels from mideleg through
   // the trap-take decision into instret[63]/D, the post-opt WNS at 300 MHz).
   // The value is unchanged: (w ? V : C) + (w ? 0 : Q) == w ? V : C + Q.
@@ -1139,6 +1143,10 @@ module csr_file #(
   // ==========================================================================
   // Other Machine-Mode CSR Updates
   // ==========================================================================
+  // The integrated interface excludes every control take from a CSR commit.
+  // Its redundant !CSR term on the trap arm lets ordinary CSR write enables
+  // simplify independently of the late trap decision. The default keeps
+  // generic trap-over-write priority, including simultaneous input events.
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1170,7 +1178,9 @@ module csr_file #(
       stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
-    end else if (i_trap_taken && !i_trap_to_d) begin
+    end else if (i_trap_taken && !i_trap_to_d &&
+                 (!COMMIT_EXCLUDES_CONTROL_TAKE ||
+                  !(i_csr_write_enable && i_csr_read_enable))) begin
       // Trap entry: save state on the target-mode side only. A Debug Mode
       // entry saves dpc/dcsr instead (see the debug block below).
       if (i_trap_to_s) begin
@@ -1302,16 +1312,31 @@ module csr_file #(
   // part of the effective data privilege). The registered pulse aligns with
   // the cycle after the commit-port access, where the TLB/PTW consumer
   // samples it. The serializer independently owns conservative pipeline
-  // recovery.
+  // recovery. With integrated exclusion, the completed CSR write is the
+  // computed result; generic instances retain the control-priority next state.
   logic csr_translation_flush_req_d;
+  logic csr_status_write_changes_translation;
+  logic [1:0] csr_written_mpp;
+  assign csr_written_mpp = (csr_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU :
+      csr_new_value[12:11];
+  // When an integrated CSR commit fires, no higher-priority control take can
+  // replace these fields. Compare its complete write result before applying
+  // the late commit enable, including MPP's WARL mapping and old-MPRV gate.
+  assign csr_status_write_changes_translation =
+      (csr_new_value[riscv_pkg::MstatusSumBit] != mstatus_sum) ||
+      (csr_new_value[riscv_pkg::MstatusMxrBit] != mstatus_mxr) ||
+      ((i_csr_address == riscv_pkg::CsrMstatus) &&
+       ((csr_new_value[riscv_pkg::MstatusMprvBit] != mstatus_mprv) ||
+        (mstatus_mprv && (csr_written_mpp != mstatus_mpp))));
   assign csr_translation_flush_req_d = i_csr_write_enable && i_csr_read_enable &&
       ((i_csr_address == riscv_pkg::CsrSatp) ||
        (((i_csr_address == riscv_pkg::CsrMstatus) ||
          (i_csr_address == riscv_pkg::CsrSstatus)) &&
-        ((next_mstatus_sum != mstatus_sum) ||
-         (next_mstatus_mxr != mstatus_mxr) ||
-         (next_mstatus_mprv != mstatus_mprv) ||
-         (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp)))));
+        (COMMIT_EXCLUDES_CONTROL_TAKE ? csr_status_write_changes_translation :
+         ((next_mstatus_sum != mstatus_sum) ||
+          (next_mstatus_mxr != mstatus_mxr) ||
+          (next_mstatus_mprv != mstatus_mprv) ||
+          (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp))))));
 
   logic csr_translation_flush_req_q;
   always_ff @(posedge i_clk) begin
@@ -1482,6 +1507,7 @@ module csr_file #(
   // Formal Verification Properties
   // ===========================================================================
 `ifdef FORMAL
+`ifndef CSR_COMMIT_LOCAL_PROOF
 
   initial assume (i_rst);
 
@@ -1857,6 +1883,271 @@ module csr_file #(
     end
   endgenerate
 
+`endif  // CSR_COMMIT_LOCAL_PROOF
 `endif  // FORMAL
+
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    if (!i_rst && COMMIT_EXCLUDES_CONTROL_TAKE) begin
+      p_integrated_csr_excludes_control_take :
+      assert (!(i_csr_write_enable && i_csr_read_enable &&
+                (i_trap_taken || i_mret_taken || i_sret_taken || i_dret_taken)));
+    end
+  end
+`endif
+
+`ifdef CSR_COMMIT_LOCAL_PROOF
+  logic f_csr_legal;
+  logic f_csr_ref_valid = 1'b0;
+  logic f_old_counter_write, f_old_mcycle_write, f_old_minstret_write;
+  logic f_old_translation_req;
+  assign f_csr_legal = !COMMIT_EXCLUDES_CONTROL_TAKE ||
+      !(i_csr_write_enable && i_csr_read_enable &&
+        (i_trap_taken || i_mret_taken || i_sret_taken || i_dret_taken));
+  assign f_old_counter_write = i_csr_write_enable && i_csr_read_enable &&
+      csr_counter_write_intent && !(i_trap_taken && !i_trap_to_d);
+  assign f_old_mcycle_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
+  assign f_old_minstret_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
+  assign f_old_translation_req = i_csr_write_enable && i_csr_read_enable &&
+      ((i_csr_address == riscv_pkg::CsrSatp) ||
+       (((i_csr_address == riscv_pkg::CsrMstatus) ||
+         (i_csr_address == riscv_pkg::CsrSstatus)) &&
+        ((next_mstatus_sum != mstatus_sum) ||
+         (next_mstatus_mxr != mstatus_mxr) ||
+         (next_mstatus_mprv != mstatus_mprv) ||
+         (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp)))));
+  logic [$bits(cycle_counter)-1:0] f_old_cycle_counter;
+  logic [$bits(instret_counter)-1:0] f_old_instret_counter;
+  logic [$bits(instruction_retired_count_q)-1:0] f_old_instruction_retired_count_q;
+  logic [$bits(mcause)-1:0] f_old_mcause;
+  logic [$bits(mcounteren_q)-1:0] f_old_mcounteren_q;
+  logic [$bits(mcountinhibit_cy)-1:0] f_old_mcountinhibit_cy;
+  logic [$bits(mcountinhibit_ir)-1:0] f_old_mcountinhibit_ir;
+  logic [$bits(medeleg_q)-1:0] f_old_medeleg_q;
+  logic [$bits(menvcfg_stce)-1:0] f_old_menvcfg_stce;
+  logic [$bits(mepc)-1:0] f_old_mepc;
+  logic [$bits(mideleg_sei)-1:0] f_old_mideleg_sei;
+  logic [$bits(mideleg_ssi)-1:0] f_old_mideleg_ssi;
+  logic [$bits(mideleg_sti)-1:0] f_old_mideleg_sti;
+  logic [$bits(mip_seip)-1:0] f_old_mip_seip;
+  logic [$bits(mip_ssip)-1:0] f_old_mip_ssip;
+  logic [$bits(mip_stip)-1:0] f_old_mip_stip;
+  logic [$bits(mscratch)-1:0] f_old_mscratch;
+  logic [$bits(mtval)-1:0] f_old_mtval;
+  logic [$bits(mtvec)-1:0] f_old_mtvec;
+  logic [$bits(mtvec_traps_misaligned_q)-1:0] f_old_mtvec_traps_misaligned_q;
+  logic [$bits(perf_cache_previous_select)-1:0] f_old_perf_cache_previous_select;
+  logic [$bits(perf_counter_select)-1:0] f_old_perf_counter_select;
+  logic [$bits(satp_mode_sv39)-1:0] f_old_satp_mode_sv39;
+  logic [$bits(satp_ppn)-1:0] f_old_satp_ppn;
+  logic [$bits(scause)-1:0] f_old_scause;
+  logic [$bits(scounteren_q)-1:0] f_old_scounteren_q;
+  logic [$bits(sepc)-1:0] f_old_sepc;
+  logic [$bits(sscratch)-1:0] f_old_sscratch;
+  logic [$bits(stimecmp)-1:0] f_old_stimecmp;
+  logic [$bits(stval)-1:0] f_old_stval;
+  logic [$bits(stvec)-1:0] f_old_stvec;
+
+  always_ff @(posedge i_clk) begin
+    f_old_cycle_counter <= cycle_counter;
+
+    if (i_rst) begin
+      f_old_cycle_counter <= 64'd0;
+    end else if (f_old_mcycle_write) begin
+      f_old_cycle_counter <= csr_new_value;
+    end else if (!mcountinhibit_cy) begin
+      f_old_cycle_counter <= cycle_counter_incremented;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    f_old_instret_counter <= instret_counter;
+    f_old_instruction_retired_count_q <= instruction_retired_count_q;
+
+    if (i_rst) begin
+      f_old_instruction_retired_count_q <= 2'd0;
+      f_old_instret_counter <= 64'd0;
+    end else begin
+      f_old_instruction_retired_count_q <= mcountinhibit_ir ? 2'd0 : i_instruction_retired_count;
+      f_old_instret_counter <= f_old_minstret_write ? csr_new_value : instret_counter_accumulated;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    f_old_mcause <= mcause;
+    f_old_mcounteren_q <= mcounteren_q;
+    f_old_mcountinhibit_cy <= mcountinhibit_cy;
+    f_old_mcountinhibit_ir <= mcountinhibit_ir;
+    f_old_medeleg_q <= medeleg_q;
+    f_old_menvcfg_stce <= menvcfg_stce;
+    f_old_mepc <= mepc;
+    f_old_mideleg_sei <= mideleg_sei;
+    f_old_mideleg_ssi <= mideleg_ssi;
+    f_old_mideleg_sti <= mideleg_sti;
+    f_old_mip_seip <= mip_seip;
+    f_old_mip_ssip <= mip_ssip;
+    f_old_mip_stip <= mip_stip;
+    f_old_mscratch <= mscratch;
+    f_old_mtval <= mtval;
+    f_old_mtvec <= mtvec;
+    f_old_mtvec_traps_misaligned_q <= mtvec_traps_misaligned_q;
+    f_old_perf_cache_previous_select <= perf_cache_previous_select;
+    f_old_perf_counter_select <= perf_counter_select;
+    f_old_satp_mode_sv39 <= satp_mode_sv39;
+    f_old_satp_ppn <= satp_ppn;
+    f_old_scause <= scause;
+    f_old_scounteren_q <= scounteren_q;
+    f_old_sepc <= sepc;
+    f_old_sscratch <= sscratch;
+    f_old_stimecmp <= stimecmp;
+    f_old_stval <= stval;
+    f_old_stvec <= stvec;
+
+    if (i_rst) begin
+      f_old_mtvec                      <= '0;
+      f_old_mtvec_traps_misaligned_q   <= 1'b0;
+      f_old_mcounteren_q               <= 3'b111;
+      f_old_mcountinhibit_cy           <= 1'b0;
+      f_old_mcountinhibit_ir           <= 1'b0;
+      f_old_mscratch                   <= '0;
+      f_old_mepc                       <= '0;
+      f_old_mcause                     <= '0;
+      f_old_mtval                      <= '0;
+      f_old_stvec                      <= '0;
+      f_old_scounteren_q               <= 3'b111;
+      f_old_sscratch                   <= '0;
+      f_old_sepc                       <= '0;
+      f_old_scause                     <= '0;
+      f_old_stval                      <= '0;
+      f_old_medeleg_q                  <= '0;
+      f_old_mideleg_ssi                <= 1'b0;
+      f_old_mideleg_sti                <= 1'b0;
+      f_old_mideleg_sei                <= 1'b0;
+      f_old_mip_ssip                   <= 1'b0;
+      f_old_mip_stip                   <= 1'b0;
+      f_old_mip_seip                   <= 1'b0;
+      f_old_satp_mode_sv39             <= 1'b0;
+      f_old_satp_ppn                   <= '0;
+      f_old_menvcfg_stce               <= 1'b0;
+      f_old_stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
+      f_old_perf_counter_select        <= '0;
+      f_old_perf_cache_previous_select <= 1'b0;
+    end else if (i_trap_taken && !i_trap_to_d) begin
+      // Trap entry: save state on the target-mode side only. A Debug Mode
+      // entry saves dpc/dcsr instead (see the debug block below).
+      if (i_trap_to_s) begin
+        f_old_sepc   <= i_trap_pc;
+        f_old_scause <= i_trap_cause;
+        f_old_stval  <= i_trap_value;
+      end else begin
+        f_old_mepc   <= i_trap_pc;
+        f_old_mcause <= i_trap_cause;
+        f_old_mtval  <= i_trap_value;
+      end
+    end else if (i_csr_write_enable && i_csr_read_enable) begin
+      unique case (i_csr_address)
+        riscv_pkg::CsrMtvec: begin
+          f_old_mtvec                    <= {mtvec_new_value[XLEN-1:2], 1'b0, mtvec_new_value[0]};
+          f_old_mtvec_traps_misaligned_q <= |mtvec_new_value[XLEN-1:2];
+        end
+        riscv_pkg::CsrMcounteren: f_old_mcounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
+        riscv_pkg::CsrMcountinhibit: begin  // WARL: CY and IR only (TM/HPM bits read 0)
+          f_old_mcountinhibit_cy <= csr_new_value[0];
+          f_old_mcountinhibit_ir <= csr_new_value[2];
+        end
+        riscv_pkg::CsrMscratch: f_old_mscratch <= csr_new_value;
+        riscv_pkg::CsrMepc:
+        f_old_mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
+        riscv_pkg::CsrMcause: f_old_mcause <= csr_new_value;
+        riscv_pkg::CsrMtval: f_old_mtval <= csr_new_value;
+        riscv_pkg::CsrMedeleg:
+        f_old_medeleg_q <= csr_new_value[15:0] & riscv_pkg::MedelegMask[15:0];
+        riscv_pkg::CsrMideleg: begin
+          f_old_mideleg_ssi <= csr_new_value[riscv_pkg::MieSsiBit];
+          f_old_mideleg_sti <= csr_new_value[riscv_pkg::MieStiBit];
+          f_old_mideleg_sei <= csr_new_value[riscv_pkg::MieSeiBit];
+        end
+        // mip: the machine bits are read-only (input reflections); the
+        // supervisor pending bits are the M-mode software-injection state.
+        riscv_pkg::CsrMip: begin
+          f_old_mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
+          f_old_mip_stip <= csr_new_value[riscv_pkg::MieStiBit];
+          f_old_mip_seip <= csr_new_value[riscv_pkg::MieSeiBit];
+        end
+        // sip: SSIP is the only S-writable pending bit, and only where
+        // delegated (the RMW base was the masked view, so set/clear forms
+        // cannot leak through a non-delegated bit either).
+        riscv_pkg::CsrSip: begin
+          if (mideleg_ssi) f_old_mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
+        end
+        riscv_pkg::CsrStvec: f_old_stvec <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
+        riscv_pkg::CsrScounteren: f_old_scounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
+        riscv_pkg::CsrSscratch: f_old_sscratch <= csr_new_value;
+        riscv_pkg::CsrSepc: f_old_sepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C
+        riscv_pkg::CsrScause: f_old_scause <= csr_new_value;
+        riscv_pkg::CsrStval: f_old_stval <= csr_new_value;
+        // satp: a write carrying an unsupported MODE leaves the whole
+        // register unchanged (privileged-spec rule). ASID is WARL-0; the
+        // PPN field stores all written bits.
+        riscv_pkg::CsrSatp: begin
+          if (csr_new_value[63:60] == SatpModeBare) begin
+            f_old_satp_mode_sv39 <= 1'b0;
+            f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
+          end else if (SatpSv39Supported && (csr_new_value[63:60] == SatpModeSv39)) begin
+            f_old_satp_mode_sv39 <= 1'b1;
+            f_old_satp_ppn <= csr_new_value[SatpPpnBits-1:0];
+          end
+        end
+        // Sstc (M6): menvcfg implements STCE only (the rest stays WARL-0);
+        // stimecmp is the full 64-bit compare value.
+        riscv_pkg::CsrMenvcfg: f_old_menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
+        riscv_pkg::CsrStimecmp: f_old_stimecmp <= csr_new_value;
+        // Without counters the profiling state keeps its reset value.
+        riscv_pkg::CsrMperfSel: if (PerfCountersPresent) f_old_perf_counter_select <= csr_new_value;
+        riscv_pkg::CsrMperfCtl:
+        if (PerfCountersPresent) f_old_perf_cache_previous_select <= csr_new_value[1];
+        default: ;
+      endcase
+    end
+  end
+
+  always_ff @(posedge i_clk) f_csr_ref_valid <= f_csr_legal;
+  always_comb begin
+    if (f_csr_legal) assert (csr_translation_flush_req_d == f_old_translation_req);
+    if (f_csr_ref_valid) begin
+      assert (cycle_counter == f_old_cycle_counter);
+      assert (instret_counter == f_old_instret_counter);
+      assert (instruction_retired_count_q == f_old_instruction_retired_count_q);
+      assert (mcause == f_old_mcause);
+      assert (mcounteren_q == f_old_mcounteren_q);
+      assert (mcountinhibit_cy == f_old_mcountinhibit_cy);
+      assert (mcountinhibit_ir == f_old_mcountinhibit_ir);
+      assert (medeleg_q == f_old_medeleg_q);
+      assert (menvcfg_stce == f_old_menvcfg_stce);
+      assert (mepc == f_old_mepc);
+      assert (mideleg_sei == f_old_mideleg_sei);
+      assert (mideleg_ssi == f_old_mideleg_ssi);
+      assert (mideleg_sti == f_old_mideleg_sti);
+      assert (mip_seip == f_old_mip_seip);
+      assert (mip_ssip == f_old_mip_ssip);
+      assert (mip_stip == f_old_mip_stip);
+      assert (mscratch == f_old_mscratch);
+      assert (mtval == f_old_mtval);
+      assert (mtvec == f_old_mtvec);
+      assert (mtvec_traps_misaligned_q == f_old_mtvec_traps_misaligned_q);
+      assert (perf_cache_previous_select == f_old_perf_cache_previous_select);
+      assert (perf_counter_select == f_old_perf_counter_select);
+      assert (satp_mode_sv39 == f_old_satp_mode_sv39);
+      assert (satp_ppn == f_old_satp_ppn);
+      assert (scause == f_old_scause);
+      assert (scounteren_q == f_old_scounteren_q);
+      assert (sepc == f_old_sepc);
+      assert (sscratch == f_old_sscratch);
+      assert (stimecmp == f_old_stimecmp);
+      assert (stval == f_old_stval);
+      assert (stvec == f_old_stvec);
+    end
+  end
+`endif
 
 endmodule : csr_file

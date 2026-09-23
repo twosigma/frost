@@ -297,26 +297,77 @@ bits still suppress the flag. The `dmmu_mmio` local proof compares this flag
 with the original resolved-address/fault classification for arbitrary state.
 
 The fetch-PC mux computes its non-sequential word including window resteer
-and progress hold, then selects between that word and the slot-2/sequential
-candidates. Independent requests reach one final LUT6 per Xilinx bit, which
-applies reset and slot-2 priority. The generic fallback has the same truth
-table. `fetch_pc_mux` proves both implementations against the original priority
-in standalone and integrated configurations; canonical arm observations stay
-unchanged.
+and progress hold. A LUT4 per Xilinx bit applies qualified slot-1 prediction,
+then a LUT6 selects reset, slot 2, sequential data or that completed word.
+The generic fallback has the same truth table. `fetch_pc_mux` proves both
+implementations against the original priority in standalone and integrated
+configurations; canonical arm observations stay unchanged.
 
 Compressed-buffer validity computes both slot-2-valid next-state outcomes before
 its final selector, including pending-handoff clear. `c_ext_buffer_next` proves
 the same reset, capture, clear, update and hold priorities for arbitrary state.
 
-The fetch-PC final requests apply served-window and progress guards after the
-kept prediction and sequential candidates. A separate LUT6 per bit completes
+The fetch-PC final data selection applies served-window and progress guards
+after the kept prediction and sequential candidates. A separate LUT6 per bit completes
 the non-prediction datum (current redirect, window resteer, or progress hold),
 so translated-fetch availability does not cross intermediate priority masks.
-Both primitive truth tables are included in `fetch_pc_mux` equivalence.
+All primitive truth tables are included in `fetch_pc_mux` equivalence.
 
 Both BTB slots split raw and forwarded tag equality into kept 14-bit partial
 comparisons before reducing the result. This bounds the served-PC comparison
 path without changing hit qualification or forwarding priority.
+
+The private non-sequential PC word omits data selection for sequential cases.
+Mixed pending consume/hold arms always supply their non-sequential target;
+the scalar sequential request overrides that word when those arms advance.
+This removes duplicate wide selection by raw served-window and pending-consume
+controls. Public arm values and final PC priority remain unchanged and proved.
+
+The sequential request keeps its raw-window cofactor separate from prediction
+priority. A LUT4 applies slot 1 after the redirect/window/progress datum,
+then a LUT6 selects slot 2 and sequential data with their final qualified
+requests. Slot 1 reaches two final data selects; sequential data reaches only
+the last select. Portable expressions and primitive truth tables are covered
+by `fetch_pc_mux`.
+
+Redirect and reset holdoffs complete their non-prediction terms before the
+late slot-1/slot-2 prediction flags. The final small gates retain reset and
+stalled-redirect behavior; `control_flow_holdoff` proves their exact next-state
+equations without environmental assumptions.
+
+Pending-prediction validity completes both outcomes of the bundle-size miss
+comparison before selecting the final next bit. Clear-over-capture priority,
+stalled holds and the capture cycle stay unchanged; `pc_pending_capture`
+compares the original transition with arbitrary inputs and current state.
+
+The FPU multiplier/FMA payload FIFOs precompute incremented read pointers before
+the late acceptance/flush decision. A final per-bit select preserves the exact
+post-pop prefetch address, proved by `fp_payload_read` for arbitrary FIFO state.
+
+Fetch increment selection applies redirect/reset holdoff after the completed
+run/NOP size candidates. This keeps the live pending-predecessor comparison
+out of intermediate wide size muxes. Prediction holdoff and mid-instruction
+correction keep their original priority. `pc_increment_holdoff` proves both
+sequential outputs against the former equations for arbitrary inputs.
+
+`cpu_ooo` enables `csr_file.COMMIT_EXCLUDES_CONTROL_TAKE`: its serialized CSR
+commit cannot coincide with a trap, MRET, SRET or DRET take. Existing CPU and
+new CSR assertions check that boundary. The integrated CSR storage and counter
+write guards omit redundant trap qualification; translation invalidation
+compares the completed CSR write before the commit enable. Generic instances
+retain the original priority. `csr_commit_cofactor` compares all affected state
+and the invalidate request with the former equations after each legal edge.
+
+Fetch pending holdoffs resolve exact-owner readiness and crossing permission
+separately, then combine the before/after/predecessor relations in the final
+cofactor. All three raw-window variants preserve the original nested equations
+for arbitrary current tags, including wraparound and unequal low bits.
+
+The architectural-PC mux resolves staged prediction versus sequential/base data
+in one LUT5 per bit, then applies reset, redirect permission and aliased live
+prediction in a final LUT6. Portable logic keeps identical priority, including
+simultaneous requests; both forms have generic and integrated equivalence tasks.
+
 
 Prediction-metadata ownership assertions sample at the packet-capture edge,
 matching the validity/target equivalence checks. Owner flags, PC comparisons
@@ -325,3 +376,8 @@ state changes; checking them mid-settle can report a false non-owner packet.
 The `prediction_metadata_output` proof checks both non-owner exclusions with
 arbitrary settled controls/state and no assumptions, while the tracker proof
 checks pending-episode ownership over time.
+
+DMMU S2's MMIO bit completes both TLB-MMIO outcomes, including its original
+hold, before the late permission/tier result selects one bit. The existing
+`dmmu_mmio` proof also checks that complete next state against the original
+resolution-qualified capture; S2 validity and other payload fields are unchanged.

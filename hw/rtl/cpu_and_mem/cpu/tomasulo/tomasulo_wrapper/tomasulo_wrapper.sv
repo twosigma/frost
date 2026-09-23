@@ -3017,6 +3017,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag(),
       .o_pre_issue_rob_tags(),
       .o_pre_issue_sel(),
+      .i_pre_issue_raw_valid('0),
+      .i_pre_issue_raw_tags('0),
       .o_pre_issue_needs_lq(),
 
       // Flush (shared with ROB)
@@ -3117,6 +3119,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag(),
       .o_pre_issue_rob_tags(),
       .o_pre_issue_sel(),
+      .i_pre_issue_raw_valid('0),
+      .i_pre_issue_raw_tags('0),
       .o_pre_issue_needs_lq(),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -3141,13 +3145,22 @@ module tomasulo_wrapper #(
   riscv_pkg::rs_dispatch_t                                          mem_rs_dispatch_2;
   logic                    [  riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
   logic                                                             mem_rs_pre_issue_needs_lq;
-  logic                    [4*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags;
-  logic                    [4*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags_final;
-  logic                    [                                   1:0] mem_rs_pre_issue_sel;
+  logic                    [8*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags;
+  logic                    [8*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags_final;
+  logic                    [                                   2:0] mem_rs_pre_issue_sel;
 
   riscv_pkg::cdb_broadcast_t mem_rs_wakeup_0, mem_rs_wakeup_1;
   riscv_pkg::cdb_broadcast_t mem_rs_cdb_0, mem_rs_cdb_1;
   logic mem_rs_early_load_injected;
+  logic mem_rs_early_wakeup_enable;
+  logic [2:0] mem_rs_pre_issue_raw_valid;
+  assign mem_rs_early_wakeup_enable = EARLY_LOAD_WAKEUP && !sc_fu_complete_reg.valid &&
+      !store_misalign_fu_complete_reg.valid && !mem_adapter_result_pending;
+  assign mem_rs_pre_issue_raw_valid = {
+    mem_rs_early_wakeup_enable && lq_fu_complete_staged && !lq_fu_complete.exception,
+    cdb_bus_2_mem_qualified.valid,
+    cdb_bus_mem_qualified.valid
+  };
   // Bypass the merger structurally when disabled, including unspecified
   // invalid payloads, so the default builds synthesize the original wires.
   assign mem_rs_cdb_0 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_0 : cdb_bus_mem_qualified;
@@ -3176,8 +3189,7 @@ module tomasulo_wrapper #(
       // No reset term: MEM_RS entries, stage2 and pend flags and the LQ
       // pre-issue registers all clear on reset, so a reset-cycle token has no
       // effect after the edge. Keeping i_rst_n put its fanout ahead of wakeup.
-      .i_enable(EARLY_LOAD_WAKEUP && !sc_fu_complete_reg.valid &&
-                !store_misalign_fu_complete_reg.valid && !mem_adapter_result_pending),
+      .i_enable(mem_rs_early_wakeup_enable),
       .i_load(lq_early_wakeup_load),
       .i_registered_0(cdb_bus_mem_qualified),
       .i_registered_1(cdb_bus_2_mem_qualified),
@@ -3220,6 +3232,7 @@ module tomasulo_wrapper #(
   reservation_station #(
       .DEPTH(riscv_pkg::MemRsDepth),
       .PREISSUE_VALID_COFACTOR(EARLY_LOAD_WAKEUP),
+      .PREISSUE_RAW_WAKEUP(1'b1),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0),
@@ -3277,6 +3290,10 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag),
       .o_pre_issue_rob_tags(mem_rs_pre_issue_rob_tags),
       .o_pre_issue_sel(mem_rs_pre_issue_sel),
+      .i_pre_issue_raw_valid(mem_rs_pre_issue_raw_valid),
+      .i_pre_issue_raw_tags({
+        lq_fu_complete.tag, cdb_bus_2_mem_qualified.tag, cdb_bus_mem_qualified.tag
+      }),
       .o_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -3477,6 +3494,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag        (),
       .o_pre_issue_rob_tags       (),
       .o_pre_issue_sel            (),
+      .i_pre_issue_raw_valid      ('0),
+      .i_pre_issue_raw_tags       ('0),
       .o_pre_issue_needs_lq       (),
       .i_flush_en                 (speculative_flush_en),
       .i_flush_tag                (i_flush_tag),
@@ -3638,6 +3657,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag(),
       .o_pre_issue_rob_tags(),
       .o_pre_issue_sel(),
+      .i_pre_issue_raw_valid('0),
+      .i_pre_issue_raw_tags('0),
       .o_pre_issue_needs_lq(),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -3941,6 +3962,8 @@ module tomasulo_wrapper #(
       .o_pre_issue_rob_tag(),
       .o_pre_issue_rob_tags(),
       .o_pre_issue_sel(),
+      .i_pre_issue_raw_valid('0),
+      .i_pre_issue_raw_tags('0),
       .o_pre_issue_needs_lq(),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -4200,6 +4223,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   load_queue #(
       .PREISSUE_CANDIDATES(EARLY_LOAD_WAKEUP),
+      .PREISSUE_SEL_WIDTH(3),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .CACHED_BASE(CACHED_BASE),
@@ -4652,7 +4676,7 @@ module tomasulo_wrapper #(
   assign mem_rs_pre_issue_rob_tag_final =
       i_translation_active ? dmmu_pre_rob_tag : mem_rs_pre_issue_rob_tag;
   assign mem_rs_pre_issue_rob_tags_final =
-      i_translation_active ? {4{dmmu_pre_rob_tag}} : mem_rs_pre_issue_rob_tags;
+      i_translation_active ? {8{dmmu_pre_rob_tag}} : mem_rs_pre_issue_rob_tags;
   assign mem_rs_pre_issue_needs_lq_final =
       i_translation_active ? dmmu_pre_needs_lq : mem_rs_pre_issue_needs_lq;
 

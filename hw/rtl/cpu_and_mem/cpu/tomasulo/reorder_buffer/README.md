@@ -295,3 +295,24 @@ timing invariants.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
+
+The done and exception bits form four per-entry allocation outcomes before
+selecting the two accepted allocation valids. Completion tags compare directly
+with each physical entry and its live bit, preserving stale-completion filtering.
+Store completion uses a separately completed tag/live qualifier as its final
+set input. Reset, allocation priority and completion-over-allocation priority
+are unchanged; `rob_control_next` checks the original indexed-write transitions.
+
+The replay flags also precompute allocation-clear outcomes per physical entry.
+CDB exceptions, flushes and commits clear the same entries as before; accepted
+allocation valids select the completed outcomes last. `rob_control_next` checks
+replay next state against the original indexed writes with arbitrary inputs and
+current bits, including simultaneous set and clear events.
+
+The serializer exports a separate retirement-only stall cofactor. In fence-sync
+and translation-CSR-drain states it omits retirement guards that every commit
+early aggregate already applies. FSM transitions and semantic events retain
+those guards. Performance counters and assertions keep the original canonical
+stall, including blocked cycles in those states. `rob_retire_stall` connects the
+actual serializer and proves every affected retirement strobe and the entire
+performance-event vector against canonical-stall references from arbitrary state.

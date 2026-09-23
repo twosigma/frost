@@ -42,7 +42,7 @@ X/Z behavior.
 | `dispatch_admission` | Legacy and queued admission equations with arbitrary inputs; the queued task assumes the producer's slot-valid contract |
 | `c_ext_buffer_next` | Slot-2 buffer next-state outcomes match original clear/capture/hold priority for arbitrary inputs/state |
 | `sq_repair_mmio` | Both parallel repair MMIO flags match classification of the original full-width selected-base-plus-immediate sums, including simultaneous/no matches and overflow |
-| `dmmu_mmio` | Parallel MMIO classification equals classification of the fault/address resolution, including all permission/fault priorities and superpage levels; arbitrary inputs/state without assumptions |
+| `dmmu_mmio` | Parallel MMIO classification and the complete S2 MMIO next bit equal original resolution/hold for arbitrary state, with no assumptions |
 | `rs_alloc_parallel` | Parallel first/second free indices and found flags equal the original serial search at depths 4/8/16/32, including zero/one free entry; arbitrary occupancy without assumptions |
 | `rs_pretag_cofactor` | Four CDB-valid cofactor winners equal the original priority-selected ROB tag, including idle; arbitrary binary inputs/current state with MEM and src3/tag-shadow/meta-anchor configurations, no sequential assumptions |
 | `ras_checkpoint` | Return-stack next pointer and count versus the original equations, from arbitrary controls and state |
@@ -53,14 +53,22 @@ X/Z behavior.
 | `c_ext_state_cofactor` | Buffer-valid next state from arbitrary inputs and state; producer relationships are checked by `prediction_release` |
 | `branch_prediction_disable` | Prediction permissions and live/staged target selection against the original equations, with arbitrary predictor outputs |
 | `fetch_redirect` | Redirect priority and registered waveform, with arbitrary controls and initial state |
-| `fetch_pc_mux`, `pc_register_mux` | Fetch and architectural-PC priority, including generic and integrated handoff configurations, from arbitrary controls and state |
+| `fetch_pc_mux`, `pc_register_mux` | Fetch and architectural-PC priority, including generic and integrated handoff configurations and portable/Xilinx primitive muxes, from arbitrary controls and state |
 | `pc_holdoff_cofactor` | Fetch holdoff equations from arbitrary controls and state; temporal integration is covered separately |
 | `pc_holdoff_tag` | Prediction holdoffs at widths 32, 64, and 72, including wraparound; assumes initial pending-valid=0, not arbitrary corrupt valid state |
 | `branch_prediction_alias` | Public alias outputs under IF's base+2/base+4 wiring; requires the width-equality opt-in guard and does not prove full-controller sequential equivalence |
+| `rob_control_next` | Done, exception and replay next states match the original indexed writes for arbitrary current state and inputs, including reset, simultaneous allocation/completion and stale tags; RAM/serializer outputs are unconstrained, no assumptions |
+| `rob_retire_stall` | Retirement strobes and the full performance-event vector equal canonical serializer behavior; actual serializer wiring, arbitrary current state/controls, no assumptions |
+| `rs_dispatch_defer` | All six dispatch-source deferred-CDB decisions match the original ready-qualified equations, with insertion-time repair enabled and disabled; no assumptions |
+| `rs_issue_clear` | Accepted port-2 clear mask equals the former indexed clear; dual issue disabled, depths 4/32, and actual INT parameters at depth 8 and depth 16/window 8, with free RAM outputs and no assumptions |
+| `sq_committed_empty` | Committed-empty next state matches the original reset/flush/registered-and-combinational-commit equation for arbitrary inputs and current bits, no assumptions |
+| `sq_live_count` | Allocation increments before late removal subtraction equal the original three candidates and exact next count; arbitrary state and controls, no assumptions |
+| `pc_pending_capture` | Pending prediction valid matches the original clear/set/hold transition for arbitrary current state, redirects, stalls and bundle-size comparison; no assumptions or initial state |
+| `control_flow_holdoff` | Redirect and reset holdoffs match the original next-state equations for arbitrary state and simultaneous prediction/redirect/stall inputs, no assumptions |
 | `rob_start_cofactor` | ROB head ownership and CSR/xRET starts; assumes initial reset and abstracts payload RAMs and serializer outputs |
 | `load_queue_amo_compute` | Four-step AMO operand and memory-tier capture, arithmetic, kill/reset, coherence exclusion, and write stability; no reset/admission assumptions and no scheduler, interrupt, or liveness claim |
 | `load_queue` (`prove_pre_match`) | Unbounded equivalence of the split pre-issue tag/valid registers against the original predicate, without environment assumptions; the separate queue BMC/cover tasks retain their existing scope |
-| `lq_prematch_cofactors` | Bounded and unbounded equivalence of registering four candidate CAM results and their selector versus registering the selected-tag CAM; arbitrary inputs/current state, resets and full flushes, no assumptions. Integration checks that the scalar tag equals the selected candidate |
+| `lq_prematch_cofactors` | Bounded and unbounded equivalence of registering four or eight candidate CAM results and their selector versus registering the selected-tag CAM; arbitrary inputs/current state, resets and full flushes, no assumptions. Integration checks that the scalar tag equals the selected candidate |
 | `if_direction_payload` | Direction payload and stall replay equivalence for non-NOP packets with arbitrary controls/owner matches; assumes one initial flush to initialize saved-NOP state and uses the real stall-capture module |
 | `mispredict_capture` | Bounded and unbounded equivalence of the recovery payload while its registered valid is set; arbitrary inputs/reset/flush, no assumptions |
 | `line_arbiter_grant` | Generic and Xilinx three-port grants equal the encoded starvation-priority rule for arbitrary request/counter state |
@@ -176,6 +184,35 @@ priority and one-hot arm expressions.
 `lq_response_bypass` proves the actual load-response bypass pulse equals the
 original full-acceptance-qualified pulse for arbitrary inputs and queue state.
 The independent partial-flush guard makes its age comparison redundant.
+
+`lq_ram_payload` checks the actual two RAM ports against the former qualified
+mux: write enables always match, and address/data match whenever enabled.
+Default, forwarding-enabled and forwarding-only configurations use arbitrary
+inputs and state, with no assumptions.
+
+`fp_payload_read` proves both FPU producer RAM prefetch addresses equal the
+original pointer-plus-pop expressions for arbitrary inputs and FIFO state,
+including pointer wraparound, without assumptions.
+
+`rs_raw_pretag` uses the real early-wakeup merger and proves that the selected
+eight-way raw candidate equals the original MEM_RS winner for arbitrary inputs
+and state. `lq_prematch_cofactors` covers both selector widths with bounded and
+unbounded equivalence against direct selected-tag matching.
+
+The RAM-payload check abstracts RAM/cache outputs as arbitrary inputs and rejects
+all initial-state constraints. Four covers reach response, cache, forward and
+AMO writes; a separate assertion excludes the AMO-head exception on cache hits.
+
+`pc_increment_holdoff` compares both sequential fetch addresses with the former
+per-size holdoff/correction candidates and run/NOP selection. The portable and
+Xilinx configurations leave all current inputs independent, with no assumptions.
+
+`csr_commit_cofactor` compares the modified CSR storage and both counters with
+old-transition ghost captures from arbitrary actual state, after one edge.
+Generic behavior is checked for all inputs; integrated behavior is checked
+under the existing CSR-commit/control-take exclusion, expressed as a property
+premise rather than an environment assumption. Translation invalidation is
+also compared combinationally. Only the ghost-valid bit is initialized.
 
 The `load_queue_amo_compute` harness counts its named AMO assertions and cover
 separately from allocator checks. Other production helper checks remain enabled,

@@ -744,7 +744,8 @@ module reorder_buffer #(
   // reads, ohread LVT select, meip register, compare-then-mux) helped. The
   // two-term factoring below stays as plain RTL; synthesis is free to refuse
   // it back into the baseline-style fused tree.
-  logic commit_stall;  // Stall commit for serializing instructions
+  logic commit_stall;  // Canonical stall for perf counters and assertions.
+  logic commit_stall_for_retire;  // Consumers also apply retirement permission.
   // Early/late factoring of the commit gates (pure AND re-association,
   // bit-identical conjunct sets; see Commit Enable Logic).
   logic commit_ready_early;
@@ -1056,7 +1057,7 @@ module reorder_buffer #(
   // re-associated so the late commit_stall enters one final LUT.
   assign commit_2_ready_early = commit_ready_early && head_next_valid && head_next_done_eff &&
                                 head_ok_2wide && head_next_ok_2wide;
-  assign commit_2_gate = commit_2_ready_early && !commit_stall;
+  assign commit_2_gate = commit_2_ready_early && !commit_stall_for_retire;
   // No max_fanout on commit_2_fire: a forced net boundary here sat mid-spine
   // on the late UART/interrupt-pending -> trap_taken arc (it appeared as a
   // distinct fo=40 level in the round-1 -1.17 post-opt path).
@@ -1999,53 +2000,114 @@ module reorder_buffer #(
   // -------------------------------------------------------------------------
   // Control signals (rob_valid, rob_done, rob_exception): need reset
   // -------------------------------------------------------------------------
+  // Complete each physical entry's allocation outcomes before the late
+  // accepted valids arrive. Completion tags compare directly with the entry
+  // index, so no selected rob_valid bit feeds back through a write decoder.
+  // Store completion is last: its tag/live eligibility settles independently
+  // of the late DMMU/store-issue valid. Allocation and completion priorities
+  // match the indexed writes, even for simultaneous inputs.
+  logic alloc_done_value, alloc_done_value_2;
+  assign alloc_done_value = i_alloc_req.is_jal || (!i_alloc_req.is_jalr &&
+      (i_alloc_req.is_wfi || i_alloc_req.is_fence ||
+       i_alloc_req.is_fence_i || i_alloc_req.is_mret));
+  assign alloc_done_value_2 = i_alloc_req_2.is_jal || (!i_alloc_req_2.is_jalr &&
+      (i_alloc_req_2.is_wfi || i_alloc_req_2.is_fence ||
+       i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret));
+  logic [ReorderBufferDepth-1:0] done_next, exception_next;
+  for (genvar entry = 0; entry < ReorderBufferDepth; entry++) begin : gen_control_next
+    wire alloc_here = tail_idx == ReorderBufferTagWidth'(entry);
+    wire alloc_here_2 = tail_idx_2 == ReorderBufferTagWidth'(entry);
+    wire cdb_here = i_cdb_write.valid && i_cdb_write.tag == ReorderBufferTagWidth'(entry);
+    wire cdb_here_2 = i_cdb_write_2.valid && i_cdb_write_2.tag == ReorderBufferTagWidth'(entry);
+    wire branch_here = i_branch_update.valid &&
+        i_branch_update.tag == ReorderBufferTagWidth'(entry);
+    wire completion_live = rob_valid[entry] && !i_flush_all;
+    wire done_completion = completion_live && (cdb_here || cdb_here_2 || branch_here);
+    wire exception_completion = completion_live &&
+        ((cdb_here && i_cdb_write.exception) || (cdb_here_2 && i_cdb_write_2.exception));
+    wire exception_hold = rob_exception[entry] || (i_replay_set_mask[entry] && rob_valid[entry]);
+    (* keep = "true" *) logic [3:0] done_alloc_cases, exception_alloc_cases;
+    for (genvar choice = 0; choice < 4; choice++) begin : gen_alloc_case
+      localparam bit Alloc1 = (choice & 1) != 0;
+      localparam bit Alloc2 = (choice & 2) != 0;
+      assign done_alloc_cases[choice] = done_completion ||
+          ((Alloc2 && alloc_here_2) ? alloc_done_value_2 :
+           (Alloc1 && alloc_here) ? alloc_done_value : rob_done[entry]);
+      assign exception_alloc_cases[choice] = exception_completion ||
+          ((Alloc2 && alloc_here_2) ? alloc_legality_fault_data_2 :
+           (Alloc1 && alloc_here) ? alloc_legality_fault_data : exception_hold);
+    end
+    (* keep = "true" *) logic store_completion_eligible;
+    assign store_completion_eligible = completion_live &&
+        i_store_complete_tag == ReorderBufferTagWidth'(entry);
+    wire done_without_store = alloc_en_2_control ?
+        (alloc_en_control ? done_alloc_cases[3] : done_alloc_cases[2]) :
+        (alloc_en_control ? done_alloc_cases[1] : done_alloc_cases[0]);
+    wire exception_selected = alloc_en_2_control ?
+        (alloc_en_control ? exception_alloc_cases[3] : exception_alloc_cases[2]) :
+        (alloc_en_control ? exception_alloc_cases[1] : exception_alloc_cases[0]);
+    assign done_next[entry] = i_rst_n &&
+        (done_without_store || (i_store_complete_valid && store_completion_eligible));
+    assign exception_next[entry] = i_rst_n && exception_selected;
+  end
   always_ff @(posedge i_clk) begin
+    rob_done <= done_next;
+    rob_exception <= exception_next;
+  end
+
+`ifdef ROB_CONTROL_NEXT_LOCAL_PROOF
+  // Original indexed-write transitions rebuilt from actual current state.
+  // All inputs and current bits are independent; no reset/admission premise.
+  logic [ReorderBufferDepth-1:0] f_done_next, f_exception_next;
+  always_comb begin
+    f_done_next = rob_done;
+    f_exception_next = rob_exception;
     if (!i_rst_n) begin
-      rob_done      <= '0;
-      rob_exception <= '0;
+      f_done_next      = '0;
+      f_exception_next = '0;
     end else begin
       // Memory-order replay flags make their entries exceptional
       // through the same stored bit as execution exceptions.
-      rob_exception <= rob_exception | (i_replay_set_mask & rob_valid);
+      f_exception_next = rob_exception | (i_replay_set_mask & rob_valid);
       // ---------------------------------------------------------------------
       // Allocation Write (control fields only)
       // ---------------------------------------------------------------------
       if (alloc_en_control) begin
         // Legality is complete at allocation; execution may later add a
         // higher-priority exception through an exceptional CDB completion.
-        rob_exception[tail_idx] <= alloc_legality_fault_data;
+        f_exception_next[tail_idx] = alloc_legality_fault_data;
 
         // JAL's link and target are both known at allocation. JALR and
         // conditional branches wait for branch resolution.
         if (i_alloc_req.is_jal) begin
-          rob_done[tail_idx] <= 1'b1;
+          f_done_next[tail_idx] = 1'b1;
         end else if (i_alloc_req.is_jalr) begin
           // JALR: link address known, target unknown until execute
-          rob_done[tail_idx] <= 1'b0;
+          f_done_next[tail_idx] = 1'b0;
         end else if (i_alloc_req.is_wfi || i_alloc_req.is_fence ||
                      i_alloc_req.is_fence_i || i_alloc_req.is_mret) begin
           // Done from the execution side at dispatch; the serializer gates
           // their commit.
-          rob_done[tail_idx] <= 1'b1;
+          f_done_next[tail_idx] = 1'b1;
         end else begin
-          rob_done[tail_idx] <= 1'b0;
+          f_done_next[tail_idx] = 1'b0;
         end
       end
 
       // Slot-2 alloc: same logic at tail_idx_2. The write addresses differ
       // (tail_idx vs tail_idx_2), so no priority arbitration is needed.
       if (alloc_en_2_control) begin
-        rob_exception[tail_idx_2] <= alloc_legality_fault_data_2;
+        f_exception_next[tail_idx_2] = alloc_legality_fault_data_2;
 
         if (i_alloc_req_2.is_jal) begin
-          rob_done[tail_idx_2] <= 1'b1;
+          f_done_next[tail_idx_2] = 1'b1;
         end else if (i_alloc_req_2.is_jalr) begin
-          rob_done[tail_idx_2] <= 1'b0;
+          f_done_next[tail_idx_2] = 1'b0;
         end else if (i_alloc_req_2.is_wfi || i_alloc_req_2.is_fence ||
                      i_alloc_req_2.is_fence_i || i_alloc_req_2.is_mret) begin
-          rob_done[tail_idx_2] <= 1'b1;
+          f_done_next[tail_idx_2] = 1'b1;
         end else begin
-          rob_done[tail_idx_2] <= 1'b0;
+          f_done_next[tail_idx_2] = 1'b0;
         end
       end
 
@@ -2058,32 +2120,38 @@ module reorder_buffer #(
       // allocation-time legality fault cannot be erased. An exceptional
       // completion sets the bit and its cause RAM port replaces the cause.
       if (cdb_state_wr_en) begin
-        rob_done[i_cdb_write.tag] <= 1'b1;
-        if (i_cdb_write.exception) rob_exception[i_cdb_write.tag] <= 1'b1;
+        f_done_next[i_cdb_write.tag] = 1'b1;
+        if (i_cdb_write.exception) f_exception_next[i_cdb_write.tag] = 1'b1;
       end
       // Lane 1 (2-wide CDB) carries a distinct tag from lane 0, so these
-      // non-blocking writes target a different rob_done/rob_exception index
+      // indexed assignments target a different f_done_next/f_exception_next index
       // and cannot collide.
       if (cdb_state_wr_en_2) begin
-        rob_done[i_cdb_write_2.tag] <= 1'b1;
-        if (i_cdb_write_2.exception) rob_exception[i_cdb_write_2.tag] <= 1'b1;
+        f_done_next[i_cdb_write_2.tag] = 1'b1;
+        if (i_cdb_write_2.exception) f_exception_next[i_cdb_write_2.tag] = 1'b1;
       end
 
       // ---------------------------------------------------------------------
       // Direct store completion (mark plain store entry done)
       // ---------------------------------------------------------------------
       if (i_store_complete_valid && !i_flush_all && rob_valid[i_store_complete_tag]) begin
-        rob_done[i_store_complete_tag] <= 1'b1;
+        f_done_next[i_store_complete_tag] = 1'b1;
       end
 
       // ---------------------------------------------------------------------
       // Branch Update (mark branch done)
       // ---------------------------------------------------------------------
       if (branch_wr_en) begin
-        rob_done[i_branch_update.tag] <= 1'b1;
+        f_done_next[i_branch_update.tag] = 1'b1;
       end
     end
   end
+
+  always_comb begin
+    assert (done_next == f_done_next);
+    assert (exception_next == f_exception_next);
+  end
+`endif
 
   // Memory-order replay flags: set by the wrapper's validation
   // table for live entries without a stored exception (an exceptional
@@ -2091,40 +2159,84 @@ module reorder_buffer #(
   // commit, flush), the same shape as rob_valid below. The flag selects the
   // ExcMemReplay cause at the head; the entry's exceptional state itself is
   // the shared rob_exception bit above.
+  // Resolve physical-entry clear masks before the accepted allocation valids.
+  // All updates after replay-set only clear, so their order is immaterial.
+  // Preserve their original enables and keep allocation as the final select.
+  logic [ReorderBufferDepth-1:0] replay_next;
+  for (genvar entry = 0; entry < ReorderBufferDepth; entry++) begin : gen_replay_next
+    wire alloc_here = tail_idx == ReorderBufferTagWidth'(entry);
+    wire alloc_here_2 = tail_idx_2 == ReorderBufferTagWidth'(entry);
+    wire cdb_clear =
+        (cdb_state_wr_en && i_cdb_write.exception &&
+         i_cdb_write.tag == ReorderBufferTagWidth'(entry)) ||
+        (cdb_state_wr_en_2 && i_cdb_write_2.exception &&
+         i_cdb_write_2.tag == ReorderBufferTagWidth'(entry));
+    wire flush_clear = i_flush_all || (i_flush_en && (flush_after_head_commit || should_flush_entry(
+        ReorderBufferTagWidth'(entry), i_flush_tag, head_idx
+    )));
+    wire commit_clear = !i_flush_all &&
+        ((commit_en && head_clear_mask[entry]) ||
+         (commit_2_fire && head_next_clear_mask[entry]));
+    wire replay_without_alloc = i_rst_n && !cdb_clear && !flush_clear && !commit_clear &&
+        (rob_replay[entry] ||
+         (i_replay_set_mask[entry] && rob_valid[entry] && !rob_exception[entry]));
+    (* keep = "true" *) logic [3:0] replay_alloc_cases;
+    for (genvar choice = 0; choice < 4; choice++) begin : gen_alloc_case
+      localparam bit Alloc1 = (choice & 1) != 0;
+      localparam bit Alloc2 = (choice & 2) != 0;
+      assign replay_alloc_cases[choice] = replay_without_alloc &&
+          !(Alloc1 && alloc_here) && !(Alloc2 && alloc_here_2);
+    end
+    assign replay_next[entry] = alloc_en_2_valid ?
+        (alloc_en_valid ? replay_alloc_cases[3] : replay_alloc_cases[2]) :
+        (alloc_en_valid ? replay_alloc_cases[1] : replay_alloc_cases[0]);
+  end
   always_ff @(posedge i_clk) begin
+    rob_replay <= replay_next;
+  end
+
+`ifdef ROB_CONTROL_NEXT_LOCAL_PROOF
+  logic [ReorderBufferDepth-1:0] f_replay_next;
+  always_comb begin
+    f_replay_next = rob_replay;
     if (!i_rst_n) begin
-      rob_replay <= '0;
+      f_replay_next = '0;
     end else begin
-      rob_replay <= rob_replay | (i_replay_set_mask & rob_valid & ~rob_exception);
-      if (cdb_state_wr_en && i_cdb_write.exception) rob_replay[i_cdb_write.tag] <= 1'b0;
-      if (cdb_state_wr_en_2 && i_cdb_write_2.exception) rob_replay[i_cdb_write_2.tag] <= 1'b0;
+      f_replay_next = rob_replay | (i_replay_set_mask & rob_valid & ~rob_exception);
+      if (cdb_state_wr_en && i_cdb_write.exception) f_replay_next[i_cdb_write.tag] = 1'b0;
+      if (cdb_state_wr_en_2 && i_cdb_write_2.exception) f_replay_next[i_cdb_write_2.tag] = 1'b0;
       if (i_flush_all) begin
-        rob_replay <= '0;
+        f_replay_next = '0;
       end else if (i_flush_en) begin
         if (flush_after_head_commit) begin
-          rob_replay <= '0;
+          f_replay_next = '0;
         end else begin
           for (int i = 0; i < ReorderBufferDepth; i++) begin
             if (should_flush_entry(i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx)) begin
-              rob_replay[i] <= 1'b0;
+              f_replay_next[i] = 1'b0;
             end
           end
         end
       end
-      if (alloc_en_valid) rob_replay[tail_idx] <= 1'b0;
-      if (alloc_en_2_valid) rob_replay[tail_idx_2] <= 1'b0;
+      if (alloc_en_valid) f_replay_next[tail_idx] = 1'b0;
+      if (alloc_en_2_valid) f_replay_next[tail_idx_2] = 1'b0;
       if (commit_en && !i_flush_all) begin
         for (int i = 0; i < ReorderBufferDepth; i++) begin
-          if (head_clear_mask[i]) rob_replay[i] <= 1'b0;
+          if (head_clear_mask[i]) f_replay_next[i] = 1'b0;
         end
       end
       if (commit_2_fire && !i_flush_all) begin
         for (int i = 0; i < ReorderBufferDepth; i++) begin
-          if (head_next_clear_mask[i]) rob_replay[i] <= 1'b0;
+          if (head_next_clear_mask[i]) f_replay_next[i] = 1'b0;
         end
       end
     end
   end
+
+  always_comb begin
+    assert (replay_next == f_replay_next);
+  end
+`endif
 
   // Keep rob_valid separate so full-flush does not share a single next-state
   // cone with unrelated ROB done/exception updates.
@@ -2289,7 +2401,8 @@ module reorder_buffer #(
       .o_sfence_window                 (o_sfence_window),
       .o_native_fence_commit_event     (native_fence_commit_event),
       .o_translation_csr_commit_event_q(translation_csr_commit_event_q),
-      .o_commit_stall                  (commit_stall)
+      .o_commit_stall                  (commit_stall),
+      .o_commit_stall_for_retire       (commit_stall_for_retire)
   );
 
   // ===========================================================================
@@ -2326,6 +2439,9 @@ module reorder_buffer #(
   // (early-backend / mispredict recovery) that never waits on the head
   // committing, so there is no deadlock.
   //
+  // The retirement-only serializer stall omits guards already present in
+  // every early aggregate below. Canonical stall remains on perf counters;
+  // rob_retire_stall checks all retirement strobes and the full perf vector.
   // TIMING (late-side factoring): commit_en and every commit_stall-qualified
   // derivative are written as <kept early aggregate> && !commit_stall. The
   // conjunct sets are identical to the flat originals (pure AND
@@ -2338,19 +2454,19 @@ module reorder_buffer #(
   assign commit_ready_early = head_ready && !head_exception && !i_commit_hold &&
                               !i_early_recovery_en && !i_flush_en && !i_flush_all &&
                               !flush_after_head_commit;
-  assign commit_en = commit_ready_early && !commit_stall;
+  assign commit_en = commit_ready_early && !commit_stall_for_retire;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
   assign commit_misprediction = head_f_is_branch && head_mispredicted;
   assign o_commit_valid_raw = commit_en;
   assign commit_store_like_early = commit_ready_early && head_f_store_like;
-  assign o_commit_store_like_raw = commit_store_like_early && !commit_stall;
+  assign o_commit_store_like_raw = commit_store_like_early && !commit_stall_for_retire;
   assign commit_mispredict_early =
       commit_ready_early && commit_misprediction && !head_early_recovered;
-  assign o_commit_misprediction_raw = commit_mispredict_early && !commit_stall;
+  assign o_commit_misprediction_raw = commit_mispredict_early && !commit_stall_for_retire;
   assign commit_correct_branch_early = commit_ready_early && head_f_has_checkpoint &&
                                        !commit_misprediction && !head_early_recovered;
-  assign o_commit_correct_branch_raw = commit_correct_branch_early && !commit_stall;
+  assign o_commit_correct_branch_raw = commit_correct_branch_early && !commit_stall_for_retire;
   // Slot-2 correct-branch strobe: qualified on the full widen-commit fire
   // (same late-side factoring as commit_2_store_like_early below). The
   // mispredicted/early-recovered exclusions are already inside
@@ -2359,7 +2475,7 @@ module reorder_buffer #(
   assign commit_correct_branch_2_early =
       commit_2_ready_early && EnableWidenCommit && i_widen_commit_ok &&
       head_next_f_has_checkpoint && !head_next_mispredicted && !head_next_early_recovered;
-  assign o_commit_correct_branch_2_raw = commit_correct_branch_2_early && !commit_stall;
+  assign o_commit_correct_branch_2_raw = commit_correct_branch_2_early && !commit_stall_for_retire;
   // Same-cycle head-mispredict indicator without the branch_update collision
   // term. Outer control logic uses this to suppress younger branch resolution
   // without feeding branch_update back into commit_en.
@@ -2368,7 +2484,8 @@ module reorder_buffer #(
       head_ready && !i_commit_hold && !i_early_recovery_en &&
       !i_flush_en && !i_flush_all && !flush_after_head_commit &&
       commit_misprediction && !head_early_recovered;
-  assign o_head_commit_misprediction_candidate = head_mispredict_candidate_early && !commit_stall;
+  assign o_head_commit_misprediction_candidate =
+      head_mispredict_candidate_early && !commit_stall_for_retire;
 
   // ===========================================================================
   // External Coordination Outputs
@@ -2751,7 +2868,7 @@ module reorder_buffer #(
       // head_next_f_store_like also covers is_sc, which head_next_ok_2wide
       // inside commit_2_ready_early excludes, so the result is bit-identical.
       head_next_f_store_like;
-  assign o_commit_2_store_like_raw = commit_2_store_like_early && !commit_stall;
+  assign o_commit_2_store_like_raw = commit_2_store_like_early && !commit_stall_for_retire;
 
   // Registered copy of the slot-2 commit so external observers can sample it
   // after the head pointer advances. Mirrors the o_commit register.
@@ -2856,8 +2973,9 @@ module reorder_buffer #(
 
     // rob_serializer exports commit_stall's IDLE arm gate-free (see the
     // TIMING note there). The dropped IDLE-only gate conjuncts are re-applied
-    // here so these counters keep their original values; a non-IDLE stall
-    // never carried the gate.
+    // here so these counters keep their original values. These counters use
+    // the canonical stall, including retirement guards in the sync/drain
+    // states; the retirement-only cofactor must not feed this block.
     if (head_ready && commit_stall && !i_flush_all &&
         ((serial_state != riscv_pkg::SERIAL_IDLE) ||
          (!i_commit_hold && !i_early_recovery_en && !i_flush_en))) begin
@@ -2935,6 +3053,112 @@ module reorder_buffer #(
               !i_commit_hold && !i_early_recovery_en && head_f_is_mret &&
               !head_exception && i_sq_committed_empty));
     end
+  end
+`endif
+
+`ifdef ROB_RETIRE_STALL_LOCAL_PROOF
+  // Original retirement equations retain the canonical serializer stall.
+  logic f_commit_en, f_commit_2_gate, f_commit_2_fire;
+  assign f_commit_en = commit_ready_early && !commit_stall;
+  assign f_commit_2_gate = commit_2_ready_early && !commit_stall;
+  assign f_commit_2_fire = f_commit_2_gate && EnableWidenCommit && i_widen_commit_ok;
+  riscv_pkg::rob_perf_events_t f_perf_events;
+  always_comb begin
+    f_perf_events = '0;
+
+    f_perf_events.rob_empty = empty;
+    f_perf_events.head_wait_int = head_wait_active && head_f_perf_wait_int;
+    f_perf_events.head_wait_mem_load = head_wait_active && head_f_perf_wait_mem_load;
+
+    if (head_wait_active) begin
+      f_perf_events.head_wait_total = 1'b1;
+
+      if (head_is_branch) begin
+        f_perf_events.head_wait_branch = 1'b1;
+      end else if (head_is_amo || head_is_lr) begin
+        f_perf_events.head_wait_mem_amo = 1'b1;
+      end else if (head_is_store || head_is_fp_store || head_is_sc) begin
+        f_perf_events.head_wait_mem_store = 1'b1;
+      end else begin
+        unique case (head_rs_type)
+          riscv_pkg::RS_INT: ;
+          riscv_pkg::RS_MUL: f_perf_events.head_wait_mul = 1'b1;
+          riscv_pkg::RS_MEM: ;
+          riscv_pkg::RS_FP: f_perf_events.head_wait_fp = 1'b1;
+          riscv_pkg::RS_FMUL: f_perf_events.head_wait_fmul = 1'b1;
+          riscv_pkg::RS_FDIV: f_perf_events.head_wait_fdiv = 1'b1;
+          default: ;
+        endcase
+      end
+    end
+
+    // rob_serializer exports commit_stall's IDLE arm gate-free (see the
+    // TIMING note there). The dropped IDLE-only gate conjuncts are re-applied
+    // here so the reference retains the original IDLE qualification. The
+    // canonical stall retains its separate sync/drain retirement guards.
+    if (head_ready && commit_stall && !i_flush_all &&
+        ((serial_state != riscv_pkg::SERIAL_IDLE) ||
+         (!i_commit_hold && !i_early_recovery_en && !i_flush_en))) begin
+      f_perf_events.commit_blocked_csr =
+          head_is_csr || (serial_state == riscv_pkg::SERIAL_CSR_EXEC) ||
+          (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN);
+      f_perf_events.commit_blocked_fence =
+          head_is_fence || head_is_fence_i || (serial_state == riscv_pkg::SERIAL_WAIT_SQ);
+      f_perf_events.commit_blocked_wfi =
+          head_is_wfi || (serial_state == riscv_pkg::SERIAL_WFI_WAIT);
+      f_perf_events.commit_blocked_mret =
+          head_is_mret || (serial_state == riscv_pkg::SERIAL_MRET_EXEC);
+      f_perf_events.commit_blocked_trap =
+          head_exception || (serial_state == riscv_pkg::SERIAL_TRAP_WAIT);
+    end
+
+    // Widen-commit viability: single-wide commit fires this cycle and the
+    // next ROB entry would also be ready to retire. This is an upper bound;
+    // the real win is slightly lower because a serial op (CSR/fence/trap) or
+    // a mispredicting branch at head+1 still forces 1-wide commit on that
+    // cycle.
+    f_perf_events.head_and_next_done = f_commit_en && head_next_valid_done;
+    // Ungated version: the entry behind head is done whether or not commit
+    // is firing this cycle. Subtract head_and_next_done to see how often
+    // the ROB is sitting on a done entry behind a stalled head.
+    f_perf_events.head_plus_one_done = head_next_valid_done && !i_flush_all;
+    // Widen-commit fire-rate predictor: tighter than head_and_next_done
+    // because the hazard gate (serial ops, head+1 mispredicting branches,
+    // FENCE.I, exceptions, AMO/LR/SC, head-mispredicting branches) is
+    // already applied. commit_2_fire_actual also folds in the master enable
+    // and the cpu_ooo slot-2 accept term (i_widen_commit_ok, currently tied
+    // high); it is what the head_ptr increment and rob_valid clear use.
+    f_perf_events.commit_2_opportunity = f_commit_2_gate;
+    f_perf_events.commit_2_fire_actual = f_commit_2_fire;
+
+    // Widen-commit blocker decomposition. Gated on f_commit_en &&
+    // head_next_valid_done so these fire only on cycles where
+    // head_and_next_done is also 1; the sum equals head_and_next_done -
+    // commit_2_opportunity (the hazard-blocked gap).
+    f_perf_events.commit_2_blocked_head_serial =
+        f_commit_en && head_next_valid_done && !head_ok_2wide;
+    f_perf_events.commit_2_blocked_next_serial =
+        f_commit_en && head_next_valid_done && head_ok_2wide &&
+        !head_next_ok_2wide && !head_next_is_branch;
+    f_perf_events.commit_2_blocked_next_branch_mispred =
+        f_commit_en && head_next_valid_done && head_ok_2wide &&
+        head_next_is_branch && head_next_mispredicted;
+    f_perf_events.commit_2_blocked_next_branch_correct =
+        f_commit_en && head_next_valid_done && head_ok_2wide &&
+        head_next_is_branch && !head_next_mispredicted && !head_next_ok_2wide;
+  end
+  always_comb begin
+    assert (commit_2_gate == (commit_2_ready_early && !commit_stall));
+    assert (commit_en == (commit_ready_early && !commit_stall));
+    assert (o_commit_store_like_raw == (commit_store_like_early && !commit_stall));
+    assert (o_commit_misprediction_raw == (commit_mispredict_early && !commit_stall));
+    assert (o_commit_correct_branch_raw == (commit_correct_branch_early && !commit_stall));
+    assert (o_commit_correct_branch_2_raw == (commit_correct_branch_2_early && !commit_stall));
+    assert (o_head_commit_misprediction_candidate ==
+        (head_mispredict_candidate_early && !commit_stall));
+    assert (o_commit_2_store_like_raw == (commit_2_store_like_early && !commit_stall));
+    assert (commit_2_fire == f_commit_2_fire);
+    assert (o_perf_events == f_perf_events);
   end
 `endif
 
@@ -3279,7 +3503,9 @@ module reorder_buffer #(
   // ===========================================================================
 
 `ifdef FORMAL
+`ifndef ROB_RETIRE_STALL_LOCAL_PROOF
 `ifndef ROB_START_LOCAL_PROOF
+`ifndef ROB_CONTROL_NEXT_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -3660,7 +3886,9 @@ module reorder_buffer #(
     end
   end
 
+`endif  // ROB_CONTROL_NEXT_LOCAL_PROOF
 `endif  // ROB_START_LOCAL_PROOF
+`endif  // ROB_RETIRE_STALL_LOCAL_PROOF
 `endif  // FORMAL
 
 endmodule : reorder_buffer

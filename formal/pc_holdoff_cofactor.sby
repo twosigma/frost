@@ -20,6 +20,9 @@ proc
 setundef -undriven -anyseq
 opt
 prep -top pc_controller
+select -assert-count 3 t:$check
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

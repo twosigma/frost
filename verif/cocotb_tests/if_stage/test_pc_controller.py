@@ -444,26 +444,26 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     dut.i_slot2_live_predicted_target.value = SLOT2_TARGET
     await _settle()
     assert dut.pc_reg_live_redirect_permission.value
-    assert not dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == BASE_PC + 4
 
     # Restore the exact alias and canonical combined interface. The live target
     # now wins in the same cycle, without a registered handoff.
     _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
     await _settle()
-    assert dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == SLOT2_TARGET
 
     # The producer's one-hot candidate contract makes a staged/live overlap
     # unreachable architecturally, but the decomposition remains exact for
     # that binary input shape: the canonical target mux gives the live image
-    # priority, while the alias-zero candidate still carries the staged image.
+    # priority. Removing the alias exposes the staged image at the output.
     dut.i_slot2_staged_prediction_used_for_pc.value = 1
     dut.i_slot2_staged_predicted_target.value = PRED_TARGET
     await _settle()
-    assert int(dut.pc_reg_nonseq_without_live_slot2.value) == PRED_TARGET
-    assert dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == SLOT2_TARGET
+    dut.i_slot1_aliases_slot2_candidate.value = 0
+    dut.i_slot2_predicted_target.value = PRED_TARGET
+    await _settle()
+    assert int(dut.next_pc_reg.value) == PRED_TARGET
 
     # Every older architectural redirect still outranks the final live mux,
     # including reset and the redirects which override an outer stall.
@@ -486,7 +486,6 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
 
         if active_name != "i_reset":
             assert not dut.pc_reg_live_redirect_permission.value
-            assert not dut.live_slot2_pc_reg_override.value
         assert int(dut.next_pc_reg.value) == target
 
     # Sample one overlapping redirect through the register as well as the

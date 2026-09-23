@@ -203,12 +203,13 @@ hints to register its address-update CAM match, so `addr_valid` is observable
 in the same cycle MEM_RS issues. Translation substitutes the DMMU's held
 pre-issue tag and validity.
 
-`PREISSUE_VALID_COFACTOR=1` also exports four candidate tags in
+`PREISSUE_VALID_COFACTOR=1` with `PREISSUE_RAW_WAKEUP=0` exports four candidate tags in
 `o_pre_issue_rob_tags` (candidate zero in the low bits), plus
 `o_pre_issue_sel={lane1_valid,lane0_valid}`. Each candidate uses the original
 priority rule under one fixed pair of CDB valid bits; no-ready still selects
 entry zero's tag. Selecting the candidate reproduces `o_pre_issue_rob_tag`.
-The wrapper enables this with early memory wakeup. The LQ registers all four
+The integrated wrapper additionally sets `PREISSUE_RAW_WAKEUP=1`, exporting
+eight candidates and a three-bit raw-wakeup selector. The LQ registers the
 CAM outcomes and the selector on the same edge, keeping the late CDB-valid
 selection out of the CAM register inputs without changing issue latency.
 The default parameter is zero; it repeats the scalar tag in all candidates
@@ -254,3 +255,27 @@ tag and control writes while preserving lowest-index allocation and the
 index-zero fallback when a free entry is absent. Nibble and mask boundaries
 are kept through synthesis. `rs_alloc_parallel` proves both indices and found
 flags against the original search for arbitrary occupancy at depths 4/8/16/32.
+
+The integrated early-wakeup MEM_RS uses eight pre-issue candidates from the two
+registered CDB valid bits and early-load eligibility. Candidate tag data uses
+raw registered CDB/load tags, before the wakeup merger's lane muxes. The LQ
+registers all eight CAM outcomes and the three-bit selector on the original
+edge; translation replicates the DMMU tag into every candidate. Generic users
+retain the four merged-valid candidates. `rs_raw_pretag` checks the real merger
+against the RS winner; `lq_prematch_cofactors` proves both four- and eight-way
+retiming without an added cycle.
+
+Dispatch-cycle CDB deferral completes tag matching and repair exclusion before
+applying the late RAT ready bit. Lane priority and the one-cycle deferred value
+handoff are unchanged. `rs_dispatch_defer` compares all six source decisions
+against the original equations with insertion-time repair enabled and disabled.
+
+Port-2 issue clears `rs_valid` with the selector's existing one-hot result and
+the original accepted-fire gate. This avoids encoding and decoding the selected
+index again. The two issue clears commute; the port-2 mask applies before
+the indexed port-1 clear. Reset, flush and dispatch-write priorities are unchanged. The
+`rs_issue_clear` proof compares the accepted mask with the former indexed clear
+across full/windowed dual-issue configurations and the disabled configuration.
+The depth-8 default and depth-16/window-8 profile use the actual INT instance
+parameters; payload RAM outputs are unconstrained so initialization cannot
+restrict the proof.

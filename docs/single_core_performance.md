@@ -10,7 +10,9 @@ has not been replaced.
 The integrated experimental profile achieves **3.9071 CoreMark/MHz** in a
 17.47-second X3 run at **161.1328125 MHz** (629.57 CoreMark). Both seed sets
 pass CRC validation, and Debian hardware regression passes. The target-rate
-build still misses timing; this result is not a 322 MHz score.
+profile now meets post-optimization setup timing (+0.002 ns WNS); placement
+and routing of that revision have not run. The hardware result remains at
+161.1328125 MHz.
 
 ## Implementation
 
@@ -378,7 +380,7 @@ integrated, and placement is not routed signoff.
 ### Post-optimization timing at 322 MHz
 
 Synthesis plus `opt_design` only (`build.py x3 --cpu-base-clock-hz 322265625
---single-core-performance --stop-after opt`), Vivado 2025.2, zero added
+--single-core-performance --no-perf-counters --stop-after opt`), Vivado 2025.2, zero added
 uncertainty. Post-opt delays are estimates, and unchanged paths move by up to
 about 0.15 ns between netlists, so compare path families, not single runs.
 
@@ -393,6 +395,8 @@ about 0.15 ns between netlists, so compare path families, not single runs.
 | Plus port-2 window, dispatch-flag shadow | -0.471 | -112 | 1,723 |
 | Plus shared-path fixes below | -0.266 | -192 | 3,002 |
 | Plus operand/predecode, fetch and queue/cache cofactors below | -0.187 | -148.277 | 2,773 |
+| Plus fetch, retirement and queue-state cofactors below | -0.049 | -0.049 | 1 |
+| Plus final DMMU MMIO capture cofactor | **+0.002** | **0.000** | **0** |
 
 The -0.266 ns row added changes that also help the hardware defaults:
 
@@ -431,8 +435,8 @@ The -0.187 ns checkpoint preserves the profile's pipeline stages and issue
 policy while shortening shared combinational paths. The same PGO sweep still
 takes **257,702 performance / 262,144 validation cycles**. The pinned Docker
 checks pass (704 fast tests), as do all seven synthesis tests and the focused
-unit, program and equivalence checks for these changes. This is an intermediate
-post-opt checkpoint; WNS remains negative and placement/routing have not run.
+unit, program and equivalence checks for these changes. This was an intermediate
+post-opt checkpoint with negative WNS; placement/routing did not run.
 The principal changes are:
 
 * Direct instruction-bit operand classification removes an operation-enum
@@ -480,6 +484,50 @@ The decoded-queue shadow uses `$bits(producer_ctrl)`, avoiding a Yosys parser
 limitation on package-qualified type arguments. The Xilinx synthesis runner
 loads primitive definitions before hierarchy elaboration so late LUT discovery
 cannot reprocess a parent after its original child modules have been pruned.
+
+The +0.002 ns checkpoint adds the following cycle-preserving transformations.
+It has zero failing setup endpoints at post-opt; its margin is only 2 ps and
+does not establish routed timing. The PGO sweep in the frozen main checkout
+still takes **257,702 performance / 262,144 validation cycles**, with all CRCs
+passing. Pinned Docker lint and all 704 fast tests pass twice. All seven
+Yosys synthesis tests, focused unit and CSR/fence/VM program tests, and the
+local equivalence checks pass.
+
+* The fetch mux omits unused sequential data from its non-sequential arms,
+  completes window/progress choices and slot 1 before the final slot-2 mux,
+  and brings sequential data directly into that final LUT6. Fetch holdoff
+  follows size selection. Pending-fetch holdoffs compare exact-owner readiness
+  and crossing separately. The architectural-PC mux uses a staged/sequential
+  LUT5 followed by a reset/redirect/live-prediction LUT6. Pending validity
+  selects completed outcomes of the bundle-size miss check, and redirect
+  holdoffs complete non-prediction terms before the flags. Slot-2 prediction
+  uses the direct staged/live validity expression.
+* MEM_RS exports eight raw-CDB/early-load tag candidates, and the LQ registers
+  their CAM results on the original edge. Load-result RAM payload selection
+  removes redundant write qualification while retaining every write enable.
+  FPU payload read pointers select their precomputed next value after the
+  acceptance/flush decision.
+* Integrated CSR instances use the existing exclusion between CSR commit and
+  trap/xRET takes to shorten write and translation-invalidation logic. Generic
+  instances retain full priority; port assertions check the integration
+  contract, and unbounded local equivalence covers each affected state field.
+* ROB done/exception bits compute per-entry allocation outcomes and use local
+  tag/live completion checks. Completion still wins allocation, and stale
+  completions remain filtered. Replay flags similarly finish allocation-clear
+  outcomes before the accepted valids. All three next-state vectors are proved
+  against the original indexed assignments from arbitrary state.
+* Dispatch CDB deferral resolves tag/repair eligibility before the late RAT
+  ready bit, preserving all six source decisions and the existing delivery cycle.
+* SQ committed-empty detection completes registered-store status before the
+  final combinational commit qualifiers, preserving reset and full-flush priority.
+  Occupancy candidates complete allocation increments before the late removal
+  subtraction; all three outcomes and the selected next count have local proofs.
+* A retirement-only serializer stall omits guards already applied by ROB
+  commit gates, while performance counters retain the canonical stall.
+* INT RS port-2 issue clears validity directly from its existing accepted
+  one-hot selector, preserving the original indexed-clear mask and priorities.
+* DMMU MMIO-bit capture selects completed resolution/hold outcomes after the
+  late TLB permission/tier classification, preserving its exact next state.
 
 ### Sustained hardware measurement
 

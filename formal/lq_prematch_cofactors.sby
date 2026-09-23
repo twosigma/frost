@@ -1,12 +1,18 @@
 [tasks]
 bmc
 prove
+bmc_raw
+prove_raw
 
 [options]
 bmc: mode bmc
 bmc: depth 5
 prove: mode prove
 prove: depth 2
+bmc_raw: mode bmc
+bmc_raw: depth 5
+prove_raw: mode prove
+prove_raw: depth 2
 
 [engines]
 smtbmc boolector
@@ -20,6 +26,8 @@ read -sv lq_l0_cache.sv
 read -sv lq_issue_selector.sv
 read -formal -D F_LQ_PREMATCH_ONLY -D SYNTHESIS -D F_LQ_PREMATCH_COFACTORS -sv load_queue.sv
 chparam -set PREISSUE_CANDIDATES 1 load_queue
+bmc_raw: chparam -set PREISSUE_SEL_WIDTH 3 load_queue
+prove_raw: chparam -set PREISSUE_SEL_WIDTH 3 load_queue
 prep -top load_queue
 select -assert-none t:$assume
 select -assert-count 1 t:$check

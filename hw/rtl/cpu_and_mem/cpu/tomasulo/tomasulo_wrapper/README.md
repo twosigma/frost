@@ -279,7 +279,7 @@ performs the wakeup. The option defaults off.
 The merge never changes ROB completion, SQ delivery, retirement, or DMA
 observation lifetime.
 
-Early wakeup also enables MEM_RS's four CDB-valid pre-issue tag candidates
+Early wakeup also enables MEM_RS's eight raw-wakeup pre-issue tag candidates
 and the LQ's matching candidate registers. The LQ captures the comparisons,
 selector, and qualifying valid on the same existing edge. While translation
 is active, every candidate carries the DMMU pre-issue tag, so the selector is
@@ -347,3 +347,12 @@ parallel, then applies the same source priority as the full-width address. The
 candidate sums need only the low 32 bits; address capture remains full width.
 No-match payloads retain the original zero-base result. `sq_repair_mmio` proves
 both flags against the original selected-address expression, including wraps.
+
+The integrated early-wakeup MEM_RS uses eight pre-issue candidates from the two
+registered CDB valid bits and early-load eligibility. Candidate tag data uses
+raw registered CDB/load tags, before the wakeup merger's lane muxes. The LQ
+registers all eight CAM outcomes and the three-bit selector on the original
+edge; translation replicates the DMMU tag into every candidate. Generic users
+retain the four merged-valid candidates. `rs_raw_pretag` checks the real merger
+against the RS winner; `lq_prematch_cofactors` proves both four- and eight-way
+retiming without an added cycle.

@@ -26,9 +26,9 @@
   chains off the BRAM-dependent select path and leaves o_pc_reg with a single
   priority expression.
 
-  Fetch candidates include every holdoff and mid-instruction
-  correction before the late bundle-size mux. The run/NOP size cofactors pick
-  complete PC and PC+2 words, then the NOP selector chooses the final pair.
+  Fetch candidates include prediction holdoff and mid-instruction correction
+  before the bundle-size mux. Run/NOP size cofactors pick complete PC and PC+2
+  words, then late redirect/reset holdoff and NOP select the final pair.
 */
 module pc_increment_calculator #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -301,10 +301,10 @@ module pc_increment_calculator #(
   assign seq_sel_pc_reg_hold =
       seq_sel_holdoff || (i_prediction_from_buffer_holdoff && !seq_sel_mid_32bit);
 
-  // Resolve the holdoff/correction controls separately for every
-  // bundle size. The late advance selector then chooses a COMPLETE fetch PC;
-  // it no longer precedes the holdoff and correction muxes. Keep the candidate
-  // words so synthesis cannot fold those muxes back behind the size selection.
+  // Resolve prediction/correction controls separately for every bundle size
+  // with redirect/reset holdoff disabled. The advance mux chooses a complete
+  // no-holdoff word; holdoff joins NOP only at the final selection. Keep these
+  // words so synthesis cannot move correction muxes behind size selection.
   // Both members of a pair reuse the existing fixed-increment adders, including
   // their XLEN wraparound. Mid-correction still outranks prediction holdoff.
   localparam int unsigned NAdvance = 4;
@@ -322,16 +322,13 @@ module pc_increment_calculator #(
   (* keep = "true" *) logic [XLEN-1:0] seq_pc_plus_2_candidate[NAdvance];
   always_comb begin
     for (int unsigned k = 0; k < NAdvance; k++) begin
-      if (seq_sel_holdoff) begin
-        seq_pc_candidate[k] = next_pc_plus_4;
-        seq_pc_plus_2_candidate[k] = next_pc_plus_6;
-      end else if (seq_sel_mid_32bit) begin
+      if (i_mid_32bit_correction) begin
         seq_pc_candidate[k] = pc_mid_32bit_correction;
         seq_pc_plus_2_candidate[k] = pc_mid_32bit_correction_plus_2;
-      end else if (pc_inc_sel_prediction_holdoff) begin
+      end else if (i_prediction_holdoff) begin
         seq_pc_candidate[k] = i_pc[1] ? next_pc_plus_2 : next_pc_plus_4;
         seq_pc_plus_2_candidate[k] = i_pc[1] ? next_pc_plus_4 : next_pc_plus_6;
-      end else if (pc_inc_sel_2) begin
+      end else if (i_control_flow_to_halfword_r) begin
         seq_pc_candidate[k] = next_pc_plus_2;
         seq_pc_plus_2_candidate[k] = next_pc_plus_4;
       end else begin
@@ -387,15 +384,70 @@ module pc_increment_calculator #(
     end
   end
 
-  // i_sel_nop picks between the two finished cofactors: the last 2:1 of the
-  // sequential value path.
-  assign o_seq_next_pc = i_sel_nop ? seq_next_pc_cof[1] : seq_next_pc_cof[0];
-  assign o_seq_next_pc_plus_2 = i_sel_nop ? seq_next_pc_plus_2_cof[1] : seq_next_pc_plus_2_cof[0];
+  // Pending-predecessor comparison makes redirect/reset holdoff a late
+  // control too. Apply it alongside NOP only after both size cofactors settle.
+  // Each bit uses holdoff, NOP and three completed data bits (one LUT5).
+  assign o_seq_next_pc = i_any_holdoff_safe ? next_pc_plus_4 :
+      i_sel_nop ? seq_next_pc_cof[1] : seq_next_pc_cof[0];
+  assign o_seq_next_pc_plus_2 = i_any_holdoff_safe ? next_pc_plus_6 :
+      i_sel_nop ? seq_next_pc_plus_2_cof[1] : seq_next_pc_plus_2_cof[0];
   assign o_seq_next_pc_verdict = i_sel_nop ? seq_next_pc_verdict_cof[1] :
                                              seq_next_pc_verdict_cof[0];
   assign o_seq_next_pc_plus_2_verdict = i_sel_nop ? seq_next_pc_plus_2_verdict_cof[1] :
                                                     seq_next_pc_plus_2_verdict_cof[0];
   assign o_seq_next_pc_reg = i_sel_nop ? seq_next_pc_reg_cof[1] : seq_next_pc_reg_cof[0];
+
+`ifdef PC_INCREMENT_HOLDOFF_PROOF
+  // Exact former candidate equations and size/NOP selection, with current
+  // inputs independent (including arbitrary run/NOP selectors).
+  logic [XLEN-1:0] f_seq_candidate[NAdvance], f_seq_plus_2_candidate[NAdvance];
+  logic [XLEN-1:0] f_seq_result[NCof], f_seq_plus_2_result[NCof];
+  always_comb begin
+    for (int unsigned k = 0; k < NAdvance; k++) begin
+      if (seq_sel_holdoff) begin
+        f_seq_candidate[k] = next_pc_plus_4;
+        f_seq_plus_2_candidate[k] = next_pc_plus_6;
+      end else if (seq_sel_mid_32bit) begin
+        f_seq_candidate[k] = pc_mid_32bit_correction;
+        f_seq_plus_2_candidate[k] = pc_mid_32bit_correction_plus_2;
+      end else if (pc_inc_sel_prediction_holdoff) begin
+        f_seq_candidate[k] = i_pc[1] ? next_pc_plus_2 : next_pc_plus_4;
+        f_seq_plus_2_candidate[k] = i_pc[1] ? next_pc_plus_4 : next_pc_plus_6;
+      end else if (pc_inc_sel_2) begin
+        f_seq_candidate[k] = next_pc_plus_2;
+        f_seq_plus_2_candidate[k] = next_pc_plus_4;
+      end else begin
+        f_seq_candidate[k] = fetch_advance_pc[k];
+        f_seq_plus_2_candidate[k] = fetch_advance_pc_plus_2[k];
+      end
+    end
+  end
+
+  always_comb begin
+    for (int c = 0; c < NCof; c++) begin
+      case (fetch_advance_sel_cof[c])
+        riscv_pkg::PcAdvancePlus4: begin
+          f_seq_result[c] = f_seq_candidate[1];
+          f_seq_plus_2_result[c] = f_seq_plus_2_candidate[1];
+        end
+        riscv_pkg::PcAdvancePlus6: begin
+          f_seq_result[c] = f_seq_candidate[2];
+          f_seq_plus_2_result[c] = f_seq_plus_2_candidate[2];
+        end
+        riscv_pkg::PcAdvancePlus8: begin
+          f_seq_result[c] = f_seq_candidate[3];
+          f_seq_plus_2_result[c] = f_seq_plus_2_candidate[3];
+        end
+        default: begin
+          f_seq_result[c] = f_seq_candidate[0];
+          f_seq_plus_2_result[c] = f_seq_plus_2_candidate[0];
+        end
+      endcase
+    end
+    assert (o_seq_next_pc == (i_sel_nop ? f_seq_result[1] : f_seq_result[0]));
+    assert (o_seq_next_pc_plus_2 == (i_sel_nop ? f_seq_plus_2_result[1] : f_seq_plus_2_result[0]));
+  end
+`endif
 
 `ifndef SYNTHESIS
   // Reference: the former single chain steered by the merged selects.

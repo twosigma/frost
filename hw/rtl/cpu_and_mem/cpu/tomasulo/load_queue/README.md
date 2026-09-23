@@ -402,11 +402,13 @@ Two bypass paths each shave a cycle off the load critical latency.
   their registers, keeping late RS readiness/classification off the CAM
   register inputs. `load_queue:prove_pre_match` proves unrestricted
   equivalence to the original combined register, including reset and flush.
-  With `PREISSUE_CANDIDATES=1`, the four candidate tag comparisons and their
-  two-bit selector are registered separately on that same edge. Selecting
+  With `PREISSUE_CANDIDATES=1`, the candidate tag comparisons and their
+  `PREISSUE_SEL_WIDTH`-bit selector are registered separately on that same edge. Selecting
   after the edge preserves the exact match and removes late wakeup-valid
   selection from the register inputs. The wrapper enables this with early
-  load wakeup and supplies four identical DMMU tags during translation.
+  load wakeup with eight candidates (`PREISSUE_SEL_WIDTH=3`), and supplies
+  eight identical DMMU tags during translation. The generic default is four
+  candidates with a two-bit selector.
   `lq_prematch_cofactors` proves this retiming without assumptions about
   inputs or current queue state; an integration assertion checks the scalar
   tag/candidate interface contract.
@@ -618,3 +620,19 @@ partial-flush age comparison. The bypass's existing `!i_flush_en` guard already
 excludes every cycle that comparison could kill the owner. Full-flush, stale
 response, valid-owner and AMO checks are unchanged. `lq_response_bypass` proves
 the final bypass pulse equals the original acceptance-qualified pulse.
+
+Load-result RAM ports retain the full response/forward/cache/AMO write guards.
+Their address and data inputs may change while a port is disabled. The SQ data
+choice removes shared age/issue qualifiers, then selects the AMO payload only
+when neither cache hit nor forwarding fires. `lq_ram_payload` proves all write
+enables and every enabled address/data against the original mux, with cache and
+forwarding configurations checked separately and no state assumptions.
+
+The integrated early-wakeup MEM_RS uses eight pre-issue candidates from the two
+registered CDB valid bits and early-load eligibility. Candidate tag data uses
+raw registered CDB/load tags, before the wakeup merger's lane muxes. The LQ
+registers all eight CAM outcomes and the three-bit selector on the original
+edge; translation replicates the DMMU tag into every candidate. Generic users
+retain the four merged-valid candidates. `rs_raw_pretag` checks the real merger
+against the RS winner; `lq_prematch_cofactors` proves both four- and eight-way
+retiming without an added cycle.

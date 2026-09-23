@@ -271,3 +271,15 @@ bounds, forwarding, and that committed stores survive a flush.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
+
+Committed-empty status finishes its stored-entry and registered-commit term
+before the ROB combinational commit strobes. The final gate retains reset and
+full-flush priority, so same-cycle store retirement still clears the status on
+the original edge. `sq_committed_empty` checks the exact next-state equation
+with arbitrary inputs and current state.
+
+The live-count candidates complete their zero/one/two allocation increments
+before subtracting the removal-mask population count. Dispatch valids still
+select the same candidate on the same edge; flush, failed-SC and drain removal
+masks are unchanged. `sq_live_count` proves all three candidates and the selected
+next count against the original equations with arbitrary state and controls.

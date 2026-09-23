@@ -1,0 +1,26 @@
+[tasks]
+bmc
+bmc_xilinx
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+bmc_xilinx: read_verilog -formal +/xilinx/cells_sim.v
+read -sv pc_reg_precompute.sv
+bmc: read_verilog -formal -D SYNTHESIS -D PC_INCREMENT_HOLDOFF_PROOF -sv pc_increment_calculator.sv
+bmc_xilinx: read_verilog -formal -D SYNTHESIS -D PC_INCREMENT_HOLDOFF_PROOF -D FROST_XILINX_PRIMS -sv pc_increment_calculator.sv
+prep -top pc_increment_calculator -flatten
+select -assert-count 2 t:$check
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_reg_precompute.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv

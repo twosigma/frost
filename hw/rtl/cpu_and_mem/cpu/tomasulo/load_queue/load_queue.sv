@@ -39,6 +39,7 @@ module load_queue #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
     parameter bit PREISSUE_CANDIDATES = 1'b0,
+    parameter int unsigned PREISSUE_SEL_WIDTH = 2,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
@@ -98,10 +99,11 @@ module load_queue #(
     // Pre-issue look-ahead from MEM_RS (1 cycle before i_addr_update fires).
     // Used to pre-compute the addr_update CAM match and register it, so
     // entry_addr_valid_now is only 2 LUT levels deep at issue time.
-    input logic [  riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_rob_tag,
-    input logic [4*riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_rob_tags,
-    input logic [                                   1:0] i_pre_issue_sel,
-    input logic                                          i_pre_issue_needs_lq,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_rob_tag,
+    input logic [(1 << PREISSUE_SEL_WIDTH)*riscv_pkg::ReorderBufferTagWidth-1:0]
+        i_pre_issue_rob_tags,
+    input logic [PREISSUE_SEL_WIDTH-1:0] i_pre_issue_sel,
+    input logic i_pre_issue_needs_lq,
 
     // =========================================================================
     // Store Queue Disambiguation (combinational handshake)
@@ -1210,10 +1212,11 @@ module load_queue #(
   end
 
   if (PREISSUE_CANDIDATES) begin : gen_pre_match_candidates
-    logic [DEPTH-1:0] candidate_match[4];
-    logic [DEPTH-1:0] candidate_match_q[4];
-    logic [1:0] select_q;
-    for (genvar candidate = 0; candidate < 4; candidate++) begin : gen_candidate
+    localparam int NumCandidates = 1 << PREISSUE_SEL_WIDTH;
+    logic [DEPTH-1:0] candidate_match[NumCandidates];
+    logic [DEPTH-1:0] candidate_match_q[NumCandidates];
+    logic [PREISSUE_SEL_WIDTH-1:0] select_q;
+    for (genvar candidate = 0; candidate < NumCandidates; candidate++) begin : gen_candidate
       for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
         assign candidate_match[candidate][entry] = lq_valid[entry] &&
             !lq_addr_valid[entry] &&
@@ -1230,9 +1233,17 @@ module load_queue #(
     end
     // The late CDB-valid mux moves across this edge without adding a cycle.
     // Full-flush/reset zero every candidate, making the selector irrelevant.
-    assign addr_update_pre_match_tags_q = select_q[1] ?
-        (select_q[0] ? candidate_match_q[3] : candidate_match_q[2]) :
-        (select_q[0] ? candidate_match_q[1] : candidate_match_q[0]);
+    wire [DEPTH-1:0] select_tree[2*NumCandidates];
+    for (genvar leaf = 0; leaf < NumCandidates; leaf++) begin : gen_leaf
+      assign select_tree[NumCandidates+leaf] = candidate_match_q[leaf];
+    end
+    for (genvar level = 0; level < PREISSUE_SEL_WIDTH; level++) begin : gen_level
+      for (genvar node = (1 << level); node < (2 << level); node++) begin : gen_node
+        assign select_tree[node] = select_q[PREISSUE_SEL_WIDTH-1-level] ?
+            select_tree[2*node+1] : select_tree[2*node];
+      end
+    end
+    assign addr_update_pre_match_tags_q = select_tree[1];
 `ifndef SYNTHESIS
     always @(posedge i_clk) begin
       if (i_rst_n && i_pre_issue_needs_lq) begin
@@ -1256,6 +1267,7 @@ module load_queue #(
       {DEPTH{addr_update_pre_issue_valid_q}};
 
 `ifdef FORMAL
+`ifndef F_LQ_RAM_PAYLOAD_PROOF
   // Independent old-shape register proves the retiming for arbitrary tag,
   // valid, reset and full-flush inputs, not just legal issue sequences.
   logic [DEPTH-1:0] f_pre_match_unsplit_q;
@@ -1263,13 +1275,8 @@ module load_queue #(
 `ifdef F_LQ_PREMATCH_COFACTORS
   logic [ReorderBufferTagWidth-1:0] f_selected_tag;
   logic [DEPTH-1:0] f_pre_match_direct;
-  assign f_selected_tag = i_pre_issue_sel[1] ?
-      (i_pre_issue_sel[0] ?
-                i_pre_issue_rob_tags[3*ReorderBufferTagWidth +: ReorderBufferTagWidth] :
-                           i_pre_issue_rob_tags[2*ReorderBufferTagWidth +: ReorderBufferTagWidth]) :
-      (i_pre_issue_sel[0] ?
-                i_pre_issue_rob_tags[ReorderBufferTagWidth +: ReorderBufferTagWidth] :
-                           i_pre_issue_rob_tags[0 +: ReorderBufferTagWidth]);
+  assign f_selected_tag =
+      i_pre_issue_rob_tags[i_pre_issue_sel*ReorderBufferTagWidth +: ReorderBufferTagWidth];
   for (genvar f_entry = 0; f_entry < DEPTH; f_entry++) begin : gen_f_pre_match
     assign f_pre_match_direct[f_entry] = lq_valid[f_entry] && !lq_addr_valid[f_entry] &&
         (lq_rob_tag[f_entry] == f_selected_tag);
@@ -1284,6 +1291,7 @@ module load_queue #(
     if (f_pre_match_initialized) assert (addr_update_pre_match_q == f_pre_match_unsplit_q);
   end
 `endif
+`endif  // F_LQ_RAM_PAYLOAD_PROOF
 
   // Head-priority uses the registered match: for ordinary loads it is a
   // fairness/performance hint, and for head MMIO/LR loads it is the
@@ -2183,10 +2191,43 @@ module load_queue #(
   // Placed after all signal declarations it references (cache_hit_fast_path,
   // sq_do_forward, lu_cache_out, lu_data_out, etc.) for readable tool output.
 
+  // Payloads need equal the architectural write only when that port fires.
+  // Keep response acceptance and SQ age/issue guards on the write enables,
+  // rather than using them to zero every address and data bit while idle.
+  logic ram_cache_payload_select;
+  logic [FLEN-1:0] ram_sq_payload;
+  // sq_head_amo_clear implies sq_check_is_amo_q, which excludes both
+  // cache and forward writes. Its ROB-head comparison is not a data select.
+  assign ram_cache_payload_select = ENABLE_L0_FAST_PATH && !i_flush_all &&
+      !i_flush_en && !i_mem_bus_busy && cache_lookup_hit &&
+      (sq_no_older_store || (i_sq_all_older_addrs_known && !i_sq_forward.match));
+  assign ram_sq_payload = ram_cache_payload_select ?
+      ((sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) ?
+       cache_lookup_data : FLEN'(lu_cache_out)) :
+      ((sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) ?
+       i_sq_forward.data : FLEN'(lu_fwd_out));
+
   always_comb begin
-    lq_data_we      = '0;
-    lq_data_wr_addr = '0;
-    lq_data_wd      = '0;
+    lq_data_we[0] = i_rst_n && !i_flush_all && accept_mem_response && !issued_is_amo;
+    lq_data_wr_addr[0] = issued_idx;
+    lq_data_wd[0] = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE) ?
+        i_mem_read_data : FLEN'(lu_data_out);
+
+    lq_data_we[1] = i_rst_n && !i_flush_all &&
+        (cache_hit_fast_path || sq_do_forward ||
+         (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done));
+    lq_data_wr_addr[1] = (cache_hit_fast_path || sq_do_forward) ? sq_check_idx : amo_entry_idx;
+    lq_data_wd[1] = (cache_hit_fast_path || sq_do_forward) ? ram_sq_payload : FLEN'(amo_old_value);
+  end
+
+`ifdef F_LQ_RAM_PAYLOAD_PROOF
+  logic [1:0] f_ram_we;
+  logic [1:0][IdxWidth-1:0] f_ram_addr;
+  logic [1:0][FLEN-1:0] f_ram_data;
+  always_comb begin
+    f_ram_we   = '0;
+    f_ram_addr = '0;
+    f_ram_data = '0;
 
     // ---------------------------------------------------------------
     // Port 0: dedicated to memory response.
@@ -2196,18 +2237,18 @@ module load_queue #(
     //         response data via if-else priority.
     // ---------------------------------------------------------------
     if (i_rst_n && !i_flush_all && accept_mem_response) begin
-      lq_data_wr_addr[0] = issued_idx;
+      f_ram_addr[0] = issued_idx;
       if (issued_is_amo) begin
         // AMO read: don't write data yet (port 1 handles after AMO write)
       end else if (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE) begin
         // FLD/RV64 LD: the full aligned beat in one write
-        lq_data_we[0] = 1'b1;
-        lq_data_wd[0] = i_mem_read_data;
+        f_ram_we[0]   = 1'b1;
+        f_ram_data[0] = i_mem_read_data;
       end else begin
         // LR / FLW / INT: extracted result (FLW's word arm is its addressed
         // raw word), zero-extended into FLEN
-        lq_data_we[0] = 1'b1;
-        lq_data_wd[0] = FLEN'(lu_data_out);
+        f_ram_we[0]   = 1'b1;
+        f_ram_data[0] = FLEN'(lu_data_out);
       end
     end
 
@@ -2229,26 +2270,41 @@ module load_queue #(
     // ---------------------------------------------------------------
     if (i_rst_n && !i_flush_all) begin
       if (cache_hit_fast_path) begin
-        lq_data_we[1] = 1'b1;
-        lq_data_wr_addr[1] = sq_check_idx;
+        f_ram_we[1] = 1'b1;
+        f_ram_addr[1] = sq_check_idx;
         // FLD takes the full cached dword line; FLW/INT extract from it
         // (FLW's word arm is its addressed raw word).
-        lq_data_wd[1]      = (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE)
+        f_ram_data[1]      = (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE)
             ? cache_lookup_data : FLEN'(lu_cache_out);
       end else if (sq_do_forward) begin
-        lq_data_we[1] = 1'b1;
-        lq_data_wr_addr[1] = sq_check_idx;
+        f_ram_we[1] = 1'b1;
+        f_ram_addr[1] = sq_check_idx;
         // FLD takes the forwarded dword image raw; FLW/INT extract their
         // addressed word/half/byte from the image beat.
-        lq_data_wd[1]      = (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE)
+        f_ram_data[1]      = (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE)
             ? i_sq_forward.data : FLEN'(lu_fwd_out);
       end else if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-        lq_data_we[1]      = 1'b1;
-        lq_data_wr_addr[1] = amo_entry_idx;
-        lq_data_wd[1]      = FLEN'(amo_old_value);
+        f_ram_we[1]   = 1'b1;
+        f_ram_addr[1] = amo_entry_idx;
+        f_ram_data[1] = FLEN'(amo_old_value);
       end
     end
   end
+
+  always_comb begin
+    assert (!cache_hit_fast_path || !sq_head_amo_clear);
+    cover (lq_data_we[0]);
+    cover (lq_data_we[1] && cache_hit_fast_path);
+    cover (lq_data_we[1] && !cache_hit_fast_path && sq_do_forward);
+    cover (lq_data_we[1] && !cache_hit_fast_path && !sq_do_forward);
+    for (int port_idx = 0; port_idx < 2; port_idx++) begin
+      assert (lq_data_we[port_idx] == f_ram_we[port_idx]);
+      assert (!lq_data_we[port_idx] ||
+              (lq_data_wr_addr[port_idx] == f_ram_addr[port_idx] &&
+               lq_data_wd[port_idx] == f_ram_data[port_idx]));
+    end
+  end
+`endif
 
   // Cache fill uses a response-valid predicate separate from architectural LQ
   // response acceptance.  A partial flush can kill the outstanding LQ entry in
@@ -3110,8 +3166,9 @@ module load_queue #(
         end else begin
           // Non-AMO (LR, FLW, FLD, INT load): the completion bypass may have
           // captured this result directly into cdb_stage the same cycle via
-          // resp_bypass_fire.  In that case skip the data_valid/LUTRAM
-          // write, since free_entry_en releases the slot.  LR still arms
+          // resp_bypass_fire.  In that case skip the data_valid
+          // update, since free_entry_en releases the slot. The harmless RAM
+          // payload write still occurs on the response port.  LR still arms
           // reservation_valid either way.
           if (issued_is_lr && !issued_lr_suppressed) reservation_valid <= 1'b1;
           if (!resp_bypass_fire) begin

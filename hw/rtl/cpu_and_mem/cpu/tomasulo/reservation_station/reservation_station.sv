@@ -38,6 +38,8 @@ module reservation_station #(
     parameter bit HAS_SRC3 = 1'b1,
     // Precompute lookahead winners for both CDB lane-valid bits.
     parameter bit PREISSUE_VALID_COFACTOR = 1'b0,
+    // MEM_RS may cofactor the two raw CDB valids and early-load eligibility.
+    parameter bit PREISSUE_RAW_WAKEUP = 1'b0,
     parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
     parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
     // The registered done-repair responses normally carry tags and CAM-snoop
@@ -243,12 +245,15 @@ module reservation_station #(
     // stage2 this cycle, so the LQ can pre-compute the addr_update CAM match
     // and register it before the issue fires.
     // =========================================================================
-    output logic [  riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tag,
-    // Four CDB-valid outcomes and their actual selector. The LQ can register
-    // the CAM outcomes and selector independently on the same edge.
-    output logic [4*riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tags,
-    output logic [                                   1:0] o_pre_issue_sel,
-    output logic                                          o_pre_issue_needs_lq,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tag,
+    // Four merged-valid or eight raw-wakeup outcomes and their selector. The
+    // LQ registers their CAM results and selector on the same existing edge.
+    output logic [(PREISSUE_RAW_WAKEUP ? 8 : 4)*riscv_pkg::ReorderBufferTagWidth-1:0]
+        o_pre_issue_rob_tags,
+    output logic [(PREISSUE_RAW_WAKEUP ? 3 : 2)-1:0] o_pre_issue_sel,
+    input logic [2:0] i_pre_issue_raw_valid,
+    input logic [3*riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_raw_tags,
+    output logic o_pre_issue_needs_lq,
 
     // =========================================================================
     // Flush Control
@@ -458,12 +463,33 @@ module reservation_station #(
   // not-ready), so the deferred wake costs one cycle in this rare window.
   // The done-repair dispatch bypass is excluded: it already resolved the
   // value into the stored-value mux above and set ready at dispatch.
-  wire dispatch_src1_cdb_defer =
-      (dispatch_src1_cdb0_match || dispatch_src1_cdb1_match) && !dispatch_src1_repair_match;
-  wire dispatch_src2_cdb_defer =
-      (dispatch_src2_cdb0_match || dispatch_src2_cdb1_match) && !dispatch_src2_repair_match;
-  wire dispatch_src3_cdb_defer =
-      (dispatch_src3_cdb0_match || dispatch_src3_cdb1_match) && !dispatch_src3_repair_match;
+  // Finish tag/repair eligibility before the late RAT ready bit.
+  (* keep = "true" *)
+  wire dispatch_src1_cdb_defer_if_unready =
+      ((i_cdb.valid && dispatch_src1_tag == i_cdb.tag) ||
+       (i_cdb_2.valid && dispatch_src1_tag == i_cdb_2.tag)) &&
+      !(DISPATCH_REPAIR_BYPASS && done_repair_match(
+      dispatch_src1_tag
+  ));
+  wire dispatch_src1_cdb_defer = !dispatch_src1_ready && dispatch_src1_cdb_defer_if_unready;
+  // Finish tag/repair eligibility before the late RAT ready bit.
+  (* keep = "true" *)
+  wire dispatch_src2_cdb_defer_if_unready =
+      ((i_cdb.valid && dispatch_src2_tag == i_cdb.tag) ||
+       (i_cdb_2.valid && dispatch_src2_tag == i_cdb_2.tag)) &&
+      !(DISPATCH_REPAIR_BYPASS && done_repair_match(
+      dispatch_src2_tag
+  ));
+  wire dispatch_src2_cdb_defer = !dispatch_src2_ready && dispatch_src2_cdb_defer_if_unready;
+  // Finish tag/repair eligibility before the late RAT ready bit.
+  (* keep = "true" *)
+  wire dispatch_src3_cdb_defer_if_unready =
+      ((i_cdb.valid && dispatch_src3_tag == i_cdb.tag) ||
+       (i_cdb_2.valid && dispatch_src3_tag == i_cdb_2.tag)) &&
+      !(DISPATCH_REPAIR_BYPASS && done_repair_match(
+      dispatch_src3_tag
+  ));
+  wire dispatch_src3_cdb_defer = !dispatch_src3_ready && dispatch_src3_cdb_defer_if_unready;
   // Delivery lane select (0 = i_cdb, 1 = i_cdb_2).  The two lanes never
   // broadcast the same tag, so at most one match term is set; the !cdb0
   // guard keeps lane-0 priority if that contract is ever violated.
@@ -540,15 +566,33 @@ module reservation_station #(
       !dispatch_src3_ready_2 && i_cdb_2.valid && dispatch_src3_tag_2 == i_cdb_2.tag;
 
   // Slot-2 twins of the deferred dispatch-CDB capture controls above.
-  wire dispatch_src1_cdb_defer_2 =
-      (dispatch_src1_cdb0_match_2 || dispatch_src1_cdb1_match_2) &&
-      !dispatch_src1_repair_match_2;
-  wire dispatch_src2_cdb_defer_2 =
-      (dispatch_src2_cdb0_match_2 || dispatch_src2_cdb1_match_2) &&
-      !dispatch_src2_repair_match_2;
-  wire dispatch_src3_cdb_defer_2 =
-      (dispatch_src3_cdb0_match_2 || dispatch_src3_cdb1_match_2) &&
-      !dispatch_src3_repair_match_2;
+  // Finish tag/repair eligibility before the late RAT ready bit.
+  (* keep = "true" *)
+  wire dispatch_src1_cdb_defer_if_unready_2 =
+      ((i_cdb.valid && dispatch_src1_tag_2 == i_cdb.tag) ||
+       (i_cdb_2.valid && dispatch_src1_tag_2 == i_cdb_2.tag)) &&
+      !(DISPATCH_REPAIR_BYPASS && done_repair_match(
+      dispatch_src1_tag_2
+  ));
+  wire dispatch_src1_cdb_defer_2 = !dispatch_src1_ready_2 && dispatch_src1_cdb_defer_if_unready_2;
+  // Finish tag/repair eligibility before the late RAT ready bit.
+  (* keep = "true" *)
+  wire dispatch_src2_cdb_defer_if_unready_2 =
+      ((i_cdb.valid && dispatch_src2_tag_2 == i_cdb.tag) ||
+       (i_cdb_2.valid && dispatch_src2_tag_2 == i_cdb_2.tag)) &&
+      !(DISPATCH_REPAIR_BYPASS && done_repair_match(
+      dispatch_src2_tag_2
+  ));
+  wire dispatch_src2_cdb_defer_2 = !dispatch_src2_ready_2 && dispatch_src2_cdb_defer_if_unready_2;
+  // Finish tag/repair eligibility before the late RAT ready bit.
+  (* keep = "true" *)
+  wire dispatch_src3_cdb_defer_if_unready_2 =
+      ((i_cdb.valid && dispatch_src3_tag_2 == i_cdb.tag) ||
+       (i_cdb_2.valid && dispatch_src3_tag_2 == i_cdb_2.tag)) &&
+      !(DISPATCH_REPAIR_BYPASS && done_repair_match(
+      dispatch_src3_tag_2
+  ));
+  wire dispatch_src3_cdb_defer_2 = !dispatch_src3_ready_2 && dispatch_src3_cdb_defer_if_unready_2;
   wire dispatch_src1_cdb_defer_lane_2 = dispatch_src1_cdb1_match_2 && !dispatch_src1_cdb0_match_2;
   wire dispatch_src2_cdb_defer_lane_2 = dispatch_src2_cdb1_match_2 && !dispatch_src2_cdb0_match_2;
   wire dispatch_src3_cdb_defer_lane_2 = dispatch_src3_cdb1_match_2 && !dispatch_src3_cdb0_match_2;
@@ -1636,11 +1680,27 @@ module reservation_station #(
   // can register a CAM pre-match and avoid a 5-level combinational chain
   // at issue time (T).
   if (PREISSUE_VALID_COFACTOR) begin : gen_preissue_cofactor
-    // The early-wakeup eligibility reaches the valid bits later than tags.
-    // Build the four exact ready/priority/tag outcomes independently and use
-    // those two bits only for the final narrow tag selection.
-    (* keep = "true" *) logic [ReorderBufferTagWidth-1:0] candidate_tag[4];
-    for (genvar valids = 0; valids < 4; valids++) begin : gen_candidate
+    // Generic callers select four merged-valid outcomes. MEM_RS selects eight
+    // outcomes of the raw lane occupancy and early-load eligibility, keeping
+    // lane-occupancy-controlled tag muxes out of every candidate CAM path.
+    localparam int NumCandidates = PREISSUE_RAW_WAKEUP ? 8 : 4;
+    (* keep = "true" *) logic [ReorderBufferTagWidth-1:0] candidate_tag[NumCandidates];
+    for (genvar valids = 0; valids < NumCandidates; valids++) begin : gen_candidate
+      localparam bit Valid0 = PREISSUE_RAW_WAKEUP ?
+          (((valids & 1) != 0) || ((valids & 4) != 0)) : ((valids & 1) != 0);
+      localparam bit Valid1 = PREISSUE_RAW_WAKEUP ?
+          (((valids & 2) != 0) || (((valids & 1) != 0) && ((valids & 4) != 0))) :
+          ((valids & 2) != 0);
+      wire [ReorderBufferTagWidth-1:0] tag0 = PREISSUE_RAW_WAKEUP ?
+          (((valids & 1) != 0) ?
+           i_pre_issue_raw_tags[0 +: ReorderBufferTagWidth] :
+           i_pre_issue_raw_tags[2*ReorderBufferTagWidth +: ReorderBufferTagWidth]) :
+          issue_cdb_tag;
+      wire [ReorderBufferTagWidth-1:0] tag1 = PREISSUE_RAW_WAKEUP ?
+          ((((valids & 1) != 0) && ((valids & 2) == 0)) ?
+           i_pre_issue_raw_tags[2*ReorderBufferTagWidth +: ReorderBufferTagWidth] :
+           i_pre_issue_raw_tags[ReorderBufferTagWidth +: ReorderBufferTagWidth]) :
+          issue_cdb_2_tag;
       logic [DEPTH-1:0] ready;
       logic [$clog2(DEPTH)-1:0] index;
       logic found;
@@ -1648,27 +1708,27 @@ module reservation_station #(
         for (int entry = 0; entry < DEPTH; entry++) begin
           ready[entry] = rs_valid[entry] &&
               (rs_src1_ready[entry] || (src1_repair_sel[entry] != 3'd0) ||
-               (((valids & 1) != 0) && !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+               (Valid0 && !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
                 (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
-                    issue_cdb_tag) ||
-               (LANE1_ISSUE_BYPASS && ((valids & 2) != 0) &&
+                    tag0) ||
+               (LANE1_ISSUE_BYPASS && Valid1 &&
                 !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
                 (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
-                    issue_cdb_2_tag)) &&
+                    tag1)) &&
               (rs_src2_ready[entry] || (src2_repair_sel[entry] != 3'd0) ||
-               (((valids & 1) != 0) && !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+               (Valid0 && !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
                 (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
-                    issue_cdb_tag) ||
-               (LANE1_ISSUE_BYPASS && ((valids & 2) != 0) &&
+                    tag0) ||
+               (LANE1_ISSUE_BYPASS && Valid1 &&
                 !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
                 (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
-                    issue_cdb_2_tag)) &&
+                    tag1)) &&
               (rs_src3_ready[entry] || (src3_repair_sel[entry] != 3'd0) ||
-               (HAS_SRC3 && ((valids & 1) != 0) && !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
-                rs_src3_tag[entry] == issue_cdb_tag) ||
-               (HAS_SRC3 && LANE1_ISSUE_BYPASS && ((valids & 2) != 0) &&
+               (HAS_SRC3 && Valid0 && !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+                rs_src3_tag[entry] == tag0) ||
+               (HAS_SRC3 && LANE1_ISSUE_BYPASS && Valid1 &&
                 !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
-                rs_src3_tag[entry] == issue_cdb_2_tag));
+                rs_src3_tag[entry] == tag1));
         end
         index = '0;
         found = 1'b0;
@@ -1683,13 +1743,24 @@ module reservation_station #(
       assign o_pre_issue_rob_tags[valids*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
           candidate_tag[valids];
     end
-    assign o_pre_issue_sel = {issue_cdb_2_valid, issue_cdb_valid};
-    assign o_pre_issue_rob_tag = issue_cdb_2_valid ?
-        (issue_cdb_valid ? candidate_tag[3] : candidate_tag[2]) :
-        (issue_cdb_valid ? candidate_tag[1] : candidate_tag[0]);
+    if (PREISSUE_RAW_WAKEUP) begin : gen_raw_select
+      assign o_pre_issue_sel = i_pre_issue_raw_valid;
+      wire [ReorderBufferTagWidth-1:0] low_tag = i_pre_issue_raw_valid[1] ?
+          (i_pre_issue_raw_valid[0] ? candidate_tag[3] : candidate_tag[2]) :
+          (i_pre_issue_raw_valid[0] ? candidate_tag[1] : candidate_tag[0]);
+      wire [ReorderBufferTagWidth-1:0] high_tag = i_pre_issue_raw_valid[1] ?
+          (i_pre_issue_raw_valid[0] ? candidate_tag[7] : candidate_tag[6]) :
+          (i_pre_issue_raw_valid[0] ? candidate_tag[5] : candidate_tag[4]);
+      assign o_pre_issue_rob_tag = i_pre_issue_raw_valid[2] ? high_tag : low_tag;
+    end else begin : gen_merged_select
+      assign o_pre_issue_sel = {issue_cdb_2_valid, issue_cdb_valid};
+      assign o_pre_issue_rob_tag = issue_cdb_2_valid ?
+          (issue_cdb_valid ? candidate_tag[3] : candidate_tag[2]) :
+          (issue_cdb_valid ? candidate_tag[1] : candidate_tag[0]);
+    end
   end else begin : gen_preissue_direct
     assign o_pre_issue_rob_tag = rs_rob_tag[issue_idx];
-    assign o_pre_issue_rob_tags = {4{o_pre_issue_rob_tag}};
+    assign o_pre_issue_rob_tags = {(PREISSUE_RAW_WAKEUP ? 8 : 4) {o_pre_issue_rob_tag}};
     assign o_pre_issue_sel = '0;
   end
 `ifdef RS_PRETAG_LOCAL_PROOF
@@ -2233,6 +2304,21 @@ module reservation_station #(
     end
   end
 
+  // Port 2 already resolves the selected physical entry as a one-hot mask.
+  // Reuse it for clearing validity, avoiding binary encode/decode after the
+  // ready/tag bypass decision. The accepted-fire gate preserves idle behavior.
+  logic [DEPTH-1:0] issue2_clear_mask;
+  assign issue2_clear_mask = {DEPTH{issue_fire_2}} & issue_sel_2;
+
+`ifdef RS_ISSUE_CLEAR_LOCAL_PROOF
+  logic [DEPTH-1:0] f_issue2_clear_mask;
+  always_comb begin
+    f_issue2_clear_mask = '0;
+    if (issue_fire_2) f_issue2_clear_mask[issue_idx_2] = 1'b1;
+    assert (issue2_clear_mask == f_issue2_clear_mask);
+  end
+`endif
+
   // --- Control signals (with reset) ---
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -2271,8 +2357,11 @@ module reservation_station #(
           end
         end
       end else begin
+        // Both issue updates only clear bits and commute. Apply the port-2
+        // mask to the held vector first, then preserve the indexed port-1
+        // clear and the later allocation writes.
+        rs_valid <= rs_valid & ~issue2_clear_mask;
         if (issue_fire) rs_valid[issue_idx] <= 1'b0;
-        if (issue_fire_2) rs_valid[issue_idx_2] <= 1'b0;
 
         if (dispatch_fire) begin
           rs_valid[free_idx] <= 1'b1;
@@ -3246,5 +3335,29 @@ module reservation_station #(
 
 `endif  // RS_PRETAG_LOCAL_PROOF
 `endif  // FORMAL
+
+`ifdef RS_DISPATCH_DEFER_LOCAL_PROOF
+  // Original equations retain ready qualification in both CDB matches.
+  always_comb begin
+    assert (dispatch_src1_cdb_defer ==
+        ((dispatch_src1_cdb0_match || dispatch_src1_cdb1_match) &&
+         !dispatch_src1_repair_match));
+    assert (dispatch_src2_cdb_defer ==
+        ((dispatch_src2_cdb0_match || dispatch_src2_cdb1_match) &&
+         !dispatch_src2_repair_match));
+    assert (dispatch_src3_cdb_defer ==
+        ((dispatch_src3_cdb0_match || dispatch_src3_cdb1_match) &&
+         !dispatch_src3_repair_match));
+    assert (dispatch_src1_cdb_defer_2 ==
+        ((dispatch_src1_cdb0_match_2 || dispatch_src1_cdb1_match_2) &&
+         !dispatch_src1_repair_match_2));
+    assert (dispatch_src2_cdb_defer_2 ==
+        ((dispatch_src2_cdb0_match_2 || dispatch_src2_cdb1_match_2) &&
+         !dispatch_src2_repair_match_2));
+    assert (dispatch_src3_cdb_defer_2 ==
+        ((dispatch_src3_cdb0_match_2 || dispatch_src3_cdb1_match_2) &&
+         !dispatch_src3_repair_match_2));
+  end
+`endif
 
 endmodule

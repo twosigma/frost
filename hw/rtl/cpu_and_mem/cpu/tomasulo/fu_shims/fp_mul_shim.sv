@@ -322,8 +322,28 @@ module fp_mul_shim (
   // Prefetch the post-pop producer heads. The block-RAM output registers load
   // these addresses on the same edge that advances the local read pointers,
   // which permits one shared result to retire every cycle.
-  assign mult_payload_read_addr = mult_payload_rd_ptr + FifoPtrW'(mult_payload_pop);
-  assign fma_payload_read_addr = fma_payload_rd_ptr + FifoPtrW'(fma_payload_pop);
+  // Compute the increment before the late acceptance/flush result. Each final
+  // address bit uses just the two completed data bits, producer permission,
+  // acceptance and flush: at most one LUT5 after either late event.
+  (* keep = "true" *) logic [FifoPtrW-1:0] mult_payload_next_ptr, fma_payload_next_ptr;
+  (* keep = "true" *) logic mult_payload_pop_permission, fma_payload_pop_permission;
+  assign mult_payload_next_ptr = mult_payload_rd_ptr + FifoPtrW'(1);
+  assign fma_payload_next_ptr = fma_payload_rd_ptr + FifoPtrW'(1);
+  assign mult_payload_pop_permission = (fifo_count != '0) && !fifo_source_is_fma[fifo_rd_ptr];
+  assign fma_payload_pop_permission = (fifo_count != '0) && fifo_source_is_fma[fifo_rd_ptr];
+  assign mult_payload_read_addr =
+      ((i_mul_accepted || fifo_head_flushed) && mult_payload_pop_permission) ?
+      mult_payload_next_ptr : mult_payload_rd_ptr;
+  assign fma_payload_read_addr =
+      ((i_mul_accepted || fifo_head_flushed) && fma_payload_pop_permission) ?
+      fma_payload_next_ptr : fma_payload_rd_ptr;
+
+`ifdef FP_PAYLOAD_READ_LOCAL_PROOF
+  always_comb begin
+    assert (mult_payload_read_addr == mult_payload_rd_ptr + FifoPtrW'(mult_payload_pop));
+    assert (fma_payload_read_addr == fma_payload_rd_ptr + FifoPtrW'(fma_payload_pop));
+  end
+`endif
 
   // A synchronous RAM cannot expose an empty-queue push on the write edge, and
   // its read-during-write value is primitive-dependent. Bypass the first push
@@ -552,6 +572,7 @@ module fp_mul_shim (
   // Formal Verification
   // ===========================================================================
 `ifdef FORMAL
+`ifndef FP_PAYLOAD_READ_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -630,6 +651,7 @@ module fp_mul_shim (
     end
   end
 
+`endif  // FP_PAYLOAD_READ_LOCAL_PROOF
 `endif  // FORMAL
 
 endmodule : fp_mul_shim

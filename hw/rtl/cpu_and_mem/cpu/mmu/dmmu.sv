@@ -421,7 +421,28 @@ module dmmu (
   logic s2_needs_sq_q, s2_is_sc_q;
   logic [riscv_pkg::XLEN-1:0] s2_store_data_q, s2_amo_rs2_q;
 
+  // The TLB permission/tier result is later than the resolution qualifiers.
+  // Finish both complete MMIO-bit outcomes, including the original hold,
+  // before selecting that result. All other S2 fields retain their enables.
+  (* keep = "true" *) logic [1:0] s2_mmio_cases;
+  logic s2_mmio_next;
+  for (genvar mmio = 0; mmio < 2; mmio++) begin : gen_s2_mmio_cases
+    logic resolved_mmio;
+    always_comb begin
+      resolved_mmio = (s1_q.va[31:30] == 2'b01);
+      if (s1_valid_q) begin
+        if (i_trap_misaligned && s1_misaligned) resolved_mmio = 1'b0;
+        else if (s1_noncanonical) resolved_mmio = 1'b0;
+        else if (tlb_hit[0]) resolved_mmio = (mmio != 0);
+        else if (walk_resp_for_s1) resolved_mmio = walk_is_mmio;
+      end
+    end
+    assign s2_mmio_cases[mmio] = s1_resolved ? resolved_mmio : s2_is_mmio_q;
+  end
+  assign s2_mmio_next = tlb_is_mmio ? s2_mmio_cases[1] : s2_mmio_cases[0];
+
   always_ff @(posedge i_clk) begin
+    s2_is_mmio_q <= s2_mmio_next;
     if (!i_rst_n || i_flush_all) begin
       s2_valid_q <= 1'b0;
     end else begin
@@ -433,7 +454,6 @@ module dmmu (
     if (s1_resolved) begin
       s2_tag_q <= s1_q.tag;
       s2_addr_q <= resolve_addr;
-      s2_is_mmio_q <= resolve_is_mmio;
       s2_fault_q <= resolve_fault;
       s2_needs_sq_q <= s1_q.needs_sq;
       s2_is_sc_q <= s1_q.is_sc;
@@ -563,6 +583,7 @@ module dmmu (
 
 `ifdef DMMU_MMIO_LOCAL_PROOF
   always_comb begin
+    p_mmio_capture_exact : assert (s2_mmio_next == (s1_resolved ? resolve_is_mmio : s2_is_mmio_q));
     p_resolve_mmio_exact :
     assert (resolve_is_mmio ==
         ((resolve_fault == riscv_pkg::DFAULT_NONE) && (resolve_addr[31:30] == 2'b01)));

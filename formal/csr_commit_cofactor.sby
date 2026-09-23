@@ -1,0 +1,25 @@
+[tasks]
+prove
+prove_integrated
+prove_perf_off
+
+[options]
+mode prove
+depth 2
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D CSR_COMMIT_LOCAL_PROOF -sv csr_file.sv
+prove_integrated: chparam -set COMMIT_EXCLUDES_CONTROL_TAKE 1 csr_file
+prove_perf_off: chparam -set COMMIT_EXCLUDES_CONTROL_TAKE 1 -set PERF_COUNTERS 0 csr_file
+prep -top csr_file
+select -assert-count 32 t:$check
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/csr/csr_file.sv

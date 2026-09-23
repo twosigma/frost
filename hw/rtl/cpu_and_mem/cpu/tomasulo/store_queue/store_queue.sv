@@ -417,6 +417,9 @@ module store_queue #(
   (* keep = "true" *)logic [CountWidth-1:0] live_count_if_none;
   (* keep = "true" *)logic [CountWidth-1:0] live_count_if_one;
   (* keep = "true" *)logic [CountWidth-1:0] live_count_if_both;
+  (* keep = "true" *)logic [CountWidth-1:0] live_count_alloc_one;
+  (* keep = "true" *)logic [CountWidth-1:0] live_count_alloc_both;
+
   logic [CountWidth-1:0] dispatch_count_if_none;
   logic [CountWidth-1:0] dispatch_count_if_one;
   logic [CountWidth-1:0] dispatch_count_if_both;
@@ -648,17 +651,25 @@ module store_queue #(
     for (int i = 0; i < DEPTH; i++) if (sq_valid[i] && sq_committed[i]) any_committed = 1'b1;
   end
 
+  // Complete registered-state/registered-commit qualification before the
+  // late ROB combinational commit strobes. They then enter one final gate
+  // together with reset/full-flush, retaining the same empty-status cycle.
+  (* keep = "true" *)logic no_registered_committed_work;
+  logic committed_empty_next;
+  assign no_registered_committed_work = !any_committed && !i_commit_valid && !i_commit_valid_2;
+  assign committed_empty_next = !i_rst_n || i_flush_all ||
+      (no_registered_committed_work && !i_commit_valid_comb && !i_commit_valid_comb_2);
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
-      committed_empty_q <= 1'b1;
-    end else begin
-      committed_empty_q <= !any_committed &&
-                           !i_commit_valid &&
-                           !i_commit_valid_2 &&
-                           !i_commit_valid_comb &&
-                           !i_commit_valid_comb_2;
-    end
+    committed_empty_q <= committed_empty_next;
   end
+
+`ifdef SQ_COMMITTED_EMPTY_LOCAL_PROOF
+  always_comb begin
+    assert (committed_empty_next == ((!i_rst_n || i_flush_all) ? 1'b1 :
+        (!any_committed && !i_commit_valid && !i_commit_valid_2 &&
+         !i_commit_valid_comb && !i_commit_valid_comb_2)));
+  end
+`endif
 
   assign o_committed_empty = committed_empty_q;
 
@@ -1421,10 +1432,13 @@ module store_queue #(
     end
   end
 
-  //
-  // The removal count and the room terms are folded into one candidate per
-  // allocation outcome ahead of the dispatch valids (see the candidate
-  // declarations); the valids select a candidate.
+  // Complete allocation increments before subtracting the late removal
+  // count. This keeps the commit-tag/flush CAM and population count from
+  // traversing two more adders; dispatch valids still select the same three
+  // exact modular-arithmetic outcomes at the final mux.
+  assign live_count_alloc_one = live_count_q + CountWidth'(alloc_room_1);
+  assign live_count_alloc_both = live_count_q + CountWidth'(alloc_room_1) +
+      CountWidth'(alloc_room_2);
   always_comb begin
     live_remove_count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -1432,8 +1446,8 @@ module store_queue #(
     end
 
     live_count_if_none = live_count_q - live_remove_count;
-    live_count_if_one  = live_count_if_none + CountWidth'(alloc_room_1);
-    live_count_if_both = live_count_if_one + CountWidth'(alloc_room_2);
+    live_count_if_one  = live_count_alloc_one - live_remove_count;
+    live_count_if_both = live_count_alloc_both - live_remove_count;
     case ({
       i_alloc.valid, i_alloc_2.valid
     })
@@ -1655,7 +1669,23 @@ module store_queue #(
   // ===========================================================================
   // Formal Verification
   // ===========================================================================
+`ifdef SQ_LIVE_COUNT_LOCAL_PROOF
+  logic [CountWidth-1:0] f_count_none, f_count_one, f_count_both;
+  assign f_count_none = live_count_q - live_remove_count;
+  assign f_count_one  = f_count_none + CountWidth'(alloc_room_1);
+  assign f_count_both = f_count_one + CountWidth'(alloc_room_2);
+  always_comb begin
+    assert (live_count_if_none == f_count_none);
+    assert (live_count_if_one == f_count_one);
+    assert (live_count_if_both == f_count_both);
+    assert (live_count_next == live_count_q + CountWidth'(slot1_alloc_en) +
+        CountWidth'(slot2_alloc_en) - live_remove_count);
+  end
+`endif
+
 `ifdef FORMAL
+`ifndef SQ_LIVE_COUNT_LOCAL_PROOF
+`ifndef SQ_COMMITTED_EMPTY_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -1988,6 +2018,8 @@ module store_queue #(
     end
   end
 
+`endif  // SQ_COMMITTED_EMPTY_LOCAL_PROOF
+`endif  // SQ_LIVE_COUNT_LOCAL_PROOF
 `endif  // FORMAL
 
 `ifndef SYNTHESIS

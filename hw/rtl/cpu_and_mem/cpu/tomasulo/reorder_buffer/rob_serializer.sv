@@ -18,7 +18,9 @@
 // rob_serializer
 // =============================================================================
 // Serializing-instruction FSM. Pins WFI, CSR, FENCE/FENCE.I, MRET, and
-// exceptions at the ROB head and produces commit_stall. serial_state is
+// exceptions at the ROB head and produces canonical and retirement-only stalls.
+// Only retirement consumers may use the cofactor; performance events retain
+// the canonical stall. serial_state is
 // exported for ROB performance counters, CSR/MRET start outputs, and
 // assertions; serial_state_next is internal. serial_state_e lives in riscv_pkg.
 // =============================================================================
@@ -61,7 +63,9 @@ module rob_serializer (
     // follows one cycle later.
     output logic o_native_fence_commit_event,
     output logic o_translation_csr_commit_event_q,
-    output logic o_commit_stall
+    output logic o_commit_stall,
+    // Qualified consumers must also apply all four retire_permit conjuncts.
+    output logic o_commit_stall_for_retire
 );
 
   riscv_pkg::serial_state_e serial_state, serial_state_next;
@@ -280,6 +284,30 @@ module rob_serializer (
 
   assign o_serial_state = serial_state;
   assign o_commit_stall = commit_stall;
+
+  // Keep retirement permission off the stall path in the two owned drain
+  // states. Their FSM transitions and semantic events retain the full gate.
+  // The canonical output above also retains it for performance counters,
+  // which count blocked cycles even while retirement is not permitted.
+  always_comb begin
+    o_commit_stall_for_retire = commit_stall;
+    case (serial_state)
+      riscv_pkg::SERIAL_FENCE_I_SYNC: o_commit_stall_for_retire = !i_fence_i_sync_done;
+      riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN: o_commit_stall_for_retire = !i_sq_committed_empty;
+      default: ;
+    endcase
+  end
+
+`ifdef ROB_RETIRE_STALL_LOCAL_PROOF
+  always_comb begin
+    assert (!retire_permit || (o_commit_stall_for_retire == commit_stall));
+    assert (!o_commit_stall_for_retire || commit_stall);
+    assert ((serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC) ||
+        (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN) ||
+        (o_commit_stall_for_retire == commit_stall));
+  end
+`endif
+
 
 `ifndef SYNTHESIS
 `ifndef FORMAL

@@ -3287,6 +3287,7 @@ module cpu_ooo #(
 
   csr_file #(
       .XLEN(XLEN),
+      .COMMIT_EXCLUDES_CONTROL_TAKE(1'b1),
       .UsePerfCsrHalf(1'b1),
       .PERF_COUNTERS(PERF_COUNTERS)
   ) csr_file_inst (
