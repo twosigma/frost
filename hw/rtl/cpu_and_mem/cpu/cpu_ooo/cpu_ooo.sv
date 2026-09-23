@@ -1152,7 +1152,7 @@ module cpu_ooo #(
       decoded_bundle_queue #(
           .DEPTH(DECODED_QUEUE_DEPTH),
           .WIDTH(2 * $bits(decoded_packet)),
-          .SHADOW_WIDTH(2 * $bits(riscv_pkg::id_dispatch_ctrl_t))
+          .SHADOW_WIDTH(2 * $bits(producer_ctrl))
       ) u_queue (
           .i_clk(i_clk),
           .i_rst(i_rst),
