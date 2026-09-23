@@ -142,3 +142,7 @@ arrives; integration assertions enforce the last three contracts in simulation.
 This is not a proof of whole-core CSR/debug/branch behavior.
 `load_queue` also has `bmc_prepare_busy`/`cover_prepare_busy` tasks for inert
 candidate preparation while another client owns the memory port.
+
+The `load_queue_amo_compute` harness counts its named AMO assertions and cover
+separately from allocator checks. Other production helper checks remain enabled,
+but their addition does not invalidate the AMO harness's structural guard.
