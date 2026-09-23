@@ -100,7 +100,12 @@ allocation target receives slot 2's values instead. Only `rs_valid` commits an
 entry, so the extra free-entry writes are unobservable. Dispatch and issue
 latency are unchanged. What changes is the wide value flops' clock enable: the
 priority-decoded free index is replaced by the entry-local invalid bit, and
-the slot-2 allocation index affects only the selected input data.
+the slot-2 allocation target affects only the selected input data. That data
+select is a per-entry one-hot (`alloc_sel_2`) computed directly from
+`rs_valid` at fixed depth (nibble free-counts, a prefix over nibbles, one gate
+per entry) rather than a decode of the rippling `alloc_idx_2` index; it is
+asserted bit-equal to that decode on every free entry in simulation and
+formal.
 
 INT_RS also enables `ISSUE_CDB_TAG_SHADOW`. A second src1/src2 tag bank is
 written through the same speculative allocation indices and clock enables as
@@ -193,13 +198,21 @@ both slots target the same station.
 ## Pre-issue look-ahead
 
 Each RS emits `o_pre_issue_rob_tag` and `o_pre_issue_needs_lq` one cycle
-before the real issue fires. Only the MEM_RS instance has a consumer: the LQ
-uses the pair to pre-register its address-update CAM match against the
-incoming ROB tag, so the LQ entry's `addr_valid` is observable in the same
-cycle MEM_RS issues (2 LUT levels at issue instead of 5–6). When address
-translation is active, the wrapper substitutes the DMMU's equivalent
-`o_pre_rob_tag` / `o_pre_needs_lq` hints. The port is unconnected on the
-other instances.
+before the real issue fires. Only MEM_RS has a consumer: the LQ uses these
+hints to register its address-update CAM match, so `addr_valid` is observable
+in the same cycle MEM_RS issues. Translation substitutes the DMMU's held
+pre-issue tag and validity.
+
+`PREISSUE_VALID_COFACTOR=1` also exports four candidate tags in
+`o_pre_issue_rob_tags` (candidate zero in the low bits), plus
+`o_pre_issue_sel={lane1_valid,lane0_valid}`. Each candidate uses the original
+priority rule under one fixed pair of CDB valid bits; no-ready still selects
+entry zero's tag. Selecting the candidate reproduces `o_pre_issue_rob_tag`.
+The wrapper enables this with early memory wakeup. The LQ registers all four
+CAM outcomes and the selector on the same edge, keeping the late CDB-valid
+selection out of the CAM register inputs without changing issue latency.
+The default parameter is zero; it repeats the scalar tag in all candidates
+with selector zero. Other RS instances leave these outputs unconnected.
 
 ## INT_RS head-wait diagnostics
 
@@ -234,3 +247,10 @@ stalls, flushes, and refill.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
+
+The binary first/second free indices also use the nibble-prefix masks, with
+parallel masked-OR encoders. This removes the serial search from payload,
+tag and control writes while preserving lowest-index allocation and the
+index-zero fallback when a free entry is absent. Nibble and mask boundaries
+are kept through synthesis. `rs_alloc_parallel` proves both indices and found
+flags against the original search for arbitrary occupancy at depths 4/8/16/32.

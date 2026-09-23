@@ -87,7 +87,10 @@ package riscv_pkg;
   // Instruction-memory predecode sideband bits, stored per 32-bit word.
   // The fetch interface returns two words, so its sideband bus is twice this
   // width: {next_word_sideband, current_word_sideband}.
-  localparam int unsigned ImemSidebandWidth = 28;
+  localparam int unsigned ImemSidebandWidth = 78;
+  // {illegal, expanded[31:25], expanded[14:0]}; source fields are stored below.
+  localparam int unsigned ImemSbRvcExtraLoLsb = 32;
+  localparam int unsigned ImemSbRvcExtraHiLsb = 55;
   localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
   localparam int unsigned ImemSbIsCompressedLo = 0;
   localparam int unsigned ImemSbIsCompressedHi = 1;
@@ -104,15 +107,18 @@ package riscv_pkg;
   localparam int unsigned ImemSbAllowsSlot2AfterHi = 9;
   localparam int unsigned ImemSbSlot2StartValidLo = 10;
   localparam int unsigned ImemSbSlot2StartValidHi = 11;
-  // Only the RVC-expanded source bits on the five current low-IMEM timing
-  // endpoints are stored: {rs2[1], rs1[2:1]} for each halfword start.
+  // The two hot rs1 bits [2:1] for each halfword start. The packet's rs2[1]
+  // hot bit comes from Bits24To20 below, avoiding duplicate storage.
   localparam int unsigned ImemSbRvcSourceHotLoLsb = 12;
-  localparam int unsigned ImemSbRvcSourceHotHiLsb = 15;
+  localparam int unsigned ImemSbRvcSourceHotHiLsb = 14;
   // The RVC expansion's complete instruction bits [24:20] for each halfword
-  // start: rs2 for register formats, immediate bits otherwise. Slot 1 uses
-  // them for rs2 instead of decompressing the fetched parcel.
-  localparam int unsigned ImemSbRvcBits24To20LoLsb = 18;
-  localparam int unsigned ImemSbRvcBits24To20HiLsb = 23;
+  // start: rs2 for register formats, immediate bits otherwise. Both slots
+  // use them for rs2 instead of decompressing the fetched parcel.
+  localparam int unsigned ImemSbRvcBits24To20LoLsb = 16;
+  localparam int unsigned ImemSbRvcBits24To20HiLsb = 21;
+  // The other three rs1 bits; rs1[2:1] already live in SourceHot.
+  localparam int unsigned ImemSbRvcRs1RestLoLsb = 26;
+  localparam int unsigned ImemSbRvcRs1RestHiLsb = 29;
 
   // Predecode sideband generation: one sideband value per 32-bit
   // instruction-memory word, a pure function of that word (no lookahead:
@@ -182,14 +188,13 @@ package riscv_pkg;
     end
   endfunction
 
-  // Return {expanded instruction[21], expanded instruction[17:16]}, i.e.
-  // {rs2[1], rs1[2:1]}, for one RVC parcel. Some formats do not consume one
-  // or both source fields, but these bits still match the literal
-  // decompressed instruction, including illegal encodings and hints. That
-  // makes this narrow metadata an exact replacement for the five current RVC
-  // source-field timing endpoints, with no source-use gating.
-  function automatic logic [2:0] imem_rvc_source_hot(input logic [15:0] parcel,
-                                                     input logic rd_is_x2);
+  // Return {expanded instruction[21], expanded instruction[19:15]}, i.e.
+  // {rs2[1], rs1}, for one RVC parcel. These bits match the literal expansion,
+  // including unused fields, illegal encodings and hints. The two wrappers
+  // split rs1 across the existing source-hot lanes and three new bits, so
+  // both PD source fields bypass the runtime decompressor.
+  function automatic logic [5:0] imem_rvc_source_fields(input logic [15:0] parcel,
+                                                        input logic rd_is_x2);
     logic [ 4:0] rs1;
     logic [ 4:0] rs2;
     logic [ 4:0] rd_full;
@@ -370,8 +375,21 @@ package riscv_pkg;
           rs2 = 5'd0;
         end
       endcase
-      imem_rvc_source_hot = {rs2[1], rs1[2:1]};
+      imem_rvc_source_fields = {rs2[1], rs1};
     end
+  endfunction
+
+  function automatic logic [2:0] imem_rvc_source_hot(input logic [15:0] parcel,
+                                                     input logic rd_is_x2);
+    logic [5:0] fields;
+    fields = imem_rvc_source_fields(parcel, rd_is_x2);
+    imem_rvc_source_hot = {fields[5], fields[2:1]};
+  endfunction
+
+  function automatic logic [2:0] imem_rvc_rs1_rest(input logic [15:0] parcel, input logic rd_is_x2);
+    logic [5:0] fields;
+    fields = imem_rvc_source_fields(parcel, rd_is_x2);
+    imem_rvc_rs1_rest = {fields[4:3], fields[0]};
   endfunction
 
   // Bits [24:20] of the RVC expansion of one parcel. Mirrors the
@@ -418,8 +436,298 @@ package riscv_pkg;
     end
   endfunction
 
+  // Full RV64C expansion computed when instruction metadata is filled. The
+  // canonical rvc_decompressor remains the exhaustive-test reference.
+  function automatic logic [32:0] imem_rvc_expand(input logic [15:0] i_instr_compressed);
+    logic i_rd_is_x2;
+    logic [31:0] o_instr_expanded;
+    logic o_illegal;
+    logic [1:0] quadrant;
+    logic [2:0] funct3;
+    localparam logic [6:0] OpcLui = 7'b0110111;
+    localparam logic [6:0] OpcJal = 7'b1101111;
+    localparam logic [6:0] OpcJalr = 7'b1100111;
+    localparam logic [6:0] OpcBranch = 7'b1100011;
+    localparam logic [6:0] OpcLoad = 7'b0000011;
+    localparam logic [6:0] OpcLoadFp = 7'b0000111;
+    localparam logic [6:0] OpcStore = 7'b0100011;
+    localparam logic [6:0] OpcStoreFp = 7'b0100111;
+    localparam logic [6:0] OpcOpImm = 7'b0010011;
+    localparam logic [6:0] OpcOp = 7'b0110011;
+    localparam logic [6:0] OpcOpImm32 = 7'b0011011;
+    localparam logic [6:0] OpcOp32 = 7'b0111011;
+    logic [4:0] rd_full, rs1_full, rs2_full;
+    logic [4:0] rd_prime, rs1_prime, rs2_prime;
+    logic [11:0] imm_addi4spn;
+    logic [11:0] imm_lw_sw;
+    logic [11:0] imm_ld_sd;
+    logic [11:0] imm_ci;
+    logic [11:0] imm_addi16sp;
+    logic [19:0] imm_lui;
+    logic [11:0] imm_j;
+    logic [ 8:0] imm_b;
+    logic [11:0] imm_lwsp;
+    logic [11:0] imm_ldsp;
+    logic [ 7:0] imm_swsp;
+    logic [11:0] imm_sdsp;
+    logic [ 5:0] shamt6;
+    begin
+      i_rd_is_x2 = (i_instr_compressed[11:7] == 5'd2);
+      quadrant = i_instr_compressed[1:0];
+      funct3 = i_instr_compressed[15:13];
+      rd_full = i_instr_compressed[11:7];
+      rs1_full = i_instr_compressed[11:7];
+      rs2_full = i_instr_compressed[6:2];
+      rd_prime = {2'b01, i_instr_compressed[4:2]};
+      rs1_prime = {2'b01, i_instr_compressed[9:7]};
+      rs2_prime = {2'b01, i_instr_compressed[4:2]};
+      imm_addi4spn = {
+        2'b0,
+        i_instr_compressed[10:7],
+        i_instr_compressed[12:11],
+        i_instr_compressed[5],
+        i_instr_compressed[6],
+        2'b00
+      };
+      imm_lw_sw = {
+        5'b0, i_instr_compressed[5], i_instr_compressed[12:10], i_instr_compressed[6], 2'b00
+      };
+      imm_ld_sd = {4'b0, i_instr_compressed[6:5], i_instr_compressed[12:10], 3'b000};
+      imm_ci = {{6{i_instr_compressed[12]}}, i_instr_compressed[12], i_instr_compressed[6:2]};
+      imm_addi16sp = {
+        {2{i_instr_compressed[12]}},
+        i_instr_compressed[12],
+        i_instr_compressed[4:3],
+        i_instr_compressed[5],
+        i_instr_compressed[2],
+        i_instr_compressed[6],
+        4'b0000
+      };
+      imm_lui = {{14{i_instr_compressed[12]}}, i_instr_compressed[12], i_instr_compressed[6:2]};
+      imm_j = {
+        i_instr_compressed[12],
+        i_instr_compressed[8],
+        i_instr_compressed[10:9],
+        i_instr_compressed[6],
+        i_instr_compressed[7],
+        i_instr_compressed[2],
+        i_instr_compressed[11],
+        i_instr_compressed[5:3],
+        1'b0
+      };
+      imm_b = {
+        i_instr_compressed[12],
+        i_instr_compressed[6:5],
+        i_instr_compressed[2],
+        i_instr_compressed[11:10],
+        i_instr_compressed[4:3],
+        1'b0
+      };
+      imm_lwsp = {
+        4'b0, i_instr_compressed[3:2], i_instr_compressed[12], i_instr_compressed[6:4], 2'b00
+      };
+      imm_ldsp = {
+        3'b0, i_instr_compressed[4:2], i_instr_compressed[12], i_instr_compressed[6:5], 3'b000
+      };
+      imm_swsp = {i_instr_compressed[8:7], i_instr_compressed[12:9], 2'b00};
+      imm_sdsp = {3'b0, i_instr_compressed[9:7], i_instr_compressed[12:10], 3'b000};
+      shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
+      // Default outputs: zero instruction for reserved encodings.
+      o_instr_expanded = 32'b0;
+      o_illegal = 1'b0;
+
+      unique case (quadrant)
+        // -----------------------------------------------------------------------
+        // Quadrant 0 (00)
+        // -----------------------------------------------------------------------
+        2'b00: begin
+          unique case (funct3)
+            3'b000: begin  // C.ADDI4SPN
+              o_instr_expanded = {imm_addi4spn, 5'd2, 3'b000, rd_prime, OpcOpImm};
+              if (imm_addi4spn == 12'b0) o_illegal = 1'b1;
+            end
+            3'b010: o_instr_expanded = {imm_lw_sw, rs1_prime, 3'b010, rd_prime, OpcLoad};  // C.LW
+            3'b001:
+            o_instr_expanded = {imm_ld_sd, rs1_prime, 3'b011, rd_prime, OpcLoadFp};  // C.FLD
+            3'b011: o_instr_expanded = {imm_ld_sd, rs1_prime, 3'b011, rd_prime, OpcLoad};  // C.LD
+            3'b110:
+            o_instr_expanded = {
+              imm_lw_sw[11:5], rs2_prime, rs1_prime, 3'b010, imm_lw_sw[4:0], OpcStore
+            };  // C.SW
+            3'b101:
+            o_instr_expanded = {
+              imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStoreFp
+            };  // C.FSD
+            3'b111:
+            o_instr_expanded = {
+              imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStore
+            };  // C.SD
+            default: o_illegal = 1'b1;  // Reserved encoding
+          endcase
+        end
+
+        // -----------------------------------------------------------------------
+        // Quadrant 1 (01)
+        // -----------------------------------------------------------------------
+        2'b01: begin
+          unique case (funct3)
+            3'b000: o_instr_expanded = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm};  // C.ADDI/NOP
+            3'b001: begin  // C.ADDIW (rd=0 reserved)
+              o_instr_expanded = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm32};
+              if (rd_full == 5'd0) o_illegal = 1'b1;
+            end
+            3'b010: o_instr_expanded = {imm_ci, 5'd0, 3'b000, rd_full, OpcOpImm};  // C.LI
+            3'b011: begin
+              if (i_rd_is_x2) begin  // C.ADDI16SP
+                o_instr_expanded = {imm_addi16sp, 5'd2, 3'b000, 5'd2, OpcOpImm};
+                if (imm_addi16sp == 12'b0) o_illegal = 1'b1;
+              end else begin  // C.LUI (rd=0 is a HINT: lui x0)
+                o_instr_expanded = {imm_lui, rd_full, OpcLui};
+                if ({i_instr_compressed[12], i_instr_compressed[6:2]} == 6'b0) o_illegal = 1'b1;
+              end
+            end
+            3'b100: begin
+              unique case (i_instr_compressed[11:10])
+                2'b00:  // C.SRLI (bit12 = shamt[5])
+                o_instr_expanded = {6'b000000, shamt6, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
+                2'b01:  // C.SRAI (bit12 = shamt[5])
+                o_instr_expanded = {6'b010000, shamt6, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
+                2'b10: begin  // C.ANDI
+                  o_instr_expanded = {imm_ci, rs1_prime, 3'b111, rs1_prime, OpcOpImm};
+                end
+                2'b11: begin  // C.SUB/C.XOR/C.OR/C.AND; bit12=1: RV64 C.SUBW/C.ADDW
+                  if (i_instr_compressed[12]) begin
+                    unique case (i_instr_compressed[6:5])
+                      2'b00:
+                      o_instr_expanded = {
+                        7'b0100000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
+                      };  // C.SUBW
+                      2'b01:
+                      o_instr_expanded = {
+                        7'b0000000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
+                      };  // C.ADDW
+                      default: o_illegal = 1'b1;  // [6:5]=10/11 stay reserved
+                    endcase
+                  end else begin
+                    unique case (i_instr_compressed[6:5])
+                      2'b00:
+                      o_instr_expanded = {
+                        7'b0100000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp
+                      };  // C.SUB
+                      2'b01:
+                      o_instr_expanded = {
+                        7'b0000000, rs2_prime, rs1_prime, 3'b100, rs1_prime, OpcOp
+                      };  // C.XOR
+                      2'b10:
+                      o_instr_expanded = {
+                        7'b0000000, rs2_prime, rs1_prime, 3'b110, rs1_prime, OpcOp
+                      };  // C.OR
+                      2'b11:
+                      o_instr_expanded = {
+                        7'b0000000, rs2_prime, rs1_prime, 3'b111, rs1_prime, OpcOp
+                      };  // C.AND
+                    endcase
+                  end
+                end
+              endcase
+            end
+            3'b101:
+            o_instr_expanded = {imm_j[11], imm_j[10:1], imm_j[11], {8{imm_j[11]}}, 5'd0, OpcJal};
+            3'b110: begin
+              o_instr_expanded = {
+                imm_b[8],
+                {3{imm_b[8]}},
+                imm_b[7:5],
+                5'd0,
+                rs1_prime,
+                3'b000,
+                imm_b[4:1],
+                imm_b[8],
+                OpcBranch
+              };  // C.BEQZ
+            end
+            3'b111: begin
+              o_instr_expanded = {
+                imm_b[8],
+                {3{imm_b[8]}},
+                imm_b[7:5],
+                5'd0,
+                rs1_prime,
+                3'b001,
+                imm_b[4:1],
+                imm_b[8],
+                OpcBranch
+              };  // C.BNEZ
+            end
+            default: o_illegal = 1'b1;  // Reserved encoding
+          endcase
+        end
+
+        // -----------------------------------------------------------------------
+        // Quadrant 2 (10)
+        // -----------------------------------------------------------------------
+        2'b10: begin
+          unique case (funct3)
+            3'b000:  // C.SLLI (rd=0 is a HINT -> nop; bit12 = shamt[5])
+            o_instr_expanded = {6'b000000, shamt6, rd_full, 3'b001, rd_full, OpcOpImm};
+            3'b010: begin  // C.LWSP
+              o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoad};
+              if (rd_full == 5'd0) o_illegal = 1'b1;
+            end
+            3'b001: begin  // C.FLDSP
+              o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoadFp};
+            end
+            3'b011: begin  // C.LDSP (integer, rd=0 reserved)
+              o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoad};
+              if (rd_full == 5'd0) o_illegal = 1'b1;
+            end
+            3'b100: begin
+              if (!i_instr_compressed[12]) begin
+                if (rs2_full == 5'd0) begin  // C.JR
+                  o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd0, OpcJalr};
+                  if (rd_full == 5'd0) o_illegal = 1'b1;
+                end else begin  // C.MV (rd=0 is a HINT -> nop, not illegal)
+                  o_instr_expanded = {7'b0, rs2_full, 5'd0, 3'b000, rd_full, OpcOp};
+                end
+              end else begin
+                if (rs2_full == 5'd0) begin
+                  if (rd_full == 5'd0) begin
+                    o_instr_expanded = 32'h0010_0073;  // C.EBREAK
+                  end else begin
+                    o_instr_expanded = {12'b0, rs1_full, 3'b000, 5'd1, OpcJalr};  // C.JALR
+                  end
+                end else begin
+                  // C.ADD (rd=0 is a HINT -> nop, not illegal)
+                  o_instr_expanded = {7'b0, rs2_full, rd_full, 3'b000, rd_full, OpcOp};
+                end
+              end
+            end
+            3'b110:
+            o_instr_expanded = {
+              4'b0, imm_swsp[7:5], rs2_full, 5'd2, 3'b010, imm_swsp[4:0], OpcStore
+            };  // C.SWSP
+            3'b101:
+            o_instr_expanded = {
+              imm_sdsp[11:5], rs2_full, 5'd2, 3'b011, imm_sdsp[4:0], OpcStoreFp
+            };  // C.FSDSP
+            3'b111:  // C.SDSP (integer, 8-scaled)
+            o_instr_expanded = {imm_sdsp[11:5], rs2_full, 5'd2, 3'b011, imm_sdsp[4:0], OpcStore};
+            default: o_illegal = 1'b1;  // Reserved encoding
+          endcase
+        end
+
+        // -----------------------------------------------------------------------
+        // Quadrant 3 (11): not compressed, passthrough
+        // -----------------------------------------------------------------------
+        default: o_instr_expanded = {16'b0, i_instr_compressed};
+      endcase
+      imem_rvc_expand = {o_illegal, o_instr_expanded};
+    end
+  endfunction
+
   function automatic logic [ImemSidebandWidth-1:0] imem_make_sideband(input logic [31:0] word);
     logic [ImemSidebandWidth-1:0] sb;
+    logic [32:0] expanded_lo, expanded_hi;
     logic compressed_control_lo;
     logic compressed_control_hi;
     logic native_fp_compute_lo;
@@ -475,10 +783,16 @@ package riscv_pkg;
       sb[ImemSbPairableNativeLo] = !sb[ImemSbIsCompressedLo] && allows_slot2_after_lo;
       sb[ImemSbPairableCompressedHi] = sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
       sb[ImemSbPairableNativeHi] = !sb[ImemSbIsCompressedHi] && allows_slot2_after_hi;
-      sb[ImemSbRvcSourceHotLoLsb+:3] = imem_rvc_source_hot(word[15:0], word[11:7] == 5'd2);
-      sb[ImemSbRvcSourceHotHiLsb+:3] = imem_rvc_source_hot(word[31:16], word[27:23] == 5'd2);
+      sb[ImemSbRvcSourceHotLoLsb+:2] = 2'(imem_rvc_source_hot(word[15:0], word[11:7] == 5'd2));
+      sb[ImemSbRvcSourceHotHiLsb+:2] = 2'(imem_rvc_source_hot(word[31:16], word[27:23] == 5'd2));
       sb[ImemSbRvcBits24To20LoLsb+:5] = imem_rvc_bits24_20(word[15:0], word[11:7] == 5'd2);
       sb[ImemSbRvcBits24To20HiLsb+:5] = imem_rvc_bits24_20(word[31:16], word[27:23] == 5'd2);
+      sb[ImemSbRvcRs1RestLoLsb+:3] = imem_rvc_rs1_rest(word[15:0], word[11:7] == 5'd2);
+      sb[ImemSbRvcRs1RestHiLsb+:3] = imem_rvc_rs1_rest(word[31:16], word[27:23] == 5'd2);
+      expanded_lo = imem_rvc_expand(word[15:0]);
+      expanded_hi = imem_rvc_expand(word[31:16]);
+      sb[ImemSbRvcExtraLoLsb+:23] = {expanded_lo[32:25], expanded_lo[14:0]};
+      sb[ImemSbRvcExtraHiLsb+:23] = {expanded_hi[32:25], expanded_hi[14:0]};
       imem_make_sideband = sb;
     end
   endfunction
@@ -1149,6 +1463,20 @@ package riscv_pkg;
     pma_data_ok = pma_fetch_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
   endfunction
 
+  // Served MMIO window decode: the implemented register window
+  // [mmio_base, mmio_base + mmio_size_bytes) plus the PLIC window (M6, a
+  // second served range in the device quadrant, addr[31:22] == 10'h110). The
+  // data_mem_request_router uses it for its pending device read, and the
+  // load queue pre-registers it beside the AMO write address (the router's
+  // AMO BRAM-mask safety), so the one decode is shared here instead of being
+  // written twice. Narrower than the LQ/SQ device-quadrant is_mmio class.
+  function automatic logic mmio_window_hit(input logic [XLEN-1:0] addr,
+                                           input logic [XLEN-1:0] mmio_base,
+                                           input logic [XLEN-1:0] mmio_size_bytes);
+    mmio_window_hit = ((addr >= mmio_base) && (addr < (mmio_base + mmio_size_bytes))) ||
+                      (addr[31:22] == 10'h110);
+  endfunction
+
   // pma_fetch_ok of the page after va's, {va[63:12] + 1, 12'h0} (a 52-bit
   // wrapping increment), without the incrementer: the map's region edges
   // are 2^18 and 2^31 / 3*2^30, so the verdict only changes where the
@@ -1327,6 +1655,9 @@ package riscv_pkg;
     // The selected instruction's bits [24:20]: the IMEM sideband's RVC
     // expansion, or the native instruction's own bits.
     logic [4:0] bits24_20_predecoded;
+    // Remaining rs1 field bits {instruction[19:18], instruction[15]}.
+    logic [2:0] rs1_rest_predecoded;
+    logic [22:0] rvc_extra_predecoded;
     // Branch prediction metadata (from BTB)
     logic btb_hit;  // BTB lookup hit
     logic btb_predicted_taken;  // BTB predicts taken
@@ -2201,7 +2532,7 @@ package riscv_pkg;
   // RAT lookup result (returned on source register read)
   typedef struct packed {
     logic                             renamed;  // Source is renamed (wait for Reorder Buffer tag)
-    logic [ReorderBufferTagWidth-1:0] tag;      // Reorder Buffer tag if renamed
+    logic [ReorderBufferTagWidth-1:0] tag;      // Meaningful only if renamed; otherwise unspecified
     logic [FLEN-1:0]                  value;    // Value from regfile if not renamed
   } rat_lookup_t;
 

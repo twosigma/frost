@@ -18,10 +18,12 @@
 
 The runtime instruction memory is split into even and odd banks. Each data
 bank is then split into a 28-bit cold block-RAM image and a four-bit
-frontend-hot image for architectural word bits ``{15, 10, 7, 6}``. The 28-bit
-predecode sideband (including six RVC source-hot bits and ten RVC-expanded
-bits [24:20]) and the five-lane
-high-parcel block-RAM replica have their own images, and every sideband
+frontend-hot image for architectural word bits ``{15, 10, 7, 6}``. The 78-bit
+predecode sideband stores each halfword's full 32-bit RVC expansion and illegal
+flag, plus twelve fetch-control predicates. The two five-bit source fields
+are split into the existing source lanes, with no duplicated rs2 hot bit.
+The sideband and five-lane high-parcel block-RAM replica have their own images,
+and every sideband
 predicate on the IF PC feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar
 LUTRAM overlay image per parity bank. The generator emits the full overlay
 image; the RTL reads the prefix selected by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
@@ -30,8 +32,10 @@ Simulation can derive all of these memories inside SystemVerilog from sw.mem.
 Vivado initializes each synthesized memory more reliably from its own file,
 which is why this generator exists. The predecode functions below mirror
 their riscv_pkg counterparts (``imem_compressed_control``, ``imem_native_*``,
-``imem_rvc_source_hot``, ``imem_rvc_bits24_20``, ``imem_make_sideband``); the imem_predecode_line
-cocotb bench cross-checks the RTL against this script.
+``imem_rvc_expand``, ``imem_rvc_source_hot``, ``imem_rvc_rs1_rest``,
+``imem_rvc_bits24_20``, and
+``imem_make_sideband``); the imem_predecode_line cocotb bench cross-checks the
+RTL against this script.
 """
 
 from __future__ import annotations
@@ -50,7 +54,7 @@ OPC_OP_FP = 0b1010011
 OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
-SIDEBAND_WIDTH = 28
+SIDEBAND_WIDTH = 78
 FAST_REPLICA_WIDTH = 5
 PC_METADATA_REPLICA_WIDTH = 4
 COLD_DATA_WIDTH = 28
@@ -68,9 +72,11 @@ SB_ALLOWS_SLOT2_AFTER_HI = 9
 SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
 SB_RVC_SOURCE_HOT_LO_LSB = 12
-SB_RVC_SOURCE_HOT_HI_LSB = 15
-SB_RVC_BITS24_20_LO_LSB = 18
-SB_RVC_BITS24_20_HI_LSB = 23
+SB_RVC_SOURCE_HOT_HI_LSB = 14
+SB_RVC_BITS24_20_LO_LSB = 16
+SB_RVC_BITS24_20_HI_LSB = 21
+SB_RVC_RS1_REST_LO_LSB = 26
+SB_RVC_RS1_REST_HI_LSB = 29
 # Sideband predicates mirrored into per-parity scalar LUTRAM overlays
 # (imem_sideband_scalar_bank); the image is ``sw_imem_<parity>_<name>.mem``.
 SCALAR_REPLICA_BITS = (
@@ -136,6 +142,141 @@ def native_control(opcode: int) -> bool:
     return opcode in {OPC_BRANCH, OPC_JAL, OPC_JALR}
 
 
+def rvc_expand(raw: int) -> tuple[int, bool]:
+    """Return the complete RV64C expansion and reserved-encoding flag."""
+    q, f = raw & 3, raw >> 13
+
+    def bit(n: int) -> int:
+        return (raw >> n) & 1
+
+    rd, rs2 = (raw >> 7) & 31, (raw >> 2) & 31
+    rp, sp = 8 | ((raw >> 2) & 7), 8 | ((raw >> 7) & 7)
+    sign = bit(12)
+
+    def i(imm: int, rs1: int, funct3: int, dest: int, op: int) -> int:
+        return ((imm & 4095) << 20) | (rs1 << 15) | (funct3 << 12) | (dest << 7) | op
+
+    def r(f7: int, src2: int, src1: int, f3: int, dest: int, op: int) -> int:
+        return (f7 << 25) | (src2 << 20) | (src1 << 15) | (f3 << 12) | (dest << 7) | op
+
+    def store(imm: int, src2: int, src1: int, f3: int, op: int) -> int:
+        return r((imm >> 5) & 127, src2, src1, f3, imm & 31, op)
+
+    ci = (-32 if sign else 0) | rs2
+    ld = (((raw >> 5) & 3) << 6) | (((raw >> 10) & 7) << 3)
+    lw = (bit(5) << 6) | (((raw >> 10) & 7) << 3) | (bit(6) << 2)
+    if q == 0:
+        if f == 0:
+            imm = (
+                (((raw >> 7) & 15) << 6)
+                | (((raw >> 11) & 3) << 4)
+                | (bit(5) << 3)
+                | (bit(6) << 2)
+            )
+            return i(imm, 2, 0, rp, 0x13), imm == 0
+        if f in (1, 2, 3):
+            return i(
+                lw if f == 2 else ld, sp, 2 if f == 2 else 3, rp, 7 if f == 1 else 3
+            ), False
+        if f in (5, 6, 7):
+            return store(
+                lw if f == 6 else ld,
+                rp,
+                sp,
+                2 if f == 6 else 3,
+                0x27 if f == 5 else 0x23,
+            ), False
+        return 0, True
+    if q == 1:
+        if f in (0, 1, 2):
+            return i(
+                ci, 0 if f == 2 else rd, 0, rd, 0x1B if f == 1 else 0x13
+            ), f == 1 and rd == 0
+        if f == 3:
+            if rd == 2:
+                imm = (
+                    (-512 if sign else 0)
+                    | (((raw >> 3) & 3) << 7)
+                    | (bit(5) << 6)
+                    | (bit(2) << 5)
+                    | (bit(6) << 4)
+                )
+                return i(imm, 2, 0, 2, 0x13), imm == 0
+            return ((ci & 0xFFFFF) << 12) | (rd << 7) | 0x37, ci == 0
+        if f == 4:
+            sub = (raw >> 10) & 3
+            if sub < 2:
+                return i((sub << 10) | (sign << 5) | rs2, sp, 5, sp, 0x13), False
+            if sub == 2:
+                return i(ci, sp, 7, sp, 0x13), False
+            op = (raw >> 5) & 3
+            if sign and op >= 2:
+                return 0, True
+            return r(
+                0x20 if op == 0 else 0,
+                rp,
+                sp,
+                0 if sign else (0, 4, 6, 7)[op],
+                sp,
+                0x3B if sign else 0x33,
+            ), False
+        if f == 5:
+            imm = (
+                (-2048 if sign else 0)
+                | (bit(8) << 10)
+                | (((raw >> 9) & 3) << 8)
+                | (bit(6) << 7)
+                | (bit(7) << 6)
+                | (bit(2) << 5)
+                | (bit(11) << 4)
+                | (((raw >> 3) & 7) << 1)
+            )
+            return (sign << 31) | (((imm >> 1) & 1023) << 21) | (sign << 20) | (
+                (255 if sign else 0) << 12
+            ) | 0x6F, False
+        imm = (
+            (sign << 8)
+            | (((raw >> 5) & 3) << 6)
+            | (bit(2) << 5)
+            | (((raw >> 10) & 3) << 3)
+            | (((raw >> 3) & 3) << 1)
+        )
+        return (sign << 31) | ((7 if sign else 0) << 28) | (((imm >> 5) & 7) << 25) | (
+            sp << 15
+        ) | ((f & 1) << 12) | (((imm >> 1) & 15) << 8) | (sign << 7) | 0x63, False
+    if q == 2:
+        if f == 0:
+            return i((sign << 5) | rs2, rd, 1, rd, 0x13), False
+        if f in (1, 2, 3):
+            imm = (
+                (((raw >> 2) & 3) << 6) | (sign << 5) | (((raw >> 4) & 7) << 2)
+                if f == 2
+                else (((raw >> 2) & 7) << 6) | (sign << 5) | (((raw >> 5) & 3) << 3)
+            )
+            return i(
+                imm, 2, 2 if f == 2 else 3, rd, 7 if f == 1 else 3
+            ), f != 1 and rd == 0
+        if f == 4:
+            if rs2:
+                return r(0, rs2, rd if sign else 0, 0, rd, 0x33), False
+            if sign and rd == 0:
+                return 0x00100073, False
+            return i(0, rd, 0, sign, 0x67), not sign and rd == 0
+        imm = (
+            (((raw >> 7) & 3) << 6) | (((raw >> 9) & 15) << 2)
+            if f == 6
+            else (((raw >> 7) & 7) << 6) | (((raw >> 10) & 7) << 3)
+        )
+        return store(imm, rs2, 2, 2 if f == 6 else 3, 0x27 if f == 5 else 0x23), False
+    return raw, False
+
+
+def rvc_extra(raw: int) -> int:
+    """Return {illegal, expanded[31:25], expanded[14:0]} for the sideband."""
+    expanded, illegal = rvc_expand(raw)
+    return (int(illegal) << 22) | ((expanded >> 25) << 15) | (expanded & 0x7FFF)
+
+
 def rvc_bits24_20(parcel: int) -> int:
     """Return bits [24:20] of one RVC parcel's 32-bit expansion.
 
@@ -192,12 +333,13 @@ def rvc_bits24_20(parcel: int) -> int:
     return 0
 
 
-def rvc_source_hot(parcel: int) -> int:
-    """Return ``{expanded rs2[1], expanded rs1[2:1]}`` for one RVC parcel.
+def rvc_source_fields(parcel: int) -> tuple[int, int]:
+    """Return rs1 and an rs2 carrier whose bit 1 matches the RVC expansion.
 
-    Unused instruction-format fields remain literal rather than being
-    normalized to zero. This mirrors ``riscv_pkg::imem_rvc_source_hot`` and
-    exactly replaces the selected decompressor slices in PD.
+    All rs1 bits and rs2[1] are exact literal instruction fields, including
+    unused fields and reserved encodings. The other rs2 bits are not part of
+    this helper's contract; use ``rvc_bits24_20`` for the complete rs2 field.
+    This mirrors ``riscv_pkg::imem_rvc_source_fields``.
     """
     parcel &= 0xFFFF
     quadrant = parcel & 0x3
@@ -314,7 +456,19 @@ def rvc_source_hot(parcel: int) -> int:
         elif funct3 in {0b101, 0b110, 0b111}:  # C.FSDSP / C.SWSP / C.FSWSP
             rs1, rs2 = 2, rs2_full
 
+    return rs1, rs2
+
+
+def rvc_source_hot(parcel: int) -> int:
+    """Return {rs2[1], rs1[2:1]} from the exact RVC expansion fields."""
+    rs1, rs2 = rvc_source_fields(parcel)
     return (((rs2 >> 1) & 1) << 2) | ((rs1 >> 1) & 0x3)
+
+
+def rvc_rs1_rest(parcel: int) -> int:
+    """Return the remaining rs1 field bits {rs1[4:3], rs1[0]}."""
+    rs1, _ = rvc_source_fields(parcel)
+    return ((rs1 >> 2) & 0x6) | (rs1 & 1)
 
 
 def make_sideband(word: int) -> int:
@@ -377,11 +531,15 @@ def make_sideband(word: int) -> int:
         sideband |= 1 << SB_PAIRABLE_COMPRESSED_HI
     if not compressed_hi and allows_slot2_after_hi:
         sideband |= 1 << SB_PAIRABLE_NATIVE_HI
-    sideband |= rvc_source_hot(lo) << SB_RVC_SOURCE_HOT_LO_LSB
-    sideband |= rvc_source_hot(hi) << SB_RVC_SOURCE_HOT_HI_LSB
+    sideband |= (rvc_source_hot(lo) & 3) << SB_RVC_SOURCE_HOT_LO_LSB
+    sideband |= (rvc_source_hot(hi) & 3) << SB_RVC_SOURCE_HOT_HI_LSB
     sideband |= rvc_bits24_20(lo) << SB_RVC_BITS24_20_LO_LSB
     sideband |= rvc_bits24_20(hi) << SB_RVC_BITS24_20_HI_LSB
+    sideband |= rvc_rs1_rest(lo) << SB_RVC_RS1_REST_LO_LSB
+    sideband |= rvc_rs1_rest(hi) << SB_RVC_RS1_REST_HI_LSB
 
+    sideband |= rvc_extra(lo) << 32
+    sideband |= rvc_extra(hi) << 55
     return sideband
 
 

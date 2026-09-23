@@ -51,6 +51,10 @@ module tomasulo_wrapper #(
     // their write enables to the cached tier.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    // Served MMIO register window: the load queue tags AMO writes with the
+    // router's MMIO BRAM-mask decode (o_amo_mem_write_is_mmio).
+    parameter int unsigned MMIO_ADDR = 32'h4000_0000,
+    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = 1'b0,
     parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
@@ -564,6 +568,9 @@ module tomasulo_wrapper #(
     output logic [       riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
     output logic [riscv_pkg::MemDataBits-1:0] o_amo_mem_write_data,
     output logic                              o_amo_mem_write_is_dword,
+    // Registered tier flags of o_amo_mem_write_addr (load_queue).
+    output logic                              o_amo_mem_write_is_mmio,
+    output logic                              o_amo_mem_write_is_cached,
     input  logic                              i_amo_mem_write_done,
 
     // =========================================================================
@@ -3008,6 +3015,8 @@ module tomasulo_wrapper #(
       .o_next_issue_is_sc(),  // unused: no SC ops in INT_RS
       .o_next_issue_needs_lq(),
       .o_pre_issue_rob_tag(),
+      .o_pre_issue_rob_tags(),
+      .o_pre_issue_sel(),
       .o_pre_issue_needs_lq(),
 
       // Flush (shared with ROB)
@@ -3106,6 +3115,8 @@ module tomasulo_wrapper #(
       .o_next_issue_is_sc(),  // unused: no SC ops in MUL_RS
       .o_next_issue_needs_lq(),
       .o_pre_issue_rob_tag(),
+      .o_pre_issue_rob_tags(),
+      .o_pre_issue_sel(),
       .o_pre_issue_needs_lq(),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -3126,10 +3137,13 @@ module tomasulo_wrapper #(
   // ---------------------------------------------------------------------------
   // MEM_RS (depth 8): Loads/stores (both INT and FP)
   // ---------------------------------------------------------------------------
-  riscv_pkg::rs_dispatch_t                                        mem_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                                        mem_rs_dispatch_2;
-  logic                    [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
-  logic                                                           mem_rs_pre_issue_needs_lq;
+  riscv_pkg::rs_dispatch_t                                          mem_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                                          mem_rs_dispatch_2;
+  logic                    [  riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag;
+  logic                                                             mem_rs_pre_issue_needs_lq;
+  logic                    [4*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags;
+  logic                    [4*riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tags_final;
+  logic                    [                                   1:0] mem_rs_pre_issue_sel;
 
   riscv_pkg::cdb_broadcast_t mem_rs_wakeup_0, mem_rs_wakeup_1;
   riscv_pkg::cdb_broadcast_t mem_rs_cdb_0, mem_rs_cdb_1;
@@ -3159,7 +3173,10 @@ module tomasulo_wrapper #(
   mem_wakeup_merge #(
       .FORMAL_STANDALONE_ENV(1'b0)
   ) u_mem_wakeup_merge (
-      .i_enable(EARLY_LOAD_WAKEUP && i_rst_n && !sc_fu_complete_reg.valid &&
+      // No reset term: MEM_RS entries, stage2 and pend flags and the LQ
+      // pre-issue registers all clear on reset, so a reset-cycle token has no
+      // effect after the edge. Keeping i_rst_n put its fanout ahead of wakeup.
+      .i_enable(EARLY_LOAD_WAKEUP && !sc_fu_complete_reg.valid &&
                 !store_misalign_fu_complete_reg.valid && !mem_adapter_result_pending),
       .i_load(lq_early_wakeup_load),
       .i_registered_0(cdb_bus_mem_qualified),
@@ -3202,6 +3219,7 @@ module tomasulo_wrapper #(
 
   reservation_station #(
       .DEPTH(riscv_pkg::MemRsDepth),
+      .PREISSUE_VALID_COFACTOR(EARLY_LOAD_WAKEUP),
       .HAS_SRC3(1'b0),
       .DISPATCH_REPAIR_BYPASS(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0),
@@ -3257,6 +3275,8 @@ module tomasulo_wrapper #(
       .o_next_issue_is_sc(mem_rs_next_is_sc),
       .o_next_issue_needs_lq(mem_rs_next_issue_needs_lq),
       .o_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag),
+      .o_pre_issue_rob_tags(mem_rs_pre_issue_rob_tags),
+      .o_pre_issue_sel(mem_rs_pre_issue_sel),
       .o_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -3455,6 +3475,8 @@ module tomasulo_wrapper #(
       .o_next_issue_is_sc         (),                              // unused: no SC ops in FP_RS
       .o_next_issue_needs_lq      (),
       .o_pre_issue_rob_tag        (),
+      .o_pre_issue_rob_tags       (),
+      .o_pre_issue_sel            (),
       .o_pre_issue_needs_lq       (),
       .i_flush_en                 (speculative_flush_en),
       .i_flush_tag                (i_flush_tag),
@@ -3614,6 +3636,8 @@ module tomasulo_wrapper #(
       .o_next_issue_is_sc(),  // unused: no SC ops in FMUL_RS
       .o_next_issue_needs_lq(),
       .o_pre_issue_rob_tag(),
+      .o_pre_issue_rob_tags(),
+      .o_pre_issue_sel(),
       .o_pre_issue_needs_lq(),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -3915,6 +3939,8 @@ module tomasulo_wrapper #(
       .o_next_issue_is_sc(),  // unused: no SC ops in FDIV_RS
       .o_next_issue_needs_lq(),
       .o_pre_issue_rob_tag(),
+      .o_pre_issue_rob_tags(),
+      .o_pre_issue_sel(),
       .o_pre_issue_needs_lq(),
       .i_flush_en(speculative_flush_en),
       .i_flush_tag(i_flush_tag),
@@ -4173,10 +4199,13 @@ module tomasulo_wrapper #(
   // Load Queue Instance
   // ===========================================================================
   load_queue #(
+      .PREISSUE_CANDIDATES(EARLY_LOAD_WAKEUP),
       .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .MMIO_ADDR(MMIO_ADDR),
+      .MMIO_SIZE_BYTES(MMIO_SIZE_BYTES),
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
   ) u_lq (
       .i_clk  (i_clk),
@@ -4196,7 +4225,9 @@ module tomasulo_wrapper #(
 
       // Pre-issue look-ahead (from MEM_RS, 1 cycle before i_addr_update;
       // shifts one cycle with the packet under active translation)
-      .i_pre_issue_rob_tag (mem_rs_pre_issue_rob_tag_final),
+      .i_pre_issue_rob_tag(mem_rs_pre_issue_rob_tag_final),
+      .i_pre_issue_rob_tags(mem_rs_pre_issue_rob_tags_final),
+      .i_pre_issue_sel(mem_rs_pre_issue_sel),
       .i_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq_final),
 
       // SQ disambiguation (internal wiring to store_queue)
@@ -4267,6 +4298,8 @@ module tomasulo_wrapper #(
       .o_amo_mem_write_addr(o_amo_mem_write_addr),
       .o_amo_mem_write_data(o_amo_mem_write_data),
       .o_amo_mem_write_is_dword(o_amo_mem_write_is_dword),
+      .o_amo_mem_write_is_mmio(o_amo_mem_write_is_mmio),
+      .o_amo_mem_write_is_cached(o_amo_mem_write_is_cached),
       .i_amo_mem_write_done(i_amo_mem_write_done),
 
       // L0 cache invalidation (from SQ)
@@ -4618,6 +4651,8 @@ module tomasulo_wrapper #(
 
   assign mem_rs_pre_issue_rob_tag_final =
       i_translation_active ? dmmu_pre_rob_tag : mem_rs_pre_issue_rob_tag;
+  assign mem_rs_pre_issue_rob_tags_final =
+      i_translation_active ? {4{dmmu_pre_rob_tag}} : mem_rs_pre_issue_rob_tags;
   assign mem_rs_pre_issue_needs_lq_final =
       i_translation_active ? dmmu_pre_needs_lq : mem_rs_pre_issue_needs_lq;
 

@@ -323,34 +323,39 @@ module c_ext_state #(
   // prediction_holdoff in the following cycle still clears the state before the
   // predicted target starts executing.
 
-  // The consumed pending-target handoff arrives after prediction arbitration.
-  // Compute the complete handoff=0 next state independently, then let that
-  // late handoff clear the final result. The pending-buffer capture implies
-  // i_prediction_holdoff, so it always belongs to the clear/override arm;
-  // removing only the handoff mask from that override is an exact cofactor.
-  // Keep the boundary so synthesis does not fold the handoff back through the
-  // state-preservation and ordinary-update priority logic.
-  (* keep = "true" *) logic prev_was_compressed_at_lo_without_handoff;
-  always_comb begin
-    prev_was_compressed_at_lo_without_handoff = o_prev_was_compressed_at_lo;
-    if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
+  // Complete both slot-2-valid outcomes, including pending handoff clear,
+  // before the late slot-2 bit selects the next buffer-valid state. The
+  // no-handoff expression remains as a simulation oracle for clear priority.
+  logic prev_was_compressed_at_lo_without_handoff;
+  logic [1:0] prev_without_handoff_cases;
+  (* keep = "true" *) logic [1:0] prev_compressed_next_cases;
+  logic prev_compressed_next;
+  // Slot-2 validity arrives from alignment/holdoff arbitration. Complete both
+  // next-state outcomes (including handoff clear) before selecting that bit.
+  for (genvar slot2 = 0; slot2 < 2; slot2++) begin : gen_buffer_slot2_case
+    always_comb begin
+      prev_without_handoff_cases[slot2] = o_prev_was_compressed_at_lo;
+      if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
         prediction_reset_buffer_state) begin
-      prev_was_compressed_at_lo_without_handoff = capture_pending_prediction_buffer;
-    end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
+        prev_without_handoff_cases[slot2] = capture_pending_prediction_buffer;
+      end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
                  !i_prediction_from_buffer_holdoff &&
                  !o_use_buffer_after_prediction &&
                  !i_pending_prediction_active) begin
-      // Slot 2 has already consumed the upper sibling when both parcels emit.
-      prev_was_compressed_at_lo_without_handoff =
-          is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
+        // Slot 2 has already consumed the upper sibling when both parcels emit.
+        prev_without_handoff_cases[slot2] = is_compressed_for_buffer && !i_pc_reg[1] && !slot2;
+      end
     end
-  end
 
-  // Control register: must be reset and cleared on control flow changes.
+    assign prev_compressed_next_cases[slot2] =
+        prev_without_handoff_cases[slot2] && !i_pending_prediction_target_handoff;
+  end
+  assign prev_was_compressed_at_lo_without_handoff = prev_without_handoff_cases[i_slot2_valid];
+  assign prev_compressed_next = prev_compressed_next_cases[i_slot2_valid];
+
   always_ff @(posedge i_clk) begin
-    o_prev_was_compressed_at_lo <=
-        prev_was_compressed_at_lo_without_handoff && !i_pending_prediction_target_handoff;
+    o_prev_was_compressed_at_lo <= prev_compressed_next;
   end
 
 `ifndef SYNTHESIS
@@ -468,6 +473,27 @@ module c_ext_state #(
     end
   end
 `endif
+`endif
+
+`ifdef C_EXT_BUFFER_LOCAL_PROOF
+  logic f_buffer_priority_ref;
+  always_comb begin
+    f_buffer_priority_ref = o_prev_was_compressed_at_lo;
+    if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
+        prediction_reset_buffer_state || i_pending_prediction_target_handoff) begin
+      f_buffer_priority_ref = 1'b0;
+      if (capture_pending_prediction_buffer_state) begin
+        f_buffer_priority_ref = 1'b1;
+      end
+    end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
+                 !pending_prediction_target_holdoff_needs_buffer &&
+                 !i_prediction_from_buffer_holdoff &&
+                 !o_use_buffer_after_prediction &&
+                 !i_pending_prediction_active) begin
+      f_buffer_priority_ref = is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
+    end
+    p_buffer_next_exact : assert (prev_compressed_next == f_buffer_priority_ref);
+  end
 `endif
 
 endmodule : c_ext_state

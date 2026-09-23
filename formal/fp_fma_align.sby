@@ -1,0 +1,29 @@
+[tasks]
+bmc
+bmc_xlen32
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv dsp_tiled_multiplier_unsigned.sv fp_lzc.sv fp_classify_operand.sv fp_operand_unpacker.sv fp_subnorm_shift.sv fp_result_assembler.sv
+read -formal -D SYNTHESIS -D FP_FMA_ALIGN_LOCAL_PROOF -sv fp_fma.sv
+bmc: chparam -set FP_WIDTH 64 fp_fma
+bmc_xlen32: chparam -set FP_WIDTH 32 fp_fma
+prep -top fp_fma
+select -assert-none t:$assume
+select -assert-count 2 t:$check
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_result_assembler.sv
+../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma.sv

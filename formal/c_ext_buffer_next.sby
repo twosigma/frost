@@ -1,0 +1,20 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read -formal -D SYNTHESIS -D C_EXT_STATE_LOCAL_PROOF -D C_EXT_BUFFER_LOCAL_PROOF -sv c_ext_state.sv
+prep -top c_ext_state
+select -assert-none t:$assume
+select -assert-count 1 t:$check
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv

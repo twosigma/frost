@@ -279,6 +279,12 @@ performs the wakeup. The option defaults off.
 The merge never changes ROB completion, SQ delivery, retirement, or DMA
 observation lifetime.
 
+Early wakeup also enables MEM_RS's four CDB-valid pre-issue tag candidates
+and the LQ's matching candidate registers. The LQ captures the comparisons,
+selector, and qualifying valid on the same existing edge. While translation
+is active, every candidate carries the DMMU pre-issue tag, so the selector is
+irrelevant. The scalar hint remains an integration oracle for this wiring.
+
 The early token is formed from registered state only: the LQ's CDB-stage
 occupancy (`o_fu_complete_staged`) and the non-recovery terms of
 `lq_result_accepted`. Recovery does not qualify it, which keeps the flush
@@ -335,3 +341,9 @@ readiness. Occupancy counters use the selected depth's width. Sixteen helps
 the decoded-queue/early-load configuration; thirty-two adds negligible benefit.
 INT_RS's second issue port keeps an eight-entry window (`ISSUE2_WINDOW`; see
 the [reservation station](../reservation_station/README.md)) at any depth.
+
+Persistent store-address repair classifies the MMIO quadrant for each source in
+parallel, then applies the same source priority as the full-width address. The
+candidate sums need only the low 32 bits; address capture remains full width.
+No-match payloads retain the original zero-base result. `sq_repair_mmio` proves
+both flags against the original selected-address expression, including wraps.

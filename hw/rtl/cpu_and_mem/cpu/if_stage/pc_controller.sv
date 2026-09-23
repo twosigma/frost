@@ -438,6 +438,7 @@ module pc_controller #(
   logic            pending_predecessor_needs_emit;
   logic [XLEN-2:0] seq_next_pc_reg_hw_q;
   logic            halfword_target_lead_catchup;
+  logic            fetch_is_halfword_ahead;
   logic            lower_parcel_window_resteer_q;
   logic            same_word_lower_parcel_catchup;
   logic            clear_pending_prediction_state;
@@ -454,6 +455,14 @@ module pc_controller #(
   assign pc_reg_after_pending = pc_reg_hw > pending_prediction_pc_hw;
   assign seq_reaches_pending = seq_next_pc_reg_hw_q >= pending_prediction_pc_hw;
   assign pc_reg_at_pending_predecessor = o_pc_reg == pending_prediction_prev_pc;
+  // A == B + 2 (modulo XLEN) has a local carry witness B[k] & !A[k].
+  // Compare those bit relationships in parallel instead of putting a full
+  // incrementer before the catch-up equality on the fetch-PC feedback path.
+  logic [XLEN-1:0] fetch_arch_pc_xor;
+  logic [XLEN-2:0] fetch_arch_pc_carry;
+  assign fetch_arch_pc_xor = o_pc ^ o_pc_reg;
+  assign fetch_arch_pc_carry = o_pc_reg[XLEN-2:0] & ~o_pc[XLEN-2:0];
+  assign fetch_is_halfword_ahead = fetch_arch_pc_xor == {fetch_arch_pc_carry[XLEN-2:1], 2'b10};
   assign pending_predecessor_needs_emit =
       i_window_cannot_serve_raw || carve_out_engaged_q || i_prediction_holdoff;
 
@@ -756,7 +765,7 @@ module pc_controller #(
       !i_sel_nop &&
       i_is_compressed &&
       o_pc_reg[1] &&
-      (o_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed));
+      fetch_is_halfword_ahead;
   // A window-resteer from a high-half architectural PC deliberately backs the
   // fetch lookup up by one parcel.  Suppress that parcel's BTB row externally
   // and use the existing +2 sequential arm after the real bundle is emitted,
@@ -917,6 +926,34 @@ module pc_controller #(
   logic trap_or_mret;
   assign trap_or_mret = i_trap_taken || i_mret_taken;
 
+  // Pending decisions inside the private fetch-data candidate ignore current
+  // redirects. The original higher-priority arms still select those redirects,
+  // so their late qualifiers need not traverse the pending-event logic first.
+  logic pending_mux_valid;
+  logic pending_mux_cross, pending_mux_target, pending_mux_use;
+  logic pending_mux_predecessor, pending_mux_release, pending_mux_emit;
+  logic pending_mux_hold, pending_mux_wcs_override, pending_mux_consume_is_seq;
+  assign pending_mux_valid = pending_prediction_valid && !redirect_kill_pending_q;
+  assign pending_mux_cross = pending_mux_valid && pending_prediction_allow_cross_pc_mux_q &&
+      pc_reg_before_pending && seq_reaches_pending;
+  assign pending_mux_target = pending_mux_valid && pc_reg_at_pending &&
+      (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q ||
+       (i_prediction_holdoff && !i_prediction_from_buffer_holdoff));
+  assign pending_mux_use = pending_mux_cross || pending_mux_target;
+  // The predecessor exception uses canonical allow_cross, just as pim_base
+  // does. Do not assume its timing replica equals it in a local mux proof.
+  assign pending_mux_predecessor = pending_mux_valid &&
+      !pending_prediction_ready_without_effective && !pc_reg_after_pending &&
+      pc_reg_at_pending_predecessor;
+  assign pending_mux_release = pending_mux_predecessor &&
+      (carve_out_engaged_q || i_prediction_holdoff);
+  assign pending_mux_emit = pending_mux_predecessor && pending_predecessor_needs_emit;
+  assign pending_mux_hold = pending_mux_valid && !pending_mux_use &&
+      !pc_reg_after_pending && !pending_mux_release;
+  assign pending_mux_wcs_override = i_window_cannot_serve_raw && pending_mux_predecessor;
+  assign pending_mux_consume_is_seq = pending_prediction_allow_cross_pc_mux_q &&
+      pending_mux_target && !pending_prediction_from_buffer && pending_prediction_fetch_at_target;
+
   // ---------------------------------------------------------------------------
   // next_pc: preserve the one-hot winner interface, then isolate predictions
   // at a final completed-data mux. The fourteen original arm conditions,
@@ -1057,8 +1094,9 @@ module pc_controller #(
     end
   end
 
-  // Complete non-sequential fetch data with reset, window resteer, catch-up,
-  // and both current predictions disabled. Substitute o_pc for every sequential
+  // Complete non-sequential fetch data with reset, window resteer, progress
+  // hold, catch-up, and both current predictions disabled. Substitute o_pc
+  // for every sequential
   // datum in this kept base, so late size selection enters only the final mux.
   // This cofactor's winners select the sequential value, including consume
   // and raw-WCS override cases. Complete slot-1 and served-window choices
@@ -1074,13 +1112,16 @@ module pc_controller #(
     npc_cond_without_prediction = npc_cond;
     npc_cond_without_prediction[0] = 1'b0;
     npc_cond_without_prediction[5] = 1'b0;
+    npc_cond_without_prediction[6] = 1'b0;
     npc_cond_without_prediction[7] = 1'b0;
     npc_cond_without_prediction[8] = 1'b0;
+    npc_cond_without_prediction[10] = pending_mux_use;
     npc_cond_without_prediction[11] = 1'b0;
+    npc_cond_without_prediction[12] = pending_mux_hold;
     for (int unsigned k = 0; k < NPcArms; k++) npc_val_without_sequential[k] = npc_val[k];
-    npc_val_without_sequential[10] = npc_consume_is_seq ? o_pc : pending_prediction_target;
+    npc_val_without_sequential[10] = pending_mux_consume_is_seq ? o_pc : pending_prediction_target;
     npc_val_without_sequential[11] = o_pc;
-    npc_val_without_sequential[12] = pending_wcs_seq_override_pc_mux ? o_pc :
+    npc_val_without_sequential[12] = pending_mux_wcs_override ? o_pc :
         (pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
          pending_prediction_pc);
     npc_val_without_sequential[13] = o_pc;
@@ -1093,22 +1134,20 @@ module pc_controller #(
     end
   end
   assign npc_sequential_override =
-      (npc_sel_without_prediction[10] && npc_consume_is_seq) ||
+      (npc_sel_without_prediction[10] && pending_mux_consume_is_seq) ||
       npc_sel_without_prediction[11] ||
-      (npc_sel_without_prediction[12] && pending_wcs_seq_override_pc_mux) ||
+      (npc_sel_without_prediction[12] && pending_mux_wcs_override) ||
       npc_sel_without_prediction[13];
-  assign npc_slot1_override = !(|npc_cond_without_prediction[6:1]) && npc_cond[8];
-  // Complete non-sequential data, including slot 1 and served-window resteer,
-  // independently of sequential and canonical slot-2 data. The final permission
-  // retains all six earlier arms. Reset stays outside the preserved datum.
+  assign npc_slot1_override = !(|npc_cond_without_prediction[5:1]) && npc_cond[8];
+  // Complete the no-window-resteer non-sequential data, including slot 1,
+  // independently of sequential and canonical slot-2 data. Window resteer and
+  // progress hold enter only the final data mux below; current redirects keep
+  // their higher priority.
   (* keep = "true" *) logic [XLEN-1:0] next_pc_without_slot2_or_sequential;
   (* keep = "true" *) logic npc_slot2_permission;
   assign next_pc_without_slot2_or_sequential =
-      (i_window_cannot_serve && pc_reg_live_redirect_permission) ?
-      {o_pc_reg[XLEN-1:2], 2'b00} :
-      (npc_slot1_override ? npc_val[8] : next_pc_without_prediction_or_sequential);
-  assign npc_slot2_permission =
-      pc_reg_live_redirect_permission && !i_window_cannot_serve && i_fetch_progress;
+      npc_slot1_override ? npc_val[8] : next_pc_without_prediction_or_sequential;
+  assign npc_slot2_permission = pc_reg_live_redirect_permission;
   // Catch-up follows every earlier arm, including slot 1 and pending consume.
   // Complete its permission without late NOP, served-window or slot-1 control.
   // Canonical slot 2 has higher final priority and therefore need not enter
@@ -1116,14 +1155,14 @@ module pc_controller #(
   (* keep = "true" *)logic npc_catchup_permission_without_nop_or_wcs;
   (* keep = "true" *)logic npc_catchup_request_without_slot1;
   assign npc_catchup_permission_without_nop_or_wcs =
-      !(|npc_cond[4:1]) && !npc_cond[6] && !(|npc_cond[10:9]) &&
+      !(|npc_cond[4:1]) && !(|npc_cond[10:9]) &&
       !pending_prediction_effective &&
       (o_fetch_lookup_is_lower_parcel ||
        (pending_prediction_target_holdoff_prev_q &&
         !pending_prediction_target_holdoff_q && i_is_compressed && o_pc_reg[1] &&
-        (o_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed))));
+        fetch_is_halfword_ahead));
   assign npc_catchup_request_without_slot1 =
-      npc_catchup_permission_without_nop_or_wcs && !i_window_cannot_serve && !i_sel_nop;
+      npc_catchup_permission_without_nop_or_wcs && !i_sel_nop;
   // The cofactor winners already carry every ordinary sequential priority
   // except WCS and current predictions. Complete both requests without slot 1,
   // then apply that common guard only to the combined request. Its true value
@@ -1133,26 +1172,61 @@ module pc_controller #(
   // enters the kept non-sequential base.
   (* keep = "true" *)logic npc_ordinary_sequential_request_without_slot1;
   logic npc_combined_sequential_request;
-  assign npc_ordinary_sequential_request_without_slot1 =
-      !i_window_cannot_serve && npc_sequential_override;
+  assign npc_ordinary_sequential_request_without_slot1 = npc_sequential_override;
   assign npc_combined_sequential_request = !npc_cond[8] &&
       (npc_ordinary_sequential_request_without_slot1 || npc_catchup_request_without_slot1);
   assign next_pc_sequential_target =
       npc_catchup_request_without_slot1 ? seq_next_pc_plus_2 : seq_next_pc;
-  // Preserve only the three final winners. Reset is part of these scalar
-  // controls, outside the completed data words. Their mutually exclusive
-  // masks leave one three-term data reduction after every completed datum.
-  (* keep = "true" *)logic npc_final_slot2_winner;
-  (* keep = "true" *)logic npc_final_sequential_winner;
-  (* keep = "true" *)logic npc_final_nonseq_winner;
-  assign npc_final_slot2_winner = !i_reset && npc_slot2_permission && npc_cond[7];
-  assign npc_final_sequential_winner =
-      !i_reset && !(npc_slot2_permission && npc_cond[7]) && npc_combined_sequential_request;
-  assign npc_final_nonseq_winner =
-      !i_reset && !(npc_slot2_permission && npc_cond[7]) && !npc_combined_sequential_request;
-  assign next_pc = ({XLEN{npc_final_slot2_winner}} & npc_val[7]) |
-      ({XLEN{npc_final_sequential_winner}} & next_pc_sequential_target) |
-      ({XLEN{npc_final_nonseq_winner}} & next_pc_without_slot2_or_sequential);
+  // Complete the non-sequential word including progress hold. Slot-2 and
+  // sequential requests stay independent: priority belongs to the final bit
+  // mux, not a slot-2 -> sequential-winner -> data chain. Each Xilinx bit fits
+  // one LUT6: reset, two requests, and three completed data inputs.
+  (* keep = "true" *) logic [XLEN-1:0] npc_final_nonseq_data;
+  (* keep = "true" *) logic npc_final_slot2_request, npc_final_sequential_request;
+  // Only these final requests include the late served-window predicate.
+  // No earlier kept permission or sequential datum depends on it.
+  assign npc_final_slot2_request = pc_reg_live_redirect_permission &&
+      i_fetch_progress && !i_window_cannot_serve && npc_cond[7];
+  assign npc_final_sequential_request = i_fetch_progress &&
+      !i_window_cannot_serve && npc_combined_sequential_request;
+`ifdef FROST_XILINX_PRIMS
+  for (genvar bit_idx = 0; bit_idx < XLEN; bit_idx++) begin : gen_fetch_pc_bit_mux
+    // Address order: {held fetch PC, aligned arch PC, base, permission,
+    // progress, window resteer}. One LUT completes the non-prediction word.
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(64'hffb05f10efa04f00)
+    ) u_nonseq (
+        .I0(i_window_cannot_serve),
+        .I1(i_fetch_progress),
+        .I2(pc_reg_live_redirect_permission),
+        .I3(next_pc_without_slot2_or_sequential[bit_idx]),
+        .I4(bit_idx < 2 ? 1'b0 : o_pc_reg[bit_idx]),
+        .I5(o_pc[bit_idx]),
+        .O (npc_final_nonseq_data[bit_idx])
+    );
+    // INIT address order is {nonseq, sequential, slot2, seq_req, slot2_req, reset}.
+    (* dont_touch = "true" *)
+    LUT6 #(
+        .INIT(64'h5511450154104400)
+    ) u_mux (
+        .I0(i_reset),
+        .I1(npc_final_slot2_request),
+        .I2(npc_final_sequential_request),
+        .I3(npc_val[7][bit_idx]),
+        .I4(next_pc_sequential_target[bit_idx]),
+        .I5(npc_final_nonseq_data[bit_idx]),
+        .O (next_pc[bit_idx])
+    );
+  end
+`else
+  assign npc_final_nonseq_data = !pc_reg_live_redirect_permission ?
+      next_pc_without_slot2_or_sequential : i_window_cannot_serve ?
+      {o_pc_reg[XLEN-1:2], 2'b00} : !i_fetch_progress ? o_pc :
+      next_pc_without_slot2_or_sequential;
+  assign next_pc = i_reset ? '0 : npc_final_slot2_request ? npc_val[7] :
+      npc_final_sequential_request ? next_pc_sequential_target : npc_final_nonseq_data;
+`endif
 
   // next_pc_reg uses the registered prediction handoff for both BTB and RAS
   // predictions. next_pc still redirects fetch immediately, but pc_reg is the
@@ -1807,6 +1881,10 @@ module pc_controller #(
 
 
 `ifdef FETCH_MUX_LOCAL_PROOF
+  always_comb begin
+    p_catchup_increment_equality :
+    assert (fetch_is_halfword_ahead == (o_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed)));
+  end
   logic [XLEN-1:0] fetch_mux_onehot_reference;
   logic [XLEN-1:0] fetch_ref;
   logic fetch_mux_original_pending_hold;

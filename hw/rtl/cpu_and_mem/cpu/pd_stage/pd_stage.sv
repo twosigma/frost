@@ -75,6 +75,8 @@ module pd_stage #(
   logic [ 2:0] decompressed_instr_bits14_12_fast;
   logic        decomp_is_compressed;
   logic        decomp_illegal;
+  logic        decomp_illegal_reference;
+  assign decomp_illegal = i_from_if_to_pd.rvc_extra_predecoded[22];
 
   rvc_decompressor decompressor_inst (
       .i_instr_compressed(i_from_if_to_pd.raw_parcel),
@@ -91,7 +93,7 @@ module pd_stage #(
       .o_instr_expanded_bits24_20_fast(decompressed_instr_bits24_20_fast),
       .o_is_compressed(decomp_is_compressed),
       .o_illegal(),
-      .o_illegal_fast(decomp_illegal)
+      .o_illegal_fast(decomp_illegal_reference)
   );
 
   // Derive the PD-local compressed select from the raw parcel bits instead of
@@ -129,26 +131,34 @@ module pd_stage #(
     end else instruction_non_nop = i_from_if_to_pd.effective_instr;
   end
 
-  // The two slot-1 instruction endpoints in the current low-IMEM set are
-  // rs1[2:1], instruction bits [17:16]. Drive those two D inputs from the
-  // source-hot metadata IF carries instead. Every other instruction bit, and
-  // all early-source bits, keep their existing cones.
+  // Both source fields use the metadata selected by IF alongside the parcel.
+  // The original hot lanes supply rs1[2:1]; rs1_rest supplies {rs1[4:3],rs1[0]}.
+  // All five bits of rs2 come from bits24_20_predecoded.
   assign instruction_non_nop_with_hot_rs1 = {
     instruction_non_nop[31:25],
     i_from_if_to_pd.bits24_20_predecoded,
-    instruction_non_nop[19:18],
+    i_from_if_to_pd.rs1_rest_predecoded[2:1],
     i_from_if_to_pd.source_hot_predecoded[1:0],
-    instruction_non_nop[15:0]
+    i_from_if_to_pd.rs1_rest_predecoded[0],
+    instruction_non_nop[14:0]
   };
 
-  // TIMING: bits [24:20] (rs2 for register formats) come from IF's
-  // predecoded field: the IMEM sideband's RVC expansion or the native word,
-  // already selected. The decompressor's rs2 cofactors and the fetched-parcel
-  // select leave the IMEM-to-PD rs2 path; the check below pins equality.
+  // TIMING: bits [24:15] come from IF's predecoded source fields: the IMEM
+  // sideband's RVC expansion or the native word, already selected. Both early
+  // source registers avoid the runtime decompressor; checks below pin equality.
   logic [31:0] instruction_non_nop_predecoded_rs2;
   always_comb begin
-    instruction_non_nop_predecoded_rs2 = instruction_non_nop;
+    instruction_non_nop_predecoded_rs2 = i_from_if_to_pd.effective_instr;
+    if (pd_sel_compressed) begin
+      instruction_non_nop_predecoded_rs2[31:25] = i_from_if_to_pd.rvc_extra_predecoded[21:15];
+      instruction_non_nop_predecoded_rs2[14:0]  = i_from_if_to_pd.rvc_extra_predecoded[14:0];
+    end
     instruction_non_nop_predecoded_rs2[24:20] = i_from_if_to_pd.bits24_20_predecoded;
+    instruction_non_nop_predecoded_rs2[19:15] = {
+      i_from_if_to_pd.rs1_rest_predecoded[2:1],
+      i_from_if_to_pd.source_hot_predecoded[1:0],
+      i_from_if_to_pd.rs1_rest_predecoded[0]
+    };
   end
 
   always_comb begin
@@ -221,9 +231,9 @@ module pd_stage #(
   // canonical instruction-source registers, so this also keeps its
   // reconstructed instruction coherent.
   assign source_reg_1_2 = {
-    instruction_non_nop_2[19:18],
+    i_from_if_to_pd_2.rs1_rest_predecoded[2:1],
     i_from_if_to_pd_2.source_hot_predecoded[1:0],
-    instruction_non_nop_2[15]
+    i_from_if_to_pd_2.rs1_rest_predecoded[0]
   };
   // rs2 comes entirely from IF's per-candidate predecoded bits [24:20].
   assign source_reg_2_2 = i_from_if_to_pd_2.bits24_20_predecoded;
@@ -264,6 +274,7 @@ module pd_stage #(
               i_from_if_to_pd.fetch_fault,
               i_from_if_to_pd.source_hot_predecoded,
               i_from_if_to_pd.bits24_20_predecoded,
+              i_from_if_to_pd.rs1_rest_predecoded,
               instruction_non_nop
             }
         ) && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault) begin
@@ -272,6 +283,13 @@ module pd_stage #(
           i_from_if_to_pd.source_hot_predecoded ==
           {instruction_non_nop[21], instruction_non_nop[17:16]}
       );
+      p_slot1_rvc_expansion_matches_instruction :
+      assert (!pd_sel_compressed ||
+              (instruction_non_nop_predecoded_rs2 == instruction_non_nop &&
+               decomp_illegal == decomp_illegal_reference));
+      p_slot1_rs1_rest_match_instruction :
+      assert (i_from_if_to_pd.rs1_rest_predecoded ==
+          {instruction_non_nop[19:18], instruction_non_nop[15]});
       p_slot1_bits24_20_match_instruction :
       assert (i_from_if_to_pd.bits24_20_predecoded == instruction_non_nop[24:20]);
     end
@@ -280,6 +298,8 @@ module pd_stage #(
               i_from_if_to_pd_2.sel_nop,
               i_from_if_to_pd_2.fetch_fault,
               i_from_if_to_pd_2.source_hot_predecoded,
+              i_from_if_to_pd_2.bits24_20_predecoded,
+              i_from_if_to_pd_2.rs1_rest_predecoded,
               instruction_non_nop_2
             }
         ) && !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault) begin
@@ -680,7 +700,7 @@ module pd_stage #(
       // sel_nop select off the 32-bit instruction D-mux, which is what x3
       // timing needs. final_instruction still provides bubble-qualified early
       // source fields below; their timing depends on the selected IF parcel.
-      o_from_pd_to_id.instruction <= instruction_non_nop_with_hot_rs1;
+      o_from_pd_to_id.instruction <= instruction_non_nop_predecoded_rs2;
       o_from_pd_to_id.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r ||
                                     i_from_if_to_pd.sel_nop;
       o_from_pd_to_id.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||

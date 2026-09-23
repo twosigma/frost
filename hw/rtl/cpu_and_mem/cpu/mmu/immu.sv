@@ -510,10 +510,14 @@ module immu #(
   // Visibility boundary.  Invalid translated payload may be stale/arbitrary;
   // fault bits are forced low so no consumer can observe a mismatched tag.
   // ---------------------------------------------------------------------------
+  // Translation preserves the page offset, and a visible result's tag equals
+  // the live PC. Drive those bits directly in both modes so satp.MODE does not
+  // fan through the low-BRAM read address. Invisible translated payload remains
+  // unspecified, as above; validity and fault timing are unchanged.
+  assign o_pa0 = {i_active ? pa0_q[31:12] : i_pc[31:12], i_pc[11:0]};
+  assign o_pa1 = {i_active ? pa1_q[31:12] : bare_pa1[31:12], pc_plus4_lo, 2'b00};
   always_comb begin
     if (!i_active) begin
-      o_pa0 = i_pc[31:0];
-      o_pa1 = bare_pa1;
       o_pa_valid = 1'b1;
       o_fault0 = bare_verdict.bare_fault0;
       o_fault0_page = 1'b0;
@@ -521,8 +525,6 @@ module immu #(
       o_fault1_page = 1'b0;
       o_line_after_ok = 1'b1;
     end else begin
-      o_pa0 = pa0_q;
-      o_pa1 = pa1_q;
       o_pa_valid = translated_visible;
       o_fault0 = translated_visible && f0_q;
       o_fault0_page = translated_visible && f0p_q;
@@ -567,6 +569,8 @@ module immu #(
   always_ff @(posedge i_clk) begin
     if (!i_rst && !$isunknown({i_pc, i_priv_u, np_va_q, o_walk_req_valid, o_walk_vpn})) begin
       if (translated_visible) begin
+        p_visible_pa0_exact : assert (o_pa0 == pa0_q);
+        p_visible_pa1_exact : assert (o_pa1 == pa1_q);
         p_visible_tag_exact :
         assert (key_valid_q && (key_va_q == i_pc) && (key_priv_u_q == i_priv_u) && resolved_q);
       end
@@ -581,6 +585,25 @@ module immu #(
       if (walk_resp_arrived) begin
         p_walk_response_echo : assert (i_walk_resp.vpn == walk_vpn_q);
       end
+    end
+  end
+`endif
+
+`ifdef IMMU_PAGE_OFFSET_LOCAL_PROOF
+  // The translation payload and its VA key capture together. Prove the
+  // offset invariant even for arbitrary ITLB answers, faults and retargets,
+  // then prove the public PA is identical whenever the old result is visible.
+  logic f_offset_past_valid = 1'b0;
+  logic [11:0] f_key_next_offset;
+  assign f_key_next_offset = {key_va_q[11:2] + 10'd1, 2'b00};
+  always @(posedge i_clk) begin
+    f_offset_past_valid <= 1'b1;
+    if (!f_offset_past_valid) assume (i_rst);
+    if (f_offset_past_valid) begin
+      p_key_pa0_offset : assert (!key_valid_q || pa0_q[11:0] == key_va_q[11:0]);
+      p_key_pa1_offset : assert (!key_valid_q || pa1_q[11:0] == f_key_next_offset);
+      p_public_pa0_exact : assert (!translated_visible || o_pa0 == pa0_q);
+      p_public_pa1_exact : assert (!translated_visible || o_pa1 == pa1_q);
     end
   end
 `endif

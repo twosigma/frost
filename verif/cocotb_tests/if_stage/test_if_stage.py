@@ -17,6 +17,9 @@
 from collections.abc import Mapping
 from typing import Any
 
+import importlib.util
+from pathlib import Path
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
@@ -30,6 +33,20 @@ from utils.packed_structs import (
     pack_struct as _pack_struct,
     unpack_struct as _unpack_struct,
 )
+
+
+def _extra_sideband(word: int) -> int:
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "sw/common/generate_imem_predecode_init.py"
+    )
+    spec = importlib.util.spec_from_file_location("expanded_predecode_model", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return (module.rvc_extra(word & 0xFFFF) << 32) | (
+        module.rvc_extra(word >> 16) << 55
+    )
 
 
 CLOCK_PERIOD_NS = 10
@@ -65,8 +82,12 @@ SB_ALLOWS_SLOT2_AFTER_HI = 9
 SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
 SB_RVC_SOURCE_HOT_LO_LSB = 12
-SB_RVC_SOURCE_HOT_HI_LSB = 15
-SIDEBAND_WIDTH = 28
+SB_RVC_SOURCE_HOT_HI_LSB = 14
+SB_RVC_BITS24_20_LO_LSB = 16
+SB_RVC_BITS24_20_HI_LSB = 21
+SB_RVC_RS1_REST_LO_LSB = 26
+SB_RVC_RS1_REST_HI_LSB = 29
+SIDEBAND_WIDTH = 78
 
 
 TRAP_CTRL_FIELDS = [
@@ -105,6 +126,8 @@ def _sideband(
     native_pairable_hi: bool = False,
     rvc_source_hot_lo: int = 0,
     rvc_source_hot_hi: int = 0,
+    rvc_rs1_rest_lo: int = 0,
+    rvc_rs1_rest_hi: int = 0,
 ) -> int:
     """Build one 32-bit-word instruction-memory sideband value."""
     allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
@@ -144,8 +167,12 @@ def _sideband(
         | _bit(allows_slot2_after_hi, SB_ALLOWS_SLOT2_AFTER_HI)
         | _bit(slot2_start_valid_lo, SB_SLOT2_START_VALID_LO)
         | _bit(slot2_start_valid_hi, SB_SLOT2_START_VALID_HI)
-        | ((rvc_source_hot_lo & 0x7) << SB_RVC_SOURCE_HOT_LO_LSB)
-        | ((rvc_source_hot_hi & 0x7) << SB_RVC_SOURCE_HOT_HI_LSB)
+        | ((rvc_source_hot_lo & 0x3) << SB_RVC_SOURCE_HOT_LO_LSB)
+        | ((rvc_source_hot_hi & 0x3) << SB_RVC_SOURCE_HOT_HI_LSB)
+        | (((rvc_source_hot_lo >> 2) & 1) << (SB_RVC_BITS24_20_LO_LSB + 1))
+        | (((rvc_source_hot_hi >> 2) & 1) << (SB_RVC_BITS24_20_HI_LSB + 1))
+        | ((rvc_rs1_rest_lo & 0x7) << SB_RVC_RS1_REST_LO_LSB)
+        | ((rvc_rs1_rest_hi & 0x7) << SB_RVC_RS1_REST_HI_LSB)
     )
 
 
@@ -216,6 +243,8 @@ def _drive_fetch(
     served_high: int = 0,
 ) -> None:
     """Drive instruction data, predecode sideband, and exact rd predicates."""
+    current_sb |= _extra_sideband(current_word)
+    next_sb |= _extra_sideband(next_word)
     dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb, next_sb=next_sb)
     positional_metadata = _pc_metadata(current_sb=current_sb, next_sb=next_sb)
@@ -1619,6 +1648,8 @@ async def test_stall_registered_replays_compressed_source_hot_metadata(
             compressed_hi=True,
             rvc_source_hot_lo=source_hot_1,
             rvc_source_hot_hi=source_hot_2,
+            rvc_rs1_rest_lo=1,
+            rvc_rs1_rest_hi=0,
         ),
     )
     _drive_pipeline_ctrl(dut, {"stall": True})
@@ -1632,6 +1663,7 @@ async def test_stall_registered_replays_compressed_source_hot_metadata(
         effective=current_word,
         compressed=True,
     )
+    assert packet1["rs1_rest_predecoded"] == 1
     assert packet1["source_hot_predecoded"] == source_hot_1 == 1
 
     packet2 = _read_if_packet(dut, slot2=True)
@@ -1642,6 +1674,7 @@ async def test_stall_registered_replays_compressed_source_hot_metadata(
         effective=expanded_addi_x6_2,
         compressed=True,
     )
+    assert packet2["rs1_rest_predecoded"] == 0
     assert packet2["source_hot_predecoded"] == source_hot_2 == 7
 
     await _advance_cycle(dut)
@@ -1660,6 +1693,7 @@ async def test_stall_registered_replays_compressed_source_hot_metadata(
         effective=current_word,
         compressed=True,
     )
+    assert packet1["rs1_rest_predecoded"] == 1
     assert packet1["source_hot_predecoded"] == source_hot_1
 
     packet2 = _read_if_packet(dut, slot2=True)
@@ -1670,6 +1704,7 @@ async def test_stall_registered_replays_compressed_source_hot_metadata(
         effective=expanded_addi_x6_2,
         compressed=True,
     )
+    assert packet2["rs1_rest_predecoded"] == 0
     assert packet2["source_hot_predecoded"] == source_hot_2
 
 

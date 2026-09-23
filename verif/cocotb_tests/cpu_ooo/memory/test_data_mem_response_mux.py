@@ -38,6 +38,7 @@ OUTPUTS = (
     "data_mem_wr_data",
     "data_mem_per_byte_wr_en",
     "data_mem_bram_byte_wr_en",
+    "data_mem_bram_write_any",
     "data_mem_read_enable",
     "data_mem_cached_byte_wr_en",
     "data_mem_cached_wr_data",

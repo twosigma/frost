@@ -197,6 +197,14 @@ cannot double-count an entry. The counter updates on the same edge as
 latency. This registered status boundary keeps the `sq_valid` reduction tree
 out of the LQ empty-bypass and cache-read launch cone.
 
+Both counters keep the dispatch valids, which arrive last through the
+dispatch fire tree, out of their arithmetic: the next live count and the two
+back-pressure comparisons are each evaluated for the three allocation
+outcomes (no request, exactly one, both) from the request-independent terms,
+and the pair of valids selects one candidate as the final logic level before
+the flops. Simulation and formal compare the selected value with the adder
+form it replaces.
+
 ## Widen-commit slot 2
 
 The SQ accepts a parallel slot-2 commit port (`i_commit_valid_2`,

@@ -27,8 +27,14 @@
  * A registered front-end retarget cancels a stale repeat on the same edge that
  * the architectural fetch PC moves. An unresolved physical pair is never
  * repeated: the live physical result must be sampled until it becomes visible.
+ * SEPARATE_ADDRESS_RETARGET lets the cached integration omit a high-provider
+ * transition from low PA bits [15:0] only. Upper region bits, metadata and
+ * response controls keep the canonical retarget; the caller must mask low
+ * responses while the high provider owns the request.
  */
-module low_bram_fetch_presenter (
+module low_bram_fetch_presenter #(
+    parameter bit SEPARATE_ADDRESS_RETARGET = 1'b0
+) (
     input logic i_clk,
     input logic i_rst,
     input logic i_response_ready,
@@ -43,6 +49,10 @@ module low_bram_fetch_presenter (
     // The presenter is kept small and has no PC detector of its own, so IF
     // supplies this.
     input logic i_retarget,
+    // Optional low-address cofactor. The caller masks low responses while
+    // crossing into the high provider. Upper PA bits keep the canonical
+    // retarget so that overlay qualification and history cannot alias low.
+    input logic i_address_retarget,
     input logic [31:0] i_pc,
     input logic [31:0] i_pa0,
     input logic [31:0] i_pa1,
@@ -70,6 +80,7 @@ module low_bram_fetch_presenter (
   logic presented_fault1_q, presented_fault1_page_q;
   logic slow_response_published_q;
   logic repeat_presented;
+  logic repeat_address;
   logic live_matches_presented;
 
   assign live_matches_presented =
@@ -90,9 +101,19 @@ module low_bram_fetch_presenter (
   assign repeat_presented = presented_owner_low_q && presented_pa_valid_q &&
       !i_retarget && (!i_response_ready || (i_publish_hold && !i_response_overlay_hit));
 
+  assign repeat_address = SEPARATE_ADDRESS_RETARGET ?
+      (presented_owner_low_q && presented_pa_valid_q && !i_address_retarget &&
+       (!i_response_ready || (i_publish_hold && !i_response_overlay_hit))) : repeat_presented;
+
   assign o_fetch_address = repeat_presented ? presented_pc_q : i_pc;
-  assign o_fetch_pa0 = repeat_presented ? presented_pa0_q : i_pa0;
-  assign o_fetch_pa1 = repeat_presented ? presented_pa1_q : i_pa1;
+  assign o_fetch_pa0 = {
+    repeat_presented ? presented_pa0_q[31:16] : i_pa0[31:16],
+    repeat_address ? presented_pa0_q[15:0] : i_pa0[15:0]
+  };
+  assign o_fetch_pa1 = {
+    repeat_presented ? presented_pa1_q[31:16] : i_pa1[31:16],
+    repeat_address ? presented_pa1_q[15:0] : i_pa1[15:0]
+  };
   assign o_fetch_pa_valid = repeat_presented ? presented_pa_valid_q : i_pa_valid;
   assign o_fetch_fault0 = repeat_presented ? presented_fault0_q : i_fault0;
   assign o_fetch_fault0_page = repeat_presented ? presented_fault0_page_q : i_fault0_page;

@@ -483,6 +483,65 @@ module sq_early_addr_pipeline (
       sq_early_addr_repair_base_hold_2_q + sq_early_addr_repair_imm_2_q
   );
 
+  // Classify each repair source in parallel with tag matching. Only bits
+  // [31:30] select the MMIO quadrant, so each candidate needs a 32-bit sum.
+  // The selected address remains full width; the kept flags prevent late
+  // match/priority selection from moving back ahead of these adders.
+  logic [7:0][31:0] repair_bases_low;
+  logic [1:0][31:0] repair_immediates_low;
+  logic [1:0][7:0] repair_conditions;
+  logic [1:0][3:0] repair_pair_matches;
+  logic [1:0][1:0] repair_half_matches;
+  (* keep = "true" *) logic [1:0][7:0] repair_mmio_candidates;
+  logic [1:0][3:0] repair_mmio_pairs;
+  logic [1:0][1:0] repair_mmio_halves;
+  logic [1:0] repair_is_mmio;
+  assign repair_bases_low = {
+    i_cdb_2.value[31:0],
+    i_cdb.value[31:0],
+    done_repair_base_6_q[31:0],
+    done_repair_base_5_q[31:0],
+    done_repair_base_4_q[31:0],
+    done_repair_base_3_q[31:0],
+    done_repair_base_2_q[31:0],
+    done_repair_base_1_q[31:0]
+  };
+  assign repair_immediates_low = {
+    sq_early_addr_repair_imm_2_q[31:0], sq_early_addr_repair_imm_q[31:0]
+  };
+  assign repair_conditions = {sq_early_addr_repair_cond_2, sq_early_addr_repair_cond};
+  assign repair_pair_matches = {sq_early_addr_repair_pair_match_2, sq_early_addr_repair_pair_match};
+  assign repair_half_matches = {sq_early_addr_repair_half_match_2, sq_early_addr_repair_half_match};
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_repair_mmio
+    for (genvar source = 0; source < 8; source++) begin : gen_source
+      logic [31:0] candidate_sum;
+      assign candidate_sum = repair_bases_low[source] + repair_immediates_low[slot];
+      assign repair_mmio_candidates[slot][source] = (candidate_sum[31:30] == 2'b01);
+    end
+    for (genvar pair = 0; pair < 3; pair++) begin : gen_pair
+      assign repair_mmio_pairs[slot][pair] = repair_conditions[slot][2*pair] ?
+          repair_mmio_candidates[slot][2*pair] : repair_mmio_candidates[slot][2*pair+1];
+    end
+    // No matching source uses base zero, exactly as the address priority tree.
+    assign repair_mmio_pairs[slot][3] = repair_conditions[slot][6] ?
+        repair_mmio_candidates[slot][6] : repair_conditions[slot][7] ?
+        repair_mmio_candidates[slot][7] : (repair_immediates_low[slot][31:30] == 2'b01);
+    assign repair_mmio_halves[slot][0] = repair_pair_matches[slot][0] ?
+        repair_mmio_pairs[slot][0] : repair_mmio_pairs[slot][1];
+    assign repair_mmio_halves[slot][1] = repair_pair_matches[slot][2] ?
+        repair_mmio_pairs[slot][2] : repair_mmio_pairs[slot][3];
+    assign repair_is_mmio[slot] = repair_half_matches[slot][0] ?
+        repair_mmio_halves[slot][0] : repair_mmio_halves[slot][1];
+  end
+`ifdef SQ_REPAIR_MMIO_LOCAL_PROOF
+  always_comb begin
+    p_repair_mmio_exact :
+    assert (repair_is_mmio[0] == (sq_early_repair_effective_addr[31:30] == 2'b01));
+    p_repair_mmio_2_exact :
+    assert (repair_is_mmio[1] == (sq_early_repair_effective_addr_2[31:30] == 2'b01));
+  end
+`endif
+
   // Port arbitration.  A fresh (ready-base) update lives for one cycle only,
   // so it always wins.  A just-matched candidate emits combinationally on a
   // free cycle and otherwise latches into the hold registers.  A held
@@ -512,7 +571,7 @@ module sq_early_addr_pipeline (
       sq_early_addr_update.valid   = sq_early_addr_repair_fire;
       sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
       sq_early_addr_update.address = sq_early_repair_effective_addr;
-      sq_early_addr_update.is_mmio = (sq_early_repair_effective_addr[31:30] == 2'b01);
+      sq_early_addr_update.is_mmio = repair_is_mmio[0];
     end
   end
 
@@ -534,7 +593,7 @@ module sq_early_addr_pipeline (
       sq_early_addr_update_2.valid   = sq_early_addr_repair_fire_2;
       sq_early_addr_update_2.rob_tag = sq_early_addr_repair_rob_tag_2_q;
       sq_early_addr_update_2.address = sq_early_repair_effective_addr_2;
-      sq_early_addr_update_2.is_mmio = (sq_early_repair_effective_addr_2[31:30] == 2'b01);
+      sq_early_addr_update_2.is_mmio = repair_is_mmio[1];
     end
   end
 

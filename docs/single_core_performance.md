@@ -392,8 +392,9 @@ about 0.15 ns between netlists, so compare path families, not single runs.
 | Plus INT port-2 pre-bypass/shift fields, no merge tag compare | -0.362 | -251 | 1,988 |
 | Plus port-2 window, dispatch-flag shadow | -0.471 | -112 | 1,723 |
 | Plus shared-path fixes below | -0.266 | -192 | 3,002 |
+| Plus operand/predecode, fetch and queue/cache cofactors below | -0.187 | -148.277 | 2,773 |
 
-The last row adds changes that also help the hardware defaults:
+The -0.266 ns row added changes that also help the hardware defaults:
 
 * The IMEM predecode sideband carries each halfword's RVC-expanded
   instruction bits [24:20] (28-bit sideband). IF selects them beside
@@ -412,19 +413,73 @@ Synthesis restructures unchanged logic when unrelated RTL changes: the same
 IMEM-to-PD RTL mapped to 9 LUT levels in one netlist and 11 in another, and
 the decoded-queue dispatch family ranged from -0.22 to -0.58 ns across builds
 that did not touch it. Synthesis is deterministic for identical RTL, and
-global retiming changed nothing. The remaining worst paths (about -0.27 ns)
-are the IF next-PC and fetch-address loop (recovery and `satp` into the PC and
+global retiming changed nothing. At that revision, the worst paths (about -0.27 ns)
+were the IF next-PC and fetch-address loop (recovery and `satp` into the PC and
 IMEM overlay address), ID decode into the queue shadow, and the unreplicated
 full-flush register, which placement replicates by design.
 
 The first profile's worst paths ran from full-flush recovery through the
 early-wakeup qualifier, MEM_RS wakeup and issue selection into the LQ
 pre-issue CAM, and from the queue's LUTRAM head through rename into every
-reservation station. With the changes above, the remaining worst paths are
+reservation station. At that revision, the remaining worst paths were
 mostly shared with the 322 MHz defaults: instruction memory to predecode,
 full-flush kill to FU adapters and LQ SQ-check state, the IF prediction
 holdoff, and L1-to-L2 requests. Queue-select paths into SQ/MUL_RS dispatch
-state remain at about -0.2 ns. Post-opt closure is not routed signoff.
+state remained at about -0.2 ns. Post-opt closure is not routed signoff.
+
+The -0.187 ns checkpoint preserves the profile's pipeline stages and issue
+policy while shortening shared combinational paths. The same PGO sweep still
+takes **257,702 performance / 262,144 validation cycles**. The pinned Docker
+checks pass (704 fast tests), as do all seven synthesis tests and the focused
+unit, program and equivalence checks for these changes. This is an intermediate
+post-opt checkpoint; WNS remains negative and placement/routing have not run.
+The principal changes are:
+
+* Direct instruction-bit operand classification removes an operation-enum
+  decode layer. An exhaustive proof retains the old classifier as reference.
+* IMEM metadata grows to 78 bits per fetched word: fetch controls, both
+  expanded source-register fields, and the remaining RV64C expansion/illegal
+  bits for each parcel. Both instruction slots consume this metadata; the
+  stored expansion is proved against the runtime decompressor for all parcels.
+* INT RS port-2 allocation uses a one-hot free-entry selector. SQ occupancy
+  and dispatch limits compute zero/one/two-allocation outcomes before the
+  final valid selection. Queued slot-2 dispatch uses the bundle's existing
+  validity contract. Ready RAT operands no longer mask unused producer tags.
+* Early memory wakeup omits redundant reset qualification and carries four
+  CDB-valid tag candidates into the LQ. Their CAM results and selector cross
+  the existing pre-match register edge independently, without an added cycle.
+* Recovery carries the flush tag independently of full-flush validity. LQ
+  tag ordering uses equivalent unsigned comparisons; AMO response capture
+  includes the eventual write-tier classification.
+* Fetch keeps live page-offset bits, separates the low BRAM address repeat
+  decision from translated-tier selection, and selects RAS checkpoint and
+  prediction-validity outcomes after their late qualifiers.
+* Cache skid/request admission is factored, the small acknowledgement ID
+  queue uses registers, and packed tag UltraRAM banks use cascade height one.
+  FMA alignment subtracts exponents directly before shift clamping.
+* Binary RS allocation indices share the parallel free-entry masks. LQ
+  allocation masks are computed for each cursor origin and selected by the
+  registered cursor; its compact cursor and AMO indices keep the original
+  search. LQ capacity predicates avoid a serial population-count path.
+* Fetch prediction and sequential candidates feed an explicit final LUT6 per
+  bit on Xilinx. A separate LUT completes redirect/resteer/hold data; late
+  window and progress guards enter only the final requests. Both primitive
+  and portable forms are proved against the original PC priority.
+* Both BTB slots use grouped full-width tag comparisons. The compressed
+  buffer computes both slot-2-valid next states before selecting the late
+  validity bit. Recovery payload capture keeps its original valid lifetime,
+  and NOP-only direction data remains masked by packet validity.
+* DMMU and store-repair MMIO classification runs beside address selection,
+  retaining permission and fault priority. LQ response bypass drops the age
+  check already excluded by its partial-flush guard. Cached-slot flags keep
+  explicit data feedback with reset as their only reset control.
+* Each MSHR entry merges fills and store bytes locally, without feeding a
+  selected complete line back through every entry's write mux.
+
+The decoded-queue shadow uses `$bits(producer_ctrl)`, avoiding a Yosys parser
+limitation on package-qualified type arguments. The Xilinx synthesis runner
+loads primitive definitions before hierarchy elaboration so late LUT discovery
+cannot reprocess a parent after its original child modules have been pruned.
 
 ### Sustained hardware measurement
 

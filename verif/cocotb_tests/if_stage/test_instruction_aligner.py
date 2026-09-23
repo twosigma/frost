@@ -16,8 +16,25 @@
 
 from typing import Any
 
+import importlib.util
+from pathlib import Path
+
 import cocotb
 from cocotb.triggers import Timer
+
+
+def _extra_sideband(word: int) -> int:
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "sw/common/generate_imem_predecode_init.py"
+    )
+    spec = importlib.util.spec_from_file_location("expanded_predecode_model", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return (module.rvc_extra(word & 0xFFFF) << 32) | (
+        module.rvc_extra(word >> 16) << 55
+    )
 
 
 PC_LO = 0x80001000
@@ -41,8 +58,12 @@ SB_ALLOWS_SLOT2_AFTER_HI = 9
 SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
 SB_RVC_SOURCE_HOT_LO_LSB = 12
-SB_RVC_SOURCE_HOT_HI_LSB = 15
-SIDEBAND_WIDTH = 28
+SB_RVC_SOURCE_HOT_HI_LSB = 14
+SB_RVC_BITS24_20_LO_LSB = 16
+SB_RVC_BITS24_20_HI_LSB = 21
+SB_RVC_RS1_REST_LO_LSB = 26
+SB_RVC_RS1_REST_HI_LSB = 29
+SIDEBAND_WIDTH = 78
 
 
 def _word(*, lo: int, hi: int) -> int:
@@ -79,6 +100,8 @@ def _sideband(
     native_pairable_hi: bool = False,
     rvc_source_hot_lo: int = 0,
     rvc_source_hot_hi: int = 0,
+    rvc_rs1_rest_lo: int = 0,
+    rvc_rs1_rest_hi: int = 0,
 ) -> int:
     """Build one 32-bit-word instruction-memory sideband value."""
     allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
@@ -118,8 +141,12 @@ def _sideband(
         | _bit(allows_slot2_after_hi, SB_ALLOWS_SLOT2_AFTER_HI)
         | _bit(slot2_start_valid_lo, SB_SLOT2_START_VALID_LO)
         | _bit(slot2_start_valid_hi, SB_SLOT2_START_VALID_HI)
-        | ((rvc_source_hot_lo & 0x7) << SB_RVC_SOURCE_HOT_LO_LSB)
-        | ((rvc_source_hot_hi & 0x7) << SB_RVC_SOURCE_HOT_HI_LSB)
+        | ((rvc_source_hot_lo & 0x3) << SB_RVC_SOURCE_HOT_LO_LSB)
+        | ((rvc_source_hot_hi & 0x3) << SB_RVC_SOURCE_HOT_HI_LSB)
+        | (((rvc_source_hot_lo >> 2) & 1) << (SB_RVC_BITS24_20_LO_LSB + 1))
+        | (((rvc_source_hot_hi >> 2) & 1) << (SB_RVC_BITS24_20_HI_LSB + 1))
+        | ((rvc_rs1_rest_lo & 0x7) << SB_RVC_RS1_REST_LO_LSB)
+        | ((rvc_rs1_rest_hi & 0x7) << SB_RVC_RS1_REST_HI_LSB)
     )
 
 
@@ -260,6 +287,16 @@ async def _settle(dut: Any) -> None:
     next_word = (fetch >> 32) & 0xFFFF_FFFF
     dut.i_instr_hi_rd_is_x2.value = _fetch_hi_rd_is_x2(
         current_word=current_word, next_word=next_word
+    )
+    sideband = int(dut.i_instr_sideband.value)
+    sideband &= ((1 << 32) - 1) | (((1 << 32) - 1) << SIDEBAND_WIDTH)
+    sideband |= _extra_sideband(current_word) | (
+        _extra_sideband(next_word) << SIDEBAND_WIDTH
+    )
+    dut.i_instr_sideband.value = sideband
+    buffer_sb = int(dut.i_instr_buffer_sideband.value) & ((1 << 32) - 1)
+    dut.i_instr_buffer_sideband.value = buffer_sb | _extra_sideband(
+        int(dut.i_instr_buffer.value)
     )
     await Timer(1, unit="ns")
 
@@ -1270,3 +1307,123 @@ async def test_next_high_rd_x2_predecode_follows_fetch_word_swap(dut: Any) -> No
             # its fixed candidate must still be correct.
             sel_nop=swapped,
         )
+
+
+@cocotb.test()
+async def test_rs1_metadata_follows_parcel_and_bank_selection(dut: Any) -> None:
+    """Both source-field paths follow the selected parcel across bank swaps."""
+    await _setup_test(dut)
+
+    def rest(instruction: int) -> int:
+        return ((instruction >> 17) & 6) | ((instruction >> 15) & 1)
+
+    # Slot 1 selects raw metadata from either halfword and either owner.
+    for swapped in (False, True):
+        for buffered in (False, True):
+            for high in (False, True):
+                _clear_inputs(dut)
+                dut.i_pc_reg.value = PC_HI if high else PC_LO
+                dut.i_instr_bank_sel_r.value = int(swapped)
+                dut.i_use_buffer_after_prediction.value = int(buffered)
+                dut.i_use_buffer_after_prediction_timing.value = int(buffered)
+                live_sb = _sideband(
+                    compressed_lo=True,
+                    compressed_hi=True,
+                    rvc_rs1_rest_lo=1,
+                    rvc_rs1_rest_hi=6,
+                )
+                other_sb = _sideband(
+                    compressed_lo=True,
+                    compressed_hi=True,
+                    rvc_rs1_rest_lo=3,
+                    rvc_rs1_rest_hi=4,
+                )
+                dut.i_instr.value = _fetch(
+                    current_word=0x00010001, next_word=0x00010001
+                )
+                dut.i_instr_sideband.value = _fetch_sideband(
+                    current_sb=other_sb if swapped else live_sb,
+                    next_sb=live_sb if swapped else other_sb,
+                )
+                dut.i_instr_buffer.value = 0x00010001
+                dut.i_instr_buffer_sideband.value = _sideband(
+                    compressed_lo=True,
+                    compressed_hi=True,
+                    rvc_rs1_rest_lo=2,
+                    rvc_rs1_rest_hi=5,
+                )
+                await _settle(dut)
+                expected = (5 if high else 2) if buffered else (6 if high else 1)
+                assert int(dut.o_rvc_rs1_rest.value) == expected
+
+    # Slot 2 must also splice native instructions that straddle fetch words.
+    native = 0x00BF8FB3  # add x31,x31,x11
+    raw = 0x0F85  # c.addi x31,1
+    expanded = 0x001F8F93
+    cases = [
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=raw),
+            0,
+            _sideband(
+                compressed_lo=True, compressed_hi=True, rvc_rs1_rest_hi=rest(expanded)
+            ),
+            _sideband(),
+            rest(expanded),
+        ),
+        (
+            PC_LO,
+            _word(lo=COMPRESSED_NOP, hi=native & 0xFFFF),
+            native >> 16,
+            _sideband(compressed_lo=True),
+            _sideband(),
+            rest(native),
+        ),
+        (
+            PC_LO,
+            0x00B50533,
+            raw,
+            _sideband(native_pairable_lo=True),
+            _sideband(compressed_lo=True, rvc_rs1_rest_lo=rest(expanded)),
+            rest(expanded),
+        ),
+        (
+            PC_LO,
+            0x00B50533,
+            native,
+            _sideband(native_pairable_lo=True),
+            _sideband(),
+            rest(native),
+        ),
+        (
+            PC_HI,
+            _word(lo=0x0003, hi=0x0533),
+            _word(lo=0x00B5, hi=raw),
+            _sideband(native_pairable_hi=True),
+            _sideband(compressed_hi=True, rvc_rs1_rest_hi=rest(expanded)),
+            rest(expanded),
+        ),
+    ]
+    for swapped in (False, True):
+        for pc, current, next_word, current_sb, next_sb, expected in cases:
+            _clear_inputs(dut)
+            dut.i_pc_reg.value = pc
+            dut.i_instr_bank_sel_r.value = int(swapped)
+            dut.i_instr.value = _fetch(
+                current_word=next_word if swapped else current,
+                next_word=current if swapped else next_word,
+            )
+            dut.i_instr_sideband.value = _fetch_sideband(
+                current_sb=next_sb if swapped else current_sb,
+                next_sb=current_sb if swapped else next_sb,
+            )
+            await _settle(dut)
+            # A BRAM bank mismatch can suppress a spanning slot-2 pair;
+            # its selected metadata remains defined even on that NOP cycle.
+            if not swapped:
+                assert not dut.o_sel_nop_2.value
+            assert int(dut.o_rs1_rest_2.value) == expected, (
+                swapped,
+                hex(pc),
+                hex(current),
+            )

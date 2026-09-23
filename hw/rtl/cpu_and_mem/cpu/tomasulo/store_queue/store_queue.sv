@@ -402,8 +402,32 @@ module store_queue #(
   logic [     DEPTH-1:0] live_remove_mask;
   logic [     DEPTH-1:0] sc_discard_remove_mask;
   logic                  drain_remove_valid;
-  logic [CountWidth-1:0] dispatch_count_next;
   logic                  committed_empty_q;
+  // TIMING: the two dispatch valids arrive last, through the dispatch fire
+  // tree (queue valid -> bundle_fire_ok -> mem_rs_dispatch_valid), and used
+  // to be adder operands of both counters, four LUT levels ahead of the
+  // live_count_q / dispatch_full*_q D pins.  Each counter is instead
+  // evaluated once per allocation outcome from request-independent terms
+  // (the window or live count, the removal count, and the room terms), and
+  // the pair of valids is the final select.  Exactly one request takes
+  // alloc_room_1 whichever slot carries it; a pair adds alloc_room_2, the
+  // slot-1-present arm of slot2_alloc_en.  Kept as nets so the select stays
+  // the last level.  Simulation and formal compare the selected value with
+  // the adder form it replaces.
+  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_none;
+  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_one;
+  (* keep = "true" *)logic [CountWidth-1:0] live_count_if_both;
+  logic [CountWidth-1:0] dispatch_count_if_none;
+  logic [CountWidth-1:0] dispatch_count_if_one;
+  logic [CountWidth-1:0] dispatch_count_if_both;
+  (* keep = "true" *)logic                  dispatch_full_if_none;
+  (* keep = "true" *)logic                  dispatch_full_if_one;
+  (* keep = "true" *)logic                  dispatch_full_if_both;
+  (* keep = "true" *)logic                  dispatch_full_for_2_if_none;
+  (* keep = "true" *)logic                  dispatch_full_for_2_if_one;
+  (* keep = "true" *)logic                  dispatch_full_for_2_if_both;
+  logic                  dispatch_full_next;
+  logic                  dispatch_full_for_2_next;
 
   // Slot-1 / slot-2 alloc targets and write enables (assigned below).
   logic [  PtrWidth-1:0] alloc_target_2;
@@ -558,9 +582,37 @@ module store_queue #(
   // slot is reusable, and dispatch would send an alloc the SQ refuses (a
   // silently lost store).  Back-pressure is therefore only ever
   // conservatively long, never short.
+  //
+  // Per-outcome window counts and their comparisons are evaluated ahead of
+  // the dispatch valids (see the candidate declarations); the valids then
+  // select a comparison result, not a count, so no adder or compare sits
+  // between them and the back-pressure flops.
+  assign dispatch_count_if_none = CountWidth'(window_occupancy);
+  assign dispatch_count_if_one = dispatch_count_if_none + CountWidth'(alloc_room_1);
+  assign dispatch_count_if_both = dispatch_count_if_one + CountWidth'(alloc_room_2);
+  assign dispatch_full_if_none = dispatch_count_if_none == CountWidth'(DEPTH);
+  assign dispatch_full_if_one = dispatch_count_if_one == CountWidth'(DEPTH);
+  assign dispatch_full_if_both = dispatch_count_if_both == CountWidth'(DEPTH);
+  assign dispatch_full_for_2_if_none = dispatch_count_if_none >= CountWidth'(DEPTH - 1);
+  assign dispatch_full_for_2_if_one = dispatch_count_if_one >= CountWidth'(DEPTH - 1);
+  assign dispatch_full_for_2_if_both = dispatch_count_if_both >= CountWidth'(DEPTH - 1);
   always_comb begin
-    dispatch_count_next = CountWidth'(window_occupancy) + CountWidth'(slot1_alloc_en) +
-                          CountWidth'(slot2_alloc_en);
+    case ({
+      i_alloc.valid, i_alloc_2.valid
+    })
+      2'b11: begin
+        dispatch_full_next = dispatch_full_if_both;
+        dispatch_full_for_2_next = dispatch_full_for_2_if_both;
+      end
+      2'b10, 2'b01: begin
+        dispatch_full_next = dispatch_full_if_one;
+        dispatch_full_for_2_next = dispatch_full_for_2_if_one;
+      end
+      default: begin
+        dispatch_full_next = dispatch_full_if_none;
+        dispatch_full_for_2_next = dispatch_full_for_2_if_none;
+      end
+    endcase
   end
 
   always_ff @(posedge i_clk) begin
@@ -568,10 +620,23 @@ module store_queue #(
       dispatch_full_q <= 1'b0;
       dispatch_full_for_2_q <= 1'b0;
     end else begin
-      dispatch_full_q <= dispatch_count_next == CountWidth'(DEPTH);
-      dispatch_full_for_2_q <= dispatch_count_next >= CountWidth'(DEPTH - 1);
+      dispatch_full_q <= dispatch_full_next;
+      dispatch_full_for_2_q <= dispatch_full_for_2_next;
     end
   end
+
+`ifndef SYNTHESIS
+  // Adder form of the registered back-pressure, compared in simulation and
+  // formal with the selected per-outcome comparisons above.
+  logic [CountWidth-1:0] dispatch_count_next_reference;
+  logic                  dispatch_full_next_reference;
+  logic                  dispatch_full_for_2_next_reference;
+  assign dispatch_count_next_reference = CountWidth'(window_occupancy) +
+      CountWidth'(slot1_alloc_en) + CountWidth'(slot2_alloc_en);
+  assign dispatch_full_next_reference = dispatch_count_next_reference == CountWidth'(DEPTH);
+  assign dispatch_full_for_2_next_reference =
+      dispatch_count_next_reference >= CountWidth'(DEPTH - 1);
+`endif
 
   // Committed-empty: no committed-but-unwritten entries. Register this status
   // for consumers that feed MEM issue/CDB arbitration. Raw same-cycle commit
@@ -1356,14 +1421,26 @@ module store_queue #(
     end
   end
 
+  //
+  // The removal count and the room terms are folded into one candidate per
+  // allocation outcome ahead of the dispatch valids (see the candidate
+  // declarations); the valids select a candidate.
   always_comb begin
     live_remove_count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
       live_remove_count = live_remove_count + CountWidth'(live_remove_mask[i]);
     end
 
-    live_count_next = live_count_q + CountWidth'(slot1_alloc_en) +
-                      CountWidth'(slot2_alloc_en) - live_remove_count;
+    live_count_if_none = live_count_q - live_remove_count;
+    live_count_if_one  = live_count_if_none + CountWidth'(alloc_room_1);
+    live_count_if_both = live_count_if_one + CountWidth'(alloc_room_2);
+    case ({
+      i_alloc.valid, i_alloc_2.valid
+    })
+      2'b11: live_count_next = live_count_if_both;
+      2'b10, 2'b01: live_count_next = live_count_if_one;
+      default: live_count_next = live_count_if_none;
+    endcase
   end
 
   always_ff @(posedge i_clk) begin
@@ -1373,6 +1450,14 @@ module store_queue #(
       live_count_q <= live_count_next;
     end
   end
+
+`ifndef SYNTHESIS
+  // Adder form of the live count, compared in simulation and formal with
+  // the selected per-outcome candidate above.
+  logic [CountWidth-1:0] live_count_next_reference;
+  assign live_count_next_reference = live_count_q + CountWidth'(slot1_alloc_en) +
+      CountWidth'(slot2_alloc_en) - live_remove_count;
+`endif
 
   // Simulation-only cross-check against the real ROB; under formal the same
   // invariant is an input assume in the FORMAL section below (and Yosys'
@@ -1535,6 +1620,11 @@ module store_queue #(
         $error("SQ: slot-1 allocation pulse lost or invented an accepted request");
       if (alloc_oh != (slot1_alloc_oh | slot2_alloc_oh) || (|(slot1_alloc_oh & slot2_alloc_oh)))
         $error("SQ: merged allocation pulses differ from the slot pulses");
+      if (live_count_next != live_count_next_reference)
+        $error("SQ: selected live-count candidate differs from the adder form");
+      if (dispatch_full_next != dispatch_full_next_reference ||
+          dispatch_full_for_2_next != dispatch_full_for_2_next_reference)
+        $error("SQ: selected dispatch back-pressure differs from the adder form");
     end
   end
 `endif
@@ -1600,6 +1690,12 @@ module store_queue #(
       // The enable-then-steer references are declared outside synthesis.
       p_slot2_alloc_en_reference : assert (slot2_alloc_en == slot2_alloc_en_reference);
       p_slot2_alloc_oh_reference : assert (slot2_alloc_oh == slot2_alloc_oh_reference);
+      // The per-outcome count candidates selected by the valids are exactly
+      // the adder forms they replace.
+      p_live_count_next_reference : assert (live_count_next == live_count_next_reference);
+      p_dispatch_full_next_reference : assert (dispatch_full_next == dispatch_full_next_reference);
+      p_dispatch_full_for_2_next_reference :
+      assert (dispatch_full_for_2_next == dispatch_full_for_2_next_reference);
 `endif
       p_slot1_alloc_onehot0 : assert ($onehot0(slot1_alloc_oh));
       p_slot1_alloc_preserved : assert ((|slot1_alloc_oh) == slot1_alloc_en);

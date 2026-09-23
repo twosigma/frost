@@ -96,10 +96,7 @@ def check_lookup(actual: Any, expected: Any, label: str) -> None:
         assert actual.tag == expected.tag, (
             f"{label}: tag mismatch: got {actual.tag}, expected {expected.tag}"
         )
-    else:
-        assert actual.tag == 0, (
-            f"{label}: tag should be 0 when not renamed, got {actual.tag}"
-        )
+    # An unrenamed source carries architectural data and an unspecified tag.
     assert actual.value == expected.value, (
         f"{label}: value mismatch: got {actual.value:#x}, expected {expected.value:#x}"
     )

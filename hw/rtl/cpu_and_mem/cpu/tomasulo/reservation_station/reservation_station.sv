@@ -36,6 +36,8 @@
 module reservation_station #(
     parameter int unsigned DEPTH = 8,
     parameter bit HAS_SRC3 = 1'b1,
+    // Precompute lookahead winners for both CDB lane-valid bits.
+    parameter bit PREISSUE_VALID_COFACTOR = 1'b0,
     parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
     parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
     // The registered done-repair responses normally carry tags and CAM-snoop
@@ -53,7 +55,9 @@ module reservation_station #(
     // slot-2 values.  Only rs_valid commits an entry, so the extra writes are
     // architecturally invisible.  This changes the wide source-value flops'
     // dispatch CE from a priority-decoded free index to the entry-local
-    // !rs_valid bit; alloc_idx_2 remains only in their D-input data select.
+    // !rs_valid bit; their D-input data select is a per-entry one-hot
+    // (alloc_sel_2) computed from rs_valid at fixed depth, equal to the
+    // alloc_idx_2 decode without the free-index priority sweep.
     parameter bit BROADCAST_FREE_SOURCE_VALUES = 1'b0,
     // Optional src1/src2 tag shadows used only by the same-cycle CDB issue
     // bypass compares.  With speculative writes enabled, the shadows retain
@@ -239,8 +243,12 @@ module reservation_station #(
     // stage2 this cycle, so the LQ can pre-compute the addr_update CAM match
     // and register it before the issue fires.
     // =========================================================================
-    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tag,
-    output logic                                        o_pre_issue_needs_lq,
+    output logic [  riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tag,
+    // Four CDB-valid outcomes and their actual selector. The LQ can register
+    // the CAM outcomes and selector independently on the same edge.
+    output logic [4*riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_issue_rob_tags,
+    output logic [                                   1:0] o_pre_issue_sel,
+    output logic                                          o_pre_issue_needs_lq,
 
     // =========================================================================
     // Flush Control
@@ -1005,28 +1013,8 @@ module reservation_station #(
   assign full_for_2 = full || (count == CountWidth'(DEPTH - 1));
   assign empty = (count == '0);
 
-  // --- Free entry selection (priority encoder: lowest free indices) ---
-  // Single sweep finds the lowest two free indices. Slot-1 takes free_idx,
-  // slot-2 takes free_idx_2 (when slot-1 is also firing) or free_idx (when
-  // slot-2 is alone). Both must point at distinct invalid entries when a
-  // 2-wide dispatch fires.
-  always_comb begin
-    free_idx     = '0;
-    free_found   = 1'b0;
-    free_idx_2   = '0;
-    free_found_2 = 1'b0;
-    for (int i = 0; i < DEPTH; i++) begin
-      if (!rs_valid[i]) begin
-        if (!free_found) begin
-          free_idx   = $clog2(DEPTH)'(i);
-          free_found = 1'b1;
-        end else if (!free_found_2) begin
-          free_idx_2   = $clog2(DEPTH)'(i);
-          free_found_2 = 1'b1;
-        end
-      end
-    end
-  end
+  // Free indices are encoded from the parallel first/second-free masks below.
+  // Both retain the serial search's index-zero not-found result.
 
   // Effective slot-2 alloc target: skip slot-1's pick when slot-1 also fires.
   // The select uses the fast i_intent_1 (slot-1 wants this RS) rather than
@@ -1096,6 +1084,127 @@ module reservation_station #(
   assign data_write_1_en = SPECULATIVE_DATA_WRITES ? !full : dispatch_fire;
   assign data_write_2_en = SPECULATIVE_DATA_WRITES ?
                            (i_intent_1 ? !full_for_2 : !full) : dispatch_fire_2;
+
+  // --- One-hot slot-2 allocation select for the broadcast value writes ---
+  // TIMING: with BROADCAST_FREE_SOURCE_VALUES every free entry's
+  // rs_src*_value D mux picks slot 2's values iff
+  // data_write_2_en && alloc_idx_2 == i.  Decoding the binary index there put
+  // the whole free_idx/free_idx_2 sweep (a ripple through rs_valid, six LUT
+  // levels at DEPTH=16) plus a decoder in front of the 64-bit value muxes;
+  // rs_valid_reg -> rs_src1_value_reg was the INT RS 322 MHz post-opt
+  // limiter.  alloc_sel_2 is that predicate computed directly from rs_valid
+  // at fixed depth: entry i is slot 2's target iff it is free and, counting
+  // free entries below it, there is exactly one (i_intent_1: slot 1 consumes
+  // the lowest) or none (slot 2 alone takes the lowest).  rs_valid is split
+  // into nibbles, so the cone is one LUT of nibble free-counts, one LUT of
+  // prefix-over-nibbles and one LUT per entry, for any DEPTH up to 32.
+  // Bit-exact with the indexed form including its not-found fallbacks:
+  // free_idx_2 is 0 when fewer than two entries are free, so under
+  // i_intent_1 entry 0 is slot 2's target iff it is the only free entry,
+  // and free_idx is 0 when nothing is free, which the !rs_valid[0] term
+  // already excludes. The binary indices for payload/tag/control writes are
+  // encoded from these same masks, avoiding a separate serial search. Keep
+  // the nibble boundaries so sharing with downstream index decoders cannot
+  // reconstruct that search on the wide value selects.
+  localparam int unsigned AllocNibbles = (DEPTH + 3) / 4;
+  logic [4*AllocNibbles-1:0] alloc_valid_padded;
+  (* keep = "true" *) logic [AllocNibbles-1:0] nib_all_valid;  // no free entry in this nibble
+  (* keep = "true" *)
+  logic [AllocNibbles-1:0] nib_one_free;  // exactly one free entry in this nibble
+  (* keep = "true" *) logic [AllocNibbles-1:0] nib_pfx_all_valid;  // no free entry in lower nibbles
+  (* keep = "true" *)
+  logic [AllocNibbles-1:0] nib_pfx_one_free;  // exactly one free entry in lower nibbles
+  logic [DEPTH-1:0] ent_first_free_in_nib;  // free, no free entry below it in its nibble
+  logic [DEPTH-1:0] ent_second_free_in_nib;  // free, one free entry below it in its nibble
+  (* keep = "true" *) logic [DEPTH-1:0] none_free_below;  // free_idx == i (given entry i is free)
+  (* keep = "true" *) logic [DEPTH-1:0] one_free_below;  // free_idx_2 == i (given entry i is free)
+  logic [DEPTH-1:0] alloc_sel_2;
+
+  // Constant-folded loop masks: every index below is a literal after
+  // unrolling, so each masked reduction is one flat AND, not a chain.
+  function automatic logic [3:0] nib_below_mask(input int unsigned r);
+    nib_below_mask = 4'((32'd1 << r) - 32'd1);
+  endfunction
+  function automatic logic [AllocNibbles-1:0] nib_lower_mask(input int unsigned n);
+    nib_lower_mask = AllocNibbles'((32'd1 << n) - 32'd1);
+  endfunction
+
+  always_comb begin
+    // Entries past DEPTH read as valid (never free).
+    alloc_valid_padded = '1;
+    alloc_valid_padded[DEPTH-1:0] = rs_valid;
+    for (int n = 0; n < AllocNibbles; n++) begin
+      nib_all_valid[n] = &alloc_valid_padded[4*n+:4];
+      nib_one_free[n]  = 1'b0;
+      for (int m = 0; m < 4; m++) begin
+        nib_one_free[n] |= !alloc_valid_padded[4*n+m] &
+            (&(alloc_valid_padded[4*n+:4] | 4'(32'd1 << m)));
+      end
+    end
+    for (int n = 0; n < AllocNibbles; n++) begin
+      nib_pfx_all_valid[n] = &(nib_all_valid | ~nib_lower_mask(n));
+      nib_pfx_one_free[n]  = 1'b0;
+      for (int m = 0; m < n; m++) begin
+        nib_pfx_one_free[n] |= nib_one_free[m] &
+            (&(nib_all_valid | ~nib_lower_mask(n) | AllocNibbles'(32'd1 << m)));
+      end
+    end
+    for (int i = 0; i < DEPTH; i++) begin
+      ent_first_free_in_nib[i] = !rs_valid[i] &
+          (&(alloc_valid_padded[(i/4)*4+:4] | ~nib_below_mask(i % 4)));
+      ent_second_free_in_nib[i] = 1'b0;
+      for (int m = 0; m < i % 4; m++) begin
+        ent_second_free_in_nib[i] |= !rs_valid[i] & !alloc_valid_padded[(i/4)*4+m] &
+            (&(alloc_valid_padded[(i/4)*4+:4] | ~nib_below_mask(i % 4) | 4'(32'd1 << m)));
+      end
+      none_free_below[i] = ent_first_free_in_nib[i] & nib_pfx_all_valid[i/4];
+      one_free_below[i] = (ent_second_free_in_nib[i] & nib_pfx_all_valid[i/4]) |
+          (ent_first_free_in_nib[i] & nib_pfx_one_free[i/4]);
+    end
+    // free_idx_2 not-found fallback: index 0 when at most one entry is free.
+    one_free_below[0] = !rs_valid[0] & (&rs_valid[DEPTH-1:1]);
+    for (int i = 0; i < DEPTH; i++) begin
+      alloc_sel_2[i] = data_write_2_en & (i_intent_1 ? one_free_below[i] : none_free_below[i]);
+    end
+  end
+
+  always_comb begin
+    free_idx   = '0;
+    free_idx_2 = '0;
+    for (int i = 0; i < DEPTH; i++) begin
+      free_idx |= $clog2(DEPTH)'(i) & {$clog2(DEPTH) {none_free_below[i]}};
+      free_idx_2 |= $clog2(DEPTH)'(i) & {$clog2(DEPTH) {one_free_below[i]}};
+    end
+    free_found   = |none_free_below;
+    // Index zero in one_free_below is only the not-found fallback.
+    free_found_2 = |one_free_below[DEPTH-1:1];
+  end
+
+`ifdef RS_ALLOC_LOCAL_PROOF
+  logic [$clog2(DEPTH)-1:0] free_idx_ref, free_idx_2_ref;
+  logic free_found_ref, free_found_2_ref;
+  always_comb begin
+    free_idx_ref = '0;
+    free_idx_2_ref = '0;
+    free_found_ref = 1'b0;
+    free_found_2_ref = 1'b0;
+    for (int i = 0; i < DEPTH; i++) begin
+      if (!rs_valid[i]) begin
+        if (!free_found_ref) begin
+          free_idx_ref   = $clog2(DEPTH)'(i);
+          free_found_ref = 1'b1;
+        end else if (!free_found_2_ref) begin
+          free_idx_2_ref   = $clog2(DEPTH)'(i);
+          free_found_2_ref = 1'b1;
+        end
+      end
+    end
+    p_alloc_first_index : assert (free_idx == free_idx_ref);
+    p_alloc_second_index : assert (free_idx_2 == free_idx_2_ref);
+    p_alloc_first_found : assert (free_found == free_found_ref);
+    p_alloc_second_found : assert (free_found_2 == free_found_2_ref);
+  end
+`endif
 
   // --- CDB bypass wakeup per entry ---
   // Same-cycle CDB tag match: if the CDB is broadcasting a result this cycle
@@ -1526,7 +1635,71 @@ module reservation_station #(
   // mem_needs_lq during the cycle it fires into stage2 (T-1), so the LQ
   // can register a CAM pre-match and avoid a 5-level combinational chain
   // at issue time (T).
-  assign o_pre_issue_rob_tag = rs_rob_tag[issue_idx];
+  if (PREISSUE_VALID_COFACTOR) begin : gen_preissue_cofactor
+    // The early-wakeup eligibility reaches the valid bits later than tags.
+    // Build the four exact ready/priority/tag outcomes independently and use
+    // those two bits only for the final narrow tag selection.
+    (* keep = "true" *) logic [ReorderBufferTagWidth-1:0] candidate_tag[4];
+    for (genvar valids = 0; valids < 4; valids++) begin : gen_candidate
+      logic [DEPTH-1:0] ready;
+      logic [$clog2(DEPTH)-1:0] index;
+      logic found;
+      always_comb begin
+        for (int entry = 0; entry < DEPTH; entry++) begin
+          ready[entry] = rs_valid[entry] &&
+              (rs_src1_ready[entry] || (src1_repair_sel[entry] != 3'd0) ||
+               (((valids & 1) != 0) && !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+                (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
+                    issue_cdb_tag) ||
+               (LANE1_ISSUE_BYPASS && ((valids & 2) != 0) &&
+                !rs_src1_ready[entry] && !src1_cdb_pend[entry] &&
+                (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[entry] : rs_src1_tag[entry]) ==
+                    issue_cdb_2_tag)) &&
+              (rs_src2_ready[entry] || (src2_repair_sel[entry] != 3'd0) ||
+               (((valids & 1) != 0) && !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+                (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
+                    issue_cdb_tag) ||
+               (LANE1_ISSUE_BYPASS && ((valids & 2) != 0) &&
+                !rs_src2_ready[entry] && !src2_cdb_pend[entry] &&
+                (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[entry] : rs_src2_tag[entry]) ==
+                    issue_cdb_2_tag)) &&
+              (rs_src3_ready[entry] || (src3_repair_sel[entry] != 3'd0) ||
+               (HAS_SRC3 && ((valids & 1) != 0) && !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+                rs_src3_tag[entry] == issue_cdb_tag) ||
+               (HAS_SRC3 && LANE1_ISSUE_BYPASS && ((valids & 2) != 0) &&
+                !rs_src3_ready[entry] && !src3_cdb_pend[entry] &&
+                rs_src3_tag[entry] == issue_cdb_2_tag));
+        end
+        index = '0;
+        found = 1'b0;
+        for (int entry = 0; entry < DEPTH; entry++) begin
+          if (ready[entry] && !found) begin
+            index = $clog2(DEPTH)'(entry);
+            found = 1'b1;
+          end
+        end
+        candidate_tag[valids] = rs_rob_tag[index];
+      end
+      assign o_pre_issue_rob_tags[valids*ReorderBufferTagWidth +: ReorderBufferTagWidth] =
+          candidate_tag[valids];
+    end
+    assign o_pre_issue_sel = {issue_cdb_2_valid, issue_cdb_valid};
+    assign o_pre_issue_rob_tag = issue_cdb_2_valid ?
+        (issue_cdb_valid ? candidate_tag[3] : candidate_tag[2]) :
+        (issue_cdb_valid ? candidate_tag[1] : candidate_tag[0]);
+  end else begin : gen_preissue_direct
+    assign o_pre_issue_rob_tag = rs_rob_tag[issue_idx];
+    assign o_pre_issue_rob_tags = {4{o_pre_issue_rob_tag}};
+    assign o_pre_issue_sel = '0;
+  end
+`ifdef RS_PRETAG_LOCAL_PROOF
+  always_comb assert (o_pre_issue_rob_tag == rs_rob_tag[issue_idx]);
+`endif
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    if (i_rst_n && any_ready) assert (o_pre_issue_rob_tag == rs_rob_tag[issue_idx]);
+  end
+`endif
   assign o_pre_issue_needs_lq = issue_fire && pl_mem_needs_lq;
 
   // --- Issue port assignment (driven from stage2 pipeline register) ---
@@ -2251,11 +2424,14 @@ module reservation_station #(
     // The selected allocation indices below still receive their tags and
     // narrow dispatch-bypass flags normally.  Since rs_valid is the sole
     // architectural commit, values written to the other free entries are
-    // don't-care prefill and cannot be observed by issue.
+    // don't-care prefill and cannot be observed by issue.  alloc_sel_2[i] is
+    // data_write_2_en && alloc_idx_2 == i for every free entry, computed at
+    // fixed depth from rs_valid (see its TIMING note); the value D select
+    // must not see the binary index decode.
     if (BROADCAST_FREE_SOURCE_VALUES) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (!rs_valid[i]) begin
-          if (data_write_2_en && (alloc_idx_2 == $clog2(DEPTH)'(i))) begin
+          if (alloc_sel_2[i]) begin
             rs_src1_value[i] <= dispatch_src1_stored_value_2;
             rs_src2_value[i] <= dispatch_src2_stored_value_2;
             if (HAS_SRC3) rs_src3_value[i] <= dispatch_src3_stored_value_2;
@@ -2558,6 +2734,14 @@ module reservation_station #(
           (free_idx == alloc_idx_2))
         $error("RS: slot-1 and slot-2 alloc collide on entry %0d", free_idx);
 
+      // The fixed-depth one-hot slot-2 select must equal the indexed decode
+      // it replaces on every free entry (fatal: the two would diverge only
+      // through a bug in the nibble tree, and the value D mux trusts it).
+      if (!$isunknown({rs_valid, i_intent_1, data_write_2_en})) begin
+        assert (alloc_sel_2 == (data_write_2_en ? (index_to_onehot(alloc_idx_2) & ~rs_valid) : '0))
+        else $error("RS: alloc_sel_2 %b disagrees with alloc_idx_2 %0d", alloc_sel_2, alloc_idx_2);
+      end
+
       // Issue fires only for ready entries (fatal: indicates RTL bug)
       // Checks stage1 issue_fire (RS→stage2), not stage2 output.
       if (issue_fire && !entry_ready[issue_idx])
@@ -2677,6 +2861,7 @@ module reservation_station #(
   // Formal Verification
   // ===========================================================================
 `ifdef FORMAL
+`ifndef RS_PRETAG_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -2784,6 +2969,15 @@ module reservation_station #(
   always_comb begin
     if (i_rst_n) begin
       p_count_matches_popcount : assert (count == f_expected_count);
+    end
+  end
+
+  // The fixed-depth one-hot slot-2 allocation select equals the indexed
+  // decode it replaces on every free entry, for every rs_valid pattern.
+  always_comb begin
+    if (i_rst_n) begin
+      p_alloc_sel_2_matches_index :
+      assert (alloc_sel_2 == (data_write_2_en ? (index_to_onehot(alloc_idx_2) & ~rs_valid) : '0));
     end
   end
 
@@ -3050,6 +3244,7 @@ module reservation_station #(
     end
   endgenerate
 
+`endif  // RS_PRETAG_LOCAL_PROOF
 `endif  // FORMAL
 
 endmodule

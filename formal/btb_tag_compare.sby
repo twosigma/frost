@@ -20,7 +20,7 @@ proc
 setundef -undriven -anyseq
 opt
 prep -top branch_predictor
-select -assert-count 1 t:$check
+select -assert-count 6 t:$check
 select -assert-none t:$assume a:init
 write_json prepared_model.json
 

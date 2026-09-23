@@ -439,7 +439,10 @@ module register_alias_table (
   // ===========================================================================
 
   // INT source 1
-  // rat_lookup_t = {renamed, tag[4:0], value[63:0]}
+  // rat_lookup_t = {renamed, tag[4:0], value[63:0]}. The tag is meaningful
+  // only when renamed is set. Expose it directly so CDB comparators can run
+  // beside the ROB-valid lookup; readiness/repair-valid qualify their use.
+  // Unrenamed tags may be stale or uninitialized. INT x0 remains all zero.
   always_comb begin
     if (i_int_src1_addr == '0) begin
       // x0 hardwired to zero
@@ -453,7 +456,7 @@ module register_alias_table (
       };
     end else begin
       o_int_src1 = {
-        1'b0, {ReorderBufferTagWidth{1'b0}}, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1}
+        1'b0, int_rat_tag[i_int_src1_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1}
       };
     end
   end
@@ -469,7 +472,7 @@ module register_alias_table (
       };
     end else begin
       o_int_src2 = {
-        1'b0, {ReorderBufferTagWidth{1'b0}}, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2}
+        1'b0, int_rat_tag[i_int_src2_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2}
       };
     end
   end
@@ -479,7 +482,7 @@ module register_alias_table (
     if (fp_rat_valid[i_fp_src1_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src1_addr]]) begin
       o_fp_src1 = {1'b1, fp_rat_tag[i_fp_src1_addr], i_fp_regfile_data1};
     end else begin
-      o_fp_src1 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data1};
+      o_fp_src1 = {1'b0, fp_rat_tag[i_fp_src1_addr], i_fp_regfile_data1};
     end
   end
 
@@ -488,7 +491,7 @@ module register_alias_table (
     if (fp_rat_valid[i_fp_src2_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src2_addr]]) begin
       o_fp_src2 = {1'b1, fp_rat_tag[i_fp_src2_addr], i_fp_regfile_data2};
     end else begin
-      o_fp_src2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data2};
+      o_fp_src2 = {1'b0, fp_rat_tag[i_fp_src2_addr], i_fp_regfile_data2};
     end
   end
 
@@ -497,7 +500,7 @@ module register_alias_table (
     if (fp_rat_valid[i_fp_src3_addr] && i_rob_entry_valid[fp_rat_tag[i_fp_src3_addr]]) begin
       o_fp_src3 = {1'b1, fp_rat_tag[i_fp_src3_addr], i_fp_regfile_data3};
     end else begin
-      o_fp_src3 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data3};
+      o_fp_src3 = {1'b0, fp_rat_tag[i_fp_src3_addr], i_fp_regfile_data3};
     end
   end
 
@@ -519,7 +522,7 @@ module register_alias_table (
       };
     end else begin
       o_int_src1_2 = {
-        1'b0, {ReorderBufferTagWidth{1'b0}}, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
+        1'b0, int_rat_tag[i_int_src1_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
       };
     end
   end
@@ -535,7 +538,7 @@ module register_alias_table (
       };
     end else begin
       o_int_src2_2 = {
-        1'b0, {ReorderBufferTagWidth{1'b0}}, {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
+        1'b0, int_rat_tag[i_int_src2_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
       };
     end
   end
@@ -545,7 +548,7 @@ module register_alias_table (
     if (fp_rat_valid[i_fp_src1_addr_2] && i_rob_entry_valid[fp_rat_tag[i_fp_src1_addr_2]]) begin
       o_fp_src1_2 = {1'b1, fp_rat_tag[i_fp_src1_addr_2], i_fp_regfile_data1_2};
     end else begin
-      o_fp_src1_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data1_2};
+      o_fp_src1_2 = {1'b0, fp_rat_tag[i_fp_src1_addr_2], i_fp_regfile_data1_2};
     end
   end
 
@@ -554,7 +557,7 @@ module register_alias_table (
     if (fp_rat_valid[i_fp_src2_addr_2] && i_rob_entry_valid[fp_rat_tag[i_fp_src2_addr_2]]) begin
       o_fp_src2_2 = {1'b1, fp_rat_tag[i_fp_src2_addr_2], i_fp_regfile_data2_2};
     end else begin
-      o_fp_src2_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data2_2};
+      o_fp_src2_2 = {1'b0, fp_rat_tag[i_fp_src2_addr_2], i_fp_regfile_data2_2};
     end
   end
 
@@ -563,7 +566,7 @@ module register_alias_table (
     if (fp_rat_valid[i_fp_src3_addr_2] && i_rob_entry_valid[fp_rat_tag[i_fp_src3_addr_2]]) begin
       o_fp_src3_2 = {1'b1, fp_rat_tag[i_fp_src3_addr_2], i_fp_regfile_data3_2};
     end else begin
-      o_fp_src3_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, i_fp_regfile_data3_2};
+      o_fp_src3_2 = {1'b0, fp_rat_tag[i_fp_src3_addr_2], i_fp_regfile_data3_2};
     end
   end
 

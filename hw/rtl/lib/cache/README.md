@@ -112,7 +112,12 @@ Tag and data storage are selected independently. The L1D and L1I use
 one-cycle BRAM tags and BRAM data. The X3 L2 keeps its data in URAM and packs
 four logical tag entries into each 72-bit URAM row; its production tag-read
 latency is three cycles. This removes the large L2 tag store from BRAM while
-leaving the L1 hit path unchanged.
+leaving the L1 hit path unchanged. The packed-tag lane index advances every
+cycle with the always-clocked URAM output; only the aligned read-valid token
+makes that lane observable. Cache admission evaluates the live and skid
+request hold conditions separately, then chooses with skid occupancy. The
+line arbiter uses a one-hot priority winner, including the starvation override,
+and drives port zero's payload while idle; idle payload carries no request.
 
 Maintenance (fence.i) starts only once every slot and pipeline stage is
 empty. Writeback-all issues each tag lookup and waits for its response before
@@ -301,3 +306,22 @@ for exact names. Benches live in
 [`verif/cocotb_tests/cache`](../../../../verif/cocotb_tests/cache/).
 The `line_port_axi_bridge` formal target checks AXI handshakes, ID
 conservation, and stale-response handling.
+
+The acknowledgement ID queue uses registers to keep the late tag-hit decision
+off a distributed-RAM write-enable setup path. Its depth, request ordering and
+response arbitration are unchanged.
+
+Packed UltraRAM tags use parallel depth banks (`CASCADE_HEIGHT=1`) to avoid
+serial address propagation through four primitives. The logical read latency
+and byte-write granularity stay fixed by the XPM parameters.
+
+For the bounded three-port arbiter, Xilinx builds implement each grant as a
+single LUT6 of the three request valids and three limit predicates. The
+portable implementation retains the same priority equations. The
+`line_arbiter_grant` proof checks both against the encoded priority rule for
+arbitrary request/counter state, including the idle port-zero payload.
+
+MSHR fill capture and W-stage store merging use per-entry byte updates. The
+response id selects the entry to update; accumulated store bytes are preserved
+and a simultaneous W-stage store retains priority. This removes a round trip
+through the indexed line-data mux without changing response or merge timing.

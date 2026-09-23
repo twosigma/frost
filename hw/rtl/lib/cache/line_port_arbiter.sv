@@ -102,12 +102,16 @@ module line_port_arbiter #(
   // with a request presented, saturating at the limit. Absent entirely when
   // the bound is 0.
   logic [NUM_PORTS-1:0] starved;
+  (* dont_touch = "true" *)logic [NUM_PORTS-1:0] at_limit;
   if (STARVATION_LIMIT != 0) begin : gen_starvation
     localparam int unsigned WaitBits = $clog2(STARVATION_LIMIT + 1);
     logic [WaitBits-1:0] wait_q[NUM_PORTS];
+    // The registered half of starved, kept as its own net so the grant below
+    // is a single level from the request valids (see there).
     always_comb begin
       for (int p = 0; p < int'(NUM_PORTS); p++) begin
-        starved[p] = i_up_req_valid[p] && (wait_q[p] == WaitBits'(STARVATION_LIMIT));
+        at_limit[p] = (wait_q[p] == WaitBits'(STARVATION_LIMIT));
+        starved[p]  = i_up_req_valid[p] && at_limit[p];
       end
     end
     always_ff @(posedge i_clk) begin
@@ -121,43 +125,137 @@ module line_port_arbiter #(
       end
     end
   end else begin : gen_no_starvation
-    assign starved = '0;
+    assign starved  = '0;
+    assign at_limit = '0;
   end
 
-  // Priority select: the lowest starved requesting port, else the lowest
-  // requesting port index.
-  logic [PortBits-1:0] sel;
-  logic                any_valid;
+  // Grant, one-hot: the lowest starved requesting port, else the lowest
+  // requesting port index, else port 0 while nothing requests (so the idle
+  // payload is port 0's, as an encoded select of 0 presents it; ready and the
+  // fire are qualified by any_valid). Each grant bit is written as a flat
+  // function of the port valids and limit flags rather than as a priority
+  // chain, and synthesis keeps the nets, so a requester valid reaches the
+  // downstream payload through one grant level and one select level: the
+  // downstream (an L2) continues from that payload into its own accept
+  // decision within the same cycle. p_grant_is_priority checks the grant
+  // against the priority rule in its encoded form.
+  (* dont_touch = "true" *)logic [NUM_PORTS-1:0] grant;
+  logic [NUM_PORTS-1:0] grant_generic;
+  logic [NUM_PORTS-1:0] valid_below, starved_below;  // any lower port
+  logic [PortBits-1:0] sel;  // the grant's index, for the id prefix
+  logic any_valid, any_starved;
   always_comb begin
-    sel       = '0;
-    any_valid = 1'b0;
-    for (int p = int'(NUM_PORTS) - 1; p >= 0; p--) begin
-      if (i_up_req_valid[p]) begin
-        sel       = PortBits'(p);
-        any_valid = 1'b1;
+    any_valid   = |i_up_req_valid;
+    any_starved = |starved;
+    for (int p = 0; p < int'(NUM_PORTS); p++) begin
+      valid_below[p]   = 1'b0;
+      starved_below[p] = 1'b0;
+      for (int q = 0; q < p; q++) begin
+        valid_below[p] |= i_up_req_valid[q];
+        starved_below[p] |= starved[q];
       end
-    end
-    for (int p = int'(NUM_PORTS) - 1; p >= 0; p--) begin
-      if (starved[p]) sel = PortBits'(p);
+      grant_generic[p] = (starved[p] && !starved_below[p]) ||
+          (!any_starved && !valid_below[p] && (i_up_req_valid[p] || ((p == 0) && !any_valid)));
     end
   end
 
-  // Pass-through request path: the winner's payload, the winner's fire.
+`ifdef FROST_XILINX_PRIMS
+  if ((NUM_PORTS == 3) && (STARVATION_LIMIT != 0)) begin : gen_three_port_grant
+    // Three request bits plus three registered-limit predicates fit one
+    // LUT6. An explicit table prevents sharing the intermediate any-starved
+    // term from serializing the late request before the downstream accept.
+    function automatic logic [63:0] grant_truth(input int winner);
+      logic [2:0] requests, limits;
+      int selected;
+      for (int row = 0; row < 64; row++) begin
+        requests = 3'(row);
+        limits   = 3'(row >> 3);
+        selected = 0;
+        for (int port = 2; port >= 0; port--) begin
+          if (requests[port]) selected = port;
+        end
+        for (int port = 2; port >= 0; port--) begin
+          if (requests[port] && limits[port]) selected = port;
+        end
+        grant_truth[row] = selected == winner;
+      end
+    endfunction
+    for (genvar port = 0; port < 3; port++) begin : gen_port
+      (* dont_touch = "true" *) LUT6 #(
+          .INIT(grant_truth(port))
+      ) grant_lut (
+          .I0(i_up_req_valid[0]),
+          .I1(i_up_req_valid[1]),
+          .I2(i_up_req_valid[2]),
+          .I3(at_limit[0]),
+          .I4(at_limit[1]),
+          .I5(at_limit[2]),
+          .O (grant[port])
+      );
+    end
+  end else begin : gen_other_grant
+    assign grant = grant_generic;
+  end
+`else
+  assign grant = grant_generic;
+`endif
+  always_comb begin
+    sel = '0;
+    for (int p = 0; p < int'(NUM_PORTS); p++) if (grant[p]) sel |= PortBits'(p);
+  end
+
+`ifdef LINE_ARBITER_GRANT_PROOF
+  logic [PortBits-1:0] f_sel;
+  always_comb begin
+    f_sel = '0;
+    for (int p = int'(NUM_PORTS) - 1; p >= 0; p--) begin
+      if (i_up_req_valid[p]) f_sel = PortBits'(p);
+    end
+    for (int p = int'(NUM_PORTS) - 1; p >= 0; p--) begin
+      if (starved[p]) f_sel = PortBits'(p);
+    end
+    assert (grant == (NUM_PORTS'(1) << f_sel));
+  end
+`endif
+
+  // Pass-through request path: the granted payload, the winner's fire. An
+  // AND-OR select over the one-hot grant maps to a single level per bit.
+  logic dn_write, dn_maint;
+  logic [  ADDR_WIDTH-1:0] dn_addr;
+  logic [LINE_BYTES*8-1:0] dn_wdata;
+  logic [  LINE_BYTES-1:0] dn_wstrb;
+  logic [  UP_ID_BITS-1:0] dn_id;
+  always_comb begin
+    dn_write = 1'b0;
+    dn_maint = 1'b0;
+    dn_addr  = '0;
+    dn_wdata = '0;
+    dn_wstrb = '0;
+    dn_id    = '0;
+    for (int p = 0; p < int'(NUM_PORTS); p++) begin
+      dn_write |= grant[p] & i_up_req_write[p];
+      dn_maint |= grant[p] & i_up_req_maintenance[p];
+      dn_addr |= {ADDR_WIDTH{grant[p]}} & i_up_req_addr[p];
+      dn_wdata |= {(LINE_BYTES * 8) {grant[p]}} & i_up_req_wdata[p];
+      dn_wstrb |= {LINE_BYTES{grant[p]}} & i_up_req_wstrb[p];
+      dn_id |= {UP_ID_BITS{grant[p]}} & i_up_req_id[p];
+    end
+  end
   assign o_down_req_valid       = any_valid;
-  assign o_down_req_write       = i_up_req_write[sel];
-  assign o_down_req_addr        = i_up_req_addr[sel];
-  assign o_down_req_wdata       = i_up_req_wdata[sel];
-  assign o_down_req_wstrb       = i_up_req_wstrb[sel];
-  assign o_down_req_id          = {sel, i_up_req_id[sel]};
-  assign o_down_req_maintenance = i_up_req_maintenance[sel];
+  assign o_down_req_write       = dn_write;
+  assign o_down_req_addr        = dn_addr;
+  assign o_down_req_wdata       = dn_wdata;
+  assign o_down_req_wstrb       = dn_wstrb;
+  assign o_down_req_id          = {sel, dn_id};
+  assign o_down_req_maintenance = dn_maint;
 
   // Ready mirrors the downstream ready so both seams fire in the same cycle
   // and payload capture lines up; a requesting port is ready only while it
-  // is the selected one, which is the whole priority rule. With nothing
+  // is the granted one, which is the whole priority rule. With nothing
   // requesting every port sees the downstream ready.
   always_comb begin
     for (int p = 0; p < int'(NUM_PORTS); p++) begin
-      o_up_req_ready[p] = i_down_req_ready && (!any_valid || (sel == PortBits'(p)));
+      o_up_req_ready[p] = i_down_req_ready && (!any_valid || grant[p]);
     end
   end
 
@@ -173,6 +271,20 @@ module line_port_arbiter #(
   end
 
 `ifndef SYNTHESIS
+  // The priority rule in its encoded form: the lowest requesting port, then
+  // the lowest starved port over it, 0 when idle. The flat grant above must
+  // agree with it every cycle.
+  logic [PortBits-1:0] chk_sel;
+  always_comb begin
+    chk_sel = '0;
+    for (int p = int'(NUM_PORTS) - 1; p >= 0; p--) begin
+      if (i_up_req_valid[p]) chk_sel = PortBits'(p);
+    end
+    for (int p = int'(NUM_PORTS) - 1; p >= 0; p--) begin
+      if (starved[p]) chk_sel = PortBits'(p);
+    end
+  end
+
   // Protocol checks (simulation only): every response carries a port prefix
   // that exists, and the per-port in-flight count never goes negative,
   // because the downstream may only answer what was fired.
@@ -184,6 +296,7 @@ module line_port_arbiter #(
     if (i_rst) begin
       inflight_q <= '0;
     end else begin
+      p_grant_is_priority : assert ((sel == chk_sel) && (grant == (NUM_PORTS'(1) << chk_sel)));
       if (i_down_resp_valid && (32'(resp_port) >= NUM_PORTS))
         $error("line_port_arbiter: response for nonexistent port %0d", resp_port);
       for (int p = 0; p < int'(NUM_PORTS); p++) begin

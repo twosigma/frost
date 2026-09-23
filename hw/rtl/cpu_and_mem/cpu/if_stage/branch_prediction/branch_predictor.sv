@@ -78,6 +78,8 @@ module branch_predictor #(
     // Legacy selected bundle.  Target and metadata retain the same selector
     // identity while the timing-critical safety/taken decision uses the fixed
     // outputs above.
+    output logic            o_btb_hit_2_plus2,
+    output logic            o_btb_hit_2_plus4,
     output logic            o_btb_hit_2,
     output logic            o_predicted_taken_2,
     output logic [XLEN-1:0] o_predicted_target_2,
@@ -578,11 +580,39 @@ module branch_predictor #(
     end
   end
 
-  assign slot2_tag_2_raw_matches = slot2_tag_2_raw == lookup_tag_2;
-  assign slot2_tag_2_alt_raw_matches = slot2_tag_2_alt_raw == lookup_tag_2_alt;
-  assign slot2_tag_2_rot_raw_matches = slot2_tag_2_rot_raw == lookup_tag_2;
-  assign slot2_tag_2_forward_matches = slot2_tag_2_forward_q == lookup_tag_2;
-  assign slot2_tag_2_alt_forward_matches = slot2_tag_2_alt_forward_q == lookup_tag_2_alt;
+  // As for slot 1, retain parallel partial equalities so a wide comparison
+  // cannot become a long carry chain on the served-PC -> prediction loop.
+  // Compare all raw/forwarded images independently before the existing muxes.
+  (* keep = "true" *) logic [4:0][TagCompareChunks-1:0] slot2_tag_equal_chunks;
+  for (genvar chunk = 0; chunk < TagCompareChunks; chunk++) begin : gen_slot2_tag_compare
+    localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
+    localparam int unsigned Bits =
+        (TagBits - FirstBit < TagCompareChunkBits) ? TagBits - FirstBit : TagCompareChunkBits;
+    assign slot2_tag_equal_chunks[0][chunk] =
+        slot2_tag_2_raw[FirstBit+:Bits] == lookup_tag_2[FirstBit+:Bits];
+    assign slot2_tag_equal_chunks[1][chunk] =
+        slot2_tag_2_alt_raw[FirstBit+:Bits] == lookup_tag_2[FirstBit+:Bits];
+    assign slot2_tag_equal_chunks[2][chunk] =
+        slot2_tag_2_rot_raw[FirstBit+:Bits] == lookup_tag_2[FirstBit+:Bits];
+    assign slot2_tag_equal_chunks[3][chunk] =
+        slot2_tag_2_forward_q[FirstBit+:Bits] == lookup_tag_2[FirstBit+:Bits];
+    assign slot2_tag_equal_chunks[4][chunk] =
+        slot2_tag_2_alt_forward_q[FirstBit+:Bits] == lookup_tag_2[FirstBit+:Bits];
+  end
+  assign slot2_tag_2_raw_matches = &slot2_tag_equal_chunks[0];
+  assign slot2_tag_2_alt_raw_matches = &slot2_tag_equal_chunks[1];
+  assign slot2_tag_2_rot_raw_matches = &slot2_tag_equal_chunks[2];
+  assign slot2_tag_2_forward_matches = &slot2_tag_equal_chunks[3];
+  assign slot2_tag_2_alt_forward_matches = &slot2_tag_equal_chunks[4];
+`ifdef BTB_TAG_COMPARE_LOCAL_PROOF
+  always_comb begin
+    assert (slot2_tag_2_raw_matches == (slot2_tag_2_raw == lookup_tag_2));
+    assert (slot2_tag_2_alt_raw_matches == (slot2_tag_2_alt_raw == lookup_tag_2));
+    assert (slot2_tag_2_rot_raw_matches == (slot2_tag_2_rot_raw == lookup_tag_2));
+    assert (slot2_tag_2_forward_matches == (slot2_tag_2_forward_q == lookup_tag_2));
+    assert (slot2_tag_2_alt_forward_matches == (slot2_tag_2_alt_forward_q == lookup_tag_2));
+  end
+`endif
   assign slot2_hit_2_base =
       slot2_valid_2_q &&
       (slot2_forward_2_q ? slot2_tag_2_forward_matches : slot2_tag_2_raw_matches);
@@ -600,6 +630,8 @@ module branch_predictor #(
   assign o_predicted_taken_2_plus4 = btb_hit_2_alt && lookup_payload_2_alt.counter[1];
   assign o_btb_compressed_2_plus2 = btb_hit_2 && lookup_payload_2.compressed;
   assign o_btb_compressed_2_plus4 = btb_hit_2_alt && lookup_payload_2_alt.compressed;
+  assign o_btb_hit_2_plus2 = btb_hit_2;
+  assign o_btb_hit_2_plus4 = btb_hit_2_alt;
   assign o_btb_hit_2 = selected_btb_hit_2;
   assign o_predicted_taken_2 = i_pc_2_use_alt ?
       o_predicted_taken_2_plus4 : o_predicted_taken_2_plus2;

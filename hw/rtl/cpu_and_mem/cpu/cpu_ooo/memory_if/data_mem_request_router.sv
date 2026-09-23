@@ -82,6 +82,14 @@ module data_mem_request_router #(
     input logic [                  XLEN-1:0] i_amo_mem_write_addr,
     input logic [riscv_pkg::MemDataBits-1:0] i_amo_mem_write_data,
     input logic                              i_amo_mem_write_is_dword,
+    // Registered tier flags for the AMO write (parallel to the SQ pair): the
+    // load queue decodes riscv_pkg::mmio_window_hit / the cached range from
+    // the same address it captures into i_amo_mem_write_addr, on the same
+    // edge, so they equal the decode of that address on every cycle the
+    // enable is high. TIMING: keeps the 32-bit range compares out of the
+    // BRAM WEA / debug-mirror cone (amo_state -> WEA was 12 logic levels).
+    input logic                              i_amo_mem_write_is_mmio,
+    input logic                              i_amo_mem_write_is_cached,
 
     // Load-queue read request. The slot id tags a cached read for the
     // adapter (don't-care for the fast tier).
@@ -117,6 +125,12 @@ module data_mem_request_router #(
     output logic [       riscv_pkg::MemDataBits-1:0] o_data_mem_wr_data,
     output logic [       riscv_pkg::MemStrbBits-1:0] o_data_mem_per_byte_wr_en,
     output logic [       riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
+    // |o_data_mem_bram_byte_wr_en, built from the arbitration terms rather
+    // than by reducing the eight strobes. TIMING: the debug-mode store mirror
+    // (cpu_and_mem) needs "any low-BRAM byte written" on its slice-writer
+    // FIFO write enable; deriving it here keeps that enable two LUT levels
+    // from the source registers instead of reducing the strobe cone again.
+    output logic                                     o_data_mem_bram_write_any,
     output logic                                     o_data_mem_read_enable,
     // Cached-tier write/read requests (asserted only for cached-range accesses).
     output logic [       riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
@@ -161,19 +175,23 @@ module data_mem_request_router #(
   logic [                  XLEN-1:0] amo_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] amo_mem_write_data;
   logic                              amo_mem_write_is_dword;
+  logic                              amo_mem_write_is_mmio;
+  logic                              amo_mem_write_is_cached;
   logic                              lq_mem_read_en;
   logic [                  XLEN-1:0] lq_mem_read_addr;
   logic                              lq_mem_addr_valid;
-  assign sq_mem_write_en        = i_sq_mem_write_en;
-  assign sq_mem_write_addr      = i_sq_mem_write_addr;
-  assign sq_mem_write_data      = i_sq_mem_write_data;
-  assign sq_mem_write_byte_en   = i_sq_mem_write_byte_en;
-  assign sq_mem_write_is_mmio   = i_sq_mem_write_is_mmio;
-  assign sq_mem_write_is_cached = i_sq_mem_write_is_cached;
-  assign amo_mem_write_en       = i_amo_mem_write_en;
-  assign amo_mem_write_addr     = i_amo_mem_write_addr;
-  assign amo_mem_write_data     = i_amo_mem_write_data;
-  assign amo_mem_write_is_dword = i_amo_mem_write_is_dword;
+  assign sq_mem_write_en         = i_sq_mem_write_en;
+  assign sq_mem_write_addr       = i_sq_mem_write_addr;
+  assign sq_mem_write_data       = i_sq_mem_write_data;
+  assign sq_mem_write_byte_en    = i_sq_mem_write_byte_en;
+  assign sq_mem_write_is_mmio    = i_sq_mem_write_is_mmio;
+  assign sq_mem_write_is_cached  = i_sq_mem_write_is_cached;
+  assign amo_mem_write_en        = i_amo_mem_write_en;
+  assign amo_mem_write_addr      = i_amo_mem_write_addr;
+  assign amo_mem_write_data      = i_amo_mem_write_data;
+  assign amo_mem_write_is_dword  = i_amo_mem_write_is_dword;
+  assign amo_mem_write_is_mmio   = i_amo_mem_write_is_mmio;
+  assign amo_mem_write_is_cached = i_amo_mem_write_is_cached;
   // AMO write strobes: word lanes for .W (by addr[2]); full beat for .D.
   logic [riscv_pkg::MemStrbBits-1:0] amo_write_strobes;
   assign amo_write_strobes = riscv_pkg::mem_strobe_for(
@@ -219,11 +237,10 @@ module data_mem_request_router #(
   // load must reach the adapter under its own id, not the one presented
   // live on the accept cycle.
   assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
-  assign lq_pending_request_is_mmio =
-      (lq_mem_request_addr >= XLEN'(MMIO_ADDR)) &&
-      (lq_mem_request_addr < (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES))) ||
-      // PLIC window (M6): a second served MMIO range in the device quadrant.
-      (lq_mem_request_addr[31:22] == 10'h110);
+  // Served MMIO window (register window + PLIC window, riscv_pkg).
+  assign lq_pending_request_is_mmio = riscv_pkg::mmio_window_hit(
+      lq_mem_request_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)
+  );
 
   // Device ordering uses the LQ's full-quadrant classification, which is
   // broader than the implemented MMIO register window above. The live decode
@@ -233,17 +250,13 @@ module data_mem_request_router #(
   assign lq_live_request_requires_park = (lq_mem_read_addr[31:30] == 2'b01);
   assign lq_pending_request_requires_drain = (lq_mem_request_addr[31:30] == 2'b01);
 
-  // AMO MMIO check: short cone from amo_entry_idx → lq_address_amo LUTRAM →
-  // range comparison. AMOs on MMIO are undefined by spec, but the check keeps
+  // AMO MMIO check: AMOs on MMIO are undefined by spec, but the check keeps
   // the pre-existing "zero the BRAM write-enable" safety so a stray AMO cannot
-  // corrupt an aliased BRAM word. It stays local so the dependency on
-  // amo_mem_write_addr never reaches the SQ-only path.
-  logic amo_mem_write_is_mmio;
-  assign amo_mem_write_is_mmio =
-      (amo_mem_write_addr >= XLEN'(MMIO_ADDR)) &&
-      (amo_mem_write_addr <  (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES))) ||
-      // PLIC window (M6): a second served MMIO range in the device quadrant.
-      (amo_mem_write_addr[31:22] == 10'h110);
+  // corrupt an aliased BRAM word. The decode (riscv_pkg::mmio_window_hit of
+  // the write address) arrives pre-registered from the load queue as
+  // i_amo_mem_write_is_mmio, captured beside the address itself, so this
+  // module sees only a flop and the dependency on amo_mem_write_addr never
+  // reaches the SQ-only path or the BRAM WEA cone.
 
   // -------------------------------------------------------------------------
   // Cached-tier decode.
@@ -257,21 +270,17 @@ module data_mem_request_router #(
   //
   // Write side: the SQ flag arrives pre-registered as i_sq_mem_write_is_cached,
   // computed at the SQ drain alongside is_mmio, which keeps the late
-  // address-range test off the BRAM WEA pin. The AMO write flag is decoded
-  // locally like amo_mem_write_is_mmio. A cached AMO write is masked off the
-  // BRAM so its aliased low word is not corrupted, and is forwarded to the
-  // cached tier like a cached SQ store: the AMO read-modify-write has to reach
-  // DDR or the modified value is lost. AMO MMIO writes stay dropped, since
-  // they are undefined by spec and the BRAM-mask safety is preserved.
+  // address-range test off the BRAM WEA pin. The AMO write flag arrives the
+  // same way (i_amo_mem_write_is_cached, captured by the load queue beside
+  // the write address). A cached AMO write is masked off the BRAM so its
+  // aliased low word is not corrupted, and is forwarded to the cached tier
+  // like a cached SQ store: the AMO read-modify-write has to reach DDR or the
+  // modified value is lost. AMO MMIO writes stay dropped, since they are
+  // undefined by spec and the BRAM-mask safety is preserved.
   logic lq_mem_request_is_cached;
   assign lq_mem_request_is_cached =
       (lq_mem_request_addr_eff >= XLEN'(CACHED_BASE)) &&
       (lq_mem_request_addr_eff <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
-
-  logic amo_mem_write_is_cached;
-  assign amo_mem_write_is_cached =
-      (amo_mem_write_addr >= XLEN'(CACHED_BASE)) &&
-      (amo_mem_write_addr <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
 
   // Cached AMO write handshake. The LQ holds i_amo_mem_write_en high for the
   // whole AMO write phase, until it sees o_amo_mem_write_done, but the
@@ -305,6 +314,14 @@ module data_mem_request_router #(
   // drain wait. Its pending Q feeds back to the LQ bus-busy gate so the hold
   // cannot be overwritten.
   assign write_port_busy = sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight;
+
+  // Low-BRAM write selects. Every term is a flop (SQ outputs, the LQ's
+  // one-hot AMO state and its registered tier flags), so each select is one
+  // LUT from registered state.
+  logic sq_bram_write;
+  logic amo_bram_write;
+  assign sq_bram_write = sq_mem_write_en && !sq_mem_write_is_mmio && !sq_mem_write_is_cached;
+  assign amo_bram_write = amo_mem_write_en && !amo_mem_write_is_mmio && !amo_mem_write_is_cached;
 
   // Low-BRAM and cached reads retain their live bypass. Device-quadrant reads
   // cannot use it even when every blocker is open: they first capture into the
@@ -384,10 +401,13 @@ module data_mem_request_router #(
     // BRAM, which would corrupt its aliased low word, so it is excluded here
     // and routed to the cached tier instead.
     o_data_mem_bram_byte_wr_en =
-        (sq_mem_write_en && !sq_mem_write_is_mmio && !sq_mem_write_is_cached) ?
-            sq_mem_write_byte_en :
-        (amo_mem_write_en && !amo_mem_write_is_mmio && !amo_mem_write_is_cached) ?
-            amo_write_strobes : '0;
+        sq_bram_write ? sq_mem_write_byte_en :
+        amo_bram_write ? amo_write_strobes : '0;
+    // Any low-BRAM byte written: |o_data_mem_bram_byte_wr_en by the mux
+    // identity |(s ? a : b) == (s ? |a : |b), with the AMO leg folded to its
+    // select because an AMO strobe is never zero (mem_strobe_for: word lanes
+    // 8'h0F / 8'hF0, dword 8'hFF). The FORMAL block below pins the identity.
+    o_data_mem_bram_write_any = sq_bram_write ? (|sq_mem_write_byte_en) : amo_bram_write;
 
     // Cached-tier byte-write-enable: a cached SQ store, or the single-cycle
     // launch pulse of a cached AMO write. The launch qualifier
@@ -678,6 +698,10 @@ module data_mem_request_router #(
       p_read_accept_equivalent :
       assert (lq_mem_read_accepted == (lq_live_read_accepted || lq_pending_read_accepted));
       p_data_read_is_accept : assert (o_data_mem_read_enable == lq_mem_read_accepted);
+      // The structural any-byte-written flag is exactly the strobe reduction,
+      // for every strobe/width/address combination the inputs can present.
+      p_bram_write_any_is_strobe_reduction :
+      assert (o_data_mem_bram_write_any == (|o_data_mem_bram_byte_wr_en));
       p_cached_read_is_accept :
       assert (o_data_mem_cached_read_enable == (lq_mem_read_accepted && lq_mem_request_is_cached));
       p_mmio_valid_is_accept : assert (o_mmio_load_valid == lq_pending_mmio_read_accepted);

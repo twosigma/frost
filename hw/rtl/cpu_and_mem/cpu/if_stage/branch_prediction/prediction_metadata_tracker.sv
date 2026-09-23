@@ -231,14 +231,37 @@ module prediction_metadata_tracker #(
   // A NOP carries no prediction metadata, because stale metadata would trigger
   // a false misprediction in EX.
   //
-  // The same-cycle live prediction (arm 5) arrives last: it is the BTB lookup
-  // on the current PC, the prediction controls and the IF output match. Every
-  // other select is registered state or a compare of registered PCs. The
-  // validity is therefore expanded over that term: arms 1-4 form a prefix
-  // that decides regardless of it, and the two cofactors (prefix else 1 when
-  // live, prefix else the registered metadata when not) are kept as nets so
-  // the outputs are one select of the late term against them. The legacy
-  // priority chain below is the simulation oracle.
+  // Ownership depends on saved state and PC equality. Select those sources
+  // before the late NOP/window-holdoff controls qualify the final validity.
+  (* keep = "true" *) logic owner_hit_live, owner_taken_live;
+  (* keep = "true" *) logic owner_hit_registered, owner_taken_registered;
+  logic output_prediction_allowed;
+  always_comb begin
+    if (prediction_pending_saved_valid) begin
+      owner_hit_live = pending_prediction_owner_matches_output && prediction_hit_pending_saved;
+      owner_taken_live = pending_prediction_owner_matches_output && prediction_taken_pending_saved;
+      owner_hit_registered = owner_hit_live;
+      owner_taken_registered = owner_taken_live;
+    end else if (i_pending_prediction_active) begin
+      owner_hit_live = pending_prediction_live_owner_matches_output;
+      owner_taken_live = pending_prediction_live_owner_matches_output;
+      owner_hit_registered = pending_prediction_live_owner_matches_output;
+      owner_taken_registered = pending_prediction_live_owner_matches_output;
+    end else begin
+      owner_hit_live = 1'b1;
+      owner_taken_live = 1'b1;
+      owner_hit_registered = i_use_saved_values ? prediction_hit_saved : i_prediction_used_r;
+      owner_taken_registered = i_use_saved_values ? prediction_taken_saved : i_prediction_used_r;
+    end
+  end
+  assign output_prediction_allowed = !effective_sel_nop && !i_pending_prediction_fetch_holdoff;
+  assign o_btb_hit = output_prediction_allowed &&
+      (i_live_prediction_for_output ? owner_hit_live : owner_hit_registered);
+  assign o_btb_predicted_taken = output_prediction_allowed &&
+      (i_live_prediction_for_output ? owner_taken_live : owner_taken_registered);
+
+`ifdef PRED_METADATA_OUTPUT_LOCAL_PROOF
+  logic f_btb_hit, f_btb_taken;
   logic validity_prefix_decides;
   logic validity_prefix_hit;
   logic validity_prefix_taken;
@@ -289,9 +312,14 @@ module prediction_metadata_tracker #(
   assign taken_when_live = validity_prefix_decides ? validity_prefix_taken : 1'b1;
   assign hit_when_not_live = validity_prefix_decides ? validity_prefix_hit : registered_hit;
   assign taken_when_not_live = validity_prefix_decides ? validity_prefix_taken : registered_taken;
-  assign o_btb_hit = i_live_prediction_for_output ? hit_when_live : hit_when_not_live;
-  assign o_btb_predicted_taken =
-      i_live_prediction_for_output ? taken_when_live : taken_when_not_live;
+  assign f_btb_hit = i_live_prediction_for_output ? hit_when_live : hit_when_not_live;
+  assign f_btb_taken = i_live_prediction_for_output ? taken_when_live : taken_when_not_live;
+
+  always_comb begin
+    assert (o_btb_hit == f_btb_hit);
+    assert (o_btb_predicted_taken == f_btb_taken);
+  end
+`endif
 
   // Target payload routing is separate from prediction validity: the
   // current-cycle stall/dispatch cone may clear hit/taken, but it does not

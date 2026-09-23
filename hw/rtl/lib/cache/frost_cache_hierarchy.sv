@@ -590,9 +590,9 @@ module frost_cache_hierarchy #(
       .o_perf_events(l1i_perf_events)
   );
 
-  // Arbiter tree below the three masters, built from two 2:1 fixed-priority
-  // instances whose id prefixes compose to the prefix-free code in the
-  // header.
+  // Arbiter tree: a 2:1 walker/instruction arbiter feeds a 3:1 arbiter
+  // shared with data and DMA. Their id prefixes compose to the prefix-free
+  // code in the header; the top arbiter also bounds starvation.
   //
   // Sub-arbiter: the walker sequencer on port 0 (a walk unblocks a load that
   // is stalling commit), instruction side on port 1 (fetch runs ahead through

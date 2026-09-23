@@ -323,8 +323,8 @@ async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_all_rvc_source_hot_metadata_matches_decompressor(dut: Any) -> None:
-    """All 49,152 RVC parcels produce the sideband's exact three hot bits."""
+async def test_all_rvc_source_metadata_matches_decompressor(dut: Any) -> None:
+    """All 49,152 RVC parcels produce the exact source-hot and remaining rs1 bits."""
     for raw in range(1 << 16):
         if raw & 0x3 == 0x3:
             continue
@@ -333,7 +333,14 @@ async def test_all_rvc_source_hot_metadata_matches_decompressor(dut: Any) -> Non
         await _settle()
 
         expanded = int(dut.o_instr_expanded.value)
+        assert (expanded, bool(int(dut.o_illegal.value))) == _PREDECODE.rvc_expand(
+            raw
+        ), f"expanded sideband: RVC 0x{raw:04x}"
         got = (((expanded >> 21) & 1) << 2) | ((expanded >> 16) & 0x3)
+        rs1_rest = ((expanded >> 17) & 0x6) | ((expanded >> 15) & 1)
+        assert rs1_rest == _PREDECODE.rvc_rs1_rest(raw), (
+            f"rs1 sideband: RVC 0x{raw:04x}"
+        )
         expected = _PREDECODE.rvc_source_hot(raw)
         assert got == expected, (
             f"RVC 0x{raw:04x}: decompressor source-hot 0b{got:03b}, "

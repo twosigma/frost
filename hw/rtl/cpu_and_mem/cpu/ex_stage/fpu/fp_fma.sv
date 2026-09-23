@@ -357,9 +357,12 @@ module fp_fma #(
   always_comb begin
     exp_large = (prod_exp_s4 >= c_exp_s4) ? prod_exp_s4 : c_exp_s4;
 
-    shift_prod_signed = $signed({exp_large[ExpExtBits-1], exp_large}) -
+    // Align only the operand with the smaller exponent. Compute each signed
+    // difference directly, then clamp negatives to zero, instead of putting
+    // the maximum-exponent mux before both subtractors.
+    shift_prod_signed = $signed({c_exp_s4[ExpExtBits-1], c_exp_s4}) -
         $signed({prod_exp_s4[ExpExtBits-1], prod_exp_s4});
-    shift_c_signed = $signed({exp_large[ExpExtBits-1], exp_large}) -
+    shift_c_signed = $signed({prod_exp_s4[ExpExtBits-1], prod_exp_s4}) -
         $signed({c_exp_s4[ExpExtBits-1], c_exp_s4});
 
     if (shift_prod_signed < 0) shift_prod_amt = '0;
@@ -370,6 +373,25 @@ module fp_fma #(
     else if (shift_c_signed >= ProdBitsSigned) shift_c_amt = ShiftBits'(ProdBits);
     else shift_c_amt = shift_c_signed[ShiftBits-1:0];
   end
+
+`ifdef FP_FMA_ALIGN_LOCAL_PROOF
+  logic signed [ExpExtBits:0] f_shift_prod, f_shift_c;
+  logic [ShiftBits-1:0] f_amt_prod, f_amt_c;
+  always_comb begin
+    f_shift_prod = $signed({exp_large[ExpExtBits-1], exp_large}) -
+        $signed({prod_exp_s4[ExpExtBits-1], prod_exp_s4});
+    f_shift_c = $signed({exp_large[ExpExtBits-1], exp_large}) -
+        $signed({c_exp_s4[ExpExtBits-1], c_exp_s4});
+    if (f_shift_prod < 0) f_amt_prod = '0;
+    else if (f_shift_prod >= ProdBitsSigned) f_amt_prod = ShiftBits'(ProdBits);
+    else f_amt_prod = f_shift_prod[ShiftBits-1:0];
+    if (f_shift_c < 0) f_amt_c = '0;
+    else if (f_shift_c >= ProdBitsSigned) f_amt_c = ShiftBits'(ProdBits);
+    else f_amt_c = f_shift_c[ShiftBits-1:0];
+    assert (shift_prod_amt == f_amt_prod);
+    assert (shift_c_amt == f_amt_c);
+  end
+`endif
 
   // =========================================================================
   // Stage 4 -> Stage 4b Pipeline Registers (after shift amount calc)

@@ -20,6 +20,12 @@ valid, slot 1 is not a branch or jump, slot 2 is not an FP-compute op, and
 every targeted structure has room for the bundle. The bundle fires or stalls
 as a unit, so slot 2 never appears downstream alone.
 
+With the decoded queue enabled, `SLOT2_VALID_FROM_BUNDLE` uses the head
+bundle's `is_not_nop` bit directly for slot-2 resource admission. The queue
+guarantees `i_valid_2 == i_valid && slot2.is_not_nop`; an integration assertion
+checks it. This removes the repeated queue-valid term from the resource
+decision. The default parameter retains the independent slot-valid interface.
+
 An FP-compute op is one that targets the FP, FMUL, or FDIV RS; FP loads and
 stores go to MEM_RS and may sit in slot 2. The fetch-stage instruction aligner
 keeps FP-compute ops out of slot 2, so the PC advances past slot 1 alone and
@@ -42,7 +48,8 @@ For each source slot, dispatch reads the INT or FP RAT according to the
 RS operand:
 
 - A source that is not renamed takes its value from the regfile passthrough,
-  and the RS entry is marked ready.
+  and the RS entry is marked ready. Its tag is unspecified and must not
+  participate in wakeup or done repair.
 - A renamed source sends the ROB tag to the RS, and dispatch also emits a
   registered done-repair request. The wrapper checks the ROB one cycle later
   and wakes the RS if that tag had already completed before dispatch.

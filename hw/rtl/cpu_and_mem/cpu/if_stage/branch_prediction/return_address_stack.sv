@@ -246,13 +246,78 @@ module return_address_stack #(
   // state flops and the post-operation checkpoint.  This keeps the forwarded
   // checkpoint definition mechanically identical to the actual state update.
   // Recovery from misprediction takes priority over normal operations.
+  // Permission arrives after fetch validity and prediction guards. Compute
+  // both exact next checkpoints first, then select that late bit once.
+  (* keep = "true" *)logic [RAS_PTR_BITS-1:0] tos_candidate  [2];
+  (* keep = "true" *)logic [  RAS_PTR_BITS:0] count_candidate[2];
+  for (genvar k = 0; k < 2; k++) begin : gen_checkpoint_permission
+    always_comb begin
+      tos_candidate[k]   = tos;
+      count_candidate[k] = valid_count;
+
+      if (i_rst) begin
+        tos_candidate[k]   = '0;
+        count_candidate[k] = '0;
+      end else if (i_misprediction) begin
+        // Restore the checkpoint. This takes priority over the normal operations.
+        // With pop_after_restore set, also decrement for the return that caused
+        // the restore. That covers two cases:
+        //   - A non-spanning return that popped and then mispredicted: the
+        //     restore undoes the pop, and this re-pops.
+        //   - A spanning return that could not pop: the restore is a noop, and
+        //     this performs the pop.
+        if (restore_swap_req) begin
+          // Coroutine replay: pop then push is net-zero on depth and only
+          // replaces the top entry, so both pointers stay at the checkpoint.
+          // With an empty restored stack IF performs neither half, same result.
+          tos_candidate[k]   = i_restore_tos;
+          count_candidate[k] = i_restore_valid_count;
+        end else if (i_pop_after_restore && i_restore_valid_count != '0) begin
+          tos_candidate[k]   = i_restore_tos - RAS_PTR_BITS'(1);
+          count_candidate[k] = i_restore_valid_count - (RAS_PTR_BITS + 1)'(1);
+        end else if (i_push_after_restore) begin
+          tos_candidate[k] = i_restore_tos + RAS_PTR_BITS'(1);
+          if (i_restore_valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
+            count_candidate[k] = i_restore_valid_count + (RAS_PTR_BITS + 1)'(1);
+          end else begin
+            count_candidate[k] = i_restore_valid_count;
+          end
+        end else begin
+          tos_candidate[k]   = i_restore_tos;
+          count_candidate[k] = i_restore_valid_count;
+        end
+      end else begin
+        if (i_is_coroutine && (k != 0) && stack_not_empty && !i_stall_registered) begin
+          // Coroutine: the pop and the push cancel, so TOS keeps its position
+          // and valid_count keeps its value.
+        end else if (do_push) begin
+          tos_candidate[k] = tos_plus_one;
+          // A push onto a full stack overwrites the oldest entry, so the count
+          // saturates at RAS_DEPTH.
+          if (valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
+            count_candidate[k] = valid_count + (RAS_PTR_BITS + 1)'(1);
+          end
+        end else if (i_is_return && !i_is_coroutine && (k != 0) &&
+                     stack_not_empty && !i_stall_registered) begin
+          tos_candidate[k]   = tos_minus_one;
+          count_candidate[k] = valid_count - (RAS_PTR_BITS + 1)'(1);
+        end
+      end
+    end
+  end
+  assign tos_next = i_prediction_allowed ? tos_candidate[1] : tos_candidate[0];
+  assign valid_count_next = i_prediction_allowed ? count_candidate[1] : count_candidate[0];
+
+`ifdef RAS_CHECKPOINT_LOCAL_PROOF
+  logic [RAS_PTR_BITS-1:0] tos_next_reference;
+  logic [  RAS_PTR_BITS:0] valid_count_next_reference;
   always_comb begin
-    tos_next = tos;
-    valid_count_next = valid_count;
+    tos_next_reference = tos;
+    valid_count_next_reference = valid_count;
 
     if (i_rst) begin
-      tos_next = '0;
-      valid_count_next = '0;
+      tos_next_reference = '0;
+      valid_count_next_reference = '0;
     end else if (i_misprediction) begin
       // Restore the checkpoint. This takes priority over the normal operations.
       // With pop_after_restore set, also decrement for the return that caused
@@ -265,39 +330,43 @@ module return_address_stack #(
         // Coroutine replay: pop then push is net-zero on depth and only
         // replaces the top entry, so both pointers stay at the checkpoint.
         // With an empty restored stack IF performs neither half, same result.
-        tos_next = i_restore_tos;
-        valid_count_next = i_restore_valid_count;
+        tos_next_reference = i_restore_tos;
+        valid_count_next_reference = i_restore_valid_count;
       end else if (i_pop_after_restore && i_restore_valid_count != '0) begin
-        tos_next = i_restore_tos - RAS_PTR_BITS'(1);
-        valid_count_next = i_restore_valid_count - (RAS_PTR_BITS + 1)'(1);
+        tos_next_reference = i_restore_tos - RAS_PTR_BITS'(1);
+        valid_count_next_reference = i_restore_valid_count - (RAS_PTR_BITS + 1)'(1);
       end else if (i_push_after_restore) begin
-        tos_next = i_restore_tos + RAS_PTR_BITS'(1);
+        tos_next_reference = i_restore_tos + RAS_PTR_BITS'(1);
         if (i_restore_valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
-          valid_count_next = i_restore_valid_count + (RAS_PTR_BITS + 1)'(1);
+          valid_count_next_reference = i_restore_valid_count + (RAS_PTR_BITS + 1)'(1);
         end else begin
-          valid_count_next = i_restore_valid_count;
+          valid_count_next_reference = i_restore_valid_count;
         end
       end else begin
-        tos_next = i_restore_tos;
-        valid_count_next = i_restore_valid_count;
+        tos_next_reference = i_restore_tos;
+        valid_count_next_reference = i_restore_valid_count;
       end
     end else begin
       if (do_pop_then_push && !i_stall_registered) begin
         // Coroutine: the pop and the push cancel, so TOS keeps its position
         // and valid_count keeps its value.
       end else if (do_push) begin
-        tos_next = tos_plus_one;
+        tos_next_reference = tos_plus_one;
         // A push onto a full stack overwrites the oldest entry, so the count
         // saturates at RAS_DEPTH.
         if (valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
-          valid_count_next = valid_count + (RAS_PTR_BITS + 1)'(1);
+          valid_count_next_reference = valid_count + (RAS_PTR_BITS + 1)'(1);
         end
       end else if (do_pop && !i_stall_registered) begin
-        tos_next = tos_minus_one;
-        valid_count_next = valid_count - (RAS_PTR_BITS + 1)'(1);
+        tos_next_reference = tos_minus_one;
+        valid_count_next_reference = valid_count - (RAS_PTR_BITS + 1)'(1);
       end
     end
   end
+  always_comb begin
+    assert ({tos_next, valid_count_next} == {tos_next_reference, valid_count_next_reference});
+  end
+`endif
 
   always_ff @(posedge i_clk) begin
     tos <= tos_next;

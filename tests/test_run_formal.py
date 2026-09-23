@@ -53,6 +53,121 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "cache_mshr_payload.sby",
+        "Per-entry MSHR byte updates match the indexed fill/store merge for arbitrary state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "lq_alloc_mask.sby",
+        "Parallel cyclic allocation masks match the original binary search and room checks",
+        tasks=("bmc4", "bmc8", "bmc16"),
+    ),
+    FormalTarget(
+        "lq_response_bypass.sby",
+        "Load-response bypass equals full acceptance under its partial-flush guard",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "lq_capacity.sby",
+        "Grouped free-entry capacity predicates equal the exact count comparisons",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "if_direction_payload.sby",
+        "Direction payload cofactor preserves every live/replayed non-NOP packet",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "mispredict_capture.sby",
+        "Recovery-valid payload equals the former gated capture for arbitrary inputs",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "line_arbiter_grant.sby",
+        "Three-port generic and Xilinx grants match starvation-bounded priority",
+        tasks=("bmc", "bmc_xilinx"),
+    ),
+    FormalTarget(
+        "lq_cached_flags.sby",
+        "Cached-slot invalidation and LR suppression match the original next state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "lq_prematch_cofactors.sby",
+        "Registered candidate CAM results equal registering the selected-tag CAM",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "lq_cached_hold.sby",
+        "Cached-slot hold next state matches the full slot-mask reduction",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "prediction_metadata_output.sby",
+        "Prediction hit/taken outputs match the priority reference for arbitrary inputs and state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "c_ext_buffer_next.sby",
+        "Compressed buffer slot-2 next-state outcomes match the original priority",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "sq_repair_mmio.sby",
+        "Parallel store-repair MMIO classification matches full-width selected address addition",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "dmmu_mmio.sby",
+        "DMMU parallel MMIO classification matches the complete fault/address resolution",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rs_alloc_parallel.sby",
+        "Parallel first/second free indices equal the serial search for arbitrary occupancy",
+        tasks=("bmc4", "bmc8", "bmc16", "bmc32"),
+    ),
+    FormalTarget(
+        "rs_pretag_cofactor.sby",
+        "Pre-issue CDB-valid cofactors preserve the exact priority-selected ROB tag",
+        tasks=("bmc", "bmc_tag_indexed"),
+    ),
+    FormalTarget(
+        "fp_fma_align.sby",
+        "FMA alignment shift amounts equal max-exponent subtraction at both precisions",
+        tasks=("bmc", "bmc_xlen32"),
+    ),
+    FormalTarget(
+        "lq_tag_order.sby",
+        "LQ tag order and full-window boundary match extended arithmetic for arbitrary tags",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "ras_checkpoint.sby",
+        "RAS checkpoint permission cofactors equal the original next state for arbitrary inputs and state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "low_bram_presenter_tier.sby",
+        "Low-address retarget cofactor preserves the visible low response stream",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "rvc_predecode.sby",
+        "Full RV64C sideband expansion equals the runtime decoder for every parcel",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "dispatch_admission.sby",
+        "Dispatch admission factoring; queued variant assumes slot-2 valid follows the bundle bit",
+        tasks=("bmc", "bmc_queued"),
+    ),
+    FormalTarget(
+        "instr_operand_classifier.sby",
+        "ID operand classes - direct fields match original operation decode for all instructions and fault overrides",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "decoded_bundle_queue.sby",
         "Decoded bundles: FIFO order, once-only held-image ownership, flush, bypass and wraparound",
         tasks=("prove", "prove_depth2", "cover"),
@@ -212,6 +327,11 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
+        "immu_page_offset.sby",
+        "IMMU translated PA page-offset preservation and visible-output equivalence",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
         "immu_bare.sby",
         "IMMU Bare bypass - exact PMA/output equivalence at local XLEN 64, 32, and 72",
         tasks=("bmc", "bmc_xlen32", "bmc_xlen72"),
@@ -219,7 +339,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "fetch_pc_mux.sby",
         "IF fetch PC - final prediction mux matches original one-hot and serial priority equations",
-        tasks=("bmc", "bmc_integrated"),
+        tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
     ),
     FormalTarget(
         "fetch_redirect.sby",
@@ -294,6 +414,15 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("bmc_integrated_xilinx", "Bounded integrated equivalence with Xilinx primitives"),
+    ("bmc_int", "Bounded check of the dual-issue integer configuration"),
+    ("prove_int", "Unbounded proof of the dual-issue integer configuration"),
+    ("bmc4", "Bounded local equivalence at depth 4"),
+    ("bmc8", "Bounded local equivalence at depth 8"),
+    ("bmc16", "Bounded local equivalence at depth 16"),
+    ("bmc32", "Bounded local equivalence at depth 32"),
+    ("bmc_xilinx", "Bounded equivalence with the Xilinx primitive implementation"),
+    ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
     ("prove", "Unbounded safety proof (ABC PDR or temporal induction)"),

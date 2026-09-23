@@ -813,6 +813,7 @@ module cpu_and_mem #(
         .i_publish_hold(fuzz_publish_hold),
         .i_owner_low(1'b1),
         .i_retarget(fetch_redirect),
+        .i_address_retarget(fetch_redirect),
         .i_pc(program_counter),
         .i_pa0(fetch_pa0),
         .i_pa1(fetch_pa1),
@@ -905,7 +906,12 @@ module cpu_and_mem #(
       else cached_fetch_valid_local_q <= cached_fetch_valid_next;
     end
 
-    low_bram_fetch_presenter u_low_bram_fetch_presenter (
+    // The low address pins may finish a held low request on a low-to-high
+    // crossing. Canonical upper PA bits still mark that read high, so it can
+    // neither hit the low overlay nor match a later low response identity.
+    low_bram_fetch_presenter #(
+        .SEPARATE_ADDRESS_RETARGET(1'b1)
+    ) u_low_bram_fetch_presenter (
         .i_clk(i_clk),
         .i_rst(rst_core),
         .i_response_ready(bram_fetch_response_ready),
@@ -914,6 +920,7 @@ module cpu_and_mem #(
         .i_publish_hold(low_bram_pipeline_stall_q),
         .i_owner_low(!fetch_pa0[31]),
         .i_retarget(fetch_redirect || fetch_high_transition),
+        .i_address_retarget(fetch_redirect),
         .i_pc(program_counter),
         .i_pa0(fetch_pa0),
         .i_pa1(fetch_pa1),
@@ -1098,6 +1105,7 @@ module cpu_and_mem #(
         .i_publish_hold(low_bram_pipeline_stall_q),
         .i_owner_low(1'b1),
         .i_retarget(fetch_redirect),
+        .i_address_retarget(fetch_redirect),
         .i_pc(program_counter),
         .i_pa0(fetch_pa0),
         .i_pa1(fetch_pa1),
@@ -1345,11 +1353,17 @@ module cpu_and_mem #(
   logic [MemByteAddrWidth-1:2] mirror_hold_addr_q;
   logic mirror_now_valid, mirror_lo, mirror_hi, mirror_overflow;
   logic [MemByteAddrWidth-1:2] mirror_now_addr;
-  assign mirror_lo = dbg_debug_mode && dbg_bram_store && (|dbg_bram_store_strb[3:0]);
-  assign mirror_hi = dbg_debug_mode && dbg_bram_store && (|dbg_bram_store_strb[7:4]);
+  // dbg_bram_store is |dbg_bram_store_strb (cpu_ooo), so it is implied by
+  // either half's strobes and is left out of the per-word terms. TIMING: the
+  // word terms sit on the slice-writer FIFO data/address, the valid below on
+  // its write enable; neither re-reduces the strobe cone.
+  assign mirror_lo = dbg_debug_mode && (|dbg_bram_store_strb[3:0]);
+  assign mirror_hi = dbg_debug_mode && (|dbg_bram_store_strb[7:4]);
   // This cycle's mirror: the held word 1 first, else the new store's word 0
-  // (or its word 1 alone).
-  assign mirror_now_valid = mirror_hold_valid_q || mirror_lo || mirror_hi;
+  // (or its word 1 alone). mirror_lo || mirror_hi is exactly
+  // dbg_debug_mode && dbg_bram_store; the router's structural any-byte flag
+  // keeps the FIFO write enable two LUT levels from the store-source flops.
+  assign mirror_now_valid = mirror_hold_valid_q || (dbg_debug_mode && dbg_bram_store);
   assign mirror_now_addr = mirror_hold_valid_q ? mirror_hold_addr_q :
       mirror_lo ? {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b0} :
                   {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};

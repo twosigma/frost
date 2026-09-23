@@ -226,6 +226,8 @@ module branch_prediction_controller #(
 
   // Slot-2 BTB outputs.
   logic            btb_hit_2;
+  logic btb_hit_2_plus2, btb_hit_2_plus4;
+  assign btb_hit_2 = slot2_pc_use_alt ? btb_hit_2_plus4 : btb_hit_2_plus2;
   logic            btb_predicted_taken_2;
   logic            btb_predicted_taken_2_plus2;
   logic            btb_predicted_taken_2_plus4;
@@ -306,7 +308,9 @@ module branch_prediction_controller #(
       .o_predicted_taken_2_plus4(btb_predicted_taken_2_plus4),
       .o_btb_compressed_2_plus2(btb_compressed_2_plus2),
       .o_btb_compressed_2_plus4(btb_compressed_2_plus4),
-      .o_btb_hit_2(btb_hit_2),
+      .o_btb_hit_2(),
+      .o_btb_hit_2_plus2(btb_hit_2_plus2),
+      .o_btb_hit_2_plus4(btb_hit_2_plus4),
       .o_predicted_taken_2(btb_predicted_taken_2),
       .o_predicted_target_2(btb_predicted_target_2),
       .o_btb_compressed_2(btb_compressed_2),
@@ -382,6 +386,7 @@ module branch_prediction_controller #(
   // values unobservable, while a pending-owner one-wide kill must still stop
   // that redundant lookup from becoming a new slot-1 owner.  Exact emission
   // remains separate for the slot-2 fallback and metadata outputs.
+  logic slot1_aliases_slot2_plus2_raw, slot1_aliases_slot2_plus4_raw;
   logic slot1_aliases_slot2_candidate_plus2;
   logic slot1_aliases_slot2_candidate_plus4;
   logic slot1_aliases_slot2_candidate;
@@ -404,17 +409,17 @@ module branch_prediction_controller #(
       logic [XLEN-2:0] carry_from_pair;
       assign pc_xor_base = i_pc ^ i_pc_2_base;
       assign carry_from_pair = i_pc_2_base[XLEN-2:0] & ~i_pc[XLEN-2:0];
-      assign slot1_aliases_slot2_candidate_plus2 = i_slot2_plus2_candidate_valid &&
-          (pc_xor_base == {carry_from_pair[XLEN-2:1], 2'b10});
-      assign slot1_aliases_slot2_candidate_plus4 = i_slot2_plus4_candidate_valid &&
-          (pc_xor_base == {carry_from_pair[XLEN-2:2], 3'b100});
+      assign slot1_aliases_slot2_plus2_raw = (pc_xor_base == {carry_from_pair[XLEN-2:1], 2'b10});
+      assign slot1_aliases_slot2_plus4_raw = (pc_xor_base == {carry_from_pair[XLEN-2:2], 3'b100});
     end else begin : gen_generic_alias_compare
-      assign slot1_aliases_slot2_candidate_plus2 =
-          i_slot2_plus2_candidate_valid && (i_pc == i_pc_2);
-      assign slot1_aliases_slot2_candidate_plus4 =
-          i_slot2_plus4_candidate_valid && (i_pc == i_pc_2_alt);
+      assign slot1_aliases_slot2_plus2_raw = (i_pc == i_pc_2);
+      assign slot1_aliases_slot2_plus4_raw = (i_pc == i_pc_2_alt);
     end
   endgenerate
+  assign slot1_aliases_slot2_candidate_plus2 =
+      i_slot2_plus2_candidate_valid && slot1_aliases_slot2_plus2_raw;
+  assign slot1_aliases_slot2_candidate_plus4 =
+      i_slot2_plus4_candidate_valid && slot1_aliases_slot2_plus4_raw;
   assign slot1_aliases_slot2_candidate =
       slot1_aliases_slot2_candidate_plus2 || slot1_aliases_slot2_candidate_plus4;
   assign o_slot1_aliases_slot2_candidate = slot1_aliases_slot2_candidate;
@@ -1040,10 +1045,36 @@ module branch_prediction_controller #(
   // Under collapsed lead, ownership reduces exactly to the alias. Use that
   // cofactor here so live direction need not pass through the shared ownership
   // LUT before qualifying this fallback. Keep both hit and direction checks.
-  assign slot2_prediction_candidate_for_pc =
-      slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken ||
-      (i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && !btb_hit_2 &&
-       btb_hit && slot2_live_fallback_size_safe && dir_predicted_taken);
+  // Complete lookup, live-fallback size, and owner decisions separately for
+  // all four candidate-valid combinations. The late aligner identity selects
+  // finished results. Keeping all four cases preserves even the otherwise
+  // invalid both-candidates combination without an exclusivity assumption.
+  (* keep = "true" *)logic [3:0] pc_candidate_cases;
+  (* keep = "true" *)logic [3:0] fallback_candidate_cases;
+  (* keep = "true" *)logic [3:0] live_target_candidate_cases;
+  for (genvar choice = 0; choice < 4; choice++) begin : gen_slot2_candidate_case
+    localparam bit Plus2 = (choice & 1) != 0;
+    localparam bit Plus4 = (choice & 2) != 0;
+    wire hit = Plus4 ? btb_hit_2_plus4 : btb_hit_2_plus2;
+    wire size_safe = !i_pc[1] ||
+        ((Plus4 ? i_slot2_is_compressed_plus4 : i_slot2_is_compressed_plus2) == btb_compressed);
+    wire aliases = (Plus2 && slot1_aliases_slot2_plus2_raw) ||
+        (Plus4 && slot1_aliases_slot2_plus4_raw);
+    wire staged_taken = (Plus2 && slot2_plus2_safe_taken) || (Plus4 && slot2_plus4_safe_taken);
+    assign fallback_candidate_cases[choice] =
+        i_lookup_lead_collapsed && !hit && size_safe && dir_predicted_taken;
+    assign pc_candidate_cases[choice] = staged_taken ||
+        (aliases && btb_hit && fallback_candidate_cases[choice]);
+    assign live_target_candidate_cases[choice] =
+        i_lookup_lead_collapsed && !hit && btb_hit &&
+        (staged_taken || fallback_candidate_cases[choice]);
+  end
+  function automatic logic select_slot2_case(input logic [3:0] cases);
+    select_slot2_case = i_slot2_plus4_candidate_valid ?
+        (i_slot2_plus2_candidate_valid ? cases[3] : cases[2]) :
+        (i_slot2_plus2_candidate_valid ? cases[1] : cases[0]);
+  endfunction
+  assign slot2_prediction_candidate_for_pc = select_slot2_case(pc_candidate_cases);
   assign o_slot2_prediction_used_for_pc =
       slot2_prediction_permission && slot2_prediction_candidate_for_pc;
   // Split the canonical redirect into a staged image and an exact live-image
@@ -1057,16 +1088,15 @@ module branch_prediction_controller #(
   assign slot2_live_fallback_used_for_pc =
       slot2_live_fallback_select && !ras_valid &&
       !i_branch_taken && !i_is_32bit_spanning;
-  assign slot2_live_fallback_candidate_for_pc_cofactor =
-      i_lookup_lead_collapsed && !btb_hit_2 &&
-      slot2_live_fallback_size_safe && dir_predicted_taken;
+  assign slot2_live_fallback_candidate_for_pc_cofactor = select_slot2_case(
+      fallback_candidate_cases
+  );
   assign slot2_live_fallback_used_for_pc_cofactor =
       slot2_prediction_permission && slot2_live_fallback_candidate_for_pc_cofactor;
   assign slot2_live_target_used_for_pc = o_slot2_prediction_used_for_pc && slot2_live_fallback_hit;
-  assign slot2_live_target_candidate_for_pc_cofactor =
-      i_lookup_lead_collapsed && !btb_hit_2 && btb_hit &&
-      (slot2_staged_prediction_candidate_for_pc ||
-       slot2_live_fallback_candidate_for_pc_cofactor);
+  assign slot2_live_target_candidate_for_pc_cofactor = select_slot2_case(
+      live_target_candidate_cases
+  );
   assign slot2_live_target_used_for_pc_cofactor =
       slot2_prediction_permission && slot2_live_target_candidate_for_pc_cofactor;
 
@@ -1236,6 +1266,13 @@ module branch_prediction_controller #(
 `endif
 
 `ifdef FORMAL
+  logic slot2_candidate_reference;
+  assign slot2_candidate_reference =
+      slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken ||
+      (i_lookup_lead_collapsed && slot1_aliases_slot2_candidate && !btb_hit_2 &&
+       btb_hit && slot2_live_fallback_size_safe && dir_predicted_taken);
+  always_comb assert (slot2_prediction_candidate_for_pc == slot2_candidate_reference);
+
   // Both the staged candidate and live fallback must obey the selected
   // prediction-disable cofactor. Together with pc_controller's readiness
   // implication, this makes a pending handoff and slot-2 prediction disjoint

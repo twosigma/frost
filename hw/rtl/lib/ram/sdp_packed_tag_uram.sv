@@ -157,7 +157,9 @@ module sdp_packed_tag_uram #(
         .ADDR_WIDTH_B(PhysicalAddrWidth),
         .AUTO_SLEEP_TIME(0),
         .BYTE_WRITE_WIDTH_A(WriteGranuleWidth),
-        .CASCADE_HEIGHT(0),
+        // Parallel banks avoid serial address hops through the depth cascade.
+        // XPM retains the requested read latency and write granularity.
+        .CASCADE_HEIGHT(1),
         .CLOCKING_MODE("common_clock"),
         .ECC_MODE("no_ecc"),
         .MEMORY_INIT_FILE("none"),
@@ -226,13 +228,17 @@ module sdp_packed_tag_uram #(
   `undef FROST_PACKED_TAG_USE_XPM
 `endif
 
-  // Pipeline the lane beside the row read. The final registered select is the
-  // last cycle counted by READ_LATENCY and holds across gaps in i_read_enable.
+  // Pipeline the lane beside the row read. The lane advances every cycle like
+  // the physical read port: a lane sampled on an unqualified cycle only ever
+  // reaches the final select on an unqualified cycle, where it is not taken,
+  // so i_read_enable (the caller's late accept decision) drives no clock
+  // enable here. The final registered select is the last cycle counted by
+  // READ_LATENCY and holds across gaps in i_read_enable.
   logic [LaneSelectWidth-1:0] read_lane_pipe[XpmReadLatency];
   logic read_valid_pipe[XpmReadLatency];
   always_ff @(posedge i_clk) begin
     read_valid_pipe[0] <= i_read_enable;
-    if (i_read_enable) read_lane_pipe[0] <= read_lane;
+    read_lane_pipe[0]  <= read_lane;
     for (int unsigned stage = 1; stage < XpmReadLatency; stage++) begin
       read_valid_pipe[stage] <= read_valid_pipe[stage-1];
       read_lane_pipe[stage]  <= read_lane_pipe[stage-1];

@@ -36,7 +36,11 @@ to the state visible immediately before slot 2.
 When the ROB recycles a tag (allocation wraps), an in-flight rename that
 points at the old generation could otherwise look valid. The RAT consumes
 the ROB's per-entry valid vector and treats any lookup whose tag points at an
-invalid entry as architectural rather than renamed.
+invalid entry as architectural rather than renamed. The tag is meaningful
+only when `renamed` is set; otherwise it may be stale or uninitialized. Lookup
+values and rename flags remain exact, and INT x0 returns all zeros. Dispatch
+compares the raw tag in parallel with rename validation, while source-ready
+and registered repair-valid flags qualify every consumer.
 
 Checkpoints capture one more bit per snapshot entry, and one for the owning
 branch: the ROB allocation generation. Restore rejects a snapshot entry whose

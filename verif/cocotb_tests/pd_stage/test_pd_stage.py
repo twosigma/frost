@@ -15,6 +15,8 @@
 """Top-level unit tests for the pre-decode stage."""
 
 from collections.abc import Mapping
+import importlib.util
+from pathlib import Path
 from typing import Any
 
 import cocotb
@@ -56,6 +58,19 @@ def _pack_if_to_pd(fields: Mapping[str, int | bool]) -> int:
     return _pack_struct(IF_TO_PD_FIELDS, fields)
 
 
+def _rvc_rs1_rest(parcel: int, *, extra: bool = False) -> int:
+    """Reuse the offline model for compressed packets without explicit metadata."""
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "sw/common/generate_imem_predecode_init.py"
+    )
+    spec = importlib.util.spec_from_file_location("pd_predecode_model", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return int(module.rvc_extra(parcel) if extra else module.rvc_rs1_rest(parcel))
+
+
 def _source_hot(instruction: int) -> int:
     """Return packed {rs2[1], rs1[2:1]} from a 32-bit instruction."""
     return (((instruction >> 21) & 1) << 2) | ((instruction >> 16) & 0x3)
@@ -90,10 +105,21 @@ def _drive_if_packet(
         "bp_dir_idx": 0,
     }
     packet.update(fields)
+    packet.setdefault(
+        "rvc_extra_predecoded", _rvc_rs1_rest(int(packet["raw_parcel"]), extra=True)
+    )
     if "source_hot_predecoded" not in fields:
         packet["source_hot_predecoded"] = _source_hot(int(packet["effective_instr"]))
     if "bits24_20_predecoded" not in fields:
         packet["bits24_20_predecoded"] = (int(packet["effective_instr"]) >> 20) & 0x1F
+    if "rs1_rest_predecoded" not in fields:
+        instr = int(packet["effective_instr"])
+        parcel = int(packet["raw_parcel"])
+        packet["rs1_rest_predecoded"] = (
+            _rvc_rs1_rest(parcel)
+            if parcel & 3 != 3 and not slot2
+            else ((instr >> 17) & 0x6) | ((instr >> 15) & 1)
+        )
     value = _pack_if_to_pd(packet)
     if slot2:
         dut.i_from_if_to_pd_2.value = value
@@ -302,6 +328,7 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
             "effective_instr": 0xDEADBEEF,
             "source_hot_predecoded": _source_hot(expected),
             "bits24_20_predecoded": (expected >> 20) & 0x1F,
+            "rs1_rest_predecoded": ((expected >> 17) & 0x6) | ((expected >> 15) & 1),
         },
     )
     await _advance_cycle(dut)
@@ -352,6 +379,8 @@ async def test_field_cofactors_preserve_selection_and_lifecycle(dut: Any) -> Non
                 "sel_compressed": False,  # PD must use its local raw classifier.
                 "source_hot_predecoded": _source_hot(expected),
                 "bits24_20_predecoded": (expected >> 20) & 0x1F,
+                "rs1_rest_predecoded": ((expected >> 17) & 0x6)
+                | ((expected >> 15) & 1),
             },
         )
 
@@ -482,6 +511,7 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
             "effective_instr": 0,
             "source_hot_predecoded": _source_hot(expanded),
             "bits24_20_predecoded": (expanded >> 20) & 0x1F,
+            "rs1_rest_predecoded": ((expanded >> 17) & 0x6) | ((expanded >> 15) & 1),
         },
     )
     await _advance_cycle(dut)
@@ -529,6 +559,8 @@ async def test_illegal_cofactor_preserves_qualification_and_lifecycle(dut: Any) 
                 "decomp_illegal": True,  # Slot 1 must not use slot 2's sideband.
                 "source_hot_predecoded": _source_hot(expected),
                 "bits24_20_predecoded": (expected >> 20) & 0x1F,
+                "rs1_rest_predecoded": ((expected >> 17) & 0x6)
+                | ((expected >> 15) & 1),
             },
         )
 

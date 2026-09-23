@@ -210,24 +210,37 @@ module misprediction_flush_controller #(
     else mispredict_recovery_pending <= commit_is_misprediction;
   end
 
-  // Misprediction data capture (no reset - gated by commit_is_misprediction)
-  always_ff @(posedge i_clk) begin
-    if (commit_is_misprediction) begin
-      mispredict_commit_q.tag            <= rob_commit_comb.tag;
-      mispredict_commit_q.has_checkpoint <= rob_commit_comb.has_checkpoint;
-      mispredict_commit_q.checkpoint_id  <= rob_commit_comb.checkpoint_id;
-      mispredict_commit_q.redirect_pc    <= rob_commit_comb.redirect_pc;
-      mispredict_commit_q.pc             <= rob_commit_comb.pc;
-      mispredict_commit_q.branch_target  <= rob_commit_comb.branch_target;
-      mispredict_commit_q.branch_taken   <= rob_commit_comb.branch_taken;
-      mispredict_commit_q.is_branch      <= rob_commit_comb.is_branch;
-      mispredict_commit_q.is_call        <= rob_commit_comb.is_call;
-      mispredict_commit_q.is_return      <= rob_commit_comb.is_return;
-      mispredict_commit_q.is_jal         <= rob_commit_comb.is_jal;
-      mispredict_commit_q.is_jalr        <= rob_commit_comb.is_jalr;
-      mispredict_commit_q.is_compressed  <= rob_commit_comb.is_compressed;
-    end
+  // The valid register above samples every edge. Refresh its payload on the
+  // same edge too; it is consumed only while mispredict_recovery_pending is
+  // high. This keeps late ROB commit/flush qualification off the wide enables.
+  riscv_pkg::mispredict_commit_capture_t mispredict_commit_d;
+  always_comb begin
+    mispredict_commit_d.tag            = rob_commit_comb.tag;
+    mispredict_commit_d.has_checkpoint = rob_commit_comb.has_checkpoint;
+    mispredict_commit_d.checkpoint_id  = rob_commit_comb.checkpoint_id;
+    mispredict_commit_d.redirect_pc    = rob_commit_comb.redirect_pc;
+    mispredict_commit_d.pc             = rob_commit_comb.pc;
+    mispredict_commit_d.branch_target  = rob_commit_comb.branch_target;
+    mispredict_commit_d.branch_taken   = rob_commit_comb.branch_taken;
+    mispredict_commit_d.is_branch      = rob_commit_comb.is_branch;
+    mispredict_commit_d.is_call        = rob_commit_comb.is_call;
+    mispredict_commit_d.is_return      = rob_commit_comb.is_return;
+    mispredict_commit_d.is_jal         = rob_commit_comb.is_jal;
+    mispredict_commit_d.is_jalr        = rob_commit_comb.is_jalr;
+    mispredict_commit_d.is_compressed  = rob_commit_comb.is_compressed;
   end
+  always_ff @(posedge i_clk) mispredict_commit_q <= mispredict_commit_d;
+
+`ifdef MISPREDICT_CAPTURE_LOCAL_PROOF
+  riscv_pkg::mispredict_commit_capture_t f_gated_capture;
+  logic f_capture_initialized = 1'b0;
+  always @(posedge i_clk) begin
+    f_capture_initialized <= 1'b1;
+    if (commit_is_misprediction) f_gated_capture <= mispredict_commit_d;
+    if (f_capture_initialized && mispredict_recovery_pending)
+      assert (mispredict_commit_q == f_gated_capture);
+  end
+`endif
 
   // FENCE.I commits before its flush pulse reaches IF. Capture the precise
   // fallthrough PC so the front-end can restart from the architectural next
@@ -383,10 +396,12 @@ module misprediction_flush_controller #(
   // pendings tolerate being superseded by flush_all exactly as they do when a
   // trap wins this arbitration.
   assign flush_en = !flush_all && (early_backend_recovery_pending || mispredict_recovery_pending);
+  // The tag is observed only by enabled partial flushes. Full flush wins in
+  // every consumer, including the LQ's ungated early-recovery seam. Leave the
+  // full-flush kill out of the age-comparison data path; its reset still wins.
   always_comb begin
     flush_tag = '0;
-    if (flush_all) flush_tag = '0;
-    else if (early_backend_recovery_pending) flush_tag = early_backend_flush_tag;
+    if (early_backend_recovery_pending) flush_tag = early_backend_flush_tag;
     else if (mispredict_recovery_pending) flush_tag = mispredict_commit_q.tag;
   end
 
@@ -521,7 +536,8 @@ module misprediction_flush_controller #(
              ref_checkpoint_restore_id}
         )) begin
       p_flush_all_is_the_pulse_or : assert (flush_all == ref_flush_all);
-      p_flush_en_tag_exact : assert (flush_en == ref_flush_en && flush_tag == ref_flush_tag);
+      p_flush_en_exact : assert (flush_en == ref_flush_en);
+      p_flush_tag_exact_when_enabled : assert (!ref_flush_en || flush_tag == ref_flush_tag);
       p_flush_pipeline_exact : assert (flush_pipeline == ref_flush_pipeline);
       p_frontend_state_flush_exact : assert (frontend_state_flush == ref_frontend_state_flush);
       p_checkpoint_restore_exact : assert (checkpoint_restore == ref_checkpoint_restore);

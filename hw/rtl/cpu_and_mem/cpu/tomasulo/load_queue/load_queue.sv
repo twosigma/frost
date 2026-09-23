@@ -38,6 +38,7 @@
 module load_queue #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth,  // 8
     parameter bit ENABLE_L0_FAST_PATH = 1'b1,
+    parameter bit PREISSUE_CANDIDATES = 1'b0,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
@@ -56,7 +57,12 @@ module load_queue #(
     // protected separately by registered pending feedback in the wrapper's
     // i_mem_bus_busy input.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
+    // Served MMIO register window (the router's AMO BRAM-mask decode,
+    // riscv_pkg::mmio_window_hit). Only the AMO write tier flags use it here;
+    // the LQ's own device ordering keeps the broader quadrant is_mmio class.
+    parameter int unsigned MMIO_ADDR = 32'h4000_0000,
+    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -92,8 +98,10 @@ module load_queue #(
     // Pre-issue look-ahead from MEM_RS (1 cycle before i_addr_update fires).
     // Used to pre-compute the addr_update CAM match and register it, so
     // entry_addr_valid_now is only 2 LUT levels deep at issue time.
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_rob_tag,
-    input logic                                        i_pre_issue_needs_lq,
+    input logic [  riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_rob_tag,
+    input logic [4*riscv_pkg::ReorderBufferTagWidth-1:0] i_pre_issue_rob_tags,
+    input logic [                                   1:0] i_pre_issue_sel,
+    input logic                                          i_pre_issue_needs_lq,
 
     // =========================================================================
     // Store Queue Disambiguation (combinational handshake)
@@ -199,6 +207,13 @@ module load_queue #(
     // router derives the word-lane strobes from o_amo_mem_write_addr[2].
     output logic [riscv_pkg::MemDataBits-1:0] o_amo_mem_write_data,
     output logic                              o_amo_mem_write_is_dword,
+    // Tier flags of o_amo_mem_write_addr (served MMIO window / cached range),
+    // captured on the same edge from the same address and gated by the same
+    // state, so each equals its decode of o_amo_mem_write_addr every cycle.
+    // TIMING: the router masks its BRAM write enables with them; decoding
+    // here keeps the 32-bit range compares off the amo_state -> WEA cone.
+    output logic                              o_amo_mem_write_is_mmio,
+    output logic                              o_amo_mem_write_is_cached,
     input  logic                              i_amo_mem_write_done,
 
     // =========================================================================
@@ -320,16 +335,13 @@ module load_queue #(
   // ===========================================================================
 
   // Check if entry_tag is younger than flush_tag (relative to rob_head)
+  // Unsigned extended subtraction orders tags below head after tags at or
+  // above it. Within either range ordinary tag order applies. Three parallel
+  // comparisons preserve that order without subtracting the late flush tag.
   function automatic logic is_younger(input logic [ReorderBufferTagWidth-1:0] entry_tag,
                                       input logic [ReorderBufferTagWidth-1:0] flush_tag,
                                       input logic [ReorderBufferTagWidth-1:0] head);
-    logic [ReorderBufferTagWidth:0] entry_age;
-    logic [ReorderBufferTagWidth:0] flush_age;
-    begin
-      entry_age  = {1'b0, entry_tag} - {1'b0, head};
-      flush_age  = {1'b0, flush_tag} - {1'b0, head};
-      is_younger = entry_age > flush_age;
-    end
+    is_younger = (entry_tag > flush_tag) ^ ((entry_tag < head) ^ (flush_tag < head));
   endfunction
 
   // Compare two live ROB tags using one common age origin.  Dependency-mask
@@ -561,6 +573,9 @@ module load_queue #(
   logic                                    amo_compute_commit;
   logic       [    XLEN-1:0]               amo_old_value;
   logic       [    XLEN-1:0]               amo_write_addr_q;
+  // Tier flags of amo_write_addr_q, captured beside it (see the port note).
+  logic                                    amo_write_is_mmio_q;
+  logic                                    amo_write_is_cached_q;
   logic       [    XLEN-1:0]               amo_write_data_q;
   logic       [    XLEN-1:0]               amo_minmax_rs2_q;
   logic                                    amo_is_d_q;
@@ -1022,10 +1037,33 @@ module load_queue #(
     end
   end
 
-  assign full = (count == CountWidth'(DEPTH));
-  // full_for_2: room for at most 1 more entry, so a 2-wide bundle of two loads
-  // would not fit even if neither slot has been allocated yet.
-  assign full_for_2 = full || (count == CountWidth'(DEPTH - 1));
+  // Capacity predicates need only distinguish zero, one, or several free
+  // entries. Four-entry groups avoid a popcount adder/comparator on the
+  // same-edge allocation controls; the exact count above remains public.
+  localparam int FreeGroups = (DEPTH + 3) / 4;
+  (* keep = "true" *) logic [FreeGroups-1:0] group_has_free, group_has_two_free;
+  logic [FreeGroups-1:0] two_free_groups;
+  for (genvar group = 0; group < FreeGroups; group++) begin : gen_capacity_group
+    logic [3:0] free_bits;
+    for (genvar lane = 0; lane < 4; lane++) begin : gen_lane
+      if (4 * group + lane < DEPTH) assign free_bits[lane] = !lq_valid[4*group+lane];
+      else assign free_bits[lane] = 1'b0;
+    end
+    assign group_has_free[group] = |free_bits;
+    assign group_has_two_free[group] =
+        (free_bits[0] && (|free_bits[3:1])) ||
+        (free_bits[1] && (|free_bits[3:2])) || (free_bits[2] && free_bits[3]);
+    if (group == 0) assign two_free_groups[group] = 1'b0;
+    else assign two_free_groups[group] = group_has_free[group] && (|group_has_free[group-1:0]);
+  end
+  assign full = &lq_valid;
+  assign full_for_2 = !(|group_has_two_free) && !(|two_free_groups);
+`ifdef F_LQ_CAPACITY_PROOF
+  always_comb begin
+    assert (full == (count == CountWidth'(DEPTH)));
+    assert (full_for_2 == ((count == CountWidth'(DEPTH)) || (count == CountWidth'(DEPTH - 1))));
+  end
+`endif
   assign empty = (count == CountWidth'(0));
 
   assign o_full = full;
@@ -1171,14 +1209,48 @@ module load_queue #(
     end
   end
 
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
-      addr_update_pre_match_tags_q  <= '0;
-      addr_update_pre_issue_valid_q <= 1'b0;
-    end else begin
-      addr_update_pre_match_tags_q  <= addr_update_pre_match;
-      addr_update_pre_issue_valid_q <= i_pre_issue_needs_lq;
+  if (PREISSUE_CANDIDATES) begin : gen_pre_match_candidates
+    logic [DEPTH-1:0] candidate_match[4];
+    logic [DEPTH-1:0] candidate_match_q[4];
+    logic [1:0] select_q;
+    for (genvar candidate = 0; candidate < 4; candidate++) begin : gen_candidate
+      for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+        assign candidate_match[candidate][entry] = lq_valid[entry] &&
+            !lq_addr_valid[entry] &&
+            (lq_rob_tag[entry] == i_pre_issue_rob_tags[
+                candidate*ReorderBufferTagWidth +: ReorderBufferTagWidth]);
+      end
+      always_ff @(posedge i_clk) begin
+        if (!i_rst_n || i_flush_all) candidate_match_q[candidate] <= '0;
+        else candidate_match_q[candidate] <= candidate_match[candidate];
+      end
     end
+    always_ff @(posedge i_clk) begin
+      select_q <= i_pre_issue_sel;
+    end
+    // The late CDB-valid mux moves across this edge without adding a cycle.
+    // Full-flush/reset zero every candidate, making the selector irrelevant.
+    assign addr_update_pre_match_tags_q = select_q[1] ?
+        (select_q[0] ? candidate_match_q[3] : candidate_match_q[2]) :
+        (select_q[0] ? candidate_match_q[1] : candidate_match_q[0]);
+`ifndef SYNTHESIS
+    always @(posedge i_clk) begin
+      if (i_rst_n && i_pre_issue_needs_lq) begin
+        assert (i_pre_issue_rob_tag ==
+                i_pre_issue_rob_tags[i_pre_issue_sel*ReorderBufferTagWidth +:
+                                    ReorderBufferTagWidth]);
+      end
+    end
+`endif
+  end else begin : gen_pre_match_direct
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n || i_flush_all) addr_update_pre_match_tags_q <= '0;
+      else addr_update_pre_match_tags_q <= addr_update_pre_match;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) addr_update_pre_issue_valid_q <= 1'b0;
+    else addr_update_pre_issue_valid_q <= i_pre_issue_needs_lq;
   end
   assign addr_update_pre_match_q = addr_update_pre_match_tags_q &
       {DEPTH{addr_update_pre_issue_valid_q}};
@@ -1188,10 +1260,27 @@ module load_queue #(
   // valid, reset and full-flush inputs, not just legal issue sequences.
   logic [DEPTH-1:0] f_pre_match_unsplit_q;
   logic f_pre_match_initialized = 1'b0;
+`ifdef F_LQ_PREMATCH_COFACTORS
+  logic [ReorderBufferTagWidth-1:0] f_selected_tag;
+  logic [DEPTH-1:0] f_pre_match_direct;
+  assign f_selected_tag = i_pre_issue_sel[1] ?
+      (i_pre_issue_sel[0] ?
+                i_pre_issue_rob_tags[3*ReorderBufferTagWidth +: ReorderBufferTagWidth] :
+                           i_pre_issue_rob_tags[2*ReorderBufferTagWidth +: ReorderBufferTagWidth]) :
+      (i_pre_issue_sel[0] ?
+                i_pre_issue_rob_tags[ReorderBufferTagWidth +: ReorderBufferTagWidth] :
+                           i_pre_issue_rob_tags[0 +: ReorderBufferTagWidth]);
+  for (genvar f_entry = 0; f_entry < DEPTH; f_entry++) begin : gen_f_pre_match
+    assign f_pre_match_direct[f_entry] = lq_valid[f_entry] && !lq_addr_valid[f_entry] &&
+        (lq_rob_tag[f_entry] == f_selected_tag);
+  end
+`else
+  wire [DEPTH-1:0] f_pre_match_direct = addr_update_pre_match;
+`endif
   always @(posedge i_clk) begin
     f_pre_match_initialized <= 1'b1;
     if (!i_rst_n || i_flush_all) f_pre_match_unsplit_q <= '0;
-    else f_pre_match_unsplit_q <= addr_update_pre_match & {DEPTH{i_pre_issue_needs_lq}};
+    else f_pre_match_unsplit_q <= f_pre_match_direct & {DEPTH{i_pre_issue_needs_lq}};
     if (f_pre_match_initialized) assert (addr_update_pre_match_q == f_pre_match_unsplit_q);
   end
 `endif
@@ -1732,7 +1821,20 @@ module load_queue #(
 
 
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
-      (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
+      (i_flush_tag == (i_rob_head_tag - ReorderBufferTagWidth'(1)));
+
+`ifdef F_LQ_TAG_ORDER_PROOF
+  logic [ReorderBufferTagWidth:0] f_entry_age, f_flush_age;
+  assign f_entry_age = {1'b0, i_pre_issue_rob_tag} - {1'b0, i_rob_head_tag};
+  assign f_flush_age = {1'b0, i_flush_tag} - {1'b0, i_rob_head_tag};
+  always_comb begin
+    assert (is_younger(
+        i_pre_issue_rob_tag, i_flush_tag, i_rob_head_tag
+    ) == (f_entry_age > f_flush_age));
+    assert ((i_flush_tag == (i_rob_head_tag - ReorderBufferTagWidth'(1))) ==
+            (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1))));
+  end
+`endif
 
   // Only the fast (BRAM/MMIO) tier has fixed 1-cycle latency; the cached tier
   // completes over a handshake with unbounded latency. If a partial flush
@@ -2010,6 +2112,25 @@ module load_queue #(
     end
   end
 
+  // The L0 hit/miss decision arrives through the cached launch pulse. Reduce
+  // the slot masks for both launch outcomes first, then select that bit last.
+  logic [CachedSlots-1:0] cs_after_response, cs_if_launch;
+  logic [CachedSlots-1:0] cs_if_flush;
+  (* keep = "true" *) logic cached_hold_if_launch, cached_hold_if_idle;
+  logic cached_launch_hold_next;
+  assign cs_after_response = cs_valid &
+      ~((i_mem_read_valid && i_mem_read_is_cached) ? (CachedSlots'(1) << resp_slot) : '0);
+  assign cs_if_launch = cs_after_response | (CachedSlots'(1) << cs_alloc_idx);
+  assign cs_if_flush = cs_valid &
+      ~(resp_from_slot ? (CachedSlots'(1) << resp_slot) : '0) & ~cs_router_canceled;
+  assign cached_hold_if_launch = (&cs_if_launch) || i_cached_resp_held;
+  assign cached_hold_if_idle = (&cs_after_response) || i_cached_resp_held;
+  assign cached_launch_hold_next = i_flush_all ? ((&cs_if_flush) || i_cached_resp_held) :
+      ((o_mem_read_en && launching_is_cached) ? cached_hold_if_launch : cached_hold_if_idle);
+`ifdef F_LQ_CACHED_HOLD_PROOF
+  always_comb assert (cached_launch_hold_next == ((&cs_valid_next) || i_cached_resp_held));
+`endif
+
   // Memory issue port: driven straight from the launch terms (no second-deep
   // staging register, see above).
   always_comb begin
@@ -2187,10 +2308,12 @@ module load_queue #(
       amo_write_value = amo_minmax_select_old_active ? amo_old_value : amo_minmax_rs2_q;
     end
 
-    o_amo_mem_write_en       = 1'b0;
-    o_amo_mem_write_addr     = '0;
-    o_amo_mem_write_data     = '0;
-    o_amo_mem_write_is_dword = 1'b0;
+    o_amo_mem_write_en        = 1'b0;
+    o_amo_mem_write_addr      = '0;
+    o_amo_mem_write_data      = '0;
+    o_amo_mem_write_is_dword  = 1'b0;
+    o_amo_mem_write_is_mmio   = 1'b0;
+    o_amo_mem_write_is_cached = 1'b0;
 
     if (amo_state == AMO_WRITE_ACTIVE) begin
       o_amo_mem_write_en = 1'b1;
@@ -2201,6 +2324,10 @@ module load_queue #(
       o_amo_mem_write_data = amo_is_d_q ? riscv_pkg::MemDataBits'(amo_write_value) :
           {(riscv_pkg::MemDataBits / 32) {amo_write_value[31:0]}};
       o_amo_mem_write_is_dword = amo_is_d_q;
+      // Gated like the address: idle presents zero, active presents the
+      // decode of the held address (the router qualifies every use with en).
+      o_amo_mem_write_is_mmio = amo_write_is_mmio_q;
+      o_amo_mem_write_is_cached = amo_write_is_cached_q;
     end
   end
 
@@ -2286,10 +2413,23 @@ module load_queue #(
   logic [FLEN-1:0] resp_bypass_value;
   logic [FLEN-1:0] cache_hit_bypass_value;
 
-  assign resp_bypass_ok = accept_mem_response && !issued_is_amo;
+  // A bypass cannot fire during a partial flush. Its response predicate
+  // therefore does not need the age-dependent issued_entry_flushed term,
+  // which itself implies i_flush_en. Full-flush, stale-response and live-owner
+  // checks remain in cache_fill_response_valid, exactly as in acceptance.
+  assign resp_bypass_ok = cache_fill_response_valid && !issued_is_amo;
 
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                             resp_bypass_ok && !i_flush_en;
+
+`ifdef F_LQ_RESPONSE_BYPASS_PROOF
+  always_comb begin
+    p_response_bypass_flush_factoring :
+    assert (resp_bypass_fire ==
+        (cdb_stage_slot_available && !issue_cdb_fire && accept_mem_response &&
+         !issued_is_amo && !i_flush_en));
+  end
+`endif
 
   assign misalign_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                                 !resp_bypass_fire && sq_check_misaligned && !i_flush_en;
@@ -2300,9 +2440,8 @@ module load_queue #(
   // are all implied (a bypass leg can only capture with the slot free, no
   // Phase-A completion, and no partial flush), so the D-selects reduce to
   // these flush- and grant-free terms. resp_bypass_data_sel is
-  // resp_bypass_ok minus accept_mem_response's !i_flush_all /
-  // !issued_entry_flushed conjuncts: issued_entry_flushed needs i_flush_en
-  // (impossible under the enable) and the only enable leg reachable during
+  // resp_bypass_ok minus its !i_flush_all conjunct: partial-flush age checks
+  // are already absent from resp_bypass_ok, and the only enable leg reachable during
   // i_flush_all is the misalign one, whose capture is discarded by
   // cdb_stage_valid's full-flush reset anyway. Outside a capture the payload
   // D is don't-care. This keeps the recovery flush tag and the CDB grant
@@ -2529,25 +2668,52 @@ module load_queue #(
   assign alloc_target   = tail_ptr + PtrWidth'({1'b0, lq_first_free_offset});
   assign alloc_target_2 = tail_ptr + PtrWidth'({1'b0, lq_second_free_offset});
 
-  // Convert the two binary targets into explicit entry-local write pulses.
-  // Slot 2 takes the first target when slot 1 is absent, and the second target
-  // for a dual allocation. Keeping these pulses prevents synthesis from
-  // rebuilding one shared indexed-write decoder across every LQ field.
-  //
-  // The pulses are expanded over the two late dispatch valids: the first
-  // target with room for one is written whenever any slot allocates, and the
-  // second target with room for two only when both do.  Slot 1 owns the first
-  // target when it is present; slot 2 owns the first target otherwise and the
-  // second target in a pair.  This is exactly the enable-then-steer form the
-  // simulation and formal checks below compare against.
+  // Compute entry-local allocation masks for each constant search origin,
+  // then select with the registered cursor. This avoids rotate/encode/add/
+  // decode on the lq_valid -> allocation-control path. The binary search
+  // above remains the source of cursor and compact payload indices.
+  // A first/second mask exists only when one/two free entries exist, so these
+  // masks already incorporate the corresponding room predicate.
+  function automatic logic [DEPTH-1:0] cyclic_before_mask(input int start, input int stop);
+    cyclic_before_mask = '0;
+    for (int step = 0; step < DEPTH; step++) begin
+      if (step < ((stop + DEPTH - start) % DEPTH)) cyclic_before_mask[(start+step)%DEPTH] = 1'b1;
+    end
+  endfunction
+  (* keep = "true" *) logic [DEPTH-1:0][DEPTH-1:0] first_free_by_start, second_free_by_start;
+  for (genvar start = 0; start < DEPTH; start++) begin : gen_alloc_origin
+    for (genvar entry = 0; entry < DEPTH; entry++) begin : gen_entry
+      localparam logic [DEPTH-1:0] BeforeMask = cyclic_before_mask(start, entry);
+      logic [DEPTH-1:0] one_free_terms;
+      for (genvar lower = 0; lower < DEPTH; lower++) begin : gen_lower
+        if (BeforeMask[lower]) begin : gen_preceding
+          assign one_free_terms[lower] = !lq_valid[lower] &&
+              (&(lq_valid | ~BeforeMask | (DEPTH'(1) << lower)));
+        end else begin : gen_other
+          assign one_free_terms[lower] = 1'b0;
+        end
+      end
+      assign first_free_by_start[start][entry]  = !lq_valid[entry] && (&(lq_valid | ~BeforeMask));
+      assign second_free_by_start[start][entry] = !lq_valid[entry] && (|one_free_terms);
+    end
+  end
+
+  // Retain the original binary decodes as the exact local proof/reference.
+  // Only the parallel masks below drive production allocation pulses.
   always_comb begin
     first_target_oh                                = '0;
     second_target_oh                               = '0;
     first_target_oh[alloc_target[IdxWidth-1:0]]    = 1'b1;
     second_target_oh[alloc_target_2[IdxWidth-1:0]] = 1'b1;
   end
-  assign first_room_oh = first_target_oh & {DEPTH{alloc_room_1}};
-  assign second_room_oh = second_target_oh & {DEPTH{alloc_room_2}};
+  assign first_room_oh  = first_free_by_start[tail_ptr[IdxWidth-1:0]] & {DEPTH{alloc_flush_ok}};
+  assign second_room_oh = second_free_by_start[tail_ptr[IdxWidth-1:0]] & {DEPTH{alloc_flush_ok}};
+`ifdef F_LQ_ALLOC_MASK_PROOF
+  always_comb begin
+    p_first_room_exact : assert (first_room_oh == (first_target_oh & {DEPTH{alloc_room_1}}));
+    p_second_room_exact : assert (second_room_oh == (second_target_oh & {DEPTH{alloc_room_2}}));
+  end
+`endif
   assign slot1_alloc_oh = first_room_oh & {DEPTH{i_alloc.valid}};
   assign slot2_alloc_oh = i_alloc.valid ? (second_room_oh & {DEPTH{i_alloc_2.valid}})
                                         : (first_room_oh & {DEPTH{i_alloc_2.valid}});
@@ -2837,7 +3003,7 @@ module load_queue #(
       // debt-free (cs_router_canceled, already removed from cs_valid_next).
       cs_valid <= cs_valid_next;
       cs_drop <= cs_valid_next;
-      cached_launch_hold_q <= (&cs_valid_next) || i_cached_resp_held;
+      cached_launch_hold_q <= cached_launch_hold_next;
       cs_any_q <= |cs_valid_next;
       reservation_valid <= 1'b0;
       amo_state <= AMO_IDLE;
@@ -2981,7 +3147,7 @@ module load_queue #(
       end
       // Launch hold: every slot busy, or the router holding a cached response
       // behind a fast beat (one skipped launch opens the response port).
-      cached_launch_hold_q <= (&cs_valid_next) || i_cached_resp_held;
+      cached_launch_hold_q <= cached_launch_hold_next;
       cs_any_q             <= |cs_valid_next;
 
       // -----------------------------------------------------------------
@@ -3324,37 +3490,64 @@ module load_queue #(
   // cone that fed the data_memory ADDRARDADDR pin via lookup_fill_bypass.
   // The captured fields are stable for the lifetime of the outstanding
   // load (allocation-time fields don't change once written).
-  // Per-slot store-invalidation guard for the L0 fill: set while the slot's
-  // load is in flight and a store lands in its dword, cleared at (re)launch.
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      cs_inval <= '0;
-    end else begin
-      for (int sl = 0; sl < int'(CachedSlots); sl++) begin
-        if (o_mem_read_en && launching_is_cached && (cs_alloc_idx == CachedSlotBits'(sl))) begin
-          cs_inval[sl] <= 1'b0;
-        end else if (cs_inval_now[sl] || cs_coh_inval_now[sl]) begin
-          cs_inval[sl] <= 1'b1;
-        end
+  // Invalidation and LR suppression clear at slot (re)launch, otherwise
+  // accumulate hits. Keep the late launch decision on D, not the slower
+  // synchronous-reset pin, just like the SQ-check control flops above.
+  logic [CachedSlots-1:0] cs_inval_next, cs_lr_suppress_next;
+  for (genvar sl = 0; sl < CachedSlots; sl++) begin : gen_cached_inval
+    logic launch_slot;
+    assign launch_slot = o_mem_read_en && launching_is_cached &&
+        (cs_alloc_idx == CachedSlotBits'(sl));
+    assign cs_inval_next[sl] = !launch_slot &&
+        (cs_inval[sl] || cs_inval_now[sl] || cs_coh_inval_now[sl]);
+    assign cs_lr_suppress_next[sl] = !launch_slot &&
+        (cs_lr_suppress[sl] || (cs_coh_inval_now[sl] && cs_is_lr[sl]));
+`ifdef FROST_XILINX_PRIMS
+    FDRE #(
+        .INIT(1'b0)
+    ) cs_inval_ff (
+        .C (i_clk),
+        .CE(1'b1),
+        .R (!i_rst_n),
+        .D (cs_inval_next[sl]),
+        .Q (cs_inval[sl])
+    );
+    FDRE #(
+        .INIT(1'b0)
+    ) cs_lr_suppress_ff (
+        .C (i_clk),
+        .CE(1'b1),
+        .R (!i_rst_n),
+        .D (cs_lr_suppress_next[sl]),
+        .Q (cs_lr_suppress[sl])
+    );
+`else
+    always_ff @(posedge i_clk) begin
+      if (!i_rst_n) begin
+        cs_inval[sl] <= 1'b0;
+        cs_lr_suppress[sl] <= 1'b0;
+      end else begin
+        cs_inval[sl] <= cs_inval_next[sl];
+        cs_lr_suppress[sl] <= cs_lr_suppress_next[sl];
       end
     end
-  end
-
-  // Per-slot reservation suppression: an LR in flight when a DMA write to
-  // its line is admitted must not establish a reservation on the pre-write
-  // value when its response lands. Cleared at (re)launch like cs_inval.
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      cs_lr_suppress <= '0;
-    end else begin
-      for (int sl = 0; sl < int'(CachedSlots); sl++) begin
-        if (o_mem_read_en && launching_is_cached && (cs_alloc_idx == CachedSlotBits'(sl))) begin
-          cs_lr_suppress[sl] <= 1'b0;
-        end else if (cs_coh_inval_now[sl] && cs_is_lr[sl]) begin
-          cs_lr_suppress[sl] <= 1'b1;
-        end
+`endif
+`ifdef F_LQ_CACHED_FLAGS_PROOF
+    logic f_inval_next, f_lr_next;
+    always_comb begin
+      f_inval_next = cs_inval[sl];
+      f_lr_next = cs_lr_suppress[sl];
+      if (o_mem_read_en && launching_is_cached && (cs_alloc_idx == CachedSlotBits'(sl))) begin
+        f_inval_next = 1'b0;
+        f_lr_next = 1'b0;
+      end else begin
+        if (cs_inval_now[sl] || cs_coh_inval_now[sl]) f_inval_next = 1'b1;
+        if (cs_coh_inval_now[sl] && cs_is_lr[sl]) f_lr_next = 1'b1;
       end
+      assert (cs_inval_next[sl] == f_inval_next);
+      assert (cs_lr_suppress_next[sl] == f_lr_next);
     end
+`endif
   end
 
   always_ff @(posedge i_clk) begin
@@ -3446,17 +3639,23 @@ module load_queue #(
 
   always_ff @(posedge i_clk) begin
     if (amo_response_capture) begin
-      amo_old_value            <= amo_response_old_value;
-      amo_entry_idx            <= issued_idx;
-      amo_write_addr_q         <= issued_addr;
-      amo_kind_q               <= issued_amo_kind;
-      amo_minmax_rs2_q         <= issued_amo_rs2;
-      amo_is_d_q               <= issued_amo_is_d;
-      amo_is_minmax_q          <= amo_response_is_minmax;
-      amo_minmax_relation_d_q  <= amo_response_minmax_relation_d;
-      amo_minmax_relation_w_q  <= amo_response_minmax_relation_w;
+      amo_old_value <= amo_response_old_value;
+      amo_entry_idx <= issued_idx;
+      amo_write_addr_q <= issued_addr;
+      // Same source, same edge, same enable as the address: the flags are
+      // its decode for as long as it is held (the write-active hold included).
+      amo_write_is_mmio_q <= riscv_pkg::mmio_window_hit(
+          issued_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)
+      );
+      amo_write_is_cached_q <= is_cached_addr(issued_addr);
+      amo_kind_q <= issued_amo_kind;
+      amo_minmax_rs2_q <= issued_amo_rs2;
+      amo_is_d_q <= issued_amo_is_d;
+      amo_is_minmax_q <= amo_response_is_minmax;
+      amo_minmax_relation_d_q <= amo_response_minmax_relation_d;
+      amo_minmax_relation_w_q <= amo_response_minmax_relation_w;
       amo_minmax_is_unsigned_q <= amo_response_minmax_is_unsigned;
-      amo_minmax_is_max_q      <= amo_response_minmax_is_max;
+      amo_minmax_is_max_q <= amo_response_minmax_is_max;
     end
     // Payload-only capture: reset/recovery cancel control before observation.
     // A killed COMPUTE may write dead data here; every subsequent normal owner
@@ -3723,8 +3922,24 @@ module load_queue #(
       o_amo_mem_write_data
   ) && $stable(
       o_amo_mem_write_is_dword
+  ) && $stable(
+      o_amo_mem_write_is_mmio
+  ) && $stable(
+      o_amo_mem_write_is_cached
   ))))
   else $error("LQ: AMO write payload changed while memory withheld write_done");
+
+  // The registered tier flags are, on every write-active cycle, the decode of
+  // the address presented beside them. Idle forces both low with the address;
+  // the check is enable-qualified so a window that starts at address zero
+  // cannot trip it.
+  assert property (@(posedge i_clk) disable iff (!i_rst_n)
+      o_amo_mem_write_en |-> ((o_amo_mem_write_is_mmio == riscv_pkg::mmio_window_hit(
+      o_amo_mem_write_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)
+  )) && (o_amo_mem_write_is_cached == is_cached_addr(
+      o_amo_mem_write_addr
+  ))))
+  else $error("LQ: AMO write tier flag disagrees with the presented address");
 
   // MIN/MAX keep next-cycle write activation; normal AMOs spend exactly one
   // intervening COMPUTE cycle with no write, completion, or dependency release.
@@ -3760,6 +3975,10 @@ module load_queue #(
   // compute boundary, including otherwise unreachable binary owner states.
   reg [1:0] f_amo_past_valid = 2'b00;
   always @(posedge i_clk) f_amo_past_valid <= {f_amo_past_valid[0], 1'b1};
+  wire [1:0] f_amo_response_tier = {
+    riscv_pkg::mmio_window_hit(issued_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)),
+    is_cached_addr(issued_addr)
+  };
   wire [XLEN-1:0] f_amo_response_result = issued_amo_is_d ? amo_non_minmax_compute(
       issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
   ) : XLEN'(amo_non_minmax_compute32(
@@ -3792,6 +4011,8 @@ module load_queue #(
           p_local_capture_kind : assert (amo_kind_q == $past(issued_amo_kind));
           p_local_capture_width : assert (amo_is_d_q == $past(issued_amo_is_d));
           p_local_capture_addr : assert (amo_write_addr_q == $past(issued_addr));
+          p_local_capture_tier :
+          assert ({amo_write_is_mmio_q, amo_write_is_cached_q} == $past(f_amo_response_tier));
           p_local_capture_index : assert (amo_entry_idx == $past(issued_idx));
           p_local_capture_mode : assert (amo_is_minmax_q == $past(amo_response_is_minmax));
           if ($past(amo_response_is_minmax)) begin
@@ -3803,10 +4024,12 @@ module load_queue #(
         if ($past(amo_state == AMO_COMPUTE)) begin
           p_local_compute_owner_hold :
           assert ({amo_old_value, amo_minmax_rs2_q,
-              amo_kind_q, amo_is_d_q, amo_is_minmax_q, amo_write_addr_q, amo_entry_idx} ==
+              amo_kind_q, amo_is_d_q, amo_is_minmax_q, amo_write_addr_q,
+               amo_write_is_mmio_q, amo_write_is_cached_q, amo_entry_idx} ==
               $past(
               {amo_old_value, amo_minmax_rs2_q, amo_kind_q, amo_is_d_q,
-              amo_is_minmax_q, amo_write_addr_q, amo_entry_idx}
+              amo_is_minmax_q, amo_write_addr_q,
+               amo_write_is_mmio_q, amo_write_is_cached_q, amo_entry_idx}
           ));
           if ($past(amo_compute_owner_killed)) begin
             p_local_compute_kill : assert (amo_state == AMO_IDLE && !o_amo_mem_write_en);
@@ -3818,12 +4041,14 @@ module load_queue #(
           p_local_active_hold :
           assert (amo_state == AMO_WRITE_ACTIVE &&
               {amo_old_value, amo_write_data_q, amo_minmax_rs2_q, amo_kind_q,
-               amo_is_d_q, amo_is_minmax_q, amo_write_addr_q, amo_entry_idx,
+               amo_is_d_q, amo_is_minmax_q, amo_write_addr_q,
+               amo_write_is_mmio_q, amo_write_is_cached_q, amo_entry_idx,
                amo_minmax_relation_d_q, amo_minmax_relation_w_q,
                amo_minmax_is_unsigned_q, amo_minmax_is_max_q} ==
               $past(
               {amo_old_value, amo_write_data_q, amo_minmax_rs2_q, amo_kind_q,
-               amo_is_d_q, amo_is_minmax_q, amo_write_addr_q, amo_entry_idx,
+               amo_is_d_q, amo_is_minmax_q, amo_write_addr_q,
+               amo_write_is_mmio_q, amo_write_is_cached_q, amo_entry_idx,
                amo_minmax_relation_d_q, amo_minmax_relation_w_q,
                amo_minmax_is_unsigned_q, amo_minmax_is_max_q}
           ));
@@ -4500,6 +4725,27 @@ module load_queue #(
         assert (o_amo_mem_write_data == $past(o_amo_mem_write_data));
         p_amo_stall_write_width_stable :
         assert (o_amo_mem_write_is_dword == $past(o_amo_mem_write_is_dword));
+        p_amo_stall_write_tier_stable :
+        assert ({o_amo_mem_write_is_mmio, o_amo_mem_write_is_cached} == $past(
+            {o_amo_mem_write_is_mmio, o_amo_mem_write_is_cached}
+        ));
+      end
+
+      // The registered tier flags never disagree with the presented address
+      // while the write is active: they capture from issued_addr on the same
+      // edge, under the same enable, and are gated by the same state as
+      // o_amo_mem_write_addr (idle forces both low, whatever the windows).
+      if (o_amo_mem_write_en) begin
+        p_amo_write_tier_flags_match_addr :
+        assert ((o_amo_mem_write_is_mmio == riscv_pkg::mmio_window_hit(
+            o_amo_mem_write_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)
+        )) && (o_amo_mem_write_is_cached == is_cached_addr(
+            o_amo_mem_write_addr
+        )));
+      end
+      if (!o_amo_mem_write_en) begin
+        p_amo_write_tier_flags_idle_low :
+        assert (!o_amo_mem_write_is_mmio && !o_amo_mem_write_is_cached);
       end
 
       // Allocation writes a valid entry at the target the free search chose.

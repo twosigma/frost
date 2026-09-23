@@ -169,8 +169,10 @@ staged indexed writes need neither replicated RAM banks nor a live-value table.
 The selected code and `rs2` are snapshotted at AMO read launch alongside the
 issued address. At response, SWAP/ADD/XOR/AND/OR enter `AMO_COMPUTE` after
 capturing the old memory value, `rs2`, compact operation, width, address and
-entry index. The existing separate 32/64-bit arithmetic functions consume only
-these registers. One cycle later their result enters `amo_write_data_q` and
+entry index. The MMIO and cached-tier flags are captured from that same issued
+address and held with it through compute and write completion. The router uses
+these registered flags, so AMO state does not feed a write-address tier decode.
+The existing separate 32/64-bit arithmetic functions consume only these registers. One cycle later their result enters `amo_write_data_q` and
 `AMO_WRITE_ACTIVE` starts. `.W` uses the selected old word's low 32 bits and
 zero-extends the new result; its architectural old-value return still
 sign-extends. No additional wide operand or result register is needed.
@@ -380,6 +382,13 @@ physical-entry priority scan and no index-to-one-hot decode on the capture
 feedback path. This keeps `lq_addr_valid` off the payload-identity encoder
 and priority path.
 
+The cached-slot launch hold reduces both possible occupancy masks before
+selecting with the late launch decision. Its reset, full-flush, response-held,
+and response-release behavior is unchanged; `lq_cached_hold` checks the exact
+next-state equation. Invalidation and LR-suppression flags retain their
+launch-clear priority, but the Xilinx implementation drives that decision
+through D rather than each flag's synchronous-reset input.
+
 ## Issue and completion bypasses
 
 Two bypass paths each shave a cycle off the load critical latency.
@@ -393,6 +402,14 @@ Two bypass paths each shave a cycle off the load critical latency.
   their registers, keeping late RS readiness/classification off the CAM
   register inputs. `load_queue:prove_pre_match` proves unrestricted
   equivalence to the original combined register, including reset and flush.
+  With `PREISSUE_CANDIDATES=1`, the four candidate tag comparisons and their
+  two-bit selector are registered separately on that same edge. Selecting
+  after the edge preserves the exact match and removes late wakeup-valid
+  selection from the register inputs. The wrapper enables this with early
+  load wakeup and supplies four identical DMMU tags during translation.
+  `lq_prematch_cofactors` proves this retiming without assumptions about
+  inputs or current queue state; an integration assertion checks the scalar
+  tag/candidate interface contract.
 - `cdb_stage` completion bypass. On a memory response, L0 fast-path hit, or SQ
   forward, the LQ writes `cdb_stage` directly from the response, cache, or
   forward data path instead of routing through `lq_data_valid` and a priority
@@ -583,3 +600,21 @@ inert staging during port ownership, no SQ/read/result side effect, and
 immediate SQ checking on release. The formal BMC and cover tasks also run
 with the option enabled. Enabling SQ probes or L0 hits while busy is a
 separate, unmerged experiment and is not the meaning of this parameter.
+
+Exact full/full-for-two status reduces free-entry predicates in four-entry
+groups, avoiding the numeric popcount adder on allocation controls. The public
+count and all admission decisions are unchanged; `lq_capacity` checks equality
+against the original count comparisons for every valid mask.
+
+Entry-local allocation pulses use parallel cyclic first/second-free masks for
+each possible cursor, selected by the registered tail. Each mask includes its
+own room condition. This avoids the rotate/encode/add/decode path before the
+control and payload write enables. Binary targets still drive cursor updates
+and compact payload indices. `lq_alloc_mask` proves the new masks against the
+original search plus capacity checks, including sparse and full states.
+
+The response-to-CDB bypass uses the response-presence predicate without the
+partial-flush age comparison. The bypass's existing `!i_flush_en` guard already
+excludes every cycle that comparison could kill the owner. Full-flush, stale
+response, valid-owner and AMO checks are unchanged. `lq_response_bypass` proves
+the final bypass pulse equals the original acceptance-qualified pulse.

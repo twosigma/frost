@@ -93,6 +93,8 @@ module instruction_aligner #(
     // Slot 1's RVC-expanded instruction bits [24:20], selected like
     // o_rvc_source_hot.
     output logic [4:0] o_rvc_bits24_20,
+    output logic [2:0] o_rvc_rs1_rest,
+    output logic [22:0] o_rvc_extra,
 
     // ===========================================================================
     // Slot-2 outputs for two-wide dispatch.
@@ -121,6 +123,7 @@ module instruction_aligner #(
     output logic [2:0] o_source_hot_2,
     // Slot 2's instruction bits [24:20], resolved like o_source_hot_2.
     output logic [4:0] o_bits24_20_2,
+    output logic [2:0] o_rs1_rest_2,
     // Early slot-2 metadata for the PC increment path.  This is equivalent to
     // the live, non-replay slot-2 decision below, but avoids routing the PC
     // path through the final IF->PD packet mux.
@@ -310,12 +313,30 @@ module instruction_aligner #(
   logic [2:0] rvc_source_hot_next_hi;
   logic [2:0] rvc_source_hot_buf_lo;
   logic [2:0] rvc_source_hot_buf_hi;
-  assign rvc_source_hot_instr_lo = aligned_current_sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
-  assign rvc_source_hot_instr_hi = aligned_current_sb[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
-  assign rvc_source_hot_next_lo  = aligned_next_sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
-  assign rvc_source_hot_next_hi  = aligned_next_sb[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
-  assign rvc_source_hot_buf_lo   = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
-  assign rvc_source_hot_buf_hi   = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
+  assign rvc_source_hot_instr_lo = {
+    aligned_current_sb[riscv_pkg::ImemSbRvcBits24To20LoLsb+1],
+    aligned_current_sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:2]
+  };
+  assign rvc_source_hot_instr_hi = {
+    aligned_current_sb[riscv_pkg::ImemSbRvcBits24To20HiLsb+1],
+    aligned_current_sb[riscv_pkg::ImemSbRvcSourceHotHiLsb+:2]
+  };
+  assign rvc_source_hot_next_lo = {
+    aligned_next_sb[riscv_pkg::ImemSbRvcBits24To20LoLsb+1],
+    aligned_next_sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:2]
+  };
+  assign rvc_source_hot_next_hi = {
+    aligned_next_sb[riscv_pkg::ImemSbRvcBits24To20HiLsb+1],
+    aligned_next_sb[riscv_pkg::ImemSbRvcSourceHotHiLsb+:2]
+  };
+  assign rvc_source_hot_buf_lo = {
+    i_instr_buffer_sideband[riscv_pkg::ImemSbRvcBits24To20LoLsb+1],
+    i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotLoLsb+:2]
+  };
+  assign rvc_source_hot_buf_hi = {
+    i_instr_buffer_sideband[riscv_pkg::ImemSbRvcBits24To20HiLsb+1],
+    i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotHiLsb+:2]
+  };
 
   always_comb begin
     unique case ({
@@ -353,6 +374,30 @@ module instruction_aligner #(
       2'b10:   o_rvc_bits24_20 = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcBits24To20LoLsb+:5];
       2'b11:   o_rvc_bits24_20 = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcBits24To20HiLsb+:5];
       default: o_rvc_bits24_20 = 5'd0;
+    endcase
+  end
+
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00:   o_rvc_extra = aligned_current_sb[riscv_pkg::ImemSbRvcExtraLoLsb+:23];
+      2'b01:   o_rvc_extra = aligned_current_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:23];
+      2'b10:   o_rvc_extra = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcExtraLoLsb+:23];
+      2'b11:   o_rvc_extra = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcExtraHiLsb+:23];
+      default: o_rvc_extra = 23'd0;
+    endcase
+  end
+
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00:   o_rvc_rs1_rest = aligned_current_sb[riscv_pkg::ImemSbRvcRs1RestLoLsb+:3];
+      2'b01:   o_rvc_rs1_rest = aligned_current_sb[riscv_pkg::ImemSbRvcRs1RestHiLsb+:3];
+      2'b10:   o_rvc_rs1_rest = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcRs1RestLoLsb+:3];
+      2'b11:   o_rvc_rs1_rest = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcRs1RestHiLsb+:3];
+      default: o_rvc_rs1_rest = 3'd0;
     endcase
   end
 
@@ -617,8 +662,14 @@ module instruction_aligner #(
   logic [1:0] slot2_decomp_next_lo_bits27_25_fast;
   logic [1:0] slot2_decomp_next_hi_bits27_25_fast;
   logic slot2_raw_illegal_cur_hi;
+  logic slot2_raw_illegal_cur_hi_reference;
+  assign slot2_raw_illegal_cur_hi = aligned_current_sb[riscv_pkg::ImemSbRvcExtraHiLsb+22];
   logic slot2_raw_illegal_next_lo;
+  logic slot2_raw_illegal_next_lo_reference;
+  assign slot2_raw_illegal_next_lo = aligned_next_sb[riscv_pkg::ImemSbRvcExtraLoLsb+22];
   logic slot2_raw_illegal_next_hi;
+  logic slot2_raw_illegal_next_hi_reference;
+  assign slot2_raw_illegal_next_hi = aligned_next_sb[riscv_pkg::ImemSbRvcExtraHiLsb+22];
 
   rvc_decompressor u_slot2_decomp_cur_hi (
       .i_instr_compressed(bram_current_word[31:16]),
@@ -635,7 +686,7 @@ module instruction_aligner #(
       .o_instr_expanded_bits24_20_fast(),
       .o_is_compressed(),
       .o_illegal(),
-      .o_illegal_fast(slot2_raw_illegal_cur_hi)
+      .o_illegal_fast(slot2_raw_illegal_cur_hi_reference)
   );
   rvc_decompressor u_slot2_decomp_next_lo (
       .i_instr_compressed(bram_next_word[15:0]),
@@ -652,7 +703,7 @@ module instruction_aligner #(
       .o_instr_expanded_bits24_20_fast(),
       .o_is_compressed(),
       .o_illegal(),
-      .o_illegal_fast(slot2_raw_illegal_next_lo)
+      .o_illegal_fast(slot2_raw_illegal_next_lo_reference)
   );
   rvc_decompressor u_slot2_decomp_next_hi (
       .i_instr_compressed(bram_next_word[31:16]),
@@ -669,7 +720,7 @@ module instruction_aligner #(
       .o_instr_expanded_bits24_20_fast(),
       .o_is_compressed(),
       .o_illegal(),
-      .o_illegal_fast(slot2_raw_illegal_next_hi)
+      .o_illegal_fast(slot2_raw_illegal_next_hi_reference)
   );
 
   // Per-candidate final instruction: RVC expansion or the native assembly.
@@ -686,36 +737,30 @@ module instruction_aligner #(
     slot2_final_cur_hi = {bram_next_word[15:0], bram_current_word[31:16]};
     if (aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi]) begin
       slot2_final_cur_hi = slot2_decomp_cur_hi;
-      slot2_final_cur_hi[27] = slot2_decomp_cur_hi_bits27_25_fast[1];
-      slot2_final_cur_hi[25] = slot2_decomp_cur_hi_bits27_25_fast[0];
+      slot2_final_cur_hi[31:25] = aligned_current_sb[riscv_pkg::ImemSbRvcExtraHiLsb+15+:7];
+      slot2_final_cur_hi[14:0] = aligned_current_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:15];
       slot2_final_cur_hi[20] = slot2_decomp_cur_hi_bits20_9_fast[1];
       slot2_final_cur_hi[15] = slot2_decomp_cur_hi_bit15_fast;
-      slot2_final_cur_hi[9] = slot2_decomp_cur_hi_bits20_9_fast[0];
-      slot2_final_cur_hi[8] = slot2_decomp_cur_hi_bit8_fast;
     end
   end
   always_comb begin
     slot2_final_next_lo = bram_next_word;
     if (aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo]) begin
       slot2_final_next_lo = slot2_decomp_next_lo;
-      slot2_final_next_lo[27] = slot2_decomp_next_lo_bits27_25_fast[1];
-      slot2_final_next_lo[25] = slot2_decomp_next_lo_bits27_25_fast[0];
+      slot2_final_next_lo[31:25] = aligned_next_sb[riscv_pkg::ImemSbRvcExtraLoLsb+15+:7];
+      slot2_final_next_lo[14:0] = aligned_next_sb[riscv_pkg::ImemSbRvcExtraLoLsb+:15];
       slot2_final_next_lo[20] = slot2_decomp_next_lo_bits20_9_fast[1];
       slot2_final_next_lo[15] = slot2_decomp_next_lo_bit15_fast;
-      slot2_final_next_lo[9] = slot2_decomp_next_lo_bits20_9_fast[0];
-      slot2_final_next_lo[8] = slot2_decomp_next_lo_bit8_fast;
     end
   end
   always_comb begin
     slot2_final_next_hi = riscv_pkg::NOP;
     if (aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi]) begin
       slot2_final_next_hi = slot2_decomp_next_hi;
-      slot2_final_next_hi[27] = slot2_decomp_next_hi_bits27_25_fast[1];
-      slot2_final_next_hi[25] = slot2_decomp_next_hi_bits27_25_fast[0];
+      slot2_final_next_hi[31:25] = aligned_next_sb[riscv_pkg::ImemSbRvcExtraHiLsb+15+:7];
+      slot2_final_next_hi[14:0] = aligned_next_sb[riscv_pkg::ImemSbRvcExtraHiLsb+:15];
       slot2_final_next_hi[20] = slot2_decomp_next_hi_bits20_9_fast[1];
       slot2_final_next_hi[15] = slot2_decomp_next_hi_bit15_fast;
-      slot2_final_next_hi[9] = slot2_decomp_next_hi_bits20_9_fast[0];
-      slot2_final_next_hi[8] = slot2_decomp_next_hi_bit8_fast;
     end
   end
 
@@ -763,6 +808,28 @@ module instruction_aligner #(
       Slot2AtNextLo:    o_bits24_20_2 = slot2_bits24_20_next_lo;
       Slot2AtNextHi:    o_bits24_20_2 = slot2_bits24_20_next_hi;
       default:          o_bits24_20_2 = 5'd0;
+    endcase
+  end
+
+  // Remaining rs1 bits use the same candidate identity, before slot2_pos.
+  logic [2:0] slot2_rs1_rest_cur_hi;
+  logic [2:0] slot2_rs1_rest_next_lo;
+  logic [2:0] slot2_rs1_rest_next_hi;
+  assign slot2_rs1_rest_cur_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi] ?
+      aligned_current_sb[riscv_pkg::ImemSbRvcRs1RestHiLsb+:3] :
+      {bram_next_word[3:2], bram_current_word[31]};
+  assign slot2_rs1_rest_next_lo = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo] ?
+      aligned_next_sb[riscv_pkg::ImemSbRvcRs1RestLoLsb+:3] :
+      {bram_next_word[19:18], bram_next_word[15]};
+  assign slot2_rs1_rest_next_hi = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] ?
+      aligned_next_sb[riscv_pkg::ImemSbRvcRs1RestHiLsb+:3] : 3'd0;
+
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi: o_rs1_rest_2 = slot2_rs1_rest_cur_hi;
+      Slot2AtNextLo:    o_rs1_rest_2 = slot2_rs1_rest_next_lo;
+      Slot2AtNextHi:    o_rs1_rest_2 = slot2_rs1_rest_next_hi;
+      default:          o_rs1_rest_2 = 3'd0;
     endcase
   end
 

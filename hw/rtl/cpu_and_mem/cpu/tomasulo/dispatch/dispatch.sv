@@ -48,7 +48,13 @@
  * per-op flags in the allocation request.
  */
 
-module dispatch (
+module dispatch #(
+    // The decoded queue supplies i_valid_2 = i_valid && packet2.is_not_nop.
+    // Under slot-1 admission, use the registered packet bit directly so the
+    // shared queue-valid signal does not pass through slot-2's blocking gate.
+    // Other callers keep independently controlled valid inputs by default.
+    parameter bit SLOT2_VALID_FROM_BUNDLE = 1'b0
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -882,7 +888,8 @@ module dispatch (
   (* max_fanout = 64 *)logic dispatch_common_ready;
   (* max_fanout = 64 *)logic dispatch_fire;
   (* max_fanout = 64 *)logic slot1_can_fire;  // Slot-1 standalone gate
-  (* max_fanout = 64 *)logic slot2_can_fire;  // Slot-2 gate, conditional on slot1_can_fire
+  // Slot-2 gate, conditional on slot1_can_fire.
+  (* keep = "true", max_fanout = 64 *)logic slot2_can_fire;
   logic slot2_resources_ok;
   (* max_fanout = 64 *)logic slot2_bundle_ok;
   (* max_fanout = 64 *)logic bundle_fire_ok;  // Whole bundle fires (slot-1 + optional slot-2)
@@ -927,8 +934,11 @@ module dispatch (
       !(need_lq_2 && lq_full_for_slot2) &&
       !(need_sq_2 && sq_full_for_slot2) &&
       !(need_checkpoint_2 && !i_checkpoint_available);
-  assign slot2_can_fire = slot1_can_fire && dispatch_valid_2 && slot2_resources_ok;
-  assign slot2_bundle_ok = !dispatch_valid_2 || slot2_resources_ok;
+  logic slot2_present_for_admission;
+  assign slot2_present_for_admission = SLOT2_VALID_FROM_BUNDLE ?
+      (i_from_id_to_ex_2.is_not_nop && !slot2_fp_compute_serialized) : dispatch_valid_2;
+  assign slot2_can_fire = slot1_can_fire && slot2_present_for_admission && slot2_resources_ok;
+  assign slot2_bundle_ok = !slot2_present_for_admission || slot2_resources_ok;
   // Width-funnel profiling: cycles where a valid slot-2 alone holds the
   // bundle (slot-1 could have fired).  Decomposed per cause into o_status.
   logic slot2_only_block;
@@ -938,6 +948,31 @@ module dispatch (
   // matches slot-1's standalone gate.
   assign bundle_fire_ok = slot1_can_fire && slot2_bundle_ok;
   assign dispatch_fire = bundle_fire_ok;
+
+`ifndef SYNTHESIS
+  always @(posedge i_clk) begin
+    if (!$isunknown({dispatch_valid, dispatch_valid_2, slot2_present_for_admission})) begin
+      p_queued_slot2_valid_contract :
+      assert (!SLOT2_VALID_FROM_BUNDLE || !dispatch_valid ||
+              (dispatch_valid_2 == slot2_present_for_admission));
+      p_bundle_admission_exact :
+      assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
+      p_slot2_admission_exact :
+      assert (slot2_can_fire == (slot1_can_fire && dispatch_valid_2 && slot2_resources_ok));
+    end
+  end
+`endif
+`ifdef DISPATCH_ADMISSION_LOCAL_PROOF
+  always_comb begin
+    if (SLOT2_VALID_FROM_BUNDLE && dispatch_valid)
+      assume (i_valid_2 == i_from_id_to_ex_2.is_not_nop);
+    p_bundle_admission_formal :
+    assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
+    p_slot2_admission_formal :
+    assert (slot2_can_fire == (slot1_can_fire && dispatch_valid_2 && slot2_resources_ok));
+  end
+`endif
+
 
   assign int_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_INT) && !i_int_rs_full &&
@@ -958,21 +993,16 @@ module dispatch (
       dispatch_common_ready && (rs_type == riscv_pkg::RS_FDIV) && !i_fdiv_rs_full &&
       slot2_bundle_ok;
 
-  // Slot-2 per-RS dispatch fire signals.  Each gates on bundle_fire_ok plus
-  // slot-2's specific RS family.  Like the slot-1 per-RS signals, only the
+  // Slot-2 per-RS dispatch fire signals use the direct two-slot admission
+  // gate rather than passing valid_2 through slot2_bundle_ok and back out.
+  // Like the slot-1 per-RS signals, only the
   // RS family targeted by slot-2 has its valid bit asserted.
-  assign int_rs_dispatch_fire_2  = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_INT);
-  assign mul_rs_dispatch_fire_2  = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_MUL);
-  assign mem_rs_dispatch_fire_2  = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_MEM);
-  assign fp_rs_dispatch_fire_2   = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_FP);
-  assign fmul_rs_dispatch_fire_2 = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_FMUL);
-  assign fdiv_rs_dispatch_fire_2 = bundle_fire_ok && dispatch_valid_2 &&
-                                   (rs_type_2 == riscv_pkg::RS_FDIV);
+  assign int_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_INT);
+  assign mul_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_MUL);
+  assign mem_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_MEM);
+  assign fp_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_FP);
+  assign fmul_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_FMUL);
+  assign fdiv_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_FDIV);
 
   // ===========================================================================
   // RAT Source Address Outputs
@@ -1101,7 +1131,7 @@ module dispatch (
 
   // Register repair-read addresses so the ROB done/value lookup is no longer in
   // the dispatch source-ready/value cone.  Tags are covered by the valid bits.
-  // Slot-2 channels (4/5/6) gate on `bundle_fire_ok && dispatch_valid_2` rather
+  // Slot-2 channels (4/5/6) gate on `slot2_can_fire` rather
   // than `dispatch_fire` alone: slot-2's bypass valid means something only
   // when slot-2 itself fires, not just when slot-1 does.
   always_ff @(posedge i_clk) begin
@@ -1116,9 +1146,9 @@ module dispatch (
       o_bypass_valid_1 <= dispatch_fire && bypass_valid_1_next;
       o_bypass_valid_2 <= dispatch_fire && bypass_valid_2_next;
       o_bypass_valid_3 <= dispatch_fire && bypass_valid_3_next;
-      o_bypass_valid_4 <= bundle_fire_ok && dispatch_valid_2 && bypass_valid_4_next;
-      o_bypass_valid_5 <= bundle_fire_ok && dispatch_valid_2 && bypass_valid_5_next;
-      o_bypass_valid_6 <= bundle_fire_ok && dispatch_valid_2 && bypass_valid_6_next;
+      o_bypass_valid_4 <= slot2_can_fire && bypass_valid_4_next;
+      o_bypass_valid_5 <= slot2_can_fire && bypass_valid_5_next;
+      o_bypass_valid_6 <= slot2_can_fire && bypass_valid_6_next;
     end
   end
 
@@ -1368,7 +1398,7 @@ module dispatch (
   always_comb begin
     o_rob_alloc_req_2 = '0;
 
-    o_rob_alloc_req_2.alloc_valid = bundle_fire_ok && dispatch_valid_2;
+    o_rob_alloc_req_2.alloc_valid = slot2_can_fire;
     o_rob_alloc_req_2.pc = i_from_id_to_ex_2.program_counter;
     o_rob_alloc_req_2.rs_type = rs_type_2;
     o_rob_alloc_req_2.dest_rf = dest_rf_2;
@@ -1429,7 +1459,7 @@ module dispatch (
   // the ROB and has a destination register (matches slot-1's gate).  The ROB
   // returns slot-2's tag as i_rob_alloc_resp_2.alloc_tag (= tail+1).
   always_comb begin
-    o_rat_alloc_valid_2    = bundle_fire_ok && dispatch_valid_2 && has_dest_2;
+    o_rat_alloc_valid_2    = slot2_can_fire && has_dest_2;
     o_rat_alloc_dest_rf_2  = dest_rf_2;
     o_rat_alloc_dest_reg_2 = dest_reg_2;
     o_rat_alloc_rob_tag_2  = i_rob_alloc_resp_2.alloc_tag;
@@ -1780,7 +1810,7 @@ module dispatch (
   logic checkpoint_save_slot1;
   logic checkpoint_save_slot2;
   assign checkpoint_save_slot1 = dispatch_fire && need_checkpoint;
-  assign checkpoint_save_slot2 = bundle_fire_ok && dispatch_valid_2 && need_checkpoint_2;
+  assign checkpoint_save_slot2 = slot2_can_fire && need_checkpoint_2;
 
   always_comb begin
     // Single save signal: slot-1 or slot-2, never both (one branch per bundle).

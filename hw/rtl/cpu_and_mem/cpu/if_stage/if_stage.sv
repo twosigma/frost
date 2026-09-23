@@ -304,6 +304,8 @@ module if_stage #(
   logic use_instr_buffer;  // Use buffered instruction
   logic [2:0] rvc_source_hot;
   logic [4:0] rvc_bits24_20;
+  logic [2:0] rvc_rs1_rest;
+  logic [22:0] rvc_extra;
 
   // Slot-2 outputs from instruction_aligner (2-wide dispatch).
   logic [15:0] raw_parcel_2;
@@ -315,6 +317,7 @@ module if_stage #(
   logic sel_compressed_2;
   logic [2:0] source_hot_2;
   logic [4:0] bits24_20_2;
+  logic [2:0] rs1_rest_2;
   logic slot2_valid_for_pc_live;
   logic slot2_is_compressed_for_pc_live;
   logic slot2_is_compressed_plus2_for_btb;
@@ -1183,6 +1186,8 @@ module if_stage #(
       .o_use_instr_buffer(use_instr_buffer),
       .o_rvc_source_hot(rvc_source_hot),
       .o_rvc_bits24_20(rvc_bits24_20),
+      .o_rvc_rs1_rest(rvc_rs1_rest),
+      .o_rvc_extra(rvc_extra),
 
       // Slot-2 outputs. sel_nop_2 already folds in slot-1 sel_nop,
       // slot-1 branch detection, and the doesn't-fit cases.
@@ -1194,6 +1199,7 @@ module if_stage #(
       .o_sel_compressed_2(sel_compressed_2),
       .o_source_hot_2(source_hot_2),
       .o_bits24_20_2(bits24_20_2),
+      .o_rs1_rest_2(rs1_rest_2),
       .o_slot2_valid_for_pc(slot2_valid_for_pc_live),
       .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
       .o_slot2_is_compressed_plus2_for_btb(slot2_is_compressed_plus2_for_btb),
@@ -1837,10 +1843,16 @@ module if_stage #(
   assign source_hot_predecoded_2_live = source_hot_2;
   // Slot 1's instruction bits [24:20] by the same construction: RVC values
   // come from the sideband, so PD's rs2 path skips the decompressor.
-  logic [4:0] bits24_20_predecoded_live;
-  logic [4:0] bits24_20_predecoded_saved;
-  logic [4:0] bits24_20_predecoded_2_saved;
+  logic [ 4:0] bits24_20_predecoded_live;
+  logic [ 2:0] rs1_rest_predecoded_live;
+  logic [ 4:0] bits24_20_predecoded_saved;
+  logic [ 2:0] rs1_rest_predecoded_saved;
+  logic [22:0] rvc_extra_saved;
+  logic [ 4:0] bits24_20_predecoded_2_saved;
+  logic [ 2:0] rs1_rest_predecoded_2_saved;
   assign bits24_20_predecoded_live = sel_compressed ? rvc_bits24_20 : assembled_instr[24:20];
+  assign rs1_rest_predecoded_live = sel_compressed ? rvc_rs1_rest :
+      {assembled_instr[19:18], assembled_instr[15]};
 
   // Capture the narrow values once on stall entry. Apply the replay select
   // only at the packet output so the live source path does not acquire the
@@ -1850,12 +1862,18 @@ module if_stage #(
       source_hot_predecoded_saved   <= '0;
       source_hot_predecoded_2_saved <= '0;
       bits24_20_predecoded_saved    <= '0;
+      rs1_rest_predecoded_saved    <= '0;
+      rvc_extra_saved <= '0;
       bits24_20_predecoded_2_saved  <= '0;
+      rs1_rest_predecoded_2_saved  <= '0;
     end else if (if_stage_stall & ~if_stage_stall_registered) begin
       source_hot_predecoded_saved   <= source_hot_predecoded_live;
       source_hot_predecoded_2_saved <= source_hot_predecoded_2_live;
       bits24_20_predecoded_saved    <= bits24_20_predecoded_live;
+      rs1_rest_predecoded_saved    <= rs1_rest_predecoded_live;
+      rvc_extra_saved <= rvc_extra;
       bits24_20_predecoded_2_saved  <= bits24_20_2;
+      rs1_rest_predecoded_2_saved  <= rs1_rest_2;
     end
   end
 
@@ -2018,6 +2036,10 @@ module if_stage #(
                                 source_hot_predecoded_live;
   assign o_from_if_to_pd.bits24_20_predecoded =
       replay_saved_if_outputs ? bits24_20_predecoded_saved : bits24_20_predecoded_live;
+  assign o_from_if_to_pd.rvc_extra_predecoded =
+      replay_saved_if_outputs ? rvc_extra_saved : rvc_extra;
+  assign o_from_if_to_pd.rs1_rest_predecoded =
+      replay_saved_if_outputs ? rs1_rest_predecoded_saved : rs1_rest_predecoded_live;
 
   // Link address (the slot-1 fall-through PC, instruction_pc + 2 for a
   // compressed instruction or + 4 for a 32-bit one) feeding the RAS call
@@ -2298,7 +2320,11 @@ module if_stage #(
       pending_prediction_active && !sel_nop_effective &&
       !pending_prediction_metadata_owner;
   logic bp_dir_taken_pending_aligned;
-  assign bp_dir_taken_pending_aligned = pending_prediction_metadata_predecessor ?
+  // Direction is payload: PD's registered inject_nop veto discards bubbles.
+  // The saved packet carries sel_nop too, and replay excludes saved NOPs, so
+  // the late validity decision need not select this data before its PD edge.
+  assign bp_dir_taken_pending_aligned = (pending_prediction_active &&
+      o_from_if_to_pd.program_counter == pending_prediction_prev_pc) ?
       bp_dir_taken_before_pending_q : bp_dir_taken_aligned;
   logic bp_dir_taken_sc;
   stall_capture_reg #(
@@ -2312,6 +2338,30 @@ module if_stage #(
       .i_data(bp_dir_taken_pending_aligned),
       .o_data(bp_dir_taken_sc)
   );
+
+`ifndef SYNTHESIS
+  logic bp_dir_taken_pending_legacy, bp_dir_taken_legacy_sc;
+  logic bp_dir_taken_legacy_output;
+  assign bp_dir_taken_pending_legacy = pending_prediction_metadata_predecessor ?
+      bp_dir_taken_before_pending_q : bp_dir_taken_aligned;
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_bp_dir_taken_legacy_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(bp_dir_taken_pending_legacy),
+      .o_data(bp_dir_taken_legacy_sc)
+  );
+  assign bp_dir_taken_legacy_output = replay_saved_if_outputs ?
+      bp_dir_taken_legacy_sc : bp_dir_taken_pending_legacy;
+  always @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.reset && !o_from_if_to_pd.sel_nop)
+      assert (o_from_if_to_pd.bp_dir_taken == bp_dir_taken_legacy_output);
+  end
+`endif
 
   // Lever A: freeze the slot-1 predict-time index across stall replay, mirroring
   // the direction bit above, so the carried index stays matched to the op.
@@ -2724,6 +2774,9 @@ module if_stage #(
                                 source_hot_predecoded_2_live;
   assign o_from_if_to_pd_2.bits24_20_predecoded =
       replay_saved_if_outputs ? bits24_20_predecoded_2_saved : bits24_20_2;
+  assign o_from_if_to_pd_2.rvc_extra_predecoded = '0;
+  assign o_from_if_to_pd_2.rs1_rest_predecoded =
+      replay_saved_if_outputs ? rs1_rest_predecoded_2_saved : rs1_rest_2;
   assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
   // Slot-2 fault tag (see the slot-1 block): current word, plus the next
   // word for every position that reads it.

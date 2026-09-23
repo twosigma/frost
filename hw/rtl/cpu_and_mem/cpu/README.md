@@ -228,6 +228,20 @@ overlay is one cycle; later windows repeat once. IF explicitly retargets owed
 BRAM requests when PC movement invalidates them. The cached provider uses two
 active and six victim lines, predecodes on fill, and detects unaccepted redirects.
 
+Each fetched word carries 78 metadata bits: twelve fetch-control predicates
+and two complete RVC expansions with illegal flags. The expansion's source
+fields retain separate lanes for the early operand lookups. The aligner
+selects metadata with its parcel, including buffered and bank-swapped words;
+IF preserves the selected metadata through a held response. Low-BRAM init,
+programming writes and L1I fills generate the same metadata. The RV64C
+predecoder is checked against the runtime decompressor for every parcel.
+
+In the cached configuration, a transition to the high provider need not
+retarget the low BRAM's address bits [15:0]. Response ownership masks that
+read. The upper physical-address bits still follow the canonical request,
+preventing false overlay hits and stale history matches on an immediate
+return to low BRAM. PC, fault and publication controls keep the full retarget.
+
 Both providers take recovery, emitted-prediction, resteer, and trap/xRET/fence
 epoch retargets. A leading slot-1 prediction is excluded while its branch
 response is still owed; slot 2 and no-lead slot 1 have already been accepted.
@@ -246,7 +260,7 @@ The shared read-only PTW supports Svade: software handles A/D-bit faults.
 |------|---------|
 | `cpu_ooo/` | Core integration, commit, recovery, memory routing, profiling |
 | [tomasulo/](tomasulo/README.md) | Rename, scheduling, queues, execution adapters, retirement |
-| `if_stage/`, `pd_stage/`, `id_stage/` | Prediction, alignment, predecode, dual decode |
+| `if_stage/`, `pd_stage/`, `id_stage/` | Prediction, alignment, predecoded RVC expansions, and dual decode. Operand classification runs beside the operation decoder, with legality and injected-NOP/fetch-fault selection applied afterward |
 | `mmu/` | 8-entry ITLB, 16-entry DTLB, translation stages, shared PTW |
 | `wb_stage/` | Generic INT/FP architectural register files |
 | `csr/` | Privileged and FP CSRs; accesses execute at commit |
@@ -254,3 +268,52 @@ The shared read-only PTW supports Svade: software handles A/D-bit faults.
 | `ex_stage/` | ALU, multiply/divide, FPU, branch execution |
 
 `cpu_ooo/cpu_ooo.f` is the authoritative CPU source list.
+
+Commit-time misprediction payload registers refresh every cycle alongside
+the separately qualified recovery-pending bit. Recovery, checkpoint and BTB
+consumers use that payload only while pending is set. This removes commit
+qualification from the wide register enables without delaying recovery;
+`mispredict_capture` proves equality to the former gated payload whenever valid.
+
+The pending-predecessor direction payload selects by packet identity before
+NOP qualification. PD already vetoes NOP redirects, and stall replay excludes
+saved NOP packets, so real direction/index pairs are unchanged. The local
+`if_direction_payload` proof and an IF integration oracle cover this contract.
+
+The fetch PC completes its normal data candidates assuming fetch progress,
+then applies the no-progress hold at the final data selection below redirects
+and served-window resteer. The public priority observations are unchanged;
+`fetch_pc_mux` proves equivalence for both standalone and integrated settings.
+
+The halfword fetch-lead catch-up equality checks the local carry relation
+for `fetch_pc == instruction_pc + 2`, including wraparound. It avoids a
+wide incrementer before the comparison; `fetch_pc_mux` also proves this
+identity with arbitrary PC values.
+
+DMMU MMIO classification runs in parallel for the TLB and walker candidates,
+then follows the same resolution priority as the address. The MMIO quadrant
+always passes the low-32-bit PMA range check; permissions and nonzero high PPN
+bits still suppress the flag. The `dmmu_mmio` local proof compares this flag
+with the original resolved-address/fault classification for arbitrary state.
+
+The fetch-PC mux computes its non-sequential word including window resteer
+and progress hold, then selects between that word and the slot-2/sequential
+candidates. Independent requests reach one final LUT6 per Xilinx bit, which
+applies reset and slot-2 priority. The generic fallback has the same truth
+table. `fetch_pc_mux` proves both implementations against the original priority
+in standalone and integrated configurations; canonical arm observations stay
+unchanged.
+
+Compressed-buffer validity computes both slot-2-valid next-state outcomes before
+its final selector, including pending-handoff clear. `c_ext_buffer_next` proves
+the same reset, capture, clear, update and hold priorities for arbitrary state.
+
+The fetch-PC final requests apply served-window and progress guards after the
+kept prediction and sequential candidates. A separate LUT6 per bit completes
+the non-prediction datum (current redirect, window resteer, or progress hold),
+so translated-fetch availability does not cross intermediate priority masks.
+Both primitive truth tables are included in `fetch_pc_mux` equivalence.
+
+Both BTB slots split raw and forwarded tag equality into kept 14-bit partial
+comparisons before reducing the result. This bounds the served-PC comparison
+path without changing hit qualification or forwarding priority.

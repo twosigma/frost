@@ -1736,7 +1736,11 @@ module cpu_ooo #(
   logic [XLEN-1:0] amo_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] amo_mem_write_data;
   logic amo_mem_write_is_dword;
+  logic amo_mem_write_is_mmio;
+  logic amo_mem_write_is_cached;
   logic amo_mem_write_done;
+  // Router-derived |o_data_mem_bram_byte_wr_en for the debug store mirror.
+  logic data_mem_bram_write_any;
 
   // RS issue. Exposed but not externally driven: the FU shims are inside the wrapper.
   riscv_pkg::rs_issue_t rs_issue_int, rs_issue_mul, rs_issue_mem;
@@ -1860,7 +1864,9 @@ module cpu_ooo #(
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .INT_RS_DEPTH(INT_RS_DEPTH),
       .CACHED_BASE(CACHED_BASE),
-      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      .MMIO_ADDR(MMIO_ADDR),
+      .MMIO_SIZE_BYTES(MMIO_SIZE_BYTES)
   ) u_tomasulo (
       .i_clk,
       .i_rst_n(rst_n),
@@ -2227,6 +2233,8 @@ module cpu_ooo #(
       .o_amo_mem_write_addr(amo_mem_write_addr),
       .o_amo_mem_write_data(amo_mem_write_data),
       .o_amo_mem_write_is_dword(amo_mem_write_is_dword),
+      .o_amo_mem_write_is_mmio(amo_mem_write_is_mmio),
+      .o_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_amo_mem_write_done(amo_mem_write_done),
 
       // Profiling snapshot
@@ -2313,7 +2321,10 @@ module cpu_ooo #(
   assign o_dbg_cmd_err = dbg_cmd_err_q;
   assign o_dbg_go_taken = dbg_go_taken;
   // Low-BRAM store snoop for the debug module's instruction-copy mirror.
-  assign o_dbg_bram_store = |o_data_mem_bram_byte_wr_en;
+  // The any-byte flag is the router's structural |o_data_mem_bram_byte_wr_en
+  // (TIMING: it feeds the slice-writer FIFO write enable; reducing the eight
+  // strobes here again cost two more LUT levels on the amo_state -> FIFO path).
+  assign o_dbg_bram_store = data_mem_bram_write_any;
   assign o_dbg_bram_store_addr = o_data_mem_addr[31:0];
   assign o_dbg_bram_store_strb = o_data_mem_bram_byte_wr_en;
 
@@ -2321,7 +2332,9 @@ module cpu_ooo #(
   // Dispatch Unit
   // ===========================================================================
 
-  dispatch u_dispatch (
+  dispatch #(
+      .SLOT2_VALID_FROM_BUNDLE(DECODED_QUEUE_DEPTH > 0)
+  ) u_dispatch (
       .i_clk,
       .i_rst_n(rst_n),
 
@@ -3074,6 +3087,8 @@ module cpu_ooo #(
       .i_amo_mem_write_addr(amo_mem_write_addr),
       .i_amo_mem_write_data(amo_mem_write_data),
       .i_amo_mem_write_is_dword(amo_mem_write_is_dword),
+      .i_amo_mem_write_is_mmio(amo_mem_write_is_mmio),
+      .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_lq_mem_read_en(lq_mem_read_en),
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
@@ -3091,6 +3106,7 @@ module cpu_ooo #(
       .o_data_mem_wr_data(o_data_mem_wr_data),
       .o_data_mem_per_byte_wr_en(o_data_mem_per_byte_wr_en),
       .o_data_mem_bram_byte_wr_en(o_data_mem_bram_byte_wr_en),
+      .o_data_mem_bram_write_any(data_mem_bram_write_any),
       .o_data_mem_read_enable(o_data_mem_read_enable),
       .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
       .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),

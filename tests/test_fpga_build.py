@@ -1195,7 +1195,16 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     provider_block = cpu_and_mem[provider_start:direct_start]
     direct_block = cpu_and_mem[direct_start:fetch_assertions_start]
     for block in (fuzz_block, provider_block, direct_block):
-        assert block.count("low_bram_fetch_presenter u_low_bram_fetch_presenter") == 1
+        assert (
+            len(
+                re.findall(
+                    r"low_bram_fetch_presenter(?:\s*#\s*\(.*?\))?\s+u_low_bram_fetch_presenter",
+                    block,
+                    re.DOTALL,
+                )
+            )
+            == 1
+        )
         assert block.count(".i_response_ready(bram_fetch_response_ready)") == 1
         assert block.count(".i_response_claim(fetch_live_claim)") == 1
         assert block.count(".o_response_valid(low_bram_response_valid)") == 1
@@ -1272,7 +1281,16 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert ".i_owner_low(1'b1)" in direct_block
     assert ".i_retarget(fetch_redirect)" in direct_block
 
-    assert cpu_and_mem.count("low_bram_fetch_presenter u_low_bram_fetch_presenter") == 3
+    assert (
+        len(
+            re.findall(
+                r"low_bram_fetch_presenter(?:\s*#\s*\(.*?\))?\s+u_low_bram_fetch_presenter",
+                cpu_and_mem,
+                re.DOTALL,
+            )
+        )
+        == 3
+    )
     assert cpu_and_mem.count(".i_response_ready(bram_fetch_response_ready)") == 3
     assert ".o_port_b_response_ready(bram_fetch_response_ready)" in cpu_and_mem
     assert ".o_port_b_window_overlay_hit(bram_fetch_window_overlay_hit)" in cpu_and_mem
@@ -1311,14 +1329,22 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert re.search(r"\bresponse_published_q\b", presenter) is None
     for output_name, live_name, held_name in (
         ("o_fetch_address", "i_pc", "presented_pc_q"),
-        ("o_fetch_pa0", "i_pa0", "presented_pa0_q"),
-        ("o_fetch_pa1", "i_pa1", "presented_pa1_q"),
         ("o_fetch_pa_valid", "i_pa_valid", "presented_pa_valid_q"),
     ):
         assert (
             f"assign {output_name} = repeat_presented ? {held_name} : {live_name};"
             in presenter
         )
+    # Only the low PA bits use the optional cofactor; full-width metadata
+    # and high region bits retain the canonical retarget selection.
+    assert "parameter bit SEPARATE_ADDRESS_RETARGET = 1'b0" in presenter
+    assert ".SEPARATE_ADDRESS_RETARGET(1'b1)" in provider_block
+    assert ".i_address_retarget(fetch_redirect)" in provider_block
+    for pa in ("pa0", "pa1"):
+        assert (
+            f"repeat_presented ? presented_{pa}_q[31:16] : i_{pa}[31:16]" in presenter
+        )
+        assert f"repeat_address ? presented_{pa}_q[15:0] : i_{pa}[15:0]" in presenter
     assert "presented_pc_q          <= o_fetch_address;" in presenter
     assert "i_response_ready && !i_retarget" not in presenter
 

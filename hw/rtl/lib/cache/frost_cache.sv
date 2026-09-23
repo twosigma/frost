@@ -559,8 +559,29 @@ module frost_cache #(
 
   // Hold a request in A while its index matches the entry in T or W: their
   // tag writes (dirty, invalidate) must be visible to this request's tag read.
-  logic a_hold;
-  assign a_hold = (t_valid_q && (in_index == t_index)) || (w_valid_q && (in_index == w_index_q));
+  // The hold is decided once per source and the skid state picks between
+  // them: the skid's index is registered, so its hold settles early, while the
+  // live upstream index is an arbiter's mux of several requesters and arrives
+  // late. Selecting after the compares keeps the skid mux out of the late
+  // cone, and the upstream compares are balanced by hand into 3-bit equality
+  // groups (one LUT6 each) whose nets synthesis must keep, then reduced flat,
+  // as for the tag compare below: a plain == on the late index has been seen
+  // re-packed into a serial chain that reached the tag read enable.
+  logic [IndexBits-1:0] sk_index, up_index;
+  assign sk_index = sk_addr_q[OffsetBits+:IndexBits];
+  assign up_index = i_up_req_addr[OffsetBits+:IndexBits];
+  localparam int unsigned IdxCmpGroups = (IndexBits + 2) / 3;
+  (* dont_touch = "true" *) logic [IdxCmpGroups-1:0] up_t_match_group, up_w_match_group;
+  for (genvar gg = 0; gg < int'(IdxCmpGroups); gg++) begin : gen_index_hold_compare
+    localparam int unsigned Lo = gg * 3;
+    localparam int unsigned Hi = (Lo + 3 <= IndexBits) ? Lo + 3 : IndexBits;
+    assign up_t_match_group[gg] = (up_index[Hi-1:Lo] == t_index[Hi-1:Lo]);
+    assign up_w_match_group[gg] = (up_index[Hi-1:Lo] == w_index_q[Hi-1:Lo]);
+  end
+  logic sk_hold, up_hold, a_hold;
+  assign sk_hold = (t_valid_q && (sk_index == t_index)) || (w_valid_q && (sk_index == w_index_q));
+  assign up_hold = (t_valid_q && (&up_t_match_group)) || (w_valid_q && (&up_w_match_group));
+  assign a_hold  = sk_valid_q ? sk_hold : up_hold;
 
   // A-stage comparators against the slots, registered into T with the entry
   // and masked there by the live valid bits. A slot being allocated by W this
@@ -746,14 +767,29 @@ module frost_cache #(
     t_done = decide && !t_stall;
   end
 
-  // T accepts the presented request when it is empty or completing.
-  logic t_accept;
-  assign t_accept = in_valid && !a_hold && !reread_q && (!t_valid_q || t_done);
+  // T accepts the presented request when it is empty or completing, i.e.
+  // in_valid && !a_hold && !reread_q && (!t_valid_q || t_done). Written per
+  // source: the skid's offer (sk_go) is registered state, the upstream's
+  // (up_go) carries the late request valid and index hold, and up_req_fire
+  // already excludes the skid-held case through o_up_req_ready, so the two
+  // offers are disjoint and their OR is in_valid && !a_hold. The late terms
+  // then meet T's availability in a single level, and p_accept_is_hold_gated
+  // checks the rewrite against the reference form every cycle.
+  logic sk_go, up_go, t_open, t_accept;
+  assign sk_go    = sk_valid_q && !sk_hold;
+  assign up_go    = up_req_fire && !up_hold;
+  assign t_open   = !reread_q && (!t_valid_q || t_done);
+  assign t_accept = (sk_go || up_go) && t_open;
 
   // ---- Tag request: issue once for a new T entry, once per retry, or once
   // when maintenance enters SCAN. CHECK waits for the matching response, so
-  // no ownership queue is needed while T remains serialized.
-  assign tag_re = (mstate_q == M_FLUSH_SCAN) || ((mstate_q == M_IDLE) && (t_accept || reread_q));
+  // no ownership queue is needed while T remains serialized. The accept's
+  // offers enter the enable beside the maintenance and retry terms rather
+  // than through t_accept, so the upstream request adds no level here.
+  logic tag_re_maint_or_retry, tag_re_open;
+  assign tag_re_maint_or_retry = (mstate_q == M_FLUSH_SCAN) || ((mstate_q == M_IDLE) && reread_q);
+  assign tag_re_open = (mstate_q == M_IDLE) && t_open;
+  assign tag_re = tag_re_maint_or_retry || (tag_re_open && (sk_go || up_go));
   assign tag_raddr = (mstate_q == M_FLUSH_SCAN) ? flush_idx_q : (reread_q ? t_index : in_index);
 
   // ===========================================================================
@@ -825,7 +861,9 @@ module frost_cache #(
   // ===========================================================================
   // At most one push per cycle; never deeper than the upstream's id space,
   // which bounds its outstanding requests.
-  logic [UP_ID_BITS-1:0] ack_id_q[AckDepth];
+  // The small ID queue uses flops so the late tag-hit decision drives a
+  // register enable instead of a distributed-RAM write-enable setup path.
+  (* ram_style = "registers" *) logic [UP_ID_BITS-1:0] ack_id_q[AckDepth];
   logic [AckPtrBits-1:0] ack_wr_q, ack_rd_q;
   logic ack_nonempty, ack_push, ack_pop;
   assign ack_nonempty = (ack_wr_q != ack_rd_q);
@@ -1057,7 +1095,37 @@ module frost_cache #(
     end
   end
 
-  // The fill merged with the write bytes the MSHR accumulated.
+  // Each MSHR merges response bytes with its own stored data. The response id
+  // only selects the destination's update, rather than selecting an MSHR's
+  // entire line before routing that line back to the same entry. W's store
+  // bytes still win over a simultaneous fill; allocation has its old priority.
+  logic [  LineBits-1:0] mshr_data_d [NUM_MSHR];
+  logic [LINE_BYTES-1:0] mshr_wstrb_d[NUM_MSHR];
+  for (genvar gm = 0; gm < int'(NUM_MSHR); gm++) begin : gen_mshr_payload
+    logic alloc_here, merge_here, fill_here, capture_fill;
+    assign alloc_here = w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(gm));
+    assign merge_here = w_valid_q && (w_op_q == W_MERGE) && (w_mshr_q == MshrBits'(gm));
+    assign fill_here = resp_is_fill && (resp_fill_slot == MshrBits'(gm));
+    assign capture_fill = fill_here && ((mshr_state_q[gm] == MS_SENT) || merge_here);
+    for (genvar gb = 0; gb < int'(LINE_BYTES); gb++) begin : gen_byte
+      logic take_store_byte, take_fill_byte;
+      assign take_store_byte = alloc_here || (merge_here && w_wstrb_q[gb]);
+      assign take_fill_byte = capture_fill && !(mshr_write_q[gm] && mshr_wstrb_q[gm][gb]);
+      assign mshr_data_d[gm][gb*8+:8] = take_store_byte ? w_wdata_q[gb*8+:8] :
+          (take_fill_byte ? i_down_resp_rdata[gb*8+:8] : mshr_data_q[gm][gb*8+:8]);
+      assign mshr_wstrb_d[gm][gb] = alloc_here ? (w_write_q && w_wstrb_q[gb]) :
+          (capture_fill || (merge_here && w_wstrb_q[gb]) || mshr_wstrb_q[gm][gb]);
+    end
+    always_ff @(posedge i_clk) begin
+      if (!i_rst) begin
+        mshr_data_q[gm]  <= mshr_data_d[gm];
+        mshr_wstrb_q[gm] <= mshr_wstrb_d[gm];
+      end
+    end
+  end
+
+`ifdef CACHE_MSHR_PAYLOAD_PROOF
+  // Original indexed next state, retained solely as an arbitrary-state oracle.
   logic [LineBits-1:0] fill_merged;
   for (genvar gb = 0; gb < int'(LINE_BYTES); gb++) begin : gen_fill_merge
     assign fill_merged[gb*8+:8] =
@@ -1074,6 +1142,29 @@ module frost_cache #(
   for (genvar gb = 0; gb < int'(LINE_BYTES); gb++) begin : gen_w_merge
     assign merge_data[gb*8+:8] = w_wstrb_q[gb] ? w_wdata_q[gb*8+:8] : merge_base[gb*8+:8];
   end
+  for (genvar gm = 0; gm < int'(NUM_MSHR); gm++) begin : gen_payload_reference
+    logic [  LineBits-1:0] data_ref;
+    logic [LINE_BYTES-1:0] strb_ref;
+    always_comb begin
+      data_ref = mshr_data_q[gm];
+      strb_ref = mshr_wstrb_q[gm];
+      if ((mshr_state_q[gm] == MS_SENT) && resp_is_fill && (resp_fill_slot == MshrBits'(gm))) begin
+        data_ref = fill_merged;
+        strb_ref = '1;
+      end
+      if (w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(gm))) begin
+        data_ref = w_wdata_q;
+        strb_ref = w_write_q ? w_wstrb_q : '0;
+      end
+      if (w_valid_q && (w_op_q == W_MERGE) && (w_mshr_q == MshrBits'(gm))) begin
+        data_ref = merge_data;
+        strb_ref = (w_merge_on_fill ? {LINE_BYTES{1'b1}} : mshr_wstrb_q[gm]) | w_wstrb_q;
+      end
+      assert (mshr_data_d[gm] == data_ref);
+      assert (mshr_wstrb_d[gm] == strb_ref);
+    end
+  end
+`endif
 
   // Writeback slots still pending after this cycle's acknowledgement: the
   // mask a newly allocated MSHR must wait for.
@@ -1319,8 +1410,6 @@ module frost_cache #(
             mshr_state_q[i] <= MS_SENT;
           MS_SENT:
           if (resp_is_fill && (resp_fill_slot == MshrBits'(i))) begin
-            mshr_data_q[i]  <= fill_merged;
-            mshr_wstrb_q[i] <= '1;
             mshr_state_q[i] <= MS_MERGE;
           end
           MS_MERGE: mshr_state_q[i] <= MS_WRITE;
@@ -1361,15 +1450,8 @@ module frost_cache #(
         mshr_has_victim_q[w_mshr_q]        <= w_has_victim_q;
         mshr_victim_wb_q[w_mshr_q]         <= w_wb_q;
         mshr_waiter_valid_q[w_mshr_q]      <= 1'b0;
-        mshr_wstrb_q[w_mshr_q]             <= w_write_q ? w_wstrb_q : '0;
-        mshr_data_q[w_mshr_q]              <= w_wdata_q;
         mshr_wb_wait_q[w_mshr_q]           <= w_wb_wait_q & wb_still_pending;
         mshr_resp_primary_done_q[w_mshr_q] <= 1'b0;
-      end
-      if (w_valid_q && (w_op_q == W_MERGE)) begin
-        mshr_wstrb_q[w_mshr_q] <= (w_merge_on_fill ? {LINE_BYTES{1'b1}} : mshr_wstrb_q[w_mshr_q]) |
-            w_wstrb_q;
-        mshr_data_q[w_mshr_q] <= merge_data;
       end
       if (w_valid_q && (w_op_q == W_WAITER)) begin
         mshr_waiter_valid_q[w_mshr_q] <= 1'b1;
@@ -1582,6 +1664,12 @@ module frost_cache #(
       p_poisoned_tag_never_decides :
       assert (!(t_tag_response && (t_tag_stale_q || t_tag_write_collision) && t_done));
       p_reread_owns_t_index : assert (!reread_q || ((mstate_q == M_IDLE) && t_valid_q));
+      // The per-source accept and tag read enable equal their reference forms.
+      p_accept_is_hold_gated :
+      assert (t_accept == (in_valid && !a_hold && !reread_q && (!t_valid_q || t_done)));
+      p_tag_re_is_accept_gated :
+      assert (tag_re == ((mstate_q == M_FLUSH_SCAN) ||
+                         ((mstate_q == M_IDLE) && (t_accept || reread_q))));
       p_cache_perf_hit_miss_onehot : assert (!(perf_events_q.hit && perf_events_q.miss));
       // No line has two writebacks in flight (see the T decision): the level
       // below applies same-line writes in acceptance order, and the slot pick

@@ -56,6 +56,8 @@ module data_mem_response_mux_tb #(
     output logic [riscv_pkg::MemStrbBits-1:0] o_ref_data_mem_per_byte_wr_en,
     output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
     output logic [riscv_pkg::MemStrbBits-1:0] o_ref_data_mem_bram_byte_wr_en,
+    output logic o_data_mem_bram_write_any,
+    output logic o_ref_data_mem_bram_write_any,
     output logic o_data_mem_read_enable,
     output logic o_ref_data_mem_read_enable,
     output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
@@ -141,6 +143,19 @@ module data_mem_response_mux_tb #(
       .o_read_data(o_standalone64)
   );
 
+  // AMO write tier flags. In the core the load queue registers these beside
+  // the AMO write address from the same source, so on every cycle they equal
+  // the decode of that address; the seam derives them from the driven address
+  // with the router's own decode (default MMIO/cached windows) instead of
+  // asking the test to keep a second pair of inputs consistent.
+  logic amo_mem_write_is_mmio;
+  logic amo_mem_write_is_cached;
+  assign amo_mem_write_is_mmio = riscv_pkg::mmio_window_hit(
+      i_amo_mem_write_addr, XLEN'(32'h4000_0000), XLEN'(32'h2C)
+  );
+  assign amo_mem_write_is_cached = (i_amo_mem_write_addr >= XLEN'(32'h8000_0000)) &&
+      (i_amo_mem_write_addr < (XLEN'(32'h8000_0000) + XLEN'(32'h4000_0000)));
+
   data_mem_request_router #(
       .XLEN(XLEN)
   ) u_reference (
@@ -157,6 +172,8 @@ module data_mem_response_mux_tb #(
       .i_amo_mem_write_addr(i_amo_mem_write_addr),
       .i_amo_mem_write_data(i_amo_mem_write_data),
       .i_amo_mem_write_is_dword(i_amo_mem_write_is_dword),
+      .i_amo_mem_write_is_mmio(amo_mem_write_is_mmio),
+      .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_lq_mem_read_en(i_lq_mem_read_en),
       .i_lq_mem_read_addr(i_lq_mem_read_addr),
       .i_lq_mem_addr_valid(i_lq_mem_addr_valid),
@@ -174,6 +191,7 @@ module data_mem_response_mux_tb #(
       .o_data_mem_wr_data(o_ref_data_mem_wr_data),
       .o_data_mem_per_byte_wr_en(o_ref_data_mem_per_byte_wr_en),
       .o_data_mem_bram_byte_wr_en(o_ref_data_mem_bram_byte_wr_en),
+      .o_data_mem_bram_write_any(o_ref_data_mem_bram_write_any),
       .o_data_mem_read_enable(o_ref_data_mem_read_enable),
       .o_data_mem_cached_byte_wr_en(o_ref_data_mem_cached_byte_wr_en),
       .o_data_mem_cached_wr_data(o_ref_data_mem_cached_wr_data),
@@ -211,6 +229,8 @@ module data_mem_response_mux_tb #(
       .i_amo_mem_write_addr(i_amo_mem_write_addr),
       .i_amo_mem_write_data(i_amo_mem_write_data),
       .i_amo_mem_write_is_dword(i_amo_mem_write_is_dword),
+      .i_amo_mem_write_is_mmio(amo_mem_write_is_mmio),
+      .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_lq_mem_read_en(i_lq_mem_read_en),
       .i_lq_mem_read_addr(i_lq_mem_read_addr),
       .i_lq_mem_addr_valid(i_lq_mem_addr_valid),
@@ -228,6 +248,7 @@ module data_mem_response_mux_tb #(
       .o_data_mem_wr_data(o_data_mem_wr_data),
       .o_data_mem_per_byte_wr_en(o_data_mem_per_byte_wr_en),
       .o_data_mem_bram_byte_wr_en(o_data_mem_bram_byte_wr_en),
+      .o_data_mem_bram_write_any(o_data_mem_bram_write_any),
       .o_data_mem_read_enable(o_data_mem_read_enable),
       .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
       .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),

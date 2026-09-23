@@ -310,29 +310,52 @@ module dmmu (
   assign tlb_resolve_addr  = (tlb_fault == riscv_pkg::DFAULT_NONE) ? tlb_pa : s1_q.va;
   assign walk_resolve_addr = (walk_fault == riscv_pkg::DFAULT_NONE) ? walk_pa : s1_q.va;
 
+  // Classify each translated candidate before the late TLB/walk selection.
+  // A zero-extended PA in the 01 quadrant always passes pma_data_ok, so the
+  // MMIO predicate can test permissions and high PPN bits directly without
+  // waiting for the full fault/address mux. The local proof below compares
+  // this with classification of the original complete resolution.
+  (* keep = "true" *) logic tlb_is_mmio, walk_is_mmio;
+  assign tlb_is_mmio = leaf_perm_ok(
+      tlb_r[0], tlb_w[0], tlb_x[0], tlb_u[0], tlb_d[0]
+  ) && !tlb_hi_nonzero[0] && (tlb_ppn20[0][19:18] == 2'b01);
+  assign walk_is_mmio = (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && leaf_perm_ok(
+      i_walk_resp.perm_r,
+      i_walk_resp.perm_w,
+      i_walk_resp.perm_x,
+      i_walk_resp.perm_u,
+      i_walk_resp.perm_d
+  ) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) && (i_walk_resp.ppn[19:18] == 2'b01);
+  logic resolve_is_mmio;
+
   // Resolution select, in architectural priority order.
   logic resolve_now;
   riscv_pkg::data_fault_kind_e resolve_fault;
   logic [riscv_pkg::XLEN-1:0] resolve_addr;
   always_comb begin
-    resolve_now   = 1'b0;
+    resolve_now = 1'b0;
     resolve_fault = riscv_pkg::DFAULT_NONE;
-    resolve_addr  = s1_q.va;
+    resolve_addr = s1_q.va;
+    resolve_is_mmio = (s1_q.va[31:30] == 2'b01);
     if (s1_valid_q) begin
       if (i_trap_misaligned && s1_misaligned) begin
-        resolve_now   = 1'b1;
+        resolve_now = 1'b1;
         resolve_fault = riscv_pkg::DFAULT_MISALIGN;
+        resolve_is_mmio = 1'b0;
       end else if (s1_noncanonical) begin
-        resolve_now   = 1'b1;
+        resolve_now = 1'b1;
         resolve_fault = riscv_pkg::DFAULT_PAGE;
+        resolve_is_mmio = 1'b0;
       end else if (tlb_hit[0]) begin
-        resolve_now   = 1'b1;
+        resolve_now = 1'b1;
         resolve_fault = tlb_fault;
-        resolve_addr  = tlb_resolve_addr;
+        resolve_addr = tlb_resolve_addr;
+        resolve_is_mmio = tlb_is_mmio;
       end else if (walk_resp_for_s1) begin
-        resolve_now   = 1'b1;
+        resolve_now = 1'b1;
         resolve_fault = walk_fault;
-        resolve_addr  = walk_resolve_addr;
+        resolve_addr = walk_resolve_addr;
+        resolve_is_mmio = walk_is_mmio;
       end
     end
   end
@@ -410,7 +433,7 @@ module dmmu (
     if (s1_resolved) begin
       s2_tag_q <= s1_q.tag;
       s2_addr_q <= resolve_addr;
-      s2_is_mmio_q <= (resolve_fault == riscv_pkg::DFAULT_NONE) && (resolve_addr[31:30] == 2'b01);
+      s2_is_mmio_q <= resolve_is_mmio;
       s2_fault_q <= resolve_fault;
       s2_needs_sq_q <= s1_q.needs_sq;
       s2_is_sc_q <= s1_q.is_sc;
@@ -537,5 +560,13 @@ module dmmu (
       .o_perm_d(tlb_d),
       .o_level()
   );
+
+`ifdef DMMU_MMIO_LOCAL_PROOF
+  always_comb begin
+    p_resolve_mmio_exact :
+    assert (resolve_is_mmio ==
+        ((resolve_fault == riscv_pkg::DFAULT_NONE) && (resolve_addr[31:30] == 2'b01)));
+  end
+`endif
 
 endmodule : dmmu
