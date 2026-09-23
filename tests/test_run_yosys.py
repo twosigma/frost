@@ -318,6 +318,11 @@ class YosysRunner:
                 verilog_files, Path(temp_dir), defines, timeout_sec
             )
             yosys_script = []
+            if synth_command.startswith("synth_xilinx"):
+                # Load primitive ports before parameter elaboration. Loading
+                # them only inside synth_xilinx can rederive a parent after
+                # hierarchy has discarded its unspecialized child modules.
+                yosys_script.append("read_verilog -lib +/xilinx/cells_sim.v")
             for vfile in verilog_files:
                 yosys_script.append(f"read_verilog -sv {defines} {vfile}")
 
@@ -538,6 +543,42 @@ def test_synthesis_accepts_specialized_top(
     result = runner.run_synthesis(
         synth_command="synth_xilinx -family xcup -run begin:begin\n"
         "rename -top specialized_cpu_and_mem"
+    )
+    has_error, errors = runner.check_for_errors(result)
+    assert not has_error, errors
+
+
+@pytest.mark.synthesis
+def test_xilinx_pc_hierarchy_keeps_parameterized_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Late primitive loading must not rederive a parent after child pruning."""
+    monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
+    runner = YosysRunner()
+    rtl = runner.root_dir / "hw/rtl/cpu_and_mem/cpu"
+    runner.root_dir = tmp_path
+    runner.test_dir = tmp_path
+    runner.filelist = tmp_path / "design.f"
+    top = tmp_path / "cpu_and_mem.sv"
+    top.write_text(
+        "module cpu_and_mem #(parameter ENABLE_CACHED_TIER=1, "
+        "USE_BEHAVIORAL_DDR=1)(input reset, output [63:0] value);\n"
+        "  pc_controller #(.PENDING_HANDOFF_EXCLUDES_SLOT2(1)) pc "
+        "(.i_reset(reset), .o_pc(value));\n"
+        "endmodule\n"
+    )
+    sources = [
+        rtl / "riscv_pkg.sv",
+        rtl / "if_stage/control_flow_tracker.sv",
+        rtl / "if_stage/pc_reg_precompute.sv",
+        rtl / "if_stage/pc_increment_calculator.sv",
+        rtl / "if_stage/pc_controller.sv",
+        top,
+    ]
+    runner.filelist.write_text("\n".join(map(str, sources)) + "\n")
+    # The failure occurs during hierarchy elaboration, before logic mapping.
+    result = runner.run_synthesis(
+        synth_command="synth_xilinx -family xcup -run begin:begin"
     )
     has_error, errors = runner.check_for_errors(result)
     assert not has_error, errors

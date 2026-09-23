@@ -165,6 +165,11 @@ synthesis, rejecting unresolved modules and latches. Both use `frost.f` with
 not establish device mapping or timing. The Xilinx timeout is two hours,
 overridable with `FROST_YOSYS_XILINX_TIMEOUT_SEC`.
 
+The Xilinx runner loads primitive definitions before elaborating parameters.
+This prevents late LUT discovery from reprocessing a parent after its original
+child modules have been pruned. A focused PC hierarchy regression covers this
+ordering alongside the full CPU/NIC synthesis checks.
+
 ```bash
 ./scripts/frost.py synthesis
 ./scripts/frost.py synthesis --target generic
