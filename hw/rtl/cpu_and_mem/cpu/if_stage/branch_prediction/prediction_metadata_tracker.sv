@@ -318,6 +318,13 @@ module prediction_metadata_tracker #(
   always_comb begin
     assert (o_btb_hit == f_btb_hit);
     assert (o_btb_predicted_taken == f_btb_taken);
+    // Ownership remains a combinational safety property in formal, where
+    // all derived nets are settled; simulation samples it at packet capture.
+    assert (!prediction_pending_saved_valid || pending_prediction_owner_matches_output ||
+        (!o_btb_hit && !o_btb_predicted_taken));
+    assert (!i_pending_prediction_active || prediction_pending_saved_valid ||
+        pending_prediction_live_owner_matches_output ||
+        (!o_btb_hit && !o_btb_predicted_taken));
   end
 `endif
 
@@ -443,7 +450,12 @@ module prediction_metadata_tracker #(
       assert (!i_live_prediction_for_output || i_pending_prediction_active ||
               prediction_pending_saved_valid || !i_prediction_used_r);
     end
+  end
 
+  // Ownership flags, equality results and output validity settle through
+  // separate combinational processes after an edge. Check their relationship
+  // at packet capture, like the independent validity/target oracles above.
+  always_ff @(posedge i_clk) begin
     if (!$isunknown(
             {
               prediction_pending_saved_valid,

@@ -104,7 +104,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "prediction_metadata_output.sby",
-        "Prediction hit/taken outputs match the priority reference for arbitrary inputs and state",
+        "Prediction validity and non-owner exclusion hold for arbitrary inputs and state",
         tasks=("bmc",),
     ),
     FormalTarget(

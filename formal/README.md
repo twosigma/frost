@@ -68,7 +68,7 @@ X/Z behavior.
 | `lq_capacity` | Grouped free-entry predicates equal full/popcount comparisons for arbitrary valid masks |
 | `lq_cached_flags` | Invalidation and LR-suppression next state equals the original priority equations; arbitrary inputs/current state |
 | `lq_cached_hold` | Cached-slot hold next state versus the original full slot-mask reduction; arbitrary inputs/current state |
-| `prediction_metadata_output` | Prediction validity routing versus the original equations; arbitrary controls/current state, with lifecycle behavior checked by `prediction_metadata_tracker` |
+| `prediction_metadata_output` | Prediction validity routing versus the original equations, plus saved/active non-owner exclusion; arbitrary controls/current state, with lifecycle behavior checked by `prediction_metadata_tracker` |
 | `lq_tag_order` | Exhaustive unsigned tag-age ordering and full-window boundary equivalence to the former extended arithmetic; arbitrary tags, no reset or live-entry assumptions |
 | `lq_l0_cache` | Bounded hit, fill and invalidation checks at 128 and 256 entries; this local cache target does not prove coherence of executed loads through retirement |
 | `alu_shift_hint` | Hint-enabled and default RV64 ALUs agree when the hint supplies the exact effective shift amount; checked against an independent shift/rotate reference. `rs_issue2_shamt` simulation covers capture and hold |

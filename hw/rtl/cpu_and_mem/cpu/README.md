@@ -317,3 +317,11 @@ Both primitive truth tables are included in `fetch_pc_mux` equivalence.
 Both BTB slots split raw and forwarded tag equality into kept 14-bit partial
 comparisons before reducing the result. This bounds the served-PC comparison
 path without changing hit qualification or forwarding priority.
+
+Prediction-metadata ownership assertions sample at the packet-capture edge,
+matching the validity/target equivalence checks. Owner flags, PC comparisons
+and routed validity settle through separate combinational processes after
+state changes; checking them mid-settle can report a false non-owner packet.
+The `prediction_metadata_output` proof checks both non-owner exclusions with
+arbitrary settled controls/state and no assumptions, while the tracker proof
+checks pending-episode ownership over time.

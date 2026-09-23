@@ -12,8 +12,9 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read -formal -D SYNTHESIS -D PRED_METADATA_OUTPUT_LOCAL_PROOF -sv prediction_metadata_tracker.sv
 prep -top prediction_metadata_tracker
-select -assert-none t:$assume
-select -assert-count 2 t:$check
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 4 t:$check
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
