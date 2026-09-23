@@ -835,6 +835,10 @@ if {$step eq "synth"} {
         error "FROST_SINGLE_CORE_PERFORMANCE must be 0 or 1"
     }
     lappend synth_args -generic SINGLE_CORE_PERFORMANCE=$single_core_performance
+    # A late module-level declaration can leave generated primitive inputs
+    # attached to separate, undriven implicit nets. Reject that ambiguity before
+    # Vivado ties those inputs to constants and reports timing on the wrong logic.
+    set_msg_config -id {Synth 8-605} -new_severity ERROR
     synth_design {*}$synth_args
 
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1"} {

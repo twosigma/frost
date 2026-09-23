@@ -9,9 +9,11 @@ has not been replaced.
 
 The integrated experimental profile achieves **3.9071 CoreMark/MHz** in a
 17.47-second X3 run at **161.1328125 MHz** (629.57 CoreMark). Both seed sets
-pass CRC validation, and Debian hardware regression passes. The target-rate
-profile now meets post-optimization setup timing (+0.002 ns WNS); placement
-and routing of that revision have not run. The hardware result remains at
+pass CRC validation, and Debian hardware regression passes on that measured
+revision. A later fetch-mux optimization had an implicit-net wiring error
+under Vivado. The corrected RTL now independently achieves **+0.002 ns
+post-optimization WNS** at the target rate; full hardware regression of the
+corrected build is in progress. The sustained hardware result remains at
 161.1328125 MHz.
 
 ## Implementation
@@ -394,9 +396,31 @@ about 0.15 ns between netlists, so compare path families, not single runs.
 | Plus INT port-2 pre-bypass/shift fields, no merge tag compare | -0.362 | -251 | 1,988 |
 | Plus port-2 window, dispatch-flag shadow | -0.471 | -112 | 1,723 |
 | Plus shared-path fixes below | -0.266 | -192 | 3,002 |
-| Plus operand/predecode, fetch and queue/cache cofactors below | -0.187 | -148.277 | 2,773 |
-| Plus fetch, retirement and queue-state cofactors below | -0.049 | -0.049 | 1 |
-| Plus final DMMU MMIO capture cofactor | **+0.002** | **0.000** | **0** |
+| Plus operand/predecode, fetch and queue/cache cofactors below (invalidated) | -0.187 | -148.277 | 2,773 |
+| Plus fetch, retirement and queue-state cofactors below (invalidated) | -0.049 | -0.049 | 1 |
+| Plus final DMMU MMIO capture cofactor (invalidated) | +0.002 | 0.000 | 0 |
+| Corrected fetch-LUT control declaration | **+0.002** | **0.000** | **0** |
+
+The three invalidated checkpoints had an undriven control input in the
+generated fetch-PC LUTs. Vivado created local implicit nets because the
+shared signal was declared after the generate block, then tied those inputs to zero.
+Verilator and Yosys resolved the intended module-level signal, so their
+passing checks did not validate that FPGA netlist. The declaration now
+precedes its uses, and native synthesis rejects `Synth 8-605` as an error.
+Inspection of the corrected full synthesis netlist confirms that all 64
+control inputs have the intended nonconstant driver. Fresh synthesis and
+optimization reproduce +0.002 ns WNS with zero failing setup endpoints;
+this remains a setup estimate with only 2 ps margin, not routed closure at
+322.265625 MHz.
+
+The corrected source preserves **257,702 performance / 262,144 validation
+cycles** in the frozen-checkout PGO sweep, with all CRCs passing. The
+20 PC-controller tests using Xilinx primitive models and all four fetch-mux
+formal configurations pass. A diagnostic FPGA image made by reconnecting
+only those 64 inputs in the original routed netlist passes all eleven
+previously timing-out hardware stages, including DDR execution, ITLB,
+interrupt stress, OpenSBI and the full Debian boot/userspace check. A clean
+RTL build is being validated separately.
 
 The -0.266 ns row added changes that also help the hardware defaults:
 
@@ -485,13 +509,14 @@ limitation on package-qualified type arguments. The Xilinx synthesis runner
 loads primitive definitions before hierarchy elaboration so late LUT discovery
 cannot reprocess a parent after its original child modules have been pruned.
 
-The +0.002 ns checkpoint adds the following cycle-preserving transformations.
-It has zero failing setup endpoints at post-opt; its margin is only 2 ps and
-does not establish routed timing. The PGO sweep in the frozen main checkout
-still takes **257,702 performance / 262,144 validation cycles**, with all CRCs
-passing. Pinned Docker lint and all 704 fast tests pass twice. All seven
+The checkpoint that reported +0.002 ns adds the following intended
+cycle-preserving transformations. Its synthesized fetch mux was incorrect,
+as described above, so that margin cannot establish timing closure. The PGO
+sweep of its RTL in the frozen main checkout took **257,702 performance /
+262,144 validation cycles**, with all CRCs passing. Pinned Docker lint and
+all 704 fast tests passed twice. All seven
 Yosys synthesis tests, focused unit and CSR/fence/VM program tests, and the
-local equivalence checks pass.
+local equivalence checks passed.
 
 * The fetch mux omits unused sequential data from its non-sequential arms,
   completes window/progress choices and slot 1 before the final slot-2 mux,

@@ -1196,6 +1196,9 @@ module pc_controller #(
   // sequential requests retain slot-2 priority; slot 1 vetoes only sequence.
   (* keep = "true" *) logic [XLEN-1:0] npc_final_nonseq_data;
   (* keep = "true" *) logic [XLEN-1:0] npc_slot1_or_nonseq_data;
+  // Declare the shared control before the primitive generate below. Otherwise
+  // Vivado creates undriven per-iteration implicit nets for its LUT input.
+  (* keep = "true" *) logic pc_reg_live_redirect_permission;
   (* keep = "true" *) logic npc_prediction_permission;
   (* keep = "true" *) logic npc_final_slot2_request;
   (* keep = "true" *) logic npc_final_sequential_request;
@@ -1296,7 +1299,6 @@ module pc_controller #(
   // Slot-2 validity never feeds a sequential veto ahead of the data mux.
   // Redirect permission is needed only at the final boundary: when false,
   // the already-completed base carries the highest-priority redirect.
-  (* keep = "true" *) logic pc_reg_live_redirect_permission;
   (* keep = "true" *) logic pc_reg_live_candidate;
   (* keep = "true" *) logic pc_reg_seq_candidate;
   (* keep = "true" *) logic [XLEN-1:0] pc_reg_staged_or_sequential;

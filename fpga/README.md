@@ -16,6 +16,10 @@ The bitstream includes Hello World. Loading a new app rebuilds it by default
 and replaces BRAM/DDR contents without rebuilding the bitstream. Read the
 UART console at **115200 baud, 8N1**.
 
+Synthesis treats Vivado's same-named implicit-net diagnostic (`Synth 8-605`)
+as an error. Declare shared signals before any generated primitive instances
+that use them; a later declaration can leave separate local nets undriven.
+
 ```mermaid
 flowchart LR
     RTL[RTL + board configuration] --> Build[Vivado build]
