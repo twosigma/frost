@@ -17,7 +17,7 @@
 /*
  * Linux clocksource-switch timer stressor (M-mode, DDR-resident).
  *
- * Unlike the linux_irq_*_ddr tests, this one mirrors no-MMU Linux after the
+ * Unlike the linux_irq_* tests, this one mirrors no-MMU Linux after the
  * switch to clint_clocksource:
  *
  *   - clint_clock_next_event() enables MTIE before an
@@ -25,11 +25,12 @@
  *     torn {old_hi,new_lo} value.
  *   - clint_timer_interrupt() clears MTIE, then the event handler re-arms it.
  *   - arch_cpu_idle() uses bare wfi while mstatus.MIE remains enabled.
- *   - cached-DDR churn leaves long-latency accesses outstanding at IRQ entry.
+ *   - cached-DDR churn runs between wfi instructions, so IRQs can land with
+ *     cached accesses in flight.
  *
  * The registered simulation uses a deliberately small L2 and
- * DDR_MODEL_LATENCY>=70. Frame violations report a failure code; the RTL
- * no-retire watchdog catches deadlocks.
+ * DDR_MODEL_LATENCY>=70. Frame violations report a failure code; a deadlock
+ * fails the run when the simulation cycle budget runs out.
  */
 
 #include <stdint.h>
@@ -52,7 +53,7 @@
 
 #define TARGET_TICKS 64u
 #define DDR_STACK_SIZE 4096u
-#define CHURN_WORDS 4096 /* 16 KiB > L1: each idle sweep sustains DDR misses */
+#define CHURN_WORDS 4096 /* 16 KiB, swept once per idle iteration */
 
 struct linux_pt_regs {
     unsigned long epc, ra, sp, gp, tp;
@@ -147,7 +148,7 @@ __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
     if (frame->cause != (MCAUSE_INTERRUPT_BIT | INT_MTI)) {
         record_failure(1u);
     }
-    /* The hardware symptom was ra==epc==0xCC0. */
+    /* epc and ra must stay in DDR; ra == epc == 0xCC0 is the failure signature. */
     if (frame->epc < 0x80000000u || frame->epc == 0x00000CC0u) {
         record_failure(2u);
     }
@@ -166,7 +167,7 @@ __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
     }
 
     /* Light handler-side cached touch (rotating window) so the handler stays
-     * short; the sustained DDR traffic comes from the idle-loop sweep. */
+     * short; the bulk of the cached traffic comes from the idle-loop sweep. */
     {
         uint32_t base = (g_ticks << 4) & (CHURN_WORDS - 1u);
         uint32_t acc = frame->epc ^ frame->ra ^ g_ticks;

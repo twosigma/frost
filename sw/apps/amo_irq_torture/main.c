@@ -18,9 +18,10 @@
  * Sweep machine-timer interrupts across cached-DDR AMO bursts and count every
  * atomic side effect.
  *
- * The bug cleared LQ AMO_WRITE_ACTIVE during an interrupt flush. The orphaned
- * write then landed before mepc re-executed the AMO, double-applying it, or
- * collided with a later cached-tier store and wedged the queue.
+ * An interrupt flush must not orphan an AMO's launched write (see "AMO
+ * sequence" in hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/README.md). An
+ * orphaned write either lands before mepc re-executes the AMO, applying it
+ * twice, or collides with a later cached-tier store and wedges the queue.
  *
  * Each iteration arms mtimecmp=now+K, with K swept across the burst, then runs
  * amoadd.w +1 over counters forced out of L1 by an eviction stream. The final
@@ -33,8 +34,9 @@
 #include "trap.h"
 #include "uart.h"
 
-/* Kernel-mirror rv64 trap frame: 8-byte slots, full-width saves, and sc.d.
- * XB is a string so gas evaluates "n*" XB "(sp)" offsets. */
+/* Trap entry and exit mirror the Linux kernel's rv64 path: a pt_regs-layout
+ * frame of 8-byte slots, full-width saves, and a dummy sc.d that clears any
+ * reservation. XB is a string so gas evaluates the "n*" XB "(sp)" offsets. */
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"
@@ -55,8 +57,9 @@ typedef uint64_t frame_word_t;
 #define EVICT_WORDS (64u * 1024u) /* 256 KiB */
 #define EVICT_TOUCH_STRIDE 8u
 
-/* Override for simulation with EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=... and use
- * SIM_TIMER_SPEEDUP=1 so the K sweep lands inside the burst. */
+/* Override for simulation with EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=... Keep
+ * SIM_TIMER_SPEEDUP at 1, the RTL default, so the K sweep lands inside the
+ * burst. */
 #ifndef AMO_TORTURE_ITERS
 #define AMO_TORTURE_ITERS 24000u
 #endif
@@ -187,9 +190,9 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
         for (uint32_t b = 0; b < BURST_AMOS; b++) {
             amo_add1(&g_counters[counter_idx * COUNTER_STRIDE_WORDS]);
             counter_idx = (counter_idx + 1u) % COUNTERS;
-            /* Stream two lines through L1 so the next AMO's line has been
-             * evicted. Its write then misses, which opens the widest in-flight
-             * window. */
+            /* Stream two lines through L1 so each counter's line is evicted
+             * before its next AMO. The AMO then misses, which opens the widest
+             * in-flight window. */
             g_evict[evict_idx] ^= iter + b;
             g_evict[evict_idx + EVICT_TOUCH_STRIDE] ^= iter ^ b;
             evict_idx = (evict_idx + 2u * EVICT_TOUCH_STRIDE) % EVICT_WORDS;

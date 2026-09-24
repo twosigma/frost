@@ -15,14 +15,15 @@
  */
 
 /**
- * RAS stress using CoreMark-like control flow:
- *   1. Loops with both branches and function calls (BTB+RAS interaction)
- *   2. Data-dependent control flow selecting which function to call
- *   3. Linked list traversal with function calls at each node
- *   4. Function pointers (indirect calls)
- *   5. Checksum computation with interleaved function calls
+ * Return-address-stack stress with CoreMark-like control flow: calls mixed
+ * with loop branches, data-dependent calls through a function pointer table,
+ * calls at each node of a linked-list walk, nested and alternating call
+ * depths, conditional calls, calls between loads, and a CRC loop. Unlike
+ * ras_test's mostly straight-line call sequences, every case here interleaves
+ * calls with conditional branches.
  *
- * Unlike the basic RAS test, these mix BTB and RAS prediction.
+ * Tests 1-7 check fixed results, test 8 only reports its result, and test 9
+ * must give the same result twice. The run ends with <<PASS>> or <<FAIL>>.
  */
 
 #include "uart.h"
@@ -324,7 +325,7 @@ NOINLINE uint32_t test_memory_with_calls(void)
         data_array[i] = i * 7;
     }
 
-    /* Reads mixed with calls: memory stalls overlap RAS traffic. */
+    /* Loads, branches on the loaded values, and calls interleave. */
     for (int i = 0; i < 64; i++) {
         if (data_array[i] & 8) { /* Branch based on memory load */
             sum += load_and_compute(i);
@@ -454,7 +455,7 @@ int main(void)
         failed++;
     }
 
-    /* Test 8 reports its result; its expected value is too involved to hardcode. */
+    /* Test 8 only reports its result. */
     uart_puts("Test 8: Memory + calls... ");
     result = test_memory_with_calls();
     uart_printf("result=0x%08x (no expected check)\n", result);

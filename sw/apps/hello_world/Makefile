@@ -15,5 +15,7 @@
 # Hello world: prints a greeting to the UART console once a second and reports
 # the cycle-counter delta between iterations.
 SRC_C   := ../../lib/src/uart.c hello_world.c
+# The bitstream boots this program, so the build also writes the split
+# instruction-BRAM init files that Vivado reads.
 GENERATE_IMEM_INIT := 1
 include ../../common/common.mk

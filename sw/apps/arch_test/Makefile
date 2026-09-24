@@ -23,9 +23,9 @@ TEST_SRC ?=
 
 # ARCH matches the -march value in common.mk RISCV_FLAGS (see arch.mk).
 include ../../common/arch.mk
-# Compressed code is carried except for the tests in NO_COMPRESS_TESTS
-# below. XLEN_DEFINE feeds the framework's arch_test.h/model_test.h
-# register-width macros and must track the march.
+# ARCH includes C except for the tests in NO_COMPRESS_TESTS below.
+# XLEN_DEFINE feeds the framework's arch_test.h/model_test.h register-width
+# macros and must track the march.
 ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 XLEN_DEFINE = -DXLEN=64
 # lp64 needs PC-relative addressing for the DDR-resident test body: medlow's
@@ -35,15 +35,14 @@ XLEN_DEFINE = -DXLEN=64
 CMODEL      = -mcmodel=medany
 ABI  = $(FROST_INT_ABI)
 
-# Misaligned load/store trap tests whose test op must not compress. The
-# vendored arch_test.h trap handler resumes at (mepc & ~3) + 8, so it needs
-# at least 8 bytes from the trapping op's start to the next case: a 4B op
-# plus two 2B c.nops. A compressed c.sd/c.ld/c.sw/c.lw shrinks that to 6B,
-# the resume lands mid-instruction, and the garbage-decode path that follows
-# traps on absolute addresses. The signature then depends on the link map,
-# which differs between the Spike reference link and ours. This list mirrors
-# NO_COMPRESS_TESTS in generate_references.py so the DUT binary and the Spike
-# reference stay flag-identical per test.
+# Misaligned load/store trap tests whose test op must not be compressed. The
+# framework trap handler (arch_test.h) resumes at (mepc & ~3) + 8, which
+# assumes a 4-byte op and two c.nops before the next case. A compressed
+# c.sd/c.ld/c.sw/c.lw leaves only 6 bytes, so the resume lands mid-instruction
+# and the misdecoded code that follows traps on absolute addresses. The
+# signature then depends on the link map, which differs between the Spike
+# reference build and this one. Keep this list equal to NO_COMPRESS_TESTS in
+# generate_references.py so both builds agree on compression for every test.
 NO_COMPRESS_TESTS = misalign-ld-01 misalign-lw-01 misalign-sw-01 misalign-sd-01
 TEST_NAME = $(basename $(notdir $(TEST_SRC)))
 ifneq ($(filter $(TEST_NAME),$(NO_COMPRESS_TESTS)),)
@@ -60,7 +59,8 @@ OBJDUMP = $(RISCV_PREFIX)objdump
 INCLUDES = -I. -Iriscv-arch-test/riscv-test-suite/env
 
 # Which memory tiers a test exercises, so a failure is attributable to one
-# path. tests/test_arch_compliance.py passes this via --mem-config.
+# path. tests/test_arch_compliance.py sets it from its --mem-config option
+# (FROST_ARCH_MEM_CONFIG under pytest).
 #   ddr    (default): code + data + signature in the cached DDR region, so
 #                     both the L1I fetch path and the D-side cached-tier
 #                     load/store path are exercised.
@@ -102,11 +102,10 @@ DISASSEMBLY_FILE     = sw.S
 all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
 
 # Compile defines the test declares in its RVTEST_CASE strings (riscof's
-# `def NAME=True` clauses): TEST_CASE_1 gates the body; tests that need
+# `def NAME=True` clauses): TEST_CASE_1 gates the body, and tests that need
 # the framework trap handler add rvtest_mtrap_routine. Tests without the
-# handler leave mtvec at 0 and Frost completes their misaligned accesses
-# (FLEN=64 signature fsd's) in hardware. Lazily expanded so clean works
-# without TEST_SRC.
+# handler leave mtvec at 0, so FROST does not check their accesses for
+# alignment. Lazily expanded so clean works without TEST_SRC.
 TEST_DEFINES = $(shell grep -ohE 'def +[A-Za-z_0-9]+ *= *True' $(TEST_SRC) \
 	| sed -E 's/def +([A-Za-z_0-9]+) *= *True/-D\1=True/' | sort -u)
 
@@ -127,13 +126,15 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 
 
 # Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
-# hw/rtl/README.md "Data-tier bus contract"). Every loader keeps the 32-bit-word formats.
+# hw/rtl/README.md "Data-tier bus contract"). Every other image stays in
+# 32-bit words.
 $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
-# DDR image, region-relative addresses (the behavioral DDR / JTAG loader
-# rebase it at 0x8000_0000). With no DDR sections (bram config) emit an empty
-# image so the harness symlink and the probed $readmemh both still work.
+# DDR image with region-relative addresses (file offset 0 is the cached
+# region base, 0x8000_0000), which the behavioral DDR model loads directly.
+# With no DDR sections (bram config) emit an empty image so the harness
+# symlink and the probed $readmemh both still work.
 $(DDR_VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 ifeq ($(strip $(DDR_SECTIONS)),)
 	: > $@

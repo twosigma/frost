@@ -12,9 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Assembly landmarks for the debug-module benches (Phase 3 M3). The benches
-# look up every label below in the ELF symbol table, so the exact instruction
-# layout matters:
+# Assembly landmarks for the debug-module benches. The benches look up every
+# label below in the ELF symbol table, so the exact instruction layout matters:
 #
 #   bp_target       32-bit addi (software breakpoint site; step +4)
 #   bp_target_rvc   c.nop (16-bit software breakpoint site; step +2)

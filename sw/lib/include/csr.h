@@ -24,9 +24,9 @@
  *
  * Zicntr extension (single 64-bit CSRs; the user views are read-only):
  *   - cycle: Clock cycle counter
- *   - time: Machine timer (mtime). Unlike cycle, software can write it
- *     through the timer MMIO/CLINT, and simulation scales it by
- *     SIM_TIMER_SPEEDUP.
+ *   - time: Machine timer (mtime). Software can rewrite it through the timer
+ *     MMIO registers or the CLINT alias, and simulation advances it by
+ *     SIM_TIMER_SPEEDUP per cycle.
  *   - instret: Instructions retired counter
  *   - mcycle/minstret: the M-mode aliases, writable from M-mode (the SBI
  *     PMU programs counter start values through them)
@@ -74,7 +74,7 @@
 #define CSR_MEPC 0x341       /* Machine exception program counter */
 #define CSR_MCAUSE 0x342     /* Machine trap cause */
 #define CSR_MTVAL 0x343      /* Machine trap value */
-#define CSR_MIP 0x344        /* Machine interrupt pending (read-only) */
+#define CSR_MIP 0x344        /* Machine interrupt pending (MEIP/MTIP/MSIP read-only) */
 #define CSR_MVENDORID 0xF11  /* Vendor ID (read-only) */
 #define CSR_MARCHID 0xF12    /* Architecture ID (read-only) */
 #define CSR_MIMPID 0xF13     /* Implementation ID (read-only) */
@@ -94,8 +94,8 @@
 /* ========================================================================== */
 #define MSTATUS_MIE (1U << 3)  /* Machine Interrupt Enable */
 #define MSTATUS_MPIE (1U << 7) /* Machine Previous Interrupt Enable */
-#define MSTATUS_MPP (3U << 11) /* Machine Previous Privilege (2 bits, WARL {M,U}) */
-#define MSTATUS_FS (3U << 13)  /* FP context status (D15): Off/Initial/Clean/Dirty */
+#define MSTATUS_MPP (3U << 11) /* Machine Previous Privilege (2 bits, WARL {M,S,U}) */
+#define MSTATUS_FS (3U << 13)  /* FP context status: Off/Initial/Clean/Dirty */
 #define MSTATUS_FS_OFF (0U << 13)
 #define MSTATUS_FS_INITIAL (1U << 13)
 #define MSTATUS_FS_CLEAN (2U << 13)
@@ -120,7 +120,7 @@
 /* Top bit set = interrupt, clear = exception (bit XLEN-1 = 63) */
 #define MCAUSE_INTERRUPT_BIT (1UL << (__riscv_xlen - 1))
 
-/* Exception codes (mcause[30:0] when interrupt bit is 0) */
+/* Exception codes (mcause[62:0] when interrupt bit is 0) */
 #define EXC_INSN_MISALIGN 0  /* Instruction address misaligned */
 #define EXC_INSN_ACCESS 1    /* Instruction access fault */
 #define EXC_ILLEGAL_INSN 2   /* Illegal instruction */
@@ -133,7 +133,7 @@
 #define EXC_ECALL_S 9        /* Environment call from S-mode */
 #define EXC_ECALL_M 11       /* Environment call from M-mode */
 
-/* Interrupt codes (mcause[30:0] when interrupt bit is 1) */
+/* Interrupt codes (mcause[62:0] when interrupt bit is 1) */
 #define INT_MSI 3  /* Machine software interrupt */
 #define INT_MTI 7  /* Machine timer interrupt */
 #define INT_MEI 11 /* Machine external interrupt */
@@ -223,7 +223,6 @@
 /**
  * rdcycle - Read low 32 bits of cycle counter
  *
- * Returns the number of clock cycles executed since reset (low 32 bits).
  * Wraps approximately every 13.3 seconds at 322.265625 MHz.
  */
 static inline __attribute__((always_inline)) uint32_t rdcycle(void)
@@ -244,7 +243,7 @@ static inline __attribute__((always_inline)) uint64_t rdcycle64(void)
 /**
  * rdtime - Read low 32 bits of time counter
  *
- * On Frost, time reads the machine timer (mtime), not the cycle counter:
+ * On FROST, time reads the machine timer (mtime), not the cycle counter:
  * software can write it via the timer MMIO/CLINT, and simulation scales its
  * increment by SIM_TIMER_SPEEDUP. Use rdcycle() for cycle-accurate measurement.
  */
@@ -263,9 +262,6 @@ static inline __attribute__((always_inline)) uint64_t rdtime64(void)
 
 /**
  * rdinstret - Read low 32 bits of instructions retired counter
- *
- * Returns the number of instructions that have completed execution
- * since reset (low 32 bits).
  */
 static inline __attribute__((always_inline)) uint32_t rdinstret(void)
 {

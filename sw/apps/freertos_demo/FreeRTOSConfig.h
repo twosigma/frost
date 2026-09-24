@@ -16,8 +16,8 @@
 
 /*
  * FreeRTOS configuration for the FROST demo: a minimal kernel build for a
- * single RV64GCB hart (mhartid = 0) with M and U privilege modes, a
- * CLINT-style mtime/mtimecmp timer, and the software build's CPU clock.
+ * single RV64GCB hart (mhartid = 0) that runs every task in M-mode, with the
+ * tick from the native mtime/mtimecmp timer and the software build's CPU clock.
  */
 
 #ifndef FREERTOS_CONFIG_H
@@ -37,12 +37,12 @@
 
 /* CPU and tick rate */
 #define configCPU_CLOCK_HZ (FPGA_CPU_CLK_FREQ)
-#define configTICK_RATE_HZ (1000) /* 1ms tick */
+#define configTICK_RATE_HZ (1000) /* Nominal; port_frost.c stretches each tick to 100 ms */
 
 /* Memory allocation */
 #define configMINIMAL_STACK_SIZE (256) /* Idle task stack (words) */
-/* Task stacks are sized in StackType_t words, so their byte footprint
- * doubles at rv64; the heap scales to keep the same word budgets. */
+/* Stack depths count StackType_t words, 8 bytes each. Every task stack and
+ * kernel object is allocated from this heap. */
 #define configTOTAL_HEAP_SIZE (16 * 1024)
 #define configMAX_TASK_NAME_LEN (16)
 #define configUSE_16_BIT_TICKS 0
@@ -78,7 +78,8 @@
 #define configUSE_CO_ROUTINES 0
 
 /* RISC-V specific configuration */
-/* CLINT timer addresses for FROST */
+/* Native timer addresses. Only the upstream RISC-V port uses these; port_frost.c reaches the
+ * same registers through mmio.h. */
 #define configMTIME_BASE_ADDRESS (0x40000010UL)    /* mtime register */
 #define configMTIMECMP_BASE_ADDRESS (0x40000018UL) /* mtimecmp register */
 

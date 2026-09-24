@@ -21,7 +21,7 @@
 #include <stdint.h>
 
 #ifndef FPGA_CPU_CLK_FREQ
-#define FPGA_CPU_CLK_FREQ 100000000 /* Default 100MHz, override in makefile */
+#define FPGA_CPU_CLK_FREQ 100000000 /* 100 MHz fallback; common.mk passes -DFPGA_CPU_CLK_FREQ */
 #endif
 
 /**

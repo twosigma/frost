@@ -20,12 +20,13 @@
  * The engine is a DMA master on the cache hierarchy's coherent DMA port,
  * driven from a 256-byte window of 32-bit registers at DMA_ENGINE_BASE. A
  * transfer moves [SRC, SRC+LEN) to [DST, DST+LEN) (SRC and DST must share
- * their offset within a 32-byte line) or fills [DST, DST+LEN) with
- * PATTERN + i per dword, optionally writes STATUS_VALUE to STATUS_ADDR after
- * every data write has completed, and optionally interrupts (PLIC source 3)
- * after the status write has completed (or after an ABORT has drained, with
- * ERROR set). START snapshots the registers, so they may be reprogrammed
- * while BUSY for the next transfer. Addresses must lie in cached DDR.
+ * their offset within a 32-byte line) or fills [DST, DST+LEN), writing
+ * PATTERN + i to its i-th 32-bit word (the word holding DST is word 0). It
+ * optionally writes STATUS_VALUE to STATUS_ADDR after every data write has
+ * completed, and optionally interrupts (PLIC source 3) once the transfer and
+ * any status write have completed (or after an ABORT has drained, with ERROR
+ * set). START snapshots the registers, so they may be reprogrammed while BUSY
+ * for the next transfer. Addresses must lie in cached DDR.
  */
 #ifndef DMA_ENGINE_H
 #define DMA_ENGINE_H

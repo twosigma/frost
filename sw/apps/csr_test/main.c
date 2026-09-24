@@ -17,8 +17,8 @@
 /*
  * Directed CSR test.
  *
- * Tests 1-3: writes mstatus with MIE=1 and checks that execution continues
- * past the write.
+ * Tests 1-3: write mstatus with MIE=0 and then MIE=1, check that execution
+ * continues past each write, and print mip.
  *
  * Tests 4-7: the M-mode counter controls that OpenSBI's SBI PMU
  * and Sstc setup depend on. mcountinhibit exists and is WARL over {CY, IR};
@@ -27,9 +27,9 @@
  * and M-mode reads of the writable aliases cost no ticks (the commit stage
  * raises the CSR write enable for pure reads too).
  *
- * The UART helpers are inline here rather than taken from lib/uart.c, so that a
- * fault in the library cannot mask or cause a failure on the CSR path under
- * test.
+ * The UART helpers are inline here rather than taken from lib/src/uart.c, so
+ * that a fault in the library cannot mask or cause a failure on the CSR path
+ * under test.
  */
 
 #include <stdint.h>
@@ -68,7 +68,7 @@ static inline void uart_hex64(uint64_t val)
 
 static int g_failed;
 
-/* Report one named check; a failure is remembered for the final verdict. */
+/* Report one named check; any failure makes the run end with <<FAIL>>. */
 static void check(const char *name, int ok)
 {
     uart_puts(ok ? "  ok   " : "  FAIL ");
@@ -280,7 +280,7 @@ int main(void)
     uart_hex(val);
     uart_puts("\r\n");
 
-    /* Test 2: write mstatus with MIE=1, the case this test was written for. */
+    /* Test 2: write mstatus with MIE=1. */
     uart_puts("\r\nTest 2: csrw mstatus with MIE=1\r\n");
     uart_putc('C');
     uart_puts(" - About to set MIE=1...\r\n");

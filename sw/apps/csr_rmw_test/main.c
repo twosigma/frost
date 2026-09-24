@@ -17,17 +17,12 @@
 /*
  * Directed CSR read-modify-write test.
  *
- * No-MMU M-mode Linux panics on the first machine-timer interrupt with
- * epc==ra==garbage, a `ret` through a clobbered return address. The kernel's
- * trap entry swaps the thread pointer with `csrrw tp, mscratch, tp`. The paths
- * that pass (umode_test, FreeRTOS) only ever use separate csrr/csrw, so FROST's
- * CSR read-modify-write instructions are an untested differentiator.
- *
- * This checks that csrrw/csrrs/csrrc return the old CSR value into rd and write
- * the new value. It covers the same-register swap idiom the kernel depends on
- * (`csrrw t0, mscratch, t0`) and the new-value semantics of the write-only
- * mperfctl profiling control. Each check reports over UART, and the run ends
- * with <<PASS>> or <<FAIL>>.
+ * Checks that csrrw/csrrs/csrrc return the old CSR value in rd and write the
+ * new value, including the same-register swap at trap entry in OpenSBI and
+ * M-mode Linux (`csrrw tp, mscratch, tp`), and that the write-only mperfctl
+ * profiling control follows the same new-value semantics. The mperfctl check
+ * needs a core built with the profiling counters (PERF_COUNTERS=1). Each
+ * check reports over UART, and the run ends with <<PASS>> or <<FAIL>>.
  */
 
 #include <stdint.h>
@@ -105,8 +100,9 @@ int main(void)
     cur = rd_scratch();
     check("csrrw x0-dest still writes", cur, 0x9ABCDEF0u);
 
-    /* The kernel pattern: `csrrw t0, mscratch, t0` names one register as both
-     * rd and rs1, an atomic swap. After it, t0 <- old(CSR), CSR <- old(t0). */
+    /* The trap-entry pattern, with t0 for tp: `csrrw t0, mscratch, t0` names
+     * one register as both rd and rs1, an atomic swap. After it,
+     * t0 <- old(CSR), CSR <- old(t0). */
     wr_scratch(0xCAFEBABEu);
     __asm__ volatile("li t0, 0xDEADBEEF\n\tcsrrw t0, mscratch, t0\n\tmv %0, t0"
                      : "=r"(swapped)

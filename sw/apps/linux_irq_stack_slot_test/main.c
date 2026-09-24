@@ -15,9 +15,9 @@
  */
 
 /*
- * Reproduces the Linux timer-IRQ failure where _find_next_zero_bit() returned
- * through ra=0x00000cc0. It poisons the future callee save slot with 0xcc0 and
- * enters a callee with this prologue:
+ * A timer interrupt taken inside a callee must not make the callee reload a
+ * stale return address from its frame. The test poisons the future callee save
+ * slot with 0xcc0 and enters a callee with this prologue:
  *
  *     addi sp, sp, -16
  *     sd   s0, 0(sp)

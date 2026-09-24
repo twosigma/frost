@@ -2,16 +2,19 @@
  *
  * Memory model shared by hardware and simulation (the cache hierarchy is opaque):
  *   [0x00000000, 0x00040000)  256KiB uncached, JTAG-loadable low BRAM
- *       Data accesses and fetch windows wholly below 64KiB are 1-cycle;
- *       later fetch windows repeat once for registered predecode metadata.
+ *       Data accesses take 1 cycle. Fetch windows wholly below 64KiB also
+ *       take 1 cycle; later fetch windows repeat once for registered
+ *       predecode metadata.
  *       ROM  95KiB: .text + small .rodata (+ .data/.sdata load image)
  *       DEBUG 1KiB @0x17C00: the debug module's execution slice (park loop,
  *           abstract-command and program-buffer words); reserved in every
- *           linker script, never allocated, written only by the DM
+ *           linker script that uses low BRAM, never allocated, written only
+ *           by the DM
  *       RAM 160KiB: .data/.sdata/.sbss/.bss + stack (top at 0x40000)
- *   [0x40000000, +0x1C000)    MMIO: native UART/FIFO/timer/MSIP regs in the
- *       first 44B (named below), plus the ns16550 UART alias at +0x1000 and
- *       the SiFive CLINT alias at +0x10000..+0x1BFFC
+ *   [0x40000000, 0x40031000)  MMIO: native UART/FIFO/timer/MSIP regs in the
+ *       first 44B (named below), the ns16550 UART alias at +0x1000, the
+ *       SiFive CLINT alias at +0x10000..+0x1BFFC, the DMA test engine at
+ *       +0x20000, and the 4KiB NIC window at +0x30000
  *   [0x80000000, +1GiB)       cached region, DDR-backed, loadable
  *       .ddr_text:             code fetched through the L1I (opt-in)
  *       .ddr_rodata/.ddr_data: large loaded sections (e.g. radix2 FFT tables)
@@ -22,25 +25,25 @@
  *   - 256KiB low region must match MEM_SIZE_BYTES (hw/rtl/frost.sv) and the
  *     axi_bram_ctrl MEM_DEPTH in fpga/build/build_step.tcl (65536 words).
  *   - The DEBUG slice must match riscv_pkg::DebugSliceBase/DebugSliceBytes;
- *     every other linker script under sw/ reserves the same region.
+ *     every other linker script under sw/ that uses low BRAM reserves the
+ *     same region.
  *   - 0x80000000 must match CACHED_BASE (hw/rtl/frost.sv / the data-mem
  *     request router).
- *   - MMIO addresses must match cpu_and_mem.sv MmioAddr constants.
+ *   - MMIO addresses must match the cpu_and_mem.sv MmioAddr constants and
+ *     the other copies listed in hw/rtl/README.md, "Memory Map".
  *
  * Image emission (two files; loader/sim write the regions separately):
  *   sw.mem      = objcopy -O verilog -R '.ddr_*' ...        (low BRAM image)
  *   sw_ddr.mem  = objcopy -O verilog -j .ddr_text -j .ddr_rodata -j .ddr_data
  *                   --change-addresses -0x80000000 ...      (DDR image, region-relative)
  *
- * Stack: lives in low BRAM for every program (fast, uncached). The 112KiB
- * reserve below, __stack_reserve, is sized from the measured CoreMark-PRO
- * parser high-water; the ASSERT at the bottom keeps any program's data+bss
- * out of it.
+ * Stack: lives in low BRAM for every program (fast, uncached). The ASSERT at
+ * the bottom keeps any program's data+bss out of the 112KiB __stack_reserve.
  *
  * .ddr_data caveat: it loads in place at its runtime address (LMA == VMA), so
- * unlike low .data, crt0 does not re-initialize it on a reset without a
- * reload. The JTAG/sim flow always reloads, so this matters only if a future
- * flow restarts the CPU without rewriting memory.
+ * unlike low .data, crt0 does not re-initialize it after a reset. The
+ * simulation harness reruns BRAM-tier programs after a reset without
+ * reloading memory, so .ddr_data may still hold writes from the first run.
  */
 
 ENTRY(_start)
@@ -59,8 +62,9 @@ MEMORY
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 
-/* Measured CoreMark-PRO stack high-water is 112KiB (parser); reserve it for
- * every program so the data+bss fit check below is a real guarantee. */
+/* 112KiB is the measured stack high-water mark of the CoreMark-PRO parser
+ * workload. The RAM fit check below keeps that much stack free in every
+ * program. */
 __stack_reserve = 112K;
 
 /* FreeRTOS ISR stack top - reuses main's stack after scheduler starts */
@@ -108,10 +112,10 @@ SECTIONS
     } > RAM
 
     /*
-     * Post-timing cache-profile support follows the legacy .data/.sdata load
-     * image. Keeping it out of the ordinary .text/.rodata sections preserves
-     * the addresses and initial cache state of measured programs when the
-     * optional report is linked in.
+     * The cache-profile report runs only after the measured region. Its code
+     * and data follow the .data/.sdata load image, outside the ordinary
+     * .text/.rodata sections, so linking the optional report in leaves the
+     * measured program's addresses and initial cache state unchanged.
      */
     .cache_profile_text LOADADDR(.sdata) + SIZEOF(.sdata) : {
         *(.cache_profile_text*)
@@ -205,8 +209,9 @@ SECTIONS
      * GLOBAL SYMBOLS
      * ================================================================ */
 
-    /* Global pointer for gp-relative small-data access. It must land within
-     * ±2048 bytes (±0x800) of every .sdata/.sbss object. */
+    /* Global pointer for gp-relative small-data access. gp-relative offsets
+     * reach ±2048 bytes (±0x800), so this gp covers the first 4KiB of
+     * .sdata/.sbss. */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
     /* Memory-mapped I/O peripheral addresses. These must match the hardware

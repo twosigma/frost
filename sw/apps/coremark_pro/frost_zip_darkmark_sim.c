@@ -35,6 +35,7 @@ void *define_params_zip(unsigned int idx, char *name, char *dataset)
     (void) idx;
     (void) dataset;
 
+    /* Upstream ignores the dataset string while pgo_training_run is set. */
     pgo_training_run = 0;
     params = (zip_params *) frost_zip_define_params_upstream(0, name, "-n=100-t=2-s40-g1");
     pgo_training_run = saved_pgo_training_run;

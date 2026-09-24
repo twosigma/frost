@@ -35,7 +35,8 @@
 #define portTICK_PERIOD_MS ((TickType_t) 1000 / configTICK_RATE_HZ)
 #define portBYTE_ALIGNMENT 16
 /* Stack cells hold registers, so the base/stack/pointer types follow the
- * register width. TickType_t stays 32-bit (32-bit access is atomic). */
+ * register width. TickType_t is 32-bit, and a 32-bit access is atomic
+ * (portTICK_TYPE_IS_ATOMIC). */
 #define portPOINTER_SIZE_TYPE uint64_t
 
 /*-----------------------------------------------------------

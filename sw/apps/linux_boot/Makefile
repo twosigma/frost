@@ -25,10 +25,11 @@
 # Three stages, split so that re-loading for a different board is cheap:
 #
 #   Stage 1a (board-independent): Buildroot downloads its cross toolchain and
-#     builds OpenSBI and the rootfs.cpio userspace -- no kernel, which is
-#     Debian's. A few minutes the first time, mostly the download; cached in
-#     the build dir afterwards. Only runs when that initramfs or the firmware
-#     is absent, so it does not re-run on every load.
+#     builds OpenSBI and the rootfs.cpio userspace, but no kernel (the kernel
+#     is Debian's). A few minutes the first time, mostly the download; cached
+#     in the build dir afterwards. Runs only when that initramfs or the
+#     firmware is missing or older than the userspace sources its rule names,
+#     so it does not re-run on every load.
 #
 #   Stage 1b (board-independent): linux/debian_kernel.py fetches Debian's
 #     pinned kernel and builds the NIC driver as a module for it, then appends
@@ -42,11 +43,10 @@
 #     FROST_LINUX_NFSROOT, an image that boots from an NFS root; see below).
 #     `load_software.py <board> linux_boot` sets both per board and `make
 #     clean`s first, so the DDR image is always repacked for the target board
-#     without a kernel rebuild.
+#     while the Buildroot build and the Debian kernel cache are reused.
 #
-# sw_ddr.mem depends on the kernel Image, the initramfs and the packer, so a
-# newer one forces a repack. It once had no prerequisites at all and never
-# regenerated when the underlying image changed.
+# sw_ddr.mem depends on the kernel Image, the initramfs, the firmware and the
+# packer, so a newer one forces a repack.
 
 # Repo-root-relative paths (this Makefile lives in sw/apps/linux_boot).
 FROST_ROOT   := $(abspath $(CURDIR)/../../..)
@@ -96,18 +96,20 @@ FPGA_CPU_CLK_FREQ ?= 322265625
 # configuring the interface from FROST_LINUX_IP, an ip= parameter in the
 # kernel's syntax (dhcp when unset; an error without FROST_LINUX_NFSROOT).
 # Without FROST_LINUX_INITRD it packs no initramfs and the kernel mounts the
-# export -- which the packed kernel must be able to do, so this combination
-# needs a kernel with CONFIG_IP_PNP and CONFIG_ROOT_NFS, not Debian's; with it,
-# that initramfs mounts the export through initramfs-tools' NFS boot
-# (boot=nfs), which is how Debian's kernel boots its own root.
+# export itself, which needs a kernel with CONFIG_IP_PNP and CONFIG_ROOT_NFS,
+# not Debian's. With it, that initramfs mounts the export through
+# initramfs-tools' NFS boot (boot=nfs), which is how Debian's kernel boots its
+# own root.
 # FROST_LINUX_MAC=aa:bb:cc:dd:ee:ff replaces the NIC's default
 # local-mac-address in every case; each board on a shared network needs its
 # own. load_software.py passes these through from the environment, like
 # FROST_LINUX_PREBUILT.
 PAYLOAD := $(or $(FROST_LINUX_KERNEL),$(DEBIAN_IMAGE))
 # What to pack as the initramfs, empty for an NFS root that the kernel mounts
-# itself. Naming it once keeps it out of the prerequisites when an override
-# supplies it: neither the Debian fetch nor the module build then runs.
+# itself. Naming it once keeps the composed initramfs out of the prerequisites
+# when an override supplies one or an NFS root needs none, so the module rule
+# below does not run; with FROST_LINUX_KERNEL set too, neither does the fetch
+# rule. Buildroot's post-image hook still does both whenever Stage 1a runs.
 ifdef FROST_LINUX_NFSROOT
 PACK_INITRD := $(FROST_LINUX_INITRD)
 PACK_ARGS := --nfsroot "$(FROST_LINUX_NFSROOT)" \
@@ -168,8 +170,8 @@ distclean: clean
 
 else  # --- Normal self-build mode ---------------------------------------------
 
-# sw_ddr.mem's recipe emits all four images at once, so it is the canonical
-# goal; sw64.mem is derived from the packed sw.mem afterwards.
+# The pack recipe writes all four images at once, so `all` names only
+# sw_ddr.mem of the four; sw64.mem is derived from the packed sw.mem afterwards.
 all: sw_ddr.mem sw64.mem
 
 # Dword-paired copy of the boot shim image for the 64-bit data BRAM's
@@ -177,19 +179,18 @@ all: sw_ddr.mem sw64.mem
 sw64.mem: sw.mem ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
-# Stage 1a: the test initramfs + OpenSBI via Buildroot. Skipped when already
-# built and no newer than the userspace it packs. Grouped target (&:): one
-# Buildroot invocation produces both files. A plain multi-target rule would run
-# the recipe once per missing file, and under -j it could run two Buildroot
-# makes concurrently in the same O= dir.
+# Stage 1a: the test initramfs + OpenSBI via Buildroot. Runs when either file
+# is missing or older than a frost-stress source or the overlay inittab.
+# Grouped target (&:): one Buildroot invocation produces both files. A plain
+# multi-target rule would run the recipe once per missing file, and under -j it
+# could run two Buildroot makes concurrently in the same O= dir.
 #
-# The prerequisites matter for more than freshness. Buildroot does not notice an
-# edited package source by itself, so an existing archive would keep the old
-# programs -- and the hardware regression's Linux stage types one of them
-# (frost_stress --counters), so a stale archive turns a healthy boot into a
-# stage timeout. Naming the sources here rebuilds just that package; the
-# packer's own check on the archive (debian_kernel.py, check_base_initramfs) is
-# the backstop for an archive whose timestamps lie.
+# Buildroot does not notice an edited package source by itself, so without
+# these prerequisites an existing archive would keep the old programs, and the
+# boot soak (fpga/linux_boot_soak.py), which boots this image, would run them.
+# Naming the sources here rebuilds just that package. debian_kernel.py's
+# check_base_initramfs, which refuses a frost_stress without the counter token,
+# is the backstop for an archive whose timestamps lie.
 #
 # BR2_EXTERNAL goes on every Buildroot invocation, not just the defconfig.
 # Buildroot would reuse the value the defconfig saved, but naming it keeps each
@@ -202,13 +203,13 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 # directory configured elsewhere (a container build reached from a native
 # loader, or the reverse) is reported rather than reconfigured.
 #
-# A directory configured before this tree stopped building a kernel is reported
-# too. Its .config still selects BR2_LINUX_KERNEL and points BR2_GLOBAL_PATCH_DIR
-# at board/frost/patches, which no longer exists, so Buildroot stops with
-# "BR2_GLOBAL_PATCH_DIR contains nonexistent directory" before any target runs.
-# Re-running the defconfig over it would clear those symbols but leave perf and
-# elfutils installed in target/ -- Buildroot does not uninstall a deselected
-# package -- so the fix is to start over, and the message says so.
+# A directory configured by a tree that built its own kernel is reported too.
+# Its .config selects BR2_LINUX_KERNEL and points BR2_GLOBAL_PATCH_DIR at
+# board/frost/patches, which does not exist in this tree, so Buildroot stops
+# with "BR2_GLOBAL_PATCH_DIR contains nonexistent directory" before any target
+# runs. Re-running the defconfig over it would clear those symbols but leave
+# perf and elfutils installed in target/ (Buildroot does not uninstall a
+# deselected package), so the fix is to start over, and the message says so.
 FROST_STRESS_SRC := $(wildcard $(BR2_EXTERNAL)/package/frost-stress/src/*.c)
 BR2_OVERLAY := $(wildcard $(BOARD_DIR)/rootfs-overlay-mmu/etc/inittab)
 BR2_RECORDED = $(patsubst "%",%,$(shell sed -n \

@@ -24,9 +24,9 @@
 
 /* Context size: 28 GPRs + mepc + mstatus + uxCriticalNesting = 31 XLEN-wide
  * slots, rounded up to 16-byte alignment (248->256 bytes).
- * STORE/LOAD/XB select the register-width access; pointer-holding
- * globals (pxCurrentTCB->pxTopOfStack, uxCriticalNesting = UBaseType_t) are
- * XLEN-wide too and use the same macros. */
+ * STORE/LOAD/XB select the register-width access. pxCurrentTCB->pxTopOfStack
+ * and uxCriticalNesting (a UBaseType_t) are XLEN-wide too and use the same
+ * macros. */
 #define STORE sd
 #define LOAD ld
 #define XB 8
@@ -36,7 +36,7 @@
 /*-----------------------------------------------------------*/
 /* freertos_risc_v_trap_handler
  *
- * Trap entry (mtvec) for exceptions and interrupts. Saves the full context on
+ * Trap entry (mtvec) for exceptions and interrupts. Saves the integer context on
  * the interrupted task's stack, dispatches on mcause, and returns through
  * whichever context pxCurrentTCB selects afterwards.
  */
@@ -45,7 +45,7 @@ freertos_risc_v_trap_handler:
     /* Save context on current stack */
     addi sp, sp, -portCONTEXT_SIZE
 
-    /* Save all registers */
+    /* Save x1 and x5-x31 */
     STORE x1,  0*XB(sp)
     STORE x5,  1*XB(sp)
     STORE x6,  2*XB(sp)
@@ -199,7 +199,7 @@ trap_exit:
     LOAD t0, 28*XB(sp)
     csrw mepc, t0
 
-    /* Restore all registers */
+    /* Restore x1 and x5-x31 */
     LOAD x31, 27*XB(sp)
     LOAD x30, 26*XB(sp)
     LOAD x29, 25*XB(sp)
@@ -258,7 +258,7 @@ xPortStartFirstTask:
     LOAD t0, 28*XB(sp)
     csrw mepc, t0
 
-    /* Restore all registers */
+    /* Restore x1 and x5-x31 */
     LOAD x31, 27*XB(sp)
     LOAD x30, 26*XB(sp)
     LOAD x29, 25*XB(sp)

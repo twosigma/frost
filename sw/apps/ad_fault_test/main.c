@@ -15,10 +15,10 @@
  */
 
 /*
- * A/D-transition fault test (bug-2 triage). FROST's page walker is
- * read-only (plan D7): hardware never sets PTE A or D, so software takes a
- * page fault and sets them itself. The riscv-tests demand pager depends on
- * one sequence that no other directed test covers:
+ * Sv39 A/D transition fault test. FROST's page-table walker is read-only:
+ * hardware never sets PTE A or D, so an access that needs one takes a page
+ * fault and software sets the bit (Svade). The riscv-tests demand pager
+ * (env_v) depends on this sequence:
  *
  *   1. install a PTE with A=1,D=1 and sfence         (page usable by the kernel)
  *   2. kernel touches the page                       (fills the DTLB, D=1)
@@ -26,11 +26,10 @@
  *   4. the next store must take a store page fault so software can set D
  *
  * If step 3's rewrite is not visible to the translation path, step 4's store
- * succeeds against a D=0 page. That happens with a stale DTLB entry, or with
- * a walker refill that reads the pre-rewrite PTE from L2/DDR because the
- * sfence's writeback-all did not publish it. The page then diverges from its
- * backing store with D never set, which is the env_v evict() assertion
- * (`user_llpt[...] & PTE_D`) that rv64ui-v-ld / -lw fail on.
+ * succeeds against a D=0 page, through a stale DTLB entry or a walk that
+ * reads the pre-rewrite PTE from below the L1D. The page then diverges from
+ * its backing store with D never set, which trips env_v's evict() assertion
+ * (`user_llpt[...] & PTE_D`).
  *
  * Cases (all in an MPRV S-window over Sv39, the vm_test mechanism):
  *   A. baseline: store then load through an A=1,D=1 page.
@@ -40,13 +39,13 @@
  *   E. set A (D still 0), sfence, load -> succeeds; store -> must fault 15.
  *   F. env_v's exact shape: A=1,D=1 -> touch -> rewrite to A=0,D=0 with an
  *      address-specific sfence.vma, then store -> must fault 15.
- *   G. after F's fault, software sets D, sfence, store -> succeeds and the
- *      page content matches what was written (the divergence the pager's
+ *   G. after F's fault, software sets A and D, sfence, store -> succeeds and
+ *      the page content matches what was written (the divergence the pager's
  *      memcmp would otherwise see).
  *   H. the demand copy itself: 4 KiB of translated stores into a fresh
- *      frame, then a physical word-by-word compare against the backing.
- *      This is the other way the assert can fire: a store lost in the L1D
- *      write-allocate merge path.
+ *      frame, then a physical word-by-word compare against the backing. A
+ *      store lost in the L1D write-allocate merge path also trips the
+ *      assertion.
  * Self-checks over UART (<<PASS>> / <<FAIL>>).
  */
 
@@ -103,6 +102,9 @@ __attribute__((naked, aligned(4))) static void ad_trap_handler(void)
                      "mret\n");
 }
 
+/* Run one case body, then an ecall. A fault skips the rest of the body,
+ * WIN_END included, because the handler resumes at label 1 past the ecall.
+ * MPRV is therefore cleared again after every case. */
 #define RUN_CASE(body_asm, ...)                                                                    \
     do {                                                                                           \
         g_cause = ~0ul;                                                                            \
@@ -190,8 +192,8 @@ static void build_tables(void)
     l1[2] = PTE_PPN(PT_L0) | PTE_V;
     l0[0] = PTE_PPN(FRAME0) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
     l0[1] = PTE_PPN(FRAME1) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
-    /* Identity 1 GiB leaf at vpn2=2 so the M-mode code/data keep working
-     * inside the MPRV window (VA 0x8000_0000 = PA). */
+    /* Identity 1 GiB leaf at vpn2=2 (VA 0x8000_0000 = PA), so in-window data
+     * accesses to DDR, such as case H's reads of BACKING, reach the same PA. */
     root[2] = PTE_PPN(0x80000000ul) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
 }
 
@@ -284,10 +286,9 @@ int main(void)
     ok &= report("G frame0-matches", val, 0x00c0ffeeul);
 
     /* H: the pager's demand copy itself: 4 KiB of translated stores into a
-     * fresh frame, then a physical compare against the backing. This is the
-     * other way the evict() assert can fire: if the copy drops a store in the
-     * L1D write-allocate merge path, the frame diverges from the backing with
-     * D never set, as observed. */
+     * fresh frame, then a physical compare against the backing. If the copy
+     * drops a store in the L1D write-allocate merge path, the frame diverges
+     * from the backing with D never set, which also trips the evict() assert. */
     {
         volatile unsigned long *backing = (volatile unsigned long *) BACKING;
         volatile unsigned long *frame = (volatile unsigned long *) FRAME2;

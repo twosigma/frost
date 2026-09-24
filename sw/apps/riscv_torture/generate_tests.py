@@ -14,13 +14,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Generate Frost riscv-torture tests and Spike references.
+"""Generate FROST riscv-torture tests and Spike references.
 
 Workflow:
   1. Generate random RV64 IMAFDC .S test files
   2. Compile for Spike, run Spike, save signature as golden reference
   3. Store .S files in tests_rv64/ and references in references_rv64/
-     (the _rv64 suffixes survive from a retired rv32 corpus)
 
 The stream includes W-form ALU/MUL, LD/SD/LWU, and .d atomics. Register seeds
 are 64-bit; x30 holds AMO addresses so other non-address GPRs remain comparable
@@ -52,11 +51,10 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 LINKER_SCRIPT = SCRIPT_DIR / "link_riscv_torture.ld"
 SPIKE_LINKER_SCRIPT = SCRIPT_DIR / "link_spike.ld"
 
-# The _rv64 suffixes survive from a retired rv32 corpus.
 TESTS_DIR = SCRIPT_DIR / "tests_rv64"
 REFERENCES_DIR = SCRIPT_DIR / "references_rv64"
 
-# Frost ISA string for Spike
+# FROST ISA string for Spike
 FROST_ISA = "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
 
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
@@ -212,7 +210,7 @@ def _gen_branch_seq(rng: random.Random, lines: list[str], label_id: int) -> None
     lines.append(f"    {alu_op} {rd}, {r1}, {r2}")
     lines.append(f"    j {done_label}")
     lines.append(f"{taken_label}:")
-    # Taken path: different ALU op
+    # Taken path: another random ALU op
     alu_op2 = rng.choice(ALU_RR_OPS)
     r3, r4 = _rand_gpr(rng), _rand_gpr(rng)
     lines.append(f"    {alu_op2} {rd}, {r3}, {r4}")
@@ -347,7 +345,7 @@ def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
 
 
 def discover_tests() -> list[Path]:
-    """Find all adapted .S test files in the corpus dir."""
+    """Return the corpus's .S test files, sorted by name."""
     if not TESTS_DIR.is_dir():
         return []
     return sorted(TESTS_DIR.glob("*.S"))
@@ -380,8 +378,8 @@ def generate_one_reference(
             "-no-pie",
             "-fno-stack-protector",
             # lp64 needs PC-relative addressing for the 0x8xxx_xxxx Spike
-            # link (medlow's absolute lui cannot form those addresses at
-            # 64-bit).
+            # link (on RV64, medlow's absolute lui cannot form those
+            # addresses).
             "-mcmodel=medany",
             "-nostdlib",
             "-nostartfiles",
@@ -402,7 +400,7 @@ def generate_one_reference(
         spike_cmd = [
             "spike",
             f"--isa={FROST_ISA}",
-            # Map main RAM at 0x80000000 (4MB) and UART sink at 0x40000000 (4KB).
+            # Map main RAM at 0x80000000 (4 MiB) and UART sink at 0x40000000 (4 KiB).
             # Without the UART region, stores to 0x40000000 in frost_footer.S
             # cause access faults and an infinite trap loop.
             "-m0x80000000:0x400000,0x40000000:0x1000",
@@ -437,9 +435,9 @@ def _worker(args: tuple[str, bool]) -> tuple[str, str, str]:
 
 
 def main() -> int:
-    """Generate riscv-torture tests and references for Frost."""
+    """Generate riscv-torture tests and references for FROST."""
     parser = argparse.ArgumentParser(
-        description="Generate riscv-torture tests and references for Frost",
+        description="Generate riscv-torture tests and references for FROST",
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
@@ -474,7 +472,9 @@ def main() -> int:
         help="Number of instruction sequences per test (default: 200)",
     )
     parser.add_argument(
-        "--test", metavar="PATH", help="Generate reference for a single test"
+        "--test",
+        metavar="PATH",
+        help="With --references-only, generate the reference for this test only",
     )
     parser.add_argument("--parallel", type=int, default=8, metavar="N")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -483,7 +483,10 @@ def main() -> int:
 
     # Check prerequisites
     if not shutil.which(f"{RISCV_PREFIX}gcc"):
-        print(f"Error: {RISCV_PREFIX}gcc not found in PATH.")
+        print(
+            f"Error: {RISCV_PREFIX}gcc not found in PATH. Run this script through "
+            "./scripts/frost.py run, or set RISCV_PREFIX."
+        )
         return 1
 
     if args.generate:

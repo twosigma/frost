@@ -15,25 +15,24 @@
  */
 
 /*
- * Sv39 data-translation directed test. Phase 3 M4 (plan D15).
+ * Sv39 data-translation directed test.
  *
- * The fetch side is untranslated until M5, so every translated access runs
- * through an MPRV window: M-mode sets mstatus.MPP to S or U and MPRV=1,
- * performs exactly the accesses under test, and drops MPRV. Code fetch and
- * the checker stay physical throughout. All traps come to M (medeleg=0) and
+ * Every translated access runs through an MPRV window: M-mode sets
+ * mstatus.MPP to S or U and MPRV=1, performs exactly the accesses under test,
+ * and drops MPRV. Code fetch and the checker stay physical throughout
+ * (itlb_test covers fetch translation). All traps come to M (medeleg=0) and
  * are recorded by the pma_fault_test-style bounce handler. The first fault
  * in a case wins; a case that does not fault falls through to an ecall,
  * which records cause 11. A trap inside a window is benign: the trap sets
- * MPP=M, so the handler and the continuation run untranslated even with
- * MPRV still up, and the case epilogue clears MPRV.
+ * MPP=M, so the handler runs untranslated even with MPRV still up. Its MRET
+ * back to M leaves MPRV set with MPP=U, so the continuation must make no data
+ * access before the case epilogue clears MPRV.
  *
- * Page tables live in cached DDR. The walker reads through the shared level,
- * never the L1D, so table stores become visible only through SFENCE.VMA's
- * L1D writeback-all. The test builds every table up front and publishes them
- * with one sfence, which is the software contract. Case K rewrites a PTE
- * mid-test and issues its own sfence. Data seeds need no publishing:
- * translated loads and stores use the same PA-indexed L1D that the M-mode
- * seeds dirtied.
+ * Page tables live in cached DDR. The test builds every table up front and
+ * publishes them with one sfence, which is the software contract. Case K
+ * rewrites a PTE mid-test and issues its own sfence. Data seeds need no
+ * publishing: translated loads and stores use the same PA-indexed L1D that
+ * the M-mode seeds dirtied.
  *
  * Matrix (fault cases check cause and mtval; loads also check the value):
  *   Q. M-mode accesses stay untranslated while satp holds Sv39 (MPRV=0).
@@ -54,24 +53,23 @@
  *      the original access type (page tables must live in cached DDR).
  *   J. Non-canonical VA -> 13 without walking, mtval = the full VA.
  *   K. sfence.vma visibility: PTE rewritten to a new frame, sfence, next
- *      access sees the new frame (the dirty-PTE writeback-all property).
- *   L. satp switch (D10): writing satp to a second pre-built root
- *      retargets the same VA with no explicit sfence.
+ *      access sees the new frame.
+ *   L. satp switch: writing satp to a second pre-built root retargets the
+ *      same VA with no explicit sfence (a satp write flushes the TLBs).
  *   W. Wrong-path loads and stores under translation: a loop that walks a
  *      NULL-terminated pointer list (the kernel's zonelist shape) exits on a
  *      mispredicted branch, so the squashed iteration's loads/stores from
  *      NULL+offset miss the DTLB and start walks that refuse. Neither a
  *      fault nor a stale address may reach the correct-path accesses that
- *      reuse the squashed ROB tags (the M7 Linux boot died here: a memory
- *      op that issued in the flush cycle survived in the translation stage).
+ *      reuse the squashed ROB tags; a squashed memory op that issues in the
+ *      flush cycle must not survive in the translation stage.
  *   M. LR/SC translated: LR+SC round-trip on R/W succeeds (rd=0); a bare
  *      SC to an R-only page -> 15 (SC must translate and fault; the
  *      may-fail-for-any-reason allowance never suppresses exceptions).
  *   N. AMO translated: amoadd round-trip on R/W; AMO to R-only -> 15.
- *   O. Device page: mtime readable through a mapped device-quadrant page.
- *   P. Bare-domain compliance (translation off, M-mode): misaligned SC ->
- *      6 (was silent failure) and misaligned AMO -> 6 (was 4), mtval
- *      exact.
+ *   O. Device page: mtime readable through a page mapped onto MMIO.
+ *   P. Translation off (M-mode): misaligned SC -> 6 and misaligned AMO -> 6,
+ *      mtval exact.
  */
 
 #include <stdint.h>
@@ -336,7 +334,7 @@ int main(void)
         ((volatile unsigned long *) (FRAME(0) + 0x800))[i] =
             0x2000000000000000ul + (unsigned long) i;
 
-    /* Publish the tables to the shared level, then enable Sv39. */
+    /* Publish the tables with an sfence, then enable Sv39. */
     sfence_vma();
     write_satp(SATP_SV39 | (PT_ROOT_A >> 12));
 
@@ -532,23 +530,24 @@ int main(void)
              "sc.w t3, t2, (t1)");
     all_ok &= report3("P1 misaligned-sc", 6, 0x81103002ul, 0, 0);
 
-    /* P2: misaligned AMO (translation off) -> 6 (was 4), mtval exact. */
+    /* P2: misaligned AMO (translation off) -> 6, mtval exact. */
     RUN_CASE("li  t1, 0x81103002\n"
              "amoadd.w t3, t2, (t1)");
     all_ok &= report3("P2 misaligned-amo", 6, 0x81103002ul, 0, 0);
 
     /* W: wrong-path NULL-pointer loads/stores under translation. The list
-     * has n live zonerefs then a NULL; the exit branch is mispredicted taken
-     * on the last iteration after n iterations trained it. The squashed
-     * iteration's loads at 16/32/136(NULL) (store variant: a store at
-     * 16(NULL)) miss the DTLB (VA 0 is unmapped in root A) and start walks
-     * that refuse. The correct path continues with loads (stores) that take
-     * the very ROB tags the squashed accesses held, with their base register
-     * set before the loop so no other instruction sits between the branch
-     * and them; they must complete unfaulted with their own addresses and
-     * data. Several list lengths and repeats vary the issue timing against
-     * the recovery flush. Expected cause: 11 (the trailing ecall). A capped
-     * walk (64 steps) records its cursor in g_val instead of running away. */
+     * has n live zonerefs then a NULL; the loop branch, trained taken by
+     * earlier iterations, is mispredicted at the exit. The squashed
+     * iteration's accesses from NULL (loads at 16/32/136; store variant: a
+     * load at 16 and a store at 32) miss the DTLB (VA 0 is unmapped in root
+     * A) and start walks that refuse. The correct path continues with loads
+     * (stores) that take the very ROB tags the squashed accesses held, with
+     * their base register set before the loop so no other instruction sits
+     * between the branch and them; they must complete unfaulted with their
+     * own addresses and data. Several list lengths and repeats vary the issue
+     * timing against the recovery flush. Expected cause: 11 (the trailing
+     * ecall). A 64-step cap stops a runaway loop and records its cursor in
+     * g_val. */
     for (int n = 1; n <= 6; n++) {
         for (int rep = 0; rep < 3; rep++) {
             volatile unsigned long *zl = (volatile unsigned long *) (FRAME(0) + 0x100);
@@ -604,17 +603,17 @@ int main(void)
             /* Store variant. The squashed iteration's accesses are a load
              * from 16(NULL), which occupies the translation stage with its
              * walk, then a store to 32(NULL), which issues in the recovery
-             * cycle and was the phantom. The correct path's second
-             * instruction after the branch is a store on that same tag: the
-             * cursor to VA_4K(13)+0x108 (a load from +0x100 takes the first
-             * tag), then t1 (0 at exit) to +0x110. The early store ports
-             * would prefill the correct-path store's address from a DTLB hit
-             * two cycles after dispatch, ahead of the squashed store's
-             * refused walk, so the target page is one the loop never touches
-             * and the DTLB is flushed first: the prefill drops, the issue
-             * port translates the store behind the squashed one, and the
-             * squashed store's fault reached the correct-path store on the
-             * unfixed RTL (cause 15, mtval 0x20). */
+             * cycle. The correct path's second instruction after the branch
+             * is a store on that same tag: the cursor to VA_4K(13)+0x108 (a
+             * load from +0x100 takes the first tag), then t1 (0 at exit) to
+             * +0x110. The early store ports would otherwise prefill the
+             * correct-path store's address from a DTLB hit, three cycles
+             * after dispatch and ahead of the squashed store's refused walk,
+             * so the target page is one the loop never touches and the DTLB
+             * is flushed first: the prefill drops, and the issue port
+             * translates the store behind the squashed one. The squashed
+             * store's fault leaking onto the correct-path store shows as
+             * cause 15, mtval 0x20. */
             g_val = 0;
             *(volatile unsigned long *) (FRAME(13) + 0x100) = 0x0D0D0D0D0D0D0D0Dul;
             *(volatile unsigned long *) (FRAME(13) + 0x108) = 0;

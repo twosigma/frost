@@ -33,7 +33,7 @@
  *   9. Independent FADD.D chains (FP ALU parallel)
  *  10. Dependent FMUL.D chain   (FP MUL serialized)
  *  11. Independent FMUL.D chains (FP MUL parallel)
- *  12. Dependent FMADD.D chain  (fused multiply-add, key for numerics)
+ *  12. Dependent FMADD.D chain  (fused multiply-add serialized)
  *  13. Mixed FP + INT           (cross-unit parallelism)
  */
 
@@ -42,6 +42,7 @@
 #include "uart.h"
 #include <stdint.h>
 
+/* 1 prints a brief profiling-counter report after each benchmark. */
 #ifndef TOMASULO_PERF_ENABLE_PROFILE
 #define TOMASULO_PERF_ENABLE_PROFILE 0
 #endif
@@ -165,8 +166,8 @@ int main(void)
 
     /* ===================================================================== */
     /* Benchmark 4: Independent MUL chains (4 x 12 = 48 instructions)        */
-    /* 4 independent MUL chains. If the MUL unit is pipelined or there are   */
-    /* multiple MUL reservation stations, these can overlap.                 */
+    /* 4 independent MUL chains. The multiplier is pipelined, so these can   */
+    /* overlap.                                                              */
     /* ===================================================================== */
     uart_printf("Bench 4: Independent MUL chains (4x12 = 48 instrs)\n");
     BENCH_PROFILE_BEGIN();
@@ -294,7 +295,8 @@ int main(void)
     /* ===================================================================== */
     /* Benchmark 9: Independent FADD.D chains (4 x 25 = 100 instructions)    */
     /* 4 chains with no cross-dependencies, ideal for OOO execution.         */
-    /* FP analogue of Bench 2.                                               */
+    /* FP analogue of Bench 2. fp_add_shim has one operation in flight at    */
+    /* a time, so the chains cannot overlap in the FP adder.                 */
     /* ===================================================================== */
     uart_printf("Bench 9: Independent FADD.D chains (4x25 = 100 instrs)\n");
     {
@@ -367,7 +369,6 @@ int main(void)
     /* ===================================================================== */
     /* Benchmark 12: Dependent FMADD.D chain (50 instructions)               */
     /* Fused multiply-add: accum = accum * 1.0 + 0.5, serialized.            */
-    /* Key for numerical workloads such as BLAS and FFT.                     */
     /* ===================================================================== */
     uart_printf("Bench 12: Dependent FMADD.D chain (50 instrs)\n");
     {

@@ -30,7 +30,7 @@
 /* UART Transmit Functions                                                   */
 /* ========================================================================= */
 
-/* Transmit a single character over UART */
+/* Transmit a single character over UART; '\n' is sent as CR+LF */
 void uart_putchar(char c);
 
 /* Check whether the UART transmitter can accept a byte */
@@ -46,7 +46,8 @@ void uart_puts(const char *s);
  *   %d, %ld, %lld - signed decimal
  *   %u, %lu, %llu - unsigned decimal
  *   %x, %lx, %llx / uppercase variants - hexadecimal
- *   %f - floating point (default precision 6, precision capped at 9) when enabled;
+ *   %f - floating point (default precision 6, precision capped at 9) when uart.c
+ *        is built with UART_PRINTF_ENABLE_FLOAT=1, otherwise printed as "%f";
  *        finite magnitudes >= 2^64 are reported as "ovf" / "-ovf"
  *   %% - literal percent sign
  * Integer, string, and character conversions support right-aligned field
@@ -74,9 +75,9 @@ int uart_getchar_nonblocking(void);
 /* Read a line from UART into buffer (blocking)
  * Reads characters until newline ('\n' or '\r') or buffer is full.
  * The newline character is not included in the buffer.
- * Buffer is always null-terminated.
+ * Buffer is null-terminated unless maxlen is 0.
  * Echoes characters back to UART as they are typed.
- * Supports backspace for editing.
+ * Supports backspace for editing; other control characters are ignored.
  * Parameters:
  *   buf - destination buffer
  *   maxlen - maximum number of characters to read (including null terminator)

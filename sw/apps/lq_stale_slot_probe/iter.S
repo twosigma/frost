@@ -25,15 +25,16 @@
  *     arm X: STALE_A_DIV_CHAIN divides and STALE_A_MUL_CHAIN multiplies
  *            delay A1..A3, three loads of untouched lines that launch to
  *            the cached tier and miss before B1 resolves, so their
- *            responses are still in flight well after the recovery;
+ *            responses are still in flight well after the recovery.
  *            STALE_A_FILLERS independent fillers in front of them give
  *            A1..A3 ROB tags beyond the ones arm Y allocates up to B2, so
- *            after the recovery reuses the tags the drained slots' stale
- *            tags read as younger than B2's; then five loads whose
- *            addresses wait on A1's value (they hold queue entries but
- *            never launch, and bring the wrong path's load count to eight
- *            so the next allocation wraps onto A1's entry). When arm X is
- *            the wrong path every one of these is flushed.
+ *            once the recovery reuses the tags, the drained slots' stale
+ *            tags read as younger than B2's. Five more loads, A4..A8, wait
+ *            on A1's value for their addresses: on the wrong path they
+ *            hold queue entries but never launch, and they bring the
+ *            path's load count to eight, the load queue's depth, so the
+ *            next allocation wraps onto A1's entry. When arm X is the
+ *            wrong path every one of these is flushed.
  *     arm Y: N, a load of the untouched marker line (-1), a chain of
  *            STALE_ADD_CHAIN dependent adds on B2's condition (register
  *            resolved, so B2 recovers a fixed number of cycles after N
@@ -55,9 +56,9 @@
  *                     unsigned long seed);
  *
  * pool: 4 KiB per iteration of cached DDR whose probed lines main.c wrote
- * and evicted (B1's condition at 0, A1..A3 at 64/128/192, A4..A8 from 256,
- * P set 1 from 1024, P set 2 from 2048). markers: one 64-byte -1 line per
- * iteration, likewise evicted.
+ * and evicted (line 0 at 0, A1..A3 at 64/128/192, A4..A8 from 256, P set 1
+ * from 1024, P set 2 from 2048). markers: one -1 dword per iteration, 64
+ * bytes apart, likewise evicted.
  */
 
 #ifndef STALE_B1_DIV_CHAIN
@@ -164,8 +165,8 @@ lq_stale_run:
     addi t2, a1, 64
     REPEAT_DIV STALE_A_DIV_CHAIN /* t2 stays blk+64, ready one chain later */
     REPEAT_MUL STALE_A_MUL_CHAIN
-    REPEAT_FILL STALE_A_FILLERS /* independent fillers: A1..A3 get ROB tags */
-    ld   s8, 0(t2)              /* A1     beyond the ones arm Y hands B2 */
+    REPEAT_FILL STALE_A_FILLERS /* independent fillers push A1..A3's tags past B2's */
+    ld   s8, 0(t2)              /* A1 */
     ld   s9, 64(t2)             /* A2 */
     ld   s10, 128(t2)           /* A3 */
     andi t5, s8, 0              /* A4..A8 wait on A1's value */

@@ -26,8 +26,9 @@
  * stores before the doorbell with "fence w, o" (memory writes before the
  * I/O write), then writes TAIL; hardware writes word 2 (DD and the outcome)
  * when it is done with the descriptor, and a reader that has seen DD orders
- * its data reads behind it with "fence r, r". See the NIC README for the
- * enable, quiesce and RESET rules.
+ * its data reads behind it with "fence r, r". See "Registers" and "Reset and
+ * clock domains" in hw/rtl/peripherals/nic/README.md for the enable, quiesce,
+ * and RESET rules.
  */
 #ifndef NIC_H
 #define NIC_H

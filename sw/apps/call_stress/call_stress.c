@@ -17,10 +17,10 @@
 /**
  * Call stress: repeated and nested calls, built with the C extension.
  *
- * Compressed JAL/JALR carry their own encodings and PC-relative offset
- * fields, so this runs loops of calls and returns up to three frames deep
- * and prints the total call count at the end. The printf loops add calls
- * into the UART library on top of the local ones.
+ * The source loops over calls up to three frames deep, makes printf calls into
+ * the UART library, and prints the total call count. With the default -O3
+ * -funroll-loops, GCC inlines the three local functions and unrolls their
+ * loops, so the calls left in the binary are the ones into the UART library.
  */
 
 #include "uart.h"

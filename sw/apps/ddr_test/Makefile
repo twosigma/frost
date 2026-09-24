@@ -16,7 +16,8 @@
 # Writes/reads distinct patterns across the high-address cached region
 # (CACHED_BASE = 0x8000_0000) to exercise cache hits, misses, fills and dirty
 # writebacks through the L1/L2 hierarchy and the per-tier memory path.
-# Code/data/stack stay in the low BRAM; the cached region is reached purely
-# via absolute-address volatile pointers, so no custom linker script is needed.
+# Code/data/stack stay in the low BRAM, and the test reaches the cached region
+# through absolute-address volatile pointers and a .ddr_rodata array, so the
+# default linker script is enough.
 SRC_C   := ../../lib/src/uart.c ddr_test.c
 include ../../common/common.mk

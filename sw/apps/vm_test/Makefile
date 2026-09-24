@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the Sv39 data-translation directed test (Phase 3 M4)
+# Makefile for the Sv39 data-translation directed test
 SRC_C := main.c
 include ../../common/common.mk

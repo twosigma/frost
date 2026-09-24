@@ -14,11 +14,11 @@
  *    limitations under the License.
  */
 
-// Frost replacement for riscv-tests/benchmarks/common/syscalls.c
+// FROST replacement for riscv-tests/benchmarks/common/syscalls.c
 //
 // Replaces the tohost/fromhost proxy syscall mechanism with direct
-// UART output at 0x40000000. Provides the same API surface so
-// benchmark source files compile unchanged.
+// UART output at 0x40000000. Provides the same functions, so the
+// benchmark sources compile unchanged.
 
 #include <limits.h>
 #include <stdarg.h>
@@ -27,7 +27,7 @@
 
 #define UART_TX (*(volatile uint8_t *) 0x40000000)
 
-// util.h references (must match riscv-tests/benchmarks/common/util.h)
+// read_csr(), from the same encoding.h that util.h includes
 #include "encoding.h"
 
 int sprintf(char *str, const char *fmt, ...);
@@ -143,7 +143,9 @@ int __attribute__((weak)) main(int argc, char **argv)
 }
 
 // -----------------------------------------------------------------------
-// _init: called by crt0, orchestrates benchmark execution
+// _init: called by crt0_bench.S. It calls thread_entry() first; a benchmark
+// that overrides it (mm) runs and exits there. Otherwise _init runs main,
+// prints the setStats counters, and exits with main's return value.
 // -----------------------------------------------------------------------
 
 void _init(int cid, int nc)
@@ -165,7 +167,8 @@ void _init(int cid, int nc)
 }
 
 // -----------------------------------------------------------------------
-// Barrier (for multi-threaded benchmarks, a no-op on single-core Frost)
+// Barrier: a no-op, since FROST has one hart. Nothing calls it; benchmarks
+// that need a barrier get util.h's static barrier().
 // -----------------------------------------------------------------------
 
 static void __attribute__((noinline)) barrier(int ncores)
@@ -390,10 +393,7 @@ int sprintf(char *str, const char *fmt, ...)
 // -----------------------------------------------------------------------
 // Standard library functions
 //
-// memcpy / memset / strlen / strnlen / strcmp / strcpy, the allocator
-// (malloc / free / calloc / realloc) and atol come from the shared Frost
-// library (sw/lib: string.c, memory.c, stdlib.c), linked in by Makefile.bench,
-// so there is one copy of each. sw/lib's malloc is a first-fit freelist
-// allocator whose free() reclaims, unlike the bump allocator this file used
-// to carry.
+// memcpy, memset, strlen, strnlen, strcmp, strcpy, malloc, free, calloc,
+// realloc, and atol come from sw/lib (string.c, memory.c, stdlib.c), which
+// Makefile.bench links in.
 // -----------------------------------------------------------------------

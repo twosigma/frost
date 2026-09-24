@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 # Return-address-stack test with a self-defined _start (no crt0.S).
-# Architecture must match common.mk's supported ISA.
+# ARCH is common.mk's ISA without F and D, and must stay within that ISA.
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imac_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI := $(FROST_INT_ABI)

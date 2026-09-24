@@ -1,4 +1,4 @@
-// Frost startup for riscv-tests benchmarks
+// FROST startup for riscv-tests benchmarks
 //
 // Benchmarks are C programs that use _init() as their entry point
 // (defined in syscalls_frost.c). This crt0:
@@ -54,11 +54,12 @@ _start:
     li x30, 0
     li x31, 0
 
-    // Enable FPU (set mstatus.FS to Initial)
+    // Enable the FPU (mstatus.FS = Dirty)
     li t0, MSTATUS_FS
     csrs mstatus, t0
 
-    // Initialize FP registers to zero (with mtvec guard for no-FPU case)
+    // Clear fcsr and write +0.0f (NaN-boxed) to every FP register. mtvec
+    // points past the block, so on a core without an FPU the first trap skips it.
     la t0, 1f
     csrw mtvec, t0
     fssr x0
@@ -141,7 +142,7 @@ _start:
     li a1, 1
     call _init
 
-    // If _init returns (shouldn't), halt
+    // _init ends in exit() and does not return; spin if it does
 8:  j 8b
 
     // ---------------------------------------------------------------

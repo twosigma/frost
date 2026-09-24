@@ -13,14 +13,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Generate golden reference signatures using Spike ISA simulator.
+"""Generate golden reference signatures with the Spike ISA simulator.
 
 Compiles each riscv-arch-test assembly file for Spike, runs it, and
 stores the resulting memory signature as the golden reference for
-comparison against Frost's RTL simulation. Frost is RV64-only, so this
+comparison against FROST's RTL simulation. FROST is RV64-only, so this
 regenerates the rv64 references only, under references/rv64i_m/....
 
-Run inside the frost Docker image, which pins Spike (D10), so the
+Run it inside the frost Docker image, which pins Spike, so the
 references are reproducible.
 
 Usage:
@@ -56,16 +56,14 @@ def _submodule_spike_env() -> Path:
 
 
 def _build_spike_env() -> Path:
-    """Materialize an 8-byte-signature-aligned copy of the submodule env.
+    """Copy the submodule's riscof spike_simple env to a temporary directory.
 
-    The copy is derived at runtime from the submodule's riscof spike_simple
-    plugin with one change: any ALIGNMENT define is forced to 3 (8 bytes).
-    Frost runs FLEN=64, so the framework's signature stores (fsd, SIGALIGN=8)
-    must not misalign, and this Spike build has no --misaligned. The current
-    rv64 env header hardcodes .align 4 (16 bytes) and defines no ALIGNMENT,
-    so the patch is a no-op there. The patched header goes into a throwaway
-    directory rather than a committed derived copy, because the framework
-    header's inline-asm macros must not be reformatted.
+    The copy forces any ALIGNMENT define to 3 (8 bytes). FROST runs FLEN=64,
+    so the framework's signature stores (fsd, SIGALIGN=8) must not misalign,
+    and the pinned Spike has no --misaligned. The rv64 env header hardcodes
+    .align 4 (16 bytes) and defines no ALIGNMENT, so the patch changes nothing
+    there. The copy is made at run time rather than committed because
+    formatters must not touch the framework header's inline-asm macros.
     """
     env_dir = Path(tempfile.mkdtemp(prefix="frost_spike_env_"))
     src_env = _submodule_spike_env()
@@ -76,27 +74,23 @@ def _build_spike_env() -> Path:
     return env_dir
 
 
-# gcc -march: must match what Frost's software builds may emit. The
-# build has carried compressed code since the M4 C-table recode, except
-# for the tests in NO_COMPRESS_TESTS below.
+# gcc -march: must match what FROST's software builds may emit, including
+# compressed code, except for the tests in NO_COMPRESS_TESTS below.
 FROST_MARCH = "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
 
-# Misaligned load/store trap tests whose test op must not compress. The
-# vendored arch_test.h trap handler resumes at (mepc & ~3) + 8, which
-# assumes at least 8 bytes from a trapping op's start to the next test
-# case (a 4-byte op plus two 2-byte c.nops). A compressed test op
-# (c.sd/c.ld/c.sw/c.lw) shrinks that to 6 bytes, so the resume lands
-# mid-instruction and execution wanders down a garbage-decode path whose
-# faulting effective addresses are absolute. The handler's region checks
-# then make the signature depend on the link map, and the Spike reference
-# link (spike_simple env/link.ld) has a 0x110-byte data->sig gap that
-# Frost's links do not. Proved on misalign-sd-01: Spike aborts at the 4th
-# record, while Frost's architecturally identical trap relativizes
-# in-region and continues. Dropping C for these tests keeps every trap on
-# the planned, link-independent path. Compressed encodings are covered by
-# the C suite and rv64uc. This set must mirror NO_COMPRESS_TESTS in the
-# app Makefile. lh/lhu/sh/lwu/lb have no C forms, and the branch/jump
-# misalign tests need C for target-legality semantics.
+# Misaligned load/store trap tests whose test op must not be compressed. The
+# framework trap handler (arch_test.h) resumes at (mepc & ~3) + 8, which
+# assumes a 4-byte op and two 2-byte c.nops before the next test case. A
+# compressed c.sd/c.ld/c.sw/c.lw leaves only 6 bytes, so the resume lands
+# mid-instruction and the misdecoded code that follows faults on absolute
+# addresses. The handler's region checks then make the signature depend on
+# the link map, which differs between the Spike env's link.ld and FROST's
+# linker scripts. Building these tests without C keeps every trap on the
+# intended, link-independent path; the C suite and rv64uc cover the
+# compressed encodings. This set must mirror NO_COMPRESS_TESTS in the app
+# Makefile. The lh/lhu/sh/lwu tests need no entry because those ops have no
+# C forms, and the branch/jump misalign tests need C for target-legality
+# semantics.
 NO_COMPRESS_TESTS = {
     "misalign-ld-01",
     "misalign-lw-01",
@@ -113,16 +107,16 @@ def test_march(test_name: str) -> str:
     return march
 
 
-# spike --isa. It matches the march today but must keep C even if a
-# future build drops it: the framework's fixed-length LA()/trap-prolog
-# macros pad with c.nops that execute (.option rvc; .align; .option
-# norvc in arch_test.h) regardless of the march, and a no-C Spike also
-# changes misaligned-jump legality (the privilege misalign references).
+# spike --isa. It keeps C even for the NO_COMPRESS_TESTS builds: the
+# framework's fixed-length LA()/trap-prolog macros pad with c.nops that
+# execute (.option rvc; .align; .option norvc in arch_test.h) regardless
+# of the march, and a no-C Spike also changes misaligned-jump legality
+# (the privilege misalign references).
 SPIKE_ISA = "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
 
 FROST_ABI = "lp64"
 
-# Extensions that Frost supports and that have tests in the suite.
+# Extensions that FROST supports and that have tests in the suite.
 SUPPORTED_EXTENSIONS = [
     "I",
     "M",
@@ -142,23 +136,24 @@ SUPPORTED_EXTENSIONS = [
 ]
 
 # Allowed filename prefixes for extensions where only a subset of tests
-# applies. privilege: Frost implements M and U modes (no S-mode), so the
-# supervisor and hypervisor tests are dropped, as are the U-mode menvcfg
-# illegal-access tests. K: Frost implements Zbkb only, which at rv64 is
-# pack/packh/packw/brev8 (zip/unzip are RV32-only encodings).
+# applies. privilege: FROST implements M, S, and U modes but no hypervisor.
+# The envcfg tests drive an S-mode trap routine and declare extensions FROST
+# does not implement (Zicbom, Zicboz, Ssdtso); of them the filter admits
+# only menvcfg_m, which the pinned suite has only under rv32i_m. K: FROST
+# implements Zbkb only, which at rv64 is pack/packh/packw/brev8 (zip/unzip
+# are RV32-only encodings).
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
     "K": {"pack", "packh", "packw", "brev8"},
 }
 
-# Excluded by filename prefix: Frost has no Zbc (clmul/clmulh/clmulr), and
-# the C directory mixes in Zcb tests Frost does not implement.
+# Excluded by filename prefix: FROST has no Zbc (clmul/clmulh/clmulr), and
+# the C directory mixes in Zcb tests FROST does not implement.
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "B": {"clmul"},
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
-    # This entry dates from a menvcfg_m test that did not assemble. The rv64
-    # privilege directory carries no menvcfg tests at this snapshot, so it
-    # and the menvcfg_m prefix in EXTENSION_TEST_FILTERS are inert.
+    # The pinned suite has no rv64 menvcfg tests, so this entry and the
+    # menvcfg_m prefix in EXTENSION_TEST_FILTERS have no effect.
     "privilege": {"menvcfg_m"},
 }
 
@@ -224,7 +219,7 @@ def generate_one_reference(
         sig_path = Path(tmpdir) / "test.sig"
 
         cc = f"{RISCV_PREFIX}gcc"
-        # FLEN=64: Frost has the D extension (64-bit FP registers).
+        # FLEN=64: FROST has the D extension (64-bit FP registers).
         cmd = [
             cc,
             f"-march={test_march(test_name)}",
@@ -258,10 +253,10 @@ def generate_one_reference(
             msg = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown"
             return test_name, "SKIP", f"Compile failed: {msg}"
 
-        # The signature area is 8-aligned (see _build_spike_env), so FLEN=64
-        # signature stores never misalign and no --misaligned support is
-        # needed. Tests that misalign by design install the framework trap
-        # handler and trap identically here and on Frost.
+        # The signature area is at least 8-byte aligned (see _build_spike_env),
+        # so FLEN=64 signature stores never misalign and no --misaligned
+        # support is needed. Tests that misalign by design install the
+        # framework trap handler and trap identically here and on FROST.
         spike = os.environ.get("FROST_SPIKE", "spike")
         spike_cmd = [
             spike,
@@ -315,10 +310,16 @@ def main() -> int:
     args = parser.parse_args()
 
     if not shutil.which(os.environ.get("FROST_SPIKE", "spike")):
-        print("Error: spike not found in PATH. Install riscv-isa-sim first.")
+        print(
+            "Error: spike not found in PATH. "
+            "Run this script in the frost Docker image (scripts/frost.py run)."
+        )
         return 1
     if not shutil.which(f"{RISCV_PREFIX}gcc"):
-        print(f"Error: {RISCV_PREFIX}gcc not found in PATH.")
+        print(
+            f"Error: {RISCV_PREFIX}gcc not found in PATH. "
+            "Run this script in the frost Docker image (scripts/frost.py run)."
+        )
         return 1
 
     spike_env = _build_spike_env()

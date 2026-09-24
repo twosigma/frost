@@ -12,8 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# RV64 A-extension directed test (Phase 1 plan M6): the doubleword atomics
-# and LR.D/SC.D, which rv64_smoke's M2-minimum slice predates.
+# RV64 A-extension directed test: doubleword AMOs and LR.D/SC.D, plus a word
+# AMO on a doubleword cell.
 include ../../common/arch.mk
 
 ARCH := $(FROST_XLEN_PREFIX)ia_zicsr

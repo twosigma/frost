@@ -17,13 +17,15 @@
 /*
  * sprintf.c: portable sprintf / snprintf family with no <stdio.h> dependency.
  *
- * Floating-point conversion scales |d| by 10^prec and rounds in the uint64_t
- * domain, which avoids cascading floating-point rounding errors.
+ * Floating-point conversions scale |d| by a power of ten, round once to a
+ * uint64_t, and print that integer's digits, which avoids cascading
+ * floating-point rounding errors.
  *
  * Supported: %d %i %u %o %x %X %f %F %e %E %g %G %c %s %p %n %%
  * Flags:     - + space 0 #
  * Width / precision: literal or *
- * Length modifiers:  hh h l ll z t
+ * Length modifiers:  hh h l ll, plus z with d i u and t with d i
+ *                    (%zo %zx %zX %to %tx %tX %tu read an unsigned int)
  */
 
 #include <limits.h>
@@ -152,7 +154,7 @@ static FPC fpclass(double d)
     return (FPC){(b >> 63) != 0, e == 0x7FF && m != 0, e == 0x7FF && m == 0};
 }
 
-/* floor(log10(|d|)) for d>0 */
+/* floor(log10(|d|)) for d != 0, capped at 31 */
 static int exp10of(double d)
 {
     d = dabs(d);
@@ -440,7 +442,9 @@ static void emit_int(OutCtx *c,
                      int w,
                      int prec)
 {
-    /* C99: %.0d with value 0 prints nothing but the padding */
+    /* C99: a zero value with precision 0 prints no digits, only the padding and,
+     * for a signed conversion, a '+' or ' ' flag. '#' is excluded because %#.0o
+     * must still print "0". */
     if (prec == 0 && uv == 0 && !fh) {
         char sc = 0;
         if (sgnd) {

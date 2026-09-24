@@ -31,8 +31,6 @@
 /* Parse a FIX timestamp string to nanoseconds. */
 uint64_t parse_timestamp(const char *timestamp_string)
 {
-    /* Approximate: 30-day months, 365-day years, no leap years (see the file header). */
-
     /* Expected format: "YYYYMMDD-HH:MM:SS.mmm", so at least 21 characters. A
      * shorter string would be over-read below. */
     int length = 0;
@@ -72,7 +70,8 @@ uint64_t parse_timestamp(const char *timestamp_string)
     return timestamp_in_nanoseconds;
 }
 
-/* Parse decimal price string to fixed-point representation */
+/* Parse an unsigned decimal price string to fixed point with TARGET_SCALE
+ * decimal places. Fraction digits past TARGET_SCALE are truncated. */
 fix_price_t parse_price(const char *price_string)
 {
     fix_price_t parsed_price;
@@ -114,9 +113,8 @@ fix_price_t parse_price(const char *price_string)
         }
     }
 
-    /* Example: "94.0000" gives whole=94, fractional=0, fractional_digits=4 */
-    /* Target: 94.00000000 in fixed point with scale 8 */
-    /* Result: 9400000000 (stored as integer with implied 8 decimal places) */
+    /* Example: "94.0000" gives whole=94, fractional=0, and 4 fractional digits,
+     * for a result of 9400000000 (8 implied decimal places). */
 
     int64_t result = whole_number_part;
 

@@ -1,8 +1,7 @@
 /* Linker script for FreeRTOS on FROST (bram tier).
- * Derived from sw/common/link.ld with two differences: there is no .heap
- * section, because FreeRTOS heap_4.c carves task stacks and kernel objects
- * out of its own ucHeap array in .bss, and there are no cached-DDR sections,
- * so the whole program lives in the 256KiB low BRAM.
+ * Based on sw/common/link.ld, without the heap and the cached-DDR sections:
+ * FreeRTOS heap_4.c carves task stacks and kernel objects out of its own
+ * ucHeap array in .bss, and the whole program lives in the 256 KiB low BRAM.
  * The memory sizes must match MEM_SIZE_BYTES in hw/rtl/frost.sv.
  */
 
@@ -26,8 +25,8 @@ MEMORY
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 
-/* Kept for the upstream RISC-V port. port_frost_asm.S runs traps on the
- * interrupted task's stack and does not reference it. */
+/* Only the upstream RISC-V port uses this symbol. port_frost_asm.S runs traps
+ * on the interrupted task's stack. */
 __freertos_irq_stack_top = _end_of_stack;
 
 SECTIONS
@@ -38,7 +37,7 @@ SECTIONS
 
     /* .text section - Executable code */
     .text : {
-        KEEP(*(.init))      /* Startup code (crt0.S) - must be first */
+        KEEP(*(.init))      /* Startup code (crt0.S): first, at the reset PC 0 */
         *(.text*)           /* All code sections */
         *(.text.*)
     } > ROM
@@ -127,7 +126,7 @@ SECTIONS
     PROVIDE(UART_RX_DATA_ADDR  = 0x40000004);  /* UART receive data (read pops byte) */
     PROVIDE(FIFO0_ADDR          = 0x40000008);  /* MMIO FIFO 0 */
     PROVIDE(FIFO1_ADDR          = 0x4000000C);  /* MMIO FIFO 1 */
-    /* CLINT-compatible timer registers (for RTOS support) */
+    /* Machine timer registers */
     PROVIDE(MTIME_LO_ADDR       = 0x40000010);  /* mtime[31:0] - Machine timer low */
     PROVIDE(MTIME_HI_ADDR       = 0x40000014);  /* mtime[63:32] - Machine timer high */
     PROVIDE(MTIMECMP_LO_ADDR    = 0x40000018);  /* mtimecmp[31:0] - Timer compare low */

@@ -17,31 +17,34 @@
 /*
  * Phase-swept M-mode ret_from_exception restore-window stress.
  *
- * Models the Linux no-MMU exit sequence once protected by the retired
- * ret_from_exception image patch. Timer phase sweeps every cycle offset:
+ * Models the exit sequence of the Linux M-mode (no-MMU) ret_from_exception;
+ * timer ticks are re-armed at drifting offsets so they sweep across it:
  *
  *   <MIE=1 region>                      ticks become eligible
  *   rw_irqoff:  csrci mstatus, 8        disable IRQs before exit
- *               [lr.d t0, (frame)]      every other iteration, force SC store
+ *               [lr.d t1, (frame)]      half the iterations, so the SC stores
  *               ld   a2, 0(frame)       PT_EPC load
  *   rw_sc:      sc.d x0, a2, (frame)    reservation clear, draining to DDR
- *   rw_wincsr:  csrw mstatus, a0        image {MIE=0, MPIE=1, MPP=U|M}
+ *   rw_wincsr:  csrw mstatus, image     image {MIE=0, MPIE=1, MPP=U|M}
  *   rw_winepc:  csrw mepc, a2
  *               ld   t1..t4, 8..32(frame)   register-restore DDR loads
  *   rw_mret:    mret                    -> U-pad (ecall back) or M-pad
  *   rw_winend:
  *
  * An L1D-alias store evicts the cached-DDR frame each iteration, forcing misses
- * and a slow committed-SC drain.
+ * and a slow committed-SC drain. Every fourth iteration also runs an AMO with
+ * interrupts enabled just before rw_irqoff.
  *
  * On every tick, mstatus.MIE must be clear at entry and mepc must not lie inside
  * (rw_irqoff,rw_winend). After csrci, M-mode delivery is ineligible through
- * mret; a held tick must appear at the post-MRET pad. Illegal-instruction traps
- * fail immediately, and each iteration must reach one landing pad. Every eighth
- * iteration also runs `csrsi mstatus,8; wfi; csrci mstatus,8` with a due timer.
+ * mret; a held tick must appear at the post-MRET pad. Any other trap except the
+ * U-pad's ecall fails the run, and each iteration must reach one landing pad.
+ * Every eighth iteration also runs `csrsi mstatus,8; wfi; csrci mstatus,8`
+ * with a due timer.
  *
- * PASS requires all iterations, no invariant violations, and ticks spanning
- * the window. FAIL prints forensics.
+ * PASS requires all iterations, no invariant violations, at least N_ITER/4
+ * ticks, and at least 8 ticks delivered at a landing pad. FAIL prints
+ * forensics.
  */
 
 #include <stdint.h>
@@ -52,14 +55,15 @@
 #define N_ITER 800u
 #endif
 
-/* Rotate through 64 line-spaced DDR frames. Dirtying the +0x20000 alias in the
- * 128 KiB direct-mapped L1D forces a cold next access. The region remains
- * within the simulation model's 64 MiB backing. */
+/* Rotate through 64 DDR frames spaced 64 bytes apart. Dirtying the +0x20000
+ * alias in the 128 KiB direct-mapped L1D forces a cold next access. The region
+ * stays within the simulation model's 64 MiB backing. */
 #define FRAME_BASE 0x82800000u
 #define FRAME_ALIAS_XOR 0x20000u
 
 /* Mirror rv64 ret_from_exception with 8-byte pt_regs slots, ld/sc.d, full-width
- * handler saves, and mcause bit 63. Counters and CLINT MMIO remain 32-bit. */
+ * handler saves, and mcause bit 63. The counters and CLINT MMIO accesses are
+ * 32-bit. */
 #define XL "ld  "  /* XLEN register load                       */
 #define XS "sd  "  /* XLEN register store                      */
 #define XLR "lr.d" /* kernel-width reservation pair           */
@@ -93,15 +97,17 @@ static void uart_hex(uint32_t v)
 
 volatile uint32_t g_iter;      /* progress marker for hang triage            */
 volatile uint32_t g_irq;       /* machine-timer tick count                   */
-volatile uint32_t g_irq_pad;   /* ticks delivered at a landing pad: the tick
-                                * arose inside the MIE=0 window and was held
+volatile uint32_t g_irq_pad;   /* ticks delivered at a landing pad, a proxy
+                                * for ticks held across the MIE=0 window
                                 * until after the MRET, the window-crossing
                                 * mechanism under test                       */
 volatile uint32_t g_pad;       /* landing-pad executions                     */
 volatile uint32_t g_fail;      /* invariant violations                       */
 volatile uint32_t g_fail_mepc; /* first violation: offending mepc            */
-volatile uint32_t g_fail_kind; /* 1=mepc-in-window 2=MIE-at-entry 3=illegal  */
-volatile uint32_t g_fail_arg;  /* extra forensic word (mcause/mstatus)       */
+volatile uint32_t g_fail_kind; /* 1=mepc-in-window 2=MIE-at-entry 3=other trap
+                                * 4=pad count                               */
+volatile uint32_t g_fail_arg;  /* extra forensic word (mcause, mstatus, or
+                                * pad-count delta)                          */
 
 /* Window boundary labels (defined in the gadget below). */
 extern const char rw_irqoff[];
@@ -111,8 +117,8 @@ extern const char rw_winend[];
  * M-mode trap handler. Timer ticks: check the two invariants, re-arm the
  * timer with a drifting period (712 + (g_irq & 0xFF)) so the phase sweeps,
  * and return to the interrupted context untouched. Ecall-from-U (the U-pad
- * handoff) and any failure bounce to the continuation stashed in mscratch
- * with MPP=M. Illegal instruction records forensics and bounces.
+ * handoff) and any other synchronous trap bounce to the continuation stashed
+ * in mscratch with MPP=M; an unexpected trap first records forensics.
  */
 __attribute__((naked, aligned(4))) static void rw_trap_handler(void)
 {
@@ -142,8 +148,8 @@ __attribute__((naked, aligned(4))) static void rw_trap_handler(void)
                      "j    5f\n" /* bounce to continuation; C reports */
                      /* ---- machine timer ---- */
                      "1:\n"
-                     /* Sweep-coverage counter: a delivery at a landing pad means the tick
-                      * arose inside the MIE=0 window and was held until after the MRET. */
+                     /* Sweep-coverage counter: deliveries at a landing pad stand in for
+                      * ticks held across the MIE=0 window until after the MRET. */
                      "csrr t1, mepc\n"
                      "la   t2, u_pad_start\n"
                      "bltu t1, t2, 7f\n"
@@ -212,8 +218,8 @@ __attribute__((naked, aligned(4))) static void rw_trap_handler(void)
 
 /* Landing pads, in one naked function so [u_pad_start, pads_end) is a single
  * contiguous range the handler can classify mepc against.
- *   u_pad_start: U-mode pad. Bumps g_pad (FROST has no memory protection in
- *                M/U) and ecalls back to M; the handler bounces on.
+ *   u_pad_start: U-mode pad. Bumps g_pad (with no PMP and satp Bare, U-mode
+ *                can write it) and ecalls back to M; the handler bounces on.
  *   m_pad_start: M-mode pad. Bumps g_pad and jumps straight to the continuation.
  */
 extern const char u_pad_start[];
@@ -241,10 +247,10 @@ __attribute__((naked, aligned(4))) void pads(void)
 }
 
 /*
- * One restore-window iteration. a0 image = {MPIE=1, MPP per variant, MIE=0};
+ * One restore-window iteration. image = {MPIE=1, MPP per variant, MIE=0};
  * frame[0] holds the pad address ("PT_EPC"). arm_lr=1 issues an LR first so
- * the SC succeeds and its store drains; arm_lr=0 leaves the SC failing, like
- * the kernel's usual dangling-reservation-free case.
+ * the SC succeeds and its store drains; arm_lr=0 leaves the SC failing, the
+ * kernel's usual case with no reservation outstanding.
  */
 __attribute__((noinline)) static void
 run_window(uint32_t image, volatile rw_word_t *frame, uint32_t arm_lr, uint32_t do_amo)
@@ -258,8 +264,8 @@ run_window(uint32_t image, volatile rw_word_t *frame, uint32_t arm_lr, uint32_t 
                      "xor  t1, t1, t0\n"
                      "andi t1, t1, 255\n"
                      /* variant: a cached-region AMO with interrupts enabled, so swept
-                      * ticks land while the AMO owns the ROB head and exercise the AMO
-                      * interrupt shield's take-deferral right before the window */
+                      * ticks land while the AMO is at the ROB head and exercise the
+                      * AMO interrupt shield right before the window */
                      "beqz %3, 8f\n"
                      "addi t1, %1, " XAMO_OFF "\n"
                      "amoswap.w t2, t1, (t1)\n"
@@ -302,11 +308,11 @@ int main(void)
         g_iter = i;
         uint32_t pad_before = g_pad;
 
-        /* Rotate the frame across 64 line-spaced slots. Write it, then dirty
-         * its L1D alias (same set, 128 KiB direct-mapped) so the just-written
-         * frame line is evicted: its write-back drains to DDR and the window's
-         * PT_EPC load and SC miss cold. That refill in turn evicts the dirty
-         * alias line, keeping a write-back draining inside the window. */
+        /* Rotate the frame across 64 slots. Write it, then dirty its L1D alias
+         * (same index, 128 KiB direct-mapped) so the just-written frame line is
+         * evicted: its write-back drains below the L1D and the window's PT_EPC
+         * load and SC miss cold. That refill in turn evicts the dirty alias
+         * line, keeping a write-back draining inside the window. */
         volatile rw_word_t *frame = (volatile rw_word_t *) (FRAME_BASE + ((i & 63u) << 6));
         volatile rw_word_t *alias = (volatile rw_word_t *) ((uintptr_t) frame ^ FRAME_ALIAS_XOR);
 
@@ -356,7 +362,7 @@ int main(void)
     uart_hex(g_pad);
     uart_puts("\r\n");
     /* The sweep must have exercised the mechanism: demand ticks overall and
-     * held ticks delivered at the pads (window crossings). */
+     * ticks delivered at the pads (a proxy for window crossings). */
     if (g_fail == 0 && g_pad == N_ITER && g_irq >= (N_ITER / 4u) && g_irq_pad >= 8u) {
         uart_puts("<<PASS>>\r\n");
     } else {

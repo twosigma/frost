@@ -1,7 +1,8 @@
-// Frost riscv-tests virtual environment: reset entry, trap frame push/pop
-// (the upstream env/v/entry.S shape). handle_reset additionally zeroes .bss
-// (the page tables and free lists must start clear; the DDR image carries
-// only loadable sections) and needs no NMI/PMP setup Frost lacks.
+// FROST riscv-tests virtual environment: reset entry, trap-frame save
+// (trap_entry) and restore (pop_tf), from upstream env/v/entry.S. Unlike
+// upstream, handle_reset zeroes .bss and .sbss, because the page tables and
+// free lists must start clear and the DDR image holds only loadable sections.
+// Upstream's NMI vector and resumable-NMI setup are left out; FROST has no NMI.
 
 #include "riscv_test.h"
 

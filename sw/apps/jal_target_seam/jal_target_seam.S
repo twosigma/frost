@@ -1,9 +1,7 @@
-# Directed reproducer: a 4-byte jal entered as a taken-branch target at
-# dword offset 4. Isolated from the rv64 M7 Linux boot, where the victim
-# was of_core_init's __of_find_all_nodes call site at 0x802c69ac. The shape
-# is XLEN-independent; before the fix this repro failed identically at rv32.
-#
-# Kernel shape mirrored: one aligned dword holding
+# Directed test: a 4-byte jal entered as a taken-branch target at dword
+# offset 4. It mirrors the code of one Linux kernel build around
+# of_core_init's __of_find_all_nodes call site at 0x802c69ac. The shape
+# is one aligned dword holding
 #   +0: compressed conditional branch, target = +4 (same dword)
 #   +2: one compressed instruction (skipped when the branch takes)
 #   +4: 4-byte jal (the branch target)
@@ -13,17 +11,18 @@
 # retires and writes ra, but fetch falls through and the callee never
 # executes.
 #
-# Root cause (fixed in prediction_metadata_tracker/pc_controller): the
+# The hazard (pc_controller and prediction_metadata_tracker): the
 # branch's own BTB hit lands in a redirect-bubble holdoff, so it emits
 # unpredicted. The jal's BTB prediction then consumes with the pending
 # pc_reg handoff armed. The PD redirect for the unpredicted branch kills
-# that pending fetch state, but the tracker's pending-saved metadata
-# survived the kill and replayed onto the re-fetched jal, so the ROB saw a
-# correctly predicted jal (own target) and never recovered the lost
-# redirect. The bug needs the variable-latency L1I fetch path to arm the
-# pending walk. In the low-BRAM tier this program fits in the always-ready
-# metadata overlay, which never pends, so the repro passes there even
-# without the fix.
+# that pending fetch state, and the tracker's pending-saved metadata
+# must die with it. If it survived, it would replay onto the re-fetched
+# jal, and the ROB would see a correctly predicted jal (its own target)
+# and never recover the lost redirect. This program reaches the pending
+# state only on the variable-latency L1I fetch path, so run it from DDR
+# (FROST_COCOTB_MEM_CONFIG=ddr). In the low-BRAM tier it fits in the
+# always-ready metadata overlay, which never pends, so it passes there
+# even when the hazard is present.
 #
 # PASS iff the callee ran once per lap.
 
@@ -46,9 +45,9 @@ _start:
     jal     ra, print_string
     .option pop
 
-    # Match the kernel scene: the victim jal lived at 0x802c69ac, i.e. at
-    # byte 0x2c of its 64-byte I-cache line. Pad so seam_jal lands at the
-    # same line offset (loop_head at +0x28, jal at +0x2c).
+    # Place seam_jal at +0x2c of a 64-byte block, where the kernel jal at
+    # 0x802c69ac sits, so it has the same offset in its cache line
+    # (loop_head at +0x28).
     .balign 64
     .option push
     .option norvc
@@ -68,7 +67,7 @@ seam_jal:
     li      a5, 1            # arm the branch for laps 2+
     blt     s1, s2, loop_head
 
-    # Verdict
+    # Check the callee count
     la      t0, callee_count
     lw      t1, 0(t0)
     beq     t1, s2, pass
@@ -110,7 +109,7 @@ callee_count:
     # Strings live in .rodata: at MEM_CONFIG=bram, .data is a crt0-copied
     # section (VMA in RAM, LMA in ROM) and standalone-asm apps have no
     # crt0, so .data initializers read as zeros there.  .rodata is
-    # execute-in-place in both tiers.  The .balign keeps the section's
+    # read in place in both tiers.  The .balign keeps the section's
     # load address word-aligned (this .text ends on a halfword and
     # objcopy's verilog writer rejects unaligned section starts).
     .section .rodata

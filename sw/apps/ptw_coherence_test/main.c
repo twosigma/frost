@@ -15,90 +15,49 @@
  */
 
 /*
- * ptw_coherence_test: the page-table walker must see dirty L1D lines.
+ * ptw_coherence_test: Sv39 page-table walks must see page-table stores that
+ * are still dirty in the L1D, with no sfence.vma in between.
  *
- * FROST's walker line port ("wup") sits ABOVE the shared level: it reads
- * page-table entries from L2 (or main memory when there is no L2), not from
- * the write-back L1D (hw/rtl/cpu_and_mem/cpu/mmu/ptw.sv line port ->
- * hw/rtl/lib/cache/frost_cache_hierarchy.sv -> L2). The hierarchy's
- * walker_coherence_sequencer keeps those reads coherent: every walk read
- * first probes the L1D (PROBE_CLEAN), so a dirty page-table line is written
- * back and ordered at the shared level ahead of the read. sfence.vma /
- * fence.i still perform an L1D writeback-all (id_stage.sv decodes BOTH
- * SFENCE.VMA and FENCE.I as is_fence_i; sfence.vma additionally
- * flash-invalidates the TLBs), but a walk no longer depends on it.
+ * The walker reads PTEs below the L1D, from L2 (or memory when there is no
+ * L2). walker_coherence_sequencer probes the L1D before each walk read, so a
+ * dirty page-table line is written back first (see "The page-table walker
+ * port" in hw/rtl/lib/cache/README.md). This test builds the state that Linux
+ * __set_memory -> split_linear_mapping creates: a 2 MiB PMD leaf replaced by a
+ * pointer to a newly filled 4 KiB PTE table and used before the closing
+ * sfence.vma, with the PMD line evicted to L2 while the table's lines are
+ * still dirty in the L1D. A walk that read only L2 would combine the new
+ * pointer with the stale table, a translation that never existed.
  *
- * The bug it reproduces (diagnosed on X3 hardware, before the sequencer):
- * Linux __set_memory -> split_linear_mapping replaces a 2 MiB PMD leaf with a
- * pointer to a freshly filled 4 KiB PTE table, then keeps touching the region
- * BEFORE the closing sfence.vma. The L1D evicted the PMD line (holding the
- * new pointer) down to L2 while the new PTE-table lines were still dirty in
- * the L1D. A DTLB miss then walked the new PMD pointer from L2 together with
- * the STALE PTE-table words from L2 -- a page table state that never existed
- * in program order. The RISC-V privileged spec only permits translations that
- * were valid at some point since the last SFENCE.VMA; a torn walk takes a
- * load page fault on a correctly mapped address, or (if a stale word decodes
- * as a leaf) returns valid-looking garbage.
+ * Each iteration uses a 2 MiB VA region R, a new child PTE page T, and a
+ * target page tp inside R:
  *
- * This test drives that exact hazard from bare metal. It extends vm_test's
- * M-mode / MPRV-window approach (sw/apps/vm_test/main.c): M-mode fetch stays
- * untranslated, and every translated data access runs in a short MPRV window
- * (MPP=S, MPRV=1). Page tables and the data regions live in cached DDR (they
- * pass through the L1D/L2 hierarchy in either memory tier, so the hazard
- * reproduces in the bram tier too; run with FROST_COCOTB_MEM_CONFIG=ddr for
- * the kernel-faithful cached tier). Code and stack stay clear of the cache
- * indices the test manipulates (stack is uncached low BRAM).
+ *   S1  Seed T with stale content and map R -> P1 with a 2 MiB leaf.
+ *   S2  sfence.vma, the only one in the iteration: the old tables are
+ *       written back to L2 and the DTLB is cleared.
+ *   S3  Load from R to install its DTLB entry and check the P1 signature.
+ *   S4  Evict R's DTLB entry by touching 24 other superpages.
+ *   S5  Fill T with leaves mapping R -> P1 page by page, fence w,w, and point
+ *       PMD[R] at T. T's lines and the PMD line are now dirty in the L1D.
+ *   S6  Evict only the PMD line to L2 and confirm L2 holds the new pointer.
+ *   S7  Load R+tp. The DTLB misses, and the walk reads the new PMD pointer
+ *       and then T's entry, whose line is still dirty in the L1D.
  *
- * Per iteration, for a chosen R (2 MiB VA region), T (new child PTE page) and
- * target page tp inside R, the sequence is:
+ * No sfence.vma or fence.i may run from S5 through S7: both write the L1D
+ * back, which would clean T's lines before the walk.
  *
- *   S1  Seed the child page T and point PMD[R] at a valid, readable 2 MiB leaf
- *       mapping R -> P1 (per-word signatures). The seed is the "stale" content
- *       the walker must NOT observe as a live translation:
- *         - INVALID flavor: T filled with 0 (V=0). A torn walk page-faults.
- *         - DECOY   flavor: T filled with LEGAL A-set 4 KiB leaves -> a decoy
- *           frame carrying a different signature. A torn walk returns wrong
- *           data with no fault -- this rejects any "fault-only" fix.
- *       (Stale words with A=0 would fault under Svade at ptw.sv rather than
- *       mis-map, so the decoy leaf sets A/D.)
- *   S2  sfence.vma. This publishes the OLD contents to L2 (a writeback-all,
- *       not merely to DRAM) and flash-clears the DTLB. This is the "closing
- *       sfence" of the prior mapping; no sfence.vma/fence.i runs after S5.
- *   S3  Touch R once (MPRV window) so the walker installs R's 2 MiB DTLB entry
- *       and we confirm R currently reads its P1 signature.
- *   S4  Evict R's DTLB entry WITHOUT any sfence by touching 24 distinct 2 MiB
- *       superpages OUTSIDE R (the DTLB has 16 entries with rotating
- *       replacement and superpage-masked matching; 16 touches inside one
- *       superpage evict nothing -- dtlb.sv). This is the capacity miss that
- *       forces the S7 walk.
- *   --- no sfence.vma or fence.i from here to S7 ---
- *   S5  Fill all 512 new PTEs of T with aligned 64-bit stores (R -> P1, page by
- *       page: identical data to the old leaf), `fence w,w`, then publish the
- *       PMD pointer PMD[R] -> T. These stores leave T's lines and the PMD line
- *       DIRTY in the L1D; L2 still holds the OLD contents. T's page and the PMD
- *       line sit at distinct L1D indices.
- *   S6  Evict ONLY the PMD line to L2 with a STORE to PMD_line_PA + 0x20000
- *       (the L1D is direct-mapped 128 KiB / 32 B lines, so +128 KiB aliases the
- *       same index with a different tag). A store is used, not a load: a load
- *       can be answered by the load path without displacing the L1D line.
- *       After a drain, a physical reload of the PMD line (which no longer hits
- *       the L1D) forces the writeback to complete through frost_cache's
- *       same-line writeback interlock, and confirms L2 now holds the new
- *       pointer. T's 128 dirty lines are never touched.
- *   S7  Load R+tp (MPRV window). The DTLB misses and the walker reads the new
- *       PMD pointer from L2 and the STALE child words from L2:
- *         - INVALID: V=0 -> load page fault (cause 13).
- *         - DECOY:   stale leaf -> decoy frame -> wrong signature.
+ * The INVALID seed is all zero (V=0), so a torn walk takes a load page fault
+ * (cause 13). The DECOY seed holds legal leaves (A and D set, since Svade
+ * faults a leaf with A=0) that map a decoy frame, so a torn walk reads the
+ * decoy signature without faulting and a fix that only handles faults cannot
+ * pass. An iteration passes with no fault and the exact P1 signature; a walker
+ * that read only L2 fails every iteration.
  *
- * PASS requires, for every iteration, NO fault AND the exact P1 signature:
- * S7's walk probes the PMD line and then T's line out of the L1D, reads the
- * new table (R -> P1) and returns the P1 signature. With the walker reading
- * the shared level alone (the RTL before walker_coherence_sequencer), every
- * iteration faulted (INVALID) or read the decoy signature (DECOY) and the app
- * printed <<FAIL>>.
- *
- * Note: the isolated DMMU/PTW cocotb benches feed the walker synthetic line
- * responses and so cannot exhibit this; it must run as a full-SoC program.
+ * As in vm_test, M-mode fetch stays untranslated and every translated data
+ * access runs in a short MPRV window (MPP=S, MPRV=1). The page tables and data
+ * regions are at fixed addresses in cached DDR, so the test runs in either
+ * memory tier; the stack is in uncached low BRAM. The isolated DMMU bench and
+ * the ptw formal target supply synthetic walk and line responses, so only a
+ * full-SoC program runs this sequence end to end.
  */
 
 #include "uart.h"
@@ -182,9 +141,10 @@ static const struct iter_cfg CFGS[] = {
 #define NUM_CFGS (sizeof(CFGS) / sizeof(CFGS[0]))
 
 /* ------------------------------------------------------------------ *
- * Trap plumbing (vm_test shape). The M-mode handler records the first
- * trap of a window and returns to the mscratch continuation with MPP=M
- * forced, so the continuation runs untranslated even while MPRV is up.
+ * Trap plumbing (vm_test shape). A trap sets MPP=M, so the handler's own
+ * data accesses are untranslated even with MPRV up. The handler records
+ * the first trap of a window and returns in M-mode (MPP=M forced) to the
+ * mscratch continuation, which drops MPRV before any data access.
  * ------------------------------------------------------------------ */
 static volatile unsigned long g_cause;
 static volatile unsigned long g_epc;
@@ -208,7 +168,7 @@ __attribute__((naked, aligned(4))) static void ptw_trap_handler(void)
                      "2:\n"
                      "csrr t0, mscratch\n"
                      "csrw mepc, t0\n"
-                     "li   t0, 0x1800\n" /* MPP=M so the continuation is untranslated */
+                     "li   t0, 0x1800\n" /* MPP=M so mret returns to M-mode */
                      "csrs mstatus, t0\n"
                      "mret\n");
 }
@@ -230,8 +190,8 @@ static inline void write_satp(unsigned long v)
 
 /* One translated (S-mode, MPRV) load of `va`. Returns the loaded value on the
  * no-fault path; g_cause stays ~0 on success, or holds the trap cause on a
- * fault. The window touches only `va`, so it is safe outside the critical
- * region (it stores the result to a global). */
+ * fault. The result goes to a global, so it is used only outside the critical
+ * window. */
 static unsigned long translated_load(unsigned long va)
 {
     g_cause = ~0ul;
@@ -291,8 +251,7 @@ static void build_static_tables(void)
     for (unsigned i = 0; i < NUM_FILLERS; i++)
         pmd[0x80 + i] = PTE_PPN(P_FILLER) | PTE_LEAF_RW;
 
-    /* Seed the decoy frame's target word once (read directly by S7, not
-     * walked). */
+    /* Zero the decoy frame's target word. */
     sd_phys(DECOY_FRAME, 0); /* placeholder; per-iter value set in do_iter */
     (void) ld_phys(P_FILLER);
 }
@@ -342,8 +301,10 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
         return 0;
     }
 
-    /* --- S4: evict R from the DTLB with 24 distinct superpages OUTSIDE R (no
-     * sfence). Rotating replacement overwrites all 16 entries. --- */
+    /* --- S4: evict R from the DTLB with 24 distinct superpages outside R (no
+     * sfence). Rotating replacement overwrites all 16 entries. The superpages
+     * must be distinct: a 2 MiB entry matches its whole superpage, so touches
+     * inside one superpage reuse one entry. --- */
     for (unsigned i = 0; i < NUM_FILLERS; i++) {
         (void) translated_load(FILLER_VA(i));
         if (g_cause != ~0ul) {
@@ -365,9 +326,9 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
     g_epc = ~0ul;
     g_tval = ~0ul;
 
-    /* --- S5/S6/S7 as one block: no compiler-inserted cached access can slip
-     * between filling T and the faulting load. Every cached access here is to
-     * a controlled address at a block distinct from T's dirty lines. --- */
+    /* --- S5/S6/S7 as one asm block, so no compiler-generated cached access
+     * can slip between filling T and the S7 load. Apart from the stores to T,
+     * every cached access here uses an L1D block distinct from T's lines. --- */
     __asm__ volatile(
         /* S5: fill all 512 PTEs of T (R page k -> P1 page k), leaving them
          * dirty in the L1D while L2 still holds the seed. */
@@ -388,15 +349,19 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
         /* S5b: publish the PMD pointer -> T (dirty in the L1D). */
         "  sd   %[pmdptr], 0(%[pmdent])\n"
         "  fence\n" /* PMD store settled into the L1D before eviction */
-        /* S6a: evict ONLY the PMD line with a STORE to the +128 KiB alias. */
+        /* S6a: evict only the PMD line with a store to the +128 KiB alias. A
+         * load could be answered by the load path without displacing the
+         * line. */
         "  sd   x0, 0(%[alias])\n"
         "  fence\n" /* drain: the eviction writeback is now in flight */
-        /* S6b: reload the PMD line (no L1D hit) -> completes the writeback via
-         * the same-line interlock; L2 now holds the new pointer. */
+        /* S6b: reload the PMD line. It misses the L1D, and its fill waits for
+         * the line's writeback (frost_cache's same-line writeback interlock),
+         * so it reads the new pointer from L2. */
         "  ld   t5, 0(%[pmdent])\n"
         "  sd   t5, 0(%[scratch])\n"
-        /* S7: translated load of R. DTLB miss -> walk reads the new pointer and
-         * the stale child words from L2. */
+        /* S7: translated load of R. The DTLB misses, and the walk reads the new
+         * PMD pointer and then T's entry, whose line is still dirty in the
+         * L1D. */
         "  la   t0, 1f\n csrw mscratch, t0\n"
         "  li   t0, 0x1800\n csrc mstatus, t0\n"
         "  li   t0, 0x0800\n csrs mstatus, t0\n"
@@ -421,8 +386,8 @@ static int do_iter(unsigned iter, const struct iter_cfg *c)
     int faulted = (g_cause != ~0ul);
 
     /* pmd_readback confirms the eviction/writeback landed (L2 has the pointer).
-     * If it did not, the walk would have found the old 2 MiB leaf and the
-     * "pass" would be meaningless -- flag it. */
+     * If it did not, the walk would have found the old 2 MiB leaf and a pass
+     * would mean nothing, so flag it. */
     int conditions_ok = (pmd_readback == pmd_ptr);
 
     int ok = conditions_ok && !faulted && (r_val == sig1);

@@ -14,13 +14,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Adapt generated riscv-torture assembly for Frost.
+"""Adapt generated riscv-torture assembly for FROST.
 
 Takes a raw riscv-torture output .S file and wraps it with:
   - frost_header.S at the top (startup, FPU init, data copy)
   - frost_footer.S at the bottom (register dump, UART signature, PASS marker)
 
-The result is self-contained and directly compilable.
+The result is self-contained and directly compilable. generate_tests.py writes
+its tests already wrapped, so the committed corpus does not go through this
+script.
 
 Usage:
     ./adapt_test.py input.S output.S
@@ -35,7 +37,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 
 
 def adapt_test(input_path: Path, output_path: Path) -> bool:
-    """Adapt a single riscv-torture test for Frost.
+    """Adapt a single riscv-torture test for FROST.
 
     The adapted file structure:
       1. #include "frost_header.S"   (provides _start, startup code)
@@ -47,8 +49,8 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
 
     Modifications to the original code:
       - Remove any existing _start label (frost_header provides it)
-      - Remove the riscv_test.h and test_macros.h includes and the RVTEST_*
-        macros (RVTEST_CODE_BEGIN defines _start too)
+      - Remove the riscv_test.h and test_macros.h includes, TEST_DATA, and
+        the other RVTEST_* macros (RVTEST_CODE_BEGIN defines _start too)
       - Remove tohost/fromhost references
       - Replace `ecall`, `RVTEST_PASS` and `RVTEST_FAIL` with
         `j _torture_test_end`
@@ -160,9 +162,9 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
 
 
 def main() -> int:
-    """Adapt riscv-torture tests for Frost."""
+    """Adapt riscv-torture tests for FROST."""
     parser = argparse.ArgumentParser(
-        description="Adapt riscv-torture tests for Frost",
+        description="Adapt riscv-torture tests for FROST",
     )
     parser.add_argument(
         "input",
@@ -208,7 +210,10 @@ def main() -> int:
 
     else:
         if not input_path.is_file():
-            print(f"Error: {input_path} does not exist", file=sys.stderr)
+            print(
+                f"Error: {input_path} is not a file (use --batch for a directory)",
+                file=sys.stderr,
+            )
             return 1
 
         if adapt_test(input_path, output_path):

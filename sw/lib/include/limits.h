@@ -18,18 +18,18 @@
 #define LIMITS_H
 
 /**
- * Integer limits for this platform: int is 32-bit, long is 64-bit at lp64.
+ * Integer limits for LP64: int is 32-bit, long is 64-bit.
  *
- * INT_MIN and LONG_MIN are written as (-MAX - 1) so that the constant
- * expression itself does not overflow.
+ * INT_MIN and LONG_MIN are written as (-MAX - 1) because the positive literals
+ * 2147483648 and 9223372036854775808 do not fit in int and long.
  */
 
-/* Limits for 32-bit signed/unsigned int (both ABIs) */
+/* Limits for 32-bit signed/unsigned int */
 #define INT_MIN (-2147483647 - 1)
 #define INT_MAX 2147483647
 #define UINT_MAX 4294967295U
 
-/* Limits for long: ABI-width (lp64: 64-bit) */
+/* Limits for 64-bit signed/unsigned long */
 #define LONG_MIN (-9223372036854775807L - 1L)
 #define LONG_MAX 9223372036854775807L
 #define ULONG_MAX 18446744073709551615UL

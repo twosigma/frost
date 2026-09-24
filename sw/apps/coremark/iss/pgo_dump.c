@@ -76,11 +76,9 @@ static void *allocate_callback(unsigned length, void *arg)
 }
 
 /* libgcov's value profilers and error paths reference a handful of libc
- * entry points that a -nostdlib link does not supply.  The training binary
- * reads no existing gcda, so fread is never called; the bump allocators are
- * sized well above what one CoreMark training run asks for, and abort()
- * reports rather than spins so an undersized arena is visible instead of
- * looking like a hung Spike run. */
+ * entry points that a -nostdlib link does not supply. The training binary
+ * reads no existing gcda, so fread is never called, and the bump allocators
+ * are sized well above what one CoreMark training run asks for. */
 void abort(void) __attribute__((noreturn));
 void *calloc(size_t count, size_t size);
 void *malloc(size_t size);
@@ -147,7 +145,8 @@ size_t fread(void *pointer, size_t size, size_t count, void *stream)
 }
 
 /* Report and stop the simulator rather than spinning, so a failure in the
- * dump is visible instead of looking like a hung training run. */
+ * dump, such as an undersized arena, is visible instead of looking like a hung
+ * training run. */
 void abort(void)
 {
     static const char message[] = "\n<<GCOV-ABORT>>\n";

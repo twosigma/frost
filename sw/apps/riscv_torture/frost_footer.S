@@ -1,17 +1,15 @@
-// Frost footer for riscv-torture tests
+// FROST footer for riscv-torture tests
 //
-// Included at the end of each adapted torture test, where it:
+// Included at the end of each torture test, where it:
 //   1. Dumps all integer registers (x0-x31) to the signature area
 //   2. Dumps all FP registers (f0-f31) to the signature area
 //   3. Prints the signature over the UART as hex (like arch_test RVMODEL_HALT)
 //   4. Prints the <<PASS>> marker
-//   5. Halts
+//   5. Writes tohost, which ends the Spike run, and halts
 //
-// Integer registers dump at their natural width, sd/8B, which is D11's
-// 64-bit signature layout. FP registers are 64-bit fsd (FLEN=64). The UART
-// dump loop is width-agnostic: it walks 32-bit words to the end label.
-// Spike's tohost cell is HTIF-read at XLEN width, so it is dword-sized and
-// sd-written.
+// Integer registers dump at their natural width (sd, 8 bytes). FP registers
+// are 64-bit fsd (FLEN=64). The UART dump loop is width-agnostic: it walks
+// 32-bit words to the end label.
 
 #define XSTORE sd
 #define XB 8
@@ -151,8 +149,7 @@ _frost_torture_sig_done:
     sb a5, 0(a2)
 
     // Signal completion via tohost (for Spike reference generation).
-    // On Frost hardware, tohost is not monitored so this is a harmless store.
-    // HTIF reads the cell at XLEN width, so use the natural-width store.
+    // FROST does not monitor tohost, so on FROST this is a harmless store.
     la a0, tohost
     li a1, 1
     XSTORE a1, 0(a0)
@@ -160,10 +157,8 @@ _frost_torture_sig_done:
 _frost_torture_halt:
     j _frost_torture_halt
 
-    // tohost/fromhost for Spike. The cells are XLEN-wide because HTIF polls
-    // at XLEN width. The layout has to stay bit-exact: the committed
-    // references embed _torture_data's address (x31 is dumped), so any drift
-    // would invalidate the whole corpus.
+    // tohost/fromhost for Spike. The cells are XLEN-wide, and tohost is
+    // written with sd, because HTIF polls at XLEN width.
     .section .tohost, "aw", @progbits
     .align 3
     .globl tohost

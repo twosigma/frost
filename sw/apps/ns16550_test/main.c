@@ -15,15 +15,15 @@
  */
 
 /*
- * ns16550a UART face directed test (Increment 1 of the no-MMU Linux glue).
+ * ns16550a UART face directed test.
  *
  * FROST presents a word-stride 16550 register face at 0x4000_1000 (DTB
  * reg-shift=2, reg-io-width=4) that aliases the native UART TX/RX, so a stock
- * Linux 8250 console driver can drive it. This test runs the 8250 init dance
- * (DLAB/baud, 8N1, FIFO, MCR), checks the register file and TX-ready status,
- * and transmits a banner through the face, which must appear on the UART TX
- * line. PASS/FAIL goes out over the known-good native UART so the verdict is
- * independent of the face under test.
+ * Linux 8250 console driver can drive it. This test runs the 8250
+ * initialization sequence (DLAB/baud, 8N1, FIFO, MCR), checks the register
+ * file and TX-ready status, and transmits a banner through the face, which
+ * must appear on the UART TX line. PASS/FAIL goes out over the known-good
+ * native UART, so the result does not depend on the face under test.
  */
 
 #include <stdint.h>

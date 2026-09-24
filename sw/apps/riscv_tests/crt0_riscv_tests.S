@@ -1,4 +1,4 @@
-// Frost minimal C-runtime startup for riscv-tests
+// FROST minimal C-runtime startup for riscv-tests
 //
 // _start in the .init section (placed first by the linker script) copies
 // .data from ROM to RAM, zeros .sbss and .bss, sets sp and gp, and calls

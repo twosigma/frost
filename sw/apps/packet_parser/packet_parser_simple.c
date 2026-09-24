@@ -30,6 +30,7 @@
 #include <stddef.h> /* For size_t */
 #include <stdint.h>
 
+/* Period of the default 322.265625 MHz clock, used only for the printed ns figure. */
 #define CLOCK_PERIOD_PS 3103
 
 
@@ -101,7 +102,6 @@ static uint32_t extract_client_order_id(uint64_t mapped_order_id)
 static inline uint32_t fifo_read_word(int fifo_id)
 {
     uint32_t chunk = (fifo_id == 0) ? fifo0_read() : fifo1_read();
-    /* Give MMIO read data a cycle to settle before consumption. */
     asm volatile("nop");
     return chunk;
 }

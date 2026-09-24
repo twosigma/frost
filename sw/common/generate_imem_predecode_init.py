@@ -16,26 +16,26 @@
 
 """Generate Vivado-friendly init files for imem_predecode.sv.
 
-The runtime instruction memory is split into even and odd banks. Each data
-bank is then split into a 28-bit cold block-RAM image and a four-bit
-frontend-hot image for architectural word bits ``{15, 10, 7, 6}``. The 78-bit
-predecode sideband stores each halfword's full 32-bit RVC expansion and illegal
-flag, plus twelve fetch-control predicates. The two five-bit source fields
-are split into the existing source lanes, with no duplicated rs2 hot bit.
-The sideband and five-lane high-parcel block-RAM replica have their own images,
-and every sideband
-predicate on the IF PC feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar
-LUTRAM overlay image per parity bank. The generator emits the full overlay
-image; the RTL reads the prefix selected by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
+The instruction memory is split into even and odd word banks, and each bank's
+data into a 28-bit cold block-RAM image and a four-bit frontend-hot image of
+word bits ``{15, 10, 7, 6}``. Each word also has a 78-bit predecode sideband:
+twelve fetch-control predicates plus, for each halfword, the full 32-bit RVC
+expansion and its illegal flag. Expansion bits [19:15] (rs1) are split between
+the source-hot lane (rs1[2:1]) and the rs1-rest lane, bits [24:20] have their
+own lane, and the RVC-extra field holds the rest, so no bit is stored twice.
+The sideband and the five-lane high-parcel block-RAM replica each get their
+own image, and every sideband predicate the IF next-PC logic reads
+(``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM overlay image per parity bank.
+The generator writes the full overlay image; the RTL reads the prefix selected
+by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
 
-Simulation can derive all of these memories inside SystemVerilog from sw.mem.
+Simulation derives all of these memories from sw.mem inside SystemVerilog.
 Vivado initializes each synthesized memory more reliably from its own file,
-which is why this generator exists. The predecode functions below mirror
-their riscv_pkg counterparts (``imem_compressed_control``, ``imem_native_*``,
+which is why this generator exists. The predecode functions below mirror their
+riscv_pkg counterparts (``imem_compressed_control``, ``imem_native_*``,
 ``imem_rvc_expand``, ``imem_rvc_source_hot``, ``imem_rvc_rs1_rest``,
-``imem_rvc_bits24_20``, and
-``imem_make_sideband``); the imem_predecode_line cocotb bench cross-checks the
-RTL against this script.
+``imem_rvc_bits24_20``, and ``imem_make_sideband``); the imem_predecode_line
+cocotb bench cross-checks the RTL against this script.
 """
 
 from __future__ import annotations
@@ -280,8 +280,8 @@ def rvc_extra(raw: int) -> int:
 def rvc_bits24_20(parcel: int) -> int:
     """Return bits [24:20] of one RVC parcel's 32-bit expansion.
 
-    This is rs2 for register formats and immediate bits otherwise, including
-    reserved encodings' canonical zero expansion. It mirrors
+    This is rs2 for register formats and immediate bits otherwise, and zero for
+    the reserved encodings that expand to zero. It mirrors
     ``riscv_pkg::imem_rvc_bits24_20`` and ``rvc_decompressor``'s
     ``rs2_field_q0/q1/q2``. A native (quadrant 3) parcel returns zero.
     """
@@ -520,9 +520,10 @@ def make_sideband(word: int) -> int:
     if slot2_start_valid_hi:
         sideband |= 1 << SB_SLOT2_START_VALID_HI
 
-    # Word-local PC/bundle predicates.  The RVC-at-low shape can include its
-    # same-word slot-2 class; the other three bits collapse the slot-1
-    # size/allows conjunction before the fetch-time cross-word join.
+    # Word-local PC/bundle predicates. With an RVC instruction in the low
+    # parcel, slot 2 starts in the same word, so EVEN_LOCAL_PAIR_VALID also
+    # checks slot 2's start. The other three bits precompute slot 1's size and
+    # allows-slot-2 term; fetch combines them with the next word's slot-2 check.
     if compressed_lo and allows_slot2_after_lo and slot2_start_valid_hi:
         sideband |= 1 << SB_EVEN_LOCAL_PAIR_VALID
     if not compressed_lo and allows_slot2_after_lo:
@@ -702,8 +703,8 @@ def main() -> int:
     odd_sideband = [make_sideband(word) for word in odd_words]
     write_word_file(args.even_sideband, even_sideband, sideband_hex_digits)
     write_word_file(args.odd_sideband, odd_sideband, sideband_hex_digits)
-    # The legacy *_compressed.mem images are the narrow high-parcel block-RAM
-    # replicas used by the X3 frontend (see make_fast_replica).
+    # Despite their name, the *_compressed.mem images hold the five-lane
+    # high-parcel block-RAM replica (see make_fast_replica).
     write_word_file(
         args.even_compressed,
         [

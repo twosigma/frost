@@ -15,9 +15,10 @@
  */
 
 /*
- * Reproduces the Linux timer-IRQ failure where _find_next_bit() returned
- * through ra=0x00000cc0. It poisons the future saved-RA slot and enters a
- * kernel-shaped rv64 callee:
+ * A timer IRQ inside a _find_next_bit()-shaped callee must not corrupt its
+ * saved ra; the failure this guards against is a return through
+ * ra = 0x00000cc0. The test poisons the future saved-ra slot with that value
+ * and enters a kernel-shaped rv64 callee:
  *
  *     addi sp, sp, -16
  *     sd   s0, 0(sp)

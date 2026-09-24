@@ -1,7 +1,7 @@
-    // Startup for the Spike instruction-count harness (see README.md).
-    // Not the FROST boot path -- ../../common/crt0.S is.  Spike enters at the
-    // ELF entry with mstatus.FS = Off, so floating point must be enabled here
-    // or CoreMark's first c.fsdsp traps as an illegal instruction.
+    // Startup for the Spike harness (see README.md); the FROST CoreMark build
+    // uses sw/common/crt0.S. Spike enters at the ELF entry with
+    // mstatus.FS = Off, so floating point must be enabled here or the first FP
+    // instruction traps as illegal.
     .section .text.init
     .globl _start
 _start:
@@ -19,8 +19,8 @@ _start:
     addi    t0, t0, 4
     j       1b
 2:  call    main
-    // HTIF: a non-zero tohost with bit 0 set exits Spike.  Two sw stores cover
-    // the 8-byte field on both XLENs.
+    // HTIF: a nonzero tohost with bit 0 set exits Spike. Two sw stores cover
+    // the 8-byte field at either XLEN.
     la      t0, tohost
     li      t1, 1
     sw      t1, 0(t0)

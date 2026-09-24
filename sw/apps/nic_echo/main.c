@@ -17,10 +17,10 @@
 /*
  * NIC echo (hw/rtl/peripherals/nic, sw/lib/include/nic.h).
  *
- * What a real link looks like to the NIC: the bench's wire-side peer
- * (verif/cocotb_tests/test_real_program.py) sends frames into the raw RX
- * interface and decodes the raw TX interface; this program echoes every
- * frame it receives, interrupt-driven with moderation, reposting RX
+ * The NIC faces a link partner: in simulation, the bench's wire-side
+ * peer (verif/cocotb_tests/test_real_program.py), which sends frames into the
+ * raw RX interface and decodes the raw TX interface. This program echoes every
+ * intact frame it receives, interrupt-driven with moderation, reposting RX
  * descriptors as it goes. The peer's plan (a fixed count of frames landing
  * in the ring, of which two are truncated by the buffer length, plus two
  * frames for another station that the filter drops) is known here, so the
@@ -193,7 +193,7 @@ static int bringup(void)
     g_tx_reaped = 0;
     __asm__ volatile("fence w, o" ::: "memory"); /* memory writes before the I/O doorbell */
     nic_write(NIC_RX_TAIL, g_rx_posted % RX_ENTRIES);
-    /* Moderation: up to four completions or 40 ticks of 30 cycles. */
+    /* Moderation: four RX or eight TX completions, or 40 ticks of 30 cycles. */
     nic_write(NIC_TICK, 30);
     nic_write(NIC_RX_ITR, NIC_ITR(40, 4));
     nic_write(NIC_TX_ITR, NIC_ITR(40, 8));

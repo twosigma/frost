@@ -1,4 +1,4 @@
-/* Linker script for riscv-tests on Frost, virtual environment (-v).
+/* Linker script for riscv-tests on FROST, virtual environment (-v).
  *
  * The upstream env/v layout in the cached DDR region: the kernel
  * (env_v/entry.S + vm.c) and the user test share one image at DRAM_BASE;
@@ -6,9 +6,10 @@
  * offset) into frames above it, and the kernel runs translated through a
  * 2 MiB superpage at the top of the address space. A ROM boot stub
  * (crt0_riscv_tests_ddr.S) far-jumps to the DDR-resident _start; DDR
- * sections load in place from sw_ddr.mem; .bss (page tables, free lists)
- * is zeroed by the entry. The whole image must stay below the user frames
- * (DRAM_BASE + 64 pages), which the ASSERT below pins.
+ * sections load in place from sw_ddr.mem; entry.S zeroes .sbss and .bss
+ * (page tables, free lists). The image and the 16 KiB kernel stack above it
+ * must stay below the user frames (DRAM_BASE + 64 pages); the ASSERTs at the
+ * end check this and that _start sits at DRAM_BASE.
  */
 
 ENTRY(_start)
@@ -65,10 +66,8 @@ SECTIONS
          * test data. User pages are demand-paged copies of this image, so a
          * kernel write through its own VA to a page the user also maps
          * diverges the copy from its backing, and evict()'s frame-vs-backing
-         * memcmp then trips its PTE_D assertion on a page the test only ever
-         * read (rv64ui-v-ld / -lw: tdat at 0x3000 shared a page with
-         * freelist_tail at 0x3020). Store tests masked it by dirtying the
-         * page. */
+         * memcmp then trips its PTE_D assertion on a page the test only
+         * read. */
         . = ALIGN(0x1000);
         __sbss_start = .;
         *(.sbss*)

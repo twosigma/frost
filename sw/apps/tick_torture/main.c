@@ -15,21 +15,23 @@
  */
 
 /*
- * Linux CLINT tick re-arm under heavy cached-DDR traffic.
+ * CLINT timer re-arm under heavy cached-DDR traffic.
  *
- * A stopped machine-timer freezes jiffies and hangs Linux. This test compresses
- * the initramfs-unpack regime: a foreground DDR thrash runs while the timer
- * handler re-arms on a much shorter period, using the Linux hi=-1/lo/hi mtimecmp
- * write order and hi/lo/hi mtime reads. Three detectors isolate failures:
+ * A timer tick that stops arriving freezes jiffies and hangs Linux. Here a
+ * foreground loop thrashes DDR while the machine-timer handler re-arms on a much
+ * shorter period than the kernel's, writing mtimecmp as hi=-1, lo, hi and
+ * reading mtime as hi, lo, hi. Three detectors catch failures:
  *
- *   D1: immediate mtimecmp readback catches dropped or mispaired stores.
- *   D2: a WATCHDOG_PERIODS deadline catches dead delivery and dumps
- *       mip/mie/mstatus plus mtimecmp.
- *   D3: bounded WFI phases require tick progress.
+ *   D1: an immediate mtimecmp readback catches dropped or mispaired stores.
+ *   D2: no tick for WATCHDOG_PERIODS periods past the armed deadline fails the
+ *       test and dumps mip/mie/mstatus plus an mtimecmp readback.
+ *   D3: periodic WFI idle phases must see a tick within WATCHDOG_PERIODS
+ *       periods, checked each time WFI returns.
  *
- * The test keeps the parts of the Linux structure that matter here: code, data
- * and stack in DDR, a csrrw tp,mscratch,tp trap entry, a full rv64 frame, an SC
- * before mret to clear a stale LR, and an absolute-next re-arm with catch-up.
+ * The test keeps the parts of the M-mode Linux structure that matter here:
+ * code, data and stack in DDR, a csrrw tp,mscratch,tp trap entry, a full rv64
+ * frame, an SC before mret to clear a stale LR, and an absolute re-arm (the
+ * previous deadline plus one period) with catch-up.
  */
 
 #include <stdint.h>
@@ -38,8 +40,9 @@
 #include "trap.h"
 #include "uart.h"
 
-/* Kernel-mirror rv64 frame: full-width slots and mcause bit 63. XB is a string
- * so gas evaluates "n*" XB offsets. */
+/* Trap frame in the kernel's rv64 pt_regs layout: 36 8-byte slots, so the saved
+ * mcause keeps its interrupt bit (63). XB is a string so gas evaluates the
+ * "n*" XB offsets. */
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"
@@ -95,7 +98,8 @@ static uint64_t clint_rdmtime(void)
     return ((uint64_t) hi << 32) | lo;
 }
 
-/* Linux drivers/clocksource/timer-clint.c write order: hi=-1, lo, hi. */
+/* Three 32-bit stores: hi=-1, lo, hi. The intermediate value stays above mtime,
+ * so the update cannot fire a spurious interrupt. */
 static void clint_set_timer_cmp(uint64_t cmp)
 {
     CLINT_MTIMECMP_HI = 0xFFFFFFFFu;
@@ -320,6 +324,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
 
 int main(void)
 {
+    /* link_ddr.ld keeps the stack in low BRAM; move it into DDR. */
     uintptr_t stack_top = ((uintptr_t) &g_ddr_stack[DDR_STACK_SIZE]) & ~(uintptr_t) 0xFu;
 
     __asm__ volatile("mv sp, %0\n"

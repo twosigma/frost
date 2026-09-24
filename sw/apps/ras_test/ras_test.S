@@ -1,25 +1,24 @@
 # Return Address Stack test suite
 #
-# Covers nested calls, recursion, depth overflow, indirect calls, mixed RVC,
-# and BTB interactions, with counter checks and diagnostic output.
+# Covers nested calls up to and past the 8-entry RAS depth, mixed 32-bit and
+# compressed returns, calls after a c.nop, back-to-back and looped calls, and
+# x5 (t0) as the link register, with counter checks and diagnostic output.
 #
-# The pass/fail checks only prove that each return landed at the right
-# address. Whether the RAS predicted it shows up in the cycle count instead:
-# an unpredicted return costs a 3-cycle misprediction penalty.
+# The checks prove only that each return lands at the right address. Whether
+# the RAS predicted it affects only the cycle count, which this test does not
+# measure.
 #
 # Test Categories:
 #   A. Basic functionality (simple call/return)
 #   B. Stack depth tests (nested calls, overflow)
 #   C. Instruction encoding tests (32-bit, compressed, mixed)
-#   D. Address alignment tests (word-aligned, halfword-aligned)
-#   E. Edge cases (underflow, coroutines, tight loops)
+#   D. Calls placed after a 2-byte c.nop (halfword-shifted call sites)
+#   E. Edge cases (tight loops, back-to-back calls, x5 as the link register)
 #   F. Stress tests (rapid call/return patterns)
 
-# rv64: the nested helpers spill ra with sd/ld in 8-byte frames. The original
-# rv32-era sw/lw spill sign-extended the reloaded return address in the DDR
-# arrangement (ra has bit 31 set there), and the return fetch PMA-faulted once
-# out-of-map aliasing was retired (Phase 3 M2); with no mtvec armed the test
-# then restarted from _start via the boot shim forever.
+# The nested helpers spill ra with sd/ld in 8-byte frames. In the DDR build,
+# return addresses have bit 31 set, so a 32-bit lw reload would sign-extend ra
+# to an out-of-map address and the return fetch would fault.
 
     .section .init
     .option push
@@ -77,8 +76,8 @@ test_a1_fail:
     jal     ra, print_string
 
     # =========================================================================
-    # TEST A2: Basic call and C.JR return (the rv32-era C.JAL call form
-    # assembles as a plain JAL here; C.JR is the compressed half)
+    # TEST A2: Basic call and C.JR return (RV64 has no C.JAL, so the call is
+    # a plain JAL; C.JR is the compressed half)
     # =========================================================================
 test_a2_start:
     addi    s3, s3, 1
@@ -383,7 +382,6 @@ test_c2_fail:
 
     # =========================================================================
     # TEST D1: Return to halfword-aligned address
-    # Checks RAS prediction when the return PC is not word-aligned
     # =========================================================================
 test_d1_start:
     addi    s3, s3, 1
@@ -392,10 +390,11 @@ test_d1_start:
 
     li      t0, 0
 
-    # The 2-byte c.nop puts the return address off a 4-byte boundary
+    # The 2-byte c.nop shifts the call by a halfword. The return address is
+    # halfword-aligned only when the code above ends on a 4-byte boundary.
     .option rvc
     c.nop
-    jal     ra, func_increment_t0  # Return will be to halfword address
+    jal     ra, func_increment_t0
 
     li      t1, 1
     bne     t0, t1, test_d1_fail
@@ -421,7 +420,9 @@ test_d1_fail:
     jal     ra, print_string
 
     # =========================================================================
-    # TEST D2: Multiple returns to halfword-aligned addresses
+    # TEST D2: Three calls, each after a c.nop. A c.nop and JAL pair is six
+    # bytes, so successive return addresses alternate between halfword and
+    # word alignment.
     # =========================================================================
 test_d2_start:
     addi    s3, s3, 1
@@ -540,7 +541,7 @@ test_e2_fail:
     jal     ra, print_string
 
     # =========================================================================
-    # TEST E3: JALR with x5 (t0) as link register (alternate link reg)
+    # TEST E3: Call and return through x5 (t0), the alternate link register
     # =========================================================================
 test_e3_start:
     addi    s3, s3, 1

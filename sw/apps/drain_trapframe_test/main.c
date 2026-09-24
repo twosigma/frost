@@ -17,31 +17,29 @@
 /*
  * Trap-frame store visibility under L1D eviction.
  *
- * The observed Linux failure restored s2=0x19999998 instead of its pointer
- * after a timer IRQ. This test checks whether a trap-frame store can leave the
- * SQ before reaching L1D, allowing eviction to write stale data to DDR.
+ * Checks that a trap-frame store stays visible when the L1D evicts its line. A
+ * store that left the SQ before reaching the L1D would let the eviction write
+ * stale data to DDR, and the trap exit would restore a wrong register.
  *
- * Under MEM_CONFIG=ddr, a Linux-style rv64 entry saves pt_regs (288 bytes,
- * 8-byte REG_S/REG_L slots) at fixed FRAME_BASE, with s2 last at offset 144.
- * The slot is pre-poisoned with the observed bad value. A cold drain store
- * precedes the IRQ. The handler then evicts s2's line through same-set
- * addresses (128 KiB direct-mapped L1D, 32-byte lines, alias stride 0x20000)
- * and reads it back.
- *
- * The rv32-era 4-byte-slot version of this test died with the Phase 3 M2
- * aliasing retirement: sw/lw round-trips of bit-31 pointers sign-extend and
- * PMA-fault, while rv64 sd/ld round-trips are exact.
+ * A Linux-style rv64 trap entry saves pt_regs (288 bytes, 8-byte REG_S/REG_L
+ * slots) at the fixed cached-DDR address FRAME_BASE, with s2 (offset 144)
+ * saved last. The s2 slot and the five after it are pre-poisoned, so a save
+ * that never lands reads back a wrong value, and a cold drain store precedes
+ * each interrupt. The handler then evicts s2's line through same-set addresses
+ * (128 KiB direct-mapped L1D, 32-byte lines, alias stride 0x20000) and reads
+ * it back.
  *
  * Failure codes distinguish:
- *   29: incoming architectural s2 was already corrupt.
- *   30: the saved value was wrong before eviction.
- *   31: it was correct before eviction and wrong afterward (the target bug).
+ *   29: the incoming architectural s2 was already wrong.
+ *   30: the saved value was wrong before the eviction.
+ *   31: s2 was correct before the eviction, but s2 or a witness slot (s3, s4)
+ *       read wrong after it.
  *
- * Timer margin 0..255 and a 0..15 post-store gap sweep the drain/eviction
- * window. A fixed continuation keeps a bad mepc reportable. The registered
- * simulation uses a deliberately small L2 and DDR_MODEL_LATENCY>=70 to keep
- * writeback pressure high. Failures print the code, margin, expected value,
- * and actual value.
+ * Timer margins 0..255, each with a post-store gap of margin & 15, sweep the
+ * drain and eviction window. The handler resumes at a fixed continuation, so
+ * a bad mepc cannot stop the sweep. The simulation target uses a small L2 and
+ * a slow DDR model to keep writeback pressure high. Failures print the code,
+ * margin, register, expected value, and actual value.
  */
 
 #include <stdint.h>
@@ -49,9 +47,11 @@
 #include "trap.h"
 #include "uart.h"
 
-/* 128 KiB direct-mapped L1D with 32-byte lines. */
+/* 128 KiB direct-mapped L1D with 32-byte lines. The naked asm below
+ * hard-codes L1D_STRIDE, N_EVICT, FRAME_BASE, FRAME_TOP, S2_LINE_BASE, and
+ * POISON_S2, so change it along with them. */
 #define L1D_STRIDE 0x00020000u /* 128 KiB: A and A+stride share one set */
-#define N_EVICT 6u             /* conflicting lines touched per eviction */
+#define N_EVICT 6u             /* same-set lines loaded per eviction, s2's first */
 
 /* Line-aligned cached-DDR trap frame. */
 #define FRAME_BASE 0x82000000u
@@ -65,9 +65,9 @@
 #define MARGIN_MIN 0u
 #define MARGIN_MAX 255u
 
-#define POISON_S2 0x19999998u /* the real name_to_int value */
+#define POISON_S2 0x19999998u /* poison for the saved s2 slot */
 
-/* Globals referenced by name from the naked asm (kept non-static, used). */
+/* Globals the naked asm references by name, so none of them is static. */
 uint32_t g_s2_target; /* &g_s2_target (full 64-bit address) is the correct s2 value */
 
 volatile uint32_t g_ticks;
@@ -89,10 +89,10 @@ volatile uint64_t g_last_actual;
 /*
  * Naked M-mode timer trap entry. Saves and restores an rv64 Linux-style
  * pt_regs frame (sd/ld, 8-byte slots) on a cached-DDR "kernel stack"
- * (sp == FRAME_TOP, set by irq_window). s2 is saved last, immediately before
- * the handler evicts its line from the direct-mapped L1D. Records the
- * discriminator codes and resumes through the fixed continuation in g_cont,
- * so a wrong mepc cannot wedge the sweep.
+ * (sp == FRAME_TOP, set by irq_window). s2 is saved last; after the gap and
+ * the code-30 check, the handler evicts its line from the direct-mapped L1D.
+ * Records the failure codes and resumes through the fixed continuation in
+ * g_cont, so a wrong mepc cannot wedge the sweep.
  */
 __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
 {
@@ -181,9 +181,7 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "4:\n"
                      /* ---- evict the saved s2 line: stride by the L1D size so every access
                       * maps to the same set with a different tag (direct-mapped), evicting
-                      * and writing back the just-stored dirty frame line. The base is built
-                      * from a positive constant because li of a bit-31 constant
-                      * sign-extends. ---- */
+                      * and writing back the just-stored dirty frame line. ---- */
                      "li   t1, 0x8200008\n"
                      "slli t1, t1, 4\n"   /* S2_LINE_BASE = 0x82000080 */
                      "li   t2, 0x20000\n" /* L1D_STRIDE  */
@@ -194,9 +192,8 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "addi t3, t3, -1\n"
                      "bnez t3, 5b\n"
                      /* ============ LOAD UNDER TEST: ld s2, 144(sp) (post-evict) =========
-                      * The line was evicted, so this load misses, refills from DDR, and sees
-                      * whatever the eviction wrote back. code=31 if it differs (the
-                      * targeted bug). */
+                      * The line was evicted, so this load misses and refills with whatever
+                      * the eviction wrote back. code=31 if it differs. */
                      "ld   t0, 144(sp)\n"
                      "la   t1, g_expected_s2\n"
                      "ld   t1, 0(t1)\n"
@@ -301,11 +298,12 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
 
 /*
  * Naked per-margin window. Preserves main's callee-saved registers, sets up the
- * cached-DDR frame stack + poison + drain store, arms the timer, loads the s0..
- * s11 sentinels, enables MIE, and spins until the handler fires. The handler
- * redirects mepc to label 9 (the fixed continuation). Reads its per-margin
- * inputs (g_timer_margin, g_gap, g_drain_addr, g_expected_s2) from globals set
- * by C before the call.
+ * cached-DDR frame stack + poison + drain store, arms the timer, loads the
+ * s0..s11 sentinels, enables MIE, and spins until the handler fires (or a
+ * bounded spin runs out). The handler redirects mepc to label 9 (the fixed
+ * continuation). The window and the handler read their per-margin inputs
+ * (g_timer_margin, g_drain_addr, g_gap, g_expected_s2) from globals that main
+ * sets before the call.
  */
 __attribute__((naked, used, noinline)) static void irq_window(void)
 {
@@ -334,13 +332,11 @@ __attribute__((naked, used, noinline)) static void irq_window(void)
         "sd   t1, 0(t0)\n"
         "la   t0, g_ticks\n"
         "sw   x0, 0(t0)\n"
-        /* kernel stack pointer: the handler does sd s2, 144(sp). Built from a
-         * positive constant because li of a bit-31 constant sign-extends,
-         * which is the rv32-ism the M2 PMA retirement faults. */
+        /* kernel stack pointer: the handler builds its frame below it */
         "li   sp, 0x8200012\n"
         "slli sp, sp, 4\n" /* FRAME_TOP = 0x82000120 */
-        /* pre-poison the frame's s2 line so a save that never lands reads a
-         * stale value; the s2 slot gets 0x19999998 (the real name_to_int value). */
+        /* pre-poison the s2..s7 slots so a save that never lands reads back a
+         * stale value; the s2 slot gets POISON_S2 */
         "li   t0, 0x820\n"
         "slli t0, t0, 20\n" /* FRAME_BASE = 0x82000000 */
         "li   t1, 0x19999998\n"
@@ -355,7 +351,8 @@ __attribute__((naked, used, noinline)) static void irq_window(void)
         "sd   t1, 176(t0)\n"
         "li   t1, 0x19999997\n"
         "sd   t1, 184(t0)\n"
-        /* cold-miss drain store: a fresh DDR line, still in flight when the IRQ hits */
+        /* cold-miss drain store to a fresh DDR line, which can still be in flight
+         * when the interrupt arrives */
         "la   t0, g_drain_addr\n"
         "ld   t0, 0(t0)\n"
         "li   t1, 0xD2A14000\n"
@@ -372,9 +369,8 @@ __attribute__((naked, used, noinline)) static void irq_window(void)
         "sw   t5, 4(t1)\n" /* MTIMECMP_HI = max (0x1C) */
         "sw   t4, 0(t1)\n" /* MTIMECMP_LO (0x18)      */
         "sw   t3, 4(t1)\n" /* MTIMECMP_HI = hi (0x1C) */
-        /* sentinels into s0..s11, loaded last; s2 gets the pointer-like expected
-         * value. At rv64 the frame round-trips through sd/ld, so the reference
-         * is the full 64-bit address with no sign-extension pinning. */
+        /* sentinels into s0..s11, loaded last; s2 gets the expected value, the
+         * full 64-bit address of g_s2_target */
         "li   s0, 0x51000000\n"
         "li   s1, 0x51000001\n"
         "la   s2, g_s2_target\n"

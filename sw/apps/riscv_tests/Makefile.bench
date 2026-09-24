@@ -1,11 +1,12 @@
-# Builds one riscv-tests benchmark for Frost.
+# Builds one riscv-tests benchmark for FROST.
 #
 # Usage: make -f Makefile.bench BENCH=median
 #        make -f Makefile.bench BENCH=mm
 #
-# Each benchmark links crt0_bench.S (Frost startup: FPU init, data copy,
-# calls _init), syscalls_frost.c (UART-based exit/printf in place of tohost),
-# the benchmark's own .c files, and -lm -lgcc for the math routines.
+# Each benchmark links crt0_bench.S (startup: FPU init, data copy, then
+# _init), syscalls_frost.c (UART-based exit/printf in place of tohost), the
+# sw/lib objects below, the benchmark's own sources, and -lm -lgcc for the
+# math routines.
 
 BENCH ?=
 
@@ -23,10 +24,11 @@ OBJDUMP = $(RISCV_PREFIX)objdump
 # Benchmark source directory
 BENCH_DIR = riscv-tests/benchmarks
 
-# Compiler flags (matching upstream benchmark build)
-# FROST always calls _init(cid=0, nc=1). The upstream matrix benchmark's
-# barrier uses __thread storage, but this startup has no TLS initialization;
-# ordinary static storage is sufficient for its single-hart thread sense.
+# Compiler flags: upstream's benchmark flags plus -fno-pie, -no-pie,
+# -fno-stack-protector, and -D__thread=. FROST always calls _init(cid=0,
+# nc=1). The barrier() in util.h, which mm calls, keeps its thread sense in
+# __thread storage, but this startup sets up no TLS; -D__thread= makes it
+# ordinary static storage, which is enough for a single hart.
 CFLAGS = -march=$(ARCH) -mabi=$(ABI) \
          -U_FORTIFY_SOURCE -DPREALLOCATE=1 -mcmodel=medany -static -fno-pie -no-pie -fno-stack-protector \
          -D__thread= \
@@ -72,11 +74,10 @@ DISASSEMBLY_FILE     = sw.S
 CRT0 = crt0_bench.S
 SYSCALLS = syscalls_frost.c
 
-# Frost standard library (single source of truth in sw/lib). syscalls_frost.c
-# no longer carries its own libc copies; the canonical memcpy/memset/str*/
-# malloc/free/calloc/realloc/atol/abs come from here. Compiled as isolated
-# objects with their own include path so the benchmark sources keep using the
-# toolchain's <string.h>/<stdlib.h> (no header shadowing).
+# sw/lib supplies memcpy, memset, the str* functions, malloc, free, calloc,
+# realloc, atol, and abs. Only these objects compile with sw/lib/include on the
+# include path, so the benchmark sources keep the toolchain's <string.h> and
+# <stdlib.h>.
 LIB_DIR = ../../lib
 LIB_OBJ = frostlib_string.o frostlib_memory.o frostlib_stdlib.o frostlib_ctype.o
 
@@ -107,7 +108,7 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 
 
 # Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
-# hw/rtl/README.md "Data-tier bus contract"). Every loader keeps the 32-bit-word formats.
+# hw/rtl/README.md "Data-tier bus contract"). Every other image stays in 32-bit words.
 $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 

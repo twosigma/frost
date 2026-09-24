@@ -15,12 +15,10 @@
  */
 
 /*
- * PMA access-fault directed test.
- *
- * Before M2, out-of-map physical addresses aliased onto the map because bits
- * [63:32] were masked at every producer. Now they raise precise access faults
- * with exact mepc/mtval. This test pins the whole matrix, self-checking over
- * UART (<<PASS>>/<<FAIL>>):
+ * PMA access-fault directed test. Out-of-map physical addresses, including
+ * any with bits [63:32] set, must raise precise access faults with exact
+ * mepc/mtval instead of aliasing onto the map. Self-checks over UART
+ * (<<PASS>>/<<FAIL>>):
  *
  *   Physical map: BRAM [0, 256 KiB) fetch+data; device quadrant
  *   [0x4000_0000, 0x8000_0000) data-only; cached DDR [0x8000_0000,
@@ -29,30 +27,29 @@
  *   A. Load from a wild 64-bit address        -> cause 5, mtval exact.
  *   B. Load from the BRAM hole (0x0010_0000)  -> cause 5.
  *   C. Load from above cached DDR (0xC000_0000) -> cause 5.
- *   D. Load from [63:32]-aliased BRAM address -> cause 5 (the pre-M2
- *      aliasing case: 0x1_0000_1000 must fault, not read BRAM+0x1000).
+ *   D. Load from [63:32]-aliased BRAM address -> cause 5 (0x1_0000_1000
+ *      must fault, not read BRAM+0x1000).
  *   E. Store to a wild address                -> cause 7, mtval exact.
- *   F. AMO to the BRAM hole                   -> cause 7 (store/AMO access
- *      fault outranks the load-side classification for AMOs).
+ *   F. AMO to the BRAM hole                   -> cause 7 (an AMO reports
+ *      the store/AMO access fault).
  *   G. LR from a wild address                 -> cause 5.
- *   H. Misaligned load in-map                 -> cause 4 still (baseline);
- *      misaligned and out-of-map              -> cause 5 (access fault
- *      outranks misalignment per the privileged spec).
+ *   H. Misaligned load in-map                 -> cause 4;
+ *      misaligned and out-of-map              -> cause 5 (the access fault
+ *      takes priority over misalignment).
  *   I. JALR to a wild 64-bit target           -> cause 1, mepc = mtval =
  *      the exact wild target (the jump itself must not fault; the fetch
  *      does).
  *   J. JALR into the BRAM hole                -> cause 1.
  *   K. JALR into the device quadrant          -> cause 1 (no fetch from
  *      MMIO).
- *   L. Device-quadrant data access still works (UART status read) and a
- *      DDR load/store round-trip still works: the in-map behavior is
- *      unchanged.
+ *   L. In-map accesses do not trap: a device-quadrant data read (UART
+ *      status) and a load/store round trip on g_ddr_word.
  *
- * The mechanism is umode_test's M-mode bounce. The mtvec handler records
- * mcause/mepc/mtval once per case, then returns to the continuation stashed
- * in mscratch. Every trigger sits behind a trapping instruction, so a
- * missing fault fails on the recorded sentinel values instead of hanging,
- * and a regression to aliasing shows up as the trailing ecall's cause 11.
+ * Each case uses the M-mode bounce from umode_test: the mtvec handler records
+ * mcause/mepc/mtval for the first trap of the case, then returns to the
+ * continuation stashed in mscratch. Every trigger is followed by an ecall, so
+ * a data access that does not fault records cause 11. The JALR triggers jump
+ * away from it, so they have no such fallback.
  */
 
 #include <stdint.h>
@@ -106,8 +103,8 @@ __attribute__((naked, aligned(4))) static void pma_trap_handler(void)
 }
 
 /* Run one trigger: reset the records, point the continuation past the
- * trigger, execute it. Each trigger is a naked body ending in ecall (the
- * no-fault fallback: cause 11 from M). */
+ * trigger, execute it. The ecall after the trigger is the no-fault fallback
+ * (cause 11 from M). */
 #define RUN_CASE(body_asm, ...)                                                                    \
     do {                                                                                           \
         g_cause = ~0ul;                                                                            \
@@ -171,8 +168,8 @@ int main(void)
              "r"(above));
     all_ok &= report3("C above-ddr-load", 5u, 0, above, 0);
 
-    /* D: the pre-M2 aliasing shape: BRAM+0x1000 with bit 32 set must fault
-     * with the exact 64-bit address in mtval, not read the alias. */
+    /* D: BRAM+0x1000 with bit 32 set must fault with the exact 64-bit
+     * address in mtval, not read the alias. */
     unsigned long alias = 0x100001000ul;
     RUN_CASE("mv   t1, %0\n"
              "ld   t2, 0(t1)",
@@ -199,7 +196,7 @@ int main(void)
              "r"(wild));
     all_ok &= report3("G wild-lr", 5u, 0, wild, 0);
 
-    /* H1: in-map misaligned load still raises cause 4 with the address. */
+    /* H1: an in-map misaligned load raises cause 4 with the address. */
     unsigned long mis = (unsigned long) &g_ddr_word + 1u;
     RUN_CASE("mv   t1, %0\n"
              "lw   t2, 0(t1)",
@@ -214,8 +211,7 @@ int main(void)
     all_ok &= report3("H2 wild-misaligned", 5u, 0, mis_wild, 0);
 
     /* I: JALR to a wild target: the fetch faults, and mepc and mtval are the
-     * exact wild target. The link register gives the handler nothing to
-     * return to. The bounce continuation recovers. */
+     * exact wild target. */
     unsigned long wild_jump = 0x140000200ul;
     RUN_CASE("mv   t1, %0\n"
              "jalr x0, t1, 0",
@@ -236,10 +232,10 @@ int main(void)
              "r"(mmio_jump));
     all_ok &= report3("K mmio-jump", 1u, mmio_jump, mmio_jump, 1);
 
-    /* L: in-map behavior unchanged. A device-quadrant data read and a DDR
-     * round-trip complete without traps; the case ends on the ecall. */
+    /* L: a device-quadrant data read and a load/store round trip on
+     * g_ddr_word complete without traps; the case ends on the ecall. */
     g_ddr_word = 0xA5A50FF012345678ull;
-    RUN_CASE("li   t1, 0x40000028\n" /* UART TX status: data-valid read */
+    RUN_CASE("li   t1, 0x40000028\n" /* UART TX status: an in-map device read */
              "lw   t2, 0(t1)\n"
              "mv   t1, %0\n"
              "ld   t2, 0(t1)\n"

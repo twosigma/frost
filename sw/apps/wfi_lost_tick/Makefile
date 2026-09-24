@@ -14,6 +14,7 @@
 
 #    Copyright 2026 Two Sigma Open Source, LLC
 #    SPDX-License-Identifier: Apache-2.0
-# WFI-idle lost-machine-timer-tick directed test (deferred-eligibility MIE edge)
+# Directed test: the Linux-style WFI idle loop, which takes its timer interrupt
+# at the csrsi that sets MIE, must not lose machine-timer ticks.
 SRC_C := main.c
 include ../../common/common.mk

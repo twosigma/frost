@@ -1,8 +1,8 @@
-    // CoreMark-PRO startup.
-    //
-    // This is local to sw/apps/coremark_pro so the overlap-safe .data copy can
-    // support initialized-data images that sit below their runtime RAM address.
-    // Define COREMARK_PRO_TRACE=1 to re-enable early UART boot markers.
+    // CoreMark-PRO startup. Unlike sw/common/crt0.S, it installs an early trap
+    // vector that prints <<BOOT_TRAP>>, and its .data copy runs backward when
+    // the destination is above the load image, so the copy stays correct even
+    // if the two ranges overlap. Build with COREMARK_PRO_TRACE=1 for UART boot
+    // markers.
     .section .init
     .option  push
     .option  norelax
@@ -20,9 +20,8 @@ _start:
     call    early_puts
 #endif
 
-    // Copy initialized data from its load image to RAM. The load image and RAM
-    // destination can overlap inside FROST's 256 KiB low BRAM, so copy backward
-    // whenever the destination is above the source.
+    // Copy initialized data from its load image to RAM, backward whenever the
+    // destination is above the source.
     la      t0, __data_load_start
     la      t1, __data_start
     la      t2, __data_end
@@ -76,8 +75,8 @@ _start:
     call    early_puts
 #endif
 
-    // Zero the cached-region BSS (.ddr_bss). Empty (PROVIDEd as 0) unless the
-    // unified linker script places zero-init sections in the DDR region.
+    // Zero the cached-region BSS (.ddr_bss). Its bounds are equal, and the loop
+    // does not run, unless the linker script places zero-init sections in DDR.
     // lp64: la cannot reach the 0x8xxx_xxxx cached region from the low-BRAM
     // .init (PCREL_HI20 reach), so load the bounds from a local literal pool
     // of absolute dwords instead, as sw/common/crt0.S does.

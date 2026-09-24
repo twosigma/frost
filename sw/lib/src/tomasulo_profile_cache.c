@@ -17,14 +17,20 @@
 #include "tomasulo_profile.h"
 
 /*
- * This code runs only after a measured region ends. Its own linker sections
- * sit after the legacy program image, so adding it leaves the code and data
- * addresses at the timing boundary unchanged, and with them the warm
- * microarchitectural state.
+ * Cache-counter drain and report for tomasulo_profile.h. It runs only after a
+ * measured region ends. Its code and strings go in their own linker sections,
+ * placed after the rest of the program image, so linking it in moves none of
+ * the program's code or static data and leaves the warm microarchitectural
+ * state at the timing boundary unchanged. This relies on the default -O3
+ * inlining the tomasulo_profile.h helpers called here: at -O2 or -Og
+ * (FROST_DEBUG=1), GCC can emit copies of them into ordinary .text.
  */
 #define CACHE_PROFILE_TEXT __attribute__((section(".cache_profile_text")))
 #define CACHE_PROFILE_RODATA __attribute__((section(".cache_profile_rodata"), aligned(1)))
 
+/* Defined by a benchmark that uses the default-report entry point
+ * (TOMASULO_PROFILE_USE_DEFAULT_REPORT_SNAPSHOTS). Weak, so programs that do
+ * not define them still link. */
 extern tomasulo_profile_snapshot_t tomasulo_profile_default_report_start __attribute__((weak));
 extern tomasulo_profile_snapshot_t tomasulo_profile_default_report_end __attribute__((weak));
 
@@ -67,10 +73,10 @@ static const char l1d_overlap_label[] CACHE_PROFILE_RODATA = "L1D >=2 misses in 
 static const char l2_overlap_label[] CACHE_PROFILE_RODATA = "L2 >=2 misses in flight";
 
 /*
- * Cache counters the hardware actually implements, clamped to the sidecar
- * storage. The counters are a build option (PERF_COUNTERS) and mperfcount
- * covers the whole bank, so anything the CPU does not implement must stay
- * out of the fixed-size arrays rather than be selected and read back.
+ * Number of cache counters the CPU implements, clamped to the size of a
+ * cache-counter array. mperfcount also counts the counters below the cache
+ * block, and reads 0 in a build without PERF_COUNTERS. Counters past this
+ * count are never selected: their array entries are zeroed instead.
  */
 static CACHE_PROFILE_TEXT uint32_t cache_bank_counter_count(void)
 {
@@ -86,6 +92,11 @@ static CACHE_PROFILE_TEXT uint32_t cache_bank_counter_count(void)
     return count;
 }
 
+/*
+ * Read one cache bank into cache_counters. control goes to mperfctl: 0 selects
+ * the current cache snapshot and 2 (bit 1) the preceding one; neither takes a
+ * snapshot.
+ */
 static CACHE_PROFILE_TEXT void read_cache_bank(uint64_t *cache_counters, uint32_t control)
 {
     uint32_t available = cache_bank_counter_count();
@@ -102,6 +113,11 @@ static CACHE_PROFILE_TEXT void read_cache_bank(uint64_t *cache_counters, uint32_
     }
 }
 
+/*
+ * The end snapshot is the current cache bank and the start snapshot the
+ * preceding one, so call this after the end snapshot and before the next.
+ * The bank select is left on the current bank.
+ */
 CACHE_PROFILE_TEXT void tomasulo_profile_read_cache_pair(tomasulo_profile_snapshot_t *start,
                                                          tomasulo_profile_snapshot_t *end)
 {
@@ -186,9 +202,9 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     uint64_t l2_overlap;
 
     /*
-     * Every delta below indexes the whole bank, so report nothing unless the
-     * hardware implements all of it and both snapshots saw counters. A short
-     * bank would otherwise print differences of counters that do not exist.
+     * Every delta below indexes the whole bank, so print n/a unless the CPU
+     * implements all of it and both snapshots saw counters. A short bank would
+     * otherwise print differences of counters that do not exist.
      */
     if (start->counter_count == 0U || end->counter_count == 0U ||
         cache_bank_counter_count() < TOMASULO_PROFILE_CACHE_COUNTER_COUNT) {
@@ -198,9 +214,10 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     }
 
     /*
-     * Full-report users may omit sidecars. Drain into post-timing stack
-     * storage in that case; otherwise reuse the pair already drained by the
-     * caller. No further snapshot may occur between the end capture and here.
+     * Callers need not bind cache-counter arrays. If either snapshot has none,
+     * drain both banks into local arrays here, which is valid only if no
+     * snapshot was taken after the end one. Otherwise use the arrays the
+     * caller already filled with tomasulo_profile_read_cache_pair().
      */
     if (start_cache == NULL || end_cache == NULL) {
         read_cache_bank(end_local, 0U);
@@ -210,6 +227,8 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
         end_cache = end_local;
     }
 
+    /* Cache-block indices: each counter's tomasulo_profile_counter_idx value
+     * minus TOMASULO_PROFILE_LEGACY_COUNTER_COUNT. */
 #define CACHE_DELTA(index) (end_cache[(index)] - start_cache[(index)])
     l1i_access = CACHE_DELTA(0);
     l1i_hit = CACHE_DELTA(1);

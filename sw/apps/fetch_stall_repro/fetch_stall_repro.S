@@ -1,15 +1,12 @@
 # Directed cached-fetch PC-step repro (executes from .ddr_text through the L1I)
 #
-# Reproduces the front-end defect where the core steps PC +2 instead of +4 on a
-# 32-bit instruction (mis-decoding it as compressed) and lands mid-instruction.
-# The original hardware failure fired deterministically at workqueue_init_early
-# (epc=0x8038d7fa, 2 bytes into a 32-bit `sw zero,4(s1)`).
+# Checks for a front-end defect: stepping PC by +2 instead of +4 on a 32-bit
+# instruction (decoding it as compressed), which lands mid-instruction.
 #
 # The defect needs the cached L1I fetch path: a fetch stall (!fetch_progress ->
 # sel_nop) from a 32-byte line-fill coinciding with a 32-bit instruction near a
-# line boundary. A BRAM fetch-fuzz run did NOT trigger it, so this version runs
-# the stream cold from cached DDR (.ddr_text): every line is a miss and causes a
-# regular line-fill stall, as during boot.
+# line boundary. The stream therefore runs cold from cached DDR (.ddr_text):
+# every line is a miss and causes a line-fill stall, as during boot.
 #
 # The stream is [compressed-nop run][32-bit nops] blocks; a compressed run length
 # of 3..6 sweeps the 32-bit nops across every alignment against the line

@@ -15,7 +15,7 @@
  */
 
 /**
- * Hardened self-modifying-code / fence.i directed reproducer.
+ * Self-modifying code with fence.i.
  *
  * Models the kernel's runtime code-patching contract (patch_insn_write +
  * fence.i): store a new instruction word into cached-DDR code, fence.i to
@@ -25,9 +25,9 @@
  *            -> fetch-buffer invalidate
  *   call -> L1I miss -> fill returns the freshly written code
  *
- * ddr_smc_test covers the gentle case and passes. This one sweeps the timing
- * and layout knobs the boot hang implicates, so a transient failure becomes a
- * deterministic one that can be read off a waveform:
+ * ddr_smc_test covers the basic sequence. This test sweeps the timing and
+ * layout around the fence.i, so a timing-dependent failure shows up
+ * deterministically and can be read off a waveform:
  *   - store->fence.i freshness gap (0/1/2/3/4/8 nops): how fresh the committed
  *     store is when fence.i drains the store queue.
  *   - Warm L1D (write hit) versus cold L1D (write-allocate miss). The L1D is
@@ -49,8 +49,8 @@
 #define ADDI_A0(imm) (0x00000513u | (((uint32_t) (imm) & 0xfffu) << 20)) /* addi a0,x0,imm */
 #define RET_INSN 0x00008067u                                             /* jalr x0,0(ra)  */
 
-/* Executable + writable patch target in the cached DDR region, line aligned
- * (LINE_BYTES = 32). ddr_code[0] is the entry (patched); [1] is `ret`. */
+/* Executable + writable patch target in the cached DDR region, aligned to a
+ * 32-byte cache line. ddr_code[0] is the entry (patched); [1] is `ret`. */
 __attribute__((section(".ddr_data"), aligned(32))) static volatile uint32_t ddr_code[8];
 /* PCREL_HI20 cannot reach the DDR region from low-BRAM code at lp64, so
  * hold the address as a link-time data relocation (same idiom as
@@ -86,8 +86,8 @@ static const int gaps[] = {0, 1, 2, 3, 4, 8};
 #define NGAPS ((int) (sizeof(gaps) / sizeof(gaps[0])))
 
 /* Conflict-evict the ddr_code line by reading aliases at +N*128 KiB. One read
- * is enough for a direct-mapped L1D; the extras cover a set-associative
- * surprise. */
+ * is enough for the direct-mapped L1D; the extra reads also cover a
+ * set-associative L1D. */
 static inline void evict_code_line(void)
 {
     uintptr_t base = (uintptr_t) ddr_code_p;

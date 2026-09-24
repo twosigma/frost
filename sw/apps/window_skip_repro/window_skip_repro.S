@@ -1,51 +1,49 @@
-# Directed reproducer for the RV64 "skipped fall-through fetch window" bug (v2).
+# Directed reproducer for the "skipped fall-through fetch window" bug.
 #
-# Observed on rv64 hardware in coremark_pro_zip / zlib longest_match:
-# a loop-back branch that the front end has trained taken resolves not-taken on
-# loop exit. The early misprediction recovery redirects to the fall-through PC,
-# but the front end skips exactly one aligned 8-byte fetch window, the
-# fall-through window, and executes the next window instead. In the wild the
-# skipped window held the callee-saved restores {c.ld s0,24(sp); minu a0,a7,s1;
-# c.ld s1,16(sp)} and the executed one held {c.addi16sp sp,32; ret}, which is
-# position-independent, so execution continued with stale s0/s1 (s0 ==
-# nice_match == 128 at the failure).
+# A loop-back branch that the front end has trained taken resolves not-taken
+# on loop exit, and early misprediction recovery redirects to the fall-through
+# PC. The bug: the front end skips exactly one aligned 8-byte fetch window, the
+# fall-through window, and executes the next window instead. In zlib
+# longest_match (as compiled for coremark_pro_zip) the skipped window holds the
+# callee-saved restores {c.ld s0,24(sp); minu a0,a7,s1; c.ld s1,16(sp)} and
+# the next one {c.addi16sp sp,32; ret}, which runs correctly on its own, so
+# the caller silently continues with stale s0/s1.
 #
 # The canary mechanism is the same in every victim: the caller puts good values
 # in s0/s1, the victim's prologue saves them, the body overwrites them with
 # poison, and the epilogue's one-window restore puts them back. If that restore
-# window is skipped the caller sees stale s0/s1 and prints a distinctive
-# <<FAIL>> line. The sim assertion p_bram_served_window_covers_pc_reg in
-# if_stage.sv fires on the same event: all victim code is fetched from low
-# BRAM, where that assertion is armed. When every call restores, the run ends
-# in <<PASS>>.
+# window is skipped, the caller sees stale s0/s1, prints a
+# <<WINDOW-SKIP>> line, and ends with <<FAIL>>. The sim assertion
+# p_bram_served_window_covers_pc_reg in if_stage.sv fires on the same event:
+# in the default BRAM build all victim code is fetched from low BRAM, where
+# that assertion is armed. When every call restores, the run ends in <<PASS>>.
 #
 # Victims / subtests (each sweeps exit iteration N over 8..64):
 #   A  victim       BRAM array, fast 1-cycle loads (baseline)
 #   B  victim       DDR array @0x80100000, load-latency delays resolution
 #                   (start block swept across 8 KiB for cache churn)
 #   C  victim_div   BRAM array + divu backpressure in the loop body
-#   D  victim_t4    loop-back target at window+4, not window-aligned, like the
-#                   wild head 0x167c; bltu still at its window+4 and the
-#                   one-window restore epilogue unchanged. Changes the
-#                   aligner/fetch state on every taken iteration and at the
-#                   final redirect.
+#   D  victim_t4    loop-back target at window+4, not window-aligned; bltu at
+#                   window+4 and the one-window restore epilogue as in A.
+#                   Changes the aligner/fetch state on every taken iteration
+#                   and at the final redirect.
 #   E  victim_t2    loop-back target at window+2 with an rvc-mixed head, so the
 #                   target is halfword-aligned on every taken iteration
 #   F  victim_span  loop body mixes rvc and 32-bit ops, with the 32-bit
 #                   pointer-advance addi spanning an 8-byte window boundary
-#                   each iteration. Exercises the served_eq_pc_word_p1 &&
-#                   use_instr_buffer covers arm that the norvc loops never
-#                   touch; bltu at window+4, same restore.
-#   G  victim_real  the zlib longest_match inner-loop reload tail + epilogue
-#                   (zip ELF 0x1738-0x1762) lifted byte for byte, with the
-#                   loop-back bltu@window+4 targeting the 0x167c-equivalent
-#                   head@window+4. A synthetic prev[] hash chain drives it, so
-#                   the bltu takes N times then falls through. Deviations are
+#                   each iteration. Exercises the served_eq_pc_word_p1 term
+#                   of the if_stage served-window check (use_instr_buffer
+#                   case), which the norvc loops never reach; bltu at
+#                   window+4, same restore.
+#   G  victim_real  the zlib longest_match inner-loop reload tail + epilogue,
+#                   copied byte for byte, with the loop-back bltu at window+4
+#                   targeting a head at window+4 as in the original. A
+#                   synthetic prev[] hash chain drives it, so the bltu is
+#                   taken about N times, then falls through. Deviations are
 #                   noted at victim_real.
 #
-# RV64 shape: doubleword compressed save/restore pairs (c.sdsp/c.ldsp), 8-byte
-# array stride, 32-byte frames; the real-bytes variant (subtest G) additionally
-# uses Zba/Zbb.
+# The victims use doubleword compressed save/restore pairs (c.sdsp/c.ldsp),
+# 32-byte frames, and an 8-byte array stride; subtest G also uses Zba/Zbb.
 
     .section .init
     .option push
@@ -55,9 +53,9 @@
 
     .equ GOOD_S0, 0x000600D0
     .equ GOOD_S1, 0x000600D1
-    .equ V1_CALLS, 1200            # calls per v1 subtest (A/B/C); trimmed from
-                                   # 2000 to make cycle room for the v2 variants
-    .equ V2_CALLS, 800             # calls per v2 subtest (D/E/F/G); the exit
+    .equ V1_CALLS, 1200            # calls per subtest A/B/C, kept low to leave
+                                   # cycle budget for D-G
+    .equ V2_CALLS, 800             # calls per subtest D/E/F/G; the exit
                                    # iteration N sweeps 57 values, so 800 calls
                                    # walk the whole sweep 14 times
     .equ DDR_BLOCKS, 8             # 8 * 1024 B = 8 KiB swept for subtest B
@@ -66,7 +64,7 @@
 # SHIM (inline macro, no call frame): put the good canaries in s0/s1, call the
 # current victim (s2), and check that the victim restored them. Every victim
 # shares the save/poison/restore canary shape, so one shim serves them all.
-# \@ makes the local labels unique per expansion. Defined before first use.
+# \@ makes the local labels unique per expansion.
 # ---------------------------------------------------------------------------
     .macro SHIM
     li      s0, GOOD_S0
@@ -117,7 +115,7 @@ _start:
 
     # ---- fill the DDR array @0x80100000: ascending-mod-128 over 8 KiB ----
     li      s6, 0x801
-    slli    s6, s6, 20             # s6 = 0x80100000 (XLEN-safe, no sign wrap)
+    slli    s6, s6, 20             # s6 = 0x80100000 (no lui sign extension)
     mv      t3, s6
     li      t0, 0
     li      t4, 0
@@ -242,7 +240,8 @@ done:
     j       done
 
 # ---------------------------------------------------------------------------
-# report_fail: distinctive line + <<FAIL>> (harness stops on the marker).
+# report_fail: a <<WINDOW-SKIP>> line, then <<FAIL>> (the harness stops on
+# the marker).
 # ---------------------------------------------------------------------------
 report_fail:
     la      a0, msg_ws
@@ -274,11 +273,12 @@ fail_halt:
 # VICTIMS. Every victim has the same shape: an rvc prologue saves s0/s1, norvc
 # code poisons them, a loop whose loop-back bltu sits at its window+4 trains
 # taken and then exits, the rvc fall-through restore window of exactly 8 bytes
-# restores s0/s1, and the next window pops the frame and returns. The .balign 8
-# at each loop head is the load-bearing invariant. Layouts verified by objdump.
+# restores s0/s1, and the next window pops the frame and returns. Every layout
+# depends on the .balign 8 before each loop head; the offsets noted below
+# match objdump.
 # ===========================================================================
 
-# --- victim: subtests A/B. Loop head window-aligned (v1 baseline). ----------
+# --- victim: subtests A/B. Loop head window-aligned (baseline). -------------
     .balign 8
 victim:
     .option rvc
@@ -419,34 +419,35 @@ victim_span_head:                  # window+0 (loop-back target)
     .option norvc
 
 # --- victim_real: subtest G. ------------------------------------------------
-# Byte-for-byte lift of the zlib longest_match inner-loop reload tail + epilogue
-# (zip ELF 0x1738-0x1762) with the loop-back bltu@window+4 targeting the
-# 0x167c-equivalent head@window+4. Driven by a synthetic prev[] hash chain: a1
-# walks prev[a1]=a1-1 down from N+2 to the threshold t1=2, so the bltu takes ~N
-# times then falls through (the bug event = the fall-through skipping the
-# restore window). s0=128 mimics the wild nice_match poison.
+# A byte-for-byte copy of the inner-loop reload tail and epilogue of zlib
+# longest_match (as compiled for coremark_pro_zip), with the loop-back bltu at
+# window+4 targeting the loop head at window+4, as in the original. A synthetic
+# prev[] hash chain drives it: a1 walks prev[a1]=a1-1 down from N+2 to the
+# threshold t1=2, so the bltu is taken about N times and then falls through,
+# which is the event under test.
 #
-# Deviations from a whole-function lift, all of which keep the fetch geometry:
-#   - the byte-scan middle (0x1680-0x1736) is elided: the head's beqz falls
+# Deviations from the whole function, all of which keep the fetch geometry:
+#   - the byte-scan middle is left out: the head's beqz falls
 #     straight through to the reload tail, so head and tail are adjacent. Their
-#     window alignments match the wild code; only the distance between the two
+#     window offsets match the original; only the distance between the two
 #     windows is smaller.
-#   - s2 is saved at prologue (wild saves it mid-scan at 0x16b0) so the tail's
+#   - s2 is saved in the prologue (mid-scan in the original) so the tail's
 #     byte-exact `ld s2,8(sp)` reads a valid slot.
-#   - branch/jump immediates differ (targets are local); opcodes+regs identical.
+#   - branch immediates differ (targets are local); opcodes and registers match.
 #   - the lbu reload addresses point at a dead scratch buffer (their loaded
-#     values feed the elided scan); they still add real load traffic.
+#     values feed the omitted scan); they still add real load traffic.
+# Hex values below are the instruction encodings, as in the original.
     .balign 8
 victim_real:
     .option rvc
-    c.addi16sp sp, -32             # 1101   (wild 0x1604) byte-faithful
-    c.sdsp  s0, 24(sp)             # ec22   (0x1606)
-    c.sdsp  s1, 16(sp)             # e826   (0x1608)
+    c.addi16sp sp, -32
+    c.sdsp  s0, 24(sp)
+    c.sdsp  s1, 16(sp)
     c.sdsp  s2, 8(sp)              # slot for the tail's ld s2,8(sp) (see note)
     .option norvc
-    li      s0, 128                # nice_match poison (wild lw s0,192(a0)+minu)
-    li      s1, 0                  # wild lw s1,164(a0)
-    li      t1, 2                  # best_len threshold (wild li t1,0 / subw)
+    li      s0, 128                # poison (nice_match = 128 in the original)
+    li      s1, 0                  # poison
+    li      t1, 2                  # threshold: bltu falls through once a1 <= 2
     li      t5, 0xFFFF             # hash mask
     la      t4, prev_array         # prev[] base
     la      t0, scan_buffer        # dead scan buffer for the lbu reloads
@@ -457,24 +458,24 @@ victim_real:
     nop                            # 4B filler -> head at window+4
     .option rvc                    # head/reload/epilogue are byte-faithful RVC
 victim_real_head:
-    addiw   a3, a3, -1             # 36fd   (0x167c) rvc  window+4 (bltu target)
-    beqz    a3, victim_real_exit   # cee9   (0x167e) rvc  chain-exhausted exit
-victim_real_reload:                # window-aligned; reproduces wild 0x1738..
-    and     a1, a1, t5             # 01e5f5b3 (0x1738) 4B (t5 blocks compress)
-    sh1add.uw a1, a1, t4           # 21d5a5bb (0x173c) 4B
-    lhu     a1, 0(a1)              # 0005d583 (0x1740) 4B  a1 = prev[a1]
-    add     a4, t0, a5             # 00f28733 (0x1744) 4B
-    lbu     t6, -1(a4)             # fff74f83 (0x1748) 4B
-    lbu     t3, 0(a4)              # 00074e03 (0x174c) 4B
-    c.ldsp  s2, 8(sp)              # 6922     (0x1750) window+0
-    c.mv    a7, a5                 # 88be     (0x1752) window+2
-    bltu    t1, a1, victim_real_head   # (0x1754) window+4, targets head
+    addiw   a3, a3, -1             # 36fd     window+4 (bltu target)
+    beqz    a3, victim_real_exit   # rvc      window+6, chain-exhausted exit
+victim_real_reload:                # window-aligned
+    and     a1, a1, t5             # 01e5f5b3 window+0 (t5 blocks compression)
+    sh1add.uw a1, a1, t4           # 21d5a5bb window+4
+    lhu     a1, 0(a1)              # 0005d583 window+0, a1 = prev[a1]
+    add     a4, t0, a5             # 00f28733 window+4
+    lbu     t6, -1(a4)             # fff74f83 window+0
+    lbu     t3, 0(a4)              # 00074e03 window+4
+    c.ldsp  s2, 8(sp)              # 6922     window+0
+    c.mv    a7, a5                 # 88be     window+2
+    bltu    t1, a1, victim_real_head   # window+4, targets head
 victim_real_exit:
-    c.ldsp  s0, 24(sp)             # 6462     (0x1758) window+0 (restore window)
-    minu    a0, a7, s1             # 0a98d533 (0x175a) the real 4B op
-    c.ldsp  s1, 16(sp)             # 64c2     (0x175e)
-    c.addi16sp sp, 32              # 6105     (0x1760) next window
-    c.jr    ra                     # 8082     (0x1762)
+    c.ldsp  s0, 24(sp)             # 6462     window+0 (restore window)
+    minu    a0, a7, s1             # 0a98d533 window+2
+    c.ldsp  s1, 16(sp)             # 64c2     window+6
+    c.addi16sp sp, 32              # 6105     window+0 (next window)
+    c.jr    ra                     # 8082     window+2
     .option norvc
 
 # ---------------------------------------------------------------------------
@@ -548,8 +549,9 @@ msg_fail:
     .asciz "<<FAIL>>\n"
 
 # ---------------------------------------------------------------------------
-# Arrays in low BRAM. No crt0 -> .bss is not load-initialized; every array is
-# written at runtime before use.
+# Arrays (in low BRAM in the default BRAM build). There is no crt0, so .bss is
+# not zeroed: _start fills bram_array and prev_array, and the values loaded
+# from scan_buffer are never used.
     .section .bss
     .balign 8
 bram_array:

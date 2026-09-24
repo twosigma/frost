@@ -27,12 +27,12 @@ SIZE    := $(RISCV_PREFIX)size     # Size analyzer
 FPGA_CPU_CLK_FREQ ?= 322265625  # X3 CPU clock
 
 # Toolchain identification passed to programs that report their build (CoreMark
-# prints it as "Compiler version"). Left empty this reported nothing, and the
-# -D below also masked core_portme.h's __VERSION__ fallback.
+# prints it as "Compiler version"). The -D below always defines
+# COMPILER_VERSION, so an empty value would print nothing instead of falling
+# back to core_portme.h's __VERSION__.
 COMPILER_VERSION ?= $(shell $(CC) --version 2>/dev/null | head -1)
 
-# Apps may override optimization before including common.mk; isa_test uses -O2
-# to avoid GP-relative relocation overflow.
+# Apps may override optimization before including common.mk (isa_test uses -O2).
 OPT_LEVEL ?= -O3
 
 # Apps may clear this; isa_test does.
@@ -70,17 +70,17 @@ MABI ?= $(FROST_FP_ABI)
 # ISA extension string appended to $(FROST_XLEN_PREFIX) to form -march.
 # IMAFDC plus explicit Zba/Zbb/Zbs, Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and
 # Zihintpause; the explicit B subsets support older toolchain spelling. Apps may
-# narrow it before including this file -- coremark drops the C extension to keep
-# every 2-wide bundle inside the 64-bit fetch window; see its Makefile.
+# narrow it before including this file: coremark builds without C by default
+# (see its Makefile).
 FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 
-# Bare-metal builds omit libc/start files and runtime unwind metadata. Explicit
-# static/non-PIE linking and disabled stack protection also permit Linux-targeted
-# GCC: our startup supplies neither a dynamic loader nor a stack-check runtime.
-# The debug profile emits DWARF for GDB. Per-function/data sections allow
-# --gc-sections; -fno-strict-aliasing is a blanket guard for
-# type-punned pointer casts (mmio.h's own accessors now carry may_alias and are
-# safe without it, but app code may still pun).
+# Bare-metal builds omit libc/start files and runtime unwind metadata (the debug
+# profile still emits DWARF for GDB). Explicit static/non-PIE linking and
+# disabled stack protection also permit Linux-targeted GCC: FROST's startup
+# supplies neither a dynamic loader nor a stack-check runtime. Per-function and
+# per-data sections allow --gc-sections. -fno-strict-aliasing guards
+# type-punned pointer casts in app code; mmio.h's accessors carry may_alias and
+# do not need it.
 # LP64 defaults to medany because medlow cannot form positive 0x8xxx_xxxx DDR
 # addresses. Apps at the rounded +2 GiB relocation boundary may override this
 # with the large model (ddr_smc_test's debug profile). riscv_tests, arch_test,
@@ -88,8 +88,8 @@ FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_z
 FROST_CMODEL = -mcmodel=medany
 
 # Per-app codegen tuning, appended after ordinary defaults (see the ELF rule),
-# so an app can override a default set below -- for example restoring
-# -fstrict-aliasing for a program that has been built warning-clean under it.
+# so an app can override a default set below, for example restoring
+# -fstrict-aliasing for a program that builds warning-clean under it.
 # Keep ordinary additive flags in EXTRA_CFLAGS; this hook is for last-wins
 # overrides. FROST_DEBUG's final profile flags take precedence when enabled.
 APP_TUNE_FLAGS ?=
@@ -190,7 +190,8 @@ IMEM_SCALAR_INIT_FILES := \
 	$(IMEM_EVEN_PAIRABLE_NATIVE_HI_FILE) $(IMEM_ODD_PAIRABLE_NATIVE_HI_FILE) \
 	$(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
-# Globally ignored suffixes keep bookkeeping out of git status.
+# Build bookkeeping. The .bin and .o suffixes match .gitignore patterns, so
+# these files stay out of git status.
 BUILD_CONFIG_FILE       := .frost-build-config.bin
 DEPENDENCY_FILE         := .frost-deps.o
 GENERATE_IMEM_INIT ?= 0
@@ -204,21 +205,22 @@ IMEM_INIT_TARGETS := $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
                      $(IMEM_SCALAR_INIT_FILES)
 endif
 
-# A content-addressed stamp turns tools, flags, ABI, and tier into rebuild
-# triggers. Identical invocations preserve its mtime, including a switch back.
+# The build-config stamp holds this string, so changing any setting in it
+# (tools, flags, ABI, memory tier, sources) triggers a rebuild. The stamp is
+# rewritten only when the string differs from its contents, so identical
+# invocations keep its mtime; switching back to an earlier configuration still
+# counts as a change.
 EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|APP_TUNE_FLAGS=$(APP_TUNE_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
 
 # Quote a single-line make value; CFLAGS contains literal single quotes.
 shell_quote = '$(subst ','"'"',$(1))'
 
-# Direct-from-source linking has no per-object .d files. Generate an equivalent
-# fragment that skips system headers. -MP tolerates headers that were removed.
-
 # Build targets
 all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
      $(DDR_TXT_FILE) $(DISASSEMBLY_FILE) $(IMEM_INIT_TARGETS)
 
-# Keep all as the default after the generated fragment appears.
+# Included after the all rule, so all stays the default goal once the generated
+# fragment exists.
 -include $(DEPENDENCY_FILE)
 
 .PHONY: FORCE
@@ -234,6 +236,9 @@ $(BUILD_CONFIG_FILE): FORCE
 	fi
 
 # Link sources into the ELF; MAKEFILE_LIST makes build-logic changes relink it.
+# Linking straight from source leaves no per-object .d files, so the recipe
+# first writes an equivalent dependency fragment: -MM skips system headers, and
+# -MP tolerates headers that were removed.
 $(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT) \
                         $(MAKEFILE_LIST) $(BUILD_CONFIG_FILE)
 	@tmp='$(DEPENDENCY_FILE).$$$$.tmp'; \
@@ -250,15 +255,17 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 
 # Verilog hex image for $readmemh, used by simulation and synthesis: one 32-bit
-# word per line in hexadecimal, little-endian. Cached-region (.ddr_*) sections
-# are excluded because they live at 0x8000_0000 and would emit @-records far
-# beyond the low BRAM. They ship separately in $(DDR_HEX_FILE).
+# word per line in hexadecimal, little-endian. The cached-region sections in
+# DDR_SPLIT_SECTIONS are excluded because they live at 0x8000_0000 and would
+# emit @-records far beyond the low BRAM. They ship separately in
+# $(DDR_HEX_FILE).
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
 # Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
-# hw/rtl/README.md "Data-tier bus contract"). Every loader keeps the 32-bit-word formats.
+# hw/rtl/README.md "Data-tier bus contract"). sw.mem, sw.txt, and both DDR
+# images stay in 32-bit words.
 $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py $< $@
 
@@ -276,8 +283,8 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 # Programs with no selected loaded sections get a single zero word so consumers
 # can always $readmemh the file. objcopy exits zero and writes an empty file in
 # that case, so any nonzero objcopy status is a real build failure.
-# The output goes to a temporary path first, so a failed conversion cannot
-# bless or replace a previously generated image.
+# The output goes to a temporary file first, so a failed conversion leaves no
+# partial image with a fresh timestamp and keeps the previous image.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \
 	tmp='$@.$$$$.tmp'; \
@@ -290,8 +297,8 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 # DDR image for the JTAG loader: dense 32-bit words from the region base, since
 # the selected sections start exactly at 0x8000_0000. The file is empty when the
 # program places nothing in the cached region, and the loader skips empty files.
-# As above, temporary outputs prevent a failed objcopy from reusing stale DDR
-# contents.
+# As above, the temporary files keep a failed step from leaving a partial image
+# with a fresh timestamp.
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \
 	bin_tmp='sw_ddr.bin.$$$$.tmp'; \
@@ -346,8 +353,10 @@ endif
 size: $(EXECUTABLE_ELF_FILE)
 	$(SIZE) $<
 
-# Clean all build artifacts. Literal retired init names remain here so a reused
-# app directory cannot retain stale provenance from older timing replicas.
+# Clean all build artifacts. The literal sw_imem_* names at the end are obsolete
+# init images that no current rule writes (fpga/build/build.py lists the same
+# names in IMEM_RETIRED_INIT_IMAGE_NAMES); deleting them keeps a reused app
+# directory free of stale images.
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
 	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) $(BUILD_CONFIG_FILE) $(DEPENDENCY_FILE) \

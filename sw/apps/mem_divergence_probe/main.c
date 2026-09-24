@@ -15,15 +15,12 @@
  */
 
 /*
- * Cached-DDR cold-vs-warm read divergence probe.
- *
- * During rv64 bring-up, repeated FDT passes appeared to read different bytes,
- * and exec's i_writecount plain/LR reads diverged. FROST simulation and hardware
- * reproduced both, while QEMU did not, implicating 32-bit extraction from one
- * half of a dword row across L1-hit and miss/refill-forward paths.
+ * Cached-DDR cold-vs-warm read divergence probe. A read of either 32-bit half
+ * of a dword must return the same data from an L1D hit as from a miss served
+ * by the refill.
  *
  * Each round fills a buffer, dirties its direct-mapped aliases to evict it,
- * records cold reads in BRAM, rereads warm, and compares both with expected.
+ * records cold reads, rereads warm, and compares both with expected.
  * Shapes include ascending and descending 32-bit reads, odd-half-first reads,
  * 64-bit reads, and a cold half-store followed by both half-loads. A mismatch
  * reports address, shape, cold/warm values, and expected value.
@@ -47,7 +44,8 @@
 static volatile uint32_t *const buf = (volatile uint32_t *) BUF_BASE;
 static volatile uint32_t *const alias = (volatile uint32_t *) (BUF_BASE ^ ALIAS_XOR);
 
-/* BRAM capture avoids perturbing the DDR lines under test. */
+/* In the default BRAM tier the captures live in low BRAM, away from the DDR
+ * lines under test. */
 static uint32_t cold_val[WORDS];
 static uint32_t warm_val[WORDS];
 

@@ -15,15 +15,15 @@
  */
 
 /*
- * Deterministic repro for the boot-hang root cause: cached store->load
- * visibility across the trap path. On rv64 the pointers round-trip through
- * sd/ld, matching the REG_S/REG_L width of the real rv64 handle_exception. A
- * 32-bit sw/lw round-trip of a bit-31 pointer would instead sign-extend and
- * PMA-fault, since Phase 3 M2 retired out-of-map aliasing.
+ * Cached store-to-load visibility across the trap path, in the Linux
+ * handle_exception pattern. Pointers round-trip through sd/ld, the REG_S/REG_L
+ * width of the rv64 handle_exception. A 32-bit sw/lw round trip would
+ * sign-extend a pointer with bit 31 set (any DDR address) to an address outside
+ * the physical map, and the frame saves through it would take access faults.
  *
  * The handler increments cached g_ctr and main waits for it to reach TARGET.
- * The bug hides the store from later loads and stalls progress. An mtime
- * watchdog reports the stuck value instead of hanging forever.
+ * A store hidden from later loads stalls the count, and an mtime watchdog
+ * reports the stuck value instead of hanging forever.
  *
  * The registered simulation uses a deliberately small L2 and
  * DDR_MODEL_LATENCY>=70 to sustain writeback pressure.
@@ -67,8 +67,8 @@ static void clint_arm(uint64_t cmp)
 
 /* Match the rv64 handle_exception: swap tp/mscratch; store sp at 8(tp) and
  * 16(tp) (REG_S = sd); reload sp from 8(tp) (REG_L = ld); then save GPRs to
- * that stack. A stale reload makes sp invalid and the saves re-trap. The
- * varying value prevents a false forward. */
+ * that stack. g_percpu starts poisoned, so if the first trap's reload misses
+ * the store to 8(tp), sp is invalid and the saves re-trap. */
 __attribute__((naked, aligned(4))) static void ctr_entry(void)
 {
     __asm__ volatile("csrrw tp, mscratch, tp\n" /* kernel: tp=0, mscratch=old tp(&g_percpu) */
@@ -144,6 +144,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
 
 int main(void)
 {
+    /* link_ddr.ld keeps the stack in low BRAM; move it into DDR. */
     uintptr_t stack_top = ((uintptr_t) &g_ddr_stack[DDR_STACK_SIZE]) & ~(uintptr_t) 0xFu;
     __asm__ volatile("mv sp, %0\n"
                      "j  main_on_ddr_stack\n"

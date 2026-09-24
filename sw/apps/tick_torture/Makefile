@@ -12,8 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Linux-faithful CLINT tick re-arm torture (see main.c). Runs from cached DDR
-# like the no-MMU Linux kernel whose tick-death hang class it guards.
+# CLINT timer re-arm stress test (see main.c). Runs from cached DDR, like the
+# Linux kernel.
 override MEM_CONFIG := ddr
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

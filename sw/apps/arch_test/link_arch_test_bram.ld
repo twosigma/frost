@@ -1,12 +1,10 @@
-/* Linker script for riscv-arch-test on Frost, low-BRAM config.
+/* Linker script for riscv-arch-test on FROST, bram config.
  *
- * Code, data and the signature area all live in the 256 KiB low region
- * (ROM 96K + RAM 160K), so neither cached tier is involved: this is the pure
- * ISA-conformance tier. The ROM/RAM split gives the big compliance tests
- * (fmadd/fnmadd/... with up to ~14K test cases) a large contiguous RAM for
- * their signature areas; a test whose image exceeds the low BRAM is covered
- * by the ddr tier (link_arch_test.ld) instead. This suite runs only in
- * simulation.
+ * Code, data and the signature area all live in the 256 KiB low BRAM (95 KiB
+ * ROM, the 1 KiB debug slice, 160 KiB RAM), so neither cached tier is
+ * involved: this is the pure ISA-conformance tier. Data and signatures share
+ * the 160 KiB RAM; a test whose image exceeds the low BRAM is covered by the
+ * ddr tier (link_arch_test.ld) instead. This suite runs only in simulation.
  *
  * The .data load image sits in ROM directly after .rodata and crt0 copies it
  * into RAM. Near-capacity tests place that load image just below RAM with a

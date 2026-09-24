@@ -17,7 +17,7 @@
 /*
  * NIC loopback test (hw/rtl/peripherals/nic, sw/lib/include/nic.h).
  *
- * Drives the NIC the way the Linux driver will: bring-up through READY, a
+ * Drives the NIC the way the Linux driver does: bring-up through READY, a
  * loopback selected through a RESET, station address, rings in cached DDR,
  * descriptors posted with a TAIL doorbell, completions read from the
  * descriptors (DD), counters, the completion and link interrupts, the
@@ -126,7 +126,7 @@ static void post_rx(uint32_t n)
 {
     for (uint32_t k = 0; k < n; k++) {
         uint32_t i = g_rx_posted % ENTRIES;
-        rx_ring[i].addr = RX_BUF(i) + (g_rx_posted % 7u) * 9u; /* odd offsets */
+        rx_ring[i].addr = RX_BUF(i) + (g_rx_posted % 7u) * 9u; /* varied alignments */
         rx_ring[i].len = RX_BUF_LEN;
         rx_ring[i].status = 0;
         g_rx_posted++;
@@ -157,7 +157,8 @@ static uint32_t send_tx(uint32_t len, const uint8_t *da, uint32_t seed)
     return i;
 }
 
-/* The RX descriptor g_rx_reaped holds the frame sent as (len, da, seed)? */
+/* Reap the next RX descriptor and check that it holds the frame sent as
+ * (len, da, seed). */
 static int reap_rx(uint32_t len, const uint8_t *da, uint32_t seed, const char *what)
 {
     uint32_t i = g_rx_reaped % ENTRIES;
@@ -332,7 +333,7 @@ static void test_frames(void)
         uint32_t idx = send_tx(lengths[k], station, k + 1u);
         int got = reap_rx(lengths[k], station, k + 1u, "frames");
         /* The round trip in mtime ticks: doorbell to DD seen, including the
-         * software checks; the envelope record in the slice notes reads it. */
+         * software checks. */
         uart_printf("frame %u bytes: %u ticks\n", lengths[k], (uint32_t) (rdmtime() - t0));
         if (!got)
             ok = 0;
@@ -436,7 +437,8 @@ static void test_irq(void)
     if (!reap_rx(81u, station, 2u, "moderation"))
         ok = 0;
     uint64_t t_wait = rdmtime();
-    while (rdmtime() - t_wait < 400u) /* an observable interval, longer than the moderation delay */
+    /* Long enough for an early raise to show, well inside the 0xFFFF-tick deadline. */
+    while (rdmtime() - t_wait < 400u)
         ;
     if (g_irq_seen & NIC_IRQ_RX) {
         uart_printf("moderation: RX raised after two completions\n");

@@ -15,17 +15,17 @@
  */
 
 /*
- * PLIC directed test. Exercises the register file
- * (priority/enable/threshold WARL widths), the level gateway (claim /
- * complete / re-raise / spurious claim), threshold masking, priority-0
- * never-interrupts, both contexts' EIP lines through the mip.MEIP and
- * mip.SEIP readbacks, and a full M-mode external-interrupt take that
- * claims and completes inside the handler.
+ * PLIC directed test. Exercises the register file (reset values and
+ * priority/enable/threshold WARL widths), the level gateway (claim /
+ * complete / re-raise / spurious claim), threshold masking, priority 0
+ * never interrupting, both contexts' EIP lines through the mip.MEIP and
+ * mip.SEIP readbacks, and an M-mode external interrupt that the handler
+ * claims and completes.
  *
- * The controllable level source is the ns16550's THRE interrupt (PLIC
- * source 1): with the transmitter idle, IER[1] raises a stable high
- * level; clearing IER[1] drops it. Source 2 (the board pin) is tied low
- * in simulation and register-tested only. Self-checks over UART
+ * The level source is the ns16550 THRE interrupt (PLIC source 1): while
+ * the UART transmitter can accept a byte, setting IER[1] holds the level
+ * high and clearing IER[1] drops it. Source 2 (the board pin) stays low
+ * in simulation and is only register-tested. Self-checks over UART
  * (<<PASS>> / <<FAIL>>).
  */
 
@@ -56,7 +56,7 @@ static void uart_hex(unsigned long v)
 #define REG32(a) (*(volatile uint32_t *) (a))
 #define PLIC_BASE 0x44000000UL
 /* Sources: 1 = ns16550, 2 = the board's external-interrupt pin, 3 = the DMA
- * test engine (cpu_and_mem.sv NUM_SOURCES). */
+ * test engine, 4 = the NIC (cpu_and_mem.sv NUM_SOURCES). */
 #define PLIC_NUM_SOURCES 4u
 #define PLIC_PRIO(s) REG32(PLIC_BASE + 4ul * (s))
 #define PLIC_PENDING REG32(PLIC_BASE + 0x1000ul)
@@ -83,9 +83,9 @@ static int report(const char *name, unsigned long got, unsigned long want)
     return got == want;
 }
 
-/* The ns16550 THRE level is ns_ier[1] && uart_tx_ready: it rises only
- * once the serializer drains this test's own prints. Wait for TX idle
- * (the same tx_ready the level uses) before expecting a raise. */
+/* The ns16550 THRE level is ns_ier[1] && i_uart_tx_ready, the transmit
+ * FIFO's ready: high while the transmitter can accept a byte. UART_TX_STATUS
+ * bit 0 reads the same signal, so wait for it before expecting a raise. */
 static void wait_tx_idle(void)
 {
     for (int i = 0; i < 400000; i++) {
@@ -94,9 +94,8 @@ static void wait_tx_idle(void)
     }
 }
 
-/* Bounded mip poll. The PLIC EIP and meip registrations are only a few
- * flops deep, but a poll that waits for a THRE raise has to outlast the
- * UART serializer draining this test's own prints, hence the 20000. */
+/* Bounded mip poll. The path from a PLIC source to mip is a few registers
+ * deep, so 20000 reads leave ample margin. */
 static unsigned long poll_mip(unsigned long mask, unsigned long want)
 {
     for (int i = 0; i < 20000; i++) {
@@ -149,7 +148,7 @@ int main(void)
 
     /* B: the gateway raises on the THRE level; pending readback. */
     PLIC_PRIO(1) = 1;
-    NS16550_IER = 0x2; /* THRE enable: level high while TX is idle */
+    NS16550_IER = 0x2; /* THRE enable: level high while TX can accept a byte */
     PLIC_EN_M = 0x2;   /* enable source 1 (bit 1 = ID 1) in context M */
     wait_tx_idle();
     ok &= report("B meip-raises", poll_mip(MIP_MEIP, MIP_MEIP), MIP_MEIP);

@@ -17,15 +17,16 @@
 /**
  * memory.c: heap allocation for bare-metal use, two ways.
  *
- * 1. Arena: bump-pointer allocation with bulk release, for allocations that
- *    share a lifetime (per frame, per request).
+ * 1. Arena: bump-pointer allocation, reset in bulk with arena_clear(), for
+ *    allocations that share a lifetime (per frame, per request).
  *
- * 2. malloc/free: first-fit freelist allocator, for allocations with mixed
- *    lifetimes.
+ * 2. malloc/free: first-fit freelist allocator that coalesces adjacent free
+ *    blocks, for allocations with mixed lifetimes.
  *
  * Both draw from one bounds-checked bump-pointer heap that grows from
  * _heap_start toward _heap_end (both defined in the linker script). _sbrk()
- * exposes the same heap to bare-metal callers and never shrinks it.
+ * exposes the same heap to bare-metal callers. It never shrinks the heap and
+ * returns NULL, not (char *) -1, on failure.
  */
 
 #include "memory.h"
@@ -34,6 +35,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Diagnostic build switches for free(), all off by default. */
 #ifndef FROST_MALLOC_DISABLE_FREE
 #define FROST_MALLOC_DISABLE_FREE 0
 #endif
@@ -108,9 +110,13 @@ static void evict_l0_words_for_range(uintptr_t start, uint32_t size)
     start &= ~(uintptr_t) (sizeof(uint32_t) - 1);
 
     /*
-     * FROST's load-queue L0 is direct-mapped and indexed by address bits [8:2].
-     * Toggling bit 9 preserves the index and changes the tag, forcing the word
-     * entry out without needing hardware support for explicit cache management.
+     * Evict each word from the direct-mapped load-queue L0 by loading an alias
+     * meant to map to the same entry with a different tag, which needs no
+     * cache-management instruction.
+     * FIXME: at its default depth, lq_l0_cache has 128 dword lines indexed by
+     * address bits [9:3], so flipping bit 9 selects a different entry and
+     * leaves the word's entry in place. The alias must differ in a tag bit
+     * instead (address bits [31:10] at that depth).
      */
     for (uintptr_t addr = start; addr < end; addr += sizeof(uint32_t)) {
         sink ^= *(volatile uint32_t *) (addr ^ 0x200u);
@@ -214,7 +220,9 @@ void *malloc(size_t size)
         struct free_slot *slot = *p;
 
         if (block_size <= slot->size) {
-            /* Shrink down free slot */
+            /* Carve the block from the end of the slot so the slot's header stays
+             * in place. Block and slot sizes are multiples of DEFAULT_ALIGN, so a
+             * nonzero remainder still holds a struct free_slot. */
             slot->size -= block_size;
             result = (char *) slot + slot->size + ALIGNED_METADATA_SIZE;
 
@@ -283,6 +291,9 @@ void free(void *ptr)
 #else
     uintptr_t header_size = ALIGNED_METADATA_SIZE;
 #if FROST_MALLOC_GUARD_FREE
+    /* Diagnostic mode: silently ignore a pointer that is misaligned or outside
+     * the allocated heap, or whose size header is misaligned, smaller than the
+     * header, or runs past heap_mark. */
     uintptr_t payload = (uintptr_t) ptr;
     uintptr_t heap_start = (uintptr_t) heap_start_p;
     uintptr_t heap_limit = (uintptr_t) heap_mark;

@@ -1,9 +1,9 @@
-// Frost riscv-tests virtual environment kernel: the upstream env/v/vm.c
-// (demand-paged Sv39 user pages under a supervisor kernel mapped at the
-// top of the address space) with its HTIF tohost console replaced by the
-// Frost UART, and Frost's Svade A/D-bit handling exercised by the fault
-// handler exactly as upstream wrote it (the kernel sets A on the first
-// fault and D on the first store fault).
+// FROST riscv-tests virtual environment kernel: the upstream env/v/vm.c
+// (demand-paged user pages under a supervisor kernel mapped at the top of
+// the address space), cut down to Sv39 and with its HTIF tohost console
+// replaced by the FROST UART. The fault handler is upstream's and handles
+// Svade's A/D faults: it maps a page with A and D clear, sets A on the next
+// fault, and sets D on a later store fault.
 //
 // See LICENSE in riscv-tests for the upstream license.
 
@@ -56,9 +56,11 @@ void printhex(uint64_t x)
 
 static void terminate(int code)
 {
-  // The user-ecall pass/fail arg (a0). Frost's riscv_test.h RVTEST_PASS uses
-  // a0 = 0; the upstream env/v uses a0 = 1; RVTEST_FAIL uses (TESTNUM << 1) | 1
-  // (odd, >= 3). Treat either pass convention as success.
+  // code is the user ecall's a0, 1 for an FP test on a core without an FPU
+  // (see handle_trap), or a kernel error code shifted left by one.
+  // The p environment's RVTEST_PASS uses a0 = 0 and env_v's (like upstream
+  // env/v) uses a0 = 1; RVTEST_FAIL uses (TESTNUM << 1) | 1, which is odd and
+  // >= 3. Either pass value is success.
   if (code == 0 || code == 1) {
     cputstring("<<PASS>>\n");
   } else {
@@ -223,8 +225,8 @@ void vm_boot(uintptr_t test_addr)
 #endif
   // map user to lowermost megapage
   l1pt[0] = ((pte_t)user_l2pt >> PGSHIFT << PTE_PPN_SHIFT) | PTE_V;
-  // map kernel to uppermost megapage, and the device quadrant (UART) to
-  // the megapage below it
+  // map kernel to uppermost megapage, and the MMIO megapage at UART_PA to
+  // the megapage below it (UART_KVA)
   l1pt[PTES_PER_PT-1] = ((pte_t)kernel_l2pt >> PGSHIFT << PTE_PPN_SHIFT) | PTE_V;
   kernel_l2pt[PTES_PER_PT-1] = (DRAM_BASE/RISCV_PGSIZE << PTE_PPN_SHIFT) | PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
   kernel_l2pt[PTES_PER_PT-2] = (UART_PA/RISCV_PGSIZE << PTE_PPN_SHIFT) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;

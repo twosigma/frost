@@ -20,8 +20,8 @@
 /**
  * Memory-mapped I/O addresses for the on-chip peripherals.
  *
- * The addresses come from the linker script (common/link.ld) and have to match
- * the decode in cpu_and_mem.sv.
+ * The addresses are PROVIDE symbols in the linker scripts (common/link.ld and
+ * the others under sw/) and must match the decode in cpu_and_mem.sv.
  *
  * Usage:
  *   #include "mmio.h"
@@ -32,15 +32,13 @@
 #include <stdint.h>
 
 /* ========================================================================== */
-/* Linker-provided symbols (defined in common/link.ld)                        */
+/* Linker-provided symbols                                                    */
 /* ========================================================================== */
 
-/* Every anchor is declared volatile, never const: only its address is used,
- * but GCC reasons about loads through the casted pointers below as loads of
- * the declared object. Through a const (or plain) object it may treat them
- * as invariant between stores, and it did: a status poll's caller received
- * the value of a load hoisted above the loop (seen with the DMA engine's
- * CTRL poll). A volatile object leaves it nothing to assume. */
+/* Every anchor is declared volatile, never const. Only its address is used,
+ * but GCC treats loads through the casts below as loads of the declared
+ * object, so for a const or plain object it may treat the value as invariant
+ * between stores and hoist a status poll's load out of its loop. */
 extern volatile unsigned long UART_ADDR;
 extern volatile unsigned long UART_RX_DATA_ADDR;
 extern volatile unsigned long UART_RX_STATUS_ADDR;
@@ -53,16 +51,12 @@ extern volatile uint32_t MTIMECMP_LO_ADDR;
 extern volatile uint32_t MTIMECMP_HI_ADDR;
 extern volatile uint32_t MSIP_ADDR;
 
-/* Only each symbol's ADDRESS matters -- the linker PROVIDEs it as the absolute
- * register address -- so the 32-bit registers above are read back through a
- * narrower lvalue than the `unsigned long` they are declared as. That is a
- * type-punned access: -fno-strict-aliasing (common.mk) makes it harmless, but
- * an app may override that (coremark does), and then GCC would both warn
- * (-Wstrict-aliasing) and be entitled to assume the two lvalues cannot alias.
- * may_alias is GCC's supported opt-out and keeps the punned accesses correct
- * under either setting; it widens nothing when -fno-strict-aliasing is in
- * effect, so every app's codegen is unchanged. uint8_t needs no such marker --
- * a character type may already alias anything.
+/* The 32-bit registers declared `unsigned long` are accessed through a
+ * narrower lvalue, which is a type pun. -fno-strict-aliasing (common.mk) makes
+ * that harmless, but an app may turn strict aliasing back on (coremark does),
+ * and GCC could then warn (-Wstrict-aliasing) and assume the two lvalues do
+ * not alias. may_alias keeps the accesses correct under either setting.
+ * uint8_t needs no such marker: a character type may alias anything.
  */
 typedef uint32_t __attribute__((may_alias)) mmio_u32_t;
 
@@ -83,7 +77,7 @@ typedef uint32_t __attribute__((may_alias)) mmio_u32_t;
 #define FIFO1 (*(volatile mmio_u32_t *) &FIFO1_ADDR)
 
 /* ========================================================================== */
-/* CLINT-compatible Timer Registers (0x40000010-0x40000020)                   */
+/* Machine timer and software interrupt (0x40000010-0x40000020)               */
 /* ========================================================================== */
 
 #define MTIME_LO (*(volatile uint32_t *) &MTIME_LO_ADDR)

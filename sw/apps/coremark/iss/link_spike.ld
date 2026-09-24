@@ -1,6 +1,6 @@
-/* Flat image for Spike: everything at DRAM_BASE, HTIF tohost/fromhost exported
- * so the simulator can see the exit write.  Deliberately independent of
- * ../../common/link.ld -- this harness never runs on FROST hardware. */
+/* Flat image for Spike: everything at DRAM_BASE, including the .tohost section
+ * that holds the HTIF tohost/fromhost words Spike watches for the exit write.
+ * Independent of sw/common/link.ld, because this harness never runs on FROST. */
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 SECTIONS

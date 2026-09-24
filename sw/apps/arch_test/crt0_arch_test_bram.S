@@ -1,12 +1,12 @@
-// Frost minimal startup for riscv-arch-test (dev branch)
+// FROST startup for riscv-arch-test, bram config
 //
-// On the dev branch, RVMODEL_BOOT is commented out in arch_test.h.
-// _start lives in the .init section, which the linker places first. It
-// copies .data from ROM to RAM, zeroes .bss, and jumps to the framework's
-// rvtest_init entry point.
+// The pinned arch_test.h never invokes RVMODEL_BOOT, so this stub does the
+// startup work. _start lives in .init, which the linker places first. It
+// copies .data/.sdata from ROM to RAM, zeroes .sbss/.bss, and jumps to the
+// framework's rvtest_init entry point.
 //
-// Some near-capacity BRAM tests place the .data load image just below RAM with
-// a small overlap into the destination range. Copy backward so the startup
+// Some near-capacity tests place the .data load image just below RAM with a
+// small overlap into the destination range. Copy backward so the startup
 // behaves like memmove when dest > src.
 
     .section .init

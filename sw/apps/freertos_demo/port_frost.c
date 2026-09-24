@@ -32,9 +32,9 @@ static volatile uint32_t ulPortYieldPending = 0;
 
 /* Next mtimecmp value */
 static uint64_t ullNextTime = 0;
-/* The nominal 1 ms tick is stretched by 100. In simulation mtime advances by
- * SIM_TIMER_SPEEDUP per cycle (1000 in tests/Makefile), so an unstretched tick would fire
- * every 300 cycles and leave the tasks little time to run. On hardware the tick is 100 ms. */
+/* Each tick is 100 nominal 1 ms periods: 100 ms of mtime. mtime counts core cycles, in
+ * simulation too (SIM_TIMER_SPEEDUP keeps its default of 1), so a tick takes about 32 million
+ * cycles at 322 MHz, more than the default simulation cycle budget. */
 static const uint64_t ullTimerIncrementForOneTick =
     (uint64_t) (configCPU_CLOCK_HZ / configTICK_RATE_HZ) * 100;
 
@@ -117,8 +117,8 @@ static void print_hex(uint32_t val)
     }
 }
 
-/* Trap entry: [Y:mepc] for a yield. The timer test still uses the rv32 cause 0x80000007,
- * which the rv64 MTI cause does not match, so a tick would print [?:mepc]. */
+/* Trap entry: [Y:mepc] for a yield. The timer check compares against the RV32 cause value
+ * 0x80000007, which the RV64 machine-timer cause never matches, so a tick prints [?:mepc]. */
 void vPortDebugTrap(uint32_t mepc, uint32_t mcause, uint32_t sp)
 {
     (void) sp;
@@ -237,7 +237,8 @@ pxPortInitialiseStack(StackType_t *pxTopOfStack, TaskFunction_t pxCode, void *pv
     *pxTopOfStack = 0; /* slot 30 */
 
     /* mstatus: MPP=11 (M-mode), MPIE=1, MIE=0. mret copies MPIE into MIE, so the task
-     * starts with interrupts enabled. */
+     * starts with interrupts enabled. FS=0 (Off): the context switch saves no FP state, and
+     * an FP instruction in a task traps as illegal. */
     pxTopOfStack--;
     *pxTopOfStack = 0x00001880; /* slot 29 */
 

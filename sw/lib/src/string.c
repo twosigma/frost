@@ -29,6 +29,8 @@
 
 #include <stdint.h>
 
+/* Diagnostic build switch: FROST_MEMORY_FENCE_WRITES=1 adds a fence rw, rw at
+ * the end of every function here that writes memory. */
 #ifndef FROST_MEMORY_FENCE_WRITES
 #define FROST_MEMORY_FENCE_WRITES 0
 #endif
@@ -69,9 +71,8 @@ void *memset(void *dst, int c, size_t n)
 
 /* Copy memory from source to destination.
  * Fast path copies machine words in 8-word unrolled blocks when the source,
- * destination, and length are all word-aligned, so aligned bulk copies issue
- * one load and one store per word instead of per byte; otherwise falls back to
- * a byte copy. Does not handle overlap (use memmove for that). */
+ * destination, and length are all word-aligned; otherwise falls back to a byte
+ * copy. Does not handle overlap (use memmove for that). */
 void *memcpy(void *dst, const void *src, size_t n)
 {
     if ((((uintptr_t) dst | (uintptr_t) src | n) & (sizeof(uintptr_t) - 1)) == 0) {
@@ -112,7 +113,7 @@ void *memmove(void *dst, const void *src, size_t n)
     const unsigned char *s = src;
 
     if (d < s) {
-        /* Forward copy (same as memcpy) */
+        /* Forward copy */
         while (n--) {
             *d++ = *s++;
         }

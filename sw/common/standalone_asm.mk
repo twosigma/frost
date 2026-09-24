@@ -92,8 +92,8 @@ endif
 
 # Make cannot otherwise tell that the shared output names were produced with a
 # different tier, ISA/ABI, tool override, linker, or section split. Keep one
-# content-addressed stamp whose mtime changes exactly when the effective build
-# configuration changes.
+# stamp holding the effective build configuration, rewritten (so its mtime
+# changes) only when that configuration changes.
 EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|ARCH=$(ARCH)|ABI=$(ABI)|AS=$(AS)|LD=$(LD)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ASM_FLAGS=$(ASM_FLAGS)|BOOT_CFLAGS=$(BOOT_CFLAGS)|FROST_ASM_DEBUG_FLAGS=$(FROST_ASM_DEBUG_FLAGS)|FROST_BOOT_DEBUG_FLAGS=$(FROST_BOOT_DEBUG_FLAGS)|LINK_FLAGS=$(LINK_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|BOOT_STUB_OBJ=$(BOOT_STUB_OBJ)|DDR_SECTIONS=$(DDR_SECTIONS)|ASM_SRC=$(ASM_SRC)
 shell_quote = '$(subst ','"'"',$(1))'
 

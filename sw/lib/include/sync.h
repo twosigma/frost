@@ -24,14 +24,12 @@
  * writing instructions to memory, fence() to order memory accesses against
  * other agents and devices.
  *
- * On Frost (RV64GCB with Zifencei) the cost depends on the memory tier.
- * With the cached tier active, fence.i writes back the L1D and then
- * invalidates the L1I. The L1I is read-only and does not snoop the L1D, so
- * without that sequence instruction fetches would not observe prior data
- * stores. In the low-BRAM tier there is no cache hierarchy and fence.i
- * completes immediately. fence orders a single-core memory system that
- * already retires loads and stores in program order at commit. Using both
- * keeps code portable to implementations where they have real effects.
+ * On FROST, fence waits at the ROB head until committed stores have drained.
+ * fence.i also waits for the L1D to write back its dirty lines and the L1I to
+ * invalidate, then flushes the pipeline and fetch buffer and refetches. The
+ * L1I is read-only and does not snoop the L1D, so without fence.i instruction
+ * fetch would not observe earlier stores. Outside Debug Mode, CPU stores reach
+ * only the data copy of low BRAM, so self-modifying code must live in DDR.
  */
 
 /**
@@ -53,8 +51,9 @@ static inline __attribute__((always_inline)) void fence(void)
  * writing instructions to memory (self-modifying code, JIT compilation,
  * dynamic code loading) so the processor fetches the new instructions.
  *
- * On Frost this writes back the L1D and then invalidates the L1I when the
- * cached tier is active; in the low-BRAM tier (no caches) it is a NOP.
+ * On FROST this drains committed stores, writes back the L1D, invalidates the
+ * L1I, and refetches. A build without the cache hierarchy
+ * (ENABLE_CACHED_TIER=0) skips the cache steps.
  */
 static inline __attribute__((always_inline)) void fence_i(void)
 {

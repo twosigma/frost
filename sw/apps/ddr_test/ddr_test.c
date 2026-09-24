@@ -314,7 +314,6 @@ int main(void)
         uart_printf("<<FAIL>>\n");
     }
 
-    /* Halt */
     for (;;) {
     }
 }

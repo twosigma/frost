@@ -15,7 +15,7 @@
  */
 
 /**
- * Self-checks the extensions claimed by Frost (RV64IMAFDCB):
+ * Self-checks the extensions FROST implements (RV64IMAFDCB):
  *   - RV64I:  Base integer instruction set
  *   - M:      Integer multiply/divide
  *   - A:      Atomic memory operations
@@ -29,8 +29,12 @@
  *   - Zicond: Conditional zero operations
  *   - Zbkb:   Bit manipulation for cryptography
  *   - Zihintpause: Pause hint for spin-wait loops
+ * plus machine-mode CSRs and traps.
  *
- * Uses known inputs and expected outputs, summarized by extension.
+ * Each check runs an instruction on known inputs; the summary reports results by
+ * extension. TEST compares the low 32 bits of a result and TEST64 all 64. A 32-bit
+ * inline-asm operand arrives sign-extended in its 64-bit register, so an operand
+ * written 0x80000000 is 0xFFFFFFFF80000000 to the instruction.
  */
 
 #include "mmio.h"
@@ -680,13 +684,11 @@ static void test_a_extension(void)
 {
     BEGIN_EXTENSION(EXT_A);
 
-    /* Both cells are 8-byte aligned. Frost's reservation set is a dword
-     * granule (sc_pending_unit compares addr[XLEN-1:3], which the A spec
-     * permits), so the SC-to-different-address fail test below only means
-     * something when the two cells sit in different granules. Two adjacent
-     * aligned(4) words can share a dword depending on link layout: the rv64
-     * build packed them together and the "fail" SC succeeded, as the spec
-     * allows. */
+    /* Both cells are 8-byte aligned so they sit in different reservation
+     * granules. FROST's reservation set is a dword (sc_pending_unit compares
+     * addr[XLEN-1:3], which the A spec permits), so an SC to the other word of
+     * the reserved dword would succeed, and the SC-to-different-address test
+     * below, which expects the SC to fail, would report a false failure. */
     volatile uint32_t atomic_mem __attribute__((aligned(8))) = 0;
     volatile uint32_t atomic_mem2 __attribute__((aligned(8))) = 0;
     uint32_t result, result2;
@@ -914,7 +916,7 @@ static void test_c_extension(void)
     uint32_t result_hi;
     volatile uint32_t mem_val;
 
-    /* ===== Quadrant 0: Stack-relative loads/stores ===== */
+    /* ===== Quadrant 0: C.ADDI4SPN, C.LW, C.SW ===== */
 
     /* C.ADDI4SPN: addi rd', sp, nzuimm (rd' = x8-x15) */
     __asm__ volatile("mv t0, sp\n"             /* Save sp */
@@ -941,6 +943,7 @@ static void test_c_extension(void)
                      : "s0", "s1", "memory");
     TEST("sw", mem_val, 0x12345678);
 
+    /* ===== Quadrant 1: immediates, ALU ops, C.J, C.BEQZ, C.BNEZ ===== */
     __asm__ volatile("c.nop" :::);
     TEST_NO_CRASH("nop");
 
@@ -1072,6 +1075,7 @@ static void test_c_extension(void)
                      : "=r"(result)::"s0");
     TEST("bnez_n", result, 1);
 
+    /* ===== Quadrant 2: C.SLLI, C.LWSP, C.JR, C.MV, C.JALR, C.ADD, C.SWSP ===== */
     __asm__ volatile("li a1, 0x00000001\n"
                      "c.slli a1, 16\n"
                      "mv %0, a1\n"
@@ -1169,12 +1173,12 @@ static void test_c_extension(void)
 
     c_trap_taken = 0;
     c_trap_cause = 0;
-    __asm__ volatile(".insn 0x9002" ::: "memory");
+    __asm__ volatile(".insn 0x9002" ::: "memory"); /* C.EBREAK */
     TEST("ebrk_t", c_trap_taken, 1);
     TEST("ebrk_c", c_trap_cause, 3);
 
     __asm__ volatile("csrw mtvec, %0" ::"r"(old_mtvec));
-    __asm__ volatile("csrs mstatus, %0" ::"r"(0x8)); /* Re-enable interrupts */
+    __asm__ volatile("csrs mstatus, %0" ::"r"(0x8)); /* Set mstatus.MIE */
 
     END_EXTENSION();
 }
@@ -2692,7 +2696,7 @@ static void test_zicsr(void)
     /* Cycle counter should advance between reads */
     TEST("CSRR cycle (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* CSRRS can only be read-tested on a read-only counter. */
+    /* With rs1 = x0, CSRRS and CSRRC only read, so they are legal on the read-only counter. */
     __asm__ volatile("csrrs %0, cycle, x0" : "=r"(result1));
     TEST("CSRRS (read)", (result1 > 0) ? 1 : 0, 1);
 
@@ -2700,7 +2704,7 @@ static void test_zicsr(void)
     __asm__ volatile("csrrc %0, cycle, x0" : "=r"(result1));
     TEST("CSRRC (read)", (result1 > 0) ? 1 : 0, 1);
 
-    /* Read-only counters cannot exercise CSRRW/CSRRS/CSRRC writes here. */
+    /* test_mmode checks CSRRW/CSRRS/CSRRC writes on mscratch. */
 
     END_EXTENSION();
 }
@@ -2721,7 +2725,7 @@ static void test_zicntr(void)
     __asm__ volatile("rdcycle %0" : "=r"(result2));
     TEST("RDCYCLE (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* RDTIME: read time counter low (the CLINT mtime, which counts every cycle on Frost) */
+    /* RDTIME: read time counter low (mtime, which counts every core cycle) */
     __asm__ volatile("rdtime %0" : "=r"(result1));
     __asm__ volatile("rdtime %0" : "=r"(result2));
     TEST("RDTIME (advancing)", (result2 > result1) ? 1 : 0, 1);
@@ -2746,9 +2750,10 @@ static void test_zifencei(void)
 {
     BEGIN_EXTENSION(EXT_ZIFENCEI);
 
-    /* FENCE.I: instruction fetch fence. The ROB serializes it, drains the store
-     * queue, and invalidates the L1I and fetch buffer (see hw/rtl/README.md).
-     * Nothing observable to check here beyond executing without a trap. */
+    /* FENCE.I: instruction fetch fence. The ROB serializes it; it drains stores,
+     * writes back dirty L1D lines, and invalidates the L1I and fetch buffer
+     * (hw/rtl/README.md, "Memory Map"). Nothing observable to check here beyond
+     * executing without a trap. */
     __asm__ volatile("fence.i" ::: "memory");
     TEST_NO_CRASH("FENCE.I");
 
@@ -3463,7 +3468,6 @@ int main(void)
     uint64_t end_cycles = rdcycle64();
     uint64_t elapsed = end_cycles - start_cycles;
 
-    /* Print elapsed cycles (avoid 64-bit division which requires libgcc) */
     uart_printf("\nTest completed in %llu cycles\n", (unsigned long long) elapsed);
 
     print_summary();

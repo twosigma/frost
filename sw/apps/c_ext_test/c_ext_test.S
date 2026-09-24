@@ -5,9 +5,8 @@
 #
 # RV64C reinterprets several RV32C encodings: C.JAL's slot becomes C.ADDIW,
 # and C.FLW/C.FSW (+SP forms) become C.LD/C.SD (+SP forms), with C.SUBW and
-# C.ADDW added. That is the whole RV64C decompressor surface. Each
-# reinterpreted encoding gets a value self-check. A wrong result prints
-# <<FAIL>> and halts. C.JALR and C.J are covered by the control-flow tests.
+# C.ADDW added. Each of these RV64C-only encodings gets a value self-check;
+# a wrong result prints <<FAIL>> and halts.
 #
 # Tests:
 #   1. 32-bit JAL to function
@@ -43,7 +42,7 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 2 (rv64): C.ADDIW, which reuses the C.JAL encoding slot
+    # Test 2: C.ADDIW, which reuses the C.JAL encoding slot
     # =========================================
     la      a0, msg_test2
     jal     ra, print_string
@@ -57,7 +56,7 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 3 (rv64): Nested calls with mixed sizes
+    # Test 3: Nested calls with mixed sizes
     # =========================================
     la      a0, msg_test3
     jal     ra, print_string
@@ -66,7 +65,7 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 4 (rv64): C.LD/C.SD and C.LDSP/C.SDSP roundtrip
+    # Test 4: C.LD/C.SD and C.LDSP/C.SDSP roundtrip
     # =========================================
     la      a0, msg_test4
     jal     ra, print_string
@@ -89,7 +88,7 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 5 (rv64): C.JALR (compressed indirect)
+    # Test 5: C.JALR (compressed indirect)
     # =========================================
     la      a0, msg_test5
     jal     ra, print_string
@@ -101,7 +100,7 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 6 (rv64): C.SUBW / C.ADDW
+    # Test 6: C.SUBW / C.ADDW
     # =========================================
     la      a0, msg_test6
     jal     ra, print_string

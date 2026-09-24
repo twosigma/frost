@@ -15,40 +15,39 @@
  */
 
 /*
- * lq_stale_slot_probe: a load can complete with another load's data.
+ * lq_stale_slot_probe: a cached load must complete with its own data across
+ * two partial flushes and ROB-tag reuse.
  *
  * The load queue keeps up to four cached-tier loads in flight in its slots.
- * A partial flush that kills a slot's load marks the slot to drain its
- * response (cs_drop) but keeps the slot busy until that response lands, and
- * the killed load's queue entry is free at once. The slot still carries the
- * dead load's ROB tag and queue index. If a live load is allocated into
- * that entry and launches, and a second partial flush arrives before the
- * dead response, the flush judges the slot by its stale tag: when that tag
- * reads as younger than the flush point, the flush clears the issued bit of
- * the live entry. The live load can then be launched a second time; its first
- * response completes it and frees the entry, and the next load allocated
- * there can receive the second response as its own data and complete with
- * the wrong value under its own ROB tag.
+ * A partial flush that kills a slot's load drop-marks the slot (cs_drop),
+ * which stays busy until the response lands and is drained, while the killed
+ * load's queue entry frees at once. A live load can then be allocated into
+ * that entry and launch while the slot still names the dead load's ROB tag
+ * and queue index. A second partial flush must not judge that slot by the
+ * stale tag. If the tag read as younger than the flush point, the flush would
+ * clear the live entry's issued bit; the live load could launch a second
+ * time, its first response would complete it and free the entry, and the
+ * next load allocated there could take the second response as its own data.
  *
- * Shape (iter.S): B1 resolves behind a divide chain and, on its wrong
- * path, runs three line loads behind a shorter one (drained slots whose
- * responses are still in flight after the recovery) plus five that only
- * hold entries; its correct path loads the -1 marker line N, then B2
- * mispredicts a fixed add chain later while N is in flight, then ten line
- * loads P keep the queue full. Every probed line carries its own signature;
- * a P that reads -1 took N's second response. Both branch directions are
- * random, so every combination is exercised; the hazard needs bit 0 set and
- * both branches mispredicted. The load queue's live-slot identity assertion
- * is the detector that fires first (the cycle after the flush, aborting the
- * run): N's relaunch is to its own line and coalesces with the first
- * request, so the two responses land back to back and the wrong value
- * reaches a P only when an allocation lands in that one-cycle gap.
+ * iter.S builds the shape. When B1's arm X is the wrong path, it leaves three
+ * cached loads in flight past the recovery. Arm Y's first load, N, reads a -1
+ * marker, and B2 resolves a fixed time after N launches, while N is in
+ * flight. Ten line loads P follow, more than the queue holds, so a P is
+ * waiting to take N's entry when it frees. Every probed line carries its own
+ * signature, so a P that reads -1 took N's second response. Branch directions
+ * are random; the hazard needs rnd bit 0 set (arm Y correct) and both
+ * branches mispredicted. Should the hazard occur in simulation, the load
+ * queue's live-slot identity check fires first, the cycle after the flush,
+ * and stops the run. The data check is weaker: N's relaunch would coalesce
+ * with its first request, so the two responses would land back to back, and
+ * a wrong value reaches a P only when an allocation falls in that one-cycle
+ * gap.
  *
- * The probe writes its own pool and marker lines and evicts them from the
- * L1D (fence.i writes it back) and the direct-mapped L2 (two alias passes)
- * before the measured loop, so it depends on no prior DRAM contents; every
- * probed line is then loaded exactly once, and each block's line 0 is
- * recorded so a pool that did not hold its signatures is reported.
+ * Before the measured loop the probe writes its own pool and marker lines and
+ * pushes them out of both cache levels (prepare_pool), so it depends on no
+ * prior DRAM contents. Each probed line is loaded at most once, and each
+ * block's line 0 is recorded so a pool that did not hold its signatures is
+ * reported.
  */
 
 #include "uart.h"
@@ -74,8 +73,7 @@ void lq_stale_run(unsigned long iters,
                   unsigned long *out,
                   unsigned long seed);
 
-/* Offsets loaded inside a block: B1's condition, A1..A3, A4..A8, P set 1,
- * P set 2. */
+/* Offsets loaded inside a block: line 0, A1..A3, A4..A8, P set 1, P set 2. */
 static const unsigned short probed_off[] = {
     0,    64,   128,  192,  256,  320,  384,  448,  512,  1024, 1088, 1152, 1216, 1280, 1344,
     1408, 1472, 1536, 1600, 2048, 2112, 2176, 2240, 2304, 2368, 2432, 2496, 2560, 2624,

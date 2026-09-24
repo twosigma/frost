@@ -17,9 +17,9 @@
 /*
  * Timer-at-WFI mepc regression.
  *
- * WFI drains the ROB. The bug sourced mepc from head_pc without head_valid, so
- * an idle-loop timer could save stale state instead of the post-WFI PC. Fire a
- * timer in WFI and require mepc to equal the following instruction.
+ * An interrupt taken while WFI waits at the ROB head must save the address of
+ * the instruction after the WFI in mepc, not a stale PC. The test fires a
+ * timer during WFI and requires mepc to equal that address.
  */
 
 #include <stdint.h>
@@ -80,9 +80,9 @@ int main(void)
                       * handler clobbers t0 and t1: it uses t1 to address
                       * g_mepc/g_taken and then to ack MTIMECMP_HI. Both are
                       * listed so the compiler cannot keep a live value pinned in
-                      * t1 across the wfi, such as g_taken's base. If it does, the
-                      * post-wfi `while(!g_taken)` reads a stale clobbered address
-                      * (DDR layout: 2008(t1=0x4000001C)=0x400007f4) and spins. */
+                      * t1 across the wfi, such as g_taken's base; the post-wfi
+                      * `while(!g_taken)` would then read through the clobbered
+                      * address and spin. */
                      : "t0", "t1", "memory");
 
     while (!g_taken) {

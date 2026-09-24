@@ -47,8 +47,10 @@ typedef struct __attribute__((packed)) {
 /* Target scale for price parsing (number of decimal places) */
 #define TARGET_SCALE 8
 
-/* Parse FIX protocol timestamp string to nanoseconds since epoch
+/* Parse FIX protocol timestamp string to nanoseconds
  * Format: YYYYMMDD-HH:MM:SS.mmm
+ * Uses 30-day months and 365-day years, so the result is not a real epoch time.
+ * A string shorter than 21 characters returns 0.
  */
 uint64_t parse_timestamp(const char *timestamp_string);
 

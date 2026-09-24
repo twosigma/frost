@@ -19,25 +19,23 @@
  *
  * Stores instructions in DDR and executes them after fence.i, covering:
  *
- *   stores -> SQ -> L1D (dirty)              ... the new code is invisible
+ *   stores -> SQ -> L1D (dirty)              ... invisible to fetch
  *   fence.i: SQ drain -> L1D writeback-all   ... pushed below the arbiter
  *            -> L1I invalidate-all           ... stale lines dropped
  *            -> fetch-buffer invalidate      ... stale window dropped
  *   call    -> L1I miss -> fill returns the freshly written code
  *
- * Each round rewrites the same buffer, then checks a cold call and a warm L1I
- * call. From round 2 onward, stale L1I/fetch-buffer state would return the old
- * constant.
- *
- * Every call must return its round's constant.
+ * Each round rewrites the same buffer, then makes a cold call and a warm L1I
+ * call, and both must return the round's constant. After the first round,
+ * stale L1I or fetch-buffer state would return the previous constant.
  */
 
 #include <stdint.h>
 
 #include "../../lib/include/uart.h"
 
-/* Writable buffer in the cached DDR region (the L1I steers by address, so
- * code in .ddr_data fetches exactly like .ddr_text). Line-aligned so each
+/* Writable buffer in the cached DDR region (fetch picks its path by address,
+ * so code in .ddr_data fetches exactly like .ddr_text). Line-aligned so each
  * round dirties a single, known L1D line. */
 __attribute__((section(".ddr_data"), aligned(32))) static volatile uint32_t ddr_code[8];
 

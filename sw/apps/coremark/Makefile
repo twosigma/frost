@@ -12,7 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Reorder complete, unmodified translation units for placement ensembles.
+# EEMBC CoreMark: the unmodified sources in coremark/ plus FROST's port layer.
+# docs/single_core_performance.md describes the benchmark configuration.
+
+# COREMARK_SOURCE_ORDER sets the link order of the five unmodified benchmark
+# sources, for link-order sweeps.
 COREMARK_SOURCES := core_list_join core_main core_matrix core_state core_util
 COREMARK_SOURCE_ORDER ?= $(COREMARK_SOURCES)
 ifneq ($(sort $(COREMARK_SOURCE_ORDER)),$(sort $(COREMARK_SOURCES)))
@@ -27,8 +31,9 @@ INCLUDE_DIR = ./coremark
 # Use the RV64 hard-float ABI.
 MABI := lp64d
 
-# C remains opt-in until link-order ensembles show stable throughput despite
-# the 64-bit fetch-window limit. scripts/coremark_sweep.py records both modes.
+# Compressed instructions are off by default: with the 64-bit fetch window,
+# their throughput is not stable across link orders. scripts/coremark_sweep.py
+# measures both settings.
 COREMARK_COMPRESSED ?= 0
 ifeq ($(filter $(COREMARK_COMPRESSED),0 1),)
 $(error COREMARK_COMPRESSED must be 0 or 1)
@@ -61,15 +66,14 @@ COREMARK_STATIC_LAYOUT_TUNE := -fno-crossjumping -freorder-blocks-and-partition
 COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
                      --param max-completely-peel-times=0
 
-# Optional PGO uses the official profile data set (1200 bytes, seeds 8/8/8).
-# APP_TUNE_FLAGS discloses the profile flags in the reported compiler settings.
-# Use -fbranch-probabilities to read edge counts without enabling the extra
-# transformations in -fprofile-use.
+# Optional PGO trains on the official profile data set (1200 bytes, seeds
+# 8/8/8). Keeping the profile flags in APP_TUNE_FLAGS puts them in the reported
+# compiler flags. -fbranch-probabilities reads edge counts without the extra
+# transformations that -fprofile-use enables.
 #
-# iss/generate_profile.py regenerates profiles for the five benchmark units;
-# the Spike port layer is different and has no profile here. The existence
-# check prevents missing profiles from silently changing the build. See
-# iss/README.md for generation and validation.
+# iss/generate_profile.py writes profiles for the five benchmark sources; the
+# port layer and libraries build without one. The existence check stops a
+# missing profile from silently changing the build. See iss/README.md.
 COREMARK_PGO_TUNE := -fbranch-probabilities -fprofile-correction \
                      -Wno-missing-profile
 COREMARK_PGO ?= 0
@@ -109,6 +113,6 @@ EXTRA_LDFLAGS = -lgcc $(COREMARK_EXTRA_LDFLAGS)
 
 include ../../common/common.mk
 
-# A regenerated profile must relink: common.mk's build-config stamp hashes the
+# A regenerated profile must relink: common.mk's build-config stamp records the
 # flags, not the profile bytes.
 $(EXECUTABLE_ELF_FILE): $(COREMARK_PGO_PROFILES)

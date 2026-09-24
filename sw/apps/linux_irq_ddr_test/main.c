@@ -17,11 +17,14 @@
 /*
  * Linux-like timer IRQ test, linked and executed from cached DDR.
  *
- * The no-MMU Linux hardware failure is an illegal-instruction panic with
- * ra == epc == 0x00000cc0 after the first machine timer interrupt from idle.
- * The test keeps the relevant ingredients in a smaller loop: DDR code/data/stack,
- * WFI idle, a machine-timer IRQ, a Linux-style naked trap entry that
- * saves/restores GPRs on the current stack, and the csrrw tp,mscratch,tp swap.
+ * A machine timer interrupt from idle must not corrupt the interrupted
+ * context; the failure this guards against is an illegal-instruction panic
+ * with ra == epc == 0x00000cc0. The test keeps the kernel's ingredients in a
+ * small loop: DDR code/data/stack, WFI idle, a machine-timer IRQ, a
+ * Linux-style naked trap entry that saves/restores GPRs on the current stack,
+ * and the csrrw tp,mscratch,tp swap. Every IRQ checks the exact epc/ra/sp/tp
+ * in its frame; the second phase also follows each wfi with a transient ra
+ * poison of 0xcc0.
  */
 
 #include <stdint.h>

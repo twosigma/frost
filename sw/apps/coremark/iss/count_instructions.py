@@ -15,23 +15,26 @@
 
 """Count CoreMark's timed-region instructions under Spike, at either XLEN.
 
-The FROST core and pinned Bootlin toolchain are RV64-only. The matrix defaults
-to RV64; an optional RV32 measurement requires an external multilib compiler
-selected with RISCV_PREFIX. Use it to separate "the compiler emits more instructions" from
-"the machine retires them more slowly" -- the latter still needs the cocotb
-run.  It is a measurement tool, not part of any build or test flow.
+The count separates "the compiler emits more instructions" from "the core
+retires them more slowly"; the second still needs a cocotb or board run. This
+is a measurement tool, not part of any build or test flow.
 
-Calibration: the matrix retains C symmetrically while varying only its named
-compiler options.  With the remaining full tuning flags, this harness lands
-within about 0.5% of the cocotb profiled-region instret at both XLENs.  The
-small, similarly directed port-instrumentation offset makes matched ratios more
-informative than absolute counts, but both remain estimates.
+FROST and the pinned Bootlin toolchain are RV64-only, so the matrix defaults to
+RV64. An RV32 count needs an external RV32/ILP32D compiler selected with
+RISCV_PREFIX.
+
+The matrix uses fixed flag sets, not the Makefile's APP_TUNE_FLAGS, and every
+row keeps the C extension. The port layer shifts the timed-region boundary
+slightly, so absolute counts and RV32/RV64 ratios are estimates. See
+"Measurement limits" in README.md.
 
     ./count_instructions.py --xlen 64
     ./count_instructions.py --xlen 64 -- --param max-inline-insns-auto=200
     ./count_instructions.py --matrix
 
-Runs inside the pinned image:  ./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --matrix
+Run it inside the pinned image:
+
+    ./scripts/frost.py run sw/apps/coremark/iss/count_instructions.py --matrix
 """
 
 import argparse
@@ -48,9 +51,9 @@ APP_DIR = HERE.parent
 COREMARK_DIR = APP_DIR / "coremark"
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 
-# Matches common.mk's default extension set. The matrix deliberately retains C
-# in every row and ABI lane; CoreMark's shipped no-C choice targets FROST fetch
-# cycles and changed instruction count by only 6 in the base-RTL measurement.
+# common.mk's default extension set. Every row keeps C at both XLENs: the
+# shipped CoreMark build leaves C out for FROST's fetch throughput, not for
+# instruction count.
 EXTENSIONS = "imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
 BASE_FLAGS = [
     "-mcmodel=medany",
@@ -72,7 +75,7 @@ BASE_FLAGS = [
     "-fno-strict-aliasing",
 ]
 
-# The ablation reported in ../Makefile, innermost flag last.
+# Fixed flag sets; each row adds one option to the row before.
 MATRIX = [
     ("stock", []),
     ("inline", ["--param", "max-inline-insns-auto=200"]),
@@ -160,7 +163,7 @@ def count(xlen: int, elf_path: Path) -> tuple[int, int]:
     if len(markers) != 2:
         raise RuntimeError(
             f"expected 2 timed-region markers, saw {len(markers)} in {total} "
-            "instructions -- did the program trap before finishing?"
+            "instructions; did the program trap before finishing?"
         )
     return markers[1] - markers[0] - 1, total
 
@@ -183,7 +186,7 @@ def main() -> int:
     parser.add_argument(
         "--matrix",
         action="store_true",
-        help="measure the flag ablation at --xlen (default: 64)",
+        help="measure the fixed flag-set matrix at --xlen (default: 64)",
     )
     parser.add_argument(
         "flags", nargs="*", help="extra compiler flags (after --) for --xlen mode"

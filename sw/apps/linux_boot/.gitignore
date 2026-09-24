@@ -1,5 +1,5 @@
-# All linux_boot images are build artifacts, produced by `make` here (the
-# Buildroot self-build + build_fpga_boot.py packer). None are committed.
+# linux_boot build artifacts, none committed. `make` here runs
+# frost_boot_image.py, which writes the packed images and its scratch files.
 sw.mem
 sw.txt
 sw_ddr.mem

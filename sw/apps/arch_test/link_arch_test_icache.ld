@@ -1,4 +1,4 @@
-/* Linker script for riscv-arch-test on Frost, I-cache isolation config.
+/* Linker script for riscv-arch-test on FROST, I-cache isolation config.
  *
  * Splits the two cached tiers so a failure is attributable to one path:
  *   - code (.text/.rodata) lives in the cached DDR region and is fetched
@@ -11,9 +11,9 @@
  * config (link_arch_test.ld) exercises by putting data in DDR too.
  *
  * The low BRAM matches the 256 KiB hardware map. .data is initialized in
- * place (LMA == VMA in RAM): the simulator preloads the data BRAM directly
- * from sw.mem, so the boot stub (crt0_arch_test.S) only zeroes .bss/.sbss
- * and far-jumps to the DDR-resident framework entry point.
+ * place (LMA == VMA in RAM): the simulator preloads the data BRAM from the
+ * low BRAM image (sw64.mem), so the boot stub (crt0_arch_test.S) only zeroes
+ * .bss/.sbss and far-jumps to the DDR-resident framework entry point.
  */
 
 ENTRY(_start)

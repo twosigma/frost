@@ -27,7 +27,7 @@
 
 #define DDR_TEXT __attribute__((section(".ddr_text"), noinline))
 
-/* Low-BRAM target for a cross-quadrant call. */
+/* Low-BRAM target for calls from DDR code. */
 __attribute__((noinline)) static int bram_scale(int x)
 {
     return 3 * x + 1;

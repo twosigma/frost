@@ -17,13 +17,13 @@
 # Compressed Double-Precision FP (Zcd) Extension Test
 #
 # Zcf (C.FLW/C.FSW and the SP forms) is rv32-only. At rv64 those encodings
-# are C.LD/C.SD (+SP forms), which c_ext_test covers, so there is nothing
-# left for Zcf here and this app tests only Zcd. The old Zcf subtests 1 and
-# 2 are gone. The remaining Zcd subtests keep their original numbering:
+# are C.LD/C.SD (+SP forms), which c_ext_test covers, so this app tests only
+# Zcd. Subtests 1 and 2 would be the Zcf forms, so numbering starts at 3:
 #   3. C.FLD / C.FSD using compressed registers (f8-f15, x8-x15 base)
 #   4. C.FLDSP / C.FSDSP using stack-pointer base
 #
-# Prints <<PASS>> on success.
+# Prints <<PASS>> on success. A failing subtest prints FAIL and its name, then
+# hangs without printing <<FAIL>>, so the harness catches it by timeout.
 
     .section .init
     .option push
