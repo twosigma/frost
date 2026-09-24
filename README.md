@@ -8,7 +8,8 @@ with Debian 13, FreeRTOS, 10 Gigabit Ethernet and 1 GiB of DDR4.
 
 ## Why FROST?
 
-- **Performance:** **3.91 CoreMark/MHz** with profile-guided optimization (PGO).
+- **Performance:** **1,259 CoreMark at 322.27 MHz** on X3 — 3.91 CoreMark/MHz
+  with profile-guided optimization (PGO).
 - **Full Debian Linux:** Debian 13 with its stock riscv64 kernel, systemd,
   and a root filesystem served over NFS. [Setup guide](docs/debian_nfsroot.md).
 - **10 Gigabit Ethernet:** an integrated NIC with a Linux driver and coherent DMA.

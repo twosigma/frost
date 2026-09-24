@@ -1,7 +1,7 @@
 # Single-core performance
 
-FROST runs at **322.265625 MHz** on X3 and delivers **3.91 CoreMark/MHz** with
-profile-guided optimization (PGO).
+FROST delivers **1,259 CoreMark at 322.265625 MHz** on X3 — **3.91 CoreMark/MHz**
+with profile-guided optimization (PGO).
 
 ## CPU configuration
 
