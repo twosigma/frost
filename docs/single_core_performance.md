@@ -12,9 +12,9 @@ The integrated experimental profile achieves **3.9071 CoreMark/MHz** in a
 pass CRC validation, and Debian hardware regression passes on that measured
 revision. A later fetch-mux optimization had an implicit-net wiring error
 under Vivado. The corrected RTL now independently achieves **+0.002 ns
-post-optimization WNS** at the target rate; full hardware regression of the
-corrected build is in progress. The sustained hardware result remains at
-161.1328125 MHz.
+post-optimization WNS** at the target rate and passes all **45 hardware
+regression stages at 161.1328125 MHz**. The sustained benchmark result above
+remains specific to its measured revision and compiler configuration.
 
 ## Implementation
 
@@ -403,7 +403,8 @@ about 0.15 ns between netlists, so compare path families, not single runs.
 
 The three invalidated checkpoints had an undriven control input in the
 generated fetch-PC LUTs. Vivado created local implicit nets because the
-shared signal was declared after the generate block, then tied those inputs to zero.
+shared signal was declared after the generate block, then tied those inputs
+to zero.
 Verilator and Yosys resolved the intended module-level signal, so their
 passing checks did not validate that FPGA netlist. The declaration now
 precedes its uses, and native synthesis rejects `Synth 8-605` as an error.
@@ -419,8 +420,22 @@ cycles** in the frozen-checkout PGO sweep, with all CRCs passing. The
 formal configurations pass. A diagnostic FPGA image made by reconnecting
 only those 64 inputs in the original routed netlist passes all eleven
 previously timing-out hardware stages, including DDR execution, ITLB,
-interrupt stress, OpenSBI and the full Debian boot/userspace check. A clean
-RTL build is being validated separately.
+interrupt stress, OpenSBI and the full Debian boot/userspace check.
+
+A clean RTL rebuild at **161.1328125 MHz** also passes all **45 hardware
+regression stages**, including the nine CoreMark-PRO workloads, Debian
+boot/userspace/network checks and DDR ECC. The normal hardware-regression
+benchmark configuration scores **587.13 CoreMark / 79.31 CoreMark-PRO**,
+unchanged from the failing image's completed benchmark stages.
+
+That rebuilt image has **+0.231 ns setup WNS, +0.010 ns hold slack**, and
+zero failing pulse-width/skew checks. All 74 bus-skew constraints also pass.
+Its first `RuntimeOptimized` route left one DDR PHY minimum-skew violation;
+a fresh `Explore` route did not clear it. The tested image uses a targeted
+delay-driven reroute of that DDR branch, with the existing constraints
+unchanged. This implementation adjustment is specific to the tested
+bitstream; the RTL fix alone does not guarantee routed timing for a new
+build. The 322.265625 MHz result above remains post-opt setup timing only.
 
 The -0.266 ns row added changes that also help the hardware defaults:
 
