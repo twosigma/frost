@@ -15,30 +15,24 @@
  */
 
 /*
- * Commit-ordered store queue with forwarding. DEPTH circular entries allocate
- * in program order; stores reach memory only after ROB commit. The ready
- * drain-cursor entry writes in order, approaching one per cycle for plain
- * fast-tier stores, and frees when the write completes.
- *
- * Address/data updates use a parallel tag CAM. Control and forwarding fields
- * remain in FFs; the drain payload uses sdp_dist_ram plus a per-entry FF mirror
- * for forwarding. The forwarding tree carries only its winning index and
- * extraction metadata across the LQ boundary. Valid bits gate stale payload.
- *
- * All sizes, including doubles, drain as one 64-bit beat. MMIO stores bypass
- * the cache; writes also invalidate the LQ L0. Partial flush removes only
- * uncommitted entries younger than flush_tag; full flush removes all.
- * Lifecycle: allocate → address/data ready → ROB commit → memory done.
+ * Store queue with store-to-load forwarding. DEPTH ring entries allocate at the
+ * tail in program order. An entry receives its address and data, commits with
+ * the ROB, writes memory as one 64-bit beat, and frees when the write completes.
+ * Writes launch in program order and only after commit, and each launch
+ * invalidates the store's line in the LQ's L0 cache. A partial flush removes
+ * uncommitted entries younger than the flush point. A full flush empties the
+ * queue, committed entries included, so its sources first wait for
+ * o_committed_empty.
  */
 
 module store_queue #(
     parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
-    // Trust dispatch's alloc valids to already embed SQ room.  Dispatch gates
+    // Trust dispatch's alloc valids to already include SQ room.  Dispatch gates
     // its per-slot mem valids on the registered conservative flags
-    // (o_dispatch_full/_for_2), and the window math never reclaims a slot in
-    // the same cycle it frees, so !dispatch_full_q implies live !full.  The
-    // local !full/!full_for_2 re-checks below are then redundant and only
-    // lengthen the dispatch -> live_count/sq_valid commit cones.
+    // (o_dispatch_full/_for_2), which give no credit for a slot freed in the
+    // same cycle, so !dispatch_full_q implies live !full.  The local
+    // !full/!full_for_2 re-checks below are then redundant and only lengthen
+    // the allocation cones into live_count_q and sq_valid.
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
     // Cached memory tier (high-address region). A committed store whose address
     // falls in [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is tagged so the router
@@ -58,9 +52,8 @@ module store_queue #(
     // Slot-2 allocation port for 2-wide dispatch.  Slot-2 valid does not
     // require slot-1 valid: dispatch derives each from its own slot's
     // mem_needs_sq, so a bundle whose only store is slot-2 is legal.  When
-    // both fire, slot-1 is older than slot-2 in program order and must be
-    // allocated to a lower physical position so the in-order commit/drain at
-    // head_idx delivers stores to memory in program order.
+    // both fire, slot-1 is older and takes the earlier ring position, so the
+    // in-order drain writes the two stores to memory in program order.
     input  riscv_pkg::sq_alloc_req_t i_alloc_2,
     output logic                     o_full,
     // Asserted when there is room for at most 1 more entry (a 2-wide bundle of
@@ -107,7 +100,7 @@ module store_queue #(
     // =========================================================================
     input riscv_pkg::sq_data_update_t i_data_update,
     // Payload counterpart of i_addr_update_capture_valid.  The control block
-    // below continues to set sq_data_valid only from i_data_update.valid.
+    // below sets sq_data_valid only from i_data_update.valid.
     input logic i_data_update_capture_valid,
 
     // =========================================================================
@@ -116,19 +109,17 @@ module store_queue #(
     input logic                                        i_commit_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag,
 
-    // Combinational commit view from ROB (unregistered).  No longer a flush
-    // guard: the ROB gates commit_ready_early (the driver of these pulses)
-    // with !i_flush_en && !i_flush_all, so a comb commit can never overlap a
-    // flush (asserted below).  These ports now only pessimistically clear
-    // committed_empty so fences/SCs cannot observe stale empty while a
-    // store commit is entering the SQ pipeline.
+    // Combinational store-commit pulses straight from the ROB (unregistered).
+    // They only clear committed_empty early (see Committed-empty below); the
+    // tags are unused.  The ROB never raises them in a flush cycle (asserted
+    // below), so the partial-flush kill needs no guard for them.
     input logic                                        i_commit_valid_comb,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_comb,
 
-    // Widen-commit slot 2: second simultaneous store retire.  Slot 2 is
-    // mutually exclusive with SC/AMO/LR/fence by the ROB hazard gate, so
-    // the SC-discard path is not shared with slot 2.  Both a registered
-    // and a combinational variant are plumbed in parallel to slot 1.
+    // Commit slot 2 (2-wide commit): a second store retiring in the same
+    // cycle.  The ROB retires SC/AMO/LR/fence only alone from the head, so
+    // the SC-discard path is not shared with slot 2.  Both a registered and
+    // a combinational variant parallel slot 1's.
     input logic                                        i_commit_valid_2,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_2,
     input logic                                        i_commit_valid_comb_2,
@@ -137,14 +128,13 @@ module store_queue #(
     // Trap-cone-free commit pulses for the forwarding scan only (same tags as
     // i_commit_valid/_2).  They are i_commit_valid/_2 with the full-flush
     // mask (the registered trap/MRET/FENCE-class pulse) omitted, which keeps
-    // the trap cone off the o_sq_forward capture D-pins (x3 post-opt -0.138,
-    // 65 endpoints).  They differ from the architectural pulses only on the
-    // full-flush cycle, where the captured probe result is structurally
-    // unconsumable (capture-then-kill: o_sq_check_valid is flush-gated,
-    // sq_check_phase2 clears, consumers require phase-2 lineage).  The
-    // architectural consumers (sq_committed, committed_empty, flush_kill
-    // exemption) keep the masked pulses: a squashed store must not latch
-    // committed state.
+    // the trap cone off the o_sq_forward capture D-pins.  They differ from
+    // the architectural pulses only on the full-flush cycle, where the
+    // captured probe result can never be consumed (capture-then-kill:
+    // o_sq_check_valid is flush-gated, sq_check_phase2 clears, and every
+    // consumer requires phase 2).  The architectural consumers (sq_committed,
+    // committed_empty, flush_kill exemption) use the masked pulses: a
+    // squashed store must not latch committed state.
     input logic i_commit_valid_scan,
     input logic i_commit_valid_scan_2,
 
@@ -175,12 +165,12 @@ module store_queue #(
     output logic [       riscv_pkg::XLEN-1:0] o_mem_write_addr,
     output logic [riscv_pkg::MemDataBits-1:0] o_mem_write_data,
     output logic [riscv_pkg::MemStrbBits-1:0] o_mem_write_byte_en,
-    // Registered MMIO flag for the current head entry. Consumers at the
+    // Registered MMIO flag of the write on the bus. Consumers at the
     // top level use this to gate the BRAM byte-write-enable at the SQ source
     // rather than recomputing an address-range check combinationally on the
     // muxed data memory address (which drags the LQ issue cone onto WEA).
     output logic                              o_mem_write_is_mmio,
-    // Registered cached-tier flag for the current head entry (parallels is_mmio).
+    // Registered cached-tier flag of the write on the bus (parallels is_mmio).
     // The router steers the store's byte-write enables to the cached tier when set.
     output logic                              o_mem_write_is_cached,
     input  logic                              i_mem_write_done,
@@ -318,12 +308,13 @@ module store_queue #(
   // ===========================================================================
   // sq_data storage
   // ===========================================================================
-  // sq_data is written once (data_update CAM match) and read by the drain side
-  // at drain_idx_q.  Store-to-load forwarding mirrors the same payload into
-  // per-entry registers.  The forwarding unit registers the winning index and
-  // selects this mirror during the following LQ consume cycle, so the CAM /
-  // winner tree does not drive 64 output-register D-pins.  Valid bits in FFs
-  // gate all reads; alloc-time zeroing is unnecessary.
+  // sq_data is written on a data_update CAM match only while the entry's
+  // sq_data_valid is clear, so a visible payload never changes.  The drain
+  // side reads it at drain_idx_q.  Store-to-load forwarding mirrors the same
+  // payload into per-entry registers.  The forwarding unit registers the
+  // winning index and selects this mirror during the following LQ consume
+  // cycle, so the CAM / winner tree does not drive 64 output-register D-pins.
+  // Valid bits in FFs gate all reads; alloc-time zeroing is unnecessary.
 
   // Write port: resolved CAM match index from data_update
   logic                                             sq_data_we;
@@ -391,11 +382,10 @@ module store_queue #(
   (* max_fanout = 32 *)logic                  dispatch_full_q;
   (* max_fanout = 32 *)logic                  dispatch_full_for_2_q;
   // Exact live-entry count, maintained from the same accepted allocation and
-  // removal events that update sq_valid.  It is a timing boundary: LQ issue
-  // consumes empty, so deriving empty directly from the sq_valid popcount put
-  // every SQ valid bit in the cache-read launch cone.  The counter changes on
-  // the same edge as sq_valid and therefore preserves the old post-edge
-  // visibility without adding a queue or issue cycle.
+  // removal events that update sq_valid, on the same edge, so empty adds no
+  // queue or issue cycle.  It is a timing boundary: LQ issue consumes empty,
+  // and deriving empty from the sq_valid popcount would put every SQ valid
+  // bit in the cache-read launch cone.
   (* keep = "true" *)logic [CountWidth-1:0] live_count_q;
   logic [CountWidth-1:0] live_count_next;
   logic [CountWidth-1:0] live_remove_count;
@@ -404,16 +394,15 @@ module store_queue #(
   logic                  drain_remove_valid;
   logic                  committed_empty_q;
   // TIMING: the two dispatch valids arrive last, through the dispatch fire
-  // tree (queue valid -> bundle_fire_ok -> mem_rs_dispatch_valid), and used
-  // to be adder operands of both counters, four LUT levels ahead of the
-  // live_count_q / dispatch_full*_q D pins.  Each counter is instead
-  // evaluated once per allocation outcome from request-independent terms
-  // (the window or live count, the removal count, and the room terms), and
-  // the pair of valids is the final select.  Exactly one request takes
-  // alloc_room_1 whichever slot carries it; a pair adds alloc_room_2, the
-  // slot-1-present arm of slot2_alloc_en.  Kept as nets so the select stays
-  // the last level.  Simulation and formal compare the selected value with
-  // the adder form it replaces.
+  // tree (queue valid -> bundle_fire_ok -> mem_rs_dispatch_valid), so they
+  // must not be adder operands ahead of the live_count_q / dispatch_full*_q
+  // D pins.  Each counter is instead evaluated once per allocation outcome
+  // from request-independent terms (the window or live count, the removal
+  // count, and the room terms), and the pair of valids is the final select.
+  // Exactly one request takes alloc_room_1 whichever slot carries it; a pair
+  // adds alloc_room_2, the slot-1-present arm of slot2_alloc_en.  Kept as
+  // nets so the select stays the last level.  Simulation and formal compare
+  // the selected value with a reference adder form.
   (* keep = "true" *)logic [CountWidth-1:0] live_count_if_none;
   (* keep = "true" *)logic [CountWidth-1:0] live_count_if_one;
   (* keep = "true" *)logic [CountWidth-1:0] live_count_if_both;
@@ -438,11 +427,12 @@ module store_queue #(
   logic                  slot2_alloc_en;
   logic [  IdxWidth-1:0] slot2_alloc_idx;
   // Per-entry allocation pulses, expanded over the two late dispatch valids
-  // (they arrive through the dispatch fire tree).  The first target with room
-  // for one entry and the second target with room for two are
-  // request-independent cofactors kept as nets; each pulse is one gate of the
-  // valids against them.  Slot 1 owns the first target when present; slot 2
-  // owns the first target otherwise and the second in a pair.
+  // (they arrive through the dispatch fire tree).  first_room_oh (the first
+  // target, if there is room for one entry) and second_room_oh (the second
+  // target, if there is room for two) do not depend on the requests and are
+  // kept as nets, so each pulse is one gate of the valids against them.
+  // Slot 1 takes the first target when present; slot 2 takes the first
+  // target when alone and the second in a pair.
   logic [     DEPTH-1:0] first_target_oh;
   logic [     DEPTH-1:0] second_target_oh;
   (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] first_room_oh;
@@ -451,13 +441,13 @@ module store_queue #(
   (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] slot2_alloc_oh;
   (* keep = "true", max_fanout = 16 *)logic [     DEPTH-1:0] alloc_oh;
 
-  // Memory write tracking.  Plain fast-tier drains (BRAM, non-MMIO,
-  // single-beat FSD included) are pipelined: up to two writes may be in
-  // flight (one on the bus, one awaiting its 1-cycle done), tracked by
-  // write_inflight_cnt plus a 2-deep in-order metadata FIFO (entry index +
-  // completes flag, popped one per done).  Cached / MMIO writes stay
-  // strictly single-outstanding (write_inflight_special): the cached
-  // adapter keeps one store in flight and MMIO dispatch is serialized.
+  // Memory write tracking.  Plain fast-tier drains (BRAM, non-MMIO) are
+  // pipelined: up to two writes may be in flight (one on the bus, one
+  // awaiting its 1-cycle done), tracked by write_inflight_cnt plus a 2-deep
+  // in-order metadata FIFO (entry index + completes flag, popped one per
+  // done).  Cached / MMIO writes are strictly single-outstanding
+  // (write_inflight_special): the cached adapter keeps one store in flight
+  // and MMIO dispatch is serialized.
   logic [           1:0] write_inflight_cnt;
   logic                  write_inflight_special;
   logic [  IdxWidth-1:0] write_fifo_idx0;
@@ -474,7 +464,7 @@ module store_queue #(
   // Drain-cursor entry readiness (committed + addr_valid + data_valid)
   logic                drain_ready;
 
-  // Head/tail search targets for the sparse valid-bit queue.
+  // Head skip-advance and tail allocation targets.
   logic [PtrWidth-1:0] head_advance_target;
   logic [PtrWidth-1:0] alloc_target;
   logic                flush_all_uncommitted;
@@ -483,12 +473,13 @@ module store_queue #(
   // Count, Full, Empty
   // ===========================================================================
   // Capacity is the ring window (tail - head), not the live popcount: with
-  // pure tail allocation, a slot is reusable only once the head has passed
-  // it, so holes inside the window (rare sc_discard frees) still consume
-  // capacity until the head skip-advance walks over them.  Window-based full
-  // is conservative in exactly those cases and exact otherwise.  The live
-  // count is separate event-maintained state so that empty does not put the
-  // sq_valid reduction tree in the LQ/cache issue cone.
+  // pure tail allocation, a freed slot is reusable only once the head has
+  // passed it or a flush has reclaimed it.  Dead slots inside the
+  // window (sc_discard holes, a drained entry the head has not yet passed, a
+  // killed suffix before the tail pullback) therefore still consume
+  // capacity, and window-based full is conservative while they last.  The
+  // live count is separate event-maintained state so that empty does not
+  // put the sq_valid reduction tree in the LQ/cache issue cone.
   logic [PtrWidth-1:0] window_occupancy;
   assign window_occupancy = tail_ptr - head_ptr;
 
@@ -508,25 +499,19 @@ module store_queue #(
   assign o_dispatch_count = live_count_q;
 
   // Slot-1 / slot-2 allocation enables.  Slot-2 valid does not require slot-1
-  // valid; if both fire, slot-1 (older) takes the first free slot from
-  // tail_ptr and slot-2 (younger) takes the second so the SQ's in-order
-  // commit/drain at head_idx writes stores to memory in program order.
+  // valid; if both fire, slot-1 (older) takes tail_ptr and slot-2 (younger)
+  // takes tail_ptr + 1, so ring order stays program order.
   //
-  // Flush gating mirrors the ROB's alloc_en (!i_flush_all && !i_flush_en).
+  // Flush gating matches the ROB's alloc_en (!i_flush_all && !i_flush_en).
   // Dispatch presents alloc requests without flush gating, because the
   // dispatch-fire cone must not absorb the flush broadcast.  On trap/MRET/
-  // FENCE-class pulse cycles the frontend kill is edge-delayed, so a
-  // straggler can present here: a wrong-path instruction, or the FENCE-class
-  // owner's to-be-refetched successor.  Every allocation target therefore
-  // decides locally and must reach the same verdict as the ROB on the same
-  // cycle.  The ROB rejects; without these terms a flush_en-cycle alloc
-  // wrote a ghost entry.  The sq_valid alloc arm runs after the
-  // partial-flush kill loop (last-write-wins) while the tail arm gives the
-  // flush priority, so the ghost sat valid with the tail never advanced:
-  // outside the ring window, with a tag the ROB never allocated, waiting for
-  // a later real alloc to land on top of it (p_alloc_slot_free violation).
-  // flush_all cycles were already benign (priority else-if branch) but still
-  // wrote the no-reset payload flops; the gate silences those too.
+  // FENCE-class flush cycles the front-end kill arrives a cycle late, so a
+  // request can still arrive here: a wrong-path instruction, or the
+  // FENCE-class instruction's successor, which will be refetched.  The SQ
+  // must drop it exactly when the ROB does; a request accepted in a
+  // partial-flush cycle would leave an SQ entry for a ROB tag that was never
+  // allocated.  On full-flush cycles the gate also keeps the request out of
+  // the unreset payload flops.
   logic alloc_flush_ok;
   assign alloc_flush_ok = !i_flush_all && !i_flush_en;
   // Room for a lone request (first target) and for a pair (first and second
@@ -543,12 +528,13 @@ module store_queue #(
 
 `ifndef SYNTHESIS
   // TRUST_DISPATCH_VALID drops the local room re-checks from the alloc
-  // enables; pin bit-exact equivalence with the untrusted computation so any
-  // contract break (an alloc valid while the window is full) fails loudly in
-  // simulation instead of ghost-writing an occupied slot.  Edge-sampled: all
-  // alloc_en consumers (live_count/tail/sq_valid/payload writes) are clocked,
-  // so the contract binds at the capture edge only.  Bench pacing may leave a
-  // refused valid high for a harmless half-cycle after the fill edge.
+  // enables; check bit-exact equivalence with the untrusted computation so a
+  // contract break (an alloc valid while the window is full) fails in
+  // simulation instead of silently overwriting an occupied slot.
+  // Edge-sampled: all alloc_en consumers (live_count/tail/sq_valid/payload
+  // writes) are clocked, so the contract binds at the capture edge only.
+  // Bench pacing may leave a refused valid high for a harmless half-cycle
+  // after the fill edge.
   always_ff @(posedge i_clk) begin
     if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
             {i_alloc.valid, i_alloc_2.valid, full, full_for_2, alloc_flush_ok}
@@ -562,8 +548,8 @@ module store_queue #(
                alloc_flush_ok));
     end
     // The registered dispatch back-pressure must stay conservative w.r.t.
-    // the live window (no same-cycle reclaim ever shrinks it early); this is
-    // the invariant the trusted alloc enables ride on.
+    // the live window (no same-cycle reclaim ever shrinks it early); the
+    // trusted alloc enables depend on this invariant.
     if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
             {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
         )) begin
@@ -582,9 +568,8 @@ module store_queue #(
   // from the live window_occupancy one cycle later.  There is no same-cycle
   // drain decrement: the head advances the cycle after a drain completes, so
   // an early decrement would deassert back-pressure one cycle before the
-  // slot is reusable, and dispatch would send an alloc the SQ refuses (a
-  // silently lost store).  Back-pressure is therefore only ever
-  // conservatively long, never short.
+  // slot is reusable, and dispatch could send a store the SQ cannot accept.
+  // Back-pressure is therefore only ever conservatively long, never short.
   //
   // Per-outcome window counts and their comparisons are evaluated ahead of
   // the dispatch valids (see the candidate declarations); the valids then
@@ -653,7 +638,7 @@ module store_queue #(
 
   // Complete registered-state/registered-commit qualification before the
   // late ROB combinational commit strobes. They then enter one final gate
-  // together with reset/full-flush, retaining the same empty-status cycle.
+  // together with reset/full-flush.
   (* keep = "true" *)logic no_registered_committed_work;
   logic committed_empty_next;
   assign no_registered_committed_work = !any_committed && !i_commit_valid && !i_commit_valid_2;
@@ -734,9 +719,9 @@ module store_queue #(
   // valid && !sent, with the entry launching this cycle folded in
   // combinationally so back-to-back fires select consecutive entries.  The
   // cursor is registered (drain_idx_q), keeping the drain data/flag reads
-  // register-addressed exactly like the old head_idx.  Program order is
-  // preserved by construction: the cursor is the oldest undrained entry,
-  // and nothing fires while that entry is not drain-ready.
+  // register-addressed.  Program order is preserved by construction: the
+  // cursor is the oldest undrained entry, and nothing fires while that entry
+  // is not drain-ready.
   logic [   DEPTH-1:0] drain_mask_base;
   logic [   DEPTH-1:0] drain_mask_post_fire;
   logic [IdxWidth-1:0] drain_idx_q;
@@ -748,12 +733,12 @@ module store_queue #(
 
   // drain_complete_fire_next carries the selected entry's late address/tier
   // classification, so feeding it into every mask bit before the above-head
-  // and absolute priority scans put both encoders in that late path.
+  // and absolute priority scans would put both encoders in that late path.
   // Instead, the F=0 base mask and the F=1 post-fire mask are computed in
   // parallel, each with its complete ring-priority scan, and only a final
   // three-bit mux depends on the late fire decision.  This is the exact
   // Shannon expansion of M[i] = base[i] && !(fire && drain_idx_q == i); the
-  // oracle below retains that original expression.
+  // reference below evaluates that expression directly.
   logic [   DEPTH-1:0] drain_mask_base_above_head;
   logic [   DEPTH-1:0] drain_mask_post_fire_above_head;
   logic [IdxWidth-1:0] drain_base_first_above_idx;
@@ -832,8 +817,9 @@ module store_queue #(
   end
 
 `ifndef SYNTHESIS
-  // Equivalence oracle for the original fire-in-mask implementation, including
-  // its empty-mask head fallback and retired rotate-encode-add scan.
+  // Reference for the parallel scans: the fire-in-mask form scanned by
+  // rotate, priority-encode, and add-back, with the same empty-mask head
+  // fallback.
   logic [   DEPTH-1:0] drain_mask_legacy;
   logic [   DEPTH-1:0] drain_mask_rotated;
   logic [IdxWidth-1:0] drain_first_offset;
@@ -879,20 +865,20 @@ module store_queue #(
   // Memory Write Logic (combinational)
   // ===========================================================================
   // The drain-cursor entry writes to memory when committed, addr_valid,
-  // data_valid.  Every size drains in a single beat (FSD included).
+  // data_valid.  Every size drains in a single beat.
   //
-  // The write interface is registered to break the head_ptr → drain_ready →
-  // o_mem_write_en combinational cone that was the critical path (-1.059 ns
-  // WNS).  drain_ready feeds the combinational next-state of a pipeline
-  // register; the o_mem_write_en output itself is a flop.
+  // The write interface is registered so the queue-state -> drain_ready
+  // decode never drives the memory bus combinationally: drain_ready feeds
+  // the next state of a pipeline register, and the o_mem_write_en output
+  // itself is a flop.
   //
-  // Drain pipelining: plain fast-tier stores (BRAM, non-MMIO, single-beat
-  // FSD included) complete exactly one cycle after their bus cycle (the
-  // router's sq_write_done_fast is the write-enable delayed one cycle), so
-  // consecutive plain drains overlap: a new launch is allowed while the
-  // previous write's done is still in flight, bounded to two in-flight by
-  // the metadata FIFO.  Cached / MMIO writes keep the strict
-  // one-at-a-time gate (write_inflight_cnt == 0 && !o_mem_write_en).
+  // Drain pipelining: plain fast-tier stores (BRAM, non-MMIO) complete
+  // exactly one cycle after their bus cycle (the router's sq_write_done_fast
+  // is the write-enable delayed one cycle), so consecutive plain drains
+  // overlap: a new launch is allowed while the previous write's done is
+  // still in flight, bounded to two in-flight by the metadata FIFO.
+  // Cached / MMIO writes keep the strict one-at-a-time gate
+  // (write_inflight_cnt == 0 && !o_mem_write_en).
 
   assign drain_ready = sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
                        sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
@@ -910,7 +896,7 @@ module store_queue #(
 
   always_comb begin
     // Single-beat drains at every size (hw/rtl/README.md, "Data-tier bus contract"): doubles
-    // are one 64-bit write, so no phase legs and no +4 second beat.
+    // are one 64-bit write.
     mem_write_addr_next = sq_address[drain_idx_q];
 
     mem_write_data_next =
@@ -931,15 +917,14 @@ module store_queue #(
   assign mem_write_addr_cached_for_plain_next =
       (sq_address[drain_idx_q] >= XLEN'(CACHED_BASE)) &&
       (sq_address[drain_idx_q] <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
-  // Single-beat doubles: every launch completes its entry, and DOUBLE joins
-  // the pipelined plain fast-tier drain (the old two-phase FSD flew alone).
-  // The write-FIFO completes plumbing is kept constant-true rather than
-  // excised; synthesis sweeps it.
+  // Every store is one beat, so every launch completes its entry and a plain
+  // fast-tier DOUBLE pipelines like any other size.  The write-FIFO completes
+  // flag is therefore constant-true; synthesis sweeps it.
   assign mem_write_completes_next = 1'b1;
   assign mem_write_plain_fast_next = !sq_is_mmio[drain_idx_q] &&
                                      !mem_write_addr_cached_for_plain_next;
 
-  // Launch gate: legacy serial arm for any write type, plus the pipelined
+  // Launch gate: the serial arm for any write type, plus the pipelined
   // arm for plain fast-tier stores.  The registered in-flight count has not
   // yet absorbed the write currently on the bus, so compute the FIFO
   // occupancy after that push and any coincident oldest-write completion.
@@ -988,22 +973,18 @@ module store_queue #(
   // ===========================================================================
   // L0 Cache Invalidation (at memory write launch)
   // ===========================================================================
-  // Invalidate the LQ's L0 cache at the written address in the same cycle
-  // the write fires.  Invalidating at launch instead of at write-done closes
-  // the stale-L0-hit window for any write latency with no extra gating:
-  // between launch and done nobody can read the old memory word either (the
-  // router owns the shared port and queues/replays reads behind the write
-  // flight), so the only reachable outcomes are an L0 miss plus a memory
-  // read ordered behind the write.  Early invalidation is always safe; at
-  // worst it costs one refill miss.  The previous done-time pulse left the
-  // L0 line live during a multi-cycle cached write flight.  Papering over
-  // that with a busy-stretch in the LQ taxed every BRAM store drain (~2%
-  // CoreMark), and routing the cached-flight signal into the LQ's busy
-  // instead pushed the L0-hit/CDB cone past timing.  Both outputs come straight from SQ output
-  // registers, adding no new logic levels anywhere.
-  // A single-beat FSD covers its whole dword with one pulse (the LQ's L0 is
-  // dword-granule, and the wrapper reservation snoop widens on is_dword).
-  // MMIO stores also pulse harmlessly (the L0 never caches MMIO).
+  // Invalidate the LQ's L0 cache at the written address in the write's bus
+  // cycle.  Invalidating at launch instead of at write-done closes the
+  // stale-L0-hit window for any write latency, including a multi-cycle
+  // cached write, with no extra gating: between launch and done nobody can
+  // read the old memory word either (the router controls the shared port
+  // and queues/replays reads behind the write flight), so the only reachable
+  // outcomes are an L0 miss plus a memory read ordered behind the write.
+  // Early invalidation is always safe; at worst it costs one refill miss.
+  // Both outputs come straight from SQ output registers.
+  // One pulse covers any store, since no store crosses a dword (the LQ's L0
+  // is dword-granule, and the wrapper's reservation snoop compares dword
+  // addresses).  MMIO stores also pulse harmlessly (the L0 never caches MMIO).
   assign o_cache_invalidate_valid = o_mem_write_en;
   assign o_cache_invalidate_addr = o_mem_write_addr;
 
@@ -1012,16 +993,14 @@ module store_queue #(
   // ===========================================================================
   // Allocate strictly at the ring tail. Ring position must encode program
   // order for the head-ordered drain to deliver stores to memory in program
-  // order; the previous policy ("keep sparse holes after partial flush and
-  // search forward from tail_ptr for the next invalid slot") let younger
-  // stores land in flush holes at ring positions the head reaches before
-  // older live entries.  Committed older stores then stranded behind a
-  // younger uncommitted hole-filler (the linear_alg LQ/SQ deadlock), and
-  // same-address stores could drain out of program order, leaving stale
-  // data in memory (the cjpeg output corruption). Partial flush now pulls
-  // tail_ptr back over the killed suffix instead (see Flush Tail Pullback),
-  // so flush holes never persist; the only remaining holes are rare
-  // sc_discard frees, which the head skip-advance walks over without reuse.
+  // order.  A younger store placed in a hole that the drain reaches before
+  // older live entries would strand committed older stores behind an
+  // uncommitted one (an LQ/SQ deadlock if a load older than that store waits
+  // for them to drain), and same-address stores could reach memory out of
+  // program order.  Partial flush therefore pulls tail_ptr back over the
+  // killed suffix (see Flush Tail Pullback), so flush holes never persist;
+  // the only lasting holes are sc_discard frees, which the head skip-advance
+  // walks over without reuse.
   assign flush_all_uncommitted = i_flush_after_head_commit;
   assign alloc_target = tail_ptr;
   assign alloc_target_2 = tail_ptr + PtrWidth'(1);
@@ -1058,27 +1037,26 @@ module store_queue #(
 `endif
 
   // ===========================================================================
-  // Flush Tail Pullback (retimed: applies the cycle after the flush)
+  // Flush Tail Pullback (applies the cycle after the flush)
   // ===========================================================================
   // A partial flush kills a program-order suffix of the live window (all
-  // uncommitted entries younger than flush_tag), so the window is rebuilt as
+  // uncommitted entries younger than flush_tag, or all uncommitted entries
+  // when flush_all_uncommitted), so the window is rebuilt as
   // [head_ptr, youngest_survivor + 1).
   //
-  // The pullback used to be computed in the flush cycle from a survivor mask
-  // that mirrored the kill predicate, i.e. from i_flush_en, i_flush_tag and
-  // the same-cycle ROB commit pulses, all of which arrive late out of the
-  // ROB-head commit cone.  Survivor mask → rotate → priority-encode → adder
-  // then converged on the tail_ptr D and head_ptr CE pins: an 18-LUT-level
-  // path (post-opt WNS -1.36 at 300 MHz).  Now the flush cycle only clears
-  // per-entry valid bits (short, per-entry endpoints) while both pointers
-  // hold.  One cycle later, while flush_pullback_pending is set, the tail is
-  // rebuilt from the registered post-kill valid mask and head_ptr, a
-  // full-cycle path from FF outputs.
+  // Rebuilding in the flush cycle would need a survivor mask that mirrors
+  // the kill predicate, followed by rotate → priority-encode → adder, all
+  // ahead of the tail_ptr D and head_ptr CE pins: too deep for one cycle.
+  // The flush cycle therefore only clears per-entry valid bits (short,
+  // per-entry endpoints) while both pointers hold.  One cycle later, while
+  // flush_pullback_pending is set, the tail is rebuilt from the registered
+  // post-kill valid mask and head_ptr, a full-cycle path from FF outputs.
   //
   // The deferred cycle is safe because:
-  //  - dispatch cannot allocate in the flush cycle or the cycle after (the
-  //    front-end redirect/refill takes several cycles; asserted below), so
-  //    nothing consumes the stale tail for allocation;
+  //  - nothing allocates in the flush cycle (alloc_flush_ok) or the cycle
+  //    after (a dispatch-side contract: the front-end redirect/refill takes
+  //    several cycles; checked below), so the stale tail is never an
+  //    allocation target;
   //  - window_occupancy reads stale-high (killed suffix still inside the
   //    window) so full/dispatch back-pressure is conservative, never short;
   //  - the head is held for the same two cycles, so its empty-collapse arm
@@ -1091,11 +1069,10 @@ module store_queue #(
   // head-rotated valid mask (sq_head_valid_rotated, shared with the head
   // advance logic): entries outside [head, tail) are never valid, killed
   // entries were just cleared, and pre-existing sc_discard holes are
-  // valid=0, exactly as the old survivor mask treated them.  With no valid
-  // entry left the window collapses to the held head pointer.  Trailing
-  // sc_discard holes (no live entry younger than them) are reclaimed by the
-  // pullback, which is safe: only reclaiming a hole with live entries beyond
-  // it would break the ring-order invariant.
+  // valid=0.  With no valid entry left the window collapses to the held head
+  // pointer.  Trailing sc_discard holes (no live entry younger than them)
+  // are reclaimed by the pullback, which is safe: only reclaiming a hole
+  // with live entries beyond it would break the ring-order invariant.
   // (The pullback encoder lives just below the Head Advancement section so it
   // can share sq_head_valid_rotated.)
 
@@ -1103,10 +1080,8 @@ module store_queue #(
   // Head Advancement (tree-based find-first-valid from head)
   // ===========================================================================
   // The scan is rotate → tree-priority-encode → add-back, O(log2(DEPTH))
-  // logic levels.  The O(DEPTH) serial scan it replaced created a 16-level
-  // chain through cascaded pointer increments; the tree form is ~4-5 levels.
-  // Empty visibility has its own live_count_q timing boundary (above), so
-  // this scan cannot leak into LQ issue through o_empty.
+  // logic levels.  Empty visibility has its own live_count_q timing
+  // boundary (above), so this scan cannot leak into LQ issue through o_empty.
 
   logic [DEPTH-1:0] sq_head_valid_rotated;
   logic [IdxWidth-1:0] sq_head_first_valid_offset;
@@ -1201,9 +1176,8 @@ module store_queue #(
       // -----------------------------------------------------------------
       // Allocation: write control signals for new entry at tail
       // -----------------------------------------------------------------
-      // The merged pulse is the write enable; slot 1's own pulse selects the
-      // request (an entry slot 1 does not own in an allocating cycle is
-      // slot 2's).
+      // The merged pulse is the write enable; slot 1's pulse selects the
+      // request (an allocated entry that slot 1 did not take is slot 2's).
       for (int i = 0; i < DEPTH; i++) begin
         if (alloc_oh[i]) begin
           sq_addr_valid[i] <= slot1_alloc_oh[i] ? i_alloc.addr_valid : i_alloc_2.addr_valid;
@@ -1222,10 +1196,10 @@ module store_queue #(
       // keeps encoding program order.  The arms are mutually exclusive:
       // flush-cycle allocs are suppressed structurally (alloc_flush_ok in
       // the slot enables), and dispatch never allocates in the pullback
-      // cycle.  The latter is a dispatch-side contract, enforced by the
-      // $error tripwire in the sim-assertion block and assumed in the FORMAL
-      // section; the front-end redirect/refill latency after any partial
-      // flush keeps dispatch quiet well past that cycle.
+      // cycle.  The latter is a dispatch-side contract, checked by $error in
+      // the sim-assertion block and assumed in the FORMAL section; the
+      // front-end redirect/refill latency after any partial flush keeps
+      // dispatch quiet well past that cycle.
       if (i_flush_en) begin
         // Hold: pullback applies next cycle from registered state.
       end else if (flush_pullback_pending) begin
@@ -1320,7 +1294,7 @@ module store_queue #(
       if (mem_write_fire_next) begin
         // A special cached or MMIO write flies alone: it only launches
         // through the serial arm, and its in-flight window blocks all further
-        // launches until completion. Single-beat FSD uses the plain fast arm.
+        // launches until completion.
         write_inflight_special <= !mem_write_plain_fast_next;
         if (mem_write_completes_next) begin
           sq_sent[drain_idx_q] <= 1'b1;
@@ -1380,19 +1354,17 @@ module store_queue #(
   // (i_flush_en / i_flush_tag / flush_all_uncommitted all come from the
   // flush controller's registers, i_rob_head_tag from the ROB head pointer).
   //
-  // A same-cycle combinational commit guard (i_commit_valid_comb/_comb_2
-  // tag-match "protect" terms) used to sit on this kill for the
-  // commit-overlaps-flush race: without it a store committing in the flush
-  // cycle was invalidated and its memory write silently lost (dropped UART
-  // chars / corrupted cjpeg output bytes in the system runs).  That race is
-  // now structurally impossible.  The ROB gates commit_ready_early (and
-  // therefore o_commit_store_like_raw / o_commit_2_store_like_raw, the
-  // drivers of i_commit_valid_comb/_comb_2) with !i_flush_en && !i_flush_all
-  // on the same flush nets this kill branch runs under, so the combinational
-  // commit pulses are 0 in every cycle the kill can execute.  Dropping the
-  // dead guard keeps the ROB head-commit cone (head_clear_mask onehot read)
-  // out of the sq_valid write path; the assertion below (and the matching
-  // formal assume) pin the invariant.
+  // A store the ROB has committed must not be killed, even before its
+  // sq_committed bit is set, or its memory write is lost.  The registered
+  // guards above cover a commit arriving on the pipelined commit bus in the
+  // flush cycle.  The ROB itself never commits in a flush cycle: it gates
+  // commit_ready_early (and therefore o_commit_store_like_raw /
+  // o_commit_2_store_like_raw, the drivers of i_commit_valid_comb/_comb_2)
+  // with !i_flush_en && !i_flush_all on the same flush nets this kill branch
+  // runs under, so the combinational commit pulses are 0 in every cycle the
+  // kill can execute.  Leaving them out keeps the ROB head-commit cone out of
+  // the sq_valid write path; the assertion below (and the matching formal
+  // assume) check the invariant.
   logic [DEPTH-1:0] flush_kill_base;
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
@@ -1434,7 +1406,7 @@ module store_queue #(
 
   // Complete allocation increments before subtracting the late removal
   // count. This keeps the commit-tag/flush CAM and population count from
-  // traversing two more adders; dispatch valids still select the same three
+  // traversing two more adders; the dispatch valids select among the three
   // exact modular-arithmetic outcomes at the final mux.
   assign live_count_alloc_one = live_count_q + CountWidth'(alloc_room_1);
   assign live_count_alloc_both = live_count_q + CountWidth'(alloc_room_1) +
@@ -1498,7 +1470,8 @@ module store_queue #(
     end else if (i_flush_all) begin
       sq_valid <= '0;
     end else begin
-      // Partial flush: invalidate uncommitted entries younger than flush_tag.
+      // Partial flush: invalidate uncommitted entries younger than flush_tag
+      // (all uncommitted entries when flush_all_uncommitted is set).
       // Committed entries are never flushed (they must complete to memory).
       if (i_flush_en) begin
         for (int i = 0; i < DEPTH; i++) begin
@@ -1526,7 +1499,7 @@ module store_queue #(
       end
 
       // A completed write frees its SQ entry identified by the in-flight
-      // metadata FIFO head. Every size, including FSD, is single-beat.
+      // metadata FIFO head.
       if (i_mem_write_done && (write_inflight_cnt != 2'd0) && write_completes_entry) begin
         sq_valid[write_entry_idx] <= 1'b0;
       end
@@ -1586,6 +1559,8 @@ module store_queue #(
     // -----------------------------------------------------------------
     // Address Update: CAM search for matching rob_tag (data only)
     // -----------------------------------------------------------------
+    // Written after the early-address loops, so a same-cycle MEM_RS update
+    // to the same entry wins.
     if (i_addr_update_capture_valid) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_addr_update.rob_tag) begin
@@ -1605,12 +1580,11 @@ module store_queue #(
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("SQ: allocation attempted when full");
-      // No advisory for alloc-during-flush: dispatch presents on
-      // trap/MRET/FENCE-class pulse cycles by design (edge-delayed frontend
-      // kill; it fired ~1178x/run as the old advisory's benign flush_all
-      // handshake), and the alloc enables now suppress the request exactly
-      // like the ROB's alloc_en, including the formerly-unsafe flush_en
-      // case.  The FORMAL section asserts the suppression.
+      // No warning for alloc-during-flush: dispatch presents requests on
+      // trap/MRET/FENCE-class flush cycles by design (the front-end kill
+      // arrives a cycle late), and the alloc enables drop them exactly like
+      // the ROB's alloc_en, for both flush_all and flush_en.  The FORMAL
+      // section asserts the suppression.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
         $warning("SQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
       if (i_alloc_2.valid && !i_alloc.valid && full)
@@ -1618,7 +1592,7 @@ module store_queue #(
       // Dispatch must never allocate in the deferred tail-pullback cycle:
       // the tail is stale until the pullback lands, so an accepted alloc
       // would write sq_valid outside the post-pullback ring window.  The
-      // alloc enables gate only on the flush pulse itself (ROB parity);
+      // alloc enables gate only on the flush pulse itself (as the ROB does);
       // this cycle is a dispatch-side contract: the front-end
       // redirect/refill latency after any partial flush keeps dispatch
       // quiet for several cycles (the FORMAL section assumes the same).
@@ -1642,27 +1616,6 @@ module store_queue #(
     end
   end
 `endif
-
-  // Debug: trace SQ drains + flush events (disabled for clean logs)
-  // always @(posedge i_clk) begin
-  //   if (i_rst_n && o_mem_write_en && o_mem_write_addr[31:16] == 16'h0001)
-  //     $display("[SQ_DRAIN] t=%0t addr=%08x data=%08x",
-  //              $time, o_mem_write_addr, o_mem_write_data);
-  //   if (i_rst_n && i_flush_en) begin
-  //     for (int i = 0; i < DEPTH; i++) begin
-  //       if (sq_valid[i] && !sq_committed[i] &&
-  //           !(i_commit_valid_comb && sq_rob_tag[i] == i_commit_rob_tag_comb) &&
-  //           !(i_commit_valid      && sq_rob_tag[i] == i_commit_rob_tag) &&
-  //           (flush_all_uncommitted ||
-  //            is_younger(sq_rob_tag[i], i_flush_tag, i_rob_head_tag)) &&
-  //           sq_addr_valid[i] && sq_address[i][31:16] == 16'h0001)
-  //         $display("[SQ_ACTUALLY_FLUSHED] t=%0t idx=%0d tag=%0d addr=%08x "
-  //                  "flush_tag=%0d head=%0d",
-  //             $time, i, sq_rob_tag[i], sq_address[i], i_flush_tag, i_rob_head_tag);
-  //     end
-  //   end
-  // end
-
 `endif
 
 
@@ -1702,11 +1655,10 @@ module store_queue #(
   // -------------------------------------------------------------------------
 
   // Alloc requests may arrive during flush (dispatch presents without flush
-  // gating for timing; the trap-cycle straggler handshake does exactly this
-  // in the real core).  The alloc enables carry the same
+  // gating for timing, and does so on trap/MRET/FENCE-class flush cycles in
+  // the real core).  The alloc enables carry the same
   // !i_flush_all && !i_flush_en gate as the ROB's alloc_en, so a flush-cycle
   // request must never write queue state.
-  // (The old assume that no allocation arrives during flush was removed.)
   always_comb begin
     if (i_rst_n && (i_flush_all || i_flush_en)) begin
       p_no_alloc_during_flush : assert (!slot1_alloc_en && !slot2_alloc_en);
@@ -1720,8 +1672,8 @@ module store_queue #(
       // The enable-then-steer references are declared outside synthesis.
       p_slot2_alloc_en_reference : assert (slot2_alloc_en == slot2_alloc_en_reference);
       p_slot2_alloc_oh_reference : assert (slot2_alloc_oh == slot2_alloc_oh_reference);
-      // The per-outcome count candidates selected by the valids are exactly
-      // the adder forms they replace.
+      // The per-outcome count candidates selected by the valids equal the
+      // reference adder forms.
       p_live_count_next_reference : assert (live_count_next == live_count_next_reference);
       p_dispatch_full_next_reference : assert (dispatch_full_next == dispatch_full_next_reference);
       p_dispatch_full_for_2_next_reference :
@@ -1737,10 +1689,10 @@ module store_queue #(
   // No allocation during the deferred tail-pullback cycle that follows a
   // partial flush: the tail is stale until the pullback lands, so an
   // accepted alloc would land outside the post-pullback ring window.  This
-  // remains a dispatch-side contract (the front-end redirect/refill latency
-  // after any partial flush keeps dispatch quiet well past this cycle); the
+  // is a dispatch-side contract (the front-end redirect/refill latency after
+  // any partial flush keeps dispatch quiet well past this cycle); the
   // simulation assertion block (ifndef FORMAL, above) checks it against the
-  // real dispatcher with an $error tripwire.
+  // real dispatcher with an $error.
   always_comb begin
     if (flush_pullback_pending) assume (!i_alloc.valid);
     if (flush_pullback_pending) assume (!i_alloc_2.valid);
@@ -1749,8 +1701,8 @@ module store_queue #(
   // No combinational commit pulse during a flush: the ROB gates
   // commit_ready_early (source of i_commit_valid_comb/_comb_2) with
   // !i_flush_en && !i_flush_all, so the flush-kill needs no same-cycle
-  // commit protect. The simulation assertion block checks the same contract
-  // against the real ROB.
+  // commit guard. The simulation assertion block checks the partial-flush
+  // half of this contract against the real ROB.
   always_comb begin
     if (i_flush_en || i_flush_all) begin
       assume (!i_commit_valid_comb);
@@ -1778,13 +1730,12 @@ module store_queue #(
 
   // Address/data updates may arrive during flush (RS stage2 issues without
   // same-cycle flush gating for timing closure).  This is safe:
-  //   - flush_all: the else-if branch resets all state; update code in the
-  //     else branch is unreachable.
+  //   - flush_all: the else-if branch resets all control state; update code
+  //     in the else branch is unreachable, and payload writes land in dead
+  //     slots.
   //   - flush_en: CAM matches only entries with sq_valid[i]==1; entries
   //     whose valid is being cleared on the same edge get a harmless
   //     write into a dead slot.
-  // (The old assume that no addr/data update arrives during flush was
-  // removed.)
 
   // No allocation when full
   always_comb begin
@@ -1796,11 +1747,10 @@ module store_queue #(
     assume (!i_mem_write_done || (write_inflight_cnt != 2'd0));
   end
 
-  // Commit may overlap with flush due to commit bus pipelining.  This is
-  // safe: flush_all resets all SQ state (else-if priority over commit
-  // processing), and flush_en only flushes younger entries while the
-  // committed head is always older than the flush boundary.
-  // (The old assume that no commit arrives during flush was removed.)
+  // Registered commits may overlap with flush due to commit bus pipelining.
+  // This is safe: flush_all resets all SQ state (else-if priority over
+  // commit processing), and the partial-flush kill spares any entry whose
+  // registered commit pulse arrives in the flush cycle.
 
   // Scan-variant commit pulses: identical to the architectural pulses off
   // full-flush cycles (the wrapper omits only the full-flush mask term).
@@ -1820,9 +1770,9 @@ module store_queue #(
 
   // Window sanity.  Capacity is the ring window (tail - head), which may
   // exceed the live popcount when the window holds dead slots (killed
-  // entries awaiting the retimed tail pullback, or sc_discard holes the
-  // head has not passed), so full && empty is a legal transient, unlike
-  // the old popcount-full design.  The invariants that do hold:
+  // entries awaiting the tail pullback, or freed entries and sc_discard
+  // holes the head has not passed), so full && empty is a legal transient.
+  // The invariants that do hold:
   //   - the window never exceeds DEPTH;
   //   - live entries never exceed the window (ring integrity);
   //   - a fully-dead window self-heals: with no flush activity in the way,
@@ -2024,25 +1974,25 @@ module store_queue #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Ring-order invariants for the pure-tail allocator: dispatch must not
-  // allocate in a partial-flush cycle (the tail-pullback and tail-advance
-  // arms are mutually exclusive), and tail allocation must always land on a
-  // free slot (ring position == program order among live entries).
+  // Ring-order invariants for the pure-tail allocator: no allocation is
+  // accepted in a partial-flush cycle or the pullback cycle after it (the
+  // tail-pullback and tail-advance arms are mutually exclusive), and tail
+  // allocation must always land on a free slot (ring position == program
+  // order among live entries).
   //
   // Simulation-only flavor: Yosys's SV frontend does not parse the
   // `assert ... else $error(...)` action blocks, so this block is hidden
-  // from the formal flow; the FORMAL section above carries the same
-  // contract as assumes (no alloc during flush or the pullback cycle) and
-  // asserts the resulting invariants.
+  // from the formal flow.  The FORMAL section above asserts the flush-cycle
+  // and free-slot invariants and assumes the pullback-cycle contract.
   always_ff @(posedge i_clk) begin
     if (i_rst_n && !i_flush_all) begin
       a_no_alloc_during_flush :
       assert (!(i_flush_en && (slot1_alloc_en || slot2_alloc_en)))
       else $error("SQ allocation during partial flush conflicts with tail pullback");
-      // The pullback is retimed one cycle after the flush; the tail is stale
-      // until it lands, so dispatch must not allocate in that cycle either.
+      // The pullback lands one cycle after the flush; the tail is stale
+      // until then, so dispatch must not allocate in that cycle either.
       // The front-end redirect/refill latency guarantees this with cycles to
-      // spare; this assertion is the contract.
+      // spare; this assertion checks the contract.
       a_no_alloc_during_pullback :
       assert (!(flush_pullback_pending && (slot1_alloc_en || slot2_alloc_en)))
       else $error("SQ allocation during deferred tail pullback cycle");
