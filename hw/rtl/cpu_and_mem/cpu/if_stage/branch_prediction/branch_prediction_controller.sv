@@ -825,9 +825,9 @@ module branch_prediction_controller #(
       // PD redirects and slot-2 prediction redirects kill a slot-1 prediction's
       // pc_reg handoff the same way a flush does: they outrank it in the
       // next_pc mux, so the prediction never takes the fetch stream.
-      // pc_controller's redirect_kill_pending_q and o_slot2_redirect_q
-      // suppressions are one-cycle pulses that ignore stalls, while this
-      // register holds through a stall, so the handoff is cleared here.
+      // For a PD redirect, pc_controller's redirect_kill_pending_q suppression
+      // is a one-cycle pulse that ignores stalls, while this register holds
+      // through a stall, so the handoff is cleared here.
       // Otherwise a stall starting in the kill cycle would let the dead
       // handoff fire on release and put pc_reg out of step with the fetched
       // bytes (test_pd_redirect_with_stall_kills_registered_prediction_handoff

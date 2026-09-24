@@ -122,7 +122,7 @@ module instruction_aligner #(
     // Slot-2 is compressed (RVC).
     output logic o_is_compressed_2,
     // No slot 2 this cycle: slot 1 is a NOP, control flow, serializing, or
-    // buffered at a low-half PC; or slot 2 does not fit in the window, cannot
+    // buffered at a low-half PC; or slot 2 extends past the next word, cannot
     // start a pair, or would read a stale next word. IF adds its own slot-1
     // NOP and pending-prediction conditions before the packet reaches PD.
     output logic o_sel_nop_2,
@@ -170,7 +170,7 @@ module instruction_aligner #(
     output logic o_slot2_kill_s1_native_serialize,  // Slot-1 is a native serializing-class op
     output logic o_slot2_kill_slot1_ctrl,  // Slot-1 is compressed control flow
     output logic o_slot2_kill_class,  // Slot-2 start is a serialize/FP-compute class op
-    output logic o_slot2_kill_window_limit,  // 32-bit slot-2 at NEXT_HI exceeds the 64-bit window
+    output logic o_slot2_kill_window_limit,  // 32-bit slot-2 at NEXT_HI, which never pairs
     output logic o_slot2_kill_transient  // Buffer/BRAM transient state
 );
 
@@ -575,8 +575,9 @@ module instruction_aligner #(
   // The (buf, !hi) cases (slot-1 from buffer at lo) arise only through
   // i_use_buffer_after_prediction, and slot-2 stays invalid there.
   //
-  // Slot-2 32-bit at NEXT_HI would need a halfword from the next fetch, so
-  // slot-2 is forced invalid in that case (slot-2 RVC at NEXT_HI is fine).
+  // Slot-2 32-bit at NEXT_HI would end in word(W+2), so slot-2 is forced
+  // invalid in that case (slot-2 RVC at NEXT_HI is fine). This holds even
+  // behind the buffer when F = W+1 puts word(W+2) in the window.
   // ---------------------------------------------------------------------------
   localparam logic [1:0] Slot2AtCurrentHi = 2'd0;
   localparam logic [1:0] Slot2AtNextLo = 2'd1;
@@ -737,7 +738,7 @@ module instruction_aligner #(
   // words at CURRENT_HI), or for a compressed candidate the sideband's
   // predecoded expansion in bits [31:25] and [14:0] and the local
   // decompressor in bits [24:15], with bits 20 and 15 from its *_fast
-  // outputs. A native NEXT_HI candidate would extend past the window, so it
+  // outputs. A native NEXT_HI candidate would extend into word(W+2), so it
   // is a NOP and slot 2 is forced invalid below.
   logic [31:0] slot2_final_cur_hi;
   logic [31:0] slot2_final_next_lo;
@@ -779,7 +780,7 @@ module instruction_aligner #(
   //
   // CURRENT_HI native is {next[15:0], current[31:16]}, so final bits
   // {21,17:16} are next-word bits {5,1:0}. NEXT_LO native is next_word.
-  // NEXT_HI native cannot fit and its final instruction is NOP.
+  // NEXT_HI native is always invalid and its final instruction is NOP.
   logic [2:0] slot2_source_hot_cur_hi;
   logic [2:0] slot2_source_hot_next_lo;
   logic [2:0] slot2_source_hot_next_hi;
@@ -960,7 +961,7 @@ module instruction_aligner #(
   assign o_slot1_is_branch = !o_sel_nop && slot1_branch_any;
 
   // Slot 2 is invalid when slot 1 is a bubble, control flow, serializing, or
-  // buffered at a low-half PC; when slot 2 does not fit in the window or
+  // buffered at a low-half PC; when slot 2 extends past the next word or
   // cannot start a pair; or when it needs a next word that the window does
   // not hold.
   //
@@ -1141,7 +1142,7 @@ module instruction_aligner #(
   assign slot2_current_hi_invalid = slot2_bram_unsafe && !slot2_current_hi_compressed;
   assign slot2_next_lo_invalid = slot2_bram_unsafe || !slot2_next_lo_start_valid;
   // A compressed NEXT_HI start is intrinsically start-valid.  Native NEXT_HI
-  // cannot fit beyond the 64-bit window and remains invalid.
+  // would end in word(W+2) and is always invalid.
   assign slot2_next_hi_invalid = slot2_bram_unsafe || !slot2_next_hi_compressed;
   assign slot2_current_hi_invalid_for_pc_advance =
       slot2_bram_unsafe && !slot2_current_hi_compressed_for_pc_advance;
@@ -1272,8 +1273,8 @@ module instruction_aligner #(
   //   2. compressed slot 1 is control flow
   //   3. slot 2 cannot start a pair (Slot2StartValid = 0: a native SYSTEM,
   //      MISC-MEM, AMO, or FP-compute instruction)
-  //   4. a start-valid native slot 2 at NEXT_HI does not fit the window (a
-  //      fixed limit, not a transient)
+  //   4. a start-valid native slot 2 at NEXT_HI, which never pairs (a fixed
+  //      limit, not a transient)
   //   5. transient: slot2_bram_unsafe, or a buffered slot 1 at lo
   // When slot 2 is valid, all six outputs are 0 by construction.
   logic slot2_kill_start_invalid;
@@ -1313,9 +1314,9 @@ module instruction_aligner #(
   assign o_slot2_kill_class = slot1_allows_slot2_for_pc && slot2_kill_start_invalid;
 
   // The remaining no-pair cases, split in two. A native slot 2 at NEXT_HI
-  // (behind a 32b slot-1 at hi) can never fit the window, whatever the fetch
-  // state. The rest are transients: parity-unsafe reads and a buffered slot 1
-  // at lo.
+  // (behind a 32b slot-1 at hi) never pairs, whatever the fetch state, since
+  // the NEXT_HI candidate is RVC-only. The rest are transients: parity-unsafe
+  // reads and a buffered slot 1 at lo.
   logic slot2_kill_no_pair;
   // Keep-pinned for the same reason as slot1_native_serialize_for_pc.
   (* keep = "true" *)logic slot2_next_hi_native32;

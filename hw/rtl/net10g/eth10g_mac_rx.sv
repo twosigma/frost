@@ -370,7 +370,8 @@ module eth10g_mac_rx #(
   // word-stage edges before publication, since every accepted frame spans at
   // least eight words. Fetches while nothing is published may collide with
   // writes; the reader does not copy them, and the fetch repeats every clock.
-  // The simulation check at the end of the file reports any violation.
+  // The simulation check at the end of the file reports a copy of a word
+  // fetched on the edge that wrote it.
   logic [7:0] memory_write_enable;
   logic [7:0] memory_write_data[8];
   logic [MemoryAddrWidth-1:0] memory_write_address[8];

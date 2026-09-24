@@ -82,8 +82,7 @@ module instr_decoder (
         10'b0110000_001: o_instr_op = riscv_pkg::ROL;
         10'b0110000_101: o_instr_op = riscv_pkg::ROR;
         // Zbkb extension (bit manipulation for crypto)
-        10'b0000100_100:
-        o_instr_op = riscv_pkg::PACK;  // Pack halfwords (zext.h is pack with rs2=0)
+        10'b0000100_100: o_instr_op = riscv_pkg::PACK;  // Pack halfwords
         10'b0000100_111: o_instr_op = riscv_pkg::PACKH;  // Pack bytes
         // Zicond extension (conditional operations)
         10'b0000111_101: o_instr_op = riscv_pkg::CZERO_EQZ;

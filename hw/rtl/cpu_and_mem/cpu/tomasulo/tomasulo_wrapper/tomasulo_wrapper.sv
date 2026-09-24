@@ -814,11 +814,12 @@ module tomasulo_wrapper #(
   //    the pulse cycle.
   //  - For full flushes the FP adapters' i_flush window is extended by one
   //    cycle (below), so a squashed result that a shim still presents on
-  //    pulse+1, before its registered clear lands, cannot be captured into
-  //    the adapter's holding register.
+  //    pulse+1, before its registered clear lands, never becomes a pending
+  //    result in the adapter.
   //  - Occupancy/credit counts see squashed entries one cycle longer, which
   //    only adds back-pressure (no overflow risk).
-  // The int_muldiv, fp_add, and ALU shims take the live flush.
+  // The int_muldiv and fp_add shims take the live flush; the ALU shims are
+  // combinational and have no flush inputs.
   logic fp_shim_flush_all_q;
   logic fp_shim_flush_en_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] fp_shim_flush_tag_q;
@@ -1930,9 +1931,10 @@ module tomasulo_wrapper #(
   // A store's PMA access fault (cause 7) uses the same issue-time trap
   // strobe as misalignment.  The store completes with an exception instead
   // of being marked done, so its SQ entry can never drain (the
-  // launched-implies-in-map invariant).  Access faults outrank misalignment
-  // per the privileged spec; the PMA term ignores i_trap_misaligned_accesses
-  // so the invariant always holds.
+  // launched-implies-in-map invariant).  With translation off, an access
+  // fault outranks misalignment (the privileged spec allows either order;
+  // the data MMU checks misalignment first).  The PMA term ignores
+  // i_trap_misaligned_accesses so the invariant always holds.
   //
   // While data translation is active, every store-family fault (misalignment
   // on the VA, page fault, access fault on the translated PA) comes from the
@@ -2184,8 +2186,8 @@ module tomasulo_wrapper #(
           store_pma_issue ? riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0] :
                             riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
       // Park the faulting address in the (otherwise unused) value slot so the
-      // ROB can forward it as xtval at trap entry (RISC-V requires xtval = the
-      // faulting virtual address for a store misaligned or access fault).
+      // ROB can forward it as xtval at trap entry (the privileged spec allows
+      // zero, but a nonzero xtval must be the faulting virtual address).
       store_misalign_fu_complete.value = {
         {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, sq_effective_addr
       };
@@ -4957,7 +4959,7 @@ module tomasulo_wrapper #(
       // Full-flush window extended one cycle: the shim sees the full flush
       // one cycle late and clears at the end of pulse+1, so it can still
       // present a squashed result during pulse+1.  The extended window keeps
-      // it out of the holding register (REGISTER_OUTPUT means it is never
+      // the adapter from marking it pending (REGISTER_OUTPUT means it is never
       // passed through combinationally).  Partial flush stays live: the age
       // compare covers the pulse cycle.
       .i_flush         (speculative_flush_all || fp_shim_flush_all_q),

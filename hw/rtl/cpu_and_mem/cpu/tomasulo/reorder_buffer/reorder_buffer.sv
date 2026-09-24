@@ -20,10 +20,10 @@
  * ROB tag. Entries complete at allocation (JAL, FENCE, FENCE.I, WFI, xRET), on
  * either CDB lane, on a branch update, or, for plain stores, on the
  * store-completion port. rob_serializer holds the following at the head:
- *   - CSR: raises o_csr_start and retires on i_csr_done (a translation CSR
- *     first waits for committed stores to drain, and ends in a full flush).
- *     The CSR file reads and writes the register the cycle after retirement,
- *     from the registered commit bus.
+ *   - CSR: raises o_csr_start and retires on i_csr_done. A translation CSR
+ *     retires in a later cycle, once committed stores have drained, and ends
+ *     in a full flush. The CSR file reads and writes the register the cycle
+ *     after retirement, from the registered commit bus.
  *   - FENCE: waits for committed stores to drain (i_sq_committed_empty).
  *   - FENCE.I, SFENCE.VMA: drain, cache sync (SFENCE.VMA also invalidates the
  *     TLBs), then a full flush and refetch.
@@ -72,7 +72,8 @@ module reorder_buffer #(
     // complete on i_branch_update instead.
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write,
     // Second CDB lane, handled like the first in the same cycle. The arbiter
-    // guarantees its tag differs from i_cdb_write.tag, so the lanes never
+    // grants the two lanes to different functional units, and an in-flight
+    // tag has only one producer, so the lane tags differ and the lanes never
     // collide on a RAM address or a rob_done bit.
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write_2,
     // Private duplicate copies of i_cdb_write.tag / i_cdb_write_2.tag,
@@ -147,9 +148,9 @@ module reorder_buffer #(
     // CSR Unit Coordination
     // =========================================================================
     // o_csr_start is raised as a ready CSR head enters CSR_EXEC; the CSR
-    // retires on i_csr_done (a translation CSR first waits for committed
-    // stores to drain). The CSR file reads and writes the register the cycle
-    // after retirement, from the registered commit bus.
+    // retires on i_csr_done, or, for a translation CSR, in a later cycle once
+    // committed stores have drained. The CSR file reads and writes the
+    // register the cycle after retirement, from the registered commit bus.
     output logic o_csr_start,
     input  logic i_csr_done,
 
@@ -258,9 +259,10 @@ module reorder_buffer #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,  // Flush entries after this tag
     input logic i_flush_all,  // Flush every entry
     input logic i_flush_after_head_commit,
-    // Memory-order replay: entries to flag after a DMA write, from the
-    // wrapper's lq_coherence_port. A flagged entry is exceptional at the head
-    // with cause ExcMemReplay; the trap unit restarts it at its own PC.
+    // Memory-order replay: loads to flag when a DMA write invalidates a line
+    // they observed, from the wrapper's lq_coherence_port. A flagged entry is
+    // exceptional at the head with cause ExcMemReplay; the trap unit restarts
+    // it at its own PC.
     input logic [riscv_pkg::ReorderBufferDepth-1:0] i_replay_set_mask,
 
     // FENCE-class recovery (FENCE.I, SFENCE.VMA, translation CSRs) ends in a
@@ -1438,8 +1440,8 @@ module reorder_buffer #(
   // 4 write ports: port 0 = slot-1 alloc, port 1 = slot-2 alloc,
   // port 2 = CDB lane 0, port 3 = CDB lane 1. Without LVT staging the
   // highest-numbered port wins a same-cycle write to one address, so a CDB
-  // write beats an allocation; the arbiter guarantees the two CDB lanes never
-  // collide on an address.
+  // write beats an allocation. The two CDB lanes never carry the same tag
+  // (see i_cdb_write_2), so they never collide on an address.
   // ---------------------------------------------------------------------------
 
   // rob_value: 4 write ports (alloc1 + alloc2 + CDB lane 0 + CDB lane 1).
@@ -2449,10 +2451,10 @@ module reorder_buffer #(
       commit_2_ready_early && EnableWidenCommit && i_widen_commit_ok &&
       head_next_f_has_checkpoint && !head_next_mispredicted && !head_next_early_recovered;
   assign o_commit_correct_branch_2_raw = commit_correct_branch_2_early && !commit_stall_for_retire;
-  // Same-cycle head-mispredict indicator. Outer control logic uses this to
-  // suppress younger branch resolution without feeding branch_update back
-  // into commit_en. Same factoring; unlike commit_ready_early, the conjunct
-  // set has no !head_exception.
+  // Same-cycle head-mispredict indicator, left unused by cpu_ooo:
+  // branch_resolution explains why it does not suppress branch resolution.
+  // Same factoring; unlike commit_ready_early, the conjunct set has no
+  // !head_exception.
   assign head_mispredict_candidate_early =
       head_ready && !i_commit_hold && !i_early_recovery_en &&
       !i_flush_en && !i_flush_all && !flush_after_head_commit &&
@@ -3190,8 +3192,9 @@ module reorder_buffer #(
     end
   end
 
-  // Retire trace: log every committed instruction to retire_trace.log (for
-  // debugging). PCs and values print as full 16 hex digits.
+  // Retire trace for debugging: one retire_trace.log line per head (slot-1)
+  // retirement; slot-2 retirements are not logged. PCs and values print as
+  // full 16 hex digits.
   integer retire_trace_fd;
   // Each format must be a $fwrite literal. Verilator does not format through
   // a localparam-string argument (it prints the format text itself).

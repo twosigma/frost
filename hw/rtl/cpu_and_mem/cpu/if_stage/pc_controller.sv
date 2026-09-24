@@ -49,8 +49,8 @@ module pc_controller #(
     // holds, so no request is skipped.
     input logic i_fetch_progress,
     input logic i_flush,  // Pipeline flush: blocks state updates from garbage instructions
-    // Registered FENCE-class flush pulse: FENCE.I, SFENCE.VMA, or a
-    // translation-changing CSR write.
+    // Registered FENCE-class flush pulse: FENCE.I, SFENCE.VMA, or a CSR
+    // instruction that accesses satp or writes mstatus or sstatus.
     input logic i_fence_i_flush,
     input logic [XLEN-1:0] i_fence_i_target,
 

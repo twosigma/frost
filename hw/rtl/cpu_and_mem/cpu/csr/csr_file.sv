@@ -831,7 +831,9 @@ module csr_file #(
   // C+2->C+3, one edge before the earliest write edge. The writing
   // instruction's own retirement stages at the write edge and lands on top
   // of the new value one edge later, so a read after `csrw minstret, V`
-  // sees V + 1 + later retirements. The spec leaves both choices open.
+  // sees V + 1 + later retirements. Zicsr has the write replace the writing
+  // instruction's increment (the next instruction reads V), so this deviates;
+  // riscv-tests' rv64mi instret_overflow is skipped for it.
   logic [ 1:0] instruction_retired_count_q;
   // Register-to-register accumulate with the write select applied after it,
   // like the cycle counter's increment boundary above.  minstret_write

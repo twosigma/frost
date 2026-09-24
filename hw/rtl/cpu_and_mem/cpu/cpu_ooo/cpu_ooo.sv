@@ -3394,7 +3394,9 @@ module cpu_ooo #(
 
   // CSR done acknowledgment, one cycle after csr_start: csr_start fires in
   // cycle N (the ROB serializer enters SERIAL_CSR_EXEC at its end) and
-  // csr_done_ack in cycle N+1 lets the ROB commit the CSR.
+  // csr_done_ack in cycle N+1 lets the ROB commit an ordinary CSR. A CSR that
+  // may change translation moves to SERIAL_CSR_TRANSLATION_DRAIN instead and
+  // retires only after committed stores drain.
   logic csr_done_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) csr_done_q <= 1'b0;

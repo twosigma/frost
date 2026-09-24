@@ -107,6 +107,8 @@ and must change together:
 4. `verif/cocotb_tests/cpu_ooo/perf/test_perf_counter_aggregator.py`
    (the block counts and bases, `PERF_COUNTER_COUNT`, and the `PERF_*`
    constants)
+5. `sw/lib/src/tomasulo_profile_cache.c` (the `CACHE_DELTA` indices, which
+   follow the cache block's order)
 
 ## Counter reference
 

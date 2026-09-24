@@ -160,7 +160,7 @@ module nic_dma_front #(
   // ---- arbitration toward the port ----------------------------------------------
   // present_q registers eligibility from the same next occupancy that the
   // request and entry registers take, so it is exactly
-  // rq_valid_q & free_any & !stop_q without putting the drain gating or the
+  // rq_valid_q & free_any_now & !stop_q without putting the drain gating or the
   // free-entry reduction on the DMA valid and select path. It holds valid
   // bits only, not request payloads, so arbitration can still switch sides
   // every cycle when a locked line is refused.

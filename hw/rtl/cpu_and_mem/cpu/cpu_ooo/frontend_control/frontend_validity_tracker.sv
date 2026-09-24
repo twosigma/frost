@@ -235,11 +235,12 @@ module frontend_validity_tracker (
   assign id_has_indirect_control_flow = pd_valid_q &&
                                         (from_id_to_ex.instruction_operation == riscv_pkg::JALR);
 
-  // Only unpredicted control flow is flagged; control flow that the front end
-  // already predicted is not. An unpredicted indirect jump feeds the
-  // control-flow serialization stall, and the prediction-fence classes below
-  // (unpredicted branch, JAL, or indirect jump in PD or ID) feed the perf
-  // counters.
+  // Only unpredicted control flow is flagged: control flow for which fetch did
+  // not follow a taken prediction (btb_predicted_taken and ras_predicted both
+  // clear). A branch predicted not taken is therefore flagged. An unpredicted
+  // indirect jump feeds the control-flow serialization stall, and the
+  // prediction-fence classes below (unpredicted branch, JAL, or indirect jump
+  // in PD or ID) feed the perf counters.
   // The IF-stage flag, if_unpredicted_control_flow_q, is registered, so it
   // trails IF by one cycle. That is harmless: the serialization fence is a
   // performance hint.

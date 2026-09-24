@@ -18,7 +18,8 @@
  * axi_behavioral_memory: simulation-only main-memory model, standing in for
  * the board's DDR controller and SmartConnect. An AXI4 slave for single-beat
  * line transactions (a longer burst is an error), with up to NUM_SLOTS reads
- * and NUM_SLOTS writes in flight and a LATENCY-cycle response.
+ * and NUM_SLOTS writes in flight and a response latency of at least LATENCY
+ * cycles.
  *
  * LATENCY_JITTER adds per-transaction LFSR jitter to that latency, as refresh
  * and arbitration vary a real controller's timing. A fixed latency hides
@@ -53,7 +54,7 @@ module axi_behavioral_memory #(
     parameter int unsigned MEM_BYTES = 64 * 1024 * 1024,
     parameter int unsigned ID_BITS = 4,
     parameter int unsigned LATENCY = 30,  // cycles from AR (or AW+W) to R (or B)
-    // Per-transaction response-latency jitter: a transaction takes
+    // Per-transaction response-latency jitter: a transaction takes at least
     // LATENCY + (lfsr % (LATENCY_JITTER+1)) cycles, plus the REORDER spread.
     // 0 adds no jitter. The LFSR free-runs every cycle, so a jittered run is
     // still deterministic while transaction latencies decorrelate.

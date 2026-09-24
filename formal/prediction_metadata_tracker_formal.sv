@@ -136,10 +136,10 @@ module prediction_metadata_tracker_formal (
         ) && !$past(
             i_reset || i_flush || i_pending_prediction_kill || formal_pending_consume
         )) begin
-      // A pending prediction's saved PC and target stay unchanged until the
-      // packet at that PC consumes them or a reset, a flush, or
-      // i_pending_prediction_kill clears them. In particular, another
-      // apparent prediction during fetch holdoff cannot overwrite them.
+      // A saved pending prediction stays valid and keeps its PC and target
+      // until the packet at that PC consumes it or a reset, a flush, or
+      // i_pending_prediction_kill invalidates it. In particular, another
+      // apparent prediction during fetch holdoff cannot overwrite it.
       assert (formal_pending_valid);
       assert (formal_pending_pc == $past(formal_pending_pc));
       assert (formal_pending_target == $past(formal_pending_target));
