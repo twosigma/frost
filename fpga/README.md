@@ -123,9 +123,9 @@ images with the JTAG loader rather than through GDB. See the
 [debugger limits](../tools/vscode-frost/README.md#debugger-scope).
 
 [`.vscode/launch.json`](../.vscode/launch.json) also has a manual
-configuration, **FROST: X3 loaded hello_world (Phase A)**, that attaches to an
-already loaded image at its current PC, with a matching OpenOCD task that logs
-to `.vscode/openocd-phase-a.log`. To give the cable back to Vivado, pause,
+configuration, **FROST: X3 loaded hello_world**, that attaches to an already
+loaded image at its current PC, with a matching OpenOCD task that logs to
+`.vscode/openocd.log`. To give the cable back to Vivado, pause,
 enter `-exec detach`, stop the session, and end the OpenOCD task. Reload the
 image after a debugger crash, or when initialized DDR data must be restored.
 
