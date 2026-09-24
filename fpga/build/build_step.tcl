@@ -830,11 +830,6 @@ if {$step eq "synth"} {
         lappend synth_args -generic PERF_COUNTERS=1
         puts "Profiling counters included (generic PERF_COUNTERS)"
     }
-    set single_core_performance [getenv_default FROST_SINGLE_CORE_PERFORMANCE 0]
-    if {$single_core_performance ni {0 1}} {
-        error "FROST_SINGLE_CORE_PERFORMANCE must be 0 or 1"
-    }
-    lappend synth_args -generic SINGLE_CORE_PERFORMANCE=$single_core_performance
     # A late module-level declaration can leave generated primitive inputs
     # attached to separate, undriven implicit nets. Reject that ambiguity before
     # Vivado ties those inputs to constants and reports timing on the wrong logic.

@@ -590,17 +590,19 @@ See the [test runner](../../../../../../tests/README.md) for commands and the
 ### Preparing a load while the shared port is busy
 
 `PREPARE_LOAD_WHILE_BUSY=1` allows the existing candidate-address register to
-capture or replace its load while `i_mem_bus_busy` is asserted. The default
-is zero. Preparation itself neither probes the SQ nor observes memory: the
+capture or replace its load while `i_mem_bus_busy` is asserted. This is enabled
+by default. Preparation itself neither probes the SQ nor observes memory: the
 SQ check and capture outputs, L0-hit consumption, and physical memory handoff
 retain their bus-busy gates. Flush, response-debt, age and admission rules
 are unchanged. No new request credit or coherence observation is created;
 loads remain covered by the existing observation table through retirement.
 
-`load_queue_prepare_busy` runs the full LQ suite and a directed test requiring
+`load_queue` runs the full LQ suite and a directed test requiring
 inert staging during port ownership, no SQ/read/result side effect, and
 immediate SQ checking on release. The formal BMC and cover tasks also run
-with the option enabled. Enabling SQ probes or L0 hits while busy is a
+with the default option enabled. `load_queue_no_prepare_busy` and the formal
+`bmc_no_prepare_busy`/`cover_no_prepare_busy` tasks cover the reusable module
+with preparation disabled. Enabling SQ probes or L0 hits while busy is a
 separate, unmerged experiment and is not the meaning of this parameter.
 
 Exact full/full-for-two status reduces free-entry predicates in four-entry

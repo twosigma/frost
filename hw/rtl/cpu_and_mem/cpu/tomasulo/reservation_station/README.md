@@ -148,8 +148,9 @@ means all). Port 0 still sees every entry. Allocation takes the lowest free
 index, so the window holds the longest-resident work. The selector's own
 first-ready exclusion still equals port 0's winner whenever the window holds a
 ready entry, because port 0 picks the lowest ready index overall. The wrapper
-sets the window to `riscv_pkg::IntRsDepth` (eight). It changes nothing at the
-default depth, and at `INT_RS_DEPTH=16` halves the port-1 selector and muxes.
+sets the window to `riscv_pkg::IntRsIssue2Window` (eight), independently of
+`riscv_pkg::IntRsDepth` (sixteen). This halves the port-1 selector and muxes
+at the default capacity.
 
 Port 0 selects the lowest-index ready entry; physical index is not strict
 age. [`rs_issue2_selector.sv`](rs_issue2_selector.sv) computes only port 1,
@@ -240,9 +241,10 @@ not enable `TRUST_DISPATCH_VALID` or `ISSUE_CDB_META_ANCHORS`: it dispatches
 into a full station and does not drive the anchor ports.
 
 Formal `bmc`/`cover` tasks check default parameters. The `bmc_tag_indexed`
-and `cover_tag_indexed` tasks check the full shipped INT configuration,
+and `cover_tag_indexed` tasks check INT features at eight-entry component capacity,
 including its parameter-gated properties, under a ROB-tag ownership
-assumption. The wrapper proof checks ownership against the real allocator.
+assumption. The wrapper proof checks the sixteen-entry INT station and its
+eight-entry second-issue window against the real allocator.
 Simulation assertions also check packet payloads and operands through
 stalls, flushes, and refill.
 
@@ -276,6 +278,6 @@ index again. The two issue clears commute; the port-2 mask applies before
 the indexed port-1 clear. Reset, flush and dispatch-write priorities are unchanged. The
 `rs_issue_clear` proof compares the accepted mask with the former indexed clear
 across full/windowed dual-issue configurations and the disabled configuration.
-The depth-8 default and depth-16/window-8 profile use the actual INT instance
-parameters; payload RAM outputs are unconstrained so initialization cannot
-restrict the proof.
+The depth-16/window-8 case uses the current INT instance parameters, while the
+depth-8 case retains smaller-capacity coverage. Payload RAM outputs are
+unconstrained so initialization cannot restrict the proof.

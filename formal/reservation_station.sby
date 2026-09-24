@@ -10,8 +10,8 @@ bmc: depth 12
 cover: mode cover
 cover: depth 20
 bmc_tag_indexed: mode bmc
-# Shallower than the default-parameter bmc on purpose. The shipped INT_RS
-# configuration roughly doubles the model - a second payload bank, a second
+# Shallower than the default-parameter bmc on purpose. The INT_RS features
+# roughly double the model - a second payload bank, a second
 # stage2 bank and the balanced second-port selector - and boolector's per-step
 # cost grows steeply with it. On a fast desktop depth 7 is about 1.5 minutes;
 # step 8 alone then costs 6 more and step 9 another 6, so depth 12 runs past
@@ -33,14 +33,16 @@ read -sv mwp_dist_ram.sv
 read -sv mwp_dist_ram_ohread.sv
 read -formal -sv rs_issue2_selector.sv
 read -formal -sv reservation_station.sv
-# The tag_indexed tasks build the shipped INT_RS configuration, not just its
-# side RAM: u_int_rs in tomasulo_wrapper.sv is the only instance that enables
+# The tag_indexed tasks check the INT_RS features at eight-entry component
+# capacity. The wrapper target checks the production sixteen-entry instance.
+# u_int_rs in tomasulo_wrapper.sv is the only instance that enables
 # TAG_INDEXED_BRANCH_PAYLOAD, and it does so beside dual issue, the
 # allocation-indexed repair, speculative and broadcast data writes, the issue
 # tag shadows and meta anchors, the branch predicate tag anchor and trusted
-# dispatch valid.  Every -set below is one of that instance's overrides; DEPTH,
+# dispatch valid. Every -set below is one of that instance's overrides;
 # LANE1_ISSUE_BYPASS and DISPATCH_STATUS_RESERVE already match it at their
-# defaults.  One chparam call: yosys cannot reprocess a hierarchy once its top
+# defaults. DEPTH stays at eight, with both ports scanning the whole station.
+# One chparam call: yosys cannot reprocess a hierarchy once its top
 # has been chparam'd.
 #
 # The plain bmc/cover tasks stay on the module defaults.  That is the shape the

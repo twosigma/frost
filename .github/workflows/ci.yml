@@ -69,6 +69,7 @@ jobs:
 
   # Run real-program shards independently in both memory tiers. Keep the long
   # benchmarks/torture runs separate and group matching custom Verilator builds.
+  # CPU architecture comes from the shared RTL defaults used by FPGA builds.
   # Unit benches and DDR probes/fetch fuzz run only on the BRAM axis.
   test-verilator:
     name: Cocotb ${{ matrix.shard.name }} (Verilator / ${{ matrix.mem_config }})

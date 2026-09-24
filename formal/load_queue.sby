@@ -1,8 +1,8 @@
 [tasks]
 bmc queue
 cover queue
-bmc_prepare_busy queue prepare_busy
-cover_prepare_busy queue prepare_busy
+bmc_no_prepare_busy queue no_prepare_busy
+cover_no_prepare_busy queue no_prepare_busy
 prove_pre_match
 
 [options]
@@ -11,12 +11,12 @@ bmc: mode bmc
 # 12 grew past the CI per-task ceiling (~15 min on a fast desktop). Every
 # counterexample this bench has produced appeared by step 7.
 bmc: depth 10
-bmc_prepare_busy: mode bmc
-bmc_prepare_busy: depth 10
+bmc_no_prepare_busy: mode bmc
+bmc_no_prepare_busy: depth 10
 cover: mode cover
 cover: depth 20
-cover_prepare_busy: mode cover
-cover_prepare_busy: depth 20
+cover_no_prepare_busy: mode cover
+cover_no_prepare_busy: depth 20
 prove_pre_match: mode prove
 prove_pre_match: depth 3
 
@@ -32,7 +32,7 @@ read -sv lq_l0_cache.sv
 read -sv lq_issue_selector.sv
 queue: read -formal -sv load_queue.sv
 prove_pre_match: read -formal -D F_LQ_PREMATCH_ONLY -sv load_queue.sv
-prepare_busy: chparam -set PREPARE_LOAD_WHILE_BUSY 1 load_queue
+no_prepare_busy: chparam -set PREPARE_LOAD_WHILE_BUSY 0 load_queue
 prep -top load_queue
 prove_pre_match: select -assert-none t:$assume
 

@@ -31,10 +31,7 @@ module x3_frost #(
     // Profiling counters (build.py --perf-counters exports FROST_PERF_COUNTERS
     // and synthesis passes it as a generic): 0 = absent, the 300 MHz production
     // build; 1 for analysis builds such as a divided-clock one.
-    parameter int unsigned PERF_COUNTERS = 0,
-    // Opt-in roadmap configuration; no rated clock/score is implied. The
-    // clock remains an independent choice through CPU_BASE_CLK_HZ.
-    parameter bit SINGLE_CORE_PERFORMANCE = 1'b0
+    parameter int unsigned PERF_COUNTERS = 0
 ) (
     input logic i_sysclk_n,  // Differential system clock negative
     input logic i_sysclk_p,  // Differential system clock positive (300 MHz)
@@ -346,10 +343,6 @@ module x3_frost #(
       .ENABLE_CACHED_TIER(1),
       .USE_BEHAVIORAL_DDR(0),
       .PERF_COUNTERS(PERF_COUNTERS),
-      .EARLY_LOAD_WAKEUP(SINGLE_CORE_PERFORMANCE),
-      .PREPARE_LOAD_WHILE_BUSY(SINGLE_CORE_PERFORMANCE),
-      .DECODED_QUEUE_DEPTH(SINGLE_CORE_PERFORMANCE ? 4 : 0),
-      .INT_RS_DEPTH(SINGLE_CORE_PERFORMANCE ? 16 : riscv_pkg::IntRsDepth),
       // The transceiver's TX and RX clocks are independent, so the NIC has no
       // raw loopback; its self-test loopback is the transceiver's PMA
       // loopback (PHY_CTRL PMA_LOOPBACK).

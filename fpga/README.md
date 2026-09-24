@@ -107,14 +107,14 @@ timing evidence for that rate. Use a separate `--build-dir` and set
 not establish routed timing or a benchmark result. Target-clock builds leave
 the rated utilization table unchanged.
 
-`--single-core-performance` selects the experimental single-core configuration
-at synthesis: a four-bundle decoded queue, sixteen-entry INT RS, load
-preparation while the shared port is busy, and early memory wakeup. It is
-independent of `--cpu-base-clock-hz`; for the roadmap experiment use both
-`--single-core-performance --cpu-base-clock-hz 322265625`. This configuration
-has not met routed timing and cannot update the rated README table, even at
-300 MHz. A resumed checkpoint keeps its existing configuration; changing it
-requires synthesis.
+Every build uses the same CPU defaults as CI: a four-bundle decoded queue,
+sixteen-entry INT RS, load preparation while the shared port is busy, and early
+memory wakeup. The second INT issue port retains its eight-entry window.
+The former `--single-core-performance` flag and board generic have been removed;
+omit that flag from older commands. CPU clock and profiling counters remain
+independent build options. Selecting the default architecture does not establish
+routed timing at a new clock. A resumed checkpoint keeps its synthesized
+architecture; updating an older build to the current defaults requires synthesis.
 
 ## Profiling counters
 
@@ -241,11 +241,12 @@ Resumed stages verify this metadata against their inputs. A new synthesis or
 optimization result invalidates the previous placement approval, so rerun
 placement before resuming downstream stages. Missing or stale downstream
 lineage requires `--start-at post_place_physopt` from a qualified placement.
-`netlist_config.json` records profiling counters, the single-core profile,
-the base clock and its divider at synthesis. Resumed builds use this record
-when deciding whether to update the rated table; omitting experimental flags
-cannot relabel a checkpoint. Older checkpoints without recorded clock/profile
-settings need a new synthesis before they can update that table.
+`netlist_config.json` records profiling counters, the base clock and its divider
+at synthesis. Schema `x3_netlist_config_v3` identifies builds made after the CPU
+defaults were unified. Resumed builds preserve this record; an older checkpoint
+is never relabeled as the current architecture. Only a new-schema, 300 MHz,
+undivided build may update the reference table. Older checkpoints need a new
+synthesis before they can update that table.
 
 Promoting a new post-opt checkpoint removes `audit_post_opt_*` and
 `post_opt_fence_*` reports from the work directory. Save any reports you need

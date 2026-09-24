@@ -33,7 +33,7 @@ X/Z behavior.
 | `divider_prefix` | Each 32/64-bit divider stage matches two restoring iterations, assuming the incoming remainder's prefix bound; valid transactions start with remainder zero, including division by zero |
 | `mul_completion_tag` | MUL adapter behavior with qualified versus unqualified invalid tags; assumes one initial reset edge |
 | `int_muldiv_shim` | Shared full/word completion ownership and credits, plus separate physical-pipeline alignment proofs, with short word paths enabled and disabled; assumes one initial reset followed by deasserted reset. Arithmetic values and liveness are outside these tasks |
-| `mem_wakeup_merge` | Exhaustive combinational preservation and idle-lane injection. Standalone, assumes the staged load never carries a valid registered lane's tag; integrated (`FORMAL_STANDALONE_ENV=0`) that contract is asserted. Accepted-load eligibility and eventual CDB delivery require wrapper integration checks |
+| `mem_wakeup_merge` | Exhaustive combinational preservation and idle-lane injection. Standalone, assumes the staged load never carries a valid registered lane's tag; integrated (`FORMAL_STANDALONE_ENV=0`) that contract is asserted after the wrapper harness's initial reset edge. Accepted-load eligibility and eventual CDB delivery require wrapper integration checks |
 | `coherence_replay_compare` | Invalidation-line copies and replay masks at widths 32, 64, and 66; assumes one initial reset edge |
 | `coherence_observation` | Unbounded observation-table ownership, line provenance, retirement/flush cleanup and registered replay timing for all 32 ROB tags at XLEN=64; producer timing contract below |
 | `sc_head_query` | Selected SC coherence result versus a full line-address comparison, from arbitrary table state |
@@ -107,11 +107,13 @@ Integration targets have narrower environment contracts:
   `cover`, and ABC-PDR `prove` tasks.
 - `prediction_metadata_tracker` proves validity and payload provenance with
   a modeled registered predictor target and arbitrary pending/output PCs.
-- `reservation_station` checks the default configuration at BMC depth 12
-  and the complete shipped INT configuration with `bmc_tag_indexed` at
-  depth 7. Both have depth-20 cover tasks. The INT variant enables properties
+- `reservation_station` checks the module defaults at BMC depth 12 and the
+  INT features at eight-entry component capacity with `bmc_tag_indexed` at
+  BMC depth 7. Both have depth-20 cover tasks. The INT variant enables properties
   that are inactive at default parameters and assumes ROB-tag ownership.
 - `tomasulo_wrapper` checks station ownership against the real allocator.
+  Its INT station uses the production sixteen-entry capacity and eight-entry
+  second-issue window.
   Its environment assumes dispatch accompanies allocation, uses that cycle's
   allocated tag, and flushes only to a live ROB entry. Depth 4 does not reach
   tag wraparound; simulation covers reuse after wrap. Station assertions
@@ -170,8 +172,9 @@ It assumes an initial reset, legal consumer pops, no producer overwrite before
 acceptance, and that the producer's announced next value (`i_shadow_next`)
 arrives; integration assertions enforce the last three contracts in simulation.
 This is not a proof of whole-core CSR/debug/branch behavior.
-`load_queue` also has `bmc_prepare_busy`/`cover_prepare_busy` tasks for inert
-candidate preparation while another client owns the memory port.
+`load_queue` checks inert candidate preparation during port ownership in its
+default `bmc`/`cover` tasks. Its `bmc_no_prepare_busy`/`cover_no_prepare_busy`
+tasks retain component coverage with preparation disabled.
 
 `cache_mshr_payload` compares per-entry data and strobe next states against the
 original indexed fill/store merge for arbitrary inputs and current state,

@@ -275,7 +275,7 @@ injected, live, and held sources.
 `EARLY_LOAD_WAKEUP=1` lets the LQ's staged, non-faulting completion use an
 idle registered CDB lane at MEM_RS one cycle early. Both occupied lanes retain
 their original packets; if both are occupied, the normal registered copy
-performs the wakeup. The option defaults off.
+performs the wakeup. This is enabled by default in the wrapper and CPU.
 The merge never changes ROB completion, SQ delivery, retirement, or DMA
 observation lifetime.
 
@@ -299,7 +299,10 @@ The merge also does not compare the staged tag with the registered lanes. An
 accepted load leaves the LQ stage before its registered broadcast, and
 in-flight tags are unique, so the staged load never duplicates a registered
 lane. `mem_wakeup_merge` asserts that contract in simulation and formal
-integration, and assumes it only in its standalone proof.
+integration, and assumes it only in its standalone proof. The wrapper formal
+harness resets on its first edge; integrated tag-uniqueness assertions begin
+at the next step, after arbitrary initial staging/CDB state has been cleared.
+Combinational preservation and injection identities remain checked at every step.
 
 The reservation station captures the value when a tag matches, including
 dispatch in that cycle. Source-ready and pending-delivery state ignore the
@@ -330,7 +333,7 @@ checks repair timing and captured values for all three FMUL operands.
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
 
-`INT_RS_DEPTH` defaults to eight and propagates from `frost` through the CPU.
+`INT_RS_DEPTH` defaults to sixteen and propagates from `frost` through the CPU.
 Its supported bounds are powers of two from two through the 32-entry ROB
 capacity; measured capacity experiments use eight, sixteen and thirty-two.
 The RS alone grows: ROB tags, two-wide dispatch/issue, completion credits,

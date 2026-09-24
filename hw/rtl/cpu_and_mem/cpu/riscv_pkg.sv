@@ -2247,8 +2247,15 @@ package riscv_pkg;
       ReorderBufferDepth
   );  // 5 bits for 32-entry Reorder Buffer
 
-  // Reservation Station depths (per RS type)
-  localparam int unsigned IntRsDepth = 8;  // Integer ALU operations
+  // Shared CPU defaults for board builds, simulation and synthesis checks.
+  localparam bit EarlyLoadWakeup = 1'b1;
+  localparam bit PrepareLoadWhileBusy = 1'b1;
+  localparam int unsigned DecodedQueueDepth = 4;  // Two-instruction bundles
+
+  // Reservation Station depths (per RS type). The second integer issue port
+  // scans only the lowest eight entries, independently of the total capacity.
+  localparam int unsigned IntRsDepth = 16;  // Integer ALU operations
+  localparam int unsigned IntRsIssue2Window = 8;
   localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
   localparam int unsigned MemRsDepth = 8;  // Load/store operations
   localparam int unsigned FpRsDepth = 6;  // FP add/sub/cmp/cvt/classify/sgnj

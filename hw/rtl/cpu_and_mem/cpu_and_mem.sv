@@ -37,10 +37,10 @@ module cpu_and_mem #(
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
     parameter int unsigned ENABLE_CACHED_TIER = 1,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
-    parameter bit EARLY_LOAD_WAKEUP = 1'b0,
-    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
+    parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
-    parameter int unsigned DECODED_QUEUE_DEPTH = 0,
+    parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,

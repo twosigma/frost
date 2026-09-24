@@ -357,7 +357,6 @@ class FunctionalBuildPolicy:
     update_readme: bool
     # Profiling counters in the netlist (the board top's PERF_COUNTERS generic).
     perf_counters: bool
-    single_core_performance: bool = False
 
 
 def resolve_functional_build_policy(
@@ -369,7 +368,6 @@ def resolve_functional_build_policy(
     route_directives: list[str],
     route_sweep_overridden: bool,
     perf_counters: bool | None = None,
-    single_core_performance: bool = False,
 ) -> FunctionalBuildPolicy:
     """Return the flow settings for ``--cpu-clock-div``.
 
@@ -396,9 +394,8 @@ def resolve_functional_build_policy(
             True,
             None,
             list(route_directives),
-            base_clock_freq == 300_000_000 and not single_core_performance,
+            base_clock_freq == 300_000_000,
             include_counters,
-            single_core_performance,
         )
     return FunctionalBuildPolicy(
         cpu_clock_div,
@@ -414,7 +411,6 @@ def resolve_functional_build_policy(
         else [X3_FUNCTIONAL_ROUTE_DIRECTIVE],
         False,
         include_counters,
-        single_core_performance,
     )
 
 
@@ -1373,8 +1369,7 @@ def is_reference_x3_netlist(main_work: Path) -> bool:
         return False
     return (
         isinstance(config, dict)
-        and config.get("schema") == "x3_netlist_config_v2"
-        and config.get("single_core_performance") == 0
+        and config.get("schema") == "x3_netlist_config_v3"
         and config.get("cpu_base_clock_hz") == 300_000_000
         and config.get("cpu_clock_div") == 1
     )
@@ -1429,11 +1424,8 @@ def copy_results_to_main_work(
         (main_work / X3_NETLIST_CONFIG_NAME).write_text(
             json.dumps(
                 {
-                    "schema": "x3_netlist_config_v2",
+                    "schema": "x3_netlist_config_v3",
                     "perf_counters": perf_counters,
-                    "single_core_performance": int(
-                        os.environ.get("FROST_SINGLE_CORE_PERFORMANCE", "0") == "1"
-                    ),
                     "cpu_base_clock_hz": int(
                         os.environ.get("FROST_CPU_BASE_CLK_HZ", "300000000")
                     ),
@@ -2842,13 +2834,6 @@ Examples:
         "includes synthesis. Capture with fpga/debug/capture_fetch_ila.py.",
     )
     parser.add_argument(
-        "--single-core-performance",
-        action="store_true",
-        help="X3 experimental decoded queue, INT RS 16, busy-port load preparation "
-        "and early memory wakeup. Requires synthesis; clock is selected separately. "
-        "This configuration cannot update the rated README table.",
-    )
-    parser.add_argument(
         "--cpu-base-clock-hz",
         type=int,
         choices=CPU_BASE_CLOCK_CHOICES,
@@ -2955,10 +2940,6 @@ Examples:
     route_sweep_directives = resolve_x3_route_sweep_directives(args.route_directives)
     if args.cpu_clock_div != 1 and board_name != "x3":
         parser.error("--cpu-clock-div is only supported for x3")
-    if args.single_core_performance and board_name != "x3":
-        parser.error("--single-core-performance is only supported for x3")
-    if args.single_core_performance and "synth" not in steps_to_run:
-        parser.error("--single-core-performance requires a run that includes synthesis")
     functional_policy = resolve_functional_build_policy(
         args.cpu_clock_div,
         clock_freq,
@@ -2968,7 +2949,6 @@ Examples:
         route_sweep_directives,
         args.route_directives is not None,
         perf_counters=args.perf_counters,
-        single_core_performance=args.single_core_performance,
     )
     clock_freq = functional_policy.clock_freq
     place_sweep_directives = functional_policy.place_directives
@@ -2994,9 +2974,6 @@ Examples:
     # The CLI is authoritative for the counters as well: synthesis reads
     # FROST_PERF_COUNTERS, and an inherited value must not change the netlist.
     os.environ["FROST_PERF_COUNTERS"] = "1" if functional_policy.perf_counters else "0"
-    os.environ["FROST_SINGLE_CORE_PERFORMANCE"] = (
-        "1" if args.single_core_performance else "0"
-    )
     if functional_policy.cpu_clock_div != 1:
         # The Vivado steps (synthesis generic, block-design clock rates) and
         # the quick-route probe count read the environment.
@@ -3217,7 +3194,7 @@ Examples:
         print(
             "\nREADME utilization table left alone: custom-directory and "
             "experimental builds, and checkpoints without recorded reference "
-            "clock/profile settings, are not the reference implementation."
+            "clock and current CPU architecture, are not the reference implementation."
         )
 
     # Summarize the last completed step, including partial/resumed runs.

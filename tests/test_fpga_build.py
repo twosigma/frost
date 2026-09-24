@@ -230,8 +230,7 @@ def test_build_main_refreshes_actual_completed_report_stage(
     (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
         json.dumps(
             {
-                "schema": "x3_netlist_config_v2",
-                "single_core_performance": 0,
+                "schema": "x3_netlist_config_v3",
                 "cpu_base_clock_hz": 300000000,
                 "cpu_clock_div": 1,
             }
@@ -3274,7 +3273,6 @@ def test_missing_lineage_sidecar_names_the_file_and_the_recovery(
 
 
 @pytest.mark.parametrize("perf_counters", ("0", "1"))
-@pytest.mark.parametrize("single_core_performance", ("0", "1"))
 @pytest.mark.parametrize(
     "base_clock, divider", (("300000000", "1"), ("322265625", "2"))
 )
@@ -3282,13 +3280,11 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     perf_counters: str,
-    single_core_performance: str,
     base_clock: str,
     divider: str,
 ) -> None:
     """Synthesis options are recorded once with their checkpoint."""
     monkeypatch.setenv("FROST_PERF_COUNTERS", perf_counters)
-    monkeypatch.setenv("FROST_SINGLE_CORE_PERFORMANCE", single_core_performance)
     monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", base_clock)
     monkeypatch.setenv("FROST_CPU_CLK_DIV", divider)
     source, dest = tmp_path / "source", tmp_path / "dest"
@@ -3298,9 +3294,8 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     fpga_build.copy_results_to_main_work(source, dest, "post_synth.dcp", "post_synth")
     stamp = dest / fpga_build.X3_NETLIST_CONFIG_NAME
     assert json.loads(stamp.read_text()) == {
-        "schema": "x3_netlist_config_v2",
+        "schema": "x3_netlist_config_v3",
         "perf_counters": int(perf_counters),
-        "single_core_performance": int(single_core_performance),
         "cpu_base_clock_hz": int(base_clock),
         "cpu_clock_div": int(divider),
     }
@@ -3312,9 +3307,6 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     (source / "post_opt.dcp").write_bytes(b"optimized netlist")
     fpga_build.copy_results_to_main_work(source, dest, "post_opt.dcp", "post_opt")
     assert json.loads(stamp.read_text())["perf_counters"] == int(perf_counters)
-    assert json.loads(stamp.read_text())["single_core_performance"] == int(
-        single_core_performance
-    )
     assert json.loads(stamp.read_text())["cpu_base_clock_hz"] == int(base_clock)
     assert json.loads(stamp.read_text())["cpu_clock_div"] == int(divider)
 
@@ -3638,86 +3630,46 @@ def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
     )
 
 
-@pytest.mark.parametrize("divider", (1, 2))
-def test_experimental_performance_profile_does_not_publish_rating(divider: int) -> None:
-    """Even at the rated clock, an experimental netlist cannot rewrite the rating."""
-    policy = fpga_build.resolve_functional_build_policy(
-        divider,
-        300_000_000,
-        ["ExtraNetDelay_high"],
-        1,
-        False,
-        ["Explore"],
-        False,
-        single_core_performance=True,
-    )
-    assert policy.single_core_performance
-    assert not policy.update_readme
-
-
-@pytest.mark.parametrize("enabled", (False, True))
-def test_performance_cli_overrides_inherited_profile(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool
+def test_retired_performance_profile_flag_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The selected synthesis profile overrides a stale opposite environment."""
-    monkeypatch.setenv("FROST_SINGLE_CORE_PERFORMANCE", "0" if enabled else "1")
-    monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
+    """Old commands must be updated to the single default CPU configuration."""
     monkeypatch.setattr(
         sys,
         "argv",
-        ["build.py", "x3", "--stop-after", "synth"]
-        + (["--single-core-performance"] if enabled else []),
-    )
-    observed = []
-
-    def compile_firmware(_root: Path, _output: Path, _clock: int) -> bool:
-        observed.append(fpga_build.os.environ["FROST_SINGLE_CORE_PERFORMANCE"])
-        return False
-
-    monkeypatch.setattr(fpga_build, "compile_hello_world", compile_firmware)
-    with pytest.raises(SystemExit) as stopped:
-        fpga_build.main()
-    assert stopped.value.code == 1
-    assert observed == ["1" if enabled else "0"]
-
-
-def test_performance_profile_requires_synthesis(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A resumed checkpoint cannot be silently relabeled as another architecture."""
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["build.py", "x3", "--start-at", "place", "--single-core-performance"],
+        ["build.py", "x3", "--stop-after", "synth", "--single-core-performance"],
     )
     with pytest.raises(SystemExit) as stopped:
         fpga_build.main()
     assert stopped.value.code == 2
+    assert (
+        "unrecognized arguments: --single-core-performance" in capsys.readouterr().err
+    )
 
 
 @pytest.mark.parametrize(
     "overrides, publish",
     [
         ({}, True),
-        ({"single_core_performance": 1}, False),
+        ({"schema": "x3_netlist_config_v2", "single_core_performance": 0}, False),
+        ({"schema": "x3_netlist_config_v2", "single_core_performance": 1}, False),
         ({"cpu_base_clock_hz": 322265625}, False),
         ({"cpu_clock_div": 2}, False),
         ({"schema": "x3_netlist_config_v1"}, False),
         (None, False),
     ],
 )
-def test_resumed_build_uses_recorded_profile_for_readme(
+def test_resumed_build_uses_recorded_configuration_for_readme(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     overrides: dict | None,
     publish: bool,
 ) -> None:
-    """Default CLI options cannot publish an experimental checkpoint as rated."""
+    """Old architectures and alternate clocks cannot publish as a current build."""
     work = _sweep_input(tmp_path, "place")
     if overrides is not None:
         config = {
-            "schema": "x3_netlist_config_v2",
-            "single_core_performance": 0,
+            "schema": "x3_netlist_config_v3",
             "cpu_base_clock_hz": 300000000,
             "cpu_clock_div": 1,
             **overrides,

@@ -38,9 +38,9 @@ module xilinx_frost_subsystem #(
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Profiling counters (see frost.sv); the board top passes its generic.
     parameter int unsigned PERF_COUNTERS = 0,
-    parameter bit EARLY_LOAD_WAKEUP = 1'b0,
-    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
-    parameter int unsigned DECODED_QUEUE_DEPTH = 0,
+    parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
+    parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     // The NIC's raw TX-to-RX loopback (see frost.sv): 1 when the board drives
     // one clock on both MAC clock ports, 0 with independent TX and RX clocks.

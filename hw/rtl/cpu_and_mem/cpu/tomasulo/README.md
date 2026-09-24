@@ -169,7 +169,7 @@ turnaround.
 
 | RS         | Depth | Instructions |
 |------------|-------|--------------|
-| `INT_RS`   | 8 default (`INT_RS_DEPTH`) | ALU ops, shifts, B-extension, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK |
+| `INT_RS`   | 16 default (`INT_RS_DEPTH`) | ALU ops, shifts, B-extension, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK |
 | `MUL_RS`   | 4     | MUL/MULW/MULH\*/DIV\*/REM\* |
 | `MEM_RS`   | 8     | All loads, stores, AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
 | `FP_RS`    | 6     | FADD/FSUB, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |

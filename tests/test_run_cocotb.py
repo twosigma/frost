@@ -915,7 +915,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="reservation_station",
         description=(
             "Reservation Station unit tests (deferred dispatch-CDB delivery "
-            "and indexed repair) on the shipped INT elaboration"
+            "and indexed repair) with INT features at eight-entry component capacity"
         ),
         verilator_extra_args=(
             # The shipped INT station is dual-issue; build the directed suite
@@ -979,12 +979,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "dword completion bypass, memory, and CDB)"
         ),
     ),
-    "load_queue_prepare_busy": CocotbRunConfig(
+    "load_queue_no_prepare_busy": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
         hdl_toplevel_module="load_queue",
-        description="Load queue with inert preparation during bus ownership; probes and launches remain gated",
-        verilator_extra_args=("-GPREPARE_LOAD_WHILE_BUSY=1",),
-        extra_env=(("FROST_TEST_PREPARE_LOAD_WHILE_BUSY", "1"),),
+        description="Component coverage with busy-port load preparation disabled",
+        verilator_extra_args=("-GPREPARE_LOAD_WHILE_BUSY=0",),
+        extra_env=(("FROST_TEST_PREPARE_LOAD_WHILE_BUSY", "0"),),
     ),
     **{
         f"lq_l0_cache_{depth}": CocotbRunConfig(
@@ -1696,13 +1696,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tomasulo integration tests with production dispatch done repair",
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
     ),
-    "tomasulo_wrapper_early_load": CocotbRunConfig(
+    "tomasulo_wrapper_no_early_load": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
-        description="Tomasulo integration with early load wakeup and production done repair",
+        description="Component coverage with early load wakeup disabled and production done repair",
         verilator_extra_args=(
             "-GENABLE_DISPATCH_DONE_REPAIR=1",
-            "-GEARLY_LOAD_WAKEUP=1",
+            "-GEARLY_LOAD_WAKEUP=0",
         ),
     ),
     "tomasulo_load_wakeup": CocotbRunConfig(
@@ -1712,10 +1712,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Early load wakeup: load-address/store-data dependencies across dispatch, "
             "registered CDB contention, duplicate delivery, and recovery"
         ),
-        verilator_extra_args=(
-            "-GENABLE_DISPATCH_DONE_REPAIR=1",
-            "-GEARLY_LOAD_WAKEUP=1",
-        ),
+        verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
     ),
     "tomasulo_coherence": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_coherence",
@@ -1733,7 +1730,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "DMA coherence races with the 256-entry L0 and early load wakeup, "
             "including executed loads tracked through retirement"
         ),
-        verilator_extra_args=("-GL0_CACHE_DEPTH=256", "-GEARLY_LOAD_WAKEUP=1"),
+        verilator_extra_args=("-GL0_CACHE_DEPTH=256",),
     ),
     "tomasulo_wrapper_split_rs": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_split_rs",

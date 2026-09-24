@@ -173,7 +173,7 @@ OP_FMADD_S = _INSTR_OPS["FMADD_S"]
 
 # RS depths (mirrors riscv_pkg parameters)
 RS_DEPTHS = {
-    RS_INT: 8,
+    RS_INT: 16,
     RS_MUL: 4,
     RS_MEM: 8,
     RS_FP: 6,

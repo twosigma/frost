@@ -26,7 +26,9 @@
 // register before its registered broadcast, so the caller's staged load and
 // a registered lane never name the same tag. Checking it here put a tag
 // comparator ahead of every MEM_RS wakeup; simulation asserts it, and formal
-// assumes it standalone (FORMAL_STANDALONE_ENV=1) and asserts it integrated.
+// assumes it standalone (FORMAL_STANDALONE_ENV=1) and asserts it integrated
+// after the enclosing harness's initial reset edge. The integrated caller
+// intentionally leaves enable unqualified by reset; its consumers reset too.
 module mem_wakeup_merge #(
     parameter bit FORMAL_STANDALONE_ENV = 1'b1
 ) (
@@ -72,9 +74,13 @@ module mem_wakeup_merge #(
        (i_registered_1.valid && i_registered_1.tag == i_load.tag));
 `ifdef FORMAL
   always_comb begin
-    if (FORMAL_STANDALONE_ENV)
+    if (FORMAL_STANDALONE_ENV) begin
       assume (!duplicates_registered_lane);
-      else assert (!duplicates_registered_lane);
+    end else if (!$initstate) begin
+      // Before the first reset edge, the caller's staging/CDB registers are
+      // arbitrary. This is a reachable-state contract, not an initial-state one.
+      assert (!duplicates_registered_lane);
+    end
   end
 `else
   always_comb begin
@@ -101,7 +107,8 @@ module mem_wakeup_merge #(
                o_wakeup_0.value == i_load.value) ||
               (o_wakeup_1.valid && o_wakeup_1.tag == i_load.tag &&
                o_wakeup_1.value == i_load.value));
-      assert (!(o_wakeup_0.valid && o_wakeup_1.valid && o_wakeup_0.tag == o_wakeup_1.tag));
+      if (FORMAL_STANDALONE_ENV || !$initstate)
+        assert (!(o_wakeup_0.valid && o_wakeup_1.valid && o_wakeup_0.tag == o_wakeup_1.tag));
     end
     if (i_enable && i_load.valid && !i_load.exception &&
         (!i_registered_0.valid || !i_registered_1.valid))

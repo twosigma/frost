@@ -56,8 +56,8 @@ module tomasulo_wrapper #(
     parameter int unsigned MMIO_ADDR = 32'h4000_0000,
     parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
-    parameter bit EARLY_LOAD_WAKEUP = 1'b0,
-    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
+    parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
     // 0 leaves out the 64 back-end profiling counters: o_perf_counter_data
     // reads zero and the event sources stay unread (synthesis removes what
@@ -2839,7 +2839,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
 
   // ---------------------------------------------------------------------------
-  // INT_RS (depth 8): Integer ALU ops, branches, CSR
+  // INT_RS (INT_RS_DEPTH entries, default 16): Integer ALU ops, branches, CSR
   // ---------------------------------------------------------------------------
   // INT_RS dispatch with routed valid
   riscv_pkg::rs_dispatch_t                                        int_rs_dispatch;
@@ -2938,7 +2938,7 @@ module tomasulo_wrapper #(
       // tags use the existing speculative indexed writes, differ only for
       // non-targeting slots, and equal the architectural tags for every valid
       // entry.
-      .ISSUE2_WINDOW(riscv_pkg::IntRsDepth),
+      .ISSUE2_WINDOW(riscv_pkg::IntRsIssue2Window),
       .ISSUE_CDB_TAG_SHADOW(1'b1),
       .ISSUE_CDB_META_ANCHORS(1'b1),
       .CAPTURE_PRIMARY_EFFECTIVE_OPERANDS(1'b1),
@@ -3162,7 +3162,7 @@ module tomasulo_wrapper #(
     cdb_bus_mem_qualified.valid
   };
   // Bypass the merger structurally when disabled, including unspecified
-  // invalid payloads, so the default builds synthesize the original wires.
+  // invalid payloads, so disabled component configurations retain the wires.
   assign mem_rs_cdb_0 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_0 : cdb_bus_mem_qualified;
   assign mem_rs_cdb_1 = EARLY_LOAD_WAKEUP ? mem_rs_wakeup_1 : cdb_bus_2_mem_qualified;
   // TIMING: the early token is formed from registered state only. It is
@@ -5117,6 +5117,8 @@ module tomasulo_wrapper #(
   // ===========================================================================
 `ifdef FORMAL
 
+  // The integrated wakeup merger's reachable-tag contract starts after this
+  // initial reset edge; its combinational identities also hold before reset.
   initial assume (!i_rst_n);
 
   // The wrapper formal target covers translation-inactive bypass paths.

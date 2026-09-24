@@ -4727,7 +4727,7 @@ async def test_amo_compute_survives_younger_partial_flush(dut: Any) -> None:
     await accept_fu_complete(dut_if)
 
 
-@cocotb.test(skip=os.environ.get("FROST_TEST_PREPARE_LOAD_WHILE_BUSY") != "1")
+@cocotb.test(skip=os.environ.get("FROST_TEST_PREPARE_LOAD_WHILE_BUSY", "1") != "1")
 async def test_busy_port_prepares_load_without_probe_or_launch(dut: Any) -> None:
     """Port ownership blocks scans and reads but permits inert staging."""
     dut_if, model = await setup(dut)

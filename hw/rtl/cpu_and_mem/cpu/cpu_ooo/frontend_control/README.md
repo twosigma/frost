@@ -1,12 +1,11 @@
 # Frontend validity and decoded bundles
 
 `frontend_validity_tracker` tracks the IF/PD/ID image and prediction fences.
-With `cpu_ooo.DECODED_QUEUE_DEPTH=0` (the default), its dispatch-valid outputs
-retain the direct frontend's serialization and replay behavior.
-
-A nonzero power-of-two depth of at least two enables `decoded_bundle_queue`.
-The measured configuration uses four **two-instruction bundles**. The queue
-passes an empty input through without adding latency. Registered full state
+The CPU defaults to `DECODED_QUEUE_DEPTH=4`: four **two-instruction bundles**
+in `decoded_bundle_queue`, shared by board builds and whole-core tests.
+The reusable module also supports nonzero power-of-two depths of at least two;
+depth zero selects the direct frontend's serialization and replay behavior.
+The queue passes an empty input through without adding latency. Registered full state
 stalls frontend replacement independently of backend resource stalls; a full
 queue does not accept a new bundle on its first pop cycle. A consumed-image
 bit prevents an ID register held by an unrelated frontend stall from being

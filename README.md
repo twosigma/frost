@@ -3,8 +3,11 @@
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
 FROST is an out-of-order 64-bit RISC-V (RV64GCB) processor written in
-SystemVerilog for FPGAs. It runs Debian 13 Linux and FreeRTOS on the Alveo X3,
-with 10 Gigabit Ethernet and 1 GiB of DDR4 memory.
+SystemVerilog for FPGAs. It runs Debian 13 and FreeRTOS on the Alveo X3522PV,
+with 10 Gigabit Ethernet and 1 GiB of DDR4. A prior X3 configuration
+measured 1018 CoreMark at 300 MHz (3.39 CoreMark/MHz).
+The current CPU defaults and their validation are recorded
+in the [performance report](docs/single_core_performance.md).
 
 ## Why FROST?
 
@@ -266,6 +269,8 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 <!-- FPGA_UTILIZATION_START -->
 
 ### FPGA Resource Utilization
+
+Historical measurement using the former CPU defaults; refresh with a new build.
 
 **Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; final report)
 

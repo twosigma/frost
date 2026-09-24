@@ -41,7 +41,7 @@ module load_queue #(
     parameter bit PREISSUE_CANDIDATES = 1'b0,
     parameter int unsigned PREISSUE_SEL_WIDTH = 2,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
-    parameter bit PREPARE_LOAD_WHILE_BUSY = 1'b0,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
     // Cached memory tier (high-address region). A load whose address falls in
     // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is served by the multi-cycle

@@ -303,7 +303,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "reservation_station.sby",
         "Reservation station - dispatch, wakeup, issue, flush, at the module "
-        "defaults and in the shipped INT configuration",
+        "defaults and with INT features at eight-entry component capacity",
         tasks=("bmc", "cover", "bmc_tag_indexed", "cover_tag_indexed"),
     ),
     FormalTarget(
@@ -333,8 +333,8 @@ FORMAL_TARGETS = [
             "bmc",
             "cover",
             "prove_pre_match",
-            "bmc_prepare_busy",
-            "cover_prepare_busy",
+            "bmc_no_prepare_busy",
+            "cover_no_prepare_busy",
         ),
     ),
     FormalTarget(
@@ -500,10 +500,10 @@ SBY_TASKS = [
     ("prove", "Unbounded safety proof (ABC PDR or temporal induction)"),
     ("prove_depth2", "Two-entry decoded bundle queue ordering and ownership"),
     (
-        "bmc_prepare_busy",
-        "Load queue with side-effect-free preparation during port ownership",
+        "bmc_no_prepare_busy",
+        "Load queue component with busy-port preparation disabled",
     ),
-    ("cover_prepare_busy", "Load queue busy-port preparation reachability"),
+    ("cover_no_prepare_busy", "Load queue reachability without busy-port preparation"),
     ("prove_alignment", "Unbounded mixed-width tracker and physical FU alignment"),
     ("prove_fallback", "Unbounded full-width fallback ownership and credits"),
     ("prove_alignment_fallback", "Unbounded full-width fallback FU alignment"),
@@ -539,13 +539,16 @@ SBY_TASKS = [
         "fmul_repair_bmc",
         "Bounded model checking with production FMUL dispatch done repair enabled",
     ),
-    # The shipped INT reservation station: the ROB-tag-indexed branch payload
-    # (side RAM) and the rest of u_int_rs's overrides, dual issue included.
+    # INT reservation-station features at eight-entry component capacity;
+    # the wrapper target checks the production sixteen-entry station.
     (
         "bmc_tag_indexed",
-        "Bounded model checking in the shipped INT station configuration",
+        "Bounded model checking of INT station features at eight-entry capacity",
     ),
-    ("cover_tag_indexed", "Cover checking in the shipped INT station configuration"),
+    (
+        "cover_tag_indexed",
+        "Cover checking of INT station features at eight-entry capacity",
+    ),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
     ("bmc_256", "Bounded checking with a 256-entry L0 cache"),
     ("cover_256", "Cover checking with a 256-entry L0 cache"),

@@ -1,4 +1,4 @@
-# Single-core performance experiments
+# Single-core performance
 
 The roadmap target remains **open**: 4 CoreMark/MHz at 322.265625 MHz,
 routed timing met, with official-length performance and validation runs.
@@ -7,14 +7,26 @@ Their synthetic timer frequency does not make them official scores, even when th
 upstream report prints ten seconds and valid CRCs. The rated README result
 has not been replaced.
 
-The integrated experimental profile achieves **3.9071 CoreMark/MHz** in a
+The architecture now used by default achieved **3.9071 CoreMark/MHz** in a
 17.47-second X3 run at **161.1328125 MHz** (629.57 CoreMark). Both seed sets
 pass CRC validation, and Debian hardware regression passes on that measured
 revision. A later fetch-mux optimization had an implicit-net wiring error
-under Vivado. The corrected RTL now independently achieves **+0.002 ns
-post-optimization WNS** at the target rate and passes all **45 hardware
-regression stages at 161.1328125 MHz**. The sustained benchmark result above
+under Vivado. Before the default promotion, the corrected RTL independently
+achieved **+0.002 ns post-optimization WNS** at the target rate and passed all
+**45 hardware regression stages at 161.1328125 MHz**. The sustained benchmark result above
 remains specific to its measured revision and compiler configuration.
+
+Board builds, Verilator program tests and Yosys synthesis now share one CPU
+configuration: early load wakeup and busy-port load preparation enabled, four
+decoded bundles, and sixteen INT reservation-station entries. The second INT
+issue port still scans eight entries. The former `--single-core-performance`
+flag and board generic have been removed. Clock selection and profiling
+counters remain independent options. Component parameters remain available for
+focused module verification; no separate CPU profile is selected for CI.
+
+The tables and experiment narratives below retain their original configurations
+and source revisions. References to the former defaults or experimental profiles
+are historical measurements, not additional supported build profiles.
 
 ## Implementation
 
@@ -33,18 +45,18 @@ remains specific to its measured revision and compiler configuration.
   dispatch during recovery), and the merge relies on an asserted tag-uniqueness
   contract instead of a lane-tag comparison. See the
   [wrapper README](../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/README.md).
-  This option defaults to **0**.
-* `DECODED_QUEUE_DEPTH=4` adds an optional fall-through queue of decoded
+  This option defaults to **1**.
+* `DECODED_QUEUE_DEPTH=4` provides the default fall-through queue of decoded
   two-instruction bundles. It decouples frontend replacement from dispatch,
   retains prediction metadata, re-reads operands/RAT state at dispatch, and
   preserves CSR/debug/recovery ownership. Dispatch reads a flop mirror of the
   head bundle, and a registered shadow of the instruction words and shallow
-  routing flags, never the queue LUTRAM. The default is **0**. See the
+  routing flags, never the queue LUTRAM. The default is **4**. See the
   [frontend contract](../hw/rtl/cpu_and_mem/cpu/cpu_ooo/frontend_control/README.md).
 * `PREPARE_LOAD_WHILE_BUSY=1` permits inert address staging while another
   client owns the shared port. SQ probes, L0 consumption and memory requests
-  still obey the bus-busy gate. It defaults to **0**.
-* `INT_RS_DEPTH` defaults to **8**. Sixteen entries help the queued frontend;
+  still obey the bus-busy gate. It defaults to **1**.
+* `INT_RS_DEPTH` defaults to **16**. Sixteen entries help the queued frontend;
   thirty-two add negligible benefit. The parameter is bounded by the existing
   32-entry ROB and changes neither memory capacity nor retirement observation.
   The second INT issue port selects only among the lowest eight entries at any
@@ -57,9 +69,8 @@ remains specific to its measured revision and compiler configuration.
 * X3 builds accept `--cpu-base-clock-hz 322265625`, including the MMCM,
   software timebase, block-design clock metadata and timing-gate period check.
   The default remains 300 MHz. Experimental clocks cannot update the rated
-  utilization table. `--single-core-performance` independently selects queue
-  depth four, INT RS sixteen, busy-port preparation and early wakeup at synthesis.
-  The experimental profile also cannot update the rated table.
+  utilization table. CPU architecture comes from the shared defaults above;
+  selecting a clock does not select a different CPU profile.
 
 No benchmark PCs, instruction sequences or data patterns are recognized by
 these hardware changes. No fusion or retirement-count transformation is used.
@@ -72,9 +83,10 @@ Simulation and formal checks use the repository's `frost` Docker image:
 The image supplies Verilator 5.052, cocotb 2.1.0 and Bootlin GCC 15.3.0
 (2026.08-1). Vivado 2025.2 runs natively.
 
-Unless specified otherwise: BRAM code/data, L0 depth 128, INT RS depth 8,
-profiling counters absent, C disabled, PGO disabled, stack workspace, default
-CoreMark compiler tuning, and the first run after simulator startup.
+For the historical sweeps below, unless specified otherwise: BRAM code/data,
+L0 depth 128, INT RS depth 8, profiling counters absent, C disabled, PGO disabled,
+stack workspace, default CoreMark compiler tuning, and the first run after
+simulator startup.
 Compare matching reset/run indices: several predictors and memories retain
 state across the second reset. Throughput in these tables is `1,000,000/ticks`.
 
@@ -91,9 +103,9 @@ state across the second reset. Throughput in these tables is `1,000,000/ticks`.
 | Combined changes, PGO, `-mtune=generic-ooo` | 275,302 | 3.6324 |
 
 The combined hardware experiment improves throughput by 3.66% over the
-original baseline; the defaults improve it by 1.98%. The combined experiment's
-early-wakeup option is not the shipped default. PGO
-uses the existing official training dataset and is a separate software
+original baseline; the then-default changes improve it by 1.98%. Early wakeup
+was optional at that revision; it is now enabled by default. PGO uses the
+existing official training dataset and is a separate software
 configuration; its gain is not attributed solely to RTL.
 
 The generic-OOO compiler experiment also passes the validation seed set
@@ -112,7 +124,7 @@ run; ten iterations still fall far short of an official ten-second run.
 
 | Configuration | BRAM performance | BRAM validation | DDR performance | DDR validation |
 | --- | ---: | ---: | ---: | ---: |
-| Hardware defaults | 289,913 | 291,583 | 401,343 | 402,394 |
+| Former hardware defaults | 289,913 | 291,583 | 401,343 | 402,394 |
 | Combined hardware, opt-in PGO, default tuning | 277,736 | 282,982 | 349,294 | 353,808 |
 
 These are first-reset timed cycles with identical required seed/CRC checks.
@@ -242,26 +254,20 @@ test runner's reset/image-loading contract; the manifest records this explicitly
 ```sh
 python3 scripts/coremark_sweep.py --output /absolute/new/evidence-directory \
   --orders 4 --compressed 0 1 --memory bram ddr \
-  --seeds performance validation --runs 2 \
-  --verilator-arg=-GEARLY_LOAD_WAKEUP=1
+  --seeds performance validation --runs 2
 
 # PGO is a separately disclosed configuration.
 python3 scripts/coremark_sweep.py --output /absolute/new/pgo-directory \
-  --orders 1 --compressed 0 --memory bram ddr --runs 2 --pgo 1 \
-  --verilator-arg=-GEARLY_LOAD_WAKEUP=1
+  --orders 1 --compressed 0 --memory bram ddr --runs 2 --pgo 1
 
-# Full experimental hardware profile; disclose PGO/compiler tuning separately.
+# Default CPU with the retained PGO/compiler tuning, disclosed separately.
 python3 scripts/coremark_sweep.py --output /absolute/new/queued-directory \
   --orders 1 --compressed 0 --memory bram ddr --runs 2 --pgo 1 \
-  --verilator-arg=-GEARLY_LOAD_WAKEUP=1 \
-  --verilator-arg=-GPREPARE_LOAD_WHILE_BUSY=1 \
-  --verilator-arg=-GDECODED_QUEUE_DEPTH=4 \
-  --verilator-arg=-GINT_RS_DEPTH=16 \
   --tune-flags='--param max-inline-insns-auto=200 -fira-algorithm=CB -fstrict-aliasing -fselective-scheduling -fbranch-probabilities -fprofile-correction -Wno-missing-profile -mtune=generic-ooo'
 
 # Native Vivado experiment; inspect the final routed report.
 python3 fpga/build/build.py x3 --cpu-base-clock-hz 322265625 \
-  --single-core-performance --build-dir /absolute/new/fpga-build --stop-after route
+  --build-dir /absolute/new/fpga-build --stop-after route
 ```
 
 The local evidence archive for this session is
@@ -271,6 +277,29 @@ kept outside Git. Each experiment retains its own source snapshot because
 timing and simulation runs overlap in isolated worktrees.
 
 ## Verification and remaining gates
+
+The shared-default promotion passes 697 fast Python tests and lint, all seven
+CI Yosys synthesis checks, and eighteen focused formal tasks. Thirteen clean
+cocotb configurations pass 386 cases with one expected disabled-preparation
+skip: LQ and wrapper enabled/disabled paths, split-RS boundaries, load wakeup,
+traps, atomics, BRAM/DDR hello_world, DDR execution, ITLB and a full debug session.
+These checks use the pinned `frost` Docker image. The frozen-main PGO sweep,
+with no CPU parameter overrides, retains **257,702 performance / 262,144
+validation cycles** and all required CRCs. The local evidence is retained in
+`postopt_evidence/default-cpu/` beside the checkout.
+
+Enabling early wakeup in the default wrapper formal target exposed arbitrary
+staging/CDB tags before its initial reset edge. Integrated tag-uniqueness
+assertions now start after that edge; standalone combinational checks remain
+unchanged, and no assumptions or synthesized logic were added. Positive and
+negative checks confirm that legal tags pass and duplicate tags after reset
+still fail. The wrapper tasks retain their documented bounded proof depths;
+they do not establish unbounded whole-core correctness.
+
+The fresh native default build reproduces +0.002 ns post-opt WNS at
+322.265625 MHz. This promotion did not rerun the full GitHub matrix or program
+a new board image; the 161 MHz hardware results below belong to the preceding
+corrected-profile image. The earlier experiments retain their original scope:
 
 The new MUL/DIV formal target proves completion ownership and credits with
 shallow SMT induction, and physical-pipeline alignment with PDR. Neither task
@@ -303,7 +332,7 @@ result target now depends on cleanup, and the Python runner requires a fresh
 XML report containing tests. A separate parallel OpenSBI build race is fixed
 by grouping the image packer's output targets. Both fixes have regression
 tests. All affected program cases were rerun after a clean and audited against actual
-simulator reports: both hardware defaults and the early-wakeup configuration
+simulator reports: both former hardware defaults and the early-wakeup configuration
 pass all 83 BRAM cases and all 72 applicable DDR cases (11 expected skips).
 `verification/program-matrix-coverage.json` maps each passing case to retained
 logs. The original pytest totals alone are not regression evidence. Individually
@@ -323,8 +352,8 @@ CPU assertions pass all 83 BRAM and 72 applicable DDR program cases, with
 11 expected DDR skips. The extracted profile's per-case log references are in
 `verification/integrated-program-matrix-coverage.json`. The two queue unit
 configurations and busy-port LQ configuration complete coverage of all 100
-currently registered unit configurations. The defaults also pass all 14
-external ISA/benchmark/torture jobs
+unit configurations registered at that revision. The former defaults also pass
+all 14 external ISA/benchmark/torture jobs
 (1,044 passing cases and seven expected skips). The integrated profile also
 passes all 1,044 external cases with the same seven skips, and all eighteen
 CoreMark-PRO workload/memory pairs. Its final serial DDR architecture job was
@@ -349,9 +378,9 @@ signoff. More physical optimization did not close these configurations.
 
 | Configuration / checkpoint | CPU MHz | Routed WNS (ns) |
 | --- | ---: | ---: |
-| Hardware defaults, best placed checkpoint | 300 | -0.239 |
+| Former hardware defaults, best placed checkpoint | 300 | -0.239 |
 | Above, post-route physical optimization | 300 | -0.221 |
-| Hardware defaults, post-placement physical optimization snapshot | 300 | -0.716 |
+| Former hardware defaults, post-placement physical optimization snapshot | 300 | -0.716 |
 | Original revision, matched placement/direct-route control | 300 | -0.304 |
 | Early wakeup, short word paths, LQ tag/valid retiming, best placed checkpoint | 322.265625 | -0.615 |
 | Above, post-placement physical optimization snapshot | 322.265625 | -0.962 |
@@ -382,14 +411,15 @@ integrated, and placement is not routed signoff.
 ### Post-optimization timing at 322 MHz
 
 Synthesis plus `opt_design` only (`build.py x3 --cpu-base-clock-hz 322265625
---single-core-performance --no-perf-counters --stop-after opt`), Vivado 2025.2, zero added
+--no-perf-counters --stop-after opt` with the current defaults; the original
+measurements selected the former performance flag), Vivado 2025.2, zero added
 uncertainty. Post-opt delays are estimates, and unchanged paths move by up to
 about 0.15 ns between netlists, so compare path families, not single runs.
 
 | Configuration | WNS (ns) | TNS (ns) | Failing endpoints |
 | --- | ---: | ---: | ---: |
-| Hardware defaults, 300 MHz | +0.070 | 0 | 0 |
-| Hardware defaults, 322 MHz | -0.173 | -88 | 1,021 |
+| Former hardware defaults, 300 MHz | +0.070 | 0 | 0 |
+| Former hardware defaults, 322 MHz | -0.173 | -88 | 1,021 |
 | Integrated profile as first integrated | -1.395 | -1,301 | 7,238 |
 | Registered-only early wakeup, queue head mirror | -0.569 | -609 | 4,446 |
 | Plus registered instruction-word shadow | -0.444 | -130 | 1,503 |
@@ -400,6 +430,7 @@ about 0.15 ns between netlists, so compare path families, not single runs.
 | Plus fetch, retirement and queue-state cofactors below (invalidated) | -0.049 | -0.049 | 1 |
 | Plus final DMMU MMIO capture cofactor (invalidated) | +0.002 | 0.000 | 0 |
 | Corrected fetch-LUT control declaration | **+0.002** | **0.000** | **0** |
+| Same architecture promoted to the shared defaults, no profile flag | **+0.002** | **0.000** | **0** |
 
 The three invalidated checkpoints had an undriven control input in the
 generated fetch-PC LUTs. Vivado created local implicit nets because the
@@ -413,6 +444,11 @@ control inputs have the intended nonconstant driver. Fresh synthesis and
 optimization reproduce +0.002 ns WNS with zero failing setup endpoints;
 this remains a setup estimate with only 2 ps margin, not routed closure at
 322.265625 MHz.
+
+A fresh build using the shared defaults reproduces the same post-opt result.
+Its synthesis primitive counts match the corrected profile build, and all 64
+fetch-control inputs retain nonconstant drivers. The default-promotion build
+stops after optimization; it does not establish placed or routed timing.
 
 The corrected source preserves **257,702 performance / 262,144 validation
 cycles** in the frozen-checkout PGO sweep, with all CRCs passing. The
@@ -437,7 +473,7 @@ unchanged. This implementation adjustment is specific to the tested
 bitstream; the RTL fix alone does not guarantee routed timing for a new
 build. The 322.265625 MHz result above remains post-opt setup timing only.
 
-The -0.266 ns row added changes that also help the hardware defaults:
+The -0.266 ns row added changes that also help the former hardware defaults:
 
 * The IMEM predecode sideband carries each halfword's RVC-expanded
   instruction bits [24:20] (28-bit sideband). IF selects them beside

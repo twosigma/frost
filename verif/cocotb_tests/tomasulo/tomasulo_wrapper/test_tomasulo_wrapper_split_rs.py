@@ -14,7 +14,8 @@
 
 """Tomasulo wrapper tests for cpu_ooo's split-RS dispatch parameterization.
 
-Includes directed coverage of the production INT_RS depth-8 fill boundary,
+Includes directed coverage of the production INT_RS depth-16 fill boundary and
+eight-entry second-issue window,
 primary-issue effective operand capture through both issue-only CDB metadata
 anchors, SQ-local CDB-lane repair timing, FP pending-repair recovery hold, and
 both effective ALU CDB packets for test-injection, live-adapter, and
@@ -309,15 +310,18 @@ async def test_split_rs_slot2_same_family_allocates_second_entry(dut: Any) -> No
 
 
 @cocotb.test()
-async def test_split_rs_int_depth8_accepts_pair_at_count6(dut: Any) -> None:
-    """A split INT pair occupies and issues from depth-8 entries 6 and 7."""
-    cocotb.log.info("=== Test: Split INT_RS Depth-8 Pair Boundary ===")
+@cocotb.parametrize(filler_count=[6, 14])
+async def test_split_rs_int_pair_at_issue_window_and_capacity(
+    dut: Any, filler_count: int
+) -> None:
+    """Pairs retain exact payloads inside the issue window and at full capacity."""
     dut_if = await setup_test(dut)
+    depth = 16
+    in_second_issue_window = filler_count == 6
 
-    # Park six unready entries so the boundary pair must allocate the two
-    # highest logical entries.  Keep their wait tag distinct from the pair's
-    # result tags so issuing the pair cannot wake any filler.
-    for entry in range(6):
+    # Park unready entries below the boundary pair. Their wait tag must stay
+    # distinct from both result tags, so neither completed ADD wakes a filler.
+    for entry in range(filler_count):
         dut_if.drive_split_rs_dispatch(
             RS_INT,
             rob_tag=entry,
@@ -330,87 +334,80 @@ async def test_split_rs_int_depth8_accepts_pair_at_count6(dut: Any) -> None:
         )
         await step_and_clear_dispatch(dut_if)
 
-    assert_rs_counts(dut_if, {RS_INT: 6})
-    assert not dut_if.rs_full_for(RS_INT), "INT_RS must not be full at count 6"
-    assert not bool(dut.o_int_rs_full_for_2.value), (
-        "INT_RS must admit a two-slot bundle at count 6"
-    )
-
-    boundary_payloads = (
-        {
-            "rob_tag": 6,
-            "op": 0,
-            "src1_ready": True,
-            "src1_value": 0x1020_3040,
-            "src2_ready": True,
-            "src2_value": 0x0102_0304,
-            "src3_ready": True,
-        },
-        {
-            "rob_tag": 7,
-            "op": 0,
-            "src1_ready": True,
-            "src1_value": 0x5060_7080,
-            "src2_ready": True,
-            "src2_value": 0x0506_0708,
-            "src3_ready": True,
-        },
-    )
-    dut_if.drive_split_rs_dispatch(RS_INT, **boundary_payloads[0])
-    dut_if.drive_split_rs_dispatch_2(RS_INT, **boundary_payloads[1])
+    assert_rs_counts(dut_if, {RS_INT: filler_count})
+    assert not dut_if.rs_full_for(RS_INT)
+    assert not bool(dut.o_int_rs_full_for_2.value)
+    operands = ((0x1020_3040, 0x0102_0304), (0x5060_7080, 0x0506_0708))
+    expected = {}
+    for slot, (src1, src2) in enumerate(operands):
+        tag = filler_count + slot
+        expected[tag] = (
+            FU_ALU2 if slot == 1 and in_second_issue_window else FU_ALU,
+            (src1 + src2) & MASK_XLEN,
+        )
+        drive = (
+            dut_if.drive_split_rs_dispatch
+            if slot == 0
+            else dut_if.drive_split_rs_dispatch_2
+        )
+        drive(
+            RS_INT,
+            rob_tag=tag,
+            op=0,
+            src1_ready=True,
+            src1_value=src1,
+            src2_ready=True,
+            src2_value=src2,
+            src3_ready=True,
+        )
     await step_and_clear_dispatch(dut_if)
 
-    assert_rs_counts(dut_if, {RS_INT: 8})
-    assert dut_if.rs_full_for(RS_INT), "INT_RS must be full at count 8"
-    assert bool(dut.o_int_rs_full_for_2.value), (
-        "A full INT_RS must also assert full_for_2"
-    )
-
-    # With both ALU pipes held, neither high-index payload may disappear.
+    count = filler_count + 2
+    assert_rs_counts(dut_if, {RS_INT: count})
+    assert dut_if.rs_full_for(RS_INT) == (count == depth)
+    assert bool(dut.o_int_rs_full_for_2.value) == (count >= depth - 1)
     await dut_if.step()
-    assert_rs_counts(dut_if, {RS_INT: 8})
-    assert dut_if.rs_full_for(RS_INT)
+    assert_rs_counts(dut_if, {RS_INT: count})
 
-    # Release both pipes.  Port 0 must expose entry 6 with its exact payload;
-    # the two ALU CDB packets then prove that both entries retained distinct
-    # tags and operands through the production depth-8 selector/RAM topology.
+    # Entries 6/7 may issue together; entries 14/15 must use port 0 in
+    # successive cycles. This catches accidentally growing ISSUE2_WINDOW
+    # together with the reservation station's capacity.
     dut_if.set_fu_ready(RS_INT, True)
     await dut_if.step()
     issue = dut_if.read_rs_issue_for(RS_INT)
-    assert issue["valid"], "Boundary pair did not issue after releasing INT ALUs"
-    assert issue["rob_tag"] == boundary_payloads[0]["rob_tag"]
-    assert issue["op"] == boundary_payloads[0]["op"]
-    assert issue["src1_value"] == boundary_payloads[0]["src1_value"]
-    assert issue["src2_value"] == boundary_payloads[0]["src2_value"]
-    assert_rs_counts(dut_if, {RS_INT: 6})
-    assert not dut_if.rs_full_for(RS_INT)
-    assert not bool(dut.o_int_rs_full_for_2.value)
+    assert issue["valid"]
+    assert issue["rob_tag"] == filler_count
+    assert issue["src1_value"] == operands[0][0]
+    assert issue["src2_value"] == operands[0][1]
+    issue_2 = dut_if.read_int_rs_issue_2()
+    assert bool(issue_2["valid"]) == in_second_issue_window
+    if in_second_issue_window:
+        assert issue_2["rob_tag"] == filler_count + 1
+    assert_rs_counts(dut_if, {RS_INT: filler_count + int(not in_second_issue_window)})
 
-    lane, lane1 = await wait_for_alu2_cdb(dut_if)
-    assert lane == 1, "Simultaneous ALU result must outrank ALU2"
-    lane0 = read_cdb_lanes(dut)[0]
-    assert_cdb_packet(
-        lane0,
-        fu_type=FU_ALU,
-        tag=boundary_payloads[0]["rob_tag"],
-        value=(boundary_payloads[0]["src1_value"] + boundary_payloads[0]["src2_value"])
-        & MASK_XLEN,
-    )
-    assert_cdb_packet(
-        lane1,
-        fu_type=FU_ALU2,
-        tag=boundary_payloads[1]["rob_tag"],
-        value=(boundary_payloads[1]["src1_value"] + boundary_payloads[1]["src2_value"])
-        & MASK_XLEN,
-    )
+    seen = set()
+    for _ in range(10):
+        for packet in read_cdb_lanes(dut):
+            if not packet.valid:
+                continue
+            assert packet.tag in expected
+            assert packet.tag not in seen, "Boundary ADD completed more than once"
+            fu_type, value = expected[packet.tag]
+            assert_cdb_packet(packet, fu_type=fu_type, tag=packet.tag, value=value)
+            seen.add(packet.tag)
+        if len(seen) == 2:
+            break
+        await dut_if.step()
+    assert seen == set(expected), "Both boundary ADDs must complete"
+    assert_rs_counts(dut_if, {RS_INT: filler_count})
 
-    # Count 7 is a separate status contract: one free slot remains, but a
-    # two-slot bundle cannot fit.
+    # Refill one slot with an unready instruction. Only count 15 must reject
+    # another pair while continuing to admit a single instruction.
     await dut_if.step()
     dut_if.set_fu_ready(RS_INT, False)
     dut_if.drive_split_rs_dispatch(
         RS_INT,
-        rob_tag=8,
+        rob_tag=filler_count + 2,
         op=0,
         src1_ready=False,
         src1_tag=0x1F,
@@ -418,13 +415,9 @@ async def test_split_rs_int_depth8_accepts_pair_at_count6(dut: Any) -> None:
         src3_ready=True,
     )
     await step_and_clear_dispatch(dut_if)
-    assert_rs_counts(dut_if, {RS_INT: 7})
-    assert not dut_if.rs_full_for(RS_INT), "Count 7 must leave one INT_RS slot"
-    assert bool(dut.o_int_rs_full_for_2.value), (
-        "Count 7 must advertise that a two-slot INT bundle cannot fit"
-    )
-
-    cocotb.log.info("=== Test Passed ===")
+    assert_rs_counts(dut_if, {RS_INT: filler_count + 1})
+    assert not dut_if.rs_full_for(RS_INT)
+    assert bool(dut.o_int_rs_full_for_2.value) == (filler_count + 1 == depth - 1)
 
 
 @cocotb.test()
