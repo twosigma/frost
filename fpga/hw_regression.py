@@ -83,7 +83,9 @@ from sweep_coremark_pro import (  # noqa: E402
 )
 
 # ``None`` leaves a score unarmed.
-# Rated-clock X3 measurements.
+# Minimum accepted scores for the standard software builds.
+# Retain the established floors when raising the CPU clock; memory-sensitive
+# CoreMark-PRO throughput does not scale linearly with CPU frequency.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 1017.61, "coremark_pro": 142.68},
 }
@@ -362,7 +364,7 @@ def check_score(
     if board_clock_freq(board)[1]:
         return True, (
             f"{key} score {measured:.2f} at the {CPU_CLK_ENV} clock override; "
-            "baseline check skipped (scores are recorded at the rated clock)"
+            "baseline check skipped for a divided-clock image"
         )
     baseline = BASELINE_SCORES.get(board, {}).get(key)
     if baseline is None:

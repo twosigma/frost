@@ -26,7 +26,7 @@
   Verilator use the portable implementations.
 */
 module frost #(
-    parameter int unsigned CLK_FREQ_HZ = 300000000,
+    parameter int unsigned CLK_FREQ_HZ = 322265625,
     // Low-memory size; override in simulation with Verilator -G.
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 18,
     // Simulation mtime multiplier; use 1 for synthesis.
@@ -83,7 +83,7 @@ module frost #(
     // Triage pacing (see cpu_and_mem): silicon-scale defaults; sim runs
     // override these to fit the cycle budget.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
-    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd300_000_000,
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
     // Profiling counters (the mperf* CSRs; about 24k cells at post-opt: 3.8k
     // LUTs, 18.3k flops, 2.1k CARRY8): 0 = absent, the
     // production build; 1 for analysis builds (build.py --perf-counters) and

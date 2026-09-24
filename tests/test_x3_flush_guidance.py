@@ -129,7 +129,7 @@ proc sim::consumer {pin} {
 }
 """
 FLUSH = r"""
-namespace eval sim {variable netprops {}; variable clock_name clock_from_mmcm; variable period 3.333}
+namespace eval sim {variable netprops {}; variable clock_name clock_from_mmcm; variable period 3.10272}
 rename get_property sim::base_get_property
 proc get_property {key objects} {
     if {$objects eq "clock_from_mmcm" || $objects eq "wrong_clock"} {
@@ -234,7 +234,7 @@ if {[dict get $result sinks] != 4 || $::sim::edits != 2} {error "Verify changed 
         "dict set ::sim::netprops $net MAX_FANOUT_MODE SLR",
         "dict set ::sim::netprops $net FORCE_MAX_FANOUT 32",
         "set ::sim::clock_name wrong_clock",
-        "set ::sim::period 6.666",
+        "set ::sim::period 3.333",
     ],
 )
 def test_invalid_preflight_has_no_writes(tmp_path: Path, change: str) -> None:
@@ -245,6 +245,18 @@ def test_invalid_preflight_has_no_writes(tmp_path: Path, change: str) -> None:
         + r"""
 if {![catch {::frost_x3_flush_guidance::prepare $audit} message] || $::sim::edits != 0} {error "Preflight did not reject before writes"}
 """,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("divider", (1, 2, 3, 4))
+def test_flush_guidance_accepts_actual_cpu_clock(tmp_path: Path, divider: int) -> None:
+    """Guidance follows the CPU divider while rejecting old-clock evidence."""
+    result = run_flush(
+        tmp_path,
+        f"set ::env(FROST_CPU_CLK_DIV) {divider}\n"
+        f"set ::sim::period [expr {{3.333 * 8 * 4 * {divider} / 34.375}}]\n"
+        "::frost_x3_flush_guidance::prepare $audit\n",
     )
     assert result.returncode == 0, result.stderr
 

@@ -103,7 +103,7 @@ BOARD_CONFIG = {
     # ``has_ddr``: the bitstream provides the JTAG DDR-load master (hw_axi_2)
     # and the cached DDR region. The flag exists so a future BRAM-only board can
     # be added without loading a DDR image.
-    "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": True},
+    "x3": {"clock_freq": 322265625, "coremark_iterations": 14000, "has_ddr": True},
 }
 
 # A functional-validation bitstream (build.py --cpu-clock-div) runs the CPU

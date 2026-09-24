@@ -48,8 +48,8 @@
  * before asserting WVALID, since a slave is allowed to wait for WVALID before
  * asserting AWREADY, and the two together would deadlock. The n-th data burst
  * still belongs to the n-th address, which is what the single id and the
- * in-order counters give. At 256 bits and 300 MHz a gibibyte takes about
- * 110 ms, once, before the first instruction.
+ * in-order counters give. At 256 bits and 322.265625 MHz a gibibyte takes about
+ * 0.1 seconds, once, before the first instruction.
  *
  * A write that is refused never counts as one that happened. The memory
  * controller's own B channel reports OKAY unconditionally, but it is not the

@@ -50,7 +50,7 @@ def _write_place_gate(work_dir: Path, wns: float = -0.1, *, bind: bool = False) 
     passed = wns >= -0.2
     (work_dir / "post_place_gate.txt").write_text(
         f"STATUS={'PASS' if passed else 'FAIL'}\n"
-        "THRESHOLD_NS=-0.200\nCPU_PERIOD_NS=3.333\n"
+        "THRESHOLD_NS=-0.200\nCPU_PERIOD_NS=3.103\n"
         "USER_SETUP_UNCERTAINTY_NS=0.000\n"
         f"STRICT_BELOW_GATE_PATHS={0 if passed else 1}\n"
         f"WORST_SLACK_NS={wns}\n"
@@ -102,7 +102,7 @@ def _write_stage_utilization(work_dir: Path, stage: str, luts: int) -> None:
         "WNS(ns) TNS(ns) Failing Total WHS THS Failing Total\n"
         "------- -------\n"
         "-0.100 -1.000 1 10 0.010 0.000 0 10\n"
-        "clock_from_mmcm {0.000 1.667} 3.333 300.000\n"
+        "clock_from_mmcm {0.000 1.667} 3.103 322.266\n"
     )
 
 
@@ -143,7 +143,7 @@ def test_readme_stage_override_ignores_stale_later_reports(
         util["luts_used"]
         == {None: 999, "post_opt": 40, "post_place": 42}[override_stage]
     )
-    assert util["clock_freq_mhz"] == 300.0
+    assert util["clock_freq_mhz"] == 322.266
     assert util["timing_met"] is False
     if override_stage == "post_place":
         provenance = (
@@ -231,7 +231,7 @@ def test_build_main_refreshes_actual_completed_report_stage(
         json.dumps(
             {
                 "schema": "x3_netlist_config_v3",
-                "cpu_base_clock_hz": 300000000,
+                "cpu_base_clock_hz": 322265625,
                 "cpu_clock_div": 1,
             }
         )
@@ -296,7 +296,7 @@ Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
     monkeypatch.setattr(
         timing_util_summary,
         "extract_utilization",
-        lambda _report: {"clock_freq_mhz": 300.0},
+        lambda _report: {"clock_freq_mhz": 322.266},
     )
 
     utilization = timing_util_summary.collect_all_board_utilization(tmp_path)
@@ -305,7 +305,7 @@ Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
 
     section = timing_util_summary.format_readme_utilization_section(utilization)
     assert (
-        "**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; "
+        "**Alveo X3522PV** (Virtex UltraScale+ @ 322 MHz; "
         "`ExtraNetDelay_high`/0.500 post-place report)" in section
     )
 
@@ -363,7 +363,7 @@ def test_hello_world_compile_clears_retired_init_images(
 
     monkeypatch.setattr(fpga_build.subprocess, "run", fake_run)
 
-    assert fpga_build.compile_hello_world(tmp_path, output_dir, 300_000_000)
+    assert fpga_build.compile_hello_world(tmp_path, output_dir, 322_265_625)
     scalar_replicas = fpga_build.IMEM_SCALAR_REPLICA_NAMES
     assert scalar_replicas == (
         "is_compressed_lo",
@@ -1415,7 +1415,7 @@ def test_x3_fetch_cluster_pblock_stays_retired() -> None:
 
 
 def test_x3_nic_fences_are_soft_and_cover_the_nic() -> None:
-    """The NIC fences bias placement only and hold every 300 MHz NIC block."""
+    """The NIC fences bias placement only and hold every 322 MHz NIC block."""
     xdc = (REPO_ROOT / "boards/x3/constr/x3.xdc").read_text()
     for pblock, region in (
         ("frost_nic_core", "CLOCKREGION_X1Y4:CLOCKREGION_X1Y4"),
@@ -1620,10 +1620,10 @@ def test_route_directives_override_the_x3_router_sweep() -> None:
 def test_functional_build_policy_leaves_full_rate_builds_alone() -> None:
     """A divider of 1 returns the caller's settings and the README refresh."""
     policy = fpga_build.resolve_functional_build_policy(
-        1, 300_000_000, ["ExtraNetDelay_high"], 6, False, ["Explore"], False
+        1, 322_265_625, ["ExtraNetDelay_high"], 6, False, ["Explore"], False
     )
     assert policy.cpu_clock_div == 1
-    assert policy.clock_freq == 300_000_000
+    assert policy.clock_freq == 322_265_625
     assert policy.place_directives == ["ExtraNetDelay_high"]
     assert policy.place_uncertainty_count == 6
     assert policy.include_extra_seeds
@@ -1633,17 +1633,17 @@ def test_functional_build_policy_leaves_full_rate_builds_alone() -> None:
 
 
 def test_functional_build_policy_collapses_the_sweeps_at_half_clock() -> None:
-    """--cpu-clock-div 2 builds for 150 MHz with single RuntimeOptimized runs."""
+    """--cpu-clock-div 2 builds for 161 MHz with single RuntimeOptimized runs."""
     policy = fpga_build.resolve_functional_build_policy(
         2,
-        300_000_000,
+        322_265_625,
         fpga_build.X3_PLACER_SWEEP_DIRECTIVES,
         fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT,
         False,
         fpga_build.ROUTER_SWEEP_DIRECTIVES,
         False,
     )
-    assert policy.clock_freq == 150_000_000
+    assert policy.clock_freq == 161_132_812
     assert policy.place_directives == ["RuntimeOptimized"]
     assert policy.place_uncertainty_count == 1
     assert not policy.include_extra_seeds
@@ -1655,7 +1655,7 @@ def test_functional_build_policy_collapses_the_sweeps_at_half_clock() -> None:
 def test_functional_build_policy_honors_explicit_sweep_overrides() -> None:
     """Explicit placer and router requests survive the divided-clock policy."""
     policy = fpga_build.resolve_functional_build_policy(
-        2, 300_000_000, ["ExtraTimingOpt"], 2, True, ["Explore", "Default"], True
+        2, 322_265_625, ["ExtraTimingOpt"], 2, True, ["Explore", "Default"], True
     )
     assert policy.place_directives == ["ExtraTimingOpt"]
     assert policy.place_uncertainty_count == 2
@@ -1663,7 +1663,7 @@ def test_functional_build_policy_honors_explicit_sweep_overrides() -> None:
     assert not policy.include_extra_seeds
     with pytest.raises(ValueError):
         fpga_build.resolve_functional_build_policy(
-            5, 300_000_000, ["ExtraTimingOpt"], 1, True, ["Explore"], True
+            5, 322_265_625, ["ExtraTimingOpt"], 1, True, ["Explore"], True
         )
 
 
@@ -1697,35 +1697,34 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
     ).read_text()
     assert "parameter int unsigned CPU_CLK_DIV = 1" in top
     assert "localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;" in top
-    assert "localparam int unsigned CpuClkHz = CPU_BASE_CLK_HZ / CPU_CLK_DIV;" in top
+    assert "localparam int unsigned CpuClkHz = 322_265_625 / CPU_CLK_DIV;" in top
     assert ".CLKOUT0_DIVIDE_F(CpuClkOutDivide)" in top
     assert ".CLK_FREQ_HZ(CpuClkHz)," in top
 
 
 @pytest.mark.parametrize("divider", (1, 2, 3, 4))
-def test_roadmap_clock_rejects_rated_clock_evidence(
+def test_x3_clock_rejects_old_clock_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, divider: int
 ) -> None:
-    """A target-clock build must never reuse a passing 300 MHz clock report."""
-    monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", "322265625")
+    """A 322 MHz build must never reuse a passing 300 MHz clock report."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", str(divider))
     _write_place_gate(tmp_path)
     gate = tmp_path / "post_place_gate.txt"
     text = gate.read_text()
     gate.write_text(
-        text.replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={3.333 * divider:.3f}")
+        text.replace("CPU_PERIOD_NS=3.103", f"CPU_PERIOD_NS={3.333 * divider:.3f}")
     )
     assert not fpga_build.x3_place_gate_passes(gate)
-    target_period = 3.333 * 300_000_000 * divider / 322_265_625
+    target_period = 3.333 * 8 * 4 * divider / 34.375
     gate.write_text(
-        text.replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={target_period:.3f}")
+        text.replace("CPU_PERIOD_NS=3.103", f"CPU_PERIOD_NS={target_period:.3f}")
     )
     assert fpga_build.x3_place_gate_passes(gate)
     policy = fpga_build.resolve_functional_build_policy(
         divider, 322_265_625, ["ExtraNetDelay_high"], 6, False, ["Explore"], False
     )
     assert policy.clock_freq == 322_265_625 // divider
-    assert not policy.update_readme
+    assert policy.update_readme is (divider == 1)
 
 
 def test_only_post_place_physopt_overconstrains_by_default() -> None:
@@ -1993,7 +1992,7 @@ def test_perf_counters_default_follows_the_clock_divider(
     """Counters are left out at full rate and included in divided-clock builds."""
     policy = fpga_build.resolve_functional_build_policy(
         divider,
-        300_000_000,
+        322_265_625,
         ["RuntimeOptimized"],
         1,
         False,
@@ -2022,7 +2021,7 @@ def test_perf_counters_cli_default_overrides_stale_environment(
     with pytest.raises(SystemExit) as stopped:
         fpga_build.main()
     assert stopped.value.code == 1
-    assert observed == [(300_000_000, "0")]
+    assert observed == [(322_265_625, "0")]
 
 
 def test_read_log_tail_streams_appended_text_and_survives_truncation(
@@ -2214,6 +2213,15 @@ def _sweep_input(script_dir: Path, step: str) -> Path:
     work_dir = script_dir / "x3/work"
     work_dir.mkdir(parents=True)
     (work_dir / fpga_build.STEP_REQUIRES_CHECKPOINT[step]).write_text("input\n")
+    (work_dir / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(
+        json.dumps(
+            {
+                "schema": "x3_netlist_config_v3",
+                "cpu_base_clock_hz": 322265625,
+                "cpu_clock_div": 1,
+            }
+        )
+    )
     if fpga_build.STEPS.index(step) > fpga_build.STEPS.index("place"):
         (work_dir / "post_place.dcp").write_text("qualified placement\n")
         _write_place_gate(work_dir, bind=True)
@@ -2541,9 +2549,9 @@ def test_native_gate_decides_rounded_boundary(tmp_path: Path, passed: bool) -> N
         ("STATUS=PASS", "STATUS=FAIL"),
         ("STATUS=PASS", "STATUS=UNKNOWN"),
         ("THRESHOLD_NS=-0.200", "THRESHOLD_NS=-0.201"),
-        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=6.666"),
-        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=3.334"),
-        ("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=NaN"),
+        ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=6.205"),
+        ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=3.104"),
+        ("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=NaN"),
         ("USER_SETUP_UNCERTAINTY_NS=0.000", "USER_SETUP_UNCERTAINTY_NS=0.500"),
         ("STRICT_BELOW_GATE_PATHS=0", "STRICT_BELOW_GATE_PATHS=2"),
         ("WORST_SLACK_NS=-0.1", "WORST_SLACK_NS=-0.201"),
@@ -2571,12 +2579,12 @@ def test_native_gate_rejects_invalid_or_wrong_clock_evidence(
 @pytest.mark.parametrize(
     "divider,period,valid",
     (
-        (2, "6.666", True),
-        (2, "6.667", True),
-        (2, "6.668", False),
-        (3, "9.999", True),
-        (4, "13.332", True),
-        (4, "13.334", False),
+        (2, "6.205", True),
+        (2, "6.206", True),
+        (2, "6.207", False),
+        (3, "9.308", True),
+        (4, "12.411", True),
+        (4, "12.413", False),
     ),
 )
 def test_gate_checks_actual_divided_cpu_period(
@@ -2591,7 +2599,7 @@ def test_gate_checks_actual_divided_cpu_period(
     _write_place_gate(tmp_path)
     gate = tmp_path / "post_place_gate.txt"
     gate.write_text(
-        gate.read_text().replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={period}")
+        gate.read_text().replace("CPU_PERIOD_NS=3.103", f"CPU_PERIOD_NS={period}")
     )
     assert fpga_build.x3_place_gate_passes(gate) is valid
 
@@ -2798,14 +2806,19 @@ def test_quick_route_rejects_stale_placement_binding(
     assert candidates[0].quick_route_returncode == -1
 
 
-def test_default_cpu_cli_overrides_stale_environment_before_software_build(
+@pytest.mark.parametrize("divider", (1, 2, 3, 4))
+def test_cpu_cli_controls_clock_before_software_build(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    divider: int,
 ) -> None:
-    """CLI default full rate controls software and synthesis despite inherited env."""
+    """Default and divided clocks reach software and RTL despite inherited env."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "2")
     monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
-    monkeypatch.setattr(sys, "argv", ["build.py", "x3", "--stop-after", "place"])
+    arguments = ["build.py", "x3", "--stop-after", "place"]
+    if divider != 1:
+        arguments += ["--cpu-clock-div", str(divider)]
+    monkeypatch.setattr(sys, "argv", arguments)
     observed = []
 
     def compile_firmware(_root: Path, _output: Path, clock: int) -> bool:
@@ -2816,7 +2829,36 @@ def test_default_cpu_cli_overrides_stale_environment_before_software_build(
     with pytest.raises(SystemExit) as stopped:
         fpga_build.main()
     assert stopped.value.code == 1
-    assert observed == [(300_000_000, "1")]
+    assert observed == [(322_265_625 // divider, str(divider))]
+
+
+@pytest.mark.parametrize("source", ("flag", "environment"))
+def test_retired_cpu_base_clock_selector_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    source: str,
+) -> None:
+    """Reject old base-clock selection before software builds or native tools."""
+    arguments = ["build.py", "x3"]
+    if source == "flag":
+        arguments += ["--cpu-base-clock-hz", "300000000"]
+    else:
+        monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", "300000000")
+    monkeypatch.setattr(sys, "argv", arguments)
+    monkeypatch.setattr(
+        fpga_build,
+        "compile_hello_world",
+        lambda *_: pytest.fail("retired clock selector launched a build"),
+    )
+    with pytest.raises(SystemExit) as stopped:
+        fpga_build.main()
+    assert stopped.value.code == 2
+    message = capsys.readouterr().err
+    assert (
+        "--cpu-base-clock-hz" in message
+        if source == "flag"
+        else "no longer supported" in message
+    )
 
 
 def test_place_gate_cannot_qualify_a_fallback_checkpoint(tmp_path: Path) -> None:
@@ -2949,19 +2991,19 @@ def test_new_300mhz_gate_cannot_authorize_retained_150mhz_physopt(
     work = tmp_path / "x3/work"
     work.mkdir(parents=True)
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "2")
-    (work / "post_place.dcp").write_bytes(b"150 MHz placement")
+    (work / "post_place.dcp").write_bytes(b"161 MHz placement")
     _write_place_gate(work)
     gate = work / "post_place_gate.txt"
     gate.write_text(
-        gate.read_text().replace("CPU_PERIOD_NS=3.333", "CPU_PERIOD_NS=6.666")
+        gate.read_text().replace("CPU_PERIOD_NS=3.103", "CPU_PERIOD_NS=6.205")
     )
     assert fpga_build.bind_x3_place_gate(work)
     child = _write_qualified_descendant(work, "post_place_physopt")
     report = work / "post_place_physopt_timing.rpt"
-    report.write_text("preserved 150 MHz report")
+    report.write_text("preserved 161 MHz report")
     old_child, old_report = child.read_bytes(), report.read_bytes()
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
-    (work / "post_place.dcp").write_bytes(b"new 300 MHz placement")
+    (work / "post_place.dcp").write_bytes(b"new 322 MHz placement")
     _write_place_gate(work, bind=True)
     assert fpga_build.require_x3_post_place_gate(work)
     monkeypatch.setattr(
@@ -3209,24 +3251,24 @@ def test_congestion_veto_decides_on_real_report_levels(
 @pytest.mark.parametrize(
     ("period", "valid"),
     (
-        ("3.333", True),
+        ("3.103", True),
         # A clock object carrying more precision than the report prints.
-        ("3.3334", True),
-        ("3.3326", True),
+        ("3.10272", True),
+        ("3.1027", True),
         # A different printed period is still wrong evidence.
-        ("3.334", False),
-        ("3.332", False),
+        ("3.104", False),
+        ("3.102", False),
     ),
 )
 def test_full_rate_gate_period_allows_only_display_rounding(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, period: str, valid: bool
 ) -> None:
-    """A 300 MHz build cannot fail on digits Vivado never printed."""
+    """A 322 MHz build cannot fail on digits Vivado never printed."""
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "1")
     _write_place_gate(tmp_path)
     gate = tmp_path / "post_place_gate.txt"
     gate.write_text(
-        gate.read_text().replace("CPU_PERIOD_NS=3.333", f"CPU_PERIOD_NS={period}")
+        gate.read_text().replace("CPU_PERIOD_NS=3.103", f"CPU_PERIOD_NS={period}")
     )
     assert fpga_build.x3_place_gate_passes(gate) is valid
 
@@ -3273,19 +3315,15 @@ def test_missing_lineage_sidecar_names_the_file_and_the_recovery(
 
 
 @pytest.mark.parametrize("perf_counters", ("0", "1"))
-@pytest.mark.parametrize(
-    "base_clock, divider", (("300000000", "1"), ("322265625", "2"))
-)
+@pytest.mark.parametrize("divider", ("1", "2"))
 def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     perf_counters: str,
-    base_clock: str,
     divider: str,
 ) -> None:
     """Synthesis options are recorded once with their checkpoint."""
     monkeypatch.setenv("FROST_PERF_COUNTERS", perf_counters)
-    monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", base_clock)
     monkeypatch.setenv("FROST_CPU_CLK_DIV", divider)
     source, dest = tmp_path / "source", tmp_path / "dest"
     source.mkdir()
@@ -3296,18 +3334,17 @@ def test_post_synth_promotion_stamps_the_netlist_perf_counters(
     assert json.loads(stamp.read_text()) == {
         "schema": "x3_netlist_config_v3",
         "perf_counters": int(perf_counters),
-        "cpu_base_clock_hz": int(base_clock),
+        "cpu_base_clock_hz": 322265625,
         "cpu_clock_div": int(divider),
     }
     # Later stages inherit the netlist, so they must not restamp it: a resumed
     # run's environment says nothing about the checkpoint it was handed.
     monkeypatch.setenv("FROST_PERF_COUNTERS", "1" if perf_counters == "0" else "0")
-    monkeypatch.setenv("FROST_CPU_BASE_CLK_HZ", "123")
     monkeypatch.setenv("FROST_CPU_CLK_DIV", "123")
     (source / "post_opt.dcp").write_bytes(b"optimized netlist")
     fpga_build.copy_results_to_main_work(source, dest, "post_opt.dcp", "post_opt")
     assert json.loads(stamp.read_text())["perf_counters"] == int(perf_counters)
-    assert json.loads(stamp.read_text())["cpu_base_clock_hz"] == int(base_clock)
+    assert json.loads(stamp.read_text())["cpu_base_clock_hz"] == 322265625
     assert json.loads(stamp.read_text())["cpu_clock_div"] == int(divider)
 
 
@@ -3350,7 +3387,10 @@ def _live_physopt_fixture(tmp_path: Path) -> tuple[Path, Path]:
         )
     )
     _write_stage_utilization(worker, "phys_opt", 42)
-    (source / fpga_build.X3_NETLIST_CONFIG_NAME).write_text('{"perf_counters": 0}\n')
+    stamp = source / fpga_build.X3_NETLIST_CONFIG_NAME
+    config = json.loads(stamp.read_text())
+    config["perf_counters"] = 0
+    stamp.write_text(json.dumps(config))
     return source, worker
 
 
@@ -3426,7 +3466,7 @@ def test_physopt_snapshot_rejects_unqualified_or_incomplete_input(
         _write_place_gate(source, bind=True)
     elif change == "wrong_clock":
         gate = source / "post_place_gate.txt"
-        gate.write_text(gate.read_text().replace("3.333", "6.666"))
+        gate.write_text(gate.read_text().replace("3.103", "6.205"))
     elif change in ("changed_checkpoint", "broken_zip"):
         (worker / "phys_opt.dcp").write_bytes(b"incomplete ZIP data")
         if change == "broken_zip":
@@ -3653,7 +3693,7 @@ def test_retired_performance_profile_flag_is_rejected(
         ({}, True),
         ({"schema": "x3_netlist_config_v2", "single_core_performance": 0}, False),
         ({"schema": "x3_netlist_config_v2", "single_core_performance": 1}, False),
-        ({"cpu_base_clock_hz": 322265625}, False),
+        ({"cpu_base_clock_hz": 300000000}, False),
         ({"cpu_clock_div": 2}, False),
         ({"schema": "x3_netlist_config_v1"}, False),
         (None, False),
@@ -3670,11 +3710,13 @@ def test_resumed_build_uses_recorded_configuration_for_readme(
     if overrides is not None:
         config = {
             "schema": "x3_netlist_config_v3",
-            "cpu_base_clock_hz": 300000000,
+            "cpu_base_clock_hz": 322265625,
             "cpu_clock_div": 1,
             **overrides,
         }
         (work / fpga_build.X3_NETLIST_CONFIG_NAME).write_text(json.dumps(config))
+    else:
+        (work / fpga_build.X3_NETLIST_CONFIG_NAME).unlink()
     monkeypatch.setattr(fpga_build, "__file__", str(tmp_path / "build.py"))
     monkeypatch.setattr(
         sys,
@@ -3700,5 +3742,13 @@ def test_resumed_build_uses_recorded_configuration_for_readme(
         "update_readme_utilization",
         lambda *_args: calls.append("publish"),
     )
-    fpga_build.main()
+    incompatible_clock = overrides is None or any(
+        key in overrides for key in ("cpu_base_clock_hz", "cpu_clock_div")
+    )
+    if incompatible_clock:
+        with pytest.raises(SystemExit) as stopped:
+            fpga_build.main()
+        assert stopped.value.code == 1
+    else:
+        fpga_build.main()
     assert bool(calls) is publish

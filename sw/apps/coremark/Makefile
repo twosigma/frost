@@ -88,10 +88,8 @@ else
 $(error COREMARK_PGO must be 0 or 1)
 endif
 
-# 11000 iterations is about ten seconds at the rated 300 MHz baseline.
-# Faster implementations need more iterations; use at least 14000 when
-# evaluating the 4 CoreMark/MHz, 322.265625 MHz target and check elapsed time.
-ITERATIONS ?= 11000
+# At 4 CoreMark/MHz and 322.265625 MHz, 14000 iterations exceeds ten seconds.
+ITERATIONS ?= 14000
 
 # CoreMark allocates its workspace on the stack. Both settings stay
 # overridable so a targeted reproducer run can place it elsewhere.

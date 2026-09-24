@@ -38,7 +38,7 @@ CLK_PERIOD_NS = 3
 UART_BAUD_RATE = 115200
 UART_DATA_BITS = 8
 CHECKPOINT_TRACE_WIDTH = 8
-UART_CLK_FREQ_HZ_DEFAULT = 300_000_000
+UART_CLK_FREQ_HZ_DEFAULT = 322_265_625
 UART_RX_DATA_MMIO_ADDR = 0x4000_0004
 UART_RX_STATUS_MMIO_ADDR = 0x4000_0024
 
@@ -163,8 +163,7 @@ async def generate_divided_clock(dut: Any) -> None:
 
 # The NIC's MAC clock period (frost.sv i_nic_tx_clk and i_nic_rx_clk): 1.75
 # core periods (5.25 ns against the 3 ns core clock), unrelated to the core
-# clock and near the ratio of the 10GBASE-R word clock (161.13 MHz) to the
-# rated 300 MHz core clock. The X3 build clocks the MAC from its transceiver.
+# clock. The X3 build clocks the MAC from its transceiver at 161.13 MHz.
 NIC_MAC_CLK_PERIOD_PS = 2 * int(CLK_PERIOD_NS * 875)
 
 

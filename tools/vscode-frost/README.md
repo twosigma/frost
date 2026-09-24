@@ -26,7 +26,9 @@ a halted CPU to see new output; **FROST: Show Output** displays diagnostics.
 ## Target settings
 
 Configure the FT4232H serial, exact Vivado target, application, placement,
-actual CPU clock in Hz, and CoreMark-PRO mode when applicable. The target path
+and CoreMark-PRO mode when applicable. The CPU clock defaults to 322.265625 MHz.
+For a `--cpu-clock-div 2` bitstream, set `frost.cpuClockHz` to `161132812`.
+The target path
 must be `127.0.0.1:3121/xilinx_tcf/Xilinx/<serial+channel>` as reported by Vivado;
 the FTDI serial alone is insufficient. Attach-only use can omit this path.
 Ports 3121 and 3333 must be free.
@@ -44,7 +46,7 @@ PATH. Supply executable paths without shell arguments; GDB defaults to
 | `frost.repoRoot` | Selected workspace folder by default |
 | `frost.elf` | Attach ELF; default resolves the app's registered build directory |
 | `frost.bitstream` | `.bit` file; empty opens a picker |
-| `frost.cpuClockHz` | Required actual bitstream clock; no assumed default |
+| `frost.cpuClockHz` | Default `322265625`; use `161132812` for half-rate builds |
 | `frost.loadTimeoutMs` | Plain-load timeout, default two hours for first Linux builds |
 | `frost.toolTimeoutMs` | Debug/program timeout |
 
@@ -56,7 +58,7 @@ loaded image; load-and-debug uses its own build. CoreMark-PRO aliases share
 
 | Command | Purpose |
 | --- | --- |
-| FROST: Configure Target | Save the cable, Vivado target, clock and application choices. |
+| FROST: Configure Target | Save the cable, Vivado target and application choices. |
 | FROST: Load Software | Choose any application accepted by the repository loader and run it using its normal build profile. |
 | FROST: Attach Debugger | Attach `cppdbg` to the already loaded application. |
 | FROST: Load Software and Debug | Choose and save a debug application, build/load it, then debug it. |

@@ -19,17 +19,14 @@
 // and the JTAG DDR loader), the NIC's GTY transceiver (x3_nic_gty) and the
 // common FROST subsystem.
 module x3_frost #(
-    // Two MMCM recipes: the rated clock and the single-core roadmap target.
-    // Software and block-design clocks must use the same selected rate.
-    parameter int unsigned CPU_BASE_CLK_HZ = 300_000_000,
     // CPU clock divider for functional-validation builds (build.py
     // --cpu-clock-div exports it as FROST_CPU_CLK_DIV and synthesis passes
-    // it as a generic): divides CPU_BASE_CLK_HZ. The 300 MHz reference,
+    // it as a generic): divides the 322.265625 MHz CPU clock. The 300 MHz reference,
     // the DDR4 controller and its clocking are unaffected.
     parameter int unsigned CPU_CLK_DIV = 1,
 
     // Profiling counters (build.py --perf-counters exports FROST_PERF_COUNTERS
-    // and synthesis passes it as a generic): 0 = absent, the 300 MHz production
+    // and synthesis passes it as a generic): 0 = absent, the full-rate production
     // build; 1 for analysis builds such as a divided-clock one.
     parameter int unsigned PERF_COUNTERS = 0
 ) (
@@ -71,16 +68,9 @@ module x3_frost #(
     output logic o_nic_txn
 );
 
-  // Clock generation using Xilinx MMCM and clock dividers. The selected VCO
-  // is divided by 4 x CPU_CLK_DIV for the CPU clock.
+  // Clock generation: 300 MHz / 8 * 34.375 / (4 * CPU_CLK_DIV).
   localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;
-  localparam int unsigned CpuClkHz = CPU_BASE_CLK_HZ / CPU_CLK_DIV;
-  localparam int CpuMmcmInputDivide = CPU_BASE_CLK_HZ == 322_265_625 ? 8 : 1;
-  localparam real CpuMmcmMultiply = CPU_BASE_CLK_HZ == 322_265_625 ? 34.375 : 4.0;
-  initial begin
-    if (CPU_BASE_CLK_HZ != 300_000_000 && CPU_BASE_CLK_HZ != 322_265_625)
-      $fatal(1, "Unsupported X3 CPU MMCM recipe");
-  end
+  localparam int unsigned CpuClkHz = 322_265_625 / CPU_CLK_DIV;
   logic main_clock, divided_clock_by_4;
   logic mmcm_locked;
   logic differential_clock_300mhz_buffered, clock_feedback, clock_from_mmcm;
@@ -93,16 +83,12 @@ module x3_frost #(
   );
 
   // Mixed-Mode Clock Manager (MMCM) for PLL-based clock generation.
-  // Rated clock: 300 MHz. The roadmap's 322.265625 MHz target uses:
-  //   .DIVCLK_DIVIDE   (8),       // Pre-divider: 300MHz / 8 = 37.5MHz
-  //   .CLKFBOUT_MULT_F (34.375),  // VCO: 37.5MHz × 34.375 = 1289.0625 MHz
-  //   .CLKOUT0_DIVIDE_F(4.0)      // Output: 1289.0625MHz / 4 = 322.265625 MHz
+  // VCO: 300 MHz / 8 * 34.375 = 1289.0625 MHz.
+  // CPU: 1289.0625 MHz / (4 * CPU_CLK_DIV).
   MMCME2_ADV #(
-      .CLKIN1_PERIOD   (3.333),               // Input period: 1/300MHz = 3.333ns
-      .DIVCLK_DIVIDE   (CpuMmcmInputDivide),
-      // VCO: 1200 MHz at the rated clock; 1289.0625 MHz at the target clock.
-      .CLKFBOUT_MULT_F (CpuMmcmMultiply),
-      // Output: selected base clock / CPU_CLK_DIV.
+      .CLKIN1_PERIOD   (3.333),           // Input period: 1/300MHz = 3.333ns
+      .DIVCLK_DIVIDE   (8),
+      .CLKFBOUT_MULT_F (34.375),
       .CLKOUT0_DIVIDE_F(CpuClkOutDivide)
   ) mixed_mode_clock_manager (
       .CLKIN1  (differential_clock_300mhz_buffered),
@@ -332,7 +318,7 @@ module x3_frost #(
   );
 
   // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU).
-  // Clock: CPU_BASE_CLK_HZ / CPU_CLK_DIV.
+  // Clock: 322.265625 MHz / CPU_CLK_DIV.
   // X3 has no push-button reset, so the subsystem stays in reset until the
   // MMCM locks, DDR4 calibrates, and ECC initialization completes. The
   // cached tier is ready for the first instruction.

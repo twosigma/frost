@@ -24,7 +24,7 @@ OBJDUMP := $(RISCV_PREFIX)objdump  # Disassembler
 SIZE    := $(RISCV_PREFIX)size     # Size analyzer
 
 # CPU clock used by software timing calculations; board flows override it.
-FPGA_CPU_CLK_FREQ ?= 300000000  # 300 MHz (default for X3)
+FPGA_CPU_CLK_FREQ ?= 322265625  # X3 CPU clock
 
 # Toolchain identification passed to programs that report their build (CoreMark
 # prints it as "Compiler version"). Left empty this reported nothing, and the

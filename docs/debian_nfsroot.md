@@ -6,8 +6,8 @@ the JTAG loader packs it with the kernel, OpenSBI, and device tree.
 See the [Linux boot contract](../linux/README.md).
 
 Examples use server `192.0.2.1`, board `192.0.2.2`, and export
-`/srv/nfs/debian`; substitute your own values. Set the software clock to match
-the bitstream; divided-clock builds take longer to boot.
+`/srv/nfs/debian`; substitute your own values. The loader defaults to the
+322.265625 MHz CPU clock. Divided-clock builds take longer to boot.
 
 ## Requirements
 
@@ -178,9 +178,8 @@ Build and program the bitstream, open the UART console, and load the tree's
 kernel and initramfs:
 
 ```bash
-./fpga/build/build.py x3 --cpu-base-clock-hz 322265625
+./fpga/build/build.py x3
 ./fpga/program_bitstream/program_bitstream.py x3
-export FROST_CPU_CLK_HZ=322265625
 K=6.12.107+deb13-riscv64   # step 3's K, the version in the tree's /boot
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
 FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
@@ -189,8 +188,8 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
   ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
-- Match `FROST_CPU_CLK_HZ` to the bitstream and use a unique `FROST_LINUX_MAC`
-  for each board.
+- For a half-rate bitstream, set `FROST_CPU_CLK_HZ=161132812`.
+- Use a unique `FROST_LINUX_MAC` for each board.
 - `FROST_LINUX_IP` uses the kernel `ip=` syntax; unset defaults to DHCP.
 - Kernel and initramfs paths must be absolute and readable on the loading host.
   Debian's `vmlinux-<version>` is an uncompressed RISC-V `Image`; no conversion

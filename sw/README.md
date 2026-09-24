@@ -32,7 +32,7 @@ Builds track compiler, flag, header, layout, and workload changes.
 | `OPT_LEVEL` | `-O3` | Optimization level |
 | `UNROLL_LOOPS` | `-funroll-loops` | Set empty to disable loop unrolling |
 | `MABI` | `lp64d` | ABI |
-| `FPGA_CPU_CLK_FREQ` | `300000000` | Actual CPU clock in Hz |
+| `FPGA_CPU_CLK_FREQ` | `322265625` | Actual CPU clock in Hz |
 | `FROST_DEBUG` | `0` | Set to 1 for `-Og -g3` and source debugging |
 | `FROST_DEBUG_FRAME_POINTER` | `1` | Frame pointers in debug C builds |
 | `EXTRA_CFLAGS` / `EXTRA_LDFLAGS` | empty | Additional compile/link flags |
@@ -57,8 +57,8 @@ Use `FROST_COCOTB_MEM_CONFIG=ddr` for simulation or the FPGA loader's `--ddr`
 option. Apps with dedicated linker scripts can retain fixed layouts.
 `LINKER_SCRIPT` overrides the common linker's selection.
 
-Board loaders set the software clock from `FROST_CPU_CLK_HZ` or the board
-default. Use `FROST_CPU_CLK_HZ=322265625` for X3, or `161132812` at half rate.
+Board loading defaults to 322.265625 MHz. For a half-rate image, use
+`FROST_CPU_CLK_HZ=161132812`.
 
 ### Build Outputs
 

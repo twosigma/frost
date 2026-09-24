@@ -44,10 +44,10 @@
 
 /* Polling budgets in loop iterations (an MMIO read each, tens of cycles):
  * sized so a failed wait reports inside the simulation's cycle budget while
- * leaving the hardware (300 MHz) milliseconds. A transceiver link
+ * leaving the hardware milliseconds. A transceiver link
  * (CLK_SHARED = 0) comes up through the transceiver's resets, CDR and block
  * lock in hundreds of milliseconds, so there the waits for READY and CARRIER
- * take WAIT_LINK_TRANSCEIVER instead: seconds at a 150 or 300 MHz CPU clock. */
+ * take WAIT_LINK_TRANSCEIVER instead: seconds at a 161 or 322 MHz CPU clock. */
 #define WAIT_READY 4000u
 #define WAIT_CARRIER 12000u
 #define WAIT_LINK_TRANSCEIVER 20000000u

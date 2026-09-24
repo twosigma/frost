@@ -17,7 +17,7 @@
 /*
  * FreeRTOS configuration for the FROST demo: a minimal kernel build for a
  * single RV64GCB hart (mhartid = 0) with M and U privilege modes, a
- * CLINT-style mtime/mtimecmp timer, and a 300 MHz clock.
+ * CLINT-style mtime/mtimecmp timer, and the software build's CPU clock.
  */
 
 #ifndef FREERTOS_CONFIG_H
@@ -36,8 +36,8 @@
 #define configUSE_TICK_HOOK 0
 
 /* CPU and tick rate */
-#define configCPU_CLOCK_HZ (300000000UL) /* FROST runs at 300 MHz */
-#define configTICK_RATE_HZ (1000)        /* 1ms tick */
+#define configCPU_CLOCK_HZ (FPGA_CPU_CLK_FREQ)
+#define configTICK_RATE_HZ (1000) /* 1ms tick */
 
 /* Memory allocation */
 #define configMINIMAL_STACK_SIZE (256) /* Idle task stack (words) */

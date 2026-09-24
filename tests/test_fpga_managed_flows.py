@@ -256,7 +256,7 @@ def test_clean_failure_does_not_build(
         raise subprocess.CalledProcessError(1, command)
 
     monkeypatch.setattr(loader.subprocess, "run", failed)
-    assert not loader.compile_app_for_board("hello_world", tmp_path, 150000000, 1)
+    assert not loader.compile_app_for_board("hello_world", tmp_path, 161132812, 1)
     assert calls == [["make", "clean"]]
 
 
@@ -296,7 +296,7 @@ def test_debug_profile_emits_dwarf_and_validates_settings(
             "GENERATE_IMEM_INIT=0",
             "FROST_DEBUG=1",
             f"MEM_CONFIG={mode}",
-            "FPGA_CPU_CLK_FREQ=150000000",
+            "FPGA_CPU_CLK_FREQ=161132812",
             "EXTRA_CFLAGS=-O3 -g0 -funroll-loops -fomit-frame-pointer",
             "APP_TUNE_FLAGS=-O3 -g0 -funroll-loops -fomit-frame-pointer",
         ],
@@ -307,7 +307,7 @@ def test_debug_profile_emits_dwarf_and_validates_settings(
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    descriptor = loader.validate_prebuilt_app(app_dir, 150000000, mode, True)
+    descriptor = loader.validate_prebuilt_app(app_dir, 161132812, mode, True)
     effective_memory = "ddr" if app in loader.FORCED_DDR_APPS else mode
     assert descriptor["effectiveMemory"] == effective_memory
     assert descriptor["startStrategy"] == (
@@ -315,17 +315,17 @@ def test_debug_profile_emits_dwarf_and_validates_settings(
     )
     assert descriptor["appDirectory"] == str(app_dir.resolve())
     mismatches = [
-        (300000000, mode, True),
-        (150000000, mode, False),
+        (322265625, mode, True),
+        (161132812, mode, False),
     ]
     if app not in loader.FORCED_DDR_APPS:
-        mismatches.append((150000000, "ddr" if mode == "bram" else "bram", True))
+        mismatches.append((161132812, "ddr" if mode == "bram" else "bram", True))
     for clock, memory, debug in mismatches:
         with pytest.raises(ValueError):
             loader.validate_prebuilt_app(app_dir, clock, memory, debug)
     (app_dir / "sw.txt").write_text("nothex!!\n")
     with pytest.raises(ValueError, match="invalid 32-bit"):
-        loader.validate_prebuilt_app(app_dir, 150000000, mode, True)
+        loader.validate_prebuilt_app(app_dir, 161132812, mode, True)
 
 
 def minimal_debug_elf(
@@ -410,7 +410,7 @@ def write_prebuilt(directory: Path, elf: bytes, **fields: str) -> None:
     config = {
         "MEM_CONFIG": "bram",
         "FROST_DEBUG": "1",
-        "FPGA_CPU_CLK_FREQ": "150000000",
+        "FPGA_CPU_CLK_FREQ": "161132812",
         **fields,
     }
     (directory / ".frost-build-config.bin").write_text(
@@ -435,7 +435,7 @@ def test_elf_determines_safe_startup(
     write_prebuilt(
         directory, minimal_debug_elf(main=main, writable_ddr=writable_ddr, entry=entry)
     )
-    descriptor = loader.validate_prebuilt_app(directory, 150000000, "bram", True)
+    descriptor = loader.validate_prebuilt_app(directory, 161132812, "bram", True)
     assert descriptor["startStrategy"] == strategy
     assert descriptor["elf"] == str(directory / "sw.elf")
     assert len(descriptor["buildConfigSha256"]) == 64
@@ -484,7 +484,7 @@ def test_coremark_pro_prebuilt_binds_alias_mode_and_diagnostics(tmp_path: Path) 
     write_prebuilt(directory, minimal_debug_elf(), **selected, **flags)
     descriptor = loader.validate_prebuilt_app(
         directory,
-        150000000,
+        161132812,
         "bram",
         True,
         app_name="coremark_pro_core",
@@ -503,7 +503,7 @@ def test_coremark_pro_prebuilt_binds_alias_mode_and_diagnostics(tmp_path: Path) 
             changed["FROST_MALLOC_DISABLE_FREE"] = "1"
         with pytest.raises(ValueError, match="workload options differ"):
             loader.validate_prebuilt_app(
-                directory, 150000000, "bram", True, app_name=app, make_vars=changed
+                directory, 161132812, "bram", True, app_name=app, make_vars=changed
             )
 
 
@@ -514,9 +514,9 @@ def test_config_hash_binds_build_before_cable(
     """The build-only descriptor binds the exact prebuilt configuration."""
     directory = tmp_path / "sw/apps/hello_world"
     write_prebuilt(directory, minimal_debug_elf())
-    descriptor = loader.validate_prebuilt_app(directory, 150000000, "bram", True)
+    descriptor = loader.validate_prebuilt_app(directory, 161132812, "bram", True)
     monkeypatch.setattr(loader, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setenv("FROST_CPU_CLK_HZ", "150000000")
+    monkeypatch.setenv("FROST_CPU_CLK_HZ", "161132812")
     monkeypatch.delenv("MEM_CONFIG", raising=False)
     monkeypatch.setattr(
         sys,

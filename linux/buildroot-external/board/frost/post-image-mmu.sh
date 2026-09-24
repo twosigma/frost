@@ -90,7 +90,7 @@ echo "  Image    = ${BINARIES_DIR}/Image-debian ($(python3 "${debian_kernel}" re
 echo "  initrd   = ${BINARIES_DIR}/rootfs-frost.cpio"
 echo "  cross    = ${cross_compile}"
 echo "  dtc      = ${dtc_path}"
-echo "  clock    = ${FPGA_CPU_CLK_FREQ:-300000000} Hz"
+echo "  clock    = ${FPGA_CPU_CLK_FREQ:-322265625} Hz"
 # The shim is plain rv64i code; leave -march/-mabi to the toolchain's defaults
 # so they match its multilib layout.
 FROST_SHIM_MARCH="" FROST_SHIM_MABI="" \
@@ -101,4 +101,4 @@ python3 "${BOARD_DIR}/frost_boot_image.py" \
     --out "${BINARIES_DIR}" \
     --cross "${cross_compile}" \
     --dtc "${dtc_path}" \
-    --clk "${FPGA_CPU_CLK_FREQ:-300000000}"
+    --clk "${FPGA_CPU_CLK_FREQ:-322265625}"

@@ -95,7 +95,16 @@ proc ::frost_x3_flush_guidance::signature {name} {
     }
     if {[get_property DIRECTION [pin "$name/Q"]] ne "OUT"} {error "Changed FDRE output direction"}
     set clk [one [get_clocks -quiet -of_objects [pin "$name/C"]] "flush CPU clock"]
-    if {[get_property NAME $clk] ne "clock_from_mmcm" || [get_property PERIOD $clk] != 3.333} {error "Expected 300 MHz CPU clock on flush FDRE"}
+    set divider 1
+    if {[info exists ::env(FROST_CPU_CLK_DIV)] && $::env(FROST_CPU_CLK_DIV) ne ""} {
+        set divider $::env(FROST_CPU_CLK_DIV)
+    }
+    if {$divider ni {1 2 3 4}} {error "Unsupported X3 CPU clock divider"}
+    set expected_period [expr {3.333 * 8 * 4 * $divider / 34.375}]
+    if {[get_property NAME $clk] ne "clock_from_mmcm" ||
+        abs([get_property PERIOD $clk] - $expected_period) > 0.0005} {
+        error "Expected X3 CPU clock on flush FDRE"
+    }
     dict set result clock [list [get_property NAME $clk] [get_property PERIOD $clk]]
     return $result
 }

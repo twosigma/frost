@@ -34,7 +34,7 @@ endif
 include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
 
 RISCV_PREFIX ?= riscv64-linux-
-FPGA_CPU_CLK_FREQ ?= 300000000
+FPGA_CPU_CLK_FREQ ?= 322265625
 AS      := $(RISCV_PREFIX)as
 LD      := $(RISCV_PREFIX)ld
 CC      := $(RISCV_PREFIX)gcc

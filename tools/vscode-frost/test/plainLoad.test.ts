@@ -16,17 +16,17 @@ const metadata: RepositoryMetadata = {
     appBuildDirectories: { hello_world: 'hello_world', linux_boot: 'linux_boot', uart_echo: 'uart_echo',
         coremark_pro_fixture: 'coremark_pro' },
 };
-const settings = { app: 'hello_world' as const, memory: 'bram' as const, cpuClockHz: 150000000 };
+const settings = { app: 'hello_world' as const, memory: 'bram' as const, cpuClockHz: 161132812 };
 const tools = { vivadoTarget: '127.0.0.1:3121/xilinx_tcf/Xilinx/test_target', vivadoPath: '/tools with spaces/vivado' };
 const record = (value: unknown) => `FROST_REPOSITORY_METADATA=${JSON.stringify(value)}\n`;
 
-function picker(answers: Array<string | undefined>, clock: string | null = '150000000'): PlainLoadUi {
+function picker(answers: Array<string | undefined>): PlainLoadUi {
     return {
         async showQuickPick<T extends vscode.QuickPickItem>(items: readonly T[]): Promise<T | undefined> {
             const answer = answers.shift();
             return items.find(item => (item as T & { value: string }).value === answer);
         },
-        async showInputBox() { return clock ?? undefined; },
+        async showInputBox() { return assert.fail('The saved CPU clock must not require another prompt'); },
     };
 }
 
@@ -57,7 +57,7 @@ test('malformed, ambiguous, oversized or inconsistent metadata fails closed', ()
 
 test('plain picker accepts non-debug apps and preserves selected DDR placement', async () => {
     const selection = await pickPlainLoad(settings, metadata, picker(['uart_echo', 'ddr']));
-    assert.deepEqual(selection, { app: 'uart_echo', memory: 'ddr', cpuClockHz: 150000000 });
+    assert.deepEqual(selection, { app: 'uart_echo', memory: 'ddr', cpuClockHz: 161132812 });
     const args = plainLoadArguments(tools, selection!);
     assert.deepEqual(args.slice(0, 4), ['fpga/load_software/load_software.py', 'x3', 'uart_echo', '--ddr']);
     assert.equal(args[args.indexOf('--target-exact') + 1], tools.vivadoTarget);
@@ -88,7 +88,6 @@ test('registered CoreMark-PRO aliases require and preserve explicit CLI run mode
 test('selection cancellation returns no load request', async () => {
     assert.equal(await pickPlainLoad(settings, metadata, picker([undefined])), undefined);
     assert.equal(await pickPlainLoad(settings, metadata, picker(['uart_echo', undefined])), undefined);
-    assert.equal(await pickPlainLoad(settings, metadata, picker(['uart_echo', 'bram'], null)), undefined);
     assert.equal(await pickPlainLoad(settings, metadata, picker(['coremark_pro_fixture', 'bram', undefined])), undefined);
 });
 
@@ -101,7 +100,7 @@ test('selection rejects apps outside the registry and nonpositive clocks', () =>
 
 test('debug selection uses repository eligibility and mapped aliases beyond the original two apps', async () => {
     const selected = await pickDebugTarget(settings, metadata, picker(['uart_echo', 'ddr']));
-    assert.deepEqual(selected, { app: 'uart_echo', memory: 'ddr', cpuClockHz: 150000000 });
+    assert.deepEqual(selected, { app: 'uart_echo', memory: 'ddr', cpuClockHz: 161132812 });
     validateDebugTarget(selected!, metadata);
     const alias = await pickDebugTarget(settings, metadata, picker(['coremark_pro_fixture', 'bram', 'validation']));
     assert.equal(alias?.app, 'coremark_pro_fixture');
@@ -122,7 +121,7 @@ test('debug picker displays every app with its unsupported reason and rejects it
         showInputBox: async () => assert.fail('An unsupported choice must not prompt for a clock'),
     };
     await assert.rejects(pickDebugTarget(settings, metadata, ui), /linux_boot.*Linux combines.*Load Software/);
-    assert.throws(() => validateDebugTarget({ app: 'linux_boot', memory: 'bram', cpuClockHz: 150000000 }, metadata),
+    assert.throws(() => validateDebugTarget({ app: 'linux_boot', memory: 'bram', cpuClockHz: 161132812 }, metadata),
         /Linux combines/);
 });
 
@@ -152,7 +151,7 @@ test('both pickers prefer the saved CoreMark-PRO run mode', async () => {
 });
 
 for (const pick of [pickPlainLoad, pickDebugTarget]) {
-    for (const pendingStep of [1, 2, 3, 4]) {
+    for (const pendingStep of [1, 2, 3]) {
     test(`cancellation closes ${pick.name} step ${pendingStep} before a delayed UI response`, { timeout: 1000 }, async () => {
         const abort = new AbortController();
         let calls = 0;
@@ -181,7 +180,7 @@ for (const pick of [pickPlainLoad, pickDebugTarget]) {
                     .includes((item as T & { value: string }).value))!;
                 return answer(selected, token);
             },
-            showInputBox: (_options, token) => answer('150000000', token),
+            showInputBox: async () => assert.fail('CPU clock is already configured'),
         };
         const picking = pick(settings, metadata, ui, abort.signal);
         await pending;

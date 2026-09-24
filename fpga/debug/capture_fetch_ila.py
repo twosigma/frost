@@ -31,7 +31,7 @@ that is already running.
     ./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4
     FROST_ILA_ARM_HOOK=fpga/build/x3/work/ila_arm_hook.tcl \\
         FROST_ILA_COLLECT_HOOK=fpga/build/x3/work/ila_collect_hook.tcl \\
-        FROST_CPU_CLK_HZ=150000000 FROST_LINUX_LANE=mmu \\
+        FROST_CPU_CLK_HZ=161132812 FROST_LINUX_LANE=mmu \\
         ./fpga/hw_regression.py --board x3 linux_boot
     ./fpga/debug/fetch_ila_report.py fpga/build/x3/work/fetch_ila.csv
 """

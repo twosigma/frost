@@ -810,11 +810,6 @@ if {$step eq "synth"} {
     # --cpu-clock-div exports FROST_CPU_CLK_DIV, and the board top takes it
     # as its CPU_CLK_DIV parameter (MMCM output divide, CLK_FREQ_HZ).
     set cpu_clk_div [getenv_default FROST_CPU_CLK_DIV 1]
-    set cpu_base_clk_hz [getenv_default FROST_CPU_BASE_CLK_HZ 300000000]
-    if {$cpu_base_clk_hz ni {300000000 322265625}} {
-        error "Unsupported X3 CPU base clock: $cpu_base_clk_hz"
-    }
-    lappend synth_args -generic CPU_BASE_CLK_HZ=$cpu_base_clk_hz
     if {$cpu_clk_div ne "1"} {
         lappend synth_args -generic CPU_CLK_DIV=$cpu_clk_div
         puts "CPU clock divider $cpu_clk_div (generic CPU_CLK_DIV)"
@@ -907,7 +902,7 @@ if {$step eq "synth"} {
         }
     }
 
-    # X3 needs setup overconstraint for 300 MHz. build.py varies it downward
+    # X3 uses setup overconstraint for placement. build.py varies it downward
     # from 0.500 ns in 0.050 ns steps as surrogate seeds and to ease packing.
     # Guidance seeds retain their 0.500 ns starting point. Published checkpoints
     # and scores use zero added uncertainty (X3_PLACE_REPORT_UNCERTAINTY_NS).

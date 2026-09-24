@@ -105,8 +105,8 @@ hi/lo/hi loop, and an 8-byte `mtimecmp` store lands atomically.
 `timebase-frequency` equals the CPU clock: `mtime` increments every core cycle
 with no divider (simulation builds may scale it via the `SIM_TIMER_SPEEDUP`
 parameter). The packer stamps it and the UART `clock-frequency` into the DTB
-from `FPGA_CPU_CLK_FREQ`. Set `FROST_CPU_CLK_HZ=322265625` when loading X3
-software to supply that clock to the packer.
+from `FPGA_CPU_CLK_FREQ`. The loader supplies 322.265625 MHz by default;
+`FROST_CPU_CLK_HZ` overrides it for divided-clock images.
 Because OpenSBI leaves `menvcfg.STCE=1`, the supervisor arms timers through
 Sstc (`stimecmp`) rather than an SBI timer call.
 

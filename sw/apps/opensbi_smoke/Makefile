@@ -28,7 +28,7 @@
 FROST_ROOT := $(abspath $(CURDIR)/../../..)
 BOARD_DIR  := $(FROST_ROOT)/linux/buildroot-external/board/frost
 RISCV_PREFIX ?= riscv64-linux-
-FPGA_CPU_CLK_FREQ ?= 300000000
+FPGA_CPU_CLK_FREQ ?= 322265625
 
 CC      := $(RISCV_PREFIX)gcc
 OBJCOPY := $(RISCV_PREFIX)objcopy

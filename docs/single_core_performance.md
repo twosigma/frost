@@ -1,7 +1,6 @@
 # Single-core performance
 
-FROST delivers **1,259 CoreMark at 322.265625 MHz** on X3 — **3.91 CoreMark/MHz**
-with profile-guided optimization (PGO).
+FROST delivers **1,259 CoreMark at 322.265625 MHz** on X3 — **3.91 CoreMark/MHz**.
 
 ## CPU configuration
 
@@ -26,7 +25,8 @@ selector and operand-mux depth independently of the sixteen-entry capacity.
 
 CoreMark uses BRAM code/data, stack workspace, uncompressed instructions and
 profiling counters disabled. The compiler is Bootlin GCC 15.3.0 (2026.08-1),
-with the RV64 hard-float ABI, official-dataset PGO and these tuning flags:
+with the RV64 hard-float ABI, profile-guided optimization (PGO) using the
+official training dataset, and these tuning flags:
 
 ```text
 --param max-inline-insns-auto=200 -fira-algorithm=CB -fstrict-aliasing -fselective-scheduling -fbranch-probabilities -fprofile-correction -Wno-missing-profile -mtune=generic-ooo
@@ -50,8 +50,7 @@ through the pinned image:
 
 Run both seed sets for at least ten seconds and check all seed/list/matrix/state
 CRCs. At 322.265625 MHz, use at least **14,000 iterations** and verify elapsed
-time. Set `FROST_CPU_CLK_HZ=322265625` when loading the image so its timebase
-matches the hardware.
+time. The loader sets the software timebase to the board clock.
 
 CoreMark/MHz is the score divided by the CPU clock in MHz. For a cycle-counted
 run, it is `1,000,000 × iterations / timed_cycles`. Compiler flags, PGO,
@@ -83,9 +82,9 @@ With the [regression environment](../fpga/README.md#hardware-regression)
 configured, build and exercise the FPGA natively:
 
 ```bash
-./fpga/build/build.py x3 --cpu-base-clock-hz 322265625 --no-perf-counters
+./fpga/build/build.py x3 --no-perf-counters
 ./fpga/program_bitstream/program_bitstream.py x3
-FROST_CPU_CLK_HZ=322265625 ./fpga/hw_regression.py --board x3
+./fpga/hw_regression.py --board x3
 ```
 
 The hardware regression uses its standard software builds. For a tuned PGO

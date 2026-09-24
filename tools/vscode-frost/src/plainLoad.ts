@@ -202,12 +202,6 @@ async function pickApplication(settings: PickerSettings, metadata: RepositoryMet
     memories.sort((a, b) => Number(b.value === settings.memory) - Number(a.value === settings.memory));
     const memory = await prompt(signal, token => ui.showQuickPick(memories, { title: 'FROST: Software placement', ignoreFocusOut: true }, token));
     if (!memory) return undefined;
-    const clock = await prompt(signal, token => ui.showInputBox({ title: 'FROST: CPU clock',
-        prompt: 'Actual CPU clock of the programmed bitstream, in Hz',
-        value: settings.cpuClockHz > 0 ? String(settings.cpuClockHz) : '', ignoreFocusOut: true,
-        validateInput: value => Number.isSafeInteger(Number(value)) && Number(value) > 0 ? undefined : 'Enter a positive integer clock in Hz.',
-    }, token));
-    if (clock === undefined) return undefined;
     let coremarkMode: PlainLoadSelection['coremarkMode'];
     if (metadata.coremarkProApps.includes(app.value)) {
         const modes = [
@@ -220,7 +214,7 @@ async function pickApplication(settings: PickerSettings, metadata: RepositoryMet
         if (!mode) return undefined;
         coremarkMode = mode.value;
     }
-    const result: PlainLoadSelection = { app: app.value, memory: memory.value, cpuClockHz: Number(clock),
+    const result: PlainLoadSelection = { app: app.value, memory: memory.value, cpuClockHz: settings.cpuClockHz,
         ...(coremarkMode ? { coremarkMode } : {}) };
     signal?.throwIfAborted();
     if (debug) validateDebugTarget(result, metadata);

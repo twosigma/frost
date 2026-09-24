@@ -85,7 +85,7 @@ endif
 
 # DTB timebase + UART clock. load_software.py exports this per board; the bare
 # `make` default matches X3.
-FPGA_CPU_CLK_FREQ ?= 300000000
+FPGA_CPU_CLK_FREQ ?= 322265625
 
 # Kernel, root filesystem and NIC address. Unset, Debian's kernel and the test
 # initramfs are packed with the packer's default bootargs.

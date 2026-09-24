@@ -67,7 +67,7 @@ static const uint8_t station[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
  * 0) comes up through the transceiver's resets, block lock and the link
  * partner's fault handshake in hundreds of milliseconds, so there the waits
  * for READY and CARRIER (an MMIO read each, tens of cycles) take
- * WAIT_LINK_TRANSCEIVER instead: seconds at a 150 or 300 MHz CPU clock.
+ * WAIT_LINK_TRANSCEIVER instead: seconds at a 161 or 322 MHz CPU clock.
  * WAIT_IDLE needs no more there: an echo's TX descriptor completes once the
  * frame has entered the NIC's TX FIFO, which the MAC drains while CARRIER
  * holds. */

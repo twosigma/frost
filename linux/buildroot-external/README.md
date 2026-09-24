@@ -74,12 +74,11 @@ The loader builds missing components and packs images for the board's clock
 and DDR size:
 
 ```bash
-export FROST_CPU_CLK_HZ=322265625
 ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
 It sets `FPGA_CPU_CLK_FREQ` and `FROST_LINUX_MEM_SIZE` (1 GiB on X3).
-A standalone build defaults to 300 MHz and 64 MiB:
+A standalone build defaults to 322.265625 MHz and 64 MiB:
 
 ```bash
 ./scripts/frost.py run make -C sw/apps/linux_boot

@@ -8,14 +8,12 @@ X3522PV at 322.265625 MHz.
 ## Quick Start
 
 ```bash
-./fpga/build/build.py x3 --cpu-base-clock-hz 322265625
+./fpga/build/build.py x3
 ./fpga/program_bitstream/program_bitstream.py x3
-export FROST_CPU_CLK_HZ=322265625
 ./fpga/load_software/load_software.py x3 coremark
 ```
 
-Set `FROST_CPU_CLK_HZ` in each shell used for loading or regression. The
-bitstream includes Hello World. Loading a new app rebuilds it by default
+The bitstream includes Hello World. Loading a new app rebuilds it by default
 and replaces BRAM/DDR contents without rebuilding the bitstream. Read the
 UART console at **115200 baud, 8N1**.
 
@@ -85,26 +83,21 @@ directory. `linux_boot` and `opensbi_smoke` are composite, load-only images.
 
 ## Functional-validation builds
 
-`--cpu-clock-div N` divides the selected CPU base rate and adjusts UART, timers, loader,
+`--cpu-clock-div N` divides the 322.265625 MHz CPU clock and adjusts UART, timers, loader,
 and initial software. DDR and Ethernet clocks remain unchanged. These builds
 use one `RuntimeOptimized` placement/route unless overridden and do not update
 the reference utilization table.
 
-Set `FROST_CPU_CLK_HZ` to the actual bitstream clock for subsequent loads and
-regressions; this also adjusts the Linux device tree and disables rated-clock
-benchmark score gates.
+Loading and regression default to 322.265625 MHz. For a divided-clock image,
+set `FROST_CPU_CLK_HZ` to its actual clock; this also adjusts the Linux device
+tree and disables full-rate benchmark score gates.
 
 ```bash
-./fpga/build/build.py x3 --cpu-base-clock-hz 322265625 --cpu-clock-div 2
+./fpga/build/build.py x3 --cpu-clock-div 2
 ./fpga/program_bitstream/program_bitstream.py x3
 FROST_CPU_CLK_HZ=161132812 ./fpga/load_software/load_software.py x3 hello_world
 FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 hello_world itlb_test
 ```
-
-Select a 322.265625 MHz base clock with `--cpu-base-clock-hz 322265625`
-(default: `300000000`). This sets the MMCM, block-design and initial software
-clocks. With `--cpu-clock-div 2`, use `FROST_CPU_CLK_HZ=161132812` for later
-loads and regression; without division, use `FROST_CPU_CLK_HZ=322265625`.
 
 Every build uses the same CPU defaults as CI: a four-bundle decoded queue,
 sixteen-entry INT RS, load preparation while the shared port is busy, and early
@@ -162,7 +155,7 @@ FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off
 ```
 
 ```bash
-FROST_CPU_CLK_HZ=322265625 ./fpga/hw_regression.py --board x3
+./fpga/hw_regression.py --board x3
 ```
 
 The runner needs local access to the export, write access to its
@@ -239,8 +232,9 @@ placement before resuming downstream stages. Missing or stale downstream
 lineage requires `--start-at post_place_physopt` from a qualified placement.
 `netlist_config.json` records profiling counters, the base clock and its divider
 at synthesis, and resumed builds preserve that record. Updating the reference
-utilization table requires schema `x3_netlist_config_v3`, a 300 MHz base clock
+utilization table requires schema `x3_netlist_config_v3`, the 322.265625 MHz base clock
 and no clock division. Synthesize again to update an older build's schema.
+Resuming requires clock metadata that matches the requested divider.
 
 Promoting a new post-opt checkpoint removes `audit_post_opt_*` and
 `post_opt_fence_*` reports from the work directory. Save any reports you need
@@ -281,7 +275,7 @@ signals, including the low 16 PC bits, and writes a probes file beside the
 bitstream. Combine it with `--cpu-clock-div 2` for a faster build.
 
 ```bash
-./fpga/build/build.py x3 --cpu-base-clock-hz 322265625 --cpu-clock-div 2 --debug-ila
+./fpga/build/build.py x3 --cpu-clock-div 2 --debug-ila
 ./fpga/program_bitstream/program_bitstream.py x3
 ./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4   # trigger: fetch-fault packet at that page offset
 FROST_ILA_ARM_HOOK=fpga/build/x3/work/ila_arm_hook.tcl \

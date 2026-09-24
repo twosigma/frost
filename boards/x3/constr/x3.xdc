@@ -316,7 +316,7 @@ set_property IOSTANDARD LVCMOS12           [get_ports "ddr4_sdram_c0_reset_n"]  
 # CDC structure: the SmartConnect clock converters, the JTAG-AXI engine's
 # gray-coded FIFOs (the debug hub homes onto the DDR4 MMCM's output), and the
 # mem_ok 2FF synchronizer below. Without this, Vivado expands the two
-# almost-equal ~300 MHz periods to phantom sub-100 ps requirements.
+# almost-equal CPU periods to phantom sub-100 ps requirements.
 set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks -of_objects [get_ports i_sysclk_p]]     -group [get_clocks -include_generated_clocks -of_objects [get_ports default_300mhz_clk0_clk_p]]
 
 # mem_ok (DDR4 calibration complete) crosses from the controller's ui_clk
@@ -412,9 +412,9 @@ set_max_delay -datapath_only 3.0 -from $nic_freerun_clk -to $nic_sync_d
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]
 
 # ---------------------------------------------------------------------------
-# NIC placement fences (x3 300 MHz timing).
+# NIC placement fences (X3 CPU timing).
 #
-# Left free, the placer spreads the NIC's 300 MHz logic (register block, DMA
+# Left free, the placer spreads the NIC's CPU-clock logic (register block, DMA
 # front-end, RX/TX engines and their byte packers) over four clock regions
 # of the CPU's core band, among the DDR interconnect, the L2, the L1D and the
 # fetch logic: the packer's issue cone then spans 2.5 ns of routing and the
@@ -422,12 +422,12 @@ set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"
 # are otherwise nearly empty. These are SOFT fences (no routing containment,
 # no exclusivity): they bias the initial placement and cannot make it
 # infeasible. Each region has 48 RAMB36 sites; the MAC's frame buffers use
-# 17.5 tiles. The 300 MHz NIC logic and the DMA test engine share one
+# 17.5 tiles. The CPU-clock NIC logic and the DMA test engine share one
 # region so the packers stay compact; the MAC (its transceiver clock domains
 # plus the packet FIFOs) takes the next one. The MAC fence stays beside the
 # NIC core rather than beside the transceiver (quad 231, CLOCKREGION_X4Y7):
 # u_mac also holds the packet FIFOs' core-clock halves and the event totals,
-# whose 300 MHz paths to the RX and TX engines would otherwise cross three
+# whose CPU-clock paths to the RX and TX engines would otherwise cross three
 # columns and three rows of clock regions, while the MAC's own path to the
 # transceiver is one register hop at 161 MHz (the wrapper's raw data
 # registers, which are free to sit beside the transceiver).

@@ -73,7 +73,7 @@ DEFAULT_MAX_JOBS = 12
 # router congestion warnings, so the routable netlist stays the default.
 BOARD_CONFIG = {
     "x3": {
-        "clock_freq": 300000000,
+        "clock_freq": 322265625,
         "is_ultrascale": True,
         "synth_directive": "AlternateRoutability",
     },
@@ -126,7 +126,7 @@ X3_PLACER_SWEEP_DIRECTIVES = [
     "AltSpreadLogic_medium",
 ]
 
-# X3 needs pre-place setup overconstraint for 300 MHz. With no Vivado seed knob,
+# X3 uses pre-place setup overconstraint. With no Vivado seed knob,
 # each 50 ps reduction creates another solution while easing the packing that
 # made the flat 0.5 ns flow unroutably dense. build_step.tcl reports at zero
 # added uncertainty after placement. Keep its seed-grid baseline separate
@@ -137,8 +137,11 @@ X3_POST_PLACE_GATE_NS = Decimal("-0.200")
 # Vivado reports slack and clock periods to three decimals, and the gate's
 # native queries carry more precision than the timing summary prints. Half a
 # printed digit accepts every value that displays as the expected one and
-# still rejects a different printed number (3.334 ns against 3.333 ns).
+# still rejects a different printed number (3.104 ns against 3.103 ns).
 X3_GATE_DISPLAY_TOLERANCE_NS = Decimal("0.0005")
+# XDC constrains the 300 MHz reference to 3.333 ns. Use that physical period
+# and the fixed MMCM recipe, including its rounding, for native timing evidence.
+X3_CPU_PERIOD_NS = Decimal("3.333") * 8 * 4 / Decimal("34.375")
 X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.050
 X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
@@ -340,7 +343,6 @@ def resolve_x3_route_sweep_directives(requested: list[str] | None) -> list[str]:
 X3_FUNCTIONAL_PLACE_DIRECTIVE = "RuntimeOptimized"
 X3_FUNCTIONAL_ROUTE_DIRECTIVE = "RuntimeOptimized"
 CPU_CLOCK_DIV_CHOICES = (1, 2, 3, 4)
-CPU_BASE_CLOCK_CHOICES = (300_000_000, 322_265_625)
 
 
 @dataclass(frozen=True)
@@ -372,7 +374,7 @@ def resolve_functional_build_policy(
     """Return the flow settings for ``--cpu-clock-div``.
 
     A divider of 1 keeps every setting as resolved by the caller. A larger
-    divider builds for the selected base clock divided by N: an explicit ``--directives`` or
+    divider builds for the board clock divided by N: an explicit ``--directives`` or
     ``--num-uncertainties`` keeps the requested placer grid, an explicit
     ``--route-directives`` keeps the requested router list, and everything
     else collapses to the single RuntimeOptimized runs a design with hundreds
@@ -394,7 +396,7 @@ def resolve_functional_build_policy(
             True,
             None,
             list(route_directives),
-            base_clock_freq == 300_000_000,
+            True,
             include_counters,
         )
     return FunctionalBuildPolicy(
@@ -930,17 +932,14 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
             )
         }
         divider = int(os.environ.get("FROST_CPU_CLK_DIV", "1"))
-        base_clock = int(os.environ.get("FROST_CPU_BASE_CLK_HZ", "300000000"))
     except (InvalidOperation, ValueError) as error:
         raise ValueError("invalid post-place gate number or CPU divider") from error
     if not all(value.is_finite() for value in numbers.values()):
         raise ValueError("nonfinite post-place gate number")
     if divider not in CPU_CLOCK_DIV_CHOICES:
         raise ValueError("unsupported CPU divider for post-place gate")
-    if base_clock not in CPU_BASE_CLOCK_CHOICES:
-        raise ValueError("unsupported CPU base clock for post-place gate")
     period = numbers["CPU_PERIOD_NS"]
-    expected_period = Decimal("3.333") * 300_000_000 * divider / base_clock
+    expected_period = X3_CPU_PERIOD_NS * divider
     # A divided clock's expectation is itself a product of the rounded base
     # period, so it keeps the documented one-picosecond display range.
     tolerance = X3_GATE_DISPLAY_TOLERANCE_NS if divider == 1 else Decimal("0.001")
@@ -1370,9 +1369,27 @@ def is_reference_x3_netlist(main_work: Path) -> bool:
     return (
         isinstance(config, dict)
         and config.get("schema") == "x3_netlist_config_v3"
-        and config.get("cpu_base_clock_hz") == 300_000_000
+        and config.get("cpu_base_clock_hz") == BOARD_CONFIG["x3"]["clock_freq"]
         and config.get("cpu_clock_div") == 1
     )
+
+
+def require_x3_netlist_clock(main_work: Path, cpu_clock_div: int) -> bool:
+    """Resume only a checkpoint built for the requested X3 clock divider."""
+    try:
+        config = json.loads((main_work / X3_NETLIST_CONFIG_NAME).read_text())
+        if not isinstance(config, dict) or (
+            config.get("cpu_base_clock_hz") != BOARD_CONFIG["x3"]["clock_freq"]
+            or config.get("cpu_clock_div") != cpu_clock_div
+        ):
+            raise ValueError("checkpoint clock differs from the requested X3 clock")
+    except (OSError, ValueError) as error:
+        print(
+            f"Error: cannot resume X3 clock configuration: {error}. "
+            "Use the checkpoint's --cpu-clock-div or restart synthesis."
+        )
+        return False
+    return True
 
 
 def copy_results_to_main_work(
@@ -1426,9 +1443,7 @@ def copy_results_to_main_work(
                 {
                     "schema": "x3_netlist_config_v3",
                     "perf_counters": perf_counters,
-                    "cpu_base_clock_hz": int(
-                        os.environ.get("FROST_CPU_BASE_CLK_HZ", "300000000")
-                    ),
+                    "cpu_base_clock_hz": BOARD_CONFIG["x3"]["clock_freq"],
                     "cpu_clock_div": int(os.environ.get("FROST_CPU_CLK_DIV", "1")),
                 },
                 indent=2,
@@ -2834,21 +2849,12 @@ Examples:
         "includes synthesis. Capture with fpga/debug/capture_fetch_ila.py.",
     )
     parser.add_argument(
-        "--cpu-base-clock-hz",
-        type=int,
-        choices=CPU_BASE_CLOCK_CHOICES,
-        default=300_000_000,
-        help="X3 MMCM base rate before --cpu-clock-div: rated 300000000 or "
-        "experimental roadmap target 322265625. Keeps software, block-design "
-        "clocks and timing evidence consistent; does not establish timing closure.",
-    )
-    parser.add_argument(
         "--cpu-clock-div",
         type=int,
         choices=CPU_CLOCK_DIV_CHOICES,
         default=1,
         metavar="N",
-        help="Functional-validation build at the selected base rate divided by N (x3): the board top's "
+        help="Functional-validation build at 322265625 Hz divided by N (x3): the board top's "
         "CPU_CLK_DIV generic divides the MMCM output, the DDR block design "
         "declares the divided clocks, and hello_world is compiled for it. "
         "Unless --directives/--num-uncertainties/--route-directives say "
@@ -2876,6 +2882,11 @@ Examples:
     )
     args = parser.parse_args()
 
+    if os.environ.get("FROST_CPU_BASE_CLK_HZ"):
+        parser.error(
+            "FROST_CPU_BASE_CLK_HZ is no longer supported; X3 uses 322265625 Hz. "
+            "Unset it and use --cpu-clock-div for a divided-clock build."
+        )
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     if args.snapshot_physopt_from is not None and (
@@ -2935,7 +2946,7 @@ Examples:
 
     # Resolve board-specific clock and implementation settings.
     board_config = BOARD_CONFIG[board_name]
-    clock_freq = args.cpu_base_clock_hz
+    clock_freq = board_config["clock_freq"]
     is_ultrascale = board_config["is_ultrascale"]
     route_sweep_directives = resolve_x3_route_sweep_directives(args.route_directives)
     if args.cpu_clock_div != 1 and board_name != "x3":
@@ -2968,9 +2979,8 @@ Examples:
         os.environ["FROST_DEBUG_ILA"] = "1"
     if board_name == "x3":
         # The CLI is authoritative even at divider 1; an inherited override
-        # must not silently change synthesis/BD clocks away from the selected rate.
+        # must not silently change synthesis/BD clocks away from the board rate.
         os.environ["FROST_CPU_CLK_DIV"] = str(functional_policy.cpu_clock_div)
-        os.environ["FROST_CPU_BASE_CLK_HZ"] = str(args.cpu_base_clock_hz)
     # The CLI is authoritative for the counters as well: synthesis reads
     # FROST_PERF_COUNTERS, and an inherited value must not change the netlist.
     os.environ["FROST_PERF_COUNTERS"] = "1" if functional_policy.perf_counters else "0"
@@ -3096,6 +3106,10 @@ Examples:
             print(f"Required checkpoint not found: {checkpoint_path}")
             sys.exit(1)
         print(f"Starting from checkpoint: {checkpoint_path}")
+        if board_name == "x3" and not require_x3_netlist_clock(
+            main_work, functional_policy.cpu_clock_div
+        ):
+            sys.exit(1)
 
     # Execute the requested pipeline range.
     final_produced = False

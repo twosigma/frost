@@ -71,10 +71,10 @@ module cpu_and_mem #(
     // On-silicon boot-hang classifier that can take over the console UART.
     // Keep it default-off for normal interactive software and Linux bring-up.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
-    // Triage pacing. Silicon defaults (~3 s / ~1 s @300 MHz); simulation runs
+    // Triage pacing. Silicon defaults (~2.8 s / ~1 s at 322 MHz); simulation runs
     // arm the classifier with thresholds sized to the sim budget instead.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
-    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd300_000_000,
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
     // RISC-V debug transport: 1 = the generic 5-bit-IR JTAG TAP
     // inside this module drives the DTM from the i_jtag_* pins (simulation,
     // portable synthesis); 0 = the DTM's BSCAN-style bundle comes from the
@@ -85,7 +85,7 @@ module cpu_and_mem #(
     // build; 1 for analysis builds and the cocotb entries that read them.
     parameter int unsigned PERF_COUNTERS = 0,
     // Core clock frequency: the NIC's TICK default (one microsecond).
-    parameter int unsigned CLK_FREQ_HZ = 300000000,
+    parameter int unsigned CLK_FREQ_HZ = 322265625,
     // The NIC's raw TX-to-RX loopback (see frost.sv): 1 for one MAC clock
     // shared by both directions, 0 for independent TX and RX clocks.
     parameter int unsigned RAW_LOOPBACK = 1

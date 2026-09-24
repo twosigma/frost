@@ -34,7 +34,7 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
         "ITERATIONS": "1",
         # The synthetic clock avoids timing overflow and lets one simulated
         # iteration pass CoreMark's ten-second reporting check down to 200k ticks.
-        # Board runs use the actual clock and ITERATIONS=11000.
+        # Board runs use the actual clock and ITERATIONS=14000.
         "FPGA_CPU_CLK_FREQ": "20000",
     },
 }

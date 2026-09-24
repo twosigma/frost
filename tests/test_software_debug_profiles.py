@@ -61,7 +61,7 @@ def build(app_dir: Path, *variables: str) -> subprocess.CompletedProcess[str]:
             "--no-print-directory",
             "-s",
             "RISCV_PREFIX=riscv64-linux-",
-            "FPGA_CPU_CLK_FREQ=150000000",
+            "FPGA_CPU_CLK_FREQ=161132812",
             "GENERATE_IMEM_INIT=0",
             *variables,
         ],
@@ -115,7 +115,7 @@ def test_custom_backends_rebuild_on_debug_profile_changes(
         assert ({".debug_info", ".debug_line"} <= sections) == bool(debug)
         stamp = (app_dir / ".frost-build-config.bin").read_text().split("|")
         assert f"FROST_DEBUG={debug}" in stamp
-        assert "FPGA_CPU_CLK_FREQ=150000000" in stamp
+        assert "FPGA_CPU_CLK_FREQ=161132812" in stamp
         assert (app_dir / "sw_ddr.txt").read_bytes() == b""
         if app == "coremark_pro":
             for obj in (

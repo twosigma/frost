@@ -64,5 +64,5 @@ examples:
         interrupts = <4>;
         dma-coherent;
         local-mac-address = [02 11 22 33 44 55];
-        clock-frequency = <300000000>;
+        clock-frequency = <322265625>;
     };

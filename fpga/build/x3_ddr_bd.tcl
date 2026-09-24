@@ -27,21 +27,20 @@
 # build_step.tcl creates the design; x3_frost.sv instantiates its wrapper.
 
 proc create_x3_ddr_bd {} {
+  if {[info exists ::env(FROST_CPU_BASE_CLK_HZ)] && $::env(FROST_CPU_BASE_CLK_HZ) ne ""} {
+    error "FROST_CPU_BASE_CLK_HZ is no longer supported; X3 uses 322265625 Hz"
+  }
   create_bd_design "ddr_subsys"
 
   # CPU and JTAG/div4 clocks; DDR4 has a dedicated 300 MHz input below. Both
   # rates follow build.py --cpu-clock-div (FROST_CPU_CLK_DIV, default 1:
-  # 300 MHz and 75 MHz) so SmartConnect's clock converters see the real
+  # 322.265625 MHz and 80.56640625 MHz) so SmartConnect sees the real
   # ratio to the DDR4 UI clock.
   set cpu_clk_div 1
   if {[info exists ::env(FROST_CPU_CLK_DIV)] && $::env(FROST_CPU_CLK_DIV) ne ""} {
     set cpu_clk_div $::env(FROST_CPU_CLK_DIV)
   }
-  set cpu_base_clk_hz 300000000
-  if {[info exists ::env(FROST_CPU_BASE_CLK_HZ)] && $::env(FROST_CPU_BASE_CLK_HZ) ne ""} {
-    set cpu_base_clk_hz $::env(FROST_CPU_BASE_CLK_HZ)
-  }
-  set cpu_clk_hz [expr {$cpu_base_clk_hz / $cpu_clk_div}]
+  set cpu_clk_hz [expr {322265625 / $cpu_clk_div}]
   set cpu_clk [create_bd_port -dir I -type clk -freq_hz $cpu_clk_hz cpu_clk]
   set jtag_clk [create_bd_port -dir I -type clk -freq_hz [expr {$cpu_clk_hz / 4}] jtag_clk]
 

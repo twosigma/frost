@@ -101,7 +101,7 @@ export function getSettings(folder: vscode.WorkspaceFolder): FrostSettings {
     app,
     coremarkMode: choice(config, "coremarkProMode", ["validation", "performance"] as const),
     memory: choice(config, "memory", ["bram", "ddr"] as const),
-    cpuClockHz: positiveInteger(config, "cpuClockHz", 0),
+    cpuClockHz: positiveInteger(config, "cpuClockHz", 322265625),
     bitstream: bitstream ? path.resolve(repoRoot, bitstream) : "",
     elf: path.resolve(repoRoot, elf),
     elfExplicit: !!explicitElf,
@@ -137,7 +137,7 @@ export async function configureTarget(folder: vscode.WorkspaceFolder): Promise<b
   const selected = await pickDebugTarget({
     app: textSetting(config, "app", "hello_world"),
     memory: choice(config, "memory", ["bram", "ddr"] as const),
-    cpuClockHz: config.get<number>("cpuClockHz", 0),
+    cpuClockHz: positiveInteger(config, "cpuClockHz", 322265625),
     coremarkMode: choice(config, "coremarkProMode", ["validation", "performance"] as const),
   }, metadata);
   if (!selected) { return false; }

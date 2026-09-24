@@ -199,10 +199,10 @@
         },
         "frost.cpuClockHz": {
           "type": "integer",
-          "default": 0,
-          "minimum": 0,
+          "default": 322265625,
+          "minimum": 1,
           "scope": "resource",
-          "description": "Required actual FPGA CPU clock in Hz. Zero means unset; configure the clock matching the programmed bitstream."
+          "description": "FPGA CPU clock in Hz. Defaults to X3 at 322265625 Hz; use 161132812 for a --cpu-clock-div 2 bitstream."
         },
         "frost.bitstream": {
           "type": "string",

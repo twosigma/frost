@@ -21,7 +21,7 @@ module xilinx_frost_subsystem #(
     // CPU clock frequency in Hz. Must match the clock the board wrapper drives
     // on i_clk. The UART sits on i_clk_div4, so its baud divisor is derived
     // from CLK_FREQ_HZ / 4.
-    parameter int unsigned CLK_FREQ_HZ = 300000000,
+    parameter int unsigned CLK_FREQ_HZ = 322265625,
     // Cached-tier configuration, set by the board top. Hardware boards with a
     // real DDR controller pass ENABLE_CACHED_TIER=1 and USE_BEHAVIORAL_DDR=0.
     // The defaults leave the tier off for a future board that has not wired up

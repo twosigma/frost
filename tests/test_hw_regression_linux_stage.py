@@ -1553,13 +1553,13 @@ def test_cpu_clock_override_reaches_the_loader_and_skips_score_checks() -> None:
     """FROST_CPU_CLK_HZ names a functional-validation bitstream's clock.
 
     The loader builds apps for it and the regression skips the CoreMark
-    baseline check, whose scores are recorded at the rated clock.
+    full-rate baseline check.
     """
     local = _load_hw_regression()
     rated, overridden = local.board_clock_freq("x3", {})
-    assert (rated, overridden) == (300_000_000, False)
-    assert local.board_clock_freq("x3", {"FROST_CPU_CLK_HZ": "150000000"}) == (
-        150_000_000,
+    assert (rated, overridden) == (322_265_625, False)
+    assert local.board_clock_freq("x3", {"FROST_CPU_CLK_HZ": "161132812"}) == (
+        161_132_812,
         True,
     )
     with pytest.raises(ValueError):
@@ -1574,7 +1574,7 @@ def test_cpu_clock_override_reaches_the_loader_and_skips_score_checks() -> None:
     assert not ok
     old = dict(local.os.environ)
     try:
-        local.os.environ["FROST_CPU_CLK_HZ"] = "150000000"
+        local.os.environ["FROST_CPU_CLK_HZ"] = "161132812"
         ok, note = local.check_score("x3", "coremark", baseline * 0.4, 5.0)
         assert ok
         assert "clock override" in note
@@ -1595,7 +1595,7 @@ def test_counters_absent_stage_follows_the_bitstream_perf_configuration(
     assert "perf_off_test" in hw.VALID_APPS
     assert "perf_off_test" in hw.regression_stages()
     assert hw.PERF_COUNTERS_ABSENT_APPS == frozenset({"perf_off_test"})
-    monkeypatch.setenv("FROST_CPU_CLK_HZ", "150000000")
+    monkeypatch.setenv("FROST_CPU_CLK_HZ", "161132812")
     monkeypatch.setattr(
         hw.sys, "argv", ["hw_regression.py", "--board", "x3", "perf_off_test"]
     )

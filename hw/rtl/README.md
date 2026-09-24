@@ -226,7 +226,7 @@ Vivado builds. `frost.f` is the system source list;
 
 | Module | Parameter | Default | Description |
 |--------|-----------|---------|-------------|
-| `frost.sv` | `CLK_FREQ_HZ` | `300000000` | Main CPU clock frequency |
+| `frost.sv` | `CLK_FREQ_HZ` | `322265625` | Main CPU clock frequency |
 | `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 18` | 256 KiB low BRAM |
 | `frost.sv` | `SIM_TIMER_SPEEDUP` | `1` | Multiplies `mtime` increment rate for simulation |
 | `frost.sv` | `CACHED_BASE` | `32'h8000_0000` | Cached-region base address |

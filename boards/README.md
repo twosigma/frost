@@ -27,7 +27,7 @@ CPU address `0x80000000` maps the first 1 GiB. Only the DDR JTAG master can
 reach ECC management, at region offset `0x40000000`.
 
 After calibration, `x3_ddr_init` zeroes the region with full-width writes
-before reads are allowed (about 110 ms at the rated clock). Synchronized
+before reads are allowed (about 0.1 seconds at the rated clock). Synchronized
 calibration, MMCM lock, and initialization completion release the common
 subsystem and DDR loader. DDR transport reset depends on MMCM lock;
 startup and image-load holds are separate. Inspect ECC with
@@ -47,9 +47,6 @@ startup and image-load holds are separate. Inspect ECC with
 clocks are unchanged. Use `build.py --cpu-clock-div N`, and match the software
 clock when loading. `PERF_COUNTERS` is controlled by `--perf-counters` and
 `--no-perf-counters`; it defaults off at full rate and on in divided-clock builds.
-
-Build with `--cpu-base-clock-hz 322265625` to select the MMCM recipe above.
-DDR and Ethernet keep their independent clocks.
 
 ## JTAG-based software loading
 
