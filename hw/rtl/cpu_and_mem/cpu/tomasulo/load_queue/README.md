@@ -421,6 +421,19 @@ Two bypass paths each shave a cycle off the load critical latency.
   AMOs wait for their write phase. An occupied CDB stage or an older ready
   completion sends the response through the ordinary per-entry data path.
 
+The response-to-CDB bypass uses response presence with full-flush, stale
+response, valid-owner and AMO guards. Its `!i_flush_en` guard excludes every
+partial-flush cycle, so the bypass needs no age comparison.
+`lq_response_bypass` checks the pulse against the acceptance-qualified reference.
+
+### Preparing a load while the shared port is busy
+
+`PREPARE_LOAD_WHILE_BUSY=1` (default) lets the candidate-address register
+capture or replace its load while `i_mem_bus_busy` is asserted. SQ probes,
+L0-hit consumption and physical memory handoff wait for the port. Preparation
+creates no request credit or coherence observation; the observation table
+tracks executed loads through retirement.
+
 ## Back-to-back issue
 
 In steady state the LQ issues one low-BRAM load per cycle. The
@@ -558,6 +571,18 @@ exact `o_full` / `o_full_for_2` mask does not have. This removes the shared
 completion/recovery cone from the dispatch-status flops without risking a
 stale-low capacity decision.
 
+Exact full/full-for-two status reduces free-entry predicates in four-entry
+groups. Allocation uses parallel cyclic first/second-free masks selected by
+the registered tail, with capacity checks in each mask. Binary targets drive
+cursor updates and compact payload indices. `lq_capacity` and `lq_alloc_mask`
+check the status and masks against count comparisons and the cyclic search.
+
+Load-result RAM writes require the response/forward/cache/AMO write guards;
+address and data may change while a port is disabled. Port 1 selects the AMO
+payload only when neither a cache hit nor forwarding fires. `lq_ram_payload`
+checks write enables and enabled address/data for each cache/forwarding
+configuration, with arbitrary state.
+
 ## Performance counters
 
 The LQ emits performance events for the wrapper. L0 hits and fills are counted
@@ -580,61 +605,13 @@ handshakes and side-effect ordering.
 The focused `load_queue_amo_compute` formal target checks the production AMO
 datapath over four steps with no reset/admission assumptions. It covers
 capture, arithmetic, compute/write transitions, kill/reset, and coherence
-exclusion. It does not establish scheduler reachability, interrupt integration,
-or unbounded progress. The normal LQ formal target retains its separate
-reset-based protocol checks.
+exclusion. Scheduler, interrupt and progress checks are outside this target.
+The normal LQ formal target checks the protocol after reset.
+
+`load_queue` tests busy-port preparation, absence of SQ/read/result side
+effects, and immediate SQ checking on release. Its BMC/cover tasks also enable
+preparation. `load_queue_no_prepare_busy` and formal
+`bmc_no_prepare_busy`/`cover_no_prepare_busy` cover the disabled setting.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
-
-### Preparing a load while the shared port is busy
-
-`PREPARE_LOAD_WHILE_BUSY=1` allows the existing candidate-address register to
-capture or replace its load while `i_mem_bus_busy` is asserted. This is enabled
-by default. Preparation itself neither probes the SQ nor observes memory: the
-SQ check and capture outputs, L0-hit consumption, and physical memory handoff
-retain their bus-busy gates. Flush, response-debt, age and admission rules
-are unchanged. No new request credit or coherence observation is created;
-loads remain covered by the existing observation table through retirement.
-
-`load_queue` runs the full LQ suite and a directed test requiring
-inert staging during port ownership, no SQ/read/result side effect, and
-immediate SQ checking on release. The formal BMC and cover tasks also run
-with the default option enabled. `load_queue_no_prepare_busy` and the formal
-`bmc_no_prepare_busy`/`cover_no_prepare_busy` tasks cover the reusable module
-with preparation disabled. Enabling SQ probes or L0 hits while busy is a
-separate, unmerged experiment and is not the meaning of this parameter.
-
-Exact full/full-for-two status reduces free-entry predicates in four-entry
-groups, avoiding the numeric popcount adder on allocation controls. The public
-count and all admission decisions are unchanged; `lq_capacity` checks equality
-against the original count comparisons for every valid mask.
-
-Entry-local allocation pulses use parallel cyclic first/second-free masks for
-each possible cursor, selected by the registered tail. Each mask includes its
-own room condition. This avoids the rotate/encode/add/decode path before the
-control and payload write enables. Binary targets still drive cursor updates
-and compact payload indices. `lq_alloc_mask` proves the new masks against the
-original search plus capacity checks, including sparse and full states.
-
-The response-to-CDB bypass uses the response-presence predicate without the
-partial-flush age comparison. The bypass's existing `!i_flush_en` guard already
-excludes every cycle that comparison could kill the owner. Full-flush, stale
-response, valid-owner and AMO checks are unchanged. `lq_response_bypass` proves
-the final bypass pulse equals the original acceptance-qualified pulse.
-
-Load-result RAM ports retain the full response/forward/cache/AMO write guards.
-Their address and data inputs may change while a port is disabled. The SQ data
-choice removes shared age/issue qualifiers, then selects the AMO payload only
-when neither cache hit nor forwarding fires. `lq_ram_payload` proves all write
-enables and every enabled address/data against the original mux, with cache and
-forwarding configurations checked separately and no state assumptions.
-
-The integrated early-wakeup MEM_RS uses eight pre-issue candidates from the two
-registered CDB valid bits and early-load eligibility. Candidate tag data uses
-raw registered CDB/load tags, before the wakeup merger's lane muxes. The LQ
-registers all eight CAM outcomes and the three-bit selector on the original
-edge; translation replicates the DMMU tag into every candidate. Generic users
-retain the four merged-valid candidates. `rs_raw_pretag` checks the real merger
-against the RS winner; `lq_prematch_cofactors` proves both four- and eight-way
-retiming without an added cycle.

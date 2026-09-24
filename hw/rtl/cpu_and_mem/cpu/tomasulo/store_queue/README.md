@@ -164,8 +164,7 @@ the expanded pulses against the enable-then-steer form they replace.
 A partial flush kills a program-order suffix. The flush cycle clears valid
 bits while pointers hold; one cycle later the tail returns to just past the
 youngest survivor by rotating valid state around the head, selecting the
-highest live offset, and adding the head back. Retiming avoids an 18-LUT path
-at 300 MHz on the pointer D/CE pins. Flush-cycle allocations are suppressed
+highest live offset, and adding the head back. Flush-cycle allocations are suppressed
 structurally: the slot alloc enables carry the ROB's flush gate
 (`!i_flush_all && !i_flush_en`), so a dispatch presented on the pulse cycle
 (the trap-cycle straggler handshake) is rejected by the SQ on the same cycle
@@ -201,9 +200,10 @@ Both counters keep the dispatch valids, which arrive last through the
 dispatch fire tree, out of their arithmetic: the next live count and the two
 back-pressure comparisons are each evaluated for the three allocation
 outcomes (no request, exactly one, both) from the request-independent terms,
-and the pair of valids selects one candidate as the final logic level before
-the flops. Simulation and formal compare the selected value with the adder
-form it replaces.
+and the pair of valids selects one candidate before the flops. Each live-count
+candidate completes its allocation increment before subtracting the removal
+population count. `sq_live_count` checks all three candidates and the selected
+next count for arbitrary state and controls.
 
 ## Widen-commit slot 2
 
@@ -238,6 +238,11 @@ combinational commit ports remain in use for the architectural
 committed-empty view shared by trap/MRET, fence/atomic, and router
 device-read ordering (see "Widen-commit slot 2" above).
 
+Committed-empty status combines stored entries and registered commits before
+applying the ROB's combinational commit strobes. Reset and full flush have
+priority. `sq_committed_empty` checks the next state for arbitrary inputs and
+current state, including same-cycle store retirement.
+
 ## SC discard
 
 If a store-conditional fails (the LR reservation was lost), the ROB
@@ -271,15 +276,3 @@ bounds, forwarding, and that committed stores survive a flush.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
-
-Committed-empty status finishes its stored-entry and registered-commit term
-before the ROB combinational commit strobes. The final gate retains reset and
-full-flush priority, so same-cycle store retirement still clears the status on
-the original edge. `sq_committed_empty` checks the exact next-state equation
-with arbitrary inputs and current state.
-
-The live-count candidates complete their zero/one/two allocation increments
-before subtracting the removal-mask population count. Dispatch valids still
-select the same candidate on the same edge; flush, failed-SC and drain removal
-masks are unchanged. `sq_live_count` proves all three candidates and the selected
-next count against the original equations with arbitrary state and controls.

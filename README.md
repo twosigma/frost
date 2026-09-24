@@ -3,15 +3,12 @@
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
 FROST is an out-of-order 64-bit RISC-V (RV64GCB) processor written in
-SystemVerilog for FPGAs. It runs Debian 13 and FreeRTOS on the Alveo X3522PV,
-with 10 Gigabit Ethernet and 1 GiB of DDR4. A prior X3 configuration
-measured 1018 CoreMark at 300 MHz (3.39 CoreMark/MHz).
-The current CPU defaults and their validation are recorded
-in the [performance report](docs/single_core_performance.md).
+SystemVerilog for FPGAs. It runs at **322.265625 MHz** on the Alveo X3522PV,
+with Debian 13, FreeRTOS, 10 Gigabit Ethernet and 1 GiB of DDR4.
 
 ## Why FROST?
 
-- **Performance:** 1018 CoreMark at 300 MHz (3.39 CoreMark/MHz) on the X3.
+- **Performance:** **3.91 CoreMark/MHz** with profile-guided optimization (PGO).
 - **Full Debian Linux:** Debian 13 with its stock riscv64 kernel, systemd,
   and a root filesystem served over NFS. [Setup guide](docs/debian_nfsroot.md).
 - **10 Gigabit Ethernet:** an integrated NIC with a Linux driver and coherent DMA.
@@ -219,7 +216,7 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 ./scripts/frost.py synthesis
 
 # FPGA synthesis (Vivado)
-./fpga/build/build.py x3                   # Alveo X3
+./fpga/build/build.py x3 --cpu-base-clock-hz 322265625
 ```
 
 ### CI Test Coverage
@@ -232,12 +229,13 @@ See the [test guide](tests/README.md#ci-integration) for coverage and commands.
 
 ```bash
 # 1. Build bitstream (~30-90 min with the DDR subsystem and timing sweeps)
-./fpga/build/build.py x3
+./fpga/build/build.py x3 --cpu-base-clock-hz 322265625
 
 # 2. Program FPGA
 ./fpga/program_bitstream/program_bitstream.py x3
 
 # 3. Load software (fast, no re-synthesis)
+export FROST_CPU_CLK_HZ=322265625
 ./fpga/load_software/load_software.py x3 hello_world
 ./fpga/load_software/load_software.py x3 coremark
 ./fpga/load_software/load_software.py x3 isa_test
@@ -262,7 +260,7 @@ then run **FROST: Configure Target** from the Command Palette.
 
 | Board              | FPGA                 | CPU Clock  | Cache hierarchy → main memory               |
 |--------------------|----------------------|------------|---------------------------------------------|
-| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz    | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
+| Alveo X3522PV      | UltraScale+ (xcux35) | 322.27 MHz | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
 
 See the [board guide](boards/README.md) for pinouts, clocking, and adding a board.
 
@@ -270,21 +268,19 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 
 ### FPGA Resource Utilization
 
-Historical measurement using the former CPU defaults; refresh with a new build.
-
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; final report)
+**Alveo X3522PV** (Virtex UltraScale+; 322.27 MHz, counters off)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 173,711 | 1,029,600 | 16.9% |
-|   LUT as Logic | 156,756 | 1,029,600 | 15.2% |
-|   LUT as Distributed RAM | 15,884 | — | — |
-|   LUT as Shift Register | 1,071 | — | — |
-| CLB Registers | 109,257 | 2,059,200 | 5.3% |
-| Block RAM Tile | 246 | 2,112 | 11.7% |
+| CLB LUTs | 187,812 | 1,029,600 | 18.2% |
+|   LUT as Logic | 169,295 | 1,029,600 | 16.4% |
+|   LUT as Distributed RAM | 17,218 | — | — |
+|   LUT as Shift Register | 1,299 | — | — |
+| CLB Registers | 114,206 | 2,059,200 | 5.5% |
+| Block RAM Tile | 360 | 2,112 | 17.1% |
 | URAM | 68 | 352 | 19.3% |
-| DSPs | 47 | 1,320 | 3.6% |
-| CARRY8 | 2,601 | 128,700 | 2.0% |
+| DSPs | 51 | 1,320 | 3.9% |
+| CARRY8 | 2,735 | 128,700 | 2.1% |
 | F7 Muxes | 1,962 | 514,800 | 0.4% |
 | F8 Muxes | 926 | 257,400 | 0.4% |
 | Bonded IOB | 132 | 364 | 36.3% |

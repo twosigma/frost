@@ -191,7 +191,7 @@ Verilator/cocotb and checks the resulting XML for actual passing tests. See
 [the verification README](../../../tests/net10g/README.md) for targets,
 coverage, artifact paths, and the extra pinned synthesis frontend.
 
-On X3, the MAC/PCS runs at the transceiver word rate alongside the 300 MHz
+On X3, the MAC/PCS runs at the transceiver word rate alongside the 322.265625 MHz
 CPU and carries Debian's NFS root over fiber. Board transceiver control,
 packet CDC, DMA, registers, interrupts, and the Linux driver are provided by
 the surrounding NIC and board integration.

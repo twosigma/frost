@@ -39,14 +39,12 @@ phase. Lint hooks can change files. For a focused Python run:
 `TEST_REGISTRY` defines CPU/SoC block benches, directed tests, and applications.
 Apps compile automatically; failed RTL assertions fail simulation.
 
-Whole-core simulations, Yosys synthesis and FPGA builds share the CPU defaults
-in `riscv_pkg`: early load wakeup and busy-port preparation enabled, four decoded
-bundles, and sixteen INT reservation-station entries with an eight-entry second
-issue window. CI runs this configuration in both BRAM and DDR; there is no
-separate performance profile to enable. `coremark_profile` enables profiling
-counters only. Explicit component-only overrides, such as
-`tomasulo_wrapper_no_early_load` and `load_queue_no_prepare_busy`, retain coverage
-of the reusable modules' disabled paths.
+Whole-core simulations, Yosys synthesis and FPGA builds share the `riscv_pkg`
+defaults: early load wakeup, busy-port preparation, four decoded bundles and a
+sixteen-entry INT RS with an eight-entry second-issue window. CI tests these
+defaults in BRAM and DDR. `coremark_profile` enables profiling counters.
+Component targets `tomasulo_wrapper_no_early_load` and
+`load_queue_no_prepare_busy` test the corresponding disabled paths.
 
 ```bash
 ./scripts/frost.py cocotb --list-tests
@@ -174,10 +172,8 @@ synthesis, rejecting unresolved modules and latches. Both use `frost.f` with
 not establish device mapping or timing. The Xilinx timeout is two hours,
 overridable with `FROST_YOSYS_XILINX_TIMEOUT_SEC`.
 
-The Xilinx runner loads primitive definitions before elaborating parameters.
-This prevents late LUT discovery from reprocessing a parent after its original
-child modules have been pruned. A focused PC hierarchy regression covers this
-ordering alongside the full CPU/NIC synthesis checks.
+The Xilinx runner loads primitive definitions before elaborating parameters;
+a focused PC hierarchy regression checks that ordering.
 
 ```bash
 ./scripts/frost.py synthesis

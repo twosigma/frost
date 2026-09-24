@@ -1,6 +1,6 @@
 # FPGA Board Support
 
-The supported board is the **Alveo X3522PV (X3)**, with a 300 MHz CPU,
+The supported board is the **Alveo X3522PV (X3)**, with a 322.265625 MHz CPU,
 256 KiB BRAM, 16 KiB L1I, 128 KiB L1D, 2 MiB URAM L2, and 1 GiB DDR4.
 See the [FPGA guide](../fpga/README.md) for build, programming, and loading commands.
 
@@ -37,8 +37,8 @@ startup and image-load holds are separate. Inspect ECC with
 
 | Domain | Clock |
 |--------|-------|
-| CPU | 300 MHz input × 4 / 1 / 4 = 300 MHz |
-| Loader, UART, reset timers | CPU/4 = 75 MHz |
+| CPU | 300 MHz input / 8 × 34.375 / 4 = 322.265625 MHz |
+| Loader, UART, reset timers | CPU/4 = 80.56640625 MHz |
 | DDR reference | Independent 300 MHz |
 | Ethernet TX / recovered RX | GTY user clocks, about 161.13 MHz |
 | GTY reset controller | Input/2 = 150 MHz, independent of MMCM and link |
@@ -48,19 +48,16 @@ clocks are unchanged. Use `build.py --cpu-clock-div N`, and match the software
 clock when loading. `PERF_COUNTERS` is controlled by `--perf-counters` and
 `--no-perf-counters`; it defaults off at full rate and on in divided-clock builds.
 
-The default CPU base clock is 300 MHz. The experimental
-`--cpu-base-clock-hz 322265625` selects `CPU_BASE_CLK_HZ=322265625`, using
-300 MHz / 8 × 34.375 / 4 before `CPU_CLK_DIV`. It changes neither the DDR
-reference nor the Ethernet clocks. See the [performance report](../docs/single_core_performance.md)
-for measured configurations and outstanding timing gates.
+Build with `--cpu-base-clock-hz 322265625` to select the MMCM recipe above.
+DDR and Ethernet keep their independent clocks.
 
 ## JTAG-based software loading
 
 The loader resets the CPU with a low-BRAM write, bursts any `sw_ddr.txt`
 image through `jtag_axi_ddr`, then writes `sw.txt` to BRAM. Keepalive BRAM
 writes during DDR transfer re-arm reset. Every BRAM write restarts a 27-bit
-CPU/4 counter; execution starts about 1.8 seconds after the last write at
-300 MHz. A separate 16-bit startup counter delays programming IP and CPU
+CPU/4 counter; execution starts about 1.67 seconds after the last write at
+322.265625 MHz. A separate 16-bit startup counter delays programming IP and CPU
 release after board reset. `frost` synchronizes resets into both clock domains.
 
 ## RISC-V debug over BSCAN (OpenOCD)

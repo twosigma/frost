@@ -290,6 +290,21 @@ handshakes are pipelined at both ends (a register stage in front of the L1D
 for probes, a latched presentation and a pipelined answer for admission and
 invalidation), so nothing combinational crosses the hierarchy.
 
+## Storage and arbitration
+
+The acknowledgement ID queue uses registers, keeping tag-hit selection off
+distributed-RAM write enables. Packed UltraRAM tags use parallel depth banks
+(`CASCADE_HEIGHT=1`); XPM parameters set read latency and byte-write granularity.
+
+Xilinx builds implement each bounded three-port arbiter grant in one LUT6,
+using three request valids and three limit predicates. `line_arbiter_grant`
+checks the portable and Xilinx implementations against the priority rule for
+arbitrary request/counter state, including the idle port-zero payload.
+
+MSHR fills and W-stage stores update bytes per entry. A fill's response ID
+selects its entry; accumulated store bytes are preserved, and a simultaneous
+W-stage store takes priority.
+
 ## Benches
 
 | Target family | Coverage |
@@ -306,22 +321,3 @@ for exact names. Benches live in
 [`verif/cocotb_tests/cache`](../../../../verif/cocotb_tests/cache/).
 The `line_port_axi_bridge` formal target checks AXI handshakes, ID
 conservation, and stale-response handling.
-
-The acknowledgement ID queue uses registers to keep the late tag-hit decision
-off a distributed-RAM write-enable setup path. Its depth, request ordering and
-response arbitration are unchanged.
-
-Packed UltraRAM tags use parallel depth banks (`CASCADE_HEIGHT=1`) to avoid
-serial address propagation through four primitives. The logical read latency
-and byte-write granularity stay fixed by the XPM parameters.
-
-For the bounded three-port arbiter, Xilinx builds implement each grant as a
-single LUT6 of the three request valids and three limit predicates. The
-portable implementation retains the same priority equations. The
-`line_arbiter_grant` proof checks both against the encoded priority rule for
-arbitrary request/counter state, including the idle port-zero payload.
-
-MSHR fill capture and W-stage store merging use per-entry byte updates. The
-response id selects the entry to update; accumulated store bytes are preserved
-and a simultaneous W-stage store retains priority. This removes a round trip
-through the indexed line-data mux without changing response or merge timing.

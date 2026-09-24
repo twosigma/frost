@@ -21,10 +21,8 @@ Use `--list-targets` for the full list and supported tasks. The registry is
 `FORMAL_TARGETS` in `tests/test_run_formal.py`; each `.sby` file defines its
 parameters, assumptions, engines, and proof depth.
 
-The focused targets below check local equivalence or integration contracts.
-A local combinational check does not establish whole-CPU behavior, timing,
-or liveness. These proofs use binary values; they do not cover simulation
-X/Z behavior.
+Targets check local equivalence or integration contracts under the scopes
+below. Formal values are binary; simulation X/Z behavior is outside these checks.
 
 | Target | Scope and limits |
 | --- | --- |
@@ -119,48 +117,7 @@ Integration targets have narrower environment contracts:
   tag wraparound; simulation covers reuse after wrap. Station assertions
   remain enabled, with standalone station assumptions disabled.
 
-## Property Style
-
-State input/output, ordering, or temporal contracts that can fail. Guard
-`$past()` with a past-valid bit and the relevant reset conditions. Assumptions
-must describe inputs the real environment guarantees, and be recorded with
-the proof scope. Keep block assertions under `ifdef FORMAL` in their module;
-formal-only integration harnesses live beside `.sby` files and stay outside
-production synthesis.
-
-## Adding a New Formal Target
-
-1. Add `ifdef FORMAL` assertions to the RTL module, or create a formal-only
-   integration harness when the property spans production modules.
-2. Create an `.sby` file in `formal/` (see `trap_unit.sby` for a block-local
-   target or `prediction_release.sby` for an integration proof). Read every
-   source whose properties must be active with `read -formal -sv`. A plain
-   `read -sv` compiles its assertions out, and a proof can then pass
-   vacuously.
-3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
-   `tasks` when the `.sby` defines it. Register any new task names in
-   `SBY_TASKS` so CLI and pytest runs include them:
-
-```python
-FORMAL_TARGETS = [
-    FormalTarget("trap_unit.sby", "Trap unit"),
-    FormalTarget("new_module.sby", "Description of new module"),  # bmc + cover only
-    FormalTarget("new_proof.sby", "Unbounded proof", tasks=("bmc", "cover", "prove")),
-]
-```
-
-## Yosys SVA Limitations
-
-Yosys supports a subset of SystemVerilog Assertions:
-
-- Use immediate assertions inside `always @(posedge clk)` blocks.
-- Use `!a || b` for implication. The concurrent form `a |-> b` is not
-  available.
-- Use `$past(signal)` for sequential properties.
-- No hierarchical references (`u_sub.signal`): assertions must sit inside the
-  module they check.
-- Assume initial reset only when it is part of the target contract; otherwise
-  prove the property from arbitrary state.
+### Additional target contracts
 
 `decoded_bundle_queue` proves FIFO ordering and arbitrary payload preservation
 at depths four and two (`prove`, `prove_depth2`) and covers bypass, full,
@@ -171,7 +128,6 @@ tied to the payload's low bits, which must equal the output packet's slice.
 It assumes an initial reset, legal consumer pops, no producer overwrite before
 acceptance, and that the producer's announced next value (`i_shadow_next`)
 arrives; integration assertions enforce the last three contracts in simulation.
-This is not a proof of whole-core CSR/debug/branch behavior.
 `load_queue` checks inert candidate preparation during port ownership in its
 default `bmc`/`cover` tasks. Its `bmc_no_prepare_busy`/`cover_no_prepare_busy`
 tasks retain component coverage with preparation disabled.
@@ -220,3 +176,46 @@ also compared combinationally. Only the ghost-valid bit is initialized.
 The `load_queue_amo_compute` harness counts its named AMO assertions and cover
 separately from allocator checks. Other production helper checks remain enabled,
 but their addition does not invalidate the AMO harness's structural guard.
+
+## Property Style
+
+State input/output, ordering, or temporal contracts that can fail. Guard
+`$past()` with a past-valid bit and the relevant reset conditions. Assumptions
+must describe inputs the real environment guarantees, and be recorded with
+the proof scope. Keep block assertions under `ifdef FORMAL` in their module;
+formal-only integration harnesses live beside `.sby` files and stay outside
+production synthesis.
+
+## Adding a New Formal Target
+
+1. Add `ifdef FORMAL` assertions to the RTL module, or create a formal-only
+   integration harness when the property spans production modules.
+2. Create an `.sby` file in `formal/` (see `trap_unit.sby` for a block-local
+   target or `prediction_release.sby` for an integration proof). Read every
+   source whose properties must be active with `read -formal -sv`. A plain
+   `read -sv` compiles its assertions out, and a proof can then pass
+   vacuously.
+3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
+   `tasks` when the `.sby` defines it. Register any new task names in
+   `SBY_TASKS` so CLI and pytest runs include them:
+
+```python
+FORMAL_TARGETS = [
+    FormalTarget("trap_unit.sby", "Trap unit"),
+    FormalTarget("new_module.sby", "Description of new module"),  # bmc + cover only
+    FormalTarget("new_proof.sby", "Unbounded proof", tasks=("bmc", "cover", "prove")),
+]
+```
+
+## Yosys SVA Limitations
+
+Yosys supports a subset of SystemVerilog Assertions:
+
+- Use immediate assertions inside `always @(posedge clk)` blocks.
+- Use `!a || b` for implication. The concurrent form `a |-> b` is not
+  available.
+- Use `$past(signal)` for sequential properties.
+- No hierarchical references (`u_sub.signal`): assertions must sit inside the
+  module they check.
+- Assume initial reset only when it is part of the target contract; otherwise
+  prove the property from arbitrary state.

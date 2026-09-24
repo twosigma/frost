@@ -1,6 +1,6 @@
 # Reservation Station
 
-A generic reservation station instantiated for INT (8 entries), MUL (4), MEM
+A generic reservation station instantiated for INT (16 entries), MUL (4), MEM
 (8), FP (6), FMUL (4), and FDIV (2). Each accepts both dispatch slots, tracks
 operand readiness, and issues when all required sources are ready.
 
@@ -18,30 +18,24 @@ balanced tree selects the lowest ready nonbranch entry other than port 0's
 global lowest-ready winner. Branches issue only through port 0, which owns the
 single `branch_resolution` / ROB branch-update path. The exclusion holds even
 when backpressure keeps port 0 from firing, so the two ports can never claim
-one entry. The other five stations elaborate with the default `DUAL_ISSUE=0`
-and are structurally unchanged.
+one entry. The other five stations use `DUAL_ISSUE=0`.
 
 The secondary INT bank also captures six effective barrel shift-amount bits
 in `o_issue_shift_amount_2`. The selector uses the same
 `riscv_pkg::projected_shift_controls` predicate as the ALU, evaluated at
 dispatch and kept per entry with immediate bits [5:0]
 (`rs_shift_uses_imm`, `rs_shift_imm`), and the exact CDB-selected `src2` D
-expression that feeds the wide operand register. The per-entry copies keep
-the payload LUTRAM read off this endpoint. It captures on `issue_fire_2` and holds with the
-existing packet; reset/flush clear ownership without resetting payload. The
-ALU2 hint input removes the immediate/register amount mux after this boundary.
-No mode flags, wide operands, priorities, or issue/completion cycles change.
-The primary ALU retains local amount selection. This requests a different
-logic partition; it adds a selector to the incoming RS D path, so fresh native
-placement must check that path as well as any ALU improvement.
+expression that feeds the wide operand register. Per-entry copies keep the
+payload LUTRAM read off this endpoint. The amount captures on `issue_fire_2`
+and holds with the packet; reset/flush clear ownership without resetting
+payload. ALU2 consumes this registered amount. The primary ALU selects its
+shift amount locally.
 
 `rs_issue2_shamt` exercises all 18 full/word shift/rotate operations across 64
 amounts, mismatched `use_imm`, both live CDB lanes, ready-low holds, back-to-back
 refill, partial/full flush and reset. A clocked RTL assertion checks amount
-identity throughout occupied stage2b cycles. `alu_shift_hint` is a separate
-one-step combinational formal comparison of actual hinted/generic ALUs with
-arbitrary binary operands/opcodes; it does not prove the RS scheduler or
-unbounded capture lifecycle.
+identity throughout occupied stage2b cycles. `alu_shift_hint` compares the
+hinted and generic ALUs combinationally for arbitrary binary operands/opcodes.
 
 Wakeup is a two-lane Tomasulo CDB snoop: each entry compares its source tags
 against both broadcast tags every cycle, and a match captures the value and
@@ -144,9 +138,9 @@ repair value) before its one-hot select, so the late selector drives only the
 final AND-OR into the stage2b operand registers.
 
 `ISSUE2_WINDOW` limits port 1 to entries below that index (0, the default,
-means all). Port 0 still sees every entry. Allocation takes the lowest free
-index, so the window holds the longest-resident work. The selector's own
-first-ready exclusion still equals port 0's winner whenever the window holds a
+means all). Port 0 sees every entry. Lowest-free-index allocation concentrates
+work in the window. The selector's first-ready exclusion equals port 0's
+winner whenever the window holds a
 ready entry, because port 0 picks the lowest ready index overall. The wrapper
 sets the window to `riscv_pkg::IntRsIssue2Window` (eight), independently of
 `riscv_pkg::IntRsDepth` (sixteen). This halves the port-1 selector and muxes
@@ -196,6 +190,20 @@ of comparing two XLEN targets at resolution.
 The RS reports both `full` and `full_for_2`; dispatch uses the latter when
 both slots target the same station.
 
+The binary first/second free indices use nibble-prefix masks and parallel
+masked-OR encoders, with index zero as the no-free-entry fallback.
+`rs_alloc_parallel` checks indices and found flags at depths 4/8/16/32.
+
+Dispatch-cycle CDB deferral completes tag matching and repair exclusion before
+the RAT ready bit selects the result. `rs_dispatch_defer` checks all six source
+decisions with insertion-time repair enabled and disabled.
+
+Port-2 issue clears `rs_valid` with its one-hot selector and accepted-fire gate,
+followed by the indexed port-1 clear. The clears commute; reset, flush and
+dispatch writes retain priority. `rs_issue_clear` checks full/windowed and
+disabled dual issue, including the production depth-16/window-8 configuration,
+with unconstrained payload RAM outputs.
+
 ## Pre-issue look-ahead
 
 Each RS emits `o_pre_issue_rob_tag` and `o_pre_issue_needs_lq` one cycle
@@ -209,12 +217,14 @@ pre-issue tag and validity.
 `o_pre_issue_sel={lane1_valid,lane0_valid}`. Each candidate uses the original
 priority rule under one fixed pair of CDB valid bits; no-ready still selects
 entry zero's tag. Selecting the candidate reproduces `o_pre_issue_rob_tag`.
-The integrated wrapper additionally sets `PREISSUE_RAW_WAKEUP=1`, exporting
-eight candidates and a three-bit raw-wakeup selector. The LQ registers the
-CAM outcomes and the selector on the same edge, keeping the late CDB-valid
-selection out of the CAM register inputs without changing issue latency.
-The default parameter is zero; it repeats the scalar tag in all candidates
-with selector zero. Other RS instances leave these outputs unconnected.
+With `PREISSUE_RAW_WAKEUP=1`, the integrated MEM_RS uses raw registered
+CDB/load tags to export eight candidates selected by CDB validity and early-load
+eligibility. The LQ registers all CAM results and the selector on one edge.
+Translation replicates the DMMU tag into every candidate. `rs_raw_pretag`
+checks the merger and RS winner; `lq_prematch_cofactors` checks four- and
+eight-way retiming. With `PREISSUE_VALID_COFACTOR=0` and
+`PREISSUE_RAW_WAKEUP=0` (defaults), every candidate repeats the scalar tag and
+the selector is zero. Other RS instances leave these outputs unconnected.
 
 ## INT_RS head-wait diagnostics
 
@@ -250,34 +260,3 @@ stalls, flushes, and refill.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
-
-The binary first/second free indices also use the nibble-prefix masks, with
-parallel masked-OR encoders. This removes the serial search from payload,
-tag and control writes while preserving lowest-index allocation and the
-index-zero fallback when a free entry is absent. Nibble and mask boundaries
-are kept through synthesis. `rs_alloc_parallel` proves both indices and found
-flags against the original search for arbitrary occupancy at depths 4/8/16/32.
-
-The integrated early-wakeup MEM_RS uses eight pre-issue candidates from the two
-registered CDB valid bits and early-load eligibility. Candidate tag data uses
-raw registered CDB/load tags, before the wakeup merger's lane muxes. The LQ
-registers all eight CAM outcomes and the three-bit selector on the original
-edge; translation replicates the DMMU tag into every candidate. Generic users
-retain the four merged-valid candidates. `rs_raw_pretag` checks the real merger
-against the RS winner; `lq_prematch_cofactors` proves both four- and eight-way
-retiming without an added cycle.
-
-Dispatch-cycle CDB deferral completes tag matching and repair exclusion before
-applying the late RAT ready bit. Lane priority and the one-cycle deferred value
-handoff are unchanged. `rs_dispatch_defer` compares all six source decisions
-against the original equations with insertion-time repair enabled and disabled.
-
-Port-2 issue clears `rs_valid` with the selector's existing one-hot result and
-the original accepted-fire gate. This avoids encoding and decoding the selected
-index again. The two issue clears commute; the port-2 mask applies before
-the indexed port-1 clear. Reset, flush and dispatch-write priorities are unchanged. The
-`rs_issue_clear` proof compares the accepted mask with the former indexed clear
-across full/windowed dual-issue configurations and the disabled configuration.
-The depth-16/window-8 case uses the current INT instance parameters, while the
-depth-8 case retains smaller-capacity coverage. Payload RAM outputs are
-unconstrained so initialization cannot restrict the proof.

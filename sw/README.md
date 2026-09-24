@@ -57,9 +57,8 @@ Use `FROST_COCOTB_MEM_CONFIG=ddr` for simulation or the FPGA loader's `--ddr`
 option. Apps with dedicated linker scripts can retain fixed layouts.
 `LINKER_SCRIPT` overrides the common linker's selection.
 
-Board loaders set the software clock automatically. For a divided-clock
-bitstream, pass `FROST_CPU_CLK_HZ` to the loader as described in the
-[FPGA guide](../fpga/README.md#functional-validation-builds).
+Board loaders set the software clock from `FROST_CPU_CLK_HZ` or the board
+default. Use `FROST_CPU_CLK_HZ=322265625` for X3, or `161132812` at half rate.
 
 ### Build Outputs
 
@@ -110,7 +109,7 @@ Library limits:
 - Failed arena creation yields `start == NULL` and zero capacity. Heap size
   overflow and oversized allocations return `NULL` without consuming the heap.
 - `rd*64()` reads an entire 64-bit counter; plain `rd*()` returns its low word.
-  Use 64-bit timing beyond about 14 seconds at 300 MHz. RV32 high-half CSR aliases
+  Use 64-bit timing beyond about 13 seconds at 322.265625 MHz. RV32 high-half CSR aliases
   are illegal. `time` follows CLINT `mtime`; cycle timing uses `cycle`.
 
 ## Applications

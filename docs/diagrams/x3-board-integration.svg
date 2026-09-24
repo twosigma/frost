@@ -2,8 +2,8 @@
   <title id="title">X3 FPGA board integration</title>
   <desc id="desc">
     The X3 integrates a CPU/BRAM/debug subsystem, a DDR4 block design, and an
-    Ethernet GTY transceiver. The CPU runs at 300/N MHz and UART/loaders at
-    75/N MHz; DDR and Ethernet clocks are independent. SmartConnect merges CPU
+    Ethernet GTY transceiver. The CPU runs at 322.265625/N MHz and UART/loaders at
+    80.56640625/N MHz; DDR and Ethernet clocks are independent. SmartConnect merges CPU
     and JTAG memory traffic across clock and width boundaries. DDR calibration
     and an ECC-initialization write pass complete before CPU and DDR-loader
     release. BSCAN shares the FPGA TAP with Vivado. Module boxes can span clock
@@ -97,7 +97,7 @@
     <path d="M 254 294 H 286" class="clock" marker-end="url(#control-arrow)"/>
     <rect x="286" y="248" width="224" height="92" rx="12" class="control"/>
     <text x="398" y="278" class="label center">IBUFDS + MMCM</text>
-    <text x="398" y="304" class="body center">VCO 1200 MHz</text>
+    <text x="398" y="304" class="body center">VCO 1289.0625 MHz</text>
     <text x="398" y="328" class="small center">output divide = 4 × N</text>
     <path d="M 510 294 H 536 V 259 H 562" class="clock" marker-end="url(#control-arrow)"/>
     <path d="M 536 294 V 337 H 562" class="clock" marker-end="url(#control-arrow)"/>
@@ -107,9 +107,9 @@
     <text x="687" y="344" class="label center">BUFGCE_DIV / 4</text>
     <path d="M 812 259 H 842" class="clock" marker-end="url(#control-arrow)"/>
     <path d="M 812 337 H 842" class="clock" marker-end="url(#control-arrow)"/>
-    <text x="858" y="254" class="label">CPU · 300/N MHz</text>
+    <text x="858" y="254" class="label">CPU · 322.27/N MHz</text>
     <text x="858" y="280" class="body">Core, runtime memory, AXI</text>
-    <text x="858" y="332" class="label">/4 · 75/N MHz</text>
+    <text x="858" y="332" class="label">/4 · 80.57/N MHz</text>
     <text x="858" y="358" class="body">Loaders, UART, reset timers</text>
   </g>
 

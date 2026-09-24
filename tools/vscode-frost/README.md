@@ -120,7 +120,7 @@ apps sharing a directory. `linux_boot` and `opensbi_smoke` are load-only
 composite images. FreeRTOS supports CPU/source inspection without task views.
 Debug benchmark timings are not reportable scores; use normal loading.
 
-Managed loads wait for image reset: 2040 ms at 300 MHz or 3830 ms at 150 MHz.
+Managed loads wait for image reset: 1916 ms at 322.265625 MHz or 3582 ms at half rate.
 After an external load, wait `ceil(4 * 2^27 * 1000 / CPU_clock_Hz) + 250` ms
 before Attach. Startup depends on the built ELF:
 

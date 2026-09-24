@@ -4,6 +4,13 @@ The wrapper connects the ROB, RAT, six reservation stations, LQ, SQ, CDB,
 adapters, and FU shims to `cpu_ooo.sv`. Cross-module glue lives here or in
 the private submodules below.
 
+`INT_RS_DEPTH` defaults to sixteen and supports powers of two from two through
+the 32-entry ROB capacity. The second INT issue port scans eight entries
+(`ISSUE2_WINDOW`), independently of capacity. Full/full-for-two checks reserve
+space at dispatch; service requires ready operands, an issue port and a ready
+FU. Occupancy counters use the selected depth's width. Changing INT RS depth
+leaves ROB/LQ/SQ capacity, completion credits and coherence bounds fixed.
+
 | Submodule | Dir | What it holds |
 |-----------|-----|---------------|
 | `tomasulo_perf_counters` | `perf/` | The 64 back-end performance counters: accumulate, snapshot into four banks, CSR-style readout. Left out when the wrapper's `PERF_COUNTERS` parameter is 0 (the production build). |
@@ -21,6 +28,11 @@ base arrives, the candidate latches the repaired base and drains on the next
 free cycle. A candidate is evicted by a newer un-ready store on the same slot,
 killed when MEM_RS issues its store (which also closes the ROB-tag-reuse
 window), and cleared on flush.
+
+Store-address repair classifies MMIO for each candidate in parallel, then
+selects by address-source priority. Classification uses low-32-bit sums;
+address capture uses full-width sums. With no match, both use a zero base.
+`sq_repair_mmio` checks both flags, including address wraparound.
 
 The per-RS dispatch-valid nets carry `(* max_fanout = 32 *)` both inside
 `dispatch_rs_router` and on the wrapper-side receiving nets, where the fanout
@@ -279,11 +291,12 @@ performs the wakeup. This is enabled by default in the wrapper and CPU.
 The merge never changes ROB completion, SQ delivery, retirement, or DMA
 observation lifetime.
 
-Early wakeup also enables MEM_RS's eight raw-wakeup pre-issue tag candidates
-and the LQ's matching candidate registers. The LQ captures the comparisons,
-selector, and qualifying valid on the same existing edge. While translation
-is active, every candidate carries the DMMU pre-issue tag, so the selector is
-irrelevant. The scalar hint remains an integration oracle for this wiring.
+Early wakeup enables eight MEM_RS pre-issue candidates from the raw registered
+CDB/load tags, selected by the two CDB valid bits and early-load eligibility.
+The LQ captures all eight CAM results, the selector and valid on one edge.
+Translation replicates the DMMU tag into every candidate. The scalar hint
+checks the wiring in simulation; `rs_raw_pretag` and `lq_prematch_cofactors`
+prove selection and retiming.
 
 The early token is formed from registered state only: the LQ's CDB-stage
 occupancy (`o_fu_complete_staged`) and the non-recovery terms of
@@ -332,30 +345,3 @@ checks repair timing and captured values for all three FMUL operands.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.
-
-`INT_RS_DEPTH` defaults to sixteen and propagates from `frost` through the CPU.
-Its supported bounds are powers of two from two through the 32-entry ROB
-capacity; measured capacity experiments use eight, sixteen and thirty-two.
-The RS alone grows: ROB tags, two-wide dispatch/issue, completion credits,
-LQ/SQ sizes, retirement observation and DMA coherence bounds are unchanged.
-The existing RS full/full-for-two admission checks still reserve space before
-dispatch, and service still requires operand readiness, an issue port and FU
-readiness. Occupancy counters use the selected depth's width. Sixteen helps
-the decoded-queue/early-load configuration; thirty-two adds negligible benefit.
-INT_RS's second issue port keeps an eight-entry window (`ISSUE2_WINDOW`; see
-the [reservation station](../reservation_station/README.md)) at any depth.
-
-Persistent store-address repair classifies the MMIO quadrant for each source in
-parallel, then applies the same source priority as the full-width address. The
-candidate sums need only the low 32 bits; address capture remains full width.
-No-match payloads retain the original zero-base result. `sq_repair_mmio` proves
-both flags against the original selected-address expression, including wraps.
-
-The integrated early-wakeup MEM_RS uses eight pre-issue candidates from the two
-registered CDB valid bits and early-load eligibility. Candidate tag data uses
-raw registered CDB/load tags, before the wakeup merger's lane muxes. The LQ
-registers all eight CAM outcomes and the three-bit selector on the original
-edge; translation replicates the DMMU tag into every candidate. Generic users
-retain the four merged-valid candidates. `rs_raw_pretag` checks the real merger
-against the RS winner; `lq_prematch_cofactors` proves both four- and eight-way
-retiming without an added cycle.

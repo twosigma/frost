@@ -2,17 +2,20 @@
 
 Run these tools natively on the Linux host with Vivado (validated with 2025.2),
 Python 3.12+, a JTAG cable, and the [RISC-V toolchain](../docs/tooling.md#shared-risc-v-toolchain)
-on PATH. The supported target is the Alveo X3522PV at 300 MHz.
+on PATH or in `linux/build-mmu/host/bin`. The supported target is the Alveo
+X3522PV at 322.265625 MHz.
 
 ## Quick Start
 
 ```bash
-./fpga/build/build.py x3
+./fpga/build/build.py x3 --cpu-base-clock-hz 322265625
 ./fpga/program_bitstream/program_bitstream.py x3
+export FROST_CPU_CLK_HZ=322265625
 ./fpga/load_software/load_software.py x3 coremark
 ```
 
-The bitstream includes Hello World. Loading a new app rebuilds it by default
+Set `FROST_CPU_CLK_HZ` in each shell used for loading or regression. The
+bitstream includes Hello World. Loading a new app rebuilds it by default
 and replaces BRAM/DDR contents without rebuilding the bitstream. Read the
 UART console at **115200 baud, 8N1**.
 
@@ -92,29 +95,22 @@ regressions; this also adjusts the Linux device tree and disables rated-clock
 benchmark score gates.
 
 ```bash
-./fpga/build/build.py x3 --cpu-clock-div 2
+./fpga/build/build.py x3 --cpu-base-clock-hz 322265625 --cpu-clock-div 2
 ./fpga/program_bitstream/program_bitstream.py x3
-FROST_CPU_CLK_HZ=150000000 ./fpga/load_software/load_software.py x3 hello_world
-FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_test
+FROST_CPU_CLK_HZ=161132812 ./fpga/load_software/load_software.py x3 hello_world
+FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 hello_world itlb_test
 ```
 
-The experimental roadmap clock is selectable with
-`--cpu-base-clock-hz 322265625` (default: `300000000`). It chooses the matching
-MMCM recipe, updates the block-design and initial software clocks, and requires
-timing evidence for that rate. Use a separate `--build-dir` and set
-`FROST_CPU_CLK_HZ=322265625` for subsequent loads and hardware regression
-(divide that value too when using `--cpu-clock-div`). Selecting the rate does
-not establish routed timing or a benchmark result. Target-clock builds leave
-the rated utilization table unchanged.
+Select a 322.265625 MHz base clock with `--cpu-base-clock-hz 322265625`
+(default: `300000000`). This sets the MMCM, block-design and initial software
+clocks. With `--cpu-clock-div 2`, use `FROST_CPU_CLK_HZ=161132812` for later
+loads and regression; without division, use `FROST_CPU_CLK_HZ=322265625`.
 
 Every build uses the same CPU defaults as CI: a four-bundle decoded queue,
 sixteen-entry INT RS, load preparation while the shared port is busy, and early
-memory wakeup. The second INT issue port retains its eight-entry window.
-The former `--single-core-performance` flag and board generic have been removed;
-omit that flag from older commands. CPU clock and profiling counters remain
-independent build options. Selecting the default architecture does not establish
-routed timing at a new clock. A resumed checkpoint keeps its synthesized
-architecture; updating an older build to the current defaults requires synthesis.
+memory wakeup. The second INT issue port scans eight entries. Clock and profiling
+counters are separate build options. Resuming a checkpoint preserves its
+synthesized architecture; RTL changes require a new synthesis.
 
 ## Profiling counters
 
@@ -140,9 +136,9 @@ riscv64-linux-gdb sw/apps/hello_world/sw.elf -ex 'target extended-remote :3333'
 ```
 
 The reset wait including guard is `ceil(4 * 2^27 * 1000 / CPU_clock_Hz) + 250`
-ms: 2040 ms at 300 MHz, 3830 ms at 150 MHz. Whole images use the JTAG loader;
-program-buffer memory access is slower. Software breakpoints work in BRAM
-and DDR; hardware breakpoints and data watchpoints are unavailable.
+ms: 1916 ms at 322.265625 MHz, 3582 ms at half rate. Whole images use the JTAG
+loader; program-buffer memory access is slower. Software breakpoints work in
+BRAM and DDR; hardware breakpoints and data watchpoints are unavailable.
 
 The manual [.vscode launch configuration](../.vscode/launch.json) attaches to
 an already loaded image using **FROST: X3 loaded hello_world (Phase A)** and
@@ -166,7 +162,7 @@ FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off
 ```
 
 ```bash
-./fpga/hw_regression.py --board x3
+FROST_CPU_CLK_HZ=322265625 ./fpga/hw_regression.py --board x3
 ```
 
 The runner needs local access to the export, write access to its
@@ -242,19 +238,17 @@ optimization result invalidates the previous placement approval, so rerun
 placement before resuming downstream stages. Missing or stale downstream
 lineage requires `--start-at post_place_physopt` from a qualified placement.
 `netlist_config.json` records profiling counters, the base clock and its divider
-at synthesis. Schema `x3_netlist_config_v3` identifies builds made after the CPU
-defaults were unified. Resumed builds preserve this record; an older checkpoint
-is never relabeled as the current architecture. Only a new-schema, 300 MHz,
-undivided build may update the reference table. Older checkpoints need a new
-synthesis before they can update that table.
+at synthesis, and resumed builds preserve that record. Updating the reference
+utilization table requires schema `x3_netlist_config_v3`, a 300 MHz base clock
+and no clock division. Synthesize again to update an older build's schema.
 
 Promoting a new post-opt checkpoint removes `audit_post_opt_*` and
 `post_opt_fence_*` reports from the work directory. Save any reports you need
 before rerunning optimization.
 
-The build updates the root README's utilization table from its last completed
-stage. The standalone `build/extract_timing_and_util_summary.py` instead uses
-the most advanced available reports.
+Eligible builds update the root README's utilization table from the last
+completed stage. To update it manually from the most advanced reports in
+`fpga/build/x3/work/`, run `./fpga/build/extract_timing_and_util_summary.py`.
 
 To route a completed phys-opt sweep while further sweeps continue, fork it
 into a separate board build directory:
@@ -287,12 +281,12 @@ signals, including the low 16 PC bits, and writes a probes file beside the
 bitstream. Combine it with `--cpu-clock-div 2` for a faster build.
 
 ```bash
-./fpga/build/build.py x3 --cpu-clock-div 2 --debug-ila
+./fpga/build/build.py x3 --cpu-base-clock-hz 322265625 --cpu-clock-div 2 --debug-ila
 ./fpga/program_bitstream/program_bitstream.py x3
 ./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4   # trigger: fetch-fault packet at that page offset
 FROST_ILA_ARM_HOOK=fpga/build/x3/work/ila_arm_hook.tcl \
   FROST_ILA_COLLECT_HOOK=fpga/build/x3/work/ila_collect_hook.tcl \
-  FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 linux_boot
+  FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 linux_boot
 ./fpga/debug/fetch_ila_report.py fpga/build/x3/work/fetch_ila.csv --before 200 --only if_ fp_
 ```
 

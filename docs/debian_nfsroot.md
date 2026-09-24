@@ -178,8 +178,9 @@ Build and program the bitstream, open the UART console, and load the tree's
 kernel and initramfs:
 
 ```bash
-./fpga/build/build.py x3
+./fpga/build/build.py x3 --cpu-base-clock-hz 322265625
 ./fpga/program_bitstream/program_bitstream.py x3
+export FROST_CPU_CLK_HZ=322265625
 K=6.12.107+deb13-riscv64   # step 3's K, the version in the tree's /boot
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
 FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off \
@@ -188,8 +189,8 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
   ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
-- Set `FROST_CPU_CLK_HZ` for a clock other than 300 MHz and use a unique
-  `FROST_LINUX_MAC` for each board.
+- Match `FROST_CPU_CLK_HZ` to the bitstream and use a unique `FROST_LINUX_MAC`
+  for each board.
 - `FROST_LINUX_IP` uses the kernel `ip=` syntax; unset defaults to DHCP.
 - Kernel and initramfs paths must be absolute and readable on the loading host.
   Debian's `vmlinux-<version>` is an uncompressed RISC-V `Image`; no conversion
@@ -197,7 +198,7 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-$K \
 - Check the packer's summary: `Linux Image` and `memory 0x40000000 B` for X3.
   Loading the image takes several minutes.
 
-At 300 MHz, allow about three minutes after loading for multi-user startup.
+Allow about three minutes after loading for multi-user startup.
 The console should show the NIC, `IP-Config: eth0 complete`, the NFS mount,
 and Debian/systemd startup. Divided-clock builds take roughly proportionally
 longer. `Unknown kernel command line parameters` for `boot=nfs`, `nfsroot`,

@@ -74,6 +74,7 @@ The loader builds missing components and packs images for the board's clock
 and DDR size:
 
 ```bash
+export FROST_CPU_CLK_HZ=322265625
 ./fpga/load_software/load_software.py x3 linux_boot
 ```
 

@@ -1,10 +1,9 @@
 # Frontend validity and decoded bundles
 
 `frontend_validity_tracker` tracks the IF/PD/ID image and prediction fences.
-The CPU defaults to `DECODED_QUEUE_DEPTH=4`: four **two-instruction bundles**
-in `decoded_bundle_queue`, shared by board builds and whole-core tests.
-The reusable module also supports nonzero power-of-two depths of at least two;
-depth zero selects the direct frontend's serialization and replay behavior.
+`decoded_bundle_queue` defaults to four **two-instruction bundles**
+(`DECODED_QUEUE_DEPTH=4`). It supports power-of-two depths of at least two;
+depth zero selects direct frontend serialization and replay.
 The queue passes an empty input through without adding latency. Registered full state
 stalls frontend replacement independently of backend resource stalls; a full
 queue does not accept a new bundle on its first pop cycle. A consumed-image
@@ -12,18 +11,18 @@ bit prevents an ID register held by an unrelated frontend stall from being
 accepted again. Every frontend advance must either have accepted its live
 image or already consumed it; the integration checks that contract.
 
-Dispatch pops a whole bundle only on the first ROB allocation request. The
-existing dispatch logic still handles the second instruction and resource
-admission atomically. Queued decode and prediction metadata address the live
+Dispatch pops a whole bundle only on the first ROB allocation request and
+handles the second instruction and resource admission atomically.
+Queued decode and prediction metadata address the live
 register-file and RAT read ports at dispatch; operand values are not frozen
 at enqueue. CSR in-flight, CSR writeback and serializing-allocation state
-continue to fence dispatch. A queued CSR is removed immediately, so the
-legacy direct-ID advance-only release assertion applies only with the queue
-disabled. The queue's once-only producer ownership replaces that mechanism.
+fence dispatch. A queued CSR is removed immediately, so the
+direct-ID advance-only release assertion applies only with the queue
+disabled.
 Unpredicted indirect jumps in queued bundles extend the frontend prediction
 fence. Full and partial frontend recovery discard all queued bundles and
 clear producer ownership. Debug stepping keeps user NOP bundles through the
-same existing `step_armed_fe_q` validity exception.
+`step_armed_fe_q` validity exception.
 
 Dispatch never reads the queue's LUTRAM directly. The oldest queued bundle
 is mirrored in flops (`head_packet_q`), and the output selects it or the
@@ -42,5 +41,5 @@ held-image ownership, occupancy and flush behavior at depths two and four.
 It uses an eight-bit arbitrary payload and assumes legal consumer pops and
 producer replacement. Cocotb runs 4,000 randomized cycles at each depth,
 including empty bypass, pointer wrap, full queues, simultaneous enqueue/pop,
-held images, reset and live flushes. Whole-core program tests discharge the
-integration contracts dynamically; this is not a whole-core formal proof.
+held images, reset and live flushes. Whole-core program tests check the
+integration contracts in simulation.
