@@ -19,15 +19,15 @@
 // and the JTAG DDR loader), the NIC's GTY transceiver (x3_nic_gty) and the
 // common FROST subsystem.
 module x3_frost #(
-    // CPU clock divider for functional-validation builds (build.py
+    // CPU clock divider for functional-testing builds (build.py
     // --cpu-clock-div exports it as FROST_CPU_CLK_DIV and synthesis passes
-    // it as a generic): divides the 322.265625 MHz CPU clock. The 300 MHz reference,
-    // the DDR4 controller and its clocking are unaffected.
+    // it as a generic). It divides the 322.265625 MHz CPU clock and its /4
+    // clock; the DDR4 and NIC transceiver clocks are unaffected.
     parameter int unsigned CPU_CLK_DIV = 1,
 
     // Profiling counters (build.py --perf-counters exports FROST_PERF_COUNTERS
-    // and synthesis passes it as a generic): 0 = absent, the full-rate production
-    // build; 1 for analysis builds such as a divided-clock one.
+    // and synthesis passes it as a generic): 1 includes them. build.py's
+    // default is 0 at full rate and 1 in divided-clock builds.
     parameter int unsigned PERF_COUNTERS = 0
 ) (
     input logic i_sysclk_n,  // Differential system clock negative
@@ -105,11 +105,10 @@ module x3_frost #(
   // Global clock buffer for the undivided main clock.
   // BUFGCE_DIV is an UltraScale+ primitive.
   BUFGCE_DIV #(
-      .BUFGCE_DIVIDE  (1),     // Divide by 1 (no division for main clock)
-      // Programmable inversion attributes (all disabled)
-      .IS_CE_INVERTED (1'b0),  // Clock enable not inverted
-      .IS_CLR_INVERTED(1'b0),  // Clear not inverted
-      .IS_I_INVERTED  (1'b0)   // Input not inverted
+      .BUFGCE_DIVIDE  (1),
+      .IS_CE_INVERTED (1'b0),
+      .IS_CLR_INVERTED(1'b0),
+      .IS_I_INVERTED  (1'b0)
   ) main_clock_buffer (
       .O(main_clock),
       .CE(1'b1),  // Clock enable always active
@@ -119,7 +118,7 @@ module x3_frost #(
 
   // Global clock buffer for the divide-by-4 JTAG/UART clock.
   BUFGCE_DIV #(
-      .BUFGCE_DIVIDE  (4),     // Divide by 4 for slower clock domain
+      .BUFGCE_DIVIDE  (4),
       .IS_CE_INVERTED (1'b0),
       .IS_CLR_INVERTED(1'b0),
       .IS_I_INVERTED  (1'b0)
@@ -179,7 +178,8 @@ module x3_frost #(
   // raw reset fans combinationally into both board clock domains). The
   // crossing is cut by the set_clock_groups -asynchronous in the xdc, which
   // declares the i_sysclk_p and default_300mhz_clk0 (DDR4) clock families
-  // asynchronous; the targeted false_path there is documentation only.
+  // asynchronous. The xdc's false path to this synchronizer is redundant with
+  // it and stays in case that grouping is narrowed.
   (* ASYNC_REG = "TRUE" *) logic [1:0] mem_ok_synchronizer;
   always_ff @(posedge main_clock) begin
     mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};
@@ -194,7 +194,7 @@ module x3_frost #(
   // location nothing has written since power-up reports an error against a
   // check code that was never computed. x3_ddr_init writes the region once
   // after calibration, and until it reports done the FROST subsystem and the
-  // JTAG image loader are both held in reset, so nothing else can read or
+  // JTAG DDR loader are both held in reset, so nothing else can read or
   // write the array first. The SmartConnect's own reset is not gated: the
   // initializer writes through it.
   logic ddr_init_busy, ddr_init_done;
@@ -238,7 +238,7 @@ module x3_frost #(
   // it is done, and to the cache hierarchy's bridge after. Only the request
   // side is selected: the subsystem is in reset for the whole initializing
   // window, so its own write requests are idle and the controller's ready and
-  // response lines can go to both readers unchanged.
+  // response lines can go to both masters unchanged.
   logic s00_awvalid, s00_wvalid, s00_wlast, s00_bready;
   logic [  4:0] s00_awid;
   logic [ 29:0] s00_awaddr;
@@ -259,10 +259,11 @@ module x3_frost #(
   assign s00_wlast = ddr_init_busy ? init_wlast : ddr_axi_wlast;
   assign s00_bready = ddr_init_busy ? init_bready : ddr_axi_bready;
 
-  // DDR4 subsystem block design: the controller (reference CONFIG) and a
-  // SmartConnect whose S00 is the FROST bridge below and S01 the JTAG
-  // DDR-image loader. Addresses are region-relative. The X3 has no push-button
-  // reset, so the controller is held in reset until the board MMCM locks.
+  // DDR4 subsystem block design (fpga/build/x3_ddr_bd.tcl): the controller and
+  // a SmartConnect whose S00 is the FROST bridge below (its write channels
+  // through the mux above) and whose S01 is the JTAG DDR-image loader.
+  // Addresses are region-relative. The X3 has no push-button reset, so the
+  // controller is held in reset until the board MMCM locks.
   ddr_subsys_wrapper ddr_subsystem (
       .cpu_clk(main_clock),
       .jtag_clk(divided_clock_by_4),

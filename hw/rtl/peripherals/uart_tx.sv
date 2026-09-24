@@ -144,8 +144,8 @@ module uart_tx #(
     end
   end
 
-  // Datapath registers. Their visibility is controlled by the resettable FSM
-  // state and ready/output-valid controls, so these flops do not need reset.
+  // Datapath registers. They are loaded when a byte is accepted and read only
+  // outside STATE_IDLE, so these flops do not need reset.
   always_ff @(posedge i_clk) begin
     unique case (current_state)
       STATE_IDLE: begin

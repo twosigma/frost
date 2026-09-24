@@ -72,6 +72,9 @@ module fp_multiplier #(
   localparam logic signed [ExpExtBits:0] MantBitsPlus3Signed = {1'b0, ExpExtBits'(MantBits + 3)};
   localparam logic [LzcBits-1:0] MantBitsPlus3Shift = LzcBits'(MantBits + 3);
 
+  // Depth of dsp_tiled_multiplier_unsigned at its default tiling, the same
+  // formula as riscv_pkg::dsp_tiled_stages. The metadata shift chain is this
+  // long, so it must match the multiplier's depth.
   localparam int unsigned MultATileWidth = 27;
   localparam int unsigned MultBTileWidth = 35;
   localparam int unsigned MultNumATiles = (MantBits + MultATileWidth - 1) / MultATileWidth;
@@ -222,7 +225,7 @@ module fp_multiplier #(
   logic        [           2:0] mult_rm             [MultLatency];
 
   // =========================================================================
-  // Stage 2B -> Stage 3 Pipeline Register (after multiply, before normalize)
+  // Stage 2 -> Stage 3 Pipeline Register (after multiply, before normalize)
   // =========================================================================
 
   logic                         result_sign_s3;

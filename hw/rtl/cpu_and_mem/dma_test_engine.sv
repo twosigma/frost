@@ -17,10 +17,10 @@
 /*
  * dma_test_engine: a small DMA master on the cache hierarchy's coherent DMA
  * port, driven from memory-mapped registers. It is the second agent the
- * coherence litmus tests need (a device that reads and writes cached DDR
- * behind the CPU's caches) and the reference for the behaviour the NIC's ring
- * engine must reproduce: data writes complete before the status write, and
- * the interrupt follows the status write's completion.
+ * coherence tests need (a device that reads and writes cached DDR behind the
+ * CPU's caches), and it keeps the completion order the NIC's ring engines
+ * also keep: data writes complete before the status write, and the interrupt
+ * follows the status write's completion.
  *
  * Registers (32-bit, word stride; the CPU sees them as a strongly ordered
  * device window, see hw/rtl/README.md "Memory Map"):
@@ -29,18 +29,18 @@
  *                while idle)
  *                R: bit 0 BUSY, bit 1 DONE, bit 2 ERROR, bit 3 IRQ pending
  *   0x04 ACK     W: any value clears DONE, ERROR and the interrupt
- *   0x08 SRC     source byte address (copy modes)
+ *   0x08 SRC     source byte address (copy mode)
  *   0x0C DST     destination byte address
  *   0x10 LEN     transfer length in bytes (0 performs no data transfer)
  *   0x14 MODE    bit 0: 0 = copy SRC to DST, 1 = fill DST;
  *                bit 1: write STATUS_VALUE to STATUS_ADDR after the data;
  *                bit 2: raise the interrupt on completion
- *   0x18 PATTERN fill mode writes PATTERN + i to the i-th dword of the
- *                transfer (i counts from DST's dword), so a reader can check
- *                the order in which values become visible
+ *   0x18 PATTERN fill mode writes PATTERN + i to the i-th 32-bit word of the
+ *                transfer (the word holding DST is word 0), so a reader can
+ *                check the order in which values become visible
  *   0x1C STATUS_ADDR  32-bit-aligned address of the status word
  *   0x20 STATUS_VALUE the status word
- *   0x24 LINES   R: line operations completed in the current/last transfer
+ *   0x24 LINES   R: DST line writes completed in the current or last transfer
  *
  * A transfer walks DST line by line. Copy mode reads the matching SRC line
  * first (SRC and DST must share their offset within a line), fill mode
@@ -49,23 +49,23 @@
  * strictly ordered: every data write has completed (the port's response,
  * which is the shared level's completion) before the status write is
  * issued, and the status write has completed before DONE and the interrupt
- * are raised. That is the completion-ordering contract the driver-facing
- * NIC engine must keep.
+ * are raised.
  *
  * Aperture: SRC, DST and STATUS_ADDR must fall inside the cached region
  * [APERTURE_BASE, APERTURE_BASE + APERTURE_BYTES) and a transfer must not
  * wrap out of it; otherwise START sets ERROR and moves nothing (and raises
  * no interrupt). START copies every transfer register into the active
- * transfer, so writes while BUSY program the next transfer only. ABORT
- * issues nothing further (no data line, no status write), waits for the
- * outstanding response, then reports ERROR without DONE and raises the
- * interrupt if the transfer enabled it; requests already accepted are never
+ * transfer, so writes while BUSY program the next transfer only.
+ *
+ * ABORT issues nothing further (no data line, no status write), waits for
+ * any outstanding response, then reports ERROR without DONE and raises the
+ * interrupt if the transfer enabled it. Requests already accepted are never
  * cancelled, so the caller must not reuse the buffers until BUSY falls. An
  * ABORT that lands in the cycle the transfer completes has no effect (the
- * transfer reports DONE): an abort can always race a completion.
- * Reset (the CPU's reset) does the same
- * implicitly: the engine issues nothing in reset, and a response to a
- * request accepted before reset is dropped.
+ * transfer reports DONE): an abort can always race a completion. Reset (the
+ * CPU's reset) also stops a transfer without cancelling accepted requests:
+ * the engine issues nothing in reset, and a response to a request accepted
+ * before reset is dropped.
  */
 module dma_test_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -148,7 +148,7 @@ module dma_test_engine #(
   logic [31:0] cur_line_q;  // DST byte address of the line being worked (line-aligned)
   logic [31:0] end_addr_q;  // DST + LEN (exclusive)
   logic [31:0] src_line_q;  // SRC line address matching cur_line_q
-  logic [31:0] dword_idx_q;  // index of the line's first dword within the transfer
+  logic [31:0] dword_idx_q;  // 32-bit word offset of this line from the first DST line
   logic [LineBits-1:0] line_data_q;
   logic abort_pending_q;
   // The active transfer's copy of the programming registers, taken at START.
@@ -183,8 +183,8 @@ module dma_test_engine #(
     end
   end
 
-  // Fill data: PATTERN + i for the i-th dword of the transfer, counted from
-  // DST's dword (lane dst_q[OffsetBits-1:2] of the first line is dword 0).
+  // Fill data: PATTERN + i for the i-th 32-bit word of the transfer (word
+  // lane a_dst_q[OffsetBits-1:2] of the first line is word 0).
   logic [LineBits-1:0] fill_data;
   always_comb begin
     for (int d = 0; d < int'(LINE_BYTES / 4); d++) begin
@@ -192,7 +192,7 @@ module dma_test_engine #(
     end
   end
 
-  // Status word positioned in its dword lane with a 4-byte strobe.
+  // Status word placed in its 32-bit lane of the line with a 4-byte strobe.
   logic [  LineBits-1:0] status_data;
   logic [LINE_BYTES-1:0] status_strb;
   always_comb begin

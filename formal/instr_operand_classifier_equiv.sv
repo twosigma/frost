@@ -14,9 +14,11 @@
  *    limitations under the License.
  */
 
-// Compare the direct classifier against ID's previous operation-enum decode,
-// for every instruction and every combination of bubble/fault overrides.
-// The reference below deliberately retains those original operation lists.
+// Checks instr_operand_classifier, which classifies operands directly from
+// the instruction fields, against a reference that decodes the operation enum
+// with instr_decoder and classifies it by operation lists. Covers every
+// instruction bit pattern and every combination of injected NOP, illegal
+// flag, and fetch fault.
 module instr_operand_classifier_equiv (
     input riscv_pkg::instr_t i_instr,
     input logic i_inject_nop,
@@ -178,10 +180,9 @@ module instr_operand_classifier_equiv (
     endcase
 
     is_fence_pre = op_for_pre_decode == riscv_pkg::FENCE;
-    // SFENCE.VMA rides the FENCE.I machinery (plan D8): FENCE.I's backend
-    // serialization and sync are a superset of what it needs.  is_sfence_vma_pre
-    // is the qualifying sideband for the TVM/U privilege gate and the M4 TLB
-    // invalidate.
+    // SFENCE.VMA uses the FENCE.I path: FENCE.I's back-end serialization and
+    // cache sync are a superset of what it needs. is_sfence_vma_pre marks it
+    // for the TVM/U-mode privilege check and the TLB invalidate.
     is_fence_i_pre = (op_for_pre_decode == riscv_pkg::FENCE_I) ||
                      (op_for_pre_decode == riscv_pkg::SFENCE_VMA);
     is_sfence_vma_pre = op_for_pre_decode == riscv_pkg::SFENCE_VMA;

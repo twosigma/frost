@@ -19,19 +19,20 @@
 
   Pure combinational module that extracts fields from a packed FP operand
   and classifies it (zero, subnormal, infinity, NaN, signaling NaN). Shared
-  by fp_adder, fp_multiplier, fp_fma, fp_divider, fp_sqrt, and fp_convert.
+  by fp_adder, fp_multiplier, fp_fma, fp_div_sqrt_iter, and fp_convert, and by
+  the fp_divider and fp_sqrt reference models in hw/sim.
 
   Outputs:
-    o_sign        - Sign bit
-    o_exp         - Raw exponent field
-    o_exp_adj     - Adjusted exponent (subnormals use exp=1 instead of 0)
-    o_frac        - Raw fraction field (without implicit bit)
-    o_mant        - Full mantissa with implicit leading bit (1.frac or 0.frac)
-    o_is_zero     - Operand is +/-0
-    o_is_subnormal- Operand is subnormal (denormalized)
-    o_is_inf      - Operand is +/-infinity
-    o_is_nan      - Operand is NaN (quiet or signaling)
-    o_is_snan     - Operand is signaling NaN
+    o_sign          Sign bit
+    o_exp           Raw exponent field
+    o_exp_adj       Adjusted exponent (subnormals use exp=1 instead of 0)
+    o_frac          Raw fraction field (without implicit bit)
+    o_mant          Full mantissa with implicit leading bit (1.frac or 0.frac)
+    o_is_zero       Operand is +/-0
+    o_is_subnormal  Operand is subnormal (denormalized)
+    o_is_inf        Operand is +/-infinity
+    o_is_nan        Operand is NaN (quiet or signaling)
+    o_is_snan       Operand is signaling NaN
 */
 module fp_operand_unpacker #(
     parameter int unsigned FP_WIDTH  = 32,

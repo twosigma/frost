@@ -15,14 +15,17 @@
  */
 
 /*
-  C-extension instruction-buffer state. Parcel selection and PC updates live
+  C-extension fetch state: the instruction buffer that keeps a word after a
+  compressed instruction in its low half, so the next instruction can come from
+  the high half; the fetch word saved at stall entry for replay; and a
+  registered copy of the instruction size. Parcel selection and PC updates live
   elsewhere.
 
   State updates are blocked during flush so garbage instructions from the old
   PC path cannot corrupt state. i_flush is if_stage's frontend_state_flush: a
-  short registered pulse per event (mispredict recovery, FENCE-class recovery,
-  trap, MRET). It is not asserted for BTB/RAS predictions or PD redirects.
-  control_flow_tracker handles those changes with holdoffs.
+  short pulse, decoded from registered state, per event (mispredict recovery,
+  FENCE-class recovery, trap, xRET). It is not asserted for BTB/RAS predictions
+  or PD redirects; control_flow_tracker handles those changes with holdoffs.
 */
 module c_ext_state #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -40,7 +43,7 @@ module c_ext_state #(
     input logic i_control_flow_holdoff,  // Registered: stale instruction cycle
     input logic i_any_holdoff_safe,  // Holdoff using only registered signals
     input logic i_prediction_holdoff,  // Registered: prediction happened last cycle (clear state)
-    input logic i_prediction_reset_state,  // Non-buffer prediction redirected fetch this cycle
+    input logic i_prediction_reset_state,  // Registered: slot-1 or slot-2 prediction last cycle
     input logic i_pending_prediction_active,  // pc_reg still consumes old-path instruction sizes
     input logic i_pending_prediction_target_handoff,  // Old-path control-flow op just redirected
     input logic i_pending_prediction_target_holdoff,  // Bubble while halfword branch PC catches up
@@ -48,9 +51,9 @@ module c_ext_state #(
 
     // Instruction data
     input logic [    31:0] i_effective_instr,     // Current effective instruction word
-    // BRAM word order doesn't match pc_reg (bank_sel_r ^ pc_reg[2])
+    // Unused. BRAM word order doesn't match pc_reg (bank_sel_r ^ pc_reg[2]).
     input logic            i_fetch_word_swapped,
-    input logic [XLEN-1:0] i_pc,                  // Current fetch PC
+    input logic [XLEN-1:0] i_pc,                  // Current fetch PC (unused)
     input logic [XLEN-1:0] i_pc_reg,              // Registered PC
 
     // Instruction type detection (from instruction aligner)
@@ -63,9 +66,9 @@ module c_ext_state #(
     // except when the consumed data comes from the saved stall snapshot.
     input logic i_fetch_progress,
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_sideband,
-    // Fetch-fault status of the current effective word ({fault, page kind},
-    // Phase 3 M5). Captured beside the word so a buffered faulted word still
-    // delivers a fault-tagged bundle.
+    // Fetch-fault status of the current effective word ({fault, page kind}).
+    // Captured beside the word so a buffered faulted word still delivers a
+    // fault-tagged bundle.
     input logic [1:0] i_instr_fault,
 
     // 2-wide bundle metadata: slot-2 valid this cycle.  When it is set and
@@ -77,17 +80,17 @@ module c_ext_state #(
     output logic [31:0] o_instr_buffer,
     output logic o_prev_was_compressed_at_lo,
     output logic o_is_compressed_for_buffer,  // Stall-restored is_compressed
-    output logic o_is_compressed_for_pc,  // Registered is_compressed for PC increment (timing)
+    output logic o_is_compressed_for_pc,  // Registered is_compressed (unused by the PC logic)
     output logic o_use_buffer_after_prediction,  // Use buffer after predicted buffered instruction
-    // Exact F=0,H=0,R=0 cofactor of o_use_buffer_after_prediction, where F is
-    // the registered FENCE-class flush, H is the registered control-flow
-    // holdoff, and R is the registered prediction reset. Served-window
-    // coverage and the aligner's fast-size selector consume this timing-only
-    // companion. Architectural buffer selection keeps all three masks.
+    // o_use_buffer_after_prediction without its F, H, and R masks (its value
+    // when all three are low): F = i_fence_i_flush, H = i_control_flow_holdoff,
+    // R = i_prediction_reset_state, all registered. The aligner uses this
+    // timing-only copy for its fast size selects and slot-2 BTB candidate bits;
+    // its buffer select uses the fully masked output.
     output logic o_use_buffer_after_prediction_timing,
-    // The two holdoff-release edges of the cofactor above without its
-    // i_prediction_holdoff mask, so if_stage can apply that late mask at the
-    // final buffer-select MUXF8 of its coverage qualification.
+    // The copy above before its i_prediction_holdoff mask (the two
+    // holdoff-release edges), so if_stage can apply that late mask in the
+    // final buffer-select MUXF8 of its served-window coverage check.
     output logic o_use_buffer_after_prediction_edge,
     output logic o_is_compressed_saved,  // Saved is_compressed for fast path
     output logic o_saved_values_valid,  // Saved values are valid (not invalidated by control flow)
@@ -110,9 +113,10 @@ module c_ext_state #(
   logic is_compressed_for_pc_capture;
   // A stall-captured IF word must remain replayable for the rest of the stall.
   // Registered prediction/control-flow holdoffs can arrive a cycle later than
-  // the captured instruction; if they clear saved_values_valid mid-stall, IF
-  // falls back to the live BRAM word while PC metadata remains held, creating
-  // wrong PC/instruction pairings like 0x78 -> 0x38.
+  // the captured instruction; if they cleared saved_values_valid mid-stall, IF
+  // would fall back to the live BRAM word while the PC metadata stays held,
+  // pairing an instruction with the wrong PC. So they invalidate the saved
+  // values only outside a registered stall.
   assign invalidate_saved_values_holdoff =
       !i_stall_registered &&
       (i_control_flow_holdoff || i_prediction_holdoff || i_prediction_reset_state);
@@ -168,11 +172,7 @@ module c_ext_state #(
   // Testing ~i_stall as well would be redundant:
   //   - If unstalling: saved values are correct
   //   - If still stalled: value isn't consumed anyway (gated by ~stall elsewhere)
-  //   - If wasn't stalled: saved_values_valid is false, so live values are used
-  //
-  // The earlier form was
-  // just_unstalled = ~i_stall && i_stall_registered && saved_values_valid,
-  // whose ~i_stall term sat in the critical path.
+  //   - If no stall is registered: live values are used
   logic use_saved_values;
   assign use_saved_values = i_stall_registered && saved_values_valid;
 
@@ -195,10 +195,11 @@ module c_ext_state #(
       i_prediction_reset_state &&
       is_compressed_for_buffer &&
       !i_pc_reg[1];
-  // While a pending prediction merely walks an older compressed low parcel,
-  // preserve its upper sibling for the next sequential packet. Keep the raw
-  // data capture independent of the handoff control cone: stale payload is
-  // harmless whenever its one-bit valid state is clear.
+  // While a pending prediction waits and pc_reg is at an older compressed
+  // instruction in a low half, keep the word so its upper sibling is available
+  // to the next sequential packet. Keep the raw data capture independent of
+  // the handoff control cone: stale payload is harmless whenever its one-bit
+  // valid state is clear.
   assign capture_pending_prediction_buffer =
       i_pending_prediction_active &&
       i_prediction_holdoff &&
@@ -213,7 +214,7 @@ module c_ext_state #(
   assign prediction_reset_buffer_state =
       i_prediction_reset_state && !preserve_lo_compressed_buffer_on_prediction;
 
-  // Export stall-restored is_compressed for use by pc_controller and spanning detection
+  // Export the stall-restored is_compressed (IF uses it for the RAS input)
   assign o_is_compressed_for_buffer = is_compressed_for_buffer;
 
   // Export saved values for instruction_aligner's fast path
@@ -256,14 +257,10 @@ module c_ext_state #(
     else if (!i_stall) prediction_from_buffer_holdoff_prev <= i_prediction_from_buffer_holdoff;
   end
 
-  // For timing, expose the exact i_fence_i_flush=0, i_control_flow_holdoff=0,
-  // i_prediction_reset_state=0 cofactor separately. The caller proves that R
-  // implies H and that F/H squash every fast-size and coverage consumer.
-  // Prediction-delivery cycles remain masked by i_prediction_holdoff in this
-  // companion and in the canonical aligner selection. Keep this masked function
-  // as the single shared companion for the aligner, branch predictor, and
-  // served-window comparators. Equivalent per-consumer copies change synthesis
-  // partitioning and lengthen the PC recurrence on X3.
+  // Timing copies (see the port list): _timing leaves out the F, H, and R
+  // masks, and _edge also leaves out i_prediction_holdoff, which IF applies
+  // last. IF asserts that R implies H and that F or H squashes every consumer
+  // of these copies, so the missing F, H, and R masks are never observed.
   assign o_use_buffer_after_prediction_edge =
       (prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
       (pending_prediction_target_holdoff_prev && !i_pending_prediction_target_holdoff);
@@ -310,12 +307,6 @@ module c_ext_state #(
   // Buffer the current word when processing a compressed instruction at instr_lo,
   // so the next instruction (at instr_hi) can access the same word.
   //
-  // The stall state preservation logic (effective_instr_saved,
-  // use_saved_values, effective_instr_for_buffer) is defined earlier in the
-  // file because other logic depends on it.
-
-  // Buffer state register updates
-  //
   // A BTB prediction can fire on the next word while IF is still outputting the
   // low half of a compressed pair. In that case the upper-half sibling still
   // needs the current buffer state for one more cycle, so preserve only the
@@ -323,15 +314,14 @@ module c_ext_state #(
   // prediction_holdoff in the following cycle still clears the state before the
   // predicted target starts executing.
 
-  // Complete both slot-2-valid outcomes, including pending handoff clear,
-  // before the late slot-2 bit selects the next buffer-valid state. The
-  // no-handoff expression remains as a simulation oracle for clear priority.
+  // i_slot2_valid arrives late, from alignment and holdoff arbitration, so
+  // compute the next buffer-valid state for both of its values, including the
+  // pending handoff clear, and select last. prev_was_compressed_at_lo_without_handoff
+  // (the next state before the handoff clear) feeds only the simulation check.
   logic prev_was_compressed_at_lo_without_handoff;
   logic [1:0] prev_without_handoff_cases;
   (* keep = "true" *) logic [1:0] prev_compressed_next_cases;
   logic prev_compressed_next;
-  // Slot-2 validity arrives from alignment/holdoff arbitration. Complete both
-  // next-state outcomes (including handoff clear) before selecting that bit.
   for (genvar slot2 = 0; slot2 < 2; slot2++) begin : gen_buffer_slot2_case
     always_comb begin
       prev_without_handoff_cases[slot2] = o_prev_was_compressed_at_lo;
@@ -359,9 +349,10 @@ module c_ext_state #(
   end
 
 `ifndef SYNTHESIS
-  // Preserve the original priority equation as an independent one-step
-  // oracle. This equality requires no assumptions about upstream controls or
-  // the current buffer state, including simultaneous reset/capture/handoff.
+  // Reference priority equation for the next buffer-valid state, checked
+  // against the split form every cycle. The check needs no assumptions about
+  // upstream controls or the current buffer state, including simultaneous
+  // reset, capture, and handoff.
   logic prev_was_compressed_at_lo_priority_ref;
   always_comb begin
     prev_was_compressed_at_lo_priority_ref = o_prev_was_compressed_at_lo;
@@ -396,10 +387,10 @@ module c_ext_state #(
 
   // Data register: no reset needed. o_prev_was_compressed_at_lo gates when
   // buffer data is used, and that signal is reset. After reset, buffer data
-  // cannot be selected until valid data has been written. Removing reset from
-  // these 32 FFs drops the reset tree connectivity, which helps timing and area.
-  // Exclude prediction holdoff so stale post-redirect data cannot enter the
-  // buffer and later be selected by use_instr_buffer.
+  // cannot be selected until valid data has been written. Leaving these FFs
+  // off the reset tree helps timing and area. Exclude prediction holdoff so
+  // stale post-redirect data cannot enter the buffer and later be selected by
+  // use_instr_buffer.
   always_ff @(posedge i_clk) begin
     if (!i_stall && (i_fetch_progress || use_saved_values) &&
         (!i_any_holdoff_safe || capture_pending_prediction_buffer) &&
@@ -417,21 +408,15 @@ module c_ext_state #(
   end
 
   // ===========================================================================
-  // Registered is_compressed for PC Increment (Timing Optimization)
+  // Registered is_compressed
   // ===========================================================================
-  // Register is_compressed for use in the PC increment calculation path. That
-  // increment feeds a 32-bit adder (CARRY8 chain) on the critical path, and the
-  // registered copy breaks the path from the stall logic through is_compressed
-  // to the adder.
+  // o_is_compressed_for_pc registers the stall-restored is_compressed.
+  // pc_controller passes it to pc_increment_calculator, which does not use it:
+  // the PC advance selects carry the instruction size.
   //
-  // Reset to 0, the conservative assumption: a 32-bit parcel, so PC steps by 4.
-  // Keep the old-path size alive through the immediate prediction cycle: if IF
-  // has already fetched ahead to a predicted branch, pc_reg may still need one
-  // more compressed +2 step before it reaches the branch PC.
-  //
-  // Do not sample is_compressed_for_buffer on sel_nop cycles. Those bubbles can
-  // still carry stale BRAM bytes from an old control-flow path, and latching
-  // their apparent 16-bit parcel size corrupts pc_reg and shifts later PCs.
+  // Reset and the control-flow holdoff clear it to 0 (a 32-bit parcel). It
+  // does not sample while a prediction is pending, or on sel_nop cycles, whose
+  // bubbles can carry stale BRAM bytes from an old control-flow path.
   always_ff @(posedge i_clk) begin
     if (i_reset || i_control_flow_holdoff) begin
       o_is_compressed_for_pc <= 1'b0;
@@ -443,11 +428,12 @@ module c_ext_state #(
 
 `ifdef FORMAL
 `ifndef C_EXT_STATE_LOCAL_PROOF
-  // The integrated producer relationships keep both legacy buffer-release
-  // history sources clear. In particular, an atomic target handoff may still
-  // capture the raw owner word, but it must suppress the one-bit valid-state
-  // override that formerly made the wrong-path upper sibling selectable.
-  // Exercise both cofactors so the clear-dominance proof is non-vacuous.
+  // With the real producers (the prediction_release and prediction_handoff
+  // targets), both buffer-release history registers stay clear. An atomic
+  // target handoff may still capture the owner's raw word, but it must not set
+  // the one-bit valid state, which would make the wrong-path upper sibling
+  // selectable. The covers exercise capture with and without a handoff, so the
+  // clear-priority proof is not vacuous.
   always_ff @(posedge i_clk) begin
     if (!i_reset) begin
       // Both upstream holdoff registers advance on the same delivery enable,

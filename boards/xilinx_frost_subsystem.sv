@@ -15,8 +15,8 @@
  */
 
 // Common subsystem for Xilinx FPGA boards: the FROST CPU, the JTAG image
-// programming path, and the reset sequencing around them. Board-specific top
-// modules supply clock generation and board I/O.
+// programming path, the BSCAN debug transport, and the reset sequencing around
+// them. Board-specific top modules supply clock generation and board I/O.
 module xilinx_frost_subsystem #(
     // CPU clock frequency in Hz. Must match the clock the board wrapper drives
     // on i_clk. The UART sits on i_clk_div4, so its baud divisor is derived
@@ -24,15 +24,15 @@ module xilinx_frost_subsystem #(
     parameter int unsigned CLK_FREQ_HZ = 322265625,
     // Cached-tier configuration, set by the board top. Hardware boards with a
     // real DDR controller pass ENABLE_CACHED_TIER=1 and USE_BEHAVIORAL_DDR=0.
-    // The defaults leave the tier off for a future board that has not wired up
-    // DDR yet. The full-system FROST hierarchy includes the UltraRAM L2.
+    // The defaults leave the tier off, for a BRAM-only board. The cached tier
+    // includes the UltraRAM L2.
     parameter int unsigned ENABLE_CACHED_TIER = 0,
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
     // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports below, wired to the
     // board's DDR controller subsystem (hardware board tops drive 0).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
-    // L1 instruction-cache size in bytes. The default matches X3; retaining a
-    // parameter keeps cache-size experiments and future board wrappers simple.
+    // L1 instruction-cache size in bytes. The default is the X3's; other boards
+    // and cache-size experiments can override it.
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,

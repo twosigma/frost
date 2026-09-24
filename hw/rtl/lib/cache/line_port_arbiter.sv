@@ -18,38 +18,35 @@
  * line_port_arbiter: N:1 arbiter for tagged line ports.
  *
  * NUM_PORTS upstream line-port slaves multiplexed onto one downstream master.
- * Every port speaks the tagged line protocol (hw/rtl/lib/cache/README.md).
- * Fixed priority by port index: port 0 wins whenever it is requesting, port 1
- * when port 0 is not, and so on. frost_cache_hierarchy composes a 2:1
- * instance (walker > L1I) under a starvation-bounded 3:1 instance
- * (L1D > walker/L1I > DMA): a data miss stalls committed work, a walk
- * unblocks a load that is stalling commit, fetch runs ahead through its
- * buffer, and DMA drains a device's buffers.
+ * Every port speaks the tagged line protocol ("Line protocol" in
+ * hw/rtl/lib/cache/README.md). Fixed priority by port index: port 0 wins
+ * whenever it is requesting, port 1 when port 0 is not, and so on.
+ * frost_cache_hierarchy composes a 2:1 instance (walker over L1I) under a
+ * starvation-bounded 3:1 instance (L1D, then that pair, then DMA).
  *
- * Ids compose: the downstream id is {port index, upstream id}, so responses
- * are steered back to their port by the prefix alone and the downstream
- * slave sees ids that are unique across every upstream master. There is no
- * grant lock. A request flows whenever the downstream is ready, however many
- * transactions are already in flight, and the loser of a cycle fires on a
- * later one. rdata is broadcast and qualified by the per-port response valid.
+ * The downstream id is {port index, upstream id}, so responses are steered
+ * back to their port by the prefix alone and the downstream slave sees ids
+ * that are unique across every upstream master. There is no grant lock. A
+ * request flows whenever the downstream is ready, however many transactions
+ * are already in flight, and the loser of a cycle fires on a later one.
+ * rdata is broadcast and qualified by the per-port response valid.
  *
- * STARVATION_LIMIT > 0 bounds the wait of a lower-priority port: a port that
+ * STARVATION_LIMIT > 0 bounds the wait of a lower-priority port. A port that
  * has watched that many grants go to other ports while presenting a request
- * becomes starved and wins over every unstarved port (the lowest starved
- * port if several), then the fixed order resumes. Several ports can starve
- * together, so a port waits at most STARVATION_LIMIT + NUM_PORTS - 2
- * competing grants; that needs STARVATION_LIMIT >= NUM_PORTS - 1 (checked
- * at elaboration), or a lower starved port could re-starve before a higher
- * one is served. Counting grants rather than cycles keeps the bound under
- * downstream backpressure, where a cycle count would saturate for every
- * waiting port between two acceptances and the lowest would win each time.
- * 0 keeps pure fixed priority. The hierarchy's top arbiter uses the bound so
- * the DMA port has a progress guarantee under a sustained stream of
- * CPU-side misses.
+ * is starved and wins over every port that is not (the lowest starved port if
+ * several), then the fixed order resumes. Several ports can starve together,
+ * so a port waits at most STARVATION_LIMIT + NUM_PORTS - 2 competing grants.
+ * That needs STARVATION_LIMIT >= NUM_PORTS - 1 (checked at elaboration), or a
+ * lower-index starved port could starve again before a higher-index one is
+ * served. The bound counts grants, not cycles: under downstream backpressure
+ * a cycle count would saturate for every waiting port between two
+ * acceptances, and the lowest index would win each time. 0 keeps pure fixed
+ * priority. The hierarchy's top arbiter uses the bound to give the DMA port
+ * a progress guarantee under a sustained stream of CPU-side misses.
  *
- * The maintenance provenance bit (passive observer classification) travels
- * with each request: the downstream sees the winning port's bit on every
- * fire, so a lower cache's traffic statistics stay exact whichever port wins.
+ * The maintenance bit travels with the granted request, so a lower cache can
+ * leave fence.i writeback traffic out of its performance counters whichever
+ * port wins.
  */
 module line_port_arbiter #(
     parameter int unsigned NUM_PORTS = 2,
@@ -98,9 +95,9 @@ module line_port_arbiter #(
       $fatal(1, "line_port_arbiter: NUM_PORTS exceeds the port-index width");
   end
 
-  // Starvation bound: grants to other ports each port has waited through
-  // with a request presented, saturating at the limit. Absent entirely when
-  // the bound is 0.
+  // Starvation bound: per port, the grants to other ports it has waited
+  // through while presenting a request, saturating at the limit. Absent
+  // entirely when the bound is 0.
   logic [NUM_PORTS-1:0] starved;
   (* dont_touch = "true" *)logic [NUM_PORTS-1:0] at_limit;
   if (STARVATION_LIMIT != 0) begin : gen_starvation
@@ -130,15 +127,15 @@ module line_port_arbiter #(
   end
 
   // Grant, one-hot: the lowest starved requesting port, else the lowest
-  // requesting port index, else port 0 while nothing requests (so the idle
-  // payload is port 0's, as an encoded select of 0 presents it; ready and the
-  // fire are qualified by any_valid). Each grant bit is written as a flat
-  // function of the port valids and limit flags rather than as a priority
-  // chain, and synthesis keeps the nets, so a requester valid reaches the
-  // downstream payload through one grant level and one select level: the
-  // downstream (an L2) continues from that payload into its own accept
-  // decision within the same cycle. p_grant_is_priority checks the grant
-  // against the priority rule in its encoded form.
+  // requesting port, else port 0 while nothing requests (the idle payload is
+  // then port 0's, as an encoded select of 0 presents it; ready and the fire
+  // are qualified by any_valid). Each grant bit is a flat function of the
+  // port valids and limit flags, not a priority chain, and synthesis keeps
+  // the nets, so a request valid reaches the downstream payload through one
+  // grant level and one select level. The downstream (the L2 in the full
+  // system) makes its own accept decision from that payload in the same
+  // cycle. p_grant_is_priority checks the grant against the priority rule in
+  // its encoded form.
   (* dont_touch = "true" *)logic [NUM_PORTS-1:0] grant;
   logic [NUM_PORTS-1:0] grant_generic;
   logic [NUM_PORTS-1:0] valid_below, starved_below;  // any lower port
@@ -161,9 +158,10 @@ module line_port_arbiter #(
 
 `ifdef FROST_XILINX_PRIMS
   if ((NUM_PORTS == 3) && (STARVATION_LIMIT != 0)) begin : gen_three_port_grant
-    // Three request bits plus three registered-limit predicates fit one
-    // LUT6. An explicit table prevents sharing the intermediate any-starved
-    // term from serializing the late request before the downstream accept.
+    // Three request bits plus three registered limit flags fit one LUT6 per
+    // grant bit. Explicit LUTs keep synthesis from sharing the any-starved
+    // term, which would add a logic level between the late request valid and
+    // the downstream accept.
     function automatic logic [63:0] grant_truth(input int winner);
       logic [2:0] requests, limits;
       int selected;
@@ -218,8 +216,8 @@ module line_port_arbiter #(
   end
 `endif
 
-  // Pass-through request path: the granted payload, the winner's fire. An
-  // AND-OR select over the one-hot grant maps to a single level per bit.
+  // Pass-through request path: the granted port's payload, AND-OR selected by
+  // the one-hot grant (one LUT level per bit for up to three ports).
   logic dn_write, dn_maint;
   logic [  ADDR_WIDTH-1:0] dn_addr;
   logic [LINE_BYTES*8-1:0] dn_wdata;
@@ -249,10 +247,10 @@ module line_port_arbiter #(
   assign o_down_req_id          = {sel, dn_id};
   assign o_down_req_maintenance = dn_maint;
 
-  // Ready mirrors the downstream ready so both seams fire in the same cycle
-  // and payload capture lines up; a requesting port is ready only while it
-  // is the granted one, which is the whole priority rule. With nothing
-  // requesting every port sees the downstream ready.
+  // Ready mirrors the downstream ready, so an upstream fire and its
+  // downstream fire happen in the same cycle. A requesting port is ready only
+  // while it holds the grant, which is what enforces the priority. With
+  // nothing requesting, every port sees the downstream ready.
   always_comb begin
     for (int p = 0; p < int'(NUM_PORTS); p++) begin
       o_up_req_ready[p] = i_down_req_ready && (!any_valid || grant[p]);

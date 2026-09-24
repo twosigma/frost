@@ -16,55 +16,33 @@
 
 /*
  * walker_coherence_sequencer: makes the page-table walker's line reads
- * coherent with the L1D before they reach the shared level (L2, or main
- * memory without one), the ordering point for every port below the L1s.
+ * coherent with the L1D before they reach the shared level (the L2, or
+ * memory without one). The walker port is a read-only tagged line port with
+ * one read in flight, so this is the read-only, one-entry counterpart of
+ * dma_coherence_sequencer. Each accepted read goes through:
  *
- * The walker port is a read-only tagged line port (hw/rtl/lib/cache/README.md)
- * with one read in flight, the read-only single-entry sibling of
- * dma_coherence_sequencer. Each accepted read walks these phases:
- *
- *   PROBE       PROBE_CLEAN to the L1D: a dirty copy is written back
- *               (accepted by the shared level before the acknowledgement)
- *               and stays valid and clean;
- *   PROBE_WAIT  the probe's acknowledgement;
- *   ISSUE       the read is presented downstream from a request register;
- *               its acceptance by the shared level orders it behind that
- *               writeback and releases the L1D probe slot;
+ *   PROBE       PROBE_CLEAN to the L1D: a dirty copy is written back and
+ *               stays valid and clean.
+ *   PROBE_WAIT  the probe's acknowledgement, which the L1D sends once the
+ *               level below has acknowledged any writeback the probe caused.
+ *   ISSUE       the read is presented downstream from a request register.
+ *               Its acceptance releases the L1D probe slot.
  *   RESP        the shared level's response passes straight through to the
- *               walker port, unregistered, as the bare port delivered it.
+ *               walker port.
  *
- * Contract toward the walker. A read returns the line as ordered at the
- * shared level behind any dirty L1D copy present at the probe's decision, so
- * a page-table store that has reached the L1D is visible to every later walk
- * read without a writeback-all. Stores still in the store queue are not
- * covered: they drain to the L1D in program order, so a walk that observes a
- * later page-table store observes every earlier one as well, and a walk that
- * observes neither sees the tables as they stood before both, a translation
- * valid since the last sfence.vma, which the architecture permits. What the
- * bare port could produce, and this sequencer cannot, is a mixture: a new
- * pointer read from the shared level with the stale table it points to.
+ * A read therefore returns the line as ordered behind any dirty L1D copy
+ * present at the probe's decision. Once accepted, it completes on its own: no
+ * step waits on the walker, the pipeline, commit, or the store queue, and
+ * walks cannot deadlock with cache maintenance. "The page-table walker port"
+ * in hw/rtl/lib/cache/README.md explains why this is enough for coherence
+ * (stores still in the store queue need not be covered) and why progress
+ * holds.
  *
- * Progress. Once accepted a read completes on its own. The probe waits only
- * on L1D transients that resolve through the shared level and DDR (a fill or
- * writeback of the line in flight) and on a probe slot, of which the L1D
- * elaborates one more than the DMA sequencer can hold, so one is always free
- * for this port; the acknowledgement waits for the dirty writeback's
- * acceptance below; the issue waits for the arbiter tree, whose higher-
- * priority L1D traffic is finite while the CPU stalls on the walk; the
- * response is unconditional. Nothing here waits on the walker, the pipeline,
- * commit, the store queue, or cache maintenance. The probe slot is released
- * at the read's acceptance, which never waits on maintenance, so a
- * writeback-all that waits for the probe slots to empty always gets them; a
- * probe that arrives while maintenance is requested parks in the hierarchy's
- * injection register, outside the L1D pipeline that maintenance drains. A
- * walk discarded by sfence.vma or a satp write still consumes its response
- * (ptw.sv), so the port never carries a response nobody collects.
- *
- * Timing. Ready, the probe request and the downstream request are dedicated
- * flops, twins of the state register, so the walker's request-valid
- * precompute, the hierarchy's probe capture and the arbiter tree each see one
- * register; the release is a registered pulse; the response passes through
- * untouched, so the walker's PTE capture path is the one it had.
+ * Timing: ready, the probe request, and the downstream request are flops that
+ * track the state register, so the walker, the hierarchy's probe capture, and
+ * the arbiter tree each see one flop. The release is a registered pulse. The
+ * response is not registered, so the sequencer adds nothing to the walker's
+ * PTE capture path.
  */
 module walker_coherence_sequencer #(
     parameter int unsigned ADDR_WIDTH = 32,

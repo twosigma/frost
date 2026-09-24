@@ -20,8 +20,9 @@ read -sv lq_l0_cache.sv
 read -sv lq_issue_selector.sv
 read -formal -sv -D LQ_AMO_COMPUTE_LOCAL_PROOF load_queue.sv
 prep -top load_queue
-# Pin the AMO proof's named properties without counting unrelated helper
-# checks that production elaboration may also retain. All checks still run.
+# Count only the named checks this proof relies on (p_local_*, cover_local_*,
+# p_lq_*_free_tree_*), so other assertions in load_queue.sv do not change the
+# counts. Every check still runs.
 select -assert-count 22 t:$check r:FLAVOR=assert %i load_queue/p_local_* %i
 select -assert-count 1 t:$check r:FLAVOR=cover %i load_queue/cover_local_* %i
 select -assert-count 4 t:$check load_queue/p_lq_*_free_tree_* %i

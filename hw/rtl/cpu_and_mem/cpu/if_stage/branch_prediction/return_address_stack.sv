@@ -26,12 +26,13 @@
  *   coroutine  JALR with rd in {x1, x5}, rs1 = x1, rd != rs1,   pop then push
  *              imm = 0 (32-bit only; C.JALR is always a call)
  *
- * Both the raw registered state and a post-operation next-state checkpoint are
- * exposed. IF carries the next-state form with a concurrently emitted younger
- * packet, so recovery includes any older pipelined push or pop.
- *
- * Push and pop are registered; the lookup is combinational. Current live BTB
- * ownership does not qualify the older RAS classification.
+ * The operation inputs describe the packet IF registered the cycle before, so
+ * the live BTB lookup's slot-1/slot-2 alias check does not gate them. Push and
+ * pop update the state at the clock edge; the lookup is combinational. Both
+ * the registered state and a next-state checkpoint that includes this cycle's
+ * operation are exported. IF gives the next-state form to the younger packet
+ * it emits alongside, so recovery keeps older pipelined pushes and pops
+ * (hw/rtl/cpu_and_mem/cpu/README.md, "Return address stack recovery").
  */
 module return_address_stack #(
     parameter int unsigned RAS_DEPTH = 8,
@@ -44,21 +45,19 @@ module return_address_stack #(
     // Instruction type detection (from ras_detector)
     input logic i_is_call,      // JAL/JALR with rd in {x1, x5} - PUSH
     input logic i_is_return,    // JALR with rs1 = x1, rd = x0 - POP
-    input logic i_is_coroutine, // JALR with both rd and rs1 as link regs - POP then PUSH
+    input logic i_is_coroutine, // JALR with rd = x5, rs1 = x1 - POP then PUSH
 
     // Link address to push (pre-computed in IF stage as PC+2/4)
     input logic [riscv_pkg::XLEN-1:0] i_link_address,
 
-    // Prediction gating (same as BTB)
+    // Pop permission; pushes do not depend on it
     input logic i_prediction_allowed,
     // Write-side prediction gating with only registered stall state. This keeps
     // the late backend stall cone off the distributed RAM write enable.
     input logic i_prediction_allowed_for_write,
     // BTB-only prediction holdoff: unused, kept for interface compatibility.
-    // It used to allow a RAS pop while the BTB predicted, which corrupted the
-    // stack when a trap, mret or branch_taken landed during the holdoff (see
-    // the pop_allowed comment). A pop now requires prediction_allowed, and
-    // recovery handles the rest.
+    // Pops are blocked during it through i_prediction_allowed (see
+    // pop_allowed).
     input logic i_btb_only_prediction_holdoff,
 
     // Misprediction recovery from EX stage
@@ -128,9 +127,10 @@ module return_address_stack #(
   // placing the dispatch/fullness cone on the RAS RAM write enable.
   assign capture_op_inputs = !i_stall_registered;
 
-  // Do not pop during btb_only_prediction_holdoff: a simultaneous redirect can
-  // flush the instruction before EX recovery, leaving the RAS corrupted. EX
-  // handles the pop during ras_pop_after_restore.
+  // Do not pop during the BTB-only prediction holdoff: a redirect in the same
+  // cycle can flush the instruction before recovery, leaving the stack
+  // corrupted. Recovery performs the pop instead (i_pop_after_restore).
+  // i_prediction_allowed is low during that holdoff, so it alone gates pops.
   logic pop_allowed;
   logic pop_possible;
   logic pop_possible_for_write;
@@ -146,9 +146,8 @@ module return_address_stack #(
   // Return: pop only, when the instruction is not also a coroutine swap.
   assign do_pop = i_is_return && !i_is_coroutine && pop_possible;
 
-  // Push calls on the first cycle they are observed, including stall-entry.
-  // Replay after stall does not re-push because capture_op_inputs is false once
-  // stall_registered takes over.
+  // Push a call on any cycle without a registered stall (see
+  // capture_op_inputs).
   assign do_push = i_is_call && !i_is_coroutine && capture_op_inputs;
   // Coroutine replay after a checkpoint restore.  {pop,push}_after_restore ==
   // 2'b11 is the reserved swap encoding (ex_comb_synthesizer): pop then push,
@@ -163,13 +162,12 @@ module return_address_stack #(
                             (do_restore_push || do_restore_swap ||
                              (!i_misprediction &&
                               (do_pop_then_push_write || do_push)));
-  // The swap writes at the restored TOS, replacing that entry, which mirrors
-  // the live coroutine path's write at `tos`. A plain restore-push writes above
-  // it. On the normal arm the registered coroutine classification is enough to
-  // choose TOS versus TOS+1 whenever WE is asserted: normal WE is either a
-  // coroutine replacement or a non-coroutine call push. Keeping the
-  // write-permission cone out of the address mux shortens the replicated RAM
-  // WADR path and preserves the existing restore priority.
+  // A restore swap writes at the restored TOS, replacing that entry like the
+  // live coroutine's write at `tos`; a restore push writes above it. On the
+  // normal path i_is_coroutine alone picks TOS or TOS+1, because a normal
+  // write is either a coroutine replacement or a non-coroutine call push.
+  // Keeping the write-permission terms out of this mux shortens the RAM
+  // write-address path.
   assign ras_write_address = do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
                              do_restore_swap ? i_restore_tos :
                              (i_is_coroutine ? tos : tos_plus_one);
@@ -177,8 +175,9 @@ module return_address_stack #(
                               i_push_address_after_restore : i_link_address;
 
 `ifndef SYNTHESIS
-  // Exact oracle for the former normal-address expression. Outside WE the
-  // optimized address is unconstrained, and no RAM state can change.
+  // Reference write address, choosing TOS by do_pop_then_push_write. It must
+  // match whenever the write enable is set; otherwise the address has no
+  // effect.
   logic [RAS_PTR_BITS-1:0] ras_write_address_legacy;
   assign ras_write_address_legacy =
       do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
@@ -208,31 +207,25 @@ module return_address_stack #(
   // ===========================================================================
   // Prediction Output
   // ===========================================================================
-  // Predicted return address for returns and coroutines, valid whenever the
-  // stack is not empty.
+  // Predicted return address for the return or coroutine on the
+  // classification inputs, valid whenever the stack is not empty.
   //
-  // The prediction describes the instruction presented on the classification
-  // inputs.  The production IF stage pipelines those inputs by one cycle; it
-  // separately forwards the post-operation checkpoint below to the younger
-  // packet that is emitted while this instruction updates the stack.
-  // o_ras_valid does not gate on i_prediction_allowed. The consumer already
-  // does: sel_ras_prediction gates ras_valid with ras_prediction_allowed,
-  // which includes prediction_common. Leaving the gate out
-  // here keeps o_ras_valid on registered signals, is_return and is_coroutine
-  // from the pipelined detector and stack_not_empty from the registered
-  // valid_count, which breaks the deep combinational path
-  // prediction_common → ras_prediction_allowed → o_ras_valid → sel_ras_prediction
+  // o_ras_valid is not gated by i_prediction_allowed; the consumer applies
+  // that gate (sel_ras_prediction uses ras_prediction_allowed, which includes
+  // prediction_common). Leaving it out keeps o_ras_valid a function of
+  // registered signals (the pipelined classification and valid_count), off
+  // the prediction_common -> ras_prediction_allowed -> sel_ras_prediction path.
   assign o_ras_valid = (i_is_return || i_is_coroutine) && stack_not_empty;
   assign o_ras_target = ras_read_data;
 
   // ===========================================================================
   // Checkpoint Output
   // ===========================================================================
-  // Keep the raw registered state visible for prediction/recovery diagnostics.
-  // The explicit next-state checkpoint is the state after the operation on
-  // this edge.  IF carries that version on the concurrently emitted younger
-  // packet, so an older delayed call is not lost (and an older delayed return
-  // is not resurrected) if that younger packet later mispredicts.
+  // The raw outputs expose the registered state for diagnostics and tests.
+  // The next-state checkpoint is the state after this edge's operation. IF
+  // attaches it to the younger packet emitted alongside, so if that packet
+  // later mispredicts, an older delayed call stays pushed and an older delayed
+  // return stays popped.
 
   assign o_checkpoint_tos = tos;
   assign o_checkpoint_valid_count = valid_count;
@@ -242,12 +235,11 @@ module return_address_stack #(
   // ===========================================================================
   // Stack Update Logic
   // ===========================================================================
-  // Compute the state that the edge will commit once, then use it for both the
-  // state flops and the post-operation checkpoint.  This keeps the forwarded
-  // checkpoint definition mechanically identical to the actual state update.
-  // Recovery from misprediction takes priority over normal operations.
-  // Permission arrives after fetch validity and prediction guards. Compute
-  // both exact next checkpoints first, then select that late bit once.
+  // Compute the next state once and use it for both the state flops and the
+  // next-state checkpoint, so the two cannot differ. Recovery takes priority
+  // over normal operations. i_prediction_allowed arrives late, so compute the
+  // next state for both of its values (k = 0 blocks pops, k = 1 allows them)
+  // and select once at the end.
   (* keep = "true" *)logic [RAS_PTR_BITS-1:0] tos_candidate  [2];
   (* keep = "true" *)logic [  RAS_PTR_BITS:0] count_candidate[2];
   for (genvar k = 0; k < 2; k++) begin : gen_checkpoint_permission
@@ -259,13 +251,10 @@ module return_address_stack #(
         tos_candidate[k]   = '0;
         count_candidate[k] = '0;
       end else if (i_misprediction) begin
-        // Restore the checkpoint. This takes priority over the normal operations.
-        // With pop_after_restore set, also decrement for the return that caused
-        // the restore. That covers two cases:
-        //   - A non-spanning return that popped and then mispredicted: the
-        //     restore undoes the pop, and this re-pops.
-        //   - A spanning return that could not pop: the restore is a noop, and
-        //     this performs the pop.
+        // Restore the checkpoint, which excludes the mispredicted instruction's
+        // own operation, then apply that operation: pop_after_restore pops for
+        // a return, push_after_restore pushes for a call, and both together are
+        // a coroutine swap.
         if (restore_swap_req) begin
           // Coroutine replay: pop then push is net-zero on depth and only
           // replaces the top entry, so both pointers stay at the checkpoint.
@@ -309,6 +298,9 @@ module return_address_stack #(
   assign valid_count_next = i_prediction_allowed ? count_candidate[1] : count_candidate[0];
 
 `ifdef RAS_CHECKPOINT_LOCAL_PROOF
+  // Reference next state for the ras_checkpoint formal target: the same
+  // priority written once, with do_pop and do_pop_then_push (which include
+  // i_prediction_allowed) in place of the two candidates.
   logic [RAS_PTR_BITS-1:0] tos_next_reference;
   logic [  RAS_PTR_BITS:0] valid_count_next_reference;
   always_comb begin
@@ -319,17 +311,7 @@ module return_address_stack #(
       tos_next_reference = '0;
       valid_count_next_reference = '0;
     end else if (i_misprediction) begin
-      // Restore the checkpoint. This takes priority over the normal operations.
-      // With pop_after_restore set, also decrement for the return that caused
-      // the restore. That covers two cases:
-      //   - A non-spanning return that popped and then mispredicted: the
-      //     restore undoes the pop, and this re-pops.
-      //   - A spanning return that could not pop: the restore is a noop, and
-      //     this performs the pop.
       if (restore_swap_req) begin
-        // Coroutine replay: pop then push is net-zero on depth and only
-        // replaces the top entry, so both pointers stay at the checkpoint.
-        // With an empty restored stack IF performs neither half, same result.
         tos_next_reference = i_restore_tos;
         valid_count_next_reference = i_restore_valid_count;
       end else if (i_pop_after_restore && i_restore_valid_count != '0) begin
@@ -348,12 +330,9 @@ module return_address_stack #(
       end
     end else begin
       if (do_pop_then_push && !i_stall_registered) begin
-        // Coroutine: the pop and the push cancel, so TOS keeps its position
-        // and valid_count keeps its value.
+        // Coroutine: no change.
       end else if (do_push) begin
         tos_next_reference = tos_plus_one;
-        // A push onto a full stack overwrites the oldest entry, so the count
-        // saturates at RAS_DEPTH.
         if (valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
           valid_count_next_reference = valid_count + (RAS_PTR_BITS + 1)'(1);
         end

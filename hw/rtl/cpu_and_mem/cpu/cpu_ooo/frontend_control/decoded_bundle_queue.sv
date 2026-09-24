@@ -15,22 +15,18 @@
  */
 
 // Fall-through queue between the held ID register and atomic bundle dispatch.
-// i_advance replaces the producer's register at this edge. A held image may be
-// accepted once, even while an unrelated frontend stall prevents replacement.
-// The consumer re-reads architectural operands and rename state at dispatch;
-// queued payloads contain decode/prediction metadata, not renamed operands.
+// ID's output register is the producer; i_advance means it loads a new bundle
+// at this edge. The queue accepts each producer image once (consumed_q), even
+// while an unrelated front-end stall holds it for several cycles. The
+// consumer ignores operand values read at decode: it reads the register files
+// and rename state when it dispatches, so renaming sees every older
+// instruction.
 //
-// TIMING: the oldest queued bundle is mirrored in head_packet_q, so dispatch
-// sees a flop (or the producer's register on the empty bypass) behind one
-// 2:1 mux with a registered select, not a LUTRAM read addressed by head_q.
-// The mirror's D mux is selected by the pop, whose other inputs are
-// registered state and the producer register.
-//
-// A narrow shadow slice (for the CPU: the rename/regfile addressing fields)
-// goes further: o_shadow is a register holding exactly the slice of o_packet
-// the consumer sees, bypass included, so the consumer's highest-fanout
-// address bits start at a flop with no select LUT. That needs the producer
-// register's next-edge value (i_shadow_next); i_shadow is its current value.
+// o_shadow is a register holding exactly the narrow slice of o_packet the
+// consumer sees, bypass included (in cpu_ooo, the bundle's narrow control
+// fields, including the register fields that address the RAT and register
+// files). It needs the producer register's current value (i_shadow) and its
+// next-edge value (i_shadow_next).
 module decoded_bundle_queue #(
     parameter int unsigned DEPTH = 4,
     parameter int unsigned WIDTH = 32,
@@ -54,11 +50,17 @@ module decoded_bundle_queue #(
 );
   localparam int unsigned PtrBits = $clog2(DEPTH);
   logic [WIDTH-1:0] packet_q[DEPTH];
-  // Mirror of packet_q[head_q] whenever the queue is nonempty.
+  // Mirror of packet_q[head_q] whenever the queue is nonempty. TIMING:
+  // dispatch sees this flop (or the producer's register on the empty bypass)
+  // behind one 2:1 mux with a registered select, not a LUTRAM read addressed
+  // by head_q. The mirror's D mux is selected by the pop, whose other inputs
+  // are registered state and the producer register.
   logic [WIDTH-1:0] head_packet_q;
   logic [WIDTH-1:0] head_packet_if_pop, head_packet_if_hold;
   (* max_fanout = 64 *) logic nonempty_q;
   logic nonempty_next;
+  // TIMING: out_shadow_q (o_shadow) goes further than the packet mirror: the
+  // consumer's highest-fanout bits start at a flop with no select LUT.
   logic [SHADOW_WIDTH-1:0] shadow_q[DEPTH];
   logic [SHADOW_WIDTH-1:0] head_shadow_q, head_shadow_next, out_shadow_q;
   logic [DEPTH-1:0] indirect_q, live_q;

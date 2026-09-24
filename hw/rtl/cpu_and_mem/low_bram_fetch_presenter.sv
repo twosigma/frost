@@ -15,22 +15,22 @@
  */
 
 /*
- * One-entry request repeater for the low instruction BRAM's variable-latency
- * metadata fallback. The state is the request presented on the last edge. An
- * unready out-of-overlay response repeats that exact VA/PA/fault bundle,
- * unless the preceding response published and advanced the live PC. In that
- * case the new live request becomes the owed request immediately. A response
- * that becomes ready while publication is held stays presented until it can
- * publish. Ready overlay responses leave the original live-PC fast path
- * intact.
+ * One-entry request repeater for the low instruction BRAM, whose fetches
+ * outside the predecode overlay take a second cycle (imem_predecode). The
+ * state is the request presented on the last edge. While its response is not
+ * ready, or is ready but publication is held, the presenter repeats that
+ * exact VA/PA/fault bundle on the memory pins, so the response stays
+ * presented until it can publish; otherwise the live request goes out.
+ * Overlay responses are ready every cycle and keep the live-PC path.
  *
  * A registered front-end retarget cancels a stale repeat on the same edge that
  * the architectural fetch PC moves. An unresolved physical pair is never
  * repeated: the live physical result must be sampled until it becomes visible.
- * SEPARATE_ADDRESS_RETARGET lets the cached integration omit a high-provider
- * transition from low PA bits [15:0] only. Upper region bits, metadata and
- * response controls keep the canonical retarget; the caller must mask low
- * responses while the high provider owns the request.
+ * SEPARATE_ADDRESS_RETARGET lets the cached integration leave the transition to
+ * the high provider out of the retarget for PA bits [15:0] only. The VA,
+ * PA[31:16], PA validity, fault flags, and response controls keep the full
+ * retarget, and the caller must mask low responses while the high provider
+ * owns the request.
  */
 module low_bram_fetch_presenter #(
     parameter bit SEPARATE_ADDRESS_RETARGET = 1'b0
@@ -49,9 +49,10 @@ module low_bram_fetch_presenter #(
     // The presenter is kept small and has no PC detector of its own, so IF
     // supplies this.
     input logic i_retarget,
-    // Optional low-address cofactor. The caller masks low responses while
-    // crossing into the high provider. Upper PA bits keep the canonical
-    // retarget so that overlay qualification and history cannot alias low.
+    // Retarget for PA bits [15:0] only, used when SEPARATE_ADDRESS_RETARGET is
+    // set. The caller masks low responses while crossing into the high
+    // provider. The upper PA bits keep i_retarget, so the overlay check and
+    // the address history see a crossing request as high, never as low.
     input logic i_address_retarget,
     input logic [31:0] i_pc,
     input logic [31:0] i_pa0,
@@ -128,16 +129,15 @@ module low_bram_fetch_presenter #(
   // publication edge, it remains response-ready for one residual cycle.
   // Suppress that duplicate while the pins chase the newly advanced live PC.
   //
-  // Overlay hits are exempt. Their response is ready every cycle, which is the
-  // original no-bubble default-program path, and they keep the always-valid
-  // low-BRAM contract through backend stalls: IF's saved-response machinery
-  // owns that cadence, and the live pins must stay free to preserve the
-  // default CoreMark schedule. A registered overlay-hit response already
-  // proves the preceding memory request was in the timed low range, so it
-  // stays outside the slow presenter's owner/PA-valid cone. Otherwise these
-  // state flops would sit at the head of the fast fetch-valid -> PC
-  // recurrence. Publication holding and duplicate suppression apply only to
-  // the slow fallback response that this presenter buffers.
+  // Overlay hits are exempt. Their response is ready every cycle, with no
+  // bubble, and stays valid through backend stalls: IF's saved-response logic
+  // handles those stalls, and the live pins stay free so code in the overlay
+  // (such as the default CoreMark build) keeps its fetch schedule. A
+  // registered overlay hit already proves the preceding memory request was in
+  // the overlay range, so its valid skips the presenter's owner and PA-valid
+  // flops, which would otherwise sit at the head of the fetch-valid -> PC
+  // path. Publication hold and duplicate suppression apply only to the slow
+  // responses this presenter buffers.
   assign o_response_valid = i_response_overlay_hit ||
       (presented_owner_low_q && presented_pa_valid_q && i_response_ready &&
        !i_publish_hold && !slow_response_published_q);

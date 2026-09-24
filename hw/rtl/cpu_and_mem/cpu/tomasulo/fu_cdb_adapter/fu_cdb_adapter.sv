@@ -22,8 +22,8 @@
  * same cycle, the adapter latches the result and re-presents it on subsequent
  * cycles until granted. It also:
  *
- *   - Raises `o_result_pending` so the RS stalls new issues while a result
- *     waits for CDB access.
+ *   - Raises `o_result_pending` while it holds a result; the wrapper uses it
+ *     for back-pressure.
  *   - Passes a result through with zero latency when the arbiter grants on
  *     the cycle the FU result arrives. Set REGISTER_OUTPUT for long-latency
  *     or non-critical FUs when the pass-through valid cone hurts timing.
@@ -32,19 +32,21 @@
  *     is younger than `i_flush_tag`, measured from `i_rob_head_tag`. A
  *     younger result arriving on the flush cycle is suppressed both in the
  *     pass-through path and in the grant-refill capture, so it cannot
- *     survive as held state. Speculative full-flush CDB suppression happens
- *     once at the arbiter.
+ *     survive as held state. A full flush does not hide the output in the
+ *     flush cycle: the arbiter's kill suppresses the broadcast once for all
+ *     adapters.
  *
- * State machine (1 bit: result_pending):
+ * State machine (1 bit: result_pending), with the default parameters:
  *
  *   IDLE + no input        -> output invalid, ready for new result
  *   IDLE + input valid     -> combinational pass-through to arbiter
  *     granted same cycle   -> stay IDLE (zero latency)
  *     not granted          -> latch into register, go PENDING
  *   PENDING                -> output from register, waiting for grant
+ *     not granted          -> keep presenting; any new input is ignored
  *     granted + new input  -> latch new input, stay PENDING (back-to-back)
- *     granted + no input   -> clear register, go IDLE
- *     flush / partial flush of held tag -> clear register, go IDLE
+ *     granted + no input   -> go IDLE
+ *     flush / partial flush of held tag -> go IDLE
  */
 
 module fu_cdb_adapter #(
@@ -52,7 +54,7 @@ module fu_cdb_adapter #(
     // Set to 0 only when the integration guarantees that a pending adapter
     // cannot receive a valid FU payload.  Under that contract the wide data
     // register can use i_fu_result.valid directly as its write enable, while
-    // ALLOW_GRANT_REFILL continues to control result_pending unchanged.
+    // ALLOW_GRANT_REFILL still controls result_pending.
     parameter bit ALLOW_GRANT_REFILL_PAYLOAD_WRITE = 1'b1,
     parameter bit REGISTER_OUTPUT = 1'b0
 ) (
@@ -66,14 +68,13 @@ module fu_cdb_adapter #(
     output riscv_pkg::fu_complete_t o_fu_complete,
     input  logic                    i_grant,
 
-    // Unqualified view of the existing payload register.  The wrapper uses
-    // this Q directly in a pending ALU's pre-edge tree fallback.  The same Q
-    // feeds the restore mux that recovers a granted ALU pass-through value
-    // after the CDB register boundary, under a same-edge captured live-source
-    // selector.  Neither use adds another wide register bank.
+    // held_result.value, unqualified. The wrapper uses it as the merge-tree
+    // fallback value for a pending ALU result, and to restore a granted ALU
+    // pass-through value after the CDB register (CDB arbiter README, "Live ALU
+    // values"). Neither use needs a wide register of its own.
     output logic [riscv_pkg::FLEN-1:0] o_held_value,
 
-    // Back-pressure to RS
+    // A result is held here (back-pressure for the producer)
     output logic o_result_pending,
 
     // Pipeline flush (full)
@@ -119,11 +120,10 @@ module fu_cdb_adapter #(
   );
   // The input-side kill asserts on any cycle the input presents a
   // flushed-younger result, including the grant-refill cycle with
-  // result_pending high.  Without that case a doomed same-cycle issue is
-  // captured into held_result and re-presented after the flush.  CoreMark hit
-  // this on the ALU slot: the refilled result lost arbitration for ~20 cycles
-  // and then broadcast to a long-freed ROB entry.  Consumers that care only
-  // about the idle pass-through case are all !result_pending-guarded already.
+  // result_pending high.  Without that case a squashed result issued in the
+  // flush cycle would be refilled into held_result and broadcast after the
+  // flush, possibly to a reallocated ROB tag.  The uses that concern only the
+  // idle pass-through are guarded by !result_pending on their own.
   assign partial_flush_input = i_flush_en & i_fu_result.valid & is_younger(
       i_fu_result.tag, i_flush_tag, i_rob_head_tag
   );
@@ -132,9 +132,9 @@ module fu_cdb_adapter #(
   // Output logic (combinational)
   // ---------------------------------------------------------------------------
   // A pass-through result hit by a same-cycle partial flush is suppressed
-  // here. The full-flush kill sits at the CDB arbiter instead, so this
-  // one-deep adapter never carries i_flush through its output or held-result
-  // control cone.
+  // here. The full-flush kill sits at the CDB arbiter instead, so i_flush
+  // reaches only result_pending, not this output mux or the held_result
+  // write enable.
   //
   // Only .valid carries the partial-flush kill; the payload (value, tag, and
   // the rest) passes through un-squashed. Every consumer qualifies the
@@ -176,15 +176,16 @@ module fu_cdb_adapter #(
     end
   end
 
-  // Data: held_result (no reset - gated by result_pending)
+  // Data: held_result (no reset; result_pending gates its visibility).
   // Writing the pass-through payload even on same-cycle grant/flush is safe:
   // result_pending is the only visibility bit, so any stale idle payload stays
   // dormant until the next pending capture overwrites it. This keeps grant and
-  // full-flush off the wide held_result control cone.
+  // full-flush off the wide held_result control cone. The wrapper's
+  // o_held_value uses depend on this capture of every idle input.
   generate
     if (ALLOW_GRANT_REFILL_PAYLOAD_WRITE) begin : gen_grant_refill_payload_write
-      // Preserve the default implementation verbatim so adapters that allow
-      // payload refill retain their existing elaborated CE structure.
+      // Capture an idle input, or the refill input on a granted pending
+      // result.
       always_ff @(posedge i_clk) begin
         if ((ALLOW_GRANT_REFILL && result_pending && i_grant && i_fu_result.valid) ||
             (!result_pending && i_fu_result.valid)) begin
@@ -453,9 +454,9 @@ module fu_cdb_adapter #(
   // Flushed-tag discipline.  Once a flush squashes the watched tag, either as
   // held state or as a same-cycle input (the grant-refill cycle included),
   // that tag must not appear on o_fu_complete until a new input re-presents
-  // it under ROB tag reuse.  This is the adapter-local pin of the
-  // producer-side stale-CDB contract, and a grant-refill arm without the
-  // input filter is exactly the escape it catches.
+  // it under ROB tag reuse.  This checks the adapter's part of the producer
+  // rule in the tomasulo README ("CDB priority and tag reuse"); a grant-refill
+  // arm without the input filter would fail it.
   // -------------------------------------------------------------------------
   (* anyconst *) logic [TagW-1:0] f_watch_tag;
 

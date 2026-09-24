@@ -15,12 +15,12 @@
  */
 
 /*
- * Formal-only conservative abstraction of pc_increment_calculator. The
- * prediction-release proof does not depend on increment arithmetic, so every
- * output is left unconstrained. This admits every production transition plus
- * arbitrary additional PC movements; a passing result is therefore stronger
- * than one tied to a particular increment model. The verdict outputs remain
- * only to mirror the production module's retained observation interface.
+ * Formal-only stand-in for pc_increment_calculator in the prediction_release
+ * and prediction_handoff targets. Every output is unconstrained, which admits
+ * every real PC movement and more, so a pass does not depend on the increment
+ * arithmetic. The fetch-verdict outputs exist only to match the real
+ * module's ports; they feed an observation bus the harness leaves
+ * unconnected.
  */
 // verilog_lint: waive module-filename
 module pc_increment_calculator #(
@@ -33,8 +33,9 @@ module pc_increment_calculator #(
     input logic i_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
-    // The production module's i_sel_nop cofactors of the two selects, whose
-    // final 2:1 mux i_sel_nop steers. Unused here, like the selects.
+    // The real module's copies of the two selects for i_sel_nop = 0 (_run)
+    // and 1 (_nop), between which i_sel_nop picks last. Unused here, like the
+    // selects.
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,

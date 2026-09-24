@@ -14,8 +14,10 @@
  *    limitations under the License.
  */
 
-// FPU Compare Unit Wrapper
-// Wraps S and D fp_compare instances with tracking FSM, NaN-boxing, and dest reg capture.
+// FP compare unit: single- and double-precision fp_compare instances for
+// FEQ/FLT/FLE and FMIN/FMAX. fp_compare takes one operation at a time, so a
+// started flag blocks a new start until the result is valid. o_dest_reg returns
+// the i_dest_reg captured at the start.
 module fpu_compare_unit #(
     parameter int unsigned FP_WIDTH_D = 64
 ) (
@@ -70,9 +72,8 @@ module fpu_compare_unit #(
   riscv_pkg::fp_flags_t                  flags_d;
 
   assign o_valid = valid_s | valid_d;
-  // NaN-box only FP results (FMIN.S/FMAX.S). FEQ/FLT/FLE produce an integer
-  // 0/1 that must zero-extend: boxing it would corrupt rd once the shim
-  // consumes the full carrier width (XLEN=64).
+  // NaN-box only the FP results (FMIN.S/FMAX.S). An FEQ/FLT/FLE result is an
+  // integer 0 or 1 for rd, so it is zero-extended instead.
   assign o_result = valid_s ? (is_compare_s ? FP_WIDTH_D'(result_s) : box32(
       result_s
   )) : valid_d ? result_d : '0;

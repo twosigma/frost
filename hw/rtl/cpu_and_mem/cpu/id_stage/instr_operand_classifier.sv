@@ -15,11 +15,13 @@
  */
 
 // Classify dispatch operands directly from instruction fields, in parallel
-// with instr_decoder. The decoder remains the authority for legality: its
-// verdict qualifies the completed class at the output, avoiding the serial
-// instruction -> operation enum -> operand-class decode on the ID D path.
-// i_instr is PD's raw instruction; i_illegal is the verdict for the injected
-// NOP when i_inject_nop is set, combined with PD's illegal flag, as in ID.
+// with instr_decoder, so the serial instruction -> operation enum ->
+// operand-class decode stays off the ID D path. The decoder still decides
+// legality: at the output, i_inject_nop selects the NOP's class, and i_illegal
+// or i_fetch_fault then selects the neutral class. i_instr is PD's instruction
+// before the NOP is applied; i_illegal is instr_decoder's flag for the
+// instruction ID decodes (the NOP when i_inject_nop is set) ORed with PD's
+// illegal flag.
 module instr_operand_classifier (
     input riscv_pkg::instr_t i_instr,
     input logic i_inject_nop,
@@ -155,7 +157,7 @@ module instr_operand_classifier (
           raw_class.rs_type = riscv_pkg::RS_NONE;  // Legal xRET / WFI.
         end
       end
-      default: ;  // Illegal opcode: the decoder's verdict selects the neutral class.
+      default: ;  // Illegal opcode: i_illegal selects the neutral class.
     endcase
 
     selected_class = raw_class;
@@ -168,8 +170,9 @@ module instr_operand_classifier (
     if (i_illegal || i_fetch_fault) begin
       selected_class = '0;
       selected_class.rs_type = riscv_pkg::RS_INT;
-      // Preserve ID's existing FETCH_FAULT classification bit exactly. Fault
-      // dispatch masks operand use; changing that contract is separate work.
+      // A fetch fault keeps uses_int_rs1 set, unlike
+      // riscv_pkg::uses_int_rs1(FETCH_FAULT). Clearing it changes what dispatch
+      // sees for a fault, so make that a change of its own.
       selected_class.uses_int_rs1 = i_fetch_fault;
     end
   end

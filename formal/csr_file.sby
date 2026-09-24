@@ -17,7 +17,7 @@ smtbmc z3
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv csr_file.sv
-# The production configuration: profiling counters absent.
+# The top-level default: profiling counters absent.
 bmc_perf_off: chparam -set PERF_COUNTERS 0 csr_file
 prep -top csr_file
 

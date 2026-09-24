@@ -17,18 +17,24 @@
 /*
  * FP Add Shim (CDB slot 4, FP_RS)
  *
- * Translates rs_issue_t from FP_RS into the FPU subunits' native ports,
- * instantiates the five subunit types, and packs their results into
- * fu_complete_t for the CDB adapter.
- *
- * Subunits:
- *   - fpu_adder_unit:       FADD_S/D, FSUB_S/D (~10 cycles)
- *   - fpu_compare_unit:     FEQ/FLT/FLE/FMIN/FMAX S/D (2 cycles)
- *   - fpu_classify_unit:    FCLASS_S/D (2 cycles)
- *   - fpu_sign_inject_unit: FSGNJ/FSGNJN/FSGNJX S/D (2 cycles)
+ * Translates rs_issue_t from FP_RS into the ports of five FPU subunits and
+ * packs their results into fu_complete_t for the CDB adapter. None of the
+ * subunits is pipelined; each runs one operation at a time, with this latency
+ * from start to result:
+ *   - fpu_adder_unit:       FADD_S/D, FSUB_S/D (10 cycles)
  *   - fpu_convert_unit:     FCVT_*, FMV_* (5 cycles)
+ *   - fpu_compare_unit:     FEQ/FLT/FLE/FMIN/FMAX S/D (3 cycles)
+ *   - fpu_classify_unit:    FCLASS_S/D (1 cycle)
+ *   - fpu_sign_inject_unit: FSGNJ/FSGNJN/FSGNJX S/D (1 cycle)
  *
- * One subunit runs at a time, so a single in_flight/flushed pair tracks it.
+ * Only one operation is in flight across all five, so a single
+ * in_flight/flushed pair and one tag register track it, and o_fu_busy is
+ * in_flight. The result is presented only in the cycle the subunit produces
+ * it, with no accept handshake, so the adapter must be free then; the wrapper
+ * stops FP_RS while the adapter holds a result. A flush that covers the
+ * operation before that cycle drops the result when it emerges; a flush in
+ * that cycle itself is left to the adapter, which sees the same flush.
+ *
  * Single-precision FP results are NaN-boxed into the 64-bit carrier. Integer
  * results arrive XLEN-correct and pad to FLEN.
  */

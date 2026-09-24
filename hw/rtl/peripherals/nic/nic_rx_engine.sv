@@ -31,15 +31,15 @@
  * is reported. One status write is in flight at a time, so DD becomes
  * visible in ring order; the next frame's data may start meanwhile.
  *
- * i_abort (the MAC domain is resetting: the stream epoch changes) abandons
- * a frame still owed beats: no more are taken, the packer is flushed and
- * its held write withdrawn, the outstanding writes are awaited and the
- * descriptor completes with DD|ERR|ABORT; a frame whose last beat is in
- * completes normally. i_stop (the RESET drain) abandons it with no completion and
- * waits for the responses owed; o_idle then says nothing is in flight.
- * i_enable low stops admission and descriptor fetching only. The CSR block
- * changes BASE/SIZE (i_restart) only while the direction is disabled and
- * idle, so a status write never targets a stale ring.
+ * i_abort (the MAC domain is resetting) abandons a frame still owed beats:
+ * no more are taken, the packer is flushed and its held write withdrawn, the
+ * outstanding writes are awaited, and the descriptor completes with
+ * DD|ERR|ABORT; a frame whose last beat is in completes normally. i_stop (the
+ * RESET drain) abandons it with no completion and waits for the responses
+ * owed; o_idle then says nothing is in flight. i_enable low stops admission
+ * and descriptor fetching only. The CSR block changes BASE/SIZE (i_restart)
+ * only while the direction is disabled and idle, so a status write never
+ * targets a stale ring.
  */
 module nic_rx_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -338,7 +338,8 @@ module nic_rx_engine #(
           end
         end
         S_ADMIT: begin
-          // The descriptor may have gone (a disable or the drain): back to idle.
+          // The drain, a MAC-domain reset, or df_desc_valid falling cancels
+          // the admission.
           if (!admit) begin
             state_q <= S_IDLE;
           end else if (!accept_q) begin

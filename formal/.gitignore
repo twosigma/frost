@@ -1,3 +1,3 @@
-# SymbiYosys run output directories (e.g., hru_bmc/, trap_unit_cover/)
-# Source files (.sby, README.md) are all at the top level, not in subdirs.
+# SymbiYosys run output directories (e.g., trap_unit_bmc/, trap_unit_cover/).
+# Source files (.sby, .sv, README.md) are all at the top level, not in subdirs.
 */

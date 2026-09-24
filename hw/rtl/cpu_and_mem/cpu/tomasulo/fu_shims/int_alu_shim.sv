@@ -23,16 +23,16 @@
  *
  * Signal flow:  INT_RS -> int_alu_shim (translate + ALU) -> fu_complete_t
  *
- * The ALU is single-cycle for every INT_RS operation (ADD, SUB, shifts, LUI,
- * AUIPC, JALR link, CSR read, bit manipulation). MUL and DIV issue through
- * MUL_RS, so this instance elaborates without the ALU's internal multiplier
- * and divider hardware.
+ * The ALU is combinational, so the shim presents each result in its issue
+ * cycle. It has no multiplier or divider: M-extension operations issue
+ * through MUL_RS to int_muldiv_shim, and a simulation assertion below checks
+ * that none arrive here.
  *
  * Fields the ALU needs, rebuilt here from rs_issue_t:
  *   - i_instruction.opcode: OPC_OP_IMM when use_imm, else OPC_OP. It selects
  *     the ALU's internal operand_b mux.
- *   - i_instruction.source_reg_2: imm[4:0], the shift amount for SLLI, SRLI,
- *     SRAI, BSETI, BCLRI, BINVI, BEXTI and RORI.
+ *   - i_instruction.source_reg_2 and funct7[0]: imm[4:0] and imm[5], the shift
+ *     amount for SLLI, SRLI, SRAI, BSETI, BCLRI, BINVI, BEXTI and RORI.
  *   - i_link_address: the pre-computed PC + 2 or PC + 4 for JALR, which
  *     dispatch places in the immediate word (JALR's own I-immediate rides
  *     jalr_imm for branch resolution).  AUIPC needs no PC here either:
@@ -41,7 +41,9 @@
  * Conditional branches do not write the CDB: o_fu_complete.valid follows the
  * RS's predecoded i_issue_writes_cdb_hint, which is clear for them, and branch
  * resolution runs on its own path. JALR does complete here, so its link
- * address wakes dependents.
+ * address wakes dependents. ECALL, EBREAK, illegal instructions and fetch
+ * faults complete as exceptions. A CSR instruction sends its write operand to
+ * the CDB; the CSR itself is read and written at commit.
  */
 module int_alu_shim #(
     parameter bit USE_SHIFT_AMOUNT_HINT = 1'b0
@@ -52,10 +54,12 @@ module int_alu_shim #(
     // From INT reservation station (issue output)
     input riscv_pkg::rs_issue_t       i_rs_issue,
     input logic                       i_issue_writes_cdb_hint,
-    // Used only by the secondary INT pipe; aligned with the same issue packet.
+    // Used only with USE_SHIFT_AMOUNT_HINT (the second INT pipe). It belongs to
+    // the same issue packet and must equal the amount the ALU would select.
     input logic                 [5:0] i_shift_amount_hint,
 
-    // CSR read data from external CSR file
+    // CSR read data. It reaches only the ALU's CSR result, which this shim
+    // replaces with the CSR write operand, so it never reaches o_fu_complete.
     input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
 
     // FU completion to CDB adapter

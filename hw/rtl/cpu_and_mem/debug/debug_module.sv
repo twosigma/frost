@@ -16,15 +16,15 @@
 
 /*
  * RISC-V Debug Module (Debug Spec 0.13.2 chapter 3),
- * minimal profile: one hart (the hartsel plumbing is WARL-0 for now; Phase 6
- * widens it), halt/resume/single-step through the core's Debug Mode take
- * class, abstract "access register" commands for the GPRs, an 8-word program
- * buffer with impebreak, abstractauto over data0/data1, ndmreset, no system
- * bus access (memory is reached through the program buffer, which is what
- * OpenOCD does anyway), authentication absent (always authenticated).
+ * minimal profile: one hart (hartsel reads as 0), halt/resume/single-step
+ * through the core's Debug Mode take class, abstract "access register"
+ * commands for the GPRs, an 8-word program buffer with impebreak,
+ * abstractauto over data0/data1, ndmreset, no system bus access (memory is
+ * reached through the program buffer, as OpenOCD does), authentication absent
+ * (always authenticated).
  *
  * How commands execute. The hart, once halted, sits in the debug slice's
- * park loop (riscv_pkg::DebugParkAddr). The module owns the slice's words
+ * park loop (riscv_pkg::DebugParkAddr). The module holds the slice's words
  * and lands them in the low BRAM through debug_slice_writer: the fixed words
  * (park, nop, the terminating ebreak, the resume dret) plus the abstract
  * words a0..a2 and the program buffer. An abstract command becomes
@@ -69,7 +69,7 @@ module debug_module #(
     output logic [31:0] o_dmi_resp_data,
     output logic [ 1:0] o_dmi_resp_op,
 
-    // Hart 0 (cpu_ooo's debug seam)
+    // Hart 0 (cpu_ooo's debug interface)
     output logic        o_haltreq,
     output logic        o_go,
     output logic [31:0] o_go_addr,

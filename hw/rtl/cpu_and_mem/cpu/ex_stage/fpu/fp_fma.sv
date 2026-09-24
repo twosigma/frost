@@ -78,6 +78,9 @@ module fp_fma #(
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
 
+  // Depth of dsp_tiled_multiplier_unsigned at its default tiling, the same
+  // formula as riscv_pkg::dsp_tiled_stages. The metadata shift chain is this
+  // long, so it must match the multiplier's depth.
   localparam int unsigned MultATileWidth = 27;
   localparam int unsigned MultBTileWidth = 35;
   localparam int unsigned MultNumATiles = (MantBits + MultATileWidth - 1) / MultATileWidth;
@@ -255,7 +258,7 @@ module fp_fma #(
   logic                          mult_special_invalid[MultLatency];
 
   // =========================================================================
-  // Stage 2B -> Stage 3 Pipeline Registers (after DSP pipeline, before LZC)
+  // Stage 2 -> Stage 3 Pipeline Registers (after DSP pipeline, before LZC)
   // =========================================================================
 
   logic        [   ProdBits-1:0] prod_mant_s3;
@@ -357,9 +360,11 @@ module fp_fma #(
   always_comb begin
     exp_large = (prod_exp_s4 >= c_exp_s4) ? prod_exp_s4 : c_exp_s4;
 
-    // Align only the operand with the smaller exponent. Compute each signed
-    // difference directly, then clamp negatives to zero, instead of putting
-    // the maximum-exponent mux before both subtractors.
+    // Align only the operand with the smaller exponent. Each shift amount is
+    // the signed difference of the two exponents, clamped to [0, ProdBits].
+    // That equals exp_large minus the operand's exponent, clamped the same
+    // way, without a max-exponent mux in front of the subtractors; the
+    // fp_fma_align formal target checks the equality.
     shift_prod_signed = $signed({c_exp_s4[ExpExtBits-1], c_exp_s4}) -
         $signed({prod_exp_s4[ExpExtBits-1], prod_exp_s4});
     shift_c_signed = $signed({prod_exp_s4[ExpExtBits-1], prod_exp_s4}) -
@@ -375,6 +380,8 @@ module fp_fma #(
   end
 
 `ifdef FP_FMA_ALIGN_LOCAL_PROOF
+  // fp_fma_align: the shift amounts equal the reference form, which subtracts
+  // each exponent from exp_large.
   logic signed [ExpExtBits:0] f_shift_prod, f_shift_c;
   logic [ShiftBits-1:0] f_amt_prod, f_amt_c;
   always_comb begin
@@ -571,7 +578,7 @@ module fp_fma #(
     end else if (sum_s6[SumBits-1]) begin
       normalized_sum_s6_comb = sum_s6 >> 1;
       normalized_exp_s6_comb = exp_large_s6 + 1;
-      // Capture the bit shifted out - it contributes to sticky for rounding
+      // The bit shifted out feeds the sticky bit
       norm_sticky_s6_comb = sum_s6[0];
     end else if (lzc_s6 > 0) begin
       normalized_sum_s6_comb = sum_s6 << norm_shift;
@@ -627,12 +634,10 @@ module fp_fma #(
 
   assign mantissa_retained_s7 = pre_round_mant_s7[MantBits:1];
   assign guard_bit_raw_s7 = pre_round_mant_s7[0];
-  // No guard-bit correction here. The effective-subtraction path in
+  // The guard bit needs no correction: the effective-subtraction path in
   // sum_s5a_comb already subtracts the smaller operand's shifted-out residual
   // (sticky_c_sub_s5) as a borrow, so the normalized mantissa and its guard bit
-  // are exact. An earlier special case at this point patched only the
-  // round-to-nearest tie and left RTZ/RDN/RUP rounding 1 ULP high, which
-  // failed the F/D arch-test FMA b4-b7 cases.
+  // are exact.
   assign guard_bit_s7 = guard_bit_raw_s7;
   assign round_bit_s7 = normalized_sum_s7[FracBits-1];
   assign sticky_bit_s7 = normalized_sum_s7[FracBits-2] | final_sticky_s7;

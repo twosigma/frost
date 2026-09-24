@@ -1,10 +1,10 @@
 # Branch Prediction file list
-# BTB-based branch prediction for reducing control flow penalties
+# BTB, bimodal direction predictor, return address stack, and their control logic
 
 # Branch Target Buffer (BTB) - stores predicted targets
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
 
-# Direction predictor (decoupled bimodal) - supplies lever A's BTB-miss direction
+# Direction predictor (bimodal) - conditional-branch direction without a taken BTB prediction
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
 
 # Return Address Stack (RAS) - predicts function return addresses
@@ -14,5 +14,6 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.s
 # Branch prediction controller - gating logic and registration
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
 
-# Prediction metadata tracker - manages prediction info through stalls/spanning
+# Prediction metadata tracker - aligns prediction metadata with the IF output across
+# stalls, bubbles, and the pending-prediction handoff
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv

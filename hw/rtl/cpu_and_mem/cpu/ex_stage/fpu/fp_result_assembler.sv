@@ -15,8 +15,9 @@
  */
 
 /*
-  Result assembler shared by fp_adder, fp_multiplier, fp_divider, fp_sqrt, and
-  fp_fma. Purely combinational: applies the rounding increment, detects
+  Result assembler shared by fp_adder, fp_multiplier, fp_fma, and
+  fp_div_sqrt_iter, and by the fp_divider and fp_sqrt reference models in
+  hw/sim. Purely combinational: applies the rounding increment, detects
   overflow and underflow, and packs the final FP result and exception flags.
 
   Priority: special -> zero -> overflow -> underflow -> normal

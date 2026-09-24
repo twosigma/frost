@@ -15,15 +15,16 @@
  */
 
 /*
-  Conversions between floating-point and integer, plus the FMV bit moves.
+  Conversions between floating-point and integer, plus the FMV bit moves. Each
+  op runs in the instance whose FP_WIDTH matches its FP format (32 for S, 64 for
+  D); FCVT.S.D and FCVT.D.S are in fp_convert_sd.
 
   Operations:
-    FCVT.W.S / FCVT.WU.S:  rd = (u)int32(fs1)   - FP to 32-bit integer
-    FCVT.S.W / FCVT.S.WU:  fd = float(rs1)      - 32-bit integer to FP
+    FCVT.W.* / FCVT.WU.*:  rd = (u)int32(fs1), FP to 32-bit integer
+    FCVT.L.* / FCVT.LU.*:  rd = (u)int64(fs1), FP to 64-bit integer
+    FCVT.*.W / FCVT.*.WU:  fd = float(rs1), 32-bit integer to FP
+    FCVT.*.L / FCVT.*.LU:  fd = float(rs1), 64-bit integer to FP
     FMV.X.W / FMV.W.X:     raw 32-bit bit moves (no conversion)
-    RV64 (XLEN=64) adds, in the matching S/D-width instance:
-    FCVT.L.* / FCVT.LU.*:  rd = (u)int64(fs1)   - FP to 64-bit integer
-    FCVT.*.L / FCVT.*.LU:  fd = float(rs1)      - 64-bit integer to FP
     FMV.X.D / FMV.D.X:     raw 64-bit bit moves
 
   The op encodes the integer width. On RV64 the W-forms keep 32-bit saturation
@@ -45,7 +46,7 @@
 
   Exception flags:
     - Invalid (NV): FP to int conversion of NaN, infinity, or an out-of-range value
-    - Inexact (NX): the result is not exact
+    - Inexact (NX): the result is not exact; never raised together with NV
 */
 module fp_convert #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -54,12 +55,12 @@ module fp_convert #(
     input logic i_clk,
     input logic i_rst,
     input logic i_valid,
-    input logic [FP_WIDTH-1:0] i_fp_operand,  // FP source for FCVT.W/WU.*, FMV.X.*
-    input logic [XLEN-1:0] i_int_operand,  // Integer source for FCVT.S.W/WU, FMV.W.X
+    input logic [FP_WIDTH-1:0] i_fp_operand,  // FP source for FP-to-integer ops and FMV.X.*
+    input logic [XLEN-1:0] i_int_operand,  // Integer source for integer-to-FP ops and FMV.*.X
     input riscv_pkg::instr_op_e i_operation,
     input logic [2:0] i_rounding_mode,
-    output logic [FP_WIDTH-1:0] o_fp_result,  // Result for FCVT.*.W/WU, FMV.*.X
-    output logic [XLEN-1:0] o_int_result,  // Result for FCVT.W/WU.S, FMV.X.W
+    output logic [FP_WIDTH-1:0] o_fp_result,  // Result of integer-to-FP ops and FMV.*.X
+    output logic [XLEN-1:0] o_int_result,  // Result of FP-to-integer ops and FMV.X.*
     output logic o_is_fp_to_int,  // Result goes to integer register
     output logic o_valid,
     output riscv_pkg::fp_flags_t o_flags
@@ -151,13 +152,11 @@ module fp_convert #(
   logic [    IntLzcBits-1:0] int_lzc;
   logic [$clog2(XLEN+1)-1:0] int_lzc_full;
 
-  // TIMING: decoded at capture, registered beside operation_reg in the IDLE
-  // branch below, instead of from operation_reg in stage 1. Decoding in stage 1
-  // put the op-compare levels in front of the operand shaping and the int->fp
-  // LZC and stretched the stage-1 cone that pins the X3 rv64 post-opt WNS. The
-  // decode input is i_operation, the same value operation_reg captures on the
-  // same edge, so the registered flags match a stage-1 decode of operation_reg
-  // cycle for cycle.
+  // TIMING: is_signed_conv and int_to_fp_word are decoded from i_operation at
+  // capture (IDLE branch below) and registered beside operation_reg, which
+  // keeps the op compares out of the stage-1 path through the operand shaping
+  // and the int->fp LZC. They capture on the same edge as operation_reg, so
+  // they always match a decode of it.
 
   // At XLEN=64 the W-form int->fp ops convert the low word's value:
   // pre-extend it (sign for .W, zero for .WU) and run the XLEN-wide
@@ -178,18 +177,14 @@ module fp_convert #(
     end
   end
 
-  // Integer LZC, computed in stage 1 without the abs carry chain in front of
-  // it. Counting leading zeros of the negated value put a full-width CARRY8
-  // chain in series with the count tree: at XLEN=64 that stage-1 cone was 19
-  // logic levels and pinned the X3 rv64 post-opt WNS (operation_reg ->
-  // int_lzc_s2, the design's worst path). The count runs on the un-negated
-  // view instead. For x < 0, abs = ~x + 1, and CLZ(~x + 1) = CLZ(~x) - 1
-  // exactly when the +1 carries into the leading one of ~x, which is when ~x
-  // has the monotone form 0...01...1 (abs is an exact power of two; this
-  // includes ~x = 0, x = -1). That monotone test is an AND tree evaluated
-  // alongside the count tree, so no carry chain precedes either. The abs_int
-  // datapath above is unchanged; its carry chain now runs in parallel with
-  // the count instead of in front of it.
+  // Integer LZC with no carry chain in front of it, for stage-1 timing: for
+  // x < 0 the count runs on ~x instead of abs = ~x + 1, so the negation's
+  // full-width carry chain is not in series with the count tree. CLZ(~x + 1)
+  // = CLZ(~x) - 1 exactly when the +1 carries into the leading one of ~x,
+  // which is when ~x has the form 0...01...1 (abs is an exact power of two;
+  // this includes ~x = 0, x = -1). That test is an AND tree evaluated beside
+  // the count tree. The abs_int carry chain above runs in parallel with the
+  // count.
   logic [XLEN-1:0] lzc_view;
   assign lzc_view = int_sign ? ~shaped_int_operand : shaped_int_operand;
 
@@ -211,10 +206,9 @@ module fp_convert #(
   assign int_lzc = IntLzcBits'(int_lzc_full - ($clog2(XLEN + 1))'(lzc_abs_carry_bump));
 
 `ifndef SYNTHESIS
-  // Equivalence oracle for the retired carry-then-count form.  The zero
-  // operand truncates identically on both sides (64 -> 0 at XLEN=64) and is
-  // don't-care downstream (int_is_zero gates it); every other operand must
-  // match bit-exactly.
+  // Simulation check against the reference form, the leading-zero count of
+  // abs_int. Both sides give 0 for a zero operand, whose count is unused
+  // anyway (int_is_zero_s2 selects a zero result); every operand must match.
   logic [$clog2(XLEN+1)-1:0] int_lzc_reference_full;
   fp_lzc #(
       .WIDTH(XLEN)
@@ -373,10 +367,9 @@ module fp_convert #(
         if (!is_unsigned_conv && fp_sign_s2 &&
             (unbiased_exp_s2 == max_exp_unsigned_eff) &&
             (fp_mantissa_s2 == {1'b1, {FracBits{1'b0}}})) begin
-          // The most negative integer of the effective width is the one
-          // signed value with the unsigned-range exponent that is still in
-          // range. Pass its magnitude so stage 4's signed path produces it
-          // without NV.
+          // The most negative integer of the effective width has the
+          // unsigned-range exponent but is in range. Pass its magnitude so
+          // stage 4's signed path produces it without NV.
           shifted_value = int_min_eff;
           round_bit = 1'b0;
           sticky_bit = 1'b0;
@@ -516,11 +509,11 @@ module fp_convert #(
     end
   endgenerate
 
-  // FMV.X.* move to the integer register. When XLEN exceeds FP_WIDTH (the S
-  // instance at XLEN=64) the RV64 FMV.X.W semantic sign-extends the 32-bit
-  // pattern into rd. At XLEN <= FP_WIDTH the operand covers rd directly
-  // (FMV.X.D in the D instance); MoveIntWidth is min(FP_WIDTH, XLEN), so the
-  // slice stays in range whichever of the two widths is larger.
+  // FMV.X.* move to the integer register. When XLEN exceeds FP_WIDTH (FMV.X.W
+  // in the S instance) the 32-bit pattern is sign-extended into rd, as RV64
+  // requires. Otherwise the operand fills rd directly (FMV.X.D in the D
+  // instance). MoveIntWidth is min(FP_WIDTH, XLEN), so the slice stays in
+  // range whichever of the two widths is larger.
   localparam int unsigned MoveIntWidth = (FP_WIDTH < XLEN) ? FP_WIDTH : XLEN;
   generate
     if (XLEN > FP_WIDTH) begin : gen_move_int_sext
@@ -705,9 +698,10 @@ module fp_convert #(
           int_operand_reg <= i_int_operand;
           operation_reg <= i_operation;
           rm_reg <= i_rounding_mode;
-          // Decode-at-capture for the stage-1 int->fp cone (see the flag
-          // declarations). Only i_operation is decoded here, never the operand:
-          // the operand arrives on the late CDB-bypassable issue payload.
+          // Decoded at capture (see the TIMING note at the flag declarations).
+          // Only i_operation is decoded here, never the operand: the operand
+          // arrives late, since the reservation station can issue it straight
+          // from the CDB.
           is_signed_conv <= (i_operation == riscv_pkg::FCVT_S_W) ||
                             (i_operation == riscv_pkg::FCVT_D_W) ||
                             (i_operation == riscv_pkg::FCVT_S_L) ||

@@ -15,11 +15,13 @@
  */
 
 /*
- * hang_triage: on-silicon classifier for the silent boot hang.
+ * hang_triage: UART diagnostics for a hardware hang (ENABLE_HANG_TRIAGE=1).
  *
- * Every hang flavor stops the kernel printing, so the trigger is a quiet
- * console UART. After a quiet stretch this block streams ASCII over the UART
- * and re-emits it periodically so the trajectory is visible:
+ * A hang stops console output, so the trigger is a quiet console. Once no CPU
+ * console write has happened for QUIET_CYCLES, this block takes over the UART
+ * and prints a snapshot, and while the console stays quiet it prints another
+ * REEMIT_CYCLES after each one finishes, so the trend is visible. Each value
+ * is eight hex digits:
  *
  *   "\n!!HANG c=<commits> t=<timer> q=<cread_req> v=<cread_resp> w=<wreq:wdone>"
  *   " l=<pc_lo> h=<pc_hi> r=<commit0_pc> s=<commit1_pc> m=<mtime_lo>"
@@ -27,11 +29,13 @@
  *   " y=<mtimecmp_hi> d=<mtimecmp-mtime lo> p=<irq/status>"
  *   "\nH <hist[0]> <hist[1]> ... <hist[63]>\n"
  *
- *   c   committed instructions     climbing => busy-loop; frozen => wedge
+ *   c   cycles that retire          climbing => busy loop; frozen => wedge
  *   t   mtimecmp writes (timer)     frozen  => timer service stopped
- *   q/v cached read req/resp        q>v frozen => a DDR read never returned
- *   w   cached write {req:done}     req>done => a DDR write never landed
- *   l/h pc_lo..pc_hi               PC range executed since last console output
+ *   q/v cached read req/resp        q>v frozen => a cached read never returned
+ *   w   cached write {req:done}     req>done => a cached write never completed
+ *       (low 16 bits of each count)
+ *   l/h pc_lo..pc_hi               fetch-PC range since the last console write
+ *                                  or snapshot
  *   r/s last retired PCs            slot-1 / slot-2 commit PCs
  *   m/n mtime lo/hi                CLINT time at snapshot
  *   x/y mtimecmp lo/hi             CLINT compare at snapshot
@@ -39,12 +43,13 @@
  *   p   irq/status bits:
  *       [0]=raw mtime>=mtimecmp, [1]=registered MTIP, [2]=MSIP, [3]=MEIP,
  *       [4]=mie.MTIE, [5]=mstatus.MIE, [7:6]=priv, [8]=trap, [9]=mret
- *   H   PC histogram, 64 buckets of 64 KiB keyed on pc[21:16] (kernel pc[31]=1)
- *       => cycle-weighted hot region of the livelock (bucket k = 0x8000_0000 +
- *       k*0x10000). The hottest bucket localizes the spin to a 64 KiB window.
+ *   H   fetch-PC histogram: cycles per 64 KiB bucket since the last console
+ *       write, counted only while pc[31] is set and keyed on pc[21:16], so
+ *       bucket k covers 0x8000_0000 + k*0x10000 (aliased every 4 MiB). The
+ *       hottest bucket locates a spin to a 64 KiB window.
  *
- * Nothing latches here: any console write resets the quiet timer and the PC
- * window.
+ * Nothing latches: a console write restarts the quiet timer and clears the
+ * PC range and histogram. The event counters run from reset.
  */
 module hang_triage #(
     parameter logic [31:0] QUIET_CYCLES  = 32'd900_000_000,  // ~2.8 s at 322 MHz
@@ -298,10 +303,8 @@ module hang_triage #(
         // Every emit state gates its push on (i_uart_ready && !o_wr_en). The
         // push is registered, so one cycle after issuing a push the FIFO's
         // occupancy, and hence i_uart_ready, does not yet reflect it. Sampling
-        // ready alone back-to-back pushes twice into a single free slot and
-        // drops a byte. That showed up on silicon as "!HANG" instead of
-        // "!!HANG": byte 1 of every burst was lost while the FIFO drained
-        // fast. The one-cycle bubble this inserts is invisible at UART rates.
+        // ready alone could push twice into a single free slot and drop a
+        // byte. The one-cycle gap between pushes costs nothing at UART rates.
         EM_PREFIX:
         if (i_uart_ready && !o_wr_en) begin
           o_wr_en   <= 1'b1;

@@ -15,13 +15,12 @@
  */
 
 /*
- * Combinational RAS hint detection using link registers x1 and x5:
- *   - JAL/JALR writing either link register pushes.
- *   - JALR x0, x1, 0 pops and predicts the return.
- *   - JALR with rs1=x1 and a distinct link rd pops then pushes for a
- *     coroutine swap.
+ * Combinational RAS hint detection. The link registers are x1 (ra) and x5 (t0):
+ *   - Call (push): JAL or JALR writing a link register.
+ *   - Return (pop and predict): JALR x0, 0(x1).
+ *   - Coroutine swap (pop, then push): JALR x5, 0(x1).
  * C.JR and C.JALR are detected directly from the raw parcel because
- * decompression occurs in PD. C.JALR is a call, never a coroutine.
+ * decompression happens in PD. C.JR x1 is a return; C.JALR is always a call.
  */
 module ras_detector (
     // Instruction to analyze (32-bit for non-compressed instructions)
@@ -55,7 +54,8 @@ module ras_detector (
   assign rd = i_instruction.dest_reg;
   assign rs1 = i_instruction.source_reg_1;
   assign funct3 = i_instruction.funct3;
-  // JALR uses I-type immediate in bits [31:20]; returns require imm == 0.
+  // JALR uses I-type immediate in bits [31:20]; returns and coroutine swaps
+  // require imm == 0.
   assign imm_i_is_zero = (i_instruction.funct7 == 7'b0000000) &&
                          (i_instruction.source_reg_2 == 5'b00000);
 
@@ -150,18 +150,16 @@ module ras_detector (
   logic is_return_c;
   logic is_coroutine_c;
 
-  // RV64 compressed calls are C.JALR (rd=x1 implicit); C.JAL is not an RV64
-  // instruction. C.JALR is never a coroutine (see is_coroutine_c below).
+  // Compressed calls are C.JALR only (rd = x1 implied).
   assign is_call_c = is_c_jalr;
 
-  // C.JR is a return only for x1/ra. Real code commonly uses x5/t0 as an
-  // indirect jump scratch register, and treating that as a return poisons the RAS.
+  // C.JR is a return only through x1 (ra). Code commonly jumps through x5 (t0)
+  // as a scratch register, and treating that as a return would corrupt the RAS.
   assign is_return_c = is_c_jr && c_rs1_is_return_link;
 
-  // Treat compressed C.JALR as a plain call, even when rs1=x5. In real code
-  // x5/t0 is commonly used as a temporary indirect-call target register, and
-  // classifying that pattern as a coroutine hint causes the RAS to skip the
-  // required call push for sequences like "la t0, label; c.jalr t0".
+  // C.JALR is always a plain call, even when rs1 = x5. Code commonly calls
+  // through t0 ("la t0, label; c.jalr t0"), and treating that as a coroutine
+  // swap would replace the top entry instead of pushing the return address.
   assign is_coroutine_c = 1'b0;
 
   // ===========================================================================

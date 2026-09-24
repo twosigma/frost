@@ -101,11 +101,10 @@ module instruction_type_decoder #(
 
   assign o_is_amo_instruction = i_instruction.opcode == riscv_pkg::OPC_AMO;
   // LR: funct7[6:2]=00010; SC: funct7[6:2]=00011. funct3 selects the width:
-  // 010 = .W (both XLENs), 011 = .D (rv64 only). At rv64 the width term has to
-  // accept both. A funct3==010-only decode leaves is_lr/is_sc low for LR.D and
-  // SC.D, which then route as generic AMOs: SC.D completes with the loaded data
-  // as its "success code" and writes memory with no reservation check.
-  // rv64_amo_test test 6 caught that, with sc.d returning the old dword.
+  // 010 = .W (both XLENs), 011 = .D (rv64 only), so at rv64 the width term
+  // accepts both. If LR.D and SC.D missed is_lr/is_sc they would route as
+  // ordinary AMOs, and SC.D would write memory with no reservation check and
+  // return the loaded data as its success code.
   logic amo_width_valid;
   assign amo_width_valid = (i_instruction.funct3 == 3'b010) || (i_instruction.funct3 == 3'b011);
   assign o_is_lr = o_is_amo_instruction && amo_width_valid &&
@@ -153,30 +152,26 @@ module instruction_type_decoder #(
   // ===========================================================================
   // RAS call/return classification
   // ===========================================================================
-  // Computed here in ID from registered inputs and passed to EX, which keeps
-  // these comparisons off the critical ras_correct path.
-  //
   // is_ras_return: JALR with rs1 = x1, rd = x0, imm = 0
   // is_ras_call: JAL/JALR with rd in {x1, x5}
   //
   // These have to match if_stage/branch_prediction/ras_detector.sv. The front
-  // end uses that detector to drive the RAS, and these flags ride the ROB so
-  // commit-time recovery can replay the same push/pop after restoring a
-  // checkpoint. Any divergence desynchronizes the RAS from the real call stack.
-  // In particular, the return test is rs1 == x1 alone. ras_detector.sv excludes
-  // x5/t0, a common indirect-jump scratch register, from the return
-  // classification, so `jr t0` must not be treated as a return here. That costs
-  // a pop for a genuine x5-linked return, which is the accepted trade: the
-  // encoding cannot distinguish the two, and a false pop is worse.
+  // end uses that detector to drive the RAS, and dispatch passes these flags
+  // to the ROB so commit-time recovery can replay the same push/pop after
+  // restoring a checkpoint. Any divergence desynchronizes the RAS from the real
+  // call stack. In particular, the return test is rs1 == x1 alone.
+  // ras_detector.sv excludes x5/t0, a common indirect-jump scratch register,
+  // from the return classification, so `jr t0` must not be treated as a return
+  // here. A genuine return through x5 is therefore not popped: the encoding
+  // cannot tell it from `jr t0`, and a false pop is worse.
   //
   // ras_detector also classifies a coroutine (`jalr x5, x1, 0`, where rd and
   // rs1 are both link registers but different) as pop-then-push.  A plain
-  // return needs rd == x0 and a plain call needs rd in {x1, x5}, so the two
-  // flags can never both be set by those two cases; {is_ras_return, is_ras_call}
-  // = 2'b11 is therefore a free encoding, and it is what carries the coroutine
-  // downstream.  This keeps the ROB entry, the commit bus and the recovery
-  // registers exactly as wide as before.  ex_comb_synthesizer decodes it back
-  // into a swap; return_address_stack replays it.
+  // return needs rd == x0 and a plain call needs rd in {x1, x5}, so no plain
+  // call or return sets both flags, and {is_ras_return, is_ras_call} = 2'b11
+  // carries the coroutine downstream without widening the ROB entry, the
+  // commit bus, or the recovery registers.  ex_comb_synthesizer decodes it
+  // back into a swap; return_address_stack replays it.
 
   logic rs1_is_return_link;
   logic rd_is_link_reg;

@@ -19,30 +19,21 @@
 // =============================================================================
 // Store-conditional (SC.W/SC.D) resolution.
 //
-// In-flight SCs are tracked in a small table keyed by ROB tag, so the SC that
-// reaches the ROB head can always fire, including when an LR/SC retry loop is
-// branch-speculated and the core issues several SCs, one per speculated
-// iteration, before the oldest resolves. A single pending-SC register failed
-// here. Under speculation the MEM_RS issues SCs out of program order, so a
-// younger SC took the one register, and the wrapper's former
-// issue-serialization gate (!(sc_pending && mem_rs_next_is_sc)) then blocked
-// the older head SC from issuing at all, so it never fired and the core
-// deadlocked. Observed on Linux printk's _prb_commit cmpxchg loop: 11 SCs
-// issued, 8-deep speculation, head=tag15 never issued while the register held
-// tag19. This table pairs with removing that gate (see tomasulo_wrapper.sv).
-// BRAM LR/SC resolves before a second SC issues, so BRAM/FreeRTOS were
-// unaffected; the longer cached-tier (DDR) latency exposes the overlap.
+// MEM_RS can issue SCs out of program order: a branch-speculated LR/SC retry
+// loop issues one SC per speculated iteration before the oldest resolves. Each
+// issued SC therefore waits in a small table keyed by its ROB tag, so the SC
+// at the ROB head can always fire and a younger SC never blocks it.
 //
-// Two flush rules matter, and both were bugs in the single-register version:
-//   * an SC fires when head_tag matches a valid entry and the SQ is drained;
-//   * an entry is cleared on a flush only if it is younger than the flush
-//     boundary (is_younger), never unconditionally on partial flush, which
-//     would drop a surviving older SC.
-// Depth = NumCheckpoints + 1 (branch speculation depth bounds concurrent SCs).
+// Rules:
+//   * An SC fires when head_tag matches a valid entry whose physical address
+//     is known and the SQ is committed-empty, unless the MEM adapter slot is
+//     busy or the coherence port holds SC fires (sc_fire_now).
+//   * A partial flush clears only entries younger than the flush tag
+//     (is_younger); a full flush clears the table.
+//   * The table must not be smaller than the SQ (see ScTableDepth).
 //
-// The store-misalign exception path, MEM-adapter input mux, and
-// lq_result_accepted remain in the wrapper. is_younger is duplicated here
-// (identical to the load_queue / RS copies).
+// The store-fault path, the MEM-adapter input mux, and lq_result_accepted
+// live in the wrapper.
 // =============================================================================
 module sc_pending_unit (
     input logic i_clk,
@@ -63,15 +54,15 @@ module sc_pending_unit (
     // The registered store-fault strobe (misalign, PMA, or the MMU's page/
     // access fault), one cycle after the fault decision.  It carries the
     // faulting op's tag, blocks the fire in its cycle, and kills a faulting
-    // SC's entry; the live decision no longer reaches this unit.
+    // SC's entry. This unit never sees the live fault decision.
     input riscv_pkg::fu_complete_t i_store_misalign_fu_complete_reg,
     input riscv_pkg::rs_issue_t i_mem_rs_issue,
     input logic [riscv_pkg::XLEN-1:0] i_sq_effective_addr,
-    // the reservation compare is in the PA domain, so under
-    // active data translation the issue-time capture (a VA) is a placeholder.
-    // The entry's address becomes usable only when the MMU's PA fills it one
-    // cycle later, matched by tag, and sc_fire waits for that. When
-    // translation is inactive the alloc-time capture is already the PA.
+    // The reservation compare is in the PA domain, so under active data
+    // translation the issue-time capture (a VA) is a placeholder. The entry's
+    // address becomes usable only when the MMU's PA fill arrives, matched by
+    // tag, and the fire waits for that. When translation is inactive the
+    // alloc-time capture is already the PA.
     input logic i_sct_alloc_addr_valid,
     input logic i_sct_addr_fill_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sct_addr_fill_tag,
@@ -125,14 +116,19 @@ module sc_pending_unit (
   assign speculative_flush_en = i_speculative_flush_en;
   assign speculative_partial_flush = i_speculative_partial_flush;
 
-  // SC tracking table: one entry per in-flight SC, keyed by ROB tag.
+  // SC tracking table: one entry per in-flight SC, keyed by ROB tag. Every
+  // waiting SC also holds an SQ entry, so at most SqDepth (eight) wait at once
+  // and NumCheckpoints + 1 (nine) entries cannot overflow. Keep the table at
+  // least SqDepth deep: an SC that finds no free entry is dropped at
+  // allocation and never fires.
   localparam int unsigned ScTableDepth = riscv_pkg::NumCheckpoints + 1;
   logic [ScTableDepth-1:0] sct_valid;
   logic [ScTableDepth-1:0] sct_addr_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_tag[ScTableDepth];
   logic [riscv_pkg::XLEN-1:0] sct_addr[ScTableDepth];
 
-  // Age comparison for the SC flush guard (identical to load_queue / RS).
+  // Age comparison for the SC flush guard (identical to the load_queue and
+  // reservation_station copies).
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
@@ -162,10 +158,11 @@ module sc_pending_unit (
         sct_hit_addr_valid = sct_addr_valid[i];
         sct_hit_addr = sct_addr[i];
         sct_hit_oh[i] = 1'b1;
-        // Keep the same highest-index priority, including an address-invalid
-        // winning entry. Coherence compares whole lines, not LR/SC word
-        // granules, so the split is riscv_pkg::DmaCoherenceLineLsb -- the same
-        // constant lq_coherence_port and the load queue compare on.
+        // Same highest-index priority as sct_hit_addr, including an
+        // address-invalid winning entry. Coherence compares whole lines, not
+        // the LR/SC doubleword granule, so the split is
+        // riscv_pkg::DmaCoherenceLineLsb, the same constant lq_coherence_port
+        // and the load queue compare on.
         o_sc_head_query_match = sct_addr_valid[i] &&
             (sct_addr[i][riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb] ==
              i_coh_query_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb]);
@@ -186,28 +183,29 @@ module sc_pending_unit (
       end
     end
   end
-  // Capture an issuing SC. Reject a phantom SC only when it is younger than the
-  // flush boundary (it is being killed); a real SC that survives the flush must
-  // be captured even if its issue coincides with the flush window.
+  // Capture an issuing SC unless a flush kills it this cycle: a full flush
+  // rejects every SC, a partial flush only SCs younger than the flush tag. An
+  // older SC that issues during a partial flush survives it and must be
+  // captured.
   logic sct_alloc;
   assign sct_alloc = o_mem_rs_issue.valid && !speculative_flush_all &&
       ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
        (o_mem_rs_issue.op == riscv_pkg::SC_D)) &&
       // An SC that faults in its own issue cycle is still captured; the
       // registered fault strobe kills its entry one cycle later and blocks
-      // every fire in between, so the entry is never fired or completed.
+      // every fire in between, so the entry never fires (the SC completes
+      // through the fault path).
       // Consulting the live fault decision here would put the store address,
       // misalignment and PMA cone on the allocation path.
       !(speculative_flush_en && is_younger(
           o_mem_rs_issue.rob_tag, i_flush_tag, head_tag
       ));
 
-  // Payload capture ignores the fault/flush vetoes in sct_alloc. Those vetoes
+  // Payload capture ignores the flush vetoes in sct_alloc. Those vetoes
   // govern sct_valid, the only visibility gate for the tag, address, and
   // address-valid payloads, so a rejected SC can refresh a free entry's dead
-  // payload without becoming observable. That keeps the effective-address
-  // PMA/misalignment cone off every table payload enable while allocation,
-  // fire, and retirement stay cycle-for-cycle identical.
+  // payload without becoming observable, and the flush age compare stays off
+  // the payload enables.
   logic sct_payload_alloc;
   assign sct_payload_alloc = o_mem_rs_issue.valid &&
       ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
@@ -217,22 +215,23 @@ module sc_pending_unit (
   logic sc_success;
   logic sc_fire_now;
 
-  // The fire also waits for the entry's PA (i_sct_addr_fill under active
+  // The fire also waits for the entry's PA (i_sct_addr_fill_* under active
   // translation). Firing at the issue cycle would compare the VA against the
   // PA-domain reservation, and it would beat the MMU's fault delivery for an
   // SC whose translation is refused.
   assign sc_can_fire = sct_hit && sct_hit_addr_valid && sq_committed_empty;
   assign sc_success = lq_reservation_valid
       // The SC matches a reservation anywhere in the reserved doubleword
-      // (the RV64A granule).
+      // (FROST's reservation granule).
       && (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_hit_addr[riscv_pkg::XLEN-1:3]);
-  // Arm SC only when the MEM adapter has no competing producer: no result
-  // pending, no live LQ result, no registered store fault presenting, and no
-  // earlier SC completion still waiting in the wrapper.  A store that faults
-  // in the fire cycle is not consulted here: its registered fault takes the
-  // MEM slot first next cycle and the wrapper holds the SC completion until
-  // the slot is free.  Consulting the live decision put the store address,
-  // misalignment and PMA cone on this unit's write path.
+  // Fire only when the coherence port is not holding SCs and the MEM adapter
+  // has no competing producer: no result pending, no live LQ result, no
+  // registered store fault presenting, and no earlier SC completion still
+  // waiting in the wrapper.  A store that faults in the fire cycle is not
+  // consulted here: its registered fault takes the MEM slot first next cycle
+  // and the wrapper holds the SC completion until the slot is free.
+  // Consulting the live decision would put the store address, misalignment
+  // and PMA cone on this unit's write path.
   assign sc_fire_now = sc_can_fire && !i_coh_sc_hold &&
                        !mem_adapter_result_pending &&
                        !lq_fu_complete.valid &&
@@ -267,9 +266,9 @@ module sc_pending_unit (
       sct_valid <= '0;
     end else begin
       // Clear only the entries younger than the flush boundary (i_flush_tag),
-      // the ones this flush is killing. Clearing on speculative_partial_flush
-      // alone would drop an SC older than the mispredicted branch, such as one
-      // still waiting for the head to reach it on the slow cached tier.
+      // the ones this flush is killing. Clearing every entry on a partial
+      // flush would drop an SC older than the mispredicted branch that is
+      // still waiting for the head.
       if (i_flush_en) begin
         for (int i = 0; i < ScTableDepth; i++) begin
           if (sct_valid[i] && is_younger(sct_tag[i], i_flush_tag, head_tag)) begin
@@ -278,7 +277,7 @@ module sc_pending_unit (
         end
       end
       // Kill the entry of an SC that faulted, at the registered store-fault
-      // strobe. It completes through the fault path, never via sc_fire: the
+      // strobe. It completes through the fault path, never by firing: the
       // registered strobe blocks every fire in its own cycle (above) and the
       // entry is gone on the next edge, so no address-valid faulting SC can
       // fire in the one extra cycle it stays resident.
@@ -293,8 +292,9 @@ module sc_pending_unit (
       if (sc_fire_now) begin
         for (int i = 0; i < ScTableDepth; i++) if (sct_hit_oh[i]) sct_valid[i] <= 1'b0;
       end
-      // Allocate a newly-issued SC into the first free slot. Alloc targets a
-      // free slot and fire/flush clear valid slots, so the indices never
+      // Allocate a newly-issued SC into the first free slot (ScTableDepth
+      // explains why one is always free). Alloc targets a free slot and the
+      // fire/fault/flush clears target valid slots, so the indices never
       // collide.
       if (sct_alloc && sct_has_free) begin
         for (int i = 0; i < ScTableDepth; i++) if (sct_free_oh[i]) sct_valid[i] <= 1'b1;
@@ -322,7 +322,7 @@ module sc_pending_unit (
   end
 
   // SC tag/addr capture (no reset; gated by the alloc one-hot), plus the
-  // MMU's PA fill a cycle later under active translation.
+  // MMU's later PA fill under active translation.
   always_ff @(posedge i_clk) begin
     if (i_sct_addr_fill_valid) begin
       for (int i = 0; i < ScTableDepth; i++) begin

@@ -14,6 +14,12 @@
  *    limitations under the License.
  */
 
+// Checks that the fetch stage's branch-direction payload select can drop its
+// NOP term. original_live is the reference select (with !effective_nop) and
+// candidate_live omits it; each passes through a real stall_capture_reg under
+// the same flush, stall, and replay controls, and the two outputs must match
+// on every non-NOP packet. A flush on the first cycle initializes the
+// saved-NOP bit.
 module if_direction_payload_equiv (
     input logic i_clk,
     i_flush,

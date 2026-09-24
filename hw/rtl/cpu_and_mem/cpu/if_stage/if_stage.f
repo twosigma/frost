@@ -4,7 +4,7 @@
 # C-Extension support (RVC) - decompression, alignment, state tracking
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_extension.f
 
-# Branch prediction - BTB-based prediction to reduce control flow penalties
+# Branch prediction - BTB, bimodal direction predictor, return address stack
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction.f
 
 # Control flow tracker - holdoff signal generation for stale instruction cycles
@@ -19,14 +19,14 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
 # PC controller - program counter management with C-ext and branch prediction support
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
 
-# Provider-local fixed-depth served-window comparators
+# Served-window check - whether a provider's window covers pc_reg's packet
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/served_window_coverage.sv
 
-# Registered provider retarget classification with late prediction selection
+# Fetch redirect - registered retarget pulse for the low-BRAM fetch presenter
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/fetch_redirect.sv
 
-# Instruction MMU - cycle-exact Bare bypass plus tagged registered-PC Sv39
-# resolution; its generic TLB (mmu/dtlb.sv) rides the tomasulo_wrapper list
+# Instruction MMU - Bare-mode pass-through and Sv39 translation of the fetch PC;
+# its TLB module (mmu/dtlb.sv) is listed in tomasulo_wrapper.f
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/immu.sv
 
 # IF stage top-level - instantiates and connects submodules

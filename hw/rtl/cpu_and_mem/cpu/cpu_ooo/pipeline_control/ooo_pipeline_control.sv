@@ -15,19 +15,19 @@
  */
 
 /*
- * OOO pipeline control.
+ * Front-end pipeline control for the out-of-order core.
  *
- * The OOO back-end stalls almost exclusively at dispatch, so this block
- * aggregates the front-end stall/serialization sources and the registered
- * trap/MRET recovery state into the pipeline_ctrl_t the IF/PD/ID stages
- * consume. It owns:
- *   - the in-flight bookkeeping counters (csr_in_flight, branch_in_flight,
- *     branch_unresolved, serializing_alloc_fire);
- *   - the CSR-serialization / control-flow-serialization front-end stalls and
- *     their registered replay pulses (stall_q / id_stall_q / replay_*);
+ * The back end stalls the pipeline almost entirely at dispatch, so this block
+ * combines the front-end stall and serialization sources and the registered
+ * trap and xRET state into the pipeline_ctrl_t that IF, PD, and ID consume.
+ * It holds:
+ *   - the CSR in-flight state (csr_in_flight, serializing_alloc_fire) and the
+ *     branch counters (checkpointed in flight, unresolved);
+ *   - the CSR and control-flow serialization stalls and their registered
+ *     stall and replay signals (stall_q, id_stall_q, replay_*);
  *   - the post-flush BRAM holdoff;
- *   - the registered trap/MRET pulse and trap target;
- *   - the prediction-disable gate and pipeline_ctrl assembly.
+ *   - the registered trap and xRET pulses and trap target;
+ *   - the prediction-disable gate and the pipeline_ctrl assembly.
  */
 
 module ooo_pipeline_control #(
@@ -56,14 +56,12 @@ module ooo_pipeline_control #(
     input logic i_id_unpredicted_control_flow,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
-    // Phase 3 M5. High while the selected fetch VA has no visible translated
-    // result: the normal post-movement bubble, a page-crossing second-page
-    // bubble, or an ITLB miss. It behaves as an ordinary front-end stall. IF
-    // captures the presented bundle and replays it, the fetch provider parks
-    // its owed ask, and the fetch lead the front end's lockstep relies on is
-    // untouched. The name comes from selected-VA tag/result validity. A flush
-    // clears it like the other stalls so trap, xret, and mispredict redirects
-    // land.
+    // High while the translation of the fetch PC is not yet visible: the Sv39
+    // bubble after the fetch PC moves, a second bubble on a page crossing, or
+    // an ITLB miss. It is an ordinary front-end stall: IF captures the
+    // presented bundle and replays it, and the fetch provider keeps its
+    // outstanding request. A flush overrides it like the other stalls, so
+    // trap, xRET, and misprediction redirects land.
     input logic i_fetch_pa_hold,
 
     output riscv_pkg::pipeline_ctrl_t o_pipeline_ctrl,
@@ -84,7 +82,7 @@ module ooo_pipeline_control #(
 
   localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
 
-  // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
+  // --- Port aliases.
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req;
   logic rob_checkpoint_valid;
   logic csr_commit_fire;
@@ -141,8 +139,8 @@ module ooo_pipeline_control #(
     if (i_rst || flush_pipeline) serializing_alloc_fire <= 1'b0;
     else serializing_alloc_fire <= serializing_alloc_fire_comb;
   end
-  // Keep the in-flight counter aligned to the same predicate that allocates
-  // speculative checkpoints so commit-time free/recovery bookkeeping balances.
+  // The in-flight counter counts up on the predicate that allocates a
+  // checkpoint, from either dispatch slot.
   assign branch_alloc_fire = rob_checkpoint_valid;
   logic branch_unresolved_alloc_fire;
   assign branch_unresolved_alloc_fire =
@@ -156,9 +154,11 @@ module ooo_pipeline_control #(
     else if (csr_commit_fire) csr_in_flight <= 1'b0;
   end
 
-  // The counter is balanced at commit time to keep the ROB / RS / LQ / SQ
-  // resource accounting correct for back-to-back branches that slip through the
-  // 1-cycle stall propagation window.
+  // Debug-only, approximate count of checkpointed branches in flight: a
+  // correct branch retiring in commit slot 2 never decrements it, and an early
+  // misprediction recovery clears it while older branches may still be in
+  // flight. branch_in_flight below has no consumer, and cpu_ooo exposes the
+  // count only as dbg_branch_in_flight_count.
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) begin
       branch_in_flight_count <= '0;
@@ -181,13 +181,12 @@ module ooo_pipeline_control #(
   logic branch_unresolved;
   logic branch_unresolved_is_one;
   // branch_unresolved_decrement arrives late: INT-RS issue -> branch
-  // resolution age compare -> resolved-correct. Precompute both update arms
-  // from early signals only, so the late decrement steers a single 2:1 mux in
-  // front of the flops instead of re-deriving the whole update case. The
-  // dont_touch attributes stop the arm nets from being flattened back into
-  // the late select cone. A keep attribute alone does not survive opt_design
-  // Explore. Behavior matches the previous alloc/decrement case statement,
-  // where alloc and decrement in the same cycle net out to a hold.
+  // resolution age compare -> resolved-correct. Both update arms are
+  // precomputed from early signals, so the late decrement steers a single 2:1
+  // mux in front of the flops instead of re-deriving the whole update case.
+  // The dont_touch attributes stop the arm nets from being flattened back into
+  // the late select cone; a keep attribute alone does not survive opt_design
+  // Explore.
   (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_dec;
   (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_not_dec;
   (* dont_touch = "true" *) logic unresolved_is_one_if_dec;
@@ -225,10 +224,9 @@ module ooo_pipeline_control #(
   end
   assign branch_unresolved = (branch_unresolved_count != '0);
 
-  // front_end_prediction_fence_pending once suppressed new predictions after
-  // an unpredicted control-flow op reached PD/ID. That gate is off: the term
-  // is still computed but has no consumer, and it is not folded into
-  // disable_branch_prediction_ooo below.
+  // front_end_prediction_fence_pending has no consumer: prediction is not
+  // suppressed while an unpredicted control-flow instruction is in PD or ID,
+  // so disable_branch_prediction_ooo below does not include it.
   assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
                                               id_unpredicted_control_flow;
   assign disable_branch_prediction_ooo = i_disable_branch_prediction ||
@@ -250,13 +248,10 @@ module ooo_pipeline_control #(
 
   // Registered stall for IF stage stall-capture registers.
   logic stall_q;
-  // TIMING: cap the replicated fanout of the registered ID stall. Its net
-  // reached fanout ~853, covering the dispatch/alloc CE cones designwide plus
-  // the width-funnel observer replay bits, and Vivado's replication heuristic
-  // was unstable there. A handful of added observer loads swung the id_stall
-  // -> ROB-alloc LVT cone from marginal to the post-opt WNS, -0.233 to
-  // -0.363. Bounded replicas make the split deterministic, matching the
-  // max_fanout treatment on other 1-bit control nets.
+  // TIMING: the registered ID stall drives the dispatch and allocation clock
+  // enables across the design plus the width-funnel observer replay bits.
+  // max_fanout bounds its replicas so the split is deterministic rather than
+  // left to Vivado's replication heuristic, as on other 1-bit control nets.
   (* max_fanout = 64 *)logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
@@ -264,10 +259,10 @@ module ooo_pipeline_control #(
   // Normally a CSR allocation advances ID before csr_in_flight raises, so the
   // image held through serialization is the younger instruction that must be
   // replayed on release. An independent front-end stall can already be high
-  // on the allocation cycle, most often the Sv39 selected-VA translation
-  // bubble, and ID then still holds the CSR itself. Remember that episode so
-  // release gives ID one advance-only cycle instead of allocating the same
-  // CSR twice.
+  // on the allocation cycle, most often the Sv39 translation bubble
+  // (i_fetch_pa_hold), and ID then still holds the CSR itself. Remember that
+  // case so release gives ID one advance-only cycle instead of allocating the
+  // same CSR twice.
   logic csr_alloc_held_id_q;
   assign frontend_stall =
       ((QUEUED_FRONTEND ? i_frontend_resource_stall : dispatch_stall) ||
@@ -282,12 +277,12 @@ module ooo_pipeline_control #(
   // A successful CSR allocation is the one cycle in which the ordinary
   // frontend_stall register chain has not caught up yet: csr_in_flight and
   // serializing_alloc_fire rise only after the allocating edge. Capture that
-  // successful fire directly into this LOCAL register so the held ID image is
+  // successful fire directly into this local register so the held ID image is
   // suppressed immediately without carrying csr_in_flight through every
   // dispatch/RS/LSQ allocation enable. Do not put the combinational fire into
-  // frontend_stall itself; that would restore the dispatch->stall->IF->dispatch
-  // combinational loop which serializing_alloc_fire was introduced to break.
-  // If allocation and release overlap, the new owner wins: a newly allocated
+  // frontend_stall itself; that would create the dispatch->stall->IF->dispatch
+  // combinational loop that registering serializing_alloc_fire avoids. If
+  // allocation and release coincide, the allocation wins: a newly allocated
   // CSR must not lose its first-cycle dispatch shield.
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) id_stall_q <= 1'b0;
@@ -301,7 +296,8 @@ module ooo_pipeline_control #(
     else replay_after_dispatch_stall_q <= dispatch_stall && !flush_pipeline;
   end
 
-  // CSR serialization release replay (see cpu_ooo history for mret-after-csrw).
+  // Serialization release: the CSR's delayed register-writeback cycle
+  // (csr_wb_pending), or its commit cycle if it writes no register.
   assign replay_after_serialize_stall_next =
       (csr_wb_pending || (csr_commit_fire && !rob_commit.dest_valid)) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
@@ -320,9 +316,9 @@ module ooo_pipeline_control #(
   end
 
 `ifndef SYNTHESIS
-  // Preserve the exact pre-cut ID-stall state as a simulation/formal oracle.
-  // The optimized owner may differ only by absorbing csr_in_flight locally;
-  // retain the newer held-CSR release exception in both implementations.
+  // Reference ID-stall register without the local CSR-allocation term, for
+  // simulation and formal checks. id_stall_q may differ from it only by
+  // including csr_in_flight; both apply the held-CSR release exception.
   logic id_stall_legacy_q;
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) id_stall_legacy_q <= 1'b0;
@@ -330,10 +326,10 @@ module ooo_pipeline_control #(
     else id_stall_legacy_q <= frontend_stall;
   end
 
-  // The local CSR owner replaces the former live !csr_in_flight term on ID
-  // validity. Pin the state relation and the complete validity predicate so
-  // allocation, held-ID release, ordinary replay, and release collisions stay
-  // cycle-identical to the former two-signal implementation.
+  // id_stall_q stands in for a live !csr_in_flight term on ID validity. Check
+  // the state relation, and that the ID-valid gate equals the reference gate
+  // ANDed with !csr_in_flight, through allocation, held-ID release, ordinary
+  // replay, and release collisions.
   always_ff @(posedge i_clk) begin
     if (!i_rst && !flush_pipeline && !$isunknown(
             {serializing_alloc_fire_comb, dispatch_stall, csr_in_flight,
@@ -352,10 +348,10 @@ module ooo_pipeline_control #(
 
 `ifndef FORMAL
   // A CSR allocated while ID was independently held must get one release
-  // cycle in which ID advances but dispatch remains invalid. Pin that exact
-  // contract so a later id_stall priority change cannot duplicate the CSR.
-  // Queued dispatch removes a CSR immediately, independently of ID advance;
-  // its consumed-image guard replaces the held-ID release contract.
+  // cycle in which ID advances but dispatch remains invalid; otherwise a
+  // change to id_stall_q's priority could dispatch the CSR twice. Queued
+  // dispatch removes a CSR immediately, independently of ID advance, and its
+  // consumed-image guard covers this case instead.
   if (!QUEUED_FRONTEND) begin : gen_direct_csr_release
     p_held_csr_release_is_advance_only :
     assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
@@ -375,13 +371,11 @@ module ooo_pipeline_control #(
       else if (post_flush_holdoff_q != 2'd0) post_flush_holdoff_q <= post_flush_holdoff_q - 2'd1;
   end
 
-  // Delay the IF/backend-visible trap/MRET recovery pulse by one cycle.
-  // trap_taken_reg and mret_taken_reg fan out to the same redirect/flush
-  // selects across IF and the recovery/flush units, ~200 leaf loads
-  // post-synthesis each. Cap the fanout so synthesis replicates the registers
-  // instead of routing one copy everywhere. Both need the cap: mret only
-  // surfaced as a failing startpoint once trap was replicated, because the
-  // two mask each other in per-endpoint timing reports.
+  // Delay the trap and xRET (mret_taken) recovery pulses seen by IF and the
+  // back end by one cycle. trap_taken_reg and mret_taken_reg both fan out to
+  // the same redirect and flush selects across IF and the recovery and flush
+  // units, so both carry a fanout cap and synthesis replicates them instead of
+  // routing one copy everywhere.
   (* max_fanout = 32 *) logic trap_taken_reg;
   (* max_fanout = 32 *) logic mret_taken_reg;
   logic [XLEN-1:0] trap_target_reg;

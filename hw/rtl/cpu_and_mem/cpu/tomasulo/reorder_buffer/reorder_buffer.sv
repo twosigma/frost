@@ -15,34 +15,38 @@
  */
 
 /*
- * 32-entry circular unified INT/FP reorder buffer with two-wide allocation and commit,
- * CDB completion, branch resolution, precise exceptions, and misprediction
- * recovery. Serializing instructions wait at the head:
- *       * WFI: stall at head until interrupt pending
- *       * CSR: reads execute speculatively, side effects applied at commit;
- *         translation-class accesses then drain the SQ and refetch
- *       * FENCE: wait for store queue to drain
- *       * FENCE.I/SFENCE.VMA: drain SQ + sync caches/TLBs + refetch
- *       * MRET/SRET/DRET: signal trap unit, redirect to mepc/sepc/dpc
- * AMO/LR/SC also require the head and an empty SQ. FP exception flags reach
- * fcsr at commit.
+ * Reorder buffer: 32 entries shared by integer and FP instructions, allocated
+ * and retired up to two per cycle in program order. An entry's index is its
+ * ROB tag. Entries complete at allocation (JAL, FENCE, FENCE.I, WFI, xRET), on
+ * either CDB lane, on a branch update, or, for plain stores, on the
+ * store-completion port. rob_serializer holds the following at the head:
+ *   - CSR: raises o_csr_start and retires on i_csr_done (a translation CSR
+ *     first waits for committed stores to drain, and ends in a full flush).
+ *     The CSR file reads and writes the register the cycle after retirement,
+ *     from the registered commit bus.
+ *   - FENCE: waits for committed stores to drain (i_sq_committed_empty).
+ *   - FENCE.I, SFENCE.VMA: drain, cache sync (SFENCE.VMA also invalidates the
+ *     TLBs), then a full flush and refetch.
+ *   - MRET/SRET/DRET: once committed stores drain, o_mret_start; the trap
+ *     unit redirects to mepc/sepc/dpc.
+ *   - WFI: waits for i_interrupt_pending.
+ *   - Exception: o_trap_pending until the trap unit takes it.
+ * LR executes only at the head, AMO and SC only at the head with committed
+ * stores drained. FP exception flags reach fcsr at retirement.
  *
- * Multi-bit fields use distributed RAM. Allocation-only fields have two write
- * ports; CDB-written fields have four through an LVT. Resolved targets use the
- * remaining sdp_dist_ram. Per-entry reset/flush bits remain in FFs.
- *
- * Coordination: i_sq_committed_empty orders FENCE/FENCE.I/MRET; CSR side
- * effects use o_csr_start/i_csr_done; traps use o_trap_pending/i_trap_taken;
- * i_interrupt_pending releases WFI.
+ * Multi-bit fields and the packed head metadata live in distributed RAM; a
+ * RAM with several write ports keeps one bank per port and a live value
+ * table (LVT). Per-entry bits that reset or a flush must clear stay in
+ * flip-flops, as do the class bits the commit logic reads early.
  */
 
 module reorder_buffer #(
     // Simulation-only check that no CDB write lands on an entry allocated in
-    // the previous cycle (the staged-LVT drain window; see the debug section).
-    // The full machine always satisfies it: alloc -> dispatch -> issue -> FU ->
-    // registered CDB exceeds one cycle. The reorder_buffer unit bench drives
-    // i_cdb_write directly without that latency, so its build disables the
-    // check (tests/Makefile, -G override).
+    // the previous cycle (the staged-LVT drain window; see
+    // g_drain_window_check). The full machine always satisfies it: alloc ->
+    // dispatch -> issue -> FU -> registered CDB exceeds one cycle. The
+    // reorder_buffer unit bench drives i_cdb_write directly without that
+    // latency, so its build disables the check (tests/Makefile, -G override).
     parameter bit DrainWindowCheck = 1'b1
 ) (
     input logic i_clk,
@@ -64,12 +68,12 @@ module reorder_buffer #(
     // =========================================================================
     // CDB Write Interface (from Functional Units via CDB)
     // =========================================================================
-    // For non-branch results (ALU, MUL, DIV, MEM, FP)
+    // Functional-unit results (ALU, MUL, DIV, MEM, FP). Conditional branches
+    // complete on i_branch_update instead.
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write,
-    // Second CDB lane (2-wide CDB): a distinct completed entry, marked done +
-    // value/exc/fp written the same cycle as i_cdb_write. The arbiter
-    // guarantees tag != i_cdb_write.tag, so the two never collide on a RAM
-    // address or a rob_done bit.
+    // Second CDB lane, handled like the first in the same cycle. The arbiter
+    // guarantees its tag differs from i_cdb_write.tag, so the lanes never
+    // collide on a RAM address or a rob_done bit.
     input riscv_pkg::reorder_buffer_cdb_write_t i_cdb_write_2,
     // Private duplicate copies of i_cdb_write.tag / i_cdb_write_2.tag,
     // registered in tomasulo_wrapper with equivalent_register_removal="no".
@@ -125,10 +129,8 @@ module reorder_buffer #(
     output logic                              o_commit_2_valid_raw,
     output logic                              o_commit_2_store_like_raw,
 
-    // Slot-2 accept from cpu_ooo: the second retiring entry may write the
-    // regfile this cycle. With the dedicated second regfile write port
-    // cpu_ooo ties this permanently high; the gate plumbing is kept so the
-    // signal path stays symmetric with the earlier back-pressure approach.
+    // Slot-2 permission from cpu_ooo. It is low only during a debugger single
+    // step, so exactly one instruction retires before the halt.
     input logic i_widen_commit_ok,
     input logic i_commit_hold,
 
@@ -144,9 +146,12 @@ module reorder_buffer #(
     // =========================================================================
     // CSR Unit Coordination
     // =========================================================================
-    // CSR reads execute speculatively; o_csr_start triggers side effects at commit
-    output logic o_csr_start,  // Signal CSR unit to apply side effects at commit
-    input  logic i_csr_done,   // CSR unit has completed
+    // o_csr_start is raised as a ready CSR head enters CSR_EXEC; the CSR
+    // retires on i_csr_done (a translation CSR first waits for committed
+    // stores to drain). The CSR file reads and writes the register the cycle
+    // after retirement, from the registered commit bus.
+    output logic o_csr_start,
+    input  logic i_csr_done,
 
     // =========================================================================
     // Trap/Exception Handling
@@ -160,53 +165,47 @@ module reorder_buffer #(
     // cpu_ooo: an interrupt must not flush an AMO whose memory write may
     // already be in flight (see trap_unit.i_amo_at_head).
     output logic o_head_is_amo,
-    // TIMING pre-decodes for cpu_ooo's regfile-bypass qualifiers (x3 post-opt
-    // -0.271 head_clear -> bypass_p*_we_q cone): dest-write conjunctions
-    // computed from the head/head+1 field nets, which are one-hot/LUTRAM
-    // reads off registered masks/pointers and so arrive early in the cycle.
-    // The consumer ANDs them with the 1-bit raw commit fires
-    // (o_commit_valid_raw / o_commit_2_valid_raw) instead of decoding the
-    // full combinational commit structs, which put the whole field mux behind
-    // the late commit gate. These bits are not gated by commit_en /
-    // commit_2_fire: the consumer's AND restores the gate, and they are
-    // don't-care while the fires are low.
+    // TIMING: pre-decoded register-write enables for cpu_ooo's regfile
+    // bypass, computed from the head and head+1 field nets, which are one-hot
+    // or LUTRAM reads off registered masks and pointers and so arrive early in
+    // the cycle. cpu_ooo ANDs them with the 1-bit raw commit fires
+    // (o_commit_valid_raw, o_commit_2_valid_raw) instead of decoding the
+    // combinational commit structs, which sit behind the late commit gate.
+    // They are not gated by commit_en or commit_2_fire and are don't-care
+    // while the fires are low.
     output logic o_head_bypass_int_we_early,
     output logic o_head_bypass_fp_we_early,
     output logic o_head_next_bypass_int_we_early,
     output logic o_head_next_bypass_fp_we_early,
-    // Same pattern for the direction-predictor commit-time training
-    // qualifiers (the dir_update_held_* capture was another -0.227 endpoint
-    // of the same cone): conditional-branch class and resolved direction of
-    // head / head+1 from the early field nets, don't-care while the raw fires
-    // are low.
+    // Same pattern for the direction-predictor training qualifiers: the
+    // conditional-branch class and resolved direction of head and head+1.
     output logic o_head_dir_train_early,
     output logic o_head_branch_taken_early,
     output logic o_head_next_dir_train_early,
     output logic o_head_next_branch_taken_early,
-    // TIMING precompute of the architectural next-PC of the head / head+1
-    // entry, for cpu_ooo's interrupt_resume_pc capture. Whenever
-    // o_commit_valid_raw (resp. o_commit_2_valid_raw) is high,
-    // o_head_retired_next_pc (resp. o_head_next_retired_next_pc) equals
-    // retired_next_pc(o_commit_comb) (resp. (o_commit_comb_2)) as computed in
-    // cpu_ooo. Both come from ungated head fields so the RAM read and the add
-    // run in parallel with the late commit_en gating rather than after it. In
-    // cycles without a commit the value is unused (checked in cpu_ooo
-    // simulation).
+    // TIMING: architectural next PC of the head and head+1 entries, for
+    // cpu_ooo's interrupt resume PC (the head value is also the FENCE-class
+    // refetch target). Whenever o_commit_valid_raw (o_commit_2_valid_raw) is
+    // high, it equals cpu_ooo's retired_next_pc() of o_commit_comb
+    // (o_commit_comb_2), which cpu_ooo checks in simulation; otherwise it is
+    // unused. Computed from ungated head fields so the RAM read and the add
+    // run in parallel with the late commit gate.
     output logic [riscv_pkg::XLEN-1:0] o_head_retired_next_pc,
     output logic [riscv_pkg::XLEN-1:0] o_head_next_retired_next_pc,
     output riscv_pkg::exc_cause_t o_trap_cause,  // Exception cause
-    // Head entry's CDB value at trap time. For a misaligned load/store the
-    // load_queue/SQ path parks the faulting address here (the value slot is
-    // otherwise unused for an exception) so cpu_ooo can write it to mtval.
+    // The head entry's value field. For instruction access and page faults,
+    // and for data misaligned, access, and page faults, the producer parks the
+    // faulting virtual address here and cpu_ooo writes it to mtval or stval.
     output logic [riscv_pkg::XLEN-1:0] o_trap_value,
     input logic i_trap_taken,  // Trap unit has taken the trap
 
-    // xRET coordination. o_mret_start covers both xRETs (SRET rides the MRET
-    // machinery); o_mret_start_is_sret qualifies which one so cpu_ooo can
-    // split the trap unit's i_mret_start/i_sret_start.
+    // xRET coordination. o_mret_start covers MRET, SRET, and DRET;
+    // o_mret_start_is_sret and o_mret_start_is_dret say which, so cpu_ooo can
+    // split it into the trap unit's i_mret_start, i_sret_start, and
+    // i_dret_start.
     output logic                       o_mret_start,          // Signal trap unit to handle xRET
     output logic                       o_mret_start_is_sret,
-    output logic                       o_mret_start_is_dret,  // ...DRET
+    output logic                       o_mret_start_is_dret,
     input  logic                       i_mret_done,           // xRET handling complete
     input  logic [riscv_pkg::XLEN-1:0] i_mepc,                // MRET return PC from csr_file
     input  logic [riscv_pkg::XLEN-1:0] i_sepc,                // SRET return PC from csr_file
@@ -226,25 +225,23 @@ module reorder_buffer #(
     // allocation, and privilege/Debug-Mode changes interpose a flushing
     // trap/xRET, so the snapshot remains exact for every surviving entry.
     input logic [2:0] i_counter_blocked,
-    // Sstc (M6): S-mode stimecmp access with menvcfg.STCE=0 is illegal.
+    // Sstc: S-mode stimecmp access with menvcfg.STCE=0 is illegal.
     input logic i_stimecmp_blocked,
     input logic i_sret_illegal,
     input logic i_sfence_illegal,
     input logic i_wfi_illegal,
     input logic i_priv_is_u,
-    // Debug Mode: DRET and the debug CSRs (dcsr/dpc/dscratch/
-    // ddata) are legal only in Debug Mode. The allocation legality check
-    // samples this registered bit; it changes only through a flushing
-    // trap/DRET.
+    // Debug Mode: DRET and the debug CSRs (dcsr, dpc, dscratch0/1, ddata) are
+    // legal only in Debug Mode. The allocation legality check samples this
+    // registered bit; it changes only through a flushing trap or DRET.
     input logic i_debug_mode,
 
     // mcounteren counter-enable bits from csr_file ([0]=CY/cycle, [1]=TM/time,
-    // [2]=IR/instret). Unused inside the module: allocation legality consumes
-    // the privilege-resolved i_counter_blocked instead. Kept on the interface
-    // for the raw CSR-state seam.
+    // [2]=IR/instret). Unused here: allocation legality uses the
+    // privilege-resolved i_counter_blocked instead.
     input logic [2:0] i_mcounteren,
 
-    // D15: mstatus.FS == Off from csr_file. The allocation legality snapshot
+    // mstatus.FS == Off from csr_file. The allocation legality snapshot
     // marks any FP instruction or fflags/frm/fcsr access illegal while it is
     // set. CSR writes serialize; hardware Dirty-setting only moves FS away
     // from Off.
@@ -253,25 +250,23 @@ module reorder_buffer #(
     // =========================================================================
     // Pipeline Flush Control
     // =========================================================================
-    // Flush requests can come from:
-    // 1. Branch misprediction (partial flush via i_flush_en)
-    // 2. Exception (full flush via i_flush_all)
-    // 3. FENCE-class retirement (FENCE.I, SFENCE.VMA, or a
-    //    translation-class CSR; full flush after commit)
+    // i_flush_en: branch recovery, a partial flush of the entries younger than
+    // i_flush_tag. With i_flush_after_head_commit (commit-time recovery: the
+    // branch retired the cycle before) every entry is flushed.
+    // i_flush_all: full flush for a trap, an xRET, or FENCE-class recovery.
     input logic i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,  // Flush entries after this tag
-    input logic i_flush_all,  // Flush entire Reorder Buffer (exception)
+    input logic i_flush_all,  // Flush every entry
     input logic i_flush_after_head_commit,
-    // Memory-order replay (Phase 4 DMA coherence): entries to flag, from the
+    // Memory-order replay: entries to flag after a DMA write, from the
     // wrapper's lq_coherence_port. A flagged entry is exceptional at the head
     // with cause ExcMemReplay; the trap unit restarts it at its own PC.
     input logic [riscv_pkg::ReorderBufferDepth-1:0] i_replay_set_mask,
 
-    // FENCE-class operations trigger a pipeline and frontend flush after
-    // commit. o_fence_class_flush_event is the serializer-owned semantic
-    // event; both the pulse register here and the flush controller's
-    // replicated kill register sample it. It is not a raw register-D
-    // interface.
+    // FENCE-class recovery (FENCE.I, SFENCE.VMA, translation CSRs) ends in a
+    // full flush. o_fence_class_flush_event marks the event and
+    // o_fence_i_flush is the same signal a cycle later; the flush controller
+    // also registers the event into its full-flush pulse.
     output logic o_fence_i_flush,
     output logic o_fence_class_flush_event,
     // One-cycle registered shadow between a translation CSR's raw retirement
@@ -285,6 +280,7 @@ module reorder_buffer #(
     // Early Misprediction Recovery
     // =========================================================================
     // Qualifies the current partial flush as an execute-time early recovery
+    // (unused here)
     input logic                                        i_early_recovery_flush,
     // Marks the entry as early-recovered so commit skips re-triggering flush
     input logic                                        i_early_recovery_en,
@@ -310,9 +306,10 @@ module reorder_buffer #(
     output riscv_pkg::rob_perf_events_t                                        o_perf_events,
 
     // =========================================================================
-    // Reorder Buffer Entry Read Interface (for RAT lookup of in-flight values)
+    // Entry Read Port
     // =========================================================================
-    // Lets the RAT check whether a Reorder Buffer entry has completed (for bypass).
+    // Done bit and value of entry i_read_tag. The full core does not use the
+    // outputs.
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_read_tag,
     output logic                                        o_read_done,
     output logic [                 riscv_pkg::FLEN-1:0] o_read_value,
@@ -350,13 +347,9 @@ module reorder_buffer #(
   localparam int unsigned RsTypeWidth = 3;
   localparam int unsigned HeadMetaWidth = 21 + RsTypeWidth;
 
-  // Widen-commit master enable. While 0 the ROB behaves as the 1-wide
-  // baseline: head_ptr advances by 1, rob_valid clears only the head, and
-  // o_commit_comb_2.valid is forced low so no downstream consumer sees slot 2
-  // even though the plumbing exists. The commit_2_opportunity perf counter
-  // still counts, which keeps the upper bound measurable with the feature
-  // off. Set to 1 once every downstream consumer (RAT, SQ, cpu_ooo second
-  // regfile write port, instret) was in place.
+  // Two-wide commit enable. With 0 the ROB retires at most one entry per
+  // cycle: commit_2_fire stays low, so o_commit_comb_2 never goes valid,
+  // while the commit_2_opportunity perf counter still counts.
   localparam bit EnableWidenCommit = 1'b1;
 
   // ===========================================================================
@@ -395,15 +388,12 @@ module reorder_buffer #(
     onehot_read = |(vec & onehot);
   endfunction
 
-  // mcounteren-bit one-hot {IR, TM, CY} for a CSR access to a Zicntr user
-  // counter cycle/time/instret (0xC00-0xC02). addr[1:0] picks the bit. The
-  // RV32 high halves 0xC80-0xC82 (addr[7]=1) do not match: at XLEN=64 they
-  // are not counters, and csr_static_illegal raises illegal-instruction for
-  // them. 0xC03/0xC83 (addr[1:0] == 2'b11) and the hpmcounter range
-  // (addr[6:2] != 0) also stay unmatched; the separate existence check marks
-  // those unimplemented CSRs illegal. The machine aliases (0xBxx) and every
-  // other privileged address never match here; their privilege checks are
-  // separate arms of alloc_legality_fault.
+  // One-hot {IR, TM, CY}, in mcounteren bit order, for a CSR access to the
+  // Zicntr user counters cycle, time, or instret (0xC00-0xC02); addr[1:0]
+  // picks the bit. Nothing else matches. The RV32 high halves and the
+  // hpmcounters do not exist here, so csr_static_illegal rejects them, and
+  // the machine aliases (0xBxx) have their own privilege check in
+  // alloc_legality_fault.
   function automatic logic [2:0] ucounter_onehot(input logic is_csr, input logic [11:0] addr);
     logic m;
     // Assigns the function name rather than using a return statement: Yosys's
@@ -415,13 +405,13 @@ module reorder_buffer #(
     };
   endfunction
 
-  // CSR existence map: accessing an address outside this
-  // set raises illegal-instruction at every privilege, per the privileged
-  // spec. This replaced the historical RAZ/WI convention for unimplemented
-  // CSRs. S-mode firmware (OpenSBI) probes optional CSRs by catching the
-  // illegal trap, so RAZ/WI would mis-advertise features.
-  // menvcfg/senvcfg exist as RAZ/WI (mandatory with S/U); the read-only id
-  // registers mvendorid/marchid/mimpid/mconfigptr exist and read 0.
+  // CSR existence map. An access to an address outside this set raises
+  // illegal-instruction at every privilege, as the privileged spec requires.
+  // S-mode firmware (OpenSBI) probes optional CSRs by catching that trap, so
+  // reading unimplemented CSRs as zero would advertise missing features.
+  // senvcfg exists with no fields (RAZ/WI; S/U make it mandatory), and the
+  // read-only id registers mvendorid/marchid/mimpid/mconfigptr exist and
+  // read 0.
   function automatic logic csr_addr_exists(input logic [11:0] addr);
     unique case (addr)
       // F extension
@@ -440,11 +430,11 @@ module reorder_buffer #(
       riscv_pkg::CsrMscratch,
       riscv_pkg::CsrMepc, riscv_pkg::CsrMcause, riscv_pkg::CsrMtval,
       riscv_pkg::CsrMip,
-      // Debug-mode CSRs (Phase 3 M3; legal only in Debug Mode, allocation
-      // legality raises illegal-instruction elsewhere)
+      // Debug-mode CSRs (legal only in Debug Mode; allocation legality
+      // raises illegal-instruction elsewhere)
       riscv_pkg::CsrDcsr, riscv_pkg::CsrDpc, riscv_pkg::CsrDscratch0,
       riscv_pkg::CsrDscratch1, riscv_pkg::CsrDdata,
-      // Machine counters (M aliases, writable from M-mode since M7)
+      // Machine counters (M aliases, writable from M-mode)
       riscv_pkg::CsrMcycle, riscv_pkg::CsrMinstret,
       // Machine id registers (read-only zero) + mhartid
       12'hF11, 12'hF12, 12'hF13, riscv_pkg::CsrMhartid, 12'hF15,
@@ -460,8 +450,8 @@ module reorder_buffer #(
   //  - An address absent from the existence map above does not exist and
   //    raises illegal-instruction at every privilege (the privileged-spec
   //    rule, and what OpenSBI's trap-probing of optional CSRs relies on).
-  //    This subsumes the historical RV64 Zicntr high-half rule
-  //    (cycleh/timeh/instreth 0xC80-0xC82, mcycleh/minstreth 0xB80/0xB82).
+  //    This covers the RV32-only counter high halves (cycleh/timeh/instreth
+  //    0xC80-0xC82, mcycleh/minstreth 0xB80/0xB82).
   //  - A write-intending access to a read-only CSR (addr[11:10] == 2'b11)
   //    is illegal per the Zicsr spec. riscv-tests rv64mi csr test 14 (csrrw
   //    to cycle) asserts exactly this.
@@ -472,7 +462,7 @@ module reorder_buffer #(
   endfunction
 
 
-  // D15 FS gate pre-decode: instructions that touch FP architectural state
+  // FS gate pre-decode: instructions that touch FP architectural state
   // and therefore raise illegal-instruction when mstatus.FS == Off. That is
   // every F/D instruction (dispatch's is_fp_instruction covers loads/stores/
   // computes/FMAs including the x-dest flagless FMV.X/FCLASS) plus the FP
@@ -484,11 +474,11 @@ module reorder_buffer #(
 
   // Complete allocation-time legality check. The live CSR-file inputs are a
   // cycle-exact snapshot for every instruction that can survive to the head:
-  // CSR writes stop younger allocation until they commit, and trap/xRET and
-  // Debug-Mode transitions flush every younger entry. Hardware FS
-  // Dirty-setting only moves FS away from Off. Capturing the result in
-  // rob_exception therefore removes the live privilege/CSR-state cone from
-  // commit without changing which instruction traps.
+  // a CSR instruction keeps younger instructions out of dispatch until its
+  // CSR write is done, and trap/xRET and Debug-Mode transitions flush every
+  // younger entry. Hardware FS Dirty-setting only moves FS away from Off.
+  // Recording the result in rob_exception keeps the live privilege/CSR-state
+  // cone off the commit path without changing which instruction traps.
   function automatic logic alloc_legality_fault(input riscv_pkg::reorder_buffer_alloc_req_t req);
     logic needs_m_priv;
     logic needs_s_priv;
@@ -524,9 +514,8 @@ module reorder_buffer #(
 
   // Forward declarations (used in debug assigns before the main declarations).
   // TIMING: head_ptr (via head_idx) drives every head RAM read address plus
-  // pointer arithmetic; post-synth fanout was ~650 with only 4 tool-chosen
-  // replicas. Capping the per-replica load lets each copy be placed next to
-  // its RAM/consumer cluster. Pure register replication; semantics unchanged.
+  // pointer arithmetic. Capping the per-replica load lets each copy be placed
+  // next to its RAM/consumer cluster.
   (* max_fanout = 96 *) logic [ReorderBufferTagWidth:0] head_ptr;
   logic [ReorderBufferTagWidth:0] tail_ptr;
   logic full;
@@ -550,11 +539,9 @@ module reorder_buffer #(
 
   // Reorder Buffer storage. 1-bit packed vectors stay in FFs for per-entry
   // flush/reset; multi-bit fields are in distributed RAM below.
-  // rob_valid broadcasts to the RAT rename muxes, per-RS CDB wake, and
-  // cpu_ooo flush/commit control. Post-synth shows bit[27] at ~80 fanout
-  // driving an 18-level cone into the pd_stage BTB register. The attribute
-  // makes Vivado replicate each bit before the net exceeds 32 loads, so the
-  // commit/flush broadcast no longer rides on a single per-bit driver.
+  // TIMING: rob_valid broadcasts to the RAT rename muxes, per-RS CDB wake,
+  // and cpu_ooo flush/commit control. The attribute makes Vivado replicate
+  // each bit before the net exceeds 32 loads.
   (* max_fanout = 32 *) logic [ReorderBufferDepth-1:0] rob_valid;
   logic [ReorderBufferDepth-1:0] rob_done;
   logic [ReorderBufferDepth-1:0] rob_exception;
@@ -565,16 +552,15 @@ module reorder_buffer #(
 
   // TIMING: alloc-time pre-decoded commit/perf-class FF vectors. The commit
   // decision spine (head_ready -> commit_stall -> commit_en / store-like)
-  // formerly read its instruction-class conjuncts out of the head-meta LVT
-  // LUTRAM (one-hot bank select + data mux, ~3-4 LUT levels before the first
-  // decision gate). Storing the decision-relevant class bits as plain
-  // per-entry FF vectors written once at allocation turns each of those reads
-  // into a 2-level onehot_read straight off registers, which shortens the
-  // front of every commit-side critical path (ROB->SQ sq_valid guard,
-  // ROB->trap/CSR arcs). Values are bit-identical to the meta-RAM fields; the
-  // meta RAM keeps carrying the payload copies consumed by the commit record.
-  // Entries are only read under head_valid, so no reset is needed (same
-  // contract as the data RAMs).
+  // reads its instruction-class conjuncts from these per-entry FF vectors,
+  // written once at allocation, instead of from the head-meta LVT LUTRAM
+  // (one-hot bank select + data mux, about 3-4 LUT levels). Each read is a
+  // 2-level onehot_read straight off registers, which shortens the front of
+  // every commit-side critical path (ROB->SQ sq_valid guard, ROB->trap/CSR
+  // arcs). Values are bit-identical to the meta-RAM fields; the meta RAM
+  // still carries the payload copies consumed by the commit record. Entries
+  // are only read under head_valid, so no reset is needed (same contract as
+  // the data RAMs).
   logic [ReorderBufferDepth-1:0] rob_f_store_like;  // is_store|is_fp_store|is_sc
   logic [ReorderBufferDepth-1:0] rob_f_is_branch;
   logic [ReorderBufferDepth-1:0] rob_f_has_checkpoint;
@@ -598,15 +584,15 @@ module reorder_buffer #(
   // !(is_csr|is_fence|is_fence_i|is_wfi|is_mret|is_amo|is_lr|is_sc): the
   // static (allocation-known) part of the 2-wide commit hazard gates.
   logic [ReorderBufferDepth-1:0] rob_f_ok_2wide_static;
-  // Phase 3 sidebands retained after the allocation-time legality fold: SRET
-  // steers the xRET start, while SFENCE.VMA steers the serializer window.
+  // Subtype bits. SRET and DRET also set is_mret and select the xRET start
+  // and return PC; SFENCE.VMA also sets is_fence_i and opens the serializer's
+  // o_sfence_window.
   logic [ReorderBufferDepth-1:0] rob_f_is_sret;
-  // DRET rides is_mret and steers the xRET start.
   logic [ReorderBufferDepth-1:0] rob_f_is_dret;
   logic [ReorderBufferDepth-1:0] rob_f_is_sfence;
-  // Conservative allocation-time ownership for CSR writes that can affect
-  // address translation. Any satp access keeps the historical conservative
-  // flush behavior; mstatus/sstatus require architectural write intent.
+  // Conservative allocation-time class of CSRs that may change address
+  // translation: any satp access, and an mstatus/sstatus access with
+  // architectural write intent.
   logic [ReorderBufferDepth-1:0] rob_f_csr_may_change_translation;
 
   // Head and tail pointers are declared above (forward reference).
@@ -731,20 +717,15 @@ module reorder_buffer #(
 
   // Commit control signals
   logic head_ready;  // Head is valid and done
-  // No synthesis attributes on commit_stall or the
-  // *_early aggregates below. Three measured rounds on this spine showed
-  // every attribute-based constraint making it worse. Round 1: (* max_fanout *) on
-  // commit_en/commit_2_fire fragmented the interrupt arc (WNS -1.17). Round
-  // 3: (* keep *) on commit_stall and the early aggregates pinned fusion
-  // boundaries in the middle of the true critical cone (WNS -0.938).
-  // commit_stall is not a late external input: its serializer cone itself
-  // reads the head metadata through the one-hot masks, so mask ->
+  // TIMING: no synthesis attributes (max_fanout, keep) on commit_stall,
+  // commit_en, commit_2_fire, or the *_early aggregates below. Each forces a
+  // net boundary inside the commit/interrupt critical cone, which hurts
+  // timing. commit_stall is not a late external input: its serializer cone
+  // itself reads the head class bits through the one-hot masks, so mask ->
   // is_csr/store-like -> FSM stall -> take_trap is one deep
-  // register-to-register cone. Every real structural change (one-hot head
-  // reads, ohread LVT select, meip register, compare-then-mux) helped. The
-  // two-term factoring below stays as plain RTL; synthesis is free to refuse
-  // it back into the baseline-style fused tree.
-  logic commit_stall;  // Canonical stall for perf counters and assertions.
+  // register-to-register cone. The two-term factoring below is plain RTL;
+  // synthesis is free to fuse it back into one tree.
+  logic commit_stall;  // Full serializer stall, for perf counters and assertions.
   logic commit_stall_for_retire;  // Consumers also apply retirement permission.
   // Early/late factoring of the commit gates (pure AND re-association,
   // bit-identical conjunct sets; see Commit Enable Logic).
@@ -808,20 +789,18 @@ module reorder_buffer #(
   assign head_next_f_store_like = onehot_read(rob_f_store_like, head_next_clear_mask);
   assign head_next_f_is_branch = onehot_read(rob_f_is_branch, head_next_clear_mask);
   assign head_next_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_next_clear_mask);
-  // No max_fanout on commit_en. A (* max_fanout = 96 *) was tried and
-  // measured worse overall: the attribute forces the commit_en net to keep
-  // its identity, which blocks opt_design from collapsing the serialization
-  // spine (interrupt_pending -> commit_stall -> commit_en -> store-like ->
-  // sq_committed_empty_for_trap -> trap_taken) into shared LUTs, adding
-  // levels to the late UART/interrupt-pending arc (933 new failing paths,
-  // WNS -1.17). With the one-hot head reads the head-side arrival is early
-  // enough that the un-split ~655-load net is no longer the limiter.
+  // No max_fanout on commit_en: keeping the net's identity blocks opt_design
+  // from collapsing the serialization spine (interrupt_pending ->
+  // commit_stall -> commit_en -> store-like -> sq_committed_empty_for_trap ->
+  // trap_taken) into shared LUTs, which adds levels to the late
+  // interrupt-pending arc. With the one-hot head reads the head side arrives
+  // early enough that the unsplit net is not the limiter.
   logic commit_en;  // Commit fires this cycle
 
   // Widen-commit ("2-wide") gate. Asserted when commit_en is high this cycle,
   // the entry immediately behind head is also retirable, and neither slot
   // hits a hazard that forces 1-wide commit (serial ops, head mispredict,
-  // head+1 mispredicting branch, FENCE.I, exceptions, AMO/LR/SC).
+  // head+1 mispredicted or early-recovered branch, exceptions, AMO/LR/SC).
   // commit_2_gate is the ungated opportunity signal (perf-counter input);
   // commit_2_fire (gate && EnableWidenCommit && i_widen_commit_ok) drives the
   // 2-wide retire itself: head_ptr advances by 2, rob_valid clears at head+1,
@@ -955,8 +934,8 @@ module reorder_buffer #(
       !head_exception && !(head_f_is_branch && head_mispredicted);
   // head+1 may be a correctly-predicted branch: the second checkpoint-free
   // RAT port and the slot-2 correct-branch training capture handle its
-  // retire side effects. Mispredicted (or early-recovered) branches still
-  // retire 1-wide at the head so the single recovery path is preserved.
+  // retire side effects. Mispredicted (or early-recovered) branches retire
+  // 1-wide at the head, which keeps a single recovery path.
   // Allocation-time legality is already stored in head_next_exception, so an
   // FS-Off FP operation cannot retire through slot 2.
   assign head_next_ok_2wide = head_next_f_ok_2wide_static &&
@@ -964,22 +943,18 @@ module reorder_buffer #(
       !(head_next_f_is_branch && (head_next_mispredicted || head_next_early_recovered));
 
   // Same-cycle CDB bypass for head / head+1. rob_done / rob_value /
-  // rob_fp_flags update at the clock edge from i_cdb_write, so without a
-  // bypass the head cannot commit until the cycle after the CDB write lands,
-  // leaving ~1 cycle of drain on every FU completion. Forwarding i_cdb_write
-  // when it targets the head (or head+1) tag lets commit fire the same cycle
-  // the arbiter broadcasts. Excluded cases (exception, branch/JAL/JALR, CSR,
-  // FENCE, FENCE.I, WFI, MRET) fall through to the existing branch_update /
-  // serial / trap paths; the bypass short-circuits only ordinary completions,
-  // which dominate the CoreMark head-wait buckets.
-  //
-  // An analogous bypass for i_store_complete_valid was tried and dropped:
-  // cutting the store drain reduced head_wait_mem_store but pushed the bubble
-  // into SQ-drain / load-disambig, netting essentially zero cycles.
+  // rob_fp_flags update at the clock edge from the CDB, so without a bypass
+  // the head cannot commit until the cycle after its CDB write lands.
+  // Forwarding a CDB write that targets the head (or head+1) tag lets commit
+  // fire the same cycle the arbiter broadcasts. At the head, excluded cases
+  // (exception, branch/JAL/JALR, CSR, FENCE, FENCE.I, WFI, xRET) keep their
+  // branch_update / serial / trap paths; the bypass short-circuits only
+  // ordinary completions. Stores complete on their own port and have no
+  // bypass.
   //
   // i_flush_all is already on the downstream commit_en gate, so the bypass
-  // does not recheck it. Leaving it off keeps the ROB's full_flush_all cone
-  // (the current -0.495 ns critical path) off the commit-side bypass path.
+  // does not recheck it. Leaving it off keeps the ROB's full-flush cone off
+  // the commit-side bypass path.
   logic head_cdb_match;
   logic head_cdb_match_l2;  // lane-1 hits the head
   logic head_cdb_bypass;
@@ -993,15 +968,13 @@ module reorder_buffer #(
   // the same values as i_cdb_write.tag / i_cdb_write_2.tag (asserted below).
   assign head_cdb_match = i_cdb_write.valid && (i_cdb_match_tag == head_idx);
   assign head_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_match_tag_2 == head_idx);
-  // TIMING: per-lane bypass structure. The former shape computed one shared
-  // head_cdb_bypass select ((match||match2) && !exc_sel && ok, exc_sel a
-  // match-steered mux) that fanned to both the 1-bit control side
-  // (head_done_eff -> head_ready -> commit/mret/trap decisions) and the
-  // 64-bit value/fp-flags muxes; opt_design fused the control bit into the
-  // wide value-mux LUT cone, adding ~3 levels to every commit-side arc.
-  // Splitting per lane gives the value muxes their own selects and keeps the
-  // control OR flat. Bit-identical: the CDB lanes carry distinct tags, so at
-  // most one lane matches the head (resp. head+1).
+  // TIMING: per-lane bypass structure. A single shared bypass select feeding
+  // both the 1-bit control side (head_done_eff -> head_ready -> commit and
+  // trap decisions) and the 64-bit value/fp-flags muxes lets opt_design fuse
+  // the control bit into the wide value-mux LUT cone, adding levels to every
+  // commit-side arc. Splitting per lane gives the value muxes their own
+  // selects and keeps the control OR flat. Bit-identical: the CDB lanes carry
+  // distinct tags, so at most one lane matches the head (resp. head+1).
   logic head_cdb_bypass_l1;
   logic head_cdb_bypass_l2;
   assign head_cdb_bypass_l1 = head_cdb_match && !i_cdb_write.exception && head_f_cdb_bypass_ok;
@@ -1010,9 +983,10 @@ module reorder_buffer #(
 
   assign head_next_cdb_match = i_cdb_write.valid && (i_cdb_match_tag == head_next_idx);
   assign head_next_cdb_match_l2 = i_cdb_write_2.valid && (i_cdb_match_tag_2 == head_next_idx);
-  // Its only consumer (commit_2_gate) gates head_next_cdb_bypass further with
-  // head_next_ok_2wide, so the bypass itself needs only the exception
-  // exclusion to cover the trap path. Per-lane structure as for the head.
+  // Retirement uses head_next_cdb_bypass only through commit_2_gate, which
+  // also requires head_next_ok_2wide, so the bypass itself needs only the
+  // exception exclusion to cover the trap path. Per-lane structure as for the
+  // head.
   logic head_next_cdb_bypass_l1;
   logic head_next_cdb_bypass_l2;
   assign head_next_cdb_bypass_l1 = head_next_cdb_match && !i_cdb_write.exception;
@@ -1050,17 +1024,16 @@ module reorder_buffer #(
   // master enable and the slot-2 accept input. It feeds the perf counter so
   // the upper bound stays measurable even when widen-commit is gated off.
   // commit_2_fire is what the output / retire logic acts on: the opportunity
-  // ANDed with the master enable and the cpu_ooo slot-2 accept signal
-  // (i_widen_commit_ok, currently tied high).
+  // ANDed with the master enable and the cpu_ooo slot-2 permission
+  // (i_widen_commit_ok, low during a debugger single step).
   // TIMING (late-side factoring, see Commit Enable Logic): commit_en && X ==
-  // (commit_ready_early && X) && !commit_stall. Same conjunct set,
-  // re-associated so the late commit_stall enters one final LUT.
+  // (commit_ready_early && X) && !commit_stall_for_retire. Same conjunct set,
+  // re-associated so the late stall enters one final LUT.
   assign commit_2_ready_early = commit_ready_early && head_next_valid && head_next_done_eff &&
                                 head_ok_2wide && head_next_ok_2wide;
   assign commit_2_gate = commit_2_ready_early && !commit_stall_for_retire;
-  // No max_fanout on commit_2_fire: a forced net boundary here sat mid-spine
-  // on the late UART/interrupt-pending -> trap_taken arc (it appeared as a
-  // distinct fo=40 level in the round-1 -1.17 post-opt path).
+  // No max_fanout on commit_2_fire: a forced net boundary here sits
+  // mid-spine on the late interrupt-pending -> trap_taken arc.
   logic commit_2_fire;
   assign commit_2_fire = commit_2_gate && EnableWidenCommit && i_widen_commit_ok;
 
@@ -1068,6 +1041,10 @@ module reorder_buffer #(
   // Distributed RAM Write Enables and Data
   // ===========================================================================
 
+  // alloc_en drives the RAMs and the tail pointer. The *_valid, *_control,
+  // and *_branch_bits copies are identical enables for the rob_valid/replay,
+  // done/exception/class, and branch FF groups; keep and max_fanout hold each
+  // copy as its own capped net.
   logic alloc_en;
   logic alloc_en_2;
   (* keep = "true", max_fanout = 16 *)logic alloc_en_valid;
@@ -1091,6 +1068,10 @@ module reorder_buffer #(
   assign alloc_en_2_branch_bits = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
                                   !full_for_2 && !i_flush_all && !i_flush_en;
 
+  // The value and FP-flag RAMs take every CDB write outside a full flush
+  // (cdb_ram_wr_en). State updates (done, exception, cause, replay) also
+  // require a live entry. See the CDB staleness checks in the simulation
+  // assertions for what a stale write reaches.
   logic cdb_ram_wr_en;
   logic cdb_state_wr_en;
   assign cdb_ram_wr_en   = i_cdb_write.valid && !i_flush_all;
@@ -1116,7 +1097,7 @@ module reorder_buffer #(
   logic branch_wr_en;
   assign branch_wr_en = i_branch_update.valid && !i_flush_all && rob_valid[i_branch_update.tag];
 
-  // Capture the complete legality verdict and its cause beside the other
+  // Record the allocation-time legality result and its cause with the other
   // allocation data. Legal entries start with exception/cause zero; a later
   // exceptional CDB completion sets the flag and replaces the cause.
   logic alloc_legality_fault_data;
@@ -1134,9 +1115,9 @@ module reorder_buffer #(
   logic [FLEN-1:0] alloc_value_data;
   logic [FLEN-1:0] alloc_value_data_2;
   always_comb begin
-    // Save the sequential fall-through/link address for every branch and
-    // jump, so commit-time redirect can use the exact saved address instead
-    // of recomputing it from compressed-length metadata.
+    // Write the link address (pc + 2 or pc + 4) into the value field of every
+    // branch and jump, so JAL and JALR hold their register result from
+    // allocation.
     if (i_alloc_req.is_branch) alloc_value_data = {{(FLEN - XLEN) {1'b0}}, i_alloc_req.link_addr};
     else alloc_value_data = '0;
   end
@@ -1434,8 +1415,9 @@ module reorder_buffer #(
       .o_read_data    (head_meta_rd_data)
   );
 
-  // Widen-commit replica: head+1 read port for head_meta. This feeds the
-  // head_next_* hazard flags consumed by the 2-wide commit gate.
+  // Widen-commit replica: head+1 read port for head_meta. It feeds the slot-2
+  // commit payload, the head+1 early outputs, and perf counters; the 2-wide
+  // gate reads the FF vectors.
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (HeadMetaWidth),
@@ -1454,40 +1436,36 @@ module reorder_buffer #(
   // Multi-write-port fields (allocation + CDB).
   // These use mwp_dist_ram (mwp_dist_ram_ohread for head-side reads) with
   // 4 write ports: port 0 = slot-1 alloc, port 1 = slot-2 alloc,
-  // port 2 = CDB lane 0, port 3 = CDB lane 1 (highest priority; the arbiter
-  // guarantees the two CDB lanes never collide on an address).
+  // port 2 = CDB lane 0, port 3 = CDB lane 1. Without LVT staging the
+  // highest-numbered port wins a same-cycle write to one address, so a CDB
+  // write beats an allocation; the arbiter guarantees the two CDB lanes never
+  // collide on an address.
   // ---------------------------------------------------------------------------
 
   // rob_value: 4 write ports (alloc1 + alloc2 + CDB lane 0 + CDB lane 1).
   // Nine instances with identical writes and different read addresses
-  // (head, head+1, RAT, dispatch bypass x6).
+  // (head, head+1, the i_read_tag port, dispatch bypass x6).
   //
-  // ROUTABILITY: NUM_NARROW_WRITE_PORTS(2)/NARROW_DATA_WIDTH(XLEN) on every
-  // value instance. The two alloc ports only ever write zero-extended XLEN
-  // link addresses (see alloc_value_data), so their banks store only the low
-  // XLEN bits and reads reconstruct zero upper halves. This deletes the alloc
-  // banks' FLEN upper halves (a quarter of each value RAM's LUTRAM, x9
-  // replicas) plus the matching alloc write-address/data fanout, part of the
-  // X3 backend-band congestion relief. The RAM modules assert the zero-upper
-  // contract in simulation.
+  // NUM_NARROW_WRITE_PORTS(2)/NARROW_DATA_WIDTH(XLEN) on every value
+  // instance: the two alloc ports only ever write zero-extended XLEN link
+  // addresses (see alloc_value_data), so their banks need only the low XLEN
+  // bits. With FLEN == XLEN (RV64 with D) this changes nothing; it saves the
+  // alloc banks' upper bits only when FLEN > XLEN.
   //
   // TIMING: NUM_STAGED_LVT_PORTS(2) on every value instance. The alloc
   // enables arrive late (the id_stall -> id_valid -> dispatch-gate cone) and
-  // previously drove every LVT bit of all 9 replicas plus the alloc bank
-  // write enables: one ~850-load net, the x3 post-opt WNS (-0.363, 578
-  // failing endpoints, 72% of TNS). With staging, the alloc ports (0/1)
-  // still write their banks in the alloc cycle, but the LVT update runs one
-  // cycle later from registers inside the RAM module, so the late enables
-  // load only the staging flops and the bank WE pins (which have ~0.9 ns of
-  // slack, since they carry no downstream decode). Reads stay cycle-exact
-  // through the module's per-entry effective-LVT correction. The
-  // load-bearing case is JAL, which is done at alloc and whose link value may
-  // be read (head commit or dispatch bypass) at alloc+1. CDB lanes (2/3) stay
-  // live: a CDB write in an older allocation's drain cycle wins the LVT
-  // because a live write beats a staged drain. A stale CDB write colliding
-  // with a new allocation in the same cycle is legal and loses to the
-  // allocation through the lvt_eff override; the drain-window tripwire below
-  // checks the one unsafe window.
+  // would otherwise drive every LVT bit of all 9 replicas. With staging, the
+  // alloc ports (0/1) still write their banks in the alloc cycle, but the LVT
+  // update runs one cycle later from registers inside the RAM module, so the
+  // late enables load only the staging flops and the bank write enables.
+  // Reads stay cycle-exact through the module's per-entry effective-LVT
+  // correction. This matters for JAL, which is done at alloc and whose link
+  // value may be read (head commit or dispatch bypass) at alloc+1. CDB lanes
+  // (2/3) stay live. A stale CDB write in the same cycle as a new allocation
+  // of that entry loses to the allocation (lvt_eff override). A CDB write in
+  // the cycle after an allocation (the drain cycle) wins the LVT, so no CDB
+  // write may target the entry then; g_drain_window_check flags one in
+  // simulation.
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH            (ReorderBufferTagWidth),
       .DATA_WIDTH            (FLEN),
@@ -1638,8 +1616,8 @@ module reorder_buffer #(
   );
 
   // rob_exc_cause: allocation installs zero or IllegalInstr; only exceptional,
-  // valid-qualified CDB completions replace it. CDB ports remain highest
-  // priority so a real execution exception overrides an allocation-time fault.
+  // valid-qualified CDB completions replace it, so a later execution
+  // exception overrides an allocation-time fault.
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
@@ -1673,7 +1651,10 @@ module reorder_buffer #(
       .o_read_data(head_next_exc_cause)
   );
 
-  // rob_fp_flags: 4 write ports (alloc1='0 + alloc2='0 + CDB lanes 0/1), 1 read port (head)
+  // rob_fp_flags: 4 write ports (alloc1='0 + alloc2='0 + CDB lanes 0/1), 1 read port (head).
+  // The CDB write enables are not rob_valid-gated and this RAM has no LVT
+  // staging, so a stale CDB write in an entry's reallocation cycle beats the
+  // allocation's zero (see the CDB staleness checks).
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
@@ -1881,8 +1862,8 @@ module reorder_buffer #(
 
   // The exported dispatch back-pressure is registered from a conservative
   // next ROB occupancy that includes allocation but not same-cycle commit.
-  // Internal allocation still uses the exact combinational full/full_for_2
-  // signals above.
+  // Internal allocation uses the exact combinational full/full_for_2 signals
+  // above.
   //
   // TIMING: the accepted request valids are a hard interface contract
   // (asserted below): dispatch never presents slot 1 while full/flushing, and
@@ -1892,8 +1873,8 @@ module reorder_buffer #(
   //
   // The three possible occupancy thresholds are precomputed in parallel, so
   // the late dispatch valid selects width 0/1/2 instead of feeding an
-  // occupancy add followed by a compare. This equals the former
-  // count+allocation result for every legal request and changes no cycle.
+  // occupancy add followed by a compare. This equals the count+allocation
+  // reference for every legal request (p_dispatch_full_predecode_equiv).
   logic [ReorderBufferTagWidth:0] dispatch_flush_tail_next;
   logic [ReorderBufferTagWidth:0] dispatch_flush_count_next;
   logic                           dispatch_full_next;
@@ -1929,7 +1910,7 @@ module reorder_buffer #(
 
   always_comb begin
     if (i_flush_all || i_flush_en) begin
-      // Preserve the exact pointer-derived flush occupancy calculation.
+      // On a flush, use the exact pointer-derived surviving occupancy.
       dispatch_full_next = dispatch_flush_count_next == ReorderBufferDepth[ReorderBufferTagWidth:0];
       dispatch_full_for_2_next = dispatch_flush_count_next >=
           (ReorderBufferDepth[ReorderBufferTagWidth:0] - 1'b1);
@@ -2000,12 +1981,13 @@ module reorder_buffer #(
   // -------------------------------------------------------------------------
   // Control signals (rob_valid, rob_done, rob_exception): need reset
   // -------------------------------------------------------------------------
-  // Complete each physical entry's allocation outcomes before the late
-  // accepted valids arrive. Completion tags compare directly with the entry
-  // index, so no selected rob_valid bit feeds back through a write decoder.
-  // Store completion is last: its tag/live eligibility settles independently
-  // of the late DMMU/store-issue valid. Allocation and completion priorities
-  // match the indexed writes, even for simultaneous inputs.
+  // TIMING: each entry's next done/exception bit is computed for all four
+  // allocation cases before the late allocation enables select one.
+  // Completion tags compare directly with the entry index, so no selected
+  // rob_valid bit feeds back through a write decoder. Store completion is
+  // last: its tag/live eligibility settles independently of the late
+  // DMMU/store-issue valid. Allocation and completion priorities match the
+  // indexed-write reference below, even for simultaneous inputs.
   logic alloc_done_value, alloc_done_value_2;
   assign alloc_done_value = i_alloc_req.is_jal || (!i_alloc_req.is_jalr &&
       (i_alloc_req.is_wfi || i_alloc_req.is_fence ||
@@ -2056,8 +2038,9 @@ module reorder_buffer #(
   end
 
 `ifdef ROB_CONTROL_NEXT_LOCAL_PROOF
-  // Original indexed-write transitions rebuilt from actual current state.
-  // All inputs and current bits are independent; no reset/admission premise.
+  // Reference: the indexed-write form of the transitions, built from the
+  // actual current state. All inputs and current bits are unconstrained; no
+  // reset or admission assumption.
   logic [ReorderBufferDepth-1:0] f_done_next, f_exception_next;
   always_comb begin
     f_done_next = rob_done;
@@ -2073,8 +2056,8 @@ module reorder_buffer #(
       // Allocation Write (control fields only)
       // ---------------------------------------------------------------------
       if (alloc_en_control) begin
-        // Legality is complete at allocation; execution may later add a
-        // higher-priority exception through an exceptional CDB completion.
+        // Legality is complete at allocation; an exceptional CDB completion
+        // may still set the bit later.
         f_exception_next[tail_idx] = alloc_legality_fault_data;
 
         // JAL's link and target are both known at allocation. JALR and
@@ -2114,7 +2097,7 @@ module reorder_buffer #(
       // ---------------------------------------------------------------------
       // CDB Write (mark entry done with result)
       // ---------------------------------------------------------------------
-      // For non-branch instructions (ALU, MUL, DIV, MEM, FP).
+      // Functional-unit results (ALU, MUL, DIV, MEM, FP).
       // Value and fp_flags are written on every CDB completion. Exception
       // state/cause are sticky across a non-exception completion so an
       // allocation-time legality fault cannot be erased. An exceptional
@@ -2159,9 +2142,10 @@ module reorder_buffer #(
   // commit, flush), the same shape as rob_valid below. The flag selects the
   // ExcMemReplay cause at the head; the entry's exceptional state itself is
   // the shared rob_exception bit above.
-  // Resolve physical-entry clear masks before the accepted allocation valids.
-  // All updates after replay-set only clear, so their order is immaterial.
-  // Preserve their original enables and keep allocation as the final select.
+  // TIMING: as for done/exception, each entry's next bit is computed for all
+  // four allocation cases before the late allocation enables select one.
+  // Every update after the set only clears, so their order is immaterial;
+  // each keeps the enable of the indexed-write reference below.
   logic [ReorderBufferDepth-1:0] replay_next;
   for (genvar entry = 0; entry < ReorderBufferDepth; entry++) begin : gen_replay_next
     wire alloc_here = tail_idx == ReorderBufferTagWidth'(entry);
@@ -2409,48 +2393,37 @@ module reorder_buffer #(
   // Commit Enable Logic
   // ===========================================================================
 
-  // Commit when the head is ready, nothing stalls it, and no flush is in
-  // progress.
+  // Commit when the head is ready, the serializer does not stall it, and
+  // retirement is permitted: no commit hold, no early-recovery pulse, and no
+  // flush of any kind. Nothing retires in a flush cycle; the store queue
+  // relies on that, since its flush logic has no guard for a store committing
+  // in the same cycle.
   //
-  // The old branch_update collision guard, which delayed commit when a
-  // mispredicted branch resolved over the CDB in the same cycle as commit, is
-  // gone. (a) JAL, its stated motivation, never produces a branch_update:
-  // branch_resolution.sv drops is_jal from is_branch_update_issue, and JAL is
-  // marked done at allocation here.
-  // (b) A conditional branch cannot resolve and commit in the same cycle:
-  // head_cdb_bypass excludes branches, so its done bit trails branch_update
-  // by one cycle. An early_mispredict_fire coinciding with a head-mispredict
-  // commit is dropped one cycle later by the !mispredict_recovery_pending
-  // term in early_mispredict_active (early_misprediction_recovery.sv).
-  // (c) The guard was the commit_en <-> branch_update critical path (19 LUT
-  // levels through the CARRY8 branch-target comparison).
+  // No guard against a same-cycle branch_update is needed. JAL never produces
+  // one (branch_resolution.sv drops is_jal from is_branch_update_issue) and
+  // is marked done at allocation. A conditional branch or JALR cannot resolve
+  // and commit in the same cycle: head_cdb_bypass excludes branches, so its
+  // done bit trails branch_update by one cycle. An early_mispredict_fire
+  // coinciding with a head-mispredict commit is dropped one cycle later by
+  // the !mispredict_recovery_pending term in early_mispredict_active
+  // (early_misprediction_recovery.sv).
   //
-  // !i_flush_en is required for serializing correctness, not only as a flush
-  // guard. rob_serializer recognizes a serial head (CSR/FENCE/FENCE.I/WFI/
-  // MRET) only while !i_flush_en (the SERIAL_IDLE guard in rob_serializer.sv).
-  // During an early-backend-recovery / mispredict-recovery bubble
-  // (i_flush_en=1) the serializer therefore leaves commit_stall=0 for a head
-  // FENCE.I, and without this term commit_en would retire the FENCE.I
-  // unserialized, skipping the cache sync (L1D writeback-all + L1I
-  // invalidate-all) and letting a post-fence fetch read pre-fence code (the
-  // SMC bug). Gating commit on !i_flush_en keeps commit_en a subset of the
-  // serializer's guard, so a serial head never retires during the bubble; it
-  // commits, serialized, after the bubble clears. The bubble is a fixed hold
-  // (early-backend / mispredict recovery) that never waits on the head
-  // committing, so there is no deadlock.
+  // rob_serializer leaves IDLE only under the same permission terms, so
+  // neither the FSM nor retirement acts on a serializing head during a
+  // recovery bubble (i_flush_en); a head that survives the bubble serializes
+  // normally afterward. The bubble is a fixed hold that never waits on the
+  // head committing, so there is no deadlock.
   //
-  // The retirement-only serializer stall omits guards already present in
-  // every early aggregate below. Canonical stall remains on perf counters;
-  // rob_retire_stall checks all retirement strobes and the full perf vector.
-  // TIMING (late-side factoring): commit_en and every commit_stall-qualified
-  // derivative are written as <kept early aggregate> && !commit_stall. The
-  // conjunct sets are identical to the flat originals (pure AND
-  // re-association, so the value is bit-identical for every input
-  // combination). All early conjuncts are register-sourced and settle well
-  // before commit_stall's interrupt arc, so the late arc traverses exactly one
-  // LUT per gate. That restores, and slightly beats, the baseline netlist's
-  // shape, where commit_stall entered the second-to-last commit_en LUT and
-  // the derivatives chained behind the commit_en broadcast.
+  // commit_stall_for_retire omits the permission terms in FENCE_I_SYNC and
+  // CSR_TRANSLATION_DRAIN, so every early aggregate below must carry them;
+  // under those terms it equals the full commit_stall. Perf counters use the
+  // full commit_stall; rob_retire_stall checks all retirement strobes and the
+  // full perf vector against it.
+  // TIMING (late-side factoring): commit_en and every stall-qualified
+  // derivative are written as <early aggregate> && !commit_stall_for_retire,
+  // an AND re-association of the flat conjunct set. All early conjuncts are
+  // register-sourced and settle well before the stall's interrupt arc, so the
+  // late arc traverses exactly one LUT per gate.
   assign commit_ready_early = head_ready && !head_exception && !i_commit_hold &&
                               !i_early_recovery_en && !i_flush_en && !i_flush_all &&
                               !flush_after_head_commit;
@@ -2476,10 +2449,10 @@ module reorder_buffer #(
       commit_2_ready_early && EnableWidenCommit && i_widen_commit_ok &&
       head_next_f_has_checkpoint && !head_next_mispredicted && !head_next_early_recovered;
   assign o_commit_correct_branch_2_raw = commit_correct_branch_2_early && !commit_stall_for_retire;
-  // Same-cycle head-mispredict indicator without the branch_update collision
-  // term. Outer control logic uses this to suppress younger branch resolution
-  // without feeding branch_update back into commit_en.
-  // (Same factoring; the original conjunct set has no !head_exception.)
+  // Same-cycle head-mispredict indicator. Outer control logic uses this to
+  // suppress younger branch resolution without feeding branch_update back
+  // into commit_en. Same factoring; unlike commit_ready_early, the conjunct
+  // set has no !head_exception.
   assign head_mispredict_candidate_early =
       head_ready && !i_commit_hold && !i_early_recovery_en &&
       !i_flush_en && !i_flush_all && !flush_after_head_commit &&
@@ -2491,11 +2464,12 @@ module reorder_buffer #(
   // External Coordination Outputs
   // ===========================================================================
 
-  // CSR and xRET allocation explicitly excludes same-cycle CDB bypass. Read
-  // stored completion directly for these class-qualified starts, so the late
-  // CDB match/exception cone cannot feed trap/CSR control through head_ready.
-  // The original-equation assertions below check both starts cycle for cycle.
-  // Ordinary commit and exception readiness retain the CDB bypass.
+  // CSRs and xRETs are never eligible for the same-cycle CDB bypass
+  // (rob_f_cdb_bypass_ok), so their starts read the stored done bit instead
+  // of head_ready, which keeps the late CDB match/exception cone out of
+  // trap/CSR control. Assertions below check both starts against the
+  // head_ready form cycle for cycle. Ordinary commit and exception readiness
+  // keep the CDB bypass.
   // CSR execution signal: asserted on entry to CSR_EXEC.
   assign o_csr_start = (serial_state == riscv_pkg::SERIAL_IDLE) && head_valid && head_done &&
                        !i_commit_hold &&
@@ -2518,14 +2492,10 @@ module reorder_buffer #(
   //
   // The i_sq_committed_empty gate keeps o_mret_start (hence i_mret_start ->
   // trap_drain_wait -> i_commit_hold) low during the drain wait, which (a)
-  // prevents a commit-hold/o_mret_start f/2 oscillation and (b) keeps
-  // mret_taken a single-cycle pulse so flush_all fires exactly once. It is
-  // free on the common path: a retiring MRET normally finds the committed SQ
-  // already empty.
-  //
-  // !i_flush_en/!i_flush_all are left out on purpose: the flush signals
-  // derive from mret_taken, which derives from o_mret_start, so gating by
-  // them creates an oscillating combinational loop.
+  // prevents o_mret_start and the commit hold from toggling each other every
+  // cycle and (b) keeps mret_taken a single-cycle pulse so flush_all fires
+  // exactly once. It costs nothing on the common path, where a retiring MRET
+  // finds the committed SQ already empty.
   assign o_mret_start = ((serial_state == riscv_pkg::SERIAL_IDLE) ||
                          (serial_state == riscv_pkg::SERIAL_MRET_EXEC)) &&
                         head_valid && head_done &&
@@ -2534,31 +2504,28 @@ module reorder_buffer #(
                         head_f_is_mret && !head_exception &&
                         i_sq_committed_empty;
   // Which xRET: cpu_ooo splits o_mret_start into the trap unit's
-  // i_mret_start/i_sret_start with this qualifier (don't-care while
-  // o_mret_start is low).
+  // i_mret_start/i_sret_start/i_dret_start with these qualifiers (don't-care
+  // while o_mret_start is low).
   assign o_mret_start_is_sret = head_f_is_sret;
   assign o_mret_start_is_dret = head_f_is_dret;
 
   // Trap pending: asserted while an exception sits at the head. The
   // combinational term detects it in the same cycle; the state term sustains
-  // it across clock edges. During the IDLE->TRAP_WAIT transition both terms
-  // are high at once, which is harmless (the result is still 1'b1).
-  // !i_flush_all is left out of the combinational term on purpose: flush_all
-  // derives from trap_taken, which derives from o_trap_pending, so gating by
-  // !i_flush_all creates an oscillating combinational loop.
+  // it across clock edges.
   assign o_trap_pending =
       ((serial_state == riscv_pkg::SERIAL_TRAP_WAIT) ||
        (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception));
   assign o_trap_pc = head_pc;
-  // WFI interrupt-resume-PC seed (Bug#2): tells cpu_ooo the ROB head is a WFI
-  // so it can seed interrupt_resume_pc = wfi_pc+4 while the WFI stalls at the
-  // head. A machine interrupt taken at a drain-gated WFI (a committed store
-  // still draining) otherwise flushes the WFI before it commits, leaving
-  // interrupt_resume_pc at the pre-WFI instruction's next-PC, which is the
-  // WFI's own PC, so mepc=wfi_pc instead of the spec-required wfi_pc+4.
+  // WFI interrupt-resume-PC seed: tells cpu_ooo the ROB head is a WFI so it
+  // can seed interrupt_resume_pc = wfi_pc+4 while the WFI stalls at the head.
+  // A machine interrupt taken at a drain-gated WFI (a committed store still
+  // draining) flushes the WFI before it commits; without the seed,
+  // interrupt_resume_pc would hold the pre-WFI instruction's next-PC, which
+  // is the WFI's own PC, giving mepc=wfi_pc instead of the spec-required
+  // wfi_pc+4.
   assign o_head_is_wfi = head_f_is_wfi;
-  // AMO interrupt shield source: the f-partition one-hot read of the head's
-  // is_amo flag, valid-qualified and registered in cpu_ooo before use.
+  // AMO interrupt shield source: the one-hot FF read of the head's is_amo
+  // flag, valid-qualified and registered in cpu_ooo before use.
   assign o_head_is_amo = head_f_is_amo;
   // A replay flag is only set on an entry without a stored exception (and
   // an exceptional completion clears it), so it selects the cause outright.
@@ -2567,11 +2534,10 @@ module reorder_buffer #(
   assign o_trap_value = head_value[XLEN-1:0];
 
   // Regfile-bypass pre-decodes (see port comment). Field-equivalent to the
-  // o_commit_comb / o_commit_comb_2 struct fields whenever the corresponding
-  // raw fire is high: same head/head+1 nets, same conjunctions as cpu_ooo's
-  // previous struct-decoded expressions (p0 keeps the !exception && !is_csr
-  // defensive terms; p1 never had them, since the commit_2 gate excludes
-  // exceptions and serial classes at head+1 by construction).
+  // same decode of the o_commit_comb / o_commit_comb_2 struct fields whenever
+  // the corresponding raw fire is high: same head/head+1 nets. The head terms
+  // also exclude exceptions and CSRs; head+1 needs neither, since the
+  // commit_2 gate keeps exceptions and serial classes off slot 2.
   assign o_head_bypass_int_we_early = head_dest_valid && !head_exception &&
       !head_is_csr && !head_dest_rf && |head_dest_reg;
   assign o_head_bypass_fp_we_early = head_dest_valid && !head_exception &&
@@ -2581,8 +2547,7 @@ module reorder_buffer #(
   assign o_head_next_bypass_fp_we_early = head_next_dest_valid && head_next_dest_rf;
   // Direction-predictor training pre-decodes (see port comment). is_branch is
   // true for both branches and jumps in the commit structs, so the
-  // conditional class excludes JAL/JALR: the same conjunction as the previous
-  // struct-decoded expressions in cpu_ooo.
+  // conditional class excludes JAL/JALR.
   assign o_head_dir_train_early = head_is_branch && !head_is_jal && !head_is_jalr;
   assign o_head_branch_taken_early = head_branch_taken;
   assign o_head_next_dir_train_early =
@@ -2595,12 +2560,12 @@ module reorder_buffer #(
   //    redirect chain puts xret_return_pc there for xRET (highest priority);
   //  - head branch: retired_next_pc returns redirect_pc = taken ?
   //    head_branch_target : head_fallthrough_pc;
-  //  - otherwise: retired_next_pc returns pc + (is_compressed ? 2 : 4) with
-  //    is_compressed == head_is_compressed == head_fallthrough_pc.
+  //  - otherwise: retired_next_pc returns pc + (is_compressed ? 2 : 4), which
+  //    is head_fallthrough_pc.
   // Slot 2 may retire a correctly-predicted branch but never an xRET (serial
   // class); its next-PC arm below mirrors the head's taken-branch handling.
   // xRET return PC: mepc for MRET, sepc for SRET, dpc for DRET (the is_sret/
-  // is_dret sidebands qualify the shared is_mret class).
+  // is_dret subtype bits qualify the shared is_mret class).
   logic [XLEN-1:0] xret_return_pc;
   assign xret_return_pc = head_f_is_dret ? i_dpc : head_f_is_sret ? i_sepc : i_mepc;
   assign o_head_retired_next_pc =
@@ -2615,16 +2580,17 @@ module reorder_buffer #(
       (head_next_f_is_branch && head_next_branch_taken) ? head_next_branch_target :
       head_next_pc + (head_next_is_compressed ? 64'd2 : 64'd4);
 
-  // FENCE-class flush signal. Native FENCE.I/SFENCE.VMA and translation CSR
-  // retirement are owned by registered serializer states, so this D cone no
-  // longer rediscovers either event through the live ROB-head/commit spine.
+  // FENCE-class flush signal. The serializer derives both FENCE-class events
+  // from its registered states (FENCE_I_SYNC for FENCE.I/SFENCE.VMA,
+  // CSR_TRANSLATION_DRAIN for translation CSRs), so this register's D input
+  // does not depend on the live ROB-head/commit spine.
   //
-  // The translation event is already delayed one cycle inside the serializer:
-  // cycle T retires and captures the CSR into the registered commit bus;
-  // cycle T+1 writes csr_file while this register samples the semantic event;
-  // cycle T+2 exposes the flush alongside any corresponding registered
-  // csr_file TLB-invalidate request. Native FENCE.I keeps its historical
-  // commit-to-flush latency.
+  // FENCE.I/SFENCE.VMA: cycle T retires and raises the event; cycle T+1
+  // raises o_fence_i_flush. The translation event is delayed one cycle inside
+  // the serializer: cycle T retires and captures the CSR into the registered
+  // commit bus; cycle T+1 writes csr_file while this register samples the
+  // event; cycle T+2 raises the flush alongside any corresponding registered
+  // csr_file TLB-invalidate request.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       fence_i_committed <= 1'b0;
@@ -2637,9 +2603,9 @@ module reorder_buffer #(
   assign o_fence_i_flush = fence_i_committed;
 
   // o_sfence_window comes straight from the serializer's registered SFENCE
-  // window (phase-identical). Capturing it from the serializer's next state
-  // keeps the live head onehot read out of the DTLB/PTW invalidate cone;
-  // plain FENCE.I stays excluded.
+  // window, high for exactly the FENCE_I_SYNC cycles of an SFENCE.VMA.
+  // Capturing it from the serializer's next state keeps the live head onehot
+  // read out of the DTLB/PTW invalidate cone; plain FENCE.I stays excluded.
 
   // ===========================================================================
   // Commit Output
@@ -2675,7 +2641,9 @@ module reorder_buffer #(
       if (head_is_mret) begin
         // The xepc is stable here: the xRET handshake
         // (o_mret_start/i_mret_done) completes before commit_en asserts,
-        // so the trap unit has finished consuming it by this point.
+        // so the trap unit has finished consuming it by this point. In the
+        // full core an xRET never retires here: its full flush arrives with
+        // i_mret_done.
         o_commit_comb.redirect_pc = xret_return_pc;
       end else if (head_is_branch) begin
         if (head_branch_taken) begin
@@ -2709,30 +2677,26 @@ module reorder_buffer #(
       o_commit_comb.is_amo          = head_is_amo;
       o_commit_comb.is_lr           = head_is_lr;
       o_commit_comb.is_sc           = head_is_sc;
-      // TIMING: the stored per-entry bit, unconditionally. The historical
-      // branch arm reconstructed compressedness from the alloc-written link
-      // value (head_value == head_pc + 2): a one-hot value-RAM read, a 64-bit
-      // add, and a 64-bit compare (two CARRY8 chains in series) on the
-      // commit-record D cone, the deepest logic path of the placed design
-      // (15 levels into mispredict_commit_q). The reconstruction is redundant
-      // by construction: id_stage computes link_address = pc +
+      // TIMING: the stored per-entry bit, unconditionally. For a branch it
+      // equals the link-derived form (head_value == head_pc + 2) by
+      // construction: id_stage computes link_address = pc +
       // (is_compressed ? 2 : 4) from the same decode bit dispatch stores into
-      // the is_compressed meta field, dispatch/JALR write only that link into
-      // the value RAM, and both slot-2 commit and head_fallthrough_pc already
-      // trust the stored bit for branches. A sim tripwire below re-derives
-      // the link form on every branch commit and $error's on divergence.
+      // the is_compressed meta field, and dispatch/JALR write only that link
+      // into the value RAM. Deriving it from the link would put a one-hot
+      // value-RAM read, a 64-bit add, and a 64-bit compare on the
+      // commit-record D cone. A simulation check below re-derives the link form
+      // on every branch commit and $error's on divergence.
       o_commit_comb.is_compressed   = head_is_compressed;
     end
   end
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Equivalence tripwire for the is_compressed simplification above: the
-  // retired link-derived view must agree with the stored per-entry bit on
-  // every branch-class commit. head_value holds the alloc-written (JALR:
-  // CDB-rewritten) link = pc + (is_compressed ? 2 : 4), so divergence here
-  // means a producer stopped honoring that contract and the simplification
-  // must be revisited.
+  // Equivalence check for the stored is_compressed bit above: the retired
+  // link-derived view must agree with it on every branch-class commit.
+  // head_value holds the alloc-written (JALR: CDB-rewritten) link = pc +
+  // (is_compressed ? 2 : 4), so divergence here means a producer broke that
+  // contract.
   always @(posedge i_clk) begin
     if (i_rst_n && o_commit_comb.valid && head_is_branch) begin
       if ((head_value[XLEN-1:0] == (head_pc + 64'd2)) != head_is_compressed)
@@ -2747,8 +2711,9 @@ module reorder_buffer #(
 `endif
 `endif
 
-  // Keep commit visible for a full cycle after the retiring edge so external
-  // observers can sample it after the head pointer advances.
+  // Registered copy of the commit bus, visible for the cycle after the
+  // retiring edge. The full core leaves it unconnected; the wrapper registers
+  // o_commit_comb itself in commit_bus_pipeline.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) o_commit.valid <= 1'b0;
     else o_commit.valid <= o_commit_comb.valid;
@@ -2796,13 +2761,14 @@ module reorder_buffer #(
   // Widen-Commit Slot 2 Output (head+1)
   // ===========================================================================
   // Slot 2 is populated whenever commit_2_fire fires. By construction slot 2
-  // is never a mispredicting branch/serial/exception/AMO/LR/SC. A
-  // correctly-predicted branch may retire here, so the branch/checkpoint
-  // fields (is_branch, branch_taken, branch_target, is_call/return/jal/jalr,
-  // has_checkpoint, checkpoint_id, redirect_pc) carry real data alongside
-  // the regfile-writeback + SQ-release fields (dest_*, value, pc, is_store,
-  // is_fp_store, fp_flags, tag, is_compressed, early_recovered); the
-  // CSR/serial flags and misprediction stay zeroed.
+  // is never a mispredicted or early-recovered branch, a serializing
+  // instruction, an exception, or AMO/LR/SC. A correctly-predicted branch may
+  // retire here, so the branch/checkpoint fields (is_branch, branch_taken,
+  // branch_target, is_call/return/jal/jalr, has_checkpoint, checkpoint_id,
+  // redirect_pc) carry real data alongside the regfile-writeback + SQ-release
+  // fields (dest_*, value, pc, is_store, is_fp_store, fp_flags, has_fp_flags,
+  // tag, is_compressed, early_recovered); the exception, CSR, and serializing
+  // fields, predicted_taken, and misprediction stay zeroed.
   always_comb begin
     o_commit_comb_2 = '0;
 
@@ -2860,9 +2826,10 @@ module reorder_buffer #(
 
   assign o_commit_2_valid_raw = commit_2_fire;
   // TIMING (late-side factoring): commit_2_fire && X == (commit_2_ready_early
-  // && EnableWidenCommit && i_widen_commit_ok && X) && !commit_stall. Same
-  // conjunct set, one late LUT. This output feeds sq_committed_empty_for_trap
-  // (the trap arc of the uart spine) and the SQ same-cycle commit guard.
+  // && EnableWidenCommit && i_widen_commit_ok && X) && !commit_stall_for_retire.
+  // Same conjunct set, one late LUT. This output feeds
+  // sq_committed_empty_for_trap (on the late trap arc) and the SQ same-cycle
+  // commit guard.
   assign commit_2_store_like_early =
       commit_2_ready_early && EnableWidenCommit && i_widen_commit_ok &&
       // head_next_f_store_like also covers is_sc, which head_next_ok_2wide
@@ -2870,8 +2837,8 @@ module reorder_buffer #(
       head_next_f_store_like;
   assign o_commit_2_store_like_raw = commit_2_store_like_early && !commit_stall_for_retire;
 
-  // Registered copy of the slot-2 commit so external observers can sample it
-  // after the head pointer advances. Mirrors the o_commit register.
+  // Registered copy of the slot-2 commit, like o_commit (unconnected in the
+  // full core).
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) o_commit_2.valid <= 1'b0;
     else o_commit_2.valid <= o_commit_comb_2.valid;
@@ -2937,8 +2904,9 @@ module reorder_buffer #(
   assign head_next_valid_done = head_next_valid && head_next_done_eff;
 
   // Cycle-exact qualifier shared by every head-wait bucket. The class bits
-  // are allocation-time state, but the done/CDB-bypass/flush terms remain
-  // live so the observer pulse boundaries are unchanged.
+  // are allocation-time state, but the done/CDB-bypass/flush terms are live,
+  // so a head stops counting as waiting in the cycle its completion takes the
+  // same-cycle CDB bypass.
   logic head_wait_active;
   assign head_wait_active = head_valid && !head_done_eff && !i_flush_all;
 
@@ -2971,11 +2939,11 @@ module reorder_buffer #(
       end
     end
 
-    // rob_serializer exports commit_stall's IDLE arm gate-free (see the
-    // TIMING note there). The dropped IDLE-only gate conjuncts are re-applied
-    // here so these counters keep their original values. These counters use
-    // the canonical stall, including retirement guards in the sync/drain
-    // states; the retirement-only cofactor must not feed this block.
+    // rob_serializer exports commit_stall's IDLE arm without its gate (see
+    // the TIMING note there), so the IDLE-only gate conjuncts are re-applied
+    // here. These counters use the full commit_stall, which keeps the
+    // retirement guards in the sync/drain states; commit_stall_for_retire
+    // must not feed this block.
     if (head_ready && commit_stall && !i_flush_all &&
         ((serial_state != riscv_pkg::SERIAL_IDLE) ||
          (!i_commit_hold && !i_early_recovery_en && !i_flush_en))) begin
@@ -2993,10 +2961,9 @@ module reorder_buffer #(
     end
 
     // Widen-commit viability: single-wide commit fires this cycle and the
-    // next ROB entry would also be ready to retire. This is an upper bound;
-    // the real win is slightly lower because a serial op (CSR/fence/trap) or
-    // a mispredicting branch at head+1 still forces 1-wide commit on that
-    // cycle.
+    // next ROB entry would also be ready to retire. This is an upper bound:
+    // a serial op (CSR/fence/trap) or a mispredicting branch at head+1 still
+    // forces 1-wide commit on that cycle.
     o_perf_events.head_and_next_done = commit_en && head_next_valid_done;
     // Ungated version: the entry behind head is done whether or not commit
     // is firing this cycle. Subtract head_and_next_done to see how often
@@ -3006,8 +2973,9 @@ module reorder_buffer #(
     // because the hazard gate (serial ops, head+1 mispredicting branches,
     // FENCE.I, exceptions, AMO/LR/SC, head-mispredicting branches) is
     // already applied. commit_2_fire_actual also folds in the master enable
-    // and the cpu_ooo slot-2 accept term (i_widen_commit_ok, currently tied
-    // high); it is what the head_ptr increment and rob_valid clear use.
+    // and the cpu_ooo slot-2 permission (i_widen_commit_ok, low during a
+    // debugger single step); it is what the head_ptr increment and rob_valid
+    // clear use.
     o_perf_events.commit_2_opportunity = commit_2_gate;
     o_perf_events.commit_2_fire_actual = commit_2_fire;
 
@@ -3029,15 +2997,16 @@ module reorder_buffer #(
   end
 
   // ===========================================================================
-  // Reorder Buffer Entry Read Interface (for RAT bypass)
+  // Entry Read Port
   // ===========================================================================
 
   assign o_read_done = rob_valid[i_read_tag] && rob_done[i_read_tag];
   // u_rob_value_rat drives o_read_value.
 
-  // CSR/xRET cofactor: the allocation producer records both class bits and
-  // bypass eligibility together. These invariants preserve the legacy start
-  // equations, including xRET's sustained SQ-drain handshake and flush loop.
+  // CSR/xRET starts: allocation records the class bits and CDB-bypass
+  // eligibility together, so no live CSR or xRET entry is bypass-eligible.
+  // That makes the stored-done start equations equal to their head_ready
+  // reference forms, including xRET's sustained SQ-drain handshake.
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
     if (i_rst_n) begin
@@ -3057,7 +3026,8 @@ module reorder_buffer #(
 `endif
 
 `ifdef ROB_RETIRE_STALL_LOCAL_PROOF
-  // Original retirement equations retain the canonical serializer stall.
+  // Reference retirement equations, using the full serializer stall
+  // (commit_stall).
   logic f_commit_en, f_commit_2_gate, f_commit_2_fire;
   assign f_commit_en = commit_ready_early && !commit_stall;
   assign f_commit_2_gate = commit_2_ready_early && !commit_stall;
@@ -3092,10 +3062,8 @@ module reorder_buffer #(
       end
     end
 
-    // rob_serializer exports commit_stall's IDLE arm gate-free (see the
-    // TIMING note there). The dropped IDLE-only gate conjuncts are re-applied
-    // here so the reference retains the original IDLE qualification. The
-    // canonical stall retains its separate sync/drain retirement guards.
+    // Same IDLE gate re-application as the production block; the full
+    // commit_stall keeps its sync/drain retirement guards.
     if (head_ready && commit_stall && !i_flush_all &&
         ((serial_state != riscv_pkg::SERIAL_IDLE) ||
          (!i_commit_hold && !i_early_recovery_en && !i_flush_en))) begin
@@ -3112,29 +3080,12 @@ module reorder_buffer #(
           head_exception || (serial_state == riscv_pkg::SERIAL_TRAP_WAIT);
     end
 
-    // Widen-commit viability: single-wide commit fires this cycle and the
-    // next ROB entry would also be ready to retire. This is an upper bound;
-    // the real win is slightly lower because a serial op (CSR/fence/trap) or
-    // a mispredicting branch at head+1 still forces 1-wide commit on that
-    // cycle.
+    // Widen-commit events, as in the production block.
     f_perf_events.head_and_next_done = f_commit_en && head_next_valid_done;
-    // Ungated version: the entry behind head is done whether or not commit
-    // is firing this cycle. Subtract head_and_next_done to see how often
-    // the ROB is sitting on a done entry behind a stalled head.
     f_perf_events.head_plus_one_done = head_next_valid_done && !i_flush_all;
-    // Widen-commit fire-rate predictor: tighter than head_and_next_done
-    // because the hazard gate (serial ops, head+1 mispredicting branches,
-    // FENCE.I, exceptions, AMO/LR/SC, head-mispredicting branches) is
-    // already applied. commit_2_fire_actual also folds in the master enable
-    // and the cpu_ooo slot-2 accept term (i_widen_commit_ok, currently tied
-    // high); it is what the head_ptr increment and rob_valid clear use.
     f_perf_events.commit_2_opportunity = f_commit_2_gate;
     f_perf_events.commit_2_fire_actual = f_commit_2_fire;
 
-    // Widen-commit blocker decomposition. Gated on f_commit_en &&
-    // head_next_valid_done so these fire only on cycles where
-    // head_and_next_done is also 1; the sum equals head_and_next_done -
-    // commit_2_opportunity (the hazard-blocked gap).
     f_perf_events.commit_2_blocked_head_serial =
         f_commit_en && head_next_valid_done && !head_ok_2wide;
     f_perf_events.commit_2_blocked_next_serial =
@@ -3178,15 +3129,13 @@ module reorder_buffer #(
 `ifndef SYNTHESIS
 `ifndef FORMAL
 
-  // One-hot head-image invariant (load-bearing for the TIMING reads): the
+  // One-hot head-image invariant, which the TIMING reads depend on: the
   // registered masks must mirror the binary pointers every cycle, since
   // onehot_read() and the mwp_dist_ram_ohread LVT selects substitute them for
   // binary head_idx / head_next_idx indexing. The check waits until reset
   // has been observed asserted at least once: at sim time 0 the full-chip
   // bench can present i_rst_n=1 before the reset synchronizer fires, while
-  // the mask FFs still hold their uninitialized all-zero value (which reads
-  // identically to the pre-fix binary indexing of the equally-uninitialized
-  // state).
+  // the mask FFs still hold their uninitialized all-zero value.
   logic dbg_mask_seen_reset;
   initial dbg_mask_seen_reset = 1'b0;
   always @(posedge i_clk) begin
@@ -3241,13 +3190,11 @@ module reorder_buffer #(
     end
   end
 
-  // Retire trace: log every committed instruction (for debugging). PCs and
-  // values print as full 16 hex digits; a %08x slice would truncate the
-  // artifact bring-up leans on.
+  // Retire trace: log every committed instruction to retire_trace.log (for
+  // debugging). PCs and values print as full 16 hex digits.
   integer retire_trace_fd;
-  // The format must be a $fwrite literal. Verilator does not format through
-  // a localparam-string argument (it prints the format text itself), which
-  // mangles this trace, so the width is selected with branches instead.
+  // Each format must be a $fwrite literal. Verilator does not format through
+  // a localparam-string argument (it prints the format text itself).
   initial begin
     retire_trace_fd = $fopen("retire_trace.log", "w");
   end
@@ -3312,47 +3259,49 @@ module reorder_buffer #(
     end
   end
 
-  // CDB staleness tripwires. A CDB write whose tag the ROB no longer tracks
-  // ("stale delivery") has two conceivable sources: a completion for a
-  // flushed tag escaping a producer's kill discipline, or a duplicate
-  // broadcast of a completion whose first delivery already committed the
-  // instruction. A third class, duplicate-tag LQ/SQ pairs seeded by a
-  // flush-cycle ghost allocation that would complete the same tag twice, is
-  // closed structurally: the queue alloc enables carry this module's
+  // CDB staleness checks. Apart from a JALR wakeup broadcast that trails
+  // the JALR's commit (see the benign-delivery filter below), a CDB write
+  // whose tag the ROB no longer tracks ("stale delivery") has two possible
+  // sources: a completion for a flushed tag escaping a producer's kill
+  // discipline, or a duplicate broadcast of a completion whose first delivery
+  // already committed the instruction. A third class, duplicate-tag LQ/SQ
+  // pairs seeded by a flush-cycle allocation that would complete the same
+  // tag twice, cannot occur: the queue alloc enables carry this module's
   // !i_flush_all && !i_flush_en gate (see load_queue/store_queue). The
-  // events observed in CoreMark-PRO and Linux-boot runs were traced to the
-  // second kind: the MEM-slot accept/present divergence duplicated a load
-  // completion one cycle after a colliding misaligned-store issue, fixed at
-  // lq_result_accepted in tomasulo_wrapper.sv. (They had been misattributed
-  // here to FDIV/FSQRT-latency flushed-tag arrivals; the "cycles after last
-  // flush" distances pointed at unrelated flushes.) Flushed-tag escapes have
-  // never been observed; the tomasulo_wrapper stale-CDB probes and the
-  // fp_div_shim FORMAL flushed-tag assert pin the producer kill discipline.
-  // Both diagnostics below are expected to stay silent. The design still
-  // absorbs a stale arrival:
-  //   - state-FF and exception-cause writes are rob_valid-gated, and a
+  // producers rule out both sources: the kill discipline (adapter age-kill,
+  // shim flush-marking, LQ cdb_stage kill, arbiter kill) and MEM-slot single
+  // delivery (each completion pops the cycle it is granted; see
+  // lq_result_accepted in tomasulo_wrapper.sv). The diagnostics below are
+  // expected to stay silent. A stale arrival that does occur lands as
+  // follows:
+  //   - State-FF and exception-cause writes are rob_valid-gated, and a
   //     normal completion never writes the cause, so it cannot erase an
-  //     allocation-time legality fault;
-  //   - a value-RAM write to a still-free entry is invisible (nothing reads
-  //     invalid entries) and healed by the next allocation's LVT takeover;
-  //   - in the entry's own reallocation cycle, old rob_valid suppresses the
-  //     state/cause write while value alloc wins through staged-LVT
-  //     resolution (see mwp_dist_ram).
-  // The one arrival with no defense is the cycle after reallocation, the
-  // staged-LVT drain cycle, where a live CDB write wins the LVT and would
-  // poison the new instruction's value and (rob_valid now set) its done
-  // state. No real completion can exist that early (alloc -> dispatch ->
-  // issue -> FU -> registered CDB always exceeds one cycle), so that window
-  // is an error below. Stale arrivals >=2 cycles after reallocation (tag
-  // ABA) would be accepted as genuine at this boundary; ruling those out is
-  // the job of the producer-side kill discipline (adapter age-kill, shim
-  // flush-marking, LQ cdb_stage kill, arbiter kill) plus the MEM-slot
-  // single-delivery discipline (each completion pops the cycle it is
-  // granted; see lq_result_accepted). Both are pinned by the directed
-  // stale-CDB/single-delivery tests in the tomasulo_wrapper bench, the
-  // fp_div_shim FORMAL flushed-tag assert, and the wrapper's fu_type-carrying
-  // stale-delivery diagnostics; any escape that does occur stays visible
-  // here (free-entry warnings + the drain-window tripwire).
+  //     allocation-time legality fault.
+  //   - A value-RAM or FP-flags-RAM write to a still-free entry is invisible
+  //     (nothing reads invalid entries) and replaced by the next
+  //     allocation's write.
+  //   - In the entry's own reallocation cycle, old rob_valid suppresses the
+  //     state/cause write while the value allocation wins through staged-LVT
+  //     resolution (see mwp_dist_ram). The FP-flags RAM (u_rob_fp_flags) has
+  //     no such defense: its CDB write ports are not rob_valid-gated and
+  //     outrank allocation, so a stale write replaces the new entry's zeroed
+  //     flags, and an entry that does not complete over the CDB (a plain
+  //     store, for example) would retire them into fflags. In that cycle the
+  //     FP-flags RAM relies entirely on the producer kill and single-delivery
+  //     disciplines.
+  //   - In the cycle after reallocation, the staged-LVT drain cycle, a live
+  //     CDB write wins the LVT and would corrupt the new instruction's value
+  //     and FP flags and (rob_valid now set) its done state. No real
+  //     completion can exist that early (alloc -> dispatch -> issue -> FU ->
+  //     registered CDB always exceeds one cycle), so g_drain_window_check
+  //     makes that window an error.
+  //   - Two or more cycles after reallocation (tag ABA), a stale arrival is
+  //     accepted as genuine at this boundary; only the producer kill and
+  //     single-delivery disciplines rule it out.
+  // The producer side is covered by the directed stale-CDB/single-delivery
+  // tests in the tomasulo_wrapper bench, the fp_div_shim formal flushed-tag
+  // assert, and the wrapper's stale-delivery diagnostics, which name the
+  // producing FU.
   logic dbg_flush_prev_cycle;
   always @(posedge i_clk) begin
     if (!i_rst_n) dbg_flush_prev_cycle <= 1'b0;
@@ -3390,9 +3339,9 @@ module reorder_buffer #(
   end : g_drain_window_check
 
   // Informational (rate-limited, non-sticky): stale deliveries to still-free
-  // entries, with the distance since the most recent flush. Harmless per the
-  // analysis above, and expected to stay silent now that the duplicate
-  // delivery source is fixed; logged for producer-discipline diagnostics.
+  // entries, with the distance since the most recent flush, logged for
+  // producer-discipline diagnostics. See the analysis above for their
+  // effect; expected to stay silent.
   int unsigned dbg_cyc_since_flush;
   int unsigned dbg_stale_cdb_logged;
   always @(posedge i_clk) begin
@@ -3400,10 +3349,10 @@ module reorder_buffer #(
     else dbg_cyc_since_flush <= dbg_cyc_since_flush + 1;
   end
   // Benign-delivery filter (mirrors the wrapper diagnostic): a write whose
-  // tag committed within the last two cycles is the JALR wakeup broadcast
-  // trailing its branch_update-driven commit. Its value was stored at alloc,
-  // and the entry cannot be reallocated that fast (a tail wrap needs >=32
-  // net allocations).
+  // tag committed within the last two cycles is taken to be a JALR wakeup
+  // broadcast trailing its branch_update-driven commit. A JALR is marked done
+  // by its branch update and its link value is stored at allocation, so it
+  // can commit before its wakeup broadcast arrives.
   logic [3:0] dbg_recent_commit_valid;
   logic [3:0][ReorderBufferTagWidth-1:0] dbg_recent_commit_tag;
   always @(posedge i_clk) begin
@@ -3452,12 +3401,14 @@ module reorder_buffer #(
     end
   end
 
-  // Serializer ownership contracts. A commit-time recovery flush cannot
-  // overlap an already-owned head. Once a serializer-class head is ready,
-  // its sole execution completion has either already been consumed (CSR) or
-  // never exists (the remaining classes), so no CDB producer can rewrite it
-  // on the entry edge or while the serializer owns it. These integration
-  // invariants justify the serializer's head-independent retirement events.
+  // Serializer contracts. i_flush_after_head_commit arrives only with
+  // i_flush_en or i_flush_all, and a commit-time recovery flush never
+  // overlaps a head the serializer already holds. Once a serializer-class
+  // head is ready, its sole execution completion has either already been
+  // consumed (CSR) or never exists (the remaining classes), so no CDB
+  // producer can rewrite it on the entry edge or while the serializer holds
+  // it. The serializer's retirement events, which do not re-read the head,
+  // depend on these integration invariants.
   always @(posedge i_clk) begin
     if (i_rst_n && i_flush_after_head_commit && !(i_flush_en || i_flush_all)) begin
       $error("Reorder Buffer: flush-after-head arrived without a recovery flush");
@@ -3539,8 +3490,8 @@ module reorder_buffer #(
          head_f_is_wfi || head_f_is_mret)) begin
       // A CSR's CDB completion is already stored before head_ready can rise;
       // the other serializer classes have no CDB producer. This also covers
-      // the IDLE -> owned-state edge, before the state-only contract below
-      // becomes active.
+      // the edge from IDLE into a serializing state, before the state-only
+      // contract below becomes active.
       assume (!(i_cdb_write.valid && (i_cdb_write.tag == head_idx)));
       assume (!(i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx)));
     end
@@ -3549,13 +3500,14 @@ module reorder_buffer #(
       // consumed their sole completion before state entry.
       assume (!(i_cdb_write.valid && (i_cdb_write.tag == head_idx)));
       assume (!(i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx)));
-      // Commit-time branch recovery can only be pending after an IDLE branch
-      // owner retired; it cannot overlap an older serialized head.
+      // Commit-time branch recovery can only be pending after a branch
+      // retired from IDLE; it cannot overlap an older serialized head.
       assume (!i_flush_after_head_commit);
     end
   end
 
-  // alloc_valid not asserted during flush (matches existing simulation assertion)
+  // Dispatch, flush, and replay contracts. Each except the replay rule
+  // matches a simulation assertion above.
   always_comb begin
     assume (!(i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)));
     assume (!(i_alloc_req.alloc_valid && full));
@@ -3563,13 +3515,13 @@ module reorder_buffer #(
     assume (!(i_alloc_req_2.alloc_valid && full_for_2));
     assume (!(i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)));
     // The controller's flush-after-head qualifier is a subtype of recovery:
-    // it always arrives with the partial flush, unless a simultaneous
-    // full-flush owner suppresses that lower-priority output.
+    // it always arrives with the partial flush, unless a simultaneous full
+    // flush suppresses that lower-priority output.
     assume (!i_flush_after_head_commit || i_flush_en || i_flush_all);
     // Memory-order replay flags only ever target loads (the wrapper's
     // validation table is written by load observations), so the head is
     // never flagged while it is a serializing-class instruction the
-    // serializer may already own.
+    // serializer may already hold.
     assume (!(|(i_replay_set_mask & head_clear_mask) &&
               (head_f_is_csr || head_f_is_mret || head_f_is_fence || head_f_is_fence_i ||
                head_f_is_wfi)));
@@ -3588,7 +3540,7 @@ module reorder_buffer #(
     ));
   end
 
-  // Reference form of the former serial add/compare implementation. The
+  // Reference: the serial add/compare form of the dispatch occupancy. The
   // interface assumptions above make raw alloc_valid exactly the accepted
   // width used by the production predecoded status cone.
   logic [ReorderBufferTagWidth:0] f_dispatch_count_next_reference;
@@ -3602,23 +3554,22 @@ module reorder_buffer #(
     end
   end
 
-  // CDB drain-window contract. Stale CDB writes (a tag the ROB no longer
-  // tracks) have reached this boundary in real runs. They were traced to
-  // MEM-slot duplicate deliveries (the accept/present divergence fixed at
-  // lq_result_accepted in tomasulo_wrapper.sv), having been misread earlier
-  // as FDIV/FSQRT-latency flushed-tag arrivals. A stale write may even
-  // coincide with the same entry's reallocation cycle; that collision is
-  // legal, because the staged LVT of the rob_value RAMs resolves it
-  // alloc-wins and rob_valid gates the state-FF writes. The single arrival
-  // the design cannot absorb is a CDB write to an entry allocated in the
-  // previous cycle: the staged-LVT drain cycle, where a live write wins the
-  // LVT and rob_valid no longer gates it. No real completion can exist that
-  // early (alloc -> dispatch -> issue -> FU -> registered CDB always exceeds
-  // one cycle), so it is assumed away here as the environment contract; the
-  // sim tripwire in the debug section errors on any violation in every
-  // simulation. Stale writes >=2 cycles after reallocation (tag ABA) are not
-  // excluded by this contract; the producer-side kill discipline and the MEM
-  // single-delivery discipline rule them out, pinned by the tomasulo_wrapper
+  // CDB drain-window contract. A stale CDB write (a tag the ROB no longer
+  // tracks) may coincide with the same entry's reallocation cycle. For the
+  // value RAMs, state FFs, and cause RAM that collision is legal: the staged
+  // LVT of the rob_value RAMs resolves it alloc-wins and rob_valid gates the
+  // state-FF and cause writes. (The FP-flags RAM is not protected in that
+  // cycle; see the CDB staleness checks in the simulation assertions.) A
+  // CDB write to an entry allocated in the previous cycle cannot be
+  // absorbed: in the staged-LVT drain cycle a live write wins the LVT and
+  // rob_valid no longer gates it. No real completion can exist that early
+  // (alloc -> dispatch -> issue -> FU -> registered CDB always exceeds one
+  // cycle), so it is assumed away here as the environment contract;
+  // g_drain_window_check errors on any violation in simulation, except in
+  // the reorder_buffer unit bench, which clears DrainWindowCheck. Stale
+  // writes >=2 cycles after reallocation (tag ABA) are not excluded by this
+  // contract; the producer-side kill discipline and the MEM single-delivery
+  // discipline rule them out, pinned by the tomasulo_wrapper
   // stale-CDB/single-delivery tests and the fp_div_shim FORMAL flushed-tag
   // assert.
   logic [1:0] f_prev_alloc_valid;
@@ -3654,8 +3605,8 @@ module reorder_buffer #(
       // count == tail_ptr - head_ptr
       p_count_consistent : assert (count == (tail_ptr - head_ptr));
 
-      // Parallel threshold selection must remain bit-identical to the original
-      // conservative next-occupancy add/compare for every legal request/flush.
+      // Parallel threshold selection must remain bit-identical to the
+      // reference next-occupancy add/compare for every legal request/flush.
       p_dispatch_full_predecode_equiv :
       assert (dispatch_full_next ==
               (f_dispatch_count_next_reference ==
@@ -3680,8 +3631,8 @@ module reorder_buffer #(
       p_head_next_mask_onehot :
       assert (head_next_clear_mask == (ReorderBufferDepth'(1) << head_next_idx));
 
-      // The alloc-time final perf classes are equivalent to the original
-      // head-meta priority classifier for every live entry.
+      // The alloc-time final perf classes are equivalent to the head-meta
+      // priority classifier for every live entry.
       if (head_valid) begin
         p_perf_wait_int_fast_class_equiv :
         assert (head_f_perf_wait_int ==
@@ -3693,11 +3644,11 @@ module reorder_buffer #(
                  !head_is_fp_store && !head_is_sc && (head_rs_type == riscv_pkg::RS_MEM)));
       end
 
-      // The class assertions above prove correspondence with the original
+      // The class assertions above prove correspondence with the head-meta
       // priority classifier. The event properties stay local to the output
       // boundary: duplicating the full classifier in these two assertions
       // would be redundant and would make btormc solve the same wide relation
-      // a second time. Together these properties prove the original event
+      // a second time. Together these properties prove the reference event
       // equations transitively, including done/CDB-bypass/flush timing.
       p_perf_wait_int_event_equiv :
       assert (o_perf_events.head_wait_int == (head_wait_active && head_f_perf_wait_int));
@@ -3707,15 +3658,14 @@ module reorder_buffer #(
       // alloc_en implies !full
       p_alloc_not_when_full : assert (!alloc_en || !full);
 
-      // Allocation only targets free (not currently valid) entries. Proven
-      // from the ROB's own pointer/flush/commit bookkeeping, with no
-      // environment assumption involved. Together with the drain-window CDB
-      // assume above, this gives the staged LVT of the rob_value RAMs
-      // everything it needs: a same-cycle alloc-vs-CDB collision on one entry
-      // is legal and resolves alloc-wins inside the RAM (lvt_eff override +
-      // drain), and the one dangerous arrival, a CDB write in the entry's
-      // drain cycle, is excluded by the environment contract (mirrored by the
-      // sim tripwire in the debug section).
+      // Allocation only targets free (not currently valid) entries, which
+      // follows from the ROB's own pointer/flush/commit bookkeeping. Together
+      // with the drain-window CDB assume above, this gives the staged LVT of
+      // the rob_value RAMs everything it needs: a same-cycle alloc-vs-CDB
+      // collision on one entry is legal and resolves alloc-wins inside the
+      // RAM (lvt_eff override + drain), and the dangerous arrival, a CDB write
+      // in the entry's drain cycle, is excluded by the environment contract
+      // (mirrored by g_drain_window_check in simulation).
       p_alloc_targets_free : assert (!alloc_en || !rob_valid[tail_idx]);
       p_alloc_2_targets_free : assert (!alloc_en_2 || !rob_valid[tail_idx_2]);
 
@@ -3730,8 +3680,8 @@ module reorder_buffer #(
       // commit_stall implies !commit_en
       p_serial_stall_blocks_commit : assert (!commit_stall || !commit_en);
 
-      // The serializer owns a pinned, completed head. TRAP_WAIT owns the one
-      // exceptional class; every other owned state remains non-exceptional.
+      // Outside IDLE the serializer holds a pinned, completed head. In
+      // TRAP_WAIT that head is exceptional; in every other state it is not.
       if (serial_state != riscv_pkg::SERIAL_IDLE) begin
         p_serial_owner_head_ready : assert (head_ready);
         if (serial_state == riscv_pkg::SERIAL_TRAP_WAIT) begin
@@ -3795,9 +3745,9 @@ module reorder_buffer #(
         ));
       end
 
-      // Both FENCE-class event flavors are exact retirement witnesses. The
-      // native flavor is combinational from the owned sync state; the
-      // translation flavor is registered once so csr_file receives the
+      // Both FENCE-class events mark a retirement exactly. The FENCE.I /
+      // SFENCE.VMA event is combinational from the FENCE_I_SYNC state; the
+      // translation-CSR event is registered once so csr_file receives the
       // registered commit payload before the final flush.
       p_native_fence_event_matches_commit :
       assert (native_fence_commit_event == (commit_en && head_f_is_fence_i));
@@ -3814,8 +3764,8 @@ module reorder_buffer #(
                     head_f_is_csr && head_f_csr_may_change_translation
       ));
 
-      // o_fence_i_flush is the one-cycle registered image of the semantic
-      // event, for both native and translation-CSR owners.
+      // o_fence_i_flush is the event registered once, for both FENCE.I /
+      // SFENCE.VMA and translation CSRs.
       p_fence_i_flush_delayed : assert (o_fence_i_flush == $past(o_fence_class_flush_event));
 
       if (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN && !i_sq_committed_empty) begin
@@ -3878,7 +3828,7 @@ module reorder_buffer #(
       // Exception triggers trap
       cover_exception_trap : cover (serial_state == riscv_pkg::SERIAL_TRAP_WAIT);
 
-      // A FENCE-class owner reaches its semantic event. The delayed-pulse
+      // A FENCE-class instruction reaches its flush event. The delayed-pulse
       // assertion above proves that o_fence_i_flush follows on the next cycle;
       // covering the source avoids another expensive solver depth whose only
       // new state is that already-proven register image.

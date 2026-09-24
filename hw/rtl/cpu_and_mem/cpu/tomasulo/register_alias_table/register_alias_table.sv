@@ -15,22 +15,21 @@
  */
 
 /*
- * Unified INT/FP register alias table with branch checkpoints. Ten source
- * lookups serve two dispatch slots (two INT and three FP each). Two rename
- * ports give slot 2 priority on an architectural-register collision. x0 is
- * never renamed and always reads zero. Commit clears only matching tags;
- * full flush clears all rename state.
+ * Register alias table: maps INT and FP architectural registers to the ROB
+ * tags of their in-flight producers. Ten source lookups serve the two
+ * dispatch slots (two INT and three FP each). x0 is never renamed and always
+ * reads zero. Commit clears a mapping only if its tag still matches; a full
+ * flush clears all rename state.
  *
- * Slot-2 alloc fires only inside a 2-wide bundle, but it does not imply
- * slot-1 alloc: slot 1 may have no register destination (a store) while
- * slot 2 does. Intra-bundle RAW (a slot-2 source reading slot-1's dest) is
- * resolved in the dispatch unit. The RAT never sees that case.
+ * Slot 2 can rename without slot 1 (slot 1 may have no destination, as with
+ * a store) and wins when both rename the same register. A slot-2 source that
+ * reads slot 1's destination is resolved in dispatch; the RAT never sees that
+ * case.
  *
- * Eight checkpoints save both RATs and RAS state for restore/free recovery.
- * Active RATs use FFs for parallel restore and conditional commit clear;
- * snapshots use sdp_dist_ram, while checkpoint-valid bits remain in FFs.
- *
- * Struct arrays are avoided for Yosys compatibility.
+ * Eight checkpoints each save both RATs and the RAS state; a misprediction
+ * restores one in a single cycle. The active RATs are flip-flops, for
+ * parallel lookup, per-entry commit clear, and bulk restore; snapshots live
+ * in sdp_dist_ram. Struct arrays are avoided for Yosys compatibility.
  */
 
 module register_alias_table (
@@ -113,8 +112,8 @@ module register_alias_table (
     // when the ROB's 2-wide gate fires.  Slot 2 cannot coincide with
     // mispredict or serial-op recovery, so the only RAT operation it drives
     // is "clear the tag if it still matches."  When both slots write the
-    // same architectural register the RAT holds slot 2's tag (the newer
-    // producer), so slot 1 misses the tag compare and slot 2 clears.
+    // same architectural register, the RAT cannot still hold slot 1's tag
+    // (slot 2 renamed the register later), so only slot 2's clear can apply.
     input logic                                        i_commit_valid_2,
     input logic                                        i_commit_dest_valid_2,
     input logic                                        i_commit_dest_rf_2,
@@ -145,7 +144,7 @@ module register_alias_table (
     output logic [riscv_pkg::RasPtrBits:0] o_ras_valid_count,
 
     // =========================================================================
-    // Checkpoint Free Interface (from ROB on correct branch commit)
+    // Checkpoint Free Interface (from flush controller on branch commit or early recovery)
     // =========================================================================
     input logic                                    i_checkpoint_free,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_checkpoint_free_id,
@@ -165,7 +164,7 @@ module register_alias_table (
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
 
     // =========================================================================
-    // Flush All (exception)
+    // Full Flush (trap, xRET, FENCE-class recovery)
     // =========================================================================
     input logic i_flush_all,
 
@@ -190,8 +189,8 @@ module register_alias_table (
   localparam int unsigned RasPtrBits = riscv_pkg::RasPtrBits;  // 3
 
   // Checkpoint snapshot entry width: valid (1) + alloc generation (1) + tag.
-  // Active RAT state still stores only {valid, tag}; the generation bit is
-  // captured only in checkpoints so restore can reject recycled ROB tags.
+  // The active RATs store only {valid, tag}; the generation bit is captured
+  // only in checkpoints so restore can reject recycled ROB tags.
   localparam int unsigned RatEntryWidth = 2 + ReorderBufferTagWidth;  // 7
 
   // Checkpoint RAM data widths
@@ -210,11 +209,10 @@ module register_alias_table (
   // ===========================================================================
 
   // INT RAT: separate valid and tag arrays.  No max_fanout attribute here:
-  // RAT tag bits feed the same-cycle dispatch cone (RAT lookup → ROB-done
-  // check → dispatch bypass mux → RS dispatch packet).  Forced replication
-  // inserts LUT1 buffers between the FF and its consumers, adding one logic
-  // level to a path that is already 14 LUT levels deep and worsening WNS
-  // measurably.
+  // the tag bits feed the same-cycle dispatch path (RAT lookup → ROB-valid
+  // check → dispatch bypass mux → RS dispatch packet), and forced replication
+  // would insert LUT1 buffers between the FFs and their consumers, adding a
+  // logic level to that path.
   logic [           NumIntRegs-1:0] int_rat_valid;
   logic [ReorderBufferTagWidth-1:0] int_rat_tag               [NumIntRegs];
 
@@ -230,7 +228,8 @@ module register_alias_table (
                                      (i_alloc_dest_reg == i_alloc_dest_reg_2);
 
 `ifndef SYNTHESIS
-  // Debug tap on x10/a0 rename state, added for a CoreMark investigation.
+  // x10 (a0) rename-state taps, read by the FROST_TARGET_PC_TRACE diagnostics
+  // in test_real_program.py.
   logic dbg_int_a0_valid  /* verilator public_flat_rd */;
   logic [ReorderBufferTagWidth-1:0] dbg_int_a0_tag  /* verilator public_flat_rd */;
   logic dbg_int_a0_commit_hit  /* verilator public_flat_rd */;
@@ -281,7 +280,7 @@ module register_alias_table (
   logic [  CheckpointIdWidth-1:0] ckpt_meta_wr_addr;
   logic [CheckpointMetaWidth-1:0] ckpt_meta_wr_data;
   logic [  CheckpointIdWidth-1:0] ckpt_meta_rd_addr;
-  /* verilator lint_off UNUSEDSIGNAL */  // branch_tag stored but read externally
+  /* verilator lint_off UNUSEDSIGNAL */
   logic [CheckpointMetaWidth-1:0] ckpt_meta_rd_data;
   /* verilator lint_on UNUSEDSIGNAL */
 
@@ -329,9 +328,9 @@ module register_alias_table (
                              !i_alloc_dest_rf && (i_alloc_dest_reg != '0);
   assign slot2_overlay_fp = i_checkpoint_save_for_slot2 && i_alloc_valid && i_alloc_dest_rf;
   assign slot2_overlay_tag = i_alloc_rob_tag;
-  // The ROB toggles entry_epoch[slot1_tag] at this cycle's posedge.  The
-  // snapshot is the next-cycle restore image, so encode the post-toggle
-  // value here.
+  // cpu_ooo flips rob_entry_epoch[slot1_tag] at this cycle's posedge, when
+  // slot 1's ROB entry allocates.  The snapshot is the next-cycle restore
+  // image, so encode the post-toggle value here.
   assign slot2_overlay_epoch_next = ~i_rob_entry_epoch[i_alloc_rob_tag];
 
   always_comb begin
@@ -449,8 +448,8 @@ module register_alias_table (
       o_int_src1 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
     end else if (int_rat_valid[i_int_src1_addr] &&
                  i_rob_entry_valid[int_rat_tag[i_int_src1_addr]]) begin
-      // Renamed to an in-flight ROB entry. Dispatch resolves done-entry
-      // bypass uniformly for INT and FP sources.
+      // Renamed to an in-flight ROB entry. If that entry is already done,
+      // done repair after dispatch supplies the value, for INT and FP alike.
       o_int_src1 = {
         1'b1, int_rat_tag[i_int_src1_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1}
       };
@@ -601,7 +600,7 @@ module register_alias_table (
         fp_rat_tag[i] <= restored_fp_tag[i];
       end
     end else if (i_flush_all) begin
-      // Full flush (trap/mret/fence_i): clear all valid bits
+      // Full flush (trap, xRET, FENCE-class recovery): clear all valid bits
       int_rat_valid <= '0;
       fp_rat_valid  <= '0;
     end else begin
@@ -627,10 +626,8 @@ module register_alias_table (
       end
 
       // ---------------------------------------------------------------
-      // Widen-commit slot 2: same clear logic for the head+1 retire.
-      // By construction only one of slot 1 / slot 2 can match a given
-      // RAT entry's tag in a 2-wide cycle (the RAT holds the newest
-      // producer, which is slot 2 if both slots target the same reg).
+      // Widen-commit slot 2: the same clear for the head+1 retire. When
+      // both slots target one register, only slot 2 can still match.
       // ---------------------------------------------------------------
       if (i_commit_valid_2 && i_commit_dest_valid_2) begin
         if (!i_commit_dest_rf_2) begin
@@ -648,14 +645,10 @@ module register_alias_table (
       end
 
       // ---------------------------------------------------------------
-      // Rename write: new instruction's destination mapping
+      // Rename write: new instruction's destination mapping.
       // Rename takes priority over commit to the same register.
-      //
-      // 2-wide write-collision: if both slots write the same architectural
-      // register (same dest_rf + same dest_reg), slot 2 wins because it is
-      // the newer producer in program order.  Implemented by suppressing
-      // slot 1's write when slot 2 targets the same register; slot 2's
-      // write below then unconditionally installs the newer mapping.
+      // When both slots write the same register, slot 1's write is
+      // suppressed and slot 2's write below installs the newer mapping.
       // ---------------------------------------------------------------
       if (i_alloc_valid && !slot1_collides_with_slot2) begin
         if (!i_alloc_dest_rf) begin
@@ -671,9 +664,8 @@ module register_alias_table (
         end
       end
 
-      // Slot-2 rename write.  No collision check is needed here: a
-      // same-register conflict is resolved by suppressing slot 1's write
-      // above, so this write installs the newer mapping.
+      // Slot-2 rename write.  No collision check is needed here: slot 1's
+      // write above already yields on a same-register collision.
       if (i_alloc_valid_2) begin
         if (!i_alloc_dest_rf_2) begin
           // INT rename (x0 writes are ignored)
@@ -709,7 +701,7 @@ module register_alias_table (
       checkpoint_valid_next = checkpoint_valid;
       // Bulk flush clear (younger branches on misprediction)
       checkpoint_valid_next = checkpoint_valid_next & ~i_checkpoint_flush_free_mask;
-      // Individual free (committed branch)
+      // Individual frees (branch commit or early recovery)
       if (i_checkpoint_free) checkpoint_valid_next[i_checkpoint_free_id] = 1'b0;
       if (i_checkpoint_free_2) checkpoint_valid_next[i_checkpoint_free_id_2] = 1'b0;
       // Save wins over all clears (new branch allocation)
@@ -756,9 +748,8 @@ module register_alias_table (
 
   // There is no slot-2-implies-slot-1 assertion: slot-2 RAT alloc fires
   // without slot-1 RAT alloc when slot 1 has no destination (a store) and
-  // slot 2 does.  An earlier assertion required it, on the assumption that
-  // slot 1 always has a destination.  The ROB-side contract (slot-2 ROB
-  // alloc implies slot-1 ROB alloc) is checked in the ROB.
+  // slot 2 does.  The ROB checks the ROB-side contract (slot-2 ROB alloc
+  // implies slot-1 ROB alloc).
 
   // No slot-2 rename during flush_all
   always @(posedge i_clk) begin

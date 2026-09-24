@@ -15,15 +15,15 @@
  */
 
 /*
-  FROST system top level: CPU, dual-port memory, UART, MMIO FIFOs, and the
-  RISC-V debug module's JTAG transport (Phase 3 M3: i_jtag_* for the generic
-  TAP, or the BSCAN bundle when DEBUG_JTAG_TAP=0). i_clk runs the CPU and
-  runtime memory ports; i_clk_div4 runs JTAG image loading, programming, and
-  UART. The related clocks permit binary-pointer dual-clock FIFOs. RTL is
-  portable unless FROST_XILINX_PRIMS selects explicit primitives in
-  cpu_and_mem's MMIO capture, data_mem_request_router, load_queue, and the
-  sdp_ram_byte_en and sdp_packed_tag_uram cache RAM wrappers; Yosys and
-  Verilator use the portable implementations.
+  FROST system top level: the CPU and memory subsystem (cpu_and_mem), reset
+  synchronization, the UART with its clock-crossing FIFOs, and the two MMIO
+  FIFOs. The debug transport arrives on i_jtag_* (generic TAP) or, with
+  DEBUG_JTAG_TAP=0, as the board's BSCAN bundle. i_clk runs the CPU and
+  memories; i_clk_div4 runs the UART and the BRAM programming port that the
+  JTAG loader uses. The two clocks are related, which lets the dual-clock
+  FIFOs use binary pointers. The RTL is portable: defining FROST_XILINX_PRIMS
+  selects explicit Xilinx primitives in a few modules, and builds without it
+  use the portable implementations.
 */
 module frost #(
     parameter int unsigned CLK_FREQ_HZ = 322265625,
@@ -31,22 +31,17 @@ module frost #(
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 18,
     // Simulation mtime multiplier; use 1 for synthesis.
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
-    // Cached memory tier: the high-address region [CACHED_BASE,
-    // CACHED_BASE+CACHED_SIZE_BYTES) is served by a write-back cache hierarchy
-    // (L1 BRAM plus an L2 URAM) over main memory.
-    // Low-BRAM data stays 1-cycle, as do instruction windows that lie wholly
-    // in the pinned 64 KiB metadata overlay; later code windows repeat once.
-    // Every MMIO handoff adds one router stage, may then wait for
-    // committed-store drain, and returns one cycle after terminal accept.
-    // Cached accesses complete by handshake with variable latency: several
-    // tagged loads in flight at the LQ, one store at the SQ.
-    // Software sees one flat 1 GiB region; the hierarchy shape is opaque.
+    // Cached region [CACHED_BASE, CACHED_BASE + CACHED_SIZE_BYTES): served by
+    // the write-back cache hierarchy (L1D, L1I, L2) over DDR. Accesses
+    // complete by handshake with variable latency, with several tagged loads
+    // but only one store in flight. Software sees one flat region; the
+    // hierarchy shape is invisible to it.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
-    // 0 disables the tier: cached-region accesses complete with zero data.
-    // Hardware board tops enable it against a real DDR controller through
-    // boards/xilinx_frost_subsystem.sv, and simulation enables it via -G (see
-    // tests/Makefile).
+    // 0 builds no hierarchy: cached-region loads return zero and stores
+    // complete without effect. Board tops with a DDR controller pass 1
+    // through boards/xilinx_frost_subsystem.sv, and simulation sets it with
+    // -G (tests/Makefile).
     parameter int unsigned ENABLE_CACHED_TIER = 0,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
@@ -84,10 +79,9 @@ module frost #(
     // override these to fit the cycle budget.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
     parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
-    // Profiling counters (the mperf* CSRs; about 24k cells at post-opt: 3.8k
-    // LUTs, 18.3k flops, 2.1k CARRY8): 0 = absent, the
-    // production build; 1 for analysis builds (build.py --perf-counters) and
-    // the cocotb entries that read them (-GPERF_COUNTERS=1).
+    // Profiling counters (the mperf* CSRs): 0 leaves them out, as production
+    // builds do; 1 for analysis builds (build.py --perf-counters) and the
+    // cocotb entries that read them (-GPERF_COUNTERS=1).
     parameter int unsigned PERF_COUNTERS = 0,
     // RISC-V debug transport: 1 = generic JTAG TAP on the
     // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
@@ -113,7 +107,7 @@ module frost #(
     output logic o_uart_tx,
     input  logic i_uart_rx,
 
-    // External interrupt input (directly triggers MEIP when high)
+    // External interrupt input: PLIC source 2, level-triggered.
     // Optional: tie to 0 if not used
     input logic i_external_interrupt = 1'b0,
 
@@ -168,15 +162,14 @@ module frost #(
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast,
 
-    // NIC. The TX and RX MAC clocks, each with its presence level
-    // (asynchronous), so that a transceiver's independent clocks can drive
+    // NIC. The TX and RX MAC clocks each come with an asynchronous
+    // clock-present level, so a transceiver's independent clocks can drive
     // them; a build with the raw loopback (RAW_LOOPBACK = 1) drives one clock
-    // on both. The defaults serve instantiations that omit the ports; a
-    // simulation top drives every one of them
-    // (verif/cocotb_tests/test_real_program.py: one clock on both, no wire,
-    // the raw loopback inside the NIC carries frames); boards wire their
-    // clocks and PHY lines. o_nic_rx_block_lock is the PCS block lock
-    // synchronized to i_clk, for a board's transceiver supervisor.
+    // on both. The defaults serve instantiations that omit the ports. The
+    // cocotb top (verif/cocotb_tests/test_real_program.py) drives every one,
+    // with one clock on both MAC clock ports, and boards wire their clocks and
+    // PHY lines. o_nic_rx_block_lock is the PCS block lock synchronized to
+    // i_clk, for a board's transceiver supervisor.
     input  logic        i_nic_tx_clk = 1'b0,
     input  logic        i_nic_rx_clk = 1'b0,
     input  logic        i_nic_tx_clk_ok = 1'b1,
@@ -221,9 +214,9 @@ module frost #(
   assign reset_div4_synchronized = reset_div4_synchronizer_shift_register[NumResetSyncStages-1];
 
   /*
-    UART write delay chain: pipeline stages that buy placement and routing
-    freedom at the cost of latency. UART is not timing-critical, so the
-    synthesizer may spread this logic out to close timing.
+    UART write delay chain: pipeline stages between the CPU's UART write and
+    the transmit FIFO. UART is not timing-critical, so it can spare the
+    latency.
   */
   logic       uart_write_enable_from_cpu;
   logic [7:0] uart_write_data_from_cpu;
@@ -261,9 +254,10 @@ module frost #(
   logic        mmio_fifo1_is_full;
   logic        mmio_fifo1_read_enable;
 
-  // CPU and memory subsystem: the core plus the dual instruction/data RAMs.
-  // The instruction-memory programming port runs in the div4 clock domain, so
-  // it crosses no clock boundary here.
+  // CPU and memory subsystem: the CPU, low BRAM, cache hierarchy, MMIO
+  // devices, debug module, NIC, and DMA test engine. The instruction-memory
+  // programming port runs in the div4 clock domain, so it crosses no clock
+  // boundary here.
   cpu_and_mem #(
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
@@ -350,7 +344,7 @@ module frost #(
       .i_fifo1_rd_data(mmio_fifo1_read_data),
       .i_fifo1_empty(mmio_fifo1_is_empty),
       .o_fifo1_rd_en(mmio_fifo1_read_enable),
-      // External interrupt (directly triggers machine external interrupt)
+      // External interrupt (PLIC source 2)
       .i_external_interrupt(i_external_interrupt),
       // Debug transport
       .i_jtag_tck,

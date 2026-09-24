@@ -14,9 +14,13 @@
  *    limitations under the License.
  */
 
-// Exact-cycle integrated payload seam: unchanged router on each side.
-// The reference receives the original procedural MMIO mux and raw cached data;
-// the candidate receives one helper payload at both router data inputs.
+// Bench for data_mem_response_mux. Two data_mem_request_router instances run
+// side by side. The reference gets the plain selection (MMIO data while MMIO
+// is valid, otherwise BRAM data) and the cached data on separate inputs; the
+// candidate gets the mux's merged payload on both. Every other input is
+// shared, and the test compares every router output on every cycle. The
+// standalone 32- and 64-bit instances take their cached select from
+// i_helper_cached_read_ready.
 module data_mem_response_mux_tb #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
@@ -145,7 +149,7 @@ module data_mem_response_mux_tb #(
 
   // AMO write tier flags. In the core the load queue registers these beside
   // the AMO write address from the same source, so on every cycle they equal
-  // the decode of that address; the seam derives them from the driven address
+  // the decode of that address; the bench derives them from the driven address
   // with the router's own decode (default MMIO/cached windows) instead of
   // asking the test to keep a second pair of inputs consistent.
   logic amo_mem_write_is_mmio;

@@ -25,26 +25,29 @@
  * OpenOCD's `riscv set_ir` pointing the three DTM registers at the FPGA's
  * IDCODE and USER instructions).
  *
- * dtmcs: version 1 (0.13), abits 7, idle 3 (the Run-Test/Idle hint),
- * dmistat = the sticky status, dmireset (W1) clears it, dmihardreset (W1)
- * additionally re-synchronizes the request handshake (the debugger's escape
- * when it believes an in-flight request will never complete, e.g. after a
- * reset). dmi: {address[6:0], data[31:0], op[1:0]}. Update-DR with op = read
- * or write starts a request unless the status is sticky or a request is
- * still in flight; a scan that captures or attempts an operation while a
- * request is in flight makes the status sticky-busy (op = 3) until dmireset,
- * which is the spec's rule for batched scans. Capture-DR returns the last
- * response's data with op = the current status.
+ * dtmcs: version 1 (0.13), abits 7, idle 3 (the Run-Test/Idle hint), and
+ * dmistat, which reads the same status as the dmi op field. dmireset (W1)
+ * clears a sticky status. dmihardreset (W1) also re-synchronizes the request
+ * handshake: the debugger's escape when it believes an in-flight request will
+ * never complete, e.g. after a reset.
+ *
+ * dmi: {address[6:0], data[31:0], op[1:0]}. Update-DR with op = read or write
+ * starts a request unless the status is sticky or a request is still in
+ * flight. A dmi capture or an attempted operation while a request is in
+ * flight sets the sticky busy status (op = 3), the spec's rule for batched
+ * scans. A failed response sets the sticky failed status (op = 2). Whichever
+ * is set first lasts until dmireset, dmihardreset, or Test-Logic-Reset.
+ * Capture-DR returns the last request's address and the last response's data,
+ * with op = the current status: the sticky status if set, else 3 while a
+ * request is in flight, else 0.
  *
  * CDC: two-phase toggle handshakes through ASYNC_REG two-flop synchronizers.
- * The request payload is written by the TCK domain together with its toggle
- * and does not change until the response has returned; the response payload
- * likewise sits still in the core domain until the next request. Neither
- * toggle is ever reset (both domains initialize to 0), so a core-side reset
- * cannot desynchronize the pair; dmihardreset re-aligns the TCK-side toggle
- * to the last acknowledged value. The TCK side latches the response payload
- * and clears busy on the same edge (one edge after the synchronized ack), so
- * a scan that captures busy=0 can never capture stale data.
+ * The TCK domain writes the request payload together with its toggle and
+ * changes it only after the response has returned (or dmihardreset has
+ * abandoned the request); the core domain likewise holds the response payload
+ * until the next request. Neither toggle is ever reset (both domains
+ * initialize to 0), so a core-side reset cannot desynchronize the pair;
+ * dmihardreset re-aligns the TCK-side toggle to the last acknowledged value.
  */
 module dtm_core (
     // JTAG side (TCK domain, BSCAN-style bundle)

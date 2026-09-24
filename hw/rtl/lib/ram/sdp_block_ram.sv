@@ -41,9 +41,9 @@ module sdp_block_ram #(
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
 
   // Synchronous write. SUPPORT_BULK_CLEAR picks the write block at elaboration:
-  // the FPGA path is exactly the original single-port write (so block-RAM
-  // inference is unchanged); the sim-only path adds a one-cycle clear-all that
-  // takes priority over a write. Only one branch ever exists in a build.
+  // 0 (every FPGA build) is a plain single-port write that infers block RAM,
+  // and nonzero (simulation only) adds a one-cycle clear-all that takes
+  // priority over a write.
   if (SUPPORT_BULK_CLEAR != 0) begin : gen_clearable_write
     always_ff @(posedge i_clk) begin
       if (i_bulk_clear) for (int i = 0; i < int'(RamDepth); ++i) ram[i] <= '0;

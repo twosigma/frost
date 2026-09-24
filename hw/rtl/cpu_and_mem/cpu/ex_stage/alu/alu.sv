@@ -19,25 +19,24 @@
  * base integer ISA plus Zba, Zbb, Zbs, Zbkb, and Zicond. At XLEN=64 that
  * includes the 6-bit shift, rotate, and bit-index amounts, the W-form word
  * operations (32-bit operation, result sign-extended to XLEN), and the Zba
- * unsigned-word address forms. The unit also forwards the pre-computed link
- * address for JAL/JALR, materializes LUI/AUIPC values (dispatch precomputes
- * AUIPC's PC + imm_u into the U-immediate, so the unit has no PC input), and
- * passes CSR read data through for Zicsr ops. M-extension operations do not execute here.
- * They run in the multiplier and divider behind int_muldiv_shim.
+ * unsigned-word address forms. The unit also returns the precomputed link
+ * address for JAL/JALR, the LUI/AUIPC values (ID precomputes AUIPC's
+ * PC + imm_u and dispatch passes it in the U-immediate, so the unit has no PC
+ * input), and the CSR read data for Zicsr ops. M-extension operations never
+ * execute here; they run in the multiplier and divider behind
+ * int_muldiv_shim.
  *
- * The CLZ, CTZ, and CPOP helper trees live in riscv_pkg.sv (Section 10). The
- * byte-granular ORC.B, REV8, and BREV8 helpers below are local and
- * XLEN-parametric.
- * At XLEN=64, base shifts and rotates share separate left and right funnels
- * at each width. This keeps direction reversal out of the barrel path.
- * Projected fill/amount controls avoid a late full-enum decoder; symbolic
- * assertions pin every consuming enum value.
- * This is purely combinational sharing: no issue or completion cycle changes.
+ * At XLEN=64, the base shifts and the Zbb rotates of each width share one
+ * left and one right funnel shifter. Their controls come from
+ * riscv_pkg::projected_shift_controls, where each control reads at most four
+ * operation-enum bits instead of decoding the full enum; the assertions at
+ * the bottom check the controls this unit uses for each of those operations.
  */
 module alu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    // The caller may supply the same effective amount captured with its issue
-    // operands. The default computes it locally, preserving the generic ALU.
+    // 1: shift by i_shift_amount_hint, which the caller computes with its
+    // issue operands and must equal the amount this unit would select. 0
+    // selects the amount locally.
     parameter bit USE_SHIFT_AMOUNT_HINT = 1'b0
 ) (
     input riscv_pkg::instr_t i_instruction,
@@ -103,13 +102,13 @@ module alu #(
                 operand_b[XLEN-1] && !(i_operand_a[XLEN-1]) ? '1 :
                 difference[XLEN];
 
-  // Legacy non-64-bit ROL fallback width: preserve the original subtraction
-  // and oversized-shift behavior rather than reducing its amount modulo XLEN.
+  // Width of the XLEN != 64 ROL amount subtraction (XLEN - amount); the
+  // amount is not reduced modulo XLEN.
   localparam int unsigned RotAmtBits = ShamtMsb + 2;
 
-  // Share register/immediate shift hardware by selecting the amount before
-  // the operation family. Decode the operation itself: instruction opcode
-  // fields are independent of the operation enum at this module interface.
+  // Register and immediate shifts share the shift hardware: the amount is
+  // selected first. Decode the operation itself: at this module interface
+  // the instruction's opcode field is independent of the operation enum.
   logic shift_uses_immediate;
   logic [ShamtMsb:0] shared_shift_amount;
   logic [XLEN-1:0] shared_left_result;
@@ -122,13 +121,12 @@ module alu #(
   logic [XLEN-1:0] shared_rotate_left_result;
   logic [31:0] shared_word_rotate_result;
 
-  // The barrel result is consumed only by the nine full-width or nine word
-  // shift/rotate operations listed in the result case. Projected predicates
-  // agree with the symbolic opcode tests on those domains; their values for
-  // every other opcode are known 0/1 but unobserved. No opcode is renumbered.
-  // The checks below pin this dependency on the established enum encoding.
-  // The shared package helper also forms the secondary INT issue hint. Its
-  // unchanged enum-contract assertions below cover every consuming operation.
+  // Only the nine full-width and nine word shift/rotate operations in the
+  // result case consume the barrel results. On those operations the
+  // projected controls equal the symbolic operation tests; for any other
+  // operation their values are unobserved. The checks below tie this to the
+  // current enum encoding. The RS computes the INT port-1 shift-amount hint
+  // with the same package function, so these checks cover it too.
   logic [6:0] shift_controls;
   assign shift_controls = riscv_pkg::projected_shift_controls(i_instruction_operation);
   assign shift_uses_immediate = shift_controls[0];
@@ -136,9 +134,9 @@ module alu #(
   assign shared_shift_amount = USE_SHIFT_AMOUNT_HINT ? i_shift_amount_hint :
       (shift_uses_immediate ? shamt_imm : i_operand_b[ShamtMsb:0]);
 
-  // Independent left/right funnels share the effective amount. Logical,
-  // signed and rotating forms differ only in the fill, so direction does
-  // not select or reverse data before and after the shift tree.
+  // The left and right funnels share the effective amount. Logical,
+  // arithmetic, and rotate forms differ only in the fill, so no data is
+  // selected or reversed by direction before or after the shift tree.
   logic full_rotate_mode, full_arithmetic_mode;
   logic word_rotate_mode, word_arithmetic_mode;
   logic [XLEN-1:0] full_barrel_fill;
@@ -146,9 +144,10 @@ module alu #(
   logic [31:0] word_barrel_fill;
   logic [31:0] word_barrel_result;
 
-  // Four or fewer opcode bits per mode fit a single LUT. The shared amount
-  // selector likewise has four opcode inputs, leaving two LUT6 inputs for
-  // the register/immediate data bit; do not preserve an intermediate decoder.
+  // Each mode reads four or fewer operation bits, so it fits a single LUT.
+  // The shared amount select also reads four operation bits, leaving two
+  // LUT6 inputs for the register and immediate amount bits; do not preserve
+  // an intermediate decoder.
   assign full_rotate_mode = shift_controls[5];
   assign full_arithmetic_mode = shift_controls[4];
   assign word_rotate_mode = shift_controls[2];
@@ -174,9 +173,9 @@ module alu #(
       {i_operand_a[31:0], word_rotate_mode ? i_operand_a[31:0] : 32'b0} << shared_shift_amount[4:0];
   assign word_left_result = word_left_wide[63:32];
 
-  // Preserve the legacy full-width rotate behavior for XLEN != 64. In
-  // particular, XLEN=32 still accepts six-bit amounts, whose out-of-word
-  // behavior differs from modulo32 rotation.
+  // For XLEN != 64 the full-width results use plain shift operators. At
+  // XLEN=32 the amounts are six bits wide, and amounts past the word do not
+  // behave like rotation modulo 32.
   generate
     if (XLEN == 64) begin : gen_shared_full_barrel64
       assign shared_left_result = full_left_result;
@@ -242,8 +241,8 @@ module alu #(
       // compressed instruction, PC+4 otherwise.
       riscv_pkg::JAL: o_result = i_link_address;
       riscv_pkg::JALR: o_result = i_link_address;
-      // Zicsr extension: rd gets the old CSR value. The CSR file performs the
-      // write side, where read-only CSRs ignore writes.
+      // Zicsr extension: the result is the CSR read data (the old value). The
+      // CSR file performs the write.
       riscv_pkg::CSRRW,
       riscv_pkg::CSRRS,
       riscv_pkg::CSRRC,
@@ -284,7 +283,7 @@ module alu #(
       riscv_pkg::MIN:
       o_result = ($signed(i_operand_a) < $signed(i_operand_b)) ? i_operand_a : i_operand_b;
       riscv_pkg::MINU: o_result = (i_operand_a < i_operand_b) ? i_operand_a : i_operand_b;
-      // Zbb extension - rotations using funnel shifter (single barrel shifter, no OR)
+      // Zbb extension - rotations on the funnel shifters (no OR of two shifts)
       // ROR: {a,a} >> shamt gives lower XLEN bits as rotated result
       riscv_pkg::ROR: o_result = shared_rotate_result;
       // ROL uses the full-width left funnel at XLEN=64.
@@ -332,10 +331,9 @@ module alu #(
   end
 
 `ifndef SYNTHESIS
-  // Encoding dependency tripwires use symbolic enum members, so enum edits
-  // cannot silently change a projected predicate on a consuming operation.
-  // Check every named consumer at time zero, even if no stimulus ever
-  // executes that opcode. These are constants, not coverage-dependent checks.
+  // These checks name each consuming operation by its enum member, so an enum
+  // change that alters a projected control for any of them fails at time
+  // zero, whether or not a test ever executes that operation.
   localparam logic [6:0] ControlsSLL   = riscv_pkg::projected_shift_controls(riscv_pkg::SLL);
   localparam logic [6:0] ControlsSRL   = riscv_pkg::projected_shift_controls(riscv_pkg::SRL);
   localparam logic [6:0] ControlsSRA   = riscv_pkg::projected_shift_controls(riscv_pkg::SRA);

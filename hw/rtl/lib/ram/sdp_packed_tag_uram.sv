@@ -33,7 +33,7 @@
  * READ_LATENCY includes the final registered lane-select mux. The XPM, or its
  * portable behavioral equivalent, supplies READ_LATENCY-1 cycles and the mux
  * supplies the last cycle. i_read_enable qualifies a logical request, and the
- * caller owns the matching response-valid pipeline. In hardware the physical
+ * caller keeps the matching response-valid pipeline. In hardware the physical
  * URAM read port runs continuously, so a late request-valid cone does not
  * feed the enable cascade; only qualified results reach o_read_data.
  *

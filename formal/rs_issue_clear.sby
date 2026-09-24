@@ -21,7 +21,7 @@ bmc8: chparam -set DEPTH 8 -set DUAL_ISSUE 1 -set HAS_SRC3 0 -set DISPATCH_REPAI
 bmc16: chparam -set DEPTH 16 -set DUAL_ISSUE 1 -set ISSUE2_WINDOW 8 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set FORMAL_STANDALONE_ENV 0 reservation_station
 bmc32: chparam -set DEPTH 32 -set DUAL_ISSUE 1 reservation_station
 hierarchy -top reservation_station
-# Payload RAMs do not constrain the selector proof, including their initial contents.
+# The clear proof holds whatever the payload RAMs return, initial contents included.
 delete t:sdp_dist_ram t:mwp_dist_ram t:mwp_dist_ram_ohread
 proc
 setundef -undriven -anyseq

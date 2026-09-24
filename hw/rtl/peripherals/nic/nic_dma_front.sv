@@ -15,37 +15,38 @@
  */
 
 /*
- * nic_dma_front: the NIC's face on the cache hierarchy's coherent DMA port.
+ * nic_dma_front: puts the RX and TX engines (index 0 and 1) on the cache
+ * hierarchy's coherent DMA port.
  *
- * Two engines (index 0 = RX, 1 = TX) present tagged line requests; the
- * front-end owns NUM_ENTRIES outstanding entries (the port id is the entry
- * index), so every request the port accepted has a home for its response,
- * and steers each response back to its owner with the kind and tag the
- * owner gave it. Each engine has one request register (its ready is that
- * register free and the engine below its share of the entries, SIDE_CAP,
- * so the other engine always finds an entry once responses return). Port
- * eligibility is registered alongside request and entry occupancy; the
- * registered requests are muxed onto the port every cycle: RX first, TX
- * once it has watched STARVATION_LIMIT grants go to RX while presenting
- * (a free entry is not a grant), and a request the port refuses in a cycle
- * (the sequencer holds its line) lets the other engine's request be
- * presented in the next one, so a locked line never blocks the other
- * engine's traffic to a different line. The sequencer acts only on the
- * fire, so re-presenting a different request is legal.
- *
- * Sinks are the engines' business: a read is issued only with its
- * destination reserved (the descriptor cache line, the reorder slot), a
- * write holds nothing but its entry. Responses carry no backpressure.
- *
- * An address outside the cached-DDR aperture is refused locally: the
- * request is not loaded, and the engine gets a response with o_resp_error
- * set for that kind and tag (delayed behind a real response of the same
- * cycle, the engine's ready staying low meanwhile). The registered i_stop
- * level (the RESET drain) withdraws the registered requests, which cannot
- * fire while that level is set because port eligibility is cleared, answers each
- * with an error response, accepts nothing, and lets the fired ones drain;
- * o_idle then says every entry is free. Every request accepted here gets
+ * The engines present tagged line requests. The front-end owns NUM_ENTRIES
+ * outstanding entries, and the port id is the entry index, so every request
+ * the port accepts has a place for its response; each response goes back to
+ * its engine with the kind and tag that engine gave the request. Each engine
+ * has one request register. Its ready requires that register free and the
+ * engine holding fewer than SIDE_CAP entries, so the other engine always
+ * finds an entry once responses return. Every request accepted here gets
  * exactly one response.
+ *
+ * The registered requests are muxed onto the port every cycle, RX first. TX
+ * goes first once it has watched STARVATION_LIMIT grants go to RX while it
+ * was presenting. When the port refuses a request (the sequencer holds its
+ * line), the other engine's request is presented the next cycle, so a
+ * locked line never blocks the other engine's traffic to a different line.
+ * The sequencer acts only on the fire, so presenting a different request
+ * after a refusal is legal.
+ *
+ * Responses carry no backpressure: an engine issues a read only with its
+ * destination reserved (the descriptor cache line, the reorder slot), and a
+ * write holds nothing but its entry.
+ *
+ * An address outside the cached-DDR aperture is refused locally: the request
+ * is not loaded, and the engine gets a response with o_resp_error set and
+ * the request's kind and tag. That response waits behind a real response to
+ * the same engine in the same cycle, and the engine's ready stays low until
+ * it is sent. While the registered i_stop level (the RESET drain) is set,
+ * nothing is accepted or presented to the port; each registered request is
+ * withdrawn with an error response, and the fired ones drain. o_idle then
+ * reports every entry free.
  */
 module nic_dma_front #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -128,7 +129,7 @@ module nic_dma_front #(
 
   // The drain level is registered here: the engines stop presenting on the
   // raw level in the same cycle, so nothing new can be accepted in the gap,
-  // and the port-side gating no longer sits on the reset controller's path.
+  // and the port-side gating stays off the reset controller's path.
   logic stop_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) stop_q <= 1'b0;
@@ -157,11 +158,12 @@ module nic_dma_front #(
   end
 
   // ---- arbitration toward the port ----------------------------------------------
-  // Register eligibility from the same next occupancy that the request and
-  // entry registers take. Thus it is exactly rq_valid_q & free_any & !stop_q
-  // without placing drain gating or the free-entry reduction on the DMA
-  // valid/selection path. Arbitration may still switch sides every cycle
-  // when a locked line is refused; no request payload is held at this seam.
+  // present_q registers eligibility from the same next occupancy that the
+  // request and entry registers take, so it is exactly
+  // rq_valid_q & free_any & !stop_q without putting the drain gating or the
+  // free-entry reduction on the DMA valid and select path. It holds valid
+  // bits only, not request payloads, so arbitration can still switch sides
+  // every cycle when a locked line is refused.
   logic [1:0] present_q;
   logic [WaitBits-1:0] tx_wait_q;
   logic tx_starved, prefer_tx_q, prefer_rx_q;
@@ -198,8 +200,9 @@ module nic_dma_front #(
   // possible next eligibility values first, leaving only the final select
   // on that path. After a fire, a free entry remains if at least two were
   // free already, or a response frees an entry other than the one allocated.
-  // The response-ID bound also preserves the ignored out-of-range write for
-  // non-power-of-two NUM_ENTRIES configurations.
+  // resp_frees_entry checks the id range to match ent_valid_n, which ignores
+  // the write for an out-of-range id (possible when NUM_ENTRIES is not a
+  // power of two).
   logic free_any_now, free_two_now, resp_frees_entry;
   logic free_if_fire0, free_if_fire1;
   logic [1:0] pending_if_fire0, pending_if_fire1;
@@ -313,16 +316,16 @@ module nic_dma_front #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // The port answers only the ids it was given, and an accepted request owns
-  // its entry until its response, so every response names a live entry. That
-  // is a contract, not something this module filters: a response for an entry
-  // it does not own is steered by ent_owner_q to whichever engine last held
-  // the index and completes a transfer that engine still has outstanding.
-  // Clearing ent_valid_q for an already-free entry is idempotent, so the
-  // occupancy and the per-side counts survive a stray response; the engine's
-  // bookkeeping does not. Assert both halves of the contract. The range arm
-  // has to come first and stand alone: ent_valid_q[i_dma_resp_id] reads x for
-  // an out-of-range id, which the entry check would then pass silently, and
+  // The port must answer only the ids it was given, and an accepted request
+  // keeps its entry until its response, so every response names a live entry.
+  // This module does not filter responses: a stray one is steered by
+  // ent_owner_q to whichever engine last held the index and completes a
+  // transfer that engine still has outstanding. Clearing ent_valid_q for a
+  // free entry changes nothing, so the occupancy and the per-side counts
+  // survive a stray response, but the engine's bookkeeping does not. Both
+  // halves of the contract are checked here. The range check comes first and
+  // stands alone because ent_valid_q[i_dma_resp_id] reads x for an
+  // out-of-range id, which the entry check would pass silently, and
   // NUM_ENTRIES need not be a power of two.
   always_ff @(posedge i_clk) begin
     if (!i_rst && i_dma_resp_valid && (32'(i_dma_resp_id) >= NUM_ENTRIES))

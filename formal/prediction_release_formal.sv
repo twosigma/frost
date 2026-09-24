@@ -14,14 +14,14 @@
  *    limitations under the License.
  */
 
-// Formal integration harness for IF pending-prediction invariants: an atomic
-// target handoff suppresses stale old-path buffer validity, and every
-// pending-state consumer is masked outside a live episode. It keeps the
-// production pc_controller and c_ext_state state machines intact. Predictor
-// lookup details are conservatively abstracted to arbitrary requests. The
-// omitted lookup, buffer, and progress blockers admit extra requests. The
-// modeled prediction registers retain the production delivery enables and
-// matching-target PD-redirect exception.
+// Integration harness for the fetch stage's pending-prediction rules: a
+// pending prediction's target handoff never leaves a stale old-path
+// instruction valid in the buffer, and every consumer of pending-prediction
+// state is masked while nothing is pending. The real pc_controller and
+// c_ext_state run together. Predictor requests are arbitrary, and the
+// lookup, buffer, and progress conditions that would block some of them are
+// omitted, which only admits more requests. The modeled prediction registers
+// keep the real update enables and the matching-target PD-redirect exception.
 module prediction_release_formal #(
     parameter bit PENDING_HANDOFF_EXCLUDES_SLOT2 = 1'b0
 ) (
@@ -120,14 +120,15 @@ module prediction_release_formal #(
   assign i_flush = i_frontend_flush_request || i_fence_i_flush;
   assign i_window_cannot_serve = i_window_cannot_serve_raw && i_window_resteer_qualifier;
 
-  // Conservatively model the IF-stage boundary without importing the BTB, RAS,
-  // or instruction aligner.  The request remains arbitrary and production-only
-  // blockers are omitted. The integrated-handoff variant restores IF's WCS=0
-  // pending-holdoff mask. WCS=1 uses its pending-holdoff cofactor here, which
-  // admits extra requests compared with IF's unconditional prediction disable.
-  // All other omitted blockers also conservatively admit extra requests.
-  // branch_prediction_disable separately proves that
-  // the production predictor applies this mask to every slot-2 source.
+  // Model the IF-stage boundary conservatively, without the BTB, RAS, or
+  // instruction aligner: the request is arbitrary and IF's other blockers are
+  // omitted, which only admits extra requests. With
+  // PENDING_HANDOFF_EXCLUDES_SLOT2, the slot-2 request gets IF's
+  // pending-holdoff mask when the window can serve (WCS=0; WCS is
+  // i_window_cannot_serve_raw). When it cannot (WCS=1), IF disables
+  // prediction outright; the harness applies the WCS=1 pending holdoff
+  // instead, which admits more requests. branch_prediction_disable separately
+  // proves that the real predictor applies this mask to every slot-2 source.
   assign prediction_used_for_pc =
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff;
@@ -204,16 +205,17 @@ module prediction_release_formal #(
       .i_trap_taken,
       .i_mret_taken,
       .i_trap_target,
-      // IF's fast size, PC squash, and replay-aware slot-2 validity differ
-      // from the canonical C-extension inputs. Keep each pair independent.
+      // IF gives pc_controller its own fast size, PC squash, and replay-aware
+      // slot-2 valid, which can differ from the c_ext_state inputs, so each
+      // pair is an independent input here.
       .i_is_compressed(i_is_compressed_for_pc),
       .i_is_compressed_for_pc(is_compressed_for_pc),
       .i_slot2_valid(i_slot2_valid_for_pc),
       .i_slot2_is_compressed,
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
-      // The selects' i_sel_nop cofactors only reach the abstracted
-      // calculator; the merged selects stand in for both.
+      // The per-i_sel_nop copies of the selects (_run, _nop) only reach the
+      // abstracted calculator, so the merged selects stand in for both.
       .i_pc_fetch_advance_sel_run(i_pc_fetch_advance_sel),
       .i_pc_fetch_advance_sel_nop(i_pc_fetch_advance_sel),
       .i_pc_reg_advance_sel_run(i_pc_reg_advance_sel),
@@ -234,11 +236,11 @@ module prediction_release_formal #(
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target,
-      // This harness abstracts every slot-2 request as the staged image. That
-      // is an exact member of the production split interface and preserves
-      // the original arbitrary combined request/target state space; live
-      // alias decomposition is proved at its producer and in pc_controller's
-      // simulation oracle.
+      // Every slot-2 request enters as a staged prediction, with the
+      // live-alias selects tied low. That is a legal use of the split
+      // interface and leaves the request and target arbitrary. The live-alias
+      // split is checked at its producer and by pc_controller's simulation
+      // assertions.
       .i_slot2_staged_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot1_aliases_slot2_candidate(1'b0),
       .i_slot2_live_target_used_for_pc_cofactor(1'b0),
@@ -270,9 +272,9 @@ module prediction_release_formal #(
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(),
-      // Translation starts from registered o_pc. The next-PC value and the
-      // retained selector-observation ports are irrelevant to this release
-      // proof, so they stay unconnected.
+      // Translation starts from the registered o_pc, so the next-PC value and
+      // the next-PC selector observation ports do not matter here and stay
+      // unconnected.
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(),

@@ -13,6 +13,6 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
 # bits per stage)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 
-# ALU top-level - single-cycle combinational integer, logic, and
-# bit-manipulation datapath
+# ALU: single-cycle combinational integer, logic, and bit-manipulation
+# datapath
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv

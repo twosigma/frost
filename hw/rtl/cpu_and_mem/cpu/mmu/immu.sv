@@ -15,33 +15,31 @@
  */
 
 /*
- * immu: instruction-side Sv39 translation.
+ * immu: instruction-side Sv39 translation of the fetch PC.
  *
- * The translation key is pc_controller's registered fetch PC.  No
- * combinational next-PC selector payload enters this module.  That boundary
- * keeps the branch/redirect selector out of the ITLB, permission, PMA and
- * physical-result cones.
+ * The translation key is pc_controller's registered fetch PC (i_pc). No
+ * combinational next-PC select enters this module, which keeps the
+ * branch/redirect select out of the ITLB, permission, PMA, and physical-address
+ * cones.
  *
- * Bare mode is a combinational, cycle-exact bypass from i_pc.  It never
- * bubbles and preserves the pre-translation physical-fetch contract:
- *   pa0 = i_pc[31:0]
- *   pa1 = the aligned word after i_pc, with 32-bit wrap
- *   faults = the full-XLEN Bare PMA verdict
+ * With translation off (Bare mode or M-mode), the outputs are a combinational,
+ * cycle-exact function of i_pc and never bubble:
+ *   pa0    = i_pc[31:0]
+ *   pa1    = the aligned word after i_pc, with 32-bit wrap
+ *   faults = the Bare PMA check of the full-XLEN PC
  *
- * Sv39 state is tagged with {i_pc, i_priv_u}.  A tag mismatch is immediately
- * invisible (valid and all fault bits are zero), then the stable registered PC
- * is captured and resolved.  A warm non-crossing fetch therefore has one
- * translation bubble after PC movement.  A 4 KiB crossing can have a second
- * bubble while the registered next-page lookup key catches up.  Misses retain
- * the tag and stall IF until the shared walker returns.
+ * Under Sv39 the registered result is tagged with {i_pc, i_priv_u}. On a tag
+ * mismatch it is invisible at once (valid and all fault bits low), and the next
+ * edge captures and resolves the current PC. A warm fetch whose window stays in
+ * one page therefore costs one bubble after each PC change; a 4 KiB crossing
+ * can cost a second while the registered next-page key catches up. A miss keeps
+ * its tag and stalls IF until the shared walker answers.
  *
- * An accepted walk records its owner: the tagged key at acceptance.  Retargets,
- * privilege changes and mode changes do not cancel that owner: a late response
- * may still populate the ITLB or the refusal memo, but it may bypass into the
- * live result only when its saved owner tag still matches.  A one-cycle recheck
- * after every response lets a stale installation become visible before a new
- * request can issue.  Flash invalidate clears both translation state and walk
- * ownership and suppresses a simultaneous response.
+ * An accepted walk records the key it was issued for. Retargets, privilege
+ * changes, and mode changes do not cancel it: a late response still fills the
+ * ITLB or the fault memo, but it bypasses into the live result only while its
+ * saved key matches the live tag. An invalidate clears the ITLB, the memo, the
+ * tag, and the outstanding walk, and ignores a response in the same cycle.
  */
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -54,12 +52,13 @@ module immu #(
     input logic i_active,
     input logic i_priv_u,
 
-    // sfence.vma / satp-write flash invalidate.
+    // Invalidate on SFENCE.VMA, any satp access, or an mstatus/sstatus write
+    // that changes translation.
     input logic i_tlb_invalidate,
 
-    // pc_controller's registered PC. Exact tag comparison makes any result
-    // captured for a pre-load value invisible as soon as this register moves;
-    // Bare output is always formed directly from i_pc.
+    // pc_controller's registered fetch PC. The exact tag compare hides a result
+    // captured for an earlier value as soon as this register changes; the Bare
+    // outputs are formed directly from it.
     input logic [XLEN-1:0] i_pc,
 
     output logic [31:0] o_pa0,
@@ -71,7 +70,7 @@ module immu #(
     output logic o_fault1_page,
     output logic o_line_after_ok,
 
-    // Shared page-table walker seam; D-side arbitration is outside this unit.
+    // Shared page-table walker port; cpu_ooo arbitrates it with the data side.
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
     output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
@@ -83,14 +82,15 @@ module immu #(
   localparam int unsigned NpBits  = XLEN - riscv_pkg::Sv39PageOffsetBits;
 
   // ---------------------------------------------------------------------------
-  // Bare bypass: this is the default low-memory/CoreMark path.
+  // Bare bypass (translation off).
   // ---------------------------------------------------------------------------
   riscv_pkg::fetch_verdict_t bare_verdict;
   logic [31:0] bare_pa1;
-  // Match the package function's input width, including its zero-extension
-  // or truncation for a caller with a different local XLEN. Keep the high
-  // zero reduction separate from Sv39 canonicality/miss logic: sharing those
-  // partial reductions can serialize the Bare fault into seven LUT levels.
+  // Convert i_pc to the package XLEN the way a call to
+  // riscv_pkg::fetch_verdict would (zero-extend or truncate), for a caller with
+  // a different local XLEN. The keep attributes hold the high-bits-zero
+  // reduction apart from the Sv39 canonicality and miss logic: sharing those
+  // partial reductions can put the Bare fault behind a long serial LUT chain.
   localparam int unsigned PmaHighBits   = riscv_pkg::XLEN - 32;
   localparam int unsigned PmaHighChunks = (PmaHighBits + 5) / 6;
   logic [riscv_pkg::XLEN-1:0] bare_pma_pc;
@@ -124,7 +124,7 @@ module immu #(
 `endif
 
   // ---------------------------------------------------------------------------
-  // Registered selected-VA identity.
+  // Tag of the registered result: the {PC, privilege} it was computed for.
   // ---------------------------------------------------------------------------
   logic key_valid_q;
   logic [XLEN-1:0] key_va_q;
@@ -149,8 +149,9 @@ module immu #(
   assign pc_np_va = i_pc[XLEN-1:12] + 1'b1;
   assign pc_plus4_lo = i_pc[11:2] + 1'b1;
 
-  // Port 1 uses a registered sample so no increment/canonicality cone is
-  // serial with the ITLB.  Its full identity is checked before use.
+  // ITLB port 1 looks up a registered next-page VA (np_va_q), so the page
+  // increment and its canonicality check are not in series with the ITLB.
+  // np_sample_matches confirms the sample belongs to the live PC before use.
   logic [NpBits-1:0] np_va_q;
   logic np_sample_matches;
   logic np_noncanon;
@@ -158,8 +159,8 @@ module immu #(
   assign np_noncanon = !riscv_pkg::sv39_va_canonical({np_va_q, 12'h000});
 
   // ---------------------------------------------------------------------------
-  // Walker ownership.  Declared before the ITLB because an install or a memo
-  // update requires a response for the outstanding walk (walk_resp_matches).
+  // Outstanding walk. Declared before the ITLB because an install or a memo
+  // update requires a response to the outstanding walk (walk_resp_matches).
   // ---------------------------------------------------------------------------
   logic walk_outstanding_q;
   logic [VpnBits-1:0] walk_vpn_q;
@@ -213,8 +214,9 @@ module immu #(
   );
 
   // ---------------------------------------------------------------------------
-  // One-entry walk-refusal memo.  A refusal is an address-space fact, not a
-  // privilege fact, and remains valid until the same invalidate as the ITLB.
+  // One-entry memo of the last faulting walk (resp_refused). A walk fault
+  // depends on the page tables, not on privilege, so the memo carries no
+  // privilege tag and stays valid until the next invalidate, like the ITLB.
   // ---------------------------------------------------------------------------
   logic memo_valid_q;
   logic [VpnBits-1:0] memo_vpn_q;
@@ -234,10 +236,10 @@ module immu #(
   end
 
   // ---------------------------------------------------------------------------
-  // Resolve one translated page.  The response bypass is enabled only when the
-  // saved owner tag matches the live tagged state (resp_for_live_key); a stale
-  // response still installs, for the recheck cycle to pick up, but cannot make
-  // unrelated payload visible.
+  // Resolve one translated page. The walk response bypasses into the result
+  // only when the walk's saved key matches the live tag (resp_for_live_key). A
+  // stale response still fills the ITLB or memo for the recheck cycle to pick
+  // up, but it cannot make another key's payload visible.
   // ---------------------------------------------------------------------------
   function automatic logic [19:0] ppn20_from_resp(input riscv_pkg::ptw_resp_t resp,
                                                   input logic [VpnBits-1:0] vpn);
@@ -384,7 +386,7 @@ module immu #(
   assign super_next_pma_bad = !riscv_pkg::pma_fetch_ok({32'b0, super_next_ppn20, 12'h000});
 
   // ---------------------------------------------------------------------------
-  // Atomic tagged-state capture.
+  // Tag and result capture. The key and its result always load together.
   // ---------------------------------------------------------------------------
   logic [31:0] pa0_d, pa1_d;
   logic resolved_d, f0_d, f0p_d, f1_d, f1p_d, after_ok_d;
@@ -475,7 +477,7 @@ module immu #(
   end
 
   // ---------------------------------------------------------------------------
-  // Walk request and owner lifetime.
+  // Walk request and outstanding-walk tracking.
   // ---------------------------------------------------------------------------
   logic walk_needed;
   assign walk_needed = tag_match && !resolved_q && (miss0_q || miss1_q);
@@ -491,9 +493,10 @@ module immu #(
       walk_key_priv_u_q <= 1'b0;
       walk_recheck_q <= 1'b0;
     end else begin
-      // High for exactly the cycle following an owned response.  A current
-      // response normally resolves through bypass; a stale response needs
-      // this quiet cycle for its ITLB/memo write to reach the resolver.
+      // High for the one cycle after a response to the outstanding walk, and
+      // no new request issues in that cycle. A response for the live key
+      // normally resolves through the bypass; a stale one needs this quiet
+      // cycle for its ITLB or memo write to reach the resolver.
       walk_recheck_q <= walk_resp_arrived;
       if (walk_resp_arrived) begin
         walk_outstanding_q <= 1'b0;
@@ -507,13 +510,14 @@ module immu #(
   end
 
   // ---------------------------------------------------------------------------
-  // Visibility boundary.  Invalid translated payload may be stale/arbitrary;
-  // fault bits are forced low so no consumer can observe a mismatched tag.
+  // Outputs. While a translated result is invisible, the PA bits may be stale
+  // and o_pa_valid and every fault bit are low, so no consumer can act on a
+  // result for the wrong tag.
   // ---------------------------------------------------------------------------
   // Translation preserves the page offset, and a visible result's tag equals
-  // the live PC. Drive those bits directly in both modes so satp.MODE does not
-  // fan through the low-BRAM read address. Invisible translated payload remains
-  // unspecified, as above; validity and fault timing are unchanged.
+  // the live PC, so the offset bits are formed from i_pc in both modes. That
+  // keeps the translation-mode select off the offset bits of the low-BRAM read
+  // address.
   assign o_pa0 = {i_active ? pa0_q[31:12] : i_pc[31:12], i_pc[11:0]};
   assign o_pa1 = {i_active ? pa1_q[31:12] : bare_pa1[31:12], pc_plus4_lo, 2'b00};
   always_comb begin
@@ -535,8 +539,8 @@ module immu #(
   end
 
 `ifndef SYNTHESIS
-  // Simulation assertions.  Directed cocotb tests provide the independent
-  // translation model; these pin the timing and ownership boundary above.
+  // Simulation assertions. Directed cocotb tests provide the independent
+  // translation model; these check the timing and tag rules above.
   always_comb begin
     if (!$isunknown(
             {
@@ -590,9 +594,9 @@ module immu #(
 `endif
 
 `ifdef IMMU_PAGE_OFFSET_LOCAL_PROOF
-  // The translation payload and its VA key capture together. Prove the
-  // offset invariant even for arbitrary ITLB answers, faults and retargets,
-  // then prove the public PA is identical whenever the old result is visible.
+  // The translation result and its VA key load together. Prove that the page
+  // offset is preserved even for arbitrary ITLB answers, faults, and retargets,
+  // and that the output PAs equal the registered result whenever it is visible.
   logic f_offset_past_valid = 1'b0;
   logic [11:0] f_key_next_offset;
   assign f_key_next_offset = {key_va_q[11:2] + 10'd1, 2'b00};
@@ -609,9 +613,8 @@ module immu #(
 `endif
 
 `ifdef FROST_DEBUG_FETCH_ILA
-  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
-  // core probes; nothing here feeds the design. Low address bits suffice:
-  // the capture is keyed on a page offset.
+  // Fetch ILA probes (build.py --debug-ila): marked copies that the debug core
+  // samples. Nothing here feeds the design.
   (* mark_debug = "true" *)logic dbg_ila_immu_active;
   (* mark_debug = "true" *)logic dbg_ila_immu_tag_match;
   (* mark_debug = "true" *)logic dbg_ila_immu_resolved;

@@ -1,6 +1,6 @@
-# NIC (Phase 4 slice 2): the net10g MAC/PCS integrated on the coherent DMA
-# port. Depends on the library file lists (cdc.f, fifo.f, ram.f) and
-# net10g.f; the reset bench harness is listed by tests/Makefile only.
+# NIC: the net10g MAC/PCS on the coherent DMA port. Depends on the library
+# file lists (cdc.f, fifo.f, ram.f) and net10g.f; the reset bench harness is
+# listed by tests/Makefile only.
 
 $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_irq.sv

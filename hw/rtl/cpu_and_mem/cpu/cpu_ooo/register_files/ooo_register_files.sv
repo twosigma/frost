@@ -15,19 +15,17 @@
  */
 
 /*
- * OOO register files (integer + FP) with widen-commit write-back bypass.
+ * Integer and FP architectural register files, read for ID and dispatch and
+ * written at ROB commit, plus the same-cycle bypass that forwards a register
+ * being committed on the edge it is read.
  *
- * Holds the two architectural register files, read in ID and written from ROB
- * commit, plus the same-cycle write-back bypass that resolves a source
- * register being committed on the edge it is read.
- *
- * Both files carry two write ports for widen (2-wide) commit: port 0 is slot 1
+ * Both files have two write ports for two-wide commit: port 0 is slot 1
  * (rob_commit), port 1 is slot 2 (rob_commit_2). When both ports write the
  * same address the mwp_dist_ram LVT steers reads to the higher-numbered port.
  * That matches program order, because slot 2 carries tag T+1 and slot 1 tag T.
- * The bypass mirrors the same priority, port 1 over port 0, on the read ports
- * that feed ID and dispatch. Its hit compares start at pre-registered
- * qualifiers rather than at the write ports.
+ * The bypass applies the same priority, port 1 over port 0, on the read ports
+ * that feed ID and dispatch. Its hit compares start at registered qualifiers
+ * rather than at the write ports.
  */
 
 module ooo_register_files #(
@@ -94,7 +92,7 @@ module ooo_register_files #(
   // FP data width (declared first: the port aliases below size FP signals).
   localparam int unsigned FpW = riscv_pkg::FpWidth;
 
-  // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
+  // --- Port aliases.
   logic            port0_int_we;
   logic [     4:0] port0_int_addr;
   logic [XLEN-1:0] port0_int_data;
@@ -140,12 +138,10 @@ module ooo_register_files #(
   assign from_id_to_ex_2 = i_from_id_to_ex_2;
 
   // ===========================================================================
-  // Register Files (read in ID, write from ROB commit)
+  // Register Files (read for ID and dispatch, written at ROB commit)
   // ===========================================================================
 
-  // Integer register file.  Widen commit drives it through two independent
-  // write ports: port 0 is slot 1 (rob_commit), port 1 is slot 2
-  // (rob_commit_2).  The header block covers the same-address LVT priority.
+  // Integer register file; the header covers its two write ports.
   localparam int unsigned IntRfWrPorts = 2;
   // 8 INT read ports: slot-1 ID rs1/rs2, slot-1 dispatch rs1/rs2, slot-2 ID
   // rs1/rs2, slot-2 dispatch rs1/rs2.  Slot-2 dispatch reads are wired
@@ -199,20 +195,16 @@ module ooo_register_files #(
       .o_read_data(int_rf_read_data)
   );
 
-  // Widen-commit bypass: check both write ports, slot 1 on port 0 and slot 2
-  // on port 1.  Port 1 wins a same-address conflict because it carries the
-  // newer tag, matching the regfile LVT priority.  Both ports write the
-  // regfile at the same edge, so this is a same-cycle compare with no
-  // cross-cycle tracking.
+  // Commit bypass for the slot-1 reads: port 1 wins a same-address hit, as
+  // in the register file. Both ports write the register file at the same
+  // edge, so this is a same-cycle compare with no cross-cycle tracking.
   logic int_hit_id_rs1_p1, int_hit_id_rs1_p0;
   logic int_hit_id_rs2_p1, int_hit_id_rs2_p0;
   logic int_hit_dp_rs1_p1, int_hit_dp_rs1_p0;
   logic int_hit_dp_rs2_p1, int_hit_dp_rs2_p0;
 
-  // Hit terms use the pre-registered bypass qualifiers (see port comment):
-  // bypass_pN_int_we already folds we && |addr into one FF, and
-  // bypass_pN_addr is the registered write address, so each hit is a single
-  // 5-bit compare rooted at registers instead of the commit-valid LUT cone.
+  // Each hit is one 5-bit compare against the registered bypass qualifiers
+  // (see the port list), not against the commit-valid logic.
   assign int_hit_id_rs1_p1 = bypass_p1_int_we &&
                              (bypass_p1_addr == from_pd_to_id.source_reg_1_early);
   assign int_hit_id_rs1_p0 = bypass_p0_int_we &&
@@ -257,7 +249,7 @@ module ooo_register_files #(
   assign int_rf_dispatch_rs2_data    = int_rf_wb_bypass_dispatch_rs2 ? int_bypass_data_dp_rs2 :
                                        int_rf_read_data[4*XLEN-1:3*XLEN];
 
-  // Slot-2 widen-commit bypass, ID and dispatch: same structure as slot 1.
+  // Commit bypass for the slot-2 reads, ID and dispatch: same as slot 1.
   logic int_hit_id_rs1_2_p1, int_hit_id_rs1_2_p0;
   logic int_hit_id_rs2_2_p1, int_hit_id_rs2_2_p0;
   logic int_hit_dp_rs1_2_p1, int_hit_dp_rs1_2_p0;
@@ -304,9 +296,7 @@ module ooo_register_files #(
   assign int_rf_dispatch_rs2_data_2 = int_rf_wb_bypass_dispatch_rs2_2 ? int_bypass_data_dp_rs2_2 :
                                       int_rf_read_data[8*XLEN-1:7*XLEN];
 
-  // FP register file.  Same 2-write-port topology as the INT regfile for
-  // widen-commit.  FpW is declared at the top of the module body because the
-  // port-alias block above sizes the FP write-port signals with it.
+  // FP register file, with the same two write ports as the integer file.
   localparam int unsigned FpRfWrPorts = 2;
   // 12 FP read ports: slot-1 ID rs1/rs2/rs3, slot-1 dispatch rs1/rs2/rs3,
   // slot-2 ID rs1/rs2/rs3, slot-2 dispatch rs1/rs2/rs3.  Slot-2 dispatch
@@ -369,7 +359,7 @@ module ooo_register_files #(
       .o_read_data(fp_rf_read_data)
   );
 
-  // FP widen-commit bypass: parallel 2-port structure to the INT bypass.
+  // FP commit bypass for the slot-1 reads: same structure as the integer one.
   logic fp_hit_id_rs1_p1, fp_hit_id_rs1_p0;
   logic fp_hit_id_rs2_p1, fp_hit_id_rs2_p0;
   logic fp_hit_id_rs3_p1, fp_hit_id_rs3_p0;
@@ -429,7 +419,7 @@ module ooo_register_files #(
   assign fp_rf_dispatch_rs3_data = fp_rf_wb_bypass_dispatch_rs3 ? fp_bypass_data_dp_rs3 :
                                    fp_rf_read_data[6*FpW-1:5*FpW];
 
-  // Slot-2 FP widen-commit bypass, ID and dispatch: same structure as slot 1.
+  // FP commit bypass for the slot-2 reads, ID and dispatch: same as slot 1.
   logic fp_hit_id_rs1_2_p1, fp_hit_id_rs1_2_p0;
   logic fp_hit_id_rs2_2_p1, fp_hit_id_rs2_2_p0;
   logic fp_hit_id_rs3_2_p1, fp_hit_id_rs3_2_p0;

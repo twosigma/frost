@@ -25,15 +25,15 @@
  * descriptor's words to the engine (from registers, a cycle behind the
  * cache), which takes it with i_desc_take.
  *
- * Eligibility is captured when the read is ISSUED: from a fetched line the
- * cursor's descriptor is eligible, and the following one when it is below
- * i_tail at that moment; nothing else in the line is ever used, and a TAIL
- * that advanced while the read was in flight makes no further slot
- * eligible, so a descriptor posted later is always re-read after its
- * doorbell. i_invalidate drops the cache and moves the cursor back to the
- * head (a disable or RESET); i_restart also zeroes the head (a BASE write:
- * a new ring generation). A response for a read issued before an
- * invalidation is dropped (the read is orphaned), as is a response with
+ * Eligibility is fixed when the read is issued: from a fetched line the
+ * cursor's descriptor is eligible, and the following one if it is in the
+ * same line and below i_tail at that moment. Nothing else in the line is
+ * ever used, and a TAIL that advances while the read is in flight makes no
+ * further slot eligible, so a descriptor posted later is always read again
+ * after its doorbell. i_invalidate (a disable or RESET) drops the cache and
+ * moves the cursor back to the head; i_restart (a BASE or SIZE write, which
+ * starts a new ring generation) also zeroes the head. A response to a read
+ * issued before an invalidation is dropped, as is a response with
  * i_resp_error set (the front-end refused or withdrew the read).
  */
 module nic_desc_fetch #(
@@ -89,7 +89,7 @@ module nic_desc_fetch #(
   logic [15:0] pend_index_q;
   assign o_pending = pending_q;
 
-  // Distance helpers in ring index space.
+  // Distance from b forward to a in ring index space.
   function automatic logic [15:0] ring_dist(input logic [15:0] a, input logic [15:0] b,
                                             input logic [15:0] m);
     ring_dist = (a - b) & m;
@@ -126,11 +126,11 @@ module nic_desc_fetch #(
       end
     end
   end
-  // The head descriptor is offered from registers: the slot search and the
-  // word mux happen a cycle ahead of the engine's decision (that path, into
-  // the packer's start, was the core domain's longest). A take, an
-  // invalidation or a restart blanks the view for the cycle it changes the
-  // state, so a stale image is never offered.
+  // The head descriptor is offered from registers, so the slot search and the
+  // word mux happen a cycle ahead of the engine's decision and stay off its
+  // path into the packer's start. A take, an invalidation or a restart clears
+  // o_desc_valid for the next cycle, while the registered words still show the
+  // old state, so a stale image is never offered.
   logic desc_valid_q;
   logic [31:0] desc_word0_q, desc_word1_q;
   logic [ADDR_WIDTH-1:0] desc_status_addr_q;

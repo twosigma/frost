@@ -7,9 +7,8 @@ prove_pre_match
 
 [options]
 bmc: mode bmc
-# Depth 10: the four cached-load slots roughly doubled the state, and depth
-# 12 grew past the CI per-task ceiling (~15 min on a fast desktop). Every
-# counterexample this bench has produced appeared by step 7.
+# Depth 10 keeps the run inside the runner's 40-minute per-task timeout; the
+# four cached-load slots make the model large.
 bmc: depth 10
 bmc_no_prepare_busy: mode bmc
 bmc_no_prepare_busy: depth 10

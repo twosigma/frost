@@ -32,22 +32,25 @@
   C.SUBW/C.ADDW, and the base shifts take 6-bit shamts with bit 12 as
   shamt[5]. C.FLD/C.FSD/C.FLDSP/C.FSDSP keep their RV32C meanings.
 
+  riscv_pkg::imem_rvc_expand computes the same expansion for the
+  instruction-memory predecode; the rvc_predecode formal target checks that
+  the two agree for every parcel.
+
   For timing, the expansion is a quadrant/funct3 case tree that computes
   only the selected instruction, rather than a bank of parallel expanders
-  feeding a wide OR tree at the output. Expanded instruction bits 8, 9, 15,
-  20, 25, and 27, plus the illegal flag, also have exact standalone cofactors,
-  and so do bits 31:28, 26, 19:18 and 14:12: with 27:25 and 15 they cover the
-  funct7, funct3 and rs1 fields of PD's instruction register. Bits 24:20 have
-  a separate field cofactor with a kept result for each quadrant. Slot 2 consumes
-  the first set, and slot 1 consumes the field cofactors and the
-  illegal flag, so these captures need not inherit unrelated logic from the
-  full case tree.
+  feeding a wide OR tree at the output. Each o_instr_expanded_*_fast output
+  repeats the named bits of o_instr_expanded, and o_illegal_fast repeats
+  o_illegal, as standalone logic computed from the parcel, so a consumer of
+  just those bits does not inherit the full case tree. They equal the full
+  outputs for every {parcel, i_rd_is_x2} pair, including an i_rd_is_x2 that
+  disagrees with the parcel's rd field; the rvc_decompressor cocotb test
+  checks all 131,072 combinations.
 */
 module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,
-    // Exact predecode of i_instr_compressed[11:7] == x2. Fixed high-half
-    // slot-2 candidates receive this from the instruction-memory fast replica;
-    // registered/local candidates compute the same predicate directly.
+    // Precomputed i_instr_compressed[11:7] == x2. The aligner's high-half
+    // slot-2 candidates receive it with the fetch window; other callers
+    // compare the parcel's rd field directly.
     input  logic        i_rd_is_x2,
     output logic [31:0] o_instr_expanded,
     output logic        o_instr_expanded_bit8_fast,
@@ -56,8 +59,8 @@ module rvc_decompressor (
     output logic [ 1:0] o_instr_expanded_bits20_9_fast,
     // Pair ordering is {expanded[27], expanded[25]}.
     output logic [ 1:0] o_instr_expanded_bits27_25_fast,
-    // Field cofactors for PD's instruction register: expanded[31:28],
-    // expanded[26], expanded[19:18] and expanded[14:12], in bit order.
+    // expanded[31:28], expanded[26], expanded[19:18] and expanded[14:12], in
+    // bit order.
     output logic [ 3:0] o_instr_expanded_bits31_28_fast,
     output logic        o_instr_expanded_bit26_fast,
     output logic [ 1:0] o_instr_expanded_bits19_18_fast,
@@ -181,7 +184,7 @@ module rvc_decompressor (
     4'b0, i_instr_compressed[3:2], i_instr_compressed[12], i_instr_compressed[6:4], 2'b00
   };
 
-  // C.FLDSP/C.LDSP: uimm[5:3|8:6] from bits [4:2,12,6:5], scaled by 8
+  // C.FLDSP/C.LDSP: uimm[5] from bit 12, uimm[4:3|8:6] from bits [6:2], scaled by 8
   logic [11:0] imm_ldsp;
   assign imm_ldsp = {
     3'b0, i_instr_compressed[4:2], i_instr_compressed[12], i_instr_compressed[6:5], 3'b000
@@ -191,7 +194,7 @@ module rvc_decompressor (
   logic [7:0] imm_swsp;
   assign imm_swsp = {i_instr_compressed[8:7], i_instr_compressed[12:9], 2'b00};
 
-  // C.FSDSP/C.SDSP: uimm[5:3|8:6] from bits [9:7,12:10], scaled by 8
+  // C.FSDSP/C.SDSP: uimm[5:3|8:6] from bits [12:7], scaled by 8
   logic [11:0] imm_sdsp;
   assign imm_sdsp = {3'b0, i_instr_compressed[9:7], i_instr_compressed[12:10], 3'b000};
 
@@ -199,16 +202,8 @@ module rvc_decompressor (
   logic [5:0] shamt6;
   assign shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
 
-  // Exact bit slice of o_instr_expanded[8] for fully known synthesizable 0/1
-  // inputs, expressed independently of the full-width expansion below. This
-  // output deliberately defines behavior for every binary
-  // {parcel, i_rd_is_x2} combination, including an inconsistent external
-  // rd==x2 predicate. In the C.ADDI16SP/C.LUI slot, C.ADDI16SP writes x2 and
-  // therefore contributes a one while C.LUI contributes rd_full[1].
-  //
-  // The slot-2 path consumes this shallow result beside the other 31 bits. It
-  // removes a false dependency through the synthesized wide case/mux network
-  // without changing the decompressor interface's functional domain.
+  // o_instr_expanded[8]. In the C.ADDI16SP/C.LUI slot, C.ADDI16SP writes x2
+  // and so contributes a one, while C.LUI contributes rd_full[1].
   always_comb begin
     unique case (quadrant)
       2'b00: begin
@@ -246,12 +241,8 @@ module rvc_decompressor (
     endcase
   end
 
-  // Exact standalone cofactors of o_instr_expanded[20] and [9]. These are the
-  // final residual slot-2 rs2[0] and non-source payload endpoints after the
-  // source-hot and earlier bit-specific bypasses. Pairing the two outputs is
-  // only an interface convenience; each case bit remains an independent
-  // one-bit function for synthesis. Slot-1 PD uses the complete bits-24:20
-  // field cofactor below before its compressed/native instruction selection.
+  // o_instr_expanded[20] and [9]. They share a port only for convenience;
+  // each bit is an independent one-bit function.
   always_comb begin
     unique case (quadrant)
       2'b00: begin
@@ -298,11 +289,10 @@ module rvc_decompressor (
     endcase
   end
 
-  // Complete rs2-field cofactors, including the immediate bits that occupy
-  // this field in non-R-type expansions. Keep each quadrant's result so the
-  // selected parcel does not inherit the full expansion's shared case tree
-  // before PD captures these bits. Reserved encodings retain the canonical
-  // zero expansion; i_rd_is_x2 remains an independent input.
+  // o_instr_expanded[24:20]: rs2, or the immediate bits that occupy the field
+  // in other formats. Each quadrant's result is a kept net so the field does
+  // not share the full expansion's case tree. riscv_pkg::imem_rvc_bits24_20
+  // mirrors this logic.
   (* keep = "true" *) logic [4:0] rs2_field_q0;
   (* keep = "true" *) logic [4:0] rs2_field_q1;
   (* keep = "true" *) logic [4:0] rs2_field_q2;
@@ -346,11 +336,7 @@ module rvc_decompressor (
     endcase
   end
 
-  // Exact standalone cofactor of o_instr_expanded[15]. This is rs1[0] for
-  // instruction formats that consume rs1, and is the remaining slot-2 source
-  // bit not carried by the instruction-memory source-hot sideband. As above,
-  // define every binary {parcel, i_rd_is_x2} combination so the splice is
-  // equivalent to the full decompressor without an environmental assumption.
+  // o_instr_expanded[15]: rs1[0] in formats that have rs1.
   always_comb begin
     unique case (quadrant)
       2'b00:   o_instr_expanded_bit15_fast = (|funct3[1:0]) && i_instr_compressed[7];
@@ -379,16 +365,11 @@ module rvc_decompressor (
     endcase
   end
 
-  // Exact standalone cofactor of o_illegal. Keeping the legality decoder out
-  // of the instruction-expansion case tree avoids dragging the wide expansion
-  // cone into slot 2's illegal-instruction capture. This deliberately matches
-  // the canonical output for every binary input, including an i_rd_is_x2 value
-  // inconsistent with the parcel's rd field.
-  //
-  // The structure is fixed as three levels: the field zero tests, one legality
-  // verdict per quadrant, and the quadrant select. The kept nets stop synthesis
-  // from re-sharing the verdict with the expansion and field cofactors, which
-  // once mapped it as a six-table chain behind the fetched word.
+  // o_illegal, decoded apart from the expansion case tree in three levels: the
+  // field zero tests, one legality result per quadrant, and the quadrant
+  // select. Without the keep attributes, synthesis can merge the per-quadrant
+  // results into the expansion and the other *_fast outputs and map the flag
+  // as a long LUT chain behind the parcel.
   (* keep = "true" *)logic illegal_rd_zero;
   (* keep = "true" *)logic illegal_rs2_zero;
   (* keep = "true" *)logic illegal_addi4spn_zero;
@@ -424,10 +405,7 @@ module rvc_decompressor (
     endcase
   end
 
-  // Exact standalone cofactors of o_instr_expanded[27] and [25]. Those are
-  // packed into PD's registered non-source payload at indices 17 and 15. The
-  // shallow pair bypasses the full decompressor mux tree while retaining its
-  // behavior for reserved and externally inconsistent predicate inputs.
+  // o_instr_expanded[27] and [25].
   always_comb begin
     unique case (quadrant)
       2'b00: begin
@@ -468,13 +446,8 @@ module rvc_decompressor (
     endcase
   end
 
-  // Exact standalone cofactors of o_instr_expanded[31:28], [26], [19:18] and
-  // [14:12]. PD's instruction register takes its funct7, funct3 and rs1 fields
-  // from these (with [27:25] and [15] above) instead of the full expansion
-  // tree, which put the instruction memory read five lookup tables from those
-  // flops. Same domain rule as above: exact for every binary
-  // {parcel, i_rd_is_x2}, including an inconsistent predicate, and a reserved
-  // encoding contributes the zero expansion.
+  // o_instr_expanded[31:28], [26], [19:18] and [14:12]. With [27], [25], and
+  // [15] above they cover funct7, funct3, and every rs1 bit except rs1[2:1].
   always_comb begin
     unique case (quadrant)
       2'b00: begin

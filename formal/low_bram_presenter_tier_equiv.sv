@@ -14,6 +14,13 @@
  *    limitations under the License.
  */
 
+// Checks that low_bram_fetch_presenter with SEPARATE_ADDRESS_RETARGET=1
+// (variant 1, whose PA bits [15:0] ignore the tier-change retarget) serves
+// the same low-BRAM responses as the default (variant 0). Each variant
+// drives its own model of imem_predecode's read and history registers. While
+// PA0[31] is clear in this and the previous cycle, both must present the
+// same addresses and response valid, and a valid response must carry the
+// same PC, faults, and data.
 module low_bram_presenter_tier_equiv (
     input logic clk
 );
@@ -36,9 +43,9 @@ module low_bram_presenter_tier_equiv (
   always_ff @(posedge clk) begin
     past_valid  <= 1'b1;
     initialized <= past_valid;
-    // First reset establishes the presenter state; the second memory edge
-    // replaces the arbitrary request launched before that reset. Later reset
-    // pulses remain unconstrained.
+    // Reset is assumed on the first two cycles: the first reset sets the
+    // presenter state, and the second edge replaces the arbitrary request
+    // launched before it. Later resets are unconstrained.
     if (!initialized) assume (rst);
     if (rst) high_q <= 1'b0;
     else high_q <= high;
@@ -88,8 +95,9 @@ module low_bram_presenter_tier_equiv (
         .o_response_valid(response_valid[variant])
     );
 
-    // Same read/history equations as imem_predecode. Address identities model
-    // arbitrary deterministic payload and metadata for each physical pair.
+    // The read and history registers follow imem_predecode's equations. Each
+    // physical pair's data is its own address, which stands for any payload
+    // and metadata that are a fixed function of the address.
     always_ff @(posedge clk) begin
       if (enabled) begin
         read_pair_q <= pair_addr;

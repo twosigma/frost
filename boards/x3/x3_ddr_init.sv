@@ -15,66 +15,42 @@
  */
 
 /*
- * x3_ddr_init: write the DDR4 region once, before anything can read it.
+ * x3_ddr_init: write the whole mapped DDR4 region once, after calibration and
+ * before anything can read it.
  *
  * The X3's DDR4 is 72 bits wide, so the controller checks ECC on every read.
- * A location nothing has written since power-up holds whatever the array came
- * up with, and its check code is unrelated to its data, so a read of it is
- * reported as a correctable or uncorrectable error unless the two happen to
- * agree. Nothing writes the array at
- * power-up: the controller has no initialization or scrubbing of its own (its
- * only other ECC option, Microblaze MCS ECC, protects the calibration
- * processor's own block RAM, not the DRAM). So this does it: after
- * calibration, and before the rest of the design leaves reset, it writes zeros
- * over the whole mapped region and reports when that is finished.
+ * A location not written since power-up has a check code unrelated to its
+ * data, so a read of it reports a correctable or uncorrectable error unless
+ * the two happen to agree. The controller neither initializes nor scrubs the
+ * array (its Microblaze MCS ECC option protects only the calibration
+ * processor's block RAM), so this module writes zeros over the region and
+ * then raises o_done. It drives the write channels only while o_busy is high.
+ * The board top gives it the controller's write channels and holds the
+ * subsystem and the JTAG DDR loader in reset until o_done.
  *
- * Only the write channels exist. The module owns them while o_busy is high --
- * the board top gives it the controller's write port and holds the subsystem
- * and the JTAG image loader in reset until o_done -- and drives nothing after.
+ * The controller's word is 512 bits and this port is 256. A single-beat write
+ * would cover half a word, and the controller would read the other,
+ * uninitialized half to recompute the check code. Each burst is therefore
+ * BEATS_PER_BURST beats from an aligned address, which gives the width
+ * converter a full word to pass on, so the initializing writes read nothing.
+ * BEATS_PER_BURST tracks the controller's word width, and the block design's
+ * S00_AXI declares a matching maximum burst length. Several bursts are in
+ * flight at once under a single AXI id, so the data channel can move a beat
+ * every cycle: 1 GiB takes about 0.1 seconds at 322.265625 MHz.
  *
- * Burst shape is the point, not a performance tweak. The controller's word is
- * 512 bits and this port is 256, so a single-beat write covers half a word and
- * the controller must read the other half to recompute the check code -- a
- * read of exactly the uninitialized data being fixed. Two beats per burst from
- * an aligned address give the width converter a full word to pass on, so the
- * initializing writes read nothing. BEATS_PER_BURST therefore tracks the
- * controller's word width, and the block design's S00_AXI declares a matching
- * maximum burst length.
+ * The module is fail-stop, with no timeout and no retry. Any response other
+ * than OKAY latches an error that withholds o_done for good: the controller
+ * always answers OKAY, but the interconnect answers a request it cannot route
+ * with DECERR, and that write did not happen. o_done also never asserts if
+ * the level below stops accepting or loses a response it already took (the
+ * controller has its own PLL and resets its AXI interface on losing lock,
+ * independently of this module's reset). The board then stays in reset
+ * instead of running on memory in an unknown state.
  *
- * Several bursts are in flight at once, ordered by a single AXI id, so the
- * write data channel runs at a beat a cycle rather than a burst per round
- * trip. Address and data advance independently, each bounded only by the
- * outstanding cap against the responses: a master may not wait for AWREADY
- * before asserting WVALID, since a slave is allowed to wait for WVALID before
- * asserting AWREADY, and the two together would deadlock. The n-th data burst
- * still belongs to the n-th address, which is what the single id and the
- * in-order counters give. At 256 bits and 322.265625 MHz a gibibyte takes about
- * 0.1 seconds, once, before the first instruction.
- *
- * A write that is refused never counts as one that happened. The memory
- * controller's own B channel reports OKAY unconditionally, but it is not the
- * only thing on this path: the interconnect answers a request it cannot route
- * with DECERR, and a run that took one of those has not written what it
- * thinks it has. Any response other than OKAY therefore latches an error that
- * withholds o_done for good, which stops the board in the same way as a write
- * that never came back.
- *
- * A response says nothing about the check code left behind, though: a write
- * can be acknowledged and still leave a bad one. What the counters afterwards
- * show is the complement of that:
- * they report the reads that did happen, so they catch a region left
- * unwritten and then read, and they cannot speak for an address nobody read
- * (fpga/ddr_ecc/ddr_ecc_status.py, and the hardware regression's last
- * stage). Coverage is the counters here. Simulation checks the responses.
- *
- * This is fail-stop, with no timeout and no retry. If the level below stops
- * accepting, or loses a response it had already taken -- the controller has
- * its own PLL and resets its AXI interface on losing lock, independently of
- * the board clock that resets this module -- the counters keep a debt that
- * never retires, o_done never asserts, and the board stays held in reset.
- * That is deliberate: the alternative to a stopped board is a running one on
- * memory whose state nobody established. It is also indistinguishable from
- * the memory not working, which it very likely means.
+ * An acknowledged write can still leave a bad check code. On the board, the
+ * controller's ECC error state (read by fpga/ddr_ecc/ddr_ecc_status.py, which
+ * the hardware regression runs last) catches a region left unwritten and then
+ * read, but says nothing about addresses nobody read.
  *
  * REGION_BYTES exists so a bench can cover the whole region in a short run.
  */
@@ -119,10 +95,9 @@ module x3_ddr_init #(
   localparam int unsigned BurstBits = $clog2(TotalBursts + 1);
   localparam int unsigned BeatBits = (BEATS_PER_BURST > 1) ? $clog2(BEATS_PER_BURST) : 1;
   // The cap is clamped to the number of bursts, which it can never usefully
-  // exceed, so that it stays representable in the counter width. BurstBits
-  // sizes TotalBursts; an unclamped larger cap would truncate against the
-  // counters, and for a small enough region truncate to zero, which would
-  // hold the address channel low and start nothing at all.
+  // exceed, so that it fits the counter width (BurstBits sizes TotalBursts).
+  // An unclamped larger cap would truncate, for a small enough region to
+  // zero, which would hold both valids low and start nothing at all.
   localparam int unsigned OutstandingCap =
       (MAX_OUTSTANDING < TotalBursts) ? MAX_OUTSTANDING : TotalBursts;
 
@@ -137,10 +112,9 @@ module x3_ddr_init #(
   // A response other than OKAY means some of the region was not written.
   logic                 resp_error_q;
 
-  // i_start is latched rather than used directly. A request channel may not
-  // drop its valid before the handshake, and every valid below is qualified
-  // by this; taking i_start straight would make a calibration line that fell
-  // again mid-burst a protocol violation rather than a stall.
+  // i_start is latched rather than used directly: every valid below is
+  // qualified by it, and a valid may not drop before its handshake, so a
+  // calibration level that fell again mid-burst must not reach them.
   logic                 started_q;
 
   logic running, aw_fire, w_fire, w_burst_last, b_fire;

@@ -14,9 +14,11 @@
  *    limitations under the License.
  */
 
-// FPU Classify Unit Wrapper
-// Wraps S and D fp_classify instances with tracking FSM and dest reg capture.
-// Result is always 32-bit (no NaN-boxing needed). No FP flags generated.
+// FP classify unit: single- and double-precision fp_classify instances for
+// FCLASS. A started flag blocks a new start until the result is valid. The
+// result is the 10-bit class mask, zero-extended to 32 bits for an integer
+// register (never NaN-boxed); FCLASS raises no FP flags. o_dest_reg returns the
+// i_dest_reg captured at the start.
 module fpu_classify_unit #(
     parameter int unsigned FP_WIDTH_D = 64
 ) (

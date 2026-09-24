@@ -5,7 +5,7 @@
 # Package dependency
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 
-# RAM primitives (used by ROB and RAT)
+# Distributed-RAM primitives used across the back end
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram_2r.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
@@ -30,15 +30,15 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 
-# Store queue (+ extracted store-to-load forwarding submodule)
+# Store queue and its store-to-load forwarding submodule
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
 
-# Data MMU (Phase 3 M4: DTLB + translation stage; the ptw lives in cpu_ooo)
+# Data MMU: DTLB and translation stage (the page-table walker lives in cpu_ooo)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
 
-# Wrapper glue submodules (extracted from tomasulo_wrapper top-level)
+# Wrapper glue submodules
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv

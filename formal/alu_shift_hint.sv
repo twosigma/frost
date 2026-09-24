@@ -14,12 +14,16 @@
  *    limitations under the License.
  */
 
-// Both instances are the actual ALU. All op bits, operands and instruction
-// fields remain symbolic. The hinted instance receives the exact local
-// effective amount; the generic instance receives arbitrary ignored hints.
-// A separate literal shift/rotate oracle checks every consuming opcode with
-// arbitrary instruction fields and operands. This proves the combinational
-// consumer contract, not RS temporal capture.
+// Shift-amount hint equivalence for the ALU. Both instances are the real ALU,
+// and all operation bits, operands and instruction fields are unconstrained.
+// The hinted instance (USE_SHIFT_AMOUNT_HINT=1) gets the amount the generic
+// one selects for itself, the immediate shamt or b[5:0]; the generic instance
+// gets an arbitrary hint, which it ignores. Their results and write enables
+// must match, and for every operation that reads the shared shift amount the
+// generic ALU must match a plain shift and rotate reference and write its
+// result. This checks the ALU's combinational use of the hint, not how the
+// reservation station captures and holds it (the rs_issue2_shamt cocotb test
+// covers that).
 module alu_shift_hint (
     input riscv_pkg::instr_t instruction,
     input riscv_pkg::instr_op_e op,

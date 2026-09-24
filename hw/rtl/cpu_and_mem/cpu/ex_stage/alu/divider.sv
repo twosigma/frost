@@ -34,8 +34,10 @@
  *   - Signed overflow (MIN_INT / -1): quotient = MIN_INT, remainder = 0,
  *     which falls out of two's-complement wraparound in the magnitude path
  *
- * int_muldiv_shim tracks in-flight results for the OoO CDB, and sizes its
- * tracker from its own DivPipeDepth, which has to stay equal to WIDTH/2 + 1.
+ * int_muldiv_shim keeps its own copies of this latency, and each must equal
+ * WIDTH/2 + 1 for its divider: DivPipeDepth sizes the in-flight tracker for
+ * the full-width divider, and WordDivDepth sets where operations for the
+ * 32-bit word divider enter that tracker.
  */
 module divider #(
     parameter int unsigned WIDTH = 32  // Bit width
@@ -68,15 +70,16 @@ module divider #(
     remainder_should_be_negative = dividend_is_negative;
   end
 
-  // 2x-folded radix-2 division requires one pipeline stage per 2 bits (16 stages for 32-bit)
+  // Two quotient bits per stage: 16 stages at WIDTH=32, 32 at WIDTH=64
   localparam int unsigned NumPipelineStages = WIDTH / 2;
 
   // Stage-boundary registers: entry 0 is the initialized input, entry
   // NumPipelineStages the finished division.
   logic [WIDTH-1:0] remainder_pipeline     [NumPipelineStages+1];
-  // Keep existing registers at both ends of each quotient delay SRL, so
-  // stage arithmetic can end at a local flip-flop instead of an SRL input.
-  // Extraction shortens the SRL accordingly; the pipeline depth is unchanged.
+  // Keep a pipeline register at both ends of each extracted quotient delay
+  // SRL, so stage arithmetic ends at a local flip-flop instead of an SRL
+  // input. The SRL is shorter by those registers; the pipeline depth is the
+  // same.
   (* srl_style = "reg_srl_reg" *)logic [WIDTH-1:0] quotient_pipeline      [NumPipelineStages+1];
   logic [WIDTH-1:0] divisor_pipeline       [NumPipelineStages+1];
   (* srl_style = "srl_reg" *)logic [WIDTH-1:0] dividend_pipeline      [NumPipelineStages+1];
@@ -160,7 +163,7 @@ module divider #(
       end
 
 `ifdef DIVIDER_PREFIX_LOCAL_PROOF
-      // Compositional lemma against the original full-width restoring steps.
+      // Compositional lemma against the reference full-width restoring steps.
       // Entry 0 initializes each transaction's remainder to zero. Each stage
       // assumes the preceding prefix bound and proves the next one, so the
       // lemmas compose for valid results, including a zero divisor. Invalid

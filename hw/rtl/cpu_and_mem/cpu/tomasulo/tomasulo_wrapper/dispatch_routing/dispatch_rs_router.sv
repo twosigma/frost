@@ -166,7 +166,6 @@ module dispatch_rs_router #(
   assign fdiv_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_FDIV) && !i_backend_recovery_hold;
 
-  // Drive the output ports from the locally-computed signals.
   assign o_int_rs_dispatch_valid = int_rs_dispatch_valid;
   assign o_mul_rs_dispatch_valid = mul_rs_dispatch_valid;
   assign o_mem_rs_dispatch_valid = mem_rs_dispatch_valid;

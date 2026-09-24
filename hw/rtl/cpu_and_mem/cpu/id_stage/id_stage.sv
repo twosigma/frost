@@ -26,11 +26,10 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
-    // Predicted-taken redirect override from pd_stage. The redirect is an FF
-    // output and the target is reconstructed only from PD's registered split
-    // banks (the same state that drives IF). Applying the override here instead
-    // of inside pd_stage's o_from_pd_to_id register keeps target arithmetic off
-    // the PD-to-ID register D path.
+    // Predicted-taken redirect override from pd_stage. The redirect and its
+    // target are formed from PD registers only (the same signals IF gets).
+    // Applying the override here, not in pd_stage's o_from_pd_to_id register,
+    // keeps target arithmetic off the PD-to-ID register D path.
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     input riscv_pkg::rf_to_fwd_t i_rf_to_id,  // Regfile read data (combinational from PD src regs)
@@ -41,11 +40,10 @@ module id_stage #(
     // that keeps a registered copy of fields it selects against this output.
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next,
     // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
-    // Slot-2 does not receive the PD predicted-taken redirect override; that
-    // heuristic is slot-1 only (see pd_stage.sv).  Slot-2 carries its own BTB
-    // metadata (staged slot-2 BTB lookup) but no RAS prediction: IF ties it
-    // off because slot-1 control flow ends the bundle.  Slot-2 mispredictions
-    // recover through the EX-stage path.
+    // Slot 2 does not receive the PD predicted-taken redirect override, which
+    // covers slot 1 only (see pd_stage.sv).  Slot 2 carries its own BTB
+    // metadata (staged slot-2 BTB lookup) but no RAS prediction; IF ties that
+    // off.  A slot-2 misprediction recovers in the back end like any other.
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
     input riscv_pkg::rf_to_fwd_t i_rf_to_id_2,
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id_2,
@@ -113,7 +111,7 @@ module id_stage #(
   logic ras_correct_non_jalr_precomputed;
   logic [XLEN-1:0] pc_relative_precomputed;
 
-  // x3 TIMING: pd_stage passes the instruction through un-NOP'd and carries the
+  // TIMING: pd_stage passes the instruction through un-NOP'd and carries the
   // bubble in inject_nop.  The NOP is applied here, from registered inputs in
   // one LUT, so the front-end-stall-fed NOP select stays off the D path of the
   // pd_stage 32-bit instruction register.
@@ -139,13 +137,14 @@ module id_stage #(
 
   logic is_illegal_instruction;
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction;
-  // a fetch (PMA) fault overrides decode entirely.  The bytes are
-  // aliased garbage and may even decode as a NOP, so the dispatch-valid and
-  // op paths both key on this flag, with priority over illegal.
+  // A fetch fault (access or page fault) overrides decode entirely. The
+  // fetched bytes are garbage and may even decode as a NOP, so the
+  // dispatch-valid and operation paths both key on this flag, with priority
+  // over illegal.
   logic is_fetch_fault;
   assign is_fetch_fault = i_from_pd_to_id.fetch_fault;
-  // M5 qualifiers (meaningful only under is_fetch_fault): page fault vs
-  // access fault, and a fault on the second halfword only (xtval = PC + 2).
+  // Fetch-fault qualifiers (meaningful only with is_fetch_fault): page fault
+  // vs access fault, and a fault on the second halfword only (xtval = PC + 2).
   logic is_fetch_fault_page;
   logic is_fetch_fault_hi;
   assign is_fetch_fault_page = i_from_pd_to_id.fetch_fault_page;
@@ -251,31 +250,32 @@ module id_stage #(
   assign is_fp_instruction_direct = is_fp_load_direct | is_fp_store_direct |
                                    is_fp_compute_direct | is_fp_fma_direct;
 
-  // FP instructions that produce integer results (write to integer regfile)
+  // FP instructions that produce integer results (write to integer regfile).
+  // funct7[6:2] leaves out the fmt bits, so each pattern covers S and D:
   // FEQ, FLT, FLE: funct7[6:2]=10100, funct3 determines compare type
-  // FCLASS.S: funct7[6:2]=11100, funct3=001
-  // FCVT.W.S, FCVT.WU.S: funct7[6:2]=11000
-  // FMV.X.W: funct7[6:2]=11100, funct3=000
+  // FCLASS: funct7[6:2]=11100, funct3=001
+  // FCVT to integer (W, WU, L, LU): funct7[6:2]=11000
+  // FMV.X.W, FMV.X.D: funct7[6:2]=11100, funct3=000
   logic is_fp_to_int_direct;
   assign is_fp_to_int_direct = is_fp_compute_direct && (
       (instruction.funct7[6:2] == 5'b10100) |  // FEQ/FLT/FLE
       (instruction.funct7[6:2] == 5'b11100 && instruction.funct3 == 3'b001) |  // FCLASS
-      (instruction.funct7[6:2] == 5'b11000) |  // FCVT.W.S, FCVT.WU.S
-      (instruction.funct7[6:2] == 5'b11100 && instruction.funct3 == 3'b000)  // FMV.X.W
+      (instruction.funct7[6:2] == 5'b11000) |  // FCVT to integer
+      (instruction.funct7[6:2] == 5'b11100 && instruction.funct3 == 3'b000)  // FMV.X.W/D
       );
 
-  // FP instructions that take integer source (read from integer regfile)
-  // FCVT.S.W, FCVT.S.WU: funct7[6:2]=11010
-  // FMV.W.X: funct7[6:2]=11110, funct3=000
+  // FP instructions that take an integer source (read the integer regfile),
+  // again for both S and D:
+  // FCVT from integer (W, WU, L, LU): funct7[6:2]=11010
+  // FMV.W.X, FMV.D.X: funct7[6:2]=11110, funct3=000
   logic is_int_to_fp_direct;
   assign is_int_to_fp_direct = is_fp_compute_direct && (
-      (instruction.funct7[6:2] == 5'b11010) |  // FCVT.S.W, FCVT.S.WU
-      (instruction.funct7[6:2] == 5'b11110 && instruction.funct3 == 3'b000)  // FMV.W.X
+      (instruction.funct7[6:2] == 5'b11010) |  // FCVT from integer
+      (instruction.funct7[6:2] == 5'b11110 && instruction.funct3 == 3'b000)  // FMV.W.X/D.X
       );
 
-  // Pipelined FP operations (multi-cycle ops that track in-flight destinations).
-  // Registered for downstream dispatch and issue logic without re-decoding.
-  // Includes: FADD, FSUB, FMUL, FDIV, FSQRT, and all FMA variants
+  // Multi-cycle FP operations: FADD, FSUB, FMUL, FDIV, FSQRT, and all FMA
+  // variants. Nothing downstream uses this flag.
   logic is_pipelined_fp_op_direct;
   assign is_pipelined_fp_op_direct = is_fp_fma_direct |  // All FMA ops
       (is_fp_compute_direct && (
@@ -327,9 +327,8 @@ module id_stage #(
   logic [riscv_pkg::FpWidth-1:0] fp_source_reg_2_data_bypassed;
   logic [riscv_pkg::FpWidth-1:0] fp_source_reg_3_data_bypassed;
 
-  // Compare against fp_dest_reg rather than instruction.dest_reg: for pipelined
-  // FPU operations the original instruction has moved on, and fp_dest_reg tracks
-  // the destination register being written.
+  // The FP bypass compares fp_dest_reg, the FP register being written, not
+  // instruction.dest_reg.
   assign fp_wb_bypass_rs1 = i_from_ma_to_wb.fp_regfile_write_enable &&
                             (i_from_ma_to_wb.fp_dest_reg ==
                              i_from_pd_to_id.source_reg_1_early);
@@ -350,9 +349,8 @@ module id_stage #(
   // ===========================================================================
   // Source Register x0 Check Pre-computation
   // ===========================================================================
-  // Pre-computed x0 flags for the source registers: registering them here keeps
-  // the ~|source_reg NOR out of the EX-stage critical path.  Nothing in the
-  // current core reads them, so today they ride the packet unused.
+  // Pre-computed x0 flags for the source registers; nothing downstream uses
+  // them.
 
   logic source_reg_1_is_x0;
   logic source_reg_2_is_x0;
@@ -408,17 +406,15 @@ module id_stage #(
   // ===========================================================================
   // Pipeline Register
   // ===========================================================================
-  // Latch decoded values and pass to Execute stage
+  // Register the decoded packet, which reaches dispatch through the decoded
+  // bundle queue (directly when DECODED_QUEUE_DEPTH is 0).
 
   // TIMING: every o_from_id_to_ex/o_from_id_to_ex_2 payload register's clock
-  // enable is this one advance term.  Left unnamed, synthesis shares a single
-  // inverter of the stall for all of them (measured post-place: one LUT1
-  // driving 1232 CE pins, on the failing dispatch-stall path family).  Name
-  // the advance and cap its fanout so the inverter replicates per register
-  // region.  Pure fanout splitting; the stall itself is unchanged.
-  // keep is load-bearing: without it synthesis flattens the inverter into a
-  // wider CE LUT and the cap is dropped with it (measured: a 1003-load CE
-  // LUT6 survived the first cap-only attempt).
+  // enable is this one advance term.  Left unnamed, synthesis drives all of
+  // them from a single inverter of the stall.  Naming the advance and capping
+  // its fanout lets the inverter replicate per register region; logically it
+  // is just ~stall.  keep is required: without it synthesis folds the
+  // inverter into a wider clock-enable LUT and drops the fanout cap with it.
   (* keep = "true", max_fanout = 64 *) logic id_advance;
   assign id_advance = ~i_pipeline_ctrl.stall;
 
@@ -546,13 +542,13 @@ module id_stage #(
                                               effective_btb_predicted_taken;
       // RAS prediction metadata, cleared on flush for the same reason
       o_from_id_to_ex.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
-      // Pre-computed RAS instruction type flags; they keep the comparisons off
-      // the EX-stage critical path.
+      // Pre-computed RAS call/return flags; dispatch passes them to the ROB for
+      // RAS recovery.
       o_from_id_to_ex.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
       o_from_id_to_ex.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
-      // Pre-computed BTB verification.  For non-JALR the target comparison is
-      // done here in ID (no forwarding dependency); JALR compares
-      // btb_expected_rs1 in EX, the same algebraic transformation as RAS.
+      // Pre-computed target checks.  A branch or JAL has a PC-relative target,
+      // so ID compares it with both predictions; a JALR is checked at
+      // resolution.
       o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                               btb_correct_non_jalr_precomputed;
       o_from_id_to_ex.ras_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
@@ -593,7 +589,7 @@ module id_stage #(
       // Compute link address from registered PD inputs instead of the live IF
       // sideband path.
       o_from_id_to_ex.link_address <= link_address_precomputed;
-      // Pre-computed branch/jump targets (computed here, used by EX stage)
+      // Pre-computed targets (see branch_target_precompute)
       o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
       o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
       o_from_id_to_ex.pc_relative_precomputed <= pc_relative_precomputed;
@@ -604,7 +600,7 @@ module id_stage #(
       // Carry the predict-time bimodal index through to commit.
       o_from_id_to_ex.bp_dir_idx <= i_from_pd_to_id.bp_dir_idx;
       o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
-      // Pre-computed expected rs1 values for branch/RAS verification.
+      // Expected rs1 values (see branch_target_precompute).
       o_from_id_to_ex.ras_expected_rs1 <= ras_expected_rs1_precomputed;
       o_from_id_to_ex.btb_expected_rs1 <= btb_expected_rs1_precomputed;
       o_from_id_to_ex.fp_rm <= fp_rm_direct;
@@ -613,7 +609,7 @@ module id_stage #(
       o_from_id_to_ex.immediate_i_type <= immediate_i_type;
       o_from_id_to_ex.immediate_b_type <= immediate_b_type;
       o_from_id_to_ex.immediate_j_type <= immediate_j_type;
-      // Regfile read data (read in ID stage, with WB bypass, registered here for EX stage)
+      // Register file read data, with the WB bypass applied
       o_from_id_to_ex.source_reg_1_data <= source_reg_1_data_bypassed;
       o_from_id_to_ex.source_reg_2_data <= source_reg_2_data_bypassed;
       // Pre-computed x0 check flags
@@ -626,8 +622,9 @@ module id_stage #(
     end
   end
 
-  // next-edge register value: the update above, generated verbatim with a
-  // hold default. The register itself is unchanged; the check below pins it.
+  // Next-edge value of o_from_id_to_ex: the always_ff update above, repeated
+  // with a hold default. Change both together; the assertion below checks
+  // that the register matches.
   riscv_pkg::from_id_to_ex_t id_next;
   assign o_from_id_to_ex_next = id_next;
   always_comb begin
@@ -751,13 +748,13 @@ module id_stage #(
       id_next.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 : effective_btb_predicted_taken;
       // RAS prediction metadata, cleared on flush for the same reason
       id_next.ras_predicted = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
-      // Pre-computed RAS instruction type flags; they keep the comparisons off
-      // the EX-stage critical path.
+      // Pre-computed RAS call/return flags; dispatch passes them to the ROB for
+      // RAS recovery.
       id_next.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
       id_next.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
-      // Pre-computed BTB verification.  For non-JALR the target comparison is
-      // done here in ID (no forwarding dependency); JALR compares
-      // btb_expected_rs1 in EX, the same algebraic transformation as RAS.
+      // Pre-computed target checks.  A branch or JAL has a PC-relative target,
+      // so ID compares it with both predictions; a JALR is checked at
+      // resolution.
       id_next.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
                                               btb_correct_non_jalr_precomputed;
       id_next.ras_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
@@ -796,7 +793,7 @@ module id_stage #(
       // Compute link address from registered PD inputs instead of the live IF
       // sideband path.
       id_next.link_address = link_address_precomputed;
-      // Pre-computed branch/jump targets (computed here, used by EX stage)
+      // Pre-computed targets (see branch_target_precompute)
       id_next.branch_target_precomputed = branch_target_precomputed;
       id_next.jal_target_precomputed = jal_target_precomputed;
       id_next.pc_relative_precomputed = pc_relative_precomputed;
@@ -807,7 +804,7 @@ module id_stage #(
       // Carry the predict-time bimodal index through to commit.
       id_next.bp_dir_idx = i_from_pd_to_id.bp_dir_idx;
       id_next.ras_predicted_target_nonzero = |i_from_pd_to_id.ras_predicted_target;
-      // Pre-computed expected rs1 values for branch/RAS verification.
+      // Expected rs1 values (see branch_target_precompute).
       id_next.ras_expected_rs1 = ras_expected_rs1_precomputed;
       id_next.btb_expected_rs1 = btb_expected_rs1_precomputed;
       id_next.fp_rm = fp_rm_direct;
@@ -816,7 +813,7 @@ module id_stage #(
       id_next.immediate_i_type = immediate_i_type;
       id_next.immediate_b_type = immediate_b_type;
       id_next.immediate_j_type = immediate_j_type;
-      // Regfile read data (read in ID stage, with WB bypass, registered here for EX stage)
+      // Register file read data, with the WB bypass applied
       id_next.source_reg_1_data = source_reg_1_data_bypassed;
       id_next.source_reg_2_data = source_reg_2_data_bypassed;
       // Pre-computed x0 check flags
@@ -843,12 +840,11 @@ module id_stage #(
   // ===========================================================================
   // Slot-2: Decoders + FP Detect + WB Bypass + x0 Check + Pipeline Register
   // ===========================================================================
-  // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2's real
-  // second instruction. PD keeps the late bubble controls off the instruction
-  // register D path and carries them in inject_nop, so apply the registered
-  // marker before every slot-2 decoder. Slot 2 does not get the PD
-  // predicted-taken redirect override; its BTB/RAS metadata is whatever PD
-  // passed through from IF.
+  // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2. As for
+  // slot 1, PD carries the bubble in inject_nop, and the NOP is applied here
+  // before the slot-2 decoders (the operand classifier applies it itself).
+  // Slot 2 does not get the PD predicted-taken redirect override; its BTB/RAS
+  // metadata is whatever PD passed through from IF.
 
   riscv_pkg::instr_t                      instruction_2;
   riscv_pkg::instr_op_e                   instruction_operation_2;
@@ -1086,8 +1082,7 @@ module id_stage #(
   assign source_reg_1_is_x0_2 = ~|i_from_pd_to_id_2.source_reg_1_early;
   assign source_reg_2_is_x0_2 = ~|i_from_pd_to_id_2.source_reg_2_early;
 
-  // Slot-2 pre-decoded operand-classification flags (mirror of slot-1).
-  // Inlined for the same `ifndef SYNTHESIS` reason as slot-1 above.
+  // Slot-2 pre-decoded operand-classification flags (mirror of slot 1).
   logic has_int_dest_pre_2;
   logic has_fp_dest_pre_2;
   logic uses_int_rs1_pre_2;
@@ -1304,8 +1299,9 @@ module id_stage #(
     end
   end
 
-  // Slot-2 next-edge register value: the update above, generated verbatim with a
-  // hold default. The register itself is unchanged; the check below pins it.
+  // Next-edge value of o_from_id_to_ex_2: the always_ff update above,
+  // repeated with a hold default. Change both together; the assertion below
+  // checks that the register matches.
   riscv_pkg::from_id_to_ex_t id_next_2;
   assign o_from_id_to_ex_next_2 = id_next_2;
   always_comb begin

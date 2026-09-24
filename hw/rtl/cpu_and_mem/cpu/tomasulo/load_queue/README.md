@@ -180,9 +180,9 @@ it sees an empty queue after a store has committed.
 
 The router's pending bit (`i_mem_request_pending` here) is part of the
 wrapper's `i_mem_bus_busy` and stays high through the accept cycle, so no
-second handoff can overwrite the parked request. A misaligned device load
-completes inside the LQ with its exception and no handoff; the trap unit still
-waits for the drain before taking the trap.
+second handoff can overwrite the parked request. A device load that faults
+(see [Completion](#completion)) completes inside the LQ with its exception and
+no handoff; the trap unit still waits for the drain before taking the trap.
 
 In practice only an interrupt (or a debug halt request) can flush a parked
 device load: xRET, FENCE-class and commit-time recovery cannot pass an
@@ -373,8 +373,8 @@ Results leave through `cdb_stage`, a one-entry register in front of the MEM
 CDB adapter (`o_fu_complete`, advanced by `i_result_accepted`). A memory
 response, L0 hit or forwarded value goes straight into it when it is free and
 the selector is not filling it, and the entry frees at once; otherwise the
-result waits in the data RAM. AMOs always complete through the data RAM, and
-nothing enters `cdb_stage` on a partial-flush cycle.
+result waits in the data RAM. An AMO that does not fault completes through the
+data RAM, and nothing enters `cdb_stage` on a partial-flush cycle.
 
 A load that faults (misaligned when `i_trap_misaligned_accesses` is set,
 outside the physical memory map, or with a fault the data MMU parked on the

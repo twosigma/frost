@@ -17,7 +17,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Two Sigma Open Source, LLC
 
-// Seed with all ones; complement the final result for the transmitted FCS.
+// Ethernet CRC-32 over the kept bytes of one 64-bit word, lane zero first
+// (eth10g_crc_pkg::crc32_update as a module). Seed with all ones; complement the
+// final result for the transmitted FCS.
 module eth10g_crc32_64 (
     input  logic [31:0] i_crc,
     input  logic [63:0] i_data,

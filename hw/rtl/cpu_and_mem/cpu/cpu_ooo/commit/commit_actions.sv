@@ -17,12 +17,12 @@
 /*
  * Commit-time actions.
  *
- * Turns ROB commit into the architectural side effects:
- *   - widen-commit regfile writes on two ports (port 0 = slot 1 = rob_commit,
- *     port 1 = slot 2 = rob_commit_2), routed to the INT or FP file by dest_rf;
+ * Turns the registered ROB commit bus into the architectural side effects:
+ *   - two-wide commit regfile writes on two ports (port 0 = slot 1 =
+ *     rob_commit, port 1 = slot 2 = rob_commit_2), routed to the INT or FP
+ *     file by dest_rf;
  *   - the delayed CSR writeback, which drives csr_read_data onto port 0 one
- *     cycle after the CSR commits and takes priority there. The delay keeps the
- *     commit CSR address off the same-cycle regfile-forwarding path;
+ *     cycle after the CSR appears on the commit bus and takes priority there;
  *   - the csr_commit_fire / csr_wb_pending serialization handshakes;
  *   - the retire valid (o_vld / o_pc_vld) and the 1-or-2 instret increment.
  */
@@ -63,7 +63,7 @@ module commit_actions #(
 
   localparam int unsigned FpW = riscv_pkg::FpWidth;
 
-  // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
+  // --- Port aliases: the body uses these unprefixed names.
   riscv_pkg::reorder_buffer_commit_t            rob_commit;
   riscv_pkg::reorder_buffer_commit_t            rob_commit_2;
   logic                                         rob_commit_valid;
@@ -80,16 +80,16 @@ module commit_actions #(
   logic [     4:0] csr_wb_dest_reg;
 
   // --- Regfile writes from ROB commit ---
-  // Widen-commit drives two independent write ports per regfile:
+  // Two-wide commit drives two independent write ports per regfile:
   //   port 0 = rob_commit (slot 1)
   //   port 1 = rob_commit_2 (slot 2)
-  // Both retire in the same cycle when commit_2_fire fired.  When both ports
+  // Both retire in the same cycle when the ROB commits two.  When both ports
   // write the same address the mwp_dist_ram LVT steers reads to port 1, which
   // matches program order because slot 2 holds the newer tag.
   //
   // CSR instructions use a delayed writeback from csr_read_data, the CSR
-  // file's registered read result.  That removes the commit CSR address
-  // from the same-cycle regfile-forwarding/dispatch source-value path.
+  // file's registered read result.  That keeps the commit CSR address off
+  // the same-cycle regfile-forwarding/dispatch source-value path.
   logic            port0_int_we;
   logic [     4:0] port0_int_addr;
   logic [XLEN-1:0] port0_int_data;
@@ -178,7 +178,7 @@ module commit_actions #(
   // --- Instruction retire signal ---
   assign o_vld = rob_commit_valid && !rob_commit.exception;
 
-  // Instret increments 1 or 2 per cycle based on widen-commit retirement.
+  // Instret increments by 1 or 2 per cycle with two-wide commit.
   // Slot 2 can never take an exception (the 2-wide gate excludes them), so its
   // retire condition is "slot 2 valid".
   logic [1:0] instruction_retired_count;

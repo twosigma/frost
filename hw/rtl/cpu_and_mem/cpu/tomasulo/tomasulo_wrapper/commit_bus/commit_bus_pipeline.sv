@@ -17,15 +17,15 @@
 // =============================================================================
 // commit_bus_pipeline
 // =============================================================================
-// One-cycle ROB commit-bus pipeline.  It breaks the critical path from ROB
-// head_ready/commit_en through SQ/RAT to LQ, and all internal consumers (RAT,
-// SQ commit, SC logic) use this registered view.  The valid bits are split out
-// and reset on full flush so Vivado does not drag the reset net onto the
-// payload register bits.  Slot 2 (widen-commit) is pipelined the same way; it
-// is never SC/AMO/LR by construction.
+// Registers both ROB commit slots and their decoded fields. RAT commit, SQ
+// commit, SC discard, the LR reservation clear, and the coherence port use
+// this registered view, which breaks the path from the ROB's
+// head_ready/commit_en through the SQ and RAT to the LQ. Only the valid bits
+// reset (on reset or a full flush), so the reset net stays off the payload
+// registers. Slot 2 is registered the same way and is never SC, AMO, or LR.
 //
-// The wrapper keeps combinational commit buses for same-cycle misprediction
-// detection; only their registers live here.
+// The wrapper keeps the combinational commit buses for same-cycle
+// misprediction detection; only their registers live here.
 // =============================================================================
 module commit_bus_pipeline (
     input logic i_clk,
@@ -39,13 +39,11 @@ module commit_bus_pipeline (
     // Registered slot-1 commit bus + decomposed fields
     output riscv_pkg::reorder_buffer_commit_t o_commit_bus_q,
     output logic o_commit_bus_q_valid,
-    // Registered valid before the flush mask: the flop value without the
-    // !i_flush_all output gate.  It serves scan-only consumers whose result is
-    // structurally unconsumable on flush cycles, currently the SQ forwarding
-    // probe's capture data path.  The flush mask term is the registered
-    // trap/MRET/FENCE-class pulse, and keeping it off the scan cone removes the
-    // last trap entry into the o_sq_forward capture D-pins (x3 post-opt -0.138,
-    // 65 endpoints).  Never drive an architectural side effect from this.
+    // The registered valid without the !i_flush_all output mask. It serves
+    // scan-only consumers whose result is discarded on a flush cycle,
+    // currently the SQ forwarding probe's capture data path. Keeping the
+    // full-flush term off that cone keeps trap timing out of the o_sq_forward
+    // capture registers. Never drive an architectural side effect from this.
     output logic o_commit_bus_q_valid_raw,
     output logic o_commit_q_dest_valid,
     output logic o_commit_q_dest_rf,
@@ -68,8 +66,7 @@ module commit_bus_pipeline (
 );
 
   // ---------------------------------------------------------------------------
-  // Alias ports back to the wrapper's local names so the always_ff body below
-  // is byte-identical to the original tomasulo_wrapper logic.
+  // Input aliases with the wrapper's signal names.
   // ---------------------------------------------------------------------------
   riscv_pkg::reorder_buffer_commit_t commit_bus;
   riscv_pkg::reorder_buffer_commit_t commit_bus_2;
@@ -120,16 +117,16 @@ module commit_bus_pipeline (
     commit_q_2_dest_rf <= commit_bus_2.dest_rf;
     commit_q_2_dest_reg <= commit_bus_2.dest_reg;
     commit_q_2_tag <= commit_bus_2.tag;
-    // Slot 2 excludes SC by construction, so "store_like" collapses to
-    // is_store | is_fp_store.  The SC discard path is not reachable.
+    // Slot 2 never carries an SC, so "store_like" is is_store | is_fp_store
+    // and slot 2 needs no SC discard.
     commit_q_2_is_store_like <= commit_bus_2.is_store || commit_bus_2.is_fp_store;
   end
 
-  // Drive the output ports from the registered locals.  The flops above clear
-  // valid on the flush edge, but consumers see the previous valid value during
-  // that same cycle.  Mask the qualified valid outputs immediately so a
-  // commit that overlaps a trap/MRET/FENCE-class full flush cannot perform one
-  // more architectural side effect while the backend is being squashed.
+  // The flops above clear valid on the flush edge, but consumers would still
+  // see the previous valid during the flush cycle itself. The qualified valid
+  // outputs are therefore masked by i_flush_all, so a commit that overlaps a
+  // trap, xRET, or FENCE-class full flush cannot perform one more
+  // architectural side effect while the back end is being squashed.
   assign o_commit_bus_q             = commit_bus_q;
   assign o_commit_bus_q_valid       = commit_bus_q_valid && !i_flush_all;
   assign o_commit_bus_q_valid_raw   = commit_bus_q_valid;

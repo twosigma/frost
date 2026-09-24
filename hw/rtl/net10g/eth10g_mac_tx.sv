@@ -25,6 +25,7 @@
 // share i_clk; i_enable is a clock enable, not wire-side flow control. XGMII data
 // and control hold while disabled, except in reset. o_drop is a single i_clk-cycle
 // event.
+//
 // /S/ always occupies lane zero; short packets are padded to 60 bytes, followed
 // by little-endian Ethernet FCS. One or two complete idle words follow /T/,
 // providing 12..19 idle bytes (conservative IFG; no deficit-idle counting).

@@ -17,9 +17,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Two Sigma Open Source, LLC
 
-// Candidate blocks already come from the raw gearbox. o_slip consumes one
-// extra bit with the CURRENT candidate. XGMII is qualified by o_xgmii_valid;
-// the raw-domain clock continues through the occasional block-enable pause.
+// 10GBASE-R receive PCS over candidate blocks from eth10g_rx_gearbox: block
+// lock, BER monitor, descrambler, decoder and receive sequencing. o_slip asks
+// the gearbox to consume one extra bit with the current candidate. XGMII is
+// qualified by o_xgmii_valid; the raw-domain clock continues through the
+// occasional block-enable pause. While the PCS is not OK (no signal, no block
+// lock, or high BER), the XGMII output is local-fault ordered sets.
 module eth10g_pcs_rx #(
     parameter int unsigned BER_WINDOW_CYCLES = 20142
 ) (

@@ -110,7 +110,7 @@ cases, then the sequential PC.
 |-----------|------|----------|------------|
 | BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches and JALs | Mispredicted conditional branches and JALs; correctly predicted conditional branches at commit |
 | Return address stack | 8 entries | Returns (`jalr x0, 0(ra)` and `c.jr ra`) and the coroutine swap `jalr t0, 0(ra)` | IF: calls (JAL or JALR writing `ra` or `t0`) push, returns pop, a coroutine swap pops then pushes; recovery restores it |
-| Bimodal direction predictor | 1024 2-bit counters | Direction of conditional branches that miss the BTB | Each conditional branch at commit |
+| Bimodal direction predictor | 1024 2-bit counters | Direction of conditional branches without a taken BTB prediction | Each conditional branch at commit |
 
 JALR never enters the BTB. A JALR that the return address stack does not
 predict goes unpredicted and recovers at commit if it mispredicts. While an
@@ -129,9 +129,10 @@ only if the entry was trained for an instruction of the same size. A JAL that
 misses the BTB mispredicts once; training at commit makes its next execution
 hit.
 
-A conditional branch that misses the BTB can still be predicted taken. IF
-reads the bimodal predictor at the fetch PC and passes the direction, and the
-index it read, along with the branch. If PD finds a slot-1 conditional branch
+A conditional branch without a taken BTB prediction (a miss, or a hit
+predicted not-taken) can still be predicted taken. IF reads the bimodal
+predictor at the fetch PC and passes the direction, and the index it read,
+along with the branch. If PD finds a slot-1 conditional branch
 that nothing has redirected yet and the direction is taken, it computes PC +
 offset and redirects fetch, at a cost of two bubbles. Commit trains the entry
 at the carried index, not at the branch's own PC, because the fetch PC that

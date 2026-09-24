@@ -14,9 +14,11 @@
  *    limitations under the License.
  */
 
-// Test-only primitive truth tables. The separate formal proof uses the pinned
-// toolchain's installed Xilinx model; these models make the cocotb seam portable.
-// Primitive module names are fixed by the production instantiations.
+// Test-only truth-table models of the Xilinx LUT primitives, so the
+// FROST_XILINX_PRIMS build of the data_mem_response_mux cocotb test needs no
+// vendor library. The data_mem_response_mux formal target uses Yosys's Xilinx
+// cell models instead. The module names must match the primitives the RTL
+// instantiates.
 // verilog_lint: waive-start module-filename
 `ifdef FROST_XILINX_PRIMS
 module LUT5 #(
@@ -32,7 +34,7 @@ module LUT5 #(
   assign O = INIT[{I4, I3, I2, I1, I0}];
 endmodule : LUT5
 
-// The actual request router also uses an existing terminal MMIO-accept LUT4.
+// data_mem_request_router also instantiates a LUT4 (its MMIO drain-accept gate).
 module LUT4 #(
     parameter logic [15:0] INIT = '0
 ) (

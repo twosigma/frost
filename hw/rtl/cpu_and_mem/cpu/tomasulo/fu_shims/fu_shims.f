@@ -2,7 +2,7 @@
 # Shims translate rs_issue_t into FU-specific ports, instantiate the FU,
 # and pack the result into fu_complete_t.
 
-# DSP tiled multiplier (shared by ALU multiplier and FPU multiplier)
+# DSP-tiled multiplier core (shared by the integer and FP multipliers)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 
 # RAM primitives used by shim result FIFOs

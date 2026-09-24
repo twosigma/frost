@@ -18,7 +18,8 @@
   Parameterized leading zero counter.
 
   Pure combinational module. Counts leading zeros in i_value,
-  starting from bit [WIDTH-1] down to bit [0].
+  starting from bit [WIDTH-1] down to bit [0]. A zero input sets o_is_zero and
+  gives o_lzc = 0, not WIDTH.
 */
 module fp_lzc #(
     parameter int unsigned WIDTH = 48

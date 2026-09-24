@@ -15,13 +15,17 @@
  */
 
 /*
- * Tracks redirects and suppresses stale BRAM data for the following one or two
- * cycles. Holdoffs insert NOPs, block prediction on stale instructions, and
- * protect C-extension state.
+ * Tracks front-end redirects and marks the cycles whose fetch data is stale.
+ * IF uses these holdoffs to insert NOPs, block prediction on stale
+ * instructions, and protect C-extension state.
  *
- * control_flow_change is combinational; control_flow_holdoff is its registered
- * successor. reset_holdoff covers the first post-reset cycle. any_holdoff
- * includes combinational sources; any_holdoff_safe uses only registered sources.
+ * control_flow_change is combinational (the redirect cycle). control_flow_holdoff
+ * is its registered successor, held through stall and no-progress cycles so it
+ * covers the first window delivered after the redirect, and likewise after a
+ * FENCE-class flush. reset_holdoff covers the first cycle after reset and
+ * extends through stalls, no-progress cycles, and redirects.
+ * any_holdoff includes the combinational source; any_holdoff_safe uses only
+ * registered ones.
  */
 module control_flow_tracker #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -42,11 +46,10 @@ module control_flow_tracker #(
     input logic            i_branch_taken,
     input logic            i_pd_redirect,             // PD predicted-taken BTB-miss redirect
     input logic [XLEN-1:0] i_pd_redirect_target,
-    input logic            i_prediction_used,         // BTB prediction used this cycle
-    // Slot-2 BTB prediction, treated like a 1-cycle-late redirect in the same
-    // way as pd_redirect. BRAM was fetching the sequential next bundle, so
-    // cycle N+2 needs a NOP. It folds into control_flow_change so the
-    // control_flow_holdoff machinery covers slot-2 prediction redirects.
+    input logic            i_prediction_used,         // Slot-1 BTB or RAS prediction used
+    // Slot-2 BTB prediction. Fetch had already requested the next sequential
+    // window, so the window after the redirect is stale; this input joins
+    // control_flow_change so control_flow_holdoff covers that window.
     input logic            i_slot2_prediction_used,
     input logic [XLEN-1:0] i_slot2_predicted_target,
     input logic [XLEN-1:0] i_branch_target,
@@ -121,7 +124,8 @@ module control_flow_tracker #(
   end
 
 `ifdef CONTROL_FLOW_HOLDOFF_LOCAL_PROOF
-  // Original transitions, for arbitrary current bits and simultaneous inputs.
+  // Reference transitions, checked by the control_flow_holdoff formal target
+  // for arbitrary current state and simultaneous inputs.
   always_comb begin
     assert (control_flow_holdoff_next ==
         (!i_reset && (control_flow_change || (control_flow_holdoff_q && fetch_stall))));
@@ -143,8 +147,8 @@ module control_flow_tracker #(
   // ===========================================================================
   // Halfword-Aligned Control Flow Detection
   // ===========================================================================
-  // Detect when control flow targets a halfword-aligned address (PC[1]=1).
-  // This affects C-extension instruction alignment.
+  // Detect when control flow targets a halfword address (PC[1]=1, the upper
+  // half of a word). This affects C-extension instruction alignment.
 
   assign o_control_flow_to_halfword =
     (i_branch_taken && i_branch_target[1]) ||
@@ -154,14 +158,16 @@ module control_flow_tracker #(
     (i_prediction_used && i_predicted_target[1]) ||
     (i_slot2_prediction_used && i_slot2_predicted_target[1]);
 
-  // Complete all four next-state cases before either prediction-used flag
-  // arrives. Slot 1 includes the live BTB tag comparison; slot 2 includes the
-  // emitted-bundle validity cone. Neither late flag should traverse the
-  // target OR and stalled-state hold logic before selecting the next state.
-  // A prediction always redirects, even during a stall, so only the neither-
-  // prediction case can retain the old flag. Simultaneous sources still OR
-  // their target bits; no exclusivity is assumed. Reset is inside every kept
-  // candidate so the final 4:1 mux needs only six inputs.
+  // o_control_flow_to_halfword_r next state:
+  //   !i_reset && (o_control_flow_to_halfword ||
+  //                (o_control_flow_to_halfword_r && fetch_stall && !control_flow_change))
+  // The two prediction-used flags arrive last (slot 1 through the live BTB tag
+  // compare, slot 2 through the emitted-bundle validity cone), so all four
+  // cases of those flags are finished first and the flags only select among
+  // them. A prediction is itself a control-flow change, so only the
+  // no-prediction case can hold the old value. Simultaneous sources OR their
+  // target bits; no exclusivity is assumed. Reset is folded into every kept
+  // case so the final 4:1 mux needs only six inputs.
   logic halfword_without_predictions;
   (* keep = "true" *) logic [3:0] halfword_next_by_prediction;
 

@@ -13,8 +13,8 @@ smtbmc boolector
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D BTB_TAG_COMPARE_LOCAL_PROOF -sv branch_predictor.sv
 bmc_small_btb: chparam -set BTB_INDEX_BITS 4 branch_predictor
-# This is the combinational comparison contract. Cut all RAMs so their
-# outputs are independent arbitrary words, including the canonical tag.
+# The tag compares are combinational. Cut every RAM, the slot-1 tag RAM
+# included, so each read returns an independent arbitrary word.
 delete t:sdp_dist_ram t:sdp_block_ram
 proc
 setundef -undriven -anyseq

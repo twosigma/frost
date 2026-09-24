@@ -20,9 +20,8 @@
  * i_read_clock, so a read costs one cycle. That register is also what makes
  * the array infer block RAM. The array is zeroed at time 0 for simulation.
  *
- * This is storage with no synchronization of its own. dc_fifo is its sole
- * user, and dc_fifo's 2-FF pointer synchronizers are what make the crossing
- * safe.
+ * This is storage with no synchronization of its own. Its users, dc_fifo and
+ * async_fifo, make the crossing safe with their pointer synchronizers.
  */
 module sdp_block_ram_dc #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits

@@ -73,10 +73,10 @@ module eth10g_mac_rx #(
   localparam int unsigned DescriptorSlots = 1 << DescriptorAddrWidth;
   localparam logic [31:0] CrcResidue = 32'hdebb20e3;
 
-  // CRC state after `count` zero bytes. A CRC over a run of bytes is linear in
-  // its seed: crc32(seed, run) = crc32_advance(seed, n) ^ crc32(0, run) for an
-  // n-byte run. Every call below has a constant count, so each result bit is
-  // an XOR of at most 19 seed bits.
+  // CRC state after `count` zero bytes, for count <= 8. A CRC over a run of
+  // bytes is linear in its seed: crc32(seed, run) = crc32_advance(seed, n) ^
+  // crc32(0, run) for an n-byte run. Every call below has a constant count, so
+  // each result bit is an XOR of at most 19 seed bits.
   function automatic logic [31:0] crc32_advance(input logic [31:0] seed, input int unsigned count);
     logic [31:0] value;
     value = seed;
@@ -370,7 +370,7 @@ module eth10g_mac_rx #(
   // word-stage edges before publication, since every accepted frame spans at
   // least eight words. Fetches while nothing is published may collide with
   // writes; the reader does not copy them, and the fetch repeats every clock.
-  // The simulation check at the end of the file holds the argument to its word.
+  // The simulation check at the end of the file reports any violation.
   logic [7:0] memory_write_enable;
   logic [7:0] memory_write_data[8];
   logic [MemoryAddrWidth-1:0] memory_write_address[8];
@@ -535,8 +535,8 @@ module eth10g_mac_rx #(
     end
   end
 
-  // Memory contents are deliberately not reset. The reset descriptor counts
-  // hide stale data and permit inference of FPGA RAM.
+  // Memory contents are not reset, so synthesis can infer FPGA RAM; the reset
+  // descriptor counts hide stale data.
   always_ff @(posedge i_clk) begin
     if (!i_rst && descriptor_write_enable) begin
       packet_length[descriptor_write] <= descriptor_write_length;
@@ -552,15 +552,15 @@ module eth10g_mac_rx #(
   end
 
 `ifndef SYNTHESIS
-  // Read-during-write tripwire for the lane memories. The lanes are simple
+  // Read-during-write check for the lane memories. The lanes are simple
   // dual-port RAMs with no read-during-write guarantee, which is legal only
   // because the reader never copies a word fetched on the edge that wrote it
-  // (see the argument above the lane declarations). Latch a same-edge hit
-  // between the fetch address and any lane write, then complain if the reader
-  // copies the beat that fetch produced. A beat already copied into the output
-  // register is unaffected by later fetches, so a stalled output beat does not
-  // count; a hit while nothing is published is the exempt case, since that
-  // fetch repeats every clock before a packet becomes visible.
+  // (see the argument above the lane declarations). A fetch on the same edge
+  // as a write to its address is recorded, and copying the beat that fetch
+  // produced is an error. A beat already copied into the output register is
+  // unaffected by later fetches, so a stalled output beat does not count; a
+  // collision while nothing is published is harmless, since that fetch
+  // repeats every clock before a packet becomes visible.
   logic fetch_write_collision;
   always_comb begin
     fetch_write_collision = 1'b0;

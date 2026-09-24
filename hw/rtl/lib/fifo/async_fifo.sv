@@ -32,13 +32,13 @@
  * never less, so the FIFO cannot overflow. READY_MARGIN entries are kept
  * free below full for a writer whose valid trails its ready decision.
  *
- * Resets are per side and synchronous in their domain; each side's reset
- * clears its pointer, its synchronizer copies, the write-side read-pointer
- * decode, and (on the read side) the skid and any read in flight, so no old
- * word can reappear. Both sides must be reset for one overlapping window
- * with no traffic, which the
- * NIC's reset controller sequences (a side that leaves reset first sees the
- * other's pointer at zero and its own at zero: empty).
+ * Resets are per side and synchronous in their domain. The write reset clears
+ * the write pointer, the read-pointer synchronizer, and its decode; the read
+ * reset clears the read pointer, the write-pointer synchronizer, the skid,
+ * and any read in flight, so no old word can reappear. Both sides must be
+ * reset for one overlapping window with no traffic, which the NIC's reset
+ * controller sequences (a side that leaves reset first sees both pointers at
+ * zero: empty).
  */
 module async_fifo #(
     parameter int unsigned DATA_WIDTH = 68,

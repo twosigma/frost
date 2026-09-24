@@ -18,15 +18,16 @@
  * Valid/ready FIFO between clocks with a fixed phase relationship, such as
  * MMCM-related main and divided clocks. Binary pointers cross through two-flop
  * synchronizers; storage is dual-clock block RAM. This is not a general
- * asynchronous FIFO: unrelated clocks require Gray-coded pointers.
+ * asynchronous FIFO: unrelated clocks require Gray-coded pointers
+ * (async_fifo).
  *
  * A consumer must not pop in the cycle right after o_valid rose, and must not
- * pop in two consecutive cycles. Either one re-pops the entry just presented
- * and skips its successor. The reason is that the storage read is registered
- * and lags the read pointer by one o_clk cycle, and o_data is loaded from
- * that registered read on the pop edge, so o_data is correct only two o_clk
- * cycles after the pointer last moved. Every consumer here complies: UART
- * byte rate, MMIO reads, and the debug slice writer's paced engine.
+ * pop in two consecutive cycles. Either one presents the same entry again and
+ * skips its successor. The storage read is registered and lags the read
+ * pointer by one o_clk cycle, and a pop loads o_data from that registered
+ * read, so a pop loads the right entry only if the read pointer last moved at
+ * least two o_clk cycles earlier. Every consumer here complies: UART byte
+ * rate, MMIO reads, and the debug slice writer's paced engine.
  */
 module dc_fifo #(
     parameter int unsigned DATA_WIDTH = 8,

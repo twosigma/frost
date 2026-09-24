@@ -24,16 +24,17 @@
  *
  * Credit gate: o_fu_busy is high whenever the unit holds an operation or the
  * result register is occupied, so an operation is only accepted when both are
- * free. That is the whole occupancy model; nothing else can hold state here,
- * so no result can be produced with nowhere to put it.
+ * free, and a finished result always has somewhere to go.
  *
  * Flush: a full flush, or a partial flush whose tag comparison says the
  * operation is younger than the boundary, kills the operation in the unit
  * (i_kill) and clears a held result. A held result the partial flush kills is
  * also suppressed combinationally on the flush cycle, because the clear only
- * lands at the end of it. On the full-flush cycle the head may still be
- * presented; the wrapper's CDB arbiter suppresses the broadcast with i_kill,
- * as the fu_cdb_adapter header describes.
+ * lands at the end of it. On the full-flush cycle the held result may still
+ * be presented, and the adapter must discard it. The wrapper feeds this shim
+ * a flush registered one cycle late, so the FP_DIV adapter never passes a
+ * result straight through and holds its full flush one extra cycle (fu_shims
+ * README, "Flushes").
  */
 module fp_div_shim (
     input logic i_clk,
@@ -273,8 +274,8 @@ module fp_div_shim (
 `ifndef FORMAL
   // An issue the shim cannot take would be lost: the RS retires its entry on
   // the issue cycle. The wrapper's registered FDIV ready gate rules this out
-  // (it requires an idle shim on the previous cycle and no issue in between),
-  // so a hit here is a real hazard, not a back-pressure event.
+  // (it requires an idle shim and no issue on the previous cycle), so a hit
+  // here is a real hazard, not a back-pressure event.
   always @(posedge i_clk) begin
     if (i_rst_n && i_rs_issue.valid && (use_div || use_sqrt) && div_busy) begin
       $error("fp_div_shim: issue of tag %0d dropped while busy", i_rs_issue.rob_tag);
@@ -339,11 +340,11 @@ module fp_div_shim (
   // Flushed-tag discipline: once a flush squashes an in-flight op, its tag does
   // not appear on o_fu_complete again until a new op fires with the same tag
   // value. That new fire means the ROB entry was reallocated and re-dispatched
-  // here, so the tag stands for live work again. This is the producer-side
-  // contract the ROB and RS rely on to rule out tag-ABA corruption from stale
-  // deliveries landing >=2 cycles after reallocation (see the drain-window
-  // section of reorder_buffer.sv). The proof tracks one arbitrary (anyconst)
-  // tag through the unit and the result register.
+  // here, so the tag stands for live work again. The ROB and RS rely on every
+  // producer following this rule, because they cannot tell a late result for
+  // a squashed op from the result of a reallocated tag (tomasulo README, "CDB
+  // priority and tag reuse"). The proof tracks one arbitrary (anyconst) tag
+  // through the unit and the result register.
   // ---------------------------------------------------------------------------
   (* anyconst *) logic [TagW-1:0] f_watch_tag;
 
@@ -380,16 +381,15 @@ module fp_div_shim (
 
   // Same cycle: the live kill term (res_partial_flushing) suppresses a
   // partially-flushed result. The full-flush squash cycle is exempt at this
-  // boundary. The shim may present the result that cycle, and the wrapper's CDB
-  // arbiter suppresses the broadcast with i_kill. Full-flush CDB suppression is
-  // centralized at the arbiter, as the fu_cdb_adapter header describes.
+  // boundary: the shim may present the result that cycle, and the adapter
+  // must discard it (see the module header).
   always_comb begin
     if (i_rst_n && !i_flush && f_watch_squashed_now && o_fu_complete.valid) begin
       p_no_complete_on_squash_cycle : assert (o_fu_complete.tag != f_watch_tag);
     end
   end
 
-  // Post-squash: the dead incarnation must never complete (until tag reuse).
+  // After the squash, the squashed op must never complete (until tag reuse).
   always_comb begin
     if (i_rst_n && f_watch_dead_q && !f_watch_fire && o_fu_complete.valid) begin
       p_no_stale_complete : assert (o_fu_complete.tag != f_watch_tag);

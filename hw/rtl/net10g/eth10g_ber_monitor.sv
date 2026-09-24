@@ -17,8 +17,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Two Sigma Open Source, LLC
 
-// Default observation window is 125 us at the raw 161.1328125 MHz clock.
-// Timer advances on EVERY clock, irrespective of block-valid pauses.
+// Clause 49 BER monitor. 16 invalid sync headers within one observation window
+// raise o_high_ber, which clears at the end of a window with fewer. The window is
+// WINDOW_CYCLES clocks (20142 by default, about 125 us at the raw 161.1328125 MHz
+// clock), and the timer advances on every clock, including block-valid pauses.
+// The monitor is held in reset while block lock is absent.
 module eth10g_ber_monitor #(
     parameter int unsigned WINDOW_CYCLES = 20142
 ) (

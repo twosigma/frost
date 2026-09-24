@@ -17,8 +17,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Two Sigma Open Source, LLC
 
-// One elastic pipeline stage. XGMII and scrambler state advance together.
-// The caller must supply idles when no packet is available.
+// 10GBASE-R transmit PCS: the encoder and scrambler as one elastic pipeline
+// stage. There is no input valid: every clock with o_xgmii_ready high consumes
+// an XGMII word and advances the scrambler, so the caller must supply idles
+// when no packet is available.
 module eth10g_pcs_tx (
     input logic i_clk,
     input logic i_rst,

@@ -15,35 +15,21 @@
  */
 
 /*
- * Direct-mapped BTB with two-bit saturating counters. Default geometry:
- *   - 256 entries indexed by PC[9:2] (8 bits). Sized up from 128 because
- *     CoreMark's branch working set overflows 128 entries. The extra capacity
- *     raises BTB hit rate and cuts front-end redirect bubbles, the dominant
- *     measured branch cost, without changing the prediction policy.
- *   - Each entry: valid (1) + tag (55 bits in RV64) + target-low (32) +
- *     counter (2) + compressed (1) + requires_pc_reg_handoff (1). A valid
- *     entry's target is in the branch PC's 4-GiB region, so lookup restores
- *     the target's upper bits from the matching PC rather than zero-extending.
- *   - Tag includes PC[1] to distinguish halfword-aligned addresses (C extension)
- *   - Counter encoding:
- *       00 = Strongly Not-Taken, 01 = Weakly Not-Taken
- *       10 = Weakly Taken,       11 = Strongly Taken
- * Slot-1 lookup is combinational. Slot-2 launches one synchronous payload
- * block-RAM read per shifted image from the current fetch request, then
- * qualifies the registered rows for the served instruction one cycle later.
- * Tags use the same response boundary and are staged from single-address
- * distributed-RAM copies, keeping their wide comparisons off the block-RAM
- * clock-to-output path. A rotated copy of the +2 image covers the adjacent-word
- * case without an A+1 read-address network. EX updates tag, target, and the
- * saturated counter synchronously. A hit predicts taken when counter[1] is set.
+ * Direct-mapped BTB with 2-bit saturating counters: 256 entries by default,
+ * indexed by PC[9:2]. Tags include PC[1], so a lookup at one halfword of a
+ * word never hits an entry trained for the other. A hit predicts taken when
+ * counter[1] is set.
  *
- * Parallel update timing:
- *   - Early-recovery and lower-priority counter RMW candidates are calculated
- *     in parallel from independent canonical update-read RAM replicas. Neither
- *     read address depends on early_active. Both replicas receive every
- *     selected write; early_active selects only the final counter value.
- *   - A lookup of the updated PC sees the old entry before the write edge and
- *     the new entry after it, including on back-to-back same-index updates.
+ * An entry stores the target's low 32 bits and is valid only if the branch and
+ * its target share a 4-GiB region; a hit takes the upper bits from the lookup
+ * PC (hw/rtl/cpu_and_mem/cpu/README.md, "4 GiB target limit").
+ *
+ * Slot 1 reads combinationally at the fetch PC. Slot 2 reads three shifted
+ * images (+2, +4, and a +2 copy rotated by one index for the next word) at the
+ * fetch PC and checks the registered rows against the served pc_reg one cycle
+ * later. Updates write synchronously: a lookup sees the old entry before the
+ * write edge and the new entry after it, including on back-to-back updates to
+ * one index.
  */
 module branch_predictor #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -61,23 +47,24 @@ module branch_predictor #(
     // Predicted op must still execute in IF/PD/ID
     output logic            o_btb_requires_pc_reg_handoff,
 
-    // Slot-2 prediction interface. Separate shifted replicas hold the
-    // current-base+2 and current-base+4 entries under predecessor keys. The
-    // live fetch PC launches the synchronous row reads one cycle ahead; the
-    // served pc_reg base then selects and re-tags the registered response.
-    // A rotated +2 replica covers an adjacent word without a second read port.
+    // Slot-2 prediction interface. The shifted images store each branch under
+    // the PC 2 or 4 bytes before it, so a lookup at base pc_reg finds a slot 2
+    // at pc_reg+2 or pc_reg+4. The live fetch PC (i_pc_2_lookup_base) launches
+    // the synchronous row reads one cycle ahead; the served base (i_pc_2_base)
+    // then selects a registered row and checks its tag. The rotated +2 image
+    // covers a base in the next word without a second read address.
     input  logic [XLEN-1:0] i_pc_2_lookup_base,
     input  logic [XLEN-1:0] i_pc_2_base,
     input  logic            i_pc_2_use_alt,
-    // Fixed-candidate direction/size results.  The controller qualifies and
-    // valid-gates these in parallel, then ORs the one-hot one-bit results.
+    // Per-candidate taken and size results. The controller qualifies and
+    // valid-gates each in parallel, then ORs the one-hot one-bit results.
     output logic            o_predicted_taken_2_plus2,
     output logic            o_predicted_taken_2_plus4,
     output logic            o_btb_compressed_2_plus2,
     output logic            o_btb_compressed_2_plus4,
-    // Legacy selected bundle.  Target and metadata retain the same selector
-    // identity while the timing-critical safety/taken decision uses the fixed
-    // outputs above.
+    // Per-candidate hits, then the candidate i_pc_2_use_alt selects (+4 when
+    // set, else +2). The controller's timing-critical taken decision uses the
+    // per-candidate outputs above instead of the selected ones.
     output logic            o_btb_hit_2_plus2,
     output logic            o_btb_hit_2_plus4,
     output logic            o_btb_hit_2,
@@ -86,7 +73,7 @@ module branch_predictor #(
     output logic            o_btb_compressed_2,
     output logic            o_btb_requires_pc_reg_handoff_2,
 
-    // Update interface (from EX stage)
+    // Update interface: at most one selected training write per cycle
     input logic            i_update,                         // Update BTB entry
     input logic [XLEN-1:0] i_update_pc,                      // PC of branch instruction
     input logic [XLEN-1:0] i_update_target,                  // Actual branch target
@@ -94,16 +81,17 @@ module branch_predictor #(
     input logic            i_update_compressed,              // Branch was compressed (16-bit)
     input logic            i_update_requires_pc_reg_handoff,
 
-    // Direct early-recovery RMW candidate. When active, the selected update
-    // transaction above carries this same PC and outcome. The separate
-    // sideband keeps the early candidate's LUTRAM address independent of the
-    // higher-level early/late update-priority mux.
+    // Early-recovery counter RMW candidate. When active, the selected update
+    // above carries this same PC and outcome. This separate input keeps the
+    // early candidate's LUTRAM read address independent of the upstream
+    // early/late update-priority mux.
     input logic            i_early_update_active,
     input logic [XLEN-1:0] i_early_update_pc,
     input logic            i_early_update_taken,
 
-    // Lower-priority RMW candidate, formed without an early-active dependency.
-    // The selected update interface above remains the sole source of writes.
+    // Late (lower-priority) counter RMW candidate, formed without depending on
+    // early-active. An update with no early candidate carries this PC and
+    // outcome. All writes come from the selected update interface above.
     input logic [XLEN-1:0] i_late_update_pc,
     input logic            i_late_update_taken
 );
@@ -135,9 +123,9 @@ module branch_predictor #(
   // Keep valid bits in FFs so reset can clear them. Slot-1 payload stays in
   // LUTRAM; the staged slot-2 payloads use block RAM.
   logic btb_valid[BtbEntries];
-  // Each shifted slot-2 replica keeps validity under its physical key. The
-  // rotated copy duplicates these 256 resettable bits so the live fetch PC
-  // never addresses a second FF-array mux through A+1.
+  // Each slot-2 image has its own valid bits, indexed like its RAM. The
+  // rotated image's copy lets the live fetch PC read all three at one index,
+  // with no A+1 read into a second FF array.
   logic btb_valid_2[BtbEntries];
   logic btb_valid_2_alt[BtbEntries];
   logic btb_valid_2_rot[BtbEntries];
@@ -168,17 +156,16 @@ module branch_predictor #(
   (* keep = "true" *) logic [1:0] early_next_counter;
   (* keep = "true" *) logic [1:0] late_next_counter;
 
-  // Slot-1 index is PC[9:2], selecting one of the 256 entries. The tag is
-  // PC[63:10] with PC[1] appended, so halfword addresses do not alias.
+  // Slot-1 lookup index and tag
   wire [BTB_INDEX_BITS-1:0] lookup_index = i_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] lookup_tag = {i_pc[XLEN-1:BTB_INDEX_BITS+2], i_pc[1]};
 
-  // Normal one-cycle fetch service gives the live address one cycle of lead
-  // over the served pc_reg. A repeated slow response can collapse that lead;
-  // IF then supplies the served address as this live lookup base. All three
-  // slot-2 images read the resulting word index. The rotated +2 image moves
-  // its address rotation to the update side, avoiding an A+1 address/decode
-  // network on the live fetch PC.
+  // Slot-2 read index. The live fetch PC normally leads the served pc_reg by
+  // one cycle; when a slow response collapses that lead, the live PC is the
+  // served address itself. All three images read this one word index. The
+  // rotated +2 image applies its rotation on the write side, so no read address
+  // needs an A+1 adder; slot2_lookup_index_next only feeds the registered
+  // next-index coverage check.
   wire [BTB_INDEX_BITS-1:0] slot2_lookup_index = i_pc_2_lookup_base[BTB_INDEX_BITS+1:2];
   wire [BTB_INDEX_BITS-1:0] slot2_lookup_index_next = slot2_lookup_index + BTB_INDEX_BITS'(1);
   wire [BTB_INDEX_BITS-1:0] lookup_index_2 = i_pc_2_base[BTB_INDEX_BITS+1:2];
@@ -190,9 +177,9 @@ module branch_predictor #(
   wire [BTB_INDEX_BITS-1:0] update_index = i_update_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag = {i_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_update_pc[1]};
 
-  // The early candidate is addressed directly by the captured early-recovery
-  // PC.  It must not be derived from the selected update PC: doing so would
-  // reconstruct the original early_active -> priority mux -> LUTRAM RMW path.
+  // The early candidate is addressed directly by i_early_update_pc. Deriving
+  // it from the selected update PC would put the early_active priority mux in
+  // front of the LUTRAM read address.
   wire [BTB_INDEX_BITS-1:0] early_update_index = i_early_update_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] early_update_tag = {
     i_early_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_early_update_pc[1]
@@ -203,9 +190,9 @@ module branch_predictor #(
     i_late_update_pc[XLEN-1:BTB_INDEX_BITS+2], i_late_update_pc[1]
   };
 
-  // Replicate every update at the predecessor keys used by each slot-2
-  // candidate.  These subtractors are update-side only and are not part of the
-  // fetch-PC recurrence.
+  // Every update is also written to the slot-2 images, keyed by the branch PC
+  // minus 2 (T2) and minus 4 (T4). These subtractors are on the update side
+  // only, off the fetch-PC recurrence.
   wire [XLEN-1:0] update_pc_2_key = i_update_pc - XLEN'(2);
   wire [BTB_INDEX_BITS-1:0] update_index_2 = update_pc_2_key[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] update_tag_2 = {update_pc_2_key[XLEN-1:BTB_INDEX_BITS+2], update_pc_2_key[1]};
@@ -214,12 +201,14 @@ module branch_predictor #(
   wire [TagBits-1:0] update_tag_2_alt = {
     update_pc_2_alt_key[XLEN-1:BTB_INDEX_BITS+2], update_pc_2_alt_key[1]
   };
-  // Rotating every +2 predecessor index by one is a bijection, so this copy
-  // retains the authoritative +2 table's exact collision history. Store the
-  // unrotated +2 tag so the response compares directly with i_pc_2_base.
+  // RT2 writes each T2 row one index lower. The shift is a bijection, so
+  // RT2[i-1] always equals T2[i]. RT2 keeps the unshifted T2 tag so its
+  // response compares directly with i_pc_2_base.
   wire [BTB_INDEX_BITS-1:0] update_index_2_rot = update_index_2 - BTB_INDEX_BITS'(1);
 
-  // Canonical tag RAMs for slot-1 lookup and the two update-read candidates.
+  // Tag RAM copies, all written by every update: one read by the slot-1
+  // lookup, one by the late update candidate, and one (below) by the early
+  // candidate.
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(TagBits)
@@ -244,9 +233,9 @@ module branch_predictor #(
       .o_read_data(btb_tag_update_late)
   );
 
-  // Canonical early-update state replica. dont_touch stays confined to the two
-  // early-update RMW RAMs: without it, synthesis may merge the identical write
-  // state and reconstruct a single selected-PC read address.
+  // Early-candidate copy. dont_touch is on the two early-candidate RAMs only:
+  // without it, synthesis may merge the identical copies and reconstruct a
+  // single selected-PC read address.
   (* dont_touch = "yes" *)
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
@@ -260,17 +249,15 @@ module branch_predictor #(
       .o_read_data(btb_tag_update_early)
   );
 
-  // Keep target storage at the measured 32-bit FPGA geometry without turning
-  // high-canonical Sv39 targets into low, zero-extended addresses. A BTB row
-  // is target-valid only when the resolved target and branch PC occupy the
-  // same 4-GiB region. On a hit, the exact matching lookup PC restores those
-  // upper bits. Cross-region control flow still updates the RMW state below
-  // but leaves the target row invalid, so the next lookup takes a harmless
-  // miss. The controller's separate direction predictor keeps its independent
-  // commit-time training; only target-valid BTB allocation is suppressed.
-  // A direct branch meets the region check except at a 4-GiB boundary, so an
-  // arbitrary cross-region JALR costs prediction coverage. Correctness holds,
-  // and the three slot-2 block RAMs stay narrow.
+  // Targets are stored as their low 32 bits, which keeps the three slot-2
+  // block RAMs narrow. So that high-canonical Sv39 targets do not become low,
+  // zero-extended addresses, a row is valid only when the target and the
+  // branch PC share a 4-GiB region, and a hit restores the upper bits from the
+  // matching lookup PC. A cross-region update still writes the RAMs but clears
+  // the row's valid bit, so the next lookup misses; the direction predictor
+  // trains separately and is unaffected. Conditional branches and JALs, the
+  // only instructions that train the BTB, cross a region only near a 4-GiB
+  // boundary.
   wire update_target_region_predictable =
       i_update_target[XLEN-1:TargetBits] == i_update_pc[XLEN-1:TargetBits];
   wire [TargetBits-1:0] update_target_stored = i_update_target[TargetBits-1:0];
@@ -285,14 +272,12 @@ module branch_predictor #(
   wire update_slot2_plus4_target_valid =
       update_target_region_predictable && update_slot2_plus4_key_same_region;
 
-  // Store each shifted slot-2 image in separate tag and payload memories. Each
-  // exact 55-bit tag uses a single-address distributed RAM plus a response FF,
-  // keeping all wide comparisons off block-RAM clock-to-output paths. Each
-  // 36-bit payload fits one RAMB18. It stores the target's low 32-bit image;
-  // a valid row restores the branch region above it, preserving high-canonical
-  // virtual targets without widening the RAM.
-  // T2 handles same-word +2 candidates, T4 handles +4 candidates, and RT2 is
-  // a one-index rotation of T2 for adjacent-word +2.
+  // Each slot-2 image keeps its tag and payload in separate memories. The
+  // 55-bit tag is a distributed RAM read at one address plus a response
+  // register, keeping the wide comparisons off block-RAM clock-to-output
+  // paths. The 36-bit payload (the target's low 32 bits, counter, compressed,
+  // and handoff flags) fits one RAMB18. T2 and T4 cover a served base in the
+  // word that was read; RT2 covers the +2 candidate of a base in the next word.
   slot2_payload_t slot2_payload_write;
   assign slot2_payload_write = {
     update_target_stored, next_counter, i_update_compressed, i_update_requires_pc_reg_handoff
@@ -386,7 +371,8 @@ module branch_predictor #(
       .o_read_data(btb_target_lookup)
   );
 
-  // Canonical counter RAMs for slot-1 lookup and update reads.
+  // Counter RAM copies for the slot-1 lookup and the late and early update
+  // reads.
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(2)
@@ -424,7 +410,7 @@ module branch_predictor #(
       .o_read_data(btb_counter_update_early)
   );
 
-  // Canonical compressed/handoff RAMs for slot-1 lookup.
+  // Compressed and handoff flags for the slot-1 lookup.
   logic btb_compressed_lookup;
   logic btb_requires_pc_reg_handoff_lookup;
   sdp_dist_ram #(
@@ -457,12 +443,10 @@ module branch_predictor #(
   wire [XLEN-1:0] lookup_target = {i_pc[XLEN-1:TargetBits], btb_target_lookup};
   wire [1:0] lookup_counter = btb_counter_lookup;
 
-  // Compare the complete architectural tag in parallel groups before the
-  // final reduction. Preserve these boundaries so the async lookup does not
-  // feed a single long carry-chain equality. Fourteen-bit groups make four
-  // partial matches at the default 55-bit tag width, leaving LUT6 inputs for
-  // the valid and taken bits. No tag bits or lookup cycles are removed,
-  // including the halfword discriminator in bit zero.
+  // Compare the full tag in 14-bit groups and keep the partial matches, so the
+  // async lookup does not feed one long carry-chain equality. The default
+  // 55-bit tag gives four groups, leaving LUT6 inputs for the valid and taken
+  // bits.
   localparam int unsigned TagCompareChunkBits = 14;
   localparam int unsigned TagCompareChunks =
       (TagBits + TagCompareChunkBits - 1) / TagCompareChunkBits;
@@ -477,9 +461,9 @@ module branch_predictor #(
   assign o_btb_hit = lookup_valid && (&lookup_tag_equal_chunks);
 
 `ifdef BTB_TAG_COMPARE_LOCAL_PROOF
-  // The local formal target makes the RAM outputs arbitrary. This proves the
-  // actual comparison against the original full-width expression without a
-  // reset, valid-bit, reachable-address, or table-content assumption.
+  // The btb_tag_compare formal target makes the RAM outputs arbitrary and
+  // proves the grouped comparison equals the full-width reference, with no
+  // assumption about reset, valid bits, reachable addresses, or table contents.
   always_comb begin
     p_lookup_tag_comparison_exact :
     assert ((&lookup_tag_equal_chunks) == (lookup_tag_stored == lookup_tag));
@@ -491,12 +475,14 @@ module branch_predictor #(
   assign o_btb_compressed = o_btb_hit && btb_compressed_lookup;
   assign o_btb_requires_pc_reg_handoff = o_btb_hit && btb_requires_pc_reg_handoff_lookup;
 
-  // The block RAMs are read-first, and the distributed-RAM tag FFs sample their
-  // pre-write values at the edge, so register the current write payload and
-  // per-image collision flags alongside the returned rows. T2 and RT2 share a
-  // payload because the rotated copy stores the authoritative T2 tag. Forwarding
-  // the complete row preserves the former asynchronous post-edge view even for
-  // a different-tag eviction.
+  // Slot-2 response registers. The block RAMs are read-first and the tag
+  // registers sample the distributed RAMs before the write edge, so a write to
+  // the row being read would be missed. Register the write's tag, payload, and
+  // per-image collision flags beside the returned rows and forward the whole
+  // row, so the response shows the post-write contents even when the write
+  // evicts a different tag. All images write the same payload, so one
+  // forwarded payload serves all three; RT2 stores the T2 tag, so T2 and RT2
+  // share a forwarded tag.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       slot2_tag_2_raw           <= '0;
@@ -550,10 +536,10 @@ module branch_predictor #(
   assign slot2_payload_2_rot =
       slot2_forward_2_rot_q ? slot2_payload_forward_q : slot2_payload_2_rot_raw;
 
-  // T2 serves a current base in the early request's word. RT2 serves the next
-  // word, with its write address rotated so the stored tag remains the current
-  // base's authoritative T2 tag. T4 is needed only for the same-word case.
-  // Full tags reject aliases; any uncovered relationship is a benign BTB miss.
+  // Pick the rows for the served base: T2 and T4 when its index is the one
+  // that was read, RT2 (+2 only) when its index is the next one; any other
+  // served base misses. Comparing indices is enough because a row depends
+  // only on its index, and the full tag rejects aliases.
   slot2_payload_t lookup_payload_2, lookup_payload_2_alt;
   logic slot2_stage_base_index_covered;
   logic slot2_stage_next_index_covered;
@@ -580,9 +566,9 @@ module branch_predictor #(
     end
   end
 
-  // As for slot 1, retain parallel partial equalities so a wide comparison
-  // cannot become a long carry chain on the served-PC -> prediction loop.
-  // Compare all raw/forwarded images independently before the existing muxes.
+  // As for slot 1, keep grouped partial matches so no wide comparison becomes a
+  // long carry chain on the served-PC -> prediction loop. Each raw and forwarded
+  // tag is compared separately, ahead of the forwarding muxes.
   (* keep = "true" *) logic [4:0][TagCompareChunks-1:0] slot2_tag_equal_chunks;
   for (genvar chunk = 0; chunk < TagCompareChunks; chunk++) begin : gen_slot2_tag_compare
     localparam int unsigned FirstBit = chunk * TagCompareChunkBits;
@@ -635,9 +621,9 @@ module branch_predictor #(
   assign o_btb_hit_2 = selected_btb_hit_2;
   assign o_predicted_taken_2 = i_pc_2_use_alt ?
       o_predicted_taken_2_plus4 : o_predicted_taken_2_plus2;
-  // Every valid shifted row was allocated only when its predecessor key,
-  // branch PC, and resolved target shared this upper region. Reattaching the
-  // served predecessor's upper bits is therefore exact for both candidates.
+  // A valid slot-2 row was written only when its key, the branch PC, and the
+  // target share one 4-GiB region, so i_pc_2_base supplies the exact upper
+  // bits for either candidate.
   assign o_predicted_target_2 = {
     i_pc_2_base[XLEN-1:TargetBits],
     i_pc_2_use_alt ? lookup_payload_2_alt.target : lookup_payload_2.target
@@ -648,9 +634,9 @@ module branch_predictor #(
       (i_pc_2_use_alt ? lookup_payload_2_alt.requires_pc_reg_handoff :
                         lookup_payload_2.requires_pc_reg_handoff);
 
-  // Calculate the early candidate directly from the captured early PC/outcome.
-  // The early canonical replica receives every actual selected write, not only
-  // early writes, so it stays cycle-for-cycle equal to the late canonical RAM.
+  // Early candidate, from the early PC and outcome. Its RAM copies take every
+  // selected write, not only early ones, so they always hold the same state as
+  // the late copies.
   wire early_tag_matches =
       btb_valid[early_update_index] && (btb_tag_update_early == early_update_tag);
   always_comb begin
@@ -665,9 +651,9 @@ module branch_predictor #(
     end
   end
 
-  // Calculate the lower-priority candidate from a PC/outcome selector whose
-  // fan-in excludes early_update_active.  The canonical replica still receives
-  // every actual selected write, including early writes.
+  // Late candidate, from a PC and outcome that do not depend on
+  // i_early_update_active. Its RAM copies also take every selected write,
+  // including early ones.
   wire late_tag_matches = btb_valid[late_update_index] && (btb_tag_update_late == late_update_tag);
   always_comb begin
     if (!late_tag_matches) begin
@@ -708,10 +694,9 @@ module branch_predictor #(
     end
   end
 
-  // These assertions check that the externally selected slot-2 bundle matches,
-  // bit for bit, the +2/+4 candidate i_pc_2_use_alt picks. Safety/taken and
-  // candidate-valid qualification happen ahead of this selector, in
-  // branch_prediction_controller.
+  // Check that the selected slot-2 bundle equals, bit for bit, the +2 or +4
+  // candidate that i_pc_2_use_alt picks. branch_prediction_controller does the
+  // safety and candidate-valid qualification on the per-candidate outputs.
   always_comb begin
     if (!$isunknown(
             {
@@ -743,9 +728,10 @@ module branch_predictor #(
     end
   end
 
-  // An independent model of the update state checks both the physical replica
-  // invariant and the selected update's exact counter semantics. The reference
-  // counter comes from its own saturating calculation, never from next_counter.
+  // A reference model of the tag and counter state checks that the early and
+  // late RAM copies both match it, and that next_counter follows the
+  // saturating-counter rule. The model computes its own next counter and never
+  // reads next_counter.
   logic reference_update_valid[BtbEntries];
   logic [TagBits-1:0] reference_update_tag[BtbEntries];
   logic [1:0] reference_update_counter[BtbEntries];
@@ -827,10 +813,9 @@ module branch_predictor #(
     end
   end
 
-  // Independent reference models for the three shifted slot-2 images. RT2
-  // uses the rotated physical address but stores the authoritative T2 tag.
-  // These checks cover replacement topology, synchronous capture, and the
-  // read-first write forwarding.
+  // Reference models of the three slot-2 images (RT2 at the rotated index,
+  // with the T2 tag). The checks cover which rows each update replaces, the
+  // registered capture, and the forwarding around the read-first RAMs.
   typedef struct packed {
     logic [TagBits-1:0] tag;
     slot2_payload_t     payload;

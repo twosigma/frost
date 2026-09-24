@@ -16,8 +16,10 @@
 
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbkb, Zicsr,
-  and M/S/U-mode privileged instructions. Outputs select the operation, branch
-  condition, and store size.
+  and M/S/U-mode privileged instructions. Compressed instructions arrive
+  already expanded. Outputs select the operation, branch condition, and store
+  size; o_illegal flags any encoding not decoded here, including reserved FP
+  rounding modes.
  */
 module instr_decoder (
     input  riscv_pkg::instr_t    i_instr,
@@ -307,17 +309,16 @@ module instr_decoder (
         endcase
       end
 
-      // Memory ordering instructions (Zifencei extension)
-      // FENCE.I is architecturally visible: the decoder emits FENCE_I here, and at
-      // commit it flushes the front end and Tomasulo state, requests the cache-
-      // hierarchy sync (L1D writeback-all + L1I invalidate-all), invalidates the
-      // fetch_provider buffer (i_invalidate), and redirects the PC to the
+      // Memory ordering: FENCE and FENCE.I (Zifencei). At commit, FENCE.I has
+      // the ROB request the cache-hierarchy sync (L1D writeback-all + L1I
+      // invalidate-all); its full flush then clears the front end, the Tomasulo
+      // state, and the fetch_provider buffer (i_invalidate), and redirects to the
       // fall-through address.
       riscv_pkg::OPC_MISC_MEM:
       unique case (i_instr.funct3)
         3'b000:
-        // PAUSE is encoded as FENCE with pred=W (0001), succ=0, all other fields 0
-        // Full encoding: 0x0100000F, funct7=0b0000001
+        // PAUSE is FENCE with pred=W (0001), succ=0, and all other fields 0:
+        // 0x0100000F.
         if (i_instr.funct7 == 7'b0000001 && i_instr.source_reg_2 == 5'b0 &&
             i_instr.source_reg_1 == 5'b0 && i_instr.dest_reg == 5'b0)
           o_instr_op = riscv_pkg::PAUSE;  // Zihintpause: hint to pause
@@ -331,9 +332,9 @@ module instr_decoder (
       riscv_pkg::OPC_CSR:
       unique case (i_instr.funct3)
         3'b000:  // PRIV - privileged system instructions
-        // SFENCE.VMA (funct7 0x09) encodes live rs1/rs2 selectors, so it is
-        // matched on funct7 alone. FROST ignores the operands, since flush-all
-        // is a legal implementation of every filtered form (plan D8).
+        // SFENCE.VMA (funct7 0x09) uses rs1 and rs2 as its address and ASID
+        // filters, so it is matched on funct7 alone. FROST ignores the filters:
+        // flushing everything is a legal implementation of every form.
         if (i_instr.funct7 == 7'b0001001)
           o_instr_op = riscv_pkg::SFENCE_VMA;
         else
@@ -419,7 +420,7 @@ module instr_decoder (
         o_store_op = riscv_pkg::STW;  // 32-bit store
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FSD;
-        o_store_op = riscv_pkg::STN;  // Handled by FP64 store unit
+        o_store_op = riscv_pkg::STN;  // Dispatch sizes stores from the operation
       end else o_illegal = 1'b1;
 
       // Fused multiply-add variants (R4-type format)
@@ -619,8 +620,8 @@ module instr_decoder (
           7'b0001000, 7'b0001001,  // FMUL.S/D
           7'b0001100, 7'b0001101,  // FDIV.S/D
           7'b0101100, 7'b0101101,  // FSQRT.S/D
-          7'b1100000, 7'b1100001,  // FCVT.W[U].S/D
-          7'b1101000, 7'b1101001,  // FCVT.S/D.W[U]
+          7'b1100000, 7'b1100001,  // FCVT.{W,WU,L,LU}.S/D
+          7'b1101000, 7'b1101001,  // FCVT.S/D.{W,WU,L,LU}
           7'b0100000, 7'b0100001:  // FCVT.S.D / FCVT.D.S
           o_illegal = 1'b1;
           default: ;  // Other OPC_OP_FP ops use funct3 for sub-op, already checked

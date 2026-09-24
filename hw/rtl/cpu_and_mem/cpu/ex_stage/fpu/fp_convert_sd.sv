@@ -21,8 +21,8 @@
     FCVT.S.D: Convert double to single (rounded per rounding mode)
     FCVT.D.S: Convert single to double (exact)
 
-  Latency:
-    5-cycle (register inputs, pipeline conversion, output) to ease timing.
+  Latency: 5 cycles from i_valid to o_valid, one operation at a time. The
+  conversion is split over registered stages to ease timing.
 */
 module fp_convert_sd #(
     parameter int unsigned FP_WIDTH = 64
@@ -65,7 +65,8 @@ module fp_convert_sd #(
   logic                                sticky_work_s2a;
   logic signed          [         9:0] exp_work_s2a;
 
-  // Stage 3 pipeline registers (post-rounder)
+  // Stage 3 registers (rounder outputs), then stage 2 registers (D->S sign and
+  // special cases, S->D result fields and special cases)
   logic                 [        31:0] round_result_s2;
   riscv_pkg::fp_flags_t                round_flags_s2;
   logic                                sign_d_s2;
@@ -129,9 +130,9 @@ module fp_convert_sd #(
 
   // Normalize the double's mantissa.
   // TIMING: the LZC, the subnormal flag and the normal-case biased exponent are
-  // computed from i_operand_d and registered at capture (IDLE branch of the data
-  // block), so stage 1 starts from the registered LZC. Computing it from op_d_reg
-  // here put the LZC on the critical path to sticky_s.
+  // computed from i_operand_d and registered at capture (the i_valid branch of
+  // the data block), so stage 1 starts from the registered LZC and the LZC stays
+  // off the stage-1 path to sticky_s.
   logic        [52:0] mant_norm_d;
   logic signed [12:0] exp_unbiased_d;
   logic        [ 5:0] lzc_d;
@@ -510,8 +511,8 @@ module fp_convert_sd #(
       op_d_reg <= i_operand_d;
       op_reg <= i_operation;
       rm_reg <= i_rounding_mode;
-      // Registered from i_operand_d rather than derived from op_d_reg next cycle,
-      // which put the LZC on the critical path to sticky_s (see the D->S block)
+      // Registered from i_operand_d so the LZC stays off the stage-1 path to
+      // sticky_s (see the TIMING note at the D->S normalize)
       frac_d_reg <= i_operand_d[51:0];
       d_is_subnormal_reg <= (i_operand_d[62:52] == 11'b0) && (i_operand_d[51:0] != 52'b0);
       exp_s_biased_normal <= $signed({2'b0, i_operand_d[62:52]}) - 13'sd1023 + 13'sd127;

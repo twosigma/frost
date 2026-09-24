@@ -55,9 +55,9 @@ response: valid  id[ID_BITS]  rdata[256]
   without fetching the line, the usual case for an eviction from the level
   above.
 - `maintenance` exists on cache and arbiter ports, not on the hierarchy's
-  upstream ports or the bridge. It marks `fence.i` writeback traffic so that
-  lower levels leave it out of their performance counters. It never changes
-  how a request is handled.
+  upstream ports or the bridge. It marks `fence.i` writeback traffic, which
+  lower levels leave out of every performance event except the two stall
+  classes. It never changes how a request is handled.
 
 Masters do use this freedom: the arbiters re-select among their ports every
 cycle, and the walker withdraws a read when its walk is discarded. A new slave
@@ -145,9 +145,9 @@ Each probe holds a probe slot from its decision until the requester releases
 it, after the level below has ordered the requester's own access. While a
 PROBE_INVAL slot is held, the cache issues no fill of that line. A miss that
 follows the invalidation waits in its miss slot and fetches the line after
-the release, instead of fetching the old data again. A fill of the line that
-was already in flight at the probe's decision is never withheld: the probe
-waits for it and invalidates what it installs.
+the release, instead of fetching the old data again. A fill of the line
+allocated before the probe's decision is never withheld: the probe waits for
+it and invalidates what it installs.
 
 Pending probe acknowledgements take the response port ahead of ordinary
 acknowledgements and hold off new read hits, so a stream of hits cannot
@@ -343,8 +343,8 @@ to the same line serialize in acceptance order, because the second waits for
 the first's entry to retire.
 
 Progress: a probe waits only on L1D transients that resolve through the
-shared level and DDR, because a fill of the probed line already in flight at
-the probe's decision is never withheld. A withheld fill waits only for the
+shared level and DDR, because a fill of the probed line allocated before the
+probe's decision is never withheld. A withheld fill waits only for the
 release, which depends on the load queue and the shared level alone. Nothing
 below the sequencer waits on the DMA port. The admit and invalidate
 handshakes hold a latched request until the load queue answers, so the core

@@ -17,11 +17,25 @@
 /*
  * FP Multiply Shim (CDB Slot 5, FMUL_RS)
  *
- * Translates rs_issue_t from FMUL_RS into FPU subunit native ports.
+ * Translates rs_issue_t from FMUL_RS into FPU subunit native ports and packs
+ * their results into fu_complete_t for the CDB adapter. Both subunits are
+ * fully pipelined and accept one operation per cycle:
+ *   - fpu_mult_unit: FMUL_S/D (11 cycles)
+ *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (16 cycles)
  *
- * Subunits:
- *   - fpu_mult_unit: FMUL_S/D (11-cycle native completion)
- *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (16-cycle native completion)
+ * Each subunit completes in issue order, so its ROB tags wait in a 32-entry
+ * circular queue. Completions enter a shared 16-entry ordering ring (the
+ * fifo_* arrays: tag, source subunit, flush state) that presents its head
+ * until the adapter takes it; each subunit's value and flags wait in its own
+ * block-RAM FIFO. o_fu_busy rises when the tag queues and the ring together
+ * reach 14 entries, or either tag queue reaches 31, so nothing can overflow.
+ *
+ * A squashed operation still runs to the end of its subunit and is dropped
+ * there. A full flush empties the ring; a partial flush marks the squashed
+ * ring entries, which are skipped when they reach the head.
+ *
+ * The wrapper feeds this shim a flush registered one cycle late; its adapter
+ * covers the flush cycle itself (fu_shims README, "Flushes").
  *
  * FMA operand mapping: a=src1, b=src2, c=src3
  *   FMADD:  negate_product=0, negate_c=0  → a*b + c
@@ -173,10 +187,10 @@ module fp_mul_shim (
   logic [       TagW-1:0] mult_tag_q        [     QueueDepth];
   logic                   mult_flushed_q    [     QueueDepth];
   logic                   mult_valid_q      [     QueueDepth];
-  // The head pointers front the tag read, the partial-flush age compare, and
-  // the completion-valid cone that gates the whole result FIFO. That self-cone
-  // was a 1332-path post-place failing family over ~200-fanout nets, so the
-  // fanout cap lets the small counters replicate per consumer group.
+  // The head pointers drive the tag read, the partial-flush age compare, and
+  // the completion-valid logic that gates the whole result FIFO, so they fan
+  // out widely. The fanout cap lets synthesis replicate these small counters
+  // per consumer group.
   (* max_fanout = 32 *)logic [  QueuePtrW-1:0] mult_rd_ptr;
   logic [  QueuePtrW-1:0] mult_wr_ptr;
   logic [QueueCountW-1:0] mult_count;
@@ -199,8 +213,8 @@ module fp_mul_shim (
 
   // The shared ring above holds only ordering and flush metadata. Payloads are
   // kept in one block-RAM FIFO per producer, so neither 69-bit result bus has
-  // to route into every slot of a shared flip-flop array. The shared source bit
-  // selects the matching producer head at retirement.
+  // to route into every slot of a shared flip-flop array. The ring head's
+  // source bit selects which producer's payload head to present.
   logic [FifoPtrW-1:0] mult_payload_rd_ptr, mult_payload_wr_ptr;
   logic [FifoPtrW-1:0] fma_payload_rd_ptr, fma_payload_wr_ptr;
   logic [FifoPtrW-1:0] mult_payload_read_addr, fma_payload_read_addr;
@@ -321,10 +335,10 @@ module fp_mul_shim (
 
   // Prefetch the post-pop producer heads. The block-RAM output registers load
   // these addresses on the same edge that advances the local read pointers,
-  // which permits one shared result to retire every cycle.
+  // which lets one result leave the ring every cycle.
   // Compute the increment before the late acceptance/flush result. Each final
-  // address bit uses just the two completed data bits, producer permission,
-  // acceptance and flush: at most one LUT5 after either late event.
+  // address bit uses just the two precomputed pointer bits, producer
+  // permission, acceptance and flush: at most one LUT5 after either late event.
   (* keep = "true" *) logic [FifoPtrW-1:0] mult_payload_next_ptr, fma_payload_next_ptr;
   (* keep = "true" *) logic mult_payload_pop_permission, fma_payload_pop_permission;
   assign mult_payload_next_ptr = mult_payload_rd_ptr + FifoPtrW'(1);

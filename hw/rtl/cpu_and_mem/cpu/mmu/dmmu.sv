@@ -15,94 +15,38 @@
  */
 
 /*
- * dmmu: the data-side Sv39 translation stage.
+ * dmmu: data-side Sv39 translation, between the MEM_RS address adder and the
+ * LQ/SQ address updates. It is used only while data translation is on
+ * (satp.MODE is Sv39 and the effective data privilege is below M); otherwise
+ * the wrapper bypasses it, with no added latency. i_active, i_sum, i_mxr, and
+ * i_eff_priv_u are registered CSR state that changes only with a full flush.
  *
- * Sits between the AGU adds and the LQ/SQ address-update writes, and runs
- * only while data translation is active: satp.MODE = Sv39 and the effective
- * data privilege is below M. The wrapper bypasses it combinationally when
- * translation is inactive, so the M-mode/Bare timing paths are exactly the
- * historical ones. Every input that decides activity is registered, quasi-static CSR
- * state whose changes ride a D10 (or trap/xret) flush.
- *
- * Issue pipe: two registered cycles when active, at full throughput. S1
- * captures the issued op {tag, VA, size, routing/permission class, store
- * data, amo_rs2}. The DTLB lookup and every check run combinationally on S1
- * during the next cycle. The resolution is then registered into S2, and every
- * consumer pulse fires from S2's registers: the LQ packet, the SQ address and
- * data packets, the ROB store-done, the store fault strobe, and the SC-table
- * PA fill. The TLB cone is flop-bounded on both sides and never reaches the
- * issue-ready, ROB-done, or queue-CAM cones. When those pulses fired
- * combinationally, an implementation probe put an 18-level lookup-to-rob_done
- * path at WNS.
- *
- * Resolution order on S1:
- *   1. VA-domain misalignment (mtvec-armed qualifier), checked before
- *      translation so a misaligned access never walks;
- *   2. non-canonical VA => page fault, no walk;
- *   3. DTLB hit => permission check on live SUM/MXR/effective-privilege,
- *      then the PMA check on the composed PA, where an out-of-map leaf is an
- *      access fault. Loads need R, or X with MXR. The store family needs W
- *      and D: Svade makes a store to a D=0 page a page fault. A U page from S
- *      needs SUM, and an S page from U faults. Launched-implies-in-map
- *      extends through translation.
- *   4. DTLB miss => ask the walker. The response is matched by its vpn echo,
- *      since the asking op may have been flushed and replaced. A clean leaf
- *      installs and resolves through the same permission path, and a refused
- *      walk resolves as its fault.
- * A fault resolution carries the VA (xtval) in place of the PA; the owner
- * routes it to the LQ entry (loads/AMOs/LR) or the store fault strobe
- * (stores/SC).
- *
- * Flow control: while S1 holds an unresolved op, one more op may issue
- * behind it into the S0 skid. o_stall is the skid's registered valid bit,
- * so the MEM_RS ready cone sees one flop and nothing of the TLB. On a hit
- * stream S1 hands off to S2 every cycle and new ops load S1 directly, with
- * the skid empty and ready high. S1 holds its op through every cycle before
- * the delivery, which makes S1's own {tag, needs-LQ} the pre-issue
- * look-ahead the load queue pairs with the packet, presented one cycle
- * before the S2 pulse by construction, for hits and arbitrary-length misses
- * alike.
- *
- * The early ports are opportunistic: they never stall and never fault. The
- * two early-store-pipeline addresses look up on a registered VA and the
- * result is registered again, so a hit with full store permission on an
- * in-map PA yields the PA two cycles after the request and the SQ entry can
- * be prefilled early. Anything else drops the early update, and the issue
- * port re-translates the same store and owns every fault and stall. The drop
- * costs nothing because the SQ keeps the first address written to an entry.
- * A translation change cannot leak through a prefilled PA: satp/sfence/D10
- * flushes kill every store that could straddle it. The wrapper drops the
- * delayed early packets on any flush, so a killed store's prefill cannot
- * reach the correct-path store that reuses its tag.
- *
- * The DTLB invalidates (flash) on sfence.vma's serialized window and on
- * the D10 satp/translation CSR flush pulse; the same signal poisons the
- * walk in flight (ptw complete-and-discard).
- *
- * Kills: S0, S1 and S2 drop ops younger than a partial flush by the same
- * age rule as every other tomasulo kill site, and so does the issue port
- * itself. MEM_RS drives its issue from a registered stage without checking
- * the same-cycle flush (a "phantom issue"), which the Bare-mode path
- * tolerates because the LQ/SQ entry it names dies on that edge. Here the op
- * would be registered and delivered cycles later, when the ROB tag has
- * been re-issued to the correct path: the M7 Linux boot died on a load
- * page fault with the squashed iteration's NULL+offset address parked on
- * the correct-path instruction that reused the tag (vm_test case W).
+ * Each op passes two registered stages, and DTLB hits flow at one op per
+ * cycle. S1 holds the op while the DTLB lookup, the checks, and any walk
+ * complete; S2 registers the result. Every consumer pulse fires from S2 (the
+ * LQ packet, the SQ address and data packets, the ROB store completion, the
+ * store fault strobe, and the SC-table address fill), which keeps the TLB
+ * lookup off the issue-ready, ROB-done, and queue-CAM paths. A faulting op
+ * carries its VA (for xtval) in place of the PA, and the wrapper routes the
+ * fault to the LQ entry (loads, LR, AMOs) or the store fault strobe (stores,
+ * SC).
  */
 module dmmu (
     input logic i_clk,
     input logic i_rst_n,
 
-    // Registered quasi-static translation state (csr_file exports).
+    // Registered translation state from csr_file.
     input logic i_active,
     input logic i_sum,
     input logic i_mxr,
     input logic i_eff_priv_u, // effective data privilege == U
 
-    // Live misalign-trap qualifier (same input the LQ/wrapper checks use).
+    // Misaligned accesses trap only while this is set (mtvec's base is
+    // nonzero). The LQ and wrapper alignment checks use the same input.
     input logic i_trap_misaligned,
 
-    // Flash-invalidate the DTLB (sfence window / D10 translation flush).
+    // Clears every DTLB entry: SFENCE.VMA, or the CSR file's translation
+    // invalidate. The walker discards its walk in flight on the same signal.
     input logic i_tlb_invalidate,
 
     // Pipeline kills.
@@ -124,10 +68,10 @@ module dmmu (
 
     // Issue port out: one pulse per resolved op, from the S2 registers.
     output logic o_iss_out_valid,
-    // Payload-only capture pulses before recovery/full-flush kills.  The LQ
-    // and SQ may accept these pulses on a kill edge because their
-    // entry/control state is cleared on that same edge; architectural
-    // visibility and every other side effect keep using o_iss_out_valid.
+    // The S2 pulse split into LQ and SQ ops, without the flush kills. The SQ
+    // uses its pulse only to write payload. The LQ uses its pulse as the
+    // address-update valid, which is safe because a flush clears the target
+    // LQ entry on the same edge. Everything else uses o_iss_out_valid.
     output logic o_iss_out_lq_capture_valid,
     output logic o_iss_out_sq_capture_valid,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_iss_out_rob_tag,
@@ -139,7 +83,7 @@ module dmmu (
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_store_data,
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_amo_rs2,
 
-    // The pre-issue pair for the LQ while active: S1's held op.
+    // Pre-issue look-ahead for the LQ: the op held in S1.
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_pre_rob_tag,
     output logic o_pre_needs_lq,
 
@@ -158,7 +102,7 @@ module dmmu (
     output logic [riscv_pkg::XLEN-1:0] o_early2_pa,
     output logic o_early2_is_mmio,
 
-    // Walker seam.
+    // Page-table walker port.
     output logic o_walk_req_valid,
     input logic i_walk_req_ready,
     output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
@@ -166,7 +110,8 @@ module dmmu (
     input riscv_pkg::ptw_resp_t i_walk_resp
 );
 
-  // Same age rule as every other tomasulo kill site.
+  // Partial-flush age test used throughout the back end: entry_tag is younger
+  // than flush_tag, both measured from the ROB head.
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
@@ -209,8 +154,14 @@ module dmmu (
   iss_payload_t s0_q, s1_q;
   logic s1_walk_asked_q;
 
-  // An op presented on the issue port during a partial flush is captured
-  // only if it is older than the flush (see the header on phantom issues).
+  // Kills. A full flush empties the pipe. A partial flush drops ops younger
+  // than the flush tag from S0, S1, and S2, and from the issue port itself:
+  // MEM_RS presents an issue without checking a same-cycle flush
+  // (hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/README.md,
+  // "Flushes"). Untranslated, such an op is harmless because the LQ or SQ
+  // entry it names dies on that edge, but this pipe would deliver it cycles
+  // later, after its ROB tag was reused on the correct path, and its fault or
+  // address would land on the wrong op. vm_test case W covers this.
   logic iss_killed;
   assign iss_killed = i_flush_en && is_younger(iss_in.tag, i_flush_tag, i_head_tag);
 
@@ -252,11 +203,11 @@ module dmmu (
   logic walk_resp_for_s1;
   assign walk_resp_for_s1 = i_walk_resp_valid && s1_valid_q && (i_walk_resp.vpn == s1_q.va[38:12]);
 
-  // Evaluate the TLB and walker leaves in parallel. Selecting their raw
-  // PPN/permission fields first puts the late TLB hit in front of PMA,
-  // fault classification and the VA/PA mux (the post-opt critical path).
-  // Only the finished resolutions depend on source selection; this adds
-  // no stage and preserves TLB priority over a simultaneous walk response.
+  // Resolve the TLB leaf and the walk-response leaf in parallel, then select
+  // between the finished results. Selecting their raw PPN and permission
+  // fields first would put the late TLB hit ahead of the PMA check, fault
+  // classification, and the VA/PA mux. A TLB hit still wins over a
+  // simultaneous walk response.
   logic [19:0] walk_ppn20;
   always_comb begin
     unique case (i_walk_resp.level)
@@ -310,11 +261,11 @@ module dmmu (
   assign tlb_resolve_addr  = (tlb_fault == riscv_pkg::DFAULT_NONE) ? tlb_pa : s1_q.va;
   assign walk_resolve_addr = (walk_fault == riscv_pkg::DFAULT_NONE) ? walk_pa : s1_q.va;
 
-  // Classify each translated candidate before the late TLB/walk selection.
-  // A zero-extended PA in the 01 quadrant always passes pma_data_ok, so the
-  // MMIO predicate can test permissions and high PPN bits directly without
-  // waiting for the full fault/address mux. The local proof below compares
-  // this with classification of the original complete resolution.
+  // MMIO class of each candidate, computed before the TLB/walk selection. A
+  // zero-extended PA in the 01 quadrant always passes pma_data_ok, so the
+  // class needs only the permission check and the high PPN bits, not the
+  // full fault and address mux. DMMU_MMIO_LOCAL_PROOF (formal target
+  // dmmu_mmio) checks it against the class of the complete resolution.
   (* keep = "true" *) logic tlb_is_mmio, walk_is_mmio;
   assign tlb_is_mmio = leaf_perm_ok(
       tlb_r[0], tlb_w[0], tlb_x[0], tlb_u[0], tlb_d[0]
@@ -328,7 +279,22 @@ module dmmu (
   ) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) && (i_walk_resp.ppn[19:18] == 2'b01);
   logic resolve_is_mmio;
 
-  // Resolution select, in architectural priority order.
+  // Resolution select, in architectural priority order:
+  //   1. Misalignment, when i_trap_misaligned is set. It is checked on the VA
+  //      before translation, so an access that traps as misaligned never
+  //      walks.
+  //   2. A non-canonical VA: page fault, no walk.
+  //   3. A DTLB hit: the permission check with the current SUM, MXR, and
+  //      effective privilege, then the PMA check on the PA, where a leaf
+  //      outside the map is an access fault. Loads need R, or X with MXR.
+  //      Stores, SC, and AMOs need W and D (Svade: a store to a D=0 page is a
+  //      page fault). A U page accessed from S needs SUM, and an S page
+  //      accessed from U faults.
+  //   4. A walk response for S1's VPN, matched by the VPN echo because the op
+  //      that asked may have been flushed and replaced. A clean leaf goes
+  //      through the same checks (and installs in the DTLB on the same edge),
+  //      and a refused walk resolves as its fault.
+  // Otherwise the op waits in S1 and asks for a walk (o_walk_req_valid).
   logic resolve_now;
   riscv_pkg::data_fault_kind_e resolve_fault;
   logic [riscv_pkg::XLEN-1:0] resolve_addr;
@@ -363,6 +329,9 @@ module dmmu (
   // ---------------------------------------------------------------------------
   // Pipe advance
   // ---------------------------------------------------------------------------
+  // While S1 holds an unresolved op, one more op may issue into the S0 skid
+  // behind it. On a run of hits S1 hands its op to S2 every cycle and new ops
+  // load S1 directly, with the skid empty.
   logic s1_resolved, s1_move;
   assign s1_resolved = s1_valid_q && resolve_now;
   assign s1_move = s1_resolved && !s1_killed;
@@ -407,7 +376,8 @@ module dmmu (
     end
   end
 
-  // The MEM_RS ready cone sees exactly one registered bit.
+  // The skid's valid bit holds MEM_RS issue, so the MEM_RS ready logic sees
+  // one register and nothing of the TLB.
   assign o_stall = s0_valid_q;
 
   // ---------------------------------------------------------------------------
@@ -421,9 +391,9 @@ module dmmu (
   logic s2_needs_sq_q, s2_is_sc_q;
   logic [riscv_pkg::XLEN-1:0] s2_store_data_q, s2_amo_rs2_q;
 
-  // The TLB permission/tier result is later than the resolution qualifiers.
-  // Finish both complete MMIO-bit outcomes, including the original hold,
-  // before selecting that result. All other S2 fields retain their enables.
+  // tlb_is_mmio arrives after the resolution qualifiers, so the next S2 MMIO
+  // bit is computed for both of its values (including the hold when nothing
+  // resolves) and tlb_is_mmio selects last. The other S2 fields use enables.
   (* keep = "true" *) logic [1:0] s2_mmio_cases;
   logic s2_mmio_next;
   for (genvar mmio = 0; mmio < 2; mmio++) begin : gen_s2_mmio_cases
@@ -448,9 +418,9 @@ module dmmu (
     end else begin
       s2_valid_q <= s1_move;
     end
-    // A killed resolution keeps s2_valid_q clear, so its payload is
-    // unobservable.  Capturing it anyway keeps the recovery/age compare off
-    // every S2 payload enable while preserving the valid pipeline exactly.
+    // A killed resolution leaves s2_valid_q clear, so its payload is never
+    // seen. Capturing it anyway keeps the flush age compare off every S2
+    // payload enable.
     if (s1_resolved) begin
       s2_tag_q <= s1_q.tag;
       s2_addr_q <= resolve_addr;
@@ -477,20 +447,20 @@ module dmmu (
   assign o_iss_out_store_data = s2_store_data_q;
   assign o_iss_out_amo_rs2 = s2_amo_rs2_q;
 
-  // Pre-issue pair: S1 holds the op through every cycle before its S2
-  // delivery, so S1 is the look-ahead the LQ pairs with the packet.
+  // S1 holds each op through the cycle before its S2 pulse, so S1's tag is
+  // the one-cycle look-ahead the LQ needs, however long a walk takes.
   assign o_pre_rob_tag = s1_q.tag;
   assign o_pre_needs_lq = s1_valid_q && !s1_q.needs_sq;
 
-  // Walk request: the held op missed every locally resolving case.
-  // Misalignment and noncanonicality resolve before lookup, while either a TLB hit or any
-  // matching walk response resolves afterward.  Keeping this narrow form off
-  // the full resolution mux prevents its late VA bit from reaching the PTW
-  // state enable.  Valid stays high until the walker accepts, and the op is
-  // never re-asked (the vpn echo makes a second ask harmless but wasteful).
-  // Keep the non-lookup qualifiers together so the late TLB hit only gates
-  // the finished request. Sharing intermediate resolution/flush terms put
-  // several more LUTs after the hit and made the PTW state enable critical.
+  // Walk request: the op in S1 is live, is neither a trapping misaligned
+  // access nor non-canonical, is not resolved by a matching walk response,
+  // has not asked yet, and missed the DTLB. The request is built from these
+  // terms directly, not from the resolution mux, and the late TLB hit gates
+  // only the finished request, which keeps the path from the lookup to the
+  // walker's state enable short. Valid stays high until the walker accepts,
+  // and an op asks once (a second ask would be harmless, since responses are
+  // matched by VPN, but wasteful). No request is made during a TLB
+  // invalidate.
   (* keep = "true" *) logic s1_walk_eligible;
   assign s1_walk_eligible = s1_valid_q && !(i_trap_misaligned && s1_misaligned) &&
       !s1_noncanonical && !walk_resp_for_s1 && !s1_walk_asked_q &&
@@ -501,6 +471,17 @@ module dmmu (
   // ---------------------------------------------------------------------------
   // Early opportunistic ports: VA registered, lookup, result registered.
   // ---------------------------------------------------------------------------
+  // These translate the two store early-address pipelines' addresses so an SQ
+  // entry can get its PA before MEM_RS issues the store. They never stall and
+  // never fault: a hit with full store permission on a canonical VA and an
+  // in-map PA gives the PA two cycles after the request, and anything else
+  // drops the early update. The issue port translates every store again and
+  // reports every fault. Once an SQ entry's address is valid, later address
+  // writes to it are ignored, so a stale prefill would stick. None can: every
+  // translation change comes with a full flush, which kills every store that
+  // could have been prefilled under the old translation, and the wrapper
+  // drops the delayed early packets on any flush, so a killed store's prefill
+  // cannot reach a correct-path store that reuses its tag.
   logic e1_valid_q, e2_valid_q;
   logic [riscv_pkg::XLEN-1:0] e1_va_q, e2_va_q;
   always_ff @(posedge i_clk) begin

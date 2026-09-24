@@ -17,20 +17,17 @@
 /*
  * frost_cache_test_harness: cocotb unit-bench top for the cache hierarchy.
  *
- * Exposes all four upstream line ports (data side + instruction side +
- * page-table walker + DMA), the DMA sequencer's load-queue handshake (the
- * bench plays the load queue), and wires the same backside topology the CPU
- * integration uses:
+ * Exposes the four upstream line ports (data, instruction, page-table walker,
+ * DMA), the DMA sequencer's load-queue handshake (the bench plays the load
+ * queue), and the fence.i sync, over the backside the CPU integration uses:
  * frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
- * The bench drives raw tagged line transactions and checks them against a
- * reference model. -G parameters select the optional L2 topology (HAS_L2),
- * shrink the caches so eviction/thrash paths are cheap to hit, and can make
- * the memory model complete transactions out of order (MEM_REORDER).
- * i_down_hold lets the bench pace the bridge: while it is high the bridge
- * sees no request and the hierarchy sees no ready, so the bottom cache's
- * downstream fires only on the cycles the bench releases. The writeback
- * starvation regression uses it to space acceptances so that fills complete
- * and re-allocate between them.
+ * -G parameters select the L2 (HAS_L2), shrink the caches so eviction paths
+ * are cheap to reach, and can make the memory model complete out of order
+ * (MEM_REORDER). While i_down_hold is high the bridge sees no request and the
+ * hierarchy sees no ready, so the bench chooses the cycles on which the
+ * bottom cache's downstream request can fire; the writeback-starvation test
+ * uses it to space acceptances so that fills complete and re-allocate
+ * between them.
  */
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -103,7 +100,7 @@ module frost_cache_test_harness #(
     output logic                                                            o_dma_resp_valid,
     output logic                                         [  UP_ID_BITS-1:0] o_dma_resp_id,
     output logic                                         [LINE_BYTES*8-1:0] o_dma_resp_rdata,
-    // The sequencer's load-queue handshake, driven by the bench.
+    // The sequencer's load-queue handshake, answered by the bench.
     output logic                                                            o_coh_admit_valid,
     output logic                                         [ DmaLockBits-1:0] o_coh_admit_slot,
     output logic                                         [  ADDR_WIDTH-1:0] o_coh_admit_addr,
@@ -119,7 +116,7 @@ module frost_cache_test_harness #(
     input  logic                                                            i_down_hold,
     // Source-registered cache observers exposed directly to cocotb.
     output cache_perf_pkg::cache_hierarchy_perf_events_t                    o_perf_events,
-    // Elaborated topology, exposed so one test can require exact L2 values.
+    // Elaborated topology (HAS_L2), for tests whose expectations depend on it.
     output logic                                                            o_has_l2
 );
 
@@ -134,9 +131,9 @@ module frost_cache_test_harness #(
   logic [UP_ID_BITS+1:0] stack_down_resp_id;
   logic [LINE_BYTES*8-1:0] stack_down_resp_rdata;
 
-  // The hold masks both sides of the seam so neither party sees a fire the
-  // other did not: the bridge acts only on the fire, and the hierarchy's
-  // request stays presented until a released cycle accepts it.
+  // The hold masks both valid and ready, so neither side sees a fire the
+  // other did not. A request held back has simply not fired yet, which the
+  // line protocol allows.
   logic bridge_req_valid, bridge_req_ready;
   assign bridge_req_valid = stack_down_req_valid && !i_down_hold;
   assign stack_down_req_ready = bridge_req_ready && !i_down_hold;

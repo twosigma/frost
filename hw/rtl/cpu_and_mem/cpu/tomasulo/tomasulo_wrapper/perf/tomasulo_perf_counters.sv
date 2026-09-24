@@ -17,14 +17,15 @@
 /*
  * Tomasulo back-end performance counters.
  *
- * Owns the 64 back-end profiling counters: ROB head-wait / commit-blocked
- * buckets and their decompositions, per-FU back-pressure, memory disambiguation,
- * occupancy sums, L0$ hit/fill, and widen-commit opportunity/fire/blocker
- * breakdowns. Accumulates each event, snapshots all 64 on demand, and muxes
- * the selected counter to the CSR read port. The snapshot is split into 4
+ * Holds the 64 back-end profiling counters: ROB head-wait and commit-blocked
+ * cycles and their breakdowns, per-FU back-pressure, memory disambiguation,
+ * occupancy sums, L0 hits and fills, and two-wide commit opportunities, fires,
+ * and blockers. Accumulates each event, snapshots all 64 on demand, and muxes
+ * the selected counter to the CSR read port. The snapshot is split into four
  * fanout banks, each with its own registered capture strobe, so it lands one
  * cycle after the mperfctl trigger commits; CSR serialization makes that
- * cycle invisible to software.
+ * cycle invisible to software. Indices and definitions are in
+ * hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md.
  */
 
 module tomasulo_perf_counters #(
@@ -98,7 +99,7 @@ module tomasulo_perf_counters #(
     output logic [63:0] o_perf_counter_data
 );
 
-  // --- Port aliases: keep the extracted body identical to the tomasulo_wrapper original.
+  // --- Port aliases with the wrapper's signal names.
   riscv_pkg::rob_perf_events_t rob_perf_events;
   logic int_rs_fu_ready, o_rs_empty, mul_rs_fu_ready, o_mul_rs_empty;
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
@@ -172,9 +173,9 @@ module tomasulo_perf_counters #(
   assign int_rs_head_rs_ready              = i_int_rs_head_rs_ready;
   assign int_rs_head_in_stage2             = i_int_rs_head_in_stage2;
 
-  // Compatibility block: these 64 local indices remain global 42-105.
-  // Cache-hierarchy counters append as a third block in
-  // perf_counter_aggregator; they must never shift this mapping.
+  // Local indices 0-63 are global indices 42-105, a software interface. The
+  // cache-hierarchy block follows at 106 in perf_counter_aggregator; nothing
+  // may renumber these (perf README, "Numbering contract").
   localparam int unsigned WrapperPerfCounterCount = 64;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
@@ -247,13 +248,12 @@ module tomasulo_perf_counters #(
   logic [63:0] perf_inc[WrapperPerfCounterCount];
   logic [63:0] perf_inc_q[WrapperPerfCounterCount];
   localparam int unsigned PerfSnapshotBankSpan = (WrapperPerfCounterCount + 3) / 4;
-  // Registered per-bank capture copies. The trigger arrives from the commit
-  // cone (the mperfctl CSR write commit) and fans into ~1.5k snapshot CE
-  // loads; registering it here keeps that cone off the commit critical path
-  // (x3 post-place: 900+ net-dominated failing endpoints). Capture lands one
-  // cycle after the trigger commit. CSR serialization means the first
-  // snapshot read commits later than that, and deltas between two snapshots
-  // cancel the constant skew.
+  // Registered per-bank capture copies. The trigger comes from the commit of
+  // the mperfctl CSR write and fans out to every snapshot register's clock
+  // enable; registering it keeps that fanout off the commit critical path.
+  // Capture lands one cycle after the trigger commit. CSR serialization means
+  // the first snapshot read commits later than that, and deltas between two
+  // snapshots cancel the constant skew.
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank0;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank1;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank2;

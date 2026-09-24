@@ -14,9 +14,11 @@
  *    limitations under the License.
  */
 
-// The production merge drives the normal issue path; raw inputs separately
-// drive the pre-issue cofactors. RS_PRETAG_LOCAL_PROOF compares their selected
-// ROB tags for arbitrary current RS state, tags, occupancy and eligibility.
+// The real mem_wakeup_merge drives the station's CDB inputs and so its normal
+// issue select, while the raw early-load and registered-lane valids and tags
+// drive the pre-issue look-ahead, as in the MEM station. RS_PRETAG_LOCAL_PROOF
+// asserts that both pick the same ROB tag, for arbitrary station state, tags,
+// occupancy, and eligibility.
 module rs_raw_pretag_equiv (
     input logic i_clk
 );

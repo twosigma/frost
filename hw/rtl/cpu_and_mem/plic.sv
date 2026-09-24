@@ -26,8 +26,8 @@
  *
  * Gateways carry level semantics: a source is requestable while its level
  * is high and it has no claim in flight; the claim clears its pending bit,
- * and completion re-opens the gateway so a still-high level re-raises on
- * the next cycle (the "level-gateway re-raise" directed case).
+ * and completion re-opens the gateway, so a level that is still high becomes
+ * pending again.
  *
  * Register map (offsets inside the PLIC window; 32-bit registers, 32-bit
  * accesses):
@@ -39,9 +39,10 @@
  * Everything else in the window reads zero and ignores writes.
  *
  * The claim read is destructive, which is why the PLIC lives in the device
- * quadrant: the router's device-read interrupt shield and drain ordering
- * make the read-beat unique and architecturally performed before the
- * consume pulse fires (see data_mem_request_router's UART-RX precedent).
+ * quadrant (addr[31:30] == 2'b01). data_mem_request_router holds a
+ * device-quadrant read until committed stores have drained and cpu_ooo's
+ * device-read interrupt shield is armed, as for the UART RX pop, so each
+ * claim read is performed exactly once before its pulse fires.
  * i_claim_pulse[c] must be exactly that once-per-performed-read pulse; the
  * register read data itself is combinational and captured by the MMIO beat
  * in the same cycle the pulse is decoded from.

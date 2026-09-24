@@ -17,10 +17,11 @@
 /*
   IEEE 754 floating-point divider, fully pipelined (FP_WIDTH 32 or 64).
 
-  Simulation reference only. The core divides on fp_div_sqrt_iter, whose
-  shared iterative datapath costs a fraction of the cells this unrolled
-  pipeline does; this file stays as the model the fp_div_sqrt_equiv bench
-  compares against, and is not in any synthesis file list.
+  Simulation-only reference model, not in any synthesis file list. The core
+  divides with fp_div_sqrt_iter, which shares one iterative datapath between
+  divide and square root at a fraction of this unrolled pipeline's area. The
+  fp_div_sqrt_equiv bench checks that unit's results, flags, and latency
+  against this model.
 
   Accepts a new operation every cycle. Pipeline depth:
     SP (FP_WIDTH=32): DivCycles + 10 = 26 + 10 = 36 stages
@@ -165,7 +166,7 @@ module fp_divider #(
       .o_is_zero(mant_lzc_zero_b)
   );
 
-  // Register UNPACK outputs -> Stage 1 output registers
+  // Stage 1 output registers
   logic s1_sign_a, s1_sign_b;
   logic [ExpBits-1:0] s1_exp_a, s1_exp_b;
   logic [LzcMantBits-1:0] s1_mant_lzc_a, s1_mant_lzc_b;
@@ -495,7 +496,9 @@ module fp_divider #(
   // Stage 4+DivCycles+2: ROUND_SHIFT (fp_subnorm_shift)
   // =========================================================================
 
-  // Extract rounding bits from normalized quotient
+  // fp_subnorm_shift takes the top MantBits quotient bits as the mantissa, the
+  // next bit as guard, and the one after as round; the last quotient bit and
+  // a nonzero remainder set sticky.
   logic [MantBits:0] rsh_pre_round_mant;
   logic              rsh_guard_bit;
   logic              rsh_round_bit;

@@ -16,25 +16,24 @@
 
 
 /*
- * Consumer-local LUTRAM overlay for one predecode sideband predicate and one
- * IMEM parity. The canonical full-depth sideband block RAM remains the source
- * for noncritical lanes and the simulation equivalence oracle. This pinned
- * low-address overlay lets the default low-memory program launch the
- * fetch-seam IF PC cone from a fabric flop instead of a RAMB36E2
- * clock-to-output, without replicating the metadata for the whole 256 KiB IMEM
- * in LUTRAM. The asynchronous distributed-RAM read lands in a local output
- * register with the same one-cycle latency and read-enable hold as the
- * block-RAM banks it mirrors. Outside the overlay a ready handshake withholds
- * the first raw response and redecodes each predicate into that same output
- * FF, so the canonical predicate BRAM lanes never reconnect to the PC.
+ * LUTRAM copy of one predecode sideband predicate for one IMEM parity bank,
+ * covering only the low overlay range ([0, 64 KiB) by default). The IF
+ * next-PC logic reads these predicates; for code in the overlay they launch
+ * from a fabric flop instead of a RAMB36E2 clock-to-output, without copying
+ * the metadata of the whole 256 KiB IMEM into LUTRAM. The full-depth sideband
+ * block RAM still supplies the noncritical lanes and is the simulation
+ * reference for this copy. The asynchronous LUTRAM read lands in a local
+ * output register with the same one-cycle latency and read-enable hold as the
+ * block-RAM banks. Outside the overlay the parent withholds the first
+ * response while the same register captures the predicate redecoded from the
+ * fetched word, so the block-RAM predicate lanes never reach the PC logic.
  *
  * The keep_hierarchy attribute keeps every copy independently placeable and
- * stops Vivado from sharing its storage with the canonical bank. Programming
+ * stops Vivado from sharing its storage with the full-depth bank. Programming
  * writes arrive from the same staged port-A registers as every other bank, so
  * a copy can never diverge from the word it mirrors. The parent quarantines
  * fetch readiness around those writes because the registered slow fallback is
- * one response behind the canonical block RAM while live debug code is
- * rewritten.
+ * one response behind the block RAM while live debug code is rewritten.
  */
 (* keep_hierarchy = "yes" *)
 module imem_sideband_scalar_bank #(
@@ -142,26 +141,28 @@ endmodule : imem_sideband_scalar_bank
  *   odd W:  ODD[W>>1] = W,    EVEN[(W>>1)+1] = W+1
  * Registered PC[2] swaps the outputs into {W+1, W}.
  *
- * Sideband bits stored with each word carry compression, opcode-class and
- * bundle qualifiers, plus {rs2[1], rs1[2:1]} for each RVC halfword. Definitions
- * live in riscv_pkg::imem_make_sideband, shared by L1I fill and the offline
- * generator sw/common/generate_imem_predecode_init.py.
+ * Each word is stored with its predecode sideband from
+ * riscv_pkg::imem_make_sideband (fetch-control bits and each halfword's RVC
+ * expansion), computed on every programming write and at simulation init.
+ * Vivado builds load init files written by
+ * sw/common/generate_imem_predecode_init.py, which mirrors that function. The
+ * L1I fill path uses the same function.
  *
  * Each 32-bit half-depth data bank is split into 28 cold bits and four
  * frontend-hot bits {15,10,7,6}. At 32K entries per parity this remains 32
  * RAMB36 while making the four timing lanes independently placeable. A
  * five-lane block-RAM replica per parity carries the raw high-parcel bits
  * C[15], C[13], C[12], the rd==x2 predicate, and AllowsSlot2AfterHi. Every
- * sideband predicate on the IF PC feedback cone (IsCompressedLo/Hi,
+ * sideband predicate the IF next-PC logic reads (IsCompressedLo/Hi,
  * EvenLocalPairValid, PairableNativeLo, PairableCompressedHi,
- * PairableNativeHi, and Slot2StartValidLo) has a pinned [0,64 KiB)
- * per-parity distributed-RAM overlay with an output flop, so default
- * low-memory execution avoids a RAMB36E2 clock-to-output at the head of that
- * cone. The canonical full-depth sideband block RAM remains the same-edge
- * equivalence oracle. Non-overlay windows repeat once while this module
- * redecodes their predicates into the scalar banks' existing output FFs,
- * allowing Vivado to trim canonical predicate lanes that have no hardware
- * consumer.
+ * PairableNativeHi, and Slot2StartValidLo) has a per-parity LUTRAM overlay of
+ * the low addresses ([0, 64 KiB) by default) with an output flop, so code
+ * there avoids a RAMB36E2 clock-to-output at the head of that path. The
+ * full-depth sideband block RAM is the simulation reference for those
+ * predicates, compared on the same edge. A window outside the overlay is
+ * presented twice while this module redecodes its predicates into the same
+ * output flops, so the block-RAM predicate lanes have no hardware consumer and
+ * Vivado can trim them.
  *
  * Port A programs and reads on the slow clock. Its write path is registered,
  * so writes commit one port-A cycle after presentation. Port B is the
@@ -224,13 +225,13 @@ module imem_predecode #(
     input logic [31:0] i_port_b_byte_address,
     // Byte address of the window's second aligned word: the
     // aligned successor of word 0 with translation off or inside a page, and
-    // the mapped next page's base across a page boundary. Replaces the even
-    // bank's +1 address increment, so the second word can come from anywhere
-    // and the address pins see no adder.
+    // the mapped next page's base across a page boundary. The even bank takes
+    // word 1's address from here instead of incrementing word 0's, so the
+    // second word can come from anywhere and the address pins see no adder.
     input logic [31:0] i_port_b_next_byte_address,
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
-    // Consumer-local PC-advance copy, ordered like o_port_b_read_data. Each
+    // Copy of the PC-advance bits, ordered like o_port_b_read_data. Each
     // word is {pairable_native_hi, pairable_compressed_hi,
     //          compressed_hi, compressed_lo}, so the complete window is
     // {next_word[3:0], current_word[3:0]}.
@@ -269,8 +270,9 @@ module imem_predecode #(
   localparam int unsigned HalfDepth = 2 ** (ADDR_WIDTH - 1);
   localparam int unsigned FullDepth = 2 ** ADDR_WIDTH;
   localparam int unsigned ByteAddrBits = 2;  // 32-bit word alignment
-  // Lane order of the narrow high-parcel block RAM (the legacy *_compressed
-  // name predates the move of the size bits to the scalar LUTRAM overlay).
+  // Lane order of the narrow high-parcel block RAM (memory_*_compressed;
+  // despite the name it holds no instruction-size bits, which live in the
+  // scalar LUTRAM overlay).
   localparam int unsigned FastLaneHiRdIsX2 = 0;  // word[27:23] == 5'd2
   localparam int unsigned FastLaneC15 = 1;  // word[31]
   localparam int unsigned FastLaneC12 = 2;  // word[28]
@@ -342,23 +344,22 @@ module imem_predecode #(
   logic [FrontendHotWidth-1:0] memory_even_frontend_hot[HalfDepth];
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [FrontendHotWidth-1:0] memory_odd_frontend_hot[HalfDepth];
-  // Keep the full-depth predecode sideband in BRAM. LUTRAM looked attractive for size,
-  // but on X3 it spreads the sideband arrays across fabric and puts pc_reg on
-  // a long distributed-memory address route in the low-BRAM fetch path. The
-  // six source-hot bits widen these arrays without adding another memory read
-  // or pipeline stage.
+  // The full-depth predecode sideband stays in block RAM: as LUTRAM it spreads
+  // across the fabric on X3 and puts pc_reg on a long distributed-memory
+  // address route in the low-BRAM fetch path. Adding sideband bits only
+  // widens these arrays; it adds no memory read or pipeline stage.
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
   // Mirror the high-parcel allows-slot-2 predicate, the high-parcel RVC
   // rd==x2 predicate, and raw high-parcel bits C[15], C[13], and C[12]
   // (word[31], word[29], and word[28]) in dedicated block-RAM banks. They are
-  // read at the same fetch edge as the other BRAM banks, so the interface
-  // latency is unchanged. Keeping them distinct preserves independent
-  // placement of these timing-facing launches. The legacy *_compressed.mem
-  // filenames contain the packed five-bit value {allows_slot2_after_hi,
-  // word[29], word[28], word[31], word[27:23] == 5'd2}; the instruction-size
-  // bits moved to the pinned scalar LUTRAM overlay below. At the current 32K
-  // entries per parity bank, each bit maps to one RAMB36.
+  // read at the same fetch edge as the other BRAM banks, so they add no
+  // latency. Keeping them distinct preserves independent placement of these
+  // timing-facing launches. The *_compressed.mem init files contain the packed
+  // five-bit value {allows_slot2_after_hi, word[29], word[28], word[31],
+  // word[27:23] == 5'd2}; the instruction-size bits are in the scalar LUTRAM
+  // overlay below. At 32K entries per parity bank, each bit maps to one
+  // RAMB36.
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
@@ -434,11 +435,10 @@ module imem_predecode #(
   // bank-realignment interval that follows it, then forces a fresh post-write
   // response.
   //
-  // For routability the write side is registered once before it fans out to
-  // the independent memory banks. The staged copies below keep their
-  // max_fanout shaping and the programming-side contract of one extra
-  // div4-clock cycle of write latency on a JTAG-paced port. The synthesized
-  // readback is a pass-through, so the read-latency contract is unchanged.
+  // For routability the write side is registered once (with max_fanout
+  // shaping) before it fans out to the independent memory banks, which adds
+  // one div4-clock cycle of write latency on the JTAG-paced port. The
+  // synthesized readback is a pass-through, so the read latency is unaffected.
   logic [ADDR_WIDTH-1:0] port_a_word_address;
   logic [ADDR_WIDTH-2:0] port_a_half_address;
   logic                  port_a_bank_sel;  // 0 = even, 1 = odd
@@ -453,7 +453,7 @@ module imem_predecode #(
   (* max_fanout = 512 *) logic port_a_write_odd_q = 1'b0;
 
   // The debug module can rewrite its out-of-overlay execution slice while the
-  // fetch port keeps presenting that same address. The canonical BRAM response
+  // fetch port keeps presenting that same address. The block-RAM response
   // observes the new word one read before the registered slow scalar fallback,
   // so the repeated-address history must be invalidated across every live
   // programming write. The staged write enables rise a complete div4 cycle
@@ -933,10 +933,10 @@ module imem_predecode #(
     odd_read_data_with_fast_rvc_fields[31] = odd_compressed[FastLaneC15];
     even_read_data_with_fast_rvc_fields[29:28] = even_compressed[FastLaneC13:FastLaneC12];
     odd_read_data_with_fast_rvc_fields[29:28] = odd_compressed[FastLaneC13:FastLaneC12];
-    // The public sideband lanes on the IF PC feedback cone always take the
-    // scalar banks' overlay/slow output FFs. The pairability predicates are
-    // fully evaluated at init/write time before they are stored in the
-    // overlay, so no post-read conjunction enters the fast IF PC cone.
+    // The sideband lanes the IF next-PC logic reads always come from the
+    // scalar banks' output FFs (overlay or slow). The pairability predicates
+    // are fully evaluated at init/write time before they are stored in the
+    // overlay, so no post-read conjunction enters that path.
     even_sideband_with_fast_metadata = even_sideband;
     odd_sideband_with_fast_metadata = odd_sideband;
     even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];
@@ -960,13 +960,13 @@ module imem_predecode #(
     odd_sideband_with_fast_metadata[riscv_pkg::ImemSbSlot2StartValidLo] = odd_slot2_start_valid_lo;
   end
 
-  // The slow fallback never reads the seven canonical predicate lanes. It
+  // The slow fallback never reads the seven block-RAM predicate lanes. It
   // redecodes them from the fully reconstructed words, then each scalar bank
   // captures its predicate in the same output FF used by the overlay. The
   // next presentation of the same ordered physical-address pair aligns those
   // FFs with the ordinary raw BRAM payload and noncritical sideband. Decode
   // from the reconstructed words so that C[15], C[13], and C[12] keep coming
-  // from their narrow timing banks instead of reviving the cold-data lanes.
+  // from their narrow timing banks instead of the cold-data lanes.
   assign even_sideband_redecoded = riscv_pkg::imem_make_sideband(
       even_read_data_with_fast_rvc_fields
   );
@@ -1035,8 +1035,8 @@ module imem_predecode #(
 
 `ifndef SYNTHESIS
   // Every overlay row is written and fetched with its parent instruction word.
-  // On every ready response the canonical sideband and data banks are
-  // same-edge oracles, so an init/write-path change cannot let either the
+  // On every ready response the full-depth sideband and data banks are the
+  // same-edge reference, so an init/write-path change cannot let either the
   // fast overlay or the slow registered view diverge unnoticed. An unready
   // miss may hold stale slow predicates, so the compare skips it.
   logic pc_metadata_compare_valid_q = 1'b0;

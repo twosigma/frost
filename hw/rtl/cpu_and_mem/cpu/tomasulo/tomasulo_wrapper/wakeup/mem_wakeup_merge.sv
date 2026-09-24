@@ -24,11 +24,12 @@
 // Contract: an early packet never carries the tag of a valid registered lane.
 // In-flight ROB tags are unique, and an accepted load leaves the LQ's staged
 // register before its registered broadcast, so the caller's staged load and
-// a registered lane never name the same tag. Checking it here put a tag
-// comparator ahead of every MEM_RS wakeup; simulation asserts it, and formal
-// assumes it standalone (FORMAL_STANDALONE_ENV=1) and asserts it integrated
-// after the enclosing harness's initial reset edge. The integrated caller
-// intentionally leaves enable unqualified by reset; its consumers reset too.
+// a registered lane never name the same tag. Checking it in logic would put a
+// tag comparator ahead of every MEM_RS wakeup, so simulation asserts it, and
+// formal assumes it standalone (FORMAL_STANDALONE_ENV=1) and asserts it
+// integrated after the enclosing harness's initial reset edge. The integrated
+// caller intentionally leaves enable unqualified by reset; its consumers reset
+// too.
 module mem_wakeup_merge #(
     parameter bit FORMAL_STANDALONE_ENV = 1'b1
 ) (

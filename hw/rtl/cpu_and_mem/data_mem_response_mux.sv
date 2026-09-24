@@ -14,8 +14,11 @@
  *    limitations under the License.
  */
 
-// Collapse the integrated fast-BRAM/MMIO/cached response into one payload.
-// cached_read_ready is the router's inverse registered fast-response owner.
+// Data-port read response payload: the cached tier's data when
+// i_cached_read_ready is high, else the MMIO data when i_mmio_read_valid is
+// high, else the low-BRAM data. i_cached_read_ready is the request router's
+// inverted registered fast-response valid, so this matches the router's
+// fast-first response mux.
 module data_mem_response_mux #(
     parameter int unsigned DATA_WIDTH = 64
 ) (
@@ -27,8 +30,9 @@ module data_mem_response_mux #(
     output logic [DATA_WIDTH-1:0] o_read_data
 );
 `ifdef FROST_XILINX_PRIMS
-  // Express each late data selection in one LUT primitive. Cover all selector
-  // combinations, including stale MMIO-valid while the cached tier owns it.
+  // One LUT5 per bit, so each late data selection is a single LUT level. The
+  // INIT covers every selector combination, including a stale MMIO valid
+  // while the cached data is selected.
   for (genvar bit_index = 0; bit_index < DATA_WIDTH; bit_index++) begin : g_response_lut
     LUT5 #(
         .INIT(32'hF0F0CCAA)
@@ -42,9 +46,10 @@ module data_mem_response_mux #(
     );
   end
 `else
-  // Preserve the original procedural MMIO selection even for an unknown
-  // MMIO-valid in four-state simulation. The outer ternary matches the
-  // router's fast-first mux with cached_read_ready = !fast_read_valid.
+  // The MMIO selection is procedural, so an unknown MMIO valid in four-state
+  // simulation selects the BRAM data instead of merging X into the result.
+  // The outer ternary matches the router's fast-first mux with
+  // cached_read_ready = !fast_read_valid.
   logic [DATA_WIDTH-1:0] fast_read_data;
   always_comb begin
     fast_read_data = i_bram_read_data;

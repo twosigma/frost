@@ -22,8 +22,6 @@
  * writes. Keeping one backing array lets synthesis pack the two read ports
  * into a multi-port LUTRAM primitive such as RAM32M or RAM64M, instead of
  * duplicating the storage across two RAM32X1D groups.
- *
- * Same caveat as sdp_dist_ram: reads are combinational, write is synchronous.
  */
 module sdp_dist_ram_2r #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits

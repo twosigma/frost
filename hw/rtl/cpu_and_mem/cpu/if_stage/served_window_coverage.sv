@@ -14,31 +14,29 @@
  *    limitations under the License.
  */
 
-// Fixed-depth served-window coverage comparator for one fetch provider.
+// Served-window check for one fetch provider: does the window it presents
+// hold every word that pc_reg's packet needs?
 //
-// All tags are 30-bit words in the 32-bit fetch seam.  A provider registers
-// S, S+1, S-1, and S!=0 beside its payload.  The accepted positions are:
-//   P == S
-//   P == S+1, unless the emitted packet needs word P+1
-//   P == S-1, when the instruction buffer owns P and the fetch window owns P+1
-// A no-buffer packet accepts a window ending at P unless it is a native
-// instruction at P[1]. The caller supplies that already-factored verdict:
-// PC-low always accepts served-last, while PC-high accepts it only for an RVC
-// instruction. A buffer-backed packet needs the successor for every P[1]
-// shape: a native slot 1 spans into P+1, while an RVC slot 1 can permit slot 2
-// at P+1's low parcel.
+// Tags are 30-bit word addresses, bits [31:2] of the fetch PC the window was
+// fetched for and of pc_reg. With S the window's first word, the provider
+// registers S, S+1, S-1, and S != 0 beside its payload. pc_reg's word P is
+// covered when:
+//   P == S;
+//   P == S+1 (the window ends at P), unless the packet needs word P+1;
+//   P == S-1, when the instruction buffer supplies P and the window P+1.
+// Without the buffer, only a 32-bit instruction in the upper half of P needs
+// P+1; the caller passes that decision as i_no_buffer_accepts_served_last
+// (always set when pc_reg is in the lower half, and in the upper half only
+// for a compressed instruction). With the buffer, a packet that starts in the
+// upper half of P always needs P+1: a 32-bit slot 1 spans into it, and a
+// compressed slot 1 can pair with a slot 2 in its lower half.
 //
-// The equality chunks use no more than six LUT inputs, as do the two reduction
-// levels.  Keeping the provider instances separate prevents the source selector
-// from being absorbed into a serial cross-provider compare.  The caller supplies
-// one already-combined instruction-buffer qualification.  It is the
-// latest-arriving input (the prediction-holdoff cone), so it enters no equality
-// LUT and reaches only the final MUXF8. Four verdict candidates cover the
-// Cartesian product of buffer/no-buffer and successor need: the caller's
-// no-buffer served-last verdict selects between same-only and same-or-last,
-// P[1] selects within the buffer arm, and the late buffer qualification selects
-// between the two arms. The tag paths keep exactly three LUT levels plus those
-// dedicated muxes.
+// Each equality chunk and both reduction levels fit in a 6-input LUT, so a tag
+// path is three LUT levels plus dedicated muxes. The buffer qualification
+// (i_use_instr_buffer) is the latest input, since it depends on the
+// prediction holdoff, so it enters no equality LUT and selects only at the
+// final MUXF8. One instance per provider keeps synthesis from merging the
+// provider select into a serial compare across providers.
 (* keep_hierarchy = "yes" *)
 module served_window_coverage (
     input  logic [29:0] i_pc_word,
@@ -74,10 +72,10 @@ module served_window_coverage (
   assign prev_lo_valid = (&prev_chunk[4:0]) && i_served_prev_word_valid;
   assign prev_hi = &prev_chunk[9:5];
 
-  // Each candidate is one LUT of at most the six half-terms (LUT2/LUT4/LUT6).
-  // The no-buffer served-last verdict, pc-high, and the late instruction-buffer
-  // qualification remain dedicated mux selects rather than entering the
-  // equality cones.
+  // One candidate per combination of buffer use and whether P+1 is needed,
+  // each one LUT of at most the six half-terms (LUT2/LUT4/LUT6).
+  // i_no_buffer_accepts_served_last, i_pc_high, and the late buffer
+  // qualification are mux selects and stay out of the equality logic.
   (* keep = "true" *) logic no_buffer_covers_same_only, no_buffer_covers_served_last;
   (* keep = "true" *) logic buffer_covers_base, buffer_covers_successor;
   assign no_buffer_covers_same_only = same_lo && same_hi;
@@ -87,10 +85,10 @@ module served_window_coverage (
   assign buffer_covers_successor = (same_lo && same_hi) || (prev_lo_valid && prev_hi);
 
   // Two MUXF7s and one MUXF8 pack the four candidate LUTs into one Xilinx
-  // slice. The earlier no-buffer-served-last / pc-high selects choose within
-  // each fixed buffer arm; the late buffer select owns the final MUXF8 only.
-  // Inference maps the nested selects to LUTs instead (adding general routing
-  // levels on the tag paths), hence the explicit primitives.
+  // slice: i_no_buffer_accepts_served_last selects within the no-buffer arm,
+  // i_pc_high within the buffer arm, and the late buffer select drives only
+  // the MUXF8. Inferred logic would map the nested selects to LUTs, adding
+  // routed levels on the tag paths, hence the explicit primitives.
 `ifdef FROST_XILINX_PRIMS
   (* keep = "true" *)logic covers_without_buffer;
   (* keep = "true" *)logic covers_with_buffer;

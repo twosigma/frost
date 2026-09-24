@@ -18,14 +18,15 @@
  * Early misprediction recovery.
  *
  * When branch_resolution flags a checkpointed conditional-branch misprediction,
- * this two-phase FSM starts recovery immediately instead of waiting for the
- * branch to reach the ROB head, cutting the penalty from ~15 to ~2 cycles:
+ * this two-phase FSM starts recovery at once instead of waiting for the branch
+ * to reach the ROB head, so the misprediction costs about two cycles:
  *   cycle N   : capture the mispredicting branch's redirect/BTB/checkpoint data;
- *   cycle N+1 : early_mispredict_active -> front-end redirect + RAT restore;
- *   cycle N+2 : early_backend_recovery_pending -> backend partial flush + hold.
- * JALR mispredictions stay on the commit-time path. The wide payload
- * registers capture on an issue-local superset of the fire condition, but only
- * the checkpoint-qualified misprediction launches a recovery, and only one
+ *   cycle N+1 : early_mispredict_active -> front-end redirect + RAT restore,
+ *               with dispatch and issue held (early_backend_recovery_hold);
+ *   cycle N+2 : early_backend_recovery_pending -> backend partial flush.
+ * JALR mispredictions recover at commit. The wide payload registers capture
+ * on an issue-local superset of the fire condition, but only the
+ * checkpoint-qualified misprediction launches a recovery, and only one
  * recovery runs at a time.
  */
 
@@ -42,9 +43,11 @@ module early_misprediction_recovery #(
     input logic i_branch_taken_resolved,
     input logic [XLEN-1:0] i_branch_target_resolved,
     input logic i_fence_i_flush,
-    // Phase-equivalent, low-fanout registered copy used only by the active
-    // pulse's late native-fence gate. The shared FENCE-class pulse remains
-    // the source for fire suppression and backend-pending cancellation below.
+    // Low-fanout registered copy of i_fence_i_flush, same cycle, for native
+    // FENCE.I and SFENCE.VMA only (not translation-CSR recovery). It is used
+    // only to gate the active pulse late; the shared FENCE-class pulse,
+    // i_fence_i_flush, still suppresses the fire and cancels a pending
+    // backend recovery below.
     input logic i_active_fence_i_flush,
     input logic i_mispredict_recovery_pending,
     input logic i_flush_all,
@@ -69,7 +72,7 @@ module early_misprediction_recovery #(
     output logic                                        o_early_backend_recovery_hold
 );
 
-  // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
+  // --- Port aliases: the body uses these unprefixed names.
   riscv_pkg::reorder_buffer_branch_update_t branch_update;
   riscv_pkg::rs_issue_t rs_issue_int;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
@@ -102,24 +105,21 @@ module early_misprediction_recovery #(
   (* max_fanout = 32 *) logic early_mispredict_capture;
   logic early_mispredict_payload_capture;
   logic early_mispredict_fire;
-  // TIMING: the top violated-path family of the rv64 X3 route (238 paths into
-  // the pc_controller redirect cone alone, ~440 with the RS dispatch holds)
-  // starts at this FF: it drives early_mispredict_active (front-end redirect +
-  // RAT restore) and early_backend_recovery_hold (dispatch/issue holds) across
-  // the die.  Same register-replication treatment as its two siblings below:
-  // replication only, with the D input, the resets and the recovery
-  // conditions untouched.
+  // TIMING: this register drives early_mispredict_active (front-end redirect
+  // and RAT restore) and early_backend_recovery_hold (dispatch and issue
+  // holds) across the die. The fanout cap lets synthesis replicate it per
+  // consumer region, like the registers below; the D input, reset, and
+  // recovery conditions are unchanged.
   (* max_fanout = 32 *) logic early_mispredict_pending;
-  // TIMING: the net that broadcasts is the derived active qualifier, not the
-  // capped register above.  It drives the redirect select, the BTB training
-  // mux select and the flush controller arms, through ~750-fanout nets on its
-  // post-place failing family.  Cap the comb driver LUT so it replicates per
-  // region, like flush_en in the flush controller.
+  // TIMING: the derived active qualifier broadcasts too: it drives the
+  // redirect select, the BTB training mux select, and the flush controller's
+  // arms. Cap its combinational driver so it replicates per region, like
+  // flush_en in the flush controller.
   (* max_fanout = 64 *) logic early_mispredict_active;
-  // TIMING: this single FF broadcast into ~1300 failing endpoints post-opt
-  // (flush_en -> RS/LQ/SQ/ROB kill and capture gating). The fanout cap makes
-  // the tool replicate the register per consumer region. Replication only:
-  // the D input, the resets and the recovery conditions are untouched.
+  // TIMING: this register broadcasts through flush_en into the RS/LQ/SQ/ROB
+  // kill and capture gating. The fanout cap makes synthesis replicate it per
+  // consumer region; the D input, reset, and recovery conditions are
+  // unchanged.
   (* max_fanout = 48 *) logic early_backend_recovery_pending;
   // TIMING: flush-tag broadcast feeding per-entry age compares across the
   // backend (CDB kill, LQ/RS squash).  Same register-replication treatment.
@@ -134,8 +134,8 @@ module early_misprediction_recovery #(
   logic [XLEN-1:0] early_mispredict_branch_target;
   logic early_mispredict_branch_taken;
 
-  // Fire when a conditional-branch misprediction is detected at execute time.
-  // JALR remains on the older commit-time recovery path for now.
+  // Fire when a conditional-branch misprediction resolves at execute. JALR
+  // mispredictions recover at commit.
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_branch_age;
   assign early_branch_age = {1'b0, branch_update.tag} - {1'b0, head_tag};
   assign early_mispredict_capture = branch_update.mispredicted && !early_mispredict_pending &&
@@ -146,8 +146,8 @@ module early_misprediction_recovery #(
   // This is a superset of fire, so a real fire captures the same payload on
   // the same edge.  A capture without a fire is inert, because only
   // early_mispredict_pending exposes the payload.  Keeping the owner compare
-  // out of these wide flop enables removes the large checkpoint_owner_tag ->
-  // recovery-payload endpoint family.
+  // out of these wide flop enables keeps checkpoint_owner_tag off the
+  // recovery-payload register paths.
   assign early_mispredict_payload_capture =
       rs_issue_int.valid && rs_issue_int.is_branch_class && rs_issue_int.has_checkpoint &&
       !rs_issue_int.is_jal && !rs_issue_int.is_jalr &&
@@ -187,7 +187,7 @@ module early_misprediction_recovery #(
   end
 
   // Capture recovery data on the issue-local superset of the fire cycle.  The
-  // pending bit above is still the only launch.
+  // pending bit above is the only launch.
   always_ff @(posedge i_clk) begin
     if (early_mispredict_payload_capture) begin
       early_mispredict_tag <= branch_update.tag;
@@ -243,9 +243,9 @@ module early_misprediction_recovery #(
   assign o_early_backend_recovery_hold = early_backend_recovery_hold;
 
 `ifndef SYNTHESIS
-  // The qualified i_is_jalr_issue is retained as an oracle for the raw-bit
-  // substitution. branch_update.mispredicted can only be true for a qualified
-  // branch update, where the two JALR predicates are exactly equal.
+  // The fire condition uses the raw is_jalr bit; the reference uses the
+  // qualified i_is_jalr_issue. branch_update.mispredicted can only be true
+  // for a qualified branch update, where the two JALR predicates are equal.
   logic early_mispredict_fire_reference;
   assign early_mispredict_fire_reference = early_mispredict_capture &&
                                             rs_issue_int.has_checkpoint && !is_jalr_issue &&

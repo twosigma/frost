@@ -18,30 +18,31 @@
  * line_port_axi_bridge: tagged line-port slave to AXI4 master.
  *
  * The bottom of the cache hierarchy: converts line transactions into
- * single-beat AXI4 bursts (AxLEN=0, AxSIZE=log2(LINE_BYTES), 256-bit data)
- * with the line id carried as the AXI id. Any number of transactions may be
- * in flight, up to one per id value, and the memory controller may complete
- * different ids in any order. Writes drive AW and W and complete on B; reads
- * complete on R. Responses are assumed OKAY (checked in simulation). The
- * bridge never orders a read against a write: the caches above own same-line
- * ordering (hw/rtl/lib/cache/README.md).
+ * single-beat AXI4 bursts (AxLEN=0, AxSIZE=log2(LINE_BYTES)) with the line
+ * id carried as the AXI id. Any number of transactions may be in flight, up
+ * to one per id value, and the memory controller may complete different ids
+ * in any order. Writes drive AW and W and complete on B; reads complete on R.
+ * Responses are assumed OKAY (checked in simulation). The bridge never orders
+ * a read against a write: the caches above keep same-line ordering ("Line
+ * protocol" in hw/rtl/lib/cache/README.md).
  *
  * Issue path: one read issue register (AR) and one write issue register
  * (AW+W), each held until its AXI handshake completes. A read request is
  * accepted when AR is free, a write when both AW and W are, so a read can be
- * accepted while a write's AW/W are still waiting.
- * Ready therefore depends on the presented request's write bit, which the
- * protocol allows.
+ * accepted while a write's AW/W are still waiting. Ready therefore depends on
+ * the presented request's write bit, which the protocol allows.
  *
  * Response path: R and B land in one-entry output registers. R has priority
  * onto the single line response port and is always accepted, since its
- * register drains the next cycle unconditionally. B waits one cycle when both
- * arrive together. A response whose id is not in flight is discarded. That is
- * how a transaction interrupted by an image-load CPU reset ends: the AXI side
- * keeps accepting, the in-flight bitmap is cleared, and the stale R/B drains
- * into nothing. The caches' reset tag sweeps (thousands of cycles) guarantee
- * no new request can reach the bridge while a stale response is still
- * outstanding, so an id can never be confused.
+ * register drains the next cycle unconditionally. A held B drains in the
+ * first cycle without an R response and holds off the B channel until then.
+ *
+ * A response whose id is not in flight is dropped. That drains the responses
+ * to transactions the memory controller accepted before an image-load CPU
+ * reset: the controller keeps running and answers them after the reset has
+ * cleared the in-flight bitmap. This relies on the caches' reset tag sweeps
+ * (thousands of cycles on hardware) outlasting any response still in flight,
+ * so no new request reuses its id first.
  *
  * BASE_ADDR is subtracted from the line address so the AXI side sees a
  * zero-based region offset: in simulation the behavioral DDR indexes from 0,
@@ -291,7 +292,7 @@ module line_port_axi_bridge #(
 
   // Line-protocol obligation of the master: an id is unique among its
   // in-flight requests (the caches above never reuse one before its
-  // response; the sim check above enforces the same rule).
+  // response; the simulation check above flags a reuse).
   always_comb begin
     if (!i_rst && i_req_valid) begin
       a_unique_inflight_id : assume (!inflight_q[i_req_id]);
@@ -311,7 +312,8 @@ module line_port_axi_bridge #(
       if ($past(o_axi_wvalid && !i_axi_wready)) begin
         p_w_held : assert (o_axi_wvalid && $stable(o_axi_wdata) && $stable(o_axi_wstrb));
       end
-      // Every line response names an id that was fired and not yet answered.
+      // An R response for an id in flight reaches the line port the next
+      // cycle with that id.
       if ($past(r_accept && r_known)) begin
         p_r_forwarded : assert (o_resp_valid && o_resp_id == $past(i_axi_rid[ID_BITS-1:0]));
       end
@@ -322,9 +324,9 @@ module line_port_axi_bridge #(
     end
   end
 
-  // The in-flight bitmap is conserved: set only by a fire, cleared only by a
-  // matching known response. (Unlabeled: Yosys does not uniquify assertion
-  // labels across generate iterations.)
+  // In-flight bitmap: a fire sets its id's bit, and nothing else sets a bit.
+  // (Unlabeled: Yosys does not uniquify assertion labels across generate
+  // iterations.)
   for (genvar k = 0; k < int'(NumIds); k++) begin : gen_inflight_props
     always @(posedge i_clk) begin
       if (f_past_valid && !i_rst && !$past(i_rst)) begin
