@@ -216,9 +216,9 @@ async def test_coroutine_then_call_selects_tos_then_tos_plus_one(dut: Any) -> No
     await _setup_test(dut)
     await _push(dut, 0x6104)
 
-    # Exercise the split read/write permission case used by the timing path:
-    # write permission is live even though pop/prediction permission is held.
-    # A coroutine still replaces the current TOS and leaves the depth intact.
+    # Write permission without pop permission, as in the controller's first
+    # stall cycle: a coroutine still replaces the current TOS and leaves the
+    # depth intact.
     _clear_inputs(dut)
     dut.i_is_coroutine.value = 1
     dut.i_link_address.value = 0x7104
@@ -327,8 +327,8 @@ async def test_restore_with_swap_after_restore_replays_coroutine(dut: Any) -> No
     dut.i_push_address_after_restore.value = 0xD004
     await _advance_cycle(dut)
 
-    # Depth is unchanged because pop + push is net zero. A plain push would
-    # have left tos/count at 3, which is the bug this encoding fixes.
+    # Depth is unchanged because pop + push is net zero; treating the pair as
+    # a plain push would leave tos/count at 3.
     _assert_checkpoint(dut, tos=2, count=2)
     _drive_return(dut)
     await _settle()

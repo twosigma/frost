@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check the OpenSBI image packer's parallel-make ownership contract."""
+"""Check that parallel make runs the OpenSBI image packer once for all its outputs."""
 
 from pathlib import Path
 import shutil

@@ -12,14 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Pin production IMEM predecode capacity and one-cycle fetch throughput.
+"""Check the full-size IMEM's predecode overlay coverage and one-cycle fetch rate.
 
-Unlike the small fast-replica bench, this target does not override the overlay
-width: the 256 KiB IMEM must provide one-cycle metadata throughout its low
-64 KiB. Check streaming reads across the former 16 KiB boundary, independent
-high row-address bits, writes, the new boundary, and full-address aliases.
-The existing small bench separately exercises live-write quarantine and the
-variable-latency response contract in detail.
+Unlike the small fast-replica bench, this target keeps the default overlay
+width, so the 256 KiB IMEM must return one-cycle metadata for every window in
+its low 64 KiB. The test streams windows across each 16 KiB boundary and the
+64 KiB overlay boundary, varies the high row-address bits, reprograms words,
+and fetches an address that aliases word 0 on the IMEM's address pins. The
+fast-replica bench covers live-write quarantine and the variable-latency
+response rules in detail.
 """
 
 from typing import Any
@@ -63,8 +64,8 @@ async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
     )
     slow_addresses = (FAST_BYTES - 4, FAST_BYTES, 0x17C00, IMEM_BYTES)
     # USE_INIT_FILE=0 initializes each word to its word index. Program only
-    # the sparse windows under test, including distinct rows with the same
-    # original 16 KiB low address bits.
+    # the sparse windows under test, including distinct rows whose addresses
+    # are equal modulo 16 KiB.
     words = list(range(IMEM_BYTES // 4))
     write_indices = {
         ((address // 4) + offset) % len(words)
@@ -102,8 +103,8 @@ async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
             dut, words, address // 4, label=f"capacity window {address:#x}"
         )
 
-    # No enable gaps: every newly covered request must complete on its first
-    # edge even when parity and high row-address bits change each cycle.
+    # No enable gaps: every overlay request must complete on its first edge,
+    # even as parity and the high row-address bits change between requests.
     for address in fast_addresses + fast_addresses[::-1]:
         await check_window(address, fast=True)
     for address in slow_addresses:
@@ -120,8 +121,8 @@ async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
         assert int(dut.o_port_b_read_data.value) == held_data
         assert int(dut.o_port_b_pc_metadata_by_parity.value) == held_metadata
 
-    # Reprogram newly covered words. These writes must reach their own scalar
-    # rows rather than corrupting an identically indexed low-16-KiB row.
+    # Reprogram words above 16 KiB. Each write must reach its own scalar row,
+    # not the row at the same offset in the first 16 KiB.
     for index in (0x4000 // 4, 0x4004 // 4, 0xC000 // 4, 0xC004 // 4):
         words[index] ^= 0xFFFF_FFFF
         await reference._write_word(dut, index, words[index])

@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tests for the host-side pinned-container workflow wrapper."""
+"""Tests for scripts/frost.py, which runs workflows in the pinned Docker image."""
 
 import json
 import os
@@ -48,7 +48,7 @@ from scripts.frost import (
 
 
 def test_cocotb_workflow_always_cleans_before_running() -> None:
-    """The convenience path must retain the repository's clean-build rule."""
+    """The cocotb shortcut runs ``make clean`` before the cocotb runner."""
     command = workflow_command("cocotb", ["hello_world", "--random-seed=7"])
 
     assert command[:4] == [
@@ -86,7 +86,7 @@ def test_run_requires_a_command() -> None:
 
 
 def test_environment_forwarding_is_scoped_and_deterministic() -> None:
-    """Only relevant, non-secret workflow controls should cross the boundary."""
+    """Only workflow variables are forwarded, sorted; PATH and secrets are not."""
     environment = {
         "FROST_COCOTB_MEM_CONFIG": "ddr",
         "COCOTB_RANDOM_SEED": "7",
@@ -105,7 +105,7 @@ def test_environment_forwarding_is_scoped_and_deterministic() -> None:
 
 
 def test_docker_command_runs_as_host_user_and_mounts_checkout() -> None:
-    """Generated runs should preserve ownership and use the local pinned image."""
+    """Runs use the host UID/GID and local image, and mount the cache and checkout."""
     command = build_docker_command(
         ["python3", "tests/test_run_formal.py", "--list-targets"],
         repository_root=Path("/work/frost"),
@@ -175,7 +175,7 @@ def test_image_probe_is_networkless_read_only_and_checkout_free() -> None:
 def test_timed_out_probe_container_is_force_removed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bounded doctor probe must not leak its container after client timeout."""
+    """A probe that times out has its container force-removed."""
     commands: list[list[str]] = []
 
     def fake_run(command: Sequence[str], **_kwargs: object) -> SimpleNamespace:
@@ -400,7 +400,7 @@ def test_cache_symlinks_are_rejected(tmp_path: Path) -> None:
 def test_cache_entry_inspection_errors_are_failures(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Doctor must not call a partially unreadable executable cache healthy."""
+    """Doctor fails a cache that has an entry it cannot inspect."""
     cache = tmp_path / "cache"
     cache.mkdir(mode=0o700)
     blocked = cache / "blocked"
@@ -423,7 +423,7 @@ def test_cache_entry_inspection_errors_are_failures(
 def test_doctor_gates_docker_checks_and_remains_read_only(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A missing CLI skips dependent checks while local diagnostics continue."""
+    """A missing Docker CLI skips the Docker checks; local checks still run."""
     home = tmp_path / "home"
     cache = home / ".cache" / "frost" / "container"
 
@@ -597,7 +597,10 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
 def test_fast_checks_run_exact_lanes_keep_going_and_report_first_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Ordinary lane failures aggregate, preserve order, status, and timings."""
+    """Without fail-fast, both lanes run in order and are timed.
+
+    The status is the first failure's.
+    """
     commands: list[list[str]] = []
     statuses = iter((3, 4))
     clock = iter((10.0, 11.25, 20.0, 22.5))
@@ -696,7 +699,7 @@ def test_fast_checks_return_success_when_both_lanes_pass(tmp_path: Path) -> None
 def test_fast_checks_stop_after_docker_infrastructure_failure(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Docker launch failures stop even when ordinary failures would aggregate."""
+    """A Docker launch failure (status 125) stops the run even without fail-fast."""
     commands: list[list[str]] = []
 
     def runner(command: Sequence[str]) -> int:

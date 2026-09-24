@@ -231,18 +231,18 @@ def _assert_decode(
 
 @cocotb.test()
 async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
-    """All 131,072 parcel/predicate combinations have exact fast cofactors.
+    """Every *_fast output equals its full counterpart for all 131,072 inputs.
 
-    Covers the slot-2 bit cofactors, the illegal flag and the PD field
-    cofactors (bits 31:28, 26, 24:20, 19:18 and 14:12).
+    Each parcel runs with both i_rd_is_x2 values. Checks bits 8, 15, {20,9},
+    and {27,25}, the fields 31:28, 26, 24:20, 19:18, and 14:12, and the
+    illegal flag.
     """
     for raw in range(1 << 16):
         dut.i_instr_compressed.value = raw
         for rd_is_x2 in (0, 1):
-            # Exercise both values independently of raw[11:7]. The inconsistent
-            # cases matter because the fast cofactor promises equality over the
-            # decompressor's complete input domain, not only the system-level
-            # predecode invariant.
+            # Drive both values regardless of raw[11:7]. The fast outputs must
+            # equal the full ones even when i_rd_is_x2 disagrees with the
+            # parcel, not only when the predecode is consistent.
             dut.i_rd_is_x2.value = rd_is_x2
             await _settle()
 
@@ -318,13 +318,13 @@ async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
             fast_illegal = int(dut.o_illegal_fast.value)
             assert fast_illegal == canonical_illegal, (
                 f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast illegal={fast_illegal}, canonical illegal={canonical_illegal}"
+                f"fast illegal={fast_illegal}, full illegal={canonical_illegal}"
             )
 
 
 @cocotb.test()
 async def test_all_rvc_source_metadata_matches_decompressor(dut: Any) -> None:
-    """All 49,152 RVC parcels produce the exact source-hot and remaining rs1 bits."""
+    """All 49,152 RVC parcels match the predecode model's expansion and source bits."""
     for raw in range(1 << 16):
         if raw & 0x3 == 0x3:
             continue
@@ -724,11 +724,9 @@ async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
 
 @cocotb.test()
 async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
-    """rd=x0 forms of C.ADD/C.MV/C.LUI/C.SLLI are HINTs that must nop.
+    """rd=x0 forms of C.ADD/C.MV/C.LUI/C.SLLI are HINTs that execute as NOPs.
 
-    They expand to a write of x0 (an architectural nop) and must not raise
-    illegal. Regression for the cadd arch-test livelock: these were wrongly
-    flagged illegal, and with no trap handler the trap looped to mtvec=0.
+    They expand to a write of x0 and must not be flagged illegal.
     """
     for raw, name in (
         (0x900A, "c.add x0,x2"),  # C.ADD rd=0 (rs2!=0)
@@ -749,10 +747,9 @@ async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
 
 
 # ============================================================================
-# RV64C vectors (M4): the reinterpreted slots expand to their RV64 meanings.
-# The all-parcels cross-check above compares only the three source-hot bits
-# of every expansion against the offline model; these tests pin the full
-# architectural expansions.
+# RV64C: the slots that RV64 reinterprets expand to their RV64 meanings. These
+# directed vectors check against hand-packed encodings, independent of the
+# offline predecode model used above.
 # ============================================================================
 @cocotb.test()
 async def test_rv64_c_addiw_expands_and_rd0_is_reserved(dut: Any) -> None:

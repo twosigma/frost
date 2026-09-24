@@ -16,16 +16,9 @@
 
 A Python model of the coherent DMA port: it may refuse a request whose
 line it "holds locked", answers after a random latency and out of order,
-and echoes a function of the address as read data. Checked: every
-response reaches its owner with its kind and tag and the right data (id
-conservation and steering); a side never holds more than its cap so the
-other side always finds an entry; RX priority with the grant-counted
-bound (TX is served within the bound under continuous RX traffic); a
-refused RX request lets a TX request to another line through the next
-cycle; an address outside the aperture is refused locally with an error
-response and no port request; the RESET drain withdraws registered
-requests and reports idle once the fired ones returned, including a
-request that fires at the edge registering the drain level.
+and echoes a function of the address as read data. Every request an engine
+hands the front-end must get exactly one response, steered back to that
+engine with the request's kind and tag.
 """
 
 import random
@@ -357,9 +350,10 @@ async def test_refused_rx_does_not_block_tx(dut: Any) -> None:
 
 @cocotb.test()
 async def test_refused_tx_under_saturated_priority_does_not_block_rx(dut: Any) -> None:
-    """TX's priority saturates against a stream of RX grants while its own line.
+    """A refused TX request with saturated priority does not block RX.
 
-    is locked; every refused TX presentation must hand the next turn to RX.
+    TX's line is locked while its grant count saturates against a stream of
+    RX grants; every refused TX presentation must hand the next turn to RX.
     """
     await _setup(dut)
     port = _PortModel(dut, latency=(1, 3), reorder=False, seed=8)
@@ -423,7 +417,7 @@ async def test_aperture_refusal_is_local(dut: Any) -> None:
 
 @cocotb.test()
 async def test_stop_withdraws_and_drains(dut: Any) -> None:
-    """i_stop withdraws registered requests (answered with an error) and idle follows the fired ones' responses."""
+    """i_stop withdraws registered requests with an error; idle waits for the fired ones."""
     await _setup(dut)
     port = _PortModel(dut, latency=(20, 30), seed=7)
     bus = _ReqBus(dut)

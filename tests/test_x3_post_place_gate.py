@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Exercise the native gate protocol with controlled timing-engine responses."""
+"""Run the X3 post-place timing gate against mocked Vivado timing queries."""
 
 import os
 from pathlib import Path
@@ -80,7 +80,7 @@ source [lindex $argv 0]
 
 
 def run_gate(tmp_path: Path, **overrides: str) -> subprocess.CompletedProcess[str]:
-    """Run the actual gate with deterministic timing responses and stale evidence."""
+    """Run the gate with mocked timing results over a stale PASS audit."""
     model = tmp_path / "model.tcl"
     model.write_text(MODEL)
     # A failed new measurement must never leave a previous passing audit behind.
@@ -159,14 +159,14 @@ def test_calculated_threshold_decides_rounded_boundary(
 def test_invalid_or_overconstrained_measurement_removes_stale_pass(
     tmp_path: Path, override: dict[str, str]
 ) -> None:
-    """Missing paths, wrong clocks or added uncertainty cannot reuse an old PASS."""
+    """An invalid or overconstrained run fails and deletes the stale PASS audit."""
     result = run_gate(tmp_path, **override)
     assert result.returncode != 0
     assert not (tmp_path / "post_place_gate.txt").exists()
 
 
 def test_divided_clock_and_explicit_zero_uncertainty(tmp_path: Path) -> None:
-    """The native gate records the actual divided clock and accepts explicit UU0."""
+    """The gate records a divided clock period and accepts an explicit UU of zero."""
     result = run_gate(tmp_path, PERIOD="6.666", SLACK="0.500", UU="0.000")
     assert result.returncode == 0, result.stderr
     assert "CPU_PERIOD_NS=6.666" in (tmp_path / "post_place_gate.txt").read_text()

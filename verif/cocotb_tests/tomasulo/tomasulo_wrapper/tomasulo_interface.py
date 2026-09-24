@@ -17,7 +17,7 @@
 Reuses the packing/unpacking functions from the ROB, RAT, and RS interfaces
 and adds a compound ``dispatch`` that drives ROB alloc, RAT rename, and the
 checkpoint save in one cycle. Covers six RS instances with per-RS
-issue/status/fu_ready access and an observation helper for the production INT
+issue/status/fu_ready access and an observation helper for the dual-issue INT
 station's second issue port.
 """
 
@@ -75,7 +75,7 @@ RS_FDIV = 5
 
 
 def _parse_instr_op_enum() -> dict[str, int]:
-    """Parse instr_op_e so direct wrapper tests track current memory op values."""
+    """Parse riscv_pkg::instr_op_e from riscv_pkg.sv so op encodings track the RTL."""
     pkg_path = (
         Path(__file__).resolve().parents[4]
         / "hw"
@@ -131,7 +131,7 @@ _INSTR_OPS = _parse_instr_op_enum()
 
 
 def instr_op_value(name: str) -> int:
-    """Return one current ``riscv_pkg::instr_op_e`` encoding by name."""
+    """Return the ``riscv_pkg::instr_op_e`` encoding of a member name."""
     try:
         return _INSTR_OPS[name]
     except KeyError as exc:
@@ -212,9 +212,10 @@ def _mem_size_for_op(op: int) -> int:
     return 2
 
 
-# Per-RS DUT signal names for issue, fu_ready, full, empty, count.
-# INT_RS uses the backward-compatible names (o_rs_issue, i_rs_fu_ready, etc.).
-# o_rs_full is a dispatch-target mux; o_int_rs_full is the dedicated INT_RS full.
+# Per-RS DUT signal names for issue, fu_ready, full, empty, and count. Of
+# INT_RS's five, only the full flag (o_int_rs_full) has a station prefix; the
+# others are o_rs_issue, i_rs_fu_ready, o_rs_empty, and o_rs_count. o_rs_full
+# is the full flag of whichever station i_rs_dispatch targets.
 _RS_SIGNAL_MAP = {
     RS_INT: {
         "issue": "o_rs_issue",
@@ -337,13 +338,12 @@ class TomasuloInterface:
         self.dut.i_rob_checkpoint_id.value = 0
 
         # ROB external coordination
-        # Zero-latency fence.i cache sync (mirrors the no-cached-tier shape).
+        # FENCE.I cache sync completes at once, as in a build without the
+        # cached tier.
         self.dut.i_fence_i_sync_done.value = 1
-        # M-mode privilege view (Phase 3 M1 head-gate inputs): nothing
-        # blocked, nothing illegal, FP on. Left floating, these can read as
-        # 1 in the 2-state build, so every op at the ROB head raises a
-        # privilege fault: no commit ever fires and the flush clears the
-        # RAT out from under the rename checks.
+        # M-mode privilege view: nothing blocked, nothing illegal, FP on. The
+        # ROB checks legality at allocation, and an op that fails traps at the
+        # ROB head instead of committing.
         self.dut.i_sepc.value = 0
         self.dut.i_priv.value = 3  # PrivM
         self.dut.i_counter_blocked.value = 0
@@ -354,8 +354,8 @@ class TomasuloInterface:
         self.dut.i_priv_is_u.value = 0
         self.dut.i_mcounteren.value = 7
         self.dut.i_mstatus_fs_off.value = 0
-        # Data translation off: the whole MMU stays on its
-        # combinational bypass arms and the D10 flush pulse never fires.
+        # Data translation off: the data MMU stays on its combinational bypass
+        # paths, and the CSR translation-invalidate pulse stays low.
         self.dut.i_translation_active.value = 0
         self.dut.i_mmu_sum.value = 0
         self.dut.i_mmu_mxr.value = 0
@@ -563,14 +563,12 @@ class TomasuloInterface:
         The arbiter broadcasts to both the ROB (cdb_write) and all RS (cdb
         broadcast for wakeup).
 
-        Every arbiter input is muxed as
-        `<internal adapter>.valid ? <internal adapter> : i_fu_complete_N`
-        (the ``cdb_arb_in_*`` assignments in tomasulo_wrapper.sv): slots 0-3
-        by the ALU/MUL/DIV/LQ adapters, slots 4-6 by the fp_add/fp_mul/fp_div
-        adapters, and slot 7 by the ALU2 adapter. The two ALU slots also split
-        a true live-shim value from the held/test-injection tree fallback
-        inside the wrapper. No slot is external-only: an injection on any slot
-        reaches the arbiter only while that slot's internal adapter is idle.
+        Every slot has an internal adapter (0-3: ALU, MUL, DIV, MEM; 4-6:
+        FP_ADD, FP_MUL, FP_DIV; 7: ALU2), and the wrapper's ``cdb_arb_in_*``
+        muxes give it priority: an injection on ``i_fu_complete_N`` reaches the
+        arbiter only in cycles when that slot's adapter presents nothing. On
+        the two ALU slots, an injected value goes through the arbiter tree, not
+        the live-value bypass (CDB arbiter README, "Live ALU values").
         """
         req = FuComplete(
             valid=True,
@@ -604,10 +602,10 @@ class TomasuloInterface:
         """Read the CDB grant vector."""
         return int(self.dut.o_cdb_grant.value)
 
-    # Backward-compat aliases for tests that used the old CDB interface. They
-    # route through FU_FP_ADD (slot 4) rather than slots 0-3, which the
-    # ALU/MUL/DIV/LQ adapters drive. Slot 4 has its own fp_add adapter, so an
-    # injection lands only while that adapter is idle (see drive_fu_complete).
+    # CDB shorthands. They inject on FU_FP_ADD (slot 4) rather than slots 0-3,
+    # which the ALU, MUL, DIV, and MEM adapters drive. Slot 4 has its own
+    # FP_ADD adapter, so an injection lands only while that adapter is idle
+    # (see drive_fu_complete).
     def drive_cdb(
         self,
         tag: int,
@@ -616,7 +614,7 @@ class TomasuloInterface:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Drive CDB via FU_FP_ADD completion (backward compat)."""
+        """Drive CDB via FU_FP_ADD completion."""
         self.drive_fu_complete(
             FU_FP_ADD,
             tag=tag,
@@ -627,11 +625,11 @@ class TomasuloInterface:
         )
 
     def clear_cdb(self) -> None:
-        """Clear CDB by clearing all FU completions (backward compat)."""
+        """Clear CDB by clearing all FU completions."""
         self.clear_all_fu_completes()
 
     def drive_cdb_write(self, write: CDBWrite) -> None:
-        """Drive CDB write via FU_FP_ADD completion (backward compat)."""
+        """Drive CDB write via FU_FP_ADD completion."""
         self.drive_fu_complete(
             FU_FP_ADD,
             tag=write.tag,
@@ -642,11 +640,11 @@ class TomasuloInterface:
         )
 
     def clear_cdb_write(self) -> None:
-        """Clear CDB write by clearing FU_FP_ADD (backward compat)."""
+        """Clear CDB write by clearing FU_FP_ADD."""
         self.clear_fu_complete(FU_FP_ADD)
 
     def drive_cdb_broadcast(self, tag: int, value: int = 0, **kwargs: Any) -> None:
-        """Drive CDB broadcast via FU_FP_ADD completion (backward compat)."""
+        """Drive CDB broadcast via FU_FP_ADD completion."""
         self.drive_fu_complete(
             FU_FP_ADD,
             tag=tag,
@@ -657,7 +655,7 @@ class TomasuloInterface:
         )
 
     def clear_cdb_broadcast(self) -> None:
-        """Clear CDB broadcast by clearing FU_FP_ADD (backward compat)."""
+        """Clear CDB broadcast by clearing FU_FP_ADD."""
         self.clear_fu_complete(FU_FP_ADD)
 
     # =========================================================================
@@ -798,7 +796,7 @@ class TomasuloInterface:
         self.dut.i_rob_entry_epoch.value = self._rob_entry_epoch_mask
 
     def record_allocated_tags(self, *tags: int) -> None:
-        """Record post-allocation ROB epochs for tags allocated this cycle."""
+        """Flip the epoch bit of each tag allocated this cycle, as cpu_ooo does."""
         for tag in set(tags):
             self._rob_entry_epoch_mask ^= 1 << (tag & MASK_TAG)
         self._drive_rob_entry_epoch()
@@ -808,13 +806,17 @@ class TomasuloInterface:
     # =========================================================================
 
     def drive_flush_en(self, flush_tag: int) -> None:
-        """Drive a partial flush and its production early-recovery identity."""
+        """Drive a partial flush, raising i_early_recovery_flush with it.
+
+        The wrapper asserts the two agree whenever speculative_flush_all is low
+        (tomasulo_wrapper README, "Flush coordination").
+        """
         self.dut.i_flush_en.value = 1
         self.dut.i_flush_tag.value = flush_tag
         self.dut.i_early_recovery_flush.value = 1
 
     def clear_flush_en(self) -> None:
-        """Deassert partial flush enable."""
+        """Deassert the partial flush and i_early_recovery_flush."""
         self.dut.i_flush_en.value = 0
         self.dut.i_early_recovery_flush.value = 0
 
@@ -1002,13 +1004,17 @@ class TomasuloInterface:
         return int(self.dut.o_checkpoint_alloc_id.value)
 
     # =========================================================================
-    # RS Dispatch (single input, routed by rs_type in the wrapper)
+    # RS Dispatch (i_rs_dispatch routed by rs_type, or per-RS split inputs)
     # =========================================================================
 
     def _rs_dispatch_kwargs(
         self, rs_type: int, valid: bool, kwargs: dict[str, Any]
     ) -> dict[str, Any]:
-        """Build a packed-dispatch kwargs dict with wrapper defaults."""
+        """Build the pack_rs_dispatch kwargs for one packet.
+
+        For RS_MEM, the LQ/SQ, FP-memory, size, and sign fields default to
+        values derived from ``op``.
+        """
         dispatch_kwargs = dict(kwargs)
         dispatch_kwargs["valid"] = valid
         dispatch_kwargs["rs_type"] = rs_type
@@ -1071,7 +1077,7 @@ class TomasuloInterface:
         getattr(self.dut, sig_name).value = 1 if ready else 0
 
     def set_rs_fu_ready(self, ready: bool = True) -> None:
-        """Set INT_RS functional unit ready (backward compat)."""
+        """Set INT_RS functional unit ready."""
         self.set_fu_ready(RS_INT, ready)
 
     def set_all_fu_ready(self, ready: bool = True) -> None:
@@ -1085,11 +1091,11 @@ class TomasuloInterface:
         return unpack_rs_issue(int(getattr(self.dut, sig_name).value))
 
     def read_rs_issue(self) -> dict:
-        """Read and unpack INT_RS issue output (backward compat)."""
+        """Read and unpack INT_RS issue output."""
         return unpack_rs_issue(int(self.dut.o_rs_issue.value))
 
     def read_int_rs_issue_2(self) -> dict:
-        """Read the production dual-issue INT_RS's second internal port."""
+        """Read the dual-issue INT_RS's second issue port (an internal signal)."""
         return unpack_rs_issue(int(self.dut.int_rs_issue_2_raw.value))
 
     def rs_issue_valid_for(self, rs_type: int) -> bool:
@@ -1098,7 +1104,7 @@ class TomasuloInterface:
 
     @property
     def rs_issue_valid(self) -> bool:
-        """Return whether INT_RS issue output is valid (backward compat)."""
+        """Return whether INT_RS issue output is valid."""
         return self.read_rs_issue()["valid"]
 
     # =========================================================================
@@ -1129,7 +1135,7 @@ class TomasuloInterface:
         """Return o_rs_full (dispatch-target mux, not the dedicated INT_RS full)."""
         return bool(self.dut.o_rs_full.value)
 
-    # Backward-compat properties (INT_RS)
+    # INT_RS shorthands
     @property
     def rs_full(self) -> bool:
         """Return whether INT_RS is full (dedicated o_int_rs_full signal)."""
@@ -1137,12 +1143,12 @@ class TomasuloInterface:
 
     @property
     def rs_empty(self) -> bool:
-        """Return whether INT_RS is empty (backward compat)."""
+        """Return whether INT_RS is empty."""
         return self.rs_empty_for(RS_INT)
 
     @property
     def rs_count(self) -> int:
-        """Return number of valid INT_RS entries (backward compat)."""
+        """Return number of valid INT_RS entries."""
         return self.rs_count_for(RS_INT)
 
     # =========================================================================
@@ -1250,7 +1256,7 @@ class TomasuloInterface:
         The data tier returns aligned 64-bit beats (hw/rtl/README.md,
         "Data-tier bus contract"). A 32-bit word is replicated into both lanes
         so the response is correct at either addr[2]; pass ``dword=True`` with
-        a full 64-bit value for FLD-style beats.
+        a full 64-bit value for dword loads such as LD and FLD.
 
         A response answers either the fast tier's single outstanding request
         or one cached slot: ``cached``/``slot`` default to the tier and slot
@@ -1276,7 +1282,7 @@ class TomasuloInterface:
         self.dut.i_lq_mem_read_is_cached.value = 0
 
     def drive_lq_mem_request_pending(self, pending: bool = True) -> None:
-        """Drive the router's registered pending-Q feedback into the LQ."""
+        """Drive the router's registered pending bit for its one-entry LQ hold."""
         self.dut.i_lq_mem_request_pending.value = 1 if pending else 0
 
     def read_lq_mem_request(self) -> dict:

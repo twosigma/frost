@@ -12,10 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Generate RISC-V instruction parameters with valid registers and immediates.
+"""Generate and encode random RISC-V instructions for the CPU reference harness.
 
-Enforces access alignment and even branch/jump offsets; optional constraints
-keep addresses inside allocated memory.
+Memory accesses are aligned and stay below ``MMIO_BASE_ADDR``; an optional
+size limit keeps them inside allocated memory. Branch and JAL offsets are
+multiples of 4 and JALR targets are word-aligned, so the PC stays word-aligned.
 """
 
 import random
@@ -47,7 +48,7 @@ from encoders.op_tables import (
     AMO_LR_SC,
     # Machine-mode trap instructions (for directed tests only)
     TRAP_INSTRS,
-    # F extension (floating-point)
+    # F and D extensions (floating-point)
     FP_ARITH_2OP,
     FP_ARITH_1OP,
     FP_FMA,
@@ -78,7 +79,7 @@ class InstructionParams(NamedTuple):
     source_register_2: int
     """Second source register index (rs2, 0-31). For FP ops, may be FP register."""
     immediate: int
-    """Immediate value for I-type instructions."""
+    """Immediate: the I-type immediate, the S-type store offset, or the CSR zimm."""
     branch_offset: int | None
     """Branch/jump offset for B-type and J-type (None for others)."""
     csr_address: int | None = None
@@ -116,7 +117,7 @@ ALL_FP_OPS = FP_OPS_TO_FP_REG | FP_OPS_TO_INT_REG | FP_OPS_NO_WRITE
 """All floating-point operations."""
 
 _RANDOM_MEMORY_OPS = LOADS | STORES | FP_LOADS | FP_STORES | AMO | AMO_LR_SC
-"""Randomly generated operations that issue a data-memory access."""
+"""Operations that access data memory, which assert_random_memory_access_in_ram checks."""
 
 
 # Grouped FP op tables by encoder signature for encode_instruction()
@@ -194,9 +195,10 @@ def _adjust_imm_to_avoid_mmio(
 ) -> int:
     """Adjust immediate if the effective address would land in reserved high space.
 
-    Frost treats every address at or above 0x40000000 as MMIO/reserved space.
-    Random RAM accesses stay below that boundary so the DUT and the software
-    memory model exercise the same backing store.
+    The generator treats every address at or above ``MMIO_BASE_ADDR``
+    (0x40000000, where MMIO starts) as reserved. Random RAM accesses stay below
+    that boundary so the DUT and the software memory model exercise the same
+    backing store.
 
     Args:
         rs1_value: Base register value
@@ -205,8 +207,8 @@ def _adjust_imm_to_avoid_mmio(
 
     Returns:
         An immediate that keeps the access below MMIO_BASE_ADDR, or the
-        original immediate when it already does or when no 12-bit immediate
-        can reach RAM from this base.
+        original immediate when it already does or when the adjusted value
+        does not fit in 12 bits.
     """
     effective_address = _effective_address(rs1_value, immediate)
 
@@ -222,8 +224,7 @@ def _adjust_imm_to_avoid_mmio(
     if IMM_12BIT_MIN <= new_imm <= IMM_12BIT_MAX:
         return new_imm
 
-    # This base cannot reach RAM within the 12-bit immediate range; the caller
-    # re-picks rs1 for that rare case.
+    # The adjusted immediate does not fit in 12 bits; the caller re-picks rs1.
     return immediate
 
 
@@ -259,9 +260,9 @@ def _generate_constrained_memory_operand(
 ) -> tuple[int, int]:
     """Return a base register and immediate whose address is in allocated RAM.
 
-    The preferred random register usually cannot reach the low initialized
-    memory with a 12-bit immediate. In that case x0 provides a guaranteed low
-    base for a well-formed architectural register-file snapshot.
+    Tries ``preferred_rs1`` first. A random register value usually cannot reach
+    low memory with a 12-bit immediate, so x0, which holds 0 in any valid
+    register-file snapshot, is the fallback.
     """
     address_limit = min(memory_size_constraint, MMIO_BASE_ADDR)
     candidate_registers = (preferred_rs1, 0) if preferred_rs1 else (0,)
@@ -285,7 +286,7 @@ def _generate_constrained_memory_operand(
 def _choose_constrained_word_aligned_rs1(
     register_file_state: list[int], memory_size_constraint: int
 ) -> int:
-    """Choose a word-aligned register value inside allocated, non-MMIO RAM."""
+    """Choose a register holding a word-aligned address in allocated, non-MMIO RAM."""
     address_limit = min(memory_size_constraint, MMIO_BASE_ADDR)
     if address_limit <= 0:
         raise ValueError("memory size constraint must be positive")
@@ -305,15 +306,15 @@ class InstructionGenerator:
 
     @staticmethod
     def get_all_operations() -> list[str]:
-        """Get list of all supported RISC-V integer operations.
+        """Get the integer operations the random generator draws from.
 
         Returns:
             List of operation mnemonics (e.g., ['add', 'sub', 'lw', ...])
 
         Note:
-            The CSR instructions read the Zicntr counters (cycle, time,
-            instret), which are timing-dependent. The test framework tracks
-            these counters in software to check the values read back.
+            The CSR instructions target INSTRET, the only counter in
+            ZICNTR_CSRS. The test framework tracks it in software to check
+            the value read back.
         """
         return (
             list(R_ALU.keys())
@@ -365,9 +366,10 @@ class InstructionGenerator:
         Args:
             register_file_state: Current register file values (32 entries).
                                 Used for calculating effective addresses.
-            force_one_address: If True, force address calculation to use only
-                              register value (immediate=0, rs1=0). Useful for
-                              stressing memory hazards.
+            force_one_address: If True, use rs1=x0 and a zero immediate (JALR
+                              still gets a random one), so every memory access
+                              targets address 0. Useful for stressing memory
+                              hazards.
             constrain_to_memory_size: If provided, constrains memory addresses
                                      to [0, memory_size) to exercise allocated
                                      memory rather than generating many
@@ -375,7 +377,7 @@ class InstructionGenerator:
 
         Returns:
             InstructionParams for the generated instruction (csr_address is set
-            only for CSR reads; source_register_3 stays 0).
+            only for CSR instructions; source_register_3 stays 0).
 
         Examples:
             >>> regfile = [0] * 32
@@ -390,7 +392,7 @@ class InstructionGenerator:
         # RISC-V register indices (rd = destination, rs1/rs2 = sources)
         destination_register = random.randint(
             1, 31
-        )  # Never x0 (except stores/branches)
+        )  # Never x0; stores and branches have no rd
         source_register_1 = 0 if force_one_address else random.randint(0, 31)
         source_register_2 = random.randint(0, 31)
 
@@ -407,7 +409,8 @@ class InstructionGenerator:
             "bexti",
             "rori",
         ):
-            # Shift, Zbs bit-position, and Zbb rotate immediates use only 5 bits
+            # Shift, Zbs bit-position, and Zbb rotate immediates are 6-bit
+            # shift amounts
             immediate_value = random.randint(0, SHIFT_AMOUNT_MASK)
         else:
             # Standard 12-bit signed immediate range
@@ -442,15 +445,15 @@ class InstructionGenerator:
                     IMM_12BIT_MAX,
                 )
         elif operation == "jalr":
-            # JALR target = (rs1 + imm) & ~1. The 32-bit tests keep the PC
-            # word-aligned, so bit[1] of (rs1 + imm) has to be 0; the &~1 then
-            # leaves a multiple of 4.
+            # JALR target = (rs1 + imm) & ~1. The random stream keeps the PC
+            # word-aligned (see the branch offsets below), so bit[1] of
+            # (rs1 + imm) has to be 0; the &~1 then leaves a multiple of 4.
             rs1_val = register_file_state[source_register_1]
             # Pick an immediate, then nudge it so the sum has bit[1] clear.
             base_imm = random.randint(IMM_12BIT_MIN, IMM_12BIT_MAX)
             sum_bits = (rs1_val + base_imm) & 0x3
             if sum_bits == 2:
-                immediate_value = base_imm + 2  # Will wrap and clear bit[1]
+                immediate_value = base_imm + 2  # 2+2=4, clears bits[1:0]
             elif sum_bits == 3:
                 immediate_value = base_imm + 1  # 3+1=4, clears bits[1:0]
             else:
@@ -524,24 +527,25 @@ class InstructionGenerator:
                     source_register_1 = 0
                     immediate_value = 0
 
-        # The C-extension IF stage allows a PC on a halfword boundary. The
-        # 32-bit tests carry no compressed instructions, so branch and jump
+        # With the C extension the core accepts a PC on a halfword boundary, but
+        # the random stream has no compressed instructions, so branch and jump
         # offsets are multiples of 4 to keep the PC word-aligned.
         branch_offset = None
         if operation in BRANCHES:
-            # Branch offsets are 13-bit signed, must be multiple of 4 for 32-bit tests
+            # 13-bit signed offset, never 0
             branch_offset = random.randrange(-4096, 4096, 4) or 4
         elif operation == "jal":
-            # JAL offsets are 21-bit signed, must be multiple of 4 for 32-bit tests
+            # 21-bit signed offset
             branch_offset = random.randrange(-1048576, 1048576, 4)
 
         csr_address = None
         if operation in CSRS:
             csr_address = random.choice(ZICNTR_CSRS)
-            # Pure read (the csrr pseudo-instruction): rs1=x0 or zimm=0 leaves
-            # the CSR unmodified.
-            source_register_1 = 0  # rs1=x0 means no write to CSR
-            immediate_value = 0  # zimm=0 for immediate variants
+            # rs1=x0 or zimm=0 makes csrrs, csrrc, csrrsi, and csrrci pure
+            # reads. csrrw and csrrwi still write, which is an illegal
+            # instruction on the read-only INSTRET.
+            source_register_1 = 0  # rs1=x0 for the register forms
+            immediate_value = 0  # zimm=0 for the immediate forms
 
         assert_random_memory_access_in_ram(
             operation,
@@ -581,7 +585,7 @@ class InstructionGenerator:
         Args:
             int_register_file_state: Current integer register file values (32 entries)
             fp_register_file_state: Current FP register file values (32 entries)
-            constrain_to_memory_size: If provided, constrains memory addresses
+            constrain_to_memory_size: If provided, keeps memory addresses in [0, memory_size)
             fp_operations: Optional list of FP operations to choose from
 
         Returns:
@@ -594,8 +598,8 @@ class InstructionGenerator:
         )
         operation = random.choice(available_fp_ops)
 
-        # Defaults; the memory ops below replace the immediate (and rs1 when
-        # the base lands in MMIO space).
+        # Defaults. FP loads and stores below replace the immediate and may
+        # replace rs1.
         destination_register = random.randint(0, 31)
         source_register_1 = random.randint(0, 31)
         source_register_2 = random.randint(0, 31)
@@ -710,7 +714,7 @@ class InstructionGenerator:
         Args:
             int_register_file_state: Current integer register file values
             fp_register_file_state: Current FP register file values
-            force_one_address: If True, force simple address calculation
+            force_one_address: Passed to generate_random_instruction; FP ops ignore it
             constrain_to_memory_size: Constrain memory addresses to this range
             fp_probability: Probability (0.0-1.0) of generating FP instruction
             fp_operations: Optional list of FP operations to choose from
@@ -753,7 +757,7 @@ class InstructionGenerator:
             destination_register: Destination register index (0-31)
             source_register_1: First source register index (0-31)
             source_register_2: Second source register index (0-31)
-            immediate_value: Immediate value for I-type instructions
+            immediate_value: Immediate for I-type and S-type instructions
             branch_offset: Branch/jump offset (for B-type and J-type)
             csr_address: CSR address for Zicsr instructions (e.g., 0xC00 for cycle)
             source_register_3: Third source register for FMA instructions (0-31)
@@ -782,7 +786,7 @@ class InstructionGenerator:
                 destination_register, source_register_1, immediate_value
             )
         elif operation in I_UNARY:
-            # I-type format: Zbb unary ops (clz, ctz, cpop, sext.b, sext.h, orc.b, rev8)
+            # Unary bit-manipulation ops (Zbb, Zbkb): rd and rs1 only
             encoder_function, _ = I_UNARY[operation]
             return encoder_function(destination_register, source_register_1)
         elif operation in LOADS:
@@ -802,7 +806,7 @@ class InstructionGenerator:
             encoder_function = BRANCHES[operation]
             return encoder_function(source_register_2, source_register_1, branch_offset)
         elif operation in JUMPS:
-            # J-type format: jump operations
+            # Jumps: JAL is J-type, JALR is I-type
             encoder_function = JUMPS[operation]
             return (
                 encoder_function(destination_register, branch_offset)
@@ -816,8 +820,7 @@ class InstructionGenerator:
             encoder_function = FENCES[operation]
             return encoder_function()
         elif operation in CSRS:
-            # CSR instructions. The random stream only reads the Zicntr
-            # counters (rs1=0 or zimm=0).
+            # Zicsr instructions
             encoder_function = CSRS[operation]
             assert csr_address is not None, "CSR address required for CSR instructions"
             if operation in ("csrrw", "csrrs", "csrrc"):

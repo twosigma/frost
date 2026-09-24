@@ -72,7 +72,7 @@ def _assert_next(dut: Any, *, pc: int, pc_reg: int) -> None:
 
 @cocotb.test()
 async def test_fetch_candidate_priority_and_wraparound(dut: Any) -> None:
-    """Sweep overlapping controls and both size cofactors at carry boundaries."""
+    """Sweep all used controls, run/nop advance selects, and i_sel_nop at carry edges."""
     await _setup_test(dut)
     mask = (1 << 64) - 1
     # Different low bits in the two PCs catch accidental use of pc_reg[1] for
@@ -107,8 +107,8 @@ async def test_fetch_candidate_priority_and_wraparound(dut: Any) -> None:
                         dut.i_sel_nop.value = nop
                         dut.i_pc_fetch_advance_sel.value = fetch_sel
                         dut.i_pc_reg_advance_sel.value = reg_sel
-                        # Independent scalar version of the original two
-                        # priority chains: choose an increment, then correct.
+                        # Independent scalar reference for both priority
+                        # chains: choose an increment, then apply corrections.
                         increment = 2 + 2 * fetch_sel
                         if holdoff:
                             increment = 4
@@ -160,7 +160,7 @@ async def test_single_wide_compressed_and_32bit_increments(dut: Any) -> None:
 
 @cocotb.test()
 async def test_two_wide_bundle_increments_from_compressed_slot1(dut: Any) -> None:
-    """Two-wide IF bundles advance pc_reg by +4 or +6 behind compressed slot-1."""
+    """Two-wide bundles led by a compressed slot 1 advance both PCs by +4 or +6."""
     await _setup_test(dut)
 
     cases: tuple[tuple[bool, int, int], ...] = (

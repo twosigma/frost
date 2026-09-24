@@ -63,10 +63,8 @@ class TestConfig:
             one address, which stresses memory hazards and cache behavior.
 
         compressed_ratio: Fraction (0.0-1.0) of compressed (C extension)
-            instructions. 0.0 (the default) generates only 32-bit
-            instructions; above 0 mixes in 16-bit ones, which advance the PC
-            by 2 instead of 4. Only ALU compressed instructions are used, no
-            branches or jumps.
+            instructions. Nothing reads it: the random generator emits only
+            32-bit instructions.
     """
 
     num_loops: int = DEFAULT_NUM_TEST_LOOPS
@@ -85,11 +83,11 @@ def handle_branch_flush(
 ) -> tuple[str, int, int, int, int]:
     """Handle branch flush by inserting NOP (addi x0, x0, 0).
 
-    A taken branch flushes the pipeline: the instructions fetched after it
-    are discarded. The model stands in for them with a NOP, which adds 0 to
-    x0, writes the hardwired-zero x0, and advances the PC by 4.
+    A taken branch or jump discards the instructions fetched after it. The
+    reference model feeds a NOP for each, advancing the PC by 4, and treats
+    every branch and jump (JAL, JALR, conditional branches) as resolving in EX
+    with a three-cycle flush:
 
-    Legacy reference-model flush timeline:
         ┌─────────────────────────────────────────────────────────────┐
         │ Branch/jump taken in EX stage                               │
         │                                                             │
@@ -99,11 +97,9 @@ def handle_branch_flush(
         │ Cycle 3: All flags cleared             → Resume normal ops  │
         └─────────────────────────────────────────────────────────────┘
 
-    This legacy reference model treats all branches and jumps (JAL, JALR,
-    conditional branches) as resolving at EX with a 3-cycle flush. The OOO
-    CPU has variable recovery and commit timing. The cpu_random harness
-    remains CLI-only and needs a commit-indexed scoreboard before its
-    expected-value queues can validate the current core.
+    The OOO core recovers and commits with variable timing, so this model does
+    not match it. The cpu_random harness, which uses this model, runs from the
+    command line only and fails until it checks results in commit order.
 
     Args:
         state: Test state to update branch tracking
@@ -151,7 +147,7 @@ async def flush_remaining_outputs(
         else:
             await RisingEdge(dut.i_clk)
         cocotb.log.info(
-            f"len(register_file_expected_values_queue) is {len(state.register_file_current_expected_queue)}"
+            f"len(register_file_current_expected_queue) is {len(state.register_file_current_expected_queue)}"
         )
 
 
@@ -283,9 +279,9 @@ async def execute_nop(
 ) -> None:
     """Execute a NOP instruction (addi x0, x0, 0).
 
-    Used for pipeline warmup, for padding during branch-flush recovery, and
-    for waiting while pipeline effects propagate. The NOP reads x0, adds 0,
-    writes the hardwired-zero x0 (no effect), and advances the PC by 4.
+    Used to warm up the pipeline and to pad cycles while earlier instructions
+    take effect. The NOP writes the hardwired-zero x0 (no effect) and advances
+    the PC by 4.
 
     Args:
         dut_if: DUT interface for signal access

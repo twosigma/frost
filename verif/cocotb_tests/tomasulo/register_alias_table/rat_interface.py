@@ -14,8 +14,9 @@
 
 """Typed RAT DUT access and packed-struct conversion helpers.
 
-Verilator flattens packed structs into bit vectors, so this interface packs
-and unpacks their fields.
+Verilator flattens packed structs into bit vectors, so this interface unpacks
+the lookup results. It also keeps a shadow RATModel and drives synthetic
+ROB-valid, epoch, and head-tag inputs in place of a real ROB.
 """
 
 from typing import Any
@@ -135,8 +136,7 @@ class RATInterface:
         self.dut.i_fp_src2_addr.value = 0
         self.dut.i_fp_src3_addr.value = 0
 
-        # Source lookup addresses - slot 2 (2-wide dispatch).  Verilator
-        # zero-initializes top-level inputs anyway, so these only mirror slot 1.
+        # Source lookup addresses - slot 2 (2-wide dispatch)
         self.dut.i_int_src1_addr_2.value = 0
         self.dut.i_int_src2_addr_2.value = 0
         self.dut.i_fp_src1_addr_2.value = 0
@@ -242,14 +242,14 @@ class RATInterface:
         return self._rob_head_tag
 
     def _drive_rob_entry_valid(self) -> None:
-        """Drive the synthetic ROB-valid vector used by standalone RAT tests."""
+        """Drive the synthetic ROB-valid, epoch, and head-tag inputs."""
         rob_valid_mask = self.rob_entry_valid_mask
         self.dut.i_rob_entry_valid.value = rob_valid_mask
         self.dut.i_rob_entry_epoch.value = self.rob_entry_epoch_mask
         self.dut.i_rob_head_tag.value = self._rob_head_tag
 
     def _apply_pending_cycle_updates(self) -> None:
-        """Apply queued same-cycle effects to the synthetic ROB-valid vector."""
+        """Apply the cycle's queued operations to the shadow RAT and synthetic ROB."""
         if (
             self._pending_rename is None
             and self._pending_rename_2 is None

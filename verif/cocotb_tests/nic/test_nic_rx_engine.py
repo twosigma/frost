@@ -16,16 +16,9 @@
 
 The engine runs against the DMA model of dma_model.py (a memory with
 out-of-order responses) and a beat source standing in for the RX FIFO.
-Checked: frames land byte-exact at any buffer offset with nothing written
-outside the buffers and the status words; the status word carries DD, the
-received length and TRUNC/ERR as specified; the filter (station, group,
-promiscuous) consumes rejected frames without a descriptor; bad
-descriptors complete with DD|ERR and the ring keeps moving; a frame is
-held while the ring is empty; a descriptor posted after its line was
-prefetched is re-read after the doorbell; the status write is issued only
-after the data writes are answered and one is in flight at a time; abort
-completes with DD|ERR|ABORT; the drain reaches idle with no completion; a
-disable lets the frame in progress finish.
+Frames must land byte-exact at any buffer offset, with nothing written
+outside the buffers and the status words. A status write is issued only
+after the data writes are answered, and only one is in flight at a time.
 """
 
 import random
@@ -138,9 +131,9 @@ class _Env:
         raise AssertionError(f"{len(self.completions)} of {n} completions")
 
     async def wait_descriptor_fetched(self, limit: int = 2000) -> None:
-        """Wait until the engine's descriptor read has been answered (so a.
+        """Wait until the engine's descriptor read has been answered.
 
-        test may then withhold responses or acceptance without starving it).
+        A test may then withhold responses or acceptance without starving it.
         """
         for _ in range(limit):
             await FallingEdge(self.dut.i_clk)
@@ -284,7 +277,7 @@ async def test_status_after_data_slow_memory(dut: Any) -> None:
 
 @cocotb.test()
 async def test_one_status_write_in_flight(dut: Any) -> None:
-    """Status responses slower than whole frames: the next status write waits for the previous response."""
+    """With slow status responses, each status write waits for the previous one's response."""
     env = await _setup(dut, 12, latency=(1, 4), status_latency=(150, 150))
     frames = []
     for i in range(4):
@@ -307,7 +300,10 @@ async def test_one_status_write_in_flight(dut: Any) -> None:
 
 @cocotb.test()
 async def test_filter(dut: Any) -> None:
-    """Station, broadcast and multicast frames are taken; another unicast is consumed without a descriptor."""
+    """Station, broadcast, and multicast frames are taken; another unicast is filtered.
+
+    A filtered frame is consumed without a descriptor.
+    """
     env = await _setup(dut, 3, promisc=0)
     for i in range(3):
         env.post(i, BUF + i * 0x1000 + 2, 2048)
@@ -332,7 +328,10 @@ async def test_filter(dut: Any) -> None:
 
 @cocotb.test()
 async def test_truncation_and_bad_descriptors(dut: Any) -> None:
-    """A short buffer truncates; length 0 and buffers outside the aperture complete with ERR; the ring moves on."""
+    """A short buffer truncates; bad buffers complete with ERR and the ring moves on.
+
+    The bad buffers have length 0, lie outside the aperture, or straddle its end.
+    """
     env = await _setup(dut, 4)
     cases = [
         (BUF + 5, 100, 300, DD | TRUNC | 300),
@@ -422,7 +421,7 @@ async def test_doorbell_rereads_posted_descriptor(dut: Any) -> None:
 
 @cocotb.test()
 async def test_abort_mid_frame(dut: Any) -> None:
-    """A MAC-domain reset mid-frame completes the descriptor with DD|ERR|ABORT; the next frame is clean."""
+    """A frame cut by a MAC-domain reset completes with DD|ERR|ABORT; the next is clean."""
     env = await _setup(dut, 7)
     env.post(0, BUF + 7, 4096)
     env.post(1, BUF + 0x1000 + 7, 4096)
@@ -460,9 +459,9 @@ async def test_abort_mid_frame(dut: Any) -> None:
 
 @cocotb.test()
 async def test_abort_after_last_beat_completes_cleanly(dut: Any) -> None:
-    """A MAC-domain reset after the frame's last beat is in cuts nothing: the frame.
+    """A MAC-domain reset after the frame's last beat is in cuts nothing.
 
-    completes clean and whole (its writes need only the DMA port).
+    The frame completes clean and whole, since its writes need only the DMA port.
     """
     env = await _setup(dut, 10)
     env.post(0, BUF + 3, 4096)
@@ -493,9 +492,10 @@ async def test_abort_after_last_beat_completes_cleanly(dut: Any) -> None:
 
 @cocotb.test()
 async def test_abort_cycle_accepts_no_write(dut: Any) -> None:
-    """A line the packer holds when the abort arrives is dropped, never handed.
+    """A line the packer holds when the abort arrives is dropped, never written.
 
-    to the front-end: nothing of an abandoned frame is written after the abort.
+    Nothing of an abandoned frame reaches the front-end after the abort, even
+    when the front-end becomes ready in the abort cycle.
     """
     env = await _setup(dut, 11)
     env.post(0, BUF, 4096)
@@ -530,9 +530,10 @@ async def test_abort_cycle_accepts_no_write(dut: Any) -> None:
 
 @cocotb.test()
 async def test_withdrawn_status_write_completes_nothing(dut: Any) -> None:
-    """A status write the drain withdrew (an error response) frees the slot and.
+    """A status write the drain withdrew (an error response) reports no completion.
 
-    reports no completion; the next frame's completion is reported.
+    It still frees the status-write slot, so the next frame's completion is
+    reported.
     """
     env = await _setup(dut, 13, latency=(1, 4))
     env.post(0, BUF + 1, 2048)

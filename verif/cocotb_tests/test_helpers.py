@@ -221,8 +221,8 @@ class DUTInterface:
             path = self.paths.regfile_ram_rs2_path
         return self._navigate_signal_path(path)
 
-    # Number of read ports on the architectural register files
-    # (generic_regfile instances in the current cpu_ooo).
+    # Read ports on the architectural register files (NUM_READ_PORTS of the
+    # generic_regfile instances in ooo_register_files).
     _INT_RF_READ_PORTS = 8
     _FP_RF_READ_PORTS = 12
 
@@ -285,7 +285,7 @@ class DUTInterface:
 
         Args:
             reg: Register index (0-31)
-            ram_index: Legacy RAM-instance selector (only used by the fallback)
+            ram_index: Configured RAM path the fallback reads (0 = rs1, 1 = rs2)
 
         Returns:
             Register value
@@ -299,7 +299,7 @@ class DUTInterface:
             # Committed value = the bank chosen by the live-value table
             # (banked RAM) or the flat RAM contents (single-write RAM).
             return read_port_ram_entry(ram, reg)
-        # Fallback: legacy regfile RAM via the configured signal path.
+        # Fallback for a DUT without the cpu_ooo hierarchy: the configured path.
         ram = self._get_regfile_ram(ram_index)
         return read_port_ram_entry(ram, reg)
 
@@ -323,7 +323,8 @@ class DUTInterface:
                 regfile_inst, self._INT_RF_READ_PORTS, reg, value
             )
             return
-        # Fallback: legacy flat regfile RAM (rs1 + rs2 instances).
+        # Fallback for a DUT without the cpu_ooo hierarchy: flat rs1 and rs2
+        # RAMs at the configured paths.
         ram_rs1 = self._get_regfile_ram(0)
         ram_rs2 = self._get_regfile_ram(1)
         ram_rs1[reg].value = value
@@ -372,7 +373,7 @@ class DUTInterface:
         if regfile_inst is not None:
             ram, _ = self._read_port_ram(regfile_inst, 0)
             return read_port_ram_entry(ram, reg)
-        # Fallback: legacy FP regfile RAM via the configured signal path.
+        # Fallback for a DUT without the cpu_ooo hierarchy: the configured path.
         ram = self._get_fp_regfile_ram(0)
         return read_port_ram_entry(ram, reg)
 
@@ -394,7 +395,8 @@ class DUTInterface:
                 regfile_inst, self._FP_RF_READ_PORTS, reg, masked_value
             )
             return
-        # Fallback: legacy flat FP regfile RAM (fs1 + fs2 + fs3 instances).
+        # Fallback for a DUT without the cpu_ooo hierarchy: flat fs1, fs2, and
+        # fs3 RAMs at the configured paths.
         ram_fs1 = self._get_fp_regfile_ram(0)
         ram_fs2 = self._get_fp_regfile_ram(1)
         ram_fs3 = self._get_fp_regfile_ram(2)
@@ -429,8 +431,10 @@ class DUTInterface:
     async def reset_dut(self, cycles: int = 3) -> int:
         """Reset the DUT and return the number of clock cycles elapsed.
 
-        The cycle count is needed to synchronize CSR counter tracking,
-        since the RTL cycle counter runs during reset/cache-clear.
+        The count covers the ``cycles`` reset cycles and the wait for
+        o_rst_done. The RTL cycle counter holds at zero during reset and runs
+        during the wait, so a CSR counter model starts from the count minus
+        ``cycles``.
 
         Returns:
             Number of clock cycles elapsed during reset sequence

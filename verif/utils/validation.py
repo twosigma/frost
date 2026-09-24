@@ -15,10 +15,10 @@
 """Assertions and validators with structured failure context.
 
 Every check here raises ValidationError, an AssertionError that keeps the
-values behind the failure in a context dict and appends them to the message, so
-a failing test reports the cycle and register that produced the mismatch.
-assert_equals also logs cocotb.RANDOM_SEED before raising, because reproducing
-a failure from random stimulus needs the seed.
+values behind the failure in a context dict and appends them to the message.
+assert_equals also accepts caller context, such as the cycle and register, and
+logs cocotb.RANDOM_SEED before raising, because reproducing a failure from
+random stimulus needs the seed.
 
 HardwareAssertions layers the RISC-V bounds on top of the generic checks:
 register index in [0, 31], 12-bit immediate in [-2048, 2047], branch offset
@@ -29,7 +29,7 @@ Example:
     ...     assert_equals(0xDEAD, 0xBEEF, "Register mismatch", cycle=123, reg="x5")
     ... except ValidationError as e:
     ...     print(e.context['cycle'])  # 123
-    ...     print(e.context['expected'])  # 0xBEEF
+    ...     print(e.context['expected'])  # 48879 (0xBEEF)
 """
 
 from typing import Any
@@ -37,7 +37,7 @@ import cocotb
 
 
 class ValidationError(AssertionError):
-    """AssertionError that keeps its context dict and prints it."""
+    """AssertionError that keeps its context dict and appends it to the message."""
 
     def __init__(self, message: str, **context: Any) -> None:
         """Initialize with message and context."""
@@ -65,7 +65,7 @@ def assert_equals(
 def assert_in_range(
     value: int, min_val: int, max_val: int, name: str = "value"
 ) -> None:
-    """Assert value is within range."""
+    """Assert min_val <= value <= max_val."""
     if not min_val <= value <= max_val:
         raise ValidationError(
             f"{name} out of range",

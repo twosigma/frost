@@ -16,7 +16,8 @@
 
 These handwritten schemas describe packed structs in riscv_pkg.sv. Treat the
 lists as read-only; bench-specific defaults and signal timing stay in each
-interface. XLEN, FLEN, and enum widths follow the verification configuration.
+interface. XLEN, FLEN, INSTR_OP_WIDTH, and STORE_OP_WIDTH come from the
+verification configuration; the other widths are written out here.
 """
 
 from config import FLEN, INSTR_OP_WIDTH, STORE_OP_WIDTH, XLEN

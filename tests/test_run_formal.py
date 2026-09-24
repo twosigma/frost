@@ -17,7 +17,9 @@
 """Run SymbiYosys targets directly or through pytest.
 
 Runs bounded checks, unbounded proofs and cover searches. Each .sby file in
-formal/ defines its properties, assumptions and supported tasks.
+formal/ is one target and defines its tasks; the properties and assumptions
+live in the RTL (under `ifdef FORMAL` or a proof define) or in the harnesses
+in formal/.
 """
 
 import subprocess
@@ -54,52 +56,52 @@ class FormalTarget:
 FORMAL_TARGETS = [
     FormalTarget(
         "sq_live_count.sby",
-        "SQ late removal subtraction preserves all allocation candidates and exact next occupancy",
+        "SQ live-count next value equals the reference arithmetic for every allocation outcome",
         tasks=("bmc",),
     ),
     FormalTarget(
         "sq_committed_empty.sby",
-        "Store committed-empty status retains reset, flush and same-cycle commit priority",
+        "SQ committed-empty next state equals the reference over reset, full flush and commits",
         tasks=("bmc",),
     ),
     FormalTarget(
         "pc_pending_capture.sby",
-        "Pending prediction valid preserves clear/set/hold priority for arbitrary current state",
+        "Pending-prediction valid next state equals the reference clear/set/hold priority",
         tasks=("bmc",),
     ),
     FormalTarget(
         "rs_issue_clear.sby",
-        "RS accepted port-2 one-hot clear equals the original indexed clear, including actual INT default/profile parameters",
+        "RS second-port one-hot entry clear equals the reference indexed clear, including the INT station's parameters",
         tasks=("bmc", "bmc4", "bmc8", "bmc16", "bmc32"),
     ),
     FormalTarget(
         "rs_dispatch_defer.sby",
-        "Dispatch CDB deferral preserves all six source decisions with late ready qualification",
+        "Dispatch's six CDB-deferral decisions equal the reference equations, with and without insertion-time repair",
         tasks=("bmc", "bmc_repair"),
     ),
     FormalTarget(
         "control_flow_holdoff.sby",
-        "Prediction-late redirect/reset holdoffs match the original next state without assumptions",
+        "Redirect/reset holdoff next state with late prediction flags equals the reference, without assumptions",
         tasks=("bmc",),
     ),
     FormalTarget(
         "rob_retire_stall.sby",
-        "Qualified ROB retirement strobes and all perf events retain canonical serializer behavior",
+        "ROB retirement strobes and every perf event equal a reference built from the full serializer stall",
         tasks=("bmc",),
     ),
     FormalTarget(
         "rob_control_next.sby",
-        "ROB per-entry done/exception/replay next state matches the original indexed-write priority",
+        "ROB per-entry done/exception/replay next state matches the reference indexed-write priority",
         tasks=("bmc",),
     ),
     FormalTarget(
         "csr_commit_cofactor.sby",
-        "CSR commit cofactors preserve storage and translation invalidation under the integration contract",
+        "Most CSR storage, both counters and the translation-invalidate request equal a reference transition model",
         tasks=("prove", "prove_integrated", "prove_perf_off"),
     ),
     FormalTarget(
         "pc_increment_holdoff.sby",
-        "Late redirect/reset holdoff preserves both sequential fetch PCs for arbitrary selectors",
+        "Both sequential fetch PCs with late redirect/reset holdoff equal the reference for arbitrary selectors",
         tasks=("bmc", "bmc_xilinx"),
     ),
     FormalTarget(
@@ -109,12 +111,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "fp_payload_read.sby",
-        "FPU payload prefetch addresses match the original post-pop increment for arbitrary state",
+        "FPU payload prefetch addresses match the reference post-pop increment for arbitrary state",
         tasks=("bmc",),
     ),
     FormalTarget(
         "lq_ram_payload.sby",
-        "Load-result RAM write enables and every enabled address/data match the original mux",
+        "Load-result RAM write enables and every enabled address/data match the reference mux",
         tasks=("bmc", "bmc_forward", "bmc_forward_only", "cover"),
     ),
     FormalTarget(
@@ -124,7 +126,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "lq_alloc_mask.sby",
-        "Parallel cyclic allocation masks match the original binary search and room checks",
+        "Parallel cyclic allocation masks match the reference binary search and room checks",
         tasks=("bmc4", "bmc8", "bmc16"),
     ),
     FormalTarget(
@@ -139,12 +141,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "if_direction_payload.sby",
-        "Direction payload cofactor preserves every live/replayed non-NOP packet",
+        "Dropping the NOP term from the direction payload select changes no live or replayed non-NOP packet",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
         "mispredict_capture.sby",
-        "Recovery-valid payload equals the former gated capture for arbitrary inputs",
+        "While recovery is pending, the captured payload equals a register loaded only on a mispredicted commit",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
@@ -154,7 +156,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "lq_cached_flags.sby",
-        "Cached-slot invalidation and LR suppression match the original next state",
+        "Cached-slot invalidation and LR suppression match the reference next state",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -169,12 +171,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "prediction_metadata_output.sby",
-        "Prediction validity and non-owner exclusion hold for arbitrary inputs and state",
+        "Prediction hit/taken bits equal the reference, and a saved or pending prediction never marks another packet",
         tasks=("bmc",),
     ),
     FormalTarget(
         "c_ext_buffer_next.sby",
-        "Compressed buffer slot-2 next-state outcomes match the original priority",
+        "Compressed buffer slot-2 next-state outcomes match the reference priority",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -184,7 +186,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "dmmu_mmio.sby",
-        "DMMU parallel MMIO classification and captured next bit match original resolution/hold",
+        "DMMU parallel MMIO classification and captured next bit match the reference resolution/hold",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -194,7 +196,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rs_pretag_cofactor.sby",
-        "Pre-issue CDB-valid cofactors preserve the exact priority-selected ROB tag",
+        "Pre-issue ROB tag computed ahead for each CDB-valid combination equals the reference priority select",
         tasks=("bmc", "bmc_tag_indexed"),
     ),
     FormalTarget(
@@ -209,12 +211,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ras_checkpoint.sby",
-        "RAS checkpoint permission cofactors equal the original next state for arbitrary inputs and state",
+        "RAS next pointer and count equal the reference priority for arbitrary inputs and state",
         tasks=("bmc",),
     ),
     FormalTarget(
         "low_bram_presenter_tier.sby",
-        "Low-address retarget cofactor preserves the visible low response stream",
+        "Low-BRAM fetch responses are the same with and without separate address retargeting",
         tasks=("bmc", "prove"),
     ),
     FormalTarget(
@@ -229,17 +231,17 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "instr_operand_classifier.sby",
-        "ID operand classes - direct fields match original operation decode for all instructions and fault overrides",
+        "ID operand classes - direct fields match classification through the operation decode for all instructions and fault overrides",
         tasks=("bmc",),
     ),
     FormalTarget(
         "decoded_bundle_queue.sby",
-        "Decoded bundles: FIFO order, once-only held-image ownership, flush, bypass and wraparound",
+        "Decoded bundles: FIFO order against a queue model, a held input consumed once, flush, bypass and wraparound",
         tasks=("prove", "prove_depth2", "cover"),
     ),
     FormalTarget(
         "int_muldiv_shim.sby",
-        "Mixed-width MUL/DIV completion-slot ownership, data-valid alignment, and FIFO credits",
+        "Mixed-width MUL/DIV pipeline tracking, completion data alignment, and FIFO credits",
         tasks=(
             "prove",
             "prove_alignment",
@@ -277,7 +279,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rob_start_cofactor.sby",
-        "ROB CSR/xRET starts - allocation class exclusion and exact legacy equations",
+        "ROB CSR/xRET starts - no CSR/xRET entry is bypass-eligible, and starts equal the reference equations",
         tasks=("prove",),
     ),
     FormalTarget(
@@ -291,7 +293,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "alu_shift_hint.sby",
-        "Actual ALU - literal shift/rotate reference and captured amount equivalence",
+        "ALU - shift/rotate reference, and equivalence with the captured shift-amount hint",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -328,7 +330,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "load_queue.sby",
         "Load queue - allocation/back-pressure, dependency cleanup, memory issue, "
-        "router cancellation/debt, staged normal AMOs, CDB broadcast",
+        "router cancellation and owed responses, staged normal AMOs, CDB broadcast",
         tasks=(
             "bmc",
             "cover",
@@ -339,7 +341,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "load_queue_amo_compute.sby",
-        "Actual LQ normal-AMO operand/compute/write transitions, original result, kill, coherence and stalled owner",
+        "LQ normal-AMO capture/compute/write transitions, reference result, kill, coherence and stalled-write hold",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
@@ -360,8 +362,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_observation.sby",
-        "Coherence observation ownership, both commit lanes, flush/reuse and "
-        "registered replay provenance under the load-to-commit timing contract",
+        "Coherence observation tracking through both commit lanes, flush and tag reuse, "
+        "and the registered replay mask, under the load-to-commit timing contract",
         tasks=("prove", "prove_unrestricted", "cover"),
     ),
     FormalTarget(
@@ -374,7 +376,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "store_queue.sby",
-        "Store queue - commit-ordered store buffer, forwarding, MMIO, FSD two-phase",
+        "Store queue - live count, write prerequisites, in-flight bounds, forwarding, "
+        "committed stores surviving a partial flush",
     ),
     FormalTarget(
         "lq_l0_cache.sby",
@@ -383,12 +386,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "branch_prediction_alias.sby",
-        "IF branch prediction - actual RTL base+2/base+4 public alias equivalence",
+        "IF branch prediction - base-PC slot alias output equals the generic base+2/base+4 computation",
         tasks=("bmc",),
     ),
     FormalTarget(
         "c_ext_state_cofactor.sby",
-        "C-extension buffer state - handoff cofactor vs original priority for arbitrary controls",
+        "C-extension buffer state - next state with the handoff factored out equals the reference priority",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -403,27 +406,27 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "fetch_pc_mux.sby",
-        "IF fetch PC - final prediction mux matches original one-hot and serial priority equations",
+        "IF fetch PC - final prediction mux matches the reference one-hot and serial priority equations",
         tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
     ),
     FormalTarget(
         "fetch_redirect.sby",
-        "IF registered provider redirect - original selector equation for arbitrary inputs/state",
+        "IF registered provider redirect - reference selector equation for arbitrary inputs/state",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
         "pc_register_mux.sby",
-        "IF architectural PC - original nested priority for arbitrary generic inputs",
+        "IF architectural PC - reference nested priority for arbitrary generic inputs",
         tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
     ),
     FormalTarget(
         "pc_holdoff_cofactor.sby",
-        "IF pending fetch holdoff - arbitrary-state effective-enable factoring matches original equations",
+        "IF pending fetch holdoff - arbitrary-state effective-enable factoring matches the reference equations",
         tasks=("bmc",),
     ),
     FormalTarget(
         "pc_holdoff_tag.sby",
-        "IF pending prediction holdoff - captured-tag producer induction and original equations",
+        "IF pending prediction holdoff - captured-tag producer induction and reference equations",
         tasks=("prove", "prove_xlen32", "prove_xlen72", "cover"),
     ),
     FormalTarget(
@@ -784,13 +787,13 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run SymbiYosys formal verification for Frost RISC-V CPU",
+        description="Run SymbiYosys formal verification for FROST",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s                           # Run every target's declared tasks
   %(prog)s --target trap_unit        # Run specific target
-  %(prog)s --task bmc                # Run only BMC (skip cover)
+  %(prog)s --task bmc                # Run only the bmc task
   %(prog)s --verbose                 # Show full sby output
   %(prog)s --list-targets            # List available targets/tasks and exit
 

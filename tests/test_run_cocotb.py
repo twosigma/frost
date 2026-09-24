@@ -27,7 +27,7 @@ Pytest (all tests):
 Pytest (real program tests only):
     pytest ./test_run_cocotb.py -k programs
 
-Pytest (tomasulo unit tests only):
+Pytest (unit benches only):
     pytest ./test_run_cocotb.py -k unit
 """
 
@@ -83,17 +83,17 @@ COREMARK_PRO_TESTS = {
         hdl_toplevel_module="frost",
         app_name=program.app_name,
         description=program.description,
-        # All nine workloads run CRC-verified minimal-preset simulations.
-        # They also all run on hardware: the DDR-backed heap and the
-        # calibrated hardware_iterations cover the larger datasets
-        # (loops/radix2/zip included), while sim keeps the small presets.
+        # Simulation runs each workload in its minimal CRC-verified
+        # configuration. Hardware runs use the official datasets, with the
+        # per-board iteration counts in software_registry.py.
     )
     for program in COREMARK_PRO_PROGRAMS
 }
 
 # Single source of truth for every runnable test, keyed by test name.
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
-    # Real-program tests share one test module and toplevel; entries differ
+    # Real-program tests run an app on the frost toplevel. All but the debug
+    # and BRAM-reload tests share the test_real_program module; entries differ
     # in the app and, for some, in build parameters or environment overrides.
     "branch_pred_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -124,7 +124,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="coremark",
         description=(
-            "Coremark benchmark (production configuration: no profiling "
+            "CoreMark benchmark (production configuration: no profiling "
             "counters, the report says so; its tick count differs from "
             "coremark_profile because the snapshot loop before the timed "
             "window is empty)"
@@ -135,7 +135,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="coremark",
         description=(
-            "Coremark benchmark with the profiling counters present: the "
+            "CoreMark benchmark with the profiling counters present: the "
             "profile report is the simulated IPC reference and the run "
             "fails unless the report shows the counters"
         ),
@@ -200,7 +200,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="smc_fencei_test",
-        description="Hardened SMC/fence.i reproducer (gap sweep, warm/cold L1D, write-miss, tight loop)",
+        description="SMC/fence.i stress (store-to-fence.i gap sweep, warm/cold L1D, write-miss, tight loop)",
     ),
     "ddr_heap_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -231,11 +231,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "CSR test: mstatus MIE writes, plus the M-mode counter controls "
             "the SBI PMU relies on (mcountinhibit CY/IR WARL and inhibit "
             "semantics, 64-bit M-mode writes to mcycle/minstret, RMW forms, "
-            "and that M-mode reads of the writable aliases cost no ticks: "
-            "the commit stage raises the CSR write enable for pure reads, "
-            "and an unqualified counter write lost one cycle per csrr -- "
-            "the timed read-loop check fails against that RTL, 0x1242 vs "
-            "0x1041 ticks for 512 reads)"
+            "and a timed read loop showing that M-mode reads of the writable "
+            "aliases cost no ticks, although the commit stage raises the CSR "
+            "write enable for pure reads)"
         ),
     ),
     "umode_test": CocotbRunConfig(
@@ -292,7 +290,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="debug_target",
         description=(
             "OpenOCD remote_bitbang integration: examine, halt, registers/memory, "
-            "breakpoints, step, and resume. Skips if OpenOCD is unavailable."
+            "breakpoints, step, and resume. Without OpenOCD it passes with a "
+            "warning unless FROST_REQUIRE_OPENOCD=1."
         ),
     ),
     "satp_drain_test": CocotbRunConfig(
@@ -301,9 +300,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="satp_drain_test",
         description=(
             "Pre-retirement committed-store drain for translation-class CSRs: "
-            "cached-DDR stores before satp/mstatus writes must drain before "
-            "the architectural write and recovery flush; status writes are "
-            "read back across the flush (the page-table store-loss regression)"
+            "cached-DDR stores just before satp/mstatus writes (the page-table "
+            "setup pattern) must drain before the architectural write and "
+            "recovery flush; status writes are read back across the flush"
         ),
     ),
     "plic_test": CocotbRunConfig(
@@ -400,9 +399,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Trap-frame store visibility under L1D eviction, including the pt_regs s2 "
             "slot."
         ),
-        # Small L2 and slow memory preserve store-drain pressure on the supported
-        # L1 -> L2 topology. Dropping a dirty writeback of the frame line fails
-        # all 256 swept margins with these settings.
+        # Small L2 and slow memory keep store-drain and writeback pressure high
+        # through the L2. With these settings, a dropped dirty writeback of the
+        # frame line fails every swept timer margin.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mret_timer_resume_test": CocotbRunConfig(
@@ -442,13 +441,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="wfi_lost_tick",
-        description="WFI-idle + MIE-toggle + CLINT-rearm lost-timer-tick repro (deferred-eligibility; frozen jiffies)",
+        description="Linux-style WFI idle with MIE toggling and CLINT re-arm, deadlines swept across WFI, csrsi and MRET: no lost timer ticks",
     ),
     "irq_mie_window": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="irq_mie_window",
-        description="Short-MIE-window lost-interrupt repro (registered interrupt_pending erased by adjacent MIE clear)",
+        description="A pending timer interrupt must be taken in a one-cycle mstatus.MIE window, not erased by the adjacent MIE clear",
     ),
     "ns16550_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -502,19 +501,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="hello_world",
         description=(
             "JTAG/port-A image reload path: power-on boot, clobber via the "
-            "programming port (must not boot), full reload (must boot) -- "
-            "mirrors fpga/load_software/file_to_bram.tcl; the ONLY sim "
-            "coverage of the loader write path"
+            "programming port (must not boot), full reload (must boot), with "
+            "writes as fpga/load_software/file_to_bram.tcl issues them; the "
+            "only simulation of the loader write path"
         ),
     ),
-    # Booting the Linux kernel on the RTL is retired: the simulated core only
-    # reached early boot in hours, and the two core bugs the kernel exposed
-    # (a load-queue stale slot, a page-table walker missing the L1D's dirty
-    # lines) were both found on hardware. Linux is gated by the hardware
-    # regression's Linux stage (fpga/hw_regression.py) and the board soaks
-    # (fpga/linux_boot_soak.py). The firmware half of the chain still runs
-    # here as opensbi_smoke, and the kernel's timer, trap and atomic patterns
-    # as the linux_irq_*, linux_clksrc_faithful and tick_torture apps.
+    # The Linux kernel does not boot here: simulation is far too slow. The
+    # hardware regression's Linux stage (fpga/hw_regression.py) and the board
+    # soaks (fpga/linux_boot_soak.py) cover Linux. In simulation, opensbi_smoke
+    # runs the firmware half of the boot chain, and the linux_irq_*,
+    # linux_clksrc_faithful and tick_torture apps run the kernel's timer, trap
+    # and atomic patterns.
     "opensbi_smoke": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -525,8 +522,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "counters. Fixed memory layout ignores mem-config. Reload memory before "
             "rerunning; reset alone leaves OpenSBI boot state initialized."
         ),
-        # OpenSBI 1.9 plus the payload measured ~5.3M cycles with Bootlin
-        # 2026.08-1 and the default DDR latency; retain boot/probe headroom.
+        # Covers the OpenSBI boot and the payload at the default DDR latency,
+        # with headroom.
         extra_env=(("COCOTB_MAX_CYCLES", "10000000"), ("COCOTB_NUM_RUNS", "1")),
     ),
     "linux_irq_ddr_test": CocotbRunConfig(
@@ -541,7 +538,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="amo_irq_torture",
         description=(
             "Timer IRQ swept across cached-DDR AMO bursts; counts every atomic "
-            "side effect (AMO-vs-interrupt-flush orphaned-write regression). "
+            "side effect to catch an AMO write orphaned by an interrupt flush. "
             "Sim runs need EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=<=384 (default "
             "24000 is hardware-scale); the bench budgets 6M cycles/run "
             "(COCOTB_AMO_TORTURE_MAX_CYCLES overrides). CI runs the pinned "
@@ -568,26 +565,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="amo_irq_torture",
         description=(
-            "amo_irq_torture with per-transaction DDR-latency jitter "
-            "(decorrelates completion timing like real DDR refresh, the "
-            "regime that exposed the interrupt-orphaned AMO write). Same "
+            "amo_irq_torture with per-transaction DDR-latency jitter, which "
+            "decorrelates completion timing as real DDR refresh does. Same "
             "sim knobs as amo_irq_torture"
         ),
         include_in_pytest=False,
         verilator_extra_args=("-GDDR_MODEL_LATENCY_JITTER=19",),
     ),
-    # Pinned sim-scale variants of the two hardware-scale torture apps, so the
-    # soak classes (CLINT re-arm, AMO-vs-IRQ flush) run in CI instead of only
-    # by hand. extra_env overrides any external EXTRA_CFLAGS: these names are
-    # the fixed configurations (use the base entries above for custom scales),
-    # and the bench's per-app budgets keyed on app_name apply to them unchanged.
+    # Pinned sim-scale variants of the two hardware-scale torture apps, so CI
+    # runs both soak classes (CLINT re-arm, AMO-vs-IRQ flush). extra_env
+    # overrides any external EXTRA_CFLAGS: these names are the fixed
+    # configurations (use the base entries above for custom scales), and the
+    # bench's per-app budgets keyed on app_name apply to them unchanged.
     "amo_irq_torture_sim": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="amo_irq_torture",
         description=(
-            "CI-scale amo_irq_torture: ITERS=256 (~2.61M cycles) against the "
-            "bench's 6M-cycle AMO budget"
+            "CI-scale amo_irq_torture: ITERS=256 against the bench's "
+            "6M-cycle AMO budget"
         ),
         extra_env=(("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=256"),),
     ),
@@ -597,8 +593,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="tick_torture",
         description=(
             "CI-scale tick_torture: TARGET_TICKS=64 with a 256 KiB workset "
-            "(still 2x the 128 KiB L1, but the default 2 MiB workset's "
-            "crt0 .bss zeroing alone is ~10M cycles) against the bench's "
+            "(still 2x the 128 KiB L1; crt0's .bss zeroing of the default "
+            "2 MiB workset alone would exceed the budget) against the bench's "
             "dedicated tick budget (COCOTB_TICK_TORTURE_MAX_CYCLES overrides)"
         ),
         extra_env=(("EXTRA_CFLAGS", "-DTARGET_TICKS=64 -DWORKSET_WORDS=65536u"),),
@@ -620,7 +616,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="trap_s2l_fwd",
-        description="handle_exception-pattern trap store->load forwarding repro (sd sp,8(tp); ld ,8(tp))",
+        description="Cached store-to-load visibility on the trap path, in the Linux handle_exception pattern (sd sp,8(tp); ld sp,8(tp))",
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "linux_irq_stack_slot_test": CocotbRunConfig(
@@ -721,17 +717,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="rv64_smoke",
-        description="RV64 M2 smoke: W-ops/LD/SD/shamt6 minimum slice",
+        description="RV64I smoke test: W-form ops, LD/SD, 6-bit shift amounts",
     ),
     "rv64_amo_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="rv64_amo_test",
         description=(
-            "RV64 A-extension directed test (M6): doubleword AMOs with "
-            "old-value AND memory checks at full 64-bit patterns, LR.D/SC.D "
-            "success + no-reservation-fail paths, and AMOADD.W window "
-            "semantics on a dword cell"
+            "RV64 A-extension directed test: doubleword AMOs with old-value "
+            "and memory checks at full 64-bit patterns, LR.D/SC.D success and "
+            "no-reservation failure paths, and AMOADD.W window semantics on a "
+            "dword cell"
         ),
     ),
     "packet_parser": CocotbRunConfig(
@@ -806,8 +802,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     # Fetch-latency fuzz: the same real programs with the simulation-only
     # variable-latency fetch provider (random i_instr_valid gaps), which
-    # exercises the front end's fetch-invalid machinery before an I-cache sits
-    # behind it. Grouped adjacently so all four reuse the shared -G build.
+    # exercises the front end's handling of invalid fetch cycles. Kept
+    # adjacent so consecutive runs reuse one FETCH_VALID_FUZZ=1 build.
     "hello_world_fetch_fuzz": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -862,7 +858,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="fetch_stall_repro",
-        description="Directed 32-bit-insn PC+2 mis-step repro (no fuzz; sanity = PASS)",
+        description="32-bit instructions near line boundaries under cold cached-DDR fetch stalls must advance the PC by 4, not 2",
     ),
     "window_skip_repro": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -889,7 +885,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
-    # Tomasulo unit tests
+    # Unit benches (no application), starting with the Tomasulo back end
     "reorder_buffer": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
         hdl_toplevel_module="reorder_buffer",
@@ -974,9 +970,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="load_queue",
         description=(
             "Load queue unit tests (allocation, disambiguation, router-pending "
-            "cancellation/debt, dependency cleanup, conservative dispatch "
-            "back-pressure, normal-AMO compute/kill/coherence, single-beat "
-            "dword completion bypass, memory, and CDB)"
+            "cancellation and owed-response draining, dependency cleanup, "
+            "conservative dispatch back-pressure, normal-AMO "
+            "compute/kill/coherence, single-beat dword completion bypass, "
+            "memory, and CDB)"
         ),
     ),
     "load_queue_no_prepare_busy": CocotbRunConfig(
@@ -1013,8 +1010,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
         hdl_toplevel_module="int_alu_shim",
         description=(
-            "Secondary INT ALU with captured shift hint: existing arithmetic "
-            "and exhaustive full/word shift-rotate checks"
+            "Secondary INT ALU with captured shift hint: the same arithmetic "
+            "checks and exhaustive full/word shift-rotate checks"
         ),
         verilator_extra_args=("-GUSE_SHIFT_AMOUNT_HINT=1",),
     ),
@@ -1122,12 +1119,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "data_mem_response_mux": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_response_mux",
         hdl_toplevel_module="data_mem_response_mux_tb",
-        description="Portable 32/64-bit response selection and actual-router exact-cycle seam",
+        description="Portable 32/64-bit response selection, compared cycle by cycle through the real router",
     ),
     "data_mem_response_mux_xilinx": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_response_mux",
         hdl_toplevel_module="data_mem_response_mux_tb",
-        description="Xilinx LUT response selection and actual-router exact-cycle seam",
+        description="Xilinx LUT response selection, compared cycle by cycle through the real router",
         verilator_extra_args=("+define+FROST_XILINX_PRIMS",),
     ),
     "data_mem_request_router": CocotbRunConfig(
@@ -1292,10 +1289,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
     ),
-    # DMA-port service envelope measurement (S0): one build
-    # per candidate lock count so producer depth can be swept against the
-    # sequencer's capacity, plus one at the full-system DDR model latency.
-    # Measurement only, not part of the pytest sweep.
+    # DMA-port service envelope measurement: one build per candidate lock
+    # count so producer depth can be swept against the sequencer's capacity,
+    # plus one at the full-system DDR model latency. Measurement only, not
+    # part of the pytest sweep.
     "dma_envelope_lock3": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_dma_envelope",
         hdl_toplevel_module="frost_cache_test_harness",
@@ -1372,8 +1369,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
     ),
-    # Phase 4 slice 2 (S1): clock-crossing library and the NIC's reset and
-    # interrupt contracts.
+    # Clock-crossing library and the NIC.
     "async_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.lib.test_async_fifo",
         hdl_toplevel_module="async_fifo",
@@ -1413,7 +1409,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="nic_byte_pack",
         description=(
             "NIC RX byte packer: beats to strobed line writes at every byte "
-            "offset, truncation, stalls, the review's boundary cases"
+            "offset, truncation, stalls, and short-frame and line-crossing "
+            "edge cases"
         ),
     ),
     "nic_byte_unpack": CocotbRunConfig(
@@ -1563,13 +1560,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "decoded_bundle_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_decoded_bundle_queue",
         hdl_toplevel_module="decoded_bundle_queue",
-        description="Decoded bundle ordering, held producer ownership, backpressure and flush",
+        description="Decoded bundle queue against a FIFO model: ordering, a held producer, backpressure and flush",
         verilator_extra_args=("-GWIDTH=32", "-GSHADOW_WIDTH=12"),
     ),
     "decoded_bundle_queue_depth2": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_decoded_bundle_queue",
         hdl_toplevel_module="decoded_bundle_queue",
-        description="Two-entry decoded queue ownership and pointer wraparound",
+        description="Two-entry decoded bundle queue against a FIFO model, including pointer wraparound",
         verilator_extra_args=("-GWIDTH=32", "-GSHADOW_WIDTH=12", "-GDEPTH=2"),
     ),
     "perf_counter_aggregator": CocotbRunConfig(
@@ -1580,7 +1577,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "perf_csr_half": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_csr_half",
         hdl_toplevel_module="perf_csr_half_test_harness",
-        description="Performance CSR half capture, commit phase and legacy read equivalence",
+        description="Performance CSR half capture and commit phase, cycle-exact against the full-counter reference read",
     ),
     "ooo_pipeline_control": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.pipeline_control.test_ooo_pipeline_control",
@@ -1632,7 +1629,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "pc_increment_calculator": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_pc_increment_calculator",
         hdl_toplevel_module="pc_increment_calculator",
-        description="IF-stage PC increment calculator tests, including overlapping holdoffs, run/NOP size cofactors and XLEN wraparound",
+        description="IF-stage PC increment calculator tests, including overlapping holdoffs, all run/NOP advance selects and XLEN wraparound",
     ),
     "pc_controller": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_pc_controller",
@@ -1665,9 +1662,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
         description=(
-            "IF-stage RVC decompressor tests, including every fast expanded-bit "
-            "cofactor and the restructured illegal flag against the full "
-            "expansion over all 131,072 parcel/rd_is_x2 combinations"
+            "IF-stage RVC decompressor tests, including every fast expanded bit "
+            "and the fast illegal flag against the full expansion over all "
+            "131,072 parcel/rd_is_x2 combinations"
         ),
     ),
     "c_ext_state": CocotbRunConfig(
@@ -1683,7 +1680,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "pd_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.pd_stage.test_pd_stage",
         hdl_toplevel_module="pd_stage",
-        description="PD-stage unit tests including exact instruction-field/illegal cofactors and native/RVC redirects",
+        description="PD-stage unit tests, including the fast instruction-field and illegal-flag paths and native/RVC redirects",
     ),
     "id_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.id_stage.test_id_stage",
@@ -1744,27 +1741,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
     ),
     # Directed machine-mode trap/interrupt tests on the cpu_tb harness, which
-    # feeds one instruction per ready cycle into the cpu_ooo core. Collected by
-    # pytest so the cpu_tb suites cannot rot unnoticed again: the harness once
-    # sat broken, missing the served-window tags, with nothing in CI noticing.
+    # feeds one instruction per ready cycle into the cpu_ooo core. Pytest
+    # collects this entry so CI notices when the cpu_tb harness breaks.
     # Filter to a single function with --testcase when running by hand.
     "directed_traps": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_traps",
         hdl_toplevel_module="cpu_tb",
         description="Directed M-mode trap/interrupt tests (cpu_tb directed suite)",
     ),
-    # The cpu_tb suites below predate the OOO integration. directed_atomics
-    # and compressed have been ported (commit-event and settle waits on the
-    # maintained DUTInterface helpers, as test_directed_traps was) and pass.
-    # They stay CLI-only pending a decision to add them to CI.
-    # directed_multicycle and cpu_random still assume in-order fixed
-    # latencies: cpu_random's monitors align full-regfile/PC snapshots to
-    # o_vld by fetch ordinal with fixed IF->WB offsets, which the OOO core's
-    # variable commit latency, 2-wide retire, and wrong-path squashes break.
-    # Porting it means a commit-indexed scoreboard. Until then their ISA
-    # coverage is gated in CI by the rv64ua/rv64uc/rv64um riscv-tests, the
-    # arch-compliance matrix, and the ddr_atomic_test/c_ext_test real
-    # programs. Flip include_in_pytest after porting.
+    # The cpu_tb suites below are CLI-only (include_in_pytest=False).
+    # directed_atomics and compressed pass on the OOO core (they wait on
+    # commit events and settling through the DUTInterface helpers, as
+    # test_directed_traps does); adding them to CI is still undecided.
+    # directed_multicycle and cpu_random assume in-order fixed latencies:
+    # cpu_random's monitors align full-regfile/PC snapshots to o_vld by fetch
+    # ordinal with fixed IF->WB offsets, which the OOO core's variable commit
+    # latency, 2-wide retire, and wrong-path squashes break, so porting it
+    # needs a commit-indexed scoreboard. CI covers their ISA ground with the
+    # rv64ua/rv64uc/rv64um riscv-tests, the arch-compliance matrix, and the
+    # ddr_atomic_test and c_ext_test programs.
     "directed_atomics": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_atomics",
         hdl_toplevel_module="cpu_tb",
@@ -1962,9 +1957,7 @@ class CocotbRunner:
         sibling pointing at the same target is accepted as success.
 
         The target must exist: a dangling link makes the RTL's $readmemh
-        fail quietly and the affected memory reads as zeros. A missing
-        sw64.mem once left the fpu_assembly_test data BRAM empty: every load
-        returned 0 and the program fell through to its done spin.
+        fail quietly and the affected memory reads as zeros.
         """
         if not Path(target).exists():
             raise FileNotFoundError(
@@ -2093,8 +2086,8 @@ class CocotbRunner:
             (Path(cocotb.__file__).resolve().parent / "libs").resolve()
         )
 
-        # A binary with any marker missing predates marker tracking (or the
-        # tracking of cocotb/Python environment changes): force a rebuild.
+        # A binary with any marker missing cannot be matched to the current
+        # configuration: force a rebuild.
         if verilator_binary.exists() and (
             not toplevel_marker.exists()
             or not cocotb_libs_marker.exists()
@@ -2313,8 +2306,9 @@ def run_test(test_name: str, capsys: Any | None = None) -> None:
 class TestRealPrograms:
     """Real programs compiled and run on the frost toplevel.
 
-    Every entry uses the same test module and toplevel; they differ in the
-    program loaded and in any per-entry build or environment overrides.
+    All but the debug and BRAM-reload entries use the test_real_program
+    module; entries differ in the program loaded and in any per-entry build
+    or environment overrides.
     """
 
     @pytest.mark.slow
@@ -2328,18 +2322,20 @@ class TestRealPrograms:
         """
         mem_config = os.environ.get("FROST_COCOTB_MEM_CONFIG", "bram")
         if mem_config == "ddr" and test_name in DDR_TIER_EXCLUDE:
-            pytest.skip(f"{test_name} does not run in the ddr tier (fuzz/ddr-only)")
+            pytest.skip(
+                f"{test_name} does not run in the ddr tier (fetch fuzzer or DDR probe)"
+            )
         run_test(test_name, capsys)
 
 
 @pytest.mark.cocotb
 class TestUnitTests:
-    """Tomasulo unit tests (individual OOO components)."""
+    """Unit benches: registry entries without an application."""
 
     @pytest.mark.slow
     @pytest.mark.parametrize("test_name", UNIT_TEST_PARAMS)
     def test_unit(self, test_name: str, capsys: Any) -> None:
-        """Run a Tomasulo unit test through cocotb."""
+        """Run one unit bench through cocotb."""
         run_test(test_name, capsys)
 
 
@@ -2413,7 +2409,8 @@ def run_seed_sweep(
         test_name: Name of the test from TEST_REGISTRY
         num_seeds: Number of different seeds to test
         testcase: Optional specific test case to run
-        max_workers: Maximum number of parallel workers (default: num_seeds)
+        max_workers: Maximum number of parallel workers (default: num_seeds,
+            capped at the CPU count)
 
     Returns:
         Dictionary with results summary
@@ -2529,7 +2526,7 @@ def main() -> None:
     test_choices = sorted(TEST_REGISTRY.keys())
 
     parser = argparse.ArgumentParser(
-        description="Run cocotb simulations for Frost RISC-V CPU",
+        description="Run cocotb simulations for FROST",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

@@ -17,18 +17,13 @@
 The tests cover back-to-back integer DIV and FDIV.S completions, plus two
 load-use pairs (FLD -> FADD.D and LH -> BEXT).
 
-Not yet ported to the OOO core. The DUT is now cpu_ooo (wrapped by cpu_tb),
-where architectural register writes come from commit_actions.sv at ROB commit,
-up to two per cycle, and are not gated by any stall signal. There is no
-writeback stage holding a multi-cycle result. The checks below still assume
-the old in-order fixed latencies, so the suite is registered CLI-only
-(include_in_pytest=False, "NEEDS PORTING to OOO" in tests/test_run_cocotb.py)
-and currently fails.
-
-The in-order scenario it was written against:
-1. Operation A completes and its result is in WB
-2. Operation B causes a stall
-3. Operation A's write should still succeed
+These tests (the directed_multicycle target) fail on the out-of-order core:
+their monitors and drain counts expect each result at a fixed offset from
+fetch. cpu_ooo has no writeback stage; commit_actions writes registers at ROB
+commit, up to two per cycle, after a variable delay, and no stall signal gates
+those writes. The target is registered CLI-only (include_in_pytest=False in
+tests/test_run_cocotb.py) until the checks follow commit order. See "CPU
+reference harness" in verif/README.md.
 """
 
 import cocotb
@@ -121,7 +116,8 @@ async def setup_test(dut: Any, use_fp_monitor: bool = False) -> tuple:
 
     Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
-    # Reset before initializing the registers, or the reset clears them.
+    # The RTL cycle counter is held at 0 during reset, so leave the reset
+    # cycles out of the CSR cycle model.
     reset_cycles = await dut_if.reset_dut(config.reset_cycles)
     state.csr_cycle_counter = reset_cycles - config.reset_cycles
 
@@ -210,8 +206,7 @@ async def test_back_to_back_integer_div(dut: Any) -> None:
     """Test back-to-back integer DIV operations.
 
     Two consecutive DIV instructions must both write their results to the
-    register file even though the second DIV stalls while the first is
-    completing.
+    register file.
 
     Sequence:
     1. ADDI x1, x0, 100    # Set up dividend
@@ -489,11 +484,11 @@ async def test_fld_faddd_load_use_hazard(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lh_bext_load_use_hazard(dut: Any) -> None:
-    """Test LH followed immediately by BEXT after an unrelated stall.
+    """Test LH followed immediately by BEXT after an unrelated DIV.
 
-    This reproduces a stale load-hit forwarding corner case:
+    Guards against stale load-hit forwarding:
     1. Warm cache with LH from address A (value has bit1=1)
-    2. Trigger a multi-cycle DIV stall
+    2. Run an unrelated multi-cycle DIV
     3. Execute LH from uncached address B (value bit1=0)
     4. Immediately consume with BEXT x3, x27, x15
 
@@ -564,7 +559,7 @@ async def test_lh_bext_load_use_hazard(dut: Any) -> None:
         dut_if, state, enc_lh(6, 10, 0), 6, 0x00000002, "LH x6, 0(x10)"
     )
 
-    # Insert unrelated multi-cycle stall to stress stale forwarding state.
+    # Insert an unrelated multi-cycle DIV to stress stale forwarding state.
     div_expected = eval_div(100, 3)
     await execute_instruction(
         dut_if, state, enc_div(9, 7, 8), 9, div_expected, "DIV x9, x7, x8 (100/3)"

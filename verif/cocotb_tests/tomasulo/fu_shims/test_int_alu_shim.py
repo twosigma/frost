@@ -14,13 +14,13 @@
 
 """Unit tests for the int_alu_shim module.
 
-Tests ADD, ADDI, SUB, shifts, LUI, AUIPC, JAL link, CSR read, branch
-no-writeback, busy signalling, a sample of Zb*/Zicond ops, and operand
-patterns that only carry meaning at XLEN=64. Exhaustive shift-amount sweeps
-alternate all full/word shift and rotate forms with conflicting register and
-immediate amounts, independently toggling use_imm and covering every one-hot
-operand bit. The ALU is single-cycle, so
-results are available combinationally (no polling loop needed).
+Tests ADD, ADDI, SUB, shifts, LUI, AUIPC, the JAL/JALR link value, the CSR
+write operand, branch no-writeback, busy signalling, a sample of Zb*/Zicond
+ops, and operand patterns that only carry meaning at XLEN=64. Exhaustive
+shift-amount sweeps run every full-width and word shift and rotate with
+conflicting register and immediate amounts, toggle use_imm independently of
+the op, and cover every one-hot operand bit. The ALU is combinational, so no
+test needs a polling loop.
 """
 
 from typing import Any
@@ -221,7 +221,7 @@ async def test_lui(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: AUIPC (dispatch-precomputed pc + upper immediate, forwarded from imm)
+# Test 7: AUIPC (PC + upper immediate, precomputed and carried in imm)
 # ============================================================================
 @cocotb.test()
 async def test_auipc(dut: Any) -> None:
@@ -231,8 +231,8 @@ async def test_auipc(dut: Any) -> None:
     rob_tag = 6
     pc_val = 0x0000_1000
     imm_val = 0x0000_2000
-    # Dispatch precomputes the PC-relative value into imm; the packet's pc is
-    # not consumed by the ALU any more.
+    # ID precomputes the PC-relative value and dispatch places it in imm; the
+    # ALU does not read the packet's pc.
     expected = (pc_val + imm_val) & MASK_XLEN
 
     iface.drive_issue(
@@ -259,7 +259,7 @@ async def test_auipc(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: JAL produces pc+4 as link address
+# Test 8: JAL and JALR return the link address carried in imm
 # ============================================================================
 @cocotb.test()
 async def test_jal_link(dut: Any) -> None:
@@ -325,7 +325,7 @@ async def test_sext_h(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: PACK implements zext.h when rs2=x0
+# Test 10: PACK with rs2=0 clears the upper half (zext.h is PACKW at RV64)
 # ============================================================================
 @cocotb.test()
 async def test_pack_zext_h(dut: Any) -> None:
@@ -611,7 +611,7 @@ async def test_branch_no_valid(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 20: CSR read (CSRRS with i_csr_read_data)
+# Test 20: CSRRS completes with its write operand (rs1)
 # ============================================================================
 @cocotb.test()
 async def test_csr_read(dut: Any) -> None:
@@ -643,8 +643,8 @@ async def test_csr_read(dut: Any) -> None:
 
 
 # ============================================================================
-# RV64-discriminating vectors (audit vacuous-pass list): ops/operand
-# patterns that only exist or only carry meaning at XLEN=64.
+# RV64 vectors: ops and operand patterns that exist or matter only at
+# XLEN=64.
 # ============================================================================
 async def _check_op(
     dut: Any,
@@ -818,7 +818,9 @@ async def _sweep_shift_rotate_amounts(dut: Any, *, word: bool) -> None:
         0x0123_4567_89AB_CDEF,
     ) + tuple(1 << bit for bit in range(64))
     case_index = 0
-    # Both domains visit all six-bit input amounts; W forms must ignore bit 5.
+    # Each op takes every six-bit amount from its own source (rs2 or the
+    # immediate) while the other source holds the complement; W forms must
+    # ignore bit 5.
     for amount in range(64):
         for operand in operands:
             for op_name, model, immediate in operations:

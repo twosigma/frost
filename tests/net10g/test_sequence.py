@@ -12,10 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Clause 49 Figure 49-15 receive sequencing and prescient termination checks.
+"""Check PCS receive sequencing (Clause 49, Figure 49-15) and termination lookahead.
 
-Primary state-diagram source (page 29), using the unchanged Clause 49 receive
-state transitions, not the separate proposed KR CRC8 extension:
+The state diagram is on page 29 of this proposal, which reproduces the Clause 49
+receive transitions unchanged; its proposed KR CRC8 extension is not used:
 https://www.ieee802.org/3/ap/public/sep05/szczepanek_02_0905.pdf
 """
 
@@ -28,7 +28,7 @@ from cocotb.triggers import Timer
 
 
 ERROR = 0xFEFEFEFEFEFEFEFE
-# Five independently specified block classes in the state diagram.
+# One (data, ctrl, bad_block) word for each block class in the state diagram.
 WORDS = {
     "C": (0x0707070707070707, 0xFF, 0),
     "S": (0xD5555555555555FB, 0x01, 0),
@@ -36,8 +36,9 @@ WORDS = {
     "T": (0x07070707070707FD, 0xFF, 0),
     "E": (ERROR, 0xFF, 1),
 }
-# Allowed transitions from the diagram. State INIT is equivalent to C for
-# processing; the root PCS independently supplies Local Fault during reset.
+# Allowed transitions from the diagram; any other pair goes to E. The INIT state
+# behaves like C here; eth10g_pcs_rx sends Local Fault itself while the PCS is
+# not OK.
 TRANSITIONS = {
     ("C", "C"): "C",
     ("C", "S"): "D",
@@ -77,7 +78,7 @@ def next_state(previous: str, current: str, lookahead: str) -> str:
 
 @cocotb.test()
 async def all_short_sequences(dut: Any) -> None:
-    """Exhaust every four-block class sequence with a separate transition table."""
+    """Check every sequence of four block classes against the transition table."""
     for sequence in itertools.product(WORDS, repeat=4):
         await edge(dut, reset=True)
         state = "C"
@@ -130,7 +131,7 @@ async def termination_lookahead_stalls_and_reset(dut: Any) -> None:
 
 @cocotb.test()
 async def decoded_control_classification(dut: Any) -> None:
-    """Distinguish explicit /E/ and data bytes from classifying control characters."""
+    """Check block classes for /E/ in control fields, control-like data, and bad blocks."""
     rng = random.Random(4915)
     # Unlike all-C blocks, /E/ in the C fields of OS, S, and T blocks does not
     # change the R_BLOCK_TYPE. This is the standard's explicit classification.

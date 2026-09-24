@@ -225,7 +225,10 @@ async def test_flush_stall_and_holdoff_control_valid_chain(dut: Any) -> None:
 
 @cocotb.test()
 async def test_id_valid_dispatch_stall_and_replay_gates(dut: Any) -> None:
-    """Dispatch flush gates debug views; the local ID owner gates all four."""
+    """A dispatch flush clears only the qualified ID valids; id_stall_q clears all four.
+
+    A dispatch-stall replay (i_replay_after_dispatch_stall_q) overrides id_stall_q.
+    """
     await _setup_test(dut)
     await _prime_pd_valid(dut)
 

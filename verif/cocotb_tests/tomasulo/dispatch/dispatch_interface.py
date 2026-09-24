@@ -79,9 +79,8 @@ MEM_SIZE_DOUBLE = 3
 
 # =============================================================================
 # instr_op_e constants, parsed from riscv_pkg.sv so every value tracks the
-# RTL enum. Hardcoded indices go stale on any mid-enum insertion: the M3
-# .D-atomics insertion shifted everything after AMOMAXU_W by 11, which
-# silently invalidated the old FLW..FCLASS_D block.
+# RTL enum. Hardcoded values would go stale whenever a member is inserted
+# mid-enum.
 # =============================================================================
 _INSTR_OPS = _parse_instr_op_enum()
 # base-ISA integer ops
@@ -134,7 +133,7 @@ DIV = _INSTR_OPS["DIV"]
 DIVU = _INSTR_OPS["DIVU"]
 REM = _INSTR_OPS["REM"]
 REMU = _INSTR_OPS["REMU"]
-# Zifencei
+# FENCE and Zifencei
 FENCE = _INSTR_OPS["FENCE"]
 FENCE_I = _INSTR_OPS["FENCE_I"]
 # Zicsr
@@ -258,7 +257,7 @@ FEQ_D = _INSTR_OPS["FEQ_D"]
 FLT_D = _INSTR_OPS["FLT_D"]
 FLE_D = _INSTR_OPS["FLE_D"]
 FCLASS_D = _INSTR_OPS["FCLASS_D"]
-# RV64 F/D conversions and moves (M3)
+# RV64 F/D conversions and moves
 FCVT_L_S = _INSTR_OPS["FCVT_L_S"]
 FCVT_LU_S = _INSTR_OPS["FCVT_LU_S"]
 FCVT_S_L = _INSTR_OPS["FCVT_S_L"]
@@ -293,11 +292,11 @@ assert _offset == 0, f"Offset mismatch: {_offset}"
 # =============================================================================
 # Pre-decoded operand-classification helpers
 # =============================================================================
-# These mirror the riscv_pkg.sv functions of the same names, so that
-# build_from_id_to_ex can fill the registered flags from instruction_operation
-# and tests need not set each one. The DUT's id_stage runs the same decode and
-# registers the result; dispatch reads the registered flag instead of
-# re-decoding.
+# These mirror the riscv_pkg.sv functions of the same names (has_int_dest,
+# uses_fp_rs1, ...), so build_from_id_to_ex can derive the pre-decoded flags
+# from instruction_operation and tests need not set each one. In the CPU,
+# id_stage runs the same decode and registers the flags, and dispatch reads
+# them without re-decoding.
 _HAS_FP_DEST_OPS: frozenset[int] = frozenset(
     {
         FLW,
@@ -559,7 +558,8 @@ _USES_FP_RS3_OPS: frozenset[int] = frozenset(
     }
 )
 
-# uses_int_rs1: most ops, except pure-FP-rs1 / PC-relative / system / CSR-imm.
+# Ops with no integer rs1: LUI, AUIPC, JAL, fences, system ops, and CSR
+# immediates. Ops that read an FP rs1 are excluded separately.
 _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
     {
         LUI,
@@ -950,11 +950,11 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_pipelined_fp_op": 1 if op in (_RS_FMUL_OPS | _RS_FDIV_OPS) else 0,
         "is_fp_to_int": 1 if op in _FP_TO_INT_OPS else 0,
         "is_int_to_fp": 1 if op in _INT_TO_FP_OPS else 0,
-        # id_stage registers is_not_nop = (instruction != NOP) on every
-        # instruction it presents; for slot 1 a fetch-fault tag also forces the
-        # flag high (id_stage.sv). Packed test packets keep that boundary even
-        # though dispatch qualifies slot-2 admission with i_valid_2. Pass
-        # is_not_nop=0 to model a NOP bubble.
+        # id_stage registers is_not_nop = (instruction != NOP), and a slot-1
+        # fetch fault also sets it. Test packets default to 1 like a real
+        # instruction, although this bench's DUT takes slot-2 presence from
+        # i_valid_2 (SLOT2_VALID_FROM_BUNDLE = 0). Pass is_not_nop=0 to model
+        # a NOP bubble.
         "is_not_nop": 1,
     }
 
@@ -1351,10 +1351,6 @@ class DispatchInterface:
         self.dut.i_checkpoint_alloc_id.value = alloc_id & (
             (1 << CHECKPOINT_ID_WIDTH) - 1
         )
-
-    # =========================================================================
-    # RAS State
-    # =========================================================================
 
     # =========================================================================
     # Flush

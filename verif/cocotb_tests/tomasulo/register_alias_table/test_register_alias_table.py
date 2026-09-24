@@ -21,13 +21,11 @@ port used by FMA, commit clears and commit tag mismatches, same-cycle
 collisions of rename against commit, flush_all against everything, restore
 against commit and save against free, and checkpoint save, restore, free,
 bulk-free mask, RAS state, and the allocation priority encoder up to
-exhaustion. Three constrained-random tests interleave those operations and
-compare the resulting RAT and checkpoint state against the model.
+exhaustion. Constrained-random tests interleave those operations and compare
+the final state against the model.
 
-Usage:
-    cd frost/tests
-    make clean
-    ./test_run_cocotb.py register_alias_table
+Usage (from repository root, through the pinned tools):
+    ./scripts/frost.py cocotb register_alias_table
 """
 
 import cocotb
@@ -696,7 +694,7 @@ async def test_checkpoint_free(dut: Any) -> None:
     # Checkpoint 0 should now be in use; next free should be 1
     await RisingEdge(dut_if.clock)
     assert dut_if.checkpoint_available, (
-        "Checkpoint should still be available (1-3 free)"
+        "Checkpoint should still be available (1-7 free)"
     )
     assert dut_if.checkpoint_alloc_id == 1, "Next free should be 1"
 
@@ -1093,7 +1091,10 @@ async def test_checkpoint_restore_priority_over_commit(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
-    """Test deterministic same-cycle behavior for checkpoint save/free."""
+    """Test same-cycle checkpoint save and free.
+
+    On the same slot the save wins; on different slots both take effect.
+    """
     cocotb.log.info("=== Test: Checkpoint Save/Free Same-Cycle Precedence ===")
 
     dut_if, model = await setup_test(dut)

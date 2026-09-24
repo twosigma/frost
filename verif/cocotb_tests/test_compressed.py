@@ -43,7 +43,7 @@ Compressed instruction categories:
 Each test runs one compressed instruction type and reads back the register
 value it commits. Negative immediates and the shift forms are covered.
 
-Usage: ``cd tests && ./test_run_cocotb.py compressed``.
+Usage: ``./scripts/frost.py cocotb compressed``.
 """
 
 import cocotb
@@ -67,14 +67,13 @@ async def settle_check_reg(
 ) -> None:
     """Check a committed register value, tolerating OOO retirement latency.
 
-    On the cpu_ooo core an architectural register write lands at ROB commit, a
-    variable number of cycles after the harness feeds the instruction, so a
-    fixed post-instruction NOP fill is not enough. Poll the committed value
-    until it equals ``expected``, then assert. Every tested instruction writes
-    a value that differs from the register's prior contents, so a stale read
-    cannot end the poll early. The instruction bus still carries the NOP
-    filler driven by the preceding execute helper, so waiting only has to
-    advance clock cycles.
+    An architectural register write lands at ROB commit, a variable number of
+    cycles after the harness feeds the instruction, so a fixed NOP fill after
+    the instruction is not enough. Poll the committed value until it equals
+    ``expected``, then assert. Every tested instruction writes a value that
+    differs from the register's prior contents, so a stale read cannot end the
+    poll early. The instruction bus still carries the NOP filler driven by the
+    preceding execute helper, so waiting only has to advance clock cycles.
 
     Args:
         dut_if: DUT interface (for the clock)
@@ -166,11 +165,12 @@ async def run_compressed_instruction_test(
             await RisingEdge(dut_if.clock)
 
     async def execute_compressed_instr(instr_16bit: int) -> None:
-        """Execute a compressed instruction and wait for it to complete.
+        """Drive one compressed instruction, then NOP filler behind it.
 
         A compressed instruction advances the PC by 2, so the PC can end up
         on an odd half-word. Wait for word alignment before driving the next
-        instruction.
+        instruction. The filler does not wait for commit; check_reg polls for
+        the result.
 
         Args:
             instr_16bit: 16-bit compressed instruction encoding
@@ -195,7 +195,7 @@ async def run_compressed_instruction_test(
         dut_if.instruction = packed
         await RisingEdge(dut_if.clock)
 
-        # Wait for pipeline to complete
+        # NOP filler behind the instruction
         for _ in range(pipeline_depth + 1):
             await FallingEdge(dut_if.clock)
             dut_if.instruction = nop_packed
@@ -348,13 +348,11 @@ async def test_compressed_instructions(dut: Any) -> None:
 
 @cocotb.test()
 async def test_random_riscv_regression_with_compressed(dut: Any) -> None:
-    """Random RISC-V regression with C extension compressed instructions.
+    """Run the directed compressed suite again; despite the name, it is not random.
 
-    Despite the name, this currently re-runs the directed suite in
-    run_compressed_instruction_test (see its docstring for the instruction
-    list). That suite consumes only the clock/reset fields of TestConfig,
-    which are left at their defaults here, so the stimulus is identical to
-    test_compressed_instructions.
+    run_compressed_instruction_test reads only the clock and reset fields of
+    TestConfig, which keep their defaults here, so the stimulus is identical
+    to test_compressed_instructions.
     """
     config = TestConfig(num_loops=1000, min_coverage_count=10)
     await run_compressed_instruction_test(dut, config)

@@ -18,7 +18,9 @@ Covers MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, divide-by-zero,
 signed overflow, result acceptance, busy signalling, and full/partial flush
 behavior. Full-width MUL/DIV take 6/33 cycles; the dedicated word pipes take
 3/17. Mixed-width tests exercise shared completion slots, backpressure, and
-flushes at every word-pipeline position.
+flushes at every word-pipeline position. FROST_TEST_SHORT_WORD_OPS=0 selects
+the expectations for a DUT built with SHORT_WORD_OPS=0, which runs word ops
+through the full-width units.
 """
 
 import os
@@ -681,7 +683,7 @@ async def test_rem_signed_overflow(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_suppresses_younger(dut: Any) -> None:
-    """Partial flush with flush_tag younger than in-flight op suppresses result."""
+    """A partial flush suppresses an in-flight MUL younger than the flush tag."""
     iface = await setup(dut)
 
     iface.drive_issue(
@@ -714,7 +716,7 @@ async def test_partial_flush_suppresses_younger(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_keeps_older(dut: Any) -> None:
-    """Partial flush with flush_tag older than in-flight op keeps result."""
+    """A partial flush keeps an in-flight MUL older than the flush tag."""
     iface = await setup(dut)
 
     rob_tag = 3
@@ -746,7 +748,7 @@ async def test_partial_flush_keeps_older(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
-    """Partial flush with flush_tag younger than in-flight DIV suppresses result."""
+    """A partial flush suppresses an in-flight DIV younger than the flush tag."""
     iface = await setup(dut)
 
     iface.drive_issue(
@@ -779,7 +781,7 @@ async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_keeps_older_div(dut: Any) -> None:
-    """Partial flush with flush_tag older than in-flight DIV keeps result."""
+    """A partial flush keeps an in-flight DIV older than the flush tag."""
     iface = await setup(dut)
 
     rob_tag = 3
@@ -1014,25 +1016,25 @@ async def test_fifo_backpressure(dut: Any) -> None:
     await FallingEdge(iface.clock)
 
     assert iface.read_busy(), (
-        "busy should be 1 with 4 DIVs in-flight (FIFO_DEPTH reached)"
+        "busy should be 1 with 4 DIVs in flight (DIV FIFO depth reached)"
     )
 
     result = await wait_for_div_complete(iface)
     assert result["valid"], "Expected valid completion"
     await FallingEdge(iface.clock)
 
-    # After popping one, inflight + fifo < FIFO_DEPTH, busy should drop
+    # After popping one, in-flight + FIFO occupancy < FifoDepth, so busy drops
     assert not iface.read_busy(), "busy should be 0 after popping one result"
 
 
 # ============================================================================
-# Test 29: Partial flush on same cycle as DIV completion suppresses result
+# Test 29: Partial flush as a younger DIV reaches the tracker tail
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_at_completion(dut: Any) -> None:
-    """Partial flush arriving on the same cycle the divider completes.
+    """A partial flush on the edge that shifts a younger DIV into the tracker tail drops it.
 
-    Must suppress the result (not leak it into the FIFO).
+    The divider result appears on that same edge; it must not enter the FIFO.
     """
     iface = await setup(dut)
 
@@ -1047,12 +1049,12 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Wait until one cycle before the divider output is expected. One edge was
-    # consumed above; the flush edge below is the final latency cycle.
+    # The issue edge above put the DIV in tracker stage 0. These edges move it
+    # to stage DivPipeDepth-2, one short of the tail.
     for _ in range(DIV_PIPELINE_LATENCY - 2):
         await RisingEdge(iface.clock)
 
-    # Assert the partial flush on the same cycle the tail valid goes high.
+    # The partial flush is sampled on the edge that shifts the DIV into the tail.
     # flush_tag=5, head=0  =>  tag 10 is younger, should be squashed.
     iface.drive_partial_flush(flush_tag=5, head_tag=0)
     await RisingEdge(iface.clock)
@@ -1074,9 +1076,9 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_fifo_head(dut: Any) -> None:
-    """Partial flush must suppress a valid FIFO head on the same cycle.
+    """A partial flush hides a younger FIFO head from the next cycle on and drains it.
 
-    Prevents the adapter from latching a younger result.
+    On the flush cycle itself the adapter's own partial-flush check drops the result.
     """
     iface = await setup(dut)
 
@@ -1124,7 +1126,7 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
 
 
 # ============================================================================
-# RV64 W-form vectors (M3 rung 2).
+# RV64 vectors: word forms and 64-bit corner cases.
 # ============================================================================
 async def _check_muldiv_op(
     dut: Any, op_name: str, src1: int, src2: int, expected: int, is_div: bool
@@ -1281,7 +1283,11 @@ async def test_word_completion_slot_collision(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mixed_word_full_random_backpressure(dut: Any) -> None:
-    """Independent arithmetic scoreboard checks mixed widths under FIFO saturation."""
+    """Random mixed-width ops match the model under random back-pressure.
+
+    Each op completes exactly once, on its own port, with the model's value.
+    Until every op has issued, each presented result is accepted with probability 1/4.
+    """
     iface = await setup(dut)
     rng = random.Random(0x6432)
     names = (

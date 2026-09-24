@@ -14,12 +14,13 @@
 
 """The DMA front-end as one engine sees it, over a byte-addressable memory.
 
-Requests are accepted with random ready gaps up to a cap of three in
-flight; responses come back after a random latency and out of order (the
-port's behaviour); reads return the line, writes apply their strobes.
-The model also records the order of events so a test can check that a
-status write was issued only after every data write of its engine had
-been answered, and that at most one status write is in flight.
+Requests are accepted with random ready gaps, up to a cap in flight (three
+by default, the front-end's per-engine limit); responses come back after a
+random latency and out of order (the port's behavior); reads return the
+line, writes apply their strobes. The model logs every accepted request and
+records a violation for a request outside the cached-DDR aperture and for a
+status write issued while a data request is unanswered or another status
+write is in flight.
 """
 
 import random
@@ -201,7 +202,9 @@ class DmaModel:
             )
 
 
-# Descriptor helpers (16 bytes: word0 address, word1 length/flags, word2 status).
+# Descriptor helpers. A descriptor is 16 bytes: word 0 buffer address, word 1
+# length and flags (SOP, EOP), word 2 status (RX received length, DD, TRUNC,
+# ERR, ABORT), word 3 reserved.
 DD = 1 << 16
 TRUNC = 1 << 17
 ERR = 1 << 18
@@ -216,7 +219,7 @@ def desc_addr(base: int, index: int) -> int:
 
 
 def post_desc(mem: Memory, base: int, index: int, buf_addr: int, word1: int) -> None:
-    """Write a descriptor the way software posts it: words 0/1, word 2 zeroed."""
+    """Write a descriptor the way software posts it: words 0 and 1, the rest zeroed."""
     a = desc_addr(base, index)
     mem.write_word32(a, buf_addr)
     mem.write_word32(a + 4, word1)

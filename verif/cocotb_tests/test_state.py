@@ -31,9 +31,9 @@ from encoders.instruction_encode import CSRAddress
 class TestState:
     """Software CPU state and expected-value queues.
 
-    The stage names in the attribute list are historical: the OOO DUT has no
-    fixed IF/EX/WB residency (see the pipeline timing model in the module
-    docstring).
+    The stage names below come from the in-order monitor alignment model
+    (config.PIPELINE_IF_TO_EX_CYCLES and related offsets). The OOO DUT has no
+    fixed IF/EX/WB residency, so read them as instruction history.
 
     Attributes:
         register_file_current: Register values after current writeback
@@ -67,19 +67,16 @@ class TestState:
         # ====================================================================
         # Integer Register File State
         # ====================================================================
-        # With full forwarding, instruction N sees results from all previous
-        # instructions via forwarding paths (EX→ID, MA→ID, WB→ID).
-        # 'previous' = values visible to current instruction (for operand reads)
-        # 'current' = values after writeback of current instruction
+        # 'previous' holds the values the current instruction reads, with every
+        # older result visible; 'current' holds the values after it writes.
         self.register_file_current: list[int] = [0] * 32
         self.register_file_previous: list[int] = [0] * 32
 
         # ====================================================================
         # FP Register File State (F extension)
         # ====================================================================
-        # Same pipeline timing as integer register file.
-        # FP registers f0-f31 are separate from integer registers x0-x31.
-        # Unlike x0, which is hardwired to 0, f0 is a normal register.
+        # Same previous/current split as the integer file. Unlike x0, f0 is an
+        # ordinary register.
         self.fp_register_file_current: list[int] = [0] * 32
         self.fp_register_file_previous: list[int] = [0] * 32
 
@@ -220,8 +217,7 @@ class TestState:
     def set_reservation(self, address: int) -> None:
         """Set LR/SC reservation for the given word-aligned address.
 
-        Called when LR.W instruction completes in MA stage.
-        The reservation is used by subsequent SC.W to determine success/failure.
+        Callers set it when they model an LR.W; a later SC.W checks it.
 
         Args:
             address: Word-aligned memory address (lower 2 bits ignored)
@@ -232,10 +228,9 @@ class TestState:
     def clear_reservation(self) -> None:
         """Clear any active LR/SC reservation.
 
-        Called when:
-        - SC.W executes (regardless of success/failure)
-        - Store to reserved address occurs
-        - Context switch (not modeled in random tests)
+        Callers clear it on every SC.W, whether or not it succeeds. Other events
+        that end a reservation, such as a store to the reserved address, are
+        not modeled.
         """
         self.reservation_valid = False
 
@@ -262,15 +257,10 @@ class TestState:
     ) -> int:
         """Get expected CSR value for a CSR read instruction.
 
-        CSR reads happen in EX stage, which is PIPELINE_IF_TO_EX_CYCLES after IF.
-        The counter value at EX time is what gets captured.
-
-        Counter timing for the monitor alignment model:
-
-        - cycle: Increments every clock edge. When CSR is in EX, the counter
-          has incremented pipeline_offset more times since generation.
-        - instret: Increments only when instruction retires in WB stage.
-          The instret value read is the count before this CSR's generation.
+        In the monitor alignment model the read happens in EX,
+        pipeline_offset cycles after the instruction is generated. It sees the
+        cycle shadow plus pipeline_offset and the instret shadow minus
+        PIPELINE_IF_TO_EX_CYCLES (not below zero).
 
         Args:
             csr_address: CSR address being read (e.g., 0xC00 for cycle)

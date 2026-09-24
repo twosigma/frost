@@ -120,7 +120,7 @@ async def test_pc_bit_zero_is_ignored_but_bit_one_selects_distinct_index(
 
 @cocotb.test()
 async def test_taken_training_requires_two_updates_then_saturates(dut: Any) -> None:
-    """The 2-bit counter starts weak-not-taken and saturates at strongly taken."""
+    """A counter starting strongly not-taken needs two taken updates, then saturates."""
     await _setup_test(dut)
 
     await _train_pc(dut, PC_A, taken=True)

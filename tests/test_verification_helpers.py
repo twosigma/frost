@@ -278,7 +278,7 @@ def test_c_addi_encoder_rejects_hint_encodings(rd: int, nzimm: int) -> None:
 
 
 def test_c_nop_has_a_dedicated_encoder() -> None:
-    """The architectural C.NOP encoding remains available explicitly."""
+    """C.NOP (C.ADDI x0, 0) has its own encoder."""
     assert compressed_encode.enc_c_nop() == 0x0001
 
 

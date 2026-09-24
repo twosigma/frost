@@ -17,10 +17,9 @@
 The bench plays the cache hierarchy's coherence sequencer on the wrapper's
 ``i_coh_*`` / ``o_coh_*`` handshake (admit a line, invalidate it, release
 it) against the core-side machinery in ``coherence/lq_coherence_port.sv``,
-the load queue and the SC pending unit. Every race here is a cycle race
-between an admission and an atomic, so each test sweeps the admission's
-presentation cycle across the atomic's dispatch-to-launch window and
-checks the order that results:
+the load queue and the SC pending unit. The races are decided by single
+cycles, so most tests sweep the admission or a flush across the cycles
+around the event it races with and check the order that results:
 
 - an AMO never launches its read between the admission of its line and the
   release, whichever side comes first (an AMO already in flight refuses the
@@ -31,7 +30,9 @@ checks the order that results:
 - a full flush landing on an SC's fire or on its window's opening cycle
   leaves the line admittable;
 - a load that took its value from the store queue is validated like any
-  other memory observation: a DMA write to its line flags it for replay.
+  other memory observation: a DMA write to its line flags it for replay. A
+  partial flush around the forward removes the observation only when it
+  kills the load itself.
 """
 
 from typing import Any

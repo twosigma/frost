@@ -14,13 +14,11 @@
 
 """Unit tests for nic_tx_engine (hw/rtl/peripherals/nic/nic_tx_engine.sv).
 
-Against the DMA model (memory, out-of-order responses) and a beat sink
-standing in for the TX FIFO: buffers at any byte offset come out as
-contiguous beats with the right final count and last flag, reading
-exactly the lines the buffer covers; invalid descriptors complete with
-DD|ERR and send nothing; DD follows the last beat; abort completes with
-DD|ERR|ABORT and pushes nothing more; the drain reaches idle without a
-completion; with the ring empty nothing is read.
+The engine runs against the DMA model of dma_model.py (a memory with
+out-of-order responses) and a beat sink standing in for the TX FIFO. A
+buffer at any byte offset must come out as contiguous beats with the right
+final count and last flag, and the engine must read exactly the lines the
+buffer covers.
 """
 
 import random
@@ -210,7 +208,7 @@ def _expected_lines(addr: int, length: int) -> list[int]:
 
 @cocotb.test()
 async def test_frames_out(dut: Any) -> None:
-    """Buffers at every kind of offset come out byte-exact, reading exactly their lines."""
+    """Buffers at random byte offsets come out byte-exact, reading exactly their lines."""
     env = await _setup(dut, 1)
     lengths = [1, 8, 9, 31, 32, 33, 60, 64, 65, 100, 1518, 1500, 9216, 4000, 7]
     plan = []
@@ -255,7 +253,7 @@ async def test_reorder_under_slow_memory(dut: Any) -> None:
 
 @cocotb.test()
 async def test_one_status_write_in_flight(dut: Any) -> None:
-    """Status responses slower than whole frames: the next status write waits for the previous response."""
+    """With slow status responses, each status write waits for the previous one's response."""
     env = await _setup(dut, 7, latency=(1, 4), sink_gap=0.0, status_latency=(150, 150))
     plan = [env.place(i, BUF + i * 0x1000 + 3, 64) for i in range(4)]
     await env.doorbell(4)
@@ -272,7 +270,11 @@ async def test_one_status_write_in_flight(dut: Any) -> None:
 
 @cocotb.test()
 async def test_invalid_descriptors(dut: Any) -> None:
-    """Length 0, oversize, missing SOP or EOP, outside or straddling the aperture: DD|ERR, nothing sent."""
+    """Invalid descriptors complete with DD|ERR and send nothing.
+
+    The cases: length 0, oversize, missing SOP or EOP, and a buffer outside the
+    aperture or straddling its end.
+    """
     env = await _setup(dut, 3)
     env.place(0, BUF + 1, 0)
     env.place(1, BUF + 0x3000, 9217)
@@ -324,9 +326,10 @@ async def test_abort_mid_frame(dut: Any) -> None:
 
 @cocotb.test()
 async def test_withdrawn_status_write_completes_nothing(dut: Any) -> None:
-    """A status write the drain withdrew (an error response) frees the slot and.
+    """A status write the drain withdrew (an error response) reports no completion.
 
-    reports no completion; the next frame's completion is reported.
+    It still frees the status-write slot, so the next frame's completion is
+    reported.
     """
     env = await _setup(dut, 8, latency=(1, 4))
     env.model.withdraw_status = True

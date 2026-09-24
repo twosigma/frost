@@ -12,7 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Serial-history reference, published vectors, stalls and error propagation."""
+"""Check the scrambler and descrambler against published vectors and a serial model.
+
+The tests cover enable pauses, resets, and channel-error propagation.
+"""
 
 import random
 
@@ -22,15 +25,15 @@ from cocotb.triggers import Timer
 
 
 class SerialReference:
-    """Track chronological scrambled wire bits, independent of RTL shift direction."""
+    """Bit-serial model of the 1 + x^39 + x^58 (de)scrambler, in wire-bit order."""
 
     def __init__(self, descramble: bool = False) -> None:
-        """Seed the serial history with the agreed all-ones reset state."""
+        """Start from the all-ones state the RTL resets to."""
         self.bits = [1] * 58
         self.descramble = descramble
 
     def word(self, value: int) -> int:
-        """Process one word in chronological wire-bit order."""
+        """Scramble or descramble one 64-bit word, bit 0 first."""
         result = 0
         for index in range(64):
             incoming = (value >> index) & 1
@@ -56,7 +59,7 @@ async def edge(
 
 @cocotb.test()
 async def published_scrambled_vectors(dut: Any) -> None:
-    """Check ten published scrambled payloads and their inverse."""
+    """Check the published scrambled payloads in both directions."""
     # Rick Walker's published Clause 49 implementation vectors. Payload octets
     # are listed in transmission order, each byte sent LSB first.
     # https://www.ieee802.org/3/10G_study/email/msg03521.html
@@ -83,7 +86,7 @@ async def published_scrambled_vectors(dut: Any) -> None:
 
 @cocotb.test()
 async def serial_reference_reset_and_enable(dut: Any) -> None:
-    """Compare independent serial references through stalls and resets."""
+    """Compare both directions with the serial model through pauses and resets."""
     rng = random.Random(0x5839)
     tx_ref, rx_ref = SerialReference(), SerialReference(True)
     tx_expected = rx_expected = 0

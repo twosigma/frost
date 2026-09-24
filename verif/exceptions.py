@@ -16,14 +16,14 @@
 
 
 class VerificationError(Exception):
-    """Base class that lets callers catch all verification failures."""
+    """Base class for the exceptions in this module."""
 
 
 class AlignmentError(VerificationError):
     """Memory alignment violation.
 
-    Raised when an access misses the alignment its width requires: 2 bytes
-    for a halfword, 4 for a word, 8 for a doubleword.
+    Raised when an address is not a multiple of the access width: 2 bytes for
+    a halfword, 4 for a word, 8 for a doubleword.
     """
 
     def __init__(

@@ -37,7 +37,7 @@ class Opcode(IntEnum):
     BRANCH = 0x63
     JALR = 0x67
     JAL = 0x6F
-    SYSTEM = 0x73  # CSR instructions (Zicsr)
+    SYSTEM = 0x73  # ECALL, EBREAK, xRET, WFI, SFENCE.VMA, and CSR instructions (Zicsr)
     # F/D extensions (floating-point); fmt or funct3 selects .S versus .D
     LOAD_FP = 0x07  # FLW, FLD
     STORE_FP = 0x27  # FSW, FSD
@@ -77,7 +77,7 @@ class Funct3(IntEnum):
     BLTU = 0x6
     BGEU = 0x7
 
-    # Memory ordering (Zifencei)
+    # FENCE (base ISA) and FENCE.I (Zifencei)
     FENCE = 0x0
     FENCE_I = 0x1
 
@@ -310,8 +310,8 @@ class JType(InstructionEncoder):
 
     Format: imm[20|10:1|11|19:12][31:12] | rd[11:7] | opcode[6:0]
     Used for: unconditional jump (JAL instruction)
-    The 21-bit immediate is permuted within imm[31:12]. Bit 0 is implicit and
-    always 0.
+    Immediate bits [20:1] are permuted into instruction bits [31:12]. Bit 0 is
+    implicit and always 0.
     """
 
     MINIMUM_JUMP_OFFSET: ClassVar[int] = -1048576  # -2^20
@@ -352,8 +352,8 @@ class AMOType(InstructionEncoder):
     Format: funct5[31:27] | aq[26] | rl[25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | rd[11:7] | opcode[6:0]
     Used for: atomic memory operations (LR.W, SC.W, AMO*.W)
 
-    aq (acquire) and rl (release) request memory ordering. FROST's decoder keys
-    on funct5 (bits 31:27) alone and ignores both bits; they default to 0 here.
+    aq (acquire) and rl (release) request memory ordering. FROST's decoder
+    ignores both bits; they default to 0 here.
     """
 
     @staticmethod
@@ -369,9 +369,9 @@ class AMOType(InstructionEncoder):
 
         Args:
             funct5_code: 5-bit function code identifying the AMO operation
-            source_register_2: rs2 register (value for AMO, 0 for LR.W)
+            source_register_2: rs2 register (data for SC.W and AMOs, 0 for LR.W)
             source_register_1: rs1 register (memory address)
-            destination_register: rd register (receives old memory value)
+            destination_register: rd register (old memory value, or SC.W status)
             aq: Acquire bit (memory ordering, default 0)
             rl: Release bit (memory ordering, default 0)
 
@@ -438,7 +438,8 @@ class R4Type(InstructionEncoder):
 class FPType(InstructionEncoder):
     """F/D extension instruction format encoder.
 
-    Uses R-type format with funct7 encoding the operation.
+    Uses R-type format with funct7 encoding the operation. Sign injection,
+    min/max, compare, classify, and moves use the rm field as funct3.
     Format: funct7[31:25] | rs2[24:20] | rs1[19:15] | rm[14:12] | rd[11:7] | opcode[6:0]
     """
 
@@ -466,7 +467,8 @@ class UType(InstructionEncoder):
 
     Format: imm[31:12][31:12] | rd[11:7] | opcode[6:0]
     Used for: LUI (Load Upper Immediate), AUIPC (Add Upper Immediate to PC)
-    LUI writes the immediate shifted left by 12 to rd. AUIPC adds it to the PC.
+    LUI writes the immediate shifted left by 12 to rd. AUIPC writes that value
+    plus its own PC to rd.
     """
 
     @staticmethod
@@ -492,7 +494,7 @@ class UType(InstructionEncoder):
         )
 
 
-# Convenience wrappers that fix the opcode per instruction class (API compatibility)
+# Wrappers that fix the opcode for each instruction class
 def enc_r(funct7: int, rs2: int, rs1: int, funct3: int, rd: int) -> int:
     """Encode R-type register-register instruction (opcode 0x33 - ALU operations)."""
     return RType.encode(funct7, rs2, rs1, funct3, rd, Opcode.ALU_REG)
@@ -547,22 +549,22 @@ def enc_lui(rd: int, immediate_20bit: int) -> int:
 def enc_fence() -> int:
     """Encode FENCE instruction (opcode 0x0F, funct3 0x0).
 
-    FENCE orders memory operations. FROST serializes it at the ROB head and
-    waits for the store queue to drain (see reorder_buffer.sv).
+    FENCE orders memory operations. FROST holds it at the ROB head until
+    committed stores drain (see reorder_buffer.sv).
 
     Format: imm[11:0] | rs1 | funct3 | rd | opcode
     Standard encoding: 0x0ff0000f (pred=0xf, succ=0xf, rs1=0, rd=0)
     """
-    # imm[11:8]=pred=0xF (all prior), imm[7:4]=succ=0xF (all subsequent), imm[3:0]=0
+    # imm[11:8]=fm=0, imm[7:4]=pred=0xF (IORW), imm[3:0]=succ=0xF (IORW)
     return IType.encode(0x0FF, 0, Funct3.FENCE, 0, Opcode.MISC_MEM)
 
 
 def enc_fence_i() -> int:
     """Encode FENCE.I instruction (opcode 0x0F, funct3 0x1).
 
-    FENCE.I synchronizes instruction and data streams. On FROST this publishes
-    self-modified cached-region code by forcing the cache-sync path: L1D dirty
-    writeback, L1I invalidate, and front-end fetch-buffer flush.
+    FENCE.I synchronizes the instruction and data streams. On FROST it drains
+    stores, writes back dirty L1D lines, invalidates the L1I, and flushes the
+    fetch buffer before refetch.
 
     Format: imm[11:0] | rs1 | funct3 | rd | opcode
     Standard encoding: 0x0000100f (imm=0, rs1=0, rd=0)
@@ -576,16 +578,13 @@ def enc_pause() -> int:
     PAUSE is a hint instruction for spin-wait loops. It is encoded as a
     FENCE with pred=W (0001), succ=0, and all other fields zero.
 
-    FROST decodes it as its own op (instr_decoder.sv), allocates no reservation
-    station for it, and retires it without a register write (alu.sv).
-
     Encoding: 0x0100000f (imm=0x010, rs1=0, funct3=0, rd=0)
     """
-    # imm[11:8]=pred=0001, imm[7:4]=succ=0000, imm[3:0]=0 -> imm=0x010
+    # imm[11:8]=fm=0, imm[7:4]=pred=0001 (W), imm[3:0]=succ=0 -> imm=0x010
     return IType.encode(0x010, 0, Funct3.FENCE, 0, Opcode.MISC_MEM)
 
 
-# Zicsr CSR addresses (Zicntr counters)
+# Zicsr CSR addresses and instructions
 class CSRAddress(IntEnum):
     """CSR addresses for Zicntr extension and M-mode CSRs."""
 
@@ -597,17 +596,17 @@ class CSRAddress(IntEnum):
     TIMEH = 0xC81  # RV32 upper half; illegal-instruction at XLEN=64
     INSTRETH = 0xC82  # RV32 upper half; illegal-instruction at XLEN=64
 
-    # Machine-mode CSRs (for RTOS support)
+    # Machine-mode CSRs
     MSTATUS = 0x300  # Machine status (MIE, MPIE, MPP)
     MISA = 0x301  # ISA description (read-only)
     MIE = 0x304  # Machine interrupt enable
     MTVEC = 0x305  # Machine trap vector base
-    MCOUNTEREN = 0x306  # U-mode counter enable (CY/TM/IR; resets to 0x7)
+    MCOUNTEREN = 0x306  # S/U counter enables (CY/TM/IR; resets to 0x7)
     MSCRATCH = 0x340  # Machine scratch register
     MEPC = 0x341  # Machine exception program counter
     MCAUSE = 0x342  # Machine trap cause
     MTVAL = 0x343  # Machine trap value
-    MIP = 0x344  # Machine interrupt pending (read-only)
+    MIP = 0x344  # Machine interrupt pending (MEIP/MTIP/MSIP read-only)
     MVENDORID = 0xF11  # Vendor ID (read-only)
     MARCHID = 0xF12  # Architecture ID (read-only)
     MIMPID = 0xF13  # Implementation ID (read-only)

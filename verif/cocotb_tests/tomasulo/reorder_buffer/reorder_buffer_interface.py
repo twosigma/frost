@@ -15,8 +15,9 @@
 """Typed ROB DUT access and packed-struct conversion helpers.
 
 Verilator flattens packed structs into bit vectors, so this interface packs
-and unpacks their fields. The six independent dispatch-bypass value reads
-have dedicated accessors, separate from the RAT-style entry read.
+and unpacks their fields. The six dispatch done-repair reads (i_bypass_tag_*)
+have their own accessors, separate from the general entry read port
+(i_read_tag).
 """
 
 from typing import Any
@@ -355,9 +356,9 @@ class ReorderBufferInterface:
         self.dut.i_checkpoint_valid.value = 0
         self.dut.i_checkpoint_id.value = 0
         self.dut.i_sq_committed_empty.value = 1
-        # Zero-latency cache sync by default (mirrors the no-cached-tier
-        # shape's done=req): FENCE.I spends exactly one cycle in
-        # SERIAL_FENCE_I_SYNC before committing.
+        # Zero-latency cache sync by default, as in a build without the cached
+        # tier (done tied to req): FENCE.I retires in its first
+        # SERIAL_FENCE_I_SYNC cycle.
         self.dut.i_fence_i_sync_done.value = 1
         self.dut.i_widen_commit_ok.value = 1
         self.dut.i_commit_hold.value = 0
@@ -377,10 +378,11 @@ class ReorderBufferInterface:
         self.dut.i_wfi_illegal.value = 0
         self.dut.i_priv_is_u.value = 0
         self.dut.i_debug_mode.value = 0
-        # All counters enabled (the reset value); the mcounteren gate is
-        # inert in PrivM anyway.
+        # All counters enabled (the reset value). The ROB does not use this
+        # input; allocation legality reads i_counter_blocked.
         self.dut.i_mcounteren.value = 0b111
-        # FS not Off (the reset value is Initial): the D15 FP gate is inert.
+        # FS not Off (the reset value is Initial), so the allocation-time
+        # FS-Off check never marks an FP instruction illegal.
         self.dut.i_mstatus_fs_off.value = 0
         self.dut.i_interrupt_pending.value = 0
         self.dut.i_flush_en.value = 0
@@ -641,12 +643,16 @@ class ReorderBufferInterface:
 
     @property
     def sfence_window(self) -> bool:
-        """True only while an SFENCE.VMA owns the serializer sync window."""
+        """True while an SFENCE.VMA at the head is in the cache-sync state."""
         return bool(self.dut.o_sfence_window.value)
 
     @property
     def fence_class_flush_event(self) -> bool:
-        """Serializer-owned native-fence or translation-CSR retirement event."""
+        """FENCE-class flush event (FENCE.I, SFENCE.VMA, or a translation CSR).
+
+        High in the cycle a FENCE.I or SFENCE.VMA retires, and one cycle after a
+        translation CSR retires.
+        """
         return bool(self.dut.o_fence_class_flush_event.value)
 
     @property
@@ -660,7 +666,7 @@ class ReorderBufferInterface:
 
     @property
     def fence_i_flush(self) -> bool:
-        """Registered native-fence or translation-CSR frontend flush."""
+        """FENCE-class flush request: the flush event delayed one cycle."""
         return bool(self.dut.o_fence_i_flush.value)
 
     # =========================================================================

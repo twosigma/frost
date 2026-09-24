@@ -11,7 +11,7 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-"""RISC-V debug module directed test (Phase 3 M3).
+"""RISC-V debug module directed test.
 
 A cocotb debugger (cocotb_tests.debug.jtag_dtm) drives frost's JTAG pins
 while `debug_target` runs and walks the debug spec's contract end to end:
@@ -95,8 +95,9 @@ BANNER_START = "debug_target: start"
 BANNER_PHASE_U = "debug_target: phase U"
 BANNER_PASS = "debug_target: <<PASS>>"
 MTIME_LO_ADDR = 0x4000_0010
-# Scratch far from either arrangement's image. The ddr build places the whole
-# program at 0x8000_0000+, so a scratch near the image would corrupt it.
+# Scratch address far from the program image in both memory configurations.
+# The DDR build places the whole program at 0x8000_0000 and up, so a scratch
+# address near the image would corrupt it.
 DDR_SCRATCH_ADDR = 0x8010_0000
 
 
@@ -393,7 +394,7 @@ async def test_debug(dut: Any) -> None:
         dpc = await dm.read_dpc()
         in_loop = syms["u_loop"] <= dpc < syms["u_loop_end"]
         # The M-mode handler is the asm trap_entry plus the C trap_dispatch it
-        # calls. The two are not adjacent in the ddr arrangement, so cover both
+        # calls. The two are not adjacent in the DDR build, so cover both
         # symbol windows. A halt anywhere on that path is valid and is retried
         # below.
         in_handler = (syms["trap_entry"] <= dpc < syms["trap_entry"] + 0x100) or (
@@ -426,7 +427,7 @@ async def test_debug(dut: Any) -> None:
     await ClockCycles(dut.i_clk, 2000)
     await dm.halt()
     assert (await dm.read_mem(syms["ecall_count"], 8)) > ecalls_before
-    # The privilege round-trips: resume lands back in U (the handler mrets).
+    # The handler mrets back to the U loop, so this halt may land in either mode.
     dcsr = await dm.read_dcsr()
     assert dcsr & DCSR_PRV_MASK in (0, 3), f"dcsr {dcsr:#x}"
 

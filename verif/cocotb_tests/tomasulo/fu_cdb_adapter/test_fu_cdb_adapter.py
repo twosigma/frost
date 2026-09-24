@@ -513,10 +513,8 @@ async def test_input_ignored_while_pending(dut: Any) -> None:
 
 # ============================================================================
 # Grant-refill partial-flush filter: a flushed-younger input on the grant
-# cycle must not be captured as held state, because it would be re-presented
-# after the flush. Before the refill arm applied partial_flush_input, this
-# showed up in CoreMark as stale ALU-slot CDB deliveries to long-freed ROB
-# entries.
+# cycle must not be captured as held state, or it would be presented after
+# the flush, possibly to a reallocated ROB tag.
 # ============================================================================
 @cocotb.test()
 async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
@@ -548,7 +546,7 @@ async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
 
     # Negative control: an input older than the flush boundary refills
     # normally under the same grant+flush alignment. The held tag=2 is older
-    # too, so the held-kill arm stays out of the way.
+    # too, so partial_flush_held stays low.
     dut_if.drive_fu_result(tag=2, value=0x2222)
     await dut_if.step()
     assert dut_if.read_result_pending()

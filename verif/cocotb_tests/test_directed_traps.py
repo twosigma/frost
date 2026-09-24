@@ -28,26 +28,15 @@ Tests:
 
     Interrupts:
         - Timer interrupt trap entry (mstatus.MIE cleared, MPIE saved)
-        - Integration timing when MTIP rises as an MRET enters fetch
+        - MTIP rising as an MRET enters fetch (timing log only)
         - CSRSI enabling MIE with an interrupt already pending
         - Precise-interrupt sweep: mepc versus the committed prefix
 
-RISC-V trap entry protocol:
-    ┌────────────────────────────────────────────────────────────────┐
-    │ On trap/interrupt entry:                                       │
-    │   1. mepc <- PC of faulting/interrupted instruction            │
-    │   2. mcause <- cause code (11=ECALL, 3=EBREAK, (1<<63)|7=MTI) │
-    │   3. mstatus.MPIE <- mstatus.MIE (save old interrupt enable)  │
-    │   4. mstatus.MIE <- 0 (disable interrupts)                    │
-    │   5. PC <- mtvec (jump to trap handler)                       │
-    │                                                                 │
-    │ On MRET:                                                        │
-    │   1. mstatus.MIE <- mstatus.MPIE (restore interrupt enable)   │
-    │   2. mstatus.MPIE <- 1                                         │
-    │   3. PC <- mepc (return to saved PC)                           │
-    └────────────────────────────────────────────────────────────────┘
+Trap entry writes mepc and mcause, copies mstatus.MIE into MPIE, clears MIE,
+and jumps to mtvec. MRET copies MPIE back into MIE, sets MPIE, and returns to
+mepc.
 
-Usage: ``cd tests && make clean && ./test_run_cocotb.py directed_traps``.
+Usage: ``./scripts/frost.py cocotb directed_traps``.
 """
 
 import cocotb
@@ -102,7 +91,8 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
 
     await dut_if.reset_dut(config.reset_cycles)
 
-    # The memory model must be running for the pipeline to make progress.
+    # No stores are queued, so the memory monitor fails the test on any DUT
+    # store.
     mem_model = MemoryModel(dut)
     cocotb.start_soon(
         mem_model.driver_and_monitor(
@@ -111,7 +101,6 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
         )
     )
 
-    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
@@ -379,10 +368,11 @@ async def test_directed_trap_handling(dut: Any) -> None:
 async def run_directed_interrupt_trap_test(
     dut: Any, config: TestConfig | None = None
 ) -> None:
-    """Directed test for interrupt trap entry - verify mstatus.MIE is cleared.
+    """Check that interrupt trap entry clears mstatus.MIE.
 
     On interrupt entry the hardware saves MIE (bit 3) into MPIE (bit 7) and
-    clears MIE, so no further interrupt is taken inside the handler.
+    clears MIE, so no further interrupt is taken inside the handler. After the
+    timer source clears, no machine interrupt may stay pending.
 
     Args:
         dut: Device under test (cocotb SimHandle)
@@ -426,7 +416,6 @@ async def run_directed_interrupt_trap_test(
         )
     )
 
-    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
@@ -516,10 +505,9 @@ async def run_directed_interrupt_trap_test(
     # ========================================================================
     cocotb.log.info("=== Verifying mstatus before interrupt ===")
 
-    # The serialized CSR write takes longer than the old in-order three-cycle
-    # estimate. Poll the architectural state and fail if the test's interrupt
-    # precondition never becomes true; do not swallow AssertionError as a
-    # hierarchy-access warning.
+    # The CSR write is serialized, so it lands after a variable delay. Poll
+    # mstatus until MIE is set, and fail the test (not just log a warning) if
+    # this precondition never holds.
     for _ in range(PIPELINE_DEPTH * 3):
         await execute_nop(dut_if, state)
         mstatus_before = int(dut.device_under_test.csr_file_inst.mstatus.value)
@@ -638,30 +626,25 @@ async def run_directed_interrupt_trap_test(
 
 @cocotb.test()
 async def test_directed_interrupt_trap_mstatus(dut: Any) -> None:
-    """Directed test for interrupt trap entry - verify mstatus.MIE is cleared."""
+    """Check that interrupt trap entry clears mstatus.MIE."""
     await run_directed_interrupt_trap_test(dut)
 
 
 # ============================================================================
-# Directed Test for MRET + Interrupt Race Condition
+# MRET + Timer Interrupt Timing Diagnostic
 # ============================================================================
 
 
 async def run_directed_mret_interrupt_race_test(
     dut: Any, config: TestConfig | None = None
 ) -> None:
-    """Log integration timing when MTIP rises as an MRET enters fetch.
+    """Log CSR and pipeline timing when MTIP rises as an MRET enters fetch.
 
-    This legacy diagnostic raises the timer source when the MRET is supplied
-    to cpu_tb's registered instruction feed; it does not synchronize the
-    source with the MRET reaching the ROB head, so it cannot prove the
-    arbitration contract.
-
-    The exact registered-pending/head-MRET collision is asserted by
-    control/test_trap_unit.py::test_mret_defers_registered_timer_interrupt,
-    alongside the trap unit's target and mutual-exclusion assertions. This
-    integration sequence remains useful for logging the surrounding CSR and
-    pipeline timing, but its outcome is not counted as race coverage.
+    The timer source rises when the MRET enters cpu_tb's registered
+    instruction feed, not when the MRET reaches the ROB head, so this sequence
+    cannot prove the MRET/interrupt arbitration and asserts nothing about it.
+    control/test_trap_unit.py::test_mret_defers_registered_timer_interrupt
+    checks the collision directly.
     """
     from encoders.op_tables import CSRS, TRAP_INSTRS
     from encoders.instruction_encode import CSRAddress
@@ -698,7 +681,6 @@ async def run_directed_mret_interrupt_race_test(
         )
     )
 
-    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # Warmup
@@ -761,7 +743,7 @@ async def run_directed_mret_interrupt_race_test(
     for _ in range(3):
         await execute_nop(dut_if, state)
 
-    # mstatus = 0x88 (MIE=1, MPIE=1), as if inside a trap handler
+    # mstatus = 0x88 (MIE=1, MPIE=1)
     cocotb.log.info("=== Setting mstatus = 0x88 (MIE=1, MPIE=1) ===")
     instr_csrrw_mstatus = enc_csrrw(0, CSRAddress.MSTATUS, 3)
     await FallingEdge(dut_if.clock)
@@ -853,7 +835,7 @@ async def run_directed_mret_interrupt_race_test(
 
 @cocotb.test()
 async def test_directed_mret_interrupt_race(dut: Any) -> None:
-    """Run the legacy MRET/MTIP integration timing diagnostic."""
+    """Log MRET/MTIP timing; the collision is checked in test_trap_unit.py."""
     await run_directed_mret_interrupt_race_test(dut)
 
 
@@ -867,10 +849,9 @@ async def run_directed_csrsi_enable_mie_test(
 ) -> None:
     """Directed test for CSRSI enabling MIE while interrupt is already pending.
 
-    The FreeRTOS scenario: a timer interrupt is pending with MIE=0, CSRSI
-    mstatus, 0x8 enables MIE, the interrupt is taken once the write lands,
-    and after trap entry MIE is 0 and MPIE is 1. A CSR write that interacts
-    badly with trap entry shows up here.
+    A timer interrupt is pending with MIE=0, and CSRSI mstatus, 0x8 enables
+    MIE. The interrupt must be taken once the write lands, and trap entry
+    must leave MIE=0 and MPIE=1.
     """
     from encoders.op_tables import CSRS
     from encoders.instruction_encode import CSRAddress
@@ -904,7 +885,6 @@ async def run_directed_csrsi_enable_mie_test(
         )
     )
 
-    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # Warmup
@@ -953,7 +933,7 @@ async def run_directed_csrsi_enable_mie_test(
     cocotb.log.info("=== Asserting timer interrupt (MIE still 0) ===")
     dut.i_interrupts_reg.value = 0b010  # mtip = 1
 
-    # Verify mstatus is 0x00 (MIE=0). This test already depends on the exposed
+    # Check that MIE is still 0. This test already depends on the exposed
     # hierarchy, so a missing signal or failed precondition must fail the test.
     mstatus_before = int(dut.device_under_test.csr_file_inst.mstatus.value)
     cocotb.log.info(f"Before CSRSI: mstatus=0x{mstatus_before:08X}")
@@ -982,11 +962,10 @@ async def run_directed_csrsi_enable_mie_test(
     # would fetch CSRSIs and re-enable MIE in a trap loop).
     dut_if.instruction = 0x00000013
 
-    # Wait for the trap, event-based. On the OOO core a CSR op is serialized:
-    # drain to the ROB head, csr_done handshake, commit, then the CSR write
-    # lands off the registered commit bus. That is roughly 8-11 cycles from
-    # fetch, not the old in-order PIPELINE_DEPTH. Then the (registered) pending
-    # interrupt is taken. Poll with a generous budget instead of guessing.
+    # Poll for the trap. A CSR instruction is serialized: it waits for the ROB
+    # head, runs the csr_done handshake, and commits, and its write lands from
+    # the registered commit bus. Only then is the pending interrupt taken, so
+    # the delay varies; the budget is generous.
     cocotb.log.info("=== Waiting for CSRSI commit + interrupt trap ===")
     trap_seen_cycle = -1
     for cycle in range(100):
@@ -1124,7 +1103,8 @@ async def run_directed_illegal_instruction_test(
 
     await dut_if.reset_dut(config.reset_cycles)
 
-    # The memory model must be running for the pipeline to make progress.
+    # No stores are queued, so the memory monitor fails the test on any DUT
+    # store.
     mem_model = MemoryModel(dut)
     cocotb.start_soon(
         mem_model.driver_and_monitor(
@@ -1133,7 +1113,6 @@ async def run_directed_illegal_instruction_test(
         )
     )
 
-    # Initialize register file history used by the monitor alignment model.
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
@@ -1178,9 +1157,8 @@ async def run_directed_illegal_instruction_test(
         ("unknown opcode 0x7F", IType.encode(0, 0, 0, 0, 0b1111111)),
         ("bad funct3=010 in BRANCH", BType.encode(0, 0, 0, 0b010, 0x63)),
         ("bad funct7=0x7F in OP", RType.encode(0b1111111, 0, 0, 0b000, 0, 0x33)),
-        # funct3=111 is reserved in LOAD and STORE at both XLENs. The original
-        # specimens used 011, which is LD/SD at RV64, so on the rv64 build they
-        # executed as real 8-byte accesses instead of trapping.
+        # funct3=111 is reserved in LOAD and STORE at both XLENs. Do not use
+        # 011: at RV64 it is LD/SD, a legal 8-byte access that does not trap.
         ("bad funct3=111 in LOAD", IType.encode(0, 0, 0b111, 0, 0x03)),
         ("bad funct3=111 in STORE", SType.encode(0, 0, 0, 0b111, 0x23)),
         # FP reserved rounding mode: rm=101 on FADD.S (OPC_OP_FP arithmetic)
@@ -1307,36 +1285,21 @@ async def test_directed_illegal_instruction(dut: Any) -> None:
 
 
 # ============================================================================
-# Directed Test for Precise-Interrupt / Commit Race (mepc off-by-one detector)
+# Directed Test for Precise Interrupt Entry (mepc off-by-one detector)
 # ============================================================================
 #
-# The bug this test was written to catch, since fixed: when an async
-# machine-timer interrupt was recognized in the same cycle an ordinary
-# instruction committed, precise state broke in three places.
-#   * commit_en (reorder_buffer.sv) was gated only by the registered
-#     trap_mret_commit_hold_q (cpu_ooo.sv). That register tracks
-#     trap_pending/mret/drain, none of which an async timer IRQ asserts, so it
-#     stays low and a normal commit could fire in the cycle o_trap_taken
-#     asserted.
-#   * interrupt_resume_pc (cpu_ooo.sv), the source of mepc for async
-#     interrupts, was updated from the combinational rob_commit_valid_raw, so a
-#     commit in the trap cycle advanced it to that instruction's next PC.
-#   * The registered ROB commit (reorder_buffer.sv o_commit.valid) and the
-#     regfile write (commit_actions.sv) were not gated by the coincident flush
-#     or trap, so the racing instruction's architectural write still landed.
-# Net effect: mepc and the set of architecturally retired instructions could
-# disagree by one, a precise-state violation. On Linux it surfaced as a lost
-# callee-saved restore, s2 = 0x19999998. The fix is the commit_ready_early
-# gating in reorder_buffer.sv, which blocks commit_en on the coincident
-# i_flush_en / i_flush_all / i_commit_hold; this test now asserts zero
-# violations as a regression check.
+# An asynchronous timer interrupt must leave precise state: mepc (taken from
+# interrupt_resume_pc in cpu_ooo) and the set of retired instructions must
+# agree, so no instruction may commit in the o_trap_taken cycle. trap_unit
+# arms each interrupt a cycle early so the ROB's commit hold is already active
+# on the take cycle.
 #
-# Detector (prefix invariant): at trap entry the architectural regfile must
-# reflect exactly the instructions with PC < mepc. Every such instruction's
-# destination register holds its marker, and no instruction with PC >= mepc
-# has its marker visible. The test sweeps the interrupt fire cycle across a
-# stream of distinct register-writing ops in a single simulation and flags
-# any offset where the invariant breaks.
+# Prefix invariant: at trap entry the architectural regfile reflects exactly
+# the instructions with PC < mepc. Every such instruction's destination
+# register holds its marker, and no instruction with PC >= mepc has its marker
+# visible. The test sweeps the interrupt fire cycle across a stream of
+# distinct register-writing ops in a single simulation and flags any offset
+# where the invariant breaks.
 #
 # The architectural integer regfile is a multi-write distributed RAM
 # (generic_regfile -> mwp_dist_ram) with a per-address live-value table, so a
@@ -1353,8 +1316,7 @@ async def run_directed_interrupt_commit_race_test(
     mode="alu":  the stream is `addi xK, x0, marker`; the result comes from
                  the ALU.
     mode="load": the stream is `lw xK, off(x4)`; the result comes through the
-                 load queue and data memory. This mirrors the Linux symptom,
-                 a lost callee-saved load restore (s2 = 0x19999998).
+                 load queue and data memory.
     """
     from encoders.op_tables import I_ALU, CSRS, LOADS
     from encoders.instruction_encode import CSRAddress
@@ -1386,7 +1348,7 @@ async def run_directed_interrupt_commit_race_test(
         if mode == "load":
             # 32-bit memory word loaded into the dest register.
             return (0x19990000 | ((gen & 0xFF) << 8) | (i & 0xFF)) & MASK32
-        return 0x40 + gen * 48 + i  # 12-bit addi immediate (<= 1914)
+        return 0x40 + gen * 48 + i  # 12-bit signed addi immediate: keep <= 2047
 
     def stream_instr(c: int, gen: int) -> int:
         if mode == "load":
@@ -1435,9 +1397,10 @@ async def run_directed_interrupt_commit_race_test(
     gen_counter = {"g": 0}
 
     async def setup_phase() -> int:
-        """Reset and rebuild mtvec/mie/mstatus via fed instructions.
+        """Reset and set mtvec, mie.MTIE, and mstatus.MIE with fed instructions.
 
-        Enable MTIE in mie. i_interrupts_reg stays 0, so nothing fires yet.
+        i_interrupts_reg stays 0, so nothing fires yet. Returns the new
+        generation number.
         """
         gen = gen_counter["g"]
         gen_counter["g"] += 1
@@ -1482,8 +1445,8 @@ async def run_directed_interrupt_commit_race_test(
     async def calibrate() -> list[int]:
         """Run the stream with no interrupt to learn each stream instruction's PC.
 
-        Captures PCs from regfile write ports and confirms a clean run commits
-        every marker in order.
+        Captures PCs from the regfile write ports, checks that they are
+        contiguous, and confirms a clean run commits every marker.
         """
         gen = await setup_phase()
         reg_pc: dict[int, int] = {}
@@ -1685,12 +1648,12 @@ async def run_directed_interrupt_commit_race_test(
         rc = r["racer"]
         if rc and rc.get("valid"):
             cocotb.log.error(
-                f"   trap-cycle committer: pc=0x{rc['pc']:08x} "
-                f"x{rc['dest_reg']}<=0x{(rc['value'] or 0):08x} -- this combinational "
-                f"commit advanced interrupt_resume_pc in the o_trap_taken cycle"
+                f"   trap-cycle commit: pc=0x{rc['pc']:08x} "
+                f"x{rc['dest_reg']}<=0x{(rc['value'] or 0):08x} -- committed in the "
+                f"o_trap_taken cycle"
             )
 
-    # ---- per-offset mepc table (visibility, incl. negative results) --------
+    # ---- per-offset mepc table (every offset, passing or not) --------------
     cocotb.log.info("=== Per-offset mepc / commit summary ===")
     for r in results:
         an = r["an"]
@@ -1708,13 +1671,13 @@ async def run_directed_interrupt_commit_race_test(
     )
 
     assert not violations, (
-        f"PRECISE-INTERRUPT BUG REPRODUCED (mode={mode}): {len(violations)}/{len(results)} "
+        f"PRECISE-INTERRUPT VIOLATION (mode={mode}): {len(violations)}/{len(results)} "
         f"interrupt fire-offsets violate the trap-entry prefix invariant (architectural "
         f"regfile != instructions with PC < mepc). First failing "
         f"offset={violations[0]['fire_offset']}, mepc=0x{violations[0]['mepc']:08x}, "
         f"lost={violations[0]['an']['lost']}, leaked={violations[0]['an']['leaked']}. "
-        f"See per-offset log above for the exact lost/leaked register (expected vs "
-        f"actual value) and the trap-cycle committer that advanced interrupt_resume_pc."
+        f"See the log above for the lost and leaked registers (expected vs "
+        f"actual value) and any commit in the trap cycle."
     )
     cocotb.log.info(
         f"=== mode={mode}: no violations across all fire offsets; "
@@ -1724,21 +1687,20 @@ async def run_directed_interrupt_commit_race_test(
 
 @cocotb.test()
 async def test_directed_interrupt_commit_race(dut: Any) -> None:
-    """Deterministic precise-interrupt repro (ALU stream): sweep an async M-timer interrupt.
+    """Sweep an async M-timer interrupt across an ALU stream.
 
-    Sweep cycle-by-cycle across a register-writing ALU stream and check that,
-    at trap entry, the architectural regfile reflects exactly the instructions
-    with PC < mepc (precise-state prefix invariant).
+    At every fire cycle, check that the architectural regfile at trap entry
+    reflects exactly the instructions with PC < mepc (precise-state prefix
+    invariant).
     """
     await run_directed_interrupt_commit_race_test(dut, mode="alu")
 
 
 @cocotb.test()
 async def test_directed_interrupt_commit_race_loads(dut: Any) -> None:
-    """Deterministic precise-interrupt repro (LOAD stream): same cycle-exact interrupt sweep.
+    """Run the same precise-interrupt sweep across a stream of loads.
 
     The stream is `lw` instructions whose results come through the load queue
-    and data memory, mirroring the Linux symptom (a lost callee-saved load
-    restore, s2 = 0x19999998).
+    and data memory.
     """
     await run_directed_interrupt_commit_race_test(dut, mode="load")

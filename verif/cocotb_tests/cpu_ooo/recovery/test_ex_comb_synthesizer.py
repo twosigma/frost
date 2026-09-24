@@ -105,7 +105,7 @@ def _assert_late_btb_candidate(
     pc: int,
     taken: bool,
 ) -> None:
-    """Assert the independently formed lower-priority RMW candidate."""
+    """Assert the late BTB counter-RMW candidate, which never depends on early recovery."""
     assert int(dut.o_btb_late_update_pc.value) == (pc & MASK32)
     assert bool(dut.o_btb_late_update_taken.value) is taken
 
@@ -196,7 +196,7 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
 
 @cocotb.test()
 async def test_early_selected_bus_keeps_raw_slot2_as_late_candidate(dut: Any) -> None:
-    """Early A owns the write while held slot-2 B remains the parallel late RMW."""
+    """Early recovery drives the BTB write; a held slot-2 commit stays the late candidate."""
     await _setup_test(dut)
 
     dut.i_early_mispredict_active.value = 1

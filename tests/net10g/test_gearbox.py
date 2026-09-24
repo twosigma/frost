@@ -15,7 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Two Sigma Open Source, LLC
 
-"""Check gearboxes against independent bit queues, including arbitrary slips."""
+"""Check the TX and RX gearboxes against bit-queue models, with random slips."""
 
 from collections import deque
 import random

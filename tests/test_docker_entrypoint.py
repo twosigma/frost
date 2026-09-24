@@ -50,11 +50,7 @@ def test_submodule_status_covers_every_configured_and_nested_module(
     status_output: str,
     expected: bool,
 ) -> None:
-    """Recursive ``git submodule status`` decides init, so nested modules count.
-
-    It replaced a probe of two hard-coded marker files, which said nothing
-    about the rest of the tree.
-    """
+    """Recursive ``git submodule status`` decides init, so nested modules count."""
     (tmp_path / ".gitmodules").write_text('[submodule "example"]\n')
     monkeypatch.setattr(docker_entrypoint, "WORKSPACE", tmp_path)
 
@@ -80,7 +76,7 @@ def test_submodule_status_covers_every_configured_and_nested_module(
 def test_main_can_skip_submodule_initialization_for_tooling_only_jobs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Fast CI jobs should not fetch large submodules they never consume."""
+    """``FROST_SKIP_SUBMODULE_INIT=1`` skips submodule init, for tooling-only jobs."""
     monkeypatch.setenv(docker_entrypoint.SKIP_SUBMODULE_INIT_ENV, "1")
     monkeypatch.setattr(
         docker_entrypoint,

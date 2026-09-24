@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Exercise the decoded queue as a held producer and an independent consumer."""
+"""Randomized decoded_bundle_queue test with a held producer (ID) and an independent consumer."""
 
 import random
 from collections import deque
@@ -24,7 +24,12 @@ from cocotb.triggers import Timer
 
 @cocotb.test()
 async def test_ownership_order_and_flush(dut: Any) -> None:
-    """Stalls, bypass, full recovery and flush preserve each accepted bundle."""
+    """Compare the queue with a FIFO model under random stalls, pops, resets, and flushes.
+
+    The run must cover a full queue, a bypass, a flush of live entries, an
+    accepted bundle held in ID, and a same-cycle push and pop on a non-empty
+    queue.
+    """
     rng = random.Random(0xDEC0DE)
     depth = len(dut.live_q)
     queued: deque[tuple[int, bool]] = deque()

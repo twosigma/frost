@@ -249,11 +249,11 @@ async def test_prediction_reset_preserves_low_compressed_buffer_once(dut: Any) -
 async def test_prediction_from_buffer_holdoff_pulses_use_buffer_afterwards(
     dut: Any,
 ) -> None:
-    """Prediction release sets both use-buffer outputs.
+    """Releasing the from-buffer prediction holdoff sets both use-buffer outputs.
 
-    Only the canonical output takes the registered flush, holdoff, and reset
-    masks. The timing cofactor keeps the pre-mask value, and the live
-    prediction_holdoff masks both.
+    Only o_use_buffer_after_prediction takes the registered FENCE-flush,
+    control-flow-holdoff, and prediction-reset masks; the timing copy leaves
+    them out. i_prediction_holdoff masks both.
     """
     await _setup_test(dut)
 
@@ -271,8 +271,8 @@ async def test_prediction_from_buffer_holdoff_pulses_use_buffer_afterwards(
 
     assert not dut.o_use_buffer_after_prediction.value
     assert dut.o_use_buffer_after_prediction_timing.value, (
-        "FENCE-free timing cofactor must retain the pre-mask value while "
-        "the canonical aligner selection stays suppressed"
+        "the timing copy must ignore i_fence_i_flush, which masks only "
+        "o_use_buffer_after_prediction"
     )
     dut.i_fence_i_flush.value = 0
     dut.i_control_flow_holdoff.value = 1
@@ -280,8 +280,8 @@ async def test_prediction_from_buffer_holdoff_pulses_use_buffer_afterwards(
 
     assert not dut.o_use_buffer_after_prediction.value
     assert dut.o_use_buffer_after_prediction_timing.value, (
-        "holdoff-free timing cofactor must retain the pre-mask value while "
-        "the canonical aligner selection stays suppressed"
+        "the timing copy must ignore i_control_flow_holdoff, which masks only "
+        "o_use_buffer_after_prediction"
     )
     dut.i_control_flow_holdoff.value = 0
     dut.i_prediction_reset_state.value = 1
@@ -289,12 +289,12 @@ async def test_prediction_from_buffer_holdoff_pulses_use_buffer_afterwards(
 
     assert not dut.o_use_buffer_after_prediction.value
     assert dut.o_use_buffer_after_prediction_timing.value, (
-        "prediction-reset-free timing cofactor must retain the pre-mask value "
-        "while the canonical aligner selection stays suppressed"
+        "the timing copy must ignore i_prediction_reset_state, which masks only "
+        "o_use_buffer_after_prediction"
     )
-    # prediction_holdoff is not peeled out of the timing cofactor. It marks a
-    # live prediction-delivery cycle, not a registered redirect squash, so it
-    # still masks the timing-only consumers.
+    # i_prediction_holdoff stays in the timing copy. It marks the cycle after
+    # a prediction, not a registered redirect squash, so it still masks the
+    # timing-only consumers.
     dut.i_prediction_reset_state.value = 0
     dut.i_prediction_holdoff.value = 1
     await _settle()
@@ -355,7 +355,7 @@ async def test_pending_prediction_capture_overrides_prediction_holdoff(
 async def test_pending_handoff_dominates_compressed_buffer_valid_state(
     dut: Any,
 ) -> None:
-    """An atomic owner cannot make its captured wrong-path high half selectable."""
+    """A same-cycle target handoff never lets the captured wrong-path half be selected."""
     await _setup_test(dut)
 
     _drive_instruction(dut, compressed=True, pc_reg=PC_LO)

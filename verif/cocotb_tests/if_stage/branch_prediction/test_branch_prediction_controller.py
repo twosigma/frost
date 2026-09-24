@@ -325,13 +325,13 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
 ) -> None:
     """A slot-2 redirect wins over a simultaneous younger slot-1 prediction.
 
-    Slot-2 validity is late instruction-memory sideband.  It must still kill
-    slot-1's registered handoff and metadata on the collision edge, but the two
-    holdoff flops omit that late clear so the sideband cone stays off their
-    synchronous reset pins.  A simultaneous slot-1 hit may therefore load them
-    for the mandatory redirect bubble.  Model both a fetch-invalid stretch and
-    a registered stall, then verify the holdoffs clear on the first delivered
-    bubble cycle without reviving slot-1 state.
+    The redirect kills slot 1's registered handoff and metadata on the same
+    edge. The two holdoff flops leave that clear out, which keeps the late
+    instruction-memory sideband logic off their synchronous reset pins, so the
+    slot-1 hit may still load them for the redirect bubble. Hold the bubble
+    through a fetch-invalid stretch and a registered stall, then check that
+    the holdoffs clear on its first delivered cycle without reviving slot-1
+    state.
     """
     await _setup_test(dut)
     await _btb_update(dut, pc=PC_A, target=TARGET_A, handoff=True)
@@ -353,8 +353,8 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
 
     await _advance_cycle(dut)
 
-    # Slot-2 owns the redirect, so the younger slot-1 handoff/metadata die on
-    # the collision edge.  Its holdoff load is harmless bubble-only state.
+    # Slot 2 takes the redirect, so the younger slot-1 handoff and metadata
+    # are killed on this edge. The slot-1 hit's holdoffs cover only the bubble.
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert dut.o_prediction_holdoff.value
@@ -450,8 +450,8 @@ async def test_pd_redirect_target_match_preserves_stalled_metadata(
     dut.i_pd_redirect_target.value = TARGET_A
     await _advance_cycle(dut)
 
-    # The redirect always kills the pc_reg handoff.  With no fetch progress,
-    # matching metadata and its holdoffs remain attached to the same target.
+    # The redirect always kills the pc_reg handoff. While IF is stalled,
+    # metadata whose target matches the redirect survives, with its holdoffs.
     assert dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert dut.o_prediction_holdoff.value
@@ -617,7 +617,7 @@ async def test_native_halfword_ras_return_uses_full_fetch_window(dut: Any) -> No
 
 @cocotb.test()
 async def test_lower_parcel_lookup_witness_does_not_block_ras(dut: Any) -> None:
-    """The containing-word BTB gate leaves real assembled returns predictive."""
+    """A lower-parcel lookup blocks only the BTB, so an assembled return still predicts."""
     await _setup_test(dut)
 
     _drive_call(dut, link_address=TARGET_RAS_RETURN)
@@ -798,7 +798,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
 async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
     dut: Any,
 ) -> None:
-    """Candidate validity cannot escape the staged base/successor coverage."""
+    """A slot-2 candidate misses when the staged read does not cover its base PC."""
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
 
@@ -835,21 +835,21 @@ async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
 async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     dut: Any,
 ) -> None:
-    """A live taken hit redirects with emitted slot-2 metadata ownership.
+    """After a collapsed lookup lead, a live taken hit becomes slot 2's prediction.
 
-    A fetch-invalid response gap can collapse the usual one-cycle lookup lead:
-    the live slot-1 BTB address then names the branch already carried by slot 2.
-    If slot 2's staged image missed, transfer that exact hit and target to slot
-    2.  The emitted branch is stamped taken, so a not-taken loop exit recovers
-    to its fall-through. No duplicate live slot-1 prediction may arm; an older
-    registered RAS call remains independently valid.
+    A fetch-invalid response gap can collapse the usual one-cycle lookup lead,
+    so the live slot-1 BTB lookup names the branch already in slot 2. When
+    slot 2's staged image misses, the live hit and target go to slot 2. The
+    branch is marked predicted taken, so a not-taken loop exit recovers to its
+    fall-through. Slot 1 must not also predict that branch, and an older
+    registered RAS call still pushes.
     """
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
 
-    # Model the observed collapsed-lead failure: the staged slot-2 row is
-    # unrelated, while the live slot-1 lookup has caught up to the emitted +4
-    # candidate behind a native slot 1.
+    # Collapsed lead: the staged slot-2 row is for an unrelated index, while
+    # the live slot-1 lookup has caught up to the +4 slot-2 candidate behind a
+    # 32-bit slot 1.
     await _stage_slot2_images(dut, SLOT2_PC + 0x20)
     dut.i_pc.value = SLOT2_PC
     dut.i_pc_2_alt.value = SLOT2_PC
@@ -857,8 +857,8 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     dut.i_lookup_lead_collapsed.value = 1
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
-    # The RAS input is the older registered packet. Its real call must push
-    # even while this younger live lookup belongs to emitted slot 2.
+    # The RAS input is the older registered packet. Its call must push even
+    # while this younger live lookup belongs to slot 2.
     _drive_call(dut, link_address=PC_B)
     await _settle()
 
@@ -891,10 +891,10 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert int(dut.o_dir_idx.value) == 0
     assert int(dut.o_ras_checkpoint_valid_count.value) == 1
 
-    # Once ordinary fixed-latency lookahead stages the exact predecessor image,
-    # that image is authoritative and the fallback arm stays idle. Slot 2 is
-    # still the unique owner: the identical live lookup must not redundantly
-    # register the already-emitted branch as a future slot-1 prediction.
+    # With the normal lookup lead, the staged image for the base PC hits and
+    # supplies the prediction, and the live fallback stays idle. The live
+    # lookup still aliases the slot-2 branch, so slot 1 must not also
+    # register that branch as a prediction.
     _clear_inputs(dut)
     await _stage_slot2_images(dut, SLOT2_PC - 4)
     dut.i_pc.value = SLOT2_PC
@@ -922,21 +922,21 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
 async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     dut: Any,
 ) -> None:
-    """A late live-taken verdict cannot re-own an emitted slot-2 branch.
+    """A live taken hit on the branch in slot 2 does not become a slot-1 prediction.
 
-    A BTB training update can become visible to the combinational slot-1
-    lookup after the synchronous slot-2 image was launched.  When the live PC
-    exactly names the branch being emitted in slot 2, consuming that newer
-    verdict as a future slot-1 prediction would replay the same branch with
-    stale bytes.  Suppress the duplicate live owner for this transition; the
-    already-emitted, unpredicted branch will resolve normally.
+    A BTB training update can reach the combinational slot-1 lookup after the
+    synchronous slot-2 image read was launched, so the two lookups can
+    disagree. When the live PC names the branch being emitted in slot 2, using
+    the newer live result as a slot-1 prediction would replay that branch with
+    stale bytes. The live result is dropped instead; the emitted, unpredicted
+    branch resolves normally.
     """
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
 
-    # Keep the staged image stale/disjoint while the live canonical lookup has
-    # the trained taken row.  Unlike the fetch-gap fallback test above, this is
-    # ordinary fixed-latency service.
+    # The staged image is for an unrelated index while the live slot-1 lookup
+    # hits the trained taken entry. Unlike the collapsed-lead test above, the
+    # lookup lead is normal here.
     await _stage_slot2_images(dut, SLOT2_PC + 0x20)
     dut.i_pc.value = SLOT2_PC
     dut.i_pc_2_alt.value = SLOT2_PC
@@ -952,8 +952,10 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     assert not dut.btb_hit_2.value
     assert dut.fixed_lead_live_taken_aliases_emitted_slot2.value
     assert dut.slot1_aliases_emitted_slot2.value
-    # The owner-free timing cofactor deliberately retains the otherwise-valid
-    # live proposal; only the canonical slot-1 consumer applies ownership.
+    # o_prediction_used_live_cofactor leaves out the
+    # slot1_prediction_owned_by_slot2 term (IF qualifies it with
+    # pc == pc_reg), so it stays high; the gated slot-1 outputs drop the
+    # prediction.
     assert dut.o_prediction_used_live_cofactor.value
     assert not dut.slot2_live_fallback_hit.value
     assert not dut.o_slot2_btb_hit.value
@@ -971,8 +973,8 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == 0
-    # The current owner is a newer BTB lookup; it cannot suppress the older
-    # registered call's stack update.
+    # The slot-2 alias belongs to a newer BTB lookup and must not suppress the
+    # older registered call's push.
     assert int(dut.o_ras_checkpoint_valid_count.value) == 1
 
 
@@ -980,11 +982,12 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
 async def test_older_ras_return_ignores_current_slot2_candidate_owner(
     dut: Any,
 ) -> None:
-    """Current BTB ownership cannot suppress an older registered return."""
+    """The live lookup's slot-2 alias does not suppress an older registered return."""
     await _setup_test(dut)
 
-    # Seed one return address, then present the older return while an unrelated
-    # collapsed-lead +4 candidate owns the current live BTB lookup.
+    # Seed one return address, then present the older return while the live
+    # BTB lookup aliases an unrelated +4 slot-2 candidate after a collapsed
+    # lead.
     _drive_call(dut, link_address=TARGET_RAS_RETURN)
     await _advance_cycle(dut)
     _clear_inputs(dut)
@@ -1013,7 +1016,7 @@ async def test_older_ras_return_ignores_current_slot2_candidate_owner(
 
 @cocotb.test()
 async def test_older_ras_return_preempts_younger_slot2_redirect(dut: Any) -> None:
-    """A delayed return owns the redirect ahead of a current slot-2 hit."""
+    """An older registered return takes the redirect ahead of a current slot-2 hit."""
     await _setup_test(dut)
 
     _drive_call(dut, link_address=TARGET_RAS_RETURN)
@@ -1051,13 +1054,13 @@ async def test_older_ras_return_preempts_younger_slot2_redirect(dut: Any) -> Non
 async def test_slot2_candidate_owner_blocks_slot1_when_full_slot2_valid_is_low(
     dut: Any,
 ) -> None:
-    """Late packet validity stays out of slot-1 prediction ownership.
+    """The slot-2 alias blocks a slot-1 prediction even while i_slot2_valid is low.
 
-    IF can force a candidate slot-2 position to one-wide after the timing
-    candidate has already identified it, notably while preserving a pending
-    prediction owner.  A taken live lookup at that candidate must not become a
-    duplicate slot-1 owner, but no nonexistent slot-2 packet may receive the
-    fallback metadata either.
+    IF can emit a one-wide packet after the early candidate valid has already
+    named a slot-2 position, for example under the pending-prediction
+    one-wide rule. A taken live lookup at that position must not become a
+    slot-1 prediction, and with no slot-2 packet it must not produce a slot-2
+    fallback hit either.
     """
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
@@ -1098,20 +1101,20 @@ async def test_slot2_candidate_owner_blocks_slot1_when_full_slot2_valid_is_low(
 async def test_blocked_ghost_slot2_candidate_preserves_direction_snapshot(
     dut: Any,
 ) -> None:
-    """An unobservable timing candidate cannot zero the next packet's snapshot."""
+    """A slot-2 candidate valid on a blocked cycle does not zero the direction snapshot."""
     await _setup_test(dut)
     ghost_idx = _dir_idx(GHOST_OWNER_PC)
 
-    # Make both the live BTB verdict and the independent bimodal direction
-    # observably taken at the ghost candidate address.
+    # Train both the BTB entry and the bimodal counter at GHOST_OWNER_PC to
+    # predict taken.
     await _dir_update(dut, idx=ghost_idx, taken=True)
     await _dir_update(dut, idx=ghost_idx, taken=True)
     await _btb_update(dut, pc=GHOST_OWNER_PC, target=TARGET_SLOT2)
 
-    # Candidate identity is a timing cofactor and may remain asserted while a
-    # global holdoff suppresses the full packet.  It still blocks unobservable
-    # live ownership, but it must not poison the registered metadata snapshot
-    # that advances for the following packet.
+    # The early candidate valid may stay high while a global holdoff
+    # suppresses the whole packet. It still sets
+    # slot1_prediction_owned_by_slot2, but it must not clear the registered
+    # direction snapshot that advances for the next packet.
     await _stage_slot2_images(dut, GHOST_OWNER_PC + 0x20)
     dut.i_pc.value = GHOST_OWNER_PC
     dut.i_pc_2_alt.value = GHOST_OWNER_PC
@@ -1182,7 +1185,7 @@ async def test_collapsed_fetch_lead_transfers_live_not_taken_hit_metadata(
 
 @cocotb.test()
 async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> None:
-    """One-hot valid arms preserve target identity and local safety qualification."""
+    """Each one-hot candidate valid selects its own target and halfword size check."""
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
     await _btb_update(dut, pc=SLOT2_PC + 2, target=TARGET_SLOT2_ALT)
@@ -1194,8 +1197,8 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_plus4_candidate_valid.value = 0
     dut.i_slot2_valid.value = 1
-    # The +2 candidate is word-aligned, so a live/BTB size mismatch plays no
-    # part in its safety qualification.
+    # The +2 candidate is word-aligned, so a size mismatch between the live
+    # instruction and the BTB entry does not block it.
     dut.i_slot2_is_compressed_plus2.value = 1
     dut.i_slot2_is_compressed_plus4.value = 1
     dut.i_slot2_is_compressed.value = 1
@@ -1210,9 +1213,9 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     await _settle()
 
     assert dut.o_slot2_btb_hit.value
-    # The +4 candidate is halfword-aligned and was trained native.  Its strict
-    # size guard must block use, while the +4 valid arm still chooses its hit
-    # and target metadata.
+    # The +4 candidate is halfword-aligned and its entry was trained as a
+    # 32-bit instruction, so the size check blocks its use; the +4 arm still
+    # supplies the hit and target.
     assert not dut.o_slot2_prediction_used.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2_ALT
 

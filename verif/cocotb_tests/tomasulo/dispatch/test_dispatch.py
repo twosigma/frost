@@ -1018,7 +1018,7 @@ async def test_memory_signed(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_prevents_dispatch(dut: Any) -> None:
-    """Flush dominates valid preflush candidates and every dispatch side effect."""
+    """A flush blocks every dispatch output of a valid bundle without stalling."""
     dut_if = await _setup(dut)
 
     dut_if.set_flush(True)
@@ -1153,7 +1153,7 @@ async def test_dynamic_rounding_mode(dut: Any) -> None:
 
 
 # =============================================================================
-# Immediate reuse: PC-relative values precomputed in ID ride the RS immediate
+# PC-derived immediates: values ID precomputes from the PC travel in the RS imm
 # =============================================================================
 
 

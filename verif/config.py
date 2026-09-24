@@ -28,10 +28,10 @@ Usage::
     >>> from config import DUTSignalPaths
     >>> custom_paths = DUTSignalPaths(regfile_ram_rs1_path="my.path.here")
 
-Retargeting the framework to another DUT means changing three things:
-MEMORY_ADDRESS_WIDTH for a different address space, DUTSignalPaths for a
-different hierarchy, and the DEFAULT_* constants for test length, memory
-init size, coverage floor, clock period, and reset length.
+To retarget the framework to another DUT, start with MEMORY_ADDRESS_WIDTH and
+MEMORY_SIZE_WORDS for its data memory, DUTSignalPaths for its hierarchy, and
+the DEFAULT_* constants for test length, memory init size, coverage floor,
+clock period, and reset length.
 """
 
 from dataclasses import dataclass
@@ -51,10 +51,10 @@ MEMORY_ADDRESS_MASK: Final[int] = (1 << MEMORY_ADDRESS_WIDTH) - 1
 """Mask for valid memory addresses (0xFFFF for 16-bit addresses)."""
 
 MEMORY_WORD_ALIGN_MASK: Final[int] = 0xFFFFFFFC
-"""Mask for word-aligning addresses (clear bottom 2 bits, 32-bit safe)."""
+"""Mask for word-aligning addresses: clears bits [1:0] and truncates to 32 bits."""
 
 MEMORY_HALFWORD_ALIGN_MASK: Final[int] = 0xFFFFFFFE
-"""Mask for halfword-aligning addresses (clear bottom bit, 32-bit safe)."""
+"""Mask for halfword-aligning addresses: clears bit 0 and truncates to 32 bits."""
 
 MEMORY_SIZE_WORDS: Final[int] = 2**14
 """Size of memory in words (16K words = 64KB for 16-bit address space)."""
@@ -73,7 +73,7 @@ MEM_STRB_BITS: Final[int] = MEM_DATA_BITS // 8
 """Byte-lane strobe count per beat (mirrors riscv_pkg::MemStrbBits)."""
 
 MEMORY_DWORD_ALIGN_MASK: Final[int] = 0xFFFFFFF8
-"""Mask for dword-aligning addresses (clear bottom 3 bits, 32-bit safe)."""
+"""Mask for dword-aligning addresses: clears bits [2:0] and truncates to 32 bits."""
 
 MEMORY_BEAT_OFFSET_MASK: Final[int] = 0x7
 """Mask to extract the byte offset within a beat (bits [2:0])."""
@@ -161,10 +161,10 @@ JAL_OFFSET_MAX: Final[int] = 1048574
 """Maximum JAL offset in bytes (2^20 - 2, must be even)."""
 
 STORE_OP_WIDTH: Final[int] = 3
-"""Packed width of riscv_pkg::store_op_e (grew STD for RV64 SD in M2)."""
+"""Packed width of riscv_pkg::store_op_e."""
 
 INSTR_OP_WIDTH: Final[int] = 8
-"""Packed width of riscv_pkg::instr_op_e (live ordinals through 206; 86/87 reserved)."""
+"""Packed width of riscv_pkg::instr_op_e (riscv_pkg::InstrOpWidth)."""
 
 # ============================================================================
 # DUT Signal Path Configuration
@@ -258,11 +258,8 @@ DEFAULT_RESET_CYCLES: Final[int] = 3
 XLEN: Final[int] = 64
 """RISC-V XLEN parameter.
 
-Single source of truth for the verification side, matching riscv_pkg's
-XLEN localparam (the core is RV64-only; rv32 support was retired after
-Phase 1). Every cocotb
-interface/model imports XLEN/FLEN from here rather than keeping a
-private copy.
+Matches riscv_pkg::XLEN; the core is RV64 only. Cocotb interfaces and models
+should import XLEN and FLEN from here rather than keep a private copy.
 """
 
 MASK_XLEN: Final[int] = (1 << XLEN) - 1

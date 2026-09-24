@@ -14,9 +14,11 @@
 
 """Cocotb tests for the fp_mul_shim module.
 
-Verifies arithmetic and the producer-local payload queues, including ordered
-dual completion, synchronous-RAM collision bypass, sustained mixed-producer
-drain, wraparound, back-pressure, and partial/full flush behavior.
+Covers the arithmetic and the result queues (the shared ordering ring and each
+unit's payload RAM FIFO): simultaneous FMUL and FMA completion, the head
+bypass for a push that becomes the head at once, back-to-back drain of
+alternating units, pointer wraparound, back-pressure, and partial and full
+flushes.
 """
 
 from typing import Any
@@ -735,7 +737,7 @@ async def test_full_flush_reuses_payload_ram_entries(dut: Any) -> None:
     await wait_for_fifo_count(dut, 2)
 
     # Wait beyond the one-cycle bypass: this value must now come from the RAM
-    # location that contained the pre-flush invalid result.
+    # location that held the flushed NaN result.
     for _ in range(3):
         await clock_cycle(dut)
         assert_completion(iface.read_fu_complete(), tag=3, value=RES_6_0)

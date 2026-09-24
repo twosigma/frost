@@ -24,14 +24,14 @@ waits for the fill; a data-side miss issued while the sequencer holds the
 line (long load-queue invalidation) is served with the post-write line rather
 than resurrecting the pre-write one; same-line DMA requests serialize; the
 load-queue handshake fires admit, inval and release once per DMA write and
-never for a DMA read; a DMA write concurrent with fence.i's writeback-all; a
-DMA request under a data-side miss flood still completes; concurrent DMA and
-data-side traffic on disjoint lines stays exact, with walker reads of the
-data side's dirty lines contending with the DMA probes; a data-side reader of
-lines a DMA agent is writing only ever sees values in coherence order (the
-sequence it observes per line never goes backwards); and random sequential
-CPU / DMA / walker / instruction traffic matches the model with no fence
-before any walker read.
+never for a DMA read; a DMA write concurrent with fence.i's writeback-all
+completes with correct data; a DMA request under a data-side miss flood still
+completes; concurrent DMA and data-side traffic on disjoint lines stays exact,
+with walker reads of the data side's dirty lines contending with the DMA
+probes; a data-side reader of lines a DMA agent is writing only ever sees
+values in coherence order (the sequence it observes per line never goes
+backwards); and random sequential CPU / DMA / walker traffic matches the
+model with no fence before any walker read.
 """
 
 import random
@@ -187,7 +187,10 @@ async def _check_dma_read(dut: Any, model: ReferenceModel, addr: int) -> None:
 
 
 def _l1d_tag_state(dut: Any, addr: int) -> tuple[bool, bool]:
-    """Return (valid, dirty) of addr's L1D tag entry from the harness's tag RAM."""
+    """Return (valid, dirty) of the L1D tag entry at addr's index.
+
+    valid is also false when the entry holds another line's tag.
+    """
     l1 = dut.cache_hierarchy.l1_cache
     index_bits = int(l1.IndexBits.value)
     tag_bits = int(l1.TagBits.value)
@@ -422,7 +425,7 @@ async def test_dma_write_during_fence_writeback_all(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dma_completes_under_cpu_miss_flood(dut: Any) -> None:
-    """A DMA request under a data-side miss stream completes within a bound."""
+    """DMA requests under a data-side miss flood complete with correct data."""
     await _setup(dut)
     lq = LoadQueueStub(dut)
     model = ReferenceModel()
@@ -543,8 +546,6 @@ async def test_cpu_reads_dma_writes_in_coherence_order(dut: Any) -> None:
             assert seen <= issued[addr], (
                 f"line 0x{addr:08x}: saw sequence {seen} before it was issued"
             )
-            # A value that was never written to this line is impossible: the
-            # writer's own model is the sequence of values issued to addr.
             del before
             last[addr] = seen
 
@@ -557,7 +558,7 @@ async def test_cpu_reads_dma_writes_in_coherence_order(dut: Any) -> None:
 
 @cocotb.test()
 async def test_random_mixed_traffic_vs_model(dut: Any) -> None:
-    """Sequential random CPU / DMA / walker / instruction traffic vs the model."""
+    """Sequential random CPU, DMA, and walker traffic against one model."""
     await _setup(dut)
     lq = LoadQueueStub(dut, admit_delay=1, inval_delay=1)
     model = ReferenceModel()

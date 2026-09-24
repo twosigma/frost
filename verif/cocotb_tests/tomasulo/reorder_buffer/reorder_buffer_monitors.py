@@ -14,13 +14,12 @@
 
 """Monitors for Reorder Buffer verification.
 
-Monitors run as background coroutines that continuously verify hardware
-outputs against expected values from the software model.
+Monitors run as background coroutines that check DUT outputs every cycle.
 
 Monitors:
-- CommitMonitor: Verifies commit outputs match expected values
-- AllocationMonitor: Verifies allocation responses
-- StatusMonitor: Verifies status signals (full, empty, count)
+- CommitMonitor: Verifies commit outputs against queued expected commits
+- AllocationMonitor: Verifies allocation responses against queued expectations
+- StatusMonitor: Checks that the status signals (full, empty, count) agree
 """
 
 import cocotb
@@ -39,8 +38,11 @@ from .reorder_buffer_interface import (
 class CommitMonitor:
     """Monitor for commit output verification.
 
-    Checks every cycle for a commit. When the DUT commits an entry, the
-    monitor pops the expected commit from the queue and compares all fields.
+    Checks the slot-1 commit bus every cycle. When the DUT commits an entry,
+    the monitor pops the next expected commit and compares the fields listed
+    in _check_commit_dict, some only when they apply: value only with a
+    destination, exc_cause only on an exception, redirect_pc only on a
+    misprediction or MRET, and so on.
 
     Usage:
         expected_commits = deque()
@@ -239,7 +241,8 @@ class CommitMonitor:
 class AllocationMonitor:
     """Monitor for allocation response verification.
 
-    Verifies that allocation responses (ready, tag) match expected values.
+    Verifies that slot-1 allocation responses (ready, tag) match expected
+    values.
 
     Usage:
         expected_allocs = deque()
@@ -332,6 +335,11 @@ class StatusMonitor:
     """Monitor for status signal verification.
 
     Continuously checks that full, empty, and count signals are consistent.
+    o_full is the registered dispatch flag, which counts the cycle's
+    allocations but gives no credit for retirements. After a cycle that
+    retires while the ROB is full, or while allocations fill it, o_full reads
+    1 for a cycle with o_count below the depth, and the full/count check
+    reports an error. Use this monitor only in tests where that cannot happen.
 
     Usage:
         monitor = StatusMonitor(dut)

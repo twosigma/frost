@@ -12,17 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the high-address fetch_provider (fetch buffer, fills).
+"""Unit tests for fetch_provider, the instruction fetch provider for cached DDR.
 
-The bench plays both of the provider's neighbours: the core, which drives i_pc
-like pc_controller would and consumes valid windows, and the L1I line port
-slave, which accepts fill requests and returns patterned lines. The tests cover
-low addresses staying out of the provider, DDR fills with the sequential walk
-across a line boundary (straddle plus next-line prefetch), ask retargeting when
-a redirect lands while unserved or immediately after an accepted window,
-back-to-back publish throughput, and the invalidate-discard of an in-flight
-fill. The RTL also carries a simulation-only cycle-by-cycle oracle for the
-folded registered readiness/tag-match state.
+The bench stands in for the core, which drives i_pc as pc_controller would and
+consumes valid windows, and for the L1I line port, which accepts fill requests
+and returns patterned lines. The RTL's simulation-only reference check of the
+folded valid bit (window_ready_q) runs throughout.
 """
 
 import importlib.util
@@ -122,9 +117,9 @@ async def _line_slave(
 
     Every request is accepted (after ``accept_gap`` idle cycles) and answered
     ``latency`` cycles later, tagged with its id. With ``reorder`` the slave
-    answers the most recent request first whenever two are pending, so the
-    provider's id routing is exercised. ``inflight`` (if given) mirrors the
-    slave's pending (id, addr) list for the tests to inspect.
+    answers the newest due request first when more than one is due in the same
+    cycle, to exercise the provider's id routing. ``inflight`` (if given)
+    mirrors the slave's pending (id, addr) list for the tests to inspect.
     """
     pending: list[tuple[int, int, int]] = []  # (due_cycle, id, addr)
     cycle = 0
@@ -167,10 +162,9 @@ async def _wait_valid(dut: Any) -> None:
 async def _wait_window(dut: Any, addr: int) -> None:
     """Wait until the valid window for addr is presented, then verify it.
 
-    Used for initial alignment after a pc jump. Per the contract, valid
-    cycles for the previous owed ask (the post-reset ask 0, or the stale
-    post-redirect window) may pass first. The core squashes those with its
-    holdoff; the bench skips them.
+    Used for initial alignment after a PC jump. Under the fetch contract,
+    valid windows for an earlier ask may pass first; the core squashes those
+    with its holdoff, and the bench skips them.
     """
     base = addr & ~0x3
     want0 = _word_at(base)
@@ -258,7 +252,7 @@ async def test_low_addresses_stay_idle(dut: Any) -> None:
 
 @cocotb.test()
 async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
-    """DDR quadrant: fill, sequential walk, line straddle, prefetch."""
+    """DDR fill, sequential walk, line straddle, and next-line prefetch."""
     await _setup(dut)
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
@@ -266,8 +260,8 @@ async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     _drive_pc(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
-    # The straddle rule requires word DDR_BASE+4 too (same line here), and
-    # the prefetch should already be chasing the next line.
+    # The window's second word, DDR_BASE+4, is in the same line, so the first
+    # request is that line; the next-line prefetch follows it.
     assert reqs[0] == DDR_BASE
 
     # Walk the whole first line; the boundary window (offset 0x1C) needs the
@@ -334,7 +328,7 @@ async def test_redirect_while_unserved_retargets(dut: Any) -> None:
 
 @cocotb.test()
 async def test_explicit_redirect_after_accepted_window_retargets(dut: Any) -> None:
-    """An architectural pulse overrides accepted-PC movement classification."""
+    """i_retarget replaces the owed ask on the cycle right after an accepted window."""
     await _setup(dut)
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=3, log=reqs))
@@ -354,9 +348,9 @@ async def test_explicit_redirect_after_accepted_window_retargets(dut: Any) -> No
     assert int(dut.ask_q.value) == old_ask
     assert int(dut.o_instr_valid.value) == 0
 
-    # A recovery now lands immediately after that accepted cycle. Movement by
-    # itself is classified as flow here, so the narrow architectural pulse has
-    # to override it and replace the unresolved ask at the next edge.
+    # A recovery lands on the cycle right after that accepted window. PC
+    # movement alone counts as flow here, so i_retarget must override it and
+    # replace the unresolved ask at the next edge.
     target = DDR_BASE + 0x2000
     _drive_pc(dut, target)
     dut.i_pa_valid.value = 1
@@ -378,7 +372,11 @@ async def test_explicit_redirect_after_accepted_window_retargets(dut: Any) -> No
 async def test_accepted_leading_prediction_keeps_branch_ask_until_served(
     dut: Any,
 ) -> None:
-    """Accepted-PC movement without a retarget pulse preserves the owed ask."""
+    """A PC move right after an accepted window, without i_retarget, keeps the ask.
+
+    The branch's window stays owed until it is served; only then does the ask
+    advance to the live PC.
+    """
     await _setup(dut)
     reqs: list[int] = []
     cocotb.start_soon(_line_slave(dut, latency=12, log=reqs))
@@ -396,9 +394,9 @@ async def test_accepted_leading_prediction_keeps_branch_ask_until_served(
     assert int(dut.ask_q.value) == branch_pc
     assert not dut.o_instr_valid.value
 
-    # Model a leading slot-1 prediction: fetch moves to the target immediately,
-    # but IF supplies no cached-provider retarget pulse. The accepted-predecessor
-    # classifier must keep the branch response owed.
+    # Model a leading slot-1 prediction: fetch moves to the target at once, and
+    # IF raises no i_retarget. The move follows an accepted window, so
+    # accepted_prev_q masks it and the branch's window stays owed.
     _drive_pc(dut, target)
     await Timer(1, unit="ns")
     assert not dut.i_retarget.value
@@ -486,8 +484,8 @@ async def test_out_of_order_fill_responses(dut: Any) -> None:
     await _wait_window(dut, DDR_BASE)
     assert reqs[:2] == [DDR_BASE, DDR_BASE + 32]
 
-    # Walk across the boundary and through the second line; every window is
-    # correct even though the lines arrived reversed.
+    # Walk across the boundary and through the second line; every window must
+    # be correct whatever order the lines arrived in.
     pc = DDR_BASE
     for _ in range(12):
         pc += 4
@@ -513,7 +511,7 @@ async def test_invalidate_discards_two_inflight_fills(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     dut.i_invalidate.value = 0
 
-    # Both lines must be fetched again before the window can publish.
+    # Both lines are requested again by the time the window publishes.
     await _wait_valid(dut)
     _check_window(dut, DDR_BASE)
     assert reqs.count(DDR_BASE) >= 2 and reqs.count(DDR_BASE + 32) >= 2, f"reqs={reqs}"
@@ -562,9 +560,8 @@ async def _walk_lines(dut: Any, start: int, lines: int) -> None:
 async def test_victim_store_serves_reentered_lines(dut: Any) -> None:
     """A loop body that fits the slots plus the store re-enters with no L1I request.
 
-    Six lines plus the next-line prefetch occupy the two slots and the
-    six-entry store exactly; the second pass must be served entirely from
-    them.
+    Six lines plus the next-line prefetch fit in the two slots and the
+    six-entry store, so the second pass must be served entirely from them.
     """
     await _setup(dut)
     reqs: list[int] = []
@@ -648,15 +645,15 @@ async def test_perf_miss_stall_qualifies_frontend_progress(dut: Any) -> None:
         await FallingEdge(dut.i_clk)
     assert int(dut.o_instr_valid.value) == 0
 
-    # The cache's source-registered outstanding level is registered once more
-    # at this seam; with no window available it becomes a stall event.
+    # The provider registers the cache's miss-outstanding level once more; with
+    # no window available, it counts as a stall.
     dut.i_l1i_miss_outstanding.value = 1
     await FallingEdge(dut.i_clk)
     assert int(dut.o_perf_miss_stall.value) == 1
 
-    # A backend pipeline stall is the competing cause. The live qualifier
-    # suppresses the onset immediately; pipeline_stall_q also suppresses the
-    # provider's registered tail after the live stall drops.
+    # A backend pipeline stall is the competing cause. The live i_pipeline_stall
+    # term suppresses the count at once, and pipeline_stall_q suppresses it for
+    # one more cycle after the stall drops.
     dut.i_pipeline_stall.value = 1
     await FallingEdge(dut.i_clk)
     assert int(dut.o_perf_miss_stall.value) == 0

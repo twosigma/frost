@@ -12,30 +12,25 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Programming/fetch checks for imem_predecode's physical timing banks.
+"""Programming and fetch checks for imem_predecode's replica and overlay banks.
 
-The five-lane block-RAM replica carries raw high-parcel ``C[15]``, ``C[13]``,
-and ``C[12]``, the ``rd == x2`` predicate, and the high-parcel allows-slot-2
-predicate. Every sideband predicate on the IF PC feedback cone
-(``SCALAR_REPLICA_BITS``: both compressed-size flags, EvenLocalPairValid,
-PairableNativeLo, PairableCompressedHi, PairableNativeHi, and
-Slot2StartValidLo) comes from a pinned low-address per-parity scalar LUTRAM
-with an output register. Above that overlay, the first response is withheld
-while the same predicates are redecoded from the raw words into those same
-scalar-bank output registers; repeating the address publishes them without
-putting canonical sideband BRAM outputs on the PC path. The architectural data
-uses resource-neutral 28-bit cold plus four-bit ``{word[15], word[10], word[7],
-word[6]}`` block-RAM slices.
+imem_predecode stores each word as 28 cold bits plus four frontend-hot bits
+``{word[15], word[10], word[7], word[6]}``, and keeps a five-lane block-RAM
+replica of high-parcel ``C[15]``, ``C[13]``, ``C[12]``, the ``rd == x2``
+predicate, and AllowsSlot2AfterHi. Each sideband predicate that the IF
+next-PC logic reads (``SCALAR_REPLICA_BITS``) comes from a per-parity LUTRAM
+overlay of the low addresses, through an output register. Outside the overlay
+the first response is withheld while those registers capture the predicates
+redecoded from the fetched words; presenting the same address pair again
+publishes them.
 
-This bench gives the overlay half the test IMEM's depth, writes both
-interleaved banks through the programming port, then checks complete data,
-predicate, and sideband windows inside and outside the overlay (including both
-parcels' RVC source-hot metadata), both PC[2] swap cases, and read-enable hold
-behavior. It also keeps an out-of-overlay fetch live across a debug-style
-programming rewrite and checks that readiness is quarantined until the raw word
-and registered slow predicates realign. The programming clock is the production
-div4 clock, which gives the fetch-domain synchronizer its documented lead over
-the staged array write.
+This bench makes the overlay half the IMEM, programs both interleaved banks
+through port A, and checks data, predicates, and the full sideband for windows
+inside and outside the overlay, both PC[2] swap cases, and read-enable hold.
+It also rewrites an out-of-overlay word while fetch stays on it and checks
+that readiness is withheld until the new word and its redecoded predicates
+line up. Port A runs at a quarter of port B's clock rate, as in production;
+the write-quarantine synchronizer depends on that ratio.
 """
 
 import importlib.util
@@ -101,7 +96,7 @@ def _with_lo_opcode(word: int, opcode: int) -> int:
 
 
 def _with_hi_size_allows_row(word: int, *, compressed: bool, allows: bool) -> int:
-    """Set one row of the high-size/high-allows reconstruction truth table."""
+    """Set the high parcel's size and AllowsSlot2AfterHi to the given values."""
     if not compressed:
         opcode = 0b011_0011 if allows else _GENERATOR.OPC_CSR
         return _with_hi_opcode(word, opcode)
@@ -159,7 +154,7 @@ def _expected_pairable_native_hi(word: int) -> int:
 
 
 def _expected_slot2_start_valid_lo(word: int) -> int:
-    """Independently model the dedicated bit-10 timing replica."""
+    """Independently model Slot2StartValidLo (sideband bit 10)."""
     lo = word & 0xFFFF
     opcode = lo & 0x7F
     compressed = (lo & 0x3) != 0b11
@@ -442,8 +437,8 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
         assert int(dut.o_port_b_response_ready.value) == 1
     else:
         # Mixed-boundary and fully outside windows are entirely slow. The
-        # first response is quarantined; an identical second read aligns the
-        # registered redecode predicates with the held raw payload.
+        # first response is withheld; an identical second read aligns the
+        # registered redecoded predicates with the raw payload.
         assert int(dut.o_port_b_response_ready.value) == 0
         await RisingEdge(dut.i_port_b_clk)
         await ReadOnly()
@@ -498,10 +493,10 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             )
             words[word_index] = _with_lo_opcode(words[word_index], low_opcode)
 
-    # Plant both asymmetric odd-bank lane-3 combinations. These repeated
-    # high-size/high-allows rows leave the four-way matrix above intact while
-    # proving that physical Slot2StartValidLo is not an alias of public
-    # PairableNativeHi.
+    # In the odd bank, plant both combinations where Slot2StartValidLo and
+    # PairableNativeHi differ, so the test would catch one lane wired to the
+    # other. Words 9 and 11 keep their high-size/high-allows rows, so the
+    # four-way matrix above stays intact.
     words[9] = _with_hi_size_allows_row(words[9], compressed=False, allows=False)
     words[9] = _with_lo_opcode(words[9], 0b011_0011)
     words[11] = _with_hi_size_allows_row(words[11], compressed=False, allows=True)
@@ -578,10 +573,10 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     for current_index in range(len(words)):
         await _fetch_window(dut, words, current_index)
 
-    # Overlay hits must retain the original one-response-per-cycle behavior.
-    # Keep enable asserted while both physical parity and every address change;
-    # a helper that disabled between windows would miss a stale registered
-    # overlay selector or a one-cycle shift in the folded output register.
+    # Overlay hits must return one response per cycle. Keep enable asserted
+    # while the address changes every cycle and covers both parities; disabling
+    # between windows would hide a stale registered overlay select or a
+    # one-cycle shift in the scalar banks' output registers.
     for current_index in (0, 1, 3, 5, 2, 6, 0):
         await _present_fetch_pair(dut, 4 * current_index, 4 * current_index + 4)
         assert int(dut.o_port_b_window_overlay_hit.value) == 1
@@ -592,10 +587,10 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     await FallingEdge(dut.i_port_b_clk)
     dut.i_port_b_enable.value = 0
 
-    # Exercise both selector directions without disabling the read port. The
-    # mixed {last-overlay-word, first-outside-word} pair must send both parity
-    # outputs through the folded slow input, withhold once, then publish the
-    # repeated pair. Returning to an overlay pair is immediately ready.
+    # Switch between overlay and slow windows without disabling the read port.
+    # The mixed {last overlay word, first outside word} pair must take both
+    # parities from the slow redecode, withhold once, then publish the repeated
+    # pair. Returning to an overlay pair is ready at once.
     await _present_fetch_pair(dut, 4 * 6, 4 * 7)
     assert int(dut.o_port_b_window_overlay_hit.value) == 1
     assert int(dut.o_port_b_response_ready.value) == 1
@@ -813,8 +808,8 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
 
     # A halted hart keeps fetching from the debug execution slice while the
     # debug module rewrites it through port A. That slice lies outside the
-    # pinned overlay, so the canonical BRAM sees a new word one response before
-    # the registered slow scalar fallback. Repeated-address history must drop
+    # overlay, so the block-RAM data shows a new word one response before the
+    # registered slow scalar fallback. Repeated-address history must drop
     # readiness across the write and rebuild it before publishing the new pair.
     live_index = 14
     replacement = _with_lo_opcode(words[live_index], 0b011_0011)

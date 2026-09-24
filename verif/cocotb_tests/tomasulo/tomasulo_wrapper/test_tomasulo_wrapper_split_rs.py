@@ -12,14 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tomasulo wrapper tests for cpu_ooo's split-RS dispatch parameterization.
+"""Tomasulo wrapper tests with split-RS dispatch (SPLIT_RS_DISPATCH=1), as cpu_ooo uses it.
 
-Includes directed coverage of the production INT_RS depth-16 fill boundary and
-eight-entry second-issue window,
-primary-issue effective operand capture through both issue-only CDB metadata
-anchors, SQ-local CDB-lane repair timing, FP pending-repair recovery hold, and
-both effective ALU CDB packets for test-injection, live-adapter, and
-held-adapter source states.
+Directed coverage of per-station routing for both dispatch slots, INT_RS's
+16-entry capacity and eight-entry second-issue window, port 0's same-cycle
+CDB bypass capture from each lane, store-address repair timing through the
+SQ's local CDB copies, FP-family done repair under recovery hold, the LQ's
+partial-flush input, and the ALU and ALU2 CDB packets from test injection, a
+live adapter, and a held adapter.
 """
 
 from typing import Any
@@ -215,8 +215,8 @@ async def wait_for_alu2_cdb(
 async def test_lq_partial_flush_timing_companion_is_full_flush_dominated(
     dut: Any,
 ) -> None:
-    """The LQ's early-recovery cofactor may differ only under full flush."""
-    cocotb.log.info("=== Test: LQ Partial-Flush Timing Companion ===")
+    """The LQ's partial-flush input may differ from speculative_flush_en only under full flush."""
+    cocotb.log.info("=== Test: LQ Partial-Flush Input Under Full Flush ===")
     dut_if = await setup_test(dut)
 
     async def park_load(tag: int) -> None:
@@ -241,10 +241,10 @@ async def test_lq_partial_flush_timing_companion_is_full_flush_dominated(
     assert dut.lq_partial_flush_en.value
     assert not dut.speculative_flush_all.value
 
-    # Commit-time recovery promotes the flush to the LQ's full-flush class.
-    # The canonical partial term is masked, while the timing companion may
-    # remain high because the full-reset input makes any payload difference
-    # architecturally unobservable.
+    # Commit-time recovery turns the flush into a full flush for the LQ.
+    # speculative_flush_en is masked, but lq_partial_flush_en (the registered
+    # i_early_recovery_flush) may stay high: the LQ's full flush clears every
+    # visible update, so the difference cannot be observed.
     dut.i_flush_after_head_commit.value = 1
     await Timer(1, unit="ns")
     assert dut.speculative_flush_all.value
@@ -258,9 +258,8 @@ async def test_lq_partial_flush_timing_companion_is_full_flush_dominated(
     assert not dut.o_lq_mem_read_en.value
     assert not any(cdb.valid for cdb in read_cdb_lanes(dut))
 
-    # An architectural full flush does not mask the canonical partial term,
-    # so both partial inputs remain equal while full-flush priority clears the
-    # parked entry.
+    # An i_flush_all full flush does not mask speculative_flush_en, so both
+    # partial terms stay equal while the full flush clears the parked entry.
     await park_load(4)
     dut_if.drive_flush_en(flush_tag=4)
     dut_if.drive_flush_all()
@@ -475,9 +474,9 @@ async def test_split_int_primary_capture_uses_both_issue_cdb_anchors(
             value=wake_value,
         )
 
-        # Register the ordinary INT-local CDB packet and the issue-only anchor
-        # on the same edge. The entry is now combinationally ready, but port 0
-        # has not yet captured it into stage2.
+        # The ordinary INT-local CDB packet and INT_RS's issue-compare copy
+        # register on the same edge. The entry is now combinationally ready,
+        # but port 0 has not yet captured it into stage2.
         await dut_if.step()
         dut_if.clear_fu_complete(FU_FP_ADD)
         if target_lane == 1:
@@ -498,7 +497,7 @@ async def test_split_int_primary_capture_uses_both_issue_cdb_anchors(
         assert not dut_if.read_rs_issue_for(RS_INT)["valid"]
 
         # The next edge performs the same-cycle bypass capture. Port 0 must
-        # expose the exact canonical lane value and its ADD result immediately.
+        # present the lane's exact value and its ADD result immediately.
         await dut_if.step()
         issue = dut_if.read_rs_issue_for(RS_INT)
         assert issue["valid"] and issue["rob_tag"] == consumer_tag
@@ -550,8 +549,8 @@ async def test_split_rs_slot2_different_family_routes_independently(dut: Any) ->
 
 @cocotb.test()
 async def test_split_rs_ignores_legacy_single_bus_dispatch(dut: Any) -> None:
-    """The split-RS production parameter ignores the legacy single dispatch bus."""
-    cocotb.log.info("=== Test: Split RS Ignores Legacy Single Bus ===")
+    """With SPLIT_RS_DISPATCH=1 the wrapper ignores the single-slot i_rs_dispatch bus."""
+    cocotb.log.info("=== Test: Split RS Ignores Single-Slot Bus ===")
     dut_if = await setup_test(dut)
 
     dut_if.drive_rs_dispatch(RS_INT, **ready_payload(5))
@@ -565,7 +564,7 @@ async def test_split_rs_ignores_legacy_single_bus_dispatch(dut: Any) -> None:
 
 @cocotb.test()
 async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None:
-    """Each registered SQ CDB lane repairs an unready store on the legacy edges."""
+    """Each SQ-local CDB lane copy repairs an unready store without adding a cycle."""
     cocotb.log.info("=== Test: Split SQ-Local CDB Lane Repair Timing ===")
     dut_if = await setup_test(dut)
 
@@ -584,9 +583,8 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         base_value = (0x1234_5678 << 32) | low_base
         immediate = 0x34 + target_lane * 0x10
         store_data = 0xCAFE_1000 + target_lane
-        # the early store-address adders carry the full width.
-        # The producer-side canonical_paddr masking was retired; out-of-map
-        # addresses fault instead of aliasing.
+        # The early store-address adders keep the full XLEN width: the
+        # address is not masked, and an out-of-map address faults.
         expected_addr = (base_value + immediate) & MASK_XLEN
 
         # Production split dispatch allocates both MEM_RS and SQ, but an
@@ -954,7 +952,7 @@ async def test_alu2_effective_packet_held_adapter_beats_injection(dut: Any) -> N
         ),
     )
 
-    # MUL and MEM own both lanes. Wait until both INT entries have left the RS;
+    # MUL and MEM occupy both lanes. Wait until both INT entries have left the RS;
     # their ungranted ALU/ALU2 completions are then resident in the adapters.
     for _ in range(8):
         await Timer(1, unit="ps")

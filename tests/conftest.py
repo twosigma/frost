@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Pytest configuration for tests."""
+"""Pytest markers and session setup for the tests in this directory."""
 
 import os
 import sys
@@ -40,12 +40,12 @@ def pytest_configure(config: Any) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_cocotb_env() -> None:
-    """Set up environment variables for cocotb simulation."""
+    """Select Verilator as the cocotb simulator."""
     os.environ["SIM"] = "verilator"
 
 
 def pytest_collection_modifyitems(config: Any, items: Any) -> None:
-    """Xfail cocotb tests on Python 3.11, where cocotb is unsupported."""
+    """Mark cocotb tests as expected failures under Python 3.11."""
     if sys.version_info[:2] == (3, 11):
         reason = (
             f"Cocotb tests not supported for Python 3.11, "

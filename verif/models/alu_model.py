@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Reference models for Frost ALU and load operations.
+"""Reference models for FROST's integer ALU, load, and AMO operations.
 
 The load models (lw, ld, lh, lhu, lb, lbu) take a MemoryReader, an object
 with read_byte and read_word methods, so no model reads global state.
@@ -54,7 +54,7 @@ class MemoryReader(Protocol):
 
 # Decorators for common RISC-V operation patterns
 def mask_to_xlen(function: Callable) -> Callable:
-    """Mask operation result to the active XLEN for overflow wrapping."""
+    """Mask the operation result to XLEN bits, wrapping on overflow."""
 
     @wraps(function)
     def wrapper(*args: int, **kwargs: int) -> int:
@@ -141,7 +141,7 @@ def _load_halfword_from_memory(
 
     Args:
         memory: Memory model to read from
-        memory_address: Byte address to load from
+        memory_address: Byte address (rounded down to a 2-byte boundary)
         is_signed: If True, sign-extend; if False, zero-extend
 
     Returns:
@@ -163,7 +163,7 @@ def lw(memory: MemoryReader, memory_address: int) -> int:
 
     Args:
         memory: Memory model to read from
-        memory_address: Byte address (will be aligned to 4-byte boundary)
+        memory_address: Byte address (rounded down to a 4-byte boundary)
 
     Returns:
         Word value sign-extended to XLEN, as RV64 LW writes rd
@@ -177,7 +177,7 @@ def ld(memory: MemoryReader, memory_address: int) -> int:
 
     Args:
         memory: Memory model to read from
-        memory_address: Byte address (will be aligned to 8-byte boundary)
+        memory_address: Byte address (rounded down to an 8-byte boundary)
 
     Returns:
         64-bit value from memory (little-endian)
@@ -219,7 +219,7 @@ def lh(memory: MemoryReader, memory_address: int) -> int:
 
     Args:
         memory: Memory model to read from
-        memory_address: Byte address (will be aligned to 2-byte boundary)
+        memory_address: Byte address (rounded down to a 2-byte boundary)
 
     Returns:
         Halfword value sign-extended to XLEN
@@ -232,7 +232,7 @@ def lhu(memory: MemoryReader, memory_address: int) -> int:
 
     Args:
         memory: Memory model to read from
-        memory_address: Byte address (will be aligned to 2-byte boundary)
+        memory_address: Byte address (rounded down to a 2-byte boundary)
 
     Returns:
         Halfword value zero-extended to XLEN
@@ -269,16 +269,15 @@ def mulhu(operand_a: int, operand_b: int) -> int:
 
 
 def _trunc_div(dividend: int, divisor: int) -> int:
-    """Exact integer division toward zero, without float rounding at RV64 width."""
+    """Divide, truncating toward zero, in integer arithmetic (floats lose 64-bit precision)."""
     magnitude = abs(dividend) // abs(divisor)
     return -magnitude if (dividend < 0) != (divisor < 0) else magnitude
 
 
 # M-extension division and remainder operations
 class DivisionOperations:
-    """Division and remainder operations with RISC-V spec-compliant edge cases.
+    """Division and remainder with the RISC-V edge-case results.
 
-    RISC-V division edge cases:
     - Division by zero: quotient = -1 (all 1s), remainder = dividend
     - Overflow (most negative / -1): quotient = most negative, remainder = 0
     """
@@ -565,7 +564,7 @@ def orc_b(value: int) -> int:
 def rev8(value: int) -> int:
     """Reverse the byte order of the XLEN-wide value (REV8 instruction).
 
-    Byte i moves to byte (XLEN/8 - 1 - i), so all eight bytes at XLEN=64.
+    Byte i moves to byte XLEN/8 - 1 - i.
     """
     value = value & MASK_XLEN
     num_bytes = XLEN // 8
@@ -625,7 +624,7 @@ def brev8(value: int) -> int:
 
 # RV64 W-form and unsigned-word evaluators.
 def _sext32_to_xlen(value: int) -> int:
-    """Sign-extend a 32-bit result into the active XLEN."""
+    """Sign-extend a 32-bit result to XLEN."""
     return sign_extend(value & MASK32, 32) & MASK_XLEN
 
 
@@ -780,7 +779,7 @@ def remuw(dividend: int, divisor: int) -> int:
 
 # A extension (atomics): AMO operation evaluators.
 # Each returns the new value to write to memory, given old_value and rs2.
-# rd always receives old_value, the value loaded from memory.
+# rd receives old_value, the word loaded from memory, sign-extended to XLEN.
 
 
 def amoswap(old_value: int, rs2_value: int) -> int:

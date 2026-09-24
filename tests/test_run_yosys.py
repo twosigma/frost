@@ -91,8 +91,8 @@ def _get_timeout_seconds(synth_command: str) -> int:
     Defaults:
       - Generic target (synth): 1800s
       - Other non-Xilinx targets: 7200s
-      - Xilinx targets (synth_xilinx*): 7200s (the full CPU/NIC target takes
-        about 50 minutes locally; allow margin for CI host variation)
+      - Xilinx targets (synth_xilinx*): 7200s (full CPU and NIC synthesis can
+        take close to an hour; the rest is margin for slower CI hosts)
 
     Environment overrides:
       - FROST_YOSYS_GENERIC_TIMEOUT_SEC
@@ -143,7 +143,7 @@ SYNTHESIS_TARGETS = [
     ("xilinx_ultrascale_plus", "synth_xilinx -family xcup", "Xilinx UltraScale+"),
 ]
 
-# Use the complete integration filelist even though cpu_and_mem remains the
+# Use the complete integration filelist even though cpu_and_mem is the
 # synthesis top: its cached tier instantiates the NIC and MAC/PCS, whose
 # dependencies are listed before cpu_and_mem.f in frost.f.
 DESIGN_FILELISTS = {
@@ -172,7 +172,7 @@ class YosysRunner:
 
         self.filelist = self.root_dir / DESIGN_FILELISTS[filelist_key]
 
-        # Create symlink to sw.mem only for designs that need it (frost has BRAM init)
+        # Only designs with BRAM init (frost) need the sw.mem/sw64.mem symlinks.
         if filelist_key == "frost":
             self.setup_sw_mem()
 
@@ -241,7 +241,7 @@ class YosysRunner:
         Yosys read_verilog cannot parse the MAC's package imports/function
         returns or the NIC's packed multidimensional ports. Convert this
         subtree together so packages resolve; the CPU and library sources
-        continue through the existing Yosys frontend. Lower always_comb to
+        go through Yosys's own frontend. Lower always_comb to
         always @* ourselves: sv2v's explicit sensitivity list can contain a
         whole unpacked array, which read_verilog rejects. Keeping always_comb
         instead makes Yosys reject sv2v's otherwise unused loop-index latches.
@@ -576,7 +576,8 @@ def test_xilinx_pc_hierarchy_keeps_parameterized_dependencies(
         top,
     ]
     runner.filelist.write_text("\n".join(map(str, sources)) + "\n")
-    # The failure occurs during hierarchy elaboration, before logic mapping.
+    # A parent rederived after child pruning fails during hierarchy
+    # elaboration, before logic mapping, so the begin step is enough.
     result = runner.run_synthesis(
         synth_command="synth_xilinx -family xcup -run begin:begin"
     )
@@ -590,7 +591,7 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run Yosys synthesis for Frost RISC-V CPU",
+        description="Run Yosys synthesis for FROST",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

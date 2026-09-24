@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Register and PC monitors for the queued CPU reference harness.
+"""Register and PC monitors for the CPU reference harness.
 
 Monitors compare on DUT valid signals. Integer comparison excludes x0;
 MemoryModel's separate monitor checks store traffic.

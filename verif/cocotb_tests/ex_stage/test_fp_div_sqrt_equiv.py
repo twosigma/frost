@@ -39,7 +39,8 @@ VECTOR_CYCLES = 80
 KILL_VECTOR_CYCLES = 220
 
 # The random sweep's vector count comes from the harness parameter. The test
-# polls in blocks and gives up after this many cycles per vector on average.
+# polls in blocks and gives up after SWEEP_CYCLE_MARGIN * VECTOR_CYCLES cycles
+# per vector, on average.
 SWEEP_CYCLE_MARGIN = 4
 
 
@@ -310,11 +311,11 @@ async def test_directed_sqrt(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: exhaustive small-mantissa divides
+# Test 3: low-mantissa-bit sweeps
 # ============================================================================
 @cocotb.test()
 async def test_mantissa_sweep(dut: Any) -> None:
-    """Sweep the low mantissa bits of both operands to walk rounding boundaries."""
+    """Walk rounding boundaries through the low mantissa bits of divide and sqrt operands."""
     await setup(dut)
 
     count = 0

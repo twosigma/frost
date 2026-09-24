@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""CoreMark evidence validation must reject partial, wrong-seed or corrupt runs."""
+"""Tests for the CoreMark sweep's report parsing and link orders."""
 
 import pytest
 
@@ -20,7 +20,7 @@ from scripts.coremark_sweep import CRCS, SOURCES, link_orders, parse_reports
 
 
 def report(seed_set: str = "performance") -> str:
-    """Build a complete one-iteration UART report with independent CRCs."""
+    """Build a passing one-iteration CoreMark report for the seed set."""
     seed, listing, matrix, state = CRCS[seed_set]
     return (
         "CoreMark Size    : 666\nTotal ticks : 285189\nIterations : 1\n"
@@ -34,7 +34,7 @@ def report(seed_set: str = "performance") -> str:
 
 @pytest.mark.parametrize("seed_set", CRCS)
 def test_reports_preserve_run_order_and_disclaim_official_length(seed_set: str) -> None:
-    """Cold/warm runs remain separate; a synthetic timer cannot confer official status."""
+    """Each report gets its own record, in log order, and none is official length."""
     log = report(seed_set) + report(seed_set).replace("285189", "284100")
     result = parse_reports(log, seed_set, 2)
     assert [run["ticks"] for run in result] == [285189, 284100]
@@ -54,13 +54,16 @@ def test_reports_preserve_run_order_and_disclaim_official_length(seed_set: str) 
     ],
 )
 def test_reject_bad_measurements(log: str, seeds: str, runs: int) -> None:
-    """Fail closed instead of publishing a plausible score from invalid evidence."""
+    """Reject missing reports, wrong CRCs, no validation line, and zero counts."""
     with pytest.raises(ValueError):
         parse_reports(log, seeds, runs)
 
 
 def test_ensemble_is_deterministic_and_contains_all_sources() -> None:
-    """Order changes preserve the benchmark and remain reproducible."""
+    """Link orders are reproducible and distinct, and each holds every source.
+
+    The first is the natural order.
+    """
     orders = link_orders(120)
     assert orders == link_orders(120)
     assert orders[0] == SOURCES

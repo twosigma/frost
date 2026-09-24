@@ -11,16 +11,16 @@
 #    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
-"""OpenOCD in the loop (Phase 3 M3).
+"""OpenOCD-in-the-loop debug test.
 
 The bench serves OpenOCD's `remote_bitbang` protocol on a localhost TCP port
 and toggles frost's JTAG pins on OpenOCD's behalf, so a real `openocd`
 (the pinned container image installs it) examines the debug module and runs
 a scripted session against `debug_target`: halt, read/write registers and
 memory (the program observes the writes), plant a software breakpoint,
-resume to it, single-step, resume to the pass banner, and `reset halt`.
-This is the debug module's acceptance test proper: hardware bring-up runs
-the same protocol over the boards' BSCAN chains (fpga/debug/).
+resume to it, single-step, halt in U-mode, resume to the pass banner, and
+`reset halt`. On boards, OpenOCD speaks the same dtmcs/dmi protocol over the
+FPGA's BSCAN chains (configurations in fpga/debug/).
 
 Without `openocd` on PATH the test logs a warning and passes; set
 FROST_REQUIRE_OPENOCD=1 to make that a failure (CI does).

@@ -14,11 +14,11 @@
 
 """Software model of the CPU data memory.
 
-A sparse, little-endian, byte-addressable dict mirrors hardware memory, so the
-testbench can supply load values to the instruction models and check the DUT's
-stores. The constructor copies the DUT's initial memory contents so both sides
-start from the same state. ``driver_and_monitor`` then checks every store the
-DUT makes.
+A little-endian, byte-addressable dict mirrors the DUT's data memory and
+supplies load values to the instruction models. The constructor copies the
+DUT's initial memory contents so both sides start from the same state.
+``driver_and_monitor`` checks every store the DUT makes against the expected
+queues.
 
 There is no global instance. A test builds one model and passes it to whatever
 needs memory access:
@@ -56,7 +56,7 @@ def poke_dut_memory_word(device_under_test: Any, byte_address: int, value: int) 
     write both words of a row in one delta.
 
     Args:
-        device_under_test: CoCoTB DUT handle with data_memory_for_simulation
+        device_under_test: cocotb DUT handle with data_memory_for_simulation
         byte_address: Word-aligned byte address to poke
         value: 32-bit value to deposit
     """
@@ -71,7 +71,7 @@ def peek_dut_memory_word(device_under_test: Any, byte_address: int) -> int:
     """Read one 32-bit word from the DUT's dword-row simulation data BRAM.
 
     Args:
-        device_under_test: CoCoTB DUT handle with data_memory_for_simulation
+        device_under_test: cocotb DUT handle with data_memory_for_simulation
         byte_address: Word-aligned byte address to read
 
     Returns:
@@ -89,7 +89,7 @@ def poke_dut_memory_dword(
     """Deposit one aligned 64-bit dword row into the DUT's simulation data BRAM.
 
     Args:
-        device_under_test: CoCoTB DUT handle with data_memory_for_simulation
+        device_under_test: cocotb DUT handle with data_memory_for_simulation
         byte_address: Dword-aligned byte address to poke
         value: 64-bit value to deposit
     """
@@ -108,7 +108,7 @@ class MemoryModel:
 
     Attributes:
         dut: Reference to the device under test
-        read_address: Address staged by the caller for the next modelled load
+        read_address: Address staged by the caller for the next modeled load
         ram_bytes: Byte address to byte value
     """
 
@@ -119,7 +119,7 @@ class MemoryModel:
         before the test drives its first instruction.
 
         Args:
-            device_under_test: CoCoTB DUT handle with data_memory_for_simulation
+            device_under_test: cocotb DUT handle with data_memory_for_simulation
         """
         self.dut = device_under_test
         self.read_address: int = 0
@@ -246,8 +246,9 @@ class MemoryModel:
                 (1 << MEM_STRB_BITS) - 1
             )
             if wr_mask:
-                # Store data rides the beat replicated across lanes (bus
-                # contract), so the full 64-bit compare is lane-independent.
+                # Store data is replicated across the beat (hw/rtl/README.md,
+                # "Data-tier bus contract"). Callers queue the replicated beat
+                # from replicate_store_data_for_beat, so all 64 bits compare.
                 wr_addr = int(self.dut.o_data_mem_addr.value) & MASK32
                 wr_data = int(self.dut.o_data_mem_wr_data.value) & MASK64
 

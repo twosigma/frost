@@ -74,7 +74,7 @@ async def _setup_test(dut: Any) -> None:
 
 
 def _drive_live_prediction(dut: Any, *, used: bool, target: int) -> None:
-    """Drive matching registered and live target provenance inputs."""
+    """Drive the registered prediction and a matching live target."""
     dut.i_prediction_used_r.value = int(used)
     dut.i_predicted_target_r.value = target
     dut.i_live_predicted_target.value = target
@@ -93,7 +93,7 @@ async def _save_pending_prediction(
     target: int = TARGET_A,
     owner_pc: int = PENDING_BRANCH_PC,
 ) -> None:
-    """Save one prediction while its pending fetch episode is active."""
+    """Capture a pending prediction, then present its owner with the target handoff."""
     _drive_live_prediction(dut, used=True, target=target)
     dut.i_pending_prediction_active.value = 1
     dut.i_pending_prediction_pc.value = owner_pc
@@ -127,7 +127,7 @@ async def test_normal_metadata_passthrough_tracks_live_prediction(dut: Any) -> N
 async def test_same_cycle_prediction_overrides_stale_registered_metadata(
     dut: Any,
 ) -> None:
-    """A no-lead emitted branch carries the prediction used that same cycle."""
+    """A collapsed lookup lead attaches the same-cycle prediction to the emitted branch."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=False, target=TARGET_A)
@@ -149,14 +149,17 @@ async def test_same_cycle_prediction_overrides_stale_registered_metadata(
 async def test_unowned_target_payload_is_independent_of_alignment_and_validity(
     dut: Any,
 ) -> None:
-    """An unowned invalid target stays live without alignment/control muxes."""
+    """With no registered or pending prediction, the target output is the live target.
+
+    The alignment, NOP, and holdoff inputs never change the target.
+    """
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=False, target=TARGET_A)
     dut.i_live_predicted_target.value = TARGET_B
 
-    # Neither source is valid, so the live payload is harmless in both phases.
-    # Raw PC alignment is not part of the wide target mux.
+    # No prediction is valid, so the live target on the output is ignored.
+    # PC alignment does not select the target.
     dut.i_live_target_aligned_with_output.value = 0
     await _settle()
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
@@ -165,8 +168,8 @@ async def test_unowned_target_payload_is_independent_of_alignment_and_validity(
     await _settle()
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
 
-    # NOP and pending-fetch holdoff clear validity without changing the wide
-    # payload source. This is the timing contract exercised by CSR stalls.
+    # NOP and pending-fetch holdoff clear validity without changing the target
+    # source.
     dut.i_sel_nop.value = 1
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _settle()
@@ -191,9 +194,10 @@ async def test_registered_target_wins_over_same_pc_live_payload(dut: Any) -> Non
 
     _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
 
-    # Model the self-target/RAS-pop corner: the raw lookup still has the same
-    # packet PC but now exposes a different target while a holdoff invalidates
-    # the output. The registered packet payload remains stable.
+    # A self-targeting prediction whose RAS entry has already popped: the live
+    # lookup at the same packet PC now shows a different target while a
+    # holdoff invalidates the output. The registered target stays on the
+    # output.
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _settle()
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
@@ -201,7 +205,7 @@ async def test_registered_target_wins_over_same_pc_live_payload(dut: Any) -> Non
 
 @cocotb.test()
 async def test_nop_output_clears_validity_without_zeroing_payload(dut: Any) -> None:
-    """NOP selection suppresses validity without entering the target dataplane."""
+    """A NOP clears validity but leaves the target output unchanged."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)
@@ -229,7 +233,7 @@ async def test_stall_start_saves_and_restores_prediction_metadata(dut: Any) -> N
     await _advance_cycle(dut)
 
     # branch_prediction_controller holds target_r while IF is stalled, so the
-    # wide payload needs no separate stall-saved replica.
+    # target needs no stall-saved copy.
     _drive_live_prediction(dut, used=False, target=TARGET_A)
     dut.i_stall.value = 0
     dut.i_stall_registered.value = 1
@@ -290,7 +294,7 @@ async def test_pending_prediction_replays_after_fetch_holdoff(dut: Any) -> None:
 
     _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
 
-    # pc_controller drops the active episode on the same handoff edge.
+    # pc_controller clears its pending state on the same handoff edge.
     dut.i_pending_prediction_active.value = 0
     await _advance_cycle(dut)
 
@@ -320,14 +324,14 @@ async def test_pending_prediction_survives_nop_until_real_instruction(dut: Any) 
 async def test_pending_prediction_waits_for_exact_owner_after_predecessor_replay(
     dut: Any,
 ) -> None:
-    """A released predecessor cannot spend the younger branch's metadata."""
+    """A predecessor released ahead of the pending branch does not consume its metadata."""
     await _setup_test(dut)
     await _save_pending_prediction(dut)
 
-    # Model the served-window immediate-predecessor carve-out on a stall-release
-    # packet: the holdoff is open and the packet is real, but its saved PC is
-    # B-2 rather than the pending branch B. The old first-non-NOP policy stamped
-    # this packet predicted-taken and consumed the metadata here.
+    # pc_controller's immediate-predecessor exception on a stall-release packet:
+    # the holdoff is open and the packet is real, but its saved PC is B-2, not
+    # the pending branch B. It must not be marked predicted-taken or consume
+    # the saved metadata.
     dut.i_use_saved_values.value = 1
     dut.i_output_pc.value = PENDING_PREDECESSOR_PC
     await _settle()
@@ -344,7 +348,7 @@ async def test_pending_prediction_waits_for_exact_owner_after_predecessor_replay
     await _settle()
     _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
 
-    # pc_controller drops the active episode on the same handoff edge.
+    # pc_controller clears its pending state on the same handoff edge.
     dut.i_pending_prediction_active.value = 0
     await _advance_cycle(dut)
     assert not bool(dut.prediction_pending_saved_valid.value)
@@ -378,12 +382,12 @@ async def test_exact_pending_owner_replays_through_stall_then_consumes(
 async def test_pending_episode_cannot_be_recaptured_by_later_prediction(
     dut: Any,
 ) -> None:
-    """The first owner and target remain immutable until consume or kill."""
+    """The saved owner PC and target do not change until consumed or killed."""
     await _setup_test(dut)
     await _save_pending_prediction(dut, target=TARGET_A)
 
-    # Keep the episode's fetch holdoff active while an unrelated registered
-    # prediction appears. The saved packet must not be overwritten.
+    # Keep the fetch holdoff active while an unrelated registered prediction
+    # appears. The saved metadata must not be overwritten.
     dut.i_pending_prediction_fetch_holdoff.value = 1
     dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC + 0x40
     dut.i_output_pc.value = PENDING_BRANCH_PC + 0x40
@@ -409,8 +413,9 @@ async def test_pending_owner_kill_dominates_recapture_and_new_episode_reuses_pc(
     await _setup_test(dut)
     await _save_pending_prediction(dut, target=TARGET_A)
 
-    # A redirect kill coincident with another apparent capture must clear the
-    # old packet; kill has priority over both capture and consume.
+    # A redirect kill in the same cycle as a new registered prediction must
+    # clear the saved metadata; the kill has priority over both capture and
+    # consume.
     dut.i_pending_prediction_kill.value = 1
     dut.i_pending_prediction_fetch_holdoff.value = 1
     _drive_live_prediction(dut, used=True, target=TARGET_B)
@@ -426,7 +431,7 @@ async def test_pending_owner_kill_dominates_recapture_and_new_episode_reuses_pc(
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
     assert not bool(dut.prediction_pending_saved_valid.value)
 
-    # A fresh episode at the same PC owns its new target independently.
+    # A new pending prediction at the same PC carries its own target.
     await _save_pending_prediction(dut, target=TARGET_C)
     await _settle()
     _assert_metadata(dut, hit=True, taken=True, target=TARGET_C)
@@ -436,7 +441,7 @@ async def test_pending_owner_kill_dominates_recapture_and_new_episode_reuses_pc(
 async def test_saved_nop_suppresses_pending_replay_without_consuming_it(
     dut: Any,
 ) -> None:
-    """Saved NOP state participates in pending replay suppression."""
+    """A stall-saved NOP suppresses the pending replay without consuming it."""
     await _setup_test(dut)
     await _save_pending_prediction(dut)
 
@@ -457,7 +462,7 @@ async def test_saved_nop_suppresses_pending_replay_without_consuming_it(
 
 @cocotb.test()
 async def test_stall_preserves_pending_prediction_capture(dut: Any) -> None:
-    """A stall cannot hide the first pending-active registered prediction."""
+    """A stall on the first pending cycle does not block capture of the prediction."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)
@@ -465,8 +470,8 @@ async def test_stall_preserves_pending_prediction_capture(dut: Any) -> None:
     dut.i_pending_prediction_active.value = 1
     dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC
     dut.i_output_pc.value = PENDING_PREDECESSOR_PC
-    # The raw-WCS immediate-predecessor carve-out has already opened the fetch
-    # holdoff; pending-active is the durable lifecycle signal.
+    # pc_controller's immediate-predecessor exception has already released the
+    # fetch holdoff; capture follows i_pending_prediction_active instead.
     dut.i_pending_prediction_fetch_holdoff.value = 0
     await _advance_cycle(dut)
 
@@ -483,7 +488,7 @@ async def test_stall_preserves_pending_prediction_capture(dut: Any) -> None:
 async def test_raw_wcs_predecessor_captures_without_prior_fetch_holdoff(
     dut: Any,
 ) -> None:
-    """The first open-holdoff predecessor cannot steal or lose branch metadata."""
+    """A predecessor emitted with the holdoff open neither takes nor loses the metadata."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)
@@ -509,7 +514,7 @@ async def test_raw_wcs_predecessor_captures_without_prior_fetch_holdoff(
 async def test_first_pending_owner_consumes_registered_metadata_without_replay(
     dut: Any,
 ) -> None:
-    """A directly arriving owner does not leave an orphaned replay entry."""
+    """An owner on the first pending cycle consumes the metadata without saving a copy."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)

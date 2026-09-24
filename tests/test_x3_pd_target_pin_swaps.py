@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check the diagnostic pin helper and production single-placement boundary."""
+"""Test the diagnostic pin-swap helper and the place step's single placement."""
 
 import os
 from pathlib import Path
@@ -210,7 +210,13 @@ puts "PASS $scenario"
 def test_pin_refinement_modes_and_failure_boundaries(
     tmp_path: Path, scenario: str
 ) -> None:
-    """Only matched, measured non-regressing changes may keep a PASS audit."""
+    """Only a matched swap that leaves global WNS and WHS no worse keeps a PASS audit.
+
+    Auto mode skips a recipe mismatch, or a regression or failed swap that it
+    rolled back exactly. Strict-mode mismatches and regressions, failed
+    rollbacks, audit-write failures, and unexpected errors are fatal, and only
+    a PASS leaves an audit file.
+    """
     script = tmp_path / "model.tcl"
     script.write_text(TCL_MODEL)
     env = dict(
@@ -319,7 +325,15 @@ source $::env(HOOK_SOURCE)
 def test_production_places_once_and_never_invokes_retired_hooks(
     tmp_path: Path, mode: str | None, guided: bool
 ) -> None:
-    """Controls precede one place; zero scoring, reports and gate follow it."""
+    """The place step places once and runs no diagnostic helper.
+
+    Placement controls come first; zero-uncertainty scoring, checkpoints,
+    timing reports, and the gate follow in that order, and nothing after
+    placement edits cells, nets, or properties. A guided seed adds its
+    temporary path group before placement, removes it after, and reopens the
+    design once. Stale helper audits are deleted, and
+    FROST_X3_PD_TARGET_PIN_SWAPS has no effect.
+    """
     script = tmp_path / "hook.tcl"
     script.write_text(HOOK_MODEL)
     trace = tmp_path / "trace.txt"

@@ -14,8 +14,9 @@
 
 """Unit tests for the fp_add_shim module.
 
-Tests FP add/sub, compare, classify, sign-injection operations, busy
-signalling, and flush behavior through the shim interface.
+Tests FP add/sub, compare, min/max, classify, sign-injection, convert and
+move operations, busy signalling, and flush behavior through the shim
+interface.
 """
 
 import re
@@ -491,9 +492,10 @@ async def test_fmax_d_snan_after_clean_ops_sets_invalid(dut: Any) -> None:
 
 
 # ============================================================================
-# RV64 vectors (M3 rung 4): W-form result sign-extension (unsigned included),
-# 32-bit W saturation vs 64-bit L range, low-word operand pre-shaping,
-# FMV.X.D/FMV.D.X, and unboxed compare results.
+# RV64 vectors: W-form results sign-extend (unsigned ones too), W conversions
+# saturate at 32 bits while L conversions have the full 64-bit range, W-form
+# integer sources use only the low word, FMV.X.D and FMV.D.X move all 64 bits,
+# and compare results are not NaN-boxed.
 # ============================================================================
 MASK64 = 0xFFFF_FFFF_FFFF_FFFF
 

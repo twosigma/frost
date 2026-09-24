@@ -12,40 +12,26 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Constrained-random instruction testbench for the Frost CPU.
+"""Constrained-random instruction regression for the CPU reference harness.
 
-Each iteration generates a random RISC-V instruction, models its effect in
-software, and drives the encoded instruction into the DUT. Background monitors
-compare the DUT outputs against the modelled values as they emerge from the
-pipeline. A run covers thousands of instructions and ends by checking
-per-instruction coverage.
+Each iteration generates a random instruction, predicts its effect with the
+Python model, and drives it into cpu_tb. Background monitors compare the
+register files, the PC, and memory writes with the predicted values, and a run
+ends by checking per-instruction coverage. The integer tests draw from the
+operation tables in encoders/op_tables.py; the FP tests also mix in F and D
+operations. LR.W/SC.W, traps, and compressed instructions have their own
+directed suites (test_directed_atomics.py, test_directed_traps.py,
+test_compressed.py).
 
-Covered:
-    - All supported RISC-V instructions (100+ types across I, M, A, B-subset, Zicsr)
-    - Register file reads and writes
-    - Program counter updates (sequential, branch, jump)
-    - Memory loads and stores (byte, halfword, word)
-    - Pipeline behavior (stalls, flushes, hazards)
-    - Branch prediction and misprediction handling
+The register and PC monitors expect each result at a fixed offset from fetch,
+which the out-of-order core does not provide, so these tests (the cpu_random
+target) fail until they check results in commit order. See
+"CPU reference harness" in verif/README.md.
 
-Not covered:
-    - Instruction fetch (instructions driven directly from testbench)
-    - Instruction cache behavior
-    - Data cache behavior
-    - Multi-cycle memory latency
-    (See test_real_program.py for system integration tests.)
-
-Related Test Modules:
-    - test_directed_atomics.py: LR.W/SC.W atomic instruction tests
-    - test_directed_traps.py: ECALL, EBREAK, MRET, interrupt handling
-    - test_compressed.py: C extension compressed instruction tests
-    - test_real_program.py: Full system integration tests
-
-Entry Points:
-    - test_random_riscv_regression(): Default random test (16,000 instructions)
-    - test_random_riscv_regression_force_one_address(): Single address stress test
-    - Six FP variants (see "Floating-Point Test Wrappers" below): mixed
-      integer/floating-point runs covering the F and D extensions
+The testbench feeds instructions straight into cpu_tb, whose data memory is a
+fixed-latency BRAM, so instruction memory, the L1 and L2 caches, and variable
+memory latency are out of scope. test_real_program.py runs whole programs on
+the full system.
 """
 
 import cocotb
@@ -102,9 +88,9 @@ async def run_random_regression(
     ``enable_fp`` selects between integer-only and mixed integer/FP
     generation. After reset, monitors for the register files, the PC, and the
     memory interface run in the background. Each loop iteration generates one
-    instruction (a NOP while the model is flushing after a taken branch),
-    models its effect, queues the expected results for the monitors, and
-    drives the encoded instruction into the DUT. The run ends by checking
+    instruction (a NOP while the model is flushing after a taken branch or
+    jump), models its effect, queues the expected results for the monitors,
+    and drives the encoded instruction into the DUT. The run ends by checking
     per-instruction coverage, then draining the pipeline so the monitors see
     the last outputs.
 
@@ -136,7 +122,6 @@ async def run_random_regression(
 
     Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
-    # Reset before initializing the register files, or reset would clear them.
     # reset_dut returns a cycle count for CSR counter synchronization. The RTL
     # cycle counter is held at 0 during reset, so subtract the reset cycles.
     reset_cycle_count = await dut_if.reset_dut(config.reset_cycles)
@@ -189,9 +174,9 @@ async def run_random_regression(
         # Step 1: Generate Instruction
         # ====================================================================
         # After a taken branch or jump the model feeds NOPs, standing in for
-        # the instructions the CPU fetched speculatively and discarded. All
-        # control flow (JAL, JALR, branches) resolves in EX, so the flush
-        # lasts 3 cycles.
+        # the instructions the CPU fetched speculatively and discarded. The
+        # model resolves all control flow (JAL, JALR, branches) in EX, so the
+        # flush lasts 3 cycles.
         if state.is_in_flush:
             operation, rd, rs1, rs2, imm = handle_branch_flush(state, operation)
             offset = None
@@ -339,8 +324,8 @@ async def run_random_regression(
         # ====================================================================
         # Step 6: Advance Software State for Next Cycle
         # ====================================================================
-        # Move the model PC through the pipeline stages. All control flow
-        # (JAL, JALR, branches) resolves in EX with the same timing.
+        # Move the model PC through the pipeline stages. The model resolves
+        # all control flow (JAL, JALR, branches) in EX with the same timing.
         pc_update = CPUModel.calculate_internal_pc_update(
             state,
             operation,
@@ -370,7 +355,8 @@ async def run_random_regression(
         )
     cocotb.log.info(stats.report())
 
-    # Every instruction type must execute more than min_coverage_count times.
+    # Every instruction type generated must execute more than
+    # min_coverage_count times.
     coverage_issues = stats.check_coverage(config.min_coverage_count)
     if coverage_issues:
         error_message = "Coverage verification failed:\n" + "\n".join(
@@ -390,7 +376,7 @@ async def run_random_regression(
 
 @cocotb.test()
 async def test_random_riscv_regression(dut: Any) -> None:
-    """Random RISC-V regression: ALU + branches + jumps + loads/stores."""
+    """Random RISC-V regression with integer instructions only."""
     await run_random_regression(dut=dut)
 
 

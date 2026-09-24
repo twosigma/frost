@@ -16,14 +16,17 @@
 
 Bit patterns are converted to and from Python floats with ``struct``. Both
 precisions cover arithmetic (add, sub, mul, div, sqrt, fma), sign injection,
-min/max, comparison, float/int conversion, classification and bit moves.
-The fused multiply-adds are computed exactly and rounded once.
+min/max, comparison, float/int conversion and classification; the bit moves
+(FMV.X.W, FMV.W.X) are single precision only. Each fused multiply-add result
+is the exact value rounded once.
 
 NaN results are the canonical quiet NaN (0x7FC00000 single,
-0x7FF8000000000000 double). Infinities and both signed zeros follow IEEE 754.
+0x7FF8000000000000 double); sign injection, the bit moves and the FP loads
+do not canonicalize. Infinities and both signed zeros follow IEEE 754.
 
-The model rounds to nearest even only, while the RTL follows the dynamic
-rounding mode. Random-operand tests treat the difference as negligible.
+The model rounds to nearest even only, so it matches the RTL while the
+effective rounding mode is RNE. That is the default: the instruction encoders
+use dynamic rounding (rm=7), and frm resets to RNE.
 """
 
 from __future__ import annotations
@@ -438,7 +441,7 @@ def float_to_bits(f: float) -> int:
     try:
         packed = struct.pack(">f", f)
     except OverflowError:
-        # Value too large for float32: saturate to signed infinity.
+        # Too large for float32: RNE overflows to signed infinity.
         return FP_NEG_INF if f < 0.0 else FP_POS_INF
     return struct.unpack(">I", packed)[0]
 
@@ -640,7 +643,7 @@ def fnmadd_s(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
         is_inf(rs1_bits) and is_zero(rs2_bits)
     ):
         return FP_CANONICAL_NAN
-    # -inf + (-inf) = NaN
+    # -inf - (-inf) = NaN
     if is_inf(rs1_bits) or is_inf(rs2_bits):
         prod_sign = ((rs1_bits >> 31) ^ (rs2_bits >> 31)) & 1
         negated_prod_sign = 1 - prod_sign  # Negated product sign
@@ -881,7 +884,7 @@ def fclass_s(rs1_bits: int, _unused: int = 0) -> int:
             # Infinity
             return 1 if sign else 0x80  # bit 0 or bit 7
         else:
-            # NaN - check if signaling (bit 22 = 0) or quiet (bit 22 = 1)
+            # NaN: bit 22 set is quiet, clear is signaling
             if mant & 0x00400000:
                 return 0x200  # bit 9: quiet NaN
             else:
@@ -1175,14 +1178,13 @@ def fclass_d(rs1_bits: int, _unused: int = 0) -> int:
 
 
 # ============================================================================
-# FLW/FLD: the loads read the same memory as LW/LD, so they defer to the
-# integer model instead of the FPU. op_tables uses fld; flw is kept for
-# symmetry.
+# FP loads read the same memory as LW/LD, so they reuse the integer load
+# models. op_tables uses fld; flw is kept for symmetry.
 # ============================================================================
 
 
 def flw(memory_model: MemoryModel, address: int) -> int:
-    """FLW: Load word from memory to FP register (uses same memory as LW)."""
+    """FLW: Load a word as LW does; box32() the result for the FP register."""
     from models.alu_model import lw
 
     return lw(memory_model, address)

@@ -75,8 +75,9 @@ FP_FLAG_NV = 0x10
 FP_FLAG_DZ = 0x08
 FP_FLAG_NX = 0x01
 
-# Unit latency plus the shim's result register: the first cycle after issue on
-# which o_fu_complete can be valid.
+# First cycle o_fu_complete is valid, counted in rising edges after the edge
+# that samples the issue. The unit pulses o_valid one edge earlier, and the
+# result register presents the result from the next edge on.
 SP_VISIBLE_CYCLES = 36
 DP_VISIBLE_CYCLES = 65
 
@@ -568,7 +569,7 @@ async def test_partial_flush_inflight_older(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_held_result(dut: Any) -> None:
-    """A held result younger than the boundary is suppressed and drained."""
+    """A partial flush keeps an older held result and suppresses and clears a younger one."""
     iface = await setup(dut)
 
     # Older tag: survives the flush and is still presented.
@@ -639,7 +640,7 @@ async def test_full_flush_held_result(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 17: The credit gate refuses nothing once the result is taken
+# Test 17: The credit returns as soon as the result is taken
 # ============================================================================
 @cocotb.test()
 async def test_credit_recovers_after_accept(dut: Any) -> None:

@@ -27,33 +27,18 @@ Test cases:
     4. Back-to-back LR.W/SC.W with no instruction between them
     5. LR.W + intervening NOPs + SC.W: the reservation persists
 
-OOO retirement:
-    On the cpu_ooo core an instruction's architectural effects (regfile write,
-    store to memory) land at ROB commit, a variable number of cycles after the
-    cpu_tb harness feeds it. LR/SC in particular are serialized through the
-    memory RS/LSQ. Register readbacks therefore wait for the instruction's
-    commit on the registered ROB commit bus (wait_for_int_reg_commit) and
-    store visibility waits for the monitor-checked memory write
-    (wait_for_memory_writes) instead of counting a fixed in-order pipeline
-    depth.
+LR.W loads a word and reserves its address. SC.W stores rs2 and writes 0 to rd
+only if the reservation covers its address; otherwise it writes 1 and does
+not store. Either way it clears the reservation.
 
-LR/SC protocol:
-    ┌────────────────────────────────────────────────────────────────┐
-    │ LR.W rd, (rs1)                                                 │
-    │   - Load word from memory[rs1] into rd                         │
-    │   - Set reservation register to rs1 address                    │
-    │                                                                │
-    │ SC.W rd, rs2, (rs1)                                            │
-    │   - If reservation matches rs1 address:                        │
-    │       - Store rs2 to memory[rs1]                               │
-    │       - Write 0 to rd (success)                                │
-    │   - Else:                                                      │
-    │       - Do not store                                           │
-    │       - Write 1 to rd (failure)                                │
-    │   - Clear reservation in either case                           │
-    └────────────────────────────────────────────────────────────────┘
+The core writes an instruction's destination register at ROB commit and its
+store after commit, both a variable number of cycles after the harness feeds
+it. LR and SC resolve only at the ROB head. Register checks therefore wait for
+the commit on the registered ROB commit bus (wait_for_int_reg_commit), and
+store checks wait for the memory monitor to see the write
+(wait_for_memory_writes).
 
-Usage: ``cd tests && ./test_run_cocotb.py directed_atomics``.
+Usage: ``./scripts/frost.py cocotb directed_atomics``.
 """
 
 import cocotb
@@ -115,8 +100,10 @@ async def execute_lr_sc_instruction(
         rd: Destination register
         rs1: Address register
         rs2: Data register (for SC.W, ignored for LR.W)
-        expected_rd_value: Expected value written to rd
-        expected_sc_success: For SC.W, whether it should succeed (None for LR.W)
+        expected_rd_value: Value the LR.W loads into rd (ignored for SC.W,
+            whose rd value comes from the model's reservation check)
+        expected_sc_success: Expected SC.W outcome (None for LR.W). Not
+            checked here; the caller asserts on rd.
     """
     from encoders.op_tables import AMO_LR_SC
 
@@ -167,7 +154,7 @@ async def execute_lr_sc_instruction(
                 f"FAILED (rd=1, no write)"
             )
 
-        # Track SC result for verification
+        # Record the SC outcome in TestState, as CPUModel does.
         state.last_sc_succeeded = success
         state.last_sc_address = address
         state.last_sc_data = state.register_file_previous[rs2]
@@ -250,18 +237,14 @@ async def execute_store(
 
 
 async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) -> None:
-    """Directed test for LR.W (load-reserved) and SC.W (store-conditional).
-
-    LR.W sets a reservation on a memory address and SC.W stores only if that
-    reservation is still valid. The five cases are listed in the module
-    docstring.
+    """Run the directed LR.W/SC.W cases listed in the module docstring.
 
     Args:
         dut: Device under test (cocotb SimHandle)
         config: Test configuration. If None, uses default configuration.
     """
     if config is None:
-        config = TestConfig(num_loops=100)  # Shorter test for directed cases
+        config = TestConfig(num_loops=100)
 
     # ========================================================================
     # Initialization Phase
@@ -314,14 +297,14 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         )
     )
 
-    # Initialize register file history used by the monitor alignment model.
+    # The execute helpers read operand values from register_file_previous.
     state.register_file_previous = state.register_file_current.copy()
 
     # ========================================================================
-    # Warmup: Let pipeline drain and sync expected queues
+    # Warmup: Let pipeline stabilize
     # ========================================================================
     cocotb.log.info("=== Warming up pipeline ===")
-    for i in range(8):  # More than pipeline depth to ensure sync
+    for i in range(8):
         cocotb.log.info(
             f"Warmup NOP {i}: queue_len={len(state.register_file_current_expected_queue)}"
         )
@@ -530,7 +513,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     assert x14_value == 0, (
         f"SC.W Test Case 4 failed: x14 = {x14_value}, expected 0 (success)"
     )
-    cocotb.log.info(f"SC.W x14 = {x14_value} (back-to-back success via forwarding)")
+    cocotb.log.info(f"SC.W x14 = {x14_value} (back-to-back success)")
 
     # Wait for the successful SC.W's store to test_address_2 to drain.
     await wait_for_memory_writes(

@@ -72,7 +72,7 @@ def is_aligned(address: int, alignment: int) -> bool:
 
 
 def ensure_aligned(address: int, alignment: int, operation: str) -> int:
-    """Ensure address is aligned, raise AlignmentError if not.
+    """Return address if it is aligned; raise AlignmentError otherwise.
 
     Args:
         address: Address to validate
@@ -172,7 +172,7 @@ def calculate_byte_mask_for_store(operation: str, beat_offset: int) -> int:
 
 
 def replicate_store_data_for_beat(operation: str, value: int) -> int:
-    """Position store data on the beat by replication (bus contract).
+    """Replicate store data across the 64-bit beat, per the data-tier bus contract.
 
     The RTL replicates sub-beat store data across all 64 bits and lets the byte
     strobes pick the addressed lanes: {8{byte}}, {4{half}}, {2{word}}, dword
@@ -251,8 +251,7 @@ def constrain_address_to_range(
 ) -> int:
     """Constrain address to valid range and alignment.
 
-    Used by random address generation to keep an address inside the allocated
-    memory space and on the alignment the operation requires.
+    The address wraps modulo ``max_address``, then aligns down.
 
     Args:
         address: Original address
@@ -290,15 +289,15 @@ def generate_aligned_immediate(
         target_alignment: Required alignment for the final address
         immediate_min: Minimum immediate value (default: -2048 for 12-bit signed)
         immediate_max: Maximum immediate value (default: 2047 for 12-bit signed)
-        memory_size_constraint: If provided, ensures (base + imm) falls within
-                               allocated memory space [0, memory_size)
+        memory_size_constraint: If provided, (base + imm) must also fall in
+                               [0, memory_size_constraint)
 
     Returns:
         Immediate value that, when added to base, produces aligned address
 
     Raises:
-        ValueError: If the immediate range contains no value satisfying the
-            alignment and optional memory-size constraint
+        ValueError: If an argument is invalid, or no immediate in the range
+            meets the alignment and optional memory-size constraint
 
     Examples:
         >>> base = 0x1001
@@ -327,8 +326,9 @@ def generate_aligned_immediate(
             )
         return random.choice(valid_immediates)
 
-    # Rejection sampling is cheaper than enumerating every valid immediate.
-    max_attempts = 1000  # Safety limit to prevent infinite loops
+    # Rejection sampling is cheaper than enumerating every valid immediate;
+    # the enumeration below runs only if every attempt misses.
+    max_attempts = 1000
 
     for _ in range(max_attempts):
         immediate_value = random.randint(immediate_min, immediate_max)

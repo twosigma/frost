@@ -15,8 +15,9 @@
 """Cocotb block, directed CPU, and compiled-program tests.
 
 Use targets in ``tests/test_run_cocotb.py`` through ``scripts/frost.py cocotb``.
-The random CPU and directed-multicycle harnesses need an OOO scoreboard port;
-see ``verif/README.md`` for supported targets and shared helpers.
+The ``cpu_random`` and ``directed_multicycle`` targets fail until they check
+results in commit order; see ``verif/README.md`` for target status and shared
+helpers.
 """
 
 from cocotb_tests.test_common import TestConfig

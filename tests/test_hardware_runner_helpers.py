@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Fast regression tests for hardware-runner policy helpers."""
+"""Tests for the CoreMark-PRO hardware timeout minimums and the sweep that uses them."""
 
 import importlib.util
 import os
@@ -53,17 +53,17 @@ sweep_coremark_pro: Any = _load_sweep_coremark_pro()
 
 
 def test_x3_zip_timeout_honors_workload_floor() -> None:
-    """Official ZIP setup must not be mistaken for a 300-second hang."""
+    """On x3, ZIP's timeout rises to the 600-second minimum that covers its setup."""
     assert coremark_pro_hardware_timeout("coremark_pro_zip", "x3", 300.0) == 600.0
 
 
 def test_x3_zip_timeout_keeps_larger_base() -> None:
-    """A caller's larger diagnostic budget must remain effective."""
+    """A base timeout above the minimum is kept."""
     assert coremark_pro_hardware_timeout("coremark_pro_zip", "x3", 900.0) == 900.0
 
 
 def test_timeout_floor_is_workload_and_board_specific() -> None:
-    """Ordinary workloads and uncalibrated boards keep the common budget."""
+    """Workloads and boards with no listed minimum keep the base timeout."""
     assert coremark_pro_hardware_timeout("coremark_pro_core", "x3", 17.0) == 17.0
     assert (
         coremark_pro_hardware_timeout("coremark_pro_zip", "future_board", 17.0) == 17.0
@@ -73,7 +73,7 @@ def test_timeout_floor_is_workload_and_board_specific() -> None:
 def test_sweep_applies_timeout_floor_without_leaking_to_next_workload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The sweep must pass each workload its independently resolved timeout."""
+    """Each workload in the sweep gets its own timeout; ZIP's minimum stays with ZIP."""
     observed_timeouts: list[tuple[str, float]] = []
 
     def fake_run_one(

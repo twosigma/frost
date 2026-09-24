@@ -14,12 +14,10 @@
 
 """Unit tests for cdc_gray_count (hw/rtl/lib/cdc/cdc_gray_count.sv).
 
-Events pulse in a 161 MHz source domain, the total is read in a 300 MHz
-destination domain. Checked: bursts of consecutive events, sparse events,
-more than 2^WIDTH events (the source counter wraps, the total does not),
-a source reset with the rebase held (no invented events, the total keeps
-its value), and a source reset without rebase (the documented failure: the
-total jumps by the wrap), so the rebase contract is shown to matter.
+Events pulse in a 161 MHz source domain and the total is read in a 300 MHz
+destination domain. Every event must count exactly once, across source
+counter wraps and across a source reset while the rebase is held. A source
+reset without the rebase must show the documented wrap error.
 """
 
 import random
@@ -115,7 +113,7 @@ async def test_source_reset_with_rebase_keeps_total(dut: Any) -> None:
 
 @cocotb.test()
 async def test_source_reset_without_rebase_is_wrong(dut: Any) -> None:
-    """Without the rebase a source reset reads as a wrap: the contract's reason."""
+    """Without the rebase, a source reset reads as a counter wrap."""
     await _setup(dut)
     await _events(dut, [1] * 100)
     before = await _settle(dut)

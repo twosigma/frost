@@ -123,7 +123,11 @@ class SQModel:
 
     @property
     def full(self) -> bool:
-        """Window-based full (matches the pure-tail-allocation RTL)."""
+        """Return whether the ring window is full, holes included.
+
+        The RTL allocates only at the tail, so a hole left by a discarded SC
+        holds its capacity until the head passes it.
+        """
         return self.window_occupancy >= self.depth
 
     @property

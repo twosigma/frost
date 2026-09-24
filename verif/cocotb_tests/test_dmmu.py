@@ -47,7 +47,7 @@ class Leaf:
     fault: int = NONE
 
     def packed(self) -> int:
-        """Encode the public riscv_pkg::ptw_resp_t seam."""
+        """Pack the leaf as a riscv_pkg::ptw_resp_t."""
         fields = (
             (self.fault, 2),
             (self.vpn, 27),
@@ -212,7 +212,11 @@ def _check(dut: Any, op: Op, leaf: Leaf) -> None:
 
 @cocotb.test()
 async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
-    """Both sources preserve fault priority, full fault VA, PA, and MMIO."""
+    """DTLB hits and walk responses match the reference fault, address, and MMIO.
+
+    The reference applies the architectural fault priority, and a faulting op
+    must return its full VA (for xtval) in place of the PA.
+    """
     await _setup(dut)
     base_op = Op()
     base_leaf = Leaf(vpn=base_op.va >> 12)

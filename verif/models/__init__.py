@@ -14,8 +14,9 @@
 
 """Software reference models for integer, branch, FP, and memory behavior.
 
-ALU helpers mask results and shifts to XLEN. MemoryModel stores little-endian
-bytes; its monitor checks DUT stores without driving memory responses.
+ALU helpers wrap results to XLEN and use the low 6 bits of a shift amount (5 for
+the W forms). MemoryModel stores little-endian bytes; its monitor checks DUT
+stores without driving memory responses.
 """
 
 from models.alu_model import add, sub, and_rv, or_rv, xor

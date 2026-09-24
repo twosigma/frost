@@ -19,16 +19,16 @@ DMA port with a chosen number in flight and reports, per scenario and depth,
 the cycles per line, the mean and maximum request latency, and the average
 residence of a request in each sequencer phase (ADMIT, PROBE, PROBE_WAIT,
 INVAL, ISSUE, RESP). The registry builds it once per candidate lock count
-(`dma_envelope_lock{3,4,6,8}`, -GNUM_DMA_LOCK) so the sweep of producer depth
-against lock count that decides the NIC's drain envelope is one table per
-build. Scenarios: full-line writes to absent lines, to lines clean or dirty
-in the L1D, to lines resident in the L2 only, partial-strobe writes to absent
-lines (a fetch from memory at the L2), reads of absent and of dirty lines,
-writes under a data-side miss flood, and a stream larger than the L2.
+(`dma_envelope_lock<N>`, -GNUM_DMA_LOCK) and once more for three locks at the
+full-system DDR model latency (`dma_envelope_lock3_mem30`); each build
+measures every scenario at every producer depth. Scenarios: full-line writes
+to absent lines, to lines clean or dirty in the L1D, to lines resident in the
+L2 only, partial-strobe writes to absent lines (a fetch from memory at the
+L2), reads of absent lines and of lines dirty in the L1D, writes under a
+data-side miss flood, and a stream larger than the L2.
 
-The bench plays the load queue with a one-cycle admit and invalidate answer
-(the core's pipelined port answers in that band). Results also land in
-`results/dma_envelope_lock<N>.json` for aggregation.
+The bench plays the load queue with a one-cycle admit and invalidation delay.
+Results also land in `results/dma_envelope_lock<N>.json`.
 """
 
 import json

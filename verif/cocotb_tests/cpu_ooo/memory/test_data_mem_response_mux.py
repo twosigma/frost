@@ -12,13 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Exact-cycle payload checks at the real router's fast/cached response seam.
+"""Cycle-exact tests of data_mem_response_mux feeding a real data_mem_request_router.
 
-The HDL reference keeps the original procedural MMIO mux and separate cached
-payload. All 25 router outputs are compared even in invalid cycles, before and
-after every edge. Independent expectations check response ownership/data, ids,
-and destructive device pulses. The same tests run portable and LUT5 builds;
-standalone 32/64-bit instances cover all 32 primitive truth-table rows.
+The testbench runs two routers side by side. The reference router gets the plain
+selection (MMIO data while MMIO is valid, otherwise BRAM data) and the cached data
+separately; the other gets the mux's merged payload on both data inputs. Every
+router output is compared before and after every edge, valid or not. Separate
+checks cover the response port, ids, and destructive device pulses. The same tests
+run on the portable and Xilinx LUT5 builds, and standalone 32- and 64-bit
+instances cover all 32 LUT truth-table rows.
 """
 
 import random
@@ -158,7 +160,7 @@ class Seam:
 
 @cocotb.test()
 async def test_helper_truth_table_and_walking_bits(dut: Any) -> None:
-    """Every LUT5 row and every data bit agrees at widths 32 and 64."""
+    """All 32 input combinations and every data bit agree at widths 32 and 64."""
     seam = Seam(dut)
     await seam.reset()
     for row in range(32):
@@ -218,7 +220,7 @@ async def test_fast_overlap_and_stale_mmio_cached_payload(dut: Any) -> None:
     out = await seam.edge()
     assert out["cached_read_ready"] == out["lq_mem_read_is_cached"] == 1
     assert out["lq_mem_read_data"] == cached
-    # Invalid response payloads also retain the old combinational behavior.
+    # An invalid cached response still passes its data and id through.
     seam.drive(cached_read_valid=0, cached_read_id=0)
     out = await seam.sample()
     assert out["lq_mem_read_valid"] == 0
@@ -228,7 +230,7 @@ async def test_fast_overlap_and_stale_mmio_cached_payload(dut: Any) -> None:
 
 @cocotb.test()
 async def test_device_drain_stalls_flush_reset_and_side_effects(dut: Any) -> None:
-    """The new data cone preserves staging, arming, drain and destructive pulses."""
+    """Device parking, drain, flush, reset, and destructive pulses match the reference."""
     seam = Seam(dut)
     await seam.reset()
     seam.drive(
@@ -278,7 +280,7 @@ async def test_device_drain_stalls_flush_reset_and_side_effects(dut: Any) -> Non
     for _ in range(4):
         out = await seam.edge()
         assert out["mmio_read_pulse"] == out["mmio_fifo1_read_pulse"] == 0
-    # Synchronous reset clears fast ownership, but does not newly mask cached valid.
+    # Synchronous reset clears the fast response but does not mask a valid cached one.
     seam.drive(lq_mem_read_en=1, lq_mem_addr_valid=1, lq_mem_read_addr=FAST_ADDR)
     assert (await seam.edge())["cached_read_ready"] == 0
     seam.drive(lq_mem_read_en=0, rst=1)
@@ -290,7 +292,7 @@ async def test_device_drain_stalls_flush_reset_and_side_effects(dut: Any) -> Non
 
 @cocotb.test()
 async def test_parked_request_identity_and_write_arbitration(dut: Any) -> None:
-    """Blocking writes retain the queued address/id and every port sideband."""
+    """A load parked behind SQ, AMO, and in-flight cached writes keeps its address and id."""
     seam = Seam(dut)
     await seam.reset()
     seam.drive(

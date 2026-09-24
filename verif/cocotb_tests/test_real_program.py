@@ -224,16 +224,16 @@ MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
 NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 
 # CoreMark-style benchmarks run the real benchmark body even with ITERATIONS=1.
-# The memory-heavy list and matrix phases exceed the generic program budget on
-# the OOO core, so they get a larger default with an env override.
+# The memory-heavy list and matrix phases exceed the generic program budget,
+# so they get a larger default with an env override.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
-# nic_loopback (and nic_echo): bring-ups waiting out the PCS's BER window
-# before CARRIER (about 35k cycles at the simulated clock ratio), frames
-# checked or copied byte by byte, and a RESET with traffic in flight.
+# nic_loopback and nic_echo share this budget. Each bring-up waits out the
+# PCS's BER window before CARRIER (about 35k cycles at the simulated clock
+# ratio), frames are checked or copied byte by byte, and nic_loopback also
+# resets the NIC with traffic in flight.
 NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 1500000))
 
-# sprintf_test runs ~200 test cases with heavy FP formatting, so it needs
-# more than the generic budget.
+# sprintf_test's FP formatting cases need more than the generic budget.
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
 # Cover the complete lookup/cache-churn and store-forwarding sweep.
@@ -360,10 +360,9 @@ async def ddr_write_watch(dut: Any) -> None:
     model addresses: absolute 0x8xxxxxxx minus 0x80000000). Each AW address is
     queued on the AW handshake and paired with the next W beat; in-window beats
     log sim time, the line address (relative and absolute), the strobe mask,
-    and the full line data. Instrumentation only, built for the rv64 Linux
-    top-of-RAM corruption hunt: the write that mangles the unflattened device
-    tree names itself here, and the retire trace at the same timestamp names
-    the culprit.
+    and the full line data. Debug instrumentation only: match a logged
+    timestamp against a retire trace to see what the core was running when
+    the line reached DDR.
     """
     lo = int(os.environ.get("FROST_DDR_WATCH_LO", "0"), 16)
     hi = int(os.environ.get("FROST_DDR_WATCH_HI", "0"), 16)
@@ -408,9 +407,9 @@ async def l0_hit_watch(dut: Any) -> None:
     """Log every L0 fast-path hit served inside a watched absolute window.
 
     Enabled by FROST_L0_WATCH_LO/FROST_L0_WATCH_HI (hex, absolute addresses).
-    Pairs with ddr_write_watch: joining the two streams offline reconstructs
-    the window's ground truth over time and exposes any hit that served stale
-    data (the rv64 device-tree corruption signature).
+    Pairs with ddr_write_watch: joining the two logs offline tracks the
+    window's DDR contents over time and can expose a hit that returned stale
+    data.
     """
     lo = int(os.environ.get("FROST_L0_WATCH_LO", "0"), 16)
     hi = int(os.environ.get("FROST_L0_WATCH_HI", "0"), 16)
@@ -441,19 +440,18 @@ async def l0_hit_watch(dut: Any) -> None:
 
 
 async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
-    """Observe a trap/MRET deadlock wedge by sampling ground-truth signals.
+    """Sample trap, MRET, flush, IRQ, and store-drain state to debug a hang.
 
-    Enabled with FROST_WEDGE_MONITOR=1. Samples the trap/MRET/flush/IRQ/store-
-    drain state every clock and emits an aggregated snapshot every
-    FROST_WEDGE_DUMP_INTERVAL cycles (default 2000). It also raises a one-shot
-    "STALL DETECTED" banner once UART output stops advancing for
-    FROST_WEDGE_STALL_CYCLES cycles (default 20000) and then emits up to
-    FROST_WEDGE_POST_STALL_DUMPS (default 16) full snapshots before it stops
-    logging (the simulation keeps running to the cycle cap).
+    Enabled with FROST_WEDGE_MONITOR=1. Samples the state every clock and
+    emits an aggregated snapshot every FROST_WEDGE_DUMP_INTERVAL cycles
+    (default 2000). It also logs a one-shot "STALL DETECTED" banner once UART
+    output stops advancing for FROST_WEDGE_STALL_CYCLES cycles (default 20000)
+    and then emits up to FROST_WEDGE_POST_STALL_DUMPS (default 16) snapshots
+    before it stops logging (the simulation keeps running to the cycle cap).
 
-    Every tap is None-safe: signals that do not resolve are reported once in the
-    "missing_taps" list and counted as 0. The monitor drives no signals and
-    changes no behaviour.
+    Taps whose signals do not resolve read as 0 (1-bit) or print as None
+    (multi-bit), and the armed log line names the missing bool_sig and val_sig
+    taps. The monitor drives no signals.
     """
     dump_interval = int(os.environ.get("FROST_WEDGE_DUMP_INTERVAL", "2000"))
     stall_cycles = int(os.environ.get("FROST_WEDGE_STALL_CYCLES", "20000"))
@@ -492,8 +490,8 @@ async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
         "mtimecmp_write_pulse": g(f"{mem}.mtimecmp_write_pulse"),
         "cached_write_inflight": g(f"{mem}.data_memory_cached_write_inflight"),
     }
-    # Load-address taps: prove which address the spin-loop load targets
-    # (decisive for distinguishing a clobbered base register from a lost store).
+    # Load-address taps: show which addresses the core reads while it spins,
+    # which separates a clobbered base register from a lost store.
     mem_addr_sig = g(f"{cpu}.o_data_mem_addr")
     mem_rd_en_sig = g(f"{cpu}.o_data_mem_read_enable")
     mem_cached_rd_en_sig = g(f"{cpu}.o_data_mem_cached_read_enable")
@@ -1000,11 +998,11 @@ class NicEchoPeer:
     scrambler state for the run) into the raw RX interface on the RX MAC
     clock, decodes the raw TX stream on the TX MAC clock with the net10g
     software receiver (restarted at every gap in valid: the PCS TX emits
-    continuously once out of reset),
-    and checks that every frame the app should echo comes back intact. The
-    plan is fixed and known to the app (sw/apps/nic_echo/main.c): 24 frames
-    that land in the ring, two of them longer than the buffers (truncated,
-    not echoed), plus two frames for another station (filtered).
+    continuously once out of reset), and checks that every frame the app
+    should echo comes back intact. The plan is fixed and known to the app
+    (sw/apps/nic_echo/main.c): 24 frames that land in the ring, two of them
+    longer than the buffers (truncated, not echoed), plus two frames for
+    another station (filtered).
     """
 
     STATION = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
@@ -1427,12 +1425,13 @@ async def run_until_complete(
     )
     coremark_matrix_expected: dict[int, tuple[int, int]] = {}
     coremark_symbol_ranges: dict[str, tuple[int, int]] = {}
-    # core_bench_matrix, not matrix_test: the tuned coremark build raises GCC's
-    # auto-inline budget (sw/apps/coremark/Makefile), so matrix_test -- like
-    # core_state_transition and cmp_complex -- no longer exists as a symbol and a
-    # default naming it would silently disable these opt-in checks. The symbol
-    # range list below still asks for the inlined names so an untuned A/B build
-    # (APP_TUNE_FLAGS=) resolves them; missing names are simply absent.
+    # These opt-in checks key on a symbol, and one missing from the image
+    # disables them silently. The raised auto-inline budget
+    # (sw/apps/coremark/Makefile) inlines matrix_test, core_state_transition,
+    # and cmp_complex, and the default LTO build inlines core_bench_matrix as
+    # well, so use an untuned build (APP_TUNE_FLAGS=) or override the symbol.
+    # The range list below also asks for the inlined names; missing names are
+    # skipped.
     coremark_if_check_symbol = os.environ.get(
         "FROST_COREMARK_IF_CHECK_SYMBOL", "core_bench_matrix"
     )
@@ -3792,8 +3791,8 @@ async def test_real_program(dut: Any) -> None:
     elif app_name == "mem_divergence_probe":
         max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
     elif app_name == "linux_irq_active_ddr_test":
-        # 72 swept ticks with 30k-iteration sentinel spin-waits: ~510k cycles
-        # at rv64, just over the generic default.
+        # 72 timer ticks and the 30k-iteration sentinel spin-waits run just
+        # past the generic budget.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
     else:
         max_cycles = MAX_CYCLES

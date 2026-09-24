@@ -12,7 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""L0 capacity, replacement, data and three-port invalidation scoreboard."""
+"""Unit tests for the L0 load cache (lq_l0_cache).
+
+A Python model of the direct-mapped array checks every lookup: capacity,
+replacement, fill data, MMIO misses, the two per-address invalidation ports,
+the DMA line port, same-cycle hit suppression, and flush.
+"""
 
 import os
 import random
@@ -25,7 +30,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 @cocotb.test()
 async def test_capacity_and_coherence(dut: Any) -> None:
-    """Exercise every index, then arbitrary overlapping fills and invalidations."""
+    """Fill and read back every index, clear each DMA line, then run random traffic."""
     depth = int(os.environ["FROST_TEST_L0_DEPTH"])
     rng = random.Random(0xCA_C4E)
     Clock(dut.i_clk, 10, unit="ns").start()
@@ -99,14 +104,16 @@ async def test_capacity_and_coherence(dut: Any) -> None:
                         del entries[index]
         await FallingEdge(dut.i_clk)
 
-    # A 256-entry elaboration must retain both halves, not alias bit 10.
+    # No two indexes may alias. At 256 entries this checks that address bit 10,
+    # the top index bit, keeps the two halves apart.
     for index in range(depth):
         await cycle(
             0x8000_0000 + index * 8, (0x8000_0000 + index * 8, rng.getrandbits(64))
         )
     for index in range(depth):
         await cycle(0x8000_0000 + index * 8)
-    # All four dwords of a DMA line, including the top index group, die at once.
+    # A DMA line invalidation clears all four dwords of the line, including the
+    # top index group, and wins over a same-cycle fill into the line.
     for index in range(0, depth, 4):
         address = 0x8000_0000 + index * 8
         await cycle(address, (address + 24, rng.getrandbits(64)), line=address)

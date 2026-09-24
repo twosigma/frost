@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Type aliases and ``NewType`` wrappers used by verification code."""
+"""``NewType`` wrappers for integer quantities in verification code."""
 
 from typing import NewType
 
@@ -21,17 +21,17 @@ Address = NewType("Address", int)
 """32-bit memory address (0 to 2^32-1)."""
 
 ByteOffset = NewType("ByteOffset", int)
-"""Byte offset within a word (0-3)."""
+"""Byte offset within an aligned 64-bit data beat (0-7)."""
 
 ByteMask = NewType("ByteMask", int)
-"""4-bit byte enable mask (0b0000 to 0b1111)."""
+"""Byte-lane mask for a 64-bit data beat (0x00 to 0xFF)."""
 
 # Register-related types
 RegisterIndex = NewType("RegisterIndex", int)
 """RISC-V register index (0-31, where 0 is hardwired to zero)."""
 
 RegisterValue = NewType("RegisterValue", int)
-"""32-bit register value."""
+"""XLEN-bit (64-bit) register value."""
 
 # Instruction-related types
 Instruction = NewType("Instruction", int)
@@ -44,7 +44,7 @@ Offset = NewType("Offset", int)
 """Branch or jump offset."""
 
 ProgramCounter = NewType("ProgramCounter", int)
-"""Program counter value (32-bit address)."""
+"""Program counter value (XLEN bits)."""
 
 # Cycle counter
 CycleCount = NewType("CycleCount", int)

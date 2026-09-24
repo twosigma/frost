@@ -18,9 +18,9 @@ Each monitor is a coroutine running in the background. When the DUT asserts the
 valid signal the monitor watches, it pops the head of its expected queue, reads
 the actual value out of the DUT, and raises AssertionError if the two differ.
 
-    - regfile_monitor: integer register file writes (x1-x31, excluding x0)
-    - fp_regfile_monitor: FP register file writes (f0-f31, all writeable)
-    - pc_monitor: program counter updates
+    - regfile_monitor: integer register file snapshot, x1-x31
+    - fp_regfile_monitor: FP register file snapshot, f0-f31
+    - pc_monitor: program counter
 
 Memory writes are checked by ``MemoryModel.driver_and_monitor()``, which
 compares writes with the expected queues but drives nothing back to the CPU.
@@ -93,7 +93,7 @@ class Monitor[T](ABC):
                 error = self.compare(actual, expected)
                 if error:
                     raise AssertionError(
-                        f"{self.name} at cycle {self.cycle}: {error} "
+                        f"{self.name} after {self.cycle} matching checks: {error} "
                         f"with {len(self.expected_queue)} expected values remaining"
                     )
                 self.cycle += 1
@@ -208,7 +208,7 @@ class FPRegisterFileMonitor(Monitor[list[int]]):
 
     def compare(self, actual: list[int], expected: list[int]) -> str | None:
         """Compare actual and expected FP register file states."""
-        for reg in range(NUM_REGISTERS):  # Start from f0, not f1
+        for reg in range(NUM_REGISTERS):
             hw_val = actual[reg]
             sw_val = expected[reg] & MASK64
             if hw_val != sw_val:
@@ -216,7 +216,7 @@ class FPRegisterFileMonitor(Monitor[list[int]]):
         return None
 
 
-# Standalone functions for backward compatibility
+# Coroutine entry points; tests start them with cocotb.start_soon().
 async def regfile_monitor(
     dut: Any,
     expected_queue: list[list[int]],
@@ -255,9 +255,8 @@ async def fp_regfile_monitor(
 ) -> None:
     """Monitor and validate FP register file values written by the DUT.
 
-    Compares the 32 F-extension registers (f0-f31) against the software
-    model's expected values each time the DUT raises its output valid signal.
-    All FP registers are writeable, so f0 is checked too.
+    Compares all 32 FP registers (f0-f31) against the software model's
+    expected values each time the DUT raises its output valid signal.
 
     Args:
         dut: Device under test

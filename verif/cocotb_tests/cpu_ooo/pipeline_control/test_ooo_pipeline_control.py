@@ -222,7 +222,7 @@ async def test_csr_allocation_stalls_until_commit_and_replays(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dispatch_replay_into_csr_allocation_keeps_local_owner(dut: Any) -> None:
-    """A held CSR firing through resource replay immediately owns the ID stall."""
+    """A CSR that allocates in the dispatch-stall replay cycle keeps id_stall_q set."""
     await _setup_test(dut)
 
     dut.i_dispatch_stall.value = 1
@@ -253,7 +253,7 @@ async def test_csr_allocated_during_fetch_hold_is_not_replayed(dut: Any) -> None
     """A pre-existing fetch hold leaves the CSR in ID, so release only advances it."""
     await _setup_test(dut)
 
-    # The Sv39 movement bubble is already holding every front-end register,
+    # A fetch translation hold (i_fetch_pa_hold) already stalls the front end,
     # but the registered dispatch-valid path may still allocate the CSR in ID.
     dut.i_fetch_pa_hold.value = 1
     _drive_alloc_req(dut, {"alloc_valid": True, "is_csr": True})
@@ -291,7 +291,7 @@ async def test_csr_allocated_during_fetch_hold_is_not_replayed(dut: Any) -> None
 
 @cocotb.test()
 async def test_csr_allocation_wins_release_collisions(dut: Any) -> None:
-    """A new CSR owner survives simultaneous WB and commit-release conditions."""
+    """A CSR allocated in the cycle of a CSR writeback or commit release stays in flight."""
     await _setup_test(dut)
 
     dut.i_csr_wb_pending.value = 1

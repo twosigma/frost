@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the extracted CPU OOO commit action block."""
+"""Unit tests for commit_actions: commit register writes, delayed CSR writeback, and instret."""
 
 from collections.abc import Mapping
 from typing import Any

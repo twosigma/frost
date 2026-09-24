@@ -108,7 +108,7 @@ def test_signature_extractors_ignore_interspersed_logs() -> None:
 def test_unsafe_parallel_runner_modes_fail_before_starting(
     runner: Callable[[], object],
 ) -> None:
-    """Advertised concurrency must not race shared build and result artifacts."""
+    """Parallel runs must fail before starting: workers would share build and result files."""
     with pytest.raises(ValueError, match="workers share application outputs"):
         runner()
 
@@ -116,7 +116,7 @@ def test_unsafe_parallel_runner_modes_fail_before_starting(
 def test_cocotb_runner_removes_every_program_memory_symlink(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A completed app run must not leave a stale data-BRAM image behind."""
+    """A completed app run removes every program-memory symlink it made in tests/."""
     test_directory = tmp_path / "tests"
     app_directory = tmp_path / "sw" / "apps" / "sample"
     test_directory.mkdir()

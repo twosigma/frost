@@ -14,9 +14,9 @@
 
 """Structured logging for instruction execution and debugging.
 
-Formatters for the three kinds of line a test emits: one per retired
-instruction, one per pipeline event, and the end-of-run coverage summary. Each
-line leads with the simulation cycle so a log can be lined up with a waveform.
+Formatters for the three kinds of line a test emits: one per instruction driven
+into the DUT, one per pipeline event, and the end-of-run coverage summary.
+Instruction and event lines start with a ``[Cycle N]`` tag.
 """
 
 import cocotb
@@ -40,10 +40,10 @@ class InstructionLogger:
         address: int | None = None,
         branch_taken: bool | None = None,
     ) -> None:
-        """Log instruction execution with full context.
+        """Log one instruction and its expected effects on a single line.
 
         Args:
-            cycle: Current simulation cycle
+            cycle: Cycle number for the ``[Cycle N]`` tag
             operation: Instruction mnemonic (e.g., "add", "lw")
             pc_current: Current PC value
             pc_expected: Expected next PC value
@@ -82,7 +82,7 @@ class InstructionLogger:
         """Log pipeline events like stalls, flushes, or hazards.
 
         Args:
-            cycle: Current simulation cycle
+            cycle: Cycle number for the ``[Cycle N]`` tag
             event: Event name (e.g., "FLUSH", "STALL", "HAZARD")
             details: Additional details about the event
         """
@@ -94,7 +94,7 @@ class InstructionLogger:
         """Log branch flush event (NOP insertion).
 
         Args:
-            cycle: Current simulation cycle
+            cycle: Cycle number for the ``[Cycle N]`` tag
             pc: PC value where flush occurred
         """
         InstructionLogger.log_pipeline_event(

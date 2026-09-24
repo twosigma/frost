@@ -12,11 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Accepted-load wakeup through the production MEM reservation station.
+"""Early load wakeup through the MEM_RS inside tomasulo_wrapper.
 
-Sweep dispatch across the early and registered copies, with either CDB lane
-occupied, and check address/data capture and exactly-once issue. Recovery
-tests suppress the early copy while killing a waiting dependent instruction.
+A dependent load or store is dispatched at a range of cycles around the
+producer load's early and registered result copies, with zero, one, or two
+registered CDB lanes busy, and must capture the loaded value and issue
+exactly once. Recovery cases flush in the early-copy cycle: a flushed
+dependent must never issue, and a surviving one issues once, after the flush.
 """
 
 from typing import Any
@@ -58,7 +60,8 @@ async def test_load_wakeup_dispatch_and_recovery(dut: Any) -> None:
             ]:
                 await iface.reset_dut()
                 iface.set_fu_ready(RS_MEM, True)
-                # Keep results unretired while observing both copies of the CDB.
+                # The oldest entry never completes, so nothing retires and
+                # every tag stays live while both CDB copies are observed.
                 oldest_tag = await iface.dispatch(make_int_req(rd=1))
                 fillers = [await iface.dispatch(make_int_req(rd=r)) for r in (2, 3)]
                 load_tag = await iface.dispatch(make_int_req(rd=4))

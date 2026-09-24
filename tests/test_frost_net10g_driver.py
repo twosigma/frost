@@ -12,13 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Static contracts for the frost_net10g NIC driver's one source.
+"""Static checks that the frost_net10g driver, DKMS package, and module build agree.
 
-linux/frost-net10g is the DKMS package that builds the driver as a module for
-Debian's kernels, which is how FROST boots it: linux/debian_kernel.py builds
-that module for the pinned kernel and puts it in the test initramfs. Nothing
-builds the driver into a kernel tree any more -- this tree builds no kernel --
-so the Kconfig is kept for the dependencies dkms.conf declares.
+linux/frost-net10g is a DKMS package that builds the driver as a module for
+Debian's kernels. linux/debian_kernel.py builds the same module for the pinned
+kernel and puts it in the test initramfs. The Kconfig and the kbuild Makefile
+also support an in-tree build, and dkms.conf repeats the Kconfig dependencies.
 """
 
 import importlib.util
@@ -90,7 +89,11 @@ def test_dkms_package_version_is_the_module_version() -> None:
 
 
 def test_dkms_conf_names_the_package_and_the_module() -> None:
-    """dkms.conf builds frost_net10g.ko from this directory for every kernel."""
+    """dkms.conf builds frost_net10g.ko from this directory for every kernel.
+
+    DKMS skips a kernel that lacks one of the Kconfig dependencies, which
+    BUILD_EXCLUSIVE_CONFIG repeats.
+    """
     conf = _dkms_conf()
     # DKMS sources the tree from /usr/src/<PACKAGE_NAME>-<PACKAGE_VERSION>/
     assert conf["PACKAGE_NAME"] == DRIVER_DIR.name

@@ -293,7 +293,8 @@ class RATModel:
         Args:
             checkpoint_id: Slot index.
             rob_entry_valid: Current ROB-valid bitmask. If omitted, all tags are
-                treated as live; branch-age filtering still applies.
+                treated as live and epochs are not checked; branch-age
+                filtering still applies.
             rob_entry_epoch: Current ROB epoch bitmask.
             rob_head_tag: Current ROB head tag for modulo age comparison.
 

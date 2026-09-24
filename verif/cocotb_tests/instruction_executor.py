@@ -31,9 +31,9 @@ from utils.instruction_logger import InstructionLogger
 class InstructionExecutor:
     """Execute and model single instructions in directed tests.
 
-    Each execute method waits on the DUT ready/valid handshake, encodes the
-    instruction, queues the modelled expectations for the monitors, drives the
-    instruction, and advances the software state.
+    Each execute method waits until the DUT is out of reset and not stalled,
+    encodes the instruction, queues the modeled expectations for the monitors,
+    drives the instruction, and advances the software state.
 
     Attributes:
         dut_if: DUT interface for signal access
@@ -74,10 +74,10 @@ class InstructionExecutor:
         await self.execute_alu("addi", rd=0, rs1=0, rs2=0, imm=0, log=log)
 
     async def flush_pipeline(self, cycles: int = PIPELINE_DEPTH) -> None:
-        """Flush pipeline by executing NOPs.
+        """Drain the pipeline by executing NOPs.
 
         Args:
-            cycles: Number of NOP cycles to execute (default: PIPELINE_DEPTH)
+            cycles: Number of NOPs to execute (default: PIPELINE_DEPTH)
         """
         for _ in range(cycles):
             await self.execute_nop()

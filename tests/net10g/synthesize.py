@@ -13,16 +13,18 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Check portable MAC/PCS synthesis in the pinned frost image.
+"""Check the Ethernet MAC/PCS with portable coarse synthesis in the frost image.
 
-Run ``./scripts/frost.py run python3 tests/net10g/synthesize.py``.
-The pinned sv2v converts a source snapshot for Yosys. If the matching binary
-is absent, a checksummed archive is cached in the isolated build directory.
-Logs, source hashes, Verilog, and netlist JSON remain in sim_build/synthesis.
+Run ``./scripts/frost.py run python3 tests/net10g/synthesize.py``. sv2v converts
+a snapshot of the sources for Yosys. If the image lacks the pinned sv2v, the
+script downloads its release archive, checks the SHA-256, and caches it in
+sim_build/synthesis, where the logs, source hashes, converted Verilog, JSON
+netlist, and summary.json also stay.
 
-Rejects latches, blackboxes, and structural errors; does not establish device
-mapping, timing, or GTY interoperability. FSM recoding stays disabled to avoid
-expanding the eight-lane RX parser's symbolic transition logic.
+The check fails on latches, blackboxes, structural errors, and out-of-range bit
+selects. It does not check device mapping, timing, or GTY interoperability. FSM
+recoding stays disabled to avoid expanding the eight-lane RX parser's symbolic
+transition logic.
 """
 
 import argparse
@@ -48,10 +50,13 @@ MAX_FRAME_BYTES = 9216
 
 
 def fetch_frontend(directory: Path) -> Path:
-    """Verify the pinned release archive and extract only its named binary/license."""
+    """Download the pinned sv2v release if needed, check it, and extract the binary.
+
+    The release's LICENSE and NOTICE files are extracted with it.
+    """
     archive = directory / "sv2v-Linux.zip"
     if not archive.exists():
-        print(f"Downloading additional frontend sv2v {SV2V_VERSION}", flush=True)
+        print(f"Downloading sv2v {SV2V_VERSION}", flush=True)
         with urllib.request.urlopen(SV2V_URL, timeout=60) as response:
             archive.write_bytes(response.read())
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
@@ -69,7 +74,7 @@ def fetch_frontend(directory: Path) -> Path:
 
 
 def locate_frontend(directory: Path) -> Path:
-    """Prefer the pinned frontend the image installs; download it otherwise."""
+    """Use the image's sv2v if it is the pinned version; otherwise download it."""
     installed = shutil.which("sv2v")
     if installed is not None:
         result = subprocess.run(
@@ -87,7 +92,7 @@ def locate_frontend(directory: Path) -> Path:
 
 
 def limit_memory() -> None:
-    """Bound each synthesis process to eight GiB without affecting other jobs."""
+    """Limit this process's address space to 8 GiB (run_logged's preexec_fn)."""
     maximum = 8 * 1024**3
     resource.setrlimit(resource.RLIMIT_AS, (maximum, maximum))
 
@@ -95,7 +100,10 @@ def limit_memory() -> None:
 def run_logged(
     command: list[str], log: Path, timeout: int, address_limit: bool = True
 ) -> None:
-    """Run one bounded subprocess and retain complete diagnostics in its log."""
+    """Run a command with a timeout, writing all its output to a log.
+
+    On failure or timeout, print the end of the log and re-raise.
+    """
     print(f"Running {Path(command[0]).name}; log: {log}", flush=True)
     try:
         with log.open("w") as output:
@@ -118,10 +126,15 @@ def binary_value(value: str | int) -> int:
 
 
 def inspect_netlist(path: Path) -> dict[str, int]:
-    """Reject unresolved logic and count actual instantiated memory capacity."""
+    """Check the netlist and return its cell and memory counts.
+
+    Fails on a missing top, a top frame-limit default other than MAX_FRAME_BYTES,
+    blackbox or whitebox modules, latches, unresolved cells, or less memory than
+    four maximum frames.
+    """
     design = json.loads(path.read_text())
     modules: dict[str, Any] = design["modules"]
-    assert TOP in modules, "Expected top module is absent"
+    assert TOP in modules, "The top module is missing from the netlist"
     top_parameters = modules[TOP]["parameter_default_values"]
     assert binary_value(top_parameters["MAX_FRAME_BYTES"]) == MAX_FRAME_BYTES
     for name, module in modules.items():
@@ -153,9 +166,7 @@ def inspect_netlist(path: Path) -> dict[str, int]:
         return counts
 
     counts = count_module(TOP)
-    assert counts["memory_cells"] > 0, (
-        "Coarse synthesis unexpectedly eliminated every memory"
-    )
+    assert counts["memory_cells"] > 0, "Coarse synthesis removed every memory"
     assert counts["memory_bits"] >= 4 * MAX_FRAME_BYTES * 8, (
         "Expected at least two full frames of buffering in each direction"
     )
@@ -163,7 +174,7 @@ def inspect_netlist(path: Path) -> dict[str, int]:
 
 
 def main() -> None:
-    """Convert a source snapshot and check full default-size coarse synthesis."""
+    """Snapshot and convert the sources, then check default-size coarse synthesis."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--timeout", type=int, default=300, help="timeout per tool in seconds"
@@ -219,9 +230,8 @@ def main() -> None:
     run_logged(
         [
             str(frontend),
-            # The usual guard that keeps simulation-only code ($error,
-            # assertions) out of a synthesized view, as the CPU's Yosys flow
-            # in tests/test_run_yosys.py also defines.
+            # Leaves out simulation-only code ($error, assertions), as the CPU's
+            # Yosys flow in tests/test_run_yosys.py does.
             "-DSYNTHESIS",
             f"--top={TOP}",
             f"--write={converted}",
@@ -233,8 +243,8 @@ def main() -> None:
         ],
         directory / "sv2v.log",
         args.timeout,
-        # GHC reserves a large virtual arena; its explicit 2-GiB heap bound
-        # and two runtime workers bound this process instead of RLIMIT_AS.
+        # sv2v's GHC runtime reserves a large virtual address range, so its
+        # own limits (a 2 GiB heap, two workers) bound it instead of RLIMIT_AS.
         address_limit=False,
     )
     script.write_text(

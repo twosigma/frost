@@ -40,7 +40,7 @@ FU_ALU2 = 7
 
 NUM_FUS = 8
 
-# Priority order: highest priority first (CoreMark-relevant traffic first)
+# Arbitration priority, highest first. It differs from the fu_type_e numbering.
 PRIORITY_ORDER = [
     FU_MUL,
     FU_MEM,

@@ -15,7 +15,9 @@
 """Load queue golden model.
 
 Mirrors the RTL circular buffer, entry state machine, issue selection,
-SQ disambiguation, memory response handling, and CDB broadcast logic.
+SQ disambiguation, memory response handling, and CDB broadcast logic. It
+tracks a single outstanding memory response and has no L0 cache; tests report
+an L0 hit with cache_hit_complete.
 """
 
 from dataclasses import dataclass
@@ -279,8 +281,9 @@ class LQModel:
         # Match the RTL head_mem_stored/head_mem_update shortcut: a load at
         # the ROB head bypasses the physical-order scan so it does not starve
         # behind a younger blocked entry after sparse-hole reuse. Head MMIO and
-        # LR loads are admitted the same way. The committed-store drain fence
-        # lives in the memory router, not in the LQ launch path.
+        # LR loads are admitted the same way. An MMIO load's committed-store
+        # drain fence is in the memory router, not the LQ launch path; a head
+        # AMO still waits for sq_committed_empty here.
         for idx, e in enumerate(self.entries):
             if (
                 e.valid
@@ -314,7 +317,7 @@ class LQModel:
         return cdb_idx, mem_idx
 
     def apply_forward(self, sq_forward: SQForwardResult) -> None:
-        """Apply SQ forwarding result to the Phase B candidate."""
+        """Apply an SQ forwarding result to the memory-issue candidate."""
         _, mem_idx = self._issue_scan()
         if mem_idx is None:
             return
@@ -325,7 +328,7 @@ class LQModel:
             e.data = sq_forward.data & MASK64
 
     def cache_hit_complete(self) -> None:
-        """Model DUT cache-hit fast path for the current Phase B candidate.
+        """Model the L0 cache-hit fast path for the current memory-issue candidate.
 
         On an L0 cache hit, the DUT marks the candidate's data as valid without
         issuing a memory request.
@@ -396,7 +399,7 @@ class LQModel:
             self.reservation_valid = True
             self.reservation_addr = e.address
         elif e.size == MEM_SIZE_DOUBLE:
-            # FLD (RV64 LD in M3): the full beat in one response
+            # LD or FLD: the full beat in one response
             e.data = data
             e.data_valid = True
             self.mem_outstanding = False
@@ -408,7 +411,7 @@ class LQModel:
             self.mem_outstanding = False
 
     def amo_compute_complete(self) -> None:
-        """Advance a normal AMO's extra cycle; killed owners never write."""
+        """Finish AMO_COMPUTE (SWAP/ADD/XOR/AND/OR): write unless a flush killed the AMO."""
         if self.amo_state == 2:
             self.amo_state = 1 if self.entries[self.amo_entry_idx].valid else 0
 
@@ -495,10 +498,11 @@ class LQModel:
     def partial_flush(self, flush_tag: int, rob_head_tag: int) -> None:
         """Partial flush: invalidate entries younger than flush_tag.
 
-        The model retains mem_outstanding as a logical response debt when the
-        in-flight entry is flushed. The RTL represents the same debt with
-        drop_mem_response_pending after clearing its live-owner tracker.
-        mem_response_drain checks validity and discards that stale response.
+        When the in-flight entry is flushed, the model keeps mem_outstanding
+        set because the response is still owed; the RTL clears its
+        mem_outstanding and tracks the owed response with
+        drop_mem_response_pending instead. mem_response_drain sees the invalid
+        entry and discards the response.
 
         Flushed entries stay as holes; the tail is not retracted, matching
         the sparse-hole RTL.

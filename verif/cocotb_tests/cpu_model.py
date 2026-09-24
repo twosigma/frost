@@ -120,7 +120,8 @@ class CPUModel:
 
         Returns:
             Tuple of (register_to_update, writeback_value, expected_pc, is_fp_destination)
-            - register_to_update: Register index to write, or None for stores/branches
+            - register_to_update: Register index to write, or None for stores,
+              branches, and fences
             - writeback_value: Value to write to destination register
             - expected_pc: Expected program counter after instruction
             - is_fp_destination: True if result goes to FP register file
@@ -167,7 +168,7 @@ class CPUModel:
             state.branch_was_jal_current = False
         elif operation in JUMPS:
             state.branch_taken_current = True  # Jumps are always taken
-            # JAL and JALR are both resolved in EX stage (3 flush cycles each)
+            # The model resolves JAL and JALR in EX, like branches (3 flush cycles)
             state.branch_was_jal_current = False
         else:
             state.branch_taken_current = False
@@ -255,7 +256,7 @@ class CPUModel:
                 immediate_value & MASK32,
             )
         elif operation in I_UNARY:
-            # Zbb unary ops: clz, ctz, cpop, sext.b, sext.h, orc.b, rev8
+            # Unary bit-manipulation ops (Zbb, plus brev8 from Zbkb)
             _, fn = I_UNARY[operation]
             return fn(state.register_file_previous[source_register_1])
         elif operation in R_ALU:
@@ -323,10 +324,9 @@ class CPUModel:
     ) -> int:
         """Compute the expected program counter after instruction execution.
 
-        In the current monitor contract, o_pc_vld fires before branch
-        recovery affects the observed PC. So o_pc shows the sequential PC for
-        the instruction itself; branch/jump targets affect subsequent flush
-        NOPs.
+        The PC monitor assumes o_pc_vld fires before branch recovery affects
+        the observed PC, so o_pc shows the sequential PC for the instruction
+        itself; branch and jump targets affect the flush NOPs that follow.
 
         Args:
             state: Test state with current PC values
@@ -396,8 +396,8 @@ class CPUModel:
     ) -> None:
         """Model the memory write for a store, SC.W, AMO, or FP store.
 
-        Computes the write address, beat data, and byte mask, then appends them
-        to the expected-value queues and applies them to the memory model.
+        Computes the write address, beat data, and byte mask, queues the
+        expected address and data, and applies the write to the memory model.
 
         Memory Write Encoding:
             Stores write aligned 64-bit beats with 8-lane byte strobes
@@ -459,9 +459,8 @@ class CPUModel:
                 f"old={old_value}, rs2={state.register_file_previous[source_register_2]}, "
                 f"new={new_value}"
             )
-            # Update expected queues.  AMO writes are word-sized: the LQ
-            # replicates the result across the beat and the router's strobes
-            # select the addressed word lanes.
+            # AMO writes are word-sized: the LQ replicates the result across
+            # the beat and the router's strobes select the addressed word lanes.
             state.memory_write_address_expected_queue.append(write_address)
             state.memory_write_data_expected_queue.append(
                 replicate_store_data_for_beat("sw", new_value)
@@ -477,9 +476,8 @@ class CPUModel:
             ) & MASK32
             fp_value = state.fp_register_file_previous[source_register_2]
             if operation == "fsd":
-                # Single-beat FSD: one 64-bit write covering the aligned
-                # dword, with no two-phase drain (hw/rtl/README.md,
-                # "Data-tier bus contract").
+                # FSD is one 64-bit write covering the aligned dword
+                # (hw/rtl/README.md, "Data-tier bus contract").
                 cocotb.log.info(
                     f"op {operation} storing fp_rs2_val 0x{fp_value:016X} "
                     f"to address 0x{write_address:08X}"

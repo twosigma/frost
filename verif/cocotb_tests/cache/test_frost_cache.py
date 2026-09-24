@@ -15,15 +15,15 @@
 """Unit tests for the frost_cache hierarchy (frost_cache_test_harness DUT).
 
 The harness wires the same backside topology the CPU integration uses:
-frost_cache_hierarchy (L1s + walker port, optional L2) ->
-line_port_axi_bridge -> axi_behavioral_memory. The bench drives raw tagged
-line-port transactions on all three upstream ports (up = D-side, iup =
-I-side, wup = page-table walker) and checks every read against a
-byte-granular reference model and every response id against the request that
-carried it. The harness defaults make the caches tiny (L1 1 KiB / L2 4 KiB)
-so evictions and thrash are constantly exercised; the registry runs the same
-tests in both optional-L2 topologies via -GHAS_L2={0,1} and with the memory
-model completing ids out of order via -GMEM_REORDER=1.
+frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory. The
+bench drives raw tagged line-port transactions on the data, instruction, and
+walker ports (up = D-side, iup = I-side, wup = page-table walker) and checks
+every read against a byte-granular reference model and every response id
+against the request that carried it. The harness defaults make the caches
+tiny (L1 1 KiB / L2 4 KiB) so evictions and thrash are constantly exercised;
+the registry runs the same tests in both optional-L2 topologies via
+-GHAS_L2={0,1}, with fast maintenance via -GSIM_FAST_MAINT=1, and with the
+memory model completing ids out of order via -GMEM_REORDER=1.
 """
 
 import itertools
@@ -43,9 +43,10 @@ BASE_ADDR = 0x8000_0000
 # larger than L1 (1 KiB) and L2 (4 KiB) so both levels evict constantly.
 WINDOW_LINES = 1024
 
-# Each test gets a disjoint 256 KiB region: the behavioral DDR persists across
-# the in-run resets between cocotb tests (like real DDR), so a fresh
-# zero-default reference model is only valid in untouched address space.
+# Per-test regions 256 KiB apart; tests that share a region use different
+# lines. The behavioral DDR persists across the in-run resets between cocotb
+# tests (like real DDR), so a fresh zero-default reference model is only valid
+# in untouched address space.
 SMOKE_BASE = BASE_ADDR + 0x00000
 PARTIAL_BASE = BASE_ADDR + 0x40000
 EVICT_BASE = BASE_ADDR + 0x80000
@@ -69,9 +70,8 @@ MEM_LATENCY_CYCLES = 12
 SWEEP_TIMEOUT_CYCLES = 200_000
 
 # The harness's up/iup/dma ports carry UP_ID_BITS=3 ids and the walker port
-# UP_ID_BITS-1 (its slot under the id tree's 2-bit prefix); each port's
-# driver cycles through its id space so consecutive transactions never
-# share one.
+# UP_ID_BITS-1 (the walker/L1I arbiter prefixes one bit); each port's driver
+# cycles through its id space so consecutive transactions never share one.
 UP_ID_BITS = 3
 _port_ids = {
     "up": itertools.cycle(range(1 << UP_ID_BITS)),
@@ -145,9 +145,8 @@ def _clear_inputs(dut: Any) -> None:
 def _l2_sweeping(dut: Any) -> bool:
     """Report whether the optional L2's reset tag sweep still refuses requests.
 
-    The walker port's ready used to reach the bench through the arbiter tree
-    from the L2, so it doubled as the L2's ready; the walker sequencer now
-    answers ready itself, so the L2's maintenance state is read directly.
+    No upstream ready reflects the L2 (the walker sequencer answers ready
+    itself), so the bench reads the L2's maintenance state directly.
     """
     if int(dut.o_has_l2.value) == 0:
         return False
@@ -178,14 +177,16 @@ async def _setup(dut: Any) -> None:
 async def _port_transaction(
     dut: Any, port: str, *, write: bool, addr: int, wdata: int = 0, wstrb: int = 0
 ) -> int:
-    """Run one tagged line transaction on one of the three upstream ports.
+    """Run one tagged line transaction on an upstream port.
 
-    Ports: "up" = D-side, "iup" = I-side, "wup" = page-table walker.
+    Ports: "up" = D-side, "iup" = I-side, "wup" = page-table walker,
+    "dma" = DMA.
 
-    Returns the 256-bit read data (0 for writes). Inputs are driven at
-    falling edges so they are stable across the rising edge that samples
-    them; ready / resp_valid are likewise sampled mid-cycle at falling edges.
-    The request carries the port's next id and the response must echo it.
+    Returns the response's 256-bit rdata, which is don't-care for a write.
+    Inputs are driven at falling edges so they are stable across the rising
+    edge that samples them; ready / resp_valid are likewise sampled mid-cycle
+    at falling edges. The request carries the port's next id and the response
+    must echo it.
     """
     req_valid = getattr(dut, f"i_{port}_req_valid")
     req_ready = getattr(dut, f"o_{port}_req_ready")
@@ -201,12 +202,12 @@ async def _port_transaction(
     getattr(dut, f"i_{port}_req_wdata").value = wdata
     getattr(dut, f"i_{port}_req_wstrb").value = wstrb
     getattr(dut, f"i_{port}_req_id").value = req_id
-    # Let the deposit propagate before the first ready sample. The walker
-    # port's ready is request-dependent: the comb arbiter tree presents the
-    # winning payload to the bridge, whose ready depends on the presented
-    # request, so raising valid can itself raise ready mid-cycle. Sampling
-    # the pre-deposit value would miss the fire at the next rising edge and
-    # leave valid high, which is a same-id double request.
+    # Let the deposit propagate before the first ready sample. A port's ready
+    # may depend on the presented request (the DMA sequencer refuses a line
+    # one of its entries holds), so the new request can itself raise ready
+    # mid-cycle. Sampling the pre-deposit value would miss the fire at the
+    # next rising edge and leave valid high, which is a same-id double
+    # request.
     await Timer(1, unit="ns")
 
     # Hold valid until a cycle where ready is high: that rising edge fires.
@@ -344,7 +345,7 @@ async def test_partial_write_merges_on_miss(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dirty_eviction_roundtrip(dut: Any) -> None:
-    """Two lines aliasing the same L1 index: dirty victim must survive."""
+    """Lines aliasing one L1 index: every dirty victim must survive eviction."""
     await _setup(dut)
     model = ReferenceModel()
     full = (1 << LINE_BYTES) - 1
@@ -360,7 +361,7 @@ async def test_dirty_eviction_roundtrip(dut: Any) -> None:
 
 @cocotb.test()
 async def test_word_strobe_writes(dut: Any) -> None:
-    """4-byte strobe groups in every lane (the adapter's store pattern)."""
+    """4-byte strobe groups in every word lane (cached_tier_adapter's word-store pattern)."""
     await _setup(dut)
     model = ReferenceModel()
     addr = STROBE_BASE + 64 * LINE_BYTES
@@ -390,7 +391,7 @@ async def test_random_traffic_vs_model(dut: Any) -> None:
             if style < 0.4:
                 wstrb = full  # whole line (eviction-shaped)
             elif style < 0.8:
-                wstrb = 0xF << (4 * rng.randrange(8))  # one word (CPU store shape)
+                wstrb = 0xF << (4 * rng.randrange(8))  # one word (a CPU word store)
             else:
                 wstrb = rng.getrandbits(32)  # arbitrary sparse bytes
                 if wstrb == 0:
@@ -402,7 +403,7 @@ async def test_random_traffic_vs_model(dut: Any) -> None:
         else:
             await _check_read(dut, model, addr)
 
-    # Final sweep: every line the model knows about must read back exactly.
+    # Final sweep: every 7th line of the window must read back exactly.
     for line in range(0, WINDOW_LINES, 7):
         await _check_read(dut, model, RANDOM_BASE + line * LINE_BYTES)
 
@@ -467,7 +468,7 @@ async def test_iport_reads_written_back_data(dut: Any) -> None:
 
 @cocotb.test()
 async def test_iport_does_not_snoop_l1d_dirty(dut: Any) -> None:
-    """v1 semantics: L1D-dirty data is invisible to the I-side.
+    """L1D-dirty data is invisible to the I-side.
 
     The I-side fills from the shared level below the arbiter; fence.i exists
     to force dirty data down before refetching.
@@ -556,8 +557,8 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
         await _line_transaction(dut, write=True, addr=addr, wdata=data, wstrb=full)
     # Push both lines out of every cache level with reads of aliasing lines
     # (the harness caches are tiny: 256 lines overflow L1D and L2 alike), so
-    # the demand misses below find clean victims and go straight to their
-    # fills. A dirty victim would serialize a writeback ahead of the fill.
+    # the demand misses below find clean victims and send nothing downstream
+    # but their fills.
     for line in range(256):
         addr = OVERLAP_BASE + 0x10000 + line * LINE_BYTES
         got = await _line_transaction(dut, write=False, addr=addr)
@@ -915,11 +916,12 @@ async def _hold_shared_level(
     """Fill the shared level's miss slots so its next miss stalls a round trip.
 
     Three data-side partial-write misses, acknowledged at allocation, and two
-    instruction-side reads fired between them leave five fills in flight
-    (the shared level has four miss slots), so a writeback that misses there
-    right afterwards waits in its tag stage until the first fill returns from
-    memory. Every line has an L1 index of its own, never revisited, so none
-    of this evicts anything or writes anything back.
+    instruction-side reads fired between them leave five fills in flight at
+    the L2, which has four miss slots, so a writeback that misses there right
+    afterwards waits in its tag stage until the first fill returns from
+    memory. Without an L2 the writeback goes straight to memory and takes a
+    round trip anyway. Every line has an L1 index of its own, never
+    revisited, so none of this evicts anything or writes anything back.
     """
     lines = [base + (8 + 3 * k + n) * LINE_BYTES for n in range(3)]
     instr = [base + 0x800 + (2 * k + n) * LINE_BYTES for n in range(2)]
@@ -1150,10 +1152,10 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     await _settle(dut)
     await Timer(1, unit="ns")
 
-    # dirty_l2_alias_2 is written through L1D and collides with
-    # dirty_l2_alias in L2, inducing another L2 victim writeback. Neither the
-    # walk nor that lower-level work is ordinary traffic, so no event or
-    # miss-occupancy total may move.
+    # The fence writes dirty_l2_alias_2 back from the L1D; in the L2 it
+    # collides with dirty_l2_alias, still dirty there, and forces another L2
+    # victim writeback. Neither the walk nor that lower-level work is ordinary
+    # traffic, so no event or miss-occupancy total may move.
     assert counts == before_fence
 
     stop[0] = True

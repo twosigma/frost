@@ -17,15 +17,15 @@
 Drives the cache hierarchy at the real L1 geometry (128 KiB D-side / 16 KiB
 I-side, set via -G in the registry), dirties a handful of D-side lines, then
 issues one fence.i cache-sync handshake and counts the cycles from sync-assert
-to done. Run the two registry builds to see the speedup directly:
+to done. Compare the two registry builds:
 
-    ./test_run_cocotb.py fence_speed_slow   # SIM_FAST_MAINT=0 (FPGA-path FSM)
-    ./test_run_cocotb.py fence_speed_fast   # SIM_FAST_MAINT=1 (fast sim path)
+    ./scripts/frost.py cocotb fence_speed_slow   # SIM_FAST_MAINT=0 (FPGA-path FSM)
+    ./scripts/frost.py cocotb fence_speed_fast   # SIM_FAST_MAINT=1 (fast sim path)
 
-The slow build walks every line (writeback-all over 4096 lines + invalidate-all
-over 512 lines, ~thousands of cycles); the fast build touches only the dirty
-lines and bulk-clears the tags (low hundreds or fewer). The measured count is
-logged as `FENCE_I_MAINT_CYCLES=<n>` for easy comparison.
+In the slow build, writeback-all walks the L1D's dirty index span and
+invalidate-all sweeps the 512 L1I tags one per cycle; the fast build visits
+only the dirty lines and clears the tags in one cycle. The count is logged as
+`FENCE_I_MAINT_CYCLES=<n>`.
 """
 
 from typing import Any

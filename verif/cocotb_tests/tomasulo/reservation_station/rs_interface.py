@@ -17,9 +17,10 @@
 Verilator flattens packed structs into bit vectors, so this interface packs
 and unpacks their fields.
 
-Older local testbench wrappers expose dispatch and issue as individual scalar
-signals instead of wide packed struct ports. The interface detects that shape
-with ``hasattr(dut, 'i_dispatch_valid')``.
+The interface also has a path for a DUT that exposes dispatch and issue as
+individual scalar ports instead of packed structs, detected with
+``hasattr(dut, 'i_dispatch_valid')``. The reservation_station module itself
+has only the packed ports.
 """
 
 from typing import Any
@@ -325,10 +326,7 @@ class RSInterface:
             self._clear_dispatch_flat()
         else:
             self.dut.i_dispatch.value = 0
-        # Slot-2 dispatch port. Verilator zero-initializes top-module inputs,
-        # so tests would pass without this; the init guards against
-        # X-propagation if that default ever changes. Tests drive the port
-        # through drive_dispatch_2.
+        # Slot-2 dispatch port; tests drive it through drive_dispatch_2.
         self.dut.i_dispatch_2.value = 0
         # Fast slot-1 intent. The RTL selects alloc_idx_2 from it regardless
         # of SPECULATIVE_DATA_WRITES, so drive_dispatch raises it together

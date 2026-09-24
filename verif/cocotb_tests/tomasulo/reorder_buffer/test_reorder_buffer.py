@@ -21,9 +21,9 @@ tests (allocation in one and two lanes, CDB completion, in-order and 2-wide
 commit, branches and checkpoints, the serializing classes FENCE, FENCE.I,
 SFENCE.VMA, CSR, WFI and MRET, flushes, and allocation-time legality faults),
 constrained random tests, error-condition tests, coverage-gap tests,
-non-interference tests, and atomics. Six-port bypass coverage checks fresh
-staged allocations, independent subcycle address changes, circular tag reuse,
-and legal same-cycle stale-CDB collisions on both allocation/CDB lanes.
+non-interference tests, and atomics. The six dispatch done-repair read ports
+(i_bypass_tag_*) are checked across staged LVT updates, tag wrap and reuse,
+and legal same-cycle stale CDB writes on every allocation slot and CDB lane.
 
 Clocked requests are driven while the clock is low and take effect on the
 next rising edge.
@@ -32,9 +32,6 @@ until the falling edge after that rising edge, while combinational outputs
 (alloc_ready, alloc_tag, and the o_commit_comb mirror that read_commit
 returns) can be read right after the edge. reset_dut returns at a falling
 edge, so a test can drive its first request immediately.
-
-Bypass read-address permutations also run within one low clock phase to check
-the asynchronous interface without accidentally advancing the staged LVT.
 
 Usage (from repository root, through the pinned tools):
     ./scripts/frost.py cocotb reorder_buffer
@@ -354,13 +351,15 @@ async def test_slot2_dual_allocation_adjacent_tags(dut: Any) -> None:
 
 @cocotb.test()
 async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> None:
-    """All six async reads preserve allocation/CDB priority across tag reuse.
+    """The six done-repair reads keep allocation/CDB write priority across tag reuse.
 
-    Sample both allocation banks before and after their staged LVT drain,
-    rotating six addresses within one low clock phase. Reuse a 31/0 bundle
-    with each allocation-port/CDB-lane collision pairing, then deliver a legal
-    later completion. No CDB targets an allocation in its next-cycle drain
-    window, and every bundle contains at most one branch.
+    Values written by both allocation ports are read before and after the
+    staged LVT update that follows allocation, rotating the six read addresses
+    within one low clock phase. A bundle at tags 31 and 0 is then reallocated
+    while a stale CDB write targets one of its tags in the same cycle, for
+    every allocation-port and CDB-lane pairing: the allocation must win, and a
+    later legal completion must land. No CDB write targets an entry in the
+    cycle after its allocation, and no bundle holds more than one branch.
     """
     dut_if, _ = await setup_test(dut)
     dut.i_commit_hold.value = 1
@@ -464,9 +463,9 @@ async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> Non
 
     await flush_held_entries()
 
-    # Retire two laps minus one entry. Both tags31 and0 have old CDB values,
-    # and the next legal pair straddles31->0. Full flushes in the subcases
-    # return the tail to this held head, preserving those RAM contents.
+    # Retire two laps minus one entry, so tags 31 and 0 both hold old CDB
+    # values and the next legal pair straddles 31 -> 0. Full flushes in the
+    # subcases return the tail to this held head and leave the RAM contents.
     for sequence in range(2 * REORDER_BUFFER_DEPTH - 1):
         tag = await drive_single_alloc(
             dut_if, make_simple_alloc_request(pc=0x6000 + 4 * sequence, rd=9)
@@ -515,7 +514,8 @@ async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> Non
             await flush_held_entries()
 
             # Across four cases each allocation port collides with each CDB
-            # lane; the collided allocation value is both nonzero JAL and zero.
+            # lane; the collided entry is the JAL (nonzero value) in two cases
+            # and the ordinary instruction (zero) in the other two.
             requests = link_pair(0x8000 + 0x100 * case, jal_slot=cdb_lane)
             stale = CDBWrite(
                 tag=tags[allocation_slot], value=0xE000_0000_0000_0000 | case
@@ -535,8 +535,9 @@ async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> Non
             await dut_if.step()
             await check_queries(tags * 3, new_values, f"collision drain case {case}")
 
-            # Only the ordinary instruction completes later; JAL was done at
-            # allocation. Use the opposite live lane after the protected drain.
+            # Only the ordinary instruction completes later (the JAL was done
+            # at allocation), on the other CDB lane and after the staged LVT
+            # update.
             plain_tag = tags[1 - cdb_lane]
             completion = CDBWrite(
                 tag=plain_tag, value=0xF000_0000_0000_0000 | (case + 1)
@@ -554,7 +555,7 @@ async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> Non
 
 @cocotb.test()
 async def test_head_wait_fast_perf_classes_dual_lane(dut: Any) -> None:
-    """Keep fast INT/load perf classes cycle-exact across both alloc lanes."""
+    """Check that head-wait class events are cycle-exact for both allocation slots."""
     cocotb.log.info("=== Test: Head-Wait Fast Perf Classes Dual Lane ===")
 
     dut_if, _ = await setup_test(dut)
@@ -1512,7 +1513,10 @@ async def test_fence_i_sync_handshake(dut: Any) -> None:
 
 @cocotb.test()
 async def test_sfence_window_matches_sync_edges(dut: Any) -> None:
-    """Registered SFENCE window has the original sync-state phase exactly."""
+    """o_sfence_window rises and falls with SFENCE.VMA's sync request.
+
+    A plain FENCE.I enters the same sync state but never opens the window.
+    """
     dut_if, model = await setup_test(dut)
     dut_if.set_fence_i_sync_done(False)
 
@@ -1944,11 +1948,10 @@ async def test_csr_serialization(dut: Any) -> None:
     dut_if, model = await setup_test(dut)
 
     await FallingEdge(dut_if.clock)
-    # csr_addr must name an implemented CSR. Since Phase 3 M1 the ROB's
-    # allocation-time existence map turns an unimplemented address (such as
-    # the dataclass default 0x000) into an illegal-instruction trap at the
-    # head instead of a serialized csr_start. mscratch (0x340) is a harmless
-    # target.
+    # csr_addr must name an implemented CSR. The ROB's allocation-time
+    # legality check turns an unimplemented address (such as the dataclass
+    # default 0x000) into an illegal-instruction trap at the head, with no
+    # csr_start. mscratch (0x340) is a harmless target.
     req = AllocationRequest(
         pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
     )
@@ -1990,12 +1993,11 @@ async def test_csr_serialization(dut: Any) -> None:
 
 @cocotb.test()
 async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
-    """A translation CSR remembers its one-cycle done pulse until SQ drain.
+    """A translation CSR keeps its one-cycle done pulse until the SQ drains.
 
-    The semantic fence-class event is delayed one cycle from retirement, and
-    the final frontend flush follows one cycle after that. This is the phase
-    relationship that lets the registered commit bus update csr_file before
-    the refetch begins.
+    o_fence_class_flush_event follows retirement by one cycle and
+    o_fence_i_flush by two, so the registered commit bus writes csr_file
+    before the refetch begins.
     """
     dut_if, model = await setup_test(dut)
     dut_if.set_sq_committed_empty(False)
@@ -2028,11 +2030,11 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
 
     assert dut_if.csr_start, "translation CSR did not start at the ready head"
 
-    # Mimic cpu_ooo's registered csr_done_q: high for one full cycle while
-    # CSR_EXEC owns the head, then low for good. The serializer has to capture
-    # that pulse into the dedicated drain state; it cannot ask for it again
-    # when the SQ drains. Let the first edge move the serializer into
-    # CSR_EXEC, then present the single completion sample.
+    # Mimic cpu_ooo's registered csr_done_q: high for one cycle while the
+    # serializer is in CSR_EXEC, then low. The serializer must record the
+    # pulse by moving to CSR_TRANSLATION_DRAIN, because the pulse does not
+    # repeat when the SQ drains. The first edge moves the serializer into
+    # CSR_EXEC; the single done cycle follows.
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(True)
@@ -3862,7 +3864,7 @@ async def test_sc_commits_via_cdb(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lr_commits_normally(dut: Any) -> None:
-    """LR at the head with done=1 commits; the ROB does not gate LR on the SQ."""
+    """An LR at the head commits once done; the serializer has no LR state."""
     cocotb.log.info("=== Test: LR Commits Normally ===")
 
     dut_if, model = await setup_test(dut)
@@ -3883,7 +3885,7 @@ async def test_lr_commits_normally(dut: Any) -> None:
 
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
-    assert dut_if.empty, "LR should commit even with SQ not empty"
+    assert dut_if.empty, "LR should commit once done"
 
     cocotb.log.info("=== Test Passed ===")
 

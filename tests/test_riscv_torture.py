@@ -40,8 +40,8 @@ from test_run_cocotb import CocotbRunner
 TESTS_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = TESTS_DIR.parent
 TORTURE_APP_DIR = REPO_ROOT / "sw" / "apps" / "riscv_torture"
-# Corpus dirs (the _rv64 suffix is historical: it namespaced the rv64
-# corpus beside the retired rv32 one, and the committed goldens keep it).
+# The committed corpus and its Spike reference signatures, as written by
+# generate_tests.py.
 TORTURE_TESTS_DIR = TORTURE_APP_DIR / "tests_rv64"
 TORTURE_REFERENCES_DIR = TORTURE_APP_DIR / "references_rv64"
 
@@ -89,8 +89,8 @@ def compile_test(
 ) -> bool:
     """Compile a single torture test, returns True on success.
 
-    ``paged`` selects the Sv39 S-mode identity-mapped environment (Phase 3
-    M5), in which the whole test runs translated. It requires the ddr config.
+    ``paged`` selects the Sv39 S-mode identity-mapped environment, in which
+    the whole test runs translated. It requires the ddr config.
     """
     env = dict(os.environ)
     subprocess.run(
@@ -239,7 +239,7 @@ def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, st
     Every word is compared except the known address-holding registers:
     sp/gp, the x30 AMO-address temporary, and the x31 memory base hold
     link-map-dependent values, and the Spike reference link differs from
-    Frost's by design.
+    FROST's by design.
     """
     total_words = _TOTAL_WORDS
     if len(actual) != total_words:
@@ -393,9 +393,9 @@ class TestRiscvTorture:
 
 
 def main() -> int:
-    """Run riscv-torture tests on Frost."""
+    """Run riscv-torture tests on FROST."""
     parser = argparse.ArgumentParser(
-        description="Run riscv-torture tests on Frost",
+        description="Run riscv-torture tests on FROST",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -424,7 +424,7 @@ Examples:
         type=int,
         default=1,
         metavar="N",
-        help="Number of workers; currently only 1 is safe and supported",
+        help="Number of workers; only 1 is supported",
     )
     parser.add_argument(
         "--mem-config",
@@ -441,7 +441,7 @@ Examples:
         action="store_true",
         help=(
             "Run the tests in S-mode under an Sv39 identity map (translated "
-            "fetch and data; Phase 3 M5). Requires --mem-config ddr."
+            "fetch and data). Requires --mem-config ddr."
         ),
     )
     args = parser.parse_args()
