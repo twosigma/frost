@@ -78,8 +78,9 @@ MEM_CONFIGS = ("bram", "ddr")
 DEFAULT_MEM_CONFIG = "bram"
 
 # Test environments, passed to the riscv_tests Makefile as ENV:
-#   p (default): the physical environment (bare M-mode, the upstream -p
-#                variants).
+#   p (default): the physical environment (the upstream -p variants): no
+#                kernel, and each test runs in the mode its RVTEST_RV64*
+#                macro selects (user mode for rv64u*).
 #   v:           the virtual environment (the upstream -v variants). The test
 #                runs as demand-paged Sv39 user code under a supervisor kernel
 #                (env_v/), so fetch and data are translated, page faults are
@@ -605,7 +606,7 @@ Available benchmarks: {", ".join(BENCHMARKS.keys())}
         default=DEFAULT_ENV,
         help=(
             f"Test environment: {', '.join(ENVS)} (default: {DEFAULT_ENV}). "
-            "p = bare M-mode (the -p variants); v = demand-paged Sv39 user "
+            "p = physical, no kernel (the -p variants); v = demand-paged Sv39 user "
             "code under the env_v supervisor kernel (the -v variants; "
             "requires --mem-config ddr, user-level suites only)."
         ),

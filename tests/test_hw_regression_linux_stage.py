@@ -387,10 +387,10 @@ def test_the_systemd_state_is_not_read_out_of_the_typed_command() -> None:
 def test_a_line_still_arriving_is_not_read_as_a_finished_one(line: str) -> None:
     """The predicates run on a capture that grows byte by byte.
 
-    Every value the stage reads from a line waits for that line's newline. ``$``
-    also matches at the end of the buffer, so a read that stopped inside
-    ``state=running`` would otherwise see the state ``r`` and fail a healthy
-    boot.
+    The mount fields, the systemd state, and the root-alive status each wait for
+    their line's newline. ``$`` also matches at the end of the buffer, so a read
+    that stopped inside ``state=running`` would otherwise see the state ``r``
+    and fail a healthy boot.
     """
     linux = stage()
     for length in range(1, len(line)):

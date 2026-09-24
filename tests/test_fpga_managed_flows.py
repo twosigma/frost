@@ -440,7 +440,8 @@ def test_elf_determines_safe_startup(
     """The ELF, not the BRAM setting alone, decides whether a restart is safe.
 
     A restart (to main, or from reset without main) needs entry 0 and no
-    writable DDR data, since it does not reload DDR; anything else attaches.
+    initialized writable DDR data, since it does not reload DDR; anything
+    else attaches.
     """
     directory = tmp_path / "hello_world"
     write_prebuilt(

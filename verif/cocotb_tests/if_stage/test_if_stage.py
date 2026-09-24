@@ -2452,13 +2452,14 @@ async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
     """A stalled PD-redirect wrong-path bubble must not dispatch on release.
 
     A PD redirect moves both PCs to the target, and the next cycle is a
-    lead-restoring bubble: fetch advances while pc_reg holds.  pd_redirect_q
-    forces that NOP, because a BTB hit in the same cycle sets
-    prediction_holdoff, which would otherwise lift the control-flow-holdoff
-    NOP.  control_flow_holdoff and prediction_holdoff hold through a stall, so
-    pd_redirect_q must too: if it ended during a stall that covers the bubble
-    cycle, the bubble would dispatch on release and the next cycle would
-    present the same pc_reg again, allocating it twice in the ROB.
+    lead-restoring bubble: fetch advances while pc_reg holds.  Here a BTB
+    prediction is used in the redirect cycle; the redirect kills it, so
+    prediction_holdoff stays clear and the control-flow-holdoff NOP squashes
+    the bubble (pd_redirect_q forces it too).  control_flow_holdoff,
+    prediction_holdoff, and pd_redirect_q all hold through a stall.  If the
+    squash ended during a stall that covers the bubble cycle, the bubble would
+    dispatch on release and the next cycle would present the same pc_reg
+    again, allocating it twice in the ROB.
     """
     await _setup_test(dut)
     dut.i_disable_branch_prediction.value = 0
@@ -2467,8 +2468,7 @@ async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
     stale_pred_target = 0x80005000
     pd_target = 0x80006000
 
-    # Train the BTB so a hit collides with the PD redirect (the collision is
-    # what arms prediction_holdoff and defeats the plain control-flow NOP).
+    # Train the BTB so a hit collides with the PD redirect.
     _drive_from_ex(
         dut,
         {
@@ -2528,7 +2528,7 @@ async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
     dup = [pc for pc in set(presented) if presented.count(pc) > 1]
     assert not dup, (
         f"slot-1 pc(s) {[hex(p) for p in dup]} presented more than once after "
-        "stall release: the pd_redirect_q wrong-path bubble expired during "
+        "stall release: the PD-redirect wrong-path bubble expired during "
         "the stall and the bubble cycle dispatched alongside the realigned "
         "repeat (stall-release duplicate dispatch)"
     )

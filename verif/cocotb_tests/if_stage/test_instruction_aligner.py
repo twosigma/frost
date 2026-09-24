@@ -1186,10 +1186,10 @@ async def test_slot2_fast_decompressor_outputs_cover_all_candidate_positions(
     """Slot 2's expansion and illegal flag are exact at all three start positions."""
     await _setup_test(dut)
 
-    # The legal C.ADDI sets all six spliced bits {27,25,20,15,9,8}; the
-    # reserved quadrant-0 parcel expands to zero, clears all six, and sets the
-    # separately computed illegal flag. Together they catch swapped
-    # destinations and a bit stuck at either value at each position.
+    # The legal C.ADDI sets bits 20 and 15, which a compressed slot 2 takes
+    # from the decompressor's fast outputs; the reserved quadrant-0 parcel
+    # expands to zero, clears both, and sets the separately computed illegal
+    # flag. Together they catch either bit stuck at 0 or 1 at each position.
     vectors = (
         (0x1385, 0xFE138393, False),  # c.addi x7,-31
         (0x8000, 0x00000000, True),  # reserved quadrant-0 funct3=100

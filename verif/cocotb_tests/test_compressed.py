@@ -70,9 +70,12 @@ async def settle_check_reg(
     An architectural register write lands at ROB commit, a variable number of
     cycles after the harness feeds the instruction, so a fixed NOP fill after
     the instruction is not enough. Poll the committed value until it equals
-    ``expected``, then assert. Every tested instruction writes a value that
-    differs from the register's prior contents, so a stale read cannot end the
-    poll early. The instruction bus still carries the NOP filler driven by the
+    ``expected``, then assert. From the zeroed registers of a fresh simulation,
+    every tested instruction writes a value that differs from the register's
+    prior contents, so a stale read cannot end the poll early. Reset does not
+    clear the register file, so the suite's second run in one simulation finds
+    x11 and x13 already at -5 and 17, and those two checks can pass on a stale
+    read. The instruction bus still carries the NOP filler driven by the
     preceding execute helper, so waiting only has to advance clock cycles.
 
     Args:

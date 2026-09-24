@@ -254,7 +254,7 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
 
     try:
         # Clean only when the existing Verilator build cannot be reused (a
-        # different toplevel, cocotb installation, or Verilator arguments).
+        # different toplevel, cocotb installation, or FROST_VERILATOR_EXTRA_ARGS).
         needs_clean = runner._verilator_needs_rebuild(sim_build_dir)
         if needs_clean:
             subprocess.run(["make", "clean"], check=False, env=env)
@@ -370,8 +370,8 @@ def run_single_test(
     if not compiled:
         # In the bram and icache tiers, a linker region overflow means the test
         # does not fit in low BRAM (95 KiB of code, 1 KiB reserved for debug,
-        # and 160 KiB of data and stack). Report SKIP: the ddr tier, with
-        # 64 MiB, runs the test.
+        # and 160 KiB of data and stack), assuming icache code fits its 64 MiB
+        # DDR region. Report SKIP: the ddr tier, with 64 MiB, runs the test.
         if mem_config != "ddr" and (
             "will not fit in region" in compile_out or "overflowed by" in compile_out
         ):

@@ -214,8 +214,8 @@ def test_pin_refinement_modes_and_failure_boundaries(
 
     Auto mode skips a recipe mismatch, or a regression or failed swap that it
     rolled back exactly. Strict-mode mismatches and regressions, failed
-    rollbacks, audit-write failures, and unexpected errors are fatal, and only
-    a PASS leaves an audit file.
+    rollbacks, audit-write failures, and unexpected errors in the recipe check
+    are fatal, and only a PASS leaves an audit file.
     """
     script = tmp_path / "model.tcl"
     script.write_text(TCL_MODEL)

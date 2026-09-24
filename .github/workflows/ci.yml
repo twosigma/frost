@@ -320,8 +320,8 @@ jobs:
             python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
               --mem-config ${{ matrix.mem_config }}
 
-  # riscv-tests ISA suites by memory tier and environment. p = bare M-mode
-  # (the -p variants). v = demand-paged Sv39 user code under the env_v
+  # riscv-tests ISA suites by memory tier and environment. p = physical, no
+  # kernel (the -p variants). v = demand-paged Sv39 user code under the env_v
   # supervisor kernel (the -v variants: translated fetch and data, delegated
   # page faults, Svade A/D handling); v runs on DDR only, user-level suites only.
   test-riscv-tests:

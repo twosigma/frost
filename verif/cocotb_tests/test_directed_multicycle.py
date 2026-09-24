@@ -18,12 +18,12 @@ The tests cover back-to-back integer DIV and FDIV.S completions, plus two
 load-use pairs (FLD -> FADD.D and LH -> BEXT).
 
 These tests (the directed_multicycle target) fail on the out-of-order core:
-their monitors and drain counts expect each result at a fixed offset from
-fetch. cpu_ooo has no writeback stage; commit_actions writes registers at ROB
-commit, up to two per cycle, after a variable delay, and no stall signal gates
-those writes. The target is registered CLI-only (include_in_pytest=False in
-tests/test_run_cocotb.py) until the checks follow commit order. See "CPU
-reference harness" in verif/README.md.
+their expected-value queues and drain counts assume each instruction retires
+at a fixed offset from fetch. cpu_ooo has no writeback stage; commit_actions
+writes registers at ROB commit, up to two per cycle, after a variable delay,
+and no stall signal gates those writes. The target is registered CLI-only
+(include_in_pytest=False in tests/test_run_cocotb.py) until the checks follow
+commit order. See "CPU reference harness" in verif/README.md.
 """
 
 import cocotb

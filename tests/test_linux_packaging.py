@@ -1857,10 +1857,10 @@ def test_linux_boot_make_rebuilds_a_stale_test_userspace() -> None:
 
 
 def test_linux_boot_make_passes_br2_external_to_every_buildroot_call() -> None:
-    """Buildroot regenerates its record of BR2_EXTERNAL from this variable.
+    """Every Buildroot call in the linux_boot Makefile names BR2_EXTERNAL.
 
-    Omitting it on one invocation leaves the build directory with no external
-    tree at all, which breaks every later call until it is reconfigured.
+    Buildroot would reuse the value the defconfig saved, but naming it keeps
+    each call independent of that saved state.
     """
     text = LINUX_BOOT_MAKEFILE.read_text()
     calls = [line for line in text.splitlines() if '$(MAKE) -C "$(BR2_SRC)"' in line]

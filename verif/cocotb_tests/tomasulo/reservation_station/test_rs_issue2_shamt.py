@@ -14,10 +14,10 @@
 
 """Tests for the port-1 shift amount of a dual-issue reservation station.
 
-o_issue_shift_amount_2 is registered with port 1's operands: the immediate's
-low six bits for an immediate shift or rotate, and the low six bits of the
-final src2 value for a register shift or rotate. The DUT is the
-reservation_station module itself.
+o_issue_shift_amount_2 is registered with port 1's operands. For a shift or
+rotate that uses the ALU barrel shifter, it holds the immediate's low six bits
+for an immediate form and the low six bits of the final src2 value for a
+register form. The DUT is the reservation_station module itself.
 """
 
 from typing import Any

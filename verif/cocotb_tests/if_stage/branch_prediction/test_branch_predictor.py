@@ -669,8 +669,8 @@ async def test_staged_slot2_lookup_covers_next_index_and_rejects_later_index(
     await _settle()
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
 
-    # A served base in neither the staged word nor the next one must not use
-    # any of the three images' registered rows.
+    # A served base whose index is neither the staged index nor the next one
+    # must not use any of the three images' registered rows.
     dut.i_pc_2_base.value = lookup_base + 8
     await _settle()
     assert not dut.o_btb_hit_2.value

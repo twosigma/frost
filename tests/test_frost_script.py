@@ -86,7 +86,7 @@ def test_run_requires_a_command() -> None:
 
 
 def test_environment_forwarding_is_scoped_and_deterministic() -> None:
-    """Only workflow variables are forwarded, sorted; PATH and secrets are not."""
+    """Only allowlisted names are forwarded, sorted; PATH and AWS keys are not."""
     environment = {
         "FROST_COCOTB_MEM_CONFIG": "ddr",
         "COCOTB_RANDOM_SEED": "7",

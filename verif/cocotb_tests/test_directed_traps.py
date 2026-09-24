@@ -1311,7 +1311,8 @@ async def run_directed_interrupt_commit_race_test(
 ) -> None:
     """Sweep an async timer interrupt cycle-by-cycle over a register-writing stream.
 
-    Assert the trap-entry precise-state prefix invariant at every offset.
+    Assert the trap-entry precise-state prefix invariant at every offset whose
+    interrupt is taken. Offsets that take no trap are logged, not checked.
 
     mode="alu":  the stream is `addi xK, x0, marker`; the result comes from
                  the ALU.
@@ -1689,9 +1690,9 @@ async def run_directed_interrupt_commit_race_test(
 async def test_directed_interrupt_commit_race(dut: Any) -> None:
     """Sweep an async M-timer interrupt across an ALU stream.
 
-    At every fire cycle, check that the architectural regfile at trap entry
-    reflects exactly the instructions with PC < mepc (precise-state prefix
-    invariant).
+    For each fire cycle whose interrupt is taken, check that the architectural
+    regfile at trap entry reflects exactly the instructions with PC < mepc
+    (precise-state prefix invariant).
     """
     await run_directed_interrupt_commit_race_test(dut, mode="alu")
 

@@ -248,7 +248,7 @@ can be debugged and where each one first stops.
 | `clint_test/` | SiFive CLINT alias: writes reach the native timer registers, and a timer interrupt armed through the alias fires |
 | `coremark/` | EEMBC CoreMark, built without the C extension by default; see the [measurement sweeps](../docs/single_core_performance.md#reproducing-and-retaining-measurements) and [Spike tools](apps/coremark/iss/README.md) |
 | `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, loaded as `coremark_pro_<workload>`; the heap and large datasets live in DDR |
-| `csr_rmw_test/` | Old and new values for `csrrw`/`csrrs`/`csrrc`, including the same-register `mscratch` swap that Linux trap entry uses |
+| `csr_rmw_test/` | Old and new values for `csrrw`/`csrrs`/`csrrc`, including the same-register `mscratch` swap that OpenSBI's trap entry uses |
 | `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit` and 64-bit `mcycle`/`minstret` writes |
 | `ddr_atomic_test/` | Word LR/SC and AMOs on cached DDR, printing a progress letter before each step |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |

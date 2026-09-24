@@ -288,7 +288,7 @@ def workflow_command(workflow: str, arguments: Sequence[str]) -> list[str]:
 
 
 def forwarded_environment_names(environment: Mapping[str, str]) -> list[str]:
-    """Return safe development-variable names to inherit in the container."""
+    """Return the allowlisted development-variable names to inherit in the container."""
     return sorted(
         name
         for name in environment

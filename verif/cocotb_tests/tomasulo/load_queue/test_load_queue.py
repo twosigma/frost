@@ -2089,9 +2089,10 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
     pulse drops, and a younger load to the same address must not use the stale
     L0 line in that gap. The SQ invalidates the line in the launch cycle, where
     i_mem_bus_busy and the L0's same-cycle invalidate suppression also block
-    the hit. In the gap the load misses and may issue to memory; the router
-    orders that read behind the in-flight write
-    (test_load_queued_behind_cached_write_inflight).
+    the hit. In the core, i_mem_bus_busy stays high for the whole write flight
+    (the wrapper ORs in i_slow_write_inflight), so the load can neither hit nor
+    launch in the gap. This bench drops busy right after the launch cycle to
+    check that the invalidation alone makes the load miss.
     """
     dut_if, model = await setup(dut)
 
@@ -2137,11 +2138,10 @@ async def test_cache_hit_blocked_until_delayed_store_invalidation(dut: Any) -> N
     await dut_if.step()
     dut_if.clear_cache_invalidate()
 
-    # Cached-tier delayed-write gap: the write pulse and busy are gone while the
-    # store is still in its write pipeline. The line was invalidated at launch,
-    # so the load must miss: no stale hit, no stale completion. Issuing to
-    # memory here is fine because the router orders the read behind the
-    # in-flight write.
+    # Cached-tier delayed-write gap: the write pulse is gone while the store is
+    # still in its write pipeline. The core keeps busy high until the write
+    # completes; the bench drops it here. The line was invalidated at launch,
+    # so the load must miss: no stale hit, no stale completion.
     dut_if.drive_mem_bus_busy(False)
     await Timer(1, unit="ns")
     assert not bool(dut.o_l0_hit.value), (

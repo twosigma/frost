@@ -126,7 +126,7 @@ class SQModel:
         """Return whether the ring window is full, holes included.
 
         The RTL allocates only at the tail, so a hole left by a discarded SC
-        holds its capacity until the head passes it.
+        holds its capacity until the head passes it or a flush reclaims it.
         """
         return self.window_occupancy >= self.depth
 

@@ -15,9 +15,10 @@
 """Unit tests for cdc_gray_count (hw/rtl/lib/cdc/cdc_gray_count.sv).
 
 Events pulse in a 161 MHz source domain and the total is read in a 300 MHz
-destination domain. Every event must count exactly once, across source
-counter wraps and across a source reset while the rebase is held. A source
-reset without the rebase must show the documented wrap error.
+destination domain. Every event must count exactly once, including across
+source counter wraps. A source reset while the rebase is held must leave the
+total unchanged. A source reset without the rebase must show the documented
+wrap error.
 """
 
 import random
@@ -91,7 +92,7 @@ async def test_source_reset_with_rebase_keeps_total(dut: Any) -> None:
     before = await _settle(dut)
     assert before == 100
     # Rebase first (the reset handshake raises it before the source resets),
-    # then reset the source, then release both in that order.
+    # then reset the source, then release the source reset before the rebase.
     await FallingEdge(dut.i_dst_clk)
     dut.i_dst_rebase.value = 1
     for _ in range(4):

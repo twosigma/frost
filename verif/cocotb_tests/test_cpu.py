@@ -23,10 +23,10 @@ operations. LR.W/SC.W, traps, and compressed instructions have their own
 directed suites (test_directed_atomics.py, test_directed_traps.py,
 test_compressed.py).
 
-The register and PC monitors expect each result at a fixed offset from fetch,
-which the out-of-order core does not provide, so these tests (the cpu_random
-target) fail until they check results in commit order. See
-"CPU reference harness" in verif/README.md.
+The test queues expected results as if each instruction retired at a fixed
+offset from fetch, which the out-of-order core does not provide, so these
+tests (the cpu_random target) fail until they check results in commit order.
+See "CPU reference harness" in verif/README.md.
 
 The testbench feeds instructions straight into cpu_tb, whose data memory is a
 fixed-latency BRAM, so instruction memory, the L1 and L2 caches, and variable

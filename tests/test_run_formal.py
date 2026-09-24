@@ -96,7 +96,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "csr_commit_cofactor.sby",
-        "Most CSR storage, both counters and the translation-invalidate request equal a reference transition model",
+        "Most CSR storage, both counters and the translation-invalidate request equal a "
+        "reference transition model (in the integrated tasks, whenever no trap or xRET "
+        "coincides with a CSR commit)",
         tasks=("prove", "prove_integrated", "prove_perf_off"),
     ),
     FormalTarget(

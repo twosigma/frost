@@ -296,7 +296,9 @@ assert _offset == 0, f"Offset mismatch: {_offset}"
 # uses_fp_rs1, ...), so build_from_id_to_ex can derive the pre-decoded flags
 # from instruction_operation and tests need not set each one. In the CPU,
 # id_stage runs the same decode and registers the flags, and dispatch reads
-# them without re-decoding.
+# them without re-decoding. The tables cover only the ops named above, not the
+# RV64-only integer ops (LD, ADDW, LR_D, ...), so a test that drives one of
+# those must set its flags explicitly.
 _HAS_FP_DEST_OPS: frozenset[int] = frozenset(
     {
         FLW,

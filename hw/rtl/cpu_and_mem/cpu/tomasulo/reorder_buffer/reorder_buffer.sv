@@ -2479,18 +2479,17 @@ module reorder_buffer #(
                        head_f_is_csr && !head_exception &&
                        !i_flush_en && !i_flush_all;
 
-  // xRET execution signal: asserted on entry to MRET_EXEC and sustained while
-  // waiting there for committed stores to drain.
+  // xRET execution signal. The serializer moves an xRET head from IDLE to
+  // MRET_EXEC whether or not committed stores have drained, and o_mret_start
+  // rises only once they have (i_sq_committed_empty), in either state.
   //
-  // take_mret (trap_unit) fires only when i_sq_committed_empty is high in the
-  // same cycle as o_mret_start, and it has no retry. Without the
-  // SERIAL_MRET_EXEC sustaining term o_mret_start is a one-cycle pulse on the
-  // IDLE->MRET_EXEC cycle: if a committed store is still draining then,
-  // take_mret misses its only chance and the serializer wedges in
-  // SERIAL_MRET_EXEC forever. No later flush can rescue it, because the stuck
-  // MRET never restores MIE, so no interrupt becomes eligible to flush it.
-  // The sustaining term mirrors o_trap_pending (below) and lets take_mret
-  // retry every cycle until the SQ drains.
+  // take_mret (trap_unit) fires only with o_mret_start. Without the
+  // SERIAL_MRET_EXEC term, o_mret_start could rise only in the IDLE->MRET_EXEC
+  // cycle, so an xRET that reaches the head while a committed store is still
+  // draining would never raise it, and the serializer would wedge in
+  // SERIAL_MRET_EXEC. No later flush could rescue it, because the stuck MRET
+  // never restores MIE, so no interrupt becomes eligible to flush it. The term
+  // mirrors o_trap_pending (below).
   //
   // The i_sq_committed_empty gate keeps o_mret_start (hence i_mret_start ->
   // trap_drain_wait -> i_commit_hold) low during the drain wait, which (a)
@@ -3733,8 +3732,8 @@ module reorder_buffer #(
         assert ($past(serial_state) == riscv_pkg::SERIAL_IDLE && $past(head_is_csr));
       end
 
-      // o_mret_start is asserted when MRET first reaches the ready head and is
-      // sustained in MRET_EXEC so trap_unit can retry after committed SQ drain.
+      // o_mret_start rises only in IDLE or MRET_EXEC, with a ready xRET at the
+      // head and committed stores drained.
       if ($past(o_mret_start)) begin
         p_mret_start_contract :
         assert (($past(

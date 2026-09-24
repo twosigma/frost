@@ -151,10 +151,11 @@ benchmark.
 ./scripts/frost.py run python3 tests/test_riscv_tests.py --suites rv64ui --mem-config ddr --env v
 ```
 
-`--mem-config bram` is the default. `--env p` runs the bare M-mode variants;
-`--env v` runs the user-level suites under the demand-paged Sv39 supervisor
-in `sw/apps/riscv_tests/env_v/`. The virtual environment needs DDR, and it
-sets page-table A and D bits from page faults (Svade).
+`--mem-config bram` is the default. `--env p` runs the physical variants, with
+no kernel and each test in the mode its RVTEST macro selects (user mode for
+`rv64u*`). `--env v` runs the user-level suites under the demand-paged Sv39
+supervisor in `sw/apps/riscv_tests/env_v/`. The virtual environment needs DDR,
+and it sets page-table A and D bits from page faults (Svade).
 
 `ISA_SKIP_TESTS` leaves out tests for behavior FROST does not implement:
 misaligned accesses in hardware (`ma_data`), debug triggers, PMP, and hardware

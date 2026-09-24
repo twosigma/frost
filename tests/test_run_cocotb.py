@@ -364,7 +364,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="csr_rmw_test",
         description=(
             "CSR read-modify-write directed test "
-            "(csrrw/csrrs/csrrc; kernel trap path; mperfctl bank control, "
+            "(csrrw/csrrs/csrrc; the trap-entry mscratch swap; mperfctl bank control, "
             "so the profiling counters are present)"
         ),
         verilator_extra_args=("-GPERF_COUNTERS=1",),
@@ -434,20 +434,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "MRET progress with draining cached stores; o_mret_start must pulse once."
         ),
-        # Small L2 and slow memory expose repeated o_mret_start while stores drain.
+        # Small L2 and slow memory keep committed stores draining as the MRET reaches the head.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "wfi_lost_tick": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="wfi_lost_tick",
-        description="Linux-style WFI idle with MIE toggling and CLINT re-arm, deadlines swept across WFI, csrsi and MRET: no lost timer ticks",
+        description="Linux-style WFI idle with MIE toggling and CLINT re-arm, deadlines swept across WFI, csrsi and MRET: the timer tick count may trail the iteration count by at most 4",
     ),
     "irq_mie_window": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="irq_mie_window",
-        description="A pending timer interrupt must be taken in a one-cycle mstatus.MIE window, not erased by the adjacent MIE clear",
+        description="A pending timer interrupt must be taken in a one-instruction mstatus.MIE window, not erased by the adjacent MIE clear",
     ),
     "ns16550_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

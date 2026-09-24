@@ -341,9 +341,9 @@ async def test_pc_reg_clock_enable_factors_fetch_holds_and_preserves_priority(
         assert int(dut.o_pc_reg.value) == expected_pc_reg
         assert int(dut.o_pc_reg_high_for_coverage.value) == ((expected_pc_reg >> 1) & 1)
 
-    # Every redirect still loads with both holds asserted. Trap, xRET, and
-    # FENCE-class redirects also load during a stall; branch and PD redirects
-    # need the pipeline unstalled.
+    # Trap, xRET, FENCE-class, branch, and PD redirects still load with both
+    # holds asserted. The first three also load during a stall; branch and PD
+    # redirects need the pipeline unstalled.
     redirect_cases = (
         ("i_trap_taken", "i_trap_target", TRAP_TARGET, True),
         ("i_mret_taken", "i_trap_target", TRAP_TARGET + 4, True),
@@ -464,8 +464,8 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     await _settle()
     assert int(dut.next_pc_reg.value) == PRED_TARGET
 
-    # Reset and every redirect still outrank the live slot-2 target, including
-    # the redirects that load during a stall.
+    # Reset and the trap, xRET, FENCE-class, branch, and PD redirects still
+    # outrank the live slot-2 target.
     redirect_cases = (
         ("i_reset", None, 0),
         ("i_trap_taken", "i_trap_target", TRAP_TARGET),

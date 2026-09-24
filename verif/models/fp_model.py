@@ -24,9 +24,13 @@ NaN results are the canonical quiet NaN (0x7FC00000 single,
 0x7FF8000000000000 double); sign injection, the bit moves and the FP loads
 do not canonicalize. Infinities and both signed zeros follow IEEE 754.
 
-The model rounds to nearest even only, so it matches the RTL while the
-effective rounding mode is RNE. That is the default: the instruction encoders
-use dynamic rounding (rm=7), and frm resets to RNE.
+The model always rounds to nearest even, so its rounding matches the RTL
+only while the effective rounding mode is RNE. That is the default: the
+instruction encoders use dynamic rounding (rm=7), and frm resets to RNE.
+
+Integer operands and results are 32-bit values, and the float/int
+conversions are the W and WU forms only. The RV64 RTL sign-extends
+FCVT.W[U] and FMV.X.W results into rd; the model does not.
 """
 
 from __future__ import annotations

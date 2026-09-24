@@ -22,10 +22,11 @@ INVAL, ISSUE, RESP). The registry builds it once per candidate lock count
 (`dma_envelope_lock<N>`, -GNUM_DMA_LOCK) and once more for three locks at the
 full-system DDR model latency (`dma_envelope_lock3_mem30`); each build
 measures every scenario at every producer depth. Scenarios: full-line writes
-to absent lines, to lines clean or dirty in the L1D, to lines resident in the
-L2 only, partial-strobe writes to absent lines (a fetch from memory at the
-L2), reads of absent lines and of lines dirty in the L1D, writes under a
-data-side miss flood, and a stream larger than the L2.
+to absent lines, to lines clean or dirty in the L1D, to lines evicted from the
+L1D and the L2 by aliasing reads (`write_l2_only`), partial-strobe writes to
+absent lines (a fetch from memory at the L2), reads of absent lines and of
+lines dirty in the L1D, writes under a data-side miss flood, and a stream
+larger than the L2.
 
 The bench plays the load queue with a one-cycle admit and invalidation delay.
 Results also land in `results/dma_envelope_lock<N>.json`.
@@ -270,7 +271,9 @@ async def test_dma_envelope(dut: Any) -> None:
             dut, sampler, "write_dirty_l1d", depth, _write_stream(base), results
         )
 
-        # 4. Lines in the L2 only (touched, then evicted from the L1D).
+        # 4. Lines read, then evicted with reads 128 KiB away. That offset
+        # also aliases in the 4 KiB L2, so despite the name, the DMA writes
+        # find these lines in neither cache.
         base = _region(region)
         region += 1
         addrs = [base + i * LINE_BYTES for i in range(STREAM_LINES)]

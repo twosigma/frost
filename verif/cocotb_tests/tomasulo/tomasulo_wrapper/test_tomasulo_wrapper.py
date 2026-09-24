@@ -6885,10 +6885,10 @@ async def test_mem_single_delivery_misalign_collision(dut: Any) -> None:
     load pops from the LQ cdb_stage the same cycle, while the colliding
     misaligned store's exception captures into its registered slot and
     takes the MEM slot the next cycle.  If the collision left the
-    already-broadcast load in cdb_stage, it would be granted a second time
-    one cycle later, after the first delivery had committed the load
-    (head-done bypass), and would write a freed ROB entry.  A late-enough
-    duplicate is the tag-ABA hazard.
+    already-broadcast load in cdb_stage, it would be granted again the
+    cycle after the store's exception, after the first delivery had
+    committed the load (head-done bypass), and would write a freed ROB
+    entry.  A late-enough duplicate is the tag-ABA hazard.
 
     Sweeps the store-wake alignment so one iteration collides exactly.
     """
@@ -7004,8 +7004,8 @@ async def test_stale_cdb_fdiv_full_flush_probe(dut: Any) -> None:
     cycle after it. Sweeps the pulse across the divide, then (second leg)
     holds a finished result in the shim or adapter under injected CDB
     contention across the flush. The first two dead tags are reallocated
-    immediately after the flush: a blocker, and an un-issuable consumer that
-    waits on it.
+    immediately after the flush (in the second leg, once the contention is
+    released): a blocker, and an un-issuable consumer that waits on it.
     """
     cocotb.log.info("=== Test: Stale-CDB FDIV Full-Flush Probe ===")
     for flush_delay, contend in [

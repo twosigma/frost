@@ -541,7 +541,12 @@ class LQInterface:
 
     @property
     def mem_outstanding(self) -> bool:
-        """Return o_mem_outstanding: whether the LQ is owed a memory response."""
+        """Return o_mem_outstanding: a fast-tier load or cached slot awaits a response.
+
+        A fast-tier load stops counting once a flush kills it, even if its response
+        is still owed and will be drained. A cached slot counts until it is freed,
+        even after a flush kills its load.
+        """
         return bool(self.dut.o_mem_outstanding.value)
 
     # =========================================================================

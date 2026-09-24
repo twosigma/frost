@@ -532,7 +532,8 @@ AMO: dict[str, tuple[Callable, Callable]] = {
 # tests cover them instead.
 #
 # ECALL: environment call, raises an exception and jumps to mtvec.
-# EBREAK: raises a breakpoint exception and jumps to mtvec.
+# EBREAK: raises a breakpoint exception and jumps to mtvec. With dcsr.ebreakm
+#   set, it enters Debug Mode instead.
 # MRET: returns from a trap, restoring the PC from mepc and restoring mstatus.
 # WFI: waits for an interrupt, stalling until one is pending.
 TRAP_INSTRS: dict[str, Callable] = {

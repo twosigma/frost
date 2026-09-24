@@ -520,7 +520,7 @@ async def test_wrapper_counter_select_and_data_path(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> None:
-    """Cache counters accumulate, freeze on capture, and keep the preceding snapshot."""
+    """Cache counters accumulate; a capture freezes a snapshot and keeps the preceding one."""
     await _setup_test(dut)
 
     patterns: list[dict[str, int | bool]] = [

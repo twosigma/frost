@@ -445,9 +445,10 @@ async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
     Enabled with FROST_WEDGE_MONITOR=1. Samples the state every clock and
     emits an aggregated snapshot every FROST_WEDGE_DUMP_INTERVAL cycles
     (default 2000). It also logs a one-shot "STALL DETECTED" banner once UART
-    output stops advancing for FROST_WEDGE_STALL_CYCLES cycles (default 20000)
-    and then emits up to FROST_WEDGE_POST_STALL_DUMPS (default 16) snapshots
-    before it stops logging (the simulation keeps running to the cycle cap).
+    output stops advancing for FROST_WEDGE_STALL_CYCLES cycles (default 20000),
+    and it stops logging after FROST_WEDGE_POST_STALL_DUMPS (default 16)
+    snapshots taken while UART is stalled (the simulation keeps running to the
+    cycle cap).
 
     Taps whose signals do not resolve read as 0 (1-bit) or print as None
     (multi-bit), and the armed log line names the missing bool_sig and val_sig
