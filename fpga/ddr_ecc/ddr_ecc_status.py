@@ -16,30 +16,21 @@
 
 """Report the X3 DDR4 controller's ECC state over JTAG.
 
-The DDR4 on the X3 is 72 bits wide, so the controller checks ECC on every
-read. That makes these registers the board's own account of whether the
-array was written before it was read: a location nothing has written since
-power-up carries a check code unrelated to its data, and reading it latches
-an error here. ``boards/x3/x3_ddr_init.sv`` writes the region once after
-calibration to prevent exactly that, and a clean report from this tool after
-a cold power cycle and a run is what shows it worked, rather than an
-argument that it must have.
+The X3's DDR4 is 72 bits wide, so the controller checks ECC on every read. A
+location not written since power-up holds a check code unrelated to its data,
+and reading it latches an error here. ``boards/x3/x3_ddr_init.sv`` writes the
+whole region after calibration to prevent that; a clean report after a cold
+power cycle and a run confirms it. The report covers only addresses that were
+actually read.
 
-A clean report is ECC_STATUS zero and CE_CNT zero, with checking enabled.
-ECC_ON_OFF gates the controller's own error capture, so zero counters with
-it clear say nothing at all and are reported as a failure rather than a
-pass. In ECC_STATUS bit 0 is the uncorrectable error and bit 1 the
-correctable one, which is the controller's order and not the intuitive one.
-CE_CNT saturates at 255, so a full counter means at least that many
-correctable errors, not exactly that many. There is no UE counter: an
-uncorrectable error shows in the status bit and in the UE captures.
+A report is clean when ECC_ON_OFF enables checking and ECC_STATUS and CE_CNT
+are zero. With checking off the controller captures nothing, so zero counters
+are reported as a failure. ECC_STATUS bit 0 is the uncorrectable error and
+bit 1 the correctable one. CE_CNT saturates at 255, so a full counter means at
+least that many correctable errors. There is no uncorrectable-error counter;
+such an error shows in ECC_STATUS and the UE captures.
 
-What this can and cannot show: it is the controller's account of the reads
-that actually happened, so it catches a region that was left uninitialized
-and then read. It cannot prove a region was covered, because nothing reports
-an address nobody read.
-
-Exits nonzero when the report is not clean, so a caller can gate on it.
+Exits with status 2 when the report is not clean and 1 when the read fails.
 """
 
 import argparse
@@ -61,10 +52,9 @@ from hw_target import (  # noqa: E402
 
 TCL_SCRIPT = SCRIPT_DIR / "ddr_ecc_status.tcl"
 
-# The controller's ECC register offsets within its management window. These
-# are the controller's own map, read out of the generated IP rather than
-# guessed: status and the correctable counter first, then the captures that
-# say where an error was and what it looked like.
+# ECC register offsets within the controller's management window, taken from
+# the generated IP's register map: status and the correctable-error counter
+# first, then the captures that record where an error was and what it held.
 ECC_REGISTERS: tuple[tuple[str, int], ...] = (
     ("ECC_STATUS", 0x000),
     ("ECC_EN_IRQ", 0x004),
@@ -78,8 +68,8 @@ ECC_REGISTERS: tuple[tuple[str, int], ...] = (
     ("UE_FFE", 0x280),
 )
 
-# The three that decide the verdict. The captures describe an error; these
-# say whether one happened, and whether the controller was watching at all.
+# The registers that decide whether the report is clean: whether an error
+# happened, and whether checking was on. The captures only describe an error.
 VERDICT_REGISTERS = ("ECC_STATUS", "CE_CNT", "ECC_ON_OFF")
 
 # ECC_STATUS bit order is the controller's: bit 0 uncorrectable, bit 1
@@ -119,8 +109,8 @@ def verdict(values: dict[str, int]) -> tuple[bool, list[str]]:
         return False, [f"{name} was not read" for name in missing]
 
     if not values["ECC_ON_OFF"] & 0x1:
-        # Without this the controller captures nothing, so the zeros below
-        # would be the absence of a measurement rather than a clean one.
+        # With checking off the controller captures nothing, so zero counters
+        # below would prove nothing.
         problems.append("ECC checking is disabled, so the counters mean nothing")
 
     status = values["ECC_STATUS"]
@@ -138,7 +128,7 @@ def verdict(values: dict[str, int]) -> tuple[bool, list[str]]:
 
 
 def format_report(values: dict[str, int], heading: str) -> str:
-    """One line per register, widest field first so the values line up."""
+    """Format one line per register, with the values aligned."""
     lines = [heading]
     for name, _ in ECC_REGISTERS:
         if name in values:
@@ -163,8 +153,8 @@ def main() -> int:
         "--clear",
         action="store_true",
         help=(
-            "After reading and judging, clear ECC_STATUS and CE_CNT and report "
-            "the cleared state too. The verdict is the state before clearing"
+            "After reading, clear ECC_STATUS and CE_CNT and report the cleared "
+            "values too; the result reflects the values before clearing"
         ),
     )
     parser.add_argument("--json", action="store_true", help="Print the values as JSON")

@@ -1,6 +1,6 @@
 #!/bin/sh
-# FROST has no hardware entropy source: the stock busybox seedrng script would
-# block in getrandom() until the kernel's CRNG is initialized, which on the
-# simulated core can be most of a boot. Seeding is skipped; nothing in the
-# boot payload needs entropy.
+# FROST has no hardware entropy source, so the stock BusyBox seedrng script
+# would block in getrandom() until the kernel's CRNG is initialized, which can
+# take much of the boot. Seeding is skipped; nothing in the boot payload needs
+# entropy.
 exit 0

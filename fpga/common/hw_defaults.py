@@ -14,22 +14,23 @@
 
 """Shared board defaults for FPGA hardware runners."""
 
-# Default JTAG target pattern per board. load_software.py filters the targets
-# by the board's vendor first, then matches this pattern within that list. X3
-# pins the lab board's exact Xilinx serial. Pass --target to select another
-# board of the same vendor.
+# Default --target pattern per board for the hardware regression and the
+# CoreMark-PRO sweep. Target selection keeps the board vendor's targets, then
+# matches this pattern among them. The X3 default names one lab board by its
+# serial; pass --target to select another board.
 DEFAULT_TARGETS = {
     "x3": "localhost:3121/xilinx_tcf/Xilinx/507711333S8VAA",
 }
 
-# Default UART device per board (override with --serial).
+# Default UART device per board (override with --serial, or --uart in
+# linux_boot_soak.py).
 DEFAULT_SERIALS = {
     "x3": "/dev/ttyUSB3",
 }
 
-# Common per-app timeout budget per board, in seconds, build time included.
-# --timeout overrides this base; workload policy may raise it to a calibrated
-# hardware minimum when untimed setup is unusually long.
+# Default per-application timeout per board, in seconds, including build and
+# load time. --timeout replaces it; the CoreMark-PRO sweep raises either value
+# to a workload's hardware_timeout_minimums entry (sw/apps/software_registry.py).
 DEFAULT_TIMEOUTS = {
     "x3": 300.0,
 }

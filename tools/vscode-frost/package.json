@@ -178,13 +178,13 @@
           "type": "string",
           "default": "",
           "scope": "machine",
-          "description": "Exact full Vivado target path at the owned endpoint (127.0.0.1:3121/xilinx_tcf/vendor/serial), required for load/program. Empty permits attach-only use."
+          "description": "Exact full Vivado target path on the extension's hardware server (127.0.0.1:3121/xilinx_tcf/<vendor>/<serial>), required to load or program. Empty allows attach-only use."
         },
         "frost.app": {
           "type": "string",
           "default": "hello_world",
           "scope": "resource",
-          "description": "Repository application used by Attach and offered first by the debug picker. Load/debug commands remember the last selected debug app.",
+          "description": "Repository application used by Attach and offered first by the application pickers. The debug load commands save their choice here.",
           "pattern": "^[a-z][a-z0-9_]*$"
         },
         "frost.memory": {
@@ -202,7 +202,7 @@
           "default": 322265625,
           "minimum": 1,
           "scope": "resource",
-          "description": "FPGA CPU clock in Hz. Defaults to X3 at 322265625 Hz; use 161132812 for a --cpu-clock-div 2 bitstream."
+          "description": "CPU clock of the programmed bitstream in Hz: 322265625 for the default X3 build, 161132812 for a --cpu-clock-div 2 build."
         },
         "frost.bitstream": {
           "type": "string",
@@ -214,7 +214,7 @@
           "type": "string",
           "default": "",
           "scope": "resource",
-          "description": "Optional ELF override for Attach, absolute or relative to the repository. Empty resolves sw.elf in the configured app’s repository build directory; managed loads always use their freshly built ELF."
+          "description": "Optional ELF for Attach, absolute or relative to the repository. Empty uses sw.elf in the configured app's build directory. The debug load commands always use the ELF they just built."
         },
         "frost.startupTimeoutMs": {
           "type": "integer",
@@ -259,7 +259,7 @@
           "type": "boolean",
           "default": true,
           "scope": "resource",
-          "description": "Automatically open the integrated FROST Serial terminal for program, load and debug commands. Closing it releases its owned serial connection."
+          "description": "Open the FROST Serial terminal automatically for program, load and debug commands. Closing the terminal releases the serial port."
         },
         "frost.loadTimeoutMs": {
           "type": "integer",
@@ -267,7 +267,7 @@
           "minimum": 1,
           "maximum": 2147483647,
           "scope": "machine",
-          "description": "Timeout for plain Load Software, including the application build. The default allows two hours for a first Linux build. Debug load/program commands continue to use toolTimeoutMs."
+          "description": "Timeout in milliseconds for Load Software, including the application build. The default of two hours covers a first Linux build. Debug loads and programming use toolTimeoutMs."
         },
         "frost.coremarkProMode": {
           "type": "string",
@@ -277,7 +277,7 @@
           ],
           "default": "validation",
           "scope": "resource",
-          "description": "Preferred CoreMark-PRO run mode for debug selection. Debug builds do not produce reportable benchmark scores."
+          "description": "Preferred CoreMark-PRO run mode, offered first once a workload is chosen. Debug builds do not produce reportable benchmark scores."
         }
       }
     }

@@ -13,20 +13,22 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Own one Linux UART and bridge its bytes over newline-delimited JSON.
+"""Hold one Linux UART exclusively and bridge its bytes over newline-delimited JSON.
 
-Commands: {"type":"write","data":"<base64>"}, {"type":"reconfigure"},
-and {"type":"close"}. Events: ready(port, baud), data(base64), reconfigured
-(port, baud), error(message), and closed. Malformed commands fail closed.
-Stdin EOF or TERM/INT closes the owned descriptor. No command flushes input.
+Commands on stdin: {"type":"write","data":"<base64>"}, {"type":"reconfigure"}
+and {"type":"close"}. Events on stdout: ready(port, baud), data(base64),
+reconfigured(port, baud), error(message) and closed. A malformed command is an
+error that ends the bridge. Stdin EOF, SIGTERM or SIGINT closes the port. No
+command flushes pending input.
 
-Before changing termios, inspect visible /proc descriptors, acquire flock and
-TIOCEXCL, then inspect again to catch another opener between inspection/open.
-TIOCEXCL excludes subsequent unprivileged opens; flock coordinates cooperating
-clients. Linux may hide descriptors even for same-user processes; permission-
-denied entries are skipped uniformly. This checks visible owners, not hidden
-existing descriptors. CAP_SYS_ADMIN processes can also bypass TIOCEXCL.
-Never change another process, close its descriptor, or restore stale termios.
+Before changing termios, the bridge looks in /proc for other processes holding
+the device, takes flock and TIOCEXCL, then looks again to catch a process that
+opened it between the first look and the open. TIOCEXCL refuses later
+unprivileged opens; flock coordinates cooperating clients. Linux may hide a
+process's descriptors even from the same user, and those are skipped, so a
+holder the bridge cannot see goes undetected; a CAP_SYS_ADMIN process can also
+bypass TIOCEXCL. The bridge never touches another process or its descriptors,
+and does not restore the old termios settings on close.
 """
 
 from __future__ import annotations
@@ -93,11 +95,16 @@ BAUD_RATES = {
 
 
 class BridgeError(Exception):
-    """An actionable transport or ownership failure."""
+    """A failure reported to the extension as an error event."""
 
 
 def resolve_port(port: str, serial: str = "", fallback: str = DEFAULT_PORT) -> Path:
-    """Prefer a stable FT4232H/X3 UART identity for automatic selection."""
+    """Return the UART to open.
+
+    An explicit ``port`` is used as given. For "auto", the one FT4232H ``if02``
+    UART in /dev/serial/by-id is chosen; with ``serial`` set, it must match
+    that serial. If no FT4232H UART is present, ``fallback`` is used.
+    """
     if port != "auto":
         if not port:
             raise BridgeError("Serial port must be a path or 'auto'")
@@ -124,7 +131,7 @@ def resolve_port(port: str, serial: str = "", fallback: str = DEFAULT_PORT) -> P
                 "No FT4232H UART identity matches the configured JTAG serial"
             )
         candidates = matched
-    # Deduplicate aliases by device identity, retaining the stable name for UI.
+    # Several by-id links can name one device; keep one stable name per device.
     identities: dict[tuple[str, int | str], Path] = {}
     for candidate in candidates:
         target = candidate.resolve(strict=True)
@@ -147,7 +154,7 @@ def resolve_port(port: str, serial: str = "", fallback: str = DEFAULT_PORT) -> P
 
 
 def device_readers(device: os.stat_result, own_fd: int | None = None) -> list[int]:
-    """Find visible processes holding this character device, through any alias."""
+    """Return the PIDs of visible processes that hold this device under any name."""
     owners = set()
     for process in Path("/proc").iterdir():
         if not process.name.isdecimal():
@@ -174,7 +181,7 @@ def device_readers(device: os.stat_result, own_fd: int | None = None) -> list[in
 
 
 def require_unused(device: os.stat_result, own_fd: int | None = None) -> None:
-    """Refuse every visible other reader before any termios change."""
+    """Raise if another visible process holds the device."""
     owners = device_readers(device, own_fd)
     if owners:
         raise BridgeError(
@@ -183,7 +190,11 @@ def require_unused(device: os.stat_result, own_fd: int | None = None) -> None:
 
 
 def force_baud(fd: int, baud: int) -> None:
-    """Reassert raw 8N1 on the owned fd after FTDI probes, without flushing RX."""
+    """Set raw 8N1 at ``baud`` on our descriptor without flushing received bytes.
+
+    The reconfigure command runs it again. The extension sends that command
+    after JTAG activity on the FT4232H, which can change the UART's settings.
+    """
     if baud not in BAUD_RATES:
         raise BridgeError(
             f"Unsupported baud {baud}; choose one of {sorted(BAUD_RATES)}"
@@ -201,7 +212,7 @@ def force_baud(fd: int, baud: int) -> None:
 
 
 def open_owned(port: Path, baud: int) -> int:
-    """Acquire ownership before configuring; undo only our own exclusivity."""
+    """Open the port exclusively and configure it; on failure undo only our TIOCEXCL."""
     if baud not in BAUD_RATES:
         raise BridgeError(f"Unsupported baud {baud}")
     expected = port.stat()
@@ -243,7 +254,11 @@ def close_owned(fd: int) -> None:
 
 
 class Bridge:
-    """Nonblocking pipes keep stdin EOF/host death responsive during output."""
+    """Relay bytes between the UART and the JSON pipes.
+
+    The pipes are nonblocking, so stdin EOF or the parent's exit is noticed
+    even while output is backed up.
+    """
 
     def __init__(self, fd: int, port: Path, baud: int):
         """Register the acquired UART and the parent's protocol pipes."""
@@ -262,7 +277,7 @@ class Bridge:
         self.selector.register(fd, selectors.EVENT_READ, "serial")
 
     def emit(self, kind: str, **values: Any) -> None:
-        """Queue one event without splitting JSON around another event."""
+        """Queue one event as a whole JSON line."""
         self.output.extend((json.dumps({"type": kind, **values}) + "\n").encode())
         if len(self.output) > MAX_BUFFER:
             raise BridgeError("Serial output consumer cannot keep up")
@@ -271,7 +286,7 @@ class Bridge:
             self.stdout_registered = True
 
     def close(self) -> None:
-        """Stop reading/writing immediately and report owned descriptor closure."""
+        """Close the UART, stop reading commands, and queue the closed event."""
         if self.closing:
             return
         self.closing = True
@@ -381,7 +396,7 @@ class Bridge:
 
 
 def main() -> int:
-    """Acquire the selected device and expose the JSON transport protocol."""
+    """Open the selected UART and run the bridge until it closes."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", default="auto")
     parser.add_argument("--baud", type=int, default=115200)
@@ -389,7 +404,7 @@ def main() -> int:
     parser.add_argument(
         "--fallback-port",
         default=DEFAULT_PORT,
-        help="Repository board default used only when auto has no stable identity",
+        help="port for --port auto when no FT4232H UART is found",
     )
     args = parser.parse_args()
     fd = None
@@ -412,7 +427,7 @@ def main() -> int:
     except (BridgeError, OSError, termios.error) as error:
         message = str(error)
         if isinstance(error, OSError) and error.errno in (errno.EBUSY, errno.EAGAIN):
-            message = "Serial port is already owned; left untouched"
+            message = "Serial port is in use by another program; left untouched"
         try:
             if bridge is not None:
                 bridge.emit("error", message=message)

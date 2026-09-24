@@ -24,7 +24,7 @@ on:
 permissions:
   contents: read
 
-# Cancel obsolete simulation jobs after a newer push to the same PR or ref.
+# Cancel an in-progress run when a newer push arrives for the same PR or ref.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -173,8 +173,8 @@ jobs:
                 [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or [ddr_heap_test] or [ddr_mlp_test]
                 or [ddr_atomic_test] or [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or
                 [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz]
-          # OpenSBI smoke: the firmware boot alone is ~4.5M cycles, and its
-          # images are layout-fixed, so it gets one runner on one axis.
+          # OpenSBI smoke: the firmware boot alone runs for millions of cycles,
+          # and its images have a fixed layout, so it gets one runner on one axis.
           - mem_config: bram
             shard:
               name: Real Programs (OpenSBI smoke)
@@ -562,25 +562,24 @@ jobs:
               -m "not cocotb and not synthesis and not formal and not slow" -v
 
   # ---------------------------------------------------------------------------
-  # MMU Linux lane: OpenSBI fw_jump + Debian's pinned riscv64 kernel + the musl
-  # test-initramfs userspace. Buildroot builds no kernel here; OpenSBI and the
+  # MMU Linux images: OpenSBI fw_jump, Debian's pinned riscv64 kernel, and the
+  # musl test-initramfs userspace. Buildroot builds no kernel; OpenSBI and the
   # userspace come from the linux/opensbi and linux/buildroot submodules through
   # the FROST BR2_EXTERNAL tree, and the kernel and the NIC module built for it
-  # come from linux/debian_kernel.py, which its post-image hook invokes. That
-  # hook also runs frost_boot_image.py (firmware +0, Image +2 MiB, DTB at
+  # come from linux/debian_kernel.py, which the post-image hook runs. That hook
+  # also runs frost_boot_image.py (firmware at +0, Image at +2 MiB, DTB at
   # +16 MiB or the first 2 MiB boundary past a larger Image, initramfs after
   # it), so a broken packer fails this job. The artifact carries the pieces, not
-  # the packed images: a board loads through load_software.py, which packs them
-  # again from these. Booting this kernel on the RTL is retired (see
-  # tests/test_run_cocotb.py): the boot gate is the hardware regression's Linux
-  # stage plus fpga/linux_boot_soak.py, with the QEMU job below as the in-CI
-  # functional check.
+  # the packed images; load_software.py packs them again for a board. Simulating
+  # this kernel on the RTL is too slow, so Linux is checked on the board (the
+  # hardware regression's Linux stage and fpga/linux_boot_soak.py) and, in CI,
+  # by the QEMU job below.
   build-frost-linux-mmu:
     name: Build FROST MMU Linux Image (Debian kernel + Buildroot userspace + OpenSBI)
     runs-on: ubuntu-26.04
     needs: build-docker
-    # No kernel is built here any more: the work is the Bootlin toolchain and
-    # Debian package downloads, the userspace, OpenSBI and the NIC module.
+    # No kernel is built: the time goes to the Bootlin toolchain and Debian
+    # package downloads, the userspace, OpenSBI, and the NIC module.
     timeout-minutes: 60
     env:
       BR2_DEFCONFIG_NAME: frost_rv64_defconfig
@@ -665,10 +664,11 @@ jobs:
 
   # Boot the same kernel and initramfs under QEMU twice: with QEMU's bundled
   # OpenSBI (an independent reference) and with the FROST-built fw_jump (the
-  # firmware artifact on a second platform). Both must reach the NIC module's
-  # load token -- which is what proves the module built against Debian's
-  # headers actually loads into Debian's kernel, since its vermagic must match
-  # exactly -- the stress token and the login prompt.
+  # firmware artifact on a second platform). Both boots must print the NIC
+  # module's load token and the userspace stress token and reach the login
+  # prompt. The init script prints the load token only when the running kernel
+  # is the pinned Debian release and the module built against its headers
+  # loads.
   linux-boot-qemu-mmu:
     name: QEMU MMU Linux Boot (bundled and FROST OpenSBI)
     runs-on: ubuntu-26.04
@@ -700,18 +700,18 @@ jobs:
           docker run --rm -v /tmp/frost-linux-images:/img frost-dev:latest \
             bash -c '
               set -euo pipefail
-              # The image is asserted to carry this binary when it is built
-              # (Dockerfile), so a miss here means the container that ran is
-              # not the image that was built. Say so with the evidence rather
-              # than leaving a bare "No such file or directory" from timeout.
+              # The Dockerfile checks that the image has this binary, so a miss
+              # means this container is not the image that was built. Print the
+              # evidence instead of a bare "No such file or directory" from
+              # timeout.
               if ! command -v qemu-system-riscv64; then
                 echo "qemu-system-riscv64 missing from this image"
                 echo "PATH=$PATH"
                 ls -l /usr/local/bin/qemu-system-* /usr/local/share/qemu/opensbi* 2>&1 || true
                 exit 1
               fi
-              # The -append string is frost_boot_image.py'"'"'s DEFAULT_BOOTARGS,
-              # which tests/test_linux_packaging.py keeps the two in step on.
+              # The -append string must equal DEFAULT_BOOTARGS in
+              # frost_boot_image.py; tests/test_linux_packaging.py checks it.
               boot() {
                 timeout -k5 180 qemu-system-riscv64 -M virt -m 256M -nographic \
                   -cpu rv64,sv57=off,sv48=off,zicbom=false,zicboz=false,v=false,h=false \

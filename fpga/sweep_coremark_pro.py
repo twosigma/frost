@@ -29,14 +29,14 @@ SingleCore and MultiCore result. Validation (-v1) is not score-eligible. A -v0
 run under the ten-second minimum warns that its registry iterations need
 recalibration.
 
-``--board`` selects a registered FPGA board. With no app arguments, all nine
-hardware-supported registry workloads run. UART and JTAG targets have
-per-board defaults. The script refuses an already-open UART and holds it with
+``--board`` selects a registered FPGA board. With no app arguments, every
+hardware-supported workload runs. UART and JTAG targets have per-board
+defaults. The script refuses an already-open UART and holds it with
 ``TIOCEXCL`` so another reader cannot steal capture bytes.
 
-``--timeout`` is the base end-to-end budget for each workload. The software
-registry can raise it for a board/workload pair whose conforming, untimed setup
-needs longer; the X3 ZIP workload has such a floor.
+``--timeout`` is the end-to-end budget for each workload, build and load
+included. The software registry can raise it to a per-board minimum for
+workloads whose untimed setup takes longer, such as ZIP on X3.
 
 Examples (from the repo root):
 
@@ -107,7 +107,7 @@ COREMARK_PRO_REFERENCE = {
 # Registry iterations must clear this official -v0 minimum.
 SCORE_RULE_MIN_SECS = 10.0
 
-# ``%8g`` may emit decimal or exponent notation.
+# MITH prints times with ``%8g``, which may use decimal or exponent notation.
 MITH_NUMBER = r"([0-9]+(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)"
 
 
@@ -436,8 +436,8 @@ def print_score_report(results: list[dict[str, Any]], mode: str) -> None:
     score, missing = coremark_pro_mark(ips_by_workload)
     if score is None:
         print(
-            "\nCoreMark-PRO score: n/a -- the official mark needs a passing "
-            f"iter/s from all 9 workloads; missing: {', '.join(missing)}"
+            "\nCoreMark-PRO score: n/a (the official mark needs a passing "
+            f"iter/s from all 9 workloads); missing: {', '.join(missing)}"
         )
     else:
         print(f"\nCoreMark-PRO score (single context): {score:.2f}")
@@ -585,8 +585,8 @@ def main() -> int:
             )
             if result["status"] == "PASS" and result["ips"] is None:
                 print(
-                    "warning: PASS but iterations/time(secs) missing from the "
-                    "capture -- UART bytes lost?",
+                    "warning: PASS, but the capture lacks a usable iterations "
+                    "or time(secs) value; UART bytes may have been lost",
                     flush=True,
                 )
             if result["status"] == "LOAD_FAIL":

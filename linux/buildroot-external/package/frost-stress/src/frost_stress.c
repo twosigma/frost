@@ -15,30 +15,30 @@
  */
 
 /*
- * FROST userspace boot stress payload. Two editions from one source:
+ * FROST userspace boot stress payload. frost-stress.mk builds the MMU edition
+ * (FROST_STRESS_MMU) for the OpenSBI + Sv39 kernel: real fork, copy-on-write
+ * and mmap phases, and counters read through perf_event_open. Without that
+ * macro the source builds a no-MMU edition that uses vfork and reads the
+ * counter CSRs directly.
  *
- *   - no-MMU / bFLT (the M-mode kernel lane): the original vfork/rdcycle
- *     payload.
- *   - MMU (FROST_STRESS_MMU, set by frost-stress.mk when BR2_USE_MMU): the
- *     Phase 3 OpenSBI + Sv39 lane, with real fork, copy-on-write and mmap
- *     phases, and the counter phase through perf_event_open.
- *
- * Inittab runs this once after rcS and before the getty. It prints a
- * machine-readable summary and a token checked by QEMU CI and hardware soaks:
+ * The test image's inittab runs it once after rcS and before the getty; the
+ * hardware regression runs it at the Debian root's shell. It prints a
+ * machine-readable summary and a token that QEMU CI, the hardware boot soak,
+ * and the hardware regression check:
  *
  *   FROST_USERSPACE_STRESS: ticks=.. vforks=.. futex=.. atomics=..
  *       cycles=.. instret=.. time=.. ipc_x1000=.. verdict=..
  *   FROST_USERSPACE_STRESS_PASS   (or _FAIL)
  *
- * (the MMU edition reports forks=.. and pages=.. beside them). If the
+ * (the MMU edition prints forks=.. and pages=.. ahead of them). If the
  * counters cannot be read, the counter fields become
  * ``counters=unavailable`` (phase 5).
  *
- * ``--counters`` prints its own line, which the hardware regression's Linux
- * stage types after logging in. Like the ``perf stat <command>`` it replaced,
- * the MMU edition measures a child from its exec to its exit
- * (scope=exec-child); the no-MMU edition has no perf_event_open and measures
- * its own workload (scope=self):
+ * ``--counters`` prints its own line; the hardware regression's Linux stage
+ * runs it at the shell after logging in. Like ``perf stat <command>``, the MMU
+ * edition measures a child from its exec to its exit (scope=exec-child); the
+ * no-MMU edition has no perf_event_open and measures its own workload
+ * (scope=self):
  *
  *   FROST_COUNTERS: scope=.. cycles=.. instret=.. time=.. ipc_x1000=.. verdict=PASS
  *   FROST_COUNTERS: scope=.. counters=unavailable verdict=FAIL
@@ -46,13 +46,13 @@
  * Phases:
  *   1. A 5 ms SIGALRM storm covers timer traps and signal delivery.
  *   2. Repeated vfork+exec exercises no-MMU process creation, bFLT loading,
- *      and scheduling. MMU: fork+exec plus a fork whose child rewrites the
+ *      and scheduling. MMU: fork+exec, plus a fork whose child rewrites the
  *      parent's heap copy, which must stay intact (copy-on-write), and an
  *      anonymous mapping walked page by page (demand faults).
  *   3. FUTEX_WAIT/FUTEX_WAKE ping-pong over a MAP_SHARED file mapping covers
  *      the shared-memory and wait-queue paths.
- *   4. Two processes contend on an LR/SC counter while timer IRQs preempt them;
- *      the final count must be exact.
+ *   4. Two processes increment a shared counter with atomic adds (amoadd.w)
+ *      while timer interrupts preempt them; the final count must be exact.
  *   5. Counter deltas and ipc_x1000 around a fixed workload. no-MMU:
  *      rdcycle/rdinstret/rdtime (FROST resets mcounteren to 0x7; QEMU leaves
  *      the counters U-inaccessible, and a SIGILL guard reports them
@@ -89,11 +89,11 @@
 #define ATOMIC_INCS 20000u
 #define COUNTER_WORK_ITERS 200000u
 
-/* Shared page layout (MAP_SHARED file mapping on the initramfs ramfs). */
+/* Shared page layout (a MAP_SHARED mapping of the file SHM_PATH). */
 struct shared {
     volatile uint32_t futex_word; /* ping-pong turn: 0 = parent, 1 = child */
     volatile uint32_t rounds_child;
-    volatile uint32_t counter;    /* LR/SC contention target              */
+    volatile uint32_t counter;    /* atomic-add contention target         */
     volatile uint32_t child_done; /* child's atomics phase complete       */
     volatile uint32_t go;         /* barrier: parent releases the child   */
 };
@@ -109,7 +109,7 @@ static void alarm_handler(int sig)
 /* ---- Zicntr counter access (phase 5) ---- */
 
 /* Numeric addresses under a zicsr arch push make these independent of -march.
- * .option arch needs binutils >= 2.38; the pinned Buildroot ships 2.4x. */
+ * .option arch needs binutils 2.38 or newer. */
 #define RD_CSR(num)                                                                                \
     ({                                                                                             \
         unsigned long __v;                                                                         \
@@ -218,7 +218,7 @@ static int run_stress_child(void)
         futex(&sh->futex_word, FUTEX_WAKE_OP, 1);
     }
 
-    /* Barrier, then LR/SC contention. */
+    /* Barrier, then atomic-add contention. */
     while (__atomic_load_n(&sh->go, __ATOMIC_ACQUIRE) == 0)
         futex(&sh->go, FUTEX_WAIT_OP, 0);
     for (uint32_t i = 0; i < ATOMIC_INCS; i++)
@@ -414,10 +414,10 @@ static int counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *time)
  * exit. Returns 1 with the counts and the elapsed time written, 0 on any
  * failure.
  *
- * This is what `perf stat -e cycles,instructions /bin/true` measured, and the
+ * It counts what `perf stat -e cycles,instructions <command>` would, and the
  * coverage is in the shape, not the numbers: the events are created on a task
- * that has not exec'd yet, enable_on_exec arms them at the exec (so the
- * pre-exec fork and the dynamic loader are excluded), inherit follows the
+ * that has not exec'd yet, enable_on_exec arms them at the exec (so the fork
+ * and the pipe handshake before it are not counted), inherit follows the
  * descendants, and the counts are read after the task has exited, which only
  * works if the kernel propagated them out of a dead task. A pipe each way
  * sequences it: the child announces itself, waits for the parent to open the
@@ -448,8 +448,8 @@ static int child_counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *t
             _exit(126);
         close(ready[1]);
         close(go[0]);
-        /* execvp, not execv: the stage types the program's name, so argv[0]
-         * may have no slash. --child does a fixed loop and a 1 ms sleep. */
+        /* execvp, not execv: when the program is run by name from the shell,
+         * argv[0] has no slash. --child does a fixed loop and a 1 ms sleep. */
         char *argv[4];
         argv[0] = (char *) g_self;
         argv[1] = (char *) "--child";
@@ -595,7 +595,7 @@ int main(int argc, char **argv)
         vforks++;
     }
 
-    /* ---- Phases 3+4: shared-memory peer (futex, then LR/SC) ---- */
+    /* ---- Phases 3+4: shared-memory peer (futex, then atomic adds) ---- */
     struct shared *sh = map_shared(1);
     if (!sh)
         return fail("mmap-shared");

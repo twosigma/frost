@@ -12,12 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Standalone fetch-seam ILA capture (build.py --debug-ila) for a program that
-# is already running: arm, wait for the trigger and write the CSV in one
-# Hardware Manager session. A capture of a program the software loader
-# starts is done by the loader's hooks instead (capture_fetch_ila.py hook),
-# because the loader's device refresh resets the core. See
-# capture_fetch_ila.py for the arguments.
+# Standalone fetch ILA capture (build.py --debug-ila) for a program that is
+# already running: arm, wait for the trigger, and write the CSV in one
+# Hardware Manager session. To capture a program the software loader starts,
+# use the loader hooks (capture_fetch_ila.py hook) instead, because the
+# loader's device refresh resets the ILA. See capture_fetch_ila.py for the
+# arguments.
 #
 # Usage: vivado -mode batch -source capture_fetch_ila.tcl -tclargs \
 #            <hw_target> <ltx_file> <csv_file> <fault_probe_glob> \

@@ -15,30 +15,28 @@
  */
 
 /*
- * frost_sigprobe: signal-return probe for the MMU lane.
- *
- * On the MMU lane's first board boot, busybox's rcS and the login shell died
- * with SIGILL at the vDSO sigreturn trampoline right after a child exit,
- * while frost_stress's SIGALRM returns were fine. This probe runs the
- * suspect variants, each in a forked runner so a crash is reported instead
- * of ending the probe, and prints one line per variant:
+ * frost_sigprobe: signal-return probe. Each variant takes a signal in a
+ * different shape and returns through the vDSO sigreturn trampoline. Each runs
+ * in a forked runner, so a crash is reported instead of ending the probe, and
+ * the probe prints one line per variant:
  *
  *   FROST_SIGPROBE v<n> <name>: ok | signal <k> | exit <k>
  *
+ * In v1 and v3-v5 the child can exit while the parent is still inside musl's
+ * post-fork signal unblock, before any user-mode store to the parent's
+ * copy-on-write-protected stack, so the kernel's write of the signal frame is
+ * the first write and faults in S-mode. v7-v10 isolate that kernel-mode first
+ * write.
+ *
  * Variants (busybox's shell installs handlers with sa_flags = 0 and a full
  * sa_mask, no SA_RESTART):
- *   v0  SIGALRM from setitimer, flags 0, empty mask (the stress's shape)
+ *   v0  SIGALRM from setitimer, flags 0, empty mask (frost_stress's shape)
  *   v1  SIGCHLD, flags 0, full mask; child _exit(0); parent in waitpid
  *   v2  v1, but the child execs /bin/true (exec + exit, the shell's shape)
  *   v3  v1 with an empty mask
  *   v4  v1 with SA_RESTART
  *   v5  v1 after touching the vDSO (clock_gettime) first
  *   v6  v2 repeated five times (five child exits, five signal returns)
- * The board's first probe run died in v1/v3/v4/v5 and survived v2/v6: the
- * dying variants have the child exit while the parent is still inside
- * musl's post-fork signal unblock, before any user-mode store to the
- * parent's copy-on-write-protected stack, so the kernel's write of the
- * signal frame is the first write and faults in S-mode. These isolate that:
  *   v7  v1 with SIGCHLD blocked across the fork; the parent touches its
  *       stack (user-mode copy-on-write fault) before unblocking
  *   v8  v7, but the parent touches its heap instead of its stack
@@ -100,7 +98,7 @@ static int one_round(int (*child_fn)(void))
         child_fn();
     g_got = 0;
     while (waitpid(pid, &status, 0) < 0) {
-        /* EINTR after the handler: retry (sa_flags has no SA_RESTART) */
+        /* Retry on EINTR: without SA_RESTART the handler interrupts waitpid */
     }
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : 11;
 }
@@ -125,7 +123,7 @@ static int blocked_fork_round(int touch_stack)
     if (pid == 0)
         _exit(0);
     if (touch_stack) {
-        stack_word = 1; /* the parent's first post-fork stack write, from U */
+        stack_word = 1; /* a user-mode store to the stack before the unblock */
     } else {
         if (heap == NULL)
             heap = malloc(64);

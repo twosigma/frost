@@ -12,8 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Close this client's connections on both success and Tcl errors. A caller-owned
-# hw_server remains alive; stopping that process is the caller's responsibility.
+# Open a Hardware Manager session, run body in the caller's scope, then close
+# the target, the server connection, and the Hardware Manager, even when body
+# fails. With a target, open exactly that target and require one FPGA on it.
+# Any error, including a failed cleanup step, is printed to stderr and exits
+# with status 1. An hw_server the caller started keeps running; stopping it is
+# the caller's job.
 proc frost_hw_session {remote_host server_url target body} {
     set connected 0
     set opened 0
@@ -25,7 +29,7 @@ proc frost_hw_session {remote_host server_url target body} {
         } elseif {$remote_host ne ""} {
             connect_hw_server -url ${remote_host}:3121
         } else {
-            # Preserve the existing interactive CLI's local-server behavior.
+            # The local hw_server, which Vivado starts if it is not running.
             connect_hw_server
         }
         set connected 1

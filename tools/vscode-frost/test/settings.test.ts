@@ -77,7 +77,7 @@ function harness(t: TestContext) {
         writes, messages, metadataRequests, inputAnswers, pickerAnswers, control };
 }
 
-test('settings accept application names beyond the original two-app enum', t => {
+test('settings accept any well-formed application name without reading repository metadata', t => {
     const h = harness(t);
     for (const app of ['coremark', 'coremark_pro_core', 'freertos_demo', 'new_repository_app17']) {
         h.user.set('app', app);
@@ -107,8 +107,8 @@ test('ELF settings distinguish explicit overrides from defaults awaiting registr
     const defaults = h.settings.getSettings(h.folder);
     assert.equal(defaults.elfExplicit, false);
     assert.equal(defaults.elf, '/fixture/workspace/selected-repo/sw/apps/coremark_pro_core/sw.elf');
-    // The controller uses elfExplicit=false to replace the display-name path
-    // with metadata.appBuildDirectories; an explicit override must survive.
+    // With elfExplicit false, the controller swaps the app name in this path for
+    // the app's build directory from metadata. An explicit override must stay.
     h.user.set('elf', 'images/exact-loaded-image.elf');
     const explicit = h.settings.getSettings(h.folder);
     assert.equal(explicit.elfExplicit, true);

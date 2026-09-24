@@ -14,10 +14,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Archive cycle-exact CoreMark seed and link-order sweeps through frost Docker.
+"""Run and archive cycle-exact CoreMark simulations in the frost Docker image.
 
-Simulation uses one iteration and a synthetic timer frequency. Normalized
-throughput here is a diagnostic, never an official-length hardware score.
+The sweep covers seed sets, link orders, compressed code and memory tiers, and
+archives what each run needs to be reproduced. Each CoreMark report covers one
+iteration with a synthetic timer, so its CoreMark/MHz is only a diagnostic for
+comparing cycle counts, not a benchmark score.
 """
 
 import argparse
@@ -42,7 +44,7 @@ CRCS = {
 
 
 def parse_reports(log: str, seed_set: str, runs: int) -> list[dict]:
-    """Require a complete, CRC-validated report for every requested reset/run."""
+    """Parse one CRC-validated CoreMark report per run from the log."""
     reports = []
     for chunk in log.split("CoreMark Size")[1:]:
 
@@ -79,7 +81,7 @@ def parse_reports(log: str, seed_set: str, runs: int) -> list[dict]:
 
 
 def link_orders(count: int) -> list[tuple[str, ...]]:
-    """Include the natural order, then deterministic distinct permutations."""
+    """Return the natural link order, then count - 1 others in a fixed shuffle."""
     if not 1 <= count <= 120:
         raise ValueError("orders must be between 1 and 120")
     remaining = [order for order in itertools.permutations(SOURCES) if order != SOURCES]
@@ -88,12 +90,12 @@ def link_orders(count: int) -> list[tuple[str, ...]]:
 
 
 def capture(*command: str) -> str:
-    """Capture a checked command without passing it through a shell."""
+    """Return a command's stripped stdout, raising if the command fails."""
     return subprocess.check_output(command, cwd=ROOT, text=True).strip()
 
 
 def fingerprint() -> str:
-    """Detect tracked or untracked source edits during the sweep."""
+    """Return a digest of the sources, to detect edits during the sweep."""
     digest = hashlib.sha256(capture("git", "rev-parse", "HEAD").encode())
     digest.update(
         subprocess.check_output(["git", "diff", "HEAD", "--binary"], cwd=ROOT)
@@ -105,7 +107,8 @@ def fingerprint() -> str:
         if path.is_file():
             digest.update(name.encode())
             digest.update(path.read_bytes())
-    # A dirty submodule marker alone cannot detect a second source edit.
+    # git diff shows an edited submodule only as dirty, so a second edit would
+    # not change it: hash the benchmark sources directly.
     benchmark = ROOT / "sw/apps/coremark/coremark"
     for path in sorted([*benchmark.glob("*.c"), *benchmark.glob("*.h")]):
         digest.update(path.name.encode())
@@ -117,7 +120,7 @@ def fingerprint() -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the requested Cartesian product and retain successful and failed evidence."""
+    """Run and archive each requested configuration, stopping at the first failure."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--orders", type=int, default=4)
@@ -132,12 +135,12 @@ def main(argv: list[str] | None = None) -> int:
         "--runs",
         type=int,
         default=1,
-        help="BRAM reset/run count; the repository's DDR runner always runs once",
+        help="runs per BRAM configuration, with a reset between runs; DDR runs once",
     )
     parser.add_argument("--pgo", choices=("0", "1"), default="0")
     parser.add_argument(
         "--tune-flags",
-        help="Explicit APP_TUNE_FLAGS override; retained verbatim with each command/report",
+        help="APP_TUNE_FLAGS for every build, recorded with each result",
     )
     parser.add_argument("--verilator-arg", action="append", default=[])
     args = parser.parse_args(argv)

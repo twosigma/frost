@@ -14,9 +14,9 @@
 
 # Diagnostic-only helper: never sourced by the production place step.
 
-# Exact post-place input-pin refinement for the two X3 PD target LUTs.
-# This changes physical pin assignment only. It is intentionally specific to
-# the recorded placement; automatic mode skips unmatched implementations.
+# Post-place input-pin swaps for the two X3 PD target LUTs. Only the physical
+# pin assignment changes; logic, location, and fixed flags stay the same. The
+# recipe matches one recorded placement, and auto mode skips any other.
 namespace eval frost_x3_pd_target_pin_swaps {
     proc pin_map {cell} {
         set result {}
@@ -91,9 +91,12 @@ namespace eval frost_x3_pd_target_pin_swaps {
         }
     }
 
-    # Direct diagnostic calls are strict unless the caller explicitly selects
-    # auto. Production placement never calls this helper. Return 1 only when
-    # applied; an explicit auto-mode skip returns 0 without a PASS audit.
+    # mode is strict unless the caller passes auto. Returns 1 only when both
+    # swaps are applied, global WNS and WHS are no worse, and the PASS audit is
+    # written. In auto mode, a design that does not match the recipe returns 0
+    # before any change, and a failed swap returns 0 once the rollback has
+    # restored the original cells and timing. A failed rollback or audit write
+    # is always an error, and a skip never leaves an audit file.
     proc apply {audit_file {mode strict}} {
         if {$mode ni {auto strict}} {error "Pin refinement mode must be auto or strict"}
         file delete $audit_file
@@ -104,8 +107,8 @@ namespace eval frost_x3_pd_target_pin_swaps {
             [list ${prefix}/u_pd_target_compressed_candidate_i_2 LUT4 16'hBF80 SLICE_X67Y361 \
                 {I0:A5 I1:A6 I2:A4 I3:A3} {I0:A5 I1:A3 I2:A4 I3:A6}]]
         set states {}
-        # Check both recipes before mutation or timing queries. An unmatched
-        # diagnostic in explicit auto mode returns without timing work.
+        # Check both cells against the recipe before any change or timing
+        # query, so an auto-mode skip does no timing work.
         set code [catch {
             foreach recipe $recipes {
                 lassign $recipe name ref init site old_map new_map
@@ -170,8 +173,9 @@ namespace eval frost_x3_pd_target_pin_swaps {
         } message options]
         if {$code != 0} {
             if {[info exists audit]} {catch {close $audit}}
-            # Automatic mode may continue only after exact snapshot and global
-            # timing restoration. Failed rollback or audit I/O is always fatal.
+            # Roll back both cells. Auto mode may continue only if every cell
+            # snapshot and the global WNS and WHS match their original values
+            # exactly; a failed rollback or audit write is always fatal.
             set rollback_errors {}
             foreach state $states {
                 if {[catch {

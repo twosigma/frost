@@ -4,8 +4,9 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 
-// A small native-tool substitute. Tree descendants deliberately close their
-// inherited output streams and ignore TERM, just as a daemonizing launcher can.
+// Stand-in for a native tool, one behavior per mode. The tree modes start a
+// descendant with no inherited stdio that ignores SIGTERM, like a daemon left
+// behind by a launcher.
 const [mode, marker] = process.argv.slice(2);
 
 switch (mode) {

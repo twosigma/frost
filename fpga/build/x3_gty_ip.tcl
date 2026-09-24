@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 # X3 (X3522PV, UltraScale+) GTY transceiver for the NIC: one 10GBASE-R channel
-# as a raw 64-bit PMA, the PCS being the soft one in hw/rtl/net10g.
+# used as a raw 64-bit PMA under the soft PCS in hw/rtl/net10g.
 #
 # Channel GTYE4_CHANNEL_X0Y28 (quad 231, lane 0: TX J7/J6, RX K4/K3, the DSFP28
 # cage labelled 2, lane 1), QPLL0 from the quad's MGTREFCLK0 (P9/P8, the
@@ -42,8 +42,8 @@ proc create_x3_gty_ip {{rx_eq_mode LPM}} {
       -module_name x3_nic_gty_wiz
   set ip [get_ips x3_nic_gty_wiz]
 
-  # The 10GBASE-R preset first, then the raw overrides: the preset's own
-  # encoding is the transceiver's asynchronous gearbox.
+  # Apply the 10GBASE-R preset first, then override its encoding (the
+  # transceiver's asynchronous gearbox) with raw data.
   set_property CONFIG.GT_TYPE GTY $ip
   set_property CONFIG.PRESET GTY-10GBASE-R $ip
   set_property -dict [list \

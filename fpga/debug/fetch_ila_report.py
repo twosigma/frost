@@ -14,12 +14,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Print a fetch-seam ILA capture (capture_fetch_ila.py collect) as a cycle table.
+"""Print a fetch ILA capture (from capture_fetch_ila.py) as a cycle table.
 
 Vivado's CSV names each column by the probed net's hierarchical path with a
 bit range; this tool shortens them to the mirror name (``if_pc_reg``,
 ``fp_served``, ...), prints hex for buses, and shows the samples around the
-trigger. ``--only`` keeps the listed columns (prefix match), ``--changes``
+trigger. ``--only`` keeps the listed columns (prefix match), and ``--changes``
 prints a row only when one of the shown columns changed.
 """
 
@@ -55,7 +55,11 @@ def load_capture(path: Path) -> tuple[list[str], list[dict[str, str]]]:
 
 
 def format_cell(name: str, value: str) -> str:
-    """Hex for wide values, the raw digit for single bits."""
+    """Format a hex cell without leading zeros.
+
+    Single characters and all-digit values of up to three characters are kept
+    as they are.
+    """
     value = value.strip()
     if len(value) <= 1:
         return value

@@ -14,8 +14,13 @@
 
 # Diagnostic-only helper: never sourced by the production place step.
 
-# Fresh-netlist flush replication request and post-placement verification.
-# The caller owns design opening, placement, constraints and checkpoints.
+# On an unplaced netlist, prepare asks the placer to replicate the full-flush
+# kill register per clock region (MAX_FANOUT_MODE CLOCK_REGION,
+# FORCE_MAX_FANOUT 64). After placement, verify checks that the replicas keep
+# the original register's function, inputs, and clock, and together drive
+# exactly its original sinks. Each step records its status in the audit file.
+# The caller opens the design, places it, and handles constraints and
+# checkpoints.
 namespace eval ::frost_x3_flush_guidance {
     variable driver_name {subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/misprediction_flush_controller_inst/full_flush_side_effect_kill_q_reg}
     variable net_name {subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/misprediction_flush_controller_inst/full_flush_side_effect_kill_q}
@@ -60,7 +65,8 @@ proc ::frost_x3_flush_guidance::driver {p} {
         set owner [one [get_cells -quiet -of_objects $ds] "source owner"]
         if {[get_property IS_PRIMITIVE $owner]} {return [lindex $ds 0]}
     }
-    # Driver-only expansion; no clock/reset consumer enumeration.
+    # Otherwise find the leaf driver through the net segments. Only output pins
+    # are queried, so the loads of clock and reset nets are never listed.
     set ns [get_nets -quiet -segments -of_objects $p]
     return [one [get_pins -quiet -leaf -of_objects $ns -filter {DIRECTION == OUT}] "electrical source"]
 }
@@ -156,8 +162,9 @@ proc ::frost_x3_flush_guidance::preflight {} {
 proc ::frost_x3_flush_guidance::audit {path value} {
     set f [open $path w]; try {puts $f $value} finally {close $f}
 }
-# Prepare and verify run in the same Vivado session around the caller's place.
-# Return the captured current-design state; no external model is loaded.
+# prepare and verify must run in one Vivado session, before and after the
+# caller's place_design. prepare returns the state it captured from the open
+# design.
 proc ::frost_x3_flush_guidance::prepare {audit_file} {
     variable state; variable cells
     if {$state ne {}} {error "Flush guidance prepare already called in this session"}
@@ -188,7 +195,8 @@ proc ::frost_x3_flush_guidance::verify_state {} {
     variable state; variable cells
     if {$state eq {} || ![dict exists $state prepared]} {error "Flush guidance was not prepared successfully"}
     set cells {}; set candidates {}; set owners {}
-    # Connectivity discovers candidates; a name prefix alone proves nothing.
+    # Find the replicas by tracing each original sink to its driver, not by
+    # name prefix.
     foreach name [dict get $state sinks] {
         set p [pin $name]
         if {[get_property DIRECTION $p] ne "IN"} {error "Original flush sink direction changed"}
@@ -214,8 +222,9 @@ proc ::frost_x3_flush_guidance::verify_state {} {
         dict set partitions $name $sinks
     }
     if {[lsort $all] ne [dict get $state sinks]} {error "Placed flush drivers do not preserve the complete original sink set"}
-    # The placer may remove the original FDRE while retaining equivalent
-    # replicas. Existing protected objects retain their original properties.
+    # The placer may remove the original FDRE and keep only equivalent
+    # replicas. The driver, if it still exists, and each of its ancestors must
+    # keep their recorded DONT_TOUCH and KEEP values.
     dict for {name flags} [dict get $state protection] {
         set objects [find get_cells $name]
         if {![llength $objects] && $name eq [dict get $state driver]} {continue}

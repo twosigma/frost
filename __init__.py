@@ -14,9 +14,9 @@
 
 """FROST RV64GCB processor, verification, build, and software package.
 
-The core implements Machine and User modes plus Zicsr, Zicntr, Zifencei,
-Zicond, Zbkb, and Zihintpause. G comprises IMAFD; B comprises Zba, Zbb, and
-Zbs.
+The core implements machine, supervisor, and user modes, Sv39 virtual memory,
+and Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and Zihintpause. G is IMAFD; B is
+Zba, Zbb, and Zbs.
 """
 
 from ._version import __version__

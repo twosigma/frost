@@ -14,11 +14,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Buildroot post-image hook for the FROST MMU Linux lane (frost_rv64_defconfig).
+# Buildroot post-image hook for frost_rv64_defconfig.
 #
 # Buildroot runs this after the image stage with BINARIES_DIR and HOST_DIR
 # exported. It builds the OpenSBI firmware from the linux/opensbi submodule with
-# the lane's own (PIE-capable) toolchain, stages Debian's pinned kernel and the
+# Buildroot's (PIE-capable) toolchain, stages Debian's pinned kernel and the
 # test initramfs with the FROST NIC module appended (linux/debian_kernel.py),
 # then packs firmware + Image + DTB + initramfs into the boot images with
 # frost_boot_image.py:
@@ -30,8 +30,9 @@
 #   $BINARIES_DIR/sw_ddr.{mem,txt}   firmware + Image + DTB + initramfs in DDR
 #   $BINARIES_DIR/frost.{dts,dtb}    the generated device tree
 #
-# CI stages sw.mem/sw_ddr.mem in sw/apps/linux_boot/; see linux/README.md for
-# the boot ABI.
+# sw/apps/linux_boot packs its own boot images for each board load, from this
+# build's fw_jump.bin and rootfs.cpio. For the boot interface, see
+# linux/README.md, "Boot chain and entry state".
 
 set -euo pipefail
 
@@ -41,7 +42,7 @@ REPO_ROOT="$(cd "${BOARD_DIR}/../../../.." && pwd)"
 : "${BINARIES_DIR:?BINARIES_DIR must be set (run me as a Buildroot post-image script)}"
 : "${HOST_DIR:?HOST_DIR must be set (run me as a Buildroot post-image script)}"
 
-# The lane's cross toolchain (Buildroot's external-toolchain wrapper links).
+# Buildroot's cross toolchain (its external-toolchain wrapper links).
 gcc_path="$(ls "${HOST_DIR}"/bin/riscv64-linux-gcc 2>/dev/null | head -n1 || true)"
 if [ -z "${gcc_path}" ]; then
     echo "post-image-mmu.sh: no riscv64-linux-gcc found in ${HOST_DIR}/bin" >&2
@@ -49,9 +50,9 @@ if [ -z "${gcc_path}" ]; then
 fi
 cross_compile="${gcc_path%gcc}"
 
-# Prefer the host dtc, then PATH. This build has no kernel tree to borrow
-# scripts/dtc from, so a host without dtc needs BR2_PACKAGE_HOST_DTC=y (the
-# frost image installs device-tree-compiler).
+# Prefer Buildroot's host dtc (HOST_DIR/bin), then PATH. This build has no
+# kernel tree to borrow scripts/dtc from, so a machine without dtc needs
+# BR2_PACKAGE_HOST_DTC=y (the frost Docker image installs device-tree-compiler).
 dtc_path="${HOST_DIR}/bin/dtc"
 if [ ! -x "${dtc_path}" ]; then
     dtc_path="$(command -v dtc || true)"

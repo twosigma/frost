@@ -302,8 +302,9 @@ async function harness(t: TestContext) {
         },
     };
 
-    // Isolate the VS Code host boundary, not the controller implementation.
-    // Every test exercises activate's real commands, provider and event handlers.
+    // Fake the vscode API and the modules that reach hardware, the UART,
+    // settings, and repository metadata. The controller itself is real: every
+    // test drives the commands, provider, and event handlers activate() registers.
     const Module = require('node:module') as {
         _load(request: string, parent: NodeModule | undefined, isMain: boolean): unknown;
     };
@@ -552,8 +553,8 @@ for (const memory of ['bram', 'ddr'] as const) {
         const h = await harness(t);
         h.control.selection!.memory = memory;
         h.control.loadTimeout = 8100000;
-        // A plain application does not need a debug ELF or even the configured
-        // debugger application's directory. The native loader owns its build.
+        // A plain load needs neither a debug ELF nor the configured debug app's
+        // directory: the native loader builds the selected app itself.
         await fs.rm(path.join(h.root, 'sw/apps/hello_world'), { recursive: true });
         const prior = Object.fromEntries(['MEM_CONFIG', 'FROST_DEBUG', 'FROST_ILA_ARM_HOOK', 'FROST_ILA_COLLECT_HOOK']
             .map(key => [key, process.env[key]]));

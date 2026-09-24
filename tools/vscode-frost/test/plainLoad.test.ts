@@ -98,7 +98,7 @@ test('selection rejects apps outside the registry and nonpositive clocks', () =>
     }
 });
 
-test('debug selection uses repository eligibility and mapped aliases beyond the original two apps', async () => {
+test('debug selection accepts any repository debug app, including a build-directory alias', async () => {
     const selected = await pickDebugTarget(settings, metadata, picker(['uart_echo', 'ddr']));
     assert.deepEqual(selected, { app: 'uart_echo', memory: 'ddr', cpuClockHz: 161132812 });
     validateDebugTarget(selected!, metadata);

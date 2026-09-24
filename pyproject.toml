@@ -66,7 +66,7 @@ markers = [
 ]
 
 [tool.mypy]
-# Native Vivado workflows retain Python 3.12 support.
+# Native workflows, such as the Vivado flows, support Python 3.12.
 python_version = "3.12"
 exclude = ["sw/FreeRTOS-Kernel", "sw/apps/coremark/coremark", "sw/apps/arch_test/riscv-arch-test"]
 files = ["verif", "tests"]
@@ -83,7 +83,8 @@ module = ["cocotb.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
-# Formatting and fixes must also run on native Vivado hosts.
+# Formatting and automatic fixes must not introduce syntax newer than Python
+# 3.12, which native hosts may run.
 target-version = "py312"
 # Exclude vendored FreeRTOS and upstream CoreMark sources.
 extend-exclude = ["sw/FreeRTOS-Kernel", "sw/apps/coremark/coremark"]

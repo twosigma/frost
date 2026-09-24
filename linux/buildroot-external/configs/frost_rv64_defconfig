@@ -1,6 +1,6 @@
-# FROST RV64 MMU Linux Buildroot defconfig: the OpenSBI firmware and the ELF-on-
-# musl test initramfs the Sv39 kernel boots into. No kernel is built here --
-# FROST boots Debian's pinned one, which post-image-mmu.sh stages through
+# FROST RV64 Buildroot defconfig: the OpenSBI firmware and the musl test
+# initramfs that the Sv39 kernel boots into. No kernel is built here: FROST
+# boots Debian's pinned one, which post-image-mmu.sh stages through
 # ../../debian_kernel.py (../../README.md, "Kernel").
 #
 # Build (inside the frost container, from the repository root):
@@ -8,9 +8,10 @@
 #        BR2_EXTERNAL=$(pwd)/linux/buildroot-external frost_rv64_defconfig
 #   make -C linux/buildroot O=$(pwd)/linux/build-mmu
 # Output lands in linux/build-mmu/images/: rootfs.cpio, fw_jump.bin (built by
-# post-image-mmu.sh from the linux/opensbi submodule), Debian's staged
-# Image-debian and the rootfs-frost.cpio composed from it, the packed
-# sw.{mem,txt} / sw_ddr.{mem,txt} boot images, and frost.dtb.
+# post-image-mmu.sh from the linux/opensbi submodule), Debian's kernel as
+# Image-debian, rootfs-frost.cpio (rootfs.cpio plus the NIC module and its
+# loader), the packed sw.{mem,txt} / sw_ddr.{mem,txt} boot images, and
+# frost.dtb.
 
 # --- Architecture: RISC-V 64-bit general purpose (rv64gc, lp64d), MMU ---
 BR2_riscv=y
@@ -34,9 +35,10 @@ BR2_TOOLCHAIN_EXTERNAL_CXX=y
 BR2_TOOLCHAIN_EXTERNAL_OPENMP=y
 BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_FROST_PATH)/patches"
 
-# --- Init and rootfs: busybox (static: every init-time exec is one page-fault
-#     storm cheaper in simulation), uncompressed cpio initramfs (a gzip'd
-#     initramfs costs the simulated core tens of cycles per byte to inflate) ---
+# --- Init and rootfs: busybox (static, so each BusyBox exec during init skips
+#     the dynamic loader's page faults and relocations), uncompressed cpio
+#     initramfs (inflating a gzip'd one costs the core tens of cycles per
+#     byte) ---
 BR2_INIT_BUSYBOX=y
 BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_FROST_PATH)/board/frost/busybox-mmu.fragment"
 BR2_TARGET_ROOTFS_CPIO=y

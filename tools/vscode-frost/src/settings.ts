@@ -147,7 +147,7 @@ export async function configureTarget(folder: vscode.WorkspaceFolder): Promise<b
   for (const [key, value] of Object.entries(values)) {
     await config.update(key, value, selectionTarget(config, key));
   }
-  void vscode.window.showInformationMessage("FROST target saved. Tool paths and artifact choices are available in Settings (FROST).");
+  void vscode.window.showInformationMessage("FROST target saved. Set tool paths, the bitstream, and the ELF in Settings (FROST) if needed.");
   return true;
 }
 

@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Load a software application image to FPGA low BRAM and optional DDR via JTAG."""
+"""Build an application and load its low-BRAM and optional DDR images over JTAG."""
 
 import argparse
 from collections.abc import Mapping
@@ -32,7 +32,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
-# Import shared target selection and the software registry.
+# Import the shared FPGA, software, and Linux helpers.
 sys.path.insert(0, str(SCRIPT_DIR.parent / "common"))
 sys.path.insert(0, str(PROJECT_ROOT / "sw" / "apps"))
 sys.path.insert(0, str(PROJECT_ROOT / "linux"))
@@ -100,24 +100,23 @@ VALID_APPS = [
 
 # Clock frequency in Hz; CoreMark iterations target about 10 seconds.
 BOARD_CONFIG = {
-    # ``has_ddr``: the bitstream provides the JTAG DDR-load master (hw_axi_2)
-    # and the cached DDR region. The flag exists so a future BRAM-only board can
-    # be added without loading a DDR image.
+    # ``has_ddr``: the bitstream provides the JTAG DDR-load master and the
+    # cached DDR region. A BRAM-only board sets it False and loads no DDR image.
     "x3": {"clock_freq": 322265625, "coremark_iterations": 14000, "has_ddr": True},
 }
 
-# A functional-validation bitstream (build.py --cpu-clock-div) runs the CPU
-# below the board's rated clock. FROST_CPU_CLK_HZ names that clock so the app
-# builds (FPGA_CPU_CLK_FREQ: UART divisor, timer constants, the Linux device
-# tree) match the programmed bitstream.
+# A divided-clock bitstream (build.py --cpu-clock-div) runs the CPU below the
+# board's rated clock. FROST_CPU_CLK_HZ gives that clock so the application
+# build (FPGA_CPU_CLK_FREQ: UART divisor, timer constants, the Linux device
+# tree) matches the programmed bitstream.
 CPU_CLK_ENV = "FROST_CPU_CLK_HZ"
 DEBUG_UNSUPPORTED = {
     "linux_boot": "Linux kernel debugging is not available in this extension.",
     "opensbi_smoke": "Debugging OpenSBI and its separate payload is not available in this extension.",
 }
 DEBUG_APPS = frozenset(VALID_APPS).difference(DEBUG_UNSUPPORTED)
-# These application Makefiles deliberately override even a caller's BRAM
-# request. The built stamp is checked against this effective layout.
+# These applications' Makefiles force MEM_CONFIG=ddr even when the caller asks
+# for BRAM, so the build-configuration check expects DDR for them.
 FORCED_DDR_APPS = frozenset(
     {
         "amo_irq_torture",
@@ -206,7 +205,7 @@ def _linux_boot_preflight() -> None:
             f"{', '.join(missing)}.\n"
             "  Install Buildroot's host dependencies (see "
             "linux/buildroot-external/README.md) or run inside the\n"
-            "  frost-dev Docker image, which ships them.",
+            "  frost Docker image, which ships them.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -214,22 +213,21 @@ def _linux_boot_preflight() -> None:
     initramfs = PROJECT_ROOT / "linux" / "build-mmu" / "images" / "rootfs.cpio"
     if not initramfs.exists():
         print(
-            "Note: no cached test initramfs found -- linux_boot will build the "
-            "userspace + OpenSBI from source now.\n"
-            "  The FIRST build downloads an rv64 cross toolchain and takes a few "
+            "Note: no cached test initramfs found; linux_boot will build the "
+            "userspace and OpenSBI from source now.\n"
+            "  The first build downloads an rv64 cross toolchain and takes a few "
             "minutes; later loads reuse\n"
-            "  the cached build and only re-pack the DDR image for this board "
+            "  the cached build and only repack the DDR image for this board "
             "(seconds).",
             file=sys.stderr,
         )
 
-    # The kernel itself is Debian's, fetched and cached by linux/debian_kernel.py
-    # (linux/README.md, "Kernel"). A cold cache downloads about 130 MB. The
-    # helper names the cache entry after the pin, so this asks it rather than
-    # guessing a path.
+    # The kernel is Debian's, fetched and cached by linux/debian_kernel.py
+    # (linux/README.md, "Kernel"). The helper names the cache entry after the
+    # pinned version, so ask it for the path.
     if not kernel_image().exists():
         print(
-            "Note: no cached Debian kernel found -- linux_boot will download it "
+            "Note: no cached Debian kernel found; linux_boot will download it "
             "now (about 130 MB, needs\n"
             "  network access) and build the NIC module for it. Later loads "
             "reuse linux/debian-kernel.",
@@ -329,11 +327,14 @@ def compile_app_for_board(
 
 
 def inspect_debug_elf(elf: bytes, require_dwarf: bool) -> tuple[int, bool, bool]:
-    """Return entry, defined executable main, and initialized writable DDR.
+    """Return (entry, has_main, writable_ddr) for a bare-metal ELF.
 
-    Bound every table, string and payload access. Extended ELF section counts
-    are intentionally unsupported: these small bare-metal images do not use
-    them. A malformed ELF must fail before the loader can discover hardware.
+    ``has_main`` is true when a ``main`` symbol lies inside an executable
+    section, and ``writable_ddr`` when the ELF initializes writable data in the
+    DDR region (0x8000_0000 to 0xC000_0000). Every table, string, and payload
+    access is bounds-checked. Extended ELF section counts are not supported;
+    these small bare-metal images do not use them. A malformed ELF must fail
+    before target discovery.
     """
     if (
         len(elf) < 64
@@ -389,9 +390,9 @@ def inspect_debug_elf(elf: bytes, require_dwarf: bool) -> tuple[int, bool, bool]
     if require_dwarf and not {b".debug_info", b".debug_line"} <= nonempty_sections:
         raise ValueError("debug ELF lacks nonempty .debug_info or .debug_line")
 
-    # Also consider load segments, including initialized data with an unusual
-    # section name. The loader's DDR image is loaded at its runtime address;
-    # restarting crt0 cannot restore bytes already changed during handoff.
+    # Also check load segments, which catch initialized data under an unusual
+    # section name. The DDR image is loaded in place, so restarting at crt0
+    # cannot restore DDR data the program has already changed.
     if program_count:
         if program_size < 56 or program_count == 0xFFFF:
             raise ValueError("invalid ELF program table")
@@ -459,12 +460,13 @@ def validate_prebuilt_app(
     make_vars: Mapping[str, str] | None = None,
     coremark_iterations: int | None = None,
 ) -> dict[str, str]:
-    """Validate a bare-metal build and describe its safe debugger startup.
+    """Validate a bare-metal build and describe how a debugger can safely start it.
 
-    This checks current files/settings, not source freshness. Callers must keep
-    the directory unchanged until loading finishes. The returned hash binds a
-    subsequent --skip-build to this exact Make configuration, without a new
-    persistent manifest. Application aliases use their registry build path.
+    This checks the current files and settings, not whether they match the
+    sources. Callers must keep the directory unchanged until loading finishes.
+    The returned hash lets a later --skip-build require this exact Make
+    configuration. Application aliases pass ``app_name`` with their registry
+    build directory.
     """
     app_name = app_name or app_dir.name
     if app_name not in DEBUG_APPS:
@@ -545,9 +547,10 @@ def validate_prebuilt_app(
 
 
 def main() -> None:
-    """Write BRAM and optional cached-DDR images over JTAG."""
+    """Build the application and load its images over JTAG."""
     parser = argparse.ArgumentParser(
-        description="Load software application images to FPGA low BRAM and optional DDR via JTAG"
+        description="Build a software application and load its low-BRAM and optional "
+        "DDR images over JTAG"
     )
     parser.add_argument(
         "board",
@@ -575,9 +578,8 @@ def main() -> None:
         "--ddr",
         action="store_true",
         help=(
-            "Build the app to execute from the cached DDR region (passes "
-            "MEM_CONFIG=ddr to the app Makefile), so an otherwise BRAM-resident "
-            "app runs its code from DDR. Requires a board with has_ddr."
+            "Build the application to run from the cached DDR region "
+            "(MEM_CONFIG=ddr); needs a board with DDR"
         ),
     )
     parser.add_argument(
@@ -751,8 +753,8 @@ def main() -> None:
     ) and args.coremark_pro_mode != "validation":
         parser.error("parser reference diagnostics require -v1 validation mode")
 
-    # Reject DDR apps on future BRAM-only bitstreams instead of loading an
-    # image whose cached address range reads as zero.
+    # Reject DDR applications on a BRAM-only board instead of loading an image
+    # whose cached address range reads as zero.
     if (args.ddr or args.software_app in DDR_APPS) and not BOARD_CONFIG[args.board][
         "has_ddr"
     ]:
@@ -868,9 +870,9 @@ def main() -> None:
         sys.exit(1)
 
     descriptor = None
-    # Keep ordinary existing loader behavior for other applications. The new
-    # prebuilt contract applies to managed builds and loads; the original two
-    # apps retain their previous unconditional validation.
+    # Validate the images and build settings of debuggable applications for
+    # --debug, --skip-build, and --build-only, and on every hello_world and
+    # debug_target load. Other plain loads skip the check.
     if args.software_app in DEBUG_APPS and (
         args.debug
         or args.skip_build
@@ -928,7 +930,7 @@ def main() -> None:
         selected_target,
     ]
 
-    # Tcl receives the optional host, then whether hw_axi_2 and cached DDR exist.
+    # Remaining Tcl arguments: remote host or "", has_ddr flag, server URL or "".
     vivado_command.append(args.remote_host if args.remote_host else "")
     vivado_command.append("1" if BOARD_CONFIG[args.board]["has_ddr"] else "0")
     vivado_command.append(args.hw_server_url or "")

@@ -11,11 +11,11 @@ export const HW_PORT = 3121;
 export const HW_URL = `127.0.0.1:${HW_PORT}`;
 
 export function imageResetDelayMs(cpuClockHz: number): number {
-    // xilinx_frost_subsystem's 27-bit inactivity counter uses CPU/4, and
-    // frost.sv subsequently synchronizes reset into the CPU clock domain.
-    // A DMI pulse while the DM is reset can be lost permanently: do not use
-    // the DMI link itself to poll for reset release. Start the full interval
-    // after the loader exits, conservatively later than its final BRAM write.
+    // Every JTAG write to BRAM restarts xilinx_frost_subsystem's 27-bit counter
+    // on the CPU/4 clock, and frost.sv then synchronizes the reset release into
+    // the CPU clock domain. A DMI pulse while the debug module is in reset can be
+    // lost permanently, so do not poll over DMI for the release. Start the full
+    // interval after the loader exits, which is later than its last BRAM write.
     const milliseconds = Math.ceil(4 * 2 ** 27 * 1000 / cpuClockHz) + 250;
     if (!Number.isFinite(milliseconds) || cpuClockHz <= 0 || milliseconds > 2147483647) {
         throw new Error('CPU clock cannot define a supported image-reset wait');
@@ -34,8 +34,9 @@ export class Hardware {
         if (vivado && !settings.vivadoTarget.startsWith(`${HW_URL}/`)) {
             throw new Error(`Configure the exact Vivado target name beginning ${HW_URL}/. Substring target selection is not used.`);
         }
-        // Conservative single-cable v1: refuse existing tool sessions. Do not
-        // adopt or terminate an external server, even if it uses our port.
+        // One cable session at a time: refuse to start while any OpenOCD or
+        // hw_server process exists. Never adopt or stop an external server,
+        // even one on our port.
         for (const pid of await fs.readdir('/proc')) {
             if (!/^\d+$/.test(pid)) continue;
             let args: string[];
@@ -135,7 +136,7 @@ export interface DebugBuild {
     buildConfigSha256: string;
 }
 
-/** Consume the loader's description of the actual ELF before acquiring JTAG. */
+/** Parse and validate the loader's FROST_DEBUG_BUILD record. Call this before acquiring JTAG. */
 export function parseDebugBuild(output: string, settings: FrostSettings, buildDirectory: string): DebugBuild {
     const marker = 'FROST_DEBUG_BUILD=';
     const records = output.split(/\r?\n/).filter(line => line.startsWith(marker));
@@ -157,8 +158,9 @@ export function parseDebugBuild(output: string, settings: FrostSettings, buildDi
     return result as unknown as DebugBuild;
 }
 
-// An in-memory change check plus a symbol copy keeps this operation's ELF
-// paired with its load, without a persistent manifest or recovery framework.
+// SHA-256 digests of the app's build outputs. The controller compares them
+// across a debug load and against its private ELF copy, and refuses to debug
+// if anything changed, so the debugger's symbols match the loaded image.
 export async function imageDigests(directory: string): Promise<Map<string, string>> {
     const values = new Map<string, string>();
     for (const file of ['sw.elf', 'sw.txt', 'sw_ddr.txt', '.frost-build-config.bin']) {
