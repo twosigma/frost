@@ -1,240 +1,243 @@
 # FROST Tomasulo Out-of-Order Back-End
 
-The Tomasulo back-end provides renaming, speculation, dynamic scheduling,
-out-of-order completion, and precise in-order commit for RV64IMACBFD + Zbkb +
-Zicond + Zicntr + Zifencei + Zihintpause. Dispatch, RAT, ROB, CDB, and commit
-are two-wide. Most reservation stations issue once per cycle; INT_RS issues
-twice to two ALUs, with branches restricted to pipe 0. Up to six stations may
-issue in one cycle, seven operations counting INT_RS's second port. Ordinary
-successful stores bypass the two-lane CDB. Both CDB lanes can wake an RS entry
-in the same cycle; `LANE1_ISSUE_BYPASS` controls the lane-1 bypass per RS instance.
+This directory is the out-of-order half of the FROST CPU. The in-order front
+end fetches and decodes up to two instructions per cycle. The back end renames
+them, parks them in reservation stations (RS) until their operands are ready,
+executes them out of order, and retires them in program order from a 32-entry
+reorder buffer (ROB), so exceptions stay precise. The core implements RV64GCB
+plus Zicntr, Zicond, Zbkb, and Zihintpause (see the
+[ISA table](../../../../../README.md#supported-risc-v-extensions)).
+
+Dispatch, rename, the common data bus (CDB), and commit are all two wide. Six
+reservation stations feed eight functional-unit (FU) slots. The integer
+station issues two operations per cycle to two ALUs, with branches and JALR
+only on the first; every other station issues one. Up to seven operations can
+therefore start in one cycle. A result on either CDB lane can wake a waiting
+RS entry and let it issue in the same cycle.
 
 ![FROST Tomasulo back-end showing parallel allocation, independent arithmetic and translated-memory execution, two-lane completion, and precise retirement](../../../../../docs/diagrams/tomasulo-backend.svg)
 
-Dispatch allocates tracking entries before issue. Arithmetic completions reach
-the CDB through their own adapters; the memory branch separately translates
-addresses and uses the LQ/SQ. Successful ordinary stores complete the ROB
-directly, while loads, atomic results, and store faults use the MEM CDB slot.
-The diagram shows selected logical paths rather than pipeline timing; matching
-`A` and `S` badges identify allocation and store-retirement connections.
+Dispatch allocates ROB, RS, and LQ/SQ entries before issue. Arithmetic results
+reach the CDB through per-unit adapters. Memory operations translate their
+addresses and go through the load and store queues. A successful ordinary
+store marks its ROB entry done directly and never uses the CDB; loads, atomics,
+SC results, and store faults complete through the MEM slot. The diagram shows
+selected logical paths rather than pipeline timing; matching `A` and `S`
+badges identify allocation and store-retirement connections.
 
 ## Directory contents
 
-| Submodule                                                          | Role |
-|--------------------------------------------------------------------|------|
-| [`tomasulo_wrapper/`](tomasulo_wrapper/README.md)                  | Glue: instantiates everything below; back-end integration. Its extracted glue submodules live in `perf/`, `commit_bus/`, `dispatch_routing/`, `store_addr/`, `atomics/` |
-| [`../mmu/`](../mmu/)                                               | Sv39 data translation: `dmmu` (the D4 translation stage + 16-entry FA `dtlb`) sits in the wrapper between the AGU adds and the LQ/SQ address updates, bypassed combinationally while translation is inactive; the read-only `ptw` lives in `cpu_ooo` behind a walk seam and reads page tables through the hierarchy's walker port |
-| [`dispatch/`](dispatch/README.md)                                  | 2-wide combinational rename + resource allocation hub |
-| [`reorder_buffer/`](reorder_buffer/README.md)                      | In-order commit, precise exceptions, serializing instructions |
-| [`register_alias_table/`](register_alias_table/README.md)          | INT + FP rename tables, branch checkpoints |
-| [`reservation_station/`](reservation_station/README.md)            | Generic RS, instantiated 6× |
-| [`load_queue/`](load_queue/README.md)                              | Loads, L0 cache, MMIO, single-beat dwords, LR/AMO |
-| [`store_queue/`](store_queue/README.md)                            | Stores, store-to-load forwarding, single-beat drains |
-| [`cdb_arbiter/`](cdb_arbiter/README.md)                            | 2-lane CDB priority arbiter |
-| [`fu_cdb_adapter/`](fu_cdb_adapter/README.md)                      | One-deep holding register per FU slot |
-| [`fu_shims/`](fu_shims/README.md)                                  | Adapters from RS issue to the reused FUs |
+| Submodule | Role |
+|-----------|------|
+| [`tomasulo_wrapper/`](tomasulo_wrapper/README.md) | Instantiates the blocks below, except `dispatch` and the page-table walker, which `cpu_ooo` instantiates, and holds the glue between them |
+| [`../mmu/`](../mmu/) | Sv39 translation. The data MMU (`dmmu`, with a 16-entry fully associative `dtlb`) sits in the wrapper between address generation and the LQ/SQ, bypassed while translation is off. The read-only page-table walker (`ptw`) lives in `cpu_ooo` and serves both the data and instruction MMUs. |
+| [`dispatch/`](dispatch/README.md) | Two-wide rename and resource allocation |
+| [`reorder_buffer/`](reorder_buffer/README.md) | In-order commit, precise exceptions, serializing instructions |
+| [`register_alias_table/`](register_alias_table/README.md) | INT and FP rename tables, branch checkpoints |
+| [`reservation_station/`](reservation_station/README.md) | Generic RS, instantiated six times |
+| [`load_queue/`](load_queue/README.md) | Loads, L0 cache, MMIO, LR/AMO |
+| [`store_queue/`](store_queue/README.md) | Stores, store-to-load forwarding, drain to memory |
+| [`cdb_arbiter/`](cdb_arbiter/README.md) | Two-lane CDB priority arbiter |
+| [`fu_cdb_adapter/`](fu_cdb_adapter/README.md) | One-entry holding register per FU slot |
+| [`fu_shims/`](fu_shims/README.md) | Adapters from RS issue ports to the functional units |
 
-Larger modules use these helpers:
-`store_queue/sq_forwarding_unit`, `load_queue/lq_issue_selector`,
-`reservation_station/rs_issue2_selector`, and
-`reorder_buffer/rob_serializer`. `serial_state_e` lives in `riscv_pkg`.
-The balanced issue selectors preserve exact priority. Each helper is documented
-in its parent's README.
+Some blocks split out helper modules, such as `rob_serializer` and
+`sq_forwarding_unit`; each parent README documents its helpers.
 
-The CPU top level (`../cpu_ooo/cpu_ooo.sv`) instantiates `tomasulo_wrapper`,
-`dispatch`, and the front-end stages. Logic that straddles the front-end /
-back-end boundary, such as early misprediction recovery, the misprediction
-flush controller, and memory port arbitration, lives in its glue submodules
-under `../cpu_ooo/branch_recovery/` and `../cpu_ooo/memory_if/`. See
-[`../README.md`](../README.md).
+The CPU top level, `../cpu_ooo/cpu_ooo.sv`, instantiates the front end,
+`dispatch`, and `tomasulo_wrapper`. Logic that spans the front and back ends,
+such as branch recovery and memory-port routing, lives in `cpu_ooo`'s own
+submodules (`branch_recovery/`, `memory_if/`, and others). See the
+[CPU README](../README.md).
 
 ## Cross-cutting design notes
 
-The system-level decisions below cut across multiple submodules.
-Each submodule's README explains how it implements its piece.
-
 ### Conservative memory disambiguation
 
-Loads can execute out of order with respect to *each other*, but a
-load is gated until every older store address is known. If a matching
-older store is found, the LQ pulls the data from the SQ via
-store-to-load forwarding; otherwise the load issues to the L0 cache
-or main memory. Stores are non-speculative: they sit in the SQ until
-the ROB commits them. MMIO loads are additionally pinned to the ROB
-head so their reads can't have speculative side effects.
+Loads can execute out of order with respect to each other, but a load waits
+until the address of every older store is known. If the newest older store
+that overlaps the load covers all of its bytes and has its data, the SQ
+forwards the data. If that store covers only some of the bytes, has no data
+yet, or is an MMIO store or store-conditional (which never forward), the load
+waits and checks again. With no overlapping older store, the load reads the
+L0 cache or memory. See the
+[store queue](store_queue/README.md#store-to-load-forwarding) for the rules.
 
-There is no memory-dependence speculation with recovery; the conservative
-gate costs IPC on memory-heavy code.
+Stores write memory only after they commit. An MMIO load issues only at the
+ROB head, and its device read also waits for committed stores to drain, so no
+device access is speculative. There is no memory-dependence prediction or
+replay; the conservative gate costs some IPC on memory-heavy code.
 
 ### Two-tier branch recovery
 
-Branches, JAL, and JALR reserve a RAT checkpoint at dispatch (a full INT +
-FP RAT snapshot plus the RAS top-of-stack and valid count; 8 slots).
+Every branch, JAL, and JALR takes one of eight checkpoints at dispatch: a
+snapshot of both RATs plus the return-address stack's top-of-stack pointer and
+valid count. While all eight are in use, a branch or jump waits at dispatch;
+other instructions still dispatch.
 
-Conditional-branch mispredictions resolve in `branch_jump_unit` and
-trigger a fast two-phase recovery in the `early_misprediction_recovery`
-submodule (under `cpu_ooo/branch_recovery/`): the
-front-end redirects and the RAT restores in the same cycle, then the
-OOO back-end's partial flush fires one cycle later. Typical recovery takes about two cycles.
+Conditional-branch mispredictions recover early. When `branch_jump_unit`
+resolves one, `early_misprediction_recovery` (in `cpu_ooo/branch_recovery/`)
+captures it. The next cycle it redirects the front end and restores the RAT,
+and the cycle after that it removes younger back-end work with an age-based
+partial flush. A misprediction costs about two cycles.
 
-JALR mispredictions use the commit-time recovery path. Like early conditional
-branch recovery, they use an age-based partial flush to discard younger work.
-Exceptions instead enter the trap machinery at commit and cause a full flush;
-trap entry also applies the privilege and delegation rules.
+JALR mispredictions recover at commit instead. The JALR retires first, so
+every uncommitted instruction left in the back end is younger, and the back
+end flushes all of them. Exceptions go to the trap logic at commit and cause a
+full flush; trap entry also applies the privilege and delegation rules.
 
 ### Serializing instructions
 
-A small FSM in the ROB pins most of these instructions at the commit head
-(atomics are instead ordered at LQ/SQ issue, see the last row):
+`rob_serializer` holds most of these instructions at the ROB head until their
+side effects are safe. The LQ and SQ order atomics instead (last row).
 
 | Class | Ordering |
 |-------|----------|
-| WFI | Wait at head for a pending interrupt. |
-| CSR | Execute the CSR read/update handshake at head; write the read result through delayed architectural writeback. Translation CSRs also drain committed stores before retirement. |
-| FENCE / FENCE.I / SFENCE.VMA | Drain committed stores. FENCE.I/SFENCE.VMA additionally wait for L1D writeback and L1I invalidation, then flush fetch; SFENCE.VMA also invalidates TLB/PTW state. |
-| xRET | Handshake with the trap unit; return to mepc, sepc, or dpc. |
-| AMO / LR / SC | Issue at ROB head; AMO and SC also require committed-empty SQ. Atomics have no ROB serial state. |
+| WFI | Waits at the head for a pending interrupt. |
+| CSR | Runs its read/update handshake at the head. The value read reaches the register file through a delayed writeback at commit, and the front end holds younger instructions until then, because the CDB carries the CSR's write operand, not the value it reads. Translation CSRs also wait for committed stores to drain. |
+| FENCE / FENCE.I / SFENCE.VMA | Wait for committed stores to drain. FENCE.I and SFENCE.VMA then wait for L1D writeback and L1I invalidation, and flush fetch; SFENCE.VMA also invalidates the TLBs and the page-table walker. |
+| xRET | Handshakes with the trap unit and returns to `mepc`, `sepc`, or `dpc`. |
+| AMO / LR / SC | AMO and LR leave the LQ only at the ROB head, and an AMO also waits until no committed stores remain in the SQ. An SC issues from MEM_RS like a store but resolves only at the ROB head, after the committed stores drain (see the [wrapper](tomasulo_wrapper/README.md)). Atomics have no serializer state. |
 
-AMOs hold interrupts from head ownership through commit so a launched write
-cannot be squashed and replayed. MMIO reads likewise establish an interrupt
-shield before destructive acceptance and retain it through commit. Exceptions
-remain enabled: faulting operations perform no memory side effect. See the
-[load queue](load_queue/README.md) for acceptance and AMO timing.
+The ROB marks a CSR instruction as a translation CSR at allocation: any
+`satp` access, or an `mstatus` or `sstatus` access that writes. Like FENCE.I
+and SFENCE.VMA, its retirement is followed by a full flush. The CSR file
+invalidates the TLBs and walker on its own: on every `satp` access, and on an
+`mstatus` or `sstatus` write that changes SUM, MXR, or MPRV (or MPP while MPRV
+is set).
 
-The translation class is captured in the ROB at allocation: any `satp` access
-counts, and `mstatus`/`sstatus` count only with write intent. Its retirement
-event is registered once so the shadow/event cycle aligns with the registered
-CSR-file write; the common FENCE-class full-flush pulse follows one cycle
-later. Native FENCE.I/SFENCE.VMA uses the same semantic event/final-pulse seam
-without the extra pre-event register. The CSR file requests the TLB/PTW
-invalidation on its own: every `satp` access invalidates, while an
-`mstatus`/`sstatus` write invalidates only when it changes a
-translation-relevant field.
+Interrupts are held off until an AMO or MMIO read commits: for an AMO from one
+cycle after it reaches the ROB head, which is before its write can launch, and
+for an MMIO read from before the device accepts it. Once either has touched
+memory or a device, an interrupt cannot squash it and make it run twice.
+Exceptions stay enabled, because a faulting operation has no memory side
+effect. See the [load queue](load_queue/README.md) for the details.
 
-### 2-wide CDB arbitration
+### CDB priority and tag reuse
 
-The balanced top-two tree preserves fixed priority without serial lane-0
-selection and lane-1 exclusion. Live ALU values bypass the payload tree and
-are restored by lane/source selects; held ALU and other FU values use the tree.
-Consumers that register the CDB repeat the restore after the register edge,
-from the value the ALU adapter's held-result register captured on the same
-edge.
+Up to eight completions compete for the two CDB lanes each cycle, and
+[`cdb_arbiter`](cdb_arbiter/README.md) grants them in fixed priority:
 
 ```
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
-An unselected FU holds its result in `fu_cdb_adapter`; pipelined FUs also have
-credit-managed result FIFOs. The grant vector is 0-, 1-, or 2-hot.
+A completion that loses waits in its [`fu_cdb_adapter`](fu_cdb_adapter/README.md)
+and competes again the next cycle; the pipelined MUL, DIV, and FP multiply
+shims also queue results in FIFOs. On a full flush the arbiter's `i_kill`
+suppresses both lanes, which keeps the widely fanned flush signal out of the
+adapters' output logic.
 
-The arbiter's `i_kill` input suppresses both broadcast lanes on a full flush.
-Killing at the arbiter keeps the widely fanned flush signal out of each
-adapter's output cone instead of replicating the suppression in every adapter.
+ROB tags are reused as soon as the tail rewinds. The ROB tolerates a stray
+completion only while its entry is free. Once the tag is reallocated, the ROB
+cannot reliably tell a late completion for a squashed instruction from the
+result of the new instruction holding that tag. Every producer therefore
+drops squashed work at its own boundary:
 
-ROB tags are reused as soon as the tail rewinds, so a completion belonging to
-a squashed instruction must never reach the CDB after its flush. A delivery
-landing two or more cycles after the tag's reallocation is indistinguishable
-from the new instruction's completion (tag ABA). Every producer therefore
-kills squashed work at its own boundary. The shims flush-mark their tag
-queues, hold buffers, and result FIFOs. The adapters age-kill held and
-pass-through results. The LQ drops in-flight responses for squashed loads.
-The arbiter kills full-flush cycles. The ROB also rejects a completion in the cycle after tag reallocation.
+- The shims mark squashed operations in their trackers, queues, and result
+  registers, and drop them when they emerge. The FP multiply and divide shims
+  do this a cycle late; see [fu_shims](fu_shims/README.md#flushes).
+- The adapters compare held and passing results against the flush point by
+  age.
+- The LQ drops memory responses and staged CDB results for squashed loads.
+- The arbiter suppresses both lanes on a full flush.
 
-The same tag-reuse argument requires each completion to broadcast exactly
-once: a duplicate delivery that lands after the first one committed the
-instruction writes a freed, or by then reallocated, entry. The MEM slot's
-accept therefore mirrors its presentation mux exactly. A presented MEM result
-always wins a CDB lane in the same cycle, because only MUL outranks it and the
-CDB is 2-wide, so it pops the LQ `cdb_stage` that cycle
-(`lq_result_accepted`). A misaligned-store issue that collides with it
-captures into its registered exception slot in parallel and owns the MEM slot
-the next cycle.
+Allocation follows the same rule. The LQ and SQ allocation enables carry the
+ROB's flush gate (`!i_flush_all && !i_flush_en`), so the ROB, LQ, and SQ all
+drop a request presented during a flush. Dispatch can present one on a trap,
+xRET, or FENCE-class flush, because the front-end kill arrives a cycle late.
+If a queue accepted it, the queue would hold an entry for a tag the ROB never
+allocated, and a later reuse of that tag would put two entries with the same
+tag in the queue.
 
-The allocation side upholds the same argument: the LQ/SQ slot alloc enables
-carry the ROB's flush gate (`!i_flush_all && !i_flush_en`), so an alloc
-request presented on a flush pulse is suppressed everywhere that cycle.
-Dispatch may present a straggler on trap/xRET/FENCE-class pulses because the
-front-end kill is edge-delayed. Without this gate, the queue could retain a tag
-the ROB rejected and later form a duplicate-tag pair after tail rewind.
-
-The deep FP shims (`fp_mul_shim`, `fp_div_shim`) consume a registered
-one-cycle flush snapshot (pulse, flush tag, and head, all captured on the
-pulse cycle) instead of the live broadcast. The
-live-flushed adapters still cover the pulse+0 boundary (they are
-REGISTER_OUTPUT, so nothing passes through combinationally), and the FP
-adapters' full-flush window is extended one cycle to cover the shim FIFO
-turnaround.
+Each completion must also broadcast exactly once: a duplicate that arrives
+after the first copy retired the instruction lands on a freed or reallocated
+entry. The MEM slot needs care here, because store faults, SC results, and
+load results share it, in that priority order. The LQ pops its result exactly
+when the MEM mux presents it. Outside a full flush, a presented MEM result
+always wins a lane, because only MUL outranks MEM on a two-lane bus. The MEM
+adapter is therefore never left holding a result, and a result from the
+store-fault or SC register, which presents it for only one cycle, is broadcast
+unless a flush squashes it.
 
 ### Instruction → reservation station routing
 
 | RS         | Depth | Instructions |
 |------------|-------|--------------|
-| `INT_RS`   | 16 default (`INT_RS_DEPTH`) | ALU ops, shifts, B-extension, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK |
+| `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, and the illegal-instruction and fetch-fault markers |
 | `MUL_RS`   | 4     | MUL/MULW/MULH\*/DIV\*/REM\* |
-| `MEM_RS`   | 8     | All loads, stores, AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
+| `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
 | `FP_RS`    | 6     | FADD/FSUB, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
 | `FMUL_RS`  | 4     | FMUL, FMA (3-source) |
-| `FDIV_RS`  | 2     | FDIV, FSQRT (long latency, separate RS so it can't block FP_RS) |
-| (none)     | n/a   | JAL, WFI, MRET, SRET, DRET, PAUSE: ROB-only, no operand wakeup needed |
+| `FDIV_RS`  | 2     | FDIV, FSQRT (a separate RS so these long operations cannot block FP_RS) |
+| (none)     | n/a   | JAL, WFI, MRET, SRET, DRET, PAUSE: ROB only, no operands to wait for |
+
+`INT_RS_DEPTH` must be a power of two from 2 to 32. The INT RS's second issue
+port considers only the lowest eight entries (`riscv_pkg::IntRsIssue2Window`).
 
 Mixed INT/FP instructions such as FCVT.W.S, FMV.X.W, and FLW with an INT base
 read each source from the RAT that matches that source slot.
 
 ### FP rounding modes
 
-If an FP instruction's `rm` field is `DYN`, dispatch substitutes the
-current `frm` CSR value into the RS entry. The value is captured in
-program order, so later `frm` writes do not affect FP ops already in
-flight.
+If an FP instruction's `rm` field is DYN, dispatch substitutes the current
+`frm` value into the RS entry. The front end holds younger instructions while
+any CSR instruction is in flight, so the substituted value is always the one
+in program order, and a later `frm` write cannot affect an FP operation
+already dispatched.
 
 ### 2-wide dispatch
 
-The 64-bit fetch aligner emits one or two compressed/native instructions,
-including cross-word pairs. Slot 2 is suppressed after control-flow or
-serializing slot 1, for serializing or FP-compute slot 2, and when it would
-extend beyond the fetch window.
+The 64-bit fetch aligner delivers one or two instructions per cycle,
+compressed or full size, including pairs that straddle two fetch words. It
+drops slot 2 when slot 1 is control flow or serializing, when slot 2 is
+serializing or an FP compute op, or when slot 2 does not fit in the fetch
+window.
 
-The bundle fires atomically after checking each target's one- or two-entry
-capacity; slot 2 never allocates alone.
+Dispatch fires the pair as a unit after checking that every target structure
+has room for both, so slot 2 never allocates alone. Slot 2 has its own RAT
+lookups, rename, ROB entry, and RS packet. A slot-2 source that reads slot 1's
+destination is redirected to the ROB tag slot 1 allocates in the same cycle,
+so a dependency inside the pair behaves like any other renamed dependency.
 
-Slot 1 control flow terminates the bundle. Slot 2 has its own RAT lookups,
-destination rename, ROB allocation, and RS packet. A slot-2 source that reads
-slot 1's destination is redirected inside dispatch to the ROB tag slot 1
-allocates that cycle, so same-bundle RAW dependencies behave like ordinary
-renamed dependencies. Slot 2 also has its own done-repair channels: dispatch
-registers slot-2 source tags on channels 4/5/6, and the wrapper repairs
-already-completed sources one cycle later, as for slot 1. The checkpoint pool
-remains single-save-per-cycle because slot 1 branch/jump instructions
-suppress slot 2; when slot 2 is the control-flow instruction, the checkpoint
-snapshot overlays slot 1's rename.
+A renamed source whose producer has already completed has missed that
+producer's CDB broadcast. Dispatch therefore registers a done-repair query for
+each renamed source (channels 1 to 3 for slot 1, 4 to 6 for slot 2). One cycle
+later the wrapper checks the ROB and, if the producer is done, wakes the RS
+entry with its value.
+
+The checkpoint pool saves at most one checkpoint per cycle. That is enough
+because control flow in slot 1 ends the pair; when slot 2 is the branch, its
+snapshot includes slot 1's rename. See [dispatch](dispatch/README.md) for the
+bundle rules.
 
 ### 2-wide commit
 
-The ROB retires up to two instructions per cycle. Head and head+1 commit
-together when both are done, neither is a serializing instruction (CSR,
-FENCE, FENCE.I, SFENCE.VMA, WFI, xRET, AMO, LR, SC), neither is an exception, the head is
-not mispredicting, and head+1 is not a mispredicted or early-recovered
-branch. A correctly predicted branch may retire at head+1; it uses a second
-checkpoint-free RAT port and held BTB/bimodal training captures. The INT and
-FP regfiles each have two write ports, built from 2-write-port distributed
-RAM with a Live Value Table that steers reads to the newer (slot-2) tag on
-same-register conflicts. The RAT and SQ each expose parallel slot-2 commit
-ports so both retires land in the same cycle.
+The ROB retires up to two instructions per cycle. The head and head+1 retire
+together when both are done, neither raised an exception, and neither is
+serializing (CSR, FENCE, FENCE.I, SFENCE.VMA, WFI, xRET, AMO, LR, SC). A
+correctly predicted branch may retire in either slot; a mispredicted or
+early-recovered branch retires alone from the head. The RAT and SQ have second
+commit ports for slot 2, and a correctly predicted branch in slot 2 trains the
+predictors through its own capture path. The INT and FP register files each
+have two write ports, built from two-write-port distributed RAM with a live
+value table that steers reads to the slot-2 write when both slots write the
+same register.
 
 ### Same-cycle bypasses
 
-Two bypass paths shorten commit and completion latency.
+When either CDB lane completes the ROB head or head+1, commit uses the
+broadcast in the same cycle instead of waiting for `rob_done` to update, which
+removes a cycle from the common completion path. Exceptions, branches, CSRs,
+fences, WFI, and xRETs do not take this bypass; they retire through the
+serializer, branch-update, or trap paths.
 
-CDB to head-done bypass: when either CDB lane targets the ROB head or head+1,
-the value flows into the commit mux in the same cycle instead of waiting for
-the `rob_done[head]` flop to update. This cuts one cycle off the common
-ordinary-completion path. Exceptions, branches, CSR, FENCE, FENCE.I,
-SFENCE.VMA, WFI, and xRET are excluded and still use the serial, branch-update,
-or trap paths.
-
-LQ address-update and completion bypasses: MEM_RS issues a pre-issue
-look-ahead one cycle early so the LQ's address-update CAM match is registered
-before the real issue, and entries appear `addr_valid` in the same cycle
-MEM_RS issues. On completion, the LQ writes its CDB staging register directly
-from the memory response, L0 hit, or SQ-forward data, bypassing the per-entry
-`data_valid` and priority-encoder path.
+The LQ has bypasses of its own. MEM_RS signals its next issue one cycle
+early, so the LQ registers the address-update match in advance and the entry
+is address-valid in the cycle MEM_RS issues. With translation on, the DMMU's
+first stage provides the look-ahead instead, and the entry is address-valid in
+the cycle the DMMU delivers the physical address. When the LQ's CDB staging
+register is free and no stored result is waiting for it, a load's data from
+memory, the L0 cache, or an SQ forward goes straight into the staging register
+instead of through the entry's data field. See the
+[load queue](load_queue/README.md).

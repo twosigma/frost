@@ -1,111 +1,147 @@
 # Dispatch
 
-Dispatch renames and allocates up to two decoded instructions per cycle from
-the in-order front-end into the Tomasulo back-end.
+Dispatch moves instructions from the in-order front end into the
+out-of-order back end. Each cycle it takes a bundle of up to two decoded
+instructions and, for each one it fires, allocates a ROB entry, looks up its
+sources in the RAT, renames its destination, sends it to a reservation
+station, and saves a checkpoint if it is a branch or jump. It also checks LQ
+and SQ room for memory operations; the wrapper allocates those entries from
+the MEM_RS packet. When a needed resource is full, the bundle waits.
 
-For each firing slot it allocates a ROB entry, looks up the source operands in
-the RAT, renames the destination, routes the instruction to its reservation
-station, checks LQ/SQ room for memory operations, and allocates a checkpoint
-for branches and jumps. The LQ and SQ entries themselves are allocated by the
-wrapper from the MEM_RS packet. The module is mostly combinational: the bundle
-fire decision and the dispatch packets are same-cycle functions of the ID
-pipeline registers and the Tomasulo resource status. The only local sequential
-state is the registered done-repair request path for already-completed sources
-(bypass valid/tag channels 1 to 6).
+Bundles come from the head of the decoded queue that ID fills
+(`DECODED_QUEUE_DEPTH`, four bundles by default), or straight from the ID
+pipeline register when the queue is disabled. Dispatch is combinational apart
+from the registered done-repair request (see
+[Source operands](#source-operands)): the fire decision and every packet are
+same-cycle functions of the bundle and the back end's resource status.
+[`dispatch.sv`](dispatch.sv) is instantiated in `cpu_ooo.sv`, beside the
+[Tomasulo back end](../README.md) it feeds.
 
 ## 2-wide bundle rules
 
-Slot 1 is the anchor. Slot 2 fires only when slot 1 also fires, slot 2 is
-valid, slot 1 is not a branch or jump, slot 2 is not an FP-compute op, and
-every targeted structure has room for the bundle. The bundle fires or stalls
-as a unit, so slot 2 never appears downstream alone.
+Slot 2 fires only when slot 1 does, and a bundle fires or stalls as a unit.
+If a valid slot 2 lacks room in a structure it needs, the whole bundle waits
+and is presented again next cycle, so slot 2 never reaches the back end
+alone. Slot 1 control flow ends a bundle: the front end never pairs an
+instruction behind a slot-1 branch or jump, and dispatch refuses such a slot 2
+as well. A bundle therefore holds at most one branch or jump, and only slot 2
+of a pair can be one.
 
-With the decoded queue enabled, `SLOT2_VALID_FROM_BUNDLE` uses the head
-bundle's `is_not_nop` bit directly for slot-2 resource admission. The queue
-guarantees `i_valid_2 == i_valid && slot2.is_not_nop`; an integration assertion
-checks it. This removes the repeated queue-valid term from the resource
-decision. The default parameter retains the independent slot-valid interface.
+FP-compute ops (bound for the FP, FMUL, or FDIV station) stay out of slot 2;
+FP loads and stores go to MEM_RS and may use either slot. The instruction
+aligner advances past slot 1 alone when the next instruction is an
+FP-compute op, so that op arrives later as slot 1. Dispatch backs this up by
+treating an FP-compute slot 2 as absent, so slot 1 fires alone.
 
-An FP-compute op is one that targets the FP, FMUL, or FDIV RS; FP loads and
-stores go to MEM_RS and may sit in slot 2. The fetch-stage instruction aligner
-keeps FP-compute ops out of slot 2, so the PC advances past slot 1 alone and
-the FP op arrives later as slot 1. Dispatch backs this up by forcing
-`dispatch_valid_2` low for an FP-compute slot 2, so slot 1 fires alone.
+Slot 2's room checks account for slot 1. The ROB check always uses
+`i_rob_full_for_2`. A station, the LQ, or the SQ uses its "full for 2" status
+when slot 1 needs the same structure, and its plain full status otherwise.
+The checkpoint check is plain `i_checkpoint_available`, since a bundle saves
+at most one checkpoint. When slot 2 is the branch,
+`o_checkpoint_save_for_slot2` tells the RAT to include slot 1's same-cycle
+rename in the snapshot.
 
-Slot 2 always checks the wrapper's `i_rob_full_for_2`, since both slots take a
-ROB entry. For the RS, LQ, and SQ it uses the "full for 2" status when slot 1
-targets the same structure and the plain full status otherwise. The checkpoint
-check is the plain `i_checkpoint_available`: slot 1 control flow terminates
-the bundle, so a 2-wide cycle allocates at most one checkpoint and the
-single-save-per-cycle checkpoint pool is enough. If slot 2 is the branch or
-jump, dispatch flags the save as a slot-2 save (`o_checkpoint_save_for_slot2`)
-so the RAT snapshot folds in slot 1's same-cycle rename.
+With the decoded queue (the default), cpu_ooo sets `SLOT2_VALID_FROM_BUNDLE`,
+and dispatch takes slot 2's presence from the bundle's `is_not_nop` bit
+rather than `i_valid_2`. The queue drives `i_valid_2 == i_valid &&
+is_not_nop`, and an assertion checks it.
 
 ## Source operands
 
-For each source slot, dispatch reads the INT or FP RAT according to the
-`uses_fp_rs1/2/3` flags pre-decoded in ID, then turns the RAT result into an
-RS operand:
+Each source reads the INT or FP RAT, as the `uses_int_rs*` and `uses_fp_rs*`
+flags from ID select, and becomes an RS operand:
 
-- A source that is not renamed takes its value from the regfile passthrough,
-  and the RS entry is marked ready. Its tag is unspecified and must not
-  participate in wakeup or done repair.
-- A renamed source sends the ROB tag to the RS, and dispatch also emits a
-  registered done-repair request. The wrapper checks the ROB one cycle later
-  and wakes the RS if that tag had already completed before dispatch.
-- A slot-2 source that reads slot 1's destination in the same bundle is
-  overridden with slot 1's newly allocated ROB tag. The RAT lookup happened
-  before slot 1's rename write, so without the override the slot-2 source
-  would be stale.
+- A source that is not renamed is ready, with its value from the register
+  file (passed through the RAT). Its tag is meaningless and must not take
+  part in wakeup or done repair.
+- A renamed source carries the producer's ROB tag and waits for the CDB. The
+  producer may have broadcast already, so dispatch also sends a registered
+  done-repair request (channels 1 to 3 for slot 1, 4 to 6 for slot 2). One
+  cycle later the wrapper checks whether that ROB entry is done and, if so,
+  wakes the RS entry with the ROB's value.
+- A slot-2 source that reads slot 1's destination gets slot 1's new ROB tag,
+  because the RAT lookup ran before slot 1's rename.
 
-For FP instructions with `rm = DYN`, dispatch substitutes the current `frm` CSR
-value into the RS entry, capturing the rounding mode in program order so later
-`frm` writes do not affect in-flight FP ops.
+For an FP instruction with `rm = DYN`, dispatch writes the current `frm` into
+the RS entry. Every CSR instruction keeps younger instructions out of
+dispatch until its CSR write and register writeback are done, so this is the
+rounding mode in program order.
 
 ## Stalls
 
-Any exhausted back-end resource stalls dispatch: ROB full, target RS full, LQ
-full for loads, LR, and AMOs, SQ full for stores and SC, or no checkpoint
-available for a branch or jump. The early back-end recovery hold (`i_hold`)
-blocks the fire gate the same way. `o_status` carries independent per-cause
-flags for slot 1 (any combination may assert in one cycle) and `slot2_block_*`
-bits for cycles where slot 2 alone holds the bundle, so the perf counter
-aggregator (`../../cpu_ooo/perf/perf_counter_aggregator.sv`) can count each
-cause without re-deriving the conditions.
+Dispatch stalls when a resource it needs is exhausted: the ROB, the target
+station, the LQ (loads, LR, AMOs), the SQ (stores, SC), or the checkpoint
+pool (branches and jumps). The early back-end recovery hold (`i_hold`)
+blocks firing too. `o_status` gives each slot-1 resource its own flag, plus
+`slot2_block_*` flags for cycles where slot 2 alone holds the bundle, so the
+[counter aggregator](../../cpu_ooo/perf/perf_counter_aggregator.sv) can count
+those causes directly. The recovery hold has no flag of its own.
 
-`o_stall` is validity-qualified backpressure
-(`dispatch_valid && !bundle_fire_ok`). Pipeline control uses it to replay a
-blocked ID packet; a resource-only stall can replay an already dispatched
-instruction and allocate it twice. `o_status.stall` uses the same qualified
-value. If separating the front-end hold for timing, keep replay
-validity-qualified; registering the stall requires capture capacity, such
-as an ID-to-dispatch skid buffer.
+`o_stall` is `dispatch_valid && !bundle_fire_ok`: a valid bundle is blocked.
+`o_status.stall` has the same value and feeds the counters. With the decoded
+queue, the front end stalls on the queue's full flag, and a bundle leaves the
+queue only when it allocates.
+
+Without the queue, pipeline control uses `o_stall` to stall the front end and
+replay the blocked ID packet, and there it must stay qualified by validity. A
+stall on resource status alone can make an instruction dispatch twice: X
+dispatches while another stall holds ID, and the next cycle ID still holds
+X's image, now invalid. If X's resource has filled by then, the unqualified
+stall replays X as valid, and X dispatches again once room returns. For
+timing, a resource-only term may drive the front-end hold, but the replay
+must keep the qualified term; registering the stall needs capture capacity,
+such as a one-entry ID-to-dispatch skid buffer.
 
 ## RS routing
 
-Most instructions route to one of six reservation stations by opcode; the
-routing table is in [`../README.md`](../README.md) under "Instruction →
-reservation station routing". Dispatch emits per-RS packets for slot 1 and
-slot 2, with only the selected RS family's `valid` bit asserted for each slot.
-JAL, WFI, MRET, SRET, DRET, and PAUSE skip the RS (`rs_type == RS_NONE`): they
-allocate a ROB entry only, and the ROB handles them at commit. JAL is marked
-done at allocation, since its link and target are known then; WFI and the
-xRETs go through the ROB's serializing FSM (see "Serializing instructions" in
-the same README).
+ID pre-decodes each instruction's station (`rs_type`); the table is in the
+[back-end overview](../README.md) under "Instruction → reservation station
+routing". Dispatch emits one packet per station for each slot and sets
+`valid` only on the selected one.
 
-## Immediate reuse
+JAL, WFI, MRET, SRET, DRET, and PAUSE have no station (`rs_type == RS_NONE`)
+and allocate only a ROB entry. JAL is done at allocation, since its link
+address and target are known then. WFI and the xRETs are also done at
+allocation and wait at the ROB head in the serializing FSM (see "Serializing
+instructions" in the same overview, and in the
+[ROB](../reorder_buffer/README.md#serializing-instructions)).
 
-The RS immediate word also carries the values ID precomputes from the PC, so
-no station needs the PC at execute: a conditional branch carries
-`branch_target_precomputed` (JAL, which skips the RS, carries
-`jal_target_precomputed`), AUIPC carries PC + imm_u, the fetch-fault
-pseudo-ops carry their xtval (PC, or PC + 2 when only the second halfword of
-a page-straddling instruction faulted), and JALR carries its link address,
-with its 12-bit offset in `jalr_imm`. A direct branch also receives
-`predicted_target_ok`, ID's compare of the precomputed target against the
-prediction, selected from the same source as `predicted_target` (RAS over
-BTB), so branch resolution checks one bit; JALR compares its computed target
-against `predicted_target` at execute. A simulation oracle checks the bit
-against the full compare for every dispatched conditional branch that was
-predicted taken. The ROB allocation request keeps its own copies of the PC,
-link address and targets for commit-time recovery and training.
+For a fetch-fault pseudo-op, dispatch clears the JAL, JALR, FENCE, FENCE.I,
+WFI, and xRET class bits in the ROB request. The faulting page's bytes can
+decode as any of them, and a done-at-allocation class would let the entry
+retire before its fault arrived.
+
+## PC-derived immediates
+
+The RS immediate word carries values ID precomputes from the PC, so the ALU
+never needs the PC:
+
+| Instruction | `imm` carries |
+|-------------|---------------|
+| Conditional branch | `branch_target_precomputed`, the taken target |
+| AUIPC | PC + U-immediate |
+| JALR | The link address; the 12-bit offset travels in `jalr_imm` |
+| Fetch-fault pseudo-op | The xtval: the PC, or PC + 2 when only the second halfword of a page-straddling instruction faulted |
+
+A conditional branch also gets `predicted_target_ok`: ID's comparison of its
+target with the prediction, from the same source as `predicted_target` (the
+RAS if it predicted, else the BTB). Branch resolution checks this one bit
+instead of comparing addresses, and a simulation check compares it with the
+full comparison for every dispatched conditional branch predicted taken.
+JALR compares its computed target with `predicted_target` at execute.
+
+The INT station keeps `pc`, `link_addr`, and `predicted_target` in a
+ROB-tag-indexed side RAM for branch resolution and early recovery (see the
+[reservation station](../reservation_station/README.md)). The ROB request
+carries its own copies of the PC, link address, and targets for commit-time
+recovery and predictor training.
+
+## Verification
+
+The `dispatch` cocotb target covers stalls, station routing, source
+resolution and renaming, two-slot bundles, checkpoints, immediates, and
+rounding modes. The `dispatch_admission` formal target checks the bundle
+admission equations with `SLOT2_VALID_FROM_BUNDLE` off and on.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

@@ -16,12 +16,14 @@
 
 # FROST Buildroot external tree (`BR2_EXTERNAL`)
 
-Builds OpenSBI firmware and a small BusyBox/musl test userspace for FROST's
-RV64 Linux system. The images include Debian's pinned kernel and the FROST
-NIC module; Buildroot does not compile a kernel here.
+This Buildroot external tree builds FROST's OpenSBI firmware and a small
+BusyBox/musl test userspace, then packs them with Debian's pinned kernel and
+the FROST NIC module into the images the JTAG loader writes to the board.
+Buildroot compiles no kernel here. At boot, the test initramfs loads the NIC
+module and runs FROST's userspace stress tests before the login prompt.
 
-For the boot ABI, memory map, and kernel requirements, see the
-[Linux guide](../README.md). For a full Debian installation, see the
+For the boot interface, memory map, and kernel requirements, see the
+[Linux reference](../README.md). For a full Debian system, see the
 [NFS-root setup guide](../../docs/debian_nfsroot.md).
 
 ## Layout
@@ -29,20 +31,21 @@ For the boot ABI, memory map, and kernel requirements, see the
 | Path | Purpose |
 | --- | --- |
 | `external.desc`, `external.mk`, `Config.in` | Buildroot external-tree registration |
-| `configs/frost_rv64_defconfig` | OpenSBI and static musl test userspace on the Bootlin riscv64 `lp64d` toolchain |
+| `configs/frost_rv64_defconfig` | OpenSBI and the musl test userspace, built with the Bootlin riscv64 `lp64d` toolchain |
 | `package/frost-stress/` | Boot stress, signal-return, and NIC loopback programs |
-| `board/frost/busybox-mmu.fragment` | BusyBox configuration |
+| `board/frost/busybox-mmu.fragment` | BusyBox configuration (statically linked) |
 | `board/frost/rootfs-overlay-mmu/` | Startup scripts and login configuration |
-| `board/frost/post-image-mmu.sh` | Builds firmware, stages Debian's kernel and NIC module, and packs images |
+| `board/frost/post-image-mmu.sh` | Builds the firmware, stages Debian's kernel and the NIC module, and packs the images |
 | `board/frost/frost_boot_image.py` | Packs firmware, kernel, device tree, and optional initramfs for the JTAG loader |
 | `board/frost/frost,net10g.yaml` | NIC device-tree binding |
 
 ## Toolchain
 
-Initialize submodules before native builds. The defconfig and custom-toolchain
-checksum must match the Dockerfile's Bootlin musl archive. Use a fresh output
-directory after changing Buildroot or the compiler; Buildroot does not support
-switching compilers inside an existing tree.
+Initialize the submodules before a native build. The defconfig's toolchain
+URL and the hash in `patches/toolchain-external-custom/` must name the same
+Bootlin musl archive as the Dockerfile. After changing Buildroot or the
+compiler, use a fresh output directory: Buildroot cannot switch compilers
+inside an existing one.
 
 ## Build
 
@@ -55,7 +58,7 @@ From the repository root, build in a separate output directory:
   BR2_EXTERNAL=/workspace/linux/buildroot-external
 ```
 
-The first build downloads the external toolchain. Outputs are in
+The first build downloads the external toolchain. Outputs land in
 `linux/build-mmu/images/`:
 
 | File | Purpose |
@@ -70,21 +73,21 @@ The first build downloads the external toolchain. Outputs are in
 
 ## Packing the images for a board
 
-The loader builds missing components and packs images for the board's clock
-and DDR size:
+The loader builds any missing component and packs the images for the board's
+clock and DDR size:
 
 ```bash
 ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
-It sets `FPGA_CPU_CLK_FREQ` and `FROST_LINUX_MEM_SIZE` (1 GiB on X3).
-A standalone build defaults to 322.265625 MHz and 64 MiB:
+It sets `FPGA_CPU_CLK_FREQ` and `FROST_LINUX_MEM_SIZE` (1 GiB on X3). A
+standalone build defaults to 322.265625 MHz and 64 MiB:
 
 ```bash
 ./scripts/frost.py run make -C sw/apps/linux_boot
 ```
 
-For Debian over NFS, provide the export and its matching kernel/initramfs:
+For Debian over NFS, give the export and its matching kernel and initramfs:
 
 ```bash
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian \
@@ -93,16 +96,11 @@ FROST_LINUX_INITRD=/srv/nfs/debian/boot/initrd.img-<version> \
   ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
-Use absolute paths. Inside `./scripts/frost.py run`, files must be under
-`/workspace`, the mounted checkout. `FROST_LINUX_IP` supplies the kernel's
-`ip=` setting (default `dhcp`); `FROST_LINUX_MAC` sets the board's MAC.
-Give each board on a shared network a unique locally administered MAC.
-See [NFS root options](../README.md#nfs-root) for details.
-
-Debian needs an initramfs with the NIC module to mount NFS. Setting only
-`FROST_LINUX_NFSROOT` omits the initramfs and requires a custom kernel with
-`CONFIG_IP_PNP` and `CONFIG_ROOT_NFS`. Firmware still comes from OpenSBI in
-either case.
+Use absolute paths; under `./scripts/frost.py run` they must be inside
+`/workspace`, where the checkout is mounted. `FROST_LINUX_IP` sets the
+kernel's `ip=` (default `dhcp`) and `FROST_LINUX_MAC` the board's MAC, which
+must be unique on a shared network. The [NFS root options](../README.md#nfs-root)
+cover these variables and what an NFS boot needs from the kernel.
 
 To load images built elsewhere, stage them and set `FROST_LINUX_PREBUILT=1`:
 
@@ -112,46 +110,49 @@ cp <elsewhere>/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 FROST_LINUX_PREBUILT=1 ./fpga/load_software/load_software.py x3 linux_boot
 ```
 
-This preserves the staged files through the loader's clean step and skips
-Buildroot. The images must already match the board's clock and memory map.
+The loader's clean step then keeps the staged files, and the build skips
+Buildroot. The images must already match the board's clock and DDR size.
 
 ## The kernel and the NIC driver
 
 [`debian_kernel.py`](../debian_kernel.py) fetches and verifies the pinned
 Debian kernel, builds the [NIC module](../frost-net10g/README.md) against its
-headers, and adds the module to the test initramfs. See the
-[kernel](../README.md#kernel) and [module](../README.md#nic-module) guides for
-standalone commands.
+headers, and adds the module to the test initramfs. The
+[kernel](../README.md#kernel) and [module](../README.md#nic-module) sections
+of the Linux reference describe its commands.
 
-CI builds these images and boots them in QEMU. FROST hardware boot is checked
-by `fpga/hw_regression.py --board x3 linux_boot` and `fpga/linux_boot_soak.py`;
-there is no Linux-kernel cocotb target.
+CI builds these images and boots them under QEMU. On the X3,
+`fpga/linux_boot_soak.py` boots the test image repeatedly, and the hardware
+regression's `linux_boot` stage boots Debian from NFS with this tree's
+OpenSBI. RTL simulation does not boot Linux.
 
-## Notes, assumptions, and gaps
-
-- Edit `busybox-mmu.fragment` and `rootfs-overlay-mmu/` to customize userspace.
-  The test initramfs has no IP-network setup; `frost_nettest` uses packet
-  sockets.
-- After changing `package/frost-stress/src/`, rebuild with
-  `frost-stress-rebuild` and regenerate the images. The `sw/apps/linux_boot`
-  Makefile does this automatically. The hardware regression separately
-  builds static copies of these programs into the Debian NFS root.
-- Each Buildroot output directory records absolute paths. Do not share it
-  between Docker and host-native builds, or between checkouts. Pass
-  `BR2_EXTERNAL` on every direct Buildroot invocation.
-- Recreate the output tree after removing packages from the configuration;
-  rerunning defconfig alone leaves obsolete packages in the rootfs.
-- Image packing needs `dtc`. It is in the `frost` image; for other build
-  environments, install it or enable `BR2_PACKAGE_HOST_DTC=y`.
-
-The test programs are:
+## Test programs
 
 | Program | Purpose |
 | --- | --- |
-| `frost_stress` | Boot-time stress of signals, process/memory operations, futexes, and atomics; prints `FROST_USERSPACE_STRESS_PASS` or `FROST_USERSPACE_STRESS_FAIL` |
-| `frost_stress --counters <command>` | Reports cycles, instructions, elapsed time, and IPC from the child's exec to exit through `perf_event_open`; replaces `perf stat` in this image |
+| `frost_stress` | Boot-time stress of signals, process and memory operations, futexes, and atomics; prints `FROST_USERSPACE_STRESS_PASS` or `FROST_USERSPACE_STRESS_FAIL` |
+| `frost_stress --counters` | Runs a fixed workload in a child process and reports its cycles and instructions (counted through `perf_event_open` from the child's exec to its exit), the elapsed time, and IPC; replaces `perf stat` in this image |
 | `frost_sigprobe` | vDSO signal-return probe |
 | `frost_nettest` | Driver loopback test; prints `FROST_NET_LOOPBACK_PASS` or `FROST_NET_LOOPBACK_FAIL <reason>` and leaves the interface down with loopback disabled |
 
-The soak requires working performance counters as well as a stress pass.
-See [counter access](../README.md#counters-and-mcounteren).
+`fpga/linux_boot_soak.py` fails a boot that passes the stress test but
+reports `counters=unavailable`; see
+[counter access](../README.md#counters-and-mcounteren).
+
+## Notes
+
+- Customize userspace in `busybox-mmu.fragment` and `rootfs-overlay-mmu/`.
+  The test initramfs does no IP networking; `frost_nettest` uses packet
+  sockets.
+- Buildroot does not notice an edited package source. After changing
+  `package/frost-stress/src/`, rebuild with `frost-stress-rebuild` and
+  regenerate the images; the `sw/apps/linux_boot` Makefile does both
+  automatically. The hardware regression builds its own static copies of
+  these programs for the Debian NFS root.
+- A Buildroot output directory records absolute paths, so do not share one
+  between Docker and native builds, or between checkouts. Later invocations
+  reuse the `BR2_EXTERNAL` saved by the defconfig step.
+- After removing packages from the configuration, recreate the output tree.
+  Rerunning the defconfig alone leaves the old packages in the rootfs.
+- Image packing needs `dtc`. The `frost` image has it; elsewhere, install it
+  or set `BR2_PACKAGE_HOST_DTC=y`.

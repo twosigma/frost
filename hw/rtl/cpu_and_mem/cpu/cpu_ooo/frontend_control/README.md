@@ -1,45 +1,76 @@
 # Frontend validity and decoded bundles
 
-`frontend_validity_tracker` tracks the IF/PD/ID image and prediction fences.
-`decoded_bundle_queue` defaults to four **two-instruction bundles**
-(`DECODED_QUEUE_DEPTH=4`). It supports power-of-two depths of at least two;
-depth zero selects direct frontend serialization and replay.
-The queue passes an empty input through without adding latency. Registered full state
-stalls frontend replacement independently of backend resource stalls; a full
-queue does not accept a new bundle on its first pop cycle. A consumed-image
-bit prevents an ID register held by an unrelated frontend stall from being
-accepted again. Every frontend advance must either have accepted its live
-image or already consumed it; the integration checks that contract.
+These two `cpu_ooo` submodules sit between the in-order front end and
+dispatch. `frontend_validity_tracker` decides which packets in IF, PD, and ID
+are real instructions. `decoded_bundle_queue` lets decode run ahead of
+dispatch by buffering decoded two-instruction bundles. The
+[CPU README](../../README.md) shows where they fit in the front end.
 
-Dispatch pops a whole bundle only on the first ROB allocation request and
-handles the second instruction and resource admission atomically.
-Queued decode and prediction metadata address the live
-register-file and RAT read ports at dispatch; operand values are not frozen
-at enqueue. CSR in-flight, CSR writeback and serializing-allocation state
-fence dispatch. A queued CSR is removed immediately, so the
-direct-ID advance-only release assertion applies only with the queue
-disabled.
-Unpredicted indirect jumps in queued bundles extend the frontend prediction
-fence. Full and partial frontend recovery discard all queued bundles and
-clear producer ownership. Debug stepping keeps user NOP bundles through the
-`step_armed_fe_q` validity exception.
+## Validity tracker
 
-Dispatch never reads the queue's LUTRAM directly. The oldest queued bundle
-is mirrored in flops (`head_packet_q`), and the output selects it or the
-empty-queue bypass with one registered select. Every narrow control field
-(`riscv_pkg::id_dispatch_ctrl_t`: the flags, operation enums, RS route and
-instruction word) goes further: `id_stage` exports its next-edge register
-value (`o_from_id_to_ex_next`, generated from the register update itself),
-and the queue keeps a registered copy of exactly what dispatch sees next
-cycle, bypass included (`o_shadow`). Dispatch control, the RAT, register-file
-and rename addresses therefore start at a flop; only the wide payload (values,
-immediates, targets) keeps the select. The shadow's own select sits after ID's
-decode, where ID's register already has its flush select.
+A two-stage valid chain (`if_valid_q`, `pd_valid_q`) follows packets from IF
+to ID, so the NOP bubbles after a flush or reset, including the one-cycle
+post-flush holdoff, never reach dispatch. A bundle is valid if either slot
+holds a real instruction, so a `c.nop` in slot 1 still carries its slot-2
+instruction. Dispatch, not the tracker, applies the recovery kill.
 
-The standalone formal target proves order, arbitrary payload preservation,
-held-image ownership, occupancy and flush behavior at depths two and four.
-It uses an eight-bit arbitrary payload and assumes legal consumer pops and
-producer replacement. Cocotb runs 4,000 randomized cycles at each depth,
-including empty bypass, pointer wrap, full queues, simultaneous enqueue/pop,
-held images, reset and live flushes. Whole-core program tests check the
-integration contracts in simulation.
+The tracker also classifies unpredicted control flow in IF, PD, and ID. An
+unpredicted indirect jump feeds the control-flow serialization stall in
+`ooo_pipeline_control`, which holds the front end while an older branch is
+unresolved. The per-class signals (conditional branch, JAL, indirect) feed
+only [profiling counters](../perf/README.md) 20–22.
+
+## Decoded bundle queue
+
+The queue holds decoded bundles from ID until dispatch takes them. Its depth
+is the `DECODED_QUEUE_DEPTH` parameter, default `riscv_pkg::DecodedQueueDepth`
+(4). A nonzero depth must be a power of two of at least 2. Depth 0 removes the
+queue: ID feeds dispatch directly, dispatch back-pressure stalls the front
+end, and ID replays its held bundle when the stall clears. One exception
+applies in that mode: if an unrelated stall already held ID when a CSR
+dispatched, ID still holds that CSR, so `ooo_pipeline_control` releases it
+with one cycle in which ID advances but nothing dispatches. Otherwise the CSR
+would dispatch twice. With the queue, the consumed bit below covers this
+case.
+
+| Case | Behavior |
+|------|----------|
+| Queue empty | The bundle in ID's output register reaches dispatch in the same cycle; the queue stores it only if dispatch does not take it |
+| Queue full | `o_full` comes from registered occupancy, so dispatch has no combinational ready path back to fetch. A full queue refuses a new bundle even in a cycle when dispatch pops one, and the front end stalls on a full queue rather than on dispatch back-pressure |
+| Dispatch | Pops a whole bundle when slot 1 allocates its ROB entry (`rob_alloc_req.alloc_valid`); slot 2, if present, fires in the same cycle |
+| Flush | Any pipeline flush (trap, xRET, FENCE-class, or misprediction recovery, early or at commit) empties the queue, as does reset |
+
+ID's output register can hold one bundle for several cycles while an
+unrelated front-end stall keeps ID from advancing. A consumed bit records that
+the queue has already accepted that bundle, so it is never enqueued twice; the
+bit clears when ID advances. ID must not advance past a valid bundle the queue
+has not accepted, and an assertion checks this.
+
+Queued bundles hold decode results and prediction metadata, not operand
+values. Dispatch reads the register files and RAT with the head bundle's
+register fields in the cycle it dispatches, so renaming always sees every
+older instruction. After a CSR dispatches, dispatch takes nothing more from
+the queue until the CSR has committed and any register result is written back,
+because a CSR's CDB broadcast carries only its write operand.
+
+The queue drops all-NOP bundles, except while a debug single step is armed
+(`step_armed_fe_q`), so that stepping over a `nop` retires exactly that `nop`.
+It also reports any queued unpredicted JALR (`o_indirect_pending`) to the
+control-flow serialization stall. For timing, dispatch reads a flop copy of
+the head bundle rather than the queue RAM, and takes its narrow control fields
+from a register (`o_shadow`) loaded a cycle early from ID's next-cycle value
+(`o_from_id_to_ex_next`).
+
+## Verification
+
+The `decoded_bundle_queue` formal target proves FIFO order, payload
+preservation, the consumed-bit rule, occupancy, and flush behavior at depths 2
+and 4 with an 8-bit symbolic payload. It assumes an initial reset, legal pops,
+and no producer overwrite before acceptance. The `decoded_bundle_queue` and
+`decoded_bundle_queue_depth2` cocotb targets run randomized traffic with
+bypass, wraparound, full queues, held bundles, reset, and flushes of live
+entries. Assertions in `cpu_ooo` check the integration rules in whole-core
+simulation.
+
+See the [test runner](../../../../../../tests/README.md) for commands and the
+[formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

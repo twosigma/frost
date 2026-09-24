@@ -2,34 +2,110 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-FROST is an out-of-order 64-bit RISC-V (RV64GCB) processor written in
-SystemVerilog for FPGAs. It runs at **322.265625 MHz** on the Alveo X3522PV,
-with Debian 13, FreeRTOS, 10 Gigabit Ethernet and 1 GiB of DDR4.
-
-## Why FROST?
-
-- **Performance:** **1,259 CoreMark at 322.27 MHz** on X3 — 3.91 CoreMark/MHz.
-- **Full Debian Linux:** Debian 13 with its stock riscv64 kernel, systemd,
-  and a root filesystem served over NFS. [Setup guide](docs/debian_nfsroot.md).
-- **10 Gigabit Ethernet:** an integrated NIC with a Linux driver and coherent DMA.
-- **Real workloads:** FreeRTOS and all nine EEMBC CoreMark-PRO benchmarks.
-- **Open-source tools:** Verilator for simulation, Yosys for synthesis checks,
-  and SymbiYosys for formal verification, all included in the Docker image.
-  Full FPGA bitstreams require proprietary Vivado on the host.
-- **Portable RTL:** generic SystemVerilog with separate board integrations.
-- **VS Code support:** program the FPGA, load software, debug, and use the
-  serial console with the [FROST extension](tools/vscode-frost/README.md).
-- **Apache 2.0 license** for commercial and academic use.
-
-## Features
+FROST is a two-wide, out-of-order RISC-V processor for FPGAs, written in
+SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
+and Sv39 virtual memory. On an AMD Alveo X3522PV it runs at 322 MHz, scores
+1,259 CoreMark (3.91 CoreMark/MHz), and boots Debian 13 with Debian's
+unmodified riscv64 kernel, mounting its root filesystem over NFS through its
+own 10 Gigabit Ethernet NIC.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 
-The diagram shows the X3 configuration. Click to view it at full size.
+The diagram shows the X3 configuration; click it for the full-size version.
+
+## Highlights
+
+- Debian 13 with systemd on an NFS root filesystem; the
+  [Debian guide](docs/debian_nfsroot.md) walks through the setup.
+- A 10 Gigabit Ethernet NIC (MAC, PCS, and descriptor-ring DMA that is
+  coherent with the caches) with a Linux driver.
+- FreeRTOS and all nine EEMBC CoreMark-PRO workloads.
+- An open-source flow: simulation (Verilator and cocotb), synthesis checks
+  (Yosys), and formal proofs (SymbiYosys) run in a pinned Docker image. AMD
+  Vivado is needed only for the FPGA itself: building bitstreams and
+  programming and loading the board.
+- Continuous testing against the RISC-V architecture tests and random
+  riscv-torture programs, with Spike as the reference, plus the riscv-tests
+  suites and unit benches for the hardware blocks.
+- Hand-written SystemVerilog rather than RTL generated from Chisel or
+  SpinalHDL, with optional Xilinx primitives and board integration kept
+  separate.
+- A [VS Code extension](tools/vscode-frost/README.md) that programs the FPGA,
+  loads software, and debugs it with source breakpoints and a serial console.
+- The Apache 2.0 license.
+
+## Quick Start
+
+You don't need an FPGA to try FROST. From the repository root:
+
+```bash
+docker build -t frost .                   # build the toolchain image (once)
+./scripts/frost.py doctor                 # check the setup (read-only)
+./scripts/frost.py cocotb hello_world     # simulate the SoC running Hello World
+```
+
+The first image build compiles GCC, Verilator, Yosys, QEMU, Spike, and other
+tools from source, so expect it to take a while. The last command compiles
+the program, simulates the full SoC in Verilator, and prints
+`Frost: Hello, world!` from the simulated UART. `scripts/frost.py`
+runs each tool inside the image as your user, so build outputs stay yours, and
+initializes Git submodules automatically. Use it for every simulation, formal,
+and lint run.
+
+Other programs to simulate:
+
+```bash
+./scripts/frost.py cocotb directed_traps      # directed M-mode trap and interrupt tests
+./scripts/frost.py cocotb isa_test            # ISA self-test
+./scripts/frost.py cocotb coremark            # CoreMark benchmark
+./scripts/frost.py cocotb coremark_pro_core   # CoreMark-PRO core workload
+./scripts/frost.py cocotb freertos_demo       # FreeRTOS demo
+./scripts/frost.py cocotb ddr_heap_test       # multi-MB malloc through the caches into DDR
+./scripts/frost.py cocotb frost_cache         # cache hierarchy unit bench
+./scripts/frost.py cocotb --list-tests        # every simulation target
+
+# Run a program from cached DDR instead of on-chip BRAM
+FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
+
+# Write waveforms (dump.fst)
+WAVES=1 ./scripts/frost.py cocotb directed_traps
+
+# Open a shell inside the image
+./scripts/frost.py shell
+```
+
+## Running on the FPGA
+
+FPGA builds and board tools run natively on a host with Vivado:
+
+```bash
+# 1. Build the bitstream (30-90 minutes)
+./fpga/build/build.py x3
+
+# 2. Program the FPGA
+./fpga/program_bitstream/program_bitstream.py x3
+
+# 3. Load software; this doesn't touch the bitstream
+./fpga/load_software/load_software.py x3 hello_world
+./fpga/load_software/load_software.py x3 coremark
+./fpga/load_software/load_software.py x3 isa_test
+
+# CoreMark-PRO: -v1 validates results, -v0 measures performance
+./fpga/load_software/load_software.py x3 coremark_pro_core -v1
+./fpga/load_software/load_software.py x3 coremark_pro_radix2 -v1
+```
+
+The UART console runs at 115200 baud, 8N1; the VS Code extension has a
+built-in serial terminal. The [FPGA guide](fpga/README.md) covers target
+selection, debugging, and the hardware regression, and the
+[Debian guide](docs/debian_nfsroot.md) covers booting Linux.
+
+## Architecture
 
 ### Supported RISC-V Extensions
 
-**ISA: RV64GCB** (G = IMAFD) plus the extensions below, over 200 instructions.
+FROST implements RV64GCB (G = IMAFD). The table lists every supported
+extension and privilege mode.
 
 | Extension        | Description                                    |
 |------------------|------------------------------------------------|
@@ -50,210 +126,28 @@ The diagram shows the X3 configuration. Click to view it at full size.
 | **Supervisor Mode** | S-mode privilege, trap delegation, Sv39 virtual memory, Sstc timers |
 | **User Mode**    | U-mode privilege and system calls |
 
-### Architecture Highlights
+### Microarchitecture
 
-- Tomasulo out-of-order execution with 2-wide decode, rename, and commit,
-  a 32-entry reorder buffer, and precise exceptions.
+- Tomasulo out-of-order execution with two-wide decode, rename, and commit, a
+  32-entry reorder buffer, and precise exceptions.
 - Six reservation stations, two integer ALUs, and hardware single- and
   double-precision floating point.
-- Branch prediction with a 256-entry BTB, 1024-entry direction predictor,
-  and 8-entry return stack; roughly two-cycle conditional-branch recovery.
+- Branch prediction with a 256-entry BTB, a 1024-entry direction predictor,
+  and an 8-entry return stack. A mispredicted conditional branch recovers in
+  about two cycles.
 - Sv39 virtual memory with hardware page-table walks and separate instruction
   and data TLBs.
-- Separate instruction and data ports. On X3: 16 KiB L1I, 128 KiB L1D,
-  2 MiB L2, and a load-queue L0 cache. DMA is coherent with the data caches.
-- 256 KiB of local BRAM and 1 GiB of cached DDR, with the same [memory map](sw/README.md#memory-map)
-  in simulation and on hardware.
-- UART, CLINT-compatible timer, PLIC interrupt controller, and 10GBASE-R Ethernet.
-- JTAG debugging with halt, resume, and single-step.
+- Separate instruction and data paths into a cache hierarchy. On X3: 16 KiB
+  L1I, 128 KiB L1D, 2 MiB L2, and a 128-entry L0 cache in the load queue. DMA
+  is coherent with the data caches.
+- 256 KiB of on-chip BRAM and 1 GiB of cached DDR4, with the same
+  [memory map](sw/README.md#memory-map) in simulation and on hardware.
+- UART, CLINT-compatible timer, PLIC interrupt controller, and 10GBASE-R
+  Ethernet.
+- JTAG debugging with halt, resume, and single-step through OpenOCD and GDB.
 
-See the [RTL guide](hw/rtl/README.md) and
-[CPU internals](hw/rtl/cpu_and_mem/cpu/README.md) for implementation details.
-
-## Prerequisites
-
-The Docker image includes RISC-V GCC and tools for simulation, open-source
-synthesis, formal verification, and linting. Full FPGA bitstreams require
-proprietary Vivado, installed separately on the host. Tool versions:
-
-| Category | Tool | Version |
-|----------|------|---------|
-| **Image** | Ubuntu | 26.04 |
-| **Runtime** | Python | 3.14.7 (native scripts support 3.12+) |
-| | Node.js / npm | 26.9.0 / 12.0.2 |
-| **Compiler** | Native GCC / G++ | 16.2.0 |
-| | Clang / clang-tidy / clang-format | 23.1.1 |
-| | RISC-V GCC for bare metal, OpenSBI and Linux (Bootlin musl) | 15.3.0 (2026.08-1) |
-| | pip / setuptools / wheel | 26.2.1 / 84.0.0 / 0.48.0 |
-| **Build** | CMake / Meson / Ninja | 4.4.3 / 1.12.0 / 1.13.2 |
-| | Buildroot / OpenSBI | 2026.08 / 1.9 |
-| **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
-| **Simulator** | Verilator / QEMU | 5.052 / 11.1.1 |
-| | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
-| **Synthesis** | Yosys / sv2v | 0.69 / 0.0.13 |
-| **Formal** | SymbiYosys / Z3 / Boolector | 0.69 / 5.1.0 / 3.2.4 |
-| **Debug** | OpenOCD | 0.12.0 |
-| **FPGA** | Vivado (native, separately installed and validated) | 2025.2 |
-| **Linting** | pre-commit / Ruff / mypy | 4.6.2 / 0.16.8 / 2.3.1 |
-| | Verible | 0.0-4294-gc1d8f5e8 |
-| **CLI** | Click | 8.5.0 |
-| **Extension** | TypeScript / vsce | 7.0.2 / 4.0.0 |
-
-Pins were checked against upstream stable releases on 2026-09-21; see the
-[tooling update notes](docs/tooling.md) for sources, compatibility constraints,
-and validation commands. Ubuntu supplies the remaining system utilities and
-libraries with its current security updates.
-
-## Docker Development Environment
-
-Build the Docker image once, then use the repository wrapper. It keeps
-container outputs owned by the invoking UID/GID:
-
-```bash
-# Build the Docker image
-docker build -t frost .
-
-# Check the local setup (read-only)
-./scripts/frost.py doctor
-
-# Run a clean Hello World cocotb simulation
-./scripts/frost.py cocotb hello_world
-
-# Open an interactive shell when needed
-./scripts/frost.py shell
-```
-
-The wrapper initializes submodules automatically. Use it for all cocotb runs
-to match CI's tools and clean stale simulation builds.
-
-## Running Code-Quality Checks
-
-Run the `Lint` and `Fast Python Tests` CI gates with:
-
-```bash
-./scripts/frost.py check
-```
-
-The lint hooks may modify files; review the resulting diff. Use
-`./scripts/frost.py lint` for lint alone, or add `--fail-fast` to `check` to
-stop after the first failing phase. Simulation and formal checks run separately;
-see the [test guide](tests/README.md).
-
-## Quick Start
-
-```bash
-# Run Hello World simulation (compiles automatically)
-./scripts/frost.py cocotb hello_world
-```
-
-The output should include "Hello, world!".
-
-### Run the CPU Verification Suite
-
-```bash
-./scripts/frost.py pytest                  # all pytest-registered cocotb targets
-./scripts/frost.py cocotb directed_traps   # directed M-mode trap/interrupt tests
-```
-
-This runs unit tests and real programs. See the [test guide](tests/README.md)
-for ISA compliance suites, randomized instruction tests, and individual targets.
-
-## Directory Structure
-
-| Directory | Contents |
-|-----------|----------|
-| [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
-| [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
-| [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
-| [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |
-| [boards/](boards/README.md) | Board wrappers and pin constraints |
-| [tests/](tests/README.md) | Test runners |
-| [verif/](verif/README.md) | Cocotb tests, reference models, and monitors |
-| [formal/](formal/README.md) | Formal verification |
-| [tools/vscode-frost/](tools/vscode-frost/README.md) | VS Code extension |
-| [scripts/](scripts/) | Docker wrapper and development tools |
-
-## User Guide
-
-### Building Software
-
-Simulations, FPGA loading, and bitstream builds compile applications
-automatically. To compile manually:
-
-```bash
-# Compile a specific application
-./scripts/frost.py run make -C sw/apps/hello_world
-
-# Compile all applications
-./scripts/frost.py run python3 sw/apps/build_all_apps.py
-
-# Container workflows (./scripts/frost.py ...) initialize all submodules
-# automatically. For native (non-container) builds, initialize them first:
-git submodule update --init --recursive
-```
-
-### Running Simulations
-
-```bash
-./scripts/frost.py cocotb directed_traps   # Directed M-mode trap/interrupt tests
-./scripts/frost.py cocotb hello_world      # Hello World program
-./scripts/frost.py cocotb isa_test         # ISA compliance application
-./scripts/frost.py cocotb coremark         # CoreMark benchmark
-./scripts/frost.py cocotb coremark_pro_core # CoreMark-PRO core workload
-./scripts/frost.py cocotb ddr_test         # Cached-region (DDR) tier test
-./scripts/frost.py cocotb ddr_heap_test    # Multi-MB malloc through the caches
-./scripts/frost.py cocotb frost_cache      # Cache-hierarchy unit bench (X3 shape)
-./scripts/frost.py cocotb freertos_demo    # FreeRTOS demo
-
-# Generate waveforms for one selected test
-WAVES=1 ./scripts/frost.py cocotb directed_traps
-```
-
-### Running Synthesis
-
-```bash
-# Open-source RTL synthesis checks (Yosys)
-./scripts/frost.py synthesis
-
-# FPGA synthesis (Vivado)
-./fpga/build/build.py x3
-```
-
-### CI Test Coverage
-
-CI runs RISC-V compliance suites, Spike-referenced random instruction tests,
-C programs, peripheral tests, synthesis checks, and formal verification.
-See the [test guide](tests/README.md#ci-integration) for coverage and commands.
-
-### FPGA Deployment
-
-```bash
-# 1. Build bitstream (~30-90 min with the DDR subsystem and timing sweeps)
-./fpga/build/build.py x3
-
-# 2. Program FPGA
-./fpga/program_bitstream/program_bitstream.py x3
-
-# 3. Load software (fast, no re-synthesis)
-./fpga/load_software/load_software.py x3 hello_world
-./fpga/load_software/load_software.py x3 coremark
-./fpga/load_software/load_software.py x3 isa_test
-
-# CoreMark-PRO (-v1 = validation, -v0 = performance)
-./fpga/load_software/load_software.py x3 coremark_pro_core -v1
-./fpga/load_software/load_software.py x3 coremark_pro_radix2 -v1
-```
-
-Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
-1 stop bit (8N1) to view the board UART console, or use the extension's
-integrated **FROST Serial** terminal below.
-
-### VS Code Extension
-
-The [FROST FPGA Debugger](tools/vscode-frost/README.md) provides programming,
-software loading, source breakpoints, stepping, register inspection, and a
-serial console. Follow its [installation guide](tools/vscode-frost/README.md#build-and-install-locally),
-then run **FROST: Configure Target** from the Command Palette.
+The [design documentation](#design-documentation) below explains how each
+part works.
 
 ## Supported FPGA Boards
 
@@ -288,13 +182,108 @@ See the [board guide](boards/README.md) for pinouts, clocking, and adding a boar
 
 <!-- FPGA_UTILIZATION_END -->
 
-## Roadmap
+## Development
 
-See [ROADMAP.md](ROADMAP.md) for current work and planned features, including SMP.
+### Tests and Checks
 
-## CPU Internals
+```bash
+./scripts/frost.py check                     # CI's lint and fast Python test jobs
+./scripts/frost.py pytest                    # the cocotb targets registered for pytest
+./scripts/frost.py cocotb directed_traps     # a single target
+./scripts/frost.py formal                    # formal proofs
+./scripts/frost.py synthesis                 # open-source synthesis checks (Yosys)
+```
 
-The [CPU README](hw/rtl/cpu_and_mem/cpu/README.md) and
-[Tomasulo README](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md) describe the OOO
-design and cross-cutting decisions. Each Tomasulo submodule also has a README
-under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
+The lint hooks in `check` can modify files, so review the diff afterwards.
+Use `./scripts/frost.py lint` for lint alone, or add `--fail-fast` to `check`
+to stop at the first failing phase.
+
+CI runs on pushes and pull requests to `main`. It runs the RISC-V
+architecture tests and riscv-torture programs against Spike reference
+results, the riscv-tests suites, unit benches for the CPU and SoC blocks,
+full programs from on-chip BRAM and from cached DDR, formal proofs, synthesis
+checks, the Ethernet MAC/PCS benches, and QEMU boots of the Linux images. The
+[test guide](tests/README.md#ci-integration) has the details and the commands
+for each suite.
+
+### Building Software
+
+Simulation, FPGA loading, and bitstream builds compile applications
+automatically. To compile by hand:
+
+```bash
+./scripts/frost.py run make -C sw/apps/hello_world         # one application
+./scripts/frost.py run python3 sw/apps/build_all_apps.py   # all applications
+```
+
+For native builds outside the container, initialize the submodules first with
+`git submodule update --init --recursive`.
+
+## Repository Layout
+
+| Directory | Contents |
+|-----------|----------|
+| [hw/rtl/](hw/rtl/README.md) | CPU, caches, peripherals, and reusable hardware blocks |
+| [sw/](sw/README.md) | Bare-metal libraries, applications, and benchmarks |
+| [linux/](linux/README.md) | Linux boot images, firmware, and NIC driver |
+| [fpga/](fpga/README.md) | FPGA build, programming, and software-loading tools |
+| [boards/](boards/README.md) | Board wrappers and pin constraints |
+| [tests/](tests/README.md) | Test runners |
+| [verif/](verif/README.md) | Cocotb tests, reference models, and monitors |
+| [formal/](formal/README.md) | Formal verification |
+| [tools/vscode-frost/](tools/vscode-frost/README.md) | VS Code extension |
+| [docs/](docs/) | Debian setup, performance, and toolchain guides; diagrams |
+| [scripts/](scripts/) | Docker wrapper and development tools |
+
+### Design Documentation
+
+| Document | Covers |
+|----------|--------|
+| [RTL overview](hw/rtl/README.md) | SoC structure, memory map, and the data bus rules |
+| [CPU](hw/rtl/cpu_and_mem/cpu/README.md) | Front end, branch prediction, address translation, and debug |
+| [Out-of-order back end](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md) | Renaming, scheduling, memory ordering, and commit, with a README for each block |
+| [Cache hierarchy](hw/rtl/lib/cache/README.md) | Caches, coherence, and the DMA port |
+| [NIC](hw/rtl/peripherals/nic/README.md) and [MAC/PCS](hw/rtl/net10g/README.md) | 10 Gigabit Ethernet |
+| [Single-core performance](docs/single_core_performance.md) | CoreMark configuration and measurement method |
+
+## Toolchain
+
+The Docker image pins the tools CI uses. Vivado is installed separately on the
+host. [docs/tooling.md](docs/tooling.md) covers native toolchain setup and
+updating the image.
+
+| Category | Tool | Version |
+|----------|------|---------|
+| **Image** | Ubuntu | 26.04 |
+| **Runtime** | Python | 3.14.7 (native scripts support 3.12+) |
+| | Node.js / npm | 26.9.0 / 12.0.2 |
+| **Compiler** | Native GCC / G++ | 16.2.0 |
+| | Clang / clang-tidy / clang-format | 23.1.1 |
+| | RISC-V GCC for bare metal, OpenSBI and Linux (Bootlin musl) | 15.3.0 (2026.08-1) |
+| | pip / setuptools / wheel | 26.2.1 / 84.0.0 / 0.48.0 |
+| **Build** | CMake / Meson / Ninja | 4.4.3 / 1.12.0 / 1.13.2 |
+| | Buildroot / OpenSBI | 2026.08 / 1.9 |
+| **Testbench** | Cocotb / pytest / pytest-cov | 2.1.0 / 9.1.1 / 7.1.0 |
+| **Simulator** | Verilator / QEMU | 5.052 / 11.1.1 |
+| | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
+| **Synthesis** | Yosys / sv2v | 0.69 / 0.0.13 |
+| **Formal** | SymbiYosys / Z3 / Boolector | 0.69 / 5.1.0 / 3.2.4 |
+| **Debug** | OpenOCD | 0.12.0 |
+| **FPGA** | Vivado (native, separately installed and validated) | 2025.2 |
+| **Linting** | pre-commit / Ruff / mypy | 4.6.2 / 0.16.8 / 2.3.1 |
+| | Verible | 0.0-4294-gc1d8f5e8 |
+| **CLI** | Click | 8.5.0 |
+| **Extension** | TypeScript / vsce | 7.0.2 / 4.0.0 |
+
+## Status and Roadmap
+
+FROST supports one board, the Alveo X3522PV, and a single hart. Planned work
+includes reaching 4 CoreMark/MHz at the same clock and a two-hart SMP
+configuration; see [ROADMAP.md](ROADMAP.md).
+
+## Contributing and License
+
+[CONTRIBUTING.md](CONTRIBUTING.md) describes the development workflow and
+coding style, and [CONTRIBUTORS.md](CONTRIBUTORS.md) lists contributors.
+FROST is licensed under the [Apache License 2.0](LICENSE); third-party code in
+submodules keeps its own license.

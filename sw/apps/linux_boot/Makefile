@@ -54,9 +54,8 @@ BR2_SRC      := $(FROST_ROOT)/linux/buildroot
 BR2_EXTERNAL := $(FROST_ROOT)/linux/buildroot-external
 BOARD_DIR    := $(BR2_EXTERNAL)/board/frost
 
-# OpenSBI fw_jump + the Sv39 kernel (linux/README.md, "OpenSBI boot chain"),
-# packed by frost_boot_image.py. The no-MMU M-mode lane was retired in Phase 3;
-# this is the only lane.
+# OpenSBI fw_jump + the Sv39 kernel (linux/README.md, "Boot chain and entry
+# state"), packed by frost_boot_image.py.
 BR2_OUT      := $(FROST_ROOT)/linux/build-mmu
 BR2_DEFCONFIG := frost_rv64_defconfig
 IMAGES       := $(BR2_OUT)/images
@@ -192,9 +191,9 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 # packer's own check on the archive (debian_kernel.py, check_base_initramfs) is
 # the backstop for an archive whose timestamps lie.
 #
-# BR2_EXTERNAL goes on every Buildroot invocation, not just the defconfig:
-# Buildroot regenerates the build directory's record of it from this variable,
-# so omitting it once leaves the tree with no external tree at all.
+# BR2_EXTERNAL goes on every Buildroot invocation, not just the defconfig.
+# Buildroot would reuse the value the defconfig saved, but naming it keeps each
+# call independent of that saved state.
 #
 # The build directory still belongs to one view of the checkout: its .config
 # stores BR2_EXTERNAL_FROST_PATH as an absolute path, which a command-line

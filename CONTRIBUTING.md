@@ -1,9 +1,11 @@
 # Contributing to FROST
 
-Use the [quick start](README.md#quick-start) to set up the pinned Docker image.
-Run simulation, formal, synthesis checks, and lint through `scripts/frost.py`;
-Vivado and board workflows run natively. See [tooling](docs/tooling.md) for setup
-and [software contributions](sw/CONTRIBUTING.md) for bare-metal applications.
+FROST's simulations, formal checks, synthesis checks, and lint run in a
+pinned Docker image through `scripts/frost.py`, with the same tool versions
+CI uses. Set it up with the [quick start](README.md#quick-start) and the
+[tooling guide](docs/tooling.md). Vivado and board workflows run natively on
+the host. Bare-metal applications and libraries have their own
+[contribution guide](sw/CONTRIBUTING.md).
 
 ## Development Workflow
 
@@ -33,8 +35,9 @@ its own license.
 
 ### SystemVerilog
 
-- Use `snake_case` names, `i_`/`o_` port prefixes, `*_t` structs/unions,
-  `*_e` enums, and uppercase parameters and enum values.
+- Use `snake_case` names, `i_`/`o_` port prefixes, `*_t` structs and unions,
+  `*_e` enums, uppercase parameters and enum values, and `CamelCase`
+  localparams.
 - Use `*_registered` for registered signals.
 - Preserve a portable core implementation. Gate optional Xilinx primitives
   with `FROST_XILINX_PRIMS`; keep board-specific integration in `boards/`.
@@ -45,8 +48,8 @@ its own license.
 ### Python
 
 - Use `snake_case` functions/variables and `CamelCase` classes/type aliases.
-- Add docstrings and public type annotations; `verif/` and `tests/` require
-  complete function annotations.
+- Add docstrings and public type annotations; mypy requires every function in
+  `verif/` and `tests/` to be annotated.
 - Use explicit configuration objects and reproducible seeds in verification.
 - Keep comments and long strings readable; Ruff does not wrap them.
 
@@ -65,26 +68,27 @@ Tcl inputs with actionable errors.
 
 ## Testing Requirements
 
-Run commands from the repository root. The cocotb and pytest shortcuts clean
-`tests/` before running; host-native cocotb results are not regression evidence.
+Run commands from the repository root. The `cocotb` and `pytest` shortcuts
+clean `tests/` first. Host-native cocotb runs are not regression evidence,
+because only the image pins the tool versions CI uses.
 
 | Change | Checks |
 |--------|--------|
 | All | `./scripts/frost.py check` (lint and fast Python tests) |
-| RTL | Affected cocotb targets, full CPU suite, both memory tiers, synthesis, relevant formal targets |
+| RTL | Affected cocotb targets, the full CPU suite in both memory tiers, synthesis, relevant formal targets |
 | Software | App simulation and `./scripts/frost.py run python3 sw/apps/build_all_apps.py` |
 | Verification | Fast Python tests and affected cocotb targets or marker shards |
 | Formal properties | Affected target, then the full formal registry |
 | FPGA integration | Native Vivado build and relevant hardware regression |
 
 ```bash
-./scripts/frost.py pytest -v
-./scripts/frost.py cocotb directed_traps
-./scripts/frost.py cocotb isa_test
-FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb isa_test
-./scripts/frost.py synthesis
-./scripts/frost.py formal --target trap_unit
-./scripts/frost.py formal
+./scripts/frost.py pytest -v                                      # the full CPU suite (the cocotb registry)
+./scripts/frost.py cocotb directed_traps                          # one target
+./scripts/frost.py cocotb isa_test                                # one program, from low BRAM
+FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb isa_test    # the same program from cached DDR
+./scripts/frost.py synthesis                                      # Yosys: generic and Xilinx UltraScale+
+./scripts/frost.py formal --target trap_unit                      # one formal target
+./scripts/frost.py formal                                         # every formal target
 ```
 
 ### Test Markers
@@ -100,20 +104,23 @@ FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb isa_test
 | `slow` | Long-running tests |
 
 For example, `./scripts/frost.py pytest -m "cocotb and cocotb_unit" -v`
-selects unit benches. See the [test guide](tests/README.md) for compliance,
-torture, environment options, and CI coverage.
+selects the unit benches. The `pytest` shortcut collects only
+`tests/test_run_cocotb.py`; select the other markers with
+`./scripts/frost.py run pytest tests -m <marker>`. See the
+[test guide](tests/README.md) for compliance, torture, environment options,
+and CI coverage.
 
 ## Adding New Components
 
-- **Board:** follow the [board checklist](boards/README.md#adding-support-for-new-boards).
-- **Application or library:** follow [sw/CONTRIBUTING.md](sw/CONTRIBUTING.md).
-- **Peripheral:** add RTL under `hw/rtl/peripherals/`, integrate address decoding,
-  update the hardware/software memory maps and device tree as applicable, and
-  add a driver and test.
-- **Formal target:** follow [formal/README.md](formal/README.md#adding-a-new-formal-target).
+| Component | How |
+|-----------|-----|
+| Board | Follow the [board checklist](boards/README.md#adding-support-for-new-boards) |
+| Application or library | Follow [sw/CONTRIBUTING.md](sw/CONTRIBUTING.md) |
+| Peripheral | Add RTL under `hw/rtl/peripherals/`, decode its address, update the hardware and software memory maps and the device tree as needed, and add a driver and a test |
+| Formal target | Follow [formal/README.md](formal/README.md#adding-a-new-formal-target) |
+| Cocotb test | Add a module under `verif/cocotb_tests/` and register it as shown below |
 
-For a cocotb test, add a module under `verif/cocotb_tests/` and register it in
-`TEST_REGISTRY` in `tests/test_run_cocotb.py`:
+Register a cocotb test in `TEST_REGISTRY` in `tests/test_run_cocotb.py`:
 
 ```python
 "new_feature": CocotbRunConfig(

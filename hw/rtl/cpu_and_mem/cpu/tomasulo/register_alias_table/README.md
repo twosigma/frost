@@ -2,81 +2,89 @@
 
 The RAT maps architectural registers (x0–x31, f0–f31) to the ROB tags of
 their in-flight producers. Dispatch reads sources and writes renames; commit
-clears a mapping once the architectural register file holds the value.
+clears a mapping once the architectural register file holds the value. The
+RAT also keeps eight checkpoints of the whole mapping, so a mispredicted
+branch can restore it in one cycle. The code is
+[`register_alias_table.sv`](register_alias_table.sv).
 
 INT and FP have separate tables with the same `{valid, tag}` entry format.
 x0 is hardwired: reads return zero and writes are ignored.
 
 Up to ten sources are looked up per cycle, two INT and three FP for each of
-the two dispatch slots. A lookup returns the regfile value when the
-architectural register is current, or the ROB tag of the producing
-instruction when the register is renamed and still in flight.
+the two dispatch slots. A lookup returns the register-file value when the
+architectural register is current, or the producer's ROB tag when the
+register is renamed and still in flight.
+
+Slot 1 and slot 2 have separate rename ports. When both rename the same
+register, slot 2 wins as the younger producer. Slot 2 can also rename alone,
+when slot 1 has no destination. A slot-2 source that reads slot 1's
+destination is resolved in [dispatch](../dispatch/README.md); the RAT never
+sees that case.
 
 ## Branch checkpoints
 
-Speculation needs a way to roll back the rename state. Every branch, JAL, or
-JALR reserves a checkpoint at dispatch. The checkpoint snapshots the full INT
-RAT, the FP RAT, the RAS state (top-of-stack pointer and valid count), and
-the owning branch's ROB tag and epoch. On misprediction, the snapshot
-replaces the active RAT in a single cycle.
+Every branch, JAL, or JALR reserves a checkpoint at dispatch. The checkpoint
+snapshots the full INT and FP RATs, the RAS state (top-of-stack pointer and
+valid count), and the owning branch's ROB tag and generation bit (see
+below). On misprediction, the snapshot replaces the active RAT in a single
+cycle.
 
-There are eight checkpoint slots; dispatch stalls when all are occupied.
-Snapshots live in distributed RAM, 8 slots × (64 entries × 7 bits + 13
-metadata bits), which saves several thousand flip-flops over keeping them in
-registers. The active RATs stay in flip-flops because they need parallel
-lookup, per-entry commit clear, and a bulk overwrite on restore.
+There are eight checkpoint slots. While all are occupied, a bundle that
+contains a branch or jump waits at dispatch; other bundles still dispatch.
+Snapshots live in distributed RAM: 8 slots × (64 entries × 7 bits + 13
+metadata bits), 3,688 bits that would otherwise be flip-flops. An entry is a
+valid bit, a generation bit, and the 5-bit tag. The active RATs stay in
+flip-flops because they need parallel lookup, per-entry commit clear, and a
+bulk overwrite on restore.
 
-For 2-wide dispatch, slot 1 and slot 2 have separate rename write ports. If
-slot 2 is the control-flow instruction that owns the checkpoint, the snapshot
-overlays slot 1's same-cycle rename before it is saved, so recovery returns
-to the state visible immediately before slot 2.
+If slot 2 is the control-flow instruction that owns the checkpoint, the
+snapshot includes slot 1's same-cycle rename, so recovery returns to the
+state just before slot 2.
 
 ## Stale rename detection
 
-When the ROB recycles a tag (allocation wraps), an in-flight rename that
-points at the old generation could otherwise look valid. The RAT consumes
-the ROB's per-entry valid vector and treats any lookup whose tag points at an
-invalid entry as architectural rather than renamed. The tag is meaningful
-only when `renamed` is set; otherwise it may be stale or uninitialized. Lookup
-values and rename flags remain exact, and INT x0 returns all zeros. Dispatch
-compares the raw tag in parallel with rename validation, while source-ready
-and registered repair-valid flags qualify every consumer.
+A lookup reports a register as renamed only if its tag points at a valid ROB
+entry (the RAT reads the ROB's per-entry valid vector); otherwise the
+consumer takes the register-file value. This covers a mapping whose producer
+has already left the ROB, as in the cycle between retirement and the RAT's
+commit clear, which arrives on the registered commit bus. The tag field is
+meaningful only when `renamed` is set. Dispatch compares the raw tag in
+parallel with the renamed check, and source-ready and registered
+repair-valid flags qualify every consumer. INT x0 always returns all zeros.
 
-Checkpoints capture one more bit per snapshot entry, and one for the owning
-branch: the ROB allocation generation. Restore rejects a snapshot entry whose
-tag has wrapped since the checkpoint was taken, whose tag is not strictly
-older than the restoring branch, or whose owner branch has already retired
-or been recycled.
+Restoring a checkpoint needs a stronger test, since tags a snapshot names may
+have been reallocated by then. cpu_ooo flips a per-entry generation bit
+(`rob_entry_epoch`) on every ROB allocation, and a snapshot records it for
+each entry and for the owning branch. A restored mapping stays renamed only
+if the branch is still in the ROB with its saved generation, the mapped
+entry is still valid with its saved generation, and that entry is strictly
+older than the branch.
 
 ## Widen-commit slot 2
 
-A parallel slot-2 commit port (`i_commit_valid_2`, `i_commit_dest_valid_2`,
-`_dest_rf_2`, `_dest_reg_2`, `_tag_2`) sits alongside the primary commit
-port so the ROB's 2-wide commit can clear both renames in one cycle. The
-slot-2 clear mirrors slot 1 and uses the same tag-compare guard: a slot
-clears the RAT entry only if its tag still matches, so a younger dispatch
-that has re-renamed the register is preserved.
-
-When both slots target the same architectural register, slot 2 (head+1) is
-the younger producer in program order, so the RAT holds its tag. Slot 1's
-tag compare misses and only slot 2's clear takes effect. Rename still has
-priority over commit: a simultaneous dispatch writing the same register wins
-over both slot clears.
+A second commit port (`i_commit_valid_2`, `i_commit_dest_valid_2`,
+`_dest_rf_2`, `_dest_reg_2`, `_tag_2`) lets the ROB's two-wide commit clear
+both renames in one cycle. Each port clears an entry only if its tag still
+matches, so a younger rename of the same register survives. When both slots
+target one register, the RAT cannot hold slot 1's tag (slot 2 renamed the
+register after it), so only slot 2's clear can take effect. Rename has
+priority over commit: a dispatch writing the same register in the same cycle
+wins over both clears.
 
 ## Bulk free
 
-Besides the two per-checkpoint free ports that two-wide commit needs, the
-RAT accepts a bulk free mask (`i_checkpoint_flush_free_mask`) that clears
-several checkpoint slots in one cycle. The misprediction flush controller
-drives it when a partial flush kills the branches younger than the flush
-point: every flushed branch's checkpoint is reclaimed without going through
-a per-slot port.
+Besides the two per-checkpoint free ports that two-wide commit needs, a bulk
+free mask (`i_checkpoint_flush_free_mask`) clears several checkpoint slots at
+once. The misprediction flush controller drives it one cycle after a partial
+flush, with every checkpoint younger than the flush point, or every
+checkpoint in use after a commit-time recovery that empties the ROB.
 
 ## Verification
 
 The `register_alias_table` cocotb target covers two-slot renaming and commit,
-checkpoint management, flushes, and x0. Inline formal properties check rename
-and commit-clear transitions, reset/flush behavior, and the x0 invariant.
+checkpoint management, flushes, and x0. The `register_alias_table` formal
+target checks rename and commit-clear transitions, reset and flush behavior,
+and the x0 invariant.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

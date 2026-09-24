@@ -1,94 +1,108 @@
 # FU CDB Adapter
 
-A one-entry holding register between an FU and the two-lane CDB. A result the
-arbiter does not grant is latched and re-presented until it is accepted. The
-wrapper instantiates one adapter per FU slot.
-
-## What it provides
-
-- `o_result_pending` back-pressures the FU shim and the RS while a result
-  waits.
-- Zero-latency pass-through when the arbiter grants on either lane in the
-  same cycle the FU result arrives. This is the default. Setting the
-  `REGISTER_OUTPUT` parameter disables it: every result is captured into the
-  register first, and the output stays invalid in the idle cycle. The wrapper
-  sets `REGISTER_OUTPUT=1` on the DIV adapter and the three FP adapters (add,
-  mul, div): the long-latency or non-critical units where the pass-through
-  valid cone hurts timing.
-- Partial-flush support. A held result whose tag is younger than the flush
-  boundary is dropped, and a same-cycle pass-through of a younger result is
-  suppressed locally. The same input-side filter gates the grant-refill
-  capture, so a flushed result issued on the flush cycle cannot be captured
-  into `held_result` and re-presented after the flush. The kill gates only `o_fu_complete.valid`; the
-  payload (value, tag, exception) passes through unsquashed. Every consumer
-  qualifies the payload with valid, and the arbiter never grants or
-  lane-selects an invalid input, so a killed result's payload is dead data
-  and the flush-tag age compare stays off the wide CDB muxes. Full-flush CDB
-  suppression lives once at the CDB arbiter's `i_kill` input rather than in
-  every adapter, which keeps the broadly-fanned speculative-flush signal out
-  of this module's output cone. `i_flush` is still wired in: it clears
-  `result_pending` on the next edge, while the combinational output filters
-  only partial flushes.
+`fu_cdb_adapter` is a one-entry holding register between a functional unit
+(FU) and the [CDB arbiter](../cdb_arbiter/README.md). The wrapper instantiates
+one per FU slot, eight in all. If the arbiter grants a result on either lane in
+the cycle it arrives, the adapter passes it straight through with no added
+latency. Otherwise the adapter latches it and presents it every cycle until it
+is granted. `o_result_pending` tells the wrapper a result is waiting.
 
 ## Behavior
 
-`result_pending` is the only state bit:
+`result_pending` is the only state bit. With the default parameters:
 
-- Idle, no input: output invalid.
-- Idle, input arrives, granted same cycle: pass through and stay idle. Zero
-  latency.
-- Idle, input arrives, not granted: latch the input and go pending.
-- Pending, granted, no new input: clear and return to idle.
-- Pending, granted, new input arrives: latch the new input and stay pending.
-  This back-to-back refill is gated by the `ALLOW_GRANT_REFILL` parameter.
-  The wrapper sets it to 0 on MUL, DIV, MEM and the three FP adapters so that
-  CDB arbitration does not feed back into the FU FIFO and issue cones. Only
-  the two integer ALU pipes keep refill enabled. On the MEM adapter the
-  setting is also what lets SC commit ordering serialize. With refill
-  disabled a grant always clears to idle, even when a new input is present.
+| State | Input and grant | Action |
+|-------|-----------------|--------|
+| Idle | No input | Output invalid |
+| Idle | Input, granted | Pass it through and stay idle |
+| Idle | Input, not granted | Latch it and go pending |
+| Pending | Not granted | Keep presenting the held result; ignore any input |
+| Pending | Granted, no input | Clear and go idle |
+| Pending | Granted, new input | Latch the new input and stay pending (refill) |
+| Pending | Flush covers the held result | Clear and go idle |
 
-`held_result` has no reset and is written on every valid idle input, whether or
-not that input is granted or flushed in the same cycle. `result_pending` is the
-only visibility bit, so a payload captured on such a cycle stays dormant until
-the next pending capture overwrites it. This keeps grant and full flush off the
-wide write-enable cone.
+With `REGISTER_OUTPUT` set there is no pass-through: an idle adapter latches
+its input instead and presents it from the pending state the next cycle, so
+each result takes one extra cycle. With `ALLOW_GRANT_REFILL` clear, a pending
+adapter that is granted always goes idle, and an input that arrives in that
+cycle is not taken.
 
-`ALLOW_GRANT_REFILL_PAYLOAD_WRITE` controls only how that wide write enable is
-implemented; it does not change the `result_pending` state machine. At its
-default of 1 the register also captures on the grant-refill cycle (when
-`ALLOW_GRANT_REFILL` allows it), so the enable carries `result_pending` and the
-CDB grant. Setting it to 0 declares that `i_fu_result.valid` and
-`result_pending` never coincide, which lets `i_fu_result.valid` alone serve as
-the write enable and removes both pending and grant from the wide CE cone.
-Both integer-ALU wrapper instances use this mode: each adapter's pending bit
-deasserts the matching INT-RS ready input before the combinational ALU shim
-can assert valid, and the wrapper asserts that invariant
-(`p_alu_pending_blocks_payload_refill`, `p_alu2_pending_blocks_payload_refill`).
+## Parameters
 
-`o_held_value` is an unqualified view of the value field of that same
-`held_result` register; it adds no storage and is not a second validity path.
-For a valid pending integer-ALU packet the wrapper uses this register Q
-directly as the pre-edge merge-tree fallback, instead of routing through the
-adapter's pending/live output mux. The wrapper also samples a valid-qualified
-live-source selector on the CDB edge and reads the same Q after that edge. A
-same-cycle-granted integer-ALU value, which `held_result` captures even though
-`result_pending` stays clear, is therefore restored on the registered broadcast
-side without another wide live-value register bank. The other adapter
-instances leave this port open.
+| Parameter | Default | Effect when changed |
+|-----------|---------|---------------------|
+| `REGISTER_OUTPUT` | 0 | 1: no pass-through; every result spends a cycle in the register. |
+| `ALLOW_GRANT_REFILL` | 1 | 0: a granted pending adapter goes idle and does not take a new input in the same cycle. |
+| `ALLOW_GRANT_REFILL_PAYLOAD_WRITE` | 1 | 0: `held_result` is written on every valid input, a simpler write enable. Legal only if a valid input never arrives while the adapter is pending. |
 
-The two "idle, input arrives" cases above assume the default pass-through
-mode. With `REGISTER_OUTPUT` set there is no combinational pass-through: a
-valid idle input always latches into the register, even if granted that cycle,
-and is presented from pending the following cycle, so every result takes one
-extra cycle.
+The wrapper's settings:
+
+| Adapters | `REGISTER_OUTPUT` | `ALLOW_GRANT_REFILL` | `ALLOW_GRANT_REFILL_PAYLOAD_WRITE` |
+|----------|-------------------|----------------------|------------------------------------|
+| ALU, ALU2 | 0 | 1 | 0 |
+| MUL, MEM | 0 | 0 | 1 |
+| DIV, FP_ADD, FP_MUL, FP_DIV | 1 | 0 | 1 |
+
+`REGISTER_OUTPUT` suits the long-latency units, where one more cycle costs
+little and the pass-through valid path hurts timing. On the FP_MUL and FP_DIV
+adapters it is also needed for correctness: their shims see flushes a cycle
+late, and these adapters keep a squashed result off the CDB by never passing a
+result straight through and by holding their full flush one extra cycle (see
+[fu_shims](../fu_shims/README.md#flushes)).
+
+Disabling refill keeps the arbiter's grant out of the producers' FIFO and
+issue logic. The producers follow a matching rule: a result counts as taken
+only when the adapter is idle. The MUL, DIV, FP_MUL, and FP_DIV shims and the
+LQ hand over a result only while their adapter is idle (a squashed result is
+dropped without waiting), and the FP stations stop issuing while it is
+pending. A granted adapter therefore drains first and takes the next result
+the following cycle. The two sides must change together: an adapter that
+refilled while its producer waited for idle would take the same result twice.
+The MEM slot's store-fault and SC registers do not wait; they rely on the MEM
+adapter never being pending (see the
+[CDB arbiter](../cdb_arbiter/README.md#priority)).
+
+The ALU adapters keep refill enabled, but a pending ALU adapter deasserts its
+INT RS ready, so the combinational ALU shim never presents a result while the
+adapter is pending; the wrapper asserts this. The same guarantee makes
+`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0` legal on both ALU adapters.
+
+## Flushes
+
+A partial flush (`i_flush_en` with `i_flush_tag`, ages measured from
+`i_rob_head_tag`) drops a held result younger than the flush point: it is
+hidden at once and cleared on the next edge. The same age check hides a
+younger result passing through and keeps a refill from taking one, so a
+result issued in the flush cycle cannot resurface later. The kill clears only
+`valid`. The value, tag, and other fields pass through unchanged, so every
+consumer must qualify them with `valid`; the arbiter never grants or selects
+an invalid input. This keeps the age compare off the wide value path.
+
+A full flush (`i_flush`) clears `result_pending` on the next edge but leaves
+the output alone in the flush cycle. The arbiter's `i_kill` suppresses the
+broadcast instead, once for all eight adapters.
+
+## Held payload
+
+`held_result` has no reset. It captures every valid input that arrives while
+the adapter is idle, even one that is granted or flushed in the same cycle;
+`result_pending` alone decides whether the stored payload is visible. This
+keeps the grant and the full flush out of the wide register's write enable.
+
+The ALU adapters depend on that capture. `o_held_value` exposes the stored
+value, unqualified, and the wrapper uses it twice: as the merge-tree fallback
+value for a pending ALU result, and to restore a live ALU value after the CDB
+register (see the [CDB arbiter](../cdb_arbiter/README.md#live-alu-values)).
+The other adapters leave `o_held_value` unconnected.
 
 ## Verification
 
-Cocotb and formal targets `fu_cdb_adapter` and
-`fu_cdb_adapter_payload_no_refill` cover the default and no-refill
-configurations: pass-through, held results, flushes, and tag reuse.
-The no-refill proof assumes no new input while pending, as required by
-`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`.
+The `fu_cdb_adapter` cocotb and formal targets cover the default parameters:
+pass-through, held results, back-pressure, both flushes, and tag reuse (a
+flushed tag never reappears until a new input brings it back).
+`fu_cdb_adapter_payload_no_refill` covers `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`;
+its formal target assumes no input arrives while the adapter is pending, which
+the wrapper asserts. The wrapper tests exercise every instance in place.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

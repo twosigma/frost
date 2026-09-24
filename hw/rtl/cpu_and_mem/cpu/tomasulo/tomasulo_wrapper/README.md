@@ -1,347 +1,363 @@
 # Tomasulo Wrapper
 
-The wrapper connects the ROB, RAT, six reservation stations, LQ, SQ, CDB,
-adapters, and FU shims to `cpu_ooo.sv`. Cross-module glue lives here or in
-the private submodules below.
-
-`INT_RS_DEPTH` defaults to sixteen and supports powers of two from two through
-the 32-entry ROB capacity. The second INT issue port scans eight entries
-(`ISSUE2_WINDOW`), independently of capacity. Full/full-for-two checks reserve
-space at dispatch; service requires ready operands, an issue port and a ready
-FU. Occupancy counters use the selected depth's width. Changing INT RS depth
-leaves ROB/LQ/SQ capacity, completion credits and coherence bounds fixed.
-
-| Submodule | Dir | What it holds |
-|-----------|-----|---------------|
-| `tomasulo_perf_counters` | `perf/` | The 64 back-end performance counters: accumulate, snapshot into four banks, CSR-style readout. Left out when the wrapper's `PERF_COUNTERS` parameter is 0 (the production build). |
-| `commit_bus_pipeline` | `commit_bus/` | Registers both combinational ROB commit buses and the decomposed `commit_q_*` fields. |
-| `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage. It registers the dispatch base and immediate, adds them the next cycle off the dispatch critical path, and produces the two SQ early-address update packets. A store whose base is not ready at dispatch becomes a persistent repair candidate (below). |
-| `dispatch_rs_router` | `dispatch_routing/` | Decodes both dispatch packets into per-RS valid and slot-1 intent signals. |
-| `sc_pending_unit` | `atomics/` | Store-conditional resolution: a per-ROB-tag table of in-flight SCs (allocated at MEM_RS SC issue, freed on fire or flush), the head-match fire/success decode, and the `sc_fu_complete` packet. |
-
-A repair candidate in `sq_early_addr_pipeline` waits for its base tag on the
-dispatch done-repair channels or the live CDB lanes, using an exact balanced
-priority tree when several sources match. While it waits, a payload-only
-sideband may refresh the still-hidden SQ address; the packet `valid` stays the
-only visibility control. If a fresh update owns the SQ port in the cycle the
-base arrives, the candidate latches the repaired base and drains on the next
-free cycle. A candidate is evicted by a newer un-ready store on the same slot,
-killed when MEM_RS issues its store (which also closes the ROB-tag-reuse
-window), and cleared on flush.
-
-Store-address repair classifies MMIO for each candidate in parallel, then
-selects by address-source priority. Classification uses low-32-bit sums;
-address capture uses full-width sums. With no match, both use a zero base.
-`sq_repair_mmio` checks both flags, including address wraparound.
-
-The per-RS dispatch-valid nets carry `(* max_fanout = 32 *)` both inside
-`dispatch_rs_router` and on the wrapper-side receiving nets, where the fanout
-to the RS instances happens, so the constraint survives flattened or
-hierarchical synthesis.
-
-The SQ early-address pipeline receives one narrow, phase-identical registered
-copy of each CDB lane, carrying only `valid`, `tag`, and the XLEN-wide value.
-The copies capture the arbiter fallback value at the CDB edge and restore the
-live ALU value after Q. They are kept physically distinct, carry no
-`max_fanout`, and feed only `sq_early_addr_pipeline`, so its repair cone can
-place locally.
-
-The rest of the glue stays inline in the wrapper: the store-misalign and
-MEM-adapter mux around `sc_pending_unit`, flush coordination, the FMUL repair
-queue, and the FU-shim wiring. It is tightly coupled to the rest and carries
-load-bearing synthesis attributes (`max_fanout`, `keep`) whose placement is best
-left undisturbed.
-
-## Inline glue logic
-
-### Done-repair locality
-
-Dispatch registers six renamed-source tags for the ROB done/value lookup, but
-those tags are not broadcast into every resident RS entry. The INT, MUL, and
-MEM stations, which take dispatch packets directly, set
-`ALLOC_INDEXED_REPAIR`: each station captures the one-hot entry allocated by
-the relevant dispatch slot and writes the returning channel straight into that
-entry's fixed source position one cycle later. The repair latency stays
-registered, and there is no six-channel global CAM with its wide source-value
-write enables.
-
-FP, FMUL, and FDIV packets pass through one-entry wrapper buffers before their
-stations, and each buffer folds the dispatch-time done-repair response into
-the packet before it crosses into the RS. A one-cycle phase marker
-(`*_pending_repair_capture_q`) identifies the response aligned with a newly
-captured packet. If an operand is unresolved and its query was valid, the
-buffer holds dequeue on that E1 edge, stores the response, and dequeues the
-registered payload on E2. FP and FDIV consume channels 1 and 2; FMUL also
-consumes channel 3 for its third source. Production dispatch guarantees that
-every unresolved FMUL operand has a valid matching query, so FMUL registers
-its capture-edge hold verdict directly from the unresolved bits; an
-unresolved/no-query standalone stimulus is outside that interface contract.
-A packet that is ready at capture—or, for FP/FDIV, has no valid E1 query—keeps
-the one-buffer-cycle path and takes no repair hold. Recovery or RS
-back-pressure can retain the packet after E1; live CDB updates keep landing
-while it waits, and later done-repair queries cannot alias the expired
-dispatch query. The three stations therefore use only the two live CDB snoops,
-with the global repair ports tied off.
-
-### FMUL operand-repair queue
-
-FMUL adds a third source/query channel to the pending-buffer contract above.
-CDB lane 0 has priority over lane 1, and both beat aligned done-repair data.
-Dequeue/refill waits until the response window has passed so an old query
-cannot update a replacement packet. Only the registered repaired packet enters
-the RS; no packet-tag-driven ROB read replicas are needed.
-
-### SC state machine
-
-The SC tracking table and its fire/success decode live in
-`atomics/sc_pending_unit.sv`. The surrounding store-misalign path and the
-MEM-adapter mux stay in the wrapper; the mux feeds the MEM adapter with, in
-priority order, the registered misaligned-store fault, the registered SC
-completion, and the LQ result. The fault register cannot hold (a second fault
-can follow it one cycle later under data translation); the SC completion
-register holds while a fault is presenting, and the unit does not fire while
-a completion waits.
-
-Store-conditional execution is split between MEM_RS issue and ROB-head commit.
-MEM_RS issues the SC like a normal store; the LQ holds the LR reservation
-register and snoops every SQ memory write to invalidate it on a matching
-address. The SC fires only when its ROB entry reaches the head, the SQ is
-committed-empty, and the entry's physical address is known (under data
-translation the DMMU fills it one cycle after issue). Its result is
-`~sc_success`, where `sc_success` (in `sc_pending_unit`) requires the
-reservation to be valid and its address to match the SC's own doubleword, the
-RV64A reservation granule. On failure the wrapper sends a discard signal to
-the SQ, which drops the SC's entry without writing memory.
-
-Out-of-order issue requires a `NumCheckpoints + 1` table keyed by ROB tag;
-a single pending slot can deadlock when a younger SC arrives before the head
-SC. Partial flush removes only younger entries.
-
-`sc_fu_complete_reg` adds one CDB cycle and holds behind registered store
-faults. Fire requires no LQ result, store-fault strobe, pending MEM adapter,
-or waiting SC completion. A fault captured on the fire edge takes priority
-next cycle; the SC result waits. Use only the registered fault strobe here
-to keep live address/misalignment/PMA logic off the SC table's write path.
-The strobe also kills the faulting SC entry, regardless of allocation timing.
-
-Release assertions require an idle adapter, a same-cycle MEM grant, and exactly
-one broadcast of the SC tag. Wrapper tests cover store-fault collisions and
-CDB contention. `i_adapter_result_pending` remains an unused LQ compatibility
-port; its source comment records the physical constraint on removing it.
-
-### Commit and CDB pipelining
-
-The ROB commit buses and both CDB lanes are registered locally. The visible
-`cdb_bus` and `cdb_bus_2` packets are same-cycle combinational reconstructions
-from those Q values, so the local registration adds no broadcast cycle.
-Commit registers live in `commit_bus/commit_bus_pipeline.sv`; CDB registers
-stay inline. Valid bits are kept separate from payload so a full flush resets
-only the narrow state. Slot 2 feeds RAT and SQ commit, and CDB lane 1 feeds
-ROB and RS wakeup.
-
-The FP, FMUL, FDIV, MUL, and MEM stations each receive both CDB lanes through
-local, kept tag FFs (`cdb_bus_<rs>_tag`, `cdb_bus_2_<rs>_tag`) while reusing
-the generic valid, value, FU type, and exception fields. The copies carry no
-`max_fanout`, duplicate no wide data, and are asserted phase-identical after
-reset.
-
-INT_RS additionally receives an issue-only `{valid, tag}` anchor per CDB lane
-(`int_rs_issue_cdb_valid`/`_tag`, `int_rs_issue_cdb_2_valid`/`_tag`). These
-kept same-edge copies carry no `max_fanout` and feed only the station's
-combinational same-cycle readiness/bypass compares. Resident wakeup, value
-capture, and dispatch-defer logic keep the ordinary INT-local packets, and
-operand values are never duplicated. Assertions check phase identity after
-reset. Together with effective-operand capture, this leaves the primary ALU
-launch directly on its existing stage2 operand Q values with the same
-broadcast and issue cycles.
-
-INT stage2 also exports a separate protected five-bit branch-predicate tag
-(`o_rs_issue_branch_predicate_tag`). The wrapper forwards this narrow
-same-edge twin to `cpu_ooo` without using it locally, and `branch_resolution`
-consumes it only for checkpoint-owner matching and head-relative
-age/suppression logic. The ordinary issue tag remains the only source of
-`branch_update.tag`, ROB write addresses, early-recovery tag capture, and
-ALU-adapter tags. Partitioning the consumers this way isolates the long
-branch-qualification cone from the architectural tag's broad ROB fanout
-without adding a branch-resolution cycle.
-
-The combinational commit versions are still exposed for the same-cycle
-misprediction-detect path in `cpu_ooo.sv`, and the CDB grants remain
-combinational so FU adapters can clear their hold registers in the same cycle
-as a grant.
-
-The registered slot-1 `is_fence_i` bit implies the same-cycle
-`o_fence_i_flush` pulse for a native FENCE.I/SFENCE.VMA commit. The converse
-does not hold: translation-class CSR recovery shares the final pulse but does
-not set the native commit-payload bit, and its extra register puts the pulse a
-cycle after that CSR has already left `commit_bus_q`. `cpu_ooo` still uses the
-native bit for early-recovery pulse kill. Formal checks the one-way implication
-plus the exact equality that survives once the translation flavor is subtracted
-with `o_translation_csr_commit_shadow`.
-
-The wrapper forwards the ROB's serializer-owned `o_fence_class_flush_event`,
-`o_translation_csr_commit_shadow`, and final `o_fence_i_flush` without
-rebuilding their timing from the live commit bus. For a translation-class
-CSR, the shadow/event cycle is the registered CSR-file write cycle and the
-final pulse follows one cycle later. TLB/PTW invalidation is a separate
-CSR-file path: `o_tlb_invalidate` is the OR of the registered SFENCE.VMA sync
-window and `i_csr_translation_flush_req` from the CSR file.
-
-The registered valid outputs (`o_commit_bus_q_valid`, `o_commit_bus_2_q_valid`)
-are also masked combinationally with `!i_flush_all_wb_mask`. The mask is a
-phase-identical alias of the controller's registered full-flush source,
-forwarded separately so implementation can replicate its fanout independently
-of the shared `i_flush_all` priority/broadcast cone. The valid flops clear on
-the flush edge, but downstream consumers still see the previous valid value
-during that cycle. Masking immediately stops a commit that overlaps a trap,
-xRET, or FENCE-class full flush from performing one more architectural side
-effect while the back-end is being squashed.
-
-The wrapper also drives the SQ slot-2 combinational commit guard from the raw
-head+1 store-commit pulse (`i_commit_valid_comb_2 = commit_2_store_like_raw`,
-`i_commit_rob_tag_comb_2 = commit_bus_2.tag`). Slot 2 has the same raw-commit race as slot 1:
-`commit_bus_2_q_valid` reaches the SQ one cycle late, so without the guard a
-full-flush trap such as a machine-timer IRQ could observe
-`sq_committed_empty` and squash a store the SQ does not yet own.
-
-### Dispatch routing
-
-`dispatch_rs_router` converts both packets to per-RS valid and slot-1 intent
-signals. The per-RS full and full-for-2 capacity outputs are computed in the
-wrapper (the FP-family ones also count an occupied pending buffer). LQ and SQ
-receive matching allocations and assign slot 1 the older entry.
-
-### Flush coordination
-
-The wrapper accepts four flush inputs and forwards them to every submodule
-with a consistent ROB head tag for age comparisons. Partial flush
-(`i_flush_en` + `i_flush_tag`) handles branch mispredictions. Full flush
-(`i_flush_all`) handles traps, xRET, and FENCE-class recovery (native
-FENCE.I/SFENCE.VMA or a translation-class CSR). The commit-time recovery
-flush (`i_flush_after_head_commit`) spares the head; it is OR-ed with
-`i_flush_all` into the effective full-flush term `speculative_flush_all` and
-masks the partial flush in `speculative_flush_en`. The execute-time
-early-backend recovery identity (`i_early_recovery_flush`) qualifies the
-selective recovery class. RAT checkpoint restoration uses its own
-checkpoint-restore interface.
-
-The LQ consumes `i_early_recovery_flush` directly as its partial-flush
-identity. In the production recovery controller this equals
-`speculative_flush_en` whenever `speculative_flush_all` is low; when the two
-differ, the LQ's full-flush input resets or suppresses every architecturally
-visible transition. Internal payload captures may differ on that edge, but
-their valid and control state is cleared before anything observes them.
-Feeding the LQ the registered identity keeps the architectural full-flush
-priority cone out of the LQ-to-SQ disambiguation capture path.
-
-Translated DMMU results likewise expose separate pre-kill payload-capture
-pulses for loads and stores (`dmmu_out_lq_capture_valid`,
-`dmmu_out_sq_capture_valid`). The SQ uses its pulse only to refresh
-still-hidden address/data storage; `dmmu_out_valid` remains the sole owner of
-SQ valid bits, faults, completion, and SC state. A capture on a recovery edge
-is therefore dead once the SQ control array clears, and the wide 8x64
-forwarding mirror and drain RAM avoid the full-flush kill cone.
-
-Full-flush CDB suppression is centralized at the CDB arbiter's `i_kill`
-input, driven by a local `cdb_kill` copy of `speculative_flush_all`, instead
-of being replicated in each `fu_cdb_adapter`'s output-valid cone. That keeps
-a broadly fanned flush signal out of every adapter's critical path, so the
-per-FU `*_result_accepted` shim-pop signals gate only on adapter-pending and
-result-valid, never on `speculative_flush_all`. The SC tracking table is
-still cleared wholesale on `speculative_flush_all`, so a killed SC never
-fires.
+`tomasulo_wrapper.sv` assembles the out-of-order back-end. `cpu_ooo`
+instantiates it once. It contains the reorder buffer (ROB), register alias
+table (RAT), six reservation stations, the load and store queues (LQ, SQ), the
+data MMU, the two-lane CDB arbiter, and the functional-unit shims and CDB
+adapters, plus the logic that connects them: commit and CDB registration,
+flush distribution, store-conditional resolution, dispatch buffers for the FP
+stations, and the early store-address path. The
+[back-end overview](../README.md) explains how the pieces fit together.
 
 ## What it instantiates
 
-The wrapper contains one ROB, one RAT, six RSes, one LQ, one SQ, one two-lane
-CDB arbiter, eight `fu_cdb_adapter` instances, and six shims (`int_alu_shim`
-x2 and one each of `int_muldiv_shim`, `fp_add_shim`, `fp_mul_shim`,
-`fp_div_shim`). The muldiv shim drives two adapter slots (MUL and DIV), and
-the MEM adapter takes the LQ/SC/store-fault mux instead of a shim. See
-[`../README.md`](../README.md). Only the ALU adapters keep
-`ALLOW_GRANT_REFILL=1` (back-to-back single-cycle ALU results); every other
-adapter (MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV) sets `ALLOW_GRANT_REFILL=0`
-so CDB arbitration does not feed back into the FIFO/issue cones (and, for
-MEM, so SC commit ordering serializes). The DIV and all three FP adapters
-also set `REGISTER_OUTPUT=1`.
+| Block | Count | Notes |
+|-------|-------|-------|
+| [`reorder_buffer`](../reorder_buffer/README.md) | 1 | |
+| [`register_alias_table`](../register_alias_table/README.md) | 1 | |
+| [`reservation_station`](../reservation_station/README.md) | 6 | INT, MUL, MEM, FP, FMUL, FDIV |
+| [`load_queue`](../load_queue/README.md), [`store_queue`](../store_queue/README.md) | 1 each | |
+| [`dmmu`](../../mmu/dmmu.sv) | 1 | Sv39 data translation between MEM_RS issue and the LQ/SQ address updates, bypassed while translation is off. The page-table walker lives in `cpu_ooo`, reached through the `*_walk_*` ports. |
+| [`cdb_arbiter`](../cdb_arbiter/README.md) | 1 | Two lanes |
+| [`fu_cdb_adapter`](../fu_cdb_adapter/README.md) | 8 | One per CDB slot |
+| [FU shims](../fu_shims/README.md) | 6 | `int_alu_shim` ×2, `int_muldiv_shim` (feeds both the MUL and DIV slots), `fp_add_shim`, `fp_mul_shim`, `fp_div_shim` |
 
-Both ALU adapters keep that grant-refill state behavior but set
-`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`. Each pending bit already deasserts the
-matching INT-RS issue-ready input before its combinational ALU shim can assert
-valid, so pending and shim-valid cannot coincide. The wrapper asserts both
-invariants, and each adapter uses `i_fu_result.valid` alone as the wide
-`held_result` write enable; CDB grant and adapter-pending stay confined to
-the narrow state logic.
+The MEM slot's adapter has no shim: its input is a mux of the registered store
+fault, the registered SC result, and the LQ result. INT_RS's port-0 issue
+packet also goes out on `o_rs_issue` to branch resolution in `cpu_ooo`, and
+`o_rs_issue_branch_predicate_tag` is a separate register copy of its ROB tag
+that branch resolution uses only for its checkpoint and age compares.
 
-Each ALU value is partitioned into a raw live path and an independent tree
-fallback from held Q or test injection. The arbiter exports the fallback
-values and lane/source selects; the generic, INT-local, and SQ-local banks
-capture them at the CDB edge and reconstruct the value after Q from the
-adapters' existing held registers. This keeps live-value restore off the
-registered CDB D paths without a new wide register bank or a cycle change.
-Assertions, formal contracts, and split-RS tests cover phase identity and the
-injected, live, and held sources.
+Glue that is large enough to stand alone lives in submodules:
+
+| Submodule | Directory | Contents |
+|-----------|-----------|----------|
+| `commit_bus_pipeline` | `commit_bus/` | Registers of both ROB commit slots and their decoded fields |
+| `dispatch_rs_router` | `dispatch_routing/` | Per-station dispatch valids for both slots, and the slot-1 intent signals |
+| `sq_early_addr_pipeline` | `store_addr/` | Early store addresses for both dispatch slots, with persistent repair |
+| `sc_pending_unit` | `atomics/` | Store-conditional table and fire decision |
+| `lq_coherence_port` | `coherence/` | The core's side of the DMA coherence handshake: holds atomics off an admitted line, invalidates the LQ's copies, and marks loads that observed the line for replay (see the [cache library](../../../../lib/cache/README.md)) |
+| `mem_wakeup_merge` | `wakeup/` | Early load wakeup for MEM_RS |
+| `tomasulo_perf_counters` | `perf/` | The back-end profiling counters |
+
+The rest stays in `tomasulo_wrapper.sv`: CDB registration, flush
+distribution, the MEM-slot input mux, the FP-family dispatch buffers, and the
+shim and adapter wiring.
+
+## Parameters
+
+| Parameter | Default | Effect |
+|-----------|---------|--------|
+| `SPLIT_RS_DISPATCH` | 0 | 1: per-station dispatch packets for both slots, as the CPU uses. 0: the single-slot `i_rs_dispatch` bus, decoded by `rs_type`, for wrapper benches |
+| `ENABLE_DISPATCH_DONE_REPAIR` | 0 | Answers dispatch's done-repair queries from the ROB (see the [reservation station](../reservation_station/README.md#done-repair)) |
+| `INT_RS_DEPTH` | 16 (`riscv_pkg::IntRsDepth`) | INT_RS entries: a power of two from 2 to 32, the ROB depth. It changes only INT_RS and the width of its occupancy count; port 1's window stays at eight entries, or the whole station if smaller |
+| `EARLY_LOAD_WAKEUP` | 1 (`riscv_pkg::EarlyLoadWakeup`) | [Early dependent memory wakeup](#early-dependent-memory-wakeup) |
+| `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: start a load's store-queue check while the memory port is busy |
+| `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 cache entries |
+| `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |
+| `MMIO_ADDR`, `MMIO_SIZE_BYTES` | `0x4000_0000`, `0x2C` | Served MMIO window, for tagging AMO writes |
+| `PERF_COUNTERS` | 1 | 0 leaves out `tomasulo_perf_counters`; `o_perf_counter_data` then reads zero |
+
+`cpu_ooo` sets `SPLIT_RS_DISPATCH=1` and `ENABLE_DISPATCH_DONE_REPAIR=1` and
+passes its own values for the rest. Its `PERF_COUNTERS` defaults to 0; FPGA
+builds choose it with `build.py --perf-counters`.
+
+## Dispatch routing
+
+`dispatch_rs_router` turns the dispatch packets into a valid bit per station
+and slot, and a slot-1 intent bit per station that each station uses to pick
+slot 2's entry early. All of them are gated by `i_backend_recovery_hold`. Each
+station reports full and full-for-2 status to dispatch; for the FP-family
+stations the wrapper adds its one-entry dispatch buffer to that count. The LQ
+and SQ allocate from the MEM_RS packets of both slots, slot 1 first.
+
+## Flush coordination
+
+The wrapper receives four flush inputs and distributes them, with the ROB head
+tag for age comparisons, to every block.
+
+| Input | Raised for | Effect |
+|-------|------------|--------|
+| `i_flush_en`, `i_flush_tag` | Branch misprediction recovery | Partial flush: removes work younger than `i_flush_tag` |
+| `i_flush_all` | Trap, xRET, and FENCE-class recovery (FENCE.I, SFENCE.VMA, a translation CSR write) | Full flush of everything, including the ROB and RAT |
+| `i_flush_after_head_commit` | Commit-time recovery, after the mispredicted instruction retired at the head | Everything left is younger, so the speculative blocks take it as a full flush |
+| `i_early_recovery_flush` | Execute-time (early) branch recovery | The LQ's partial-flush input |
+
+The speculative blocks (the stations, adapters, FU shims, data MMU, SC table,
+FP-family buffers, coherence port, and the CDB arbiter's `i_kill`, which
+suppresses both lanes on a full flush) use two derived terms:
+`speculative_flush_all = i_flush_all || i_flush_after_head_commit` and
+`speculative_flush_en = i_flush_en && !i_flush_after_head_commit`. The LQ takes
+`speculative_flush_all` as its full flush and `i_early_recovery_flush` as its
+partial flush. The ROB, the SQ, and the store early-address path take the raw
+inputs; the ROB and SQ handle commit-time recovery themselves, and the SQ keeps
+committed stores through it. The RAT takes `i_flush_all` only, because
+misprediction recovery restores a RAT checkpoint through its own interface.
+
+Since commit-time recovery becomes a full flush, every partial flush that
+reaches the speculative blocks and the LQ comes from early recovery. The
+wrapper asserts that `i_early_recovery_flush` equals `speculative_flush_en`
+whenever `speculative_flush_all` is low. When they differ, the LQ's full-flush
+input is also high and clears everything visible.
+
+`i_backend_recovery_hold` is not a flush. While it is high, the wrapper blocks
+dispatch into every station, blocks issue, and holds the FP-family buffers.
+
+Some wide payload registers are written even when the write will be
+discarded. The SQ writes a store's address and data payload even if the store
+faults or a flush kills it, and the SC table writes a tag and address even
+when a same-cycle flush vetoes the entry. A separate valid bit, which does see
+the flush or fault, is the only thing that makes the payload observable. The
+data MMU's pre-kill result pulses follow the same pattern: the SQ uses
+`dmmu_out_sq_capture_valid` for payload only, and the LQ uses
+`dmmu_out_lq_capture_valid` as its address-update valid because a flush clears
+the targeted LQ entry on the same edge.
+
+## Commit and CDB registration
+
+The ROB's commit outputs are combinational. `commit_bus_pipeline` registers
+both commit slots, and every internal consumer (RAT commit, SQ commit, SC
+discard, the LR reservation clear, and the coherence port) uses the registered
+view. The combinational buses are also exported (`o_commit_comb`,
+`o_commit_comb_2`) for `cpu_ooo`'s same-cycle misprediction detection.
+
+The registered commit valids are masked by the full flush in the flush cycle
+itself (`i_flush_all_wb_mask`, a bit-identical copy of `i_flush_all`). The
+valid register clears on the flush edge, but without the mask its old value
+would stay visible for that cycle, and a commit overlapping a trap, xRET, or
+FENCE-class flush could perform one more architectural side effect. The SQ's
+forwarding scan uses the unmasked copies (`*_valid_raw`); its result is
+discarded on a flush cycle anyway.
+
+The SQ also receives the ROB's raw store-commit pulses for both slots
+(`i_commit_valid_comb`, `i_commit_valid_comb_2`), a cycle before the registered
+commit reaches it. They keep its committed-empty status from reading empty
+while a just-committed store is still on its way, which a trap such as a timer
+interrupt could otherwise act on and squash the store (see the
+[store queue](../store_queue/README.md)).
+
+`o_fence_class_flush_event`, `o_translation_csr_commit_shadow`, and
+`o_fence_i_flush` come straight from the ROB; `o_fence_i_flush` is the
+registered fence event. For FENCE.I and SFENCE.VMA it coincides with the
+instruction in the registered commit bus, whose `is_fence_i` bit is set. For a
+translation CSR write it arrives a cycle after the CSR has left that bus, with
+`is_fence_i` clear. So a registered `is_fence_i` implies `o_fence_i_flush`, but
+not the reverse. `cpu_ooo`'s early recovery relies on the forward direction,
+which the wrapper formal target checks. `o_tlb_invalidate` is the ROB's
+SFENCE.VMA window OR the CSR file's `i_csr_translation_flush_req`.
+
+Both CDB lanes are registered once after the arbiter; the ROB and every station
+wake from the registered lanes. The grants stay combinational, so an adapter
+can clear its holding register in the cycle it is granted. The wrapper also
+keeps same-edge copies of each lane next to particular consumers (per-station
+tag copies, an INT_RS copy with its own issue-compare valid and tag, the ROB's
+head-match tags, and a 64-bit copy for the store early-address path).
+Simulation assertions check that the station and SQ copies always match the
+main register.
+
+A registered ALU result does not store a second copy of the ALU output. For
+other sources the registered value comes from the arbiter's value tree. For a
+live ALU or ALU2 result the wrapper registers only a select bit, and after the
+edge takes the value from that ALU adapter's holding register, which captured
+the same result on the same edge. This works because the adapter captures
+every valid ALU result, which follows from the rule in the next section. The
+[CDB arbiter](../cdb_arbiter/README.md) describes the live-value path.
+
+## CDB adapters
+
+| Slot | Adapter | `ALLOW_GRANT_REFILL` | `REGISTER_OUTPUT` | Other |
+|------|---------|----------------------|-------------------|-------|
+| 0, 7 | ALU, ALU2 | 1 (default) | 0 | `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0` |
+| 1 | MUL | 0 | 0 | |
+| 2 | DIV | 0 | 1 | |
+| 3 | MEM | 0 | 0 | |
+| 4 | FP_ADD | 0 | 1 | |
+| 5 | FP_MUL | 0 | 1 | Full flush held for one extra cycle |
+| 6 | FP_DIV | 0 | 1 | Full flush held for one extra cycle |
+
+With refill off, a granted adapter always returns to idle, which keeps the
+grant out of the FU result FIFO and issue logic. `REGISTER_OUTPUT=1` removes
+the same-cycle pass-through, adding a cycle to every DIV and FP result. The FP
+multiply and divide shims act on a registered snapshot of the flush (pulse,
+flush tag, and head tag), one cycle late, so their adapters treat the cycle
+after a full flush as a flush too. The
+[adapter README](../fu_cdb_adapter/README.md) describes each parameter.
+
+A pending ALU adapter deasserts its INT_RS port's `fu_ready`, so no ALU result
+arrives while it is pending; simulation asserts this for both ALUs. As a
+result the ALU adapters never actually refill, their holding register can use
+the result's valid bit alone as its write enable
+(`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`), and that register holds every valid ALU
+result for the CDB value restore above.
+
+Test inputs `i_fu_complete_0` to `i_fu_complete_7` feed the same slots in any
+cycle the slot's adapter presents nothing. `cpu_ooo` ties them to zero.
+
+## FP-family dispatch buffers
+
+FP_RS, FMUL_RS, and FDIV_RS do not take dispatch packets directly. Each has a
+one-entry buffer in the wrapper that captures the packet, applies done repair
+to it, and then passes it to the station, so the stations tie their own repair
+inputs to zero. Only slot 1 carries FP compute ops, so FP and FDIV use repair
+channels 1 and 2, and FMUL, whose FMA takes three sources, uses channels 1
+to 3.
+
+Call the cycle after capture E1. The repair response for a newly captured
+packet arrives in E1, marked by `*_pending_repair_capture_q`:
+
+- If a source is unresolved and was queried, the buffer holds the packet
+  through E1, merges the response, and passes it on in E2 at the earliest. A
+  packet with nothing to repair can pass in E1.
+- Both CDB lanes update a buffered packet in every cycle it waits. Lane 0 wins
+  over lane 1, and both win over the repair response.
+- Repair responses are accepted only in E1, so a packet held longer by
+  recovery or a full station cannot take a later query's response for the
+  same tag.
+- FMUL decides at capture whether to hold in E1, from its unresolved-source
+  bits alone. That relies on dispatch querying every unresolved source, which
+  production dispatch does. FMUL can take a new packet in the cycle it passes
+  one on, except during the repair window; FP and FDIV wait for the buffer to
+  empty.
+- A full flush empties the buffer, and so does a partial flush when the
+  buffered packet is younger than the flush tag. No packet passes during a
+  flush or `i_backend_recovery_hold`.
+
+## Store address pipeline
+
+A store's address can reach the SQ before MEM_RS issues the store. When a store
+dispatches with its base register ready, `sq_early_addr_pipeline` registers the
+base and immediate, adds them in the next cycle, and writes the address into
+the store's SQ entry, matched by ROB tag. Each dispatch slot has its own
+registers, adder, and SQ update port.
+
+A store whose base is not ready becomes the slot's repair candidate. It waits
+for its base tag on the done-repair channels or either CDB lane, then writes
+its address. If a fresh store holds the slot's SQ port that cycle, the
+candidate keeps the base and writes on the next free cycle. A candidate is
+replaced by a newer unready store on the same slot (the old store then gets its
+address at MEM_RS issue), cancelled when MEM_RS issues the store (the issue
+delivers the address anyway), and cleared by any flush. Cancelling at issue
+also keeps a stale candidate from writing into a later store that reuses the
+ROB tag: a store cannot complete, and so its tag cannot be reused, before
+MEM_RS issues it.
+
+While a candidate waits, it writes its provisional address into the SQ entry's
+payload without setting the address-valid bit; only the final update makes the
+address visible. Under data translation the early address goes through the
+data MMU's opportunistic lookup and is dropped unless that lookup hits and
+passes every store check; MEM_RS issue translates every store anyway and
+reports any fault.
+
+## Store-conditional resolution
+
+MEM_RS issues an SC like a store: its address and data go to the SQ. The SC
+does not complete at issue. It waits in `sc_pending_unit`, and fires only when:
+
+- its ROB entry is at the head,
+- the SQ is committed-empty,
+- its physical address is known (under data translation the data MMU supplies
+  it after issue),
+- and nothing else is using or about to use the MEM CDB slot: no LQ result, no
+  pending MEM adapter, no registered store fault, and no earlier SC result
+  still waiting.
+
+The DMA coherence port can also hold SC fires around a DMA write.
+
+The SC succeeds when the LR reservation, held in the LQ, is valid and covers
+the SC's aligned doubleword, FROST's reservation granule. The reservation is
+cleared when any SC commits, when the SQ launches a write to the same
+doubleword, and when a DMA write invalidates the line. The SC's result (0 on
+success, 1 on failure) is registered and presented to the MEM adapter in the
+following cycle. When a failed SC commits, the wrapper sends `sc_discard` to
+the SQ, which drops the entry without writing memory.
+
+The pending table is keyed by ROB tag because MEM_RS issues SCs out of order:
+a speculated LR/SC retry loop can issue several SCs before the oldest reaches
+the head. Each waits in the table until it is at the head, so a younger SC can
+never block the one that must complete first. The table has
+`NumCheckpoints + 1` (nine) entries. That is enough because every waiting SC
+also holds an SQ entry, so at most `SqDepth` (eight) can wait at once. An SC
+that found the table full would never fire, so the table must not become
+smaller than the SQ. A partial flush clears only entries younger than the
+flush tag, since an older SC may still be waiting for the head; a full flush
+clears the table.
+
+The MEM adapter's input gives priority to the registered store fault, then the
+registered SC result, then the LQ result. The fault register cannot wait,
+because another store fault can arrive the next cycle, so a colliding SC
+result waits behind it. An SC that faults completes through the fault path: the
+registered fault strobe kills its table entry before it can fire. Each SC
+result must reach the CDB exactly once, since a second broadcast could land on
+a reused ROB tag; simulation assertions check this, and they are also part of
+the wrapper formal target.
 
 ## Early dependent memory wakeup
 
-`EARLY_LOAD_WAKEUP=1` lets the LQ's staged, non-faulting completion use an
-idle registered CDB lane at MEM_RS one cycle early. Both occupied lanes retain
-their original packets; if both are occupied, the normal registered copy
-performs the wakeup. This is enabled by default in the wrapper and CPU.
-The merge never changes ROB completion, SQ delivery, retirement, or DMA
-observation lifetime.
+With `EARLY_LOAD_WAKEUP=1` (the default), a load's result wakes its dependents
+in MEM_RS one cycle before the registered CDB broadcast, so a load or store
+whose address or store data comes from an earlier load can issue a cycle
+sooner. The other stations, the ROB, and the SQ still see the load on the
+registered CDB as usual.
 
-Early wakeup enables eight MEM_RS pre-issue candidates from the raw registered
-CDB/load tags, selected by the two CDB valid bits and early-load eligibility.
-The LQ captures all eight CAM results, the selector and valid on one edge.
-Translation replicates the DMMU tag into every candidate. The scalar hint
-checks the wiring in simulation; `rs_raw_pretag` and `lq_prematch_cofactors`
-prove selection and retiming.
+`mem_wakeup_merge` places the LQ's staged, non-faulting result into an idle
+registered CDB lane on MEM_RS's CDB inputs only. It never displaces a
+registered broadcast; if both lanes are busy, the load wakes MEM_RS through
+the registered copy a cycle later. The merge is enabled only when the LQ result
+is the MEM adapter's input this cycle, with no store fault or SC result ahead
+of it and the adapter idle. MEM_RS's look-ahead then exports eight candidate
+tags so the LQ's pre-issue match can follow the merged lanes (see the
+[reservation station](../reservation_station/README.md#pre-issue-look-ahead)).
 
-The early token is formed from registered state only: the LQ's CDB-stage
-occupancy (`o_fu_complete_staged`) and the non-recovery terms of
-`lq_result_accepted`. Recovery does not qualify it, which keeps the flush
-pulses and the LQ's age compare out of the MEM_RS wakeup, issue-select and LQ
-pre-issue CAM path. MEM_RS neither issues nor dispatches during recovery, so
-a token in a recovery cycle only sets source state in surviving entries. A
-surviving consumer's producer is older than the recovery point and is only
-delayed; its staged value is final. A discarded load's consumers are younger
-and are discarded in the same cycle.
+Why it is safe:
 
-The merge also does not compare the staged tag with the registered lanes. An
-accepted load leaves the LQ stage before its registered broadcast, and
-in-flight tags are unique, so the staged load never duplicates a registered
-lane. `mem_wakeup_merge` asserts that contract in simulation and formal
-integration, and assumes it only in its standalone proof. The wrapper formal
-harness resets on its first edge; integrated tag-uniqueness assertions begin
-at the next step, after arbitrary initial staging/CDB state has been cleared.
-Combinational preservation and injection identities remain checked at every step.
-
-The reservation station captures the value when a tag matches, including
-dispatch in that cycle. Source-ready and pending-delivery state ignore the
-later registered duplicate. Outside recovery, a wrapper assertion checks that
-each early packet is also an actual same-cycle CDB broadcast; during recovery,
-that it was accepted or is recovering. `mem_wakeup_merge` formal checks the
-combinational merge; `tomasulo_load_wakeup` exercises dependent load addresses
-and store data across dispatch, CDB contention, and recovery that discards the
-consumer, the producer, or neither.
+- Outside recovery, the early token is a real broadcast, not a prediction: a
+  presented MEM result always wins a CDB lane, since only MUL outranks MEM and
+  the CDB is two lanes wide. The wrapper asserts that every injected packet is
+  also broadcast in the same cycle.
+- The token is built from registered LQ state and ignores recovery, which keeps
+  the flush logic out of the MEM_RS wakeup path. That is still safe. During
+  recovery MEM_RS accepts no dispatch and moves no new entry into stage 2, and
+  a packet already in stage 2 captured its operands earlier, so a token in a
+  recovery cycle can only mark sources ready in surviving resident entries. A
+  surviving consumer is older than the recovery point, so its producer load is
+  too; that load is delayed, not discarded, and its staged value is final. A
+  consumer of a discarded load is younger than it and is discarded in the same
+  cycle.
+- The early packet never repeats the tag of a valid registered lane: an
+  accepted load leaves the LQ's staging register before its registered
+  broadcast, and in-flight tags are unique. When the registered broadcast
+  arrives a cycle later, the source is already ready or about to receive the
+  same value, so the duplicate has no effect.
 
 ## Performance counters
 
-With `PERF_COUNTERS=1`, `perf/tomasulo_perf_counters.sv` owns 64 counters for
-head waits, commit stalls, FU pressure, memory activity, and occupancy.
-See the [counter reference](../../cpu_ooo/perf/README.md) for indices and
-partition rules. Four capture banks with `max_fanout=768` snapshot one cycle
-after the trigger, aligned with the top-level and cache banks.
+With `PERF_COUNTERS` nonzero, `perf/tomasulo_perf_counters.sv` keeps the
+back-end counters: ROB head-wait and commit-blocked cycles and their
+breakdowns, per-FU back-pressure, memory disambiguation, occupancy sums, L0
+hits and fills, and two-wide commit opportunities and blockers. A snapshot is
+captured one cycle after the `mperfctl` trigger, on the same cycle as the
+top-level and cache counter blocks. See the
+[counter reference](../../cpu_ooo/perf/README.md) for indices and definitions.
 
-## Verification hooks
+## Verification
 
-Inputs `i_fu_complete_0` through `i_fu_complete_7` let tests inject
-completions without running FU shims. The `tomasulo_wrapper` and
-`tomasulo_wrapper_split_rs` cocotb targets enable
-`ENABLE_DISPATCH_DONE_REPAIR=1` and check repair capture/hold/dequeue,
-CDB priority, recovery, and same-tag reuse. The `fmul_repair_bmc` formal task
-checks repair timing and captured values for all three FMUL operands.
+- `tomasulo_wrapper` (cocotb) runs the integration tests with done repair
+  enabled: FP-family buffer repair timing, CDB contention, SC flows and
+  store-fault collisions, flushes, and stale-tag probes.
+  `tomasulo_wrapper_no_early_load` runs the same suite with early load wakeup
+  off. `tomasulo_wrapper_split_rs` tests per-station dispatch as the CPU uses
+  it, including INT_RS's second-issue window and the local CDB copies.
+  `tomasulo_load_wakeup` covers early wakeup across dispatch, CDB contention,
+  and recovery, and `tomasulo_coherence` and `tomasulo_coherence_l0_256` cover
+  DMA coherence races.
+- The `tomasulo_wrapper` formal target checks commit propagation, flush
+  composition, INT_RS's side-RAM tag rule against the real ROB, and the SC and
+  CDB-copy assertions above, with translation off. Its `fmul_repair_bmc` task
+  enables done repair and checks FMUL buffer repair timing and values for all
+  three sources.
+- In Verilator simulation, the wrapper logs CDB broadcasts that target a free
+  ROB entry, naming the FU that produced each, to help track down results that
+  escaped a flush.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

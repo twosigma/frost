@@ -1,8 +1,12 @@
 # Verification
 
-Cocotb benches check RTL blocks, directed CPU behavior, and compiled
-applications. [tests/README.md](../tests/README.md) covers commands, memory
-tiers, compliance, torture, and CI selection.
+This directory holds the Python side of FROST's simulation tests: the cocotb
+benches in `cocotb_tests/` and the models, encoders, and monitors they share.
+Block benches drive one RTL module and check it against independent models
+and assertions. Application tests compile a program from `sw/apps/`, run it
+on the whole SoC, and read its result from the UART. The runners in
+[`tests/`](../tests/README.md) build the RTL with Verilator and launch these
+benches; that README covers commands, memory tiers, the ISA suites, and CI.
 
 ## Architecture
 
@@ -18,10 +22,8 @@ flowchart LR
     Spike[Committed Spike references] --> Signatures
 ```
 
-Block tests use independent models and assertions. Applications compile before
-simulation and run through the SoC, including UART and memory. Signature suites
-compare architectural results with Spike; Spike is needed only to regenerate
-references.
+Signature suites compare architectural results with Spike references
+committed to the repository, so Spike is needed only to regenerate them.
 
 ## Directory Structure
 
@@ -38,53 +40,60 @@ references.
 ## Running Tests
 
 ```bash
-./scripts/frost.py cocotb --list-tests
-./scripts/frost.py cocotb directed_traps
-./scripts/frost.py cocotb directed_atomics --testcase test_directed_lr_sc
-./scripts/frost.py cocotb hello_world
-FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
+./scripts/frost.py cocotb --list-tests                                      # every target
+./scripts/frost.py cocotb directed_traps                                    # one target
+./scripts/frost.py cocotb directed_atomics --testcase test_directed_lr_sc   # one test function
+./scripts/frost.py cocotb hello_world                                       # an application, from BRAM
+FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world           # the same, from cached DDR
 ```
 
-`TEST_REGISTRY` in `tests/test_run_cocotb.py` defines available targets. Always
-use the wrapper, which cleans `tests/` and runs the pinned image.
-
-| CPU harness target | Status |
-|--------------------|--------|
-| `directed_traps` | Supported; CI |
-| `directed_atomics`, `compressed` | Supported; CLI-only |
-| `cpu_random`, `directed_multicycle` | Require a commit-indexed OOO scoreboard; expected to fail |
-
-Bare `make` in `tests/` selects the unported `test_cpu.py` harness. Use named
-targets. `--testcase` selects a function/regex through `COCOTB_TEST_FILTER`.
-For programs, `COCOTB_NUM_RUNS` controls reset/rerun count (default 2), and
-`COCOTB_MAX_CYCLES` is the generic budget; app-specific limits can take precedence.
+`TEST_REGISTRY` in `tests/test_run_cocotb.py` defines the targets. Always use
+the wrapper, which cleans `tests/` and runs the pinned image. Running `make`
+in `tests/` with no arguments selects the CPU reference harness described
+below, which does not pass, so always name a target. `--testcase` selects
+test functions by regex through `COCOTB_TEST_FILTER`. The
+[environment table](../tests/README.md#environment-and-output) lists the
+cycle budgets and run counts for applications.
 
 ## CPU reference harness
 
-`test_cpu.py` generates instructions, encodes them, models expected effects,
-and drives `cpu_tb`. Its fixed-latency queues need an OOO port before this
-can be a passing CPU regression.
+`test_cpu.py`, which the `cpu_random` target runs, generates random
+instructions, encodes them, predicts their effects with a Python model, and
+drives `cpu_tb`. Its monitors expect each instruction's results at a fixed
+offset from fetch, and `directed_multicycle` makes the same assumption. The
+out-of-order core breaks it: the core retires up to two instructions per
+cycle, after a variable delay, and squashes wrong-path instructions. Both
+targets fail until they check results in commit order. Until then, the
+riscv-tests, the architecture compliance suites, and application tests such
+as `ddr_atomic_test` and `c_ext_test` cover those instructions in CI.
 
-| Component | Contract |
-|-----------|----------|
+| CPU harness target | Status |
+|--------------------|--------|
+| `directed_traps` | Passes; runs in CI |
+| `directed_atomics`, `compressed` | Pass; run from the command line only |
+| `cpu_random`, `directed_multicycle` | Fail: they need a scoreboard indexed by commit order |
+
+| Component | Role |
+|-----------|------|
 | `InstructionGenerator` | Valid, aligned instruction parameters; optional address constraints |
 | `CPUModel` | Register, PC, memory, and instruction effects |
 | `TestState` | Architectural state, expected queues, LR/SC reservation, branch history |
-| `InstructionExecutor` | Reusable encode/model/queue/drive helper |
+| `InstructionExecutor` | Reusable encode, model, queue, and drive helper |
 | `DUTInterface` | Signal access through `DUTSignalPaths` |
-| Register/FP monitors | Compare full snapshots on `o_vld`; integer comparison excludes x0 |
-| PC monitor | Compare on `o_pc_vld` |
-| Memory monitor | Check stores and byte masks against queues; does not drive reads or update model memory |
+| Register and FP monitors | Compare full snapshots on `o_vld`; the integer comparison skips x0 |
+| PC monitor | Compares on `o_pc_vld` |
+| Memory monitor | Checks each store's address and data against the expected queues (the byte mask only marks that a store happened); it does not drive reads or update model memory |
 
-`encoders/op_tables.py` defines the modeled ISA subset and generation families.
-Atomic modeling covers word operations; supervisor instructions use other
-suites. `TestConfig` in `cocotb_tests/test_common.py` supplies generation, reset,
-clock, coverage, and logging options. Directed suites can orchestrate their
-own driving and checks.
+`encoders/op_tables.py` defines the modeled ISA subset and the instruction
+families the generator draws from. Atomic modeling covers word operations;
+supervisor instructions are tested by other suites. `TestConfig` in
+`cocotb_tests/test_common.py` supplies generation, reset, clock, coverage,
+and logging options. Directed suites can drive the DUT and check results
+themselves.
 
 ## Extending the Framework
 
-- Add encoder/evaluator pairs to `encoders/op_tables.py`. New instruction
+- Add encoder and evaluator pairs to `encoders/op_tables.py`. New instruction
   families also need generator and model support.
 - Add monitors as coroutines started by the test.
 - Override `DUTSignalPaths` for hierarchy differences instead of hardcoding
@@ -92,4 +101,5 @@ own driving and checks.
 - Keep shared constants in `config.py` and per-run behavior in `TestConfig`.
 - Reuse CPU port layouts from `cocotb_tests/cpu_structs.py` and serialization
   helpers from `utils/packed_structs.py`; keep stimulus defaults in each bench.
-- Register new benches using the [contribution guide](../CONTRIBUTING.md#adding-new-components).
+- Register new benches as described in the
+  [contribution guide](../CONTRIBUTING.md#adding-new-components).
