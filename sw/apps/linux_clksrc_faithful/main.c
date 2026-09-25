@@ -25,14 +25,17 @@
  *     torn {old_hi,new_lo} value.
  *   - clint_timer_interrupt() clears MTIE, then the event handler re-arms it.
  *   - arch_cpu_idle() uses bare wfi while mstatus.MIE remains enabled.
- *   - cached-DDR churn runs between wfi instructions, so IRQs can land with
- *     cached accesses in flight. The sweeps keep missing the L1D (see
- *     CHURN_BASE).
+ *   - before each wfi the idle loop churns one to four cached-DDR lines, each
+ *     fetched from DDR (see CHURN_BASE), so ticks land both during these
+ *     bursts, when misses can be in flight, and at the wfi. The handler
+ *     counts ticks taken during a burst and ticks taken outside one.
  *
  * The registered simulation uses a deliberately small L2 and
  * DDR_MODEL_LATENCY>=70, so the misses go to DDR. Frame violations report a
- * failure code; a deadlock fails the run when the simulation cycle budget runs
- * out.
+ * failure code. So does a run in which fewer than MIN_TICKS_EACH ticks land
+ * during the bursts or outside them (code 7): the timing no longer covers
+ * both cases, and the burst lengths need retuning. A deadlock fails the run
+ * when the simulation cycle budget runs out.
  */
 
 #include <stdint.h>
@@ -53,20 +56,26 @@
 #define CLINT_MTIME_LO (*(volatile uint32_t *) 0x4001BFF8u)
 #define CLINT_MTIME_HI (*(volatile uint32_t *) 0x4001BFFCu)
 
-#define TARGET_TICKS 64u
+#define TARGET_TICKS 128u
+#define MIN_TICKS_EACH (TARGET_TICKS / 8u)
 #define DDR_STACK_SIZE 4096u
 
-/* The churn is CHURN_WORDS words (8 KiB, swept once per idle iteration) in
- * CHURN_SLICES slices placed CHURN_STRIDE apart in DDR past the program image,
- * which nothing else uses. The caches are direct-mapped and the stride is a
- * multiple of their sizes (the 128 KiB L1D, the registered simulation's 4 KiB
- * L2), so the slices share lines and evict each other, and the sweeps keep
- * missing after the first instead of hitting in the L1D. */
+/* The idle loop churns CHURN_WORDS words (8 KiB) in CHURN_SLICES slices
+ * placed CHURN_STRIDE apart in DDR past the program image, and the handler
+ * touches HANDLER_LINES, a slice-sized region one stride above the last
+ * slice; nothing else uses either. The caches are direct-mapped and the stride
+ * is a multiple of their sizes (the 128 KiB L1D, the registered simulation's
+ * 4 KiB L2), so the lines at one offset in every slice and in HANDLER_LINES
+ * map to the same line of each cache. The idle loop walks the slices in turn,
+ * so by the time it churns a line the other slices have evicted it, and the
+ * line comes from DDR. */
 #define CHURN_BASE 0x80800000u
 #define CHURN_STRIDE 0x00100000u /* 1 MiB */
 #define CHURN_SLICES 8u
 #define CHURN_SLICE_WORDS 256u /* 1 KiB */
 #define CHURN_WORDS (CHURN_SLICES * CHURN_SLICE_WORDS)
+#define HANDLER_LINES (CHURN_BASE + CHURN_SLICES * CHURN_STRIDE)
+#define LINE_WORDS 8u /* 32-byte cache lines */
 
 struct linux_pt_regs {
     unsigned long epc, ra, sp, gp, tp;
@@ -92,6 +101,9 @@ volatile unsigned long g_last_ra;
 volatile unsigned long g_last_sp;
 volatile unsigned long g_last_tp;
 volatile unsigned long g_last_mscratch;
+volatile uint32_t g_in_churn;    /* set during an idle-loop churn burst */
+volatile uint32_t g_ticks_churn; /* ticks taken during a burst */
+volatile uint32_t g_ticks_wfi;   /* ticks taken outside a burst */
 static uint8_t g_ddr_stack[DDR_STACK_SIZE] __attribute__((aligned(16)));
 
 static inline uintptr_t read_tp(void)
@@ -106,6 +118,7 @@ static inline void write_tp(uintptr_t v)
     __asm__ volatile("mv tp, %0" : : "r"(v) : "memory");
 }
 
+/* Only the first failure sets the reported code. */
 static void record_failure(uint32_t code)
 {
     if (!g_fail_seen) {
@@ -139,11 +152,12 @@ static inline volatile uint32_t *churn_word(uint32_t i)
                                               (i % CHURN_SLICE_WORDS) * 4u);
 }
 
-static uint32_t churn_ddr(uint32_t seed)
+/* Read-modify-write words [first, first + count) of the churn, wrapping. */
+static uint32_t churn_ddr(uint32_t seed, uint32_t first, uint32_t count)
 {
     uint32_t acc = seed;
-    for (uint32_t i = 0; i < CHURN_WORDS; i++) {
-        volatile uint32_t *w = churn_word(i);
+    for (uint32_t i = first; i < first + count; i++) {
+        volatile uint32_t *w = churn_word(i & (CHURN_WORDS - 1u));
         uint32_t v = *w;
         acc ^= v + (i << 3);
         acc = (acc << 5) | (acc >> 27);
@@ -156,6 +170,11 @@ static uint32_t churn_ddr(uint32_t seed)
 __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
 {
     csr_clear(mie, MIE_MTIE);
+    if (g_in_churn) {
+        g_ticks_churn = g_ticks_churn + 1u;
+    } else {
+        g_ticks_wfi = g_ticks_wfi + 1u;
+    }
 
     g_last_mepc = frame->epc;
     g_last_ra = frame->ra;
@@ -184,15 +203,15 @@ __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
         record_failure(6u);
     }
 
-    /* Light handler-side cached touch (rotating window) so the handler stays
-     * short; the bulk of the cached traffic comes from the idle-loop sweep. */
+    /* A light cached touch (one line, rotating through HANDLER_LINES) keeps
+     * the handler short; the idle loop does the churning. */
     {
-        uint32_t base = (g_ticks << 4) & (CHURN_WORDS - 1u);
+        uint32_t off = (g_ticks * LINE_WORDS * 4u) & (CHURN_SLICE_WORDS * 4u - 1u);
+        volatile uint32_t *line = (volatile uint32_t *) (uintptr_t) (HANDLER_LINES + off);
         uint32_t acc = frame->epc ^ frame->ra ^ g_ticks;
-        for (int i = 0; i < 8; i++) {
-            volatile uint32_t *w = churn_word((base + (uint32_t) i) & (CHURN_WORDS - 1u));
-            acc ^= *w;
-            *w = acc + (uint32_t) i;
+        for (uint32_t i = 0; i < LINE_WORDS; i++) {
+            acc ^= line[i];
+            line[i] = acc + i;
         }
     }
     g_ticks = g_ticks + 1u;
@@ -265,28 +284,44 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
     clint_clock_next_event(clint_rdmtime() + 384u);
     enable_interrupts();
 
-    /* arch_cpu_idle(): bare wfi with MIE on, interleaved with concurrent
-     * cached-DDR work so IRQs land while cached ops are outstanding. */
+    /* arch_cpu_idle(): bare wfi with MIE on. Each iteration first churns the
+     * next one to four lines. The burst length varies so that some bursts end
+     * before the next tick and some do not, and with the handler's varying
+     * delta this puts ticks both in the churn and at the wfi. */
     uint32_t spin = 0x2468ACE0u;
-    while (g_ticks < TARGET_TICKS && !g_fail_seen) {
-        spin = churn_ddr(spin ^ g_ticks);
+    uint32_t next = 0u;
+    for (uint32_t iter = 0u; g_ticks < TARGET_TICKS && !g_fail_seen; iter++) {
+        uint32_t count = LINE_WORDS * (1u + (iter & 3u));
+        g_in_churn = 1u;
+        spin = churn_ddr(spin ^ g_ticks, next, count);
+        g_in_churn = 0u;
+        next = (next + count) & (CHURN_WORDS - 1u);
         __asm__ volatile("wfi" ::: "memory");
     }
 
     disable_timer_interrupt();
     disable_interrupts();
 
+    if (g_ticks_churn < MIN_TICKS_EACH || g_ticks_wfi < MIN_TICKS_EACH) {
+        record_failure(7u);
+    }
+
     if (!g_fail_seen && g_ticks >= TARGET_TICKS && spin != 0u) {
-        uart_printf("ticks=%u spin=%08x last_mepc=%08x last_ra=%08x\n",
+        uart_printf("ticks=%u churn=%u wfi=%u spin=%08x last_mepc=%016lx last_ra=%016lx\n",
                     g_ticks,
+                    g_ticks_churn,
+                    g_ticks_wfi,
                     spin,
                     g_last_mepc,
                     g_last_ra);
         uart_printf("<<PASS>>\n");
     } else {
-        uart_printf("FAIL code=%u ticks=%u mepc=%08x ra=%08x sp=%08x tp=%08x mscratch=%08x\n",
+        uart_printf("FAIL code=%u ticks=%u churn=%u wfi=%u mepc=%016lx ra=%016lx sp=%016lx "
+                    "tp=%016lx mscratch=%016lx\n",
                     g_fail_code,
                     g_ticks,
+                    g_ticks_churn,
+                    g_ticks_wfi,
                     g_last_mepc,
                     g_last_ra,
                     g_last_sp,
