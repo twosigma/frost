@@ -116,7 +116,7 @@ module data_mem_response_mux_tb #(
 
   data_mem_response_mux #(
       .DATA_WIDTH(riscv_pkg::MemDataBits)
-  ) u_seam (
+  ) u_mux (
       .i_bram_read_data(i_data_mem_rd_data),
       .i_mmio_read_data(i_mmio_read_data),
       .i_cached_read_data(i_cached_read_data),
