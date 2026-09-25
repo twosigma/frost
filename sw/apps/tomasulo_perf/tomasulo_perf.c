@@ -30,7 +30,7 @@
  *
  * Benchmarks (floating-point, double-precision):
  *   8. Dependent FADD.D chain   (FP ALU serialized)
- *   9. Independent FADD.D chains (FP ALU parallel)
+ *   9. Independent FADD.D chains (FP adder takes one at a time)
  *  10. Dependent FMUL.D chain   (FP MUL serialized)
  *  11. Independent FMUL.D chains (FP MUL parallel)
  *  12. Dependent FMADD.D chain  (fused multiply-add serialized)
@@ -512,9 +512,10 @@ int main(void)
     /* ===================================================================== */
     uart_printf("\n============================================================\n");
     uart_printf("  Performance measurement complete.\n");
-    uart_printf("  INT: Compare Bench 1 vs 2 (ADD) and Bench 3 vs 4 (MUL)\n");
-    uart_printf("  FP:  Compare Bench 8 vs 9 (FADD) and Bench 10 vs 11 (FMUL)\n");
-    uart_printf("  to see the IPC benefit of out-of-order execution.\n");
+    uart_printf("  Compare these pairs for the IPC gain of out-of-order execution:\n");
+    uart_printf("  INT: Bench 1 vs 2 (ADD) and Bench 3 vs 4 (MUL)\n");
+    uart_printf("  FP:  Bench 10 vs 11 (FMUL). Bench 8 vs 9 (FADD) show about the\n");
+    uart_printf("       same IPC: the FP adder takes one operation at a time.\n");
     uart_printf("============================================================\n\n");
 
 #if TOMASULO_PERF_ENABLE_PROFILE
