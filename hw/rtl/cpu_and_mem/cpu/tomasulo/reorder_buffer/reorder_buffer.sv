@@ -1439,11 +1439,14 @@ module reorder_buffer #(
   // ---------------------------------------------------------------------------
   // Multi-write-port fields (allocation + CDB).
   // These use mwp_dist_ram (mwp_dist_ram_ohread for head-side reads) with
-  // 4 write ports: port 0 = slot-1 alloc, port 1 = slot-2 alloc,
-  // port 2 = CDB lane 0, port 3 = CDB lane 1. Without LVT staging the
-  // highest-numbered port wins a same-cycle write to one address, so a CDB
-  // write beats an allocation. The two CDB lanes never carry the same tag
-  // (see i_cdb_write_2), so they never collide on an address.
+  // 4 write ports. The value and exception-cause RAMs number them port 0 =
+  // slot-1 alloc, port 1 = slot-2 alloc, port 2 = CDB lane 0, port 3 = CDB
+  // lane 1; the FP-flags RAM puts the CDB lanes first. Without LVT staging
+  // the highest-numbered port wins a same-cycle write to one address.
+  // Allocation targets only free entries, so it collides with a CDB write
+  // only when that write is stale; each RAM lets the allocation win (see the
+  // CDB staleness checks). The two CDB lanes never carry the same tag (see
+  // i_cdb_write_2), so they never collide on an address.
   // ---------------------------------------------------------------------------
 
   // rob_value: 4 write ports (alloc1 + alloc2 + CDB lane 0 + CDB lane 1).
@@ -1655,20 +1658,22 @@ module reorder_buffer #(
       .o_read_data(head_next_exc_cause)
   );
 
-  // rob_fp_flags: 4 write ports (alloc1='0 + alloc2='0 + CDB lanes 0/1), 1 read port (head).
-  // The CDB write enables are not rob_valid-gated and this RAM has no LVT
-  // staging, so a stale CDB write in an entry's reallocation cycle beats the
-  // allocation's zero (see the CDB staleness checks).
+  // rob_fp_flags: CDB lanes 0/1 on ports 0/1, and the two allocation ports,
+  // which write zero, on ports 2/3. The highest-numbered port wins a
+  // same-cycle write to one address, so the allocation beats a stale CDB
+  // write in the entry's reallocation cycle without rob_valid on the CDB
+  // write enables. A store, branch, or FENCE never completes on the CDB and
+  // retires with the allocation's zero.
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (FpFlagsWidth),
       .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags (
       .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_enable({alloc_en_2, alloc_en, cdb_ram_wr_en_2, cdb_ram_wr_en}),
+      .i_write_address({tail_idx_2, tail_idx, i_cdb_write_2.tag, i_cdb_write.tag}),
       .i_write_data({
-        i_cdb_write_2.fp_flags, i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)
+        FpFlagsWidth'(0), FpFlagsWidth'(0), i_cdb_write_2.fp_flags, i_cdb_write.fp_flags
       }),
       .i_read_address(head_idx),
       .i_read_onehot(head_clear_mask),
@@ -1682,10 +1687,10 @@ module reorder_buffer #(
       .NUM_WRITE_PORTS(4)
   ) u_rob_fp_flags_next (
       .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
+      .i_write_enable({alloc_en_2, alloc_en, cdb_ram_wr_en_2, cdb_ram_wr_en}),
+      .i_write_address({tail_idx_2, tail_idx, i_cdb_write_2.tag, i_cdb_write.tag}),
       .i_write_data({
-        i_cdb_write_2.fp_flags, i_cdb_write.fp_flags, FpFlagsWidth'(0), FpFlagsWidth'(0)
+        FpFlagsWidth'(0), FpFlagsWidth'(0), i_cdb_write_2.fp_flags, i_cdb_write.fp_flags
       }),
       .i_read_address(head_next_idx),
       .i_read_onehot(head_next_clear_mask),
@@ -3285,14 +3290,10 @@ module reorder_buffer #(
   //     (nothing reads invalid entries) and replaced by the next
   //     allocation's write.
   //   - In the entry's own reallocation cycle, old rob_valid suppresses the
-  //     state/cause write while the value allocation wins through staged-LVT
-  //     resolution (see mwp_dist_ram). The FP-flags RAM (u_rob_fp_flags) has
-  //     no such defense: its CDB write ports are not rob_valid-gated and
-  //     outrank allocation, so a stale write replaces the new entry's zeroed
-  //     flags, and an entry that does not complete over the CDB (a plain
-  //     store, for example) would retire them into fflags. In that cycle the
-  //     FP-flags RAM relies entirely on the producer kill and single-delivery
-  //     disciplines.
+  //     state/cause write, the value allocation wins through staged-LVT
+  //     resolution (see mwp_dist_ram), and the FP-flags allocation wins
+  //     through its higher-numbered ports (see u_rob_fp_flags), so every
+  //     field starts from its allocation value.
   //   - In the cycle after reallocation, the staged-LVT drain cycle, a live
   //     CDB write wins the LVT and would corrupt the new instruction's value
   //     and FP flags and (rob_valid now set) its done state. No real
@@ -3559,21 +3560,19 @@ module reorder_buffer #(
   end
 
   // CDB drain-window contract. A stale CDB write (a tag the ROB no longer
-  // tracks) may coincide with the same entry's reallocation cycle. For the
-  // value RAMs, state FFs, and cause RAM that collision is legal: the staged
-  // LVT of the rob_value RAMs resolves it alloc-wins and rob_valid gates the
-  // state-FF and cause writes. (The FP-flags RAM is not protected in that
-  // cycle; see the CDB staleness checks in the simulation assertions.) A
-  // CDB write to an entry allocated in the previous cycle cannot be
-  // absorbed: in the staged-LVT drain cycle a live write wins the LVT and
-  // rob_valid no longer gates it. No real completion can exist that early
-  // (alloc -> dispatch -> issue -> FU -> registered CDB always exceeds one
-  // cycle), so it is assumed away here as the environment contract;
-  // g_drain_window_check errors on any violation in simulation, except in
-  // the reorder_buffer unit bench, which clears DrainWindowCheck. Stale
-  // writes >=2 cycles after reallocation (tag ABA) are not excluded by this
-  // contract; the producer-side kill discipline and the MEM single-delivery
-  // discipline rule them out, pinned by the tomasulo_wrapper
+  // tracks) may coincide with the same entry's reallocation cycle. That
+  // collision is legal: the staged LVT of the rob_value RAMs and the port
+  // order of the FP-flags RAMs resolve it alloc-wins, and rob_valid gates the
+  // state-FF and cause writes. A CDB write to an entry allocated in the
+  // previous cycle cannot be absorbed: in the staged-LVT drain cycle a live
+  // write wins the LVT and rob_valid no longer gates it. No real completion
+  // can exist that early (alloc -> dispatch -> issue -> FU -> registered CDB
+  // always exceeds one cycle), so it is assumed away here as the environment
+  // contract; g_drain_window_check errors on any violation in simulation,
+  // except in the reorder_buffer unit bench, which clears DrainWindowCheck.
+  // Stale writes >=2 cycles after reallocation (tag ABA) are not excluded by
+  // this contract; the producer-side kill discipline and the MEM
+  // single-delivery discipline rule them out, pinned by the tomasulo_wrapper
   // stale-CDB/single-delivery tests and the fp_div_shim FORMAL flushed-tag
   // assert.
   logic [1:0] f_prev_alloc_valid;

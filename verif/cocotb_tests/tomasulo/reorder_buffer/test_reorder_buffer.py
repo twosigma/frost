@@ -2399,6 +2399,93 @@ async def test_same_cycle_stale_exception_does_not_override_alloc_illegal(
 
 
 @cocotb.test()
+async def test_stale_cdb_fp_flags_lose_to_reallocation(dut: Any) -> None:
+    """A stale CDB write in a tag's reallocation cycle leaves no FP flags behind.
+
+    A store or a conditional branch never completes on the CDB, so the flags
+    it retires with are the zero that allocation writes. A stale completion
+    with every flag set lands on each allocation slot's tag, from each CDB
+    lane, in the cycle that tag is reallocated to a store or a branch; the
+    pair then retires two-wide, which reads the head and head+1 FP-flag RAMs,
+    and both commits must carry zero flags. Legal completions on later tags
+    must still retire their flags through both commit slots.
+    """
+    dut_if, _ = await setup_test(dut)
+    dut.i_commit_hold.value = 1
+    tag_mask = REORDER_BUFFER_DEPTH - 1
+    all_flags = 0b11111
+
+    async def retire_pair(tags: tuple[int, int]) -> tuple[dict, dict]:
+        """Release the commit hold for one edge and return both commit slots."""
+        dut.i_commit_hold.value = 0
+        await RisingEdge(dut_if.clock)
+        commits = (dut_if.read_commit(), dut_if.read_commit_2())
+        await FallingEdge(dut_if.clock)
+        dut.i_commit_hold.value = 1
+        for commit, tag in zip(commits, tags, strict=True):
+            assert commit["valid"] and commit["tag"] == tag, (
+                f"expected a two-wide retirement of tags {tags}, got "
+                f"{[(c['valid'], c['tag']) for c in commits]}"
+            )
+        assert dut_if.empty
+        return commits
+
+    for case in range(8):
+        stale_slot = case & 1
+        stale_lane = (case >> 1) & 1
+        store_first = not (case >> 2) & 1
+        pc = 0x9000 + 0x40 * case
+        store = make_store_request(pc=pc if store_first else pc + 4)
+        branch = make_branch_request(pc=pc + 4 if store_first else pc)
+        requests = (store, branch) if store_first else (branch, store)
+
+        head = dut_if.tail_ptr & tag_mask
+        tags = (head, (head + 1) & tag_mask)
+        stale = CDBWrite(tag=tags[stale_slot], value=0xBAD0 | case, fp_flags=all_flags)
+        if stale_lane:
+            dut_if.drive_cdb_write_2(stale)
+        else:
+            dut_if.drive_cdb_write(stale)
+        responses = await drive_dual_alloc(dut_if, *requests)
+        dut_if.clear_cdb_writes()
+        assert tuple(tag for _, tag, _ in responses) == tags
+
+        store_tag, branch_tag = tags if store_first else tags[::-1]
+        dut_if.drive_store_complete(store_tag)
+        dut_if.drive_branch_update(
+            BranchUpdate(tag=branch_tag, taken=False, target=0, mispredicted=False)
+        )
+        await dut_if.step()
+        dut_if.clear_store_complete()
+        dut_if.clear_branch_update()
+
+        commits = await retire_pair(tags)
+        for slot, commit in enumerate(commits):
+            assert commit["fp_flags"] == 0, (
+                f"case {case} (stale write on slot {stale_slot + 1}, lane "
+                f"{stale_lane}): commit slot {slot + 1} retired tag {commit['tag']} "
+                f"with fp_flags {commit['fp_flags']:05b}"
+            )
+
+    head = dut_if.tail_ptr & tag_mask
+    tags = (head, (head + 1) & tag_mask)
+    fp_ops = tuple(
+        make_simple_alloc_request(pc=0xA000 + 4 * slot, rd=slot + 1, is_fp=True)
+        for slot in range(2)
+    )
+    responses = await drive_dual_alloc(dut_if, *fp_ops)
+    assert tuple(tag for _, tag, _ in responses) == tags
+    await dut_if.step()  # No completion in the cycle after allocation.
+    flags = (0b00101, 0b11000)
+    dut_if.drive_cdb_write_2(CDBWrite(tag=tags[0], value=0x1111, fp_flags=flags[0]))
+    dut_if.drive_cdb_write(CDBWrite(tag=tags[1], value=0x2222, fp_flags=flags[1]))
+    await dut_if.step()
+    dut_if.clear_cdb_writes()
+    commits = await retire_pair(tags)
+    assert tuple(commit["fp_flags"] for commit in commits) == flags
+
+
+@cocotb.test()
 async def test_flush_reuse_clears_alloc_illegal(dut: Any) -> None:
     """A legal reallocation must not inherit a flushed tag's stored fault."""
     dut_if, model = await setup_test(dut)

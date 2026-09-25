@@ -50,6 +50,15 @@ that fast: dispatch, issue, execution, and the registered CDB take more than
 one cycle. A simulation check flags violations; the unit bench, which drives
 the CDB directly, disables it with `DrainWindowCheck=0`.
 
+A CDB write reaches a free entry only if it is stale: a completion for a tag
+that was flushed or has already retired (a JALR's wakeup broadcast can trail
+its retirement). If it lands in the cycle that entry is reallocated, the
+allocation wins in every field. The state bits and the exception cause take
+CDB writes only for valid entries, the value copies resolve the collision in
+the staged LVT, and the FP-flag RAM numbers its allocation ports above its
+CDB ports. A store or branch, which never completes on the CDB, therefore
+retires with zero FP flags.
+
 ## Allocation
 
 Slot 1 takes the tail entry and slot 2 the next, so ring order is program

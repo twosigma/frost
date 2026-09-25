@@ -2983,10 +2983,13 @@ module cpu_ooo #(
   assign rob_commit_2_fp_flags_nonzero = rob_commit_2.fp_flags.nv | rob_commit_2.fp_flags.dz |
                                          rob_commit_2.fp_flags.of | rob_commit_2.fp_flags.uf |
                                          rob_commit_2.fp_flags.nx;
+  // Only FP computes (has_fp_flags) accumulate flags. Every other entry
+  // retires the zero its allocation wrote, so the has_fp_flags term matters
+  // only if a stray CDB write reached a store, branch, or integer entry.
   assign rob_commit_fp_flags_valid = rob_commit_valid && rob_commit_fp_flags_nonzero &&
-                                     !rob_commit.exception;
+                                     !rob_commit.exception && rob_commit.has_fp_flags;
   assign rob_commit_2_fp_flags_valid = rob_commit_2_valid && rob_commit_2_fp_flags_nonzero &&
-                                       !rob_commit_2.exception;
+                                       !rob_commit_2.exception && rob_commit_2.has_fp_flags;
   assign rob_commit_any_fp_flags_valid = rob_commit_fp_flags_valid || rob_commit_2_fp_flags_valid;
 
   // FP regfile write at commit (either slot) -> csr_file sets
