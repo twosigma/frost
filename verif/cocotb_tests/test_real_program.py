@@ -1290,6 +1290,12 @@ async def run_until_complete(
         progress_interval = int(
             os.environ.get("COCOTB_COREMARK_PROGRESS_INTERVAL", 500_000)
         )
+    # FROST_IRQ_PRECISION_CHECK logs each interrupt take (up to
+    # FROST_IRQ_PRECISION_EVENT_LIMIT) and fails a run that takes none.
+    # FROST_IRQ_PRECISION_STRICT also fails a take in whose cycle the
+    # registered commit bus writes x1 or x2 at the saved PC, and a take inside
+    # FROST_IRQ_CALLEE_SYMBOL (default irq_stack_slot_callee), past its first
+    # instruction, while x2 was last written outside that function.
     irq_precision_check = os.environ.get("FROST_IRQ_PRECISION_CHECK") == "1"
     irq_precision_strict = os.environ.get("FROST_IRQ_PRECISION_STRICT") == "1"
     irq_low_ra_assert = os.environ.get("FROST_IRQ_LOW_RA_ASSERT") == "1"
@@ -1297,6 +1303,7 @@ async def run_until_complete(
         os.environ.get("FROST_IRQ_PRECISION_EVENT_LIMIT", "64")
     )
     irq_precision_events: list[str] = []
+    irq_take_count = 0
     external_irq_symbol = os.environ.get("FROST_EXTERNAL_IRQ_SYMBOL")
     external_irq_enabled = bool(external_irq_symbol)
     external_irq_offset = int(os.environ.get("FROST_EXTERNAL_IRQ_OFFSET", "0"), 0)
@@ -2622,6 +2629,48 @@ async def run_until_complete(
         rob_commit1_reg_dest_reg_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
         )
+        _require_signals(
+            "FROST_IRQ_PRECISION_CHECK",
+            {
+                "trap_taken": trap_taken_live_sig,
+                "dbg_trap_taken_q": trap_taken_reg_dbg_sig,
+                "dbg_trap_cause_internal": trap_cause_internal_live_sig,
+                "dbg_trap_pc_internal": trap_pc_internal_live_sig,
+                "rob_trap_pc": rob_trap_pc_live_sig,
+                "dbg_interrupt_resume_pc": interrupt_resume_pc_live_sig,
+                "csr_commit_fire": csr_commit_fire_live_sig,
+                "csr_mepc": csr_mepc_live_sig,
+                "flush_all": flush_all_live_sig,
+                "dbg_commit_valid": commit_valid_live_sig,
+                "dbg_commit_pc": commit_pc_live_sig,
+                "dbg_commit_dest_valid": commit0_dest_valid_sig,
+                "dbg_commit_dest_rf": commit0_dest_rf_sig,
+                "dbg_commit_dest_reg": commit0_dest_reg_sig,
+                "dbg_commit_value": commit0_value_sig,
+                "dbg_commit_2_valid": commit1_valid_sig,
+                "dbg_commit_2_pc": commit1_pc_sig,
+                "dbg_commit_2_dest_valid": commit1_dest_valid_sig,
+                "dbg_commit_2_dest_rf": commit1_dest_rf_sig,
+                "dbg_commit_2_dest_reg": commit1_dest_reg_sig,
+                "dbg_commit_2_value": commit1_value_sig,
+                "dbg_port0_int_we": port0_int_we_sig,
+                "dbg_port0_int_addr": port0_int_addr_sig,
+                "dbg_port0_int_data": port0_int_data_sig,
+                "dbg_port1_int_we": port1_int_we_sig,
+                "dbg_port1_int_addr": port1_int_addr_sig,
+                "dbg_port1_int_data": port1_int_data_sig,
+                "dbg_rob_commit_reg_valid": rob_commit0_reg_valid_sig,
+                "dbg_rob_commit_reg_pc": rob_commit0_reg_pc_sig,
+                "dbg_rob_commit_reg_dest_valid": rob_commit0_reg_dest_valid_sig,
+                "dbg_rob_commit_reg_dest_rf": rob_commit0_reg_dest_rf_sig,
+                "dbg_rob_commit_reg_dest_reg": rob_commit0_reg_dest_reg_sig,
+                "dbg_rob_commit_2_reg_valid": rob_commit1_reg_valid_sig,
+                "dbg_rob_commit_2_reg_pc": rob_commit1_reg_pc_sig,
+                "dbg_rob_commit_2_reg_dest_valid": rob_commit1_reg_dest_valid_sig,
+                "dbg_rob_commit_2_reg_dest_rf": rob_commit1_reg_dest_rf_sig,
+                "dbg_rob_commit_2_reg_dest_reg": rob_commit1_reg_dest_reg_sig,
+            },
+        )
 
     retired_pc_hist: Counter[int] = Counter()
     retired_mispredicts = 0
@@ -2667,6 +2716,7 @@ async def run_until_complete(
     retire_only_trace = os.environ.get("FROST_CONTROL_FLOW_RETIRE_ONLY") == "1"
     ras_transition_trace_active = True
     irq_precision_callee_range: tuple[int, int] | None = None
+    irq_precision_callee_body = 0
     external_irq_range: tuple[int, int] | None = None
     external_irq_active = False
     external_irq_hold_remaining = 0
@@ -2680,9 +2730,14 @@ async def run_until_complete(
         irq_precision_callee_range = irq_symbol_ranges.get(irq_callee_symbol)
         if irq_precision_callee_range is not None:
             lo, hi = irq_precision_callee_range
+            # The stack-pointer rule starts after the callee's first
+            # instruction, its sp adjustment, which may be compressed.
+            callee_code = _load_symbol_machine_code(irq_callee_symbol, app_name)
+            irq_precision_callee_body = lo + callee_code.get(lo, (0, 32))[1] // 8
             cocotb.log.info(
                 f"IRQ precision callee window {irq_callee_symbol}: "
-                f"[0x{lo:08x}, 0x{hi:08x})"
+                f"[0x{lo:08x}, 0x{hi:08x}), body from "
+                f"0x{irq_precision_callee_body:08x}"
             )
     if external_irq_enabled and external_irq_symbol is not None:
         external_symbol_ranges = _load_symbol_ranges([external_irq_symbol], app_name)
@@ -2906,47 +2961,51 @@ async def run_until_complete(
                         f"{port_name}=0x{(value or 0):08x}@0x{(pc or 0):08x}"
                     )
 
+            # The take-cycle state is read only when an interrupt is taken,
+            # which keeps the check's per-cycle cost to a few handles.
             trap = bool(_read_bool(trap_taken_live_sig))
-            trap_q = bool(_read_bool(trap_taken_reg_dbg_sig))
-            flush_all = bool(_read_bool(flush_all_live_sig))
-            trap_cause = _read_int(trap_cause_internal_live_sig)
+            trap_cause = _read_int(trap_cause_internal_live_sig) if trap else None
             is_irq = bool((trap_cause or 0) & MCAUSE_INTERRUPT_BIT)
-            trap_pc = _read_int(trap_pc_internal_live_sig)
-            rob_trap_pc = _read_int(rob_trap_pc_live_sig)
-            interrupt_resume_pc = _read_int(interrupt_resume_pc_live_sig)
-            c0_valid = bool(_read_bool(commit_valid_live_sig))
-            c1_valid = bool(_read_bool(commit1_valid_sig))
-            c0_pc = _read_int(commit_pc_live_sig)
-            c1_pc = _read_int(commit1_pc_sig)
-            reg0_sensitive = commit_writes_x1_x2_at_pc(
-                rob_commit0_reg_valid_sig,
-                rob_commit0_reg_pc_sig,
-                rob_commit0_reg_dest_valid_sig,
-                rob_commit0_reg_dest_rf_sig,
-                rob_commit0_reg_dest_reg_sig,
-                trap_pc,
-            )
-            reg1_sensitive = commit_writes_x1_x2_at_pc(
-                rob_commit1_reg_valid_sig,
-                rob_commit1_reg_pc_sig,
-                rob_commit1_reg_dest_valid_sig,
-                rob_commit1_reg_dest_rf_sig,
-                rob_commit1_reg_dest_reg_sig,
-                trap_pc,
-            )
-
-            stale_sp_body = False
-            if trap and is_irq and trap_pc is not None and irq_precision_callee_range:
-                callee_lo, callee_hi = irq_precision_callee_range
-                x2_from_callee = (
-                    current_x2_commit_pc is not None
-                    and callee_lo <= current_x2_commit_pc < callee_hi
+            if is_irq:
+                irq_take_count += 1
+                trap_q = bool(_read_bool(trap_taken_reg_dbg_sig))
+                flush_all = bool(_read_bool(flush_all_live_sig))
+                trap_pc = _read_int(trap_pc_internal_live_sig)
+                rob_trap_pc = _read_int(rob_trap_pc_live_sig)
+                interrupt_resume_pc = _read_int(interrupt_resume_pc_live_sig)
+                c0_valid = bool(_read_bool(commit_valid_live_sig))
+                c1_valid = bool(_read_bool(commit1_valid_sig))
+                c0_pc = _read_int(commit_pc_live_sig)
+                c1_pc = _read_int(commit1_pc_sig)
+                reg0_sensitive = commit_writes_x1_x2_at_pc(
+                    rob_commit0_reg_valid_sig,
+                    rob_commit0_reg_pc_sig,
+                    rob_commit0_reg_dest_valid_sig,
+                    rob_commit0_reg_dest_rf_sig,
+                    rob_commit0_reg_dest_reg_sig,
+                    trap_pc,
                 )
-                stale_sp_body = (
-                    callee_lo + 4 <= trap_pc < callee_hi and not x2_from_callee
+                reg1_sensitive = commit_writes_x1_x2_at_pc(
+                    rob_commit1_reg_valid_sig,
+                    rob_commit1_reg_pc_sig,
+                    rob_commit1_reg_dest_valid_sig,
+                    rob_commit1_reg_dest_rf_sig,
+                    rob_commit1_reg_dest_reg_sig,
+                    trap_pc,
                 )
 
-            if trap and is_irq:
+                stale_sp_body = False
+                if trap_pc is not None and irq_precision_callee_range:
+                    callee_lo, callee_hi = irq_precision_callee_range
+                    x2_from_callee = (
+                        current_x2_commit_pc is not None
+                        and callee_lo <= current_x2_commit_pc < callee_hi
+                    )
+                    stale_sp_body = (
+                        irq_precision_callee_body <= trap_pc < callee_hi
+                        and not x2_from_callee
+                    )
+
                 event = (
                     f"IRQ precision event cycle={cycle + 1} "
                     f"cause=0x{(trap_cause or 0):08x} trap_pc=0x{(trap_pc or 0):08x} "
@@ -2994,28 +3053,27 @@ async def run_until_complete(
                         f"stale_sp_body={stale_sp_body}; {event}"
                     )
 
-            low_ra_events = []
-            for port_name, we_sig, addr_sig, data_sig in (
-                ("p0", port0_int_we_sig, port0_int_addr_sig, port0_int_data_sig),
-                ("p1", port1_int_we_sig, port1_int_addr_sig, port1_int_data_sig),
-            ):
-                data_value = _read_int(data_sig)
-                if (
-                    bool(_read_bool(we_sig))
-                    and _read_int(addr_sig) == 1
-                    and data_value is not None
-                    and data_value < 0x1000
+            if irq_low_ra_assert:
+                low_ra_events = []
+                for port_name, we_sig, addr_sig, data_sig in (
+                    ("p0", port0_int_we_sig, port0_int_addr_sig, port0_int_data_sig),
+                    ("p1", port1_int_we_sig, port1_int_addr_sig, port1_int_data_sig),
                 ):
-                    low_ra_events.append(f"{port_name}=0x{data_value:08x}")
-            if irq_low_ra_assert and low_ra_events:
-                raise AssertionError(
-                    "Low RA writeback under IRQ monitor: "
-                    f"cycle={cycle + 1} {' '.join(low_ra_events)} "
-                    f"trap={int(trap)} irq={int(is_irq)} "
-                    f"cause=0x{(trap_cause or 0):08x} "
-                    f"trap_pc=0x{(trap_pc or 0):08x} "
-                    f"mepc=0x{(_read_int(csr_mepc_live_sig) or 0):08x}"
-                )
+                    if bool(_read_bool(we_sig)) and _read_int(addr_sig) == 1:
+                        data_value = _read_int(data_sig)
+                        if data_value is not None and data_value < 0x1000:
+                            low_ra_events.append(f"{port_name}=0x{data_value:08x}")
+                if low_ra_events:
+                    cause_now = _read_int(trap_cause_internal_live_sig) or 0
+                    raise AssertionError(
+                        "Low RA writeback under IRQ monitor: "
+                        f"cycle={cycle + 1} {' '.join(low_ra_events)} "
+                        f"trap={int(trap)} "
+                        f"irq={int(bool(cause_now & MCAUSE_INTERRUPT_BIT))} "
+                        f"cause=0x{cause_now:08x} "
+                        f"trap_pc=0x{(_read_int(trap_pc_internal_live_sig) or 0):08x} "
+                        f"mepc=0x{(_read_int(csr_mepc_live_sig) or 0):08x}"
+                    )
 
         for we_sig, addr_sig, data_sig, pc_sig in (
             (
@@ -3866,6 +3924,15 @@ async def run_until_complete(
             f"Run {run_number}: CoreMark IF check compared "
             f"{coremark_if_check_count} dispatched instructions of "
             f"{coremark_if_check_symbol} with sw.S"
+        )
+    if irq_precision_check:
+        if irq_take_count == 0:
+            raise AssertionError(
+                f"Run {run_number}: FROST_IRQ_PRECISION_CHECK=1 saw no interrupt taken"
+            )
+        cocotb.log.info(
+            f"Run {run_number}: IRQ precision check saw {irq_take_count} "
+            f"interrupt{'' if irq_take_count == 1 else 's'} taken"
         )
 
 

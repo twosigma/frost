@@ -635,7 +635,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="linux_irq_stack_slot_test",
-        description="Linux-like timer IRQ over a poisoned DDR callee return-address stack slot",
+        description=(
+            "Linux-like timer IRQ over a poisoned DDR callee return-address stack "
+            "slot, with the strict IRQ precision check"
+        ),
+        extra_env=(
+            ("FROST_IRQ_PRECISION_CHECK", "1"),
+            ("FROST_IRQ_PRECISION_STRICT", "1"),
+        ),
     ),
     "linux_irq_find_next_slot_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
