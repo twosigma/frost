@@ -191,9 +191,6 @@ def discover_isa_tests(
 
     tests = sorted(suite_dir.glob("*.S"))
 
-    # Makefrag is not a test.
-    tests = [t for t in tests if t.stem != "Makefrag"]
-
     # Apply skip lists: always-skip, plus the bram-only skips in the bram tier
     # and the virtual-environment skips.
     skip_set = set(ISA_SKIP_TESTS.get(suite, set()))
