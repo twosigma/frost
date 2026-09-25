@@ -23,7 +23,7 @@ TOPLEVEL_LANG   ?= verilog
 # Top-level module name for simulation
 TOPLEVEL        ?= cpu_tb
 # Python test module(s) to run (comma-separated for multiple)
-COCOTB_TEST_MODULES ?= cocotb_tests.test_cpu
+COCOTB_TEST_MODULES ?= cocotb_tests.test_directed_traps
 # Git repository root (with fallback for Docker/non-git contexts)
 ROOT            ?= $(shell git rev-parse --show-toplevel 2>/dev/null || echo /workspace)
 # Whether to generate a waveform file

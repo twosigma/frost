@@ -12,19 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""CPU reference state and expected-value queues.
+"""CPU reference state for the directed cpu_tb tests.
 
-Previous/current fields describe instruction history, not fixed OOO pipeline
-residency. Monitors consume queued expectations on DUT valid signals. Counter
-shadows support CSR checks; RV64 counters are 64-bit and have no high-half CSRs.
+Register files, the program counter, counter shadows, the LR/SC reservation,
+and the expected-write queues that MemoryModel's store monitor consumes.
+"previous" and "current" describe instruction history, not pipeline
+residency. RV64 counters are 64-bit and have no high-half CSRs.
 """
 
-from config import (
-    MASK64,
-    MASK_XLEN,
-    PIPELINE_IF_TO_EX_CYCLES,
-)
-from encoders.instruction_encode import CSRAddress
+from config import MASK_XLEN
 
 # The LR/SC reservation covers the aligned doubleword that holds the LR's
 # address: sc_pending_unit compares addr[XLEN-1:3].
@@ -34,21 +30,10 @@ _RESERVATION_ADDRESS_MASK = MASK_XLEN & ~0x7
 class TestState:
     """Software CPU state and expected-value queues.
 
-    The stage names below come from the in-order monitor alignment model
-    (config.PIPELINE_IF_TO_EX_CYCLES and related offsets). The OOO DUT has no
-    fixed IF/EX/WB residency, so read them as instruction history.
-
     Attributes:
-        register_file_current: Register values after current writeback
-        register_file_previous: Register values visible to current instruction
-        fp_register_file_current: FP register values after current writeback
-        fp_register_file_previous: FP register values visible to current instruction
-        program_counter_current: PC at fetch stage
-        program_counter_previous: PC at decode stage
-        program_counter_two_cycles_ago: PC at writeback stage
-        branch_taken_current: Whether current instruction is a taken branch/jump
-        branch_taken_previous: Whether previous instruction was a taken branch/jump
-        branch_taken_two_cycles_ago: Whether instruction two cycles ago was taken
+        register_file_current: Register values after the current instruction writes
+        register_file_previous: Register values the current instruction reads
+        program_counter_current: PC of the current instruction
         csr_cycle_counter: Clock cycle counter for CSR verification
         csr_instret_counter: Instruction retired counter for CSR verification
         reservation_valid: Whether an LR/SC reservation is active
@@ -56,150 +41,43 @@ class TestState:
         last_sc_succeeded: Whether the last SC.W instruction succeeded
         last_sc_address: Address of the last SC.W instruction
         last_sc_data: Data value of the last SC.W instruction
-        register_file_current_expected_queue: Queue for integer register verification
-        fp_register_file_current_expected_queue: Queue for FP register verification
-        program_counter_expected_values_queue: Queue for PC verification
-        memory_write_data_expected_queue: Queue for memory write data verification
-        memory_write_address_expected_queue: Queue for memory write address verification
+        register_file_current_expected_queue: Expected integer register files
+        program_counter_expected_values_queue: Expected PCs
+        memory_write_data_expected_queue: Expected store data, for MemoryModel
+        memory_write_address_expected_queue: Expected store addresses, for MemoryModel
     """
 
     def __init__(self) -> None:
         """Initialize test state with default values for CPU verification."""
-        # ====================================================================
-        # Integer Register File State
-        # ====================================================================
         # 'previous' holds the values the current instruction reads, with every
         # older result visible; 'current' holds the values after it writes.
         self.register_file_current: list[int] = [0] * 32
         self.register_file_previous: list[int] = [0] * 32
 
-        # ====================================================================
-        # FP Register File State (F extension)
-        # ====================================================================
-        # Same previous/current split as the integer file. Unlike x0, f0 is an
-        # ordinary register.
-        self.fp_register_file_current: list[int] = [0] * 32
-        self.fp_register_file_previous: list[int] = [0] * 32
+        self.program_counter_current: int = 8
 
-        # ====================================================================
-        # Program Counter State
-        # ====================================================================
-        # Track PC at different pipeline stages for output verification
-        self.program_counter_current: int = 8  # Fetch stage
-        self.program_counter_previous: int = 4  # Decode stage
-        self.program_counter_two_cycles_ago: int = 0  # Writeback stage
-
-        # ====================================================================
-        # Branch/Jump State
-        # ====================================================================
-        # Branch recovery model keeps three pending flush slots for the monitor.
-        self.branch_taken_current: bool = False
-        self.branch_taken_previous: bool = False
-        self.branch_taken_two_cycles_ago: bool = False
-
-        # ====================================================================
-        # CSR Counter State
-        # ====================================================================
         # Shadow RTL counters to verify CSR read values
         self.csr_cycle_counter: int = 0  # Increments every clock edge
         self.csr_instret_counter: int = 0  # Increments when instruction retires
 
-        # ====================================================================
-        # LR/SC Reservation State
-        # ====================================================================
         self.reservation_valid: bool = False
         self.reservation_address: int = 0
         self.last_sc_succeeded: bool = False
         self.last_sc_address: int = 0
         self.last_sc_data: int = 0
 
-        # ====================================================================
-        # Expected Output Queues
-        # ====================================================================
         self.register_file_current_expected_queue: list[list[int]] = []
-        self.fp_register_file_current_expected_queue: list[list[int]] = []
         self.program_counter_expected_values_queue: list[int] = []
         self.memory_write_data_expected_queue: list[int] = []
         self.memory_write_address_expected_queue: list[int] = []
 
-    # ========================================================================
-    # Convenience Properties
-    # ========================================================================
-
-    @property
-    def is_in_flush(self) -> bool:
-        """Check if pipeline is currently flushing due to a taken branch/jump."""
-        return (
-            self.branch_taken_current
-            or self.branch_taken_previous
-            or self.branch_taken_two_cycles_ago
-        )
-
-    # ========================================================================
-    # State Update Methods
-    # ========================================================================
-
     def update_program_counter(self, expected_program_counter: int) -> None:
-        """Update program counter state across pipeline stages."""
-        self.program_counter_two_cycles_ago = self.program_counter_previous
-        self.program_counter_previous = self.program_counter_current
+        """Set the program counter of the next instruction."""
         self.program_counter_current = expected_program_counter
 
-    def update_register(self, register_index: int, value: int) -> None:
-        """Update a register in the current integer register file state.
-
-        Args:
-            register_index: Register to update (1-31, x0 is ignored)
-            value: Value to write (masked to XLEN bits)
-        """
-        if register_index and register_index < 32:
-            self.register_file_current[register_index] = value & MASK_XLEN
-
-    def update_fp_register(self, register_index: int, value: int) -> None:
-        """Update a register in the current FP register file state.
-
-        Args:
-            register_index: FP register to update (0-31, f0 is writeable unlike x0)
-            value: Value to write (will be masked to 64 bits)
-        """
-        if register_index < 32:
-            self.fp_register_file_current[register_index] = value & MASK64
-
     def advance_register_state(self) -> None:
-        """Advance both integer and FP register state: current becomes previous."""
+        """Make the current register values the ones the next instruction reads."""
         self.register_file_previous = self.register_file_current.copy()
-        self.fp_register_file_previous = self.fp_register_file_current.copy()
-
-    def queue_expected_outputs(self, expected_pc: int, include_fp: bool = True) -> None:
-        """Queue expected register files and PC for monitor verification.
-
-        Args:
-            expected_pc: Expected program counter value
-            include_fp: If True, also queue FP register file expectations.
-                Set to False for integer-only tests where no FP monitor runs.
-        """
-        self.register_file_current_expected_queue.append(
-            self.register_file_current.copy()
-        )
-        if include_fp:
-            self.fp_register_file_current_expected_queue.append(
-                self.fp_register_file_current.copy()
-            )
-        self.program_counter_expected_values_queue.append(expected_pc)
-
-    def has_pending_expectations(self) -> bool:
-        """Check if there are still expected values waiting to be verified."""
-        return (
-            len(self.register_file_current_expected_queue) > 0
-            or len(self.fp_register_file_current_expected_queue) > 0
-            or len(self.program_counter_expected_values_queue) > 0
-            or len(self.memory_write_data_expected_queue) > 0
-            or len(self.memory_write_address_expected_queue) > 0
-        )
-
-    # ========================================================================
-    # CSR Counter Methods
-    # ========================================================================
 
     def increment_cycle_counter(self) -> None:
         """Increment CSR cycle counter (called every clock edge)."""
@@ -208,10 +86,6 @@ class TestState:
     def increment_instret_counter(self) -> None:
         """Increment CSR instret counter (called when instruction retires)."""
         self.csr_instret_counter += 1
-
-    # ========================================================================
-    # LR/SC Reservation Methods
-    # ========================================================================
 
     def set_reservation(self, address: int) -> None:
         """Reserve the aligned doubleword that holds ``address``.
@@ -248,57 +122,3 @@ class TestState:
         if not self.reservation_valid:
             return False
         return (address & _RESERVATION_ADDRESS_MASK) == self.reservation_address
-
-    # ========================================================================
-    # CSR Read Methods
-    # ========================================================================
-
-    def get_csr_value(
-        self, csr_address: int, pipeline_offset: int = PIPELINE_IF_TO_EX_CYCLES
-    ) -> int:
-        """Get expected CSR value for a CSR read instruction.
-
-        In the monitor alignment model the read happens in EX,
-        pipeline_offset cycles after the instruction is generated. It sees the
-        cycle shadow plus pipeline_offset and the instret shadow minus
-        PIPELINE_IF_TO_EX_CYCLES (not below zero).
-
-        Args:
-            csr_address: CSR address being read (e.g., 0xC00 for cycle)
-            pipeline_offset: Cycles from IF to EX stage (default PIPELINE_IF_TO_EX_CYCLES)
-
-        Returns:
-            Expected CSR value (XLEN bits)
-        """
-        # Cycle counter: increments every clock, so add pipeline offset
-        cycle_at_ex = self.csr_cycle_counter + pipeline_offset
-
-        # Instret only increments when an instruction retires in WB, and the
-        # CSR read captures the value from before the current posedge.
-        instret_at_ex = max(0, self.csr_instret_counter - PIPELINE_IF_TO_EX_CYCLES)
-
-        if csr_address in (CSRAddress.CYCLE, CSRAddress.TIME):
-            return cycle_at_ex & MASK_XLEN
-        elif csr_address == CSRAddress.INSTRET:
-            return instret_at_ex & MASK_XLEN
-        elif csr_address == CSRAddress.MCOUNTEREN:
-            # Reset value 0x7 (CY/TM/IR set); no generated test writes it.
-            return 0x7
-        else:
-            # Not modeled: the random stream reads only the CSRs above, and
-            # the RTL raises illegal-instruction for CSRs it does not have.
-            return 0
-
-    # ========================================================================
-    # Branch Flush Methods
-    # ========================================================================
-
-    def advance_branch_state(self) -> None:
-        """Advance branch tracking state for pipeline flush handling.
-
-        Shifts branch taken flags through the 3-cycle flush window.
-        Called during branch flush to track when flush completes.
-        """
-        self.branch_taken_two_cycles_ago = self.branch_taken_previous
-        self.branch_taken_previous = self.branch_taken_current
-        self.branch_taken_current = False

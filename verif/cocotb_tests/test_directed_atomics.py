@@ -213,7 +213,7 @@ async def execute_lr_sc_instruction(
                 f"FAILED (rd=1, no write)"
             )
 
-        # Record the SC outcome in TestState, as CPUModel does.
+        # Record the SC outcome in TestState.
         state.last_sc_succeeded = success
         state.last_sc_address = address
         state.last_sc_data = state.register_file_previous[rs2]

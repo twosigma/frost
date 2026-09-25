@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software reference models for integer, branch, FP, and memory behavior.
+"""Software reference models for integer, FP, and memory behavior.
 
 ALU helpers wrap results to XLEN and use the low 6 bits of a shift amount (5 for
 the W forms). MemoryModel stores little-endian bytes; its monitor checks DUT
@@ -20,7 +20,6 @@ stores without driving memory responses.
 """
 
 from models.alu_model import add, sub, and_rv, or_rv, xor
-from models.branch_model import branch_taken_decision
 from models.memory_model import MemoryModel
 
 __all__ = [
@@ -29,6 +28,5 @@ __all__ = [
     "and_rv",
     "or_rv",
     "xor",
-    "branch_taken_decision",
     "MemoryModel",
 ]

@@ -14,10 +14,8 @@
 
 """Cocotb block, directed CPU, and compiled-program tests.
 
-Use targets in ``tests/test_run_cocotb.py`` through ``scripts/frost.py cocotb``.
-The ``cpu_random`` and ``directed_multicycle`` targets fail until they check
-results in commit order; see ``verif/README.md`` for target status and shared
-helpers.
+Use targets in ``tests/test_run_cocotb.py`` through ``scripts/frost.py cocotb``;
+see ``verif/README.md`` for the directed CPU targets and shared helpers.
 """
 
 from cocotb_tests.test_common import TestConfig

@@ -1885,39 +1885,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "precise-interrupt sweeps"
         ),
     ),
-    # The cpu_tb suites below are CLI-only (include_in_pytest=False).
-    # directed_atomics and compressed pass on the OOO core (they wait on
-    # commit events and settling through the DUTInterface helpers, as
-    # test_directed_traps does); adding them to CI is still undecided.
-    # directed_multicycle and cpu_random assume in-order fixed latencies:
-    # cpu_random's monitors align full-regfile/PC snapshots to o_vld by fetch
-    # ordinal with fixed IF->WB offsets, which the OOO core's variable commit
-    # latency, 2-wide retire, and wrong-path squashes break, so porting it
-    # needs a commit-indexed scoreboard. CI covers their ISA ground with the
-    # rv64ua/rv64uc/rv64um riscv-tests, the arch-compliance matrix, and the
-    # ddr_atomic_test and c_ext_test programs.
+    # The cpu_tb suites below are CLI-only (include_in_pytest=False). They
+    # wait on commit events and settling through the DUTInterface helpers, as
+    # test_directed_traps does; adding them to CI is still undecided.
     "directed_atomics": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_atomics",
         hdl_toplevel_module="cpu_tb",
         description="Directed LR.W/SC.W atomic tests (cpu_tb directed suite)",
         include_in_pytest=False,
     ),
-    "directed_multicycle": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_directed_multicycle",
-        hdl_toplevel_module="cpu_tb",
-        description="Directed back-to-back multi-cycle op tests (cpu_tb; NEEDS PORTING to OOO)",
-        include_in_pytest=False,
-    ),
     "compressed": CocotbRunConfig(
         python_test_module="cocotb_tests.test_compressed",
         hdl_toplevel_module="cpu_tb",
         description="RISC-V C-extension directed and random ALU tests (cpu_tb)",
-        include_in_pytest=False,
-    ),
-    "cpu_random": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_cpu",
-        hdl_toplevel_module="cpu_tb",
-        description="Constrained-random instruction regression (cpu_tb; NEEDS PORTING to OOO: commit-indexed scoreboard)",
         include_in_pytest=False,
     ),
 }
@@ -2023,7 +2003,7 @@ class CocotbRunner:
 
         Args:
             python_test_module: Module holding the cocotb tests
-                (e.g. "cocotb_tests.test_cpu").
+                (e.g. "cocotb_tests.test_directed_traps").
             hdl_toplevel_module: Top-level HDL module name (e.g. "cpu_tb").
             app_name: Application to compile and load (e.g. "hello_world").
             verilator_extra_args: Extra Verilator args for this build.

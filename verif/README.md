@@ -1,7 +1,7 @@
 # Verification
 
 This directory holds the Python side of FROST's simulation tests: the cocotb
-benches in `cocotb_tests/` and the models, encoders, and monitors they share.
+benches in `cocotb_tests/` and the models and encoders they share.
 Block benches drive one RTL module and check it against independent models
 and assertions. Application tests compile a program from `sw/apps/`, run it
 on the whole SoC, and read its result from the UART. The runners in
@@ -30,10 +30,9 @@ committed to the repository, so Spike is needed only to regenerate them.
 | Path | Purpose |
 |------|---------|
 | `cocotb_tests/` | Block benches, directed CPU tests, application harness |
-| `models/` | Integer, branch, floating-point, and memory models |
+| `models/` | Integer, floating-point, and memory models |
 | `encoders/` | Instruction encoders and operation tables |
-| `monitors/` | Register and PC monitors for the CPU reference harness |
-| `utils/` | Memory-access helpers, data types, struct packing, logging, assertions |
+| `utils/` | Memory-access helpers, data types, struct packing, assertions |
 | `config.py` | Constants (`XLEN=64`) and configurable DUT signal paths |
 | `verification_types.py` | Shared `NewType` wrappers |
 
@@ -49,57 +48,41 @@ FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world           # th
 
 `TEST_REGISTRY` in `tests/test_run_cocotb.py` defines the targets. Always use
 the wrapper, which cleans `tests/` and runs the pinned image. Running `make`
-in `tests/` with no arguments selects the CPU reference harness described
-below, which does not pass, so always name a target. `--testcase` selects
+in `tests/` with no arguments runs the `directed_traps` suite. `--testcase` selects
 test functions by regex through `COCOTB_TEST_FILTER`. The
 [environment table](../tests/README.md#environment-and-output) lists the
 cycle budgets and run counts for applications.
 
-## CPU reference harness
+## Directed CPU tests
 
-`test_cpu.py`, which the `cpu_random` target runs, generates random
-instructions, encodes them, predicts their effects with a Python model, and
-drives `cpu_tb`. The encoders, models, and expected state are RV64: register
-values, immediates, PCs, and counters are XLEN wide. The monitors expect the
-PC and each instruction's results at a fixed offset from fetch, and
-`directed_multicycle` makes the same assumption. The out-of-order core
-breaks it: fetch redirects on its own schedule, instructions retire one or
-two per cycle after a variable delay, and wrong-path instructions are
-squashed, so the testbench cannot tell which of the instructions it drives
-will be squashed. (`cpu_tb` fills the upper half of every fetch window with
-an ECALL, which cannot pair as slot 2, so each 32-bit instruction is fetched
-alone.) Both targets stop at their first PC check, before any register
-comparison, and fail until they check results in commit order. Until then,
-the riscv-tests, the architecture compliance suites, and application tests
-such as `ddr_atomic_test` and `c_ext_test` cover those instructions in CI.
+The directed suites drive instruction words into `cpu_tb`, the core with a
+fetch driver and a data memory model, and check results by waiting on commit
+events and reading the architectural register files through `DUTInterface`.
+They follow the out-of-order core's own timing rather than fixed pipeline
+offsets. (`cpu_tb` fills the upper half of every fetch window with an ECALL,
+which cannot pair as slot 2, so each 32-bit instruction is fetched alone.)
+Random instruction streams run as compiled programs instead: the
+riscv-torture suite checks them against Spike.
 
 | CPU harness target | Status |
 |--------------------|--------|
-| `directed_traps` | Passes; runs in CI |
-| `directed_atomics`, `compressed` | Pass; run from the command line only |
-| `cpu_random`, `directed_multicycle` | Fail: they need a scoreboard indexed by commit order |
+| `directed_traps` | Runs in CI |
+| `directed_atomics`, `compressed` | Run from the command line only |
 
 | Component | Role |
 |-----------|------|
-| `InstructionGenerator` | Valid, aligned instruction parameters; optional address constraints |
-| `CPUModel` | Register, PC, memory, and instruction effects |
-| `TestState` | Architectural state, expected queues, LR/SC reservation, branch history |
+| `TestState` | Register and PC state, counter shadows, LR/SC reservation, expected-store queues |
 | `DUTInterface` | Signal access through `DUTSignalPaths` |
-| Register and FP monitors | Compare full snapshots on `o_vld`; the integer comparison skips x0 |
-| PC monitor | Compares on `o_pc_vld` |
 | Memory monitor | Checks each store's address and data against the expected queues (the byte mask only marks that a store happened); it does not drive reads or update model memory |
 
-`encoders/op_tables.py` defines the modeled ISA subset and the instruction
-families the generator draws from. Atomic modeling covers word operations;
-supervisor instructions are tested by other suites. `TestConfig` in
-`cocotb_tests/test_common.py` supplies generation, reset, clock, coverage,
-and logging options. Directed suites can drive the DUT and check results
-themselves.
+`encoders/op_tables.py` pairs an encoder with a reference evaluator for each
+modeled instruction. Atomic modeling covers word operations; supervisor
+instructions are tested by other suites. `TestConfig` in
+`cocotb_tests/test_common.py` supplies the reset, clock, and coverage options.
 
 ## Extending the Framework
 
-- Add encoder and evaluator pairs to `encoders/op_tables.py`. New instruction
-  families also need generator and model support.
+- Add encoder and evaluator pairs to `encoders/op_tables.py`.
 - Add monitors as coroutines started by the test.
 - Override `DUTSignalPaths` for hierarchy differences instead of hardcoding
   paths in test logic.

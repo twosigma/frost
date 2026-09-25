@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Fast checks of the CPU reference harness: generator, encoders, and models."""
+"""Fast checks of the CPU reference harness: encoders and models."""
 
 import importlib
 import shutil
@@ -37,15 +37,9 @@ finally:
 instruction_encode = importlib.import_module("encoders.instruction_encode")
 op_tables = importlib.import_module("encoders.op_tables")
 fp_model = importlib.import_module("models.fp_model")
-instruction_generator = importlib.import_module("cocotb_tests.instruction_generator")
-cpu_model = importlib.import_module("cocotb_tests.cpu_model")
 test_state = importlib.import_module("cocotb_tests.test_state")
-test_helpers = importlib.import_module("cocotb_tests.test_helpers")
-instruction_logger = importlib.import_module("utils.instruction_logger")
 validation = importlib.import_module("utils.validation")
 config = importlib.import_module("config")
-
-GENERATOR = instruction_generator.InstructionGenerator
 
 # (assembly, op_tables table, mnemonic, encoder arguments, word). The words come
 # from GNU as; test_expected_words_match_the_assembler re-assembles them.
@@ -123,35 +117,6 @@ def test_expected_words_match_the_assembler(tmp_path: Path) -> None:
     assert words == [encoding[4] for encoding in ENCODINGS]
 
 
-def test_random_csr_pool_holds_only_the_read_forms() -> None:
-    """The pool leaves out csrrw and csrrwi, whose write traps on read-only INSTRET."""
-    pool = GENERATOR.get_all_operations()
-
-    assert sorted(op for op in pool if op in op_tables.CSRS) == [
-        "csrrc",
-        "csrrci",
-        "csrrs",
-        "csrrsi",
-    ]
-
-
-@pytest.mark.parametrize("operation", ("csrrs", "csrrc", "csrrsi", "csrrci"))
-def test_random_csr_instructions_read_instret_without_writing(
-    monkeypatch: pytest.MonkeyPatch, operation: str
-) -> None:
-    """Each random CSR instruction reads INSTRET with rs1=x0 or zimm=0."""
-    monkeypatch.setattr(
-        GENERATOR, "get_all_operations", staticmethod(lambda: [operation])
-    )
-    register_file = [0] + [0x1000 + 4 * reg for reg in range(1, 32)]
-
-    params = GENERATOR.generate_random_instruction(register_file)
-
-    assert params.csr_address == instruction_encode.CSRAddress.INSTRET
-    assert params.source_register_1 == 0
-    assert params.immediate == 0
-
-
 # NaN-boxed single-precision values: -1.0, 2.0, 3.0, canonical NaN, -inf, 3e9.
 BOXED_NEG_ONE = 0xFFFF_FFFF_BF80_0000
 BOXED_TWO = 0xFFFF_FFFF_4000_0000
@@ -223,54 +188,6 @@ def test_flw_nan_boxes_the_loaded_word() -> None:
     assert op_tables.FP_LOADS["flw"][1](memory, 0x100) == 0xFFFF_FFFF_3F80_0000
 
 
-@pytest.mark.parametrize(
-    ("operation", "rs1_value", "immediate", "expected"),
-    (
-        ("addi", 0x10, -1, 0xF),
-        ("andi", 0xFFFF_FFFF_FFFF_FFF0, -1, 0xFFFF_FFFF_FFFF_FFF0),
-        ("ori", 0, -2, 0xFFFF_FFFF_FFFF_FFFE),
-        ("slti", 0, -1, 0),
-        ("sltiu", 0xFFFF_FFFF, -1, 1),
-    ),
-)
-def test_i_alu_immediates_sign_extend_to_xlen(
-    operation: str, rs1_value: int, immediate: int, expected: int
-) -> None:
-    """The model sign-extends a negative I-type immediate to XLEN, not 32 bits."""
-    state = test_state.TestState()
-    state.register_file_previous[1] = rs1_value
-
-    rd, value, _, is_fp = cpu_model.CPUModel.model_instruction_execution(
-        state, None, operation, 5, 1, 0, immediate, None
-    )
-
-    assert (rd, value, is_fp) == (5, expected, False)
-
-
-def test_register_state_and_counters_keep_xlen_values() -> None:
-    """Integer registers and counter reads are not truncated to 32 bits."""
-    state = test_state.TestState()
-    state.update_register(5, 0xFFFF_FFFF_FFFF_FFFB)
-    state.csr_instret_counter = (1 << 40) + 10
-
-    assert state.register_file_current[5] == 0xFFFF_FFFF_FFFF_FFFB
-    assert state.get_csr_value(instruction_encode.CSRAddress.INSTRET) == (
-        (1 << 40) + 10 - config.PIPELINE_IF_TO_EX_CYCLES
-    )
-
-
-def test_control_flow_targets_wrap_at_xlen() -> None:
-    """A jump below address 0 wraps at XLEN, as the RV64 PC does."""
-    state = test_state.TestState()
-    state.program_counter_two_cycles_ago = 0x10
-
-    internal_pc = cpu_model.CPUModel.calculate_internal_pc_update(
-        state, "jal", 0, 0, -0x20, 0x14
-    )
-
-    assert internal_pc == 0xFFFF_FFFF_FFFF_FFEC
-
-
 class _ListLog:
     """Stand-in for cocotb.log, which exists only inside a simulation."""
 
@@ -295,66 +212,3 @@ def test_assert_equals_reports_every_mismatch(
         validation.assert_equals(5, expected)
 
     assert failure.value.context["difference"] == difference
-
-
-def test_coverage_check_and_summary_agree_at_the_minimum(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An operation run exactly the minimum number of times passes both."""
-    log = _ListLog()
-    monkeypatch.setattr(instruction_logger.cocotb, "log", log, raising=False)
-    stats = test_helpers.TestStatistics(coverage={"add": 5, "sub": 4})
-
-    instruction_logger.InstructionLogger.log_coverage_summary(stats.coverage, 5)
-
-    assert stats.check_coverage(5) == ["sub: only 4 executions (min: 5)"]
-    assert any("\u2713 add" in line for line in log.lines)
-    assert any("\u2717 sub" in line for line in log.lines)
-
-
-@pytest.mark.parametrize("operation", ("lr.w", "amoadd.w"))
-def test_lr_and_amo_addresses_keep_xlen_bits(operation: str) -> None:
-    """LR.W and AMOs read the word at rs1, above bit 31 as well."""
-    state = test_state.TestState()
-    state.register_file_previous[10] = 0x1_0000_0104
-    memory = _WordMemory({0x1_0000_0104: 0x8000_0001})
-
-    _, rd_value, _, _ = cpu_model.CPUModel.model_instruction_execution(
-        state, memory, operation, 5, 10, 11, 0, None
-    )
-
-    assert memory.read_address == 0x1_0000_0104
-    assert rd_value == 0xFFFF_FFFF_8000_0001
-
-
-def test_sc_address_keeps_xlen_bits() -> None:
-    """SC.W checks the reservation at its full rs1 address."""
-    state = test_state.TestState()
-    state.register_file_previous[10] = 0x1_0000_0104
-    state.set_reservation(0x1_0000_0100)
-
-    cpu_model.CPUModel.model_instruction_execution(
-        state, None, "sc.w", 5, 10, 11, 0, None
-    )
-
-    assert state.last_sc_succeeded is True
-    assert state.last_sc_address == 0x1_0000_0104
-
-
-@pytest.mark.parametrize(
-    ("sc_address", "succeeds"),
-    ((0x100, True), (0x104, True), (0x108, False), (0x0FC, False)),
-    ids=("same-word", "other-word", "next-doubleword", "previous-doubleword"),
-)
-def test_reservation_covers_the_lr_doubleword(sc_address: int, succeeds: bool) -> None:
-    """An SC.W to either word of the LR.W's doubleword succeeds, as in the RTL."""
-    state = test_state.TestState()
-    state.register_file_previous[10] = sc_address
-    state.set_reservation(0x100)
-
-    _, rd_value, _, _ = cpu_model.CPUModel.model_instruction_execution(
-        state, None, "sc.w", 5, 10, 11, 0, None
-    )
-
-    assert state.last_sc_succeeded is succeeds
-    assert rd_value == (0 if succeeds else 1)

@@ -34,10 +34,7 @@ Example::
     result = evaluator(rs1_value, rs2_value)
 
 To add an instruction, write its evaluator in alu_model.py or fp_model.py if one
-does not exist yet, then add the entry to the table it belongs in here. The
-random generator and CPU model look instructions up by table, though
-instruction_generator.py also special-cases some mnemonics by name, such as
-shifts and aligned accesses. A new table also needs generator and model support.
+does not exist yet, then add the entry to the table it belongs in here.
 """
 
 from collections.abc import Callable
