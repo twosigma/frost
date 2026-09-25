@@ -175,6 +175,7 @@ module fp_add_shim (
   logic in_flight, flushed;
   logic fire;  // a subunit is being launched this cycle
   logic completing;  // any subunit is producing a valid output
+  logic [TagW-1:0] tag_reg;  // ROB tag of the in-flight operation
 
   // Forward declare subunit valid outputs
   logic adder_valid_out, compare_valid_out, classify_valid_out;
@@ -210,8 +211,6 @@ module fp_add_shim (
   assign o_fu_busy = in_flight;
 
   // Latch the ROB tag on fire
-  logic [TagW-1:0] tag_reg;
-
   always_ff @(posedge i_clk) begin
     if (fire) begin
       tag_reg <= i_rs_issue.rob_tag;
