@@ -259,7 +259,7 @@ XLEN: Final[int] = 64
 """RISC-V XLEN parameter.
 
 Matches riscv_pkg::XLEN; the core is RV64 only. Cocotb interfaces and models
-should import XLEN and FLEN from here rather than keep a private copy.
+import XLEN and FLEN from here rather than keep a private copy.
 """
 
 MASK_XLEN: Final[int] = (1 << XLEN) - 1
