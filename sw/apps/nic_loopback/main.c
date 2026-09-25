@@ -135,12 +135,17 @@ static void post_rx(uint32_t n)
     nic_write(NIC_RX_TAIL, g_rx_posted % ENTRIES);
 }
 
+/* Byte i of the frame sent as (da, seed): the destination MAC, then a
+ * pattern. */
+static uint8_t frame_byte(uint32_t i, const uint8_t *da, uint32_t seed)
+{
+    return i < 6 ? da[i] : (uint8_t) (seed * 31u + i * 7u + (i >> 8));
+}
+
 static void fill_frame(uint8_t *buf, uint32_t len, const uint8_t *da, uint32_t seed)
 {
-    for (uint32_t i = 0; i < 6 && i < len; i++)
-        buf[i] = da[i];
-    for (uint32_t i = 6; i < len; i++)
-        buf[i] = (uint8_t) (seed * 31u + i * 7u + (i >> 8));
+    for (uint32_t i = 0; i < len; i++)
+        buf[i] = frame_byte(i, da, seed);
 }
 
 static uint32_t send_tx(uint32_t len, const uint8_t *da, uint32_t seed)
@@ -179,15 +184,8 @@ static int reap_rx(uint32_t len, const uint8_t *da, uint32_t seed, const char *w
     }
     __asm__ volatile("fence r, r" ::: "memory"); /* DD before the data */
     const volatile uint8_t *buf = (const volatile uint8_t *) (uintptr_t) rx_ring[i].addr;
-    uint8_t want[8];
     for (uint32_t b = 0; b < expected_len; b++) {
-        uint8_t w;
-        if (b < len) {
-            fill_frame(want, 1, da, seed); /* unused: recompute below */
-            w = b < 6 ? da[b] : (uint8_t) (seed * 31u + b * 7u + (b >> 8));
-        } else {
-            w = 0; /* the MAC pads with zeros */
-        }
+        uint8_t w = b < len ? frame_byte(b, da, seed) : 0; /* the MAC pads with zeros */
         if (buf[b] != w) {
             uart_printf("%s: byte %u got %x want %x\n", what, b, buf[b], w);
             return 0;
