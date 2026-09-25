@@ -268,7 +268,7 @@ updating the image.
 | | Spike | `02b1dc182164bb73b19b050676dd89f0834f8b2e` |
 | **Synthesis** | Yosys / sv2v | 0.69 / 0.0.13 |
 | **Formal** | SymbiYosys / Z3 / Boolector | 0.69 / 5.1.0 / 3.2.4 |
-| **Debug** | OpenOCD | 0.12.0 |
+| **Debug** | OpenOCD | 0.12.0 (Ubuntu package) |
 | **FPGA** | Vivado (native, separately installed and validated) | 2025.2 |
 | **Linting** | pre-commit / Ruff / mypy | 4.6.2 / 0.16.8 / 2.3.1 |
 | | Verible | 0.0-4294-gc1d8f5e8 |

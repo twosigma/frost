@@ -218,15 +218,17 @@ RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
 # Permit a bind-mounted checkout owned by the invoking host user.
 RUN git config --global --add safe.directory /workspace
 
-# OpenOCD comes from the apt layer below; ``frost.py doctor`` checks its
-# version against this value.
+# OpenOCD is Ubuntu's package (apt layer below). That layer fails unless the
+# package reports this upstream release, and ``frost.py doctor`` checks it too.
 ARG OPENOCD_VERSION=0.12.0
 
 # Host packages for the Buildroot Linux image build (OpenSBI, the test
 # userspace, and the NIC module built against Debian's kernel headers; no
 # kernel is compiled here), the QEMU boot check, and the OpenOCD debug tests.
-# The same packages serve ``load_software.py <board> linux_boot``. Keep the
-# layer late to preserve the expensive tool-build cache above.
+# The same packages serve ``load_software.py <board> linux_boot``. liblz4-dev
+# supplies lz4.h for Verilator's FST trace writer, which WAVES=1 compiles into
+# every model. Keep the layer late to preserve the expensive tool-build cache
+# above.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     patch \
@@ -243,9 +245,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libncurses-dev \
     device-tree-compiler \
     libfdt-dev \
+    liblz4-dev \
     openocd \
     libslirp-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && openocd_banner="$(openocd --version 2>&1)" \
+    && printf '%s\n' "$openocd_banner" | grep -Fx "Open On-Chip Debugger ${OPENOCD_VERSION}"
 
 # Python's ensurepip does not install setuptools or wheel, and QEMU's offline
 # build environment needs both to install its bundled qemu.qmp wheel.

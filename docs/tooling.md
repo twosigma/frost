@@ -92,6 +92,10 @@ the language lockfiles consistent. Some constraints that are easy to break:
   `./scripts/frost.py run make -C sw/apps/opensbi_smoke distclean`. A plain
   `clean` keeps that application's cached firmware.
 - The Debian kernel and its headers must match the NIC module's ABI.
+- OpenOCD is Ubuntu's package, and `OPENOCD_VERSION` is the upstream release
+  it must report. The image build fails when a base-image change or an
+  archive update brings another release; update the ARG and the README row,
+  then run `debug_openocd_test`.
 
 To validate an update, run `doctor` and `check`, unit and program simulations
 in both memory tiers, formal and synthesis checks, regenerate the Spike
