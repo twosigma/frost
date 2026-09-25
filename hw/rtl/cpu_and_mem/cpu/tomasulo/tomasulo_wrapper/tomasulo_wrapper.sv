@@ -791,7 +791,7 @@ module tomasulo_wrapper #(
   // Registered flush snapshot for fp_mul_shim and fp_div_shim.
   //
   // The live flush pulses fan out to the flush logic of every entry these
-  // shims track (fp_mul_shim's two 32-entry FMUL/FMA tag queues and 16-entry
+  // shims track (fp_mul_shim's two 16-entry FMUL/FMA tag queues and 16-entry
   // result ring; fp_div_shim's tag and result registers). To keep that
   // fanout off their timing paths, the shims take a copy of the pulse
   // registered one cycle late, together with the flush tag and ROB head

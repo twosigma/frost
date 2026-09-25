@@ -23,12 +23,13 @@
  *   - fpu_mult_unit: FMUL_S/D (11 cycles)
  *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (16 cycles)
  *
- * Each subunit completes in issue order, so its ROB tags wait in a 32-entry
+ * Each subunit completes in issue order, so its ROB tags wait in a 16-entry
  * circular queue. Completions enter a shared 16-entry ordering ring (the
  * fifo_* arrays: tag, source subunit, flush state) that presents its head
  * until the adapter takes it; each subunit's value and flags wait in its own
  * block-RAM FIFO. o_fu_busy rises when the tag queues and the ring together
- * reach 14 entries, or either tag queue reaches 31, so nothing can overflow.
+ * reach 14 entries, which keeps each queue and the ring at 14 entries or
+ * fewer, so nothing can overflow.
  *
  * A squashed operation still runs to the end of its subunit and is dropped
  * there. A full flush empties the ring; a partial flush marks the squashed
@@ -165,8 +166,10 @@ module fp_mul_shim (
   // ===========================================================================
   // Multi-in-flight metadata and result FIFO
   // ===========================================================================
-  localparam int unsigned QueueDepth = 32;
+  // mul_busy caps the tag queues plus the ring at ResultFifoDepth - 2
+  // entries, so a tag queue as deep as the ring never fills.
   localparam int unsigned ResultFifoDepth = 16;
+  localparam int unsigned QueueDepth = ResultFifoDepth;
   localparam int unsigned QueuePtrW = $clog2(QueueDepth);
   localparam int unsigned QueueCountW = $clog2(QueueDepth + 1);
   localparam int unsigned FifoPtrW = $clog2(ResultFifoDepth);
@@ -226,9 +229,7 @@ module fp_mul_shim (
   logic [CreditCountW-1:0] total_occupancy;
   assign total_occupancy = CreditCountW'(mult_count) + CreditCountW'(fma_count) +
                            CreditCountW'(fifo_count);
-  assign mul_busy = (total_occupancy >= CreditCountW'(ResultFifoDepth - 2)) ||
-                    (mult_count >= QueueCountW'(QueueDepth - 1)) ||
-                    (fma_count >= QueueCountW'(QueueDepth - 1));
+  assign mul_busy = total_occupancy >= CreditCountW'(ResultFifoDepth - 2);
   assign o_fu_busy = mul_busy;
 
   // ===========================================================================

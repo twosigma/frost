@@ -93,7 +93,7 @@ operation per cycle. FMUL takes 11 cycles and FMA 16 at both precisions,
 because the DSP-tiled mantissa multiplier has three stages for single and
 double precision (`riscv_pkg::dsp_tiled_stages` pads single precision up to
 the double-precision depth). Each unit therefore completes in issue order and
-keeps its tags in a 32-entry circular queue.
+keeps its tags in a 16-entry circular queue.
 
 Completions from both units enter a shared 16-entry ordering ring, which
 presents its head until the adapter accepts it (`i_mul_accepted`). The ring
@@ -102,8 +102,8 @@ flags payload sits in its own 16-entry block-RAM FIFO; the RAMs prefetch the
 next head, and a one-entry bypass register covers a result that becomes the
 head as it is written, so the shim can hand over one result per cycle.
 `o_fu_busy` rises when operations in flight plus ring occupancy reach 14 (the
-ring depth minus 2), or when either tag queue holds 31 entries, so nothing can
-overflow.
+ring depth minus 2). That also keeps each tag queue and the ring at 14 entries
+or fewer, so nothing can overflow.
 
 ## fp_div_shim
 
