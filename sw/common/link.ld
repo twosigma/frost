@@ -241,7 +241,7 @@ SECTIONS
  * .data/.sdata use AT(expr), which ld does not check against the region. */
 ASSERT(ADDR(.cache_profile_rodata) + SIZEOF(.cache_profile_rodata) <=
            ORIGIN(ROM) + LENGTH(ROM),
-       "ROM overflow: loaded program image exceeds 96K")
+       "ROM overflow: loaded program image exceeds 95K")
 
 /* RAM data+bss must leave the full stack reserve free below _stack_top. */
 ASSERT(__bss_end <= _end_of_stack - __stack_reserve,
