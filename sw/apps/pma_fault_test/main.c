@@ -118,7 +118,8 @@ __attribute__((naked, aligned(4))) static void pma_trap_handler(void)
 
 /* Run one trigger: reset the records, point the continuation past the
  * trigger, execute it. The ecall after the trigger is the no-fault fallback
- * (cause 11 from M). */
+ * (cause 11 from M). The clobbers include every register the handler
+ * writes. */
 #define RUN_CASE(body_asm, ...)                                                                    \
     do {                                                                                           \
         g_cause = ~0ul;                                                                            \
@@ -130,7 +131,7 @@ __attribute__((naked, aligned(4))) static void pma_trap_handler(void)
                          "1:\n"                                                                    \
                          :                                                                         \
                          : __VA_ARGS__                                                             \
-                         : "t0", "t1", "t2", "memory");                                            \
+                         : "t0", "t1", "t2", "t3", "memory");                                      \
     } while (0)
 
 static int report3(const char *name,
