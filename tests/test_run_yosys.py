@@ -72,9 +72,10 @@ def _hierarchy_command(synth_command: str) -> str:
     model is simulation-only. Other targets keep the module defaults.
 
     Apply the parameters with `chparam -set`, rather than `hierarchy -chparam`:
-    the latter triggers a duplicate-module assertion in Yosys 0.64 when the
-    cache/walker hierarchy is reprocessed. Yosys may still specialize
-    and rename this top, so later checks must follow its top attribute.
+    in Yosys 0.69 the latter fails a duplicate-module assertion
+    (`modules_.count(module->name) == 0`) when the cache/walker hierarchy is
+    reprocessed. Yosys may still specialize and rename this top, so later
+    checks must follow its top attribute.
     """
     family = _xilinx_family(synth_command)
     commands = []
