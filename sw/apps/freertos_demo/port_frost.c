@@ -174,14 +174,20 @@ StackType_t *
 pxPortInitialiseStack(StackType_t *pxTopOfStack, TaskFunction_t pxCode, void *pvParameters)
 {
 
-    /* Lay out a context as port_frost_asm.S saves it, in XLEN-wide slots
-     * (high to low address):
+    /* Lay out a context as port_frost_asm.S saves it: 32 XLEN-wide slots, the 256 bytes
+     * (portCONTEXT_SIZE) that it restores (high to low address):
+     *   slot 31: padding
      *   slot 30: uxCriticalNesting
      *   slot 29: mstatus
      *   slot 28: mepc
      *   slots 27..1: x31 (t6) down to x5 (t0)
      *   slot 0: x1 (ra)
-     */
+     * The kernel passes a 16-byte aligned pxTopOfStack, so the task starts with sp at
+     * pxTopOfStack, 16-byte aligned as the psABI requires. */
+
+    /* Padding, never read */
+    pxTopOfStack--;
+    *pxTopOfStack = 0; /* slot 31 */
 
     /* uxCriticalNesting = 0: the task starts outside any critical section */
     pxTopOfStack--;

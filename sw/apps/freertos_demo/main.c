@@ -18,7 +18,8 @@
  * FreeRTOS demo for FROST. A producer and a higher-priority consumer pass
  * NUM_ITEMS values through a depth-3 queue, sharing the UART under a mutex,
  * while two worker tasks hammer one counter with amoadd.w and yield every 64
- * iterations; the 1 ms tick also time-slices the equal-priority tasks. The
+ * iterations; the 1 ms tick also time-slices the equal-priority tasks. Each
+ * demo task checks that it starts with a 16-byte aligned stack pointer. The
  * consumer then checks that a tick taken inside a critical section defers its
  * task switch to the end of that section, checks both tallies, and prints
  * <<PASS>> or <<FAIL>>.
@@ -51,6 +52,22 @@ static volatile uint32_t ulConsumerCount = 0;
 static volatile uint32_t ulAtomicCounter = 0;
 static const uint32_t ulAtomicWorkerIds[ATOMIC_WORKER_TASKS] = {1U, 2U};
 static volatile uint32_t ulHelperRuns = 0;
+static volatile uint32_t ulStackMisaligned = 0;
+
+/*-----------------------------------------------------------*/
+/* Stack alignment */
+
+/* The psABI keeps sp 16-byte aligned and every frame a multiple of 16 bytes, so sp here is
+ * misaligned only if the task started with a misaligned sp. */
+static void prvCheckStackAlignment(void)
+{
+    uintptr_t uxSp;
+
+    __asm volatile("mv %0, sp" : "=r"(uxSp));
+    if ((uxSp & 0xFU) != 0U) {
+        ulStackMisaligned = 1U;
+    }
+}
 
 /*-----------------------------------------------------------*/
 /* UART output under the mutex */
@@ -71,6 +88,7 @@ static void vProducerTask(void *pvParameters)
     (void) pvParameters;
     uint32_t ulValue;
 
+    prvCheckStackAlignment();
     safe_print("[Producer] Task started\r\n");
 
     for (ulValue = 1; ulValue <= NUM_ITEMS; ulValue++) {
@@ -118,6 +136,7 @@ static void vAtomicWorkerTask(void *pvParameters)
     (void) pvParameters;
     uint32_t i;
 
+    prvCheckStackAlignment();
     for (i = 0; i < ATOMIC_ITERATIONS_PER_WORKER; i++) {
         atomic_inc_amo(&ulAtomicCounter);
 
@@ -149,6 +168,7 @@ static void vTickHelperTask(void *pvParameters)
 {
     (void) pvParameters;
 
+    prvCheckStackAlignment();
     for (;;) {
         ulHelperRuns++;
         taskYIELD();
@@ -230,9 +250,11 @@ static void vConsumerTask(void *pvParameters)
     uint32_t i;
     BaseType_t xQueueOk;
     BaseType_t xAtomicOk;
+    BaseType_t xStackOk;
     TickCheckResult_t eTickCheck;
     const uint32_t ulAtomicExpected = ATOMIC_WORKER_TASKS * ATOMIC_ITERATIONS_PER_WORKER;
 
+    prvCheckStackAlignment();
     safe_print("[Consumer] Task started (higher priority)\r\n");
 
     while (ulConsumerCount < NUM_ITEMS) {
@@ -262,6 +284,7 @@ static void vConsumerTask(void *pvParameters)
 
     xQueueOk = (ulProducerCount == NUM_ITEMS) && (ulConsumerCount == NUM_ITEMS);
     xAtomicOk = (ulAtomicCounter == ulAtomicExpected);
+    xStackOk = (ulStackMisaligned == 0U);
 
     /* Print summary */
     if (xSemaphoreTake(xUartMutex, portMAX_DELAY) == pdTRUE) {
@@ -281,8 +304,11 @@ static void vConsumerTask(void *pvParameters)
         } else {
             uart_puts("not run\r\n");
         }
+        uart_puts("Task stacks: ");
+        uart_puts(xStackOk == pdTRUE ? "16-byte aligned\r\n" : "misaligned\r\n");
         uart_puts("All checks: ");
-        if (xQueueOk == pdTRUE && xAtomicOk == pdTRUE && eTickCheck == eTickCheckDeferred) {
+        if (xQueueOk == pdTRUE && xAtomicOk == pdTRUE && eTickCheck == eTickCheckDeferred &&
+            xStackOk == pdTRUE) {
             uart_puts("Working!\r\n");
             uart_puts("\r\nPASS\r\n");
             uart_puts("<<PASS>>\r\n");

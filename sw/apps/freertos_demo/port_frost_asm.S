@@ -19,7 +19,8 @@
 .extern uxCriticalNesting
 
 /* Context size: 28 GPRs + mepc + mstatus + uxCriticalNesting = 31 XLEN-wide
- * slots, rounded up to 16-byte alignment (248->256 bytes).
+ * slots, plus a padding slot so the frame is 16-byte aligned (256 bytes).
+ * pxPortInitialiseStack builds a new task's frame to the same size.
  * STORE/LOAD/XB select the register-width access. pxCurrentTCB->pxTopOfStack
  * and uxCriticalNesting (a UBaseType_t) are XLEN-wide too and use the same
  * macros. */
