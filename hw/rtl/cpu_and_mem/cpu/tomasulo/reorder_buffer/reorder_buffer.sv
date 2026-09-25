@@ -3093,9 +3093,9 @@ module reorder_buffer #(
     end
   end
 
-  // Retire trace for debugging: one retire_trace.log line per head (slot-1)
-  // retirement; slot-2 retirements are not logged. PCs and values print as
-  // full 16 hex digits.
+  // Retire trace for debugging: one retire_trace.log line per retirement, in
+  // program order (head, then head+1 when slot 2 retires in the same cycle).
+  // PCs and values print as full 16 hex digits.
   integer retire_trace_fd;
   // Each format must be a $fwrite literal. Verilator does not format through
   // a localparam-string argument (it prints the format text itself).
@@ -3109,6 +3109,14 @@ module reorder_buffer #(
                 head_value_eff[riscv_pkg::XLEN-1:0]);
       end else begin
         $fwrite(retire_trace_fd, "%0t pc=%016x\n", $time, head_pc);
+      end
+    end
+    if (i_rst_n && commit_2_fire) begin
+      if (head_next_dest_valid && !head_next_dest_rf && head_next_dest_reg != 5'd0) begin
+        $fwrite(retire_trace_fd, "%0t pc=%016x rd=x%0d val=%016x\n", $time, head_next_pc,
+                head_next_dest_reg, head_next_value_eff[riscv_pkg::XLEN-1:0]);
+      end else begin
+        $fwrite(retire_trace_fd, "%0t pc=%016x\n", $time, head_next_pc);
       end
     end
   end
