@@ -59,13 +59,18 @@ cycle budgets and run counts for applications.
 
 `test_cpu.py`, which the `cpu_random` target runs, generates random
 instructions, encodes them, predicts their effects with a Python model, and
-drives `cpu_tb`. Its monitors expect each instruction's results at a fixed
-offset from fetch, and `directed_multicycle` makes the same assumption. The
-out-of-order core breaks it: the core retires up to two instructions per
-cycle, after a variable delay, and squashes wrong-path instructions. Both
-targets fail until they check results in commit order. Until then, the
-riscv-tests, the architecture compliance suites, and application tests such
-as `ddr_atomic_test` and `c_ext_test` cover those instructions in CI.
+drives `cpu_tb`. The encoders, models, and expected state are RV64: register
+values, immediates, PCs, and counters are XLEN wide. The monitors expect the
+PC and each instruction's results at a fixed offset from fetch, and
+`directed_multicycle` makes the same assumption. The out-of-order core
+breaks it: it fetches two instructions per cycle, redirects fetch on its own
+schedule, retires up to two instructions per cycle after a variable delay,
+and squashes wrong-path instructions, and the testbench cannot tell which of
+the instructions it drives will be squashed. Both targets stop at their
+first PC check, before any register comparison, and fail until they check
+results in commit order. Until then, the riscv-tests, the architecture
+compliance suites, and application tests such as `ddr_atomic_test` and
+`c_ext_test` cover those instructions in CI.
 
 | CPU harness target | Status |
 |--------------------|--------|
@@ -78,7 +83,6 @@ as `ddr_atomic_test` and `c_ext_test` cover those instructions in CI.
 | `InstructionGenerator` | Valid, aligned instruction parameters; optional address constraints |
 | `CPUModel` | Register, PC, memory, and instruction effects |
 | `TestState` | Architectural state, expected queues, LR/SC reservation, branch history |
-| `InstructionExecutor` | Reusable encode, model, queue, and drive helper |
 | `DUTInterface` | Signal access through `DUTSignalPaths` |
 | Register and FP monitors | Compare full snapshots on `o_vld`; the integer comparison skips x0 |
 | PC monitor | Compares on `o_pc_vld` |

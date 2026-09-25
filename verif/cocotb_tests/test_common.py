@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from config import (
-    MASK32,
+    MASK_XLEN,
     NOP_INSTRUCTION,
     DEFAULT_NUM_TEST_LOOPS,
     DEFAULT_MIN_COVERAGE_COUNT,
@@ -136,7 +136,7 @@ async def flush_remaining_outputs(
     """
     # Pad the PC queue for the instructions still in the pipeline.
     for _ in range(PIPELINE_FLUSH_CYCLES):
-        expected_pc = (state.program_counter_current + 4) & MASK32
+        expected_pc = (state.program_counter_current + 4) & MASK_XLEN
         state.program_counter_expected_values_queue.append(expected_pc)
         state.program_counter_current += 4
 
@@ -166,7 +166,7 @@ async def warmup_pipeline(
     """
     cocotb.log.info(f"=== Warming up pipeline ({PIPELINE_DEPTH} NOPs) ===")
     for warmup_cycle in range(PIPELINE_DEPTH):
-        expected_pc = (state.program_counter_current + 4) & MASK32
+        expected_pc = (state.program_counter_current + 4) & MASK_XLEN
         state.queue_expected_outputs(expected_pc, include_fp=enable_fp)
 
         dut_if.instruction = NOP_INSTRUCTION
@@ -304,7 +304,7 @@ async def execute_nop(
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
     )
-    expected_pc = (state.program_counter_current + 4) & MASK32
+    expected_pc = (state.program_counter_current + 4) & MASK_XLEN
     state.program_counter_expected_values_queue.append(expected_pc)
 
     dut_if.instruction = instr

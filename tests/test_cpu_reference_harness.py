@@ -38,6 +38,9 @@ instruction_encode = importlib.import_module("encoders.instruction_encode")
 op_tables = importlib.import_module("encoders.op_tables")
 fp_model = importlib.import_module("models.fp_model")
 instruction_generator = importlib.import_module("cocotb_tests.instruction_generator")
+cpu_model = importlib.import_module("cocotb_tests.cpu_model")
+test_state = importlib.import_module("cocotb_tests.test_state")
+config = importlib.import_module("config")
 
 GENERATOR = instruction_generator.InstructionGenerator
 
@@ -214,3 +217,51 @@ def test_flw_nan_boxes_the_loaded_word() -> None:
 
     assert fp_model.flw(memory, 0x100) == 0xFFFF_FFFF_3F80_0000
     assert op_tables.FP_LOADS["flw"][1](memory, 0x100) == 0xFFFF_FFFF_3F80_0000
+
+
+@pytest.mark.parametrize(
+    ("operation", "rs1_value", "immediate", "expected"),
+    (
+        ("addi", 0x10, -1, 0xF),
+        ("andi", 0xFFFF_FFFF_FFFF_FFF0, -1, 0xFFFF_FFFF_FFFF_FFF0),
+        ("ori", 0, -2, 0xFFFF_FFFF_FFFF_FFFE),
+        ("slti", 0, -1, 0),
+        ("sltiu", 0xFFFF_FFFF, -1, 1),
+    ),
+)
+def test_i_alu_immediates_sign_extend_to_xlen(
+    operation: str, rs1_value: int, immediate: int, expected: int
+) -> None:
+    """The model sign-extends a negative I-type immediate to XLEN, not 32 bits."""
+    state = test_state.TestState()
+    state.register_file_previous[1] = rs1_value
+
+    rd, value, _, is_fp = cpu_model.CPUModel.model_instruction_execution(
+        state, None, operation, 5, 1, 0, immediate, None
+    )
+
+    assert (rd, value, is_fp) == (5, expected, False)
+
+
+def test_register_state_and_counters_keep_xlen_values() -> None:
+    """Integer registers and counter reads are not truncated to 32 bits."""
+    state = test_state.TestState()
+    state.update_register(5, 0xFFFF_FFFF_FFFF_FFFB)
+    state.csr_instret_counter = (1 << 40) + 10
+
+    assert state.register_file_current[5] == 0xFFFF_FFFF_FFFF_FFFB
+    assert state.get_csr_value(instruction_encode.CSRAddress.INSTRET) == (
+        (1 << 40) + 10 - config.PIPELINE_IF_TO_EX_CYCLES
+    )
+
+
+def test_control_flow_targets_wrap_at_xlen() -> None:
+    """A jump below address 0 wraps at XLEN, as the RV64 PC does."""
+    state = test_state.TestState()
+    state.program_counter_two_cycles_ago = 0x10
+
+    internal_pc = cpu_model.CPUModel.calculate_internal_pc_update(
+        state, "jal", 0, 0, -0x20, 0x14
+    )
+
+    assert internal_pc == 0xFFFF_FFFF_FFFF_FFEC

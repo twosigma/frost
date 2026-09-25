@@ -20,8 +20,8 @@ shadows support CSR checks; RV64 counters are 64-bit and have no high-half CSRs.
 """
 
 from config import (
-    MASK32,
     MASK64,
+    MASK_XLEN,
     MEMORY_WORD_ALIGN_MASK,
     PIPELINE_IF_TO_EX_CYCLES,
 )
@@ -151,10 +151,10 @@ class TestState:
 
         Args:
             register_index: Register to update (1-31, x0 is ignored)
-            value: Value to write (will be masked to 32 bits)
+            value: Value to write (masked to XLEN bits)
         """
         if register_index and register_index < 32:
-            self.register_file_current[register_index] = value & MASK32
+            self.register_file_current[register_index] = value & MASK_XLEN
 
     def update_fp_register(self, register_index: int, value: int) -> None:
         """Update a register in the current FP register file state.
@@ -267,7 +267,7 @@ class TestState:
             pipeline_offset: Cycles from IF to EX stage (default PIPELINE_IF_TO_EX_CYCLES)
 
         Returns:
-            Expected 32-bit CSR value
+            Expected CSR value (XLEN bits)
         """
         # Cycle counter: increments every clock, so add pipeline offset
         cycle_at_ex = self.csr_cycle_counter + pipeline_offset
@@ -277,18 +277,15 @@ class TestState:
         instret_at_ex = max(0, self.csr_instret_counter - PIPELINE_IF_TO_EX_CYCLES)
 
         if csr_address in (CSRAddress.CYCLE, CSRAddress.TIME):
-            return cycle_at_ex & MASK32
-        elif csr_address in (CSRAddress.CYCLEH, CSRAddress.TIMEH):
-            return (cycle_at_ex >> 32) & MASK32
+            return cycle_at_ex & MASK_XLEN
         elif csr_address == CSRAddress.INSTRET:
-            return instret_at_ex & MASK32
-        elif csr_address == CSRAddress.INSTRETH:
-            return (instret_at_ex >> 32) & MASK32
+            return instret_at_ex & MASK_XLEN
         elif csr_address == CSRAddress.MCOUNTEREN:
             # Reset value 0x7 (CY/TM/IR set); no generated test writes it.
             return 0x7
         else:
-            # The RTL returns 0 for unimplemented CSRs.
+            # Not modeled: the random stream reads only the CSRs above, and
+            # the RTL raises illegal-instruction for CSRs it does not have.
             return 0
 
     # ========================================================================

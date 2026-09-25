@@ -25,7 +25,12 @@ expected_pc of current_pc + 4.
 """
 
 import cocotb
-from config import MASK32, MEMORY_WORD_ALIGN_MASK, MEMORY_DWORD_ALIGN_MASK
+from config import (
+    MASK32,
+    MASK_XLEN,
+    MEMORY_WORD_ALIGN_MASK,
+    MEMORY_DWORD_ALIGN_MASK,
+)
 from encoders.op_tables import (
     R_ALU,
     I_ALU,
@@ -139,12 +144,12 @@ class CPUModel:
         if operation in LOADS:
             memory_model.read_address = (
                 state.register_file_previous[source_register_1] + immediate_value
-            ) & MASK32
+            ) & MASK_XLEN
         elif operation in FP_LOADS:
             # FP loads use integer register for address calculation
             memory_model.read_address = (
                 state.register_file_previous[source_register_1] + immediate_value
-            ) & MASK32
+            ) & MASK_XLEN
         elif operation in AMO or operation == "lr.w":
             # AMO and LR.W use rs1 as address (word-aligned)
             memory_model.read_address = (
@@ -240,7 +245,7 @@ class CPUModel:
         if operation in JUMPS:
             # JAL/JALR write return address (PC+4) to destination
             # Uses PC from 2 cycles ago (passed through pipeline registers)
-            return (state.program_counter_two_cycles_ago + 4) & MASK32
+            return (state.program_counter_two_cycles_ago + 4) & MASK_XLEN
         elif operation in CSRS:
             # CSR instructions write the old CSR value to rd
             assert csr_address is not None, "CSR address required for CSR instructions"
@@ -253,7 +258,7 @@ class CPUModel:
             _, fn = I_ALU[operation]
             return fn(
                 state.register_file_previous[source_register_1],
-                immediate_value & MASK32,
+                immediate_value & MASK_XLEN,
             )
         elif operation in I_UNARY:
             # Unary bit-manipulation ops (Zbb, plus brev8 from Zbkb)
@@ -338,7 +343,7 @@ class CPUModel:
         Returns:
             Expected program counter value (always PC + 4)
         """
-        return (state.program_counter_current + 4) & MASK32
+        return (state.program_counter_current + 4) & MASK_XLEN
 
     @staticmethod
     def calculate_internal_pc_update(
@@ -371,16 +376,16 @@ class CPUModel:
         if operation == "jal":
             # JAL target = instruction_PC + offset = two_cycles_ago + offset
             assert offset is not None, "JAL instructions must have an offset"
-            jal_target = (state.program_counter_two_cycles_ago + offset) & MASK32
-            return (jal_target - 4) & MASK32
+            jal_target = (state.program_counter_two_cycles_ago + offset) & MASK_XLEN
+            return (jal_target - 4) & MASK_XLEN
         elif operation == "jalr":
             # JALR target = (rs1 + imm) & ~1
-            jalr_target = (rs1_value + immediate) & 0xFFFFFFFE & MASK32
-            return (jalr_target - 4) & MASK32
+            jalr_target = (rs1_value + immediate) & ~1 & MASK_XLEN
+            return (jalr_target - 4) & MASK_XLEN
         elif operation in BRANCHES and state.branch_taken_current:
             # Taken branch target = instruction_PC + offset = two_cycles_ago + offset
             assert offset is not None, "Branch instructions must have an offset"
-            return (state.program_counter_two_cycles_ago + offset - 4) & MASK32
+            return (state.program_counter_two_cycles_ago + offset - 4) & MASK_XLEN
         else:
             # Non-control-flow: internal tracking matches expected output
             return expected_pc
@@ -473,7 +478,7 @@ class CPUModel:
             # rs2 is an FP register (data), rs1 an integer register (address)
             write_address = (
                 state.register_file_previous[source_register_1] + immediate
-            ) & MASK32
+            ) & MASK_XLEN
             fp_value = state.fp_register_file_previous[source_register_2]
             if operation == "fsd":
                 # FSD is one 64-bit write covering the aligned dword
@@ -506,7 +511,7 @@ class CPUModel:
 
         write_address = (
             state.register_file_previous[source_register_1] + immediate
-        ) & MASK32
+        ) & MASK_XLEN
 
         # Get byte position within the data-tier beat (0-7)
         beat_offset = get_beat_byte_offset(write_address)

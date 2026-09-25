@@ -23,12 +23,10 @@ helpers.
 from cocotb_tests.test_common import TestConfig
 from cocotb_tests.test_state import TestState
 from cocotb_tests.test_helpers import DUTInterface, TestStatistics
-from cocotb_tests.instruction_executor import InstructionExecutor
 
 __all__ = [
     "TestConfig",
     "TestState",
     "DUTInterface",
     "TestStatistics",
-    "InstructionExecutor",
 ]
