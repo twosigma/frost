@@ -20,11 +20,15 @@
  * illegal-instruction for such an instruction, as it does for the reserved
  * static modes. Self-checks over UART (<<PASS>>/<<FAIL>>):
  *
- *   A-F, K, L. With frm = 5, 6 or 7, a DYN add, double multiply, square
- *      root, FMA, float-to-int and int-to-float conversion, divide, and
- *      widening conversion each trap with mcause 2, mepc at the instruction
- *      and mtval 0. The destination keeps its old value and fflags stay
- *      clear (the divide would otherwise raise DZ).
+ *   A-F, K, L. With frm = 5, 6 or 7, a DYN add (under each of the three),
+ *      double multiply, square root, FMA, float-to-int and int-to-float
+ *      conversion, divide, and widening conversion each trap with mcause 2,
+ *      mepc at the instruction and mtval 0. The destination keeps its old
+ *      value and fflags stay clear (the divide would otherwise raise DZ).
+ *      A trapping instruction still executes on its FP unit first: frm 5
+ *      and 6 reach the unit as the rounding mode and frm 7 reaches it as
+ *      RNE, so the square root and divide run under both. The int-to-float
+ *      conversion reads x0, so its rs1 field is 0.
  *   G. Static rounding modes ignore frm: with frm = 5, fadd.s rne rounds to
  *      nearest, and with frm = 7, fadd.s rup rounds up.
  *   H. Instructions without an rm field (fsgnj.s, feq.s, fmin.s) do not
@@ -195,13 +199,22 @@ int main(void)
     set_trap_handler(&fp_trap_handler);
 
     RUN_FP(5ul, "fadd.s ft0, ft1, ft2, dyn", ONE_S, TINY_S);
-    all_ok &= expect_illegal("A frm=5 fadd.s dyn");
+    all_ok &= expect_illegal("A1 frm=5 fadd.s dyn");
+
+    RUN_FP(6ul, "fadd.s ft0, ft1, ft2, dyn", ONE_S, TINY_S);
+    all_ok &= expect_illegal("A2 frm=6 fadd.s dyn");
+
+    RUN_FP(7ul, "fadd.s ft0, ft1, ft2, dyn", ONE_S, TINY_S);
+    all_ok &= expect_illegal("A3 frm=7 fadd.s dyn");
 
     RUN_FP(6ul, "fmul.d ft0, ft1, ft2, dyn", ONE_D, TWO_D);
     all_ok &= expect_illegal("B frm=6 fmul.d dyn");
 
     RUN_FP(7ul, "fsqrt.s ft0, ft1, dyn", ONE_S, ONE_S);
-    all_ok &= expect_illegal("C frm=7 fsqrt.s dyn");
+    all_ok &= expect_illegal("C1 frm=7 fsqrt.s dyn");
+
+    RUN_FP(6ul, "fsqrt.s ft0, ft1, dyn", ONE_S, ONE_S);
+    all_ok &= expect_illegal("C2 frm=6 fsqrt.s dyn");
 
     RUN_FP(5ul, "fmadd.s ft0, ft1, ft2, ft3, dyn", ONE_S, ONE_S);
     all_ok &= expect_illegal("D frm=5 fmadd.s dyn");
@@ -210,7 +223,10 @@ int main(void)
     all_ok &= expect_illegal("E frm=6 fcvt.w.s dyn");
 
     RUN_FP(7ul, "fdiv.s ft0, ft1, ft2, dyn", ONE_S, ZERO_S);
-    all_ok &= expect_illegal("F frm=7 fdiv.s dyn by zero");
+    all_ok &= expect_illegal("F1 frm=7 fdiv.s dyn by zero");
+
+    RUN_FP(5ul, "fdiv.s ft0, ft1, ft2, dyn", ONE_S, ZERO_S);
+    all_ok &= expect_illegal("F2 frm=5 fdiv.s dyn by zero");
 
     /* FCVT.D.S (funct7 0100001, rs2 0) with rm = DYN. The widening
      * conversion is exact, but its rm field still decodes as usual. */
