@@ -32,10 +32,10 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from cocotb.utils import get_sim_time
-from typing import Any
+from typing import Any, TextIO
 
 from config import XLEN
-from cocotb_tests.cpu_structs import ID_TO_EX_FIELDS
+from cocotb_tests.cpu_structs import COMMIT_FIELDS, ID_TO_EX_FIELDS
 
 CLK_PERIOD_NS = 3
 UART_BAUD_RATE = 115200
@@ -46,6 +46,13 @@ UART_RX_DATA_MMIO_ADDR = 0x4000_0004
 UART_RX_STATUS_MMIO_ADDR = 0x4000_0024
 # mcause bit XLEN-1 marks an interrupt.
 MCAUSE_INTERRUPT_BIT = 1 << (XLEN - 1)
+# High in the cycle a mispredicted branch retires at the ROB head and starts
+# commit-time recovery; a branch that early recovery already redirected at
+# execute does not raise it.
+COMMIT_MISPREDICTION_PATH = (
+    "cpu_and_memory_subsystem.cpu_inst.misprediction_flush_controller_inst."
+    "commit_is_misprediction"
+)
 
 # Success/failure markers that programs print
 PASS_MARKER = "<<PASS>>"
@@ -1518,7 +1525,12 @@ async def run_until_complete(
     )
     coremark_matrix_base_pc: int | None = None
     coremark_matrix_last_pc: int | None = None
-    coremark_matrix_retire_trace: list[str] = []
+    coremark_retire_trace_file: TextIO | None = None
+    coremark_retire_trace_count = 0
+    coremark_retire_trace_limit = 20000
+    coremark_retire_commits: tuple[_PackedStruct, _PackedStruct] | None = None
+    coremark_retire_slot2_valid_sig = None
+    coremark_retire_slot2_pc_sig = None
     if control_flow_trace_env:
         parsed_ranges: list[tuple[int, int]] = []
         for raw_range in control_flow_trace_env.split(","):
@@ -1548,9 +1560,7 @@ async def run_until_complete(
         retire_pc_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
         )
-        retire_mispredict_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.commit_is_misprediction"
-        )
+        retire_mispredict_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc")
         pc_vld_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc_vld")
         mem_rd_en_sig = _get_signal(
@@ -1821,12 +1831,42 @@ async def run_until_complete(
                 )
             coremark_matrix_base_pc = retire_trace_range[0]
             coremark_matrix_last_pc = retire_trace_range[1] - 1
-            commit_predicted_taken_live_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_predicted_taken"
+            coremark_retire_slot2_valid_sig = _get_signal(
+                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
             )
-            commit_branch_taken_live_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_branch_taken"
+            coremark_retire_slot2_pc_sig = _get_signal(
+                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
             )
+            _require_signals(
+                "FROST_COREMARK_RETIRE_TRACE_PATH",
+                {
+                    "cpu_inst.dbg_commit_valid": retire_sig,
+                    "cpu_inst.dbg_commit_pc": retire_pc_sig,
+                    "cpu_inst.dbg_commit_2_valid": coremark_retire_slot2_valid_sig,
+                    "cpu_inst.dbg_commit_2_pc": coremark_retire_slot2_pc_sig,
+                },
+            )
+            coremark_retire_commits = (
+                _packed_struct(
+                    dut,
+                    "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb",
+                    COMMIT_FIELDS,
+                    "FROST_COREMARK_RETIRE_TRACE_PATH",
+                ),
+                _packed_struct(
+                    dut,
+                    "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb_2",
+                    COMMIT_FIELDS,
+                    "FROST_COREMARK_RETIRE_TRACE_PATH",
+                ),
+            )
+            # Every run appends its samples under a "# run N" line; the first
+            # run starts a new file. Line buffering keeps the samples a
+            # failing run wrote.
+            coremark_retire_trace_file = Path(coremark_retire_trace_path).open(
+                "w" if run_number == 1 else "a", buffering=1
+            )
+            coremark_retire_trace_file.write(f"# run {run_number}\n")
     elif (
         app_name in {"branch_pred_test", "ras_stress_test"}
         or control_flow_trace_ranges
@@ -1836,9 +1876,7 @@ async def run_until_complete(
         retire_pc_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
         )
-        retire_mispredict_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.commit_is_misprediction"
-        )
+        retire_mispredict_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc")
         pc_vld_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc_vld")
         branch_pred_off_sig = _get_signal(
@@ -2345,9 +2383,7 @@ async def run_until_complete(
         flush_pipeline_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.flush_pipeline"
         )
-        commit_is_misprediction_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.commit_is_misprediction"
-        )
+        commit_is_misprediction_live_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pd_final_instruction_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_instr"
         )
@@ -2699,16 +2735,59 @@ async def run_until_complete(
             and _read_int(pc_sig) == trap_pc
         )
 
-    def dump_coremark_retire_trace() -> None:
-        if coremark_retire_trace_path is None:
+    def sample_coremark_retire_trace(cycle_number: int, slot1_pc: int) -> None:
+        """Write one line per commit this cycle inside the traced function.
+
+        Slot 1 is the ROB head, and slot 2 (head+1) retires only together with
+        it. mispred marks a mispredicted branch, whichever recovery redirected
+        it, and early marks one that early recovery redirected at execute.
+        Slot 2 never holds a mispredicted branch, so the ROB zeroes its
+        misprediction and predicted_taken fields; a slot-2 branch went the way
+        it was predicted, so its pred_taken is its branch_taken.
+        """
+        nonlocal coremark_retire_trace_count
+        assert coremark_retire_trace_file is not None
+        assert coremark_retire_commits is not None
+        assert coremark_matrix_base_pc is not None
+        assert coremark_matrix_last_pc is not None
+        commits = [(1, slot1_pc)]
+        if _read_bool(coremark_retire_slot2_valid_sig):
+            slot2_pc = _read_int(coremark_retire_slot2_pc_sig)
+            if slot2_pc is not None:
+                commits.append((2, slot2_pc))
+        for slot, pc in commits:
+            if (
+                not coremark_matrix_base_pc <= pc <= coremark_matrix_last_pc
+                or coremark_retire_trace_count >= coremark_retire_trace_limit
+            ):
+                continue
+            commit = coremark_retire_commits[slot - 1]
+            packed = commit.read()
+            if packed is None:
+                raise AssertionError(
+                    f"Retire trace: the slot-{slot} commit bus is unresolvable "
+                    f"at cycle={cycle_number}"
+                )
+            branch_taken = commit.field(packed, "branch_taken")
+            predicted_taken = (
+                commit.field(packed, "predicted_taken") if slot == 1 else branch_taken
+            )
+            coremark_retire_trace_file.write(
+                f"cycle={cycle_number} slot={slot} pc=0x{pc:08x} "
+                f"off=0x{(pc - coremark_matrix_base_pc):04x} "
+                f"mispred={commit.field(packed, 'misprediction')} "
+                f"early={commit.field(packed, 'early_recovered')} "
+                f"pred_taken={predicted_taken} branch_taken={branch_taken}\n"
+            )
+            coremark_retire_trace_count += 1
+
+    def close_coremark_retire_trace() -> None:
+        if coremark_retire_trace_file is None:
             return
-        trace_path = Path(coremark_retire_trace_path)
-        trace_path.write_text(
-            "".join(f"{sample}\n" for sample in coremark_matrix_retire_trace)
-        )
+        coremark_retire_trace_file.close()
         cocotb.log.info(
-            f"Wrote {len(coremark_matrix_retire_trace)} retire samples of "
-            f"{coremark_retire_trace_symbol} to {trace_path}"
+            f"Run {run_number}: wrote {coremark_retire_trace_count} retire samples "
+            f"of {coremark_retire_trace_symbol} to {coremark_retire_trace_path}"
         )
 
     for cycle in range(max_cycles):
@@ -2995,20 +3074,10 @@ async def run_until_complete(
             if retire_pc is not None:
                 retired_pc_hist[retire_pc] += 1
                 if (
-                    coremark_retire_trace_path is not None
-                    and coremark_matrix_base_pc is not None
-                    and coremark_matrix_last_pc is not None
-                    and coremark_matrix_base_pc <= retire_pc <= coremark_matrix_last_pc
-                    and len(coremark_matrix_retire_trace) < 20000
+                    coremark_retire_trace_file is not None
+                    and coremark_retire_trace_count < coremark_retire_trace_limit
                 ):
-                    coremark_matrix_retire_trace.append(
-                        f"cycle={cycle + 1} "
-                        f"pc=0x{retire_pc:08x} "
-                        f"off=0x{(retire_pc - coremark_matrix_base_pc):04x} "
-                        f"mispred={int(bool(_read_bool(retire_mispredict_sig)))} "
-                        f"pred_taken={int(bool(_read_bool(commit_predicted_taken_live_sig)))} "
-                        f"branch_taken={int(bool(_read_bool(commit_branch_taken_live_sig)))}"
-                    )
+                    sample_coremark_retire_trace(cycle + 1, retire_pc)
                 if (
                     is_coremark_like
                     and len(coremark_return_events) < coremark_return_limit
@@ -3676,7 +3745,7 @@ async def run_until_complete(
                     await RisingEdge(dut.i_clk)
                 break
 
-    dump_coremark_retire_trace()
+    close_coremark_retire_trace()
     print("\n")  # Newline after UART output
     cocotb.log.info(f"Run {run_number} completed after {cycle + 1} cycles")
 
@@ -3699,7 +3768,7 @@ async def run_until_complete(
                 "Coremark retire samples captured for "
                 + str(coremark_retire_trace_symbol)
                 + ": "
-                + str(len(coremark_matrix_retire_trace))
+                + str(coremark_retire_trace_count)
             )
         if is_coremark_like and coremark_matrix_events:
             cocotb.log.error(
