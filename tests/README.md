@@ -170,12 +170,13 @@ subtracts) therefore run only locally, for example with
 locally. The F and D shards set `FROST_ARCH_SIM_TIMEOUT_SEC=3600`, an hour
 per test; the runner's default limit is sized for the largest tests in DDR.
 
-Many F and D tests in the pinned suite have malformed data constants (a hex
-value run together with decimal digits). The assembler truncates each one with
-a warning, so those cases load other operands than their comments name, and
-some special cases never run: the fused multiply-add `*_b1` sets, for example,
-never multiply infinity by zero with a quiet-NaN addend, a case that
-`fp_mul_shim` checks directly.
+In 99 of the pinned F and D sources, most `NAN_BOXED` data constants run the
+intended hex value together with its own decimal digits, less the first:
+`0x7f7fffff` appears as `0x7f7fffff139095039`. The assembler would truncate
+each one with a warning, so those cases would load other operands than their
+comments name. `sw/apps/arch_test/repair_constants.py` restores the intended
+values. The FROST build and `generate_references.py` both compile the repaired
+copy, so the committed references come from it too.
 
 ### `test_riscv_tests.py`
 

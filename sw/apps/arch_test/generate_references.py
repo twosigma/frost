@@ -20,7 +20,9 @@ stores the resulting memory signature as the golden reference for
 comparison against FROST's RTL simulation. Every test is built for RV64
 (XLEN=64, FLEN=64), including the F and D tests that RV32 and RV64 share,
 which the suite keeps under rv32i_m. References mirror the source path:
-references/<suite>/<extension>/<test>.reference_output.
+references/<suite>/<extension>/<test>.reference_output. Each test is built
+from a copy with its malformed data constants repaired (repair_constants.py),
+as the FROST build does.
 
 Run it inside the frost Docker image, which pins Spike, so the
 references are reproducible.
@@ -43,6 +45,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+# repair_constants.py sits next to this script, which the tests also load by
+# path, so make the directory importable in either case.
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from repair_constants import repair  # noqa: E402
+
 ARCH_TEST_DIR = SCRIPT_DIR / "riscv-arch-test"
 SUITE_ROOT = ARCH_TEST_DIR / "riscv-test-suite"
 REFERENCES_DIR = SCRIPT_DIR / "references"
@@ -259,6 +267,8 @@ def generate_one_reference(
     with tempfile.TemporaryDirectory() as tmpdir:
         elf_path = Path(tmpdir) / "test.elf"
         sig_path = Path(tmpdir) / "test.sig"
+        repaired_src = Path(tmpdir) / "test.S"
+        repaired_src.write_text(repair(test_src.read_text())[0])
 
         cc = f"{RISCV_PREFIX}gcc"
         # FLEN=64: FROST has the D extension (64-bit FP registers).
@@ -283,7 +293,7 @@ def generate_one_reference(
             *defines,
             "-o",
             str(elf_path),
-            str(test_src),
+            str(repaired_src),
         ]
         result = subprocess.run(
             cmd,

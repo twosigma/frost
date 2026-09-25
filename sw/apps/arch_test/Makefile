@@ -109,14 +109,22 @@ all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY
 TEST_DEFINES = $(shell grep -ohE 'def +[A-Za-z_0-9]+ *= *True' $(TEST_SRC) \
 	| sed -E 's/def +([A-Za-z_0-9]+) *= *True/-D\1=True/' | sort -u)
 
-# Compile and link .S test file + startup stub via gcc (handles #include)
-$(EXECUTABLE_ELF_FILE): $(TEST_SRC) $(CRT0) model_test.h $(LINKER_SCRIPT)
+# Many pinned F and D sources carry malformed data constants.
+# repair_constants.py writes a fixed copy (unchanged for the other tests), and
+# the build compiles that; generate_references.py does the same for Spike.
+REPAIRED_SRC = test_src_repaired.S
+
+$(REPAIRED_SRC): $(TEST_SRC) repair_constants.py
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv64i_m/I/src/addw-01.S)
 endif
+	python3 repair_constants.py $(TEST_SRC) $@
+
+# Compile and link .S test file + startup stub via gcc (handles #include)
+$(EXECUTABLE_ELF_FILE): $(REPAIRED_SRC) $(CRT0) model_test.h $(LINKER_SCRIPT)
 	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles -static -fno-pie -no-pie -fno-stack-protector \
 		$(XLEN_DEFINE) -DFLEN=64 $(TEST_DEFINES) \
-		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(CRT0) $(TEST_SRC)
+		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(CRT0) $(REPAIRED_SRC)
 
 # Low BRAM image: everything that is not split out to DDR. With an empty
 # DDR_SECTIONS (bram config) this keeps the full image in BRAM.
@@ -152,6 +160,6 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 
 clean:
 	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) \
-		$(RAW_BINARY_FILE) $(DISASSEMBLY_FILE)
+		$(RAW_BINARY_FILE) $(DISASSEMBLY_FILE) $(REPAIRED_SRC)
 
 .PHONY: all clean

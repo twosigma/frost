@@ -68,6 +68,8 @@ sw_ddr.txt
 sw_ddr.bin
 sw_imem_*.mem
 sw/apps/*/sw.S
+# The arch-test build's copy of the test source with its constants repaired.
+sw/apps/arch_test/test_src_repaired.S
 # Buildroot's test initramfs with the NIC module appended, rebuilt by
 # sw/apps/linux_boot/Makefile.
 /sw/apps/linux_boot/rootfs.cpio
