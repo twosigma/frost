@@ -102,6 +102,15 @@ COREMARK_PRO_TESTS = {
     for program in COREMARK_PRO_PROGRAMS
 }
 
+# test_real_program's serial TX line check (FROST_UART_LINE_CHECK), with a
+# 3.6864 MHz CLK_FREQ_HZ that puts a UART bit at 8 clk_div4 cycles, so the
+# check waits hundreds of cycles per byte rather than thousands. Programs that
+# time the UART against the real clock (ns16550_test) cannot use it.
+UART_LINE_CHECK: dict[str, Any] = {
+    "extra_env": (("FROST_UART_LINE_CHECK", "1"),),
+    "verilator_extra_args": ("-GCLK_FREQ_HZ=3686400",),
+}
+
 # Single source of truth for every runnable test, keyed by test name.
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     # Real-program tests run an app on the frost toplevel. All but the debug
@@ -258,8 +267,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Directed instret test: NOPs, MRET, FENCE.I, SFENCE.VMA, a WFI that "
             "a timer interrupt ends, and a software interrupt the device-read "
             "shield defers all count exactly (each take's count must equal the "
-            "instructions before mepc)"
+            "instructions before mepc); the serial TX line must carry its output"
         ),
+        **UART_LINE_CHECK,
     ),
     "umode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -522,6 +532,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "ns16550a UART face directed test (Linux glue): 8250 init, register "
             "file, LSR.TEMT clear from a THR write until the byte is sent"
         ),
+    ),
+    "uart_burst": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="uart_burst",
+        description=(
+            "UART bytes written by back-to-back stores into an idle transmitter: "
+            "the serial TX line must carry each one once, in order"
+        ),
+        **UART_LINE_CHECK,
     ),
     "clint_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -793,7 +813,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="hello_world",
-        description="Hello World program",
+        description="Hello World program; the serial TX line must carry its output",
+        **UART_LINE_CHECK,
     ),
     "isa_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

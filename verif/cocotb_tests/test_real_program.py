@@ -21,6 +21,11 @@ The test watches the CPU's UART output for success and failure markers:
 
 By default each program runs twice with a reset between runs to check that it
 tolerates reset and reinitializes all state.
+
+With FROST_UART_LINE_CHECK=1, each run also decodes the serial TX pin and
+requires it to carry exactly the bytes the CPU wrote, which checks the TX
+FIFO's clock crossing and the transmitter. The registry sets it, together
+with a lower CLK_FREQ_HZ that shortens the bit time, for a few programs.
 """
 
 import os
@@ -323,6 +328,126 @@ class UartMonitor:
     def get_output(self) -> str:
         """Get the complete output buffer."""
         return self.output_buffer
+
+
+def _uart_bit_cycles(dut: Any) -> int:
+    """Return i_clk_div4 cycles per UART bit, as uart_tx and uart_rx compute it.
+
+    Both run on clk_div4 with CLK_FREQ_HZ/4 as their clock, so a bit lasts
+    (CLK_FREQ_HZ/4) / BAUD_RATE cycles.
+    """
+    clk_freq = _read_u64(getattr(dut, "CLK_FREQ_HZ", None))
+    if clk_freq is None:
+        clk_freq = UART_CLK_FREQ_HZ_DEFAULT
+    return max(1, (clk_freq // 4) // UART_BAUD_RATE)
+
+
+class UartLineMonitor:
+    """Decode the serial TX pin (o_uart_tx, 8N1) into bytes.
+
+    UartMonitor reads the CPU's UART writes ahead of the TX FIFO. This decoder
+    reads what leaves frost after the FIFO's clock crossing and the
+    transmitter, sampling each bit in its middle on i_clk_div4, the
+    transmitter's clock. A frame starts only where the line falls after
+    being high, so the low level before reset is not taken for a start bit.
+    A stop bit that reads low is a framing error.
+    """
+
+    def __init__(self, dut: Any) -> None:
+        """Bind the TX pin and take the bit time from CLK_FREQ_HZ."""
+        self.dut = dut
+        self.bit_cycles = _uart_bit_cycles(dut)
+        self.decoded = bytearray()
+        self.framing_errors = 0
+        self._running = True
+        self._generation = 0
+
+    async def start(self) -> None:
+        """Start decoding in the background."""
+        cocotb.start_soon(self._decode())
+
+    def stop(self) -> None:
+        """Stop decoding."""
+        self._running = False
+
+    def clear(self) -> None:
+        """Forget what was decoded, and drop a frame in flight (a reset follows)."""
+        self.decoded = bytearray()
+        self.framing_errors = 0
+        self._generation += 1
+
+    async def _wait(self, cycles: int) -> None:
+        """Wait a number of i_clk_div4 cycles."""
+        for _ in range(cycles):
+            await RisingEdge(self.dut.i_clk_div4)
+
+    def _level(self) -> int:
+        """Sample the TX pin; an unresolvable value reads as low."""
+        value = self.dut.o_uart_tx.value
+        return int(value) if value.is_resolvable else 0
+
+    async def _decode(self) -> None:
+        """Wait for each start bit, then sample the data and stop bits."""
+        idle = False
+        while self._running:
+            await RisingEdge(self.dut.i_clk_div4)
+            if not idle:
+                idle = self._level() == 1
+                continue
+            if self._level() != 0:
+                continue
+            generation = self._generation
+            await self._wait(self.bit_cycles // 2)
+            value = 0
+            for bit in range(UART_DATA_BITS):
+                await self._wait(self.bit_cycles)
+                value |= self._level() << bit
+            await self._wait(self.bit_cycles)
+            stop = self._level()
+            idle = False
+            if generation != self._generation:
+                continue
+            if stop != 1:
+                self.framing_errors += 1
+            self.decoded.append(value)
+
+
+async def check_uart_line(
+    dut: Any, uart_monitor: UartMonitor, line_monitor: UartLineMonitor
+) -> None:
+    """Require the TX pin to carry exactly the bytes the CPU wrote this run.
+
+    The transmitter lags the CPU, so wait until the line has carried as many
+    bytes as the CPU had written when the run finished, allowing twelve bit
+    times per byte still owed.
+    """
+    expected = bytes(ord(char) for char in uart_monitor.get_output())
+    owed = len(expected) - len(line_monitor.decoded)
+    budget = (owed + 2) * 12 * line_monitor.bit_cycles * 4 + 1000
+    for _ in range(budget):
+        if len(line_monitor.decoded) >= len(expected):
+            break
+        await RisingEdge(dut.i_clk)
+    decoded = bytes(line_monitor.decoded[: len(expected)])
+    assert line_monitor.framing_errors == 0, (
+        f"UART TX line: {line_monitor.framing_errors} framing error(s)"
+    )
+    if decoded != expected:
+        mismatch = next(
+            (
+                i
+                for i, (a, b) in enumerate(zip(decoded, expected, strict=False))
+                if a != b
+            ),
+            min(len(decoded), len(expected)),
+        )
+        raise AssertionError(
+            f"UART TX line carried {len(decoded)} of {len(expected)} bytes and "
+            f"differs from the CPU's writes at byte {mismatch}: "
+            f"line {decoded[mismatch : mismatch + 16]!r}, "
+            f"CPU {expected[mismatch : mismatch + 16]!r}"
+        )
+    cocotb.log.info(f"UART TX line matches the CPU's {len(expected)} bytes")
 
 
 def _get_signal(dut: Any, path: str) -> Any | None:
@@ -740,21 +865,10 @@ class UartRxDriver:
         self.dut.i_uart_rx.value = 1
 
     def _compute_bit_cycles(self) -> int:
-        """Match uart_rx.sv prescaler math to compute cycles per bit.
-
-        uart_rx uses CLK_FREQ_HZ/4 (since it runs on clk_div4) and computes:
-        ClockCyclesPerBit = (CLK_FREQ_HZ/4) / BAUD_RATE.
-        """
-        clk_freq = _read_u64(getattr(self.dut, "CLK_FREQ_HZ", None))
-        if clk_freq is None:
-            clk_freq = UART_CLK_FREQ_HZ_DEFAULT
-        uart_clk_freq = clk_freq // 4
-        bit_cycles = uart_clk_freq // UART_BAUD_RATE
-        cocotb.log.info(
-            f"UartRxDriver: clk_freq={clk_freq}, uart_clk_freq={uart_clk_freq}, "
-            f"bit_cycles={bit_cycles}"
-        )
-        return max(1, bit_cycles)
+        """Return uart_rx's i_clk_div4 cycles per bit."""
+        bit_cycles = _uart_bit_cycles(self.dut)
+        cocotb.log.info(f"UartRxDriver: bit_cycles={bit_cycles}")
+        return bit_cycles
 
     async def _wait_cycles(self, cycles: int) -> None:
         """Wait for a number of i_clk_div4 cycles."""
@@ -4006,6 +4120,10 @@ async def test_real_program(dut: Any) -> None:
     # Start UART monitor (runs across every program run)
     uart_monitor = UartMonitor(dut)
     await uart_monitor.start()
+    line_monitor = None
+    if os.environ.get("FROST_UART_LINE_CHECK") == "1":
+        line_monitor = UartLineMonitor(dut)
+        await line_monitor.start()
 
     # Optional trap/MRET deadlock wedge observer (pure instrumentation).
     if os.environ.get("FROST_WEDGE_MONITOR") == "1":
@@ -4030,6 +4148,8 @@ async def test_real_program(dut: Any) -> None:
             # Reset between runs
             cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
             uart_monitor.clear()
+            if line_monitor is not None:
+                line_monitor.clear()
             dut.i_rst_n.value = 0
             if hasattr(dut, "i_uart_rx"):
                 dut.i_uart_rx.value = 1
@@ -4080,9 +4200,13 @@ async def test_real_program(dut: Any) -> None:
             )
             if nic_peer is not None:
                 nic_peer.verify()
+        if line_monitor is not None:
+            await check_uart_line(dut, uart_monitor, line_monitor)
         log_ras_stats(run_number, read_ras_stats(dut))
 
     uart_monitor.stop()
+    if line_monitor is not None:
+        line_monitor.stop()
     if debug_monitor:
         debug_monitor.stop()
 

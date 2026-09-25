@@ -318,6 +318,7 @@ can be debugged and where each one first stops.
 | `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters 89, 91 and 104 read 0 |
 | `tomasulo_test/` | RAW/WAR/WAW hazards, register renaming, and out-of-order execution, with order-independent results |
 | `trap_s2l_fwd/` | A counter a timer handler stores to cached DDR must be visible to later loads (Linux `handle_exception` pattern) |
+| `uart_burst/` | UART bytes written by back-to-back stores into an idle transmitter; the bench checks the serial TX line |
 | `uart_echo/` | Interactive UART receive demo with `echo`, `hex`, and `count` commands |
 | `umode_test/` | U-mode: `ecall`, timer preemption, illegal CSR and `mret` access, and `mcounteren` gating |
 | `vm_test/` | Sv39 data translation through MPRV: page sizes, permissions, Svade, malformed PTEs, `sfence.vma`, atomics, MMIO, and access faults through device mappings |
