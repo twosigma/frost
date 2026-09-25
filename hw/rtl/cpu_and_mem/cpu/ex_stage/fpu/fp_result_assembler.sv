@@ -76,8 +76,8 @@ module fp_result_assembler #(
       end
       final_mantissa = rounded_mantissa[MantBits-1:1];
     end else if ((i_exp_work <= '0) && rounded_mantissa[MantBits-1]) begin
-      // Tininess is detected after rounding. A subnormal-path value that rounds
-      // up into the hidden bit is the minimum normal, not an underflowed zero.
+      // A subnormal-path value that rounds up into the hidden bit is the
+      // minimum normal, not an underflowed zero.
       adjusted_exponent = {{(ExpExtBits - 1) {1'b0}}, 1'b1};
       final_mantissa = rounded_mantissa[FracBits-1:0];
     end else begin
@@ -117,6 +117,12 @@ module fp_result_assembler #(
       o_flags.nx = i_is_inexact;
       o_result   = {i_result_sign, {ExpBits{1'b0}}, final_mantissa};
     end else begin
+      // FIXME: RISC-V detects tininess after rounding to full precision with an
+      // unbounded exponent. An inexact FMUL, FMA, or FDIV result that the
+      // subnormal rounding lifts to the minimum normal is still tiny when that
+      // full-precision rounding stays below the minimum normal, and must then
+      // raise UF, which this branch never does. fp_convert_sd handles the same
+      // case for FCVT.S.D with its tiny_s2a bit.
       o_flags.nx = i_is_inexact;
       o_result   = {i_result_sign, adjusted_exponent[ExpBits-1:0], final_mantissa};
     end
