@@ -14,7 +14,7 @@
 
 """DMA-port service envelope measurement (frost_cache_test_harness).
 
-Not a pass/fail bench: it streams tagged line requests through the coherent
+No performance limits: it streams tagged line requests through the coherent
 DMA port with a chosen number in flight and reports, per scenario and depth,
 the cycles per line, the mean and maximum request latency, and the average
 residence of a request in each sequencer phase (ADMIT, PROBE, PROBE_WAIT,
@@ -31,8 +31,8 @@ memory at the L2); reads of absent lines and of lines dirty in the L1D;
 writes under a data-side miss flood; and a stream four times the L2
 (`write_beyond_l2`, only with the harness's 4 KiB L2).
 
-The bench plays the load queue with a one-cycle admit and invalidation delay.
-Results also land in
+The bench plays the load queue with a one-cycle admit and invalidation delay,
+and checks that every write_l2_only write hits in the L2. Results also land in
 `results/dma_envelope_lock<N>_mem<latency>_l2_<KiB>k.json`, which records the
 geometry and the memory latency.
 """
@@ -74,7 +74,7 @@ BIG_STRIDE = 0x4000
 
 
 class _PhaseSampler:
-    """Accumulate, per cycle, the sequencer entries in each phase and L2 hits."""
+    """Accumulate per-phase sequencer entries and L2 hits and misses, per cycle."""
 
     def __init__(self, dut: Any) -> None:
         self._dut = dut
@@ -221,8 +221,8 @@ async def _measure(
     depth: int,
     requests: list[tuple[bool, int, int, int]],
     results: dict[str, Any],
-) -> int:
-    """Run one stream at one depth, log/record its numbers, return its L2 hits."""
+) -> tuple[int, int]:
+    """Run, log and record one stream at one depth; return its L2 hits and misses."""
     stream = _DmaStream(dut, depth)
     sampler.reset()
     sampler.active = True
@@ -255,7 +255,7 @@ async def _measure(
         "l2_misses": sampler.l2_misses,
         "phase_residence": phases,
     }
-    return sampler.l2_hits
+    return sampler.l2_hits, sampler.l2_misses
 
 
 async def _flood(dut: Any, stop: list[bool]) -> None:
@@ -341,11 +341,15 @@ async def test_dma_envelope(dut: Any) -> None:
             addrs = [base + i * LINE_BYTES for i in range(STREAM_LINES)]
             await _cpu_touch(dut, addrs, write=False)
             await _evict_l1d(dut, addrs)
-            hits = await _measure(
+            hits, misses = await _measure(
                 dut, sampler, "write_l2_only", depth, _write_stream(base), results
             )
-            assert hits == STREAM_LINES, (
-                f"write_l2_only: {hits} of {STREAM_LINES} DMA writes hit in the L2"
+            # The L2 counts each DMA write as one hit or one miss, and other
+            # traffic in the window can only add to the counts, so no miss and
+            # at least a hit per line mean every DMA write hit.
+            assert misses == 0 and hits >= STREAM_LINES, (
+                "write_l2_only: not every DMA write hit in the L2 "
+                f"({STREAM_LINES} writes; L2 hits {hits}, misses {misses})"
             )
 
         # 5. Partial-strobe writes to absent lines: the L2 fetches the line.
