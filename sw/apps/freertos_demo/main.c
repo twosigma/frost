@@ -234,8 +234,10 @@ static void vConsumerTask(void *pvParameters)
     }
 
     safe_print("[Consumer] Waiting for atomic worker completion...\r\n");
+    /* pdFALSE takes one notification per call, so both workers count even if
+     * both notified before the first take. */
     for (i = 0; i < ATOMIC_WORKER_TASKS; i++) {
-        (void) ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        (void) ulTaskNotifyTake(pdFALSE, portMAX_DELAY);
     }
 
     safe_print("[Consumer] Waiting for a tick inside a critical section...\r\n");
