@@ -924,15 +924,14 @@ async def _fire_read(dut: Any, port: str, addr: int) -> None:
 async def _hold_shared_level(
     dut: Any, model: ReferenceModel, base: int, k: int
 ) -> None:
-    """Fill the shared level's miss slots so its next miss stalls a round trip.
+    """Fill the L2's miss slots so its next miss stalls a round trip.
 
     Three data-side partial-write misses, acknowledged at allocation, and two
     instruction-side reads fired between them leave five fills in flight at
     the L2, which has four miss slots, so a writeback that misses there right
     afterwards waits in its tag stage until the first fill returns from
-    memory. Without an L2 the writeback goes straight to memory and takes a
-    round trip anyway. Every line has an L1 index of its own, never
-    revisited, so none of this evicts anything or writes anything back.
+    memory. Every line has an L1 index of its own, never revisited, so none
+    of this evicts anything or writes anything back.
     """
     lines = [base + (8 + 3 * k + n) * LINE_BYTES for n in range(3)]
     instr = [base + 0x800 + (2 * k + n) * LINE_BYTES for n in range(2)]
