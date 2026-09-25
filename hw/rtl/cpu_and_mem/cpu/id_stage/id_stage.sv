@@ -33,10 +33,11 @@ module id_stage #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     // mstatus.FS == Off: every F/D instruction in either slot decodes as
-    // illegal. The live value is exact because FS enters or leaves Off only
-    // through a write-intending mstatus/sstatus access, and each of those ends
-    // in the FENCE-class full flush, which refetches everything decoded under
-    // the old value (cpu_ooo asserts this).
+    // illegal. cpu_ooo drives a copy registered one cycle after the CSR. It is
+    // exact because FS enters or leaves Off only through a write-intending
+    // mstatus/sstatus access, which ends in the FENCE-class full flush in the
+    // cycle the new value appears: that flush discards what ID decodes then
+    // and refetches everything decoded before it (cpu_ooo asserts this).
     input logic i_mstatus_fs_off,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Next-edge value of o_from_id_to_ex (its register D), for a consumer

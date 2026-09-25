@@ -739,6 +739,16 @@ module cpu_ooo #(
   // mstatus.FS == Off from csr_file. ID decodes every F/D instruction as
   // illegal while it is set; the ROB's allocation check reads it too.
   logic csr_mstatus_fs_off;
+  // TIMING: ID reads a registered copy, so the route from csr_file stays off
+  // the ID class-register and decoded-queue shadow D paths. The copy differs
+  // from the CSR only in the cycle FS enters or leaves Off, and that cycle
+  // carries the full flush, which discards everything ID decodes then
+  // (p_fs_off_change_flushes_decode below).
+  logic id_mstatus_fs_off_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) id_mstatus_fs_off_q <= 1'b0;
+    else id_mstatus_fs_off_q <= csr_mstatus_fs_off;
+  end
 
   id_stage #(
       .XLEN(XLEN)
@@ -748,7 +758,7 @@ module cpu_ooo #(
       .i_from_pd_to_id(from_pd_to_id),
       .i_pd_redirect(pd_redirect),
       .i_pd_redirect_target(pd_redirect_target),
-      .i_mstatus_fs_off(csr_mstatus_fs_off),
+      .i_mstatus_fs_off(id_mstatus_fs_off_q),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
       // Slot 2 (2-wide dispatch). i_from_pd_to_id_2 carries the second
@@ -3164,18 +3174,17 @@ module cpu_ooo #(
   );
 
 `ifndef SYNTHESIS
-  // id_stage decodes F/D instructions against the live mstatus.FS, so an
-  // instruction decoded before FS enters or leaves Off must not survive the
-  // change. FS enters or leaves Off only through a write-intending
-  // mstatus/sstatus access (hardware Dirty-setting starts from a value other
-  // than Off), which the ROB classes as a translation CSR: its FENCE-class
-  // full flush lands in the cycle the new value first shows here.
-  logic csr_mstatus_fs_off_q;
+  // id_stage decodes F/D instructions against id_mstatus_fs_off_q, one cycle
+  // behind mstatus.FS, so an instruction decoded under the old value, before
+  // or in the cycle FS enters or leaves Off, must not survive the change. FS
+  // enters or leaves Off only through a write-intending mstatus/sstatus access
+  // (hardware Dirty-setting starts from a value other than Off), which the ROB
+  // classes as a translation CSR: its FENCE-class full flush lands in the
+  // cycle the new value first shows here.
   logic fs_off_checks_armed = 1'b0;
   always_ff @(posedge i_clk) begin
-    csr_mstatus_fs_off_q <= csr_mstatus_fs_off;
-    fs_off_checks_armed  <= !i_rst;
-    if (fs_off_checks_armed && !i_rst && (csr_mstatus_fs_off != csr_mstatus_fs_off_q)) begin
+    fs_off_checks_armed <= !i_rst;
+    if (fs_off_checks_armed && !i_rst && (csr_mstatus_fs_off != id_mstatus_fs_off_q)) begin
       p_fs_off_change_flushes_decode : assert (flush_all);
     end
   end
