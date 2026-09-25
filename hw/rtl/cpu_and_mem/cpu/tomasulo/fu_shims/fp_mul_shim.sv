@@ -657,6 +657,92 @@ module fp_mul_shim (
     end
   end
 
+`ifdef FP_MUL_SHIM_TAG_ORDER_PROOF
+  // Tag order. f_pick (a free input) selects one issued operation, and the
+  // ghost state below follows it: first through its subunit's tag queue, then,
+  // if it completes, through the shared ring. f_queue_ahead and f_ring_ahead
+  // count the older entries in front of it. When everything older has left a
+  // queue or the ring, its tag must be at the head: the subunit queue pops it
+  // in the cycle its own result leaves the subunit (f_age, at the fixed
+  // latencies in the fp_multiplier and fp_fma headers), and the ring presents
+  // it with its tag and source. Since f_pick is arbitrary, this holds for every
+  // operation. A full flush empties the ring; in the tag queue the operation
+  // still pops in order, marked flushed.
+  localparam int unsigned FMultCycles = 11;
+  localparam int unsigned FFmaCycles = 16;
+  (* anyseq *) logic f_pick;
+  logic f_armed, f_in_queue, f_in_ring, f_fma;
+  logic [TagW-1:0] f_tag;
+  logic [4:0] f_age;
+  logic [QueueCountW-1:0] f_queue_ahead;
+  logic [FifoCountW-1:0] f_ring_ahead;
+  logic f_queue_pop;
+
+  assign f_queue_pop = f_in_queue && (f_fma ? fma_pop : mult_pop);
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      f_armed    <= 1'b0;
+      f_in_queue <= 1'b0;
+      f_in_ring  <= 1'b0;
+    end else begin
+      if (!f_armed && f_pick && fire) begin
+        f_armed <= 1'b1;
+        f_in_queue <= 1'b1;
+        f_fma <= use_fma;
+        f_tag <= i_rs_issue.rob_tag;
+        f_age <= 5'd1;
+        f_queue_ahead <= use_fma ? fma_count - QueueCountW'(fma_pop) :
+                                   mult_count - QueueCountW'(mult_pop);
+      end
+      if (f_in_queue) f_age <= f_age + 5'd1;
+      if (f_queue_pop) begin
+        if (f_queue_ahead == '0) begin
+          f_in_queue <= 1'b0;
+          if (f_fma ? fma_completion_valid : mult_completion_valid) begin
+            f_in_ring <= 1'b1;
+            f_ring_ahead <= fifo_count - FifoCountW'(fifo_pop) +
+                FifoCountW'(f_fma && mult_completion_valid);
+          end
+        end else begin
+          f_queue_ahead <= f_queue_ahead - 1'b1;
+        end
+      end
+      if (f_in_ring) begin
+        if (i_flush || (fifo_pop && (f_ring_ahead == '0))) f_in_ring <= 1'b0;
+        else if (fifo_pop) f_ring_ahead <= f_ring_ahead - 1'b1;
+      end
+    end
+  end
+
+  always_comb begin
+    if (i_rst_n && f_queue_pop && (f_queue_ahead == '0)) begin
+      p_tracked_queue_head :
+      assert ((f_fma ? fma_tag_q[fma_rd_ptr] : mult_tag_q[mult_rd_ptr]) == f_tag);
+      p_tracked_pop_at_own_result :
+      assert (f_age == 5'(f_fma ? FFmaCycles : FMultCycles));
+    end
+    if (i_rst_n && f_in_ring && (f_ring_ahead == '0)) begin
+      p_tracked_ring_head :
+      assert (fifo_count != '0 && fifo_tag[fifo_rd_ptr] == f_tag &&
+              fifo_source_is_fma[fifo_rd_ptr] == f_fma);
+      if (!fifo_head_flushed) begin
+        p_tracked_ring_head_presents : assert (o_fu_complete.valid && o_fu_complete.tag == f_tag);
+      end
+    end
+  end
+
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      cover_tracked_mult_leaves_ring :
+      cover (f_in_ring && !f_fma && (f_ring_ahead == '0) && fifo_pop && !fifo_head_flushed);
+      cover_tracked_fma_leaves_ring :
+      cover (f_in_ring && f_fma && (f_ring_ahead == '0) && fifo_pop && !fifo_head_flushed);
+      cover_tracked_behind_older : cover (f_in_ring && (f_ring_ahead != '0) && fifo_pop);
+    end
+  end
+`endif
+
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       cover_fire_mult : cover (fire && use_mult);

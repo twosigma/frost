@@ -466,6 +466,10 @@ FORMAL_TARGETS = [
         "FP mul shim - FP multiply/FMA CDB pipeline",
     ),
     FormalTarget(
+        "fp_mul_shim_order.sby",
+        "FP mul shim - each operation's tag leaves its subunit queue with its own result and the ring in issue order",
+    ),
+    FormalTarget(
         "fp_div_shim.sby",
         "FP div shim - FP divide/sqrt CDB pipeline",
     ),
