@@ -405,7 +405,14 @@ def run_single_test(
 
     ref_path = get_reference_path(test_src)
     if not ref_path.exists():
-        return TestResult(test_name, extension, "SKIP", "No reference output")
+        # A FAIL, so tests that a suite update adds cannot pass unchecked.
+        return TestResult(
+            test_name,
+            extension,
+            "FAIL",
+            f"No reference output ({ref_path.name}); generate it with "
+            "sw/apps/arch_test/generate_references.py",
+        )
 
     compiled, compile_out = compile_test(test_src, mem_config)
     if not compiled:

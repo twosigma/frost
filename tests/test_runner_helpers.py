@@ -67,6 +67,30 @@ def test_arch_timeout_is_a_failure(
     assert "timed out" in result.message
 
 
+def test_arch_missing_reference_fails_the_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A selected arch test without a committed reference fails an extension run."""
+    source = tmp_path / "fadd_b1-01.S"
+    source.write_text("")
+    monkeypatch.setattr(
+        test_arch_compliance, "discover_tests", lambda *_, **__: [source]
+    )
+    monkeypatch.setattr(
+        test_arch_compliance,
+        "get_reference_path",
+        lambda _: tmp_path / "fadd_b1-01.reference_output",
+    )
+
+    def compile_test(*_: object, **__: object) -> tuple[bool, str]:
+        raise AssertionError("the runner built a test that has no reference")
+
+    monkeypatch.setattr(test_arch_compliance, "compile_test", compile_test)
+    monkeypatch.setattr(sys, "argv", ["test_arch_compliance.py", "--extensions", "F"])
+
+    assert test_arch_compliance.main() == 1
+
+
 def test_torture_timeout_is_a_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -155,7 +155,9 @@ you pass `--no-sim-filter`; `--test` runs any one test. In the `bram` and
 `icache` tiers, a test too large for low BRAM (95 KiB of code, 1 KiB reserved
 for debug, and 160 KiB of data and stack) reports SKIP; the `ddr` tier still
 runs it. `--shard K/N` runs part K of N of each selected extension, with the
-parts balanced by case count.
+parts balanced by case count. A selected test with no committed reference
+fails; `sw/apps/arch_test/generate_references.py`, run in the frost image,
+generates references with the pinned Spike.
 
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
 instruction BRAM, and F and D in DDR, to fit the runner time budget; the BRAM
