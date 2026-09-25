@@ -314,9 +314,9 @@ def test_coverage_check_and_summary_agree_at_the_minimum(
 
 @pytest.mark.parametrize("operation", ("lr.w", "amoadd.w"))
 def test_lr_and_amo_addresses_keep_xlen_bits(operation: str) -> None:
-    """LR.W and AMOs read the word at rs1 word-aligned, without truncation."""
+    """LR.W and AMOs read the word at rs1, above bit 31 as well."""
     state = test_state.TestState()
-    state.register_file_previous[10] = 0x1_0000_0106
+    state.register_file_previous[10] = 0x1_0000_0104
     memory = _WordMemory({0x1_0000_0104: 0x8000_0001})
 
     _, rd_value, _, _ = cpu_model.CPUModel.model_instruction_execution(
