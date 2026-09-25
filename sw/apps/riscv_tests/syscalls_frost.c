@@ -26,6 +26,8 @@
 #include <string.h>
 
 #define UART_TX (*(volatile uint8_t *) 0x40000000)
+// Bit 0 set: at least 64 more bytes fit in the TX FIFO.
+#define UART_TX_STATUS (*(volatile uint32_t *) 0x40000028)
 
 // read_csr(), from the same encoding.h that util.h includes
 #include "encoding.h"
@@ -38,11 +40,18 @@ size_t strnlen(const char *s, size_t n);
 // UART output primitives
 // -----------------------------------------------------------------------
 
+static void uart_write_byte(uint8_t b)
+{
+    while (!(UART_TX_STATUS & 1u))
+        ;
+    UART_TX = b;
+}
+
 static void uart_putchar_raw(char c)
 {
     if (c == '\n')
-        UART_TX = (uint8_t) '\r';
-    UART_TX = (uint8_t) c;
+        uart_write_byte((uint8_t) '\r');
+    uart_write_byte((uint8_t) c);
 }
 
 void printstr(const char *s)

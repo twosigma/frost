@@ -31,6 +31,8 @@
 
 static void uart_putc(char c)
 {
+    while (!(UART_TX_STATUS & 1u))
+        ;
     UART_TX = (uint8_t) c;
 }
 

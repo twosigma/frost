@@ -3,7 +3,7 @@
 // Included at the end of each torture test, where it:
 //   1. Dumps all integer registers (x0-x31) to the signature area
 //   2. Dumps all FP registers (f0-f31) to the signature area
-//   3. Prints the signature over the UART as hex (like arch_test RVMODEL_HALT)
+//   3. Prints the signature over the UART as hex, one word per line
 //   4. Prints the <<PASS>> marker
 //   5. Writes tohost, which ends the Spike run, and halts
 //
@@ -13,6 +13,17 @@
 
 #define XSTORE sd
 #define XB 8
+
+// Send the byte in \reg once the TX FIFO has room (UART_TX_STATUS, 0x28 past
+// the UART base in a2, bit 0). Clobbers t6, whose value is already in the
+// signature by then.
+.macro frost_torture_putc reg
+1:
+    lw t6, 0x28(a2)
+    andi t6, t6, 1
+    beqz t6, 1b
+    sb \reg, 0(a2)
+.endm
 
     .text
     .globl _torture_test_end
@@ -95,7 +106,7 @@ _torture_test_end:
     fsd f30, (32*XB + 240)(t0)
     fsd f31, (32*XB + 248)(t0)
 
-    // Dump the signature over the UART (same pattern as arch_test RVMODEL_HALT)
+    // Dump the signature over the UART
     la a0, _frost_torture_signature
     la a1, _frost_torture_signature_end
     li a2, 0x40000000
@@ -116,13 +127,13 @@ _frost_torture_hex_loop:
 _frost_torture_hex_digit:
     addi a5, a5, '0'
 _frost_torture_hex_out:
-    sb a5, 0(a2)
+    frost_torture_putc a5
     addi a4, a4, -4
     bge a4, zero, _frost_torture_hex_loop
 
     // Newline after each word
     li a5, '\n'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     addi a0, a0, 4
     j _frost_torture_sig_loop
 
@@ -130,23 +141,23 @@ _frost_torture_sig_done:
     // Print <<PASS>> marker
     li a2, 0x40000000
     li a5, '<'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     li a5, '<'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     li a5, 'P'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     li a5, 'A'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     li a5, 'S'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     li a5, 'S'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     li a5, '>'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     li a5, '>'
-    sb a5, 0(a2)
+    frost_torture_putc a5
     li a5, '\n'
-    sb a5, 0(a2)
+    frost_torture_putc a5
 
     // Signal completion via tohost (for Spike reference generation).
     // FROST does not monitor tohost, so on FROST this is a harmless store.

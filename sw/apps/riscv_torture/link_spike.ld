@@ -66,6 +66,12 @@ SECTIONS
         *(.tohost)
     } > RAM
 
+    /* Spike maps plain memory at the UART. The footer polls UART_TX_STATUS
+     * before each byte, so preset its ready bit there. */
+    .frost_uart_status 0x40000028 : {
+        LONG(1)
+    } > MMIO
+
     /DISCARD/ : {
         *(.eh_frame*)
         *(.eh_frame_hdr*)
