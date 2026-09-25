@@ -44,6 +44,7 @@ from .dispatch_interface import (
     AUIPC,
     JALR,
     FADD_S,
+    FLW,
     FMUL_S,
     FDIV_S,
     LD,
@@ -201,6 +202,41 @@ async def test_stall_when_lq_full(dut: Any) -> None:
     )
     await dut_if.step()
     assert dut_if.stall, "Expected stall when LQ is full for load"
+
+
+@cocotb.test()
+async def test_illegal_memory_ops_take_no_queue_entry(dut: Any) -> None:
+    """An illegal or fetch-faulting memory op dispatches with the LQ and SQ full.
+
+    It routes to INT_RS and never takes a queue entry, so it must not wait for
+    one. A legal load still waits.
+    """
+    dut_if = await _setup(dut)
+    dut_if.set_lq_full(True)
+    dut_if.set_sq_full(True)
+    for name, operation, flag in (
+        ("FS=Off flw", FLW, "is_illegal_instruction"),
+        ("illegal lw", LW, "is_illegal_instruction"),
+        ("faulting sc.d", SC_D, "is_fetch_fault"),
+        ("faulting amoadd.d", AMOADD_D, "is_fetch_fault"),
+    ):
+        dut_if.drive_instruction(
+            valid=True,
+            instruction_operation=operation,
+            instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+            **{flag: 1},
+        )
+        await dut_if.step()
+        assert not dut_if.stall, f"{name} waited for a full load or store queue"
+        assert dut_if.read_rs_dispatch()["rs_type"] == RS_INT, name
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=LW,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+    )
+    await dut_if.step()
+    assert dut_if.stall, "a legal load must wait for a full load queue"
 
 
 @cocotb.test()

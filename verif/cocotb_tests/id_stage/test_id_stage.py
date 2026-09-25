@@ -47,6 +47,7 @@ OPC_LOAD = 0b0000011
 OPC_STORE = 0b0100011
 OPC_OP = 0b0110011
 OPC_FMADD = 0b1000011
+OPC_AMO = 0b0101111
 OPC_LOAD_FP = 0b0000111
 OPC_OP_FP = 0b1010011
 
@@ -709,6 +710,9 @@ async def test_fs_off_decodes_fp_instructions_as_illegal(dut: Any) -> None:
             assert packet["uses_fp_rs2"] is False
             assert packet["uses_fp_rs3"] is False
             assert packet["is_real"] is True
+            # The FS=Off FLW takes no load-queue entry, so dispatch never
+            # waits for one.
+            assert packet["needs_lq"] is False and packet["needs_sq"] is False
             other = _read_id_packet(dut, slot2=not fp_slot2)
             assert other["is_illegal_instruction"] is False
             assert other["instruction_operation"] == ADD
@@ -727,11 +731,52 @@ async def test_fs_off_decodes_fp_instructions_as_illegal(dut: Any) -> None:
     assert load["rs_type"] == RS_MEM
     assert load["has_fp_dest"] is True
     assert load["uses_int_rs1"] is True
+    assert load["needs_lq"] is True and load["needs_sq"] is False
     compute = _read_id_packet(dut, slot2=True)
     assert compute["is_illegal_instruction"] is False
     assert compute["instruction_operation"] == FADD_S
     assert compute["rs_type"] == RS_FP
     assert compute["has_fp_flags"] is True
+
+
+@cocotb.test()
+async def test_memory_queue_needs_follow_the_operand_class(dut: Any) -> None:
+    """Loads, LR and AMOs need a load-queue entry, stores and SC a store-queue one.
+
+    An illegal instruction, a fetch fault and a bubble take no entry,
+    whatever their bytes decode as.
+    """
+    await _setup_test(dut)
+    load = _pack_i(imm=-16, rs1=8, funct3=0b011, rd=9, opcode=OPC_LOAD)
+    store = _pack_s(imm=20, rs2=6, rs1=5, funct3=0b011, opcode=OPC_STORE)
+    lr_w = _pack_r(funct7=0b0001000, rs2=0, rs1=5, funct3=0b010, rd=6, opcode=OPC_AMO)
+    sc_w = _pack_r(funct7=0b0001100, rs2=7, rs1=5, funct3=0b010, rd=6, opcode=OPC_AMO)
+    amoadd_d = _pack_r(
+        funct7=0b0000000, rs2=7, rs1=5, funct3=0b011, rd=6, opcode=OPC_AMO
+    )
+    cases: tuple[tuple[str, int, dict[str, bool], tuple[bool, bool]], ...] = (
+        ("ld", load, {}, (True, False)),
+        ("sd", store, {}, (False, True)),
+        ("lr.w", lr_w, {}, (True, False)),
+        ("sc.w", sc_w, {}, (False, True)),
+        ("amoadd.d", amoadd_d, {}, (True, False)),
+        ("illegal ld", load, {"illegal_instruction": True}, (False, False)),
+        ("faulting sd", store, {"fetch_fault": True}, (False, False)),
+        ("faulting sc.w", sc_w, {"fetch_fault": True}, (False, False)),
+        ("bubble ld", load, {"inject_nop": True}, (False, False)),
+    )
+    for name, instruction, extra, (needs_lq, needs_sq) in cases:
+        for slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC, "instruction": instruction, **extra},
+                slot2=slot2,
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+            await _advance_cycle(dut)
+            packet = _read_id_packet(dut, slot2=slot2)
+            assert packet["needs_lq"] is needs_lq, f"{name} slot2={slot2}: needs_lq"
+            assert packet["needs_sq"] is needs_sq, f"{name} slot2={slot2}: needs_sq"
 
 
 @cocotb.test()

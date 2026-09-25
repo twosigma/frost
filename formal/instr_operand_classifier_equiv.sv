@@ -55,6 +55,8 @@ module instr_operand_classifier_equiv (
   logic is_sfence_vma_pre;
   logic is_csr_imm_pre;
   logic has_fp_flags_pre;
+  logic needs_lq_pre;
+  logic needs_sq_pre;
 
   always_comb begin
     case (op_for_pre_decode)
@@ -168,6 +170,27 @@ module instr_operand_classifier_equiv (
     case (op_for_pre_decode)
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD: is_int_store_pre = 1'b1;
       default: is_int_store_pre = 1'b0;
+    endcase
+
+    case (op_for_pre_decode)
+      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::LWU, riscv_pkg::LD, riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::LR_W, riscv_pkg::LR_D,
+      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W, riscv_pkg::AMOXOR_W,
+      riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W, riscv_pkg::AMOMIN_W,
+      riscv_pkg::AMOMAX_W, riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D, riscv_pkg::AMOXOR_D,
+      riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D, riscv_pkg::AMOMIN_D,
+      riscv_pkg::AMOMAX_D, riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
+      needs_lq_pre = 1'b1;
+      default: needs_lq_pre = 1'b0;
+    endcase
+
+    case (op_for_pre_decode)
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
+      riscv_pkg::FSW, riscv_pkg::FSD, riscv_pkg::SC_W, riscv_pkg::SC_D:
+      needs_sq_pre = 1'b1;
+      default: needs_sq_pre = 1'b0;
     endcase
 
     case (op_for_pre_decode)
@@ -417,6 +440,8 @@ module instr_operand_classifier_equiv (
   logic is_sfence_vma_direct;
   logic is_csr_imm_direct;
   logic has_fp_flags_direct;
+  logic needs_lq_direct;
+  logic needs_sq_direct;
   instr_operand_classifier dut (
       .i_instr,
       .i_inject_nop,
@@ -436,7 +461,9 @@ module instr_operand_classifier_equiv (
       .o_is_fence_i(is_fence_i_direct),
       .o_is_sfence_vma(is_sfence_vma_direct),
       .o_is_csr_imm(is_csr_imm_direct),
-      .o_has_fp_flags(has_fp_flags_direct)
+      .o_has_fp_flags(has_fp_flags_direct),
+      .o_needs_lq(needs_lq_direct),
+      .o_needs_sq(needs_sq_direct)
   );
   always_comb begin
     p_has_int_dest : assert (has_int_dest_direct == has_int_dest_pre);
@@ -454,5 +481,7 @@ module instr_operand_classifier_equiv (
     p_is_sfence_vma : assert (is_sfence_vma_direct == is_sfence_vma_pre);
     p_is_csr_imm : assert (is_csr_imm_direct == is_csr_imm_pre);
     p_has_fp_flags : assert (has_fp_flags_direct == has_fp_flags_pre);
+    p_needs_lq : assert (needs_lq_direct == needs_lq_pre);
+    p_needs_sq : assert (needs_sq_direct == needs_sq_pre);
   end
 endmodule : instr_operand_classifier_equiv

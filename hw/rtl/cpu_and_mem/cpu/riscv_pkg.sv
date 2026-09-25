@@ -1798,6 +1798,10 @@ package riscv_pkg;
     logic is_fence_i;
     logic is_csr_imm;
     logic has_fp_flags;
+    // The instruction takes a load-queue or store-queue entry (the operand
+    // classifier's class, clear for an illegal instruction or fetch fault).
+    logic needs_lq;
+    logic needs_sq;
     logic is_jump_and_link;  // JAL instruction
     logic is_jump_and_link_register;  // JALR instruction
     // CSR instruction fields (Zicsr)
@@ -1901,6 +1905,10 @@ package riscv_pkg;
     logic is_fence_i;
     logic is_csr_imm;
     logic has_fp_flags;
+    // The instruction takes a load-queue or store-queue entry (the operand
+    // classifier's class, clear for an illegal instruction or fetch fault).
+    logic needs_lq;
+    logic needs_sq;
     logic is_jump_and_link;
     logic is_jump_and_link_register;
     logic is_csr_instruction;

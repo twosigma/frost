@@ -325,9 +325,8 @@ module dispatch #(
   assign uses_int_rs1     = i_from_id_to_ex.uses_int_rs1;
   assign uses_int_rs2     = i_from_id_to_ex.uses_int_rs2;
 
-  // is_fp_load stays set for an illegal op (an FS=Off FLW/FLD among them).
-  // The op routes to INT_RS and gets no LQ entry, so the flag only adds an
-  // LQ-full wait; masking it would add a term to the dispatch-stall path.
+  // An illegal FSW or FSD (FS=Off) keeps its decoded is_fp_store; the mask
+  // keeps it from reaching the ROB and the reservation station as a store.
   assign is_store_flag    = i_from_id_to_ex.is_int_store;
   assign is_fp_store_flag = i_from_id_to_ex.is_fp_store && !i_from_id_to_ex.is_illegal_instruction;
   assign is_load_flag     = i_from_id_to_ex.is_load_instruction;
@@ -743,13 +742,13 @@ module dispatch #(
     endcase
   end
 
+  // Whether the instruction takes a load- or store-queue entry, registered
+  // in ID from the operand classifier: clear for an illegal instruction (an
+  // FS=Off FLW or FSD among them) or a fetch fault, which routes to INT_RS, so
+  // neither waits on a full queue.
   logic need_lq, need_sq;
-  assign need_lq = is_load_flag || is_fp_load_flag ||
-                   i_from_id_to_ex.is_lr ||
-                   (i_from_id_to_ex.is_amo_instruction &&
-                    !i_from_id_to_ex.is_lr &&
-                    !i_from_id_to_ex.is_sc);
-  assign need_sq = is_store_flag || is_fp_store_flag || i_from_id_to_ex.is_sc;
+  assign need_lq = i_from_id_to_ex.needs_lq;
+  assign need_sq = i_from_id_to_ex.needs_sq;
 
   logic need_checkpoint;
   assign need_checkpoint = is_branch_flag;
@@ -760,12 +759,8 @@ module dispatch #(
   // Slot-2 resource needs. When slot 2 is absent these are don't-cares:
   // slot2_bundle_ok is 1 and o_stall reduces to slot 1's condition.
   logic need_lq_2, need_sq_2;
-  assign need_lq_2 = is_load_flag_2 || is_fp_load_flag_2 ||
-                     i_from_id_to_ex_2.is_lr ||
-                     (i_from_id_to_ex_2.is_amo_instruction &&
-                      !i_from_id_to_ex_2.is_lr &&
-                      !i_from_id_to_ex_2.is_sc);
-  assign need_sq_2 = is_store_flag_2 || is_fp_store_flag_2 || i_from_id_to_ex_2.is_sc;
+  assign need_lq_2 = i_from_id_to_ex_2.needs_lq;
+  assign need_sq_2 = i_from_id_to_ex_2.needs_sq;
 
   logic need_checkpoint_2;
   assign need_checkpoint_2 = is_branch_flag_2;

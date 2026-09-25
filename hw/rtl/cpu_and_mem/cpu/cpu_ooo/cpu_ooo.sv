@@ -846,6 +846,8 @@ module cpu_ooo #(
         producer_ctrl.is_fence_i = decoded_packet.is_fence_i;
         producer_ctrl.is_csr_imm = decoded_packet.is_csr_imm;
         producer_ctrl.has_fp_flags = decoded_packet.has_fp_flags;
+        producer_ctrl.needs_lq = decoded_packet.needs_lq;
+        producer_ctrl.needs_sq = decoded_packet.needs_sq;
         producer_ctrl.is_jump_and_link = decoded_packet.is_jump_and_link;
         producer_ctrl.is_jump_and_link_register = decoded_packet.is_jump_and_link_register;
         producer_ctrl.is_csr_instruction = decoded_packet.is_csr_instruction;
@@ -889,6 +891,8 @@ module cpu_ooo #(
         producer_ctrl_2.is_fence_i = decoded_packet_2.is_fence_i;
         producer_ctrl_2.is_csr_imm = decoded_packet_2.is_csr_imm;
         producer_ctrl_2.has_fp_flags = decoded_packet_2.has_fp_flags;
+        producer_ctrl_2.needs_lq = decoded_packet_2.needs_lq;
+        producer_ctrl_2.needs_sq = decoded_packet_2.needs_sq;
         producer_ctrl_2.is_jump_and_link = decoded_packet_2.is_jump_and_link;
         producer_ctrl_2.is_jump_and_link_register = decoded_packet_2.is_jump_and_link_register;
         producer_ctrl_2.is_csr_instruction = decoded_packet_2.is_csr_instruction;
@@ -932,6 +936,8 @@ module cpu_ooo #(
         producer_ctrl_next.is_fence_i = decoded_packet_next.is_fence_i;
         producer_ctrl_next.is_csr_imm = decoded_packet_next.is_csr_imm;
         producer_ctrl_next.has_fp_flags = decoded_packet_next.has_fp_flags;
+        producer_ctrl_next.needs_lq = decoded_packet_next.needs_lq;
+        producer_ctrl_next.needs_sq = decoded_packet_next.needs_sq;
         producer_ctrl_next.is_jump_and_link = decoded_packet_next.is_jump_and_link;
         producer_ctrl_next.is_jump_and_link_register =
             decoded_packet_next.is_jump_and_link_register;
@@ -976,6 +982,8 @@ module cpu_ooo #(
         producer_ctrl_next_2.is_fence_i = decoded_packet_next_2.is_fence_i;
         producer_ctrl_next_2.is_csr_imm = decoded_packet_next_2.is_csr_imm;
         producer_ctrl_next_2.has_fp_flags = decoded_packet_next_2.has_fp_flags;
+        producer_ctrl_next_2.needs_lq = decoded_packet_next_2.needs_lq;
+        producer_ctrl_next_2.needs_sq = decoded_packet_next_2.needs_sq;
         producer_ctrl_next_2.is_jump_and_link = decoded_packet_next_2.is_jump_and_link;
         producer_ctrl_next_2.is_jump_and_link_register =
             decoded_packet_next_2.is_jump_and_link_register;
@@ -1057,6 +1065,8 @@ module cpu_ooo #(
         from_id_to_ex.is_fence_i = queue_ctrl.is_fence_i;
         from_id_to_ex.is_csr_imm = queue_ctrl.is_csr_imm;
         from_id_to_ex.has_fp_flags = queue_ctrl.has_fp_flags;
+        from_id_to_ex.needs_lq = queue_ctrl.needs_lq;
+        from_id_to_ex.needs_sq = queue_ctrl.needs_sq;
         from_id_to_ex.is_jump_and_link = queue_ctrl.is_jump_and_link;
         from_id_to_ex.is_jump_and_link_register = queue_ctrl.is_jump_and_link_register;
         from_id_to_ex.is_csr_instruction = queue_ctrl.is_csr_instruction;
@@ -1100,6 +1110,8 @@ module cpu_ooo #(
         from_id_to_ex_2.is_fence_i = queue_ctrl_2.is_fence_i;
         from_id_to_ex_2.is_csr_imm = queue_ctrl_2.is_csr_imm;
         from_id_to_ex_2.has_fp_flags = queue_ctrl_2.has_fp_flags;
+        from_id_to_ex_2.needs_lq = queue_ctrl_2.needs_lq;
+        from_id_to_ex_2.needs_sq = queue_ctrl_2.needs_sq;
         from_id_to_ex_2.is_jump_and_link = queue_ctrl_2.is_jump_and_link;
         from_id_to_ex_2.is_jump_and_link_register = queue_ctrl_2.is_jump_and_link_register;
         from_id_to_ex_2.is_csr_instruction = queue_ctrl_2.is_csr_instruction;

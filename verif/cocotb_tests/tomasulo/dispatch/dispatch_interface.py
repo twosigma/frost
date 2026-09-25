@@ -969,6 +969,10 @@ _AMO_OPS: frozenset[int] = frozenset(
 )
 _FP_LOAD_OPS: frozenset[int] = frozenset({FLW, FLD})
 _FP_STORE_OPS: frozenset[int] = frozenset({FSW, FSD})
+# The operand classifier's needs_lq and needs_sq: SC takes a store-queue entry,
+# LR and every other AMO a load-queue one.
+_NEEDS_LQ_OPS: frozenset[int] = _LOAD_OPS | _FP_LOAD_OPS | (_AMO_OPS - {SC_W, SC_D})
+_NEEDS_SQ_OPS: frozenset[int] = _INT_STORE_OPS | _FP_STORE_OPS | frozenset({SC_W, SC_D})
 _FP_INSTRUCTION_OPS: frozenset[int] = frozenset(
     _FP_LOAD_OPS
     | _FP_STORE_OPS
@@ -1021,6 +1025,8 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_fence_i": 1 if op in {FENCE_I, SFENCE_VMA} else 0,
         "is_csr_imm": 1 if op in _CSR_IMM_OPS else 0,
         "has_fp_flags": 1 if op in _HAS_FP_FLAGS_OPS else 0,
+        "needs_lq": 1 if op in _NEEDS_LQ_OPS else 0,
+        "needs_sq": 1 if op in _NEEDS_SQ_OPS else 0,
         "is_load_instruction": 1 if op in _LOAD_OPS else 0,
         "is_load_unsigned": 1 if op in _LOAD_UNSIGNED_OPS else 0,
         "is_jump_and_link": 1 if op == JAL else 0,
@@ -1064,6 +1070,8 @@ _CLASSIFIER_FIELDS: tuple[str, ...] = (
     "is_sfence_vma",
     "is_csr_imm",
     "has_fp_flags",
+    "needs_lq",
+    "needs_sq",
 )
 
 

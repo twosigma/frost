@@ -102,6 +102,8 @@ ID_TO_EX_FIELDS = [
     ("is_fence_i", 1),
     ("is_csr_imm", 1),
     ("has_fp_flags", 1),
+    ("needs_lq", 1),
+    ("needs_sq", 1),
     ("is_jump_and_link", 1),
     ("is_jump_and_link_register", 1),
     ("is_csr_instruction", 1),

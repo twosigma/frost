@@ -41,7 +41,10 @@ module instr_operand_classifier (
     output logic o_is_fence_i,
     output logic o_is_sfence_vma,
     output logic o_is_csr_imm,
-    output logic o_has_fp_flags
+    output logic o_has_fp_flags,
+    // The instruction takes a load-queue or store-queue entry at dispatch.
+    output logic o_needs_lq,
+    output logic o_needs_sq
 );
   typedef struct packed {
     logic has_int_dest, has_fp_dest;
@@ -49,6 +52,7 @@ module instr_operand_classifier (
     logic [2:0] rs_type;
     logic is_int_store, is_branch_or_jump, is_fence, is_fence_i;
     logic is_sfence_vma, is_csr_imm, has_fp_flags;
+    logic needs_lq, needs_sq;
   } operand_class_t;
 
   operand_class_t raw_class, selected_class;
@@ -96,6 +100,7 @@ module instr_operand_classifier (
         raw_class.has_fp_dest = i_instr.opcode == riscv_pkg::OPC_LOAD_FP;
         raw_class.uses_int_rs1 = 1'b1;
         raw_class.rs_type = riscv_pkg::RS_MEM;
+        raw_class.needs_lq = 1'b1;
       end
       riscv_pkg::OPC_STORE, riscv_pkg::OPC_STORE_FP: begin
         raw_class.uses_int_rs1 = 1'b1;
@@ -103,12 +108,16 @@ module instr_operand_classifier (
         raw_class.uses_fp_rs2 = i_instr.opcode == riscv_pkg::OPC_STORE_FP;
         raw_class.is_int_store = i_instr.opcode == riscv_pkg::OPC_STORE;
         raw_class.rs_type = riscv_pkg::RS_MEM;
+        raw_class.needs_sq = 1'b1;
       end
       riscv_pkg::OPC_AMO: begin
         raw_class.has_int_dest = 1'b1;
         raw_class.uses_int_rs1 = 1'b1;
         raw_class.uses_int_rs2 = i_instr.funct7[6:2] != 5'b00010;  // LR has no rs2.
         raw_class.rs_type = riscv_pkg::RS_MEM;
+        // SC takes a store-queue entry; LR and every other AMO a load-queue one.
+        raw_class.needs_lq = i_instr.funct7[6:2] != 5'b00011;
+        raw_class.needs_sq = i_instr.funct7[6:2] == 5'b00011;
       end
       riscv_pkg::OPC_FMADD, riscv_pkg::OPC_FMSUB,
       riscv_pkg::OPC_FNMSUB, riscv_pkg::OPC_FNMADD: begin
@@ -172,7 +181,7 @@ module instr_operand_classifier (
     end
     // An illegal instruction or a fetch fault reads no operands, so its INT_RS
     // entry waits on no source register (a fetch fault's register fields are
-    // garbage).
+    // garbage), and it takes no load- or store-queue entry.
     if (i_illegal || i_fetch_fault) begin
       selected_class = '0;
       selected_class.rs_type = riscv_pkg::RS_INT;
@@ -182,5 +191,6 @@ module instr_operand_classifier (
   assign {o_has_int_dest, o_has_fp_dest, o_uses_int_rs1, o_uses_int_rs2,
           o_uses_fp_rs1, o_uses_fp_rs2, o_uses_fp_rs3, o_rs_type,
           o_is_int_store, o_is_branch_or_jump, o_is_fence, o_is_fence_i,
-          o_is_sfence_vma, o_is_csr_imm, o_has_fp_flags} = selected_class;
+          o_is_sfence_vma, o_is_csr_imm, o_has_fp_flags, o_needs_lq, o_needs_sq} =
+      selected_class;
 endmodule : instr_operand_classifier

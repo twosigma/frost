@@ -249,6 +249,8 @@ module id_stage #(
   logic uses_fp_rs3_pre;
   logic [2:0] rs_type_pre;
   logic is_int_store_pre;
+  logic needs_lq_pre;
+  logic needs_sq_pre;
   logic is_branch_or_jump_pre;
   logic is_fence_pre;
   logic is_fence_i_pre;
@@ -275,7 +277,9 @@ module id_stage #(
       .o_is_fence_i(is_fence_i_pre),
       .o_is_sfence_vma(is_sfence_vma_pre),
       .o_is_csr_imm(is_csr_imm_pre),
-      .o_has_fp_flags(has_fp_flags_pre)
+      .o_has_fp_flags(has_fp_flags_pre),
+      .o_needs_lq(needs_lq_pre),
+      .o_needs_sq(needs_sq_pre)
   );
 
   // ===========================================================================
@@ -304,6 +308,8 @@ module id_stage #(
       o_from_id_to_ex.is_load_unsigned          <= 1'b0;
       o_from_id_to_ex.rs_type                   <= riscv_pkg::RS_INT;
       o_from_id_to_ex.is_int_store              <= 1'b0;
+      o_from_id_to_ex.needs_lq                  <= 1'b0;
+      o_from_id_to_ex.needs_sq                  <= 1'b0;
       o_from_id_to_ex.is_branch_or_jump         <= 1'b0;
       o_from_id_to_ex.is_fence                  <= 1'b0;
       o_from_id_to_ex.is_fence_i                <= 1'b0;
@@ -360,6 +366,8 @@ module id_stage #(
       o_from_id_to_ex.is_load_unsigned <= i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
       o_from_id_to_ex.rs_type <= i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre;
       o_from_id_to_ex.is_int_store <= i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre;
+      o_from_id_to_ex.needs_lq <= i_pipeline_ctrl.flush ? 1'b0 : needs_lq_pre;
+      o_from_id_to_ex.needs_sq <= i_pipeline_ctrl.flush ? 1'b0 : needs_sq_pre;
       o_from_id_to_ex.is_branch_or_jump <= i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre;
       o_from_id_to_ex.is_fence <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre;
       o_from_id_to_ex.is_fence_i <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre;
@@ -459,6 +467,8 @@ module id_stage #(
       id_next.is_load_unsigned = 1'b0;
       id_next.rs_type = riscv_pkg::RS_INT;
       id_next.is_int_store = 1'b0;
+      id_next.needs_lq = 1'b0;
+      id_next.needs_sq = 1'b0;
       id_next.is_branch_or_jump = 1'b0;
       id_next.is_fence = 1'b0;
       id_next.is_fence_i = 1'b0;
@@ -515,6 +525,8 @@ module id_stage #(
       id_next.is_load_unsigned = i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
       id_next.rs_type = i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre;
       id_next.is_int_store = i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre;
+      id_next.needs_lq = i_pipeline_ctrl.flush ? 1'b0 : needs_lq_pre;
+      id_next.needs_sq = i_pipeline_ctrl.flush ? 1'b0 : needs_sq_pre;
       id_next.is_branch_or_jump = i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre;
       id_next.is_fence = i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre;
       id_next.is_fence_i = i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre;
@@ -760,6 +772,8 @@ module id_stage #(
   logic uses_fp_rs3_pre_2;
   logic [2:0] rs_type_pre_2;
   logic is_int_store_pre_2;
+  logic needs_lq_pre_2;
+  logic needs_sq_pre_2;
   logic is_branch_or_jump_pre_2;
   logic is_fence_pre_2;
   logic is_fence_i_pre_2;
@@ -786,7 +800,9 @@ module id_stage #(
       .o_is_fence_i(is_fence_i_pre_2),
       .o_is_sfence_vma(is_sfence_vma_pre_2),
       .o_is_csr_imm(is_csr_imm_pre_2),
-      .o_has_fp_flags(has_fp_flags_pre_2)
+      .o_has_fp_flags(has_fp_flags_pre_2),
+      .o_needs_lq(needs_lq_pre_2),
+      .o_needs_sq(needs_sq_pre_2)
   );
 
 
@@ -800,6 +816,8 @@ module id_stage #(
       o_from_id_to_ex_2.is_load_unsigned          <= 1'b0;
       o_from_id_to_ex_2.rs_type                   <= riscv_pkg::RS_INT;
       o_from_id_to_ex_2.is_int_store              <= 1'b0;
+      o_from_id_to_ex_2.needs_lq                  <= 1'b0;
+      o_from_id_to_ex_2.needs_sq                  <= 1'b0;
       o_from_id_to_ex_2.is_branch_or_jump         <= 1'b0;
       o_from_id_to_ex_2.is_fence                  <= 1'b0;
       o_from_id_to_ex_2.is_fence_i                <= 1'b0;
@@ -848,6 +866,8 @@ module id_stage #(
                                             is_load_unsigned_direct_2;
       o_from_id_to_ex_2.rs_type <= i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre_2;
       o_from_id_to_ex_2.is_int_store <= i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre_2;
+      o_from_id_to_ex_2.needs_lq <= i_pipeline_ctrl.flush ? 1'b0 : needs_lq_pre_2;
+      o_from_id_to_ex_2.needs_sq <= i_pipeline_ctrl.flush ? 1'b0 : needs_sq_pre_2;
       o_from_id_to_ex_2.is_branch_or_jump <= i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre_2;
       o_from_id_to_ex_2.is_fence <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre_2;
       o_from_id_to_ex_2.is_fence_i <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre_2;
@@ -931,6 +951,8 @@ module id_stage #(
       id_next_2.is_load_unsigned = 1'b0;
       id_next_2.rs_type = riscv_pkg::RS_INT;
       id_next_2.is_int_store = 1'b0;
+      id_next_2.needs_lq = 1'b0;
+      id_next_2.needs_sq = 1'b0;
       id_next_2.is_branch_or_jump = 1'b0;
       id_next_2.is_fence = 1'b0;
       id_next_2.is_fence_i = 1'b0;
@@ -977,6 +999,8 @@ module id_stage #(
       id_next_2.is_load_unsigned = i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct_2;
       id_next_2.rs_type = i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre_2;
       id_next_2.is_int_store = i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre_2;
+      id_next_2.needs_lq = i_pipeline_ctrl.flush ? 1'b0 : needs_lq_pre_2;
+      id_next_2.needs_sq = i_pipeline_ctrl.flush ? 1'b0 : needs_sq_pre_2;
       id_next_2.is_branch_or_jump = i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre_2;
       id_next_2.is_fence = i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre_2;
       id_next_2.is_fence_i = i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre_2;

@@ -71,11 +71,15 @@ rounding mode in program order.
 
 Dispatch stalls when a resource it needs is exhausted: the ROB, the target
 station, the LQ (loads, LR, AMOs), the SQ (stores, SC), or the checkpoint
-pool (branches and jumps). The early back-end recovery hold (`i_hold`)
-blocks firing too. `o_status` gives each slot-1 resource its own flag, plus
-`slot2_block_*` flags for cycles where slot 2 alone holds the bundle, so the
-[counter aggregator](../../cpu_ooo/perf/perf_counter_aggregator.sv) can count
-those causes directly. The recovery hold has no flag of its own.
+pool (branches and jumps). ID registers whether an instruction needs an LQ or
+SQ entry (`needs_lq`, `needs_sq`, from the operand classifier). An illegal
+instruction, an FS=Off FP load or store among them, or a fetch fault needs
+neither, whatever its bytes decode as: it goes to INT_RS to raise its
+exception, so it never waits for a full queue. The early back-end recovery
+hold (`i_hold`) blocks firing too. `o_status` gives each slot-1 resource its
+own flag, plus `slot2_block_*` flags for cycles where slot 2 alone holds the
+bundle, so the [counter aggregator](../../cpu_ooo/perf/perf_counter_aggregator.sv)
+can count those causes directly. The recovery hold has no flag of its own.
 
 `o_stall` is `dispatch_valid && !bundle_fire_ok`: a valid bundle is blocked.
 `o_status.stall` has the same value and feeds the counters. With the decoded
