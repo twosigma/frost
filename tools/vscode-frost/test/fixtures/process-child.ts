@@ -1,7 +1,7 @@
 // Copyright 2026 Two Sigma Open Source, LLC
 // SPDX-License-Identifier: Apache-2.0
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import net from 'node:net';
 
 // Stand-in for a native tool, one behavior per mode. The tree modes start a
@@ -44,9 +44,12 @@ switch (mode) {
         const server = net.createServer(socket => socket.end('owned descendant\n'));
         server.listen(0, '127.0.0.1', () => {
             const address = server.address() as net.AddressInfo;
-            writeFileSync(marker, JSON.stringify({
+            // Write, then rename into place: the tree modes' poll must never
+            // read a marker that exists but is not yet written.
+            writeFileSync(`${marker}.tmp`, JSON.stringify({
                 pid: process.pid, parent: process.ppid, port: address.port,
             }));
+            renameSync(`${marker}.tmp`, marker);
         });
         break;
     }
@@ -58,8 +61,8 @@ switch (mode) {
         descendant.once('error', error => { throw error; });
         const timer = setInterval(() => {
             if (!existsSync(marker)) return;
-            // A successful parse means the descendant is listening and its
-            // SIGTERM handler is installed before the test starts cleanup.
+            // The marker appears only once the descendant is listening and its
+            // SIGTERM handler is installed, before the test starts cleanup.
             const details: unknown = JSON.parse(readFileSync(marker, 'utf8'));
             clearInterval(timer);
             process.stdout.write(`TREE_READY ${JSON.stringify(details)}\n`);
