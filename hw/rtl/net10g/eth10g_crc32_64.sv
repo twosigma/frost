@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Ethernet CRC-32 over the kept bytes of one 64-bit word, lane zero first
 // (eth10g_crc_pkg::crc32_update as a module). Seed with all ones; complement the
 // final result for the transmitted FCS.

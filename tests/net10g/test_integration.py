@@ -12,9 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Two Sigma Open Source, LLC
-
 """Test the whole MAC/PCS in both directions against software raw-bitstream peers."""
 
 from collections import deque

@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // 10GBASE-R receive PCS over candidate blocks from eth10g_rx_gearbox: block
 // lock, BER monitor, descrambler, decoder and receive sequencing. o_slip asks
 // the gearbox to consume one extra bit with the current candidate. XGMII is

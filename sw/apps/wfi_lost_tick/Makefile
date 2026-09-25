@@ -12,8 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-#    Copyright 2026 Two Sigma Open Source, LLC
-#    SPDX-License-Identifier: Apache-2.0
 # Directed test: the Linux-style WFI idle loop, which takes its timer interrupt
 # at the csrsi that sets MIE, must not lose machine-timer ticks.
 SRC_C := main.c

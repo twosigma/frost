@@ -12,9 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Two Sigma Open Source, LLC
-
 """Check the parallel CRC-32 against zlib."""
 
 import random

@@ -12,10 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-#    Copyright 2026 Two Sigma Open Source, LLC
-#
-#    Licensed under the Apache License, Version 2.0 (the "License");
-
 # pde_subdir_find() epilogue return-value hazard (see main.c). The whole
 # program runs from cached DDR.
 override MEM_CONFIG := ddr

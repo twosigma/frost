@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Standalone full-duplex MAC/PCS with a raw 64-bit PMA-facing interface.
 // TX and RX clocks are independent, nominally 161.1328125 MHz. AXIS TX is
 // synchronous to i_tx_clk and AXIS RX to i_rx_clk. Packet data never crosses

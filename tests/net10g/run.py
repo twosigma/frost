@@ -13,9 +13,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Two Sigma Open Source, LLC
-
 """Run the standalone Ethernet MAC/PCS benches in the frost image.
 
 Each target is cleaned before it builds; its results go to sim_build/<target>/.

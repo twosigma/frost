@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // 10GBASE-R transmit PCS: the encoder and scrambler as one elastic pipeline
 // stage. There is no input valid: every clock with o_xgmii_ready high consumes
 // an XGMII word and advances the scrambler, so the caller must supply idles

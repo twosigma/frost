@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Raw 64-bit stream to candidate 66-bit blocks. A slip consumes one extra bit
 // together with the current candidate. Keeping one lookahead bit makes every
 // slip atomic, including candidates that straddle a raw word boundary.

@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Elastic 66-to-64 packer. Bit zero is earliest on both interfaces.
 // The raw output has no backpressure. Continuous block input produces a
 // continuous raw stream after startup; the block ready rate is 32/33.

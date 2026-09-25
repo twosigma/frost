@@ -12,8 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-#    Copyright 2026 Two Sigma Open Source, LLC
-#    SPDX-License-Identifier: Apache-2.0
 # Directed test: a pending timer interrupt must be taken when a csrsi/csrci pair
 # opens mstatus.MIE for one instruction.
 SRC_C := main.c

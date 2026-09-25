@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Clause 49 BER monitor. 16 invalid sync headers within one observation window
 // raise o_high_ber, which clears at the end of a window with fewer. The window is
 // WINDOW_CYCLES clocks (20142 by default, about 125 us at the raw 161.1328125 MHz

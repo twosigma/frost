@@ -12,8 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-#    Copyright 2026 Two Sigma Open Source, LLC
-#    SPDX-License-Identifier: Apache-2.0
 # MRET-drain deadlock directed test: an MRET behind draining cached stores must
 # wait for them, then return. The program runs from BRAM. Only the buffer it
 # stores to lives in the cached DDR region, in a loaded .ddr_data section, so

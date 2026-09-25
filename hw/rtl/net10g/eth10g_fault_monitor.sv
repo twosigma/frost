@@ -14,9 +14,6 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
 // Reconciliation sublayer receive fault qualification. Both 32-bit XGMII
 // columns of each word are checked in order. Four equal fault sequences
 // qualify; 128 columns without a fault sequence clear both the qualification
