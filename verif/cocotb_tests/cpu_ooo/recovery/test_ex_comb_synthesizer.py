@@ -19,7 +19,7 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
-from config import XLEN
+from config import MASK_XLEN
 from cocotb_tests.cpu_structs import (
     FROM_EX_FIELDS,
     MISPREDICT_COMMIT_FIELDS,
@@ -34,7 +34,6 @@ from utils.packed_structs import (
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3
-MASK32 = (1 << XLEN) - 1
 
 
 def _pack_mispredict_commit(fields: Mapping[str, int | bool]) -> int:
@@ -106,7 +105,7 @@ def _assert_late_btb_candidate(
     taken: bool,
 ) -> None:
     """Assert the late BTB counter-RMW candidate, which never depends on early recovery."""
-    assert int(dut.o_btb_late_update_pc.value) == (pc & MASK32)
+    assert int(dut.o_btb_late_update_pc.value) == (pc & MASK_XLEN)
     assert bool(dut.o_btb_late_update_taken.value) is taken
 
 
@@ -120,8 +119,8 @@ def _assert_btb_update(
 ) -> None:
     """Assert the BTB update payload fields."""
     assert output["btb_update"]
-    assert output["btb_update_pc"] == (pc & MASK32)
-    assert output["btb_update_target"] == (target & MASK32)
+    assert output["btb_update_pc"] == (pc & MASK_XLEN)
+    assert output["btb_update_target"] == (target & MASK_XLEN)
     assert output["btb_update_taken"] is taken
     assert output["btb_update_compressed"] is compressed
     assert output["btb_update_requires_pc_reg_handoff"]

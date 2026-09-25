@@ -16,22 +16,16 @@
 
 Verilator flattens packed structs into bit vectors, so this interface packs
 and unpacks their fields.
-
-The interface also has a path for a DUT that exposes dispatch and issue as
-individual scalar ports instead of packed structs, detected with
-``hasattr(dut, 'i_dispatch_valid')``. The reservation_station module itself
-has only the packed ports.
 """
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
-from config import FLEN, INSTR_OP_WIDTH, XLEN
+from config import FLEN, INSTR_OP_WIDTH, MASK_XLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1  # 0x1F
-MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
 # instr_op_e: explicit 8-bit, two-state unsigned enum in riscv_pkg
@@ -113,9 +107,9 @@ def pack_rs_dispatch(
     bit += CHECKPOINT_ID_WIDTH
     val |= (1 if has_checkpoint else 0) << bit
     bit += 1
-    val |= (link_addr & MASK32) << bit
+    val |= (link_addr & MASK_XLEN) << bit
     bit += XLEN
-    val |= (pc & MASK32) << bit
+    val |= (pc & MASK_XLEN) << bit
     bit += XLEN
     val |= (csr_imm & 0x1F) << bit
     bit += 5
@@ -135,7 +129,7 @@ def pack_rs_dispatch(
     bit += 1
     val |= (1 if predicted_target_ok else 0) << bit
     bit += 1
-    val |= (predicted_target & MASK32) << bit
+    val |= (predicted_target & MASK_XLEN) << bit
     bit += XLEN
     val |= (1 if predicted_taken else 0) << bit
     bit += 1
@@ -145,7 +139,7 @@ def pack_rs_dispatch(
     bit += 12
     val |= (1 if use_imm else 0) << bit
     bit += 1
-    val |= (imm & MASK32) << bit
+    val |= (imm & MASK_XLEN) << bit
     bit += XLEN
     val |= (src3_value & MASK64) << bit
     bit += FLEN
@@ -230,9 +224,9 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
     bit += CHECKPOINT_ID_WIDTH
     result["has_checkpoint"] = bool((raw >> bit) & 1)
     bit += 1
-    result["link_addr"] = (raw >> bit) & MASK32
+    result["link_addr"] = (raw >> bit) & MASK_XLEN
     bit += XLEN
-    result["pc"] = (raw >> bit) & MASK32
+    result["pc"] = (raw >> bit) & MASK_XLEN
     bit += XLEN
     result["csr_imm"] = (raw >> bit) & 0x1F
     bit += 5
@@ -252,7 +246,7 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
     bit += 1
     result["predicted_target_ok"] = bool((raw >> bit) & 1)
     bit += 1
-    result["predicted_target"] = (raw >> bit) & MASK32
+    result["predicted_target"] = (raw >> bit) & MASK_XLEN
     bit += XLEN
     result["predicted_taken"] = bool((raw >> bit) & 1)
     bit += 1
@@ -262,7 +256,7 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
     bit += 12
     result["use_imm"] = bool((raw >> bit) & 1)
     bit += 1
-    result["imm"] = (raw >> bit) & MASK32
+    result["imm"] = (raw >> bit) & MASK_XLEN
     bit += XLEN
     result["src3_value"] = (raw >> bit) & MASK64
     bit += FLEN
@@ -286,17 +280,11 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
 
 
 class RSInterface:
-    """Interface to the Reservation Station DUT.
-
-    Detects whether the DUT has flattened wrapper ports or the packed struct
-    ports used by the direct module.
-    """
+    """Interface to the Reservation Station DUT."""
 
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
         self.dut = dut
-        # Flattened wrappers expose individual dispatch/issue ports.
-        self._flat = hasattr(dut, "i_dispatch_valid")
 
     @property
     def clock(self) -> Any:
@@ -322,10 +310,7 @@ class RSInterface:
 
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
-        if self._flat:
-            self._clear_dispatch_flat()
-        else:
-            self.dut.i_dispatch.value = 0
+        self.dut.i_dispatch.value = 0
         # Slot-2 dispatch port; tests drive it through drive_dispatch_2.
         self.dut.i_dispatch_2.value = 0
         # Fast slot-1 intent. The RTL selects alloc_idx_2 from it regardless
@@ -372,18 +357,12 @@ class RSInterface:
         # While it is high the RTL steers a simultaneous slot-2 dispatch to
         # the second free entry.
         self.set_intent_1(True)
-        if self._flat:
-            self._drive_dispatch_flat(**kwargs)
-        else:
-            self.dut.i_dispatch.value = pack_rs_dispatch(**kwargs)
+        self.dut.i_dispatch.value = pack_rs_dispatch(**kwargs)
 
     def clear_dispatch(self) -> None:
         """Clear dispatch signals."""
         self.set_intent_1(False)
-        if self._flat:
-            self._clear_dispatch_flat()
-        else:
-            self.dut.i_dispatch.value = 0
+        self.dut.i_dispatch.value = 0
 
     def drive_dispatch_2(self, intent_1: bool = False, **kwargs: Any) -> None:
         """Drive slot-2 dispatch signals."""
@@ -400,80 +379,8 @@ class RSInterface:
         """Drive fast slot-1 intent used by slot-2 allocation selection."""
         self.dut.i_intent_1.value = 1 if active else 0
 
-    def _drive_dispatch_flat(self, **kwargs: Any) -> None:
-        """Drive individual dispatch ports from a flattened wrapper."""
-        d = self.dut
-        d.i_dispatch_valid.value = 1 if kwargs.get("valid") else 0
-        d.i_dispatch_rs_type.value = int(kwargs.get("rs_type", 0)) & 0x7
-        d.i_dispatch_rob_tag.value = int(kwargs.get("rob_tag", 0)) & MASK_TAG
-        d.i_dispatch_op.value = int(kwargs.get("op", 0)) & MASK_OP
-        d.i_dispatch_src1_ready.value = 1 if kwargs.get("src1_ready") else 0
-        d.i_dispatch_src1_tag.value = int(kwargs.get("src1_tag", 0)) & MASK_TAG
-        d.i_dispatch_src1_value.value = int(kwargs.get("src1_value", 0)) & MASK64
-        d.i_dispatch_src2_ready.value = 1 if kwargs.get("src2_ready") else 0
-        d.i_dispatch_src2_tag.value = int(kwargs.get("src2_tag", 0)) & MASK_TAG
-        d.i_dispatch_src2_value.value = int(kwargs.get("src2_value", 0)) & MASK64
-        d.i_dispatch_src3_ready.value = 1 if kwargs.get("src3_ready") else 0
-        d.i_dispatch_src3_tag.value = int(kwargs.get("src3_tag", 0)) & MASK_TAG
-        d.i_dispatch_src3_value.value = int(kwargs.get("src3_value", 0)) & MASK64
-        d.i_dispatch_imm.value = int(kwargs.get("imm", 0)) & MASK32
-        d.i_dispatch_use_imm.value = 1 if kwargs.get("use_imm") else 0
-        d.i_dispatch_jalr_imm.value = int(kwargs.get("jalr_imm", 0)) & 0xFFF
-        d.i_dispatch_rm.value = int(kwargs.get("rm", 0)) & 0x7
-        d.i_dispatch_predicted_target_ok.value = (
-            1 if kwargs.get("predicted_target_ok") else 0
-        )
-        d.i_dispatch_is_compressed.value = 1 if kwargs.get("is_compressed") else 0
-        d.i_dispatch_predicted_taken.value = 1 if kwargs.get("predicted_taken") else 0
-        d.i_dispatch_predicted_target.value = (
-            int(kwargs.get("predicted_target", 0)) & MASK32
-        )
-        d.i_dispatch_is_fp_mem.value = 1 if kwargs.get("is_fp_mem") else 0
-        d.i_dispatch_mem_needs_lq.value = 1 if kwargs.get("mem_needs_lq") else 0
-        d.i_dispatch_mem_needs_sq.value = 1 if kwargs.get("mem_needs_sq") else 0
-        d.i_dispatch_mem_size.value = int(kwargs.get("mem_size", 0)) & 0x3
-        d.i_dispatch_mem_signed.value = 1 if kwargs.get("mem_signed") else 0
-        d.i_dispatch_csr_addr.value = int(kwargs.get("csr_addr", 0)) & 0xFFF
-        d.i_dispatch_csr_imm.value = int(kwargs.get("csr_imm", 0)) & 0x1F
-        d.i_dispatch_pc.value = int(kwargs.get("pc", 0)) & MASK32
-        d.i_dispatch_link_addr.value = int(kwargs.get("link_addr", 0)) & MASK32
-
-    def _clear_dispatch_flat(self) -> None:
-        """Clear all individual dispatch ports to zero."""
-        d = self.dut
-        d.i_dispatch_valid.value = 0
-        d.i_dispatch_rs_type.value = 0
-        d.i_dispatch_rob_tag.value = 0
-        d.i_dispatch_op.value = 0
-        d.i_dispatch_src1_ready.value = 0
-        d.i_dispatch_src1_tag.value = 0
-        d.i_dispatch_src1_value.value = 0
-        d.i_dispatch_src2_ready.value = 0
-        d.i_dispatch_src2_tag.value = 0
-        d.i_dispatch_src2_value.value = 0
-        d.i_dispatch_src3_ready.value = 0
-        d.i_dispatch_src3_tag.value = 0
-        d.i_dispatch_src3_value.value = 0
-        d.i_dispatch_imm.value = 0
-        d.i_dispatch_use_imm.value = 0
-        d.i_dispatch_jalr_imm.value = 0
-        d.i_dispatch_rm.value = 0
-        d.i_dispatch_predicted_target_ok.value = 0
-        d.i_dispatch_is_compressed.value = 0
-        d.i_dispatch_predicted_taken.value = 0
-        d.i_dispatch_predicted_target.value = 0
-        d.i_dispatch_is_fp_mem.value = 0
-        d.i_dispatch_mem_needs_lq.value = 0
-        d.i_dispatch_mem_needs_sq.value = 0
-        d.i_dispatch_mem_size.value = 0
-        d.i_dispatch_mem_signed.value = 0
-        d.i_dispatch_csr_addr.value = 0
-        d.i_dispatch_csr_imm.value = 0
-        d.i_dispatch_pc.value = 0
-        d.i_dispatch_link_addr.value = 0
-
     # =========================================================================
-    # CDB (84 bits, always packed)
+    # CDB (84 bits)
     # =========================================================================
 
     def drive_cdb(self, tag: int, value: int = 0, **kwargs: Any) -> None:
@@ -525,44 +432,11 @@ class RSInterface:
 
     def read_issue(self) -> dict:
         """Read and unpack the issue output."""
-        if self._flat:
-            return self._read_issue_flat()
         return unpack_rs_issue(int(self.dut.o_issue.value))
-
-    def _read_issue_flat(self) -> dict:
-        """Read individual issue ports from a flattened wrapper."""
-        d = self.dut
-        return {
-            "valid": bool(d.o_issue_valid.value),
-            "rob_tag": int(d.o_issue_rob_tag.value),
-            "op": int(d.o_issue_op.value),
-            "src1_value": int(d.o_issue_src1_value.value),
-            "src2_value": int(d.o_issue_src2_value.value),
-            "src3_value": int(d.o_issue_src3_value.value),
-            "imm": int(d.o_issue_imm.value),
-            "use_imm": bool(d.o_issue_use_imm.value),
-            "jalr_imm": int(d.o_issue_jalr_imm.value),
-            "rm": int(d.o_issue_rm.value),
-            "predicted_target_ok": bool(d.o_issue_predicted_target_ok.value),
-            "is_compressed": bool(d.o_issue_is_compressed.value),
-            "predicted_taken": bool(d.o_issue_predicted_taken.value),
-            "predicted_target": int(d.o_issue_predicted_target.value),
-            "is_fp_mem": bool(d.o_issue_is_fp_mem.value),
-            "mem_needs_lq": bool(d.o_issue_mem_needs_lq.value),
-            "mem_needs_sq": bool(d.o_issue_mem_needs_sq.value),
-            "mem_size": int(d.o_issue_mem_size.value),
-            "mem_signed": bool(d.o_issue_mem_signed.value),
-            "csr_addr": int(d.o_issue_csr_addr.value),
-            "csr_imm": int(d.o_issue_csr_imm.value),
-            "pc": int(d.o_issue_pc.value),
-            "link_addr": int(d.o_issue_link_addr.value),
-        }
 
     @property
     def issue_valid(self) -> bool:
         """Return whether issue output is valid."""
-        if self._flat:
-            return bool(self.dut.o_issue_valid.value)
         return self.read_issue()["valid"]
 
     # =========================================================================

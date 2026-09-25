@@ -325,11 +325,11 @@ async def test_sext_h(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: PACK with rs2=0 clears the upper half (zext.h is PACKW at RV64)
+# Test 10: PACK with rs2=0 zero-extends the low word (RV64 zext.h is PACKW)
 # ============================================================================
 @cocotb.test()
-async def test_pack_zext_h(dut: Any) -> None:
-    """PACK with rs2=0 packs the low halves (rs2=0 clears the top)."""
+async def test_pack_rs2_zero(dut: Any) -> None:
+    """PACK with rs2=0 zero-extends the low word of rs1."""
     iface = await setup(dut)
 
     rob_tag = 9

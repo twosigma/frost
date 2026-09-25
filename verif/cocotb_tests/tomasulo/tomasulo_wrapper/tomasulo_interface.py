@@ -25,7 +25,7 @@ import re
 from pathlib import Path
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
-from config import MASK_XLEN
+from config import MASK32, MASK_XLEN
 
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import (
     pack_alloc_request,
@@ -41,7 +41,6 @@ from cocotb_tests.tomasulo.reservation_station.rs_interface import (
     pack_rs_dispatch,
     unpack_rs_issue,
     MASK_TAG,
-    MASK32,
     MASK64,
 )
 from cocotb_tests.tomasulo.load_queue.lq_interface import CACHED_BASE

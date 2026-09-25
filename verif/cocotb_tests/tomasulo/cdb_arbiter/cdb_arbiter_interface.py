@@ -18,18 +18,17 @@ Packs fu_complete_t requests, unpacks cdb_broadcast_t outputs, and drives or
 reads the DUT ports.
 
 The RTL has one completion port per FU (i_fu_complete_0 .. i_fu_complete_7)
-plus live and fallback value inputs for the two integer ALUs. _get_fu_signal
-also accepts a DUT that exposes the completions as one array handle.
+plus live and fallback value inputs for the two integer ALUs.
 """
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
+from config import FLEN
 
 from .cdb_arbiter_model import CdbBroadcast, FuComplete, FU_ALU, FU_ALU2, NUM_FUS
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-FLEN = 64
 EXC_CAUSE_WIDTH = 5
 FP_FLAGS_WIDTH = 5
 FU_TYPE_WIDTH = 3
@@ -127,15 +126,8 @@ class CdbArbiterInterface:
         await FallingEdge(self.clock)
 
     def _get_fu_signal(self, fu_index: int) -> Any:
-        """Return the DUT handle for one FU completion input.
-
-        Uses the per-FU ports (dut.i_fu_complete_0 .. dut.i_fu_complete_7)
-        when present, otherwise indexes an array handle,
-        dut.i_fu_complete[fu_index].
-        """
-        if hasattr(self.dut, "i_fu_complete_0"):
-            return getattr(self.dut, f"i_fu_complete_{fu_index}")
-        return self.dut.i_fu_complete[fu_index]
+        """Return the DUT handle for one FU completion input (i_fu_complete_N)."""
+        return getattr(self.dut, f"i_fu_complete_{fu_index}")
 
     def drive_fu_complete(
         self,

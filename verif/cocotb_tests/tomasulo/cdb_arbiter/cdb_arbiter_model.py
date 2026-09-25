@@ -21,9 +21,10 @@ both CDB broadcast results plus the per-FU grant vector (up to 2-hot).
 
 from dataclasses import dataclass
 
+from config import FLEN
+
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-FLEN = 64
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK64 = (1 << FLEN) - 1

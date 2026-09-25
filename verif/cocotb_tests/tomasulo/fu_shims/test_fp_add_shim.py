@@ -19,8 +19,6 @@ move operations, busy signalling, and flush behavior through the shim
 interface.
 """
 
-import re
-from pathlib import Path
 from typing import Any
 
 import cocotb
@@ -29,6 +27,7 @@ from cocotb.triggers import FallingEdge, RisingEdge
 
 from .fp_add_shim_interface import (
     FpAddShimInterface,
+    _parse_instr_op_enum,
     nan_box_f32,
 )
 
@@ -51,77 +50,6 @@ FLEN_1_0 = nan_box_f32(F32_1_0)
 FLEN_2_0 = nan_box_f32(F32_2_0)
 FLEN_3_0 = nan_box_f32(F32_3_0)
 FLEN_NEG_1_0 = nan_box_f32(F32_NEG_1_0)
-
-
-# ---------------------------------------------------------------------------
-# Parse instr_op_e from riscv_pkg.sv so op values track the RTL source.
-# ---------------------------------------------------------------------------
-def _parse_instr_op_enum() -> dict[str, int]:
-    """Parse the instr_op_e enum from riscv_pkg.sv and return name->value map.
-
-    Handles both implicit sequential values and explicit assignments
-    (e.g. ``FOO = 5``, ``BAR = 32'HDEAD_BEEF``).  Raises RuntimeError
-    on parse failures so silent mis-numbering cannot occur.
-    """
-    pkg_path = (
-        Path(__file__).resolve().parents[4]
-        / "hw"
-        / "rtl"
-        / "cpu_and_mem"
-        / "cpu"
-        / "riscv_pkg.sv"
-    )
-    text = pkg_path.read_text()
-    # Accept either an implicit enum base or a one-line bit/logic base.
-    m = re.search(
-        r"typedef\s+enum"
-        r"(?:\s+(?:bit|logic)(?:\s+(?:signed|unsigned))?(?:\s*\[[^\r\n]+?\])?)?"
-        r"\s*\{([^}]*)\}\s*instr_op_e\s*;",
-        text,
-        re.DOTALL,
-    )
-    if not m:
-        raise RuntimeError("Could not find instr_op_e enum in riscv_pkg.sv")
-    body = m.group(1)
-    result: dict[str, int] = {}
-    next_val = 0
-    for line in body.splitlines():
-        line = re.sub(r"//.*", "", line)  # strip comments
-        line = re.sub(r"/\*.*?\*/", "", line)  # strip inline /* */
-        line = line.strip().rstrip(",")
-        if not line:
-            continue
-        # NAME = VALUE  (explicit assignment)
-        # Supports: plain decimal (5), sized (8'd5, 32'hFF), unsized ('hFF),
-        # octal (8'o17), binary (4'b1010), with optional _ separators.
-        em = re.fullmatch(
-            r"([A-Z_][A-Z0-9_]*)\s*=\s*(?:\d*'[bBdDhHoO])?([0-9a-fA-F_]+)",
-            line,
-        )
-        if em:
-            digits = em.group(2).replace("_", "")
-            base = 10
-            # Detect base from the format specifier preceding the digits
-            bm = re.search(r"'([bBdDhHoO])", line)
-            if bm:
-                base = {"b": 2, "d": 10, "h": 16, "o": 8}[bm.group(1).lower()]
-            try:
-                next_val = int(digits, base)
-            except ValueError as exc:
-                raise RuntimeError(f"Cannot parse instr_op_e value: {line!r}") from exc
-            result[em.group(1)] = next_val
-            next_val += 1
-            continue
-        # NAME  (implicit sequential)
-        if re.fullmatch(r"[A-Z_][A-Z0-9_]*", line):
-            result[line] = next_val
-            next_val += 1
-            continue
-        # Any other non-blank line inside the enum is a parse failure.
-        raise RuntimeError(f"Cannot parse instr_op_e entry: {line!r}")
-    if not result:
-        raise RuntimeError("instr_op_e enum body is empty")
-    return result
 
 
 _INSTR_OPS = _parse_instr_op_enum()

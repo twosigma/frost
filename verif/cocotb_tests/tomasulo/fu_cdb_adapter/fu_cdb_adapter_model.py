@@ -21,9 +21,10 @@ parameters and the full flush only; there is no partial flush.
 
 from dataclasses import dataclass
 
+from config import FLEN
+
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-FLEN = 64
 EXC_CAUSE_WIDTH = 5
 FP_FLAGS_WIDTH = 5
 

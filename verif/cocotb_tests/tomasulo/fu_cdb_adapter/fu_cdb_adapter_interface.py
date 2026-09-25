@@ -20,12 +20,12 @@ Packs and unpacks fu_complete_t, drives stimulus, and reads results.
 from typing import Any
 
 from cocotb.triggers import FallingEdge, RisingEdge
+from config import FLEN
 
 from .fu_cdb_adapter_model import FuComplete
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-FLEN = 64
 EXC_CAUSE_WIDTH = 5
 FP_FLAGS_WIDTH = 5
 
