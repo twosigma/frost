@@ -34,7 +34,8 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 from typing import Any
 
-from config import NOP_INSTRUCTION, XLEN
+from config import XLEN
+from cocotb_tests.cpu_structs import ID_TO_EX_FIELDS
 
 CLK_PERIOD_NS = 3
 UART_BAUD_RATE = 115200
@@ -355,6 +356,69 @@ def _read_bool(signal: Any) -> bool | None:
     if value is None:
         return None
     return bool(value)
+
+
+def _require_signals(check: str, handles: dict[str, Any]) -> None:
+    """Fail an opt-in check whose signal handles did not all resolve.
+
+    Args:
+        check: The environment variable that enabled the check
+        handles: Signal path to the handle _get_signal returned for it
+
+    Raises:
+        AssertionError: If any handle is None.
+    """
+    missing = sorted(path for path, handle in handles.items() if handle is None)
+    if missing:
+        raise AssertionError(
+            f"{check} needs signals this build does not expose: {', '.join(missing)}"
+        )
+
+
+class _PackedStruct:
+    """Named fields of a packed struct, read through its whole-vector handle.
+
+    Verilator's VPI exposes a packed struct as one vector, with no handles for
+    its members. The layout is a cocotb_tests.cpu_structs list of (name,
+    width) pairs, MSB first, and its widths must add up to the vector's width.
+    """
+
+    def __init__(self, handle: Any, layout: list[tuple[str, int]], path: str) -> None:
+        """Map each field to its bit slice, checking the layout's total width."""
+        total = sum(width for _, width in layout)
+        if len(handle) != total:
+            raise AssertionError(
+                f"{path} is {len(handle)} bits wide, but its cpu_structs layout "
+                f"adds up to {total}"
+            )
+        self.handle = handle
+        self.slices: dict[str, tuple[int, int]] = {}
+        for name, width in layout:
+            total -= width
+            self.slices[name] = (total, (1 << width) - 1)
+
+    def read(self) -> int | None:
+        """Return the whole struct as an int, or None if unresolvable."""
+        return _read_int(self.handle)
+
+    def field(self, packed: int, name: str) -> int:
+        """Extract one field from a value that read() returned."""
+        lsb, mask = self.slices[name]
+        return (packed >> lsb) & mask
+
+
+def _packed_struct(
+    dut: Any, path: str, layout: list[tuple[str, int]], check: str
+) -> _PackedStruct:
+    """Look up a packed-struct signal that an opt-in check needs.
+
+    Raises:
+        AssertionError: If the signal is missing or its width does not
+            match the layout.
+    """
+    handle = _get_signal(dut, path)
+    _require_signals(check, {path: handle})
+    return _PackedStruct(handle, layout, path)
 
 
 async def ddr_write_watch(dut: Any) -> None:
@@ -1442,6 +1506,10 @@ async def run_until_complete(
         "FROST_COREMARK_IF_CHECK_SYMBOL", "calc_func"
     )
     coremark_if_check_count = 0
+    coremark_if_check_alloc_sig = None
+    coremark_if_check_slot2: _PackedStruct | None = None
+    coremark_if_check_lo = 0
+    coremark_if_check_hi = 0
     coremark_retire_trace_path = (
         os.environ.get("FROST_COREMARK_RETIRE_TRACE_PATH") if is_coremark_like else None
     )
@@ -1709,6 +1777,25 @@ async def run_until_complete(
                     f"FROST_COREMARK_IF_CHECK_SYMBOL={coremark_if_check_symbol!r} "
                     "has no code in sw.S; name a function this build contains"
                 )
+            coremark_if_check_lo = min(coremark_matrix_expected)
+            coremark_if_check_hi = max(coremark_matrix_expected) + 4
+            coremark_if_check_alloc_sig = _get_signal(
+                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_alloc_valid"
+            )
+            _require_signals(
+                "FROST_COREMARK_IF_CHECK",
+                {
+                    "cpu_inst.dbg_rob_alloc_valid": coremark_if_check_alloc_sig,
+                    "cpu_inst.dbg_id_pc": id_pc_sig,
+                    "cpu_inst.dbg_id_instr": id_instr_sig,
+                },
+            )
+            coremark_if_check_slot2 = _packed_struct(
+                dut,
+                "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex_2",
+                ID_TO_EX_FIELDS,
+                "FROST_COREMARK_IF_CHECK",
+            )
         coremark_symbol_ranges = _load_symbol_ranges(
             [
                 "core_bench_list",
@@ -3056,35 +3143,54 @@ async def run_until_complete(
                         f"a0_tag={_read_int(rat_a0_tag_sig)}"
                     )
 
-        if coremark_if_check_enabled and coremark_matrix_expected:
-            # Compare at the decode output: from_id_to_ex holds a NOP for
-            # every bubble, while pd_stage's instruction register keeps the
-            # stale word and marks the bubble in inject_nop. Verilator's VPI
-            # does not expose packed-struct members such as
-            # from_if_to_pd.effective_instr, so earlier stages cannot be read.
-            # A compressed parcel reaches decode expanded, so 16-bit words are
-            # skipped.
-            id_pc = _read_int(id_pc_sig)
-            id_instr = _read_int(id_instr_sig)
-            if id_pc in coremark_matrix_expected and id_instr not in {
-                None,
-                NOP_INSTRUCTION,
-            }:
-                expected_bits, expected_width = coremark_matrix_expected[id_pc]
-                if expected_width == 32:
-                    coremark_if_check_count += 1
-                    if id_instr != expected_bits:
-                        retire_pc = (
-                            _read_int(retire_pc_sig) if _read_bool(retire_sig) else None
+        if (
+            coremark_if_check_enabled
+            and coremark_if_check_slot2 is not None
+            and _read_bool(coremark_if_check_alloc_sig)
+        ):
+            # Compare each instruction as it dispatches: the decoded bundle
+            # queue pops its head bundle when ROB allocation fires, and slot
+            # 2 dispatches with slot 1 exactly when its is_not_nop bit is
+            # set. A slot-2 instruction follows slot 1 sequentially (a slot-1
+            # branch ends the bundle), so slot 2 is read only near the
+            # function. A compressed instruction reaches decode expanded, so
+            # 16-bit parcels are skipped. CoreMark takes no fetch faults, so
+            # every dispatched packet holds the word fetched from its PC.
+            slot1_pc = _read_int(id_pc_sig)
+            dispatched = [(1, slot1_pc, _read_int(id_instr_sig))]
+            if (
+                slot1_pc is not None
+                and coremark_if_check_lo - 4 <= slot1_pc < coremark_if_check_hi
+            ):
+                slot2 = coremark_if_check_slot2
+                packet_2 = slot2.read()
+                if packet_2 is None:
+                    raise AssertionError(
+                        f"CoreMark IF check: from_id_to_ex_2 is unresolvable at "
+                        f"cycle={cycle + 1}"
+                    )
+                if slot2.field(packet_2, "is_not_nop"):
+                    dispatched.append(
+                        (
+                            2,
+                            slot2.field(packet_2, "program_counter"),
+                            slot2.field(packet_2, "instruction"),
                         )
-                        raise AssertionError(
-                            f"CoreMark IF check mismatch at cycle={cycle + 1}: "
-                            f"decode pc=0x{id_pc:08x} holds 0x{id_instr:08x}, "
-                            f"sw.S has 0x{expected_bits:08x} "
-                            f"(pd_pc=0x{(_read_int(pd_pc_sig) or 0):08x} "
-                            f"pd_instr=0x{(_read_int(pd_instr_sig) or 0):08x} "
-                            f"retire_pc=0x{(retire_pc or 0):08x})"
-                        )
+                    )
+            for slot, dispatch_pc, dispatch_instr in dispatched:
+                if dispatch_pc is None:
+                    continue
+                expected = coremark_matrix_expected.get(dispatch_pc)
+                if expected is None or expected[1] != 32:
+                    continue
+                coremark_if_check_count += 1
+                if dispatch_instr != expected[0]:
+                    raise AssertionError(
+                        f"CoreMark IF check mismatch at cycle={cycle + 1}: "
+                        f"dispatch slot {slot} pc=0x{dispatch_pc:08x} holds "
+                        f"0x{(dispatch_instr or 0):08x}, sw.S has "
+                        f"0x{expected[0]:08x}"
+                    )
 
         if is_coremark_like and len(coremark_matrix_events) < coremark_matrix_limit:
             if_pc = _read_int(if_pc_sig)
@@ -3689,7 +3795,7 @@ async def run_until_complete(
             )
         cocotb.log.info(
             f"Run {run_number}: CoreMark IF check compared "
-            f"{coremark_if_check_count} decoded instructions of "
+            f"{coremark_if_check_count} dispatched instructions of "
             f"{coremark_if_check_symbol} with sw.S"
         )
 

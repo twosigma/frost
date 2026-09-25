@@ -366,3 +366,70 @@ def test_rat_interfaces_preserve_rv64_regfile_values(interface_type: Any) -> Non
     assert dut.i_int_regfile_data2.value == values[1]
     assert dut.i_int_regfile_data1_2.value == values[2]
     assert dut.i_int_regfile_data2_2.value == values[3]
+
+
+class _VectorValue:
+    """Resolvable stand-in for a cocotb vector value."""
+
+    is_resolvable = True
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    def __int__(self) -> int:
+        return self._value
+
+
+class _VectorHandle:
+    """Stand-in for a VPI handle of a packed struct: a width and a value."""
+
+    def __init__(self, width: int, value: int) -> None:
+        self._width = width
+        self.value = _VectorValue(value)
+
+    def __len__(self) -> int:
+        return self._width
+
+
+def test_packed_struct_reads_fields_through_the_whole_vector() -> None:
+    """Fields come out of the packed value at their cpu_structs positions."""
+    real_program = importlib.import_module("cocotb_tests.test_real_program")
+    layout = cpu_structs.ID_TO_EX_FIELDS
+    width = sum(field_width for _, field_width in layout)
+    packed = packed_structs.pack_struct(
+        layout,
+        {
+            "program_counter": 0x8000_0000_0000_0B8C,
+            "instruction": 0x00A5_8593,
+            "is_not_nop": 1,
+        },
+    )
+    struct = real_program._PackedStruct(_VectorHandle(width, packed), layout, "slot2")
+
+    value = struct.read()
+    assert value == packed
+    assert struct.field(value, "program_counter") == 0x8000_0000_0000_0B8C
+    assert struct.field(value, "instruction") == 0x00A5_8593
+    assert struct.field(value, "is_not_nop") == 1
+    assert struct.field(value, "is_compressed") == 0
+
+
+def test_packed_struct_rejects_a_layout_of_another_width() -> None:
+    """A layout that no longer matches the RTL struct fails at setup."""
+    real_program = importlib.import_module("cocotb_tests.test_real_program")
+    layout = cpu_structs.COMMIT_FIELDS
+    width = sum(field_width for _, field_width in layout)
+
+    with pytest.raises(AssertionError, match="bits wide"):
+        real_program._PackedStruct(_VectorHandle(width + 1, 0), layout, "commit")
+
+
+def test_required_signals_name_every_missing_handle() -> None:
+    """An opt-in check fails at setup and names the handles it could not find."""
+    real_program = importlib.import_module("cocotb_tests.test_real_program")
+
+    real_program._require_signals("CHECK", {"present": object()})
+    with pytest.raises(AssertionError, match="CHECK needs .*: a, b$"):
+        real_program._require_signals(
+            "CHECK", {"b": None, "present": object(), "a": None}
+        )
