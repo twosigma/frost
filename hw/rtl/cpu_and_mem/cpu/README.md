@@ -20,7 +20,7 @@ expands renaming, execution, result broadcast, and load/store ordering.
 | [`cpu_ooo/`](cpu_ooo/) | `cpu_ooo.sv` and its glue submodules |
 | [`tomasulo/`](tomasulo/README.md) | Back end: dispatch, rename tables, reservation stations, load and store queues, ROB |
 | `if_stage/` | Fetch PC control, branch prediction, instruction alignment |
-| `pd_stage/` | Slot-1 compressed-instruction expansion, early source fields, the PD branch redirect |
+| `pd_stage/` | Slot-1 instruction from the native word or its predecoded RVC expansion, early source fields, the PD branch redirect |
 | `id_stage/` | Decode for both slots |
 | `mmu/` | Instruction MMU (8-entry ITLB), data MMU (16-entry DTLB), shared page-table walker |
 | `csr/` | CSR file; CSR instructions execute at commit |
@@ -84,8 +84,11 @@ inside another package's typedef.
 IF receives a 64-bit window each cycle: the 32-bit word at the fetch PC and
 the word after it. It cuts up to two instructions from the window, assembling
 a 32-bit instruction that starts in the upper half of a word from both words
-in the same cycle. IF expands a compressed slot-2 instruction itself; PD
-expands slot 1 and extracts source registers early; ID decodes both slots.
+in the same cycle. Compressed instructions are expanded when their words are
+written to instruction memory or filled into the L1I (see
+[Instruction fetch providers](#instruction-fetch-providers)): IF builds slot 2
+from that predecoded RV64C expansion, PD does the same for slot 1 and extracts
+source registers early, and ID decodes both slots.
 Decoded bundles wait in the
 [decoded bundle queue](cpu_ooo/frontend_control/README.md) until dispatch
 renames them.

@@ -22,8 +22,9 @@
  * c_extension aligns parcels and keeps the instruction buffer; mmu/immu
  * translates o_pc into the physical addresses of the window's two words.
  *
- * Slot 1 stays compressed until PD, keeping decompression off the memory path.
- * Slot 2 is decompressed here from fixed candidates before its position mux.
+ * IF needs no RVC decompressor: the predecode sideband carries each parcel's
+ * RV64C expansion. PD forms slot 1's instruction from the fields IF passes
+ * it; slot 2 is built here from fixed candidates before its position mux.
  * Misprediction redirects, BTB training, and RAS restores arrive on
  * i_from_ex_comb. IF captures its packet when a pipeline stall begins and, if
  * it was a real instruction, replays it on release, because the fetch window
@@ -296,7 +297,7 @@ module if_stage #(
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
   // ---------------------------------------------------------------------------
-  logic [15:0] raw_parcel;  // Selected 16-bit parcel for RVC decompression
+  logic [15:0] raw_parcel;  // Slot-1 parcel: size bits, RAS detection, PD's reference
   logic [31:0] effective_instr;  // Raw current word (for state machine/buffer)
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
@@ -1671,8 +1672,8 @@ module if_stage #(
   // a single cycle.  When PC[1]=1, the 32-bit candidate is assembled
   // speculatively from the current word's upper half and the next word's
   // lower half.  This is the architecturally selected value for a native
-  // instruction.  For an RVC instruction PD selects raw_parcel/decompression
-  // instead, so the speculative upper half is a don't-care.
+  // instruction.  For an RVC instruction PD builds the instruction from the
+  // predecoded fields instead, so the speculative upper half is a don't-care.
   //
   // Do not qualify this mux with is_compressed.  That bit comes from the IMEM
   // predecode sideband, and qualifying the 32-bit candidate with it would put
@@ -1714,7 +1715,7 @@ module if_stage #(
       rvc_source_hot : {assembled_instr[21], assembled_instr[17:16]};
   assign source_hot_predecoded_2_live = source_hot_2;
   // Slot 1's instruction bits [24:20] by the same construction: RVC values
-  // come from the sideband, so PD's rs2 path skips the decompressor.
+  // come from the sideband, so PD's rs2 path has no decompressor.
   logic [ 4:0] bits24_20_predecoded_live;
   logic [ 2:0] rs1_rest_predecoded_live;
   logic [ 4:0] bits24_20_predecoded_saved;

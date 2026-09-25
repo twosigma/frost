@@ -1308,8 +1308,9 @@ async def test_high_half_rvc_speculates_native_candidate_without_sideband_mux(
         packet,
         pc=BASE_PC + 2,
         raw=COMPRESSED_NOP,
-        # PD selects/decompresses raw for RVC. effective_instr is therefore a
-        # don't-care and can carry the sideband-free 32-bit spanning candidate.
+        # PD builds an RVC instruction from its predecoded fields, so
+        # effective_instr is a don't-care and can carry the sideband-free
+        # 32-bit spanning candidate.
         effective=_word(lo=COMPRESSED_NOP, hi=0xCAFE),
         compressed=True,
     )

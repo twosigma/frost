@@ -1,7 +1,8 @@
 # Instruction Fetch (IF) stage file list
 # Manages program counter and instruction memory interface
 
-# C-Extension support (RVC) - decompression, alignment, state tracking
+# C-Extension support (RVC) - alignment, buffer state, and the reference
+# decompressor used in simulation
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_extension.f
 
 # Branch prediction - BTB, bimodal direction predictor, return address stack

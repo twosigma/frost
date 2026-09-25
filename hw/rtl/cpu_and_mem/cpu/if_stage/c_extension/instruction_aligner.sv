@@ -82,7 +82,7 @@ module instruction_aligner #(
     // select in the coverage module's final buffer-arm mux.
     output logic o_no_buffer_accepts_served_last,
     output logic o_sel_nop,  // Outputting NOP
-    output logic o_sel_compressed,  // Outputting decompressed instruction
+    output logic o_sel_compressed,  // Slot 1 is a compressed instruction
     output logic o_use_instr_buffer,  // Using buffered instruction
     // Exact {rs2[1], rs1[2:1]} of the selected parcel's RVC expansion.
     output logic [2:0] o_rvc_source_hot,

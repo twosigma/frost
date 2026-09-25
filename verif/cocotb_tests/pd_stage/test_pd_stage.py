@@ -312,7 +312,7 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
 
 
 @cocotb.test()
-async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> None:
+async def test_compressed_parcel_registers_its_predecoded_expansion(dut: Any) -> None:
     """PD classifies the raw parcel itself and registers its predecoded expansion."""
     await _setup_test(dut)
     raw = _pack_compressed(
@@ -347,7 +347,9 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
 
 
 @cocotb.test()
-async def test_field_cofactors_preserve_selection_and_lifecycle(dut: Any) -> None:
+async def test_rvc_fields_come_from_predecode_through_packet_lifecycle(
+    dut: Any,
+) -> None:
     """Slot 1 takes an RVC expansion from its predecoded fields, not effective_instr.
 
     IF's sel_compressed is ignored in both directions. The test then checks
@@ -554,7 +556,9 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_illegal_cofactor_preserves_qualification_and_lifecycle(dut: Any) -> None:
+async def test_rvc_illegal_flag_comes_from_predecode_through_packet_lifecycle(
+    dut: Any,
+) -> None:
     """Slot 1's illegal flag comes from the predecoded RVC illegal bit.
 
     PD's own compressed classifier qualifies it. IF's sel_compressed and the

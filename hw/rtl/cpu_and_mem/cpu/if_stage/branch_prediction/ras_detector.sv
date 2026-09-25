@@ -19,8 +19,9 @@
  *   - Call (push): JAL or JALR writing a link register.
  *   - Return (pop and predict): JALR x0, 0(x1).
  *   - Coroutine swap (pop, then push): JALR x5, 0(x1).
- * C.JR and C.JALR are detected directly from the raw parcel because
- * decompression happens in PD. C.JR x1 is a return; C.JALR is always a call.
+ * C.JR and C.JALR are detected directly from the raw parcel, because the
+ * instruction input is the fetched word, not the RV64C expansion. C.JR x1 is a
+ * return; C.JALR is always a call.
  */
 module ras_detector (
     // Instruction to analyze (32-bit for non-compressed instructions)
