@@ -103,9 +103,10 @@ queue while a just-committed store is still on its way in.
 A partial flush removes uncommitted stores younger than the flush point; the
 commit-time recovery flush removes all uncommitted stores. Committed stores
 survive both, and the tail moves back over the removed entries one cycle
-later. A flush can arrive one cycle after a store's commit pulse, before the
-entry's committed bit is set, so the flush also spares entries that match the
-registered commit ports. The ROB never commits in a flush cycle.
+later. The flush also spares entries that match the registered commit ports,
+whose committed bits are not yet set. The core does not depend on that guard:
+no store retires in the cycle before either flush, and the ROB never commits
+in a flush cycle.
 
 A full flush (trap, xRET, or FENCE-class recovery) empties the SQ. Those events
 first wait for committed stores to drain, so no committed write is lost.
