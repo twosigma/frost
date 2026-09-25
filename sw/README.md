@@ -265,6 +265,7 @@ can be debugged and where each one first stops.
 | `fpu_assembly_test/` | FP hazards: squashed FP loads and load-use stalls |
 | `fpu_test/` | Subnormals, fused multiply-add, rounding, and conversions |
 | `freertos_demo/` | FreeRTOS tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
+| `fs_off_test/` | F/D instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes that apply from the next instruction |
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
 | `isa_test/` | Self-checks for RV64IMAFDCB, Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and Zihintpause, plus M-mode CSRs and traps |

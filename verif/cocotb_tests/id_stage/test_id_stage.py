@@ -53,6 +53,8 @@ OPC_STORE = 0b0100011
 OPC_OP_IMM = 0b0010011
 OPC_OP = 0b0110011
 OPC_FMADD = 0b1000011
+OPC_LOAD_FP = 0b0000111
+OPC_OP_FP = 0b1010011
 
 # Parsed from riscv_pkg.sv so the values track instr_op_e. Hardcoded values
 # would go stale whenever a member is inserted earlier in the enum.
@@ -67,6 +69,8 @@ LW = _INSTR_OPS["LW"]
 SW = _INSTR_OPS["SW"]
 FMADD_S = _INSTR_OPS["FMADD_S"]
 FENCE = _INSTR_OPS["FENCE"]
+FLW = _INSTR_OPS["FLW"]
+FADD_S = _INSTR_OPS["FADD_S"]
 PAUSE = _INSTR_OPS["PAUSE"]
 
 BREQ = 0
@@ -78,6 +82,7 @@ STW = 3
 
 RS_INT = 0
 RS_MEM = 2
+RS_FP = 3
 RS_FMUL = 4
 RS_NONE = 6
 
@@ -330,6 +335,7 @@ def _clear_inputs(dut: Any) -> None:
     _drive_wb(dut, {})
     dut.i_pd_redirect.value = 0
     dut.i_pd_redirect_target.value = 0
+    dut.i_mstatus_fs_off.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -759,6 +765,67 @@ async def test_fetch_fault_reads_no_source_register(dut: Any) -> None:
             assert packet["uses_int_rs2"] is False
             assert packet["uses_fp_rs1"] is False
             _drive_pd_packet(dut, {}, slot2=slot2)
+
+
+@cocotb.test()
+async def test_fs_off_decodes_fp_instructions_as_illegal(dut: Any) -> None:
+    """While mstatus.FS is Off, F/D instructions in either slot take the illegal class."""
+    await _setup_test(dut)
+    flw = _pack_i(imm=8, rs1=10, funct3=0b010, rd=3, opcode=OPC_LOAD_FP)
+    fadd = _pack_r(funct7=0, rs2=2, rs1=1, funct3=0, rd=4, opcode=OPC_OP_FP)
+    fmadd = _pack_r4(rs3=7, fmt=0, rs2=6, rs1=5, rm=0, rd=4, opcode=OPC_FMADD)
+    add = _pack_r(funct7=0, rs2=12, rs1=11, funct3=0, rd=10, opcode=OPC_OP)
+
+    for fp_instr in (flw, fadd, fmadd):
+        for fp_slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC, "instruction": fp_instr},
+                slot2=fp_slot2,
+            )
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC + 4, "instruction": add},
+                slot2=not fp_slot2,
+            )
+            dut.i_mstatus_fs_off.value = 1
+            await _advance_cycle(dut)
+
+            packet = _read_id_packet(dut, slot2=fp_slot2)
+            assert packet["is_illegal_instruction"] is True, hex(fp_instr)
+            assert packet["is_fp_instruction"] is True
+            assert packet["rs_type"] == RS_INT
+            assert packet["has_int_dest"] is False
+            assert packet["has_fp_dest"] is False
+            assert packet["has_fp_flags"] is False
+            assert packet["uses_int_rs1"] is False
+            assert packet["uses_fp_rs1"] is False
+            assert packet["uses_fp_rs2"] is False
+            assert packet["uses_fp_rs3"] is False
+            assert packet["is_not_nop"] is True
+            other = _read_id_packet(dut, slot2=not fp_slot2)
+            assert other["is_illegal_instruction"] is False
+            assert other["instruction_operation"] == ADD
+            assert other["uses_int_rs1"] is True
+
+    # FS on again: the same instructions decode normally.
+    dut.i_mstatus_fs_off.value = 0
+    _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": flw})
+    _drive_pd_packet(
+        dut, {"program_counter": BASE_PC + 4, "instruction": fadd}, slot2=True
+    )
+    await _advance_cycle(dut)
+    load = _read_id_packet(dut)
+    assert load["is_illegal_instruction"] is False
+    assert load["instruction_operation"] == FLW
+    assert load["rs_type"] == RS_MEM
+    assert load["has_fp_dest"] is True
+    assert load["uses_int_rs1"] is True
+    compute = _read_id_packet(dut, slot2=True)
+    assert compute["is_illegal_instruction"] is False
+    assert compute["instruction_operation"] == FADD_S
+    assert compute["rs_type"] == RS_FP
+    assert compute["has_fp_flags"] is True
 
 
 @cocotb.test()

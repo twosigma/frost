@@ -262,9 +262,10 @@ module csr_file #(
     // flight.
     output logic [43:0] o_satp_root_ppn,
 
-    // mstatus.FS == Off. Sampled by the reorder buffer's FP-op legality check
-    // at allocation. Changes only on a committed CSR write (hardware only
-    // sets Dirty, never Off).
+    // mstatus.FS == Off. id_stage decodes every F/D instruction as illegal
+    // while it is set, and the reorder buffer's allocation check traps them
+    // and fflags/frm/fcsr accesses. Changes only on a committed CSR write
+    // (hardware only sets Dirty, never Off).
     output logic o_mstatus_fs_off,
 
     // Debug Mode state exports: the live Debug-Mode bit (the
@@ -351,9 +352,10 @@ module csr_file #(
   logic       mstatus_tsr;  // Trap SRET (bit 22)
   // FS [14:13]: FP context status. Writable 2-bit field; hardware
   // sets Dirty on any FP architectural-state write (FP regfile dest,
-  // FP-flag accrual, fflags/frm/fcsr CSR write); the reorder buffer samples
-  // o_mstatus_fs_off at allocation and marks FP instructions illegal when
-  // Off. Resets to Initial so FP works without OS setup.
+  // FP-flag accrual, fflags/frm/fcsr CSR write). While it is Off, id_stage
+  // decodes F/D instructions as illegal and the reorder buffer's allocation
+  // check traps FP CSR accesses (o_mstatus_fs_off). Resets to Initial so FP
+  // works without OS setup.
   logic [1:0] mstatus_fs;
   localparam logic [1:0] FsOff = 2'b00;
   localparam logic [1:0] FsInitial = 2'b01;
@@ -1039,10 +1041,10 @@ module csr_file #(
     // (i_fp_flags_valid, covers x-dest computes like FCMP/FCVT), (c) a CSR
     // write to fflags/frm/fcsr. Mutually exclusive with a CSR write to
     // mstatus in the same cycle (CSR ops are head-serialized and are not FP
-    // ops), and impossible while FS==Off (the ROB gate traps FP ops and FP
-    // CSR accesses before they commit), so plain priority-after-write is
-    // safe. Pessimistic Dirty (e.g. on a flag op that raises no flags) is
-    // architecturally permitted.
+    // ops), and impossible while FS==Off (F/D instructions decode as illegal
+    // and FP CSR accesses trap at ROB allocation, so none commits), so plain
+    // priority-after-write is safe. Pessimistic Dirty (e.g. on a flag op that
+    // raises no flags) is architecturally permitted.
     if ((i_csr_write_enable && i_csr_read_enable &&
          (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
           i_csr_address == riscv_pkg::CsrFcsr)) ||

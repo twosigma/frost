@@ -769,6 +769,10 @@ module cpu_ooo #(
     from_ma_to_wb_commit.fp_regfile_write_data   = '0;
   end
 
+  // mstatus.FS == Off from csr_file. ID decodes every F/D instruction as
+  // illegal while it is set; the ROB's allocation check reads it too.
+  logic csr_mstatus_fs_off;
+
   id_stage #(
       .XLEN(XLEN)
   ) id_stage_inst (
@@ -780,6 +784,7 @@ module cpu_ooo #(
       .i_rf_to_id(rf_to_fwd),
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),
+      .i_mstatus_fs_off(csr_mstatus_fs_off),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
       // Slot 2 (2-wide dispatch). i_from_pd_to_id_2 carries the second
@@ -3108,7 +3113,6 @@ module cpu_ooo #(
   logic trap_to_d, trap_no_csr, dbg_go_taken, dbg_park_entry, dbg_park_exception;
   logic [2:0] trap_dbg_cause;
   logic csr_mstatus_mie_direct;
-  logic csr_mstatus_fs_off;
 
   // CSR write data: for register ops (CSRRW/CSRRS/CSRRC), the ALU shim
   // stored rs1 in rob_commit.value. For immediate ops (CSRRWI/CSRRSI/CSRRCI),
@@ -3313,6 +3317,23 @@ module cpu_ooo #(
       .i_perf_counter_csr_half(perf_counter_csr_half_q),
       .i_perf_counter_count(perf_counter_count)
   );
+
+`ifndef SYNTHESIS
+  // id_stage decodes F/D instructions against the live mstatus.FS, so an
+  // instruction decoded before FS enters or leaves Off must not survive the
+  // change. FS changes only through a write-intending mstatus/sstatus access,
+  // which the ROB classes as a translation CSR: its FENCE-class full flush
+  // lands in the cycle the new value first shows here.
+  logic csr_mstatus_fs_off_q;
+  logic fs_off_checks_armed = 1'b0;
+  always_ff @(posedge i_clk) begin
+    csr_mstatus_fs_off_q <= csr_mstatus_fs_off;
+    fs_off_checks_armed  <= !i_rst;
+    if (fs_off_checks_armed && !i_rst && (csr_mstatus_fs_off != csr_mstatus_fs_off_q)) begin
+      p_fs_off_change_flushes_decode : assert (flush_all);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Page-Table Walker

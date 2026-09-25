@@ -91,7 +91,10 @@ from that predecoded RV64C expansion, PD does the same for slot 1 and extracts
 source registers early, and ID decodes both slots.
 Decoded bundles wait in the
 [decoded bundle queue](cpu_ooo/frontend_control/README.md) until dispatch
-renames them.
+renames them. While `mstatus.FS` is Off, ID decodes every F/D instruction as
+illegal, so it reaches dispatch as an illegal-instruction marker and never
+touches memory or FP state; the [CSR-write flush](#csr-writes) keeps that
+decode in step with FS.
 
 IF keeps two PCs. The fetch PC (`o_pc`) addresses instruction memory and the
 slot-1 BTB lookup. `pc_reg` is the PC of the packet IF emits, normally one
@@ -259,10 +262,11 @@ Simulation assertions in both modules check the rule, and the
 `csr_commit_cofactor` formal target checks the CSR state under it.
 
 A CSR instruction that accesses `satp`, or writes `mstatus` or `sstatus`, can
-change address translation, so everything after it must be refetched under
-the new state. The ROB serializer waits for committed stores to drain and then
-retires the CSR. The write lands in `csr_file` the next cycle, from the
-registered commit bus, and a full pipeline flush follows one cycle after that.
+change address translation or `mstatus.FS`, which ID's decode reads, so
+everything after it must be refetched under the new state. The ROB serializer
+waits for committed stores to drain and then retires the CSR. The write lands
+in `csr_file` the next cycle, from the registered commit bus, and a full
+pipeline flush follows one cycle after that.
 It is the same FENCE-class flush that FENCE.I uses, so it also drops the fetch
 provider's buffered lines. Across those two cycles `cpu_ooo` blocks trap,
 Debug Mode, and xRET takes and ignores exceptions, so no younger instruction

@@ -1370,8 +1370,10 @@ module dispatch #(
     // that build `op` here, and registered into from_id_to_ex_t.
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
 
-    // FS check: the ROB samples mstatus.FS at allocation and records an
-    // illegal-instruction exception for an FP instruction when FS is Off.
+    // FS check: while mstatus.FS is Off, ID decodes every F/D instruction as
+    // illegal, so it dispatches to INT_RS as ILLEGAL. The ROB's allocation
+    // check records the same illegal-instruction exception from this flag and
+    // also covers fflags/frm/fcsr accesses.
     o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
   end
 

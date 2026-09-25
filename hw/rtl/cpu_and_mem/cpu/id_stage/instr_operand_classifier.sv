@@ -21,7 +21,7 @@
 // or i_fetch_fault then selects the neutral class. i_instr is PD's instruction
 // before the NOP is applied; i_illegal is instr_decoder's flag for the
 // instruction ID decodes (the NOP when i_inject_nop is set) ORed with PD's
-// illegal flag.
+// illegal flag and ID's mstatus.FS=Off check.
 module instr_operand_classifier (
     input riscv_pkg::instr_t i_instr,
     input logic i_inject_nop,

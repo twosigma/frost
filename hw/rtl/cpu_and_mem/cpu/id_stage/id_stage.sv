@@ -35,6 +35,12 @@ module id_stage #(
     input riscv_pkg::rf_to_fwd_t i_rf_to_id,  // Regfile read data (combinational from PD src regs)
     input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id,  // FP regfile read data (F extension)
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
+    // mstatus.FS == Off: every F/D instruction in either slot decodes as
+    // illegal. The live value is exact because FS enters or leaves Off only
+    // through a write-intending mstatus/sstatus access, and each of those ends
+    // in the FENCE-class full flush, which refetches everything decoded under
+    // the old value (cpu_ooo asserts this).
+    input logic i_mstatus_fs_off,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Next-edge value of o_from_id_to_ex (its register D), for a consumer
     // that keeps a registered copy of fields it selects against this output.
@@ -135,8 +141,6 @@ module id_stage #(
       .o_illegal(decoder_illegal)
   );
 
-  logic is_illegal_instruction;
-  assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction;
   // A fetch fault (access or page fault) overrides decode entirely. The
   // fetched bytes are garbage and may even decode as a NOP, so the
   // dispatch-valid and operation paths both key on this flag, with priority
@@ -249,6 +253,15 @@ module id_stage #(
                             (instruction.opcode == riscv_pkg::OPC_FNMADD);
   assign is_fp_instruction_direct = is_fp_load_direct | is_fp_store_direct |
                                    is_fp_compute_direct | is_fp_fma_direct;
+
+  // Illegal: an undecodable encoding, an illegal compressed parcel (PD), or
+  // any F/D instruction while mstatus.FS is Off. An FS=Off FP op then takes
+  // the ordinary illegal path (INT_RS, op ILLEGAL), so an FP load never
+  // reaches the load queue and performs no memory or device read, and no
+  // memory fault can replace its illegal-instruction cause.
+  logic is_illegal_instruction;
+  assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
+                                  (i_mstatus_fs_off & is_fp_instruction_direct);
 
   // FP instructions that produce integer results (write to integer regfile).
   // funct7[6:2] leaves out the fmt bits, so each pattern covers S and D:
@@ -906,8 +919,6 @@ module id_stage #(
       .o_illegal(decoder_illegal_2)
   );
 
-  logic is_illegal_instruction_2;
-  assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction;
   logic is_fetch_fault_2;
   assign is_fetch_fault_2 = i_from_pd_to_id_2.fetch_fault;
   logic is_fetch_fault_page_2;
@@ -1003,6 +1014,10 @@ module id_stage #(
                               (instruction_2.opcode == riscv_pkg::OPC_FNMADD);
   assign is_fp_instruction_direct_2 = is_fp_load_direct_2 | is_fp_store_direct_2 |
                                      is_fp_compute_direct_2 | is_fp_fma_direct_2;
+
+  logic is_illegal_instruction_2;
+  assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction |
+                                    (i_mstatus_fs_off & is_fp_instruction_direct_2);
 
   logic is_fp_to_int_direct_2;
   assign is_fp_to_int_direct_2 = is_fp_compute_direct_2 && (

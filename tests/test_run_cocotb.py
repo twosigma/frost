@@ -262,6 +262,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "access-fault priority over misalignment."
         ),
     ),
+    "fs_off_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fs_off_test",
+        description=(
+            "F/D instructions while mstatus.FS is Off: illegal-instruction ahead of "
+            "access and misaligned faults, no device read by a trapping FP load "
+            "(FIFO0 and a waiting UART RX byte), and FS writes that apply from the "
+            "next instruction"
+        ),
+    ),
     "vm_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

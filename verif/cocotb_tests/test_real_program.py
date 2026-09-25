@@ -4017,6 +4017,10 @@ async def test_real_program(dut: Any) -> None:
         uart_driver = UartRxDriver(dut)
         debug_monitor = UartMmioDebugMonitor(dut)
         await debug_monitor.start()
+    elif app_name == "fs_off_test":
+        # fs_off_test checks that a trapping FS=Off FP load leaves a waiting
+        # UART RX byte unread; the bench sends it (0x5A) once per run.
+        uart_driver = UartRxDriver(dut)
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
 
     for run_number in range(1, NUM_RUNS + 1):
@@ -4059,6 +4063,9 @@ async def test_real_program(dut: Any) -> None:
         else:
             if nic_peer is not None:
                 nic_peer.start_run()
+            if app_name == "fs_off_test":
+                assert uart_driver is not None
+                cocotb.start_soon(uart_driver.send(b"\x5a"))
             await run_until_complete(
                 dut,
                 uart_monitor,

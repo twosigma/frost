@@ -594,7 +594,9 @@ module reorder_buffer #(
   logic [ReorderBufferDepth-1:0] rob_f_is_sfence;
   // Conservative allocation-time class of CSRs that may change address
   // translation: any satp access, and an mstatus/sstatus access with
-  // architectural write intent.
+  // architectural write intent. id_stage's mstatus.FS=Off check also relies
+  // on this class: the full flush that ends every such write discards whatever
+  // ID decoded under the old FS value.
   logic [ReorderBufferDepth-1:0] rob_f_csr_may_change_translation;
 
   // Head and tail pointers are declared above (forward reference).
