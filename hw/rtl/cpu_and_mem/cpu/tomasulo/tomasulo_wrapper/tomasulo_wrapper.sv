@@ -1975,7 +1975,7 @@ module tomasulo_wrapper #(
   (* keep = "true" *) logic store_pma_with_page_carry;
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
-  logic store_issue_is_sc;
+  logic mem_rs_issue_is_sc;
 
   assign store_page_offset_sum =
       {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
@@ -1989,11 +1989,11 @@ module tomasulo_wrapper #(
   assign store_base_page_tail_zero = !(|o_mem_rs_issue.src1_value[29:12]);
   assign store_base_page_tail_ones = &o_mem_rs_issue.src1_value[29:12];
 
-  assign store_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+  assign mem_rs_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
       (o_mem_rs_issue.op == riscv_pkg::SC_D);
   assign store_base_pma_ok = store_base_z18 ||
       (store_base_z32 && ((o_mem_rs_issue.src1_value[31:30] == 2'b10) ||
-                          (store_base_device_page && !store_issue_is_sc)));
+                          (store_base_device_page && !mem_rs_issue_is_sc)));
   assign store_base_page_eq_0 = store_base_z18 && store_base_page_lo6_zero;
   assign store_base_page_eq_3f = store_base_z18 && store_base_page_lo6_ones;
   assign store_base_page_eq_40 = store_base_z19 && o_mem_rs_issue.src1_value[18] &&
@@ -2076,9 +2076,7 @@ module tomasulo_wrapper #(
   (* keep = "true" *) logic store_issue_untranslated_without_pma;
   assign store_issue_translated = dmmu_store_ok && !dmmu_out_is_sc;
   assign store_issue_untranslated_without_pma =
-      o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-      (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
-      (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
+      o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq && !mem_rs_issue_is_sc &&
       (!i_trap_misaligned_accesses || !store_addr_misaligned);
   assign store_issue_fire = i_translation_active ? store_issue_translated :
       (store_issue_untranslated_without_pma && store_addr_pma_ok);
@@ -2094,7 +2092,7 @@ module tomasulo_wrapper #(
   logic store_addr_misaligned_full_ref;
   logic store_misalign_issue_full_ref;
   logic store_issue_fire_full_ref;
-  assign store_addr_pma_ok_full_ref = store_issue_is_sc ? riscv_pkg::pma_atomic_ok(
+  assign store_addr_pma_ok_full_ref = mem_rs_issue_is_sc ? riscv_pkg::pma_atomic_ok(
       sq_effective_addr
   ) : riscv_pkg::pma_data_ok(
       sq_effective_addr
@@ -2129,7 +2127,7 @@ module tomasulo_wrapper #(
             o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
             {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}
         );
-        p_store_sc_imm_zero : assert (!store_issue_is_sc || (o_mem_rs_issue.imm == '0));
+        p_store_sc_imm_zero : assert (!mem_rs_issue_is_sc || (o_mem_rs_issue.imm == '0));
         if (o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
             {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}) begin
           p_store_page_pma_exact : assert (store_addr_pma_ok === store_addr_pma_ok_full_ref);
@@ -4504,9 +4502,6 @@ module tomasulo_wrapper #(
       ((mem_rs_next_issue_valid && mem_rs_next_issue_needs_lq && mem_rs_fu_ready_base) ||
        (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq));
 
-  logic dmmu_iss_is_sc;
-  assign dmmu_iss_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::SC_D);
   logic [riscv_pkg::XLEN-1:0] dmmu_out_store_data;
 
   // AMO classification at issue: the MMU's permission class (AMOs and SC
@@ -4564,8 +4559,8 @@ module tomasulo_wrapper #(
       .i_iss_size(riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size)),
       .i_iss_needs_sq(o_mem_rs_issue.mem_needs_sq),
       .i_iss_store_perms(o_mem_rs_issue.mem_needs_sq || dmmu_iss_is_amo),
-      .i_iss_is_sc(dmmu_iss_is_sc),
-      .i_iss_atomic(dmmu_iss_is_amo || dmmu_iss_is_lr || dmmu_iss_is_sc),
+      .i_iss_is_sc(mem_rs_issue_is_sc),
+      .i_iss_atomic(dmmu_iss_is_amo || dmmu_iss_is_lr || mem_rs_issue_is_sc),
       .i_iss_store_data(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .i_iss_amo_rs2(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .o_iss_out_valid(dmmu_out_valid),
