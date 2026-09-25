@@ -2226,11 +2226,13 @@ module cpu_and_mem #(
 
   // UART write: the native TX at 0x4000_0000, or the ns16550 THR at
   // 0x4000_1000 when DLAB is clear. Both funnel into the same TX byte stream.
+  logic cpu_uart_wr_en_next;
+  assign cpu_uart_wr_en_next = |data_memory_byte_write_enable_registered &&
+      ((data_memory_address_registered == UartMmioAddr) ||
+       (data_memory_address_registered == Ns16550ThrRbr && !ns_lcr[7]));
   always_ff @(posedge i_clk) begin
     cpu_uart_wr_data <= data_memory_write_data_registered[7:0];  // UART uses only lower byte
-    cpu_uart_wr_en   <= |data_memory_byte_write_enable_registered &&
-                       ((data_memory_address_registered == UartMmioAddr) ||
-                        (data_memory_address_registered == Ns16550ThrRbr && !ns_lcr[7]));
+    cpu_uart_wr_en   <= cpu_uart_wr_en_next;
   end
 
   generate
@@ -2297,7 +2299,9 @@ module cpu_and_mem #(
           .i_mtimecmp_hi      (triage_mtimecmp_hi),
           .i_mtimecmp_delta_lo(triage_mtimecmp_delta_lo),
           .i_irq_status       (triage_irq_status),
-          .i_uart_busy        (cpu_uart_wr_en),
+          // The byte entering cpu_uart_wr_en at the next edge: the takeover
+          // never shares an edge with one, so the mux below never drops it.
+          .i_uart_busy        (cpu_uart_wr_en_next),
           .i_uart_ready       (i_uart_tx_ready),
           .o_active           (triage_active),
           .o_wr_en            (triage_wr_en),

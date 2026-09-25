@@ -20,7 +20,9 @@
  * A hang stops console output, so the trigger is a quiet console. Once no CPU
  * console write has happened for QUIET_CYCLES, this block takes over the UART
  * and prints a snapshot, and while the console stays quiet it prints another
- * REEMIT_CYCLES after each one finishes, so the trend is visible. Each value
+ * REEMIT_CYCLES after each one finishes, so the trend is visible. The takeover
+ * waits for an edge that brings no CPU byte, so none is lost to the handover;
+ * while this block holds the console, cpu_and_mem drops CPU bytes. Each value
  * is eight hex digits:
  *
  *   "\n!!HANG c=<commits> t=<timer> q=<cread_req> v=<cread_resp> w=<wreq:wdone>"
@@ -75,6 +77,7 @@ module hang_triage #(
     input logic [31:0] i_mtimecmp_hi,
     input logic [31:0] i_mtimecmp_delta_lo,
     input logic [31:0] i_irq_status,
+    // A CPU console byte enters the TX stream at the next edge.
     input logic        i_uart_busy,
 
     input  logic       i_uart_ready,
@@ -279,7 +282,7 @@ module hang_triage #(
       o_wr_en <= 1'b0;
       case (em_state)
         EM_IDLE: begin
-          if (quiet_cnt >= QUIET_CYCLES) begin
+          if ((quiet_cnt >= QUIET_CYCLES) && !i_uart_busy) begin
             snap_c   <= cnt_commit;
             snap_t   <= cnt_timer;
             snap_q   <= cnt_cread_req;

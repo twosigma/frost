@@ -1477,6 +1477,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "handled then"
         ),
     ),
+    "hang_triage": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_hang_triage",
+        hdl_toplevel_module="hang_triage",
+        description=(
+            "Hang-triage console takeover (short windows): a quiet console starts "
+            "a snapshot, and the takeover never shares an edge with a CPU byte"
+        ),
+        verilator_extra_args=("-GQUIET_CYCLES=40", "-GREEMIT_CYCLES=100"),
+    ),
     # Clock-crossing library and the NIC.
     "async_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.lib.test_async_fifo",

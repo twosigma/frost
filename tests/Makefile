@@ -382,6 +382,11 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc.sv \
         $(ROOT)/hw/rtl/lib/fifo/dc_fifo.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),hang_triage)
+# Hang-triage console takeover unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/hang_triage.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cdc_gray_count)
 # Gray-coded event counter unit bench
 COMPILE_ARGS := \
