@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from cocotb.triggers import FallingEdge, RisingEdge
-from config import FLEN, INSTR_OP_WIDTH, XLEN
+from config import FLEN, INSTR_OP_WIDTH, MASK32, MASK_XLEN, XLEN
 
 # =============================================================================
 # Width constants from riscv_pkg
@@ -32,7 +32,6 @@ from config import FLEN, INSTR_OP_WIDTH, XLEN
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1  # 0x1F
-MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
 # instr_op_e: 8-bit two-state unsigned enum in riscv_pkg
@@ -135,9 +134,9 @@ def pack_rs_issue(
     bit += CHECKPOINT_ID_WIDTH
     val |= (1 if has_checkpoint else 0) << bit
     bit += 1
-    val |= (link_addr & MASK32) << bit
+    val |= (link_addr & MASK_XLEN) << bit
     bit += XLEN
-    val |= (pc & MASK32) << bit
+    val |= (pc & MASK_XLEN) << bit
     bit += XLEN
     val |= (csr_imm & 0x1F) << bit
     bit += 5
@@ -157,7 +156,7 @@ def pack_rs_issue(
     bit += 1
     val |= (1 if predicted_target_ok else 0) << bit
     bit += 1
-    val |= (predicted_target & MASK32) << bit
+    val |= (predicted_target & MASK_XLEN) << bit
     bit += XLEN
     val |= (1 if predicted_taken else 0) << bit
     bit += 1
@@ -167,7 +166,7 @@ def pack_rs_issue(
     bit += 12
     val |= (1 if use_imm else 0) << bit
     bit += 1
-    val |= (imm & MASK32) << bit
+    val |= (imm & MASK_XLEN) << bit
     bit += XLEN
     val |= (src3_value & MASK64) << bit
     bit += FLEN
