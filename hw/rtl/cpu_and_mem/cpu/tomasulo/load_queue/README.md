@@ -415,7 +415,9 @@ The `load_queue` cocotb suite tests the queue in isolation,
 and ROB-tag reuse against slow, reordered DDR responses. The wrapper and
 router suites (`tomasulo_coherence`, `data_mem_request_router` and others)
 check the connected handshakes, and simulation assertions check cached-slot
-identity, AMO write stability and the device-read shield.
+identity, AMO write stability, the device-read shield, and that every launched
+load other than an AMO keeps an owner (the fast owner or a cached slot) until
+its data is valid or a flush removes it.
 
 Formally, `load_queue` checks queue invariants from reset,
 `load_queue_amo_compute` the AMO datapath with no reset or admission

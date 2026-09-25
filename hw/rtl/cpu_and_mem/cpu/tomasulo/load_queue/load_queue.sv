@@ -1405,7 +1405,8 @@ module load_queue #(
   assign o_head_load_sq_disambig = head_sq_disambig_hit;
   // "bus blocked" = address is resolved and the data isn't ready yet, but the
   // blocker is not an SQ disambig.  Covers bus-busy stalls, pre-sq_check
-  // staging cycles, AMO/SQ-committed blockers, and drop-response edge cases.
+  // staging cycles, the cached-region commit interlock, and drop-response
+  // edge cases.
   assign o_head_load_bus_blocked  = head_entry_found && head_entry_addr_valid &&
                                     !head_entry_data_valid && !head_sq_disambig_hit;
   assign o_head_load_cdb_wait = head_entry_found && head_entry_data_valid;
