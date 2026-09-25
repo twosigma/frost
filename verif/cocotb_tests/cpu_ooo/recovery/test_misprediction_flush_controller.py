@@ -481,6 +481,70 @@ async def test_correct_branch_commit_frees_only_live_owned_checkpoint(
 
 
 @cocotb.test()
+async def test_held_slot2_free_is_one_shot_across_checkpoint_reuse(dut: Any) -> None:
+    """A held slot-2 record frees its checkpoint once, even if the id returns at its tag.
+
+    C0: slot-1 X (tag 5, checkpoint 4) and slot-2 A (tag 6, checkpoint 0)
+    retire as correct branches. C1: slot-1 B (tag 7, checkpoint 2) retires, so
+    slot-1 training holds A's record; A's free pulses once. C2: checkpoint 0 is
+    free. C3: a new branch R holds checkpoint 0 at A's recycled ROB tag 6 while
+    A's record is still held; the record must not free R's live checkpoint. A
+    later slot-2 capture still gets its own free.
+    """
+    await _setup_test(dut)
+
+    in_use = (1 << 4) | (1 << 0) | (1 << 2)
+    owners = {4: 5, 0: 6, 2: 7}
+    dut.i_checkpoint_in_use.value = in_use
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags(owners)
+    _drive_commit(dut, {"valid": True, "tag": 5, "checkpoint_id": 4, "is_branch": True})
+    dut.i_rob_commit_correct_branch_raw.value = 1
+    _drive_commit_2(
+        dut, {"valid": True, "tag": 6, "checkpoint_id": 0, "is_branch": True}
+    )
+    dut.i_rob_commit_correct_branch_2_raw.value = 1
+    await _advance_cycle(dut)  # C1
+
+    dut.i_rob_commit_correct_branch_2_raw.value = 0
+    _drive_commit(dut, {"valid": True, "tag": 7, "checkpoint_id": 2, "is_branch": True})
+    dut.i_rob_commit_correct_branch_raw.value = 1
+    await _settle()
+    assert dut.o_checkpoint_free_2.value, "A's checkpoint must be freed once"
+    assert int(dut.o_checkpoint_free_id_2.value) == 0
+    await _advance_cycle(dut)  # C2
+
+    in_use &= ~((1 << 4) | (1 << 0))
+    dut.i_checkpoint_in_use.value = in_use
+    dut.i_rob_commit_correct_branch_raw.value = 0
+    await _settle()
+    assert not dut.o_checkpoint_free_2.value
+    await _advance_cycle(dut)  # C3
+
+    in_use |= 1 << 0
+    owners[0] = 6
+    dut.i_checkpoint_in_use.value = in_use
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags(owners)
+    await _settle()
+    assert dut.o_correct_branch_commit_pending_2_raw.value, (
+        "the scenario needs A's record still held at C3"
+    )
+    assert not dut.o_checkpoint_free_2.value, (
+        "the held record freed a reallocated live checkpoint"
+    )
+
+    # A new slot-2 capture of R (tag 6, checkpoint 0) gets its own free.
+    _drive_commit_2(
+        dut, {"valid": True, "tag": 6, "checkpoint_id": 0, "is_branch": True}
+    )
+    dut.i_rob_commit_correct_branch_2_raw.value = 1
+    await _advance_cycle(dut)
+    dut.i_rob_commit_correct_branch_2_raw.value = 0
+    await _settle()
+    assert dut.o_checkpoint_free_2.value
+    assert int(dut.o_checkpoint_free_id_2.value) == 0
+
+
+@cocotb.test()
 async def test_raw_slot2_training_pending_survives_early_recovery_until_service(
     dut: Any,
 ) -> None:

@@ -283,10 +283,12 @@ module misprediction_flush_controller #(
   // --- Slot-2 correct-branch capture ---
   // pending_2 holds until the BTB-training channel is idle (every higher
   // synthesizer arm quiet), a newer slot-2 capture supersedes it, or a full
-  // flush clears it. The checkpoint free does not wait: it pulses on the first
-  // held cycle, and the owner check (in_use && owner-tag match) limits it to
-  // one pulse. cpu_ooo clears in_use on the free, so a stale hold cannot free
-  // a reallocated id a second time.
+  // flush clears it. The checkpoint free does not wait: it may pulse only on
+  // the first held cycle of each capture, and only if the owner check
+  // (in_use && owner-tag match) passes. The owner check alone is not enough,
+  // because a record held by slot-1 training can outlive its checkpoint: the
+  // id can be reallocated at the same ROB tag, and a second free would release
+  // the new branch's live checkpoint and hang the ROB at that branch.
   // TIMING: the held slot-2 select feeds the lowest-priority arm of every
   // replica of the BTB training mux, so it carries the same caps as the
   // slot-1 pending/payload pair.
@@ -294,11 +296,19 @@ module misprediction_flush_controller #(
   (* max_fanout = 64 *) riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
   wire commit_is_correct_branch_2 = rob_commit_correct_branch_2_raw;
   logic correct_branch_2_served;
+  // Set after a held capture's first cycle, the only cycle its free may pulse.
+  logic correct_branch_2_free_done_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_all) correct_branch_commit_pending_2 <= 1'b0;
     else if (commit_is_correct_branch_2) correct_branch_commit_pending_2 <= 1'b1;
     else if (correct_branch_2_served) correct_branch_commit_pending_2 <= 1'b0;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_all) correct_branch_2_free_done_q <= 1'b0;
+    else if (commit_is_correct_branch_2) correct_branch_2_free_done_q <= 1'b0;
+    else if (correct_branch_commit_pending_2) correct_branch_2_free_done_q <= 1'b1;
   end
 
   always_ff @(posedge i_clk) begin
@@ -320,11 +330,11 @@ module misprediction_flush_controller #(
       !early_mispredict_active && !mispredict_recovery_pending &&
       !correct_branch_commit_pending;
 
-  // One-shot slot-2 checkpoint free (see the owner check above).
+  // One-shot slot-2 checkpoint free (see the capture comment above).
   logic correct_branch_commit_checkpoint_live_2;
   always_comb begin
     correct_branch_commit_checkpoint_live_2 = 1'b0;
-    if (correct_branch_commit_pending_2) begin
+    if (correct_branch_commit_pending_2 && !correct_branch_2_free_done_q) begin
       correct_branch_commit_checkpoint_live_2 =
           checkpoint_in_use[correct_branch_commit_q_2.checkpoint_id] &&
           (checkpoint_owner_tag[correct_branch_commit_q_2.checkpoint_id] ==
