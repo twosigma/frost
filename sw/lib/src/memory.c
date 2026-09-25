@@ -122,10 +122,10 @@ _Static_assert(FROST_MALLOC_EVICT_L0_DEPTH >= 8 &&
  * Evict the dwords of [start, start + size) from the L0 without a
  * cache-management instruction: load an alias of each dword that differs in
  * one tag bit, so it indexes the same entry and its fill replaces the freed
- * dword. The flip moves each address by at least the length of the range,
- * which puts every alias outside it, so no load here reinstalls a freed dword
- * (for ranges up to L0_ALIAS_LIMIT). A range longer than the L0 needs one load
- * per entry.
+ * dword. The flipped bit is worth at least the range's span, counted from the
+ * dword that holds start, which puts every alias outside the range, so no load
+ * here reinstalls a freed dword (for spans up to L0_ALIAS_LIMIT). A range
+ * longer than the L0 needs one load per entry.
  * Best effort: a load answered by store forwarding, or whose fill a store or
  * DMA write suppresses, leaves its entry in place.
  */
