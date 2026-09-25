@@ -27,7 +27,8 @@
  *   %x / %X   unsigned hex integer (lower / upper)
  *   %f / %F   decimal floating-point  ([-]ddd.dddddd)
  *   %e / %E   scientific notation     ([-]d.ddde±dd)
- *   %g / %G   shorter of %f / %e
+ *   %g / %G   %e style when the rounded exponent is < -4 or >= the precision,
+ *             else %f
  *   %c        character
  *   %s        NUL-terminated string
  *   %p        pointer (0x…)
