@@ -274,7 +274,7 @@ jobs:
   # Local-only ``icache`` (code in DDR, data/signature in BRAM) isolates fetch;
   # it is diagnostic, not a compliance target.
   test-arch-compliance:
-    name: Arch Tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
+    name: Arch Tests (${{ matrix.extension }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
     runs-on: ubuntu-26.04
     # Headroom beyond per-test timeouts for slow extension batches.
     timeout-minutes: 300
@@ -283,7 +283,8 @@ jobs:
       fail-fast: false
       matrix:
         # Zcf is RV32-only; its C.FLW/C.FSW slots encode C.LD/C.SD on RV64.
-        extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd, hints]
+        # F and D run only in the shards below.
+        extension: [I, M, A, C, B, K, Zicond, Zifencei, privilege, D_Zcd, hints]
         mem_config: [bram, ddr]
         # Zifencei self-modifying code needs cached DDR. Low BRAM is Harvard:
         # stores cannot update instruction BRAM, and fence.i only maintains the
@@ -291,12 +292,19 @@ jobs:
         exclude:
           - extension: Zifencei
             mem_config: bram
-          # F/D DDR batches exceed hosted-runner budgets. BRAM covers FPU
-          # conformance; other DDR tiers cover the cache path.
-          - extension: F
-            mem_config: ddr
-          - extension: D
-            mem_config: ddr
+        # F and D run in BRAM only, split into shards balanced by case count
+        # (--shard K/N). Their DDR batches exceed hosted-runner budgets; the
+        # other DDR tiers cover the cache path.
+        include:
+          - {extension: F, mem_config: bram, shard: 1/4}
+          - {extension: F, mem_config: bram, shard: 2/4}
+          - {extension: F, mem_config: bram, shard: 3/4}
+          - {extension: F, mem_config: bram, shard: 4/4}
+          - {extension: D, mem_config: bram, shard: 1/5}
+          - {extension: D, mem_config: bram, shard: 2/5}
+          - {extension: D, mem_config: bram, shard: 3/5}
+          - {extension: D, mem_config: bram, shard: 4/5}
+          - {extension: D, mem_config: bram, shard: 5/5}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7.0.1
@@ -318,7 +326,8 @@ jobs:
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
-              --mem-config ${{ matrix.mem_config }}
+              --mem-config ${{ matrix.mem_config }} \
+              ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
 
   # riscv-tests ISA suites by memory tier and environment. p = physical, no
   # kernel (the -p variants). v = demand-paged Sv39 user code under the env_v

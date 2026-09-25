@@ -126,14 +126,21 @@ point is marked `slow`:
 
 Runs the implemented parts of riscv-arch-test and compares each test's
 signature, printed over the UART, with a committed Spike reference under
-`sw/apps/arch_test/references/rv64i_m/`. The extensions are I, M, A, F, D, C,
-B, K (Zbkb only), Zicond, Zifencei, privilege, D_Zcd, and hints; Zcf exists
-only on RV32. The filters and exclusions in the runner define the exact set.
+`sw/apps/arch_test/references/`, which mirrors the suite's directory layout.
+The extensions are I, M, A, F, D, C, B, K (Zbkb only), Zicond, Zifencei,
+privilege, D_Zcd, and hints; Zcf exists only on RV32. The tests come from the
+suite's `rv64i_m` directory; F and D also run the tests that RV32 and RV64
+share, which the suite keeps under `rv32i_m/F` and `rv32i_m/D`, except the
+`*_b15` fused multiply-add sets in subdirectories, which are too large to
+simulate. Every test runs with XLEN=64 and FLEN=64. The filters and exclusions
+in the runner define the exact set.
 
 ```bash
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions I M A
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv64i_m/I/src/addw-01.S
+./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv32i_m/F/src/fadd_b1-01.S
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions I --mem-config icache
+./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions F --shard 1/4
 ```
 
 | Memory tier | Code | Data and signature |
@@ -146,11 +153,24 @@ The pytest entry point reads the tier from `FROST_ARCH_MEM_CONFIG`. Tests
 with more than 5,000 cases (`SIM_MAX_TEST_CASES`) are left out unless you pass
 `--no-sim-filter`. In the `bram` and `icache` tiers, a test too large for low
 BRAM (95 KiB of code, 1 KiB reserved for debug, and 160 KiB of data and
-stack) reports SKIP; the `ddr` tier still runs it.
+stack) reports SKIP; the `ddr` tier still runs it. `--shard K/N` runs part K
+of N of each selected extension, with the parts balanced by case count.
 
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
 instruction BRAM, and F and D in DDR, to fit the runner time budget; the BRAM
-jobs cover FPU conformance. `icache` runs only locally.
+jobs cover FPU conformance, split into shards. The F and D tests that do not
+fit low BRAM (the larger `*_b8` and `*_b9` arithmetic sets) and those above
+5,000 cases (the `*_b1` fused multiply-adds and the `*_b11` adds and
+subtracts) therefore run only locally, for example with
+`--test rv32i_m/F/src/fmadd_b1-01.S --mem-config ddr`. `icache` runs only
+locally.
+
+Many F and D tests in the pinned suite have malformed data constants (a hex
+value run together with decimal digits). The assembler truncates each one with
+a warning, so those cases load other operands than their comments name, and
+some special cases never run: the fused multiply-add `*_b1` sets, for example,
+never multiply infinity by zero with a quiet-NaN addend, a case that
+`fp_mul_shim` checks directly.
 
 ### `test_riscv_tests.py`
 
@@ -268,7 +288,7 @@ pinned Docker image:
 | --- | --- |
 | Cocotb applications | BRAM and DDR where supported; each CoreMark-PRO workload runs separately |
 | Cocotb unit benches, DDR probes, fetch fuzzers, OpenSBI smoke | BRAM only: tier-independent or fixed-layout runs |
-| Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR |
+| Architecture compliance | BRAM and DDR; excludes Zifencei on BRAM and F/D on DDR; F and D run in BRAM shards |
 | riscv-tests | Physical mode in BRAM and DDR, user-level Sv39 tests in DDR, and benchmarks in both |
 | Torture | BRAM, DDR, and paged DDR |
 | Ethernet | Standalone MAC/PCS simulation and portable synthesis |

@@ -82,6 +82,24 @@ def test_torture_timeout_is_a_failure(
     assert "timed out" in result.message
 
 
+def test_arch_shards_partition_tests_by_case_count(tmp_path: Path) -> None:
+    """Arch-test shards are disjoint, cover every test, and balance case counts."""
+    tests = []
+    for index, cases in enumerate((900, 500, 400, 300, 200, 100, 50)):
+        source = tmp_path / f"t{index}-01.S"
+        source.write_text("".join(f"inst_{n}:\n" for n in range(cases)))
+        tests.append(source)
+
+    shards = [test_arch_compliance.select_shard(tests, k, 3) for k in (1, 2, 3)]
+
+    assert sorted(t for shard in shards for t in shard) == sorted(tests)
+    loads = [
+        sum(test_arch_compliance._count_test_cases(t) for t in shard)
+        for shard in shards
+    ]
+    assert loads == [900, 800, 750]
+
+
 def test_signature_extractors_ignore_interspersed_logs() -> None:
     """Progress logging inside a UART dump must not truncate its signature."""
     output = "\n".join(

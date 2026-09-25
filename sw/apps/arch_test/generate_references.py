@@ -17,8 +17,10 @@
 
 Compiles each riscv-arch-test assembly file for Spike, runs it, and
 stores the resulting memory signature as the golden reference for
-comparison against FROST's RTL simulation. FROST is RV64-only, so this
-regenerates the rv64 references only, under references/rv64i_m/....
+comparison against FROST's RTL simulation. Every test is built for RV64
+(XLEN=64, FLEN=64), including the F and D tests that RV32 and RV64 share,
+which the suite keeps under rv32i_m. References mirror the source path:
+references/<suite>/<extension>/<test>.reference_output.
 
 Run it inside the frost Docker image, which pins Spike, so the
 references are reproducible.
@@ -27,6 +29,7 @@ Usage:
     ./generate_references.py --extensions I M A
     ./generate_references.py --all
     ./generate_references.py --test rv64i_m/I/src/add-01.S
+    ./generate_references.py --test rv32i_m/F/src/fadd_b1-01.S
 """
 
 import argparse
@@ -41,14 +44,22 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 ARCH_TEST_DIR = SCRIPT_DIR / "riscv-arch-test"
+SUITE_ROOT = ARCH_TEST_DIR / "riscv-test-suite"
 REFERENCES_DIR = SCRIPT_DIR / "references"
 
-# Suite name: also the namespace under references/.
-SUITE_NAME = "rv64i_m"
-
-# Test-suite source directory.
-SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / SUITE_NAME
-
+# Suite directories under riscv-test-suite that each extension's tests come
+# from. rv64i_m holds the RV64 tests. The F and D tests that RV32 and RV64
+# share (fadd, fmadd, fdiv, fsqrt, fcvt.w.s, fcvt.s.d, ...) exist only under
+# rv32i_m; rv64i_m/F and rv64i_m/D hold just the RV64-only conversions and
+# moves. Only tests whose RVTEST_ISA lists RV64 are selected, and only the .S
+# files directly in each src directory (the *_b15 fused multiply-add sets in
+# its subdirectories are not). This must match EXTENSION_SUITES in
+# tests/test_arch_compliance.py.
+DEFAULT_SUITES = ("rv64i_m",)
+EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
+    "F": ("rv64i_m", "rv32i_m"),
+    "D": ("rv64i_m", "rv32i_m"),
+}
 
 # The submodule's riscof env for the rv64 Spike reference build.
 SPIKE_ENV_DIR = ARCH_TEST_DIR / "riscof-plugins" / "rv64" / "spike_simple" / "env"
@@ -177,12 +188,26 @@ EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
 
 
+def declares_rv64(test_src: Path) -> bool:
+    """Return True if the test's RVTEST_ISA string lists an RV64 ISA."""
+    match = re.search(r'RVTEST_ISA\("([^"]*)"\)', test_src.read_text(errors="replace"))
+    return match is not None and "RV64" in match.group(1)
+
+
+def reference_path(test_src: Path) -> Path:
+    """Return the reference file for a test: references/<suite>/<extension>/<test>."""
+    # Path shape: .../riscv-test-suite/<suite>/<extension>/src/<test>.S
+    suite, extension = test_src.parents[2].name, test_src.parents[1].name
+    return REFERENCES_DIR / suite / extension / f"{test_src.stem}.reference_output"
+
+
 def discover_tests(extension: str) -> list[Path]:
-    """Find all .S test files for an extension, applying filters."""
-    src_dir = SUITE_DIR / extension / "src"
-    if not src_dir.is_dir():
-        return []
-    tests = sorted(src_dir.glob("*.S"))
+    """Find the RV64 .S test files for an extension, applying filters."""
+    tests: list[Path] = []
+    for suite in EXTENSION_SUITES.get(extension, DEFAULT_SUITES):
+        src_dir = SUITE_ROOT / suite / extension / "src"
+        if src_dir.is_dir():
+            tests.extend(t for t in sorted(src_dir.glob("*.S")) if declares_rv64(t))
     allowed_prefixes = EXTENSION_TEST_FILTERS.get(extension)
     if allowed_prefixes is not None:
         tests = [
@@ -215,7 +240,6 @@ def test_defines(test_src: Path) -> list[str]:
 
 def generate_one_reference(
     test_src: Path,
-    extension: str,
     env_dir: Path,
     verbose: bool = False,
 ) -> tuple[str, str, str]:
@@ -225,9 +249,8 @@ def generate_one_reference(
     "OK", "SKIP", or "ERROR".
     """
     test_name = test_src.stem
-    ref_dir = REFERENCES_DIR / SUITE_NAME / extension
-    ref_dir.mkdir(parents=True, exist_ok=True)
-    ref_path = ref_dir / f"{test_name}.reference_output"
+    ref_path = reference_path(test_src)
+    ref_path.parent.mkdir(parents=True, exist_ok=True)
 
     defines = test_defines(test_src)
 
@@ -305,10 +328,10 @@ def generate_one_reference(
         return test_name, "OK", f"{len(lines)} words"
 
 
-def _worker(args: tuple[str, str, str, bool]) -> tuple[str, str, str]:
+def _worker(args: tuple[str, str, bool]) -> tuple[str, str, str]:
     """Worker for parallel reference generation."""
-    test_src_str, extension, env_dir_str, verbose = args
-    return generate_one_reference(Path(test_src_str), extension, Path(env_dir_str), verbose)
+    test_src_str, env_dir_str, verbose = args
+    return generate_one_reference(Path(test_src_str), Path(env_dir_str), verbose)
 
 
 def main() -> int:
@@ -341,13 +364,14 @@ def main() -> int:
 
     # Single test mode
     if args.test:
-        test_path = ARCH_TEST_DIR / "riscv-test-suite" / args.test
+        test_path = SUITE_ROOT / args.test
         if not test_path.exists():
             print(f"Error: Test not found: {args.test}")
             return 1
-        parts = Path(args.test).parts
-        ext = parts[1] if len(parts) > 1 else "unknown"
-        name, status, msg = generate_one_reference(test_path, ext, env_dir, args.verbose)
+        if not declares_rv64(test_path):
+            print(f"Error: {args.test} does not list RV64 in its RVTEST_ISA")
+            return 1
+        name, status, msg = generate_one_reference(test_path, env_dir, args.verbose)
         print(f"{name:40s} {status}  {msg}")
         return 0 if status == "OK" else 1
 
@@ -355,7 +379,7 @@ def main() -> int:
 
     print(f"Generating references for: {', '.join(extensions)}")
     print(f"march: {FROST_MARCH}  spike --isa: {SPIKE_ISA}")
-    print(f"Output: {REFERENCES_DIR / SUITE_NAME}/")
+    print(f"Output: {REFERENCES_DIR}/")
     print()
 
     total_ok = 0
@@ -369,7 +393,7 @@ def main() -> int:
             continue
 
         print(f"{ext} ({len(tests)} tests):")
-        work_items = [(str(t), ext, str(env_dir), args.verbose) for t in tests]
+        work_items = [(str(t), str(env_dir), args.verbose) for t in tests]
 
         results = []
         if args.parallel > 1 and len(tests) > 1:
@@ -404,7 +428,7 @@ def main() -> int:
 
     print()
     print(f"Total: {total_ok} OK, {total_skip} SKIP, {total_error} ERROR")
-    print(f"References stored in: {REFERENCES_DIR / SUITE_NAME}/")
+    print(f"References stored in: {REFERENCES_DIR}/")
     return 1 if total_error > 0 else 0
 
 

@@ -23,13 +23,17 @@ the repository root:
     ./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions I M
     ./scripts/frost.py run python3 tests/test_arch_compliance.py --all
     ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv64i_m/I/src/addw-01.S
+    ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv32i_m/F/src/fadd_b1-01.S
 
-The pytest entry point (TestArchCompliance) is marked slow and reads the memory
-tier from FROST_ARCH_MEM_CONFIG.
+Every test runs on the RV64 core, including the F and D tests that RV32 and
+RV64 share, which the suite keeps under rv32i_m. The pytest entry point
+(TestArchCompliance) is marked slow and reads the memory tier from
+FROST_ARCH_MEM_CONFIG.
 """
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -47,10 +51,21 @@ ARCH_TEST_APP_DIR = REPO_ROOT / "sw" / "apps" / "arch_test"
 ARCH_TEST_DIR = ARCH_TEST_APP_DIR / "riscv-arch-test"
 REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
 
-# The upstream suite directory, which also names the reference directory under
-# references/.
-SUITE_NAME = "rv64i_m"
-SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / SUITE_NAME
+SUITE_ROOT = ARCH_TEST_DIR / "riscv-test-suite"
+
+# Suite directories under riscv-test-suite that each extension's tests come
+# from. rv64i_m holds the RV64 tests. The F and D tests that RV32 and RV64
+# share (fadd, fmadd, fdiv, fsqrt, fcvt.w.s, fcvt.s.d, ...) exist only under
+# rv32i_m; rv64i_m/F and rv64i_m/D hold just the RV64-only conversions and
+# moves. Only tests whose RVTEST_ISA lists RV64 run, and only the .S files
+# directly in each src directory (the *_b15 fused multiply-add sets in its
+# subdirectories do not). This must match EXTENSION_SUITES in
+# sw/apps/arch_test/generate_references.py.
+DEFAULT_SUITES = ("rv64i_m",)
+EXTENSION_SUITES: dict[str, tuple[str, ...]] = {
+    "F": ("rv64i_m", "rv32i_m"),
+    "D": ("rv64i_m", "rv32i_m"),
+}
 
 # The suite's extension directories that FROST runs.
 SUPPORTED_EXTENSIONS = [
@@ -100,6 +115,8 @@ EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
 SIM_MAX_TEST_CASES = 5000
 
 # Per-test simulation timeout in seconds; FROST_ARCH_SIM_TIMEOUT_SEC overrides it.
+# This and the cycle budget in run_simulation cover the largest tests, the
+# fused multiply-add *_b1 sets that --no-sim-filter adds, in the ddr tier.
 ARCH_SIM_TIMEOUT_SEC = int(os.environ.get("FROST_ARCH_SIM_TIMEOUT_SEC", "12600"))
 
 # Memory configurations decide where a test's code, data, and signature live,
@@ -140,19 +157,27 @@ def _count_test_cases(test_src: Path) -> int:
     return count
 
 
-def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
-    """Find all .S test files for an extension.
+def declares_rv64(test_src: Path) -> bool:
+    """Return True if the test's RVTEST_ISA string lists an RV64 ISA."""
+    match = re.search(r'RVTEST_ISA\("([^"]*)"\)', test_src.read_text(errors="replace"))
+    return match is not None and "RV64" in match.group(1)
 
-    If the extension has a filter in EXTENSION_TEST_FILTERS, only tests whose
+
+def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
+    """Find the RV64 .S test files for an extension.
+
+    Tests come from the extension's EXTENSION_SUITES directories. If the
+    extension has a filter in EXTENSION_TEST_FILTERS, only tests whose
     filename (without numeric suffix) matches a filter prefix are returned.
 
     Unless include_all is True, tests with more than SIM_MAX_TEST_CASES cases
     are left out as too slow to simulate.
     """
-    src_dir = SUITE_DIR / extension / "src"
-    if not src_dir.is_dir():
-        return []
-    tests = sorted(src_dir.glob("*.S"))
+    tests: list[Path] = []
+    for suite in EXTENSION_SUITES.get(extension, DEFAULT_SUITES):
+        src_dir = SUITE_ROOT / suite / extension / "src"
+        if src_dir.is_dir():
+            tests.extend(t for t in sorted(src_dir.glob("*.S")) if declares_rv64(t))
     allowed_prefixes = EXTENSION_TEST_FILTERS.get(extension)
     if allowed_prefixes is not None:
         tests = [
@@ -181,10 +206,30 @@ def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
     return tests
 
 
+def select_shard(tests: list[Path], shard: int, shard_count: int) -> list[Path]:
+    """Return shard number `shard` (1-based) of `shard_count`, balanced by case count.
+
+    Tests are dealt largest first to the shard with the fewest cases so far,
+    so the shards take similar simulation time. The split depends only on the
+    test list, so every CI job computes the same partition.
+    """
+    loads = [0] * shard_count
+    members: list[list[Path]] = [[] for _ in range(shard_count)]
+    sized = sorted(
+        ((_count_test_cases(t), t) for t in tests),
+        key=lambda item: (-item[0], str(item[1])),
+    )
+    for cases, test in sized:
+        index = loads.index(min(loads))
+        members[index].append(test)
+        loads[index] += cases
+    return sorted(members[shard - 1])
+
+
 def get_reference_path(test_src: Path) -> Path:
     """Return the reference signature path for a test source file.
 
-    References live under references/rv64i_m/{extension}/{test}.reference_output
+    References live under references/{suite}/{extension}/{test}.reference_output
     and come from generate_references.py, run with the image's pinned Spike. The
     suite name comes from the test's own path.
     """
@@ -426,19 +471,24 @@ def run_extension_tests(
     parallel: int = 1,
     include_all: bool = False,
     mem_config: str = DEFAULT_MEM_CONFIG,
+    shard: tuple[int, int] | None = None,
 ) -> list[TestResult]:
-    """Run all tests for a given extension."""
+    """Run all tests for a given extension, or one (index, count) shard of them."""
     if parallel != 1:
         raise ValueError(PARALLEL_UNSAFE_MESSAGE)
 
     tests = discover_tests(extension, include_all=include_all)
+    if shard is not None:
+        tests = select_shard(tests, *shard)
     if not tests:
         print(f"  No tests found for extension {extension}")
         return []
 
+    suites = ", ".join(EXTENSION_SUITES.get(extension, DEFAULT_SUITES))
+    shard_text = f", shard {shard[0]}/{shard[1]}" if shard is not None else ""
     print(
-        f"\nExtension: {extension} ({len(tests)} tests, "
-        f"suite={SUITE_NAME}, mem-config={mem_config})"
+        f"\nExtension: {extension} ({len(tests)} tests{shard_text}, "
+        f"suites={suites}, mem-config={mem_config})"
     )
 
     results = []
@@ -514,6 +564,7 @@ Examples:
   %(prog)s --extensions I M
   %(prog)s --all
   %(prog)s --test rv64i_m/I/src/addw-01.S
+  %(prog)s --test rv32i_m/F/src/fadd_b1-01.S
 
 Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
 """,
@@ -543,6 +594,11 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
         help="Number of workers; only 1 is supported",
     )
     parser.add_argument(
+        "--shard",
+        metavar="K/N",
+        help="Run only shard K of N of each extension's tests, balanced by case count",
+    )
+    parser.add_argument(
         "--no-sim-filter",
         action="store_true",
         help="Also run tests with over 5000 cases (left out by default as too slow)",
@@ -562,12 +618,23 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
     args = parser.parse_args()
     if args.parallel != 1:
         parser.error(PARALLEL_UNSAFE_MESSAGE)
+    shard = None
+    if args.shard:
+        match = re.fullmatch(r"(\d+)/(\d+)", args.shard)
+        if not match or not 1 <= int(match.group(1)) <= int(match.group(2)):
+            parser.error("--shard must be K/N with 1 <= K <= N")
+        if args.test:
+            parser.error("--shard applies to --extensions and --all, not --test")
+        shard = (int(match.group(1)), int(match.group(2)))
 
     # Single test mode
     if args.test:
-        test_path = ARCH_TEST_DIR / "riscv-test-suite" / args.test
+        test_path = SUITE_ROOT / args.test
         if not test_path.exists():
             print(f"Error: Test file not found: {args.test}")
+            return 1
+        if not declares_rv64(test_path):
+            print(f"Error: {args.test} does not list RV64 in its RVTEST_ISA")
             return 1
 
         parts = Path(args.test).parts
@@ -584,13 +651,16 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
     extensions = SUPPORTED_EXTENSIONS if args.all else args.extensions
 
     for ext in extensions:
-        ext_dir = SUITE_DIR / ext
-        if not ext_dir.is_dir():
+        ext_suites = EXTENSION_SUITES.get(ext, DEFAULT_SUITES)
+        if not any((SUITE_ROOT / suite / ext).is_dir() for suite in ext_suites):
             print(f"Warning: Extension '{ext}' not found in test suite, skipping")
 
     print("=" * 60)
     print("RISC-V Architecture Test Results")
-    print(f"Suite: {SUITE_NAME}")
+    suites = sorted(
+        {s for ext in extensions for s in EXTENSION_SUITES.get(ext, DEFAULT_SUITES)}
+    )
+    print(f"Suites: {', '.join(suites)}")
     print(f"Extensions: {', '.join(extensions)}")
     print(f"Memory config: {args.mem_config}")
     print("=" * 60)
@@ -602,6 +672,7 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
             parallel=args.parallel,
             include_all=args.no_sim_filter,
             mem_config=args.mem_config,
+            shard=shard,
         )
         all_results.extend(results)
 
