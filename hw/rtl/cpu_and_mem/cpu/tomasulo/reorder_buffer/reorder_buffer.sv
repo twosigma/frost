@@ -282,9 +282,6 @@ module reorder_buffer #(
     // =========================================================================
     // Early Misprediction Recovery
     // =========================================================================
-    // Qualifies the current partial flush as an execute-time early recovery
-    // (unused here)
-    input logic                                        i_early_recovery_flush,
     // Marks the entry as early-recovered so commit skips re-triggering flush
     input logic                                        i_early_recovery_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_recovery_tag,
@@ -307,15 +304,6 @@ module reorder_buffer #(
     output logic                        [   riscv_pkg::ReorderBufferDepth-1:0] o_entry_valid,
     output logic                        [   riscv_pkg::ReorderBufferDepth-1:0] o_entry_done,
     output riscv_pkg::rob_perf_events_t                                        o_perf_events,
-
-    // =========================================================================
-    // Entry Read Port
-    // =========================================================================
-    // Done bit and value of entry i_read_tag. The full core does not use the
-    // outputs.
-    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_read_tag,
-    output logic                                        o_read_done,
-    output logic [                 riscv_pkg::FLEN-1:0] o_read_value,
 
     // =========================================================================
     // Dispatch Bypass Read Ports (async value read for renamed-but-done sources)
@@ -643,7 +631,6 @@ module reorder_buffer #(
   logic [XLEN-1:0] head_branch_target_jal;  // JAL target written at allocation
   logic [XLEN-1:0] head_branch_target_resolved;  // branch/JALR target written at resolution
   logic head_predicted_taken;
-  logic [XLEN-1:0] head_predicted_target;  // from RAM
   logic head_mispredicted;
   logic head_early_recovered;
   logic head_is_call;  // for BTB/RAS update at commit
@@ -691,7 +678,6 @@ module reorder_buffer #(
   logic [XLEN-1:0] head_next_branch_target_jal;
   logic [XLEN-1:0] head_next_branch_target_resolved;
   logic head_next_predicted_taken;
-  logic [XLEN-1:0] head_next_predicted_target;
   logic head_next_mispredicted;
   logic head_next_early_recovered;
   logic head_next_f_has_checkpoint;
@@ -702,7 +688,6 @@ module reorder_buffer #(
   logic head_next_has_checkpoint;
   logic [CheckpointIdWidth-1:0] head_next_checkpoint_id;
   riscv_pkg::fp_flags_t head_next_fp_flags;
-  riscv_pkg::exc_cause_t head_next_exc_cause;
   logic head_next_is_csr;
   logic head_next_is_fence;
   logic head_next_is_fence_i;
@@ -716,9 +701,6 @@ module reorder_buffer #(
   riscv_pkg::rs_type_e head_next_rs_type;
   logic [RsTypeWidth-1:0] head_next_rs_type_bits;
   logic [HeadMetaWidth-1:0] head_next_meta_rd_data;
-  logic [11:0] head_next_csr_addr;
-  logic [2:0] head_next_csr_op;
-  logic [XLEN-1:0] head_next_csr_write_data;
 
   // Commit control signals
   logic head_ready;  // Head is valid and done
@@ -891,10 +873,11 @@ module reorder_buffer #(
 
   // Head+1 entry fields from FF-backed packed vectors / distributed RAM.
   // Dedicated read-port replicas, instantiated alongside the head RAMs below,
-  // drive the RAM-backed multi-bit fields (pc, dest_reg, value,
-  // branch_target_*, predicted_target, checkpoint_id, meta, csr_*, exc_cause,
-  // fp_flags). The 1-bit packed-vector fields share the existing FF storage
-  // and are indexed at head_next_idx for free.
+  // drive the RAM-backed multi-bit fields slot 2 retires (pc, dest_reg,
+  // value, branch_target_*, checkpoint_id, meta, fp_flags). Slot 2 never
+  // retires an exception or a CSR, so exc_cause and csr_* have no head+1
+  // copy. The 1-bit packed-vector fields share the existing FF storage and
+  // are indexed at head_next_idx for free.
   assign head_next_idx = head_idx + 1'b1;
   // TIMING: same one-hot substitution as the head fields, using the
   // registered head_next_clear_mask (== 1 << head_next_idx by construction).
@@ -1357,35 +1340,6 @@ module reorder_buffer #(
 
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_predicted_target (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.predicted_target, i_alloc_req.predicted_target}),
-      .i_read_address (head_idx),
-      .i_read_onehot  (head_clear_mask),
-      .o_read_data    (head_predicted_target)
-  );
-
-  // Widen-commit replica: head+1 read port for predicted_target.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_predicted_target_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.predicted_target, i_alloc_req.predicted_target}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_predicted_target)
-  );
-
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (CheckpointIdWidth),
       .NUM_WRITE_PORTS(2)
   ) u_rob_checkpoint_id (
@@ -1458,8 +1412,8 @@ module reorder_buffer #(
   // ---------------------------------------------------------------------------
 
   // rob_value: 4 write ports (alloc1 + alloc2 + CDB lane 0 + CDB lane 1).
-  // Nine instances with identical writes and different read addresses
-  // (head, head+1, the i_read_tag port, dispatch bypass x6).
+  // Eight instances with identical writes and different read addresses
+  // (head, head+1, dispatch bypass x6).
   //
   // NUM_NARROW_WRITE_PORTS(2)/NARROW_DATA_WIDTH(XLEN) on every value
   // instance: the two alloc ports only ever write zero-extended XLEN link
@@ -1469,7 +1423,7 @@ module reorder_buffer #(
   //
   // TIMING: NUM_STAGED_LVT_PORTS(2) on every value instance. The alloc
   // enables arrive late (the id_stall -> id_valid -> dispatch-gate cone) and
-  // would otherwise drive every LVT bit of all 9 replicas. With staging, the
+  // would otherwise drive every LVT bit of all 8 replicas. With staging, the
   // alloc ports (0/1) still write their banks in the alloc cycle, but the LVT
   // update runs one cycle later from registers inside the RAM module, so the
   // late enables load only the staging flops and the bank write enables.
@@ -1514,22 +1468,6 @@ module reorder_buffer #(
       .i_read_address(head_next_idx),
       .i_read_onehot(head_next_clear_mask),
       .o_read_data(head_next_value)
-  );
-
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_rat (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_read_tag),
-      .o_read_data(o_read_value)
   );
 
   // Dispatch bypass value read ports (same write data as above, different read addresses)
@@ -1651,23 +1589,6 @@ module reorder_buffer #(
       .o_read_data(head_exc_cause)
   );
 
-  // Widen-commit replica: head+1 read port for exc_cause.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (ExcCauseWidth),
-      .NUM_WRITE_PORTS(4)
-  ) u_rob_exc_cause_next (
-      .i_clk,
-      .i_write_enable({cdb_exc_cause_wr_en_2, cdb_exc_cause_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({
-        i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, alloc_exc_cause_data_2, alloc_exc_cause_data
-      }),
-      .i_read_address(head_next_idx),
-      .i_read_onehot(head_next_clear_mask),
-      .o_read_data(head_next_exc_cause)
-  );
-
   // rob_fp_flags: CDB lanes 0/1 on ports 0/1, and the two allocation ports,
   // which write zero, on ports 2/3. The highest-numbered port wins a
   // same-cycle write to one address, so the allocation beats a stale CDB
@@ -1781,21 +1702,6 @@ module reorder_buffer #(
       .o_read_data    (head_csr_addr)
   );
 
-  // Widen-commit replica: head+1 read port for csr_addr.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (12),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_csr_addr_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.csr_addr, i_alloc_req.csr_addr}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_csr_addr)
-  );
-
   // CSR op RAM (3-bit funct3, written at allocation)
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
@@ -1811,21 +1717,6 @@ module reorder_buffer #(
       .o_read_data    (head_csr_op)
   );
 
-  // Widen-commit replica: head+1 read port for csr_op.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (3),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_csr_op_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.csr_op, i_alloc_req.csr_op}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_csr_op)
-  );
-
   // CSR write data RAM (XLEN-bit, written at allocation)
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
@@ -1839,21 +1730,6 @@ module reorder_buffer #(
       .i_read_address (head_idx),
       .i_read_onehot  (head_clear_mask),
       .o_read_data    (head_csr_write_data)
-  );
-
-  // Widen-commit replica: head+1 read port for csr_write_data.
-  mwp_dist_ram_ohread #(
-      .ADDR_WIDTH     (ReorderBufferTagWidth),
-      .DATA_WIDTH     (XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_rob_csr_write_data_next (
-      .i_clk,
-      .i_write_enable ({alloc_en_2, alloc_en}),
-      .i_write_address({tail_idx_2, tail_idx}),
-      .i_write_data   ({i_alloc_req_2.csr_write_data, i_alloc_req.csr_write_data}),
-      .i_read_address (head_next_idx),
-      .i_read_onehot  (head_next_clear_mask),
-      .o_read_data    (head_next_csr_write_data)
   );
 
   // ===========================================================================
@@ -1995,8 +1871,8 @@ module reorder_buffer #(
 
   // Allocation, CDB writes, branch updates, and flush for the FF-backed
   // fields. The multi-bit fields (pc, dest_reg, value, branch_target,
-  // predicted_target, checkpoint_id, exc_cause, fp_flags, head-only
-  // metadata) live in the distributed RAMs above.
+  // checkpoint_id, exc_cause, fp_flags, the CSR fields, head-only metadata)
+  // live in the distributed RAMs above.
   // -------------------------------------------------------------------------
   // Control signals (rob_valid, rob_done, rob_exception): need reset
   // -------------------------------------------------------------------------
@@ -3013,13 +2889,6 @@ module reorder_buffer #(
         commit_en && head_next_valid_done && head_ok_2wide &&
         head_next_is_branch && !head_next_mispredicted && !head_next_ok_2wide;
   end
-
-  // ===========================================================================
-  // Entry Read Port
-  // ===========================================================================
-
-  assign o_read_done = rob_valid[i_read_tag] && rob_done[i_read_tag];
-  // u_rob_value_rat drives o_read_value.
 
   // CSR/xRET starts: allocation records the class bits and CDB-bypass
   // eligibility together, so no live CSR or xRET entry is bypass-eligible.

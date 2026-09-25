@@ -691,14 +691,13 @@ async def test_split_fp_pending_done_repair_survives_recovery_hold(dut: Any) -> 
     await dut_if.step()
     dut_if.clear_cdb_write()
 
-    dut_if.set_read_tag(producer_tag)
     for _ in range(6):
         await Timer(1, unit="ps")
-        if dut_if.read_entry_done():
+        if dut_if.rob_entry_done(producer_tag):
             break
         await dut_if.step()
-    assert dut_if.read_entry_done()
-    assert dut_if.read_entry_value() == producer_value
+    assert dut_if.rob_entry_done(producer_tag)
+    assert await dut_if.read_rob_entry_value(producer_tag) == producer_value
 
     consumer_tag = await dut_if.dispatch(
         AllocationRequest(pc=0x7004, dest_rf=1, dest_reg=2, dest_valid=True)
@@ -765,14 +764,13 @@ async def test_split_fmul_pending_done_repair_uses_three_channels(dut: Any) -> N
         dut_if.drive_cdb_write(CDBWrite(tag=tag, value=value))
         await dut_if.step()
         dut_if.clear_cdb_write()
-        dut_if.set_read_tag(tag)
         for _ in range(6):
             await Timer(1, unit="ps")
-            if dut_if.read_entry_done():
+            if dut_if.rob_entry_done(tag):
                 break
             await dut_if.step()
-        assert dut_if.read_entry_done()
-        assert dut_if.read_entry_value() == value
+        assert dut_if.rob_entry_done(tag)
+        assert await dut_if.read_rob_entry_value(tag) == value
 
     consumer_tag = await dut_if.dispatch(
         AllocationRequest(pc=0x702C, dest_rf=1, dest_reg=6, dest_valid=True)

@@ -23,9 +23,9 @@ blocks.
 Head and tail pointers carry an extra wrap bit to tell full from empty.
 `dest_rf` selects the register file an entry writes.
 
-Multi-bit fields live in distributed RAM: PC, destination register, predicted
-target, checkpoint ID, head metadata, value, exception cause, FP flags,
-branch target, and the CSR address, op, and write data. A RAM with several
+Multi-bit fields live in distributed RAM: PC, destination register,
+checkpoint ID, head metadata, value, exception cause, FP flags, branch
+target, and the CSR address, op, and write data. A RAM with several
 write ports keeps one bank per port and a Live Value Table (LVT) recording
 which bank holds each entry's newest value. Allocation-only fields have two
 write ports, one per dispatch slot; the value, FP-flag, and exception-cause
@@ -36,10 +36,9 @@ has no LVT. The head selects between the two. Single-bit state (`valid`,
 `done`, `exception`, the replay flag, and the branch flags) stays in
 flip-flops, so reset and flushes can clear any set of entries at once.
 
-The value field has nine copies with identical writes and different read
-addresses: head, head+1, six dispatch done-repair reads (three sources per
-slot), and a general read port (`i_read_tag`) that the full core does not
-use.
+The value field has eight copies with identical writes and different read
+addresses: head, head+1, and six dispatch done-repair reads (three sources
+per slot).
 
 The value copies update their LVT one cycle after an allocation
 (`NUM_STAGED_LVT_PORTS`), which keeps the late dispatch enable off the LVT;
@@ -150,8 +149,9 @@ Slot 2 carries the register write, store commit, and RAT clear, plus branch
 and checkpoint fields for a correctly predicted branch; its strobe
 `o_commit_correct_branch_2_raw` frees the checkpoint and trains the
 predictors. Its `misprediction` bit is always 0, and for a branch its
-`redirect_pc` is just the next PC. Every RAM the head reads has a `_next`
-copy that reads head+1.
+`redirect_pc` is just the next PC. Every RAM holding a field slot 2
+retires has a `_next` copy that reads head+1; slot 2 never retires an
+exception or a CSR, so the exception-cause and CSR RAMs have none.
 
 When both slots write the same register, slot 2 holds the newer value. The
 register files (two write ports merged by an LVT) give its write priority.

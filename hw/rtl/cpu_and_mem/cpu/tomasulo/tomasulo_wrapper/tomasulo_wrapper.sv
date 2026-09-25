@@ -279,13 +279,10 @@ module tomasulo_wrapper #(
     output logic                                        o_head_done,
 
     // =========================================================================
-    // ROB Bypass Read
+    // ROB Entry State
     // =========================================================================
-    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_read_tag,
-    output logic                                        o_read_done,
-    output logic [                 riscv_pkg::FLEN-1:0] o_read_value,
-    output logic [   riscv_pkg::ReorderBufferDepth-1:0] o_rob_entry_done_vec,
-    input  logic [   riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_epoch,
+    output logic [riscv_pkg::ReorderBufferDepth-1:0] o_rob_entry_done_vec,
+    input  logic [riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_epoch,
 
     // =========================================================================
     // Dispatch Done-Entry Bypass (generic source ports)
@@ -2695,8 +2692,7 @@ module tomasulo_wrapper #(
       .i_flush_after_head_commit(i_flush_after_head_commit),
 
       // Early misprediction recovery
-      .i_early_recovery_flush(i_early_recovery_flush),
-      .i_early_recovery_en(i_early_recovery_en),
+      .i_early_recovery_en (i_early_recovery_en),
       .i_early_recovery_tag(i_early_recovery_tag),
 
       // Status
@@ -2713,11 +2709,6 @@ module tomasulo_wrapper #(
       .o_entry_valid                  (rob_entry_valid),
       .o_entry_done                   (rob_entry_done),
       .o_perf_events                  (rob_perf_events),
-
-      // Bypass read
-      .i_read_tag  (i_read_tag),
-      .o_read_done (o_read_done),
-      .o_read_value(o_read_value),
 
       // Dispatch bypass value read
       .i_bypass_tag_1  (i_bypass_tag_1),

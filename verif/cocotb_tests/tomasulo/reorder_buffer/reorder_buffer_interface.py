@@ -15,14 +15,14 @@
 """Typed ROB DUT access and packed-struct conversion helpers.
 
 Verilator flattens packed structs into bit vectors, so this interface packs
-and unpacks their fields. The six dispatch done-repair reads (i_bypass_tag_*)
-have their own accessors, separate from the general entry read port
-(i_read_tag).
+and unpacks their fields. Entry done bits come from o_entry_valid and
+o_entry_done; entry values are read through the six dispatch done-repair
+read ports (i_bypass_tag_*).
 """
 
 from typing import Any
 
-from cocotb.triggers import RisingEdge, FallingEdge
+from cocotb.triggers import RisingEdge, FallingEdge, Timer
 from config import FLEN, MASK64, MASK_XLEN, XLEN
 
 from .reorder_buffer_model import (
@@ -390,10 +390,8 @@ class ReorderBufferInterface:
         self.dut.i_flush_all.value = 0
         self.dut.i_flush_after_head_commit.value = 0
         self.dut.i_replay_set_mask.value = 0
-        self.dut.i_early_recovery_flush.value = 0
         self.dut.i_early_recovery_en.value = 0
         self.dut.i_early_recovery_tag.value = 0
-        self.dut.i_read_tag.value = 0
         self.set_bypass_tags((0,) * 6)
 
     # =========================================================================
@@ -757,20 +755,24 @@ class ReorderBufferInterface:
         return int(self.dut.dbg_tail_ptr.value)
 
     # =========================================================================
-    # Entry Read Interface
+    # Entry Reads
     # =========================================================================
 
-    def set_read_tag(self, tag: int) -> None:
-        """Set the tag for entry reads. Call on falling edge."""
-        self.dut.i_read_tag.value = tag
+    def entry_done(self, tag: int) -> bool:
+        """Return whether entry tag is valid and done."""
+        valid = int(self.dut.o_entry_valid.value)
+        done = int(self.dut.o_entry_done.value)
+        return bool((valid & done) >> tag & 1)
 
-    def read_entry_done(self) -> bool:
-        """Read entry done status. Call after setting tag and rising edge."""
-        return bool(self.dut.o_read_done.value)
+    async def read_entry_value(self, tag: int) -> int:
+        """Read entry tag's value through done-repair read port 1.
 
-    def read_entry_value(self) -> int:
-        """Read entry value. Call after setting tag and rising edge."""
-        return int(self.dut.o_read_value.value)
+        Drives i_bypass_tag_1 and waits 1 ps for the asynchronous read, so
+        call it away from a rising edge. The other read ports keep their tags.
+        """
+        self.dut.i_bypass_tag_1.value = tag
+        await Timer(1, unit="ps")
+        return int(self.dut.o_bypass_value_1.value)
 
     def set_bypass_tags(self, tags: tuple[int, ...]) -> None:
         """Drive all six asynchronous dispatch-bypass read addresses."""

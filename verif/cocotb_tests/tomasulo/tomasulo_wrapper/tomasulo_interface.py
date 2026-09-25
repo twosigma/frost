@@ -24,7 +24,7 @@ station's second issue port.
 import re
 from pathlib import Path
 from typing import Any
-from cocotb.triggers import RisingEdge, FallingEdge
+from cocotb.triggers import RisingEdge, FallingEdge, Timer
 from config import MASK32, MASK_XLEN
 
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import (
@@ -384,8 +384,7 @@ class TomasuloInterface:
         self.dut.i_early_recovery_en.value = 0
         self.dut.i_early_recovery_tag.value = 0
 
-        # ROB bypass read
-        self.dut.i_read_tag.value = 0
+        # ROB entry state and dispatch done-repair reads
         self._rob_entry_epoch_mask = 0
         self._drive_rob_entry_epoch()
         self.dut.i_bypass_valid_1.value = 0
@@ -753,20 +752,26 @@ class TomasuloInterface:
         return bool(self.dut.o_head_done.value)
 
     # =========================================================================
-    # ROB Bypass Read
+    # ROB Entry Reads
     # =========================================================================
 
-    def set_read_tag(self, tag: int) -> None:
-        """Set ROB bypass read tag."""
-        self.dut.i_read_tag.value = tag
+    def rob_entry_done(self, tag: int) -> bool:
+        """Return whether ROB entry tag is valid and done."""
+        valid = int(self.dut.rob_entry_valid.value)
+        done = int(self.dut.o_rob_entry_done_vec.value)
+        return bool((valid & done) >> tag & 1)
 
-    def read_entry_done(self) -> bool:
-        """Return whether the read entry is done."""
-        return bool(self.dut.o_read_done.value)
+    async def read_rob_entry_value(self, tag: int) -> int:
+        """Read ROB entry tag's value through done-repair channel 6.
 
-    def read_entry_value(self) -> int:
-        """Return the read entry value."""
-        return int(self.dut.o_read_value.value)
+        Drives i_bypass_tag_6 with i_bypass_valid_6 left low, so no repair
+        request is made, and waits 1 ps for the asynchronous read; call it
+        away from a rising edge. Tests that drive channel 6 themselves must
+        not overlap with this read.
+        """
+        self.dut.i_bypass_tag_6.value = tag
+        await Timer(1, unit="ps")
+        return int(self.dut.o_bypass_value_6.value)
 
     def drive_dispatch_bypass(self, channel: int, tag: int) -> None:
         """Drive one registered dispatch done-repair query channel."""

@@ -912,13 +912,12 @@ async def test_cdb_write(dut: Any) -> None:
     # Entry 2 is not at the head: it becomes done but does not commit.
     cdb = CDBWrite(tag=2, value=0xAAAA)
     dut_if.drive_cdb_write(cdb)
-    dut_if.set_read_tag(2)
     model.cdb_write(cdb)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    done = dut_if.read_entry_done()
-    value = dut_if.read_entry_value()
+    done = dut_if.entry_done(2)
+    value = await dut_if.read_entry_value(2)
     assert done, "Entry 2 should be done after CDB write"
     assert value == 0xAAAA, f"Entry 2 value mismatch: {value:x}"
 
@@ -926,13 +925,12 @@ async def test_cdb_write(dut: Any) -> None:
 
     cdb = CDBWrite(tag=3, value=0xBBBB)
     dut_if.drive_cdb_write(cdb)
-    dut_if.set_read_tag(3)
     model.cdb_write(cdb)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    done = dut_if.read_entry_done()
-    value = dut_if.read_entry_value()
+    done = dut_if.entry_done(3)
+    value = await dut_if.read_entry_value(3)
     assert done, "Entry 3 should be done after CDB write"
     assert value == 0xBBBB, f"Entry 3 value mismatch: {value:x}"
 
@@ -940,13 +938,12 @@ async def test_cdb_write(dut: Any) -> None:
 
     cdb = CDBWrite(tag=1, value=0xCCCC)
     dut_if.drive_cdb_write(cdb)
-    dut_if.set_read_tag(1)
     model.cdb_write(cdb)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    done = dut_if.read_entry_done()
-    value = dut_if.read_entry_value()
+    done = dut_if.entry_done(1)
+    value = await dut_if.read_entry_value(1)
     assert done, "Entry 1 should be done after CDB write"
     assert value == 0xCCCC, f"Entry 1 value mismatch: {value:x}"
 
@@ -3480,11 +3477,10 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
 
     assert dut_if.count == 4, f"Should have 4 entries, got {dut_if.count}"
 
-    dut_if.set_read_tag(1)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
-    done = dut_if.read_entry_done()
-    value = dut_if.read_entry_value()
+    done = dut_if.entry_done(1)
+    value = await dut_if.read_entry_value(1)
     assert done, "Entry 1 should be done after CDB write"
     assert value == 0xBBBB, f"Entry 1 value mismatch: {value:#x}"
 

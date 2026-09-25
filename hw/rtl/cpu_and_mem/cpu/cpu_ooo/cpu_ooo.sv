@@ -1581,9 +1581,6 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rs_issue_int_branch_predicate_tag;
 
   // ROB bypass read
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rob_read_tag;
-  logic rob_read_done;
-  logic [riscv_pkg::FLEN-1:0] rob_read_value;
   logic dispatch_bypass_valid_1, dispatch_bypass_valid_2, dispatch_bypass_valid_3;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0]
       dispatch_bypass_tag_1, dispatch_bypass_tag_2, dispatch_bypass_tag_3;
@@ -1851,9 +1848,6 @@ module cpu_ooo #(
       .o_head_done(head_done),
 
       // ROB bypass read
-      .i_read_tag(rob_read_tag),
-      .o_read_done(rob_read_done),
-      .o_read_value(rob_read_value),
       .o_rob_entry_done_vec(rob_entry_done_vec),
       .i_rob_entry_epoch(rob_entry_epoch),
       .i_bypass_valid_1(dispatch_bypass_valid_1),
@@ -2309,14 +2303,6 @@ module cpu_ooo #(
       // Stall output
       .o_stall(dispatch_stall)
   );
-
-  // ===========================================================================
-  // ROB Bypass Read: head-entry read port (address only)
-  // ===========================================================================
-  // The wrapper's read port is addressed with head_tag, but rob_read_done /
-  // rob_read_value have no consumer here: CSR write data comes from the
-  // registered commit payload (csr_write_data_from_commit, below).
-  assign rob_read_tag = head_tag;
 
   // ===========================================================================
   // Branch Resolution Unit

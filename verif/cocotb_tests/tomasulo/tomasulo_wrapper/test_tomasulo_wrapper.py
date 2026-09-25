@@ -416,11 +416,10 @@ async def wait_for_rob_done_value(
     max_cycles: int = 8,
 ) -> None:
     """Wait until a CDB write is resident in the ROB and check its value."""
-    dut_if.set_read_tag(tag)
     for _ in range(max_cycles):
         await Timer(1, unit="ps")
-        if dut_if.read_entry_done():
-            assert dut_if.read_entry_value() == value
+        if dut_if.rob_entry_done(tag):
+            assert await dut_if.read_rob_entry_value(tag) == value
             return
         await dut_if.step()
     raise TimeoutError(f"ROB tag {tag} did not become done")
@@ -1843,9 +1842,9 @@ async def test_rs_full_stalls_dispatch(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
-    """ROB bypass read and RS state consistency."""
-    cocotb.log.info("=== Test: ROB Bypass Read with RS State ===")
+async def test_rob_entry_read_with_rs_state(dut: Any) -> None:
+    """The ROB entry stays not done while the RS holds it, then takes the ALU result."""
+    cocotb.log.info("=== Test: ROB Entry Read with RS State ===")
     dut_if, model = await setup_test(dut)
 
     req = make_int_req(pc=0x1000, rd=8)
@@ -1874,9 +1873,8 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
     dut_if.clear_rs_dispatch()
 
     # RS has the entry, ROB entry is not done yet
-    dut_if.set_read_tag(tag)
     await RisingEdge(dut_if.clock)
-    assert not dut_if.read_entry_done(), "ROB entry should not be done yet"
+    assert not dut_if.rob_entry_done(tag), "ROB entry should not be done yet"
 
     dut_if.set_commit_hold(True)
 
@@ -1898,13 +1896,12 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
     model.cdb_write(CDBWrite(tag=tag, value=alu_result))
 
     for _ in range(5):
-        dut_if.set_read_tag(tag)
         await Timer(1, unit="ps")  # Combinational settle
-        if dut_if.read_entry_done():
+        if dut_if.rob_entry_done(tag):
             break
         await dut_if.step()
-    assert dut_if.read_entry_done(), "ROB entry should be done now"
-    assert dut_if.read_entry_value() == alu_result
+    assert dut_if.rob_entry_done(tag), "ROB entry should be done now"
+    assert await dut_if.read_rob_entry_value(tag) == alu_result
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -4471,13 +4468,12 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_fu_complete(FU_FP_ADD)
 
-    dut_if.set_read_tag(tag_s1)
     ready = False
     for _ in range(12):
         await dut_if.step()
         if (
             (int(dut.u_sq.sq_data_valid.value) >> s1_slot) & 1
-        ) and dut_if.read_entry_done():
+        ) and dut_if.rob_entry_done(tag_s1):
             ready = True
             break
     assert ready, "S1 never became data-valid + ROB-done under the blanket"
