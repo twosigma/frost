@@ -74,7 +74,9 @@ RS_MEM = 2
 RS_FP = 3
 PRIV_U = 0
 PRIV_M = 3
+EXC_INSTR_ACCESS_FAULT = 1
 EXC_ILLEGAL_INSTR = 2
+EXC_INSTR_PAGE_FAULT = 12
 CSR_MSTATUS = 0x300
 CSR_SSTATUS = 0x100
 CSR_SATP = 0x180
@@ -2268,39 +2270,63 @@ async def test_alloc_priv_fault_survives_nonexception_cdb(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_cdb_exception_overrides_alloc_illegal_cause(dut: Any) -> None:
-    """A real execution exception replaces a stored IllegalInstr cause."""
+async def test_fetch_fault_replaces_alloc_illegal_cause(dut: Any) -> None:
+    """A fetch fault's completion replaces the IllegalInstr cause of its garbage decode.
+
+    A fetch-fault pseudo-op carries the faulting fetch's bytes, and they can
+    decode as a CSR access. Here they name CSR 0x000, which does not exist,
+    so allocation records IllegalInstr. The INT ALU shim then completes the
+    entry with the fetch fault (access fault 1 on one CDB lane, page fault 12
+    on the other), which the privileged spec ranks above illegal-instruction,
+    and the trap must report the fetch fault and its address.
+    """
     dut_if, model = await setup_test(dut)
 
-    dut.i_priv.value = PRIV_U
-    dut.i_priv_is_u.value = 1
-    req = AllocationRequest(
-        pc=0x2200,
-        dest_reg=6,
-        dest_valid=True,
-        is_csr=True,
-        csr_addr=CSR_MSTATUS,
-    )
-    tag = await drive_single_alloc(dut_if, req)
-    model_tag = model.allocate(req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
-    assert tag == model_tag
-    dut.i_priv.value = PRIV_M
-    dut.i_priv_is_u.value = 0
+    for lane, cause in ((0, EXC_INSTR_ACCESS_FAULT), (1, EXC_INSTR_PAGE_FAULT)):
+        # A 4-byte instruction straddling a page boundary: the fault address
+        # is the second page.
+        pc = 0x2FFE + 0x1000 * lane
+        fault_addr = pc + 2
+        req = AllocationRequest(
+            pc=pc,
+            rs_type=RS_INT,
+            is_csr=True,
+            csr_addr=0x000,
+            csr_op=0b001,
+            csr_write_intent=True,
+        )
+        tag = await drive_single_alloc(dut_if, req)
+        assert model.allocate(req, exception=True, exc_cause=EXC_ILLEGAL_INSTR) == tag
 
-    cdb_cause = 5
-    cdb = CDBWrite(tag=tag, value=0, exception=True, exc_cause=cdb_cause)
-    dut_if.drive_cdb_write_2(cdb)
-    model.cdb_write(cdb)
-    await RisingEdge(dut_if.clock)
-    await FallingEdge(dut_if.clock)
-    dut_if.clear_cdb_write_2()
+        cdb = CDBWrite(tag=tag, value=fault_addr, exception=True, exc_cause=cause)
+        if lane:
+            dut_if.drive_cdb_write_2(cdb)
+        else:
+            dut_if.drive_cdb_write(cdb)
+        model.cdb_write(cdb)
+        await dut_if.step()
+        dut_if.clear_cdb_writes()
+        assert model.entries[tag].exc_cause == cause
 
-    assert model.entries[tag].exception
-    assert model.entries[tag].exc_cause == cdb_cause
-    await RisingEdge(dut_if.clock)
-    assert dut_if.trap_pending
-    assert not dut_if.csr_start
-    assert dut_if.trap_cause == cdb_cause, "CDB exception must override IllegalInstr"
+        await RisingEdge(dut_if.clock)
+        assert dut_if.trap_pending
+        assert not dut_if.csr_start, "Faulting CSR decode must not start serialization"
+        assert dut_if.trap_pc == pc
+        assert dut_if.trap_cause == cause, (
+            f"lane {lane}: fetch fault {cause} did not replace IllegalInstr "
+            f"(trap cause {dut_if.trap_cause})"
+        )
+        assert int(dut.o_trap_value.value) == fault_addr
+
+        # Take the trap; its full flush empties the ROB for the next case.
+        await FallingEdge(dut_if.clock)
+        dut_if.set_trap_taken(True)
+        dut_if.drive_full_flush()
+        await dut_if.step()
+        dut_if.set_trap_taken(False)
+        dut_if.clear_full_flush()
+        model.flush_all()
+        assert dut_if.empty
 
 
 @cocotb.test()

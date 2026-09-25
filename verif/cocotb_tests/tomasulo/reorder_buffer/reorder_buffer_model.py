@@ -450,7 +450,10 @@ class ReorderBufferModel:
         entry.value = write.value & MASK64
         # Allocation-time legality is already a precise exception. A normal
         # FU completion supplies value/done but must not erase that fault or
-        # its cause. A real CDB exception has priority and replaces the cause.
+        # its cause. An exceptional completion replaces the cause; in the core
+        # the only one that can reach an entry with an allocation-time fault
+        # and name a different cause is an instruction fetch fault, which
+        # ranks above illegal-instruction.
         if write.exception:
             entry.exception = True
             entry.exc_cause = write.exc_cause

@@ -244,8 +244,9 @@ module reorder_buffer #(
 
     // mstatus.FS == Off from csr_file. The allocation legality snapshot
     // marks any FP instruction or fflags/frm/fcsr access illegal while it is
-    // set. CSR writes serialize; hardware Dirty-setting only moves FS away
-    // from Off.
+    // set; ID also marks F/D instructions illegal then, which keeps FP loads
+    // and stores out of the memory pipeline. CSR writes serialize; hardware
+    // Dirty-setting only moves FS away from Off.
     input logic i_mstatus_fs_off,
 
     // =========================================================================
@@ -1089,10 +1090,16 @@ module reorder_buffer #(
 
   // Exception causes differ from the ordinary value/fp-flags payloads:
   // allocation may already have installed an illegal-instruction cause, and a
-  // non-exception CDB completion must leave it untouched. Qualifying with
-  // rob_valid also makes an exceptional stale CDB harmless in the entry's own
-  // reallocation cycle; otherwise the cause RAM's higher-numbered CDB LVT
-  // port would beat the allocation port and poison the new entry.
+  // non-exception CDB completion must leave it untouched. An exceptional
+  // completion replaces it. The only one that can reach an entry with an
+  // allocation-time fault and name another cause is an instruction fetch
+  // fault, which outranks illegal-instruction (the fetch-fault pseudo-op's
+  // bytes can decode as, say, a CSR access); ID marks F/D instructions
+  // illegal while mstatus.FS is Off, so no FP load or store takes a memory
+  // fault. Qualifying with rob_valid also makes an exceptional stale CDB
+  // harmless in the entry's own reallocation cycle; otherwise the cause RAM's
+  // higher-numbered CDB LVT port would beat the allocation port and poison
+  // the new entry.
   logic cdb_exc_cause_wr_en;
   logic cdb_exc_cause_wr_en_2;
   assign cdb_exc_cause_wr_en   = cdb_state_wr_en && i_cdb_write.exception;
@@ -1103,7 +1110,8 @@ module reorder_buffer #(
 
   // Record the allocation-time legality result and its cause with the other
   // allocation data. Legal entries start with exception/cause zero; a later
-  // exceptional CDB completion sets the flag and replaces the cause.
+  // exceptional CDB completion sets the flag and replaces the cause (see
+  // cdb_exc_cause_wr_en).
   logic alloc_legality_fault_data;
   logic alloc_legality_fault_data_2;
   riscv_pkg::exc_cause_t alloc_exc_cause_data;
@@ -1623,8 +1631,10 @@ module reorder_buffer #(
   );
 
   // rob_exc_cause: allocation installs zero or IllegalInstr; only exceptional,
-  // valid-qualified CDB completions replace it, so a later execution
-  // exception overrides an allocation-time fault.
+  // valid-qualified CDB completions replace it. On an entry with an
+  // allocation-time fault, the only replacement that names another cause is
+  // a fetch fault, which outranks illegal-instruction (see
+  // cdb_exc_cause_wr_en).
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),

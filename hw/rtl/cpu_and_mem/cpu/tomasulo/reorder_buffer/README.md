@@ -86,10 +86,19 @@ Deciding at allocation is exact because that state cannot change under a
 live entry: every CSR instruction keeps younger instructions out of dispatch
 until its CSR write is done, traps, xRETs, and Debug Mode transitions flush
 younger work, and hardware never sets `mstatus.FS` to Off (it only sets
-Dirty). A normal CDB completion therefore leaves an allocation-time fault in
-place, while an exceptional one sets the exception and replaces the cause.
-Both writes require a valid entry, so a stale write for a recycled tag cannot
-overwrite the cause of the entry allocated there in the same cycle.
+Dirty).
+
+A normal CDB completion leaves an allocation-time fault in place, while an
+exceptional one sets the exception and replaces the cause. ID marks F/D
+instructions illegal while `mstatus.FS` is Off, so no FP load or store
+reaches the memory pipeline and takes a memory fault. The only exceptional
+completion that can reach an entry with an allocation-time fault and name a
+different cause is an instruction fetch fault, which the privileged spec
+ranks above illegal-instruction: the fetch-fault pseudo-op carries the
+faulting fetch's bytes, and they can decode as, say, an access to a CSR that
+does not exist. Completions update an entry only while it is valid, so a
+stale write for a recycled tag cannot overwrite the cause of the entry
+allocated there in the same cycle.
 
 ## Completion
 
