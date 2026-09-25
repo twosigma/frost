@@ -21,9 +21,9 @@
  * so each one spans a word boundary, and every other one also ends in the next
  * 8-byte fetch window. The sequence covers register and immediate ALU forms,
  * lui, mul, a store and load through scratch, a taken and a not-taken branch,
- * a jump, and the return; the result depends on the reloaded value and on
- * every branch and jump outcome. main.c's span_chain_ref is the same
- * computation.
+ * a jump, and the return. For the inputs main.c uses, the result depends on
+ * the reloaded value and on every branch and jump outcome. main.c's
+ * span_chain_ref is the same computation.
  */
     .option push
     .option norelax

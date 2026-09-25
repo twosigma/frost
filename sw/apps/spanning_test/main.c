@@ -48,15 +48,20 @@ static uint64_t span_chain_ref(uint64_t x)
 
 static int failures;
 
-static void check_text(const char *got, const char *want)
+/* Compares before printing anything, and prints a wrong result as hex bytes,
+ * so a corrupted result cannot print the pass marker. */
+static void check_text(const char *got, size_t size, const char *want)
 {
-    uart_printf("%s", got);
     if (strcmp(got, want) == 0) {
-        uart_puts(" OK\n");
-    } else {
-        uart_printf(" FAIL (want \"%s\")\n", want);
-        failures++;
+        uart_printf("%s OK\n", want);
+        return;
     }
+    uart_puts("FAIL (got");
+    for (size_t i = 0; i < size && got[i] != '\0'; i++) {
+        uart_printf(" %02x", (unsigned) (unsigned char) got[i]);
+    }
+    uart_printf(", want \"%s\")\n", want);
+    failures++;
 }
 
 int main(void)
@@ -71,7 +76,7 @@ int main(void)
 
     uart_puts("Test 1: snprintf with string... ");
     snprintf(buf, sizeof buf, "%s", "Hello");
-    check_text(buf, "Hello");
+    check_text(buf, sizeof buf, "Hello");
 
     /* The loop repeats the call, covering PC handling across iterations. */
     uart_puts("Test 2: snprintf in loop... ");
@@ -79,11 +84,11 @@ int main(void)
     for (int i = 0; i < 3; i++) {
         len += snprintf(buf + len, sizeof buf - (size_t) len, "%d", i);
     }
-    check_text(buf, "012");
+    check_text(buf, sizeof buf, "012");
 
     uart_puts("Test 3: complex snprintf... ");
     snprintf(buf, sizeof buf, "%s=%d", "val", 42);
-    check_text(buf, "val=42");
+    check_text(buf, sizeof buf, "val=42");
 
     uart_puts("Test 4: spanning sequence... ");
     for (unsigned i = 0; i < sizeof span_inputs / sizeof span_inputs[0]; i++) {
