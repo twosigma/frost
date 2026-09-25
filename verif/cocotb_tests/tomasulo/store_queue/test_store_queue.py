@@ -26,11 +26,13 @@ aligned-dword memory image, with the store data shifted to its byte lanes.
 """
 
 import random
+from dataclasses import dataclass
 from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import Timer
+from config import MASK_XLEN
 
 from .sq_interface import SQInterface, pack_sq_addr_update, pack_sq_data_update
 from .sq_model import (
@@ -40,8 +42,8 @@ from .sq_model import (
     MEM_SIZE_HALF,
     MEM_SIZE_WORD,
     MEM_SIZE_DOUBLE,
-    MASK32,
     MASK64,
+    MASK_TAG,
 )
 
 CLOCK_PERIOD_NS = 10
@@ -562,7 +564,7 @@ async def test_payload_only_fault_capture_stays_invisible(dut: Any) -> None:
 
     assert int(dut.sq_addr_valid.value) == 0
     assert int(dut.sq_data_valid.value) == 0
-    assert int(dut.sq_address_flat.value) & MASK32 == 0xDEAD_1000
+    assert int(dut.sq_address_flat.value) & MASK_XLEN == 0xDEAD_1000
     assert int(dut.sq_is_mmio.value) & 1
     assert int(dut.sq_data_fwd_flat.value) & MASK64 == 0xDEAD_BEEF_CAFE_0001
 
@@ -606,7 +608,7 @@ async def test_early_payload_capture_stays_hidden_and_normal_update_wins(
     await dut_if.step()
     dut_if.clear_early_addr_update()
     assert int(dut.sq_addr_valid.value) == 0
-    assert int(dut.sq_address_flat.value) & MASK32 == 0x4000_1000
+    assert int(dut.sq_address_flat.value) & MASK_XLEN == 0x4000_1000
     assert int(dut.sq_is_mmio.value) & 1
 
     dut_if.drive_commit(rob_tag)
@@ -1440,8 +1442,9 @@ async def test_forward_same_cycle_commit_after_head_advance(dut: Any) -> None:
     """A just-committed store must still block/forward a younger load.
 
     The ROB can advance its head to the load's tag before the SQ latches the
-    store's committed bit. Forwarding must treat i_commit_valid as visible in
-    that same cycle so the load cannot issue to memory in front of the store.
+    store's committed bit. The store's tag then ranks it younger than the
+    load, so forwarding must treat i_commit_valid as visible in that same
+    cycle, or the load could issue to memory in front of the store.
     """
     dut_if, model = await setup(dut)
 
@@ -1454,7 +1457,11 @@ async def test_forward_same_cycle_commit_after_head_advance(dut: Any) -> None:
         dut_if, model, rob_tag=store_tag, address=store_addr, data=store_data
     )
 
+    # The forwarding unit ranks ages against a registered copy of the head
+    # tag, so the head moves one cycle before the probe.
     dut_if.drive_rob_head_tag(load_tag)
+    await dut_if.step()
+
     dut_if.drive_commit(store_tag)
     dut_if.drive_sq_check(addr=store_addr, rob_tag=load_tag, size=MEM_SIZE_WORD)
     await dut_if.step()  # Wait for registered SQ forwarding output
@@ -1703,113 +1710,273 @@ async def test_forward_lb_at_fsd_base(dut: Any) -> None:
 # ============================================================================
 # Test 33: Constrained random
 # ============================================================================
+def store_beat(data: int, size: int) -> int:
+    """Return the drain beat of a store: sub-dword data replicated across 64 bits."""
+    if size == MEM_SIZE_BYTE:
+        return bbeat(data)
+    if size == MEM_SIZE_HALF:
+        return hbeat(data)
+    if size == MEM_SIZE_WORD:
+        return wbeat(data)
+    return data & MASK64
+
+
+def store_strobe(address: int, size: int) -> int:
+    """Return the 8-lane byte strobe of a naturally aligned store."""
+    width = 1 << size
+    return ((1 << width) - 1) << (address & 0x7)
+
+
+@dataclass
+class RandomStore:
+    """One store of the constrained-random reference, in program order."""
+
+    tag: int
+    size: int
+    address: int
+    data: int
+    alloc_cycle: int
+    addr_sent: bool = False
+    data_sent: bool = False
+    committed: bool = False
+    launched: bool = False
+
+
 @cocotb.test()
 async def test_constrained_random(dut: Any) -> None:
-    """Drive random allocations, updates, commits, and writes against the model.
+    """Drive random stores, commits, drains and flushes against a reference.
 
-    Commits go oldest first. The DUT count must match the model periodically
-    and after the final drain.
+    The write bus is sampled every cycle, because the pipelined drain can
+    launch a write every cycle, and each write must be the oldest committed
+    store not yet written, with its address, replicated data and byte strobe.
+    A partial flush removes the uncommitted stores younger than its tag, and a
+    commit-time recovery flush (its tag already behind the ROB head) removes
+    every uncommitted store; either can meet a registered commit in the same
+    cycle. A full flush comes only when no committed store is pending, as in
+    the core. The live count must match the reference every cycle, and every
+    committed store must drain.
     """
-    dut_if, model = await setup(dut)
+    dut_if, _ = await setup(dut)
+    rng = random.Random(42)
 
-    random.seed(42)
-    allocated_tags: list[int] = []
-    committed_tags: set[int] = set()
-    next_tag = 0
-    num_cycles = 500
+    stores: list[RandomStore] = []
+    # ROB tags step by 2 per store; the odd tag before each store stands for
+    # the other instruction (a branch, say) that a partial flush names.
+    next_tag = 2
+    done_due = False
+    quiet = 0  # no allocation for this many cycles after a flush
+    writes_checked = 0
+    committed_total = 0
+    flushes = {"partial": 0, "commit-time": 0, "full": 0}
 
-    for cycle in range(num_cycles):
-        action = random.random()
+    def uncommitted() -> list[RandomStore]:
+        return [st for st in stores if not st.committed]
 
-        # Allocate
-        if action < 0.25 and not model.full and next_tag < 31:
-            tag = next_tag
-            next_tag += 1
-            size = random.choice([MEM_SIZE_BYTE, MEM_SIZE_HALF, MEM_SIZE_WORD])
-            dut_if.drive_alloc(rob_tag=tag, size=size)
-            model.alloc(tag, False, size)
-            allocated_tags.append(tag)
-            await dut_if.step()
-            dut_if.clear_alloc()
+    def head_tag() -> int:
+        """ROB head: the instruction just older than the oldest uncommitted store."""
+        pending = uncommitted()
+        return ((pending[0].tag if pending else next_tag) - 1) & MASK_TAG
 
-            # Immediately give addr and data
-            addr = random.randint(0, 0xFFFF) & ~0x3  # word-aligned
-            data = random.randint(0, MASK32)
-            dut_if.drive_addr_update(rob_tag=tag, address=addr)
-            model.addr_update(tag, addr)
-            dut_if.drive_data_update(rob_tag=tag, data=data)
-            model.data_update(tag, data)
-            await dut_if.step()
-            dut_if.clear_addr_update()
-            dut_if.clear_data_update()
+    def ready(st: RandomStore) -> bool:
+        return st.addr_sent and st.data_sent
 
-        # Commit oldest uncommitted
-        elif action < 0.50 and allocated_tags:
-            uncommitted = [t for t in allocated_tags if t not in committed_tags]
-            if uncommitted:
-                tag = uncommitted[0]
-                dut_if.drive_commit(tag)
-                model.commit(tag)
-                committed_tags.add(tag)
-                await dut_if.step()
-                dut_if.clear_commit()
+    def clear_drives() -> None:
+        dut_if.clear_alloc()
+        dut_if.clear_alloc_2()
+        dut_if.clear_addr_update()
+        dut_if.clear_data_update()
+        dut_if.clear_commit()
+        dut_if.clear_commit_2()
+        dut_if.clear_partial_flush()
+        dut_if.clear_flush_all()
+        dut.i_flush_after_head_commit.value = 0
 
-        # Process memory write
-        elif action < 0.75:
-            await Timer(1, unit="ns")
-            write_req = dut_if.read_mem_write()
-            if write_req.en:
-                model.mem_write_initiate()
-                await dut_if.step()
-                dut_if.drive_mem_write_done()
-                model.mem_write_done()
-                model.advance_head()
-                if allocated_tags:
-                    allocated_tags.pop(0)
-                    if committed_tags:
-                        committed_tags -= {min(committed_tags)}
-                await dut_if.step()
-                dut_if.clear_mem_write_done()
-            else:
-                await dut_if.step()
-
-        else:
-            await dut_if.step()
-
-        if cycle % 50 == 0:
-            assert dut_if.count == model.count, (
-                f"Cycle {cycle}: count mismatch DUT={dut_if.count} model={model.count}"
-            )
-
-    # Drain remaining entries
-    for _ in range(SQ_DEPTH + 20):
-        uncommitted = [t for t in allocated_tags if t not in committed_tags]
-        if uncommitted:
-            tag = uncommitted[0]
-            dut_if.drive_commit(tag)
-            model.commit(tag)
-            committed_tags.add(tag)
-            await dut_if.step()
-            dut_if.clear_commit()
-
+    async def check_cycle(cycle: int) -> bool:
+        """Check the count and the write bus; return whether a write completes now."""
+        nonlocal done_due, writes_checked
         await Timer(1, unit="ns")
-        write_req = dut_if.read_mem_write()
-        if write_req.en:
-            model.mem_write_initiate()
-            await dut_if.step()
-            dut_if.drive_mem_write_done()
-            model.mem_write_done()
-            model.advance_head()
-            if allocated_tags:
-                allocated_tags.pop(0)
-            await dut_if.step()
-            dut_if.clear_mem_write_done()
-        else:
-            await dut_if.step()
+        assert dut_if.count == len(stores), (
+            f"cycle {cycle}: count DUT={dut_if.count} reference={len(stores)}"
+        )
+        complete_now = done_due
+        done_due = False
+        req = dut_if.read_mem_write()
+        if req.en:
+            expected = next((st for st in stores if not st.launched), None)
+            assert expected is not None and expected.committed, (
+                f"cycle {cycle}: write to 0x{req.addr:x} launched with no committed "
+                "store waiting to drain"
+            )
+            assert req.addr == expected.address, (
+                f"cycle {cycle}: tag {expected.tag} wrote 0x{req.addr:x}, "
+                f"expected 0x{expected.address:x}"
+            )
+            beat = store_beat(expected.data, expected.size)
+            assert req.data == beat, (
+                f"cycle {cycle}: tag {expected.tag} wrote data 0x{req.data:016x}, "
+                f"expected 0x{beat:016x}"
+            )
+            strobe = store_strobe(expected.address, expected.size)
+            assert req.byte_en == strobe, (
+                f"cycle {cycle}: tag {expected.tag} strobe 0x{req.byte_en:02x}, "
+                f"expected 0x{strobe:02x}"
+            )
+            expected.launched = True
+            done_due = True
+            writes_checked += 1
+        return complete_now
 
-    assert dut_if.count == model.count, (
-        f"Final count mismatch DUT={dut_if.count} model={model.count}"
+    def complete_write(complete_now: bool) -> None:
+        """Acknowledge last cycle's write, as the router does for a BRAM store."""
+        if complete_now:
+            assert stores and stores[0].launched
+            stores.pop(0)
+            dut_if.drive_mem_write_done()
+        else:
+            dut_if.clear_mem_write_done()
+
+    def commit(st: RandomStore, slot2: bool = False) -> None:
+        nonlocal committed_total
+        if slot2:
+            dut_if.drive_commit_2(st.tag)
+        else:
+            dut_if.drive_commit(st.tag)
+        st.committed = True
+        committed_total += 1
+
+    def send_updates(cycle: int) -> None:
+        waiting_addr = [
+            st for st in stores if not st.addr_sent and st.alloc_cycle < cycle
+        ]
+        if waiting_addr and rng.random() < 0.5:
+            st = rng.choice(waiting_addr)
+            dut_if.drive_addr_update(st.tag, st.address)
+            st.addr_sent = True
+        waiting_data = [
+            st for st in stores if not st.data_sent and st.alloc_cycle < cycle
+        ]
+        if waiting_data and rng.random() < 0.5:
+            st = rng.choice(waiting_data)
+            dut_if.drive_data_update(st.tag, st.data)
+            st.data_sent = True
+
+    def can_allocate(tag: int) -> bool:
+        """Keep live tags distinct and inside a window that ages compare correctly."""
+        if any(st.tag == tag for st in stores):
+            return False
+        return not stores or ((tag - stores[0].tag) & MASK_TAG) < 24
+
+    def new_store(cycle: int) -> RandomStore:
+        nonlocal next_tag
+        size = rng.choice(
+            [MEM_SIZE_BYTE, MEM_SIZE_HALF, MEM_SIZE_WORD, MEM_SIZE_DOUBLE]
+        )
+        address = rng.randrange(0, 0x1_0000) & ~((1 << size) - 1)
+        st = RandomStore(next_tag, size, address, rng.getrandbits(64), cycle)
+        next_tag = (next_tag + 2) & MASK_TAG
+        stores.append(st)
+        return st
+
+    num_cycles = 3000
+    for cycle in range(num_cycles):
+        complete_now = await check_cycle(cycle)
+        clear_drives()
+        complete_write(complete_now)
+        pending = uncommitted()
+        action = rng.random()
+
+        if action < 0.03 and pending:
+            # Partial flush at a branch just older than pending[k]: kills
+            # pending[k:]. When k > 0 the oldest pending store may take its
+            # registered commit in the same cycle.
+            k = rng.randrange(len(pending))
+            if k > 0 and ready(pending[0]) and rng.random() < 0.5:
+                commit(pending[0])
+            flush_tag = (pending[k].tag - 1) & MASK_TAG
+            dut_if.drive_rob_head_tag(head_tag())
+            dut_if.drive_partial_flush(flush_tag)
+            for st in pending[k:]:
+                stores.remove(st)
+            next_tag = (flush_tag + 1) & MASK_TAG
+            quiet = 2
+            flushes["partial"] += 1
+        elif action < 0.045 and pending:
+            # Commit-time recovery: the mispredicted branch, just older than
+            # the oldest store left uncommitted, has retired, so the ROB head
+            # is past it and no store ranks younger than the flush tag by age.
+            # i_flush_after_head_commit alone removes every uncommitted store,
+            # except one whose registered commit lands in this cycle.
+            if ready(pending[0]) and rng.random() < 0.5:
+                commit(pending[0])
+            branch = head_tag()
+            dut_if.drive_rob_head_tag(branch + 1)
+            dut_if.drive_partial_flush(branch)
+            dut.i_flush_after_head_commit.value = 1
+            for st in uncommitted():
+                stores.remove(st)
+            next_tag = (branch + 1) & MASK_TAG
+            quiet = 2
+            flushes["commit-time"] += 1
+        elif (
+            action < 0.06
+            and not any(st.committed for st in stores)
+            and not complete_now
+        ):
+            # Full flush: its sources first wait for o_committed_empty.
+            dut_if.drive_flush_all()
+            stores.clear()
+            quiet = 2
+            flushes["full"] += 1
+        else:
+            pending = uncommitted()
+            if pending and ready(pending[0]) and rng.random() < 0.4:
+                commit(pending[0])
+                if len(pending) > 1 and ready(pending[1]) and rng.random() < 0.3:
+                    commit(pending[1], slot2=True)
+            send_updates(cycle)
+            if (
+                quiet == 0
+                and rng.random() < 0.4
+                and not dut_if.full
+                and can_allocate(next_tag)
+            ):
+                st = new_store(cycle)
+                dut_if.drive_alloc(rob_tag=st.tag, size=st.size)
+                if (
+                    rng.random() < 0.3
+                    and not dut_if.full_for_2
+                    and can_allocate(next_tag)
+                ):
+                    st2 = new_store(cycle)
+                    dut_if.drive_alloc_2(rob_tag=st2.tag, size=st2.size)
+            dut_if.drive_rob_head_tag(head_tag())
+            quiet = max(0, quiet - 1)
+        await dut_if.step()
+
+    # Drain: no more allocations or flushes; every store gets its address and
+    # data, commits in order, and must reach the bus.
+    for cycle in range(num_cycles, num_cycles + 400):
+        complete_now = await check_cycle(cycle)
+        clear_drives()
+        if not stores and not complete_now:
+            break
+        complete_write(complete_now)
+        pending = uncommitted()
+        if pending and ready(pending[0]):
+            commit(pending[0])
+        send_updates(cycle)
+        dut_if.drive_rob_head_tag(head_tag())
+        await dut_if.step()
+    clear_drives()
+    dut_if.clear_mem_write_done()
+
+    assert not stores, f"{len(stores)} stores never drained"
+    assert writes_checked == committed_total, (
+        f"{committed_total} stores committed but {writes_checked} writes reached the bus"
     )
+    assert dut_if.count == 0 and dut_if.empty
+    assert all(count > 0 for count in flushes.values()), f"flush coverage: {flushes}"
+    cocotb.log.info(f"{writes_checked} writes checked; flushes: {flushes}")
 
 
 # ============================================================================
@@ -2295,8 +2462,8 @@ async def test_commit_cycle_registered_guard_survives_flush_after_head(
     dut_if.clear_commit()
 
     assert dut_if.count == 1, (
-        "store with its registered commit in the flush cycle was lost to "
-        "flush_all_uncommitted (missing registered-commit guard)"
+        "commit-time recovery flush removed a store whose registered commit "
+        "arrived in the same cycle"
     )
     write_req = await wait_for_mem_write(dut_if, max_cycles=8)
     assert write_req.en and write_req.addr == 0x3000, (

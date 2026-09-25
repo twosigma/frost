@@ -20,14 +20,13 @@ hw/rtl/README.md "Data-tier bus contract").
 """
 
 from dataclasses import dataclass
-from config import FLEN, XLEN
+from config import FLEN, MASK_XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 SQ_DEPTH = 8
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
 # mem_size_e values
@@ -156,7 +155,7 @@ class SQModel:
         e.rob_tag = rob_tag & MASK_TAG
         e.is_fp = is_fp
         e.addr_valid = addr_valid
-        e.address = address & MASK32
+        e.address = address & MASK_XLEN
         e.data_valid = False
         e.data = 0
         e.size = size
@@ -184,7 +183,7 @@ class SQModel:
         for e in self.entries:
             if e.valid and not e.addr_valid and e.rob_tag == (rob_tag & MASK_TAG):
                 e.addr_valid = True
-                e.address = address & MASK32
+                e.address = address & MASK_XLEN
                 e.is_mmio = is_mmio
 
     def data_update(self, rob_tag: int, data: int) -> None:
