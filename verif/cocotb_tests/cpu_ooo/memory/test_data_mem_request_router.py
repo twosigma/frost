@@ -976,9 +976,10 @@ async def test_device_arming_does_not_gate_non_device_reads(dut: Any) -> None:
 
 @cocotb.test()
 async def test_blocker_returning_after_arming_still_blocks_accept(dut: Any) -> None:
-    """A write-port blocker that appears before the accept keeps a device read parked.
+    """A write-port blocker that appears after arming keeps a device read parked.
 
     Arming only adds a precondition; the accept checks every live blocker again.
+    Once the blocker leaves, the request re-arms and is read exactly once.
     """
     await _setup_test(dut)
     dut.i_sq_committed_empty.value = 1
@@ -989,10 +990,10 @@ async def test_blocker_returning_after_arming_still_blocks_accept(dut: Any) -> N
     await _advance_cycle(dut)
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_addr_valid.value = 0
-    await _settle()
-    # The SQ takes the write port in the second pending cycle, so the request
-    # cannot arm and stays parked while the port is busy.
-    await _advance_cycle(dut)
+    # Both pending cycles pass with every blocker open, so the request arms.
+    await _advance_arming_cycle(dut)
+    assert int(dut.device_accept_armed_q.value) == 1
+    # The SQ takes the write port in the cycle the accept would fire.
     dut.i_sq_mem_write_en.value = 1
     dut.i_sq_mem_write_addr.value = FAST_ADDR
     dut.i_sq_mem_write_byte_en.value = 0b1111
@@ -1004,8 +1005,25 @@ async def test_blocker_returning_after_arming_still_blocks_accept(dut: Any) -> N
 
     for _ in range(3):
         await _advance_cycle(dut)
+        assert int(dut.device_accept_armed_q.value) == 0
+        assert int(dut.o_data_mem_read_enable.value) == 0
         assert int(dut.o_mmio_read_pulse.value) == 0
+        assert int(dut.o_mmio_uart_rx_ready_pulse.value) == 0
         assert int(dut.o_lq_mem_request_valid.value) == 1
+
+    # The port frees: one re-arm cycle, then the read fires once.
+    dut.i_sq_mem_write_en.value = 0
+    dut.i_sq_mem_write_byte_en.value = 0
+    await _advance_rearm_cycle(dut)
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_mmio_read_pulse.value) == 1
+    assert int(dut.o_mmio_load_addr.value) == UART_RX_DATA_MMIO_ADDR
+    await _advance_cycle(dut)
+    assert int(dut.o_lq_mem_request_valid.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    assert int(dut.o_mmio_uart_rx_ready_pulse.value) == 1
+    await _advance_cycle(dut)
+    assert int(dut.o_mmio_uart_rx_ready_pulse.value) == 0
 
 
 @cocotb.test()
