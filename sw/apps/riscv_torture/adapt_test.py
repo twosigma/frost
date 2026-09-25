@@ -130,7 +130,7 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
 
     # Build adapted file
     adapted = []
-    adapted.append("// Adapted riscv-torture test for Frost")
+    adapted.append("// Adapted riscv-torture test for FROST")
     adapted.append(f"// Original: {input_path.name}")
     adapted.append("")
     adapted.append('#include "frost_header.S"')
@@ -140,7 +140,7 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
     adapted.append("")
     adapted.extend(code_lines)
     adapted.append("")
-    adapted.append("    // End of torture test — jump to register dump")
+    adapted.append("    // End of torture test: jump to the register dump")
     adapted.append("    j _torture_test_end")
     adapted.append("")
 

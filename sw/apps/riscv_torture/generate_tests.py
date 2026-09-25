@@ -266,7 +266,7 @@ def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
     gpr_max = (1 << 64) - 1
     gpr_digits = 16
 
-    lines.append(f"// Generated RV64IMAFDC torture test for Frost (seed={seed})")
+    lines.append(f"// Generated RV64IMAFDC torture test for FROST (seed={seed})")
     lines.append(f"// nseqs={nseqs} memsize={memsize}")
     lines.append("")
     lines.append('#include "frost_header.S"')
