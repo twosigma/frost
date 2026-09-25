@@ -135,7 +135,7 @@ static void prepare_pool(void)
 
 int main(void)
 {
-    unsigned long arm_y = 0, fail_iters = 0, fail_values = 0, marker_bad = 0, cond_bad = 0;
+    unsigned long arm_y = 0, fail_iters = 0, fail_values = 0, marker_bad = 0, line0_sig_bad = 0;
     unsigned long reported = 0, rng = SEED;
 
     uart_printf("\r\nlq_stale_slot_probe: %lu iterations, pool @%lx, markers @%lx\r\n",
@@ -153,7 +153,7 @@ int main(void)
         unsigned long bad = 0;
 
         if (out[11] != sig(i, 0)) {
-            cond_bad++;
+            line0_sig_bad++;
             if (reported < 8) {
                 reported++;
                 uart_printf("  iter %lu: line 0 read %lx, expected its signature %lx\r\n",
@@ -218,9 +218,9 @@ int main(void)
                 fail_iters,
                 fail_values,
                 marker_bad,
-                cond_bad);
-    uart_printf((fail_iters == 0 && marker_bad == 0 && cond_bad == 0) ? "<<PASS>>\r\n"
-                                                                      : "<<FAIL>>\r\n");
+                line0_sig_bad);
+    uart_printf((fail_iters == 0 && marker_bad == 0 && line0_sig_bad == 0) ? "<<PASS>>\r\n"
+                                                                           : "<<FAIL>>\r\n");
     for (;;) {
     }
     return 0;
