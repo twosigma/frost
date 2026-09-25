@@ -1,10 +1,9 @@
 # RV64 A-extension directed test
 #
 # Exercises the doubleword atomics end-to-end through the OoO core's AMO
-# path; the arch and riscv-tests suites cover the ops one at a time. Each
-# test here checks both the returned old value and the resulting memory word,
-# with full-64-bit patterns chosen so any 32-bit datapath truncation or
-# W-style sign-extension in the AMO ALU shows up.
+# path. Each test checks both the returned old value and the resulting memory
+# doubleword, with full 64-bit patterns chosen so any 32-bit datapath
+# truncation or W-style sign extension in the AMO ALU shows up.
 #
 # Coverage:
 #   1. AMOSWAP.D: old value returned, new value stored
