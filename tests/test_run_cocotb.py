@@ -701,6 +701,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "FreeRTOS RV64 queue, mutex, and amoadd.w demo with tick time slicing; "
             "a tick inside a critical section must defer its task switch"
         ),
+        # The demo waits for timer ticks, 10,000 cycles apart in the simulation
+        # build, and from cached DDR it uses most of the default 500k-cycle budget.
+        extra_env=(("COCOTB_MAX_CYCLES", "1000000"),),
     ),
     "fpu_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
