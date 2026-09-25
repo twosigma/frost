@@ -1007,7 +1007,7 @@ def bind_x3_place_gate(work_dir: Path, expected_wns: float | None = None) -> boo
     if not gate.passed:
         print(
             f"Warning: post-place WNS {gate.worst_slack_ns} ns is below "
-            "-0.200 ns; continuing with downstream optimization."
+            f"{X3_POST_PLACE_GATE_NS} ns; continuing with downstream optimization."
         )
     return True
 
@@ -1038,7 +1038,7 @@ def require_x3_post_place_gate(main_work: Path) -> bool:
     if not gate.passed:
         print(
             f"Warning: post-place WNS {gate.worst_slack_ns} ns is below "
-            "-0.200 ns; continuing with downstream optimization."
+            f"{X3_POST_PLACE_GATE_NS} ns; continuing with downstream optimization."
         )
     return True
 
@@ -1742,7 +1742,10 @@ def select_x3_place_best_run(
         if x3_place_gate_passes(run.work_dir / "post_place_gate.txt", run.wns)
     ]
     if not passing:
-        print("\nNo placement meets -0.200 ns; selecting the best measured result.")
+        print(
+            f"\nNo placement meets {X3_POST_PLACE_GATE_NS} ns; "
+            "selecting the best measured result."
+        )
         return min(eligible, key=directive_sweep_rank_key)
     eligible = passing
 
@@ -2618,6 +2621,11 @@ def generate_bitstream(
 
 def main() -> None:
     """Run FPGA build."""
+    # The defaults the epilog quotes.
+    jobs = DEFAULT_MAX_JOBS
+    gate = X3_POST_PLACE_GATE_NS
+    veto = X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT
+    probes = X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT
     parser = argparse.ArgumentParser(
         description="FROST FPGA build script",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -2627,7 +2635,7 @@ Steps (in order):
   opt                         - Opt design
   place                       - Place design (x3 sweeps selected placer
                                 directives x uncertainty seeds, up to --jobs
-                                at a time; warn below -0.200 ns,
+                                at a time; warn below {gate} ns,
                                 veto congested seeds, keep the best post-place
                                 WNS; no quick-route probe by default)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
@@ -2643,7 +2651,7 @@ Steps (in order):
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
-  * --jobs / -j limits simultaneous Vivado processes per build (default {DEFAULT_MAX_JOBS}).
+  * --jobs / -j limits simultaneous Vivado processes per build (default {jobs}).
     This covers X3 placement, quick-route probes, and both router sweeps.
     Candidates queue and start as slots become free; every candidate still runs.
     Separate build invocations have independent limits. Vivado's per-process
@@ -2670,13 +2678,13 @@ Behavior:
     must show no paths left in the group, all of those paths back in
     clock_from_mmcm, and the candidate's own directive and uncertainty.
   * X3 place-seed selection is congestion-aware. Among seeds that pass the
-    -0.200 ns gate, those whose placer congestion estimate reaches
-    FROST_PLACE_CONGESTION_VETO_LEVEL (default {X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT}) are dropped; if that drops
+    {gate} ns gate, those whose placer congestion estimate reaches
+    FROST_PLACE_CONGESTION_VETO_LEVEL (default {veto}) are dropped; if that drops
     them all, the least congested remain. FROST_PLACE_QUICK_ROUTE_COUNT
-    (default {X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT}) quick-routes that many of the best remaining seeds and ranks
+    (default {probes}) quick-routes that many of the best remaining seeds and ranks
     them by routed WNS; without probes they rank by post-place WNS. Scores and
     the promoted checkpoint and reports use zero added setup uncertainty. If
-    no seed meets -0.200 ns, the build warns and continues with the best one.
+    no seed meets {gate} ns, the build warns and continues with the best one.
   * FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH spreads wire-dense hierarchies
     (FROST_PLACE_CELL_BLOAT_CELLS, default *u_tomasulo/u_int_rs) in every
     candidate. Setting either variable, even to an empty value, disables the

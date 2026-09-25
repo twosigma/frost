@@ -17,6 +17,7 @@
 import importlib.util
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 import re
 import subprocess
@@ -2547,6 +2548,24 @@ def test_build_cli_rejects_invalid_job_limits_before_starting_work(
         fpga_build.main()
     assert rejected.value.code == 2
     assert "--jobs" in capsys.readouterr().err
+
+
+def test_build_help_quotes_the_defaults_the_build_uses(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The help's job limit, post-place gate, veto level and probe count follow the code."""
+    monkeypatch.setattr(fpga_build, "DEFAULT_MAX_JOBS", 7)
+    monkeypatch.setattr(fpga_build, "X3_POST_PLACE_GATE_NS", Decimal("-0.321"))
+    monkeypatch.setattr(fpga_build, "X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT", 4)
+    monkeypatch.setattr(fpga_build, "X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT", 2)
+    monkeypatch.setattr(sys, "argv", ["build.py", "--help"])
+    with pytest.raises(SystemExit):
+        fpga_build.main()
+    text = capsys.readouterr().out
+    assert "processes per build (default 7)." in text
+    assert text.count("-0.321 ns") == 3 and "-0.200" not in text
+    assert "FROST_PLACE_CONGESTION_VETO_LEVEL (default 4) are dropped" in text
+    assert "(default 2) quick-routes" in text
 
 
 @pytest.mark.parametrize("max_jobs", (0, -1))
