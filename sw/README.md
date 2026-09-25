@@ -289,7 +289,7 @@ can be debugged and where each one first stops.
 | `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |
 | `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls; fixed layout, ignores `MEM_CONFIG` |
 | `packet_parser/` | FIX message parser demo fed through the MMIO FIFOs; reports parse time in cycles |
-| `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, and the FENCE encodings next to it, `fence r,0` included, retire as FENCEs |
+| `pause_test/` | `pause` (`0x0100000F`) retires without draining committed stores, while `fence r,0` and the other FENCE encodings next to it wait for the drain |
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |
 | `perf_off_test/` | Core built without profiling counters: `mperf*` CSRs read zero and ignore writes, while `cycle` and `instret` count |
 | `plic_test/` | PLIC registers, level gateway, claim and complete, threshold, both contexts, an M-mode external interrupt, and completions from contexts that do not enable the source |

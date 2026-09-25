@@ -407,8 +407,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pause_test",
         description=(
-            "PAUSE (0x0100000F) retires without draining committed stores, and "
-            "every other FENCE encoding, fence r,0 included, retires as a FENCE "
+            "PAUSE (0x0100000F) retires without draining committed stores, while "
+            "fence r,0 and the other FENCE encodings next to it wait for the drain "
             "(profiling counters present)"
         ),
         verilator_extra_args=("-GPERF_COUNTERS=1",),
