@@ -41,7 +41,7 @@ from typing import Any
 
 from monitors.monitors import regfile_monitor, pc_monitor, fp_regfile_monitor
 from config import (
-    MASK32,
+    MASK_XLEN,
     NOP_INSTRUCTION,
 )
 from encoders.op_tables import (
@@ -271,7 +271,7 @@ async def run_random_regression(
         dut_if.instruction = instr
 
         if config.use_structured_logging:
-            addr = (state.register_file_previous[rs1] + imm) & MASK32
+            addr = (state.register_file_previous[rs1] + imm) & MASK_XLEN
             InstructionLogger.log_instruction_execution(
                 cycle=cycle,
                 operation=operation,
@@ -307,10 +307,10 @@ async def run_random_regression(
                     f"wb_value {rd_wb_value} to rd {rd_to_update}"
                 )
             if operation in (LOADS | FP_LOADS):
-                addr = (state.register_file_previous[rs1] + imm) & MASK32
+                addr = (state.register_file_previous[rs1] + imm) & MASK_XLEN
                 cocotb.log.info(f"cycle {cycle} loading from address 0x{addr:08X}")
             if operation in (STORES | FP_STORES):
-                addr = (state.register_file_previous[rs1] + imm) & MASK32
+                addr = (state.register_file_previous[rs1] + imm) & MASK_XLEN
                 cocotb.log.info(f"cycle {cycle} storing to address 0x{addr:08X}")
 
         # Wait for rising edge (instruction sampled by DUT on this edge)

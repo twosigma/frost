@@ -206,6 +206,7 @@ class _WordMemory:
 
     def __init__(self, words: dict[int, int]) -> None:
         self.words = words
+        self.read_address = 0
 
     def read_word(self, address: int) -> int:
         return self.words[address]
@@ -309,6 +310,35 @@ def test_coverage_check_and_summary_agree_at_the_minimum(
     assert stats.check_coverage(5) == ["sub: only 4 executions (min: 5)"]
     assert any("\u2713 add" in line for line in log.lines)
     assert any("\u2717 sub" in line for line in log.lines)
+
+
+@pytest.mark.parametrize("operation", ("lr.w", "amoadd.w"))
+def test_lr_and_amo_addresses_keep_xlen_bits(operation: str) -> None:
+    """LR.W and AMOs read the word at rs1 word-aligned, without truncation."""
+    state = test_state.TestState()
+    state.register_file_previous[10] = 0x1_0000_0106
+    memory = _WordMemory({0x1_0000_0104: 0x8000_0001})
+
+    _, rd_value, _, _ = cpu_model.CPUModel.model_instruction_execution(
+        state, memory, operation, 5, 10, 11, 0, None
+    )
+
+    assert memory.read_address == 0x1_0000_0104
+    assert rd_value == 0xFFFF_FFFF_8000_0001
+
+
+def test_sc_address_keeps_xlen_bits() -> None:
+    """SC.W checks the reservation at its full rs1 address."""
+    state = test_state.TestState()
+    state.register_file_previous[10] = 0x1_0000_0104
+    state.set_reservation(0x1_0000_0100)
+
+    cpu_model.CPUModel.model_instruction_execution(
+        state, None, "sc.w", 5, 10, 11, 0, None
+    )
+
+    assert state.last_sc_succeeded is True
+    assert state.last_sc_address == 0x1_0000_0104
 
 
 @pytest.mark.parametrize(

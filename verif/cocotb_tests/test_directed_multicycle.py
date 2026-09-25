@@ -31,7 +31,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge
 from typing import Any
 
-from config import MASK32, MASK64, PIPELINE_DEPTH
+from config import MASK64, MASK_XLEN, PIPELINE_DEPTH
 from monitors.monitors import regfile_monitor, pc_monitor, fp_regfile_monitor
 from models.memory_model import MemoryModel
 from cocotb_tests.test_helpers import DUTInterface
@@ -75,9 +75,9 @@ async def execute_instruction(
         state.fp_register_file_current[rd] = expected_value & MASK64
     else:
         if rd != 0:
-            state.register_file_current[rd] = expected_value & MASK32
+            state.register_file_current[rd] = expected_value & MASK_XLEN
 
-    expected_pc = (state.program_counter_current + 4) & MASK32
+    expected_pc = (state.program_counter_current + 4) & MASK_XLEN
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
     )
@@ -154,7 +154,7 @@ async def setup_test(dut: Any, use_fp_monitor: bool = False) -> tuple:
             state.fp_register_file_current_expected_queue.append(
                 state.fp_register_file_current.copy()
             )
-        expected_pc = (state.program_counter_current + 4) & MASK32
+        expected_pc = (state.program_counter_current + 4) & MASK_XLEN
         state.program_counter_expected_values_queue.append(expected_pc)
 
         dut_if.instruction = nop
@@ -189,7 +189,7 @@ async def drain_pipeline(
             state.fp_register_file_current_expected_queue.append(
                 state.fp_register_file_current.copy()
             )
-        expected_pc = (state.program_counter_current + 4) & MASK32
+        expected_pc = (state.program_counter_current + 4) & MASK_XLEN
         state.program_counter_expected_values_queue.append(expected_pc)
 
         dut_if.instruction = nop

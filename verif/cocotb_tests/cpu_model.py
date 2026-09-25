@@ -72,6 +72,9 @@ from utils.memory_utils import (
 )
 from cocotb_tests.test_state import TestState
 
+# AMO, LR.W, and SC.W address the word at rs1: word-aligned, XLEN wide.
+_ATOMIC_ADDRESS_MASK = MASK_XLEN & ~0x3
+
 
 # Grouped FP op tables by evaluator signature for _compute_writeback_value()
 _FP_EVAL_2SRC_FP = {**FP_ARITH_2OP, **FP_SGNJ, **FP_MINMAX, **FP_CMP}
@@ -153,7 +156,7 @@ class CPUModel:
         elif operation in AMO or operation == "lr.w":
             # AMO and LR.W use rs1 as address (word-aligned)
             memory_model.read_address = (
-                state.register_file_previous[source_register_1] & MEMORY_WORD_ALIGN_MASK
+                state.register_file_previous[source_register_1] & _ATOMIC_ADDRESS_MASK
             )
 
         # Determine whether branch or jump was taken
@@ -280,7 +283,7 @@ class CPUModel:
             # SC.W: rd receives 0 on success, 1 on failure
             # Check reservation and clear it (SC always clears reservation)
             sc_address = (
-                state.register_file_previous[source_register_1] & MEMORY_WORD_ALIGN_MASK
+                state.register_file_previous[source_register_1] & _ATOMIC_ADDRESS_MASK
             )
             success = state.check_reservation(sc_address)
             state.clear_reservation()
@@ -448,7 +451,7 @@ class CPUModel:
         if operation in AMO:
             # AMO address is rs1 (word-aligned)
             write_address = (
-                state.register_file_previous[source_register_1] & MEMORY_WORD_ALIGN_MASK
+                state.register_file_previous[source_register_1] & _ATOMIC_ADDRESS_MASK
             )
             old_value = lw(mem_model, write_address)
             _, evaluator = AMO[operation]
