@@ -146,7 +146,12 @@ module sdp_ram_byte_en #(
       .USE_MEM_INIT(0),
       .WAKEUP_TIME("disable_sleep"),
       .WRITE_DATA_WIDTH_A(DATA_WIDTH),
-      .WRITE_MODE_B("read_first"),  // never read+write the same row in a cycle
+      // read_first: a read of a row written at the same edge returns the old
+      // data, as in the portable model below. frost_cache never has the
+      // memory read and write one row at the same edge (after the read-input
+      // register and the write stages), at either write latency; the
+      // simulation check at the end of the module flags it.
+      .WRITE_MODE_B("read_first"),
       .WRITE_PROTECT(1)
   ) u_xpm_ram (
       .doutb         (row_dout),
@@ -205,5 +210,17 @@ module sdp_ram_byte_en #(
 `endif
 
   assign o_rdata = row_dout;
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // The write mode never decides a read's data: the memory is never asked to
+  // read and write one row at the same edge (see WRITE_MODE_B).
+  always @(posedge i_clk) begin
+    if (re_in_reg && row_write_en && (raddr_reg == waddr_q)) begin
+      $error("sdp_ram_byte_en: row %0d read and written at the same edge", raddr_reg);
+    end
+  end
+`endif
+`endif
 
 endmodule : sdp_ram_byte_en
