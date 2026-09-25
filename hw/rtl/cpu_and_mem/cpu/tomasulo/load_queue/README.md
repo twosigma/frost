@@ -166,8 +166,7 @@ It may probe the SQ and hand off to the
 [data-memory router](../../cpu_ooo/memory_if/data_mem_request_router.sv)
 while older committed stores still drain, since neither step touches the
 device. A device-quadrant load outside the MMIO and PLIC windows reads
-nothing: it completes with a load access fault instead (see
-[Completion](#completion)).
+nothing: it faults instead (see [Completion](#completion)).
 
 The router parks every device request in its one-entry request register and
 accepts it only once the request is armed behind the interrupt shield
@@ -270,13 +269,13 @@ FROST_VERILATOR_EXTRA_ARGS=-GL0_CACHE_DEPTH=256 ./scripts/frost.py cocotb corema
 
 The LR reservation (`o_reservation_valid`, `o_reservation_addr`) lives here.
 An LR reads memory and sets the reservation when its response is accepted.
-Devices hold no reservations, so an LR to the device quadrant takes a load
-access fault instead, with no read and no reservation. The reservation clears
-on any SC commit (`i_sc_clear_reservation`), a store write to the reserved
-dword (the SQ's write-launch snoop), a DMA write to its 32-byte line, or a
-full flush. An LR in flight when a DMA write hits its line, or whose
-response lands on the invalidation edge, sets no reservation. The SC goes
-through the SQ;
+Devices hold no reservations, so an LR to the device quadrant faults instead
+(see [Completion](#completion)), with no read and no reservation. The
+reservation clears on any SC commit (`i_sc_clear_reservation`), a store write
+to the reserved dword (the SQ's write-launch snoop), a DMA write to its
+32-byte line, or a full flush. An LR in flight when a DMA write hits its line,
+or whose response lands on the invalidation edge, sets no reservation. The SC
+goes through the SQ;
 [`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv) decides
 success when the SC fires at the ROB head, from the reservation and the SC's
 dword.
@@ -286,9 +285,9 @@ dword.
 An AMO issues at the ROB head once the SQ has no committed store left to write
 (`i_sq_committed_empty`), so no other memory access interleaves with it. Its
 read launches like a load. An AMO to the device quadrant never launches: it
-takes a store/AMO access fault instead, so AMOs only read and write BRAM and
-cached DDR. At the response, SWAP, ADD, XOR, AND and OR capture the old
-value and `rs2`, spend a cycle in `AMO_COMPUTE`, and enter
+faults instead (see [Completion](#completion)), so AMOs only read and write
+BRAM and cached DDR. At the response, SWAP, ADD, XOR, AND and OR capture the
+old value and `rs2`, spend a cycle in `AMO_COMPUTE`, and enter
 `AMO_WRITE_ACTIVE`; MIN and MAX compare during the capture and enter
 `AMO_WRITE_ACTIVE` directly. The write uses the LQ's own port
 (`o_amo_mem_write_*`, with a registered cached-tier flag) and stays
@@ -385,7 +384,10 @@ A load that faults (misaligned when `i_trap_misaligned_accesses` is set,
 outside the physical memory map, an AMO or LR to the device quadrant, or with
 a fault the data MMU parked on the entry) never reaches memory. It completes
 from the staging register with its cause (a store/AMO cause for an AMO) and
-the faulting address, which becomes the trap value.
+the faulting address, which becomes the trap value. A parked fault comes
+first, and the data MMU ranks misalignment and page faults above access
+faults; without translation, the access fault (cause 5, or 7 for an AMO)
+outranks misalignment.
 
 ## Storage
 
