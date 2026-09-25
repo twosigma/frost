@@ -14,13 +14,14 @@
 
 """Cocotb tests for the fp_mul_shim module.
 
-Covers the arithmetic and the result queues (the shared ordering ring and each
-unit's payload RAM FIFO): simultaneous FMUL and FMA completion, the head
-bypass for a push that becomes the head at once, back-to-back drain of
-alternating units, pointer wraparound, back-pressure, and partial and full
-flushes.
+Covers the arithmetic, each unit's tag queue, and the result queues (the
+shared ordering ring and each unit's payload RAM FIFO): simultaneous FMUL and
+FMA completion, the head bypass for a push that becomes the head at once,
+back-to-back drain of alternating units, pointer wraparound, the busy bound,
+back-pressure, and partial and full flushes.
 """
 
+import struct
 from typing import Any
 
 import cocotb
@@ -74,6 +75,10 @@ FP_FLAG_NV = 0x10
 # Native completion latency is 11 cycles for FMUL and 16 cycles for FMA.
 MAX_LATENCY = 20
 FMA_EXTRA_LATENCY = 5
+
+# o_fu_busy rises once the tag queues and the ordering ring hold this many
+# operations in total (ResultFifoDepth - 2).
+BUSY_BOUND = 14
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +172,55 @@ async def wait_for_completions(
             if len(results) == count:
                 return results
     raise AssertionError(f"only saw {len(results)} of {count} expected completions")
+
+
+def boxed_f32(value: float) -> int:
+    """Return *value* as a NaN-boxed single-precision operand."""
+    return NAN_BOX | struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+def drive_tagged_op(iface: FpMulShimInterface, tag: int, op: int) -> None:
+    """Drive a valid FMUL_S (tag * 2) or FMADD_S (tag * 2 + 1) for *tag*.
+
+    The result encodes the tag, so a tag queue and payload FIFO that fall out
+    of step show up as a value mismatch.
+    """
+    iface.drive_issue(
+        valid=True,
+        rob_tag=tag,
+        op=op,
+        src1_value=boxed_f32(tag),
+        src2_value=SRC_2_0,
+        src3_value=SRC_1_0,
+    )
+
+
+def tagged_result(tag: int, op: int) -> int:
+    """Return the exact NaN-boxed result of drive_tagged_op(tag, op)."""
+    return boxed_f32(2.0 * tag + (1.0 if op == OP_FMADD_S else 0.0))
+
+
+def drive_idle(iface: FpMulShimInterface) -> None:
+    """Drive no issue."""
+    iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+
+
+async def issue_until_busy(
+    dut: Any, iface: FpMulShimInterface, ops: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Offer (tag, op) pairs one per cycle while o_fu_busy is low.
+
+    Returns the pairs the shim accepted. The last pair stays driven; the
+    caller replaces or clears it.
+    """
+    accepted: list[tuple[int, int]] = []
+    for tag, op in ops:
+        if iface.read_busy():
+            break
+        drive_tagged_op(iface, tag, op)
+        await clock_cycle(dut)
+        accepted.append((tag, op))
+    return accepted
 
 
 # ============================================================================
@@ -588,29 +642,23 @@ async def test_continuous_alternating_producer_drain(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_fmul_payload_and_ordering_ring_wraparound(dut: Any) -> None:
-    """Twenty-four accepted FMULs wrap both 16-entry rings without reordering."""
+    """Twenty-four FMULs wrap the FMUL tag queue, the ring and the payload FIFO in order."""
     iface = await setup(dut)
 
     issued = 0
     results: list[dict] = []
     while issued < 24:
         if iface.read_busy():
-            iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+            drive_idle(iface)
         else:
             issued += 1
-            iface.drive_issue(
-                valid=True,
-                rob_tag=issued,
-                op=OP_FMUL_S,
-                src1_value=SRC_2_0,
-                src2_value=SRC_3_0,
-            )
+            drive_tagged_op(iface, issued, OP_FMUL_S)
         await clock_cycle(dut)
         result = iface.read_fu_complete()
         if result["valid"]:
             results.append(result)
 
-    iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+    drive_idle(iface)
     for _ in range(MAX_LATENCY + 24):
         if len(results) == 24:
             break
@@ -621,14 +669,123 @@ async def test_fmul_payload_and_ordering_ring_wraparound(dut: Any) -> None:
     assert len(results) == 24, f"only saw {len(results)} of 24 completions"
 
     for expected_tag, result in enumerate(results, start=1):
-        assert_completion(result, tag=expected_tag, value=RES_6_0)
+        assert_completion(
+            result, tag=expected_tag, value=tagged_result(expected_tag, OP_FMUL_S)
+        )
 
-    # The last sampled result is accepted on the following edge.
+    # The last sampled result is accepted on the following edge. All three
+    # structures are 16 entries deep, so 24 pushes leave each pointer at 8.
     await clock_cycle(dut)
+    assert int(dut.mult_rd_ptr.value) == 8
+    assert int(dut.mult_wr_ptr.value) == 8
+    assert int(dut.mult_count.value) == 0
     assert int(dut.fifo_rd_ptr.value) == 8
     assert int(dut.fifo_wr_ptr.value) == 8
     assert int(dut.mult_payload_rd_ptr.value) == 8
     assert int(dut.mult_payload_wr_ptr.value) == 8
+
+
+# ============================================================================
+# Back-pressure: the busy bound fills the FMA tag queue and then the ring
+# ============================================================================
+@cocotb.test()
+async def test_busy_bound_fills_fma_tag_queue_and_ring(dut: Any) -> None:
+    """Busy stops issue at 14 FMAs; the full FMA tag queue, then the ring, keep order."""
+    iface = await setup(dut)
+    iface.set_accepted(False)
+
+    # The 16-cycle FMA latency outlasts 14 issue cycles, so every accepted FMA
+    # is still in the FMA tag queue when busy rises.
+    ops = [(tag, OP_FMADD_S) for tag in range(1, BUSY_BOUND + 3)]
+    accepted = await issue_until_busy(dut, iface, ops)
+    assert len(accepted) == BUSY_BOUND, (
+        f"busy rose after {len(accepted)} FMAs, expected {BUSY_BOUND}"
+    )
+    assert int(dut.fma_count.value) == BUSY_BOUND
+
+    # Keep offering one more FMA while busy: the shim must not take it. The
+    # results move from the tag queue into the stalled ring, so the total,
+    # and with it busy, holds.
+    refused_tag = 31
+    drive_tagged_op(iface, refused_tag, OP_FMADD_S)
+    await wait_for_fifo_count(dut, BUSY_BOUND)
+    assert int(dut.fma_count.value) == 0
+    assert iface.read_busy(), "busy dropped while the stalled ring held the bound"
+    drive_idle(iface)
+
+    iface.set_accepted(True)
+    for tag, op in accepted:
+        assert_completion(
+            iface.read_fu_complete(), tag=tag, value=tagged_result(tag, op)
+        )
+        await clock_cycle(dut)
+    assert not iface.read_fu_complete()["valid"], "the refused FMA completed"
+    assert not iface.read_busy()
+
+    # A second batch wraps the FMA tag queue while it holds the bound
+    # (entries 14, 15, then 0 through 11).
+    ops = [(tag, OP_FMADD_S) for tag in range(15, 15 + BUSY_BOUND + 2)]
+    accepted = await issue_until_busy(dut, iface, ops)
+    drive_idle(iface)
+    assert len(accepted) == BUSY_BOUND, (
+        f"busy rose after {len(accepted)} FMAs, expected {BUSY_BOUND}"
+    )
+    results = await wait_for_completions(dut, iface, BUSY_BOUND)
+    for (tag, op), result in zip(accepted, results, strict=True):
+        assert_completion(result, tag=tag, value=tagged_result(tag, op))
+    await clock_cycle(dut)
+    assert int(dut.fma_rd_ptr.value) == (2 * BUSY_BOUND) % 16
+    assert int(dut.fma_wr_ptr.value) == (2 * BUSY_BOUND) % 16
+    assert int(dut.fma_count.value) == 0
+    assert not iface.read_fu_complete()["valid"]
+
+
+# ============================================================================
+# Back-pressure: mixed FMUL/FMA occupancy at the busy bound
+# ============================================================================
+@cocotb.test()
+async def test_busy_bound_mixed_units_keep_unit_order(dut: Any) -> None:
+    """Busy counts both tag queues and the ring; results keep each unit's issue order."""
+    iface = await setup(dut)
+    iface.set_accepted(False)
+
+    # M = FMUL_S, A = FMADD_S. Busy must stop issue before the last two.
+    unit_op = {"M": OP_FMUL_S, "A": OP_FMADD_S}
+    ops = [(tag, unit_op[unit]) for tag, unit in enumerate("MAAMMAMAAAMMAMAM", start=1)]
+    accepted = await issue_until_busy(dut, iface, ops)
+    drive_idle(iface)
+    assert len(accepted) == BUSY_BOUND, (
+        f"busy rose after {len(accepted)} operations, expected {BUSY_BOUND}"
+    )
+    # The first FMUL (11-cycle latency) is already in the ring when busy rises.
+    mult_count = int(dut.mult_count.value)
+    fma_count = int(dut.fma_count.value)
+    fifo_count = int(dut.fifo_count.value)
+    assert fifo_count >= 1, "expected an FMUL result in the ring at the bound"
+    assert mult_count + fma_count + fifo_count == BUSY_BOUND
+
+    await wait_for_fifo_count(dut, BUSY_BOUND)
+    iface.set_accepted(True)
+    results: list[dict] = []
+    for _ in range(BUSY_BOUND):
+        results.append(iface.read_fu_complete())
+        await clock_cycle(dut)
+    assert not iface.read_fu_complete()["valid"]
+    assert not iface.read_busy()
+
+    op_of = dict(accepted)
+    for result in results:
+        assert result["valid"], "expected a valid completion"
+        assert result["tag"] in op_of, f"unexpected tag {result['tag']}"
+        tag = result["tag"]
+        assert_completion(result, tag=tag, value=tagged_result(tag, op_of[tag]))
+    seen = [result["tag"] for result in results]
+    for op in unit_op.values():
+        issued_order = [tag for tag, unit in accepted if unit == op]
+        completed_order = [tag for tag in seen if op_of[tag] == op]
+        assert completed_order == issued_order, (
+            f"completion order {completed_order} differs from issue order {issued_order}"
+        )
 
 
 # ============================================================================
