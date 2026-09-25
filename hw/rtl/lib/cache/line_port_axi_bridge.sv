@@ -32,17 +32,29 @@
  * accepted while a write's AW/W are still waiting. Ready therefore depends on
  * the presented request's write bit, which the protocol allows.
  *
+ * Reset does not withdraw a presented beat. The bridge resets with the CPU,
+ * while the memory controller and its interconnect keep running (through
+ * the image-load reset and the debug ndmreset), so a VALID must stay
+ * asserted until its handshake. A write whose AW was accepted and whose W
+ * was not would otherwise leave the interconnect pairing the next write's
+ * data with the old address. The issue valids therefore take no reset: a
+ * beat presented at a reset stays presented, payload unchanged, until the
+ * slave takes it, and ready stays low through the reset. The declaration
+ * initializers are the power-up state; the level below is reset only while
+ * nothing is presented, as at power-up.
+ *
  * Response path: R and B land in one-entry output registers. R has priority
  * onto the single line response port and is always accepted, since its
  * register drains the next cycle unconditionally. A held B drains in the
  * first cycle without an R response and holds off the B channel until then.
  *
  * A response whose id is not in flight is dropped. That drains the responses
- * to transactions the memory controller accepted before an image-load CPU
+ * to transactions the memory controller accepted before or during a CPU
  * reset: the controller keeps running and answers them after the reset has
  * cleared the in-flight bitmap. This relies on the caches' reset tag sweeps
  * (thousands of cycles on hardware) outlasting any response still in flight,
- * so no new request reuses its id first.
+ * so no new request reuses its id first. A write held across an image-load
+ * reset lands long before the JTAG loader writes the new image into DDR.
  *
  * BASE_ADDR is subtracted from the line address so the AXI side sees a
  * zero-based region offset: in simulation the behavioral DDR indexes from 0,
@@ -111,11 +123,13 @@ module line_port_axi_bridge #(
   end
 
   // ---- Issue registers ------------------------------------------------------
-  logic                    ar_valid_q;
+  // The valids clear only on their handshakes, never on reset (see the
+  // header); the initializers are the power-up state.
+  logic                    ar_valid_q = 1'b0;
   logic [            31:0] ar_addr_q;
   logic [     ID_BITS-1:0] ar_id_q;
-  logic                    aw_valid_q;
-  logic                    w_valid_q;
+  logic                    aw_valid_q = 1'b0;
+  logic                    w_valid_q = 1'b0;
   logic [            31:0] aw_addr_q;
   logic [     ID_BITS-1:0] aw_id_q;
   logic [LINE_BYTES*8-1:0] w_data_q;
@@ -149,28 +163,24 @@ module line_port_axi_bridge #(
   assign o_axi_arid    = AXI_ID_BITS'(ar_id_q);
   assign o_axi_araddr  = ar_addr_q;
 
+  // req_fire is low through reset (o_req_ready), so a reset only lets the
+  // presented beats finish their handshakes.
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      ar_valid_q <= 1'b0;
-      aw_valid_q <= 1'b0;
-      w_valid_q  <= 1'b0;
-    end else begin
-      if (ar_valid_q && i_axi_arready) ar_valid_q <= 1'b0;
-      if (aw_valid_q && i_axi_awready) aw_valid_q <= 1'b0;
-      if (w_valid_q && i_axi_wready) w_valid_q <= 1'b0;
-      if (req_fire) begin
-        if (i_req_write) begin
-          aw_valid_q <= 1'b1;
-          w_valid_q  <= 1'b1;
-          aw_addr_q  <= i_req_addr - BASE_ADDR;
-          aw_id_q    <= i_req_id;
-          w_data_q   <= i_req_wdata;
-          w_strb_q   <= i_req_wstrb;
-        end else begin
-          ar_valid_q <= 1'b1;
-          ar_addr_q  <= i_req_addr - BASE_ADDR;
-          ar_id_q    <= i_req_id;
-        end
+    if (ar_valid_q && i_axi_arready) ar_valid_q <= 1'b0;
+    if (aw_valid_q && i_axi_awready) aw_valid_q <= 1'b0;
+    if (w_valid_q && i_axi_wready) w_valid_q <= 1'b0;
+    if (req_fire) begin
+      if (i_req_write) begin
+        aw_valid_q <= 1'b1;
+        w_valid_q  <= 1'b1;
+        aw_addr_q  <= i_req_addr - BASE_ADDR;
+        aw_id_q    <= i_req_id;
+        w_data_q   <= i_req_wdata;
+        w_strb_q   <= i_req_wstrb;
+      end else begin
+        ar_valid_q <= 1'b1;
+        ar_addr_q  <= i_req_addr - BASE_ADDR;
+        ar_id_q    <= i_req_id;
       end
     end
   end
@@ -300,9 +310,10 @@ module line_port_axi_bridge #(
   end
 
   // AXI master obligations: a presented address/data beat stays valid and
-  // stable until it is accepted.
+  // stable until it is accepted, through a reset as well (the slave is not
+  // reset with the bridge).
   always @(posedge i_clk) begin
-    if (f_past_valid && !i_rst && !$past(i_rst)) begin
+    if (f_past_valid) begin
       if ($past(o_axi_arvalid && !i_axi_arready)) begin
         p_ar_held : assert (o_axi_arvalid && $stable(o_axi_araddr) && $stable(o_axi_arid));
       end
@@ -312,6 +323,8 @@ module line_port_axi_bridge #(
       if ($past(o_axi_wvalid && !i_axi_wready)) begin
         p_w_held : assert (o_axi_wvalid && $stable(o_axi_wdata) && $stable(o_axi_wstrb));
       end
+    end
+    if (f_past_valid && !i_rst && !$past(i_rst)) begin
       // An R response for an id in flight reaches the line port the next
       // cycle with that id.
       if ($past(r_accept && r_known)) begin
@@ -343,6 +356,8 @@ module line_port_axi_bridge #(
   always @(posedge i_clk) begin
     if (!i_rst) begin
       cover_read_and_write_in_flight : cover (ar_valid_q && aw_valid_q);
+      // A reset lands between a write's AW and W handshakes.
+      cover_reset_between_aw_and_w : cover ($past(i_rst) && w_valid_q && !aw_valid_q);
       cover_r_and_b_same_cycle : cover (r_accept && r_known && b_accept && b_known);
       cover_two_reads_in_flight : cover ($countones(inflight_q) >= 2);
     end

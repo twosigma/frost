@@ -236,9 +236,13 @@ walker keeps one walk in flight and uses id 0.
 The bridge drops any response whose id is not in flight. That is how a
 transaction interrupted by an image-load CPU reset drains harmlessly on
 hardware, where the DDR controller keeps running through the reset: its
-stale response meets a cleared in-flight map. This relies on the caches'
-reset sweeps, thousands of cycles on hardware, outlasting any response still
-in flight, so that no new request can reuse its id first.
+stale response meets a cleared in-flight map. A request the bridge was still
+presenting when the reset came stays presented until the controller accepts
+it, as AXI requires of a master whose slave is not reset, so a write whose
+address was accepted before its data never leaves an orphaned beat behind;
+its response is then dropped the same way. This relies on the caches' reset
+sweeps, thousands of cycles on hardware, outlasting any response still in
+flight, so that no new request can reuse its id first.
 
 ## The page-table walker port
 

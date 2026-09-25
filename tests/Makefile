@@ -452,6 +452,11 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),line_port_axi_bridge)
+# Line-port AXI bridge unit bench (the bench plays an AXI slave it never resets)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),x3_ddr_init)
 # X3 power-up DDR4 region writer unit bench (AXI write master only)
 COMPILE_ARGS := \

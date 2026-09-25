@@ -1536,6 +1536,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tagged line-port arbiter unit tests with out-of-order DDR completion",
         verilator_extra_args=("-GMEM_REORDER=1",),
     ),
+    "line_port_axi_bridge": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_line_port_axi_bridge",
+        hdl_toplevel_module="line_port_axi_bridge",
+        description=(
+            "Line-port AXI bridge across a CPU reset against a slave that keeps "
+            "running: presented beats stay valid until accepted, a reset between "
+            "AW and W leaves no orphaned beat, stale responses are dropped"
+        ),
+    ),
     "x3_ddr_init": CocotbRunConfig(
         python_test_module="cocotb_tests.test_x3_ddr_init",
         hdl_toplevel_module="x3_ddr_init",
