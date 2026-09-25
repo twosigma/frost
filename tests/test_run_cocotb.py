@@ -666,7 +666,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="linux_clksrc_faithful",
-        description="Faithful Linux clocksource-switch: enable-MTIE-then-arm, re-arming handler, bare-wfi idle, concurrent DDR",
+        description="M-mode Linux CLINT timer sequence: enable-MTIE-then-arm, re-arming handler, wfi idle with MIE set, concurrent DDR",
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "trap_s2l_fwd": CocotbRunConfig(

@@ -17,18 +17,22 @@
 /*
  * Linux clocksource-switch timer stressor (M-mode, DDR-resident).
  *
- * Unlike the linux_irq_* tests, this one mirrors no-MMU Linux after the
- * switch to clint_clocksource:
+ * Unlike the linux_irq_* tests, this one mirrors the CLINT timer driver
+ * (timer-clint.c) that an M-mode (no-MMU) Linux kernel switches to as its
+ * clocksource:
  *
  *   - clint_clock_next_event() enables MTIE, then writes mtimecmp low word
  *     first, as an RV32 kernel's writeq_relaxed (io-64-nonatomic-lo-hi) does.
  *     That exposes the old deadline and a torn {old_hi,new_lo} value.
  *   - clint_timer_interrupt() clears MTIE, then the event handler re-arms it.
- *   - arch_cpu_idle() uses bare wfi while mstatus.MIE remains enabled.
- *   - before each wfi the idle loop churns one to four cached-DDR lines, each
- *     fetched from DDR (see CHURN_BASE), so ticks land both during these
- *     bursts, when misses can be in flight, and at the wfi. The handler
- *     counts ticks taken during a burst and ticks taken outside one.
+ *
+ * The idle loop departs from Linux, whose idle loop executes wfi with
+ * interrupts disabled and enables them afterward: here mstatus.MIE stays
+ * set, so ticks also interrupt the wfi itself. Before each wfi the loop
+ * churns one to four cached-DDR lines, each fetched from DDR (see
+ * CHURN_BASE), so ticks land both during these bursts, when misses can be
+ * in flight, and at the wfi. The handler counts ticks taken during a burst
+ * and ticks taken outside one.
  *
  * The registered simulation uses a deliberately small L2 and
  * DDR_MODEL_LATENCY>=70, so the misses go to DDR. Frame violations report a
@@ -291,14 +295,14 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
     set_trap_handler(&faithful_irq_entry);
 
     /* Start the clockevent (clint_timer_starting_cpu -> first next_event), then
-     * enable MIE once and leave it on, exactly like the kernel after boot. */
+     * enable MIE once and leave it on. */
     clint_clock_next_event(clint_rdmtime() + 384u);
     enable_interrupts();
 
-    /* arch_cpu_idle(): bare wfi with MIE on. Each iteration first churns the
-     * next one to four lines. The burst length varies so that some bursts end
-     * before the next tick and some do not, and with the handler's varying
-     * delta this puts ticks both in the churn and at the wfi. */
+    /* Idle: wfi with MIE on. Each iteration first churns the next one to four
+     * lines. The burst length varies so that some bursts end before the next
+     * tick and some do not, and with the handler's varying delta this puts
+     * ticks both in the churn and at the wfi. */
     uint32_t spin = 0x2468ACE0u;
     uint32_t next = 0u;
     for (uint32_t iter = 0u; g_ticks < TARGET_TICKS && !g_fail_seen; iter++) {

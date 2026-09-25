@@ -273,7 +273,7 @@ can be debugged and where each one first stops.
 | `itlb_test/` | Sv39 instruction translation in S- and U-mode: superpages, page-crossing instructions, fetch faults, `sfence.vma` and `satp` changes |
 | `jal_target_seam/` | A 4-byte `jal` entered as a taken-branch target at dword offset 4; needs the cached fetch path (`FROST_COCOTB_MEM_CONFIG=ddr`) |
 | `linux_boot/` | Debian's riscv64 kernel, OpenSBI, and a Buildroot initramfs, packed for loading; see the [Linux guide](../linux/README.md) |
-| `linux_clksrc_faithful/` | The Linux CLINT clocksource sequence (MTIE before the RV32 kernel's torn `mtimecmp` write, handler re-arm, bare `wfi`) under DDR traffic |
+| `linux_clksrc_faithful/` | An M-mode Linux kernel's CLINT timer sequence (MTIE, then an RV32-style torn `mtimecmp` write; handler re-arm) under DDR traffic, idling in `wfi` with interrupts enabled |
 | `linux_irq_active_ddr_test/` | Timer interrupts landing in active DDR code with a Linux-style trap frame; `ra` must stay valid |
 | `linux_irq_ddr_test/` | Linux-style timer interrupt path from `wfi` idle, with code, data, and stack in DDR |
 | `linux_irq_find_next_slot_test/` | Timer interrupts swept across a `_find_next_bit`-shaped loop whose saved-`ra` slot is poisoned |
