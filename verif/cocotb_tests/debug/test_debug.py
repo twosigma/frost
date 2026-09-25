@@ -40,7 +40,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, RisingEdge, Timer
+from cocotb.triggers import ClockCycles, RisingEdge
 
 from cocotb_tests.debug.jtag_dtm import (
     CMDERR_EXCEPTION,
@@ -86,11 +86,11 @@ from cocotb_tests.debug.jtag_dtm import (
 )
 from cocotb_tests.test_real_program import (
     CLK_PERIOD_NS,
+    RESET_CYCLES,
     UartMonitor,
     generate_divided_clock,
 )
 
-RESET_CYCLES = 10
 BANNER_START = "debug_target: start"
 BANNER_PHASE_U = "debug_target: phase U"
 BANNER_PASS = "debug_target: <<PASS>>"
@@ -138,7 +138,6 @@ async def _reset(dut: Any) -> None:
     dut.i_rst_n.value = 0
     dut.i_uart_rx.value = 1
     dut.i_external_interrupt.value = 0
-    await Timer(2 * CLK_PERIOD_NS, unit="ns")
     for _ in range(RESET_CYCLES):
         await RisingEdge(dut.i_clk)
     dut.i_rst_n.value = 1

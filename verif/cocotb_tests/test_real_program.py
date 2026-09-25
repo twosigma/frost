@@ -30,7 +30,7 @@ import re
 from collections import Counter
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge, Timer
+from cocotb.triggers import FallingEdge, RisingEdge
 from cocotb.utils import get_sim_time
 from typing import Any, TextIO
 
@@ -273,8 +273,10 @@ MEM_DIVERGENCE_PROBE_MAX_CYCLES = int(
     os.environ.get("COCOTB_MEM_DIVERGENCE_PROBE_MAX_CYCLES", 20000000)
 )
 
-# Number of clock cycles to hold reset between runs
-RESET_CYCLES = 10
+# i_clk cycles to hold i_rst_n low, before the first run and between runs.
+# frost.sv needs at least 20 (five i_clk_div4 cycles) so that each dual-clock
+# FIFO applies reset on its i_clk_div4 side while its i_clk side is still held.
+RESET_CYCLES = 20
 
 
 class UartMonitor:
@@ -4044,8 +4046,8 @@ async def test_real_program(dut: Any) -> None:
                 dut.i_uart_rx.value = 1
             if hasattr(dut, "i_external_interrupt"):
                 dut.i_external_interrupt.value = 0
-            await Timer(2 * CLK_PERIOD_NS, unit="ns")
-            await RisingEdge(dut.i_clk)
+            for _ in range(RESET_CYCLES):
+                await RisingEdge(dut.i_clk)
             dut.i_rst_n.value = 1
 
         cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
