@@ -112,7 +112,8 @@ module if_stage #(
     input logic i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic i_dir_update_taken,
-    // PD predicted-taken BTB-miss redirect (from pd_stage)
+    // PD redirect: a bimodal-taken branch without a taken BTB or RAS
+    // prediction (from pd_stage)
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
@@ -233,7 +234,7 @@ module if_stage #(
   logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count_next;
 
   // Bimodal direction prediction, carried with each slot-1 instruction to PD
-  // so the PD redirect can fire on a BTB miss.
+  // so PD can redirect a branch the BTB does not predict taken.
   logic bp_dir_taken;
   logic bp_dir_taken_live;
   logic bp_dir_taken_live_cofactor;
@@ -359,8 +360,7 @@ module if_stage #(
   // control_flow_holdoff, pending-prediction holdoffs, reset_holdoff, and
   // flush, all conditions where the live BRAM data may not match pc_reg's
   // word and the slot-2 alignment math is unreliable.  The aligner's narrow
-  // o_sel_nop (= sel_nop_align) covers only mid-32bit and the prediction
-  // holdoffs.
+  // o_sel_nop (= sel_nop_align) covers only the prediction holdoffs.
   //
   // A pending prediction's saved taken metadata belongs to one instruction,
   // the branch at pending_prediction_pc. The instruction just before it may be
@@ -592,8 +592,10 @@ module if_stage #(
                                       (!prediction_holdoff || btb_only_prediction_holdoff);
 
   // IF's internal state clears on flush_for_c_ext_safe, the front-end state
-  // flush. Its trap and xRET terms are registered, and it is allowed to lag
-  // the pipeline flush (i_pipeline_ctrl.flush) by one cycle.
+  // flush. cpu_ooo drives i_frontend_state_flush and i_pipeline_ctrl.flush
+  // from the same signal (flush_pipeline in misprediction_flush_controller),
+  // so the two are equal on every cycle; its trap and xRET terms are the
+  // registered pulses.
   logic flush_for_c_ext_safe;
   assign flush_for_c_ext_safe = i_frontend_state_flush;
   assign if_stage_stall = i_pipeline_ctrl.stall;
@@ -1183,23 +1185,20 @@ module if_stage #(
   // RAS prediction stale cycle: only when the prediction came from the RAS.
   assign ras_prediction_holdoff = prediction_holdoff && !btb_only_prediction_holdoff;
 
-  // Registered PD redirect, used to override the !prediction_holdoff exemption
-  // in sel_nop below.  When a PD redirect fires and the BTB predicts the
-  // wrong-path instruction in the same cycle, prediction_holdoff would
-  // otherwise keep sel_nop from squashing the stale BRAM data in the holdoff
-  // cycle.  The register is off the critical path (FF output → one OR gate).
+  // Registered PD redirect, ORed with !prediction_holdoff in sel_nop's
+  // control-flow term below. The term is redundant: pd_redirect_q = 1 implies
+  // prediction_holdoff = 0. The edge that sets pd_redirect_q also clears the
+  // holdoff, because a PD redirect either kills the registered prediction
+  // metadata (which clears the holdoff) or finds registered metadata, whose
+  // holdoff blocks any new prediction that cycle; and while pd_redirect_q
+  // holds, the holdoff can only be cleared. The register is off the critical
+  // path (FF output → one OR gate).
   logic pd_redirect_q;
   always_ff @(posedge i_clk) begin
-    // This override must last as long as the holdoffs it overrides.
-    // control_flow_holdoff and prediction_holdoff both hold across a pipeline
-    // stall (i_pipeline_ctrl.stall) and across a cycle with no fetch progress
-    // (an L1I miss, for example). If the override expired first, then on
-    // release the colliding BTB hit's prediction_holdoff would defeat the
-    // control-flow NOP term, the bubble cycle would present a bundle that
-    // dispatch consumes, and the next cycle would present the same pc_reg
-    // again, allocating it twice in the ROB. So it updates only on an
-    // unstalled cycle with fetch progress, the same gate as
-    // o_slot2_redirect_q in pc_controller (!i_stall && i_fetch_progress).
+    // Updates only on an unstalled cycle with fetch progress, the same gate
+    // as o_slot2_redirect_q in pc_controller (!i_stall && i_fetch_progress),
+    // so it holds through the stalls and no-progress cycles that
+    // control_flow_holdoff also holds through.
     if (i_pipeline_ctrl.reset) pd_redirect_q <= 1'b0;
     else if (!i_pipeline_ctrl.stall && fetch_progress) pd_redirect_q <= i_pd_redirect;
   end
@@ -1264,12 +1263,13 @@ module if_stage #(
   // before its target handoff and metadata are ready, and then dispatch it
   // again at the handoff.
   //
-  // pd_redirect_q overrides the !prediction_holdoff exemption: when a PD
-  // redirect caused the holdoff, the arriving BRAM data is stale even if a
-  // spurious wrong-path BTB hit set prediction_holdoff.  slot2_redirect_q has
-  // the same role for the slot-2 BTB redirect bubble: BRAM was fetching the
-  // sequential wrong-path bundle when the slot-2 prediction fired, so the
-  // cycle following the redirect must NOP even if prediction_holdoff is set.
+  // pd_redirect_q in that exemption is redundant (see its declaration): a
+  // PD redirect's holdoff cycle never has prediction_holdoff set.
+  // slot2_redirect_q overrides the exemption for the slot-2 BTB redirect
+  // bubble: BRAM was fetching the sequential wrong-path bundle when the
+  // slot-2 prediction fired, and a same-cycle slot-1 BTB hit can set
+  // prediction_holdoff, so the cycle following the redirect must NOP even if
+  // prediction_holdoff is set.
   //
   // Served-window rule: pc_reg's word P (bits [31:2], as the providers tag
   // their windows) must be S, S+1, or, while the instruction buffer holds P,
@@ -2288,7 +2288,7 @@ module if_stage #(
       ras_checkpoint_valid_count_sc : ras_checkpoint_valid_count_next;
   // Bimodal direction carried with the slot-1 instruction (replay-aware). A
   // collapsed-lead delivery (pc == pc_reg) uses the live lookup, including
-  // for a BTB-miss branch that PD may then redirect on.
+  // for a branch without a taken BTB prediction that PD may then redirect on.
   assign o_from_if_to_pd.bp_dir_taken = replay_saved_if_outputs ? bp_dir_taken_sc :
                                         bp_dir_taken_pending_aligned;
   // Predict-time index carried with the slot-1 instruction (replay-aware).
@@ -2480,8 +2480,11 @@ module if_stage #(
   // Stall handling mirrors slot 1's stall_capture_reg pattern: during a stall
   // the window moves on, so the values captured at stall entry are replayed
   // until release (gated by replay_saved_if_outputs). sel_nop_2_saved flushes
-  // to 1 like sel_nop_saved, and sel_nop_2 already includes slot 1's sel_nop,
-  // slot-1 control flow, and the case where slot 2 does not fit.
+  // to 1 like sel_nop_saved. sel_nop_2 already includes slot 1's sel_nop, the
+  // pending-prediction one-wide kill, and the aligner's pairing decision:
+  // slot 1's AllowsSlot2After and slot 2's Slot2StartValid sideband bits,
+  // whether slot 2 fits the window, and the aligner's stale-next-word gate
+  // (slot2_bram_unsafe).
 
   logic [15:0] raw_parcel_2_saved;
   logic [31:0] effective_instr_2_sc;

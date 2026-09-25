@@ -1672,9 +1672,9 @@ package riscv_pkg;
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
     // Bimodal branch-direction prediction, not gated by btb_hit, carried to
-    // PD.  PD uses it to redirect on a BTB miss when the direction predicts
-    // taken, whatever the offset sign.  Consumed only in PD (slot-1); not
-    // carried past PD.
+    // PD.  PD uses it to redirect a branch without a taken BTB or RAS
+    // prediction when the direction predicts taken, whatever the offset sign.
+    // Consumed only in PD (slot-1); not carried past PD.
     logic bp_dir_taken;
     // Predict-time bimodal index this op carried from fetch, handed back at
     // commit to train the entry the prediction read (carried all the way to

@@ -59,7 +59,8 @@ module pc_controller #(
     input logic            i_branch_taken,
     input logic [XLEN-1:0] i_branch_target,
 
-    // PD predicted-taken BTB-miss redirect (from pd_stage)
+    // PD redirect: a bimodal-taken branch without a taken BTB or RAS
+    // prediction (from pd_stage)
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic i_window_cannot_serve,  // Served window cannot hold pc_reg -> resteer+hold
