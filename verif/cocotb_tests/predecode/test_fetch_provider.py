@@ -21,6 +21,7 @@ folded valid bit (window_ready_q) runs throughout.
 """
 
 import importlib.util
+from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -109,21 +110,25 @@ async def _line_slave(
     latency: int,
     log: list[int],
     *,
-    reorder: bool = False,
+    latencies: Sequence[int] = (),
     accept_gap: int = 0,
     inflight: list[tuple[int, int]] | None = None,
+    responses: list[tuple[int, int]] | None = None,
 ) -> None:
     """Serve patterned lines on the line port with several requests in flight.
 
     Every request is accepted (after ``accept_gap`` idle cycles) and answered
-    ``latency`` cycles later, tagged with its id. With ``reorder`` the slave
-    answers the newest due request first when more than one is due in the same
-    cycle, to exercise the provider's id routing. ``inflight`` (if given)
-    mirrors the slave's pending (id, addr) list for the tests to inspect.
+    ``latency`` cycles later, tagged with its id. Request n uses
+    ``latencies[n]`` instead while the sequence lasts, so a later request can
+    be answered before an earlier one. One response goes out per cycle, the
+    earliest due first. ``inflight`` (if given) mirrors the slave's pending
+    (id, addr) list, and ``responses`` records the (id, addr) of each response
+    in the order sent.
     """
-    pending: list[tuple[int, int, int]] = []  # (due_cycle, id, addr)
+    pending: list[tuple[int, int, int, int]] = []  # (due_cycle, seq, id, addr)
     cycle = 0
     gap = 0
+    accepted = 0
     while True:
         await FallingEdge(dut.i_clk)
         cycle += 1
@@ -131,11 +136,13 @@ async def _line_slave(
         dut.i_line_resp_valid.value = 0
         due = [e for e in pending if e[0] <= cycle]
         if due:
-            entry = due[-1] if reorder else due[0]
+            entry = min(due)
             pending.remove(entry)
             dut.i_line_resp_valid.value = 1
-            dut.i_line_resp_id.value = entry[1]
-            dut.i_line_resp_rdata.value = _line_at(entry[2])
+            dut.i_line_resp_id.value = entry[2]
+            dut.i_line_resp_rdata.value = _line_at(entry[3])
+            if responses is not None:
+                responses.append((entry[2], entry[3]))
         # Request side: accept one per cycle unless in an accept gap.
         dut.i_line_req_ready.value = 0
         if gap > 0:
@@ -144,11 +151,13 @@ async def _line_slave(
             addr = int(dut.o_line_req_addr.value)
             rid = int(dut.o_line_req_id.value)
             log.append(addr)
-            pending.append((cycle + latency, rid, addr))
+            wait = latencies[accepted] if accepted < len(latencies) else latency
+            pending.append((cycle + wait, accepted, rid, addr))
+            accepted += 1
             dut.i_line_req_ready.value = 1
             gap = accept_gap
         if inflight is not None:
-            inflight[:] = [(e[1], e[2]) for e in pending]
+            inflight[:] = [(e[2], e[3]) for e in pending]
 
 
 async def _wait_valid(dut: Any) -> None:
@@ -474,24 +483,41 @@ async def test_cold_redirect_keeps_two_fills_in_flight(dut: Any) -> None:
 
 @cocotb.test()
 async def test_out_of_order_fill_responses(dut: Any) -> None:
-    """The following line may land before the window's own line."""
+    """The following line's fill lands before the window's own line.
+
+    The slave holds the first request's response back, so the provider has to
+    route each response by its echoed id. No window may publish before the
+    window's own line lands, and every window across the line boundary must
+    be correct without another request for either line.
+    """
     await _setup(dut)
     reqs: list[int] = []
-    cocotb.start_soon(_line_slave(dut, latency=8, log=reqs, reorder=True))
+    responses: list[tuple[int, int]] = []
+    cocotb.start_soon(
+        _line_slave(dut, latency=8, log=reqs, latencies=(16, 3), responses=responses)
+    )
 
     await FallingEdge(dut.i_clk)
     _drive_pc(dut, DDR_BASE)
-    await _wait_window(dut, DDR_BASE)
+    await _wait_valid(dut)
+    # The window line is even (slot 0, id 0) and the following line odd.
+    assert responses[:2] == [(1, DDR_BASE + 32), (0, DDR_BASE)], (
+        f"responses before the first window: {[(i, hex(a)) for i, a in responses]}"
+    )
+    _check_window(dut, DDR_BASE)
     assert reqs[:2] == [DDR_BASE, DDR_BASE + 32]
 
-    # Walk across the boundary and through the second line; every window must
-    # be correct whatever order the lines arrived in.
+    # Walk across the boundary and through the second line. Both lines must
+    # already sit in their own slots.
     pc = DDR_BASE
-    for _ in range(12):
+    for _ in range(15):
         pc += 4
         _drive_pc(dut, pc)
         await _wait_valid(dut)
         _check_window(dut, pc)
+    assert reqs.count(DDR_BASE) == 1 and reqs.count(DDR_BASE + 32) == 1, (
+        f"a reordered line was requested again: {[hex(r) for r in reqs]}"
+    )
 
 
 @cocotb.test()
