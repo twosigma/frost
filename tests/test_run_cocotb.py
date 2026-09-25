@@ -34,6 +34,7 @@ Pytest (unit benches only):
 import os
 import random
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1966,6 +1967,35 @@ DDR_TIER_EXCLUDE = {
 # =============================================================================
 
 PROGRAM_MEMORY_FILENAMES = ("sw.mem", "sw64.mem", "sw_ddr.mem")
+
+
+def run_in_process_group(
+    command: list[str], *, env: Mapping[str, str], timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """Run command in its own process group and kill the whole group on timeout.
+
+    subprocess.run(timeout=...) kills only its direct child, so a timed-out
+    bash or make would leave the simulator it started running. Raises
+    subprocess.TimeoutExpired after the group is killed.
+    """
+    with subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=dict(env),
+        start_new_session=True,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except BaseException:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
 def _program_memory_target(program_memory_file: str, filename: str) -> str:

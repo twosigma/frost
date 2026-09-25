@@ -15,8 +15,10 @@
 """Fast regression tests for standalone simulation-runner result handling."""
 
 import importlib.util
+import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -24,9 +26,9 @@ from types import ModuleType
 import pytest
 
 import test_arch_compliance
+import test_run_cocotb
 import test_riscv_tests
 import test_riscv_torture
-import test_run_cocotb
 
 
 def _failed_simulation() -> subprocess.CompletedProcess[str]:
@@ -320,15 +322,44 @@ def test_arch_simulation_turns_off_the_uart_tx_drop_check(
     environments: list[dict[str, str]] = []
 
     def simulation_run(
-        *_args: object, env: dict[str, str], **_kwargs: object
+        _command: list[str], *, env: dict[str, str], timeout: float
     ) -> subprocess.CompletedProcess[str]:
         environments.append(env)
         return subprocess.CompletedProcess(args=["make"], returncode=0)
 
-    monkeypatch.setattr(subprocess, "run", simulation_run)
+    monkeypatch.setattr(test_arch_compliance, "run_in_process_group", simulation_run)
 
     test_arch_compliance.run_simulation()
 
     assert [env["COCOTB_PLUSARGS"].split() for env in environments] == [
         ["+seed", "+uart_tx_drop_check=0"]
     ]
+
+
+def test_run_in_process_group_returns_output() -> None:
+    """A command that finishes in time returns its exit code and output."""
+    result = test_run_cocotb.run_in_process_group(
+        ["bash", "-c", "echo out; echo err >&2; exit 3"], env=os.environ, timeout=30
+    )
+    assert result.returncode == 3
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
+
+
+def test_run_in_process_group_kills_grandchildren_on_timeout(tmp_path: Path) -> None:
+    """A timeout kills the command's whole process group, not just its shell."""
+    pid_file = tmp_path / "child.pid"
+    with pytest.raises(subprocess.TimeoutExpired):
+        test_run_cocotb.run_in_process_group(
+            ["bash", "-c", f"sleep 60 & echo $! > {pid_file}; wait"],
+            env=os.environ,
+            timeout=1,
+        )
+    child = int(pid_file.read_text())
+    for _ in range(50):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            return
+        time.sleep(0.1)
+    pytest.fail(f"grandchild {child} survived the timeout")

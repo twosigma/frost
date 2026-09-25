@@ -42,7 +42,7 @@ from typing import Any
 
 import pytest
 
-from test_run_cocotb import CocotbRunner
+from test_run_cocotb import CocotbRunner, run_in_process_group
 
 # Directory layout
 TESTS_DIR = Path(__file__).parent.resolve()
@@ -319,13 +319,8 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
             f"make COCOTB_TEST_MODULES='cocotb_tests.test_real_program' "
             f"TOPLEVEL=frost"
         )
-        result = subprocess.run(
-            ["bash", "-c", cmd],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-            timeout=ARCH_SIM_TIMEOUT_SEC,
+        result = run_in_process_group(
+            ["bash", "-c", cmd], env=env, timeout=ARCH_SIM_TIMEOUT_SEC
         )
 
         if result.returncode == 0:

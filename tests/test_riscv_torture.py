@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from test_run_cocotb import CocotbRunner
+from test_run_cocotb import CocotbRunner, run_in_process_group
 
 # Directory layout
 TESTS_DIR = Path(__file__).parent.resolve()
@@ -168,14 +168,7 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
             f"make COCOTB_TEST_MODULES='cocotb_tests.test_real_program' "
             f"TOPLEVEL=frost"
         )
-        result = subprocess.run(
-            ["bash", "-c", cmd],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=False,
-            timeout=7200,
-        )
+        result = run_in_process_group(["bash", "-c", cmd], env=env, timeout=7200)
 
         if simulator == "verilator" and result.returncode == 0:
             runner._update_verilator_toplevel_marker(sim_build_dir)
