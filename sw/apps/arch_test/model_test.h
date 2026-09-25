@@ -106,7 +106,7 @@
 // [begin_signature, end_signature) includes the trailing .align padding,
 // so a mismatched end alignment shows up as missing/extra zero words in
 // the signature compare. The env uses the riscof convention's 16-byte
-// bounds.
+// bounds; generate_references.py stops with an error if the two differ.
 //-----------------------------------------------------------------------
 #define FROST_SIG_ALIGN 4
 

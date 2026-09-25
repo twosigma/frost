@@ -50,28 +50,50 @@ SUITE_NAME = "rv64i_m"
 SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / SUITE_NAME
 
 
-def _submodule_spike_env() -> Path:
-    """Return the submodule's rv64 riscof spike_simple env."""
-    return ARCH_TEST_DIR / "riscof-plugins" / "rv64" / "spike_simple" / "env"
+# The submodule's riscof env for the rv64 Spike reference build.
+SPIKE_ENV_DIR = ARCH_TEST_DIR / "riscof-plugins" / "rv64" / "spike_simple" / "env"
 
 
-def _build_spike_env() -> Path:
-    """Copy the submodule's riscof spike_simple env to a temporary directory.
+def _signature_alignment(header: Path) -> tuple[int, int]:
+    """Return the .align operands before begin_signature and end_signature.
 
-    The copy forces any ALIGNMENT define to 3 (8 bytes). FROST runs FLEN=64,
-    so the framework's signature stores (fsd, SIGALIGN=8) must not misalign,
-    and the pinned Spike has no --misaligned. The rv64 env header hardcodes
-    .align 4 (16 bytes) and defines no ALIGNMENT, so the patch changes nothing
-    there. The copy is made at run time rather than committed because
-    formatters must not touch the framework header's inline-asm macros.
+    Macro continuation lines are joined first, and an operand that names a
+    #define in the same header is resolved. Exits with an error when either
+    bound has no numeric alignment.
     """
-    env_dir = Path(tempfile.mkdtemp(prefix="frost_spike_env_"))
-    src_env = _submodule_spike_env()
-    shutil.copy(src_env / "link.ld", env_dir / "link.ld")
-    header = (src_env / "model_test.h").read_text()
-    header = re.sub(r"#define ALIGNMENT\s+\d+", "#define ALIGNMENT 3", header)
-    (env_dir / "model_test.h").write_text(header)
-    return env_dir
+    text = header.read_text().replace("\\\n", " ")
+    defines = dict(re.findall(r"^\s*#define\s+(\w+)\s+(\d+)\s*$", text, re.MULTILINE))
+    alignments = []
+    for label in ("begin_signature", "end_signature"):
+        match = re.search(rf"\.align\s+(\w+)\s*;\s*\.global\s+{label}\b", text)
+        operand = defines.get(match.group(1), match.group(1)) if match else ""
+        if not operand.isdigit():
+            sys.exit(f"Error: {header}: no numeric .align before {label}")
+        alignments.append(int(operand))
+    return alignments[0], alignments[1]
+
+
+def spike_env() -> Path:
+    """Return the Spike env directory after checking its signature bounds.
+
+    The signature region [begin_signature, end_signature) includes the
+    trailing .align padding, so the Spike env and FROST's model_test.h must
+    align both bounds alike, or the signatures differ by padding words. The
+    bounds must also be at least 8-byte aligned: the FLEN=64 signature
+    stores (fsd) must not misalign, and the pinned Spike has no --misaligned.
+    """
+    spike_align = _signature_alignment(SPIKE_ENV_DIR / "model_test.h")
+    frost_align = _signature_alignment(SCRIPT_DIR / "model_test.h")
+    if spike_align != frost_align:
+        sys.exit(
+            f"Error: signature alignment (begin, end) is {spike_align} in the Spike env "
+            f"but {frost_align} in model_test.h; make FROST_SIG_ALIGN match the env."
+        )
+    if min(spike_align) < 3:
+        sys.exit(
+            f"Error: signature alignment {spike_align} is below 8 bytes (.align 3)."
+        )
+    return SPIKE_ENV_DIR
 
 
 # gcc -march: must match what FROST's software builds may emit, including
@@ -199,7 +221,7 @@ def test_defines(test_src: Path) -> list[str]:
 def generate_one_reference(
     test_src: Path,
     extension: str,
-    spike_env: Path,
+    env_dir: Path,
     verbose: bool = False,
 ) -> tuple[str, str, str]:
     """Compile a test for Spike, run it, and save the signature.
@@ -233,8 +255,8 @@ def generate_one_reference(
             "-nostdlib",
             "-nostartfiles",
             "-g",
-            f"-T{spike_env / 'link.ld'}",
-            f"-I{spike_env}",
+            f"-T{env_dir / 'link.ld'}",
+            f"-I{env_dir}",
             f"-I{ARCH_TEST_DIR / 'riscv-test-suite' / 'env'}",
             "-DXLEN=64",
             "-DFLEN=64",
@@ -253,7 +275,7 @@ def generate_one_reference(
             msg = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown"
             return test_name, "SKIP", f"Compile failed: {msg}"
 
-        # The signature area is at least 8-byte aligned (see _build_spike_env),
+        # The signature area is at least 8-byte aligned (checked in spike_env),
         # so FLEN=64 signature stores never misalign and no --misaligned
         # support is needed. Tests that misalign by design install the
         # framework trap handler and trap identically here and on FROST.
@@ -290,10 +312,8 @@ def generate_one_reference(
 
 def _worker(args: tuple[str, str, str, bool]) -> tuple[str, str, str]:
     """Worker for parallel reference generation."""
-    test_src_str, extension, spike_env_str, verbose = args
-    return generate_one_reference(
-        Path(test_src_str), extension, Path(spike_env_str), verbose
-    )
+    test_src_str, extension, env_dir_str, verbose = args
+    return generate_one_reference(Path(test_src_str), extension, Path(env_dir_str), verbose)
 
 
 def main() -> int:
@@ -322,21 +342,17 @@ def main() -> int:
         )
         return 1
 
-    spike_env = _build_spike_env()
+    env_dir = spike_env()
 
     # Single test mode
     if args.test:
         test_path = ARCH_TEST_DIR / "riscv-test-suite" / args.test
         if not test_path.exists():
-            test_path = SUITE_DIR.parent / args.test
-        if not test_path.exists():
             print(f"Error: Test not found: {args.test}")
             return 1
         parts = Path(args.test).parts
         ext = parts[1] if len(parts) > 1 else "unknown"
-        name, status, msg = generate_one_reference(
-            test_path, ext, spike_env, args.verbose
-        )
+        name, status, msg = generate_one_reference(test_path, ext, env_dir, args.verbose)
         print(f"{name:40s} {status}  {msg}")
         return 0 if status == "OK" else 1
 
@@ -358,7 +374,7 @@ def main() -> int:
             continue
 
         print(f"{ext} ({len(tests)} tests):")
-        work_items = [(str(t), ext, str(spike_env), args.verbose) for t in tests]
+        work_items = [(str(t), ext, str(env_dir), args.verbose) for t in tests]
 
         results = []
         if args.parallel > 1 and len(tests) > 1:
