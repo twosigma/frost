@@ -1279,6 +1279,55 @@ async def test_partial_flush_committed_survives(dut: Any) -> None:
     assert dut_if.count == 1, f"Expected 1 committed entry, got {dut_if.count}"
 
 
+@cocotb.test()
+async def test_partial_flush_spares_registered_commits_on_both_slots(dut: Any) -> None:
+    """A partial flush spares the stores whose registered commits arrive with it.
+
+    Two stores get their registered commit pulses on slots 1 and 2 in the
+    flush cycle, before sq_committed is set, with the ROB head already past
+    both. By age alone they rank younger than the flush tag, so each commit
+    port must exempt its store from the kill, or its memory write is lost.
+    The core retires no store in the cycle before a partial flush, so this
+    checks the SQ's guard on its own.
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(2)
+
+    stores = {
+        2: (0x1000, 0xA1),
+        3: (0x1100, 0xA2),
+        4: (0x1200, 0xA3),
+        6: (0x1300, 0xA4),
+    }
+    for tag, (address, data) in stores.items():
+        await alloc_addr_data(dut_if, model, rob_tag=tag, address=address, data=data)
+
+    # Flush cycle: registered commits of tags 2 (slot 1) and 3 (slot 2), the
+    # head at 4, and a partial flush at a branch with tag 5. Store 4 is older
+    # than the branch and stays; store 6 is younger and is removed.
+    dut_if.drive_commit(2)
+    dut_if.drive_commit_2(3)
+    model.commit(2)
+    model.commit(3)
+    dut_if.drive_rob_head_tag(4)
+    dut_if.drive_partial_flush(5)
+    model.partial_flush(5, 4)
+    await dut_if.step()
+    dut_if.clear_commit()
+    dut_if.clear_commit_2()
+    dut_if.clear_partial_flush()
+
+    assert dut_if.count == 3, (
+        f"{dut_if.count} stores left after the flush, expected 3 (tags 2, 3 and 4)"
+    )
+    writes = await drain_pipelined_writes(dut_if, model, 2)
+    drained = [(w.addr, w.data) for w in writes]
+    assert drained == [(0x1000, wbeat(0xA1)), (0x1100, wbeat(0xA2))], (
+        f"committed stores drained as {[(hex(a), hex(d)) for a, d in drained]}"
+    )
+    assert dut_if.count == 1, "store 4 must stay, waiting for its commit"
+
+
 # ============================================================================
 # Test 21: In-order commit and write for multiple stores
 # ============================================================================
@@ -1439,12 +1488,14 @@ async def test_forward_load_older_than_store(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_forward_same_cycle_commit_after_head_advance(dut: Any) -> None:
-    """A just-committed store must still block/forward a younger load.
+    """A store whose commit is not yet latched must still block/forward a younger load.
 
-    The ROB can advance its head to the load's tag before the SQ latches the
-    store's committed bit. The store's tag then ranks it younger than the
-    load, so forwarding must treat i_commit_valid as visible in that same
-    cycle, or the load could issue to memory in front of the store.
+    The forwarding unit's registered head copy already sits at the load's tag,
+    so the store's tag ranks it younger than the load and only the same-cycle
+    i_commit_valid term makes it an older store; without that term the load
+    could issue to memory in front of the store. In the core the registered
+    head still ranks the store older in its commit-pulse cycle, so this checks
+    the term on its own.
     """
     dut_if, model = await setup(dut)
 
@@ -1475,6 +1526,52 @@ async def test_forward_same_cycle_commit_after_head_advance(dut: Any) -> None:
     assert fwd.data == store_data, f"Expected 0x{store_data:x}, got 0x{fwd.data:x}"
 
     dut_if.clear_commit()
+    dut_if.clear_sq_check()
+    await dut_if.step()
+
+
+@cocotb.test()
+async def test_forward_same_cycle_slot2_commit_after_head_advance(dut: Any) -> None:
+    """A store committing on slot 2 must also block/forward a younger load.
+
+    The slot-2 counterpart of test_forward_same_cycle_commit_after_head_advance:
+    two stores commit together on slots 1 and 2 while the registered head copy
+    already sits at the load's tag, so only the slot-2 commit term makes the
+    store older in the forwarding scan.
+    """
+    dut_if, model = await setup(dut)
+
+    store_addr = 0x2000
+    store_data = 0x1234ABCD
+    older_tag = 2
+    store_tag = 3
+    load_tag = 4
+
+    await alloc_addr_data(dut_if, model, rob_tag=older_tag, address=0x1000, data=0x55)
+    await alloc_addr_data(
+        dut_if, model, rob_tag=store_tag, address=store_addr, data=store_data
+    )
+
+    # As in the slot-1 test, the head moves one cycle before the probe.
+    dut_if.drive_rob_head_tag(load_tag)
+    await dut_if.step()
+
+    # Slot 1 commits the older store, whose address the load does not touch.
+    dut_if.drive_commit(older_tag)
+    dut_if.drive_commit_2(store_tag)
+    dut_if.drive_sq_check(addr=store_addr, rob_tag=load_tag, size=MEM_SIZE_WORD)
+    await dut_if.step()  # Wait for registered SQ forwarding output
+
+    fwd = dut_if.read_sq_forward()
+    all_known = dut_if.read_all_older_addrs_known()
+
+    assert all_known, "Both committing older stores should still count as known"
+    assert fwd.match, "A store committing on slot 2 must still match the load"
+    assert fwd.can_forward, "A store committing on slot 2 must still forward"
+    assert fwd.data == store_data, f"Expected 0x{store_data:x}, got 0x{fwd.data:x}"
+
+    dut_if.clear_commit()
+    dut_if.clear_commit_2()
     dut_if.clear_sq_check()
     await dut_if.step()
 
@@ -1751,9 +1848,11 @@ async def test_constrained_random(dut: Any) -> None:
     store not yet written, with its address, replicated data and byte strobe.
     A partial flush removes the uncommitted stores younger than its tag, and a
     commit-time recovery flush (its tag already behind the ROB head) removes
-    every uncommitted store; either can meet a registered commit in the same
-    cycle. A full flush comes only when no committed store is pending, as in
-    the core. The live count must match the reference every cycle, and every
+    every uncommitted store; either can meet registered commits on one or both
+    commit slots in the same cycle. The core never produces that overlap, and
+    its slot-2 commit is always the tag after slot 1's, but the SQ must handle
+    both. A full flush comes only when no committed store is pending, as in the
+    core. The live count must match the reference every cycle, and every
     committed store must drain.
     """
     dut_if, _ = await setup(dut)
@@ -1768,6 +1867,7 @@ async def test_constrained_random(dut: Any) -> None:
     writes_checked = 0
     committed_total = 0
     flushes = {"partial": 0, "commit-time": 0, "full": 0}
+    flush_cycle_commits = {"slot 1": 0, "slot 2": 0}
 
     def uncommitted() -> list[RandomStore]:
         return [st for st in stores if not st.committed]
@@ -1888,10 +1988,15 @@ async def test_constrained_random(dut: Any) -> None:
         if action < 0.03 and pending:
             # Partial flush at a branch just older than pending[k]: kills
             # pending[k:]. When k > 0 the oldest pending store may take its
-            # registered commit in the same cycle.
+            # registered commit in the same cycle, and when k > 1 the next one
+            # may take slot 2; the ROB head is then already past both.
             k = rng.randrange(len(pending))
             if k > 0 and ready(pending[0]) and rng.random() < 0.5:
                 commit(pending[0])
+                flush_cycle_commits["slot 1"] += 1
+                if k > 1 and ready(pending[1]) and rng.random() < 0.5:
+                    commit(pending[1], slot2=True)
+                    flush_cycle_commits["slot 2"] += 1
             flush_tag = (pending[k].tag - 1) & MASK_TAG
             dut_if.drive_rob_head_tag(head_tag())
             dut_if.drive_partial_flush(flush_tag)
@@ -1905,9 +2010,13 @@ async def test_constrained_random(dut: Any) -> None:
             # the oldest store left uncommitted, has retired, so the ROB head
             # is past it and no store ranks younger than the flush tag by age.
             # i_flush_after_head_commit alone removes every uncommitted store,
-            # except one whose registered commit lands in this cycle.
+            # except those whose registered commits land in this cycle.
             if ready(pending[0]) and rng.random() < 0.5:
                 commit(pending[0])
+                flush_cycle_commits["slot 1"] += 1
+                if len(pending) > 1 and ready(pending[1]) and rng.random() < 0.5:
+                    commit(pending[1], slot2=True)
+                    flush_cycle_commits["slot 2"] += 1
             branch = head_tag()
             dut_if.drive_rob_head_tag(branch + 1)
             dut_if.drive_partial_flush(branch)
@@ -1976,7 +2085,13 @@ async def test_constrained_random(dut: Any) -> None:
     )
     assert dut_if.count == 0 and dut_if.empty
     assert all(count > 0 for count in flushes.values()), f"flush coverage: {flushes}"
-    cocotb.log.info(f"{writes_checked} writes checked; flushes: {flushes}")
+    assert all(count > 0 for count in flush_cycle_commits.values()), (
+        f"flush-cycle commit coverage: {flush_cycle_commits}"
+    )
+    cocotb.log.info(
+        f"{writes_checked} writes checked; flushes: {flushes}; "
+        f"commits in flush cycles: {flush_cycle_commits}"
+    )
 
 
 # ============================================================================
@@ -2444,16 +2559,20 @@ async def test_commit_cycle_registered_guard_survives_flush_after_head(
     is set. A commit-time recovery flush (i_flush_after_head_commit) removes
     every uncommitted store regardless of age, so flush_kill_base must
     exempt entries that match the registered commit, or the store's memory
-    write is lost.
+    write is lost. In the core the mispredicted branch retires alone in the
+    cycle before this flush, so this checks the SQ's guard on its own.
     """
     dut_if, model = await setup(dut)
-    dut_if.drive_rob_head_tag(4)
+    dut_if.drive_rob_head_tag(3)
 
-    await alloc_addr_data(dut_if, model, 6, 0x3000, 0xDD)
+    await alloc_addr_data(dut_if, model, 3, 0x3000, 0xDD)
 
-    # Same cycle: registered commit of tag 6 (its combinational commit fired
-    # the previous cycle) plus a commit-time recovery flush.
-    dut_if.drive_commit(6)
+    # Same cycle: registered commit of store 3 (its combinational commit fired
+    # the previous cycle) plus a commit-time recovery flush for the branch at
+    # tag 4. The head is past the branch, at 5, so by age the store is older
+    # than the flush tag and only i_flush_after_head_commit would remove it.
+    dut_if.drive_commit(3)
+    dut_if.drive_rob_head_tag(5)
     dut.i_flush_after_head_commit.value = 1
     dut_if.drive_partial_flush(4)
     await dut_if.step()
