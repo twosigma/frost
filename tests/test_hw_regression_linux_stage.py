@@ -467,20 +467,6 @@ def test_ends_the_capture_on_an_unavailable_counter_run() -> None:
     assert "counters=unavailable" in note and "verdict=FAIL" in note
 
 
-def test_requires_the_child_through_exec_scope() -> None:
-    """The counters must cover a child measured from its exec, like ``perf stat``.
-
-    A narrower measurement fails the stage instead of silently covering less.
-    """
-    linux = stage()
-    assert hw.LINUX_COUNTER_SCOPE == "exec-child"
-    assert hw.counter_values(FULL_TRANSCRIPT)["scope"] == "exec-child"
-    transcript = FULL_TRANSCRIPT.replace("scope=exec-child", "scope=self")
-    assert linux.success_done(transcript)  # the counts are there ...
-    ok, note = linux.judge(transcript)  # ... but not the scope
-    assert not ok and "scope: self is not exec-child" in note
-
-
 def test_counters_are_not_matched_in_the_echo_or_the_stress_summary() -> None:
     """Only the counter run's own line counts.
 

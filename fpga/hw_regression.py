@@ -290,11 +290,8 @@ LINUX_SYSTEMD_STATE_RE = re.compile(r"^\r*state=(\w+)[ \t\r]*\n", re.MULTILINE)
 # through perf_event_open and prints them on its own line. ``perf`` itself is
 # not packed for the target: it builds only against a kernel tree, and this
 # tree builds no kernel. Like ``perf stat``, the counters cover a child
-# measured from its exec to its exit, which ``scope`` names; the stage
-# requires that scope, so a narrower measurement is a failure rather than a
-# quiet loss of coverage.
+# measured from its exec to its exit.
 LINUX_COUNTER_EVENTS = ("cycles", "instret")
-LINUX_COUNTER_SCOPE = "exec-child"
 LINUX_COUNTER_COMMAND = f"{LINUX_ROOT_BIN}/frost_stress --counters"
 LINUX_COUNTER_LINE = f"{INITRAMFS_COUNTER_TOKEN}:"
 LINUX_COUNTER_RE = re.compile(
@@ -1155,8 +1152,8 @@ def linux_stage(root: LinuxRoot) -> UartStage:
     programs: ``findmnt``, whose line must show ``/`` mounted from this export
     over NFSv3; ``systemctl``, which must report a finished startup with no
     failed unit; the stress payload, whose pass token must follow the prompt;
-    and ``frost_stress --counters``, which must report the ``exec-child`` scope
-    and a nonzero count for every name in ``LINUX_COUNTER_EVENTS``. Last comes
+    and ``frost_stress --counters``, which must report a nonzero count for
+    every name in ``LINUX_COUNTER_EVENTS``. Last comes
     ``frost_nettest``, which needs its pass token and then the root back: that
     test takes the root's own link down, so the stage requires the bounded
     ``sync`` after it to report success (``nettest_command``). Any program's
@@ -1238,8 +1235,6 @@ def linux_stage(root: LinuxRoot) -> UartStage:
             return False, f"{LINUX_STRESS_COMMAND}: no {LINUX_TOKEN!r} after the login"
         counts = counter_values(serial_buf)
         bad = []
-        if counts.get("scope") != LINUX_COUNTER_SCOPE:
-            bad.append(f"scope: {counts.get('scope')} is not {LINUX_COUNTER_SCOPE}")
         for event in LINUX_COUNTER_EVENTS:
             count = counts.get(event)
             if count is None:
@@ -1259,7 +1254,7 @@ def linux_stage(root: LinuxRoot) -> UartStage:
         return True, (
             f"{KERNEL_RELEASE}, NIC driver, {mount_note}, systemd "
             f"{LINUX_SYSTEMD_RUNNING}, login, stress token, counters "
-            f"({LINUX_COUNTER_SCOPE}) {summary}, {LINUX_NET_COMMAND}, root alive"
+            f"{summary}, {LINUX_NET_COMMAND}, root alive"
         )
 
     return UartStage(

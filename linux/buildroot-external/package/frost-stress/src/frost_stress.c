@@ -111,8 +111,8 @@ static void alarm_handler(int sig)
         __v;                                                                                       \
     })
 
-/* The full-width CSR; the rv32 timeh address traps on FROST. Userspace can
- * read time: the kernel leaves scounteren.TM set. */
+/* The 64-bit time CSR. Userspace can read it: the kernel leaves
+ * scounteren.TM set. */
 static uint64_t read_time64(void)
 {
     return RD_CSR(0xc01);
@@ -440,16 +440,14 @@ static int child_counter_deltas(uint64_t *cycles, uint64_t *instret, uint64_t *t
 static int run_counters(void)
 {
     uint64_t cycles = 0, instret = 0, time = 0;
-    const char *scope = "exec-child";
     int ok = child_counter_deltas(&cycles, &instret, &time);
     if (!ok || cycles == 0 || instret == 0 || time == 0) {
-        printf("FROST_COUNTERS: scope=%s counters=unavailable verdict=FAIL\n", scope);
+        printf("FROST_COUNTERS: scope=exec-child counters=unavailable verdict=FAIL\n");
         fflush(stdout);
         return 1;
     }
-    printf("FROST_COUNTERS: scope=%s cycles=%llu instret=%llu time=%llu "
+    printf("FROST_COUNTERS: scope=exec-child cycles=%llu instret=%llu time=%llu "
            "ipc_x1000=%u verdict=PASS\n",
-           scope,
            (unsigned long long) cycles,
            (unsigned long long) instret,
            (unsigned long long) time,

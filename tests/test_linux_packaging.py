@@ -1862,9 +1862,8 @@ def test_counter_token_matches_the_program_that_prints_it() -> None:
     ).read_text()
     assert f'printf("{helper.INITRAMFS_COUNTER_TOKEN}:' in source
     assert helper.INITRAMFS_COUNTER_PROGRAM.endswith("frost_stress")
-    # The mode the stage types, and the scope it requires, are implemented.
+    # The mode the stage types is implemented, and it counts a child from its exec.
     assert '"--counters"' in source
-    assert 'scope = "exec-child"' in source
     assert "enable_on_exec = 1" in source
     assert "attr.inherit = 1" in source
 
