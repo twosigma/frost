@@ -7,9 +7,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 
 # Shared RAM primitives
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
-$(ROOT)/hw/rtl/lib/ram/sdp_dist_ram_2r.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
-$(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_2r.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 
 # Reorder Buffer

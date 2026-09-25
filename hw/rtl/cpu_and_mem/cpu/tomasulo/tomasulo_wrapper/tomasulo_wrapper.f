@@ -7,9 +7,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 
 # Distributed-RAM primitives used across the back end
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
-$(ROOT)/hw/rtl/lib/ram/sdp_dist_ram_2r.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
-$(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_2r.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 
 # Submodules
