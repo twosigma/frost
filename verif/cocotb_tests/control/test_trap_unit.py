@@ -345,3 +345,86 @@ async def test_interrupt_over_pending_replay_enters_its_vector(dut: Any) -> None
     assert int(dut.o_trap_cause.value) == MCAUSE_MTI
     assert int(dut.o_trap_target.value) == 0x1000  # mtvec, direct mode
     assert int(dut.o_trap_no_csr.value) == 0
+
+
+async def _raise_take(dut: Any, take: str) -> None:
+    """Drive a take source and return in the cycle o_trap_taken is high."""
+    if take == "interrupt":
+        dut.i_mstatus.value = MSTATUS_MIE
+        dut.i_mstatus_mie_direct.value = 1
+        dut.i_mie.value = MIE_MTIE
+        dut.i_interrupts.value = INTERRUPT_MTIP
+    elif take == "exception":
+        dut.i_exception_valid.value = 1
+        dut.i_exception_cause.value = 2  # illegal instruction
+    elif take == "halt":
+        dut.i_dbg_haltreq.value = 1
+    else:  # a Debug Mode go redirect
+        dut.i_debug_mode.value = 1
+        dut.i_dbg_go.value = 1
+        dut.i_dbg_go_target.value = 0x800
+    for _ in range(6):
+        await RisingEdge(dut.i_clk)
+        await Timer(1, unit="ns")
+        if int(dut.o_trap_taken.value):
+            return
+    raise AssertionError(f"the {take} was never taken")
+
+
+def _xret_taken(dut: Any) -> list[int]:
+    return [
+        int(dut.o_mret_taken.value),
+        int(dut.o_sret_taken.value),
+        int(dut.o_dret_taken.value),
+    ]
+
+
+@cocotb.test()
+async def test_no_xret_taken_in_trap_flush_cycle(dut: Any) -> None:
+    """An xRET start in the cycle after a trap take is not taken.
+
+    The full flush that follows every take lands in that cycle and removes
+    every ROB entry, but the commit hold does not cover it, so an xRET at the
+    head then (one allocated in the take cycle, for example) must not return
+    before the handler runs. The same start is taken one cycle later.
+    """
+    Clock(dut.i_clk, 10, unit="ns").start()
+    starts = ["i_mret_start", "i_sret_start", "i_dret_start"]
+    # DRET is legal only in Debug Mode, so it follows the go redirect.
+    cases = [
+        ("interrupt", "i_mret_start"),
+        ("interrupt", "i_sret_start"),
+        ("exception", "i_mret_start"),
+        ("exception", "i_sret_start"),
+        ("halt", "i_mret_start"),
+        ("go", "i_dret_start"),
+    ]
+    for take, start in cases:
+        await _reset(dut)
+        await _raise_take(dut, take)
+        await RisingEdge(dut.i_clk)
+        # The flush cycle. What the core did on the take edge: the entry
+        # cleared MIE, the ROB dropped its exception request, a halt entered
+        # Debug Mode, and the debug module dropped go once it was taken.
+        dut.i_mstatus.value = 0
+        dut.i_mstatus_mie_direct.value = 0
+        dut.i_exception_valid.value = 0
+        dut.i_dbg_haltreq.value = 0
+        dut.i_dbg_go.value = 0
+        if take == "halt":
+            dut.i_debug_mode.value = 1
+        getattr(dut, start).value = 1
+        await Timer(1, unit="ns")
+        case = f"{start} after the {take} take"
+        assert _xret_taken(dut) == [0, 0, 0], f"{case}: xRET taken in the flush cycle"
+        assert int(dut.o_trap_taken.value) == 0, (
+            f"{case}: second take in the flush cycle"
+        )
+
+        await RisingEdge(dut.i_clk)
+        await Timer(1, unit="ns")
+        want = [int(s == start) for s in starts]
+        assert _xret_taken(dut) == want, (
+            f"{case}: xRET not taken one cycle later (taken {_xret_taken(dut)})"
+        )
+        getattr(dut, start).value = 0

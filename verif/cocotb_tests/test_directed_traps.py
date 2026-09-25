@@ -29,8 +29,7 @@ Tests:
     Interrupts:
         - Timer interrupt trap entry (mstatus.MIE cleared, MPIE saved)
         - MTIP swept across an MRET: the entry's mepc and MPP match the
-          retirement order (plus a test that expects the error of a known
-          bug: an MRET the entry flushes is still taken)
+          retirement order, and no MRET the entry flushes is taken
         - CSRSI enabling MIE with an interrupt already pending
         - Precise-interrupt sweep: mepc versus the committed prefix
 
@@ -642,10 +641,6 @@ MSTATUS_MIE = 1 << 3
 MSTATUS_MPIE = 1 << 7
 
 
-class XretInTrapFlushCycleError(Exception):
-    """An MRET allocated in an interrupt's take cycle was taken in the flush cycle."""
-
-
 async def sweep_mret_interrupt_race(
     dut: Any, config: TestConfig | None = None
 ) -> list[dict[str, Any]]:
@@ -876,39 +871,26 @@ async def test_directed_mret_interrupt_race(dut: Any) -> None:
         )
 
 
-@cocotb.test(expect_error=XretInTrapFlushCycleError)
+@cocotb.test()
 async def test_directed_mret_interrupt_race_no_xret_after_take(dut: Any) -> None:
-    """Check that an MRET the interrupt entry flushes is never taken.
+    """Check that no MRET and no second interrupt are taken after the entry.
 
-    Expected to raise XretInTrapFlushCycleError for a known bug: an xRET
-    dispatched in the cycle an interrupt is taken reaches the ROB head in the
-    flush cycle, and o_mret_start is not gated by the flush, so the trap unit
-    takes it one cycle after the entry (the handler never runs, and the
-    interrupt is taken again). Once the bug is fixed the test passes, which
-    cocotb reports as a failure; drop expect_error then. Any other take after
-    the entry fails the test with an AssertionError.
+    An MRET dispatched in the take cycle can be the ROB head in the entry's
+    flush cycle; the flush removes it, so the trap unit must not take it
+    there. Once the entry clears MIE, the interrupt must not be taken again.
     """
     results = await sweep_mret_interrupt_race(dut)
-    known: list[tuple[int, list[int], list[int]]] = []
-    other: list[tuple[int, list[int], list[int]]] = []
+    extra: list[tuple[int, list[int], list[int]]] = []
     for r in results:
         if not r["traps"]:
             continue  # test_directed_mret_interrupt_race checks that each offset traps
         first = r["traps"][0]
-        after = [n for n in r["mrets"] if n > first]
-        case = (r["fire_offset"], r["traps"], r["mrets"])
-        if after == [first + 1] and len(r["traps"]) <= 2:
-            known.append(case)
-        elif after or len(r["traps"]) != 1:
-            other.append(case)
-    assert not other, (
-        "an MRET or a second interrupt was taken after the entry, outside the known "
-        f"flush-cycle MRET case (offset, takes, mrets): {other}"
+        if any(n > first for n in r["mrets"]) or len(r["traps"]) != 1:
+            extra.append((r["fire_offset"], r["traps"], r["mrets"]))
+    assert not extra, (
+        "an MRET or a second interrupt was taken after the entry "
+        f"(offset, takes, mrets): {extra}"
     )
-    if known:
-        raise XretInTrapFlushCycleError(
-            f"MRET taken in the flush cycle of the entry (offset, takes, mrets): {known}"
-        )
 
 
 # ============================================================================

@@ -699,10 +699,19 @@ module trap_unit #(
   // an xRET at the ROB head; pending interrupts are deferred across the xRET
   // recovery window above so the return redirect stays precise. MRET, SRET,
   // and DRET are mutually exclusive at the head (one instruction).
+  //
+  // No xRET is taken in the cycle after a trap (trap_taken_prev). The trap's
+  // full flush lands in that cycle and removes every ROB entry, but the commit
+  // hold does not cover it, so the ROB can raise an xRET start there: for an
+  // xRET allocated in the take cycle, or one whose start the take cycle's
+  // commit hold kept low. Taking it would return before the handler runs.
   logic take_mret, take_sret, take_dret;
-  assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
-  assign take_sret = i_sret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
-  assign take_dret = i_dret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
+  assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap && !trap_taken_prev &&
+      i_sq_committed_empty;
+  assign take_sret = i_sret_start && !i_pipeline_stall && !take_trap && !trap_taken_prev &&
+      i_sq_committed_empty;
+  assign take_dret = i_dret_start && !i_pipeline_stall && !take_trap && !trap_taken_prev &&
+      i_sq_committed_empty;
 
   // Hold commit while a trap/xRET waits out the store drain, so the
   // committed set shrinks monotonically and the wait is bounded. The
@@ -910,6 +919,10 @@ module trap_unit #(
       p_mret_waits_drain : assert (!o_mret_taken || i_sq_committed_empty);
       p_sret_waits_drain : assert (!o_sret_taken || i_sq_committed_empty);
 
+      // No xRET in a trap's flush cycle: the flush removes it from the ROB.
+      p_no_xret_in_trap_flush_cycle :
+      assert (!(trap_taken_prev && (o_mret_taken || o_sret_taken || o_dret_taken)));
+
       // xRET targets are exactly xepc (full-width, unmasked).
       p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
       p_sret_target : assert (!o_sret_taken || (o_trap_target == i_sepc));
@@ -1031,6 +1044,8 @@ module trap_unit #(
       cover_mret_taken : cover (o_mret_taken);
       cover_sret_taken : cover (o_sret_taken);
       cover_dret_taken : cover (o_dret_taken);
+      cover_xret_start_in_trap_flush_cycle :
+      cover (trap_taken_prev && (i_mret_start || i_sret_start || i_dret_start));
       cover_debug_halt : cover (o_trap_to_d && d_int_take_ready && i_dbg_haltreq);
       cover_debug_step_halt : cover (o_trap_to_d && d_int_take_ready && !i_dbg_haltreq);
       cover_debug_ebreak_entry : cover (o_trap_to_d && !d_int_take_ready);
