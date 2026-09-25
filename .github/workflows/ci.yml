@@ -322,9 +322,13 @@ jobs:
           docker load --input /tmp/frost-dev.tar
           rm -f /tmp/frost-dev.tar
 
-      - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
+      - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }}${{ matrix.shard && format(' / {0}', matrix.shard) || '' }})
+        # The F and D shards' tests take minutes each in bram, so an hour per
+        # test (FROST_ARCH_SIM_TIMEOUT_SEC) keeps one hung test from using up
+        # the job. The runner's default is sized for the largest tests in DDR.
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+          docker run --rm ${{ matrix.shard && '-e FROST_ARCH_SIM_TIMEOUT_SEC=3600' || '' }} \
+            -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
               --mem-config ${{ matrix.mem_config }} \
               ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}

@@ -140,7 +140,7 @@ exclusions in the runner define the exact set.
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv64i_m/I/src/addw-01.S
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --test rv32i_m/F/src/fadd_b1-01.S
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions I --mem-config icache
-./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions F --shard 1/4
+./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions F --mem-config bram --shard 1/4
 ```
 
 | Memory tier | Code | Data and signature |
@@ -166,7 +166,8 @@ fit low BRAM (the larger `*_b8` and `*_b9` arithmetic sets) and those above
 5,000 cases (the `*_b1` fused multiply-adds and the `*_b11` adds and
 subtracts) therefore run only locally, for example with
 `--test rv32i_m/F/src/fmadd_b1-01.S --mem-config ddr`. `icache` runs only
-locally.
+locally. The F and D shards set `FROST_ARCH_SIM_TIMEOUT_SEC=3600`, an hour
+per test; the runner's default limit is sized for the largest tests in DDR.
 
 Many F and D tests in the pinned suite have malformed data constants (a hex
 value run together with decimal digits). The assembler truncates each one with
