@@ -61,7 +61,8 @@
  *      from priv S): M-target interrupts always fire below M.
  *   O. sstatus is a strict view: with mstatus.MPIE set, sstatus read from S
  *      shows zeros in the M-only fields, and so does sstatus read from M
- *      with mstatus.MPP=M; SUM/MXR round-trip through sstatus writes.
+ *      with mstatus.MIE, MPIE and MPP=M set; SUM/MXR round-trip through
+ *      sstatus writes.
  *   P. sie visibility follows mideleg: with mie.SSIE=1 but mideleg[SSI]=0,
  *      sie reads 0 in bit 1 and sie writes cannot set it; delegating makes
  *      the same bit visible/writable. sip.SSIP is S-writable when delegated.
@@ -863,8 +864,8 @@ int main(void)
     /* O: sstatus is a strict view (M fields invisible) and SUM/MXR
      * round-trip through it. The MRET in run_at_priv sets MPIE, so an M-only
      * field is nonzero while the S body reads sstatus. That MRET also sets
-     * MPP to U, so the S read cannot see MPP leak; the M-mode read covers
-     * it, with mstatus.MPP = M and MPIE set. */
+     * MPP to U, so the S read cannot see MPP leak. The M-mode read sets MIE,
+     * MPIE and MPP = M itself, with mie cleared so MIE=1 takes no interrupt. */
     reset_s_record();
     cause = run_at_priv(&b_capture_views, PRIV_S);
     all_ok &= report("O view-case-ends", cause, 9u);
@@ -872,9 +873,12 @@ int main(void)
         "O sstatus-m-fields-zero", g_seen_sstatus & ((1ul << 3) | (1ul << 7) | (3ul << 11)), 0ul);
     {
         unsigned long saved_mstatus = csr_read(mstatus);
-        csr_set(mstatus, MSTATUS_MPP | MSTATUS_MPIE);
+        unsigned long saved_mie = csr_read(mie);
+        csr_write(mie, 0);
+        csr_set(mstatus, MSTATUS_MIE | MSTATUS_MPP | MSTATUS_MPIE);
         unsigned long seen_from_m = csr_read(sstatus);
         csr_write(mstatus, saved_mstatus);
+        csr_write(mie, saved_mie);
         all_ok &= report("O sstatus-m-fields-zero-from-M",
                          seen_from_m & ((1ul << 3) | (1ul << 7) | (3ul << 11)),
                          0ul);
