@@ -1430,9 +1430,11 @@ package riscv_pkg;
 
   // PMA region checks. The physical map:
   //   [0x0000_0000, 0x0004_0000)  256 KiB BRAM      fetch, loads, stores, atomics
-  //   [0x4000_0000, 0x8000_0000)  device quadrant   loads and stores
+  //   [0x4000_0000, 0x4003_1000)  MMIO registers    loads and stores
+  //   [0x4400_0000, 0x4440_0000)  PLIC              loads and stores
   //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR  fetch, loads, stores, atomics
-  // Everything else, including all of [63:32], is unmapped and faults
+  // Everything else, including the rest of the device quadrant
+  // [0x4000_0000, 0x8000_0000) and all of [63:32], is unmapped and faults
   // (instruction/load/store-AMO access fault, causes 1/5/7). The device
   // quadrant supports no AMOs and no reservations (the privileged spec's
   // AMONone and RsrvNone), so an AMO, LR or SC to it takes the access fault
@@ -1443,14 +1445,40 @@ package riscv_pkg;
   // Sv39, the data MMU checks the translated address). Consequently every
   // launched memory access has bits [XLEN-1:32] zero, which is the
   // invariant the 32-bit region decodes and the load queue's masked
-  // store-forwarding check address rely on, and no atomic reaches a device.
+  // store-forwarding check address rely on; every launched device access is
+  // inside a device window; and no atomic reaches a device.
+  //
+  // The device windows in 4 KiB pages. cpu_and_mem.sv decodes the registers
+  // inside them, so the two change together (hw/rtl/README.md, "Memory
+  // Map"). The store-issue check in tomasulo_wrapper and the DTLB's
+  // per-entry device class work on whole pages.
+  localparam logic [19:0] MmioFirstPage = 20'h4_0000;
+  localparam logic [19:0] MmioLastPage  = 20'h4_0030;
+  localparam logic [19:0] PlicFirstPage = 20'h4_4000;
+  localparam logic [19:0] PlicLastPage  = 20'h4_43FF;
+
   function automatic logic pma_fetch_ok(input logic [XLEN-1:0] addr);
     pma_fetch_ok = (addr[XLEN-1:18] == '0) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b10));
   endfunction
 
+  // A physical page number (PA[31:12]) inside a device window. The MMIO
+  // window is the start of an aligned 64-page block and the PLIC window is a
+  // whole aligned 1024-page block, so the check is a block compare plus, for
+  // the MMIO window, a lookup of the page's offset in its block. TIMING: no
+  // wide magnitude compare; the offset lookup is one 6-input function.
+  localparam logic [63:0] MmioBlockPages = ~(64'hFFFF_FFFF_FFFF_FFFF << (MmioLastPage[5:0] + 1));
+  function automatic logic pma_device_page_ok(input logic [19:0] page);
+    pma_device_page_ok = ((page[19:6] == MmioFirstPage[19:6]) && MmioBlockPages[page[5:0]]) ||
+                         (page[19:10] == PlicFirstPage[19:10]);
+  endfunction
+
+  function automatic logic pma_device_ok(input logic [XLEN-1:0] addr);
+    pma_device_ok = (addr[XLEN-1:32] == '0) && pma_device_page_ok(addr[31:12]);
+  endfunction
+
   // Loads and stores.
   function automatic logic pma_data_ok(input logic [XLEN-1:0] addr);
-    pma_data_ok = pma_fetch_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
+    pma_data_ok = pma_fetch_ok(addr) || pma_device_ok(addr);
   endfunction
 
   // AMO, LR and SC: BRAM and cached DDR only.

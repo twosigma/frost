@@ -806,19 +806,32 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
 
     def pma_data_ok(addr: int) -> bool:
         addr &= MASK_XLEN
-        return addr < 0x0004_0000 or 0x4000_0000 <= addr < 0xC000_0000
+        return (
+            addr < 0x0004_0000
+            or 0x4000_0000 <= addr < 0x4003_1000
+            or 0x4400_0000 <= addr < 0x4440_0000
+            or 0x8000_0000 <= addr < 0xC000_0000
+        )
 
     page_max = (1 << (XLEN - 12)) - 1
     page_cases = [
         # Positive low-offset carry: predecessor of each PMA interval edge.
         ("inc-wrap-enters-bram", page_max, 0xFFF, 1, True),
         ("inc-exits-bram", 0x3F, 0xFFF, 1, False),
-        ("inc-enters-device", 0x3FFFF, 0xFFF, 1, True),
+        ("inc-enters-mmio", 0x3FFFF, 0xFFF, 1, True),
+        ("inc-exits-mmio", 0x40030, 0xFFF, 1, False),
+        ("inc-enters-plic", 0x43FFF, 0xFFF, 1, True),
+        ("inc-exits-plic", 0x443FF, 0xFFF, 1, False),
+        ("inc-enters-ddr", 0x7FFFF, 0xFFF, 1, True),
         ("inc-exits-ddr", 0xBFFFF, 0xFFF, 1, False),
         # Negative low-offset borrow: each PMA edge viewed in reverse.
         ("dec-wrap-exits-bram", 0, 0, -1, False),
         ("dec-enters-bram", 0x40, 0, -1, True),
-        ("dec-exits-device", 0x40000, 0, -1, False),
+        ("dec-exits-mmio", 0x40000, 0, -1, False),
+        ("dec-enters-mmio", 0x40031, 0, -1, True),
+        ("dec-exits-plic", 0x44000, 0, -1, False),
+        ("dec-enters-plic", 0x44400, 0, -1, True),
+        ("dec-exits-ddr", 0x80000, 0, -1, False),
         ("dec-enters-ddr", 0xC0000, 0, -1, True),
         # Sign controls with no page movement: carry/borrow gating is required.
         ("positive-no-carry", 0x3F, 0, 1, True),
@@ -914,7 +927,7 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
 async def test_sc_to_device_quadrant_faults_at_issue(dut: Any) -> None:
     """An SC to the device quadrant takes a store access fault at issue.
 
-    The device quadrant takes plain stores but no atomics, so an SC there
+    The device windows take plain stores but no atomics, so an SC there
     faults (cause 7, its address as the trap value) where an SW to the same
     address issues normally; an SC to cached DDR does not fault.
     """

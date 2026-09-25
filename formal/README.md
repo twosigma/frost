@@ -241,7 +241,7 @@ after reset need not satisfy the bound, because reset clears every valid bit.
 | `coherence_replay_compare` | DMA-invalidation replay masks, computed with chunked compares against local copies of the invalidated line, equal full-width line equality, at XLEN 32, 64, and 66. Assumes one initial reset |
 | `data_mem_request_router` | Device reads are staged and accepted only after committed stores drain, a flush cancels an unaccepted device read, read enables match acceptances, and a blocked request keeps its address. Assumes the load queue presents no new read while one is held |
 | `data_mem_response_mux` | Load data selected among BRAM, MMIO, and cached DDR equals the reference selection at 32 and 64 bits, for portable and Xilinx LUT5 builds |
-| `dmmu_mmio` | The DMMU's MMIO classification and its stage-2 MMIO bit's next value equal the reference resolve-and-hold logic |
+| `dmmu_mmio` | The DMMU's MMIO classification and its stage-2 MMIO bit's next value equal the reference resolve-and-hold logic, and the DTLB's per-entry device-window bit equals the window decode of the PPN it selects |
 | `immu_bare` | With translation off (Bare), the IMMU's physical addresses and fault flags equal the reference for every PC. The XLEN 32 and 72 variants check only Bare mode and width conversion, not Sv39 |
 | `immu_page_offset` | Translation preserves the page offset, and the visible physical addresses equal the reference; unbounded. The ITLB is replaced by arbitrary outputs, including answers a real ITLB could not give. Assumes one initial reset |
 | `line_arbiter_grant` | Three-port cache line arbiter grants equal the reference starvation-priority rule, for portable and Xilinx-primitive builds |

@@ -1191,15 +1191,18 @@ async def test_misaligned_mmio_completes_without_device_read_during_drain(
 
 
 # ============================================================================
-# Test 13d: Device-quadrant atomics fault
+# Test 13d: Device-window atomics and unserved device addresses fault
 # ============================================================================
 @cocotb.test()
-async def test_device_atomics_fault_without_a_read(dut: Any) -> None:
-    """An AMO or LR to the device quadrant faults at the ROB head with no read.
+async def test_device_atomics_and_unserved_device_loads_fault_without_a_read(
+    dut: Any,
+) -> None:
+    """AMO and LR to a device window, and loads outside the windows, fault with no read.
 
-    The device quadrant takes loads but no atomics (AMO cause 7, LR cause 5).
-    Each fault completes with its address as the trap value; a load to the
-    same address still reads the device.
+    The device windows take loads but no atomics (AMO cause 7, LR cause 5), and
+    a device-quadrant address outside them is unmapped (load cause 5). Each
+    fault completes at the ROB head with its address as the trap value; a load
+    inside a window still reads the device.
     """
     from .lq_interface import AMOSWAP_W, LR_W
 
@@ -1209,6 +1212,9 @@ async def test_device_atomics_fault_without_a_read(dut: Any) -> None:
         ("lr-mmio-window", 0x4000_101C, False, True, LR_W, 5),
         ("amo-plic-window", 0x4400_0004, True, False, AMOSWAP_W, 7),
         ("amo-unserved", 0x4011_8000, True, False, AMOSWAP_W, 7),
+        ("load-unserved", 0x4011_8000, False, False, 0, 5),
+        ("load-past-mmio-window", 0x4003_1000, False, False, 0, 5),
+        ("load-past-plic-window", 0x4440_0000, False, False, 0, 5),
         ("load-mmio-window", 0x4000_101C, False, False, 0, None),
         ("load-plic-window", 0x4400_0004, False, False, 0, None),
     ]
@@ -1238,7 +1244,7 @@ async def test_device_atomics_fault_without_a_read(dut: Any) -> None:
                 break
             await dut_if.step()
         if cause is None:
-            assert launched, f"{name}: the device load did not read the device"
+            assert launched, f"{name}: the in-window load did not read the device"
             continue
         assert not launched, f"{name}: the faulting access reached the device"
         assert result.valid, f"{name}: no fault completion"

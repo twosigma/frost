@@ -1935,21 +1935,24 @@ module tomasulo_wrapper #(
   // Split the effective-address add at bit 12: the low 13-bit unsigned sum
   // supplies both the page carry and the final alignment bits, while the PMA
   // classification of the base page runs in parallel.  The legal data pages
-  // are [0, 0x3f] and [0x40000, 0xbffff].  Moving one page changes membership
-  // only at the four interval entry/exit boundaries in each direction, so the
-  // page choices below are exactly pma_data_ok(src1 + sext12(imm)) without
-  // putting the PMA/ROB and PMA/SC-table paths behind the 64-bit carry chain.
-  // An SC's immediate is zero, so its address is the base and only the
-  // no-carry choice applies to it; that choice also clears for an SC in the
-  // device quadrant, which makes it pma_atomic_ok(src1) for an SC.
+  // are BRAM [0, 0x3f], the two device windows (riscv_pkg::MmioFirstPage..
+  // MmioLastPage and PlicFirstPage..PlicLastPage), and DDR [0x80000,
+  // 0xbffff].  Moving one page changes membership only at the eight interval
+  // entry/exit boundaries in each direction, so the page choices below are
+  // exactly pma_data_ok(src1 + sext12(imm)) without putting the PMA/ROB and
+  // PMA/SC-table paths behind the 64-bit carry chain.  An SC's immediate is
+  // zero, so its address is the base page, and the base-page check leaves
+  // the device windows out for an SC, which makes the result
+  // pma_atomic_ok(src1) for an SC.
   // Keep the 13-bit tap explicit so synthesis cannot re-expand this predicate
   // through sq_effective_addr; that full-width sum is the architectural
   // SQ/xtval payload below.
   (* keep = "true" *) logic [12:0] store_page_offset_sum;
   logic store_base_z18;
   logic store_base_z19;
-  logic store_base_z30;
   logic store_base_z32;
+  logic [19:0] store_base_page;  // base page within the 32-bit map
+  logic store_base_device_page;
   logic store_base_page_lo6_zero;
   logic store_base_page_lo6_ones;
   logic store_base_page_tail_zero;
@@ -1958,8 +1961,16 @@ module tomasulo_wrapper #(
   logic store_base_page_eq_0;
   logic store_base_page_eq_3f;
   logic store_base_page_eq_40;
-  logic store_base_page_eq_3ffff;
-  logic store_base_page_eq_40000;
+  logic store_base_page_eq_mmio_prev;
+  logic store_base_page_eq_mmio_first;
+  logic store_base_page_eq_mmio_last;
+  logic store_base_page_eq_mmio_next;
+  logic store_base_page_eq_plic_prev;
+  logic store_base_page_eq_plic_first;
+  logic store_base_page_eq_plic_last;
+  logic store_base_page_eq_plic_next;
+  logic store_base_page_eq_7ffff;
+  logic store_base_page_eq_80000;
   logic store_base_page_eq_bffff;
   logic store_base_page_eq_c0000;
   logic store_base_page_eq_max;
@@ -1970,29 +1981,48 @@ module tomasulo_wrapper #(
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
   logic store_issue_is_sc;
-  logic store_sc_device;
 
   assign store_page_offset_sum =
       {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
   assign store_base_z18 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:18]);
   assign store_base_z19 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:19]);
-  assign store_base_z30 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:30]);
   assign store_base_z32 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:32]);
+  assign store_base_page = o_mem_rs_issue.src1_value[31:12];
+  assign store_base_device_page = riscv_pkg::pma_device_page_ok(store_base_page);
   assign store_base_page_lo6_zero = !(|o_mem_rs_issue.src1_value[17:12]);
   assign store_base_page_lo6_ones = &o_mem_rs_issue.src1_value[17:12];
   assign store_base_page_tail_zero = !(|o_mem_rs_issue.src1_value[29:12]);
   assign store_base_page_tail_ones = &o_mem_rs_issue.src1_value[29:12];
 
+  assign store_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::SC_D);
   assign store_base_pma_ok = store_base_z18 ||
-      (store_base_z32 && ((o_mem_rs_issue.src1_value[31:30] == 2'b01) ||
-                          (o_mem_rs_issue.src1_value[31:30] == 2'b10)));
+      (store_base_z32 && ((o_mem_rs_issue.src1_value[31:30] == 2'b10) ||
+                          (store_base_device_page && !store_issue_is_sc)));
   assign store_base_page_eq_0 = store_base_z18 && store_base_page_lo6_zero;
   assign store_base_page_eq_3f = store_base_z18 && store_base_page_lo6_ones;
   assign store_base_page_eq_40 = store_base_z19 && o_mem_rs_issue.src1_value[18] &&
       store_base_page_lo6_zero;
-  assign store_base_page_eq_3ffff = store_base_z30 && store_base_page_tail_ones;
-  assign store_base_page_eq_40000 = store_base_z32 &&
-      (o_mem_rs_issue.src1_value[31:30] == 2'b01) && store_base_page_tail_zero;
+  assign store_base_page_eq_mmio_prev = store_base_z32 &&
+      (store_base_page == riscv_pkg::MmioFirstPage - 20'd1);
+  assign store_base_page_eq_mmio_first = store_base_z32 &&
+      (store_base_page == riscv_pkg::MmioFirstPage);
+  assign store_base_page_eq_mmio_last = store_base_z32 &&
+      (store_base_page == riscv_pkg::MmioLastPage);
+  assign store_base_page_eq_mmio_next = store_base_z32 &&
+      (store_base_page == riscv_pkg::MmioLastPage + 20'd1);
+  assign store_base_page_eq_plic_prev = store_base_z32 &&
+      (store_base_page == riscv_pkg::PlicFirstPage - 20'd1);
+  assign store_base_page_eq_plic_first = store_base_z32 &&
+      (store_base_page == riscv_pkg::PlicFirstPage);
+  assign store_base_page_eq_plic_last = store_base_z32 &&
+      (store_base_page == riscv_pkg::PlicLastPage);
+  assign store_base_page_eq_plic_next = store_base_z32 &&
+      (store_base_page == riscv_pkg::PlicLastPage + 20'd1);
+  assign store_base_page_eq_7ffff = store_base_z32 &&
+      (o_mem_rs_issue.src1_value[31:30] == 2'b01) && store_base_page_tail_ones;
+  assign store_base_page_eq_80000 = store_base_z32 &&
+      (o_mem_rs_issue.src1_value[31:30] == 2'b10) && store_base_page_tail_zero;
   assign store_base_page_eq_bffff = store_base_z32 &&
       (o_mem_rs_issue.src1_value[31:30] == 2'b10) && store_base_page_tail_ones;
   assign store_base_page_eq_c0000 = store_base_z32 &&
@@ -2000,19 +2030,19 @@ module tomasulo_wrapper #(
   assign store_base_page_eq_max = &o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12];
 
   assign store_page_inc_toggle = store_base_page_eq_max || store_base_page_eq_3f ||
-      store_base_page_eq_3ffff || store_base_page_eq_bffff;
+      store_base_page_eq_mmio_prev || store_base_page_eq_mmio_last ||
+      store_base_page_eq_plic_prev || store_base_page_eq_plic_last ||
+      store_base_page_eq_7ffff || store_base_page_eq_bffff;
   assign store_page_dec_toggle = store_base_page_eq_0 || store_base_page_eq_40 ||
-      store_base_page_eq_40000 || store_base_page_eq_c0000;
+      store_base_page_eq_mmio_first || store_base_page_eq_mmio_next ||
+      store_base_page_eq_plic_first || store_base_page_eq_plic_next ||
+      store_base_page_eq_80000 || store_base_page_eq_c0000;
   // Complete both page classifications before the offset carry selects one.
   // With no carry, only a negative immediate can leave the base page; with
   // carry, only a nonnegative immediate can do so. Keep these scalar results
   // so the wide base-page comparisons and the offset adder meet at one mux.
-  assign store_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
-      (o_mem_rs_issue.op == riscv_pkg::SC_D);
-  assign store_sc_device = store_issue_is_sc && store_base_z32 &&
-      (o_mem_rs_issue.src1_value[31:30] == 2'b01);
-  assign store_pma_without_page_carry = (store_base_pma_ok ^
-      (o_mem_rs_issue.imm[11] && store_page_dec_toggle)) && !store_sc_device;
+  assign store_pma_without_page_carry = store_base_pma_ok ^
+      (o_mem_rs_issue.imm[11] && store_page_dec_toggle);
   assign store_pma_with_page_carry = store_base_pma_ok ^
       (!o_mem_rs_issue.imm[11] && store_page_inc_toggle);
   assign store_addr_pma_ok = store_page_offset_sum[12] ? store_pma_with_page_carry :

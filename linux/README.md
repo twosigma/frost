@@ -77,13 +77,16 @@ The board and simulation share one physical map.
 | `[0x4400_0000, +4 MiB)` | PLIC with M and S contexts for hart 0. Sources 1–4 are the UART, external pin, DMA test engine, and NIC. OpenSBI hides the M context from Linux. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises the board's DDR size: 1 GiB on X3. |
 
-The PMA map has three regions: the BRAM, the device quadrant
-`[0x4000_0000, 0x8000_0000)`, and cached DDR. An access anywhere else,
-including any address with bits 63:32 set, raises a precise access fault
-(cause 1, 5, or 7 for a fetch, load, or store) with the exact address in
-`mtval`. Instruction fetch from the device quadrant also faults, and so does
-an AMO, LR, or SC to it (cause 7, 5, or 7): devices take loads and stores
-only. Addresses outside the map never alias onto it.
+The PMA map has four regions: the BRAM, the MMIO register window
+`[0x4000_0000, 0x4003_1000)`, the PLIC window `[0x4400_0000, 0x4440_0000)`,
+and cached DDR. An access anywhere else, including the rest of the device
+quadrant `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set,
+raises a precise access fault (cause 1, 5, or 7 for a fetch, load, or store)
+with the exact address in `mtval`, unless a misaligned-address or page fault
+takes priority. Instruction fetch from the device windows
+also faults, and so does an AMO, LR, or SC to them (cause 7, 5, or 7):
+devices take loads and stores only. Addresses outside the map never alias
+onto it.
 
 The image packer lays out DDR as follows, with offsets from `0x8000_0000`:
 

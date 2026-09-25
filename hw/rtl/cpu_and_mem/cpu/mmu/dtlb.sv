@@ -28,9 +28,12 @@
  *
  * The physical map is 32-bit, so an entry keeps only PPN[19:0] and one bit
  * that is set when PPN[43:20] is nonzero. A lookup returns PA[31:12] and that
- * bit, and the MMU raises an access fault for a leaf outside the map. The MMU
- * also checks permissions; this module only reports the stored R, W, X, U,
- * and D bits.
+ * bit, and the MMU raises an access fault for a leaf outside the map. It also
+ * returns whether PA[31:12] is in a device window
+ * (riscv_pkg::pma_device_page_ok), computed for every entry beside the
+ * compare so that the data MMU's MMIO class does not wait for the PPN mux.
+ * The MMU also checks permissions; this module only reports the stored R, W,
+ * X, U, and D bits.
  *
  * Lookups are combinational, one per port: the data side's issue port and
  * its two early-store ports, or the instruction side's current-PC and
@@ -65,7 +68,9 @@ module dtlb #(
     // Level of the hit entry (0 = 4 KiB, 1 = 2 MiB, 2 = 1 GiB): lets the
     // ITLB derive the next page's PA inside a superpage without a second
     // lookup.
-    output logic [NUM_PORTS-1:0][                       1:0] o_level
+    output logic [NUM_PORTS-1:0][                       1:0] o_level,
+    // o_ppn20 is a device-window page (riscv_pkg::pma_device_page_ok).
+    output logic [NUM_PORTS-1:0]                             o_device_page
 );
 
   localparam int unsigned EntryIdxBits = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
@@ -101,6 +106,7 @@ module dtlb #(
     for (int p = 0; p < NUM_PORTS; p++) begin
       o_hit[p] = |match[p];
       o_ppn20[p] = '0;
+      o_device_page[p] = 1'b0;
       o_ppn_hi_nonzero[p] = 1'b0;
       o_perm_r[p] = 1'b0;
       o_perm_w[p] = 1'b0;
@@ -110,14 +116,17 @@ module dtlb #(
       o_level[p] = 2'd0;
       for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
         if (match[p][e]) begin
+          logic [19:0] ppn20;
           // For a superpage the low PPN bits come from the VA, as Sv39
           // specifies. The walker faults a misaligned superpage, so the
           // entry's own low PPN bits are zero.
           unique case (e_level[e])
-            2'd2: o_ppn20[p] = {e_ppn20[e][19:18], i_lookup_vpn[p][17:0]};
-            2'd1: o_ppn20[p] = {e_ppn20[e][19:9], i_lookup_vpn[p][8:0]};
-            default: o_ppn20[p] = e_ppn20[e];
+            2'd2: ppn20 = {e_ppn20[e][19:18], i_lookup_vpn[p][17:0]};
+            2'd1: ppn20 = {e_ppn20[e][19:9], i_lookup_vpn[p][8:0]};
+            default: ppn20 = e_ppn20[e];
           endcase
+          o_ppn20[p] = ppn20;
+          o_device_page[p] = riscv_pkg::pma_device_page_ok(ppn20);
           o_ppn_hi_nonzero[p] = e_ppn_hi_nonzero[e];
           o_perm_r[p] = e_r[e];
           o_perm_w[p] = e_w[e];

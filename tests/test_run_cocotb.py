@@ -258,8 +258,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pma_fault_test",
         description=(
-            "PMA faults for out-of-map fetch/load/store/AMO/LR and for AMO/LR/SC to "
-            "devices; exact mepc/mtval and access-fault priority over misalignment."
+            "PMA faults for out-of-map fetch/load/store/AMO/LR (unserved device "
+            "addresses included) and for AMO/LR/SC to devices; exact mepc/mtval and "
+            "access-fault priority over misalignment."
         ),
     ),
     "fs_off_test": CocotbRunConfig(
@@ -279,9 +280,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="vm_test",
         description=(
             "Sv39 data translation: MPRV, page sizes, permissions, Svade, malformed PTEs, "
-            "PMA, non-canonical VAs, sfence.vma/satp retargeting, atomics (including "
-            "faults through device mappings), MMIO, and flush/tag reuse. Checks exact "
-            "causes and mtval."
+            "PMA (including leaves onto unserved device addresses), non-canonical "
+            "VAs, sfence.vma/satp retargeting, atomics (including faults through "
+            "device mappings), MMIO, and flush/tag reuse. Checks exact causes and "
+            "mtval."
         ),
     ),
     "slot2_fault_test": CocotbRunConfig(
@@ -1754,7 +1756,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Data-MMU hit/walk resolution priority, Sv39 permissions and PA/PMA "
             "composition, two-cycle hit latency and one-result-per-cycle throughput, "
-            "miss skid, and flush/tag-reuse tests"
+            "miss skid, early store-port prefill, and flush/tag-reuse tests"
         ),
     ),
     "immu": CocotbRunConfig(

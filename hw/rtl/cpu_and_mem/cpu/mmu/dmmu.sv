@@ -198,6 +198,7 @@ module dmmu (
   logic [2:0][19:0] tlb_ppn20;
   logic [2:0] tlb_hi_nonzero;
   logic [2:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
+  logic [2:0] tlb_device_page;
 
   assign tlb_vpn[0] = s1_q.va[38:12];
 
@@ -232,11 +233,17 @@ module dmmu (
   logic [riscv_pkg::XLEN-1:0] tlb_pa, walk_pa;
   assign tlb_pa  = {32'b0, tlb_ppn20[0], s1_q.va[11:0]};
   assign walk_pa = {32'b0, walk_ppn20, s1_q.va[11:0]};
+  logic walk_device_page;
+  assign walk_device_page = riscv_pkg::pma_device_page_ok(walk_ppn20);
 
-  // The PMA of the op's access type: AMO, LR, and SC use the atomic map,
-  // which leaves out the device quadrant.
-  function automatic logic leaf_pma_ok(input logic [riscv_pkg::XLEN-1:0] pa);
-    leaf_pma_ok = s1_q.atomic ? riscv_pkg::pma_atomic_ok(pa) : riscv_pkg::pma_data_ok(pa);
+  // The PMA of the op's access type on a zero-extended PA: the atomic map
+  // (BRAM and cached DDR), plus the device windows for a load or store (AMO,
+  // LR, and SC leave them out). device_page is the PA page's device-window
+  // class: the DTLB's per-entry bit for a hit, which keeps the window decode
+  // off the PPN mux, or the walk response's own decode.
+  function automatic logic leaf_pma_ok(input logic [riscv_pkg::XLEN-1:0] pa,
+                                       input logic device_page);
+    leaf_pma_ok = riscv_pkg::pma_atomic_ok(pa) || (device_page && !s1_q.atomic);
   endfunction
 
   riscv_pkg::data_fault_kind_e tlb_fault, walk_fault;
@@ -244,7 +251,7 @@ module dmmu (
     tlb_fault = riscv_pkg::DFAULT_NONE;
     if (!leaf_perm_ok(tlb_r[0], tlb_w[0], tlb_x[0], tlb_u[0], tlb_d[0])) begin
       tlb_fault = riscv_pkg::DFAULT_PAGE;
-    end else if (tlb_hi_nonzero[0] || !leaf_pma_ok(tlb_pa)) begin
+    end else if (tlb_hi_nonzero[0] || !leaf_pma_ok(tlb_pa, tlb_device_page[0])) begin
       tlb_fault = riscv_pkg::DFAULT_ACCESS;
     end
 
@@ -258,7 +265,9 @@ module dmmu (
               i_walk_resp.perm_d
           )) begin
         walk_fault = riscv_pkg::DFAULT_PAGE;
-      end else if ((|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) || !leaf_pma_ok(walk_pa)) begin
+      end else if ((|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) || !leaf_pma_ok(
+              walk_pa, walk_device_page
+          )) begin
         walk_fault = riscv_pkg::DFAULT_ACCESS;
       end
     end
@@ -268,24 +277,24 @@ module dmmu (
   assign tlb_resolve_addr  = (tlb_fault == riscv_pkg::DFAULT_NONE) ? tlb_pa : s1_q.va;
   assign walk_resolve_addr = (walk_fault == riscv_pkg::DFAULT_NONE) ? walk_pa : s1_q.va;
 
-  // MMIO class of each candidate, computed before the TLB/walk selection. A
-  // zero-extended PA in the 01 quadrant always passes pma_data_ok and always
-  // fails pma_atomic_ok, so the class needs only the permission check, the
-  // op's atomic bit, and the high PPN bits, not the full fault and address
-  // mux. DMMU_MMIO_LOCAL_PROOF (formal target dmmu_mmio) checks it against
-  // the class of the complete resolution.
+  // MMIO class of each candidate, computed before the TLB/walk selection: a
+  // clean leaf onto a device-window page, for an op that is not atomic
+  // (atomics fault there). The DTLB computes the hit's device-window bit per
+  // entry, so the class needs only the permission check, the high PPN bits,
+  // and that bit, not the PPN mux, the full fault, or the address mux.
+  // DMMU_MMIO_LOCAL_PROOF (formal target dmmu_mmio) checks it against the
+  // class of the complete resolution.
   (* keep = "true" *) logic tlb_is_mmio, walk_is_mmio;
   assign tlb_is_mmio = leaf_perm_ok(
       tlb_r[0], tlb_w[0], tlb_x[0], tlb_u[0], tlb_d[0]
-  ) && !tlb_hi_nonzero[0] && !s1_q.atomic && (tlb_ppn20[0][19:18] == 2'b01);
+  ) && !tlb_hi_nonzero[0] && !s1_q.atomic && tlb_device_page[0];
   assign walk_is_mmio = (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && leaf_perm_ok(
       i_walk_resp.perm_r,
       i_walk_resp.perm_w,
       i_walk_resp.perm_x,
       i_walk_resp.perm_u,
       i_walk_resp.perm_d
-  ) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) && !s1_q.atomic &&
-      (i_walk_resp.ppn[19:18] == 2'b01);
+  ) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) && !s1_q.atomic && walk_device_page;
   logic resolve_is_mmio;
 
   // Resolution select, in architectural priority order:
@@ -520,8 +529,11 @@ module dmmu (
       va = (s == 0) ? e1_va_q : e2_va_q;
       early_pa_c[s] = {32'b0, tlb_ppn20[s+1], va[11:0]};
       priv_ok = tlb_u[s+1] ? (i_eff_priv_u || i_sum) : !i_eff_priv_u;
+      // pma_data_ok(early_pa_c[s]), with the device-window part taken from
+      // the DTLB's per-entry bit.
       early_ok_c[s] = v && riscv_pkg::sv39_va_canonical(va) && tlb_hit[s+1] && priv_ok &&
-          tlb_w[s+1] && tlb_d[s+1] && !tlb_hi_nonzero[s+1] && riscv_pkg::pma_data_ok(early_pa_c[s]);
+          tlb_w[s+1] && tlb_d[s+1] && !tlb_hi_nonzero[s+1] &&
+          (riscv_pkg::pma_atomic_ok(early_pa_c[s]) || tlb_device_page[s+1]);
     end
   end
 
@@ -569,11 +581,21 @@ module dmmu (
       .o_perm_x(tlb_x),
       .o_perm_u(tlb_u),
       .o_perm_d(tlb_d),
-      .o_level()
+      .o_level(),
+      .o_device_page(tlb_device_page)
   );
 
 `ifdef DMMU_MMIO_LOCAL_PROOF
+  // The DTLB's per-entry device-window bit is the window decode of the PPN
+  // it selects, on every port.
+  logic [2:0] f_tlb_device_page_ref;
   always_comb begin
+    for (int p = 0; p < 3; p++) begin
+      f_tlb_device_page_ref[p] = riscv_pkg::pma_device_page_ok(tlb_ppn20[p]);
+    end
+  end
+  always_comb begin
+    p_tlb_device_page_exact : assert (tlb_device_page == f_tlb_device_page_ref);
     p_mmio_capture_exact : assert (s2_mmio_next == (s1_resolved ? resolve_is_mmio : s2_is_mmio_q));
     p_resolve_mmio_exact :
     assert (resolve_is_mmio ==

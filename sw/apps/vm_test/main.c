@@ -74,6 +74,11 @@
  *      the 4 KiB device page, on the walk and on a DTLB hit, and AMOs
  *      through a 2 MiB and a 1 GiB leaf over the device quadrant; mtval is
  *      the VA.
+ *   X. Leaves onto unserved device addresses: loads -> 5 and stores -> 7
+ *      with the VA in mtval, through a 4 KiB page (on the walk), a 2 MiB
+ *      leaf (on a DTLB hit), and a 1 GiB leaf (on the walk and on a DTLB
+ *      hit). Served addresses in the same superpages (mtime, a PLIC
+ *      priority) still load without a trap.
  */
 
 #include <stdint.h>
@@ -311,6 +316,7 @@ static void build_tables(void)
     l0_a[11] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* device */
     l0_a[12] = PTE_PPN(FRAME(12)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* K rewrite */
     l0_a[13] = PTE_PPN(FRAME(13)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* LR/SC ok */
+    l0_a[14] = PTE_PPN(0x40100000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* unserved */
 
     /* Root B: same VA_4K(0) window backed by FRAME(14) (satp-switch). */
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
@@ -714,6 +720,36 @@ int main(void)
                    "lw   t2, 0(t1)\n"
                    "amoor.w t3, zero, (t1)");
     all_ok &= report3("R8 device-amo-1g-hit", 7, VA_1G_DEVICE + 0x24, 0, 0);
+
+    /* X: leaves onto unserved device addresses. The 4 KiB page at
+     * VA_4K(14) maps PA 0x4010_0000, where every access faults, so it is
+     * checked on the walk only. The superpage cases load a served register
+     * through the leaf first (mtime, a PLIC priority), so the faulting
+     * access hits the DTLB. */
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040E000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("X1 unserved-4k-load", 5, VA_4K(14), 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040E008\n" SREG " t2, 0(t1)");
+    all_ok &= report3("X2 unserved-4k-store", 7, VA_4K(14) + 8, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x02400010\n"
+                   "lw   t2, 0(t1)\n"
+                   "li   t1, 0x02431000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("X3 unserved-2m-load-hit", 5, VA_2M_DEVICE + 0x31000, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x02400010\n"
+                   "lw   t2, 0(t1)\n"
+                   "li   t1, 0x02500000\n" SREG " t2, 0(t1)");
+    all_ok &= report3("X4 unserved-2m-store-hit", 7, VA_2M_DEVICE + 0x100000, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0xC4000004\n"
+                   "lw   t2, 0(t1)\n"
+                   "li   t1, 0xC4400000\n"
+                   "lw   t2, 0(t1)");
+    all_ok &= report3("X5 unserved-1g-load-hit", 5, VA_1G_DEVICE + 0x4400000, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0xC0000010\n"
+                   "lw   t2, 0(t1)\n"
+                   "li   t1, 0xC0031000\n"
+                   "sw   t2, 0(t1)");
+    all_ok &= report3("X6 unserved-1g-store-hit", 7, VA_1G_DEVICE + 0x31000, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0xFFFFFFF8\n" LREG " t2, 0(t1)");
+    all_ok &= report3("X7 unserved-1g-load-walk", 5, 0xFFFFFFF8ul, 0, 0);
 
     /* Turn translation off before the exit path. */
     write_satp(0);
