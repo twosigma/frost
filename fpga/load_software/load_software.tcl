@@ -86,7 +86,7 @@ reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
 # this load starts can run.
 if {[info exists ::env(FROST_ILA_ARM_HOOK)] && $::env(FROST_ILA_ARM_HOOK) ne ""} {
     current_hw_device [lindex [get_hw_devices] 0]
-    puts "Arming the fetch-seam ILA from $::env(FROST_ILA_ARM_HOOK)"
+    puts "Arming the fetch ILA from $::env(FROST_ILA_ARM_HOOK)"
     source $::env(FROST_ILA_ARM_HOOK)
 }
 
@@ -130,8 +130,8 @@ set ddr_axi ""
 if {[llength $all_hw_axis] == 1} {
     set bram_axi [get_property NAME [lindex $all_hw_axis 0]]
     if {$has_ddr && [probe_hw_axi_echoes $bram_axi]} {
-        puts "Error: only one JTAG-AXI master enumerated and it echoes like the"
-        puts "DDR loader -- the BRAM loader is missing from the debug chain."
+        puts "Error: only one JTAG-AXI master enumerated, and it echoes like the"
+        puts "DDR loader: the BRAM loader is missing from the debug chain."
         error "BRAM-loader JTAG-AXI master is missing"
     }
 } else {
@@ -198,7 +198,7 @@ flush stdout
 # capture, in the session that armed it. This blocks, so it runs after the
 # sentinel to let the host start its UART capture on time.
 if {[info exists ::env(FROST_ILA_COLLECT_HOOK)] && $::env(FROST_ILA_COLLECT_HOOK) ne ""} {
-    puts "Collecting the fetch-seam ILA capture via $::env(FROST_ILA_COLLECT_HOOK)"
+    puts "Collecting the fetch ILA capture via $::env(FROST_ILA_COLLECT_HOOK)"
     source $::env(FROST_ILA_COLLECT_HOOK)
     flush stdout
 }

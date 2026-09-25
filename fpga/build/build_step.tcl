@@ -215,7 +215,7 @@ proc frost_insert_fetch_ila {clock_net_name depth} {
     # The core is implemented when the opt step reopens the checkpoint in
     # non-project mode; here (project mode) implement_debug_core insists on
     # a saved design. The definitions travel in the checkpoint's constraints.
-    puts "Fetch-seam ILA: $probe_index probes, depth $depth, clock $clock_net_name"
+    puts "Fetch ILA: $probe_index probes, depth $depth, clock $clock_net_name"
 }
 
 proc split_env_list {value} {
@@ -858,7 +858,7 @@ if {$step eq "synth"} {
     # instantiate it (and the debug hub) before optimization.
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1" && [llength [get_debug_cores -quiet]] > 0} {
         implement_debug_core
-        puts "Fetch-seam ILA implemented: [llength [get_debug_cores]] debug core(s)"
+        puts "Fetch ILA implemented: [llength [get_debug_cores]] debug core(s)"
     }
 
     opt_design -directive $directive
