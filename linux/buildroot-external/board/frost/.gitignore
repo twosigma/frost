@@ -1,8 +1,12 @@
-# Boot images from a standalone frost_boot_image.py run in this directory (it
-# writes to --out, FROST_OUTDIR, or the current directory). Buildroot writes
-# them to $BINARIES_DIR instead.
-/frost-nommu-fpga.dts
-/frost-nommu-fpga.dtb
+# Outputs of a standalone frost_boot_image.py run in this directory (it writes
+# to --out, FROST_OUTDIR, or the current directory): the boot images and the
+# DTB and shim it builds for them. Buildroot writes them to $BINARIES_DIR
+# instead.
+/frost.dts
+/frost.dtb
+/frost_boot_shim.S
+/shim.elf
+/shim.bin
 /sw.mem
 /sw.txt
 /sw_ddr.mem
