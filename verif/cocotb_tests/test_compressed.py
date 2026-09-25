@@ -44,7 +44,9 @@ The directed test runs one compressed instruction type at a time and reads
 back the register value it commits; negative immediates and the shift forms
 are covered. The random test cycles through the compressed ALU forms in the
 op_tables C_* tables with random operands, seeded by the cocotb random seed,
-and checks each result against the table's evaluator.
+and checks each result against the table's evaluator. About half of its words
+carry a second random instruction in the high half, so the two halves also
+dispatch as one bundle.
 
 Usage: ``./scripts/frost.py cocotb compressed``.
 """
@@ -173,8 +175,8 @@ class CompressedHarness:
             self.dut_if.instruction = self.nop_packed
             await RisingEdge(self.dut_if.clock)
 
-    async def execute(self, instr_16bit: int) -> None:
-        """Drive one compressed instruction, then NOP filler behind it.
+    async def execute(self, instr_16bit: int, high_16bit: int | None = None) -> None:
+        """Drive one word of compressed instructions, then NOP filler behind it.
 
         A compressed instruction advances the PC by 2, so the PC can end up
         on an odd half-word. Wait for word alignment before driving the next
@@ -182,7 +184,9 @@ class CompressedHarness:
         the result.
 
         Args:
-            instr_16bit: 16-bit compressed instruction encoding
+            instr_16bit: 16-bit compressed instruction for the low half
+            high_16bit: 16-bit compressed instruction for the high half, which
+                runs second (C.NOP if None)
         """
         # With PC[1]=1 and prev_was_compressed_at_lo=1 the CPU reads from
         # instr_buffer rather than i_instr, so an instruction driven now would
@@ -196,10 +200,11 @@ class CompressedHarness:
             self.dut_if.instruction = self.nop_packed
             await RisingEdge(self.dut_if.clock)
 
-        # The CPU processes both halves of a word as the PC advances from lo
-        # to hi. A NOP in the high half leaves the instruction under test as
-        # the only one with an effect.
-        packed = (self.c_nop << 16) | instr_16bit
+        # The CPU runs both halves of the word, low half first; the two can
+        # dispatch together as one bundle. A C.NOP in the high half leaves
+        # the low instruction as the only one with an effect.
+        high = self.c_nop if high_16bit is None else high_16bit
+        packed = (high << 16) | instr_16bit
         await FallingEdge(self.dut_if.clock)
         self.dut_if.instruction = packed
         await RisingEdge(self.dut_if.clock)
@@ -460,6 +465,30 @@ def _limited_register_refresh(regs: list[int]) -> tuple[int, int, int]:
     raise AssertionError("x8-x15 hold every candidate C.LI value")
 
 
+def _draw_high_parcel(
+    rng: random.Random, regs: list[int], low: tuple[int, int, int]
+) -> tuple[str, int, int, int] | None:
+    """Draw an instruction for the high half of a word behind ``low``.
+
+    It runs after the low-half instruction, so it is drawn against the
+    registers that instruction leaves and changes its own rd from there. When
+    both write one register only the final value can be checked, so that
+    value must also differ from the register's value before the word.
+
+    Returns:
+        (mnemonic, 16-bit encoding, rd, expected rd value), or None if the
+        draw gives no such instruction
+    """
+    _, low_rd, low_expected = low
+    after_low = regs.copy()
+    after_low[low_rd] = low_expected
+    family, mnemonic = rng.choice(_COMPRESSED_ALU_FORMS)
+    drawn = _draw_changing_instruction(rng, family, mnemonic, after_low)
+    if drawn is None or (drawn[1] == low_rd and drawn[2] == regs[low_rd]):
+        return None
+    return (mnemonic, *drawn)
+
+
 async def run_random_compressed_test(dut: Any, config: TestConfig) -> None:
     """Drive random compressed ALU instructions and check each against the model.
 
@@ -468,9 +497,12 @@ async def run_random_compressed_test(dut: Any, config: TestConfig) -> None:
     check can pass only once that instruction has committed. The rd'/rs2'
     forms can leave x8-x15 in a state no operands of a form change (all
     equal, for example); a checked C.LI then loads x8 with a value after
-    which every form has such operands. The run ends by comparing x1-x31
-    with the model and checking that every form ran at least
-    config.min_coverage_count times.
+    which every form has such operands. About half of the words also carry a
+    random instruction in the high half, which the core runs second and can
+    dispatch in the same bundle (slot 2). The run ends by comparing x1-x31
+    with the model, checking that every form ran at least
+    config.min_coverage_count times, and checking that some word pairs
+    dispatched as one bundle.
 
     Args:
         dut: Device under test (cocotb SimHandle)
@@ -489,6 +521,42 @@ async def run_random_compressed_test(dut: Any, config: TestConfig) -> None:
         await harness.execute(encoding)
         await harness.check(rd, expected, f"{mnemonic} (0x{encoding:04x})")
 
+    async def drive_pair(
+        mnemonic: str, encoding: int, rd: int, expected: int
+    ) -> tuple[str, int, int, int] | None:
+        """Drive a low-half instruction with a random high-half one, if drawn."""
+        high = _draw_high_parcel(rng, regs, (encoding, rd, expected))
+        if high is None:
+            await drive(mnemonic, encoding, rd, expected)
+            return None
+        high_mnemonic, high_encoding, high_rd, high_expected = high
+        regs[rd] = expected
+        regs[high_rd] = high_expected
+        stats.record_instruction(mnemonic)
+        stats.record_instruction(high_mnemonic)
+        await harness.execute(encoding, high_encoding)
+        if high_rd != rd:
+            await harness.check(rd, expected, f"{mnemonic} (0x{encoding:04x}), low")
+        await harness.check(
+            high_rd, high_expected, f"{high_mnemonic} (0x{high_encoding:04x}), high"
+        )
+        return high
+
+    # ROB allocation for slot 2 fires only when a word's two instructions
+    # dispatch as one bundle; alloc_valid is the request struct's MSB.
+    slot2_alloc = dut.device_under_test.rob_alloc_req_2
+    slot2_valid_shift = len(slot2_alloc) - 1
+    slot2_dispatches = 0
+
+    async def count_slot2_dispatches() -> None:
+        nonlocal slot2_dispatches
+        while True:
+            await RisingEdge(harness.dut_if.clock)
+            if (int(slot2_alloc.value) >> slot2_valid_shift) & 1:
+                slot2_dispatches += 1
+
+    slot2_counter = cocotb.start_soon(count_slot2_dispatches())
+    word_pairs = 0
     for index in range(config.num_loops):
         family, mnemonic = _COMPRESSED_ALU_FORMS[index % len(_COMPRESSED_ALU_FORMS)]
         drawn = _draw_changing_instruction(rng, family, mnemonic, regs)
@@ -496,7 +564,11 @@ async def run_random_compressed_test(dut: Any, config: TestConfig) -> None:
             await drive("c.li", *_limited_register_refresh(regs))
             drawn = _draw_changing_instruction(rng, family, mnemonic, regs)
             assert drawn is not None, f"No {mnemonic} operands change a register"
-        await drive(mnemonic, *drawn)
+        if rng.random() < 0.5:
+            if await drive_pair(mnemonic, *drawn) is not None:
+                word_pairs += 1
+        else:
+            await drive(mnemonic, *drawn)
 
     for reg in range(1, 32):
         actual = harness.dut_if.read_register(reg) & MASK_XLEN
@@ -505,6 +577,12 @@ async def run_random_compressed_test(dut: Any, config: TestConfig) -> None:
         )
     coverage_issues = stats.check_coverage(config.min_coverage_count)
     assert not coverage_issues, "Coverage: " + "; ".join(coverage_issues)
+    slot2_counter.cancel()
+    cocotb.log.info(
+        f"{word_pairs} words carried two instructions; slot 2 dispatched in "
+        f"{slot2_dispatches} cycles"
+    )
+    assert slot2_dispatches, "No word pair dispatched as one bundle"
     cocotb.log.info(stats.report())
 
 
