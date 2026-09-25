@@ -68,8 +68,9 @@ prints a command that reproduces each failing seed.
 Whole-CPU simulations, synthesis, and FPGA builds all use the CPU
 configuration in `riscv_pkg`. The `tomasulo_wrapper_no_early_load` and
 `load_queue_no_prepare_busy` targets cover early load wakeup and busy-port
-load preparation turned off, and `coremark_profile` runs CoreMark with the
-profiling counters.
+load preparation turned off, `load_queue_sq_forward` runs the load-queue bench
+with store-to-load forwarding on, as the core builds it, and `coremark_profile`
+runs CoreMark with the profiling counters.
 
 Applications run from low BRAM by default. To run them from cached DDR:
 

@@ -1060,6 +1060,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GPREPARE_LOAD_WHILE_BUSY=0",),
         extra_env=(("FROST_TEST_PREPARE_LOAD_WHILE_BUSY", "0"),),
     ),
+    "load_queue_sq_forward": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
+        hdl_toplevel_module="load_queue",
+        description="Component coverage with store-to-load forwarding enabled, as in the core",
+        verilator_extra_args=("-GENABLE_SQ_FORWARD_FAST_PATH=1",),
+        extra_env=(("FROST_TEST_SQ_FORWARD_FAST_PATH", "1"),),
+    ),
     **{
         f"lq_l0_cache_{depth}": CocotbRunConfig(
             python_test_module="cocotb_tests.tomasulo.load_queue.test_lq_l0_cache",

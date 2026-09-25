@@ -60,7 +60,9 @@ def wbeat(word: int) -> int:
     return (word << 32) | word
 
 
-AMO_RESCUE_THRESHOLD = 16384
+# Set by the load_queue_sq_forward target, which builds the LQ with
+# ENABLE_SQ_FORWARD_FAST_PATH=1 as the core does.
+SQ_FORWARD_FAST_PATH = os.environ.get("FROST_TEST_SQ_FORWARD_FAST_PATH", "0") == "1"
 
 
 async def setup(dut: Any) -> tuple[LQInterface, LQModel]:
@@ -763,9 +765,11 @@ async def test_lhu_unsigned(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_sq_forward(dut: Any) -> None:
-    """An SQ match completes the load by forwarding when forwarding is enabled.
+    """An SQ match that can forward completes the load with the store's data.
 
-    Otherwise the load waits until the match clears and then reads memory.
+    With ENABLE_SQ_FORWARD_FAST_PATH=1 (the load_queue_sq_forward target) the
+    load completes from the forwarded data without reading memory. With 0 it
+    waits while the match holds and reads memory once the match clears.
     """
     dut_if, model = await setup(dut)
 
@@ -778,14 +782,23 @@ async def test_sq_forward(dut: Any) -> None:
     sq_check = await wait_for_sq_check(dut_if)
     assert sq_check["valid"], "Expected forwarded load to reach SQ check stage"
 
-    # While SQ still reports a match, the load must not issue to memory.
-    mem_req = dut_if.read_mem_request()
-    assert not mem_req["en"], "Should not issue memory read when SQ forwards"
-
-    result = await wait_for_fu_complete(dut_if)
+    # While the SQ reports a match, the load must never read memory.
+    result = dut_if.read_fu_complete()
+    for _ in range(6):
+        assert not dut_if.read_mem_request()["en"], (
+            "Load read memory while the SQ reported a matching older store"
+        )
+        if result.valid:
+            break
+        await dut_if.step()
+        result = dut_if.read_fu_complete()
+    assert result.valid == SQ_FORWARD_FAST_PATH, (
+        "Load should complete by forwarding exactly when forwarding is enabled "
+        f"(ENABLE_SQ_FORWARD_FAST_PATH={int(SQ_FORWARD_FAST_PATH)})"
+    )
     if not result.valid:
-        # Forwarding disabled (ENABLE_SQ_FORWARD_FAST_PATH=0): release the SQ
-        # match and let memory complete the load.
+        # Forwarding disabled: release the SQ match and let memory complete
+        # the load.
         dut_if.clear_sq_forward()
         mem_req = await wait_for_mem_request(dut_if)
         assert mem_req["en"], "Expected memory read once SQ conflict is released"
@@ -800,7 +813,6 @@ async def test_sq_forward(dut: Any) -> None:
     else:
         dut_if.clear_sq_forward()
         dut_if.drive_sq_all_older_known(False)
-        result = await wait_for_fu_complete(dut_if)
 
     assert result.valid, "Load should complete via SQ fast path or memory fallback"
     assert result.tag == 10
@@ -2317,7 +2329,7 @@ async def test_cached_response_during_flush_all_does_not_refill_l0(dut: Any) -> 
 # ============================================================================
 @cocotb.test()
 async def test_cache_miss_fills_cache(dut: Any) -> None:
-    """Cache miss -> fill -> subsequent load uses fast path or memory fallback."""
+    """A load that misses fills the L0, and a later load to it hits."""
     dut_if, model = await setup(dut)
 
     # First load at 0x3000 misses the cold cache and goes to memory
@@ -2333,12 +2345,13 @@ async def test_cache_miss_fills_cache(dut: Any) -> None:
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
 
-    result, _ = await complete_load_fast_path_or_memory(
+    result, used_fast_path = await complete_load_fast_path_or_memory(
         dut_if, model, mem_data=0x1234_5678, expected_addr=0x3000
     )
     assert result.valid, "Second load should complete after warm-cache lookup"
     assert result.tag == 4
     assert result.value == 0x1234_5678
+    assert used_fast_path, "Second load should hit the line the first load filled"
 
 
 # ============================================================================
@@ -2510,10 +2523,11 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
 
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    result, _ = await complete_load_fast_path_or_memory(
+    result, used_fast_path = await complete_load_fast_path_or_memory(
         dut_if, model, mem_data=low_word, expected_addr=base_addr
     )
     assert result.valid, "LW at base_addr should complete"
+    assert used_fast_path, "LW at base_addr should hit the line the FLD filled"
     assert result.tag == 2
     assert result.value == low_word, (
         f"LW at base_addr: expected 0x{low_word:08x}, got 0x{result.value:08x} "
@@ -2525,10 +2539,11 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
 
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    result, _ = await complete_load_fast_path_or_memory(
+    result, used_fast_path = await complete_load_fast_path_or_memory(
         dut_if, model, mem_data=high_word, expected_addr=base_addr + 4
     )
     assert result.valid, "LW at base_addr+4 should complete"
+    assert used_fast_path, "LW at base_addr+4 should hit the line the FLD filled"
     assert result.tag == 3
     assert result.value == high_word, (
         f"LW at base_addr+4: expected 0x{high_word:08x}, got 0x{result.value:08x}"
@@ -2542,10 +2557,10 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
 async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
     """An MMIO load never takes forwarded data, even when the SQ reports can_forward.
 
-    With a matching older store it stalls instead. In the RTL, sq_do_forward
-    excludes MMIO loads (!sq_check_is_mmio_q), but this bench runs with
-    ENABLE_SQ_FORWARD_FAST_PATH=0, where no load forwards, so the test checks
-    the stall rather than that guard.
+    With a matching older store it stalls instead. With
+    ENABLE_SQ_FORWARD_FAST_PATH=1 (the load_queue_sq_forward target) this
+    checks sq_do_forward's !sq_check_is_mmio_q term; with 0 no load forwards,
+    so only the stall is checked.
     """
     dut_if, model = await setup(dut)
 
@@ -2568,18 +2583,15 @@ async def test_mmio_load_blocks_sq_forward(dut: Any) -> None:
     # issue to memory either: sq_can_issue is false while match=True, so it
     # stalls. That is the required behavior; an MMIO load behind a matching
     # store waits until that store has drained.
-    mem_req = dut_if.read_mem_request()
-    assert not mem_req["en"], (
-        "MMIO load with SQ match should stall, not issue to memory"
-    )
-
-    # Step once; the entry must not become data_valid through forwarding
-    await dut_if.step()
-
-    # Verify no CDB broadcast happened (load is still waiting)
-    await Timer(1, unit="ns")
-    result = dut_if.read_fu_complete()
-    assert not result.valid, "MMIO load should not have been forwarded"
+    for _ in range(6):
+        await Timer(1, unit="ns")
+        assert not dut_if.read_mem_request()["en"], (
+            "MMIO load with SQ match should stall, not issue to memory"
+        )
+        assert not dut_if.read_fu_complete().valid, (
+            "MMIO load completed from forwarded store data"
+        )
+        await dut_if.step()
 
     dut_if.drive_sq_all_older_known(False)
     dut_if.clear_sq_forward()
@@ -2869,7 +2881,7 @@ async def test_head_amo_ignores_physically_earlier_younger_amo(dut: Any) -> None
     dut_if.drive_sq_empty(True)
     dut_if.drive_sq_committed_empty(True)
 
-    mem_req = await wait_for_mem_request(dut_if, max_cycles=AMO_RESCUE_THRESHOLD + 8)
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
     assert mem_req["en"], "ROB-head AMO should ignore physically earlier younger AMO"
     assert mem_req["addr"] == 0x9004, (
         f"Expected head AMO addr=0x9004, got 0x{mem_req['addr']:x}"
