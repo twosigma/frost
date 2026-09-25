@@ -58,7 +58,7 @@ volatile ee_s32 seed5_volatile = 0;
 /* Timing: ticks are CPU cycles from the cycle counter, and EE_TICKS_PER_SEC is
  * FPGA_CPU_CLK_FREQ. TIMER_RES_DIVIDER must stay 1: GETMYTIME returns undivided
  * cycles, and only EE_TICKS_PER_SEC is divided by it. */
-#define NSECS_PER_SEC FPGA_CPU_CLK_FREQ * 1ULL
+#define NSECS_PER_SEC (FPGA_CPU_CLK_FREQ * 1ULL)
 #define CORETIMETYPE uint64_t
 #define GETMYTIME(_t) (*_t = read_timer64())
 #define MYTIMEDIFF(fin, ini) ((fin) - (ini))
@@ -131,7 +131,7 @@ void portable_init(core_portable *p, int *argc, char *argv[])
 {
     ee_printf("\nBaremetal Coremark %d iterations, assuming %d Hz FPGA clock.\n",
               ITERATIONS,
-              NSECS_PER_SEC);
+              (int) NSECS_PER_SEC);
     ee_printf("Adjust FPGA_CPU_CLK_FREQ in Makefile if clock frequency differs.\n");
     ee_printf("Expect a run time of at least 10 seconds before result printed.\n");
     ee_printf("Increase ITERATIONS in the Makefile if CPU is too fast.\n");
