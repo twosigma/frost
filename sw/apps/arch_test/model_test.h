@@ -48,6 +48,12 @@
 // word as 8 lowercase hex characters followed by a newline.
 // After the signature, prints "<<PASS>>" so the cocotb test_real_program
 // harness terminates the simulation.
+//
+// The dump does not check UART_TX_STATUS, so on the serial line a dump
+// larger than the 16 KiB transmit FIFO loses bytes. The suite runs only in
+// simulation, where the runner reads the dump from the CPU's UART writes,
+// ahead of the FIFO, and turns off frost.sv's dropped-byte check
+// (+uart_tx_drop_check=0).
 //-----------------------------------------------------------------------
 #define RVMODEL_HALT                                                                               \
     la a0, begin_signature;                                                                        \

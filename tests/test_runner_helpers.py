@@ -299,3 +299,36 @@ def test_cocotb_runner_rejects_zero_exit_without_fresh_passing_tests(
     monkeypatch.setattr(subprocess, "run", simulation_run)
     with pytest.raises(RuntimeError, match="report"):
         runner.run_simulation()
+
+
+def test_arch_simulation_turns_off_the_uart_tx_drop_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Arch runs pass +uart_tx_drop_check=0: the signature dump can outgrow the TX FIFO."""
+    monkeypatch.setenv("SIM", "verilator")
+    monkeypatch.setattr(test_arch_compliance, "TESTS_DIR", tmp_path / "tests")
+    monkeypatch.setattr(test_arch_compliance, "ARCH_TEST_APP_DIR", tmp_path / "app")
+    (tmp_path / "tests").mkdir()
+    runner_class = test_run_cocotb.CocotbRunner
+    monkeypatch.setattr(
+        runner_class, "setup_environment", lambda _self: {"COCOTB_PLUSARGS": "+seed"}
+    )
+    monkeypatch.setattr(runner_class, "_verilator_needs_rebuild", lambda *_: False)
+    monkeypatch.setattr(
+        runner_class, "_update_verilator_toplevel_marker", lambda *_: None
+    )
+    environments: list[dict[str, str]] = []
+
+    def simulation_run(
+        *_args: object, env: dict[str, str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        environments.append(env)
+        return subprocess.CompletedProcess(args=["make"], returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", simulation_run)
+
+    test_arch_compliance.run_simulation()
+
+    assert [env["COCOTB_PLUSARGS"].split() for env in environments] == [
+        ["+seed", "+uart_tx_drop_check=0"]
+    ]

@@ -436,9 +436,15 @@ module frost #(
 `ifndef SYNTHESIS
   // A write that finds the FIFO full is lost. A writer that checks the TX
   // status before each burst of up to 16 bytes, as the 8250 driver does,
-  // never finds it full; this reports a write that does.
+  // never finds it full; this reports a write that does. The plusarg
+  // +uart_tx_drop_check=0 turns the check off for a run that writes more
+  // than fits without checking the status and reads its output from
+  // cpu_and_mem's UART write, ahead of this FIFO: the arch-test signature dump.
+  int unsigned uart_tx_drop_check;
+  initial if (!$value$plusargs("uart_tx_drop_check=%d", uart_tx_drop_check)) uart_tx_drop_check = 1;
   always_ff @(posedge i_clk)
-    if (!reset_synchronized && uart_write_enable_from_cpu && !uart_fifo_input_ready)
+    if (uart_tx_drop_check != 0 && !reset_synchronized && uart_write_enable_from_cpu &&
+        !uart_fifo_input_ready)
       $error("frost: UART TX byte dropped: the transmit FIFO was full");
 `endif
 

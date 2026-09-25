@@ -289,6 +289,12 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     sim_build_dir = runner._get_sim_build_dir(env)
     # A 50M-cycle budget instead of the 500K application default.
     env["COCOTB_MAX_CYCLES"] = "50000000"
+    # RVMODEL_HALT writes the signature without checking the UART TX status, so
+    # a large dump overflows the transmit FIFO. The dump is read from the CPU's
+    # UART writes, ahead of the FIFO, so turn off frost's dropped-byte check.
+    env["COCOTB_PLUSARGS"] = (
+        env.get("COCOTB_PLUSARGS", "") + " +uart_tx_drop_check=0"
+    ).strip()
 
     original_dir = os.getcwd()
     os.chdir(TESTS_DIR)
