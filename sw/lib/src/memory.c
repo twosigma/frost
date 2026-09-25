@@ -376,11 +376,14 @@ void *realloc(void *ptr, size_t size)
     if (size <= old_payload)
         return ptr;
 
+    /* Grow to twice the old payload when that fits, else to exactly size. */
     size_t new_size = size;
     if (old_payload <= (SIZE_MAX / 2u) && (size_t) old_payload * 2u > new_size)
         new_size = (size_t) old_payload * 2u;
 
     void *newp = malloc(new_size);
+    if (newp == NULL && new_size != size)
+        newp = malloc(size);
     if (newp == NULL)
         return NULL;
 
