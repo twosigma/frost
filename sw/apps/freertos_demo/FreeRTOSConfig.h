@@ -93,7 +93,11 @@
         for (;;)                                                                                   \
             ;                                                                                      \
     }
-#define configCHECK_FOR_STACK_OVERFLOW 0 /* Disable for minimal demo */
+/* On every switch away from a task, check its saved stack pointer and the 16
+ * fill bytes at its stack limit; an overflow fails the run. There is no
+ * malloc-failed hook: the tick check retries a helper whose stack allocation
+ * fails. */
+#define configCHECK_FOR_STACK_OVERFLOW 2
 #define configGENERATE_RUN_TIME_STATS 0
 #define configUSE_TRACE_FACILITY 0
 #define configUSE_STATS_FORMATTING_FUNCTIONS 0

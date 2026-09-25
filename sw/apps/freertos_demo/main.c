@@ -453,15 +453,9 @@ void freertos_risc_v_application_interrupt_handler(void)
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
     (void) xTask;
-    (void) pcTaskName;
-    uart_puts("[STACK OVERFLOW]\r\n");
-    for (;;)
-        ;
-}
-
-void vApplicationMallocFailedHook(void)
-{
-    uart_puts("[MALLOC FAILED]\r\n");
+    uart_puts("\r\n[STACK OVERFLOW] ");
+    uart_puts(pcTaskName);
+    uart_puts("\r\nFAIL\r\n<<FAIL>>\r\n");
     for (;;)
         ;
 }
