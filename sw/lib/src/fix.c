@@ -73,8 +73,9 @@ uint64_t parse_timestamp(const char *timestamp_string)
 
 /* Parse a decimal price string with an optional leading '-' to fixed point
  * with TARGET_SCALE decimal places. Fraction digits past TARGET_SCALE are
- * truncated. The magnitude is built unsigned, so the most negative amount
- * parses exactly; amounts outside the int64_t range are not detected. */
+ * truncated. The magnitude is built and negated in uint64_t, so the most
+ * negative amount parses exactly and no input overflows signed arithmetic;
+ * an amount outside the int64_t range is not detected and wraps modulo 2^64. */
 fix_price_t parse_price(const char *price_string)
 {
     fix_price_t parsed_price;
@@ -137,7 +138,8 @@ fix_price_t parse_price(const char *price_string)
         result *= 10;
     }
 
-    parsed_price.amount = negative && result != 0 ? -(int64_t) (result - 1U) - 1 : (int64_t) result;
+    /* GCC converts an out-of-range value to int64_t modulo 2^64. */
+    parsed_price.amount = (int64_t) (negative ? 0U - result : result);
     parsed_price.scale = TARGET_SCALE;
 
     return parsed_price;

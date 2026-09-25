@@ -320,16 +320,17 @@ static bool test_oversized_fifo_string(void)
 }
 
 /* parse_price keeps the sign of a negative price, including one below 1 and
- * the most negative amount. */
+ * the most negative amount, and wraps an amount below that modulo 2^64. */
 static bool test_signed_prices(void)
 {
     fix_price_t neg = parse_price("-1.5");
     fix_price_t neg_fraction = parse_price("-0.25");
     fix_price_t neg_whole = parse_price("-94");
     fix_price_t most_negative = parse_price("-92233720368.54775808");
+    fix_price_t below_range = parse_price("-92233720368.54775809");
     return neg.amount == -150000000LL && neg_fraction.amount == -25000000LL &&
            neg_whole.amount == -9400000000LL && most_negative.amount == INT64_MIN &&
-           neg.scale == TARGET_SCALE;
+           below_range.amount == INT64_MAX && neg.scale == TARGET_SCALE;
 }
 
 /* Test FIX message: ICE venue accepted execution report */
