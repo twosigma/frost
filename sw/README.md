@@ -294,7 +294,7 @@ can be debugged and where each one first stops.
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |
 | `perf_off_test/` | Core built without profiling counters: `mperf*` CSRs read zero and ignore writes, while `cycle` and `instret` count |
 | `plic_test/` | PLIC registers, level gateway, claim and complete, threshold, both contexts, an M-mode external interrupt, and completions from contexts that do not enable the source |
-| `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map (device-quadrant addresses outside the device windows included) and for AMO, LR, and SC to device registers, with exact `mepc` and `mtval` |
+| `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map (loads from device-quadrant addresses outside the device windows included; untranslated stores there are ignored) and for AMO, LR, and SC to device registers, with exact `mepc` and `mtval` |
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |
 | `ptw_coherence_test/` | Sv39 walks must see page tables still dirty in the L1D, without `sfence.vma` |
 | `ras_slot_bench/` | Return prediction with the call and the return in either slot of their fetch bundle: per-phase cycles and flush-recovery cycles from the profiling counters (`PERF_COUNTERS=1`) |

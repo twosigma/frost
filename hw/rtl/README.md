@@ -88,9 +88,13 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 Every other address, including the rest of the device quadrant
 `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set, is
 unmapped: a fetch, load, store, or AMO there raises a precise access fault
-(cause 1, 5, or 7) and never aliases onto the map. Under Sv39, a
-misaligned-address or page fault takes priority over the access fault; for
-an untranslated access, the access fault takes priority over misalignment.
+(cause 1, 5, or 7) and never aliases onto the map. The one exception is a
+store to the rest of the device quadrant with translation off: the
+store-issue check covers the whole quadrant (it has no time for the exact
+window compares at 322 MHz), so the store issues and the device bus ignores
+it. Under Sv39, a misaligned-address or page fault takes priority over the
+access fault; for an untranslated access, the access fault takes priority
+over misalignment.
 
 The ROM, DEBUG, and RAM regions divide the 256 KiB low BRAM as the unified
 linker script (`sw/common/link.ld`) does. Low BRAM holds separate instruction

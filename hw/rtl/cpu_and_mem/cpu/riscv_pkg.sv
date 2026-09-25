@@ -1435,18 +1435,21 @@ package riscv_pkg;
   //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR  fetch, loads, stores, atomics
   // Everything else, including the rest of the device quadrant
   // [0x4000_0000, 0x8000_0000) and all of [63:32], is unmapped and faults
-  // (instruction/load/store-AMO access fault, causes 1/5/7). The device
-  // quadrant supports no AMOs and no reservations (the privileged spec's
-  // AMONone and RsrvNone), so an AMO, LR or SC to it takes the access fault
-  // too (causes 7/5/7). An address that fails its pma_*_ok check never
-  // reaches a memory tier: fetch delivers a fault-tagged bundle (the
-  // FETCH_FAULT pseudo-op raises the precise exception), and a data access
-  // faults at the LQ/SQ issue check beside the misalignment test (under
-  // Sv39, the data MMU checks the translated address). Consequently every
-  // launched memory access has bits [XLEN-1:32] zero, which is the
-  // invariant the 32-bit region decodes and the load queue's masked
-  // store-forwarding check address rely on; every launched device access is
-  // inside a device window; and no atomic reaches a device.
+  // (instruction/load/store-AMO access fault, causes 1/5/7), with one
+  // exception: with translation off, a store to the rest of the device
+  // quadrant issues and the device bus ignores it (pma_store_ok, for the
+  // store-issue check's timing). The device quadrant supports no AMOs and no
+  // reservations (the privileged spec's AMONone and RsrvNone), so an AMO, LR
+  // or SC to it takes the access fault (causes 7/5/7). An address that fails
+  // its pma_*_ok check never reaches a memory tier: fetch delivers a
+  // fault-tagged bundle (the FETCH_FAULT pseudo-op raises the precise
+  // exception), and a data access faults at the LQ/SQ issue check beside the
+  // misalignment test (under Sv39, the data MMU checks the translated address
+  // exactly). Consequently every launched memory access has bits [XLEN-1:32]
+  // zero, which is the invariant the 32-bit region decodes and the load
+  // queue's masked store-forwarding check address rely on; every launched
+  // device access other than such an untranslated store is inside a device
+  // window; and no atomic reaches a device.
   //
   // The device windows in 4 KiB pages. cpu_and_mem.sv decodes the registers
   // inside them, so the two change together (hw/rtl/README.md, "Memory
@@ -1482,6 +1485,14 @@ package riscv_pkg;
   // Loads and stores.
   function automatic logic pma_data_ok(input logic [XLEN-1:0] addr);
     pma_data_ok = pma_fetch_ok(addr) || pma_device_ok(addr);
+  endfunction
+
+  // Stores at the untranslated store-issue check: BRAM, cached DDR and the
+  // whole device quadrant. The exact window compares do not fit that path's
+  // timing, so a store to an unserved device address issues and the device bus
+  // ignores it. Translated stores use the data MMU's exact check.
+  function automatic logic pma_store_ok(input logic [XLEN-1:0] addr);
+    pma_store_ok = pma_fetch_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
   endfunction
 
   // AMO, LR and SC: BRAM and cached DDR only.

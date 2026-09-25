@@ -82,7 +82,9 @@ The PMA map has four regions: the BRAM, the MMIO register window
 and cached DDR. An access anywhere else, including the rest of the device
 quadrant `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set,
 raises a precise access fault (cause 1, 5, or 7 for a fetch, load, or store)
-with the exact address in `mtval`. Under Sv39, a misaligned-address or page
+with the exact address in `mtval`, except that an untranslated store to the
+rest of the device quadrant (from M-mode firmware, say) is ignored instead.
+Under Sv39, a misaligned-address or page
 fault takes priority over it; for an untranslated access, the access fault
 takes priority over misalignment. Instruction fetch from the device windows
 also faults, and so does an AMO, LR, or SC to them (cause 7, 5, or 7):

@@ -261,9 +261,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pma_fault_test",
         description=(
-            "PMA faults for out-of-map fetch/load/store/AMO/LR (unserved device "
-            "addresses included) and for AMO/LR/SC to devices; exact mepc/mtval and "
-            "access-fault priority over misalignment."
+            "PMA faults for out-of-map fetch/load/store/AMO/LR (loads from unserved "
+            "device addresses included; untranslated stores there are ignored) and "
+            "for AMO/LR/SC to devices; exact mepc/mtval and access-fault priority "
+            "over misalignment."
         ),
     ),
     "fs_off_test": CocotbRunConfig(

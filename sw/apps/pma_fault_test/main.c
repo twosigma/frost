@@ -53,11 +53,13 @@
  *      on RAM is held), mtval exact, and the ns16550 scratch register keeps
  *      its value. An AMO to an unserved device address that aliases a
  *      low-BRAM word -> cause 7, and the word is unchanged.
- *   N. Plain accesses to unserved device addresses fault: lw/ld -> cause 5
- *      and sw/sd -> cause 7 at the address that aliases the low-BRAM word
- *      (unchanged), a store whose immediate carries it past the end of the
- *      MMIO window -> cause 7, and loads just past the MMIO window, on both
- *      sides of the PLIC, and at the top of the quadrant -> cause 5.
+ *   N. Plain loads from unserved device addresses fault (lw/ld -> cause 5
+ *      at the address that aliases the low-BRAM word, and loads just past the
+ *      MMIO window, on both sides of the PLIC, and at the top of the
+ *      quadrant). With translation off, stores there issue and the device
+ *      bus ignores them: sw/sd to the aliasing address and a store whose
+ *      immediate carries it past the end of the MMIO window do not trap, and
+ *      the low-BRAM word is unchanged.
  *
  * Each case uses the M-mode bounce from umode_test: the mtvec handler records
  * mcause/mepc/mtval for the first trap of the case, then returns to the
@@ -361,20 +363,20 @@ int main(void)
              "li   t2, -1\n"
              "sw   t2, 0(t1)",
              "r"(unserved));
-    all_ok &= report3("N3 unserved-sw", 7u, 0, unserved, 0);
+    all_ok &= report3("N3 unserved-sw-ignored", 11u, 0, 0, 0);
     RUN_CASE("mv   t1, %0\n"
              "li   t2, -1\n"
              "sd   t2, 0(t1)",
              "r"(unserved));
-    all_ok &= report3("N4 unserved-sd", 7u, 0, unserved, 0);
+    all_ok &= report3("N4 unserved-sd-ignored", 11u, 0, 0, 0);
     all_ok &= check_value("N4 bram-unchanged", bram_word, 0x0123456789ABCDEFull);
 
     /* N5: the base is in the MMIO window's last page and the immediate
-     * carries the store into the first unserved page. */
+     * carries the store into the first unserved page, which ignores it. */
     RUN_CASE("mv   t1, %0\n"
              "sw   t2, 8(t1)",
              "r"(0x40030FF8ul));
-    all_ok &= report3("N5 store-carries-past-mmio", 7u, 0, 0x40031000ul, 0);
+    all_ok &= report3("N5 store-past-mmio-ignored", 11u, 0, 0, 0);
 
     /* N6: loads at the edges of the served windows. */
     for (unsigned i = 0; i < sizeof(k_unserved_loads) / sizeof(k_unserved_loads[0]); i++) {

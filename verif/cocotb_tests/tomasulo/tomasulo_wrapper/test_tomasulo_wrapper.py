@@ -803,35 +803,27 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
     cocotb.log.info("=== Test: Store Page-Carry PMA and Alignment Exactness ===")
     dut_if, _model = await setup_test(dut)
 
-    def pma_data_ok(addr: int) -> bool:
+    def pma_store_ok(addr: int) -> bool:
+        """Mirror riscv_pkg::pma_store_ok: BRAM, the device quadrant and DDR."""
         addr &= MASK_XLEN
-        return (
-            addr < 0x0004_0000
-            or 0x4000_0000 <= addr < 0x4003_1000
-            or 0x4400_0000 <= addr < 0x4440_0000
-            or 0x8000_0000 <= addr < 0xC000_0000
-        )
+        return addr < 0x0004_0000 or 0x4000_0000 <= addr < 0xC000_0000
 
     page_max = (1 << (XLEN - 12)) - 1
     page_cases = [
         # Positive low-offset carry: predecessor of each PMA interval edge.
         ("inc-wrap-enters-bram", page_max, 0xFFF, 1, True),
         ("inc-exits-bram", 0x3F, 0xFFF, 1, False),
-        ("inc-enters-mmio", 0x3FFFF, 0xFFF, 1, True),
-        ("inc-exits-mmio", 0x40030, 0xFFF, 1, False),
-        ("inc-enters-plic", 0x43FFF, 0xFFF, 1, True),
-        ("inc-exits-plic", 0x443FF, 0xFFF, 1, False),
-        ("inc-enters-ddr", 0x7FFFF, 0xFFF, 1, True),
+        ("inc-enters-device", 0x3FFFF, 0xFFF, 1, True),
         ("inc-exits-ddr", 0xBFFFF, 0xFFF, 1, False),
         # Negative low-offset borrow: each PMA edge viewed in reverse.
         ("dec-wrap-exits-bram", 0, 0, -1, False),
         ("dec-enters-bram", 0x40, 0, -1, True),
-        ("dec-exits-mmio", 0x40000, 0, -1, False),
-        ("dec-enters-mmio", 0x40031, 0, -1, True),
-        ("dec-exits-plic", 0x44000, 0, -1, False),
-        ("dec-enters-plic", 0x44400, 0, -1, True),
-        ("dec-exits-ddr", 0x80000, 0, -1, False),
+        ("dec-exits-device", 0x40000, 0, -1, False),
         ("dec-enters-ddr", 0xC0000, 0, -1, True),
+        # The whole device quadrant is legal for a store, so stepping past a
+        # device window does not change the result.
+        ("inc-past-mmio-window", 0x40030, 0xFFF, 1, True),
+        ("dec-into-plic-gap", 0x44000, 0, -1, True),
         # Sign controls with no page movement: carry/borrow gating is required.
         ("positive-no-carry", 0x3F, 0, 1, True),
         ("negative-no-borrow", 0x40000, 1, -1, True),
@@ -843,7 +835,7 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
         dut.i_trap_misaligned_accesses.value = 0
         base = ((page << 12) | low) & MASK_XLEN
         effective = (base + imm) & MASK_XLEN
-        assert pma_data_ok(effective) == expected_ok, f"bad test vector {name}"
+        assert pma_store_ok(effective) == expected_ok, f"bad test vector {name}"
 
         issue = await present_store_via_mem_rs(
             dut_if,
@@ -877,7 +869,7 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
         dut_if.set_fu_ready(RS_MEM, True)
         dut.i_trap_misaligned_accesses.value = 1
         effective = (base + imm) & MASK_XLEN
-        assert pma_data_ok(effective), f"alignment case must remain in-map: {name}"
+        assert pma_store_ok(effective), f"alignment case must remain in-map: {name}"
 
         await present_store_via_mem_rs(
             dut_if,
