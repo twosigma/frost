@@ -290,8 +290,9 @@ module cpu_and_mem #(
   // fault. The pages must also keep the layout their decodes assume: both
   // windows inside the device quadrant, which the load and store queues order
   // as devices; the MMIO window inside one aligned 64-page block
-  // (riscv_pkg::pma_device_page_ok); and an unmapped page on both sides of
-  // each window (the store-issue page split in tomasulo_wrapper).
+  // (riscv_pkg::pma_device_page_ok); and each window nonempty with an
+  // unmapped page on both sides (the store-issue page split in
+  // tomasulo_wrapper).
   initial begin
     if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
         ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
@@ -300,6 +301,7 @@ module cpu_and_mem #(
       $fatal(1, "cpu_and_mem: MMIO or PLIC window differs from the riscv_pkg device-window pages");
     if ((riscv_pkg::MmioFirstPage[19:18] != 2'b01) || (riscv_pkg::PlicFirstPage[19:18] != 2'b01) ||
         (riscv_pkg::MmioLastPage[19:6] != riscv_pkg::MmioFirstPage[19:6]) ||
+        (riscv_pkg::MmioFirstPage > riscv_pkg::MmioLastPage) ||
         (riscv_pkg::MmioLastPage == 20'h7_FFFF) || (riscv_pkg::PlicLastPage == 20'h7_FFFF) ||
         ((riscv_pkg::MmioLastPage + 20'd1 >= riscv_pkg::PlicFirstPage) &&
          (riscv_pkg::PlicLastPage + 20'd1 >= riscv_pkg::MmioFirstPage)))
