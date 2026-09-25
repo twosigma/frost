@@ -165,3 +165,64 @@ def test_ddr_smc_debug_reaches_buffer_from_low_bram(tmp_path: Path) -> None:
         stamp = (app_dir / ".frost-build-config.bin").read_text()
         assert ("APP_TUNE_FLAGS=-mcmodel=large|" in stamp) == bool(debug)
         assert (app_dir / "sw_ddr.txt").stat().st_size > 0
+
+
+def functions_by_file(path: Path) -> dict[str, dict[str, str]]:
+    """Map each source-file symbol of an ELF64 to its local functions' sections.
+
+    Global functions are listed under the empty file name.
+    """
+    elf = path.read_bytes()
+    assert elf[:6] == b"\x7fELF\x02\x01"
+    offset = struct.unpack_from("<Q", elf, 40)[0]
+    size, count, names_index = struct.unpack_from("<HHH", elf, 58)
+
+    def header(index: int) -> tuple[int, int, int, int, int]:
+        base = offset + index * size
+        name, kind = struct.unpack_from("<II", elf, base)
+        start, length = struct.unpack_from("<QQ", elf, base + 24)
+        return name, kind, start, length, struct.unpack_from("<I", elf, base + 40)[0]
+
+    def string(table: int, at: int) -> str:
+        start = header(table)[2] + at
+        return elf[start : elf.index(b"\0", start)].decode()
+
+    sections = [string(names_index, header(index)[0]) for index in range(count)]
+    symtab = next(index for index in range(count) if header(index)[1] == 2)
+    _, _, start, length, strtab = header(symtab)
+    functions: dict[str, dict[str, str]] = {"": {}}
+    current = ""
+    for base in range(start, start + length, 24):
+        name, info, _, section = struct.unpack_from("<IBBH", elf, base)
+        if info & 0xF == 4:  # STT_FILE
+            current = string(strtab, name)
+            functions.setdefault(current, {})
+        elif info & 0xF == 2 and section < len(sections):  # STT_FUNC
+            owner = current if info >> 4 == 0 else ""
+            functions[owner][string(strtab, name)] = sections[section]
+    return functions
+
+
+@pytest.mark.parametrize("profile", ["OPT_LEVEL=-O2", "OPT_LEVEL=-Os", "FROST_DEBUG=1"])
+def test_cache_report_code_stays_in_its_section(tmp_path: Path, profile: str) -> None:
+    """Every function of tomasulo_profile_cache.c links into .cache_profile_text.
+
+    At these levels GCC can emit out-of-line copies of the tomasulo_profile.h
+    helpers the report calls; a copy in .text would shift the program image.
+    """
+    app_dir = scratch_app(tmp_path, "ddr_mlp_test")
+    result = build(app_dir, "MEM_CONFIG=bram", profile)
+    assert result.returncode == 0, result.stdout + result.stderr
+    functions = functions_by_file(app_dir / "sw.elf")
+    report = dict(functions["tomasulo_profile_cache.c"])
+    report.update(
+        (name, section)
+        for name, section in functions[""].items()
+        if name.startswith("tomasulo_profile_")
+    )
+    assert "tomasulo_profile_read_cache_pair" in report
+    assert {
+        name: section
+        for name, section in report.items()
+        if section != ".cache_profile_text"
+    } == {}

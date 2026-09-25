@@ -21,11 +21,17 @@
  * measured region ends. Its code and strings go in their own linker sections,
  * placed after the rest of the program image, so linking it in moves none of
  * the program's code or static data and leaves the warm microarchitectural
- * state at the timing boundary unchanged. This relies on the default -O3
- * inlining the tomasulo_profile.h helpers called here: at -O2 or -Og
- * (FROST_DEBUG=1), GCC can emit copies of them into ordinary .text.
+ * state at the timing boundary unchanged.
+ *
+ * GCC can emit out-of-line copies of the static inline tomasulo_profile.h
+ * helpers into ordinary .text (at -O2, -Os, or -Og), so the functions here
+ * that call them are flattened (CACHE_PROFILE_FLATTEN), which inlines every
+ * helper whenever optimization is on. tomasulo_profile_read_cache_pair() is
+ * noinline, so link-time optimization cannot inline it, and the bank reads it
+ * calls, into a caller in .text.
  */
 #define CACHE_PROFILE_TEXT __attribute__((section(".cache_profile_text")))
+#define CACHE_PROFILE_FLATTEN __attribute__((flatten))
 #define CACHE_PROFILE_RODATA __attribute__((section(".cache_profile_rodata"), aligned(1)))
 
 /* Defined by a benchmark that uses the default-report entry point
@@ -118,8 +124,9 @@ static CACHE_PROFILE_TEXT void read_cache_bank(uint64_t *cache_counters, uint32_
  * preceding one, so call this after the end snapshot and before the next.
  * The bank select is left on the current bank.
  */
-CACHE_PROFILE_TEXT void tomasulo_profile_read_cache_pair(tomasulo_profile_snapshot_t *start,
-                                                         tomasulo_profile_snapshot_t *end)
+CACHE_PROFILE_TEXT __attribute__((noinline)) void
+tomasulo_profile_read_cache_pair(tomasulo_profile_snapshot_t *start,
+                                 tomasulo_profile_snapshot_t *end)
 {
     uint64_t *start_cache = (uint64_t *) (uintptr_t) start->cache_counters_addr;
     uint64_t *end_cache = (uint64_t *) (uintptr_t) end->cache_counters_addr;
@@ -131,7 +138,8 @@ CACHE_PROFILE_TEXT void tomasulo_profile_read_cache_pair(tomasulo_profile_snapsh
     csr_write_imm(CSR_MPERFCTL, 0U);
 }
 
-static CACHE_PROFILE_TEXT void print_metric(const char *label, uint64_t value, uint64_t total)
+static CACHE_PROFILE_TEXT CACHE_PROFILE_FLATTEN void
+print_metric(const char *label, uint64_t value, uint64_t total)
 {
     uint32_t pct_x10 = tomasulo_profile_pct_x10(value, total);
     uart_printf(metric_prefix, label);
@@ -139,7 +147,8 @@ static CACHE_PROFILE_TEXT void print_metric(const char *label, uint64_t value, u
     uart_printf(metric_suffix, (unsigned long) (pct_x10 / 10U), (unsigned long) (pct_x10 % 10U));
 }
 
-static CACHE_PROFILE_TEXT void print_hit_rate(const char *label, uint64_t hits, uint64_t accesses)
+static CACHE_PROFILE_TEXT CACHE_PROFILE_FLATTEN void
+print_hit_rate(const char *label, uint64_t hits, uint64_t accesses)
 {
     if (accesses == 0U) {
         uart_printf(no_accesses, label);
@@ -152,7 +161,7 @@ static CACHE_PROFILE_TEXT void print_hit_rate(const char *label, uint64_t hits, 
     }
 }
 
-static CACHE_PROFILE_TEXT void
+static CACHE_PROFILE_TEXT CACHE_PROFILE_FLATTEN void
 print_miss_latency(const char *label, uint64_t miss_cycles_sum, uint64_t misses)
 {
     if (misses == 0U) {
