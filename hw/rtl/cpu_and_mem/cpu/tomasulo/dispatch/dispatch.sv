@@ -105,11 +105,6 @@ module dispatch #(
     output riscv_pkg::reorder_buffer_alloc_req_t  o_rob_alloc_req_2,
     input  riscv_pkg::reorder_buffer_alloc_resp_t i_rob_alloc_resp_2,
 
-    // ROB entry-done vector. Unused here; kept for interface stability. The
-    // registered done-repair channels (1 to 6) cover a source whose producer
-    // broadcast before dispatch.
-    input logic [riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_done,
-
     // =========================================================================
     // RAT Source Lookups (combinational, from tomasulo_wrapper)
     // =========================================================================

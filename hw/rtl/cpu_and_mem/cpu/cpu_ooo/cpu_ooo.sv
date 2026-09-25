@@ -1213,7 +1213,6 @@ module cpu_ooo #(
   logic widen_commit_ok;
   assign widen_commit_ok = 1'b1;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
-  logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done_vec;
 
   // Per-ROB-entry predict-time bimodal index for the direction predictor.  Written
   // at ROB allocation (mirroring rob_entry_epoch) and read at commit to train the
@@ -1848,7 +1847,7 @@ module cpu_ooo #(
       .o_head_done(head_done),
 
       // ROB entry state and dispatch done-repair reads
-      .o_rob_entry_done_vec(rob_entry_done_vec),
+      .o_rob_entry_done_vec(),
       .i_rob_entry_epoch(rob_entry_epoch),
       .i_bypass_valid_1(dispatch_bypass_valid_1),
       .i_bypass_tag_1(dispatch_bypass_tag_1),
@@ -2182,10 +2181,6 @@ module cpu_ooo #(
       // Slot-2 ROB alloc (2-wide dispatch)
       .o_rob_alloc_req_2 (rob_alloc_req_2_raw),
       .i_rob_alloc_resp_2(rob_alloc_resp_2),
-
-      // Unused by dispatch: slot-2 sources recover a missed CDB broadcast
-      // through done-repair channels 4/5/6.
-      .i_rob_entry_done(rob_entry_done_vec),
 
       // RAT lookups - slot 1
       .o_int_src1_addr(int_src1_addr),
