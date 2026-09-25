@@ -2336,7 +2336,6 @@ module if_stage #(
       // for it must die too (see o_pending_prediction_redirect_kill in
       // pc_controller).
       .i_pending_prediction_kill(pending_prediction_redirect_kill),
-      .i_prediction_holdoff(prediction_holdoff),
       .i_stall_registered(if_stage_stall_registered),
 
       // Registered prediction from branch_prediction_controller

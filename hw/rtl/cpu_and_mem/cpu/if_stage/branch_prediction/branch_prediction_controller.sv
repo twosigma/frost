@@ -645,7 +645,6 @@ module branch_prediction_controller #(
       .i_link_address(i_link_address),
       .i_prediction_allowed(ras_pop_prediction_allowed),
       .i_prediction_allowed_for_write(ras_write_prediction_allowed),
-      .i_btb_only_prediction_holdoff(o_btb_only_prediction_holdoff),
       .i_misprediction(ras_misprediction_r),
       .i_restore_tos(ras_restore_tos_r),
       .i_restore_valid_count(ras_restore_valid_count_r),

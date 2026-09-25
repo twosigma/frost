@@ -55,10 +55,6 @@ module return_address_stack #(
     // Write-side prediction gating with only registered stall state. This keeps
     // the late backend stall cone off the distributed RAM write enable.
     input logic i_prediction_allowed_for_write,
-    // BTB-only prediction holdoff: unused, kept for interface compatibility.
-    // Pops are blocked during it through i_prediction_allowed (see
-    // pop_allowed).
-    input logic i_btb_only_prediction_holdoff,
 
     // Misprediction recovery from EX stage
     input logic i_misprediction,

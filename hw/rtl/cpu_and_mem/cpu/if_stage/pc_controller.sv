@@ -242,7 +242,6 @@ module pc_controller #(
       .i_reset,
       .i_stall,
       .i_fetch_progress,
-      .i_flush,
       .i_fence_i_flush,
       // Control flow sources
       .i_trap_taken,

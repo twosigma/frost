@@ -37,7 +37,6 @@ module control_flow_tracker #(
     // Holdoffs extend through no-progress cycles exactly as through stalls:
     // the stale-suppression window must still cover the first delivery.
     input logic i_fetch_progress,
-    input logic i_flush,
     input logic i_fence_i_flush,
 
     // Control flow sources

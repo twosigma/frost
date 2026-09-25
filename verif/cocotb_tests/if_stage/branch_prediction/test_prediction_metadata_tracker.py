@@ -34,7 +34,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_stall.value = 0
     dut.i_flush.value = 0
     dut.i_pending_prediction_kill.value = 0
-    dut.i_prediction_holdoff.value = 0
     dut.i_stall_registered.value = 0
     dut.i_prediction_used_r.value = 0
     dut.i_predicted_target_r.value = 0

@@ -32,7 +32,6 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_stall.value = 0
     dut.i_fetch_progress.value = 1
-    dut.i_flush.value = 0
     dut.i_fence_i_flush.value = 0
     dut.i_trap_taken.value = 0
     dut.i_mret_taken.value = 0
@@ -374,8 +373,7 @@ async def test_halfword_next_state_exhaustive(dut: Any) -> None:
             port.value = (enabled >> bit) & 1
         for bit, port in enumerate(target_ports):
             port.value = WORD_TARGET | (((targets >> bit) & 1) << 1)
-        # Both flush inputs remain independent of halfword-target tracking.
-        dut.i_flush.value = (enabled >> 2) & 1
+        # The FENCE-class flush stays independent of halfword-target tracking.
         dut.i_fence_i_flush.value = targets & 1
         source_targets = (0, 1, 1, 2, 3, 4)  # MRET and traps share a target.
         halfword = any(

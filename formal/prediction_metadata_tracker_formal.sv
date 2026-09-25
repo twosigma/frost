@@ -32,7 +32,6 @@ module prediction_metadata_tracker_formal (
   (* anyseq *) logic i_stall;
   (* anyseq *) logic i_flush;
   (* anyseq *) logic i_pending_prediction_kill;
-  (* anyseq *) logic i_prediction_holdoff;
   (* anyseq *) logic i_prediction_used_r;
   (* anyseq *) logic i_pending_prediction_active;
   (* anyseq *) logic [XLEN-1:0] i_pending_prediction_pc;
@@ -105,7 +104,6 @@ module prediction_metadata_tracker_formal (
       .i_stall,
       .i_flush,
       .i_pending_prediction_kill,
-      .i_prediction_holdoff,
       .i_stall_registered,
       .i_prediction_used_r,
       .i_predicted_target_r,

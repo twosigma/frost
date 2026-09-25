@@ -34,7 +34,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_link_address.value = 0
     dut.i_prediction_allowed.value = 1
     dut.i_prediction_allowed_for_write.value = 1
-    dut.i_btb_only_prediction_holdoff.value = 0
     dut.i_misprediction.value = 0
     dut.i_restore_tos.value = 0
     dut.i_restore_valid_count.value = 0
@@ -149,7 +148,6 @@ async def test_return_valid_ignores_prediction_gate_but_pop_uses_it(dut: Any) ->
     _clear_inputs(dut)
     dut.i_is_return.value = 1
     dut.i_prediction_allowed.value = 0
-    dut.i_btb_only_prediction_holdoff.value = 1
     await _settle()
 
     assert dut.o_ras_valid.value

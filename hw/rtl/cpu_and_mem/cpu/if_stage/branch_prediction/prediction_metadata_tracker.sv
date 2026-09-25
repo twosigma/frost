@@ -36,8 +36,6 @@ module prediction_metadata_tracker #(
     // (o_pending_prediction_redirect_kill). The saved pending metadata below
     // describes that state and dies with it.
     input logic i_pending_prediction_kill,
-    // Unused; IF and the standalone and formal harnesses connect it.
-    input logic i_prediction_holdoff,
     input logic i_stall_registered,
 
     // Current registered prediction from branch_prediction_controller
