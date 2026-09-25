@@ -49,8 +49,6 @@ class TestState:
         branch_taken_current: Whether current instruction is a taken branch/jump
         branch_taken_previous: Whether previous instruction was a taken branch/jump
         branch_taken_two_cycles_ago: Whether instruction two cycles ago was taken
-        branch_was_jal_current: Whether current branch was caused by JAL
-        branch_was_jal_previous: Whether previous branch was caused by JAL
         csr_cycle_counter: Clock cycle counter for CSR verification
         csr_instret_counter: Instruction retired counter for CSR verification
         reservation_valid: Whether an LR/SC reservation is active
@@ -98,8 +96,6 @@ class TestState:
         self.branch_taken_current: bool = False
         self.branch_taken_previous: bool = False
         self.branch_taken_two_cycles_ago: bool = False
-        self.branch_was_jal_current: bool = False
-        self.branch_was_jal_previous: bool = False
 
         # ====================================================================
         # CSR Counter State
@@ -306,5 +302,3 @@ class TestState:
         self.branch_taken_two_cycles_ago = self.branch_taken_previous
         self.branch_taken_previous = self.branch_taken_current
         self.branch_taken_current = False
-        self.branch_was_jal_previous = self.branch_was_jal_current
-        self.branch_was_jal_current = False

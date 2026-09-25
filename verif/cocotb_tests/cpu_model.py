@@ -170,14 +170,11 @@ class CPUModel:
                 f"rs2(x{source_register_2})=0x{rs2_val:08X}, "
                 f"taken={state.branch_taken_current}"
             )
-            state.branch_was_jal_current = False
         elif operation in JUMPS:
-            state.branch_taken_current = True  # Jumps are always taken
             # The model resolves JAL and JALR in EX, like branches (3 flush cycles)
-            state.branch_was_jal_current = False
+            state.branch_taken_current = True  # Jumps are always taken
         else:
             state.branch_taken_current = False
-            state.branch_was_jal_current = False
 
         # Stores, branches, fences, and FP stores have no destination register.
         # CSR instructions do write rd: the old CSR value.

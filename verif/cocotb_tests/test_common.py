@@ -61,10 +61,6 @@ class TestConfig:
 
         force_one_address: If True, use rs1=0 and imm=0 so every access hits
             one address, which stresses memory hazards and cache behavior.
-
-        compressed_ratio: Fraction (0.0-1.0) of compressed (C extension)
-            instructions. Nothing reads it: the random generator emits only
-            32-bit instructions.
     """
 
     num_loops: int = DEFAULT_NUM_TEST_LOOPS
@@ -75,7 +71,6 @@ class TestConfig:
     use_structured_logging: bool = False
     constrain_addresses_to_memory: bool = False
     force_one_address: bool = False
-    compressed_ratio: float = 0.0
 
 
 def handle_branch_flush(
@@ -108,8 +103,7 @@ def handle_branch_flush(
     Returns:
         Tuple of (operation, rd, rs1, rs2, imm) representing a NOP
     """
-    # Shift the branch-taken and JAL flags through the model's three flush
-    # slots.
+    # Shift the branch-taken flags through the model's three flush slots.
     state.advance_branch_state()
 
     return "addi", 0, 0, 0, 0  # operation, rd, rs1, rs2, imm
