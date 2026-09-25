@@ -1872,7 +1872,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "directed_traps": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_traps",
         hdl_toplevel_module="cpu_tb",
-        description="Directed M-mode trap/interrupt tests (cpu_tb directed suite)",
+        description=(
+            "Directed M-mode trap/interrupt tests (cpu_tb directed suite): trap entry "
+            "and MRET, interrupt entry, MTIP swept across an MRET (one test expects the "
+            "error of a known bug), and precise-interrupt sweeps"
+        ),
     ),
     # The cpu_tb suites below are CLI-only (include_in_pytest=False).
     # directed_atomics and compressed pass on the OOO core (they wait on

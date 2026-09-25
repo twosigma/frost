@@ -75,7 +75,7 @@ such as `ddr_atomic_test` and `c_ext_test` cover those instructions in CI.
 
 | CPU harness target | Status |
 |--------------------|--------|
-| `directed_traps` | Passes; runs in CI |
+| `directed_traps` | Passes; runs in CI (one test expects the error of a known bug) |
 | `directed_atomics`, `compressed` | Pass; run from the command line only |
 | `cpu_random`, `directed_multicycle` | Fail: they need a scoreboard indexed by commit order |
 
