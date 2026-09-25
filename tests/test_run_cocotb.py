@@ -77,6 +77,17 @@ class CocotbRunConfig:
     extra_env: tuple[tuple[str, str], ...] = ()
 
 
+# tests/Makefile turns these environment variables into Verilator arguments:
+# WAVES for every toplevel, the rest as -G overrides of the frost toplevel.
+MAKEFILE_BUILD_VARIABLES = (
+    "WAVES",
+    "SIM_MEM_SIZE_BYTES",
+    "ENABLE_CACHED_TIER",
+    "DDR_MODEL_BYTES",
+    "DDR_MODEL_LATENCY",
+    "SIM_FAST_MAINT",
+)
+
 COREMARK_PRO_TESTS = {
     program.app_name: CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1909,12 +1920,19 @@ class CocotbRunner:
     def _verilator_build_signature(self) -> str:
         """Return the build-affecting signature tracked by the rebuild marker."""
         signature = self._verilator_extra_args_string()
-        # External FROST_VERILATOR_EXTRA_ARGS reaches the build (composed in
-        # setup_environment), so it must reach the signature too. Otherwise
-        # changing it between runs would reuse a stale Vtop.
+        # External FROST_VERILATOR_EXTRA_ARGS and the tests/Makefile variables
+        # reach the build too, so they must reach the signature. Otherwise
+        # changing one between runs would reuse a stale Vtop.
         external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
         if external_verilator_args:
             signature = f"{signature} {external_verilator_args}".strip()
+        makefile_settings = " ".join(
+            f"{name}={os.environ[name]}"
+            for name in MAKEFILE_BUILD_VARIABLES
+            if name in os.environ
+        )
+        if makefile_settings:
+            signature = f"{signature} {makefile_settings}".strip()
         return signature
 
     def _compile_app(self) -> bool:

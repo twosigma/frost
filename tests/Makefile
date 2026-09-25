@@ -32,11 +32,6 @@ WAVES           ?= 0
 # Export variables for Cocotb
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
-# Timer speedup meant to make FreeRTOS/timer-based tests run faster. It is not
-# plumbed through to Verilator (no -G override is passed), so sims run at the
-# RTL parameter default of 1 and this variable has no effect.
-SIM_TIMER_SPEEDUP ?= 1000
-
 # Compilation arguments - RTL file list (varies by toplevel)
 ifeq ($(TOPLEVEL),reorder_buffer)
 # Reorder Buffer unit test - minimal dependencies
@@ -489,8 +484,9 @@ export VERILOG_SOURCES
 # Add verification infrastructure to Python path so cocotb_tests modules are importable
 export PYTHONPATH := $(ROOT)/verif:$(ROOT)/tests:$(PYTHONPATH)
 
-# Detect number of CPU cores for parallel compilation
-NUMBER_OF_CPU_CORES := $(shell nproc)
+# Parallel compilation jobs: every core by default. Set NUMBER_OF_CPU_CORES in
+# the environment to share the host with other runs.
+NUMBER_OF_CPU_CORES ?= $(shell nproc)
 
 # Verilator threading: the simulation runs single-threaded (VERILATOR_THREADS=1)
 # because the VPI overhead of a multithreaded runtime costs more than it gains

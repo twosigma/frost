@@ -15,7 +15,6 @@
 """Pytest markers and session setup for the tests in this directory."""
 
 import os
-import sys
 from typing import Any
 
 import pytest
@@ -42,16 +41,3 @@ def pytest_configure(config: Any) -> None:
 def setup_cocotb_env() -> None:
     """Select Verilator as the cocotb simulator."""
     os.environ["SIM"] = "verilator"
-
-
-def pytest_collection_modifyitems(config: Any, items: Any) -> None:
-    """Mark cocotb tests as expected failures under Python 3.11."""
-    if sys.version_info[:2] == (3, 11):
-        reason = (
-            f"Cocotb tests not supported for Python 3.11, "
-            f"running {sys.version_info.major}.{sys.version_info.minor}"
-        )
-        xfail_cocotb = pytest.mark.xfail(reason=reason, raises=Exception)
-        for item in items:
-            if "cocotb" in item.keywords:
-                item.add_marker(xfail_cocotb)
