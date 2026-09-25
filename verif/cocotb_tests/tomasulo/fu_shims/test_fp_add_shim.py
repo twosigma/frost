@@ -717,6 +717,65 @@ async def test_fcvt_signed_integer_min_boundaries(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_fcvt_other_range_limits(dut: Any) -> None:
+    """At the unsigned and upper range limits, NX if the rounded value fits, else NV."""
+    nx, nv = FFLAG_NX, FFLAG_NV
+    all_nv, exact = (nv,) * 5, (0,) * 5
+    ones = 0xFFFF_FFFF_FFFF_FFFF  # UINT64_MAX, and UINT32_MAX sign-extended
+    int64_max = 0x7FFF_FFFF_FFFF_FFFF
+    # op -> (operand, result in every mode, flags in RNE, RTZ, RDN, RUP, RMM
+    # order). At these limits the saturation value equals the nearest in-range
+    # result, so only the flags depend on the mode.
+    cases = {
+        "FCVT_WU_D": [
+            (0xBFE0_0000_0000_0000, 0, (nx, nx, nv, nx, nv)),  # -0.5
+            (0xBFE8_0000_0000_0000, 0, (nv, nx, nv, nx, nv)),  # -0.75
+            (0xBFF0_0000_0000_0000, 0, all_nv),  # -1
+            (0x41EF_FFFF_FFF0_0000, ones, (nv, nx, nx, nv, nv)),  # 2^32 - 0.5
+            (0x41F0_0000_0000_0000, ones, all_nv),  # 2^32
+        ],
+        "FCVT_W_D": [
+            (0x41DF_FFFF_FFE0_0000, 0x7FFF_FFFF, (nv, nx, nx, nv, nv)),  # 2^31 - 0.5
+        ],
+        "FCVT_W_S": [
+            (nan_box_f32(0x4EFF_FFFF), 0x7FFF_FF80, exact),  # 2^31 - 128
+            (nan_box_f32(0x4F00_0000), 0x7FFF_FFFF, all_nv),  # 2^31
+        ],
+        "FCVT_WU_S": [
+            (nan_box_f32(0xBF40_0000), 0, (nv, nx, nv, nx, nv)),  # -0.75
+            (nan_box_f32(0x4F7F_FFFF), 0xFFFF_FFFF_FFFF_FF00, exact),  # 2^32 - 256
+            (nan_box_f32(0x4F80_0000), ones, all_nv),  # 2^32
+        ],
+        "FCVT_L_S": [
+            (nan_box_f32(0x5EFF_FFFF), 0x7FFF_FF80_0000_0000, exact),  # 2^63 - 2^39
+            (nan_box_f32(0x5F00_0000), int64_max, all_nv),  # 2^63
+        ],
+        "FCVT_LU_S": [
+            (nan_box_f32(0x5F7F_FFFF), 0xFFFF_FF00_0000_0000, exact),  # 2^64 - 2^40
+            (nan_box_f32(0x5F80_0000), ones, all_nv),  # 2^64
+        ],
+        "FCVT_L_D": [
+            (0x43DF_FFFF_FFFF_FFFF, 0x7FFF_FFFF_FFFF_FC00, exact),  # 2^63 - 1024
+            (0x43E0_0000_0000_0000, int64_max, all_nv),  # 2^63
+        ],
+        "FCVT_LU_D": [
+            (0xBFE0_0000_0000_0000, 0, (nx, nx, nv, nx, nv)),  # -0.5
+            (0x43EF_FFFF_FFFF_FFFF, 0xFFFF_FFFF_FFFF_F800, exact),  # 2^64 - 2048
+            (0x43F0_0000_0000_0000, ones, all_nv),  # 2^64
+        ],
+    }
+    await _run_vectors(
+        dut,
+        [
+            (op_name, src, rm, value, flags[rm])
+            for op_name, rows in cases.items()
+            for src, value, flags in rows
+            for rm in range(5)
+        ],
+    )
+
+
+@cocotb.test()
 async def test_fcvt_s_d_tiny_directed_rounding(dut: Any) -> None:
     """FCVT.S.D far below the smallest subnormal: RUP and RDN round away from zero."""
     magnitudes = [
