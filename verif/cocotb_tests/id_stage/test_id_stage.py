@@ -112,9 +112,7 @@ def _drive_pd_packet(
         "instruction": instruction,
         "source_reg_1_early": (instruction >> 15) & 0x1F,
         "source_reg_2_early": (instruction >> 20) & 0x1F,
-        "fp_source_reg_3_early": (instruction >> 27) & 0x1F,
         "illegal_instruction": False,
-        "btb_hit": False,
         "btb_predicted_taken": False,
         "btb_predicted_target": 0,
         "ras_predicted": False,
@@ -378,7 +376,6 @@ async def test_inject_nop_masks_non_nop_payload_identically_in_both_slots(
         "inject_nop": True,
         "source_reg_1_early": 0,
         "source_reg_2_early": 0,
-        "fp_source_reg_3_early": 0,
     }
     _drive_pd_packet(dut, bubble)
     _drive_pd_packet(dut, bubble, slot2=True)
@@ -455,7 +452,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": jal,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": jal_target,
             "ras_checkpoint_tos": 3,
@@ -469,7 +465,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
             "instruction": jalr_return,
             "ras_predicted": True,
             "ras_predicted_target": ras_target,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": btb_target,
             "ras_checkpoint_tos": 5,
@@ -858,7 +853,6 @@ async def test_ras_and_btb_target_checks_for_direct_branches(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": branch,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": target,
             "ras_predicted": False,
@@ -876,7 +870,6 @@ async def test_ras_and_btb_target_checks_for_direct_branches(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": branch,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": target + 8,
             "ras_predicted": True,

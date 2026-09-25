@@ -210,6 +210,16 @@ def _drive_return(dut: Any) -> None:
     dut.i_instruction_valid.value = 1
 
 
+def _slot2_btb_hit(dut: Any) -> bool:
+    """Slot 2's BTB hit: a staged hit for a valid candidate, or the live fallback hit."""
+    staged = (
+        dut.btb_hit_2.value
+        and dut.i_slot2_valid.value
+        and dut.slot2_candidate_valid.value
+    )
+    return bool(staged or dut.slot2_live_fallback_hit.value)
+
+
 def _assert_no_effective_slot1_prediction(dut: Any) -> None:
     """Assert that slot-1 prediction is not consumed by the controller."""
     assert not dut.o_prediction_used.value
@@ -416,7 +426,7 @@ async def test_live_prediction_holdoff_blocks_slot2_redirect(dut: Any) -> None:
     dut.i_slot2_valid.value = 1
     await _settle()
 
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert not dut.o_slot2_prediction_used.value
     assert not dut.o_slot2_prediction_used_for_pc.value
     assert dut.o_prediction_used_r.value
@@ -747,13 +757,13 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     dut.i_slot2_plus2_candidate_valid.value = 1
     await _settle()
 
-    assert not dut.o_slot2_btb_hit.value
+    assert not _slot2_btb_hit(dut)
     assert not dut.o_slot2_prediction_used.value
 
     dut.i_slot2_valid.value = 1
     await _settle()
 
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert dut.o_slot2_prediction_used.value
     assert dut.o_slot2_prediction_used_for_pc.value
 
@@ -779,7 +789,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     dut.i_slot2_is_compressed.value = 1
     await _settle()
 
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert not dut.o_slot2_prediction_used.value
 
     dut.i_slot2_is_compressed_plus2.value = 0
@@ -807,7 +817,7 @@ async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
     dut.i_slot2_valid.value = 1
     await _settle()
 
-    assert not dut.o_slot2_btb_hit.value
+    assert not _slot2_btb_hit(dut)
     assert not dut.o_slot2_predicted_taken.value
     assert not dut.o_slot2_prediction_used.value
     assert not dut.o_slot2_prediction_used_for_pc.value
@@ -821,7 +831,7 @@ async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
     dut.i_slot2_valid.value = 1
     await _settle()
 
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert dut.o_slot2_predicted_taken.value
     assert dut.o_slot2_prediction_used.value
     assert dut.o_slot2_prediction_used_for_pc.value
@@ -866,7 +876,7 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert not dut.o_slot2_staged_prediction_used_for_pc.value
     assert dut.o_slot2_live_target_used_for_pc_cofactor.value
     assert int(dut.o_predicted_target.value) == TARGET_SLOT2
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert dut.o_slot2_predicted_taken.value
     assert dut.o_slot2_prediction_used.value
     assert dut.o_slot2_prediction_used_for_pc.value
@@ -904,7 +914,7 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert dut.o_slot1_aliases_slot2_candidate.value
     assert dut.o_slot2_staged_prediction_used_for_pc.value
     assert not dut.o_slot2_live_target_used_for_pc_cofactor.value
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert dut.o_slot2_prediction_used.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
     assert int(dut.o_slot2_staged_predicted_target.value) == TARGET_SLOT2
@@ -953,7 +963,7 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     # prediction.
     assert dut.o_prediction_used_live_cofactor.value
     assert not dut.slot2_live_fallback_hit.value
-    assert not dut.o_slot2_btb_hit.value
+    assert not _slot2_btb_hit(dut)
     assert not dut.o_slot2_prediction_used.value
     assert not dut.o_slot2_prediction_used_for_pc.value
     _assert_no_effective_slot1_prediction(dut)
@@ -1030,7 +1040,7 @@ async def test_older_ras_return_preempts_younger_slot2_redirect(dut: Any) -> Non
     assert dut.slot1_prediction_owned_by_slot2.value
     assert dut.btb_hit.value
     assert dut.btb_hit_2.value
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert not dut.o_slot2_prediction_used.value
     assert not dut.o_slot2_prediction_used_for_pc.value
     assert not dut.o_slot2_predicted_taken.value
@@ -1074,7 +1084,7 @@ async def test_slot2_candidate_owner_blocks_slot1_when_full_slot2_valid_is_low(
     assert not dut.slot1_aliases_emitted_slot2.value
     assert not dut.fixed_lead_live_taken_aliases_emitted_slot2.value
     assert not dut.slot2_live_fallback_hit.value
-    assert not dut.o_slot2_btb_hit.value
+    assert not _slot2_btb_hit(dut)
     assert not dut.o_slot2_prediction_used.value
     _assert_no_effective_slot1_prediction(dut)
     assert not dut.o_dir_predicted_taken_live.value
@@ -1161,7 +1171,7 @@ async def test_collapsed_fetch_lead_transfers_live_not_taken_hit_metadata(
     assert not dut.btb_predicted_taken.value
     assert not dut.btb_hit_2.value
     assert dut.slot2_live_fallback_hit.value
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert not dut.o_slot2_predicted_taken.value
     assert not dut.o_slot2_prediction_used.value
     assert not dut.o_slot2_prediction_used_for_pc.value
@@ -1199,7 +1209,7 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     dut.i_slot2_is_compressed.value = 1
     await _settle()
 
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     assert dut.o_slot2_prediction_used.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
 
@@ -1207,7 +1217,7 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     dut.i_slot2_plus4_candidate_valid.value = 1
     await _settle()
 
-    assert dut.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(dut)
     # The +4 candidate is halfword-aligned and its entry was trained as a
     # 32-bit instruction, so the size check blocks its use; the +4 arm still
     # supplies the hit and target.

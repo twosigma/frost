@@ -79,9 +79,8 @@ def _drive_live_prediction(dut: Any, *, used: bool, target: int) -> None:
     dut.i_live_predicted_target.value = target
 
 
-def _assert_metadata(dut: Any, *, hit: bool, taken: bool, target: int) -> None:
+def _assert_metadata(dut: Any, *, taken: bool, target: int) -> None:
     """Assert the tracker metadata outputs."""
-    assert bool(dut.o_btb_hit.value) is hit
     assert bool(dut.o_btb_predicted_taken.value) is taken
     assert int(dut.o_btb_predicted_target.value) == target
 
@@ -114,12 +113,12 @@ async def test_normal_metadata_passthrough_tracks_live_prediction(dut: Any) -> N
     _drive_live_prediction(dut, used=True, target=TARGET_A)
     await _settle()
 
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
     _drive_live_prediction(dut, used=False, target=TARGET_B)
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
@@ -135,13 +134,13 @@ async def test_same_cycle_prediction_overrides_stale_registered_metadata(
     dut.i_live_predicted_target.value = TARGET_B
     await _settle()
 
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_B)
+    _assert_metadata(dut, taken=True, target=TARGET_B)
 
     dut.i_sel_nop.value = 1
     await _settle()
 
     # NOP affects validity only; the aligned live target payload is harmless.
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
@@ -161,24 +160,24 @@ async def test_unowned_target_payload_is_independent_of_alignment_and_validity(
     # PC alignment does not select the target.
     dut.i_live_target_aligned_with_output.value = 0
     await _settle()
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
     dut.i_live_target_aligned_with_output.value = 1
     await _settle()
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
     # NOP and pending-fetch holdoff clear validity without changing the target
     # source.
     dut.i_sel_nop.value = 1
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _settle()
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
     dut.i_sel_nop.value = 0
     dut.i_pending_prediction_fetch_holdoff.value = 0
     dut.i_live_prediction_for_output.value = 1
     await _settle()
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_B)
+    _assert_metadata(dut, taken=True, target=TARGET_B)
 
 
 @cocotb.test()
@@ -191,7 +190,7 @@ async def test_registered_target_wins_over_same_pc_live_payload(dut: Any) -> Non
     dut.i_live_predicted_target.value = TARGET_B
     await _settle()
 
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
     # A self-targeting prediction whose RAS entry has already popped: the live
     # lookup at the same packet PC now shows a different target while a
@@ -199,7 +198,7 @@ async def test_registered_target_wins_over_same_pc_live_payload(dut: Any) -> Non
     # output.
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _settle()
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+    _assert_metadata(dut, taken=False, target=TARGET_A)
 
 
 @cocotb.test()
@@ -211,14 +210,14 @@ async def test_nop_output_clears_validity_without_zeroing_payload(dut: Any) -> N
     dut.i_sel_nop.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+    _assert_metadata(dut, taken=False, target=TARGET_A)
 
     dut.i_sel_nop.value = 0
     dut.i_sel_nop_saved.value = 1
     dut.i_use_saved_values.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+    _assert_metadata(dut, taken=False, target=TARGET_A)
 
 
 @cocotb.test()
@@ -239,19 +238,19 @@ async def test_stall_start_saves_and_restores_prediction_metadata(dut: Any) -> N
     dut.i_use_saved_values.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
     dut.i_stall_registered.value = 0
     dut.i_use_saved_values.value = 0
     _drive_live_prediction(dut, used=False, target=TARGET_B)
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
 async def test_flush_clears_stall_saved_valid_metadata(dut: Any) -> None:
-    """Flush clears the saved hit/taken bits captured at stall start."""
+    """Flush clears the saved taken bit captured at stall start."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)
@@ -266,7 +265,6 @@ async def test_flush_clears_stall_saved_valid_metadata(dut: Any) -> None:
     dut.i_use_saved_values.value = 1
     await _settle()
 
-    assert not dut.o_btb_hit.value
     assert not dut.o_btb_predicted_taken.value
 
 
@@ -282,7 +280,7 @@ async def test_pending_prediction_replays_after_fetch_holdoff(dut: Any) -> None:
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+    _assert_metadata(dut, taken=False, target=TARGET_A)
 
     await _advance_cycle(dut)
 
@@ -291,13 +289,13 @@ async def test_pending_prediction_replays_after_fetch_holdoff(dut: Any) -> None:
     dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
     # pc_controller clears its pending state on the same handoff edge.
     dut.i_pending_prediction_active.value = 0
     await _advance_cycle(dut)
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
@@ -309,14 +307,14 @@ async def test_pending_prediction_survives_nop_until_real_instruction(dut: Any) 
     dut.i_sel_nop.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+    _assert_metadata(dut, taken=False, target=TARGET_A)
 
     await _advance_cycle(dut)
 
     dut.i_sel_nop.value = 0
     await _settle()
 
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
 
 @cocotb.test()
@@ -334,7 +332,7 @@ async def test_pending_prediction_waits_for_exact_owner_after_predecessor_replay
     dut.i_use_saved_values.value = 1
     dut.i_output_pc.value = PENDING_PREDECESSOR_PC
     await _settle()
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+    _assert_metadata(dut, taken=False, target=TARGET_A)
 
     await _advance_cycle(dut)
     assert bool(dut.prediction_pending_saved_valid.value)
@@ -345,13 +343,13 @@ async def test_pending_prediction_waits_for_exact_owner_after_predecessor_replay
     dut.i_output_pc.value = PENDING_BRANCH_PC
     dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
     # pc_controller clears its pending state on the same handoff edge.
     dut.i_pending_prediction_active.value = 0
     await _advance_cycle(dut)
     assert not bool(dut.prediction_pending_saved_valid.value)
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
@@ -366,11 +364,11 @@ async def test_exact_pending_owner_replays_through_stall_then_consumes(
     dut.i_stall.value = 1
     dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
     await _advance_cycle(dut)
     assert bool(dut.prediction_pending_saved_valid.value)
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
     dut.i_stall.value = 0
     await _advance_cycle(dut)
@@ -401,7 +399,7 @@ async def test_pending_episode_cannot_be_recaptured_by_later_prediction(
     dut.i_output_pc.value = PENDING_BRANCH_PC
     _drive_live_prediction(dut, used=False, target=TARGET_B)
     await _settle()
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
 
 @cocotb.test()
@@ -427,13 +425,13 @@ async def test_pending_owner_kill_clears_saved_metadata_and_new_episode_reuses_p
     dut.i_pending_prediction_fetch_holdoff.value = 0
     _drive_live_prediction(dut, used=False, target=TARGET_B)
     await _settle()
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
     assert not bool(dut.prediction_pending_saved_valid.value)
 
     # A new pending prediction at the same PC carries its own target.
     await _save_pending_prediction(dut, target=TARGET_C)
     await _settle()
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_C)
+    _assert_metadata(dut, taken=True, target=TARGET_C)
 
 
 @cocotb.test()
@@ -463,7 +461,7 @@ async def test_kill_on_first_pending_cycle_beats_capture(dut: Any) -> None:
     _drive_live_prediction(dut, used=False, target=TARGET_B)
     await _settle()
     assert not bool(dut.prediction_pending_saved_valid.value)
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
@@ -478,7 +476,7 @@ async def test_saved_nop_suppresses_pending_replay_without_consuming_it(
     dut.i_sel_nop_saved.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+    _assert_metadata(dut, taken=False, target=TARGET_A)
 
     await _advance_cycle(dut)
 
@@ -486,7 +484,7 @@ async def test_saved_nop_suppresses_pending_replay_without_consuming_it(
     dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
 
 @cocotb.test()
@@ -510,7 +508,7 @@ async def test_stall_preserves_pending_prediction_capture(dut: Any) -> None:
     dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
 
 @cocotb.test()
@@ -526,7 +524,7 @@ async def test_raw_wcs_predecessor_captures_without_prior_fetch_holdoff(
     dut.i_output_pc.value = PENDING_PREDECESSOR_PC
     dut.i_pending_prediction_fetch_holdoff.value = 0
     await _settle()
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+    _assert_metadata(dut, taken=False, target=TARGET_A)
 
     await _advance_cycle(dut)
     assert bool(dut.prediction_pending_saved_valid.value)
@@ -536,7 +534,7 @@ async def test_raw_wcs_predecessor_captures_without_prior_fetch_holdoff(
     dut.i_output_pc.value = PENDING_BRANCH_PC
     dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
 
 @cocotb.test()
@@ -552,7 +550,7 @@ async def test_first_pending_owner_consumes_registered_metadata_without_replay(
     dut.i_output_pc.value = PENDING_BRANCH_PC
     dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
-    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+    _assert_metadata(dut, taken=True, target=TARGET_A)
 
     await _advance_cycle(dut)
     assert not bool(dut.prediction_pending_saved_valid.value)
@@ -560,7 +558,7 @@ async def test_first_pending_owner_consumes_registered_metadata_without_replay(
     dut.i_pending_prediction_active.value = 0
     _drive_live_prediction(dut, used=False, target=TARGET_B)
     await _settle()
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    _assert_metadata(dut, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
@@ -577,4 +575,4 @@ async def test_flush_clears_pending_prediction_replay(dut: Any) -> None:
     _drive_live_prediction(dut, used=False, target=TARGET_C)
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=TARGET_C)
+    _assert_metadata(dut, taken=False, target=TARGET_C)

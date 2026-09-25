@@ -81,7 +81,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `pc_pending_capture` | The pending-prediction valid bit's next state equals the reference clear/set/hold priority |
 | `pc_register_mux` | The architectural-PC mux equals the reference nested priority, in the same configurations as `fetch_pc_mux` |
 | `prediction_handoff` | `prediction_release` with `PENDING_HANDOFF_EXCLUDES_SLOT2=1`, the setting the fetch stage uses |
-| `prediction_metadata_output` | Each packet's BTB hit and taken bits equal the reference priority, and while a prediction is saved or pending, a packet it does not belong to never reports hit or taken. `prediction_metadata_tracker` checks the sequential behavior |
+| `prediction_metadata_output` | Each packet's BTB-taken bit equals the reference priority, and while a prediction is saved or pending, a packet it does not belong to never reports taken. `prediction_metadata_tracker` checks the sequential behavior |
 | `prediction_metadata_tracker` | A pending prediction's saved PC and target stay unchanged until their packet consumes them or a reset or redirect kills them, plus the tracker's own validity and payload checks. See below |
 | `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoff outputs, predecessor-PC tags, `pc_reg[1]` replica, and lower-parcel lookup geometry match their reference relations. See below |
 | `ras_checkpoint` | The return-address stack's next pointer and count equal the reference equations |

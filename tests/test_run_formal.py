@@ -173,7 +173,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "prediction_metadata_output.sby",
-        "Prediction hit/taken bits equal the reference, and a saved or pending prediction never marks another packet",
+        "Prediction taken bit equals the reference, and a saved or pending prediction never marks another packet",
         tasks=("bmc",),
     ),
     FormalTarget(

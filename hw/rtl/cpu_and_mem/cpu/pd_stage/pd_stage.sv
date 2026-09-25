@@ -123,18 +123,14 @@ module pd_stage #(
   // Early Source Register Extraction
   // ===========================================================================
   // Early source registers, taken from final_instruction: the predecoded
-  // fields above, or x0 for a NOP. No logic reads slot 1's copies or either
-  // slot's fp_source_reg_3_early; slot 2's rs1 and rs2 copies hold its
-  // instruction bits (see below).
+  // fields above, or x0 for a NOP. No logic reads slot 1's copies; slot 2's
+  // rs1 and rs2 copies hold its instruction bits (see below).
 
   logic [4:0] source_reg_1;
   logic [4:0] source_reg_2;
-  logic [4:0] fp_source_reg_3;  // F extension: rs3 for FMA instructions
 
   assign source_reg_1 = final_instruction[19:15];
   assign source_reg_2 = final_instruction[24:20];
-  // F extension: rs3 for FMA is in bits [31:27] (R4-type format)
-  assign fp_source_reg_3 = final_instruction[31:27];
 
   // ===========================================================================
   // Slot-2: Instruction Selection and Source Extraction
@@ -167,11 +163,10 @@ module pd_stage #(
 
   logic [4:0] source_reg_1_2;
   logic [4:0] source_reg_2_2;
-  logic [4:0] fp_source_reg_3_2;
 
   // Source fields before NOP injection. The synchronous clear below
   // (slot2_early_source_clear) applies slot invalidation through the FDRE
-  // reset pin, keeping the bubble and flush mux off these 15 D inputs. rs1[2:1]
+  // reset pin, keeping the bubble and flush mux off these 10 D inputs. rs1[2:1]
   // come from the source-hot sideband bits, the rest of rs1 from
   // rs1_rest_predecoded, and all of rs2 from IF's predecoded bits [24:20].
   // These registers supply rs1 and rs2 of the reassembled instruction.
@@ -181,7 +176,6 @@ module pd_stage #(
     i_from_if_to_pd_2.rs1_rest_predecoded[0]
   };
   assign source_reg_2_2 = i_from_if_to_pd_2.bits24_20_predecoded;
-  assign fp_source_reg_3_2 = instruction_non_nop_2[31:27];
   // Keep the bubble select off the remaining 22 instruction D inputs, as slot 1
   // does for its full instruction register. The registered
   // o_from_pd_to_id_2.inject_nop bit tells ID when to substitute the NOP. The
@@ -633,7 +627,6 @@ module pd_stage #(
       o_from_pd_to_id.fetch_fault_page    <= 1'b0;
       o_from_pd_to_id.fetch_fault_hi      <= 1'b0;
       // Branch prediction metadata
-      o_from_pd_to_id.btb_hit             <= 1'b0;
       o_from_pd_to_id.btb_predicted_taken <= 1'b0;
       // RAS prediction metadata
       o_from_pd_to_id.ras_predicted       <= 1'b0;
@@ -672,8 +665,6 @@ module pd_stage #(
       // registers (the same signals that drive the IF redirect). Both are
       // shallow logic over registers, which keeps the PC + offset carry chain
       // off these D inputs.
-      o_from_pd_to_id.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                  i_from_if_to_pd.btb_hit;
       o_from_pd_to_id.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                               i_from_if_to_pd.btb_predicted_taken;
       // RAS prediction metadata - clear on flush/pd_redirect
@@ -688,8 +679,6 @@ module pd_stage #(
                                              5'd0 : source_reg_1;
       o_from_pd_to_id.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                              5'd0 : source_reg_2;
-      o_from_pd_to_id.fp_source_reg_3_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                                5'd0 : fp_source_reg_3;
       o_from_pd_to_id.btb_predicted_target <= i_from_if_to_pd.btb_predicted_target;
       o_from_pd_to_id.ras_predicted_target <= i_from_if_to_pd.ras_predicted_target;
       o_from_pd_to_id.ras_checkpoint_tos <= i_from_if_to_pd.ras_checkpoint_tos;
@@ -717,7 +706,6 @@ module pd_stage #(
       o_from_pd_to_id_2.fetch_fault         <= 1'b0;
       o_from_pd_to_id_2.fetch_fault_page    <= 1'b0;
       o_from_pd_to_id_2.fetch_fault_hi      <= 1'b0;
-      o_from_pd_to_id_2.btb_hit             <= 1'b0;
       o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
       o_from_pd_to_id_2.ras_predicted       <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
@@ -739,8 +727,6 @@ module pd_stage #(
                                          i_from_if_to_pd_2.fetch_fault);
       o_from_pd_to_id_2.fetch_fault_page <= i_from_if_to_pd_2.fetch_fault_page;
       o_from_pd_to_id_2.fetch_fault_hi <= i_from_if_to_pd_2.fetch_fault_hi;
-      o_from_pd_to_id_2.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                    i_from_if_to_pd_2.btb_hit;
       o_from_pd_to_id_2.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                                 i_from_if_to_pd_2.btb_predicted_taken;
       o_from_pd_to_id_2.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
@@ -771,17 +757,14 @@ module pd_stage #(
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
-      o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
-      o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
-      o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;
+      o_from_pd_to_id_2.source_reg_1_early <= 5'd0;
+      o_from_pd_to_id_2.source_reg_2_early <= 5'd0;
     end else if (slot2_early_source_clear) begin
-      o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
-      o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
-      o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;
+      o_from_pd_to_id_2.source_reg_1_early <= 5'd0;
+      o_from_pd_to_id_2.source_reg_2_early <= 5'd0;
     end else if (!i_pipeline_ctrl.stall) begin
-      o_from_pd_to_id_2.source_reg_1_early    <= source_reg_1_2;
-      o_from_pd_to_id_2.source_reg_2_early    <= source_reg_2_2;
-      o_from_pd_to_id_2.fp_source_reg_3_early <= fp_source_reg_3_2;
+      o_from_pd_to_id_2.source_reg_1_early <= source_reg_1_2;
+      o_from_pd_to_id_2.source_reg_2_early <= source_reg_2_2;
     end
   end
 

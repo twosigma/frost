@@ -1716,7 +1716,6 @@ package riscv_pkg;
     // {illegal, expanded[31:25], expanded[14:0]} for the selected parcel.
     logic [22:0] rvc_extra_predecoded;
     // Branch prediction metadata (from BTB)
-    logic btb_hit;  // BTB lookup hit
     logic btb_predicted_taken;  // BTB predicts taken
     // Target is meaningful only with btb_predicted_taken. Invalid/NOP packets
     // carry whatever target was selected rather than zero, so late front-end
@@ -1729,8 +1728,8 @@ package riscv_pkg;
     // before this packet's own operation, for recovery.
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
-    // Bimodal branch-direction prediction, not gated by btb_hit, carried to
-    // PD.  PD uses it to redirect a branch without a taken BTB or RAS
+    // Bimodal branch-direction prediction, not gated by a BTB hit, carried
+    // to PD.  PD uses it to redirect a branch without a taken BTB or RAS
     // prediction when the direction predicts taken, whatever the offset sign.
     // Consumed only in PD (slot-1); not carried past PD.
     logic bp_dir_taken;
@@ -1776,14 +1775,11 @@ package riscv_pkg;
     // registered instruction from rs1 and rs2 here.
     logic [4:0] source_reg_1_early;
     logic [4:0] source_reg_2_early;
-    // F extension: Early FP source reg 3 for FMA instructions (rs3 = funct7[6:2])
-    logic [4:0] fp_source_reg_3_early;
     logic illegal_instruction;  // Illegal compressed instruction (predecoded illegal-RVC flag)
     logic fetch_fault;  // Fetch fault (overrides decode with FETCH_[PAGE_]FAULT)
     logic fetch_fault_page;  // ...page fault (cause 12) rather than access fault (1)
     logic fetch_fault_hi;  // ...on the second halfword only (xtval = PC + 2)
     // Branch prediction metadata (passed through from IF)
-    logic btb_hit;
     logic btb_predicted_taken;
     logic [XLEN-1:0] btb_predicted_target;  // Valid only with btb_predicted_taken
     // RAS prediction metadata (passed through from IF)

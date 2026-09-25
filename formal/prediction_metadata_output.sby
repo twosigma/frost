@@ -14,7 +14,7 @@ read -formal -D SYNTHESIS -D PRED_METADATA_OUTPUT_LOCAL_PROOF -sv prediction_met
 prep -top prediction_metadata_tracker
 select -assert-none t:$assume a:init
 select -assert-none t:$check r:FLAVOR=assume %i
-select -assert-count 4 t:$check
+select -assert-count 3 t:$check
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

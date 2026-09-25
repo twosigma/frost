@@ -305,6 +305,16 @@ def _read_if_packet(dut: Any, *, slot2: bool = False) -> dict[str, Any]:
     return _unpack_struct(IF_TO_PD_FIELDS, int(signal.value))
 
 
+def _slot2_btb_hit(bpc: Any) -> bool:
+    """Slot 2's BTB hit: a staged hit for a valid candidate, or the live fallback hit."""
+    staged = (
+        bpc.btb_hit_2.value
+        and bpc.i_slot2_valid.value
+        and bpc.slot2_candidate_valid.value
+    )
+    return bool(staged or bpc.slot2_live_fallback_hit.value)
+
+
 def _assert_packet(
     packet: Mapping[str, Any],
     *,
@@ -979,7 +989,7 @@ async def test_delayed_ras_return_beats_current_slot2_redirect(dut: Any) -> None
     assert bpc.slot1_aliases_emitted_slot2.value
     assert bpc.btb_hit.value
     assert bpc.btb_hit_2.value
-    assert bpc.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(bpc)
     assert ras.do_pop.value
     assert bpc.o_ras_predicted.value
     assert bpc.o_prediction_used_for_pc.value
@@ -1116,7 +1126,6 @@ async def test_self_targeting_ras_pop_keeps_registered_target_provenance(
 
     packet = _read_if_packet(dut)
     assert packet["sel_nop"]
-    assert not packet["btb_hit"]
     assert not packet["btb_predicted_taken"]
     assert packet["btb_predicted_target"] == target_a
 
@@ -1162,7 +1171,6 @@ async def test_disabled_prediction_32bit_fetch_packet_and_slot2_nop(
         effective=ADD_INSTR_A,
         compressed=False,
     )
-    assert not packet["btb_hit"]
     assert not packet["btb_predicted_taken"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
 
@@ -1281,7 +1289,7 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         compressed=True,
     )
     assert packet2["source_hot_predecoded"] == 0b010
-    assert not packet2["btb_hit"]
+    assert not packet2["btb_predicted_taken"]
     assert not packet2["ras_predicted"]
 
 
@@ -1881,7 +1889,7 @@ async def test_native_slot1_uses_plus4_candidate_for_slot2_btb_redirect(
     bpc = dut.branch_prediction_controller_inst
     assert not dut.slot2_plus2_candidate_valid.value
     assert dut.slot2_plus4_candidate_valid.value
-    assert bpc.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(bpc)
     assert bpc.o_slot2_prediction_used.value
     assert int(bpc.o_slot2_predicted_target.value) == slot2_target
     assert bpc.slot1_aliases_emitted_slot2.value
@@ -1891,7 +1899,6 @@ async def test_native_slot1_uses_plus4_candidate_for_slot2_btb_redirect(
 
     packet2 = _read_if_packet(dut, slot2=True)
     assert packet2["program_counter"] == slot2_pc
-    assert packet2["btb_hit"]
     assert packet2["btb_predicted_taken"]
     assert packet2["btb_predicted_target"] == slot2_target
 
@@ -2012,14 +2019,13 @@ async def test_slot2_rt2_successor_lookup_redirects(dut: Any) -> None:
     bpc = dut.branch_prediction_controller_inst
     assert dut.slot2_plus2_candidate_valid.value
     assert not dut.slot2_plus4_candidate_valid.value
-    assert bpc.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(bpc)
     assert bpc.o_slot2_prediction_used.value
     assert bpc.o_slot2_prediction_used_for_pc.value
     assert int(bpc.o_slot2_predicted_target.value) == slot2_target
 
     packet2 = _read_if_packet(dut, slot2=True)
     assert packet2["program_counter"] == slot2_pc
-    assert packet2["btb_hit"]
     assert packet2["btb_predicted_taken"]
     assert packet2["btb_predicted_target"] == slot2_target
 
@@ -2048,14 +2054,13 @@ async def test_slot2_rt2_successor_lookup_stall_replay_is_safe(dut: Any) -> None
     bpc = dut.branch_prediction_controller_inst
     assert dut.slot2_plus2_candidate_valid.value
     assert not dut.slot2_plus4_candidate_valid.value
-    assert bpc.o_slot2_btb_hit.value
+    assert _slot2_btb_hit(bpc)
     assert bpc.o_slot2_prediction_used_for_pc.value
     assert not bpc.o_slot2_prediction_used.value
     assert int(bpc.o_slot2_predicted_target.value) == slot2_target
 
     packet2 = _read_if_packet(dut, slot2=True)
     assert packet2["program_counter"] == slot2_pc
-    assert packet2["btb_hit"]
     assert not packet2["btb_predicted_taken"]
     assert packet2["btb_predicted_target"] == slot2_target
 
@@ -2071,7 +2076,6 @@ async def test_slot2_rt2_successor_lookup_stall_replay_is_safe(dut: Any) -> None
 
     replay2 = _read_if_packet(dut, slot2=True)
     assert replay2["program_counter"] == slot2_pc
-    assert replay2["btb_hit"]
     assert not replay2["btb_predicted_taken"]
     assert replay2["btb_predicted_target"] == slot2_target
     assert not bpc.o_slot2_prediction_used_for_pc.value
@@ -2211,7 +2215,6 @@ async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
     branch_packet = _read_if_packet(dut)
     assert not branch_packet["sel_nop"]
     assert branch_packet["program_counter"] == branch_pc
-    assert branch_packet["btb_hit"]
     assert branch_packet["btb_predicted_taken"]
     assert branch_packet["btb_predicted_target"] == target
     assert branch_packet["bp_dir_idx"] == (
@@ -2328,7 +2331,6 @@ async def test_no_lead_btb_miss_uses_and_replays_live_direction_metadata(
 
     packet = _read_if_packet(dut)
     assert not packet["sel_nop"]
-    assert not packet["btb_hit"]
     assert not packet["btb_predicted_taken"]
     assert packet["bp_dir_taken"]
     assert packet["bp_dir_idx"] == branch_idx
@@ -2664,7 +2666,7 @@ async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> 
             if packet["sel_nop"] or packet["program_counter"] != jal_pc:
                 continue
             jal_packets_seen += 1
-            assert not packet["btb_predicted_taken"] and not packet["btb_hit"], (
+            assert not packet["btb_predicted_taken"], (
                 "stale pending-saved BTB metadata replayed onto the re-fetched "
                 f"instruction at {jal_pc:#x} after a PD redirect killed its "
                 "pending fetch state"
@@ -2726,7 +2728,6 @@ async def test_pending_exact_owner_handoffs_atomically_with_metadata(
     early_packet = _read_if_packet(dut)
     assert early_packet["program_counter"] == branch_pc
     assert not early_packet["sel_nop"]
-    assert early_packet["btb_hit"]
     assert early_packet["btb_predicted_taken"]
     assert early_packet["btb_predicted_target"] == target
     assert dut.o_fetch_live_claim.value
@@ -2737,7 +2738,6 @@ async def test_pending_exact_owner_handoffs_atomically_with_metadata(
         packet = _read_if_packet(dut)
         if not packet["sel_nop"] and packet["program_counter"] == branch_pc:
             real_owner_packets.append(packet)
-            assert packet["btb_hit"]
             assert packet["btb_predicted_taken"]
             assert packet["btb_predicted_target"] == target
         await _advance_cycle(dut)
@@ -2861,9 +2861,8 @@ async def test_pending_owner_is_not_emitted_as_predecessor_slot2(
             assert not bpc.o_prediction_used_for_pc.value
             assert not bpc.o_prediction_requires_pc_reg_handoff.value
             assert not bpc.o_ras_predicted.value
-            assert not bpc.o_slot2_btb_hit.value
+            assert not _slot2_btb_hit(bpc)
             assert not bpc.o_slot2_prediction_used.value
-            assert not slot2_packet["btb_hit"]
             assert not slot2_packet["btb_predicted_taken"]
             assert not dut.slot2_valid_for_pc_live_effective.value
             assert int(dut.pc_advance_sel_run_live.value) == int(
@@ -2894,7 +2893,6 @@ async def test_pending_owner_is_not_emitted_as_predecessor_slot2(
     )
     owner_slot, owner_packet = owner_packets[0]
     assert owner_slot == 1
-    assert owner_packet["btb_hit"]
     assert owner_packet["btb_predicted_taken"]
     assert owner_packet["btb_predicted_target"] == target
     assert not dut.pc_controller_inst.pending_prediction_valid.value
@@ -3049,17 +3047,16 @@ async def test_pending_slot1_owner_kills_stale_noncontrol_sibling(
     assert not bpc.o_prediction_used_for_pc.value
     assert not bpc.o_prediction_requires_pc_reg_handoff.value
     assert not bpc.o_ras_predicted.value
-    assert not bpc.o_slot2_btb_hit.value
+    assert not _slot2_btb_hit(bpc)
     assert not bpc.o_slot2_prediction_used.value
     assert owner["program_counter"] == branch_pc
     assert not owner["sel_nop"]
-    assert owner["btb_hit"] and owner["btb_predicted_taken"]
+    assert owner["btb_predicted_taken"]
     assert owner["btb_predicted_target"] == target
     assert owner["raw_parcel"] == COMPRESSED_NOP
     assert sibling["program_counter"] == branch_pc + 2
     assert sibling["raw_parcel"] == sibling_canary
     assert sibling["sel_nop"]
-    assert not sibling["btb_hit"]
     assert not sibling["btb_predicted_taken"]
     assert not dut.slot2_valid_for_pc_live_effective.value
     assert int(dut.pc_advance_sel_run_live.value) == int(
@@ -3116,7 +3113,6 @@ async def test_first_exact_owner_wcs_captures_then_replays_once(
     packet = _read_if_packet(dut)
     assert packet["program_counter"] == branch_pc
     assert packet["sel_nop"]
-    assert not packet["btb_hit"]
     assert not packet["btb_predicted_taken"]
     assert not dut.o_fetch_live_claim.value
     assert metadata.pending_prediction_capture.value
@@ -3140,7 +3136,6 @@ async def test_first_exact_owner_wcs_captures_then_replays_once(
     owner_packet = _read_if_packet(dut)
     assert owner_packet["program_counter"] == branch_pc
     assert not owner_packet["sel_nop"]
-    assert owner_packet["btb_hit"]
     assert owner_packet["btb_predicted_taken"]
     assert owner_packet["btb_predicted_target"] == target
 
@@ -3349,7 +3344,6 @@ async def test_pending_prediction_owner_keeps_predict_time_direction_index(
         packet = _read_if_packet(dut)
         if not packet["sel_nop"] and packet["program_counter"] == predecessor_pc:
             predecessor_seen = True
-            assert not packet["btb_hit"]
             assert not packet["btb_predicted_taken"]
             assert packet["bp_dir_taken"]
             assert packet["bp_dir_idx"] == predecessor_idx
@@ -3381,7 +3375,7 @@ async def test_pending_prediction_owner_keeps_predict_time_direction_index(
     dut.branch_prediction_controller_inst.pred_idx_snapshot_r.value = stale_idx
     await _settle()
     packet = _read_if_packet(dut)
-    assert packet["btb_hit"] and packet["btb_predicted_taken"]
+    assert packet["btb_predicted_taken"]
     assert packet["btb_predicted_target"] == target
     assert int(dut.branch_prediction_controller_inst.o_dir_idx.value) == stale_idx
     assert packet["bp_dir_idx"] == branch_idx
@@ -3401,7 +3395,7 @@ async def test_pending_prediction_owner_keeps_predict_time_direction_index(
     packet = _read_if_packet(dut)
     assert not packet["sel_nop"]
     assert packet["program_counter"] == branch_pc
-    assert packet["btb_hit"] and packet["btb_predicted_taken"]
+    assert packet["btb_predicted_taken"]
     assert packet["btb_predicted_target"] == target
     assert packet["bp_dir_idx"] == branch_idx
 

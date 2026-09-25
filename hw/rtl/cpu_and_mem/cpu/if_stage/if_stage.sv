@@ -214,7 +214,6 @@ module if_stage #(
 
   // Slot-2 prediction, plus the staged and live parts of its redirect that
   // pc_controller combines itself for timing.
-  logic slot2_btb_hit;
   logic slot2_predicted_taken;
   logic [XLEN-1:0] slot2_predicted_target;
   logic slot2_prediction_used;
@@ -822,7 +821,6 @@ module if_stage #(
       .o_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc),
       .o_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
       .o_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
-      .o_slot2_btb_hit(slot2_btb_hit),
       .o_slot2_predicted_taken(slot2_predicted_taken),
       .o_slot2_predicted_target(slot2_predicted_target),
       .o_slot2_staged_predicted_target(slot2_staged_predicted_target),
@@ -2331,7 +2329,6 @@ module if_stage #(
       .i_use_saved_values(replay_saved_if_outputs),
 
       // Outputs to PD stage
-      .o_btb_hit(o_from_if_to_pd.btb_hit),
       .o_btb_predicted_taken(o_from_if_to_pd.btb_predicted_taken),
       .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target)
   );
@@ -2676,24 +2673,10 @@ module if_stage #(
   //
   // predicted_taken is stamped only when the slot-2 prediction redirected
   // fetch (slot2_prediction_used).  A BTB hit whose counter says not-taken
-  // (predicted_taken_2 == 0) is stamped btb_hit=1, predicted_taken=0, which
-  // matches fetch staying on the sequential path.  Branch resolution then
-  // flags a direction or target mismatch.
-  logic            slot2_btb_hit_sc;
+  // leaves it 0, which matches fetch staying on the sequential path.  Branch
+  // resolution then flags a direction or target mismatch.
   logic            slot2_predicted_taken_sc;
   logic [XLEN-1:0] slot2_predicted_target_sc;
-
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_slot2_btb_hit_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(slot2_btb_hit),
-      .o_data(slot2_btb_hit_sc)
-  );
 
   stall_capture_reg #(
       .WIDTH(1)
@@ -2719,12 +2702,9 @@ module if_stage #(
       .o_data(slot2_predicted_target_sc)
   );
 
-  // Clear the slot-2 BTB hit and taken flags when slot 2 is a NOP.
+  // Clear the slot-2 taken flag when slot 2 is a NOP.
   logic slot2_sel_nop_effective;
   assign slot2_sel_nop_effective = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
-  assign o_from_if_to_pd_2.btb_hit = slot2_sel_nop_effective ? 1'b0 :
-                                     (replay_saved_if_outputs ? slot2_btb_hit_sc :
-                                      slot2_btb_hit);
   assign o_from_if_to_pd_2.btb_predicted_taken = slot2_sel_nop_effective ? 1'b0 :
                                      (replay_saved_if_outputs ? slot2_predicted_taken_sc :
                                       slot2_predicted_taken);

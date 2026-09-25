@@ -49,7 +49,6 @@ module prediction_metadata_tracker_formal (
   logic f_past_valid;
   logic i_stall_registered;
   logic [XLEN-1:0] i_predicted_target_r;
-  logic o_btb_hit;
   logic o_btb_predicted_taken;
   logic [XLEN-1:0] o_btb_predicted_target;
   logic formal_pending_valid;
@@ -123,7 +122,6 @@ module prediction_metadata_tracker_formal (
       .o_formal_pending_consume(formal_pending_consume),
       .o_formal_pending_pc(formal_pending_pc),
       .o_formal_pending_target(formal_pending_target),
-      .o_btb_hit,
       .o_btb_predicted_taken,
       .o_btb_predicted_target
   );
@@ -157,14 +155,13 @@ module prediction_metadata_tracker_formal (
     // while its younger branch packet is captured.
     cover (f_past_valid && i_pending_prediction_active &&
            !i_pending_prediction_fetch_holdoff &&
-           (i_output_pc != i_pending_prediction_pc) && !o_btb_hit &&
-           !o_btb_predicted_taken);
+           (i_output_pc != i_pending_prediction_pc) && !o_btb_predicted_taken);
     // A real non-owner packet may pass while pending metadata remains saved;
     // it must carry no prediction until its exact owner PC arrives.
     cover (f_past_valid && formal_pending_valid &&
            !formal_pending_owner_match &&
            !i_sel_nop && !i_pending_prediction_fetch_holdoff &&
-           !o_btb_hit && !o_btb_predicted_taken);
+           !o_btb_predicted_taken);
     // Model a self-targeting/RAS-pop collision: raw lookup alignment remains
     // true while registered metadata already owns the packet and its target.
     cover (f_past_valid && i_prediction_used_r &&

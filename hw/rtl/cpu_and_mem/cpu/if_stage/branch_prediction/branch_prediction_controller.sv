@@ -183,7 +183,6 @@ module branch_prediction_controller #(
     output logic                       o_slot2_staged_prediction_used_for_pc,
     output logic                       o_slot1_aliases_slot2_candidate,
     output logic                       o_slot2_live_target_used_for_pc_cofactor,
-    output logic                       o_slot2_btb_hit,
     output logic                       o_slot2_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_staged_predicted_target,
@@ -1014,8 +1013,7 @@ module branch_prediction_controller #(
 
   // The staged lookup takes precedence whenever it hits.  On a staged miss, an
   // exact live hit for the same emitted instruction supplies both metadata
-  // and (when taken) the redirect.  A live not-taken hit is still a real BTB
-  // hit and is reported as one (o_slot2_btb_hit).
+  // and (when taken) the redirect.
   assign slot2_live_fallback_select =
       prediction_common && slot2_live_fallback_hit &&
       slot2_live_fallback_size_safe && dir_predicted_taken;
@@ -1090,9 +1088,6 @@ module branch_prediction_controller #(
   assign o_slot2_staged_predicted_target = btb_predicted_target_2;
   assign o_slot2_live_predicted_target = btb_predicted_target;
   assign o_slot2_prediction_used = o_slot2_prediction_used_for_pc && !i_stall;
-  assign o_slot2_btb_hit =
-      (btb_hit_2 && i_slot2_valid && slot2_candidate_valid) ||
-      slot2_live_fallback_hit;
   assign o_slot2_predicted_taken = o_slot2_prediction_used;
   // Finish the live/staged target choice before IF's late i_slot2_valid
   // arrives.  An invalid slot 2 shows the staged target, as in the reference;
@@ -1226,10 +1221,6 @@ module branch_prediction_controller #(
         assert (!slot1_aliases_emitted_slot2 ||
                 (!sel_btb_prediction && !o_prediction_requires_pc_reg_handoff &&
                  !o_dir_predicted_taken_live));
-      end
-      if (!$isunknown({slot2_live_fallback_hit, o_slot2_btb_hit})) begin
-        p_live_fallback_hit_is_carried_by_slot2 :
-        assert (!slot2_live_fallback_hit || o_slot2_btb_hit);
       end
       if (!$isunknown(
               {
