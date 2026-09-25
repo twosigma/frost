@@ -732,6 +732,36 @@ async def test_fetch_fault_with_nop_bytes_is_dispatched_in_either_slot(
 
 
 @cocotb.test()
+async def test_fetch_fault_reads_no_source_register(dut: Any) -> None:
+    """A fetch fault's garbage rs1 field creates no INT_RS source dependency."""
+    await _setup_test(dut)
+    add = _pack_r(funct7=0, rs2=12, rs1=11, funct3=0, rd=10, opcode=OPC_OP)
+
+    for page_fault in (False, True):
+        for slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {
+                    "program_counter": BASE_PC,
+                    "instruction": add,
+                    "fetch_fault": True,
+                    "fetch_fault_page": page_fault,
+                },
+                slot2=slot2,
+            )
+            await _advance_cycle(dut)
+
+            packet = _read_id_packet(dut, slot2=slot2)
+            assert packet["is_fetch_fault"] is True
+            assert packet["rs_type"] == RS_INT
+            assert packet["has_int_dest"] is False
+            assert packet["uses_int_rs1"] is False
+            assert packet["uses_int_rs2"] is False
+            assert packet["uses_fp_rs1"] is False
+            _drive_pd_packet(dut, {}, slot2=slot2)
+
+
+@cocotb.test()
 async def test_flush_clears_control_and_stall_holds_outputs(dut: Any) -> None:
     """Flush clears decoded control fields, and stall holds registered outputs."""
     await _setup_test(dut)

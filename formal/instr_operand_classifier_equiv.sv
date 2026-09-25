@@ -361,7 +361,8 @@ module instr_operand_classifier_equiv (
       op_for_pre_decode != riscv_pkg::CSRRWI &&
       op_for_pre_decode != riscv_pkg::CSRRSI &&
       op_for_pre_decode != riscv_pkg::CSRRCI &&
-      op_for_pre_decode != riscv_pkg::ILLEGAL);
+      op_for_pre_decode != riscv_pkg::ILLEGAL &&
+      op_for_pre_decode != riscv_pkg::FETCH_FAULT);
 
     // INT rs2: branches, R-type ALU, integer stores, AMO/SC.
     case (op_for_pre_decode)
