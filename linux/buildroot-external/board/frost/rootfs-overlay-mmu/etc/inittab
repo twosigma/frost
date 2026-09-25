@@ -21,11 +21,11 @@ null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 # now run any rc scripts
 ::sysinit:/etc/init.d/rcS
 
-# FROST userspace boot stress (MMU edition): a timer and signal storm,
-# fork/exec with copy-on-write checks, anonymous and shared mappings, futex
-# ping-pong, two-process atomic-add contention, and cycle/instret deltas
-# through perf_event_open. It prints the FROST_USERSPACE_STRESS_PASS token that
-# the QEMU CI job and the hardware boot soak check. sysinit entries run in order
+# FROST userspace boot stress: a timer and signal storm, fork/exec with
+# copy-on-write checks, anonymous and shared mappings, futex ping-pong,
+# two-process atomic-add contention, and cycle/instret deltas through
+# perf_event_open. It prints the FROST_USERSPACE_STRESS_PASS token that the
+# QEMU CI job and the hardware boot soak check. sysinit entries run in order
 # before the getty, so the token always precedes the login prompt.
 # The signal-return probe (one line per variant, see
 # package/frost-stress/src/frost_sigprobe.c) runs first, so a stress failure

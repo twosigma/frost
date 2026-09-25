@@ -52,7 +52,7 @@ BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FROST_PATH)/board/frost/rootfs-overlay-mmu"
 # --- Boot payload packaging: OpenSBI build + frost_boot_image.py ---
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FROST_PATH)/board/frost/post-image-mmu.sh"
 
-# --- Userspace: the boot stress payload (MMU edition), which also reads the
+# --- Userspace: the boot stress payload, which also reads the
 #     counters the hardware regression checks (../../README.md, "Counters and
 #     mcounteren"), so no perf is needed on the target ---
 BR2_PACKAGE_FROST_STRESS=y

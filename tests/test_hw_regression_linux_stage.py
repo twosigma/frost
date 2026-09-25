@@ -146,7 +146,7 @@ SYSTEMD_DEGRADED = (
 STRESS_ECHO = hw.LINUX_STRESS_COMMAND + "\r\r\n"
 STRESS_OUT = (
     "FROST_USERSPACE_STRESS: starting\r\r\n"
-    "FROST_USERSPACE_STRESS: forks=2 pages=256 ticks=60 vforks=12 futex=64 "
+    "FROST_USERSPACE_STRESS: forks=2 pages=256 ticks=60 execs=12 futex=64 "
     "atomics=40000 cycles=4764560 instret=3473800 time=7499 ipc_x1000=729 "
     "verdict=PASS\r\r\n"
     f"{hw.LINUX_TOKEN}\r\r\n{PROMPT}"
@@ -1254,10 +1254,9 @@ def test_the_programs_are_built_from_this_checkouts_sources() -> None:
     Debian root cannot run, and frost_nettest has to be static to survive the
     link it takes down.
     """
-    for name, _ in hw.ROOT_PROGRAMS:
+    for name in hw.ROOT_PROGRAMS:
         assert (REPO_ROOT / hw.ROOT_PROGRAM_SRC / f"{name}.c").is_file()
     assert "-static" in hw.ROOT_PROGRAM_CFLAGS
-    assert ("frost_stress", ("-DFROST_STRESS_MMU=1",)) in hw.ROOT_PROGRAMS
 
 
 def _stub_board(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:

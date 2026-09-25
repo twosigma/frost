@@ -26,11 +26,8 @@ FROST_STRESS_SITE_METHOD = local
 FROST_STRESS_LICENSE = Apache-2.0
 FROST_STRESS_LICENSE_FILES =
 
-# The payload builds its fork/mmap/perf_event_open edition (frost_stress.c).
-FROST_STRESS_CFLAGS = -DFROST_STRESS_MMU=1
-
 define FROST_STRESS_BUILD_CMDS
-	$(TARGET_CC) $(TARGET_CFLAGS) $(FROST_STRESS_CFLAGS) $(TARGET_LDFLAGS) \
+	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
 		-o $(@D)/frost_stress $(@D)/frost_stress.c
 	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
 		-o $(@D)/frost_sigprobe $(@D)/frost_sigprobe.c

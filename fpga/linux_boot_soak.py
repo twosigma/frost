@@ -22,8 +22,9 @@ NIC module's ``FROST_NET10G_MODULE_PASS <release>`` line (Debian's kernel has
 no FROST driver built in, and the line names the running release) and the
 ``FROST_USERSPACE_STRESS_PASS`` token; ``--login-only`` requires only the
 prompt. A crash signature or a timeout fails the boot, and so does
-``counters=unavailable``: FROST resets ``mcounteren`` to 0x7, so the Zicntr
-counters must be readable from user mode.
+``counters=unavailable``: the boot image's DTB maps the cycle and instruction
+events to FROST's fixed counters, so the SBI PMU must serve them to the stress
+payload's ``perf_event_open``.
 
 The script reads the UART at 115200 8N1 through termios and sets the speed
 again after every load, because Vivado hw_server's FTDI probes can corrupt the
@@ -213,8 +214,8 @@ def main() -> int:
                 and not args.login_only
                 and "counters=unavailable" in stress_line
             ):
-                # FROST enables the counters for user mode at reset, so only an
-                # emulator run may report them unavailable.
+                # The boot image's DTB gives the SBI PMU both fixed counters,
+                # so a FROST boot must be able to read them.
                 verdict = "FAIL(counters-unavailable)"
             print(f"boot {boot}: {verdict}  {stress_line}", flush=True)
             if verdict == "PASS":

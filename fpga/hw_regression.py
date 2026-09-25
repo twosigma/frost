@@ -764,10 +764,7 @@ def probe_nfs3_tcp(
 # initramfs), and static linking is what lets frost_nettest run with the root's
 # link down (see ``nettest_command``).
 ROOT_PROGRAM_SRC = Path("linux/buildroot-external/package/frost-stress/src")
-ROOT_PROGRAMS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("frost_stress", ("-DFROST_STRESS_MMU=1",)),
-    ("frost_nettest", ()),
-)
+ROOT_PROGRAMS = ("frost_stress", "frost_nettest")
 ROOT_PROGRAM_CFLAGS = ("-O2", "-static")
 # Cross prefixes, in order: FROST_LINUX_CROSS_COMPILE (the Docker image sets
 # it), the one Buildroot's own build produced (this stage's loader builds it),
@@ -789,7 +786,7 @@ def resolve_cross_compile(
             return prefix
     raise LinuxEnvironmentError(
         f"{ENV_NOT_READY}: no riscv64 Linux cross compiler for the root's "
-        f"{', '.join(name for name, _ in ROOT_PROGRAMS)}. Tried "
+        f"{', '.join(ROOT_PROGRAMS)}. Tried "
         f"{', '.join(prefix + 'gcc' for prefix in candidates)}. Install one "
         f"(Debian: gcc-riscv64-linux-gnu), set {CROSS_COMPILE_ENV} to a prefix, "
         "or build Buildroot once (make -C sw/apps/linux_boot), whose own "
@@ -809,7 +806,7 @@ def install_root_programs(repo: Path, export: Path, cross: str) -> str:
     if not target.is_dir():
         raise LinuxEnvironmentError(
             f"{ENV_NOT_READY}: {target} is not a directory. The stage installs "
-            f"{' and '.join(name for name, _ in ROOT_PROGRAMS)} there, in root's "
+            f"{' and '.join(ROOT_PROGRAMS)} there, in root's "
             "PATH on the root filesystem."
         )
     if not os.access(target, os.W_OK):
@@ -822,13 +819,12 @@ def install_root_programs(repo: Path, export: Path, cross: str) -> str:
         )
     names = []
     with tempfile.TemporaryDirectory() as scratch:
-        for name, extra in ROOT_PROGRAMS:
+        for name in ROOT_PROGRAMS:
             built = Path(scratch) / name
             source = repo / ROOT_PROGRAM_SRC / f"{name}.c"
             command = [
                 cross + "gcc",
                 *ROOT_PROGRAM_CFLAGS,
-                *extra,
                 "-o",
                 str(built),
                 str(source),
