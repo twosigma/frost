@@ -941,9 +941,9 @@ module trap_unit #(
         p_dret_defers_interrupt : assert (!o_trap_taken);
       end
 
-      // Cross-class ordering (the spec rule delegation introduces): an
-      // interrupt destined for M is taken before one destined for S, so an
-      // S-target take never fires while an M-target take is ready.
+      // Cross-class ordering (the spec rule delegation introduces): when both
+      // classes are ready, the M-target take wins, so an S-target take never
+      // fires while an M-target take is ready.
       p_m_over_s : assert (!(o_trap_taken && o_trap_to_s && m_int_take_ready));
 
       // Target-side steering invariants: an S-target interrupt take always
