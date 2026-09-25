@@ -1904,7 +1904,6 @@ module cpu_ooo #(
       .o_commit_2(rob_commit_2),
       .o_commit_comb_2(rob_commit_comb_2),
       .o_commit_2_valid_raw(rob_commit_2_valid_raw),
-      .o_commit_2_store_like_raw(),
       // Single step: retire one instruction at a time while a step is armed,
       // so exactly one instruction executes before the halt.
       .i_widen_commit_ok(widen_commit_ok && !step_armed_rob_q),

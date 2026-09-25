@@ -122,12 +122,10 @@ module tomasulo_wrapper #(
     // Widen-commit slot 2 (head+1).  Non-null only when the
     // 2-wide gate inside the ROB fires; otherwise valid bits are low and
     // payload is '0.  cpu_ooo consumes these in parallel with slot 1 for
-    // two-wide architectural retirement, except o_commit_2_store_like_raw,
-    // which only the testbench observes (the SQ takes it inside the wrapper).
+    // two-wide architectural retirement.
     output riscv_pkg::reorder_buffer_commit_t o_commit_2,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb_2,
     output logic                              o_commit_2_valid_raw,
-    output logic                              o_commit_2_store_like_raw,
 
     // =========================================================================
     // ROB External Coordination
@@ -668,17 +666,16 @@ module tomasulo_wrapper #(
     commit_bus_2_q_qualified       = commit_bus_2_q;
     commit_bus_2_q_qualified.valid = commit_bus_2_q_valid;
   end
-  assign o_commit_2_valid_raw      = commit_2_valid_raw;
-  assign o_commit_2_store_like_raw = commit_2_store_like_raw;
+  assign o_commit_2_valid_raw = commit_2_valid_raw;
 
   // Back-end profiling counters (params, storage, accumulate/snapshot/mux) live
   // in tomasulo_perf_counters; instantiated below.
 
   // Expose both the raw and registered commit buses.
-  assign o_commit_comb             = commit_bus;
-  assign o_commit                  = commit_bus_q_qualified;
-  assign o_commit_comb_2           = commit_bus_2;
-  assign o_commit_2                = commit_bus_2_q_qualified;
+  assign o_commit_comb        = commit_bus;
+  assign o_commit             = commit_bus_q_qualified;
+  assign o_commit_comb_2      = commit_bus_2;
+  assign o_commit_2           = commit_bus_2_q_qualified;
 
   // ROB entry valid/done vectors: ROB -> RAT/dispatch
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_valid;

@@ -715,8 +715,8 @@ class TomasuloInterface:
 
     @property
     def commit_2_store_like_raw(self) -> bool:
-        """Return unregistered widen-commit slot-2 store-like marker."""
-        return bool(self.dut.o_commit_2_store_like_raw.value)
+        """Return the ROB's unregistered slot-2 store-like commit marker (an internal net)."""
+        return bool(self.dut.commit_2_store_like_raw.value)
 
     # =========================================================================
     # ROB Status
