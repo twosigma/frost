@@ -355,7 +355,7 @@ async def run_random_regression(
         )
     cocotb.log.info(stats.report())
 
-    # Every instruction type generated must execute more than
+    # Every instruction type generated must execute at least
     # min_coverage_count times.
     coverage_issues = stats.check_coverage(config.min_coverage_count)
     if coverage_issues:

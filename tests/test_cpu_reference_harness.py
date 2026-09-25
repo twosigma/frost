@@ -40,6 +40,8 @@ fp_model = importlib.import_module("models.fp_model")
 instruction_generator = importlib.import_module("cocotb_tests.instruction_generator")
 cpu_model = importlib.import_module("cocotb_tests.cpu_model")
 test_state = importlib.import_module("cocotb_tests.test_state")
+test_helpers = importlib.import_module("cocotb_tests.test_helpers")
+instruction_logger = importlib.import_module("utils.instruction_logger")
 validation = importlib.import_module("utils.validation")
 config = importlib.import_module("config")
 
@@ -292,6 +294,21 @@ def test_assert_equals_reports_every_mismatch(
         validation.assert_equals(5, expected)
 
     assert failure.value.context["difference"] == difference
+
+
+def test_coverage_check_and_summary_agree_at_the_minimum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operation run exactly the minimum number of times passes both."""
+    log = _ListLog()
+    monkeypatch.setattr(instruction_logger.cocotb, "log", log, raising=False)
+    stats = test_helpers.TestStatistics(coverage={"add": 5, "sub": 4})
+
+    instruction_logger.InstructionLogger.log_coverage_summary(stats.coverage, 5)
+
+    assert stats.check_coverage(5) == ["sub: only 4 executions (min: 5)"]
+    assert any("\u2713 add" in line for line in log.lines)
+    assert any("\u2717 sub" in line for line in log.lines)
 
 
 @pytest.mark.parametrize(

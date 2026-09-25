@@ -108,8 +108,8 @@ class TestStatistics:
     def check_coverage(self, minimum_execution_count: int = 50) -> list[str]:
         """Check which instructions didn't meet minimum coverage threshold.
 
-        An instruction passes only on a strictly-greater-than check
-        (count > minimum_execution_count).
+        An instruction passes once it has run minimum_execution_count times,
+        the rule the coverage summary (InstructionLogger) marks with a check.
 
         Args:
             minimum_execution_count: Minimum times each instruction should execute
@@ -119,7 +119,7 @@ class TestStatistics:
         """
         issues = []
         for operation, execution_count in self.coverage.items():
-            if execution_count <= minimum_execution_count:
+            if execution_count < minimum_execution_count:
                 issues.append(
                     f"{operation}: only {execution_count} executions (min: {minimum_execution_count})"
                 )
