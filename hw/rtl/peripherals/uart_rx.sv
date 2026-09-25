@@ -170,15 +170,13 @@ module uart_rx #(
         if (baud_rate_prescaler_counter > 0) begin
           baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
         end else begin
-          if (bits_remaining_counter > 0) begin
-            // Sample current bit at mid-bit, shift into MSB (LSB first reception)
-            data_shift_register <= {uart_input_synchronized, data_shift_register[DATA_WIDTH-1:1]};
-            bits_remaining_counter <= bits_remaining_counter - 1;
-            baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
-          end else begin
-            // All data bits received, wait for stop bit
-            baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
-          end
+          // Sample current bit at mid-bit, shift into MSB (LSB first
+          // reception). The FSM leaves this state at the last bit's sample,
+          // where bits_remaining_counter is 1, so the counter is never 0
+          // here, and this reload also times the stop-bit check.
+          data_shift_register <= {uart_input_synchronized, data_shift_register[DATA_WIDTH-1:1]};
+          bits_remaining_counter <= bits_remaining_counter - 1;
+          baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
         end
       end
 
