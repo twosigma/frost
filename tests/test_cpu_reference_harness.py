@@ -36,6 +36,7 @@ finally:
 
 instruction_encode = importlib.import_module("encoders.instruction_encode")
 op_tables = importlib.import_module("encoders.op_tables")
+fp_model = importlib.import_module("models.fp_model")
 instruction_generator = importlib.import_module("cocotb_tests.instruction_generator")
 
 GENERATOR = instruction_generator.InstructionGenerator
@@ -143,3 +144,73 @@ def test_random_csr_instructions_read_instret_without_writing(
     assert params.csr_address == instruction_encode.CSRAddress.INSTRET
     assert params.source_register_1 == 0
     assert params.immediate == 0
+
+
+# NaN-boxed single-precision values: -1.0, 2.0, 3.0, canonical NaN, -inf, 3e9.
+BOXED_NEG_ONE = 0xFFFF_FFFF_BF80_0000
+BOXED_TWO = 0xFFFF_FFFF_4000_0000
+BOXED_THREE = 0xFFFF_FFFF_4040_0000
+BOXED_NAN = 0xFFFF_FFFF_7FC0_0000
+BOXED_NEG_INF = 0xFFFF_FFFF_FF80_0000
+BOXED_3E9 = 0xFFFF_FFFF_4F32_D05E
+# Double-precision values: -2.0, 2^31, 2^32 - 1.
+DOUBLE_NEG_TWO = 0xC000_0000_0000_0000
+DOUBLE_2_POW_31 = 0x41E0_0000_0000_0000
+DOUBLE_2_POW_32_MINUS_1 = 0x41EF_FFFF_FFE0_0000
+
+
+FP_INTEGER_CASES: tuple[tuple[str, str, int, int], ...] = (
+    # FMV.X.W moves the raw low word, sign-extended, whatever the boxing.
+    ("FP_MV_F2I", "fmv.x.w", 0x0000_0000_3F80_0000, 0x0000_0000_3F80_0000),
+    ("FP_MV_F2I", "fmv.x.w", BOXED_NEG_ONE, 0xFFFF_FFFF_BF80_0000),
+    ("FP_MV_F2I", "fmv.x.w", 0x1234_5678_BF80_0000, 0xFFFF_FFFF_BF80_0000),
+    # W-form results are sign-extended from bit 31, unsigned ones included.
+    ("FP_CVT_F2I", "fcvt.w.s", BOXED_NEG_ONE, 0xFFFF_FFFF_FFFF_FFFF),
+    ("FP_CVT_F2I", "fcvt.w.s", BOXED_NAN, 0x0000_0000_7FFF_FFFF),
+    ("FP_CVT_F2I", "fcvt.w.s", BOXED_NEG_INF, 0xFFFF_FFFF_8000_0000),
+    ("FP_CVT_F2I", "fcvt.wu.s", BOXED_3E9, 0xFFFF_FFFF_B2D0_5E00),
+    ("FP_CVT_F2I", "fcvt.wu.s", BOXED_NAN, 0xFFFF_FFFF_FFFF_FFFF),
+    ("FP_CVT_F2I", "fcvt.w.d", DOUBLE_NEG_TWO, 0xFFFF_FFFF_FFFF_FFFE),
+    ("FP_CVT_F2I", "fcvt.wu.d", DOUBLE_2_POW_31, 0xFFFF_FFFF_8000_0000),
+    ("FP_CVT_F2I", "fcvt.wu.d", DOUBLE_2_POW_32_MINUS_1, 0xFFFF_FFFF_FFFF_FFFF),
+    # W-form conversions to FP read only the low word of the integer operand.
+    ("FP_CVT_I2F", "fcvt.s.w", 0xFFFF_FFFF_FFFF_FFFF, BOXED_NEG_ONE),
+    ("FP_CVT_I2F", "fcvt.s.w", 0x0000_0001_0000_0002, BOXED_TWO),
+    ("FP_CVT_I2F", "fcvt.s.wu", 0xFFFF_FFFF_0000_0003, BOXED_THREE),
+    ("FP_CVT_I2F", "fcvt.d.w", 0xFFFF_FFFF_FFFF_FFFE, DOUBLE_NEG_TWO),
+    ("FP_CVT_I2F", "fcvt.d.wu", 0x0000_0001_FFFF_FFFF, DOUBLE_2_POW_32_MINUS_1),
+)
+
+
+@pytest.mark.parametrize(
+    ("table", "mnemonic", "operand", "expected"),
+    FP_INTEGER_CASES,
+    ids=[f"{case[1]}-{case[2]:#018x}" for case in FP_INTEGER_CASES],
+)
+def test_fp_integer_moves_and_conversions_follow_rv64(
+    table: str, mnemonic: str, operand: int, expected: int
+) -> None:
+    """Integer results fill all 64 bits of rd; integer operands use the low word."""
+    _, evaluator = getattr(op_tables, table)[mnemonic]
+    assert evaluator(operand) == expected
+
+
+class _WordMemory:
+    """MemoryReader over a dict of aligned words."""
+
+    def __init__(self, words: dict[int, int]) -> None:
+        self.words = words
+
+    def read_word(self, address: int) -> int:
+        return self.words[address]
+
+    def read_byte(self, address: int) -> int:
+        return (self.words[address & ~0x3] >> (8 * (address & 0x3))) & 0xFF
+
+
+def test_flw_nan_boxes_the_loaded_word() -> None:
+    """FLW writes the word NaN-boxed; it is not the sign-extended LW value."""
+    memory = _WordMemory({0x100: 0x3F80_0000})
+
+    assert fp_model.flw(memory, 0x100) == 0xFFFF_FFFF_3F80_0000
+    assert op_tables.FP_LOADS["flw"][1](memory, 0x100) == 0xFFFF_FFFF_3F80_0000

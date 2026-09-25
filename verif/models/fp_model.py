@@ -28,9 +28,9 @@ The model always rounds to nearest even, so its rounding matches the RTL
 only while the effective rounding mode is RNE. That is the default: the
 instruction encoders use dynamic rounding (rm=7), and frm resets to RNE.
 
-Integer operands and results are 32-bit values, and the float/int
-conversions are the W and WU forms only. The RV64 RTL sign-extends
-FCVT.W[U] and FMV.X.W results into rd; the model does not.
+The float/int conversions are the W and WU forms only. They read the low 32
+bits of an integer operand, and their integer results, like FMV.X.W's, are
+sign-extended from bit 31 to XLEN, as RV64 writes rd.
 """
 
 from __future__ import annotations
@@ -38,6 +38,9 @@ from __future__ import annotations
 import math
 import struct
 from typing import TYPE_CHECKING
+
+from config import MASK_XLEN
+from utils.riscv_utils import sign_extend, to_signed32
 
 if TYPE_CHECKING:
     from models.memory_model import MemoryModel
@@ -417,6 +420,11 @@ def unbox32(bits64: int) -> int:
     return bits64 & MASK32
 
 
+def _word_to_rd(word: int) -> int:
+    """Sign-extend a 32-bit integer result from bit 31 to XLEN, as RV64 writes rd."""
+    return sign_extend(word & MASK32, 32) & MASK_XLEN
+
+
 # IEEE 754 double-precision constants
 DP_POS_ZERO = 0x0000000000000000
 DP_NEG_ZERO = 0x8000000000000000
@@ -789,57 +797,53 @@ def fle_s(rs1_bits: int, rs2_bits: int) -> int:
 
 
 def fcvt_w_s(rs1_bits: int, _unused: int = 0) -> int:
-    """FCVT.W.S: Convert float to signed 32-bit integer."""
+    """FCVT.W.S: Convert float to a signed 32-bit integer, sign-extended to XLEN."""
     if is_nan(rs1_bits):
-        return 0x7FFFFFFF  # Return max positive for NaN
+        return _word_to_rd(0x7FFFFFFF)  # Return max positive for NaN
     if is_inf(rs1_bits):
-        return 0x7FFFFFFF if not is_negative(rs1_bits) else 0x80000000
+        return _word_to_rd(0x7FFFFFFF if not is_negative(rs1_bits) else 0x80000000)
     f = bits_to_float(rs1_bits)
     # Overflow saturates
     if f >= 2147483648.0:  # >= 2^31
-        return 0x7FFFFFFF
+        return _word_to_rd(0x7FFFFFFF)
     if f < -2147483648.0:  # < -2^31
-        return 0x80000000
+        return _word_to_rd(0x80000000)
     # Round to nearest even (RNE)
     result = _round_to_nearest_even(f)
     if result > 2147483647:
-        return 0x7FFFFFFF
+        return _word_to_rd(0x7FFFFFFF)
     if result < -2147483648:
-        return 0x80000000
-    return result & MASK32
+        return _word_to_rd(0x80000000)
+    return _word_to_rd(result)
 
 
 def fcvt_wu_s(rs1_bits: int, _unused: int = 0) -> int:
-    """FCVT.WU.S: Convert float to unsigned 32-bit integer."""
+    """FCVT.WU.S: Convert float to an unsigned 32-bit integer, sign-extended to XLEN."""
     if is_nan(rs1_bits):
-        return 0xFFFFFFFF  # Return max unsigned for NaN
+        return _word_to_rd(0xFFFFFFFF)  # Return max unsigned for NaN
     if is_inf(rs1_bits):
-        return 0xFFFFFFFF if not is_negative(rs1_bits) else 0
+        return _word_to_rd(0xFFFFFFFF if not is_negative(rs1_bits) else 0)
     f = bits_to_float(rs1_bits)
     # Overflow saturates
     if f >= 4294967296.0:  # >= 2^32
-        return 0xFFFFFFFF
+        return _word_to_rd(0xFFFFFFFF)
     # Round to nearest even (RNE)
     result = _round_to_nearest_even(f)
     if result < 0:
         return 0
     if result > 0xFFFFFFFF:
-        return 0xFFFFFFFF
-    return result & MASK32
+        return _word_to_rd(0xFFFFFFFF)
+    return _word_to_rd(result)
 
 
 def fcvt_s_w(rs1_int: int, _unused: int = 0) -> int:
-    """FCVT.S.W: Convert signed 32-bit integer to float."""
-    if rs1_int & 0x80000000:
-        signed_val = rs1_int - 0x100000000
-    else:
-        signed_val = rs1_int
-    f = float(signed_val)
+    """FCVT.S.W: Convert the signed low 32 bits of rs1 to float."""
+    f = float(to_signed32(rs1_int))
     return float_to_bits(f)
 
 
 def fcvt_s_wu(rs1_int: int, _unused: int = 0) -> int:
-    """FCVT.S.WU: Convert unsigned 32-bit integer to float."""
+    """FCVT.S.WU: Convert the unsigned low 32 bits of rs1 to float."""
     f = float(rs1_int & MASK32)
     return float_to_bits(f)
 
@@ -850,8 +854,11 @@ def fcvt_s_wu(rs1_int: int, _unused: int = 0) -> int:
 
 
 def fmv_x_w(rs1_bits: int, _unused: int = 0) -> int:
-    """FMV.X.W: Move float bits to integer register (no conversion)."""
-    return rs1_bits & MASK32
+    """FMV.X.W: Move the low 32 bits of an FP register to rd, sign-extended.
+
+    The move neither converts nor checks the NaN boxing.
+    """
+    return _word_to_rd(rs1_bits)
 
 
 def fmv_w_x(rs1_int: int, _unused: int = 0) -> int:
@@ -1097,53 +1104,49 @@ def fle_d(rs1_bits: int, rs2_bits: int) -> int:
 
 
 def fcvt_w_d(rs1_bits: int, _unused: int = 0) -> int:
-    """FCVT.W.D: Convert double to signed 32-bit integer."""
+    """FCVT.W.D: Convert double to a signed 32-bit integer, sign-extended to XLEN."""
     if is_nan_d(rs1_bits):
-        return 0x7FFFFFFF
+        return _word_to_rd(0x7FFFFFFF)
     if is_inf_d(rs1_bits):
-        return 0x7FFFFFFF if not is_negative_d(rs1_bits) else 0x80000000
+        return _word_to_rd(0x7FFFFFFF if not is_negative_d(rs1_bits) else 0x80000000)
     d = bits_to_double(rs1_bits)
     if d >= 2147483648.0:
-        return 0x7FFFFFFF
+        return _word_to_rd(0x7FFFFFFF)
     if d < -2147483648.0:
-        return 0x80000000
+        return _word_to_rd(0x80000000)
     result = _round_to_nearest_even(d)
     if result > 2147483647:
-        return 0x7FFFFFFF
+        return _word_to_rd(0x7FFFFFFF)
     if result < -2147483648:
-        return 0x80000000
-    return result & MASK32
+        return _word_to_rd(0x80000000)
+    return _word_to_rd(result)
 
 
 def fcvt_wu_d(rs1_bits: int, _unused: int = 0) -> int:
-    """FCVT.WU.D: Convert double to unsigned 32-bit integer."""
+    """FCVT.WU.D: Convert double to an unsigned 32-bit integer, sign-extended to XLEN."""
     if is_nan_d(rs1_bits):
-        return 0xFFFFFFFF
+        return _word_to_rd(0xFFFFFFFF)
     if is_inf_d(rs1_bits):
-        return 0xFFFFFFFF if not is_negative_d(rs1_bits) else 0
+        return _word_to_rd(0xFFFFFFFF if not is_negative_d(rs1_bits) else 0)
     d = bits_to_double(rs1_bits)
     if d >= 4294967296.0:
-        return 0xFFFFFFFF
+        return _word_to_rd(0xFFFFFFFF)
     result = _round_to_nearest_even(d)
     if result < 0:
         return 0
     if result > 0xFFFFFFFF:
-        return 0xFFFFFFFF
-    return result & MASK32
+        return _word_to_rd(0xFFFFFFFF)
+    return _word_to_rd(result)
 
 
 def fcvt_d_w(rs1_int: int, _unused: int = 0) -> int:
-    """FCVT.D.W: Convert signed 32-bit integer to double."""
-    if rs1_int & 0x80000000:
-        signed_val = rs1_int - 0x100000000
-    else:
-        signed_val = rs1_int
-    d = float(signed_val)
+    """FCVT.D.W: Convert the signed low 32 bits of rs1 to double."""
+    d = float(to_signed32(rs1_int))
     return double_to_bits(d)
 
 
 def fcvt_d_wu(rs1_int: int, _unused: int = 0) -> int:
-    """FCVT.D.WU: Convert unsigned 32-bit integer to double."""
+    """FCVT.D.WU: Convert the unsigned low 32 bits of rs1 to double."""
     d = float(rs1_int & MASK32)
     return double_to_bits(d)
 
@@ -1183,15 +1186,15 @@ def fclass_d(rs1_bits: int, _unused: int = 0) -> int:
 
 # ============================================================================
 # FP loads read the same memory as LW/LD, so they reuse the integer load
-# models. op_tables uses fld; flw is kept for symmetry.
+# models.
 # ============================================================================
 
 
 def flw(memory_model: MemoryModel, address: int) -> int:
-    """FLW: Load a word as LW does; box32() the result for the FP register."""
+    """FLW: Load a word from memory into an FP register, NaN-boxed."""
     from models.alu_model import lw
 
-    return lw(memory_model, address)
+    return box32(lw(memory_model, address))
 
 
 def fld(memory_model: MemoryModel, address: int) -> int:

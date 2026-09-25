@@ -292,6 +292,7 @@ from models.fp_model import (
     # D extension - classify
     fclass_d,
     # FP loads
+    flw,
     fld,
 )
 
@@ -627,7 +628,8 @@ C_JUMPS: dict[str, Callable] = {
 #
 # Single- and double-precision forms share tables (.s and .d suffixes). FP
 # registers are 64 bits wide, so the evaluators unbox single-precision operands
-# and NaN-box single-precision results (unbox32, box32).
+# and NaN-box single-precision results (unbox32, box32). FMV.X.W is the
+# exception: it moves the raw low word without a NaN-box check.
 #
 # FP instruction categories:
 #   - FP_ARITH_2OP: two-operand arithmetic (rd, rs1, rs2)
@@ -804,9 +806,10 @@ FP_CVT_F2F: dict[str, tuple[Callable, Callable]] = {
     ),
 }
 
-# FP to integer move: copies bits without conversion into an integer register.
+# FP to integer move: copies the low word without conversion into an integer
+# register, sign-extended.
 FP_MV_F2I: dict[str, tuple[Callable, Callable]] = {
-    "fmv.x.w": (lambda rd, rs1: enc_fmv_x_w(rd, rs1), lambda a: fmv_x_w(unbox32(a))),
+    "fmv.x.w": (lambda rd, rs1: enc_fmv_x_w(rd, rs1), fmv_x_w),
 }
 
 # Integer to FP move: copies bits without conversion from an integer register into
@@ -823,9 +826,9 @@ FP_CLASS: dict[str, tuple[Callable, Callable]] = {
 
 # FP load (memory -> FP register)
 #   encoder: lambda rd, rs1, imm -> 32-bit instruction
-#   evaluator: lambda memory, address -> loaded bits (lw for flw, fld for fld)
+#   evaluator: lambda memory, address -> FP register bits (flw NaN-boxes the word)
 FP_LOADS: dict[str, tuple[Callable, Callable]] = {
-    "flw": (lambda rd, rs1, imm: enc_flw(rd, rs1, imm), lambda m, a: box32(lw(m, a))),
+    "flw": (lambda rd, rs1, imm: enc_flw(rd, rs1, imm), flw),
     "fld": (lambda rd, rs1, imm: enc_fld(rd, rs1, imm), fld),
 }
 
