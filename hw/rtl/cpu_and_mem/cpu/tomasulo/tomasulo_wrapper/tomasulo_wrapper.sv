@@ -507,12 +507,6 @@ module tomasulo_wrapper #(
     output logic                 [$clog2(riscv_pkg::FdivRsDepth + 1) - 1:0] o_fdiv_rs_count,
 
     // =========================================================================
-    // CSR Read Data (to the ALU shims). A CSR op's CDB result is its write
-    // operand, so this value never reaches the CDB.
-    // =========================================================================
-    input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
-
-    // =========================================================================
     // Store Queue: Memory Write Interface
     // =========================================================================
     output logic                              o_sq_mem_write_en,
@@ -3984,7 +3978,6 @@ module tomasulo_wrapper #(
       .i_rs_issue             (int_rs_issue_w),
       .i_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
       .i_shift_amount_hint    (6'b0),
-      .i_csr_read_data        (i_csr_read_data),
       .o_fu_complete          (alu_shim_out),
       .o_fu_busy              (alu_fu_busy)
   );
@@ -4025,7 +4018,6 @@ module tomasulo_wrapper #(
       .i_rs_issue             (int_rs_issue_2_w),
       .i_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint_2),
       .i_shift_amount_hint    (int_rs_issue_shift_amount_2),
-      .i_csr_read_data        (i_csr_read_data),
       .o_fu_complete          (alu2_shim_out),
       .o_fu_busy              (alu2_fu_busy)
   );

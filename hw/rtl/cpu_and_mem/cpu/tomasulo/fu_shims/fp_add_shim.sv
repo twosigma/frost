@@ -209,14 +209,12 @@ module fp_add_shim (
 
   assign o_fu_busy = in_flight;
 
-  // Latch ROB tag + op on fire
+  // Latch the ROB tag on fire
   logic [TagW-1:0] tag_reg;
-  riscv_pkg::instr_op_e op_reg;
 
   always_ff @(posedge i_clk) begin
     if (fire) begin
       tag_reg <= i_rs_issue.rob_tag;
-      op_reg  <= i_rs_issue.op;
     end
   end
 

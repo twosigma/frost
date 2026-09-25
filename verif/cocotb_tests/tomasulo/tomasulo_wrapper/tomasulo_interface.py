@@ -464,9 +464,6 @@ class TomasuloInterface:
         self.dut.i_perf_snapshot_capture.value = 0
         self.dut.i_perf_counter_select.value = 0
 
-        # CSR read data (for ALU shim CSR operations)
-        self.dut.i_csr_read_data.value = 0
-
         # FRM CSR (dynamic rounding-mode resolution)
         self.dut.i_frm_csr.value = 0  # Default: RNE
 

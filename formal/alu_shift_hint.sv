@@ -32,7 +32,6 @@ module alu_shift_hint (
     imm_u,
     imm_i,
     link,
-    csr,
     input logic [5:0] unused_hint
 );
   logic [6:0] controls;
@@ -54,7 +53,6 @@ module alu_shift_hint (
       .i_immediate_u_type(imm_u),
       .i_immediate_i_type(imm_i),
       .i_link_address(link),
-      .i_csr_read_data(csr),
       .o_result(generic_result),
       .o_write_enable(generic_write)
   );
@@ -70,7 +68,6 @@ module alu_shift_hint (
       .i_immediate_u_type(imm_u),
       .i_immediate_i_type(imm_i),
       .i_link_address(link),
-      .i_csr_read_data(csr),
       .o_result(hinted_result),
       .o_write_enable(hinted_write)
   );

@@ -2174,9 +2174,6 @@ module cpu_ooo #(
       .o_fdiv_rs_empty(),
       .o_fdiv_rs_count(),
 
-      // CSR read data
-      .i_csr_read_data(csr_read_data),
-
       // Store queue memory interface
       .o_sq_mem_write_en(sq_mem_write_en),
       .o_sq_mem_write_addr(sq_mem_write_addr),

@@ -58,10 +58,6 @@ module int_alu_shim #(
     // the same issue packet and must equal the amount the ALU would select.
     input logic                 [5:0] i_shift_amount_hint,
 
-    // CSR read data. It reaches only the ALU's CSR result, which this shim
-    // replaces with the CSR write operand, so it never reaches o_fu_complete.
-    input logic [riscv_pkg::XLEN-1:0] i_csr_read_data,
-
     // FU completion to CDB adapter
     output riscv_pkg::fu_complete_t o_fu_complete,
 
@@ -105,7 +101,6 @@ module int_alu_shim #(
       .i_immediate_i_type(i_rs_issue.imm),
       // JALR's link address rides the immediate word (dispatch puts it there).
       .i_link_address(i_rs_issue.imm),
-      .i_csr_read_data(i_csr_read_data),
       .o_result(alu_result),
       .o_write_enable()
   );

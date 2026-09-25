@@ -19,9 +19,7 @@ pack_rs_issue and unpack_fu_complete come from fp_add_shim_interface.
 The ALU shim is combinational and has no flush ports. Besides rs_issue_t,
 drive_issue drives the two RS-side hints: i_issue_writes_cdb_hint, which
 gates o_fu_complete.valid and is low for conditional branches, and
-i_shift_amount_hint, which only shifts and rotates use. i_csr_read_data stays
-zero: CSR ops complete with their write operand, so it never reaches
-o_fu_complete.
+i_shift_amount_hint, which only shifts and rotates use.
 """
 
 from typing import Any
@@ -70,7 +68,6 @@ class IntAluShimInterface:
         """Drive all inputs to zero / inactive."""
         self.dut.i_rs_issue.value = 0
         self.dut.i_issue_writes_cdb_hint.value = 0
-        self.dut.i_csr_read_data.value = 0
         self.dut.i_shift_amount_hint.value = 0
 
     async def reset(self, cycles: int = 3) -> None:

@@ -20,11 +20,12 @@
  * includes the 6-bit shift, rotate, and bit-index amounts, the W-form word
  * operations (32-bit operation, result sign-extended to XLEN), and the Zba
  * unsigned-word address forms. The unit also returns the precomputed link
- * address for JAL/JALR, the LUI/AUIPC values (ID precomputes AUIPC's
+ * address for JAL/JALR and the LUI/AUIPC values (ID precomputes AUIPC's
  * PC + imm_u and dispatch passes it in the U-immediate, so the unit has no PC
- * input), and the CSR read data for Zicsr ops. M-extension operations never
- * execute here; they run in the multiplier and divider behind
- * int_muldiv_shim.
+ * input). M-extension operations never execute here; they run in the
+ * multiplier and divider behind int_muldiv_shim. Zicsr operations have no
+ * result here either: int_alu_shim completes them with the CSR write operand,
+ * and the CSR is read and written at commit.
  *
  * At XLEN=64, the base shifts and the Zbb rotates of each width share one
  * left and one right funnel shifter. Their controls come from
@@ -47,8 +48,6 @@ module alu #(
     input logic [XLEN-1:0] i_immediate_u_type,  // Upper immediate for LUI/AUIPC
     input logic [XLEN-1:0] i_immediate_i_type,  // I-type immediate
     input logic [XLEN-1:0] i_link_address,  // Pre-computed link address (PC+2 or PC+4)
-    // CSR interface (Zicsr extension)
-    input logic [XLEN-1:0] i_csr_read_data,  // CSR read value from CSR file
     output logic [XLEN-1:0] o_result,
     output logic o_write_enable  // Whether to write result to register file
 );
@@ -241,17 +240,6 @@ module alu #(
       // compressed instruction, PC+4 otherwise.
       riscv_pkg::JAL: o_result = i_link_address;
       riscv_pkg::JALR: o_result = i_link_address;
-      // Zicsr extension: the result is the CSR read data (the old value). The
-      // CSR file performs the write.
-      riscv_pkg::CSRRW,
-      riscv_pkg::CSRRS,
-      riscv_pkg::CSRRC,
-      riscv_pkg::CSRRWI,
-      riscv_pkg::CSRRSI,
-      riscv_pkg::CSRRCI: begin
-        o_result = i_csr_read_data;
-        o_write_enable = 1'b1;
-      end
       // Zba extension - address generation (shift-and-add)
       riscv_pkg::SH1ADD: o_result = (i_operand_a << 1) + i_operand_b;
       riscv_pkg::SH2ADD: o_result = (i_operand_a << 2) + i_operand_b;
@@ -325,7 +313,7 @@ module alu #(
       // Anything not listed above leaves rd untouched. The M-extension ops
       // have no arm here: they execute in the multiplier and divider behind
       // int_muldiv_shim, and a simulation assert in int_alu_shim catches any
-      // that issue here.
+      // that issue here. The Zicsr ops have no arm either (see the header).
       default: o_write_enable = 1'b0;
     endcase
   end
