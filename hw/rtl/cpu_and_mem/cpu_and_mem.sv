@@ -284,6 +284,18 @@ module cpu_and_mem #(
   localparam int unsigned PlicClaimM = 32'h4420_0004;
   localparam int unsigned PlicClaimS = 32'h4420_1004;
 
+  // The data PMA accepts device accesses only in riscv_pkg's device-window
+  // pages, so they must be exactly the MMIO and PLIC windows decoded here: a
+  // page only the PMA had would reach no register, and one it lacked would
+  // fault.
+  initial begin
+    if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
+        ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
+        ({PlicWindowSel, 22'h00_0000} != {riscv_pkg::PlicFirstPage, 12'h000}) ||
+        ({PlicWindowSel, 22'h3F_FFFF} != {riscv_pkg::PlicLastPage, 12'hFFF}))
+      $fatal(1, "cpu_and_mem: MMIO or PLIC window differs from the riscv_pkg device-window pages");
+  end
+
   // CPU interface signals
   logic [31:0] program_counter;
   logic commit_vld;  // instruction-retire pulse (hang-triage tap)
