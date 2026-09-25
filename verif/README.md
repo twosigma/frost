@@ -63,14 +63,15 @@ drives `cpu_tb`. The encoders, models, and expected state are RV64: register
 values, immediates, PCs, and counters are XLEN wide. The monitors expect the
 PC and each instruction's results at a fixed offset from fetch, and
 `directed_multicycle` makes the same assumption. The out-of-order core
-breaks it: it fetches two instructions per cycle, redirects fetch on its own
-schedule, retires up to two instructions per cycle after a variable delay,
-and squashes wrong-path instructions, and the testbench cannot tell which of
-the instructions it drives will be squashed. Both targets stop at their
-first PC check, before any register comparison, and fail until they check
-results in commit order. Until then, the riscv-tests, the architecture
-compliance suites, and application tests such as `ddr_atomic_test` and
-`c_ext_test` cover those instructions in CI.
+breaks it: fetch redirects on its own schedule, instructions retire one or
+two per cycle after a variable delay, and wrong-path instructions are
+squashed, so the testbench cannot tell which of the instructions it drives
+will be squashed. (`cpu_tb` fills the upper half of every fetch window with
+an ECALL, which cannot pair as slot 2, so each 32-bit instruction is fetched
+alone.) Both targets stop at their first PC check, before any register
+comparison, and fail until they check results in commit order. Until then,
+the riscv-tests, the architecture compliance suites, and application tests
+such as `ddr_atomic_test` and `c_ext_test` cover those instructions in CI.
 
 | CPU harness target | Status |
 |--------------------|--------|
