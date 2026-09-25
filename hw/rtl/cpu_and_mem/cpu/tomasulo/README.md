@@ -79,7 +79,7 @@ Conditional-branch mispredictions recover early. When `branch_jump_unit`
 resolves one, `early_misprediction_recovery` (in `cpu_ooo/branch_recovery/`)
 captures it. The next cycle it redirects the front end and restores the RAT,
 and the cycle after that it removes younger back-end work with an age-based
-partial flush. A misprediction costs about two cycles.
+partial flush.
 
 JALR mispredictions recover at commit instead. The JALR retires first, so
 every uncommitted instruction left in the back end is younger, and the back

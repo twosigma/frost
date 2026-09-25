@@ -18,8 +18,8 @@
  * Early misprediction recovery.
  *
  * When branch_resolution flags a checkpointed conditional-branch misprediction,
- * this two-phase FSM starts recovery at once instead of waiting for the branch
- * to reach the ROB head, so the misprediction costs about two cycles:
+ * this two-phase FSM starts recovery in the cycle after the branch resolves
+ * instead of waiting for the branch to reach the ROB head:
  *   cycle N   : capture the mispredicting branch's redirect/BTB/checkpoint data;
  *   cycle N+1 : early_mispredict_active -> front-end redirect + RAT restore,
  *               with dispatch and issue held (early_backend_recovery_hold);
