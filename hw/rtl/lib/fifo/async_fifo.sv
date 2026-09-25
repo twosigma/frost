@@ -29,8 +29,10 @@
  * the synchronized read pointer. The decode adds one write-clock cycle to
  * free-space credit return, separating Gray conversion from the occupancy
  * and RAM write-enable path. The writer sees at least the true occupancy,
- * never less, so the FIFO cannot overflow. READY_MARGIN entries are kept
- * free below full for a writer whose valid trails its ready decision.
+ * never less, so the FIFO cannot overflow. o_ready falls with READY_MARGIN
+ * entries still free and also gates the push, so the margin only reserves
+ * entries and absorbs no write: the RAM never holds more than
+ * DEPTH - READY_MARGIN words.
  *
  * Resets are per side and synchronous in their domain. The write reset clears
  * the write pointer, the read-pointer synchronizer, and its decode; the read
