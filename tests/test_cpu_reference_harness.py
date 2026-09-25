@@ -40,6 +40,7 @@ fp_model = importlib.import_module("models.fp_model")
 instruction_generator = importlib.import_module("cocotb_tests.instruction_generator")
 cpu_model = importlib.import_module("cocotb_tests.cpu_model")
 test_state = importlib.import_module("cocotb_tests.test_state")
+validation = importlib.import_module("utils.validation")
 config = importlib.import_module("config")
 
 GENERATOR = instruction_generator.InstructionGenerator
@@ -265,6 +266,32 @@ def test_control_flow_targets_wrap_at_xlen() -> None:
     )
 
     assert internal_pc == 0xFFFF_FFFF_FFFF_FFEC
+
+
+class _ListLog:
+    """Stand-in for cocotb.log, which exists only inside a simulation."""
+
+    def __init__(self) -> None:
+        self.lines: list[str] = []
+
+    def info(self, message: str) -> None:
+        self.lines.append(message)
+
+
+@pytest.mark.parametrize(
+    ("expected", "difference"), ((None, None), ("5", None), (3, 2), (4.5, 0.5))
+)
+def test_assert_equals_reports_every_mismatch(
+    monkeypatch: pytest.MonkeyPatch, expected: object, difference: object
+) -> None:
+    """A number compared with a non-number raises ValidationError, not TypeError."""
+    monkeypatch.setattr(validation.cocotb, "log", _ListLog(), raising=False)
+    monkeypatch.setattr(validation.cocotb, "RANDOM_SEED", 1, raising=False)
+
+    with pytest.raises(validation.ValidationError) as failure:
+        validation.assert_equals(5, expected)
+
+    assert failure.value.context["difference"] == difference
 
 
 @pytest.mark.parametrize(

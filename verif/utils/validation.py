@@ -53,11 +53,14 @@ def assert_equals(
     if actual != expected:
         base_msg = message or f"Expected {expected}, got {actual}"
         cocotb.log.info(f"cocotb RANDOM_SEED is {cocotb.RANDOM_SEED}")
+        both_numbers = isinstance(actual, int | float) and isinstance(
+            expected, int | float
+        )
         raise ValidationError(
             base_msg,
             actual=actual,
             expected=expected,
-            difference=actual - expected if isinstance(actual, int | float) else None,
+            difference=actual - expected if both_numbers else None,
             **context,
         )
 
