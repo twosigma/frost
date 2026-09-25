@@ -333,7 +333,8 @@ async def test_pack_rs2_zero(dut: Any) -> None:
     iface = await setup(dut)
 
     rob_tag = 9
-    src1 = 0x1122_3344_AABB_CCDD
+    # Every upper-word bit is set, so any bit of it that reaches rd shows.
+    src1 = 0xFFFF_FFFF_AABB_CCDD
     iface.drive_issue(
         valid=True,
         rob_tag=rob_tag,
@@ -541,8 +542,10 @@ async def test_pack_general(dut: Any) -> None:
     iface = await setup(dut)
 
     rob_tag = 16
-    src1 = 0x5566_7788_AABB_CCDD
-    src2 = 0x99AA_BBCC_1122_3344
+    # Each upper word is the complement of its low word, so taking either
+    # operand's upper word in place of its low word flips every bit.
+    src1 = 0x5544_3322_AABB_CCDD
+    src2 = 0xEEDD_CCBB_1122_3344
     iface.drive_issue(
         valid=True,
         rob_tag=rob_tag,
