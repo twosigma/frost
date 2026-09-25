@@ -375,23 +375,19 @@ module fp_sqrt #(
   // =========================================================================
   // Stage 4+RootBits+1: ROUND_SHIFT (fp_subnorm_shift)
   // =========================================================================
-  // fp_subnorm_shift takes the top MantBits root bits as the mantissa, the next
-  // bit as guard, and the one after as round; the last root bit and a nonzero
-  // remainder set sticky.
-  logic [MantBits:0] rsh_pre_round_mant;
-  logic              rsh_guard_bit;
-  logic              rsh_round_bit;
-  logic              rsh_sticky_bit;
-  logic              rsh_is_zero;
+  // The root carries MantBits + 3 bits: the mantissa, then guard and round.
+  // Its last bit and a nonzero remainder set sticky.
+  logic [MantBits-1:0] rsh_mantissa;
+  logic                rsh_guard_bit;
+  logic                rsh_round_bit;
+  logic                rsh_sticky_bit;
+  logic                rsh_is_zero;
 
-  assign rsh_pre_round_mant = s_norm_root[RootBits-1-:(MantBits+1)];
-  assign rsh_guard_bit      = s_norm_root[1];
-  assign rsh_round_bit      = s_norm_root[0];
-  assign rsh_sticky_bit     = |s_norm_remainder;
-  assign rsh_is_zero        = (s_norm_root == '0) && (s_norm_remainder == '0);
-
-  logic [MantBits-1:0] rsh_mantissa_retained;
-  assign rsh_mantissa_retained = rsh_pre_round_mant[MantBits:1];
+  assign rsh_mantissa   = s_norm_root[RootBits-1-:MantBits];
+  assign rsh_guard_bit  = s_norm_root[2];
+  assign rsh_round_bit  = s_norm_root[1];
+  assign rsh_sticky_bit = s_norm_root[0] | (|s_norm_remainder);
+  assign rsh_is_zero    = (s_norm_root == '0) && (s_norm_remainder == '0);
 
   logic [MantBits-1:0] rsh_mantissa_out;
   logic rsh_guard_out, rsh_round_out, rsh_sticky_out;
@@ -401,10 +397,10 @@ module fp_sqrt #(
       .MANT_BITS(MantBits),
       .EXP_EXT_BITS(ExpExtBits)
   ) u_subnorm_shift (
-      .i_mantissa(rsh_mantissa_retained),
-      .i_guard(rsh_pre_round_mant[0]),
-      .i_round(rsh_guard_bit),
-      .i_sticky(rsh_round_bit | rsh_sticky_bit),
+      .i_mantissa(rsh_mantissa),
+      .i_guard(rsh_guard_bit),
+      .i_round(rsh_round_bit),
+      .i_sticky(rsh_sticky_bit),
       .i_exponent(s_norm_result_exp),
       .o_mantissa(rsh_mantissa_out),
       .o_guard(rsh_guard_out),
