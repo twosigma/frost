@@ -32,12 +32,14 @@
 #define TEST_WINDOW 0x00800000u /* exercise the first 8 MiB of the region */
 
 /* Word offsets (in 32-bit words) covering low, two mid points, and far. The
- * low cases start at the second 32-byte line: ddr_preload fills the first. */
+ * low case starts at the second 32-byte line, since ddr_preload fills the
+ * first. The mid cases share its direct-mapped L1D index (OFF_MID_B also its
+ * L2 index), so they evict the low line and later reads of it miss. */
 #define OFF_LOW (32u / 4u)
 #define OFF_LOW2 (OFF_LOW + 1u)
-#define OFF_MID_A (0x00040000u / 4u)       /* 256 KiB in (beyond L1) */
-#define OFF_MID_B (0x00400000u / 4u)       /* 4 MiB in (beyond L2)   */
-#define OFF_TOP ((TEST_WINDOW - 16u) / 4u) /* near the window top    */
+#define OFF_MID_A (OFF_LOW + 0x00040000u / 4u) /* 256 KiB past OFF_LOW (beyond L1) */
+#define OFF_MID_B (OFF_LOW + 0x00400000u / 4u) /* 4 MiB past OFF_LOW (beyond L2) */
+#define OFF_TOP ((TEST_WINDOW - 16u) / 4u)     /* near the window top */
 
 static volatile uint32_t *const ddr = (volatile uint32_t *) CACHED_BASE;
 
