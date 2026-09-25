@@ -513,11 +513,12 @@ test15_start:
     li      t0, 0
     li      a3, 3           # Loop count (use a3 for c.bnez)
     .option rvc
-    nop                     # c.nop is 2 bytes, may adjust alignment
+    .balign 4
+    nop                     # c.nop: the loop starts at PC[1]=1
 test15_loop:
     c.addi  t0, 1           # Compressed increment
     c.addi  a3, -1          # Compressed decrement
-    c.bnez  a3, test15_loop # Compressed branch (may be at halfword boundary)
+    c.bnez  a3, test15_loop # Compressed branch at PC[1]=1
     .option norvc
 
     # Verify: t0 should be 3
@@ -722,11 +723,12 @@ test20_start:
     li      t0, 0
     li      t1, 1
     .option rvc
+    .balign 4
     c.nop                   # 2 bytes - push next 32-bit instr to span
     .option norvc
     # The next 32-bit instruction starts at halfword boundary (spans)
-    addi    t0, t0, 1       # 32-bit, might span
-    bnez    t1, test20_skip # Branch after potential spanning
+    addi    t0, t0, 1       # 32-bit at PC[1]=1: spans
+    bnez    t1, test20_skip # Branch right after the spanning addi
     addi    t0, t0, 100     # Should be skipped
 test20_skip:
     addi    t0, t0, 1       # t0 = 2
@@ -982,6 +984,7 @@ test27_start:
     li      t0, 0
     li      t1, 1
     .option rvc
+    .balign 4
     c.nop                       # 2 bytes to push branch to halfword
     .option norvc
     # This 32-bit branch starts at halfword = spans word boundary
@@ -1006,9 +1009,6 @@ test27_fail:
 
     # =========================================
     # Test 28: Spanning branch, taken
-    # FIXME: nothing pins the alignment of this c.nop, so whether the
-    # branch spans depends on the code before it. In the current build it
-    # does not; a .balign 4 before the c.nop would pin it.
     # =========================================
 test28_start:
     la      a0, msg_test28
@@ -1017,7 +1017,8 @@ test28_start:
     li      t0, 0
     li      t1, 0           # For taken branch
     .option rvc
-    c.nop                   # Align to make next branch span
+    .balign 4
+    c.nop                   # Pin the branch at PC[1]=1
     .option norvc
     beqz    t1, test28_taken  # Taken (t1 == 0), spanning branch
     addi    t0, t0, 100     # Should be skipped
@@ -1040,10 +1041,8 @@ test28_fail:
 
     # =========================================
     # Test 29: Spanning loop branch
-    # Loop back-edge is a spanning instruction
-    # FIXME: nothing pins the alignment of the loop, so whether addi and
-    # bnez span depends on the code before it. In the current build they
-    # do not; the loop must start word-aligned for them to span.
+    # The loop starts word-aligned, so after its 2-byte c.addi the 32-bit
+    # addi and the bnez back-edge both start at PC[1]=1 and span.
     # =========================================
 test29_start:
     la      a0, msg_test29
@@ -1052,12 +1051,12 @@ test29_start:
     li      t0, 0
     li      t1, 5
     .option rvc
-    c.nop                   # Align loop branch to span
+    .balign 4
 test29_loop:
     c.addi  t0, 1           # 2 bytes
     .option norvc
-    addi    t1, t1, -1      # 4 bytes - this is at halfword
-    bnez    t1, test29_loop # 4 bytes - this should span
+    addi    t1, t1, -1      # 4 bytes at PC[1]=1: spans
+    bnez    t1, test29_loop # 4 bytes at PC[1]=1: spans
 
     # Verify: t0 should be 5
     li      t2, 5
@@ -1440,10 +1439,6 @@ test38_start:
     la      a0, msg_test38
     jal     ra, print_string
 
-    # Skip switch: point this jump at tests_done to skip this and later tests
-    j       test38_run
-
-test38_run:
     li      t0, 0
 
     # Load target address then jump
@@ -1744,10 +1739,7 @@ test43_start:
     sw      s1, 0(sp)
     sw      s2, 4(sp)
 
-    # FIXME: lui+addi build 0x1337F619 = 322434585, not 322265625
-    # (0x13356219). Both have nine digits, so the check still passes.
-    lui     a4, 0x1337f
-    addi    a4, a4, 0x619
+    li      a4, 322265625       # 0x13356219
     li      a3, 0               # Digit count
     li      a5, 15              # Max iterations
 
@@ -2140,8 +2132,6 @@ msg_test44:
     .asciz "Test 44: Combined extract+print... "
 msg_test45:
     .asciz "Test 45: Exact uart_printf loop... "
-msg_skip:
-    .asciz "SKIP (known bug)\n"
 msg_ok:
     .asciz "OK\n"
 msg_fail:
