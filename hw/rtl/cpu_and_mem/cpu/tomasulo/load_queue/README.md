@@ -160,12 +160,14 @@ hide it.
 ## Device loads
 
 Device reads can have side effects (clear-on-read registers, FIFO pops), so a
-device load (any address with `addr[31:30] == 2'b01`, mapped or not) runs
-exactly once and never speculatively: it leaves the LQ only at the ROB head.
+device load (any address with `addr[31:30] == 2'b01`) runs exactly once and
+never speculatively: it leaves the LQ only at the ROB head.
 It may probe the SQ and hand off to the
 [data-memory router](../../cpu_ooo/memory_if/data_mem_request_router.sv)
 while older committed stores still drain, since neither step touches the
-device.
+device. A device-quadrant load outside the MMIO and PLIC windows reads
+nothing: it completes with a load access fault instead (see
+[Completion](#completion)).
 
 The router parks every device request in its one-entry request register and
 accepts it only once the request is armed behind the interrupt shield

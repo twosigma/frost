@@ -1938,7 +1938,9 @@ module tomasulo_wrapper #(
   // PMA/SC-table paths behind the 64-bit carry chain.  An SC's immediate is
   // zero, so its address is the base page, and the base-page check leaves
   // the device windows out for an SC, which makes the result
-  // pma_atomic_ok(src1) for an SC.
+  // pma_atomic_ok(src1) for an SC.  The edges are exact only for nonempty
+  // intervals with an unmapped page between any two, which cpu_and_mem
+  // checks for the device windows.
   // Keep the 13-bit tap explicit so synthesis cannot re-expand this predicate
   // through sq_effective_addr; that full-width sum is the architectural
   // SQ/xtval payload below.

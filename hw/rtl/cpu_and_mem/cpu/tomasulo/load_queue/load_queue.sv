@@ -1564,8 +1564,8 @@ module load_queue #(
   // path, a forward, or a memory launch. The PMA term is not gated by
   // i_trap_misaligned_accesses: the launched-implies-in-map invariant that
   // the 32-bit region decodes rely on must hold unconditionally. Access
-  // faults outrank misalignment per the privileged spec's exception
-  // priority, and an AMO's fault is the store/AMO access fault. AMOs and LRs
+  // faults outrank misalignment (the privileged spec allows either order),
+  // and an AMO's fault is the store/AMO access fault. AMOs and LRs
   // are checked against the atomic map, which excludes the device quadrant,
   // so neither reaches a device.
   logic sq_check_pma_fault;

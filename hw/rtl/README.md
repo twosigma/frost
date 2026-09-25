@@ -88,8 +88,9 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 Every other address, including the rest of the device quadrant
 `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set, is
 unmapped: a fetch, load, store, or AMO there raises a precise access fault
-(cause 1, 5, or 7), unless a misaligned-address or page fault takes priority,
-and never aliases onto the map.
+(cause 1, 5, or 7) and never aliases onto the map. Under Sv39, a
+misaligned-address or page fault takes priority over the access fault; for
+an untranslated access, the access fault takes priority over misalignment.
 
 The ROM, DEBUG, and RAM regions divide the 256 KiB low BRAM as the unified
 linker script (`sw/common/link.ld`) does. Low BRAM holds separate instruction
@@ -215,8 +216,9 @@ only the addressed word. The PLIC, DMA test engine, and NIC windows take
 store writes only the upper register. Devices take loads and stores only, and
 only inside the MMIO and PLIC windows. A load or store elsewhere in the device
 quadrant raises an access fault (cause 5 or 7), and so does an AMO, LR, or SC
-anywhere in the quadrant (cause 7, 5, or 7), unless a misaligned-address or
-page fault takes priority; the device sees neither a read nor a write.
+anywhere in the quadrant (cause 7, 5, or 7). The device sees neither a read
+nor a write, and the [memory map](#memory-map) gives how these faults rank
+against misaligned-address and page faults.
 
 MMIO is strongly ordered: accesses from one hart complete in program order
 without fences. A device read waits for committed stores to drain and is

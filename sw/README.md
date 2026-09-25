@@ -318,7 +318,7 @@ can be debugged and where each one first stops.
 | `trap_s2l_fwd/` | A counter a timer handler stores to cached DDR must be visible to later loads (Linux `handle_exception` pattern) |
 | `uart_echo/` | Interactive UART receive demo with `echo`, `hex`, and `count` commands |
 | `umode_test/` | U-mode: `ecall`, timer preemption, illegal CSR and `mret` access, and `mcounteren` gating |
-| `vm_test/` | Sv39 data translation through MPRV: page sizes, permissions, Svade, malformed PTEs, `sfence.vma`, atomics, MMIO |
+| `vm_test/` | Sv39 data translation through MPRV: page sizes, permissions, Svade, malformed PTEs, `sfence.vma`, atomics, MMIO, and access faults through device mappings |
 | `wfi_drain_mepc_test/` | A timer interrupt at `wfi` while a cached store drains must set `mepc` past the `wfi` |
 | `wfi_lost_tick/` | The Linux idle loop (`wfi` with MIE toggling and CLINT re-arm) must not lose timer ticks |
 | `wfi_mepc_test/` | A timer interrupt at `wfi` must set `mepc` to the next instruction |
