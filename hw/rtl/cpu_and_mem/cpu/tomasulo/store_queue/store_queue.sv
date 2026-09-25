@@ -335,6 +335,7 @@ module store_queue #(
   end
 
   // Read outputs
+  logic [IdxWidth-1:0] drain_idx_q;  // drain cursor (see Drain Cursor below)
   logic [FLEN-1:0] sq_data_drain_rd;  // read at drain_idx_q (drain cursor)
 
   logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
@@ -720,7 +721,6 @@ module store_queue #(
   // is not drain-ready.
   logic [   DEPTH-1:0] drain_mask_base;
   logic [   DEPTH-1:0] drain_mask_post_fire;
-  logic [IdxWidth-1:0] drain_idx_q;
 
   logic                mem_write_fire_next;
   logic                mem_write_completes_next;

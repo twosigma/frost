@@ -552,6 +552,8 @@ module load_queue #(
   amo_kind_e                               amo_kind_q;
   logic                                    amo_compute_owner_killed;
   logic                                    amo_compute_commit;
+  logic                                    amo_response_capture;
+  logic                                    amo_response_is_minmax;
   logic       [    XLEN-1:0]               amo_old_value;
   logic       [    XLEN-1:0]               amo_write_addr_q;
   // Tier flags of amo_write_addr_q, captured beside it (see the port note).
@@ -1553,6 +1555,10 @@ module load_queue #(
   // response the LQ can launch one load per cycle. The terms match
   // sq_check_stage_clears below.
   logic sq_check_will_clear;
+  logic cache_hit_fast_path;
+  logic sq_do_forward;
+  logic launch_mem_issue;
+  logic older_amo_write_pending;
   logic sq_check_misaligned;
   logic misalign_bypass_fire;
   logic sq_check_is_cached_region;
@@ -1704,18 +1710,15 @@ module load_queue #(
   // load).
 
   logic sq_can_issue;
-  logic sq_do_forward;
   logic stage_mem_issue;
-  logic launch_mem_issue;
   logic [IdxWidth-1:0] launch_mem_issue_idx;
   logic [XLEN-1:0] launch_mem_issue_addr;
   riscv_pkg::mem_size_e launch_mem_issue_size;
-  logic cache_hit_fast_path;
   logic [XLEN-1:0] stage_mem_issue_addr;
   riscv_pkg::mem_size_e stage_mem_issue_size;
   logic sq_no_older_store;
   logic sq_commit_interlock;
-  assign sq_no_older_store   = sq_check_no_older_store_q || i_sq_empty;
+  assign sq_no_older_store = sq_check_no_older_store_q || i_sq_empty;
   assign sq_commit_interlock = sq_commit_check_block && sq_check_phase2;
 
   // AMO write fence: AMOs live in the LQ, not the SQ, so SQ disambiguation
@@ -1724,7 +1727,6 @@ module load_queue #(
   // vector.  Allocation is in program order, so no AMO older than the staged
   // entry can appear after it was staged; the registered vector is the
   // complete fence, with no ROB-head arithmetic on this path.
-  logic older_amo_write_pending;
   assign older_amo_write_pending = |(older_amo_block_q & sq_check_in_flight_mask);
 
   // A staged head AMO with the committed queue empty cannot have older SQ
@@ -3578,8 +3580,6 @@ module load_queue #(
   assign amo_old_word_sext = {{(XLEN - 32) {amo_beat_word[31]}}, amo_beat_word[31:0]};
   logic [XLEN-1:0] amo_response_old_value;
   logic [XLEN-1:0] amo_compute_result;
-  logic amo_response_capture;
-  logic amo_response_is_minmax;
   logic [1:0] amo_response_minmax_relation_d;
   logic [1:0] amo_response_minmax_relation_w;
   logic amo_response_minmax_is_unsigned;
