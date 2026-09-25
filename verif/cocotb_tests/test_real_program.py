@@ -756,6 +756,46 @@ class WfiRecoveryWatch:
                 seeded_pc = (_read_int(self.sig["rob_trap_pc"]) or 0) + 4
 
 
+class CoverageCounter:
+    """Count the cycles a one-bit signal is high while the core is out of reset.
+
+    For an app listed in COVERAGE_POINTS: the test fails if the count stays
+    at zero, so the program cannot stop producing the case it exists for
+    without the bench noticing.
+    """
+
+    def __init__(self, dut: Any, path: str, label: str) -> None:
+        """Resolve the signal and the core's reset."""
+        self.dut = dut
+        self.label = label
+        self.signal = _get_signal(dut, path)
+        self.reset = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.i_rst")
+        _require_signals(
+            f"coverage of {label}",
+            {path: self.signal, "cpu_inst.i_rst": self.reset},
+        )
+        self.hits = 0
+
+    async def run(self) -> None:
+        """Sample every cycle."""
+        while True:
+            await RisingEdge(self.dut.i_clk)
+            await ReadOnly()
+            if _read_bool(self.signal) and _read_bool(self.reset) is False:
+                self.hits += 1
+
+
+# App name -> (signal path, label) for CoverageCounter.
+COVERAGE_POINTS: dict[str, tuple[str, str]] = {
+    # if_stage's resteer to pc_reg's word when the fetch window cannot hold
+    # pc_reg's packet; reached only under the fetch-latency fuzz.
+    "served_window_resteer": (
+        "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.window_resteer_pc_reg",
+        "served-window resteer",
+    ),
+}
+
+
 async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
     """Sample trap, MRET, flush, IRQ, and store-drain state to debug a hang.
 
@@ -4362,6 +4402,13 @@ async def test_real_program(dut: Any) -> None:
     wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
     if wfi_watch is not None:
         cocotb.start_soon(wfi_watch.run())
+    coverage = (
+        CoverageCounter(dut, *COVERAGE_POINTS[app_name])
+        if app_name in COVERAGE_POINTS
+        else None
+    )
+    if coverage is not None:
+        cocotb.start_soon(coverage.run())
 
     for run_number in range(1, NUM_RUNS + 1):
         if run_number > 1:
@@ -4436,5 +4483,9 @@ async def test_real_program(dut: Any) -> None:
         cocotb.log.info(
             f"wrong-path WFI at the ROB head in recovery: {wfi_watch.hits} cycles"
         )
+
+    if coverage is not None:
+        assert coverage.hits > 0, f"the program never reached a {coverage.label}"
+        cocotb.log.info(f"{coverage.label}: {coverage.hits} cycles")
 
     cocotb.log.info(f"=== All {NUM_RUNS} run(s) completed successfully ===")

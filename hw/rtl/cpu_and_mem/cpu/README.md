@@ -306,7 +306,12 @@ names the parcel before it, which is off the program path, so `pc_controller`
 flags the lookup, `branch_prediction_controller` ignores that BTB entry, and
 IF gives the packet a not-taken direction with its own bimodal index.
 `fetch_pc_mux` checks the resteer's priority and `prediction_release` the
-retry's lookup address; simulation assertions check the rest.
+retry's lookup address; simulation assertions check the rest. With
+fixed-latency fetch no program reaches the resteer. The
+`served_window_resteer_fetch_fuzz` system test does, under the fetch-latency
+fuzz: its loop branch's target window arrives in the lead-restoring bubble
+and is dropped, and when a fuzz gap holds the retry, fetch has moved on to
+the next word.
 
 ### Aliased BTB lookups
 

@@ -307,6 +307,7 @@ can be debugged and where each one first stops.
 | `rv64_amo_test/` | Doubleword AMOs, LR.D/SC.D, and word AMOs on a dword cell, with full 64-bit value checks |
 | `rv64_smoke/` | The smallest RV64I program: W-form operations, 6-bit shift amounts, and 64-bit loads and stores |
 | `satp_drain_test/` | A store committed just before a `satp` or `mstatus` write must drain before that write retires and flushes the pipeline |
+| `served_window_resteer/` | A BTB-predicted loop branch to an upper-half target; under the fetch-latency fuzz its target window arrives after fetch has moved on, so IF resteers (`served_window_resteer_fetch_fuzz`) |
 | `slot2_fault_test/` | A fetch fault on the second instruction of a fetch pair, one whose bytes encode a NOP included, must trap at that instruction with exact `mepc` and `mtval` |
 | `smc_fencei_test/` | Self-modifying code with `fence.i` across store-to-fence gaps, warm and cold L1D, and tight loops |
 | `smode_test/` | S-mode: delegation, `sret`, TSR/TVM/TW, supervisor CSRs, counter permissions, and interrupts |

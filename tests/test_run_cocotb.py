@@ -781,8 +781,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # The app runs from cached DDR (its Makefile forces MEM_CONFIG=ddr), so
         # its misses go to a small L2 and a slow DDR here, as for the other tests
         # in CI's Cache stress shard, which share this Verilator build. The run
-        # never takes if_stage's window_cannot_serve resteer; the if_stage and
-        # pc_controller benches and assertions cover that guard.
+        # never takes if_stage's window_cannot_serve resteer;
+        # served_window_resteer_fetch_fuzz takes it end to end.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "freertos_demo": CocotbRunConfig(
@@ -981,6 +981,18 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
         extra_env=(("EXTRA_CFLAGS", "-DITLB_NO_CACHED_FETCH"),),
+    ),
+    "served_window_resteer_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="served_window_resteer",
+        description=(
+            "Served-window resteer end to end under fetch-latency fuzz: a "
+            "BTB-predicted loop branch to an upper-half target whose window "
+            "arrives after fetch has moved on; the bench requires resteers and "
+            "the loop's count and sum must be right"
+        ),
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
     "fetch_lead_repro": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
