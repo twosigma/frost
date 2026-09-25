@@ -48,10 +48,6 @@ module frontend_validity_tracker (
     input logic                            i_id_stall_q,
     input logic                            i_replay_after_dispatch_stall_q,
     input logic                            i_flush_pipeline,
-    // Debug Mode single step: allocate user NOP bundles too, so
-    // a step over a nop retires exactly that nop. Outside stepping FROST
-    // drops all-NOP bundles at ID and never retires them.
-    input logic                            i_keep_nops,
 
     output logic o_if_valid_q,
     output logic o_pd_valid_q,
@@ -120,17 +116,12 @@ module frontend_validity_tracker (
   logic id_valid_2_preflush;
   logic id_valid;
   logic id_valid_2;
-  // 2-wide: the NOP filter must consider both slots. A bundle whose slot 1 is
-  // a user NOP (such as a c.nop, which expands to `addi x0, x0, 0`) but whose
-  // slot 2 carries a real instruction must still dispatch: IF has already
-  // moved past both, so dropping the bundle would lose the slot-2
-  // instruction. Treat the bundle as valid when either slot has a non-NOP
-  // instruction. Dispatch handles a slot-1 NOP harmlessly: alloc to ROB, no
-  // dest, no rename, silent retire.
-  // TIMING: the check uses id_stage's registered `is_not_nop` flags rather
-  // than a 32-bit compare against the NOP encoding here, which would put
-  // slot 2's instruction bits into dispatch_stall and the RS write-enable
-  // logic.
+  // 2-wide: a bundle is valid when either slot holds a real instruction
+  // (id_stage's registered is_real, clear for PD's inject_nop bubbles). The
+  // base below excludes the bubbles after a flush, reset, or sel_nop; is_real
+  // also excludes the PD-redirect bubbles, which kill both slots. A NOP in
+  // the program is a real instruction: it dispatches and retires like any
+  // other, so instret counts it.
   logic id_valid_base_preflush;
   // id_stall_q covers the whole CSR serialization window for the dispatch
   // valid: pipeline control sets it on the edge where a CSR allocates, and the
@@ -151,16 +142,14 @@ module frontend_validity_tracker (
       // Dispatch-stall replay still needs an explicit pulse because the
       // resource stall's release cannot be known until this cycle.
       (!id_stall_q || replay_after_dispatch_stall_q);
-  // i_keep_nops (single step) keeps a real all-NOP bundle: the base has already
-  // excluded injected bubbles, so only user NOPs get through.
   assign id_valid_preflush = id_valid_base_preflush &&
-      (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop || i_keep_nops);
+      (from_id_to_ex.is_real || from_id_to_ex_2.is_real);
 
   // Slot 2 is a candidate only when the bundle's base candidate is (the
-  // bundle stalls and dispatches as a unit) and slot 2 holds a non-NOP
+  // bundle stalls and dispatches as a unit) and slot 2 holds a real
   // instruction. The recovery kill is applied separately, by dispatch and in
   // id_valid_2 below.
-  assign id_valid_2_preflush = id_valid_base_preflush && from_id_to_ex_2.is_not_nop;
+  assign id_valid_2_preflush = id_valid_base_preflush && from_id_to_ex_2.is_real;
 
   assign id_valid = id_valid_preflush && !dispatch_flush;
   assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;

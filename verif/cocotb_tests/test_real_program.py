@@ -3241,8 +3241,8 @@ async def run_until_complete(
         ):
             # Compare each instruction as it dispatches: the decoded bundle
             # queue pops its head bundle when ROB allocation fires, and slot
-            # 2 dispatches with slot 1 exactly when its is_not_nop bit is
-            # set. A slot-2 instruction follows slot 1 sequentially (a slot-1
+            # 2 dispatches with slot 1 exactly when its is_real bit is set.
+            # A slot-2 instruction follows slot 1 sequentially (a slot-1
             # branch ends the bundle), so slot 2 is read only near the
             # function. A compressed instruction reaches decode expanded, so
             # 16-bit parcels are skipped. CoreMark takes no fetch faults, so
@@ -3260,7 +3260,7 @@ async def run_until_complete(
                         f"CoreMark IF check: from_id_to_ex_2 is unresolvable at "
                         f"cycle={cycle + 1}"
                     )
-                if slot2.field(packet_2, "is_not_nop"):
+                if slot2.field(packet_2, "is_real"):
                     dispatched.append(
                         (
                             2,

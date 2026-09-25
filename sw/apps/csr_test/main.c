@@ -251,12 +251,8 @@ static void counter_tests(void)
     uart_puts("\r\nTest 8: a minstret write replaces the writer's own increment\r\n");
     /* Zicsr: the value an instruction writes to minstret is the value the
      * next instruction reads. Each sequence is one asm statement, so nothing
-     * runs between its instructions. The spacer is `li t0, 0`, not `nop`:
-     * FROST drops a NOP before dispatch (in slot 2 of a decoded bundle, or
-     * in a bundle with no other instruction), and a dropped NOP never
-     * retires. That, xRETs retiring through a flush, and a WFI that an
-     * interrupt takes over at the ROB head are the known cases minstret does
-     * not count (linux/README.md, "Counters and mcounteren"). */
+     * runs between its instructions. instret_test covers the instructions
+     * that retire without an ordinary commit. */
     const uint64_t v = 0x1000;
     const uint64_t zero = 0;
     __asm volatile("csrw 0xB02, %1\n\tcsrr %0, 0xB02" : "=r"(a) : "r"(v));

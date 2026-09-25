@@ -1879,11 +1879,10 @@ package riscv_pkg;
     logic uses_fp_rs1;
     logic uses_fp_rs2;
     logic uses_fp_rs3;
-    // Pre-computed `instruction != NOP` flag, registered in id_stage so the
-    // dispatch valid terms (cpu_ooo's id_valid/id_valid_2) test one bit
-    // instead of a 32-bit compare. A fetch fault sets it even when its
-    // garbage bytes encode a NOP, so the fault still dispatches.
-    logic is_not_nop;
+    // A real instruction rather than a bubble (PD's inject_nop), registered
+    // in id_stage. The dispatch valid terms (cpu_ooo's id_valid/id_valid_2)
+    // and slot 2's presence test it. A NOP in the program is real.
+    logic is_real;
   } from_id_to_ex_t;
 
   // The narrow control fields of from_id_to_ex_t: every flag, the operation
@@ -1934,7 +1933,7 @@ package riscv_pkg;
     logic uses_fp_rs1;
     logic uses_fp_rs2;
     logic uses_fp_rs3;
-    logic is_not_nop;
+    logic is_real;
   } id_dispatch_ctrl_t;
 
   // Control-flow feedback consumed by the front-end.

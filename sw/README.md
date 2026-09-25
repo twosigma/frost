@@ -268,6 +268,7 @@ can be debugged and where each one first stops.
 | `freertos_demo/` | FreeRTOS tasks passing data through a queue and sharing the UART under a mutex, while worker tasks increment one counter with `amoadd.w` and the 1 ms tick time-slices them; a tick inside a critical section must defer its task switch |
 | `fs_off_test/` | F/D instructions with `mstatus.FS` Off: illegal-instruction ahead of access and misaligned faults, no device read by a trapping FP load, and `mstatus.FS` writes, through `mstatus` or `sstatus`, that apply from the next instruction |
 | `hello_world/` | Prints a greeting and the cycle-count delta once a second; the program the bitstream boots |
+| `instret_test/` | `minstret` counts NOPs, `mret`, `fence.i`, `sfence.vma`, a `wfi` that a timer interrupt ends, and an interrupt held off by the device-read shield; each interrupt's count must equal the instructions before `mepc` |
 | `irq_mie_window/` | A pending timer interrupt must be taken when a `csrsi`/`csrci` pair opens `mstatus.MIE` for one instruction |
 | `isa_test/` | Self-checks for RV64IMAFDCB, Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and Zihintpause, plus M-mode CSRs and traps |
 | `itlb_test/` | Sv39 instruction translation in S- and U-mode: superpages, page-crossing instructions, fetch faults, `sfence.vma` and `satp` changes |

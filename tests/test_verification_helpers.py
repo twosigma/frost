@@ -241,7 +241,7 @@ def test_packed_struct_reads_fields_through_the_whole_vector() -> None:
         {
             "program_counter": 0x8000_0000_0000_0B8C,
             "instruction": 0x00A5_8593,
-            "is_not_nop": 1,
+            "is_real": 1,
         },
     )
     struct = real_program._PackedStruct(_VectorHandle(width, packed), layout, "slot2")
@@ -250,7 +250,7 @@ def test_packed_struct_reads_fields_through_the_whole_vector() -> None:
     assert value == packed
     assert struct.field(value, "program_counter") == 0x8000_0000_0000_0B8C
     assert struct.field(value, "instruction") == 0x00A5_8593
-    assert struct.field(value, "is_not_nop") == 1
+    assert struct.field(value, "is_real") == 1
     assert struct.field(value, "is_compressed") == 0
 
 

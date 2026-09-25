@@ -790,11 +790,9 @@ module cpu_ooo #(
   logic step_armed_q;
   logic step_done_q;
   logic step_done_set;
-  // Duplicate registers of step_armed_q for its two wide consumers, the front
-  // end's keep-NOPs term and the ROB's commit-width gate. They load the same
-  // next state and are kept from merging so placement can put each next to
-  // its consumer.
-  (* keep = "true", equivalent_register_removal = "no" *)logic step_armed_fe_q;
+  // A duplicate register of step_armed_q for its wide consumer, the ROB's
+  // commit-width gate. It loads the same next state and is kept from merging
+  // so placement can put it next to its consumer.
   (* keep = "true", equivalent_register_removal = "no" *)logic step_armed_rob_q;
 
   frontend_validity_tracker frontend_validity_tracker_inst (
@@ -811,7 +809,6 @@ module cpu_ooo #(
       .i_id_stall_q(id_stall_q),
       .i_replay_after_dispatch_stall_q(replay_after_dispatch_stall_q),
       .i_flush_pipeline(flush_pipeline),
-      .i_keep_nops(step_armed_fe_q),
       .o_if_valid_q(if_valid_q),
       .o_pd_valid_q(pd_valid_q),
       .o_id_valid_preflush(direct_id_valid_preflush),
@@ -881,7 +878,7 @@ module cpu_ooo #(
         producer_ctrl.uses_fp_rs1 = decoded_packet.uses_fp_rs1;
         producer_ctrl.uses_fp_rs2 = decoded_packet.uses_fp_rs2;
         producer_ctrl.uses_fp_rs3 = decoded_packet.uses_fp_rs3;
-        producer_ctrl.is_not_nop = decoded_packet.is_not_nop;
+        producer_ctrl.is_real = decoded_packet.is_real;
         producer_ctrl_2.is_load_instruction = decoded_packet_2.is_load_instruction;
         producer_ctrl_2.is_load_unsigned = decoded_packet_2.is_load_unsigned;
         producer_ctrl_2.instruction_operation = decoded_packet_2.instruction_operation;
@@ -924,7 +921,7 @@ module cpu_ooo #(
         producer_ctrl_2.uses_fp_rs1 = decoded_packet_2.uses_fp_rs1;
         producer_ctrl_2.uses_fp_rs2 = decoded_packet_2.uses_fp_rs2;
         producer_ctrl_2.uses_fp_rs3 = decoded_packet_2.uses_fp_rs3;
-        producer_ctrl_2.is_not_nop = decoded_packet_2.is_not_nop;
+        producer_ctrl_2.is_real = decoded_packet_2.is_real;
         producer_ctrl_next.is_load_instruction = decoded_packet_next.is_load_instruction;
         producer_ctrl_next.is_load_unsigned = decoded_packet_next.is_load_unsigned;
         producer_ctrl_next.instruction_operation = decoded_packet_next.instruction_operation;
@@ -968,7 +965,7 @@ module cpu_ooo #(
         producer_ctrl_next.uses_fp_rs1 = decoded_packet_next.uses_fp_rs1;
         producer_ctrl_next.uses_fp_rs2 = decoded_packet_next.uses_fp_rs2;
         producer_ctrl_next.uses_fp_rs3 = decoded_packet_next.uses_fp_rs3;
-        producer_ctrl_next.is_not_nop = decoded_packet_next.is_not_nop;
+        producer_ctrl_next.is_real = decoded_packet_next.is_real;
         producer_ctrl_next_2.is_load_instruction = decoded_packet_next_2.is_load_instruction;
         producer_ctrl_next_2.is_load_unsigned = decoded_packet_next_2.is_load_unsigned;
         producer_ctrl_next_2.instruction_operation = decoded_packet_next_2.instruction_operation;
@@ -1012,14 +1009,14 @@ module cpu_ooo #(
         producer_ctrl_next_2.uses_fp_rs1 = decoded_packet_next_2.uses_fp_rs1;
         producer_ctrl_next_2.uses_fp_rs2 = decoded_packet_next_2.uses_fp_rs2;
         producer_ctrl_next_2.uses_fp_rs3 = decoded_packet_next_2.uses_fp_rs3;
-        producer_ctrl_next_2.is_not_nop = decoded_packet_next_2.is_not_nop;
+        producer_ctrl_next_2.is_real = decoded_packet_next_2.is_real;
       end
       // An unpredicted JALR in either slot. While it is queued it counts as
       // pending for the control-flow serialization stall.
       assign input_indirect =
           (decoded_packet.is_jump_and_link_register &&
            !(decoded_packet.ras_predicted || decoded_packet.btb_predicted_taken)) ||
-          (decoded_packet_2.is_not_nop && decoded_packet_2.is_jump_and_link_register &&
+          (decoded_packet_2.is_real && decoded_packet_2.is_jump_and_link_register &&
            !(decoded_packet_2.ras_predicted || decoded_packet_2.btb_predicted_taken));
       decoded_bundle_queue #(
           .DEPTH(DECODED_QUEUE_DEPTH),
@@ -1030,8 +1027,7 @@ module cpu_ooo #(
           .i_rst(i_rst),
           .i_flush(flush_pipeline),
           .i_advance(!pipeline_ctrl.stall),
-          .i_valid(pd_valid_q &&
-              (decoded_packet.is_not_nop || decoded_packet_2.is_not_nop || step_armed_fe_q)),
+          .i_valid(pd_valid_q && (decoded_packet.is_real || decoded_packet_2.is_real)),
           .i_packet({decoded_packet_2, decoded_packet}),
           .i_shadow({producer_ctrl_2, producer_ctrl}),
           .i_shadow_next({producer_ctrl_next_2, producer_ctrl_next}),
@@ -1093,7 +1089,7 @@ module cpu_ooo #(
         from_id_to_ex.uses_fp_rs1 = queue_ctrl.uses_fp_rs1;
         from_id_to_ex.uses_fp_rs2 = queue_ctrl.uses_fp_rs2;
         from_id_to_ex.uses_fp_rs3 = queue_ctrl.uses_fp_rs3;
-        from_id_to_ex.is_not_nop = queue_ctrl.is_not_nop;
+        from_id_to_ex.is_real = queue_ctrl.is_real;
         from_id_to_ex_2.is_load_instruction = queue_ctrl_2.is_load_instruction;
         from_id_to_ex_2.is_load_unsigned = queue_ctrl_2.is_load_unsigned;
         from_id_to_ex_2.instruction_operation = queue_ctrl_2.instruction_operation;
@@ -1136,11 +1132,11 @@ module cpu_ooo #(
         from_id_to_ex_2.uses_fp_rs1 = queue_ctrl_2.uses_fp_rs1;
         from_id_to_ex_2.uses_fp_rs2 = queue_ctrl_2.uses_fp_rs2;
         from_id_to_ex_2.uses_fp_rs3 = queue_ctrl_2.uses_fp_rs3;
-        from_id_to_ex_2.is_not_nop = queue_ctrl_2.is_not_nop;
+        from_id_to_ex_2.is_real = queue_ctrl_2.is_real;
       end
       assign id_valid_preflush = queue_valid &&
           !(csr_in_flight || csr_wb_pending || serializing_alloc_fire);
-      assign id_valid_2_preflush = id_valid_preflush && from_id_to_ex_2.is_not_nop;
+      assign id_valid_2_preflush = id_valid_preflush && from_id_to_ex_2.is_real;
       assign id_valid = id_valid_preflush && !dispatch_flush;
       assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
 `ifndef SYNTHESIS
@@ -2084,18 +2080,15 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       step_armed_q     <= 1'b0;
-      step_armed_fe_q  <= 1'b0;
       step_armed_rob_q <= 1'b0;
       step_done_q      <= 1'b0;
     end else if (trap_taken && trap_to_d) begin
       step_armed_q     <= 1'b0;
-      step_armed_fe_q  <= 1'b0;
       step_armed_rob_q <= 1'b0;
       step_done_q      <= 1'b0;
     end else begin
       if (dret_taken && csr_dcsr_step) begin
         step_armed_q     <= 1'b1;
-        step_armed_fe_q  <= 1'b1;
         step_armed_rob_q <= 1'b1;
       end
       if (step_done_set) step_done_q <= 1'b1;
@@ -2104,8 +2097,8 @@ module cpu_ooo #(
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
-      assert (step_armed_fe_q == step_armed_q && step_armed_rob_q == step_armed_q)
-      else $error("step_armed_q twins diverged");
+      assert (step_armed_rob_q == step_armed_q)
+      else $error("step_armed_rob_q diverged from step_armed_q");
     end
   end
 `endif
@@ -2522,6 +2515,9 @@ module cpu_ooo #(
   logic [     4:0] port1_fp_addr;
   logic [ FpW-1:0] port1_fp_data;
   logic [     1:0] instruction_retired_count;
+  // An instruction retired without a ROB commit in the previous cycle: an
+  // xRET, or a WFI that a trap took over (set with the resume PC below).
+  logic            retired_without_commit_q;
 
   commit_actions #(
       .XLEN(XLEN)
@@ -2532,7 +2528,7 @@ module cpu_ooo #(
       .i_rob_commit_2(rob_commit_2),
       .i_rob_commit_valid(rob_commit_valid),
       .i_csr_read_data(csr_read_data),
-      .i_trap_taken(trap_taken),
+      .i_retired_without_commit(retired_without_commit_q),
       .o_port0_int_we(port0_int_we),
       .o_port0_int_addr(port0_int_addr),
       .o_port0_int_data(port0_int_data),
@@ -3244,6 +3240,11 @@ module cpu_ooo #(
   logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
   logic [XLEN-1:0] trap_value_internal;
   logic [XLEN-1:0] interrupt_resume_pc;
+  // A legal WFI waits at the ROB head (see the seed arm below).
+  logic            wfi_resume_seed;
+  // The seed arm was the last to write interrupt_resume_pc, so a take now
+  // saves wfi_pc+4: the WFI retires with it.
+  logic            resume_pc_past_wfi_q;
 
   function automatic logic [XLEN-1:0] retired_next_pc(
       input riscv_pkg::reorder_buffer_commit_t commit);
@@ -3296,8 +3297,7 @@ module cpu_ooo #(
     end else if (rob_commit_valid_raw) begin
       // Timing: identical value to retired_next_pc(rob_commit_comb); see above.
       interrupt_resume_pc <= rob_head_retired_next_pc;
-    end else if (rob_head_is_wfi && head_valid && (rob_trap_cause == '0) && !flush_all &&
-                 !mispredict_recovery_pending) begin
+    end else if (wfi_resume_seed) begin
       // While a WFI waits at the ROB head, the architectural resume PC is
       // wfi_pc+4 (WFI never redirects). Seed it so that an interrupt taken at
       // the WFI saves the spec-required wfi_pc+4 rather than the pre-WFI
@@ -3314,10 +3314,57 @@ module cpu_ooo #(
       // a FENCE-class retirement) and commit-time recovery (a wrong-path
       // head) remove the head at the end of the cycle; seeding then would
       // overwrite the resume PC installed by the take or by the last
-      // retirement.
+      // retirement. A WFI never waits in Debug Mode or while a single step is
+      // armed (it runs as a nop there), so it gets no seed: a step that
+      // retires the instruction before it must halt with dpc at the WFI.
       interrupt_resume_pc <= rob_trap_pc + 64'd4;
     end
   end
+
+  assign wfi_resume_seed = rob_head_is_wfi && head_valid && (rob_trap_cause == '0) &&
+      !flush_all && !mispredict_recovery_pending && !csr_debug_mode && !step_armed_q;
+
+  // Mirrors the arms above: only the seed sets the flag, and every
+  // higher-priority arm clears it.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || xret_taken || trap_taken || rob_commit_2_valid_raw || rob_commit_valid_raw)
+      resume_pc_past_wfi_q <= 1'b0;
+    else if (wfi_resume_seed) resume_pc_past_wfi_q <= 1'b1;
+  end
+
+  // Instructions that retire without a registered commit, for instret
+  // (commit_actions adds this bit a cycle later):
+  //  - an xRET, which retires through the full flush after it;
+  //  - a legal WFI that a halt or an M/S interrupt takes over at the ROB head:
+  //    the take saves the seeded wfi_pc+4, so the WFI has executed. A WFI that
+  //    commits first clears resume_pc_past_wfi_q, so it never counts twice. A
+  //    Debug Mode go redirect or re-park (trap_no_csr) saves no PC and is
+  //    left out;
+  //  - a FENCE.I or SFENCE.VMA (the native FENCE-class event): it commits, but
+  //    the full flush it raises masks its own registered commit. A trap taken
+  //    in the same cycle would squash that commit instead, and the fence
+  //    would run again after the handler.
+  always_ff @(posedge i_clk) begin
+    retired_without_commit_q <= !i_rst &&
+        (xret_taken || (trap_taken && !trap_no_csr && resume_pc_past_wfi_q) ||
+         (fence_class_flush_event && !translation_csr_commit_shadow && !trap_taken));
+  end
+
+`ifndef SYNTHESIS
+  // A take that counts a waiting WFI saves the seeded resume PC past it.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && trap_taken && !trap_no_csr && resume_pc_past_wfi_q) begin
+      p_counted_wfi_take_saves_seed :
+      assert (trap_pc_internal == interrupt_resume_pc)
+      else
+        $error(
+            "cpu_ooo: a take counted the waiting WFI but saved PC %08x, not the seed %08x",
+            trap_pc_internal,
+            interrupt_resume_pc
+        );
+    end
+  end
+`endif
 
 `ifndef SYNTHESIS
   // Equivalence check for the ROB retired-next-PC precompute: whenever a
@@ -3343,12 +3390,11 @@ module cpu_ooo #(
   // An M/S interrupt taken while a WFI waits at the ROB head resumes after a
   // legal WFI: the saved PC must be wfi_pc+4. An illegal WFI has not
   // executed and gets no seed, so the interrupt saves the resume PC held
-  // while it waited (the WFI's own PC, or that of a dropped NOP before it),
-  // never wfi_pc+4, and the WFI traps once the handler returns. Waiting means
-  // the same WFI was the valid head in the previous cycle with nothing
-  // retiring, trapping or being flushed, so the resume-PC seed has had its
-  // cycle. A WFI's cause field is zero unless allocation marked it illegal
-  // (a WFI never completes on the CDB).
+  // while it waited (the WFI's own PC), never wfi_pc+4, and the WFI traps
+  // once the handler returns. Waiting means the same WFI was the valid head
+  // in the previous cycle with nothing retiring, trapping or being flushed,
+  // so the resume-PC seed has had its cycle. A WFI's cause field is zero
+  // unless allocation marked it illegal (a WFI never completes on the CDB).
   logic wfi_waiting_q;
   logic wfi_waiting_legal_q;
   logic [XLEN-1:0] wfi_waiting_pc_q;

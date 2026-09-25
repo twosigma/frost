@@ -250,6 +250,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "follows the rs1/uimm field, not the value)"
         ),
     ),
+    "instret_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="instret_test",
+        description=(
+            "Directed instret test: NOPs, MRET, FENCE.I, SFENCE.VMA, a WFI that "
+            "a timer interrupt ends, and a software interrupt the device-read "
+            "shield defers all count exactly (each take's count must equal the "
+            "instructions before mepc)"
+        ),
+    ),
     "umode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

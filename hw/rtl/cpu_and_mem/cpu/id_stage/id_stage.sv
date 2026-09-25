@@ -347,7 +347,7 @@ module id_stage #(
       o_from_id_to_ex.uses_fp_rs1               <= 1'b0;
       o_from_id_to_ex.uses_fp_rs2               <= 1'b0;
       o_from_id_to_ex.uses_fp_rs3               <= 1'b0;
-      o_from_id_to_ex.is_not_nop                <= 1'b0;
+      o_from_id_to_ex.is_real                   <= 1'b0;
     end else if (id_advance) begin
       // While the pipeline advances, pass the decoded instruction on, or a NOP
       // when flushing.
@@ -413,12 +413,10 @@ module id_stage #(
       o_from_id_to_ex.uses_fp_rs1 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre;
       o_from_id_to_ex.uses_fp_rs2 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre;
       o_from_id_to_ex.uses_fp_rs3 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre;
-      // Registered NOP detect.  After a flush or reset the register holds the
-      // NOP pattern, so is_not_nop is 0 there too, which matches NOP semantics.
-      // A fault-tagged bundle must dispatch even when its garbage bytes happen
-      // to encode a NOP.
-      o_from_id_to_ex.is_not_nop <= i_pipeline_ctrl.flush ? 1'b0 :
-          ((instruction != riscv_pkg::NOP) || is_fetch_fault);
+      // A real instruction rather than a bubble: reset, flush, and PD's
+      // inject_nop (flush, PD redirect, or sel_nop) clear it. A NOP in the
+      // program is real, so it dispatches, retires, and counts in instret.
+      o_from_id_to_ex.is_real <= i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id.inject_nop;
     end
     // Datapath payload (immediates and targets): not reset, only stalled.
     if (id_advance) begin
@@ -504,7 +502,7 @@ module id_stage #(
       id_next.uses_fp_rs1 = 1'b0;
       id_next.uses_fp_rs2 = 1'b0;
       id_next.uses_fp_rs3 = 1'b0;
-      id_next.is_not_nop = 1'b0;
+      id_next.is_real = 1'b0;
     end else if (id_advance) begin
       // While the pipeline advances, pass the decoded instruction on, or a NOP
       // when flushing.
@@ -568,12 +566,8 @@ module id_stage #(
       id_next.uses_fp_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre;
       id_next.uses_fp_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre;
       id_next.uses_fp_rs3 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre;
-      // Registered NOP detect.  After a flush or reset the register holds the
-      // NOP pattern, so is_not_nop is 0 there too, which matches NOP semantics.
-      // A fault-tagged bundle must dispatch even when its garbage bytes happen
-      // to encode a NOP.
-      id_next.is_not_nop = i_pipeline_ctrl.flush ? 1'b0 :
-          ((instruction != riscv_pkg::NOP) || is_fetch_fault);
+      // A real instruction rather than a bubble (see o_from_id_to_ex.is_real).
+      id_next.is_real = i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id.inject_nop;
     end
     // Datapath payload (immediates and targets): not reset, only stalled.
     if (id_advance) begin
@@ -842,7 +836,7 @@ module id_stage #(
       o_from_id_to_ex_2.uses_fp_rs1               <= 1'b0;
       o_from_id_to_ex_2.uses_fp_rs2               <= 1'b0;
       o_from_id_to_ex_2.uses_fp_rs3               <= 1'b0;
-      o_from_id_to_ex_2.is_not_nop                <= 1'b0;
+      o_from_id_to_ex_2.is_real                   <= 1'b0;
     end else if (id_advance) begin
       o_from_id_to_ex_2.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction_2;
       o_from_id_to_ex_2.is_compressed <= i_pipeline_ctrl.flush ? 1'b0 :
@@ -898,10 +892,8 @@ module id_stage #(
       o_from_id_to_ex_2.uses_fp_rs1 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre_2;
       o_from_id_to_ex_2.uses_fp_rs2 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre_2;
       o_from_id_to_ex_2.uses_fp_rs3 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre_2;
-      // As for slot 1, a fault-tagged slot dispatches even when its garbage
-      // bytes encode a NOP.
-      o_from_id_to_ex_2.is_not_nop <= i_pipeline_ctrl.flush ? 1'b0 :
-          ((instruction_2 != riscv_pkg::NOP) || is_fetch_fault_2);
+      // A real instruction rather than a bubble, as for slot 1.
+      o_from_id_to_ex_2.is_real <= i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id_2.inject_nop;
     end
     if (id_advance) begin
       o_from_id_to_ex_2.program_counter <= i_from_pd_to_id_2.program_counter;
@@ -975,7 +967,7 @@ module id_stage #(
       id_next_2.uses_fp_rs1 = 1'b0;
       id_next_2.uses_fp_rs2 = 1'b0;
       id_next_2.uses_fp_rs3 = 1'b0;
-      id_next_2.is_not_nop = 1'b0;
+      id_next_2.is_real = 1'b0;
     end else if (id_advance) begin
       id_next_2.instruction = i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction_2;
       id_next_2.is_compressed = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.is_compressed;
@@ -1024,8 +1016,7 @@ module id_stage #(
       id_next_2.uses_fp_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre_2;
       id_next_2.uses_fp_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre_2;
       id_next_2.uses_fp_rs3 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre_2;
-      id_next_2.is_not_nop = i_pipeline_ctrl.flush ? 1'b0 :
-          ((instruction_2 != riscv_pkg::NOP) || is_fetch_fault_2);
+      id_next_2.is_real = i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id_2.inject_nop;
     end
     if (id_advance) begin
       id_next_2.program_counter = i_from_pd_to_id_2.program_counter;

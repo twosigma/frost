@@ -278,7 +278,7 @@ def _assert_control_nop(packet: Mapping[str, int | bool]) -> None:
     assert packet["uses_fp_rs1"] is False
     assert packet["uses_fp_rs2"] is False
     assert packet["uses_fp_rs3"] is False
-    assert packet["is_not_nop"] is False
+    assert packet["is_real"] is False
 
 
 @cocotb.test()
@@ -314,7 +314,7 @@ async def test_add_decodes_int_sources(dut: Any) -> None:
     assert packet["has_fp_dest"] is False
     assert packet["uses_int_rs1"] is True
     assert packet["uses_int_rs2"] is True
-    assert packet["is_not_nop"] is True
+    assert packet["is_real"] is True
 
 
 @cocotb.test()
@@ -363,6 +363,39 @@ async def test_load_and_slot2_store_decode_independently(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_program_nop_is_real_and_bubble_is_not(dut: Any) -> None:
+    """A NOP in the program is a real instruction in both slots; a bubble is not.
+
+    is_real decides dispatch, so a real NOP dispatches, retires, and counts in
+    instret, while an inject_nop bubble never reaches the ROB.
+    """
+    await _setup_test(dut)
+    _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": NOP_INSTR})
+    _drive_pd_packet(
+        dut, {"program_counter": BASE_PC + 4, "instruction": NOP_INSTR}, slot2=True
+    )
+    await _advance_cycle(dut)
+    for slot2 in (False, True):
+        packet = _read_id_packet(dut, slot2=slot2)
+        assert packet["instruction"] == NOP_INSTR
+        assert packet["is_real"] is True
+
+    for slot2 in (False, True):
+        _drive_pd_packet(
+            dut,
+            {
+                "program_counter": BASE_PC + 8,
+                "instruction": NOP_INSTR,
+                "inject_nop": True,
+            },
+            slot2=slot2,
+        )
+    await _advance_cycle(dut)
+    for slot2 in (False, True):
+        assert _read_id_packet(dut, slot2=slot2)["is_real"] is False
+
+
+@cocotb.test()
 async def test_inject_nop_masks_non_nop_payload_identically_in_both_slots(
     dut: Any,
 ) -> None:
@@ -388,7 +421,7 @@ async def test_inject_nop_masks_non_nop_payload_identically_in_both_slots(
     assert slot2_packet["instruction"] == NOP_INSTR
     assert slot2_packet["instruction_operation"] == ADDI
     assert slot2_packet["is_int_store"] is False
-    assert slot2_packet["is_not_nop"] is False
+    assert slot2_packet["is_real"] is False
 
 
 @cocotb.test()
@@ -523,7 +556,7 @@ async def test_illegal_pd_input_clears_operand_classification(dut: Any) -> None:
     assert packet["uses_fp_rs1"] is False
     assert packet["uses_fp_rs2"] is False
     assert packet["uses_fp_rs3"] is False
-    assert packet["is_not_nop"] is True
+    assert packet["is_real"] is True
 
 
 # PAUSE is exactly 0x0100000F. The other words are FENCE encodings: four that
@@ -568,7 +601,7 @@ async def test_only_exact_pause_decodes_as_pause(dut: Any) -> None:
             assert pause["has_int_dest"] is False
             assert pause["uses_int_rs1"] is False
             assert pause["uses_int_rs2"] is False
-            assert pause["is_not_nop"] is True
+            assert pause["is_real"] is True
 
             fence = _read_id_packet(dut, slot2=not pause_slot2)
             assert fence["instruction_operation"] == FENCE, hex(fence_word)
@@ -604,10 +637,10 @@ async def test_fetch_fault_with_nop_bytes_is_dispatched_in_either_slot(
 
         fault = _read_id_packet(dut, slot2=fault_slot2)
         assert fault["is_fetch_fault"] is True
-        assert fault["is_not_nop"] is True
+        assert fault["is_real"] is True
         other = _read_id_packet(dut, slot2=not fault_slot2)
         assert other["is_fetch_fault"] is False
-        assert other["is_not_nop"] is False
+        assert other["is_real"] is True  # a NOP in the program is real
 
 
 @cocotb.test()
@@ -675,7 +708,7 @@ async def test_fs_off_decodes_fp_instructions_as_illegal(dut: Any) -> None:
             assert packet["uses_fp_rs1"] is False
             assert packet["uses_fp_rs2"] is False
             assert packet["uses_fp_rs3"] is False
-            assert packet["is_not_nop"] is True
+            assert packet["is_real"] is True
             other = _read_id_packet(dut, slot2=not fp_slot2)
             assert other["is_illegal_instruction"] is False
             assert other["instruction_operation"] == ADD
@@ -735,7 +768,7 @@ async def test_fs_off_leaves_bubbles_legal(dut: Any) -> None:
             assert packet["has_fp_dest"] is False
             assert packet["uses_int_rs1"] is True
             assert packet["uses_fp_rs1"] is False
-            assert packet["is_not_nop"] is False
+            assert packet["is_real"] is False
         assert packets[1] == packets[0], hex(raw)
     dut.i_mstatus_fs_off.value = 0
 

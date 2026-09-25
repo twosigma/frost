@@ -246,11 +246,10 @@ transport. Inside the CPU the work is divided like this:
 A `dret` with `dcsr.step` set arms a single step. The first retirement after
 that (a commit, an xRET, or a trap that does not enter Debug Mode) completes
 the step, and the trap unit halts before the next instruction. While a step is
-armed, commit is one-wide and the front end keeps all-NOP bundles, which FROST
-otherwise drops before dispatch, so stepping over a `nop` retires exactly that
-`nop`. Because trap entry presets the interrupt resume PC to the trap target, a
-stepped instruction that traps halts with `dpc` at the handler's first
-instruction, as the specification requires.
+armed, commit is one-wide, and a `wfi` runs as a `nop`, so a step over the
+instruction before a `wfi` halts at the `wfi`. Because trap entry presets the
+interrupt resume PC to the trap target, a stepped instruction that traps halts
+with `dpc` at the handler's first instruction, as the specification requires.
 
 ## CSR writes
 

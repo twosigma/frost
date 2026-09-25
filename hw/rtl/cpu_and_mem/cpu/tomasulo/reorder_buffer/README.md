@@ -177,6 +177,13 @@ acts in the retirement cycle, on the combinational buses and the strobes
 `o_commit_misprediction_raw`, `o_commit_correct_branch_raw`, and
 `o_commit_correct_branch_2_raw`.
 
+The registered bus also drives `instret`, through cpu_ooo's `commit_actions`.
+A full flush masks that bus a cycle after it is raised, so three retirements
+never reach it, and cpu_ooo counts them separately: an xRET, which never
+commits; a FENCE.I or SFENCE.VMA, whose own flush masks its registered
+commit; and a WFI that a halt or interrupt takes over at the head, where the
+take saves the PC after the WFI.
+
 ### Early-recovered branches
 
 [`early_misprediction_recovery`](../../cpu_ooo/branch_recovery/early_misprediction_recovery.sv)

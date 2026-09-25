@@ -1037,12 +1037,12 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_fp_instruction": 1 if op in _FP_INSTRUCTION_OPS else 0,
         "is_fp_load": 1 if op in _FP_LOAD_OPS else 0,
         "is_fp_store": 1 if op in _FP_STORE_OPS else 0,
-        # id_stage registers is_not_nop = (instruction != NOP), and a fetch
-        # fault in either slot also sets it. Test packets default to 1 like a real
+        # id_stage sets is_real for a real instruction and clears it for a
+        # bubble (PD's inject_nop). Test packets default to 1 like a real
         # instruction, although this bench's DUT takes slot-2 presence from
-        # i_valid_2 (SLOT2_VALID_FROM_BUNDLE = 0). Pass is_not_nop=0 to model
-        # a NOP bubble.
-        "is_not_nop": 1,
+        # i_valid_2 (SLOT2_VALID_FROM_BUNDLE = 0). Pass is_real=0 to model a
+        # bubble.
+        "is_real": 1,
     }
 
 

@@ -42,9 +42,9 @@ at most one checkpoint. When slot 2 is the branch,
 rename in the snapshot.
 
 With the decoded queue (the default), cpu_ooo sets `SLOT2_VALID_FROM_BUNDLE`,
-and dispatch takes slot 2's presence from the bundle's `is_not_nop` bit
-rather than `i_valid_2`. The queue drives `i_valid_2 == i_valid &&
-is_not_nop`, and an assertion checks it.
+and dispatch takes slot 2's presence from the bundle's `is_real` bit (a real
+instruction rather than a bubble) instead of `i_valid_2`. The queue drives
+`i_valid_2 == i_valid && is_real`, and an assertion checks it.
 
 ## Source operands
 

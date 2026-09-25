@@ -52,8 +52,8 @@
 
 module dispatch #(
     // Set when the decoded queue drives the inputs; the queue guarantees
-    // i_valid_2 == i_valid && packet2.is_not_nop. Slot 2's presence then comes
-    // from the registered is_not_nop bit, which keeps the shared queue-valid
+    // i_valid_2 == i_valid && packet2.is_real. Slot 2's presence then comes
+    // from the registered is_real bit, which keeps the shared queue-valid
     // signal out of slot 2's blocking gate. With the default 0, dispatch uses
     // i_valid_2.
     parameter bit SLOT2_VALID_FROM_BUNDLE = 1'b0
@@ -917,7 +917,7 @@ module dispatch #(
       !(need_checkpoint_2 && !i_checkpoint_available);
   logic slot2_present_for_admission;
   assign slot2_present_for_admission = SLOT2_VALID_FROM_BUNDLE ?
-      (i_from_id_to_ex_2.is_not_nop && !slot2_fp_compute_serialized) : dispatch_valid_2;
+      (i_from_id_to_ex_2.is_real && !slot2_fp_compute_serialized) : dispatch_valid_2;
   assign slot2_can_fire = slot1_can_fire && slot2_present_for_admission && slot2_resources_ok;
   assign slot2_bundle_ok = !slot2_present_for_admission || slot2_resources_ok;
   // Width-funnel profiling: cycles where a valid slot-2 alone holds the
@@ -945,8 +945,7 @@ module dispatch #(
 `endif
 `ifdef DISPATCH_ADMISSION_LOCAL_PROOF
   always_comb begin
-    if (SLOT2_VALID_FROM_BUNDLE && dispatch_valid)
-      assume (i_valid_2 == i_from_id_to_ex_2.is_not_nop);
+    if (SLOT2_VALID_FROM_BUNDLE && dispatch_valid) assume (i_valid_2 == i_from_id_to_ex_2.is_real);
     p_bundle_admission_formal :
     assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
     p_slot2_admission_formal :

@@ -119,7 +119,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_id_stall_q.value = 0
     dut.i_replay_after_dispatch_stall_q.value = 0
     dut.i_flush_pipeline.value = 0
-    dut.i_keep_nops.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -157,13 +156,13 @@ async def _prime_pd_valid(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_valid_chain_and_two_slot_nop_filter(dut: Any) -> None:
-    """IF/PD validity advances and slot-2 can make the bundle valid."""
+async def test_valid_chain_and_two_slot_bubble_filter(dut: Any) -> None:
+    """IF/PD validity advances, slot 2 can make the bundle valid, and two bubbles cannot."""
     await _setup_test(dut)
 
     _drive_if(dut, {"sel_nop": False, "effective_instr": NOP_INSTR})
-    _drive_id_slot(dut, {"is_not_nop": False})
-    _drive_id_slot(dut, {"is_not_nop": True}, slot2=True)
+    _drive_id_slot(dut, {"is_real": False})
+    _drive_id_slot(dut, {"is_real": True}, slot2=True)
 
     await _advance_cycle(dut)
 
@@ -179,14 +178,24 @@ async def test_valid_chain_and_two_slot_nop_filter(dut: Any) -> None:
     assert dut.o_id_valid.value
     assert dut.o_id_valid_2.value
 
-    _drive_id_slot(dut, {"is_not_nop": True})
-    _drive_id_slot(dut, {"is_not_nop": False}, slot2=True)
+    _drive_id_slot(dut, {"is_real": True})
+    _drive_id_slot(dut, {"is_real": False}, slot2=True)
     await _settle()
 
     assert dut.o_id_valid_preflush.value
     assert not dut.o_id_valid_2_preflush.value
     assert dut.o_id_valid.value
     assert not dut.o_id_valid_2.value
+
+    # A PD-redirect bubble reaches ID with a valid chain but clears is_real in
+    # both slots, so the bundle is no candidate.
+    _drive_id_slot(dut, {"is_real": False})
+    _drive_id_slot(dut, {"is_real": False}, slot2=True)
+    await _settle()
+
+    assert dut.o_pd_valid_q.value
+    assert not dut.o_id_valid_preflush.value
+    assert not dut.o_id_valid_2_preflush.value
 
 
 @cocotb.test()
@@ -230,8 +239,8 @@ async def test_id_valid_dispatch_stall_and_replay_gates(dut: Any) -> None:
     await _setup_test(dut)
     await _prime_pd_valid(dut)
 
-    _drive_id_slot(dut, {"is_not_nop": True})
-    _drive_id_slot(dut, {"is_not_nop": True}, slot2=True)
+    _drive_id_slot(dut, {"is_real": True})
+    _drive_id_slot(dut, {"is_real": True}, slot2=True)
     await _settle()
 
     assert dut.o_id_valid_preflush.value
@@ -407,7 +416,7 @@ async def test_id_prediction_fence_priority_and_prediction_suppression(
     await _prime_pd_valid(dut)
 
     _drive_pd(dut, {"instruction": BRANCH_INSTR})
-    _drive_id_slot(dut, {"instruction_operation": OP_JALR, "is_not_nop": True})
+    _drive_id_slot(dut, {"instruction_operation": OP_JALR, "is_real": True})
     await _settle()
 
     assert dut.o_front_end_indirect_control_flow_pending.value
@@ -416,14 +425,14 @@ async def test_id_prediction_fence_priority_and_prediction_suppression(
     assert not dut.o_prediction_fence_jal.value
 
     _drive_pd(dut, {})
-    _drive_id_slot(dut, {"instruction_operation": OP_JAL, "is_not_nop": True})
+    _drive_id_slot(dut, {"instruction_operation": OP_JAL, "is_real": True})
     await _settle()
 
     assert dut.o_prediction_fence_jal.value
     assert not dut.o_prediction_fence_branch.value
     assert not dut.o_prediction_fence_indirect.value
 
-    _drive_id_slot(dut, {"instruction_operation": OP_BEQ, "is_not_nop": True})
+    _drive_id_slot(dut, {"instruction_operation": OP_BEQ, "is_real": True})
     await _settle()
 
     assert dut.o_prediction_fence_branch.value
@@ -434,7 +443,7 @@ async def test_id_prediction_fence_priority_and_prediction_suppression(
         dut,
         {
             "instruction_operation": OP_JALR,
-            "is_not_nop": True,
+            "is_real": True,
             "ras_predicted": True,
         },
     )

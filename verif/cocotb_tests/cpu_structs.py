@@ -147,7 +147,7 @@ ID_TO_EX_FIELDS = [
     ("uses_fp_rs1", 1),
     ("uses_fp_rs2", 1),
     ("uses_fp_rs3", 1),
-    ("is_not_nop", 1),
+    ("is_real", 1),
 ]
 
 # from_ex_comb_t

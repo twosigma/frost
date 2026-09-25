@@ -10,9 +10,12 @@ dispatch by buffering decoded two-instruction bundles. The
 
 A two-stage valid chain (`if_valid_q`, `pd_valid_q`) follows packets from IF
 to ID, so the NOP bubbles after a flush or reset, including the one-cycle
-post-flush holdoff, never reach dispatch. A bundle is valid if either slot
-holds a real instruction, so a `c.nop` in slot 1 still carries its slot-2
-instruction. Dispatch, not the tracker, applies the recovery kill.
+post-flush holdoff, never reach dispatch. ID's registered `is_real` bit marks
+each slot that holds a real instruction rather than a bubble (PD's
+`inject_nop`), which also rules out the PD-redirect bubbles. A bundle is valid
+if either slot is real, and slot 2 dispatches only when it is. A NOP in the
+program is a real instruction: it dispatches, retires, and counts in
+`instret`. Dispatch, not the tracker, applies the recovery kill.
 
 The tracker also finds unpredicted control flow. An unpredicted indirect jump
 in slot 1 of IF (while a stall holds it there), PD, or ID feeds the
@@ -55,11 +58,8 @@ older instruction. After a CSR dispatches, dispatch takes nothing more from
 the queue until the CSR has committed and any register result is written back,
 because a CSR's CDB broadcast carries only its write operand.
 
-The queue drops all-NOP bundles, except while a debug single step is armed
-(`step_armed_fe_q`), so that stepping over a `nop` retires exactly that `nop`.
-A dropped NOP never retires, and neither does a NOP in slot 2, which is never
-valid, so `instret` counts neither.
-It also reports any queued unpredicted JALR (`o_indirect_pending`) to the
+The queue takes every bundle with a real instruction in either slot. It also
+reports any queued unpredicted JALR (`o_indirect_pending`) to the
 control-flow serialization stall. For timing, dispatch reads a flop copy of
 the head bundle rather than the queue RAM, and takes its narrow control fields
 from a register (`o_shadow`) loaded a cycle early from ID's next-cycle value

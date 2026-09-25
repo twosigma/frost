@@ -19,8 +19,9 @@ DTM identification and the sticky-busy protocol, dmactive, the hartsel WARL
 probe OpenOCD performs, halt with dcsr.cause/prv, abstract GPR access in both
 sizes, progbuf-based CSR and memory access across the BRAM / MMIO / DDR
 tiers, abstractauto, a progbuf exception, software breakpoints planted in
-BRAM code, single stepping over 32-bit / RVC instructions, a ret, and an
-ecall (dpc must land on the trap handler), a halt in U-mode with the
+BRAM code, single stepping over 32-bit / RVC instructions, a ret, a div
+into a wfi (dpc must land on the wfi, which the next step retires as a nop),
+and an ecall (dpc must land on the trap handler), a halt in U-mode with the
 privilege round-trip through dcsr.prv, the program observing the debugger's
 memory writes (its PASS banner is gated on them), a halt out of a wfi loop,
 and ndmreset with havereset/ackhavereset.
@@ -360,6 +361,27 @@ async def test_debug(dut: Any) -> None:
         assert dpc == expected and _cause(dcsr) == DCSR_CAUSE_STEP, (
             f"step: dpc={dpc:#x} expected {expected:#x} dcsr={dcsr:#x}"
         )
+
+    # ---- Single steps: a div into a wfi --------------------------------------
+    # The wfi reaches the ROB head while the step's halt holds it there. It
+    # runs as a nop while a step is armed, so the halt must save its own PC,
+    # and the next step retires it.
+    site = syms["step_wfi_site"]
+    resume_pc = await dm.read_dpc()
+    saved = {n: await dm.read_gpr(n) for n in (10, 11, 12)}
+    await dm.write_gpr(11, 1000)
+    await dm.write_gpr(12, 7)
+    await dm.write_dpc(site)
+    for expected in (site + 4, site + 8):
+        dpc = await dm.step()
+        dcsr = await dm.read_dcsr()
+        assert dpc == expected and _cause(dcsr) == DCSR_CAUSE_STEP, (
+            f"step over div/wfi: dpc={dpc:#x} expected {expected:#x} dcsr={dcsr:#x}"
+        )
+    assert (await dm.read_gpr(10)) == 1000 // 7
+    for n, value in saved.items():
+        await dm.write_gpr(n, value)
+    await dm.write_dpc(resume_pc)
     await dm.set_step(False)
 
     # ---- Halfword c.ebreak breakpoint ----------------------------------------

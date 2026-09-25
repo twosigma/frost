@@ -24,7 +24,10 @@
  *   - the delayed CSR writeback, which drives csr_read_data onto port 0 one
  *     cycle after the CSR appears on the commit bus and takes priority there;
  *   - the csr_commit_fire / csr_wb_pending serialization handshakes;
- *   - the retire valid (o_vld / o_pc_vld) and the 1-or-2 instret increment.
+ *   - the retire valid (o_vld / o_pc_vld) and the instret increment: the
+ *     registered commits, plus an instruction that retired without one (an
+ *     xRET, a WFI that a trap took over at the ROB head, or a FENCE.I or
+ *     SFENCE.VMA, whose own full flush masks its registered commit).
  */
 
 module commit_actions #(
@@ -37,7 +40,9 @@ module commit_actions #(
     input riscv_pkg::reorder_buffer_commit_t            i_rob_commit_2,
     input logic                                         i_rob_commit_valid,
     input logic                              [XLEN-1:0] i_csr_read_data,
-    input logic                                         i_trap_taken,
+    // Registered in cpu_ooo: an instruction retired without a ROB commit in
+    // the previous cycle.
+    input logic                                         i_retired_without_commit,
 
     // Regfile write ports (port 0 = slot 1 + delayed CSR, port 1 = slot 2).
     output logic                          o_port0_int_we,
@@ -68,12 +73,10 @@ module commit_actions #(
   riscv_pkg::reorder_buffer_commit_t            rob_commit_2;
   logic                                         rob_commit_valid;
   logic                              [XLEN-1:0] csr_read_data;
-  logic                                         trap_taken;
   assign rob_commit       = i_rob_commit;
   assign rob_commit_2     = i_rob_commit_2;
   assign rob_commit_valid = i_rob_commit_valid;
   assign csr_read_data    = i_csr_read_data;
-  assign trap_taken       = i_trap_taken;
 
   logic            csr_commit_fire;
   logic            csr_wb_pending;
@@ -172,23 +175,31 @@ module commit_actions #(
       assert (!rob_commit.valid && !rob_commit_2.valid)
       else $error("CSR delayed writeback overlapped a commit write port");
     end
+    // Each of those raises a full flush, which masks the bus in the cycle the
+    // bit arrives.
+    if (!i_rst && i_retired_without_commit) begin
+      assert (!rob_commit_valid)
+      else $error("a retirement without commit overlapped a registered commit");
+    end
   end
 `endif
 
   // --- Instruction retire signal ---
   assign o_vld = rob_commit_valid && !rob_commit.exception;
 
-  // Instret increments by 1 or 2 per cycle with two-wide commit.
-  // Slot 2 can never take an exception (the 2-wide gate excludes them), so its
-  // retire condition is "slot 2 valid".
+  // Instret adds every registered commit, 1 or 2 per cycle. Slot 2 can
+  // never take an exception (the 2-wide gate excludes them), so its retire
+  // condition is "slot 2 valid". The registered bus holds exactly the
+  // instructions that retired, including one that shares a cycle with a trap
+  // take: the full flush masks it a cycle after a take, which removes the raw
+  // commit of the take cycle itself (that instruction runs again after the
+  // handler). An xRET, a taken-over WFI, or a FENCE.I or SFENCE.VMA (which
+  // its own flush masks here) arrives as i_retired_without_commit.
   logic [1:0] instruction_retired_count;
   always_comb begin
-    instruction_retired_count = 2'd0;
-    if (rob_commit_valid && !rob_commit.exception && !trap_taken) begin
-      instruction_retired_count = 2'd1;
-      if (rob_commit_2.valid) begin
-        instruction_retired_count = 2'd2;
-      end
+    instruction_retired_count = {1'b0, i_retired_without_commit};
+    if (rob_commit_valid && !rob_commit.exception) begin
+      instruction_retired_count = instruction_retired_count + 2'd1 + {1'b0, rob_commit_2.valid};
     end
   end
 
