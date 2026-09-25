@@ -41,8 +41,8 @@
  * beat presented at a reset stays presented, payload unchanged, until the
  * slave takes it, and o_req_ready stays low through the reset. The
  * declaration initializers are the power-up state. On the X3 the level
- * below is reset only while the MMCM that also clocks the CPU is out of
- * lock, which holds the CPU in reset as well. In simulation the DDR model
+ * below is reset at power-up and when the MMCM that also clocks the CPU
+ * loses lock, which resets the CPU too. In simulation the DDR model
  * shares the bridge's reset: its queues clear at the first reset edge and
  * its readies rise, so a reset longer than one cycle lets it take and
  * discard the held beats.
