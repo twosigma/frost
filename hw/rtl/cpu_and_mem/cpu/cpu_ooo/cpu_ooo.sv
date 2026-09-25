@@ -29,9 +29,8 @@
 module cpu_ooo #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 16,
-    // MMIO register window, by default the PMA's (riscv_pkg).
+    // MMIO register window base, by default the PMA's (riscv_pkg).
     parameter int unsigned MMIO_ADDR = riscv_pkg::MmioWindowAddr,
-    parameter int unsigned MMIO_SIZE_BYTES = riscv_pkg::MmioWindowBytes,
     // Cached tier: loads and stores to [CACHED_BASE, CACHED_BASE +
     // CACHED_SIZE_BYTES) go to the cache hierarchy and complete by handshake,
     // with variable latency. Low-BRAM data accesses take one cycle.
@@ -2846,7 +2845,6 @@ module cpu_ooo #(
   data_mem_request_router #(
       .XLEN(XLEN),
       .MMIO_ADDR(MMIO_ADDR),
-      .MMIO_SIZE_BYTES(MMIO_SIZE_BYTES),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) data_mem_request_router_inst (

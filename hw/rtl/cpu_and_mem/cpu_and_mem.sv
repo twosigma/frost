@@ -633,7 +633,6 @@ module cpu_and_mem #(
   cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
-      .MMIO_SIZE_BYTES(MmioSizeBytes),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .PERF_COUNTERS(PERF_COUNTERS),

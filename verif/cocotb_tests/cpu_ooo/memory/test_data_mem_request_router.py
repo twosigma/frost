@@ -34,7 +34,6 @@ FIFO1_MMIO_ADDR = MMIO_ADDR + 0xC
 CACHED_BASE = 0x80000000
 FAST_ADDR = 0x100
 CACHED_ADDR = CACHED_BASE + 0x1234
-OUTSIDE_MMIO_DEVICE_ADDR = 0x50001234
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -450,11 +449,11 @@ async def test_full_flush_cancels_staged_mmio_before_accept(dut: Any) -> None:
 
 @cocotb.test()
 async def test_device_quadrant_always_parks_before_accept(dut: Any) -> None:
-    """An unmapped device-quadrant read parks before accept even with no store to drain."""
+    """A device-quadrant read parks before accept even with no store to drain."""
     await _setup_test(dut)
     dut.i_sq_committed_empty.value = 1
     dut.i_lq_mem_read_en.value = 1
-    dut.i_lq_mem_read_addr.value = OUTSIDE_MMIO_DEVICE_ADDR
+    dut.i_lq_mem_read_addr.value = MMIO_ADDR + 0x10
     dut.i_lq_mem_addr_valid.value = 1
     await _settle()
 
@@ -469,14 +468,14 @@ async def test_device_quadrant_always_parks_before_accept(dut: Any) -> None:
     dut.i_data_mem_rd_data.value = 0x5A5A1234
     await _settle()
     assert int(dut.o_lq_mem_request_valid.value) == 1
-    assert int(dut.o_data_mem_addr.value) == OUTSIDE_MMIO_DEVICE_ADDR
+    assert int(dut.o_data_mem_addr.value) == MMIO_ADDR + 0x10
 
     await _advance_arming_cycle(dut)
     assert int(dut.o_lq_mem_request_valid.value) == 1
-    assert int(dut.o_data_mem_addr.value) == OUTSIDE_MMIO_DEVICE_ADDR
+    assert int(dut.o_data_mem_addr.value) == MMIO_ADDR + 0x10
     assert int(dut.o_data_mem_read_enable.value) == 1
-    assert int(dut.o_mmio_read_pulse.value) == 0
-    assert int(dut.o_mmio_load_valid.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 1
+    assert int(dut.o_mmio_load_valid.value) == 1
     assert int(dut.o_data_mem_cached_read_enable.value) == 0
 
     await _advance_cycle(dut)
@@ -531,27 +530,23 @@ async def test_device_drain_high_to_low_after_capture_blocks_accept(dut: Any) ->
 
 @cocotb.test()
 async def test_device_quadrant_boundary_table_and_drain_scope(dut: Any) -> None:
-    """Check the quadrant and device-window edges and confine drain gating to quadrant 01.
+    """Check the quadrant edges and confine device reads and drain gating to quadrant 01.
 
-    Each case is (address, parks as a device read, cached, in a served window).
-    The served windows are the router's defaults: riscv_pkg's MMIO window
-    [0x4000_0000, 0x4003_1000) and the PLIC window [0x4400_0000, 0x4440_0000).
+    Each case is (address, parks as a device read, cached). Every quadrant-01
+    address is a device read with an MMIO effect: the router trusts the PMA,
+    which faults loads outside the served device windows before they arrive.
     """
     await _setup_test(dut)
     cases = (
-        (0x3FFF_FFFF, False, False, False),
-        (0x4000_0000, True, False, True),
-        (0x4003_0FFF, True, False, True),
-        (0x4003_1000, True, False, False),
-        (0x43FF_FFFF, True, False, False),
-        (0x4400_0000, True, False, True),
-        (0x443F_FFFF, True, False, True),
-        (0x4440_0000, True, False, False),
-        (0x7FFF_FFFF, True, False, False),
-        (0x8000_0000, False, True, False),
-        (0xBFFF_FFFF, False, True, False),
-        (0xC000_0000, False, False, False),
-        (0xFFFF_FFFF, False, False, False),
+        (0x3FFF_FFFF, False, False),
+        (0x4000_0000, True, False),
+        (0x4003_0FFF, True, False),
+        (0x4400_0000, True, False),
+        (0x7FFF_FFFF, True, False),
+        (0x8000_0000, False, True),
+        (0xBFFF_FFFF, False, True),
+        (0xC000_0000, False, False),
+        (0xFFFF_FFFF, False, False),
     )
 
     async def reset_between_cases() -> None:
@@ -563,7 +558,7 @@ async def test_device_quadrant_boundary_table_and_drain_scope(dut: Any) -> None:
 
     # With no store to drain, only quadrant 01 parks; the other quadrants take
     # the live low-BRAM, cached, or unmapped bypass.
-    for index, (addr, is_device, is_cached, is_mmio) in enumerate(cases):
+    for index, (addr, is_device, is_cached) in enumerate(cases):
         if index:
             await reset_between_cases()
         dut.i_sq_committed_empty.value = 1
@@ -587,15 +582,15 @@ async def test_device_quadrant_boundary_table_and_drain_scope(dut: Any) -> None:
             assert int(dut.o_data_mem_addr.value) == addr
             assert int(dut.o_data_mem_read_enable.value) == 1
             assert int(dut.o_data_mem_cached_read_enable.value) == 0
-            assert int(dut.o_mmio_read_pulse.value) == (1 if is_mmio else 0)
-            assert int(dut.o_mmio_load_valid.value) == (1 if is_mmio else 0)
+            assert int(dut.o_mmio_read_pulse.value) == 1
+            assert int(dut.o_mmio_load_valid.value) == 1
             await _advance_cycle(dut)
             assert int(dut.o_lq_mem_request_valid.value) == 0
         else:
             assert int(dut.o_lq_mem_request_valid.value) == 0
 
     # Closing committed-empty changes only the quadrant-01 cases.
-    for addr, is_device, is_cached, _ in cases:
+    for addr, is_device, is_cached in cases:
         await reset_between_cases()
         dut.i_sq_committed_empty.value = 0
         dut.i_lq_mem_read_en.value = 1
@@ -789,44 +784,6 @@ async def test_reset_discards_parked_device_read(dut: Any) -> None:
     await _advance_cycle(dut)
     assert int(dut.o_data_mem_read_enable.value) == 0
     assert int(dut.o_lq_mem_read_valid.value) == 0
-
-
-@cocotb.test()
-async def test_device_quadrant_outside_mmio_range_still_waits_for_drain(
-    dut: Any,
-) -> None:
-    """The drain wait covers the whole device quadrant, not only mapped peripherals."""
-    await _setup_test(dut)
-
-    dut.i_sq_committed_empty.value = 0
-    dut.i_lq_mem_read_en.value = 1
-    dut.i_lq_mem_read_addr.value = OUTSIDE_MMIO_DEVICE_ADDR
-    dut.i_lq_mem_addr_valid.value = 1
-    await _settle()
-    assert int(dut.o_data_mem_read_enable.value) == 0
-    assert int(dut.o_mmio_read_pulse.value) == 0
-    assert int(dut.o_mmio_load_valid.value) == 0
-    await _advance_cycle(dut)
-    dut.i_lq_mem_read_en.value = 0
-    dut.i_lq_mem_addr_valid.value = 0
-
-    for _ in range(2):
-        assert int(dut.o_lq_mem_request_valid.value) == 1
-        assert int(dut.o_data_mem_addr.value) == OUTSIDE_MMIO_DEVICE_ADDR
-        assert int(dut.o_data_mem_read_enable.value) == 0
-        assert int(dut.o_mmio_read_pulse.value) == 0
-        await _advance_cycle(dut)
-
-    dut.i_sq_committed_empty.value = 1
-    await _advance_rearm_cycle(dut)
-    assert int(dut.o_data_mem_read_enable.value) == 1
-    assert int(dut.o_data_mem_addr.value) == OUTSIDE_MMIO_DEVICE_ADDR
-    assert int(dut.o_mmio_read_pulse.value) == 0
-    assert int(dut.o_mmio_load_valid.value) == 0
-    assert int(dut.o_data_mem_cached_read_enable.value) == 0
-    await _advance_cycle(dut)
-    assert int(dut.o_lq_mem_read_valid.value) == 1
-    assert int(dut.o_lq_mem_request_valid.value) == 0
 
 
 @cocotb.test()

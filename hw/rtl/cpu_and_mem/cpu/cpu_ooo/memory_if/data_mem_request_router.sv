@@ -35,13 +35,18 @@
  * slot, and the fast tier's fixed-latency response takes the LQ response port
  * first while the adapter holds a cached one (o_cached_read_ready). While a
  * cached store is pending, i_cached_write_inflight keeps the write port busy.
+ *
+ * Addresses have passed the PMA: bits 63:32 are zero, and a load in the
+ * device quadrant (addr[31:30] = 01) is inside a served device window, since
+ * the load queue and the data MMU fault the others. The quadrant decode is
+ * therefore the whole device classification here.
  */
 
 module data_mem_request_router #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    // Served MMIO register window, by default the PMA's (riscv_pkg).
+    // MMIO register window base, by default the PMA's (riscv_pkg). The UART
+    // RX data and FIFO pop registers are fixed offsets from it.
     parameter int unsigned MMIO_ADDR = riscv_pkg::MmioWindowAddr,
-    parameter int unsigned MMIO_SIZE_BYTES = riscv_pkg::MmioWindowBytes,
     // Cached tier: loads and stores to [CACHED_BASE, CACHED_BASE +
     // CACHED_SIZE_BYTES) are served by the cache hierarchy with variable
     // latency.
@@ -201,7 +206,6 @@ module data_mem_request_router #(
   logic [                         XLEN-1:0] lq_mem_request_addr_eff;
   logic [       riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
   logic                                     lq_mem_read_valid;
-  logic                                     lq_pending_request_is_mmio;
   logic                                     lq_live_request_requires_park;
   logic                                     lq_pending_request_requires_drain;
   logic                                     lq_live_read_accepted;
@@ -220,15 +224,10 @@ module data_mem_request_router #(
   // load must reach the adapter under its own id, not the one presented
   // live on the accept cycle.
   assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
-  // Served MMIO window (register window + PLIC window, riscv_pkg).
-  assign lq_pending_request_is_mmio = riscv_pkg::mmio_window_hit(
-      lq_mem_request_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)
-  );
-
-  // Device ordering uses the LQ's device-quadrant classification, which is
-  // broader than the served MMIO window above. The live decode only blocks
-  // the bypass so the request is captured; acceptance uses the same two-bit
-  // decode of the held address, so no live LQ signal reaches an MMIO effect.
+  // Device reads use the device-quadrant decode (see the header). The live
+  // decode only blocks the bypass so the request is captured; acceptance and
+  // the MMIO effects use the same two-bit decode of the held address, so no
+  // live LQ signal reaches an MMIO effect.
   assign lq_live_request_requires_park = (lq_mem_read_addr[31:30] == 2'b01);
   assign lq_pending_request_requires_drain = (lq_mem_request_addr[31:30] == 2'b01);
 
@@ -334,7 +333,8 @@ module data_mem_request_router #(
       (!lq_pending_request_requires_drain || device_accept_armed_q);
 `endif
   assign lq_mem_read_accepted = lq_live_read_accepted || lq_pending_read_accepted;
-  assign lq_pending_mmio_read_accepted = lq_pending_read_accepted && lq_pending_request_is_mmio;
+  assign lq_pending_mmio_read_accepted =
+      lq_pending_read_accepted && lq_pending_request_requires_drain;
 
   always_comb begin
     o_data_mem_read_enable = lq_mem_read_accepted;
@@ -667,8 +667,8 @@ module data_mem_request_router #(
       end
       if (o_mmio_read_pulse) begin
         p_mmio_effect_is_registered_pending :
-        assert (lq_mem_request_valid && lq_pending_request_is_mmio && lq_pending_read_accepted);
-        p_mmio_effect_is_device : assert (lq_pending_request_requires_drain);
+        assert (lq_mem_request_valid && lq_pending_request_requires_drain &&
+                lq_pending_read_accepted);
         p_mmio_effect_needs_sq_drain : assert (i_sq_committed_empty);
       end
     end

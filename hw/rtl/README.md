@@ -302,8 +302,7 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
-| `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base |
-| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h3_1000` (`riscv_pkg::MmioWindowBytes`) | MMIO window size, covering the native registers, the ns16550a face, the CLINT alias, and the DMA test engine and NIC windows; `cpu_and_mem.sv` passes the same window |
+| `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base; the UART RX data and FIFO pop registers are fixed offsets from it |
 
 ## License
 
