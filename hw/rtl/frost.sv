@@ -213,26 +213,14 @@ module frost #(
                                                    ~i_rst_n;
   assign reset_div4_synchronized = reset_div4_synchronizer_shift_register[NumResetSyncStages-1];
 
-  /*
-    UART write delay chain: pipeline stages between the CPU's UART write and
-    the transmit FIFO. UART is not timing-critical, so it can spare the
-    latency.
-  */
-  logic       uart_write_enable_from_cpu;
-  logic [7:0] uart_write_data_from_cpu;
-  localparam int unsigned NumUartDelayStages = 10;
-  // Pack the chain into SRL primitives rather than flip-flops to save area
-  (* srl_style = "srl" *)logic [NumUartDelayStages-1:0]      uart_write_enable_delay_chain;
-  (* srl_style = "srl" *)logic [NumUartDelayStages-1:0][7:0] uart_write_data_delay_chain;
-  always_ff @(posedge i_clk)
-    for (int stage = 0; stage < NumUartDelayStages; ++stage) begin
-      uart_write_enable_delay_chain[stage] <= (stage > 0) ?
-                                              uart_write_enable_delay_chain[stage-1] :
-                                              uart_write_enable_from_cpu;
-      uart_write_data_delay_chain[stage] <= (stage > 0) ?
-                                            uart_write_data_delay_chain[stage-1] :
-                                            uart_write_data_from_cpu;
-    end
+  // UART TX: cpu_and_mem's registered UART write feeds the transmit FIFO
+  // directly (see the FIFO below).
+  logic        uart_write_enable_from_cpu;
+  logic [ 7:0] uart_write_data_from_cpu;
+  logic [ 7:0] uart_fifo_data;
+  logic        uart_fifo_valid;
+  logic        uart_fifo_ready;
+  logic        uart_fifo_input_ready;
 
   // UART RX interface signals - received data from UART to CPU
   logic        uart_rx_data_valid_to_cpu;
@@ -411,12 +399,6 @@ module frost #(
       .o_full(mmio_fifo1_is_full)
   );
 
-  // Interface signals for UART transmitter module
-  logic [7:0] uart_fifo_data;
-  logic       uart_fifo_valid;
-  logic       uart_fifo_ready;
-  logic       uart_fifo_input_ready;
-
   /*
     Dual-clock FIFO carrying UART data from the CPU domain to the clk_div4 UART
     domain. It buffers console output so the CPU runs ahead while the
@@ -431,8 +413,8 @@ module frost #(
       .i_clk(i_clk),  // Input: CPU clock domain (fast)
       .o_rst(reset_div4_synchronized),
       .i_rst(reset_synchronized),
-      .i_data(uart_write_data_delay_chain[NumUartDelayStages-1]),
-      .i_valid(uart_write_enable_delay_chain[NumUartDelayStages-1]),
+      .i_data(uart_write_data_from_cpu),
+      .i_valid(uart_write_enable_from_cpu),
       .o_ready(uart_fifo_input_ready),
       .o_data(uart_fifo_data),
       .o_valid(uart_fifo_valid),
