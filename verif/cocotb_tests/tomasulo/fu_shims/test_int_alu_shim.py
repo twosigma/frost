@@ -329,15 +329,16 @@ async def test_sext_h(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_pack_rs2_zero(dut: Any) -> None:
-    """PACK with rs2=0 zero-extends the low word of rs1."""
+    """PACK with rs2=0 zero-extends the low word of rs1, dropping its upper word."""
     iface = await setup(dut)
 
     rob_tag = 9
+    src1 = 0x1122_3344_AABB_CCDD
     iface.drive_issue(
         valid=True,
         rob_tag=rob_tag,
         op=_op("PACK"),
-        src1_value=0xAABB_CCDD,
+        src1_value=src1,
         src2_value=0,
     )
     await iface.step()
@@ -347,7 +348,8 @@ async def test_pack_rs2_zero(dut: Any) -> None:
     assert result["tag"] == rob_tag, (
         f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     )
-    expected = alu_model.pack(0xAABB_CCDD, 0)
+    expected = alu_model.pack(src1, 0)
+    assert expected == 0xAABB_CCDD, f"model gave 0x{expected:X}"
     assert result["value"] == expected, (
         f"Expected 0x{expected:X}, got 0x{result['value']:X}"
     )
@@ -531,20 +533,22 @@ async def test_czero_nez(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 17: PACK packs low halfwords from rs1 and rs2
+# Test 17: PACK packs the low words of rs1 and rs2
 # ============================================================================
 @cocotb.test()
 async def test_pack_general(dut: Any) -> None:
-    """PACK: upper halfword from rs2, lower halfword from rs1."""
+    """PACK: upper word from the low word of rs2, lower word from the low word of rs1."""
     iface = await setup(dut)
 
     rob_tag = 16
+    src1 = 0x5566_7788_AABB_CCDD
+    src2 = 0x99AA_BBCC_1122_3344
     iface.drive_issue(
         valid=True,
         rob_tag=rob_tag,
         op=_op("PACK"),
-        src1_value=0xAABB_CCDD,
-        src2_value=0x1122_3344,
+        src1_value=src1,
+        src2_value=src2,
     )
     await iface.step()
 
@@ -553,7 +557,8 @@ async def test_pack_general(dut: Any) -> None:
     assert result["tag"] == rob_tag, (
         f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     )
-    expected = alu_model.pack(0xAABB_CCDD, 0x1122_3344)
+    expected = alu_model.pack(src1, src2)
+    assert expected == 0x1122_3344_AABB_CCDD, f"model gave 0x{expected:X}"
     assert result["value"] == expected, (
         f"Expected 0x{expected:X}, got 0x{result['value']:X}"
     )
