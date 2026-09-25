@@ -34,6 +34,8 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 from typing import Any
 
+from config import XLEN
+
 CLK_PERIOD_NS = 3
 UART_BAUD_RATE = 115200
 UART_DATA_BITS = 8
@@ -41,6 +43,8 @@ CHECKPOINT_TRACE_WIDTH = 8
 UART_CLK_FREQ_HZ_DEFAULT = 322_265_625
 UART_RX_DATA_MMIO_ADDR = 0x4000_0004
 UART_RX_STATUS_MMIO_ADDR = 0x4000_0024
+# mcause bit XLEN-1 marks an interrupt.
+MCAUSE_INTERRUPT_BIT = 1 << (XLEN - 1)
 
 # Success/failure markers that programs print
 PASS_MARKER = "<<PASS>>"
@@ -2333,6 +2337,50 @@ async def run_until_complete(
         trap_taken_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.trap_taken"
         )
+        trap_taken_reg_dbg_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_taken_q",
+                "cpu_and_memory_subsystem.cpu_inst.trap_taken_reg",
+            ],
+        )
+        # The unregistered commit bus, for the event log.
+        commit_valid_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
+        )
+        commit_pc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
+        )
+        commit0_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_valid"
+        )
+        commit0_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_rf"
+        )
+        commit0_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_reg"
+        )
+        commit0_value_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_value"
+        )
+        commit1_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+        )
+        commit1_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+        )
+        commit1_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_valid"
+        )
+        commit1_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_rf"
+        )
+        commit1_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_reg"
+        )
+        commit1_value_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_value"
+        )
         trap_cause_internal_live_sig = _first_signal(
             dut,
             [
@@ -2703,7 +2751,7 @@ async def run_until_complete(
             trap_q = bool(_read_bool(trap_taken_reg_dbg_sig))
             flush_all = bool(_read_bool(flush_all_live_sig))
             trap_cause = _read_int(trap_cause_internal_live_sig)
-            is_irq = bool((trap_cause or 0) & 0x8000_0000)
+            is_irq = bool((trap_cause or 0) & MCAUSE_INTERRUPT_BIT)
             trap_pc = _read_int(trap_pc_internal_live_sig)
             rob_trap_pc = _read_int(rob_trap_pc_live_sig)
             interrupt_resume_pc = _read_int(interrupt_resume_pc_live_sig)
@@ -2725,22 +2773,6 @@ async def run_until_complete(
                 rob_commit1_reg_dest_valid_sig,
                 rob_commit1_reg_dest_rf_sig,
                 rob_commit1_reg_dest_reg_sig,
-                trap_pc,
-            )
-            raw0_sensitive = commit_writes_x1_x2_at_pc(
-                commit_valid_live_sig,
-                commit_pc_live_sig,
-                commit0_dest_valid_sig,
-                commit0_dest_rf_sig,
-                commit0_dest_reg_sig,
-                trap_pc,
-            )
-            raw1_sensitive = commit_writes_x1_x2_at_pc(
-                commit1_valid_sig,
-                commit1_pc_sig,
-                commit1_dest_valid_sig,
-                commit1_dest_rf_sig,
-                commit1_dest_reg_sig,
                 trap_pc,
             )
 
@@ -2787,16 +2819,18 @@ async def run_until_complete(
                     irq_precision_events.append(event)
                     cocotb.log.info(event)
 
-                raw_commit_collision = c0_valid or c1_valid
-                sensitive_pc_write = (
-                    raw0_sensitive or raw1_sensitive or reg0_sensitive or reg1_sensitive
-                )
-                if irq_precision_strict and (
-                    raw_commit_collision or sensitive_pc_write or stale_sp_body
-                ):
+                # Only the registered commit bus counts. An unregistered
+                # commit can share the take cycle; the full flush that follows
+                # masks it on the registered bus (commit_bus_pipeline), and
+                # the instruction at the saved PC runs again after the handler.
+                # A registered commit has already advanced
+                # interrupt_resume_pc, so the rule also flags a correct take
+                # inside a one- or two-instruction loop whose first
+                # instruction writes x1 or x2.
+                sensitive_pc_write = reg0_sensitive or reg1_sensitive
+                if irq_precision_strict and (sensitive_pc_write or stale_sp_body):
                     raise AssertionError(
                         "IRQ precision violation: "
-                        f"raw_commit={raw_commit_collision} "
                         f"x1_x2_same_pc={sensitive_pc_write} "
                         f"stale_sp_body={stale_sp_body}; {event}"
                     )
