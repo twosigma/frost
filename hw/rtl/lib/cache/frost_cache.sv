@@ -378,11 +378,13 @@ module frost_cache #(
   // has ordered the requester's own access. While a PROBE_INVAL slot is held,
   // no fill of its line is issued (mshr_fill_held): a miss that follows the
   // invalidation waits in its MSHR and fetches the line after the release,
-  // instead of fetching the old data again. A probe cannot decide while an
-  // MSHR guards its index, so it waits for a fill already pending and
-  // invalidates what that fill installs; a slot withholds only fills
-  // allocated after its decision. ProbeSlots keeps the arrays legal when the
-  // machinery is absent; every use is then constant.
+  // instead of fetching the old data again. A whole-line write to the line
+  // fetches it too (t_line_inval_held), so its install also waits for the
+  // release. A probe cannot decide while an MSHR guards its index, so it
+  // waits for a fill already pending and invalidates what that fill
+  // installs; a slot withholds only fills allocated after its decision.
+  // ProbeSlots keeps the arrays legal when the machinery is absent; every use
+  // is then constant.
   logic [ProbeSlots-1:0] probe_valid_q;  // slot held (decision to the requester's release)
   logic [ProbeSlots-1:0] probe_ack_q;  // acknowledgement waiting for the response port
   logic [ProbeSlots-1:0] probe_inval_q;
@@ -648,6 +650,25 @@ module frost_cache #(
       t_line_live_match[w_mshr_q] = (w_line_q == t_line);
     end
     if (w_allocs_wb) t_wb_live_match[w_wb_q] = ({w_victim_tag_q, w_index_q} == t_line);
+  end
+  // ---- A held PROBE_INVAL slot on T's line. A whole-line write allocates
+  // without a fetch, so the fill withholding alone would not hold it back:
+  // installed while the slot is held, the copy could be cleaned by another
+  // probe (a walk's PROBE_CLEAN) and written back before the requester's own
+  // write is ordered, leaving a clean copy older than the level below's. Such
+  // a write allocates as a fetching write instead (w_needs_fill_q), so its
+  // install follows the withheld fill, whose bytes it all overrides. The
+  // check cannot miss a slot: a_hold keeps a probe of the index out of T
+  // while the write is in T or W (and the write out while the probe is), and
+  // the probe cannot decide while the write's MSHR guards the index.
+  // Registered into W, off the T decision.
+  logic t_line_inval_held;
+  always_comb begin
+    t_line_inval_held = 1'b0;
+    for (int k = 0; k < int'(ProbeSlots); k++) begin
+      if ((NUM_PROBE > 0) && probe_valid_q[k] && probe_inval_q[k] && (probe_line_q[k] == t_line))
+        t_line_inval_held = 1'b1;
+    end
   end
   // ---- The T decision.
   logic                decide;
@@ -1297,7 +1318,7 @@ module frost_cache #(
         w_has_victim_q <= (t_is_alloc || t_is_probe_hit) && victim_dirty;
         w_probe_slot_q <= probe_free_idx;
         w_victim_tag_q <= tag_rdata_tag;
-        w_needs_fill_q <= !(t_write_q && (&t_wstrb_q));
+        w_needs_fill_q <= !(t_write_q && (&t_wstrb_q)) || t_line_inval_held;
         w_wb_wait_q <= t_wb_match_q & wb_valid;
       end else begin
         w_op_q <= W_NONE;
