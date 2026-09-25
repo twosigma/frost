@@ -644,8 +644,9 @@ def main() -> None:
         "--coremark-pro-evict-free",
         action="store_true",
         help=(
-            "Diagnostic only: evict load-queue L0 entries for freed CoreMark-PRO "
-            "heap blocks before returning them to the freelist"
+            "Diagnostic only: before free() returns a CoreMark-PRO heap block to "
+            "the freelist, evict its dwords from the load-queue L0 (assumes the "
+            "default 128-entry L0)"
         ),
     )
     parser.add_argument(

@@ -103,23 +103,44 @@ static int align_size_up(size_t value, size_t align, size_t *result)
 }
 
 #if FROST_MALLOC_EVICT_FREE
-static void evict_l0_words_for_range(uintptr_t start, uint32_t size)
+/* Entries in the load queue's direct-mapped L0 (riscv_pkg::LqL0Depth, frost's
+ * L0_CACHE_DEPTH); this must not be below the hardware's depth. An entry
+ * holds one aligned dword, so address bits [3, 3 + log2(depth)) index it and
+ * the bits above are its tag. */
+#ifndef FROST_MALLOC_EVICT_L0_DEPTH
+#define FROST_MALLOC_EVICT_L0_DEPTH 128
+#endif
+_Static_assert(FROST_MALLOC_EVICT_L0_DEPTH >= 8 &&
+                   (FROST_MALLOC_EVICT_L0_DEPTH & (FROST_MALLOC_EVICT_L0_DEPTH - 1)) == 0,
+               "the L0 depth is a power of two of at least 8");
+#define L0_BYTES ((uintptr_t) 8 * FROST_MALLOC_EVICT_L0_DEPTH)
+/* The heap lies in the 1 GiB DDR region, which is aligned to its size, so an
+ * address with one bit below 30 flipped stays inside it. */
+#define L0_ALIAS_LIMIT ((uintptr_t) 1 << 29)
+
+/*
+ * Evict the dwords of [start, start + size) from the L0 without a
+ * cache-management instruction: load an alias of each dword that differs in
+ * one tag bit, so it indexes the same entry and its fill replaces the freed
+ * dword. The flip moves each address by at least the length of the range,
+ * which puts every alias outside it, so no load here reinstalls a freed dword
+ * (for ranges up to L0_ALIAS_LIMIT). A range longer than the L0 needs one load
+ * per entry.
+ * Best effort: a load answered by store forwarding, or whose fill a store or
+ * DMA write suppresses, leaves its entry in place.
+ */
+static void evict_l0_dwords_for_range(uintptr_t start, uint32_t size)
 {
     volatile uint32_t sink = 0;
-    uintptr_t end = start + size;
-    start &= ~(uintptr_t) (sizeof(uint32_t) - 1);
+    uintptr_t first = start & ~(uintptr_t) 7;
+    uintptr_t span = start + size - first;
+    uintptr_t alias = L0_BYTES;
+    uintptr_t count = span < L0_BYTES ? (span + 7) / 8 : FROST_MALLOC_EVICT_L0_DEPTH;
 
-    /*
-     * Evict each word from the direct-mapped load-queue L0 by loading an alias
-     * meant to map to the same entry with a different tag, which needs no
-     * cache-management instruction.
-     * FIXME: at its default depth, lq_l0_cache has 128 dword lines indexed by
-     * address bits [9:3], so flipping bit 9 selects a different entry and
-     * leaves the word's entry in place. The alias must differ in a tag bit
-     * instead (address bits [31:10] at that depth).
-     */
-    for (uintptr_t addr = start; addr < end; addr += sizeof(uint32_t)) {
-        sink ^= *(volatile uint32_t *) (addr ^ 0x200u);
+    while (alias < span && alias < L0_ALIAS_LIMIT)
+        alias <<= 1;
+    for (uintptr_t i = 0; i < count; i++) {
+        sink ^= *(volatile uint32_t *) ((first + 8 * i) ^ alias);
     }
 
     __asm__ volatile("" : : "r"(sink) : "memory");
@@ -314,7 +335,7 @@ void free(void *ptr)
     uint32_t block_size = md->size;
 
 #if FROST_MALLOC_EVICT_FREE
-    evict_l0_words_for_range((uintptr_t) ptr - header_size, block_size);
+    evict_l0_dwords_for_range((uintptr_t) ptr - header_size, block_size);
 #endif
 
     struct free_slot *slot = ptr - header_size;
