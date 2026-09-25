@@ -330,6 +330,9 @@ module dispatch #(
   assign uses_int_rs1     = i_from_id_to_ex.uses_int_rs1;
   assign uses_int_rs2     = i_from_id_to_ex.uses_int_rs2;
 
+  // is_fp_load stays set for an illegal op (an FS=Off FLW/FLD among them).
+  // The op routes to INT_RS and gets no LQ entry, so the flag only adds an
+  // LQ-full wait; masking it would add a term to the dispatch-stall path.
   assign is_store_flag    = i_from_id_to_ex.is_int_store;
   assign is_fp_store_flag = i_from_id_to_ex.is_fp_store && !i_from_id_to_ex.is_illegal_instruction;
   assign is_load_flag     = i_from_id_to_ex.is_load_instruction;
