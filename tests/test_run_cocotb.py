@@ -688,8 +688,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="pde_subdir_find epilogue return-value hazard reproducer",
         # The app runs from cached DDR (its Makefile forces MEM_CONFIG=ddr), so
         # its misses go to a small L2 and a slow DDR here, as for the other tests
-        # in CI's Cache stress shard, which share this Verilator build. The
-        # window_cannot_serve guard also has an SVA check.
+        # in CI's Cache stress shard, which share this Verilator build. The run
+        # never takes if_stage's window_cannot_serve resteer; the if_stage and
+        # pc_controller benches and assertions cover that guard.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "freertos_demo": CocotbRunConfig(
