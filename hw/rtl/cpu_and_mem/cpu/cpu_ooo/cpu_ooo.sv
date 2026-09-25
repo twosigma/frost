@@ -3166,9 +3166,10 @@ module cpu_ooo #(
 `ifndef SYNTHESIS
   // id_stage decodes F/D instructions against the live mstatus.FS, so an
   // instruction decoded before FS enters or leaves Off must not survive the
-  // change. FS changes only through a write-intending mstatus/sstatus access,
-  // which the ROB classes as a translation CSR: its FENCE-class full flush
-  // lands in the cycle the new value first shows here.
+  // change. FS enters or leaves Off only through a write-intending
+  // mstatus/sstatus access (hardware Dirty-setting starts from a value other
+  // than Off), which the ROB classes as a translation CSR: its FENCE-class
+  // full flush lands in the cycle the new value first shows here.
   logic csr_mstatus_fs_off_q;
   logic fs_off_checks_armed = 1'b0;
   always_ff @(posedge i_clk) begin
