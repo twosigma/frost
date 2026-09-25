@@ -73,9 +73,9 @@ ADD_INSTR_B = 0x00C585B3
 ADD_INSTR_C = 0x00D60633
 COMPRESSED_NOP = 0x0001
 COMPRESSED_J = (0b101 << 13) | 0b01
-COMPRESSED_HINT = 0x2221
+COMPRESSED_ADDIW = 0x2221
 # Quadrant-1/funct3=001 is C.ADDIW x4, x4, 8.
-COMPRESSED_HINT_EXPANDED = 0x0082021B
+COMPRESSED_ADDIW_EXPANDED = 0x0082021B
 BASE_PC = 0x80001000
 BRANCH_TARGET = 0x80002000
 FENCE_TARGET = 0x80003000
@@ -586,7 +586,7 @@ async def test_unbuffered_high_rvc_accepts_owner_last_as_one_wide(dut: Any) -> N
 
     packet_pc = BASE_PC + 2
     owner_word = _word(lo=0xBEEF, hi=COMPRESSED_NOP)
-    predecessor_word = _word(lo=COMPRESSED_HINT, hi=0xD00D)
+    predecessor_word = _word(lo=COMPRESSED_ADDIW, hi=0xD00D)
     served_word = (packet_pc >> 2) - 1
     await _redirect_to(dut, packet_pc)
     assert int(dut.pc_reg.value) == packet_pc
@@ -617,7 +617,7 @@ async def test_unbuffered_high_rvc_accepts_owner_last_as_one_wide(dut: Any) -> N
             _read_if_packet(dut),
             pc=packet_pc,
             raw=COMPRESSED_NOP,
-            effective=_word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT),
+            effective=_word(lo=COMPRESSED_NOP, hi=COMPRESSED_ADDIW),
             compressed=True,
         )
         assert _read_if_packet(dut, slot2=True)["sel_nop"]
@@ -630,7 +630,7 @@ async def test_buffered_high_rvc_rejects_window_ending_at_owner_word(dut: Any) -
 
     owner_pc = BASE_PC
     packet_pc = owner_pc + 2
-    owner_word = _word(lo=0xFA6D, hi=COMPRESSED_HINT)
+    owner_word = _word(lo=0xFA6D, hi=COMPRESSED_ADDIW)
     owner_sb = _sideband(
         compressed_lo=True,
         compressed_hi=True,
@@ -639,7 +639,7 @@ async def test_buffered_high_rvc_rejects_window_ending_at_owner_word(dut: Any) -
     predecessor_canary = COMPRESSED_NOP
     predecessor_word = _word(lo=predecessor_canary, hi=0xD00D)
     predecessor_sb = _sideband(compressed_lo=True)
-    successor_parcel = COMPRESSED_HINT
+    successor_parcel = COMPRESSED_ADDIW
     successor_word = _word(lo=successor_parcel, hi=0xCAFE)
     successor_sb = _sideband(compressed_lo=True)
 
@@ -722,15 +722,15 @@ async def test_buffered_high_rvc_rejects_window_ending_at_owner_word(dut: Any) -
         _assert_packet(
             _read_if_packet(dut),
             pc=packet_pc,
-            raw=COMPRESSED_HINT,
-            effective=_word(lo=COMPRESSED_HINT, hi=successor_parcel),
+            raw=COMPRESSED_ADDIW,
+            effective=_word(lo=COMPRESSED_ADDIW, hi=successor_parcel),
             compressed=True,
         )
         _assert_packet(
             _read_if_packet(dut, slot2=True),
             pc=owner_pc + 4,
             raw=successor_parcel,
-            effective=COMPRESSED_HINT_EXPANDED,
+            effective=COMPRESSED_ADDIW_EXPANDED,
             compressed=True,
         )
 
@@ -1249,7 +1249,7 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
     await _setup_test(dut)
     await _redirect_to(dut, BASE_PC)
 
-    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_ADDIW)
     _drive_fetch(
         dut,
         current_word=current_word,
@@ -1274,10 +1274,10 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
     _assert_packet(
         packet2,
         pc=BASE_PC + 2,
-        raw=COMPRESSED_HINT,
+        raw=COMPRESSED_ADDIW,
         # Slot-2 carries the expanded instruction (C.ADDIW x4, x4, 8) rather
         # than the raw word.
-        effective=COMPRESSED_HINT_EXPANDED,
+        effective=COMPRESSED_ADDIW_EXPANDED,
         compressed=True,
     )
     assert packet2["source_hot_predecoded"] == 0b010
@@ -1372,7 +1372,7 @@ async def test_high_half_target_ignores_preceding_low_half_btb_entry(
     ghost_branch = 0xF7FD  # C.BNEZ
     target_raw = 0xFA6D  # C.BNEZ at the high-half target P+2
     rejoin_raw = COMPRESSED_NOP
-    next_raw = COMPRESSED_HINT
+    next_raw = COMPRESSED_ADDIW
 
     # Reach the high-half target through the architectural redirect path. The
     # normal fetch lead is then P+6 while pc_reg names the target at P+2.
@@ -1508,7 +1508,7 @@ async def test_slot2_collision_holdoff_stays_inside_stretched_redirect_bubble(
     )
     await _redirect_to(dut, BASE_PC)
 
-    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_ADDIW)
     _drive_fetch(
         dut,
         current_word=current_word,
@@ -1987,7 +1987,7 @@ async def _present_rt2_successor_slot2_candidate(dut: Any) -> tuple[int, int, in
     assert int(dut.pc_reg.value) == successor_base
     assert successor_base == early_lookup_base + 4
 
-    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_ADDIW)
     _drive_fetch(
         dut,
         current_word=current_word,
@@ -2795,8 +2795,8 @@ async def test_pending_owner_is_not_emitted_as_predecessor_slot2(
         compressed_hi=True,
         compressed_control_lo=True,
     )
-    compressed_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
-    predecessor_word = _word(lo=COMPRESSED_HINT, hi=COMPRESSED_NOP)
+    compressed_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_ADDIW)
+    predecessor_word = _word(lo=COMPRESSED_ADDIW, hi=COMPRESSED_NOP)
     owner_word = _word(lo=branch_raw, hi=COMPRESSED_NOP)
     mem: dict[int, tuple[int, int]] = {
         BASE_PC: (compressed_word, compressed_ctrl_sb),
@@ -2975,8 +2975,8 @@ async def test_pending_slot1_owner_kills_stale_noncontrol_sibling(
     sibling_pc = branch_pc + 2
     target = sibling_pc
     sibling_btb_target = BASE_PC + 0x182
-    sibling_canary = COMPRESSED_HINT
-    predecessor_word = _word(lo=COMPRESSED_HINT, hi=NOP_INSTR & 0xFFFF)
+    sibling_canary = COMPRESSED_ADDIW
+    predecessor_word = _word(lo=COMPRESSED_ADDIW, hi=NOP_INSTR & 0xFFFF)
     stale_owner_word = _word(lo=NOP_INSTR >> 16, hi=COMPRESSED_NOP)
     sibling_word = _word(lo=sibling_canary, hi=COMPRESSED_NOP)
     predecessor_sb = _sideband(compressed_lo=True)
@@ -3170,7 +3170,7 @@ async def test_atomic_compressed_owner_discards_wrong_path_high_buffer(
 
     branch_pc = BASE_PC + 4
     target = BASE_PC + 0x82
-    owner_high_canary = COMPRESSED_HINT
+    owner_high_canary = COMPRESSED_ADDIW
     owner_word = _word(lo=0xFA6D, hi=owner_high_canary)  # C.BNEZ, then canary
     owner_sb = _sideband(
         compressed_lo=True,
@@ -3295,7 +3295,7 @@ async def test_pending_prediction_owner_keeps_predict_time_direction_index(
         compressed_control_lo=True,
         compressed_control_hi=True,
     )
-    compressed_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    compressed_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_ADDIW)
     predecessor_word = _word(lo=COMPRESSED_NOP, hi=0xFA6D)  # C.BNEZ
     mem: dict[int, tuple[int, int]] = {
         BASE_PC: (compressed_word, compressed_ctrl_sb),
@@ -3518,7 +3518,7 @@ async def test_fetch_invalid_compressed_pair_resume(dut: Any) -> None:
         assert _read_if_packet(dut, slot2=True)["sel_nop"]
 
     dut.i_instr_valid.value = 1
-    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_ADDIW)
     _drive_fetch(
         dut,
         current_word=current_word,
@@ -3536,10 +3536,10 @@ async def test_fetch_invalid_compressed_pair_resume(dut: Any) -> None:
     _assert_packet(
         _read_if_packet(dut, slot2=True),
         pc=BASE_PC + 2,
-        raw=COMPRESSED_HINT,
+        raw=COMPRESSED_ADDIW,
         # Slot-2 carries the decompressed instruction (C.ADDIW x4, x4, 8)
         # rather than the raw word.
-        effective=COMPRESSED_HINT_EXPANDED,
+        effective=COMPRESSED_ADDIW_EXPANDED,
         compressed=True,
     )
 

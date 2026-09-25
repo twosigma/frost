@@ -90,8 +90,10 @@ async def _train_pc(dut: Any, pc: int, *, taken: bool, count: int = 1) -> None:
 
 
 @cocotb.test()
-async def test_initial_state_is_weak_not_taken_and_exports_pc_index(dut: Any) -> None:
-    """Initial zeroed counters predict not-taken and expose pc[BIM_BITS:1]."""
+async def test_initial_state_is_strongly_not_taken_and_exports_pc_index(
+    dut: Any,
+) -> None:
+    """Initial zeroed counters are strongly not-taken and expose pc[BIM_BITS:1]."""
     await _setup_test(dut)
 
     await _lookup(dut, PC_A)

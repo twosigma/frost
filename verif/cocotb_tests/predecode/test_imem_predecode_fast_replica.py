@@ -109,13 +109,17 @@ def _with_hi_size_allows_row(word: int, *, compressed: bool, allows: bool) -> in
 
 
 def _expected_compressed_control(parcel: int) -> bool:
-    """Independently classify compressed control-flow instructions."""
+    """Independently classify compressed control-flow instructions.
+
+    Quadrant 1 holds C.J, C.BEQZ, and C.BNEZ. RV64C has no C.JAL: its
+    funct3=001 slot is C.ADDIW, which is not control flow.
+    """
     funct3 = (parcel >> 13) & 0x7
     funct4 = (parcel >> 12) & 0xF
     rs1 = (parcel >> 7) & 0x1F
     rs2 = (parcel >> 2) & 0x1F
     op = parcel & 0x3
-    return (op == 0b01 and funct3 in {0b001, 0b101, 0b110, 0b111}) or (
+    return (op == 0b01 and funct3 in {0b101, 0b110, 0b111}) or (
         op == 0b10 and rs2 == 0 and rs1 != 0 and funct4 in {0b1000, 0b1001}
     )
 
@@ -508,6 +512,13 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     # physical parity banks.
     for word_index in (2, 3):
         words[word_index] = (words[word_index] & 0xFFFF_0000) | 0x0001
+
+    # Case 3's compressed high parcels allow slot 2 after them. Make them
+    # C.ADDIW (quadrant 1, funct3=001), the RV64C encoding that RV32C uses for
+    # C.JAL, so a control classification of that slot shows up in both banks.
+    for word_index in (6, 7):
+        words[word_index] = (words[word_index] & ~(0x7 << 29)) | (0b001 << 29)
+        assert _GENERATOR.rvc_expand(words[word_index] >> 16)[0] & 0x7F == 0x1B
 
     for bank_parity in (0, 1):
         observed_size_allows_rows = {

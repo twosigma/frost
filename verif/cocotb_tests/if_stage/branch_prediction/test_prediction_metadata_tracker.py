@@ -413,8 +413,8 @@ async def test_pending_owner_kill_dominates_recapture_and_new_episode_reuses_pc(
     await _save_pending_prediction(dut, target=TARGET_A)
 
     # A redirect kill in the same cycle as a new registered prediction must
-    # clear the saved metadata; the kill has priority over both capture and
-    # consume.
+    # clear the saved metadata. (Nothing can be captured this cycle, because
+    # the saved copy is still valid; see the first-pending-cycle test below.)
     dut.i_pending_prediction_kill.value = 1
     dut.i_pending_prediction_fetch_holdoff.value = 1
     _drive_live_prediction(dut, used=True, target=TARGET_B)
@@ -434,6 +434,36 @@ async def test_pending_owner_kill_dominates_recapture_and_new_episode_reuses_pc(
     await _save_pending_prediction(dut, target=TARGET_C)
     await _settle()
     _assert_metadata(dut, hit=True, taken=True, target=TARGET_C)
+
+
+@cocotb.test()
+async def test_kill_on_first_pending_cycle_beats_capture(dut: Any) -> None:
+    """A kill on the first pending cycle, where capture would fire, saves nothing."""
+    await _setup_test(dut)
+
+    # First pending cycle: nothing is saved yet and a prediction is pending,
+    # so without the kill this edge would capture TARGET_A.
+    _drive_live_prediction(dut, used=True, target=TARGET_A)
+    dut.i_pending_prediction_active.value = 1
+    dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC
+    dut.i_output_pc.value = PENDING_BRANCH_PC
+    dut.i_pending_prediction_fetch_holdoff.value = 1
+    dut.i_pending_prediction_kill.value = 1
+    await _settle()
+    assert not bool(dut.prediction_pending_saved_valid.value)
+    assert bool(dut.pending_prediction_capture.value)
+    await _advance_cycle(dut)
+
+    # The kill won: nothing was saved, so the owner presented with the target
+    # handoff after the redirect gets no prediction.
+    dut.i_pending_prediction_kill.value = 0
+    dut.i_pending_prediction_active.value = 0
+    dut.i_pending_prediction_fetch_holdoff.value = 0
+    dut.i_pending_prediction_target_handoff.value = 1
+    _drive_live_prediction(dut, used=False, target=TARGET_B)
+    await _settle()
+    assert not bool(dut.prediction_pending_saved_valid.value)
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
