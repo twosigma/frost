@@ -899,7 +899,8 @@ int main(void)
             unsigned long stub;    /* stub offset in the stub page */
             int thrash;            /* evict the L1I + provider buffers first */
             int sfence;            /* sfence.vma before the run and before the sret;
-                                    * 0 only with lazy = ras = 0, which change PTEs */
+                                    * 0 only when lazy and ras are both 0: a nonzero
+                                    * lazy or ras rewrites PTEs every iteration */
             int dirty;             /* dirty 64 KiB of L1D lines after main's sfence.vma */
             int low_va;            /* body + handler at the low VA (another 4 GiB region) */
             int lazy;              /* stub page unmapped: fault, PTE install, sfence, sret */

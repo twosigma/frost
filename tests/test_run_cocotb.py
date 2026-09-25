@@ -281,8 +281,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "instructions, permissions, PMA, replacement, sfence.vma/satp, cold indirect "
             "jumps, lazy mappings, and signal-return trampolines through cached DDR."
         ),
-        # Case Z's 17 variants each repeat six L1I-evicting runs of 16.5 KiB,
-        # exceeding the default 500k-cycle budget from DDR.
+        # Case Z runs its 17 variants six times each, nearly all after a
+        # 16.5 KiB L1I-evicting sweep and two with a 64 KiB L1D writeback per
+        # run, which exceeds the default 500k-cycle budget from DDR.
         extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
     "debug_test": CocotbRunConfig(
