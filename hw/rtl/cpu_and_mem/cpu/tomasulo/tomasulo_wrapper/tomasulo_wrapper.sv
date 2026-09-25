@@ -744,7 +744,6 @@ module tomasulo_wrapper #(
   // promoted to a speculative full flush, and no head/tag relationship is
   // recomputed here.
   (* max_fanout = 32 *)logic full_flush_all;
-  (* max_fanout = 32 *)logic speculative_partial_flush;
   (* max_fanout = 32 *)logic speculative_flush_all;
   logic speculative_flush_en;
   logic lq_partial_flush_en;
@@ -752,7 +751,6 @@ module tomasulo_wrapper #(
   // not have to route back through every adapter output-valid cone.
   (* keep = "true" *)logic cdb_kill;
   assign full_flush_all = i_flush_all;
-  assign speculative_partial_flush = i_flush_en;
   assign speculative_flush_all = full_flush_all || i_flush_after_head_commit;
   assign speculative_flush_en = i_flush_en && !i_flush_after_head_commit;
   // TIMING: every partial flush that reaches the LQ is an early-recovery
@@ -2428,7 +2426,6 @@ module tomasulo_wrapper #(
       .i_sct_addr_fill_addr            (dmmu_out_addr),
       .i_speculative_flush_all         (speculative_flush_all),
       .i_speculative_flush_en          (speculative_flush_en),
-      .i_speculative_partial_flush     (speculative_partial_flush),
       .i_coh_sc_hold                   (coh_sc_hold),
       .i_coh_query_addr                (coh_lq_query_addr),
       .o_sc_head_query_match           (coh_sc_head_query_match),

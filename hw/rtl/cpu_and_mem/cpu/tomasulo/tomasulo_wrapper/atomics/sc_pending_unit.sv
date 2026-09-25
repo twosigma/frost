@@ -69,7 +69,6 @@ module sc_pending_unit (
     input logic [riscv_pkg::XLEN-1:0] i_sct_addr_fill_addr,
     input logic i_speculative_flush_all,
     input logic i_speculative_flush_en,
-    input logic i_speculative_partial_flush,
     // DMA coherence: hold SC fires while the head SC's line is
     // admitted to a DMA write; expose the head SC's address for admission
     // and the successful fire that opens the SC window.
@@ -101,7 +100,6 @@ module sc_pending_unit (
   logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
   logic speculative_flush_all;
   logic speculative_flush_en;
-  logic speculative_partial_flush;
   assign head_tag = i_head_tag;
   assign sq_committed_empty = i_sq_committed_empty;
   assign lq_reservation_valid = i_lq_reservation_valid;
@@ -114,14 +112,15 @@ module sc_pending_unit (
   assign sq_effective_addr = i_sq_effective_addr;
   assign speculative_flush_all = i_speculative_flush_all;
   assign speculative_flush_en = i_speculative_flush_en;
-  assign speculative_partial_flush = i_speculative_partial_flush;
 
-  // SC tracking table: one entry per in-flight SC, keyed by ROB tag. Every
-  // waiting SC also holds an SQ entry, so at most SqDepth (eight) wait at once
-  // and NumCheckpoints + 1 (nine) entries cannot overflow. Keep the table at
-  // least SqDepth deep: an SC that finds no free entry is dropped at
-  // allocation and never fires.
-  localparam int unsigned ScTableDepth = riscv_pkg::NumCheckpoints + 1;
+  // SC tracking table: one entry per in-flight SC, keyed by ROB tag. A waiting
+  // SC also holds its SQ entry, which it keeps until it commits after firing,
+  // and every flush that clears SQ entries clears the matching table entries
+  // on the same edge. So at most SqDepth SCs wait at once, counting the one
+  // issuing, and a table of SqDepth entries always has a free entry for it
+  // (checked in simulation below). An SC that found no free entry would be
+  // dropped at allocation and never fire.
+  localparam int unsigned ScTableDepth = riscv_pkg::SqDepth;
   logic [ScTableDepth-1:0] sct_valid;
   logic [ScTableDepth-1:0] sct_addr_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_tag[ScTableDepth];
@@ -254,7 +253,8 @@ module sc_pending_unit (
   always_comb begin
     assert (o_sc_head_query_match ==
             (o_sc_head_addr_valid &&
-             (o_sc_head_addr[riscv_pkg::XLEN-1:5] == i_coh_query_addr[riscv_pkg::XLEN-1:5])));
+             (o_sc_head_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb] ==
+              i_coh_query_addr[riscv_pkg::XLEN-1:riscv_pkg::DmaCoherenceLineLsb])));
   end
 `endif
 `endif
@@ -345,6 +345,14 @@ module sc_pending_unit (
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && sct_alloc && !sct_has_free)
+      $error(
+          "sc_pending_unit: SC tag %0d issued with the table full; it would never fire",
+          o_mem_rs_issue.rob_tag
+      );
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst_n && sct_payload_alloc && !$isunknown(
             {o_mem_rs_issue.imm, o_mem_rs_issue.src1_value, sq_effective_addr}

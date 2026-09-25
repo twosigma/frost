@@ -6295,6 +6295,88 @@ async def test_partial_flush_clears_younger_sc_pending(dut: Any) -> None:
     cocotb.log.info("=== Test Passed ===")
 
 
+@cocotb.test()
+async def test_sc_table_holds_a_full_store_queue_of_scs(dut: Any) -> None:
+    """Every SQ entry can hold an issued SC waiting in the SC table.
+
+    An incomplete blocker holds the ROB head while SqDepth SCs dispatch and
+    issue, so the whole SQ is waiting SCs. Each must get an SC-table entry
+    (an SC that found none would never fire) and, once the blocker completes,
+    fire at the head in order and commit. No reservation is set, so every SC
+    fails and returns 1.
+    """
+    cocotb.log.info("=== Test: SC Table Holds A Full Store Queue Of SCs ===")
+    dut_if, _model = await setup_test(dut)
+    sq_depth = 8  # riscv_pkg::SqDepth
+    dut_if.set_fu_ready(RS_MEM, True)
+
+    blocker_tag = await dut_if.dispatch(make_int_req(pc=0x8000, rd=5))
+    sc_tags: list[int] = []
+    for i in range(sq_depth):
+        req_sc = AllocationRequest(
+            pc=0x8004 + 4 * i,
+            dest_reg=6 + i,
+            dest_valid=True,
+            is_sc=True,
+            is_store=True,
+        )
+        dut_if.drive_alloc_request(req_sc)
+        _, tag_sc, _ = dut_if.read_alloc_response()
+        dut_if.drive_rat_rename(req_sc.dest_rf, req_sc.dest_reg, tag_sc)
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_MEM,
+            rob_tag=tag_sc,
+            op=OP_SC_W,
+            src1_ready=True,
+            src1_value=0x1000 + 8 * i,
+            src2_ready=True,
+            src2_value=i,
+            src3_ready=True,
+            imm=0,
+            use_imm=True,
+            mem_size=2,
+            mem_signed=False,
+        )
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_alloc_request()
+        dut_if.clear_rat_rename()
+        dut_if.clear_rs_dispatch()
+        sc_tags.append(tag_sc)
+
+    # Let MEM_RS issue the last SC into the table.
+    for _ in range(6):
+        await dut_if.step()
+    table = int(dut.sc_pending_unit_inst.sct_valid.value)
+    assert bin(table).count("1") == sq_depth, (
+        f"expected {sq_depth} waiting SCs in the SC table, got mask {table:#x}"
+    )
+
+    dut_if.drive_fu_complete(FU_FP_ADD, tag=blocker_tag, value=0)
+    await dut_if.step()
+    dut_if.clear_fu_complete(FU_FP_ADD)
+
+    committed: list[tuple[int, int]] = []
+    for _ in range(200):
+        await RisingEdge(dut_if.clock)
+        for commit in (dut_if.read_commit(), dut_if.read_commit_2()):
+            if commit["valid"]:
+                committed.append((commit["tag"], commit["value"]))
+        await FallingEdge(dut_if.clock)
+        if len(committed) == sq_depth + 1:
+            break
+    assert [tag for tag, _ in committed] == [blocker_tag, *sc_tags], (
+        f"commit order {committed} does not match blocker {blocker_tag} "
+        f"then SCs {sc_tags}"
+    )
+    assert all(value == 1 for _, value in committed[1:]), (
+        f"every SC should fail without a reservation: {committed[1:]}"
+    )
+    assert not int(dut.sc_pending.value), "SC table should be empty after the SCs fire"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
 # =============================================================================
 # MMIO Store Integration Test
 # =============================================================================

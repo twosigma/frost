@@ -273,13 +273,13 @@ the SQ, which drops the entry without writing memory.
 The pending table is keyed by ROB tag because MEM_RS issues SCs out of order:
 a speculated LR/SC retry loop can issue several SCs before the oldest reaches
 the head. Each waits in the table until it is at the head, so a younger SC can
-never block the one that must complete first. The table has
-`NumCheckpoints + 1` (nine) entries. That is enough because every waiting SC
-also holds an SQ entry, so at most `SqDepth` (eight) can wait at once. An SC
-that found the table full would never fire, so the table must not become
-smaller than the SQ. A partial flush clears only entries younger than the
-flush tag, since an older SC may still be waiting for the head; a full flush
-clears the table.
+never block the one that must complete first. The table has `SqDepth`
+(eight) entries. That is enough because every waiting SC also holds an SQ
+entry, so at most `SqDepth` can wait at once. An SC that found the table full
+would never fire; a simulation assertion checks that every issuing SC finds a
+free entry. A partial flush clears only entries younger than the flush tag,
+since an older SC may still be waiting for the head; a full flush clears the
+table.
 
 The MEM adapter's input gives priority to the registered store fault, then the
 registered SC result, then the LQ result. The fault register cannot wait,
