@@ -353,7 +353,7 @@ the integrated core; the `*_fetch_fuzz` variants, such as
 `branch_pred_test_fetch_fuzz`, add random fetch gaps with `FETCH_VALID_FUZZ=1`.
 Formal targets cover the PC muxes and holdoffs, the pending-prediction
 handoff, predictor aliasing, RV64C predecode (`rvc_predecode` checks every
-16-bit parcel against the runtime decompressor), the TLBs and walker, and the
+16-bit parcel against the reference decompressor), the TLBs and walker, and the
 CSR file and trap unit.
 
 See the [test runner](../../../../tests/README.md) for commands and the

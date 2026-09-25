@@ -78,7 +78,6 @@ module cpu_ooo #(
     // steers only the PC-metadata and served-window selects, off the fanout of
     // the register that drives the window valid.
     input logic i_instr_pc_metadata_served_high,
-    input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
     // Word tags (address bits [31:2]) that each provider registers beside its
     // window, with the next and previous word, for IF's served-window check.
@@ -580,7 +579,6 @@ module cpu_ooo #(
       .i_pc_pairability_by_provider_parity,
       .i_slot2_start_valid_lo_by_provider_parity,
       .i_instr_pc_metadata_served_high,
-      .i_instr_hi_rd_is_x2,
       .i_instr_bank_sel_r,
       .i_served_word_low,
       .i_served_last_word_low,

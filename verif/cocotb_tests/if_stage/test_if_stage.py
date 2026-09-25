@@ -15,6 +15,7 @@
 """Integration tests for the IF-stage top level."""
 
 from collections.abc import Mapping
+from functools import lru_cache
 from typing import Any
 
 import importlib.util
@@ -35,7 +36,9 @@ from utils.packed_structs import (
 )
 
 
-def _extra_sideband(word: int) -> int:
+@lru_cache(maxsize=1)
+def _predecode_model() -> Any:
+    """Load the predecode generator, which models the sideband of every word."""
     path = (
         Path(__file__).resolve().parents[3]
         / "sw/common/generate_imem_predecode_init.py"
@@ -44,9 +47,17 @@ def _extra_sideband(word: int) -> int:
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return (module.rvc_extra(word & 0xFFFF) << 32) | (
-        module.rvc_extra(word >> 16) << 55
-    )
+    return module
+
+
+def _rvc_sideband(word: int) -> int:
+    """Return the model's RVC sideband fields for both parcels of a word.
+
+    These are the source-hot, bits [24:20], and rs1-rest fields (sideband bits
+    [31:12]) and the {illegal, bits [31:25], bits [14:0]} extras above them,
+    the predecoded expansion that IF selects for a compressed instruction.
+    """
+    return _predecode_model().make_sideband(word) & ~((1 << 12) - 1)
 
 
 CLOCK_PERIOD_NS = 10
@@ -242,9 +253,9 @@ def _drive_fetch(
     bank_sel: int = 0,
     served_high: int = 0,
 ) -> None:
-    """Drive instruction data, predecode sideband, and exact rd predicates."""
-    current_sb |= _extra_sideband(current_word)
-    next_sb |= _extra_sideband(next_word)
+    """Drive instruction data and its predecode sideband and PC metadata."""
+    current_sb |= _rvc_sideband(current_word)
+    next_sb |= _rvc_sideband(next_word)
     dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb, next_sb=next_sb)
     positional_metadata = _pc_metadata(current_sb=current_sb, next_sb=next_sb)
@@ -282,9 +293,6 @@ def _drive_fetch(
     )
     dut.i_slot2_start_valid_lo_by_provider_parity.value = start_valid_by_parity << (
         2 if served_high else 0
-    )
-    dut.i_instr_hi_rd_is_x2.value = int(((current_word >> 23) & 0x1F) == 2) | (
-        int(((next_word >> 23) & 0x1F) == 2) << 1
     )
     dut.i_instr_bank_sel_r.value = bank_sel
     dut.i_served_high.value = served_high
@@ -1246,15 +1254,12 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         dut,
         current_word=current_word,
         next_word=ADD_INSTR_A,
-        current_sb=_sideband(
-            compressed_lo=True,
-            compressed_hi=True,
-            rvc_source_hot_lo=3,
-            rvc_source_hot_hi=5,
-        ),
+        current_sb=_sideband(compressed_lo=True, compressed_hi=True),
     )
     await _settle()
 
+    # Each slot carries its own parcel's predecoded {rs2[1], rs1[2:1]}: 0 for
+    # C.NOP and 0b010 for C.ADDIW x4 (rs1 = x4).
     packet1 = _read_if_packet(dut)
     _assert_packet(
         packet1,
@@ -1263,19 +1268,19 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         effective=current_word,
         compressed=True,
     )
-    assert packet1["source_hot_predecoded"] == 3
+    assert packet1["source_hot_predecoded"] == 0
 
     packet2 = _read_if_packet(dut, slot2=True)
     _assert_packet(
         packet2,
         pc=BASE_PC + 2,
         raw=COMPRESSED_HINT,
-        # Slot-2 carries the decompressed instruction (C.ADDIW x4, x4, 8)
-        # rather than the raw word.
+        # Slot-2 carries the expanded instruction (C.ADDIW x4, x4, 8) rather
+        # than the raw word.
         effective=COMPRESSED_HINT_EXPANDED,
         compressed=True,
     )
-    assert packet2["source_hot_predecoded"] == 5
+    assert packet2["source_hot_predecoded"] == 0b010
     assert not packet2["btb_hit"]
     assert not packet2["ras_predicted"]
 

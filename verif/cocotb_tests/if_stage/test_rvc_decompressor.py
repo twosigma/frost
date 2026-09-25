@@ -213,7 +213,6 @@ def _imm_sdsp(raw: int) -> int:
 def _drive(dut: Any, raw: int) -> None:
     """Drive one compressed instruction parcel."""
     dut.i_instr_compressed.value = raw
-    dut.i_rd_is_x2.value = ((raw >> 7) & 0x1F) == 2
 
 
 def _assert_decode(
@@ -227,99 +226,6 @@ def _assert_decode(
     assert int(dut.o_instr_expanded.value) == expanded
     assert bool(dut.o_is_compressed.value) is compressed
     assert bool(dut.o_illegal.value) is illegal
-
-
-@cocotb.test()
-async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
-    """Every *_fast output equals its full counterpart for all 131,072 inputs.
-
-    Each parcel runs with both i_rd_is_x2 values. Checks bits 8, 15, {20,9},
-    and {27,25}, the fields 31:28, 26, 24:20, 19:18, and 14:12, and the
-    illegal flag.
-    """
-    for raw in range(1 << 16):
-        dut.i_instr_compressed.value = raw
-        for rd_is_x2 in (0, 1):
-            # Drive both values regardless of raw[11:7]. The fast outputs must
-            # equal the full ones even when i_rd_is_x2 disagrees with the
-            # parcel, not only when the predecode is consistent.
-            dut.i_rd_is_x2.value = rd_is_x2
-            await _settle()
-
-            expanded_bit8 = (int(dut.o_instr_expanded.value) >> 8) & 1
-            fast_bit8 = int(dut.o_instr_expanded_bit8_fast.value)
-            assert fast_bit8 == expanded_bit8, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast bit 8={fast_bit8}, expanded bit 8={expanded_bit8}"
-            )
-
-            expanded_bit15 = (int(dut.o_instr_expanded.value) >> 15) & 1
-            fast_bit15 = int(dut.o_instr_expanded_bit15_fast.value)
-            assert fast_bit15 == expanded_bit15, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast bit 15={fast_bit15}, expanded bit 15={expanded_bit15}"
-            )
-
-            expanded_bits20_9 = (((int(dut.o_instr_expanded.value) >> 20) & 1) << 1) | (
-                (int(dut.o_instr_expanded.value) >> 9) & 1
-            )
-            fast_bits20_9 = int(dut.o_instr_expanded_bits20_9_fast.value)
-            assert fast_bits20_9 == expanded_bits20_9, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast bits {{20,9}}=0b{fast_bits20_9:02b}, "
-                f"expanded bits {{20,9}}=0b{expanded_bits20_9:02b}"
-            )
-
-            expanded_bits27_25 = (
-                ((int(dut.o_instr_expanded.value) >> 27) & 1) << 1
-            ) | ((int(dut.o_instr_expanded.value) >> 25) & 1)
-            fast_bits27_25 = int(dut.o_instr_expanded_bits27_25_fast.value)
-            assert fast_bits27_25 == expanded_bits27_25, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast bits {{27,25}}=0b{fast_bits27_25:02b}, "
-                f"expanded bits {{27,25}}=0b{expanded_bits27_25:02b}"
-            )
-
-            expanded = int(dut.o_instr_expanded.value)
-            field_cofactors = (
-                (
-                    "bits 24:20",
-                    (expanded >> 20) & 0x1F,
-                    int(dut.o_instr_expanded_bits24_20_fast.value),
-                ),
-                (
-                    "bits 31:28",
-                    (expanded >> 28) & 0xF,
-                    int(dut.o_instr_expanded_bits31_28_fast.value),
-                ),
-                (
-                    "bit 26",
-                    (expanded >> 26) & 1,
-                    int(dut.o_instr_expanded_bit26_fast.value),
-                ),
-                (
-                    "bits 19:18",
-                    (expanded >> 18) & 0x3,
-                    int(dut.o_instr_expanded_bits19_18_fast.value),
-                ),
-                (
-                    "bits 14:12",
-                    (expanded >> 12) & 0x7,
-                    int(dut.o_instr_expanded_bits14_12_fast.value),
-                ),
-            )
-            for name, expected_bits, fast_bits in field_cofactors:
-                assert fast_bits == expected_bits, (
-                    f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                    f"fast {name}=0b{fast_bits:b}, expanded {name}=0b{expected_bits:b}"
-                )
-
-            canonical_illegal = int(dut.o_illegal.value)
-            fast_illegal = int(dut.o_illegal_fast.value)
-            assert fast_illegal == canonical_illegal, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast illegal={fast_illegal}, full illegal={canonical_illegal}"
-            )
 
 
 @cocotb.test()

@@ -195,8 +195,7 @@ package riscv_pkg;
   // {rs2[1], rs1}, for one RVC parcel. These bits match the literal expansion,
   // including unused fields, illegal encodings and hints. The two wrappers
   // below split rs1 into the stored SourceHot bits (rs1[2:1]) and Rs1Rest
-  // bits ({rs1[4:3], rs1[0]}), so PD's early rs1 bypasses the runtime
-  // decompressor.
+  // bits ({rs1[4:3], rs1[0]}), from which PD builds its early rs1.
   function automatic logic [5:0] imem_rvc_source_fields(input logic [15:0] parcel,
                                                         input logic rd_is_x2);
     logic [ 4:0] rs1;
@@ -396,9 +395,9 @@ package riscv_pkg;
     imem_rvc_rs1_rest = {fields[4:3], fields[0]};
   endfunction
 
-  // Bits [24:20] of the RVC expansion of one parcel. Mirrors
-  // rvc_decompressor's rs2_field_q0/q1/q2 selects exactly, including
-  // reserved encodings; a quadrant-3 (native) parcel returns zero.
+  // Bits [24:20] of the RVC expansion of one parcel, equal to those of
+  // rvc_decompressor's expansion, including reserved encodings; a quadrant-3
+  // (native) parcel returns zero.
   function automatic logic [4:0] imem_rvc_bits24_20(input logic [15:0] c, input logic rd_is_x2);
     logic arithmetic_reserved;
     logic ebreak;
@@ -1634,7 +1633,9 @@ package riscv_pkg;
   // aligner expands slot 2 (see decomp_illegal).
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
-    // Raw 16-bit parcel for decompression (compressed instructions)
+    // Raw 16-bit parcel at the instruction's start. PD takes slot 1's size and
+    // compressed branch offset from it, and expands it only in simulation, as
+    // the reference for its checks.
     logic [15:0] raw_parcel;
     // Selection signals for final instruction mux (computed in IF, used in PD)
     logic sel_nop;
@@ -1646,7 +1647,7 @@ package riscv_pkg;
     // values come from effective_instr.  IF resolves slot 2 beside each fixed
     // aligner candidate before its late position mux, while slot 1 resolves
     // after spanning assembly. PD builds its early source registers from the
-    // *_predecoded fields, so they avoid the runtime decompressor.
+    // *_predecoded fields.
     logic [2:0] source_hot_predecoded;
     // The selected instruction's bits [24:20]: the IMEM sideband's RVC
     // expansion, or the native instruction's own bits.
@@ -1694,8 +1695,8 @@ package riscv_pkg;
     logic fetch_fault;
     logic fetch_fault_page;
     logic fetch_fault_hi;
-    // Slot-2 only: illegal-RVC flag for the pre-decompressed effective_instr
-    // (the aligner decompresses slot-2 per candidate position; see
+    // Slot-2 only: illegal-RVC flag for the expanded effective_instr (the
+    // aligner takes each candidate's flag from its sideband; see
     // instruction_aligner). 0 for slot 1, whose illegal flag PD takes from
     // rvc_extra_predecoded.
     logic decomp_illegal;
@@ -1713,13 +1714,13 @@ package riscv_pkg;
     logic inject_nop;
     // Original instruction size before RVC decompression.
     logic is_compressed;
-    // Source registers extracted in parallel with decompression, so the ID
-    // regfile read and dispatch do not wait on the decompressor.
+    // Source registers from IF's predecoded fields, registered in PD so the
+    // ID regfile read and dispatch need not wait for decode.
     logic [4:0] source_reg_1_early;
     logic [4:0] source_reg_2_early;
     // F extension: Early FP source reg 3 for FMA instructions (rs3 = funct7[6:2])
     logic [4:0] fp_source_reg_3_early;
-    logic illegal_instruction;  // Illegal compressed instruction detected by decompressor
+    logic illegal_instruction;  // Illegal compressed instruction (predecoded illegal-RVC flag)
     logic fetch_fault;  // Fetch fault (overrides decode with FETCH_[PAGE_]FAULT)
     logic fetch_fault_page;  // ...page fault (cause 12) rather than access fault (1)
     logic fetch_fault_hi;  // ...on the second halfword only (xtval = PC + 2)

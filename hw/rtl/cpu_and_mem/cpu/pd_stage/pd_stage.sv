@@ -19,12 +19,12 @@
 
   PD forms slot 1's 32-bit instruction: the native word (IF assembles one that
   spans two words), or for a compressed parcel the RV64C expansion that IF
-  selected from the predecode sideband. Only the local rvc_decompressor's
-  compressed flag feeds the registered outputs; its expansion is the reference
-  for the simulation checks. Slot 2 arrives already expanded by the instruction
-  aligner (see instruction_aligner.sv). PD also registers early source-register
-  fields so register lookups need not wait for decode, and raises the PD
-  redirect for a predicted-taken slot-1 branch (see that section).
+  selected from the predecode sideband. Slot 2 arrives already expanded by
+  the instruction aligner (see instruction_aligner.sv). In simulation only,
+  local rvc_decompressors expand both slots' raw parcels as the reference for
+  the checks below. PD also registers early source-register fields so
+  register lookups need not wait for decode, and raises the PD redirect for a
+  predicted-taken slot-1 branch (see that section).
 
   Both slots register the instruction without rewriting it to a NOP. A bubble
   (flush, PD redirect, or sel_nop) rides in inject_nop, which ID applies before
@@ -40,10 +40,11 @@ module pd_stage #(
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id,
     // Slot-2 instruction (2-wide dispatch). IF supplies a real second
     // instruction whenever the bundle has one and raises sel_nop only when it
-    // does not. The aligner has already decompressed it: effective_instr holds
-    // the finished instruction and decomp_illegal the selected candidate's
-    // illegal-RVC flag. PD extracts its source fields and carries invalidation
-    // separately in inject_nop. The PD redirect is slot-1 only.
+    // does not. The aligner has already expanded it from the predecode
+    // sideband: effective_instr holds the finished instruction and
+    // decomp_illegal the selected candidate's illegal-RVC flag. PD extracts
+    // its source fields and carries invalidation separately in inject_nop.
+    // The PD redirect is slot-1 only.
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
     // Redirect to IF for a slot-1 conditional branch that nothing has
@@ -54,50 +55,35 @@ module pd_stage #(
 );
 
   // ===========================================================================
-  // RVC Decompressor
+  // Compressed Select and Illegal Flag
   // ===========================================================================
-  // Runtime expansion of slot 1's raw parcel. Only o_is_compressed feeds the
-  // registered outputs; the expansion and o_illegal_fast are the reference that
-  // the simulation checks below compare with IF's predecoded fields.
-
-  logic [31:0] decompressed_instr;
-  logic        decompressed_instr_bit15_fast;
-  logic [ 4:0] decompressed_instr_bits24_20_fast;
-  logic [ 1:0] decompressed_instr_bits27_25_fast;
-  logic [ 3:0] decompressed_instr_bits31_28_fast;
-  logic        decompressed_instr_bit26_fast;
-  logic [ 1:0] decompressed_instr_bits19_18_fast;
-  logic [ 2:0] decompressed_instr_bits14_12_fast;
-  logic        decomp_is_compressed;
-  logic        decomp_illegal;
-  logic        decomp_illegal_reference;
+  // Take slot 1's compressed select from the raw parcel's low bits, not IF's
+  // sideband sel_compressed (which IF still uses for PC and buffer timing).
+  // That keeps the BRAM sideband out of PD's instruction and branch-target
+  // muxes, so no path runs from it through the instruction select into the
+  // target carry chain. The illegal-RVC flag is the predecoded one.
+  logic pd_sel_compressed;
+  logic decomp_illegal;
+  assign pd_sel_compressed = (i_from_if_to_pd.raw_parcel[1:0] != 2'b11);
   assign decomp_illegal = i_from_if_to_pd.rvc_extra_predecoded[22];
+
+`ifndef SYNTHESIS
+  // Reference expansion of slot 1's raw parcel, which the checks below compare
+  // with IF's predecoded fields. instruction_non_nop is the instruction PD
+  // would register if it decoded the parcel itself.
+  logic [31:0] decompressed_instr;
+  logic        decomp_illegal_reference;
+  logic [31:0] instruction_non_nop;
 
   rvc_decompressor decompressor_inst (
       .i_instr_compressed(i_from_if_to_pd.raw_parcel),
-      .i_rd_is_x2(i_from_if_to_pd.raw_parcel[11:7] == 5'd2),
       .o_instr_expanded(decompressed_instr),
-      .o_instr_expanded_bit8_fast(),
-      .o_instr_expanded_bit15_fast(decompressed_instr_bit15_fast),
-      .o_instr_expanded_bits20_9_fast(),
-      .o_instr_expanded_bits27_25_fast(decompressed_instr_bits27_25_fast),
-      .o_instr_expanded_bits31_28_fast(decompressed_instr_bits31_28_fast),
-      .o_instr_expanded_bit26_fast(decompressed_instr_bit26_fast),
-      .o_instr_expanded_bits19_18_fast(decompressed_instr_bits19_18_fast),
-      .o_instr_expanded_bits14_12_fast(decompressed_instr_bits14_12_fast),
-      .o_instr_expanded_bits24_20_fast(decompressed_instr_bits24_20_fast),
-      .o_is_compressed(decomp_is_compressed),
-      .o_illegal(),
-      .o_illegal_fast(decomp_illegal_reference)
+      .o_is_compressed(),
+      .o_illegal(decomp_illegal_reference)
   );
-
-  // Take slot 1's compressed select from the raw parcel, not IF's sideband
-  // sel_compressed (which IF still uses for PC and buffer timing). That keeps
-  // the BRAM sideband out of PD's instruction and branch-target muxes, so no
-  // path runs from it through the instruction select into the target carry
-  // chain.
-  logic pd_sel_compressed;
-  assign pd_sel_compressed = decomp_is_compressed;
+  assign instruction_non_nop = pd_sel_compressed ? decompressed_instr :
+                                                   i_from_if_to_pd.effective_instr;
+`endif
 
   // ===========================================================================
   // Final Instruction Selection
@@ -106,45 +92,13 @@ module pd_stage #(
   // muxes, so nothing here depends on the sel_* signals being one-hot.
 
   logic [31:0] final_instruction;
-  logic [31:0] instruction_non_nop;
-  logic [31:0] instruction_non_nop_with_hot_rs1;
 
-  always_comb begin
-    if (pd_sel_compressed) begin
-      instruction_non_nop = decompressed_instr;
-      // instruction_non_nop is the decompressor's expansion, the reference for
-      // the simulation checks below. The rs2, funct7, funct3, rs1[4:3], and
-      // rs1[0] fields use the decompressor's standalone field outputs; the
-      // other bits use its full expansion.
-      instruction_non_nop[24:20] = decompressed_instr_bits24_20_fast;
-      instruction_non_nop[31:28] = decompressed_instr_bits31_28_fast;
-      instruction_non_nop[27]    = decompressed_instr_bits27_25_fast[1];
-      instruction_non_nop[26]    = decompressed_instr_bit26_fast;
-      instruction_non_nop[25]    = decompressed_instr_bits27_25_fast[0];
-      instruction_non_nop[19:18] = decompressed_instr_bits19_18_fast;
-      instruction_non_nop[15]    = decompressed_instr_bit15_fast;
-      instruction_non_nop[14:12] = decompressed_instr_bits14_12_fast;
-    end else instruction_non_nop = i_from_if_to_pd.effective_instr;
-  end
-
-  // instruction_non_nop with both source fields from the metadata IF selected
-  // alongside the parcel: source_hot_predecoded supplies rs1[2:1],
-  // rs1_rest_predecoded supplies {rs1[4:3], rs1[0]}, and bits24_20_predecoded
-  // supplies all of rs2.
-  assign instruction_non_nop_with_hot_rs1 = {
-    instruction_non_nop[31:25],
-    i_from_if_to_pd.bits24_20_predecoded,
-    i_from_if_to_pd.rs1_rest_predecoded[2:1],
-    i_from_if_to_pd.source_hot_predecoded[1:0],
-    i_from_if_to_pd.rs1_rest_predecoded[0],
-    instruction_non_nop[14:0]
-  };
-
-  // TIMING: the registered slot-1 instruction bypasses the runtime
-  // decompressor. Bits [24:15] come from IF's predecoded source fields (the
-  // IMEM sideband's RVC expansion or the native word, already selected), and a
-  // compressed parcel's other bits come from rvc_extra_predecoded. The checks
-  // below compare the result with the decompressor's expansion.
+  // TIMING: the registered slot-1 instruction is built from IF's predecoded
+  // fields, with no decoder of its own. Bits [24:15] come from IF's
+  // predecoded source fields (the IMEM sideband's RVC expansion or the native
+  // word, already selected), and a compressed parcel's other bits come from
+  // rvc_extra_predecoded. The checks below compare the result with the
+  // reference expansion.
   logic [31:0] instruction_non_nop_predecoded_rs2;
   always_comb begin
     instruction_non_nop_predecoded_rs2 = i_from_if_to_pd.effective_instr;
@@ -188,12 +142,13 @@ module pd_stage #(
   // branch ends its bundle in the aligner, so the branch's packet never has a
   // valid slot 2.
 
-  // Slot 2 arrives already decompressed. The aligner expands its three
-  // candidate parcels in parallel with its position select, so no RVC expander
-  // follows the position mux. effective_instr holds the finished instruction
-  // for both RVC and native cases, and decomp_illegal the selected candidate's
-  // illegal-RVC flag. sel_compressed is the sideband compressed flag, which
-  // equals the parcel-derived o_is_compressed of an rvc_decompressor.
+  // Slot 2 arrives already expanded. The aligner takes each of its three
+  // candidates' RVC expansion from the predecode sideband in parallel with its
+  // position select, so no RVC expander follows the position mux.
+  // effective_instr holds the finished instruction for both RVC and native
+  // cases, and decomp_illegal the selected candidate's illegal-RVC flag.
+  // sel_compressed is the sideband compressed flag, which equals
+  // raw_parcel[1:0] != 2'b11.
   logic pd_sel_compressed_2;
   assign pd_sel_compressed_2 = i_from_if_to_pd_2.sel_compressed;
 
@@ -240,6 +195,16 @@ module pd_stage #(
   };
 
 `ifndef SYNTHESIS
+  // Reference expansion of slot 2's raw parcel, for the checks below.
+  logic [31:0] decompressed_instr_2;
+  logic        decomp_illegal_reference_2;
+  rvc_decompressor decompressor_2_inst (
+      .i_instr_compressed(i_from_if_to_pd_2.raw_parcel),
+      .o_instr_expanded(decompressed_instr_2),
+      .o_is_compressed(),
+      .o_illegal(decomp_illegal_reference_2)
+  );
+
   // The predecoded fields are a second copy of instruction bits. Check them
   // against the instruction wherever both are available, so the registered
   // instruction and the early source registers cannot diverge from the
@@ -288,9 +253,18 @@ module pd_stage #(
               i_from_if_to_pd_2.source_hot_predecoded,
               i_from_if_to_pd_2.bits24_20_predecoded,
               i_from_if_to_pd_2.rs1_rest_predecoded,
+              i_from_if_to_pd_2.raw_parcel,
+              i_from_if_to_pd_2.decomp_illegal,
+              pd_sel_compressed_2,
               instruction_non_nop_2
             }
         ) && !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault) begin
+      p_slot2_sel_compressed_matches_parcel :
+      assert (pd_sel_compressed_2 == (i_from_if_to_pd_2.raw_parcel[1:0] != 2'b11));
+      p_slot2_rvc_expansion_matches_reference :
+      assert (!pd_sel_compressed_2 ||
+              (instruction_non_nop_2 == decompressed_instr_2 &&
+               i_from_if_to_pd_2.decomp_illegal == decomp_illegal_reference_2));
       p_slot2_source_hot_matches_instruction :
       assert (
           i_from_if_to_pd_2.source_hot_predecoded ==
@@ -680,8 +654,7 @@ module pd_stage #(
       // Illegal compressed indication is only valid when compressed decode path is selected.
       o_from_pd_to_id.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                               (!i_from_if_to_pd.sel_nop &&
-                                              pd_sel_compressed &&
-                                              decomp_is_compressed && decomp_illegal);
+                                              pd_sel_compressed && decomp_illegal);
       // The fetch fault has the same flush/redirect clear and !sel_nop gate as
       // the illegal flag. Decode replaces the instruction's garbage bytes with
       // a fetch-fault pseudo-op.

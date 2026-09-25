@@ -18,9 +18,9 @@
  * Variable-latency fetch provider for code in cached DDR (windows whose
  * physical address has bit 31 set): a two-line fetch buffer over the L1I line
  * port. It returns {instr64, predecode sideband, per-parity PC metadata,
- * bank_sel_r, served word tags, fault flags} plus a valid; cpu_and_mem
- * derives the two hi_rd_is_x2 bits from o_instr. It never drives the low-BRAM
- * address pins, which cpu_and_mem drives through low_bram_fetch_presenter.
+ * bank_sel_r, served word tags, fault flags} plus a valid. It never drives
+ * the low-BRAM address pins, which cpu_and_mem drives through
+ * low_bram_fetch_presenter.
  * o_instr_valid_next is o_instr_valid's next value outside reset and
  * invalidate, so cpu_and_mem can keep an identical registered copy beside IF
  * without pulling this block's state into the low-BRAM fetch-valid -> PC

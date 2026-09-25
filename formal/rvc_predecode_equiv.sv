@@ -14,7 +14,7 @@
  *    limitations under the License.
  */
 
-// The fill-time RV64C expansion must equal the independent runtime decoder
+// The fill-time RV64C expansion must equal the independent reference decoder
 // for every 16-bit parcel, including reserved and native encodings.
 module rvc_predecode_equiv;
   (* anyconst *) logic [15:0] parcel;
@@ -22,7 +22,6 @@ module rvc_predecode_equiv;
   logic illegal;
   rvc_decompressor dut (
       .i_instr_compressed(parcel),
-      .i_rd_is_x2(parcel[11:7] == 5'd2),
       .o_instr_expanded(expanded),
       .o_illegal(illegal)
   );

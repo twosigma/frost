@@ -282,8 +282,8 @@ def rvc_bits24_20(parcel: int) -> int:
 
     This is rs2 for register formats and immediate bits otherwise, and zero for
     the reserved encodings that expand to zero. It mirrors
-    ``riscv_pkg::imem_rvc_bits24_20`` and ``rvc_decompressor``'s
-    ``rs2_field_q0/q1/q2``. A native (quadrant 3) parcel returns zero.
+    ``riscv_pkg::imem_rvc_bits24_20`` and equals bits [24:20] of
+    ``rvc_decompressor``'s expansion. A native (quadrant 3) parcel returns zero.
     """
     c = parcel & 0xFFFF
 

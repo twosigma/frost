@@ -296,7 +296,6 @@ module cpu_and_mem #(
   // Dedicated PC-metadata copy for the IF PC-advance selector. Each word is
   // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
   logic [7:0] instruction_pc_metadata;
-  logic [1:0] instruction_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic instruction_valid;  // Fetch window valid
   // Provider-local served-window word tags. IF compares both providers in
@@ -368,7 +367,6 @@ module cpu_and_mem #(
   logic [15:0] fetch_pc_metadata_by_provider_parity;
   logic [7:0] fetch_pc_pairability_by_provider_parity;
   logic [3:0] fetch_slot2_start_valid_lo_by_provider_parity;
-  logic [1:0] bram_fetch_hi_rd_is_x2;
   logic bram_fetch_bank_sel_r;
   (* keep = "true", max_fanout = 16 *) logic bram_fetch_bank_sel_cpu_r;
 
@@ -630,7 +628,6 @@ module cpu_and_mem #(
           fetch_slot2_start_valid_lo_by_provider_parity
       ),
       .i_instr_pc_metadata_served_high(instruction_pc_metadata_served_high),
-      .i_instr_hi_rd_is_x2(instruction_hi_rd_is_x2),
       .i_instr_bank_sel_r(instruction_bank_sel_r),
       .i_served_word_low(instruction_served_word_low),
       .i_served_last_word_low(instruction_served_last_word_low),
@@ -828,7 +825,6 @@ module cpu_and_mem #(
     assign high_fetch_pc_metadata_by_parity = '0;
     assign high_fetch_pc_pairability_by_parity = '0;
     assign high_fetch_slot2_start_valid_lo_by_parity = '0;
-    assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
 
     // No instruction-side cache traffic in fuzz mode (low-BRAM programs).
@@ -862,12 +858,10 @@ module cpu_and_mem #(
     (* keep = "true", max_fanout = 16 *) logic fetch_high_instr_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_sideband_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_pc_metadata_q;
-    (* keep = "true", max_fanout = 16 *) logic fetch_high_rdx2_q;
     logic fetch_high_transition;
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
     logic [7:0] cached_fetch_pc_metadata;
-    logic [1:0] cached_fetch_hi_rd_is_x2;
     logic cached_fetch_bank_sel_r;
     logic [29:0] cached_fetch_served_word;
     logic [29:0] cached_fetch_served_last_word;
@@ -931,9 +925,6 @@ module cpu_and_mem #(
         .o_fetch_fault1_page(fetch_word1_fault_page),
         .o_response_valid(low_bram_response_valid)
     );
-    assign cached_fetch_hi_rd_is_x2 = {
-      cached_fetch_instr[59:55] == 5'd2, cached_fetch_instr[27:23] == 5'd2
-    };
     assign cached_fetch_pc_metadata = {
       cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
       cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableCompressedHi],
@@ -950,14 +941,12 @@ module cpu_and_mem #(
         fetch_high_instr_q       <= 1'b0;
         fetch_high_sideband_q    <= 1'b0;
         fetch_high_pc_metadata_q <= 1'b0;
-        fetch_high_rdx2_q        <= 1'b0;
       end else begin
         // The tier is a property of the physical address.
         fetch_high_valid_q       <= fetch_pa0[31];
         fetch_high_instr_q       <= fetch_pa0[31];
         fetch_high_sideband_q    <= fetch_pa0[31];
         fetch_high_pc_metadata_q <= fetch_pa0[31];
-        fetch_high_rdx2_q        <= fetch_pa0[31];
       end
     end
 
@@ -985,8 +974,6 @@ module cpu_and_mem #(
                                   bram_fetch_sideband;
     assign instruction_pc_metadata = fetch_high_pc_metadata_q ?
         cached_fetch_pc_metadata : bram_fetch_pc_metadata;
-    assign instruction_hi_rd_is_x2 = fetch_high_rdx2_q ? cached_fetch_hi_rd_is_x2 :
-                                                        bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = fetch_high_valid_q ? cached_fetch_bank_sel_r :
                                                          bram_fetch_bank_sel_cpu_r;
     assign instruction_served_word_low = bram_fetch_served_word_q;
@@ -1005,7 +992,6 @@ module cpu_and_mem #(
       if (!rst_core) begin
         p_cached_fetch_valid_timing_twin_exact :
         assert (cached_fetch_valid_local_q == cached_fetch_valid);
-        p_fetch_high_rdx2_select_aligned : assert (fetch_high_rdx2_q == fetch_high_valid_q);
         p_fetch_high_pc_metadata_select_aligned :
         assert (fetch_high_pc_metadata_q == fetch_high_valid_q);
       end
@@ -1123,7 +1109,6 @@ module cpu_and_mem #(
     assign high_fetch_pc_metadata_by_parity = '0;
     assign high_fetch_pc_pairability_by_parity = '0;
     assign high_fetch_slot2_start_valid_lo_by_parity = '0;
-    assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
     assign iup_req_valid = 1'b0;
     assign iup_req_write = 1'b0;
@@ -1494,7 +1479,7 @@ module cpu_and_mem #(
       .o_port_b_slot2_start_valid_lo_by_parity(bram_fetch_slot2_start_valid_lo_by_parity),
       .o_port_b_window_overlay_hit(bram_fetch_window_overlay_hit),
       .o_port_b_response_ready(bram_fetch_response_ready),
-      .o_port_b_hi_rd_is_x2(bram_fetch_hi_rd_is_x2),
+      .o_port_b_hi_rd_is_x2(),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
 

@@ -59,7 +59,6 @@ module cpu_tb
   logic [7:0] i_pc_pairability_by_provider_parity;
   logic [3:0] i_slot2_start_valid_lo_by_provider_parity;
   logic i_instr_pc_metadata_served_high;
-  logic [1:0] i_instr_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
   logic [29:0] i_served_word_low;
@@ -298,7 +297,6 @@ module cpu_tb
           i_instr_sideband[riscv_pkg::ImemSbSlot2StartValidLo]
         }
   };
-  assign i_instr_hi_rd_is_x2 = {TbSlot2Blocker[27:23] == 5'd2, tb_cur_word[27:23] == 5'd2};
   // bank_sel_r == pc_reg[2] => aligned: current word taken from i_instr[31:0].
   assign i_instr_bank_sel_r = tb_bank_sel_q;
   // This fixed one-cycle provider is the low lane. All arithmetic tags are

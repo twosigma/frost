@@ -223,7 +223,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rvc_predecode.sby",
-        "Full RV64C sideband expansion equals the runtime decoder for every parcel",
+        "Full RV64C sideband expansion equals the reference decoder for every parcel",
         tasks=("bmc",),
     ),
     FormalTarget(

@@ -59,7 +59,6 @@ module if_stage #(
     input logic [7:0] i_pc_pairability_by_provider_parity,
     input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
     input logic i_instr_pc_metadata_served_high,
-    input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
     // Each provider's word tag for its served window, S = the window's fetch
     // PC bits [31:2]. S+1, S-1, and S != 0 are registered beside S, so the
@@ -74,8 +73,8 @@ module if_stage #(
     input logic [29:0] i_served_prev_word_high,
     input logic i_served_prev_word_valid_high,
     // Fetch window valid: {i_instr, i_instr_sideband, i_instr_pc_metadata,
-    // i_instr_hi_rd_is_x2, i_instr_bank_sel_r} hold the window for the fetch
-    // address presented last cycle. While it is low (an L1I miss, a two-cycle
+    // i_instr_bank_sel_r} hold the window for the fetch address presented
+    // last cycle. While it is low (an L1I miss, a two-cycle
     // low-BRAM fetch outside the predecode overlay, or FETCH_VALID_FUZZ gaps)
     // and no stall-captured packet is being replayed, IF emits NOP bubbles,
     // its PCs and per-packet state hold, and the provider keeps working on the
@@ -353,7 +352,6 @@ module if_stage #(
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_live;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_saved;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel;
-  logic slot1_is_branch;
   logic slot2_valid;  // matches the output slot-2 valid sent to PD/dispatch
   logic slot2_prediction_valid;  // live-only valid for the current staged slot-2 lookup
   logic slot2_redirect_q;  // One-cycle bubble after slot-2 BTB redirect.
@@ -1120,7 +1118,6 @@ module if_stage #(
       .i_pc_pairability_by_provider_parity(i_pc_pairability_by_provider_parity),
       .i_slot2_start_valid_lo_by_provider_parity(i_slot2_start_valid_lo_by_provider_parity),
       .i_instr_pc_metadata_served_high(i_instr_pc_metadata_served_high),
-      .i_instr_hi_rd_is_x2(i_instr_hi_rd_is_x2),
       .i_instr_bank_sel_r(instr_bank_sel_for_aligner),
       .i_instr_buffer(instr_buffer),
       .i_instr_buffer_sideband(instr_buffer_sideband),
@@ -1173,7 +1170,6 @@ module if_stage #(
       .o_slot2_is_compressed_plus4_for_btb(slot2_is_compressed_plus4_for_btb),
       .o_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid),
       .o_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid),
-      .o_slot1_is_branch(slot1_is_branch),
 
       // Slot-2 kill-cause taps (see their declarations above).
       .o_slot2_kill_s1_native_ctrl(slot2_kill_s1_native_ctrl_live),
@@ -2493,11 +2489,11 @@ module if_stage #(
   logic        sel_nop_2_saved;
   logic        slot2_decomp_illegal_sc;
 
-  // Slot-2's raw parcel is retained for observation and stall replay; PD
-  // consumes the aligner's pre-decompressed effective_instr instead. Keep only
-  // a saved register here and let the final replay mux below select it; the
-  // generic stall_capture_reg would add an unnecessary live-data mux before
-  // the replay mux.
+  // Slot-2's raw parcel is retained for stall replay; PD decodes the
+  // aligner's expanded effective_instr and expands the raw parcel only in
+  // simulation, as its reference. Keep only a saved register here and let the
+  // final replay mux below select it; the generic stall_capture_reg would add
+  // an unnecessary live-data mux before the replay mux.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
       raw_parcel_2_saved <= '0;

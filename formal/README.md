@@ -85,7 +85,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `prediction_metadata_tracker` | A pending prediction's saved PC and target stay unchanged until their packet consumes them or a reset or redirect kills them, plus the tracker's own validity and payload checks. See below |
 | `prediction_release` | A pending prediction's target handoff never releases a stale old-path instruction, and pending-prediction outputs are masked when nothing is pending. See below |
 | `ras_checkpoint` | The return-address stack's next pointer and count equal the reference equations |
-| `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the runtime decompressor for all 65,536 16-bit parcels |
+| `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
 
 `prediction_release` runs the real `pc_controller` and `c_ext_state`
 together. The harness replaces the PC-increment calculator with one whose
