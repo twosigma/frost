@@ -81,7 +81,9 @@ void vPortYieldWithinAPI(void)
 
 /*-----------------------------------------------------------*/
 
-/* Arm mtimecmp for the first tick and enable the timer interrupt */
+/* Arm mtimecmp for the first tick and enable the timer interrupt. mstatus.MIE stays clear, as
+ * vTaskStartScheduler left it: the first task's mret sets it from the frame's MPIE, so no tick
+ * can be taken before a task context is loaded. */
 static void prvSetupTimerInterrupt(void)
 {
     uint32_t low = MTIME_LO;
@@ -99,9 +101,6 @@ static void prvSetupTimerInterrupt(void)
     /* Enable timer interrupt in mie (bit 7 = MTIE). */
     uint32_t mie_val = 0x80;
     __asm volatile("csrs mie, %0" ::"r"(mie_val));
-
-    /* Enable global interrupts in mstatus (bit 3 = MIE) */
-    __asm volatile("csrsi mstatus, 0x08");
 }
 
 /*-----------------------------------------------------------*/

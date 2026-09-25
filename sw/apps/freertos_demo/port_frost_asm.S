@@ -231,8 +231,9 @@ trap_exit:
 /*-----------------------------------------------------------*/
 /* xPortStartFirstTask
  *
- * Called from xPortStartScheduler. Loads the first task's saved context from
- * pxCurrentTCB and enters it with mret; never returns.
+ * Called from xPortStartScheduler with interrupts disabled. Loads the first
+ * task's saved context from pxCurrentTCB and enters it with mret, which sets
+ * mstatus.MIE from the frame's MPIE (1 in a new task's frame); never returns.
  */
 xPortStartFirstTask:
     /* Load stack pointer from pxCurrentTCB */
