@@ -674,6 +674,38 @@ async def test_victim_store_keeps_outer_loop_lines(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_line_wanted_on_its_way_to_the_store_is_not_fetched_again(
+    dut: Any,
+) -> None:
+    """A slot's old line wanted back before it reaches the store is copied, not fetched.
+
+    A loop runs from the middle of an even line A through the first window of
+    the odd line B after it. Entering B, the next-line prefetch puts the line
+    after B into A's slot, and one cycle later the loop is back in A while A
+    is still in the slot's shadow on its way to the store. A must come back
+    from the store: no line is fetched twice, and the store never holds a
+    line twice (the RTL checks that on every store write).
+    """
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
+
+    line_a = DDR_BASE + 8 * LINE_BYTES
+    line_b = line_a + LINE_BYTES
+    await FallingEdge(dut.i_clk)
+    for _ in range(6):
+        _drive_pc(dut, line_a + 16)
+        await _wait_window(dut, line_a + 16)
+        for pc in (line_a + 20, line_a + 24, line_a + 28, line_b):
+            _drive_pc(dut, pc)
+            await _wait_valid(dut)
+            _check_window(dut, pc)
+    assert sorted(reqs) == [line_a, line_b, line_b + LINE_BYTES], (
+        f"line requests: {[hex(r) for r in reqs]}"
+    )
+
+
+@cocotb.test()
 async def test_invalidate_drops_the_victim_store(dut: Any) -> None:
     """fence.i (i_invalidate) must not let a stored line be copied back."""
     await _setup(dut)

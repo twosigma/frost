@@ -529,8 +529,10 @@ module fetch_provider #(
   // ---- Victim store ----------------------------------------------------------
   // Lines evicted from a window slot are written here, into a free entry if
   // there is one and otherwise at the round-robin pointer (see the header).
-  // Each line lives in one place: a copied entry is invalidated, and a slot's
-  // old line is stored when replaced.
+  // Each line lives in one place: a copied entry is invalidated, a slot's old
+  // line is stored when replaced, and the slot's engine does not fetch that
+  // line while it is on its way to the store (see want_fill). A simulation
+  // check at the end of the module tests every store write for a duplicate.
   localparam int unsigned VictimLines   = (VICTIM_LINES > 0) ? VICTIM_LINES : 1;
   localparam int unsigned VictimPtrBits = (VictimLines > 1) ? $clog2(VictimLines) : 1;
   logic [VictimLines-1:0] vs_valid_q;
@@ -565,12 +567,17 @@ module fetch_provider #(
   // the store holds it, it is copied, one slot per cycle and never in a cycle
   // where a fill response lands or an invalidate fires, so the single victim
   // write port and the slot write are uncontended. Otherwise it is fetched.
+  // A copy waits while the slot's shadow is pending (ev_pending_q, the cycle
+  // after the slot write), and so does a fill of the line the shadow holds:
+  // that line is copied back once it reaches the store rather than fetched a
+  // second time. A fill of any other line starts at once.
   logic [1:0] want_cand, want_fill, copy_now;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
       want_cand[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !cand_present[p] &&
           !fill_busy_q[p];
-      want_fill[p] = want_cand[p] && !vs_hit[p];
+      want_fill[p] = want_cand[p] && !vs_hit[p] &&
+          !((VICTIM_LINES > 0) && ev_pending_q[p] && (ev_line_q[p] == cand_line[p]));
     end
     copy_now = '0;
     if (!i_line_resp_valid && !i_invalidate) begin
@@ -783,6 +790,21 @@ module fetch_provider #(
         $error("fetch_provider: line response id %0d (expected 0 or 1)", i_line_resp_id);
       if (i_line_resp_valid && !(fill_busy_q[resp_slot] && fill_sent_q[resp_slot]))
         $error("fetch_provider: line response for slot %0d with no fill in flight", resp_slot);
+    end
+  end
+
+  // A store write never duplicates a valid entry. An entry a copy releases
+  // on the same edge holds a line of the other parity, so it cannot match.
+  logic vs_write_line_stored;
+  always_comb begin
+    vs_write_line_stored = 1'b0;
+    for (int v = 0; v < int'(VictimLines); v++) begin
+      if (vs_valid_q[v] && (vs_line_q[v] == ev_line_q[ev_sel])) vs_write_line_stored = 1'b1;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !i_invalidate && ev_write && (VICTIM_LINES > 0)) begin
+      p_victim_store_write_is_unique : assert (!vs_write_line_stored);
     end
   end
 `endif
