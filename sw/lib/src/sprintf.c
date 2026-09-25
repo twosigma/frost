@@ -17,9 +17,9 @@
 /*
  * sprintf.c: portable sprintf / snprintf family with no <stdio.h> dependency.
  *
- * Floating-point conversions scale |d| by a power of ten, round once to a
- * uint64_t, and print that integer's digits, which avoids cascading
- * floating-point rounding errors.
+ * Floating-point conversions are exact. They expand |d| into its decimal
+ * digits with integer arithmetic and round once, to nearest with ties to even,
+ * so every finite double prints as a correctly rounding C library prints it.
  *
  * Supported: %d %i %u %o %x %X %f %F %e %E %g %G %c %s %p %n %%
  * Flags:     - + space 0 #
@@ -107,37 +107,8 @@ static const char *u64str(uint64_t v, unsigned base, bool up, char buf[IBUF], si
     return &buf[i];
 }
 
-/* ── Floating-point helpers ────────────────────────────────────────────── */
+/* ── Floating-point digits ─────────────────────────────────────────────── */
 
-static const uint64_t P10U[] = {1ULL,
-                                10ULL,
-                                100ULL,
-                                1000ULL,
-                                10000ULL,
-                                100000ULL,
-                                1000000ULL,
-                                10000000ULL,
-                                100000000ULL,
-                                1000000000ULL,
-                                10000000000ULL,
-                                100000000000ULL,
-                                1000000000000ULL,
-                                10000000000000ULL,
-                                100000000000000ULL,
-                                1000000000000000ULL,
-                                10000000000000000ULL,
-                                100000000000000000ULL,
-                                1000000000000000000ULL};
-#define NP10 18
-
-static const double P10D[] = {1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10,
-                              1e11, 1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21,
-                              1e22, 1e23, 1e24, 1e25, 1e26, 1e27, 1e28, 1e29, 1e30, 1e31};
-
-static inline double dabs(double d)
-{
-    return d < 0 ? -d : d;
-}
 static inline uint64_t dbits(double d)
 {
     uint64_t u;
@@ -156,101 +127,347 @@ static FPC fpclass(double d)
     return (FPC){(b >> 63) != 0, e == 0x7FF && m != 0, e == 0x7FF && m == 0};
 }
 
-/* floor(log10(|d|)) for d != 0, capped at 31 */
-static int exp10of(double d)
+#define CHUNK_BASE 1000000000U
+
+/* The largest double has 309 integer digits, 35 chunks of nine. The limbs
+ * hold a fraction numerator of up to 1074 bits plus the 4 bits a multiply by
+ * 10 adds, or an integer below 2^1024 while its chunks are divided out. */
+#define FP_CHUNKS 35
+#define FP_LIMBS 35
+
+/*
+ * Exact decimal digits of a finite |d|, most significant first: the integer
+ * part as base-1e9 chunks, then the fraction frac / 2^fbits one digit at a
+ * time. After the last nonzero digit the stream yields zeros.
+ */
+typedef struct {
+    uint32_t chunk[FP_CHUNKS]; /* integer part, least significant chunk first */
+    uint32_t frac[FP_LIMBS];   /* fraction numerator, least significant limb first */
+    uint8_t cdig[9];           /* digits of chunk[ci], most significant first */
+    int ci;                    /* chunk being read, -1 after the integer part */
+    int cpos;                  /* next digit of cdig to read */
+    int clast;                 /* last nonzero digit of cdig, -1 if none */
+    int chunk_nz;              /* lowest nonzero chunk */
+    int fbits;                 /* the fraction is frac / 2^fbits */
+    int flo, ftop;             /* lowest and highest nonzero limbs; flo > ftop for 0 */
+    int pend;                  /* first digit, read ahead past leading zeros; -1 if none */
+    int e10;                   /* decimal exponent of the first digit (0 for zero) */
+} FpDigits;
+
+static void load_chunk(FpDigits *s)
 {
-    d = dabs(d);
-    int e = 0;
-    if (d >= 1.0) {
-        while (e < 31 && d >= P10D[e + 1])
-            e++;
-    } else {
-        while (d < 1.0 && e > -350) {
-            d *= 10.0;
-            e--;
-        }
-        if (d >= 10.0) {
-            d /= 10.0;
-            e++;
-        } /* FP rounding edge-case */
+    uint32_t v = s->chunk[s->ci];
+    s->clast = -1;
+    for (int j = 8; j >= 0; j--) {
+        s->cdig[j] = (uint8_t) (v % 10U);
+        v /= 10U;
+        if (s->clast < 0 && s->cdig[j] != 0)
+            s->clast = j;
     }
-    return e;
+    s->cpos = 0;
 }
 
-static void sp_special(OutCtx *c, const char *s, int w, bool lj)
+/* Multiply the fraction by 10 and return the digit that moves above the binary point. */
+static int frac_next(FpDigits *s)
 {
-    size_t l = strlen(s);
+    int q = s->fbits / 32, r = s->fbits % 32;
+    uint32_t carry = 0, dg;
+
+    if (s->flo > s->ftop)
+        return 0;
+    for (int i = s->flo; i <= s->ftop; i++) {
+        uint64_t t = (uint64_t) s->frac[i] * 10U + carry;
+        s->frac[i] = (uint32_t) t;
+        carry = (uint32_t) (t >> 32);
+    }
+    if (carry)
+        s->frac[++s->ftop] = carry;
+    while (s->frac[s->flo] == 0)
+        s->flo++;
+    if (s->ftop < q)
+        return 0;
+    /* The product is below 2^(fbits + 4), so only limb q, and limb q + 1
+     * when r > 28, hold bits at or above fbits. */
+    dg = s->frac[q] >> r;
+    if (s->ftop > q) {
+        dg |= s->frac[q + 1] << (32 - r);
+        s->frac[q + 1] = 0;
+    }
+    s->frac[q] = r ? s->frac[q] & ((1U << r) - 1U) : 0U;
+    s->ftop = q;
+    while (s->ftop >= s->flo && s->frac[s->ftop] == 0)
+        s->ftop--;
+    while (s->flo <= s->ftop && s->frac[s->flo] == 0)
+        s->flo++;
+    return (int) dg;
+}
+
+static int fpd_next(FpDigits *s)
+{
+    if (s->pend >= 0) {
+        int dg = s->pend;
+        s->pend = -1;
+        return dg;
+    }
+    if (s->ci >= 0) {
+        int dg = s->cdig[s->cpos++];
+        if (s->cpos == 9 && --s->ci >= 0)
+            load_chunk(s);
+        return dg;
+    }
+    return frac_next(s);
+}
+
+/* True while a nonzero digit remains in the stream. */
+static bool fpd_more(const FpDigits *s)
+{
+    if (s->pend > 0 || s->flo <= s->ftop)
+        return true;
+    return s->ci >= 0 && (s->cpos <= s->clast || s->ci > s->chunk_nz);
+}
+
+/* Start the digit stream of |d|, given the bits of a finite |d|. */
+static void fpd_init(FpDigits *s, uint64_t bits)
+{
+    int be = (int) (bits >> 52);
+    int k = be ? be - 1075 : -1074;
+    uint64_t m = (bits & 0xFFFFFFFFFFFFFULL) | (be ? 1ULL << 52 : 0);
+    int nchunk = 0;
+
+    /* |d| = m * 2^k */
+    memset(s->frac, 0, sizeof(s->frac));
+    s->ci = -1;
+    s->chunk_nz = 0;
+    s->fbits = 0;
+    s->flo = 0;
+    s->ftop = -1;
+    s->pend = -1;
+    s->e10 = 0;
+    if (m == 0)
+        return;
+
+    if (k >= 0) {
+        /* Build the integer m * 2^k in the limbs, then divide out the chunks. */
+        uint32_t *n = s->frac;
+        int q = k / 32, r = k % 32, top = q + 2;
+        n[q] = (uint32_t) (m << r);
+        n[q + 1] = (uint32_t) (r ? m >> (32 - r) : m >> 32);
+        n[q + 2] = (uint32_t) (r ? m >> (64 - r) : 0);
+        do {
+            uint64_t rem = 0;
+            while (top > 0 && n[top] == 0)
+                top--;
+            for (int i = top; i >= 0; i--) {
+                uint64_t t = (rem << 32) | n[i];
+                n[i] = (uint32_t) (t / CHUNK_BASE);
+                rem = t % CHUNK_BASE;
+            }
+            s->chunk[nchunk++] = (uint32_t) rem;
+        } while (top > 0 || n[0] != 0);
+    } else {
+        int sh = -k;
+        uint64_t ip = sh < 64 ? m >> sh : 0;
+        uint64_t fr = sh < 64 ? m & ((1ULL << sh) - 1U) : m;
+        while (ip) {
+            s->chunk[nchunk++] = (uint32_t) (ip % CHUNK_BASE);
+            ip /= CHUNK_BASE;
+        }
+        s->fbits = sh;
+        s->frac[0] = (uint32_t) fr;
+        s->frac[1] = (uint32_t) (fr >> 32);
+        s->ftop = 1;
+        while (s->ftop >= 0 && s->frac[s->ftop] == 0)
+            s->ftop--;
+        while (s->flo <= s->ftop && s->frac[s->flo] == 0)
+            s->flo++;
+    }
+
+    if (nchunk > 0) {
+        s->ci = nchunk - 1;
+        load_chunk(s);
+        while (s->cdig[s->cpos] == 0)
+            s->cpos++;
+        s->e10 = 9 * (nchunk - 1) + 8 - s->cpos;
+        while (s->chunk[s->chunk_nz] == 0)
+            s->chunk_nz++;
+    } else {
+        int dg;
+        s->e10 = -1;
+        while ((dg = frac_next(s)) == 0)
+            s->e10--;
+        s->pend = dg;
+    }
+}
+
+/*
+ * Rounding of `keep` digits, the first `lead` of them zeros ahead of the
+ * stream's first digit, to nearest with ties to even.
+ */
+typedef struct {
+    int64_t last_lt9; /* last kept digit below 9, or -1 */
+    int64_t last_nz;  /* last nonzero kept digit after rounding, or -1 */
+    bool up;          /* add one to digit keep - 1 */
+    bool carry;       /* the addition carries out of digit 0 */
+} FpRound;
+
+static void fp_round(FpDigits *s, const FpDigits *start, int64_t lead, int64_t keep, FpRound *r)
+{
+    int64_t i = lead < keep ? lead : keep;
+    int last = 0;
+
+    *s = *start;
+    r->last_lt9 = i - 1;
+    r->last_nz = -1;
+    r->up = false;
+    for (; i < keep; i++) {
+        if (!fpd_more(s)) {
+            /* The remaining kept digits and the rounding digit are zeros. */
+            r->last_lt9 = keep - 1;
+            break;
+        }
+        last = fpd_next(s);
+        if (last != 9)
+            r->last_lt9 = i;
+        if (last != 0)
+            r->last_nz = i;
+    }
+    if (i == keep && keep >= lead) {
+        int rd = fpd_next(s);
+        r->up = rd > 5 || (rd == 5 && (fpd_more(s) || (last & 1)));
+    }
+    r->carry = r->up && r->last_lt9 < 0;
+    if (r->up)
+        r->last_nz = r->last_lt9;
+}
+
+/* Write zeros for digits [from, total), with the point after digit nint - 1. */
+static void fp_zeros(OutCtx *c, int64_t from, int64_t total, int64_t nint, bool point)
+{
+    if (from < nint) {
+        ctx_repeat(c, '0', (size_t) (nint - from));
+        if (point)
+            ctx_putc(c, '.');
+        from = nint;
+    }
+    ctx_repeat(c, '0', (size_t) (total - from));
+}
+
+/*
+ * Write the rounded digits: nint of them before the point and nfrac after it.
+ * A carry out of the kept digits prints as a leading 1, then zeros.
+ */
+static void fp_digits_out(OutCtx *c,
+                          FpDigits *s,
+                          const FpDigits *start,
+                          int64_t lead,
+                          const FpRound *r,
+                          int64_t nint,
+                          int64_t nfrac,
+                          bool point)
+{
+    int64_t total = nint + nfrac, i = 0;
+
+    if (r->carry) {
+        ctx_putc(c, '1');
+        if (point && nint == 1)
+            ctx_putc(c, '.');
+        fp_zeros(c, 1, total, nint, point);
+        return;
+    }
+    *s = *start;
+    for (; i < total; i++) {
+        int dg = 0;
+        if (i >= lead) {
+            if (!fpd_more(s))
+                break;
+            dg = fpd_next(s);
+        }
+        if (r->up && i >= r->last_lt9)
+            dg = (i == r->last_lt9) ? dg + 1 : 0;
+        ctx_putc(c, (char) ('0' + dg));
+        if (point && i + 1 == nint)
+            ctx_putc(c, '.');
+    }
+    fp_zeros(c, i, total, nint, point);
+}
+
+/* Infinity and NaN: the sign and the + and space flags apply, 0 does not. */
+static void sp_special(OutCtx *c, bool nan, char sgn, bool up, int w, bool lj)
+{
+    const char *s = nan ? (up ? "NAN" : "nan") : (up ? "INF" : "inf");
+    size_t l = sgn ? 4U : 3U;
     size_t pad = (w > 0 && (size_t) w > l) ? (size_t) w - l : 0;
     if (!lj)
         ctx_repeat(c, ' ', pad);
-    ctx_write(c, s, l);
+    if (sgn)
+        ctx_putc(c, sgn);
+    ctx_write(c, s, 3);
     if (lj)
         ctx_repeat(c, ' ', pad);
 }
 
-/* ── %f ───────────────────────────────────────────────────────────────── */
+/* ── %f %F %e %E %g %G ─────────────────────────────────────────────────── */
 static void
-do_f(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int w, bool lj, bool zp, bool trim)
+do_fp(OutCtx *c, double d, int prec, char conv, bool fp, bool fsp, bool fh, int w, bool lj, bool zp)
 {
-    if (prec < 0)
-        prec = 6;
     FPC fc = fpclass(d);
-    if (fc.nan) {
-        sp_special(c, "nan", w, lj);
-        return;
-    }
-    if (fc.inf) {
-        sp_special(c, fc.neg ? "-inf" : "inf", w, lj);
-        return;
-    }
-
-    double ad = dabs(d);
     char sgn = fc.neg ? '-' : (fp ? '+' : (fsp ? ' ' : 0));
+    bool up = conv == 'F' || conv == 'E' || conv == 'G';
+    char style = (char) (conv | 0x20);
+    uint64_t bits = dbits(d) & ~(1ULL << 63);
+    int64_t p = prec < 0 ? 6 : prec;
+    int64_t lead = 0, nint = 1, nfrac;
+    bool trim = false;
+    FpDigits start, s;
+    FpRound r;
 
-    /* integer digit count */
-    int e10 = (ad == 0.0) ? 0 : exp10of(ad);
-    int idigs = (e10 >= 0) ? (e10 + 1) : 0;
+    if (fc.nan || fc.inf) {
+        sp_special(c, fc.nan, sgn, up, w, lj);
+        return;
+    }
+    fpd_init(&start, bits);
+    int e10 = start.e10;
 
-    /* cap precision so idigs+prec <= NP10 (fits in uint64_t) */
-    int sp;
-    if (idigs >= (int) NP10) {
-        sp = 0;
-    } else {
-        int max_sp = (int) NP10 - idigs;
-        sp = prec < max_sp ? prec : max_sp;
+    if (style == 'g') {
+        /* Style f when the exponent after rounding to P significant digits
+         * is in [-4, P), else style e; trailing zeros go unless '#'. */
+        int64_t x;
+        if (p == 0)
+            p = 1;
+        fp_round(&s, &start, 0, p, &r);
+        x = e10 + (r.carry ? 1 : 0);
+        trim = !fh;
+        style = (x >= -4 && x < p) ? 'f' : 'e';
+        p = style == 'f' ? p - 1 - x : p - 1;
+    }
+    if (style == 'f') {
+        nint = (e10 > 0 ? e10 : 0) + 1;
+        lead = nint - 1 - e10;
+    }
+    fp_round(&s, &start, lead, nint + p, &r);
+    if (style == 'e') {
+        e10 += r.carry ? 1 : 0;
+    } else if (r.carry) {
+        nint++;
+    }
+    nfrac = p;
+    if (trim)
+        nfrac = r.last_nz >= nint ? r.last_nz - nint + 1 : 0;
+    bool point = nfrac > 0 || fh;
+
+    char eb[8];
+    size_t el = 0;
+    if (style == 'e') {
+        unsigned ae = (unsigned) (e10 < 0 ? -e10 : e10);
+        eb[el++] = up ? 'E' : 'e';
+        eb[el++] = e10 < 0 ? '-' : '+';
+        if (ae >= 100U)
+            eb[el++] = (char) ('0' + ae / 100U);
+        eb[el++] = (char) ('0' + ae / 10U % 10U);
+        eb[el++] = (char) ('0' + ae % 10U);
     }
 
-    /* scaled = round(ad * 10^sp) */
-    double sh = ad * (double) P10U[sp] + 0.5;
-    uint64_t scaled = (sh >= (double) UINT64_MAX) ? UINT64_MAX : (uint64_t) sh;
-
-    uint64_t scale = P10U[sp];
-    uint64_t ipart = scaled / scale, fpart = scaled % scale;
-
-    int frac_digits = sp;
-    int out_prec = prec;
-    if (trim && !fh) {
-        while (frac_digits > 0 && fpart % 10U == 0) {
-            fpart /= 10U;
-            frac_digits--;
-        }
-        out_prec = frac_digits;
-    }
-
-    char ib[IBUF];
-    size_t il;
-    const char *ip = u64str(ipart, 10, false, ib, &il);
-
-    char frac_buf[IBUF];
-    size_t fl = 0;
-    const char *frac = NULL;
-    if (frac_digits > 0)
-        frac = u64str(fpart, 10, false, frac_buf, &fl);
-
-    size_t body = il;
-    if (out_prec > 0 || fh)
-        body += 1U + (size_t) out_prec;
-    size_t content = body + (sgn ? 1U : 0U);
+    size_t content = (sgn ? 1U : 0U) + (size_t) nint + (point ? 1U : 0U) + (size_t) nfrac + el;
     size_t pad = (w > 0 && (size_t) w > content) ? (size_t) w - content : 0;
 
     if (!lj && !zp)
@@ -259,174 +476,10 @@ do_f(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int w, bool lj, 
         ctx_putc(c, sgn);
     if (!lj && zp)
         ctx_repeat(c, '0', pad);
-
-    ctx_write(c, ip, il);
-    if (out_prec > 0 || fh) {
-        ctx_putc(c, '.');
-        if (frac_digits > 0) {
-            ctx_repeat(c, '0', (size_t) frac_digits - fl);
-            ctx_write(c, frac, fl);
-        }
-        ctx_repeat(c, '0', (size_t) (out_prec - frac_digits));
-    }
+    fp_digits_out(c, &s, &start, lead, &r, nint, nfrac, point);
+    ctx_write(c, eb, el);
     if (lj)
         ctx_repeat(c, ' ', pad);
-}
-
-/* ── %e / %E ─────────────────────────────────────────────────────────── */
-static void do_e(OutCtx *c,
-                 double d,
-                 int prec,
-                 bool fp,
-                 bool fsp,
-                 bool fh,
-                 int w,
-                 bool lj,
-                 bool zp,
-                 bool up,
-                 bool trim)
-{
-    if (prec < 0)
-        prec = 6;
-    FPC fc = fpclass(d);
-    if (fc.nan) {
-        sp_special(c, "nan", w, lj);
-        return;
-    }
-    if (fc.inf) {
-        sp_special(c, fc.neg ? "-inf" : "inf", w, lj);
-        return;
-    }
-
-    double ad = dabs(d);
-    char sgn = fc.neg ? '-' : (fp ? '+' : (fsp ? ' ' : 0));
-    int e10 = (ad == 0.0) ? 0 : exp10of(ad);
-
-    /* cap precision */
-    int sp = prec;
-    if (sp > (int) NP10 - 1)
-        sp = (int) NP10 - 1;
-
-    /* normalise: t = ad/10^e10, should be in [1,10) */
-    double t;
-    if (ad == 0.0)
-        t = 0.0;
-    else if (e10 >= 0 && e10 <= (int) NP10)
-        t = ad / (double) P10U[e10];
-    else if (e10 < 0 && -e10 <= (int) NP10)
-        t = ad * (double) P10U[-e10];
-    else if (e10 >= 0 && e10 <= 31)
-        t = ad / P10D[e10];
-    else
-        t = ad;
-    /* nudge into [1,10) */
-    if (ad != 0.0) {
-        while (t >= 10.0) {
-            t /= 10.0;
-            e10++;
-        }
-        while (t < 1.0) {
-            t *= 10.0;
-            e10--;
-        }
-    }
-
-    uint64_t scale = P10U[sp];
-    double sh = t * (double) scale + 0.5;
-    uint64_t scaled = (sh >= (double) UINT64_MAX) ? UINT64_MAX : (uint64_t) sh;
-    /* rounding overflow? */
-    if (scaled >= scale * 10) {
-        scaled /= 10;
-        e10++;
-    }
-
-    uint64_t first = scaled / scale, frac = scaled % scale;
-
-    int frac_digits = sp;
-    int out_prec = prec;
-    if (trim && !fh) {
-        while (frac_digits > 0 && frac % 10U == 0) {
-            frac /= 10U;
-            frac_digits--;
-        }
-        out_prec = frac_digits;
-    }
-
-    char frac_buf[IBUF];
-    size_t fl = 0;
-    const char *frac_str = NULL;
-    if (frac_digits > 0)
-        frac_str = u64str(frac, 10, false, frac_buf, &fl);
-
-    int ae = e10;
-    char exp_sign = (ae < 0) ? '-' : '+';
-    if (ae < 0)
-        ae = -ae;
-    char exp_buf[IBUF];
-    size_t exp_digits;
-    const char *exp_str = u64str((uint64_t) ae, 10, false, exp_buf, &exp_digits);
-    size_t exponent_len = 2U + (exp_digits < 2U ? 2U : exp_digits);
-
-    size_t body = 1U + exponent_len;
-    if (out_prec > 0 || fh)
-        body += 1U + (size_t) out_prec;
-    size_t content = body + (sgn ? 1U : 0U);
-    size_t pad = (w > 0 && (size_t) w > content) ? (size_t) w - content : 0;
-
-    if (!lj && !zp)
-        ctx_repeat(c, ' ', pad);
-    if (sgn)
-        ctx_putc(c, sgn);
-    if (!lj && zp)
-        ctx_repeat(c, '0', pad);
-
-    ctx_putc(c, (char) ('0' + (int) first));
-    if (out_prec > 0 || fh) {
-        ctx_putc(c, '.');
-        if (frac_digits > 0) {
-            ctx_repeat(c, '0', (size_t) frac_digits - fl);
-            ctx_write(c, frac_str, fl);
-        }
-        ctx_repeat(c, '0', (size_t) (out_prec - frac_digits));
-    }
-    ctx_putc(c, up ? 'E' : 'e');
-    ctx_putc(c, exp_sign);
-    if (exp_digits < 2U)
-        ctx_putc(c, '0');
-    ctx_write(c, exp_str, exp_digits);
-
-    if (lj)
-        ctx_repeat(c, ' ', pad);
-}
-
-/* ── %g / %G ─────────────────────────────────────────────────────────── */
-static void
-do_g(OutCtx *c, double d, int prec, bool fp, bool fsp, bool fh, int w, bool lj, bool zp, bool up)
-{
-    if (prec < 0)
-        prec = 6;
-    if (prec == 0)
-        prec = 1;
-    FPC fc = fpclass(d);
-    if (fc.nan) {
-        sp_special(c, "nan", w, lj);
-        return;
-    }
-    if (fc.inf) {
-        sp_special(c, fc.neg ? "-inf" : "inf", w, lj);
-        return;
-    }
-
-    double ad = dabs(d);
-    int e10 = (ad == 0.0) ? 0 : exp10of(ad);
-
-    if (e10 < -4 || e10 >= prec) {
-        do_e(c, d, prec - 1, fp, fsp, fh, w, lj, zp, up, true);
-    } else {
-        int64_t requested = (int64_t) prec - 1 - e10;
-        int p = requested > INT_MAX ? INT_MAX : (int) requested;
-        do_f(c, d, p, fp, fsp, fh, w, lj, zp, true);
-    }
 }
 
 /* ── Integer emit ──────────────────────────────────────────────────────── */
@@ -750,15 +803,11 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
             }
             case 'f':
             case 'F':
-                do_f(&ctx, va_arg(ap, double), prec, fp, fsp, fh, w, fm, fz, false);
-                break;
             case 'e':
             case 'E':
-                do_e(&ctx, va_arg(ap, double), prec, fp, fsp, fh, w, fm, fz, *p == 'E', false);
-                break;
             case 'g':
             case 'G':
-                do_g(&ctx, va_arg(ap, double), prec, fp, fsp, fh, w, fm, fz, *p == 'G');
+                do_fp(&ctx, va_arg(ap, double), prec, *p, fp, fsp, fh, w, fm, fz);
                 break;
             case 'n': {
                 /* The count goes into the object type the length modifier names. */

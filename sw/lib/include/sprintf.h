@@ -39,6 +39,10 @@
  * Width:   decimal integer or *
  * Precision: .decimal integer or .*
  * Length modifiers: h  hh  l  ll  z  t, with every integer conversion and %n
+ *
+ * Floating-point output is correctly rounded (to nearest, ties to even) for
+ * every finite double. Infinity and NaN print as inf and nan, or as INF and
+ * NAN for %F, %E, and %G.
  */
 
 #include <stdarg.h>
