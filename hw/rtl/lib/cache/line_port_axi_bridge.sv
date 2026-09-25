@@ -39,9 +39,10 @@
  * was not would otherwise leave the interconnect pairing the next write's
  * data with the old address. The issue valids therefore take no reset: a
  * beat presented at a reset stays presented, payload unchanged, until the
- * slave takes it, and ready stays low through the reset. The declaration
- * initializers are the power-up state. On hardware the level below is reset
- * only at power-up, while nothing is presented. In simulation the DDR model
+ * slave takes it, and o_req_ready stays low through the reset. The
+ * declaration initializers are the power-up state. On the X3 the level
+ * below is reset only while the MMCM that also clocks the CPU is out of
+ * lock, which holds the CPU in reset as well. In simulation the DDR model
  * shares the bridge's reset: its queues clear at the first reset edge and
  * its readies rise, so a reset longer than one cycle lets it take and
  * discard the held beats.
@@ -51,13 +52,18 @@
  * register drains the next cycle unconditionally. A held B drains in the
  * first cycle without an R response and holds off the B channel until then.
  *
- * A response whose id is not in flight is dropped. That drains the responses
- * to transactions the memory controller accepted before or during a CPU
- * reset: the controller keeps running and answers them after the reset has
- * cleared the in-flight bitmap. This relies on the caches' reset tag sweeps
- * (thousands of cycles on hardware) outlasting any response still in flight,
- * so no new request reuses its id first. A write held across an image-load
- * reset lands long before the JTAG loader writes the new image into DDR.
+ * A response whose id is not in flight is dropped. On hardware that drains
+ * the transactions the bridge accepted before an image-load reset or an
+ * ndmreset: the controller keeps running and completes them after the reset
+ * has cleared the in-flight bitmap. A late response would pass for the
+ * response to a new request with the same id, so the bridge relies on each
+ * such transaction completing (held beats taken, response received) before
+ * the L2's reset tag sweep ends, one cycle per L2 line; the L2 sends nothing
+ * earlier. An image load relies on the same promptness: nothing orders the
+ * JTAG loader's DDR writes after the bridge's, so each write the bridge
+ * accepted before the reset must land before the loader's first DDR write,
+ * at least one JTAG-AXI transaction after the low-BRAM write that raised
+ * the reset.
  *
  * BASE_ADDR is subtracted from the line address so the AXI side sees a
  * zero-based region offset: in simulation the behavioral DDR indexes from 0,

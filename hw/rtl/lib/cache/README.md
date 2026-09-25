@@ -243,9 +243,14 @@ stale response meets a cleared in-flight map. A request the bridge was still
 presenting when the reset came stays presented until the controller accepts
 it, as AXI requires of a master whose slave is not reset, so a write whose
 address was accepted before its data never leaves an orphaned beat behind;
-its response is then dropped the same way. This relies on the caches' reset
-sweeps, thousands of cycles on hardware, outlasting any response still in
-flight, so that no new request can reuse its id first.
+its response is then dropped the same way. A late response would pass for
+the response to a new request with the same id, so the bridge relies on every
+transaction it accepted before the reset completing (held beats taken,
+response received) before the L2's reset sweep ends, one cycle per line or
+65,536 cycles for the 2 MiB L2; the L2 sends nothing earlier. An image load
+relies on the same promptness: nothing orders the JTAG loader's DDR writes
+after the bridge's, so each write the bridge accepted before the reset must
+land before the loader's first DDR write.
 
 ## The page-table walker port
 
