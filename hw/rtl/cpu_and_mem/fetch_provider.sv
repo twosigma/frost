@@ -85,9 +85,11 @@
  * brought in by the next-line prefetch, takes one of them. A straight-line
  * loop body of up to VICTIM_LINES lines re-enters without touching the L1I;
  * with the default six-line store, a seven-line body, which with the
- * prefetched line fills all eight places, does too. Store writes go
- * round-robin and can overwrite live entries, so an inner loop that keeps
- * cycling lines through the store can push out an enclosing loop's lines.
+ * prefetched line fills all eight places, does too. A store write takes a
+ * free entry when there is one (copying a line back frees its entry) and
+ * otherwise overwrites the entry at a round-robin pointer, so an inner loop
+ * that cycles lines through the store reuses the entries it frees instead of
+ * evicting an enclosing loop's lines.
  * The store is looked up from the registered candidate lines only, so
  * nothing of it reaches the window path, and an invalidate drops it with the
  * slots.
@@ -525,9 +527,10 @@ module fetch_provider #(
   (* keep = "true" *) logic perf_miss_stall_q;
 
   // ---- Victim store ----------------------------------------------------------
-  // Lines evicted from a window slot are written here round-robin (see the
-  // header). Each line lives in one place: a copied entry is invalidated, and
-  // a slot's old line is stored when replaced.
+  // Lines evicted from a window slot are written here, into a free entry if
+  // there is one and otherwise at the round-robin pointer (see the header).
+  // Each line lives in one place: a copied entry is invalidated, and a slot's
+  // old line is stored when replaced.
   localparam int unsigned VictimLines   = (VICTIM_LINES > 0) ? VICTIM_LINES : 1;
   localparam int unsigned VictimPtrBits = (VictimLines > 1) ? $clog2(VictimLines) : 1;
   logic [VictimLines-1:0] vs_valid_q;
@@ -697,6 +700,25 @@ module fetch_provider #(
     end
   end
 
+  // Store write entry: the lowest free entry, else the round-robin pointer,
+  // which advances only when it is used. The choice decodes registers only,
+  // like ev_write, so the write enables stay off the fill-response cone. An
+  // entry released this cycle still reads as valid here.
+  logic vs_free_found;
+  logic [VictimPtrBits-1:0] vs_free_idx;
+  logic [VictimPtrBits-1:0] vs_wr_idx;
+  always_comb begin
+    vs_free_found = 1'b0;
+    vs_free_idx   = '0;
+    for (int v = int'(VictimLines) - 1; v >= 0; v--) begin
+      if (!vs_valid_q[v]) begin
+        vs_free_found = 1'b1;
+        vs_free_idx   = VictimPtrBits'(v);
+      end
+    end
+  end
+  assign vs_wr_idx = vs_free_found ? vs_free_idx : vs_wr_ptr_q;
+
   always_ff @(posedge i_clk) begin
     if (i_rst || i_invalidate) begin
       vs_valid_q  <= '0;
@@ -706,11 +728,12 @@ module fetch_provider #(
       // case where the round-robin pointer happens to sit there.
       if (|copy_now) vs_valid_q[vs_hit_idx[copy_slot]] <= 1'b0;
       if (ev_write && (VICTIM_LINES > 0)) begin
-        vs_valid_q[vs_wr_ptr_q] <= 1'b1;
-        vs_line_q[vs_wr_ptr_q] <= ev_line_q[ev_sel];
-        vs_data_q[vs_wr_ptr_q] <= ev_data_q[ev_sel];
-        vs_sb_q[vs_wr_ptr_q] <= ev_sb_q[ev_sel];
-        vs_wr_ptr_q <= (vs_wr_ptr_q == VictimPtrBits'(VictimLines - 1)) ? '0 : vs_wr_ptr_q + 1'b1;
+        vs_valid_q[vs_wr_idx] <= 1'b1;
+        vs_line_q[vs_wr_idx] <= ev_line_q[ev_sel];
+        vs_data_q[vs_wr_idx] <= ev_data_q[ev_sel];
+        vs_sb_q[vs_wr_idx] <= ev_sb_q[ev_sel];
+        if (!vs_free_found)
+          vs_wr_ptr_q <= (vs_wr_ptr_q == VictimPtrBits'(VictimLines - 1)) ? '0 : vs_wr_ptr_q + 1'b1;
       end
     end
   end

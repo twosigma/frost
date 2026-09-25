@@ -641,6 +641,39 @@ async def test_victim_store_evicts_beyond_capacity(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_victim_store_keeps_outer_loop_lines(dut: Any) -> None:
+    """An inner loop's store traffic goes to free entries, not the outer loop's lines.
+
+    A four-line outer loop encloses a two-line inner loop that runs three
+    times per pass. Each inner re-entry copies lines back from the store,
+    which frees their entries, and writes the lines the copies replace. The
+    seven-line footprint (six lines plus the line after the inner loop) fits
+    the two slots and the six-entry store, so after the first outer pass no
+    line is fetched again.
+    """
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
+
+    outer = DDR_BASE
+    inner = DDR_BASE + 4 * LINE_BYTES
+    await FallingEdge(dut.i_clk)
+    first_pass = 0
+    for outer_pass in range(4):
+        _drive_pc(dut, outer)
+        await _walk_lines(dut, outer, 4)
+        for _ in range(3):
+            _drive_pc(dut, inner)
+            await _walk_lines(dut, inner, 2)
+        if outer_pass == 0:
+            first_pass = len(reqs)
+    refetched = reqs[first_pass:]
+    assert not refetched, (
+        f"lines fetched again after the first pass: {[hex(r) for r in refetched]}"
+    )
+
+
+@cocotb.test()
 async def test_invalidate_drops_the_victim_store(dut: Any) -> None:
     """fence.i (i_invalidate) must not let a stored line be copied back."""
     await _setup(dut)
