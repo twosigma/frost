@@ -273,8 +273,7 @@ module cpu_ooo #(
   (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // driven by commit_actions below
   logic branch_resolved_correct;  // branch resolved correctly at execute time
-  logic branch_unresolved_decrement;  // a branch resolved as correctly predicted
-  logic [riscv_pkg::CheckpointIdWidth-1:0] branch_unresolved_checkpoint_id;  // its checkpoint
+  logic [riscv_pkg::CheckpointIdWidth-1:0] branch_resolved_checkpoint_id;  // its checkpoint
 
   // Outputs of ooo_pipeline_control used elsewhere in this file.
   logic front_end_cf_serialize_stall;
@@ -309,8 +308,8 @@ module cpu_ooo #(
       .i_dispatch_stall(dispatch_stall),
       .i_frontend_resource_stall(decoded_queue_full),
       .i_csr_wb_pending(csr_wb_pending),
-      .i_branch_unresolved_decrement(branch_unresolved_decrement),
-      .i_branch_unresolved_checkpoint_id(branch_unresolved_checkpoint_id),
+      .i_branch_resolved_correct(branch_resolved_correct),
+      .i_branch_resolved_checkpoint_id(branch_resolved_checkpoint_id),
       .i_front_end_indirect_control_flow_pending(
           front_end_indirect_control_flow_pending || decoded_queue_indirect_pending),
       .i_disable_branch_prediction(i_disable_branch_prediction),
@@ -2490,6 +2489,8 @@ module cpu_ooo #(
   logic            is_jalr_issue;
   logic            branch_taken_resolved;
   logic [XLEN-1:0] branch_target_resolved;
+  // Every branch holds a checkpoint, so this is the resolving branch's own.
+  assign branch_resolved_checkpoint_id = rs_issue_int.checkpoint_id;
 
   branch_resolution #(
       .XLEN(XLEN)
@@ -2509,13 +2510,10 @@ module cpu_ooo #(
       .i_checkpoint_owner_tag(checkpoint_owner_tag),
       .o_branch_update(branch_update),
       .o_branch_resolved_correct(branch_resolved_correct),
-      .o_branch_unresolved_decrement(branch_unresolved_decrement),
       .o_is_jalr_issue(is_jalr_issue),
       .o_branch_taken_resolved(branch_taken_resolved),
       .o_branch_target_resolved(branch_target_resolved)
   );
-  // Every branch holds a checkpoint, so this is the resolving branch's own.
-  assign branch_unresolved_checkpoint_id = rs_issue_int.checkpoint_id;
 
   // Not part of branch resolution: LQ request present, meaning held in the
   // router or a read handoff with no write on the port. Nothing consumes it,

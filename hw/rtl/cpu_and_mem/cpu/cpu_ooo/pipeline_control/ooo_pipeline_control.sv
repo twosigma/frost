@@ -55,8 +55,8 @@ module ooo_pipeline_control #(
     input logic i_frontend_resource_stall,
     input logic i_csr_wb_pending,
     // A branch resolved as correctly predicted, and its checkpoint id.
-    input logic i_branch_unresolved_decrement,
-    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_branch_unresolved_checkpoint_id,
+    input logic i_branch_resolved_correct,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_branch_resolved_checkpoint_id,
     input logic i_front_end_indirect_control_flow_pending,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
@@ -96,8 +96,8 @@ module ooo_pipeline_control #(
   logic [XLEN-1:0] trap_target;
   logic dispatch_stall;
   logic csr_wb_pending;
-  logic branch_unresolved_decrement;
-  logic [riscv_pkg::CheckpointIdWidth-1:0] branch_unresolved_checkpoint_id;
+  logic branch_resolved_correct;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] branch_resolved_checkpoint_id;
   logic front_end_indirect_control_flow_pending;
   logic flush_pipeline;
   assign rob_alloc_req                           = i_rob_alloc_req;
@@ -112,8 +112,8 @@ module ooo_pipeline_control #(
   assign trap_target                             = i_trap_target;
   assign dispatch_stall                          = i_dispatch_stall;
   assign csr_wb_pending                          = i_csr_wb_pending;
-  assign branch_unresolved_decrement             = i_branch_unresolved_decrement;
-  assign branch_unresolved_checkpoint_id         = i_branch_unresolved_checkpoint_id;
+  assign branch_resolved_correct                 = i_branch_resolved_correct;
+  assign branch_resolved_checkpoint_id           = i_branch_resolved_checkpoint_id;
   assign front_end_indirect_control_flow_pending = i_front_end_indirect_control_flow_pending;
   assign flush_pipeline                          = i_flush_pipeline;
 
@@ -163,8 +163,7 @@ module ooo_pipeline_control #(
     if (i_rst) begin
       checkpoint_unresolved_q <= '0;
     end else begin
-      if (branch_unresolved_decrement)
-        checkpoint_unresolved_q[branch_unresolved_checkpoint_id] <= 1'b0;
+      if (branch_resolved_correct) checkpoint_unresolved_q[branch_resolved_checkpoint_id] <= 1'b0;
       if (rob_checkpoint_valid)
         checkpoint_unresolved_q[rob_checkpoint_id] <= checkpoint_save_unresolved;
     end
@@ -176,12 +175,12 @@ module ooo_pipeline_control #(
   // naming a live one.
   always_ff @(posedge i_clk) begin
     if (!i_rst && !$isunknown(
-            {rob_checkpoint_valid, branch_unresolved_decrement, checkpoint_in_use}
+            {rob_checkpoint_valid, branch_resolved_correct, checkpoint_in_use}
         )) begin
       p_unresolved_save_takes_free_checkpoint :
       assert (!rob_checkpoint_valid || !checkpoint_in_use[rob_checkpoint_id]);
       p_unresolved_clear_names_live_checkpoint :
-      assert (!branch_unresolved_decrement || checkpoint_in_use[branch_unresolved_checkpoint_id]);
+      assert (!branch_resolved_correct || checkpoint_in_use[branch_resolved_checkpoint_id]);
     end
   end
 `endif

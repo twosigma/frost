@@ -181,12 +181,11 @@ def _assert_no_branch_update(dut: Any) -> None:
     assert not update["valid"]
     assert not update["mispredicted"]
     assert not dut.o_branch_resolved_correct.value
-    assert not dut.o_branch_unresolved_decrement.value
 
 
 @cocotb.test()
-async def test_correct_beq_branch_updates_rob_and_decrements(dut: Any) -> None:
-    """A correctly predicted BEQ writes a resolved branch update."""
+async def test_correct_beq_branch_updates_rob_and_reports_correct(dut: Any) -> None:
+    """A correctly predicted BEQ writes a resolved branch update and reports it correct."""
     await _setup_test(dut)
 
     _drive_issue(
@@ -211,7 +210,6 @@ async def test_correct_beq_branch_updates_rob_and_decrements(dut: Any) -> None:
     assert update["target"] == 0x80000180
     assert not update["mispredicted"]
     assert dut.o_branch_resolved_correct.value
-    assert dut.o_branch_unresolved_decrement.value
     assert not dut.o_is_jalr_issue.value
     assert dut.o_branch_taken_resolved.value
     assert int(dut.o_branch_target_resolved.value) == 0x80000180
@@ -259,7 +257,6 @@ async def test_direction_and_target_mispredictions_are_flagged(dut: Any) -> None
         assert update["target"] == case["expected_target"]
         assert update["mispredicted"]
         assert not dut.o_branch_resolved_correct.value
-        assert not dut.o_branch_unresolved_decrement.value
 
 
 @cocotb.test()

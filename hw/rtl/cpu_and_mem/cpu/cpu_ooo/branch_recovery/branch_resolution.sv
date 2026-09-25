@@ -62,7 +62,6 @@ module branch_resolution #(
 
     output riscv_pkg::reorder_buffer_branch_update_t            o_branch_update,
     output logic                                                o_branch_resolved_correct,
-    output logic                                                o_branch_unresolved_decrement,
     output logic                                                o_is_jalr_issue,
     output logic                                                o_branch_taken_resolved,
     output logic                                     [XLEN-1:0] o_branch_target_resolved
@@ -276,25 +275,19 @@ module branch_resolution #(
     branch_update.mispredicted = branch_mispredicted;
   end
 
-  // Set when a branch resolves as correctly predicted. As
-  // branch_unresolved_decrement below it clears the branch's unresolved bit in
-  // ooo_pipeline_control, so front_end_cf_serialize_stall can drop before the
-  // branch commits.
+  // Set when a branch resolves as correctly predicted. It clears the branch's
+  // unresolved bit in ooo_pipeline_control, so front_end_cf_serialize_stall
+  // can drop before the branch commits. A JAL resolves at allocation and never
+  // sets it.
   logic branch_resolved_correct;
-  assign branch_resolved_correct = branch_update.valid && !branch_update.mispredicted;
-
-  // Direct JALs are architecturally resolved at dispatch/rename time and
-  // therefore never enter the unresolved-branch tracker.
-  logic branch_unresolved_decrement;
-  assign branch_unresolved_decrement   = branch_resolved_correct;
+  assign branch_resolved_correct   = branch_update.valid && !branch_update.mispredicted;
 
   // --- Output wiring.
-  assign o_branch_update               = branch_update;
-  assign o_branch_resolved_correct     = branch_resolved_correct;
-  assign o_branch_unresolved_decrement = branch_unresolved_decrement;
-  assign o_is_jalr_issue               = is_jalr_issue;
-  assign o_branch_taken_resolved       = branch_taken_resolved;
-  assign o_branch_target_resolved      = branch_target_resolved;
+  assign o_branch_update           = branch_update;
+  assign o_branch_resolved_correct = branch_resolved_correct;
+  assign o_is_jalr_issue           = is_jalr_issue;
+  assign o_branch_taken_resolved   = branch_taken_resolved;
+  assign o_branch_target_resolved  = branch_target_resolved;
 
 `ifndef SYNTHESIS
   // Simulation checks for the late qualification. The reference is the plain

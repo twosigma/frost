@@ -76,8 +76,8 @@ def _drive_checkpoint_save(dut: Any, checkpoint_id: int | None) -> None:
 
 def _drive_resolve(dut: Any, checkpoint_id: int | None) -> None:
     """Drive a correct branch resolution for this cycle (None: no resolution)."""
-    dut.i_branch_unresolved_decrement.value = int(checkpoint_id is not None)
-    dut.i_branch_unresolved_checkpoint_id.value = checkpoint_id or 0
+    dut.i_branch_resolved_correct.value = int(checkpoint_id is not None)
+    dut.i_branch_resolved_checkpoint_id.value = checkpoint_id or 0
 
 
 def _drive_commit(dut: Any, fields: Mapping[str, int | bool]) -> None:
