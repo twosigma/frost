@@ -2012,7 +2012,7 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
         # is kept for satp regardless of write intent.
         csr_write_intent=False,
         csr_addr=CSR_SATP,
-        csr_op=0b010,
+        csr_op=0b000,  # csrr: dispatch clears [1:0] of a CSR with no write intent
     )
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -2145,7 +2145,7 @@ async def test_nontranslation_csrs_do_not_wait_for_sq(dut: Any) -> None:
     dut_if.set_sq_committed_empty(False)
 
     cases = (
-        (CSR_MSTATUS, False, 0b010),
+        (CSR_MSTATUS, False, 0b000),  # csrr
         (CSR_MIE, True, 0b001),
     )
     for case_index, (csr_addr, write_intent, csr_op) in enumerate(cases):

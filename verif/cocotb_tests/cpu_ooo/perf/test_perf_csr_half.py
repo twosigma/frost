@@ -74,8 +74,8 @@ class Seam:
         for _ in range(count):
             await self.step(raw_valid=0, **inputs)
 
-    async def access(self, address: int, value: int = 0, op: int = 2) -> int:
-        """Launch one raw CSR access and collect its next-cycle read capture."""
+    async def access(self, address: int, value: int = 0, op: int = 0) -> int:
+        """Launch one raw CSR access (a csrr by default); return its next-cycle read capture."""
         await self.step(
             raw_address=address,
             raw_value=value,
@@ -127,7 +127,7 @@ async def test_consecutive_halves_use_same_edge_payload_and_address(dut: Any) ->
             raw_address=MPERF_DATAH if n & 1 else MPERF_DATA,
             raw_valid=1,
             raw_is_csr=1,
-            raw_op=2,
+            raw_op=0,
             raw_value=0,
             wrapper_data=word,
         )
@@ -162,11 +162,11 @@ async def test_snapshot_selector_and_previous_cache_bank_phase(dut: Any) -> None
     # interface"), and both paths must return the same value.
     for address, value, op in (
         (MPERF_SEL, 42, 1),
-        (MPERF_DATAH, 0, 2),
+        (MPERF_DATAH, 0, 0),
         (MPERF_SEL, 130, 1),
-        (MPERF_DATA, 0, 2),
+        (MPERF_DATA, 0, 0),
         (MPERF_CTL, 1, 1),
-        (MPERF_DATAH, 0, 2),
+        (MPERF_DATAH, 0, 0),
     ):
         await s.step(
             raw_address=address,
@@ -189,7 +189,7 @@ async def test_flush_exception_bubbles_and_reset_keep_current_qualification(
     await s.access(MPERF_SEL, 42, 1)
     await s.idle(3, wrapper_data=0xA5A5A5A55A5A5A5A)
     await s.step(
-        raw_valid=1, raw_is_csr=1, raw_address=MPERF_DATAH, raw_value=0, raw_op=2
+        raw_valid=1, raw_is_csr=1, raw_address=MPERF_DATAH, raw_value=0, raw_op=0
     )
     assert int(dut.o_reference_comb.value) == 0xA5A5A5A5
     # Immediate flush after commit capture masks valid before the next edge.
@@ -222,15 +222,16 @@ async def test_ordinary_csr_and_same_cycle_fp_forwarding_unchanged(dut: Any) -> 
     s = await setup(dut)
     await s.access(0x340, 0x0123456789ABCDEF, 1)  # mscratch
     assert await s.access(0x340) == 0x0123456789ABCDEF
-    await s.step(raw_address=0xC01, raw_valid=1, raw_is_csr=1, raw_op=2, raw_value=0)
+    await s.step(raw_address=0xC01, raw_valid=1, raw_is_csr=1, raw_op=0, raw_value=0)
     assert await s.step(raw_valid=0, mtime=0xDEADBEEF87654321) == 0xDEADBEEF87654321
     await s.access(0x001, 0, 1)  # Clear fflags.
-    await s.step(raw_address=0x001, raw_valid=1, raw_is_csr=1, raw_op=2, raw_value=0)
+    await s.step(raw_address=0x001, raw_valid=1, raw_is_csr=1, raw_op=0, raw_value=0)
     assert await s.step(raw_valid=0, fp_flags=0b10001, fp_flags_valid=1) == 0b10001
     await s.idle(1, fp_flags_valid=0)
-    # The CSRRS write has priority over the same-cycle flag accumulation and
-    # takes its value from the stored fflags (zero), while the read forwards
-    # 10001; the next-cycle replay is suppressed.
+    # The read's write-back (csr_file writes every committed CSR access) has
+    # priority over the same-cycle flag accumulation and takes its value from
+    # the stored fflags (zero), while the read forwards 10001; the next-cycle
+    # replay is suppressed.
     assert await s.access(0x003) == 0
     # A distinct FP commit without a CSR write still accumulates normally.
     await s.idle(1, fp_flags=0b00110, fp_flags_valid=1)
@@ -257,7 +258,7 @@ async def test_random_raw_commit_and_snapshot_histories(dut: Any) -> None:
     )
     for _ in range(1024):
         address = rng.choice(addresses)
-        value, op = 0, 2
+        value, op = 0, 0
         if address == MPERF_SEL:
             value, op = rng.choice((0, 7, 42, 49, 106, 129, 130, 255)), 1
         elif address == MPERF_CTL:
