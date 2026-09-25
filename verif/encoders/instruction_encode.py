@@ -31,6 +31,7 @@ class Opcode(IntEnum):
     STORE = 0x23
     ALU_IMM = 0x13
     ALU_REG = 0x33
+    ALU_REG_W = 0x3B  # OP-32: RV64 word register-register operations
     LUI = 0x37  # Load Upper Immediate
     AUIPC = 0x17  # Add Upper Immediate to PC
     AMO = 0x2F  # A extension (atomics)
@@ -498,6 +499,11 @@ class UType(InstructionEncoder):
 def enc_r(funct7: int, rs2: int, rs1: int, funct3: int, rd: int) -> int:
     """Encode R-type register-register instruction (opcode 0x33 - ALU operations)."""
     return RType.encode(funct7, rs2, rs1, funct3, rd, Opcode.ALU_REG)
+
+
+def enc_r_w(funct7: int, rs2: int, rs1: int, funct3: int, rd: int) -> int:
+    """Encode R-type RV64 word instruction (opcode 0x3B - ADDW, PACKW, etc.)."""
+    return RType.encode(funct7, rs2, rs1, funct3, rd, Opcode.ALU_REG_W)
 
 
 def enc_i(immediate: int, rs1: int, funct3: int, rd: int) -> int:

@@ -43,8 +43,10 @@ shifts and aligned accesses. A new table also needs generator and model support.
 from collections.abc import Callable
 
 
+from config import SHIFT_AMOUNT_MASK
 from encoders.instruction_encode import (
     enc_r,
+    enc_r_w,
     enc_i,
     enc_i_load,
     enc_i_jalr,
@@ -307,9 +309,11 @@ def make_i_encoder(f3: int) -> Callable:
 def make_i_shift_encoder(f3: int, f7: int) -> Callable:
     """Return an I-type shift encoder called as ``encoder(rd, rs1, sh)``.
 
-    funct7 fills imm[11:5] and the low 5 bits of the shift amount fill imm[4:0].
+    RV64 layout: funct7[6:1] fills imm[11:6] and the 6-bit shift amount fills
+    imm[5:0], so funct7[0] must be 0.
     """
-    return lambda rd, rs1, sh: enc_i((sh & 0x1F) | (f7 << 5), rs1, f3, rd)
+    assert f7 & 1 == 0, "funct7[0] would overlap shift amount bit 5"
+    return lambda rd, rs1, sh: enc_i((sh & SHIFT_AMOUNT_MASK) | (f7 << 5), rs1, f3, rd)
 
 
 def make_i_unary_encoder(f3: int, f7: int, rs2_field: int) -> Callable:
@@ -330,9 +334,9 @@ def make_i_fixed_encoder(f3: int, f7: int, rs2_field: int) -> Callable:
     return lambda rd, rs1: enc_i((rs2_field & 0x1F) | (f7 << 5), rs1, f3, rd)
 
 
-def make_r_unary_encoder(f7: int, f3: int) -> Callable:
-    """Return an R-type encoder called as ``encoder(rd, rs1)`` with rs2 = x0 (zext.h)."""
-    return lambda rd, rs1: enc_r(f7, 0, rs1, f3, rd)
+def make_r_w_unary_encoder(f7: int, f3: int) -> Callable:
+    """Return an OP-32 encoder called as ``encoder(rd, rs1)`` with rs2 = x0 (zext.h)."""
+    return lambda rd, rs1: enc_r_w(f7, 0, rs1, f3, rd)
 
 
 def make_load_encoder(f3: int) -> Callable:
@@ -491,11 +495,11 @@ I_UNARY: dict[str, tuple[Callable, Callable]] = {
     "cpop": (make_i_unary_encoder(0x1, 0x30, 2), cpop),
     "sext.b": (make_i_unary_encoder(0x1, 0x30, 4), sext_b),
     "sext.h": (make_i_unary_encoder(0x1, 0x30, 5), sext_h),
-    # zext.h: R-type (opcode 0x33, the RV32 form) with funct7=0x04, funct3=4, rs2=0
-    "zext.h": (make_r_unary_encoder(0x04, 0x4), zext_h),
-    # funct3=5, fixed rs2 value
+    # zext.h at RV64 is packw rd, rs1, x0: OP-32 with funct7=0x04, funct3=4
+    "zext.h": (make_r_w_unary_encoder(0x04, 0x4), zext_h),
+    # funct3=5, fixed rs2 value; rev8 uses its RV64 funct7 (0x35)
     "orc.b": (make_i_fixed_encoder(0x5, 0x14, 7), orc_b),
-    "rev8": (make_i_fixed_encoder(0x5, 0x34, 0x18), rev8),
+    "rev8": (make_i_fixed_encoder(0x5, 0x35, 0x18), rev8),
     # Zbkb extension - bit manipulation for crypto
     "brev8": (make_i_fixed_encoder(0x5, 0x34, 7), brev8),
 }
