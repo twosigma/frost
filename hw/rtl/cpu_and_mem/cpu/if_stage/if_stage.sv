@@ -285,10 +285,6 @@ module if_stage #(
   logic [31:0] instr_buffer;  // Word kept for its upper parcel (see c_ext_state)
   logic prev_was_compressed_at_lo;  // Previous instr was compressed at addr[1]=0
   logic is_compressed_for_buffer;  // Stall-restored is_compressed
-  logic is_compressed_for_pc;  // Registered is_compressed for PC timing
-  logic use_buffer_after_prediction;  // Use buffer after prediction-from-buffer holdoff
-  logic use_buffer_after_prediction_timing;  // ... with F, H, R forced to 0 (see c_ext_state)
-  logic use_buffer_after_prediction_edge;  // ... without its prediction_holdoff mask
   logic use_instr_buffer_for_coverage_timing;
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
@@ -343,8 +339,6 @@ module if_stage #(
   logic slot2_is_compressed_plus4_for_btb;
   logic slot2_plus2_candidate_valid;
   logic slot2_plus4_candidate_valid;
-  logic slot2_plus2_candidate_valid_timing;
-  logic slot2_plus4_candidate_valid_timing;
   logic slot2_valid_for_pc_saved;
   logic slot2_is_compressed_for_pc_saved;
   logic slot2_valid_for_pc;
@@ -420,11 +414,11 @@ module if_stage #(
   logic [1:0] active_slot2_start_valid_lo_by_parity;
   logic [1:0] active_slot2_start_valid_lo_by_parity_canonical;
   // Simulation-only checks: each metadata replica matches the sideband bits
-  // it copies, and while slot 2 is valid the timing-only +2/+4 slot-2
-  // candidate selects match the architectural selects and the reference
-  // selector (slot 1's fast size). The fast size may differ on a cycle where
-  // prediction is blocked, so the reference comparison also requires that
-  // branch_prediction_controller's prediction_common would be set.
+  // it copies, and while slot 2 is valid the +2/+4 slot-2 candidate selects
+  // match the reference selector (slot 1's fast size). The fast size may
+  // differ on a cycle where prediction is blocked, so the comparison also
+  // requires that branch_prediction_controller's prediction_common would be
+  // set.
   logic slot2_candidate_legacy_oracle_active;
   assign slot2_candidate_legacy_oracle_active =
       !i_pipeline_ctrl.reset && slot2_prediction_valid &&
@@ -515,32 +509,11 @@ module if_stage #(
       );
     end
     if (slot2_candidate_legacy_oracle_active && !$isunknown(
-            {
-              is_compressed_fast,
-              slot2_plus2_candidate_valid_timing,
-              slot2_plus4_candidate_valid_timing
-            }
+            {is_compressed_fast, slot2_plus2_candidate_valid, slot2_plus4_candidate_valid}
         )) begin
       p_slot2_candidate_identity_matches_legacy_live_selector :
-      assert ({slot2_plus4_candidate_valid_timing,
-               slot2_plus2_candidate_valid_timing} ==
+      assert ({slot2_plus4_candidate_valid, slot2_plus2_candidate_valid} ==
               {!is_compressed_fast, is_compressed_fast});
-    end
-    if (!$isunknown(
-            {
-              slot2_prediction_valid,
-              slot2_plus2_candidate_valid,
-              slot2_plus4_candidate_valid,
-              slot2_plus2_candidate_valid_timing,
-              slot2_plus4_candidate_valid_timing
-            }
-        )) begin
-      p_live_slot2_prediction_candidates_match_canonical :
-      assert (!slot2_prediction_valid ||
-              ({slot2_plus4_candidate_valid_timing,
-                slot2_plus2_candidate_valid_timing} ==
-               {slot2_plus4_candidate_valid,
-                slot2_plus2_candidate_valid}));
     end
   end
 `endif
@@ -773,8 +746,8 @@ module if_stage #(
       .i_pc_2_alt(slot2_pc_plus4_for_btb),
       .i_pc_2_base(pc_reg),
       .i_lookup_lead_collapsed(lookup_lead_collapsed),
-      .i_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid_timing),
-      .i_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid_timing),
+      .i_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid),
+      .i_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid),
       .i_slot2_valid(slot2_prediction_valid),
       .i_slot2_is_compressed_plus2(slot2_is_compressed_plus2_for_btb),
       .i_slot2_is_compressed_plus4(slot2_is_compressed_plus4_for_btb),
@@ -789,11 +762,10 @@ module if_stage #(
       .i_branch_taken(i_from_ex_comb.branch_taken),
       .i_any_holdoff_safe(any_holdoff_safe),
       .i_is_32bit_spanning(1'b0),
-      // The timing copy of the buffer select (F, H, R forced to 0; see
-      // use_instr_buffer_for_coverage_timing). On any cycle where it differs
-      // from use_instr_buffer, the holdoff, flush, and prediction-disable
-      // gates already block prediction; the packet itself uses
-      // use_instr_buffer.
+      // The buffer select without the aligner's FENCE-class term (see
+      // use_instr_buffer_for_coverage_timing). The two differ only on a
+      // FENCE-class flush cycle, which already blocks prediction; the packet
+      // itself uses use_instr_buffer.
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
       .i_disable_branch_prediction(disable_branch_prediction_effective),
       .i_disable_branch_prediction_wcs0(disable_branch_prediction_effective_wcs0),
@@ -920,7 +892,6 @@ module if_stage #(
       .i_trap_target(i_trap_ctrl.trap_target),
 
       .i_is_compressed(is_compressed_fast),
-      .i_is_compressed_for_pc(is_compressed_for_pc),
       // Two-wide bundle advance. pc_controller does not read the slot-2 valid
       // and size; the advance selects below already fold them in. The selects
       // switch to their stall-captured copies during replay, so the PC
@@ -1094,7 +1065,6 @@ module if_stage #(
       // Its registered trap and xRET terms keep exception detection off the
       // path through c_ext_state to the PC calculation.
       .i_flush(flush_for_c_ext_safe),
-      .i_fence_i_flush(i_fence_i_flush),
       .i_stall_registered(if_stage_stall_registered),
 
       .i_control_flow_holdoff(control_flow_holdoff),
@@ -1107,10 +1077,6 @@ module if_stage #(
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
 
       .i_effective_instr(effective_instr),
-      // c_ext_state does not read this port: the buffer captures
-      // i_effective_instr, whose word select already applies the bank parity.
-      .i_fetch_word_swapped(fetch_word_swapped_for_c_ext),
-      .i_pc(pc),
       .i_pc_reg(pc_reg),
 
       .i_is_compressed(is_compressed),
@@ -1125,10 +1091,6 @@ module if_stage #(
       .o_instr_buffer(instr_buffer),
       .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
       .o_is_compressed_for_buffer(is_compressed_for_buffer),
-      .o_is_compressed_for_pc(is_compressed_for_pc),
-      .o_use_buffer_after_prediction(use_buffer_after_prediction),
-      .o_use_buffer_after_prediction_timing(use_buffer_after_prediction_timing),
-      .o_use_buffer_after_prediction_edge(use_buffer_after_prediction_edge),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid),
       .o_instr_buffer_sideband(instr_buffer_sideband),
@@ -1181,8 +1143,6 @@ module if_stage #(
       .i_pc_reg_high_for_coverage(pc_reg_high_for_coverage),
 
       .i_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
-      .i_use_buffer_after_prediction(use_buffer_after_prediction),
-      .i_use_buffer_after_prediction_timing(use_buffer_after_prediction_timing),
 
       .i_mid_32bit_correction(mid_32bit_correction),
       // RAS predicts after the instruction arrives, so the next cycle's
@@ -1229,8 +1189,6 @@ module if_stage #(
       .o_slot2_is_compressed_plus4_for_btb(slot2_is_compressed_plus4_for_btb),
       .o_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid),
       .o_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid),
-      .o_slot2_plus2_candidate_valid_timing(slot2_plus2_candidate_valid_timing),
-      .o_slot2_plus4_candidate_valid_timing(slot2_plus4_candidate_valid_timing),
       .o_slot1_is_branch(slot1_is_branch),
 
       // Slot-2 kill-cause taps (see their declarations above).
@@ -1357,26 +1315,20 @@ module if_stage #(
   assign pc_reg_serve_view = riscv_pkg::canonical_paddr(pc_reg);
   assign pc_reg_word = pc_reg_serve_view[31:2];
   // use_instr_buffer_for_coverage_timing is the aligner's buffer select
-  // evaluated with F = i_fence_i_flush, H = control_flow_holdoff, and
-  // R = prediction_reset_c_ext all forced to 0. The real select,
-  // use_instr_buffer, drives the packet and the PC advance; this timing copy
-  // drives only branch_prediction_controller and the two served-window
-  // comparators. R implies H, and F or H already squash every result that
+  // without its FENCE-class term (the aligner ignores the stall-saved copy on
+  // an i_fence_i_flush cycle) and with the register copy of pc_reg[1]. The
+  // real select, use_instr_buffer, drives the packet and the PC advance; this
+  // copy drives only branch_prediction_controller and the two served-window
+  // comparators, and a FENCE-class flush already squashes every result that
   // could see a difference. The aligner separately supplies the no-buffer
-  // (B = 0) served-last flag: always true when pc_reg[1] is 0, otherwise true
-  // only for a compressed high parcel, so the comparators never depend on the
-  // low parcel's size.
+  // served-last flag: always true when pc_reg[1] is 0, otherwise true only
+  // for a compressed high parcel, so the comparators never depend on the low
+  // parcel's size. When the buffer select is 1 it wins the comparators' final
+  // MUXF8, so the no-buffer flag does not matter.
   assign prev_was_compressed_at_lo_for_coverage_timing = use_saved_values ?
       prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
-  // prediction_holdoff is the latest input here (it heads the served-window
-  // -> next-PC feedback path), so c_ext_state supplies the release edge
-  // unmasked and the mask is applied here, which keeps prediction_holdoff out
-  // of the aligner's packet-shape logic. When this select is 1 it wins the
-  // comparators' final MUXF8, so the no-buffer served-last flag does not
-  // matter.
   assign use_instr_buffer_for_coverage_timing =
-      (prev_was_compressed_at_lo_for_coverage_timing && pc_reg_high_for_coverage) ||
-      (use_buffer_after_prediction_edge && !prediction_holdoff);
+      prev_was_compressed_at_lo_for_coverage_timing && pc_reg_high_for_coverage;
 
 `ifndef SYNTHESIS
   always_comb begin
@@ -1385,14 +1337,12 @@ module if_stage #(
               use_instr_buffer_for_coverage_timing,
               prev_was_compressed_at_lo_for_coverage_timing,
               pc_reg_high_for_coverage,
-              pc_reg[1],
-              use_buffer_after_prediction_timing
+              pc_reg[1]
             }
         )) begin
       p_use_instr_buffer_for_coverage_timing_exact :
       assert (use_instr_buffer_for_coverage_timing ==
-              ((prev_was_compressed_at_lo_for_coverage_timing && pc_reg[1]) ||
-               use_buffer_after_prediction_timing));
+              (prev_was_compressed_at_lo_for_coverage_timing && pc_reg[1]));
       p_pc_reg_high_for_coverage_exact : assert (pc_reg_high_for_coverage == pc_reg[1]);
     end
   end
@@ -1489,14 +1439,10 @@ module if_stage #(
              i_served_high,
              pc_reg_word,
              served_window_native_high,
-             use_buffer_after_prediction_timing,
              no_buffer_accepts_served_last,
              is_compressed_for_pc_advance,
-             prediction_holdoff,
              use_instr_buffer_for_coverage_timing,
              i_fence_i_flush,
-             prediction_reset_c_ext,
-             control_flow_holdoff,
              use_instr_buffer}
         )) begin
       p_served_low_last_word_contract :
@@ -1523,11 +1469,8 @@ module if_stage #(
                (!pc_reg[1] || is_compressed_for_pc_advance)));
       p_served_window_guard_equivalent :
       assert (served_window_covers_pc_reg == served_window_covers_reference);
-      p_coverage_buffer_timing_matches_canonical_outside_squash :
-      assert (i_fence_i_flush || control_flow_holdoff ||
-              (use_instr_buffer_for_coverage_timing == use_instr_buffer));
-      p_prediction_reset_implies_control_flow_holdoff :
-      assert (!prediction_reset_c_ext || control_flow_holdoff);
+      p_coverage_buffer_select_matches_packet_outside_fence :
+      assert (i_fence_i_flush || (use_instr_buffer_for_coverage_timing == use_instr_buffer));
     end
   end
 `endif
@@ -1663,42 +1606,15 @@ module if_stage #(
 `endif
 
 `ifndef SYNTHESIS
-  // These checks justify feeding the timing copy of the buffer select to the
-  // served-window comparators. prediction_holdoff can change coverage only on
-  // a buffer-release edge after a prediction. A raw edge can coincide with a
-  // newly armed pending prediction, but that prediction's registered
-  // prediction_holdoff masks use_buffer_after_prediction_timing, so a
-  // visible release cannot reach pending_predecessor_needs_emit while a
-  // prediction is pending. The c_ext_state history bits are read by
-  // hierarchical reference, only in this simulation check, so they need no
-  // module port.
-  logic prediction_release_unmasked_check;
-  assign prediction_release_unmasked_check =
-      (c_ext_state_inst.prediction_from_buffer_holdoff_prev &&
-       !prediction_from_buffer_holdoff) ||
-      (c_ext_state_inst.pending_prediction_target_holdoff_prev &&
-       !pending_prediction_target_holdoff);
-
   // Every FENCE-class flush also flushes front-end state, so the other squash
   // causes must force a NOP and hide any comparator-driven resteer during the
-  // redirect pulse.
+  // redirect pulse. The served-window comparators' buffer select differs from
+  // the packet's only on such a cycle.
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.reset && !$isunknown(
             {i_fence_i_flush,
              flush_for_c_ext_safe,
-             control_flow_holdoff,
-             prediction_holdoff,
-             prediction_release_unmasked_check,
-             prediction_reset_c_ext,
-             pending_prediction_active,
-             use_buffer_after_prediction_timing,
-             use_buffer_after_prediction,
-             use_instr_buffer_for_coverage_timing,
-             use_instr_buffer,
-             any_holdoff_safe,
-             prediction_used,
              prediction_used_for_pc,
-             slot2_prediction_used,
              slot2_prediction_used_for_pc,
              sel_nop_existing,
              sel_nop_existing_wcs0,
@@ -1715,35 +1631,6 @@ module if_stage #(
       assert (sel_nop == (sel_nop_existing || window_cannot_serve_pc_reg));
       p_window_resteer_wcs_cofactor_exact :
       assert (window_resteer_pc_reg == (window_cannot_serve_pc_reg && !sel_nop_existing));
-      p_prediction_buffer_timing_cofactor_exact :
-      assert (use_buffer_after_prediction ==
-              (use_buffer_after_prediction_timing && !prediction_reset_c_ext &&
-               !i_fence_i_flush && !control_flow_holdoff));
-      p_prediction_reset_holdoff_invariant :
-      assert (!prediction_reset_c_ext || control_flow_holdoff);
-      p_pending_prediction_excludes_timing_buffer_release :
-      assert (!(pending_prediction_active && use_buffer_after_prediction_timing));
-      p_pending_raw_release_is_prediction_masked :
-      assert (!(pending_prediction_active && prediction_release_unmasked_check) ||
-              prediction_holdoff);
-      // The timing copy of the buffer select can differ from use_instr_buffer
-      // only under a registered squash (R implies H). It keeps the
-      // prediction_holdoff mask, so both WCS versions of the squash are then
-      // true, the PC increment takes its holdoff arm, and every prediction
-      // source is disabled. The only raw-WCS consumers outside those squashes
-      // are in the pending-predecessor logic, and the buffer-release pulse
-      // cannot coincide with a pending prediction here.
-      p_registered_squash_masks_coverage_cofactor :
-      assert (i_fence_i_flush ||
-              (use_instr_buffer_for_coverage_timing == use_instr_buffer) ||
-              (control_flow_holdoff && !prediction_holdoff &&
-               any_holdoff_safe &&
-               sel_nop_existing && sel_nop_existing_wcs0 &&
-               sel_nop_existing_wcs && sel_nop &&
-               !window_resteer_pc_reg &&
-               !pending_prediction_active &&
-               !prediction_used && !prediction_used_for_pc &&
-               !slot2_prediction_used && !slot2_prediction_used_for_pc));
     end
   end
 
@@ -1983,15 +1870,12 @@ module if_stage #(
       prediction_from_buffer_holdoff <= 1'b0;
     end else if (!if_stage_stall && fetch_progress) begin
       // Held through fetch-invalid cycles (like a stall) so the deferred
-      // stale-suppression and the c_ext use-buffer edge stay sequenced.
+      // stale-suppression stays sequenced.
       prediction_from_buffer_holdoff <= prediction_used_from_buffer;
     end
   end
 
-  // Registered to break the combinational loop prediction_used → c_ext_state
-  // (use_buffer_after_prediction) → instruction_aligner (is_compressed) →
-  // pc_controller/branch_prediction_controller → prediction_used.  The one
-  // cycle delay matches the data: the prediction redirects PC this cycle and
+  // Registered to match the data: the prediction redirects PC this cycle and
   // the new fetch data arrives next cycle, when c_ext_state resets.  Slot-2
   // predictions are included so c_ext_state also resets its buffer state
   // across slot-2 BTB redirects; the bubble cycle after a slot-2 prediction

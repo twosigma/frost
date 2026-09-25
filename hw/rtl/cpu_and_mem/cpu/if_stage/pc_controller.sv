@@ -76,7 +76,6 @@ module pc_controller #(
 
     // C-extension state
     input logic i_is_compressed,  // Slot-1 size; used by the halfword catch-up arm
-    input logic i_is_compressed_for_pc,  // Not used
 
     // Bundle advance: +2 or +4 for one instruction, +4, +6, or +8 for two.
     // i_slot2_valid and i_slot2_is_compressed are not used; if_stage folds
@@ -304,7 +303,6 @@ module pc_controller #(
 
       // C-extension state signals
       .i_is_compressed,
-      .i_is_compressed_for_pc,
       .i_sel_nop,
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,

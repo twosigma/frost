@@ -35,7 +35,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc.value = PC
     dut.i_pc_reg.value = PC_REG
     dut.i_is_compressed.value = 0
-    dut.i_is_compressed_for_pc.value = 0
     dut.i_sel_nop.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
     dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4

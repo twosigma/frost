@@ -46,7 +46,7 @@ module prediction_release_formal #(
   (* anyseq *) logic i_mret_taken;
   (* anyseq *) logic [XLEN-1:0] i_trap_target;
   (* anyseq *) logic i_is_compressed;
-  (* anyseq *) logic i_is_compressed_for_pc;
+  (* anyseq *) logic i_is_compressed_fast;
   (* anyseq *) logic i_slot2_valid;
   (* anyseq *) logic i_slot2_valid_for_pc;
   (* anyseq *) logic i_slot2_is_compressed;
@@ -101,9 +101,6 @@ module prediction_release_formal #(
   logic [31:0] instr_buffer;
   logic prev_was_compressed_at_lo;
   logic is_compressed_for_buffer;
-  logic is_compressed_for_pc;
-  logic use_buffer_after_prediction;
-  logic use_buffer_after_prediction_timing;
   logic is_compressed_saved;
   logic saved_values_valid;
   logic [riscv_pkg::ImemSidebandWidth-1:0] instr_buffer_sideband;
@@ -208,8 +205,7 @@ module prediction_release_formal #(
       // IF gives pc_controller its own fast size, PC squash, and replay-aware
       // slot-2 valid, which can differ from the c_ext_state inputs, so each
       // pair is an independent input here.
-      .i_is_compressed(i_is_compressed_for_pc),
-      .i_is_compressed_for_pc(is_compressed_for_pc),
+      .i_is_compressed(i_is_compressed_fast),
       .i_slot2_valid(i_slot2_valid_for_pc),
       .i_slot2_is_compressed,
       .i_pc_fetch_advance_sel,
@@ -293,7 +289,6 @@ module prediction_release_formal #(
       .i_reset,
       .i_stall,
       .i_flush,
-      .i_fence_i_flush,
       .i_stall_registered(stall_registered),
       .i_control_flow_holdoff(control_flow_holdoff),
       .i_any_holdoff_safe(any_holdoff_safe),
@@ -304,8 +299,6 @@ module prediction_release_formal #(
       .i_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_effective_instr('0),
-      .i_fetch_word_swapped(1'b0),
-      .i_pc(pc),
       .i_pc_reg(pc_reg),
       .i_is_compressed,
       .i_sel_nop,
@@ -316,9 +309,6 @@ module prediction_release_formal #(
       .o_instr_buffer(instr_buffer),
       .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
       .o_is_compressed_for_buffer(is_compressed_for_buffer),
-      .o_is_compressed_for_pc(is_compressed_for_pc),
-      .o_use_buffer_after_prediction(use_buffer_after_prediction),
-      .o_use_buffer_after_prediction_timing(use_buffer_after_prediction_timing),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid),
       .o_instr_buffer_sideband(instr_buffer_sideband),

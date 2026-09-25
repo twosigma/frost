@@ -443,7 +443,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "prediction_handoff.sby",
-        "IF pending handoff - slot-2 veto equivalence and raw buffer-release invariants",
+        "IF pending handoff - slot-2 veto equivalence and stale-buffer handoff exclusion",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(

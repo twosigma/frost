@@ -261,8 +261,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_reg.value = PC_LO
     dut.i_pc_reg_high_for_coverage.value = (PC_LO >> 1) & 1
     dut.i_prev_was_compressed_at_lo.value = 0
-    dut.i_use_buffer_after_prediction.value = 0
-    dut.i_use_buffer_after_prediction_timing.value = 0
     dut.i_mid_32bit_correction.value = 0
     dut.i_prediction_holdoff.value = 0
     dut.i_prediction_from_buffer_holdoff.value = 0
@@ -397,46 +395,25 @@ async def test_pc_metadata_size_replica_is_consumer_local(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_coverage_served_last_verdict_peels_low_size_and_buffer_release(
-    dut: Any,
-) -> None:
-    """The served-last check ignores low-parcel size and the timing buffer select."""
+async def test_coverage_served_last_flag_ignores_low_parcel_size(dut: Any) -> None:
+    """The served-last flag is set at a low-half PC and follows the high parcel's size."""
     await _setup_test(dut)
 
     # At a low-half PC any packet may use a window that ends at its word, so
-    # the output is set even though the live parcel is native. B
-    # (i_use_buffer_after_prediction_timing) switches the PC-advance size to
-    # the compressed buffer parcel, but only the coverage module's final
-    # buffer mux applies B, so B must not reach this output.
+    # the output is set even though the live parcel is native.
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=False)
     )
-    dut.i_instr_buffer_sideband.value = _sideband(compressed_lo=True)
-    dut.i_use_buffer_after_prediction_timing.value = 1
-    await _settle(dut)
-
-    assert bool(dut.o_is_compressed_for_pc_advance.value)
-    assert bool(dut.o_no_buffer_accepts_served_last.value)
-
-    dut.i_use_buffer_after_prediction_timing.value = 0
     await _settle(dut)
     assert not bool(dut.o_is_compressed_for_pc_advance.value)
     assert bool(dut.o_no_buffer_accepts_served_last.value)
 
     # At a high-half PC, a served-last window is safe only for a compressed
-    # parcel. As above, B may select a compressed buffer parcel for PC advance
-    # but does not change this output, which assumes B = 0.
+    # parcel.
     dut.i_pc_reg.value = PC_HI
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_hi=False)
     )
-    dut.i_instr_buffer_sideband.value = _sideband(compressed_hi=True)
-    dut.i_use_buffer_after_prediction_timing.value = 1
-    await _settle(dut)
-    assert bool(dut.o_is_compressed_for_pc_advance.value)
-    assert not bool(dut.o_no_buffer_accepts_served_last.value)
-
-    dut.i_use_buffer_after_prediction_timing.value = 0
     await _settle(dut)
     assert not bool(dut.o_is_compressed_for_pc_advance.value)
     assert not bool(dut.o_no_buffer_accepts_served_last.value)
@@ -858,49 +835,21 @@ async def test_buffer_selection_uses_buffer_word_and_sideband(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_prediction_buffer_at_low_pc_invalidates_slot2(dut: Any) -> None:
-    """Using the buffer after a prediction at a low-half PC leaves slot 2 invalid."""
-    await _setup_test(dut)
-
-    buffer_word = _word(lo=COMPRESSED_NOP, hi=0x7777)
-    dut.i_pc_reg.value = PC_LO
-    dut.i_use_buffer_after_prediction.value = 1
-    dut.i_use_buffer_after_prediction_timing.value = 1
-    dut.i_instr_buffer.value = buffer_word
-    dut.i_instr_buffer_sideband.value = _sideband(compressed_lo=True)
-    await _settle(dut)
-
-    _assert_slot1(
-        dut,
-        raw=COMPRESSED_NOP,
-        effective=buffer_word,
-        compressed=True,
-        fast_compressed=True,
-        use_buffer=True,
-    )
-    _assert_slot2(dut, raw=0, effective=0x00000013, compressed=False, sel_nop=True)
-
-
-@cocotb.test()
-async def test_prediction_buffer_timing_cofactor_only_changes_timing_replicas(
-    dut: Any,
-) -> None:
-    """A timing-only buffer select changes timing outputs, never packet selection."""
+async def test_buffer_is_never_used_at_low_half_pc(dut: Any) -> None:
+    """A set buffer state leaves a low-half slot 1 on the live window."""
     await _setup_test(dut)
 
     live_word = 0x00B50533  # add a0,a0,a1: native pairable slot 1
     next_word = _word(lo=COMPRESSED_NOP, hi=0x7777)
-    buffer_word = _word(lo=COMPRESSED_NOP, hi=0x7777)
     dut.i_pc_reg.value = PC_LO
+    dut.i_prev_was_compressed_at_lo.value = 1
     dut.i_instr.value = _fetch(current_word=live_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(native_pairable_lo=True),
         next_sb=_sideband(compressed_lo=True),
     )
-    dut.i_instr_buffer.value = buffer_word
+    dut.i_instr_buffer.value = _word(lo=COMPRESSED_NOP, hi=0x7777)
     dut.i_instr_buffer_sideband.value = _sideband(compressed_lo=True)
-    dut.i_use_buffer_after_prediction.value = 0
-    dut.i_use_buffer_after_prediction_timing.value = 1
     await _settle(dut)
 
     _assert_slot1(
@@ -908,24 +857,11 @@ async def test_prediction_buffer_timing_cofactor_only_changes_timing_replicas(
         raw=live_word & 0xFFFF,
         effective=live_word,
         compressed=False,
-        fast_compressed=True,
+        fast_compressed=False,
         use_buffer=False,
     )
-    assert dut.o_is_compressed_for_pc_advance.value, (
-        "the PC-advance size must use the timing buffer select, like the fast size"
-    )
-    assert not dut.o_sel_nop_2.value
-    assert dut.o_slot2_valid_for_pc.value, (
-        "packet validity and PC advance must keep the live native-led pair"
-    )
+    assert dut.o_slot2_valid_for_pc.value
     _assert_slot2_btb_candidate_valids(dut, plus2_valid=False, plus4_valid=True)
-    assert not dut.o_slot2_plus2_candidate_valid_timing.value
-    assert not dut.o_slot2_plus4_candidate_valid_timing.value, (
-        "timing BTB candidates must see a buffered low-half slot 1, which never pairs"
-    )
-    assert dut.o_is_compressed_fast.value, (
-        "the fast size must follow the timing select to the buffered RVC parcel"
-    )
 
 
 @cocotb.test()
@@ -1318,45 +1254,41 @@ async def test_rs1_metadata_follows_parcel_and_bank_selection(dut: Any) -> None:
     def rest(instruction: int) -> int:
         return ((instruction >> 17) & 6) | ((instruction >> 15) & 1)
 
-    # Slot 1 selects predecoded fields from either halfword of the window or
-    # the buffer.
+    # Slot 1 selects predecoded fields from either halfword of the window or,
+    # at a high-half PC only, the buffer.
     for swapped in (False, True):
-        for buffered in (False, True):
-            for high in (False, True):
-                _clear_inputs(dut)
-                dut.i_pc_reg.value = PC_HI if high else PC_LO
-                dut.i_instr_bank_sel_r.value = int(swapped)
-                dut.i_use_buffer_after_prediction.value = int(buffered)
-                dut.i_use_buffer_after_prediction_timing.value = int(buffered)
-                live_sb = _sideband(
-                    compressed_lo=True,
-                    compressed_hi=True,
-                    rvc_rs1_rest_lo=1,
-                    rvc_rs1_rest_hi=6,
-                )
-                other_sb = _sideband(
-                    compressed_lo=True,
-                    compressed_hi=True,
-                    rvc_rs1_rest_lo=3,
-                    rvc_rs1_rest_hi=4,
-                )
-                dut.i_instr.value = _fetch(
-                    current_word=0x00010001, next_word=0x00010001
-                )
-                dut.i_instr_sideband.value = _fetch_sideband(
-                    current_sb=other_sb if swapped else live_sb,
-                    next_sb=live_sb if swapped else other_sb,
-                )
-                dut.i_instr_buffer.value = 0x00010001
-                dut.i_instr_buffer_sideband.value = _sideband(
-                    compressed_lo=True,
-                    compressed_hi=True,
-                    rvc_rs1_rest_lo=2,
-                    rvc_rs1_rest_hi=5,
-                )
-                await _settle(dut)
-                expected = (5 if high else 2) if buffered else (6 if high else 1)
-                assert int(dut.o_rvc_rs1_rest.value) == expected
+        for buffered, high in ((False, False), (False, True), (True, True)):
+            _clear_inputs(dut)
+            dut.i_pc_reg.value = PC_HI if high else PC_LO
+            dut.i_instr_bank_sel_r.value = int(swapped)
+            dut.i_prev_was_compressed_at_lo.value = int(buffered)
+            live_sb = _sideband(
+                compressed_lo=True,
+                compressed_hi=True,
+                rvc_rs1_rest_lo=1,
+                rvc_rs1_rest_hi=6,
+            )
+            other_sb = _sideband(
+                compressed_lo=True,
+                compressed_hi=True,
+                rvc_rs1_rest_lo=3,
+                rvc_rs1_rest_hi=4,
+            )
+            dut.i_instr.value = _fetch(current_word=0x00010001, next_word=0x00010001)
+            dut.i_instr_sideband.value = _fetch_sideband(
+                current_sb=other_sb if swapped else live_sb,
+                next_sb=live_sb if swapped else other_sb,
+            )
+            dut.i_instr_buffer.value = 0x00010001
+            dut.i_instr_buffer_sideband.value = _sideband(
+                compressed_lo=True,
+                compressed_hi=True,
+                rvc_rs1_rest_lo=2,
+                rvc_rs1_rest_hi=5,
+            )
+            await _settle(dut)
+            expected = 5 if buffered else (6 if high else 1)
+            assert int(dut.o_rvc_rs1_rest.value) == expected
 
     # Slot 2 must also splice native instructions that straddle fetch words.
     native = 0x00BF8FB3  # add x31,x31,x11

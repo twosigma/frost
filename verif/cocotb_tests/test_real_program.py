@@ -2024,9 +2024,6 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pending_prediction_fetch_holdoff",
         )
-        if_is_compressed_for_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.is_compressed_for_pc"
-        )
         if_is_32bit_spanning_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.is_32bit_spanning"
         )
@@ -2039,10 +2036,6 @@ async def run_until_complete(
         )
         if_use_instr_buffer_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.use_instr_buffer"
-        )
-        if_use_buffer_after_prediction_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.use_buffer_after_prediction",
         )
         if_prev_compressed_lo_sig = _get_signal(
             dut,
@@ -3499,12 +3492,10 @@ async def run_until_complete(
                     f"eff=0x{(_read_int(if_effective_instr_sig) or 0):08x} "
                     f"sel_nop={_read_bool(if_sel_nop_live_sig)} "
                     f"sel_comp={_read_bool(if_sel_compressed_sig)} "
-                    f"is_comp_pc={_read_bool(if_is_compressed_for_pc_sig)} "
                     f"is32span={_read_bool(if_is_32bit_spanning_sig)} "
                     f"span_wait={_read_bool(if_spanning_wait_sig)} "
                     f"span_run={_read_bool(if_spanning_in_progress_sig)} "
                     f"use_buf={_read_bool(if_use_instr_buffer_sig)} "
-                    f"use_buf_pred={_read_bool(if_use_buffer_after_prediction_sig)} "
                     f"prev_lo={_read_bool(if_prev_compressed_lo_sig)} "
                     f"prev32={_read_bool(pc_prev_was_32bit_sig)} "
                     f"mid32={_read_bool(pc_mid_32bit_sig)} "

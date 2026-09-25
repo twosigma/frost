@@ -3248,7 +3248,6 @@ async def test_atomic_compressed_owner_discards_wrong_path_high_buffer(
             target_packets.append(packet)
             assert packet["raw_parcel"] == COMPRESSED_NOP
             assert packet["raw_parcel"] != owner_high_canary
-        assert not dut.use_buffer_after_prediction.value
         await _advance_cycle(dut)
 
     assert len(target_packets) == 1, (

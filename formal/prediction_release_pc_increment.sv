@@ -29,7 +29,6 @@ module pc_increment_calculator #(
     input logic [XLEN-1:0] i_pc,
     input logic [XLEN-1:0] i_pc_reg,
     input logic i_is_compressed,
-    input logic i_is_compressed_for_pc,
     input logic i_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,

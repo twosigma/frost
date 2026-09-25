@@ -53,7 +53,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_mret_taken.value = 0
     dut.i_trap_target.value = 0
     dut.i_is_compressed.value = 0
-    dut.i_is_compressed_for_pc.value = 0
     dut.i_slot2_valid.value = 0
     dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4

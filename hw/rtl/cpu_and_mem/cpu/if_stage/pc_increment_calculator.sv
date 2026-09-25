@@ -35,10 +35,8 @@ module pc_increment_calculator #(
     input logic [XLEN-1:0] i_pc,
     input logic [XLEN-1:0] i_pc_reg,
 
-    // Instruction size. Neither input is used: the advance selects below
-    // carry the size.
+    // Instruction size. Not used: the advance selects below carry the size.
     input logic i_is_compressed,
-    input logic i_is_compressed_for_pc,
     input logic i_sel_nop,  // IF emits a NOP: the window may be stale, so its sizes are unreliable
 
     // Encoded instruction-bundle advance: +2/+4 one-wide, +4/+6/+8 for
@@ -212,9 +210,9 @@ module pc_increment_calculator #(
   // dont_touch instance keeps the adders in pc_reg_precompute, apart from
   // that mux (see pc_reg_precompute).
   //
-  // The prediction-from-buffer hold is applied after the bundle-advance mux.
-  // Advancing while IF emits the NOP would corrupt pc_reg[1], which selects
-  // the buffered halfword on the following use_buffer_after_prediction cycle.
+  // The prediction-from-buffer hold, which keeps pc_reg in place through the
+  // stale cycle after a prediction made from the buffered word, is applied
+  // after the bundle-advance mux.
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_compressed;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_32bit;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_plus_6;

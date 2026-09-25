@@ -4,7 +4,7 @@
 # RVC decompressor - expands 16-bit compressed instructions to 32-bit
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
 
-# C-extension state - instruction buffer, stall-saved fetch word, registered size
+# C-extension state - instruction buffer and stall-saved fetch word
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv
 
 # Instruction aligner - parcel selection based on PC alignment and C-ext state

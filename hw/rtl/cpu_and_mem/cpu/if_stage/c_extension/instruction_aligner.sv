@@ -62,13 +62,6 @@ module instruction_aligner #(
 
     // C-extension state
     input logic i_prev_was_compressed_at_lo,  // Previous was compressed at lo
-    // c_ext_state's request to use the buffered word after a prediction
-    // holdoff, and its timing copy (the same with the FENCE-class flush,
-    // control-flow holdoff, and prediction reset taken as 0). The two differ
-    // only in cycles where IF already squashes every size-driven PC and
-    // prediction consumer.
-    input logic i_use_buffer_after_prediction,
-    input logic i_use_buffer_after_prediction_timing,
 
     // Control signals
     input logic i_mid_32bit_correction,  // Landed mid-instruction; 0 with 64-bit fetch
@@ -88,11 +81,10 @@ module instruction_aligner #(
     output logic o_is_compressed,  // Current parcel is compressed
     output logic o_is_compressed_fast,  // Fast path for PC-critical path (registered selects only)
     output logic o_is_compressed_for_pc_advance,  // Size-only replica path to advance selector
-    // For the served-window check, exact for B = 0, where B is
-    // i_use_buffer_after_prediction_timing: may a packet without the buffer
-    // use a window that ends at pc_reg's word? Always at a low-half PC; at a
-    // high-half PC only if that parcel is compressed. IF applies B in the
-    // coverage module's final buffer-arm mux.
+    // For the served-window check: may a packet that does not use the buffer
+    // take a window that ends at pc_reg's word? Always at a low-half PC; at a
+    // high-half PC only if that parcel is compressed. IF applies the buffer
+    // select in the coverage module's final buffer-arm mux.
     output logic o_no_buffer_accepts_served_last,
     output logic o_sel_nop,  // Outputting NOP
     output logic o_sel_compressed,  // Outputting decompressed instruction
@@ -121,10 +113,10 @@ module instruction_aligner #(
     output logic o_slot2_decomp_illegal,
     // Slot-2 is compressed (RVC).
     output logic o_is_compressed_2,
-    // No slot 2 this cycle: slot 1 is a NOP, control flow, serializing, or
-    // buffered at a low-half PC; or slot 2 extends past the next word, cannot
-    // start a pair, or would read a stale next word. IF adds its own slot-1
-    // NOP and pending-prediction conditions before the packet reaches PD.
+    // No slot 2 this cycle: slot 1 is a NOP, control flow, or serializing; or
+    // slot 2 extends past the next word, cannot start a pair, or would read a
+    // stale next word. IF adds its own slot-1 NOP and pending-prediction
+    // conditions before the packet reaches PD.
     output logic o_sel_nop_2,
     // Slot-2 compressed flag for the IF-to-PD packet (equals o_is_compressed_2).
     output logic o_sel_compressed_2,
@@ -152,11 +144,6 @@ module instruction_aligner #(
     // o_slot2_valid_for_pc.
     output logic o_slot2_plus2_candidate_valid,
     output logic o_slot2_plus4_candidate_valid,
-    // The same, built with i_use_buffer_after_prediction_timing; they drive
-    // only branch_prediction_controller. IF asserts that they equal the pair
-    // above whenever a live slot-2 lookup is valid.
-    output logic o_slot2_plus2_candidate_valid_timing,
-    output logic o_slot2_plus4_candidate_valid_timing,
     // Slot 1 is control flow (branch, JAL, JALR, or a compressed form). Bundles
     // end at control flow through the sideband's AllowsSlot2After bits, not
     // through this output.
@@ -177,11 +164,9 @@ module instruction_aligner #(
   // ===========================================================================
   // Instruction Buffer Selection
   // ===========================================================================
-  // The buffer supplies the current word in two cases: the previous
-  // instruction was compressed at lo and the PC is now at hi, or c_ext_state
-  // asks for it after a prediction holdoff (i_use_buffer_after_prediction).
-  // Coming out of a stall, the saved copy of prev_was_compressed_at_lo stands
-  // in for the live one.
+  // The buffer supplies the current word when the previous instruction was
+  // compressed at lo and the PC is now at hi. Coming out of a stall, the saved
+  // copy of prev_was_compressed_at_lo stands in for the live one.
 
   // The mux select uses registered signals only, to break the critical path
   // from stall_for_trap_check -> is_compressed -> PC.
@@ -192,18 +177,7 @@ module instruction_aligner #(
   assign prev_was_compressed_at_lo_for_use = use_saved_prev ?
       i_prev_was_compressed_at_lo_saved : i_prev_was_compressed_at_lo;
 
-  assign o_use_instr_buffer = (prev_was_compressed_at_lo_for_use && i_pc_reg[1]) ||
-                               i_use_buffer_after_prediction;
-
-  // The same select built from i_use_buffer_after_prediction_timing, for the
-  // two slot-2 BTB candidate bits only. branch_prediction_controller already
-  // blocks prediction in every cycle where the two selects can differ. Packet
-  // selection and PC advance keep the full select, and this copy takes the
-  // registered holdoffs off the candidate-to-predicted-target path.
-  logic use_instr_buffer_for_slot2_prediction_timing;
-  assign use_instr_buffer_for_slot2_prediction_timing =
-      (prev_was_compressed_at_lo_for_use && i_pc_reg[1]) ||
-      i_use_buffer_after_prediction_timing;
+  assign o_use_instr_buffer = prev_was_compressed_at_lo_for_use && i_pc_reg[1];
 
   // ===========================================================================
   // Current Word and Next Word Selection
@@ -435,40 +409,24 @@ module instruction_aligner #(
   assign prev_was_compressed_at_lo_fast = i_stall_registered ?
       i_prev_was_compressed_at_lo_saved : i_prev_was_compressed_at_lo;
 
-  // These size selects, like the slot-2 BTB candidate copies, use the timing
-  // copy B = i_use_buffer_after_prediction_timing. Raw parcel selection,
-  // instruction assembly, the slot-2 shape and its PC advance, and
-  // o_use_instr_buffer use the full buffer select above.
-  //
   // The size mux is Shannon-expanded on H = pc_reg[1]: the low- and
   // high-parcel results are built in parallel from early registered selects,
-  // and the pc_reg[1] copy picks one with a final 2:1 select. At H=0 the buffer
-  // is used when B is set; at H=1, when prev or B is. This equals
-  // need_buffer = (prev & H) | B followed by one saved/buffer/window mux (the
+  // and the pc_reg[1] copy picks one with a final 2:1 select. Only the
+  // high-parcel result can come from the buffer. This equals
+  // need_buffer = prev & H followed by one saved/buffer/window mux (the
   // reference below), with need_buffer and a select level removed from the
   // pc_reg[1] -> served-window -> next-PC path.
   logic is_compressed_fast_low;
   logic is_compressed_fast_high;
   logic is_compressed_for_pc_advance_low;
   logic is_compressed_for_pc_advance_high;
-  logic high_parcel_compressed_for_coverage;
   assign is_compressed_fast_low = use_saved_is_compressed ? i_is_compressed_saved :
-      (i_use_buffer_after_prediction_timing ? is_comp_buf_lo : is_comp_instr_lo_fast);
+      is_comp_instr_lo_fast;
   assign is_compressed_fast_high = use_saved_is_compressed ? i_is_compressed_saved :
-      ((prev_was_compressed_at_lo_fast || i_use_buffer_after_prediction_timing) ?
-       is_comp_buf_hi : is_comp_instr_hi_fast);
+      (prev_was_compressed_at_lo_fast ? is_comp_buf_hi : is_comp_instr_hi_fast);
   assign is_compressed_for_pc_advance_low =
-      use_saved_is_compressed ? i_is_compressed_saved :
-      (i_use_buffer_after_prediction_timing ? is_comp_buf_lo :
-                                                is_comp_instr_lo_for_pc_advance);
+      use_saved_is_compressed ? i_is_compressed_saved : is_comp_instr_lo_for_pc_advance;
   assign is_compressed_for_pc_advance_high =
-      use_saved_is_compressed ? i_is_compressed_saved :
-      ((prev_was_compressed_at_lo_fast || i_use_buffer_after_prediction_timing) ?
-       is_comp_buf_hi : is_comp_instr_hi_for_pc_advance);
-  // High-parcel size with B = 0: the saved size during replay; otherwise the
-  // buffer's size exactly when the preceding low parcel was compressed. IF
-  // applies B only at the coverage module's final buffer-arm select.
-  assign high_parcel_compressed_for_coverage =
       use_saved_is_compressed ? i_is_compressed_saved :
       (prev_was_compressed_at_lo_fast ? is_comp_buf_hi : is_comp_instr_hi_for_pc_advance);
 
@@ -480,7 +438,7 @@ module instruction_aligner #(
   // native or compressed; at a high-half PC only a compressed slot 1 does.
   // Writing that directly keeps low-parcel metadata out of the coverage path.
   assign o_no_buffer_accepts_served_last =
-      !i_pc_reg_high_for_coverage || high_parcel_compressed_for_coverage;
+      !i_pc_reg_high_for_coverage || is_compressed_for_pc_advance_high;
 
 `ifndef SYNTHESIS
   // Reference: the same selects without the Shannon expansion, checked
@@ -489,9 +447,7 @@ module instruction_aligner #(
   logic is_compressed_fast_reference;
   logic is_compressed_for_pc_advance_reference;
   logic no_buffer_accepts_served_last_reference;
-  assign need_buffer_fast_reference =
-      (prev_was_compressed_at_lo_fast && i_pc_reg[1]) ||
-      i_use_buffer_after_prediction_timing;
+  assign need_buffer_fast_reference = prev_was_compressed_at_lo_fast && i_pc_reg[1];
   assign is_compressed_fast_reference = use_saved_is_compressed ? i_is_compressed_saved :
       (need_buffer_fast_reference ?
        (i_pc_reg[1] ? is_comp_buf_hi : is_comp_buf_lo) :
@@ -527,10 +483,6 @@ module instruction_aligner #(
       assert (o_is_compressed_for_pc_advance == is_compressed_for_pc_advance_reference);
       p_no_buffer_accepts_served_last_exact :
       assert (o_no_buffer_accepts_served_last == no_buffer_accepts_served_last_reference);
-      p_coverage_served_last_matches_live_shape_when_observable :
-      assert (i_use_buffer_after_prediction_timing ||
-              (o_no_buffer_accepts_served_last ==
-               (!i_pc_reg_high_for_coverage || o_is_compressed_for_pc_advance)));
     end
   end
 `endif
@@ -572,8 +524,8 @@ module instruction_aligner #(
   //    buf,  hi, RVC   -> slot-2 at next_word[15:0]       (NEXT_LO)
   //    buf,  hi, 32b   -> slot-2 at next_word[31:16]      (NEXT_HI)  span pair
   //
-  // The (buf, !hi) cases (slot-1 from buffer at lo) arise only through
-  // i_use_buffer_after_prediction, and slot-2 stays invalid there.
+  // The buffer serves only a high-half pc_reg, so the (buf, !hi) cases do not
+  // occur; the default arm marks slot 2 invalid for them.
   //
   // Slot-2 32-bit at NEXT_HI would end in word(W+2), so slot-2 is forced
   // invalid in that case (slot-2 RVC at NEXT_HI is fine). This holds even
@@ -611,7 +563,7 @@ module instruction_aligner #(
       3'b010:  slot2_pos = Slot2AtNextHi;  // !buf,  hi, 32b (span pair)
       3'b111:  slot2_pos = Slot2AtNextLo;  //  buf,  hi, RVC
       3'b110:  slot2_pos = Slot2AtNextHi;  //  buf,  hi, 32b (span pair)
-      default: slot2_pos = Slot2InvalidPos;  //  buf, !hi, * (punt)
+      default: slot2_pos = Slot2InvalidPos;  //  buf, !hi, * (does not occur)
     endcase
   end
 
@@ -960,10 +912,9 @@ module instruction_aligner #(
   assign slot1_branch_any  = o_is_compressed ? slot1_branch_compressed : slot1_branch_native;
   assign o_slot1_is_branch = !o_sel_nop && slot1_branch_any;
 
-  // Slot 2 is invalid when slot 1 is a bubble, control flow, serializing, or
-  // buffered at a low-half PC; when slot 2 extends past the next word or
-  // cannot start a pair; or when it needs a next word that the window does
-  // not hold.
+  // Slot 2 is invalid when slot 1 is a bubble, control flow, or serializing;
+  // when slot 2 extends past the next word or cannot start a pair; or when it
+  // needs a next word that the window does not hold.
   //
   // Only a compressed CURRENT_HI slot 2 lies wholly in pc_reg's word W. Every
   // other shape reads bram_next_word, which is word(W+1) when the parities
@@ -975,9 +926,6 @@ module instruction_aligner #(
   // the stale word.
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
-  logic slot2_bram_unsafe_for_prediction_timing;
-  assign slot2_bram_unsafe_for_prediction_timing =
-      !use_instr_buffer_for_slot2_prediction_timing && fetch_word_swapped_slot2;
   // Slot 1 leads a pair only when its AllowsSlot2After bit is set: it is
   // neither control flow nor a native serializing instruction (SYSTEM,
   // MISC-MEM, or AMO opcode). A CSR instruction broadcasts only its write
@@ -1036,28 +984,14 @@ module instruction_aligner #(
   // High-half slot-1 shape qualifiers from whichever word supplies slot-1.
   // Live provider words use the timing metadata replicas; buffered
   // instructions use the sideband captured in the instruction-buffer register.
-  // A buffered slot 1 at a low-half PC never pairs, so the low-half
-  // candidates below read only the window's bits.
+  // The buffer serves only a high-half slot 1, so the low-half candidates
+  // below read only the window's bits.
   logic slot1_pairable_compressed_hi_for_pc;
   logic slot1_pairable_native_hi_for_pc;
   assign slot1_pairable_compressed_hi_for_pc = o_use_instr_buffer ?
       i_instr_buffer_sideband[riscv_pkg::ImemSbPairableCompressedHi] :
       aligned_current_pc_metadata[2];
   assign slot1_pairable_native_hi_for_pc = o_use_instr_buffer ?
-      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] :
-      aligned_current_pc_metadata[3];
-
-  // Copies built with use_instr_buffer_for_slot2_prediction_timing. They feed
-  // only the two slot-2 BTB candidate bits; packet validity and PC advance use
-  // the selects above.
-  logic slot1_pairable_compressed_hi_for_prediction_timing;
-  logic slot1_pairable_native_hi_for_prediction_timing;
-  assign slot1_pairable_compressed_hi_for_prediction_timing =
-      use_instr_buffer_for_slot2_prediction_timing ?
-      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableCompressedHi] :
-      aligned_current_pc_metadata[2];
-  assign slot1_pairable_native_hi_for_prediction_timing =
-      use_instr_buffer_for_slot2_prediction_timing ?
       i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] :
       aligned_current_pc_metadata[3];
 
@@ -1072,7 +1006,7 @@ module instruction_aligner #(
                                       aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo] &&
                                       aligned_current_sb[riscv_pkg::ImemSbIsCompressedLo];
   // NEXT_LO from either shape: 32b slot-1 at lo, or RVC slot-1 at hi
-  // (buffered or not). A buffered slot 1 at lo never pairs.
+  // (buffered or not).
   assign slot2_next_lo_candidate =
       (!o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
        aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo] &&
@@ -1096,21 +1030,6 @@ module instruction_aligner #(
       (!o_sel_nop && i_pc_reg[1] && slot1_pairable_compressed_hi_for_pc);
   assign slot2_next_hi_candidate_for_pc =
       !o_sel_nop && i_pc_reg[1] && slot1_pairable_native_hi_for_pc;
-
-  logic slot2_current_hi_candidate_for_prediction_timing;
-  logic slot2_next_lo_candidate_for_prediction_timing;
-  logic slot2_next_hi_candidate_for_prediction_timing;
-  assign slot2_current_hi_candidate_for_prediction_timing =
-      !o_sel_nop && !use_instr_buffer_for_slot2_prediction_timing &&
-      !i_pc_reg[1] && aligned_current_pc_pairability[0];
-  assign slot2_next_lo_candidate_for_prediction_timing =
-      (!o_sel_nop && !use_instr_buffer_for_slot2_prediction_timing &&
-       !i_pc_reg[1] && aligned_current_pc_pairability[1]) ||
-      (!o_sel_nop && i_pc_reg[1] &&
-       slot1_pairable_compressed_hi_for_prediction_timing);
-  assign slot2_next_hi_candidate_for_prediction_timing =
-      !o_sel_nop && i_pc_reg[1] &&
-      slot1_pairable_native_hi_for_prediction_timing;
 
   logic slot2_current_hi_compressed;
   logic slot2_next_lo_compressed;
@@ -1149,21 +1068,6 @@ module instruction_aligner #(
   assign slot2_next_hi_invalid_for_pc_advance =
       slot2_bram_unsafe || !slot2_next_hi_compressed_for_pc_advance;
 
-  logic slot2_current_hi_valid_for_prediction_timing;
-  logic slot2_next_lo_valid_for_prediction_timing;
-  logic slot2_next_hi_valid_for_prediction_timing;
-  assign slot2_current_hi_valid_for_prediction_timing =
-      slot2_current_hi_candidate_for_prediction_timing &&
-      !(slot2_bram_unsafe_for_prediction_timing &&
-        !slot2_current_hi_compressed_for_pc_advance);
-  assign slot2_next_lo_valid_for_prediction_timing =
-      slot2_next_lo_candidate_for_prediction_timing &&
-      !(slot2_bram_unsafe_for_prediction_timing || !slot2_next_lo_start_valid);
-  assign slot2_next_hi_valid_for_prediction_timing =
-      slot2_next_hi_candidate_for_prediction_timing &&
-      !(slot2_bram_unsafe_for_prediction_timing ||
-        !slot2_next_hi_compressed_for_pc_advance);
-
   logic slot2_current_hi_valid_for_pc;
   logic slot2_next_lo_valid_for_pc;
   logic slot2_next_hi_valid_for_pc;
@@ -1186,54 +1090,19 @@ module instruction_aligner #(
   // arms that PC advance also uses. NEXT_LO is +4 behind a native slot 1 at
   // lo and +2 behind a compressed slot 1 at hi; CURRENT_HI is always +2 and
   // NEXT_HI always +4.
-  logic slot2_plus2_candidate_valid_canonical;
-  logic slot2_plus4_candidate_valid_canonical;
-  assign slot2_plus2_candidate_valid_canonical = slot2_current_hi_valid_for_pc_advance ||
+  assign o_slot2_plus2_candidate_valid = slot2_current_hi_valid_for_pc_advance ||
       (i_pc_reg[1] && slot2_next_lo_valid_for_pc);
-  assign slot2_plus4_candidate_valid_canonical = slot2_next_hi_valid_for_pc_advance ||
+  assign o_slot2_plus4_candidate_valid = slot2_next_hi_valid_for_pc_advance ||
       (!i_pc_reg[1] && slot2_next_lo_valid_for_pc);
-  // The copies for branch_prediction_controller use the timing buffer select.
-  // They equal the pair above whenever prediction is enabled and can differ
-  // only in cycles where IF squashes every prediction consumer.
-  assign o_slot2_plus2_candidate_valid = slot2_plus2_candidate_valid_canonical;
-  assign o_slot2_plus4_candidate_valid = slot2_plus4_candidate_valid_canonical;
-  assign o_slot2_plus2_candidate_valid_timing =
-      slot2_current_hi_valid_for_prediction_timing ||
-      (i_pc_reg[1] && slot2_next_lo_valid_for_prediction_timing);
-  assign o_slot2_plus4_candidate_valid_timing =
-      slot2_next_hi_valid_for_prediction_timing ||
-      (!i_pc_reg[1] && slot2_next_lo_valid_for_prediction_timing);
   assign slot2_valid_for_pc_advance = slot2_current_hi_valid_for_pc_advance ||
       slot2_next_lo_valid_for_pc || slot2_next_hi_valid_for_pc_advance;
   assign o_slot2_valid_for_pc = slot2_valid_for_pc_advance;
 
 `ifndef SYNTHESIS
   always_comb begin
-    if (!$isunknown(
-            {
-              i_use_buffer_after_prediction,
-              i_use_buffer_after_prediction_timing,
-              slot2_plus2_candidate_valid_canonical,
-              slot2_plus4_candidate_valid_canonical,
-              o_slot2_plus2_candidate_valid_timing,
-              o_slot2_plus4_candidate_valid_timing
-            }
-        )) begin
-      p_slot2_prediction_candidates_are_onehot :
-      assert ($onehot0(
-          {o_slot2_plus4_candidate_valid_timing, o_slot2_plus2_candidate_valid_timing}
-      ));
-      p_slot2_canonical_candidates_are_onehot :
-      assert ($onehot0(
-          {slot2_plus4_candidate_valid_canonical, slot2_plus2_candidate_valid_canonical}
-      ));
-      p_slot2_prediction_candidate_cofactor_exact :
-      assert ((i_use_buffer_after_prediction_timing !=
-               i_use_buffer_after_prediction) ||
-              ({o_slot2_plus4_candidate_valid_timing,
-                o_slot2_plus2_candidate_valid_timing} ==
-               {slot2_plus4_candidate_valid_canonical,
-                slot2_plus2_candidate_valid_canonical}));
+    if (!$isunknown({o_slot2_plus2_candidate_valid, o_slot2_plus4_candidate_valid})) begin
+      p_slot2_candidates_are_onehot :
+      assert ($onehot0({o_slot2_plus4_candidate_valid, o_slot2_plus2_candidate_valid}));
     end
   end
 `endif
@@ -1275,7 +1144,7 @@ module instruction_aligner #(
   //      MISC-MEM, AMO, or FP-compute instruction)
   //   4. a start-valid native slot 2 at NEXT_HI, which never pairs (a fixed
   //      limit, not a transient)
-  //   5. transient: slot2_bram_unsafe, or a buffered slot 1 at lo
+  //   5. transient: slot2_bram_unsafe
   // When slot 2 is valid, all six outputs are 0 by construction.
   logic slot2_kill_start_invalid;
   assign slot2_kill_start_invalid =
@@ -1315,8 +1184,8 @@ module instruction_aligner #(
 
   // The remaining no-pair cases, split in two. A native slot 2 at NEXT_HI
   // (behind a 32b slot-1 at hi) never pairs, whatever the fetch state, since
-  // the NEXT_HI candidate is RVC-only. The rest are transients: parity-unsafe
-  // reads and a buffered slot 1 at lo.
+  // the NEXT_HI candidate is RVC-only. The rest are transient parity-unsafe
+  // reads.
   logic slot2_kill_no_pair;
   // Keep-pinned for the same reason as slot1_native_serialize_for_pc.
   (* keep = "true" *)logic slot2_next_hi_native32;

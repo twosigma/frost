@@ -33,10 +33,9 @@
 //
 // Each equality chunk and both reduction levels fit in a 6-input LUT, so a tag
 // path is three LUT levels plus dedicated muxes. The buffer qualification
-// (i_use_instr_buffer) is the latest input, since it depends on the
-// prediction holdoff, so it enters no equality LUT and selects only at the
-// final MUXF8. One instance per provider keeps synthesis from merging the
-// provider select into a serial compare across providers.
+// (i_use_instr_buffer) enters no equality LUT and selects only at the final
+// MUXF8. One instance per provider keeps synthesis from merging the provider
+// select into a serial compare across providers.
 (* keep_hierarchy = "yes" *)
 module served_window_coverage (
     input  logic [29:0] i_pc_word,
