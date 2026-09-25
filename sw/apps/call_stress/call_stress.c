@@ -17,32 +17,43 @@
 /**
  * Call stress: repeated and nested calls, built with the C extension.
  *
- * The source loops over calls up to three frames deep, makes printf calls into
- * the UART library, and prints the total call count. With the default -O3
- * -funroll-loops, GCC inlines the three local functions and unrolls their
- * loops, so the calls left in the binary are the ones into the UART library.
+ * The source loops over calls up to three frames deep, checks the call count
+ * after each loop, and makes printf calls into the UART library. noinline
+ * keeps the local functions real calls at -O3, and each one counts itself
+ * after its inner calls, so none of those calls becomes a tail call.
  */
 
 #include "uart.h"
 
 volatile int call_count = 0;
+static int failures = 0;
 
-void simple_func(void)
+__attribute__((noinline)) void simple_func(void)
 {
     call_count++;
 }
 
-void nested_func(void)
+__attribute__((noinline)) void nested_func(void)
 {
-    call_count++;
     simple_func();
+    call_count++;
 }
 
-void multi_nested(void)
+__attribute__((noinline)) void multi_nested(void)
 {
-    call_count++;
     simple_func();
     nested_func();
+    call_count++;
+}
+
+static void check_count(int want)
+{
+    if (call_count == want) {
+        uart_puts("OK\n");
+    } else {
+        uart_printf("FAIL (count %d, want %d)\n", call_count, want);
+        failures++;
+    }
 }
 
 int main(void)
@@ -53,19 +64,19 @@ int main(void)
     for (int i = 0; i < 10; i++) {
         simple_func();
     }
-    uart_puts("OK\n");
+    check_count(10);
 
     uart_puts("Test 2: 10 nested calls...");
     for (int i = 0; i < 10; i++) {
         nested_func();
     }
-    uart_puts("OK\n");
+    check_count(10 + 10 * 2);
 
     uart_puts("Test 3: 10 multi-nested calls...");
     for (int i = 0; i < 10; i++) {
         multi_nested();
     }
-    uart_puts("OK\n");
+    check_count(10 + 10 * 2 + 10 * 4);
 
     uart_puts("Test 4: printf calls...\n");
     for (int i = 0; i < 5; i++) {
@@ -80,8 +91,12 @@ int main(void)
     uart_puts("OK\n");
 
     uart_printf("\nTotal calls: %d\n", call_count);
-    uart_puts("\n*** ALL TESTS PASSED ***\n");
-    uart_puts("<<PASS>>\n");
+    if (failures == 0) {
+        uart_puts("\n*** ALL TESTS PASSED ***\n");
+        uart_puts("<<PASS>>\n");
+    } else {
+        uart_puts("<<FAIL>>\n");
+    }
 
     for (;;)
         ;
