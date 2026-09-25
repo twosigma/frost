@@ -303,17 +303,10 @@ int main(void)
 
 void freertos_risc_v_application_exception_handler(void)
 {
-    uint32_t mcause, mepc;
+    unsigned long mcause, mepc;
     __asm volatile("csrr %0, mcause" : "=r"(mcause));
     __asm volatile("csrr %0, mepc" : "=r"(mepc));
-    uart_puts("\r\n[EXCEPTION] cause=");
-    uart_putchar('0' + (mcause & 0xF));
-    uart_puts(" at PC=0x");
-    static const char hex[] = "0123456789ABCDEF";
-    for (int i = 7; i >= 0; i--) {
-        uart_putchar(hex[(mepc >> (i * 4)) & 0xF]);
-    }
-    uart_puts("\r\n");
+    uart_printf("\r\n[EXCEPTION] cause=%lu at PC=0x%016lx\r\n", mcause, mepc);
     for (;;)
         ;
 }
