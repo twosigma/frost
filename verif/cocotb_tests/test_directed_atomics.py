@@ -565,6 +565,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         f"SC.W Test Case 4 failed: x14 = {x14_value}, expected 0 (success)"
     )
     cocotb.log.info(f"SC.W x14 = {x14_value} (back-to-back success)")
+    check_int_register(dut_if, state, 13, "Test Case 4 LR.W")
 
     # Wait for the successful SC.W's store to test_address_2 to drain.
     await wait_for_memory_writes(
