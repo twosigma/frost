@@ -2025,11 +2025,10 @@ package riscv_pkg;
   } interrupt_t;
 
   // ===========================================================================
-  // Section 10: Bit Manipulation Helper Functions (Zbb + Zbkb Extensions)
+  // Section 10: Bit Manipulation Helper Functions (Zbb Extension)
   // ===========================================================================
   // Bit manipulation helpers structured for FPGA timing:
   //   - CLZ, CTZ, CPOP (Zbb): tree-based parallel counting
-  //   - BREV8 (Zbkb): per-byte bit permutation
 
   // 8-bit CLZ: returns 0-8 (8 means all zeros).
   function automatic [3:0] clz8(input logic [7:0] val);
@@ -2206,27 +2205,6 @@ package riscv_pkg;
     cpop64 = 7'(cpop32(val[31:0])) + 7'(cpop32(val[63:32]));
   endfunction
 
-  // 49-bit CLZ: pads to 64 bits and uses clz64. The output is the
-  // leading-zero count (0-48); the caller must handle the all-zeros case
-  // separately.
-  function automatic [5:0] clz49(input logic [48:0] val);
-    logic [6:0] clz_result;
-    clz_result = clz64({15'b0, val});
-    // Subtract padding offset (15 bits). For non-zero input, clz_result is 15-63,
-    // mapping to 0-48 after subtraction. Truncate to 6 bits (result fits in 0-48).
-    clz49 = 6'(clz_result - 7'd15);
-  endfunction
-
-  // BREV8: Bit-reverse each byte independently (Zbkb extension)
-  // Each byte has its bits reversed: bit 0 <-> bit 7, bit 1 <-> bit 6, etc.
-  function automatic [31:0] brev8(input logic [31:0] val);
-    for (int byte_idx = 0; byte_idx < 4; byte_idx++) begin
-      for (int bit_idx = 0; bit_idx < 8; bit_idx++) begin
-        brev8[byte_idx*8+bit_idx] = val[byte_idx*8+(7-bit_idx)];
-      end
-    end
-  endfunction
-
   // ===========================================================================
   // Section 11: Tomasulo Out-of-Order Execution Structures
   // ===========================================================================
@@ -2277,7 +2255,6 @@ package riscv_pkg;
   localparam int unsigned FLEN = FpWidth;  // 64 bits for D extension
 
   // CDB parameters
-  localparam int unsigned NumCdbLanes = 1;  // unused; the CDB has two lanes (o_cdb, o_cdb_2)
   localparam int unsigned NumFus = 8;  // ALU, MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV, ALU2
 
   // ---------------------------------------------------------------------------
