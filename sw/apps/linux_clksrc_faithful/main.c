@@ -20,9 +20,9 @@
  * Unlike the linux_irq_* tests, this one mirrors no-MMU Linux after the
  * switch to clint_clocksource:
  *
- *   - clint_clock_next_event() enables MTIE before an
- *     io-64-nonatomic-lo-hi mtimecmp write, exposing the old deadline and a
- *     torn {old_hi,new_lo} value.
+ *   - clint_clock_next_event() enables MTIE, then writes mtimecmp low word
+ *     first, as an RV32 kernel's writeq_relaxed (io-64-nonatomic-lo-hi) does.
+ *     That exposes the old deadline and a torn {old_hi,new_lo} value.
  *   - clint_timer_interrupt() clears MTIE, then the event handler re-arms it.
  *   - arch_cpu_idle() uses bare wfi while mstatus.MIE remains enabled.
  *   - before each wfi the idle loop churns one to four cached-DDR lines, each
@@ -138,7 +138,8 @@ static uint64_t clint_rdmtime(void)
     return ((uint64_t) hi << 32) | lo;
 }
 
-/* Linux clint_clock_next_event(): enable MTIE, then write lo and hi. */
+/* Linux clint_clock_next_event() as an RV32 kernel runs it: enable MTIE, then
+ * write lo and hi. */
 static void clint_clock_next_event(uint64_t cmp)
 {
     csr_set(mie, MIE_MTIE);

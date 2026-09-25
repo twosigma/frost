@@ -88,7 +88,8 @@ static uint64_t clint_rdmtime(void)
     return ((uint64_t) hi << 32) | lo;
 }
 
-/* Linux timer-clint.c write order: hi=-1, lo, hi. */
+/* Three 32-bit stores: hi=-1, lo, hi. The intermediate value stays above mtime,
+ * so the update cannot fire a spurious interrupt. */
 static void clint_set_timer_cmp(uint64_t cmp)
 {
     CLINT_MTIMECMP_HI = 0xFFFFFFFFu;
