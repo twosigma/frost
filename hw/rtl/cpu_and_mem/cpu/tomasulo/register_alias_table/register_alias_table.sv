@@ -280,9 +280,7 @@ module register_alias_table (
   logic [  CheckpointIdWidth-1:0] ckpt_meta_wr_addr;
   logic [CheckpointMetaWidth-1:0] ckpt_meta_wr_data;
   logic [  CheckpointIdWidth-1:0] ckpt_meta_rd_addr;
-  /* verilator lint_off UNUSEDSIGNAL */
   logic [CheckpointMetaWidth-1:0] ckpt_meta_rd_data;
-  /* verilator lint_on UNUSEDSIGNAL */
 
   sdp_dist_ram #(
       .ADDR_WIDTH(CheckpointIdWidth),
