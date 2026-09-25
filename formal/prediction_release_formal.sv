@@ -14,14 +14,14 @@
  *    limitations under the License.
  */
 
-// Integration harness for the fetch stage's pending-prediction rules: a
-// pending prediction's target handoff never leaves a stale old-path
-// instruction valid in the buffer, and every consumer of pending-prediction
-// state is masked while nothing is pending. The real pc_controller and
-// c_ext_state run together. Predictor requests are arbitrary, and the
-// lookup, buffer, and progress conditions that would block some of them are
-// omitted, which only admits more requests. The modeled prediction registers
-// keep the real update enables and the matching-target PD-redirect exception.
+// Integration harness for the fetch stage's pending-prediction rules: every
+// consumer of pending-prediction state is masked while nothing is pending,
+// and the holdoff outputs and captured predecessor tags keep their reference
+// relations. The real pc_controller and c_ext_state run together. Predictor
+// requests are arbitrary, and the lookup, buffer, and progress conditions
+// that would block some of them are omitted, which only admits more
+// requests. The modeled prediction registers keep the real update enables
+// and the matching-target PD-redirect exception.
 module prediction_release_formal #(
     parameter bit PENDING_HANDOFF_EXCLUDES_SLOT2 = 1'b0
 ) (

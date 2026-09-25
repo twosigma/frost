@@ -330,18 +330,12 @@ module c_ext_state #(
 `ifdef FORMAL
 `ifndef C_EXT_STATE_LOCAL_PROOF
   // With the real producers (the prediction_release and prediction_handoff
-  // targets): an atomic target handoff may still capture the owner's raw
-  // word, but it must not set the one-bit valid state, which would make the
-  // wrong-path upper sibling selectable. The covers exercise capture with and
-  // without a handoff, so the check is not vacuous.
-  logic f_handoff_q = 1'b0;
+  // targets), a pending buffer capture is reachable both with and without a
+  // coinciding target handoff. c_ext_buffer_next proves for any inputs that
+  // the handoff leaves the buffer's valid state clear, so the owner's raw
+  // word may be captured but its wrong-path upper sibling never selected.
   always_ff @(posedge i_clk) begin
-    f_handoff_q <= !i_reset && i_pending_prediction_target_handoff;
     if (!i_reset) begin
-      if (f_handoff_q) begin
-        p_handoff_leaves_buffer_invalid : assert (!o_prev_was_compressed_at_lo);
-      end
-
       cover_pending_prediction_episode : cover (i_pending_prediction_active);
       cover_pending_buffer_capture_without_handoff :
       cover (capture_pending_prediction_buffer && !i_pending_prediction_target_handoff &&
