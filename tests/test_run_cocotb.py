@@ -324,8 +324,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "PLIC directed test: register WARL widths, level-gateway claim/"
             "complete/re-raise/spurious, threshold masking, priority-0, both "
-            "contexts' EIP readbacks, and an M-mode take that claims and "
-            "completes in the handler (ns16550 THRE as the level source)"
+            "contexts' EIP readbacks, an M-mode take that claims and "
+            "completes in the handler, and completions ignored from contexts "
+            "that do not enable the source (ns16550 THRE as the level source)"
         ),
     ),
     "sstc_test": CocotbRunConfig(

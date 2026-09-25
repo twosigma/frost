@@ -19,8 +19,9 @@
  * priority/enable/threshold WARL widths), the level gateway (claim /
  * complete / re-raise / spurious claim), threshold masking, priority 0
  * never interrupting, both contexts' EIP lines through the mip.MEIP and
- * mip.SEIP readbacks, and an M-mode external interrupt that the handler
- * claims and completes.
+ * mip.SEIP readbacks, an M-mode external interrupt that the handler
+ * claims and completes, and completions from contexts that do not enable
+ * the source, which must leave the gateway closed.
  *
  * The level source is the ns16550 THRE interrupt (PLIC source 1): while
  * the UART transmitter can accept a byte, setting IER[1] holds the level
@@ -103,6 +104,25 @@ static unsigned long poll_mip(unsigned long mask, unsigned long want)
             return want;
     }
     return csr_read(mip) & mask;
+}
+
+/* The mask bits of mip, or of the pending word, seen set in any of 200
+ * reads, for checks that a line or a gateway stays quiet. Both paths are a
+ * few registers deep, so 200 reads leave ample margin. */
+static unsigned long mip_seen(unsigned long mask)
+{
+    unsigned long seen = 0;
+    for (int i = 0; i < 200; i++)
+        seen |= csr_read(mip) & mask;
+    return seen;
+}
+
+static unsigned long pending_seen(unsigned long mask)
+{
+    unsigned long seen = 0;
+    for (int i = 0; i < 200; i++)
+        seen |= PLIC_PENDING & mask;
+    return seen;
 }
 
 /* ---- M external-interrupt handler (case I): records mcause, claims,
@@ -215,6 +235,31 @@ int main(void)
     ok &= report("I take-cause", g_irq_cause, 0x8000000000000000ul | 11ul);
     ok &= report("I take-claim", g_irq_claim, 1);
     ok &= report("I meip-clear", poll_mip(MIP_MEIP, 0), 0);
+    PLIC_EN_M = 0;
+
+    /* J: a completion counts only from a context that enables the source.
+     * Source 1 is claimed from M and its level stays high. A completion from
+     * S, which never enables it, and one from M after disabling it there must
+     * each leave the gateway closed; a completion from M with the source
+     * enabled reopens it. */
+    PLIC_EN_M = 0x2;
+    NS16550_IER = 0x2;
+    wait_tx_idle();
+    ok &= report("J meip-raises", poll_mip(MIP_MEIP, MIP_MEIP), MIP_MEIP);
+    ok &= report("J claim-id", PLIC_CLAIM_M, 1);
+    PLIC_CLAIM_S = 1;
+    ok &= report("J s-complete-ignored", pending_seen(0x2), 0);
+    PLIC_EN_M = 0;
+    PLIC_CLAIM_M = 1;
+    ok &= report("J m-disabled-complete-ignored", pending_seen(0x2), 0);
+    PLIC_EN_M = 0x2;
+    ok &= report("J meip-quiet", mip_seen(MIP_MEIP), 0);
+    PLIC_CLAIM_M = 1;
+    ok &= report("J reopened", poll_mip(MIP_MEIP, MIP_MEIP), MIP_MEIP);
+    ok &= report("J claim-again", PLIC_CLAIM_M, 1);
+    NS16550_IER = 0;
+    PLIC_CLAIM_M = 1;
+    ok &= report("J meip-clear", poll_mip(MIP_MEIP, 0), 0);
     PLIC_EN_M = 0;
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
