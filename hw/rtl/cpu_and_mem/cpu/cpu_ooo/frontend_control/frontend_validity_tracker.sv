@@ -60,8 +60,6 @@ module frontend_validity_tracker (
     output logic o_id_valid_2_preflush,
     output logic o_id_valid,
     output logic o_id_valid_2,
-    output logic o_pd_unpredicted_control_flow,
-    output logic o_id_unpredicted_control_flow,
     output logic o_front_end_indirect_control_flow_pending,
     output logic o_prediction_fence_branch,
     output logic o_prediction_fence_jal,
@@ -276,7 +274,6 @@ module frontend_validity_tracker (
     end
   end
 `endif
-  logic if_unpredicted_control_flow;
   logic if_unpredicted_indirect_control_flow;
   logic pd_unpredicted_control_flow;
   logic pd_unpredicted_indirect_control_flow;
@@ -286,12 +283,10 @@ module frontend_validity_tracker (
   logic id_unpredicted_indirect_control_flow;
   logic id_unpredicted_branch;
   logic id_unpredicted_jal;
-  logic front_end_control_flow_pending;
   logic front_end_indirect_control_flow_pending;
   logic prediction_fence_branch;
   logic prediction_fence_jal;
   logic prediction_fence_indirect;
-  assign if_unpredicted_control_flow = if_unpredicted_control_flow_q;
   assign if_unpredicted_indirect_control_flow = if_unpredicted_control_flow_q &&
                                                 if_has_indirect_control_flow;
   assign pd_unpredicted_control_flow = pd_has_control_flow &&
@@ -320,9 +315,6 @@ module frontend_validity_tracker (
   );
   assign id_unpredicted_jal = id_unpredicted_control_flow &&
                               (from_id_to_ex.instruction_operation == riscv_pkg::JAL);
-  assign front_end_control_flow_pending = if_unpredicted_control_flow ||
-                                          pd_unpredicted_control_flow ||
-                                          id_unpredicted_control_flow;
   assign front_end_indirect_control_flow_pending = if_unpredicted_indirect_control_flow ||
                                                    pd_unpredicted_indirect_control_flow ||
                                                    id_unpredicted_indirect_control_flow;
@@ -352,8 +344,6 @@ module frontend_validity_tracker (
   assign o_id_valid_2_preflush                     = id_valid_2_preflush;
   assign o_id_valid                                = id_valid;
   assign o_id_valid_2                              = id_valid_2;
-  assign o_pd_unpredicted_control_flow             = pd_unpredicted_control_flow;
-  assign o_id_unpredicted_control_flow             = id_unpredicted_control_flow;
   assign o_front_end_indirect_control_flow_pending = front_end_indirect_control_flow_pending;
   assign o_prediction_fence_branch                 = prediction_fence_branch;
   assign o_prediction_fence_jal                    = prediction_fence_jal;

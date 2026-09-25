@@ -262,13 +262,9 @@ module cpu_ooo #(
   // back, so no dependent instruction picks up the wrong CDB value.
   logic csr_in_flight;
   logic csr_wb_pending;
-  localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
-  logic [BranchInFlightCountWidth-1:0] branch_in_flight_count;
   // Front-end control-flow classification from frontend_validity_tracker,
   // for ooo_pipeline_control and the perf counters.
   logic front_end_indirect_control_flow_pending;
-  logic pd_unpredicted_control_flow;
-  logic id_unpredicted_control_flow;
   logic prediction_fence_branch;
   logic prediction_fence_jal;
   logic prediction_fence_indirect;
@@ -306,9 +302,6 @@ module cpu_ooo #(
       .i_rob_checkpoint_id(rob_checkpoint_id),
       .i_checkpoint_in_use(checkpoint_in_use),
       .i_csr_commit_fire(csr_commit_fire),
-      .i_correct_branch_commit_pending(correct_branch_commit_pending),
-      .i_mispredict_recovery_pending(mispredict_recovery_pending),
-      .i_mispredict_commit_q(mispredict_commit_q),
       .i_rob_commit(rob_commit),
       .i_trap_taken(trap_taken),
       .i_mret_taken(xret_taken),
@@ -320,15 +313,12 @@ module cpu_ooo #(
       .i_branch_unresolved_checkpoint_id(branch_unresolved_checkpoint_id),
       .i_front_end_indirect_control_flow_pending(
           front_end_indirect_control_flow_pending || decoded_queue_indirect_pending),
-      .i_pd_unpredicted_control_flow(pd_unpredicted_control_flow),
-      .i_id_unpredicted_control_flow(id_unpredicted_control_flow),
       .i_disable_branch_prediction(i_disable_branch_prediction),
       .i_flush_pipeline(flush_pipeline),
       .i_fetch_pa_hold(fetch_pa_hold),
       .o_pipeline_ctrl(pipeline_ctrl),
       .o_serializing_alloc_fire(serializing_alloc_fire),
       .o_csr_in_flight(csr_in_flight),
-      .o_branch_in_flight_count(branch_in_flight_count),
       .o_disable_branch_prediction_ooo(disable_branch_prediction_ooo),
       .o_front_end_cf_serialize_stall(front_end_cf_serialize_stall),
       .o_stall_q(stall_q),
@@ -408,7 +398,6 @@ module cpu_ooo #(
   logic dbg_stall_q  /* verilator public_flat_rd */;
   logic dbg_replay_after_dispatch_stall_q  /* verilator public_flat_rd */;
   logic dbg_replay_after_serialize_stall_q  /* verilator public_flat_rd */;
-  logic [BranchInFlightCountWidth-1:0] dbg_branch_in_flight_count  /* verilator public_flat_rd */;
   logic dbg_rob_alloc_valid  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_rob_alloc_pc  /* verilator public_flat_rd */;
   logic dbg_rob_alloc_is_csr  /* verilator public_flat_rd */;
@@ -504,7 +493,6 @@ module cpu_ooo #(
   assign dbg_stall_q = stall_q;
   assign dbg_replay_after_dispatch_stall_q = replay_after_dispatch_stall_q;
   assign dbg_replay_after_serialize_stall_q = replay_after_serialize_stall_q;
-  assign dbg_branch_in_flight_count = branch_in_flight_count;
   assign dbg_btb_update = from_ex_comb_synth.btb_update;
   assign dbg_btb_update_pc = from_ex_comb_synth.btb_update_pc;
   assign dbg_btb_update_target = from_ex_comb_synth.btb_update_target;
@@ -856,8 +844,6 @@ module cpu_ooo #(
       .o_id_valid_2_preflush(direct_id_valid_2_preflush),
       .o_id_valid(direct_id_valid),
       .o_id_valid_2(direct_id_valid_2),
-      .o_pd_unpredicted_control_flow(pd_unpredicted_control_flow),
-      .o_id_unpredicted_control_flow(id_unpredicted_control_flow),
       .o_front_end_indirect_control_flow_pending(front_end_indirect_control_flow_pending),
       .o_prediction_fence_branch(prediction_fence_branch),
       .o_prediction_fence_jal(prediction_fence_jal),

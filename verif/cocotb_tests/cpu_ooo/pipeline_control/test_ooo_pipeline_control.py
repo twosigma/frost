@@ -24,7 +24,6 @@ from cocotb_tests.cpu_structs import (
     PIPELINE_CTRL_FIELDS,
     COMMIT_FIELDS,
     ROB_ALLOC_REQ_FIELDS as ALLOC_REQ_FIELDS,
-    MISPREDICT_COMMIT_FIELDS,
 )
 from utils.packed_structs import (
     pack_struct as _pack_struct,
@@ -52,11 +51,6 @@ def _pack_alloc_req(fields: Mapping[str, int | bool]) -> int:
 def _pack_commit(fields: Mapping[str, int | bool]) -> int:
     """Pack a reorder_buffer_commit_t value."""
     return _pack_struct(COMMIT_FIELDS, fields)
-
-
-def _pack_mispredict_commit(fields: Mapping[str, int | bool]) -> int:
-    """Pack a mispredict_commit_capture_t value."""
-    return _pack_struct(MISPREDICT_COMMIT_FIELDS, fields)
 
 
 def _read_pipeline_ctrl(dut: Any) -> dict[str, int | bool]:
@@ -93,31 +87,21 @@ def _drive_commit(dut: Any, fields: Mapping[str, int | bool]) -> None:
     dut.i_rob_commit.value = _pack_commit(packet)
 
 
-def _drive_mispredict_commit(dut: Any, fields: Mapping[str, int | bool]) -> None:
-    """Drive the captured commit-time misprediction payload."""
-    dut.i_mispredict_commit_q.value = _pack_mispredict_commit(fields)
-
-
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     _drive_alloc_req(dut, {})
     _drive_alloc_req_2(dut, {})
     _drive_commit(dut, QUIESCENT_COMMIT)
-    _drive_mispredict_commit(dut, {})
     _drive_checkpoint_save(dut, None)
     _drive_resolve(dut, None)
     dut.i_checkpoint_in_use.value = 0
     dut.i_csr_commit_fire.value = 0
-    dut.i_correct_branch_commit_pending.value = 0
-    dut.i_mispredict_recovery_pending.value = 0
     dut.i_trap_taken.value = 0
     dut.i_mret_taken.value = 0
     dut.i_trap_target.value = 0
     dut.i_dispatch_stall.value = 0
     dut.i_csr_wb_pending.value = 0
     dut.i_front_end_indirect_control_flow_pending.value = 0
-    dut.i_pd_unpredicted_control_flow.value = 0
-    dut.i_id_unpredicted_control_flow.value = 0
     dut.i_disable_branch_prediction.value = 0
     dut.i_flush_pipeline.value = 0
     dut.i_fetch_pa_hold.value = 0
@@ -184,7 +168,6 @@ async def test_idle_outputs_and_global_prediction_disable(dut: Any) -> None:
     assert not ctrl["stall"]
     assert not ctrl["stall_registered"]
     assert not ctrl["flush"]
-    assert int(dut.o_branch_in_flight_count.value) == 0
     assert not dut.o_serializing_alloc_fire.value
     assert not dut.o_csr_in_flight.value
     assert not dut.o_disable_branch_prediction_ooo.value
@@ -416,49 +399,6 @@ async def test_csr_wb_pending_generates_serialize_replay(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_branch_in_flight_counter_balances_alloc_and_commit(dut: Any) -> None:
-    """Branch checkpoint allocations and commit/recovery releases balance the count."""
-    await _setup_test(dut)
-
-    dut.i_rob_checkpoint_valid.value = 1
-    await _advance_cycle(dut)
-
-    assert int(dut.o_branch_in_flight_count.value) == 1
-
-    dut.i_correct_branch_commit_pending.value = 1
-    await _advance_cycle(dut)
-
-    assert int(dut.o_branch_in_flight_count.value) == 1
-
-    dut.i_rob_checkpoint_valid.value = 0
-    await _advance_cycle(dut)
-
-    assert int(dut.o_branch_in_flight_count.value) == 0
-
-    await _advance_cycle(dut)
-
-    assert int(dut.o_branch_in_flight_count.value) == 0
-
-    dut.i_rob_checkpoint_valid.value = 1
-    dut.i_correct_branch_commit_pending.value = 0
-    await _advance_cycle(dut)
-
-    assert int(dut.o_branch_in_flight_count.value) == 1
-
-    dut.i_rob_checkpoint_valid.value = 0
-    dut.i_mispredict_recovery_pending.value = 1
-    _drive_mispredict_commit(dut, {"has_checkpoint": False})
-    await _advance_cycle(dut)
-
-    assert int(dut.o_branch_in_flight_count.value) == 1
-
-    _drive_mispredict_commit(dut, {"has_checkpoint": True})
-    await _advance_cycle(dut)
-
-    assert int(dut.o_branch_in_flight_count.value) == 0
-
-
-@cocotb.test()
 async def test_unresolved_branch_serializes_younger_indirect_control_flow(
     dut: Any,
 ) -> None:
@@ -583,20 +523,16 @@ async def test_flush_clears_serialization_and_starts_holdoff(dut: Any) -> None:
     await _setup_test(dut)
 
     _drive_alloc_req(dut, {"alloc_valid": True, "is_csr": True})
-    dut.i_rob_checkpoint_valid.value = 1
     await _advance_cycle(dut)
 
     assert dut.o_csr_in_flight.value
-    assert int(dut.o_branch_in_flight_count.value) == 1
 
     _drive_alloc_req(dut, {})
-    dut.i_rob_checkpoint_valid.value = 0
     dut.i_flush_pipeline.value = 1
     await _advance_cycle(dut)
 
     assert not dut.o_csr_in_flight.value
     assert not dut.o_serializing_alloc_fire.value
-    assert int(dut.o_branch_in_flight_count.value) == 0
     assert int(dut.o_post_flush_holdoff_q.value) == 1
 
     dut.i_flush_pipeline.value = 0

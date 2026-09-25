@@ -307,7 +307,6 @@ async def test_pd_prediction_fence_classification(dut: Any) -> None:
     _drive_pd(dut, {"instruction": BRANCH_INSTR})
     await _settle()
 
-    assert dut.o_pd_unpredicted_control_flow.value
     assert dut.o_prediction_fence_branch.value
     assert not dut.o_prediction_fence_jal.value
     assert not dut.o_prediction_fence_indirect.value
@@ -330,7 +329,6 @@ async def test_pd_prediction_fence_classification(dut: Any) -> None:
     _drive_pd(dut, {"instruction": BRANCH_INSTR, "btb_predicted_taken": True})
     await _settle()
 
-    assert not dut.o_pd_unpredicted_control_flow.value
     assert not dut.o_prediction_fence_branch.value
 
 
@@ -346,7 +344,7 @@ async def test_id_prediction_fence_priority_and_prediction_suppression(
     _drive_id_slot(dut, {"instruction_operation": OP_JALR, "is_not_nop": True})
     await _settle()
 
-    assert dut.o_id_unpredicted_control_flow.value
+    assert dut.o_front_end_indirect_control_flow_pending.value
     assert dut.o_prediction_fence_indirect.value
     assert not dut.o_prediction_fence_branch.value
     assert not dut.o_prediction_fence_jal.value
@@ -376,7 +374,7 @@ async def test_id_prediction_fence_priority_and_prediction_suppression(
     )
     await _settle()
 
-    assert not dut.o_id_unpredicted_control_flow.value
+    assert not dut.o_front_end_indirect_control_flow_pending.value
     assert not dut.o_prediction_fence_branch.value
     assert not dut.o_prediction_fence_jal.value
     assert not dut.o_prediction_fence_indirect.value

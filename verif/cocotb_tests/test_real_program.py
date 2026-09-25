@@ -1324,11 +1324,6 @@ async def run_until_complete(
     retire_pc_sig = None
     retire_mispredict_sig = None
     branch_pred_off_sig = None
-    branch_in_flight_count_sig = None
-    fe_cf_pending_sig = None
-    if_cf_pending_sig = None
-    pd_cf_pending_sig = None
-    id_cf_pending_sig = None
     if_btb_pred_sig = None
     if_ras_pred_sig = None
     pd_btb_pred_sig = None
@@ -1676,12 +1671,6 @@ async def run_until_complete(
         branch_pred_off_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.disable_branch_prediction_ooo"
         )
-        branch_in_flight_count_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_branch_in_flight_count"
-        )
-        fe_cf_pending_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.front_end_control_flow_pending"
-        )
         if_stall_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall"
         )
@@ -1698,15 +1687,6 @@ async def run_until_complete(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_dispatch_stall_q"
         )
         if coremark_cf_debug_enabled:
-            if_cf_pending_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.if_unpredicted_control_flow"
-            )
-            pd_cf_pending_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.pd_unpredicted_control_flow"
-            )
-            id_cf_pending_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.id_unpredicted_control_flow"
-            )
             if_btb_pred_sig = _get_signal(
                 dut,
                 "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.btb_predicted_taken",
@@ -1889,9 +1869,6 @@ async def run_until_complete(
         branch_pred_off_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.disable_branch_prediction_ooo"
         )
-        fe_cf_pending_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.front_end_control_flow_pending"
-        )
         dispatch_stall_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_dispatch_stall"
         )
@@ -1912,9 +1889,6 @@ async def run_until_complete(
         )
         replay_after_serialize_stall_q_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_serialize_stall_q"
-        )
-        branch_in_flight_count_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_branch_in_flight_count"
         )
         btb_hit_sig = _get_signal(
             dut,
@@ -3193,7 +3167,6 @@ async def run_until_complete(
                     f"retire_pc=0x{retire_pc:08x} "
                     f"fetch_pc=0x{(pc or 0):08x} "
                     f"pred_off={_read_bool(branch_pred_off_sig)} "
-                    f"fe_cf_pending={_read_bool(fe_cf_pending_sig)} "
                     f"cf_hold={_read_bool(if_control_flow_holdoff_sig)} "
                     f"br_taken={_read_bool(branch_taken_live_sig)} "
                     f"br_target=0x{(_read_int(branch_target_live_sig) or 0):08x} "
@@ -3538,7 +3511,6 @@ async def run_until_complete(
                     f"seq_next_pc_reg=0x{(_read_int(pc_seq_next_pc_reg_sig) or 0):08x} "
                     f"next_pc_reg=0x{(_read_int(pc_next_pc_reg_sig) or 0):08x} "
                     f"pred_off={_read_bool(branch_pred_off_sig)} "
-                    f"fe_cf_pending={_read_bool(fe_cf_pending_sig)} "
                     f"stall={_read_bool(if_stall_sig)} "
                     f"stall_r={_read_bool(if_stall_registered_sig)} "
                     f"dispatch_stall={_read_bool(dispatch_stall_sig)} "
@@ -3546,7 +3518,6 @@ async def run_until_complete(
                     f"stall_q={_read_bool(front_end_stall_q_sig)} "
                     f"replay_q={_read_bool(replay_after_dispatch_stall_q_sig)} "
                     f"replay_ser_q={_read_bool(replay_after_serialize_stall_q_sig)} "
-                    f"br_inflight={_read_int(branch_in_flight_count_sig)} "
                     f"cf_hold={_read_bool(if_control_flow_holdoff_sig)} "
                     f"br_taken={_read_bool(branch_taken_live_sig)} "
                     f"br_target=0x{(_read_int(branch_target_live_sig) or 0):08x} "
@@ -3691,8 +3662,6 @@ async def run_until_complete(
             rob_count = _read_int(rob_count_sig)
             dispatch_stall = _read_bool(dispatch_stall_sig)
             branch_pred_off = _read_bool(branch_pred_off_sig)
-            branch_in_flight_count = _read_int(branch_in_flight_count_sig)
-            fe_cf_pending = _read_bool(fe_cf_pending_sig)
             lq_issue_mem_found = _read_bool(lq_issue_mem_found_sig)
             lq_sq_check_valid = _read_bool(lq_sq_check_valid_sig)
             lq_sq_can_issue = _read_bool(lq_sq_can_issue_sig)
@@ -3704,9 +3673,6 @@ async def run_until_complete(
                 if_pc = _read_int(if_pc_sig)
                 pd_pc = _read_int(pd_pc_sig)
                 id_pc = _read_int(id_pc_sig)
-                if_cf_pending = _read_bool(if_cf_pending_sig)
-                pd_cf_pending = _read_bool(pd_cf_pending_sig)
-                id_cf_pending = _read_bool(id_cf_pending_sig)
                 if_btb_pred = _read_bool(if_btb_pred_sig)
                 if_ras_pred = _read_bool(if_ras_pred_sig)
                 pd_btb_pred = _read_bool(pd_btb_pred_sig)
@@ -3716,9 +3682,6 @@ async def run_until_complete(
                 pd_instr = _read_int(pd_instr_sig)
                 id_op = _read_int(id_op_sig)
                 cf_debug_suffix = (
-                    f" if_cf_pending={if_cf_pending}"
-                    f" pd_cf_pending={pd_cf_pending}"
-                    f" id_cf_pending={id_cf_pending}"
                     f" if_pc=0x{(if_pc or 0):08x}"
                     f" pd_pc=0x{(pd_pc or 0):08x}"
                     f" id_pc=0x{(id_pc or 0):08x}"
@@ -3753,8 +3716,6 @@ async def run_until_complete(
                 f"issue_pc=0x{(_read_int(issue_pc_live_sig) or 0):08x} "
                 f"ckpt_avail={_read_bool(checkpoint_available_live_sig)} "
                 f"branch_pred_off={branch_pred_off} "
-                f"branch_in_flight_count={branch_in_flight_count} "
-                f"fe_cf_pending={fe_cf_pending} "
                 f"lq_issue_mem_found={lq_issue_mem_found} "
                 f"lq_sq_check_valid={lq_sq_check_valid} "
                 f"lq_sq_can_issue={lq_sq_can_issue} "

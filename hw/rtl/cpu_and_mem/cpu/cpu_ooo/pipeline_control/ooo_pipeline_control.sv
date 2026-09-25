@@ -21,9 +21,8 @@
  * combines the front-end stall and serialization sources and the registered
  * trap and xRET state into the pipeline_ctrl_t that IF, PD, and ID consume.
  * It holds:
- *   - the CSR in-flight state (csr_in_flight, serializing_alloc_fire), the
- *     checkpointed-branch counter, and the per-checkpoint unresolved-branch
- *     bits;
+ *   - the CSR in-flight state (csr_in_flight, serializing_alloc_fire) and
+ *     the per-checkpoint unresolved-branch bits;
  *   - the CSR and control-flow serialization stalls and their registered
  *     stall and replay signals (stall_q, id_stall_q, replay_*);
  *   - the post-flush BRAM holdoff;
@@ -48,9 +47,6 @@ module ooo_pipeline_control #(
     // Checkpoints held by in-flight branches (cpu_ooo's checkpoint_in_use).
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_in_use,
     input logic i_csr_commit_fire,
-    input logic i_correct_branch_commit_pending,
-    input logic i_mispredict_recovery_pending,
-    input riscv_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
     input riscv_pkg::reorder_buffer_commit_t i_rob_commit,
     input logic i_trap_taken,
     input logic i_mret_taken,
@@ -62,8 +58,6 @@ module ooo_pipeline_control #(
     input logic i_branch_unresolved_decrement,
     input logic [riscv_pkg::CheckpointIdWidth-1:0] i_branch_unresolved_checkpoint_id,
     input logic i_front_end_indirect_control_flow_pending,
-    input logic i_pd_unpredicted_control_flow,
-    input logic i_id_unpredicted_control_flow,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
     // High while the translation of the fetch PC is not yet visible: the Sv39
@@ -77,7 +71,6 @@ module ooo_pipeline_control #(
     output riscv_pkg::pipeline_ctrl_t o_pipeline_ctrl,
     output logic o_serializing_alloc_fire,
     output logic o_csr_in_flight,
-    output logic [$clog2(riscv_pkg::ReorderBufferDepth+1)-1:0] o_branch_in_flight_count,
     output logic o_disable_branch_prediction_ooo,
     output logic o_front_end_cf_serialize_stall,
     output logic o_stall_q,
@@ -90,8 +83,6 @@ module ooo_pipeline_control #(
     output logic [XLEN-1:0] o_trap_target_reg
 );
 
-  localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
-
   // --- Port aliases.
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req;
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
@@ -99,9 +90,6 @@ module ooo_pipeline_control #(
   logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
   logic csr_commit_fire;
-  logic correct_branch_commit_pending;
-  logic mispredict_recovery_pending;
-  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   riscv_pkg::reorder_buffer_commit_t rob_commit;
   logic trap_taken;
   logic mret_taken;
@@ -111,8 +99,6 @@ module ooo_pipeline_control #(
   logic branch_unresolved_decrement;
   logic [riscv_pkg::CheckpointIdWidth-1:0] branch_unresolved_checkpoint_id;
   logic front_end_indirect_control_flow_pending;
-  logic pd_unpredicted_control_flow;
-  logic id_unpredicted_control_flow;
   logic flush_pipeline;
   assign rob_alloc_req                           = i_rob_alloc_req;
   assign rob_alloc_req_2                         = i_rob_alloc_req_2;
@@ -120,9 +106,6 @@ module ooo_pipeline_control #(
   assign rob_checkpoint_id                       = i_rob_checkpoint_id;
   assign checkpoint_in_use                       = i_checkpoint_in_use;
   assign csr_commit_fire                         = i_csr_commit_fire;
-  assign correct_branch_commit_pending           = i_correct_branch_commit_pending;
-  assign mispredict_recovery_pending             = i_mispredict_recovery_pending;
-  assign mispredict_commit_q                     = i_mispredict_commit_q;
   assign rob_commit                              = i_rob_commit;
   assign trap_taken                              = i_trap_taken;
   assign mret_taken                              = i_mret_taken;
@@ -132,21 +115,14 @@ module ooo_pipeline_control #(
   assign branch_unresolved_decrement             = i_branch_unresolved_decrement;
   assign branch_unresolved_checkpoint_id         = i_branch_unresolved_checkpoint_id;
   assign front_end_indirect_control_flow_pending = i_front_end_indirect_control_flow_pending;
-  assign pd_unpredicted_control_flow             = i_pd_unpredicted_control_flow;
-  assign id_unpredicted_control_flow             = i_id_unpredicted_control_flow;
   assign flush_pipeline                          = i_flush_pipeline;
 
   // Signals produced here (also read internally); wired to o_* at the end.
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
   (* max_fanout = 32 *) logic frontend_stall;
   logic csr_in_flight;
-  logic branch_in_flight;
-  logic [BranchInFlightCountWidth-1:0] branch_in_flight_count;
-  logic front_end_prediction_fence_pending;
   logic disable_branch_prediction_ooo;
   (* max_fanout = 32 *) logic serializing_alloc_fire;
-  logic branch_alloc_fire;
-  logic branch_commit_fire;
 
   // CSR results are only architecturally available at commit, so hold the
   // front-end after dispatching a CSR until it completes.  serializing_alloc_fire
@@ -157,39 +133,12 @@ module ooo_pipeline_control #(
     if (i_rst || flush_pipeline) serializing_alloc_fire <= 1'b0;
     else serializing_alloc_fire <= serializing_alloc_fire_comb;
   end
-  // The in-flight counter counts up on the predicate that allocates a
-  // checkpoint, from either dispatch slot.
-  assign branch_alloc_fire = rob_checkpoint_valid;
-  assign branch_commit_fire = correct_branch_commit_pending ||
-                             (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint);
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) csr_in_flight <= 1'b0;
     else if (serializing_alloc_fire_comb) csr_in_flight <= 1'b1;
     else if (csr_commit_fire) csr_in_flight <= 1'b0;
   end
-
-  // Debug-only, approximate count of checkpointed branches in flight: a
-  // correct branch retiring in commit slot 2 never decrements it, and an early
-  // misprediction recovery clears it while older branches may still be in
-  // flight. branch_in_flight below has no consumer, and cpu_ooo exposes the
-  // count only as dbg_branch_in_flight_count.
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) begin
-      branch_in_flight_count <= '0;
-    end else begin
-      case ({
-        branch_alloc_fire, branch_commit_fire
-      })
-        2'b10: branch_in_flight_count <= branch_in_flight_count + 1'b1;
-        2'b01:
-        if (branch_in_flight_count != '0) branch_in_flight_count <= branch_in_flight_count - 1'b1;
-        default: branch_in_flight_count <= branch_in_flight_count;
-      endcase
-    end
-  end
-
-  assign branch_in_flight = (branch_in_flight_count != '0);
 
   // Unresolved branches, one bit per checkpoint. Every branch or jump saves a
   // checkpoint when it dispatches, from either slot (at most one per bundle),
@@ -237,11 +186,6 @@ module ooo_pipeline_control #(
   end
 `endif
 
-  // front_end_prediction_fence_pending has no consumer: prediction is not
-  // suppressed while an unpredicted control-flow instruction is in PD or ID,
-  // so disable_branch_prediction_ooo below does not include it.
-  assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
-                                              id_unpredicted_control_flow;
   assign disable_branch_prediction_ooo = i_disable_branch_prediction ||
                                          csr_in_flight ||
                                          serializing_alloc_fire;
@@ -421,7 +365,6 @@ module ooo_pipeline_control #(
   assign o_pipeline_ctrl                  = pipeline_ctrl;
   assign o_serializing_alloc_fire         = serializing_alloc_fire;
   assign o_csr_in_flight                  = csr_in_flight;
-  assign o_branch_in_flight_count         = branch_in_flight_count;
   assign o_disable_branch_prediction_ooo  = disable_branch_prediction_ooo;
   assign o_front_end_cf_serialize_stall   = front_end_cf_serialize_stall;
   assign o_stall_q                        = stall_q;
