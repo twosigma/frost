@@ -45,8 +45,8 @@
  *
  * Each cache exports a registered performance-event bundle. The L1D's
  * writeback-all traffic carries the maintenance bit through the arbiters, so
- * the L2 leaves fence.i writebacks out of every event except the two stall
- * classes. Walker traffic carries maintenance=0 and counts as ordinary.
+ * the L2 leaves fence.i writebacks out of every event. Walker traffic carries
+ * maintenance=0 and counts as ordinary.
  */
 module frost_cache_hierarchy #(
     parameter int unsigned ADDR_WIDTH = 32,

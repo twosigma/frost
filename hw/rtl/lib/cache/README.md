@@ -56,8 +56,8 @@ response: valid  id[ID_BITS]  rdata[256]
   above.
 - `maintenance` exists on cache and arbiter ports, not on the hierarchy's
   upstream ports or the bridge. It marks `fence.i` writeback traffic, which
-  lower levels leave out of every performance event except the two stall
-  classes. It never changes how a request is handled.
+  lower levels leave out of every performance event. It never changes how a
+  request is handled.
 
 Masters do use this freedom: the arbiters re-select among their ports every
 cycle, and the walker withdraws a read when its walk is discarded. A new slave

@@ -83,8 +83,8 @@
  *
  * Performance events are registered here, one cycle after the decisions they
  * report, which keeps the tag and stage decisions off the path toward
- * cpu_ooo. Probes are left out of every event, and maintenance-provenance
- * requests out of every event except the two stall classes.
+ * cpu_ooo. Probes and maintenance-provenance requests are left out of every
+ * event.
  */
 module frost_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -1587,8 +1587,9 @@ module frost_cache #(
       perf_events_q.miss_outstanding <= miss_count;
       perf_events_q.hit_under_miss <= t_done && !t_maint_q && (t_is_read_hit || t_is_write_hit) &&
           (miss_count != '0);
-      perf_events_q.slot_full_stall <= stall_full && t_plain;
-      perf_events_q.conflict_stall <= (stall_conflict || stall_wb_snapshot) && t_plain;
+      perf_events_q.slot_full_stall <= stall_full && t_plain && !t_maint_q;
+      perf_events_q.conflict_stall <= (stall_conflict || stall_wb_snapshot) && t_plain &&
+          !t_maint_q;
     end
   end
   assign o_perf_events = perf_events_q;

@@ -1238,3 +1238,89 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     stop[0] = True
     await FallingEdge(dut.i_clk)
     await monitor
+
+
+@cocotb.test()
+async def test_l2_stall_events_exclude_fence_writebacks(dut: Any) -> None:
+    """The L2's stall events leave out the stalls of fence.i writeback traffic.
+
+    Fills held at the L2 (i_down_hold) make a fence's L1D writeback, which
+    carries the maintenance bit, stall there: first on an index conflict
+    with a pending fill, then with every L2 miss slot taken by pending
+    fills. A monitor of the L2's decision stage must see both stalls while
+    the L2's conflict and slot-full events stay at zero. The bench's
+    ordinary traffic never stalls at the L2, which the monitor checks too.
+    """
+    await _setup(dut)
+    l2 = dut.cache_hierarchy.l2_cache
+    counts = _new_perf_counts()
+    stop = [False]
+    monitor = cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
+    stalls = {"maint_conflict": 0, "maint_full": 0, "plain": 0}
+
+    async def _watch_l2_decisions() -> None:
+        while True:
+            await FallingEdge(dut.i_clk)
+            if not int(l2.decide.value):
+                continue
+            conflict = int(l2.stall_conflict.value) | int(l2.stall_wb_snapshot.value)
+            full = int(l2.stall_full.value)
+            if int(l2.t_maint_q.value):
+                stalls["maint_conflict"] += conflict
+                stalls["maint_full"] += full
+            else:
+                stalls["plain"] += conflict | full
+
+    watcher = cocotb.start_soon(_watch_l2_decisions())
+    full = (1 << LINE_BYTES) - 1
+    base = PERF_BASE + 0x20000
+
+    async def _fence_behind_held_fills(
+        dirty: int, reads: list[tuple[str, int]]
+    ) -> None:
+        """Dirty one L1D line, hold fills of `reads` at the L2, and fence."""
+        wdata = _line_int(bytes([(0xA7 + b) & 0xFF for b in range(32)]))
+        await _line_transaction(dut, write=True, addr=dirty, wdata=wdata, wstrb=full)
+        await FallingEdge(dut.i_clk)
+        dut.i_down_hold.value = 1
+        for port, addr in reads:
+            await _fire_read(dut, port, addr)
+        await _settle(dut, 20)
+        fence = cocotb.start_soon(_fence_sync(dut))
+        await _settle(dut, 100)
+        dut.i_down_hold.value = 0
+        await fence
+        await _settle(dut)
+
+    # An L1I miss on the dirty line's L2 index (another tag) is pending when
+    # the writeback arrives.
+    dirty = base + 5 * LINE_BYTES
+    await _fence_behind_held_fills(dirty, [("iup", dirty + 4096)])
+    # Two L1I misses, a walk and a DMA read take the L2's four miss slots.
+    reads = base + 0x4000
+    await _fence_behind_held_fills(
+        base + 0x2000 + 6 * LINE_BYTES,
+        [
+            ("iup", reads + 9 * LINE_BYTES),
+            ("iup", reads + 12 * LINE_BYTES),
+            ("wup", reads + 15 * LINE_BYTES),
+            ("dma", reads + 18 * LINE_BYTES),
+        ],
+    )
+
+    stop[0] = True
+    await FallingEdge(dut.i_clk)
+    await monitor
+    watcher.cancel()
+    assert stalls["plain"] == 0, f"ordinary traffic stalled at the L2: {stalls}"
+    assert stalls["maint_conflict"] > 0, (
+        "the fence's writeback never met an index conflict at the L2"
+    )
+    assert stalls["maint_full"] > 0, (
+        "the fence's writeback never found the L2's miss slots full"
+    )
+    counted = (counts["l2"]["conflict_stall"], counts["l2"]["slot_full_stall"])
+    assert counted == (0, 0), (
+        f"the L2 counted {counted[0]} conflict stalls and {counted[1]} slot-full "
+        "stalls of fence.i writebacks"
+    )
