@@ -245,9 +245,15 @@ protects atomic operations and device reads. Debug Mode saves `dpc` and
 `dcsr`, masks interrupts, and runs the module's commands from the reserved
 low-BRAM debug slice. The module supports abstract GPR access and an 8-word
 program buffer. Debugger memory accesses run through that buffer; there is no
-system bus access. A DMI access that arrives while the system reset is held
-waits, with the DTM reporting busy, and is handled when the reset ends, with
-`dmactive` 0 as after any reset.
+system bus access.
+
+The system reset (the board-level reset, which on X3 follows the clock lock
+and DDR readiness, and the image-load reset) also resets the debug module, so
+`dmactive`, a pending halt request, and the program buffer do not survive it.
+Debug Spec 0.13.2 (section 3.2) resets the module only at power-up and while
+`dmactive` is 0; FROST treats these resets as power-up. `ndmreset` resets only
+the core. A DMI access that arrives while the system reset is held waits, with
+the DTM reporting busy, and is handled when the reset ends, with `dmactive` 0.
 
 `debug_slice_writer` writes the module's words into the slice through the
 BRAM programming port. It also mirrors Debug-Mode stores to low BRAM into the

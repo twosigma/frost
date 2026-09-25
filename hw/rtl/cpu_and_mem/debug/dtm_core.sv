@@ -41,8 +41,9 @@
  * starts a request unless the status is sticky or a request is still in
  * flight. A dmi capture or an attempted operation while a request is in
  * flight sets the sticky busy status (op = 3), the spec's rule for batched
- * scans. A failed response sets the sticky failed status (op = 2). Whichever
- * is set first lasts until dmireset, dmihardreset, or Test-Logic-Reset.
+ * scans. A failed response sets the sticky failed status (op = 2), replacing
+ * a sticky busy, so dmireset's busy recovery can never hide a failure. The
+ * sticky status lasts until dmireset, dmihardreset, or Test-Logic-Reset.
  * Capture-DR returns the last request's address and the data of the last
  * response kept, with op = the current status: the sticky status if set,
  * else 3 while a request is in flight, else 0.
@@ -178,8 +179,9 @@ module dtm_core (
           end
         end
       end
-      // A failed response is sticky like busy.
-      if (resp_keep && (resp_op_q == 2'd2) && (sticky_q == 2'd0)) sticky_q <= 2'd2;
+      // A failed response is sticky like busy, and outranks it. Placed last, it
+      // also survives a dmireset on the same edge.
+      if (resp_keep && (resp_op_q == 2'd2)) sticky_q <= 2'd2;
     end
   end
 

@@ -53,6 +53,13 @@
  * was not halted and parked, or was resuming), 7 other (the store mirror
  * overflowed during the command, see debug_slice_writer). dmactive = 0 holds
  * every other register in reset.
+ *
+ * Reset: i_rst is cpu_and_mem's system reset (the board-level reset, which
+ * on X3 follows the clock lock and DDR readiness, and the image-load reset),
+ * and it resets this module too, dmactive included. Debug Spec 0.13.2
+ * section 3.2 resets the module only at power-up and while dmactive is 0; on
+ * an FPGA these resets serve as power-up. ndmreset resets only the core and
+ * leaves the module's state.
  */
 module debug_module #(
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18

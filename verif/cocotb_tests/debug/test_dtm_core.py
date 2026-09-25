@@ -313,3 +313,30 @@ async def test_dmistat_reports_the_sticky_status(dut: Any) -> None:
     await jtag.dmi(OP_READ, 0x04)
     assert await jtag.result() == (STATUS_OK, 0)
     await RisingEdge(dut.i_clk)
+
+
+@cocotb.test()
+async def test_failed_response_replaces_sticky_busy(dut: Any) -> None:
+    """A failed response that arrives while sticky busy is set replaces busy with failed.
+
+    Busy recovery (dmireset, then a retry) would otherwise clear the status and
+    the failure would never be reported.
+    """
+    jtag, model = await _setup(dut)
+    model.latency = 600
+    model.resp_op = STATUS_FAILED
+    await jtag.dmi(OP_READ, 0x04)
+    status, _ = await jtag.dmi(OP_NOP)
+    assert status == STATUS_BUSY
+    await _wait_answered(jtag, model, 1)
+    assert _dmistat(await jtag.dtmcs()) == STATUS_FAILED, (
+        "the failure stayed hidden behind busy"
+    )
+    status, _ = await jtag.dmi(OP_NOP)
+    assert status == STATUS_FAILED
+
+    model.latency = 2
+    model.resp_op = STATUS_OK
+    await jtag.dtmcs(DTMCS_DMIRESET)
+    await jtag.dmi(OP_READ, 0x04)
+    assert await jtag.result() == (STATUS_OK, 0)
