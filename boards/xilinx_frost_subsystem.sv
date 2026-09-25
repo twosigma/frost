@@ -130,7 +130,6 @@ module xilinx_frost_subsystem #(
   logic [ 3:0] instruction_memory_write_enable;
   logic [17:0] instruction_memory_address;
   logic [31:0] instruction_memory_write_data;
-  logic [31:0] instruction_memory_read_data;
 
   // Hold the programming IP and CPU in reset briefly after the board-level reset
   // releases so clocks are stable before any BRAM write or instruction fetch.
@@ -307,7 +306,6 @@ module xilinx_frost_subsystem #(
       .i_instr_mem_we(instruction_memory_program_write_enable),
       .i_instr_mem_addr({14'd0, instruction_memory_address}),  // Zero-extend to 32 bits
       .i_instr_mem_wrdata(instruction_memory_write_data),
-      .o_instr_mem_rddata(instruction_memory_read_data),
       .o_uart_tx,
       .i_uart_rx,
       // Debug transport: BSCAN bundle (the generic TAP pins stay idle)

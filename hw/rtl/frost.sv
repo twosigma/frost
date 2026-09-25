@@ -98,11 +98,10 @@ module frost #(
     input logic i_clk_div4,
     input logic i_rst_n,
 
-    input  logic        i_instr_mem_en,
-    input  logic [ 3:0] i_instr_mem_we,
-    input  logic [31:0] i_instr_mem_addr,
-    input  logic [31:0] i_instr_mem_wrdata,
-    output logic [31:0] o_instr_mem_rddata,
+    input logic        i_instr_mem_en,
+    input logic [ 3:0] i_instr_mem_we,
+    input logic [31:0] i_instr_mem_addr,
+    input logic [31:0] i_instr_mem_wrdata,
 
     output logic o_uart_tx,
     input  logic i_uart_rx,
@@ -319,7 +318,6 @@ module frost #(
       .i_instr_mem_we(i_instr_mem_we),
       .i_instr_mem_addr(i_instr_mem_addr),
       .i_instr_mem_wrdata(i_instr_mem_wrdata),
-      .o_instr_mem_rddata,
       .o_uart_wr_en(uart_write_enable_from_cpu),
       .o_uart_wr_data(uart_write_data_from_cpu),
       .i_uart_tx_ready(!uart_fifo_almost_full),

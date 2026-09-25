@@ -94,11 +94,10 @@ module cpu_and_mem #(
 
     // Low-BRAM programming interface (div4 clock domain); writes go to both the
     // instruction and data copies
-    input  logic        i_instr_mem_en,
-    input  logic [ 3:0] i_instr_mem_we,
-    input  logic [31:0] i_instr_mem_addr,
-    input  logic [31:0] i_instr_mem_wrdata,
-    output logic [31:0] o_instr_mem_rddata,
+    input logic        i_instr_mem_en,
+    input logic [ 3:0] i_instr_mem_we,
+    input logic [31:0] i_instr_mem_addr,
+    input logic [31:0] i_instr_mem_wrdata,
 
     output logic       o_uart_wr_en,
     output logic [7:0] o_uart_wr_data,
@@ -1575,7 +1574,6 @@ module cpu_and_mem #(
       .i_port_b_byte_write_enable(data_memory_bram_byte_write_enable),
       .o_port_b_read_data(data_memory_read_data)
   );
-  assign o_instr_mem_rddata = instruction[31:0];  // Current fetch word; imem port A is write-only
 
   // Cached tier: high-address region behind the cache hierarchy. The router
   // only asserts the cached read/write requests for addresses inside the
