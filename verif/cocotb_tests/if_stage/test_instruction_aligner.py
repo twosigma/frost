@@ -269,7 +269,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_reg_high_for_coverage.value = (PC_LO >> 1) & 1
     dut.i_prev_was_compressed_at_lo.value = 0
     dut.i_prediction_holdoff.value = 0
-    dut.i_prediction_from_buffer_holdoff.value = 0
     dut.i_stall_registered.value = 0
     dut.i_prev_was_compressed_at_lo_saved.value = 0
     dut.i_is_compressed_saved.value = 0
@@ -894,19 +893,15 @@ async def test_saved_stall_values_drive_fast_compressed_path(dut: Any) -> None:
 
 @cocotb.test()
 async def test_nop_sources_suppress_slot1_and_slot2(dut: Any) -> None:
-    """The prediction holdoffs create slot-1/slot-2 NOP cycles."""
+    """The RAS prediction holdoff creates a slot-1/slot-2 NOP cycle."""
     await _setup_test(dut)
 
-    for signal_name in (
-        "i_prediction_holdoff",
-        "i_prediction_from_buffer_holdoff",
-    ):
-        _clear_inputs(dut)
-        setattr(getattr(dut, signal_name), "value", 1)
-        await _settle(dut)
+    _clear_inputs(dut)
+    dut.i_prediction_holdoff.value = 1
+    await _settle(dut)
 
-        assert bool(dut.o_sel_nop.value) is True
-        assert bool(dut.o_sel_nop_2.value) is True
+    assert bool(dut.o_sel_nop.value) is True
+    assert bool(dut.o_sel_nop_2.value) is True
 
 
 @cocotb.test()

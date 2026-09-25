@@ -45,7 +45,6 @@ module c_ext_state #(
     input logic i_pending_prediction_active,  // pc_reg still consumes old-path instruction sizes
     input logic i_pending_prediction_target_handoff,  // Old-path control-flow op just redirected
     input logic i_pending_prediction_target_holdoff,  // Bubble while halfword branch PC catches up
-    input logic i_prediction_from_buffer_holdoff,  // Stale cycle after predicting from the buffer
 
     // Instruction data
     input logic [    31:0] i_effective_instr,  // Current effective instruction word
@@ -257,7 +256,6 @@ module c_ext_state #(
         prev_without_handoff_cases[slot2] = capture_pending_prediction_buffer;
       end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
-                 !i_prediction_from_buffer_holdoff &&
                  !i_pending_prediction_active) begin
         // Slot 2 has already consumed the upper sibling when both parcels emit.
         prev_without_handoff_cases[slot2] = is_compressed_for_buffer && !i_pc_reg[1] && !slot2;
@@ -290,7 +288,6 @@ module c_ext_state #(
       end
     end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
-                 !i_prediction_from_buffer_holdoff &&
                  !i_pending_prediction_active) begin
       prev_was_compressed_at_lo_priority_ref =
           is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
@@ -322,7 +319,6 @@ module c_ext_state #(
         !i_flush &&
         !pending_prediction_target_holdoff_needs_buffer &&
         (!i_prediction_holdoff || capture_pending_prediction_buffer) &&
-        !i_prediction_from_buffer_holdoff &&
         !prediction_reset_buffer_state &&
         (!i_pending_prediction_active || capture_pending_prediction_buffer)) begin
       o_instr_buffer <= effective_instr_for_buffer;
@@ -370,7 +366,6 @@ module c_ext_state #(
       end
     end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
                  !pending_prediction_target_holdoff_needs_buffer &&
-                 !i_prediction_from_buffer_holdoff &&
                  !i_pending_prediction_active) begin
       f_buffer_priority_ref = is_compressed_for_buffer && !i_pc_reg[1] && !i_slot2_valid;
     end

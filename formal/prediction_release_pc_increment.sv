@@ -38,7 +38,6 @@ module pc_increment_calculator #(
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_nop,
     input logic i_any_holdoff_safe,
     input logic i_prediction_holdoff,
-    input logic i_prediction_from_buffer_holdoff,
     input logic i_control_flow_to_halfword_r,
     output logic [XLEN-1:0] o_seq_next_pc,
     output logic [XLEN-1:0] o_seq_next_pc_plus_2,

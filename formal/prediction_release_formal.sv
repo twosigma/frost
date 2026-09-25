@@ -54,7 +54,6 @@ module prediction_release_formal #(
   (* anyseq *) logic [XLEN-1:0] i_predicted_target;
   (* anyseq *) logic i_ras_predicted;
   (* anyseq *) logic i_prediction_requires_pc_reg_handoff;
-  (* anyseq *) logic i_use_instr_buffer;
   (* anyseq *) logic i_prediction_already_emitted;
   (* anyseq *) logic i_sel_nop;
   (* anyseq *) logic i_sel_nop_for_pc;
@@ -65,9 +64,7 @@ module prediction_release_formal #(
   logic stall_registered;
   logic prediction_used;
   logic prediction_used_for_pc;
-  logic prediction_used_from_buffer;
   logic prediction_holdoff;
-  logic prediction_from_buffer_holdoff;
   logic prediction_reset_state;
   logic prediction_used_r;
   logic sel_prediction_r;
@@ -128,7 +125,6 @@ module prediction_release_formal #(
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff;
   assign prediction_used = prediction_used_for_pc && !i_branch_taken && !i_stall;
-  assign prediction_used_from_buffer = prediction_used && i_use_instr_buffer;
   assign slot2_prediction_used_for_pc =
       i_slot2_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff &&
@@ -152,12 +148,6 @@ module prediction_release_formal #(
       prediction_holdoff <= 1'b0;
     end else if (!i_stall && i_fetch_progress) begin
       prediction_holdoff <= prediction_used;
-    end
-
-    if (i_reset || i_flush) begin
-      prediction_from_buffer_holdoff <= 1'b0;
-    end else if (!i_stall && i_fetch_progress) begin
-      prediction_from_buffer_holdoff <= prediction_used_from_buffer;
     end
 
     if (i_reset) prediction_reset_state <= 1'b0;
@@ -219,8 +209,6 @@ module prediction_release_formal #(
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_requires_pc_reg_handoff,
       .i_prediction_holdoff(prediction_holdoff),
-      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
-      .i_prediction_used_from_buffer(prediction_used_from_buffer),
       .i_prediction_already_emitted,
       .i_sel_nop(i_sel_nop_for_pc),
       .i_slot2_prediction_used(slot2_prediction_used),
@@ -289,7 +277,6 @@ module prediction_release_formal #(
       .i_pending_prediction_active(pending_prediction_active),
       .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .i_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
-      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_effective_instr('0),
       .i_pc_reg(pc_reg),
       .i_is_compressed,

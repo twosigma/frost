@@ -99,8 +99,6 @@ module pc_controller #(
     // Predicted op must still execute in IF/PD/ID
     input logic i_prediction_requires_pc_reg_handoff,
     input logic i_prediction_holdoff,  // Registered: the cycle after a prediction
-    input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
-    input logic i_prediction_used_from_buffer,  // Current prediction came from IF buffer
     // The predicted branch's own packet is being emitted this cycle, because
     // variable fetch latency closed the gap between o_pc and pc_reg. The
     // registered target handoff covers it, so the prediction never pends, even
@@ -310,7 +308,6 @@ module pc_controller #(
       // higher-priority served-window arm.
       .i_any_holdoff_safe(o_any_holdoff_safe && !pending_predecessor_release_wcs0),
       .i_prediction_holdoff,
-      .i_prediction_from_buffer_holdoff,
       .i_control_flow_to_halfword_r(o_control_flow_to_halfword_r),
 
       // Outputs
@@ -376,7 +373,6 @@ module pc_controller #(
   logic            pending_predecessor_release_wcs0;
   logic            pim_base;  // pending, not ready, and pc_reg at the branch's predecessor
   logic            carve_out_engaged_q;  // raw WCS seen while pim_base held
-  logic            pending_prediction_from_buffer;
   logic            prediction_needs_pending;
   logic            use_pending_prediction_for_pc_reg;
   logic            pending_prediction_crossing_pc_reg;
@@ -501,16 +497,13 @@ module pc_controller #(
   // A word-aligned pending branch can reach pc_reg in the first cycle its
   // prediction is pending, before pending_prediction_pc_ready_q has seen fetch
   // return to its PC. i_prediction_holdoff marks that cycle, in which the
-  // branch's target and predictor metadata still line up. A prediction made
-  // from the instruction buffer is excluded: it has its own registered
-  // stale-buffer holdoff, and its packet is not yet a real output. For any
-  // other branch, the apply gate below either emits it and moves pc_reg to
-  // the target on the same edge, or keeps the prediction pending through a
-  // stall, a served-window resteer, or a higher-priority arm.
+  // branch's target and predictor metadata still line up. The apply gate
+  // below either emits the branch and moves pc_reg to the target on the same
+  // edge, or keeps the prediction pending through a stall, a served-window
+  // resteer, or a higher-priority arm.
   assign pending_prediction_target_handoff =
       pending_prediction_effective && pc_reg_at_pending &&
-      (pending_prediction_allow_cross || pending_prediction_pc_ready_q ||
-       (i_prediction_holdoff && !i_prediction_from_buffer_holdoff));
+      (pending_prediction_allow_cross || pending_prediction_pc_ready_q || i_prediction_holdoff);
   // A ready handoff is applied, and the pending state consumed, only when no
   // stall or higher-priority arm blocks it. A variable-latency provider can
   // return the target window in the same cycle pc_reg reaches the still-owed
@@ -532,8 +525,7 @@ module pc_controller #(
   assign pending_prediction_ready_without_effective =
       ((pending_prediction_allow_cross && pc_reg_before_pending && seq_reaches_pending) ||
        (pc_reg_at_pending &&
-        (pending_prediction_allow_cross || pending_prediction_pc_ready_q ||
-         (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
+        (pending_prediction_allow_cross || pending_prediction_pc_ready_q || i_prediction_holdoff)));
   assign stale_pending_prediction = pending_prediction_effective && pc_reg_after_pending;
   // A pending prediction must not skip the compressed instruction just before
   // the branch, at pc_reg (pending_prediction_pc == o_pc_reg + 2).
@@ -600,14 +592,14 @@ module pc_controller #(
   assign pending_prediction_target_handoff_pc_mux =
       pending_prediction_effective && pc_reg_at_pending &&
       (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q ||
-       (i_prediction_holdoff && !i_prediction_from_buffer_holdoff));
+       i_prediction_holdoff);
   assign use_pending_prediction_for_pc_reg_pc_mux =
       pending_prediction_effective &&
       ((pending_prediction_allow_cross_pc_mux_q && pc_reg_before_pending &&
         seq_reaches_pending) ||
        (pc_reg_at_pending &&
         (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q ||
-         (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
+         i_prediction_holdoff)));
   // Raw WCS enters the pending-hold arm's value, not its request, which keeps
   // it off the one-hot priority logic. With H0 the hold without raw WCS, X the
   // predecessor term, and W raw WCS, the hold is H = H0 & !(W & X), and
@@ -686,8 +678,7 @@ module pc_controller #(
   (* keep = "true" *)logic pending_fetch_owner_ready;
   (* keep = "true" *)logic pending_fetch_cross_permission;
   assign pending_fetch_owner_ready = pc_reg_at_pending &&
-      (pending_prediction_allow_cross || pending_prediction_pc_ready_q ||
-       (i_prediction_holdoff && !i_prediction_from_buffer_holdoff));
+      (pending_prediction_allow_cross || pending_prediction_pc_ready_q || i_prediction_holdoff);
   assign pending_fetch_cross_permission = pending_prediction_allow_cross && seq_reaches_pending;
   (* keep = "true" *)logic pending_prediction_fetch_holdoff_without_effective;
   (* keep = "true" *)logic pending_prediction_fetch_holdoff_wcs0_without_effective;
@@ -827,7 +818,6 @@ module pc_controller #(
                !o_pending_prediction_target_holdoff));
     end
     if (pending_prediction_effective && pc_reg_at_pending && i_prediction_holdoff &&
-        !i_prediction_from_buffer_holdoff &&
         !fetch_stall && !$isunknown(
             {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
              o_pending_prediction_target_holdoff}
@@ -893,7 +883,6 @@ module pc_controller #(
       pending_prediction_target               <= i_predicted_target;
       pending_prediction_allow_cross          <= o_pc[1];
       pending_prediction_allow_cross_pc_mux_q <= o_pc[1];
-      pending_prediction_from_buffer          <= i_prediction_used_from_buffer;
     end
   end
 
@@ -914,7 +903,7 @@ module pc_controller #(
       pc_reg_before_pending && seq_reaches_pending;
   assign pending_mux_target = pending_mux_valid && pc_reg_at_pending &&
       (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q ||
-       (i_prediction_holdoff && !i_prediction_from_buffer_holdoff));
+       i_prediction_holdoff);
   assign pending_mux_use = pending_mux_cross || pending_mux_target;
   // The predecessor exception uses pending_prediction_allow_cross itself, as
   // pim_base does, not its _pc_mux_q copy; the local mux proofs do not assume
@@ -928,7 +917,7 @@ module pc_controller #(
   assign pending_mux_hold = pending_mux_valid && !pending_mux_use &&
       !pc_reg_after_pending && !pending_mux_release;
   assign pending_mux_consume_is_seq = pending_prediction_allow_cross_pc_mux_q &&
-      pending_mux_target && !pending_prediction_from_buffer && pending_prediction_fetch_at_target;
+      pending_mux_target && pending_prediction_fetch_at_target;
 
   // ---------------------------------------------------------------------------
   // next_pc. npc_cond, npc_val, and npc_sel describe the arms in priority
@@ -964,8 +953,7 @@ module pc_controller #(
   logic [XLEN-1:0] npc_consume_val;
   assign pending_prediction_fetch_at_target = o_pc == pending_prediction_target;
   assign npc_consume_is_seq = pending_prediction_allow_cross_pc_mux_q &&
-      pending_prediction_target_handoff_pc_mux && !pending_prediction_from_buffer &&
-      pending_prediction_fetch_at_target;
+      pending_prediction_target_handoff_pc_mux && pending_prediction_fetch_at_target;
   assign npc_consume_val = npc_consume_is_seq ? seq_next_pc : pending_prediction_target;
 
   always_comb begin
@@ -1471,8 +1459,7 @@ module pc_controller #(
         (pending_prediction_allow_cross ?
              (pc_reg_at_pending && !pending_crossing_ref) :
              (pc_reg_at_pending &&
-              (pending_prediction_pc_ready_q ||
-               (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
+              (pending_prediction_pc_ready_q || i_prediction_holdoff)));
     pending_use_ref = pending_cross_handoff_ref || pending_target_handoff_ref;
     pending_stale_ref = pending_prediction_effective && !pending_use_ref && pc_reg_after_pending;
     pending_pim_base_ref = pending_prediction_effective && !pending_use_ref &&
@@ -1491,8 +1478,7 @@ module pc_controller #(
         (pending_prediction_allow_cross_pc_mux_q ?
              (pc_reg_at_pending && !pending_crossing_pc_mux_ref) :
              (pc_reg_at_pending &&
-              (pending_prediction_pc_ready_q ||
-               (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
+              (pending_prediction_pc_ready_q || i_prediction_holdoff)));
     pending_use_pc_mux_ref = pending_cross_handoff_pc_mux_ref || pending_target_handoff_pc_mux_ref;
     pending_stale_pc_mux_ref = pending_prediction_effective && !pending_use_pc_mux_ref &&
                                pc_reg_after_pending;
@@ -1503,7 +1489,6 @@ module pc_controller #(
     npc_consume_is_seq_ref = !pending_cross_handoff_pc_mux_ref &&
                              pending_prediction_allow_cross_pc_mux_q &&
                              pending_target_handoff_pc_mux_ref &&
-                             !pending_prediction_from_buffer &&
                              pending_prediction_fetch_at_target;
   end
 
@@ -1523,8 +1508,7 @@ module pc_controller #(
               pending_prediction_pc_ready_q,
               i_window_cannot_serve_raw,
               carve_out_engaged_q,
-              i_prediction_holdoff,
-              pending_prediction_from_buffer
+              i_prediction_holdoff
             }
         )) begin
       p_pending_crossing_reduction_exact :

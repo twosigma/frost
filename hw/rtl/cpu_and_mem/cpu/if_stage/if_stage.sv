@@ -360,7 +360,7 @@ module if_stage #(
   // control_flow_holdoff, pending-prediction holdoffs, reset_holdoff, and
   // flush, all conditions where the live BRAM data may not match pc_reg's
   // word and the slot-2 alignment math is unreliable.  The aligner's narrow
-  // o_sel_nop (= sel_nop_align) covers only the prediction holdoffs.
+  // o_sel_nop (= sel_nop_align) covers only the RAS prediction holdoff.
   //
   // A pending prediction's saved taken metadata belongs to one instruction,
   // the branch at pending_prediction_pc. The instruction just before it may be
@@ -637,8 +637,6 @@ module if_stage #(
   logic [    31:0] assembled_instr_sc;
   logic [XLEN-1:0] instruction_pc_sc;
   logic [XLEN-1:0] link_address_sc;
-  logic            prediction_from_buffer_holdoff;
-  logic            prediction_used_from_buffer;
 
   assign ras_replay_inputs = if_stage_stall_registered && ras_saved_input_available_sc;
 
@@ -652,7 +650,6 @@ module if_stage #(
                                  ras_instruction_valid_sc &&
                                  (!if_stage_stall_registered ||
                                    ras_saved_input_available_sc);
-  assign prediction_used_from_buffer = prediction_used && use_instr_buffer;
 
   // ===========================================================================
   // RAS Input Pipeline Register (Timing Optimization)
@@ -902,8 +899,6 @@ module if_stage #(
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
       .i_prediction_holdoff(prediction_holdoff),
-      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
-      .i_prediction_used_from_buffer(prediction_used_from_buffer),
       .i_prediction_already_emitted(live_prediction_emits_with_output),
       .i_sel_nop(pc_control_sel_nop),
 
@@ -1059,7 +1054,6 @@ module if_stage #(
       .i_pending_prediction_active(pending_prediction_active),
       .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .i_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
-      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
 
       .i_effective_instr(effective_instr),
       .i_pc_reg(pc_reg),
@@ -1132,7 +1126,6 @@ module if_stage #(
       // instruction is stale.  BTB predicts before the instruction arrives, so
       // that cycle must not be suppressed.
       .i_prediction_holdoff(ras_prediction_holdoff),
-      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
 
       // Only the registered stall, not the combinational one, so the path
       // stall → is_compressed → PC is broken.
@@ -1838,23 +1831,6 @@ module if_stage #(
     end
   end
 
-  // ===========================================================================
-  // Prediction From Buffer Holdoff
-  // ===========================================================================
-  // When the RAS (or BTB) predicts from a buffered instruction, a fetch is in
-  // flight that arrives next cycle with stale data: it was fetched for the PC
-  // after the buffered instruction, not for the predicted target.  This
-  // holdoff suppresses that stale instruction for one cycle.
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
-      prediction_from_buffer_holdoff <= 1'b0;
-    end else if (!if_stage_stall && fetch_progress) begin
-      // Held through fetch-invalid cycles (like a stall) so the deferred
-      // stale-suppression stays sequenced.
-      prediction_from_buffer_holdoff <= prediction_used_from_buffer;
-    end
-  end
-
   // Registered to match the data: the prediction redirects PC this cycle and
   // the new fetch data arrives next cycle, when c_ext_state resets.  Slot-2
   // predictions are included so c_ext_state also resets its buffer state
@@ -1864,6 +1840,18 @@ module if_stage #(
     if (i_pipeline_ctrl.reset) prediction_reset_c_ext <= 1'b0;
     else prediction_reset_c_ext <= prediction_used || slot2_prediction_used;
   end
+
+`ifndef SYNTHESIS
+  // A slot-1 prediction never fires while slot 1 comes from the instruction
+  // buffer: prediction_common requires no registered stall and a clear buffer
+  // select, and with no registered stall the predictor's copy of the select
+  // (use_instr_buffer_for_coverage_timing) equals use_instr_buffer. A redirect
+  // therefore never needs to squash a fetch issued behind a buffered word.
+  always @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.reset && !$isunknown({prediction_used, use_instr_buffer}))
+      p_no_prediction_from_buffered_word : assert (!(prediction_used && use_instr_buffer));
+  end
+`endif
 
   // Saved IF outputs are replayed only when the stalled cycle carried a real,
   // still-valid instruction.

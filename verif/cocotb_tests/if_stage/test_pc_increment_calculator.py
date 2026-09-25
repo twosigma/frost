@@ -42,7 +42,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_any_holdoff_safe.value = 0
     dut.i_prediction_holdoff.value = 0
-    dut.i_prediction_from_buffer_holdoff.value = 0
     dut.i_control_flow_to_halfword_r.value = 0
 
 
@@ -79,13 +78,10 @@ async def test_fetch_candidate_priority_and_wraparound(dut: Any) -> None:
     for pc, pc_reg in pc_pairs:
         dut.i_pc.value = pc
         dut.i_pc_reg.value = pc_reg
-        for controls in range(16):
-            holdoff, prediction, buffered, halfword = (
-                (controls >> bit) & 1 for bit in range(4)
-            )
+        for controls in range(8):
+            holdoff, prediction, halfword = ((controls >> bit) & 1 for bit in range(3))
             dut.i_any_holdoff_safe.value = holdoff
             dut.i_prediction_holdoff.value = prediction
-            dut.i_prediction_from_buffer_holdoff.value = buffered
             dut.i_control_flow_to_halfword_r.value = halfword
             for run_sel in range(4):
                 for nop_sel in range(4):
@@ -112,7 +108,7 @@ async def test_fetch_candidate_priority_and_wraparound(dut: Any) -> None:
                             increment = 2
                         expected_pc = (pc + increment) & mask
                         expected_reg = (pc_reg + 2 + 2 * reg_sel) & mask
-                        if holdoff or buffered:
+                        if holdoff:
                             expected_reg = pc_reg
                         await _settle()
                         _assert_next(dut, pc=expected_pc, pc_reg=expected_reg)
@@ -233,63 +229,3 @@ async def test_sel_nop_forces_pc_reg_compressed_path_while_fetch_advances(
     await _settle()
 
     _assert_next(dut, pc=PC + 4, pc_reg=PC_REG + 2)
-
-
-@cocotb.test()
-async def test_prediction_from_buffer_holdoff_blocks_pc_reg_bundle_advance(
-    dut: Any,
-) -> None:
-    """Prediction-from-buffer holdoff blocks every selected pc_reg advance."""
-    await _setup_test(dut)
-
-    dut.i_pc.value = PC
-    dut.i_pc_reg.value = PC
-    for advance_sel, increment in (
-        (PC_ADV_PLUS2, 2),
-        (PC_ADV_PLUS4, 4),
-        (PC_ADV_PLUS6, 6),
-        (PC_ADV_PLUS8, 8),
-    ):
-        dut.i_pc_fetch_advance_sel.value = advance_sel
-        dut.i_pc_fetch_advance_sel_run.value = advance_sel
-        dut.i_pc_fetch_advance_sel_nop.value = advance_sel
-        dut.i_pc_reg_advance_sel.value = advance_sel
-        dut.i_pc_reg_advance_sel_run.value = advance_sel
-        dut.i_pc_reg_advance_sel_nop.value = advance_sel
-        dut.i_prediction_from_buffer_holdoff.value = 1
-        await _settle()
-
-        _assert_next(dut, pc=PC + increment, pc_reg=PC)
-
-        dut.i_prediction_from_buffer_holdoff.value = 0
-        await _settle()
-
-        _assert_next(dut, pc=PC + increment, pc_reg=PC + increment)
-
-
-@cocotb.test()
-async def test_pc_reg_hold_and_prediction_buffer_priority_matrix(dut: Any) -> None:
-    """Safe hold and prediction-buffer hold keep their priority."""
-    await _setup_test(dut)
-
-    dut.i_pc.value = PC
-    dut.i_pc_reg.value = PC
-    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS8
-    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS8
-    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS8
-    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS8
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS8
-    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS8
-    for safe_hold in (0, 1):
-        for prediction_buffer_hold in (0, 1):
-            dut.i_any_holdoff_safe.value = safe_hold
-            dut.i_prediction_from_buffer_holdoff.value = prediction_buffer_hold
-            await _settle()
-
-            fetch_increment = 4 if safe_hold else 8
-            pc_reg_increment = 0 if (safe_hold or prediction_buffer_hold) else 8
-            _assert_next(
-                dut,
-                pc=PC + fetch_increment,
-                pc_reg=PC + pc_reg_increment,
-            )

@@ -53,7 +53,6 @@ module pc_increment_calculator #(
     // Holdoff and control signals
     input logic i_any_holdoff_safe,
     input logic i_prediction_holdoff,
-    input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
     input logic i_control_flow_to_halfword_r,
 
     // Outputs for final PC mux in pc_controller
@@ -133,10 +132,6 @@ module pc_increment_calculator #(
   // only the 4:1 mux after them and never reaches the CARRY8 chains. The
   // dont_touch instance keeps the adders in pc_reg_precompute, apart from
   // that mux (see pc_reg_precompute).
-  //
-  // The prediction-from-buffer hold, which keeps pc_reg in place through the
-  // stale cycle after a prediction made from the buffered word, is applied
-  // after the bundle-advance mux.
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_compressed;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_32bit;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_plus_6;
@@ -182,9 +177,7 @@ module pc_increment_calculator #(
   // Select from the precomputed values by holdoff state.
   // i_any_holdoff_safe already includes pc_controller's predecessor release.
   logic seq_sel_holdoff;
-  logic seq_sel_pc_reg_hold;
   assign seq_sel_holdoff = i_any_holdoff_safe;
-  assign seq_sel_pc_reg_hold = seq_sel_holdoff || i_prediction_from_buffer_holdoff;
 
   // For each bundle size, apply the prediction-holdoff and halfword-target
   // choices first, without the redirect/reset holdoff. The advance mux then
@@ -243,7 +236,7 @@ module pc_increment_calculator #(
           seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[0];
         end
       endcase
-      if (seq_sel_pc_reg_hold) seq_next_pc_reg_cof[c] = i_pc_reg;
+      if (seq_sel_holdoff) seq_next_pc_reg_cof[c] = i_pc_reg;
       else seq_next_pc_reg_cof[c] = pc_reg_normal_cof[c];
     end
   end
@@ -354,7 +347,7 @@ module pc_increment_calculator #(
     endcase
     seq_next_pc_plus_2_ref = next_sequential_pc_plus_2_ref;
     seq_next_pc_ref = next_sequential_pc_ref;
-    if (seq_sel_pc_reg_hold) seq_next_pc_reg_ref = i_pc_reg;
+    if (seq_sel_holdoff) seq_next_pc_reg_ref = i_pc_reg;
     else seq_next_pc_reg_ref = pc_reg_normal_ref;
     if (!$isunknown(
             {
@@ -417,7 +410,7 @@ module pc_increment_calculator #(
     neq_advance_sel = i_sel_nop ? neq_advance_sel_cof[1] : neq_advance_sel_cof[0];
   end
   always_comb begin
-    if (seq_sel_pc_reg_hold) o_seq_next_pc_reg_neq_pc = neq_hold;
+    if (seq_sel_holdoff) o_seq_next_pc_reg_neq_pc = neq_hold;
     else o_seq_next_pc_reg_neq_pc = neq_advance_sel;
   end
 

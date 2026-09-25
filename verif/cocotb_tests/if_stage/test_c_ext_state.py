@@ -42,7 +42,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pending_prediction_active.value = 0
     dut.i_pending_prediction_target_handoff.value = 0
     dut.i_pending_prediction_target_holdoff.value = 0
-    dut.i_prediction_from_buffer_holdoff.value = 0
     dut.i_effective_instr.value = 0
     dut.i_pc_reg.value = PC_LO
     dut.i_is_compressed.value = 0
@@ -229,38 +228,6 @@ async def test_prediction_reset_preserves_low_compressed_buffer_once(dut: Any) -
     await _advance_cycle(dut)
 
     assert not dut.o_prev_was_compressed_at_lo.value
-
-
-@cocotb.test()
-async def test_prediction_from_buffer_holdoff_freezes_buffer(dut: Any) -> None:
-    """The stale cycle after a prediction from the buffer changes no buffer state."""
-    await _setup_test(dut)
-
-    _drive_instruction(dut, compressed=True, pc_reg=PC_LO)
-    await _advance_cycle(dut)
-    assert dut.o_prev_was_compressed_at_lo.value
-    _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
-
-    # A native word at the high half would clear the buffer state and capture
-    # a new word on an ordinary cycle; the holdoff keeps both.
-    _drive_instruction(
-        dut,
-        instr=INSTR_B,
-        sideband=SIDEBAND_B,
-        compressed=False,
-        pc_reg=PC_HI,
-    )
-    dut.i_prediction_from_buffer_holdoff.value = 1
-    await _advance_cycle(dut)
-
-    assert dut.o_prev_was_compressed_at_lo.value
-    _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
-
-    dut.i_prediction_from_buffer_holdoff.value = 0
-    await _advance_cycle(dut)
-
-    assert not dut.o_prev_was_compressed_at_lo.value
-    _assert_buffer(dut, instr=INSTR_B, sideband=SIDEBAND_B)
 
 
 @cocotb.test()

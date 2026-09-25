@@ -66,8 +66,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_sel_prediction_r.value = 0
     dut.i_prediction_requires_pc_reg_handoff.value = 0
     dut.i_prediction_holdoff.value = 0
-    dut.i_prediction_from_buffer_holdoff.value = 0
-    dut.i_prediction_used_from_buffer.value = 0
     dut.i_prediction_already_emitted.value = 0
     dut.i_sel_nop.value = 0
     dut.i_slot2_prediction_used.value = 0
@@ -781,73 +779,6 @@ async def test_high_half_pending_retry_returns_fetch_to_halfword_target(
 ) -> None:
     """A retry at an upper-half branch returns fetch to a halfword-aligned target."""
     await _exercise_high_half_pending_retry(dut, target=HALFWORD_PRED_TARGET)
-
-
-@cocotb.test()
-async def test_first_exact_owner_from_buffer_holdoff_defers_handoff(
-    dut: Any,
-) -> None:
-    """A stale buffered packet at the pending branch cannot take the handoff.
-
-    In the first prediction-holdoff cycle, a pending branch at pc_reg is ready
-    for the target handoff, unless its prediction was made from the
-    instruction buffer. That packet is still a NOP during its own buffer
-    holdoff, so it waits for the registered readiness
-    (pending_prediction_pc_ready_q).
-    """
-    await _setup_test(dut)
-    await _clear_reset_holdoff(dut)
-    await _start_word_stream_at(dut, BASE_PC)
-
-    branch_pc = BASE_PC + 4
-    dut.i_prediction_used_from_buffer.value = 1
-    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
-    await _advance_cycle(dut)
-
-    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=branch_pc)
-    assert dut.o_pending_prediction_active.value
-    assert dut.pending_prediction_valid.value
-    assert dut.pending_prediction_from_buffer.value
-    assert not dut.pending_prediction_pc_ready_q.value
-
-    # In the first cycle with pc_reg at the branch, the packet is still the
-    # stale buffered one. i_prediction_holdoff alone must not let that NOP take
-    # the handoff.
-    _clear_inputs(dut)
-    dut.i_prediction_holdoff.value = 1
-    dut.i_prediction_from_buffer_holdoff.value = 1
-    dut.i_sel_nop.value = 1
-    await _settle()
-
-    assert not dut.pending_prediction_target_handoff.value
-    assert not dut.pending_prediction_target_handoff_applies.value
-    assert not dut.o_pending_prediction_target_handoff.value
-    assert dut.o_pending_prediction_fetch_holdoff.value
-
-    await _advance_cycle(dut)
-    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
-    assert dut.o_pending_prediction_active.value
-    assert not dut.o_pending_prediction_target_holdoff.value
-
-    # After the stale-buffer cycle, the registered readiness applies. The first
-    # cycle with fetch at the branch sets pending_prediction_pc_ready_q; only
-    # the next cycle may take the saved branch and target.
-    _clear_inputs(dut)
-    await _settle()
-    assert not dut.pending_prediction_pc_ready_q.value
-    assert not dut.pending_prediction_target_handoff.value
-
-    await _advance_cycle(dut)
-    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
-    assert dut.pending_prediction_pc_ready_q.value
-    assert dut.pending_prediction_target_handoff.value
-    assert dut.pending_prediction_target_handoff_applies.value
-    assert dut.o_pending_prediction_target_handoff.value
-
-    await _advance_cycle(dut)
-    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=HALFWORD_PRED_TARGET)
-    assert not dut.o_pending_prediction_active.value
-    assert dut.o_pending_prediction_target_holdoff.value
 
 
 @cocotb.test()
