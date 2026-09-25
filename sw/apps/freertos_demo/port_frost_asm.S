@@ -158,13 +158,11 @@ handle_timer:
     la t0, pxCurrentTCB
     LOAD s1, 0(t0)
 
-    /* C tick handler; may call vTaskSwitchContext */
+    /* C tick handler, given the interrupted code's saved uxCriticalNesting. It
+     * calls vTaskSwitchContext only when that nesting is 0, so a task
+     * interrupted inside a critical section always resumes. */
+    LOAD a0, 30*XB(sp)
     call vPortTimerTickHandler
-
-    /* If the interrupted code was inside a critical section (saved nesting > 0),
-     * do not switch */
-    LOAD t1, 30*XB(sp)
-    bnez t1, timer_same_task
 
     /* Check if pxCurrentTCB changed */
     la t0, pxCurrentTCB

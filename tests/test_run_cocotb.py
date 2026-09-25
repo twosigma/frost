@@ -693,7 +693,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="freertos_demo",
-        description=("FreeRTOS RV64 scheduling, synchronization, and interrupt demo."),
+        description=(
+            "FreeRTOS RV64 queue, mutex, and amoadd.w demo with tick time slicing; "
+            "a tick inside a critical section must defer its task switch"
+        ),
     ),
     "fpu_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

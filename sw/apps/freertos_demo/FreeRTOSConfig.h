@@ -37,7 +37,7 @@
 
 /* CPU and tick rate */
 #define configCPU_CLOCK_HZ (FPGA_CPU_CLK_FREQ)
-#define configTICK_RATE_HZ (1000) /* Nominal; port_frost.c stretches each tick to 100 ms */
+#define configTICK_RATE_HZ (1000) /* 1 ms tick */
 
 /* Memory allocation */
 #define configMINIMAL_STACK_SIZE (256) /* Idle task stack (words) */
@@ -108,7 +108,7 @@
 #define INCLUDE_vTaskDelayUntil 1
 #define INCLUDE_vTaskDelay 1
 #define INCLUDE_xTaskGetSchedulerState 0
-#define INCLUDE_xTaskGetCurrentTaskHandle 0
+#define INCLUDE_xTaskGetCurrentTaskHandle 1
 #define INCLUDE_uxTaskGetStackHighWaterMark 0
 #define INCLUDE_xTaskGetIdleTaskHandle 0
 #define INCLUDE_eTaskGetState 0

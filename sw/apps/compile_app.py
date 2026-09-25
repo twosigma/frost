@@ -38,6 +38,13 @@ APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
         # Board runs use the real clock and ITERATIONS=14000.
         "FPGA_CPU_CLK_FREQ": "20000",
     },
+    "freertos_demo": {
+        # The demo waits for timer ticks. At 10 MHz the 1 ms tick is 10,000
+        # cycles, which keeps the run inside the default cycle budget; at the
+        # board clock a tick is about 322,000 cycles. Board runs use the real
+        # clock.
+        "FPGA_CPU_CLK_FREQ": "10000000",
+    },
 }
 
 # linux_boot's device-tree memory size (sw/apps/linux_boot/Makefile), which

@@ -46,8 +46,10 @@
 extern void vPortEnterCritical(void);
 extern void vPortExitCritical(void);
 
-#define portDISABLE_INTERRUPTS() __asm volatile("csrci mstatus, 8")
-#define portENABLE_INTERRUPTS() __asm volatile("csrsi mstatus, 8")
+/* The "memory" clobbers keep the compiler from moving memory accesses, the
+ * uxCriticalNesting updates in particular, across the mstatus.MIE change. */
+#define portDISABLE_INTERRUPTS() __asm volatile("csrci mstatus, 8" ::: "memory")
+#define portENABLE_INTERRUPTS() __asm volatile("csrsi mstatus, 8" ::: "memory")
 
 #define portENTER_CRITICAL() vPortEnterCritical()
 #define portEXIT_CRITICAL() vPortExitCritical()

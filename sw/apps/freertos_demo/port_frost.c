@@ -32,11 +32,10 @@ static volatile uint32_t ulPortYieldPending = 0;
 
 /* Next mtimecmp value */
 static uint64_t ullNextTime = 0;
-/* Each tick is 100 nominal 1 ms periods: 100 ms of mtime. mtime counts core cycles, in
- * simulation too (SIM_TIMER_SPEEDUP keeps its default of 1), so a tick takes about 32 million
- * cycles at 322 MHz, more than the default simulation cycle budget. */
+/* mtime advances once per core cycle, so a tick is configCPU_CLOCK_HZ / configTICK_RATE_HZ
+ * cycles. */
 static const uint64_t ullTimerIncrementForOneTick =
-    (uint64_t) (configCPU_CLOCK_HZ / configTICK_RATE_HZ) * 100;
+    (uint64_t) (configCPU_CLOCK_HZ / configTICK_RATE_HZ);
 
 /*-----------------------------------------------------------*/
 
@@ -107,8 +106,10 @@ static void prvSetupTimerInterrupt(void)
 
 /*-----------------------------------------------------------*/
 
-/* Timer interrupt handler - called from trap handler */
-void vPortTimerTickHandler(void)
+/* Tick interrupt, called from the trap handler with the interrupted code's critical-section
+ * depth. A task switch while that depth is nonzero would preempt the critical section, so the
+ * switch is left pending for vPortExitCritical. */
+void vPortTimerTickHandler(UBaseType_t uxInterruptedNesting)
 {
     ullNextTime += ullTimerIncrementForOneTick;
 
@@ -118,7 +119,11 @@ void vPortTimerTickHandler(void)
     MTIMECMP_HI = (uint32_t) (ullNextTime >> 32);
 
     if (xTaskIncrementTick() != pdFALSE) {
-        vTaskSwitchContext();
+        if (uxInterruptedNesting == 0U) {
+            vTaskSwitchContext();
+        } else {
+            ulPortYieldPending = 1U;
+        }
     }
 }
 
