@@ -186,8 +186,8 @@ lane *i* is byte address `{addr[31:3], i}`. Producers position data by
   size-cased misalignment checks cover the 8-byte class (`|addr[2:0]`).
 - The load queue's L0 cache and store-to-load forwarding work on dwords. The
   data BRAM's `$readmemh` image is the dword-paired `sw64.mem`
-  (`sw/common/make_dword_mem.py`); every other image and loader format stays
-  in 32-bit words.
+  (`sw/common/make_dword_mem.py`); `sw.mem`, `sw.txt`, and both DDR images
+  stay in 32-bit words.
 - Cached loads are tagged. The load queue names one of its
   `riscv_pkg::CachedLoadSlots` slots on each cached launch, the adapter
   carries that id on the line port, and the response returns it beside the
