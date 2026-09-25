@@ -2277,7 +2277,7 @@ package riscv_pkg;
     RS_FP   = 3'd3,  // FP_RS: FP add/sub/cmp/cvt/classify/sgnj
     RS_FMUL = 3'd4,  // FMUL_RS: FP mul/FMA (3 sources)
     RS_FDIV = 3'd5,  // FDIV_RS: FP div/sqrt
-    RS_NONE = 3'd6   // No RS needed (JAL, WFI, MRET/SRET/DRET, PAUSE; ROB only)
+    RS_NONE = 3'd6   // No RS needed (JAL, WFI, MRET/SRET/DRET; ROB only)
   } rs_type_e;
 
   // ---------------------------------------------------------------------------
@@ -2824,7 +2824,9 @@ package riscv_pkg;
       // CSR instructions -> INT_RS (execute at Reorder Buffer head)
       CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
       // Privileged (exceptions) -> INT_RS
-      ECALL, EBREAK, FETCH_FAULT, FETCH_PAGE_FAULT:
+      ECALL, EBREAK, FETCH_FAULT, FETCH_PAGE_FAULT,
+      // Zihintpause: a no-operand NOP that completes through INT_RS
+      PAUSE:
       get_rs_type = RS_INT;
 
       // Multiply/divide -> MUL_RS
@@ -2868,7 +2870,7 @@ package riscv_pkg;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.
-      JAL, WFI, MRET, SRET, DRET, PAUSE: get_rs_type = RS_NONE;
+      JAL, WFI, MRET, SRET, DRET: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase

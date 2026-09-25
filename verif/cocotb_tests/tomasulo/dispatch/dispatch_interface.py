@@ -746,7 +746,7 @@ _RS_FMUL_OPS: frozenset[int] = frozenset(
 
 _RS_FDIV_OPS: frozenset[int] = frozenset({FDIV_S, FSQRT_S, FDIV_D, FSQRT_D})
 
-_RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, SRET, DRET, PAUSE})
+_RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, SRET, DRET})
 
 _INT_STORE_OPS: frozenset[int] = frozenset({SB, SH, SW})
 

@@ -45,9 +45,9 @@
  *     done and, if so, wakes the RS with the ROB value.
  *   - Architectural (no rename): src_ready=1, src_value=regfile value.
  *
- * Instructions that need no RS (JAL, WFI, MRET/SRET/DRET, PAUSE) go to the
- * ROB only (rs_type=RS_NONE). The ROB completes and commits them from the
- * per-op flags in the allocation request.
+ * Instructions that need no RS (JAL, WFI, MRET/SRET/DRET) go to the ROB only
+ * (rs_type=RS_NONE). The ROB completes and commits them from the per-op flags
+ * in the allocation request.
  */
 
 module dispatch #(

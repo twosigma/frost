@@ -99,8 +99,8 @@ ID pre-decodes each instruction's station (`rs_type`); the table is in the
 routing". Dispatch emits one packet per station for each slot and sets
 `valid` only on the selected one.
 
-JAL, WFI, MRET, SRET, DRET, and PAUSE have no station (`rs_type == RS_NONE`)
-and allocate only a ROB entry. JAL is done at allocation, since its link
+JAL, WFI, MRET, SRET, and DRET have no station (`rs_type == RS_NONE`) and
+allocate only a ROB entry. JAL is done at allocation, since its link
 address and target are known then. WFI and the xRETs are also done at
 allocation and wait at the ROB head in the serializing FSM (see "Serializing
 instructions" in the same overview, and in the

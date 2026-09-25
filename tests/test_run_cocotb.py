@@ -382,6 +382,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("-GPERF_COUNTERS=1",),
     ),
+    "pause_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pause_test",
+        description=(
+            "PAUSE (0x0100000F) retires without draining committed stores, and "
+            "every other FENCE encoding, fence r,0 included, retires as a FENCE "
+            "(profiling counters present)"
+        ),
+        verilator_extra_args=("-GPERF_COUNTERS=1",),
+    ),
     "perf_off_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

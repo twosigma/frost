@@ -316,9 +316,11 @@ module instr_decoder (
       riscv_pkg::OPC_MISC_MEM:
       unique case (i_instr.funct3)
         3'b000:
-        // PAUSE is FENCE with pred=W (0001), succ=0, and all other fields 0:
-        // 0x0100000F.
-        if (i_instr.funct7 == 7'b0000001 && i_instr.source_reg_2 == 5'b0 &&
+        // PAUSE is FENCE with fm=0, pred=W, succ=0 and rd=rs1=x0, which is
+        // exactly 0x0100000F: pred=W is instruction bit 24, so funct7=0 and
+        // rs2=5'b10000. Every other encoding, fence r,0 (0x0200000F)
+        // included, is a FENCE.
+        if (i_instr.funct7 == 7'b0000000 && i_instr.source_reg_2 == 5'b10000 &&
             i_instr.source_reg_1 == 5'b0 && i_instr.dest_reg == 5'b0)
           o_instr_op = riscv_pkg::PAUSE;  // Zihintpause: hint to pause
         else o_instr_op = riscv_pkg::FENCE;  // FENCE (memory ordering)

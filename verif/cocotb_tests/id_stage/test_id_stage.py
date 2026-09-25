@@ -66,6 +66,8 @@ AUIPC = _INSTR_OPS["AUIPC"]
 LW = _INSTR_OPS["LW"]
 SW = _INSTR_OPS["SW"]
 FMADD_S = _INSTR_OPS["FMADD_S"]
+FENCE = _INSTR_OPS["FENCE"]
+PAUSE = _INSTR_OPS["PAUSE"]
 
 BREQ = 0
 JUMP = 6
@@ -643,6 +645,57 @@ async def test_illegal_pd_input_clears_operand_classification(dut: Any) -> None:
     assert packet["uses_fp_rs2"] is False
     assert packet["uses_fp_rs3"] is False
     assert packet["is_not_nop"] is True
+
+
+# PAUSE is exactly 0x0100000F. The other words are FENCE encodings that differ
+# from it in one field: fence r,0 (0x0200000F, pred=R), fence rw,rw, fence.tso,
+# fence 0,0, and pred=W with rd or rs1 nonzero.
+PAUSE_INSTR = 0x0100000F
+FENCE_LOOKALIKES = (
+    0x0200000F,
+    0x0330000F,
+    0x8330000F,
+    0x0000000F,
+    0x0100008F,
+    0x0100800F,
+)
+
+
+@cocotb.test()
+async def test_only_exact_pause_decodes_as_pause(dut: Any) -> None:
+    """0x0100000F is PAUSE, a no-operand INT_RS op; every other FENCE word is a FENCE."""
+    await _setup_test(dut)
+
+    for fence_word in FENCE_LOOKALIKES:
+        for pause_slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC, "instruction": PAUSE_INSTR},
+                slot2=pause_slot2,
+            )
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC + 4, "instruction": fence_word},
+                slot2=not pause_slot2,
+            )
+            await _advance_cycle(dut)
+
+            pause = _read_id_packet(dut, slot2=pause_slot2)
+            assert pause["instruction_operation"] == PAUSE
+            assert pause["rs_type"] == RS_INT
+            assert pause["is_fence"] is False
+            assert pause["is_fence_i"] is False
+            assert pause["is_illegal_instruction"] is False
+            assert pause["has_int_dest"] is False
+            assert pause["uses_int_rs1"] is False
+            assert pause["uses_int_rs2"] is False
+            assert pause["is_not_nop"] is True
+
+            fence = _read_id_packet(dut, slot2=not pause_slot2)
+            assert fence["instruction_operation"] == FENCE, hex(fence_word)
+            assert fence["rs_type"] == RS_MEM, hex(fence_word)
+            assert fence["is_fence"] is True, hex(fence_word)
+            assert fence["is_illegal_instruction"] is False, hex(fence_word)
 
 
 @cocotb.test()

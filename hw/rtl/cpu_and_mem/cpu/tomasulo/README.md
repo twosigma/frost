@@ -164,13 +164,13 @@ unless a flush squashes it.
 
 | RS         | Depth | Instructions |
 |------------|-------|--------------|
-| `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, and the illegal-instruction and fetch-fault markers |
+| `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, PAUSE (a NOP with no operands), and the illegal-instruction and fetch-fault markers |
 | `MUL_RS`   | 4     | MUL/MULW/MULH\*/DIV\*/REM\* |
 | `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
 | `FP_RS`    | 6     | FADD/FSUB, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
 | `FMUL_RS`  | 4     | FMUL, FMA (3-source) |
 | `FDIV_RS`  | 2     | FDIV, FSQRT (a separate RS so these long operations cannot block FP_RS) |
-| (none)     | n/a   | JAL, WFI, MRET, SRET, DRET, PAUSE: ROB only, no operands to wait for |
+| (none)     | n/a   | JAL, WFI, MRET, SRET, DRET: ROB only, no operands to wait for |
 
 `INT_RS_DEPTH` must be a power of two from 2 to 32. The INT RS's second issue
 port considers only the lowest eight entries (`riscv_pkg::IntRsIssue2Window`).

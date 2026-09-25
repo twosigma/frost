@@ -133,10 +133,13 @@ module instr_operand_classifier (
         endcase
       end
       riscv_pkg::OPC_MISC_MEM: begin
-        // Match instr_decoder's PAUSE arm exactly, including its funct7 key.
-        if (i_instr.funct3 == 3'b000 && i_instr.funct7 == 7'b0000001 &&
-            i_instr.source_reg_2 == '0 && i_instr.source_reg_1 == '0 && i_instr.dest_reg == '0)
-          raw_class.rs_type = riscv_pkg::RS_NONE;
+        // PAUSE (exactly 0x0100000F, matching instr_decoder's PAUSE arm) is a
+        // no-operand INT_RS op that completes like a NOP; it waits on nothing
+        // and, unlike FENCE, does not drain committed stores.
+        if (i_instr.funct3 == 3'b000 && i_instr.funct7 == 7'b0000000 &&
+            i_instr.source_reg_2 == 5'b10000 && i_instr.source_reg_1 == '0 &&
+            i_instr.dest_reg == '0)
+          raw_class.rs_type = riscv_pkg::RS_INT;
         else begin
           raw_class.rs_type = riscv_pkg::RS_MEM;
           raw_class.is_fence = i_instr.funct3 == 3'b000;

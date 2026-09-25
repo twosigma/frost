@@ -99,7 +99,8 @@ module instr_operand_classifier_equiv (
       riscv_pkg::CSRRW, riscv_pkg::CSRRS,
       riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
       riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
-      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL:
+      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL,
+      riscv_pkg::PAUSE:
       rs_type_pre = riscv_pkg::RS_INT;
 
       riscv_pkg::MUL, riscv_pkg::MULH,
@@ -160,8 +161,7 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
       rs_type_pre = riscv_pkg::RS_FDIV;
 
-      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET,
-      riscv_pkg::PAUSE:
+      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET:
       rs_type_pre = riscv_pkg::RS_NONE;
 
       default: rs_type_pre = riscv_pkg::RS_INT;
