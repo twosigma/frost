@@ -24,8 +24,12 @@ from typing import NamedTuple
 from config import (
     MASK_XLEN,
     XLEN,
+    BRANCH_OFFSET_MAX,
+    BRANCH_OFFSET_MIN,
     IMM_12BIT_MIN,
     IMM_12BIT_MAX,
+    JAL_OFFSET_MAX,
+    JAL_OFFSET_MIN,
     SHIFT_AMOUNT_MASK,
     HALFWORD_ALIGNMENT,
     WORD_ALIGNMENT,
@@ -540,10 +544,12 @@ class InstructionGenerator:
         branch_offset = None
         if operation in BRANCHES:
             # 13-bit signed offset, never 0
-            branch_offset = random.randrange(-4096, 4096, 4) or 4
+            branch_offset = (
+                random.randrange(BRANCH_OFFSET_MIN, BRANCH_OFFSET_MAX + 1, 4) or 4
+            )
         elif operation == "jal":
             # 21-bit signed offset
-            branch_offset = random.randrange(-1048576, 1048576, 4)
+            branch_offset = random.randrange(JAL_OFFSET_MIN, JAL_OFFSET_MAX + 1, 4)
 
         csr_address = None
         if operation in CSRS:

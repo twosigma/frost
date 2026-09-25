@@ -44,17 +44,11 @@ from typing import Final
 MEMORY_ADDRESS_WIDTH: Final[int] = 16
 """Width of memory address bus in bits (default: 16-bit = 64KB address space)."""
 
-MEMORY_WORD_SIZE_BYTES: Final[int] = 4
-"""Size of a memory word in bytes (32-bit words)."""
-
 MEMORY_ADDRESS_MASK: Final[int] = (1 << MEMORY_ADDRESS_WIDTH) - 1
 """Mask for valid memory addresses (0xFFFF for 16-bit addresses)."""
 
 MEMORY_WORD_ALIGN_MASK: Final[int] = 0xFFFFFFFC
 """Mask for word-aligning addresses: clears bits [1:0] and truncates to 32 bits."""
-
-MEMORY_HALFWORD_ALIGN_MASK: Final[int] = 0xFFFFFFFE
-"""Mask for halfword-aligning addresses: clears bit 0 and truncates to 32 bits."""
 
 MEMORY_SIZE_WORDS: Final[int] = 2**14
 """Size of memory in words (16K words = 64KB for 16-bit address space)."""
@@ -84,9 +78,6 @@ MEMORY_SIZE_DWORDS: Final[int] = MEMORY_SIZE_WORDS // 2
 MMIO_BASE_ADDR: Final[int] = 0x40000000
 """Base address of MMIO peripheral range (UART, CLINT timer, etc.)."""
 
-DMA_ENGINE_BASE_ADDR: Final[int] = 0x40020000
-"""Base address of the DMA test engine's register window (dma_test_engine.sv)."""
-
 # ============================================================================
 # Register File Configuration
 # ============================================================================
@@ -96,9 +87,6 @@ NUM_REGISTERS: Final[int] = 32
 
 FIRST_WRITABLE_REGISTER: Final[int] = 1
 """First writable register index (x0 is hardwired to zero)."""
-
-LAST_REGISTER: Final[int] = 31
-"""Last register index."""
 
 # ============================================================================
 # RISC-V Data Type Masks
@@ -132,9 +120,6 @@ IMM_12BIT_MIN: Final[int] = -2048
 
 IMM_12BIT_MAX: Final[int] = 2047
 """Maximum value for 12-bit signed immediate (2^11 - 1)."""
-
-IMM_12BIT_MASK: Final[int] = 0xFFF
-"""Mask for 12-bit immediate values."""
 
 SHIFT_AMOUNT_BITS: Final[int] = 6
 """Number of bits in a base shift amount (6 at XLEN=64)."""
@@ -280,12 +265,6 @@ PIPELINE_FLUSH_CYCLES: Final[int] = 3
 
 PIPELINE_IF_TO_EX_CYCLES: Final[int] = 3
 """Monitor offset from fetch to branch/CSR resolution."""
-
-PIPELINE_IF_TO_MA_CYCLES: Final[int] = 4
-"""Monitor offset from fetch to memory-observation point."""
-
-PIPELINE_IF_TO_WB_CYCLES: Final[int] = 5
-"""Monitor offset from fetch to architectural writeback observation."""
 
 # ============================================================================
 # Division Edge Cases (RISC-V Spec)
