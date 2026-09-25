@@ -170,8 +170,9 @@ module instr_operand_classifier (
       selected_class.has_int_dest = 1'b1;
       selected_class.uses_int_rs1 = 1'b1;
     end
-    // An illegal instruction or a fetch fault reads no operands (a fetch
-    // fault's register fields are garbage), so no INT_RS source waits on it.
+    // An illegal instruction or a fetch fault reads no operands, so its INT_RS
+    // entry waits on no source register (a fetch fault's register fields are
+    // garbage).
     if (i_illegal || i_fetch_fault) begin
       selected_class = '0;
       selected_class.rs_type = riscv_pkg::RS_INT;
