@@ -1580,7 +1580,7 @@ module cpu_ooo #(
   // every ROB, recovery, and FU consumer use rs_issue_int.rob_tag itself.
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rs_issue_int_branch_predicate_tag;
 
-  // ROB bypass read
+  // Slot-1 done-repair channels.
   logic dispatch_bypass_valid_1, dispatch_bypass_valid_2, dispatch_bypass_valid_3;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0]
       dispatch_bypass_tag_1, dispatch_bypass_tag_2, dispatch_bypass_tag_3;
@@ -1847,7 +1847,7 @@ module cpu_ooo #(
       .o_head_valid(head_valid),
       .o_head_done(head_done),
 
-      // ROB bypass read
+      // ROB entry state and dispatch done-repair reads
       .o_rob_entry_done_vec(rob_entry_done_vec),
       .i_rob_entry_epoch(rob_entry_epoch),
       .i_bypass_valid_1(dispatch_bypass_valid_1),
@@ -2969,9 +2969,11 @@ module cpu_ooo #(
   assign rob_commit_2_fp_flags_nonzero = rob_commit_2.fp_flags.nv | rob_commit_2.fp_flags.dz |
                                          rob_commit_2.fp_flags.of | rob_commit_2.fp_flags.uf |
                                          rob_commit_2.fp_flags.nx;
-  // Only FP computes (has_fp_flags) accumulate flags. Every other entry
-  // retires the zero its allocation wrote, so the has_fp_flags term matters
-  // only if a stray CDB write reached a store, branch, or integer entry.
+  // Only entries with has_fp_flags (the OP-FP and FMA opcodes) accumulate
+  // flags. Every other entry retires zero flags: allocation writes zero and
+  // only the FP units send nonzero flags on the CDB, so the has_fp_flags term
+  // matters only if a stray CDB write reached a store, branch, or integer
+  // entry.
   assign rob_commit_fp_flags_valid = rob_commit_valid && rob_commit_fp_flags_nonzero &&
                                      !rob_commit.exception && rob_commit.has_fp_flags;
   assign rob_commit_2_fp_flags_valid = rob_commit_2_valid && rob_commit_2_fp_flags_nonzero &&

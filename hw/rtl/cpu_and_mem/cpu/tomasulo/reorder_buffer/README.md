@@ -54,9 +54,9 @@ that was flushed or has already retired (a JALR's wakeup broadcast can trail
 its retirement). If it lands in the cycle that entry is reallocated, the
 allocation wins in every field. The state bits and the exception cause take
 CDB writes only for valid entries, the value copies resolve the collision in
-the staged LVT, and the FP-flag RAM numbers its allocation ports above its
-CDB ports. A store or branch, which never completes on the CDB, therefore
-retires with zero FP flags.
+the staged LVT, and the FP-flag RAMs number their allocation ports above
+their CDB ports. A store or branch, which never completes on the CDB,
+therefore retires with zero FP flags.
 
 ## Allocation
 
@@ -101,9 +101,9 @@ completion that can reach an entry with an allocation-time fault and name a
 different cause is an instruction fetch fault, which the privileged spec
 ranks above illegal-instruction: the fetch-fault pseudo-op carries the
 faulting fetch's bytes, and they can decode as, say, an access to a CSR that
-does not exist. Completions update an entry only while it is valid, so a
-stale write for a recycled tag cannot overwrite the cause of the entry
-allocated there in the same cycle.
+does not exist. Exceptional completions set the exception bit and cause only
+while the entry is valid, so a stale write for a recycled tag cannot
+overwrite the cause of the entry allocated there in the same cycle.
 
 ## Completion
 
