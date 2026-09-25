@@ -313,7 +313,7 @@ can be debugged and where each one first stops.
 | `sstc_test/` | Sstc: `menvcfg.STCE`, `stimecmp` access rules, and an S-mode timer interrupt through `stimecmp` |
 | `strings_test/` | `string.h`, `ctype.h`, and `stdlib.h` functions |
 | `tick_torture/` | CLINT timer re-arming, lost-tick detection, and `wfi` wakeup under DDR traffic |
-| `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run if the head-load counter split does not add up |
+| `tomasulo_perf/` | IPC of dependent and independent integer and FP instruction chains, and of a load/AMO loop; `-DTOMASULO_PERF_ENABLE_PROFILE=1` adds profiling-counter reports and fails the run unless the head-load counter split adds up and the reserved counters 89, 91 and 104 read 0 |
 | `tomasulo_test/` | RAW/WAR/WAW hazards, register renaming, and out-of-order execution, with order-independent results |
 | `trap_s2l_fwd/` | A counter a timer handler stores to cached DDR must be visible to later loads (Linux `handle_exception` pattern) |
 | `uart_echo/` | Interactive UART receive demo with `echo`, `hex`, and `count` commands |

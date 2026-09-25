@@ -467,7 +467,8 @@ per miss, diagnostics, and average occupancy, with raw hex values and
 percentages. In the tree, `sw/apps/coremark` (`core_portme.c`) snapshots
 around the timed region and prints the full report, and `sw/apps/tomasulo_perf`
 prints a brief report for each micro-benchmark and checks that the head-load
-split (86 and 93 above) adds up.
+split (86 and 93 above) adds up and that the reserved counters 89, 91 and 104
+read 0.
 
 ## Verification
 
