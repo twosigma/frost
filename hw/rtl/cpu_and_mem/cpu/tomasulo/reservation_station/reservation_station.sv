@@ -1447,7 +1447,7 @@ module reservation_station #(
       always_ff @(posedge i_clk) begin
         if (i_rst_n && stage2_valid) begin
           assert (stage2_branch_predicate_tag == stage2_rob_tag)
-          else $error("reservation_station: branch predicate tag lost phase identity");
+          else $error("reservation_station: branch predicate tag twin differs from stage2_rob_tag");
         end
       end
 `endif
@@ -1601,7 +1601,7 @@ module reservation_station #(
         end
         if (i_rst_n && stage2_valid) begin
           assert (stage2_branch_payload_tag == stage2_rob_tag)
-          else $error("reservation_station: branch payload tag lost phase identity");
+          else $error("reservation_station: branch payload tag twin differs from stage2_rob_tag");
         end
       end
 
@@ -2150,12 +2150,12 @@ module reservation_station #(
           else $error("RS: issue-2 operand oracle valid diverged from stage2b");
           if (stage2b_valid) begin
             assert (stage2b_src1_value == stage2b_src1_value_oracle_q)
-            else $error("RS: issue-2 src1 effective capture differs from legacy bypass");
+            else $error("RS: issue-2 src1 effective capture differs from the reference");
             assert (stage2b_src2_value == stage2b_src2_value_oracle_q)
-            else $error("RS: issue-2 src2 effective capture differs from legacy bypass");
+            else $error("RS: issue-2 src2 effective capture differs from the reference");
             if (HAS_SRC3) begin
               assert (stage2b_src3_value == stage2b_src3_value_oracle_q)
-              else $error("RS: issue-2 src3 effective capture differs from legacy bypass");
+              else $error("RS: issue-2 src3 effective capture differs from the reference");
             end
           end
 
@@ -2756,9 +2756,9 @@ module reservation_station #(
           else $error("RS: primary operand oracle valid diverged from stage2");
           if (stage2_valid) begin
             assert (stage2_src1_value == primary_src1_value_oracle_q)
-            else $error("RS: primary src1 effective capture differs from legacy bypass");
+            else $error("RS: primary src1 effective capture differs from the reference");
             assert (stage2_src2_value == primary_src2_value_oracle_q)
-            else $error("RS: primary src2 effective capture differs from legacy bypass");
+            else $error("RS: primary src2 effective capture differs from the reference");
           end
 
           if (stage2_should_flush) begin
