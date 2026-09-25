@@ -99,7 +99,7 @@
  *      and its translation in the ITLB), thrash without sfence.vma
  *      (warm-ITLB), a body without the call, a jalr handler, 64 KiB of L1D
  *      lines dirtied after main's sfence.vma (so the S handler's sfence.vma
- *      writes them back), the handler's jalr at a line start,
+ *      writes back at least 64 KiB), the handler's jalr at a line start,
  *      the handler page at a low VA (busybox is a static binary below 2 GiB
  *      while the vDSO sits above it, so the ret and the RAS's wrong-path
  *      target change 4 GiB region), the lazy vDSO map (the stub page starts
@@ -971,8 +971,8 @@ int main(void)
 #endif
                 if (zv->sfence)
                     sfence_vma();
-                /* After main's sfence.vma, whose cache sync would clean them:
-                 * the S handler's sfence.vma must write these lines back. */
+                /* After main's sfence.vma, whose cache sync would clean them,
+                 * so the S handler's sfence.vma writes back at least 64 KiB. */
                 if (zv->dirty) {
                     volatile unsigned long *d = (volatile unsigned long *) Z_DIRTY_BASE;
                     for (unsigned long w = 0; w < Z_DIRTY_BYTES / sizeof(unsigned long); w += 4)
