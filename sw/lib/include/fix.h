@@ -56,6 +56,7 @@ uint64_t parse_timestamp(const char *timestamp_string);
 
 /* Parse decimal price string to fixed-point representation
  * Example: "94.5000" -> {amount=9450000000, scale=8}
+ * A leading '-' makes the amount negative: "-1.5" -> {amount=-150000000, scale=8}
  */
 fix_price_t parse_price(const char *price_string);
 
