@@ -4,10 +4,12 @@
 
 FROST is a two-wide, out-of-order RISC-V processor for FPGAs, written in
 SystemVerilog. It implements RV64GCB with machine, supervisor, and user modes
-and Sv39 virtual memory. On an AMD Alveo X3522PV it runs at 322 MHz, scores
-1,259 CoreMark (3.91 CoreMark/MHz), and boots Debian 13 with Debian's
-unmodified riscv64 kernel, mounting its root filesystem over NFS through its
-own 10 Gigabit Ethernet NIC.
+and Sv39 virtual memory. On an AMD Alveo X3522PV it runs at 322 MHz and boots
+Debian 13 with Debian's unmodified riscv64 kernel, mounting its root
+filesystem over NFS through its own 10 Gigabit Ethernet NIC. It runs CoreMark
+at 3.91 CoreMark/MHz, which gives 1,259 CoreMark at 322 MHz. The rate was
+measured on the board at 161 MHz, on a build whose second integer issue port
+scanned all 16 reservation-station entries instead of the default eight.
 
 [![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
 

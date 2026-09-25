@@ -67,8 +67,8 @@ PROFILED_SOURCES = (
     "core_state",
     "core_util",
 )
-# Matches the app Makefile's ordinary flags. APP_TUNE_FLAGS is appended last
-# there too, so the training and measured builds see the same optimizer.
+# Matches the app Makefile's ordinary flags. The tuning flags follow them, as
+# APP_TUNE_FLAGS does there.
 BASE_FLAGS = (
     "-mcmodel=medany",
     "-Wall",
@@ -88,6 +88,9 @@ BASE_FLAGS = (
     "-funroll-loops",
     "-fno-strict-aliasing",
 )
+# The Makefile's COREMARK_BASE_TUNE and COREMARK_CPU_TUNE. The published build
+# reads the profiles with -mtune=generic-ooo instead; with the pinned GCC, the
+# -mtune used for training does not change the counts.
 DEFAULT_TUNE_FLAGS = (
     "--param",
     "max-inline-insns-auto=200",

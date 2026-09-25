@@ -1,8 +1,13 @@
 # Single-core performance
 
-FROST scores 1,259 CoreMark at 322.265625 MHz on the X3, or 3.91 CoreMark/MHz.
-This page describes the CPU and benchmark configuration behind that number,
-how to reproduce it, and how to compare changes.
+FROST runs CoreMark at 3.91 CoreMark/MHz on the X3, measured on the board at
+161.1328125 MHz. The score at the full 322.265625 MHz clock, 1,259 CoreMark,
+is that rate times the clock in MHz, not a separate measurement. The measured
+build's second INT issue port scanned all 16 reservation-station entries. The
+current default scans the lowest eight, which in simulation takes about 0.5%
+more cycles per CoreMark iteration.
+This page describes the current CPU defaults and the benchmark configuration,
+how to measure the score, and how to compare changes.
 
 ## CPU configuration
 
@@ -48,6 +53,11 @@ Generate the profiles in the pinned image:
 ./scripts/frost.py run sw/apps/coremark/iss/generate_profile.py
 ```
 
+The script trains with the CoreMark Makefile's default tuning, which uses
+`-mtune=sifive-7-series`. The tuning model does not change the profile: with
+the pinned GCC, training with `-mtune=generic-ooo` gives the same counts and
+the same benchmark image.
+
 | Build variable | Purpose |
 | --- | --- |
 | `COREMARK_PGO=1` | Use the generated branch profiles |
@@ -75,7 +85,9 @@ image and archives everything needed to reproduce each result: source
 fingerprints, commands, compiler flags, PGO inputs, ELF and load images,
 disassembly, hashes, cycle counts, and CRC results. Run it from the main
 checkout with the output directory outside it. It cleans before each
-simulation and stops if the sources change during the run.
+simulation and stops if the sources change during the run. Compare builds by
+the hashes of `sw.bin` or `sw.S`: `sw.elf` differs even between identical
+builds, because its symbol table names a temporary `ccXXXXXX.o` object file.
 
 ```bash
 # PGO cycle counts with the CPU defaults and the benchmark tuning
@@ -115,8 +127,8 @@ and compressed instructions and PGO off.
 - Compare identical binaries and matching reset indices when changing RTL.
 - Run both CoreMark seed sets, compressed-code and link-order variations, and
   all nine CoreMark-PRO workloads in BRAM and DDR.
-- In a link-order sweep, count distinct binaries: different source orders can
-  produce identical code.
+- In a link-order sweep, count distinct `sw.bin` images: different source
+  orders can produce identical code.
 - Use the performance counters to explain cycle changes, then measure the
   benchmark with counters disabled.
 - After RTL changes, check routed timing and run the full hardware regression,

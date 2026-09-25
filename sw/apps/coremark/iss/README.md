@@ -73,7 +73,12 @@ filesystem runtime, and the script rejects a training ELF that contains TLS,
 dynamic loading, or Linux syscalls.
 
 Regenerate the committed profiles whenever the compiler or the training flags
-change. Arguments after `--` replace the script's default tuning flags.
+change. Arguments after `--` replace the script's default tuning flags, the
+Makefile's `COREMARK_BASE_TUNE` and `COREMARK_CPU_TUNE` (`-mtune=sifive-7-series`).
+The published build ([single-core performance](../../../../docs/single_core_performance.md))
+uses `-mtune=generic-ooo`, but with the pinned GCC the tuning model does not
+change the profile: training with either gives the same counts and the same
+benchmark image.
 
 These details of the training build are easy to get wrong:
 
@@ -96,3 +101,8 @@ profile changed, compare with the stamp removed:
 ```bash
 riscv64-linux-gcov-dump -l sw.elf-core_state.gcda | sed '/stamp/d'
 ```
+
+To check that a new profile leaves the benchmark unchanged, rebuild the
+published configuration and compare its `sw.bin`. Do not compare `sw.elf`: its
+hash differs even between identical builds, because its symbol table names a
+temporary `ccXXXXXX.o` object file.
