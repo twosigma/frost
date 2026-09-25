@@ -61,7 +61,7 @@ class Monitor[T](ABC):
         self.dut = dut
         self.expected_queue = expected_queue
         self.name = name
-        self.cycle = 0
+        self.matched_checks = 0
 
     @abstractmethod
     def is_valid(self) -> bool:
@@ -93,10 +93,10 @@ class Monitor[T](ABC):
                 error = self.compare(actual, expected)
                 if error:
                     raise AssertionError(
-                        f"{self.name} after {self.cycle} matching checks: {error} "
+                        f"{self.name} after {self.matched_checks} matching checks: {error} "
                         f"with {len(self.expected_queue)} expected values remaining"
                     )
-                self.cycle += 1
+                self.matched_checks += 1
 
 
 class RegisterFileMonitor(Monitor[list[int]]):
