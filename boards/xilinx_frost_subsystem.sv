@@ -156,7 +156,9 @@ module xilinx_frost_subsystem #(
       instruction_memory_write_enable & {4{i_rst_n & programming_reset_n}};
 
   // JTAG-to-AXI bridge IP: turns JTAG commands into AXI transactions.
-  // Runs on the divided clock to stay within the JTAG frequency limit.
+  // Runs on the divided clock, like the BRAM controller and programming port
+  // it drives. PG174 rates the core for clocks up to 200 MHz; the CPU clock
+  // is faster.
   jtag_axi_0 jtag_to_axi_bridge (
       .aclk(i_clk_div4),
       .aresetn(i_rst_n & programming_reset_n),

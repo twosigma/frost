@@ -445,10 +445,11 @@ endmodule : x3_nic_gty_supervisor
  * every TX clock, and RXDATA comes back as a raw word that is valid every RX
  * clock; both are registered once, bit 0 first on the line. While
  * PHY_CTRL.PHY_RESET is set, the reset controller's reset-all input is held
- * and the NIC sees both MAC clocks absent and no receive signal (the
- * transceiver itself keeps running); clearing it runs the full reset
- * sequence. PMA_LOOPBACK selects near-end PMA loopback (the line TX still
- * transmits).
+ * and the NIC sees both MAC clocks absent and no receive signal. The
+ * transceiver itself keeps running, because the reset controller starts its
+ * sequence when reset-all falls; clearing PHY_RESET therefore runs the full
+ * reset sequence. PMA_LOOPBACK selects near-end PMA loopback (the line TX
+ * still transmits).
  */
 module x3_nic_gty (
     input logic i_sysclk_300,  // the board's buffered 300 MHz system clock input
