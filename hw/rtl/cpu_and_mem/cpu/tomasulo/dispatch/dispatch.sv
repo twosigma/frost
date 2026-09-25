@@ -1352,13 +1352,16 @@ module dispatch #(
     // CSR info (stored in ROB for commit-time serialized execution)
     // Zicsr write intent: CSRRW/CSRRWI (funct3[1:0]==01) always write; the
     // set/clear forms write only when the rs1/uimm field (same bits) is
-    // nonzero. Pre-decoded here so the ROB can trap write-intending
-    // accesses to read-only CSRs without carrying the rs1 field.
+    // nonzero, whatever the register holds. Pre-decoded here so the ROB can
+    // trap write-intending accesses to read-only CSRs without carrying the
+    // rs1 field. csr_op is funct3 with [1:0] cleared for a pure read, so
+    // csr_file sees the same intent at commit.
     o_rob_alloc_req.csr_write_intent =
         (i_from_id_to_ex.instruction.funct3[1:0] == 2'b01) ||
         (i_from_id_to_ex.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req.csr_addr = i_from_id_to_ex.csr_address;
-    o_rob_alloc_req.csr_op = i_from_id_to_ex.instruction.funct3;
+    o_rob_alloc_req.csr_op = o_rob_alloc_req.csr_write_intent ?
+        i_from_id_to_ex.instruction.funct3 : {i_from_id_to_ex.instruction.funct3[2], 2'b00};
     // CSR write data: the zero-extended immediate for immediate forms, else 0.
     // A register form's rs1 value is not known until its source operand
     // resolves; the INT ALU shim sends the write operand on the CDB, and the
@@ -1430,7 +1433,8 @@ module dispatch #(
         (i_from_id_to_ex_2.instruction.funct3[1:0] == 2'b01) ||
         (i_from_id_to_ex_2.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req_2.csr_addr = i_from_id_to_ex_2.csr_address;
-    o_rob_alloc_req_2.csr_op = i_from_id_to_ex_2.instruction.funct3;
+    o_rob_alloc_req_2.csr_op = o_rob_alloc_req_2.csr_write_intent ?
+        i_from_id_to_ex_2.instruction.funct3 : {i_from_id_to_ex_2.instruction.funct3[2], 2'b00};
     o_rob_alloc_req_2.csr_write_data =
       i_from_id_to_ex_2.is_csr_imm ?
       {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex_2.csr_imm} :

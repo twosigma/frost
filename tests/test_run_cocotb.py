@@ -242,9 +242,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "CSR test: mstatus MIE writes, plus the M-mode counter controls "
             "the SBI PMU relies on (mcountinhibit CY/IR WARL and inhibit "
             "semantics, 64-bit M-mode writes to mcycle/minstret, RMW forms, "
-            "and a timed read loop showing that M-mode reads of the writable "
+            "a timed read loop showing that M-mode reads of the writable "
             "aliases cost no ticks, although the commit stage raises the CSR "
-            "write enable for pure reads)"
+            "write enable for pure reads, and exact Zicsr minstret writes: "
+            "the next instruction reads the written value, and write intent "
+            "follows the rs1/uimm field, not the value)"
         ),
     ),
     "umode_test": CocotbRunConfig(

@@ -56,6 +56,11 @@ from .dispatch_interface import (
     LR_D,
     SC_D,
     AMOADD_D,
+    CSRRS,
+    CSRRC,
+    CSRRWI,
+    CSRRSI,
+    CSRRCI,
     RS_INT,
     RS_MUL,
     RS_MEM,
@@ -1160,6 +1165,65 @@ async def test_csr_info_in_rob_alloc(dut: Any) -> None:
     assert req["is_csr"] == 1, "Should be marked as CSR"
     assert req["csr_addr"] == csr_addr_val, f"csr_addr mismatch: {req['csr_addr']:#x}"
     assert req["csr_op"] == funct3_val, f"csr_op mismatch: {req['csr_op']}"
+
+
+@cocotb.test()
+async def test_csr_write_intent_from_encoding(dut: Any) -> None:
+    """A set or clear form with rs1/uimm = 0 reaches the ROB as a pure read.
+
+    Its csr_op keeps funct3[2] with bits [1:0] cleared and csr_write_intent is
+    0. A nonzero rs1 field writes whatever the register holds, and
+    CSRRW/CSRRWI always write; both keep funct3. Checked on both slots.
+    """
+    dut_if = await _setup(dut)
+
+    forms = [
+        (CSRRW, 0b001),
+        (CSRRS, 0b010),
+        (CSRRC, 0b011),
+        (CSRRWI, 0b101),
+        (CSRRSI, 0b110),
+        (CSRRCI, 0b111),
+    ]
+    for slot in (1, 2):
+        for op, funct3 in forms:
+            for rs1 in (0, 7):
+                writes = (funct3 & 0b011) == 0b001 or rs1 != 0
+                want_op = funct3 if writes else funct3 & 0b100
+                csr = {
+                    "instruction_operation": op,
+                    "csr_address": 0xB02,  # minstret
+                    "csr_imm": rs1,
+                    "instruction": _make_instr(
+                        dest_reg=5, opcode=0b1110011, funct3=funct3, source_reg_1=rs1
+                    ),
+                }
+                if slot == 1:
+                    dut_if.drive_instruction(valid=True, rs1_addr=rs1, **csr)
+                    dut_if.drive_instruction_2(valid=False)
+                else:
+                    dut_if.drive_instruction(
+                        valid=True,
+                        instruction_operation=ADD,
+                        instruction=_make_instr(dest_reg=6, opcode=OPC_OP),
+                    )
+                    dut_if.drive_instruction_2(valid=True, rs1_addr=rs1, **csr)
+                await dut_if.step()
+
+                req = (
+                    dut_if.read_rob_alloc_req()
+                    if slot == 1
+                    else dut_if.read_rob_alloc_req_2()
+                )
+                case = f"slot {slot}, funct3={funct3:03b}, rs1/uimm={rs1}"
+                assert req["alloc_valid"] == 1, f"{case}: no allocation"
+                assert req["is_csr"] == 1, f"{case}: not marked as a CSR"
+                assert req["csr_write_intent"] == int(writes), (
+                    f"{case}: csr_write_intent={req['csr_write_intent']}, want {int(writes)}"
+                )
+                assert req["csr_op"] == want_op, (
+                    f"{case}: csr_op={req['csr_op']:03b}, want {want_op:03b}"
+                )
 
 
 # =============================================================================

@@ -250,7 +250,7 @@ can be debugged and where each one first stops.
 | `coremark/` | EEMBC CoreMark, built without the C extension by default; see the [measurement sweeps](../docs/single_core_performance.md#reproducing-and-retaining-measurements) and [Spike tools](apps/coremark/iss/README.md) |
 | `coremark_pro/` | All nine EEMBC CoreMark-PRO workloads, loaded as `coremark_pro_<workload>`; the heap and large datasets live in DDR |
 | `csr_rmw_test/` | Old and new values for `csrrw`/`csrrs`/`csrrc`, including the same-register `mscratch` swap that OpenSBI's trap entry uses |
-| `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit` and 64-bit `mcycle`/`minstret` writes |
+| `csr_test/` | `mstatus.MIE` writes and the M-mode counter controls: `mcountinhibit`, 64-bit `mcycle`/`minstret` writes, and the Zicsr rule that a `minstret` write replaces the writing instruction's own increment |
 | `ddr_atomic_test/` | Word LR/SC and AMOs on cached DDR, printing a progress letter before each step |
 | `ddr_exec_test/` | Code in DDR: calls into BRAM, recursion, a body larger than the fetch buffer, cold and warm runs |
 | `ddr_heap_test/` | Multi-MiB `malloc` from the DDR heap, checked for address aliasing |

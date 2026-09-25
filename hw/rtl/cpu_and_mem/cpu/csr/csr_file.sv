@@ -84,9 +84,11 @@
       this CSR before it enables Sstc, and its SBI PMU uses it with the
       mcycle/minstret writes to stop, start, and preload the counters for
       Linux perf.
-  An mcycle/minstret write replaces the whole counter: there is no increment
-  on the write edge, and instret counts the writing instruction only after
-  the write lands (both allowed by the spec). The RV32 high halves
+  An mcycle/minstret write replaces the whole counter and takes the place
+  of the increment it coincides with (Zicsr): mcycle does not tick on the
+  write edge, and the writing instruction does not count itself in
+  minstret, so the next instruction reads exactly the value written there.
+  Write intent comes from the encoding (see i_csr_op). The RV32 high halves
   (0xC80-0xC82, 0xB80, 0xB82) raise illegal-instruction at any privilege;
   the reorder buffer checks that at allocation. It also checks S/U-mode
   counter access there, using o_counter_blocked, so this module only stores
@@ -127,7 +129,7 @@ module csr_file #(
     // CSR access interface, driven from the ROB commit port in cpu_ooo.
     input  logic            i_csr_read_enable,    // A CSR access is committing
     input  logic [    11:0] i_csr_address,        // CSR address
-    input  logic [     2:0] i_csr_op,             // CSR operation (funct3)
+    input  logic [     2:0] i_csr_op,             // funct3; [1:0] = 0 marks a pure read
     input  logic [XLEN-1:0] i_csr_write_data,     // rs1 value or zero-extended immediate
     input  logic            i_csr_write_enable,   // Commit the write (not stalled/flushed)
     output logic [XLEN-1:0] o_csr_read_data,      // CSR read value (registered, 1-cycle latency)
@@ -685,15 +687,18 @@ module csr_file #(
     endcase
   end
 
-  // New value for the addressed CSR under the CSR operation.
+  // New value for the addressed CSR under the CSR operation. A pure read
+  // (op[1:0] = 0; dispatch clears those bits for a set or clear whose
+  // rs1/uimm field is 0) still reaches the write paths below with
+  // csr_rmw_base, exactly as a set or clear of zero would. Only the counter
+  // writes check write intent.
   //
   // mip RMW base (priv spec, the mip.SEIP note): the read value of
   // SEIP/STIP is composed with the PLIC S-context line / the Sstc compare,
   // but the value used in a CSRRS/CSRRC read-modify-write is the software
-  // bit alone. Otherwise a set/clear (or a csrr, which arrives here as a
-  // set with zero) would capture the transient line into the
-  // software-injection bit, where it would stick after the line drops
-  // (plic_test's H seip-drops case checks this).
+  // bit alone. Otherwise a set/clear or a pure read would capture the
+  // transient line into the software-injection bit, where it would stick
+  // after the line drops (plic_test's H seip-drops case checks this).
   logic [XLEN-1:0] csr_rmw_base;
   always_comb begin
     csr_rmw_base = csr_current_value;
@@ -703,12 +708,12 @@ module csr_file #(
     end
   end
   always_comb begin
-    csr_new_value = csr_current_value;
+    csr_new_value = csr_rmw_base;
     unique case (i_csr_op)
       riscv_pkg::CSR_RW, riscv_pkg::CSR_RWI: csr_new_value = i_csr_write_data;
       riscv_pkg::CSR_RS, riscv_pkg::CSR_RSI: csr_new_value = csr_rmw_base | i_csr_write_data;
       riscv_pkg::CSR_RC, riscv_pkg::CSR_RCI: csr_new_value = csr_rmw_base & ~i_csr_write_data;
-      default:                               csr_new_value = csr_current_value;
+      default:                               csr_new_value = csr_rmw_base;
     endcase
   end
 
@@ -758,18 +763,18 @@ module csr_file #(
   // write; cpu_ooo guarantees it cannot coincide), plus Zicsr write intent:
   // the commit stage raises both enables for every CSR instruction, and a
   // pure read that "wrote" the value it read would swallow that cycle's
-  // increment. CSRRW/CSRRWI always write; the set/clear forms write only
-  // with a nonzero rs1/uimm. A set/clear with a zero operand from a nonzero
-  // rs1 is folded into the no-write case: its write-back of the unchanged
-  // value is indistinguishable from not writing (the ROB applies the exact
-  // rs1 test for read-only-CSR traps). The cycle counter computes its
-  // increment from the register alone and selects a write or the inhibit
-  // afterward; the retired counter uses its staged count below.
+  // increment. Intent comes from the encoding, not the value: CSRRW/CSRRWI
+  // always write, and a set/clear writes when its rs1/uimm field is nonzero,
+  // even if the register holds 0. Dispatch clears op[1:0] for a set/clear
+  // whose field is 0, so op[1:0] != 0 is exactly the write intent. The cycle
+  // counter computes its increment from the register alone and selects a
+  // write or the inhibit afterward; the retired counter uses its staged
+  // count below.
   logic csr_counter_write_intent;
   logic csr_counter_write;
   logic mcycle_write;
   logic minstret_write;
-  assign csr_counter_write_intent = (i_csr_op[1:0] == 2'b01) || (i_csr_write_data != '0);
+  assign csr_counter_write_intent = (i_csr_op[1:0] != 2'b00);
   assign csr_counter_write = i_csr_write_enable && i_csr_read_enable &&
       csr_counter_write_intent &&
       (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_taken && !i_trap_to_d));
@@ -826,16 +831,17 @@ module csr_file #(
   // mcountinhibit.IR gates the count at the staging register, keeping
   // the 64-bit chain untouched: with IR set, retirements stage as zero. The
   // write that sets IR is itself counted: its own retirement stages at
-  // the write edge, when IR is not yet set, and lands one edge later. A
-  // minstret write installs the new value and drops the staged count of
-  // that edge, which is always zero: commit is stalled while the CSR sits at
-  // the head, and the last older retirement (cycle C above) accumulated at
-  // C+2->C+3, one edge before the earliest write edge. The writing
-  // instruction's own retirement stages at the write edge and lands on top
-  // of the new value one edge later, so a read after `csrw minstret, V`
-  // sees V + 1 + later retirements. Zicsr has the write replace the writing
-  // instruction's increment (the next instruction reads V), so this deviates;
-  // riscv-tests' rv64mi instret_overflow is skipped for it.
+  // the write edge, when IR is not yet set, and lands one edge later.
+  //
+  // A minstret write installs the new value and stages zero in place of the
+  // retire count of its own cycle. That count is the writing instruction
+  // alone, because a CSR never commits two-wide (checked in simulation
+  // below), so the write takes the place of the writer's increment as Zicsr
+  // requires: after `csrw minstret, V` the next instruction reads exactly V.
+  // The staged count the write replaces in the accumulator is always zero:
+  // commit is stalled while the CSR sits at the head, and the last older
+  // retirement (cycle C above) accumulated at C+2->C+3, one edge before the
+  // earliest write edge.
   logic [ 1:0] instruction_retired_count_q;
   // Register-to-register accumulate with the write select applied after it,
   // like the cycle counter's increment boundary above.  minstret_write
@@ -850,7 +856,8 @@ module csr_file #(
       instruction_retired_count_q <= 2'd0;
       instret_counter <= 64'd0;
     end else begin
-      instruction_retired_count_q <= mcountinhibit_ir ? 2'd0 : i_instruction_retired_count;
+      instruction_retired_count_q <= (mcountinhibit_ir || minstret_write) ? 2'd0 :
+                                     i_instruction_retired_count;
       instret_counter <= minstret_write ? csr_new_value : instret_counter_accumulated;
     end
   end
@@ -1480,6 +1487,14 @@ module csr_file #(
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
 
+  // A committed minstret write in the previous cycle, and the value it wrote.
+  logic f_minstret_written_q = 1'b0;
+  logic [XLEN-1:0] f_minstret_value_q;
+  always @(posedge i_clk) begin
+    f_minstret_written_q <= !i_rst && minstret_write;
+    f_minstret_value_q   <= csr_new_value;
+  end
+
   // Structural constraints
   always_comb begin
     assume (!(i_trap_taken && i_mret_taken));
@@ -1608,16 +1623,24 @@ module csr_file #(
       // Cycle counter: a committed mcycle write installs csr_new_value
       // with no increment; otherwise it increments every cycle unless
       // mcountinhibit.CY holds it. A committed access without write intent
-      // (csrr, or a set/clear with a zero operand) is not a write.
+      // (op[1:0] = 0: a csrr, or a set/clear with rs1/uimm = 0) is not a
+      // write, and a set/clear with write intent is one even when the value
+      // is 0.
       p_counter_pure_read_is_not_a_write :
       assert (!($past(
-          i_csr_write_enable && i_csr_read_enable && (i_csr_op[1:0] != 2'b01) &&
-          (i_csr_write_data == '0)
+          i_csr_write_enable && i_csr_read_enable && (i_csr_op[1:0] == 2'b00)
       ) && ($past(
           mcycle_write
       ) || $past(
           minstret_write
       ))));
+      p_counter_zero_set_clear_is_a_write :
+      assert (!$past(
+          i_csr_write_enable && i_csr_read_enable && i_csr_op[1] && (i_csr_write_data == '0) &&
+          (i_csr_address == riscv_pkg::CsrMinstret)
+      ) || $past(
+          minstret_write
+      ));
       if ($past(mcycle_write)) begin
         p_mcycle_write : assert (cycle_counter == $past(csr_new_value));
       end else if ($past(mcountinhibit_cy)) begin
@@ -1628,20 +1651,29 @@ module csr_file #(
 
       // Instret retime invariants (see the Instructions Retired Counter
       // comment): the staging register follows the input by one cycle
-      // (zeroed while mcountinhibit.IR is set), and the accumulator applies
-      // the staged count unless a committed minstret write replaces the
-      // counter. Composed without writes or inhibit:
+      // (zeroed while mcountinhibit.IR is set, and on a committed minstret
+      // write, which replaces the writer's own count), and the accumulator
+      // applies the staged count unless a committed minstret write replaces
+      // the counter. Composed without writes or inhibit:
       //   instret_counter(T) == instret_counter(T-1) + retired_count(T-2)
       // So instret is the running total of retired instructions delayed by
       // one staging cycle. The delay is architecturally invisible because
       // commit-serialized CSR reads sample the counter no earlier than
       // <last counted commit> + 3 cycles.
       p_instret_stage_follows :
-      assert (instruction_retired_count_q == ($past(
+      assert (instruction_retired_count_q == (($past(
           mcountinhibit_ir
-      ) ? 2'd0 : $past(
+      ) || $past(
+          minstret_write
+      )) ? 2'd0 : $past(
           i_instruction_retired_count
       )));
+      // Zicsr: the write takes the place of the writer's own increment, so
+      // one edge after the write, with no second write, the counter still
+      // holds the written value.
+      if ($past(f_minstret_written_q) && !$past(minstret_write)) begin
+        p_minstret_write_replaces_own_count : assert (instret_counter == $past(f_minstret_value_q));
+      end
       if ($past(minstret_write)) begin
         p_minstret_write : assert (instret_counter == $past(csr_new_value));
       end else begin
@@ -1856,6 +1888,10 @@ module csr_file #(
       p_integrated_csr_excludes_control_take :
       assert (!(i_csr_write_enable && i_csr_read_enable &&
                 (i_trap_taken || i_mret_taken || i_sret_taken || i_dret_taken)));
+      // A minstret write stages zero in place of its cycle's retire count,
+      // which must be the writing instruction alone.
+      p_integrated_minstret_write_retires_alone :
+      assert (!minstret_write || (i_instruction_retired_count == 2'd1));
     end
   end
 `endif
@@ -1939,7 +1975,8 @@ module csr_file #(
       f_old_instruction_retired_count_q <= 2'd0;
       f_old_instret_counter <= 64'd0;
     end else begin
-      f_old_instruction_retired_count_q <= mcountinhibit_ir ? 2'd0 : i_instruction_retired_count;
+      f_old_instruction_retired_count_q <= (mcountinhibit_ir || f_old_minstret_write) ? 2'd0 :
+                                           i_instruction_retired_count;
       f_old_instret_counter <= f_old_minstret_write ? csr_new_value : instret_counter_accumulated;
     end
   end

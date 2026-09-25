@@ -198,12 +198,10 @@ supervisor in `sw/apps/riscv_tests/env_v/`. The virtual environment needs DDR,
 and it sets page-table A and D bits from page faults (Svade).
 
 `ISA_SKIP_TESTS` leaves out tests for behavior FROST does not implement:
-misaligned accesses in hardware (`ma_data`), debug triggers, PMP, and hardware
-A/D updates. It also leaves out `instret_overflow`, because a write to
-`minstret` does not replace the writing instruction's own increment, and
-`ma_addr`, which passes and can be re-enabled. In BRAM, `ISA_SKIP_TESTS_BRAM`
-also leaves out `fence_i` and `icache-alias`, which need DDR for instruction
-storage or page tables.
+misaligned accesses in hardware (`ma_data`), debug triggers (`breakpoint`),
+PMP (`pmpaddr`), and hardware A/D updates (`dirty`). In BRAM,
+`ISA_SKIP_TESTS_BRAM` also leaves out `fence_i` and `icache-alias`, which need
+DDR for instruction storage or page tables.
 
 ### `test_riscv_torture.py`
 

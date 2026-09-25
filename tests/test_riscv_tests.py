@@ -118,12 +118,6 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
     "rv64mi": {
         "breakpoint",  # Requires debug trigger module
         "pmpaddr",  # PMP not implemented on FROST
-        # TODO: re-enable. The test accepts a misaligned-access trap in place
-        # of the access.
-        "ma_addr",
-        # Its RV64 case expects `csrwi minstret, 0; csrr a0, minstret` to read
-        # 0 (the write suppresses its own increment); FROST reads 1.
-        "instret_overflow",
     },
     "rv64si": {
         # Expects the hardware to set the PTE A/D bits; FROST is Svade (A=0 /
