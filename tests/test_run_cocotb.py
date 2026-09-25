@@ -269,8 +269,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "F/D instructions while mstatus.FS is Off: illegal-instruction ahead of "
             "access and misaligned faults, no device read by a trapping FP load "
-            "(FIFO0 and a waiting UART RX byte), and FS writes that apply from the "
-            "next instruction"
+            "(FIFO0 and a waiting UART RX byte), and FS writes through mstatus or "
+            "sstatus that apply from the next instruction"
         ),
     ),
     "vm_test": CocotbRunConfig(
