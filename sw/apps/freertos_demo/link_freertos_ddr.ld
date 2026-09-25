@@ -148,3 +148,8 @@ SECTIONS
     PROVIDE(UART_RX_STATUS_ADDR = 0x40000024); /* UART RX status (bit 0 = data available) */
     PROVIDE(UART_TX_STATUS_ADDR = 0x40000028); /* UART TX status (bit 0 = can accept byte) */
 }
+
+/* crt0_ddr_boot.S jumps to the constant 0x8000_0000, which is correct only while
+ * _start sits at the DDR origin. The ASSERT turns a reordering of the DDR
+ * sections into a link failure instead of a jump to the wrong address. */
+ASSERT(_start == ORIGIN(DDR), "link_freertos_ddr.ld: _start must sit at ORIGIN(DDR) (the rv64 boot stub jumps to the constant 0x80000000)")

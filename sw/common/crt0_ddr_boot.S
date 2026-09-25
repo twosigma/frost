@@ -13,7 +13,8 @@ _frost_ddr_boot:
     // lp64 + medany cannot reach the DDR-resident _start from this low-BRAM
     // stub: R_RISCV_PCREL_HI20 reaches just under +2 GiB, short of
     // 0x8000_0000. Materialize the DDR origin as a constant instead.
-    // link_ddr.ld ASSERTs that _start sits at ORIGIN(DDR) = 0x8000_0000.
+    // link_ddr.ld and freertos_demo's link_freertos_ddr.ld ASSERT that _start
+    // sits at ORIGIN(DDR) = 0x8000_0000.
     // lui+slli builds the address as a positive 64-bit value, so there is no
     // lui sign-extension hazard, and .option norvc keeps the small ROM image
     // all-4-byte. The riscv_tests DDR stub has the same shape.
