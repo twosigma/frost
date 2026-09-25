@@ -69,13 +69,16 @@ COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
 # Optional PGO trains on the official profile data set (1200 bytes, seeds
 # 8/8/8). Keeping the profile flags in APP_TUNE_FLAGS puts them in the reported
 # compiler flags. -fbranch-probabilities reads edge counts without the extra
-# transformations that -fprofile-use enables.
+# transformations that -fprofile-use enables. The PGO build uses the
+# out-of-order cost model; its default flags are the published configuration
+# (docs/single_core_performance.md).
 #
 # iss/generate_profile.py writes profiles for the five benchmark sources; the
 # port layer and libraries build without one. The existence check stops a
 # missing profile from silently changing the build. See iss/README.md.
 COREMARK_PGO_TUNE := -fbranch-probabilities -fprofile-correction \
                      -Wno-missing-profile
+COREMARK_PGO_CPU_TUNE := -mtune=generic-ooo
 COREMARK_PGO ?= 0
 COREMARK_PGO_PROFILES :=
 ifeq ($(COREMARK_PGO),1)
@@ -84,7 +87,7 @@ COREMARK_PGO_PROFILES := $(addsuffix .gcda,$(addprefix sw.elf-,\
 $(foreach profile,$(COREMARK_PGO_PROFILES),\
     $(if $(wildcard $(profile)),,$(error COREMARK_PGO=1 needs $(profile); run \
     ./scripts/frost.py run sw/apps/coremark/iss/generate_profile.py)))
-APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_PGO_TUNE) $(COREMARK_CPU_TUNE)
+APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_PGO_TUNE) $(COREMARK_PGO_CPU_TUNE)
 else ifeq ($(COREMARK_PGO),0)
 APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_STATIC_LAYOUT_TUNE) \
                   $(COREMARK_LTO_TUNE) $(COREMARK_CPU_TUNE)

@@ -75,10 +75,11 @@ dynamic loading, or Linux syscalls.
 Regenerate the committed profiles whenever the compiler or the training flags
 change. Arguments after `--` replace the script's default tuning flags, the
 Makefile's `COREMARK_BASE_TUNE` and `COREMARK_CPU_TUNE` (`-mtune=sifive-7-series`).
-The published build ([single-core performance](../../../../docs/single_core_performance.md))
-uses `-mtune=generic-ooo`, but with the pinned GCC the tuning model does not
-change the profile: training with either gives the same counts and the same
-benchmark image.
+The PGO build, which is the published configuration
+([single-core performance](../../../../docs/single_core_performance.md)),
+uses `COREMARK_PGO_CPU_TUNE` (`-mtune=generic-ooo`), but with the pinned GCC
+the tuning model does not change the profile: training with either gives the
+same counts and the same benchmark image.
 
 These details of the training build are easy to get wrong:
 

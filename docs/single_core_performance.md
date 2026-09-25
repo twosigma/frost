@@ -42,9 +42,8 @@ The tuning flags are:
 --param max-inline-insns-auto=200 -fira-algorithm=CB -fstrict-aliasing -fselective-scheduling -fbranch-probabilities -fprofile-correction -Wno-missing-profile -mtune=generic-ooo
 ```
 
-These differ from the CoreMark Makefile's defaults, which use
-`-mtune=sifive-7-series`, so pass them through `APP_TUNE_FLAGS` to reproduce
-the reported configuration.
+These are the CoreMark Makefile's defaults for `COREMARK_PGO=1`. Its defaults
+without PGO use `-mtune=sifive-7-series` and add static-layout and LTO flags.
 
 PGO training uses the official profile data set (1,200 bytes, seeds 8/8/8).
 Generate the profiles in the pinned image:
@@ -53,15 +52,15 @@ Generate the profiles in the pinned image:
 ./scripts/frost.py run sw/apps/coremark/iss/generate_profile.py
 ```
 
-The script trains with the CoreMark Makefile's default tuning, which uses
-`-mtune=sifive-7-series`. The tuning model does not change the profile: with
-the pinned GCC, training with `-mtune=generic-ooo` gives the same counts and
-the same benchmark image.
+The script trains with the Makefile's `COREMARK_BASE_TUNE` and
+`COREMARK_CPU_TUNE` (`-mtune=sifive-7-series`). The tuning model does not
+change the profile: with the pinned GCC, training with `-mtune=generic-ooo`
+gives the same counts and the same benchmark image.
 
 | Build variable | Purpose |
 | --- | --- |
-| `COREMARK_PGO=1` | Use the generated branch profiles |
-| `APP_TUNE_FLAGS` | Compiler tuning flags (set to the flags above) |
+| `COREMARK_PGO=1` | Use the generated branch profiles and the tuning flags above |
+| `APP_TUNE_FLAGS` | Replace the default tuning flags |
 | `COREMARK_SEED_SET=performance` or `validation` | Select the official seed set |
 | `COREMARK_COMPRESSED=0` or `1` | Disable or enable compressed instructions |
 | `COREMARK_SOURCE_ORDER` | Reorder the benchmark's translation units |
@@ -90,8 +89,8 @@ the hashes of `sw.bin` or `sw.S`: `sw.elf` differs even between identical
 builds, because its symbol table names a temporary `ccXXXXXX.o` object file.
 
 ```bash
-# PGO cycle counts with the CPU defaults and the benchmark tuning
-python3 scripts/coremark_sweep.py --output /absolute/new/coremark-results --orders 1 --compressed 0 --memory bram --seeds performance validation --runs 1 --pgo 1 --tune-flags='--param max-inline-insns-auto=200 -fira-algorithm=CB -fstrict-aliasing -fselective-scheduling -fbranch-probabilities -fprofile-correction -Wno-missing-profile -mtune=generic-ooo'
+# PGO cycle counts with the CPU defaults and the published tuning
+python3 scripts/coremark_sweep.py --output /absolute/new/coremark-results --orders 1 --compressed 0 --memory bram --seeds performance validation --runs 1 --pgo 1
 
 # Compressed code and link order in both memory tiers, without PGO
 python3 scripts/coremark_sweep.py --output /absolute/new/layout-results --orders 4 --compressed 0 1 --memory bram ddr --seeds performance validation --runs 2

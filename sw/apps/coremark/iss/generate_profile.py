@@ -88,9 +88,9 @@ BASE_FLAGS = (
     "-funroll-loops",
     "-fno-strict-aliasing",
 )
-# The Makefile's COREMARK_BASE_TUNE and COREMARK_CPU_TUNE. The published build
-# reads the profiles with -mtune=generic-ooo instead; with the pinned GCC, the
-# -mtune used for training does not change the counts.
+# The Makefile's COREMARK_BASE_TUNE and COREMARK_CPU_TUNE. The PGO build reads
+# the profiles with COREMARK_PGO_CPU_TUNE (-mtune=generic-ooo) instead; with the
+# pinned GCC, the -mtune used for training does not change the counts.
 DEFAULT_TUNE_FLAGS = (
     "--param",
     "max-inline-insns-auto=200",
