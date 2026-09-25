@@ -219,7 +219,7 @@ SECTIONS
     PROVIDE(UART_ADDR           = 0x40000000);  /* UART transmit register (write-only) */
     PROVIDE(UART_RX_DATA_ADDR   = 0x40000004);  /* UART receive data (read consumes byte) */
     PROVIDE(UART_RX_STATUS_ADDR = 0x40000024);  /* UART RX status (bit 0 = data available) */
-    PROVIDE(UART_TX_STATUS_ADDR = 0x40000028);  /* UART TX status (bit 0 = can accept byte) */
+    PROVIDE(UART_TX_STATUS_ADDR = 0x40000028);  /* UART TX status (bit 0 = TX ready) */
     PROVIDE(FIFO0_ADDR      = 0x40000008);  /* MMIO FIFO 0 */
     PROVIDE(FIFO1_ADDR      = 0x4000000C);  /* MMIO FIFO 1 */
     /* CLINT-compatible timer registers (for RTOS support) */

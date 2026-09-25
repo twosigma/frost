@@ -57,8 +57,8 @@ static volatile uint32_t g_claims;
 static volatile uint32_t g_bad_claim;
 
 /* Naked M external-interrupt handler. Claim, and if bytes remain, send one
- * through the THR and complete. THRE stays set while the transmitter can
- * accept a byte, so the source raises again for the next byte. When the
+ * through the THR and complete. THRE stays set while the transmit FIFO has
+ * room, so the source raises again for the next byte. When the
  * message is done, disable IER before completing so the level drops for
  * good. */
 __attribute__((naked, aligned(4))) static void m_irq_handler(void)
@@ -118,7 +118,7 @@ int main(void)
     PLIC_PRIO1 = 1;
     PLIC_THR_M = 0;
     PLIC_EN_M = 0x2;   /* source 1 in context M */
-    NS16550_IER = 0x2; /* THRE interrupt: raised while TX can accept a byte */
+    NS16550_IER = 0x2; /* THRE interrupt: raised while the TX FIFO has room */
     enable_external_interrupt();
     enable_interrupts();
 

@@ -33,7 +33,8 @@
 /* Transmit a single character over UART; '\n' is sent as CR+LF */
 void uart_putchar(char c);
 
-/* Check whether the UART transmitter can accept a byte */
+/* Check whether the UART transmit FIFO has room: nonzero while at least 64
+ * more bytes fit (UART_TX_STATUS bit 0) */
 int uart_tx_ready(void);
 
 /* Transmit a null-terminated string over UART */

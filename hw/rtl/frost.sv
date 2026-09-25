@@ -214,13 +214,17 @@ module frost #(
   assign reset_div4_synchronized = reset_div4_synchronizer_shift_register[NumResetSyncStages-1];
 
   // UART TX: cpu_and_mem's registered UART write feeds the transmit FIFO
-  // directly (see the FIFO below).
+  // directly, and the transmit status it reads comes back from that FIFO and
+  // the transmitter (see the FIFO below).
   logic        uart_write_enable_from_cpu;
   logic [ 7:0] uart_write_data_from_cpu;
   logic [ 7:0] uart_fifo_data;
   logic        uart_fifo_valid;
   logic        uart_fifo_ready;
   logic        uart_fifo_input_ready;
+  logic        uart_fifo_almost_full;
+  logic        uart_fifo_empty;
+  logic        uart_tx_empty;
 
   // UART RX interface signals - received data from UART to CPU
   logic        uart_rx_data_valid_to_cpu;
@@ -315,7 +319,8 @@ module frost #(
       .o_instr_mem_rddata,
       .o_uart_wr_en(uart_write_enable_from_cpu),
       .o_uart_wr_data(uart_write_data_from_cpu),
-      .i_uart_tx_ready(uart_fifo_input_ready),
+      .i_uart_tx_ready(!uart_fifo_almost_full),
+      .i_uart_tx_empty(uart_tx_empty),
       // UART RX interface
       .i_uart_rx_data(uart_rx_data_to_cpu),
       .i_uart_rx_valid(uart_rx_data_valid_to_cpu),
@@ -402,12 +407,17 @@ module frost #(
   /*
     Dual-clock FIFO carrying UART data from the CPU domain to the clk_div4 UART
     domain. It buffers console output so the CPU runs ahead while the
-    transmitter drains the FIFO at the baud rate.
+    transmitter drains the FIFO at the baud rate. A write is refused only when
+    the FIFO has no room. Software paces itself with the TX status
+    (UART_TX_STATUS, the ns16550 LSR THRE bit and THRE interrupt), which is
+    the FIFO's almost-full level: it drops while fewer than 64 more bytes
+    fit, so a 16550 driver's 16-byte burst per THRE, plus the writes still on
+    their way, always fits.
   */
   dc_fifo #(
       .DATA_WIDTH(8),  // 8 bits per UART character
       .DEPTH(16384),
-      .READY_MARGIN(64)
+      .ALMOST_FULL_MARGIN(64)
   ) uart_transmit_clock_domain_crossing_fifo (
       .o_clk(i_clk_div4),  // Output: UART clock domain (slow)
       .i_clk(i_clk),  // Input: CPU clock domain (fast)
@@ -416,10 +426,21 @@ module frost #(
       .i_data(uart_write_data_from_cpu),
       .i_valid(uart_write_enable_from_cpu),
       .o_ready(uart_fifo_input_ready),
+      .o_almost_full(uart_fifo_almost_full),
+      .o_empty(uart_fifo_empty),
       .o_data(uart_fifo_data),
       .o_valid(uart_fifo_valid),
       .i_ready(uart_fifo_ready)
   );
+
+`ifndef SYNTHESIS
+  // A write that finds the FIFO full is lost. A writer that checks the TX
+  // status before each burst of up to 16 bytes, as the 8250 driver does,
+  // never finds it full; this reports a write that does.
+  always_ff @(posedge i_clk)
+    if (!reset_synchronized && uart_write_enable_from_cpu && !uart_fifo_input_ready)
+      $error("frost: UART TX byte dropped: the transmit FIFO was full");
+`endif
 
   // UART transmitter - converts valid/ready handshake to serial UART protocol
   uart_tx #(
@@ -433,6 +454,23 @@ module frost #(
       .o_ready(uart_fifo_ready),
       .o_uart (o_uart_tx)
   );
+
+  /*
+    Transmitter empty (the ns16550 LSR TEMT bit): no byte is in the FIFO, is
+    entering it this cycle, waits in its output register, or is being shifted
+    out. A THR write is already in cpu_and_mem's o_uart_wr_en, or past it,
+    when a later LSR read is performed, because a device load waits for every
+    committed store to drain plus an arming cycle (data_mem_request_router).
+    (While hang_triage owns the console, cpu_and_mem drops CPU writes, so
+    TEMT never sees them.) The transmitter's idle level crosses into i_clk
+    through two stages, like the FIFO's read pointer, so both views come from
+    the same clk_div4 edge.
+  */
+  logic       uart_tx_idle_div4;
+  logic [1:0] uart_tx_idle_sync;
+  assign uart_tx_idle_div4 = uart_fifo_ready && !uart_fifo_valid;
+  always_ff @(posedge i_clk) uart_tx_idle_sync <= {uart_tx_idle_sync[0], uart_tx_idle_div4};
+  assign uart_tx_empty = uart_fifo_empty && !uart_write_enable_from_cpu && uart_tx_idle_sync[1];
 
   /*
     UART RX subsystem. uart_rx runs in the clk_div4 domain like TX, so both
@@ -473,6 +511,8 @@ module frost #(
       .i_data(uart_rx_data_from_receiver),
       .i_valid(uart_rx_valid_from_receiver),
       .o_ready(uart_rx_ready_to_receiver),
+      .o_almost_full(),
+      .o_empty(),
       .o_data(uart_rx_data_to_cpu),
       .o_valid(uart_rx_data_valid_to_cpu),
       .i_ready(uart_rx_data_ready_from_cpu)

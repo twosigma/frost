@@ -146,7 +146,7 @@ SECTIONS
     PROVIDE(MTIMECMP_HI_ADDR    = 0x4000001C);  /* mtimecmp[63:32] - Timer compare high */
     PROVIDE(MSIP_ADDR           = 0x40000020);  /* Machine software interrupt pending */
     PROVIDE(UART_RX_STATUS_ADDR = 0x40000024); /* UART RX status (bit 0 = data available) */
-    PROVIDE(UART_TX_STATUS_ADDR = 0x40000028); /* UART TX status (bit 0 = can accept byte) */
+    PROVIDE(UART_TX_STATUS_ADDR = 0x40000028); /* UART TX status (bit 0 = TX ready) */
 }
 
 /* crt0_ddr_boot.S jumps to the constant 0x8000_0000, which is correct only while

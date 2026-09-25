@@ -24,8 +24,8 @@
  * the source, which must leave the gateway closed.
  *
  * The level source is the ns16550 THRE interrupt (PLIC source 1): while
- * the UART transmitter can accept a byte, setting IER[1] holds the level
- * high and clearing IER[1] drops it. Source 2 (the board pin) stays low
+ * the UART transmit FIFO has room, setting IER[1] holds the level high and
+ * clearing IER[1] drops it. Source 2 (the board pin) stays low
  * in simulation and is only register-tested. Self-checks over UART
  * (<<PASS>> / <<FAIL>>).
  */
@@ -84,9 +84,9 @@ static int report(const char *name, unsigned long got, unsigned long want)
     return got == want;
 }
 
-/* The ns16550 THRE level is ns_ier[1] && i_uart_tx_ready, the transmit
- * FIFO's ready: high while the transmitter can accept a byte. UART_TX_STATUS
- * bit 0 reads the same signal, so wait for it before expecting a raise. */
+/* The ns16550 THRE level is ns_ier[1] && i_uart_tx_ready, high while the
+ * transmit FIFO is not almost full. UART_TX_STATUS bit 0 reads the same
+ * signal, so wait for it before expecting a raise. */
 static void wait_tx_idle(void)
 {
     for (int i = 0; i < 400000; i++) {
@@ -168,7 +168,7 @@ int main(void)
 
     /* B: the gateway raises on the THRE level; pending readback. */
     PLIC_PRIO(1) = 1;
-    NS16550_IER = 0x2; /* THRE enable: level high while TX can accept a byte */
+    NS16550_IER = 0x2; /* THRE enable: level high while the TX FIFO has room */
     PLIC_EN_M = 0x2;   /* enable source 1 (bit 1 = ID 1) in context M */
     wait_tx_idle();
     ok &= report("B meip-raises", poll_mip(MIP_MEIP, MIP_MEIP), MIP_MEIP);

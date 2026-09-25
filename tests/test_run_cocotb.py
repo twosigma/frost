@@ -466,7 +466,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ns16550_test",
-        description="ns16550a UART face directed test (Linux glue)",
+        description=(
+            "ns16550a UART face directed test (Linux glue): 8250 init, register "
+            "file, LSR.TEMT clear from a THR write until the byte is sent"
+        ),
     ),
     "clint_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1431,11 +1434,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.lib.test_dc_fifo",
         hdl_toplevel_module="dc_fifo",
         description=(
-            "Dual-clock FIFO: bytes written back to back into a reader that "
-            "takes each one in its first idle cycle, as uart_tx does, come out "
-            "once each and in order"
+            "Dual-clock FIFO as the UART transmit FIFO (scaled down): room, "
+            "almost-full and empty levels while filling, 16-byte bursts at the "
+            "almost-full warning with pointer wrap and no byte lost, and a "
+            "reader that takes each byte in its first idle cycle"
         ),
-        verilator_extra_args=("-GDEPTH=128",),
+        verilator_extra_args=("-GDEPTH=128", "-GALMOST_FULL_MARGIN=64"),
     ),
     "cdc_gray_count": CocotbRunConfig(
         python_test_module="cocotb_tests.lib.test_cdc_gray_count",

@@ -131,7 +131,7 @@ copy.
 | MTIMECMP_HI | `0x4000001C` | Timer compare, high 32 bits |
 | MSIP | `0x40000020` | Machine software interrupt pending |
 | UART_RX_STATUS | `0x40000024` | Bit 0: receive data available |
-| UART_TX_STATUS | `0x40000028` | Bit 0: transmitter can accept a byte |
+| UART_TX_STATUS | `0x40000028` | Bit 0: TX ready, at least 64 more bytes fit in the transmit FIFO |
 | NS16550 | `0x40001000` | 16550-compatible UART registers, `0x40001000` to `0x4000101C` |
 | CLINT | `0x40010000` | SiFive CLINT-compatible alias of MSIP, `mtimecmp`, and `mtime`, for Linux |
 | DMA test engine | `0x40020000` | Coherent DMA copy and fill engine |
@@ -285,7 +285,7 @@ can be debugged and where each one first stops.
 | `nic_echo/` | Interrupt-driven Ethernet echo; needs a link partner, which the simulation bench provides |
 | `nic_loopback/` | NIC loopback, descriptor rings, interrupts, filtering, and reset during traffic |
 | `ns16550_irq_console_test/` | Console output written one byte per THRE interrupt, each claimed and completed through the PLIC |
-| `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, and transmit |
+| `ns16550_test/` | The 16550 UART registers: Linux 8250 initialization, register file, LSR.THRE and LSR.TEMT around a write, and transmit |
 | `opensbi_smoke/` | OpenSBI boots a bare S-mode payload that tests SBI calls; fixed layout, ignores `MEM_CONFIG` |
 | `packet_parser/` | FIX message parser demo fed through the MMIO FIFOs; reports parse time in cycles |
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |

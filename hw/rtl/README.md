@@ -124,7 +124,7 @@ MMIO registers:
 | `0x4000_001C` | MTIMECMP_HI | Timer compare high word |
 | `0x4000_0020` | MSIP | Machine software interrupt pending |
 | `0x4000_0024` | UART_RX_STATUS | Bit 0 is data available |
-| `0x4000_0028` | UART_TX_STATUS | Bit 0 is can accept byte |
+| `0x4000_0028` | UART_TX_STATUS | Bit 0 is TX ready: at least 64 more bytes fit in the transmit FIFO |
 | `0x4000_1000`–`101C` | ns16550a UART face | 16550 register file (word stride) aliasing UART_TX/RX for the Linux 8250 driver |
 | `0x4001_0000` | CLINT MSIP | SiFive CLINT alias of MSIP |
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
@@ -137,7 +137,10 @@ appears as an ns16550a at `0x4000_1000` (word stride: device tree
 `reg-shift=2`, `reg-io-width=4`; `earlycon=uart8250,mmio32`), and the timer
 as a SiFive CLINT at `0x4001_0000` (`mtimecmp` at `+0x4000`, `mtime` at
 `+0xBFF8`). Both are aliases of the native registers, so the kernel's
-standard 8250 and CLINT drivers work without a board-specific driver.
+standard 8250 and CLINT drivers work without a board-specific driver. The
+16550's LSR.THRE and its THRE interrupt follow UART_TX_STATUS, so the 8250
+driver's 16-byte burst per THRE always fits, and LSR.TEMT reads 1 only once
+every byte written has been sent.
 
 The PLIC uses the standard register layout: per-source priorities, the
 pending word, per-context enables at `0x2000 + 0x80*ctx`, and threshold and

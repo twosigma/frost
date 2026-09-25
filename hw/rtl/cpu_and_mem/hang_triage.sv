@@ -301,10 +301,10 @@ module hang_triage #(
           end
         end
         // Every emit state gates its push on (i_uart_ready && !o_wr_en). The
-        // push is registered, so one cycle after issuing a push the FIFO's
-        // occupancy, and hence i_uart_ready, does not yet reflect it. Sampling
-        // ready alone could push twice into a single free slot and drop a
-        // byte. The one-cycle gap between pushes costs nothing at UART rates.
+        // push is registered and enters the transmit FIFO while o_wr_en is
+        // high, so i_uart_ready (the FIFO's almost-full level) reflects it
+        // from the next cycle. The one-cycle gap between pushes lets every
+        // decision see the previous push and costs nothing at UART rates.
         EM_PREFIX:
         if (i_uart_ready && !o_wr_en) begin
           o_wr_en   <= 1'b1;

@@ -90,19 +90,20 @@ module debug_slice_writer #(
   logic fifo_out_valid, fifo_pop;
   dc_fifo #(
       .DATA_WIDTH(ReqBits),
-      .DEPTH(DEPTH),
-      .READY_MARGIN(1)
+      .DEPTH(DEPTH)
   ) u_req_fifo (
-      .i_clk  (i_clk),
-      .i_rst  (i_rst),
-      .i_data ({i_req_mirror, i_req_word_addr, i_req_data}),
-      .i_valid(i_req_valid),
-      .o_ready(fifo_ready),
-      .o_clk  (i_clk_div4),
-      .o_rst  (i_rst_div4),
-      .o_data (fifo_out),
-      .o_valid(fifo_out_valid),
-      .i_ready(fifo_pop)
+      .i_clk        (i_clk),
+      .i_rst        (i_rst),
+      .i_data       ({i_req_mirror, i_req_word_addr, i_req_data}),
+      .i_valid      (i_req_valid),
+      .o_ready      (fifo_ready),
+      .o_almost_full(),
+      .o_empty      (),
+      .o_clk        (i_clk_div4),
+      .o_rst        (i_rst_div4),
+      .o_data       (fifo_out),
+      .o_valid      (fifo_out_valid),
+      .i_ready      (fifo_pop)
   );
 
   // ---------------------------------------------------------------------------

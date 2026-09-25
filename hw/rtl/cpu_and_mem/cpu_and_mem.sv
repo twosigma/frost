@@ -102,7 +102,10 @@ module cpu_and_mem #(
 
     output logic       o_uart_wr_en,
     output logic [7:0] o_uart_wr_data,
+    // TX status from frost.sv: room for a burst (the transmit FIFO is not
+    // almost full), and transmitter empty (nothing queued or being sent).
     input  logic       i_uart_tx_ready,
+    input  logic       i_uart_tx_empty,
 
     // UART RX interface - received data from UART
     input  logic [7:0] i_uart_rx_data,
@@ -226,7 +229,7 @@ module cpu_and_mem #(
   localparam int unsigned UartMmioAddr = 32'h4000_0000;  // UART TX (write-only)
   localparam int unsigned UartRxDataMmioAddr = 32'h4000_0004;  // UART RX data (read consumes byte)
   localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024;  // RX status (bit0: data available)
-  localparam int unsigned UartTxStatusMmioAddr = 32'h4000_0028; // TX status (bit0: can accept byte)
+  localparam int unsigned UartTxStatusMmioAddr = 32'h4000_0028;  // TX status (bit0: TX ready)
   localparam int unsigned Fifo0MmioAddr = 32'h4000_0008;
   localparam int unsigned Fifo1MmioAddr = 32'h4000_000C;
   // Timer registers (CLINT-compatible layout)
@@ -2118,7 +2121,7 @@ module cpu_and_mem #(
         MsipMmioAddr[31:3], 3'b000
       } :
       mmio_read_data_comb = {{31'b0, i_uart_rx_valid}, {31'b0, msip}};
-      // {-, UART TX status (bit 0: can accept byte)}
+      // {-, UART TX status (bit 0: TX ready, the transmit FIFO not almost full)}
       {
         UartTxStatusMmioAddr[31:3], 3'b000
       } :
@@ -2126,12 +2129,13 @@ module cpu_and_mem #(
       // ns16550a UART face (aliases native UART TX/RX). DLAB selects DLL/DLM.
       {Ns16550ThrRbr[31:3], 3'b000} : mmio_read_data_comb = {ns_ier_dlm_word, ns_thr_rbr_word};
       {Ns16550IirFcr[31:3], 3'b000} : mmio_read_data_comb = {{24'b0, ns_lcr}, {24'b0, ns_iir}};
-      // LSR: TEMT|THRE from TX-ready (bits 6,5); DR from RX-valid (bit 0).
+      // LSR: TEMT from transmitter-empty (bit 6), THRE from TX-ready (bit 5),
+      // DR from RX-valid (bit 0).
       {
         Ns16550Mcr[31:3], 3'b000
       } :
       mmio_read_data_comb = {
-        {24'b0, 1'b0, i_uart_tx_ready, i_uart_tx_ready, 4'b0, i_uart_rx_valid}, {24'b0, ns_mcr}
+        {24'b0, 1'b0, i_uart_tx_empty, i_uart_tx_ready, 4'b0, i_uart_rx_valid}, {24'b0, ns_mcr}
       };
       {
         Ns16550Msr[31:3], 3'b000
