@@ -1348,14 +1348,9 @@ module cpu_ooo #(
   riscv_pkg::reorder_buffer_commit_t rob_commit_comb_2;
   riscv_pkg::reorder_buffer_commit_t rob_commit_2;
   logic rob_commit_2_valid_raw;
-  logic rob_commit_2_store_like_raw;
   logic rob_commit_2_valid;
   assign rob_commit_2_valid = rob_commit_2.valid;
-  logic rob_commit_store_like_raw;
   logic sq_committed_empty_for_trap;
-  assign rob_commit_store_like_raw =
-      rob_commit_valid_raw &&
-      (rob_commit_comb.is_store || rob_commit_comb.is_fp_store || rob_commit_comb.is_sc);
   logic widen_commit_ok;
   assign widen_commit_ok = 1'b1;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
@@ -1707,7 +1702,6 @@ module cpu_ooo #(
   logic lq_mem_request_valid;
   logic cached_read_held;
   logic lq_device_request_pending;
-  logic lq_mem_request_fire;
 
   // AMO memory interface
   logic amo_mem_write_en;
@@ -1910,7 +1904,7 @@ module cpu_ooo #(
       .o_commit_2(rob_commit_2),
       .o_commit_comb_2(rob_commit_comb_2),
       .o_commit_2_valid_raw(rob_commit_2_valid_raw),
-      .o_commit_2_store_like_raw(rob_commit_2_store_like_raw),
+      .o_commit_2_store_like_raw(),
       // Single step: retire one instruction at a time while a step is armed,
       // so exactly one instruction executes before the halt.
       .i_widen_commit_ok(widen_commit_ok && !step_armed_rob_q),
@@ -2506,13 +2500,6 @@ module cpu_ooo #(
       .o_branch_taken_resolved(branch_taken_resolved),
       .o_branch_target_resolved(branch_target_resolved)
   );
-
-  // Not part of branch resolution: LQ request present, meaning held in the
-  // router or a read handoff with no write on the port. Nothing consumes it,
-  // and it is not the router's accept: a device read stays held for at least
-  // one staging cycle and may wait many cycles for committed stores to drain.
-  assign lq_mem_request_fire = lq_mem_request_valid ||
-                               (lq_mem_read_en && !sq_mem_write_en && !amo_mem_write_en);
 
 `ifndef SYNTHESIS
 `ifndef FORMAL

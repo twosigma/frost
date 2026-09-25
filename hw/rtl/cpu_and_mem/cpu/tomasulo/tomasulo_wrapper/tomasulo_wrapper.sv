@@ -122,7 +122,8 @@ module tomasulo_wrapper #(
     // Widen-commit slot 2 (head+1).  Non-null only when the
     // 2-wide gate inside the ROB fires; otherwise valid bits are low and
     // payload is '0.  cpu_ooo consumes these in parallel with slot 1 for
-    // two-wide architectural retirement.
+    // two-wide architectural retirement, except o_commit_2_store_like_raw,
+    // which only the testbench observes (the SQ takes it inside the wrapper).
     output riscv_pkg::reorder_buffer_commit_t o_commit_2,
     output riscv_pkg::reorder_buffer_commit_t o_commit_comb_2,
     output logic                              o_commit_2_valid_raw,
