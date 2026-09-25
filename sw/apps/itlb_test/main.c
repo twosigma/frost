@@ -94,10 +94,12 @@
  *      DDR evicts the stub's line from the L1I and the provider buffers, and
  *      sfence.vma evicts its translation. FROST also runs every sfence.vma as
  *      a fence.i cache sync (L1D writeback, L1I invalidate). Variants: the
- *      stub at 0x7E8 (line offset 8) and 0x000, no thrash (named warm-L1I,
- *      though its sfence.vma still invalidates the L1I), no sfence
+ *      stub at 0x7E8 (line offset 8) and 0x000, no thrash and no sfence.vma
+ *      (warm-L1I: after the first iteration the stub's line stays in the L1I
+ *      and its translation in the ITLB), thrash without sfence.vma
  *      (warm-ITLB), a body without the call, a jalr handler, 64 KiB of L1D
- *      lines dirtied before the run, the handler's jalr at a line start,
+ *      lines dirtied after main's sfence.vma (so the S handler's sfence.vma
+ *      writes them back), the handler's jalr at a line start,
  *      the handler page at a low VA (busybox is a static binary below 2 GiB
  *      while the vDSO sits above it, so the ret and the RAS's wrong-path
  *      target change 4 GiB region), the lazy vDSO map (the stub page starts
@@ -896,8 +898,9 @@ int main(void)
             unsigned long handler; /* handler offset in the U text page */
             unsigned long stub;    /* stub offset in the stub page */
             int thrash;            /* evict the L1I + provider buffers first */
-            int sfence;            /* sfence.vma before the run and before the sret */
-            int dirty;             /* dirty 64 KiB of L1D lines before the run */
+            int sfence;            /* sfence.vma before the run and before the sret;
+                                    * 0 only with lazy = ras = 0, which change PTEs */
+            int dirty;             /* dirty 64 KiB of L1D lines after main's sfence.vma */
             int low_va;            /* body + handler at the low VA (another 4 GiB region) */
             int lazy;              /* stub page unmapped: fault, PTE install, sfence, sret */
             int ras;               /* 1: the body's low-VA page (the RAS's return address)
@@ -909,7 +912,7 @@ int main(void)
             {"faithful stub@5E0", 0x000, 0x300, 0x5E0, 1, 1, 0, 0, 0, 0},
             {"control stub@7E8", 0x000, 0x300, 0x7E8, 1, 1, 0, 0, 0, 0},
             {"control stub@000", 0x000, 0x300, 0x000, 1, 1, 0, 0, 0, 0},
-            {"warm-L1I stub@5E0", 0x000, 0x300, 0x5E0, 0, 1, 0, 0, 0, 0},
+            {"warm-L1I stub@5E0", 0x000, 0x300, 0x5E0, 0, 0, 0, 0, 0, 0},
             {"warm-ITLB stub@5E0", 0x000, 0x300, 0x5E0, 1, 0, 0, 0, 0, 0},
             {"no-call body stub@5E0", 0x200, 0x300, 0x5E0, 1, 1, 0, 0, 0, 0},
             {"jalr handler stub@5E0", 0x000, 0x380, 0x5E0, 1, 1, 0, 0, 0, 0},
@@ -966,13 +969,15 @@ int main(void)
                         sweep[w] = w;
                 }
 #endif
+                if (zv->sfence)
+                    sfence_vma();
+                /* After main's sfence.vma, whose cache sync would clean them:
+                 * the S handler's sfence.vma must write these lines back. */
                 if (zv->dirty) {
                     volatile unsigned long *d = (volatile unsigned long *) Z_DIRTY_BASE;
                     for (unsigned long w = 0; w < Z_DIRTY_BYTES / sizeof(unsigned long); w += 4)
                         d[w] = w + (unsigned long) it;
                 }
-                if (zv->sfence)
-                    sfence_vma();
                 RUN_AT(text_va + zv->body, MPP_U);
                 l0_y[ix_t] = stub_pte;
                 l0_a[VP_Z_BODY_LOW] = low_pte_u;
