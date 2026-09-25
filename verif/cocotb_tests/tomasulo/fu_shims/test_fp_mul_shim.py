@@ -686,11 +686,11 @@ async def test_fmul_payload_and_ordering_ring_wraparound(dut: Any) -> None:
 
 
 # ============================================================================
-# Back-pressure: the busy bound fills the FMA tag queue and then the ring
+# Back-pressure: 14 FMAs at the busy bound, in the tag queue and then the ring
 # ============================================================================
 @cocotb.test()
-async def test_busy_bound_fills_fma_tag_queue_and_ring(dut: Any) -> None:
-    """Busy stops issue at 14 FMAs; the full FMA tag queue, then the ring, keep order."""
+async def test_busy_bound_fma_tag_queue_and_ring(dut: Any) -> None:
+    """Busy stops issue at 14 FMAs, which keep issue order in the FMA tag queue and ring."""
     iface = await setup(dut)
     iface.set_accepted(False)
 

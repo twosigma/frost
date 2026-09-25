@@ -3677,7 +3677,7 @@ async def test_div_shim_end_to_end(dut: Any) -> None:
 
 @cocotb.test()
 async def test_integrated_fu_back_to_back(dut: Any) -> None:
-    """An ADD dispatched right after a 6-cycle MUL broadcasts first; both commit in ROB order."""
+    """An ADD dispatched after a 6-cycle MUL broadcasts first; both commit in ROB order."""
     cocotb.log.info("=== Test: Integrated FU Back-to-Back ===")
     dut_if, model = await setup_test(dut)
 
