@@ -1710,8 +1710,8 @@ package riscv_pkg;
     // RAS (Return Address Stack) prediction metadata
     logic ras_predicted;  // RAS prediction was used
     logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
-    // RAS entry state for this packet: after any older pipelined operation and
-    // before this packet's own operation, for recovery.
+    // Return address stack state for this packet: after every older push and
+    // pop and before this packet's own, for recovery.
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
     // Bimodal branch-direction prediction, not gated by a BTB hit, carried
@@ -1855,7 +1855,7 @@ package riscv_pkg;
     // encoding: a plain return needs rd==x0 and a plain call needs rd in
     // {x1,x5}, so the pair is otherwise mutually exclusive.  See
     // instruction_type_decoder.sv.
-    logic is_ras_return;  // JALR with rs1=x1, rd=x0, imm=0 (matches ras_detector)
+    logic is_ras_return;  // JALR with rs1=x1, rd=x0, imm=0
     logic is_ras_call;  // JAL/JALR with rd in {x1,x5}
     // BTB check for JAL and branches: their target is PC-relative and known
     // in ID, so ID compares it with btb_predicted_target directly.
@@ -1954,6 +1954,11 @@ package riscv_pkg;
     logic [XLEN-1:0] btb_update_target;  // Actual branch target
     logic btb_update_taken;  // Actual branch outcome (taken/not-taken)
     logic btb_update_compressed;  // Branch was a compressed (16-bit) instruction
+    // The trained instruction is a call or a return (both for a coroutine
+    // swap), so a later hit takes its target from the return address stack
+    // or pushes onto it.
+    logic btb_update_call;
+    logic btb_update_return;
     // RAS misprediction recovery signals
     logic ras_misprediction;  // RAS prediction was wrong, need to restore
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction

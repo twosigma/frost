@@ -15,14 +15,15 @@
  */
 
 /*
- * Aligns slot-1 prediction metadata (taken, target) with the packet IF emits,
+ * Aligns slot-1 prediction metadata (taken, target, and the call and return
+ * types of the BTB entry behind the target) with the packet IF emits,
  * across stalls, NOP bubbles, and the pending-prediction handoff
  * (hw/rtl/cpu_and_mem/cpu/README.md, "Pending-prediction handoff"). Validity
  * is saved when a stall begins, restored with the held instruction, and
  * cleared for bubbles. A pending prediction belongs to the packet at its saved
- * PC, its owner; no other packet may carry or consume it. The target is
- * selected separately from validity and is meaningful only when the packet is
- * predicted taken.
+ * PC, its owner; no other packet may carry or consume it. The target and its
+ * types are selected separately from validity and are meaningful only when the
+ * packet is predicted taken.
  */
 module prediction_metadata_tracker #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -41,6 +42,8 @@ module prediction_metadata_tracker #(
     // Current registered prediction from branch_prediction_controller
     input logic            i_prediction_used_r,
     input logic [XLEN-1:0] i_predicted_target_r,
+    input logic            i_predicted_is_call_r,
+    input logic            i_predicted_is_return_r,
     // Whether pc_controller holds a prediction deferred while pc_reg walks
     // older instructions, that prediction's owner PC, and the PC of the packet
     // IF presents now. i_output_pc must come through the same live/stall-replay
@@ -60,6 +63,8 @@ module prediction_metadata_tracker #(
     // lookup at its own PC.
     input logic            i_live_target_aligned_with_output,
     input logic [XLEN-1:0] i_live_predicted_target,
+    input logic            i_live_predicted_is_call,
+    input logic            i_live_predicted_is_return,
     input logic            i_pending_prediction_fetch_holdoff,
     // pc_controller's pulse that applies the pending target. Saved metadata is
     // consumed only when this fires while its owner is the unstalled output.
@@ -82,7 +87,11 @@ module prediction_metadata_tracker #(
 
     // Outputs to PD stage
     output logic            o_btb_predicted_taken,
-    output logic [XLEN-1:0] o_btb_predicted_target
+    output logic [XLEN-1:0] o_btb_predicted_target,
+    // Types of the entry behind o_btb_predicted_target, which drive IF's
+    // return address stack operation for the packet
+    output logic            o_btb_predicted_is_call,
+    output logic            o_btb_predicted_is_return
 );
 
   // ===========================================================================
@@ -110,6 +119,8 @@ module prediction_metadata_tracker #(
 
   logic            prediction_taken_pending_saved;
   logic [XLEN-1:0] prediction_target_pending_saved;
+  logic            prediction_is_call_pending_saved;
+  logic            prediction_is_return_pending_saved;
   logic [XLEN-1:0] prediction_pc_pending_saved;
   logic            prediction_pending_saved_valid;
 
@@ -202,8 +213,10 @@ module prediction_metadata_tracker #(
 
   always_ff @(posedge i_clk) begin
     if (pending_prediction_capture) begin
-      prediction_target_pending_saved <= i_predicted_target_r;
-      prediction_pc_pending_saved     <= i_pending_prediction_pc;
+      prediction_target_pending_saved    <= i_predicted_target_r;
+      prediction_is_call_pending_saved   <= i_predicted_is_call_r;
+      prediction_is_return_pending_saved <= i_predicted_is_return_r;
+      prediction_pc_pending_saved        <= i_pending_prediction_pc;
     end
   end
 
@@ -222,8 +235,8 @@ module prediction_metadata_tracker #(
   //
   // Ownership depends on saved state and PC equality. Select those sources
   // before the late NOP and fetch-holdoff controls qualify the final validity.
-  (* keep = "true" *) logic owner_taken_live;
-  (* keep = "true" *) logic owner_taken_registered;
+  (* keep = "true" *)logic owner_taken_live;
+  (* keep = "true" *)logic owner_taken_registered;
   logic output_prediction_allowed;
   always_comb begin
     if (prediction_pending_saved_valid) begin
@@ -300,20 +313,27 @@ module prediction_metadata_tracker #(
   // to the PD register. There is no stall-saved target copy: the registered
   // target holds through an IF stall, and a pending prediction has its own
   // saved target. Registered or stall-replayed metadata keeps the registered
-  // target, even for a self-targeting prediction whose live RAS state has
-  // already popped; otherwise the target is the live lookup's. The
+  // target, even for a self-targeting prediction whose live lookup now names
+  // the same PC again; otherwise the target is the live lookup's. The
   // PC-alignment input is used only by assertions and never selects these
   // bits.
   //
   // Consumers use the target only when o_btb_predicted_taken is set, so the
   // value on an invalid packet does not matter.
+  // The types follow the target.
   always_comb begin
     if (prediction_pending_saved_valid) begin
-      o_btb_predicted_target = prediction_target_pending_saved;
+      o_btb_predicted_target    = prediction_target_pending_saved;
+      o_btb_predicted_is_call   = prediction_is_call_pending_saved;
+      o_btb_predicted_is_return = prediction_is_return_pending_saved;
     end else if (i_use_saved_values || i_prediction_used_r) begin
-      o_btb_predicted_target = i_predicted_target_r;
+      o_btb_predicted_target    = i_predicted_target_r;
+      o_btb_predicted_is_call   = i_predicted_is_call_r;
+      o_btb_predicted_is_return = i_predicted_is_return_r;
     end else begin
-      o_btb_predicted_target = i_live_predicted_target;
+      o_btb_predicted_target    = i_live_predicted_target;
+      o_btb_predicted_is_call   = i_live_predicted_is_call;
+      o_btb_predicted_is_return = i_live_predicted_is_return;
     end
   end
 
@@ -324,25 +344,34 @@ module prediction_metadata_tracker #(
   // match. The checks also pin the contract that the target of an invalid
   // packet is ignored.
   logic [XLEN-1:0] prediction_target_saved_legacy;
+  logic [     1:0] prediction_kind_saved_legacy;
   logic            btb_predicted_taken_legacy;
   logic [XLEN-1:0] btb_predicted_target_legacy;
+  // The call and return types, selected with the target.
+  logic [     1:0] btb_predicted_kind_legacy;
 
   always_ff @(posedge i_clk) begin
     if (i_stall & ~i_stall_registered) begin
       prediction_target_saved_legacy <= i_predicted_target_r;
+      prediction_kind_saved_legacy   <= {i_predicted_is_call_r, i_predicted_is_return_r};
     end
   end
 
   always_comb begin
+    btb_predicted_kind_legacy = '0;
     if (effective_sel_nop) begin
       btb_predicted_taken_legacy  = 1'b0;
       btb_predicted_target_legacy = '0;
     end else if (effective_pending_prediction_replay) begin
-      btb_predicted_taken_legacy  = prediction_taken_pending_saved;
+      btb_predicted_taken_legacy = prediction_taken_pending_saved;
       btb_predicted_target_legacy = prediction_target_pending_saved;
+      btb_predicted_kind_legacy = {
+        prediction_is_call_pending_saved, prediction_is_return_pending_saved
+      };
     end else if (effective_pending_prediction_direct) begin
       btb_predicted_taken_legacy  = 1'b1;
       btb_predicted_target_legacy = i_predicted_target_r;
+      btb_predicted_kind_legacy   = {i_predicted_is_call_r, i_predicted_is_return_r};
     end else if (prediction_pending_saved_valid || i_pending_prediction_active ||
                  i_pending_prediction_fetch_holdoff) begin
       btb_predicted_taken_legacy  = 1'b0;
@@ -350,11 +379,15 @@ module prediction_metadata_tracker #(
     end else if (i_live_prediction_for_output) begin
       btb_predicted_taken_legacy  = 1'b1;
       btb_predicted_target_legacy = i_live_predicted_target;
+      btb_predicted_kind_legacy   = {i_live_predicted_is_call, i_live_predicted_is_return};
     end else begin
       btb_predicted_taken_legacy =
           i_use_saved_values ? prediction_taken_saved : i_prediction_used_r;
       btb_predicted_target_legacy =
           i_use_saved_values ? prediction_target_saved_legacy : i_predicted_target_r;
+      btb_predicted_kind_legacy =
+          i_use_saved_values ? prediction_kind_saved_legacy :
+                               {i_predicted_is_call_r, i_predicted_is_return_r};
     end
   end
 
@@ -380,6 +413,28 @@ module prediction_metadata_tracker #(
       p_valid_prediction_target_matches_legacy :
       assert (!btb_predicted_taken_legacy ||
               (o_btb_predicted_target == btb_predicted_target_legacy));
+    end
+    if (!$isunknown(
+            {
+              btb_predicted_taken_legacy,
+              o_btb_predicted_is_call,
+              o_btb_predicted_is_return,
+              btb_predicted_kind_legacy
+            }
+        )) begin
+      p_valid_prediction_types_match_legacy :
+      assert (!btb_predicted_taken_legacy ||
+              ({o_btb_predicted_is_call, o_btb_predicted_is_return} ==
+               btb_predicted_kind_legacy));
+    end
+    if (!$isunknown(
+            {
+              o_btb_predicted_taken,
+              o_btb_predicted_target,
+              btb_predicted_taken_legacy,
+              btb_predicted_target_legacy
+            }
+        )) begin
       p_invalid_prediction_payload_is_ignored :
       assert (({XLEN{o_btb_predicted_taken}} & o_btb_predicted_target) ==
               ({XLEN{btb_predicted_taken_legacy}} & btb_predicted_target_legacy));

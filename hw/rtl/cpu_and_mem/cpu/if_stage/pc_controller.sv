@@ -94,7 +94,6 @@ module pc_controller #(
     input logic [XLEN-1:0] i_predicted_target_r,  // Predicted target address (registered)
     input logic i_prediction_used,  // Prediction consumed this cycle
     input logic i_prediction_used_for_pc,  // Stall-ungated select for PC D mux only
-    input logic i_ras_predicted,  // Prediction came from RAS/return detection
     input logic i_sel_prediction_r,  // Registered prediction used (for pc_reg)
     // Predicted op must still execute in IF/PD/ID
     input logic i_prediction_requires_pc_reg_handoff,
@@ -467,8 +466,7 @@ module pc_controller #(
   assign pc_reg_next_misses_fetch_pc_for_prediction = seq_next_pc_reg_neq_pc;
 
   assign prediction_needs_pending =
-      i_prediction_used && !i_prediction_already_emitted &&
-      !i_ras_predicted && !i_slot2_prediction_used &&
+      i_prediction_used && !i_prediction_already_emitted && !i_slot2_prediction_used &&
       (o_pc[1] || i_predicted_target[1] ||
        (pc_reg_next_misses_fetch_pc_for_prediction &&
         i_prediction_requires_pc_reg_handoff));
@@ -839,7 +837,7 @@ module pc_controller #(
   logic pending_valid_next;
   for (genvar miss = 0; miss < 2; miss++) begin : gen_pending_valid_by_miss
     wire capture = !fetch_stall && i_prediction_used &&
-        !i_prediction_already_emitted && !i_ras_predicted && !i_slot2_prediction_used &&
+        !i_prediction_already_emitted && !i_slot2_prediction_used &&
         (o_pc[1] || i_predicted_target[1] ||
          ((miss != 0) && i_prediction_requires_pc_reg_handoff));
     assign pending_valid_by_miss[miss] =
@@ -1417,8 +1415,7 @@ module pc_controller #(
   // reset, stall, holdoff, or NOP.
   always_ff @(posedge i_clk) begin
     if (!i_reset && !fetch_stall && !o_any_holdoff_safe && !i_sel_nop &&
-        i_prediction_used && !i_ras_predicted &&
-        !i_slot2_prediction_used && !o_pc[1] && !i_predicted_target[1] &&
+        i_prediction_used && !i_slot2_prediction_used && !o_pc[1] && !i_predicted_target[1] &&
         (o_pc_reg != o_pc) &&
         i_prediction_requires_pc_reg_handoff) begin
       p_pending_prediction_fast_miss_matches_full :

@@ -51,6 +51,15 @@ module prediction_metadata_tracker_formal (
   logic [XLEN-1:0] i_predicted_target_r;
   logic o_btb_predicted_taken;
   logic [XLEN-1:0] o_btb_predicted_target;
+  logic o_btb_predicted_is_call;
+  logic o_btb_predicted_is_return;
+  // Each call and return type pair is tied to its target's low two bits, so a
+  // type selected from a different source than its target shows as a
+  // mismatch at the output.
+  logic i_predicted_is_call_r, i_predicted_is_return_r;
+  logic i_live_predicted_is_call, i_live_predicted_is_return;
+  assign {i_predicted_is_call_r, i_predicted_is_return_r} = i_predicted_target_r[1:0];
+  assign {i_live_predicted_is_call, i_live_predicted_is_return} = i_live_predicted_target[1:0];
   logic formal_pending_valid;
   logic formal_pending_owner_match;
   logic formal_pending_consume;
@@ -106,12 +115,16 @@ module prediction_metadata_tracker_formal (
       .i_stall_registered,
       .i_prediction_used_r,
       .i_predicted_target_r,
+      .i_predicted_is_call_r,
+      .i_predicted_is_return_r,
       .i_pending_prediction_active,
       .i_pending_prediction_pc,
       .i_output_pc,
       .i_live_prediction_for_output,
       .i_live_target_aligned_with_output,
       .i_live_predicted_target,
+      .i_live_predicted_is_call,
+      .i_live_predicted_is_return,
       .i_pending_prediction_fetch_holdoff,
       .i_pending_prediction_target_handoff,
       .i_sel_nop,
@@ -123,8 +136,19 @@ module prediction_metadata_tracker_formal (
       .o_formal_pending_pc(formal_pending_pc),
       .o_formal_pending_target(formal_pending_target),
       .o_btb_predicted_taken,
-      .o_btb_predicted_target
+      .o_btb_predicted_target,
+      .o_btb_predicted_is_call,
+      .o_btb_predicted_is_return
   );
+
+  // The types always travel with their target. Before the first edge the
+  // unreset pending copies are arbitrary, as for the harness's other checks.
+  always_comb begin
+    if (f_past_valid) begin
+      p_types_follow_target :
+      assert ({o_btb_predicted_is_call, o_btb_predicted_is_return} == o_btb_predicted_target[1:0]);
+    end
+  end
 
   always_ff @(posedge i_clk) begin
     if (f_past_valid && $past(

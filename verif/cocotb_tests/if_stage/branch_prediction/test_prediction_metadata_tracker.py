@@ -37,12 +37,16 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_stall_registered.value = 0
     dut.i_prediction_used_r.value = 0
     dut.i_predicted_target_r.value = 0
+    dut.i_predicted_is_call_r.value = 0
+    dut.i_predicted_is_return_r.value = 0
     dut.i_pending_prediction_active.value = 0
     dut.i_pending_prediction_pc.value = 0
     dut.i_output_pc.value = 0
     dut.i_live_prediction_for_output.value = 0
     dut.i_live_target_aligned_with_output.value = 0
     dut.i_live_predicted_target.value = 0
+    dut.i_live_predicted_is_call.value = 0
+    dut.i_live_predicted_is_return.value = 0
     dut.i_pending_prediction_fetch_holdoff.value = 0
     dut.i_pending_prediction_target_handoff.value = 0
     dut.i_sel_nop.value = 0

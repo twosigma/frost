@@ -119,7 +119,7 @@ async def test_compressed_low_half_arms_buffer_and_captures_words(dut: Any) -> N
     await _advance_cycle(dut)
 
     assert dut.o_prev_was_compressed_at_lo.value
-    assert dut.o_is_compressed_for_buffer.value
+    assert dut.is_compressed_for_buffer.value
     _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
 
@@ -172,7 +172,7 @@ async def test_stall_start_saves_and_restores_instruction_metadata(dut: Any) -> 
     )
     await _settle()
 
-    assert dut.o_is_compressed_for_buffer.value
+    assert dut.is_compressed_for_buffer.value
 
     await _advance_cycle(dut)
 

@@ -14,7 +14,7 @@ read_verilog -formal -D SYNTHESIS -sv branch_prediction_controller.sv
 # Cut the predictor submodules so their outputs are arbitrary: the properties
 # concern only the controller's prediction-use gates, whatever the lookups
 # return.
-delete t:branch_predictor t:direction_predictor t:ras_detector t:return_address_stack
+delete t:branch_predictor t:direction_predictor t:return_address_stack
 proc
 setundef -undriven -anyseq
 opt

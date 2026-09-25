@@ -751,6 +751,8 @@ async def _train_btb(
     pc: int,
     target: int,
     compressed: bool = False,
+    call: bool = False,
+    ret: bool = False,
 ) -> None:
     """Install one taken BTB entry while prediction remains test-disabled."""
     _drive_from_ex(
@@ -761,6 +763,8 @@ async def _train_btb(
             "btb_update_target": target,
             "btb_update_taken": True,
             "btb_update_compressed": compressed,
+            "btb_update_call": call,
+            "btb_update_return": ret,
         },
     )
     await _advance_cycle(dut)
@@ -768,366 +772,139 @@ async def _train_btb(
     await _settle()
 
 
-async def _push_ras_call(dut: Any, *, return_target: int) -> None:
-    """Present one native call and wait for its pipelined RAS push."""
-    bpc = dut.branch_prediction_controller_inst
-    ras = bpc.ras_inst
-    count_before = int(bpc.o_ras_checkpoint_valid_count.value)
-    call_pc = return_target - 4
+async def _present_typed_prediction(
+    dut: Any, *, predecessor_pc: int, instruction: int
+) -> None:
+    """Predict the instruction after predecessor_pc from its own slot-1 lookup.
 
-    await _redirect_to(dut, call_pc)
-    assert int(dut.pc_reg.value) == call_pc
-
-    _drive_fetch(
-        dut,
-        current_word=CALL_RA_PLUS4_INSTR,
-        next_word=NOP_INSTR,
-        bank_sel=(call_pc >> 2) & 1,
-    )
-    await _advance_cycle(dut)
-
-    # IF pipelines the RAS detector and link address by one cycle.  The call
-    # is now the controller input, and the following edge performs the push.
-    assert ras.do_push.value
-    assert int(bpc.i_link_address.value) == return_target
-    _drive_fetch(
-        dut,
-        current_word=NOP_INSTR,
-        next_word=NOP_INSTR,
-        bank_sel=((call_pc + 4) >> 2) & 1,
-    )
-    await _advance_cycle(dut)
-
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == count_before + 1
-    assert int(bpc.o_ras_predicted_target.value) == return_target
-
-
-async def _restore_ras_checkpoint(dut: Any, *, tos: int, count: int) -> None:
-    """Apply one conditional-branch RAS restore through BPC's input register."""
-    bpc = dut.branch_prediction_controller_inst
-    _drive_fetch(
-        dut,
-        current_word=NOP_INSTR,
-        next_word=NOP_INSTR,
-        bank_sel=(int(dut.pc_reg.value) >> 2) & 1,
-    )
-    _drive_from_ex(
-        dut,
-        {
-            "ras_misprediction": True,
-            "ras_restore_tos": tos,
-            "ras_restore_valid_count": count,
-        },
-    )
-    await _advance_cycle(dut)
-
-    # Recovery inputs are intentionally registered in BPC.  In this cycle the
-    # next-state checkpoint must already describe the restore that the second
-    # edge will commit.
-    _drive_from_ex(dut, {})
-    await _settle()
-    assert bpc.ras_misprediction_r.value
-    assert int(bpc.o_ras_checkpoint_tos_next.value) == tos
-    assert int(bpc.o_ras_checkpoint_valid_count_next.value) == count
-    await _advance_cycle(dut)
-
-    assert int(bpc.o_ras_checkpoint_tos.value) == tos
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == count
-
-
-@cocotb.test()
-async def test_pipelined_ras_call_survives_current_slot2_owner(dut: Any) -> None:
-    """A younger branch checkpoints after an older delayed call push."""
-    await _setup_test(dut)
-
-    call_pc = BASE_PC
-    follower_pc = call_pc + 4
-    slot2_pc = follower_pc + 4
-    slot2_target = BRANCH_TARGET
-    await _train_btb(dut, pc=slot2_pc, target=slot2_target)
-    await _redirect_to(dut, call_pc)
-
-    bpc = dut.branch_prediction_controller_inst
-    ras = bpc.ras_inst
-    count_before = int(bpc.o_ras_checkpoint_valid_count.value)
-    assert int(dut.pc_reg.value) == call_pc
-    assert int(dut.o_pc.value) == follower_pc
-
-    # Cycle N: emit and capture the call. The fetch lead at follower_pc also
-    # starts the read of the +4 slot-2 BTB copy that the next bundle needs.
-    _drive_fetch(
-        dut,
-        current_word=CALL_RA_PLUS4_INSTR,
-        next_word=ADD_INSTR_A,
-        current_sb=_sideband(),
-        next_sb=_sideband(native_pairable_lo=True),
-        bank_sel=(call_pc >> 2) & 1,
-    )
-    await _settle()
-    _assert_packet(
-        _read_if_packet(dut),
-        pc=call_pc,
-        raw=CALL_RA_PLUS4_INSTR & 0xFFFF,
-        effective=CALL_RA_PLUS4_INSTR,
-        compressed=False,
-    )
-    await _advance_cycle(dut)
-
-    # Cycle N+1: the registered RAS detector classifies the older call while
-    # the live lookup at slot2_pc aliases this bundle's real, taken slot-2
-    # branch.
-    assert int(dut.pc_reg.value) == follower_pc
-    assert int(dut.o_pc.value) == slot2_pc
-    _drive_fetch(
-        dut,
-        current_word=ADD_INSTR_A,
-        next_word=BRANCH_INSTR,
-        current_sb=_sideband(native_pairable_lo=True),
-        next_sb=_sideband(),
-        bank_sel=(follower_pc >> 2) & 1,
-    )
+    predecessor_pc holds a non-pairable ALU op, so the live lookup one word
+    ahead belongs to slot 1. On return the predicted packet is IF's output,
+    with its metadata registered.
+    """
+    await _redirect_to(dut, predecessor_pc)
+    _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=instruction)
     dut.i_disable_branch_prediction.value = 0
     await _settle()
-
-    assert bpc.ras_is_call.value
-    assert int(bpc.i_link_address.value) == follower_pc
-    assert dut.slot2_plus4_candidate_valid.value
-    assert bpc.btb_hit.value
-    assert bpc.btb_hit_2.value
-    assert bpc.slot1_prediction_owned_by_slot2.value
-    assert bpc.slot1_aliases_emitted_slot2.value
-    assert ras.do_push.value
-    assert not bpc.o_ras_predicted.value
-    assert not bpc.o_prediction_used.value
-    assert bpc.o_slot2_prediction_used.value
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == count_before
-
-    # Both younger packet slots enter after the older delayed call operation on
-    # this edge.  Their recovery checkpoint must therefore forward the post-push
-    # state even though BPC's current checkpoint output is still pre-push.
-    expected_tos = (int(bpc.o_ras_checkpoint_tos.value) + 1) & 0x7
-    assert int(bpc.o_ras_checkpoint_tos_next.value) == expected_tos
-    assert int(bpc.o_ras_checkpoint_valid_count_next.value) == count_before + 1
-    branch_packet = _read_if_packet(dut, slot2=True)
-    _assert_packet(
-        branch_packet,
-        pc=slot2_pc,
-        raw=BRANCH_INSTR & 0xFFFF,
-        effective=BRANCH_INSTR,
-        compressed=False,
-    )
-    assert branch_packet["ras_checkpoint_tos"] == expected_tos
-    assert branch_packet["ras_checkpoint_valid_count"] == count_before + 1
-    branch_checkpoint = (
-        branch_packet["ras_checkpoint_tos"],
-        branch_packet["ras_checkpoint_valid_count"],
-    )
-
+    assert dut.branch_prediction_controller_inst.o_prediction_used.value
     await _advance_cycle(dut)
-
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == count_before + 1
-    assert int(bpc.o_ras_predicted_target.value) == follower_pc
-    assert int(dut.o_pc.value) == slot2_target
-
-    # Dirty the speculative stack with a younger call, then recover the branch
-    # from the exact checkpoint it carried.  The older call must remain present.
     dut.i_disable_branch_prediction.value = 1
-    dirty_target = BASE_PC + 0x500
-    await _push_ras_call(dut, return_target=dirty_target)
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == branch_checkpoint[1] + 1
-    await _restore_ras_checkpoint(
-        dut,
-        tos=branch_checkpoint[0],
-        count=branch_checkpoint[1],
-    )
-    assert int(bpc.o_ras_predicted_target.value) == follower_pc
-
-
-@cocotb.test()
-async def test_delayed_ras_return_beats_current_slot2_redirect(dut: Any) -> None:
-    """A younger branch checkpoints after an older delayed return pop."""
-    await _setup_test(dut)
-
-    return_pc = BASE_PC
-    follower_pc = return_pc + 4
-    # Returning to the sequential follower keeps the younger bundle that is
-    # visible in the same cycle on the program path.
-    return_target = follower_pc
-    slot2_pc = follower_pc + 4
-    slot2_target = BRANCH_TARGET
-    await _push_ras_call(dut, return_target=return_target)
-    await _train_btb(dut, pc=slot2_pc, target=slot2_target)
-    await _redirect_to(dut, return_pc)
-
-    bpc = dut.branch_prediction_controller_inst
-    ras = bpc.ras_inst
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == 1
     _drive_fetch(
         dut,
-        current_word=RETURN_RA_INSTR,
-        next_word=ADD_INSTR_A,
-        current_sb=_sideband(),
-        next_sb=_sideband(native_pairable_lo=True),
-        bank_sel=(return_pc >> 2) & 1,
+        current_word=instruction,
+        next_word=NOP_INSTR,
+        bank_sel=((predecessor_pc + 4) >> 2) & 1,
     )
-    await _advance_cycle(dut)
-
-    _drive_fetch(
-        dut,
-        current_word=ADD_INSTR_A,
-        next_word=BRANCH_INSTR,
-        current_sb=_sideband(native_pairable_lo=True),
-        next_sb=_sideband(),
-        bank_sel=(follower_pc >> 2) & 1,
-    )
-    dut.i_disable_branch_prediction.value = 0
     await _settle()
-
-    assert bpc.ras_is_return.value
-    assert bpc.ras_valid.value
-    assert bpc.slot1_prediction_owned_by_slot2.value
-    assert bpc.slot1_aliases_emitted_slot2.value
-    assert bpc.btb_hit.value
-    assert bpc.btb_hit_2.value
-    assert _slot2_btb_hit(bpc)
-    assert ras.do_pop.value
-    assert bpc.o_ras_predicted.value
-    assert bpc.o_prediction_used_for_pc.value
-    assert bpc.o_prediction_used.value
-    assert int(bpc.o_predicted_target.value) == return_target
-    assert not bpc.o_slot2_prediction_used_for_pc.value
-    assert not bpc.o_slot2_prediction_used.value
-    assert int(dut.pc_controller_inst.o_npc_sel.value) == 1 << 8
-
-    # The raw stack still contains the older return address until the edge, but
-    # the concurrently emitted younger branch must carry the post-pop state.
-    expected_tos = (int(bpc.o_ras_checkpoint_tos.value) - 1) & 0x7
-    assert int(bpc.o_ras_checkpoint_tos_next.value) == expected_tos
-    assert int(bpc.o_ras_checkpoint_valid_count_next.value) == 0
-    branch_packet = _read_if_packet(dut, slot2=True)
-    _assert_packet(
-        branch_packet,
-        pc=slot2_pc,
-        raw=BRANCH_INSTR & 0xFFFF,
-        effective=BRANCH_INSTR,
-        compressed=False,
-    )
-    assert branch_packet["ras_checkpoint_tos"] == expected_tos
-    assert branch_packet["ras_checkpoint_valid_count"] == 0
-    branch_checkpoint = (
-        branch_packet["ras_checkpoint_tos"],
-        branch_packet["ras_checkpoint_valid_count"],
-    )
-
-    await _advance_cycle(dut)
-
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == 0
-    assert int(dut.o_pc.value) == return_target
-    assert not dut.pc_controller_inst.o_slot2_redirect_q.value
-
-    # A younger speculative call must be discarded by recovery to the branch's
-    # empty checkpoint; restoring the pre-pop state would resurrect the return.
-    dut.i_disable_branch_prediction.value = 1
-    await _push_ras_call(dut, return_target=BASE_PC + 0x600)
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == 1
-    await _restore_ras_checkpoint(
-        dut,
-        tos=branch_checkpoint[0],
-        count=branch_checkpoint[1],
-    )
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == 0
+    assert int(dut.pc_reg.value) == predecessor_pc + 4
 
 
 @cocotb.test()
-async def test_self_targeting_ras_pop_keeps_registered_target_provenance(
+async def test_typed_call_pushes_once_when_its_packet_is_accepted(dut: Any) -> None:
+    """A call predicted from a typed entry pushes its link when PD takes the packet.
+
+    Presented under a stall it does not push; its stall replay pushes once.
+    The packet carries the stack state before its own push.
+    """
+    await _setup_test(dut)
+    bpc = dut.branch_prediction_controller_inst
+    call_pc = BASE_PC + 4
+    callee = BASE_PC + 0x1000
+    await _train_btb(dut, pc=call_pc, target=callee, call=True)
+
+    await _present_typed_prediction(
+        dut, predecessor_pc=BASE_PC, instruction=CALL_RA_PLUS4_INSTR
+    )
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _settle()
+    packet = _read_if_packet(dut)
+    assert packet["program_counter"] == call_pc
+    assert packet["btb_predicted_taken"]
+    assert packet["btb_predicted_target"] == callee
+    assert packet["ras_checkpoint_valid_count"] == 0
+    assert not dut.ras_push.value
+
+    await _advance_cycle(dut)
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == 0
+
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    packet = _read_if_packet(dut)
+    assert packet["program_counter"] == call_pc
+    assert packet["btb_predicted_taken"]
+    assert packet["ras_checkpoint_valid_count"] == 0
+    assert dut.ras_push.value
+    assert not dut.ras_pop.value
+    assert int(dut.ras_push_address.value) == call_pc + 4
+
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {})
+    await _settle()
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == 1
+    assert int(bpc.ras_inst.o_top.value) == call_pc + 4
+    assert not dut.ras_push.value
+
+
+@cocotb.test()
+async def test_typed_return_predicts_the_stack_top_and_pops_on_acceptance(
     dut: Any,
 ) -> None:
-    """A self-targeting RAS pop cannot retag metadata with the new stack top."""
+    """A return predicted from a typed entry targets the stack top, then pops."""
     await _setup_test(dut)
-
-    target_b = BASE_PC + 0x100
-    target_a = BASE_PC + 0x200
-    await _push_ras_call(dut, return_target=target_b)
-    await _push_ras_call(dut, return_target=target_a)
-
     bpc = dut.branch_prediction_controller_inst
-    ras = bpc.ras_inst
-    assert int(bpc.o_ras_checkpoint_valid_count.value) == 2
-    assert int(bpc.o_ras_predicted_target.value) == target_a
+    call_pc = BASE_PC + 4
+    # A different BTB row from call_pc's (the BTB is direct mapped).
+    return_pc = BASE_PC + 0x1204
+    stale_target = BASE_PC + 0x2000
+    await _train_btb(dut, pc=call_pc, target=return_pc - 4, call=True)
+    await _train_btb(dut, pc=return_pc, target=stale_target, ret=True)
 
-    # The redirect helper leaves the ordinary one-word fetch lead.  Present a
-    # return for one cycle so its pipelined detector reaches BPC exactly when
-    # the lookup PC is A and pc_reg is still A-4.
-    await _redirect_to(dut, target_a - 8)
-    assert int(dut.o_pc.value) == target_a - 4
-    assert int(dut.pc_reg.value) == target_a - 8
-    _drive_fetch(
-        dut,
-        current_word=RETURN_RA_INSTR,
-        next_word=RETURN_RA_INSTR,
-        bank_sel=((target_a - 8) >> 2) & 1,
+    await _present_typed_prediction(
+        dut, predecessor_pc=BASE_PC, instruction=CALL_RA_PLUS4_INSTR
     )
     await _advance_cycle(dut)
-
-    assert int(dut.o_pc.value) == target_a
-    assert int(dut.pc_reg.value) == target_a - 4
-    _drive_fetch(
-        dut,
-        current_word=RETURN_RA_INSTR,
-        next_word=RETURN_RA_INSTR,
-        bank_sel=((target_a - 4) >> 2) & 1,
-    )
-    dut.i_disable_branch_prediction.value = 0
-    await _settle()
-
-    assert ras.do_pop.value
-    assert bpc.o_ras_predicted.value
-    assert bpc.o_prediction_used.value
-    assert int(bpc.o_predicted_target.value) == target_a
-
-    # This return packet is marked predicted by its live RAS fields.  The BTB
-    # metadata is registered on the consume edge below, for the target and
-    # holdoff cycle that follows.
-    return_packet = _read_if_packet(dut)
-    _assert_packet(
-        return_packet,
-        pc=target_a - 4,
-        raw=RETURN_RA_INSTR & 0xFFFF,
-        effective=RETURN_RA_INSTR,
-        compressed=False,
-    )
-    assert return_packet["ras_predicted"]
-    assert return_packet["ras_predicted_target"] == target_a
-
-    # Consume the self-targeting prediction.  This edge registers target A,
-    # pops the stack to B, and makes both live PCs equal A, so the live target
-    # is now B.  The RAS prediction holdoff makes this stale-fetch cycle a NOP,
-    # but the packet's target must still come from the registered metadata
-    # (A), not from the new stack top.
-    await _advance_cycle(dut)
-    _drive_fetch(
-        dut,
-        current_word=RETURN_RA_INSTR,
-        next_word=RETURN_RA_INSTR,
-        bank_sel=(target_a >> 2) & 1,
-    )
-    await _settle()
-
-    assert int(dut.o_pc.value) == target_a
-    assert int(dut.pc_reg.value) == target_a
-    assert dut.lookup_pc_matches_packet_pc.value
-    assert bpc.o_prediction_holdoff.value
-    assert bpc.o_prediction_used_r.value
-    assert int(bpc.o_predicted_target_r.value) == target_a
     assert int(bpc.o_ras_checkpoint_valid_count.value) == 1
-    assert int(bpc.o_ras_predicted_target.value) == target_b
-    assert int(bpc.o_predicted_target.value) == target_b
-    assert not ras.do_pop.value
 
+    await _present_typed_prediction(
+        dut, predecessor_pc=return_pc - 4, instruction=RETURN_RA_INSTR
+    )
     packet = _read_if_packet(dut)
-    assert packet["sel_nop"]
-    assert not packet["btb_predicted_taken"]
-    assert packet["btb_predicted_target"] == target_a
+    assert packet["program_counter"] == return_pc
+    assert packet["btb_predicted_taken"]
+    assert packet["btb_predicted_target"] == call_pc + 4
+    assert packet["ras_checkpoint_valid_count"] == 1
+    assert dut.ras_pop.value
+    assert not dut.ras_push.value
+
+    await _advance_cycle(dut)
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == 0
+
+
+@cocotb.test()
+async def test_squashed_typed_packet_leaves_the_stack_alone(dut: Any) -> None:
+    """A PD redirect or a flush in the cycle IF emits the call drops its push."""
+    await _setup_test(dut)
+    bpc = dut.branch_prediction_controller_inst
+    call_pc = BASE_PC + 4
+    await _train_btb(dut, pc=call_pc, target=BASE_PC + 0x1000, call=True)
+
+    for squash in ("pd_redirect", "flush"):
+        await _present_typed_prediction(
+            dut, predecessor_pc=BASE_PC, instruction=CALL_RA_PLUS4_INSTR
+        )
+        assert _read_if_packet(dut)["btb_predicted_taken"]
+        if squash == "pd_redirect":
+            dut.i_pd_redirect.value = 1
+            dut.i_pd_redirect_target.value = BASE_PC + 0x40
+        else:
+            _drive_pipeline_ctrl(dut, {"flush": True})
+        await _settle()
+        assert not dut.ras_push.value, squash
+
+        await _advance_cycle(dut)
+        dut.i_pd_redirect.value = 0
+        _drive_pipeline_ctrl(dut, {})
+        await _settle()
+        assert int(bpc.o_ras_checkpoint_valid_count.value) == 0, squash
 
 
 @cocotb.test()
@@ -1541,7 +1318,6 @@ async def test_slot2_collision_holdoff_stays_inside_stretched_redirect_bubble(
     assert not bpc.o_prediction_used_r.value
     assert not bpc.o_sel_prediction_r.value
     assert bpc.o_prediction_holdoff.value
-    assert bpc.o_btb_only_prediction_holdoff.value
     assert dut.slot2_redirect_q.value
     assert dut.prediction_reset_c_ext.value, (
         "a consumed slot prediction must arm the registered C-state reset"
@@ -1580,7 +1356,6 @@ async def test_slot2_collision_holdoff_stays_inside_stretched_redirect_bubble(
     await _advance_cycle(dut)
 
     assert not bpc.o_prediction_holdoff.value
-    assert not bpc.o_btb_only_prediction_holdoff.value
     assert not bpc.o_prediction_used_r.value
     assert not bpc.o_sel_prediction_r.value
     assert not dut.slot2_redirect_q.value
@@ -1852,7 +1627,6 @@ async def test_noncovering_window_cannot_seed_branch_prediction(dut: Any) -> Non
     assert int(bpc.o_predicted_target.value) == target
     assert not bpc.o_prediction_used.value
     assert not bpc.o_prediction_used_for_pc.value
-    assert not bpc.o_ras_predicted.value
     assert not bpc.o_slot2_prediction_used.value
     assert not bpc.o_slot2_prediction_used_for_pc.value
     assert _read_if_packet(dut)["sel_nop"]
@@ -2860,7 +2634,6 @@ async def test_pending_owner_is_not_emitted_as_predecessor_slot2(
             assert not bpc.o_prediction_used.value
             assert not bpc.o_prediction_used_for_pc.value
             assert not bpc.o_prediction_requires_pc_reg_handoff.value
-            assert not bpc.o_ras_predicted.value
             assert not _slot2_btb_hit(bpc)
             assert not bpc.o_slot2_prediction_used.value
             assert not slot2_packet["btb_predicted_taken"]
@@ -3046,7 +2819,6 @@ async def test_pending_slot1_owner_kills_stale_noncontrol_sibling(
     assert not bpc.o_prediction_used.value
     assert not bpc.o_prediction_used_for_pc.value
     assert not bpc.o_prediction_requires_pc_reg_handoff.value
-    assert not bpc.o_ras_predicted.value
     assert not _slot2_btb_hit(bpc)
     assert not bpc.o_slot2_prediction_used.value
     assert owner["program_counter"] == branch_pc

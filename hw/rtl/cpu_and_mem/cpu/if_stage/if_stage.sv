@@ -196,14 +196,17 @@ module if_stage #(
   // Branch Prediction Controller Interface (branch_prediction_controller)
   // ---------------------------------------------------------------------------
   logic [XLEN-1:0] btb_predicted_target;  // Combinational: Predicted target address
+  // The BTB entry behind the target is typed as a call or a return.
+  logic btb_predicted_is_call;
+  logic btb_predicted_is_return;
   logic prediction_used_r;  // Registered: Prediction was applied
   logic [XLEN-1:0] btb_predicted_target_r;  // Registered: Target for pipeline alignment
+  logic btb_predicted_is_call_r;  // Registered with the target
+  logic btb_predicted_is_return_r;
   logic prediction_used;  // Current prediction being used
   logic prediction_used_for_pc;  // Stall-ungated PC mux select
   logic prediction_used_live_cofactor;  // prediction_used without the slot-2 alias gate
   logic prediction_holdoff;  // Block prediction (stale data)
-  logic btb_only_prediction_holdoff;  // Holdoff when BTB (not RAS) predicted - instr valid
-  logic ras_prediction_holdoff;  // Holdoff when RAS predicted - next instr is stale
   logic disable_branch_prediction_effective;  // i_disable_branch_prediction + IF-internal gates
   // The same with window_cannot_serve_pc_reg (WCS) forced to 0 and to 1.
   logic disable_branch_prediction_effective_wcs0;
@@ -223,15 +226,23 @@ module if_stage #(
   logic slot2_live_target_used_for_pc_cofactor;
   logic [XLEN-1:0] slot2_staged_predicted_target;
   logic [XLEN-1:0] slot2_live_predicted_target;
+  logic slot2_predicted_is_call;
+  logic slot2_predicted_is_return;
 
-  // RAS (Return Address Stack) signals
-  logic ras_predicted;  // RAS prediction was used
-  logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
-  // RAS top of stack and valid count including any push or pop by the older
-  // packet that lands on this edge: the recovery point of the packet leaving
-  // IF now.
-  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos_next;
-  logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count_next;
+  // Return address stack: the registered top of stack and valid count, the
+  // recovery point of the packet leaving IF now, and the push or pop for that
+  // packet ("Return address stack" in the CPU README).
+  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos;
+  logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count;
+  logic ras_push;
+  logic ras_pop;
+  logic [XLEN-1:0] ras_push_address;
+  // Types of the BTB entry behind each output packet's prediction, through the
+  // same live, registered, pending, and stall-replay selection as its target.
+  logic slot1_packet_is_call;
+  logic slot1_packet_is_return;
+  logic slot2_packet_is_call;
+  logic slot2_packet_is_return;
 
   // Bimodal direction prediction, carried with each slot-1 instruction to PD
   // so PD can redirect a branch the BTB does not predict taken.
@@ -282,7 +293,6 @@ module if_stage #(
   // ---------------------------------------------------------------------------
   logic [31:0] instr_buffer;  // Word kept for its upper parcel (see c_ext_state)
   logic prev_was_compressed_at_lo;  // Previous instr was compressed at addr[1]=0
-  logic is_compressed_for_buffer;  // Stall-restored is_compressed
   logic use_instr_buffer_for_coverage_timing;
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
@@ -312,7 +322,6 @@ module if_stage #(
   logic fetch_progress;  // live window valid OR replay bundle presented
   logic fetch_invalid_unstalled_q;  // last unstalled cycle had no live window
   logic lookup_lead_collapsed;  // first live window after such a gap
-  logic sel_nop_align;
   logic sel_compressed;  // Select compressed instruction path
   logic use_instr_buffer;  // Use buffered instruction
   logic [2:0] rvc_source_hot;
@@ -359,8 +368,7 @@ module if_stage #(
   // Slot 2 must NOP whenever slot 1 NOPs. IF's full sel_nop covers
   // control_flow_holdoff, pending-prediction holdoffs, reset_holdoff, and
   // flush, all conditions where the live BRAM data may not match pc_reg's
-  // word and the slot-2 alignment math is unreliable.  The aligner's narrow
-  // o_sel_nop (= sel_nop_align) covers only the RAS prediction holdoff.
+  // word and the slot-2 alignment math is unreliable.
   //
   // A pending prediction's saved taken metadata belongs to one instruction,
   // the branch at pending_prediction_pc. The instruction just before it may be
@@ -514,8 +522,6 @@ module if_stage #(
   // Derived Signals and Stall State
   // ---------------------------------------------------------------------------
   logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
-  logic ras_instruction_valid;
-  logic ras_instruction_valid_live;
   (* keep = "true", max_fanout = 32 *)logic if_stage_stall;
   (* keep = "true", max_fanout = 32 *)logic if_stage_stall_registered;
   (* keep = "true" *)logic pc_controller_stall;
@@ -588,9 +594,6 @@ module if_stage #(
     end
   end
 `endif
-  assign ras_instruction_valid_live = !sel_nop &&
-                                      (!prediction_holdoff || btb_only_prediction_holdoff);
-
   // IF's internal state clears on flush_for_c_ext_safe, the front-end state
   // flush. cpu_ooo drives i_frontend_state_flush and i_pipeline_ctrl.flush
   // from the same signal (flush_pipeline in misprediction_flush_controller),
@@ -619,68 +622,14 @@ module if_stage #(
   // ===========================================================================
   // Branch Prediction Controller
   // ===========================================================================
-  // With 64-bit fetch both halves of a straddling instruction arrive together,
-  // so there is no spanning state to detect; RAS detection uses the assembled
-  // instruction directly.
-  logic [31:0] ras_instruction;
-  logic [15:0] ras_raw_parcel;
-  logic        ras_is_compressed;
-  logic        ras_saved_input_available_sc;
-  logic        ras_replay_inputs;
-  logic        ras_instruction_valid_sc;
-
   // Declared before first use to avoid Vivado warnings.
-  logic        use_saved_values;
+  logic use_saved_values;
   assign use_saved_values = if_stage_stall_registered && saved_values_valid;
   logic            prediction_reset_c_ext;
   logic [    15:0] raw_parcel_sc;
   logic [    31:0] assembled_instr_sc;
   logic [XLEN-1:0] instruction_pc_sc;
   logic [XLEN-1:0] link_address_sc;
-
-  assign ras_replay_inputs = if_stage_stall_registered && ras_saved_input_available_sc;
-
-  assign ras_instruction = assembled_instr_sc;
-  assign ras_raw_parcel = raw_parcel_sc;
-  assign ras_is_compressed = ras_replay_inputs ? is_compressed_for_buffer : is_compressed;
-  assign ras_instruction_valid = !any_holdoff_safe &&
-                                 !i_from_ex_comb.branch_taken &&
-                                 !i_trap_ctrl.trap_taken &&
-                                 !i_trap_ctrl.mret_taken &&
-                                 ras_instruction_valid_sc &&
-                                 (!if_stage_stall_registered ||
-                                   ras_saved_input_available_sc);
-
-  // ===========================================================================
-  // RAS Input Pipeline Register (Timing Optimization)
-  // ===========================================================================
-  // The instruction and its validity are registered before
-  // branch_prediction_controller to break the critical path:
-  //   mispredict_recovery → flush → control_flow → buffer_select →
-  //   ras_instruction → RAS call/return detect → prediction_used → PC
-  //
-  // As a result, RAS classification and the RAS redirect trail their packet
-  // by one cycle. The redirect applies as soon as the registered
-  // classification is visible, and the RAS-only holdoff suppresses the stale
-  // sequential response. The RAS is speculative; any mismatch is recovered by
-  // the normal branch machinery.
-  logic [    31:0] ras_instruction_q;
-  logic [    15:0] ras_raw_parcel_q;
-  logic            ras_is_compressed_q;
-  logic            ras_instruction_valid_q;
-  logic [XLEN-1:0] link_address_sc_q;
-
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
-      ras_instruction_valid_q <= 1'b0;
-    end else begin
-      ras_instruction_q       <= ras_instruction;
-      ras_raw_parcel_q        <= ras_raw_parcel;
-      ras_is_compressed_q     <= ras_is_compressed;
-      ras_instruction_valid_q <= ras_instruction_valid;
-      link_address_sc_q       <= link_address_sc;
-    end
-  end
 
   // Slot-2 PC candidates: slot 2 sits at pc_reg+2 behind an RVC slot 1 and at
   // pc_reg+4 behind a native one. The live fetch PC reads the +2, +4, and
@@ -770,20 +719,18 @@ module if_stage #(
       .i_btb_update_target(i_from_ex_comb.btb_update_target),
       .i_btb_update_taken(i_from_ex_comb.btb_update_taken),
       .i_btb_update_compressed(i_from_ex_comb.btb_update_compressed),
+      .i_btb_update_call(i_from_ex_comb.btb_update_call),
+      .i_btb_update_return(i_from_ex_comb.btb_update_return),
       .i_btb_early_update_active,
       .i_btb_early_update_pc,
       .i_btb_early_update_taken,
       .i_btb_late_update_pc,
       .i_btb_late_update_taken,
 
-      // RAS inputs: the registered instruction/validity copies from the "RAS
-      // Input Pipeline Register" block above, which break the
-      // flush → RAS → prediction_used path.
-      .i_instruction(ras_instruction_q),
-      .i_raw_parcel(ras_raw_parcel_q),
-      .i_is_compressed(ras_is_compressed_q),
-      .i_instruction_valid(ras_instruction_valid_q),
-      .i_link_address(link_address_sc_q),
+      // Return address stack operation for the packet handed to PD this cycle
+      .i_ras_push(ras_push),
+      .i_ras_pop(ras_pop),
+      .i_ras_push_address(ras_push_address),
 
       // RAS misprediction recovery (from branch recovery)
       .i_ras_misprediction(i_from_ex_comb.ras_misprediction),
@@ -800,17 +747,20 @@ module if_stage #(
 
       // Combinational prediction target (for pc_controller)
       .o_predicted_target(btb_predicted_target),
+      .o_predicted_is_call(btb_predicted_is_call),
+      .o_predicted_is_return(btb_predicted_is_return),
 
       // Registered prediction outputs (for pipeline alignment)
-      .o_prediction_used_r (prediction_used_r),
+      .o_prediction_used_r(prediction_used_r),
       .o_predicted_target_r(btb_predicted_target_r),
+      .o_predicted_is_call_r(btb_predicted_is_call_r),
+      .o_predicted_is_return_r(btb_predicted_is_return_r),
 
       // Control outputs
       .o_prediction_used(prediction_used),
       .o_prediction_used_for_pc(prediction_used_for_pc),
       .o_prediction_used_live_cofactor(prediction_used_live_cofactor),
       .o_prediction_holdoff(prediction_holdoff),
-      .o_btb_only_prediction_holdoff(btb_only_prediction_holdoff),
       .o_sel_prediction_r(sel_prediction_r),
       .o_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
       .o_control_flow_to_halfword_pred(control_flow_to_halfword_pred),
@@ -825,17 +775,13 @@ module if_stage #(
       .o_slot2_predicted_target(slot2_predicted_target),
       .o_slot2_staged_predicted_target(slot2_staged_predicted_target),
       .o_slot2_live_predicted_target(slot2_live_predicted_target),
+      .o_slot2_predicted_is_call(slot2_predicted_is_call),
+      .o_slot2_predicted_is_return(slot2_predicted_is_return),
 
-      // RAS prediction outputs
-      .o_ras_predicted(ras_predicted),
-      .o_ras_predicted_target(ras_predicted_target),
-      // The current stack state is left unconnected. IF packets need the
-      // state after the pending push or pop, because RAS classification is
-      // one packet older than the live IF output.
-      .o_ras_checkpoint_tos(),
-      .o_ras_checkpoint_valid_count(),
-      .o_ras_checkpoint_tos_next(ras_checkpoint_tos_next),
-      .o_ras_checkpoint_valid_count_next(ras_checkpoint_valid_count_next),
+      // The registered stack state: the recovery point of the packets IF hands
+      // PD this cycle, before their own push or pop.
+      .o_ras_checkpoint_tos(ras_checkpoint_tos),
+      .o_ras_checkpoint_valid_count(ras_checkpoint_valid_count),
 
       // Bimodal direction and predict-time index, carried to PD
       .o_dir_predicted_taken(bp_dir_taken),
@@ -894,7 +840,6 @@ module if_stage #(
       .i_predicted_target_r(btb_predicted_target_r),
       .i_prediction_used(prediction_used),
       .i_prediction_used_for_pc(prediction_used_for_pc),
-      .i_ras_predicted(ras_predicted),
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_requires_pc_reg_handoff(prediction_requires_pc_reg_handoff),
       .i_prediction_holdoff(prediction_holdoff),
@@ -1068,7 +1013,6 @@ module if_stage #(
                             i_instr_sideband[riscv_pkg::ImemSidebandWidth-1:0]),
       .o_instr_buffer(instr_buffer),
       .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
-      .o_is_compressed_for_buffer(is_compressed_for_buffer),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid),
       .o_instr_buffer_sideband(instr_buffer_sideband),
@@ -1121,11 +1065,6 @@ module if_stage #(
 
       .i_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
 
-      // RAS predicts after the instruction arrives, so the next cycle's
-      // instruction is stale.  BTB predicts before the instruction arrives, so
-      // that cycle must not be suppressed.
-      .i_prediction_holdoff(ras_prediction_holdoff),
-
       // Only the registered stall, not the combinational one, so the path
       // stall → is_compressed → PC is broken.
       .i_stall_registered(if_stage_stall_registered),
@@ -1139,7 +1078,6 @@ module if_stage #(
       .o_is_compressed_fast(is_compressed_fast),
       .o_is_compressed_for_pc_advance(is_compressed_for_pc_advance),
       .o_no_buffer_accepts_served_last(no_buffer_accepts_served_last),
-      .o_sel_nop(sel_nop_align),
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer),
       .o_rvc_source_hot(rvc_source_hot),
@@ -1173,9 +1111,6 @@ module if_stage #(
       .o_slot2_kill_window_limit(slot2_kill_window_limit_live),
       .o_slot2_kill_transient(slot2_kill_transient_live)
   );
-
-  // RAS prediction stale cycle: only when the prediction came from the RAS.
-  assign ras_prediction_holdoff = prediction_holdoff && !btb_only_prediction_holdoff;
 
   // Registered PD redirect, ORed with !prediction_holdoff in sel_nop's
   // control-flow term below. The term is redundant: pd_redirect_q = 1 implies
@@ -1474,16 +1409,11 @@ module if_stage #(
 `ifndef SYNTHESIS
   always_comb begin
     if (!$isunknown(
-            {
-              window_cannot_serve_pc_reg,
-              prediction_used_for_pc,
-              slot2_prediction_used_for_pc,
-              ras_predicted
-            }
+            {window_cannot_serve_pc_reg, prediction_used_for_pc, slot2_prediction_used_for_pc}
         )) begin
       p_noncovering_window_blocks_all_predictions :
       assert (!window_cannot_serve_pc_reg ||
-              (!prediction_used_for_pc && !slot2_prediction_used_for_pc && !ras_predicted));
+              (!prediction_used_for_pc && !slot2_prediction_used_for_pc));
     end
   end
 `endif
@@ -1494,7 +1424,7 @@ module if_stage #(
   logic sel_nop_existing_wcs;
   assign sel_nop_existing = i_pipeline_ctrl.flush ||
                    flush_for_c_ext_safe || !fetch_progress ||
-                   sel_nop_align || reset_holdoff ||
+                   reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    pending_prediction_fetch_holdoff ||
                    (control_flow_holdoff &&
@@ -1506,7 +1436,7 @@ module if_stage #(
   // pending-prediction holdoff logic on its way to the PC advance.
   assign sel_nop_existing_wcs0 = i_pipeline_ctrl.flush ||
                    flush_for_c_ext_safe || !fetch_progress ||
-                   sel_nop_align || reset_holdoff ||
+                   reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    pending_prediction_fetch_holdoff_wcs0 ||
                    (control_flow_holdoff &&
@@ -1517,7 +1447,7 @@ module if_stage #(
   // AND and the compare stays out of the pending-hold and priority-mux logic.
   assign sel_nop_existing_wcs = i_pipeline_ctrl.flush ||
                    flush_for_c_ext_safe || !fetch_progress ||
-                   sel_nop_align || reset_holdoff ||
+                   reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    pending_prediction_fetch_holdoff_wcs ||
                    (control_flow_holdoff &&
@@ -1548,7 +1478,7 @@ module if_stage #(
   logic pc_control_sel_nop;
   assign flush_pc_control = (i_pipeline_ctrl.flush || flush_for_c_ext_safe) && !i_flush_all;
   assign sel_nop_existing_pc_control = flush_pc_control || !fetch_progress ||
-                   sel_nop_align || reset_holdoff ||
+                   reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    pending_prediction_fetch_holdoff_wcs0 ||
                    (control_flow_holdoff &&
@@ -1792,33 +1722,6 @@ module if_stage #(
       .o_data(sel_compressed_sc)
   );
 
-  // Keep RAS replay eligibility and validity aligned with the same stall-entry
-  // cycle as the captured instruction data instead of depending on
-  // c_ext_state.saved_values_valid in the live RAS cone.
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_ras_saved_input_available_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(!sel_nop),
-      .o_data(ras_saved_input_available_sc)
-  );
-
-  stall_capture_reg #(
-      .WIDTH(1)
-  ) u_ras_instruction_valid_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(ras_instruction_valid_live),
-      .o_data(ras_instruction_valid_sc)
-  );
-
   // sel_nop_saved has non-standard flush behavior (flushes to 1'b1, not '0),
   // and is passed to prediction_metadata_tracker, so it stays in a separate
   // always_ff block.
@@ -2048,66 +1951,58 @@ module if_stage #(
 `endif
 
   // ===========================================================================
-  // RAS Metadata for Pipeline Passthrough
+  // Return Address Stack Operation and Recovery Point
   // ===========================================================================
-  // RAS checkpoint data is stall-captured like the other IF outputs.  It is
-  // the state after any older, one-cycle-pipelined RAS operation lands on
-  // this edge and therefore the correct entry state for the live younger
-  // packet.  The checkpoint then travels down the pipeline for recovery.
+  // PD takes IF's packets on an unstalled cycle and drops them on a flush or a
+  // PD redirect; only a packet PD takes moves the stack, so a squashed or
+  // replayed packet never pushes or pops twice. A packet whose used prediction
+  // came from a BTB entry typed as a call pushes its link address, one typed
+  // as a return pops, and a coroutine swap does both. At most one packet of a
+  // bundle can: an instruction predicted taken ends the bundle.
+  //
+  // The branch predictor reads the stack top for a typed lookup. A packet
+  // accepted in the same cycle as a younger typed lookup could leave that
+  // lookup a stale top, but no younger lookup's prediction survives such a
+  // cycle: registered slot-1 metadata implies the prediction holdoff, a
+  // pending-prediction handoff blocks prediction, a stall replay comes with
+  // the registered stall, a slot-2 prediction kills the same-cycle slot-1
+  // prediction, and a collapsed-lead packet carries its own lookup (checked
+  // below).
+  //
+  // The stack's registered state is both packets' recovery point: their own
+  // operation lands on this edge. It does not change while IF stalls, so a
+  // stall-replayed packet carries the state it was first presented with.
+  logic ras_packet_accepted;
+  logic ras_op_slot1;
+  logic ras_op_slot2;
+  logic [XLEN-1:0] slot2_link_address;
+  assign ras_packet_accepted = !if_stage_stall && !i_pipeline_ctrl.flush && !i_pd_redirect;
+  assign ras_op_slot1 = ras_packet_accepted && o_from_if_to_pd.btb_predicted_taken &&
+                        (slot1_packet_is_call || slot1_packet_is_return);
+  assign ras_op_slot2 = ras_packet_accepted && o_from_if_to_pd_2.btb_predicted_taken &&
+                        (slot2_packet_is_call || slot2_packet_is_return);
+  assign slot2_link_address = o_from_if_to_pd_2.program_counter +
+      (o_from_if_to_pd_2.sel_compressed ? riscv_pkg::PcIncrementCompressed :
+                                          riscv_pkg::PcIncrement32bit);
+  assign ras_push = (ras_op_slot1 && slot1_packet_is_call) ||
+                    (ras_op_slot2 && slot2_packet_is_call);
+  assign ras_pop = (ras_op_slot1 && slot1_packet_is_return) ||
+                   (ras_op_slot2 && slot2_packet_is_return);
+  assign ras_push_address = ras_op_slot2 ? slot2_link_address : link_address_sc;
 
-  logic ras_predicted_saved;
-
-  // ras_predicted_saved has a non-standard flush condition (includes
-  // prediction_holdoff), so it stays in a separate always_ff block.
+`ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
-    if (flush_for_c_ext_safe || prediction_holdoff) begin
-      // Clear control bit on flush or prediction-driven control flow change.
-      // Saved data remains but is ignored when ras_predicted_saved is low.
-      ras_predicted_saved <= 1'b0;
-    end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      ras_predicted_saved <= ras_predicted;
+    if (!i_pipeline_ctrl.reset && !$isunknown(
+            {ras_op_slot1, ras_op_slot2, live_prediction_emits_with_output,
+             prediction_used, slot2_prediction_used}
+        )) begin
+      p_ras_one_operation_per_bundle : assert (!(ras_op_slot1 && ras_op_slot2));
+      p_ras_operation_has_no_younger_live_prediction :
+      assert (!(ras_op_slot1 && !live_prediction_emits_with_output &&
+                prediction_used && !slot2_prediction_used));
     end
   end
-
-  logic [                 XLEN-1:0] ras_predicted_target_sc;
-  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos_sc;
-  logic [  riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count_sc;
-
-  stall_capture_reg #(
-      .WIDTH(XLEN)
-  ) u_ras_predicted_target_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(ras_predicted_target),
-      .o_data(ras_predicted_target_sc)
-  );
-
-  stall_capture_reg #(
-      .WIDTH(riscv_pkg::RasPtrBits)
-  ) u_ras_checkpoint_tos_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(ras_checkpoint_tos_next),
-      .o_data(ras_checkpoint_tos_sc)
-  );
-
-  stall_capture_reg #(
-      .WIDTH(riscv_pkg::RasPtrBits + 1)
-  ) u_ras_checkpoint_valid_count_sc (
-      .i_clk,
-      .i_reset(1'b0),
-      .i_flush(flush_for_c_ext_safe),
-      .i_stall(if_stage_stall),
-      .i_stall_registered(if_stage_stall_registered),
-      .i_data(ras_checkpoint_valid_count_next),
-      .o_data(ras_checkpoint_valid_count_sc)
-  );
+`endif
 
   // Output-NOP selection follows the same stall replay as the packet fields.
   logic sel_nop_effective;
@@ -2263,16 +2158,11 @@ module if_stage #(
 
   // The RAS prediction flag is cleared for a NOP; the target and checkpoint
   // payloads are not. Stall replay selects the saved copies.
-  assign o_from_if_to_pd.ras_predicted = sel_nop_effective ? 1'b0 :
-                                         (replay_saved_if_outputs ? ras_predicted_saved :
-                                          ras_predicted);
-  assign o_from_if_to_pd.ras_predicted_target = replay_saved_if_outputs ?
-                                                ras_predicted_target_sc :
-                                                ras_predicted_target;
-  assign o_from_if_to_pd.ras_checkpoint_tos = replay_saved_if_outputs ? ras_checkpoint_tos_sc :
-                                              ras_checkpoint_tos_next;
-  assign o_from_if_to_pd.ras_checkpoint_valid_count = replay_saved_if_outputs ?
-      ras_checkpoint_valid_count_sc : ras_checkpoint_valid_count_next;
+  // A return predicted from the stack is an ordinary taken BTB prediction.
+  assign o_from_if_to_pd.ras_predicted = 1'b0;
+  assign o_from_if_to_pd.ras_predicted_target = '0;
+  assign o_from_if_to_pd.ras_checkpoint_tos = ras_checkpoint_tos;
+  assign o_from_if_to_pd.ras_checkpoint_valid_count = ras_checkpoint_valid_count;
   // Bimodal direction carried with the slot-1 instruction (replay-aware). A
   // collapsed-lead delivery (pc == pc_reg) uses the live lookup, including
   // for a branch without a taken BTB prediction that PD may then redirect on.
@@ -2309,6 +2199,8 @@ module if_stage #(
       // Registered prediction from branch_prediction_controller
       .i_prediction_used_r(prediction_used_r),
       .i_predicted_target_r(btb_predicted_target_r),
+      .i_predicted_is_call_r(btb_predicted_is_call_r),
+      .i_predicted_is_return_r(btb_predicted_is_return_r),
       // Pending metadata belongs to one exact instruction. The effective
       // output PC follows the same live/stall-replay mux as the packet itself.
       .i_pending_prediction_active(pending_prediction_active),
@@ -2320,6 +2212,8 @@ module if_stage #(
       // synthesized target path, and hit/taken still decide validity.
       .i_live_target_aligned_with_output(lookup_pc_matches_packet_pc),
       .i_live_predicted_target(btb_predicted_target),
+      .i_live_predicted_is_call(btb_predicted_is_call),
+      .i_live_predicted_is_return(btb_predicted_is_return),
       .i_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
       .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
 
@@ -2330,7 +2224,9 @@ module if_stage #(
 
       // Outputs to PD stage
       .o_btb_predicted_taken(o_from_if_to_pd.btb_predicted_taken),
-      .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target)
+      .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target),
+      .o_btb_predicted_is_call(slot1_packet_is_call),
+      .o_btb_predicted_is_return(slot1_packet_is_return)
   );
 
 `ifndef SYNTHESIS
@@ -2711,12 +2607,27 @@ module if_stage #(
   assign o_from_if_to_pd_2.btb_predicted_target = replay_saved_if_outputs ?
                                                   slot2_predicted_target_sc :
                                                   slot2_predicted_target;
+  // Types of the entry behind the slot-2 target, for the stack operation.
+  logic [1:0] slot2_predicted_kind_sc;
+  stall_capture_reg #(
+      .WIDTH(2)
+  ) u_slot2_predicted_kind_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data({slot2_predicted_is_call, slot2_predicted_is_return}),
+      .o_data(slot2_predicted_kind_sc)
+  );
+  assign slot2_packet_is_call = replay_saved_if_outputs ? slot2_predicted_kind_sc[1] :
+                                                          slot2_predicted_is_call;
+  assign slot2_packet_is_return = replay_saved_if_outputs ? slot2_predicted_kind_sc[0] :
+                                                            slot2_predicted_is_return;
 
-  // RAS metadata: slot 2 never drives a RAS prediction, because only slot 1
-  // is classified for the RAS. Both slots come after the same older pipelined
-  // RAS operation, so they share its post-operation checkpoint. Slot 1 cannot
-  // be a call or return when slot 2 is valid: such an instruction ends the
-  // bundle and updates the stack on a later edge.
+  // Return address stack metadata: slot 2 shares slot 1's recovery point.
+  // Slot 1 cannot push or pop when slot 2 is valid: an instruction predicted
+  // taken ends the bundle.
   assign o_from_if_to_pd_2.ras_predicted = 1'b0;
   assign o_from_if_to_pd_2.ras_predicted_target = '0;
   assign o_from_if_to_pd_2.ras_checkpoint_tos = o_from_if_to_pd.ras_checkpoint_tos;
@@ -2821,7 +2732,7 @@ module if_stage #(
   (* mark_debug = "true" *) logic dbg_ila_if_control_flow_holdoff;
   (* mark_debug = "true" *) logic dbg_ila_if_prediction_holdoff;
   (* mark_debug = "true" *) logic dbg_ila_if_prediction_used;
-  (* mark_debug = "true" *) logic dbg_ila_if_ras_predicted;
+  (* mark_debug = "true" *) logic dbg_ila_if_ras_op;
   (* mark_debug = "true" *) logic dbg_ila_if_pending_prediction_active;
   (* mark_debug = "true" *) logic dbg_ila_if_flush;
   (* mark_debug = "true" *) logic dbg_ila_if_stall;
@@ -2855,7 +2766,7 @@ module if_stage #(
   assign dbg_ila_if_control_flow_holdoff = control_flow_holdoff;
   assign dbg_ila_if_prediction_holdoff = prediction_holdoff;
   assign dbg_ila_if_prediction_used = prediction_used;
-  assign dbg_ila_if_ras_predicted = ras_predicted;
+  assign dbg_ila_if_ras_op = ras_push || ras_pop;
   assign dbg_ila_if_pending_prediction_active = pending_prediction_active;
   assign dbg_ila_if_flush = i_pipeline_ctrl.flush;
   assign dbg_ila_if_stall = i_pipeline_ctrl.stall;

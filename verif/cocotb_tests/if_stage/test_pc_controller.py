@@ -62,7 +62,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_predicted_target_r.value = 0
     dut.i_prediction_used.value = 0
     dut.i_prediction_used_for_pc.value = 0
-    dut.i_ras_predicted.value = 0
     dut.i_sel_prediction_r.value = 0
     dut.i_prediction_requires_pc_reg_handoff.value = 0
     dut.i_prediction_holdoff.value = 0

@@ -73,7 +73,6 @@ module c_ext_state #(
     // Outputs
     output logic [31:0] o_instr_buffer,
     output logic o_prev_was_compressed_at_lo,
-    output logic o_is_compressed_for_buffer,  // Stall-restored is_compressed
     output logic o_is_compressed_saved,  // Saved is_compressed for fast path
     output logic o_saved_values_valid,  // Saved values are valid (not invalidated by control flow)
     output logic [riscv_pkg::ImemSidebandWidth-1:0] o_instr_buffer_sideband,
@@ -193,9 +192,6 @@ module c_ext_state #(
       !i_pending_prediction_target_handoff;
   assign prediction_reset_buffer_state =
       i_prediction_reset_state && !preserve_lo_compressed_buffer_on_prediction;
-
-  // Export the stall-restored is_compressed (IF uses it for the RAS input)
-  assign o_is_compressed_for_buffer = is_compressed_for_buffer;
 
   // Export saved values for instruction_aligner's fast path
   assign o_is_compressed_saved = is_compressed_saved;

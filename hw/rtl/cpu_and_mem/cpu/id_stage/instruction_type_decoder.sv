@@ -127,23 +127,22 @@ module instruction_type_decoder #(
   // is_ras_return: JALR with rs1 = x1, rd = x0, imm = 0
   // is_ras_call: JAL/JALR with rd in {x1, x5}
   //
-  // These have to match if_stage/branch_prediction/ras_detector.sv. The front
-  // end uses that detector to drive the RAS, and dispatch passes these flags
-  // to the ROB so commit-time recovery can replay the same push/pop after
-  // restoring a checkpoint. Any divergence desynchronizes the RAS from the real
-  // call stack. In particular, the return test is rs1 == x1 alone.
-  // ras_detector.sv excludes x5/t0, a common indirect-jump scratch register,
-  // from the return classification, so `jr t0` must not be treated as a return
-  // here. A genuine return through x5 is therefore not popped: the encoding
-  // cannot tell it from `jr t0`, and a false pop is worse.
+  // These flags drive every return address stack operation. Dispatch passes
+  // them to the ROB, commit-time recovery replays the same push or pop after
+  // restoring a checkpoint (ex_comb_synthesizer), and a mispredicted call or
+  // return trains its BTB entry with them, which is what makes the front end
+  // push or pop for that entry later. The return test is rs1 == x1 alone:
+  // x5/t0 is a common indirect-jump scratch register, so `jr t0` must not be
+  // a return. A genuine return through x5 is therefore not popped: the
+  // encoding cannot tell it from `jr t0`, and a false pop is worse.
   //
-  // ras_detector also classifies a coroutine (`jalr x5, x1, 0`, where rd and
-  // rs1 are both link registers but different) as pop-then-push.  A plain
-  // return needs rd == x0 and a plain call needs rd in {x1, x5}, so no plain
-  // call or return sets both flags, and {is_ras_return, is_ras_call} = 2'b11
-  // carries the coroutine downstream without widening the ROB entry, the
-  // commit bus, or the recovery registers.  ex_comb_synthesizer decodes it
-  // back into a swap; return_address_stack replays it.
+  // A coroutine (`jalr x5, x1, 0`, where rd and rs1 are both link registers
+  // but different) pops then pushes.  A plain return needs rd == x0 and a
+  // plain call needs rd in {x1, x5}, so no plain call or return sets both
+  // flags, and {is_ras_return, is_ras_call} = 2'b11 carries the coroutine
+  // downstream without widening the ROB entry, the commit bus, or the
+  // recovery registers.  ex_comb_synthesizer decodes it back into a swap;
+  // return_address_stack replays it.
 
   logic rs1_is_return_link;
   logic rd_is_link_reg;
@@ -153,7 +152,7 @@ module instruction_type_decoder #(
   assign rd_is_link_reg = (i_instruction.dest_reg == 5'd1) || (i_instruction.dest_reg == 5'd5);
 
   // Coroutine (swap): JALR with rd and rs1 both link registers but different,
-  // imm = 0.  Mirrors ras_detector.sv's is_coroutine_32 exactly.
+  // imm = 0.
   assign is_ras_coroutine = o_is_jalr &&
                             rd_is_link_reg &&
                             rs1_is_return_link &&

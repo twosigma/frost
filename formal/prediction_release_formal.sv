@@ -52,7 +52,6 @@ module prediction_release_formal #(
   (* anyseq *) logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel;
   (* anyseq *) logic i_prediction_request;
   (* anyseq *) logic [XLEN-1:0] i_predicted_target;
-  (* anyseq *) logic i_ras_predicted;
   (* anyseq *) logic i_prediction_requires_pc_reg_handoff;
   (* anyseq *) logic i_prediction_already_emitted;
   (* anyseq *) logic i_sel_nop;
@@ -95,7 +94,6 @@ module prediction_release_formal #(
 
   logic [31:0] instr_buffer;
   logic prev_was_compressed_at_lo;
-  logic is_compressed_for_buffer;
   logic is_compressed_saved;
   logic saved_values_valid;
   logic [riscv_pkg::ImemSidebandWidth-1:0] instr_buffer_sideband;
@@ -205,7 +203,6 @@ module prediction_release_formal #(
       .i_predicted_target_r(predicted_target_r),
       .i_prediction_used(prediction_used),
       .i_prediction_used_for_pc(prediction_used_for_pc),
-      .i_ras_predicted,
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_requires_pc_reg_handoff,
       .i_prediction_holdoff(prediction_holdoff),
@@ -287,7 +284,6 @@ module prediction_release_formal #(
       .i_slot2_valid,
       .o_instr_buffer(instr_buffer),
       .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
-      .o_is_compressed_for_buffer(is_compressed_for_buffer),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid),
       .o_instr_buffer_sideband(instr_buffer_sideband),

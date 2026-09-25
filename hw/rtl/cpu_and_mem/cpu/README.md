@@ -114,16 +114,18 @@ cases, then the sequential PC.
 
 | Structure | Size | Predicts | Trained by |
 |-----------|------|----------|------------|
-| BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches and JALs | Mispredicted conditional branches and JALs; correctly predicted conditional branches at commit |
-| Return address stack | 8 entries | Returns (`jalr x0, 0(ra)` and `c.jr ra`) and the coroutine swap `jalr t0, 0(ra)` | IF: calls (JAL or JALR writing `ra` or `t0`) push, returns pop, a coroutine swap pops then pushes; recovery restores it |
+| BTB | 256 entries, direct-mapped, 2-bit counters | Target and direction of conditional branches, JALs and returns; an entry is typed as a call, a return, or both | Mispredicted conditional branches, JALs and returns; correctly predicted conditional branches at commit |
+| Return address stack | 8 entries | The target of a BTB hit typed as a return (`jalr x0, 0(ra)`, `c.jr ra`) or a coroutine swap (`jalr t0, 0(ra)`) | IF, when it hands PD a packet predicted from a typed entry: a call (JAL writing `ra` or `t0`) pushes, a return pops, a swap replaces the top; recovery restores it |
 | Bimodal direction predictor | 1024 2-bit counters | Direction of conditional branches without a taken BTB prediction | Each conditional branch at commit |
 
-JALR never enters the BTB. A JALR that the return address stack does not
-predict goes unpredicted; a JALR is always taken, so an unpredicted one
-resolves as mispredicted and recovers when it commits. While an unpredicted
-JALR is in the front end (slot 1 of IF, PD, or ID, or the decoded queue) and a
-conditional branch or JALR is unresolved, `ooo_pipeline_control` stalls the
-front end to limit wrong-path fetch.
+A return is predicted like any BTB hit, from the lookup at its fetch PC, but
+its entry is typed, so its target is the top of the return address stack
+while the stack holds an entry (the BTB target, the return's last target,
+otherwise). No other JALR enters the BTB. A JALR that is not predicted
+resolves as mispredicted, because a JALR is always taken, and recovers when it
+commits. While an unpredicted JALR is in the front end (slot 1 of IF, PD, or
+ID, or the decoded queue) and a conditional branch or JALR is unresolved,
+`ooo_pipeline_control` stalls the front end to limit wrong-path fetch.
 
 The BTB is indexed by PC[9:2]. Its tags include PC[1], so a lookup at one
 halfword of a word never hits an entry trained for the other. A hit predicts
@@ -318,20 +320,34 @@ the next word.
 When the fetch PC equals the slot-2 position (`pc_reg` + 2 or + 4), for
 example on the first window after a fetch gap, the slot-1 and slot-2 lookups
 name the same instruction, and one branch could get two predictions.
-`branch_prediction_controller` gives the alias to slot 2 only. The return
-address stack is not gated by this, because its pushes and pops belong to the
-older packet that IF registered the cycle before. Checked by
-`branch_prediction_alias`, `branch_prediction_disable`, and
-`prediction_metadata_output`.
+`branch_prediction_controller` gives the alias to slot 2 only, so a typed
+entry's push or pop also happens once, with the packet that carries the
+prediction. Checked by `branch_prediction_alias`, `branch_prediction_disable`,
+and `prediction_metadata_output`.
 
 ### Return address stack recovery
 
-The stack updates on the edge that captures the next, younger packet, so each
-packet carries the state after all older pushes and pops (top of stack and
-valid count) as its recovery point. Restoring it keeps an older call pushed
-and an older return popped. `ras_checkpoint` checks the next-state equations;
-the `return_address_stack`, `ras_test`, and `ras_stress_test` cocotb targets
-check the behavior.
+The stack moves only when PD takes a packet whose used prediction came from a
+typed BTB entry: a packet squashed in IF, dropped by a flush or a PD redirect,
+or held by a stall never pushes or pops, and a stall replay pushes or pops
+once. At most one packet of a bundle can, because an instruction predicted
+taken ends the bundle. The operation lands on the edge that hands PD the
+packet, so the registered state (top of stack and valid count) is the
+recovery point that packet and its bundle partner carry. Restoring it keeps
+every older call pushed and every older return popped, and recovery then
+replays the mispredicted instruction's own push or pop.
+
+A typed lookup reads the top of the stack before any operation in the same
+cycle. That is safe because no younger lookup's prediction survives a cycle
+in which PD takes a typed packet: registered slot-1 metadata implies the
+prediction holdoff, a pending-prediction handoff blocks prediction, a stall
+replay comes with the registered stall, a slot-2 prediction kills the
+same-cycle slot-1 prediction, and a collapsed-lead packet carries its own
+lookup. if_stage asserts this, and branch_prediction_controller asserts that
+no operation arrives with a recovery restore. `ras_checkpoint` checks the
+next-state equations; the `return_address_stack`, `branch_prediction_controller`
+and `if_stage` benches and the `ras_slot_bench`, `ras_test` and
+`ras_stress_test` programs check the behavior.
 
 ### BTB training order
 

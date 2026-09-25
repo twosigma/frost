@@ -82,9 +82,9 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `pc_register_mux` | The architectural-PC mux equals the reference nested priority, in the same configurations as `fetch_pc_mux` |
 | `prediction_handoff` | `prediction_release` with `PENDING_HANDOFF_EXCLUDES_SLOT2=1`, the setting the fetch stage uses |
 | `prediction_metadata_output` | Each packet's BTB-taken bit equals the reference priority, and while a prediction is saved or pending, a packet it does not belong to never reports taken. `prediction_metadata_tracker` checks the sequential behavior |
-| `prediction_metadata_tracker` | A pending prediction's saved PC and target stay unchanged until their packet consumes them or a reset or redirect kills them, plus the tracker's own validity and payload checks. See below |
+| `prediction_metadata_tracker` | A pending prediction's saved PC and target stay unchanged until their packet consumes them or a reset or redirect kills them, the call and return types always leave with their target, plus the tracker's own validity and payload checks. See below |
 | `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoff outputs, predecessor-PC tags, `pc_reg[1]` replica, and lower-parcel lookup geometry match their reference relations. See below |
-| `ras_checkpoint` | The return-address stack's next pointer and count equal the reference equations |
+| `ras_checkpoint` | The return-address stack's next pointer and count equal the reference equations, and a push or swap writes where the reference puts its entry |
 | `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
 
 `prediction_release` runs the real `pc_controller` and `c_ext_state`
@@ -103,7 +103,9 @@ assumes a reset on the first cycle and these relations, which the fetch
 stage guarantees: saved values are replayed only during a registered stall;
 the live target is used only when it is aligned with the output packet, no
 stall is registered, and no registered or pending prediction exists; and a
-reset cycle inserts a NOP and uses neither saved nor live metadata.
+reset cycle inserts a NOP and uses neither saved nor live metadata. Each
+call and return type pair is tied to its target's low two bits, so a type
+selected from a different source than its target would show at the output.
 
 ### Decode, rename, and dispatch
 

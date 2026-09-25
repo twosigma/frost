@@ -60,9 +60,6 @@ module instruction_aligner #(
     // C-extension state
     input logic i_prev_was_compressed_at_lo,  // Previous was compressed at lo
 
-    // Control signals
-    input logic i_prediction_holdoff,  // Stale cycle after RAS prediction
-
     // Stall handling.  Only the registered stall is taken, so the mux selects
     // stay off the combinational stall path.
     input logic i_stall_registered,
@@ -81,7 +78,6 @@ module instruction_aligner #(
     // high-half PC only if that parcel is compressed. IF applies the buffer
     // select in the coverage module's final buffer-arm mux.
     output logic o_no_buffer_accepts_served_last,
-    output logic o_sel_nop,  // Outputting NOP
     output logic o_sel_compressed,  // Slot 1 is a compressed instruction
     output logic o_use_instr_buffer,  // Using buffered instruction
     // Exact {rs2[1], rs1[2:1]} of the selected parcel's RVC expansion.
@@ -143,7 +139,7 @@ module instruction_aligner #(
     // Slot-2 kill-cause classification (not on the PC path). The native and
     // compressed slot-1 control bits also feed the frontend validity tracker;
     // all six feed profiling. Mutually exclusive; meaningful only on cycles
-    // where slot-1 is real (!o_sel_nop) and slot-2 is killed (o_sel_nop_2).
+    // where slot-1 is real and slot-2 is killed (o_sel_nop_2).
     output logic o_slot2_kill_s1_native_ctrl,  // Slot-1 is native 32-bit control flow
     output logic o_slot2_kill_s1_native_serialize,  // Slot-1 is a native serializing-class op
     output logic o_slot2_kill_slot1_ctrl,  // Slot-1 is compressed control flow
@@ -481,12 +477,10 @@ module instruction_aligner #(
   // ===========================================================================
   // Instruction Selection Signals
   // ===========================================================================
-  // A spanning instruction is assembled in the same cycle, so only the RAS
-  // prediction holdoff NOPs slot 1 here. IF adds its other bubble conditions.
-  assign o_sel_nop = i_prediction_holdoff;
-
-  // The size bit is not qualified with o_sel_nop: PD selects the final
-  // instruction with the priority NOP > compressed > 32-bit.
+  // A spanning instruction is assembled in the same cycle, so nothing here NOPs
+  // slot 1; IF applies its bubble conditions. The size bit is not qualified
+  // with them: PD selects the final instruction with the priority NOP >
+  // compressed > 32-bit.
   assign o_sel_compressed = o_is_compressed;
 
   // ===========================================================================
@@ -850,19 +844,18 @@ module instruction_aligner #(
   logic slot2_next_lo_candidate;
   logic slot2_next_hi_candidate;
   // RVC slot-1 at lo: slot-2 at CURRENT_HI.
-  assign slot2_current_hi_candidate = !o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+  assign slot2_current_hi_candidate = !o_use_instr_buffer && !i_pc_reg[1] &&
                                       aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo] &&
                                       aligned_current_sb[riscv_pkg::ImemSbIsCompressedLo];
   // NEXT_LO from either shape: 32b slot-1 at lo, or RVC slot-1 at hi
   // (buffered or not).
   assign slot2_next_lo_candidate =
-      (!o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+      (!o_use_instr_buffer && !i_pc_reg[1] &&
        aligned_current_sb[riscv_pkg::ImemSbAllowsSlot2AfterLo] &&
        !aligned_current_sb[riscv_pkg::ImemSbIsCompressedLo]) ||
-      (!o_sel_nop && i_pc_reg[1] && slot1_allows_slot2_for_pc && o_is_compressed);
+      (i_pc_reg[1] && slot1_allows_slot2_for_pc && o_is_compressed);
   // 32b slot-1 at hi: slot-2 at NEXT_HI (RVC slot-2 only).
-  assign slot2_next_hi_candidate = !o_sel_nop && i_pc_reg[1] && slot1_allows_slot2_for_pc &&
-                                   !o_is_compressed;
+  assign slot2_next_hi_candidate = i_pc_reg[1] && slot1_allows_slot2_for_pc && !o_is_compressed;
 
   // Shape candidates for packet validity and PC advance, from the precombined
   // pairing bits. The slot-2 terms that this word cannot supply join below.
@@ -870,14 +863,13 @@ module instruction_aligner #(
   logic slot2_next_lo_candidate_for_pc;
   logic slot2_next_hi_candidate_for_pc;
   assign slot2_current_hi_candidate_for_pc =
-      !o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+      !o_use_instr_buffer && !i_pc_reg[1] &&
       aligned_current_pc_pairability[0];
   assign slot2_next_lo_candidate_for_pc =
-      (!o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+      (!o_use_instr_buffer && !i_pc_reg[1] &&
        aligned_current_pc_pairability[1]) ||
-      (!o_sel_nop && i_pc_reg[1] && slot1_pairable_compressed_hi_for_pc);
-  assign slot2_next_hi_candidate_for_pc =
-      !o_sel_nop && i_pc_reg[1] && slot1_pairable_native_hi_for_pc;
+      (i_pc_reg[1] && slot1_pairable_compressed_hi_for_pc);
+  assign slot2_next_hi_candidate_for_pc = i_pc_reg[1] && slot1_pairable_native_hi_for_pc;
 
   logic slot2_current_hi_compressed;
   logic slot2_next_lo_compressed;
@@ -968,11 +960,11 @@ module instruction_aligner #(
   assign slot2_sel_nop_when_enabled = !slot2_valid_when_enabled;
   // This is the live pairing decision only. if_stage also NOPs slot 2
   // whenever its full slot-1 sel_nop is set (for example the control-flow,
-  // pending-prediction, and reset holdoffs and flushes, none of which are in
-  // this module's o_sel_nop) and when the bundle holds a pending prediction's
-  // branch, which must go out one-wide as slot 1. pc_controller and c_ext_state
-  // take if_stage's replay-aware slot-2 valid, not this output, so PC advance,
-  // buffer state, and dispatch agree on slot 2 during stall replay.
+  // pending-prediction, and reset holdoffs and flushes) and when the bundle
+  // holds a pending prediction's branch, which must go out one-wide as slot 1.
+  // pc_controller and c_ext_state take if_stage's replay-aware slot-2 valid,
+  // not this output, so PC advance, buffer state, and dispatch agree on slot 2
+  // during stall replay.
   assign o_sel_nop_2 = slot2_sel_nop_when_enabled;
 
   // Slot-2 sel_compressed: mirror slot-1.

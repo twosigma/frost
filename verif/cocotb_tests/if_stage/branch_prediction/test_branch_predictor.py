@@ -45,6 +45,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_update_target.value = 0
     dut.i_update_taken.value = 0
     dut.i_update_compressed.value = 0
+    dut.i_update_call.value = 0
+    dut.i_update_return.value = 0
     dut.i_early_update_active.value = 0
     dut.i_early_update_pc.value = 0
     dut.i_early_update_taken.value = 0
@@ -81,6 +83,8 @@ async def _update(
     target: int,
     taken: bool,
     compressed: bool = False,
+    call: bool = False,
+    ret: bool = False,
     early_active: bool = False,
     early_pc: int | None = None,
     early_taken: bool | None = None,
@@ -109,6 +113,8 @@ async def _update(
     dut.i_update_target.value = target
     dut.i_update_taken.value = int(taken)
     dut.i_update_compressed.value = int(compressed)
+    dut.i_update_call.value = int(call)
+    dut.i_update_return.value = int(ret)
     dut.i_early_update_active.value = int(early_active)
     dut.i_early_update_pc.value = selected_early_pc
     dut.i_early_update_taken.value = int(selected_early_taken)
@@ -116,6 +122,8 @@ async def _update(
     dut.i_late_update_taken.value = int(selected_late_taken)
     await _advance_cycle(dut)
     dut.i_update.value = 0
+    dut.i_update_call.value = 0
+    dut.i_update_return.value = 0
     dut.i_early_update_active.value = 0
     await _settle()
 
@@ -507,6 +515,51 @@ async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
         target=TARGET_A,
         compressed=True,
     )
+
+
+@cocotb.test()
+async def test_call_and_return_types_follow_their_entry(dut: Any) -> None:
+    """Each lookup port reports the call and return types its hit entry was trained with.
+
+    Types come only with a hit, and retraining the entry replaces them. The
+    slot-2 payload drops target bit 0 to make room for the types, so a
+    target that uses every other bit must still come back whole.
+    """
+    await _setup_test(dut)
+
+    cases = (
+        ("call", True, False),
+        ("return", False, True),
+        ("coroutine swap", True, True),
+        ("plain branch", False, False),
+    )
+    for name, call, ret in cases:
+        target = 0x8FFF_FFFE
+        await _update(dut, pc=PC_A, target=target, taken=True, call=call, ret=ret)
+
+        await _lookup(dut, PC_A)
+        _assert_slot1(dut, hit=True, taken=True, target=target)
+        assert bool(dut.o_btb_is_call.value) is call, name
+        assert bool(dut.o_btb_is_return.value) is ret, name
+
+        await _lookup(dut, PC_A, slot2=True)
+        _assert_slot2(dut, hit=True, taken=True, target=target)
+        assert bool(dut.o_btb_is_call_2.value) is call, name
+        assert bool(dut.o_btb_is_return_2.value) is ret, name
+
+        await _lookup_slot2_alt(dut, PC_A - 4)
+        _assert_slot2(dut, hit=True, taken=True, target=target)
+        assert bool(dut.o_btb_is_call_2.value) is call, name
+        assert bool(dut.o_btb_is_return_2.value) is ret, name
+        dut.i_pc_2_use_alt.value = 0
+
+    # A miss reports no type on either port.
+    await _lookup(dut, PC_B)
+    assert not dut.o_btb_hit.value
+    assert not dut.o_btb_is_call.value and not dut.o_btb_is_return.value
+    await _lookup(dut, PC_B, slot2=True)
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_btb_is_call_2.value and not dut.o_btb_is_return_2.value
 
 
 @cocotb.test()

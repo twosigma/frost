@@ -902,12 +902,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ras_slot_bench",
         description=(
             "Return prediction with calls and returns in either bundle slot: each "
-            "phase must stay under a flush-recovery budget (profiling counters). "
-            "Kept out of pytest because it fails today: the RAS prediction reaches "
-            "the packet after each return, so every return resolves mispredicted"
+            "phase must stay under a flush-recovery budget (profiling counters)"
         ),
         verilator_extra_args=("-GPERF_COUNTERS=1",),
-        include_in_pytest=False,
     ),
     "tomasulo_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1781,11 +1778,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.register_files.test_ooo_register_files",
         hdl_toplevel_module="ooo_register_files",
         description="CPU OOO architectural register-files tests",
-    ),
-    "ras_detector": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.branch_prediction.test_ras_detector",
-        hdl_toplevel_module="ras_detector",
-        description="IF-stage RAS instruction detector tests",
     ),
     "return_address_stack": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_return_address_stack",

@@ -40,39 +40,6 @@ TARGET_RAS_RETURN = 0x80006000
 TARGET_RAS_RECOVERY = 0x80007000
 GHOST_OWNER_PC = 0x80000700
 
-OPC_JAL = 0b1101111
-OPC_JALR = 0b1100111
-
-
-def _make_instr(
-    *,
-    funct7: int = 0,
-    rs2: int = 0,
-    rs1: int = 0,
-    funct3: int = 0,
-    rd: int = 0,
-    opcode: int = 0,
-) -> int:
-    """Pack an instr_t-compatible RISC-V instruction word."""
-    return (
-        ((funct7 & 0x7F) << 25)
-        | ((rs2 & 0x1F) << 20)
-        | ((rs1 & 0x1F) << 15)
-        | ((funct3 & 0x7) << 12)
-        | ((rd & 0x1F) << 7)
-        | (opcode & 0x7F)
-    )
-
-
-def _make_jal(*, rd: int) -> int:
-    """Build a JAL instruction with detector-relevant fields set."""
-    return _make_instr(rd=rd, opcode=OPC_JAL)
-
-
-def _make_jalr(*, rd: int, rs1: int) -> int:
-    """Build a JALR instruction with detector-relevant fields set."""
-    return _make_instr(rs1=rs1, rd=rd, opcode=OPC_JALR)
-
 
 def _dir_idx(pc: int) -> int:
     """Return the branch direction predictor index for a fetch PC."""
@@ -113,6 +80,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_btb_update_target.value = 0
     dut.i_btb_update_taken.value = 0
     dut.i_btb_update_compressed.value = 0
+    dut.i_btb_update_call.value = 0
+    dut.i_btb_update_return.value = 0
     dut.i_btb_early_update_active.value = 0
     dut.i_btb_early_update_pc.value = 0
     dut.i_btb_early_update_taken.value = 0
@@ -121,11 +90,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_dir_update_valid.value = 0
     dut.i_dir_update_idx.value = 0
     dut.i_dir_update_taken.value = 0
-    dut.i_instruction.value = 0
-    dut.i_raw_parcel.value = 0
-    dut.i_is_compressed.value = 0
-    dut.i_instruction_valid.value = 0
-    dut.i_link_address.value = 0
+    dut.i_ras_push.value = 0
+    dut.i_ras_pop.value = 0
+    dut.i_ras_push_address.value = 0
     dut.i_ras_misprediction.value = 0
     dut.i_ras_restore_tos.value = 0
     dut.i_ras_restore_valid_count.value = 0
@@ -163,6 +130,8 @@ async def _btb_update(
     target: int,
     taken: bool = True,
     compressed: bool = False,
+    call: bool = False,
+    ret: bool = False,
 ) -> None:
     """Apply one BTB update through the controller's staging register."""
     _clear_inputs(dut)
@@ -171,6 +140,8 @@ async def _btb_update(
     dut.i_btb_update_target.value = target
     dut.i_btb_update_taken.value = int(taken)
     dut.i_btb_update_compressed.value = int(compressed)
+    dut.i_btb_update_call.value = int(call)
+    dut.i_btb_update_return.value = int(ret)
     dut.i_btb_late_update_pc.value = pc
     dut.i_btb_late_update_taken.value = int(taken)
     await _advance_cycle(dut)
@@ -197,17 +168,18 @@ async def _dir_update(dut: Any, *, idx: int, taken: bool) -> None:
     await _settle()
 
 
-def _drive_call(dut: Any, *, link_address: int) -> None:
-    """Drive a valid call instruction for RAS push."""
-    dut.i_instruction.value = _make_jal(rd=1)
-    dut.i_instruction_valid.value = 1
-    dut.i_link_address.value = link_address
+def _drive_ras_push(dut: Any, address: int) -> None:
+    """Drive IF's push for an accepted call packet."""
+    dut.i_ras_push.value = 1
+    dut.i_ras_push_address.value = address
 
 
-def _drive_return(dut: Any) -> None:
-    """Drive a valid JALR x0, x1, 0 return instruction for RAS prediction."""
-    dut.i_instruction.value = _make_jalr(rd=0, rs1=1)
-    dut.i_instruction_valid.value = 1
+async def _ras_push(dut: Any, address: int) -> None:
+    """Push one return address through IF's operation port."""
+    _drive_ras_push(dut, address)
+    await _advance_cycle(dut)
+    dut.i_ras_push.value = 0
+    await _settle()
 
 
 def _slot2_btb_hit(dut: Any) -> bool:
@@ -235,9 +207,7 @@ async def test_reset_clears_registered_prediction_state(dut: Any) -> None:
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert not dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_slot2_prediction_used.value
-    assert not dut.o_ras_predicted.value
 
 
 @cocotb.test()
@@ -307,7 +277,6 @@ async def test_slot1_btb_prediction_registers_metadata_and_holdoffs(dut: Any) ->
     assert dut.o_prediction_used.value
     assert dut.o_prediction_used_for_pc.value
     assert dut.o_prediction_requires_pc_reg_handoff.value
-    assert not dut.o_ras_predicted.value
     assert not dut.o_control_flow_to_halfword_pred.value
 
     await _advance_cycle(dut)
@@ -316,14 +285,12 @@ async def test_slot1_btb_prediction_registers_metadata_and_holdoffs(dut: Any) ->
     assert dut.o_sel_prediction_r.value
     assert int(dut.o_predicted_target_r.value) == TARGET_A
     assert dut.o_prediction_holdoff.value
-    assert dut.o_btb_only_prediction_holdoff.value
 
     _clear_inputs(dut)
     await _advance_cycle(dut)
 
     assert not dut.o_prediction_used_r.value
     assert not dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
 
 
 @cocotb.test()
@@ -365,7 +332,6 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert dut.o_prediction_holdoff.value
-    assert dut.o_btb_only_prediction_holdoff.value
 
     _clear_inputs(dut)
     dut.i_any_holdoff_safe.value = 1
@@ -373,7 +339,6 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     await _advance_cycle(dut)
 
     assert dut.o_prediction_holdoff.value
-    assert dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
 
@@ -383,7 +348,6 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     await _advance_cycle(dut)
 
     assert dut.o_prediction_holdoff.value
-    assert dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
 
@@ -395,7 +359,6 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     await _advance_cycle(dut)
 
     assert not dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
 
@@ -413,7 +376,6 @@ async def test_live_prediction_holdoff_blocks_slot2_redirect(dut: Any) -> None:
 
     assert dut.o_prediction_used_r.value
     assert dut.o_prediction_holdoff.value
-    assert dut.o_btb_only_prediction_holdoff.value
 
     _clear_inputs(dut)
     # Hold the live slot-1 bookkeeping while the slot-2 images are staged.
@@ -448,7 +410,6 @@ async def test_pd_redirect_target_match_preserves_stalled_metadata(
     assert dut.o_prediction_used_r.value
     assert dut.o_sel_prediction_r.value
     assert dut.o_prediction_holdoff.value
-    assert dut.o_btb_only_prediction_holdoff.value
 
     _clear_inputs(dut)
     dut.i_stall.value = 1
@@ -462,7 +423,6 @@ async def test_pd_redirect_target_match_preserves_stalled_metadata(
     assert dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert dut.o_prediction_holdoff.value
-    assert dut.o_btb_only_prediction_holdoff.value
 
     dut.i_pd_redirect_target.value = TARGET_SLOT2
     await _advance_cycle(dut)
@@ -470,7 +430,6 @@ async def test_pd_redirect_target_match_preserves_stalled_metadata(
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert not dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
 
 
 @cocotb.test()
@@ -521,7 +480,6 @@ async def test_first_stall_cycle_keeps_pc_select_but_not_metadata(dut: Any) -> N
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert not dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
 
 
 @cocotb.test()
@@ -576,130 +534,92 @@ async def test_halfword_slot1_btb_requires_compressed_entry(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_ras_return_prediction_takes_priority_over_btb(dut: Any) -> None:
-    """A valid RAS return prediction overrides a simultaneous BTB target."""
+async def test_typed_return_predicts_the_stack_top(dut: Any) -> None:
+    """A BTB hit typed as a return takes the top of the stack as its target."""
     await _setup_test(dut)
 
-    _drive_call(dut, link_address=TARGET_RAS_RETURN)
-    await _advance_cycle(dut)
-    _clear_inputs(dut)
-    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN)
+    await _ras_push(dut, TARGET_RAS_RETURN)
+    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN, ret=True)
 
     dut.i_pc.value = RETURN_PC
-    _drive_return(dut)
     await _settle()
 
-    assert dut.o_ras_predicted.value
-    assert int(dut.o_ras_predicted_target.value) == TARGET_RAS_RETURN
-    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
     assert dut.o_prediction_used.value
     assert dut.o_prediction_used_for_pc.value
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+    assert dut.o_predicted_is_return.value
+    assert not dut.o_predicted_is_call.value
 
     await _advance_cycle(dut)
 
+    # The type is registered with the target for the packet that follows.
+    assert dut.o_prediction_used_r.value
+    assert int(dut.o_predicted_target_r.value) == TARGET_RAS_RETURN
+    assert dut.o_predicted_is_return_r.value
+    assert not dut.o_predicted_is_call_r.value
     assert dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
+    # The controller never pops by itself: IF pops when it hands PD the return.
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
 
 
 @cocotb.test()
-async def test_native_halfword_ras_return_uses_full_fetch_window(dut: Any) -> None:
-    """A native return at PC[1]=1 is complete in the 64-bit fetch window."""
+async def test_typed_return_with_an_empty_stack_uses_the_btb_target(dut: Any) -> None:
+    """With the stack empty, a return predicts the target it last took."""
     await _setup_test(dut)
-
-    _drive_call(dut, link_address=TARGET_RAS_RETURN)
-    await _advance_cycle(dut)
-    _clear_inputs(dut)
-
-    dut.i_pc.value = PC_HALFWORD
-    _drive_return(dut)
-    dut.i_is_compressed.value = 0
-    await _settle()
-
-    assert dut.o_ras_predicted.value
-    assert dut.o_prediction_used.value
-    assert dut.o_prediction_used_for_pc.value
-    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
-
-
-@cocotb.test()
-async def test_lower_parcel_lookup_witness_does_not_block_ras(dut: Any) -> None:
-    """A lower-parcel lookup blocks only the BTB, so an assembled return still predicts."""
-    await _setup_test(dut)
-
-    _drive_call(dut, link_address=TARGET_RAS_RETURN)
-    await _advance_cycle(dut)
-    _clear_inputs(dut)
+    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN, ret=True)
 
     dut.i_pc.value = RETURN_PC
+    await _settle()
+
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert dut.o_prediction_used.value
+    assert int(dut.o_predicted_target.value) == TARGET_BTB_RETURN
+    assert dut.o_predicted_is_return.value
+
+
+@cocotb.test()
+async def test_untyped_and_call_hits_keep_the_btb_target(dut: Any) -> None:
+    """Only a return takes the stack top; a call and a plain branch keep their targets."""
+    await _setup_test(dut)
+    await _ras_push(dut, TARGET_RAS_RETURN)
+
+    for call in (True, False):
+        await _btb_update(dut, pc=PC_A, target=TARGET_A, call=call)
+        dut.i_pc.value = PC_A
+        await _settle()
+
+        assert dut.o_prediction_used.value
+        assert int(dut.o_predicted_target.value) == TARGET_A
+        assert bool(dut.o_predicted_is_call.value) is call
+        assert not dut.o_predicted_is_return.value
+
+
+@cocotb.test()
+async def test_typed_return_obeys_the_btb_prediction_gates(dut: Any) -> None:
+    """A lower-parcel lookup, spanning, and a disable block a typed return like any hit.
+
+    The target payload stays the stack top: the gates clear only validity.
+    """
+    await _setup_test(dut)
+    await _ras_push(dut, TARGET_RAS_RETURN)
+    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN, ret=True)
+    dut.i_pc.value = RETURN_PC
+
     dut.i_fetch_lookup_is_lower_parcel.value = 1
-    _drive_return(dut)
     await _settle()
-
-    assert dut.o_ras_predicted.value
-    assert dut.o_prediction_used.value
-    assert dut.o_prediction_used_for_pc.value
-    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
-
-
-@cocotb.test()
-async def test_spanning_ras_return_suppresses_use_without_pop(dut: Any) -> None:
-    """A spanning return waits without consuming its RAS entry."""
-    await _setup_test(dut)
-
-    _drive_call(dut, link_address=TARGET_RAS_RETURN)
-    await _advance_cycle(dut)
-    _clear_inputs(dut)
-
-    dut.i_pc.value = RETURN_PC
-    _drive_return(dut)
-    dut.i_is_32bit_spanning.value = 1
-    await _settle()
-
-    assert not dut.o_ras_predicted.value
     _assert_no_effective_slot1_prediction(dut)
     assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+    dut.i_fetch_lookup_is_lower_parcel.value = 0
 
-    # Holding the spanning return through an edge must not consume the top.
-    await _advance_cycle(dut)
-    assert not dut.o_ras_predicted.value
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
-
-    # Once the assembled instruction is no longer spanning, the same return
-    # becomes usable and its prediction consumes exactly that preserved entry.
-    dut.i_is_32bit_spanning.value = 0
+    dut.i_is_32bit_spanning.value = 1
     await _settle()
-    assert dut.o_ras_predicted.value
-    assert dut.o_prediction_used.value
-    assert dut.o_prediction_used_for_pc.value
-    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+    _assert_no_effective_slot1_prediction(dut)
+    dut.i_is_32bit_spanning.value = 0
 
-    await _advance_cycle(dut)
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
-    assert not dut.o_ras_predicted.value
-
-
-@cocotb.test()
-async def test_ras_target_payload_is_independent_of_global_prediction_disable(
-    dut: Any,
-) -> None:
-    """Prediction disable clears validity without selecting the BTB payload."""
-    await _setup_test(dut)
-
-    _drive_call(dut, link_address=TARGET_RAS_RETURN)
-    await _advance_cycle(dut)
-    _clear_inputs(dut)
-    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN)
-
-    dut.i_pc.value = RETURN_PC
-    _drive_return(dut)
     dut.i_disable_branch_prediction.value = 1
     dut.i_disable_branch_prediction_wcs0.value = 1
     dut.i_disable_branch_prediction_wcs.value = 1
     await _settle()
-
-    assert not dut.o_ras_predicted.value
     _assert_no_effective_slot1_prediction(dut)
     assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
 
@@ -707,16 +627,42 @@ async def test_ras_target_payload_is_independent_of_global_prediction_disable(
     dut.i_disable_branch_prediction_wcs0.value = 0
     dut.i_disable_branch_prediction_wcs.value = 0
     await _settle()
-
-    assert dut.o_ras_predicted.value
     assert dut.o_prediction_used.value
     assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+
+
+@cocotb.test()
+async def test_ras_operations_move_the_checkpoint_on_the_edge(dut: Any) -> None:
+    """IF's push and pop land on the edge; the checkpoint shows the state before them."""
+    await _setup_test(dut)
+    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN, ret=True)
+    dut.i_pc.value = RETURN_PC
+
+    _drive_ras_push(dut, TARGET_RAS_RETURN)
+    await _settle()
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    await _advance_cycle(dut)
+    dut.i_ras_push.value = 0
+    await _settle()
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+    assert int(dut.o_ras_checkpoint_tos.value) == 1
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+
+    dut.i_ras_pop.value = 1
+    await _settle()
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+    await _advance_cycle(dut)
+    dut.i_ras_pop.value = 0
+    await _settle()
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert int(dut.o_predicted_target.value) == TARGET_BTB_RETURN
 
 
 @cocotb.test()
 async def test_ras_recovery_inputs_are_registered_before_restore(dut: Any) -> None:
     """RAS recovery inputs take effect one cycle after reaching the controller."""
     await _setup_test(dut)
+    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN, ret=True)
 
     dut.i_ras_misprediction.value = 1
     dut.i_ras_restore_tos.value = 0
@@ -726,19 +672,14 @@ async def test_ras_recovery_inputs_are_registered_before_restore(dut: Any) -> No
     await _advance_cycle(dut)
 
     _clear_inputs(dut)
-    _drive_return(dut)
+    dut.i_pc.value = RETURN_PC
     await _settle()
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert int(dut.o_predicted_target.value) == TARGET_BTB_RETURN
 
-    assert not dut.o_ras_predicted.value
-
-    _clear_inputs(dut)
     await _advance_cycle(dut)
-
-    _drive_return(dut)
-    await _settle()
-
-    assert dut.o_ras_predicted.value
-    assert int(dut.o_ras_predicted_target.value) == TARGET_RAS_RECOVERY
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RECOVERY
 
 
 @cocotb.test()
@@ -865,7 +806,7 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     dut.i_slot2_valid.value = 1
     # The RAS input is the older registered packet. Its call must push even
     # while this younger live lookup belongs to slot 2.
-    _drive_call(dut, link_address=PC_B)
+    _drive_ras_push(dut, PC_B)
     await _settle()
 
     assert dut.btb_hit.value
@@ -884,14 +825,12 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert int(dut.o_slot2_live_predicted_target.value) == TARGET_SLOT2
     _assert_no_effective_slot1_prediction(dut)
     assert not dut.o_prediction_requires_pc_reg_handoff.value
-    assert not dut.o_ras_predicted.value
 
     await _advance_cycle(dut)
 
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert not dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == 0
     assert int(dut.o_ras_checkpoint_valid_count.value) == 1
@@ -949,7 +888,7 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     dut.i_lookup_lead_collapsed.value = 0
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
-    _drive_call(dut, link_address=PC_B)
+    _drive_ras_push(dut, PC_B)
     await _settle()
 
     assert dut.btb_hit.value
@@ -968,14 +907,12 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     assert not dut.o_slot2_prediction_used_for_pc.value
     _assert_no_effective_slot1_prediction(dut)
     assert not dut.o_prediction_requires_pc_reg_handoff.value
-    assert not dut.o_ras_predicted.value
 
     await _advance_cycle(dut)
 
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert not dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == 0
     # The slot-2 alias belongs to a newer BTB lookup and must not suppress the
@@ -984,75 +921,26 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
 
 
 @cocotb.test()
-async def test_older_ras_return_ignores_current_slot2_candidate_owner(
-    dut: Any,
-) -> None:
-    """The live lookup's slot-2 alias does not suppress an older registered return."""
+async def test_slot2_typed_return_predicts_the_stack_top(dut: Any) -> None:
+    """A staged slot-2 hit typed as a return redirects to the stack top."""
     await _setup_test(dut)
-
-    # Seed one return address, then present the older return while the live
-    # BTB lookup aliases an unrelated +4 slot-2 candidate after a collapsed
-    # lead.
-    _drive_call(dut, link_address=TARGET_RAS_RETURN)
-    await _advance_cycle(dut)
-    _clear_inputs(dut)
-
-    dut.i_pc.value = SLOT2_PC
-    dut.i_pc_2_alt.value = SLOT2_PC
-    dut.i_pc_2_base.value = SLOT2_PC - 4
-    dut.i_lookup_lead_collapsed.value = 1
-    dut.i_slot2_plus4_candidate_valid.value = 1
-    dut.i_slot2_valid.value = 1
-    _drive_return(dut)
-    await _settle()
-
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
-    assert dut.slot1_prediction_owned_by_slot2.value
-    assert dut.o_prediction_used_live_cofactor.value
-    assert dut.o_prediction_used.value
-    assert dut.o_prediction_used_for_pc.value
-    assert dut.o_ras_predicted.value
-    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
-
-    await _advance_cycle(dut)
-
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
-
-
-@cocotb.test()
-async def test_older_ras_return_preempts_younger_slot2_redirect(dut: Any) -> None:
-    """An older registered return takes the redirect ahead of a current slot-2 hit."""
-    await _setup_test(dut)
-
-    _drive_call(dut, link_address=TARGET_RAS_RETURN)
-    await _advance_cycle(dut)
-    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
+    await _ras_push(dut, TARGET_RAS_RETURN)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2, ret=True)
     await _stage_slot2_images(dut, SLOT2_PC - 4)
 
-    dut.i_pc.value = SLOT2_PC
+    dut.i_pc.value = SLOT2_PC + 0x40
     dut.i_pc_2_alt.value = SLOT2_PC
     dut.i_pc_2_base.value = SLOT2_PC - 4
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
-    _drive_return(dut)
     await _settle()
 
-    assert dut.slot1_prediction_owned_by_slot2.value
-    assert dut.btb_hit.value
-    assert dut.btb_hit_2.value
-    assert _slot2_btb_hit(dut)
-    assert not dut.o_slot2_prediction_used.value
-    assert not dut.o_slot2_prediction_used_for_pc.value
-    assert not dut.o_slot2_predicted_taken.value
-    assert dut.o_ras_predicted.value
-    assert dut.o_prediction_used.value
-    assert dut.o_prediction_used_for_pc.value
-    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
-    assert dut.ras_inst.do_pop.value
-
-    await _advance_cycle(dut)
-
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert dut.o_slot2_prediction_used.value
+    assert dut.o_slot2_predicted_taken.value
+    assert int(dut.o_slot2_predicted_target.value) == TARGET_RAS_RETURN
+    assert int(dut.o_slot2_staged_predicted_target.value) == TARGET_RAS_RETURN
+    assert dut.o_slot2_predicted_is_return.value
+    assert not dut.o_slot2_predicted_is_call.value
 
 
 @cocotb.test()
@@ -1076,7 +964,7 @@ async def test_slot2_candidate_owner_blocks_slot1_when_full_slot2_valid_is_low(
     dut.i_pc_2_base.value = SLOT2_PC - 4
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 0
-    _drive_call(dut, link_address=PC_B)
+    _drive_ras_push(dut, PC_B)
     await _settle()
 
     assert dut.btb_predicted_taken.value
@@ -1089,14 +977,12 @@ async def test_slot2_candidate_owner_blocks_slot1_when_full_slot2_valid_is_low(
     _assert_no_effective_slot1_prediction(dut)
     assert not dut.o_dir_predicted_taken_live.value
     assert not dut.o_prediction_requires_pc_reg_handoff.value
-    assert not dut.o_ras_predicted.value
 
     await _advance_cycle(dut)
 
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
     assert not dut.o_prediction_holdoff.value
-    assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == 0
     assert int(dut.o_ras_checkpoint_valid_count.value) == 1
@@ -1164,7 +1050,7 @@ async def test_collapsed_fetch_lead_transfers_live_not_taken_hit_metadata(
     dut.i_lookup_lead_collapsed.value = 1
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
-    _drive_call(dut, link_address=PC_B)
+    _drive_ras_push(dut, PC_B)
     await _settle()
 
     assert dut.btb_hit.value

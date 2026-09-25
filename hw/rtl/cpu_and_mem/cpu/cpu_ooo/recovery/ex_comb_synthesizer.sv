@@ -111,15 +111,21 @@ module ex_comb_synthesizer #(
       late_from_ex_comb.branch_taken          = 1'b1;
       late_from_ex_comb.branch_target_address = mispredict_commit_q.redirect_pc;
 
-      if (mispredict_commit_q.is_branch && !mispredict_commit_q.is_jalr) begin
-        // BTB update for conditional branches and JAL (JALR never enters the
-        // BTB). Training JAL lets a JAL that missed the BTB hit on its next
-        // execution.
+      if (mispredict_commit_q.is_branch &&
+          (!mispredict_commit_q.is_jalr || mispredict_commit_q.is_return)) begin
+        // BTB update for conditional branches, JAL, and returns (a coroutine
+        // swap included). Training JAL lets a JAL that missed the BTB hit on
+        // its next execution. A return's entry is typed, so a later hit
+        // predicts from the return address stack; its stored target is the
+        // fallback while the stack is empty. Any other JALR never enters the
+        // BTB. The call and return bits type the entry for the stack.
         late_from_ex_comb.btb_update            = 1'b1;
         late_from_ex_comb.btb_update_pc         = mispredict_commit_q.pc;
         late_from_ex_comb.btb_update_target     = mispredict_commit_q.branch_target;
         late_from_ex_comb.btb_update_taken      = mispredict_commit_q.branch_taken;
         late_from_ex_comb.btb_update_compressed = mispredict_commit_q.is_compressed;
+        late_from_ex_comb.btb_update_call       = mispredict_commit_q.is_call;
+        late_from_ex_comb.btb_update_return     = mispredict_commit_q.is_return;
       end
 
       if (mispredict_commit_q.has_checkpoint) begin

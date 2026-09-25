@@ -24,6 +24,11 @@
  * its target share a 4-GiB region; a hit takes the upper bits from the lookup
  * PC (hw/rtl/cpu_and_mem/cpu/README.md, "4 GiB target limit").
  *
+ * An entry is typed as a call, a return, or both (a coroutine swap), from the
+ * commit that trained it. A hit on a typed entry tells the prediction
+ * controller to take the target from the return address stack and to update
+ * the stack when the predicted instruction is accepted.
+ *
  * Slot 1 reads combinationally at the fetch PC. Slot 2 reads three shifted
  * images (+2, +4, and a +2 copy rotated by one index for the next word) at the
  * fetch PC and checks the registered rows against the served pc_reg one cycle
@@ -44,6 +49,9 @@ module branch_predictor #(
     output logic            o_predicted_taken,   // Predict taken
     output logic [XLEN-1:0] o_predicted_target,  // Predicted target address
     output logic            o_btb_compressed,    // Entry is for compressed instruction
+    // The hit entry is typed as a call or a return (both for a coroutine swap).
+    output logic            o_btb_is_call,
+    output logic            o_btb_is_return,
 
     // Slot-2 prediction interface. The shifted images store each branch under
     // the PC 2 or 4 bytes before it, so a lookup at base pc_reg finds a slot 2
@@ -69,13 +77,18 @@ module branch_predictor #(
     output logic            o_predicted_taken_2,
     output logic [XLEN-1:0] o_predicted_target_2,
     output logic            o_btb_compressed_2,
+    // The selected candidate's entry is typed as a call or a return.
+    output logic            o_btb_is_call_2,
+    output logic            o_btb_is_return_2,
 
     // Update interface: at most one selected training write per cycle
-    input logic            i_update,            // Update BTB entry
-    input logic [XLEN-1:0] i_update_pc,         // PC of branch instruction
-    input logic [XLEN-1:0] i_update_target,     // Actual branch target
-    input logic            i_update_taken,      // Actual branch outcome
-    input logic            i_update_compressed, // Branch was compressed (16-bit)
+    input logic            i_update,             // Update BTB entry
+    input logic [XLEN-1:0] i_update_pc,          // PC of branch instruction
+    input logic [XLEN-1:0] i_update_target,      // Actual branch target
+    input logic            i_update_taken,       // Actual branch outcome
+    input logic            i_update_compressed,  // Branch was compressed (16-bit)
+    input logic            i_update_call,        // Branch is a call (types the entry)
+    input logic            i_update_return,      // Branch is a return (types the entry)
 
     // Early-recovery counter RMW candidate. When active, the selected update
     // above carries this same PC and outcome. This separate input keeps the
@@ -100,12 +113,17 @@ module branch_predictor #(
   localparam int unsigned TargetBits = riscv_pkg::PhysAddrBits;
   // Yosys 0.64 cannot parse $bits on this module-local typedef in a parameter
   // override. The simulation check below pins the spelled width to the struct.
-  localparam int unsigned Slot2PayloadBits = TargetBits + 3;
+  localparam int unsigned Slot2PayloadBits = TargetBits + 4;
 
+  // A target's bit 0 is always 0 (instructions are halfword aligned, and a
+  // JALR target has bit 0 cleared), so the payload keeps bits [TargetBits-1:1].
+  // That leaves room for the call and return types in one RAMB18 (36 bits).
   typedef struct packed {
-    logic [TargetBits-1:0] target;
+    logic [TargetBits-2:0] target_hi;   // target bits [TargetBits-1:1]
     logic [1:0]            counter;
     logic                  compressed;
+    logic                  is_call;
+    logic                  is_return;
   } slot2_payload_t;
 
   // 2-bit saturating counter states
@@ -270,11 +288,18 @@ module branch_predictor #(
   // Each slot-2 image keeps its tag and payload in separate memories. The
   // 55-bit tag is a distributed RAM read at one address plus a response
   // register, keeping the wide comparisons off block-RAM clock-to-output
-  // paths. The 35-bit payload (the target's low 32 bits, counter, and
-  // compressed flag) fits one RAMB18. T2 and T4 cover a served base in the
-  // word that was read; RT2 covers the +2 candidate of a base in the next word.
+  // paths. The 36-bit payload (target bits [31:1], counter, compressed flag,
+  // and the call and return types) fits one RAMB18. T2 and T4 cover a served
+  // base in the word that was read; RT2 covers the +2 candidate of a base in
+  // the next word.
   slot2_payload_t slot2_payload_write;
-  assign slot2_payload_write = {update_target_stored, next_counter, i_update_compressed};
+  assign slot2_payload_write = {
+    update_target_stored[TargetBits-1:1],
+    next_counter,
+    i_update_compressed,
+    i_update_call,
+    i_update_return
+  };
 
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
@@ -417,6 +442,20 @@ module branch_predictor #(
       .o_read_data(btb_compressed_lookup)
   );
 
+  // Call and return types for the slot-1 lookup.
+  logic [1:0] btb_kind_lookup;
+  sdp_dist_ram #(
+      .ADDR_WIDTH(BTB_INDEX_BITS),
+      .DATA_WIDTH(2)
+  ) btb_kind_ram (
+      .i_clk,
+      .i_write_enable(i_update),
+      .i_write_address(update_index),
+      .i_write_data({i_update_call, i_update_return}),
+      .i_read_address(lookup_index),
+      .o_read_data(btb_kind_lookup)
+  );
+
   // Combinational slot-1 lookup
   wire lookup_valid = btb_valid[lookup_index];
   wire [TagBits-1:0] lookup_tag_stored = btb_tag_lookup;
@@ -453,6 +492,8 @@ module branch_predictor #(
   assign o_predicted_taken  = o_btb_hit && lookup_counter[1];
   assign o_predicted_target = lookup_target;
   assign o_btb_compressed   = o_btb_hit && btb_compressed_lookup;
+  assign o_btb_is_call      = o_btb_hit && btb_kind_lookup[1];
+  assign o_btb_is_return    = o_btb_hit && btb_kind_lookup[0];
 
   // Slot-2 response registers. The block RAMs are read-first and the tag
   // registers sample the distributed RAMs before the write edge, so a write to
@@ -605,9 +646,14 @@ module branch_predictor #(
   // bits for either candidate.
   assign o_predicted_target_2 = {
     i_pc_2_base[XLEN-1:TargetBits],
-    i_pc_2_use_alt ? lookup_payload_2_alt.target : lookup_payload_2.target
+    i_pc_2_use_alt ? lookup_payload_2_alt.target_hi : lookup_payload_2.target_hi,
+    1'b0
   };
   assign o_btb_compressed_2 = i_pc_2_use_alt ? o_btb_compressed_2_plus4 : o_btb_compressed_2_plus2;
+  assign o_btb_is_call_2 = i_pc_2_use_alt ? (btb_hit_2_alt && lookup_payload_2_alt.is_call) :
+                                            (btb_hit_2 && lookup_payload_2.is_call);
+  assign o_btb_is_return_2 = i_pc_2_use_alt ?
+      (btb_hit_2_alt && lookup_payload_2_alt.is_return) : (btb_hit_2 && lookup_payload_2.is_return);
 
   // Early candidate, from the early PC and outcome. Its RAM copies take every
   // selected write, not only early ones, so they always hold the same state as
@@ -669,6 +715,14 @@ module branch_predictor #(
     end
   end
 
+  // The slot-2 payload drops target bit 0, so every trained target must have
+  // it clear.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && i_update && !$isunknown(i_update_target[0])) begin
+      p_update_target_is_halfword_aligned : assert (!i_update_target[0]);
+    end
+  end
+
   // Check that the selected slot-2 bundle equals, bit for bit, the +2 or +4
   // candidate that i_pc_2_use_alt picks. branch_prediction_controller does the
   // safety and candidate-valid qualification on the per-candidate outputs.
@@ -695,7 +749,8 @@ module branch_predictor #(
       p_slot2_target_selector_identity :
       assert (o_predicted_target_2 ==
               {i_pc_2_base[XLEN-1:TargetBits],
-               i_pc_2_use_alt ? lookup_payload_2_alt.target : lookup_payload_2.target});
+               i_pc_2_use_alt ? lookup_payload_2_alt.target_hi : lookup_payload_2.target_hi,
+               1'b0});
       p_slot2_size_selector_identity :
       assert (o_btb_compressed_2 ==
               (i_pc_2_use_alt ? (btb_hit_2_alt && lookup_payload_2_alt.compressed) :
@@ -802,6 +857,16 @@ module branch_predictor #(
   logic shifted_reference_valid_2_rot[BtbEntries];
   slot2_reference_row_t shifted_reference_row_2_rot[BtbEntries];
 
+  // The payload every update writes, built from the reference counter.
+  slot2_payload_t reference_update_payload;
+  assign reference_update_payload = {
+    update_target_stored[TargetBits-1:1],
+    reference_selected_next_counter,
+    i_update_compressed,
+    i_update_call,
+    i_update_return
+  };
+
   wire shifted_reference_hit_2 = shifted_reference_valid_2[lookup_index_2] &&
       (shifted_reference_row_2[lookup_index_2].tag == lookup_tag_2);
   wire shifted_reference_hit_2_alt = shifted_reference_valid_2_alt[lookup_index_2_alt] &&
@@ -820,17 +885,13 @@ module branch_predictor #(
       end
     end else if (i_update) begin
       shifted_reference_valid_2[update_index_2] <= update_slot2_plus2_target_valid;
-      shifted_reference_row_2[update_index_2] <= {
-        update_tag_2, update_target_stored, reference_selected_next_counter, i_update_compressed
-      };
+      shifted_reference_row_2[update_index_2] <= {update_tag_2, reference_update_payload};
       shifted_reference_valid_2_alt[update_index_2_alt] <= update_slot2_plus4_target_valid;
       shifted_reference_row_2_alt[update_index_2_alt] <= {
-        update_tag_2_alt, update_target_stored, reference_selected_next_counter, i_update_compressed
+        update_tag_2_alt, reference_update_payload
       };
       shifted_reference_valid_2_rot[update_index_2_rot] <= update_slot2_plus2_target_valid;
-      shifted_reference_row_2_rot[update_index_2_rot] <= {
-        update_tag_2, update_target_stored, reference_selected_next_counter, i_update_compressed
-      };
+      shifted_reference_row_2_rot[update_index_2_rot] <= {update_tag_2, reference_update_payload};
     end
   end
 
