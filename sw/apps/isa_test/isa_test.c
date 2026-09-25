@@ -3223,10 +3223,6 @@ __attribute__((naked, aligned(4))) static void test_trap_handler(void)
         /* Advance mepc past the trapping instruction. With the C extension it
          * may be 16 or 32 bits wide; 32-bit instructions have bits[1:0] = 0b11. */
         "csrr t0, mepc\n"
-        "nop\n" /* Allow pipeline to settle */
-        "nop\n"
-        "nop\n"
-        "nop\n"
         "lhu t2, 0(t0)\n"    /* Load low halfword of instruction */
         "andi t2, t2, 0x3\n" /* Check bits [1:0] */
         "li t3, 0x3\n"
