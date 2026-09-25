@@ -43,7 +43,7 @@
  *   K. JALR into the device quadrant          -> cause 1 (no fetch from
  *      MMIO).
  *   L. In-map accesses do not trap: a device-quadrant data read (UART
- *      status) and a load/store round trip on g_ddr_word.
+ *      status) and a load/store round trip on a cached-DDR word.
  *
  * Each case uses the M-mode bounce from umode_test: the mtvec handler records
  * mcause/mepc/mtval for the first trap of the case, then returns to the
@@ -138,7 +138,8 @@ static int report3(const char *name,
     return ok;
 }
 
-static volatile uint64_t g_ddr_word __attribute__((section(".data")));
+/* In .ddr_data, so case L reaches the cached tier in both memory tiers. */
+static volatile uint64_t g_ddr_word __attribute__((section(".ddr_data")));
 
 int main(void)
 {
