@@ -378,6 +378,12 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
         -f $(ROOT)/hw/rtl/lib/fifo/fifo.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),dc_fifo)
+# Dual-clock FIFO unit bench (related clocks, binary pointers)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc.sv \
+        $(ROOT)/hw/rtl/lib/fifo/dc_fifo.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cdc_gray_count)
 # Gray-coded event counter unit bench
 COMPILE_ARGS := \

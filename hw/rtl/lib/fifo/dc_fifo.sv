@@ -21,13 +21,10 @@
  * asynchronous FIFO: unrelated clocks require Gray-coded pointers
  * (async_fifo).
  *
- * A consumer must not pop in the cycle right after o_valid rose, and must not
- * pop in two consecutive cycles. Either one presents the same entry again and
- * skips its successor. The storage read is registered and lags the read
- * pointer by one o_clk cycle, and a pop loads o_data from that registered
- * read, so a pop loads the right entry only if the read pointer last moved at
- * least two o_clk cycles earlier. Every consumer here complies: UART byte
- * rate, MMIO reads, and the debug slice writer's paced engine.
+ * The storage read is registered and lags the read pointer by one o_clk
+ * cycle, so after o_data loads an entry the next load waits a cycle for that
+ * read. A consumer may take o_data in any cycle o_valid is high; one that
+ * takes it right after a load sees o_valid low for a cycle.
  */
 module dc_fifo #(
     parameter int unsigned DATA_WIDTH = 8,
@@ -124,23 +121,29 @@ module dc_fifo #(
   assign write_occupancy_after_next = write_pointer_next - read_pointer_synchronized_stage2;
   assign o_ready = write_occupancy_after_next <= ReadyThreshold;
 
-  // Read clock domain logic (output side)
+  // Read clock domain logic (output side). memory_read_data holds the entry
+  // at the read pointer only if the pointer did not move at the last edge.
   logic read_data_valid_registered;
+  logic read_data_fresh;
+  logic take, load;
+  assign take = read_data_valid_registered && i_ready;
+  assign load = (!read_data_valid_registered || take) && read_data_fresh &&
+      (read_pointer_in_output_domain != write_pointer_synchronized_stage2);
 
   always @(posedge o_clk) begin
     if (o_rst) begin
       read_pointer_in_output_domain <= 0;
       read_data_valid_registered <= 0;
+      read_data_fresh <= 0;
     end else begin
-      // Pop when the output register is free and the FIFO is not empty.
-      if ((!read_data_valid_registered || i_ready) &&
-          (read_pointer_in_output_domain != write_pointer_synchronized_stage2)) begin
-        // Read data from memory (already registered in sdp_block_ram_dc)
+      read_data_fresh <= !load;
+      if (load) begin
+        // Load the next entry once the output register is free.
         o_data <= memory_read_data;
         read_pointer_in_output_domain <= read_pointer_next;
         read_data_valid_registered <= 1;
-      end else if (i_ready) begin
-        // FIFO is empty, so valid drops once the consumer takes what is here.
+      end else if (take) begin
+        // The consumer took the entry and no next one is ready yet.
         read_data_valid_registered <= 0;
       end
     end

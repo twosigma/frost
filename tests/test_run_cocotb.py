@@ -1427,6 +1427,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "full/empty, ready margin, both-side reset"
         ),
     ),
+    "dc_fifo": CocotbRunConfig(
+        python_test_module="cocotb_tests.lib.test_dc_fifo",
+        hdl_toplevel_module="dc_fifo",
+        description=(
+            "Dual-clock FIFO: bytes written back to back into a reader that "
+            "takes each one in its first idle cycle, as uart_tx does, come out "
+            "once each and in order"
+        ),
+        verilator_extra_args=("-GDEPTH=128",),
+    ),
     "cdc_gray_count": CocotbRunConfig(
         python_test_module="cocotb_tests.lib.test_cdc_gray_count",
         hdl_toplevel_module="cdc_gray_count",
