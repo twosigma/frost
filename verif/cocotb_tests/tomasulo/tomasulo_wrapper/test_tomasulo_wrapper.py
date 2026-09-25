@@ -3252,7 +3252,6 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
     dut_if.set_all_fu_ready(True)
     await Timer(1, unit="ps")
     num_dispatches = 0
-    prev_was_flush = False
     pending_tags: set[int] = set()
     random_manual_cdb_rs_types = [RS_MEM, RS_FP, RS_FDIV]
     # Deferred CDB for the wrapper's registered fanout. Keep ROB completion
@@ -3284,21 +3283,17 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
 
         dut_rob_full = dut_if.rob_full
 
-        # Check RS issue from each type this loop dispatches to (skip after a
-        # flush); the dispatch step below explains which types it leaves out.
-        if not prev_was_flush:
-            for rs_type in random_manual_cdb_rs_types:
-                issue = dut_if.read_rs_issue_for(rs_type)
-                if issue["valid"]:
-                    assert issue["rob_tag"] in rs_live_tags[rs_type], (
-                        f"Cycle {cycle}: {RS_NAMES[rs_type]} DUT issued unknown tag {issue['rob_tag']}"
-                    )
-                    rs_live_tags[rs_type].discard(issue["rob_tag"])
-                    consume_model_rs_tag(rs_type, issue["rob_tag"])
-        else:
-            # Flush may leave a stale output pulse visible for one cycle.
-            for rs_type in random_manual_cdb_rs_types:
-                rs_live_tags[rs_type].clear()
+        # Check RS issue from each type this loop dispatches to; the dispatch
+        # step below explains which types it leaves out. A flush empties
+        # rs_live_tags, so an issue in the cycle after it fails here.
+        for rs_type in random_manual_cdb_rs_types:
+            issue = dut_if.read_rs_issue_for(rs_type)
+            if issue["valid"]:
+                assert issue["rob_tag"] in rs_live_tags[rs_type], (
+                    f"Cycle {cycle}: {RS_NAMES[rs_type]} DUT issued unknown tag {issue['rob_tag']}"
+                )
+                rs_live_tags[rs_type].discard(issue["rob_tag"])
+                consume_model_rs_tag(rs_type, issue["rob_tag"])
 
         # Auto-commit ROB head
         c = model.try_commit()
@@ -3306,7 +3301,6 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
             pending_tags.discard(c["tag"])
 
         r = random.random()
-        prev_was_flush = False
 
         # Dispatch to a random RS type (~35%). INT_RS and MUL_RS are skipped
         # because their FU pipelines auto-complete, and FMUL_RS because its
@@ -3392,7 +3386,6 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
 
         # Flush all (~5%)
         elif r < 0.70:
-            prev_was_flush = True
             deferred_cdb = None  # Flush cancels any pending CDB
             dut_if.drive_flush_all()
             model.flush_all()
@@ -3543,6 +3536,7 @@ async def test_alu_shim_end_to_end(dut: Any) -> None:
     # Enable INT_RS FU ready so the ADD issues as soon as it is resident
     dut_if.set_fu_ready(RS_INT, True)
     await dut_if.step()  # dispatch writes the RS entry
+    dut_if.clear_rs_dispatch()
     await dut_if.step()  # stage2 valid -> ALU produces result combinationally
 
     # ALU is single-cycle: result appears on CDB combinationally at this
@@ -3554,7 +3548,9 @@ async def test_alu_shim_end_to_end(dut: Any) -> None:
     assert cdb.value == expected_result, (
         f"ALU ADD result mismatch: got {cdb.value:#x}, expected {expected_result:#x}"
     )
-    dut_if.clear_rs_dispatch()
+    # One dispatch cycle allocates the ADD once, so no second copy waits in
+    # INT_RS to broadcast the tag again after the entry commits.
+    assert dut_if.rs_empty_for(RS_INT), "INT_RS should hold no second copy of the ADD"
 
     model.fu_complete(FU_ALU, tag=tag, value=expected_result)
 
@@ -3741,6 +3737,7 @@ async def test_integrated_fu_back_to_back(dut: Any) -> None:
         src3_ready=True,
     )
     await dut_if.step()  # dispatch writes the ADD's RS entry
+    dut_if.clear_rs_dispatch()
     expected_add = 0x3000
 
     await dut_if.step()  # stage2 valid -> ALU produces result combinationally
@@ -3752,16 +3749,10 @@ async def test_integrated_fu_back_to_back(dut: Any) -> None:
     assert cdb.value == expected_add, (
         f"ADD result: got {cdb.value:#x}, expected {expected_add:#x}"
     )
-    dut_if.clear_rs_dispatch()
     model.fu_complete(FU_ALU, tag=tag_b, value=expected_add)
 
-    # The RS dispatch above stayed driven for a second edge, so INT_RS also
-    # holds a second copy of the ADD, which reaches the CDB one cycle later.
-    # Drain that duplicate before waiting for the MUL result.
-    await dut_if.step()  # duplicate ADD result on the CDB
-    await dut_if.step()  # duplicate gone
-
-    # Wait for MUL result on CDB (6-cycle multiplier)
+    # Wait for MUL result on CDB (6-cycle multiplier). The ADD was dispatched
+    # once, so the next broadcast is the MUL, not a second copy of the ADD.
     cdb = await wait_for_cdb(dut_if, max_cycles=10)
     assert cdb.tag == tag_a, f"Expected MUL tag={tag_a}, got {cdb.tag}"
     assert cdb.value == expected_mul, (
@@ -4023,16 +4014,16 @@ async def test_lq_end_to_end_lw(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
+async def test_lq_load_after_store_drain_through_wrapper(dut: Any) -> None:
     """Same-address SW then LW: the store commits and drains, then the load reads memory."""
-    cocotb.log.info("=== Test: LQ SQ Forward Through Wrapper ===")
+    cocotb.log.info("=== Test: LQ Load After Store Drain Through Wrapper ===")
     dut_if, model = await setup_test(dut)
 
     dut_if.set_fu_ready(RS_MEM, True)
 
     base_addr = 0x2000
     imm = 0x4
-    forward_data = 0xCAFE_BABE
+    store_data = 0xCAFE_BABE
     expected_addr = (base_addr + imm) & 0xFFFF_FFFF
 
     # --- Step 1: Dispatch SW to ROB (is_store, no dest) ---
@@ -4048,7 +4039,7 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
         src1_ready=True,
         src1_value=base_addr,
         src2_ready=True,
-        src2_value=forward_data,
+        src2_value=store_data,
         src3_ready=True,
         imm=imm,
         use_imm=True,
@@ -4062,7 +4053,7 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
         src1_ready=True,
         src1_value=base_addr,
         src2_ready=True,
-        src2_value=forward_data,
+        src2_value=store_data,
         src3_ready=True,
         imm=imm,
         use_imm=True,
@@ -4096,7 +4087,7 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
         await dut_if.step()
     assert sq_write["en"], "SQ should drain the committed store"
     assert sq_write["addr"] == expected_addr
-    assert sq_write["data"] == wbeat(forward_data)
+    assert sq_write["data"] == wbeat(store_data)
 
     await dut_if.step()
     dut_if.drive_sq_mem_write_done()
@@ -4156,13 +4147,11 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
     assert mem_req["en"], "LQ should issue after the store drains"
     assert mem_req["addr"] == expected_addr
 
-    dut_if.drive_lq_mem_response(forward_data)
+    dut_if.drive_lq_mem_response(store_data)
     cdb = await wait_for_cdb(dut_if)
     dut_if.clear_lq_mem_response()
     assert cdb.tag == tag_lw, f"CDB tag={cdb.tag} expected={tag_lw}"
-    assert cdb.value == forward_data, (
-        f"CDB value={cdb.value:#x} expected={forward_data:#x}"
-    )
+    assert cdb.value == store_data, f"CDB value={cdb.value:#x} expected={store_data:#x}"
 
     for _ in range(20):
         if dut_if.rob_empty:
@@ -4703,7 +4692,7 @@ async def test_lq_flush_all_clears_lq(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lq_cdb_arbitration(dut: Any) -> None:
-    """LQ CDB result contends with external FP_ADD completion, arbiter resolves."""
+    """A load and an FP_ADD completion share the CDB: MEM on lane 0, FP_ADD on lane 1."""
     cocotb.log.info("=== Test: LQ CDB Arbitration ===")
     dut_if, model = await setup_test(dut)
 
@@ -4781,9 +4770,28 @@ async def test_lq_cdb_arbitration(dut: Any) -> None:
     dut_if.clear_lq_mem_response()
 
     # MEM outranks FP_ADD and the CDB has two lanes, so the load is
-    # broadcast alongside FP_ADD as soon as the MEM slot presents it, and the
-    # MEM adapter never holds it. Once the load has gone, the still-driven
-    # FP_ADD is back on lane 0.
+    # broadcast on lane 0 in the cycle the MEM slot presents it, with FP_ADD
+    # alongside on lane 1: both are granted, and neither waits.
+    for _ in range(5):
+        lane_0 = dut_if.read_cdb_output()
+        if lane_0.valid and lane_0.tag == tag_lw:
+            break
+        assert lane_0.valid and lane_0.tag == tag_int, (
+            f"only FP_ADD should be on the CDB before the load, got {lane_0}"
+        )
+        await dut_if.step()
+    assert lane_0.valid and lane_0.tag == tag_lw, "load should reach CDB lane 0"
+    assert lane_0.value == 0x1111, f"load value={lane_0.value:#x}"
+    lane_1 = unpack_cdb_broadcast(int(dut.o_cdb_2.value))
+    assert lane_1.valid and lane_1.tag == tag_int and lane_1.value == 0x2222, (
+        f"FP_ADD should share the load's cycle on lane 1, got {lane_1}"
+    )
+    grant = dut_if.read_cdb_grant()
+    assert (grant >> FU_MEM) & 1 and (grant >> FU_FP_ADD) & 1, (
+        f"both MEM and FP_ADD should be granted, grant={grant:#x}"
+    )
+
+    # Once the load has gone, the still-driven FP_ADD is back on lane 0.
     await dut_if.step()
 
     cdb1 = dut_if.read_cdb_output()
@@ -5095,7 +5103,7 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fp_dynamic_rounding_dispatch_capture(dut: Any) -> None:
-    """A dispatched rounding mode is kept at issue after i_frm_csr changes."""
+    """FRM_DYN resolves to i_frm_csr at dispatch and keeps it after frm changes."""
     cocotb.log.info("=== Test: FP Dynamic Rounding Dispatch Capture ===")
     dut_if, model = await setup_test(dut)
 
@@ -5106,7 +5114,7 @@ async def test_fp_dynamic_rounding_dispatch_capture(dut: Any) -> None:
     # Set frm CSR to RDN (round down) before dispatch
     dut.i_frm_csr.value = 0b010  # FRM_RDN
 
-    # Drive rm already resolved to RDN, as for an FRM_DYN op with frm=RDN.
+    # Dispatch with rm=DYN: the wrapper substitutes the current frm.
     dut_if.drive_rs_dispatch(
         rs_type=RS_FP,
         rob_tag=tag,
@@ -5116,7 +5124,7 @@ async def test_fp_dynamic_rounding_dispatch_capture(dut: Any) -> None:
         src2_ready=True,
         src2_value=0x4000000000000000,  # 2.0 double
         src3_ready=True,
-        rm=0b010,  # FRM_RDN resolved from FRM_DYN by dispatch
+        rm=0b111,  # FRM_DYN
     )
     model.rs_dispatch(
         rs_type=RS_FP,
@@ -5143,7 +5151,7 @@ async def test_fp_dynamic_rounding_dispatch_capture(dut: Any) -> None:
     assert issue["valid"], "FP_RS should issue"
     assert issue["rob_tag"] == tag
     assert issue["rm"] == 0b010, (
-        f"rm should be 0b010 (RDN, captured at dispatch), got {issue['rm']}"
+        f"rm should be 0b010 (RDN, resolved from DYN at dispatch), got {issue['rm']}"
     )
 
     cocotb.log.info("=== Test Passed ===")
@@ -7100,7 +7108,7 @@ async def test_stale_cdb_fdiv_full_flush_probe(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_stale_cdb_fdiv_fifo_contention_flush_probe(dut: Any) -> None:
+async def test_stale_cdb_fdiv_contention_partial_flush_probe(dut: Any) -> None:
     """A completed-but-unbroadcast FDIV killed by a partial flush stays dead.
 
     Injected ALU+MUL completions occupy both CDB lanes so the finished FDIV
@@ -7109,7 +7117,7 @@ async def test_stale_cdb_fdiv_fifo_contention_flush_probe(dut: Any) -> None:
     (swept), the contention is released, and the flushed result must never
     broadcast.
     """
-    cocotb.log.info("=== Test: Stale-CDB FDIV FIFO-Contention Flush Probe ===")
+    cocotb.log.info("=== Test: Stale-CDB FDIV Contention Partial-Flush Probe ===")
     # Divider SP latency plus issue overhead; sweep around the completion
     # boundary so the kill lands while the result is still in the divider,
     # in the shim's result register, or held in the adapter.

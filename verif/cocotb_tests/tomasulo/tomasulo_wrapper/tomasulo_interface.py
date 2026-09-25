@@ -344,6 +344,8 @@ class TomasuloInterface:
         # ROB checks legality at allocation, and an op that fails traps at the
         # ROB head instead of committing.
         self.dut.i_sepc.value = 0
+        self.dut.i_dpc.value = 0
+        self.dut.i_debug_mode.value = 0
         self.dut.i_priv.value = 3  # PrivM
         self.dut.i_counter_blocked.value = 0
         self.dut.i_stimecmp_blocked.value = 0
@@ -456,6 +458,8 @@ class TomasuloInterface:
         # RAT checkpoint free
         self.dut.i_checkpoint_free.value = 0
         self.dut.i_checkpoint_free_id.value = 0
+        self.dut.i_checkpoint_free_2.value = 0
+        self.dut.i_checkpoint_free_id_2.value = 0
         self.dut.i_checkpoint_flush_free_mask.value = 0
 
         # Profiling inputs
@@ -475,6 +479,7 @@ class TomasuloInterface:
         self.dut.i_lq_mem_read_id.value = 0
         self.dut.i_lq_mem_request_pending.value = 0
         self.dut.i_cached_read_held.value = 0
+        self.dut.i_slow_write_inflight.value = 0
 
         # DMA coherence handshake: idle.
         self.dut.i_coh_admit_valid.value = 0
