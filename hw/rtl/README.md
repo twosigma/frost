@@ -158,9 +158,8 @@ ORed into `mip.SEIP` with the SEIP bit that M-mode software can set. A claim
 read is destructive, so the router handles it as a device read like the UART
 RX pop (see the [data-tier bus contract](#data-tier-bus-contract)).
 
-If these addresses change, update `cpu_and_mem.sv`, the `MMIO_ADDR` and
-`MMIO_SIZE_BYTES` parameters of `cpu_ooo.sv`, the device-window pages in
-`riscv_pkg.sv` (`MmioFirstPage` through `PlicLastPage`), the MMIO `PROVIDE`
+If these addresses change, update `cpu_and_mem.sv`, the device-window pages
+in `riscv_pkg.sv` (`MmioFirstPage` through `PlicLastPage`), the MMIO `PROVIDE`
 symbols in the linker scripts under `sw/` (`sw/common/link.ld`,
 `sw/common/link_ddr.ld`, and several app-specific scripts),
 `sw/lib/include/mmio.h`, the verification constants in `verif/config.py`, and
@@ -291,8 +290,8 @@ The main parameters; `frost.sv` documents the rest.
 | `frost.sv` | `PERF_COUNTERS` | `0` | 1 builds the `mperf*` profiling counters |
 | `frost.sv` | `DEBUG_JTAG_TAP` | `1` | 1 uses the generic TAP on `i_jtag_*`; 0 takes the BSCAN bundle from the board |
 | `frost.sv` | `RAW_LOOPBACK` | `1` | 1 builds the NIC's raw TX-to-RX loopback, which needs one clock on both MAC clock ports; 0 for a transceiver's independent clocks |
-| `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` | MMIO base |
-| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size; `cpu_and_mem.sv` passes `32'h3_1000` to cover the ns16550a face, the CLINT alias, and the DMA test engine and NIC windows |
+| `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` (`riscv_pkg::MmioWindowAddr`) | MMIO window base |
+| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h3_1000` (`riscv_pkg::MmioWindowBytes`) | MMIO window size, covering the native registers, the ns16550a face, the CLINT alias, and the DMA test engine and NIC windows; `cpu_and_mem.sv` passes the same window |
 
 ## License
 

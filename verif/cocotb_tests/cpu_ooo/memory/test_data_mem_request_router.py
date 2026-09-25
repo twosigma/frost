@@ -531,11 +531,22 @@ async def test_device_drain_high_to_low_after_capture_blocks_accept(dut: Any) ->
 
 @cocotb.test()
 async def test_device_quadrant_boundary_table_and_drain_scope(dut: Any) -> None:
-    """Check every quadrant boundary and confine drain gating to quadrant 01."""
+    """Check the quadrant and device-window edges and confine drain gating to quadrant 01.
+
+    Each case is (address, parks as a device read, cached, in a served window).
+    The served windows are the router's defaults: riscv_pkg's MMIO window
+    [0x4000_0000, 0x4003_1000) and the PLIC window [0x4400_0000, 0x4440_0000).
+    """
     await _setup_test(dut)
     cases = (
         (0x3FFF_FFFF, False, False, False),
         (0x4000_0000, True, False, True),
+        (0x4003_0FFF, True, False, True),
+        (0x4003_1000, True, False, False),
+        (0x43FF_FFFF, True, False, False),
+        (0x4400_0000, True, False, True),
+        (0x443F_FFFF, True, False, True),
+        (0x4440_0000, True, False, False),
         (0x7FFF_FFFF, True, False, False),
         (0x8000_0000, False, True, False),
         (0xBFFF_FFFF, False, True, False),
@@ -583,7 +594,7 @@ async def test_device_quadrant_boundary_table_and_drain_scope(dut: Any) -> None:
         else:
             assert int(dut.o_lq_mem_request_valid.value) == 0
 
-    # Closing committed-empty changes only the two quadrant-01 boundary cases.
+    # Closing committed-empty changes only the quadrant-01 cases.
     for addr, is_device, is_cached, _ in cases:
         await reset_between_cases()
         dut.i_sq_committed_empty.value = 0

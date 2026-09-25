@@ -1489,17 +1489,22 @@ package riscv_pkg;
     pma_atomic_ok = pma_fetch_ok(addr);
   endfunction
 
+  // The MMIO window in bytes: the default of the MMIO_ADDR and
+  // MMIO_SIZE_BYTES parameters of cpu_ooo and data_mem_request_router.
+  localparam int unsigned MmioWindowAddr  = {MmioFirstPage, 12'h000};
+  localparam int unsigned MmioWindowBytes = {MmioLastPage - MmioFirstPage + 20'd1, 12'h000};
+
   // Served MMIO window decode for the data_mem_request_router's pending
   // device read: the register window [mmio_base, mmio_base +
-  // mmio_size_bytes) plus the PLIC window (addr[31:22] == 10'h110). In the
-  // core, cpu_and_mem passes the same MMIO window that pma_device_ok checks,
-  // so every device load the router sees is inside it. Narrower than the
-  // LQ/SQ device-quadrant is_mmio class.
+  // mmio_size_bytes) plus the PLIC window. The router's register window
+  // defaults to the MMIO window above, and cpu_and_mem passes the same one,
+  // so in the core every device load the router sees is inside it
+  // (pma_device_ok). Narrower than the LQ/SQ device-quadrant is_mmio class.
   function automatic logic mmio_window_hit(input logic [XLEN-1:0] addr,
                                            input logic [XLEN-1:0] mmio_base,
                                            input logic [XLEN-1:0] mmio_size_bytes);
     mmio_window_hit = ((addr >= mmio_base) && (addr < (mmio_base + mmio_size_bytes))) ||
-                      (addr[31:22] == 10'h110);
+                      (addr[31:22] == PlicFirstPage[19:10]);
   endfunction
 
   // pma_fetch_ok of the page after va's, {va[63:12] + 1, 12'h0} (a 52-bit
