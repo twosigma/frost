@@ -437,6 +437,45 @@ async def test_jal_alloc_does_not_create_unresolved_branch_stall(dut: Any) -> No
 
 
 @cocotb.test()
+async def test_slot2_jal_does_not_create_unresolved_branch_stall(dut: Any) -> None:
+    """A JAL that saves its checkpoint from slot 2 is not tracked as unresolved.
+
+    Behind a slot 1 that is not a branch or jump, slot 2's class decides.
+    """
+    await _setup_test(dut)
+
+    await _dispatch_branch(dut, 0, 0, slot2=True, jal=True)
+    dut.i_front_end_indirect_control_flow_pending.value = 1
+    await _advance_cycle(dut)
+
+    assert not dut.o_front_end_cf_serialize_stall.value
+    assert not _read_pipeline_ctrl(dut)["stall"]
+
+
+@cocotb.test()
+async def test_slot1_branch_class_ignores_a_waiting_slot2_jal(dut: Any) -> None:
+    """A slot-1 branch's save is unresolved while a JAL waits in slot 2.
+
+    Slot 2 cannot dispatch behind a slot-1 branch, but its request still
+    carries the JAL's class; slot 1's class must decide.
+    """
+    await _setup_test(dut)
+
+    _drive_alloc_req(dut, {"alloc_valid": True, "is_branch": True})
+    _drive_alloc_req_2(dut, {"is_branch": True, "is_jal": True})
+    _drive_checkpoint_save(dut, 1)
+    await _advance_cycle(dut)
+    _drive_alloc_req(dut, {})
+    _drive_alloc_req_2(dut, {})
+    _drive_checkpoint_save(dut, None)
+    dut.i_checkpoint_in_use.value = 1 << 1
+    dut.i_front_end_indirect_control_flow_pending.value = 1
+    await _advance_cycle(dut)
+
+    assert dut.o_front_end_cf_serialize_stall.value, "the slot-1 branch is unresolved"
+
+
+@cocotb.test()
 async def test_slot2_branch_stays_unresolved_after_older_resolves(dut: Any) -> None:
     """A branch dispatched from slot 2 counts until it resolves itself.
 
