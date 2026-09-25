@@ -26,10 +26,12 @@ Test cases:
     3. SC.W to the wrong address: LR to addr A, SC to addr B, fails
     4. Back-to-back LR.W/SC.W with no instruction between them
     5. LR.W + intervening NOPs + SC.W: the reservation persists
+    6. LR.W to one word, SC.W to the other word of the same doubleword:
+       succeeds, because FROST reserves the aligned doubleword
 
-LR.W loads a word and reserves its address. SC.W stores rs2 and writes 0 to rd
-only if the reservation covers its address; otherwise it writes 1 and does
-not store. Either way it clears the reservation.
+LR.W loads a word and reserves the doubleword that holds it. SC.W stores rs2
+and writes 0 to rd only if the reservation covers its address; otherwise it
+writes 1 and does not store. Either way it clears the reservation.
 
 The core writes an instruction's destination register at ROB commit and its
 store after commit, both a variable number of cycles after the harness feeds
@@ -100,10 +102,12 @@ async def execute_lr_sc_instruction(
         rd: Destination register
         rs1: Address register
         rs2: Data register (for SC.W, ignored for LR.W)
-        expected_rd_value: Value the LR.W loads into rd (ignored for SC.W,
-            whose rd value comes from the model's reservation check)
-        expected_sc_success: Expected SC.W outcome (None for LR.W). Not
-            checked here; the caller asserts on rd.
+        expected_rd_value: Value the LR.W loads into rd, or the SC.W result
+            (0 success, 1 failure), which must match the model's
+        expected_sc_success: Expected SC.W outcome, which must match the
+            model's reservation check (None for LR.W)
+
+    The DUT's rd is not read here; callers wait for the commit and check it.
     """
     from encoders.op_tables import AMO_LR_SC
 
@@ -121,6 +125,7 @@ async def execute_lr_sc_instruction(
     queue_len = len(state.register_file_current_expected_queue)
 
     if operation == "lr.w":
+        assert expected_sc_success is None, "expected_sc_success applies to SC.W only"
         # LR.W: load from memory, set reservation
         mem_model.read_address = address
         state.set_reservation(address)
@@ -135,6 +140,15 @@ async def execute_lr_sc_instruction(
         success = state.check_reservation(address)
         state.clear_reservation()
         writeback_value = 0 if success else 1
+        assert success == expected_sc_success, (
+            f"SC.W x{rd} at 0x{address:08X}: the model predicts "
+            f"{'success' if success else 'failure'}, the test expects "
+            f"{'success' if expected_sc_success else 'failure'}"
+        )
+        assert writeback_value == expected_rd_value, (
+            f"SC.W x{rd}: the model writes rd={writeback_value}, the test "
+            f"expects {expected_rd_value}"
+        )
 
         if success:
             # Model memory write (word data rides the beat replicated)
@@ -274,6 +288,8 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     state.register_file_current[12] = test_data  # x12 = data to store
     state.register_file_current[20] = test_value_1  # x20 = initial value for addr1
     state.register_file_current[21] = test_value_2  # x21 = initial value for addr2
+    # x22 = the other word of addr1's doubleword
+    state.register_file_current[22] = test_address_1 + 4
 
     # Write all register values to the DUT.
     for i in range(1, 32):
@@ -568,6 +584,56 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     # Wait for the successful SC.W's store to test_address_1 to drain.
     await wait_for_memory_writes(
         dut_if, state, "Test Case 5 SC.W store to reach memory"
+    )
+
+    # ========================================================================
+    # Test Case 6: LR.W and SC.W to different words of one doubleword
+    # ========================================================================
+    # The reservation covers the aligned doubleword (sc_pending_unit compares
+    # addr[XLEN-1:3]), so the SC.W to the LR.W's neighboring word succeeds.
+    cocotb.log.info(
+        "=== Test Case 6: LR.W addr1, SC.W addr1+4 (same doubleword, should "
+        "succeed) ==="
+    )
+
+    # LR.W x17, (x10) - reserve the doubleword holding test_address_1
+    await execute_lr_sc_instruction(
+        dut_if,
+        state,
+        mem_model,
+        operation="lr.w",
+        rd=17,
+        rs1=10,
+        rs2=0,
+        expected_rd_value=test_data,  # Value from Test Case 5's SC
+        expected_sc_success=None,
+    )
+
+    # SC.W x18, x12, (x22) - store to test_address_1 + 4
+    await execute_lr_sc_instruction(
+        dut_if,
+        state,
+        mem_model,
+        operation="sc.w",
+        rd=18,
+        rs1=22,
+        rs2=12,
+        expected_rd_value=0,  # 0 = success
+        expected_sc_success=True,
+    )
+
+    await wait_for_int_reg_commit(
+        dut, dut_if, state, 18, "Test Case 6 SC.W x18 to commit"
+    )
+    x18_value = dut_if.read_register(18)
+    assert x18_value == 0, (
+        f"SC.W Test Case 6 failed: x18 = {x18_value}, expected 0 (success "
+        "within the reserved doubleword)"
+    )
+    cocotb.log.info(f"SC.W x18 = {x18_value} (success in the reserved doubleword)")
+
+    await wait_for_memory_writes(
+        dut_if, state, "Test Case 6 SC.W store to reach memory"
     )
 
     # ========================================================================

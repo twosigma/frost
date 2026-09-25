@@ -22,10 +22,13 @@ shadows support CSR checks; RV64 counters are 64-bit and have no high-half CSRs.
 from config import (
     MASK64,
     MASK_XLEN,
-    MEMORY_WORD_ALIGN_MASK,
     PIPELINE_IF_TO_EX_CYCLES,
 )
 from encoders.instruction_encode import CSRAddress
+
+# The LR/SC reservation covers the aligned doubleword that holds the LR's
+# address: sc_pending_unit compares addr[XLEN-1:3].
+_RESERVATION_ADDRESS_MASK = MASK_XLEN & ~0x7
 
 
 class TestState:
@@ -51,7 +54,7 @@ class TestState:
         csr_cycle_counter: Clock cycle counter for CSR verification
         csr_instret_counter: Instruction retired counter for CSR verification
         reservation_valid: Whether an LR/SC reservation is active
-        reservation_address: Word-aligned address of current reservation
+        reservation_address: Doubleword-aligned address of current reservation
         last_sc_succeeded: Whether the last SC.W instruction succeeded
         last_sc_address: Address of the last SC.W instruction
         last_sc_data: Data value of the last SC.W instruction
@@ -215,15 +218,15 @@ class TestState:
     # ========================================================================
 
     def set_reservation(self, address: int) -> None:
-        """Set LR/SC reservation for the given word-aligned address.
+        """Reserve the aligned doubleword that holds ``address``.
 
         Callers set it when they model an LR.W; a later SC.W checks it.
 
         Args:
-            address: Word-aligned memory address (lower 2 bits ignored)
+            address: LR.W address (lower 3 bits ignored)
         """
         self.reservation_valid = True
-        self.reservation_address = address & MEMORY_WORD_ALIGN_MASK
+        self.reservation_address = address & _RESERVATION_ADDRESS_MASK
 
     def clear_reservation(self) -> None:
         """Clear any active LR/SC reservation.
@@ -237,8 +240,10 @@ class TestState:
     def check_reservation(self, address: int) -> bool:
         """Check if SC.W to the given address should succeed.
 
+        An SC.W to either word of the reserved doubleword succeeds.
+
         Args:
-            address: Word-aligned memory address for SC.W
+            address: SC.W address
 
         Returns:
             True if reservation is valid and address matches (SC succeeds),
@@ -246,7 +251,7 @@ class TestState:
         """
         if not self.reservation_valid:
             return False
-        return (address & MEMORY_WORD_ALIGN_MASK) == self.reservation_address
+        return (address & _RESERVATION_ADDRESS_MASK) == self.reservation_address
 
     # ========================================================================
     # CSR Read Methods

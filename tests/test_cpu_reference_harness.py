@@ -265,3 +265,22 @@ def test_control_flow_targets_wrap_at_xlen() -> None:
     )
 
     assert internal_pc == 0xFFFF_FFFF_FFFF_FFEC
+
+
+@pytest.mark.parametrize(
+    ("sc_address", "succeeds"),
+    ((0x100, True), (0x104, True), (0x108, False), (0x0FC, False)),
+    ids=("same-word", "other-word", "next-doubleword", "previous-doubleword"),
+)
+def test_reservation_covers_the_lr_doubleword(sc_address: int, succeeds: bool) -> None:
+    """An SC.W to either word of the LR.W's doubleword succeeds, as in the RTL."""
+    state = test_state.TestState()
+    state.register_file_previous[10] = sc_address
+    state.set_reservation(0x100)
+
+    _, rd_value, _, _ = cpu_model.CPUModel.model_instruction_execution(
+        state, None, "sc.w", 5, 10, 11, 0, None
+    )
+
+    assert state.last_sc_succeeded is succeeds
+    assert rd_value == (0 if succeeds else 1)
