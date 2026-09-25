@@ -131,7 +131,7 @@ Sources: `dispatch.sv` (`o_status`), `ooo_pipeline_control.sv`,
 | 3 | `FLUSH_RECOVERY` | cycle | A pipeline flush is active (`flush_pipeline`: trap, xRET, FENCE-class, or misprediction recovery) |
 | 4 | `POST_FLUSH_HOLDOFF` | cycle | The fetch settle window after a pipeline flush (`post_flush_holdoff_q != 0`) |
 | 5 | `CSR_SERIALIZE` | cycle | The front end is held for a CSR instruction, from the cycle after it dispatches until it commits and any register result is written back |
-| 6 | `CONTROL_FLOW_SERIALIZE` | cycle | An unpredicted indirect jump is held in the front end while an older branch or jump is unresolved (registered `front_end_cf_serialize_stall`) |
+| 6 | `CONTROL_FLOW_SERIALIZE` | cycle | The registered `front_end_cf_serialize_stall` is high: the front end is held at an unpredicted indirect jump while a conditional branch or JALR is unresolved |
 | 7 | `DISPATCH_STALL_ROB_FULL` | cycle | A valid slot-1 instruction is present and the ROB is full |
 | 8 | `DISPATCH_STALL_INT_RS_FULL` | cycle | A valid slot-1 instruction targets the INT RS and it is full |
 | 9 | `DISPATCH_STALL_MUL_RS_FULL` | cycle | Same, MUL RS |

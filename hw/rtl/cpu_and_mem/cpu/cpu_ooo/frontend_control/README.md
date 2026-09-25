@@ -14,11 +14,13 @@ post-flush holdoff, never reach dispatch. A bundle is valid if either slot
 holds a real instruction, so a `c.nop` in slot 1 still carries its slot-2
 instruction. Dispatch, not the tracker, applies the recovery kill.
 
-The tracker also classifies unpredicted control flow in IF, PD, and ID. An
-unpredicted indirect jump feeds the control-flow serialization stall in
-`ooo_pipeline_control`, which holds the front end while an older branch is
-unresolved. The per-class signals (conditional branch, JAL, indirect) feed
-only [profiling counters](../perf/README.md) 20–22.
+The tracker also finds unpredicted control flow. An unpredicted indirect jump
+in slot 1 of IF (while a stall holds it there), PD, or ID feeds the
+control-flow serialization stall in `ooo_pipeline_control`, which holds the
+front end while a conditional branch or JALR is unresolved. That stall only
+limits wrong-path fetch past the jump; recovery does not depend on it. The PD
+and ID per-class signals (conditional branch, JAL, indirect) feed only
+[profiling counters](../perf/README.md) 20–22.
 
 ## Decoded bundle queue
 

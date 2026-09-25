@@ -190,9 +190,17 @@ module ooo_pipeline_control #(
                                          csr_in_flight ||
                                          serializing_alloc_fire;
 
-  // If an older unresolved branch/jump is still in flight, the shared in-order
-  // front-end cannot safely march a younger *unpredicted* indirect control-flow
-  // instruction through IF/PD/ID.
+  // Control-flow serialization. While a conditional branch or JALR is
+  // unresolved, hold IF, PD, and ID once an unpredicted indirect jump shows up
+  // in slot 1 of IF (under a stall), PD, or ID, or in either slot of a bundle
+  // in the decoded queue. Fetch runs on sequentially past such a jump: a JALR
+  // fetched without a prediction always resolves as mispredicted and recovers
+  // when it commits. The hold limits that wrong-path fetch. It is a
+  // performance measure: recovery squashes everything younger than a
+  // mispredicted branch or jump, so architectural state does not depend on it.
+  // The stall is registered and does not gate queued dispatch. ID keeps
+  // showing a held jump after dispatch takes it, so the jump's own unresolved
+  // bit can keep the hold until the jump recovers.
   logic front_end_cf_serialize_stall_comb;
   logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
   assign front_end_cf_serialize_stall_comb =

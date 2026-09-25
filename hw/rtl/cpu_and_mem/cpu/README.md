@@ -113,9 +113,11 @@ cases, then the sequential PC.
 | Bimodal direction predictor | 1024 2-bit counters | Direction of conditional branches without a taken BTB prediction | Each conditional branch at commit |
 
 JALR never enters the BTB. A JALR that the return address stack does not
-predict goes unpredicted and recovers at commit if it mispredicts. While an
-unpredicted JALR sits in IF, PD, ID, or the decoded queue and an older branch
-is unresolved, `ooo_pipeline_control` stalls the front end.
+predict goes unpredicted; a JALR is always taken, so an unpredicted one
+resolves as mispredicted and recovers when it commits. While an unpredicted
+JALR is in the front end (slot 1 of IF, PD, or ID, or the decoded queue) and a
+conditional branch or JALR is unresolved, `ooo_pipeline_control` stalls the
+front end to limit wrong-path fetch.
 
 The BTB is indexed by PC[9:2]. Its tags include PC[1], so a lookup at one
 halfword of a word never hits an entry trained for the other. A hit predicts

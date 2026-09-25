@@ -25,11 +25,10 @@
  * four outputs only without a decoded queue (DECODED_QUEUE_DEPTH = 0); the
  * queued build derives dispatch validity from o_pd_valid_q and the queue.
  *
- * Control-flow detection: finds unpredicted control flow in IF, PD, and ID.
- * An unpredicted indirect jump feeds ooo_pipeline_control's control-flow
- * serialization stall; the prediction-fence classes feed the perf counters.
- * PD bubbles arrive as from_pd_to_id.inject_nop, not as a rewritten
- * instruction.
+ * Control-flow detection: finds unpredicted indirect jumps in slot 1 of IF,
+ * PD, and ID for ooo_pipeline_control's control-flow serialization stall, and
+ * classifies unpredicted control flow in PD and ID for the perf counters. PD
+ * bubbles arrive as from_pd_to_id.inject_nop, not as a rewritten instruction.
  */
 
 module frontend_validity_tracker (
@@ -236,41 +235,45 @@ module frontend_validity_tracker (
   // Only unpredicted control flow is flagged: control flow for which fetch did
   // not follow a taken prediction (btb_predicted_taken and ras_predicted both
   // clear). A branch predicted not taken is therefore flagged. An unpredicted
-  // indirect jump feeds the control-flow serialization stall, and the
-  // prediction-fence classes below (unpredicted branch, JAL, or indirect jump
-  // in PD or ID) feed the perf counters.
-  // The IF-stage flag, if_unpredicted_control_flow_q, is registered, so it
-  // trails IF by one cycle. That is harmless: the serialization fence is a
-  // performance hint.
+  // indirect jump in slot 1 of IF, PD, or ID feeds the control-flow
+  // serialization stall, and the prediction-fence classes below (unpredicted
+  // branch, JAL, or indirect jump in PD or ID) feed the perf counters.
+  // The IF term is registered for timing. Its indirect class and both
+  // prediction bits are sampled together from IF's output, so it describes
+  // the packet IF presented in the previous cycle. After an unstalled edge PD
+  // has taken that packet and the PD term covers it, so the IF term is masked
+  // unless stall_registered shows that a stall kept the packet in IF.
   // TIMING: the late BTB-prediction bit is registered separately, off the
-  // control-flow qualifier's D input. Both registers load every edge, so
-  // their conjunction equals a single register of the whole predicate,
-  // including reset/flush and stalled cycles (checked below). The qualifier
-  // clears on reset/flush; the BTB register needs no reset because it is
-  // masked while the qualifier is clear. Only synchronous pipeline control
-  // consumes the result.
-  (* keep = "true" *)logic if_control_flow_without_btb_q;
+  // indirect qualifier's D input. Both registers load every edge, so their
+  // conjunction equals a single register of the whole predicate, including
+  // reset/flush and stalled cycles (checked below). The qualifier clears on
+  // reset/flush; the BTB register needs no reset because it is masked while
+  // the qualifier is clear. Only synchronous pipeline control consumes the
+  // result.
+  (* keep = "true" *)logic if_indirect_without_ras_q;
   (* keep = "true" *)logic if_btb_predicted_taken_q;
-  logic if_unpredicted_control_flow_q;
+  logic if_unpredicted_indirect_q;
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) if_control_flow_without_btb_q <= 1'b0;
-    else if_control_flow_without_btb_q <= if_has_control_flow && !from_if_to_pd.ras_predicted;
+    if (i_rst || flush_pipeline) if_indirect_without_ras_q <= 1'b0;
+    else
+      if_indirect_without_ras_q <= if_has_control_flow && if_has_indirect_control_flow &&
+                                   !from_if_to_pd.ras_predicted;
     if_btb_predicted_taken_q <= from_if_to_pd.btb_predicted_taken;
   end
-  assign if_unpredicted_control_flow_q = if_control_flow_without_btb_q && !if_btb_predicted_taken_q;
+  assign if_unpredicted_indirect_q = if_indirect_without_ras_q && !if_btb_predicted_taken_q;
 
 `ifndef SYNTHESIS
   // Reference: the whole predicate in one register, compared with the split
   // form on every edge.
-  logic if_unpredicted_control_flow_legacy_q;
+  logic if_unpredicted_indirect_reference_q;
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) if_unpredicted_control_flow_legacy_q <= 1'b0;
+    if (i_rst || flush_pipeline) if_unpredicted_indirect_reference_q <= 1'b0;
     else
-      if_unpredicted_control_flow_legacy_q <= if_has_control_flow &&
+      if_unpredicted_indirect_reference_q <= if_has_control_flow && if_has_indirect_control_flow &&
           !(from_if_to_pd.btb_predicted_taken || from_if_to_pd.ras_predicted);
-    if (!$isunknown({if_unpredicted_control_flow_q, if_unpredicted_control_flow_legacy_q})) begin
-      p_split_unpredicted_control_flow_matches_original :
-      assert (if_unpredicted_control_flow_q == if_unpredicted_control_flow_legacy_q);
+    if (!$isunknown({if_unpredicted_indirect_q, if_unpredicted_indirect_reference_q})) begin
+      p_split_if_unpredicted_indirect_matches_reference :
+      assert (if_unpredicted_indirect_q == if_unpredicted_indirect_reference_q);
     end
   end
 `endif
@@ -287,8 +290,8 @@ module frontend_validity_tracker (
   logic prediction_fence_branch;
   logic prediction_fence_jal;
   logic prediction_fence_indirect;
-  assign if_unpredicted_indirect_control_flow = if_unpredicted_control_flow_q &&
-                                                if_has_indirect_control_flow;
+  assign if_unpredicted_indirect_control_flow = if_unpredicted_indirect_q &&
+                                                pipeline_ctrl.stall_registered;
   assign pd_unpredicted_control_flow = pd_has_control_flow &&
                                        !(from_pd_to_id.btb_predicted_taken ||
                                          from_pd_to_id.ras_predicted);

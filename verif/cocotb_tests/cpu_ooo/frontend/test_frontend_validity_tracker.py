@@ -38,6 +38,7 @@ BP_DIR_IDX_BITS = 10
 NOP_INSTR = 0x00000013
 BRANCH_INSTR = 0x00000063
 JALR_INSTR = 0x00000067
+RETURN_INSTR = 0x00008067  # jalr x0, 0(ra)
 JAL_INSTR = 0x0000006F
 
 OP_JAL = 21
@@ -265,37 +266,105 @@ async def test_id_valid_dispatch_stall_and_replay_gates(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_if_unpredicted_jalr_sets_indirect_pending(dut: Any) -> None:
-    """An unpredicted IF-stage JALR raises indirect-control-flow pending."""
+async def test_if_unpredicted_jalr_held_by_stall_sets_indirect_pending(
+    dut: Any,
+) -> None:
+    """An unpredicted JALR that a stall holds in IF raises indirect pending.
+
+    The IF term is registered, so it describes the packet IF presented in the
+    previous cycle, and it counts only while a stall has kept that packet in
+    IF. A predicted JALR never raises it, and a flush clears it. Once an
+    unstalled edge hands the JALR to PD, the PD term flags it instead.
+    """
     await _setup_test(dut)
+    held = {"stall": True, "stall_registered": True}
+    jalr = {"sel_nop": False, "effective_instr": JALR_INSTR, "has_control_flow": True}
 
-    _drive_if(
-        dut,
-        {
-            "sel_nop": False,
-            "effective_instr": JALR_INSTR,
-            "has_control_flow": True,
-            "btb_predicted_taken": True,
-        },
-    )
+    for prediction in ("btb_predicted_taken", "ras_predicted"):
+        _drive_pipeline_ctrl(dut, held)
+        _drive_if(dut, {**jalr, prediction: True})
+        await _advance_cycle(dut)
+        assert not dut.o_front_end_indirect_control_flow_pending.value, prediction
+
+    _drive_if(dut, jalr)
     await _advance_cycle(dut)
-
-    assert not dut.o_front_end_indirect_control_flow_pending.value
+    assert dut.o_front_end_indirect_control_flow_pending.value
 
     dut.i_flush_pipeline.value = 1
     await _advance_cycle(dut)
+    assert not dut.o_front_end_indirect_control_flow_pending.value
     dut.i_flush_pipeline.value = 0
+    await _advance_cycle(dut)
+    assert dut.o_front_end_indirect_control_flow_pending.value
+
+    # Release cycle: the stall drops, and IF still presents the held JALR.
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    assert dut.o_front_end_indirect_control_flow_pending.value
+
+    # The unstalled edge hands the JALR to PD. The PD term flags it there; the
+    # IF term still holds its class, but stall_registered is low, so it is
+    # masked.
+    await _advance_cycle(dut)
+    _drive_pipeline_ctrl(dut, {})
+    _drive_if(dut, {})
+    _drive_pd(dut, {"instruction": JALR_INSTR})
+    await _settle()
+    assert dut.o_front_end_indirect_control_flow_pending.value
+    _drive_pd(dut, {})
+    await _settle()
+    assert not dut.o_front_end_indirect_control_flow_pending.value
+
+
+@cocotb.test()
+async def test_if_term_takes_class_and_prediction_from_one_packet(dut: Any) -> None:
+    """A BTB-missed branch followed by a RAS-predicted return raises nothing.
+
+    The IF term samples the indirect class and both prediction bits from the
+    same IF packet. Pairing the branch's missing prediction with the next
+    packet's indirect class would flag the predicted return. The sequence runs
+    once with IF advancing and once with both stall inputs held high, so the
+    sampled registers are also checked with the stall gate open.
+    """
+    await _setup_test(dut)
+    held = {"stall": True, "stall_registered": True}
+
+    for ctrl in ({}, held):
+        _drive_pipeline_ctrl(dut, ctrl)
+        _drive_if(
+            dut,
+            {
+                "sel_nop": False,
+                "effective_instr": BRANCH_INSTR,
+                "has_control_flow": True,
+            },
+        )
+        await _advance_cycle(dut)
+        _drive_if(
+            dut,
+            {
+                "sel_nop": False,
+                "effective_instr": RETURN_INSTR,
+                "has_control_flow": True,
+                "ras_predicted": True,
+            },
+        )
+        await _settle()
+        assert not dut.o_front_end_indirect_control_flow_pending.value, ctrl
+        await _advance_cycle(dut)
+        assert not dut.o_front_end_indirect_control_flow_pending.value, ctrl
+
+    # An unpredicted JALR that leaves IF on an unstalled edge is PD's to flag.
+    _drive_pipeline_ctrl(dut, {})
     _drive_if(
-        dut,
-        {
-            "sel_nop": False,
-            "effective_instr": JALR_INSTR,
-            "has_control_flow": True,
-        },
+        dut, {"sel_nop": False, "effective_instr": JALR_INSTR, "has_control_flow": True}
     )
     await _advance_cycle(dut)
-
-    assert dut.o_front_end_indirect_control_flow_pending.value
+    _drive_if(
+        dut, {"sel_nop": False, "effective_instr": JALR_INSTR, "has_control_flow": True}
+    )
+    await _settle()
+    assert not dut.o_front_end_indirect_control_flow_pending.value
 
 
 @cocotb.test()
