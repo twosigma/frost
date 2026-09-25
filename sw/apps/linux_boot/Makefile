@@ -226,11 +226,10 @@ $(BR2_INITRD) $(FW_JUMP) &: $(FROST_STRESS_SRC) $(BR2_OVERLAY)
 	  $(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" \
 	    $(BR2_DEFCONFIG) || exit 1; \
 	elif [ -n "$(BR2_STALE_KERNEL)" ]; then \
-	  echo "ERROR: $(BR2_OUT) was configured when this tree still built a"; \
-	  echo "       kernel (its .config has BR2_LINUX_KERNEL=y and a"; \
-	  echo "       BR2_GLOBAL_PATCH_DIR that no longer exists). FROST boots"; \
-	  echo "       Debian's kernel now, and Buildroot cannot reuse that"; \
-	  echo "       configuration. Start over:"; \
+	  echo "ERROR: $(BR2_OUT) is configured to build a kernel (its .config"; \
+	  echo "       has BR2_LINUX_KERNEL=y and a BR2_GLOBAL_PATCH_DIR that does"; \
+	  echo "       not exist). FROST boots Debian's kernel, and Buildroot"; \
+	  echo "       cannot reuse that configuration. Start over:"; \
 	  echo "         make -C sw/apps/linux_boot distclean"; \
 	  exit 1; \
 	elif [ "$(BR2_RECORDED)" != "$(BR2_EXTERNAL)" ]; then \
@@ -265,7 +264,9 @@ $(INITRD_IMG): $(BR2_INITRD) $(DEBIAN_KERNEL) $(DRIVER_DIR)/frost_net10g.c \
 
 # Stage 2: pack for this board's clock. The firmware that Buildroot's
 # post-image hook built (images/fw_jump.bin) is packed with frost_boot_image.py.
-sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(PAYLOAD) $(PACK_INITRD) $(FW_JUMP) \
+# Grouped target (&:): one packer run writes all four files, so make -j must
+# not start a second run for another of them.
+sw_ddr.mem sw.mem sw_ddr.txt sw.txt &: $(PAYLOAD) $(PACK_INITRD) $(FW_JUMP) \
     $(BOARD_DIR)/frost_boot_image.py
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) $(SHIM_CROSS) \
 	  python3 "$(BOARD_DIR)/frost_boot_image.py" \
