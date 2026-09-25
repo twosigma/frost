@@ -670,7 +670,9 @@ module tomasulo_wrapper #(
   assign o_commit_comb_2      = commit_bus_2;
   assign o_commit_2           = commit_bus_2_q_qualified;
 
-  // ROB entry valid/done vectors: ROB -> RAT/dispatch
+  // ROB entry valid/done vectors: valid to the RAT (stale-rename check), done
+  // to the dispatch done-repair below. o_rob_entry_done_vec exports the done
+  // vector for the unit bench; cpu_ooo leaves it unconnected.
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_valid;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_done;
   assign o_rob_entry_done_vec = rob_entry_done;
