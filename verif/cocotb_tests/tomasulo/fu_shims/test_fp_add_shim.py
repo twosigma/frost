@@ -640,3 +640,75 @@ async def test_rv64_feq_s_result_not_boxed(dut: Any) -> None:
     """FEQ.S writes exactly 0 or 1 into the 64-bit rd (no NaN-boxing)."""
     result = await _run_op(dut, "FEQ_S", FLEN_1_0, FLEN_1_0)
     assert result["value"] == 1, f"got 0x{result['value']:016X}"
+
+
+# ============================================================================
+# Conversion corners in every rounding mode
+# ============================================================================
+INT32_MIN_SEXT = 0xFFFF_FFFF_8000_0000
+INT64_MIN = 0x8000_0000_0000_0000
+
+
+async def _run_vectors(dut: Any, vectors: list[tuple[str, int, int, int, int]]) -> None:
+    """Run (op, src1, rm, expected value, expected flags) vectors one at a time."""
+    iface = await setup(dut)
+    failures: list[str] = []
+    for op_name, src1, rm, value, flags in vectors:
+        iface.drive_issue(
+            valid=True, rob_tag=7, op=_op(op_name), src1_value=src1, src2_value=0, rm=rm
+        )
+        await RisingEdge(iface.clock)
+        iface.clear_issue()
+        result = await wait_for_complete(iface)
+        await RisingEdge(iface.clock)
+        if result["value"] != value or result["fp_flags"] != flags:
+            failures.append(
+                f"{op_name}({src1:#018x}, rm={rm}): got {result['value']:#018x} flags "
+                f"{result['fp_flags']:#04x}, expected {value:#018x} flags {flags:#04x}"
+            )
+    assert not failures, "\n".join(failures)
+
+
+@cocotb.test()
+async def test_fcvt_w_d_just_below_int32_min(dut: Any) -> None:
+    """FCVT.W.D between -2^31-1 and -2^31: NX if it rounds to -2^31, NV otherwise."""
+    nx, nv = FFLAG_NX, FFLAG_NV
+    # Flags per rounding mode, in RNE, RTZ, RDN, RUP, RMM order. The result is
+    # -2^31 in every case, the saturation value included.
+    cases = [
+        (0xC1E0_0000_0000_0000, (0, 0, 0, 0, 0)),  # -2^31
+        (0xC1E0_0000_0000_0001, (nx, nx, nv, nx, nx)),  # next double below -2^31
+        (0xC1E0_0000_0008_0000, (nx, nx, nv, nx, nx)),  # -2^31 - 0.25
+        (0xC1E0_0000_0010_0000, (nx, nx, nv, nx, nv)),  # -2^31 - 0.5
+        (0xC1E0_0000_0018_0000, (nv, nx, nv, nx, nv)),  # -2^31 - 0.75
+        (0xC1E0_0000_0020_0000, (nv, nv, nv, nv, nv)),  # -2^31 - 1
+    ]
+    await _run_vectors(
+        dut,
+        [
+            ("FCVT_W_D", src, rm, INT32_MIN_SEXT, flags[rm])
+            for src, flags in cases
+            for rm in range(5)
+        ],
+    )
+
+
+@cocotb.test()
+async def test_fcvt_signed_integer_min_boundaries(dut: Any) -> None:
+    """The most negative integer converts exactly; the next FP value below it is NV."""
+    cases = [
+        ("FCVT_W_S", nan_box_f32(0xCF00_0000), INT32_MIN_SEXT, 0),  # -2^31
+        ("FCVT_W_S", nan_box_f32(0xCF00_0001), INT32_MIN_SEXT, FFLAG_NV),
+        ("FCVT_L_S", nan_box_f32(0xDF00_0000), INT64_MIN, 0),  # -2^63
+        ("FCVT_L_S", nan_box_f32(0xDF00_0001), INT64_MIN, FFLAG_NV),
+        ("FCVT_L_D", 0xC3E0_0000_0000_0000, INT64_MIN, 0),  # -2^63
+        ("FCVT_L_D", 0xC3E0_0000_0000_0001, INT64_MIN, FFLAG_NV),
+    ]
+    await _run_vectors(
+        dut,
+        [
+            (op_name, src, rm, value, flags)
+            for op_name, src, value, flags in cases
+            for rm in range(5)
+        ],
+    )

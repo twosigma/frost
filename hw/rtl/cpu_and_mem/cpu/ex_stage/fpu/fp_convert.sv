@@ -92,8 +92,7 @@ module fp_convert #(
   localparam logic [XLEN-1:0] IntMax = {1'b0, {XLEN - 1{1'b1}}};
   localparam logic [XLEN-1:0] IntMin = {1'b1, {XLEN - 1{1'b0}}};
   localparam logic [XLEN-1:0] UintMax = {XLEN{1'b1}};
-  // 32-bit saturation bounds for the W-forms at XLEN=64 (IntMinW doubles as
-  // the magnitude of the most negative word). Stage 4 sign-extends every
+  // 32-bit saturation bounds for the W-forms at XLEN=64. Stage 4 sign-extends every
   // W-form result from bit 31, so these stay in unextended low-word form.
   localparam logic [XLEN-1:0] IntMaxW = XLEN'(64'h0000_0000_7FFF_FFFF);
   localparam logic [XLEN-1:0] IntMinW = XLEN'(64'h0000_0000_8000_0000);
@@ -363,59 +362,32 @@ module fp_convert #(
         round_bit = (unbiased_exp_s2 == -1) ? extended_mant[ExtMantBits-1] : 1'b0;
         sticky_bit = (unbiased_exp_s2 == -1) ? |extended_mant[ExtMantBits-2:0] : |extended_mant;
         fp_to_int_inexact_pre_s2_comb = 1'b1;
-      end else if (unbiased_exp_s2 > max_exp_signed_eff) begin
-        if (!is_unsigned_conv && fp_sign_s2 &&
-            (unbiased_exp_s2 == max_exp_unsigned_eff) &&
-            (fp_mantissa_s2 == {1'b1, {FracBits{1'b0}}})) begin
-          // The most negative integer of the effective width has the
-          // unsigned-range exponent but is in range. Pass its magnitude so
-          // stage 4's signed path produces it without NV.
-          shifted_value = int_min_eff;
-          round_bit = 1'b0;
-          sticky_bit = 1'b0;
-        end else if (is_unsigned_conv && !fp_sign_s2 &&
-                     (unbiased_exp_s2 <= max_exp_unsigned_eff)) begin
-          if (unbiased_exp_s2 >= MantBitsMinus1Ext) begin
-            fp_to_int_shift_amt = ShiftBits'(unbiased_exp_s2 - MantBitsMinus1Ext);
-            fp_to_int_shifted_ext = mant_shifted_lsb << fp_to_int_shift_amt;
-            shifted_value = fp_to_int_shifted_ext[XLEN-1:0];
-            round_bit = 1'b0;
-            sticky_bit = 1'b0;
-          end else begin
-            fp_to_int_shift_amt = ShiftBits'((XLEN - 1) - int'(unbiased_exp_s2));
-            fp_to_int_shifted_ext = extended_mant >> fp_to_int_shift_amt;
-            shifted_value = fp_to_int_shifted_ext[ExtMantBits-1:MantBits];
-            round_bit = fp_to_int_shifted_ext[MantBits-1];
-            sticky_bit = |fp_to_int_shifted_ext[MantBits-2:0];
-            fp_to_int_inexact_pre_s2_comb = round_bit | sticky_bit;
-          end
+      end else if ((unbiased_exp_s2 > max_exp_signed_eff) &&
+                   !((is_unsigned_conv != fp_sign_s2) &&
+                     (unbiased_exp_s2 == max_exp_unsigned_eff))) begin
+        // Out of range whatever the rounding. At exponent max_exp_unsigned_eff
+        // an unsigned conversion of a positive value, or a signed conversion
+        // of a negative one (which may round to the most negative integer),
+        // can still be in range: those take the shift path below, and stage 4
+        // checks the rounded magnitude against the limit.
+        fp_to_int_force_valid_s2_comb   = 1'b1;
+        fp_to_int_force_invalid_s2_comb = 1'b1;
+        if (fp_sign_s2) begin
+          fp_to_int_force_result_s2_comb = is_unsigned_conv ? '0 : int_min_eff;
         end else begin
-          fp_to_int_force_valid_s2_comb   = 1'b1;
-          fp_to_int_force_invalid_s2_comb = 1'b1;
-          if (fp_sign_s2) begin
-            fp_to_int_force_result_s2_comb = is_unsigned_conv ? '0 : int_min_eff;
-          end else begin
-            fp_to_int_force_result_s2_comb = is_unsigned_conv ? uint_max_eff : int_max_eff;
-          end
-          shifted_value = '0;
-          round_bit = 1'b0;
-          sticky_bit = 1'b0;
+          fp_to_int_force_result_s2_comb = is_unsigned_conv ? uint_max_eff : int_max_eff;
         end
+      end else if (unbiased_exp_s2 >= MantBitsMinus1Ext) begin
+        fp_to_int_shift_amt = ShiftBits'(unbiased_exp_s2 - MantBitsMinus1Ext);
+        fp_to_int_shifted_ext = mant_shifted_lsb << fp_to_int_shift_amt;
+        shifted_value = fp_to_int_shifted_ext[XLEN-1:0];
       end else begin
-        if (unbiased_exp_s2 >= MantBitsMinus1Ext) begin
-          fp_to_int_shift_amt = ShiftBits'(unbiased_exp_s2 - MantBitsMinus1Ext);
-          fp_to_int_shifted_ext = mant_shifted_lsb << fp_to_int_shift_amt;
-          shifted_value = fp_to_int_shifted_ext[XLEN-1:0];
-          round_bit = 1'b0;
-          sticky_bit = 1'b0;
-        end else begin
-          fp_to_int_shift_amt = ShiftBits'((XLEN - 1) - int'(unbiased_exp_s2));
-          fp_to_int_shifted_ext = extended_mant >> fp_to_int_shift_amt;
-          shifted_value = fp_to_int_shifted_ext[ExtMantBits-1:MantBits];
-          round_bit = fp_to_int_shifted_ext[MantBits-1];
-          sticky_bit = |fp_to_int_shifted_ext[MantBits-2:0];
-          fp_to_int_inexact_pre_s2_comb = round_bit | sticky_bit;
-        end
+        fp_to_int_shift_amt = ShiftBits'((XLEN - 1) - int'(unbiased_exp_s2));
+        fp_to_int_shifted_ext = extended_mant >> fp_to_int_shift_amt;
+        shifted_value = fp_to_int_shifted_ext[ExtMantBits-1:MantBits];
+        round_bit = fp_to_int_shifted_ext[MantBits-1];
+        sticky_bit = |fp_to_int_shifted_ext[MantBits-2:0];
+        fp_to_int_inexact_pre_s2_comb = round_bit | sticky_bit;
       end
     end
 
