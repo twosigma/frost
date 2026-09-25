@@ -168,6 +168,16 @@ static uint32_t churn_ddr(uint32_t seed, uint32_t first, uint32_t count)
 }
 
 /* Linux clint_timer_interrupt(): clear MTIE, then re-arm through the handler. */
+/* link_ddr.ld places .text, then .rodata, then .data, which starts at
+ * __data_load_start. */
+extern char _start[];
+extern char __data_load_start[];
+
+static int in_program_code(unsigned long pc)
+{
+    return pc >= (uintptr_t) _start && pc < (uintptr_t) __data_load_start;
+}
+
 __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
 {
     csr_clear(mie, MIE_MTIE);
@@ -186,11 +196,11 @@ __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
     if (frame->cause != (MCAUSE_INTERRUPT_BIT | INT_MTI)) {
         record_failure(1u);
     }
-    /* epc and ra must stay in DDR; ra == epc == 0xCC0 is the failure signature. */
-    if (frame->epc < 0x80000000u || frame->epc == 0x00000CC0u) {
+    /* epc and ra must point into the program's DDR code (text and rodata). */
+    if (!in_program_code(frame->epc)) {
         record_failure(2u);
     }
-    if (frame->ra < 0x80000000u || frame->ra == 0x00000CC0u) {
+    if (!in_program_code(frame->ra)) {
         record_failure(3u);
     }
     if (frame->sp < (uintptr_t) &g_ddr_stack[0] ||
