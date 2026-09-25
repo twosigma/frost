@@ -4809,20 +4809,17 @@ module tomasulo_wrapper #(
       // Raw store-commit pulses from the ROB, a cycle ahead of the registered
       // commit.  The SQ uses them only to clear committed-empty early, so a
       // trap such as a timer interrupt cannot see an empty SQ and full-flush
-      // a store that has committed but not yet reached the SQ; the tags are
-      // unused.  The ROB never commits in a flush cycle, so the flush kill
-      // needs no guard for them.  The narrow raw pulse keeps the wide commit
-      // payload logic off the committed-empty path.
-      .i_commit_valid_comb  (commit_store_like_raw),
-      .i_commit_rob_tag_comb(head_tag),
+      // a store that has committed but not yet reached the SQ.  The ROB never
+      // commits in a flush cycle, so the flush kill needs no guard for them.
+      // The narrow raw pulse keeps the wide commit payload logic off the
+      // committed-empty path.
+      .i_commit_valid_comb(commit_store_like_raw),
 
       // Slot 2 likewise: commit_bus_2_q_valid is still one cycle away from
       // the SQ.
-      .i_commit_valid_comb_2  (commit_2_store_like_raw),
-      .i_commit_rob_tag_comb_2(commit_bus_2.tag),
+      .i_commit_valid_comb_2(commit_2_store_like_raw),
 
       // Store-to-load forwarding (from LQ)
-      .i_sq_check_valid          (sq_check_valid),
       .i_sq_check_capture_valid  (sq_check_capture_valid),
       .i_sq_check_addr           (sq_check_addr),
       .i_sq_check_addr_b         (sq_check_addr_b),
@@ -4858,7 +4855,6 @@ module tomasulo_wrapper #(
       .i_flush_tag(i_flush_tag),
       .i_flush_all(full_flush_all),
       .i_flush_after_head_commit(i_flush_after_head_commit),
-      .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
       .o_empty          (sq_empty_exact),

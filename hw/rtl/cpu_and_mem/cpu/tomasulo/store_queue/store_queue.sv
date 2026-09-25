@@ -110,11 +110,10 @@ module store_queue #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag,
 
     // Combinational store-commit pulses straight from the ROB (unregistered).
-    // They only clear committed_empty early (see Committed-empty below); the
-    // tags are unused.  The ROB never raises them in a flush cycle (asserted
-    // below), so the partial-flush kill needs no guard for them.
-    input logic                                        i_commit_valid_comb,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_comb,
+    // They only clear committed_empty early (see Committed-empty below).  The
+    // ROB never raises them in a flush cycle (asserted below), so the
+    // partial-flush kill needs no guard for them.
+    input logic i_commit_valid_comb,
 
     // Commit slot 2 (2-wide commit): a second store retiring in the same
     // cycle.  The ROB retires SC/AMO/LR/fence only alone from the head, so
@@ -123,7 +122,6 @@ module store_queue #(
     input logic                                        i_commit_valid_2,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_2,
     input logic                                        i_commit_valid_comb_2,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_commit_rob_tag_comb_2,
 
     // Trap-cone-free commit pulses for the forwarding scan only (same tags as
     // i_commit_valid/_2).  They are i_commit_valid/_2 with the full-flush
@@ -141,9 +139,9 @@ module store_queue #(
     // =========================================================================
     // Store-to-Load Forwarding (from LQ disambiguation)
     // =========================================================================
-    input logic i_sq_check_valid,
-    // Flush-free capture-enable variant for the forwarding unit's output
-    // register only (see load_queue.o_sq_check_capture_valid).
+    // The LQ's probe valid without its flush and commit-block terms; it
+    // enables only the forwarding unit's output register (see
+    // load_queue.o_sq_check_capture_valid).
     input logic i_sq_check_capture_valid,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr,
     // Three copies of the same address driven by dont_touch'd LQ-side
@@ -193,7 +191,6 @@ module store_queue #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
     input logic                                        i_flush_after_head_commit,
-    input logic                                        i_early_recovery_flush,
 
     // =========================================================================
     // SC Discard (from ROB commit: failed SC invalidates its SQ entry)
@@ -679,7 +676,6 @@ module store_queue #(
       .i_clk                     (i_clk),
       .i_rst_n                   (i_rst_n),
       .i_flush_all               (i_flush_all),
-      .i_sq_check_valid          (i_sq_check_valid),
       .i_sq_check_capture_valid  (i_sq_check_capture_valid),
       .i_sq_check_addr           (i_sq_check_addr),
       .i_sq_check_addr_b         (i_sq_check_addr_b),

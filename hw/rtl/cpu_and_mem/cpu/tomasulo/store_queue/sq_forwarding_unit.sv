@@ -48,12 +48,12 @@ module sq_forwarding_unit #(
     input logic i_flush_all,
 
     // Load probe (from MEM_RS via LQ) + ROB head + commit snoop
-    input logic i_sq_check_valid,
-    // Capture enable for the Block 3 output register: i_sq_check_valid without
-    // the flush and commit-block terms, which would put the registered trap
-    // pulse on every capture bit's D input. The LQ guards its uses of the
-    // result instead (hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/README.md,
-    // "Forwarding results captured on a flush cycle").
+    // i_sq_check_capture_valid enables the Block 3 output register. It is the
+    // LQ's probe valid without the flush and commit-block terms, which would
+    // put the registered trap pulse on every capture bit's D input. The LQ
+    // guards its uses of the result instead
+    // (hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/README.md, "Forwarding
+    // results captured on a flush cycle").
     input logic i_sq_check_capture_valid,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_b,
