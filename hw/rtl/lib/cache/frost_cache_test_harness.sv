@@ -41,7 +41,8 @@ module frost_cache_test_harness #(
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
     parameter int unsigned L2_DATA_WRITE_LATENCY = 2,
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
-    parameter int unsigned MEM_BYTES = 4 * 1024 * 1024,
+    // Room for every cache bench's per-test regions, which stay disjoint.
+    parameter int unsigned MEM_BYTES = 16 * 1024 * 1024,
     parameter int unsigned MEM_LATENCY = 12,
     // Per-transaction latency jitter (0 = off; see axi_behavioral_memory).
     parameter int unsigned MEM_LATENCY_JITTER = 0,

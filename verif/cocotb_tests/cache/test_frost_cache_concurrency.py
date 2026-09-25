@@ -53,20 +53,26 @@ MEM_LATENCY = 12  # harness default
 L1_LINES = 1024 // LINE_BYTES  # harness L1 = 1 KiB
 L2_BYTES = 4096  # harness L2
 
-# Per-test regions. The behavioral DDR persists across the in-run resets, so a
-# test whose model assumes zero-filled memory needs lines no earlier test wrote.
+# Per-test 256 KiB regions, disjoint from each other and from the other cache
+# benches' ranges. The behavioral DDR persists across the in-run resets, so a
+# test whose model assumes zero-filled memory needs lines no earlier test
+# wrote; every line a test touches, its eviction reads included, stays inside
+# its own region.
 PIPE_BASE = BASE_ADDR + 0x400000
 HUM_BASE = BASE_ADDR + 0x440000
 MUM_BASE = BASE_ADDR + 0x480000
 MERGE_BASE = BASE_ADDR + 0x4C0000
 WAITER_BASE = BASE_ADDR + 0x500000
 CONFLICT_BASE = BASE_ADDR + 0x540000
-STALE_BASE = BASE_ADDR + 0x680000
 WBFILL_BASE = BASE_ADDR + 0x580000
 FENCE_BASE = BASE_ADDR + 0x5C0000
 RANDOM_BASE = BASE_ADDR + 0x600000
 TAG_INSTALL_BASE = BASE_ADDR + 0x640000
+STALE_BASE = BASE_ADDR + 0x680000
 STARVE_BASE = BASE_ADDR + 0x6C0000
+TURNS_BASE = BASE_ADDR + 0x700000
+# Offset of a test's eviction reads inside its region.
+EVICT_OFFSET = 0x30000
 RESP_TIMEOUT_CYCLES = 5_000
 
 # frost_cache.sv WbStarveLimit: the loads of the downstream request register
@@ -269,7 +275,7 @@ async def test_hit_under_miss(dut: Any) -> None:
             dut, "up", col, write=True, addr=addr, wdata=data, wstrb=FULL
         )
     # Evict everything, then bring only hit_addr back.
-    await _evict_with_reads(dut, col, HUM_BASE + 0x40000)
+    await _evict_with_reads(dut, col, HUM_BASE + EVICT_OFFSET)
     await _transaction(dut, "up", col, write=False, addr=hit_addr)
     await _settle(dut)
 
@@ -292,14 +298,14 @@ async def test_miss_under_miss(dut: Any) -> None:
     col = _Collector(dut, "up")
     model = ReferenceModel()
     # Distinct indices at every level (same-index misses serialize by design).
-    addrs = [MUM_BASE + 0x20000 * k + (5 + 3 * k) * LINE_BYTES for k in range(3)]
+    addrs = [MUM_BASE + 0x10000 * k + (5 + 3 * k) * LINE_BYTES for k in range(3)]
     for k, addr in enumerate(addrs):
         data = _line_int(bytes([(0x30 * (k + 1) + b) & 0xFF for b in range(32)]))
         model.write_line(addr, data, FULL)
         await _transaction(
             dut, "up", col, write=True, addr=addr, wdata=data, wstrb=FULL
         )
-    await _evict_with_reads(dut, col, MUM_BASE + 0x80000)
+    await _evict_with_reads(dut, col, MUM_BASE + EVICT_OFFSET)
 
     ids = [_ids.take("up") for _ in addrs]
     for req_id, addr in zip(ids, addrs):
@@ -325,7 +331,7 @@ async def test_write_miss_early_ack_and_merge(dut: Any) -> None:
     seed = _line_int(bytes([(0xA0 + b) & 0xFF for b in range(32)]))
     model.write_line(addr, seed, FULL)
     await _transaction(dut, "up", col, write=True, addr=addr, wdata=seed, wstrb=FULL)
-    await _evict_with_reads(dut, col, MERGE_BASE + 0x40000)
+    await _evict_with_reads(dut, col, MERGE_BASE + EVICT_OFFSET)
 
     w1 = _line_int(bytes([0x11] * 32))
     w2 = _line_int(bytes([0x22] * 32))
@@ -366,7 +372,7 @@ async def test_read_waiter(dut: Any) -> None:
     data = _line_int(bytes([(0xC3 + b) & 0xFF for b in range(32)]))
     model.write_line(addr, data, FULL)
     await _transaction(dut, "up", col, write=True, addr=addr, wdata=data, wstrb=FULL)
-    await _evict_with_reads(dut, col, WAITER_BASE + 0x40000)
+    await _evict_with_reads(dut, col, WAITER_BASE + EVICT_OFFSET)
 
     ids = [_ids.take("up") for _ in range(3)]
     for req_id in ids:
@@ -392,7 +398,7 @@ async def test_index_conflict(dut: Any) -> None:
         await _transaction(
             dut, "up", col, write=True, addr=addr, wdata=data, wstrb=FULL
         )
-    await _evict_with_reads(dut, col, CONFLICT_BASE + 0x40000)
+    await _evict_with_reads(dut, col, CONFLICT_BASE + EVICT_OFFSET)
 
     ids = [_ids.take("up") for _ in range(3)]
     for req_id, addr in zip(ids, (x, y, z)):
@@ -751,7 +757,7 @@ async def test_writeback_slots_take_turns_under_dirty_victim_stream(dut: Any) ->
     model = ReferenceModel()
     cache = dut.cache_hierarchy.l2_cache
 
-    base = STARVE_BASE + 0x20000
+    base = TURNS_BASE
     n_dirty = 16
     dirty = [base + i * LINE_BYTES for i in range(n_dirty)]  # L1 indices 0..15
     for i, d in enumerate(dirty):
@@ -928,7 +934,7 @@ async def test_stale_match_recycled_slot(dut: Any) -> None:
     alias = L1_LINES * LINE_BYTES  # same L1 index, next tag
 
     for k in range(14):
-        base = STALE_BASE + k * 0x10000
+        base = STALE_BASE + k * 0x4000
         x = base  # index 0 of this region
         data = _line_int(bytes([(0xA0 + k + b * 3) & 0xFF for b in range(32)]))
         model.write_line(x, data, FULL)

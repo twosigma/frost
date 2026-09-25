@@ -44,16 +44,16 @@ UP_ID_BITS = 3
 NUM_IDS = 1 << UP_ID_BITS
 MEM_LATENCY_CYCLES = 12  # harness default
 
-# Per-test, per-port regions: the behavioral memory (1 MiB) persists across
-# the in-run resets between cocotb tests, so a fresh zero-default reference
-# model is only valid in untouched address space.
+# Disjoint per-test, per-port regions: the behavioral memory (1 MiB) persists
+# across the in-run resets between cocotb tests, so a fresh zero-default
+# reference model is only valid in untouched address space.
 SMOKE_BASE = (BASE_ADDR + 0x00000, BASE_ADDR + 0x10000)
 SIMUL_BASE = (BASE_ADDR + 0x20000, BASE_ADDR + 0x30000)
 NOLOCK_BASE = (BASE_ADDR + 0x40000, BASE_ADDR + 0x50000)
 RANDOM_BASE = (BASE_ADDR + 0x60000, BASE_ADDR + 0x80000)
 BURST_BASE = (BASE_ADDR + 0xA0000, BASE_ADDR + 0xB0000)
 RANDOM_OUT_BASE = (BASE_ADDR + 0xC0000, BASE_ADDR + 0xE0000)
-STARVE_BASE = (BASE_ADDR + 0xE0000, BASE_ADDR + 0xF0000)
+STARVE_BASE = (BASE_ADDR + 0xF0000, BASE_ADDR + 0xF8000)
 
 STARVATION_LIMIT = 16  # harness default, the hierarchy's DMA_STARVATION_LIMIT
 

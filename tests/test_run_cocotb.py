@@ -1298,8 +1298,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     # DMA-port service envelope measurement: one build per candidate lock
     # count so producer depth can be swept against the sequencer's capacity,
-    # plus one at the full-system DDR model latency. Measurement only, not
-    # part of the pytest sweep.
+    # plus one at the full-system DDR model latency and one with the
+    # production L2, which the write_l2_only scenario needs. Measurement
+    # only, not part of the pytest sweep.
     "dma_envelope_lock3": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_dma_envelope",
         hdl_toplevel_module="frost_cache_test_harness",
@@ -1368,6 +1369,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GL1_CACHE_BYTES=131072",
             "-GNUM_DMA_LOCK=3",
             "-GMEM_LATENCY=30",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock3_big_l2": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=3 with the production "
+            "2 MiB L2: adds write_l2_only (lines the L2 holds and the L1D does not) "
+            "and drops write_beyond_l2 (L1 -> L2 -> DDR)"
+        ),
+        verilator_extra_args=(
+            "-GL1_CACHE_BYTES=131072",
+            "-GL2_CACHE_BYTES=2097152",
+            "-GNUM_DMA_LOCK=3",
         ),
         include_in_pytest=False,
     ),

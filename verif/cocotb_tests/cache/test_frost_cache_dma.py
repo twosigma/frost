@@ -56,22 +56,23 @@ from cocotb_tests.cache.test_frost_cache import (
 from cocotb_tests.cache.test_frost_cache_concurrency import _Collector, _fire
 
 FULL = (1 << LINE_BYTES) - 1
-# Per-test disjoint regions (the behavioral DDR persists across in-run resets).
-ABSENT_BASE = BASE_ADDR + 0x700000
-CLEAN_BASE = BASE_ADDR + 0x740000
-DIRTY_BASE = BASE_ADDR + 0x780000
-READ_BASE = BASE_ADDR + 0x7C0000
-TRANSIT_BASE = BASE_ADDR + 0x800000
-LOCK_BASE = BASE_ADDR + 0x840000
-SERIAL_BASE = BASE_ADDR + 0x880000
-FENCE_BASE = BASE_ADDR + 0x8C0000
-FLOOD_BASE = BASE_ADDR + 0x900000
-DISJOINT_BASE = BASE_ADDR + 0x940000
-ORDER_BASE = BASE_ADDR + 0x980000
-RANDOM_BASE = BASE_ADDR + 0x9C0000
+# Per-test disjoint 256 KiB regions (the behavioral DDR persists across
+# in-run resets), above the ranges the other cache benches use and inside the
+# harness's memory model.
+ABSENT_BASE = BASE_ADDR + 0x800000
+CLEAN_BASE = BASE_ADDR + 0x840000
+DIRTY_BASE = BASE_ADDR + 0x880000
+READ_BASE = BASE_ADDR + 0x8C0000
+TRANSIT_BASE = BASE_ADDR + 0x900000
+LOCK_BASE = BASE_ADDR + 0x940000
+SERIAL_BASE = BASE_ADDR + 0x980000
+FENCE_BASE = BASE_ADDR + 0x9C0000
+FLOOD_BASE = BASE_ADDR + 0xA00000
+DISJOINT_BASE = BASE_ADDR + 0xA40000
+ORDER_BASE = BASE_ADDR + 0xA80000
+RANDOM_BASE = BASE_ADDR + 0xAC0000
 
 L1_ALIAS = 1024  # harness L1 = 1 KiB: +1024 is the same index, another tag
-MEM_LATENCY = 12  # harness default
 
 
 class LoadQueueStub:
@@ -512,24 +513,25 @@ async def test_concurrent_disjoint_traffic(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cpu_reads_dma_writes_in_coherence_order(dut: Any) -> None:
-    """A CPU reader of DMA-written lines never sees a value go backwards.
+    """A CPU reader of DMA-written lines sees each line's own writes, in order.
 
-    The DMA side writes an increasing sequence number into each line; the CPU
-    side reads the lines concurrently, in any interleaving. Per line the
-    sequence the CPU observes must be non-decreasing and never exceed the
-    latest write the DMA side has issued.
+    The DMA side writes an increasing sequence number, unique across lines,
+    into each line; the CPU side reads the lines concurrently, in any
+    interleaving. Every value the CPU observes in a line must be one the DMA
+    side has issued to that line (or the line's initial zero), and per line
+    the sequence it observes must never go backwards.
     """
     await _setup(dut)
     lq = LoadQueueStub(dut, inval_delay=3)
     lines = [ORDER_BASE + i * LINE_BYTES for i in range(4)]
-    issued = {addr: 0 for addr in lines}
+    written: dict[int, set[int]] = {addr: {0} for addr in lines}
     done = [False]
 
     async def dma_writer() -> None:
         r = random.Random(0xC0FFEE)
         for n in range(1, 61):
             addr = lines[r.randrange(len(lines))]
-            issued[addr] = n
+            written[addr].add(n)
             await _dma(dut, write=True, addr=addr, wdata=n, wstrb=FULL)
         done[0] = True
 
@@ -538,15 +540,14 @@ async def test_cpu_reads_dma_writes_in_coherence_order(dut: Any) -> None:
         last = {addr: 0 for addr in lines}
         while not done[0]:
             addr = lines[r.randrange(len(lines))]
-            before = issued[addr]
             seen = await _line_transaction(dut, write=False, addr=addr) & 0xFFFF_FFFF
+            assert seen in written[addr], (
+                f"line 0x{addr:08x}: saw sequence {seen}, which the DMA side "
+                "never issued to this line"
+            )
             assert seen >= last[addr], (
                 f"line 0x{addr:08x}: saw sequence {seen} after {last[addr]}"
             )
-            assert seen <= issued[addr], (
-                f"line 0x{addr:08x}: saw sequence {seen} before it was issued"
-            )
-            del before
             last[addr] = seen
 
     writer = cocotb.start_soon(dma_writer())

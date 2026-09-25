@@ -361,7 +361,7 @@ may take several cycles to answer.
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `line_port_arbiter*` | Arbitration and tagged responses |
 | `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |
-| `dma_envelope_lock3` through `dma_envelope_lock8`, `dma_envelope_lock3_mem30` | DMA throughput and latency by lock count and scenario; CLI-only |
+| `dma_envelope_lock3` through `dma_envelope_lock8`, `dma_envelope_lock3_mem30`, `dma_envelope_lock3_big_l2` | DMA throughput and latency by lock count and scenario; CLI-only |
 
 Run a target with `./scripts/frost.py cocotb <target>`; `--list-tests` prints
 the exact names. The benches live in
