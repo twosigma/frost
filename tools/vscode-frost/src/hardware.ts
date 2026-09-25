@@ -23,6 +23,54 @@ export function imageResetDelayMs(cpuClockHz: number): number {
     return milliseconds;
 }
 
+const HARDWARE_TOOLS = ['openocd', 'hw_server'];
+// The dynamic loader, which a launcher can exec to run the tool inside the
+// loader's own process (oss-cad-suite's bin/openocd).
+const DYNAMIC_LOADER = /^ld[\w.-]*\.so(?:\.\d+)*$/;
+// Loader options (glibc and musl) that take the next argument as their value.
+const LOADER_VALUE_OPTIONS = new Set(['--library-path', '--inhibit-rpath', '--audit',
+    '--preload', '--argv0', '--glibc-hwcaps-prepend', '--glibc-hwcaps-mask']);
+// Loader options that report on the program, or on the loader, and exit.
+const LOADER_REPORT_OPTIONS = new Set(['--list', '--verify', '--list-tunables',
+    '--list-diagnostics', '--help', '--version']);
+
+/**
+ * Return whether a process's argv (from /proc/<pid>/cmdline) is an OpenOCD or
+ * hw_server: the tool itself, or the dynamic loader running it. A program that
+ * only names one in its arguments, such as `man openocd` or a shell whose script
+ * or command string names one, is not. A launcher that starts the tool as a
+ * process of its own, such as Vivado's bin/hw_server and bin/loader scripts,
+ * leaves that process to be found.
+ */
+export function isHardwareTool(argv: readonly string[]): boolean {
+    const isTool = (arg = '') => HARDWARE_TOOLS.includes(path.basename(arg));
+    const [program = '', ...rest] = argv;
+    if (isTool(program)) return true;
+    if (!DYNAMIC_LOADER.test(path.basename(program))) return false;
+    // The loader's options start with --, and the first other argument, or
+    // the one after --, is the program it runs.
+    for (let i = 0; i < rest.length; i++) {
+        const arg = rest[i];
+        if (arg === '--') return isTool(rest[i + 1]);
+        if (!arg.startsWith('--')) return isTool(arg);
+        if (LOADER_REPORT_OPTIONS.has(arg)) return false;
+        if (LOADER_VALUE_OPTIONS.has(arg)) i++;
+    }
+    return false;
+}
+
+/** Return the PID of an OpenOCD or hw_server process, if one is running. */
+export async function findHardwareTool(procRoot = '/proc'): Promise<string | undefined> {
+    for (const pid of await fs.readdir(procRoot)) {
+        if (!/^\d+$/.test(pid)) continue;
+        let argv: string[];
+        try { argv = (await fs.readFile(path.join(procRoot, pid, 'cmdline'), 'utf8')).split('\0'); }
+        catch { continue; }
+        if (isHardwareTool(argv)) return pid;
+    }
+    return undefined;
+}
+
 export class Hardware {
     private owned = new Set<OwnedProcess>();
     constructor(private readonly output: (text: string) => void) {}
@@ -37,14 +85,9 @@ export class Hardware {
         // One cable session at a time: refuse to start while any OpenOCD or
         // hw_server process exists. Never adopt or stop an external server,
         // even one on our port.
-        for (const pid of await fs.readdir('/proc')) {
-            if (!/^\d+$/.test(pid)) continue;
-            let args: string[];
-            try { args = (await fs.readFile(`/proc/${pid}/cmdline`, 'utf8')).split('\0'); }
-            catch { continue; }
-            if (args.some(arg => ['openocd', 'hw_server'].includes(path.basename(arg)))) {
-                throw new Error(`Existing hardware tool PID ${pid} must release the cable first. It was left untouched.`);
-            }
+        const pid = await findHardwareTool();
+        if (pid !== undefined) {
+            throw new Error(`Existing hardware tool PID ${pid} must release the cable first. It was left untouched.`);
         }
         await requireFreePort(GDB_PORT);
         await requireFreePort(HW_PORT);
