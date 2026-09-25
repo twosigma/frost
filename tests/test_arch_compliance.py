@@ -77,14 +77,12 @@ SUPPORTED_EXTENSIONS = [
 # encodings) but not Zbkx (xperm4/xperm8), Zkn (AES/SHA256/SHA512), or Zks
 # (SM3/SM4).
 # privilege: FROST implements M, S, and U modes but no hypervisor. The envcfg
-# tests drive an S-mode trap routine and declare extensions FROST does not
-# implement (Zicbom, Zicboz, Ssdtso). Of them the filter admits only
-# menvcfg_m, which the pinned suite has only under rv32i_m. The directed
-# sw/apps/umode_test covers U-mode, including illegal M-CSR and MRET access
-# from U.
+# tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and FROST's
+# menvcfg implements only STCE. The directed sw/apps/umode_test covers U-mode,
+# including illegal M-CSR and MRET access from U.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "packw", "brev8"},
-    "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
+    "privilege": {"ebreak", "ecall", "misalign"},
 }
 
 # Tests excluded by filename prefix. FROST implements Zba/Zbb/Zbs but not Zbc,

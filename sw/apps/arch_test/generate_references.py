@@ -159,13 +159,11 @@ SUPPORTED_EXTENSIONS = [
 
 # Allowed filename prefixes for extensions where only a subset of tests
 # applies. privilege: FROST implements M, S, and U modes but no hypervisor.
-# The envcfg tests drive an S-mode trap routine and declare extensions FROST
-# does not implement (Zicbom, Zicboz, Ssdtso); of them the filter admits
-# only menvcfg_m, which the pinned suite has only under rv32i_m. K: FROST
-# implements Zbkb only, which at rv64 is pack/packh/packw/brev8 (zip/unzip
-# are RV32-only encodings).
+# The envcfg tests are left out: they declare Zicbom, Zicboz, and Ssdtso, and
+# FROST's menvcfg implements only STCE. K: FROST implements Zbkb only, which
+# at rv64 is pack/packh/packw/brev8 (zip/unzip are RV32-only encodings).
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
-    "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
+    "privilege": {"ebreak", "ecall", "misalign"},
     "K": {"pack", "packh", "packw", "brev8"},
 }
 
@@ -174,9 +172,6 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "B": {"clmul"},
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
-    # The pinned suite has no rv64 menvcfg tests, so this entry and the
-    # menvcfg_m prefix in EXTENSION_TEST_FILTERS have no effect.
-    "privilege": {"menvcfg_m"},
 }
 
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv64-linux-")
