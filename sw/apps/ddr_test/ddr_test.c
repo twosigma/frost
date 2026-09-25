@@ -31,9 +31,10 @@
 #define CACHED_BASE 0x80000000u
 #define TEST_WINDOW 0x00800000u /* exercise the first 8 MiB of the region */
 
-/* Word offsets (in 32-bit words) covering low, two mid points, and far. */
-#define OFF_LOW 0u
-#define OFF_LOW2 1u
+/* Word offsets (in 32-bit words) covering low, two mid points, and far. The
+ * low cases start at the second 32-byte line: ddr_preload fills the first. */
+#define OFF_LOW (32u / 4u)
+#define OFF_LOW2 (OFF_LOW + 1u)
 #define OFF_MID_A (0x00040000u / 4u)       /* 256 KiB in (beyond L1) */
 #define OFF_MID_B (0x00400000u / 4u)       /* 4 MiB in (beyond L2)   */
 #define OFF_TOP ((TEST_WINDOW - 16u) / 4u) /* near the window top    */
@@ -41,8 +42,12 @@
 static volatile uint32_t *const ddr = (volatile uint32_t *) CACHED_BASE;
 
 /* Preloaded through sw_ddr.mem in simulation or sw_ddr.txt over JTAG. This
- * checks linker placement, image delivery, and cache fill from initialized DDR. */
-__attribute__((section(".ddr_rodata"))) static const uint32_t ddr_preload[8] = {
+ * checks linker placement, image delivery, and cache fill from initialized DDR.
+ * volatile makes every check a DDR load; without it GCC folds the comparisons
+ * against this initializer and drops the array. It is the program's only DDR
+ * data, so it fills the region's first line, which no store in this program
+ * touches: a rerun after reset does not reload memory. */
+__attribute__((section(".ddr_rodata"))) static const volatile uint32_t ddr_preload[8] = {
     0x0DD41001u,
     0x0DD41002u,
     0x0DD41003u,
@@ -192,10 +197,10 @@ int main(void)
         const uint32_t lines = 24u;
         int evict_fail = 0;
         for (uint32_t i = 0; i < lines; i++) {
-            ddr[i * l1_stride_words + 7u] = 0xE0000000u ^ (i * 0x01010101u);
+            ddr[OFF_LOW + 7u + i * l1_stride_words] = 0xE0000000u ^ (i * 0x01010101u);
         }
         for (uint32_t i = 0; i < lines; i++) {
-            uint32_t got = ddr[i * l1_stride_words + 7u];
+            uint32_t got = ddr[OFF_LOW + 7u + i * l1_stride_words];
             uint32_t want = 0xE0000000u ^ (i * 0x01010101u);
             if (got != want) {
                 uart_printf("EVICT i=%lu want=0x%08lx got=0x%08lx FAIL\n",
