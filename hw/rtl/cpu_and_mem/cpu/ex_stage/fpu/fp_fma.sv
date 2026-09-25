@@ -78,19 +78,9 @@ module fp_fma #(
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
 
-  // Depth of dsp_tiled_multiplier_unsigned at its default tiling, the same
-  // formula as riscv_pkg::dsp_tiled_stages. The metadata shift chain is this
-  // long, so it must match the multiplier's depth.
-  localparam int unsigned MultATileWidth = 27;
-  localparam int unsigned MultBTileWidth = 35;
-  localparam int unsigned MultNumATiles = (MantBits + MultATileWidth - 1) / MultATileWidth;
-  localparam int unsigned MultNumBTiles = (MantBits + MultBTileWidth - 1) / MultBTileWidth;
-  localparam int unsigned MultNumTerms = MultNumATiles * MultNumBTiles;
-  localparam int unsigned MultReduceStages = (MultNumTerms <= 1) ? 0 : $clog2(MultNumTerms);
-  localparam int unsigned MultMinLatency = 3;
-  localparam int unsigned MultReduceLatency = MultReduceStages + 1;
-  localparam int unsigned MultLatency =
-      (MultReduceLatency < MultMinLatency) ? MultMinLatency : MultReduceLatency;
+  // Depth of dsp_tiled_multiplier_unsigned at its default 27x35 tiling. The
+  // metadata shift chain is this long, so it must match the multiplier's depth.
+  localparam int unsigned MultLatency = riscv_pkg::dsp_tiled_stages(MantBits, MantBits, 27, 35);
   // Input registers
   logic [FP_WIDTH-1:0] operand_a_reg;
   logic [FP_WIDTH-1:0] operand_b_reg;
@@ -793,6 +783,16 @@ module fp_fma #(
       end
     end
   end
+
+`ifndef SYNTHESIS
+  // The metadata chain's valid bit leaves the chain in the same cycle as the
+  // multiplier's product, so each product pairs with its own metadata.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      p_mult_meta_aligned : assert (mult_meta_valid[MultLatency-1] == prod_mant_s2_tiled_valid);
+    end
+  end
+`endif
 
   always_ff @(posedge i_clk) begin
     if (i_valid) begin
