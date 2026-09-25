@@ -33,8 +33,8 @@
 # same opcodes including sc.w.rl and the trailing fence, on both dword
 # lanes.  The neighboring word holds a positive pattern, so a wrong-lane
 # read looks different from a mis-extension (val=0x00000000ffffffff).  A
-# failing check prints its number and s4, which most checks set to the
-# offending loaded value, and <<PASS>> appears only if every check passes.
+# failing check prints its number and s4, which every comparison sets to the
+# value it tests, and <<PASS>> appears only if every check passes.
 
 .equ NEIGHBOR, 0x7A7A7A7A     # positive, distinctive wrong-lane tell
 .equ LAPS, 8
@@ -132,12 +132,15 @@ check5:
     li      s0, 5
     li      t0, 1
     amoadd.w t2, t0, (s1)        # -2 -> -1, old = -2
+    mv      s4, t2
     li      t3, -2
     bne     t2, t3, fail
     amoadd.w t2, t0, (s1)        # -1 -> 0, old = -1
+    mv      s4, t2
     li      t3, -1
     bne     t2, t3, fail
     lw      t5, 0(s1)
+    mv      s4, t5
     bnez    t5, fail
 
 # --- check 6: lr.w immediately after sc.w.rl, no fence between --------
@@ -148,9 +151,11 @@ check5:
     sc.w.rl t4, t4, (s1)         # store -1
     bnez    t4, 0b
     lr.w    t2, (s1)             # read it straight back
+    mv      s4, t2
     li      t3, -1
     bne     t2, t3, fail
     lw      t5, 4(s1)            # neighbor untouched
+    mv      s4, t5
     li      t6, NEIGHBOR
     bne     t5, t6, fail
 
@@ -176,9 +181,11 @@ check5:
     li      t3, -1
     bne     t2, t3, fail
     lw      t5, 4(s2)
+    mv      s4, t5
     li      t6, -2
     bne     t5, t6, fail
     lw      t5, 0(s2)            # neighbor untouched
+    mv      s4, t5
     li      t6, NEIGHBOR
     bne     t5, t6, fail
     j       check8
@@ -243,11 +250,12 @@ fail:
     addi    a0, a0, 48
     la      t0, digit_buf
     sb      a0, 0(t0)
+    sb      zero, 1(t0)          # .data is not loaded in the bram tier
     la      a0, digit_buf
     jal     ra, print_string
     la      a0, msg_val
     jal     ra, print_string
-    mv      a0, s4               # the last value any check recorded
+    mv      a0, s4               # the value the failing comparison tested
     jal     ra, print_hex64
     la      a0, msg_nl
     jal     ra, print_string
@@ -307,8 +315,9 @@ digit_buf:
     # Strings live in .rodata: at MEM_CONFIG=bram, .data is a crt0-copied
     # section (VMA in RAM, LMA in ROM) and standalone-asm apps have no
     # crt0, so .data initializers never reach RAM there.  .rodata is
-    # used in place in both tiers.  The cells above are fine in .data:
-    # every one is written at runtime before it is read.  The .balign
+    # used in place in both tiers.  The cells and digit_buf are fine in
+    # .data: the code writes them before it reads them, and the pressure
+    # loop does not depend on scratch_arena's contents.  The .balign
     # keeps the section's load address word-aligned for objcopy's
     # verilog writer.
     .section .rodata
