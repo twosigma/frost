@@ -32,9 +32,12 @@
  * further slot eligible, so a descriptor posted later is always read again
  * after its doorbell. i_invalidate (a disable or RESET) drops the cache and
  * moves the cursor back to the head; i_restart (a BASE or SIZE write, which
- * starts a new ring generation) also zeroes the head. A response to a read
- * issued before an invalidation is dropped, as is a response with
- * i_resp_error set (the front-end refused or withdrew the read).
+ * starts a new ring generation) also zeroes the head. Neither may coincide
+ * with i_desc_take: the take would be lost (HEAD would not advance past a
+ * descriptor the engine then uses), so the engines never take in such a
+ * cycle. A response to a read issued before an invalidation is dropped, as
+ * is a response with i_resp_error set (the front-end refused or withdrew the
+ * read).
  */
 module nic_desc_fetch #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -200,6 +203,10 @@ module nic_desc_fetch #(
       $error("nic_desc_fetch: response tag %0d, expected %0d", i_resp_tag, pend_slot_q);
     if (!i_rst && i_resp_valid && !pending_q)
       $error("nic_desc_fetch: response with no read in flight");
+    if (!i_rst && i_desc_take && (i_invalidate || i_restart))
+      $error("nic_desc_fetch: descriptor take during an invalidation or restart is lost");
+    if (!i_rst && i_desc_take && !head_hit)
+      $error("nic_desc_fetch: descriptor take with no head descriptor cached");
   end
 `endif
 `endif

@@ -1458,7 +1458,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "NIC RX engine against a memory model with out-of-order responses: "
             "frames into ring buffers at any byte offset, the filter, truncation, "
             "bad descriptors, the doorbell re-read, ring-empty hold, DD after "
-            "the data and in ring order, abort and drain"
+            "the data and in ring order, abort and drain, and a disable in the "
+            "admission cycle"
         ),
     ),
     "nic_tx_engine": CocotbRunConfig(
@@ -1467,7 +1468,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "NIC TX engine against a memory model with out-of-order responses: "
             "ring buffers at any byte offset to beats, invalid descriptors, DD "
-            "after the last beat, abort and drain"
+            "after the last beat, abort and drain, and a disable in the "
+            "admission cycle"
         ),
     ),
     "nic_top": CocotbRunConfig(

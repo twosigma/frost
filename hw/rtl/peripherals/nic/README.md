@@ -270,9 +270,9 @@ whole with one 64-bit load.
   valid: BASE 32-byte aligned, SIZE in 2..16, and the whole ring inside
   cached DDR. A refused enable sets the direction's CONFIG_ERR and raises
   DESC_ERR.
-- Clearing an enable stops new frames and descriptor fetches; a frame in
-  progress finishes. The direction's IDLE bit shows when nothing is in
-  flight.
+- Clearing an enable stops new frames and descriptor fetches; a frame already
+  admitted finishes, and one not yet admitted waits for the next enable. The
+  direction's IDLE bit shows when nothing is in flight.
 - BASE and SIZE are writable only while the direction is disabled and idle.
   Writing either starts a new ring generation: TAIL and HEAD return to 0 and
   the descriptor cache is dropped.
@@ -335,7 +335,7 @@ final scan.
 | `nic_irq`, `nic_reset` | Interrupt moderation, reset and drain, and absent or lost clocks |
 | `nic_dma_front` | Tagged responses, fairness, aperture errors, and drain |
 | `nic_byte_pack`, `nic_byte_unpack` | Byte placement, alignment, truncation, and backpressure |
-| `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer and status ordering, malformed descriptors, and aborts |
+| `nic_rx_engine`, `nic_tx_engine` | Rings, filtering, buffer and status ordering, malformed descriptors, aborts, and disables |
 | `nic_top` | Whole NIC with three clocks and raw loopback |
 | `nic_top_unrelated_clocks` | Independent TX and RX clocks with `RAW_LOOPBACK=0` |
 | `nic_loopback`, `nic_echo` | Full-system software tests in both memory tiers |

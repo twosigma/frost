@@ -31,8 +31,9 @@
  * i_abort (the MAC domain is resetting) abandons the frame: no more beats
  * are pushed, the reads in flight are awaited, the descriptor completes
  * with DD|ERR|ABORT. i_stop (the RESET drain) abandons it with no
- * completion. i_enable low stops descriptor fetching only; the frame in
- * progress finishes. BASE/SIZE change only while disabled and idle.
+ * completion. i_enable low stops admission and descriptor fetching only; a
+ * frame already admitted finishes. BASE/SIZE change only while disabled and
+ * idle.
  */
 module nic_tx_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -186,10 +187,13 @@ module nic_tx_engine #(
   );
   // Admission takes two cycles: S_IDLE registers the validation of the head
   // descriptor, S_ADMIT acts on it, so the unpacker's start and the
-  // descriptor take come from registers.
+  // descriptor take come from registers. S_ADMIT requires i_enable as well:
+  // nic_desc_fetch ignores a take while the direction is disabled, so a
+  // disable in that cycle cancels the admission instead of sending a frame
+  // whose descriptor HEAD never passes.
   logic consider, admit;
   assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && df_desc_valid;
-  assign admit    = (state_q == S_ADMIT) && !i_stop && !i_abort && df_desc_valid;
+  assign admit    = (state_q == S_ADMIT) && i_enable && !i_stop && !i_abort && df_desc_valid;
   assign df_take  = admit;
   assign up_start = admit && desc_ok_q;
   // Lines covering [offset, offset + len): ((offset + len - 1) >> OffsetBits) + 1.

@@ -383,3 +383,40 @@ async def test_empty_ring_reads_nothing(dut: Any) -> None:
     assert env.model.log == []
     assert int(dut.o_idle.value) == 1
     env.stop()
+
+
+@cocotb.test()
+async def test_disable_in_the_admit_cycle_sends_nothing(dut: Any) -> None:
+    """A disable in the cycle the engine moves to S_ADMIT cancels the admission.
+
+    Nothing is read or sent and HEAD stays put. After re-enable descriptor 0
+    is sent once, then descriptor 1, and HEAD counts both.
+    """
+    env = await _setup(dut, 9)
+    first = env.place(0, BUF + 3, 200)
+    second = env.place(1, BUF + 0x3000 + 5, 90)
+    await env.doorbell(1)
+    # state_q becomes S_ADMIT (1) on a rising edge; clearing the enable at the
+    # next falling edge makes the S_ADMIT cycle see it disabled.
+    for _ in range(400):
+        await FallingEdge(dut.i_clk)
+        if int(dut.state_q.value) == 1:
+            dut.i_enable.value = 0
+            break
+    else:
+        raise AssertionError("the engine never reached S_ADMIT")
+    for _ in range(200):
+        await FallingEdge(dut.i_clk)
+    assert env.lines_read() == [], "the buffer was read after the disable"
+    assert env.sink.beats == 0 and env.completions == []
+    assert int(dut.o_head.value) == 0
+    dut.i_enable.value = 1
+    await env.doorbell(2)
+    await env.wait_completions(2)
+    await env.wait_idle()
+    assert env.sink.frames == [first, second]
+    assert desc_status(env.mem, RING, 0) == DD
+    assert desc_status(env.mem, RING, 1) == DD
+    assert int(dut.o_head.value) == 2
+    assert not env.model.violations, env.model.violations
+    env.stop()

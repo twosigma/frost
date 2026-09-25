@@ -613,3 +613,47 @@ async def test_disable_finishes_frame(dut: Any) -> None:
     assert desc_status(env.mem, RING, 1) == DD | 100
     assert not env.model.violations, env.model.violations
     env.stop()
+
+
+@cocotb.test()
+async def test_disable_in_the_admit_cycle_admits_nothing(dut: Any) -> None:
+    """A disable in the cycle the engine moves to S_ADMIT cancels the admission.
+
+    The frame stays in the FIFO and HEAD stays put. After re-enable that frame
+    and the next land in descriptors 0 and 1, and HEAD counts both.
+    """
+    env = await _setup(dut, 14)
+    env.post(0, BUF + 1, 2048)
+    env.post(1, BUF + 0x1000 + 1, 2048)
+    env.pre = set(env.mem.bytes)
+    await env.doorbell(2)
+    await env.wait_descriptor_fetched()
+    f0, f1 = env.frame(100), env.frame(120)
+    push = cocotb.start_soon(env.push_frame(f0, gap=0.0))
+    # state_q becomes S_ADMIT (1) on a rising edge; clearing the enable at the
+    # next falling edge makes the S_ADMIT cycle see it disabled.
+    for _ in range(200):
+        await FallingEdge(dut.i_clk)
+        if int(dut.state_q.value) == 1:
+            dut.i_enable.value = 0
+            break
+    else:
+        raise AssertionError("the engine never reached S_ADMIT")
+    for _ in range(100):
+        await FallingEdge(dut.i_clk)
+    assert env.beats_taken == 0, "a frame was admitted in the disable cycle"
+    assert env.completions == [] and int(dut.o_head.value) == 0
+    dut.i_enable.value = 1
+    assert await push
+    assert await env.push_frame(f1)
+    await env.wait_completions(2)
+    await env.wait_idle()
+    assert desc_status(env.mem, RING, 0) == DD | 100
+    assert desc_status(env.mem, RING, 1) == DD | 120
+    assert env.mem.read_bytes(BUF + 1, 100) == f0
+    assert env.mem.read_bytes(BUF + 0x1000 + 1, 120) == f1
+    assert env.completions == [(0, 100), (0, 120)]
+    assert int(dut.o_head.value) == 2
+    env.check_written([(BUF + 1, 100), (BUF + 0x1000 + 1, 120)])
+    assert not env.model.violations, env.model.violations
+    env.stop()
