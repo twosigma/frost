@@ -261,7 +261,11 @@ module sq_forwarding_unit #(
 
       // sq_committed is set on the edge after a store's commit pulse. Count
       // the pulse as committed too, so a younger load cannot slip past the
-      // store during that one-cycle lag. Both commit ports get the guard.
+      // store during that one-cycle lag. Both commit ports get the guard. In
+      // the current core the age check already ranks such a store older:
+      // rob_head_tag_q trails the ROB head by a cycle, so in the pulse cycle
+      // it still names the store or the slot-1 store just before it. The
+      // pulse terms are a safety net for a change to that timing.
       store_committed = sq_committed[i] ||
                         (i_commit_valid && (entry_rob_tag == i_commit_rob_tag)) ||
                         (i_commit_valid_2 && (entry_rob_tag == i_commit_rob_tag_2));

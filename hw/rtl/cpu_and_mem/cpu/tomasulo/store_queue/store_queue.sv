@@ -1353,7 +1353,12 @@ module store_queue #(
   // A store the ROB has committed must not be killed, even before its
   // sq_committed bit is set, or its memory write is lost.  The registered
   // guards above cover a commit arriving on the pipelined commit bus in the
-  // flush cycle.  The ROB itself never commits in a flush cycle: it gates
+  // flush cycle.  In the current core no store is on that bus then: the ROB
+  // retires nothing while early recovery is active (i_early_recovery_en), the
+  // cycle before its backend flush, and a commit-time recovery follows a
+  // mispredicted branch that retires alone.  The guards are a safety net for
+  // a change to those rules; the store_queue bench drives them directly.
+  // The ROB itself never commits in a flush cycle: it gates
   // commit_ready_early (and therefore o_commit_store_like_raw /
   // o_commit_2_store_like_raw, the drivers of i_commit_valid_comb/_comb_2)
   // with !i_flush_en && !i_flush_all on the same flush nets this kill branch
