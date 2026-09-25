@@ -505,6 +505,9 @@ module fp_adder #(
       .i_mantissa_work   (mantissa_work_s6),
       .i_round_up        (round_up_s6),
       .i_is_inexact      (is_inexact_s6),
+      // A sum or difference below the minimum normal is exact, so an inexact
+      // result is never tiny.
+      .i_is_tiny         (1'b0),
       .i_result_sign     (result_sign_s6),
       .i_rm              (rm_s6),
       .i_is_special      (is_special_s6),

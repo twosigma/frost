@@ -41,7 +41,7 @@
     Stage 5A: add/subtract
     Stage 5B: leading zero count on the sum
     Stage 6:  normalize the sum
-    Stage 7A: subnormal shift, rounding-bit extraction
+    Stage 7A: subnormal shift, rounding-bit extraction, tininess
     Stage 7B: round-up decision
     Stage 8:  rounding increment and result formatting (fp_result_assembler)
     Stage 9:  output register
@@ -657,6 +657,19 @@ module fp_fma #(
       .o_exponent(exp_work_s7a_comb)
   );
 
+  // Tininess of the unshifted sum, for the underflow flag.
+  logic tiny_s7a_comb;
+  assign tiny_s7a_comb = riscv_pkg::fp_is_tiny(
+      normalized_exp_s7 <= 0,
+      normalized_exp_s7 == 0,
+      &mantissa_retained_s7,
+      rm_s7,
+      guard_bit_s7,
+      round_bit_s7,
+      sticky_bit_s7,
+      fp_round_sign_s7a_comb
+  );
+
   // =========================================================================
   // Stage 7A -> Stage 7B Pipeline Register (after subnormal handling)
   // =========================================================================
@@ -664,6 +677,7 @@ module fp_fma #(
   logic [MantBits-1:0] mantissa_work_s7b;
   logic guard_work_s7b, round_work_s7b, sticky_work_s7b;
   logic signed [ExpExtBits-1:0] exp_work_s7b;
+  logic tiny_s7b;
   logic fp_round_sign_s7b;
   logic is_zero_result_s7b;
   logic [2:0] rm_s7b;
@@ -694,6 +708,7 @@ module fp_fma #(
   logic                 [  MantBits-1:0] mantissa_work_s8;
   logic                                  round_up_s8;
   logic                                  is_inexact_s8;
+  logic                                  tiny_s8;
   logic                                  is_zero_result_s8;
   logic                 [           2:0] rm_s8;
   logic                                  is_special_s8;
@@ -719,6 +734,7 @@ module fp_fma #(
       .i_mantissa_work   (mantissa_work_s8),
       .i_round_up        (round_up_s8),
       .i_is_inexact      (is_inexact_s8),
+      .i_is_tiny         (tiny_s8),
       .i_result_sign     (result_sign_s8),
       .i_rm              (rm_s8),
       .i_is_special      (is_special_s8),
@@ -944,6 +960,7 @@ module fp_fma #(
     round_work_s7b <= round_work_s7a_comb;
     sticky_work_s7b <= sticky_work_s7a_comb;
     exp_work_s7b <= exp_work_s7a_comb;
+    tiny_s7b <= tiny_s7a_comb;
     fp_round_sign_s7b <= fp_round_sign_s7a_comb;
     is_zero_result_s7b <= sum_is_zero_s7 && !sum_sticky_s7;
     rm_s7b <= rm_s7;
@@ -956,6 +973,7 @@ module fp_fma #(
     mantissa_work_s8 <= mantissa_work_s7b;
     round_up_s8 <= round_up_s7b_comb;
     is_inexact_s8 <= is_inexact_s7b;
+    tiny_s8 <= tiny_s7b;
     is_zero_result_s8 <= is_zero_result_s7b;
     rm_s8 <= rm_s7b;
     is_special_s8 <= is_special_s7b;

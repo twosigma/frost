@@ -514,6 +514,19 @@ module fp_divider #(
   logic rsh_guard_out, rsh_round_out, rsh_sticky_out;
   logic signed [ExpExtBits-1:0] rsh_exp_out;
 
+  // Tininess of the unshifted quotient, for the underflow flag.
+  logic rsh_tiny;
+  assign rsh_tiny = riscv_pkg::fp_is_tiny(
+      s_norm_result_exp <= 0,
+      s_norm_result_exp == 0,
+      &rsh_mantissa,
+      s_norm_rm,
+      rsh_guard_bit,
+      rsh_round_bit,
+      rsh_sticky_bit,
+      s_norm_result_sign
+  );
+
   fp_subnorm_shift #(
       .MANT_BITS(MantBits),
       .EXP_EXT_BITS(ExpExtBits)
@@ -534,6 +547,7 @@ module fp_divider #(
   logic signed [ExpExtBits-1:0] s_rsh_exp;
   logic [MantBits-1:0] s_rsh_mantissa;
   logic s_rsh_guard, s_rsh_round, s_rsh_sticky;
+  logic s_rsh_tiny;
   logic s_rsh_is_zero;
   logic [2:0] s_rsh_rm;
   logic s_rsh_result_sign;
@@ -548,6 +562,7 @@ module fp_divider #(
     s_rsh_guard <= rsh_guard_out;
     s_rsh_round <= rsh_round_out;
     s_rsh_sticky <= rsh_sticky_out;
+    s_rsh_tiny <= rsh_tiny;
     s_rsh_is_zero <= rsh_is_zero;
     s_rsh_rm <= s_norm_rm;
     s_rsh_result_sign <= s_norm_result_sign;
@@ -576,6 +591,7 @@ module fp_divider #(
   logic [MantBits-1:0] s_rprep_mantissa;
   logic s_rprep_round_up;
   logic s_rprep_is_inexact;
+  logic s_rprep_tiny;
   logic s_rprep_is_zero;
   logic [2:0] s_rprep_rm;
   logic s_rprep_is_special;
@@ -589,6 +605,7 @@ module fp_divider #(
     s_rprep_mantissa <= s_rsh_mantissa;
     s_rprep_round_up <= rprep_round_up;
     s_rprep_is_inexact <= rprep_is_inexact;
+    s_rprep_tiny <= s_rsh_tiny;
     s_rprep_is_zero <= s_rsh_is_zero;
     s_rprep_rm <= s_rsh_rm;
     s_rprep_is_special <= s_rsh_is_special;
@@ -614,6 +631,7 @@ module fp_divider #(
       .i_mantissa_work(s_rprep_mantissa),
       .i_round_up(s_rprep_round_up),
       .i_is_inexact(s_rprep_is_inexact),
+      .i_is_tiny(s_rprep_tiny),
       .i_result_sign(s_rprep_result_sign),
       .i_rm(s_rprep_rm),
       .i_is_special(s_rprep_is_special),

@@ -1229,6 +1229,21 @@ package riscv_pkg;
     endcase
   endfunction
 
+  // Tininess after rounding (IEEE 754-2008 section 7.5, the RISC-V choice): a
+  // nonzero result is tiny when rounding it to full precision with an
+  // unbounded exponent leaves it below the minimum normal. The caller passes
+  // the normalized value before the subnormal shift: exp_le_zero and
+  // exp_is_zero describe its biased exponent (1 is the minimum normal), and
+  // guard, round_bit and sticky are its full-precision rounding bits. Only an
+  // all-ones mantissa at exponent 0 can round up to the minimum normal.
+  function automatic logic fp_is_tiny(input logic exp_le_zero, input logic exp_is_zero,
+                                      input logic mant_all_ones, input logic [2:0] rounding_mode,
+                                      input logic guard, input logic round_bit, input logic sticky,
+                                      input logic sign);
+    fp_is_tiny = exp_le_zero && !(exp_is_zero && mant_all_ones && fp_compute_round_up(
+                                  rounding_mode, guard, round_bit, sticky, 1'b1, sign));
+  endfunction
+
   // mstatus bit positions (low word)
   localparam int unsigned MstatusSieBit = 1;  // Supervisor Interrupt Enable
   localparam int unsigned MstatusMieBit = 3;  // Machine Interrupt Enable

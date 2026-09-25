@@ -29,7 +29,7 @@
               widths, with metadata on a matching shift chain
     Stage 3A: leading zero count on the product
     Stage 3B: normalization shift
-    Stage 4A: subnormal shift, rounding-bit extraction
+    Stage 4A: subnormal shift, rounding-bit extraction, tininess
     Stage 4B: round-up decision
     Stage 5:  rounding increment and result formatting (fp_result_assembler)
     Stage 6:  output register
@@ -335,6 +335,19 @@ module fp_multiplier #(
       .o_exponent(exp_work_s4)
   );
 
+  // Tininess of the unshifted product, for the underflow flag.
+  logic tiny_s4;
+  assign tiny_s4 = riscv_pkg::fp_is_tiny(
+      exp_s4 <= 0,
+      exp_s4 == 0,
+      &mantissa_retained_s4,
+      rm_s4,
+      pre_round_mant_s4[0],
+      guard_bit_s4,
+      round_bit_s4 | sticky_bit_s4,
+      result_sign_s4
+  );
+
   // =========================================================================
   // Stage 4A -> Stage 4B Pipeline Register (after subnormal handling)
   // =========================================================================
@@ -342,6 +355,7 @@ module fp_multiplier #(
   logic [MantBits-1:0] mantissa_work_s4b;
   logic guard_work_s4b, round_work_s4b, sticky_work_s4b;
   logic signed [ExpExtBits-1:0] exp_work_s4b;
+  logic                         tiny_s4b;
   logic                         result_sign_s4b;
   logic                         product_is_zero_s4b;
   logic        [           2:0] rm_s4b;
@@ -372,6 +386,7 @@ module fp_multiplier #(
   logic                 [  MantBits-1:0] mantissa_work_s5;
   logic                                  round_up_s5;
   logic                                  is_inexact_s5;
+  logic                                  tiny_s5;
   logic                                  product_is_zero_s5;
   logic                 [           2:0] rm_s5;
   logic                                  is_special_s5;
@@ -397,6 +412,7 @@ module fp_multiplier #(
       .i_mantissa_work   (mantissa_work_s5),
       .i_round_up        (round_up_s5),
       .i_is_inexact      (is_inexact_s5),
+      .i_is_tiny         (tiny_s5),
       .i_result_sign     (result_sign_s5),
       .i_rm              (rm_s5),
       .i_is_special      (is_special_s5),
@@ -525,6 +541,7 @@ module fp_multiplier #(
     round_work_s4b <= round_work_s4;
     sticky_work_s4b <= sticky_work_s4;
     exp_work_s4b <= exp_work_s4;
+    tiny_s4b <= tiny_s4;
     result_sign_s4b <= result_sign_s4;
     product_is_zero_s4b <= product_is_zero_s4;
     rm_s4b <= rm_s4;
@@ -537,6 +554,7 @@ module fp_multiplier #(
     mantissa_work_s5 <= mantissa_work_s4b;
     round_up_s5 <= round_up_s4b_comb;
     is_inexact_s5 <= is_inexact_s4b;
+    tiny_s5 <= tiny_s4b;
     product_is_zero_s5 <= product_is_zero_s4b;
     rm_s5 <= rm_s4b;
     is_special_s5 <= is_special_s4b;

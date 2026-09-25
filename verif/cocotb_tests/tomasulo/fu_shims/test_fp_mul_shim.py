@@ -107,6 +107,7 @@ async def issue_once(
     src1_value: int,
     src2_value: int,
     src3_value: int = 0,
+    rm: int = 0,
 ) -> None:
     """Issue one operation for exactly one cycle."""
     iface.drive_issue(
@@ -116,6 +117,7 @@ async def issue_once(
         src1_value=src1_value,
         src2_value=src2_value,
         src3_value=src3_value,
+        rm=rm,
     )
     await clock_cycle(dut)
     iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
@@ -1022,3 +1024,66 @@ async def test_fma_d_inf_times_zero_with_nan_addend(dut: Any) -> None:
         F64_SNAN,
     )
     await _check_nan_addend_vectors(dut, "D", vectors, 0, F64_CANONICAL_NAN)
+
+
+FP_FLAG_UF = 0x02
+FP_FLAG_NX = 0x01
+RM_RNE = 0
+RM_RUP = 3
+F32_MIN_NORMAL = 0x0080_0000
+F64_MIN_NORMAL = 0x0010_0000_0000_0000
+
+# (op, a, b, c, rm, expected flags). Each result is the minimum normal, reached
+# by the subnormal rounding. The first three are tiny after rounding to full
+# precision with an unbounded exponent, so they raise UF; the last two round
+# up to the minimum normal at full precision too, so they do not.
+MIN_NORMAL_VECTORS = (
+    ("FMUL_S", 0x3F7F_FFFF, F32_MIN_NORMAL, None, RM_RNE, FP_FLAG_UF | FP_FLAG_NX),
+    (
+        "FMADD_S",
+        0x3F7F_FFFF,
+        F32_MIN_NORMAL,
+        F32_POS_ZERO,
+        RM_RNE,
+        FP_FLAG_UF | FP_FLAG_NX,
+    ),
+    (
+        "FMUL_D",
+        0x3FEF_FFFF_FFFF_FFFF,
+        F64_MIN_NORMAL,
+        None,
+        RM_RUP,
+        FP_FLAG_UF | FP_FLAG_NX,
+    ),
+    ("FMUL_S", 0x3F7F_FFFE, 0x0080_0001, None, RM_RNE, FP_FLAG_NX),
+    ("FMUL_D", 0x3FEF_FFFF_FFFF_FFFE, 0x0010_0000_0000_0001, None, RM_RNE, FP_FLAG_NX),
+)
+
+
+@cocotb.test()
+async def test_min_normal_result_raises_uf_only_when_tiny(dut: Any) -> None:
+    """UF follows tininess after rounding when the subnormal rounding reaches the minimum normal."""
+    iface = await setup(dut)
+    failures: list[str] = []
+    for tag, (name, a, b, c, rm, flags) in enumerate(MIN_NORMAL_VECTORS):
+        single = name.endswith("_S")
+        box = NAN_BOX if single else 0
+        expected = box | (F32_MIN_NORMAL if single else F64_MIN_NORMAL)
+        await issue_once(
+            dut,
+            iface,
+            rob_tag=tag,
+            op=_INSTR_OPS[name],
+            src1_value=box | a,
+            src2_value=box | b,
+            src3_value=box | (c or 0),
+            rm=rm,
+        )
+        result = await wait_for_complete(dut, iface)
+        if result["value"] != expected or result["fp_flags"] != flags:
+            failures.append(
+                f"{name}({a:#x}, {b:#x}) rm={rm}: got {result['value']:#018x} flags "
+                f"{result['fp_flags']:#04x}, expected {expected:#018x} flags {flags:#04x}"
+            )
+        await clock_cycle(dut)
+    assert not failures, "\n".join(failures)

@@ -140,7 +140,7 @@ module fp_div_sqrt_iter (
   logic [63:0] special_q;
   logic is_special_q, special_nv_q, special_dz_q, sign_q;
   logic guard_q, round_q, sticky_q, zero_result_q;
-  logic round_up_q, inexact_q;
+  logic round_up_q, inexact_q, tiny_q;
   riscv_pkg::fp_flags_t flags_q;
 
   assign o_ready  = (state_q == ST_IDLE);
@@ -476,6 +476,22 @@ module fp_div_sqrt_iter (
   assign rsh_round_in = quo_q[1];
   assign rsh_sticky_in = quo_q[0] | (|rem_q);
 
+  // Tininess of the unshifted quotient or root, for the underflow flag. A
+  // single-precision mantissa sits in the low MantBitsS bits. A root is never
+  // tiny: even the smallest subnormal's (2^-537 in double precision) is far
+  // above the minimum normal.
+  logic rsh_tiny;
+  assign rsh_tiny = riscv_pkg::fp_is_tiny(
+      exp_q <= 0,
+      exp_q == 0,
+      is_double_q ? (&rsh_mantissa_in) : (&rsh_mantissa_in[MantBitsS-1:0]),
+      rm_q,
+      rsh_guard_in,
+      rsh_round_in,
+      rsh_sticky_in,
+      sign_q
+  );
+
   // One fp_subnorm_shift serves both precisions: a right shift of the
   // right-justified {mantissa, guard, round, sticky} keeps the same low bits
   // and shifted-out sticky, and its clamp at 56 positions agrees with the
@@ -529,6 +545,7 @@ module fp_div_sqrt_iter (
       .i_mantissa_work(quo_q[MantBitsS-1:0]),
       .i_round_up(round_up_q),
       .i_is_inexact(inexact_q),
+      .i_is_tiny(tiny_q),
       .i_result_sign(sign_q),
       .i_rm(rm_q),
       .i_is_special(is_special_q),
@@ -552,6 +569,7 @@ module fp_div_sqrt_iter (
       .i_mantissa_work(quo_q[MantBitsD-1:0]),
       .i_round_up(round_up_q),
       .i_is_inexact(inexact_q),
+      .i_is_tiny(tiny_q),
       .i_result_sign(sign_q),
       .i_rm(rm_q),
       .i_is_special(is_special_q),
@@ -677,6 +695,7 @@ module fp_div_sqrt_iter (
           round_q <= rsh_round_out;
           sticky_q <= rsh_sticky_out;
           exp_q <= rsh_exp_out;
+          tiny_q <= rsh_tiny;
         end
 
         ST_ROUND_PREP: begin

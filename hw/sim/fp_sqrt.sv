@@ -486,6 +486,9 @@ module fp_sqrt #(
       .i_mantissa_work(s_rprep_mantissa),
       .i_round_up(s_rprep_round_up),
       .i_is_inexact(s_rprep_is_inexact),
+      // A root is never tiny: even the smallest subnormal's (2^-537 in double
+      // precision) is far above the minimum normal.
+      .i_is_tiny(1'b0),
       .i_result_sign(1'b0),  // non-special results are positive
       .i_rm(s_rprep_rm),
       .i_is_special(s_rprep_is_special),

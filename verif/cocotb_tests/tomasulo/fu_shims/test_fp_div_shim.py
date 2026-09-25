@@ -812,3 +812,24 @@ async def test_partial_flushes_around_capture(dut: Any) -> None:
         await RisingEdge(iface.clock)
         assert not iface.read_fu_complete()["valid"], "flushed result was presented"
     assert not iface.read_busy(), "the drained result must free the credit"
+
+
+@cocotb.test()
+async def test_divide_to_min_normal_raises_uf_when_tiny(dut: Any) -> None:
+    """A quotient tiny after full-precision rounding raises UF though it rounds to the minimum normal."""
+    iface = await setup(dut)
+    rm_rup = 3
+    uf_nx = 0x03
+
+    result = await run_one(
+        iface, 24, OP_FDIV_S, NAN_BOX | 0x0080_0000, NAN_BOX | 0x3F80_0001, rm=rm_rup
+    )
+    assert result["value"] == NAN_BOX | 0x0080_0000
+    assert result["fp_flags"] == uf_nx, f"FDIV.S flags {result['fp_flags']:#04x}"
+
+    await wait_until_idle(iface)
+    result = await run_one(
+        iface, 25, OP_FDIV_D, 0x0010_0000_0000_0000, 0x3FF0_0000_0000_0001, rm=rm_rup
+    )
+    assert result["value"] == 0x0010_0000_0000_0000
+    assert result["fp_flags"] == uf_nx, f"FDIV.D flags {result['fp_flags']:#04x}"

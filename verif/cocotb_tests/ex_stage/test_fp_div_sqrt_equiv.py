@@ -134,6 +134,8 @@ DIV_PAIRS = [
     ("all_frac_ones", "three"),
     ("half_ulp_tie", "two"),
     ("one", "half_ulp_tie"),
+    # Tiny after full-precision rounding, rounded to the minimum normal (UF).
+    ("min_normal", "half_ulp_tie"),
     ("three", "all_frac_ones"),
     ("max_normal", "max_normal"),
     ("min_subnormal", "min_subnormal"),
