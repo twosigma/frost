@@ -55,6 +55,11 @@ _start:
     sw      t0, 8(s1)        # low word
     li      t1, 0x01234567
     sw      t1, 12(s1)       # high word
+    # Clear the destination and fs0 first: a rerun after reset finds the
+    # previous run's results in both, which would hide a dropped c.fld/c.fsd.
+    sw      zero, 16(s1)
+    sw      zero, 20(s1)
+    fmv.d.x fs0, zero
     .option rvc
     c.fld   fs0, 8(s1)       # f8 from [s1 + 8]
     c.fsd   fs0, 16(s1)      # store to [s1 + 16]
@@ -79,6 +84,9 @@ _start:
     sw      t0, 0(sp)        # low word
     li      t1, 0x5A5A5A5A
     sw      t1, 4(sp)        # high word
+    sw      zero, 8(sp)      # cleared as in test 3
+    sw      zero, 12(sp)
+    fmv.d.x fs1, zero
     .option rvc
     c.fldsp fs1, 0(sp)       # f9 from [sp + 0]
     c.fsdsp fs1, 8(sp)       # store to [sp + 8]
