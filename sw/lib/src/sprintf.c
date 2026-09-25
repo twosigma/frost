@@ -19,7 +19,9 @@
  *
  * Floating-point conversions are exact. They expand |d| into its decimal
  * digits with integer arithmetic and round once, to nearest with ties to even,
- * so every finite double prints as a correctly rounding C library prints it.
+ * so every finite double prints as a correctly rounding C library prints it in
+ * the default rounding mode. No floating-point arithmetic is involved, so the
+ * dynamic rounding mode in frm does not change the output.
  *
  * Supported: %d %i %u %o %x %X %f %F %e %E %g %G %c %s %p %n %%
  * Flags:     - + space 0 #

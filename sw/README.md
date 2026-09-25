@@ -190,8 +190,10 @@ Library limits:
 - `snprintf` supports integer, floating-point, string, character, and pointer
   conversions, the standard flags, `*` width and precision, and the
   `hh`/`h`/`l`/`ll`/`z`/`t` modifiers. Floating-point output is correctly
-  rounded for every finite double. If the full output would be longer than
-  `INT_MAX`, `snprintf` returns -1 and still terminates a nonempty buffer.
+  rounded to nearest (ties to even) for every finite double; the dynamic
+  rounding mode in `frm` does not change it. If the full output would be
+  longer than `INT_MAX`, `snprintf` returns -1 and still terminates a
+  nonempty buffer.
 - `strtol` accepts base 0 or 2 to 36 and saturates on overflow. An invalid
   base or a string with no digits returns 0 and sets `endptr` to the input.
 - A failed `arena_alloc` returns `start == NULL` and zero capacity. `malloc`
