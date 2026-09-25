@@ -376,10 +376,12 @@ void *realloc(void *ptr, size_t size)
     if (size <= old_payload)
         return ptr;
 
-    /* Grow to twice the old payload when that fits, else to exactly size. */
+    /* Grow to twice the old payload when that fits, else to exactly size. With
+     * a 32-bit size_t the doubling can wrap, which leaves it below old_payload. */
     size_t new_size = size;
-    if (old_payload <= (SIZE_MAX / 2u) && (size_t) old_payload * 2u > new_size)
-        new_size = (size_t) old_payload * 2u;
+    size_t doubled = (size_t) old_payload * 2u;
+    if (doubled >= old_payload && doubled > new_size)
+        new_size = doubled;
 
     void *newp = malloc(new_size);
     if (newp == NULL && new_size != size)
