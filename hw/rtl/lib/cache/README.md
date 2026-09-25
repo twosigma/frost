@@ -171,6 +171,12 @@ pre-writeback data in the freshly invalidated L1I. The L2 needs no
 maintenance: it sits below both L1s, so everything the L1D writes back is
 visible to L1I fills.
 
+A sequence answers only a request held since it started. A full flush can
+take the request away mid-sequence (an interrupt taken while `fence.i`
+waits); the sequence still runs to its end, since the sweeps cannot be
+aborted, but it finishes without raising done. Stores can reach the L1D
+after its writeback walk, so a request raised again gets a fresh sequence.
+
 Maintenance and probes never overlap. Maintenance waits for the probe slots
 to empty like any other in-flight work, and a probe waits for maintenance
 like any other request, parked in the hierarchy's probe injection register.

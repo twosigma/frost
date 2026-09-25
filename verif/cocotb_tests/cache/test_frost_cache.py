@@ -897,27 +897,28 @@ class _WritebackHazardMonitor:
         self._task.cancel()
 
 
-async def _fire_iup_read(dut: Any, addr: int) -> None:
-    """Present one instruction-side read and return once it has fired.
+async def _fire_read(dut: Any, port: str, addr: int) -> None:
+    """Present one read on a port and return once it has fired.
 
     Its response is never collected: the read exists only to occupy a miss
-    slot of the shared level for one memory round trip.
+    slot of the L2 for one memory round trip, or for as long as the bench
+    holds the level below.
     """
-    req_id = next(_port_ids["iup"])
+    req_id = next(_port_ids[port])
     await FallingEdge(dut.i_clk)
-    dut.i_iup_req_valid.value = 1
-    dut.i_iup_req_write.value = 0
-    dut.i_iup_req_addr.value = addr
-    dut.i_iup_req_id.value = req_id
+    getattr(dut, f"i_{port}_req_valid").value = 1
+    getattr(dut, f"i_{port}_req_write").value = 0
+    getattr(dut, f"i_{port}_req_addr").value = addr
+    getattr(dut, f"i_{port}_req_id").value = req_id
     await Timer(1, unit="ns")
     for _ in range(RESP_TIMEOUT_CYCLES):
-        if int(dut.o_iup_req_ready.value) == 1:
+        if int(getattr(dut, f"o_{port}_req_ready").value) == 1:
             break
         await FallingEdge(dut.i_clk)
     else:
-        raise AssertionError(f"iup request never accepted (addr=0x{addr:08x})")
+        raise AssertionError(f"{port} request never accepted (addr=0x{addr:08x})")
     await FallingEdge(dut.i_clk)
-    dut.i_iup_req_valid.value = 0
+    getattr(dut, f"i_{port}_req_valid").value = 0
 
 
 async def _hold_shared_level(
@@ -938,7 +939,7 @@ async def _hold_shared_level(
     await _line_transaction(dut, write=True, addr=lines[0], wdata=0, wstrb=1)
     model.write_line(lines[0], 0, 1)
     for addr in instr:
-        await _fire_iup_read(dut, addr)
+        await _fire_read(dut, "iup", addr)
     for addr in lines[1:]:
         await _line_transaction(dut, write=True, addr=addr, wdata=0, wstrb=1)
         model.write_line(addr, 0, 1)
@@ -1059,6 +1060,76 @@ async def test_no_fetch_refill_waits_for_own_writeback(dut: Any) -> None:
     mon.stop()
     assert mon.install_waits > 0, (
         "no install was ever held behind its line's pending writeback"
+    )
+
+
+# fence_state_e ordinal of FENCE_L1I_REQ (frost_cache_hierarchy.sv): IDLE,
+# L1D_REQ, L1D_WAIT, L1I_REQ, ...
+FENCE_L1I_REQ = 3
+
+
+@cocotb.test()
+async def test_fence_request_raised_again_mid_sequence(dut: Any) -> None:
+    """A request raised again mid-sequence is answered after a fresh writeback.
+
+    A full flush (an interrupt taken while fence.i waits for the cache sync)
+    drops the request once the sequence's L1D writeback walk has ended, and
+    the sweeps run to their end anyway. A store that reaches the L1D after
+    that walk, followed by the re-executed fence.i raising the request again
+    before the old sequence finishes, must not be answered by the old
+    sequence: done may rise only after a writeback-all that covers the
+    store, so the next L1I fill returns it. The bench keeps the old sequence
+    in its L1I phase by holding an L1I miss at the L2 (i_down_hold): the L1I
+    cannot start its invalidate-all until that miss completes.
+    """
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    hierarchy = dut.cache_hierarchy
+    code = FENCE2_BASE + 0x20000 + 5 * LINE_BYTES
+    held = FENCE2_BASE + 0x30000 + 9 * LINE_BYTES
+
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 1
+    await _fire_read(dut, "iup", held)
+
+    # The first request: nothing is dirty, so the L1D walk ends at once and
+    # the sequence waits in its L1I phase.
+    dut.i_fence_sync.value = 1
+    for _ in range(SWEEP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if int(hierarchy.fence_state_q.value) == FENCE_L1I_REQ:
+            break
+    else:
+        raise AssertionError("the fence sequence never reached its L1I phase")
+    # The flush drops the request, and a store then reaches the L1D. A
+    # whole-line write installs without a fetch, so it completes while the
+    # level below is held.
+    dut.i_fence_sync.value = 0
+    wdata = _line_int(bytes([(0x6B + 3 * b) & 0xFF for b in range(32)]))
+    model.write_line(code, wdata, full)
+    await _line_transaction(dut, write=True, addr=code, wdata=wdata, wstrb=full)
+    # The re-executed fence.i raises the request again before the old
+    # sequence has finished.
+    await FallingEdge(dut.i_clk)
+    assert int(hierarchy.fence_state_q.value) == FENCE_L1I_REQ, (
+        "the old sequence left its L1I phase before the request came back"
+    )
+    dut.i_fence_sync.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_down_hold.value = 0
+    for _ in range(SWEEP_TIMEOUT_CYCLES):
+        await FallingEdge(dut.i_clk)
+        if int(dut.o_fence_done.value) == 1:
+            break
+    else:
+        raise AssertionError("fence sync never completed")
+    dut.i_fence_sync.value = 0
+    await _settle(dut)
+
+    got = await _port_transaction(dut, "iup", write=False, addr=code)
+    assert got == model.read_line(code), (
+        "fence.i was answered by a sequence whose writeback missed the store"
     )
 
 

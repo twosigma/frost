@@ -153,7 +153,8 @@ module frost_cache_hierarchy #(
     // line first, then the L1I invalidates, so an instruction fill racing the
     // sync cannot leave pre-writeback data in the freshly invalidated L1I.
     // The L2 needs no maintenance: it sits below both L1s, so everything the
-    // L1D writes back is visible to L1I fills.
+    // L1D writes back is visible to L1I fills. Done answers only a request
+    // held since its sequence started (see the sequencer below).
     input  logic i_fence_sync,
     output logic o_fence_done,
 
@@ -628,26 +629,38 @@ module frost_cache_hierarchy #(
   } fence_state_e;
 
   fence_state_e fence_state_q;
+  // The request dropped after this sequence left FENCE_IDLE.
+  logic         fence_req_dropped_q;
+  // The request has stayed high since this sequence started.
+  logic         fence_held;
+  assign fence_held = i_fence_sync && !fence_req_dropped_q;
 
   assign l1d_writeback_req = (fence_state_q == FENCE_L1D_REQ);
   assign l1i_invalidate_req = (fence_state_q == FENCE_L1I_REQ);
   assign o_fence_done = (fence_state_q == FENCE_DONE);
 
+  // Once started, a sequence always runs to its end: the sweeps cannot be
+  // aborted. It answers only a request held since it started. When the
+  // requester drops i_fence_sync mid-sequence (a full flush, such as an
+  // interrupt taken while fence.i waits), stores can reach the L1D after the
+  // sequence's writeback walk has ended; if the re-executed fence.i raises
+  // the request again before the old sequence finishes, that sequence must
+  // not answer it. So a sequence whose request dropped returns to idle
+  // without raising done, and a request held again starts a fresh sequence
+  // from the L1D writeback.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      fence_state_q <= FENCE_IDLE;
+      fence_state_q       <= FENCE_IDLE;
+      fence_req_dropped_q <= 1'b0;
     end else begin
+      if (fence_state_q == FENCE_IDLE) fence_req_dropped_q <= 1'b0;
+      else if (!i_fence_sync) fence_req_dropped_q <= 1'b1;
       unique case (fence_state_q)
         FENCE_IDLE:     if (i_fence_sync) fence_state_q <= FENCE_L1D_REQ;
         FENCE_L1D_REQ:  if (l1d_maint_busy) fence_state_q <= FENCE_L1D_WAIT;
         FENCE_L1D_WAIT: if (!l1d_maint_busy) fence_state_q <= FENCE_L1I_REQ;
         FENCE_L1I_REQ:  if (l1i_maint_busy) fence_state_q <= FENCE_L1I_WAIT;
-        FENCE_L1I_WAIT: if (!l1i_maint_busy) fence_state_q <= FENCE_DONE;
-        // Once started the sequence always completes: the sweeps cannot be
-        // aborted. If the requester drops i_fence_sync mid-sequence (a full
-        // flush), the sequence still finishes, raises done for one cycle, and
-        // returns to idle; a request raised again before then is answered by
-        // the sequence already running.
+        FENCE_L1I_WAIT: if (!l1i_maint_busy) fence_state_q <= fence_held ? FENCE_DONE : FENCE_IDLE;
         FENCE_DONE:     if (!i_fence_sync) fence_state_q <= FENCE_IDLE;
         default:        fence_state_q <= FENCE_IDLE;
       endcase
