@@ -44,17 +44,17 @@ static void uart_puts(const char *s)
         uart_putc(*s++);
 }
 
-static void uart_hex(uint32_t v)
+static void uart_hex(unsigned long v)
 {
     static const char hex[] = "0123456789ABCDEF";
     uart_puts("0x");
-    for (int i = 28; i >= 0; i -= 4)
+    for (int i = (int) (sizeof(unsigned long) * 8) - 4; i >= 0; i -= 4)
         uart_putc(hex[(v >> i) & 0xF]);
 }
 
 /* ---- trap state shared with the naked handler ---- */
 static volatile unsigned long g_cause; /* full XLEN mcause */
-static volatile uint32_t g_mepc;       /* resume PC saved by the first trap     */
+static volatile unsigned long g_mepc;  /* full XLEN resume PC saved by the first trap */
 static volatile uint32_t g_from_priv;  /* mstatus.MPP at trap entry = prev priv */
 
 /*
@@ -75,7 +75,7 @@ __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
                      "sd   t0, 0(t1)\n"
                      "csrr t0, mepc\n" /* saved resume PC of this trap */
                      "la   t1, g_mepc\n"
-                     "sw   t0, 0(t1)\n"
+                     "sd   t0, 0(t1)\n"
                      "csrr t0, mstatus\n"
                      "srli t0, t0, 11\n"
                      "andi t0, t0, 0x3\n" /* mstatus.MPP */
@@ -145,8 +145,8 @@ int main(void)
     unsigned long cause = run_in_umode_pending_timer(&u_spin);
     disable_timer_interrupt();
 
-    uint32_t mepc = g_mepc;
-    uint32_t want_pc = (uint32_t) &u_spin;
+    unsigned long mepc = g_mepc;
+    unsigned long want_pc = (unsigned long) &u_spin;
     int ok = (cause == ((1ul << 63) | 7u)) /* MTI: interrupt bit at XLEN-1 */
              && (g_from_priv == 0u) && (mepc == want_pc);
 
