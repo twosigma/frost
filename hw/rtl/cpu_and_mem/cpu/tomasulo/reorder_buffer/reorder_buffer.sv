@@ -1412,7 +1412,7 @@ module reorder_buffer #(
   // These use mwp_dist_ram (mwp_dist_ram_ohread for head-side reads) with
   // 4 write ports. The value and exception-cause RAMs number them port 0 =
   // slot-1 alloc, port 1 = slot-2 alloc, port 2 = CDB lane 0, port 3 = CDB
-  // lane 1; the FP-flags RAM puts the CDB lanes first. Without LVT staging
+  // lane 1; the FP-flag RAMs put the CDB lanes first. Without LVT staging
   // the highest-numbered port wins a same-cycle write to one address.
   // Allocation targets only free entries, so it collides with a CDB write
   // only when that write is stale; each RAM lets the allocation win (see the
