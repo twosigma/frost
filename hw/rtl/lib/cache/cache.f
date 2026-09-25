@@ -16,14 +16,14 @@ $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 $(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
 
 # DMA coherence sequencer: probes the L1D, and for a write runs the load-queue
-# handshake, before a DMA request reaches the shared level.
+# handshake, before a DMA request reaches the L2.
 $(ROOT)/hw/rtl/lib/cache/dma_coherence_sequencer.sv
 
 # Walker coherence sequencer: probes the L1D before a page-table walk read
-# reaches the shared level.
+# reaches the L2.
 $(ROOT)/hw/rtl/lib/cache/walker_coherence_sequencer.sv
 
-# Configurable cache hierarchy wrapper (L1s + walker + DMA ports, optional URAM L2)
+# Cache hierarchy wrapper (L1s + walker + DMA ports + URAM L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 
 # Tagged line-port -> AXI4 master bridge, multiple outstanding (bottom of the hierarchy)

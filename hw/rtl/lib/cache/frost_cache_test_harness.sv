@@ -21,19 +21,17 @@
  * DMA), the DMA sequencer's load-queue handshake (the bench plays the load
  * queue), and the fence.i sync, over the backside the CPU integration uses:
  * frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
- * -G parameters select the L2 (HAS_L2), shrink the caches so eviction paths
- * are cheap to reach, and can make the memory model complete out of order
- * (MEM_REORDER). While i_down_hold is high the bridge sees no request and the
- * hierarchy sees no ready, so the bench chooses the cycles on which the
- * bottom cache's downstream request can fire; the writeback-starvation test
- * uses it to space acceptances so that fills complete and re-allocate
- * between them.
+ * -G parameters shrink the caches so eviction paths are cheap to reach, and
+ * can make the memory model complete out of order (MEM_REORDER). While
+ * i_down_hold is high the bridge sees no request and the hierarchy sees no
+ * ready, so the bench chooses the cycles on which the L2's downstream request
+ * can fire: tests use it to keep fills in flight and to space acceptances so
+ * that fills complete and re-allocate between them.
  */
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned UP_ID_BITS = 3,
-    parameter int unsigned HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 1024,
     parameter int unsigned L1I_CACHE_BYTES = 1024,
     parameter int unsigned L2_CACHE_BYTES = 4096,
@@ -115,12 +113,8 @@ module frost_cache_test_harness #(
     // Bench-paced downstream: masks the bridge's acceptance (see the header).
     input  logic                                                            i_down_hold,
     // Source-registered cache observers exposed directly to cocotb.
-    output cache_perf_pkg::cache_hierarchy_perf_events_t                    o_perf_events,
-    // Elaborated topology (HAS_L2), for tests whose expectations depend on it.
-    output logic                                                            o_has_l2
+    output cache_perf_pkg::cache_hierarchy_perf_events_t                    o_perf_events
 );
-
-  assign o_has_l2 = (HAS_L2 != 0);
 
   logic stack_down_req_valid, stack_down_req_ready, stack_down_req_write;
   logic [ADDR_WIDTH-1:0] stack_down_req_addr;
@@ -142,7 +136,6 @@ module frost_cache_test_harness #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
       .UP_ID_BITS(UP_ID_BITS),
-      .HAS_L2(HAS_L2),
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1_DATA_READ_LATENCY(L1_DATA_READ_LATENCY),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),

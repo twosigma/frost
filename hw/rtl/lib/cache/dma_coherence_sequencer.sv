@@ -281,8 +281,13 @@ module dma_coherence_sequencer #(
   // here when the register is empty and moves to E_RESP at the copy. The
   // register presents the request until the arbiter accepts it; that
   // acceptance is the L2's ordering point, and the registered release pulses
-  // follow it. The register keeps the entry state decode and the payload mux
-  // off the arbiter's select and the L2's accept path.
+  // follow it. Releasing at acceptance is enough because the L2 applies
+  // same-line requests in acceptance order, so a fill the probe withheld
+  // reaches the L2 behind the write and returns the new line. A level that
+  // could let a read overtake an accepted write, as the AXI bridge below the
+  // L2 does, would need the release to wait for the write's response. The
+  // register keeps the entry state decode and the payload mux off the
+  // arbiter's select and the L2's accept path.
   logic out_valid_q, out_write_q;
   logic [LockBits-1:0] out_slot_q;
   logic [LineAddrBits-1:0] out_line_q;

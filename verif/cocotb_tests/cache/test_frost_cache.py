@@ -21,9 +21,9 @@ walker ports (up = D-side, iup = I-side, wup = page-table walker) and checks
 every read against a byte-granular reference model and every response id
 against the request that carried it. The harness defaults make the caches
 tiny (L1 1 KiB / L2 4 KiB) so evictions and thrash are constantly exercised;
-the registry runs the same tests in both optional-L2 topologies via
--GHAS_L2={0,1}, with fast maintenance via -GSIM_FAST_MAINT=1, and with the
-memory model completing ids out of order via -GMEM_REORDER=1.
+the registry also runs the same tests with fast maintenance via
+-GSIM_FAST_MAINT=1 and with the memory model completing ids out of order via
+-GMEM_REORDER=1.
 """
 
 import itertools
@@ -65,8 +65,6 @@ WALK2_BASE = BASE_ADDR + 0x380000
 WALK3_BASE = BASE_ADDR + 0x3C0000
 
 RESP_TIMEOUT_CYCLES = 20_000
-# Harness default MEM_LATENCY; the overlap test bounds response spread by it.
-MEM_LATENCY_CYCLES = 12
 SWEEP_TIMEOUT_CYCLES = 200_000
 
 # The harness's up/iup/dma ports carry UP_ID_BITS=3 ids and the walker port
@@ -143,14 +141,12 @@ def _clear_inputs(dut: Any) -> None:
 
 
 def _l2_sweeping(dut: Any) -> bool:
-    """Report whether the optional L2's reset tag sweep still refuses requests.
+    """Report whether the L2's reset tag sweep still refuses requests.
 
     No upstream ready reflects the L2 (the walker sequencer answers ready
     itself), so the bench reads the L2's maintenance state directly.
     """
-    if int(dut.o_has_l2.value) == 0:
-        return False
-    return int(dut.cache_hierarchy.gen_l2.l2_cache.o_maint_busy.value) == 1
+    return int(dut.cache_hierarchy.l2_cache.o_maint_busy.value) == 1
 
 
 async def _setup(dut: Any) -> None:
@@ -306,6 +302,17 @@ def _copy_perf_counts(
 ) -> dict[str, dict[str, int]]:
     """Take a value copy of monitor totals."""
     return {level: dict(values) for level, values in counts.items()}
+
+
+def _perf_field(dut: Any, level: str, field: str) -> int:
+    """Read one field of one instance from the packed hierarchy event bundle."""
+    raw = int(dut.o_perf_events.value)
+    shift = PERF_INSTANCE_SHIFTS[level] + PERF_INSTANCE_WIDTH
+    for name in PERF_FIELDS:
+        shift -= PERF_FIELD_WIDTHS[name]
+        if name == field:
+            return (raw >> shift) & ((1 << PERF_FIELD_WIDTHS[name]) - 1)
+    raise KeyError(field)
 
 
 async def _check_read(dut: Any, model: ReferenceModel, addr: int) -> None:
@@ -537,13 +544,12 @@ async def test_mixed_id_traffic(dut: Any) -> None:
 
 @cocotb.test()
 async def test_ports_overlap_below_arbiter(dut: Any) -> None:
-    """Simultaneous D and I misses both fire downstream without a grant lock.
+    """Simultaneous D and I misses are in flight at the L2 together.
 
-    One request from each L1 reaches the tagged arbiter, which lets both reach
-    the bridge back to back. In the L1-only shape the two DDR reads therefore
-    overlap and the responses land within one memory latency of each other;
-    the L2 shape spaces their launches through its serialized tag front-end,
-    so there only the data and id routing are checked.
+    One request from each L1 reaches the tagged arbiter, which has no grant
+    lock, so both reach the L2 back to back and both of its miss slots fetch
+    at once: the L2's outstanding-miss count must reach 2, and each response
+    must carry its own data and id.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -566,11 +572,15 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
 
     done_cycle: dict[str, int] = {}
     cycle = [0]
+    peak_l2_misses = [0]
 
     async def _count_cycles() -> None:
         while True:
             await FallingEdge(dut.i_clk)
             cycle[0] += 1
+            peak_l2_misses[0] = max(
+                peak_l2_misses[0], _perf_field(dut, "l2", "miss_outstanding")
+            )
 
     counter = cocotb.start_soon(_count_cycles())
 
@@ -589,14 +599,12 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
 
     spread = abs(done_cycle["up"] - done_cycle["iup"])
     dut._log.info(
-        f"overlap test: responses {spread} cycles apart (has_l2={int(dut.o_has_l2.value)})"
+        f"overlap test: responses {spread} cycles apart, "
+        f"peak L2 misses outstanding {peak_l2_misses[0]}"
     )
-    if int(dut.o_has_l2.value) == 0:
-        # Both fills were in flight at once: the second response cannot trail
-        # the first by a whole memory round trip.
-        assert spread < MEM_LATENCY_CYCLES, (
-            f"misses did not overlap: {spread} cycles apart"
-        )
+    assert peak_l2_misses[0] >= 2, (
+        f"the two misses never fetched at the L2 together (peak {peak_l2_misses[0]})"
+    )
 
 
 @cocotb.test()
@@ -625,14 +633,12 @@ async def test_walker_port_reads_shared_level(dut: Any) -> None:
 
 @cocotb.test()
 async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
-    """Simultaneous D, I, and walker misses all fire downstream together.
+    """Simultaneous D, I, and walker misses are in flight at the L2 together.
 
     The arbiter tree has no grant lock at either level, so three tagged
-    reads (one per master) can be in flight below it at once. In the
-    L1-only shape the three DDR reads overlap and the responses land within
-    one memory latency of each other; the L2 shape spaces their launches
-    through its serialized tag front-end, so there only the data and id
-    routing are checked.
+    reads (one per master) reach the L2 back to back and fetch at once: the
+    L2's outstanding-miss count must reach 3, and each response must carry
+    its own data and id.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -653,11 +659,15 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
 
     done_cycle: dict[str, int] = {}
     cycle = [0]
+    peak_l2_misses = [0]
 
     async def _count_cycles() -> None:
         while True:
             await FallingEdge(dut.i_clk)
             cycle[0] += 1
+            peak_l2_misses[0] = max(
+                peak_l2_misses[0], _perf_field(dut, "l2", "miss_outstanding")
+            )
 
     counter = cocotb.start_soon(_count_cycles())
 
@@ -677,12 +687,12 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
 
     spread = max(done_cycle.values()) - min(done_cycle.values())
     dut._log.info(
-        f"3-port overlap: responses {spread} cycles apart (has_l2={int(dut.o_has_l2.value)})"
+        f"3-port overlap: responses {spread} cycles apart, "
+        f"peak L2 misses outstanding {peak_l2_misses[0]}"
     )
-    if int(dut.o_has_l2.value) == 0:
-        assert spread < MEM_LATENCY_CYCLES, (
-            f"misses did not overlap: {spread} cycles apart"
-        )
+    assert peak_l2_misses[0] >= 3, (
+        f"the three misses never fetched at the L2 together (peak {peak_l2_misses[0]})"
+    )
 
 
 @cocotb.test()
@@ -1136,16 +1146,13 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
     assert counts["l1i"]["hit"] + counts["l1i"]["miss"] == counts["l1i"]["access"]
     assert counts["l1d"]["hit"] + counts["l1d"]["miss"] == counts["l1d"]["access"]
 
-    if int(dut.o_has_l2.value) != 0:
-        # Cold D/I reads + three ordinary dirty L1D victims written to L2.
-        assert counts["l2"]["access"] == 5
-        assert counts["l2"]["hit"] == 0
-        assert counts["l2"]["miss"] == 5
-        assert counts["l2"]["writeback"] == 1
-        assert counts["l2"]["miss_outstanding"] > 0
-        assert counts["l2"]["hit"] + counts["l2"]["miss"] == counts["l2"]["access"]
-    else:
-        assert counts["l2"] == {field: 0 for field in PERF_FIELDS}
+    # Cold D/I reads + three ordinary dirty L1D victims written to L2.
+    assert counts["l2"]["access"] == 5
+    assert counts["l2"]["hit"] == 0
+    assert counts["l2"]["miss"] == 5
+    assert counts["l2"]["writeback"] == 1
+    assert counts["l2"]["miss_outstanding"] > 0
+    assert counts["l2"]["hit"] + counts["l2"]["miss"] == counts["l2"]["access"]
 
     before_fence = _copy_perf_counts(counts)
     await _fence_sync(dut)

@@ -1216,14 +1216,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="Cache hierarchy unit tests (L1 -> L2 -> DDR, X3 shape)",
-        verilator_extra_args=("-GHAS_L2=1",),
-    ),
-    "frost_cache_l1_only": CocotbRunConfig(
-        python_test_module="cocotb_tests.cache.test_frost_cache",
-        hdl_toplevel_module="frost_cache_test_harness",
-        description="Cache hierarchy unit tests (generic L1-only topology)",
-        verilator_extra_args=("-GHAS_L2=0",),
+        description="Cache hierarchy unit tests (L1 -> L2 -> DDR)",
     ),
     # Same functional suite with the sim-only fast maintenance path
     # (SIM_FAST_MAINT=1) enabled: checks that invalidate-all and writeback-all
@@ -1232,13 +1225,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
         description="Cache hierarchy unit tests, fast fence.i maintenance (L1 -> L2 -> DDR)",
-        verilator_extra_args=("-GHAS_L2=1", "-GSIM_FAST_MAINT=1"),
-    ),
-    "frost_cache_l1_only_fast": CocotbRunConfig(
-        python_test_module="cocotb_tests.cache.test_frost_cache",
-        hdl_toplevel_module="frost_cache_test_harness",
-        description="Cache hierarchy unit tests, fast fence.i maintenance (L1 -> DDR)",
-        verilator_extra_args=("-GHAS_L2=0", "-GSIM_FAST_MAINT=1"),
+        verilator_extra_args=("-GSIM_FAST_MAINT=1",),
     ),
     # Same suites with the memory model completing transactions of different
     # ids out of issue order, which the tagged fabric must tolerate.
@@ -1246,66 +1233,50 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
         description="Cache hierarchy unit tests, out-of-order DDR completion (L1 -> L2 -> DDR)",
-        verilator_extra_args=("-GHAS_L2=1", "-GMEM_REORDER=1"),
+        verilator_extra_args=("-GMEM_REORDER=1",),
     ),
     # Multi-outstanding driver: pipelined hits, hit/miss-under-miss, merges,
     # waiters, index conflicts, writeback-then-fill, fence.i under misses.
     "frost_cache_concurrency": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="Non-blocking cache concurrency tests (L1 -> L2 -> DDR, X3 shape)",
-        verilator_extra_args=("-GHAS_L2=1",),
-    ),
-    "frost_cache_concurrency_l1_only": CocotbRunConfig(
-        python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
-        hdl_toplevel_module="frost_cache_test_harness",
-        description="Non-blocking cache concurrency tests (generic L1-only topology)",
-        verilator_extra_args=("-GHAS_L2=0",),
+        description="Non-blocking cache concurrency tests (L1 -> L2 -> DDR)",
     ),
     "frost_cache_concurrency_reorder": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
         hdl_toplevel_module="frost_cache_test_harness",
         description="Non-blocking cache concurrency tests, out-of-order DDR completion (L1 -> L2 -> DDR)",
-        verilator_extra_args=("-GHAS_L2=1", "-GMEM_REORDER=1"),
-    ),
-    "frost_cache_l1_only_reorder": CocotbRunConfig(
-        python_test_module="cocotb_tests.cache.test_frost_cache",
-        hdl_toplevel_module="frost_cache_test_harness",
-        description="Cache hierarchy unit tests, out-of-order DDR completion (L1 -> DDR)",
-        verilator_extra_args=("-GHAS_L2=0", "-GMEM_REORDER=1"),
+        verilator_extra_args=("-GMEM_REORDER=1",),
     ),
     # DMA coherence: the fourth (DMA) upstream port through the coherence
     # sequencer, with the bench playing the load queue's admit/inval/release
-    # handshake. Both topologies and out-of-order DDR completion.
+    # handshake. In-order and out-of-order DDR completion.
     "frost_cache_dma": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_dma",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="DMA coherence tests: probes, lock, handshake (L1 -> L2 -> DDR, X3 shape)",
-        verilator_extra_args=("-GHAS_L2=1",),
-    ),
-    "frost_cache_dma_l1_only": CocotbRunConfig(
-        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
-        hdl_toplevel_module="frost_cache_test_harness",
-        description="DMA coherence tests (generic L1-only topology)",
-        verilator_extra_args=("-GHAS_L2=0",),
+        description="DMA coherence tests: probes, lock, handshake (L1 -> L2 -> DDR)",
     ),
     "frost_cache_dma_reorder": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_dma",
         hdl_toplevel_module="frost_cache_test_harness",
         description="DMA coherence tests, out-of-order DDR completion (L1 -> L2 -> DDR)",
-        verilator_extra_args=("-GHAS_L2=1", "-GMEM_REORDER=1"),
+        verilator_extra_args=("-GMEM_REORDER=1",),
     ),
-    # fence.i maintenance cycle-count measurement at the real L1 geometry
-    # (128 KiB D / 16 KiB I). Two builds, slow (FPGA-path FSM) and fast, so
-    # the speedup is readable from the logs. Not part of the pytest sweep.
+    # fence.i maintenance cycle-count measurement at the production cache
+    # geometry (128 KiB L1D, 16 KiB L1I, 2 MiB L2). Two builds, slow
+    # (FPGA-path FSM) and fast, so the speedup is readable from the logs. Not
+    # part of the pytest sweep.
     "fence_speed_slow": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_fence_speed",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="fence.i maintenance cost, FPGA-path FSM (SIM_FAST_MAINT=0)",
+        description=(
+            "fence.i maintenance cost at the production cache geometry, "
+            "FPGA-path FSM (SIM_FAST_MAINT=0)"
+        ),
         verilator_extra_args=(
-            "-GHAS_L2=0",
             "-GL1_CACHE_BYTES=131072",
             "-GL1I_CACHE_BYTES=16384",
+            "-GL2_CACHE_BYTES=2097152",
             "-GSIM_FAST_MAINT=0",
         ),
         include_in_pytest=False,
@@ -1313,11 +1284,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "fence_speed_fast": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_fence_speed",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="fence.i maintenance cost, fast sim path (SIM_FAST_MAINT=1)",
+        description=(
+            "fence.i maintenance cost at the production cache geometry, "
+            "fast sim path (SIM_FAST_MAINT=1)"
+        ),
         verilator_extra_args=(
-            "-GHAS_L2=0",
             "-GL1_CACHE_BYTES=131072",
             "-GL1I_CACHE_BYTES=16384",
+            "-GL2_CACHE_BYTES=2097152",
             "-GSIM_FAST_MAINT=1",
         ),
         include_in_pytest=False,
@@ -1332,10 +1306,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "DMA-port service envelope measurement, NUM_DMA_LOCK=3: cycles "
             "per line, latency tail and sequencer phase residence per scenario "
-            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+            "and producer depth (L1 -> L2 -> DDR)"
         ),
         verilator_extra_args=(
-            "-GHAS_L2=1",
             "-GL1_CACHE_BYTES=131072",
             "-GNUM_DMA_LOCK=3",
         ),
@@ -1347,10 +1320,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "DMA-port service envelope measurement, NUM_DMA_LOCK=4: cycles "
             "per line, latency tail and sequencer phase residence per scenario "
-            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+            "and producer depth (L1 -> L2 -> DDR)"
         ),
         verilator_extra_args=(
-            "-GHAS_L2=1",
             "-GL1_CACHE_BYTES=131072",
             "-GNUM_DMA_LOCK=4",
         ),
@@ -1362,10 +1334,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "DMA-port service envelope measurement, NUM_DMA_LOCK=6: cycles "
             "per line, latency tail and sequencer phase residence per scenario "
-            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+            "and producer depth (L1 -> L2 -> DDR)"
         ),
         verilator_extra_args=(
-            "-GHAS_L2=1",
             "-GL1_CACHE_BYTES=131072",
             "-GNUM_DMA_LOCK=6",
         ),
@@ -1377,10 +1348,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "DMA-port service envelope measurement, NUM_DMA_LOCK=8: cycles "
             "per line, latency tail and sequencer phase residence per scenario "
-            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+            "and producer depth (L1 -> L2 -> DDR)"
         ),
         verilator_extra_args=(
-            "-GHAS_L2=1",
             "-GL1_CACHE_BYTES=131072",
             "-GNUM_DMA_LOCK=8",
         ),
@@ -1392,10 +1362,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "DMA-port service envelope measurement, NUM_DMA_LOCK=3 at DDR latency 30: cycles "
             "per line, latency tail and sequencer phase residence per scenario "
-            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+            "and producer depth (L1 -> L2 -> DDR)"
         ),
         verilator_extra_args=(
-            "-GHAS_L2=1",
             "-GL1_CACHE_BYTES=131072",
             "-GNUM_DMA_LOCK=3",
             "-GMEM_LATENCY=30",

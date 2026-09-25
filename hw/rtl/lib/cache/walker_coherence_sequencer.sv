@@ -16,10 +16,10 @@
 
 /*
  * walker_coherence_sequencer: makes the page-table walker's line reads
- * coherent with the L1D before they reach the shared level (the L2, or
- * memory without one). The walker port is a read-only tagged line port with
- * one read in flight, so this is the read-only, one-entry counterpart of
- * dma_coherence_sequencer. Each accepted read goes through:
+ * coherent with the L1D before they reach the L2. The walker port is a
+ * read-only tagged line port with one read in flight, so this is the
+ * read-only, one-entry counterpart of dma_coherence_sequencer. Each accepted
+ * read goes through:
  *
  *   PROBE       PROBE_CLEAN to the L1D: a dirty copy is written back and
  *               stays valid and clean.
@@ -27,8 +27,8 @@
  *               level below has acknowledged any writeback the probe caused.
  *   ISSUE       the read is presented downstream from a request register.
  *               Its acceptance releases the L1D probe slot.
- *   RESP        the shared level's response passes straight through to the
- *               walker port.
+ *   RESP        the L2's response passes straight through to the walker
+ *               port.
  *
  * A read therefore returns the line as ordered behind any dirty L1D copy
  * present at the probe's decision. Once accepted, it completes on its own: no
@@ -99,7 +99,7 @@ module walker_coherence_sequencer #(
     S_PROBE,       // presenting PROBE_CLEAN to the L1D
     S_PROBE_WAIT,  // probe in flight, waiting for its acknowledgement
     S_ISSUE,       // presenting the read downstream
-    S_RESP         // read accepted; waiting for the shared level's response
+    S_RESP         // read accepted; waiting for the L2's response
   } state_e;
 
   state_e state_q;

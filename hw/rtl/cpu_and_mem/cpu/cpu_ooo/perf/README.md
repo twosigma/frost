@@ -411,10 +411,7 @@ When every miss allocates its own slot, this is the average miss latency in
 cycles. Merged and waiting requests pull the quotient below the latency of the
 misses that allocate.
 
-The cache unit benches also build the hierarchy without an L2 (`HAS_L2=0`).
-There the L2 event bundle is tied to 0, so every L2 counter (114–117, 120,
-123, 125, 127, 129) reads 0. Full-system builds always include the L2
-(`HAS_L2=1`). With `ENABLE_CACHED_TIER=0`, all cache counters read 0.
+With `ENABLE_CACHED_TIER=0`, all cache counters read 0.
 
 ## Using the counters from software
 
@@ -477,8 +474,7 @@ The `perf_counter_aggregator` cocotb bench checks event counting, snapshots,
 the preceding cache bank, and out-of-range selects; `perf_csr_half` checks the
 CSR read path against a plain full-width read. `perf_off_test` and the
 `csr_file` task `bmc_perf_off` check the build without counters. Cache benches
-check hit and miss accounting, maintenance exclusion, and zero L2 counters in
-the L1-only configuration.
+check hit and miss accounting and maintenance exclusion.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

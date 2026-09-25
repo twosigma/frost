@@ -12,10 +12,10 @@ still dirty in the L1D, and software never flushes a cache for them.
 | File | Role |
 |------|------|
 | `frost_cache.sv` | The line cache, used at every level; the L1D instance also takes per-line coherence probes |
-| `frost_cache_hierarchy.sv` | L1D, walker, L1I, and DMA ports over the arbiter tree, the two coherence sequencers sharing one probe path into the L1D, the optional L2, and `fence.i` sequencing |
+| `frost_cache_hierarchy.sv` | L1D, walker, L1I, and DMA ports over the arbiter tree, the two coherence sequencers sharing one probe path into the L1D, the L2, and `fence.i` sequencing |
 | `line_port_arbiter.sv` | N:1 tagged arbiter: fixed priority by port index, optional starvation bound, port index prefixed to ids |
-| `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the shared level |
-| `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the shared level; one read in flight |
+| `dma_coherence_sequencer.sv` | Takes each DMA request through the L1D, and each DMA write through the load queue as well, before it reaches the L2 |
+| `walker_coherence_sequencer.sv` | Probes the L1D before each page-table walk read reaches the L2; one read in flight |
 | `line_port_axi_bridge.sv` | Line port to single-beat AXI4 master; line ids become AXI ids |
 | `axi_behavioral_memory.sv` | Simulation-only DDR model: concurrent transactions, latency and jitter settings, optional out-of-order completion |
 | `cache_perf_pkg.sv` | Per-cache performance events: access, hit, miss, and writeback pulses, hit-under-miss, the outstanding-miss count, and two stall classes |
@@ -180,17 +180,16 @@ stale lines instead of writing them back. `SIM_FAST_MAINT=1` (simulation
 only) makes the sweep a one-cycle clear and makes writeback-all visit only
 dirty lines, with the same functional effect.
 
-## Hierarchy shapes
+## The hierarchy
 
-The full system always builds `HAS_L2=1`, the X3 shape. `HAS_L2=0`, with the
-L1s' arbiter tree feeding the bridge directly, exists at the
-`frost_cache_hierarchy` boundary for unit benches and reuse; no board uses
-it.
+`frost_cache_hierarchy` puts the L1D, walker, L1I, and DMA ports over one
+arbiter tree into the L2, which is the ordering point for all traffic below
+the L1s and drives the AXI bridge.
 
-[![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration into L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer, with the L1-only unit configuration below](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
+[![FROST cache hierarchy: L1D, walker, L1I and DMA arbitration into L2 and DDR, each of the walker and DMA ports entering through its own coherence sequencer](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
 
-The upper view shows the X3 configuration and the lower view the L1-only
-shape. Arrows follow requests; responses return by id prefix.
+The diagram shows the X3 configuration. Arrows follow requests; responses
+return by id prefix.
 
 The arbiter tree is a 2:1 `line_port_arbiter` (walker over L1I) under a 3:1
 one (L1D over that pair over DMA). Both are combinational pass-throughs, so
@@ -221,8 +220,9 @@ prefix-free code in `UP_ID_BITS + 2` bits:
 | L1I | `{2'b01, 1'b1, id}` | 2 |
 | DMA port | `{2'b10, id}` | 3 |
 
-The L2, or the bridge in the L1-only shape, sees those 5 bits, which is the
-AXI id width the X3 DDR block design provides (`fpga/build/x3_ddr_bd.tcl`).
+The L2 sees those 5 bits and gives its own downstream requests 5-bit ids as
+well, the AXI id width the X3 DDR block design provides
+(`fpga/build/x3_ddr_bd.tcl`).
 The L1I spends one of its 2 bits on the fill/writeback type, leaving 2 miss
 slots, which is all its master, the two-line fetch buffer, ever uses. The
 walker keeps one walk in flight and uses id 0.
@@ -251,15 +251,15 @@ Page tables live in cacheable DDR, and a page-table store sits dirty in the
 L1D like any other store, while the walker reads below the L1D. Software also
 publishes page tables without `sfence.vma`: Linux fills a new table, executes
 `fence w,w`, stores the pointer to it, and uses the mapping before the
-closing `sfence.vma`. A walker that read only the shared level could see the
-new pointer (evicted from the L1D) together with the stale table below the
-L1D that it points to. That is a translation that never existed, which the
+closing `sfence.vma`. A walker that read only the L2 could see the new
+pointer (evicted from the L1D) together with the stale table below the L1D
+that it points to. That is a translation that never existed, which the
 architecture forbids: a walk may return any translation valid since the last
 `sfence.vma`, but not a mixture.
 
 `walker_coherence_sequencer` prevents this. Every walk read first sends a
 PROBE_CLEAN to the L1D, so a dirty copy is written back and ordered at the
-shared level ahead of the read, and stays valid and clean in the L1D. Stores
+L2 ahead of the read, and stays valid and clean in the L1D. Stores
 still in the store queue are not covered, and need not be. They drain to the
 L1D in program order, so a walk that sees a later page-table store sees
 every earlier one, and a walk that sees neither returns the old translation,
@@ -279,9 +279,9 @@ free for the walker.
 
 Progress: once accepted, a walk read completes on its own.
 
-- The probe waits only on L1D transients that resolve through the shared
-  level (a fill or writeback of the line already in flight) and on its
-  reserved probe slot.
+- The probe waits only on L1D transients that resolve through the L2 (a
+  fill or writeback of the line already in flight) and on its reserved probe
+  slot.
 - The acknowledgement waits only for the level below to acknowledge the
   dirty writeback.
 - The issue waits only for the arbiter tree, where the higher-priority L1D
@@ -305,7 +305,7 @@ load queue keeps its own dword copies of loaded data, so a DMA agent that
 simply joined the tree below the L1D would neither see the CPU's dirty data
 nor invalidate the CPU's stale copies. The sequencer therefore takes every
 DMA request through the L1D, and every DMA write through the load queue as
-well, before the shared level orders it. It holds up to `NUM_DMA_LOCK` (3)
+well, before the L2 orders it. It holds up to `NUM_DMA_LOCK` (3)
 requests between acceptance and response, one per lock entry, and accepts a
 new request only when an entry is free and no active entry holds the same
 line.
@@ -322,10 +322,12 @@ A DMA write goes through five steps:
    have executed but not retired for replay, marks in-flight loads of it as
    not-to-fill and in-flight LRs as reservation-suppressed, and clears a
    matching reservation.
-4. The write is presented downstream. Its acceptance by the shared level
-   orders it, releases the L1D probe slot so that withheld fills fetch the
-   new line, and pulses the release to the load queue.
-5. The shared level's completion becomes the DMA port's response.
+4. The write is presented downstream. Its acceptance by the L2 orders it,
+   releases the L1D probe slot so that withheld fills fetch the new line,
+   and pulses the release to the load queue. Acceptance is enough because
+   the L2 applies same-line requests in acceptance order: a withheld fill
+   reaches it behind the write.
+5. The L2's completion becomes the DMA port's response.
 
 A DMA read sends a PROBE_CLEAN, which writes a dirty copy back and leaves it
 valid and clean, then presents the read. The probe slot is released when the
@@ -342,10 +344,10 @@ other, so an agent orders dependent writes by waiting for responses. Requests
 to the same line serialize in acceptance order, because the second waits for
 the first's entry to retire.
 
-Progress: a probe waits only on L1D transients that resolve through the
-shared level and DDR, because a fill of the probed line allocated before the
-probe's decision is never withheld. A withheld fill waits only for the
-release, which depends on the load queue and the shared level alone. Nothing
+Progress: a probe waits only on L1D transients that resolve through the L2
+and DDR, because a fill of the probed line allocated before the probe's
+decision is never withheld. A withheld fill waits only for the release,
+which depends on the load queue and the L2 alone. Nothing
 below the sequencer waits on the DMA port. The admit and invalidate
 handshakes hold a latched request until the load queue answers, so the core
 may take several cycles to answer.
@@ -354,7 +356,7 @@ may take several cycles to answer.
 
 | Target family | Coverage |
 | --- | --- |
-| `frost_cache*` | Tagged data, instruction, and walker traffic, hierarchy variants, maintenance, and dirty-L1D walker coherence |
+| `frost_cache*` | Tagged data, instruction, and walker traffic, maintenance (also on the fast simulation path), out-of-order memory completion, and dirty-L1D walker coherence |
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `line_port_arbiter*` | Arbitration and tagged responses |

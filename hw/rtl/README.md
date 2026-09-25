@@ -253,8 +253,8 @@ the DDR model's size and latency, and turns on fast cache maintenance
 (`SIM_FAST_MAINT=1`). Individual entries in `tests/test_run_cocotb.py` add
 their own overrides, such as `-GFETCH_VALID_FUZZ=1` for the fetch-fuzz runs
 and DDR latency jitter or reordering for stress runs. The cache unit benches
-instantiate `frost_cache_hierarchy` directly and cover both `HAS_L2=1` and
-the L1-only `HAS_L2=0` shape.
+instantiate `frost_cache_hierarchy` directly, with smaller caches so that
+evictions are cheap to reach.
 
 ## Parameters
 

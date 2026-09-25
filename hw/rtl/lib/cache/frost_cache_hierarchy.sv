@@ -16,7 +16,7 @@
 
 /*
  * frost_cache_hierarchy: the cache hierarchy as one module
- * (hw/rtl/lib/cache/README.md, "Hierarchy shapes").
+ * (hw/rtl/lib/cache/README.md, "The hierarchy").
  *
  * Four upstream line-port slaves share one downstream master:
  *   up   the data side, through the L1D;
@@ -28,9 +28,8 @@
  * through the load queue. A 2:1 arbiter (walker > L1I) feeds a 3:1 arbiter
  * (L1D > that pair > DMA). Both are combinational pass-throughs, so the tree
  * acts as one fixed-priority arbiter ordered L1D, walker, L1I, DMA, and the
- * top arbiter adds a starvation bound. It feeds the L2 when HAS_L2 != 0, and
- * the downstream port directly otherwise. The cocotb cache benches cover
- * both shapes.
+ * top arbiter adds a starvation bound. It feeds the L2, which drives the
+ * downstream port.
  *
  * Each arbiter prefixes its port index to the ids it forwards, which gives a
  * prefix-free code in DownIdBits = UP_ID_BITS + 2 bits:
@@ -53,7 +52,6 @@ module frost_cache_hierarchy #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
     parameter int unsigned UP_ID_BITS = 3,
-    parameter int unsigned HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1_DATA_READ_LATENCY = 2,
     parameter int unsigned L1_DATA_WRITE_LATENCY = 1,
@@ -107,8 +105,8 @@ module frost_cache_hierarchy #(
     output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
 
     // Upstream line port (slave): page-table walker. It has no cache of its
-    // own, because walks are short chains of dependent reads that the L2,
-    // when present, serves. Each read probes the L1D through
+    // own, because walks are short chains of dependent reads that the L2
+    // serves. Each read probes the L1D through
     // walker_coherence_sequencer, then enters the arbiter tree between the
     // L1D and the L1I in priority. Read-only: the write pins exist for
     // protocol symmetry and are ignored (simulation flags a write). Its ids
@@ -185,7 +183,7 @@ module frost_cache_hierarchy #(
   end
 
   // Per-L1 downstream wires into the arbiter tree, and the top arbiter's
-  // downstream (to L2 or straight to the hierarchy's downstream port).
+  // downstream into the L2.
   logic                    l1_down_req_valid;
   logic                    l1_down_req_ready;
   logic                    l1_down_req_write;
@@ -656,72 +654,56 @@ module frost_cache_hierarchy #(
     end
   end
 
-  if (HAS_L2 != 0) begin : gen_l2
-    frost_cache #(
-        .ADDR_WIDTH(ADDR_WIDTH),
-        .CACHE_SIZE_BYTES(L2_CACHE_BYTES),
-        .LINE_BYTES(LINE_BYTES),
-        .UP_ID_BITS(DownIdBits),
-        .DOWN_ID_BITS(DownIdBits),
-        .TAG_MEMORY_PRIMITIVE("ultra"),
-        .TAG_READ_LATENCY(L2_TAG_READ_LATENCY),
-        .DATA_MEMORY_PRIMITIVE("ultra"),
-        .DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
-        .DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
-        // With SIM_FAST_MAINT the L2's reset sweep takes one cycle. The full
-        // sweep walks every tag (65,536 at 2 MiB) and refuses upstream
-        // traffic meanwhile, which no test needs.
-        .SIM_FAST_MAINT(SIM_FAST_MAINT)
-    ) l2_cache (
-        .i_clk(i_clk),
-        .i_rst(i_rst),
-        .i_writeback_all(1'b0),
-        .i_invalidate_all(1'b0),
-        .o_maint_busy(),
-        .i_up_req_valid(arb_down_req_valid),
-        .o_up_req_ready(arb_down_req_ready),
-        .i_up_req_write(arb_down_req_write),
-        .i_up_req_addr(arb_down_req_addr),
-        .i_up_req_wdata(arb_down_req_wdata),
-        .i_up_req_wstrb(arb_down_req_wstrb),
-        .i_up_req_id(arb_down_req_id),
-        // Provenance muxed per fire by the arbiter.
-        .i_up_req_maintenance(arb_down_req_maintenance),
-        .i_up_req_probe(1'b0),
-        .i_up_req_probe_inval(1'b0),
-        .i_probe_release_valid(1'b0),
-        .i_probe_release_id('0),
-        .o_up_resp_valid(arb_down_resp_valid),
-        .o_up_resp_id(arb_down_resp_id),
-        .o_up_resp_rdata(arb_down_resp_rdata),
-        .o_down_req_valid(o_down_req_valid),
-        .i_down_req_ready(i_down_req_ready),
-        .o_down_req_write(o_down_req_write),
-        .o_down_req_addr(o_down_req_addr),
-        .o_down_req_wdata(o_down_req_wdata),
-        .o_down_req_wstrb(o_down_req_wstrb),
-        .o_down_req_id(o_down_req_id),
-        .o_down_req_maintenance(),
-        .i_down_resp_valid(i_down_resp_valid),
-        .i_down_resp_id(i_down_resp_id),
-        .i_down_resp_rdata(i_down_resp_rdata),
-        .o_perf_events(l2_perf_events)
-    );
-  end else begin : gen_no_l2
-    // Generate-time tie-off: in the optional L1-only topology, the L2 observer
-    // bundle is a hard zero rather than a runtime mux or X source.
-    assign l2_perf_events      = '0;
-    assign o_down_req_valid    = arb_down_req_valid;
-    assign arb_down_req_ready  = i_down_req_ready;
-    assign o_down_req_write    = arb_down_req_write;
-    assign o_down_req_addr     = arb_down_req_addr;
-    assign o_down_req_wdata    = arb_down_req_wdata;
-    assign o_down_req_wstrb    = arb_down_req_wstrb;
-    assign o_down_req_id       = arb_down_req_id;
-    assign arb_down_resp_valid = i_down_resp_valid;
-    assign arb_down_resp_id    = i_down_resp_id;
-    assign arb_down_resp_rdata = i_down_resp_rdata;
-  end
+  frost_cache #(
+      .ADDR_WIDTH(ADDR_WIDTH),
+      .CACHE_SIZE_BYTES(L2_CACHE_BYTES),
+      .LINE_BYTES(LINE_BYTES),
+      .UP_ID_BITS(DownIdBits),
+      .DOWN_ID_BITS(DownIdBits),
+      .TAG_MEMORY_PRIMITIVE("ultra"),
+      .TAG_READ_LATENCY(L2_TAG_READ_LATENCY),
+      .DATA_MEMORY_PRIMITIVE("ultra"),
+      .DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
+      .DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
+      // With SIM_FAST_MAINT the L2's reset sweep takes one cycle. The full
+      // sweep walks every tag (65,536 at 2 MiB) and refuses upstream
+      // traffic meanwhile, which no test needs.
+      .SIM_FAST_MAINT(SIM_FAST_MAINT)
+  ) l2_cache (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_writeback_all(1'b0),
+      .i_invalidate_all(1'b0),
+      .o_maint_busy(),
+      .i_up_req_valid(arb_down_req_valid),
+      .o_up_req_ready(arb_down_req_ready),
+      .i_up_req_write(arb_down_req_write),
+      .i_up_req_addr(arb_down_req_addr),
+      .i_up_req_wdata(arb_down_req_wdata),
+      .i_up_req_wstrb(arb_down_req_wstrb),
+      .i_up_req_id(arb_down_req_id),
+      // Provenance muxed per fire by the arbiter.
+      .i_up_req_maintenance(arb_down_req_maintenance),
+      .i_up_req_probe(1'b0),
+      .i_up_req_probe_inval(1'b0),
+      .i_probe_release_valid(1'b0),
+      .i_probe_release_id('0),
+      .o_up_resp_valid(arb_down_resp_valid),
+      .o_up_resp_id(arb_down_resp_id),
+      .o_up_resp_rdata(arb_down_resp_rdata),
+      .o_down_req_valid(o_down_req_valid),
+      .i_down_req_ready(i_down_req_ready),
+      .o_down_req_write(o_down_req_write),
+      .o_down_req_addr(o_down_req_addr),
+      .o_down_req_wdata(o_down_req_wdata),
+      .o_down_req_wstrb(o_down_req_wstrb),
+      .o_down_req_id(o_down_req_id),
+      .o_down_req_maintenance(),
+      .i_down_resp_valid(i_down_resp_valid),
+      .i_down_resp_id(i_down_resp_id),
+      .i_down_resp_rdata(i_down_resp_rdata),
+      .o_perf_events(l2_perf_events)
+  );
 
 `ifndef SYNTHESIS
   // The walker port is read-only; the sequencer in front of it has no write

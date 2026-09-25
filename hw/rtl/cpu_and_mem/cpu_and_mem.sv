@@ -1660,7 +1660,6 @@ module cpu_and_mem #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
         .UP_ID_BITS(LineIdBits),
-        .HAS_L2(1),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES),
