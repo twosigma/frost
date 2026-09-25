@@ -14,10 +14,6 @@
 .extern vPortTimerTickHandler
 .extern freertos_risc_v_application_exception_handler
 .extern freertos_risc_v_application_interrupt_handler
-.extern vPortDebugTrap
-.extern vPortDebugRestore
-.extern vPortDebugTCB
-.extern vPortDebugRA
 
 /* Critical section nesting counter */
 .extern uxCriticalNesting

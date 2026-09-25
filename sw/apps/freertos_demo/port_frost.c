@@ -107,57 +107,6 @@ static void prvSetupTimerInterrupt(void)
 
 /*-----------------------------------------------------------*/
 
-/* Trap-path trace helpers, wired in by hand when debugging: port_frost_asm.S declares the
- * vPortDebug* symbols with .extern but calls none of them. */
-static void print_hex(uint32_t val)
-{
-    static const char hex[] = "0123456789ABCDEF";
-    for (int i = 7; i >= 0; i--) {
-        UART_TX = hex[(val >> (i * 4)) & 0xF];
-    }
-}
-
-/* Trap entry: [Y:mepc] for a yield. The timer check compares against the RV32 cause value
- * 0x80000007, which the RV64 machine-timer cause never matches, so a tick prints [?:mepc]. */
-void vPortDebugTrap(uint32_t mepc, uint32_t mcause, uint32_t sp)
-{
-    (void) sp;
-    UART_TX = '[';
-    if (mcause == 11) {
-        UART_TX = 'Y'; /* Yield */
-    } else if (mcause == 0x80000007) {
-        UART_TX = 'T'; /* Timer */
-    } else {
-        UART_TX = '?';
-    }
-    UART_TX = ':';
-    print_hex(mepc);
-    UART_TX = ']';
-}
-
-/* Debug: print mepc being restored */
-void vPortDebugRestore(uint32_t mepc)
-{
-    UART_TX = '<';
-    print_hex(mepc);
-    UART_TX = '>';
-}
-
-/* Debug: print TCB pointer */
-extern void *volatile pxCurrentTCB;
-void vPortDebugTCB(char marker)
-{
-    UART_TX = marker;
-    print_hex((uint32_t) (uintptr_t) pxCurrentTCB);
-}
-
-/* Debug: print RA value */
-void vPortDebugRA(uint32_t ra)
-{
-    UART_TX = 'R';
-    print_hex(ra);
-}
-
 /* Timer interrupt handler - called from trap handler */
 void vPortTimerTickHandler(void)
 {
@@ -190,9 +139,6 @@ void vApplicationTickHook(void)
 }
 
 /*-----------------------------------------------------------*/
-
-/* External symbol: pointer to current TCB */
-extern void *volatile pxCurrentTCB;
 
 /* Defined in port_frost_asm.S */
 extern void xPortStartFirstTask(void);
