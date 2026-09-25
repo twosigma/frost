@@ -121,13 +121,12 @@ discard, the LR reservation clear, and the coherence port) uses the registered
 view. The combinational buses are also exported (`o_commit_comb`,
 `o_commit_comb_2`) for `cpu_ooo`'s same-cycle misprediction detection.
 
-The registered commit valids are masked by the full flush in the flush cycle
-itself (`i_flush_all_wb_mask`, a bit-identical copy of `i_flush_all`). The
-valid register clears on the flush edge, but without the mask its old value
-would stay visible for that cycle, and a commit overlapping a trap, xRET, or
-FENCE-class flush could perform one more architectural side effect. The SQ's
-forwarding scan uses the unmasked copies (`*_valid_raw`); its result is
-discarded on a flush cycle anyway.
+The registered commit valids are masked by the full flush (`i_flush_all`) in
+the flush cycle itself. The valid register clears on the flush edge, but
+without the mask its old value would stay visible for that cycle, and a
+commit overlapping a trap, xRET, or FENCE-class flush could perform one more
+architectural side effect. The SQ's forwarding scan uses the unmasked copies
+(`*_valid_raw`); its result is discarded on a flush cycle anyway.
 
 The SQ also receives the ROB's raw store-commit pulses for both slots
 (`i_commit_valid_comb`, `i_commit_valid_comb_2`), a cycle before the registered

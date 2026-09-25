@@ -4180,7 +4180,7 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
 
     The SQ's forwarding scan qualifies committed stores with raw commit
     pulses (sq_commit_valid_scan), while every architectural consumer uses
-    sq_commit_valid, which i_flush_all_wb_mask kills in the full-flush cycle;
+    sq_commit_valid, which i_flush_all kills in the full-flush cycle;
     the two differ only in that cycle. The forwarding result register's
     capture enable (sq_check_capture_valid) has no flush term either, so a
     probe result captured on a flush cycle must never be consumed (load queue
@@ -4194,8 +4194,8 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
                  released) commits combinationally -> commit_bus_pipeline
                  registers the pulse.  ROB head advances past S1.
       cycle E  : the raw registered pulse cycle.  commit_bus_q_valid_raw=1,
-                 sq_commit_valid_scan=1.  The bench asserts i_flush_all +
-                 i_flush_all_wb_mask mid-cycle, so:
+                 sq_commit_valid_scan=1.  The bench asserts i_flush_all
+                 mid-cycle, so:
                    - sq_commit_valid (architectural) is comb-killed,
                    - sq_commit_valid_scan stays high,
                    - the LQ probe for load L is still staged with
@@ -4474,9 +4474,9 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
         "sq_committed must still lag the pulse (the one-cycle window)"
     )
 
-    # Land the flush ON this cycle and open the capture window: flush_all +
-    # wb_mask assert (sampled at edge E+1, comb-killing the arch pulse now)
-    # and the bus-busy blanket drops (capture enable goes high now).
+    # Land the flush ON this cycle and open the capture window: flush_all
+    # asserts (sampled at edge E+1, comb-killing the arch pulse now) and the
+    # bus-busy blanket drops (capture enable goes high now).
     dut_if.drive_flush_all()
     dut.i_slow_write_inflight.value = 0
     dut_if.set_commit_hold(True)

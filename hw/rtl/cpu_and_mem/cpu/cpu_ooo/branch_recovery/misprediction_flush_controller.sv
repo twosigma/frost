@@ -82,11 +82,6 @@ module misprediction_flush_controller #(
     output logic o_flush_en,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_flush_tag,
     output logic o_flush_all,
-    // The same signal as o_flush_all, for latency-critical consumers such as
-    // the commit-writeback valid mask. Both come from the replicated register
-    // of the trap, xRET, and FENCE-class events. FENCE-class recovery wins the
-    // full flush even when a younger partial recovery is pending too.
-    output logic o_flush_all_flat,
     output logic o_commit_recovery_flush_after_head,
     output logic o_flush_after_head,
     output logic o_checkpoint_restore,
@@ -490,7 +485,6 @@ module misprediction_flush_controller #(
   assign o_flush_en                            = flush_en;
   assign o_flush_tag                           = flush_tag;
   assign o_flush_all                           = flush_all;
-  assign o_flush_all_flat                      = flush_all;
 
 `ifndef SYNTHESIS
   // Reference decode: plain priority chains built from the individual

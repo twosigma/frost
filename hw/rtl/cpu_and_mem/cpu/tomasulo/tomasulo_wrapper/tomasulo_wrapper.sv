@@ -222,10 +222,6 @@ module tomasulo_wrapper #(
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
-    // The same signal as i_flush_all: misprediction_flush_controller drives
-    // o_flush_all and o_flush_all_flat from one register. Used only by the
-    // commit-bus pipeline's valid mask.
-    input logic                                        i_flush_all_wb_mask,
     input logic                                        i_flush_after_head_commit,
     input logic                                        i_backend_recovery_hold,
     // A slow-tier (cached-region) store is in flight between the memory
@@ -632,7 +628,7 @@ module tomasulo_wrapper #(
   commit_bus_pipeline commit_bus_pipeline_inst (
       .i_clk                     (i_clk),
       .i_rst_n                   (i_rst_n),
-      .i_flush_all               (i_flush_all_wb_mask),
+      .i_flush_all               (i_flush_all),
       .i_commit_bus              (commit_bus),
       .i_commit_bus_2            (commit_bus_2),
       .o_commit_bus_q            (commit_bus_q),
@@ -5440,14 +5436,6 @@ module tomasulo_wrapper #(
   // No allocation during flush
   always_comb begin
     assume (!(i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)));
-  end
-
-  // i_flush_all_wb_mask is bit-identical to i_flush_all by construction
-  // (misprediction_flush_controller drives o_flush_all and o_flush_all_flat
-  // from the same register). Model the equality for the standalone formal
-  // top so the commit-writeback mask cannot fire independently of flush_all.
-  always_comb begin
-    assume (i_flush_all_wb_mask == i_flush_all);
   end
 
   // No rename during full flush

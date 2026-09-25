@@ -1603,9 +1603,6 @@ module cpu_ooo #(
   logic flush_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
   logic flush_all;
-  // Equal to flush_all every cycle and built from the same registers, on its
-  // own net for the commit write-back mask and the bypass-qualifier clear.
-  logic flush_all_flat;
   logic commit_recovery_flush_after_head;
   // The flush that clears the LQ: a full flush, or commit-time recovery,
   // which the LQ also treats as a full flush. The router must cancel a held,
@@ -1958,7 +1955,6 @@ module cpu_ooo #(
       .i_flush_en(flush_en),
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
-      .i_flush_all_wb_mask(flush_all_flat),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(early_backend_recovery_hold),
       .i_slow_write_inflight(i_cached_write_inflight),
@@ -2751,7 +2747,7 @@ module cpu_ooo #(
   assign csr_wb_arm = csr_commit_fire && rob_commit.dest_valid;
 
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_all_flat) begin
+    if (i_rst || flush_all) begin
       bypass_p0_int_we_q <= 1'b0;
       bypass_p1_int_we_q <= 1'b0;
       bypass_p0_fp_we_q  <= 1'b0;
@@ -2921,7 +2917,6 @@ module cpu_ooo #(
       .o_flush_en(flush_en),
       .o_flush_tag(flush_tag),
       .o_flush_all(flush_all),
-      .o_flush_all_flat(flush_all_flat),
       .o_commit_recovery_flush_after_head(commit_recovery_flush_after_head),
       .o_flush_after_head(flush_after_head),
       .o_checkpoint_restore(checkpoint_restore),
