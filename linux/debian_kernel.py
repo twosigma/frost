@@ -569,7 +569,9 @@ def toolchain_bin(cache: Path | str | None = None, cross: str | None = None) -> 
     These are wrapper scripts rather than symlinks because the toolchain's gcc
     is itself a wrapper that finds its real binary from its own name. The
     directory is named after the toolchain, so two builders with different
-    toolchains get one each instead of overwriting a shared directory.
+    toolchains get one each instead of overwriting a shared directory. One
+    without its ``.complete`` marker (partly deleted, say) is replaced under
+    the lock.
     """
     compiler, identity = toolchain_identity(cross)
     key = hashlib.sha256(identity.encode()).hexdigest()[:KEY_LENGTH]
@@ -585,6 +587,10 @@ def toolchain_bin(cache: Path | str | None = None, cross: str | None = None) -> 
     with cache_lock(cache):
         if marker.exists():
             return out
+        if out.exists():
+            # publish() cannot rename the new entry onto a nonempty directory.
+            log(f"{out.name} is incomplete; writing its wrappers again")
+            shutil.rmtree(out)
         staging = staging_dir(cache)
         try:
             staged = staging / out.name
@@ -604,6 +610,8 @@ def toolchain_bin(cache: Path | str | None = None, cross: str | None = None) -> 
             publish(staged, out)
         finally:
             shutil.rmtree(staging, ignore_errors=True)
+    if not marker.exists():
+        raise RuntimeError(f"{out}: the toolchain wrappers were not published")
     return out
 
 

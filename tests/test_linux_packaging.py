@@ -1453,6 +1453,39 @@ def test_debian_kernel_revalidates_a_damaged_entry(
     assert helper.kernel_image(cache).is_file()
 
 
+def test_debian_kernel_rebuilds_an_incomplete_toolchain_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrapper directory without its completion marker is rebuilt, not trusted.
+
+    Publishing renames the new staging onto the entry, which cannot replace a
+    directory that still holds files, so the incomplete one must go first.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    tools = tmp_path / "toolchain"
+    tools.mkdir()
+    for name in ("gcc", "objcopy", "ld"):
+        tool = tools / f"riscv64-test-linux-{name}"
+        tool.write_text("#!/bin/sh\nexit 0\n")
+        tool.chmod(0o755)
+    prefix = str(tools / "riscv64-test-linux-")
+    monkeypatch.setattr(
+        helper,
+        "toolchain_identity",
+        lambda cross=None: (tools / "riscv64-test-linux-gcc", "test toolchain"),
+    )
+    cache = tmp_path / "cache"
+    out = helper.toolchain_bin(cache, prefix)
+    objcopy = out / f"{helper.DEBIAN_CROSS_COMPILE}objcopy"
+    assert (out / ".complete").is_file() and objcopy.is_file()
+
+    (out / ".complete").unlink()  # a partial delete
+    objcopy.unlink()
+    assert helper.toolchain_bin(cache, prefix) == out
+    assert (out / ".complete").is_file() and objcopy.is_file()
+    assert list((cache / "staging").iterdir()) == []
+
+
 def test_debian_kernel_publishes_whole_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
