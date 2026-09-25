@@ -30,9 +30,12 @@
  * clears the sticky status. dmihardreset (W1) also abandons a request in
  * flight: it is not issued again (the debug module may still perform it
  * once), its response is discarded when it arrives, and the DTM stays busy
- * until then. The debug module answers every request, one that arrives
- * during its reset once the reset ends, so no request stays in flight for
- * good.
+ * until then. The spec's dmihardreset forgets the request instead, for one
+ * that will never complete. Waiting keeps one request in flight across the
+ * crossing, so the payload never changes under the core side and no later
+ * request receives the abandoned one's response. It relies on the debug
+ * module answering every request, one that arrives during its reset once
+ * the reset ends, so no request stays in flight for good.
  *
  * dmi: {address[6:0], data[31:0], op[1:0]}. Update-DR with op = read or write
  * starts a request unless the status is sticky or a request is still in
