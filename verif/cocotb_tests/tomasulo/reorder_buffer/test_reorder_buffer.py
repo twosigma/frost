@@ -2721,11 +2721,18 @@ async def test_random_branch_flush(dut: Any) -> None:
 
 @cocotb.test()
 async def test_stress_full_empty(dut: Any) -> None:
-    """Stress test buffer boundaries (full/empty transitions)."""
+    """Fill the buffer and drain it repeatedly, checking the status outputs.
+
+    StatusMonitor checks o_full against o_count every cycle, including the
+    cycles after a retirement from a full buffer, where the registered
+    o_full still reads 1.
+    """
     cocotb.log.info("=== Test: Stress Full/Empty ===")
     log_random_seed()
 
     dut_if, _ = await setup_test(dut)
+    status_mon = StatusMonitor(dut)
+    cocotb.start_soon(status_mon.run())
 
     num_cycles = 100
 
@@ -2764,6 +2771,7 @@ async def test_stress_full_empty(dut: Any) -> None:
 
         assert dut_if.empty, f"Cycle {cycle}: DUT should be empty"
 
+    status_mon.check_complete()
     cocotb.log.info("=== Test Passed ===")
 
 
@@ -3180,7 +3188,8 @@ async def test_amo_commits_normally(dut: Any) -> None:
 
     AMO ordering is enforced at LQ issue, which waits for the AMO to reach
     the ROB head with the SQ committed-empty. The ROB itself does not
-    consult i_sq_committed_empty for AMO commit.
+    consult i_sq_committed_empty for AMO commit, so the AMO retires while
+    the input reports committed stores still draining.
     """
     cocotb.log.info("=== Test: AMO Commits Normally ===")
 
@@ -3196,6 +3205,8 @@ async def test_amo_commits_normally(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
 
     # Queue the expected commit before the CDB write: commit fires on the
     # same rising edge that registers done=1, so the monitor needs the
@@ -3532,7 +3543,8 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     """LR commits once done; SC is resolved by the wrapper and completes over the CDB.
 
     Neither consults the SQ in the ROB: LR ordering is enforced at LQ issue,
-    and the SC result (0 for success) arrives as an ordinary CDB value.
+    and the SC result (0 for success) arrives as an ordinary CDB value. Both
+    retire while i_sq_committed_empty reports committed stores draining.
     """
     cocotb.log.info("=== Test: LR/SC Commit Behavior ===")
 
@@ -3556,6 +3568,8 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
 
     expected_lr = ExpectedCommit(
         valid=True,
@@ -3951,7 +3965,10 @@ async def test_sc_commits_via_cdb(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lr_commits_normally(dut: Any) -> None:
-    """An LR at the head commits once done; the serializer has no LR state."""
+    """An LR at the head commits once done, even with committed stores draining.
+
+    The serializer has no LR state, so i_sq_committed_empty does not hold it.
+    """
     cocotb.log.info("=== Test: LR Commits Normally ===")
 
     dut_if, model = await setup_test(dut)
@@ -3962,6 +3979,8 @@ async def test_lr_commits_normally(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
 
     cdb = CDBWrite(tag=0, value=0xFEEDFACE)
     dut_if.drive_cdb_write(cdb)

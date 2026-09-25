@@ -389,6 +389,7 @@ class ReorderBufferInterface:
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
         self.dut.i_flush_after_head_commit.value = 0
+        self.dut.i_replay_set_mask.value = 0
         self.dut.i_early_recovery_flush.value = 0
         self.dut.i_early_recovery_en.value = 0
         self.dut.i_early_recovery_tag.value = 0
