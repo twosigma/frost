@@ -107,24 +107,48 @@ COREMARK_PRO_REFERENCE = {
 # Registry iterations must clear this official -v0 minimum.
 SCORE_RULE_MIN_SECS = 10.0
 
-# MITH prints times with ``%8g``, which may use decimal or exponent notation.
-MITH_NUMBER = r"([0-9]+(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)"
+# MITH prints times with ``%8g``: space-padded, in decimal or exponent notation.
+# %g never ends a number with a decimal point, and its exponent always has a
+# sign and at least two digits.
+MITH_NUMBER = r"([0-9]+(?:\.[0-9]+)?(?:e[+-][0-9]{2,})?)"
+# %g rounds each time to six significant digits, so in an intact report
+# iterations times secs/workload is within one part in 10^5 of time(secs). The
+# check allows twice that, so a damaged value that still passes it is off by no
+# more than a few parts in 10^5.
+MITH_TIME_TOLERANCE = 2e-5
 
 
 def parse_workload_perf(serial_buf: str, workload: str) -> dict[str, Any]:
     """Extract workload iterations and seconds, then derive iter/s.
 
-    Matching the official workload name excludes -v1 item lines; only the
-    workload-level block has ``iterations=``.
+    The values come from the workload's ``iterations``, ``time(secs)`` and
+    ``secs/workload`` lines, which MITH prints in that order. The -v1 item
+    blocks repeat the ``time(secs)`` key, and an item can share the workload's
+    name (core's does), but no item block has those three lines, and every item
+    block comes after them, so lost bytes cannot bring an item's time to that
+    place. Each number must end its line in the form %g prints, and iterations
+    times secs/workload must match time(secs) within %g's rounding. Lost bytes
+    that leave a malformed number (``1.5e-``, ``12.``) or a well-formed wrong
+    one (``12.5`` read as ``1.5`` or ``125``) make both values read as missing.
+    A zero time still reads as 0, but it cannot confirm the iteration count,
+    which then reads as missing.
     """
     name = re.escape(workload)
-    iters_match = re.search(rf"-- {name}:iterations=([0-9]+)", serial_buf)
-    secs_match = re.search(rf"-- {name}:time\(secs\)=\s*{MITH_NUMBER}", serial_buf)
-    iterations = int(iters_match.group(1)) if iters_match else None
-    secs = float(secs_match.group(1)) if secs_match else None
-    ips = None
-    if iterations and secs and secs > 0:
-        ips = iterations / secs
+    report = re.search(
+        rf"-- {name}:iterations=([0-9]+)\r*\n"
+        rf"-- {name}:time\(secs\)= *{MITH_NUMBER}\r*\n"
+        rf"-- {name}:secs/workload= *{MITH_NUMBER}\r*\n",
+        serial_buf,
+    )
+    iterations: int | None = None
+    secs: float | None = None
+    ips: float | None = None
+    if report:
+        count, total, each = int(report[1]), float(report[2]), float(report[3])
+        if math.isclose(count * each, total, rel_tol=MITH_TIME_TOLERANCE):
+            secs = total
+            if total > 0:
+                iterations, ips = count, count / total
     return {"iterations": iterations, "secs": secs, "ips": ips}
 
 
@@ -321,7 +345,6 @@ def run_one(
                     "workload": workload,
                     "mode": mode,
                     "status": "LOAD_FAIL",
-                    "elapsed": None,
                     "iterations": None,
                     "secs": None,
                     "ips": None,
@@ -359,11 +382,6 @@ def run_one(
     else:
         status = "TIMEOUT"
 
-    workload_time = None
-    match = re.search(r"-- [^:\r\n]+:time\(secs\)=\s*([0-9.]+)", serial_buf)
-    if match:
-        workload_time = float(match.group(1))
-
     perf = (
         parse_workload_perf(serial_buf, workload)
         if workload
@@ -375,7 +393,6 @@ def run_one(
         "workload": workload,
         "mode": mode,
         "status": status,
-        "elapsed": workload_time,
         **perf,
         "serial": serial_buf,
         "loader_tail": list(loader_tail),
@@ -580,7 +597,7 @@ def main() -> int:
             results.append(result)
             print(
                 f"\nRESULT {args.board} {result['app']} {result['mode']}: "
-                f"{result['status']} time={result['elapsed']}",
+                f"{result['status']} time={result['secs']}",
                 flush=True,
             )
             if result["status"] == "PASS" and result["ips"] is None:
@@ -598,7 +615,7 @@ def main() -> int:
     bad = [r for r in results if r["status"] != "PASS"]
     print(f"\nSUMMARY ({args.board})")
     for r in results:
-        line = f"{args.board} {r['app']} {r['mode']} {r['status']} time={r['elapsed']}"
+        line = f"{args.board} {r['app']} {r['mode']} {r['status']} time={r['secs']}"
         if r["ips"] is not None:
             line += f" iter/s={r['ips']:.6g}"
         print(line)
