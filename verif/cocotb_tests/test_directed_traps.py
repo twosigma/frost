@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed machine-mode trap tests.
+"""Directed trap and interrupt tests.
 
 These tests live outside the random regression because trap handling needs
 exact CSR setup (mtvec, mepc, mcause), interrupt tests drive an external
@@ -30,6 +30,9 @@ Tests:
         - Timer interrupt trap entry (mstatus.MIE cleared, MPIE saved)
         - MTIP swept across an MRET: the entry's mepc and MPP match the
           retirement order, and no MRET the entry flushes is taken
+        - Interrupts at a waiting WFI: one taken at an illegal (U-mode) WFI
+          saves the WFI's PC, and an M interrupt right after an S interrupt
+          entry at a WFI saves the S handler's address
         - CSRSI enabling MIE with an interrupt already pending
         - Precise-interrupt sweep: mepc versus the committed prefix
 
@@ -891,6 +894,263 @@ async def test_directed_mret_interrupt_race_no_xret_after_take(dut: Any) -> None
         "an MRET or a second interrupt was taken after the entry "
         f"(offset, takes, mrets): {extra}"
     )
+
+
+# ============================================================================
+# Interrupt Resume PC Around a Waiting WFI
+# ============================================================================
+
+
+WFI_AT = 0x2000  # MRET target: the WFI is fetched here
+M_VECTOR = 0x1000
+S_VECTOR = 0x3000
+EXC_ILLEGAL_INSTR = 2
+INT_MACHINE_TIMER = (1 << 63) | 7
+INT_SUPERVISOR_TIMER = (1 << 63) | 5
+CSR_STVEC = 0x105
+CSR_STIMECMP = 0x14D
+CSR_MIDELEG = 0x303
+CSR_MENVCFG = 0x30A
+
+
+class WfiBench:
+    """cpu_tb driver for the WFI resume-PC tests.
+
+    It feeds instructions one fetch at a time, records every trap take with
+    whether a WFI was the valid ROB head and whether it targeted S, and
+    captures mepc, mcause, sepc and scause one cycle after each take.
+    """
+
+    def __init__(self, dut: Any) -> None:
+        """Start the clock and the take monitor."""
+        from encoders.op_tables import I_ALU, CSRS, TRAP_INSTRS
+
+        self.dut = dut
+        self.config = TestConfig(num_loops=100)
+        self.dut_if = DUTInterface(dut)
+        self.clk = self.dut_if.clock
+        self.core = dut.device_under_test
+        self.nop = 0x00000013
+        self.mret = TRAP_INSTRS["mret"]()
+        self.wfi = TRAP_INSTRS["wfi"]()
+        self.addi = I_ALU["addi"][0]
+        self.slli = I_ALU["slli"][0]
+        self.csrrw = CSRS["csrrw"]
+        self.csrrs = CSRS["csrrs"]
+        self.takes: list[tuple[bool, bool]] = []  # (WFI at the valid head, to S)
+        self.entries: list[tuple[int, int, int, int]] = []  # mepc, mcause, sepc, scause
+        Clock(self.clk, self.config.clock_period_ns, unit="ns").start()
+        cocotb.start_soon(self._monitor())
+
+    async def _monitor(self) -> None:
+        trap_unit = self.core.trap_unit_inst
+        csr = self.core.csr_file_inst
+        capture = False
+        while True:
+            await RisingEdge(self.clk)
+            if capture:
+                self.entries.append(
+                    (
+                        int(csr.mepc.value),
+                        int(csr.mcause.value),
+                        int(csr.sepc.value),
+                        int(csr.scause.value),
+                    )
+                )
+            capture = bool(int(trap_unit.o_trap_taken.value))
+            if capture:
+                wfi_head = bool(int(self.core.rob_head_is_wfi.value)) and bool(
+                    int(self.core.head_valid.value)
+                )
+                self.takes.append((wfi_head, bool(int(trap_unit.o_trap_to_s.value))))
+
+    async def feed(self, instr: int) -> None:
+        """Present one instruction to the next fetch."""
+        await FallingEdge(self.clk)
+        await self.dut_if.wait_ready()
+        self.dut_if.instruction = instr
+        await RisingEdge(self.clk)
+
+    async def write_csr(self, address: int, rd: int, value: int, op: str = "w") -> None:
+        """Write (or set bits of) a CSR from scratch register rd and let it drain.
+
+        The value is a 12-bit immediate shifted left, built with addi and
+        slli steps of at most 31 (the shift encoder keeps five bits).
+        """
+        shift = 0
+        while value >> shift > 0x7FF:
+            shift += 1
+        assert (value >> shift) << shift == value, f"cannot build 0x{value:x}"
+        await self.feed(self.addi(rd, 0, value >> shift))
+        while shift:
+            step = min(shift, 31)
+            await self.feed(self.slli(rd, rd, step))
+            shift -= step
+        encode = self.csrrw if op == "w" else self.csrrs
+        await self.feed(encode(0, address, rd))
+        for _ in range(4):
+            await self.feed(self.nop)
+
+    async def reset(self) -> None:
+        """Reset the core with no interrupt pending and mtime at 0."""
+        self.dut.i_interrupts_reg.value = 0
+        self.dut.i_mtime_reg.value = 0
+        self.dut_if.instruction = self.nop
+        await self.dut_if.reset_dut(self.config.reset_cycles)
+        for _ in range(6):
+            await self.feed(self.nop)
+        self.takes.clear()
+        self.entries.clear()
+
+    async def enter_wfi(self, mstatus: int) -> None:
+        """Write mepc and mstatus, MRET, and feed a WFI at the MRET target."""
+        from encoders.instruction_encode import CSRAddress
+
+        await self.write_csr(CSRAddress.MEPC, 3, WFI_AT)
+        await self.write_csr(CSRAddress.MSTATUS, 4, mstatus)
+        await self.feed(self.mret)
+        for _ in range(40):
+            await FallingEdge(self.clk)
+            await self.dut_if.wait_ready()
+            at_target = int(self.dut.o_pc.value) == WFI_AT
+            self.dut_if.instruction = self.wfi if at_target else self.nop
+            await RisingEdge(self.clk)
+            if at_target:
+                return
+        raise AssertionError(f"the MRET never redirected fetch to 0x{WFI_AT:x}")
+
+    async def raise_mtip_after(self, cycles: int) -> None:
+        """Raise mtip after `cycles` falling edges."""
+        for _ in range(cycles):
+            await FallingEdge(self.clk)
+        self.dut.i_interrupts_reg.value = 0b010
+
+
+@cocotb.test()
+async def test_directed_interrupt_at_illegal_wfi_resumes_at_it(dut: Any) -> None:
+    """An interrupt taken at an illegal WFI saves the WFI's own PC.
+
+    A WFI in U-mode is illegal and has not executed, so a machine timer
+    interrupt that wins the take over its illegal-instruction exception must
+    save mepc = the WFI's PC, as the exception does. MTIP rises 0 to 23 clock
+    cycles after the WFI is fetched; the sweep must include interrupts taken
+    with the WFI at the ROB head.
+    """
+    from encoders.instruction_encode import CSRAddress
+
+    bench = WfiBench(dut)
+    at_head: list[int] = []
+    for offset in range(24):
+        await bench.reset()
+        await bench.write_csr(CSRAddress.MTVEC, 1, M_VECTOR)
+        await bench.write_csr(CSRAddress.MIE, 2, 1 << 7)  # MTIE
+        await bench.enter_wfi(0)  # MPP = U, MIE = MPIE = 0
+        injector = cocotb.start_soon(bench.raise_mtip_after(offset))
+        for _ in range(40):
+            await bench.feed(bench.nop)
+            if bench.entries:
+                break
+        if not injector.done():
+            injector.cancel()
+        dut.i_interrupts_reg.value = 0
+        assert bench.entries, f"offset {offset}: no trap taken"
+        mepc, mcause, _, _ = bench.entries[0]
+        wfi_head, _ = bench.takes[0]
+        cocotb.log.info(
+            f"offset={offset:2d} mcause=0x{mcause:x} mepc=0x{mepc:x} wfi_at_head={wfi_head}"
+        )
+        assert mcause in (EXC_ILLEGAL_INSTR, INT_MACHINE_TIMER), (
+            f"offset {offset}: mcause=0x{mcause:x}"
+        )
+        assert mepc == WFI_AT, (
+            f"offset {offset}: mcause=0x{mcause:x} saved mepc=0x{mepc:x}, want the "
+            f"illegal WFI's PC 0x{WFI_AT:x}"
+        )
+        if mcause == INT_MACHINE_TIMER and wfi_head:
+            at_head.append(offset)
+    assert at_head, (
+        "no offset took the interrupt with the illegal WFI at the ROB head; widen "
+        "the sweep"
+    )
+    cocotb.log.info(f"interrupt taken at the illegal WFI for offsets {at_head}")
+
+
+@cocotb.test()
+async def test_directed_interrupt_after_s_entry_at_wfi_saves_the_handler(
+    dut: Any,
+) -> None:
+    """An M interrupt right after an S interrupt entry saves the S handler's address.
+
+    An S timer interrupt (Sstc, delegated) reaches S-mode code at a WFI; its
+    arrival is swept 0 to 11 clock cycles after the WFI is fetched, so some
+    entries are taken with the WFI at the ROB head, which leaves it the valid
+    head in the entry's flush cycle. A machine timer interrupt raised right
+    after each entry is taken before any handler instruction retires, so mepc
+    must be the S handler's first instruction. The sweep must include entries
+    taken at the WFI.
+    """
+    from encoders.instruction_encode import CSRAddress
+
+    bench = WfiBench(dut)
+    at_head: list[int] = []
+
+    async def raise_stip_after(cycles: int) -> None:
+        for _ in range(cycles):
+            await FallingEdge(bench.clk)
+        dut.i_mtime_reg.value = 1 << 17  # past stimecmp
+
+    for offset in range(12):
+        await bench.reset()
+        await bench.write_csr(CSRAddress.MTVEC, 1, M_VECTOR)
+        await bench.write_csr(CSR_STVEC, 2, S_VECTOR)
+        await bench.write_csr(CSR_MIDELEG, 5, 1 << 5)  # STI to S
+        await bench.write_csr(CSRAddress.MIE, 6, (1 << 7) | (1 << 5))  # MTIE, STIE
+        await bench.write_csr(CSR_MENVCFG, 7, 1 << 63, op="s")  # STCE
+        await bench.write_csr(CSR_STIMECMP, 8, 1 << 16)  # above mtime (0)
+        await bench.enter_wfi((1 << 11) | (1 << 1))  # MPP = S, SIE = 1, MIE = 0
+        injector = cocotb.start_soon(raise_stip_after(offset))
+        for _ in range(40):
+            await bench.feed(bench.nop)
+            if bench.takes:
+                break
+        assert bench.takes, f"offset {offset}: the S timer interrupt was never taken"
+        dut.i_interrupts_reg.value = 0b010  # mtip, right after the S entry
+        for _ in range(40):
+            await bench.feed(bench.nop)
+            if len(bench.entries) >= 2:
+                break
+        if not injector.done():
+            injector.cancel()
+        dut.i_interrupts_reg.value = 0
+        assert len(bench.entries) >= 2, (
+            f"offset {offset}: the machine timer interrupt was not taken: {bench.takes}"
+        )
+        (wfi_head, to_s), (_, second_to_s) = bench.takes[0], bench.takes[1]
+        _, _, sepc, scause = bench.entries[0]
+        mepc, mcause, _, _ = bench.entries[1]
+        cocotb.log.info(
+            f"offset={offset:2d} S entry at WFI={wfi_head} scause=0x{scause:x} "
+            f"sepc=0x{sepc:x}; M entry mcause=0x{mcause:x} mepc=0x{mepc:x}"
+        )
+        assert to_s and scause == INT_SUPERVISOR_TIMER, (
+            f"offset {offset}: first take to S={to_s}, scause=0x{scause:x}"
+        )
+        if wfi_head:
+            # WFI_AT when the take lands in the WFI's first cycle at the head
+            # (it has not executed), WFI_AT + 4 once it waits there.
+            assert sepc in (WFI_AT, WFI_AT + 4), (
+                f"offset {offset}: sepc=0x{sepc:x}, want the WFI's PC or PC + 4"
+            )
+            at_head.append(offset)
+        assert not second_to_s and mcause == INT_MACHINE_TIMER, (
+            f"offset {offset}: second take to S={second_to_s}, mcause=0x{mcause:x}"
+        )
+        assert mepc == S_VECTOR, (
+            f"offset {offset}: mepc=0x{mepc:x}, want the S handler entry 0x{S_VECTOR:x} "
+            "(no handler instruction retired before the take)"
+        )
+    assert at_head, "no S entry was taken with the WFI at the ROB head; widen the sweep"
+    cocotb.log.info(f"S entries taken at the WFI for offsets {at_head}")
 
 
 # ============================================================================

@@ -1876,9 +1876,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_directed_traps",
         hdl_toplevel_module="cpu_tb",
         description=(
-            "Directed M-mode trap/interrupt tests (cpu_tb directed suite): trap entry "
-            "and MRET, interrupt entry, MTIP swept across an MRET (entry state, and no "
-            "MRET taken in the entry's flush cycle), and precise-interrupt sweeps"
+            "Directed trap/interrupt tests (cpu_tb directed suite): trap entry and MRET, "
+            "interrupt entry, MTIP swept across an MRET (entry state, and no MRET taken in "
+            "the entry's flush cycle), the resume PC of interrupts at a waiting WFI "
+            "(illegal in U-mode, and an M interrupt right after an S entry), and "
+            "precise-interrupt sweeps"
         ),
     ),
     # The cpu_tb suites below are CLI-only (include_in_pytest=False).

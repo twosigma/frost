@@ -3298,7 +3298,8 @@ module cpu_ooo #(
     end else if (rob_commit_valid_raw) begin
       // Timing: identical value to retired_next_pc(rob_commit_comb); see above.
       interrupt_resume_pc <= rob_head_retired_next_pc;
-    end else if (rob_head_is_wfi && head_valid) begin
+    end else if (rob_head_is_wfi && head_valid && (rob_trap_cause == '0) && !flush_all &&
+                 !mispredict_recovery_pending) begin
       // While a WFI waits at the ROB head, the architectural resume PC is
       // wfi_pc+4 (WFI never redirects). Seed it so that an interrupt taken at
       // the WFI saves the spec-required wfi_pc+4 rather than the pre-WFI
@@ -3307,6 +3308,15 @@ module cpu_ooo #(
       // same cycle, before the WFI's own commit can advance
       // interrupt_resume_pc. Lowest priority: a real commit always wins, and
       // WFI is never compressed, so +4 is exact.
+      //
+      // Only a legal WFI that stays in the ROB seeds. A WFI's cause is zero
+      // unless allocation marked it illegal; an illegal WFI has not executed,
+      // so an interrupt taken there must not resume past it (it traps once
+      // the handler returns). A full flush (after a trap taken at the WFI, or
+      // a FENCE-class retirement) and commit-time recovery (a wrong-path
+      // head) remove the head at the end of the cycle; seeding then would
+      // overwrite the resume PC installed by the take or by the last
+      // retirement.
       interrupt_resume_pc <= rob_trap_pc + 64'd4;
     end
   end
@@ -3332,33 +3342,49 @@ module cpu_ooo #(
     end
   end
 
-  // An M/S interrupt taken while a WFI waits at the ROB head resumes after
-  // the WFI: the saved PC must be wfi_pc+4. Waiting means the same WFI was
-  // the valid head in the previous cycle with nothing retiring, trapping or
-  // being flushed, so the resume-PC seed has had its cycle. A WFI's cause
-  // field is zero unless allocation marked it illegal (a WFI never completes
-  // on the CDB); an illegal WFI has not executed, so it is left out.
+  // An M/S interrupt taken while a WFI waits at the ROB head resumes after a
+  // legal WFI: the saved PC must be wfi_pc+4. An illegal WFI has not
+  // executed and gets no seed, so the interrupt saves the resume PC held
+  // while it waited (the WFI's own PC, or that of a dropped NOP before it),
+  // never wfi_pc+4, and the WFI traps once the handler returns. Waiting means
+  // the same WFI was the valid head in the previous cycle with nothing
+  // retiring, trapping or being flushed, so the resume-PC seed has had its
+  // cycle. A WFI's cause field is zero unless allocation marked it illegal
+  // (a WFI never completes on the CDB).
   logic wfi_waiting_q;
+  logic wfi_waiting_legal_q;
   logic [XLEN-1:0] wfi_waiting_pc_q;
   always_ff @(posedge i_clk) begin
-    wfi_waiting_q <= !i_rst && rob_head_is_wfi && head_valid && (rob_trap_cause == '0) &&
+    wfi_waiting_q <= !i_rst && rob_head_is_wfi && head_valid &&
                      !rob_commit_valid_raw && !trap_taken && !xret_taken &&
                      !flush_all && !flush_en && !mispredict_recovery_pending;
+    wfi_waiting_legal_q <= (rob_trap_cause == '0);
     wfi_waiting_pc_q <= rob_trap_pc;
   end
   always @(posedge i_clk) begin
     if (!i_rst && wfi_waiting_q && trap_taken && !trap_to_d && !trap_no_csr &&
         trap_cause_internal[XLEN-1] && rob_head_is_wfi && head_valid &&
         (rob_trap_pc == wfi_waiting_pc_q)) begin
-      p_wfi_interrupt_resumes_after_wfi :
-      assert (trap_pc_internal == wfi_waiting_pc_q + XLEN'(4))
-      else
-        $error(
-            "cpu_ooo: interrupt at a waiting WFI (pc %08x) saved resume PC %08x, want %08x",
-            wfi_waiting_pc_q,
-            trap_pc_internal,
-            wfi_waiting_pc_q + XLEN'(4)
-        );
+      if (wfi_waiting_legal_q) begin
+        p_wfi_interrupt_resumes_after_wfi :
+        assert (trap_pc_internal == wfi_waiting_pc_q + XLEN'(4))
+        else
+          $error(
+              "cpu_ooo: interrupt at a waiting WFI (pc %08x) saved resume PC %08x, want %08x",
+              wfi_waiting_pc_q,
+              trap_pc_internal,
+              wfi_waiting_pc_q + XLEN'(4)
+          );
+      end else begin
+        p_illegal_wfi_interrupt_keeps_wfi :
+        assert (trap_pc_internal != wfi_waiting_pc_q + XLEN'(4))
+        else
+          $error(
+              "cpu_ooo: interrupt at a waiting illegal WFI (pc %08x) saved resume PC %08x",
+              wfi_waiting_pc_q,
+              trap_pc_internal
+          );
+      end
     end
   end
 `endif
