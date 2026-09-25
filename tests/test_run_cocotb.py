@@ -479,7 +479,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="mret_drain_deadlock",
         description=(
-            "MRET progress with draining cached stores; o_mret_start must pulse once."
+            "An MRET that reaches the ROB head while cached stores drain is taken once they drain."
         ),
         # Small L2 and slow memory keep committed stores draining as the MRET reaches the head.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
