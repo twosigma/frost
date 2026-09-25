@@ -78,6 +78,10 @@
   Counters (Zicntr, one 64-bit CSR each):
     - cycle (0xC00) and instret (0xC02) are read-only; mcycle (0xB00) and
       minstret (0xB02) are their M-mode aliases and accept writes.
+    - instret adds i_instruction_retired_count, the ROB commits. It misses
+      xRETs, which retire through the full flush after them, a WFI that an
+      interrupt takes over at the ROB head, and the NOPs the front end drops
+      before dispatch.
     - time (0xC01) reads i_mtime.
     - mcountinhibit (0x320): CY (bit 0) and IR (bit 2) stop cycle and
       instret while set; the other bits read 0. Resets to 0. OpenSBI requires

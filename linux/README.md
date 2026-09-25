@@ -166,6 +166,14 @@ perf driver disables them. `frost_stress --counters` counts a child process
 running a fixed workload, from its exec to its exit, and the boot stress
 payload reports cycle, instruction, time, and IPC deltas for its own workload.
 
+`instret` does not count MRET, SRET, or DRET, which retire through the full
+flush that follows them; a WFI that an interrupt takes over while it waits at
+the ROB head (the interrupt saves the PC after the WFI, which never commits);
+or the NOPs (`addi x0, x0, 0`, including `c.nop`) that the front end drops
+before dispatch: a NOP in the second slot of a decoded bundle, or in a bundle
+with no other instruction. Instruction counts and IPC from
+`PERF_COUNT_HW_INSTRUCTIONS` leave those instructions out.
+
 ## Kernel
 
 [`debian_kernel.py`](debian_kernel.py) downloads Debian's riscv64 kernel and

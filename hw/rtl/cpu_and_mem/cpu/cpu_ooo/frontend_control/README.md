@@ -57,6 +57,8 @@ because a CSR's CDB broadcast carries only its write operand.
 
 The queue drops all-NOP bundles, except while a debug single step is armed
 (`step_armed_fe_q`), so that stepping over a `nop` retires exactly that `nop`.
+A dropped NOP never retires, and neither does a NOP in slot 2, which is never
+valid, so `instret` counts neither.
 It also reports any queued unpredicted JALR (`o_indirect_pending`) to the
 control-flow serialization stall. For timing, dispatch reads a flop copy of
 the head bundle rather than the queue RAM, and takes its narrow control fields
