@@ -275,7 +275,9 @@ module fp_convert_sd #(
     end
   end
 
-  // Overflow/underflow handling for D->S
+  // Overflow/underflow handling for D->S. Both cases bypass the rounder, whose
+  // exponent (round_exp_s1) is only 10 bits wide. d_underflow_too_small is a
+  // nonzero value below 2^-152, less than half the smallest subnormal.
   logic d_overflow;
   logic d_underflow_too_small;
   assign d_overflow = (exp_s_biased >= 13'sd255);
@@ -294,6 +296,13 @@ module fp_convert_sd #(
   logic [FP_WIDTH-1:0] d2s_result_s3;
   riscv_pkg::fp_flags_t d2s_flags_s3;
 
+  // A d_underflow_too_small value rounds to zero, or to the smallest subnormal
+  // when the rounding direction is away from zero (RUP for a positive value,
+  // RDN for a negative one).
+  logic d_tiny_round_away;
+  assign d_tiny_round_away = (rm_reg_s2 == riscv_pkg::FRM_RUP && !sign_d_s2) ||
+                             (rm_reg_s2 == riscv_pkg::FRM_RDN && sign_d_s2);
+
   always_comb begin
     d2s_result_s3 = '0;
     d2s_flags_s3  = '0;
@@ -309,7 +318,7 @@ module fp_convert_sd #(
       d2s_flags_s3.of = 1'b1;
       d2s_flags_s3.nx = 1'b1;
     end else if (d_underflow_too_small_s2) begin
-      d2s_result_s3   = box32({sign_d_s2, 31'b0});
+      d2s_result_s3   = box32({sign_d_s2, 30'b0, d_tiny_round_away});
       d2s_flags_s3.uf = 1'b1;
       d2s_flags_s3.nx = 1'b1;
     end else begin

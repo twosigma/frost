@@ -645,6 +645,8 @@ async def test_rv64_feq_s_result_not_boxed(dut: Any) -> None:
 # ============================================================================
 # Conversion corners in every rounding mode
 # ============================================================================
+RM_RNE, RM_RTZ, RM_RDN, RM_RUP, RM_RMM = range(5)
+FFLAG_UF = 0x02
 INT32_MIN_SEXT = 0xFFFF_FFFF_8000_0000
 INT64_MIN = 0x8000_0000_0000_0000
 
@@ -712,3 +714,25 @@ async def test_fcvt_signed_integer_min_boundaries(dut: Any) -> None:
             for rm in range(5)
         ],
     )
+
+
+@cocotb.test()
+async def test_fcvt_s_d_tiny_directed_rounding(dut: Any) -> None:
+    """FCVT.S.D far below the smallest subnormal: RUP and RDN round away from zero."""
+    magnitudes = [
+        0x0370_0000_0000_0000,  # 2^-200
+        0x0000_0000_0000_0001,  # smallest double subnormal
+        0x3660_0000_0000_0000,  # 2^-153
+        0x366F_FFFF_FFFF_FFFF,  # just below 2^-152
+        0x3670_0000_0000_0000,  # 2^-152
+    ]
+    vectors = []
+    for magnitude in magnitudes:
+        for negative in (False, True):
+            sign = 0x8000_0000 if negative else 0
+            for rm in range(5):
+                away = (rm == RM_RUP and not negative) or (rm == RM_RDN and negative)
+                expected = nan_box_f32(sign | int(away))
+                src = magnitude | (INT64_MIN if negative else 0)
+                vectors.append(("FCVT_S_D", src, rm, expected, FFLAG_UF | FFLAG_NX))
+    await _run_vectors(dut, vectors)
