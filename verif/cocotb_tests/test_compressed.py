@@ -96,11 +96,12 @@ async def settle_check_reg(
     An architectural register write lands at ROB commit, a variable number of
     cycles after the harness feeds the instruction, so a fixed NOP fill after
     the instruction is not enough. Poll the committed value until it equals
-    ``expected``, then assert. Every test starts from a zeroed register file,
-    and every checked instruction writes a value that differs from the
-    register's prior contents, so a stale read cannot end the poll early. The
-    instruction bus still carries the NOP filler driven by the preceding
-    execute helper, so waiting only has to advance clock cycles.
+    ``expected``, then assert. Every checked instruction writes a value that
+    differs from the register's prior contents (the directed test starts from
+    zeroed registers, and the random test draws only operands that change
+    rd), so a stale read cannot end the poll early. The instruction bus still
+    carries the NOP filler driven by the preceding execute helper, so waiting
+    only has to advance clock cycles.
 
     Args:
         dut_if: DUT interface (for the clock)
