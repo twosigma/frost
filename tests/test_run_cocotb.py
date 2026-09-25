@@ -460,6 +460,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "retires; the interrupt must save the PC after it)"
         ),
     ),
+    "wfi_seed_recovery": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="wfi_seed_recovery",
+        description=(
+            "Wrong-path WFI at the ROB head while commit-time recovery is pending: "
+            "the interrupt resume PC must not be seeded from it"
+        ),
+    ),
     "wfi_drain_mepc_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

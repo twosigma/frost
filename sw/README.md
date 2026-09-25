@@ -325,5 +325,6 @@ can be debugged and where each one first stops.
 | `wfi_drain_mepc_test/` | A timer interrupt at `wfi` while a cached store drains must set `mepc` past the `wfi` |
 | `wfi_lost_tick/` | The Linux idle loop (`wfi` with MIE toggling and CLINT re-arm) must not lose timer ticks |
 | `wfi_mepc_test/` | A timer interrupt at `wfi` must set `mepc` to the next instruction |
+| `wfi_seed_recovery/` | Mispredicted `jr` jumps with `wfi` on the wrong path; the bench checks that a wrong-path `wfi` at the ROB head during recovery does not set the interrupt resume PC |
 | `window_skip_repro/` | After a branch trained taken resolves not-taken, fetch must not skip the fall-through window |
 | `writecount_probe/` | `lr.w` sign extension on both dword halves in the Linux `i_writecount` sequence, with `sc.w` and `amoadd.w` |

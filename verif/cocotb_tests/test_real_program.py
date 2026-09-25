@@ -35,7 +35,7 @@ import re
 from collections import Counter
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 from cocotb.utils import get_sim_time
 from typing import Any, TextIO
 
@@ -639,6 +639,58 @@ async def l0_hit_watch(dut: Any) -> None:
                 if hits > 6000:
                     cocotb.log.warning("l0_hit_watch: hit cap reached; muting")
                     return
+
+
+class WfiRecoveryWatch:
+    """Check the resume PC around a wrong-path WFI at the ROB head.
+
+    For the wfi_seed_recovery app. In a cycle where commit-time recovery is
+    pending and the ROB head is a legal WFI, that WFI is on the wrong path, and
+    the recovery flush removes it at the end of the cycle. cpu_ooo must not
+    seed interrupt_resume_pc from it, so the next cycle's resume PC must not
+    be the WFI's PC + 4. The program's jump targets are further on, so the
+    resume PC left by the jump never equals it.
+    """
+
+    SIGNALS = (
+        "rob_head_is_wfi",
+        "head_valid",
+        "rob_trap_cause",
+        "mispredict_recovery_pending",
+        "rob_trap_pc",
+        "interrupt_resume_pc",
+    )
+
+    def __init__(self, dut: Any) -> None:
+        """Resolve the cpu_ooo signals the check reads."""
+        self.dut = dut
+        cpu = "cpu_and_memory_subsystem.cpu_inst"
+        self.sig = {name: _get_signal(dut, f"{cpu}.{name}") for name in self.SIGNALS}
+        missing = [name for name, sig in self.sig.items() if sig is None]
+        assert not missing, f"WfiRecoveryWatch: unresolvable {missing}"
+        self.hits = 0
+
+    async def run(self) -> None:
+        """Watch every cycle; fail at once on a seeded resume PC."""
+        seeded_pc = None
+        while True:
+            await RisingEdge(self.dut.i_clk)
+            await ReadOnly()
+            if seeded_pc is not None:
+                resume = _read_int(self.sig["interrupt_resume_pc"])
+                assert resume != seeded_pc, (
+                    f"interrupt_resume_pc was seeded from the wrong-path WFI at "
+                    f"{seeded_pc - 4:#x}"
+                )
+                seeded_pc = None
+            if (
+                _read_bool(self.sig["rob_head_is_wfi"])
+                and _read_bool(self.sig["head_valid"])
+                and _read_int(self.sig["rob_trap_cause"]) == 0
+                and _read_bool(self.sig["mispredict_recovery_pending"])
+            ):
+                self.hits += 1
+                seeded_pc = (_read_int(self.sig["rob_trap_pc"]) or 0) + 4
 
 
 async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
@@ -4142,6 +4194,9 @@ async def test_real_program(dut: Any) -> None:
         # UART RX byte unread; the bench sends it (0x5A) once per run.
         uart_driver = UartRxDriver(dut)
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
+    wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
+    if wfi_watch is not None:
+        cocotb.start_soon(wfi_watch.run())
 
     for run_number in range(1, NUM_RUNS + 1):
         if run_number > 1:
@@ -4209,5 +4264,12 @@ async def test_real_program(dut: Any) -> None:
         line_monitor.stop()
     if debug_monitor:
         debug_monitor.stop()
+
+    if wfi_watch is not None:
+        # Without a hit the program no longer produces the case under test.
+        assert wfi_watch.hits > 0, "no wrong-path WFI reached the ROB head in recovery"
+        cocotb.log.info(
+            f"wrong-path WFI at the ROB head in recovery: {wfi_watch.hits} cycles"
+        )
 
     cocotb.log.info(f"=== All {NUM_RUNS} run(s) completed successfully ===")
