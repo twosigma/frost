@@ -450,7 +450,7 @@ static void test_mixed(void)
     T("char+str", "A=65", 4, "%c=%d", 'A', 65);
     T("three strings", "foo/bar/baz", 11, "%s/%s/%s", "foo", "bar", "baz");
     TFP("money", "$1234567.89", 11, "$%.2f", 1234567.89);
-    T("neg hex", "    -1", 6, "%6d", -1); /* plain -1 */
+    T("d neg width", "    -1", 6, "%6d", -1);
     T("multi width", "   1  22 333", 12, "%4d%4d%4d", 1, 22, 333);
 }
 
@@ -787,6 +787,76 @@ static void test_regression(void)
     T("all zeros fmt", "000/000/0000", 12, "%03d/%03d/%04d", 0, 0, 0);
 }
 
+/* ── z and t with every integer conversion ───────────────────────────────── */
+static void test_size_modifiers(void)
+{
+    section("z / t");
+    T("zx 64-bit", "123456789abcdef", 15, "%zx", (size_t) 0x123456789abcdefULL);
+    T("zX 64-bit", "123456789ABCDEF", 15, "%zX", (size_t) 0x123456789abcdefULL);
+    T("zo 64-bit", "4432126361152746757", 19, "%zo", (size_t) 0x123456789abcdefULL);
+    T("zu max", "18446744073709551615", 20, "%zu", (size_t) -1);
+    T("zd negative", "-81985529216486895", 18, "%zd", (ptrdiff_t) -0x123456789abcdefLL);
+    T("tx 64-bit", "123456789abcdef", 15, "%tx", (ptrdiff_t) 0x123456789abcdefLL);
+    T("tX 64-bit", "123456789ABCDEF", 15, "%tX", (ptrdiff_t) 0x123456789abcdefLL);
+    T("to 64-bit", "4432126361152746757", 19, "%to", (ptrdiff_t) 0x123456789abcdefLL);
+    T("tu 64-bit", "81985529216486895", 17, "%tu", (ptrdiff_t) 0x123456789abcdefLL);
+    T("tx all ones", "ffffffffffffffff", 16, "%tx", (size_t) -1);
+    T("td min", "-9223372036854775808", 20, "%td", (ptrdiff_t) INT64_MIN);
+    T("#zx width", "  0x123456789abcdef", 19, "%#19zx", (size_t) 0x123456789abcdefULL);
+}
+
+/* ── '#' with a zero value and with precision ────────────────────────────── */
+static void test_alt_form(void)
+{
+    section("# with precision");
+    T("x hash prec 0 zero", "", 0, "%#.0x", 0);
+    T("X hash prec 0 zero", "", 0, "%#.0X", 0);
+    T("x hash prec 0 zero width", "   |", 4, "%#3.0x|", 0);
+    T("o hash prec 0 zero", "0", 1, "%#.0o", 0);
+    T("o hash prec adds no 0", "00010", 5, "%#.5o", 8);
+    T("o hash short prec", "010", 3, "%#.2o", 8);
+}
+
+/* ── %n length modifiers ─────────────────────────────────────────────────── */
+static void test_n_modifiers(void)
+{
+    section("%n length modifiers");
+    /* Each store must write exactly the named object type: 3 into its low
+     * bytes and nothing beyond it. */
+    union {
+        signed char hh;
+        short h;
+        int i;
+        long l;
+        long long ll;
+        ptrdiff_t t;
+        uint64_t raw;
+    } v;
+    char got[8];
+
+    v.raw = 0xEEEEEEEEEEEEEEEEULL;
+    snprintf(got, sizeof(got), "abc%hhn", &v.hh);
+    check_bool("%hhn writes one byte", v.raw == 0xEEEEEEEEEEEEEE03ULL);
+    v.raw = 0xEEEEEEEEEEEEEEEEULL;
+    snprintf(got, sizeof(got), "abc%hn", &v.h);
+    check_bool("%hn writes two bytes", v.raw == 0xEEEEEEEEEEEE0003ULL);
+    v.raw = 0xEEEEEEEEEEEEEEEEULL;
+    snprintf(got, sizeof(got), "abc%n", &v.i);
+    check_bool("%n writes four bytes", v.raw == 0xEEEEEEEE00000003ULL);
+    v.raw = 0xEEEEEEEEEEEEEEEEULL;
+    snprintf(got, sizeof(got), "abc%ln", &v.l);
+    check_bool("%ln writes eight bytes", v.raw == 3U);
+    v.raw = 0xEEEEEEEEEEEEEEEEULL;
+    snprintf(got, sizeof(got), "abc%lln", &v.ll);
+    check_bool("%lln writes eight bytes", v.raw == 3U);
+    v.raw = 0xEEEEEEEEEEEEEEEEULL;
+    snprintf(got, sizeof(got), "abc%zn", &v.t);
+    check_bool("%zn writes eight bytes", v.raw == 3U);
+    v.raw = 0xEEEEEEEEEEEEEEEEULL;
+    snprintf(got, sizeof(got), "abc%tn", &v.t);
+    check_bool("%tn writes eight bytes", v.raw == 3U);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * main
  * ══════════════════════════════════════════════════════════════════════════ */
@@ -816,6 +886,9 @@ int main(void)
     test_star();
     test_n();
     test_regression();
+    test_size_modifiers();
+    test_alt_form();
+    test_n_modifiers();
 
     uart_puts("\n==========================\n");
     uart_puts("Results: ");

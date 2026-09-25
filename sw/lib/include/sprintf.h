@@ -31,15 +31,14 @@
  *   %c        character
  *   %s        NUL-terminated string
  *   %p        pointer (0x…)
- *   %n        store the count written so far (int *; length modifiers ignored)
+ *   %n        store the count written so far (int *, or the type a length
+ *             modifier names)
  *   %%        literal '%'
  *
  * Flags:   - + space 0 #
  * Width:   decimal integer or *
  * Precision: .decimal integer or .*
- * Length modifiers: h  hh  l  ll  z  t
- *   z works only with d, i, and u, and t only with d and i. With the other
- *   integer conversions they read just the low 32 bits of the argument.
+ * Length modifiers: h  hh  l  ll  z  t, with every integer conversion and %n
  */
 
 #include <stdarg.h>

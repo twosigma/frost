@@ -24,8 +24,7 @@
  * Supported: %d %i %u %o %x %X %f %F %e %E %g %G %c %s %p %n %%
  * Flags:     - + space 0 #
  * Width / precision: literal or *
- * Length modifiers:  hh h l ll, plus z with d i u and t with d i
- *                    (%zo %zx %zX %to %tx %tX %tu read an unsigned int)
+ * Length modifiers:  hh h l ll z t
  */
 
 #include <limits.h>
@@ -35,6 +34,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+/* z and t read size_t and ptrdiff_t as each other's unsigned and signed forms. */
+_Static_assert(sizeof(size_t) == sizeof(ptrdiff_t), "size_t and ptrdiff_t differ in width");
 
 /* ── Output context ────────────────────────────────────────────────────── */
 
@@ -443,9 +445,9 @@ static void emit_int(OutCtx *c,
                      int prec)
 {
     /* C99: a zero value with precision 0 prints no digits, only the padding and,
-     * for a signed conversion, a '+' or ' ' flag. '#' is excluded because %#.0o
-     * must still print "0". */
-    if (prec == 0 && uv == 0 && !fh) {
+     * for a signed conversion, a '+' or ' ' flag. %#.0o is the exception: it
+     * prints "0". */
+    if (prec == 0 && uv == 0 && !(fh && base == 8)) {
         char sc = 0;
         if (sgnd) {
             if (neg)
@@ -469,7 +471,9 @@ static void emit_int(OutCtx *c,
     char ib[IBUF];
     size_t dl;
     const char *digs = u64str(uv, base, up, ib, &dl);
+    size_t pp = (prec > 0 && dl < (size_t) prec) ? (size_t) prec - dl : 0;
 
+    /* '#' with o adds a leading 0 only when the precision has not already. */
     char pfx[3];
     int pl = 0;
     if (sgnd) {
@@ -480,7 +484,7 @@ static void emit_int(OutCtx *c,
         else if (fsp)
             pfx[pl++] = ' ';
     } else if (fh && uv != 0) {
-        if (base == 8)
+        if (base == 8 && pp == 0)
             pfx[pl++] = '0';
         else if (base == 16) {
             pfx[pl++] = '0';
@@ -488,7 +492,6 @@ static void emit_int(OutCtx *c,
         }
     }
 
-    size_t pp = (prec > 0 && dl < (size_t) prec) ? (size_t) prec - dl : 0;
     size_t nl = (size_t) pl + pp + dl;
     size_t pad = (w > 0 && (size_t) w > nl) ? (size_t) w - nl : 0;
     bool dozp = zp && prec < 0 && !lj;
@@ -715,7 +718,10 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                 emit_int(&ctx, uv, true, neg, 10, false, fm, fp, fsp, fz, fh, w, prec);
                 break;
             }
-            case 'u': {
+            case 'u':
+            case 'o':
+            case 'x':
+            case 'X': {
                 uint64_t uv;
                 switch (lm) {
                     case LM_HH:
@@ -731,59 +737,15 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                         uv = (unsigned long long) va_arg(ap, unsigned long long);
                         break;
                     case LM_Z:
+                    case LM_T:
                         uv = (size_t) va_arg(ap, size_t);
                         break;
                     default:
                         uv = (unsigned) va_arg(ap, unsigned);
                         break;
                 }
-                emit_int(&ctx, uv, false, false, 10, false, fm, fp, fsp, fz, fh, w, prec);
-                break;
-            }
-            case 'o': {
-                uint64_t uv;
-                switch (lm) {
-                    case LM_HH:
-                        uv = (unsigned char) va_arg(ap, unsigned);
-                        break;
-                    case LM_H:
-                        uv = (unsigned short) va_arg(ap, unsigned);
-                        break;
-                    case LM_L:
-                        uv = (unsigned long) va_arg(ap, unsigned long);
-                        break;
-                    case LM_LL:
-                        uv = (unsigned long long) va_arg(ap, unsigned long long);
-                        break;
-                    default:
-                        uv = (unsigned) va_arg(ap, unsigned);
-                        break;
-                }
-                emit_int(&ctx, uv, false, false, 8, false, fm, fp, fsp, fz, fh, w, prec);
-                break;
-            }
-            case 'x':
-            case 'X': {
-                bool up = (*p == 'X');
-                uint64_t uv;
-                switch (lm) {
-                    case LM_HH:
-                        uv = (unsigned char) va_arg(ap, unsigned);
-                        break;
-                    case LM_H:
-                        uv = (unsigned short) va_arg(ap, unsigned);
-                        break;
-                    case LM_L:
-                        uv = (unsigned long) va_arg(ap, unsigned long);
-                        break;
-                    case LM_LL:
-                        uv = (unsigned long long) va_arg(ap, unsigned long long);
-                        break;
-                    default:
-                        uv = (unsigned) va_arg(ap, unsigned);
-                        break;
-                }
-                emit_int(&ctx, uv, false, false, 16, up, fm, fp, fsp, fz, fh, w, prec);
+                unsigned base = (*p == 'u') ? 10U : (*p == 'o') ? 8U : 16U;
+                emit_int(&ctx, uv, false, false, base, *p == 'X', fm, fp, fsp, fz, fh, w, prec);
                 break;
             }
             case 'f':
@@ -799,9 +761,47 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
                 do_g(&ctx, va_arg(ap, double), prec, fp, fsp, fh, w, fm, fz, *p == 'G');
                 break;
             case 'n': {
-                int *np = va_arg(ap, int *);
-                if (np)
-                    *np = (int) ctx.pos;
+                /* The count goes into the object type the length modifier names. */
+                size_t n = ctx.pos;
+                switch (lm) {
+                    case LM_HH: {
+                        signed char *np = va_arg(ap, signed char *);
+                        if (np)
+                            *np = (signed char) n;
+                        break;
+                    }
+                    case LM_H: {
+                        short *np = va_arg(ap, short *);
+                        if (np)
+                            *np = (short) n;
+                        break;
+                    }
+                    case LM_L: {
+                        long *np = va_arg(ap, long *);
+                        if (np)
+                            *np = (long) n;
+                        break;
+                    }
+                    case LM_LL: {
+                        long long *np = va_arg(ap, long long *);
+                        if (np)
+                            *np = (long long) n;
+                        break;
+                    }
+                    case LM_Z:
+                    case LM_T: {
+                        ptrdiff_t *np = va_arg(ap, ptrdiff_t *);
+                        if (np)
+                            *np = (ptrdiff_t) n;
+                        break;
+                    }
+                    default: {
+                        int *np = va_arg(ap, int *);
+                        if (np)
+                            *np = (int) n;
+                        break;
+                    }
+                }
                 break;
             }
             default:

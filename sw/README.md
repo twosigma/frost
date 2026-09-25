@@ -189,9 +189,7 @@ Library limits:
   capped at 9, and finite magnitudes of 2^64 or more print as `ovf` or `-ovf`.
 - `snprintf` supports integer, floating-point, string, character, and pointer
   conversions, the standard flags, `*` width and precision, and the
-  `hh`/`h`/`l`/`ll` modifiers. `z` works only with `d`, `i`, and `u`, and `t`
-  only with `d` and `i`; `%zx`, `%zo`, `%tx`, `%to`, and `%tu` read just the
-  low 32 bits of the argument. If the full output would be longer than
+  `hh`/`h`/`l`/`ll`/`z`/`t` modifiers. If the full output would be longer than
   `INT_MAX`, `snprintf` returns -1 and still terminates a nonempty buffer.
 - `strtol` accepts base 0 or 2 to 36 and saturates on overflow. An invalid
   base or a string with no digits returns 0 and sets `endptr` to the input.
