@@ -119,6 +119,13 @@ ALL_FP_OPS = FP_OPS_TO_FP_REG | FP_OPS_TO_INT_REG | FP_OPS_NO_WRITE
 _RANDOM_MEMORY_OPS = LOADS | STORES | FP_LOADS | FP_STORES | AMO | AMO_LR_SC
 """Operations that access data memory, which assert_random_memory_access_in_ram checks."""
 
+_RANDOM_CSR_OPS = ("csrrs", "csrrc", "csrrsi", "csrrci")
+"""CSR forms in the random pool: with rs1=x0 or zimm=0 they read without writing.
+
+csrrw and csrrwi always write, and a write to the read-only INSTRET raises
+illegal-instruction, so the random stream leaves them out.
+"""
+
 
 # Grouped FP op tables by encoder signature for encode_instruction()
 _FP_ENCODE_RD_RS1_RS2 = {**FP_ARITH_2OP, **FP_SGNJ, **FP_MINMAX, **FP_CMP}
@@ -312,9 +319,9 @@ class InstructionGenerator:
             List of operation mnemonics (e.g., ['add', 'sub', 'lw', ...])
 
         Note:
-            The CSR instructions target INSTRET, the only counter in
-            ZICNTR_CSRS. The test framework tracks it in software to check
-            the value read back.
+            The CSR instructions are the read forms in _RANDOM_CSR_OPS and
+            target INSTRET, the only counter in ZICNTR_CSRS. The test
+            framework tracks it in software to check the value read back.
         """
         return (
             list(R_ALU.keys())
@@ -325,7 +332,7 @@ class InstructionGenerator:
             + list(BRANCHES.keys())
             + list(JUMPS.keys())
             + list(FENCES.keys())
-            + list(CSRS.keys())
+            + list(_RANDOM_CSR_OPS)
             + list(AMO.keys())
             # LR.W/SC.W are left to directed tests: whether an SC.W succeeds
             # depends on the preceding LR.W and on everything issued between
@@ -541,9 +548,7 @@ class InstructionGenerator:
         csr_address = None
         if operation in CSRS:
             csr_address = random.choice(ZICNTR_CSRS)
-            # rs1=x0 or zimm=0 makes csrrs, csrrc, csrrsi, and csrrci pure
-            # reads. csrrw and csrrwi still write, which is an illegal
-            # instruction on the read-only INSTRET.
+            # rs1=x0 or zimm=0 makes the forms in _RANDOM_CSR_OPS pure reads.
             source_register_1 = 0  # rs1=x0 for the register forms
             immediate_value = 0  # zimm=0 for the immediate forms
 

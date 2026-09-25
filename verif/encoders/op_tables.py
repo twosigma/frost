@@ -460,10 +460,10 @@ FENCES: dict[str, Callable] = {
 }
 
 # Zicsr read/modify/write instructions. Each writes the old CSR value into rd.
-# The encoder takes (rd, csr_address, rs1_or_zimm). The random stream targets
-# only ZICNTR_CSRS and passes rs1=x0 or zimm=0, which makes csrrs, csrrc, csrrsi,
-# and csrrci pure reads. csrrw and csrrwi still write, and a write to a
-# read-only counter raises illegal-instruction.
+# The encoder takes (rd, csr_address, rs1_or_zimm). csrrw and csrrwi always
+# write, and a write to a read-only counter raises illegal-instruction, so the
+# random stream draws only csrrs, csrrc, csrrsi, and csrrci, targets only
+# ZICNTR_CSRS, and passes rs1=x0 or zimm=0, which makes them pure reads.
 CSRS: dict[str, Callable] = {
     "csrrw": enc_csrrw,
     "csrrs": enc_csrrs,
