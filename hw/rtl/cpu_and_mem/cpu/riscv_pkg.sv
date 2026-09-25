@@ -26,9 +26,9 @@
  *   Section 5: Instruction Format (instr_t), XLEN, memory map, PMA, Sv39, constants
  *   Section 6: Pipeline Control (pipeline_ctrl_t)
  *   Section 7: Inter-Stage Data Structures (from_*_to_*_t)
- *   Section 9: Trap/Exception Handling
- *   Section 10: Bit Manipulation Helper Functions (clz, ctz, cpop), multiplier depth
- *   Section 11: Tomasulo OOO Execution (Reorder Buffer, RS, LQ, SQ, CDB, RAT)
+ *   Section 8: Trap/Exception Handling
+ *   Section 9: Bit Manipulation Helper Functions (clz, ctz, cpop), multiplier depth
+ *   Section 10: Tomasulo OOO Execution (Reorder Buffer, RS, LQ, SQ, CDB, RAT)
  *
  * Supported Extensions:
  * =====================
@@ -1952,7 +1952,7 @@ package riscv_pkg;
   } from_ex_comb_t;
 
   // ===========================================================================
-  // Section 9: Trap/Exception Handling
+  // Section 8: Trap/Exception Handling
   // ===========================================================================
   // Trap-control structures for M/S/U-mode exception and interrupt handling.
   // Trap and xRET redirect to IF (the trap unit's outputs, registered in
@@ -1971,7 +1971,7 @@ package riscv_pkg;
   } interrupt_t;
 
   // ===========================================================================
-  // Section 10: Bit Manipulation Helper Functions (Zbb Extension)
+  // Section 9: Bit Manipulation Helper Functions (Zbb Extension)
   // ===========================================================================
   // Bit manipulation helpers structured for FPGA timing:
   //   - CLZ, CTZ, CPOP (Zbb): tree-based parallel counting
@@ -2152,7 +2152,7 @@ package riscv_pkg;
   endfunction
 
   // ===========================================================================
-  // Section 11: Tomasulo Out-of-Order Execution Structures
+  // Section 10: Tomasulo Out-of-Order Execution Structures
   // ===========================================================================
   // Parameters, types, and data structures for the Tomasulo OOO execution engine.
   // Includes Reorder Buffer, Reservation Stations, Load/Store Queues, CDB, RAT.
