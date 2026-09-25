@@ -699,6 +699,81 @@ source $actual_script
     assert ("FROST_PROGRAM_COMPLETE" in result.stdout) is not failure
 
 
+@pytest.mark.parametrize("failure", [False, True])
+def test_tcl_fetch_ila_capture_cleanup(tmp_path: Path, failure: bool) -> None:
+    """capture_fetch_ila.tcl writes the CSV and closes its session, pass or fail.
+
+    Stub Vivado commands stand in for the hardware manager and the ILA. Only
+    commands Vivado has are stubbed, so a call to any other one fails.
+    """
+    csv = tmp_path / "fetch_ila.csv"
+    harness = tmp_path / "mock-ila.tcl"
+    harness.write_text("""
+set actual_script [lindex $argv 0]
+set argv [lrange $argv 1 end]
+set argc [llength $argv]
+proc open_hw_manager {} {puts OPEN_MANAGER}
+proc connect_hw_server {args} {puts "CONNECT:$args"}
+proc get_hw_targets {} {return {localhost:3219/xilinx_tcf/Xilinx/cable-1}}
+proc current_hw_target {target} {puts "TARGET:$target"}
+proc open_hw_target {} {puts OPEN_TARGET}
+proc get_hw_devices {} {return device0}
+proc current_hw_device {args} {return device0}
+proc set_property {args} {}
+proc refresh_hw_device {args} {}
+proc get_hw_ilas {args} {return ila0}
+proc get_hw_probes {args} {
+    if {[lsearch -exact $args -filter] >= 0} {return probe0}
+    return {probe0 probe1}
+}
+proc get_property {key object} {return $object}
+proc report_property {args} {return "STATUS idle"}
+proc run_hw_ila {ila} {puts "ARM:$ila"}
+proc wait_on_hw_ila {args} {}
+proc upload_hw_ila_data {ila} {
+    if {$::env(TEST_UPLOAD_FAIL)} {error "injected upload failure"}
+    return data0
+}
+proc write_hw_ila_data {args} {
+    set fd [open [lindex $args end-1] w]
+    puts $fd sample
+    close $fd
+}
+proc close_hw_target {} {puts CLOSE_TARGET}
+proc disconnect_hw_server {} {puts DISCONNECT_SERVER}
+proc close_hw_manager {} {puts CLOSE_MANAGER}
+source $actual_script
+""")
+    env = os.environ.copy()
+    env["TEST_UPLOAD_FAIL"] = str(int(failure))
+    result = subprocess.run(
+        [
+            "tclsh",
+            str(harness),
+            str(ROOT / "fpga/debug/capture_fetch_ila.tcl"),
+            TARGET,
+            str(tmp_path / "x3_frost.ltx"),
+            str(csv),
+            "*fault",
+            "*pc*",
+            "eq16'hX5E4",
+            "3072",
+            "1",
+            "192.0.2.7",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=10,
+    )
+    assert result.returncode == int(failure), result.stderr
+    assert "CONNECT:-url 192.0.2.7:3121" in result.stdout
+    assert "ARM:ila0" in result.stdout
+    assert result.stdout.endswith("CLOSE_TARGET\nDISCONNECT_SERVER\nCLOSE_MANAGER\n")
+    assert csv.exists() is not failure
+    assert ("injected upload failure" in result.stderr) is failure
+
+
 @pytest.mark.parametrize("app", [*loader.VALID_APPS, "unregistered_app"])
 def test_tcl_loader_app_preflight_never_opens_manager(tmp_path: Path, app: str) -> None:
     """load_software.tcl accepts every app in VALID_APPS and rejects others.
