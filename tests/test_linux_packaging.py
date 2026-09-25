@@ -1110,7 +1110,7 @@ def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
 
     result = _make_linux_boot(app)
     assert result.returncode != 0
-    assert "still built a" in result.stdout
+    assert "is configured to build a kernel" in result.stdout
     assert "make -C sw/apps/linux_boot distclean" in result.stdout
     assert "BUILDROOT_INVOKED" not in result.stdout
     assert not (app / "sw_ddr.mem").exists()
