@@ -29,16 +29,18 @@ Test cases:
     6. LR.W to one word, SC.W to the other word of the same doubleword:
        succeeds, because FROST reserves the aligned doubleword
 
-LR.W loads a word and reserves the doubleword that holds it. SC.W stores rs2
-and writes 0 to rd only if the reservation covers its address; otherwise it
-writes 1 and does not store. Either way it clears the reservation.
+LR.W loads a word, sign-extended to XLEN, and reserves the doubleword that
+holds it. SC.W stores rs2 and writes 0 to rd only if the reservation covers
+its address; otherwise it writes 1 and does not store. Either way it clears
+the reservation.
 
 The core writes an instruction's destination register at ROB commit and its
 store after commit, both a variable number of cycles after the harness feeds
 it. LR and SC resolve only at the ROB head. Register checks therefore wait for
 the commit on the registered ROB commit bus (wait_for_int_reg_commit), and
 store checks wait for the memory monitor to see the write
-(wait_for_memory_writes).
+(wait_for_memory_writes). The monitor does not compare byte strobes, so each
+store is also read back from the DUT memory (check_memory_dword).
 
 Usage: ``./scripts/frost.py cocotb directed_atomics``.
 """
@@ -48,9 +50,11 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge
 from typing import Any
 
-from config import MASK32
-from models.memory_model import MemoryModel
+from config import MASK32, MASK_XLEN
+from models.alu_model import lw
+from models.memory_model import MemoryModel, peek_dut_memory_word
 from utils.memory_utils import replicate_store_data_for_beat
+from utils.riscv_utils import sign_extend
 from cocotb_tests.test_helpers import DUTInterface
 from cocotb_tests.test_state import TestState
 from cocotb_tests.test_common import (
@@ -81,6 +85,42 @@ async def wait_for_memory_writes(
         await execute_nop(dut_if, state)
 
 
+def check_int_register(
+    dut_if: DUTInterface, state: TestState, reg: int, what: str
+) -> None:
+    """Check that the DUT's committed x<reg> equals the model's value.
+
+    Call it only after the instruction that writes x<reg> has committed and
+    no younger instruction that writes x<reg> is in flight.
+    """
+    actual = dut_if.read_register(reg)
+    expected = state.register_file_current[reg]
+    assert actual == expected, (
+        f"{what}: x{reg} = 0x{actual:016X}, the model has 0x{expected:016X}"
+    )
+    cocotb.log.info(f"{what}: x{reg} = 0x{actual:016X}")
+
+
+def check_memory_dword(
+    dut: Any, mem_model: MemoryModel, address: int, what: str
+) -> None:
+    """Check both words of the doubleword holding address against the model.
+
+    The memory monitor compares each store's address and beat data but not
+    its byte strobes, and a word store replicates its data across the beat,
+    so only a readback shows which word of the doubleword a store wrote.
+    """
+    dword_address = address & ~0x7
+    for word_address in (dword_address, dword_address + 4):
+        actual = peek_dut_memory_word(dut, word_address)
+        expected = mem_model.read_word(word_address)
+        assert actual == expected, (
+            f"{what}: memory word at 0x{word_address:08X} = 0x{actual:08X}, "
+            f"the model has 0x{expected:08X}"
+        )
+    cocotb.log.info(f"{what}: doubleword at 0x{dword_address:08X} matches the model")
+
+
 async def execute_lr_sc_instruction(
     dut_if: DUTInterface,
     state: TestState,
@@ -102,8 +142,9 @@ async def execute_lr_sc_instruction(
         rd: Destination register
         rs1: Address register
         rs2: Data register (for SC.W, ignored for LR.W)
-        expected_rd_value: Value the LR.W loads into rd, or the SC.W result
-            (0 success, 1 failure), which must match the model's
+        expected_rd_value: The word the LR.W loads (rd gets it sign-extended
+            to XLEN), or the SC.W result (0 success, 1 failure); either must
+            match the model's
         expected_sc_success: Expected SC.W outcome, which must match the
             model's reservation check (None for LR.W)
 
@@ -126,13 +167,17 @@ async def execute_lr_sc_instruction(
 
     if operation == "lr.w":
         assert expected_sc_success is None, "expected_sc_success applies to SC.W only"
-        # LR.W: load from memory, set reservation
+        # LR.W: load the word sign-extended to XLEN, set the reservation
         mem_model.read_address = address
         state.set_reservation(address)
-        writeback_value = expected_rd_value
+        writeback_value = lw(mem_model, address)
+        assert writeback_value == sign_extend(expected_rd_value, 32) & MASK_XLEN, (
+            f"LR.W x{rd} at 0x{address:08X}: the model loads "
+            f"0x{writeback_value:016X}, the test expects 0x{expected_rd_value:08X}"
+        )
         cocotb.log.info(
             f"LR.W x{rd}, (x{rs1}): addr=0x{address:08X}, "
-            f"loaded=0x{writeback_value:08X}, reservation set, queue_before={queue_len}, "
+            f"loaded=0x{writeback_value:016X}, reservation set, queue_before={queue_len}, "
             f"instr=0x{instr:08X}"
         )
     else:
@@ -174,12 +219,12 @@ async def execute_lr_sc_instruction(
         state.last_sc_data = state.register_file_previous[rs2]
 
     if rd != 0:
-        state.register_file_current[rd] = writeback_value & MASK32
+        state.register_file_current[rd] = writeback_value & MASK_XLEN
 
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
     )
-    expected_pc = (state.program_counter_current + 4) & MASK32
+    expected_pc = (state.program_counter_current + 4) & MASK_XLEN
     state.program_counter_expected_values_queue.append(expected_pc)
 
     dut_if.instruction = instr
@@ -219,7 +264,7 @@ async def execute_store(
     enc_sw = STORES["sw"]
     instr = enc_sw(rs2, rs1, imm)
 
-    address = (state.register_file_previous[rs1] + imm) & MASK32
+    address = (state.register_file_previous[rs1] + imm) & MASK_XLEN
     write_data = state.register_file_previous[rs2] & MASK32
 
     # Queue expected memory write (word data rides the beat replicated)
@@ -238,7 +283,7 @@ async def execute_store(
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
     )
-    expected_pc = (state.program_counter_current + 4) & MASK32
+    expected_pc = (state.program_counter_current + 4) & MASK_XLEN
     state.program_counter_expected_values_queue.append(expected_pc)
 
     dut_if.instruction = instr
@@ -342,21 +387,8 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     cocotb.log.info("=== Waiting for stores to complete ===")
     await wait_for_memory_writes(dut_if, state, "init stores to reach memory")
 
-    # Peek the DUT memory after the stores. The simulation data BRAM stores
-    # 64-bit dword rows, and the helper extracts the word lane.
-    from models.memory_model import peek_dut_memory_word
-
-    try:
-        mem_val_1 = peek_dut_memory_word(dut, test_address_1)
-        mem_val_2 = peek_dut_memory_word(dut, test_address_2)
-        cocotb.log.info(
-            f"DEBUG: DUT memory word at 0x{test_address_1:08X} = 0x{mem_val_1:08X}"
-        )
-        cocotb.log.info(
-            f"DEBUG: DUT memory word at 0x{test_address_2:08X} = 0x{mem_val_2:08X}"
-        )
-    except Exception as e:
-        cocotb.log.warning(f"DEBUG: Could not read DUT memory: {e}")
+    check_memory_dword(dut, mem_model, test_address_1, "Init store to addr1")
+    check_memory_dword(dut, mem_model, test_address_2, "Init store to addr2")
 
     # ========================================================================
     # Test Case 1: LR.W + SC.W Success (same address)
@@ -419,6 +451,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     await wait_for_memory_writes(
         dut_if, state, "Test Case 1 SC.W store to reach memory"
     )
+    check_memory_dword(dut, mem_model, test_address_1, "Test Case 1 SC.W store")
 
     # ========================================================================
     # Test Case 2: SC.W without LR.W (should fail)
@@ -489,6 +522,8 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         f"SC.W Test Case 3 failed: x9 = {x9_value}, expected 1 (failure)"
     )
     cocotb.log.info(f"SC.W x9 = {x9_value} (failed due to address mismatch)")
+    # LR.W sign-extends the loaded word into the 64-bit rd.
+    check_int_register(dut_if, state, 8, "Test Case 3 LR.W")
 
     # ========================================================================
     # Test Case 4: Back-to-back LR.W/SC.W
@@ -535,6 +570,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     await wait_for_memory_writes(
         dut_if, state, "Test Case 4 SC.W store to reach memory"
     )
+    check_memory_dword(dut, mem_model, test_address_2, "Test Case 4 SC.W store")
 
     # ========================================================================
     # Test Case 5: LR.W + intervening NOPs + SC.W (reservation persists)
@@ -580,17 +616,25 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         f"SC.W Test Case 5 failed: x16 = {x16_value}, expected 0 (success)"
     )
     cocotb.log.info(f"SC.W x16 = {x16_value} (success after NOPs)")
+    check_int_register(dut_if, state, 15, "Test Case 5 LR.W")
 
     # Wait for the successful SC.W's store to test_address_1 to drain.
     await wait_for_memory_writes(
         dut_if, state, "Test Case 5 SC.W store to reach memory"
     )
+    check_memory_dword(dut, mem_model, test_address_1, "Test Case 5 SC.W store")
 
     # ========================================================================
     # Test Case 6: LR.W and SC.W to different words of one doubleword
     # ========================================================================
     # The reservation covers the aligned doubleword (sc_pending_unit compares
     # addr[XLEN-1:3]), so the SC.W to the LR.W's neighboring word succeeds.
+    # It stores test_value_1, which neither word of the doubleword holds, so
+    # the readback below shows that it wrote the upper word and only that.
+    assert test_value_1 not in (
+        mem_model.read_word(test_address_1),
+        mem_model.read_word(test_address_1 + 4),
+    ), "Test Case 6 needs SC.W data that differs from both words it could hit"
     cocotb.log.info(
         "=== Test Case 6: LR.W addr1, SC.W addr1+4 (same doubleword, should "
         "succeed) ==="
@@ -609,7 +653,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         expected_sc_success=None,
     )
 
-    # SC.W x18, x12, (x22) - store to test_address_1 + 4
+    # SC.W x18, x20, (x22) - store test_value_1 to test_address_1 + 4
     await execute_lr_sc_instruction(
         dut_if,
         state,
@@ -617,7 +661,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         operation="sc.w",
         rd=18,
         rs1=22,
-        rs2=12,
+        rs2=20,
         expected_rd_value=0,  # 0 = success
         expected_sc_success=True,
     )
@@ -631,10 +675,12 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         "within the reserved doubleword)"
     )
     cocotb.log.info(f"SC.W x18 = {x18_value} (success in the reserved doubleword)")
+    check_int_register(dut_if, state, 17, "Test Case 6 LR.W")
 
     await wait_for_memory_writes(
         dut_if, state, "Test Case 6 SC.W store to reach memory"
     )
+    check_memory_dword(dut, mem_model, test_address_1, "Test Case 6 SC.W store")
 
     # ========================================================================
     # Cleanup: Flush pipeline with NOPs
