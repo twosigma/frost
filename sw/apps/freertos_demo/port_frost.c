@@ -23,6 +23,7 @@
 #include "FreeRTOS.h"
 #include "mmio.h"
 #include "task.h"
+#include "trap.h"
 #include <stdint.h>
 
 /* Critical-section nesting depth. Not static: port_frost_asm.S saves and restores it as
@@ -86,11 +87,9 @@ void vPortYieldWithinAPI(void)
  * can be taken before a task context is loaded. */
 static void prvSetupTimerInterrupt(void)
 {
-    uint32_t low = MTIME_LO;
-    uint32_t high = MTIME_HI;
-    uint64_t ullCurrentTime = ((uint64_t) high << 32) | low;
-
-    ullNextTime = ullCurrentTime + ullTimerIncrementForOneTick;
+    /* rdmtime rereads the high word, so a carry out of the low word between its two 32-bit
+     * reads cannot put the first tick about 2^32 cycles late. */
+    ullNextTime = rdmtime() + ullTimerIncrementForOneTick;
 
     /* Park the high word at all-ones first so no intermediate 64-bit compare value lies
      * below mtime and fires early. */
