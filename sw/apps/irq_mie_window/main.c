@@ -19,8 +19,7 @@
  *
  * An interrupt that becomes eligible at the boundary after
  * `csrsi mstatus, 8` must be taken even though the next instruction,
- * `csrci mstatus, 8`, clears MIE again. Rechecking the live MIE after the
- * interrupt became eligible would drop it (lost Linux timer ticks).
+ * `csrci mstatus, 8`, clears MIE again.
  *
  * Hold mtip pending with mtimecmp=0 and mie.MTIE=1, then pulse mstatus.MIE for
  * one instruction. A correct core traps on the first pulse; PASS requires

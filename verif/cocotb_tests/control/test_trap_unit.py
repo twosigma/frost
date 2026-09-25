@@ -103,13 +103,13 @@ async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
 
     await RisingEdge(dut.i_clk)
     await Timer(1, unit="ns")
-    # The latch held the timer interrupt across the MRET inhibit, so no tick is
-    # lost: it is eligible as soon as the inhibit lifts (in U-mode a machine
-    # interrupt is enabled regardless of mstatus.MIE). In the full core,
-    # cpu_ooo seeds interrupt_resume_pc with the MRET target when the MRET is
-    # taken, so this take saves that target as mepc. The eligible cycle arms
-    # the take and raises o_trap_drain_wait to hold commit; the trap is taken
-    # one cycle later.
+    # The latch held the timer interrupt across the MRET inhibit, so it is
+    # eligible as soon as the inhibit lifts, a cycle before a re-latch would
+    # be (in U-mode a machine interrupt is enabled regardless of
+    # mstatus.MIE). In the full core, cpu_ooo seeds interrupt_resume_pc with
+    # the MRET target when the MRET is taken, so this take saves that target
+    # as mepc. The eligible cycle arms the take and raises o_trap_drain_wait
+    # to hold commit; the trap is taken one cycle later.
     assert int(dut.o_trap_taken.value) == 0
     assert int(dut.o_trap_drain_wait.value) == 1
 
@@ -237,9 +237,9 @@ async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
     assert int(dut.o_trap_taken.value) == 0
 
     # The latch holds the timer interrupt across the MIE-low window, so it is
-    # eligible on the cycle MIE is restored; clearing the latch instead could
-    # lose the tick when MIE is high only briefly. Taking it still requires the
-    # live mstatus.MIE (m_int_globally_enabled).
+    # eligible on the cycle MIE is restored, a cycle before a re-latch would
+    # be. Taking it still requires the live mstatus.MIE
+    # (m_int_globally_enabled).
     dut.i_mstatus.value = MSTATUS_MIE
     dut.i_mstatus_mie_direct.value = 1
     await Timer(1, unit="ns")

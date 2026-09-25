@@ -26,8 +26,8 @@
  * device read at the ROB head could be repeated; see the port comments.
  *
  * Interrupt eligibility is evaluated per target class, never as one chain
- * over the raw pending bits. Anything destined for M is taken before
- * anything destined for S, and cause priority applies within a class:
+ * over the raw pending bits. When both classes are armed, the M-target take
+ * wins, and cause priority applies within a class:
  *   M-target (mideleg[i]=0, including all machine classes):
  *     pending && mie[i] && (priv < M || mstatus.MIE)
  *   S-target (mideleg[i]=1, supervisor classes only):
@@ -344,19 +344,19 @@ module trap_unit #(
   // this class, and not in the cycle after a trap (trap_taken_prev). It is
   // not gated by the live per-class global enable, nor by the xRET inhibit.
   //
-  // Once a class latch has been set (while fully eligible), a younger CSR
-  // clear of that class's global enable (M: the kernel idle
-  // `csrsi mstatus,MIE; ...; csrci`; S: the same shape on sstatus.SIE) must
-  // not retroactively erase it. The interrupt was eligible at an instruction
-  // boundary the CSR clear is younger than, so per the spec it is taken and
-  // the trap squashes the CSR clear. The latch is registered (one cycle
-  // late) and the eligible term re-checks the live global enable, so without
-  // a hold the CSR clear's delayed side effect lands in the sample-to-service
-  // gap and the interrupt is lost. The latch therefore holds across a
-  // global-enable drop. It still releases when the source itself de-qualifies
-  // (pending drops, mie.x is cleared, or delegation moves the source to the
-  // other class; the mideleg term keeps a moved source from being taken with
-  // the old class's CSRs) or when this class's trap is taken.
+  // A set latch is retained while any source of its class stays pending,
+  // enabled in mie, and aimed at the class, even while the class's global
+  // enable (xIE or the Debug Mode mask) is off or the xRET inhibit is up.
+  // The eligible term still requires the live enable and no inhibit, so a
+  // retained latch can neither trap nor request a commit hold while its
+  // class is masked. When the gates reopen with its cause still valid,
+  // arming starts a cycle earlier than re-latching would allow; that head
+  // start can also let a retained S request be taken ahead of an M request
+  // that became pending while the xRET inhibit was up. The latch clears when
+  // no source of the class is live (pending drops, mie.x is cleared, or
+  // mideleg moves the source to the other class, which keeps it from being
+  // taken with the old class's CSRs), on its own class's take, and after any
+  // trap (trap_taken_prev).
   logic m_int_source_live, s_int_source_live;
   assign m_int_source_live =
       ((i_interrupts.meip && mie_meie) || (i_interrupts.mtip && mie_mtie) ||
