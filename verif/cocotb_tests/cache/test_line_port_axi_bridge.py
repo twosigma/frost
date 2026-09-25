@@ -149,7 +149,7 @@ class _AxiSlave:
 
 
 class _ResponseLog:
-    """Record every line-port response pulse as (cycle, id)."""
+    """Record every line-port response pulse as (cycle, id, rdata)."""
 
     def __init__(self, dut: Any) -> None:
         self._dut = dut
