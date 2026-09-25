@@ -114,9 +114,6 @@ MASK64: Final[int] = (1 << 64) - 1
 # Alignment Requirements
 # ============================================================================
 
-BYTE_ALIGNMENT: Final[int] = 1
-"""Byte alignment requirement (always aligned)."""
-
 HALFWORD_ALIGNMENT: Final[int] = 2
 """Halfword alignment requirement (2-byte boundary)."""
 

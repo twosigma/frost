@@ -25,7 +25,6 @@ __all__ = [
     "sign_extend",
     "to_signed32",
     "to_unsigned32",
-    "to_signed33",
     "to_signed_xlen",
     "to_unsigned_xlen",
 ]
@@ -97,15 +96,3 @@ def to_unsigned32(val: int) -> int:
         Unsigned 32-bit integer (0 to 2^32-1)
     """
     return val & MASK32
-
-
-def to_signed33(val: int) -> int:
-    """Sign-extend a 32-bit value to a Python signed integer (same as to_signed32).
-
-    Args:
-        val: 32-bit value to sign-extend
-
-    Returns:
-        Python integer with correct sign (negative if bit 31 was set)
-    """
-    return sign_extend(val & MASK32, 32)

@@ -20,9 +20,8 @@ assert_equals also accepts caller context, such as the cycle and register, and
 logs cocotb.RANDOM_SEED before raising, because reproducing a failure from
 random stimulus needs the seed.
 
-HardwareAssertions layers the RISC-V bounds on top of the generic checks:
-register index in [0, 31], 12-bit immediate in [-2048, 2047], branch offset
-even and in [-4096, 4094].
+HardwareAssertions layers the RISC-V register-index bound [0, 31] on top of
+the generic range check.
 
 Example:
     >>> try:
@@ -79,29 +78,6 @@ def assert_in_range(
         )
 
 
-def assert_aligned(value: int, alignment: int, name: str = "value") -> None:
-    """Assert value is a multiple of alignment."""
-    if value % alignment != 0:
-        raise ValidationError(
-            f"{name} not aligned to {alignment}-byte boundary",
-            value=hex(value),
-            alignment=alignment,
-            misalignment=value % alignment,
-        )
-
-
-def assert_bit_width(value: int, bits: int, name: str = "value") -> None:
-    """Assert value is non-negative and fits in the given bit width."""
-    max_val = (1 << bits) - 1
-    if value < 0 or value > max_val:
-        raise ValidationError(
-            f"{name} exceeds {bits}-bit width",
-            value=hex(value),
-            bits=bits,
-            max_value=hex(max_val),
-        )
-
-
 class HardwareAssertions:
     """RISC-V bounds checks built on the generic assertions."""
 
@@ -109,14 +85,3 @@ class HardwareAssertions:
     def assert_register_valid(reg: int) -> None:
         """Assert the register index is in [0, 31]."""
         assert_in_range(reg, 0, 31, "register")
-
-    @staticmethod
-    def assert_immediate_12bit(imm: int) -> None:
-        """Assert immediate fits in 12 bits (signed)."""
-        assert_in_range(imm, -2048, 2047, "12-bit immediate")
-
-    @staticmethod
-    def assert_branch_offset(offset: int) -> None:
-        """Assert the branch offset is even and in [-4096, 4094]."""
-        assert_aligned(offset, 2, "branch offset")
-        assert_in_range(offset, -4096, 4094, "branch offset")

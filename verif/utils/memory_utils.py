@@ -12,92 +12,18 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Memory access and alignment helpers.
+"""Memory access helpers.
 
-Alignment checks and enforcement, the byte strobe and data replication a store
-needs on the 64-bit data-tier beat, and address/immediate constraints for
-random stimulus.
+The byte strobe and data replication a store needs on the 64-bit data-tier
+beat, and aligned immediates for random stimulus.
 """
 
 from config import (
-    BYTE_ALIGNMENT,
-    HALFWORD_ALIGNMENT,
-    WORD_ALIGNMENT,
     MASK32,
     MASK64,
     MASK_XLEN,
     MEMORY_BEAT_OFFSET_MASK,
 )
-from exceptions import AlignmentError
-
-
-def align_address(address: int, alignment: int) -> int:
-    """Align address down to specified boundary.
-
-    Args:
-        address: Address to align
-        alignment: Alignment in bytes; must be a power of two
-
-    Returns:
-        Address aligned down to the nearest alignment boundary
-
-    Examples:
-        >>> hex(align_address(0x1003, 4))  # Word align
-        '0x1000'
-        >>> hex(align_address(0x1003, 2))  # Halfword align
-        '0x1002'
-    """
-    return address & ~(alignment - 1)
-
-
-def is_aligned(address: int, alignment: int) -> bool:
-    """Check whether address is a multiple of alignment.
-
-    Args:
-        address: Address to check
-        alignment: Required alignment in bytes
-
-    Returns:
-        True if address meets alignment requirement, False otherwise
-
-    Examples:
-        >>> is_aligned(0x1000, 4)
-        True
-        >>> is_aligned(0x1002, 4)
-        False
-        >>> is_aligned(0x1002, 2)
-        True
-    """
-    return (address % alignment) == 0
-
-
-def ensure_aligned(address: int, alignment: int, operation: str) -> int:
-    """Return address if it is aligned; raise AlignmentError otherwise.
-
-    Args:
-        address: Address to validate
-        alignment: Required alignment in bytes
-        operation: Operation name for error message (e.g., "lw", "sh")
-
-    Returns:
-        The address, unchanged
-
-    Raises:
-        AlignmentError: If address doesn't meet alignment requirement
-
-    Examples:
-        >>> hex(ensure_aligned(0x1000, 4, "lw"))
-        '0x1000'
-        >>> ensure_aligned(0x1002, 4, "lw")  # doctest: +SKIP
-        Traceback: AlignmentError
-    """
-    if not is_aligned(address, alignment):
-        raise AlignmentError(
-            f"{operation} requires {alignment}-byte alignment, got address 0x{address:08x}",
-            address=address,
-            required_alignment=alignment,
-        )
-    return address
 
 
 def get_beat_byte_offset(address: int) -> int:
@@ -216,61 +142,6 @@ def replicate_store_data_for_beat(operation: str, value: int) -> int:
         raise ValueError(f"Unknown store operation: {operation}")
 
 
-def get_alignment_for_operation(operation: str) -> int:
-    """Get required alignment for a memory operation.
-
-    Args:
-        operation: Memory operation mnemonic (load or store)
-
-    Returns:
-        Required alignment in bytes (1, 2, or 4)
-
-    Raises:
-        ValueError: If operation is not recognized
-
-    Examples:
-        >>> get_alignment_for_operation("lw")
-        4
-        >>> get_alignment_for_operation("sh")
-        2
-        >>> get_alignment_for_operation("lb")
-        1
-    """
-    if operation in ("lw", "sw"):
-        return WORD_ALIGNMENT
-    elif operation in ("lh", "lhu", "sh"):
-        return HALFWORD_ALIGNMENT
-    elif operation in ("lb", "lbu", "sb"):
-        return BYTE_ALIGNMENT
-    else:
-        raise ValueError(f"Unknown memory operation: {operation}")
-
-
-def constrain_address_to_range(
-    address: int, max_address: int, alignment: int = 1
-) -> int:
-    """Constrain address to valid range and alignment.
-
-    The address wraps modulo ``max_address``, then aligns down.
-
-    Args:
-        address: Original address
-        max_address: Maximum valid address (exclusive)
-        alignment: Required alignment in bytes (default: 1)
-
-    Returns:
-        Address constrained to [0, max_address) and aligned
-
-    Examples:
-        >>> hex(constrain_address_to_range(0x5000, 0x2000, 4))
-        '0x1000'
-        >>> hex(constrain_address_to_range(0x100, 0x2000, 4))
-        '0x100'
-    """
-    constrained = address % max_address
-    return align_address(constrained, alignment)
-
-
 def generate_aligned_immediate(
     base_value: int,
     target_alignment: int,
@@ -302,8 +173,8 @@ def generate_aligned_immediate(
     Examples:
         >>> base = 0x1001
         >>> imm = generate_aligned_immediate(base, 4)
-        >>> is_aligned((base + imm) & 0xFFFFFFFF, 4)
-        True
+        >>> (base + imm) % 4
+        0
     """
     import random
 

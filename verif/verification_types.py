@@ -16,36 +16,11 @@
 
 from typing import NewType
 
-# Memory-related types
 Address = NewType("Address", int)
-"""32-bit memory address (0 to 2^32-1)."""
+"""Byte address (XLEN bits)."""
 
-ByteOffset = NewType("ByteOffset", int)
-"""Byte offset within an aligned 64-bit data beat (0-7)."""
-
-ByteMask = NewType("ByteMask", int)
-"""Byte-lane mask for a 64-bit data beat (0x00 to 0xFF)."""
-
-# Register-related types
 RegisterIndex = NewType("RegisterIndex", int)
-"""RISC-V register index (0-31, where 0 is hardwired to zero)."""
+"""Register index (0-31); integer register x0 is hardwired to zero."""
 
-RegisterValue = NewType("RegisterValue", int)
-"""XLEN-bit (64-bit) register value."""
-
-# Instruction-related types
 Instruction = NewType("Instruction", int)
 """32-bit encoded RISC-V instruction."""
-
-Immediate = NewType("Immediate", int)
-"""Immediate value for I-type instructions."""
-
-Offset = NewType("Offset", int)
-"""Branch or jump offset."""
-
-ProgramCounter = NewType("ProgramCounter", int)
-"""Program counter value (XLEN bits)."""
-
-# Cycle counter
-CycleCount = NewType("CycleCount", int)
-"""Simulation cycle counter."""

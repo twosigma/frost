@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""RISC-V conversion, memory-alignment, logging, and validation helpers.
+"""RISC-V conversion, memory-access, logging, and validation helpers.
 
 Only ``__all__`` names are re-exported; import other helpers from their modules.
 """

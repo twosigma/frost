@@ -33,9 +33,9 @@ committed to the repository, so Spike is needed only to regenerate them.
 | `models/` | Integer, branch, floating-point, and memory models |
 | `encoders/` | Instruction encoders and operation tables |
 | `monitors/` | Register and PC monitors for the CPU reference harness |
-| `utils/` | Alignment, data types, struct packing, logging, assertions |
+| `utils/` | Memory-access helpers, data types, struct packing, logging, assertions |
 | `config.py` | Constants (`XLEN=64`) and configurable DUT signal paths |
-| `verification_types.py`, `exceptions.py` | Shared types and exceptions |
+| `verification_types.py` | Shared `NewType` wrappers |
 
 ## Running Tests
 
