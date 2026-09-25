@@ -1449,10 +1449,7 @@ module store_queue #(
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
       assert (!(i_flush_en && (i_commit_valid_comb || i_commit_valid_comb_2)))
-      else
-        $error(
-            "store_queue: combinational commit overlapped a partial flush; the flush-kill no longer guards this race"
-        );
+      else $error("store_queue: combinational store commit in a partial-flush cycle");
     end
   end
 `endif
@@ -1764,6 +1761,15 @@ module store_queue #(
   // Combinational assertions
   // -------------------------------------------------------------------------
 
+  // Number of valid entries.
+  logic [CountWidth-1:0] f_valid_count;
+  always_comb begin
+    f_valid_count = '0;
+    for (int i = 0; i < DEPTH; i++) begin
+      f_valid_count = f_valid_count + {{(CountWidth - 1) {1'b0}}, sq_valid[i]};
+    end
+  end
+
   // Window sanity.  Capacity is the ring window (tail - head), which may
   // exceed the live popcount when the window holds dead slots (killed
   // entries awaiting the tail pullback, or freed entries and sc_discard
@@ -1793,14 +1799,6 @@ module store_queue #(
   end
 
   // count consistent with valid entries
-  logic [CountWidth-1:0] f_valid_count;
-  always_comb begin
-    f_valid_count = '0;
-    for (int i = 0; i < DEPTH; i++) begin
-      f_valid_count = f_valid_count + {{(CountWidth - 1) {1'b0}}, sq_valid[i]};
-    end
-  end
-
   always_comb begin
     if (i_rst_n) begin
       p_count_consistent : assert (o_count == f_valid_count);
