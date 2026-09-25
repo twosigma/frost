@@ -27,13 +27,18 @@ publishes them.
 This bench makes the overlay half the IMEM, programs both interleaved banks
 through port A, and checks data, predicates, and the full sideband for windows
 inside and outside the overlay, both PC[2] swap cases, and read-enable hold.
-It also rewrites an out-of-overlay word while fetch stays on it and checks
+After each programming pass it runs the init-file generator on the same words
+and compares every image it writes with the matching memory, row for row:
+Vivado loads those files, while simulation packs the memories itself. It
+also rewrites an out-of-overlay word while fetch stays on it and checks
 that readiness is withheld until the new word and its redecoded predicates
 line up. Port A runs at a quarter of port B's clock rate, as in production;
 the write-quarantine synchronizer depends on that ratio.
 """
 
 import importlib.util
+import sys
+import tempfile
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -248,6 +253,83 @@ def _check_offline_init_replica(words: list[int]) -> None:
             for sideband_bit in SCALAR_REPLICA_BITS.values():
                 assert _replica(word, sideband_bit) == _expected_scalar_replica(
                     word, sideband_bit
+                )
+
+
+# Block-RAM images per parity bank: (imem_predecode array suffix, generator
+# option suffix).
+BLOCK_RAM_IMAGES = (
+    ("cold", "cold"),
+    ("frontend_hot", "frontend-hot"),
+    ("sideband", "sideband"),
+    ("compressed", "compressed"),
+)
+
+
+def _generator_images(words: list[int]) -> dict[str, list[int]]:
+    """Run the init-file generator on ``words`` and read back every image.
+
+    Keys are the generator's output options without the dashes, such as
+    ``even-cold`` or ``odd-is-compressed-lo``.
+    """
+    image_names = [image for _, image in BLOCK_RAM_IMAGES] + [
+        name.replace("_", "-") for name in SCALAR_REPLICA_BITS
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        sw_mem = tmp_path / "sw.mem"
+        sw_mem.write_text("@0\n" + "\n".join(f"{word:08X}" for word in words) + "\n")
+        argv = [
+            "generate_imem_predecode_init.py",
+            str(sw_mem),
+            "--depth-words",
+            str(len(words)),
+        ]
+        outputs = {}
+        for parity in ("even", "odd"):
+            for name in image_names:
+                key = f"{parity}-{name}"
+                outputs[key] = tmp_path / f"{key}.mem"
+                argv += [f"--{key}", str(outputs[key])]
+        saved_argv = sys.argv
+        sys.argv = argv
+        try:
+            assert _GENERATOR.main() == 0
+        finally:
+            sys.argv = saved_argv
+        return {
+            key: [int(value, 16) for value in path.read_text().split()]
+            for key, path in outputs.items()
+        }
+
+
+def _check_rtl_images_match_generator(dut: Any, words: list[int]) -> None:
+    """Check every imem_predecode memory row against the generator's init image.
+
+    Simulation fills these memories with imem_predecode's own packing
+    functions, while Vivado loads the generator's files, so the two must agree
+    row for row, including the order of the four fast lanes. The scalar LUTRAM
+    banks store only the overlay rows.
+    """
+    images = _generator_images(words)
+    overlay_rows = OVERLAY_WORD_COUNT // 2
+    for parity in ("even", "odd"):
+        for row in range(len(words) // 2):
+            for array_suffix, image in BLOCK_RAM_IMAGES:
+                got = int(getattr(dut, f"memory_{parity}_{array_suffix}")[row].value)
+                want = images[f"{parity}-{image}"][row]
+                assert got == want, (
+                    f"memory_{parity}_{array_suffix}[{row}] = 0x{got:x}, "
+                    f"generator image 0x{want:x}"
+                )
+            if row >= overlay_rows:
+                continue
+            for name in SCALAR_REPLICA_BITS:
+                bank = f"u_{parity}_{name}_bank"
+                got = int(getattr(dut, bank).memory[row].value)
+                want = images[f"{parity}-{name.replace('_', '-')}"][row]
+                assert got == want, (
+                    f"{bank}.memory[{row}] = {got}, generator image {want}"
                 )
 
 
@@ -565,6 +647,7 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     dut.i_port_a_write_enable.value = 0
     for word_index, word in enumerate(words):
         await _read_word(dut, word_index, word)
+    _check_rtl_images_match_generator(dut, words)
 
     dut.i_port_a_enable.value = 0
     for current_index in range(len(words)):
@@ -742,6 +825,7 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
 
     for word_index, word in overwrites.items():
         await _read_word(dut, word_index, word)
+    _check_rtl_images_match_generator(dut, words)
 
     for current_index in range(len(words)):
         await _fetch_window(dut, words, current_index)
