@@ -223,7 +223,9 @@ protects atomic operations and device reads. Debug Mode saves `dpc` and
 `dcsr`, masks interrupts, and runs the module's commands from the reserved
 low-BRAM debug slice. The module supports abstract GPR access and an 8-word
 program buffer. Debugger memory accesses run through that buffer; there is no
-system bus access.
+system bus access. A DMI access that arrives while the system reset is held
+waits, with the DTM reporting busy, and is handled when the reset ends, with
+`dmactive` 0 as after any reset.
 
 `debug_slice_writer` writes the module's words into the slice through the
 BRAM programming port. It also mirrors Debug-Mode stores to low BRAM into the

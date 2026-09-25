@@ -175,9 +175,20 @@ module debug_module #(
   // ---------------------------------------------------------------------------
   // DMI decode
   // ---------------------------------------------------------------------------
+  // A request that arrives while the module is in reset waits, and is
+  // handled and answered once the reset ends, like any access then (with
+  // dmactive 0); dtm_core reports busy meanwhile. dtm_core holds the
+  // request's payload until its answer, so the payload is still on the inputs
+  // then. Every request is answered exactly once: dtm_core waits for every
+  // answer.
+  logic dmi_req_pending_q = 1'b0;
+  logic dmi_req_valid;
+  assign dmi_req_valid = (i_dmi_req_valid || dmi_req_pending_q) && !i_rst;
+  always_ff @(posedge i_clk) dmi_req_pending_q <= (i_dmi_req_valid || dmi_req_pending_q) && i_rst;
+
   logic dmi_read, dmi_write;
-  assign dmi_read  = i_dmi_req_valid && (i_dmi_req_op == 2'd1);
-  assign dmi_write = i_dmi_req_valid && (i_dmi_req_op == 2'd2);
+  assign dmi_read  = dmi_req_valid && (i_dmi_req_op == 2'd1);
+  assign dmi_write = dmi_req_valid && (i_dmi_req_op == 2'd2);
   logic [ 6:0] addr;
   logic [31:0] wdata;
   assign addr  = i_dmi_req_addr;
@@ -248,7 +259,7 @@ module debug_module #(
       o_dmi_resp_data  <= '0;
       o_dmi_resp_op    <= 2'd0;
     end else begin
-      o_dmi_resp_valid <= i_dmi_req_valid;
+      o_dmi_resp_valid <= dmi_req_valid;
       o_dmi_resp_data  <= rdata;
       o_dmi_resp_op    <= 2'd0;
     end

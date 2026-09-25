@@ -1399,6 +1399,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
     ),
+    # Debug transport and debug module.
+    "dtm_core": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_dtm_core",
+        hdl_toplevel_module="dtm_core",
+        description=(
+            "Debug transport module: dmi round trips, sticky busy and failed "
+            "status, dtmcs.dmistat as the sticky status, and dmihardreset "
+            "abandoning a request in flight without issuing it again"
+        ),
+    ),
+    "debug_module": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_debug_module",
+        hdl_toplevel_module="debug_module",
+        description=(
+            "Debug module DMI face: every request answered once, the next "
+            "cycle, or after the reset ends for one made in reset, which is "
+            "handled then"
+        ),
+    ),
     # Clock-crossing library and the NIC.
     "async_fifo": CocotbRunConfig(
         python_test_module="cocotb_tests.lib.test_async_fifo",

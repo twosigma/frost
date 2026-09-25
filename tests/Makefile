@@ -360,6 +360,17 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),dtm_core)
+# Debug transport module unit bench (dtmcs/dmi registers, request handshake)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/debug/dtm_core.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),debug_module)
+# Debug module unit bench (the DMI face)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_module.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),async_fifo)
 # Asynchronous FIFO unit bench (Gray pointers over the dual-clock block RAM)
 COMPILE_ARGS := \
