@@ -148,7 +148,7 @@ module dma_test_engine #(
   logic [31:0] cur_line_q;  // DST byte address of the line being worked (line-aligned)
   logic [31:0] end_addr_q;  // DST + LEN (exclusive)
   logic [31:0] src_line_q;  // SRC line address matching cur_line_q
-  logic [31:0] dword_idx_q;  // 32-bit word offset of this line from the first DST line
+  logic [31:0] word_idx_q;  // 32-bit word offset of this line from the first DST line
   logic [LineBits-1:0] line_data_q;
   logic abort_pending_q;
   // The active transfer's copy of the programming registers, taken at START.
@@ -187,8 +187,8 @@ module dma_test_engine #(
   // lane a_dst_q[OffsetBits-1:2] of the first line is word 0).
   logic [LineBits-1:0] fill_data;
   always_comb begin
-    for (int d = 0; d < int'(LINE_BYTES / 4); d++) begin
-      fill_data[d*32+:32] = a_pattern_q + dword_idx_q + 32'(d) - 32'(a_dst_q[OffsetBits-1:2]);
+    for (int w = 0; w < int'(LINE_BYTES / 4); w++) begin
+      fill_data[w*32+:32] = a_pattern_q + word_idx_q + 32'(w) - 32'(a_dst_q[OffsetBits-1:2]);
     end
   end
 
@@ -295,7 +295,7 @@ module dma_test_engine #(
             cur_line_q       <= {dst_q[31:OffsetBits], {OffsetBits{1'b0}}};
             src_line_q       <= {src_q[31:OffsetBits], {OffsetBits{1'b0}}};
             end_addr_q       <= dst_end[31:0];
-            dword_idx_q      <= '0;
+            word_idx_q       <= '0;
             a_dst_q          <= dst_q;
             a_pattern_q      <= pattern_q;
             a_status_addr_q  <= status_addr_q;
@@ -337,10 +337,10 @@ module dma_test_engine #(
             if (abort_pending_q) begin
               state_q <= S_FINISH;
             end else if (more_lines) begin
-              cur_line_q  <= cur_line_q + LINE_BYTES;
-              src_line_q  <= src_line_q + LINE_BYTES;
-              dword_idx_q <= dword_idx_q + 32'(LINE_BYTES / 4);
-              state_q     <= a_fill_q ? S_WRITE : S_READ;
+              cur_line_q <= cur_line_q + LINE_BYTES;
+              src_line_q <= src_line_q + LINE_BYTES;
+              word_idx_q <= word_idx_q + 32'(LINE_BYTES / 4);
+              state_q    <= a_fill_q ? S_WRITE : S_READ;
             end else begin
               state_q <= a_status_q ? S_STATUS : S_FINISH;
             end
