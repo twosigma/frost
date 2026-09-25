@@ -170,6 +170,9 @@ module fp_fma #(
   logic                is_special;
   logic [FP_WIDTH-1:0] special_result;
   logic                special_invalid;
+  logic                inf_times_zero;
+
+  assign inf_times_zero = (is_inf_a && is_zero_b) || (is_zero_a && is_inf_b);
 
   always_comb begin
     is_special = 1'b0;
@@ -179,8 +182,9 @@ module fp_fma #(
     if (is_nan_a || is_nan_b || is_nan_c) begin
       is_special = 1'b1;
       special_result = CanonicalNan;
-      special_invalid = is_snan_a | is_snan_b | is_snan_c;
-    end else if ((is_inf_a && is_zero_b) || (is_zero_a && is_inf_b)) begin
+      // Infinity times zero is invalid even when the addend is a quiet NaN.
+      special_invalid = is_snan_a | is_snan_b | is_snan_c | inf_times_zero;
+    end else if (inf_times_zero) begin
       is_special = 1'b1;
       special_result = CanonicalNan;
       special_invalid = 1'b1;

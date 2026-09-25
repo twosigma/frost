@@ -747,3 +747,121 @@ async def test_full_flush_reuses_payload_ram_entries(dut: Any) -> None:
     assert_completion(iface.read_fu_complete(), tag=4, value=RES_7_0)
     await clock_cycle(dut)
     assert not iface.read_fu_complete()["valid"]
+
+
+# ============================================================================
+# FMA special cases: infinity times zero is invalid even with a NaN addend
+# ============================================================================
+F32_NEG_ZERO = 0x8000_0000
+F32_NEG_INF = 0xFF80_0000
+F32_QNAN_PAYLOAD = 0x7FC0_0001
+F32_NEG_QNAN = 0xFFC0_0000
+F32_SNAN = 0x7F80_0001
+
+F64_POS_ZERO = 0x0000_0000_0000_0000
+F64_NEG_ZERO = 0x8000_0000_0000_0000
+F64_POS_INF = 0x7FF0_0000_0000_0000
+F64_NEG_INF = 0xFFF0_0000_0000_0000
+F64_1_0 = 0x3FF0_0000_0000_0000
+F64_CANONICAL_NAN = 0x7FF8_0000_0000_0000
+F64_QNAN_PAYLOAD = 0x7FF8_0000_0000_0001
+F64_NEG_QNAN = 0xFFF8_0000_0000_0000
+F64_SNAN = 0x7FF0_0000_0000_0001
+
+FMA_VARIANTS = ("FMADD", "FMSUB", "FNMSUB", "FNMADD")
+
+
+def _nan_addend_vectors(
+    zero: int,
+    neg_zero: int,
+    inf: int,
+    neg_inf: int,
+    one: int,
+    qnan: int,
+    qnan_payload: int,
+    neg_qnan: int,
+    snan: int,
+) -> list[tuple[int, int, int, int]]:
+    """Return (a, b, c, expected flags) with NaN addends; every result is the canonical NaN."""
+    return [
+        # a * b is infinity times zero: invalid whatever the NaN addend.
+        (inf, zero, qnan, FP_FLAG_NV),
+        (zero, inf, qnan, FP_FLAG_NV),
+        (neg_inf, zero, qnan_payload, FP_FLAG_NV),
+        (inf, neg_zero, neg_qnan, FP_FLAG_NV),
+        (neg_zero, neg_inf, qnan, FP_FLAG_NV),
+        (zero, inf, snan, FP_FLAG_NV),
+        # A valid product with a quiet-NaN addend raises nothing.
+        (inf, one, qnan, 0),
+        (zero, one, qnan, 0),
+        (one, one, neg_qnan, 0),
+    ]
+
+
+async def _check_nan_addend_vectors(
+    dut: Any,
+    precision: str,
+    vectors: list[tuple[int, int, int, int]],
+    box: int,
+    canonical_nan: int,
+) -> None:
+    """Run every FMA variant over *vectors* and check the result and flags."""
+    iface = await setup(dut)
+    failures: list[str] = []
+    tag = 0
+    for variant in FMA_VARIANTS:
+        op = _INSTR_OPS[f"{variant}_{precision}"]
+        for a, b, c, flags in vectors:
+            tag = (tag + 1) % 32
+            await issue_once(
+                dut,
+                iface,
+                rob_tag=tag,
+                op=op,
+                src1_value=box | a,
+                src2_value=box | b,
+                src3_value=box | c,
+            )
+            result = await wait_for_complete(dut, iface)
+            if result["value"] != box | canonical_nan or result["fp_flags"] != flags:
+                failures.append(
+                    f"{variant}_{precision}({a:#x}, {b:#x}, {c:#x}): got "
+                    f"{result['value']:#018x} flags {result['fp_flags']:#04x}, expected "
+                    f"{box | canonical_nan:#018x} flags {flags:#04x}"
+                )
+            await clock_cycle(dut)
+    assert not failures, "\n".join(failures)
+
+
+@cocotb.test()
+async def test_fma_s_inf_times_zero_with_nan_addend(dut: Any) -> None:
+    """Single FMA of infinity times zero raises NV even when the addend is a quiet NaN."""
+    vectors = _nan_addend_vectors(
+        F32_POS_ZERO,
+        F32_NEG_ZERO,
+        F32_POS_INF,
+        F32_NEG_INF,
+        F32_1_0,
+        F32_CANONICAL_NAN,
+        F32_QNAN_PAYLOAD,
+        F32_NEG_QNAN,
+        F32_SNAN,
+    )
+    await _check_nan_addend_vectors(dut, "S", vectors, NAN_BOX, F32_CANONICAL_NAN)
+
+
+@cocotb.test()
+async def test_fma_d_inf_times_zero_with_nan_addend(dut: Any) -> None:
+    """Double FMA of infinity times zero raises NV even when the addend is a quiet NaN."""
+    vectors = _nan_addend_vectors(
+        F64_POS_ZERO,
+        F64_NEG_ZERO,
+        F64_POS_INF,
+        F64_NEG_INF,
+        F64_1_0,
+        F64_CANONICAL_NAN,
+        F64_QNAN_PAYLOAD,
+        F64_NEG_QNAN,
+        F64_SNAN,
+    )
+    await _check_nan_addend_vectors(dut, "D", vectors, 0, F64_CANONICAL_NAN)
