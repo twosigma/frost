@@ -863,7 +863,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Tomasulo performance measurement (IPC benchmarks) with the "
             "profiling counters present and the per-benchmark profile "
             "reports compiled in; the run fails unless the reports show the "
-            "counters"
+            "counters and the head-load wait split adds up"
         ),
         verilator_extra_args=("-GPERF_COUNTERS=1",),
         extra_env=(

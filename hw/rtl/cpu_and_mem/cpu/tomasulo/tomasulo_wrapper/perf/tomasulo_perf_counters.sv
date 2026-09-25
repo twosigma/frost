@@ -20,12 +20,12 @@
  * Holds the 64 back-end profiling counters: ROB head-wait and commit-blocked
  * cycles and their breakdowns, per-FU back-pressure, memory disambiguation,
  * occupancy sums, L0 hits and fills, and two-wide commit opportunities, fires,
- * and blockers. Accumulates each event, snapshots all 64 on demand, and muxes
- * the selected counter to the CSR read port. The snapshot is split into four
- * fanout banks, each with its own registered capture strobe, so it lands one
- * cycle after the mperfctl trigger commits; CSR serialization makes that
- * cycle invisible to software. Indices and definitions are in
- * hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md.
+ * and blockers. Three slots are reserved and read 0. Accumulates each event,
+ * snapshots all 64 on demand, and muxes the selected counter to the CSR read
+ * port. The snapshot is split into four fanout banks, each with its own
+ * registered capture strobe, so it lands one cycle after the mperfctl trigger
+ * commits; CSR serialization makes that cycle invisible to software. Indices
+ * and definitions are in hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md.
  */
 
 module tomasulo_perf_counters #(
@@ -78,14 +78,11 @@ module tomasulo_perf_counters #(
     input logic i_lq_head_load_bus_blocked,
     input logic i_lq_head_load_cdb_wait,
     input logic i_lq_head_load_post_lq,
-    input logic i_lq_head_load_bb_issued,
     input logic i_lq_head_load_bb_bus_busy,
-    input logic i_lq_head_load_bb_amo,
     input logic i_lq_head_load_bb_sq_wait,
     input logic i_lq_head_load_bb_staging,
     input logic i_lq_head_load_bbs_other_in_staging,
     input logic i_lq_head_load_bbs_launch_gated,
-    input logic i_lq_head_load_bbs_slow_outstanding,
     input logic i_lq_head_load_bbs_capture_gap,
 
     // head_wait_int decomposition status.
@@ -120,10 +117,9 @@ module tomasulo_perf_counters #(
   logic lq_l0_hit, lq_l0_fill, lq_mem_outstanding;
   logic lq_head_load_addr_pending, lq_head_load_sq_disambig, lq_head_load_bus_blocked;
   logic lq_head_load_cdb_wait, lq_head_load_post_lq;
-  logic lq_head_load_bb_issued, lq_head_load_bb_bus_busy, lq_head_load_bb_amo;
-  logic lq_head_load_bb_sq_wait, lq_head_load_bb_staging;
+  logic lq_head_load_bb_bus_busy, lq_head_load_bb_sq_wait, lq_head_load_bb_staging;
   logic lq_head_load_bbs_other_in_staging, lq_head_load_bbs_launch_gated;
-  logic lq_head_load_bbs_slow_outstanding, lq_head_load_bbs_capture_gap;
+  logic lq_head_load_bbs_capture_gap;
   logic int_rs_head_in_rs, int_rs_head_rs_ready, int_rs_head_in_stage2;
   assign rob_perf_events                   = i_rob_perf_events;
   assign int_rs_fu_ready                   = i_int_rs_fu_ready;
@@ -160,14 +156,11 @@ module tomasulo_perf_counters #(
   assign lq_head_load_bus_blocked          = i_lq_head_load_bus_blocked;
   assign lq_head_load_cdb_wait             = i_lq_head_load_cdb_wait;
   assign lq_head_load_post_lq              = i_lq_head_load_post_lq;
-  assign lq_head_load_bb_issued            = i_lq_head_load_bb_issued;
   assign lq_head_load_bb_bus_busy          = i_lq_head_load_bb_bus_busy;
-  assign lq_head_load_bb_amo               = i_lq_head_load_bb_amo;
   assign lq_head_load_bb_sq_wait           = i_lq_head_load_bb_sq_wait;
   assign lq_head_load_bb_staging           = i_lq_head_load_bb_staging;
   assign lq_head_load_bbs_other_in_staging = i_lq_head_load_bbs_other_in_staging;
   assign lq_head_load_bbs_launch_gated     = i_lq_head_load_bbs_launch_gated;
-  assign lq_head_load_bbs_slow_outstanding = i_lq_head_load_bbs_slow_outstanding;
   assign lq_head_load_bbs_capture_gap      = i_lq_head_load_bbs_capture_gap;
   assign int_rs_head_in_rs                 = i_int_rs_head_in_rs;
   assign int_rs_head_rs_ready              = i_int_rs_head_rs_ready;
@@ -175,7 +168,9 @@ module tomasulo_perf_counters #(
 
   // Local indices 0-63 are global indices 42-105, a software interface. The
   // cache-hierarchy block follows at 106 in perf_counter_aggregator; nothing
-  // may renumber these (perf README, "Numbering contract").
+  // may renumber these (perf README, "Numbering contract"). Local slots 47, 49
+  // and 62 (global 89, 91 and 104) are reserved: nothing drives them, so they
+  // read 0.
   localparam int unsigned WrapperPerfCounterCount = 64;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;
@@ -224,9 +219,9 @@ module tomasulo_perf_counters #(
   localparam int unsigned PerfHeadLoadBusBlocked = 44;
   localparam int unsigned PerfHeadLoadCdbWait = 45;
   localparam int unsigned PerfHeadLoadPostLq = 46;
-  localparam int unsigned PerfHeadLoadBbIssued = 47;
+  // 47 is reserved.
   localparam int unsigned PerfHeadLoadBbBusBusy = 48;
-  localparam int unsigned PerfHeadLoadBbAmo = 49;
+  // 49 is reserved.
   localparam int unsigned PerfHeadLoadBbSqWait = 50;
   localparam int unsigned PerfHeadLoadBbStaging = 51;
   localparam int unsigned PerfHeadIntOperandWait = 52;
@@ -240,7 +235,7 @@ module tomasulo_perf_counters #(
   // Staging catch-all sub-decomposition (partitions PerfHeadLoadBbStaging).
   localparam int unsigned PerfHeadLoadBbsOtherInStaging = 60;
   localparam int unsigned PerfHeadLoadBbsLaunchGated = 61;
-  localparam int unsigned PerfHeadLoadBbsSlowOutstanding = 62;
+  // 62 is reserved.
   localparam int unsigned PerfHeadLoadBbsCaptureGap = 63;
 
   logic [63:0] perf_live[WrapperPerfCounterCount];
@@ -348,16 +343,9 @@ module tomasulo_perf_counters #(
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_post_lq)
     };
-    perf_inc[PerfHeadLoadBbIssued] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_issued)
-    };
     perf_inc[PerfHeadLoadBbBusBusy] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_bus_busy)
-    };
-    perf_inc[PerfHeadLoadBbAmo] = {
-      {63{1'b0}}, (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_amo)
     };
     perf_inc[PerfHeadLoadBbSqWait] = {
       {63{1'b0}},
@@ -368,7 +356,7 @@ module tomasulo_perf_counters #(
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_staging)
     };
     // Sub-decomposition of PerfHeadLoadBbStaging: same head-wait qualifier so
-    // the four terms partition counter 93 exactly.
+    // the three terms partition counter 93 exactly.
     perf_inc[PerfHeadLoadBbsOtherInStaging] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding &&
@@ -377,11 +365,6 @@ module tomasulo_perf_counters #(
     perf_inc[PerfHeadLoadBbsLaunchGated] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bbs_launch_gated)
-    };
-    perf_inc[PerfHeadLoadBbsSlowOutstanding] = {
-      {63{1'b0}},
-      (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding &&
-       lq_head_load_bbs_slow_outstanding)
     };
     perf_inc[PerfHeadLoadBbsCaptureGap] = {
       {63{1'b0}},

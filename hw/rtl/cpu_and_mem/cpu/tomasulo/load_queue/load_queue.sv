@@ -273,18 +273,15 @@ module load_queue #(
     // =========================================================================
     // Split `o_head_load_bus_blocked` into mutually exclusive sub-causes,
     // picked in priority order so each cycle contributes to exactly one
-    // counter.  All five are gated externally by the same
+    // counter.  All three are gated externally by the same
     // `head_wait_mem_load && !o_mem_outstanding` term the parent counter
     // uses, so the sum across sub-buckets equals `bus_blocked`.
-    output logic o_head_load_bb_issued,  // head has been issued, waiting for response
     output logic o_head_load_bb_bus_busy,  // i_mem_bus_busy = 1
-    output logic o_head_load_bb_amo,  // some AMO pending (any_pending_amo approximation)
     output logic o_head_load_bb_sq_wait,  // in sq_check stage but !sq_check_phase2
     output logic o_head_load_bb_staging,  // catch-all (pre-sq_check capture, drop-pending, etc.)
     // Staging catch-all sub-decomposition (partitions o_head_load_bb_staging):
     output logic o_head_load_bbs_other_in_staging,  // sq_check busy with a DIFFERENT load
-    output logic o_head_load_bbs_launch_gated,  // head staged, phase2 armed, launch still gated
-    output logic o_head_load_bbs_slow_outstanding,  // staging free; cached launch hold set
+    output logic o_head_load_bbs_launch_gated,  // head staged, phase2 armed, not complete
     output logic o_head_load_bbs_capture_gap  // staging free; head not captured yet
 );
 
@@ -1420,76 +1417,50 @@ module load_queue #(
   // -------------------------------------------------------------------------
   // Bus-blocked sub-bucket classification
   // -------------------------------------------------------------------------
-  // Priority-ordered (mutually exclusive per cycle):
-  //   1. issued:   head already launched
-  //   2. bus_busy: i_mem_bus_busy
-  //   3. amo:      some AMO in the LQ has not finished (any_pending_amo, an
-  //                approximation; see below).  For an AMO at the head this
-  //                also catches the SQ-committed-empty gate.
-  //   4. sq_wait:  entry is currently staged in sq_check but !sq_check_phase2
+  // Priority-ordered, so the three terms partition head_entry_bb_base:
+  //   1. bus_busy: i_mem_bus_busy
+  //   2. sq_wait:  entry is currently staged in sq_check but !sq_check_phase2
   //                (sq_check_phase2 takes a cycle to arm after the SQ sees
   //                the staged request).
-  //   5. staging:  everything else (one-cycle addr_valid -> sq_check_capture
+  //   3. staging:  everything else (one-cycle addr_valid -> sq_check_capture
   //                delay, drop_mem_response_pending, and so on)
+  // A launched plain load owes a response until its data is valid (checked in
+  // simulation below), so the counters' !o_mem_outstanding gate already
+  // excludes a launched head load. Every AMO still in the LQ is younger than
+  // a load at the ROB head and cannot hold it up.
 
   logic head_entry_bb_base;
   assign head_entry_bb_base = head_entry_found && head_entry_addr_valid &&
                               !head_entry_data_valid && !head_sq_disambig_hit;
-
-  // This is approximate: any pending (valid, AMO, not data-valid) LQ entry
-  // counts, whatever its age.  An AMO still in the LQ has not committed, so
-  // none is older than a load at the ROB head; for such a load this bucket
-  // takes cycles in which the load waits for another reason while a younger
-  // AMO is pending.
-  logic any_pending_amo;
-  always_comb begin
-    any_pending_amo = 1'b0;
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i]) begin
-        any_pending_amo = 1'b1;
-      end
-    end
-  end
 
   logic head_entry_in_sq_wait;
   assign head_entry_in_sq_wait = sq_check_pending &&
                                  (sq_check_idx == head_entry_idx) &&
                                  !sq_check_phase2;
 
-  assign o_head_load_bb_issued = head_entry_bb_base && head_entry_issued;
-  assign o_head_load_bb_bus_busy = head_entry_bb_base && !head_entry_issued && i_mem_bus_busy;
-  assign o_head_load_bb_amo      = head_entry_bb_base && !head_entry_issued &&
-                                   !i_mem_bus_busy && any_pending_amo;
-  assign o_head_load_bb_sq_wait  = head_entry_bb_base && !head_entry_issued &&
-                                   !i_mem_bus_busy && !any_pending_amo &&
-                                   head_entry_in_sq_wait;
-  assign o_head_load_bb_staging  = head_entry_bb_base && !head_entry_issued &&
-                                   !i_mem_bus_busy && !any_pending_amo &&
-                                   !head_entry_in_sq_wait;
+  assign o_head_load_bb_bus_busy = head_entry_bb_base && i_mem_bus_busy;
+  assign o_head_load_bb_sq_wait = head_entry_bb_base && !i_mem_bus_busy && head_entry_in_sq_wait;
+  assign o_head_load_bb_staging = head_entry_bb_base && !i_mem_bus_busy && !head_entry_in_sq_wait;
 
-  // Staging sub-decomposition (priority-ordered, mutually exclusive; the four
+  // Staging sub-decomposition (priority-ordered, mutually exclusive; the three
   // terms partition o_head_load_bb_staging exactly):
   //   other_in_staging: the single sq_check staging register is occupied by
   //                     a different load (the serialization cost of one
   //                     staging pipe);
-  //   launch_gated:     the head load is staged with phase2 armed but the
-  //                     launch is still gated (drop-response window,
-  //                     sq_can_issue qualifiers, launch arbitration);
-  //   slow_outstanding: staging is free but the cached launch hold is up:
-  //                     every cached load slot is in flight (or, rarely, a
-  //                     cached response is being let through);
-  //   capture_gap:      staging free, no launch hold: the head load has not
-  //                     been captured yet (selector / capture-recycle
-  //                     bubble).
+  //   launch_gated:     the head load is staged with phase2 armed and has not
+  //                     completed: the cycle it launches, hits the L0 or
+  //                     forwards, and any cycle its launch is gated
+  //                     (drop-response window, sq_can_issue qualifiers,
+  //                     other launch gates);
+  //   capture_gap:      staging free: the head load has not been captured
+  //                     yet (selector / capture-recycle bubble).
   logic head_bbs_base;
   assign head_bbs_base = o_head_load_bb_staging;
   assign o_head_load_bbs_other_in_staging = head_bbs_base && sq_check_pending &&
                                             (sq_check_idx != head_entry_idx);
   assign o_head_load_bbs_launch_gated = head_bbs_base && sq_check_pending &&
                                         (sq_check_idx == head_entry_idx) && sq_check_phase2;
-  assign o_head_load_bbs_slow_outstanding = head_bbs_base && !sq_check_pending &&
-      cached_launch_hold_q;
-  assign o_head_load_bbs_capture_gap = head_bbs_base && !sq_check_pending && !cached_launch_hold_q;
+  assign o_head_load_bbs_capture_gap = head_bbs_base && !sq_check_pending;
 
   // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])
@@ -3728,6 +3699,17 @@ module load_queue #(
   // ===========================================================================
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  // Entries that the fast owner or a live cached slot names (see the response
+  // ownership check below).
+  logic [DEPTH-1:0] sim_resp_owned;
+  always_comb begin
+    sim_resp_owned = '0;
+    if (mem_outstanding) sim_resp_owned[fast_idx] = 1'b1;
+    for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+      if (cs_valid[sl] && !cs_drop[sl]) sim_resp_owned[cs_idx[sl]] = 1'b1;
+    end
+  end
+
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("LQ: allocation attempted when full");
@@ -3829,6 +3811,20 @@ module load_queue #(
             fast_idx,
             lq_rob_tag[fast_idx]
         );
+      // Response ownership, the converse of the slot checks above: a launched
+      // non-AMO load owes its response until its data is valid, so the fast
+      // owner or a live cached slot names its entry. This relies on the
+      // integrated response timing: a fast response arrives the cycle after
+      // accept, so a back-to-back fast launch replaces fast_idx only in its
+      // predecessor's response cycle. The head-load counters depend on it.
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (lq_valid[i] && lq_issued[i] && !lq_data_valid[i] && !lq_is_amo[i] && !sim_resp_owned[i])
+          $error(
+              "LQ: launched load in entry %0d (tag %0d) owes a response but has no owner",
+              i,
+              lq_rob_tag[i]
+          );
+      end
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);

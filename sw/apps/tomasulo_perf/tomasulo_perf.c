@@ -35,6 +35,14 @@
  *  11. Independent FMUL.D chains (FP MUL parallel)
  *  12. Dependent FMADD.D chain  (fused multiply-add serialized)
  *  13. Mixed FP + INT           (cross-unit parallelism)
+ *
+ * Benchmarks (atomics):
+ *  14. Load + younger AMOADD.W  (head-load wait with an AMO in flight)
+ *
+ * With TOMASULO_PERF_ENABLE_PROFILE=1 and the counters present, each report
+ * also checks that the head-load wait split adds up (counters 90, 92 and 93
+ * sum to 86; 102, 103 and 105 sum to 93) and that the reserved counters 89,
+ * 91 and 104 read 0. A failed check ends the run with <<FAIL>>.
  */
 
 #include "csr.h"
@@ -53,12 +61,61 @@ static uint64_t bench_profile_end_cache[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
 static tomasulo_profile_snapshot_t bench_profile_start;
 static tomasulo_profile_snapshot_t bench_profile_end;
 
+static uint32_t bench_profile_failures;
+
+/* Wrapper counters with no source; they must read 0 (perf README). */
+static const uint32_t bench_profile_reserved[] = {89U, 91U, 104U};
+
+/*
+ * Print the head-load wait split and check that it adds up and that the
+ * reserved counters read 0 in both snapshots.
+ */
+static void bench_profile_check(const char *label)
+{
+    const tomasulo_profile_snapshot_t *s = &bench_profile_start;
+    const tomasulo_profile_snapshot_t *e = &bench_profile_end;
+    uint64_t bus_blocked = tomasulo_profile_delta(s, e, TOMASULO_PERF_HEAD_LOAD_BUS_BLOCKED);
+    uint64_t bus_busy = tomasulo_profile_delta(s, e, TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY);
+    uint64_t sq_wait = tomasulo_profile_delta(s, e, TOMASULO_PERF_HEAD_LOAD_BB_SQ_WAIT);
+    uint64_t staging = tomasulo_profile_delta(s, e, TOMASULO_PERF_HEAD_LOAD_BB_STAGING);
+    uint64_t other = tomasulo_profile_delta(s, e, TOMASULO_PERF_HEAD_LOAD_BBS_OTHER_IN_STAGING);
+    uint64_t gated = tomasulo_profile_delta(s, e, TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED);
+    uint64_t capture = tomasulo_profile_delta(s, e, TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP);
+    uint64_t reserved = 0;
+    uint32_t i;
+
+    if (s->counter_count == 0 || e->counter_count == 0) {
+        return;
+    }
+    for (i = 0; i < sizeof(bench_profile_reserved) / sizeof(bench_profile_reserved[0]); i++) {
+        reserved |= s->counters[bench_profile_reserved[i]] | e->counters[bench_profile_reserved[i]];
+    }
+    uart_printf("  Head-load bus-blocked %llu: bus_busy %llu + sq_wait %llu + staging %llu "
+                "(other %llu + gated %llu + capture %llu)\n",
+                (unsigned long long) bus_blocked,
+                (unsigned long long) bus_busy,
+                (unsigned long long) sq_wait,
+                (unsigned long long) staging,
+                (unsigned long long) other,
+                (unsigned long long) gated,
+                (unsigned long long) capture);
+    if (bus_busy + sq_wait + staging != bus_blocked || other + gated + capture != staging ||
+        reserved != 0) {
+        uart_printf("  Profile check FAILED for %s: split does not add up or a reserved counter "
+                    "is nonzero (0x%llx)\n",
+                    label,
+                    (unsigned long long) reserved);
+        bench_profile_failures++;
+    }
+}
+
 #define BENCH_PROFILE_BEGIN() tomasulo_profile_take_snapshot(&bench_profile_start)
 #define BENCH_PROFILE_END(label)                                                                   \
     do {                                                                                           \
         tomasulo_profile_take_snapshot(&bench_profile_end);                                        \
         tomasulo_profile_read_cache_pair(&bench_profile_start, &bench_profile_end);                \
         tomasulo_profile_print_brief_report((label), &bench_profile_start, &bench_profile_end);    \
+        bench_profile_check(label);                                                                \
     } while (0)
 #else
 #define BENCH_PROFILE_BEGIN()                                                                      \
@@ -414,6 +471,43 @@ int main(void)
     }
 
     /* ===================================================================== */
+    /* Atomics                                                               */
+    /* ===================================================================== */
+    uart_printf("\n--- Atomics ---\n\n");
+
+    /* ===================================================================== */
+    /* Benchmark 14: Load + younger AMOADD.W (50 iters, 6 instrs/iter)       */
+    /* The load's address depends on the previous AMO's result, so the load  */
+    /* reaches the ROB head before it can issue and waits there while the    */
+    /* AMO behind it is pending in the load queue: the head-load wait split  */
+    /* runs with an AMO in flight. The two words sit in different dwords.    */
+    /* ===================================================================== */
+    uart_printf("Bench 14: Load + younger AMOADD.W (50 iters, 6 instrs/iter)\n");
+    {
+        volatile uint32_t amo_area[4] = {1U, 0U, 0U, 0U};
+        BENCH_PROFILE_BEGIN();
+        c0 = rdcycle();
+        i0 = rdinstret();
+        __asm__ volatile("addi t0, zero, 50\n"
+                         "addi t2, zero, 1\n"
+                         "addi t3, zero, 0\n"
+                         "1:\n"
+                         "and  t4, t3, zero\n" /* 0, available with the previous AMO */
+                         "add  t4, t4, %[ld]\n"
+                         "lw   t1, 0(t4)\n"
+                         "amoadd.w t3, t2, (%[amo])\n"
+                         "addi t0, t0, -1\n"
+                         "bne  t0, zero, 1b\n"
+                         :
+                         : [ld] "r"(&amo_area[0]), [amo] "r"(&amo_area[2])
+                         : "t0", "t1", "t2", "t3", "t4", "memory");
+        c1 = rdcycle();
+        i1 = rdinstret();
+        BENCH_PROFILE_END("Bench 14: Load + younger AMOADD.W");
+        print_result(c1 - c0, i1 - i0);
+    }
+
+    /* ===================================================================== */
     /* Summary                                                               */
     /* ===================================================================== */
     uart_printf("\n============================================================\n");
@@ -423,6 +517,12 @@ int main(void)
     uart_printf("  to see the IPC benefit of out-of-order execution.\n");
     uart_printf("============================================================\n\n");
 
+#if TOMASULO_PERF_ENABLE_PROFILE
+    if (bench_profile_failures != 0) {
+        uart_printf("<<FAIL>>\n");
+        return 1;
+    }
+#endif
     uart_printf("<<PASS>>\n");
 
     return 0;

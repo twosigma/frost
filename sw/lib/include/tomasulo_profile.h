@@ -136,9 +136,9 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_LOAD_BUS_BLOCKED = 86,
     TOMASULO_PERF_HEAD_LOAD_CDB_WAIT = 87,
     TOMASULO_PERF_HEAD_LOAD_POST_LQ = 88,
-    TOMASULO_PERF_HEAD_LOAD_BB_ISSUED = 89,
+    /* 89 is reserved and reads 0. */
     TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY = 90,
-    TOMASULO_PERF_HEAD_LOAD_BB_AMO = 91,
+    /* 91 is reserved and reads 0. */
     TOMASULO_PERF_HEAD_LOAD_BB_SQ_WAIT = 92,
     TOMASULO_PERF_HEAD_LOAD_BB_STAGING = 93,
     TOMASULO_PERF_HEAD_INT_OPERAND_WAIT = 94,
@@ -152,7 +152,7 @@ enum tomasulo_profile_counter_idx {
     /* Staging catch-all sub-decomposition (partitions HEAD_LOAD_BB_STAGING). */
     TOMASULO_PERF_HEAD_LOAD_BBS_OTHER_IN_STAGING = 102,
     TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED = 103,
-    TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING = 104,
+    /* 104 is reserved and reads 0. */
     TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP = 105,
     /*
      * Cache-hierarchy block: global indices 106-129. Indices are a software
@@ -1031,16 +1031,8 @@ static inline void tomasulo_profile_print_report(const char *label,
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_POST_LQ),
         cycles);
     tomasulo_profile_print_metric(
-        "Head load bus-blocked: issued (post-launch)",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_ISSUED),
-        cycles);
-    tomasulo_profile_print_metric(
         "Head load bus-blocked: bus_busy",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_BUS_BUSY),
-        cycles);
-    tomasulo_profile_print_metric(
-        "Head load bus-blocked: AMO blocked",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BB_AMO),
         cycles);
     tomasulo_profile_print_metric(
         "Head load bus-blocked: SQ phase2 wait",
@@ -1057,10 +1049,6 @@ static inline void tomasulo_profile_print_report(const char *label,
     tomasulo_profile_print_metric(
         "  staging: head staged, launch gated",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED),
-        cycles);
-    tomasulo_profile_print_metric(
-        "  staging: cached slots full",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING),
         cycles);
     tomasulo_profile_print_metric(
         "  staging: capture gap",

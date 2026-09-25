@@ -295,20 +295,20 @@ The L0 hit rate is 76 / (76 + 66), and 79 + 80 = 46.
 
 Source: `load_queue.sv` head-load diagnostics. Every row also requires
 `HEAD_WAIT_MEM_LOAD` with no memory response in flight. Counters 84–88 are
-sub-buckets of 80, and 89–93 partition 86.
+sub-buckets of 80, and 90, 92 and 93 partition 86.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
 | 84 | 42 | `HEAD_LOAD_ADDR_PENDING` | cycle | The head load is in the LQ but its address is not computed yet (waiting on rs1 or MEM_RS) |
 | 85 | 43 | `HEAD_LOAD_SQ_DISAMBIG` | cycle | The address is known, but the load waits on SQ disambiguation |
-| 86 | 44 | `HEAD_LOAD_BUS_BLOCKED` | cycle | Ready to issue, but blocked by the bus, arbitration, or the pipeline (split by 89–93) |
+| 86 | 44 | `HEAD_LOAD_BUS_BLOCKED` | cycle | Ready to issue, but blocked by the bus, arbitration, or the pipeline (split by 90, 92 and 93) |
 | 87 | 45 | `HEAD_LOAD_CDB_WAIT` | cycle | The data is in the LQ, waiting to enter the CDB stage |
 | 88 | 46 | `HEAD_LOAD_POST_LQ` | cycle | The LQ entry is already freed; the result is in the CDB pipeline on its way to the ROB |
-| 89 | 47 | `HEAD_LOAD_BB_ISSUED` | cycle | Bus-blocked: the load has issued, and its response was accepted but its entry has not cleared |
+| 89 | 47 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_LOAD_BB_ISSUED`, which never counted: a launched head load owes a response until its data arrives, and 79 counts those cycles |
 | 90 | 48 | `HEAD_LOAD_BB_BUS_BUSY` | cycle | Bus-blocked: the memory bus is busy |
-| 91 | 49 | `HEAD_LOAD_BB_AMO` | cycle | Bus-blocked: an AMO in the LQ has not finished (approximate: any unfinished AMO counts) |
+| 91 | 49 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_LOAD_BB_AMO`, which counted while any AMO was pending in the LQ. Every such AMO is younger than the head load, so those cycles belong to 92 and 93 |
 | 92 | 50 | `HEAD_LOAD_BB_SQ_WAIT` | cycle | Bus-blocked: in the `sq_check` stage, before phase 2 |
-| 93 | 51 | `HEAD_LOAD_BB_STAGING` | cycle | Bus-blocked: everything else (before `sq_check` capture, a pending response drop, and similar; split by 102–105) |
+| 93 | 51 | `HEAD_LOAD_BB_STAGING` | cycle | Bus-blocked: everything else (before `sq_check` capture, a pending response drop, and similar; split by 102, 103 and 105) |
 
 ### Wrapper 94–97: head-INT decomposition
 
@@ -324,10 +324,10 @@ operation is.
 
 ### Wrapper 98–105: widen-commit blocker taxonomy + staging catch-all split
 
-Sources: `reorder_buffer.sv` (98–101) and `load_queue.sv` (102–105).
+Sources: `reorder_buffer.sv` (98–101) and `load_queue.sv` (102, 103 and 105).
 Counters 98–101 count only cycles in which commit fires and head+1 is valid
 and done, and they partition the hazard-blocked gap:
-98 + 99 + 100 + 101 = 78 − 82. Counters 102–105 partition 93.
+98 + 99 + 100 + 101 = 78 − 82. Counters 102, 103 and 105 partition 93.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
@@ -336,9 +336,9 @@ and done, and they partition the hazard-blocked gap:
 | 100 | 58 | `COMMIT_2_BLOCKED_NEXT_BRANCH_MISPRED` | cycle | Head+1 is a mispredicted branch, including one early recovery already handled |
 | 101 | 59 | `COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT` | cycle | Head+1 is a branch with no misprediction that the gate still refused. Correctly predicted branches can retire in slot 2, so this should stay near 0; a steady nonzero count points to a problem in slot-2 branch retirement |
 | 102 | 60 | `HEAD_LOAD_BBS_OTHER_IN_STAGING` | cycle | `HEAD_LOAD_BB_STAGING`, and the single `sq_check` staging register holds a different load (the cost of one staging pipe) |
-| 103 | 61 | `HEAD_LOAD_BBS_LAUNCH_GATED` | cycle | `HEAD_LOAD_BB_STAGING`, and the head load is staged with phase 2 armed but its launch is still gated (response-drop window, launch qualifiers) |
-| 104 | 62 | `HEAD_LOAD_BBS_SLOW_OUTSTANDING` | cycle | `HEAD_LOAD_BB_STAGING`, staging is free, and the LQ's cached-launch hold is set. Every row here also requires no memory response in flight, so the hold can only come from the router holding a cached response |
-| 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging is free, and a cached slot is available, but the head load has not been captured yet (a selector or capture-recycle bubble) |
+| 103 | 61 | `HEAD_LOAD_BBS_LAUNCH_GATED` | cycle | `HEAD_LOAD_BB_STAGING`, and the head load is staged with phase 2 armed: the cycle in which it launches, hits the L0 or forwards, and any cycle its launch is still gated (response-drop window, launch qualifiers) |
+| 104 | 62 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_LOAD_BBS_SLOW_OUTSTANDING` (staging free, cached-launch hold set), which never counted: the hold implies a cached load in flight, and 79 counts those cycles |
+| 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, and staging is free: the head load has not been captured yet (a selector or capture-recycle bubble) |
 
 ### Cache hierarchy 106–129: cache traffic, fetch stalls, miss latency, concurrency
 
@@ -466,7 +466,8 @@ pressure, cache activity and hit rates, L1I fetch-miss stalls, slot-cycles
 per miss, diagnostics, and average occupancy, with raw hex values and
 percentages. In the tree, `sw/apps/coremark` (`core_portme.c`) snapshots
 around the timed region and prints the full report, and `sw/apps/tomasulo_perf`
-prints a brief report for each micro-benchmark.
+prints a brief report for each micro-benchmark and checks that the head-load
+split (86 and 93 above) adds up.
 
 ## Verification
 
