@@ -25,9 +25,8 @@ PROVIDE(_stack_top = _end_of_stack);
 SECTIONS
 {
     /* _start comes first in ROM: ISA tests and crt0_bench.S define it in
-     * .text.init, crt0_riscv_tests.S in .init. */
+     * .text.init. */
     .text : {
-        KEEP(*(.init))
         KEEP(*(.text.init))
         *(.text*)
         *(.text.*)

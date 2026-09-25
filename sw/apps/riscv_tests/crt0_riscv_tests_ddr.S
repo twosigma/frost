@@ -11,7 +11,8 @@
 // PCREL_HI20 reach (la) and medlow's absolute lui range. _start is the DDR
 // region base itself (linker ORIGIN 0x8000_0000), so the stub builds it as a
 // constant with lui and slli, needing no relocation and no data-side load from
-// the boot ROM.
+// the boot ROM. link_riscv_tests_ddr.ld and link_riscv_tests_v.ld ASSERT that
+// placement.
 
     .section .boot, "ax", @progbits
     .globl _frost_riscv_tests_boot

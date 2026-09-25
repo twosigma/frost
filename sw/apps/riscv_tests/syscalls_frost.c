@@ -167,17 +167,6 @@ void _init(int cid, int nc)
 }
 
 // -----------------------------------------------------------------------
-// Barrier: a no-op, since FROST has one hart. Nothing calls it; benchmarks
-// that need a barrier get util.h's static barrier().
-// -----------------------------------------------------------------------
-
-static void __attribute__((noinline)) barrier(int ncores)
-{
-    (void) ncores;
-    // Single-core: no synchronization needed
-}
-
-// -----------------------------------------------------------------------
 // Printf implementation (ported from upstream syscalls.c)
 // -----------------------------------------------------------------------
 

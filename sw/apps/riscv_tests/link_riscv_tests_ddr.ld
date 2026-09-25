@@ -32,7 +32,6 @@ SECTIONS
     } > ROM
 
     .text : {
-        KEEP(*(.init))
         KEEP(*(.text.init))
         *(.text*)
         *(.text.*)
@@ -107,3 +106,7 @@ SECTIONS
     PROVIDE(MTIMECMP_HI_ADDR = 0x4000001C);
     PROVIDE(MSIP_ADDR        = 0x40000020);
 }
+
+/* crt0_riscv_tests_ddr.S jumps to the constant 0x8000_0000, which is correct
+ * only while _start sits at the DDR origin. */
+ASSERT(_start == ORIGIN(DDR), "link_riscv_tests_ddr.ld: _start must sit at ORIGIN(DDR) (the boot stub jumps to the constant 0x80000000)")
