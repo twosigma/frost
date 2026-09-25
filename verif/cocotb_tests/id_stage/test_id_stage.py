@@ -35,9 +35,6 @@ from utils.packed_structs import (
 )
 
 CLOCK_PERIOD_NS = 10
-RAS_PTR_BITS = 3
-BP_DIR_IDX_BITS = 10
-BRANCH_OP_WIDTH = 3
 
 NOP_INSTR = 0x00000013
 BASE_PC = 0x80001000

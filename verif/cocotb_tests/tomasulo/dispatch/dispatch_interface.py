@@ -33,27 +33,19 @@ from cocotb_tests.cpu_structs import (
 # Width constants from riscv_pkg
 # =============================================================================
 ROB_TAG_WIDTH = 5
-REG_ADDR_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
-RAS_PTR_BITS = 3
-BP_DIR_IDX_BITS = 10
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
 # instr_op_e: enum bit [InstrOpWidth-1:0] in riscv_pkg (8-bit, two-state, unsigned)
 OP_WIDTH = INSTR_OP_WIDTH
-MASK_OP = (1 << OP_WIDTH) - 1
 
 # rs_type_e: 3 bits
 RS_TYPE_WIDTH = 3
 
 # mem_size_e: 2 bits
 MEM_SIZE_WIDTH = 2
-
-# instr_t: 32 bits packed struct
-INSTR_WIDTH = 32
 
 # =============================================================================
 # RS type constants
@@ -121,6 +113,10 @@ LHU = _INSTR_OPS["LHU"]
 SB = _INSTR_OPS["SB"]
 SH = _INSTR_OPS["SH"]
 SW = _INSTR_OPS["SW"]
+# RV64 loads/stores
+LWU = _INSTR_OPS["LWU"]
+LD = _INSTR_OPS["LD"]
+SD = _INSTR_OPS["SD"]
 # M-extension
 MUL = _INSTR_OPS["MUL"]
 MULH = _INSTR_OPS["MULH"]
@@ -130,6 +126,12 @@ DIV = _INSTR_OPS["DIV"]
 DIVU = _INSTR_OPS["DIVU"]
 REM = _INSTR_OPS["REM"]
 REMU = _INSTR_OPS["REMU"]
+# RV64 M word forms
+MULW = _INSTR_OPS["MULW"]
+DIVW = _INSTR_OPS["DIVW"]
+DIVUW = _INSTR_OPS["DIVUW"]
+REMW = _INSTR_OPS["REMW"]
+REMUW = _INSTR_OPS["REMUW"]
 # FENCE and Zifencei
 FENCE = _INSTR_OPS["FENCE"]
 FENCE_I = _INSTR_OPS["FENCE_I"]
@@ -178,6 +180,28 @@ CZERO_NEZ = _INSTR_OPS["CZERO_NEZ"]
 PACK = _INSTR_OPS["PACK"]
 PACKH = _INSTR_OPS["PACKH"]
 BREV8 = _INSTR_OPS["BREV8"]
+# RV64 word forms (RV64I, Zba, Zbb, Zbkb)
+ADDIW = _INSTR_OPS["ADDIW"]
+SLLIW = _INSTR_OPS["SLLIW"]
+SRLIW = _INSTR_OPS["SRLIW"]
+SRAIW = _INSTR_OPS["SRAIW"]
+ADDW = _INSTR_OPS["ADDW"]
+SUBW = _INSTR_OPS["SUBW"]
+SLLW = _INSTR_OPS["SLLW"]
+SRLW = _INSTR_OPS["SRLW"]
+SRAW = _INSTR_OPS["SRAW"]
+ADD_UW = _INSTR_OPS["ADD_UW"]
+SH1ADD_UW = _INSTR_OPS["SH1ADD_UW"]
+SH2ADD_UW = _INSTR_OPS["SH2ADD_UW"]
+SH3ADD_UW = _INSTR_OPS["SH3ADD_UW"]
+SLLI_UW = _INSTR_OPS["SLLI_UW"]
+ROLW = _INSTR_OPS["ROLW"]
+RORW = _INSTR_OPS["RORW"]
+RORIW = _INSTR_OPS["RORIW"]
+CLZW = _INSTR_OPS["CLZW"]
+CTZW = _INSTR_OPS["CTZW"]
+CPOPW = _INSTR_OPS["CPOPW"]
+PACKW = _INSTR_OPS["PACKW"]
 # Zihintpause
 PAUSE = _INSTR_OPS["PAUSE"]
 # Privileged
@@ -188,6 +212,10 @@ WFI = _INSTR_OPS["WFI"]
 ECALL = _INSTR_OPS["ECALL"]
 EBREAK = _INSTR_OPS["EBREAK"]
 DRET = _INSTR_OPS["DRET"]
+# Markers dispatch substitutes for an illegal instruction or a fetch fault
+ILLEGAL = _INSTR_OPS["ILLEGAL"]
+FETCH_FAULT = _INSTR_OPS["FETCH_FAULT"]
+FETCH_PAGE_FAULT = _INSTR_OPS["FETCH_PAGE_FAULT"]
 # A extension
 LR_W = _INSTR_OPS["LR_W"]
 SC_W = _INSTR_OPS["SC_W"]
@@ -200,6 +228,17 @@ AMOMIN_W = _INSTR_OPS["AMOMIN_W"]
 AMOMAX_W = _INSTR_OPS["AMOMAX_W"]
 AMOMINU_W = _INSTR_OPS["AMOMINU_W"]
 AMOMAXU_W = _INSTR_OPS["AMOMAXU_W"]
+LR_D = _INSTR_OPS["LR_D"]
+SC_D = _INSTR_OPS["SC_D"]
+AMOSWAP_D = _INSTR_OPS["AMOSWAP_D"]
+AMOADD_D = _INSTR_OPS["AMOADD_D"]
+AMOXOR_D = _INSTR_OPS["AMOXOR_D"]
+AMOAND_D = _INSTR_OPS["AMOAND_D"]
+AMOOR_D = _INSTR_OPS["AMOOR_D"]
+AMOMIN_D = _INSTR_OPS["AMOMIN_D"]
+AMOMAX_D = _INSTR_OPS["AMOMAX_D"]
+AMOMINU_D = _INSTR_OPS["AMOMINU_D"]
+AMOMAXU_D = _INSTR_OPS["AMOMAXU_D"]
 # F extension
 FLW = _INSTR_OPS["FLW"]
 FSW = _INSTR_OPS["FSW"]
@@ -293,9 +332,7 @@ assert _offset == 0, f"Offset mismatch: {_offset}"
 # uses_fp_rs1, ...), so build_from_id_to_ex can derive the pre-decoded flags
 # from instruction_operation and tests need not set each one. In the CPU,
 # id_stage runs the same decode and registers the flags, and dispatch reads
-# them without re-decoding. The tables cover only the ops named above, not the
-# RV64-only integer ops (LD, ADDW, LR_D, ...), so a test that drives one of
-# those must set its flags explicitly.
+# them without re-decoding. The tables cover every instr_op_e member.
 _HAS_FP_DEST_OPS: frozenset[int] = frozenset(
     {
         FLW,
@@ -401,6 +438,27 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         PACK,
         PACKH,
         BREV8,
+        ADDIW,
+        SLLIW,
+        SRLIW,
+        SRAIW,
+        ADDW,
+        SUBW,
+        SLLW,
+        SRLW,
+        SRAW,
+        ADD_UW,
+        SH1ADD_UW,
+        SH2ADD_UW,
+        SH3ADD_UW,
+        SLLI_UW,
+        ROLW,
+        RORW,
+        RORIW,
+        CLZW,
+        CTZW,
+        CPOPW,
+        PACKW,
         MUL,
         MULH,
         MULHSU,
@@ -409,11 +467,18 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         DIVU,
         REM,
         REMU,
+        MULW,
+        DIVW,
+        DIVUW,
+        REMW,
+        REMUW,
         LB,
         LH,
         LW,
         LBU,
         LHU,
+        LWU,
+        LD,
         LR_W,
         SC_W,
         AMOSWAP_W,
@@ -425,6 +490,17 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         AMOMAX_W,
         AMOMINU_W,
         AMOMAXU_W,
+        LR_D,
+        SC_D,
+        AMOSWAP_D,
+        AMOADD_D,
+        AMOXOR_D,
+        AMOAND_D,
+        AMOOR_D,
+        AMOMIN_D,
+        AMOMAX_D,
+        AMOMINU_D,
+        AMOMAXU_D,
         CSRRW,
         CSRRS,
         CSRRC,
@@ -557,8 +633,9 @@ _USES_FP_RS3_OPS: frozenset[int] = frozenset(
     }
 )
 
-# Ops with no integer rs1: LUI, AUIPC, JAL, fences, system ops, and CSR
-# immediates. Ops that read an FP rs1 are excluded separately.
+# Ops with no integer rs1: LUI, AUIPC, JAL, fences, system ops, CSR
+# immediates, and the illegal and fetch-fault markers. Ops that read an FP rs1
+# are excluded separately.
 _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
     {
         LUI,
@@ -577,6 +654,9 @@ _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
         CSRRWI,
         CSRRSI,
         CSRRCI,
+        ILLEGAL,
+        FETCH_FAULT,
+        FETCH_PAGE_FAULT,
     }
 )
 
@@ -606,6 +686,11 @@ _USES_INT_RS2_OPS: frozenset[int] = frozenset(
         DIVU,
         REM,
         REMU,
+        MULW,
+        DIVW,
+        DIVUW,
+        REMW,
+        REMUW,
         SH1ADD,
         SH2ADD,
         SH3ADD,
@@ -626,9 +711,22 @@ _USES_INT_RS2_OPS: frozenset[int] = frozenset(
         CZERO_NEZ,
         PACK,
         PACKH,
+        ADDW,
+        SUBW,
+        SLLW,
+        SRLW,
+        SRAW,
+        ADD_UW,
+        SH1ADD_UW,
+        SH2ADD_UW,
+        SH3ADD_UW,
+        ROLW,
+        RORW,
+        PACKW,
         SB,
         SH,
         SW,
+        SD,
         SC_W,
         AMOSWAP_W,
         AMOADD_W,
@@ -639,11 +737,21 @@ _USES_INT_RS2_OPS: frozenset[int] = frozenset(
         AMOMAX_W,
         AMOMINU_W,
         AMOMAXU_W,
+        SC_D,
+        AMOSWAP_D,
+        AMOADD_D,
+        AMOXOR_D,
+        AMOAND_D,
+        AMOOR_D,
+        AMOMIN_D,
+        AMOMAX_D,
+        AMOMINU_D,
+        AMOMAXU_D,
     }
 )
 
 _RS_MUL_OPS: frozenset[int] = frozenset(
-    {MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU}
+    {MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW}
 )
 
 _RS_MEM_OPS: frozenset[int] = frozenset(
@@ -656,6 +764,9 @@ _RS_MEM_OPS: frozenset[int] = frozenset(
         SB,
         SH,
         SW,
+        LWU,
+        LD,
+        SD,
         FLW,
         FSW,
         FLD,
@@ -671,6 +782,17 @@ _RS_MEM_OPS: frozenset[int] = frozenset(
         AMOMAX_W,
         AMOMINU_W,
         AMOMAXU_W,
+        LR_D,
+        SC_D,
+        AMOSWAP_D,
+        AMOADD_D,
+        AMOXOR_D,
+        AMOAND_D,
+        AMOOR_D,
+        AMOMIN_D,
+        AMOMAX_D,
+        AMOMINU_D,
+        AMOMAXU_D,
         FENCE,
         FENCE_I,
         SFENCE_VMA,
@@ -745,7 +867,7 @@ _RS_FDIV_OPS: frozenset[int] = frozenset({FDIV_S, FSQRT_S, FDIV_D, FSQRT_D})
 
 _RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, SRET, DRET})
 
-_INT_STORE_OPS: frozenset[int] = frozenset({SB, SH, SW})
+_INT_STORE_OPS: frozenset[int] = frozenset({SB, SH, SW, SD})
 
 _BRANCH_OR_JUMP_OPS: frozenset[int] = frozenset(
     {BEQ, BNE, BLT, BGE, BLTU, BGEU, JAL, JALR}
@@ -816,8 +938,8 @@ _HAS_FP_FLAGS_OPS: frozenset[int] = frozenset(
     }
 )
 
-_LOAD_OPS: frozenset[int] = frozenset({LB, LH, LW, LBU, LHU})
-_LOAD_UNSIGNED_OPS: frozenset[int] = frozenset({LBU, LHU})
+_LOAD_OPS: frozenset[int] = frozenset({LB, LH, LW, LBU, LHU, LWU, LD})
+_LOAD_UNSIGNED_OPS: frozenset[int] = frozenset({LBU, LHU, LWU})
 _CSR_OPS: frozenset[int] = frozenset({CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI})
 _AMO_OPS: frozenset[int] = frozenset(
     {
@@ -832,6 +954,17 @@ _AMO_OPS: frozenset[int] = frozenset(
         AMOMAX_W,
         AMOMINU_W,
         AMOMAXU_W,
+        LR_D,
+        SC_D,
+        AMOSWAP_D,
+        AMOADD_D,
+        AMOXOR_D,
+        AMOAND_D,
+        AMOOR_D,
+        AMOMIN_D,
+        AMOMAX_D,
+        AMOMINU_D,
+        AMOMAXU_D,
     }
 )
 _FP_LOAD_OPS: frozenset[int] = frozenset({FLW, FLD})
@@ -894,8 +1027,8 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_jump_and_link_register": 1 if op == JALR else 0,
         "is_csr_instruction": 1 if op in _CSR_OPS else 0,
         "is_amo_instruction": 1 if op in _AMO_OPS else 0,
-        "is_lr": 1 if op == LR_W else 0,
-        "is_sc": 1 if op == SC_W else 0,
+        "is_lr": 1 if op in {LR_W, LR_D} else 0,
+        "is_sc": 1 if op in {SC_W, SC_D} else 0,
         "is_mret": 1 if op in {MRET, SRET, DRET} else 0,
         "is_sret": 1 if op == SRET else 0,
         "is_dret": 1 if op == DRET else 0,
@@ -913,6 +1046,27 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
     }
 
 
+# The fields id_stage takes from instr_operand_classifier, which selects its
+# neutral class for an illegal instruction or a fetch fault.
+_CLASSIFIER_FIELDS: tuple[str, ...] = (
+    "has_int_dest",
+    "has_fp_dest",
+    "uses_int_rs1",
+    "uses_int_rs2",
+    "uses_fp_rs1",
+    "uses_fp_rs2",
+    "uses_fp_rs3",
+    "rs_type",
+    "is_int_store",
+    "is_branch_or_jump",
+    "is_fence",
+    "is_fence_i",
+    "is_sfence_vma",
+    "is_csr_imm",
+    "has_fp_flags",
+)
+
+
 def build_from_id_to_ex(**kwargs: int) -> int:
     """Pack from_id_to_ex_t fields into a single bit vector.
 
@@ -920,12 +1074,17 @@ def build_from_id_to_ex(**kwargs: int) -> int:
     those fields; any other name raises ValueError.
 
     Pre-decoded dispatch fields that the caller does not set are derived from
-    instruction_operation, mirroring what id_stage computes and registers.
+    instruction_operation, mirroring what id_stage computes and registers. For
+    an illegal instruction or a fetch fault, the operand-classifier fields take
+    ID's neutral class instead (INT_RS, no operands, no destination).
     """
     unknown = sorted(set(kwargs) - set(_FROM_ID_TO_EX_OFFSETS))
     if unknown:
         raise ValueError(f"not from_id_to_ex_t fields: {', '.join(unknown)}")
     derived = _derive_pre_decoded_flags(int(kwargs.get("instruction_operation", 0)))
+    if kwargs.get("is_illegal_instruction") or kwargs.get("is_fetch_fault"):
+        neutral = _derive_pre_decoded_flags(ILLEGAL)
+        derived.update({name: neutral[name] for name in _CLASSIFIER_FIELDS})
     for name, value in derived.items():
         kwargs.setdefault(name, value)
 

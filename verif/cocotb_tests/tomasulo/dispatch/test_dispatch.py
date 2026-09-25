@@ -47,6 +47,15 @@ from .dispatch_interface import (
     FMUL_S,
     FDIV_S,
     CSRRW,
+    LD,
+    LWU,
+    SD,
+    ADDW,
+    ADDIW,
+    MULW,
+    LR_D,
+    SC_D,
+    AMOADD_D,
     RS_INT,
     RS_MUL,
     RS_MEM,
@@ -55,12 +64,17 @@ from .dispatch_interface import (
     RS_FDIV,
     RS_NONE,
     MEM_SIZE_BYTE,
+    MEM_SIZE_WORD,
+    MEM_SIZE_DOUBLE,
 )
 
 # Major opcodes (instruction bits [6:0]), values from opc_e in riscv_pkg.
 # OPC_OP is the R-type integer form, OPC_OP_IMM the I-type immediate form.
 OPC_OP = 0b0110011
 OPC_OP_IMM = 0b0010011
+OPC_OP_32 = 0b0111011
+OPC_OP_IMM_32 = 0b0011011
+OPC_AMO = 0b0101111
 OPC_LOAD = 0b0000011
 OPC_STORE = 0b0100011
 OPC_BRANCH = 0b1100011
@@ -1005,6 +1019,82 @@ async def test_memory_signed(dut: Any) -> None:
 
     rs = dut_if.read_rs_dispatch()
     assert rs["mem_signed"] == 0, "LBU should have mem_signed=0"
+
+
+@cocotb.test()
+async def test_rv64_ops_dispatch_with_decoded_flags(dut: Any) -> None:
+    """RV64-only ops get their station, destination, sources and memory size.
+
+    The packets carry the flags id_stage registers for each op, as
+    build_from_id_to_ex derives them.
+    """
+    dut_if = await _setup(dut)
+    # Both INT sources are renamed, so a source the op reads is not ready.
+    dut_if.drive_int_src1(renamed=1, tag=7, value=0)
+    dut_if.drive_int_src2(renamed=1, tag=9, value=0)
+
+    # name, op, opcode, funct3, station, writes rd, reads rs2, memory size
+    cases = (
+        ("LD", LD, OPC_LOAD, 0b011, RS_MEM, True, False, MEM_SIZE_DOUBLE),
+        ("LWU", LWU, OPC_LOAD, 0b110, RS_MEM, True, False, MEM_SIZE_WORD),
+        ("SD", SD, OPC_STORE, 0b011, RS_MEM, False, True, MEM_SIZE_DOUBLE),
+        ("ADDW", ADDW, OPC_OP_32, 0b000, RS_INT, True, True, None),
+        ("ADDIW", ADDIW, OPC_OP_IMM_32, 0b000, RS_INT, True, False, None),
+        ("MULW", MULW, OPC_OP_32, 0b000, RS_MUL, True, True, None),
+        ("LR_D", LR_D, OPC_AMO, 0b011, RS_MEM, True, False, MEM_SIZE_DOUBLE),
+        ("SC_D", SC_D, OPC_AMO, 0b011, RS_MEM, True, True, MEM_SIZE_DOUBLE),
+        ("AMOADD_D", AMOADD_D, OPC_AMO, 0b011, RS_MEM, True, True, MEM_SIZE_DOUBLE),
+    )
+    for name, op, opcode, funct3, station, writes_rd, reads_rs2, size in cases:
+        dut_if.drive_instruction(
+            valid=True,
+            rs1_addr=1,
+            rs2_addr=2,
+            instruction_operation=op,
+            instruction=_make_instr(
+                dest_reg=5, opcode=opcode, funct3=funct3, source_reg_1=1, source_reg_2=2
+            ),
+        )
+        await dut_if.step()
+
+        rs = dut_if.read_rs_dispatch()
+        assert rs["valid"] == 1, name
+        assert rs["rs_type"] == station, f"{name}: rs_type {rs['rs_type']}"
+        assert dut_if.rat_alloc_valid == writes_rd, f"{name}: RAT rename"
+        assert rs["src1_ready"] == 0 and rs["src1_tag"] == 7, f"{name}: src1"
+        assert rs["src2_ready"] == (0 if reads_rs2 else 1), f"{name}: src2"
+        if size is not None:
+            assert rs["mem_size"] == size, f"{name}: mem_size {rs['mem_size']}"
+
+    # LWU zero-extends; LD needs no extension.
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=LWU,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b110),
+    )
+    await dut_if.step()
+    assert dut_if.read_rs_dispatch()["mem_signed"] == 0, "LWU should zero-extend"
+
+    # An illegal instruction and a fetch fault take ID's neutral class: INT_RS,
+    # no destination, and no source to wait for.
+    for flag in ("is_illegal_instruction", "is_fetch_fault"):
+        dut_if.drive_instruction(
+            valid=True,
+            rs1_addr=1,
+            rs2_addr=2,
+            instruction_operation=ADD,
+            instruction=_make_instr(
+                dest_reg=5, opcode=OPC_OP, source_reg_1=1, source_reg_2=2
+            ),
+            **{flag: 1},
+        )
+        await dut_if.step()
+
+        rs = dut_if.read_rs_dispatch()
+        assert rs["valid"] == 1, flag
+        assert rs["rs_type"] == RS_INT, flag
+        assert not dut_if.rat_alloc_valid, f"{flag}: no destination"
+        assert rs["src1_ready"] == 1 and rs["src2_ready"] == 1, f"{flag}: sources"
 
 
 # =============================================================================
