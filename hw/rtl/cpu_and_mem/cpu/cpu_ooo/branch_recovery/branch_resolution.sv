@@ -52,7 +52,6 @@ module branch_resolution #(
     input logic i_early_mispredict_active,
     input logic i_early_backend_recovery_pending,
     input logic i_mispredict_recovery_pending,
-    input riscv_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
     input logic i_flush_for_trap,
     input logic i_flush_for_mret,
     input logic i_fence_i_flush,
@@ -75,7 +74,6 @@ module branch_resolution #(
   logic early_mispredict_active;
   logic early_backend_recovery_pending;
   logic mispredict_recovery_pending;
-  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   logic flush_for_trap;
   logic flush_for_mret;
   logic fence_i_flush;
@@ -88,7 +86,6 @@ module branch_resolution #(
   assign early_mispredict_active        = i_early_mispredict_active;
   assign early_backend_recovery_pending = i_early_backend_recovery_pending;
   assign mispredict_recovery_pending    = i_mispredict_recovery_pending;
-  assign mispredict_commit_q            = i_mispredict_commit_q;
   assign flush_for_trap                 = i_flush_for_trap;
   assign flush_for_mret                 = i_flush_for_mret;
   assign fence_i_flush                  = i_fence_i_flush;
@@ -100,7 +97,6 @@ module branch_resolution #(
   logic branch_issue_checkpoint_live;
   logic [riscv_pkg::ReorderBufferTagWidth:0] branch_issue_age;
   logic [riscv_pkg::ReorderBufferTagWidth:0] early_flush_age;
-  logic [riscv_pkg::ReorderBufferTagWidth:0] commit_flush_age;
   // TIMING: compare, then mux. Computing each checkpoint's live bit first
   // lets all eight in_use and owner-tag compares run in parallel straight out
   // of the checkpoint registers, leaving only a 1-bit 8:1 select behind
@@ -131,7 +127,6 @@ module branch_resolution #(
   // unresolved.
   assign branch_issue_age = {1'b0, branch_predicate_tag} - {1'b0, head_tag};
   assign early_flush_age  = {1'b0, early_mispredict_tag} - {1'b0, head_tag};
-  assign commit_flush_age = {1'b0, mispredict_commit_q.tag} - {1'b0, head_tag};
 
   always_comb begin
     branch_issue_is_flushed = 1'b0;

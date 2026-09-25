@@ -20,7 +20,6 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 from cocotb_tests.cpu_structs import (
-    MISPREDICT_COMMIT_FIELDS,
     BRANCH_UPDATE_FIELDS,
     RS_ISSUE_FIELDS,
 )
@@ -89,11 +88,6 @@ def _pack_rs_issue(fields: Mapping[str, int | bool]) -> int:
     return _pack_struct(RS_ISSUE_FIELDS, fields)
 
 
-def _pack_mispredict_commit(fields: Mapping[str, int | bool]) -> int:
-    """Pack a mispredict_commit_capture_t value."""
-    return _pack_struct(MISPREDICT_COMMIT_FIELDS, fields)
-
-
 def _read_branch_update(dut: Any) -> dict[str, Any]:
     """Read and unpack the branch update output."""
     return _unpack_struct(BRANCH_UPDATE_FIELDS, int(dut.o_branch_update.value))
@@ -122,7 +116,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_mispredict_active.value = 0
     dut.i_early_backend_recovery_pending.value = 0
     dut.i_mispredict_recovery_pending.value = 0
-    dut.i_mispredict_commit_q.value = 0
     dut.i_flush_for_trap.value = 0
     dut.i_flush_for_mret.value = 0
     dut.i_fence_i_flush.value = 0
@@ -495,7 +488,6 @@ async def test_commit_recovery_suppresses_all_branch_resolution(dut: Any) -> Non
 
     _drive_issue(dut, {"rob_tag": 3})
     dut.i_mispredict_recovery_pending.value = 1
-    dut.i_mispredict_commit_q.value = _pack_mispredict_commit({"tag": 2})
     await _settle()
 
     _assert_no_branch_update(dut)

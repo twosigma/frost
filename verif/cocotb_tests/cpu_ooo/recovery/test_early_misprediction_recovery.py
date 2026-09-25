@@ -52,7 +52,6 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to their idle values."""
     dut.i_branch_update.value = 0
     dut.i_rs_issue_int.value = 0
-    dut.i_head_tag.value = 0
     dut.i_is_jalr_issue.value = 0
     dut.i_branch_taken_resolved.value = 0
     dut.i_branch_target_resolved.value = 0

@@ -38,7 +38,6 @@ module early_misprediction_recovery #(
 
     input riscv_pkg::reorder_buffer_branch_update_t i_branch_update,
     input riscv_pkg::rs_issue_t i_rs_issue_int,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_tag,
     input logic i_is_jalr_issue,
     input logic i_branch_taken_resolved,
     input logic [XLEN-1:0] i_branch_target_resolved,
@@ -75,7 +74,6 @@ module early_misprediction_recovery #(
   // --- Port aliases: the body uses these unprefixed names.
   riscv_pkg::reorder_buffer_branch_update_t branch_update;
   riscv_pkg::rs_issue_t rs_issue_int;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic is_jalr_issue;
   logic branch_taken_resolved;
   logic [XLEN-1:0] branch_target_resolved;
@@ -89,7 +87,6 @@ module early_misprediction_recovery #(
   logic mret_taken_reg;
   assign branch_update               = i_branch_update;
   assign rs_issue_int                = i_rs_issue_int;
-  assign head_tag                    = i_head_tag;
   assign is_jalr_issue               = i_is_jalr_issue;
   assign branch_taken_resolved       = i_branch_taken_resolved;
   assign branch_target_resolved      = i_branch_target_resolved;
@@ -136,8 +133,6 @@ module early_misprediction_recovery #(
 
   // Fire when a conditional-branch misprediction resolves at execute. JALR
   // mispredictions recover at commit.
-  logic [riscv_pkg::ReorderBufferTagWidth:0] early_branch_age;
-  assign early_branch_age = {1'b0, branch_update.tag} - {1'b0, head_tag};
   assign early_mispredict_capture = branch_update.mispredicted && !early_mispredict_pending &&
                                     !early_backend_recovery_pending;
   // TIMING: the wide redirect/BTB/checkpoint payload does not need the
