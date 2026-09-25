@@ -23,7 +23,8 @@
  * records cold reads, rereads warm, and compares both with expected.
  * Shapes include ascending and descending 32-bit reads, odd-half-first reads,
  * 64-bit reads, and a cold half-store followed by both half-loads. A mismatch
- * reports address, shape, cold/warm values, and expected value.
+ * reports shape, address, and the values read with their expected values: the
+ * cold and warm reads, or the stored half and its neighbor.
  */
 
 #include <stdint.h>
@@ -85,6 +86,23 @@ report_mismatch(const char *shape, uint32_t i, uint32_t got_cold, uint32_t got_w
                     (unsigned) got_cold,
                     (unsigned) got_warm,
                     (unsigned) want);
+    }
+    g_fail++;
+}
+
+/* Store-forward shape: the stored half and its neighbor, each with its own
+ * expected value. */
+static void
+report_stfwd(uint32_t si, uint32_t got_s, uint32_t want_s, uint32_t got_n, uint32_t want_n)
+{
+    if (g_fail < 10u) {
+        uart_printf("DIVERGE shape=stfwd word=%u addr=%x stored=%x want=%x neighbor=%x want=%x\n",
+                    (unsigned) si,
+                    (unsigned) (BUF_BASE + 4u * si),
+                    (unsigned) got_s,
+                    (unsigned) want_s,
+                    (unsigned) got_n,
+                    (unsigned) want_n);
     }
     g_fail++;
 }
@@ -167,11 +185,12 @@ static void shape_store_forward(uint32_t round)
         uint32_t si = i + (hi_first ? 1u : 0u);
         uint32_t ni = i + (hi_first ? 0u : 1u);
         uint32_t sv = expect_word(si, round) ^ 0xA5A5A5A5u;
+        uint32_t nv = expect_word(ni, round);
         buf[si] = sv;
         uint32_t got_s = buf[si];
         uint32_t got_n = buf[ni];
-        if (got_s != sv || got_n != expect_word(ni, round)) {
-            report_mismatch("stfwd", si, got_s, got_n, sv);
+        if (got_s != sv || got_n != nv) {
+            report_stfwd(si, got_s, sv, got_n, nv);
         }
     }
 }
