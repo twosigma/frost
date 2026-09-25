@@ -29,9 +29,9 @@
  *      which shows that the counter sees the drain. Needs the profiling
  *      counters (PERF_COUNTERS=1, as the cocotb entry builds); without them
  *      the check reports SKIP.
- *   C. PAUSE and the FENCE encodings that differ from it in one field retire,
- *      and execution continues past each. An instruction that never retires
- *      keeps the run from reaching <<PASS>>.
+ *   C. PAUSE, the FENCE encodings that differ from it in one field, fence
+ *      rw,rw and fence.tso retire, and execution continues past each. An
+ *      instruction that never retires keeps the run from reaching <<PASS>>.
  */
 
 #include <stdint.h>

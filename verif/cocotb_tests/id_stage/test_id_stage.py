@@ -531,9 +531,9 @@ async def test_illegal_pd_input_clears_operand_classification(dut: Any) -> None:
     assert packet["is_not_nop"] is True
 
 
-# PAUSE is exactly 0x0100000F. The other words are FENCE encodings that differ
-# from it in one field: fence r,0 (0x0200000F, pred=R), fence rw,rw, fence.tso,
-# fence 0,0, and pred=W with rd or rs1 nonzero.
+# PAUSE is exactly 0x0100000F. The other words are FENCE encodings: four that
+# differ from it in one field (fence r,0 = 0x0200000F with pred=R, fence 0,0,
+# and pred=W with rd or rs1 nonzero), plus fence rw,rw and fence.tso.
 PAUSE_INSTR = 0x0100000F
 FENCE_LOOKALIKES = (
     0x0200000F,
