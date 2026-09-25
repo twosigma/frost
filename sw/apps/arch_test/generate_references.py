@@ -73,7 +73,9 @@ def _signature_alignment(header: Path) -> tuple[int, int]:
     bound has no numeric alignment.
     """
     text = header.read_text().replace("\\\n", " ")
-    defines = dict(re.findall(r"^\s*#define\s+(\w+)\s+(\d+)\s*$", text, re.MULTILINE))
+    # A numeric #define, optionally followed by a // or /* */ comment.
+    define_re = r"^\s*#define\s+(\w+)\s+(\d+)\s*(?://.*|/\*.*\*/)?\s*$"
+    defines = dict(re.findall(define_re, text, re.MULTILINE))
     alignments = []
     for label in ("begin_signature", "end_signature"):
         match = re.search(rf"\.align\s+(\w+)\s*;\s*\.global\s+{label}\b", text)
@@ -196,8 +198,8 @@ def declares_rv64(test_src: Path) -> bool:
 
 def reference_path(test_src: Path) -> Path:
     """Return the reference file for a test: references/<suite>/<extension>/<test>."""
-    # Path shape: .../riscv-test-suite/<suite>/<extension>/src/<test>.S
-    suite, extension = test_src.parents[2].name, test_src.parents[1].name
+    # Path shape: .../riscv-test-suite/<suite>/<extension>/src/[<subdir>/]<test>.S
+    suite, extension = test_src.relative_to(SUITE_ROOT).parts[:2]
     return REFERENCES_DIR / suite / extension / f"{test_src.stem}.reference_output"
 
 

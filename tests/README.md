@@ -131,9 +131,9 @@ The extensions are I, M, A, F, D, C, B, K (Zbkb only), Zicond, Zifencei,
 privilege, D_Zcd, and hints; Zcf exists only on RV32. The tests come from the
 suite's `rv64i_m` directory; F and D also run the tests that RV32 and RV64
 share, which the suite keeps under `rv32i_m/F` and `rv32i_m/D`, except the
-`*_b15` fused multiply-add sets in subdirectories, which are too large to
-simulate. Every test runs with XLEN=64 and FLEN=64. The filters and exclusions
-in the runner define the exact set.
+`*_b15` fused multiply-add sets in subdirectories, which together are too
+large to simulate. Every test runs with XLEN=64 and FLEN=64. The filters and
+exclusions in the runner define the exact set.
 
 ```bash
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --extensions I M A
@@ -149,12 +149,13 @@ in the runner define the exact set.
 | `bram` | BRAM | BRAM |
 | `icache` (diagnostic) | DDR | BRAM |
 
-The pytest entry point reads the tier from `FROST_ARCH_MEM_CONFIG`. Tests
-with more than 5,000 cases (`SIM_MAX_TEST_CASES`) are left out unless you pass
-`--no-sim-filter`. In the `bram` and `icache` tiers, a test too large for low
-BRAM (95 KiB of code, 1 KiB reserved for debug, and 160 KiB of data and
-stack) reports SKIP; the `ddr` tier still runs it. `--shard K/N` runs part K
-of N of each selected extension, with the parts balanced by case count.
+The pytest entry point reads the tier from `FROST_ARCH_MEM_CONFIG`. Extension
+runs leave out tests with more than 5,000 cases (`SIM_MAX_TEST_CASES`) unless
+you pass `--no-sim-filter`; `--test` runs any one test. In the `bram` and
+`icache` tiers, a test too large for low BRAM (95 KiB of code, 1 KiB reserved
+for debug, and 160 KiB of data and stack) reports SKIP; the `ddr` tier still
+runs it. `--shard K/N` runs part K of N of each selected extension, with the
+parts balanced by case count.
 
 CI skips Zifencei in BRAM, because ordinary stores cannot reach the separate
 instruction BRAM, and F and D in DDR, to fit the runner time budget; the BRAM

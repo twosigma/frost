@@ -233,11 +233,9 @@ def get_reference_path(test_src: Path) -> Path:
     and come from generate_references.py, run with the image's pinned Spike. The
     suite name comes from the test's own path.
     """
-    # Path shape: .../riscv-test-suite/{SUITE}/{EXT}/src/{test}.S
-    suite_name = test_src.parent.parent.parent.name
-    ext_name = test_src.parent.parent.name
-    test_stem = test_src.stem
-    return REFERENCES_DIR / suite_name / ext_name / f"{test_stem}.reference_output"
+    # Path shape: .../riscv-test-suite/{SUITE}/{EXT}/src/[{subdir}/]{test}.S
+    suite_name, ext_name = test_src.relative_to(SUITE_ROOT).parts[:2]
+    return REFERENCES_DIR / suite_name / ext_name / f"{test_src.stem}.reference_output"
 
 
 def compile_test(
@@ -619,7 +617,7 @@ Available extensions: {", ".join(SUPPORTED_EXTENSIONS)}
     if args.parallel != 1:
         parser.error(PARALLEL_UNSAFE_MESSAGE)
     shard = None
-    if args.shard:
+    if args.shard is not None:
         match = re.fullmatch(r"(\d+)/(\d+)", args.shard)
         if not match or not 1 <= int(match.group(1)) <= int(match.group(2)):
             parser.error("--shard must be K/N with 1 <= K <= N")

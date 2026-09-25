@@ -14,9 +14,12 @@
 
 """Fast regression tests for standalone simulation-runner result handling."""
 
+import importlib.util
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -98,6 +101,61 @@ def test_arch_shards_partition_tests_by_case_count(tmp_path: Path) -> None:
         for shard in shards
     ]
     assert loads == [900, 800, 750]
+
+
+def _generate_references() -> ModuleType:
+    """Load sw/apps/arch_test/generate_references.py as a module."""
+    path = test_arch_compliance.ARCH_TEST_APP_DIR / "generate_references.py"
+    spec = importlib.util.spec_from_file_location("generate_references", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_arch_reference_paths_keep_the_suite() -> None:
+    """Runner and generator map a test in a src subdirectory under its suite too."""
+    generator = _generate_references()
+    src = test_arch_compliance.SUITE_ROOT / "rv32i_m" / "F" / "src"
+    refs = test_arch_compliance.REFERENCES_DIR / "rv32i_m" / "F"
+    for test, reference in (
+        (src / "fadd_b1-01.S", refs / "fadd_b1-01.reference_output"),
+        (
+            src / "fmadd_b15" / "fmadd_b15-001.S",
+            refs / "fmadd_b15-001.reference_output",
+        ),
+    ):
+        assert test_arch_compliance.get_reference_path(test) == reference
+        assert generator.reference_path(test) == reference
+
+
+def test_arch_empty_shard_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty --shard is a usage error, not an unsharded run."""
+
+    def run_extension_tests(*_: object, **__: object) -> list[object]:
+        raise AssertionError("the runner started tests")
+
+    monkeypatch.setattr(
+        test_arch_compliance, "run_extension_tests", run_extension_tests
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["test_arch_compliance.py", "--extensions", "F", "--shard", ""]
+    )
+    with pytest.raises(SystemExit) as exit_info:
+        test_arch_compliance.main()
+    assert exit_info.value.code == 2
+
+
+def test_signature_alignment_accepts_a_commented_define(tmp_path: Path) -> None:
+    """A trailing comment on FROST_SIG_ALIGN does not hide its value."""
+    generator = _generate_references()
+    header = (generator.SCRIPT_DIR / "model_test.h").read_text()
+    commented = header.replace(
+        "#define FROST_SIG_ALIGN 4", "#define FROST_SIG_ALIGN 4 // 16 B"
+    )
+    assert commented != header
+    (tmp_path / "model_test.h").write_text(commented)
+    assert generator._signature_alignment(tmp_path / "model_test.h") == (4, 4)
 
 
 def test_signature_extractors_ignore_interspersed_logs() -> None:
