@@ -33,8 +33,9 @@
 
 /* Word offsets (in 32-bit words) covering low, two mid points, and far. The
  * low case starts at the second 32-byte line, since ddr_preload fills the
- * first. The mid cases share its direct-mapped L1D index (OFF_MID_B also its
- * L2 index), so they evict the low line and later reads of it miss. */
+ * first. The mid cases share the low line's direct-mapped L1D index
+ * (OFF_MID_B also its L2 index), so they evict it and later reads of the low
+ * words miss. */
 #define OFF_LOW (32u / 4u)
 #define OFF_LOW2 (OFF_LOW + 1u)
 #define OFF_MID_A (OFF_LOW + 0x00040000u / 4u) /* 256 KiB past OFF_LOW (beyond L1) */
