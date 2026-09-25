@@ -21,8 +21,9 @@
  * combines the front-end stall and serialization sources and the registered
  * trap and xRET state into the pipeline_ctrl_t that IF, PD, and ID consume.
  * It holds:
- *   - the CSR in-flight state (csr_in_flight, serializing_alloc_fire) and the
- *     branch counters (checkpointed in flight, unresolved);
+ *   - the CSR in-flight state (csr_in_flight, serializing_alloc_fire), the
+ *     checkpointed-branch counter, and the per-checkpoint unresolved-branch
+ *     bits;
  *   - the CSR and control-flow serialization stalls and their registered
  *     stall and replay signals (stall_q, id_stall_q, replay_*);
  *   - the post-flush BRAM holdoff;
@@ -38,7 +39,14 @@ module ooo_pipeline_control #(
     input logic i_rst,
 
     input riscv_pkg::reorder_buffer_alloc_req_t i_rob_alloc_req,
+    // Slot 2's allocation request. With slot 1's, it tells whether the
+    // checkpoint saved this cycle belongs to a conditional branch or JALR.
+    input riscv_pkg::reorder_buffer_alloc_req_t i_rob_alloc_req_2,
+    // Checkpoint save from dispatch (either slot) and its checkpoint id.
     input logic i_rob_checkpoint_valid,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_rob_checkpoint_id,
+    // Checkpoints held by in-flight branches (cpu_ooo's checkpoint_in_use).
+    input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_in_use,
     input logic i_csr_commit_fire,
     input logic i_correct_branch_commit_pending,
     input logic i_mispredict_recovery_pending,
@@ -50,7 +58,9 @@ module ooo_pipeline_control #(
     input logic i_dispatch_stall,
     input logic i_frontend_resource_stall,
     input logic i_csr_wb_pending,
+    // A branch resolved as correctly predicted, and its checkpoint id.
     input logic i_branch_unresolved_decrement,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_branch_unresolved_checkpoint_id,
     input logic i_front_end_indirect_control_flow_pending,
     input logic i_pd_unpredicted_control_flow,
     input logic i_id_unpredicted_control_flow,
@@ -84,7 +94,10 @@ module ooo_pipeline_control #(
 
   // --- Port aliases.
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req;
+  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
   logic rob_checkpoint_valid;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
   logic csr_commit_fire;
   logic correct_branch_commit_pending;
   logic mispredict_recovery_pending;
@@ -96,12 +109,16 @@ module ooo_pipeline_control #(
   logic dispatch_stall;
   logic csr_wb_pending;
   logic branch_unresolved_decrement;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] branch_unresolved_checkpoint_id;
   logic front_end_indirect_control_flow_pending;
   logic pd_unpredicted_control_flow;
   logic id_unpredicted_control_flow;
   logic flush_pipeline;
   assign rob_alloc_req                           = i_rob_alloc_req;
+  assign rob_alloc_req_2                         = i_rob_alloc_req_2;
   assign rob_checkpoint_valid                    = i_rob_checkpoint_valid;
+  assign rob_checkpoint_id                       = i_rob_checkpoint_id;
+  assign checkpoint_in_use                       = i_checkpoint_in_use;
   assign csr_commit_fire                         = i_csr_commit_fire;
   assign correct_branch_commit_pending           = i_correct_branch_commit_pending;
   assign mispredict_recovery_pending             = i_mispredict_recovery_pending;
@@ -113,6 +130,7 @@ module ooo_pipeline_control #(
   assign dispatch_stall                          = i_dispatch_stall;
   assign csr_wb_pending                          = i_csr_wb_pending;
   assign branch_unresolved_decrement             = i_branch_unresolved_decrement;
+  assign branch_unresolved_checkpoint_id         = i_branch_unresolved_checkpoint_id;
   assign front_end_indirect_control_flow_pending = i_front_end_indirect_control_flow_pending;
   assign pd_unpredicted_control_flow             = i_pd_unpredicted_control_flow;
   assign id_unpredicted_control_flow             = i_id_unpredicted_control_flow;
@@ -142,9 +160,6 @@ module ooo_pipeline_control #(
   // The in-flight counter counts up on the predicate that allocates a
   // checkpoint, from either dispatch slot.
   assign branch_alloc_fire = rob_checkpoint_valid;
-  logic branch_unresolved_alloc_fire;
-  assign branch_unresolved_alloc_fire =
-      rob_alloc_req.alloc_valid && rob_alloc_req.is_branch && !rob_alloc_req.is_jal;
   assign branch_commit_fire = correct_branch_commit_pending ||
                              (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint);
 
@@ -176,53 +191,51 @@ module ooo_pipeline_control #(
 
   assign branch_in_flight = (branch_in_flight_count != '0);
 
-  // Track the number of branches that have dispatched but not yet resolved.
-  logic [BranchInFlightCountWidth-1:0] branch_unresolved_count;
+  // Unresolved branches, one bit per checkpoint. Every branch or jump saves a
+  // checkpoint when it dispatches, from either slot (at most one per bundle),
+  // and holds it until it commits or is flushed. The save marks the
+  // checkpoint unresolved for a conditional branch or JALR (a JAL resolves at
+  // allocation), and a correct resolution clears it. A mispredicted branch
+  // keeps its bit until its recovery frees the checkpoint (a JALR recovers
+  // only at commit), since everything younger is on the wrong path. Masking
+  // with checkpoint_in_use drops flushed branches, so an early recovery keeps
+  // the older unresolved branches it does not flush. The mask trails a
+  // partial flush by a few cycles, while the flushed front end refills.
+  // TIMING: the late correct-resolution pulse only clears a bit, so no
+  // counter arithmetic sits behind it; the checkpoint ids and the save come
+  // from dispatch and the issue payload.
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_unresolved_q;
+  logic checkpoint_save_unresolved;
   logic branch_unresolved;
-  logic branch_unresolved_is_one;
-  // branch_unresolved_decrement arrives late: INT-RS issue -> branch
-  // resolution age compare -> resolved-correct. Both update arms are
-  // precomputed from early signals, so the late decrement steers a single 2:1
-  // mux in front of the flops instead of re-deriving the whole update case.
-  // The dont_touch attributes stop the arm nets from being flattened back into
-  // the late select cone; a keep attribute alone does not survive opt_design
-  // Explore.
-  (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_dec;
-  (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_not_dec;
-  (* dont_touch = "true" *) logic unresolved_is_one_if_dec;
-  (* dont_touch = "true" *) logic unresolved_is_one_if_not_dec;
-  always_comb begin
-    if (branch_unresolved_alloc_fire) begin
-      unresolved_count_if_not_dec  = branch_unresolved_count + 1'b1;
-      unresolved_is_one_if_not_dec = (branch_unresolved_count == '0);
-      // alloc and decrement together net out to a hold
-      unresolved_count_if_dec      = branch_unresolved_count;
-      unresolved_is_one_if_dec     = branch_unresolved_is_one;
-    end else begin
-      unresolved_count_if_not_dec  = branch_unresolved_count;
-      unresolved_is_one_if_not_dec = branch_unresolved_is_one;
-      if (branch_unresolved_count != '0) begin
-        unresolved_count_if_dec  = branch_unresolved_count - 1'b1;
-        unresolved_is_one_if_dec = (branch_unresolved_count == BranchInFlightCountWidth'(2));
-      end else begin
-        unresolved_count_if_dec  = branch_unresolved_count;
-        unresolved_is_one_if_dec = branch_unresolved_is_one;
-      end
-    end
-  end
+  // A bundle holds at most one branch, so slot 1's class picks the saver.
+  assign checkpoint_save_unresolved =
+      rob_alloc_req.is_branch ? !rob_alloc_req.is_jal : !rob_alloc_req_2.is_jal;
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) begin
-      branch_unresolved_count  <= '0;
-      branch_unresolved_is_one <= 1'b0;
-    end else if (branch_unresolved_decrement) begin
-      branch_unresolved_count  <= unresolved_count_if_dec;
-      branch_unresolved_is_one <= unresolved_is_one_if_dec;
+    if (i_rst) begin
+      checkpoint_unresolved_q <= '0;
     end else begin
-      branch_unresolved_count  <= unresolved_count_if_not_dec;
-      branch_unresolved_is_one <= unresolved_is_one_if_not_dec;
+      if (branch_unresolved_decrement)
+        checkpoint_unresolved_q[branch_unresolved_checkpoint_id] <= 1'b0;
+      if (rob_checkpoint_valid)
+        checkpoint_unresolved_q[rob_checkpoint_id] <= checkpoint_save_unresolved;
     end
   end
-  assign branch_unresolved = (branch_unresolved_count != '0);
+  assign branch_unresolved = |(checkpoint_unresolved_q & checkpoint_in_use);
+
+`ifndef SYNTHESIS
+  // The bits rely on a save taking a free checkpoint and a resolution
+  // naming a live one.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !$isunknown(
+            {rob_checkpoint_valid, branch_unresolved_decrement, checkpoint_in_use}
+        )) begin
+      p_unresolved_save_takes_free_checkpoint :
+      assert (!rob_checkpoint_valid || !checkpoint_in_use[rob_checkpoint_id]);
+      p_unresolved_clear_names_live_checkpoint :
+      assert (!branch_unresolved_decrement || checkpoint_in_use[branch_unresolved_checkpoint_id]);
+    end
+  end
+`endif
 
   // front_end_prediction_fence_pending has no consumer: prediction is not
   // suppressed while an unpredicted control-flow instruction is in PD or ID,

@@ -166,8 +166,8 @@ module branch_resolution #(
     //       only be head_ready the cycle after its branch_update.
     //   (b) resolution writes to entries that will be flushed are harmless:
     //       flush-after-head invalidates them next cycle, allocation re-inits
-    //       the branch bits, and the unresolved-branch counter resets on
-    //       flush_pipeline.
+    //       the branch bits, and the unresolved-branch bit such a write
+    //       clears in ooo_pipeline_control belongs to a flushed branch.
     //   (c) an early_mispredict_fire coinciding with a head-mispredict commit
     //       is dropped one cycle later.  early_mispredict_active gates on
     //       !mispredict_recovery_pending (early_misprediction_recovery.sv),
@@ -276,9 +276,10 @@ module branch_resolution #(
     branch_update.mispredicted = branch_mispredicted;
   end
 
-  // Set when a branch resolves as correctly predicted. It is also the
-  // unresolved-branch decrement below, which lets front_end_cf_serialize_stall
-  // drop early.
+  // Set when a branch resolves as correctly predicted. As
+  // branch_unresolved_decrement below it clears the branch's unresolved bit in
+  // ooo_pipeline_control, so front_end_cf_serialize_stall can drop before the
+  // branch commits.
   logic branch_resolved_correct;
   assign branch_resolved_correct = branch_update.valid && !branch_update.mispredicted;
 

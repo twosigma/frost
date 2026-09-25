@@ -69,6 +69,23 @@ def _drive_alloc_req(dut: Any, fields: Mapping[str, int | bool]) -> None:
     dut.i_rob_alloc_req.value = _pack_alloc_req(fields)
 
 
+def _drive_alloc_req_2(dut: Any, fields: Mapping[str, int | bool]) -> None:
+    """Drive slot 2's ROB allocation request struct."""
+    dut.i_rob_alloc_req_2.value = _pack_alloc_req(fields)
+
+
+def _drive_checkpoint_save(dut: Any, checkpoint_id: int | None) -> None:
+    """Drive dispatch's checkpoint save for this cycle (None: no save)."""
+    dut.i_rob_checkpoint_valid.value = int(checkpoint_id is not None)
+    dut.i_rob_checkpoint_id.value = checkpoint_id or 0
+
+
+def _drive_resolve(dut: Any, checkpoint_id: int | None) -> None:
+    """Drive a correct branch resolution for this cycle (None: no resolution)."""
+    dut.i_branch_unresolved_decrement.value = int(checkpoint_id is not None)
+    dut.i_branch_unresolved_checkpoint_id.value = checkpoint_id or 0
+
+
 def _drive_commit(dut: Any, fields: Mapping[str, int | bool]) -> None:
     """Drive the ROB commit struct."""
     packet = dict(QUIESCENT_COMMIT)
@@ -84,9 +101,12 @@ def _drive_mispredict_commit(dut: Any, fields: Mapping[str, int | bool]) -> None
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     _drive_alloc_req(dut, {})
+    _drive_alloc_req_2(dut, {})
     _drive_commit(dut, QUIESCENT_COMMIT)
     _drive_mispredict_commit(dut, {})
-    dut.i_rob_checkpoint_valid.value = 0
+    _drive_checkpoint_save(dut, None)
+    _drive_resolve(dut, None)
+    dut.i_checkpoint_in_use.value = 0
     dut.i_csr_commit_fire.value = 0
     dut.i_correct_branch_commit_pending.value = 0
     dut.i_mispredict_recovery_pending.value = 0
@@ -95,7 +115,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_trap_target.value = 0
     dut.i_dispatch_stall.value = 0
     dut.i_csr_wb_pending.value = 0
-    dut.i_branch_unresolved_decrement.value = 0
     dut.i_front_end_indirect_control_flow_pending.value = 0
     dut.i_pd_unpredicted_control_flow.value = 0
     dut.i_id_unpredicted_control_flow.value = 0
@@ -124,6 +143,35 @@ async def _advance_cycle(dut: Any) -> None:
     """Advance one clock edge and let registered outputs settle."""
     await RisingEdge(dut.i_clk)
     await _settle()
+
+
+async def _dispatch_branch(
+    dut: Any,
+    in_use: int,
+    checkpoint_id: int,
+    *,
+    slot2: bool = False,
+    jal: bool = False,
+) -> int:
+    """Dispatch one branch that saves checkpoint_id and return the new in-use mask.
+
+    A slot-2 branch dispatches behind a non-branch slot 1. The bench stands in
+    for cpu_ooo's checkpoint_in_use, which sets the saved bit on the same edge.
+    """
+    branch = {"alloc_valid": True, "is_branch": True, "is_jal": jal}
+    if slot2:
+        _drive_alloc_req(dut, {"alloc_valid": True})
+        _drive_alloc_req_2(dut, branch)
+    else:
+        _drive_alloc_req(dut, branch)
+    _drive_checkpoint_save(dut, checkpoint_id)
+    await _advance_cycle(dut)
+    _drive_alloc_req(dut, {})
+    _drive_alloc_req_2(dut, {})
+    _drive_checkpoint_save(dut, None)
+    in_use |= 1 << checkpoint_id
+    dut.i_checkpoint_in_use.value = in_use
+    return in_use
 
 
 @cocotb.test()
@@ -417,22 +465,19 @@ async def test_unresolved_branch_serializes_younger_indirect_control_flow(
     """An unresolved non-JAL branch serializes younger indirect control flow."""
     await _setup_test(dut)
 
-    _drive_alloc_req(dut, {"alloc_valid": True, "is_branch": True})
-    await _advance_cycle(dut)
-
-    _drive_alloc_req(dut, {})
+    await _dispatch_branch(dut, 0, 2)
     dut.i_front_end_indirect_control_flow_pending.value = 1
     await _advance_cycle(dut)
 
     assert dut.o_front_end_cf_serialize_stall.value
     assert _read_pipeline_ctrl(dut)["stall"]
 
-    dut.i_branch_unresolved_decrement.value = 1
+    _drive_resolve(dut, 2)
     await _advance_cycle(dut)
 
     assert dut.o_front_end_cf_serialize_stall.value
 
-    dut.i_branch_unresolved_decrement.value = 0
+    _drive_resolve(dut, None)
     await _advance_cycle(dut)
 
     assert not dut.o_front_end_cf_serialize_stall.value
@@ -443,15 +488,93 @@ async def test_jal_alloc_does_not_create_unresolved_branch_stall(dut: Any) -> No
     """JAL checkpoint allocation is not tracked as unresolved branch work."""
     await _setup_test(dut)
 
-    _drive_alloc_req(dut, {"alloc_valid": True, "is_branch": True, "is_jal": True})
-    await _advance_cycle(dut)
-
-    _drive_alloc_req(dut, {})
+    await _dispatch_branch(dut, 0, 0, jal=True)
     dut.i_front_end_indirect_control_flow_pending.value = 1
     await _advance_cycle(dut)
 
     assert not dut.o_front_end_cf_serialize_stall.value
     assert not _read_pipeline_ctrl(dut)["stall"]
+
+
+@cocotb.test()
+async def test_slot2_branch_stays_unresolved_after_older_resolves(dut: Any) -> None:
+    """A branch dispatched from slot 2 counts until it resolves itself.
+
+    An older slot-1 branch resolving must not retire the slot-2 branch.
+    """
+    await _setup_test(dut)
+
+    in_use = await _dispatch_branch(dut, 0, 0)
+    await _dispatch_branch(dut, in_use, 1, slot2=True)
+    _drive_resolve(dut, 0)
+    await _advance_cycle(dut)
+    _drive_resolve(dut, None)
+    dut.i_front_end_indirect_control_flow_pending.value = 1
+    await _advance_cycle(dut)
+
+    assert dut.o_front_end_cf_serialize_stall.value, "the slot-2 branch is unresolved"
+
+    _drive_resolve(dut, 1)
+    await _advance_cycle(dut)
+    _drive_resolve(dut, None)
+    await _advance_cycle(dut)
+
+    assert not dut.o_front_end_cf_serialize_stall.value
+
+
+@cocotb.test()
+async def test_early_recovery_keeps_older_unresolved_branch(dut: Any) -> None:
+    """A partial flush forgets only the branches it kills.
+
+    The younger branch's early recovery flushes the front end and frees its
+    checkpoint; the older branch is still unresolved and still serializes.
+    """
+    await _setup_test(dut)
+
+    in_use = await _dispatch_branch(dut, 0, 0)
+    in_use = await _dispatch_branch(dut, in_use, 1)
+    dut.i_flush_pipeline.value = 1
+    await _advance_cycle(dut)
+    dut.i_flush_pipeline.value = 0
+    dut.i_checkpoint_in_use.value = in_use & ~(1 << 1)
+    dut.i_front_end_indirect_control_flow_pending.value = 1
+    await _advance_cycle(dut)
+
+    assert dut.o_front_end_cf_serialize_stall.value, "the older branch is unresolved"
+
+    _drive_resolve(dut, 0)
+    await _advance_cycle(dut)
+    _drive_resolve(dut, None)
+    await _advance_cycle(dut)
+
+    assert not dut.o_front_end_cf_serialize_stall.value
+
+
+@cocotb.test()
+async def test_flushed_branch_and_reused_checkpoint_are_not_unresolved(
+    dut: Any,
+) -> None:
+    """A branch flushed before it resolves stops counting with its checkpoint.
+
+    A JAL that later reuses the checkpoint does not revive the stale bit.
+    """
+    await _setup_test(dut)
+
+    await _dispatch_branch(dut, 0, 3)
+    dut.i_flush_pipeline.value = 1
+    await _advance_cycle(dut)
+    dut.i_flush_pipeline.value = 0
+    dut.i_checkpoint_in_use.value = 0
+    dut.i_front_end_indirect_control_flow_pending.value = 1
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+
+    assert not dut.o_front_end_cf_serialize_stall.value
+
+    await _dispatch_branch(dut, 0, 3, jal=True)
+    await _advance_cycle(dut)
+
+    assert not dut.o_front_end_cf_serialize_stall.value
 
 
 @cocotb.test()

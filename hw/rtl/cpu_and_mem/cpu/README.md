@@ -39,7 +39,7 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 
 | Submodule | Directory | Role |
 |-----------|-----------|------|
-| `ooo_pipeline_control` | `pipeline_control/` | Front-end stalls, CSR and control-flow serialization, in-flight counters, post-flush holdoff, the registered trap and xRET redirect, prediction disable |
+| `ooo_pipeline_control` | `pipeline_control/` | Front-end stalls, CSR and control-flow serialization, unresolved-branch tracking, post-flush holdoff, the registered trap and xRET redirect, prediction disable |
 | `frontend_validity_tracker` | `frontend_control/` | Marks which IF/PD/ID packets are real instructions and classifies unpredicted control flow ([README](cpu_ooo/frontend_control/README.md)) |
 | `decoded_bundle_queue` | `frontend_control/` | Queue of decoded two-instruction bundles between ID and dispatch, four deep by default ([README](cpu_ooo/frontend_control/README.md)) |
 | `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to ID and dispatch |

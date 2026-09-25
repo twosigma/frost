@@ -277,7 +277,8 @@ module cpu_ooo #(
   (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // driven by commit_actions below
   logic branch_resolved_correct;  // branch resolved correctly at execute time
-  logic branch_unresolved_decrement;  // resolve event for unresolved counter
+  logic branch_unresolved_decrement;  // a branch resolved as correctly predicted
+  logic [riscv_pkg::CheckpointIdWidth-1:0] branch_unresolved_checkpoint_id;  // its checkpoint
 
   // Outputs of ooo_pipeline_control used elsewhere in this file.
   logic front_end_cf_serialize_stall;
@@ -300,7 +301,10 @@ module cpu_ooo #(
       .i_clk,
       .i_rst,
       .i_rob_alloc_req(rob_alloc_req),
+      .i_rob_alloc_req_2(rob_alloc_req_2),
       .i_rob_checkpoint_valid(rob_checkpoint_valid),
+      .i_rob_checkpoint_id(rob_checkpoint_id),
+      .i_checkpoint_in_use(checkpoint_in_use),
       .i_csr_commit_fire(csr_commit_fire),
       .i_correct_branch_commit_pending(correct_branch_commit_pending),
       .i_mispredict_recovery_pending(mispredict_recovery_pending),
@@ -313,6 +317,7 @@ module cpu_ooo #(
       .i_frontend_resource_stall(decoded_queue_full),
       .i_csr_wb_pending(csr_wb_pending),
       .i_branch_unresolved_decrement(branch_unresolved_decrement),
+      .i_branch_unresolved_checkpoint_id(branch_unresolved_checkpoint_id),
       .i_front_end_indirect_control_flow_pending(
           front_end_indirect_control_flow_pending || decoded_queue_indirect_pending),
       .i_pd_unpredicted_control_flow(pd_unpredicted_control_flow),
@@ -2523,6 +2528,8 @@ module cpu_ooo #(
       .o_branch_taken_resolved(branch_taken_resolved),
       .o_branch_target_resolved(branch_target_resolved)
   );
+  // Every branch holds a checkpoint, so this is the resolving branch's own.
+  assign branch_unresolved_checkpoint_id = rs_issue_int.checkpoint_id;
 
   // Not part of branch resolution: LQ request present, meaning held in the
   // router or a read handoff with no write on the port. Nothing consumes it,
