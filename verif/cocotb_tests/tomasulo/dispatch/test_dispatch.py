@@ -294,7 +294,6 @@ async def test_fadd_dispatches_to_fp_rs(dut: Any) -> None:
         valid=True,
         instruction_operation=FADD_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -313,7 +312,6 @@ async def test_fmul_dispatches_to_fmul_rs(dut: Any) -> None:
         valid=True,
         instruction_operation=FMUL_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -332,7 +330,6 @@ async def test_fdiv_dispatches_to_fdiv_rs(dut: Any) -> None:
         valid=True,
         instruction_operation=FDIV_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -832,7 +829,6 @@ async def test_fp_dest_rename(dut: Any) -> None:
         valid=True,
         instruction_operation=FADD_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -1090,7 +1086,6 @@ async def test_fp_flags_for_compute(dut: Any) -> None:
         valid=True,
         instruction_operation=FADD_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -1142,7 +1137,6 @@ async def test_dynamic_rounding_mode(dut: Any) -> None:
         valid=True,
         instruction_operation=FADD_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         fp_rm=0b111,  # DYN
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
@@ -1271,7 +1265,6 @@ async def test_auipc_and_fetch_fault_immediates_are_precomputed(dut: Any) -> Non
         valid=True,
         instruction_operation=ADD,
         is_fetch_fault=1,
-        is_fetch_fault_hi=1,
         pc_relative_precomputed=0x8000_1002,
         instruction=_make_instr(opcode=OPC_OP),
     )

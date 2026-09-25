@@ -22,8 +22,8 @@
   selected from the predecode sideband. Slot 2 arrives already expanded by
   the instruction aligner (see instruction_aligner.sv). In simulation only,
   local rvc_decompressors expand both slots' raw parcels as the reference for
-  the checks below. PD also registers early source-register fields so
-  register lookups need not wait for decode, and raises the PD redirect for a
+  the checks below. PD also registers early source-register fields, from
+  which it reassembles slot 2's instruction, and raises the PD redirect for a
   predicted-taken slot-1 branch (see that section).
 
   Both slots register the instruction without rewriting it to a NOP. A bubble
@@ -122,9 +122,10 @@ module pd_stage #(
   // ===========================================================================
   // Early Source Register Extraction
   // ===========================================================================
-  // Early source registers for the register-file read and its bypass
-  // compares, taken from final_instruction: the predecoded fields above, or x0
-  // for a NOP.
+  // Early source registers, taken from final_instruction: the predecoded
+  // fields above, or x0 for a NOP. No logic reads slot 1's copies or either
+  // slot's fp_source_reg_3_early; slot 2's rs1 and rs2 copies hold its
+  // instruction bits (see below).
 
   logic [4:0] source_reg_1;
   logic [4:0] source_reg_2;
@@ -173,7 +174,7 @@ module pd_stage #(
   // reset pin, keeping the bubble and flush mux off these 15 D inputs. rs1[2:1]
   // come from the source-hot sideband bits, the rest of rs1 from
   // rs1_rest_predecoded, and all of rs2 from IF's predecoded bits [24:20].
-  // These registers also supply rs1 and rs2 of the reassembled instruction.
+  // These registers supply rs1 and rs2 of the reassembled instruction.
   assign source_reg_1_2 = {
     i_from_if_to_pd_2.rs1_rest_predecoded[2:1],
     i_from_if_to_pd_2.source_hot_predecoded[1:0],
@@ -184,8 +185,8 @@ module pd_stage #(
   // Keep the bubble select off the remaining 22 instruction D inputs, as slot 1
   // does for its full instruction register. The registered
   // o_from_pd_to_id_2.inject_nop bit tells ID when to substitute the NOP. The
-  // source fields keep their own clear below, so register-file lookup
-  // addresses stay x0 for an invalid slot.
+  // source fields keep their own clear below, so they read x0 for an invalid
+  // slot.
   assign slot2_instruction_non_source = {instruction_non_nop_2[31:25], instruction_non_nop_2[14:0]};
   assign o_from_pd_to_id_2.instruction = {
     slot2_instruction_non_source_q[21:15],

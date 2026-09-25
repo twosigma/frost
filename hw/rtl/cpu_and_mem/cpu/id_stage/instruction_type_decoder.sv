@@ -20,11 +20,10 @@
  * instruction_operation, so the two decodes run in parallel.
  *
  * Decoded instruction types:
- *   - Load types (byte, halfword, unsigned)
- *   - M-extension (multiply, divide)
+ *   - Loads (any load, unsigned)
  *   - CSR instructions (address extraction)
  *   - A-extension atomics (LR, SC)
- *   - Privileged instructions (ECALL, EBREAK, MRET, SRET, DRET, WFI)
+ *   - Privileged instructions (MRET, SRET, DRET, WFI)
  *   - JAL/JALR detection
  *   - RAS returns and calls, including the coroutine swap encoding
  */
@@ -36,13 +35,7 @@ module instruction_type_decoder #(
 
     // Load type detection
     output logic o_is_load_instruction,
-    output logic o_is_load_byte,
-    output logic o_is_load_halfword,
     output logic o_is_load_unsigned,
-
-    // M-extension detection
-    output logic o_is_multiply,
-    output logic o_is_divide,
 
     // CSR instruction fields
     output logic        o_is_csr_instruction,
@@ -55,8 +48,6 @@ module instruction_type_decoder #(
     output logic o_is_sc,
 
     // Privileged instruction detection
-    output logic o_is_ecall,
-    output logic o_is_ebreak,
     output logic o_is_mret,
     output logic o_is_sret,
     output logic o_is_dret,
@@ -73,21 +64,10 @@ module instruction_type_decoder #(
 
   assign o_is_load_instruction = i_instruction.opcode == riscv_pkg::OPC_LOAD;
 
-  // Load width comes straight from funct3, avoiding the serial chain
+  // Load signedness comes straight from funct3, avoiding the serial chain
   // instruction -> instruction_operation -> is_load_*.
   // Load funct3: 000=LB, 001=LH, 010=LW, 011=LD, 100=LBU, 101=LHU, 110=LWU
-  assign o_is_load_byte = o_is_load_instruction &&
-                          (i_instruction.funct3 == 3'b000 || i_instruction.funct3 == 3'b100);
-  assign o_is_load_halfword = o_is_load_instruction &&
-                              (i_instruction.funct3 == 3'b001 || i_instruction.funct3 == 3'b101);
   assign o_is_load_unsigned = o_is_load_instruction && i_instruction.funct3[2];
-
-  // M-extension uses opcode=OP (0110011), funct7=0000001
-  logic is_m_extension;
-  assign is_m_extension = (i_instruction.opcode == riscv_pkg::OPC_OP) &&
-                          (i_instruction.funct7 == 7'b0000001);
-  assign o_is_multiply = is_m_extension && !i_instruction.funct3[2];  // funct3[2]=0 for MUL*
-  assign o_is_divide = is_m_extension && i_instruction.funct3[2];  // funct3[2]=1 for DIV/REM
 
   // Zicsr: CSR instructions use OPC_CSR (SYSTEM) with funct3 != 000. The
   // privileged instructions share that opcode with funct3=000, so the funct3
@@ -116,14 +96,6 @@ module instruction_type_decoder #(
   logic is_priv_instruction;
   assign is_priv_instruction = (i_instruction.opcode == riscv_pkg::OPC_CSR) &&
                                (i_instruction.funct3 == 3'b000);
-  // ECALL: funct7=0000000, rs2=00000
-  assign o_is_ecall = is_priv_instruction &&
-                      (i_instruction.funct7 == 7'b0000000) &&
-                      (i_instruction.source_reg_2 == 5'b00000);
-  // EBREAK: funct7=0000000, rs2=00001
-  assign o_is_ebreak = is_priv_instruction &&
-                       (i_instruction.funct7 == 7'b0000000) &&
-                       (i_instruction.source_reg_2 == 5'b00001);
   // MRET: funct7=0011000, rs2=00010
   assign o_is_mret = is_priv_instruction &&
                      (i_instruction.funct7 == 7'b0011000) &&

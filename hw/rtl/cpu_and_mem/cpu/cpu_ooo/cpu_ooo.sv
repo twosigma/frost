@@ -664,46 +664,37 @@ module cpu_ooo #(
   );
 
   // ===========================================================================
-  // Register Files (read in ID, write from ROB commit)
+  // Register Files (read at dispatch, write from ROB commit)
   // ===========================================================================
 
   // Both architectural register files (integer + FP) and the widen-commit
   // write-back bypass live in ooo_register_files. Write ports come from ROB
   // commit (port 0 = slot 1, port 1 = slot 2); read addresses come from the
-  // ID-early and dispatch source fields of both bundle slots. The resolved
-  // (post-bypass) read results feed ID, dispatch, and the RAT.
+  // dispatch source fields of both bundle slots. The resolved (post-bypass)
+  // read results feed dispatch and the RAT.
 
   // FP data width, also used below by the commit-side write-port packing.
   localparam int unsigned FpW = riscv_pkg::FpWidth;
 
-  riscv_pkg::rf_to_fwd_t                rf_to_fwd;
-  riscv_pkg::rf_to_fwd_t                rf_to_fwd_2;
-  logic                      [XLEN-1:0] int_rf_dispatch_rs1_data;
-  logic                      [XLEN-1:0] int_rf_dispatch_rs2_data;
-  logic                      [XLEN-1:0] int_rf_dispatch_rs1_data_2;
-  logic                      [XLEN-1:0] int_rf_dispatch_rs2_data_2;
-  riscv_pkg::fp_rf_to_fwd_t             fp_rf_to_fwd;
-  riscv_pkg::fp_rf_to_fwd_t             fp_rf_to_fwd_2;
-  logic                      [ FpW-1:0] fp_rf_dispatch_rs1_data;
-  logic                      [ FpW-1:0] fp_rf_dispatch_rs2_data;
-  logic                      [ FpW-1:0] fp_rf_dispatch_rs3_data;
-  logic                      [ FpW-1:0] fp_rf_dispatch_rs1_data_2;
-  logic                      [ FpW-1:0] fp_rf_dispatch_rs2_data_2;
-  logic                      [ FpW-1:0] fp_rf_dispatch_rs3_data_2;
-
-  // Bypass-disable struct for id_stage: it forces id_stage's own single-port
-  // write-back bypass off, because ooo_register_files already bypasses both
-  // commit ports. Driven in the ID section below.
-  riscv_pkg::from_ma_to_wb_t            from_ma_to_wb_commit;
+  logic [XLEN-1:0] int_rf_dispatch_rs1_data;
+  logic [XLEN-1:0] int_rf_dispatch_rs2_data;
+  logic [XLEN-1:0] int_rf_dispatch_rs1_data_2;
+  logic [XLEN-1:0] int_rf_dispatch_rs2_data_2;
+  logic [ FpW-1:0] fp_rf_dispatch_rs1_data;
+  logic [ FpW-1:0] fp_rf_dispatch_rs2_data;
+  logic [ FpW-1:0] fp_rf_dispatch_rs3_data;
+  logic [ FpW-1:0] fp_rf_dispatch_rs1_data_2;
+  logic [ FpW-1:0] fp_rf_dispatch_rs2_data_2;
+  logic [ FpW-1:0] fp_rf_dispatch_rs3_data_2;
 
   // Registered write enables and addresses for the register-file bypass,
   // computed below after commit_actions.
-  logic                                 bypass_p0_int_we_q;
-  logic                                 bypass_p1_int_we_q;
-  logic                                 bypass_p0_fp_we_q;
-  logic                                 bypass_p1_fp_we_q;
-  logic                      [     4:0] bypass_p0_addr_q;
-  logic                      [     4:0] bypass_p1_addr_q;
+  logic            bypass_p0_int_we_q;
+  logic            bypass_p1_int_we_q;
+  logic            bypass_p0_fp_we_q;
+  logic            bypass_p1_fp_we_q;
+  logic [     4:0] bypass_p0_addr_q;
+  logic [     4:0] bypass_p1_addr_q;
 
   ooo_register_files #(
       .XLEN(XLEN)
@@ -727,18 +718,12 @@ module cpu_ooo #(
       .i_bypass_p1_fp_we (bypass_p1_fp_we_q),
       .i_bypass_p0_addr  (bypass_p0_addr_q),
       .i_bypass_p1_addr  (bypass_p1_addr_q),
-      .i_from_pd_to_id  (from_pd_to_id),
-      .i_from_pd_to_id_2(from_pd_to_id_2),
       .i_from_id_to_ex  (from_id_to_ex),
       .i_from_id_to_ex_2(from_id_to_ex_2),
-      .o_rf_to_fwd  (rf_to_fwd),
-      .o_rf_to_fwd_2(rf_to_fwd_2),
       .o_int_rf_dispatch_rs1_data  (int_rf_dispatch_rs1_data),
       .o_int_rf_dispatch_rs2_data  (int_rf_dispatch_rs2_data),
       .o_int_rf_dispatch_rs1_data_2(int_rf_dispatch_rs1_data_2),
       .o_int_rf_dispatch_rs2_data_2(int_rf_dispatch_rs2_data_2),
-      .o_fp_rf_to_fwd  (fp_rf_to_fwd),
-      .o_fp_rf_to_fwd_2(fp_rf_to_fwd_2),
       .o_fp_rf_dispatch_rs1_data  (fp_rf_dispatch_rs1_data),
       .o_fp_rf_dispatch_rs2_data  (fp_rf_dispatch_rs2_data),
       .o_fp_rf_dispatch_rs3_data  (fp_rf_dispatch_rs3_data),
@@ -750,24 +735,6 @@ module cpu_ooo #(
   // ===========================================================================
   // Stage 3: Instruction Decode (ID)
   // ===========================================================================
-  // ROB commit writes are architectural WB for the OOO core. Decode still needs
-  // same-cycle bypass when it reads a source register that is being committed.
-  always_comb begin
-    // id_stage has its own write-back bypass that fires on matches against
-    // `instruction.dest_reg` using this struct's regfile_write_* fields. It
-    // sees only one write port, so when both commit slots write the same
-    // register it would return slot 1's older value over the slot-2 result
-    // that ooo_register_files selects. Force the write enables low so
-    // id_stage's bypass never fires and uses i_rf_to_id.source_reg_*_data,
-    // which is already the fully bypassed result.
-    from_ma_to_wb_commit                         = '0;
-    from_ma_to_wb_commit.regfile_write_enable    = 1'b0;
-    from_ma_to_wb_commit.regfile_write_data      = '0;
-    from_ma_to_wb_commit.instruction.dest_reg    = '0;
-    from_ma_to_wb_commit.fp_regfile_write_enable = 1'b0;
-    from_ma_to_wb_commit.fp_dest_reg             = '0;
-    from_ma_to_wb_commit.fp_regfile_write_data   = '0;
-  end
 
   // mstatus.FS == Off from csr_file. ID decodes every F/D instruction as
   // illegal while it is set; the ROB's allocation check reads it too.
@@ -781,9 +748,6 @@ module cpu_ooo #(
       .i_from_pd_to_id(from_pd_to_id),
       .i_pd_redirect(pd_redirect),
       .i_pd_redirect_target(pd_redirect_target),
-      .i_rf_to_id(rf_to_fwd),
-      .i_fp_rf_to_id(fp_rf_to_fwd),
-      .i_from_ma_to_wb(from_ma_to_wb_commit),
       .i_mstatus_fs_off(csr_mstatus_fs_off),
       .o_from_id_to_ex(decoded_packet),
       .o_from_id_to_ex_next(decoded_packet_next),
@@ -791,8 +755,6 @@ module cpu_ooo #(
       // instruction plus its inject_nop bubble marker, which ID applies before
       // producing o_from_id_to_ex_2.
       .i_from_pd_to_id_2(from_pd_to_id_2),
-      .i_rf_to_id_2(rf_to_fwd_2),
-      .i_fp_rf_to_id_2(fp_rf_to_fwd_2),
       .o_from_id_to_ex_2(decoded_packet_2),
       .o_from_id_to_ex_next_2(decoded_packet_next_2)
   );
@@ -867,15 +829,9 @@ module cpu_ooo #(
       // registers (producer_ctrl) and of their next-edge values
       // (producer_ctrl_next).
       always_comb begin
-        producer_ctrl.source_reg_1_is_x0 = decoded_packet.source_reg_1_is_x0;
-        producer_ctrl.source_reg_2_is_x0 = decoded_packet.source_reg_2_is_x0;
         producer_ctrl.is_load_instruction = decoded_packet.is_load_instruction;
-        producer_ctrl.is_load_byte = decoded_packet.is_load_byte;
-        producer_ctrl.is_load_halfword = decoded_packet.is_load_halfword;
         producer_ctrl.is_load_unsigned = decoded_packet.is_load_unsigned;
         producer_ctrl.instruction_operation = decoded_packet.instruction_operation;
-        producer_ctrl.branch_operation = decoded_packet.branch_operation;
-        producer_ctrl.store_operation = decoded_packet.store_operation;
         producer_ctrl.rs_type = decoded_packet.rs_type;
         producer_ctrl.is_int_store = decoded_packet.is_int_store;
         producer_ctrl.is_branch_or_jump = decoded_packet.is_branch_or_jump;
@@ -885,8 +841,6 @@ module cpu_ooo #(
         producer_ctrl.has_fp_flags = decoded_packet.has_fp_flags;
         producer_ctrl.is_jump_and_link = decoded_packet.is_jump_and_link;
         producer_ctrl.is_jump_and_link_register = decoded_packet.is_jump_and_link_register;
-        producer_ctrl.is_multiply = decoded_packet.is_multiply;
-        producer_ctrl.is_divide = decoded_packet.is_divide;
         producer_ctrl.is_csr_instruction = decoded_packet.is_csr_instruction;
         producer_ctrl.is_amo_instruction = decoded_packet.is_amo_instruction;
         producer_ctrl.is_lr = decoded_packet.is_lr;
@@ -896,29 +850,18 @@ module cpu_ooo #(
         producer_ctrl.is_dret = decoded_packet.is_dret;
         producer_ctrl.is_sfence_vma = decoded_packet.is_sfence_vma;
         producer_ctrl.is_wfi = decoded_packet.is_wfi;
-        producer_ctrl.is_ecall = decoded_packet.is_ecall;
-        producer_ctrl.is_ebreak = decoded_packet.is_ebreak;
         producer_ctrl.is_illegal_instruction = decoded_packet.is_illegal_instruction;
         producer_ctrl.is_fetch_fault = decoded_packet.is_fetch_fault;
         producer_ctrl.is_fetch_fault_page = decoded_packet.is_fetch_fault_page;
-        producer_ctrl.is_fetch_fault_hi = decoded_packet.is_fetch_fault_hi;
         producer_ctrl.is_fp_instruction = decoded_packet.is_fp_instruction;
         producer_ctrl.is_fp_load = decoded_packet.is_fp_load;
         producer_ctrl.is_fp_store = decoded_packet.is_fp_store;
-        producer_ctrl.is_fp_load_double = decoded_packet.is_fp_load_double;
-        producer_ctrl.is_fp_store_double = decoded_packet.is_fp_store_double;
-        producer_ctrl.is_fp_compute = decoded_packet.is_fp_compute;
-        producer_ctrl.is_pipelined_fp_op = decoded_packet.is_pipelined_fp_op;
-        producer_ctrl.is_fp_to_int = decoded_packet.is_fp_to_int;
-        producer_ctrl.is_int_to_fp = decoded_packet.is_int_to_fp;
         producer_ctrl.is_compressed = decoded_packet.is_compressed;
         producer_ctrl.instruction = decoded_packet.instruction;
-        producer_ctrl.btb_hit = decoded_packet.btb_hit;
         producer_ctrl.btb_predicted_taken = decoded_packet.btb_predicted_taken;
         producer_ctrl.ras_predicted = decoded_packet.ras_predicted;
         producer_ctrl.is_ras_return = decoded_packet.is_ras_return;
         producer_ctrl.is_ras_call = decoded_packet.is_ras_call;
-        producer_ctrl.ras_predicted_target_nonzero = decoded_packet.ras_predicted_target_nonzero;
         producer_ctrl.btb_correct_non_jalr = decoded_packet.btb_correct_non_jalr;
         producer_ctrl.ras_correct_non_jalr = decoded_packet.ras_correct_non_jalr;
         producer_ctrl.has_int_dest = decoded_packet.has_int_dest;
@@ -929,15 +872,9 @@ module cpu_ooo #(
         producer_ctrl.uses_fp_rs2 = decoded_packet.uses_fp_rs2;
         producer_ctrl.uses_fp_rs3 = decoded_packet.uses_fp_rs3;
         producer_ctrl.is_not_nop = decoded_packet.is_not_nop;
-        producer_ctrl_2.source_reg_1_is_x0 = decoded_packet_2.source_reg_1_is_x0;
-        producer_ctrl_2.source_reg_2_is_x0 = decoded_packet_2.source_reg_2_is_x0;
         producer_ctrl_2.is_load_instruction = decoded_packet_2.is_load_instruction;
-        producer_ctrl_2.is_load_byte = decoded_packet_2.is_load_byte;
-        producer_ctrl_2.is_load_halfword = decoded_packet_2.is_load_halfword;
         producer_ctrl_2.is_load_unsigned = decoded_packet_2.is_load_unsigned;
         producer_ctrl_2.instruction_operation = decoded_packet_2.instruction_operation;
-        producer_ctrl_2.branch_operation = decoded_packet_2.branch_operation;
-        producer_ctrl_2.store_operation = decoded_packet_2.store_operation;
         producer_ctrl_2.rs_type = decoded_packet_2.rs_type;
         producer_ctrl_2.is_int_store = decoded_packet_2.is_int_store;
         producer_ctrl_2.is_branch_or_jump = decoded_packet_2.is_branch_or_jump;
@@ -947,8 +884,6 @@ module cpu_ooo #(
         producer_ctrl_2.has_fp_flags = decoded_packet_2.has_fp_flags;
         producer_ctrl_2.is_jump_and_link = decoded_packet_2.is_jump_and_link;
         producer_ctrl_2.is_jump_and_link_register = decoded_packet_2.is_jump_and_link_register;
-        producer_ctrl_2.is_multiply = decoded_packet_2.is_multiply;
-        producer_ctrl_2.is_divide = decoded_packet_2.is_divide;
         producer_ctrl_2.is_csr_instruction = decoded_packet_2.is_csr_instruction;
         producer_ctrl_2.is_amo_instruction = decoded_packet_2.is_amo_instruction;
         producer_ctrl_2.is_lr = decoded_packet_2.is_lr;
@@ -958,30 +893,18 @@ module cpu_ooo #(
         producer_ctrl_2.is_dret = decoded_packet_2.is_dret;
         producer_ctrl_2.is_sfence_vma = decoded_packet_2.is_sfence_vma;
         producer_ctrl_2.is_wfi = decoded_packet_2.is_wfi;
-        producer_ctrl_2.is_ecall = decoded_packet_2.is_ecall;
-        producer_ctrl_2.is_ebreak = decoded_packet_2.is_ebreak;
         producer_ctrl_2.is_illegal_instruction = decoded_packet_2.is_illegal_instruction;
         producer_ctrl_2.is_fetch_fault = decoded_packet_2.is_fetch_fault;
         producer_ctrl_2.is_fetch_fault_page = decoded_packet_2.is_fetch_fault_page;
-        producer_ctrl_2.is_fetch_fault_hi = decoded_packet_2.is_fetch_fault_hi;
         producer_ctrl_2.is_fp_instruction = decoded_packet_2.is_fp_instruction;
         producer_ctrl_2.is_fp_load = decoded_packet_2.is_fp_load;
         producer_ctrl_2.is_fp_store = decoded_packet_2.is_fp_store;
-        producer_ctrl_2.is_fp_load_double = decoded_packet_2.is_fp_load_double;
-        producer_ctrl_2.is_fp_store_double = decoded_packet_2.is_fp_store_double;
-        producer_ctrl_2.is_fp_compute = decoded_packet_2.is_fp_compute;
-        producer_ctrl_2.is_pipelined_fp_op = decoded_packet_2.is_pipelined_fp_op;
-        producer_ctrl_2.is_fp_to_int = decoded_packet_2.is_fp_to_int;
-        producer_ctrl_2.is_int_to_fp = decoded_packet_2.is_int_to_fp;
         producer_ctrl_2.is_compressed = decoded_packet_2.is_compressed;
         producer_ctrl_2.instruction = decoded_packet_2.instruction;
-        producer_ctrl_2.btb_hit = decoded_packet_2.btb_hit;
         producer_ctrl_2.btb_predicted_taken = decoded_packet_2.btb_predicted_taken;
         producer_ctrl_2.ras_predicted = decoded_packet_2.ras_predicted;
         producer_ctrl_2.is_ras_return = decoded_packet_2.is_ras_return;
         producer_ctrl_2.is_ras_call = decoded_packet_2.is_ras_call;
-        producer_ctrl_2.ras_predicted_target_nonzero =
-            decoded_packet_2.ras_predicted_target_nonzero;
         producer_ctrl_2.btb_correct_non_jalr = decoded_packet_2.btb_correct_non_jalr;
         producer_ctrl_2.ras_correct_non_jalr = decoded_packet_2.ras_correct_non_jalr;
         producer_ctrl_2.has_int_dest = decoded_packet_2.has_int_dest;
@@ -992,15 +915,9 @@ module cpu_ooo #(
         producer_ctrl_2.uses_fp_rs2 = decoded_packet_2.uses_fp_rs2;
         producer_ctrl_2.uses_fp_rs3 = decoded_packet_2.uses_fp_rs3;
         producer_ctrl_2.is_not_nop = decoded_packet_2.is_not_nop;
-        producer_ctrl_next.source_reg_1_is_x0 = decoded_packet_next.source_reg_1_is_x0;
-        producer_ctrl_next.source_reg_2_is_x0 = decoded_packet_next.source_reg_2_is_x0;
         producer_ctrl_next.is_load_instruction = decoded_packet_next.is_load_instruction;
-        producer_ctrl_next.is_load_byte = decoded_packet_next.is_load_byte;
-        producer_ctrl_next.is_load_halfword = decoded_packet_next.is_load_halfword;
         producer_ctrl_next.is_load_unsigned = decoded_packet_next.is_load_unsigned;
         producer_ctrl_next.instruction_operation = decoded_packet_next.instruction_operation;
-        producer_ctrl_next.branch_operation = decoded_packet_next.branch_operation;
-        producer_ctrl_next.store_operation = decoded_packet_next.store_operation;
         producer_ctrl_next.rs_type = decoded_packet_next.rs_type;
         producer_ctrl_next.is_int_store = decoded_packet_next.is_int_store;
         producer_ctrl_next.is_branch_or_jump = decoded_packet_next.is_branch_or_jump;
@@ -1011,8 +928,6 @@ module cpu_ooo #(
         producer_ctrl_next.is_jump_and_link = decoded_packet_next.is_jump_and_link;
         producer_ctrl_next.is_jump_and_link_register =
             decoded_packet_next.is_jump_and_link_register;
-        producer_ctrl_next.is_multiply = decoded_packet_next.is_multiply;
-        producer_ctrl_next.is_divide = decoded_packet_next.is_divide;
         producer_ctrl_next.is_csr_instruction = decoded_packet_next.is_csr_instruction;
         producer_ctrl_next.is_amo_instruction = decoded_packet_next.is_amo_instruction;
         producer_ctrl_next.is_lr = decoded_packet_next.is_lr;
@@ -1022,30 +937,18 @@ module cpu_ooo #(
         producer_ctrl_next.is_dret = decoded_packet_next.is_dret;
         producer_ctrl_next.is_sfence_vma = decoded_packet_next.is_sfence_vma;
         producer_ctrl_next.is_wfi = decoded_packet_next.is_wfi;
-        producer_ctrl_next.is_ecall = decoded_packet_next.is_ecall;
-        producer_ctrl_next.is_ebreak = decoded_packet_next.is_ebreak;
         producer_ctrl_next.is_illegal_instruction = decoded_packet_next.is_illegal_instruction;
         producer_ctrl_next.is_fetch_fault = decoded_packet_next.is_fetch_fault;
         producer_ctrl_next.is_fetch_fault_page = decoded_packet_next.is_fetch_fault_page;
-        producer_ctrl_next.is_fetch_fault_hi = decoded_packet_next.is_fetch_fault_hi;
         producer_ctrl_next.is_fp_instruction = decoded_packet_next.is_fp_instruction;
         producer_ctrl_next.is_fp_load = decoded_packet_next.is_fp_load;
         producer_ctrl_next.is_fp_store = decoded_packet_next.is_fp_store;
-        producer_ctrl_next.is_fp_load_double = decoded_packet_next.is_fp_load_double;
-        producer_ctrl_next.is_fp_store_double = decoded_packet_next.is_fp_store_double;
-        producer_ctrl_next.is_fp_compute = decoded_packet_next.is_fp_compute;
-        producer_ctrl_next.is_pipelined_fp_op = decoded_packet_next.is_pipelined_fp_op;
-        producer_ctrl_next.is_fp_to_int = decoded_packet_next.is_fp_to_int;
-        producer_ctrl_next.is_int_to_fp = decoded_packet_next.is_int_to_fp;
         producer_ctrl_next.is_compressed = decoded_packet_next.is_compressed;
         producer_ctrl_next.instruction = decoded_packet_next.instruction;
-        producer_ctrl_next.btb_hit = decoded_packet_next.btb_hit;
         producer_ctrl_next.btb_predicted_taken = decoded_packet_next.btb_predicted_taken;
         producer_ctrl_next.ras_predicted = decoded_packet_next.ras_predicted;
         producer_ctrl_next.is_ras_return = decoded_packet_next.is_ras_return;
         producer_ctrl_next.is_ras_call = decoded_packet_next.is_ras_call;
-        producer_ctrl_next.ras_predicted_target_nonzero =
-            decoded_packet_next.ras_predicted_target_nonzero;
         producer_ctrl_next.btb_correct_non_jalr = decoded_packet_next.btb_correct_non_jalr;
         producer_ctrl_next.ras_correct_non_jalr = decoded_packet_next.ras_correct_non_jalr;
         producer_ctrl_next.has_int_dest = decoded_packet_next.has_int_dest;
@@ -1056,15 +959,9 @@ module cpu_ooo #(
         producer_ctrl_next.uses_fp_rs2 = decoded_packet_next.uses_fp_rs2;
         producer_ctrl_next.uses_fp_rs3 = decoded_packet_next.uses_fp_rs3;
         producer_ctrl_next.is_not_nop = decoded_packet_next.is_not_nop;
-        producer_ctrl_next_2.source_reg_1_is_x0 = decoded_packet_next_2.source_reg_1_is_x0;
-        producer_ctrl_next_2.source_reg_2_is_x0 = decoded_packet_next_2.source_reg_2_is_x0;
         producer_ctrl_next_2.is_load_instruction = decoded_packet_next_2.is_load_instruction;
-        producer_ctrl_next_2.is_load_byte = decoded_packet_next_2.is_load_byte;
-        producer_ctrl_next_2.is_load_halfword = decoded_packet_next_2.is_load_halfword;
         producer_ctrl_next_2.is_load_unsigned = decoded_packet_next_2.is_load_unsigned;
         producer_ctrl_next_2.instruction_operation = decoded_packet_next_2.instruction_operation;
-        producer_ctrl_next_2.branch_operation = decoded_packet_next_2.branch_operation;
-        producer_ctrl_next_2.store_operation = decoded_packet_next_2.store_operation;
         producer_ctrl_next_2.rs_type = decoded_packet_next_2.rs_type;
         producer_ctrl_next_2.is_int_store = decoded_packet_next_2.is_int_store;
         producer_ctrl_next_2.is_branch_or_jump = decoded_packet_next_2.is_branch_or_jump;
@@ -1075,8 +972,6 @@ module cpu_ooo #(
         producer_ctrl_next_2.is_jump_and_link = decoded_packet_next_2.is_jump_and_link;
         producer_ctrl_next_2.is_jump_and_link_register =
             decoded_packet_next_2.is_jump_and_link_register;
-        producer_ctrl_next_2.is_multiply = decoded_packet_next_2.is_multiply;
-        producer_ctrl_next_2.is_divide = decoded_packet_next_2.is_divide;
         producer_ctrl_next_2.is_csr_instruction = decoded_packet_next_2.is_csr_instruction;
         producer_ctrl_next_2.is_amo_instruction = decoded_packet_next_2.is_amo_instruction;
         producer_ctrl_next_2.is_lr = decoded_packet_next_2.is_lr;
@@ -1086,30 +981,18 @@ module cpu_ooo #(
         producer_ctrl_next_2.is_dret = decoded_packet_next_2.is_dret;
         producer_ctrl_next_2.is_sfence_vma = decoded_packet_next_2.is_sfence_vma;
         producer_ctrl_next_2.is_wfi = decoded_packet_next_2.is_wfi;
-        producer_ctrl_next_2.is_ecall = decoded_packet_next_2.is_ecall;
-        producer_ctrl_next_2.is_ebreak = decoded_packet_next_2.is_ebreak;
         producer_ctrl_next_2.is_illegal_instruction = decoded_packet_next_2.is_illegal_instruction;
         producer_ctrl_next_2.is_fetch_fault = decoded_packet_next_2.is_fetch_fault;
         producer_ctrl_next_2.is_fetch_fault_page = decoded_packet_next_2.is_fetch_fault_page;
-        producer_ctrl_next_2.is_fetch_fault_hi = decoded_packet_next_2.is_fetch_fault_hi;
         producer_ctrl_next_2.is_fp_instruction = decoded_packet_next_2.is_fp_instruction;
         producer_ctrl_next_2.is_fp_load = decoded_packet_next_2.is_fp_load;
         producer_ctrl_next_2.is_fp_store = decoded_packet_next_2.is_fp_store;
-        producer_ctrl_next_2.is_fp_load_double = decoded_packet_next_2.is_fp_load_double;
-        producer_ctrl_next_2.is_fp_store_double = decoded_packet_next_2.is_fp_store_double;
-        producer_ctrl_next_2.is_fp_compute = decoded_packet_next_2.is_fp_compute;
-        producer_ctrl_next_2.is_pipelined_fp_op = decoded_packet_next_2.is_pipelined_fp_op;
-        producer_ctrl_next_2.is_fp_to_int = decoded_packet_next_2.is_fp_to_int;
-        producer_ctrl_next_2.is_int_to_fp = decoded_packet_next_2.is_int_to_fp;
         producer_ctrl_next_2.is_compressed = decoded_packet_next_2.is_compressed;
         producer_ctrl_next_2.instruction = decoded_packet_next_2.instruction;
-        producer_ctrl_next_2.btb_hit = decoded_packet_next_2.btb_hit;
         producer_ctrl_next_2.btb_predicted_taken = decoded_packet_next_2.btb_predicted_taken;
         producer_ctrl_next_2.ras_predicted = decoded_packet_next_2.ras_predicted;
         producer_ctrl_next_2.is_ras_return = decoded_packet_next_2.is_ras_return;
         producer_ctrl_next_2.is_ras_call = decoded_packet_next_2.is_ras_call;
-        producer_ctrl_next_2.ras_predicted_target_nonzero =
-            decoded_packet_next_2.ras_predicted_target_nonzero;
         producer_ctrl_next_2.btb_correct_non_jalr = decoded_packet_next_2.btb_correct_non_jalr;
         producer_ctrl_next_2.ras_correct_non_jalr = decoded_packet_next_2.ras_correct_non_jalr;
         producer_ctrl_next_2.has_int_dest = decoded_packet_next_2.has_int_dest;
@@ -1158,15 +1041,9 @@ module cpu_ooo #(
       always_comb begin
         from_id_to_ex = queue_packet;
         from_id_to_ex_2 = queue_packet_2;
-        from_id_to_ex.source_reg_1_is_x0 = queue_ctrl.source_reg_1_is_x0;
-        from_id_to_ex.source_reg_2_is_x0 = queue_ctrl.source_reg_2_is_x0;
         from_id_to_ex.is_load_instruction = queue_ctrl.is_load_instruction;
-        from_id_to_ex.is_load_byte = queue_ctrl.is_load_byte;
-        from_id_to_ex.is_load_halfword = queue_ctrl.is_load_halfword;
         from_id_to_ex.is_load_unsigned = queue_ctrl.is_load_unsigned;
         from_id_to_ex.instruction_operation = queue_ctrl.instruction_operation;
-        from_id_to_ex.branch_operation = queue_ctrl.branch_operation;
-        from_id_to_ex.store_operation = queue_ctrl.store_operation;
         from_id_to_ex.rs_type = queue_ctrl.rs_type;
         from_id_to_ex.is_int_store = queue_ctrl.is_int_store;
         from_id_to_ex.is_branch_or_jump = queue_ctrl.is_branch_or_jump;
@@ -1176,8 +1053,6 @@ module cpu_ooo #(
         from_id_to_ex.has_fp_flags = queue_ctrl.has_fp_flags;
         from_id_to_ex.is_jump_and_link = queue_ctrl.is_jump_and_link;
         from_id_to_ex.is_jump_and_link_register = queue_ctrl.is_jump_and_link_register;
-        from_id_to_ex.is_multiply = queue_ctrl.is_multiply;
-        from_id_to_ex.is_divide = queue_ctrl.is_divide;
         from_id_to_ex.is_csr_instruction = queue_ctrl.is_csr_instruction;
         from_id_to_ex.is_amo_instruction = queue_ctrl.is_amo_instruction;
         from_id_to_ex.is_lr = queue_ctrl.is_lr;
@@ -1187,29 +1062,18 @@ module cpu_ooo #(
         from_id_to_ex.is_dret = queue_ctrl.is_dret;
         from_id_to_ex.is_sfence_vma = queue_ctrl.is_sfence_vma;
         from_id_to_ex.is_wfi = queue_ctrl.is_wfi;
-        from_id_to_ex.is_ecall = queue_ctrl.is_ecall;
-        from_id_to_ex.is_ebreak = queue_ctrl.is_ebreak;
         from_id_to_ex.is_illegal_instruction = queue_ctrl.is_illegal_instruction;
         from_id_to_ex.is_fetch_fault = queue_ctrl.is_fetch_fault;
         from_id_to_ex.is_fetch_fault_page = queue_ctrl.is_fetch_fault_page;
-        from_id_to_ex.is_fetch_fault_hi = queue_ctrl.is_fetch_fault_hi;
         from_id_to_ex.is_fp_instruction = queue_ctrl.is_fp_instruction;
         from_id_to_ex.is_fp_load = queue_ctrl.is_fp_load;
         from_id_to_ex.is_fp_store = queue_ctrl.is_fp_store;
-        from_id_to_ex.is_fp_load_double = queue_ctrl.is_fp_load_double;
-        from_id_to_ex.is_fp_store_double = queue_ctrl.is_fp_store_double;
-        from_id_to_ex.is_fp_compute = queue_ctrl.is_fp_compute;
-        from_id_to_ex.is_pipelined_fp_op = queue_ctrl.is_pipelined_fp_op;
-        from_id_to_ex.is_fp_to_int = queue_ctrl.is_fp_to_int;
-        from_id_to_ex.is_int_to_fp = queue_ctrl.is_int_to_fp;
         from_id_to_ex.is_compressed = queue_ctrl.is_compressed;
         from_id_to_ex.instruction = queue_ctrl.instruction;
-        from_id_to_ex.btb_hit = queue_ctrl.btb_hit;
         from_id_to_ex.btb_predicted_taken = queue_ctrl.btb_predicted_taken;
         from_id_to_ex.ras_predicted = queue_ctrl.ras_predicted;
         from_id_to_ex.is_ras_return = queue_ctrl.is_ras_return;
         from_id_to_ex.is_ras_call = queue_ctrl.is_ras_call;
-        from_id_to_ex.ras_predicted_target_nonzero = queue_ctrl.ras_predicted_target_nonzero;
         from_id_to_ex.btb_correct_non_jalr = queue_ctrl.btb_correct_non_jalr;
         from_id_to_ex.ras_correct_non_jalr = queue_ctrl.ras_correct_non_jalr;
         from_id_to_ex.has_int_dest = queue_ctrl.has_int_dest;
@@ -1220,15 +1084,9 @@ module cpu_ooo #(
         from_id_to_ex.uses_fp_rs2 = queue_ctrl.uses_fp_rs2;
         from_id_to_ex.uses_fp_rs3 = queue_ctrl.uses_fp_rs3;
         from_id_to_ex.is_not_nop = queue_ctrl.is_not_nop;
-        from_id_to_ex_2.source_reg_1_is_x0 = queue_ctrl_2.source_reg_1_is_x0;
-        from_id_to_ex_2.source_reg_2_is_x0 = queue_ctrl_2.source_reg_2_is_x0;
         from_id_to_ex_2.is_load_instruction = queue_ctrl_2.is_load_instruction;
-        from_id_to_ex_2.is_load_byte = queue_ctrl_2.is_load_byte;
-        from_id_to_ex_2.is_load_halfword = queue_ctrl_2.is_load_halfword;
         from_id_to_ex_2.is_load_unsigned = queue_ctrl_2.is_load_unsigned;
         from_id_to_ex_2.instruction_operation = queue_ctrl_2.instruction_operation;
-        from_id_to_ex_2.branch_operation = queue_ctrl_2.branch_operation;
-        from_id_to_ex_2.store_operation = queue_ctrl_2.store_operation;
         from_id_to_ex_2.rs_type = queue_ctrl_2.rs_type;
         from_id_to_ex_2.is_int_store = queue_ctrl_2.is_int_store;
         from_id_to_ex_2.is_branch_or_jump = queue_ctrl_2.is_branch_or_jump;
@@ -1238,8 +1096,6 @@ module cpu_ooo #(
         from_id_to_ex_2.has_fp_flags = queue_ctrl_2.has_fp_flags;
         from_id_to_ex_2.is_jump_and_link = queue_ctrl_2.is_jump_and_link;
         from_id_to_ex_2.is_jump_and_link_register = queue_ctrl_2.is_jump_and_link_register;
-        from_id_to_ex_2.is_multiply = queue_ctrl_2.is_multiply;
-        from_id_to_ex_2.is_divide = queue_ctrl_2.is_divide;
         from_id_to_ex_2.is_csr_instruction = queue_ctrl_2.is_csr_instruction;
         from_id_to_ex_2.is_amo_instruction = queue_ctrl_2.is_amo_instruction;
         from_id_to_ex_2.is_lr = queue_ctrl_2.is_lr;
@@ -1249,29 +1105,18 @@ module cpu_ooo #(
         from_id_to_ex_2.is_dret = queue_ctrl_2.is_dret;
         from_id_to_ex_2.is_sfence_vma = queue_ctrl_2.is_sfence_vma;
         from_id_to_ex_2.is_wfi = queue_ctrl_2.is_wfi;
-        from_id_to_ex_2.is_ecall = queue_ctrl_2.is_ecall;
-        from_id_to_ex_2.is_ebreak = queue_ctrl_2.is_ebreak;
         from_id_to_ex_2.is_illegal_instruction = queue_ctrl_2.is_illegal_instruction;
         from_id_to_ex_2.is_fetch_fault = queue_ctrl_2.is_fetch_fault;
         from_id_to_ex_2.is_fetch_fault_page = queue_ctrl_2.is_fetch_fault_page;
-        from_id_to_ex_2.is_fetch_fault_hi = queue_ctrl_2.is_fetch_fault_hi;
         from_id_to_ex_2.is_fp_instruction = queue_ctrl_2.is_fp_instruction;
         from_id_to_ex_2.is_fp_load = queue_ctrl_2.is_fp_load;
         from_id_to_ex_2.is_fp_store = queue_ctrl_2.is_fp_store;
-        from_id_to_ex_2.is_fp_load_double = queue_ctrl_2.is_fp_load_double;
-        from_id_to_ex_2.is_fp_store_double = queue_ctrl_2.is_fp_store_double;
-        from_id_to_ex_2.is_fp_compute = queue_ctrl_2.is_fp_compute;
-        from_id_to_ex_2.is_pipelined_fp_op = queue_ctrl_2.is_pipelined_fp_op;
-        from_id_to_ex_2.is_fp_to_int = queue_ctrl_2.is_fp_to_int;
-        from_id_to_ex_2.is_int_to_fp = queue_ctrl_2.is_int_to_fp;
         from_id_to_ex_2.is_compressed = queue_ctrl_2.is_compressed;
         from_id_to_ex_2.instruction = queue_ctrl_2.instruction;
-        from_id_to_ex_2.btb_hit = queue_ctrl_2.btb_hit;
         from_id_to_ex_2.btb_predicted_taken = queue_ctrl_2.btb_predicted_taken;
         from_id_to_ex_2.ras_predicted = queue_ctrl_2.ras_predicted;
         from_id_to_ex_2.is_ras_return = queue_ctrl_2.is_ras_return;
         from_id_to_ex_2.is_ras_call = queue_ctrl_2.is_ras_call;
-        from_id_to_ex_2.ras_predicted_target_nonzero = queue_ctrl_2.ras_predicted_target_nonzero;
         from_id_to_ex_2.btb_correct_non_jalr = queue_ctrl_2.btb_correct_non_jalr;
         from_id_to_ex_2.ras_correct_non_jalr = queue_ctrl_2.ras_correct_non_jalr;
         from_id_to_ex_2.has_int_dest = queue_ctrl_2.has_int_dest;

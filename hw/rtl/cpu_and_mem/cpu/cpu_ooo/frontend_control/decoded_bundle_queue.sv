@@ -17,10 +17,9 @@
 // Fall-through queue between the held ID register and atomic bundle dispatch.
 // ID's output register is the producer; i_advance means it loads a new bundle
 // at this edge. The queue accepts each producer image once (consumed_q), even
-// while an unrelated front-end stall holds it for several cycles. The
-// consumer ignores operand values read at decode: it reads the register files
-// and rename state when it dispatches, so renaming sees every older
-// instruction.
+// while an unrelated front-end stall holds it for several cycles. Packets
+// carry no register values: the consumer reads the register files and rename
+// state when it dispatches, so renaming sees every older instruction.
 //
 // o_shadow is a register holding exactly the narrow slice of o_packet the
 // consumer sees, bypass included (in cpu_ooo, the bundle's narrow control

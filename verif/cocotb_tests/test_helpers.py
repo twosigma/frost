@@ -223,8 +223,8 @@ class DUTInterface:
 
     # Read ports on the architectural register files (NUM_READ_PORTS of the
     # generic_regfile instances in ooo_register_files).
-    _INT_RF_READ_PORTS = 8
-    _FP_RF_READ_PORTS = 12
+    _INT_RF_READ_PORTS = 4
+    _FP_RF_READ_PORTS = 6
 
     def _int_regfile_inst(self) -> Any | None:
         """Return the architectural integer register-file instance for the cpu_ooo DUT.

@@ -42,7 +42,7 @@ walker (`mmu/ptw`), and these glue submodules from [`cpu_ooo/`](cpu_ooo/):
 | `ooo_pipeline_control` | `pipeline_control/` | Front-end stalls, CSR and control-flow serialization, unresolved-branch tracking, post-flush holdoff, the registered trap and xRET redirect, prediction disable |
 | `frontend_validity_tracker` | `frontend_control/` | Marks which IF/PD/ID packets are real instructions and classifies unpredicted control flow ([README](cpu_ooo/frontend_control/README.md)) |
 | `decoded_bundle_queue` | `frontend_control/` | Queue of decoded two-instruction bundles between ID and dispatch, four deep by default ([README](cpu_ooo/frontend_control/README.md)) |
-| `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to ID and dispatch |
+| `ooo_register_files` | `register_files/` | INT and FP architectural register files, two write ports each for two-wide commit, and a bypass that forwards a same-cycle commit to dispatch |
 | `commit_actions` | `commit/` | Register writes at commit, the delayed CSR writeback, the retire valid, and the instret increment |
 | `branch_resolution` | `branch_recovery/` | Resolves conditional branches and JALRs from INT_RS with `branch_jump_unit` and reports them to the ROB, ignoring a branch whose checkpoint was reused. A JAL resolves when the ROB allocates it |
 | `early_misprediction_recovery` | `branch_recovery/` | For a mispredicted conditional branch that holds a checkpoint, redirects fetch and restores the RAT the cycle after it resolves, instead of at commit |
@@ -205,9 +205,10 @@ still owed and must arrive first.
 Every 32-bit word carries 78 bits of predecode metadata: 12 fetch-control
 bits (instruction size, pairing, and slot-2 eligibility) and, for each
 halfword, the full RV64C expansion with its illegal flag. The expansion's
-source-register fields are stored separately so register lookups can start
-early. Low-BRAM initialization, debugger and loader writes, and L1I fills all
-compute the metadata with `riscv_pkg::imem_make_sideband`, and
+source-register fields are stored separately, and PD takes a compressed
+instruction's register fields from them. Low-BRAM initialization, debugger
+and loader writes, and L1I fills all compute the metadata with
+`riscv_pkg::imem_make_sideband`, and
 `sw/common/generate_imem_predecode_init.py` mirrors it for Vivado init files.
 
 ## Address translation

@@ -24,20 +24,16 @@
  *   - PC-relative result for AUIPC (PC + U-type immediate) and the xtval of a
  *     fetch-fault pseudo-op (PC + faulting-halfword offset); dispatch carries
  *     it in the RS immediate so those ops need no PC at execute
- *   - RAS expected rs1 (ras_predicted_target - I-type immediate)
- *   - BTB expected rs1 (btb_predicted_target - I-type immediate)
  *   - BTB and RAS correct flags for non-JALR instructions
  *
  * A JALR target needs rs1, so branch resolution computes it and compares it
- * with the predicted target directly. The expected-rs1 values are the rs1 for
- * which rs1 + imm equals the prediction; nothing downstream uses them.
+ * with the predicted target directly.
  */
 module branch_target_precompute #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     // PC and immediates for target computation
     input  logic [XLEN-1:0] i_program_counter,
-    input  logic [XLEN-1:0] i_immediate_i_type,
     input  logic [XLEN-1:0] i_immediate_b_type,
     input  logic [XLEN-1:0] i_immediate_j_type,
     input  logic [XLEN-1:0] i_immediate_u_type,
@@ -55,10 +51,6 @@ module branch_target_precompute #(
     // Pre-computed PC-relative result: AUIPC's PC + imm_u, or the fetch-fault
     // pseudo-op's xtval (PC, or PC + 2 when only the second halfword faulted)
     output logic [XLEN-1:0] o_pc_relative_precomputed,
-    // Expected rs1 values: ras_predicted_target - imm_i and
-    // btb_predicted_target - imm_i
-    output logic [XLEN-1:0] o_ras_expected_rs1,
-    output logic [XLEN-1:0] o_btb_expected_rs1,
     // Non-JALR: the precomputed target equals btb_predicted_target
     output logic            o_btb_correct_non_jalr,
     // Same compare against the RAS prediction, for non-JALR instructions
@@ -76,9 +68,6 @@ module branch_target_precompute #(
   assign pc_relative_offset = i_is_fetch_fault ?
       {{(XLEN - 2) {1'b0}}, i_is_fetch_fault_hi, 1'b0} : XLEN'(signed'(i_immediate_u_type));
   assign o_pc_relative_precomputed = i_program_counter + pc_relative_offset;
-
-  assign o_ras_expected_rs1 = i_ras_predicted_target - XLEN'(signed'(i_immediate_i_type));
-  assign o_btb_expected_rs1 = i_btb_predicted_target - XLEN'(signed'(i_immediate_i_type));
 
   // JAL and branches have PC-relative targets, so the whole prediction
   // comparison fits in ID, and branch resolution sees only its one-bit result

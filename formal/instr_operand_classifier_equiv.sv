@@ -34,8 +34,6 @@ module instr_operand_classifier_equiv (
   instr_decoder decoder (
       .i_instr(instruction),
       .o_instr_op(instruction_operation),
-      .o_store_op(),
-      .o_branch_taken_op(),
       .o_illegal(decoder_illegal)
   );
   riscv_pkg::instr_op_e op_for_pre_decode;

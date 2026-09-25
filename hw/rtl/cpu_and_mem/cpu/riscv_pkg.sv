@@ -22,11 +22,10 @@
  *   Section 1: Instruction Opcodes (opc_e) and the IMEM predecode sideband
  *   Section 2: Instruction Operations (instr_op_e)
  *   Section 3: CSR Definitions (addresses, bit positions, cause codes)
- *   Section 4: Control Enumerations (branch_taken_op_e, store_op_e)
+ *   Section 4: Control Enumerations (branch_taken_op_e)
  *   Section 5: Instruction Format (instr_t), XLEN, memory map, PMA, Sv39, constants
  *   Section 6: Pipeline Control (pipeline_ctrl_t)
  *   Section 7: Inter-Stage Data Structures (from_*_to_*_t)
- *   Section 8: Operand and Register File Structures
  *   Section 9: Trap/Exception Handling
  *   Section 10: Bit Manipulation Helper Functions (clz, ctz, cpop), multiplier depth
  *   Section 11: Tomasulo OOO Execution (Reorder Buffer, RS, LQ, SQ, CDB, RAT)
@@ -1304,8 +1303,7 @@ package riscv_pkg;
   // ===========================================================================
   // Section 4: Control Enumerations
   // ===========================================================================
-  // Branch operation types and store operation types. These are compact
-  // encodings used by branch resolution and store-queue routing.
+  // Branch operation types, a compact encoding used by branch resolution.
 
   // Branch operation type, capped at 3 bits to keep the decode logic small.
   typedef enum bit [2:0] {
@@ -1318,16 +1316,6 @@ package riscv_pkg;
     JUMP,
     NULL
   } branch_taken_op_e;
-
-  // Kept as narrow as the store-size set allows.
-  // STN must be 0 so Verilator's 2-state initialization (all zeros) defaults to "no store"
-  typedef enum bit [2:0] {
-    STN,  // store nothing (default/reset value)
-    STB,  // store byte
-    STH,  // store half-word
-    STW,  // store word
-    STD   // store doubleword (RV64 SD)
-  } store_op_e;
 
   // ===========================================================================
   // Section 5: Instruction Format
@@ -1714,8 +1702,8 @@ package riscv_pkg;
     logic inject_nop;
     // Original instruction size before RVC decompression.
     logic is_compressed;
-    // Source registers from IF's predecoded fields, registered in PD so the
-    // ID regfile read and dispatch need not wait for decode.
+    // Source registers from IF's predecoded fields. pd_stage builds slot 2's
+    // registered instruction from rs1 and rs2 here.
     logic [4:0] source_reg_1_early;
     logic [4:0] source_reg_2_early;
     // F extension: Early FP source reg 3 for FMA instructions (rs3 = funct7[6:2])
@@ -1744,23 +1732,11 @@ package riscv_pkg;
     // sign-extended to XLEN by immediate_decoder.
     logic [XLEN-1:0] immediate_i_type;  // I-type: 12-bit sign-extended
     logic [XLEN-1:0] immediate_s_type;  // S-type: for stores
-    logic [XLEN-1:0] immediate_b_type;  // B-type: for branches
     logic [XLEN-1:0] immediate_u_type;  // U-type: upper 20 bits
-    logic [XLEN-1:0] immediate_j_type;  // J-type: for jumps
-    // Register file read data, read in ID with PD's early source registers.
-    logic [XLEN-1:0] source_reg_1_data;
-    logic [XLEN-1:0] source_reg_2_data;
-    // Pre-computed x0 flags: set when the corresponding source register is
-    // x0. They keep the ~|source_reg NOR gate out of the dispatch and
-    // register-read paths.
-    logic source_reg_1_is_x0;
-    logic source_reg_2_is_x0;
     // Instruction type flags
     logic is_load_instruction;
-    logic is_load_byte, is_load_halfword, is_load_unsigned;
+    logic is_load_unsigned;
     instr_op_e instruction_operation;
-    branch_taken_op_e branch_operation;
-    store_op_e store_operation;
     // Pre-decoded reservation-station route. Stored as raw bits because
     // rs_type_e is declared later in this package.
     logic [2:0] rs_type;
@@ -1772,7 +1748,6 @@ package riscv_pkg;
     logic has_fp_flags;
     logic is_jump_and_link;  // JAL instruction
     logic is_jump_and_link_register;  // JALR instruction
-    logic is_multiply, is_divide;
     // CSR instruction fields (Zicsr)
     logic is_csr_instruction;
     logic [11:0] csr_address;
@@ -1787,27 +1762,14 @@ package riscv_pkg;
     logic is_dret;  // Qualifies is_mret as DRET (dpc/dcsr side, Debug-Mode gate)
     logic is_sfence_vma;  // Qualifies is_fence_i as SFENCE.VMA (TVM/U-priv gate)
     logic is_wfi;  // WFI instruction
-    logic is_ecall;  // ECALL instruction
-    logic is_ebreak;  // EBREAK instruction
     logic is_illegal_instruction;  // Illegal instruction (unknown opcode or illegal compressed)
     logic is_fetch_fault;  // Fetch fault pseudo-op (cause 1 or 12 at the FU shim)
     logic is_fetch_fault_page;  // ...FETCH_PAGE_FAULT (cause 12) instead of FETCH_FAULT
-    logic is_fetch_fault_hi;  // ...faulting portion is the second halfword (xtval = PC + 2)
     // F extension fields
     logic is_fp_instruction;  // Any FP instruction
     logic is_fp_load;  // FLW or FLD: data goes to the FP regfile
     logic is_fp_store;  // FSW or FSD
-    logic is_fp_load_double;  // FLD
-    logic is_fp_store_double;  // FSD
-    logic is_fp_compute;  // FP compute op (FADD, FSUB, FMUL, FDIV, FSQRT, FMA*, etc.)
-    logic is_pipelined_fp_op;  // Multi-cycle FP op: FADD, FSUB, FMUL, FDIV, FSQRT, or an FMA
     logic [2:0] fp_rm;  // Rounding mode from instruction (funct3)
-    logic is_fp_to_int;  // FP to integer conversion (result goes to int reg)
-    logic is_int_to_fp;  // Integer to FP conversion (uses int rs1)
-    // FP source register data (read in ID stage)
-    logic [FpWidth-1:0] fp_source_reg_1_data;
-    logic [FpWidth-1:0] fp_source_reg_2_data;
-    logic [FpWidth-1:0] fp_source_reg_3_data;  // For FMA instructions
     // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
     logic [XLEN-1:0] link_address;
     // Original instruction size before RVC decompression.
@@ -1819,7 +1781,6 @@ package riscv_pkg;
     logic [XLEN-1:0] jal_target_precomputed;  // PC + imm_j (for JAL)
     instr_t instruction;
     // Branch prediction metadata (passed through from IF via PD/ID)
-    logic btb_hit;
     logic btb_predicted_taken;
     logic [XLEN-1:0] btb_predicted_target;  // Valid only with btb_predicted_taken
     // RAS prediction metadata (passed through from IF via PD/ID)
@@ -1840,14 +1801,9 @@ package riscv_pkg;
     // instruction_type_decoder.sv.
     logic is_ras_return;  // JALR with rs1=x1, rd=x0, imm=0 (matches ras_detector)
     logic is_ras_call;  // JAL/JALR with rd in {x1,x5}
-    logic ras_predicted_target_nonzero;  // ras_predicted_target != 0
-    // Expected rs1 of a JALR that follows the RAS prediction: its target is
-    // rs1 + imm, so rs1 = ras_predicted_target - imm.
-    logic [XLEN-1:0] ras_expected_rs1;
     // BTB check for JAL and branches: their target is PC-relative and known
     // in ID, so ID compares it with btb_predicted_target directly.
     logic btb_correct_non_jalr;  // True if non-JALR target matches BTB prediction
-    logic [XLEN-1:0] btb_expected_rs1;  // btb_predicted_target - imm_i (for JALR)
     // The same PC-relative target check against the RAS prediction, so
     // dispatch can forward the bit that matches its selected prediction
     // source (rs_dispatch_t.predicted_target_ok).
@@ -1879,20 +1835,14 @@ package riscv_pkg;
   } from_id_to_ex_t;
 
   // The narrow control fields of from_id_to_ex_t: every flag, the operation
-  // enums, the RS route and the instruction word (same names and types).
+  // enum, the RS route and the instruction word (same names and types).
   // The decoded-bundle queue keeps a registered copy of exactly what dispatch
   // sees next cycle, built from id_stage's next-edge register values, so
   // dispatch control and rename addressing start at a flop.
   typedef struct packed {
-    logic source_reg_1_is_x0;
-    logic source_reg_2_is_x0;
     logic is_load_instruction;
-    logic is_load_byte;
-    logic is_load_halfword;
     logic is_load_unsigned;
     instr_op_e instruction_operation;
-    branch_taken_op_e branch_operation;
-    store_op_e store_operation;
     logic [2:0] rs_type;
     logic is_int_store;
     logic is_branch_or_jump;
@@ -1902,8 +1852,6 @@ package riscv_pkg;
     logic has_fp_flags;
     logic is_jump_and_link;
     logic is_jump_and_link_register;
-    logic is_multiply;
-    logic is_divide;
     logic is_csr_instruction;
     logic is_amo_instruction;
     logic is_lr;
@@ -1913,29 +1861,18 @@ package riscv_pkg;
     logic is_dret;
     logic is_sfence_vma;
     logic is_wfi;
-    logic is_ecall;
-    logic is_ebreak;
     logic is_illegal_instruction;
     logic is_fetch_fault;
     logic is_fetch_fault_page;
-    logic is_fetch_fault_hi;
     logic is_fp_instruction;
     logic is_fp_load;
     logic is_fp_store;
-    logic is_fp_load_double;
-    logic is_fp_store_double;
-    logic is_fp_compute;
-    logic is_pipelined_fp_op;
-    logic is_fp_to_int;
-    logic is_int_to_fp;
     logic is_compressed;
     instr_t instruction;
-    logic btb_hit;
     logic btb_predicted_taken;
     logic ras_predicted;
     logic is_ras_return;
     logic is_ras_call;
-    logic ras_predicted_target_nonzero;
     logic btb_correct_non_jalr;
     logic ras_correct_non_jalr;
     logic has_int_dest;
@@ -1969,36 +1906,6 @@ package riscv_pkg;
     logic ras_push_after_restore;  // Push after restoring (for mispredicted calls)
     logic [XLEN-1:0] ras_push_address_after_restore;  // Link address to push after restore
   } from_ex_comb_t;
-
-  // Writeback result bundle.
-  typedef struct packed {
-    logic regfile_write_enable;
-    logic [XLEN-1:0] regfile_write_data;  // Final result to write back
-    instr_t instruction;
-    // F extension fields
-    logic fp_regfile_write_enable;
-    logic [4:0] fp_dest_reg;  // FP destination register (for forwarding)
-    logic [FpWidth-1:0] fp_regfile_write_data;  // Final FP result to write back
-    fp_flags_t fp_flags;  // FP exception flags (to accumulate in fflags)
-  } from_ma_to_wb_t;
-
-  // ===========================================================================
-  // Section 8: Operand and Register File Structures
-  // ===========================================================================
-  // Data structures for operand bypassing and register file communication.
-
-  // Integer register file read data for operand selection.
-  typedef struct packed {
-    logic [XLEN-1:0] source_reg_1_data;
-    logic [XLEN-1:0] source_reg_2_data;
-  } rf_to_fwd_t;
-
-  // F extension: FP register file read data for operand selection.
-  typedef struct packed {
-    logic [FpWidth-1:0] fp_source_reg_1_data;
-    logic [FpWidth-1:0] fp_source_reg_2_data;
-    logic [FpWidth-1:0] fp_source_reg_3_data;
-  } fp_rf_to_fwd_t;
 
   // ===========================================================================
   // Section 9: Trap/Exception Handling

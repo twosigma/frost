@@ -52,9 +52,6 @@ RS_TYPE_WIDTH = 3
 # mem_size_e: 2 bits
 MEM_SIZE_WIDTH = 2
 
-# branch_taken_op_e: 3 bits
-BRANCH_OP_WIDTH = 3
-
 # instr_t: 32 bits packed struct
 INSTR_WIDTH = 32
 
@@ -820,11 +817,7 @@ _HAS_FP_FLAGS_OPS: frozenset[int] = frozenset(
 )
 
 _LOAD_OPS: frozenset[int] = frozenset({LB, LH, LW, LBU, LHU})
-_LOAD_BYTE_OPS: frozenset[int] = frozenset({LB, LBU})
-_LOAD_HALFWORD_OPS: frozenset[int] = frozenset({LH, LHU})
 _LOAD_UNSIGNED_OPS: frozenset[int] = frozenset({LBU, LHU})
-_MUL_OPS: frozenset[int] = frozenset({MUL, MULH, MULHSU, MULHU})
-_DIV_OPS: frozenset[int] = frozenset({DIV, DIVU, REM, REMU})
 _CSR_OPS: frozenset[int] = frozenset({CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI})
 _AMO_OPS: frozenset[int] = frozenset(
     {
@@ -851,35 +844,6 @@ _FP_INSTRUCTION_OPS: frozenset[int] = frozenset(
     | _USES_FP_RS1_OPS
     | _USES_FP_RS2_OPS
     | _USES_FP_RS3_OPS
-)
-_FP_COMPUTE_OPS: frozenset[int] = _HAS_FP_FLAGS_OPS
-_FP_TO_INT_OPS: frozenset[int] = frozenset(
-    {
-        FCVT_W_S,
-        FCVT_WU_S,
-        FCVT_W_D,
-        FCVT_WU_D,
-        FMV_X_W,
-        FCVT_L_S,
-        FCVT_LU_S,
-        FCVT_L_D,
-        FCVT_LU_D,
-        FMV_X_D,
-    }
-)
-_INT_TO_FP_OPS: frozenset[int] = frozenset(
-    {
-        FCVT_S_W,
-        FCVT_S_WU,
-        FCVT_D_W,
-        FCVT_D_WU,
-        FMV_W_X,
-        FCVT_S_L,
-        FCVT_S_LU,
-        FCVT_D_L,
-        FCVT_D_LU,
-        FMV_D_X,
-    }
 )
 
 
@@ -925,13 +889,9 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_csr_imm": 1 if op in _CSR_IMM_OPS else 0,
         "has_fp_flags": 1 if op in _HAS_FP_FLAGS_OPS else 0,
         "is_load_instruction": 1 if op in _LOAD_OPS else 0,
-        "is_load_byte": 1 if op in _LOAD_BYTE_OPS else 0,
-        "is_load_halfword": 1 if op in _LOAD_HALFWORD_OPS else 0,
         "is_load_unsigned": 1 if op in _LOAD_UNSIGNED_OPS else 0,
         "is_jump_and_link": 1 if op == JAL else 0,
         "is_jump_and_link_register": 1 if op == JALR else 0,
-        "is_multiply": 1 if op in _MUL_OPS else 0,
-        "is_divide": 1 if op in _DIV_OPS else 0,
         "is_csr_instruction": 1 if op in _CSR_OPS else 0,
         "is_amo_instruction": 1 if op in _AMO_OPS else 0,
         "is_lr": 1 if op == LR_W else 0,
@@ -941,17 +901,9 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_dret": 1 if op == DRET else 0,
         "is_sfence_vma": 1 if op == SFENCE_VMA else 0,
         "is_wfi": 1 if op == WFI else 0,
-        "is_ecall": 1 if op == ECALL else 0,
-        "is_ebreak": 1 if op == EBREAK else 0,
         "is_fp_instruction": 1 if op in _FP_INSTRUCTION_OPS else 0,
         "is_fp_load": 1 if op in _FP_LOAD_OPS else 0,
         "is_fp_store": 1 if op in _FP_STORE_OPS else 0,
-        "is_fp_load_double": 1 if op == FLD else 0,
-        "is_fp_store_double": 1 if op == FSD else 0,
-        "is_fp_compute": 1 if op in _FP_COMPUTE_OPS else 0,
-        "is_pipelined_fp_op": 1 if op in (_RS_FMUL_OPS | _RS_FDIV_OPS) else 0,
-        "is_fp_to_int": 1 if op in _FP_TO_INT_OPS else 0,
-        "is_int_to_fp": 1 if op in _INT_TO_FP_OPS else 0,
         # id_stage registers is_not_nop = (instruction != NOP), and a fetch
         # fault in either slot also sets it. Test packets default to 1 like a real
         # instruction, although this bench's DUT takes slot-2 presence from
@@ -965,11 +917,14 @@ def build_from_id_to_ex(**kwargs: int) -> int:
     """Pack from_id_to_ex_t fields into a single bit vector.
 
     All fields default to 0. Keyword arguments matching struct field names set
-    those fields.
+    those fields; any other name raises ValueError.
 
     Pre-decoded dispatch fields that the caller does not set are derived from
     instruction_operation, mirroring what id_stage computes and registers.
     """
+    unknown = sorted(set(kwargs) - set(_FROM_ID_TO_EX_OFFSETS))
+    if unknown:
+        raise ValueError(f"not from_id_to_ex_t fields: {', '.join(unknown)}")
     derived = _derive_pre_decoded_flags(int(kwargs.get("instruction_operation", 0)))
     for name, value in derived.items():
         kwargs.setdefault(name, value)

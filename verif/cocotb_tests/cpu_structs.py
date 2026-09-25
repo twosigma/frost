@@ -16,13 +16,12 @@
 
 These handwritten schemas describe packed structs in riscv_pkg.sv. Treat the
 lists as read-only; bench-specific defaults and signal timing stay in each
-interface. XLEN, FLEN, INSTR_OP_WIDTH, and STORE_OP_WIDTH come from the
-verification configuration; the other widths are written out here.
+interface. XLEN, FLEN, and INSTR_OP_WIDTH come from the verification
+configuration; the other widths are written out here.
 """
 
-from config import FLEN, INSTR_OP_WIDTH, STORE_OP_WIDTH, XLEN
+from config import FLEN, INSTR_OP_WIDTH, XLEN
 
-BRANCH_OP_WIDTH = 3
 ROB_TAG_WIDTH = 5
 REG_ADDR_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
@@ -95,20 +94,10 @@ ID_TO_EX_FIELDS = [
     ("program_counter", XLEN),
     ("immediate_i_type", XLEN),
     ("immediate_s_type", XLEN),
-    ("immediate_b_type", XLEN),
     ("immediate_u_type", XLEN),
-    ("immediate_j_type", XLEN),
-    ("source_reg_1_data", XLEN),
-    ("source_reg_2_data", XLEN),
-    ("source_reg_1_is_x0", 1),
-    ("source_reg_2_is_x0", 1),
     ("is_load_instruction", 1),
-    ("is_load_byte", 1),
-    ("is_load_halfword", 1),
     ("is_load_unsigned", 1),
     ("instruction_operation", INSTR_OP_WIDTH),
-    ("branch_operation", BRANCH_OP_WIDTH),
-    ("store_operation", STORE_OP_WIDTH),
     ("rs_type", 3),
     ("is_int_store", 1),
     ("is_branch_or_jump", 1),
@@ -118,8 +107,6 @@ ID_TO_EX_FIELDS = [
     ("has_fp_flags", 1),
     ("is_jump_and_link", 1),
     ("is_jump_and_link_register", 1),
-    ("is_multiply", 1),
-    ("is_divide", 1),
     ("is_csr_instruction", 1),
     ("csr_address", 12),
     ("csr_imm", 5),
@@ -131,31 +118,18 @@ ID_TO_EX_FIELDS = [
     ("is_dret", 1),
     ("is_sfence_vma", 1),
     ("is_wfi", 1),
-    ("is_ecall", 1),
-    ("is_ebreak", 1),
     ("is_illegal_instruction", 1),
     ("is_fetch_fault", 1),
     ("is_fetch_fault_page", 1),
-    ("is_fetch_fault_hi", 1),
     ("is_fp_instruction", 1),
     ("is_fp_load", 1),
     ("is_fp_store", 1),
-    ("is_fp_load_double", 1),
-    ("is_fp_store_double", 1),
-    ("is_fp_compute", 1),
-    ("is_pipelined_fp_op", 1),
     ("fp_rm", 3),
-    ("is_fp_to_int", 1),
-    ("is_int_to_fp", 1),
-    ("fp_source_reg_1_data", FLEN),
-    ("fp_source_reg_2_data", FLEN),
-    ("fp_source_reg_3_data", FLEN),
     ("link_address", XLEN),
     ("is_compressed", 1),
     ("branch_target_precomputed", XLEN),
     ("jal_target_precomputed", XLEN),
     ("instruction", 32),
-    ("btb_hit", 1),
     ("btb_predicted_taken", 1),
     ("btb_predicted_target", XLEN),
     ("ras_predicted", 1),
@@ -165,10 +139,7 @@ ID_TO_EX_FIELDS = [
     ("bp_dir_idx", BP_DIR_IDX_BITS),
     ("is_ras_return", 1),
     ("is_ras_call", 1),
-    ("ras_predicted_target_nonzero", 1),
-    ("ras_expected_rs1", XLEN),
     ("btb_correct_non_jalr", 1),
-    ("btb_expected_rs1", XLEN),
     ("ras_correct_non_jalr", 1),
     ("pc_relative_precomputed", XLEN),
     # Dispatch consumes these registered operand classifications.
@@ -197,19 +168,6 @@ FROM_EX_FIELDS = [
     ("ras_pop_after_restore", 1),
     ("ras_push_after_restore", 1),
     ("ras_push_address_after_restore", XLEN),
-]
-
-# rf_to_fwd_t
-RF_TO_FWD_FIELDS = [
-    ("source_reg_1_data", XLEN),
-    ("source_reg_2_data", XLEN),
-]
-
-# fp_rf_to_fwd_t
-FP_RF_TO_FWD_FIELDS = [
-    ("fp_source_reg_1_data", FLEN),
-    ("fp_source_reg_2_data", FLEN),
-    ("fp_source_reg_3_data", FLEN),
 ]
 
 # reorder_buffer_alloc_req_t

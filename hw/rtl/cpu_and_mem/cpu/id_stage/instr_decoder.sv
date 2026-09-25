@@ -17,24 +17,19 @@
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbkb, Zicsr,
   and M/S/U-mode privileged instructions. Compressed instructions arrive
-  already expanded. Outputs select the operation, branch condition, and store
-  size; o_illegal flags any encoding not decoded here, including reserved FP
-  rounding modes.
+  already expanded. o_instr_op selects the operation; o_illegal flags any
+  encoding not decoded here, including reserved FP rounding modes.
  */
 module instr_decoder (
     input  riscv_pkg::instr_t    i_instr,
     output riscv_pkg::instr_op_e o_instr_op,
-    output riscv_pkg::store_op_e o_store_op,
-    output riscv_pkg::branch_taken_op_e o_branch_taken_op,
-    output logic o_illegal
+    output logic                 o_illegal
 );
 
   always_comb begin
     // default values
     o_instr_op = riscv_pkg::ADDI;
-    o_branch_taken_op = riscv_pkg::NULL;
-    o_store_op = riscv_pkg::STN;
-    o_illegal = 1'b0;
+    o_illegal  = 1'b0;
 
     unique case (i_instr.opcode)
       // Register-register operations (R-type format)
@@ -171,45 +166,22 @@ module instr_decoder (
       riscv_pkg::OPC_AUIPC: o_instr_op = riscv_pkg::AUIPC;
 
       // Jump and link (J-type) - unconditional jump, save return address
-      riscv_pkg::OPC_JAL: begin
-        o_instr_op = riscv_pkg::JAL;
-        o_branch_taken_op = riscv_pkg::JUMP;
-      end
+      riscv_pkg::OPC_JAL: o_instr_op = riscv_pkg::JAL;
 
       // Jump and link register (I-type) - jump to register value + offset
       riscv_pkg::OPC_JALR:
-      if (i_instr.funct3 == 3'b000) begin
-        o_instr_op = riscv_pkg::JALR;
-        o_branch_taken_op = riscv_pkg::JUMP;
-      end else o_illegal = 1'b1;
+      if (i_instr.funct3 == 3'b000) o_instr_op = riscv_pkg::JALR;
+      else o_illegal = 1'b1;
 
       // Branch instructions (B-type) - conditional branches
       riscv_pkg::OPC_BRANCH:
       unique case (i_instr.funct3)
-        3'b000: begin  // Branch if equal
-          o_instr_op = riscv_pkg::BEQ;
-          o_branch_taken_op = riscv_pkg::BREQ;
-        end
-        3'b001: begin  // Branch if not equal
-          o_instr_op = riscv_pkg::BNE;
-          o_branch_taken_op = riscv_pkg::BRNE;
-        end
-        3'b100: begin  // Branch if less than (signed)
-          o_instr_op = riscv_pkg::BLT;
-          o_branch_taken_op = riscv_pkg::BRLT;
-        end
-        3'b101: begin  // Branch if greater or equal (signed)
-          o_instr_op = riscv_pkg::BGE;
-          o_branch_taken_op = riscv_pkg::BRGE;
-        end
-        3'b110: begin  // Branch if less than (unsigned)
-          o_instr_op = riscv_pkg::BLTU;
-          o_branch_taken_op = riscv_pkg::BRLTU;
-        end
-        3'b111: begin  // Branch if greater or equal (unsigned)
-          o_instr_op = riscv_pkg::BGEU;
-          o_branch_taken_op = riscv_pkg::BRGEU;
-        end
+        3'b000:  o_instr_op = riscv_pkg::BEQ;  // Branch if equal
+        3'b001:  o_instr_op = riscv_pkg::BNE;  // Branch if not equal
+        3'b100:  o_instr_op = riscv_pkg::BLT;  // Branch if less than (signed)
+        3'b101:  o_instr_op = riscv_pkg::BGE;  // Branch if greater or equal (signed)
+        3'b110:  o_instr_op = riscv_pkg::BLTU;  // Branch if less than (unsigned)
+        3'b111:  o_instr_op = riscv_pkg::BGEU;  // Branch if greater or equal (unsigned)
         default: o_illegal = 1'b1;
       endcase
 
@@ -229,22 +201,10 @@ module instr_decoder (
       // Store instructions (S-type) - write from register to memory
       riscv_pkg::OPC_STORE:
       unique case (i_instr.funct3)
-        3'b000: begin  // Store byte (8 bits)
-          o_instr_op = riscv_pkg::SB;
-          o_store_op = riscv_pkg::STB;
-        end
-        3'b001: begin  // Store halfword (16 bits)
-          o_instr_op = riscv_pkg::SH;
-          o_store_op = riscv_pkg::STH;
-        end
-        3'b010: begin  // Store word (32 bits)
-          o_instr_op = riscv_pkg::SW;
-          o_store_op = riscv_pkg::STW;
-        end
-        3'b011: begin  // Store doubleword (64 bits)
-          o_instr_op = riscv_pkg::SD;
-          o_store_op = riscv_pkg::STD;
-        end
+        3'b000:  o_instr_op = riscv_pkg::SB;  // Store byte (8 bits)
+        3'b001:  o_instr_op = riscv_pkg::SH;  // Store halfword (16 bits)
+        3'b010:  o_instr_op = riscv_pkg::SW;  // Store word (32 bits)
+        3'b011:  o_instr_op = riscv_pkg::SD;  // Store doubleword (64 bits)
         default: o_illegal = 1'b1;
       endcase
 
@@ -418,10 +378,8 @@ module instr_decoder (
       riscv_pkg::OPC_STORE_FP:
       if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FSW;
-        o_store_op = riscv_pkg::STW;  // 32-bit store
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FSD;
-        o_store_op = riscv_pkg::STN;  // Dispatch sizes stores from the operation
       end else o_illegal = 1'b1;
 
       // Fused multiply-add variants (R4-type format)
