@@ -15,17 +15,15 @@
 # Self-checking tests for the RISC-V extensions FROST implements, plus M-mode
 # CSRs and traps.
 
-# -O2 instead of common.mk's default -O3, for ISA test coverage and performance.
+# -O2 rather than common.mk's -O3: the checks are inline assembly, so the level
+# only changes the C code around them, and -O2 keeps that code smaller.
 OPT_LEVEL := -O2
+# No -funroll-loops: the checks are inline assembly, so unrolling only grows the
+# image (about 10 KiB) and slows the run.
 UNROLL_LOOPS :=
 # Compressed-instruction tests deliberately clobber s0. Keep that register
 # available with DWARF/-Og too; ordinary frame-pointer unwinding is unavailable.
 FROST_DEBUG_FRAME_POINTER := 0
-
-# Put no objects in the small-data sections. The DDR-tier link fails without
-# it (R_RISCV_HI20 overflow in c_test_trap_handler).
-EXTRA_CFLAGS := -msmall-data-limit=0
-EXTRA_LDFLAGS := -lgcc
 
 SRC_C   := ../../lib/src/uart.c ../../lib/src/string.c isa_test.c
 include ../../common/common.mk

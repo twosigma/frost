@@ -886,12 +886,12 @@ __attribute__((naked, aligned(4))) static void c_test_trap_handler(void)
     __asm__ volatile(
         /* Save mcause to global */
         "csrr t0, mcause\n"
-        "lui t1, %%hi(c_trap_cause)\n"
-        "sw t0, %%lo(c_trap_cause)(t1)\n"
+        "la t1, c_trap_cause\n"
+        "sw t0, 0(t1)\n"
         /* Set trap_taken flag */
         "li t0, 1\n"
-        "lui t1, %%hi(c_trap_taken)\n"
-        "sw t0, %%lo(c_trap_taken)(t1)\n"
+        "la t1, c_trap_taken\n"
+        "sw t0, 0(t1)\n"
         /* Advance mepc past the trapping instruction (detect 16-bit vs 32-bit) */
         "csrr t0, mepc\n"
         "lhu t2, 0(t0)\n"
