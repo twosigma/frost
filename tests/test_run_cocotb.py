@@ -686,8 +686,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pde_return_hazard",
         description="pde_subdir_find epilogue return-value hazard reproducer",
-        # This app stays in low BRAM, so L2/DDR parameters do not affect it.
-        # The window_cannot_serve guard also has an SVA check.
+        # The app runs from cached DDR (its Makefile forces MEM_CONFIG=ddr), so
+        # its misses go to a small L2 and a slow DDR here, as for the other tests
+        # in CI's Cache stress shard, which share this Verilator build. The
+        # window_cannot_serve guard also has an SVA check.
+        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
