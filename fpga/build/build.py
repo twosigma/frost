@@ -2621,7 +2621,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="FROST FPGA build script",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Steps (in order):
   synth                       - Synthesis
   opt                         - Opt design
@@ -2643,7 +2643,7 @@ Steps (in order):
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
-  * --jobs / -j limits simultaneous Vivado processes per build (default 12).
+  * --jobs / -j limits simultaneous Vivado processes per build (default {DEFAULT_MAX_JOBS}).
     This covers X3 placement, quick-route probes, and both router sweeps.
     Candidates queue and start as slots become free; every candidate still runs.
     Separate build invocations have independent limits. Vivado's per-process
@@ -2671,9 +2671,9 @@ Behavior:
     clock_from_mmcm, and the candidate's own directive and uncertainty.
   * X3 place-seed selection is congestion-aware. Among seeds that pass the
     -0.200 ns gate, those whose placer congestion estimate reaches
-    FROST_PLACE_CONGESTION_VETO_LEVEL (default 5) are dropped; if that drops
+    FROST_PLACE_CONGESTION_VETO_LEVEL (default {X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT}) are dropped; if that drops
     them all, the least congested remain. FROST_PLACE_QUICK_ROUTE_COUNT
-    (default 0) quick-routes that many of the best remaining seeds and ranks
+    (default {X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT}) quick-routes that many of the best remaining seeds and ranks
     them by routed WNS; without probes they rank by post-place WNS. Scores and
     the promoted checkpoint and reports use zero added setup uncertainty. If
     no seed meets -0.200 ns, the build warns and continues with the best one.

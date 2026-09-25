@@ -196,8 +196,10 @@ Resumed steps check the metadata files saved beside each checkpoint, so copy
 a build directory as a whole. A new synthesis or `opt` result invalidates the
 placement: rerun placement before resuming later steps. Only full-rate builds
 update the utilization table in the root README;
-`./fpga/build/extract_timing_and_util_summary.py` refreshes it from the
-latest-stage reports in the build directory.
+`./fpga/build/extract_timing_and_util_summary.py` refreshes it from the most
+advanced stage with a utilization report in the build directory, trying
+`final`, `post_route`, `post_place_physopt`, `post_place`, `post_opt`, then
+`post_synth`.
 
 To route a finished phys_opt sweep while the original build keeps going, fork
 it into a new build directory:

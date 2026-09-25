@@ -1056,8 +1056,8 @@ def nettest_command(interface: str) -> str:
     bootargs carry ``ipv6.disable=1`` for exactly that reason, and an NFS root's
     do not, because the root is IPv4.
 
-    It restores the MTU and flags it read first, and the IPv6 setting, through
-    sysfs with shell built-ins, so nothing has to be read from the root or
+    It restores the MTU and flags it read first (sysfs) and the IPv6 setting
+    (procfs) with shell built-ins, so nothing has to be read from the root or
     exec'd from it before the link is up again. The shell itself is still the
     login shell mapped from the root, which has run every command before this
     one, so its pages are resident; a reclaim under memory pressure could still
