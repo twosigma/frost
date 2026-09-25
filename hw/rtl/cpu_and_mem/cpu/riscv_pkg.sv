@@ -1429,24 +1429,33 @@ package riscv_pkg;
   endfunction
 
   // PMA region checks. The physical map:
-  //   [0x0000_0000, 0x0004_0000)  256 KiB BRAM      fetch + data
-  //   [0x4000_0000, 0x8000_0000)  device quadrant   data only (no fetch)
-  //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR  fetch + data
+  //   [0x0000_0000, 0x0004_0000)  256 KiB BRAM      fetch, loads, stores, atomics
+  //   [0x4000_0000, 0x8000_0000)  device quadrant   loads and stores
+  //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR  fetch, loads, stores, atomics
   // Everything else, including all of [63:32], is unmapped and faults
-  // (instruction/load/store-AMO access fault, causes 1/5/7). An address that
-  // fails its pma_*_ok check never reaches a memory tier: fetch delivers a
-  // fault-tagged bundle (the FETCH_FAULT pseudo-op raises the precise
-  // exception), and a data access faults at the LQ/SQ issue check beside the
-  // misalignment test (under Sv39, the data MMU checks the translated
-  // address). Consequently every launched memory access has bits
-  // [XLEN-1:32] zero, which is the invariant the 32-bit region decodes and
-  // the load queue's masked store-forwarding check address rely on.
+  // (instruction/load/store-AMO access fault, causes 1/5/7). The device
+  // quadrant supports no AMOs and no reservations (the privileged spec's
+  // AMONone and RsrvNone), so an AMO, LR or SC to it takes the access fault
+  // too (causes 7/5/7). An address that fails its pma_*_ok check never
+  // reaches a memory tier: fetch delivers a fault-tagged bundle (the
+  // FETCH_FAULT pseudo-op raises the precise exception), and a data access
+  // faults at the LQ/SQ issue check beside the misalignment test (under
+  // Sv39, the data MMU checks the translated address). Consequently every
+  // launched memory access has bits [XLEN-1:32] zero, which is the
+  // invariant the 32-bit region decodes and the load queue's masked
+  // store-forwarding check address rely on, and no atomic reaches a device.
   function automatic logic pma_fetch_ok(input logic [XLEN-1:0] addr);
     pma_fetch_ok = (addr[XLEN-1:18] == '0) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b10));
   endfunction
 
+  // Loads and stores.
   function automatic logic pma_data_ok(input logic [XLEN-1:0] addr);
     pma_data_ok = pma_fetch_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
+  endfunction
+
+  // AMO, LR and SC: BRAM and cached DDR only.
+  function automatic logic pma_atomic_ok(input logic [XLEN-1:0] addr);
+    pma_atomic_ok = pma_fetch_ok(addr);
   endfunction
 
   // Served MMIO window decode: the implemented register window

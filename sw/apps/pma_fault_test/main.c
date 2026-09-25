@@ -20,9 +20,10 @@
  * mepc/mtval instead of aliasing onto the map. Self-checks over UART
  * (<<PASS>>/<<FAIL>>):
  *
- *   Physical map: BRAM [0, 256 KiB) fetch+data; device quadrant
- *   [0x4000_0000, 0x8000_0000) data-only; cached DDR [0x8000_0000,
- *   0xC000_0000) fetch+data. Everything else faults.
+ *   Physical map: BRAM [0, 256 KiB) and cached DDR [0x8000_0000,
+ *   0xC000_0000) take fetch, loads, stores and atomics; the device quadrant
+ *   [0x4000_0000, 0x8000_0000) takes loads and stores only. Everything else
+ *   faults.
  *
  *   A. Load from a wild 64-bit address        -> cause 5, mtval exact.
  *   B. Load from the BRAM hole (0x0010_0000)  -> cause 5.
@@ -44,6 +45,12 @@
  *      MMIO).
  *   L. In-map accesses do not trap: a device-quadrant data read (UART
  *      status) and a load/store round trip on a cached-DDR word.
+ *   M. Atomics to a device register fault before any device access: AMO
+ *      -> cause 7, LR -> cause 5, SC -> cause 7 (also while a reservation
+ *      on RAM is held), mtval exact, and the ns16550 scratch register keeps
+ *      its value. An AMO to a device-quadrant address with no register
+ *      behind it, which aliases a low-BRAM word, -> cause 7, and the word is
+ *      unchanged.
  *
  * Each case uses the M-mode bounce from umode_test: the mtvec handler records
  * mcause/mepc/mtval for the first trap of the case, then returns to the
@@ -138,8 +145,25 @@ static int report3(const char *name,
     return ok;
 }
 
+static int check_value(const char *name, unsigned long got, unsigned long want)
+{
+    int ok = (got == want);
+    uart_puts(ok ? "[PASS] " : "[FAIL] ");
+    uart_puts(name);
+    uart_puts(" got=");
+    uart_hex(got);
+    uart_puts(" want=");
+    uart_hex(want);
+    uart_puts("\r\n");
+    return ok;
+}
+
 /* In .ddr_data, so case L reaches the cached tier in both memory tiers. */
 static volatile uint64_t g_ddr_word __attribute__((section(".ddr_data")));
+
+/* The ns16550 scratch register: a read/write device register with no side
+ * effects. */
+#define NS16550_SCR 0x4000101Cul
 
 int main(void)
 {
@@ -251,6 +275,55 @@ int main(void)
     uart_hex(g_ddr_word);
     uart_puts("\r\n");
     all_ok &= l_ok;
+
+    /* M1-M4: the device quadrant supports no AMOs and no LR/SC, so each
+     * faults before the device sees a read or a write. */
+    volatile uint32_t *scr = (volatile uint32_t *) NS16550_SCR;
+    *scr = 0x5Au;
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, 0xA5\n"
+             "amoswap.w t2, t2, (t1)",
+             "r"(NS16550_SCR));
+    all_ok &= report3("M1 device-amo", 7u, 0, NS16550_SCR, 0);
+    all_ok &= check_value("M1 scr-unchanged", *scr, 0x5Au);
+
+    RUN_CASE("mv   t1, %0\n"
+             "lr.w t2, (t1)",
+             "r"(NS16550_SCR));
+    all_ok &= report3("M2 device-lr", 5u, 0, NS16550_SCR, 0);
+
+    *scr = 0x5Au;
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, 0x33\n"
+             "sc.w t2, t2, (t1)",
+             "r"(NS16550_SCR));
+    all_ok &= report3("M3 device-sc", 7u, 0, NS16550_SCR, 0);
+    all_ok &= check_value("M3 scr-unchanged", *scr, 0x5Au);
+
+    /* M4: the lr.w on g_ddr_word holds a reservation; the SC still faults. */
+    *scr = 0x5Au;
+    RUN_CASE("mv   t0, %1\n"
+             "lr.w t2, (t0)\n"
+             "mv   t1, %0\n"
+             "li   t2, 0x33\n"
+             "sc.w t2, t2, (t1)",
+             "r"(NS16550_SCR),
+             "r"((unsigned long) &g_ddr_word));
+    all_ok &= report3("M4 device-sc-reserved", 7u, 0, NS16550_SCR, 0);
+    all_ok &= check_value("M4 scr-unchanged", *scr, 0x5Au);
+
+    /* M5: an AMO to a device-quadrant address with no register behind it.
+     * The low BRAM decodes only the address bits below its size, so without
+     * the fault the address would reach bram_word, which is on the stack (low
+     * BRAM in both memory tiers). */
+    volatile uint64_t bram_word = 0x0123456789ABCDEFull;
+    unsigned long unserved = 0x40100000ul + ((unsigned long) &bram_word & 0x3FFFFul);
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, 1\n"
+             "amoadd.w t2, t2, (t1)",
+             "r"(unserved));
+    all_ok &= report3("M5 unserved-amo", 7u, 0, unserved, 0);
+    all_ok &= check_value("M5 bram-unchanged", bram_word, 0x0123456789ABCDEFull);
 
     uart_puts(all_ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

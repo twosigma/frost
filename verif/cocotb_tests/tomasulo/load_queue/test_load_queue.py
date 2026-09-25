@@ -1191,6 +1191,63 @@ async def test_misaligned_mmio_completes_without_device_read_during_drain(
 
 
 # ============================================================================
+# Test 13d: Device-quadrant atomics fault
+# ============================================================================
+@cocotb.test()
+async def test_device_atomics_fault_without_a_read(dut: Any) -> None:
+    """An AMO or LR to the device quadrant faults at the ROB head with no read.
+
+    The device quadrant takes loads but no atomics (AMO cause 7, LR cause 5).
+    Each fault completes with its address as the trap value; a load to the
+    same address still reads the device.
+    """
+    from .lq_interface import AMOSWAP_W, LR_W
+
+    # (name, address, is_amo, is_lr, amo_op, cause); cause None: the load reads.
+    cases: list[tuple[str, int, bool, bool, int, int | None]] = [
+        ("amo-mmio-window", 0x4000_101C, True, False, AMOSWAP_W, 7),
+        ("lr-mmio-window", 0x4000_101C, False, True, LR_W, 5),
+        ("amo-plic-window", 0x4400_0004, True, False, AMOSWAP_W, 7),
+        ("amo-unserved", 0x4011_8000, True, False, AMOSWAP_W, 7),
+        ("load-mmio-window", 0x4000_101C, False, False, 0, None),
+        ("load-plic-window", 0x4400_0004, False, False, 0, None),
+    ]
+    dut_if, _ = await setup(dut)
+    for name, address, is_amo, is_lr, amo_op, cause in cases:
+        await dut_if.reset_dut()
+        dut_if.drive_rob_head_tag(6)
+        dut_if.drive_alloc(
+            6, size=MEM_SIZE_WORD, is_lr=is_lr, is_amo=is_amo, amo_op=amo_op
+        )
+        await dut_if.step()
+        dut_if.clear_alloc()
+        dut_if.drive_addr_update(6, address, is_mmio=True)
+        await dut_if.step()
+        dut_if.clear_addr_update()
+        dut_if.drive_sq_all_older_known(True)
+        dut_if.drive_sq_forward(match=False, can_forward=False)
+        dut_if.drive_sq_committed_empty(True)
+
+        launched = False
+        result = dut_if.read_fu_complete()
+        for _ in range(8):
+            await Timer(1, unit="ns")
+            launched |= bool(dut_if.read_mem_request()["en"])
+            result = dut_if.read_fu_complete()
+            if result.valid or launched:
+                break
+            await dut_if.step()
+        if cause is None:
+            assert launched, f"{name}: the device load did not read the device"
+            continue
+        assert not launched, f"{name}: the faulting access reached the device"
+        assert result.valid, f"{name}: no fault completion"
+        assert result.tag == 6 and result.exception, name
+        assert result.exc_cause == cause, f"{name}: cause {result.exc_cause}"
+        assert result.value == address, f"{name}: trap value 0x{result.value:x}"
+
+
+# ============================================================================
 # Test 14: FLD single beat
 # ============================================================================
 @cocotb.test()

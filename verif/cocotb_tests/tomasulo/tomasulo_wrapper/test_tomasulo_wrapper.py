@@ -911,6 +911,45 @@ async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_sc_to_device_quadrant_faults_at_issue(dut: Any) -> None:
+    """An SC to the device quadrant takes a store access fault at issue.
+
+    The device quadrant takes plain stores but no atomics, so an SC there
+    faults (cause 7, its address as the trap value) where an SW to the same
+    address issues normally; an SC to cached DDR does not fault.
+    """
+    cocotb.log.info("=== Test: SC to the Device Quadrant Faults at Issue ===")
+    dut_if, _model = await setup_test(dut)
+    cases = [
+        ("sw-mmio-window", OP_SW, 0x4000_101C, False),
+        ("sc-mmio-window", OP_SC_W, 0x4000_101C, True),
+        ("sc-plic-window", OP_SC_W, 0x4400_0004, True),
+        ("sc-unserved-device", OP_SC_W, 0x4011_8000, True),
+        ("sc-ddr", OP_SC_W, 0x8000_0100, False),
+    ]
+    for tag, (name, op, addr, expected_fault) in enumerate(cases):
+        await dut_if.reset_dut()
+        dut_if.set_fu_ready(RS_MEM, True)
+        dut.i_trap_misaligned_accesses.value = 1
+        await present_store_via_mem_rs(
+            dut_if, tag=tag, base_addr=addr, store_data=0x5A, op=op
+        )
+        assert bool(dut.store_pma_issue.value) == expected_fault, name
+        assert bool(dut.store_misalign_issue.value) == expected_fault, name
+        assert bool(dut.store_issue_fire.value) == (op == OP_SW), name
+        if expected_fault:
+            await dut_if.step()
+            cdb = dut_if.read_cdb_output()
+            if not cdb.valid:
+                cdb = await wait_for_cdb(dut_if)
+            assert cdb.tag == tag and cdb.exception, name
+            assert cdb.exc_cause == 7, name
+            assert cdb.value == addr, name
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
 async def test_dispatch_and_commit_clears_rat(dut: Any) -> None:
     """Commit bus wire: dispatch INT instr -> CDB write -> commit -> RAT cleared."""
     cocotb.log.info("=== Test: Dispatch and Commit Clears RAT ===")

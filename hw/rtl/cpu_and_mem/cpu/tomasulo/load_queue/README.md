@@ -268,12 +268,14 @@ FROST_VERILATOR_EXTRA_ARGS=-GL0_CACHE_DEPTH=256 ./scripts/frost.py cocotb corema
 ### LR and SC
 
 The LR reservation (`o_reservation_valid`, `o_reservation_addr`) lives here.
-An LR always reads memory and sets the reservation when its response is
-accepted. The reservation clears on any SC commit (`i_sc_clear_reservation`),
-a store write to the reserved dword (the SQ's write-launch snoop), a DMA write
-to its 32-byte line, or a full flush. An LR in flight when a DMA write hits
-its line, or whose response lands on the invalidation edge, sets no
-reservation. The SC goes through the SQ;
+An LR reads memory and sets the reservation when its response is accepted.
+Devices hold no reservations, so an LR to the device quadrant takes a load
+access fault instead, with no read and no reservation. The reservation clears
+on any SC commit (`i_sc_clear_reservation`), a store write to the reserved
+dword (the SQ's write-launch snoop), a DMA write to its 32-byte line, or a
+full flush. An LR in flight when a DMA write hits its line, or whose
+response lands on the invalidation edge, sets no reservation. The SC goes
+through the SQ;
 [`sc_pending_unit`](../tomasulo_wrapper/atomics/sc_pending_unit.sv) decides
 success when the SC fires at the ROB head, from the reservation and the SC's
 dword.
@@ -282,8 +284,10 @@ dword.
 
 An AMO issues at the ROB head once the SQ has no committed store left to write
 (`i_sq_committed_empty`), so no other memory access interleaves with it. Its
-read launches like a load. At the response, SWAP, ADD, XOR, AND and OR capture
-the old value and `rs2`, spend a cycle in `AMO_COMPUTE`, and enter
+read launches like a load. An AMO to the device quadrant never launches: it
+takes a store/AMO access fault instead, so AMOs only read and write BRAM and
+cached DDR. At the response, SWAP, ADD, XOR, AND and OR capture the old
+value and `rs2`, spend a cycle in `AMO_COMPUTE`, and enter
 `AMO_WRITE_ACTIVE`; MIN and MAX compare during the capture and enter
 `AMO_WRITE_ACTIVE` directly. The write uses the LQ's own port
 (`o_amo_mem_write_*`, with registered MMIO and cached-tier flags) and stays
@@ -377,10 +381,10 @@ result waits in the data RAM. An AMO that does not fault completes through the
 data RAM, and nothing enters `cdb_stage` on a partial-flush cycle.
 
 A load that faults (misaligned when `i_trap_misaligned_accesses` is set,
-outside the physical memory map, or with a fault the data MMU parked on the
-entry) never reaches memory. It completes from the staging register with its
-cause (a store/AMO cause for an AMO) and the faulting address, which becomes
-the trap value.
+outside the physical memory map, an AMO or LR to the device quadrant, or with
+a fault the data MMU parked on the entry) never reaches memory. It completes
+from the staging register with its cause (a store/AMO cause for an AMO) and
+the faulting address, which becomes the trap value.
 
 ## Storage
 

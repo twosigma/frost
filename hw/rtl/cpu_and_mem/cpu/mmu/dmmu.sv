@@ -63,6 +63,7 @@ module dmmu (
     input logic i_iss_needs_sq,  // routing: SQ-resident (stores + SC)
     input logic i_iss_store_perms,  // permission class: stores + SC + AMOs
     input logic i_iss_is_sc,
+    input logic i_iss_atomic,  // AMO, LR or SC: checked against the atomic PMA map
     input logic [riscv_pkg::XLEN-1:0] i_iss_store_data,
     input logic [riscv_pkg::XLEN-1:0] i_iss_amo_rs2,
 
@@ -134,6 +135,7 @@ module dmmu (
     logic needs_sq;
     logic store_perms;
     logic is_sc;
+    logic atomic;
     logic [riscv_pkg::XLEN-1:0] store_data;
     logic [riscv_pkg::XLEN-1:0] amo_rs2;
   } iss_payload_t;
@@ -146,6 +148,7 @@ module dmmu (
     iss_in.needs_sq = i_iss_needs_sq;
     iss_in.store_perms = i_iss_store_perms;
     iss_in.is_sc = i_iss_is_sc;
+    iss_in.atomic = i_iss_atomic;
     iss_in.store_data = i_iss_store_data;
     iss_in.amo_rs2 = i_iss_amo_rs2;
   end
@@ -230,12 +233,18 @@ module dmmu (
   assign tlb_pa  = {32'b0, tlb_ppn20[0], s1_q.va[11:0]};
   assign walk_pa = {32'b0, walk_ppn20, s1_q.va[11:0]};
 
+  // The PMA of the op's access type: AMO, LR, and SC use the atomic map,
+  // which leaves out the device quadrant.
+  function automatic logic leaf_pma_ok(input logic [riscv_pkg::XLEN-1:0] pa);
+    leaf_pma_ok = s1_q.atomic ? riscv_pkg::pma_atomic_ok(pa) : riscv_pkg::pma_data_ok(pa);
+  endfunction
+
   riscv_pkg::data_fault_kind_e tlb_fault, walk_fault;
   always_comb begin
     tlb_fault = riscv_pkg::DFAULT_NONE;
     if (!leaf_perm_ok(tlb_r[0], tlb_w[0], tlb_x[0], tlb_u[0], tlb_d[0])) begin
       tlb_fault = riscv_pkg::DFAULT_PAGE;
-    end else if (tlb_hi_nonzero[0] || !riscv_pkg::pma_data_ok(tlb_pa)) begin
+    end else if (tlb_hi_nonzero[0] || !leaf_pma_ok(tlb_pa)) begin
       tlb_fault = riscv_pkg::DFAULT_ACCESS;
     end
 
@@ -249,9 +258,7 @@ module dmmu (
               i_walk_resp.perm_d
           )) begin
         walk_fault = riscv_pkg::DFAULT_PAGE;
-      end else if ((|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) || !riscv_pkg::pma_data_ok(
-              walk_pa
-          )) begin
+      end else if ((|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) || !leaf_pma_ok(walk_pa)) begin
         walk_fault = riscv_pkg::DFAULT_ACCESS;
       end
     end
@@ -262,21 +269,23 @@ module dmmu (
   assign walk_resolve_addr = (walk_fault == riscv_pkg::DFAULT_NONE) ? walk_pa : s1_q.va;
 
   // MMIO class of each candidate, computed before the TLB/walk selection. A
-  // zero-extended PA in the 01 quadrant always passes pma_data_ok, so the
-  // class needs only the permission check and the high PPN bits, not the
-  // full fault and address mux. DMMU_MMIO_LOCAL_PROOF (formal target
-  // dmmu_mmio) checks it against the class of the complete resolution.
+  // zero-extended PA in the 01 quadrant always passes pma_data_ok and always
+  // fails pma_atomic_ok, so the class needs only the permission check, the
+  // op's atomic bit, and the high PPN bits, not the full fault and address
+  // mux. DMMU_MMIO_LOCAL_PROOF (formal target dmmu_mmio) checks it against
+  // the class of the complete resolution.
   (* keep = "true" *) logic tlb_is_mmio, walk_is_mmio;
   assign tlb_is_mmio = leaf_perm_ok(
       tlb_r[0], tlb_w[0], tlb_x[0], tlb_u[0], tlb_d[0]
-  ) && !tlb_hi_nonzero[0] && (tlb_ppn20[0][19:18] == 2'b01);
+  ) && !tlb_hi_nonzero[0] && !s1_q.atomic && (tlb_ppn20[0][19:18] == 2'b01);
   assign walk_is_mmio = (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) && leaf_perm_ok(
       i_walk_resp.perm_r,
       i_walk_resp.perm_w,
       i_walk_resp.perm_x,
       i_walk_resp.perm_u,
       i_walk_resp.perm_d
-  ) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) && (i_walk_resp.ppn[19:18] == 2'b01);
+  ) && !(|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) && !s1_q.atomic &&
+      (i_walk_resp.ppn[19:18] == 2'b01);
   logic resolve_is_mmio;
 
   // Resolution select, in architectural priority order:
@@ -286,7 +295,8 @@ module dmmu (
   //   2. A non-canonical VA: page fault, no walk.
   //   3. A DTLB hit: the permission check with the current SUM, MXR, and
   //      effective privilege, then the PMA check on the PA, where a leaf
-  //      outside the map is an access fault. Loads need R, or X with MXR.
+  //      outside the map is an access fault, and so is an AMO, LR, or SC
+  //      onto the device quadrant. Loads need R, or X with MXR.
   //      Stores, SC, and AMOs need W and D (Svade: a store to a D=0 page is a
   //      page fault). A U page accessed from S needs SUM, and an S page
   //      accessed from U faults.

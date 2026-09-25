@@ -14,7 +14,8 @@
 
 """Data-MMU checks through its issue, walker, and registered result ports.
 
-The reference resolves Sv39 leaves and the architectural fault priorities in
+The reference resolves Sv39 leaves, the PMA map (the device quadrant takes
+loads and stores but no atomics), and the architectural fault priorities in
 Python. Protocol checks pin the two-cycle latency, one-result-per-cycle hit
 throughput, miss skid, and recovery behavior without inspecting internal RTL.
 """
@@ -75,6 +76,7 @@ class Op:
     needs_sq: int = 0
     store: int = 0
     is_sc: int = 0
+    atomic: int = 0
     data: int = 0xFEDC_BA98_7654_3210
     amo_rs2: int = 0x1234_5678_9ABC_DEF0
     priv_u: int = 0
@@ -103,10 +105,13 @@ def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
     pa = ((leaf.ppn << 12) & ~((1 << offset_bits) - 1)) | (
         va & ((1 << offset_bits) - 1)
     )
-    mapped = pa < 0x40000 or 0x4000_0000 <= pa < 0xC000_0000
+    device = 0x4000_0000 <= pa < 0x8000_0000
+    mapped = (
+        pa < 0x40000 or 0x8000_0000 <= pa < 0xC000_0000 or (not op.atomic and device)
+    )
     if not mapped:
         return va, ACCESS, 0
-    return pa, NONE, int(0x4000_0000 <= pa < 0x8000_0000)
+    return pa, NONE, int(device)
 
 
 async def _cycle(dut: Any) -> None:
@@ -133,6 +138,7 @@ async def _setup(dut: Any) -> None:
         "i_iss_needs_sq",
         "i_iss_store_perms",
         "i_iss_is_sc",
+        "i_iss_atomic",
         "i_iss_store_data",
         "i_iss_amo_rs2",
         "i_early_valid",
@@ -180,6 +186,7 @@ def _issue(dut: Any, op: Op) -> None:
     dut.i_iss_needs_sq.value = op.needs_sq
     dut.i_iss_store_perms.value = op.store
     dut.i_iss_is_sc.value = op.is_sc
+    dut.i_iss_atomic.value = op.atomic
     dut.i_iss_store_data.value = op.data
     dut.i_iss_amo_rs2.value = op.amo_rs2
     dut.i_eff_priv_u.value = op.priv_u
@@ -215,7 +222,8 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
     """DTLB hits and walk responses match the reference fault, address, and MMIO.
 
     The reference applies the architectural fault priority, and a faulting op
-    must return its full VA (for xtval) in place of the PA.
+    must return its full VA (for xtval) in place of the PA. The atomic cases
+    put LR, AMO, and SC on device pages (4 KiB and 1 GiB leaves) and on DDR.
     """
     await _setup(dut)
     base_op = Op()
@@ -244,6 +252,18 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
         (replace(base_op, va=base_op.va + 1, trap_misaligned=0), base_leaf),
         (replace(base_op, va=0x0123_4568), replace(base_leaf, level=1, ppn=0x80200)),
         (replace(base_op, va=0x1234_5678), replace(base_leaf, level=2)),
+        # Atomics: no access to the device quadrant.
+        (replace(base_op, atomic=1), replace(base_leaf, ppn=0x40000)),
+        (replace(base_op, store=1, atomic=1), replace(base_leaf, ppn=0x44000)),
+        (
+            replace(base_op, needs_sq=1, store=1, is_sc=1, atomic=1),
+            replace(base_leaf, ppn=0x40030),
+        ),
+        (replace(base_op, store=1, atomic=1), base_leaf),
+        (
+            replace(base_op, va=0xC000_0018, store=1, atomic=1),
+            replace(base_leaf, level=2, ppn=0x40000),
+        ),
     ]
     for via_walk in (False, True):
         for op, leaf in cases:

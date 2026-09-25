@@ -1917,7 +1917,8 @@ module tomasulo_wrapper #(
   // launched-implies-in-map invariant).  With translation off, an access
   // fault outranks misalignment (the privileged spec allows either order;
   // the data MMU checks misalignment first).  The PMA term ignores
-  // i_trap_misaligned_accesses so the invariant always holds.
+  // i_trap_misaligned_accesses so the invariant always holds.  An SC is
+  // checked against the atomic map, so an SC to the device quadrant faults.
   //
   // While data translation is active, every store-family fault (misalignment
   // on the VA, page fault, access fault on the translated PA) comes from the
@@ -1938,6 +1939,9 @@ module tomasulo_wrapper #(
   // only at the four interval entry/exit boundaries in each direction, so the
   // page choices below are exactly pma_data_ok(src1 + sext12(imm)) without
   // putting the PMA/ROB and PMA/SC-table paths behind the 64-bit carry chain.
+  // An SC's immediate is zero, so its address is the base and only the
+  // no-carry choice applies to it; that choice also clears for an SC in the
+  // device quadrant, which makes it pma_atomic_ok(src1) for an SC.
   // Keep the 13-bit tap explicit so synthesis cannot re-expand this predicate
   // through sq_effective_addr; that full-width sum is the architectural
   // SQ/xtval payload below.
@@ -1965,6 +1969,8 @@ module tomasulo_wrapper #(
   (* keep = "true" *) logic store_pma_with_page_carry;
   logic store_addr_pma_ok;
   logic store_addr_misaligned;
+  logic store_issue_is_sc;
+  logic store_sc_device;
 
   assign store_page_offset_sum =
       {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
@@ -2001,8 +2007,12 @@ module tomasulo_wrapper #(
   // With no carry, only a negative immediate can leave the base page; with
   // carry, only a nonnegative immediate can do so. Keep these scalar results
   // so the wide base-page comparisons and the offset adder meet at one mux.
-  assign store_pma_without_page_carry = store_base_pma_ok ^
-      (o_mem_rs_issue.imm[11] && store_page_dec_toggle);
+  assign store_issue_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::SC_D);
+  assign store_sc_device = store_issue_is_sc && store_base_z32 &&
+      (o_mem_rs_issue.src1_value[31:30] == 2'b01);
+  assign store_pma_without_page_carry = (store_base_pma_ok ^
+      (o_mem_rs_issue.imm[11] && store_page_dec_toggle)) && !store_sc_device;
   assign store_pma_with_page_carry = store_base_pma_ok ^
       (!o_mem_rs_issue.imm[11] && store_page_inc_toggle);
   assign store_addr_pma_ok = store_page_offset_sum[12] ? store_pma_with_page_carry :
@@ -2059,7 +2069,11 @@ module tomasulo_wrapper #(
   logic store_addr_misaligned_full_ref;
   logic store_misalign_issue_full_ref;
   logic store_issue_fire_full_ref;
-  assign store_addr_pma_ok_full_ref = riscv_pkg::pma_data_ok(sq_effective_addr);
+  assign store_addr_pma_ok_full_ref = store_issue_is_sc ? riscv_pkg::pma_atomic_ok(
+      sq_effective_addr
+  ) : riscv_pkg::pma_data_ok(
+      sq_effective_addr
+  );
   assign store_addr_misaligned_full_ref = is_mem_access_misaligned(
       riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size), sq_effective_addr
   );
@@ -2090,6 +2104,7 @@ module tomasulo_wrapper #(
             o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
             {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}
         );
+        p_store_sc_imm_zero : assert (!store_issue_is_sc || (o_mem_rs_issue.imm == '0));
         if (o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
             {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}) begin
           p_store_page_pma_exact : assert (store_addr_pma_ok === store_addr_pma_ok_full_ref);
@@ -4488,6 +4503,10 @@ module tomasulo_wrapper #(
       (o_mem_rs_issue.op == riscv_pkg::AMOOR_D) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN_D) ||
       (o_mem_rs_issue.op == riscv_pkg::AMOMAX_D) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU_D) ||
       (o_mem_rs_issue.op == riscv_pkg::AMOMAXU_D);
+  // LR joins AMOs and SC in the MMU's atomic class (no device access).
+  logic dmmu_iss_is_lr;
+  assign dmmu_iss_is_lr = (o_mem_rs_issue.op == riscv_pkg::LR_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::LR_D);
 
   logic dmmu_out_valid;
   logic dmmu_out_lq_capture_valid;
@@ -4524,6 +4543,7 @@ module tomasulo_wrapper #(
       .i_iss_needs_sq(o_mem_rs_issue.mem_needs_sq),
       .i_iss_store_perms(o_mem_rs_issue.mem_needs_sq || dmmu_iss_is_amo),
       .i_iss_is_sc(dmmu_iss_is_sc),
+      .i_iss_atomic(dmmu_iss_is_amo || dmmu_iss_is_lr || dmmu_iss_is_sc),
       .i_iss_store_data(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .i_iss_amo_rs2(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .o_iss_out_valid(dmmu_out_valid),
@@ -4669,9 +4689,12 @@ module tomasulo_wrapper #(
 
   // While translation is active, the issue-time SQ updates come from the
   // data MMU's S2 stage: the PA-verified address, and the data held in the
-  // MMU-aligned sideband register. A faulted store never sets the SQ's
-  // address- or data-valid bit (dmmu_store_ok excludes it), which keeps the
-  // launched-implies-in-map invariant under translation.
+  // MMU-aligned sideband register. The issue-time update of a faulted store
+  // sets neither the SQ's address- nor its data-valid bit (dmmu_store_ok
+  // excludes it). An early prefill may already have set its address, but
+  // its data never becomes valid and the store never commits, so it never
+  // drains, which keeps the launched-implies-in-map invariant under
+  // translation.
   riscv_pkg::sq_addr_update_t sq_addr_update;
   logic sq_addr_update_capture_valid;
   always_comb begin
@@ -4688,9 +4711,11 @@ module tomasulo_wrapper #(
       sq_addr_update.is_mmio = sq_addr_is_mmio;
     end
   end
-  // A faulted or killed store never sets the SQ's address-valid bit, so its
-  // payload is unobservable.  Capture that dead payload anyway to keep the VA
-  // misalignment/PMA and recovery decisions off all per-entry payload enables.
+  // A faulted store's issue-time update leaves the SQ's address-valid bit
+  // clear, and a killed store's entry is invalid from the same edge, so
+  // neither payload is ever used.  Capture that dead payload anyway to keep
+  // the VA misalignment/PMA and recovery decisions off all per-entry payload
+  // enables.
   // Under translation this is the DMMU's raw store S2 pulse, symmetric to the
   // LQ-only pulse above; architectural SQ control stays on dmmu_store_ok.
   assign sq_addr_update_capture_valid = i_translation_active ?

@@ -1571,7 +1571,9 @@ module load_queue #(
   // i_trap_misaligned_accesses: the launched-implies-in-map invariant that
   // the 32-bit region decodes rely on must hold unconditionally. Access
   // faults outrank misalignment per the privileged spec's exception
-  // priority, and an AMO's fault is the store/AMO access fault.
+  // priority, and an AMO's fault is the store/AMO access fault. AMOs and LRs
+  // are checked against the atomic map, which excludes the device quadrant,
+  // so neither reaches a device.
   logic sq_check_pma_fault;
   // A parked translation-stage fault (lq_fault_kind, staged
   // into sq_check_fault_kind_q) outranks both recomputed checks: the
@@ -1581,11 +1583,14 @@ module load_queue #(
   logic sq_check_parked_fault;
   assign sq_check_parked_fault = sq_check_entry_valid && sq_check_entry_issueable &&
       (riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE);
-  assign sq_check_pma_fault = !sq_check_parked_fault &&
-      sq_check_entry_valid && sq_check_entry_issueable &&
-      !riscv_pkg::pma_data_ok(
+  logic sq_check_pma_ok;
+  assign sq_check_pma_ok = (sq_check_is_amo_q || sq_check_is_lr_q) ? riscv_pkg::pma_atomic_ok(
+      sq_check_addr_q
+  ) : riscv_pkg::pma_data_ok(
       sq_check_addr_q
   );
+  assign sq_check_pma_fault = !sq_check_parked_fault &&
+      sq_check_entry_valid && sq_check_entry_issueable && !sq_check_pma_ok;
   assign sq_check_misaligned = sq_check_parked_fault || sq_check_pma_fault ||
       (i_trap_misaligned_accesses &&
        sq_check_entry_valid && sq_check_entry_issueable &&

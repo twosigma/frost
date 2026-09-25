@@ -70,6 +70,10 @@
  *   O. Device page: mtime readable through a page mapped onto MMIO.
  *   P. Translation off (M-mode): misaligned SC -> 6 and misaligned AMO -> 6,
  *      mtval exact.
+ *   R. Atomics through device mappings: AMO -> 7, LR -> 5, SC -> 7 through
+ *      the 4 KiB device page, on the walk and on a DTLB hit, and AMOs
+ *      through a 2 MiB and a 1 GiB leaf over the device quadrant; mtval is
+ *      the VA.
  */
 
 #include <stdint.h>
@@ -214,9 +218,11 @@ static int report_val(const char *name, unsigned long got, unsigned long want)
  *   4K frames 0x8110_0000 + n*4K   2M frame 0x8120_0000
  *   1G-case touch offset 0x8300_0000 (inside the identity leaf)
  * Virtual layout: 4 KiB pages at 0x0040_0000 + n*4K (vpn2=0, vpn1=2,
- * vpn0=n); 2 MiB leaves at vpn1=16/17 (VA 0x0200_0000 / 0x0220_0000); the
- * 1 GiB identity leaf at vpn2=2 (VA 0x8000_0000); the bad-pointer subtree
- * at vpn2=1 (VA 0x4000_0000).
+ * vpn0=n); 2 MiB leaves at vpn1=16/17 (VA 0x0200_0000 / 0x0220_0000) and
+ * vpn1=18 (VA 0x0240_0000, onto PA 0x4000_0000); the 1 GiB identity leaf at
+ * vpn2=2 (VA 0x8000_0000); the bad-pointer subtree at vpn2=1 (VA
+ * 0x4000_0000); a 1 GiB leaf over the device quadrant at vpn2=3 (VA
+ * 0xC000_0000).
  * -------------------------------------------------------------------------- */
 #define PT_ROOT_A 0x81000000ul
 #define PT_ROOT_B 0x81001000ul
@@ -232,6 +238,8 @@ static int report_val(const char *name, unsigned long got, unsigned long want)
 #define VA_2M_MISALIGNED 0x02200000ul
 #define VA_1G_TOUCH 0x83000000ul
 #define VA_BADPTR 0x40000000ul
+#define VA_2M_DEVICE 0x02400000ul
+#define VA_1G_DEVICE 0xC0000000ul
 
 #define PTE_V (1ul << 0)
 #define PTE_R (1ul << 1)
@@ -274,16 +282,19 @@ static void build_tables(void)
 
     /* Root A: [0] -> L1 A; [1] -> pointer aimed at BRAM (walker PMA
      * refusal: page tables must live in cached DDR); [2] -> 1 GiB DDR
-     * identity leaf. */
+     * identity leaf; [3] -> 1 GiB leaf over the device quadrant. */
     root_a[0] = PTE_PPN(PT_L1_A) | PTE_V;
     root_a[1] = PTE_PPN(0x0ul) | PTE_V;
     root_a[2] = PTE_PPN(0x80000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    root_a[3] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
 
     /* L1 A: [2] -> L0 A (the VA_4K window); [16] -> 2 MiB leaf; [17] ->
-     * misaligned 2 MiB leaf (its PPN low bits are nonzero). */
+     * misaligned 2 MiB leaf (its PPN low bits are nonzero); [18] -> 2 MiB
+     * leaf over the start of the device quadrant. */
     l1_a[2] = PTE_PPN(PT_L0_A) | PTE_V;
     l1_a[16] = PTE_PPN(FRAME_2M) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
     l1_a[17] = PTE_PPN(FRAME(0)) | PTE_V | PTE_R | PTE_A;
+    l1_a[18] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
 
     /* L0 A permission flavors: VA_4K(n) -> FRAME(n). */
     l0_a[0] = PTE_PPN(FRAME(0)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
@@ -669,6 +680,40 @@ int main(void)
     }
     uart_puts(all_ok ? "[PASS] W wrong-path translated loads/stores\r\n"
                      : "[FAIL] W wrong-path translated loads/stores (see above)\r\n");
+
+    /* R: atomics through device mappings fault with the VA in mtval. The
+     * target is the UART RX status word (+0x24), which a read does not
+     * change. The walk cases start with an sfence. Setting MPRV also
+     * invalidates the DTLB, so the hit cases load through the leaf first,
+     * inside the same window. */
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040B024\n"
+             "amoor.w t3, zero, (t1)");
+    all_ok &= report3("R1 device-amo-walk", 7, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x0040B024\n"
+                   "lw   t2, 0(t1)\n"
+                   "amoor.w t3, zero, (t1)");
+    all_ok &= report3("R2 device-amo-hit", 7, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040B024\n"
+             "lr.w t3, (t1)");
+    all_ok &= report3("R3 device-lr-walk", 5, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x0040B024\n"
+                   "lw   t2, 0(t1)\n"
+                   "lr.w t3, (t1)");
+    all_ok &= report3("R4 device-lr-hit", 5, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040B024\n"
+             "sc.w t3, t2, (t1)");
+    all_ok &= report3("R5 device-sc-walk", 7, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x0040B024\n"
+                   "lw   t2, 0(t1)\n"
+                   "sc.w t3, t2, (t1)");
+    all_ok &= report3("R6 device-sc-hit", 7, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x02400024\n"
+             "amoor.w t3, zero, (t1)");
+    all_ok &= report3("R7 device-amo-2m", 7, VA_2M_DEVICE + 0x24, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0xC0000024\n"
+                   "lw   t2, 0(t1)\n"
+                   "amoor.w t3, zero, (t1)");
+    all_ok &= report3("R8 device-amo-1g-hit", 7, VA_1G_DEVICE + 0x24, 0, 0);
 
     /* Turn translation off before the exit path. */
     write_satp(0);

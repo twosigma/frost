@@ -203,7 +203,10 @@ and CLINT alias, support 64-bit access: an 8-byte load of `mtime`
 behavior. UART and FIFO registers are 32-bit-access-max: a wider store writes
 only the addressed word. The PLIC, DMA test engine, and NIC windows take
 32-bit accesses: a 64-bit load returns an aligned register pair, and a 64-bit
-store writes only the upper register.
+store writes only the upper register. Devices take loads and stores only: an
+AMO, LR, or SC to the device quadrant raises an access fault (cause 7, 5, or
+7), or a misaligned-address or page fault that takes priority, before the
+device sees a read or a write.
 
 MMIO is strongly ordered: accesses from one hart complete in program order
 without fences. A device read waits for committed stores to drain and is

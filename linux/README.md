@@ -81,8 +81,9 @@ The PMA map has three regions: the BRAM, the device quadrant
 `[0x4000_0000, 0x8000_0000)`, and cached DDR. An access anywhere else,
 including any address with bits 63:32 set, raises a precise access fault
 (cause 1, 5, or 7 for a fetch, load, or store) with the exact address in
-`mtval`. Instruction fetch from the device quadrant also faults. Addresses
-outside the map never alias onto it.
+`mtval`. Instruction fetch from the device quadrant also faults, and so does
+an AMO, LR, or SC to it (cause 7, 5, or 7): devices take loads and stores
+only. Addresses outside the map never alias onto it.
 
 The image packer lays out DDR as follows, with offsets from `0x8000_0000`:
 
