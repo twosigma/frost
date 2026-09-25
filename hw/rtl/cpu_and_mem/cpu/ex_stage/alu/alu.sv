@@ -48,8 +48,7 @@ module alu #(
     input logic [XLEN-1:0] i_immediate_u_type,  // Upper immediate for LUI/AUIPC
     input logic [XLEN-1:0] i_immediate_i_type,  // I-type immediate
     input logic [XLEN-1:0] i_link_address,  // Pre-computed link address (PC+2 or PC+4)
-    output logic [XLEN-1:0] o_result,
-    output logic o_write_enable  // Whether to write result to register file
+    output logic [XLEN-1:0] o_result
 );
 
   logic [XLEN-1:0] operand_b;
@@ -198,7 +197,6 @@ module alu #(
 
   always_comb begin
     o_result = '0;
-    o_write_enable = 1'b1;  // Most operations write to register file
     unique case (i_instruction_operation)
       // Base ISA R-type (register-register) arithmetic and logical operations
       riscv_pkg::ADD: o_result = i_operand_a + operand_b;
@@ -308,13 +306,12 @@ module alu #(
       riscv_pkg::PACKW: o_result = w_result({i_operand_b[15:0], i_operand_a[15:0]});
       // Zbkb extension - bit permutation (local XLEN-parametric helper)
       riscv_pkg::BREV8: o_result = brev8_x(i_operand_a);
-      // Zihintpause - PAUSE is a hint, treated as NOP (no register write)
-      riscv_pkg::PAUSE: o_write_enable = 1'b0;
-      // Anything not listed above leaves rd untouched. The M-extension ops
-      // have no arm here: they execute in the multiplier and divider behind
-      // int_muldiv_shim, and a simulation assert in int_alu_shim catches any
-      // that issue here. The Zicsr ops have no arm either (see the header).
-      default: o_write_enable = 1'b0;
+      // Anything not listed above returns 0, PAUSE (a hint) among them. The
+      // M-extension ops have no arm here: they execute in the multiplier and
+      // divider behind int_muldiv_shim, and a simulation assert in
+      // int_alu_shim catches any that issue here. The Zicsr ops have no arm
+      // either (see the header).
+      default: ;
     endcase
   end
 

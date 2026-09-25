@@ -101,8 +101,7 @@ module int_alu_shim #(
       .i_immediate_i_type(i_rs_issue.imm),
       // JALR's link address rides the immediate word (dispatch puts it there).
       .i_link_address(i_rs_issue.imm),
-      .o_result(alu_result),
-      .o_write_enable()
+      .o_result(alu_result)
   );
 
   // ---------------------------------------------------------------------------

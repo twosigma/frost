@@ -18,12 +18,11 @@
 // and all operation bits, operands and instruction fields are unconstrained.
 // The hinted instance (USE_SHIFT_AMOUNT_HINT=1) gets the amount the generic
 // one selects for itself, the immediate shamt or b[5:0]; the generic instance
-// gets an arbitrary hint, which it ignores. Their results and write enables
-// must match, and for every operation that reads the shared shift amount the
-// generic ALU must match a plain shift and rotate reference and write its
-// result. This checks the ALU's combinational use of the hint, not how the
-// reservation station captures and holds it (the rs_issue2_shamt cocotb test
-// covers that).
+// gets an arbitrary hint, which it ignores. Their results must match, and for
+// every operation that reads the shared shift amount the generic ALU must
+// match a plain shift and rotate reference. This checks the ALU's
+// combinational use of the hint, not how the reservation station captures and
+// holds it (the rs_issue2_shamt cocotb test covers that).
 module alu_shift_hint (
     input riscv_pkg::instr_t instruction,
     input riscv_pkg::instr_op_e op,
@@ -37,7 +36,6 @@ module alu_shift_hint (
   logic [6:0] controls;
   logic [5:0] effective_amount;
   logic [63:0] generic_result, hinted_result;
-  logic generic_write, hinted_write;
   assign controls = riscv_pkg::projected_shift_controls(op);
   assign effective_amount = controls[0] ?
       {instruction.funct7[0], instruction.source_reg_2} : b[5:0];
@@ -53,8 +51,7 @@ module alu_shift_hint (
       .i_immediate_u_type(imm_u),
       .i_immediate_i_type(imm_i),
       .i_link_address(link),
-      .o_result(generic_result),
-      .o_write_enable(generic_write)
+      .o_result(generic_result)
   );
   alu #(
       .XLEN(64),
@@ -68,8 +65,7 @@ module alu_shift_hint (
       .i_immediate_u_type(imm_u),
       .i_immediate_i_type(imm_i),
       .i_link_address(link),
-      .o_result(hinted_result),
-      .o_write_enable(hinted_write)
+      .o_result(hinted_result)
   );
   logic [ 5:0] oracle_amount;
   logic [63:0] oracle_result;
@@ -116,11 +112,9 @@ module alu_shift_hint (
     if (oracle_word_consumer) oracle_result = {{32{oracle_word[31]}}, oracle_word};
     if (oracle_consumer) begin
       p_barrel_reference : assert (generic_result == oracle_result);
-      p_barrel_writes : assert (generic_write);
     end
   end
   always_comb begin
     p_result_equal : assert (hinted_result == generic_result);
-    p_write_equal : assert (hinted_write == generic_write);
   end
 endmodule
