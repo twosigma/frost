@@ -564,8 +564,6 @@ module frost_cache #(
   // in A and it compares again next cycle.
   logic [NUM_MSHR-1:0] in_idx_match, in_line_match;
   logic [NUM_WB-1:0] in_wb_match;
-  logic flush_read;  // assigned below the T decision; forwarded into the comparators
-  logic flush_tag_ready;
   always_comb begin
     for (int i = 0; i < int'(NUM_MSHR); i++) begin
       in_idx_match[i]  = (mshr_line_q[i][IndexBits-1:0] == in_index);
@@ -577,12 +575,6 @@ module frost_cache #(
       in_line_match[w_mshr_q] = 1'b0;
     end
     if (w_allocs_wb) in_wb_match[w_wb_q] = 1'b0;
-    // The writeback slot the flush walk takes this cycle (flush_read) is
-    // compared against the line it is taking, although no request is
-    // accepted while the walk runs.
-    if (flush_read) begin
-      in_wb_match[wb_free_idx] = ({tag_rdata_tag, flush_idx_q} == in_line);
-    end
   end
 
   // ---- Tag compare, balanced by hand: 3-bit equality groups (one LUT6
@@ -636,12 +628,13 @@ module frost_cache #(
   // read waiter or merge a write across lines, or let a fill skip the
   // writeback of its own line. The captured bits are therefore refreshed
   // every held cycle from the live slot lines. A slot being allocated this
-  // cycle (a W allocation, its victim's writeback slot, the flush walk's
-  // writeback slot) still reads its old line, so its incoming identity is
-  // forwarded instead. Excluding it would leave the next decision blind to a
-  // real conflict with, or writeback of, the line being installed. Fresh
-  // captures get the same treatment from a_hold and the A-stage exclusion
-  // and forwarding above.
+  // cycle (a W allocation or its victim's writeback slot) still reads its old
+  // line, so its incoming identity is forwarded instead. Excluding it would
+  // leave the next decision blind to a real conflict with, or writeback of,
+  // the line being installed. Fresh captures get the same treatment from
+  // a_hold and the A-stage exclusion above. The flush walk's writeback slots
+  // need neither: no request is in A or T while a walk runs, and the walk
+  // returns to M_IDLE only once its writebacks are acknowledged.
   logic [NUM_MSHR-1:0] t_idx_live_match, t_line_live_match;
   logic [NUM_WB-1:0] t_wb_live_match;
   always_comb begin
@@ -655,9 +648,6 @@ module frost_cache #(
       t_line_live_match[w_mshr_q] = (w_line_q == t_line);
     end
     if (w_allocs_wb) t_wb_live_match[w_wb_q] = ({w_victim_tag_q, w_index_q} == t_line);
-    if (flush_read) begin
-      t_wb_live_match[wb_free_idx] = ({tag_rdata_tag, flush_idx_q} == t_line);
-    end
   end
   // ---- The T decision.
   logic                decide;
@@ -788,6 +778,7 @@ module frost_cache #(
   // Flush walk: wait for this index's tag response, then read a dirty victim
   // into a writeback slot. A multi-cycle tag array keeps CHECK self-held until
   // flush_tag_ready.
+  logic flush_tag_ready, flush_read;
   assign flush_tag_ready = (mstate_q == M_FLUSH_CHECK) && tag_response_valid;
   assign flush_read = flush_tag_ready && tag_rdata_valid && tag_rdata_dirty && wb_free_any;
 
@@ -1641,6 +1632,10 @@ module frost_cache #(
       p_poisoned_tag_never_decides :
       assert (!(t_tag_response && (t_tag_stale_q || t_tag_write_collision) && t_done));
       p_reread_owns_t_index : assert (!reread_q || ((mstate_q == M_IDLE) && t_valid_q));
+      // No request is in A, T, or W while the sweep or a walk runs, so the
+      // slot comparators never see the walk's writeback slots.
+      p_pipeline_empty_during_maintenance :
+      assert ((mstate_q == M_IDLE) || (!sk_valid_q && !t_valid_q && !w_valid_q));
       // The per-source accept and tag read enable equal their reference forms.
       p_accept_is_hold_gated :
       assert (t_accept == (in_valid && !a_hold && !reread_q && (!t_valid_q || t_done)));
