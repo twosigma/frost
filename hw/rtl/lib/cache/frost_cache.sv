@@ -32,8 +32,10 @@
  *   - miss:      T reads a dirty victim into a writeback slot; W invalidates
  *                the victim's tag and allocates a miss-status slot (MSHR),
  *                which fetches the line downstream unless a write covers the
- *                whole line. A write miss is acknowledged from T, where the
- *                store is ordered, and its bytes merge into the fill;
+ *                whole line and no probe is withholding the line's fills
+ *                (see the probe slots). A write miss is acknowledged from T,
+ *                where the store is ordered, and its bytes merge into the
+ *                fill;
  *   - secondary: a write to a line whose write-allocate MSHR is pending
  *                merges into it; a read takes the MSHR's single waiter seat;
  *                anything else aimed at an index in transition waits.

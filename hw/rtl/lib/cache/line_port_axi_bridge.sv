@@ -40,8 +40,11 @@
  * data with the old address. The issue valids therefore take no reset: a
  * beat presented at a reset stays presented, payload unchanged, until the
  * slave takes it, and ready stays low through the reset. The declaration
- * initializers are the power-up state; the level below is reset only while
- * nothing is presented, as at power-up.
+ * initializers are the power-up state. On hardware the level below is reset
+ * only at power-up, while nothing is presented. In simulation the DDR model
+ * shares the bridge's reset: its queues clear at the first reset edge and
+ * its readies rise, so a reset longer than one cycle lets it take and
+ * discard the held beats.
  *
  * Response path: R and B land in one-entry output registers. R has priority
  * onto the single line response port and is always accepted, since its
@@ -310,8 +313,8 @@ module line_port_axi_bridge #(
   end
 
   // AXI master obligations: a presented address/data beat stays valid and
-  // stable until it is accepted, through a reset as well (the slave is not
-  // reset with the bridge).
+  // stable until it is accepted, through a reset as well (on hardware the
+  // slave is not reset with the bridge).
   always @(posedge i_clk) begin
     if (f_past_valid) begin
       if ($past(o_axi_arvalid && !i_axi_arready)) begin

@@ -107,7 +107,7 @@ until that writeback is acknowledged:
 
 - A fill of the line waits before fetching, so the cache never relies on the
   level below to order a read against a write.
-- A whole-line write, which allocates without a fetch, waits before
+- A whole-line write that allocates without a fetch waits before
   installing.
 - A store to a copy that a probe left valid and clean waits before dirtying
   it again.
@@ -373,6 +373,7 @@ may take several cycles to answer.
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `line_port_arbiter*` | Arbitration and tagged responses |
+| `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, and dropped stale responses |
 | `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |
 | `dma_envelope_lock3` through `dma_envelope_lock8`, `dma_envelope_lock3_mem30`, `dma_envelope_lock3_big_l2` | DMA throughput and latency by lock count and scenario; CLI-only |
 
@@ -381,6 +382,7 @@ the exact names. The benches live in
 [`verif/cocotb_tests/cache`](../../../../verif/cocotb_tests/cache/). The
 full-system programs `dma_torture` and `ptw_coherence_test` check DMA and
 walker coherence against the running CPU. Formal targets cover the bridge
-(`line_port_axi_bridge`: AXI handshakes, id conservation, and stale-response
-drops), the arbiter grant (`line_arbiter_grant`), and the miss-slot byte
-merge (`cache_mshr_payload`); see the [formal guide](../../../../formal/README.md).
+(`line_port_axi_bridge`: AXI handshakes, also across a CPU reset, id
+conservation, and stale-response drops), the arbiter grant
+(`line_arbiter_grant`), and the miss-slot byte merge (`cache_mshr_payload`);
+see the [formal guide](../../../../formal/README.md).

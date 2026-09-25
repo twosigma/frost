@@ -547,9 +547,9 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
     """Simultaneous D and I misses are in flight at the L2 together.
 
     One request from each L1 reaches the tagged arbiter, which has no grant
-    lock, so both reach the L2 back to back and both of its miss slots fetch
-    at once: the L2's outstanding-miss count must reach 2, and each response
-    must carry its own data and id.
+    lock, so the second reaches the L2 without waiting for the first's
+    response and both fetch at once: the L2's outstanding-miss count must
+    reach 2, and each response must carry its own data and id.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -635,10 +635,10 @@ async def test_walker_port_reads_shared_level(dut: Any) -> None:
 async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
     """Simultaneous D, I, and walker misses are in flight at the L2 together.
 
-    The arbiter tree has no grant lock at either level, so three tagged
-    reads (one per master) reach the L2 back to back and fetch at once: the
-    L2's outstanding-miss count must reach 3, and each response must carry
-    its own data and id.
+    The arbiter tree has no grant lock at either level, so each of three
+    tagged reads (one per master) reaches the L2 without waiting for another's
+    response, and all three fetch at once: the L2's outstanding-miss count
+    must reach 3, and each response must carry its own data and id.
     """
     await _setup(dut)
     model = ReferenceModel()
