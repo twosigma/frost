@@ -1299,7 +1299,7 @@ async def test_directed_illegal_instruction(dut: Any) -> None:
 # register holds its marker, and no instruction with PC >= mepc has its marker
 # visible. The test sweeps the interrupt fire cycle across a stream of
 # distinct register-writing ops in a single simulation and flags any offset
-# where the invariant breaks.
+# where the invariant breaks or no trap is taken.
 #
 # The architectural integer regfile is a multi-write distributed RAM
 # (generic_regfile -> mwp_dist_ram) with a per-address live-value table, so a
@@ -1311,8 +1311,9 @@ async def run_directed_interrupt_commit_race_test(
 ) -> None:
     """Sweep an async timer interrupt cycle-by-cycle over a register-writing stream.
 
-    Assert the trap-entry precise-state prefix invariant at every offset whose
-    interrupt is taken. Offsets that take no trap are logged, not checked.
+    Every offset must take the interrupt: mtip stays high from its fire cycle
+    to the end of the observation window, with mie.MTIE and mstatus.MIE set.
+    At each offset the trap-entry precise-state prefix invariant must hold.
 
     mode="alu":  the stream is `addi xK, x0, marker`; the result comes from
                  the ALU.
@@ -1671,6 +1672,13 @@ async def run_directed_interrupt_commit_race_test(
         f"{len(violations)} violated the prefix invariant."
     )
 
+    no_trap_offsets = [r["fire_offset"] for r in results if r["an"]["no_trap"]]
+    assert not no_trap_offsets, (
+        f"LOST INTERRUPT (mode={mode}): {len(no_trap_offsets)}/{len(results)} fire "
+        f"offsets took no trap within the {obs}-cycle window: {no_trap_offsets}. mtip "
+        f"stays high from the fire cycle with mie.MTIE and mstatus.MIE set, so every "
+        f"offset must trap."
+    )
     assert not violations, (
         f"PRECISE-INTERRUPT VIOLATION (mode={mode}): {len(violations)}/{len(results)} "
         f"interrupt fire-offsets violate the trap-entry prefix invariant (architectural "
@@ -1690,8 +1698,8 @@ async def run_directed_interrupt_commit_race_test(
 async def test_directed_interrupt_commit_race(dut: Any) -> None:
     """Sweep an async M-timer interrupt across an ALU stream.
 
-    For each fire cycle whose interrupt is taken, check that the architectural
-    regfile at trap entry reflects exactly the instructions with PC < mepc
+    Every fire cycle must take the interrupt, and the architectural regfile at
+    trap entry must reflect exactly the instructions with PC < mepc
     (precise-state prefix invariant).
     """
     await run_directed_interrupt_commit_race_test(dut, mode="alu")
