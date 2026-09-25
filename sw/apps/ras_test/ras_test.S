@@ -1,8 +1,9 @@
 # Return Address Stack test suite
 #
-# Covers nested calls up to and past the 8-entry RAS depth, mixed 32-bit and
-# compressed returns, calls after a c.nop, back-to-back and looped calls, and
-# x5 (t0) as the link register, with counter checks and diagnostic output.
+# Covers nested calls up to and past the 8-entry RAS depth, returns with an
+# empty RAS, mixed 32-bit and compressed returns, calls at halfword offsets,
+# back-to-back and looped calls, x5 (t0) as the link register, and coroutine
+# swaps, with counter checks and diagnostic output.
 #
 # The checks prove only that each return lands at the right address. Whether
 # the RAS predicted it affects only the cycle count, which this test does not
@@ -10,10 +11,11 @@
 #
 # Test Categories:
 #   A. Basic functionality (simple call/return)
-#   B. Stack depth tests (nested calls, overflow)
+#   B. Stack depth tests (nested calls, overflow, underflow)
 #   C. Instruction encoding tests (32-bit, compressed, mixed)
 #   D. Calls placed after a 2-byte c.nop (halfword-shifted call sites)
-#   E. Edge cases (tight loops, back-to-back calls, x5 as the link register)
+#   E. Edge cases (tight loops, back-to-back calls, x5 as the link register,
+#      coroutine swaps)
 #   F. Stress tests (rapid call/return patterns)
 
 # The nested helpers spill ra with sd/ld in 8-byte frames. In the DDR build,
@@ -288,7 +290,7 @@ test_b4_start:
     addi    s1, s1, 1
     la      a0, msg_ok
     jal     ra, print_string
-    j       test_c1_start
+    j       test_b5_start
 
 test_b4_fail:
     addi    s2, s2, 1
@@ -297,6 +299,56 @@ test_b4_fail:
     la      a0, msg_expected
     jal     ra, print_string
     li      a0, 1023
+    jal     ra, print_hex
+    la      a0, msg_got
+    jal     ra, print_string
+    mv      a0, t0
+    jal     ra, print_hex
+    la      a0, msg_newline
+    jal     ra, print_string
+
+    # =========================================================================
+    # TEST B5: Returns with an empty RAS (underflow)
+    # Every earlier call has returned. Nine returns through an ra that no call
+    # pushed, one more than the RAS holds, leave it empty whatever it held;
+    # a call and return after them must still land.
+    # =========================================================================
+test_b5_start:
+    addi    s3, s3, 1
+    la      a0, msg_test_b5
+    jal     ra, print_string
+
+    li      t0, 0
+    li      t2, 9
+
+    .option norvc
+test_b5_loop:
+    la      ra, test_b5_back    # Not a call: nothing is pushed
+    jalr    zero, ra, 0         # Return with nothing to pop
+    j       test_b5_fail
+test_b5_back:
+    addi    t0, t0, 1
+    addi    t2, t2, -1
+    bnez    t2, test_b5_loop
+    jal     ra, func_increment_t0
+    .option rvc
+
+    # 9 returns + 1 call
+    li      t1, 10
+    bne     t0, t1, test_b5_fail
+
+    addi    s1, s1, 1
+    la      a0, msg_ok
+    jal     ra, print_string
+    j       test_c1_start
+
+test_b5_fail:
+    addi    s2, s2, 1
+    la      a0, msg_fail
+    jal     ra, print_string
+    la      a0, msg_expected
+    jal     ra, print_string
+    li      a0, 10
     jal     ra, print_hex
     la      a0, msg_got
     jal     ra, print_string
@@ -390,9 +442,10 @@ test_d1_start:
 
     li      t0, 0
 
-    # The 2-byte c.nop shifts the call by a halfword. The return address is
-    # halfword-aligned only when the code above ends on a 4-byte boundary.
+    # The c.nop starts at a word boundary, so the JAL starts at PC[1]=1 and
+    # returns to a halfword-aligned address.
     .option rvc
+    .balign 4
     c.nop
     jal     ra, func_increment_t0
 
@@ -420,9 +473,9 @@ test_d1_fail:
     jal     ra, print_string
 
     # =========================================================================
-    # TEST D2: Three calls, each after a c.nop. A c.nop and JAL pair is six
-    # bytes, so successive return addresses alternate between halfword and
-    # word alignment.
+    # TEST D2: Three calls, each after a c.nop that starts at a word boundary,
+    # so every return address is halfword-aligned. The first two returns land
+    # on the c.nop that pads to the next word boundary.
     # =========================================================================
 test_d2_start:
     addi    s3, s3, 1
@@ -432,10 +485,13 @@ test_d2_start:
     li      t0, 0
 
     .option rvc
+    .balign 4
     c.nop
     jal     ra, func_increment_t0
+    .balign 4
     c.nop
     jal     ra, func_increment_t0
+    .balign 4
     c.nop
     jal     ra, func_increment_t0
 
@@ -600,7 +656,7 @@ test_e4_start:
     addi    s1, s1, 1
     la      a0, msg_ok
     jal     ra, print_string
-    j       test_f1_start
+    j       test_e5_start
 
 test_e4_fail:
     addi    s2, s2, 1
@@ -613,6 +669,53 @@ test_e4_fail:
     la      a0, msg_got
     jal     ra, print_string
     mv      a0, s4
+    jal     ra, print_hex
+    la      a0, msg_newline
+    jal     ra, print_string
+
+    # =========================================================================
+    # TEST E5: Coroutine swaps
+    # jalr t0, 0(ra) resumes the caller and links the coroutine's resume
+    # point in t0 (the RAS pops the caller's return address, then pushes
+    # t0); jalr ra, 0(t0) resumes the coroutine. Each of the five steps
+    # shifts its number into t1, so t1 records the order they ran in.
+    # =========================================================================
+test_e5_start:
+    addi    s3, s3, 1
+    la      a0, msg_test_e5
+    jal     ra, print_string
+
+    li      t1, 0
+
+    .option norvc
+    jal     ra, func_coroutine  # Step 1
+    slli    t1, t1, 4
+    addi    t1, t1, 2           # Step 2
+    jalr    ra, t0, 0           # Resume the coroutine: step 3
+    slli    t1, t1, 4
+    addi    t1, t1, 4           # Step 4
+    jalr    ra, t0, 0           # Resume it again: step 5, then it returns
+    .option rvc
+
+    li      t2, 0x12345
+    bne     t1, t2, test_e5_fail
+
+    addi    s1, s1, 1
+    la      a0, msg_ok
+    jal     ra, print_string
+    j       test_f1_start
+
+test_e5_fail:
+    addi    s2, s2, 1
+    la      a0, msg_fail
+    jal     ra, print_string
+    la      a0, msg_expected
+    jal     ra, print_string
+    li      a0, 0x12345
+    jal     ra, print_hex
+    la      a0, msg_got
+    jal     ra, print_string
+    mv      a0, t1
     jal     ra, print_hex
     la      a0, msg_newline
     jal     ra, print_string
@@ -1071,6 +1174,21 @@ func_inner_via_t0:
     jalr    zero, t0, 0     # Return via x5
     .option rvc
 
+    .align 2
+func_coroutine:
+    # TEST E5's coroutine: swaps back to the caller twice, then returns
+    .option norvc
+    slli    t1, t1, 4
+    addi    t1, t1, 1       # Step 1
+    jalr    t0, ra, 0       # Swap: pop the caller's return, push t0
+    slli    t1, t1, 4
+    addi    t1, t1, 3       # Step 3
+    jalr    t0, ra, 0       # Swap again
+    slli    t1, t1, 4
+    addi    t1, t1, 5       # Step 5
+    jalr    zero, ra, 0     # Return
+    .option rvc
+
 # =============================================================================
 # Utility functions
 # =============================================================================
@@ -1153,7 +1271,7 @@ msg_header:
 msg_test_a1:
     .string "A1: Basic 32-bit JAL/JALR... "
 msg_test_a2:
-    .string "A2: Compressed C.JAL/C.JR... "
+    .string "A2: JAL call, C.JR return... "
 msg_test_a3:
     .string "A3: Sequential calls (5x)... "
 
@@ -1165,6 +1283,8 @@ msg_test_b3:
     .string "B3: Nested 8 levels (RAS limit)... "
 msg_test_b4:
     .string "B4: Nested 10 levels (overflow)... "
+msg_test_b5:
+    .string "B5: Returns with empty RAS... "
 
 msg_test_c1:
     .string "C1: 32-bit call, compressed ret... "
@@ -1184,6 +1304,8 @@ msg_test_e3:
     .string "E3: x5 (t0) as link reg... "
 msg_test_e4:
     .string "E4: Nested with x5 link... "
+msg_test_e5:
+    .string "E5: Coroutine swaps... "
 
 msg_test_f1:
     .string "F1: Stress 100 calls... "

@@ -295,7 +295,7 @@ can be debugged and where each one first stops.
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |
 | `ptw_coherence_test/` | Sv39 walks must see page tables still dirty in the L1D, without `sfence.vma` |
 | `ras_stress_test/` | Return-address-stack stress: calls mixed with branches, data-dependent calls, and function pointers |
-| `ras_test/` | Return-address stack: deep nesting, overflow and underflow, coroutines, compressed and halfword-aligned calls |
+| `ras_test/` | Return-address stack: deep nesting, overflow and underflow, coroutine swaps, compressed returns, and calls at halfword offsets |
 | `restore_window_stress/` | Timer interrupts swept across a Linux-style M-mode exception return; none may be taken between its `csrci` and `mret` |
 | `riscv_tests/` | Upstream riscv-tests ISA suites, built per test with `TEST_SRC`, and benchmarks, built with `Makefile.bench` |
 | `riscv_torture/` | Committed riscv-torture random tests compared with Spike register signatures; built per test with `TEST_SRC` |
