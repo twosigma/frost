@@ -340,7 +340,7 @@ def test_x3_place_provenance_records_manual_bloat_targets() -> None:
     )
 
 
-def test_hello_world_compile_clears_retired_init_images(
+def test_hello_world_compile_replaces_obsolete_init_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """compile_hello_world deletes obsolete init images and writes the scalar-replica ones.
@@ -1431,7 +1431,7 @@ def test_x3_flow_carries_no_timing_exceptions() -> None:
     assert "prediction_release" not in tcl
 
 
-def test_x3_fetch_cluster_pblock_stays_retired() -> None:
+def test_x3_constraints_define_no_fetch_cluster_pblock() -> None:
     """x3.xdc defines no frost_fetch_cluster pblock."""
     xdc = (REPO_ROOT / "boards/x3/constr/x3.xdc").read_text()
     assert "frost_fetch_cluster" not in xdc
@@ -1736,7 +1736,7 @@ def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
 
 
 @pytest.mark.parametrize("divider", (1, 2, 3, 4))
-def test_x3_clock_rejects_old_clock_evidence(
+def test_x3_place_gate_requires_the_mmcm_cpu_period(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, divider: int
 ) -> None:
     """At each divider, the gate rejects the 300 MHz reference period times the divider.
@@ -2877,7 +2877,7 @@ def test_cpu_cli_controls_clock_before_software_build(
 
 
 @pytest.mark.parametrize("source", ("flag", "environment"))
-def test_retired_cpu_base_clock_selector_is_rejected(
+def test_cpu_base_clock_selector_is_rejected_before_building(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     source: str,
@@ -2892,7 +2892,7 @@ def test_retired_cpu_base_clock_selector_is_rejected(
     monkeypatch.setattr(
         fpga_build,
         "compile_hello_world",
-        lambda *_: pytest.fail("retired clock selector launched a build"),
+        lambda *_: pytest.fail("rejected clock selector launched a build"),
     )
     with pytest.raises(SystemExit) as stopped:
         fpga_build.main()
@@ -2957,7 +2957,7 @@ def test_missing_placement_checkpoint_cannot_defeat_complete_passing_seed(
 
 
 @pytest.mark.parametrize("extras", [False, True])
-def test_retired_toggles_cannot_add_or_modify_placement_candidates(
+def test_unused_placement_switches_cannot_add_or_modify_candidates(
     extras: bool,
 ) -> None:
     """The unused flush-guidance and pin-swap switches affect no candidate.
@@ -2988,7 +2988,7 @@ def test_retired_toggles_cannot_add_or_modify_placement_candidates(
     assert inherited["FROST_PLACE_FLUSH_INCREMENTAL"] == "1"
 
 
-def test_retired_flags_do_not_launch_an_extra_worker(
+def test_unused_placement_switches_do_not_launch_an_extra_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With the unused switches set, only the requested seed and off-grid seed run.
@@ -3035,7 +3035,7 @@ def test_retired_flags_do_not_launch_an_extra_worker(
     assert not (main_work / "post_place_pin_swap_audit.txt").exists()
 
 
-def test_new_300mhz_gate_cannot_authorize_retained_150mhz_physopt(
+def test_new_placement_gate_cannot_requalify_the_previous_physopt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A new placement's gate cannot requalify a phys-opt checkpoint of the old one."""
@@ -3744,7 +3744,7 @@ def test_physopt_launch_allows_fork_only_after_this_runs_completed_sweep(
     )
 
 
-def test_retired_performance_profile_flag_is_rejected(
+def test_single_core_performance_flag_is_not_an_option(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """--single-core-performance is not an option."""

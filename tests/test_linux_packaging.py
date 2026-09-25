@@ -108,7 +108,7 @@ def _load_script(name: str, path: Path, *import_dirs: Path) -> ModuleType:
 
 
 PMD_BYTES = 2 << 20  # the rv64 kernel's alignment
-FORMER_DTB_OFFSET = 0x100_0000  # the packer's DTB_MIN_OFFSET, +16 MiB
+LOWEST_DTB_OFFSET = 0x100_0000  # the packer's DTB_MIN_OFFSET, +16 MiB
 
 
 def _rtl_localparam(text: str, name: str) -> int:
@@ -149,7 +149,7 @@ def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
     # The rv64 kernel Image must sit on a PMD (2 MiB) boundary.
     assert packer.PMD_BYTES == PMD_BYTES
     assert packer.PAYLOAD_OFFSET % PMD_BYTES == 0
-    assert packer.DTB_MIN_OFFSET == FORMER_DTB_OFFSET
+    assert packer.DTB_MIN_OFFSET == LOWEST_DTB_OFFSET
     assert packer.PAYLOAD_OFFSET < packer.DTB_MIN_OFFSET
     assert packer.DTB_GROWTH_BYTES < packer.DTB_SLOT_BYTES
     assert packer.DTB_MIN_OFFSET + packer.DTB_SLOT_BYTES < packer.MEM_SIZE
@@ -175,14 +175,14 @@ def test_sbi_layout_rule_invariants(footprint: int) -> None:
     layout = packer.plan_layout(footprint)
     assert layout.footprint == footprint
     assert layout.dtb_offset % PMD_BYTES == 0
-    assert layout.dtb_offset >= FORMER_DTB_OFFSET
+    assert layout.dtb_offset >= LOWEST_DTB_OFFSET
     assert layout.dtb_offset >= packer.PAYLOAD_OFFSET + footprint
-    lowest = max(FORMER_DTB_OFFSET, packer.PAYLOAD_OFFSET + footprint)
+    lowest = max(LOWEST_DTB_OFFSET, packer.PAYLOAD_OFFSET + footprint)
     assert layout.dtb_offset < lowest + PMD_BYTES
     assert layout.initrd_offset == layout.dtb_offset + packer.DTB_SLOT_BYTES
 
 
-def test_sbi_layout_keeps_the_former_offsets_up_to_14_mib() -> None:
+def test_sbi_layout_puts_the_dtb_at_16_mib_for_payloads_up_to_14_mib() -> None:
     """Payloads up to 14 MiB put the DTB at +16 MiB; larger ones move it up.
 
     The initramfs follows 64 KiB above the DTB in both cases.
@@ -309,7 +309,7 @@ def test_sbi_packer_places_the_dtb_by_image_size(tmp_path: Path) -> None:
     """
     packer = _load_module(SBI_PACKER)
     image = _linux_image(packer, image_size=0xE01000, length=0xE00000)
-    assert packer.plan_layout(len(image)).dtb_offset == FORMER_DTB_OFFSET
+    assert packer.plan_layout(len(image)).dtb_offset == LOWEST_DTB_OFFSET
     dtb_offset, initrd_offset = 0x120_0000, 0x121_0000
     firmware = bytes(range(256)) * 16
     initrd = bytes(range(251)) * 17  # not a whole number of words
@@ -361,7 +361,7 @@ def test_sbi_packer_places_the_dtb_by_image_size(tmp_path: Path) -> None:
     for offset, content in regions:
         prefix = content[:0x2000]
         assert _decode_words(dense, 9 * (offset // 4), len(prefix)) == prefix
-    gap = dense[9 * (FORMER_DTB_OFFSET // 4) : 9 * (dtb_offset // 4)]
+    gap = dense[9 * (LOWEST_DTB_OFFSET // 4) : 9 * (dtb_offset // 4)]
     assert set(gap.split()) == {"00000000"}
 
 
@@ -409,7 +409,7 @@ def test_sbi_packer_nfsroot_packs_no_initramfs(
     assert f'bootargs = "{bootargs}";' in dts
     assert "initrd" not in dts
     records = re.findall(r"^@([0-9a-f]{8})$", (out / "sw_ddr.mem").read_text(), re.M)
-    offsets = (packer.FW_OFFSET, packer.PAYLOAD_OFFSET, FORMER_DTB_OFFSET)
+    offsets = (packer.FW_OFFSET, packer.PAYLOAD_OFFSET, LOWEST_DTB_OFFSET)
     assert records == [f"{offset // 4:08x}" for offset in offsets]
 
 
@@ -509,17 +509,17 @@ def test_sbi_packer_nfsroot_through_an_initramfs(
         f"nfsroot={export},vers=3,tcp,hard rw ip={ip}"
     )
     assert f'bootargs = "{bootargs}";' in dts
-    initrd_start = packer.DDR_BASE + FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES
+    initrd_start = packer.DDR_BASE + LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES
     assert f"linux,initrd-start = <0x{initrd_start:08x}>;" in dts
     assert f"linux,initrd-end = <0x{initrd_start + len(initrd):08x}>;" in dts
     records = _ddr_records(out / "sw_ddr.mem")
     assert list(records) == [
         packer.FW_OFFSET,
         packer.PAYLOAD_OFFSET,
-        FORMER_DTB_OFFSET,
-        FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES,
+        LOWEST_DTB_OFFSET,
+        LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES,
     ]
-    assert records[FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES][: len(initrd)] == initrd
+    assert records[LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES][: len(initrd)] == initrd
 
 
 @pytest.mark.parametrize(
@@ -1034,10 +1034,10 @@ def test_linux_boot_make_nfsroot(
     dts = (app / "frost.dts").read_text()
     bootargs = packer.nfsroot_bootargs(NFS_EXPORT, ip, initramfs)
     assert f'bootargs = "{bootargs}";' in dts
-    offsets = [packer.FW_OFFSET, packer.PAYLOAD_OFFSET, FORMER_DTB_OFFSET]
+    offsets = [packer.FW_OFFSET, packer.PAYLOAD_OFFSET, LOWEST_DTB_OFFSET]
     records = _ddr_records(app / "sw_ddr.mem")
     if initramfs:
-        offsets.append(FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES)
+        offsets.append(LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES)
         assert records[offsets[-1]][: len(initrd)] == initrd
         assert "linux,initrd-start = <0x81010000>;" in dts
     else:

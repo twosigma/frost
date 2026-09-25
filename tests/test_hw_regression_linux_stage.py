@@ -1373,7 +1373,7 @@ def board_console() -> str:
     return BOARD_CONSOLE.read_bytes().decode("utf-8", errors="replace")
 
 
-def test_the_board_run_that_timed_out_now_passes() -> None:
+def test_the_real_board_capture_ends_and_passes_the_stage() -> None:
     """The real capture ends the stage and passes the judge.
 
     Every check in it printed and was correct, but the mount line and the

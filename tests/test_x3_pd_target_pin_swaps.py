@@ -322,7 +322,7 @@ source $::env(HOOK_SOURCE)
 
 @pytest.mark.parametrize("mode", (None, "", "auto", "0", "1", "invalid"))
 @pytest.mark.parametrize("guided", [False, True])
-def test_production_places_once_and_never_invokes_retired_hooks(
+def test_production_places_once_and_runs_no_diagnostic_helper(
     tmp_path: Path, mode: str | None, guided: bool
 ) -> None:
     """The place step places once and runs no diagnostic helper.
