@@ -2381,19 +2381,19 @@ async def test_fs_off_slot2_blocks_widen_commit_then_traps(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dyn_rm_with_reserved_frm_is_illegal(dut: Any) -> None:
-    """An FP op with rm = DYN is illegal at allocation while frm is 5, 6, or 7.
+    """An FP op flagged fp_dyn_rm is illegal at allocation while frm is 5, 6, or 7.
 
-    For each reserved frm the DYN op allocates in slot 1, then in slot 2
-    beside an ordinary instruction. frm returns to RNE right after
-    allocation, and the op must still trap with IllegalInstr at the head
-    while the slot-1 instruction retires alone. DYN with a valid frm, a
-    static rounding mode under a reserved frm, and a non-FP instruction with
-    funct3 111 all retire normally.
+    For each reserved frm the op allocates in slot 1, then in slot 2 beside
+    an ordinary instruction. frm returns to RNE right after allocation, and
+    the op must still trap with IllegalInstr at the head while the slot-1
+    instruction retires alone. The trapping requests carry csr_op values
+    other than 111, so the check depends on fp_dyn_rm alone. fp_dyn_rm with
+    a valid frm, a static rounding mode under a reserved frm, and a non-FP
+    instruction with funct3 111 all retire normally.
     """
     dut_if, _ = await setup_test(dut)
-    frm_dyn = 0b111
 
-    def fp_request(pc: int, rm: int) -> AllocationRequest:
+    def fp_request(pc: int, dyn: bool, csr_op: int) -> AllocationRequest:
         return AllocationRequest(
             pc=pc,
             rs_type=RS_FP,
@@ -2401,8 +2401,9 @@ async def test_dyn_rm_with_reserved_frm_is_illegal(dut: Any) -> None:
             dest_reg=3,
             dest_valid=True,
             is_fp_instruction=True,
+            fp_dyn_rm=dyn,
             has_fp_flags=True,
-            csr_op=rm,
+            csr_op=csr_op,
         )
 
     async def complete(tag: int) -> None:
@@ -2426,7 +2427,7 @@ async def test_dyn_rm_with_reserved_frm_is_illegal(dut: Any) -> None:
     for frm in (5, 6, 7):
         pc = 0x6000 + 0x100 * frm
         dut.i_frm.value = frm
-        tag = await drive_single_alloc(dut_if, fp_request(pc, frm_dyn))
+        tag = await drive_single_alloc(dut_if, fp_request(pc, True, 0b100))
         dut.i_frm.value = 0
         await complete(tag)
         await expect_illegal_head(pc)
@@ -2435,7 +2436,7 @@ async def test_dyn_rm_with_reserved_frm_is_illegal(dut: Any) -> None:
         (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(
             dut_if,
             make_simple_alloc_request(pc=pc + 0x10, rd=4),
-            fp_request(pc + 0x14, frm_dyn),
+            fp_request(pc + 0x14, True, 0b000),
         )
         dut.i_frm.value = 0
         await complete(tag_2)
@@ -2449,12 +2450,12 @@ async def test_dyn_rm_with_reserved_frm_is_illegal(dut: Any) -> None:
         await expect_illegal_head(pc + 0x14)
 
     legal_cases = (
-        ("DYN with frm=RMM", 4, fp_request(0x7000, frm_dyn)),
-        ("static RNE with frm=7", 7, fp_request(0x7004, 0b000)),
+        ("DYN with frm=RMM", 4, fp_request(0x7000, True, 0b111)),
+        ("static RNE with frm=7", 7, fp_request(0x7004, False, 0b000)),
         (
             "non-FP funct3 111 with frm=5",
             5,
-            AllocationRequest(pc=0x7008, dest_reg=5, dest_valid=True, csr_op=frm_dyn),
+            AllocationRequest(pc=0x7008, dest_reg=5, dest_valid=True, csr_op=0b111),
         ),
     )
     for name, frm, req in legal_cases:

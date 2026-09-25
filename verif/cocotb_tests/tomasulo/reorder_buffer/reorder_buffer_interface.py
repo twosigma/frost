@@ -43,9 +43,9 @@ from cocotb_tests.cpu_structs import (
 
 # reorder_buffer_alloc_req_t contains five XLEN fields: pc,
 # predicted_target, branch_target, link_addr, and csr_write_data. The other
-# fields occupy 49 bits, so the complete width is 369 (49 + 5*64).
+# fields occupy 50 bits, so the complete width is 370 (50 + 5*64).
 # alloc_valid is always the MSB (ALLOC_REQ_WIDTH - 1).
-ALLOC_REQ_WIDTH = 49 + (5 * XLEN)
+ALLOC_REQ_WIDTH = 50 + (5 * XLEN)
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -108,6 +108,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     val |= (1 if req.predicted_taken else 0) << bit
     bit += 1
     val |= (1 if req.is_branch else 0) << bit
+    bit += 1
+    val |= (1 if req.fp_dyn_rm else 0) << bit
     bit += 1
     val |= (1 if req.is_fp_instruction else 0) << bit
     bit += 1

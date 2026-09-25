@@ -143,6 +143,7 @@ class AllocationRequest:
     is_store: bool = False
     is_fp_store: bool = False
     is_fp_instruction: bool = False
+    fp_dyn_rm: bool = False
     is_branch: bool = False
     predicted_taken: bool = False
     predicted_target: int = 0

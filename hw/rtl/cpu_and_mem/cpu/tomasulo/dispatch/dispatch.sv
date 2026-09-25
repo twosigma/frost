@@ -1358,8 +1358,6 @@ module dispatch #(
         (i_from_id_to_ex.instruction.funct3[1:0] == 2'b01) ||
         (i_from_id_to_ex.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req.csr_addr = i_from_id_to_ex.csr_address;
-    // funct3 for every instruction: the ROB also reads it as an F/D
-    // instruction's rm field (reserved-frm legality check).
     o_rob_alloc_req.csr_op = i_from_id_to_ex.instruction.funct3;
     // CSR write data: the zero-extended immediate for immediate forms, else 0.
     // A register form's rs1 value is not known until its source operand
@@ -1380,6 +1378,15 @@ module dispatch #(
     // check records the same illegal-instruction exception from this flag and
     // also covers fflags/frm/fcsr accesses.
     o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
+
+    // Reserved-frm check: the ROB marks an F/D instruction with rm = DYN
+    // illegal at allocation while frm is 5 to 7. The rm field is funct3, and
+    // every legal F/D instruction without an rm field has a funct3 of 011 or
+    // less. TIMING: funct3 is read from the instruction word, which comes
+    // from the decoded-bundle queue's registered shadow like
+    // is_fp_instruction; fp_rm comes through the queue's bypass select.
+    o_rob_alloc_req.fp_dyn_rm = i_from_id_to_ex.is_fp_instruction &&
+        (i_from_id_to_ex.instruction.funct3 == riscv_pkg::FRM_DYN);
   end
 
   // Slot-2 ROB alloc request: same field shape, slot-2 inputs.  alloc_valid
@@ -1432,6 +1439,8 @@ module dispatch #(
     o_rob_alloc_req_2.has_fp_flags = op_has_fp_flags_2;
 
     o_rob_alloc_req_2.is_fp_instruction = i_from_id_to_ex_2.is_fp_instruction;
+    o_rob_alloc_req_2.fp_dyn_rm = i_from_id_to_ex_2.is_fp_instruction &&
+        (i_from_id_to_ex_2.instruction.funct3 == riscv_pkg::FRM_DYN);
   end
 
   // ===========================================================================

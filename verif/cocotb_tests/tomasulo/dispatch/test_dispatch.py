@@ -1236,6 +1236,45 @@ async def test_dynamic_rounding_mode(dut: Any) -> None:
     assert rs["rm"] == 0b010, f"Expected resolved rm=0b010 (RDN), got {rs['rm']:#05b}"
 
 
+@cocotb.test()
+async def test_fp_dyn_rm_predecode(dut: Any) -> None:
+    """Both slots flag exactly the F/D instructions whose rm field (funct3) is DYN.
+
+    The flag depends on funct3 alone, so a DYN op whose rs1 field is 0 is
+    flagged. A static rounding mode and an integer instruction with funct3
+    111 are not. Slot 2 never allocates an FP compute op, but its request
+    carries the same pre-decode.
+    """
+    dut_if = await _setup(dut)
+
+    cases = (
+        ("fadd.s dyn", FADD_S, 1, 0b111, 1, 1),
+        ("fadd.s dyn, rs1 field 0", FADD_S, 1, 0b111, 0, 1),
+        ("fadd.s rmm", FADD_S, 1, 0b100, 1, 0),
+        ("integer op with funct3 111", ADDI, 0, 0b111, 1, 0),
+    )
+    for name, op, is_fp, funct3, rs1_field, expected in cases:
+        instruction = _make_instr(
+            dest_reg=3,
+            opcode=OPC_OP_FP if is_fp else OPC_OP_IMM,
+            funct3=funct3,
+            source_reg_1=rs1_field,
+            source_reg_2=2,
+        )
+        for drive in (dut_if.drive_instruction, dut_if.drive_instruction_2):
+            drive(
+                valid=True,
+                instruction_operation=op,
+                is_fp_instruction=is_fp,
+                fp_rm=funct3,
+                instruction=instruction,
+            )
+        await dut_if.step()
+
+        assert dut_if.read_rob_alloc_req()["fp_dyn_rm"] == expected, f"slot 1: {name}"
+        assert dut_if.read_rob_alloc_req_2()["fp_dyn_rm"] == expected, f"slot 2: {name}"
+
+
 # =============================================================================
 # PC-derived immediates: values ID precomputes from the PC travel in the RS imm
 # =============================================================================

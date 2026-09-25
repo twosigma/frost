@@ -181,6 +181,7 @@ ROB_ALLOC_REQ_FIELDS = [
     ("is_store", 1),
     ("is_fp_store", 1),
     ("is_fp_instruction", 1),
+    ("fp_dyn_rm", 1),
     ("is_branch", 1),
     ("predicted_taken", 1),
     ("predicted_target", XLEN),

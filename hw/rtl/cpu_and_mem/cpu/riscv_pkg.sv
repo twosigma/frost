@@ -2262,6 +2262,10 @@ package riscv_pkg;
     // allocation-time mstatus.FS==Off legality check; FP CSR accesses
     // are classified separately from csr_addr at allocation.
     logic is_fp_instruction;
+    // An F/D instruction whose rm field selects the dynamic rounding mode
+    // (rm = 111). The ROB marks it illegal at allocation while frm holds a
+    // reserved value (5 to 7).
+    logic fp_dyn_rm;
     logic is_branch;
     logic predicted_taken;
     logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
@@ -2299,9 +2303,7 @@ package riscv_pkg;
     // allocation.
     logic csr_write_intent;
     logic [11:0] csr_addr;
-    // funct3 of every instruction: the CSR operation, and for an F/D
-    // instruction the rm field the ROB's reserved-frm check reads.
-    logic [2:0] csr_op;
+    logic [2:0] csr_op;  // funct3 for CSR operation
     logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
     // FP flags validity
     logic has_fp_flags;  // Instruction produces FP flags

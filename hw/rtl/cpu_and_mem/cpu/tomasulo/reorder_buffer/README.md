@@ -82,9 +82,10 @@ without `menvcfg.STCE`, Debug-only instructions and CSRs, unimplemented CSRs,
 writes to read-only CSRs, FP use while `mstatus.FS` is Off, and an FP
 instruction with the dynamic rounding mode (rm = 111) while `frm` holds a
 reserved value (5 to 7), which traps like the reserved static modes do.
-Dispatch passes every instruction's funct3 in the request's `csr_op` field;
-for an F/D instruction it is 111 exactly when the instruction has an rm field
-set to dynamic.
+Dispatch marks such an instruction with the request's `fp_dyn_rm` bit: an F/D
+instruction whose funct3 is 111. That funct3 is always an rm field set to
+dynamic, since every F/D instruction without an rm field has a funct3 of 011
+or less.
 
 Deciding at allocation is exact because that state cannot change under a
 live entry: every CSR instruction keeps younger instructions out of dispatch
