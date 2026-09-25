@@ -1140,6 +1140,80 @@ async def test_checkpoint_save_free_same_cycle_precedence(dut: Any) -> None:
     cocotb.log.info("=== Test Passed ===")
 
 
+@cocotb.test()
+async def test_checkpoint_free_second_port(dut: Any) -> None:
+    """The second free port releases a checkpoint alone or beside the first.
+
+    Slot-2 branch retirement frees its checkpoint through i_checkpoint_free_2,
+    possibly in the same cycle as a slot-1 free. A save to the same slot in
+    that cycle still wins.
+    """
+    cocotb.log.info("=== Test: Checkpoint Free Second Port ===")
+
+    dut_if, model = await setup_test(dut)
+
+    for slot in range(4):
+        await dut_if.checkpoint_save(checkpoint_id=slot, branch_tag=slot + 8)
+        model.checkpoint_save(slot, slot + 8, 0, 0)
+    assert dut_if.checkpoint_alloc_id == 4, "Slots 0-3 should be in use"
+
+    async def free_cycle(
+        free_1: int | None, free_2: int | None, save: int | None = None
+    ) -> None:
+        await FallingEdge(dut_if.clock)
+        if free_1 is not None:
+            dut_if.drive_checkpoint_free(free_1)
+        if free_2 is not None:
+            dut_if.drive_checkpoint_free_2(free_2)
+        if save is not None:
+            dut_if.drive_checkpoint_save(checkpoint_id=save, branch_tag=save + 16)
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_checkpoint_free()
+        dut_if.clear_checkpoint_free_2()
+        dut_if.clear_checkpoint_save()
+        for slot in (free_1, free_2):
+            if slot is not None:
+                model.checkpoint_free(slot)
+        if save is not None:
+            model.checkpoint_save(save, save + 16, 0, 0)
+
+    def check(label: str) -> None:
+        avail, alloc_id = model.checkpoint_available()
+        assert dut_if.checkpoint_available == avail, f"{label}: availability"
+        if avail:
+            assert dut_if.checkpoint_alloc_id == alloc_id, (
+                f"{label}: next free slot DUT={dut_if.checkpoint_alloc_id} "
+                f"model={alloc_id}"
+            )
+
+    # Port 2 alone.
+    await free_cycle(None, 2)
+    check("port 2 frees slot 2")
+    assert dut_if.checkpoint_alloc_id == 2
+
+    # Both ports in one cycle, different slots.
+    await free_cycle(0, 3)
+    check("port 1 frees slot 0, port 2 frees slot 3")
+    assert dut_if.checkpoint_alloc_id == 0
+
+    # Refill, then free the same slot on both ports.
+    for slot in (0, 2, 3):
+        await dut_if.checkpoint_save(checkpoint_id=slot, branch_tag=slot + 8)
+        model.checkpoint_save(slot, slot + 8, 0, 0)
+    check("slots 0-3 in use again")
+    await free_cycle(1, 1)
+    check("both ports free slot 1")
+    assert dut_if.checkpoint_alloc_id == 1
+
+    # A save to the slot port 2 frees in the same cycle wins.
+    await free_cycle(None, 1, save=1)
+    check("save wins over a same-slot port-2 free")
+    assert dut_if.checkpoint_alloc_id == 4
+
+    cocotb.log.info("=== Test Passed ===")
+
+
 # =============================================================================
 # INT/FP Cross-Table Tests
 # =============================================================================

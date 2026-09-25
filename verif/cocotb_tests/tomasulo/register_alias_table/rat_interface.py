@@ -17,6 +17,17 @@
 Verilator flattens packed structs into bit vectors, so this interface unpacks
 the lookup results. It also keeps a shadow RATModel and drives synthetic
 ROB-valid, epoch, and head-tag inputs in place of a real ROB.
+
+The synthetic ROB-valid mask counts a tag live from its rename or checkpoint
+save until a commit that matches the shadow RAT's current mapping of its
+destination, or a full flush. So a tag renamed again before it commits, a tag
+committed without a destination, and a checkpoint owner's branch tag stay
+live until the next full flush. The tests rely on this: their models ignore
+ROB validity, and they commit tags that a real ROB would not retire. Epoch
+bits flip only when a checkpoint owner allocates; a test that needs the
+post-allocation epoch of a renamed tag sets it with add_rob_entry_epoch_bits.
+The DUT and the shadow model see the same mask, so restores agree, but a
+restore rarely finds a dead tag to filter out.
 """
 
 from typing import Any
@@ -67,6 +78,7 @@ class RATInterface:
         self._pending_checkpoint_save: tuple[int, int, int, int, bool] | None = None
         self._pending_checkpoint_restore: int | None = None
         self._pending_checkpoint_free: int | None = None
+        self._pending_checkpoint_free_2: int | None = None
         self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
 
@@ -126,6 +138,7 @@ class RATInterface:
         self._pending_checkpoint_save = None
         self._pending_checkpoint_restore = None
         self._pending_checkpoint_free = None
+        self._pending_checkpoint_free_2 = None
         self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
 
@@ -196,9 +209,11 @@ class RATInterface:
         self.dut.i_checkpoint_restore_id.value = 0
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
 
-        # Checkpoint free
+        # Checkpoint free (both ports) and the bulk free mask
         self.dut.i_checkpoint_free.value = 0
         self.dut.i_checkpoint_free_id.value = 0
+        self.dut.i_checkpoint_free_2.value = 0
+        self.dut.i_checkpoint_free_id_2.value = 0
         self.dut.i_checkpoint_flush_free_mask.value = 0
 
         # Flush
@@ -258,6 +273,7 @@ class RATInterface:
             and self._pending_checkpoint_save is None
             and self._pending_checkpoint_restore is None
             and self._pending_checkpoint_free is None
+            and self._pending_checkpoint_free_2 is None
             and self._pending_checkpoint_bulk_free_mask == 0
             and not self._pending_flush_all
         ):
@@ -281,6 +297,9 @@ class RATInterface:
 
             if self._pending_checkpoint_free is not None:
                 self._shadow_rat.checkpoint_free(self._pending_checkpoint_free)
+
+            if self._pending_checkpoint_free_2 is not None:
+                self._shadow_rat.checkpoint_free(self._pending_checkpoint_free_2)
 
             if self._pending_checkpoint_save is not None:
                 checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2 = (
@@ -369,6 +388,7 @@ class RATInterface:
         self._pending_checkpoint_save = None
         self._pending_checkpoint_restore = None
         self._pending_checkpoint_free = None
+        self._pending_checkpoint_free_2 = None
         self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
 
@@ -683,6 +703,17 @@ class RATInterface:
     def clear_checkpoint_free(self) -> None:
         """Clear checkpoint free signals."""
         self.dut.i_checkpoint_free.value = 0
+        self._apply_pending_cycle_updates()
+
+    def drive_checkpoint_free_2(self, checkpoint_id: int) -> None:
+        """Drive the second checkpoint free port (slot-2 branch retirement)."""
+        self.dut.i_checkpoint_free_2.value = 1
+        self.dut.i_checkpoint_free_id_2.value = checkpoint_id & 0x7
+        self._pending_checkpoint_free_2 = checkpoint_id & 0x7
+
+    def clear_checkpoint_free_2(self) -> None:
+        """Clear the second checkpoint free port."""
+        self.dut.i_checkpoint_free_2.value = 0
         self._apply_pending_cycle_updates()
 
     def drive_checkpoint_bulk_free(self, free_mask: int) -> None:
