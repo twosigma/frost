@@ -57,10 +57,11 @@ Reads return a snapshot, never a live value, so take a snapshot first:
 
 The cache block also keeps the snapshot before the current one: each capture
 moves the cache block's current snapshot into a preceding bank. Every
-`mperfctl` write sets the bank select from bit 1. While it is set, indices
-106–129 read the preceding bank; indices 0–105 are unaffected. Bit 1 alone
-does not take a snapshot. Software can therefore snapshot both ends of a timed
-region and read both sets of cache counters afterward.
+`mperfctl` write sets the bank select from bit 1, and a read leaves it
+unchanged. While it is set, indices 106–129 read the preceding bank; indices
+0–105 are unaffected. Bit 1 alone does not take a snapshot. Software can
+therefore snapshot both ends of a timed region and read both sets of cache
+counters afterward.
 
 The read path has three registers: the selector and the read data each pass
 through one in the aggregator, and `csr_file` registers its read data again.

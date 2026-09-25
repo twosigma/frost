@@ -181,6 +181,23 @@ async def test_snapshot_selector_and_previous_cache_bank_phase(dut: Any) -> None
 
 
 @cocotb.test()
+async def test_mperfctl_read_keeps_previous_bank_select(dut: Any) -> None:
+    """A read of mperfctl leaves the bank select; only a write sets or clears it."""
+    s = await setup(dut)
+    await s.access(MPERF_CTL, 2, 1)  # csrrw: select the preceding bank
+    await s.idle(3)
+    assert int(dut.o_previous.value) == 1
+    # A csrr, or a set/clear with rs1 = x0 (dispatch clears op[1:0]): mperfctl
+    # reads 0, so a write-back of the read value would clear the select.
+    await s.access(MPERF_CTL)
+    await s.idle(3)
+    assert int(dut.o_previous.value) == 1, "a read of mperfctl cleared the bank select"
+    await s.access(MPERF_CTL, 2, 3)  # csrrc with bit 1: a write, so it clears
+    await s.idle(3)
+    assert int(dut.o_previous.value) == 0
+
+
+@cocotb.test()
 async def test_flush_exception_bubbles_and_reset_keep_current_qualification(
     dut: Any,
 ) -> None:

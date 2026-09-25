@@ -695,7 +695,7 @@ module csr_file #(
   // (op[1:0] = 0; dispatch clears those bits for a set or clear whose
   // rs1/uimm field is 0) still reaches the write paths below with
   // csr_rmw_base, exactly as a set or clear of zero would. Only the counter
-  // writes check write intent.
+  // writes and mperfctl, which reads 0, check write intent.
   //
   // mip RMW base (priv spec, the mip.SEIP note): the read value of
   // SEIP/STIP is composed with the PLIC S-context line / the Sstc compare,
@@ -774,13 +774,13 @@ module csr_file #(
   // counter computes its increment from the register alone and selects a
   // write or the inhibit afterward; the retired counter uses its staged
   // count below.
-  logic csr_counter_write_intent;
+  logic csr_write_intent;
   logic csr_counter_write;
   logic mcycle_write;
   logic minstret_write;
-  assign csr_counter_write_intent = (i_csr_op[1:0] != 2'b00);
+  assign csr_write_intent = (i_csr_op[1:0] != 2'b00);
   assign csr_counter_write = i_csr_write_enable && i_csr_read_enable &&
-      csr_counter_write_intent &&
+      csr_write_intent &&
       (COMMIT_EXCLUDES_CONTROL_TAKE || !(i_trap_taken && !i_trap_to_d));
   assign mcycle_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
   assign minstret_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
@@ -1224,9 +1224,11 @@ module csr_file #(
         riscv_pkg::CsrMenvcfg: menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
         riscv_pkg::CsrStimecmp: stimecmp <= csr_new_value;
         // Without counters the profiling state keeps its reset value.
+        // mperfctl reads 0, so a pure read's write-back would clear the bank
+        // select; only a write with intent sets it.
         riscv_pkg::CsrMperfSel: if (PerfCountersPresent) perf_counter_select <= csr_new_value;
         riscv_pkg::CsrMperfCtl:
-        if (PerfCountersPresent) perf_cache_previous_select <= csr_new_value[1];
+        if (PerfCountersPresent && csr_write_intent) perf_cache_previous_select <= csr_new_value[1];
         default: ;
       endcase
     end
@@ -1916,7 +1918,7 @@ module csr_file #(
       !(i_csr_write_enable && i_csr_read_enable &&
         (i_trap_taken || i_mret_taken || i_sret_taken || i_dret_taken));
   assign f_old_counter_write = i_csr_write_enable && i_csr_read_enable &&
-      csr_counter_write_intent && !(i_trap_taken && !i_trap_to_d);
+      csr_write_intent && !(i_trap_taken && !i_trap_to_d);
   assign f_old_mcycle_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
   assign f_old_minstret_write = f_old_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
   assign f_old_translation_req = i_csr_write_enable && i_csr_read_enable &&
@@ -2117,7 +2119,8 @@ module csr_file #(
         // Without counters the profiling state keeps its reset value.
         riscv_pkg::CsrMperfSel: if (PerfCountersPresent) f_old_perf_counter_select <= csr_new_value;
         riscv_pkg::CsrMperfCtl:
-        if (PerfCountersPresent) f_old_perf_cache_previous_select <= csr_new_value[1];
+        if (PerfCountersPresent && csr_write_intent)
+          f_old_perf_cache_previous_select <= csr_new_value[1];
         default: ;
       endcase
     end
