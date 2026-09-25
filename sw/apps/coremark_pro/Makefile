@@ -103,7 +103,11 @@ ABI  := $(FROST_FP_ABI)
 FROST_CMODEL := -mcmodel=medany
 
 # Clock that clock_gettime() in al_frost.c converts cycles with. The FPGA loader
-# passes the board clock; simulation builds use this default.
+# passes the board clock; simulation builds use this default. MITH times a run
+# in whole milliseconds, and several simulation datasets finish their timed
+# region within one millisecond at the board clock, where they would report a
+# time of 0 and an infinite workloads/sec. At 30 MHz a millisecond is 30,000
+# cycles, which most of them exceed.
 FPGA_CPU_CLK_FREQ ?= 30000000
 
 # Optimization level for every CoreMark-PRO translation unit and the link.
