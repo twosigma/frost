@@ -33,8 +33,8 @@
 # same opcodes including sc.w.rl and the trailing fence, on both dword
 # lanes.  The neighboring word holds a positive pattern, so a wrong-lane
 # read looks different from a mis-extension (val=0x00000000ffffffff).  A
-# failing check prints its number and s4, which every comparison sets to the
-# value it tests, and <<PASS>> appears only if every check passes.
+# failing check prints its number and s4, the value the failing comparison
+# tested, and <<PASS>> appears only if every check passes.
 
 .equ NEIGHBOR, 0x7A7A7A7A     # positive, distinctive wrong-lane tell
 .equ LAPS, 8
