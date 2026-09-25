@@ -1530,7 +1530,7 @@ def run_sweep_stage(
             "stage": SWEEP_STAGE,
             "status": "FAIL",
             "elapsed": elapsed,
-            "note": f"sweep exited {returncode} -- not all nine workloads passed",
+            "note": f"sweep exited {returncode}; not all nine workloads passed",
         }
     score_match = re.search(
         r"CoreMark-PRO score \(single context\): ([0-9]+(?:\.[0-9]+)?)", output

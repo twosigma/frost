@@ -353,10 +353,10 @@ def test_hello_world_compile_replaces_obsolete_init_images(
     app_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
 
-    retired_names = fpga_build.IMEM_RETIRED_INIT_IMAGE_NAMES
-    assert "sw_imem_even_pc_metadata.mem" in retired_names
-    assert "sw_imem_odd_pc_metadata_bit3.mem" in retired_names
-    for name in retired_names:
+    obsolete_names = fpga_build.IMEM_OBSOLETE_INIT_IMAGE_NAMES
+    assert "sw_imem_even_pc_metadata.mem" in obsolete_names
+    assert "sw_imem_odd_pc_metadata_bit3.mem" in obsolete_names
+    for name in obsolete_names:
         (output_dir / name).write_text("stale\n")
 
     def fake_run(command: list[str], **_kwargs: Any) -> Any:
@@ -391,12 +391,12 @@ def test_hello_world_compile_replaces_obsolete_init_images(
     )
     for name in new_init_names:
         assert (output_dir / name).is_file()
-    for name in retired_names:
+    for name in obsolete_names:
         assert not (output_dir / name).exists()
 
     common_mk = (REPO_ROOT / "sw/common/common.mk").read_text()
     clean_rule = common_mk[common_mk.index("clean:") :]
-    for name in retired_names:
+    for name in obsolete_names:
         assert name in clean_rule
     for variable, name in zip(new_init_variables, new_init_names, strict=True):
         assert f"{variable} := {name}" in common_mk
@@ -438,8 +438,8 @@ def test_hello_world_compile_replaces_obsolete_init_images(
         "read_mem [file join $software_mem_directory "
         "sw_imem_odd_${scalar_replica}.mem]" in build_tcl
     )
-    for retired_name in retired_names:
-        assert retired_name not in build_tcl
+    for obsolete_name in obsolete_names:
+        assert obsolete_name not in build_tcl
 
 
 def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:

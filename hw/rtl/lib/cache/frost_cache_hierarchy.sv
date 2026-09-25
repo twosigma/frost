@@ -735,14 +735,14 @@ module frost_cache_hierarchy #(
   // Downstream watchdog: the L1D holding a downstream request unaccepted for
   // this long means the level below has wedged. Print the L1, walker, and
   // arbiter links so the log alone locates it.
-  int unsigned seam_stall_cnt;
+  int unsigned down_stall_cnt;
   always_ff @(posedge i_clk) begin
     if (i_rst || !(l1_down_req_valid && !l1_down_req_ready)) begin
-      seam_stall_cnt <= 0;
+      down_stall_cnt <= 0;
     end else begin
-      seam_stall_cnt <= seam_stall_cnt + 1;
-      if (seam_stall_cnt == 2048) begin
-        $display("hierarchy SEAM STALL: l1d{v=%0d rdy=%0d w=%0d} l1i{v=%0d rdy=%0d w=%0d}",
+      down_stall_cnt <= down_stall_cnt + 1;
+      if (down_stall_cnt == 2048) begin
+        $display("hierarchy DOWNSTREAM STALL: l1d{v=%0d rdy=%0d w=%0d} l1i{v=%0d rdy=%0d w=%0d}",
                  l1_down_req_valid, l1_down_req_ready, l1_down_req_write, l1i_down_req_valid,
                  l1i_down_req_ready, l1i_down_req_write);
         $display("  wup{v=%0d rdy=%0d} walk_down{v=%0d rdy=%0d} wi_down{v=%0d rdy=%0d id=%0d}",

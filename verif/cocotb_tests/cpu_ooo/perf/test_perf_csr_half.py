@@ -33,7 +33,7 @@ MPERF_DATAH = 0xFC1
 MASK32 = (1 << 32) - 1
 
 
-class Seam:
+class CsrPathChecker:
     """Drive raw commit inputs; compare both CSR paths before and after every clock edge."""
 
     def __init__(self, dut: Any) -> None:
@@ -87,7 +87,7 @@ class Seam:
         return await self.step(raw_valid=0)
 
 
-async def setup(dut: Any) -> Seam:
+async def setup(dut: Any) -> CsrPathChecker:
     """Reset both CSR implementations and their shared upstream pipeline."""
     for name in (
         "clk",
@@ -107,7 +107,7 @@ async def setup(dut: Any) -> Seam:
         "mtime",
     ):
         getattr(dut, "i_" + name).value = 0
-    s = Seam(dut)
+    s = CsrPathChecker(dut)
     await s.step(rst=1)
     await s.step(rst=1)
     await s.step(rst=0)

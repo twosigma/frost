@@ -762,7 +762,7 @@ module tomasulo_wrapper #(
 `ifndef FORMAL
   always_comb begin
     if (!$isunknown({lq_partial_flush_en, speculative_flush_en, speculative_flush_all})) begin
-      p_lq_partial_flush_seam_exact_when_observable :
+      p_lq_partial_flush_exact_when_observable :
       assert (speculative_flush_all || (lq_partial_flush_en == speculative_flush_en));
     end
   end

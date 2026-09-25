@@ -355,7 +355,7 @@ size: $(EXECUTABLE_ELF_FILE)
 
 # Clean all build artifacts. The literal sw_imem_* names at the end are obsolete
 # init images that no current rule writes (fpga/build/build.py lists the same
-# names in IMEM_RETIRED_INIT_IMAGE_NAMES); deleting them keeps a reused app
+# names in IMEM_OBSOLETE_INIT_IMAGE_NAMES); deleting them keeps a reused app
 # directory free of stale images.
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \

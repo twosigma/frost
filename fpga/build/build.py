@@ -613,7 +613,7 @@ IMEM_SCALAR_REPLICA_NAMES = (
 )
 X3_PC_TAIL_SCALAR_LAUNCH_COUNT = 2 * len(IMEM_SCALAR_REPLICA_NAMES)
 # Obsolete IMEM init images, deleted from reused build directories.
-IMEM_RETIRED_INIT_IMAGE_NAMES = (
+IMEM_OBSOLETE_INIT_IMAGE_NAMES = (
     "sw_imem_even_pc_compressed.mem",
     "sw_imem_odd_pc_compressed.mem",
     "sw_imem_even_compressed_hi.mem",
@@ -839,10 +839,10 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
 
     # Delete obsolete images left in reused build directories, and this build's
     # outputs so the existence check below sees only files this build wrote.
-    retired_init_outputs = tuple(
-        output_dir / name for name in IMEM_RETIRED_INIT_IMAGE_NAMES
+    obsolete_init_outputs = tuple(
+        output_dir / name for name in IMEM_OBSOLETE_INIT_IMAGE_NAMES
     )
-    for output_path in (*outputs.values(), *retired_init_outputs):
+    for output_path in (*outputs.values(), *obsolete_init_outputs):
         output_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
