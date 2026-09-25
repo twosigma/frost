@@ -779,7 +779,6 @@ module if_stage #(
       .i_btb_update_target(i_from_ex_comb.btb_update_target),
       .i_btb_update_taken(i_from_ex_comb.btb_update_taken),
       .i_btb_update_compressed(i_from_ex_comb.btb_update_compressed),
-      .i_btb_update_requires_pc_reg_handoff(i_from_ex_comb.btb_update_requires_pc_reg_handoff),
       .i_btb_early_update_active,
       .i_btb_early_update_pc,
       .i_btb_early_update_taken,

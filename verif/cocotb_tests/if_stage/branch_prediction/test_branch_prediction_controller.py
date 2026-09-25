@@ -113,7 +113,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_btb_update_target.value = 0
     dut.i_btb_update_taken.value = 0
     dut.i_btb_update_compressed.value = 0
-    dut.i_btb_update_requires_pc_reg_handoff.value = 0
     dut.i_btb_early_update_active.value = 0
     dut.i_btb_early_update_pc.value = 0
     dut.i_btb_early_update_taken.value = 0
@@ -164,7 +163,6 @@ async def _btb_update(
     target: int,
     taken: bool = True,
     compressed: bool = False,
-    handoff: bool = False,
 ) -> None:
     """Apply one BTB update through the controller's staging register."""
     _clear_inputs(dut)
@@ -173,7 +171,6 @@ async def _btb_update(
     dut.i_btb_update_target.value = target
     dut.i_btb_update_taken.value = int(taken)
     dut.i_btb_update_compressed.value = int(compressed)
-    dut.i_btb_update_requires_pc_reg_handoff.value = int(handoff)
     dut.i_btb_late_update_pc.value = pc
     dut.i_btb_late_update_taken.value = int(taken)
     await _advance_cycle(dut)
@@ -290,7 +287,7 @@ async def test_direction_slot1_snapshot_holds_during_stall(dut: Any) -> None:
 async def test_slot1_btb_prediction_registers_metadata_and_holdoffs(dut: Any) -> None:
     """A used BTB prediction registers target metadata and one-cycle holdoffs."""
     await _setup_test(dut)
-    await _btb_update(dut, pc=PC_A, target=TARGET_A, handoff=True)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A)
 
     dut.i_pc.value = PC_A
     await _settle()
@@ -334,7 +331,7 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     state.
     """
     await _setup_test(dut)
-    await _btb_update(dut, pc=PC_A, target=TARGET_A, handoff=True)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
 
     _clear_inputs(dut)
@@ -432,7 +429,7 @@ async def test_pd_redirect_target_match_preserves_stalled_metadata(
 ) -> None:
     """A stalled matching PD redirect preserves metadata; a mismatch kills it."""
     await _setup_test(dut)
-    await _btb_update(dut, pc=PC_A, target=TARGET_A, handoff=True)
+    await _btb_update(dut, pc=PC_A, target=TARGET_A)
 
     _clear_inputs(dut)
     dut.i_pc.value = PC_A

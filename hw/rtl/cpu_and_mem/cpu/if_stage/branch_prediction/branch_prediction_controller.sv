@@ -117,7 +117,6 @@ module branch_prediction_controller #(
     input logic [riscv_pkg::XLEN-1:0] i_btb_update_target,
     input logic                       i_btb_update_taken,
     input logic                       i_btb_update_compressed,
-    input logic                       i_btb_update_requires_pc_reg_handoff,
     // Early-recovery counter read-modify-write candidate, addressed directly.
     // The selected update port above is the only source of BTB writes.
     input logic                       i_btb_early_update_active,
@@ -230,7 +229,6 @@ module branch_prediction_controller #(
   logic            btb_predicted_taken;
   logic [XLEN-1:0] btb_predicted_target;
   logic            btb_compressed;
-  logic            btb_requires_pc_reg_handoff;
 
   // Slot-2 BTB outputs.
   logic            btb_hit_2;
@@ -241,7 +239,6 @@ module branch_prediction_controller #(
   logic            btb_compressed_2;
   logic            btb_compressed_2_plus2;
   logic            btb_compressed_2_plus4;
-  logic            btb_requires_pc_reg_handoff_2;
 
   // Target, hit, bimodal index, and the other selected metadata all follow
   // the same candidate.  The +4 candidate valid is already qualified, and
@@ -266,7 +263,6 @@ module branch_prediction_controller #(
   logic [riscv_pkg::XLEN-1:0] btb_update_target_q;
   logic                       btb_update_taken_q;
   logic                       btb_update_compressed_q;
-  logic                       btb_update_requires_pc_reg_handoff_q;
   logic                       btb_early_update_active_q;
   logic [riscv_pkg::XLEN-1:0] btb_early_update_pc_q;
   logic                       btb_early_update_taken_q;
@@ -280,15 +276,14 @@ module branch_prediction_controller #(
       btb_update_q              <= i_btb_update;
       btb_early_update_active_q <= i_btb_early_update_active;
     end
-    btb_update_pc_q                      <= i_btb_update_pc;
-    btb_update_target_q                  <= i_btb_update_target;
-    btb_update_taken_q                   <= i_btb_update_taken;
-    btb_update_compressed_q              <= i_btb_update_compressed;
-    btb_update_requires_pc_reg_handoff_q <= i_btb_update_requires_pc_reg_handoff;
-    btb_early_update_pc_q                <= i_btb_early_update_pc;
-    btb_early_update_taken_q             <= i_btb_early_update_taken;
-    btb_late_update_pc_q                 <= i_btb_late_update_pc;
-    btb_late_update_taken_q              <= i_btb_late_update_taken;
+    btb_update_pc_q          <= i_btb_update_pc;
+    btb_update_target_q      <= i_btb_update_target;
+    btb_update_taken_q       <= i_btb_update_taken;
+    btb_update_compressed_q  <= i_btb_update_compressed;
+    btb_early_update_pc_q    <= i_btb_early_update_pc;
+    btb_early_update_taken_q <= i_btb_early_update_taken;
+    btb_late_update_pc_q     <= i_btb_late_update_pc;
+    btb_late_update_taken_q  <= i_btb_late_update_taken;
   end
 
   branch_predictor #(
@@ -303,7 +298,6 @@ module branch_prediction_controller #(
       .o_predicted_taken(btb_predicted_taken),
       .o_predicted_target(btb_predicted_target),
       .o_btb_compressed(btb_compressed),
-      .o_btb_requires_pc_reg_handoff(btb_requires_pc_reg_handoff),
 
       // The live fetch PC launches the slot-2 rows one cycle ahead; pc_reg is
       // the current served-base tag/index used to select the staged response.
@@ -320,7 +314,6 @@ module branch_prediction_controller #(
       .o_predicted_taken_2(btb_predicted_taken_2),
       .o_predicted_target_2(btb_predicted_target_2),
       .o_btb_compressed_2(btb_compressed_2),
-      .o_btb_requires_pc_reg_handoff_2(btb_requires_pc_reg_handoff_2),
 
       // Update, through the staging registers above
       .i_update(btb_update_q),
@@ -328,7 +321,6 @@ module branch_prediction_controller #(
       .i_update_target(btb_update_target_q),
       .i_update_taken(btb_update_taken_q),
       .i_update_compressed(btb_update_compressed_q),
-      .i_update_requires_pc_reg_handoff(btb_update_requires_pc_reg_handoff_q),
       .i_early_update_active(btb_early_update_active_q),
       .i_early_update_pc(btb_early_update_pc_q),
       .i_early_update_taken(btb_early_update_taken_q),

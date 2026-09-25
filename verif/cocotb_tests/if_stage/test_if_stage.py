@@ -733,7 +733,6 @@ async def _train_btb(
     pc: int,
     target: int,
     compressed: bool = False,
-    handoff: bool = False,
 ) -> None:
     """Install one taken BTB entry while prediction remains test-disabled."""
     _drive_from_ex(
@@ -744,7 +743,6 @@ async def _train_btb(
             "btb_update_target": target,
             "btb_update_taken": True,
             "btb_update_compressed": compressed,
-            "btb_update_requires_pc_reg_handoff": handoff,
         },
     )
     await _advance_cycle(dut)
@@ -1343,7 +1341,6 @@ async def test_high_half_target_ignores_preceding_low_half_btb_entry(
         pc=word_pc,
         target=ghost_target,
         compressed=True,
-        handoff=True,
     )
 
     # Train taken both direction entries that could leak here: P, the lookup
@@ -1497,7 +1494,6 @@ async def test_slot2_collision_holdoff_stays_inside_stretched_redirect_bubble(
         dut,
         pc=slot1_pc,
         target=slot1_target,
-        handoff=True,
     )
     await _train_btb(
         dut,
@@ -1785,7 +1781,6 @@ async def test_leading_slot1_prediction_keeps_provider_branch_ask_owed(
         pc=branch_pc,
         target=target,
         compressed=False,
-        handoff=True,
     )
     await _redirect_to(dut, BASE_PC)
 
@@ -1820,7 +1815,6 @@ async def test_noncovering_window_cannot_seed_branch_prediction(dut: Any) -> Non
         pc=branch_pc,
         target=target,
         compressed=False,
-        handoff=True,
     )
     await _redirect_to(dut, BASE_PC)
 
@@ -2173,7 +2167,6 @@ async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
         pc=branch_pc,
         target=target,
         compressed=True,
-        handoff=True,
     )
     await _redirect_to(dut, branch_pc)
 
@@ -2393,7 +2386,6 @@ async def test_pd_redirect_with_stall_kills_registered_prediction_handoff(
             "btb_update_target": stale_pred_target,
             "btb_update_taken": True,
             "btb_update_compressed": False,
-            "btb_update_requires_pc_reg_handoff": True,
         },
     )
     await _advance_cycle(dut)
@@ -2477,7 +2469,6 @@ async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
             "btb_update_target": stale_pred_target,
             "btb_update_taken": True,
             "btb_update_compressed": False,
-            "btb_update_requires_pc_reg_handoff": True,
         },
     )
     await _advance_cycle(dut)
@@ -2573,7 +2564,6 @@ async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> 
             "btb_update_target": callee,
             "btb_update_taken": True,
             "btb_update_compressed": False,
-            "btb_update_requires_pc_reg_handoff": True,
         },
     )
     await _advance_cycle(dut)
@@ -2700,7 +2690,6 @@ async def test_pending_exact_owner_handoffs_atomically_with_metadata(
         pc=branch_pc,
         target=target,
         compressed=False,
-        handoff=True,
     )
     await _redirect_to(dut, BASE_PC)
 
@@ -2780,7 +2769,6 @@ async def test_pending_owner_is_not_emitted_as_predecessor_slot2(
         pc=branch_pc,
         target=target,
         compressed=True,
-        handoff=True,
     )
 
     # Keep pc_reg advancing one halfword at a time while the fetch lookup runs
@@ -2999,14 +2987,12 @@ async def test_pending_slot1_owner_kills_stale_noncontrol_sibling(
         pc=sibling_pc,
         target=sibling_btb_target,
         compressed=True,
-        handoff=True,
     )
     await _train_btb(
         dut,
         pc=branch_pc,
         target=target,
         compressed=True,
-        handoff=True,
     )
     await _redirect_to(dut, start_pc)
 
@@ -3095,7 +3081,6 @@ async def test_first_exact_owner_wcs_captures_then_replays_once(
         pc=branch_pc,
         target=target,
         compressed=False,
-        handoff=True,
     )
     await _redirect_to(dut, BASE_PC)
 
@@ -3199,7 +3184,6 @@ async def test_atomic_compressed_owner_discards_wrong_path_high_buffer(
         pc=branch_pc,
         target=target,
         compressed=True,
-        handoff=True,
     )
     await _redirect_to(dut, BASE_PC)
 
@@ -3295,7 +3279,6 @@ async def test_pending_prediction_owner_keeps_predict_time_direction_index(
         pc=branch_pc,
         target=target,
         compressed=False,
-        handoff=True,
     )
 
     # Four words of unpairable compressed parcels make pc_reg advance only one
@@ -3579,7 +3562,6 @@ async def test_pd_redirect_stall_32bit_target_no_plus2_desync(dut: Any) -> None:
             "btb_update_target": stale_pred_target,
             "btb_update_taken": True,
             "btb_update_compressed": False,
-            "btb_update_requires_pc_reg_handoff": True,
         },
     )
     await _advance_cycle(dut)

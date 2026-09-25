@@ -115,12 +115,11 @@ module ex_comb_synthesizer #(
         // BTB update for conditional branches and JAL (JALR never enters the
         // BTB). Training JAL lets a JAL that missed the BTB hit on its next
         // execution.
-        late_from_ex_comb.btb_update                         = 1'b1;
-        late_from_ex_comb.btb_update_pc                      = mispredict_commit_q.pc;
-        late_from_ex_comb.btb_update_target                  = mispredict_commit_q.branch_target;
-        late_from_ex_comb.btb_update_taken                   = mispredict_commit_q.branch_taken;
-        late_from_ex_comb.btb_update_compressed              = mispredict_commit_q.is_compressed;
-        late_from_ex_comb.btb_update_requires_pc_reg_handoff = 1'b1;
+        late_from_ex_comb.btb_update            = 1'b1;
+        late_from_ex_comb.btb_update_pc         = mispredict_commit_q.pc;
+        late_from_ex_comb.btb_update_target     = mispredict_commit_q.branch_target;
+        late_from_ex_comb.btb_update_taken      = mispredict_commit_q.branch_taken;
+        late_from_ex_comb.btb_update_compressed = mispredict_commit_q.is_compressed;
       end
 
       if (mispredict_commit_q.has_checkpoint) begin
@@ -153,7 +152,6 @@ module ex_comb_synthesizer #(
         late_from_ex_comb.btb_update_target = correct_branch_commit_q.branch_target;
         late_from_ex_comb.btb_update_taken = correct_branch_commit_q.branch_taken;
         late_from_ex_comb.btb_update_compressed = correct_branch_commit_q.is_compressed;
-        late_from_ex_comb.btb_update_requires_pc_reg_handoff = 1'b1;
       end
 
     end else if (correct_branch_commit_pending_2_raw) begin
@@ -167,7 +165,6 @@ module ex_comb_synthesizer #(
         late_from_ex_comb.btb_update_target = correct_branch_commit_q_2.branch_target;
         late_from_ex_comb.btb_update_taken = correct_branch_commit_q_2.branch_taken;
         late_from_ex_comb.btb_update_compressed = correct_branch_commit_q_2.is_compressed;
-        late_from_ex_comb.btb_update_requires_pc_reg_handoff = 1'b1;
       end
     end
   end
@@ -179,22 +176,21 @@ module ex_comb_synthesizer #(
 
     if (early_mispredict_active) begin
       // Early misprediction recovery: redirect PC and update BTB
-      from_ex_comb_synth                                    = '0;
-      from_ex_comb_synth.branch_taken                       = 1'b1;
-      from_ex_comb_synth.branch_target_address              = early_mispredict_redirect_pc;
+      from_ex_comb_synth                         = '0;
+      from_ex_comb_synth.branch_taken            = 1'b1;
+      from_ex_comb_synth.branch_target_address   = early_mispredict_redirect_pc;
 
       // Early recovery only handles checkpointed conditional branches, so the
       // BTB update and RAS restore are unconditional on this path.
-      from_ex_comb_synth.btb_update                         = 1'b1;
-      from_ex_comb_synth.btb_update_pc                      = early_mispredict_pc;
-      from_ex_comb_synth.btb_update_target                  = early_mispredict_branch_target;
-      from_ex_comb_synth.btb_update_taken                   = early_mispredict_branch_taken;
-      from_ex_comb_synth.btb_update_compressed              = early_mispredict_is_compressed;
-      from_ex_comb_synth.btb_update_requires_pc_reg_handoff = 1'b1;
+      from_ex_comb_synth.btb_update              = 1'b1;
+      from_ex_comb_synth.btb_update_pc           = early_mispredict_pc;
+      from_ex_comb_synth.btb_update_target       = early_mispredict_branch_target;
+      from_ex_comb_synth.btb_update_taken        = early_mispredict_branch_taken;
+      from_ex_comb_synth.btb_update_compressed   = early_mispredict_is_compressed;
 
-      from_ex_comb_synth.ras_misprediction                  = 1'b1;
-      from_ex_comb_synth.ras_restore_tos                    = restored_ras_tos;
-      from_ex_comb_synth.ras_restore_valid_count            = restored_ras_valid_count;
+      from_ex_comb_synth.ras_misprediction       = 1'b1;
+      from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
+      from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
     end
 
     // These two redirect fields have a much smaller exact priority function

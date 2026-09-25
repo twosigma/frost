@@ -123,7 +123,6 @@ def _assert_btb_update(
     assert output["btb_update_target"] == (target & MASK_XLEN)
     assert output["btb_update_taken"] is taken
     assert output["btb_update_compressed"] is compressed
-    assert output["btb_update_requires_pc_reg_handoff"]
 
 
 @cocotb.test()

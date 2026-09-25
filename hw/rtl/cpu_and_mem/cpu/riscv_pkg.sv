@@ -1962,7 +1962,6 @@ package riscv_pkg;
     logic [XLEN-1:0] btb_update_target;  // Actual branch target
     logic btb_update_taken;  // Actual branch outcome (taken/not-taken)
     logic btb_update_compressed;  // Branch was a compressed (16-bit) instruction
-    logic btb_update_requires_pc_reg_handoff;  // Predicted op must still execute in IF/PD/ID
     // RAS misprediction recovery signals
     logic ras_misprediction;  // RAS prediction was wrong, need to restore
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction

@@ -39,13 +39,11 @@ module branch_predictor #(
     input logic i_rst,
 
     // Slot-1 prediction interface (IF stage)
-    input  logic [XLEN-1:0] i_pc,                          // Current PC for lookup
-    output logic            o_btb_hit,                     // BTB entry hit
-    output logic            o_predicted_taken,             // Predict taken
-    output logic [XLEN-1:0] o_predicted_target,            // Predicted target address
-    output logic            o_btb_compressed,              // Entry is for compressed instruction
-    // Predicted op must still execute in IF/PD/ID
-    output logic            o_btb_requires_pc_reg_handoff,
+    input  logic [XLEN-1:0] i_pc,                // Current PC for lookup
+    output logic            o_btb_hit,           // BTB entry hit
+    output logic            o_predicted_taken,   // Predict taken
+    output logic [XLEN-1:0] o_predicted_target,  // Predicted target address
+    output logic            o_btb_compressed,    // Entry is for compressed instruction
 
     // Slot-2 prediction interface. The shifted images store each branch under
     // the PC 2 or 4 bytes before it, so a lookup at base pc_reg finds a slot 2
@@ -71,15 +69,13 @@ module branch_predictor #(
     output logic            o_predicted_taken_2,
     output logic [XLEN-1:0] o_predicted_target_2,
     output logic            o_btb_compressed_2,
-    output logic            o_btb_requires_pc_reg_handoff_2,
 
     // Update interface: at most one selected training write per cycle
-    input logic            i_update,                         // Update BTB entry
-    input logic [XLEN-1:0] i_update_pc,                      // PC of branch instruction
-    input logic [XLEN-1:0] i_update_target,                  // Actual branch target
-    input logic            i_update_taken,                   // Actual branch outcome
-    input logic            i_update_compressed,              // Branch was compressed (16-bit)
-    input logic            i_update_requires_pc_reg_handoff,
+    input logic            i_update,            // Update BTB entry
+    input logic [XLEN-1:0] i_update_pc,         // PC of branch instruction
+    input logic [XLEN-1:0] i_update_target,     // Actual branch target
+    input logic            i_update_taken,      // Actual branch outcome
+    input logic            i_update_compressed, // Branch was compressed (16-bit)
 
     // Early-recovery counter RMW candidate. When active, the selected update
     // above carries this same PC and outcome. This separate input keeps the
@@ -104,13 +100,12 @@ module branch_predictor #(
   localparam int unsigned TargetBits = riscv_pkg::PhysAddrBits;
   // Yosys 0.64 cannot parse $bits on this module-local typedef in a parameter
   // override. The simulation check below pins the spelled width to the struct.
-  localparam int unsigned Slot2PayloadBits = TargetBits + 4;
+  localparam int unsigned Slot2PayloadBits = TargetBits + 3;
 
   typedef struct packed {
     logic [TargetBits-1:0] target;
     logic [1:0]            counter;
     logic                  compressed;
-    logic                  requires_pc_reg_handoff;
   } slot2_payload_t;
 
   // 2-bit saturating counter states
@@ -275,13 +270,11 @@ module branch_predictor #(
   // Each slot-2 image keeps its tag and payload in separate memories. The
   // 55-bit tag is a distributed RAM read at one address plus a response
   // register, keeping the wide comparisons off block-RAM clock-to-output
-  // paths. The 36-bit payload (the target's low 32 bits, counter, compressed,
-  // and handoff flags) fits one RAMB18. T2 and T4 cover a served base in the
+  // paths. The 35-bit payload (the target's low 32 bits, counter, and
+  // compressed flag) fits one RAMB18. T2 and T4 cover a served base in the
   // word that was read; RT2 covers the +2 candidate of a base in the next word.
   slot2_payload_t slot2_payload_write;
-  assign slot2_payload_write = {
-    update_target_stored, next_counter, i_update_compressed, i_update_requires_pc_reg_handoff
-  };
+  assign slot2_payload_write = {update_target_stored, next_counter, i_update_compressed};
 
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
@@ -410,9 +403,8 @@ module branch_predictor #(
       .o_read_data(btb_counter_update_early)
   );
 
-  // Compressed and handoff flags for the slot-1 lookup.
+  // Compressed flag for the slot-1 lookup.
   logic btb_compressed_lookup;
-  logic btb_requires_pc_reg_handoff_lookup;
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
       .DATA_WIDTH(1)
@@ -423,18 +415,6 @@ module branch_predictor #(
       .i_write_data(i_update_compressed),
       .i_read_address(lookup_index),
       .o_read_data(btb_compressed_lookup)
-  );
-
-  sdp_dist_ram #(
-      .ADDR_WIDTH(BTB_INDEX_BITS),
-      .DATA_WIDTH(1)
-  ) btb_requires_pc_reg_handoff_ram (
-      .i_clk,
-      .i_write_enable(i_update),
-      .i_write_address(update_index),
-      .i_write_data(i_update_requires_pc_reg_handoff),
-      .i_read_address(lookup_index),
-      .o_read_data(btb_requires_pc_reg_handoff_lookup)
   );
 
   // Combinational slot-1 lookup
@@ -470,10 +450,9 @@ module branch_predictor #(
   end
 `endif
 
-  assign o_predicted_taken = o_btb_hit && lookup_counter[1];
+  assign o_predicted_taken  = o_btb_hit && lookup_counter[1];
   assign o_predicted_target = lookup_target;
-  assign o_btb_compressed = o_btb_hit && btb_compressed_lookup;
-  assign o_btb_requires_pc_reg_handoff = o_btb_hit && btb_requires_pc_reg_handoff_lookup;
+  assign o_btb_compressed   = o_btb_hit && btb_compressed_lookup;
 
   // Slot-2 response registers. The block RAMs are read-first and the tag
   // registers sample the distributed RAMs before the write edge, so a write to
@@ -629,10 +608,6 @@ module branch_predictor #(
     i_pc_2_use_alt ? lookup_payload_2_alt.target : lookup_payload_2.target
   };
   assign o_btb_compressed_2 = i_pc_2_use_alt ? o_btb_compressed_2_plus4 : o_btb_compressed_2_plus2;
-  assign o_btb_requires_pc_reg_handoff_2 =
-      selected_btb_hit_2 &&
-      (i_pc_2_use_alt ? lookup_payload_2_alt.requires_pc_reg_handoff :
-                        lookup_payload_2.requires_pc_reg_handoff);
 
   // Early candidate, from the early PC and outcome. Its RAM copies take every
   // selected write, not only early ones, so they always hold the same state as
@@ -846,27 +821,15 @@ module branch_predictor #(
     end else if (i_update) begin
       shifted_reference_valid_2[update_index_2] <= update_slot2_plus2_target_valid;
       shifted_reference_row_2[update_index_2] <= {
-        update_tag_2,
-        update_target_stored,
-        reference_selected_next_counter,
-        i_update_compressed,
-        i_update_requires_pc_reg_handoff
+        update_tag_2, update_target_stored, reference_selected_next_counter, i_update_compressed
       };
       shifted_reference_valid_2_alt[update_index_2_alt] <= update_slot2_plus4_target_valid;
       shifted_reference_row_2_alt[update_index_2_alt] <= {
-        update_tag_2_alt,
-        update_target_stored,
-        reference_selected_next_counter,
-        i_update_compressed,
-        i_update_requires_pc_reg_handoff
+        update_tag_2_alt, update_target_stored, reference_selected_next_counter, i_update_compressed
       };
       shifted_reference_valid_2_rot[update_index_2_rot] <= update_slot2_plus2_target_valid;
       shifted_reference_row_2_rot[update_index_2_rot] <= {
-        update_tag_2,
-        update_target_stored,
-        reference_selected_next_counter,
-        i_update_compressed,
-        i_update_requires_pc_reg_handoff
+        update_tag_2, update_target_stored, reference_selected_next_counter, i_update_compressed
       };
     end
   end
