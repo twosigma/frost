@@ -707,6 +707,45 @@ async def test_fs_off_decodes_fp_instructions_as_illegal(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_fs_off_leaves_bubbles_legal(dut: Any) -> None:
+    """A bubble whose raw bits are an F/D instruction decodes as the same NOP whatever FS is."""
+    await _setup_test(dut)
+    flw = _pack_i(imm=8, rs1=10, funct3=0b010, rd=3, opcode=OPC_LOAD_FP)
+    fmadd = _pack_r4(rs3=7, fmt=0, rs2=6, rs1=5, rm=0, rd=4, opcode=OPC_FMADD)
+
+    for raw in (flw, fmadd):
+        packets = {}
+        for fs_off in (1, 0):
+            bubble = {
+                "program_counter": BASE_PC,
+                "instruction": raw,
+                "inject_nop": True,
+            }
+            _drive_pd_packet(dut, bubble)
+            _drive_pd_packet(
+                dut, {**bubble, "program_counter": BASE_PC + 4}, slot2=True
+            )
+            dut.i_mstatus_fs_off.value = fs_off
+            await _advance_cycle(dut)
+            packets[fs_off] = (_read_id_packet(dut), _read_id_packet(dut, slot2=True))
+
+        for packet in packets[1]:
+            assert packet["instruction"] == NOP_INSTR, hex(raw)
+            assert packet["instruction_operation"] == ADDI
+            assert packet["is_illegal_instruction"] is False, hex(raw)
+            assert packet["is_fp_instruction"] is False
+            assert packet["is_fp_load"] is False
+            assert packet["rs_type"] == RS_INT
+            assert packet["has_int_dest"] is True
+            assert packet["has_fp_dest"] is False
+            assert packet["uses_int_rs1"] is True
+            assert packet["uses_fp_rs1"] is False
+            assert packet["is_not_nop"] is False
+        assert packets[1] == packets[0], hex(raw)
+    dut.i_mstatus_fs_off.value = 0
+
+
+@cocotb.test()
 async def test_flush_clears_control_and_stall_holds_outputs(dut: Any) -> None:
     """Flush clears decoded control fields, and stall holds registered outputs."""
     await _setup_test(dut)
