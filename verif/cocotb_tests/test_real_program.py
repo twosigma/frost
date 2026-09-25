@@ -28,11 +28,13 @@ FIFO's clock crossing and the transmitter. The registry sets it, together
 with a lower CLK_FREQ_HZ that shortens the bit time, for a few programs.
 """
 
+import importlib.util
 import os
 import random
 from pathlib import Path
 import re
 from collections import Counter
+from collections.abc import Callable
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
@@ -40,7 +42,13 @@ from cocotb.utils import get_sim_time
 from typing import Any, TextIO
 
 from config import XLEN
-from cocotb_tests.cpu_structs import COMMIT_FIELDS, ID_TO_EX_FIELDS
+from cocotb_tests.cpu_structs import (
+    COMMIT_FIELDS,
+    FROM_EX_FIELDS,
+    ID_TO_EX_FIELDS,
+    IF_TO_PD_FIELDS,
+    PD_TO_ID_FIELDS,
+)
 
 CLK_PERIOD_NS = 3
 UART_BAUD_RATE = 115200
@@ -469,12 +477,34 @@ def _first_signal(dut: Any, paths: list[str]) -> Any | None:
     return None
 
 
+def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
+    """Return rvc_expand from sw/common/generate_imem_predecode_init.py.
+
+    The offline IMEM predecode generator holds the RVC expansion model that
+    the decompressor bench checks the RTL against.
+    """
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "sw"
+        / "common"
+        / "generate_imem_predecode_init.py"
+    )
+    spec = importlib.util.spec_from_file_location("generate_imem_predecode_init", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rvc_expand: Callable[[int], tuple[int, bool]] = module.rvc_expand
+    return rvc_expand
+
+
 def _read_int(signal: Any) -> int | None:
     """Read a signal as int, return None if not resolvable."""
     if signal is None:
         return None
     if isinstance(signal, int):
         return signal
+    if isinstance(signal, _StructField):
+        return signal.read()
     try:
         value = signal.value
     except AttributeError:
@@ -553,6 +583,39 @@ def _packed_struct(
     handle = _get_signal(dut, path)
     _require_signals(check, {path: handle})
     return _PackedStruct(handle, layout, path)
+
+
+class _StructField:
+    """One member of a packed struct, which _read_int and _read_bool accept.
+
+    Verilator's VPI has no handles for packed-struct members, so this reads
+    the whole vector through _PackedStruct and extracts the member.
+    """
+
+    def __init__(self, struct: _PackedStruct, name: str) -> None:
+        """Bind the struct and the member's name."""
+        self.struct = struct
+        self.name = name
+
+    def read(self) -> int | None:
+        """Return the member, or None if the struct is unresolvable."""
+        packed = self.struct.read()
+        return None if packed is None else self.struct.field(packed, self.name)
+
+
+def _struct_field(
+    dut: Any, path: str, layout: list[tuple[str, int]], name: str
+) -> _StructField | None:
+    """Look up one member of a packed-struct signal for a diagnostic.
+
+    Returns None when the struct is missing, as _get_signal does. A struct
+    whose width differs from its layout raises, since every member would read
+    wrong.
+    """
+    handle = _get_signal(dut, path)
+    if handle is None:
+        return None
+    return _StructField(_PackedStruct(handle, layout, path), name)
 
 
 async def ddr_write_watch(dut: Any) -> None:
@@ -1053,15 +1116,18 @@ class UartMmioDebugMonitor:
         )
         # dc_fifo pointers and state
         self.fifo_read_ptr = _get_signal(
-            dut, "uart_rx_cdc_fifo.read_pointer_in_output_domain"
+            dut, "uart_receive_clock_domain_crossing_fifo.read_pointer_in_output_domain"
         )
         self.fifo_write_ptr_synced = _get_signal(
-            dut, "uart_rx_cdc_fifo.write_pointer_synchronized_stage2"
+            dut,
+            "uart_receive_clock_domain_crossing_fifo.write_pointer_synchronized_stage2",
         )
         self.fifo_valid_reg = _get_signal(
-            dut, "uart_rx_cdc_fifo.read_data_valid_registered"
+            dut, "uart_receive_clock_domain_crossing_fifo.read_data_valid_registered"
         )
-        self.fifo_o_data = _get_signal(dut, "uart_rx_cdc_fifo.o_data")
+        self.fifo_o_data = _get_signal(
+            dut, "uart_receive_clock_domain_crossing_fifo.o_data"
+        )
 
     async def start(self) -> None:
         """Start the background monitoring coroutine."""
@@ -1480,6 +1546,9 @@ async def run_until_complete(
         os.environ.get("FROST_EXTERNAL_IRQ_HOLD_CYCLES", "1")
     )
     retire_sig = None
+    # Slot 2 of the combinational commit bus, read wherever retire_sig is.
+    retire_2_sig = None
+    retire_2_pc_sig = None
     pc_sig = None
     pc_vld_sig = None
     mem_rd_en_sig = None
@@ -1521,9 +1590,7 @@ async def run_until_complete(
     id_pc_sig = None
     id_instr_sig = None
     id_op_sig = None
-    int_rf_write_enable_sig = None
-    int_rf_write_addr_sig = None
-    int_rf_write_data_sig = None
+    int_rf_write_ports: list[tuple[Any, Any, Any, Any]] = []
     issue_valid_sig = None
     issue_pc_sig = None
     issue_pred_taken_sig = None
@@ -1685,6 +1752,8 @@ async def run_until_complete(
     coremark_if_check_count = 0
     coremark_if_check_alloc_sig = None
     coremark_if_check_slot2: _PackedStruct | None = None
+    coremark_if_check_rvc_expand: Callable[[int], tuple[int, bool]] | None = None
+    coremark_if_check_compressed = 0
     coremark_if_check_lo = 0
     coremark_if_check_hi = 0
     coremark_retire_trace_path = (
@@ -1729,6 +1798,12 @@ async def run_until_complete(
         )
         retire_pc_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
+        )
+        retire_2_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+        )
+        retire_2_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
         )
         retire_mispredict_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc")
@@ -1855,23 +1930,29 @@ async def run_until_complete(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_dispatch_stall_q"
         )
         if coremark_cf_debug_enabled:
-            if_btb_pred_sig = _get_signal(
+            if_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.btb_predicted_taken",
+                "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+                IF_TO_PD_FIELDS,
+                "btb_predicted_taken",
             )
             if_ras_pred_sig = _get_signal(
                 dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_predicted"
             )
-            pd_btb_pred_sig = _get_signal(
+            pd_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id.btb_predicted_taken",
+                "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+                PD_TO_ID_FIELDS,
+                "btb_predicted_taken",
             )
             pd_ras_pred_sig = _get_signal(
                 dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_predicted"
             )
-            id_btb_pred_sig = _get_signal(
+            id_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.btb_predicted_taken",
+                "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+                ID_TO_EX_FIELDS,
+                "btb_predicted_taken",
             )
             id_ras_pred_sig = _get_signal(
                 dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_predicted"
@@ -1900,20 +1981,35 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq.mem_outstanding",
         )
-        if_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.program_counter"
+        if_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "program_counter",
         )
-        if_sel_nop_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_nop"
+        if_sel_nop_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "sel_nop",
         )
-        if_sel_compressed_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_compressed"
+        if_sel_compressed_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "sel_compressed",
         )
-        if_raw_parcel_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.raw_parcel"
+        if_raw_parcel_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "raw_parcel",
         )
-        if_effective_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.effective_instr"
+        if_effective_instr_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "effective_instr",
         )
         pd_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_pc")
         pd_instr_sig = _get_signal(
@@ -1923,9 +2019,11 @@ async def run_until_complete(
         id_instr_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_instr"
         )
-        id_op_sig = _get_signal(
+        id_op_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.instruction_operation",
+            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            ID_TO_EX_FIELDS,
+            "instruction_operation",
         )
         issue_valid_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_valid"
@@ -1961,6 +2059,7 @@ async def run_until_complete(
                 ID_TO_EX_FIELDS,
                 "FROST_COREMARK_IF_CHECK",
             )
+            coremark_if_check_rvc_expand = _load_rvc_expand()
         coremark_symbol_ranges = _load_symbol_ranges(
             [
                 "core_bench_list",
@@ -2027,9 +2126,17 @@ async def run_until_complete(
         or control_flow_trace_ranges
         or os.environ.get("FROST_CHECKPOINT_TRACE") == "1"
     ):
-        retire_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_vld")
+        retire_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
+        )
         retire_pc_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
+        )
+        retire_2_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+        )
+        retire_2_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
         )
         retire_mispredict_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc")
@@ -2083,14 +2190,23 @@ async def run_until_complete(
         id_ras_pred_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_predicted"
         )
-        if_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.program_counter"
+        if_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "program_counter",
         )
-        if_sel_nop_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_nop"
+        if_sel_nop_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "sel_nop",
         )
-        if_raw_parcel_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.raw_parcel"
+        if_raw_parcel_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "raw_parcel",
         )
         if_ras_ckpt_tos_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_checkpoint_tos"
@@ -2099,11 +2215,17 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_checkpoint_valid_count",
         )
-        pd_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id.program_counter"
+        pd_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+            PD_TO_ID_FIELDS,
+            "program_counter",
         )
-        pd_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id.instruction"
+        pd_instr_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+            PD_TO_ID_FIELDS,
+            "instruction",
         )
         pd_ras_ckpt_tos_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_checkpoint_tos"
@@ -2112,8 +2234,11 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_checkpoint_valid_count",
         )
-        id_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.program_counter"
+        id_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            ID_TO_EX_FIELDS,
+            "program_counter",
         )
         id_ras_ckpt_tos_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_checkpoint_tos"
@@ -2122,19 +2247,33 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_checkpoint_valid_count",
         )
-        id_op_sig = _get_signal(
+        id_op_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.instruction_operation",
+            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            ID_TO_EX_FIELDS,
+            "instruction_operation",
         )
-        int_rf_write_enable_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.int_rf_write_enable"
-        )
-        int_rf_write_addr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.int_rf_write_addr"
-        )
-        int_rf_write_data_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.int_rf_write_data"
-        )
+        # Integer register writes at commit, from the registered commit bus:
+        # port 0 (slot 1 and the CSR writeback), then port 1 (slot 2), each
+        # with its commit's PC.
+        int_rf_write_ports = [
+            (
+                _get_signal(
+                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_we"
+                ),
+                _get_signal(
+                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_addr"
+                ),
+                _get_signal(
+                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_data"
+                ),
+                _get_signal(dut, f"cpu_and_memory_subsystem.cpu_inst.{pc_tap}"),
+            )
+            for port, pc_tap in (
+                (0, "dbg_rob_commit_reg_pc"),
+                (1, "dbg_rob_commit_2_reg_pc"),
+            )
+        ]
         # tomasulo_wrapper exposes the issue payload as one packed `o_rs_issue`
         # struct, so use the flat debug taps cpu_ooo maintains for it. There is
         # no debug tap for the issue source operands, so src1/src2 are not
@@ -2148,8 +2287,11 @@ async def run_until_complete(
         issue_pred_taken_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_predicted_taken"
         )
-        redirect_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.misprediction_redirect_pc"
+        redirect_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb",
+            COMMIT_FIELDS,
+            "redirect_pc",
         )
         btb_update_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update"
@@ -2192,16 +2334,6 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pending_prediction_fetch_holdoff",
         )
-        if_is_32bit_spanning_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.is_32bit_spanning"
-        )
-        if_spanning_wait_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.spanning_wait_for_fetch",
-        )
-        if_spanning_in_progress_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.spanning_in_progress"
-        )
         if_use_instr_buffer_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.use_instr_buffer"
         )
@@ -2216,10 +2348,6 @@ async def run_until_complete(
         pc_next_pc_reg_sig = _get_signal(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.next_pc_reg",
-        )
-        pc_prev_was_32bit_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.prev_was_32bit",
         )
         ras_tos_sig = _get_signal(
             dut,
@@ -2265,20 +2393,29 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.i_link_address",
         )
-        ras_misprediction_live_sig = _get_signal(
+        ras_misprediction_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.ras_misprediction",
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "ras_misprediction",
         )
-        ras_restore_tos_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.ras_restore_tos"
-        )
-        ras_restore_valid_count_live_sig = _get_signal(
+        ras_restore_tos_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.ras_restore_valid_count",
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "ras_restore_tos",
         )
-        ras_pop_after_restore_live_sig = _get_signal(
+        ras_restore_valid_count_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.ras_pop_after_restore",
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "ras_restore_valid_count",
+        )
+        ras_pop_after_restore_live_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "ras_pop_after_restore",
         )
         commit_valid_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
@@ -2379,15 +2516,23 @@ async def run_until_complete(
         flush_tag_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.flush_tag"
         )
-        commit_is_mret_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.rob_commit.is_mret"
-        )
-        branch_taken_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.branch_taken"
-        )
-        branch_target_live_sig = _get_signal(
+        commit_is_mret_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.branch_target_address",
+            "cpu_and_memory_subsystem.cpu_inst.rob_commit",
+            COMMIT_FIELDS,
+            "is_mret",
+        )
+        branch_taken_live_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "branch_taken",
+        )
+        branch_target_live_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "branch_target_address",
         )
         trap_taken_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.trap_taken"
@@ -3224,9 +3369,16 @@ async def run_until_complete(
                 last_x2_commit = _read_int(data_sig)
                 last_x2_commit_pc = _read_int(pc_sig)
 
-        if _read_bool(int_rf_write_enable_sig):
-            commit_addr = _read_int(int_rf_write_addr_sig)
-            commit_data = _read_int(int_rf_write_data_sig)
+        for (
+            write_we_sig,
+            write_addr_sig,
+            write_data_sig,
+            write_pc_sig,
+        ) in int_rf_write_ports:
+            if not _read_bool(write_we_sig):
+                continue
+            commit_addr = _read_int(write_addr_sig)
+            commit_data = _read_int(write_data_sig)
             if commit_addr == 2:
                 last_x2_commit = commit_data
             elif commit_addr == 5:
@@ -3248,15 +3400,21 @@ async def run_until_complete(
                 and commit_addr == 13
                 and len(control_flow_debug_events) < control_flow_debug_limit
             ):
-                commit_pc = _read_int(commit_pc_live_sig)
+                commit_pc = _read_int(write_pc_sig)
                 if in_trace_window(commit_pc):
                     control_flow_debug_events.append(
                         "wrx13  "
                         f"cycle={cycle + 1} "
                         f"data=0x{(commit_data or 0):08x} "
-                        f"commit_pc=0x{(commit_pc or 0):08x} "
-                        f"commit_v={int(bool(_read_bool(commit_valid_live_sig)))}"
+                        f"commit_pc=0x{(commit_pc or 0):08x}"
                     )
+        # Slot 2 commits only beside slot 1. It counts toward the progress
+        # line and the PC histogram; the traces below follow slot 1.
+        if _read_bool(retire_2_sig):
+            retired_count += 1
+            retire_2_pc = _read_int(retire_2_pc_sig)
+            if retire_2_pc is not None:
+                retired_pc_hist[retire_2_pc] += 1
         if _read_bool(retire_sig):
             retired_count += 1
             retire_pc = _read_int(retire_pc_sig)
@@ -3403,6 +3561,7 @@ async def run_until_complete(
         if (
             coremark_if_check_enabled
             and coremark_if_check_slot2 is not None
+            and coremark_if_check_rvc_expand is not None
             and _read_bool(coremark_if_check_alloc_sig)
         ):
             # Compare each instruction as it dispatches: the decoded bundle
@@ -3410,9 +3569,11 @@ async def run_until_complete(
             # 2 dispatches with slot 1 exactly when its is_real bit is set.
             # A slot-2 instruction follows slot 1 sequentially (a slot-1
             # branch ends the bundle), so slot 2 is read only near the
-            # function. A compressed instruction reaches decode expanded, so
-            # 16-bit parcels are skipped. CoreMark takes no fetch faults, so
-            # every dispatched packet holds the word fetched from its PC.
+            # function. A compressed instruction reaches decode expanded, so a
+            # 16-bit parcel is compared with its expansion by rvc_expand, the
+            # offline predecode generator's model. CoreMark takes no fetch
+            # faults, so every dispatched packet holds the word fetched from
+            # its PC.
             slot1_pc = _read_int(id_pc_sig)
             dispatched = [(1, slot1_pc, _read_int(id_instr_sig))]
             if (
@@ -3438,15 +3599,22 @@ async def run_until_complete(
                 if dispatch_pc is None:
                     continue
                 expected = coremark_matrix_expected.get(dispatch_pc)
-                if expected is None or expected[1] != 32:
+                if expected is None:
                     continue
+                word, width = expected
+                if width == 16:
+                    expected_instr = coremark_if_check_rvc_expand(word)[0]
+                    sw_s_text = f"0x{word:04x}, which expands to 0x{expected_instr:08x}"
+                    coremark_if_check_compressed += 1
+                else:
+                    expected_instr = word
+                    sw_s_text = f"0x{word:08x}"
                 coremark_if_check_count += 1
-                if dispatch_instr != expected[0]:
+                if dispatch_instr != expected_instr:
                     raise AssertionError(
                         f"CoreMark IF check mismatch at cycle={cycle + 1}: "
                         f"dispatch slot {slot} pc=0x{dispatch_pc:08x} holds "
-                        f"0x{(dispatch_instr or 0):08x}, sw.S has "
-                        f"0x{expected[0]:08x}"
+                        f"0x{(dispatch_instr or 0):08x}, sw.S has {sw_s_text}"
                     )
 
         if is_coremark_like and len(coremark_matrix_events) < coremark_matrix_limit:
@@ -3656,12 +3824,8 @@ async def run_until_complete(
                     f"eff=0x{(_read_int(if_effective_instr_sig) or 0):08x} "
                     f"sel_nop={_read_bool(if_sel_nop_live_sig)} "
                     f"sel_comp={_read_bool(if_sel_compressed_sig)} "
-                    f"is32span={_read_bool(if_is_32bit_spanning_sig)} "
-                    f"span_wait={_read_bool(if_spanning_wait_sig)} "
-                    f"span_run={_read_bool(if_spanning_in_progress_sig)} "
                     f"use_buf={_read_bool(if_use_instr_buffer_sig)} "
                     f"prev_lo={_read_bool(if_prev_compressed_lo_sig)} "
-                    f"prev32={_read_bool(pc_prev_was_32bit_sig)} "
                     f"seq_next_pc_reg=0x{(_read_int(pc_seq_next_pc_reg_sig) or 0):08x} "
                     f"next_pc_reg=0x{(_read_int(pc_next_pc_reg_sig) or 0):08x} "
                     f"pred_off={_read_bool(branch_pred_off_sig)} "
@@ -4038,7 +4202,8 @@ async def run_until_complete(
         cocotb.log.info(
             f"Run {run_number}: CoreMark IF check compared "
             f"{coremark_if_check_count} dispatched instructions of "
-            f"{coremark_if_check_symbol} with sw.S"
+            f"{coremark_if_check_symbol} with sw.S "
+            f"({coremark_if_check_compressed} of them compressed)"
         )
     if irq_precision_check:
         if irq_take_count == 0:
