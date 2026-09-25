@@ -34,7 +34,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from cocotb.utils import get_sim_time
 from typing import Any
 
-from config import XLEN
+from config import NOP_INSTRUCTION, XLEN
 
 CLK_PERIOD_NS = 3
 UART_BAUD_RATE = 115200
@@ -1278,6 +1278,7 @@ async def run_until_complete(
     pd_pc_sig = None
     pd_instr_sig = None
     id_pc_sig = None
+    id_instr_sig = None
     id_op_sig = None
     int_rf_write_enable_sig = None
     int_rf_write_addr_sig = None
@@ -1430,23 +1431,22 @@ async def run_until_complete(
     )
     coremark_matrix_expected: dict[int, tuple[int, int]] = {}
     coremark_symbol_ranges: dict[str, tuple[int, int]] = {}
-    # These opt-in checks key on a symbol, and one missing from the image
-    # disables them silently. The raised auto-inline budget
-    # (sw/apps/coremark/Makefile) inlines matrix_test, core_state_transition,
-    # and cmp_complex, and the default LTO build inlines core_bench_matrix as
-    # well, so use an untuned build (APP_TUNE_FLAGS=) or override the symbol.
-    # The range list below also asks for the inlined names; missing names are
-    # skipped.
+    # The IF check and the retire trace each cover one function, found by
+    # name in sw.S; a name missing from sw.S fails the run. The default,
+    # calc_func, holds the matrix and state kernels in the default build,
+    # whose LTO inlines core_bench_matrix and core_bench_state into it. An
+    # untuned build (APP_TUNE_FLAGS=) keeps core_bench_matrix as a function of
+    # its own. The range list below also asks for kernel names that inlining
+    # removes; missing names there are skipped.
     coremark_if_check_symbol = os.environ.get(
-        "FROST_COREMARK_IF_CHECK_SYMBOL", "core_bench_matrix"
+        "FROST_COREMARK_IF_CHECK_SYMBOL", "calc_func"
     )
+    coremark_if_check_count = 0
     coremark_retire_trace_path = (
         os.environ.get("FROST_COREMARK_RETIRE_TRACE_PATH") if is_coremark_like else None
     )
-    coremark_retire_trace_symbol = (
-        os.environ.get("FROST_COREMARK_RETIRE_TRACE_SYMBOL", "core_bench_matrix")
-        if is_coremark_like
-        else None
+    coremark_retire_trace_symbol = os.environ.get(
+        "FROST_COREMARK_RETIRE_TRACE_SYMBOL", "calc_func"
     )
     coremark_matrix_base_pc: int | None = None
     coremark_matrix_last_pc: int | None = None
@@ -1467,7 +1467,13 @@ async def run_until_complete(
         control_flow_trace_label = os.environ.get(
             "FROST_CONTROL_FLOW_TRACE_LABEL", f"{app_name or 'program'} trace"
         )
-    if progress_interval or irq_precision_check or external_irq_enabled:
+    if (
+        progress_interval
+        or irq_precision_check
+        or external_irq_enabled
+        or coremark_if_check_enabled
+        or coremark_retire_trace_path is not None
+    ):
         retire_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
         )
@@ -1681,6 +1687,9 @@ async def run_until_complete(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_instr"
         )
         id_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_pc")
+        id_instr_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_instr"
+        )
         id_op_sig = _get_signal(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.instruction_operation",
@@ -1695,16 +1704,15 @@ async def run_until_complete(
             coremark_matrix_expected = _load_symbol_machine_code(
                 coremark_if_check_symbol, app_name
             )
-        elif coremark_retire_trace_path is not None:
-            coremark_matrix_expected = _load_symbol_machine_code(
-                coremark_if_check_symbol, app_name
-            )
-        if coremark_matrix_expected:
-            coremark_matrix_base_pc = min(coremark_matrix_expected)
-            coremark_matrix_last_pc = max(coremark_matrix_expected)
+            if not coremark_matrix_expected:
+                raise AssertionError(
+                    f"FROST_COREMARK_IF_CHECK_SYMBOL={coremark_if_check_symbol!r} "
+                    "has no code in sw.S; name a function this build contains"
+                )
         coremark_symbol_ranges = _load_symbol_ranges(
             [
                 "core_bench_list",
+                "calc_func",
                 "matrix_test",
                 "core_bench_matrix",
                 "core_state_transition",
@@ -1714,15 +1722,24 @@ async def run_until_complete(
             ],
             app_name,
         )
-        if (
-            coremark_retire_trace_path is not None
-            and coremark_retire_trace_symbol is not None
-            and coremark_retire_trace_symbol in coremark_symbol_ranges
-        ):
-            coremark_matrix_base_pc, coremark_matrix_last_pc = coremark_symbol_ranges[
-                coremark_retire_trace_symbol
-            ]
-            coremark_matrix_last_pc -= 1
+        if coremark_retire_trace_path is not None:
+            retire_trace_range = _load_symbol_ranges(
+                [coremark_retire_trace_symbol], app_name
+            ).get(coremark_retire_trace_symbol)
+            if retire_trace_range is None:
+                raise AssertionError(
+                    "FROST_COREMARK_RETIRE_TRACE_SYMBOL="
+                    f"{coremark_retire_trace_symbol!r} is not in sw.S; name a "
+                    "function this build contains"
+                )
+            coremark_matrix_base_pc = retire_trace_range[0]
+            coremark_matrix_last_pc = retire_trace_range[1] - 1
+            commit_predicted_taken_live_sig = _get_signal(
+                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_predicted_taken"
+            )
+            commit_branch_taken_live_sig = _get_signal(
+                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_branch_taken"
+            )
     elif (
         app_name in {"branch_pred_test", "ras_stress_test"}
         or control_flow_trace_ranges
@@ -2595,41 +2612,17 @@ async def run_until_complete(
             and _read_int(pc_sig) == trap_pc
         )
 
-    def format_coremark_if_mismatch(
-        *,
-        stage: str,
-        pc: int,
-        expected_bits: int,
-        expected_width: int,
-        raw: int,
-        sel_nop: bool,
-        sel_compressed: bool,
-        effective_instr: int,
-        pd_pc: int | None,
-        pd_instr: int | None,
-        id_pc: int | None,
-        retire_pc: int | None,
-    ) -> str:
-        return (
-            f"CoreMark matrix IF mismatch at cycle={cycle + 1} "
-            f"stage={stage} pc=0x{pc:08x} "
-            f"expected_width={expected_width} expected=0x{expected_bits:0{expected_width // 4}x} "
-            f"sel_nop={int(sel_nop)} "
-            f"sel_comp={int(sel_compressed)} raw=0x{raw:04x} "
-            f"eff=0x{effective_instr:08x} "
-            f"pd_pc=0x{(pd_pc or 0):08x} pd_instr=0x{(pd_instr or 0):08x} "
-            f"id_pc=0x{(id_pc or 0):08x} retire_pc=0x{(retire_pc or 0):08x}"
-        )
-
     def dump_coremark_retire_trace() -> None:
-        if (
-            coremark_retire_trace_path is None
-            or coremark_matrix_base_pc is None
-            or not coremark_matrix_retire_trace
-        ):
+        if coremark_retire_trace_path is None:
             return
         trace_path = Path(coremark_retire_trace_path)
-        trace_path.write_text("\n".join(coremark_matrix_retire_trace) + "\n")
+        trace_path.write_text(
+            "".join(f"{sample}\n" for sample in coremark_matrix_retire_trace)
+        )
+        cocotb.log.info(
+            f"Wrote {len(coremark_matrix_retire_trace)} retire samples of "
+            f"{coremark_retire_trace_symbol} to {trace_path}"
+        )
 
     for cycle in range(max_cycles):
         await RisingEdge(dut.i_clk)
@@ -3064,65 +3057,34 @@ async def run_until_complete(
                     )
 
         if coremark_if_check_enabled and coremark_matrix_expected:
-            if_pc = _read_int(if_pc_sig)
-            pd_pc = _read_int(pd_pc_sig)
-            pd_instr = _read_int(pd_instr_sig)
+            # Compare at the decode output: from_id_to_ex holds a NOP for
+            # every bubble, while pd_stage's instruction register keeps the
+            # stale word and marks the bubble in inject_nop. Verilator's VPI
+            # does not expose packed-struct members such as
+            # from_if_to_pd.effective_instr, so earlier stages cannot be read.
+            # A compressed parcel reaches decode expanded, so 16-bit words are
+            # skipped.
             id_pc = _read_int(id_pc_sig)
-            retire_pc = _read_int(retire_pc_sig) if _read_bool(retire_sig) else None
-            if if_pc in coremark_matrix_expected:
-                expected_bits, expected_width = coremark_matrix_expected[if_pc]
-                sel_nop = bool(_read_bool(if_sel_nop_sig))
-                sel_compressed = bool(_read_bool(if_sel_compressed_sig))
-                raw = _read_int(if_raw_parcel_sig) or 0
-                effective_instr = _read_int(if_effective_instr_sig) or 0
-
-                if not sel_nop:
-                    mismatch = False
-                    if expected_width == 16:
-                        mismatch = (not sel_compressed) or (raw != expected_bits)
-                    else:
-                        # 64-bit fetch assembles spanning instructions inside IF,
-                        # so effective_instr carries the whole 32-bit word at both
-                        # word- and halfword-aligned PCs.
-                        mismatch = sel_compressed or (effective_instr != expected_bits)
-
-                    if mismatch:
+            id_instr = _read_int(id_instr_sig)
+            if id_pc in coremark_matrix_expected and id_instr not in {
+                None,
+                NOP_INSTRUCTION,
+            }:
+                expected_bits, expected_width = coremark_matrix_expected[id_pc]
+                if expected_width == 32:
+                    coremark_if_check_count += 1
+                    if id_instr != expected_bits:
+                        retire_pc = (
+                            _read_int(retire_pc_sig) if _read_bool(retire_sig) else None
+                        )
                         raise AssertionError(
-                            format_coremark_if_mismatch(
-                                stage="if",
-                                pc=if_pc,
-                                expected_bits=expected_bits,
-                                expected_width=expected_width,
-                                raw=raw,
-                                sel_nop=sel_nop,
-                                sel_compressed=sel_compressed,
-                                effective_instr=effective_instr,
-                                pd_pc=pd_pc,
-                                pd_instr=pd_instr,
-                                id_pc=id_pc,
-                                retire_pc=retire_pc,
-                            )
+                            f"CoreMark IF check mismatch at cycle={cycle + 1}: "
+                            f"decode pc=0x{id_pc:08x} holds 0x{id_instr:08x}, "
+                            f"sw.S has 0x{expected_bits:08x} "
+                            f"(pd_pc=0x{(_read_int(pd_pc_sig) or 0):08x} "
+                            f"pd_instr=0x{(_read_int(pd_instr_sig) or 0):08x} "
+                            f"retire_pc=0x{(retire_pc or 0):08x})"
                         )
-
-            if pd_pc in coremark_matrix_expected and pd_instr not in {None, 0x00000013}:
-                expected_bits, expected_width = coremark_matrix_expected[pd_pc]
-                if expected_width == 32 and pd_instr != expected_bits:
-                    raise AssertionError(
-                        format_coremark_if_mismatch(
-                            stage="pd",
-                            pc=pd_pc,
-                            expected_bits=expected_bits,
-                            expected_width=expected_width,
-                            raw=_read_int(if_raw_parcel_sig) or 0,
-                            sel_nop=bool(_read_bool(if_sel_nop_sig)),
-                            sel_compressed=bool(_read_bool(if_sel_compressed_sig)),
-                            effective_instr=_read_int(if_effective_instr_sig) or 0,
-                            pd_pc=pd_pc,
-                            pd_instr=pd_instr,
-                            id_pc=id_pc,
-                            retire_pc=retire_pc,
-                        )
-                    )
 
         if is_coremark_like and len(coremark_matrix_events) < coremark_matrix_limit:
             if_pc = _read_int(if_pc_sig)
@@ -3718,6 +3680,18 @@ async def run_until_complete(
                 f"Run {run_number} failed: program did not print expected text "
                 f"'{initial_text}' within {max_cycles} cycles"
             )
+
+    if coremark_if_check_enabled:
+        if coremark_if_check_count == 0:
+            raise AssertionError(
+                f"Run {run_number}: FROST_COREMARK_IF_CHECK=1 compared no "
+                f"instructions of {coremark_if_check_symbol}"
+            )
+        cocotb.log.info(
+            f"Run {run_number}: CoreMark IF check compared "
+            f"{coremark_if_check_count} decoded instructions of "
+            f"{coremark_if_check_symbol} with sw.S"
+        )
 
 
 async def run_uart_echo_interaction(
