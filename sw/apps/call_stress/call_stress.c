@@ -17,10 +17,11 @@
 /**
  * Call stress: repeated and nested calls, built with the C extension.
  *
- * The source loops over calls up to three frames deep, checks the call count
- * after each loop, and makes printf calls into the UART library. noinline
- * keeps the local functions real calls at -O3, and each one counts itself
- * after its inner calls, so none of those calls becomes a tail call.
+ * The source loops over calls up to three frames deep and checks the call
+ * count after each loop. Tests 4 and 5 make printf calls into the UART
+ * library, and nothing checks their output. noinline keeps the local
+ * functions real calls at -O3, and each one counts itself after its inner
+ * calls, so none of those calls becomes a tail call.
  */
 
 #include "uart.h"
@@ -82,13 +83,11 @@ int main(void)
     for (int i = 0; i < 5; i++) {
         uart_printf("  iteration %d\n", i);
     }
-    uart_puts("OK\n");
 
     uart_puts("Test 5: format specifiers...\n");
     uart_printf("  int: %d\n", 12345);
     uart_printf("  hex: 0x%08x\n", 0xDEADBEEF);
     uart_printf("  str: %s\n", "hello");
-    uart_puts("OK\n");
 
     uart_printf("\nTotal calls: %d\n", call_count);
     if (failures == 0) {
