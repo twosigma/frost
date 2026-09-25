@@ -1450,8 +1450,9 @@ package riscv_pkg;
   //
   // The device windows in 4 KiB pages. cpu_and_mem.sv decodes the registers
   // inside them, so the two change together (hw/rtl/README.md, "Memory
-  // Map"). The store-issue check in tomasulo_wrapper and the DTLB's
-  // per-entry device class work on whole pages.
+  // Map"); cpu_and_mem also checks at time zero that the windows keep the
+  // layout the page decodes assume. The store-issue check in tomasulo_wrapper
+  // and the DTLB's per-entry device class work on whole pages.
   localparam logic [19:0] MmioFirstPage = 20'h4_0000;
   localparam logic [19:0] MmioLastPage  = 20'h4_0030;
   localparam logic [19:0] PlicFirstPage = 20'h4_4000;
@@ -1462,11 +1463,13 @@ package riscv_pkg;
   endfunction
 
   // A physical page number (PA[31:12]) inside a device window. The MMIO
-  // window is the start of an aligned 64-page block and the PLIC window is a
+  // window lies inside one aligned 64-page block and the PLIC window is a
   // whole aligned 1024-page block, so the check is a block compare plus, for
   // the MMIO window, a lookup of the page's offset in its block. TIMING: no
   // wide magnitude compare; the offset lookup is one 6-input function.
-  localparam logic [63:0] MmioBlockPages = ~(64'hFFFF_FFFF_FFFF_FFFF << (MmioLastPage[5:0] + 1));
+  localparam logic [63:0] MmioBlockPages =
+      ~(64'hFFFF_FFFF_FFFF_FFFF << (MmioLastPage[5:0] + 1)) &
+      (64'hFFFF_FFFF_FFFF_FFFF << MmioFirstPage[5:0]);
   function automatic logic pma_device_page_ok(input logic [19:0] page);
     pma_device_page_ok = ((page[19:6] == MmioFirstPage[19:6]) && MmioBlockPages[page[5:0]]) ||
                          (page[19:10] == PlicFirstPage[19:10]);
