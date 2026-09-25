@@ -239,9 +239,9 @@ int main(void)
 
     /* J: a completion counts only from a context that enables the source.
      * Source 1 is claimed from M and its level stays high. A completion from
-     * S, which never enables it, and one from M after disabling it there must
-     * each leave the gateway closed; a completion from M with the source
-     * enabled reopens it. */
+     * S, which has it disabled since case H, and one from M after disabling
+     * it there must each leave the gateway closed; a completion from M with
+     * the source enabled reopens it. */
     PLIC_EN_M = 0x2;
     NS16550_IER = 0x2;
     wait_tx_idle();
