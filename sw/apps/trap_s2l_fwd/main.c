@@ -42,6 +42,7 @@
 
 #define TARGET 200u
 #define DDR_STACK_SIZE 4096u
+#define PERCPU_POISON 0xB6B60000B6B60000ULL
 
 volatile uint32_t g_ctr;        /* cached counter, written by handler, read by main */
 volatile uint64_t g_percpu[16]; /* DDR per-cpu-like scratch (tp base) */
@@ -67,8 +68,8 @@ static void clint_arm(uint64_t cmp)
 
 /* Match the rv64 handle_exception: swap tp/mscratch; store sp at 8(tp) and
  * 16(tp) (REG_S = sd); reload sp from 8(tp) (REG_L = ld); then save GPRs to
- * that stack. g_percpu starts poisoned, so if the first trap's reload misses
- * the store to 8(tp), sp is invalid and the saves re-trap. */
+ * that stack. main poisons 8(tp) before every trap, so if a reload misses the
+ * store to 8(tp), sp is invalid and the saves re-trap. */
 __attribute__((naked, aligned(4))) static void ctr_entry(void)
 {
     __asm__ volatile("csrrw tp, mscratch, tp\n" /* kernel: tp=0, mscratch=old tp(&g_percpu) */
@@ -106,10 +107,10 @@ __attribute__((naked, aligned(4))) static void ctr_entry(void)
 
 __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
 {
-    uart_printf("\n=== faithful handle_exception sw/lw-into-sp repro ===\n");
+    uart_printf("\n=== faithful handle_exception sd/ld-into-sp repro ===\n");
     g_ctr = 0u;
     for (int i = 0; i < 16; i++)
-        g_percpu[i] = 0xB6B60000B6B60000ULL + (uint64_t) i;
+        g_percpu[i] = PERCPU_POISON + (uint64_t) i;
     /* kernel convention: tp = per-cpu ptr, mscratch = 0 */
     __asm__ volatile("mv tp, %0" : : "r"((uintptr_t) &g_percpu[0]) : "memory");
     csr_write(mscratch, 0u);
@@ -119,6 +120,9 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
     uint64_t deadline = clint_rdmtime() + 1500000u;
     uint32_t observed = 0u;
     while (g_ctr < TARGET) {
+        /* Every trap stores the same sp, so re-poison the slot: otherwise a
+         * reload that misses this trap's store would read the last one's. */
+        g_percpu[1] = PERCPU_POISON + 1u;
         clint_arm(clint_rdmtime() + 200u);
         enable_interrupts();
         for (volatile int s = 0; s < 32; s++) {
