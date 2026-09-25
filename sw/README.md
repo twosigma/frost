@@ -294,6 +294,7 @@ can be debugged and where each one first stops.
 | `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map, with exact `mepc` and `mtval` |
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |
 | `ptw_coherence_test/` | Sv39 walks must see page tables still dirty in the L1D, without `sfence.vma` |
+| `ras_slot_bench/` | Return prediction with the call and the return in either slot of their fetch bundle: per-phase cycles and flush-recovery cycles from the profiling counters (`PERF_COUNTERS=1`) |
 | `ras_stress_test/` | Return-address-stack stress: calls mixed with branches, data-dependent calls, and function pointers |
 | `ras_test/` | Return-address stack: deep nesting, overflow and underflow, coroutine swaps, compressed returns, and calls at halfword offsets |
 | `restore_window_stress/` | Timer interrupts swept across a Linux-style M-mode exception return; none may be taken between its `csrci` and `mret` |

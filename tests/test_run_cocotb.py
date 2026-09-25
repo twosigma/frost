@@ -805,6 +805,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ras_stress_test",
         description="RAS stress test (calls, branches, and function pointers)",
     ),
+    "ras_slot_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ras_slot_bench",
+        description=(
+            "Return prediction with calls and returns in either bundle slot: each "
+            "phase must stay under a flush-recovery budget (profiling counters). "
+            "Kept out of pytest because it fails today: the RAS prediction reaches "
+            "the packet after each return, so every return resolves mispredicted"
+        ),
+        verilator_extra_args=("-GPERF_COUNTERS=1",),
+        include_in_pytest=False,
+    ),
     "tomasulo_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
