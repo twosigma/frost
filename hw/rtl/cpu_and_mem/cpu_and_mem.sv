@@ -148,6 +148,9 @@ module cpu_and_mem #(
     // DDR AXI master (cache-hierarchy bridge). Quiescent when
     // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled. Transaction ids
     // are the line-protocol ids (DdrAxiIdBits wide, board-fixed).
+    // i_ddr_axi_rst (i_clk domain) is the reset of the interconnect behind
+    // these ports; the behavioral memory uses the CPU reset instead.
+    input  logic         i_ddr_axi_rst,
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
     output logic [  4:0] o_ddr_axi_awid,
@@ -1853,6 +1856,11 @@ module cpu_and_mem #(
     logic [31:0] axi_wstrb;
     logic [DdrAxiIdBits-1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
+    // The AXI slave's reset: the behavioral memory resets with the CPU, the
+    // board's interconnect with its own reset.
+    logic ddr_axi_rst;
+    assign ddr_axi_rst = (USE_BEHAVIORAL_DDR != 0) ? rst_core : i_ddr_axi_rst;
+
     line_port_axi_bridge #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
@@ -1862,6 +1870,7 @@ module cpu_and_mem #(
     ) ddr_bridge (
         .i_clk(i_clk),
         .i_rst(rst_core),
+        .i_axi_rst(ddr_axi_rst),
         .i_req_valid(down_req_valid),
         .o_req_ready(down_req_ready),
         .i_req_write(down_req_write),

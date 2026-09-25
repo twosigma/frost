@@ -131,6 +131,10 @@ module frost #(
     // DDR AXI master for the cache hierarchy: single-beat 256-bit bursts with
     // region-relative addresses. Quiescent when USE_BEHAVIORAL_DDR=1 or the
     // cached tier is disabled; hardware boards wire it to the DDR controller.
+    // i_ddr_axi_rst_n (active low, asynchronous) is the reset of the
+    // interconnect behind these ports: while it is low the bridge drives every
+    // VALID low. Unused with the behavioral memory.
+    input  logic         i_ddr_axi_rst_n = 1'b1,
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
     output logic [  4:0] o_ddr_axi_awid,
@@ -203,6 +207,18 @@ module frost #(
                                               ~i_rst_n;  // Invert: active-low input to active-high
   always_ff @(posedge i_clk)
     reset_synchronized <= reset_synchronizer_shift_register[NumResetSyncStages-1];
+
+  // The DDR interconnect's reset, asserted asynchronously so the bridge's
+  // VALIDs drop as soon as the interconnect enters reset (even if i_clk stops
+  // with the MMCM that drives both) and released synchronously.
+  (* ASYNC_REG = "TRUE" *)
+  logic [NumResetSyncStages-1:0] ddr_axi_reset_synchronizer_n;
+  always_ff @(posedge i_clk or negedge i_ddr_axi_rst_n)
+    if (!i_ddr_axi_rst_n) ddr_axi_reset_synchronizer_n <= '0;
+    else
+      ddr_axi_reset_synchronizer_n <= {ddr_axi_reset_synchronizer_n[NumResetSyncStages-2:0], 1'b1};
+  logic ddr_axi_reset;
+  assign ddr_axi_reset = !ddr_axi_reset_synchronizer_n[NumResetSyncStages-1];
 
   // Reset synchronization for divided clock domain (JTAG/UART clock)
   (* ASYNC_REG = "TRUE" *)
@@ -285,6 +301,7 @@ module frost #(
       .i_clk,
       .i_clk_div4,
       .i_rst(reset_synchronized),
+      .i_ddr_axi_rst(ddr_axi_reset),
       .o_ddr_axi_awvalid,
       .i_ddr_axi_awready,
       .o_ddr_axi_awid,

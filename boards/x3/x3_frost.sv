@@ -338,6 +338,8 @@ module x3_frost #(
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
       .i_rst_n(mmcm_locked & mem_ok_synced & ddr_init_done),
+      // The SmartConnect's CPU-side reset.
+      .i_ddr_axi_rst_n(cpu_side_aresetn),
       .o_uart_tx,
       .i_uart_rx,
       .o_ddr_axi_awvalid(ddr_axi_awvalid),

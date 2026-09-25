@@ -56,6 +56,8 @@ module xilinx_frost_subsystem #(
     // DDR AXI master driven by the cache-hierarchy bridge: single-beat 256-bit
     // bursts, 5-bit transaction ids, addresses relative to the cached region
     // base. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is off.
+    // i_ddr_axi_rst_n is the reset of the interconnect behind these ports.
+    input  logic         i_ddr_axi_rst_n,
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
     output logic [  4:0] o_ddr_axi_awid,
@@ -302,6 +304,7 @@ module xilinx_frost_subsystem #(
       .i_clk(i_clk),
       .i_clk_div4(i_clk_div4),
       .i_rst_n(i_rst_n & image_load_reset_n & programming_reset_n),  // Combined reset
+      .i_ddr_axi_rst_n,
       .i_instr_mem_en(instruction_memory_program_enable),
       .i_instr_mem_we(instruction_memory_program_write_enable),
       .i_instr_mem_addr({14'd0, instruction_memory_address}),  // Zero-extend to 32 bits

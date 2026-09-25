@@ -256,6 +256,14 @@ relies on the same promptness: nothing orders the JTAG loader's DDR writes
 after the bridge's, so each write the bridge accepted before the reset must
 land before the loader's first DDR write.
 
+The interconnect's own reset is different. While it is in reset, AXI
+requires every VALID low, so the bridge takes that reset as a second input
+(`frost`'s `i_ddr_axi_rst_n`, which X3 drives from the SmartConnect's
+CPU-side reset, the MMCM lock). It gates the held VALIDs off in the cycle
+the reset arrives and drops those beats, so none is presented after the
+interconnect restarts. The behavioral DDR model in simulation resets with
+the CPU, so there the CPU reset serves as both.
+
 ## The page-table walker port
 
 The hardware page-table walker (`ptw.sv`) is the hierarchy's `wup` port,
@@ -382,7 +390,7 @@ may take several cycles to answer.
 | `frost_cache_concurrency*` | Hits and misses under outstanding misses, merge and waiter paths, writeback progress, and `fence.i` |
 | `frost_cache_dma*` | Coherent reads and writes, invalidations, ordering, and concurrent CPU and walker traffic |
 | `line_port_arbiter*` | Arbitration and tagged responses |
-| `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, and dropped stale responses |
+| `line_port_axi_bridge` | The bridge across a CPU reset against a slave that keeps running: held beats, AW/W pairing, and dropped stale responses; and across the slave's own reset, which withdraws the held beats |
 | `fence_speed_slow`, `fence_speed_fast` | Maintenance latency; CLI-only |
 | `dma_envelope_lock3` through `dma_envelope_lock8`, `dma_envelope_lock3_mem30`, `dma_envelope_lock3_big_l2` | DMA throughput and latency by lock count and scenario; CLI-only |
 
@@ -391,7 +399,8 @@ the exact names. The benches live in
 [`verif/cocotb_tests/cache`](../../../../verif/cocotb_tests/cache/). The
 full-system programs `dma_torture` and `ptw_coherence_test` check DMA and
 walker coherence against the running CPU. Formal targets cover the bridge
-(`line_port_axi_bridge`: AXI handshakes, also across a CPU reset, id
-conservation, and stale-response drops), the arbiter grant
+(`line_port_axi_bridge`: AXI handshakes, also across a CPU reset, VALIDs
+low through the AXI side's reset, id conservation, and stale-response
+drops), the arbiter grant
 (`line_arbiter_grant`), and the miss-slot byte merge (`cache_mshr_payload`);
 see the [formal guide](../../../../formal/README.md).

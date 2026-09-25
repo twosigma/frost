@@ -374,7 +374,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "line_port_axi_bridge.sby",
-        "Line-port AXI bridge - AXI handshake legality, id conservation, stale-response drop",
+        "Line-port AXI bridge - AXI handshake legality across both resets, id conservation, "
+        "stale-response drop",
     ),
     FormalTarget(
         "store_queue.sby",

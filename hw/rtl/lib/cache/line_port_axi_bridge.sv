@@ -32,20 +32,18 @@
  * accepted while a write's AW/W are still waiting. Ready therefore depends on
  * the presented request's write bit, which the protocol allows.
  *
- * Reset does not withdraw a presented beat. The bridge resets with the CPU,
- * while the memory controller and its interconnect keep running (through
- * the image-load reset and the debug ndmreset), so a VALID must stay
- * asserted until its handshake. A write whose AW was accepted and whose W
- * was not would otherwise leave the interconnect pairing the next write's
- * data with the old address. The issue valids therefore take no reset: a
- * beat presented at a reset stays presented, payload unchanged, until the
- * slave takes it, and o_req_ready stays low through the reset. The
- * declaration initializers are the power-up state. On the X3 the level
- * below is reset at power-up and when the MMCM that also clocks the CPU
- * loses lock, which resets the CPU too. In simulation the DDR model
- * shares the bridge's reset: its queues clear at the first reset edge and
- * its readies rise, so a reset longer than one cycle lets it take and
- * discard the held beats.
+ * Two resets. i_rst resets the bridge with the CPU, while the memory
+ * controller and its interconnect keep running (through the image-load reset
+ * and the debug ndmreset), so it does not withdraw a presented beat: a VALID
+ * must stay asserted until its handshake. A write whose AW was accepted and
+ * whose W was not would otherwise leave the interconnect pairing the next
+ * write's data with the old address. A beat presented at i_rst stays
+ * presented, payload unchanged, until the slave takes it, and o_req_ready
+ * stays low through the reset. i_axi_rst is the AXI side's own reset: while
+ * the interconnect below is in reset, AXI requires VALID low, so i_axi_rst
+ * gates the three issue valids off at once and clears them, and no beat
+ * from before it is presented afterward. The declaration initializers are
+ * the power-up state.
  *
  * Response path: R and B land in one-entry output registers. R has priority
  * onto the single line response port and is always accepted, since its
@@ -80,6 +78,8 @@ module line_port_axi_bridge #(
 ) (
     input logic i_clk,
     input logic i_rst,
+    // The AXI slave below is in reset (see the header).
+    input logic i_axi_rst,
 
     // Line port (slave).
     input  logic                    i_req_valid,
@@ -132,8 +132,8 @@ module line_port_axi_bridge #(
   end
 
   // ---- Issue registers ------------------------------------------------------
-  // The valids clear only on their handshakes, never on reset (see the
-  // header); the initializers are the power-up state.
+  // The valids clear on their handshakes and on i_axi_rst, never on i_rst
+  // (see the header); the initializers are the power-up state.
   logic                    ar_valid_q = 1'b0;
   logic [            31:0] ar_addr_q;
   logic [     ID_BITS-1:0] ar_id_q;
@@ -148,7 +148,7 @@ module line_port_axi_bridge #(
   logic write_slot_free, read_slot_free;
   assign write_slot_free = !aw_valid_q && !w_valid_q;
   assign read_slot_free  = !ar_valid_q;
-  assign o_req_ready     = !i_rst && (i_req_write ? write_slot_free : read_slot_free);
+  assign o_req_ready     = !i_rst && !i_axi_rst && (i_req_write ? write_slot_free : read_slot_free);
 
   logic req_fire;
   assign req_fire = i_req_valid && o_req_ready;
@@ -161,23 +161,28 @@ module line_port_axi_bridge #(
   assign o_axi_arsize  = 3'($clog2(LINE_BYTES));
   assign o_axi_arburst = 2'b01;  // INCR
 
-  assign o_axi_awvalid = aw_valid_q;
+  assign o_axi_awvalid = aw_valid_q && !i_axi_rst;
   assign o_axi_awid    = AXI_ID_BITS'(aw_id_q);
   assign o_axi_awaddr  = aw_addr_q;
-  assign o_axi_wvalid  = w_valid_q;
+  assign o_axi_wvalid  = w_valid_q && !i_axi_rst;
   assign o_axi_wdata   = w_data_q;
   assign o_axi_wstrb   = w_strb_q;
   assign o_axi_wlast   = 1'b1;
-  assign o_axi_arvalid = ar_valid_q;
+  assign o_axi_arvalid = ar_valid_q && !i_axi_rst;
   assign o_axi_arid    = AXI_ID_BITS'(ar_id_q);
   assign o_axi_araddr  = ar_addr_q;
 
-  // req_fire is low through reset (o_req_ready), so a reset only lets the
-  // presented beats finish their handshakes.
+  // req_fire is low through either reset (o_req_ready), so i_rst only lets the
+  // presented beats finish their handshakes; i_axi_rst drops them.
   always_ff @(posedge i_clk) begin
     if (ar_valid_q && i_axi_arready) ar_valid_q <= 1'b0;
     if (aw_valid_q && i_axi_awready) aw_valid_q <= 1'b0;
     if (w_valid_q && i_axi_wready) w_valid_q <= 1'b0;
+    if (i_axi_rst) begin
+      ar_valid_q <= 1'b0;
+      aw_valid_q <= 1'b0;
+      w_valid_q  <= 1'b0;
+    end
     if (req_fire) begin
       if (i_req_write) begin
         aw_valid_q <= 1'b1;
@@ -316,13 +321,17 @@ module line_port_axi_bridge #(
     if (!i_rst && i_req_valid) begin
       a_unique_inflight_id : assume (!inflight_q[i_req_id]);
     end
+    if (i_axi_rst) begin
+      p_axi_reset_valids_low : assert (!o_axi_arvalid && !o_axi_awvalid && !o_axi_wvalid);
+    end
   end
 
   // AXI master obligations: a presented address/data beat stays valid and
-  // stable until it is accepted, through a reset as well (on hardware the
-  // slave is not reset with the bridge).
+  // stable until it is accepted, through i_rst as well (on hardware the slave
+  // is not reset with the bridge); while the slave itself is in reset
+  // (i_axi_rst) every VALID is low, and a beat withdrawn by it never returns.
   always @(posedge i_clk) begin
-    if (f_past_valid) begin
+    if (f_past_valid && !i_axi_rst) begin
       if ($past(o_axi_arvalid && !i_axi_arready)) begin
         p_ar_held : assert (o_axi_arvalid && $stable(o_axi_araddr) && $stable(o_axi_arid));
       end
@@ -332,6 +341,9 @@ module line_port_axi_bridge #(
       if ($past(o_axi_wvalid && !i_axi_wready)) begin
         p_w_held : assert (o_axi_wvalid && $stable(o_axi_wdata) && $stable(o_axi_wstrb));
       end
+    end
+    if (f_past_valid && $past(i_axi_rst)) begin
+      p_axi_reset_drops_beats : assert (!ar_valid_q && !aw_valid_q && !w_valid_q);
     end
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       // An R response for an id in flight reaches the line port the next
@@ -367,6 +379,8 @@ module line_port_axi_bridge #(
       cover_read_and_write_in_flight : cover (ar_valid_q && aw_valid_q);
       // A reset lands between a write's AW and W handshakes.
       cover_reset_between_aw_and_w : cover ($past(i_rst) && w_valid_q && !aw_valid_q);
+      // The AXI-side reset drops a held beat.
+      cover_axi_reset_drops_beat : cover ($past(i_axi_rst && ar_valid_q) && !ar_valid_q);
       cover_r_and_b_same_cycle : cover (r_accept && r_known && b_accept && b_known);
       cover_two_reads_in_flight : cover ($countones(inflight_q) >= 2);
     end

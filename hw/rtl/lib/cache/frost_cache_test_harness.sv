@@ -234,6 +234,8 @@ module frost_cache_test_harness #(
   ) bridge (
       .i_clk(i_clk),
       .i_rst(i_rst),
+      // The behavioral memory below resets with the bridge.
+      .i_axi_rst(i_rst),
       .i_req_valid(bridge_req_valid),
       .o_req_ready(bridge_req_ready),
       .i_req_write(stack_down_req_write),

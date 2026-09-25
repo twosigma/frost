@@ -128,6 +128,8 @@ module line_port_arbiter_test_harness #(
   ) bridge (
       .i_clk(i_clk),
       .i_rst(i_rst),
+      // The behavioral memory below resets with the bridge.
+      .i_axi_rst(i_rst),
       .i_req_valid(arb_down_req_valid && i_down_ready_gate),
       .o_req_ready(arb_down_req_ready),
       .i_req_write(arb_down_req_write),

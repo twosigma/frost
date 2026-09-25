@@ -1613,7 +1613,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Line-port AXI bridge across a CPU reset against a slave that keeps "
             "running: presented beats stay valid until accepted, a reset between "
-            "AW and W leaves no orphaned beat, stale responses are dropped"
+            "AW and W leaves no orphaned beat, stale responses are dropped; the "
+            "slave's own reset withdraws held beats at once"
         ),
     ),
     "x3_ddr_init": CocotbRunConfig(

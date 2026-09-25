@@ -18,14 +18,16 @@ The bridge resets with the CPU, while on hardware the DDR controller and its
 interconnect keep running through the image-load reset and the debug
 ndmreset. The bench plays that slave in Python: it accepts AW and W
 independently and pairs them in arrival order, as an interconnect does, and
-it is never reset. Checked: a beat presented before a reset stays presented,
-with a stable payload, until the slave accepts it (AXI's VALID-until-READY
-rule, which a slave that is not being reset relies on); a reset between the
-AW and W handshakes of one write leaves no orphaned beat, so the next write
-lands at its own address; the reverse split and a wholly unaccepted write
-complete the same way; a read presented across a reset completes and its
-response, now stale, never reaches the line port; and every transaction
-issued after the reset completes normally.
+only the bridge's AXI-side reset (i_axi_rst) resets it. Checked: a beat
+presented before a CPU-side reset stays presented, with a stable payload,
+until the slave accepts it (AXI's VALID-until-READY rule, which a slave that
+is not being reset relies on); a reset between the AW and W handshakes of
+one write leaves no orphaned beat, so the next write lands at its own
+address; the reverse split and a wholly unaccepted write complete the same
+way; a read presented across a reset completes and its response, now stale,
+never reaches the line port; the AXI-side reset drops every VALID at once
+and no withdrawn beat returns; and every transaction issued after a reset
+completes normally.
 """
 
 from collections import deque
@@ -44,7 +46,7 @@ RESET_CYCLES = 3
 
 
 class _AxiSlave:
-    """AXI4 slave for single-beat bursts that the bench never resets.
+    """AXI4 slave for single-beat bursts, reset only by the bridge's i_axi_rst.
 
     Handshakes are evaluated mid-cycle, after the bench drives the ready
     lines at the falling edge: a channel fires at the next rising edge when
@@ -52,8 +54,9 @@ class _AxiSlave:
     separately and pair in arrival order; each pair is written into a
     byte-addressed memory and answered on B. Reads are answered on R a few
     cycles after AR. Every cycle the slave also checks the master's side of
-    the rule: a valid presented without a handshake must stay high, with the
-    same payload, in the next cycle.
+    the rules: a valid presented without a handshake must stay high, with
+    the same payload, in the next cycle, and every valid must be low while
+    i_axi_rst holds the slave in reset, which drops its queued work.
     """
 
     def __init__(self, dut: Any) -> None:
@@ -66,6 +69,7 @@ class _AxiSlave:
         self.w: deque[tuple[int, int]] = deque()  # (data, strb)
         self.mem: dict[int, int] = {}  # byte address (AXI side) -> byte
         self.performed: list[tuple[int, int, int]] = []  # (addr, data, strb)
+        self.reads: list[tuple[int, int]] = []  # accepted AR beats (id, addr)
         self._b: deque[int] = deque()  # write ids waiting for B
         self._r: deque[tuple[int, int, int]] = deque()  # (due cycle, id, data)
         self.violations: list[str] = []
@@ -114,6 +118,17 @@ class _AxiSlave:
             awvalid = int(dut.o_axi_awvalid.value)
             wvalid = int(dut.o_axi_wvalid.value)
             arvalid = int(dut.o_axi_arvalid.value)
+            if int(dut.i_axi_rst.value):
+                if awvalid or wvalid or arvalid:
+                    self.violations.append(
+                        f"cycle {self.cycle}: a VALID was high in reset"
+                    )
+                self._held = {"aw": None, "w": None, "ar": None}
+                self.aw.clear()
+                self.w.clear()
+                self._b.clear()
+                self._r.clear()
+                continue
             aw = (int(dut.o_axi_awid.value), int(dut.o_axi_awaddr.value))
             w = (int(dut.o_axi_wdata.value), int(dut.o_axi_wstrb.value))
             ar = (int(dut.o_axi_arid.value), int(dut.o_axi_araddr.value))
@@ -129,6 +144,7 @@ class _AxiSlave:
                 self.w.append(w)
             if arvalid and arready:
                 rid, addr = ar
+                self.reads.append(ar)
                 self._r.append((self.cycle + 4, rid, self.read_line(addr)))
             if b_id is not None and int(dut.o_axi_bready.value):
                 self._b.popleft()
@@ -190,6 +206,7 @@ def _pattern(seed: int) -> int:
 async def _start(dut: Any) -> tuple[_AxiSlave, _ResponseLog]:
     """Start the clock and the slave, and reset the bridge for a few cycles."""
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
+    dut.i_axi_rst.value = 0
     dut.i_req_valid.value = 0
     dut.i_req_write.value = 0
     dut.i_req_addr.value = 0
@@ -351,6 +368,58 @@ async def test_unaccepted_write_and_read_complete_across_reset(dut: Any) -> None
     assert await log.wait_for(8, after=reset_end) == after[1]
     await _fire(dut, write=False, addr=wr[0], req_id=9)
     assert await log.wait_for(9, after=reset_end) == wr[1]
+    assert not slave.violations, "; ".join(slave.violations)
+    slave.stop()
+    log.stop()
+
+
+@cocotb.test()
+async def test_axi_reset_withdraws_held_beats(dut: Any) -> None:
+    """While the AXI side is in reset every VALID is low, and no held beat returns.
+
+    A write and a read the slave has not accepted are pending when the AXI
+    reset rises together with the bridge's own, as when the X3 MMCM loses
+    lock. The VALIDs must drop in that cycle, and after the resets only new
+    transactions reach the slave.
+    """
+    slave, log = await _start(dut)
+    wr = (BASE_ADDR + 0x700, _pattern(7))
+
+    slave.awready = False
+    slave.wready = False
+    slave.arready = False
+    await _fire(dut, write=True, addr=wr[0], req_id=3, wdata=wr[1])
+    await _fire(dut, write=False, addr=BASE_ADDR + 0x780, req_id=4)
+    await _cycles(dut, 2)
+    assert int(dut.o_axi_awvalid.value) and int(dut.o_axi_arvalid.value)
+
+    await FallingEdge(dut.i_clk)
+    dut.i_rst.value = 1
+    dut.i_axi_rst.value = 1
+    await Timer(1, unit="ns")
+    assert not (
+        int(dut.o_axi_awvalid.value)
+        or int(dut.o_axi_wvalid.value)
+        or int(dut.o_axi_arvalid.value)
+    ), "a VALID stayed high in the cycle the AXI reset rose"
+    await _cycles(dut, RESET_CYCLES)
+    dut.i_rst.value = 0
+    dut.i_axi_rst.value = 0
+    reset_end = log.cycle
+    slave.awready = True
+    slave.wready = True
+    slave.arready = True
+    await _cycles(dut, 12)
+
+    assert not slave.violations, "; ".join(slave.violations)
+    assert not slave.performed and not slave.reads, (
+        f"a beat withdrawn by the AXI reset reached the slave: {slave.performed} {slave.reads}"
+    )
+    after = (BASE_ADDR + 0x740, _pattern(8))
+    await _fire(dut, write=True, addr=after[0], req_id=5, wdata=after[1])
+    await log.wait_for(5, after=reset_end)
+    await _fire(dut, write=False, addr=after[0], req_id=6)
+    assert await log.wait_for(6, after=reset_end) == after[1]
     assert not slave.violations, "; ".join(slave.violations)
     slave.stop()
     log.stop()
