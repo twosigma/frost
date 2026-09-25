@@ -175,13 +175,16 @@ static void shape_dword(uint32_t round)
 
 static void shape_store_forward(uint32_t round)
 {
-    /* Store one half of a cold dword, then immediately load both halves: the
-     * load of the stored half must forward/miss-merge, the neighbor half must
-     * come from the fill. Alternate which half is stored. */
+    /* Store one half of each dword of the evicted buffer, then immediately
+     * load both halves: the stored half must read back the new value and the
+     * neighbor half the refilled one. The stored half alternates within each
+     * line, and the dword that opens a line stores its low half in even lines
+     * and its high half in odd lines. */
     fill_pattern(round);
     evict_buffer(round);
     for (uint32_t i = 0; i < WORDS; i += 2u) {
-        uint32_t hi_first = (i >> 1) & 1u;
+        uint32_t line = i / (LINE_BYTES / 4u);
+        uint32_t hi_first = ((i >> 1) ^ line) & 1u;
         uint32_t si = i + (hi_first ? 1u : 0u);
         uint32_t ni = i + (hi_first ? 0u : 1u);
         uint32_t sv = expect_word(si, round) ^ 0xA5A5A5A5u;
