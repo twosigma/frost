@@ -3331,6 +3331,36 @@ module cpu_ooo #(
       end
     end
   end
+
+  // An M/S interrupt taken while a WFI waits at the ROB head resumes after
+  // the WFI: the saved PC must be wfi_pc+4. Waiting means the same WFI was
+  // the valid head in the previous cycle with nothing retiring, trapping or
+  // being flushed, so the resume-PC seed has had its cycle. A WFI's cause
+  // field is zero unless allocation marked it illegal (a WFI never completes
+  // on the CDB); an illegal WFI has not executed, so it is left out.
+  logic wfi_waiting_q;
+  logic [XLEN-1:0] wfi_waiting_pc_q;
+  always_ff @(posedge i_clk) begin
+    wfi_waiting_q <= !i_rst && rob_head_is_wfi && head_valid && (rob_trap_cause == '0) &&
+                     !rob_commit_valid_raw && !trap_taken && !xret_taken &&
+                     !flush_all && !flush_en && !mispredict_recovery_pending;
+    wfi_waiting_pc_q <= rob_trap_pc;
+  end
+  always @(posedge i_clk) begin
+    if (!i_rst && wfi_waiting_q && trap_taken && !trap_to_d && !trap_no_csr &&
+        trap_cause_internal[XLEN-1] && rob_head_is_wfi && head_valid &&
+        (rob_trap_pc == wfi_waiting_pc_q)) begin
+      p_wfi_interrupt_resumes_after_wfi :
+      assert (trap_pc_internal == wfi_waiting_pc_q + XLEN'(4))
+      else
+        $error(
+            "cpu_ooo: interrupt at a waiting WFI (pc %08x) saved resume PC %08x, want %08x",
+            wfi_waiting_pc_q,
+            trap_pc_internal,
+            wfi_waiting_pc_q + XLEN'(4)
+        );
+    end
+  end
 `endif
 
   // The trap unit takes sq_committed_empty without a same-cycle store-commit

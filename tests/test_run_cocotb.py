@@ -432,7 +432,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="wfi_mepc_test",
-        description="Timer-interrupt-at-WFI mepc directed test (empty-ROB interrupt resume PC)",
+        description=(
+            "Timer-interrupt-at-WFI mepc directed test (the timer wakes a waiting WFI, which "
+            "retires; the interrupt must save the PC after it)"
+        ),
     ),
     "wfi_drain_mepc_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

@@ -17,9 +17,10 @@
 /*
  * Timer-at-WFI mepc regression.
  *
- * An interrupt taken while WFI waits at the ROB head must save the address of
- * the instruction after the WFI in mepc, not a stale PC. The test fires a
- * timer during WFI and requires mepc to equal that address.
+ * The test fires a timer while WFI waits at the ROB head. The pending
+ * interrupt releases the WFI, which retires, and the interrupt is taken at the
+ * next instruction, so mepc must be the address after the WFI, not a stale PC.
+ * wfi_drain_mepc_test covers an interrupt taken before the WFI retires.
  */
 
 #include <stdint.h>
@@ -68,7 +69,8 @@ int main(void)
     enable_interrupts();
 
     /* Stash the post-WFI continuation in mscratch, capture its address as the
-     * expected resume PC, then WFI (drains the ROB). The timer fires here. */
+     * expected resume PC, then WFI, which waits at the ROB head. The timer
+     * fires here. */
     __asm__ volatile("la   t0, 1f\n"
                      "csrw mscratch, t0\n"
                      "la   %0, 1f\n"
@@ -93,7 +95,7 @@ int main(void)
         uart_printf("<<PASS>>\n");
     } else {
         uart_printf(
-            "<<FAIL>> interrupt-from-empty-ROB saved a stale mepc (not the WFI resume PC)\n");
+            "<<FAIL>> interrupt after the WFI saved a stale mepc (not the WFI resume PC)\n");
     }
     for (;;) {
     }

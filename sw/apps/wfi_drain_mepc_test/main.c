@@ -25,7 +25,8 @@
  * to a fresh cold line before WFI, forcing a full-latency drain. mscratch is
  * armed before MIE is enabled, and the register-preserving handler returns
  * through mscratch, so a bad mepc survives to be reported. The test passes
- * when no margin produces mepc==wfi_pc. Run with DDR_MODEL_LATENCY>=70.
+ * when no margin produces mepc==wfi_pc. Each margin step is one mtime tick,
+ * so the sweep assumes mtime advances once per cycle (SIM_TIMER_SPEEDUP=1).
  */
 
 #include <stdint.h>
