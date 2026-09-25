@@ -363,3 +363,40 @@ def test_run_in_process_group_kills_grandchildren_on_timeout(tmp_path: Path) -> 
             return
         time.sleep(0.1)
     pytest.fail(f"grandchild {child} survived the timeout")
+
+
+def test_seed_sweep_restores_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A seed sweep undoes its registry entry's environment overrides."""
+    from concurrent.futures import Future
+
+    class _InlineExecutor:
+        def __init__(self, max_workers: int) -> None:
+            del max_workers
+
+        def __enter__(self) -> "_InlineExecutor":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def submit(
+            self, function: Callable[..., object], *args: object
+        ) -> Future[object]:
+            del function
+            future: Future[object] = Future()
+            future.set_result((args[1], True, ""))
+            return future
+
+    config = test_run_cocotb.CocotbRunConfig(
+        python_test_module="cocotb_tests.sweep_probe",
+        hdl_toplevel_module="sweep_probe",
+        extra_env=(("FROST_SWEEP_ENV_PROBE", "set"),),
+    )
+    monkeypatch.setitem(test_run_cocotb.TEST_REGISTRY, "sweep_probe", config)
+    monkeypatch.setattr(test_run_cocotb, "ProcessPoolExecutor", _InlineExecutor)
+    monkeypatch.delenv("FROST_SWEEP_ENV_PROBE", raising=False)
+
+    report = test_run_cocotb.run_seed_sweep("sweep_probe", num_seeds=1)
+
+    assert report["passed"] == 1
+    assert "FROST_SWEEP_ENV_PROBE" not in os.environ

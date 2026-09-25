@@ -2599,48 +2599,53 @@ def run_seed_sweep(
     # each other in sw/apps/<app>, and an unlink+recreate of tests/sw.mem opens
     # a window where a sibling's $readmemh sees a missing or half-written image.
     parent_runner = CocotbRunner.from_config(TEST_REGISTRY[test_name])
-    if parent_runner.app_name:
-        if not parent_runner._compile_app():
-            raise RuntimeError(
-                f"Failed to compile application: {parent_runner.app_name}"
-            )
-        program_memory_file = parent_runner._get_program_memory_file()
-        if program_memory_file:
-            for mem_name in PROGRAM_MEMORY_FILENAMES:
-                CocotbRunner._ensure_symlink(
-                    parent_runner.test_directory / mem_name,
-                    _program_memory_target(program_memory_file, mem_name),
+    # from_config applies the entry's extra_env to os.environ; the workers
+    # inherit it, and the finally below restores it once the pool is done.
+    try:
+        if parent_runner.app_name:
+            if not parent_runner._compile_app():
+                raise RuntimeError(
+                    f"Failed to compile application: {parent_runner.app_name}"
                 )
+            program_memory_file = parent_runner._get_program_memory_file()
+            if program_memory_file:
+                for mem_name in PROGRAM_MEMORY_FILENAMES:
+                    CocotbRunner._ensure_symlink(
+                        parent_runner.test_directory / mem_name,
+                        _program_memory_target(program_memory_file, mem_name),
+                    )
 
-    results: dict[int, tuple[bool, str]] = {}
-    workers = max_workers if max_workers else min(num_seeds, os.cpu_count() or 4)
+        results: dict[int, tuple[bool, str]] = {}
+        workers = max_workers if max_workers else min(num_seeds, os.cpu_count() or 4)
 
-    with tempfile.TemporaryDirectory(prefix="frost_seed_sweep_") as temp_dir:
-        with ProcessPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(
-                    _run_single_seed, test_name, seed, testcase, temp_dir
-                ): seed
-                for seed in seeds
-            }
+        with tempfile.TemporaryDirectory(prefix="frost_seed_sweep_") as temp_dir:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = {
+                    executor.submit(
+                        _run_single_seed, test_name, seed, testcase, temp_dir
+                    ): seed
+                    for seed in seeds
+                }
 
-            for future in as_completed(futures):
-                seed = futures[future]
-                try:
-                    ret_seed, passed, error_msg = future.result()
-                    results[ret_seed] = (passed, error_msg)
-                    status = "PASSED" if passed else "FAILED"
-                    print(f"  Seed {ret_seed}: {status}")
-                except Exception as e:
-                    results[seed] = (False, str(e))
-                    print(f"  Seed {seed}: FAILED (exception: {e})")
+                for future in as_completed(futures):
+                    seed = futures[future]
+                    try:
+                        ret_seed, passed, error_msg = future.result()
+                        results[ret_seed] = (passed, error_msg)
+                        status = "PASSED" if passed else "FAILED"
+                        print(f"  Seed {ret_seed}: {status}")
+                    except Exception as e:
+                        results[seed] = (False, str(e))
+                        print(f"  Seed {seed}: FAILED (exception: {e})")
 
-    # The workers shared the parent-created symlinks; clean up after the pool.
-    if parent_runner.app_name:
-        for mem_name in PROGRAM_MEMORY_FILENAMES:
-            mem_path = parent_runner.test_directory / mem_name
-            if mem_path.exists() or mem_path.is_symlink():
-                mem_path.unlink()
+        # The workers shared the parent-created symlinks; clean up after the pool.
+        if parent_runner.app_name:
+            for mem_name in PROGRAM_MEMORY_FILENAMES:
+                mem_path = parent_runner.test_directory / mem_name
+                if mem_path.exists() or mem_path.is_symlink():
+                    mem_path.unlink()
+    finally:
+        parent_runner.restore_environment()
 
     passed_seeds = [s for s, (p, _) in results.items() if p]
     failed_seeds = [s for s, (p, _) in results.items() if not p]
