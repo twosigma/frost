@@ -188,6 +188,9 @@ module frost #(
     Reset synchronization for the main clock domain. A flip-flop chain turns
     the active-low asynchronous reset input into an active-high reset
     synchronous to i_clk, keeping the async edge out of the CPU domain.
+    Hold i_rst_n low for at least 20 i_clk cycles (five i_clk_div4 cycles):
+    each dual-clock FIFO needs its i_clk_div4 side to apply reset while its
+    i_clk side is still held (dc_fifo).
     Potential TODO: assert reset async but deassert it sync for faster entry.
   */
   localparam int unsigned NumResetSyncStages = 3;

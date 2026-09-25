@@ -36,10 +36,12 @@
  * read. A consumer may take o_data in any cycle o_valid is high; one that
  * takes it right after a load sees o_valid low for a cycle.
  *
- * Each side resets in its own domain, and a write during the write-side
- * reset is dropped. The two resets must overlap in time: a side that leaves
- * reset before the other has entered it picks up the other's old pointer, and
- * its status is wrong until that reset arrives.
+ * Each side resets in its own domain, at its own clock edges, and a write
+ * during the write-side reset is dropped. Each side must apply its reset at
+ * one of its clock edges while the other side is still held in reset, so the
+ * resets must span several cycles of the slower clock. Otherwise one side
+ * works from the other side's old pointer: the status is wrong, stale entries
+ * can come out, and the pointers can stay out of step.
  */
 module dc_fifo #(
     parameter int unsigned DATA_WIDTH = 8,
