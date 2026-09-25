@@ -3391,10 +3391,12 @@ module cpu_ooo #(
 
   // The trap unit takes sq_committed_empty without a same-cycle store-commit
   // guard: the SQ's registered committed-empty already folds the raw commit
-  // pulses into its D (one cycle pessimistic), and trap_unit's interrupt
-  // arming and exception commit block keep any commit off the take cycle.
-  // Leaving the guard out keeps the ROB head-commit logic out of the
-  // take_trap -> trap_target/CSR-write timing.
+  // pulses into its D (one cycle pessimistic). trap_unit's interrupt arming
+  // and exception commit block keep a commit off the take cycle, except when
+  // an interrupt shield deferred the take; a raw commit in that cycle is
+  // masked on the registered commit bus by the full flush that follows, so it
+  // never reaches the SQ. Leaving the guard out keeps the ROB head-commit
+  // logic out of the take_trap -> trap_target/CSR-write timing.
   assign sq_committed_empty_for_trap = sq_committed_empty;
 
   // AMO interrupt shield register (see trap_unit.i_amo_at_head port comment
