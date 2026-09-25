@@ -83,7 +83,8 @@ int main(void)
     enable_timer_interrupt();
 
     for (uint32_t margin = MARGIN_MIN; margin <= MARGIN_MAX; margin++) {
-        volatile uint32_t *sink = (volatile uint32_t *) (DRAIN_BASE + margin * DRAIN_LINE);
+        volatile uint32_t *sink =
+            (volatile uint32_t *) (uintptr_t) (DRAIN_BASE + margin * DRAIN_LINE);
         uint32_t wfi_addr = 0;
         uint32_t resume_addr = 0;
         uint32_t before = g_taken;

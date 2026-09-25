@@ -392,7 +392,8 @@ static void setup_sentinel_frame_checks(void)
     expect_frame_word(FRAME_S11, SENTINEL_S11);
 }
 
-__attribute__((naked, noinline, used)) static uint32_t name_to_int_shape_asm(uint32_t seed)
+__attribute__((naked, noinline, used)) static uint32_t
+name_to_int_shape_asm(uint32_t seed __attribute__((unused)))
 {
     __asm__ volatile("li   a5, 0x19999998\n"
                      "addi a4, a5, 9\n"
@@ -401,7 +402,8 @@ __attribute__((naked, noinline, used)) static uint32_t name_to_int_shape_asm(uin
                      "ret\n");
 }
 
-__attribute__((naked, noinline, used)) static uint32_t sentinel_irq_window(uint32_t before)
+__attribute__((naked, noinline, used)) static uint32_t sentinel_irq_window(uint32_t before
+                                                                           __attribute__((unused)))
 {
     __asm__ volatile(
         "addi sp, sp, -16*" XB "\n" XS " ra, 0*" XB "(sp)\n" XS " s0, 1*" XB "(sp)\n" XS

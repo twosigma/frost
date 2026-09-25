@@ -66,7 +66,7 @@ static volatile uintptr_t trap_s1;
 static volatile uintptr_t trap_s2;
 static volatile uintptr_t trap_s3;
 
-void exit(int code);
+void exit(int code) __attribute__((noreturn));
 
 void frost_coremark_pro_trap_handler(void) __attribute__((noreturn));
 void frost_coremark_pro_trap_entry(void) __attribute__((naked, aligned(4)));

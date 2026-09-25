@@ -87,7 +87,9 @@ static volatile uint32_t observed_namelen;
 static void churn_cache(uint32_t seed);
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
-epilogue_repro(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
+epilogue_repro(uintptr_t node __attribute__((unused)),
+               uintptr_t salt2 __attribute__((unused)),
+               uintptr_t salt3 __attribute__((unused)))
 {
     __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
                      " s1, 5*" XB "(sp)\n" XS " s2, 4*" XB "(sp)\n" XS " s3, 3*" XB "(sp)\n"
@@ -107,7 +109,9 @@ epilogue_repro(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
 }
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
-epilogue_direct_a0(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
+epilogue_direct_a0(uintptr_t node __attribute__((unused)),
+                   uintptr_t salt2 __attribute__((unused)),
+                   uintptr_t salt3 __attribute__((unused)))
 {
     __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
                      " s1, 5*" XB "(sp)\n" XS " s2, 4*" XB "(sp)\n" XS " s3, 3*" XB "(sp)\n"
@@ -194,7 +198,8 @@ __attribute__((noinline, used)) static uintptr_t fake_proc_get_inode(uintptr_t s
     return 0x12345678u;
 }
 
-__attribute__((noinline, naked, used, aligned(4))) static void pde_init_version_asm(uintptr_t de)
+__attribute__((noinline, naked, used, aligned(4))) static void
+pde_init_version_asm(uintptr_t de __attribute__((unused)))
 {
     __asm__ volatile("addi t0, a0, 100\n"
                      "sw   t0, 92(a0)\n"
@@ -219,7 +224,9 @@ __attribute__((noinline, naked, used, aligned(4))) static void pde_init_version_
 }
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
-pde_subdir_find_asm(uintptr_t de, const char *name, uint32_t len)
+pde_subdir_find_asm(uintptr_t de __attribute__((unused)),
+                    const char *name __attribute__((unused)),
+                    uint32_t len __attribute__((unused)))
 {
     __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
                      " s1, 5*" XB "(sp)\n"
@@ -254,7 +261,9 @@ pde_subdir_find_asm(uintptr_t de, const char *name, uint32_t len)
 }
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
-proc_lookup_de_asm(uintptr_t dir, uintptr_t dentry, uintptr_t de)
+proc_lookup_de_asm(uintptr_t dir __attribute__((unused)),
+                   uintptr_t dentry __attribute__((unused)),
+                   uintptr_t de __attribute__((unused)))
 {
     __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " s1, 5*" XB "(sp)\n" XS
                      " s2, 4*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n"

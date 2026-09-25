@@ -313,7 +313,8 @@ int main(void)
          * evicted: its write-back drains below the L1D and the window's PT_EPC
          * load and SC miss cold. That refill in turn evicts the dirty alias
          * line, keeping a write-back draining inside the window. */
-        volatile rw_word_t *frame = (volatile rw_word_t *) (FRAME_BASE + ((i & 63u) << 6));
+        volatile rw_word_t *frame =
+            (volatile rw_word_t *) (uintptr_t) (FRAME_BASE + ((i & 63u) << 6));
         volatile rw_word_t *alias = (volatile rw_word_t *) ((uintptr_t) frame ^ FRAME_ALIAS_XOR);
 
         uint32_t to_umode = i & 1u;

@@ -464,8 +464,6 @@ int main(void)
     uart_puts("Test 9: Long-running (50 iters)... ");
     result = long_running_test(50);
     uart_printf("result=0x%08x\n", result);
-    /* Result of a known-good run, recorded for reference only. */
-    uint32_t expected_long = 0xA8D8EB35;
 
     /* Run it again to check consistency */
     uart_puts("Test 9b: Verify consistency... ");

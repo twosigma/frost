@@ -68,7 +68,7 @@ static void uart_hex(unsigned long v)
 #define PLIC_CLAIM_S REG32(PLIC_BASE + 0x201004ul)
 #define NS16550_IER REG32(0x40001004UL)
 
-#define MIP_MEIP (1ul << 11)
+/* csr.h supplies MIP_MEIP. */
 #define MIP_SEIP (1ul << 9)
 
 static int report(const char *name, unsigned long got, unsigned long want)
