@@ -26,11 +26,13 @@
  *   - clint_timer_interrupt() clears MTIE, then the event handler re-arms it.
  *   - arch_cpu_idle() uses bare wfi while mstatus.MIE remains enabled.
  *   - cached-DDR churn runs between wfi instructions, so IRQs can land with
- *     cached accesses in flight.
+ *     cached accesses in flight. The sweeps keep missing the L1D (see
+ *     CHURN_BASE).
  *
  * The registered simulation uses a deliberately small L2 and
- * DDR_MODEL_LATENCY>=70. Frame violations report a failure code; a deadlock
- * fails the run when the simulation cycle budget runs out.
+ * DDR_MODEL_LATENCY>=70, so the misses go to DDR. Frame violations report a
+ * failure code; a deadlock fails the run when the simulation cycle budget runs
+ * out.
  */
 
 #include <stdint.h>
@@ -53,7 +55,18 @@
 
 #define TARGET_TICKS 64u
 #define DDR_STACK_SIZE 4096u
-#define CHURN_WORDS 4096 /* 16 KiB, swept once per idle iteration */
+
+/* The churn is CHURN_WORDS words (8 KiB, swept once per idle iteration) in
+ * CHURN_SLICES slices placed CHURN_STRIDE apart in DDR past the program image,
+ * which nothing else uses. The caches are direct-mapped and the stride is a
+ * multiple of their sizes (the 128 KiB L1D, the registered simulation's 4 KiB
+ * L2), so the slices share lines and evict each other, and the sweeps keep
+ * missing after the first instead of hitting in the L1D. */
+#define CHURN_BASE 0x80800000u
+#define CHURN_STRIDE 0x00100000u /* 1 MiB */
+#define CHURN_SLICES 8u
+#define CHURN_SLICE_WORDS 256u /* 1 KiB */
+#define CHURN_WORDS (CHURN_SLICES * CHURN_SLICE_WORDS)
 
 struct linux_pt_regs {
     unsigned long epc, ra, sp, gp, tp;
@@ -79,8 +92,6 @@ volatile unsigned long g_last_ra;
 volatile unsigned long g_last_sp;
 volatile unsigned long g_last_tp;
 volatile unsigned long g_last_mscratch;
-volatile uint32_t g_churn[CHURN_WORDS];
-
 static uint8_t g_ddr_stack[DDR_STACK_SIZE] __attribute__((aligned(16)));
 
 static inline uintptr_t read_tp(void)
@@ -122,14 +133,21 @@ static void clint_clock_next_event(uint64_t cmp)
     CLINT_MTIMECMP_HI = (uint32_t) (cmp >> 32);
 }
 
+static inline volatile uint32_t *churn_word(uint32_t i)
+{
+    return (volatile uint32_t *) (uintptr_t) (CHURN_BASE + (i / CHURN_SLICE_WORDS) * CHURN_STRIDE +
+                                              (i % CHURN_SLICE_WORDS) * 4u);
+}
+
 static uint32_t churn_ddr(uint32_t seed)
 {
     uint32_t acc = seed;
-    for (int i = 0; i < CHURN_WORDS; i++) {
-        uint32_t v = g_churn[i];
-        acc ^= v + ((uint32_t) i << 3);
+    for (uint32_t i = 0; i < CHURN_WORDS; i++) {
+        volatile uint32_t *w = churn_word(i);
+        uint32_t v = *w;
+        acc ^= v + (i << 3);
         acc = (acc << 5) | (acc >> 27);
-        g_churn[i] = v ^ acc ^ (0x9E3779B9u + (uint32_t) i);
+        *w = v ^ acc ^ (0x9E3779B9u + i);
     }
     return acc;
 }
@@ -172,9 +190,9 @@ __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
         uint32_t base = (g_ticks << 4) & (CHURN_WORDS - 1u);
         uint32_t acc = frame->epc ^ frame->ra ^ g_ticks;
         for (int i = 0; i < 8; i++) {
-            uint32_t idx = (base + (uint32_t) i) & (CHURN_WORDS - 1u);
-            acc ^= g_churn[idx];
-            g_churn[idx] = acc + (uint32_t) i;
+            volatile uint32_t *w = churn_word((base + (uint32_t) i) & (CHURN_WORDS - 1u));
+            acc ^= *w;
+            *w = acc + (uint32_t) i;
         }
     }
     g_ticks = g_ticks + 1u;
@@ -232,8 +250,8 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
 {
     uart_printf("\n=== Linux faithful clocksource-switch timer test ===\n");
 
-    for (int i = 0; i < CHURN_WORDS; i++) {
-        g_churn[i] = 0x80000000u ^ ((uint32_t) i * 0x10204081u);
+    for (uint32_t i = 0; i < CHURN_WORDS; i++) {
+        *churn_word(i) = 0x80000000u ^ (i * 0x10204081u);
     }
     g_fake_current.kernel_sp = (uintptr_t) &g_ddr_stack[DDR_STACK_SIZE];
     g_fake_current.user_sp = 0u;
