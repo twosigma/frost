@@ -2303,7 +2303,7 @@ package riscv_pkg;
     // allocation.
     logic csr_write_intent;
     logic [11:0] csr_addr;
-    logic [2:0] csr_op;  // funct3, with [1:0] cleared when csr_write_intent is 0
+    logic [2:0] csr_op;  // funct3; [1:0] cleared for a CSR with no write intent
     logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
     // FP flags validity
     logic has_fp_flags;  // Instruction produces FP flags
@@ -2383,7 +2383,7 @@ package riscv_pkg;
     logic is_jalr;  // JALR instruction
     // CSR info (for commit-time CSR execution)
     logic [11:0] csr_addr;  // CSR address
-    logic [2:0] csr_op;  // funct3; [1:0] = 0 marks a pure read
+    logic [2:0] csr_op;  // funct3; for a CSR, [1:0] = 0 marks a pure read
     logic [XLEN-1:0] csr_write_data;  // CSR write data (rs1 or zero-ext imm)
     // Serializing instruction flags (for outer control logic)
     logic is_csr;  // CSR instruction (Reorder Buffer executes at commit)

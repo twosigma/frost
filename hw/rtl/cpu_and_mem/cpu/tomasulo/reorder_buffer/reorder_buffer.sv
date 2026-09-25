@@ -1711,7 +1711,7 @@ module reorder_buffer #(
       .o_read_data    (head_csr_addr)
   );
 
-  // CSR op RAM (funct3, [1:0] cleared for a pure read; written at allocation)
+  // CSR op RAM (funct3, [1:0] cleared for a CSR pure read; written at allocation)
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (3),

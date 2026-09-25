@@ -46,7 +46,6 @@ from .dispatch_interface import (
     FADD_S,
     FMUL_S,
     FDIV_S,
-    CSRRW,
     LD,
     LWU,
     SD,
@@ -56,11 +55,14 @@ from .dispatch_interface import (
     LR_D,
     SC_D,
     AMOADD_D,
+    FCVT_S_W,
+    ANDI,
     CSRRS,
     CSRRC,
     CSRRWI,
     CSRRSI,
     CSRRCI,
+    CSRRW,
     RS_INT,
     RS_MUL,
     RS_MEM,
@@ -1224,6 +1226,51 @@ async def test_csr_write_intent_from_encoding(dut: Any) -> None:
                 assert req["csr_op"] == want_op, (
                     f"{case}: csr_op={req['csr_op']:03b}, want {want_op:03b}"
                 )
+
+
+@cocotb.test()
+async def test_non_csr_instruction_keeps_funct3_in_csr_op(dut: Any) -> None:
+    """A non-CSR instruction reaches the ROB with its funct3 unchanged in csr_op.
+
+    Only a CSR with no write intent has csr_op[1:0] cleared. FP ops with
+    rm = DYN (111) and an f0 or x0 rs1, and ANDI from x0, keep 111.
+    """
+    dut_if = await _setup(dut)
+
+    cases = [
+        (1, "fadd.s rm=dyn, rs1=f0", FADD_S, OPC_OP_FP),
+        (1, "fcvt.s.w rm=dyn, rs1=x0", FCVT_S_W, OPC_OP_FP),
+        (1, "andi rs1=x0", ANDI, OPC_OP_IMM),
+        (2, "andi rs1=x0", ANDI, OPC_OP_IMM),
+    ]
+    for slot, name, op, opcode in cases:
+        packet = {
+            "instruction_operation": op,
+            "instruction": _make_instr(
+                dest_reg=5, opcode=opcode, funct3=0b111, source_reg_1=0
+            ),
+        }
+        if slot == 1:
+            dut_if.drive_instruction(valid=True, rs1_addr=0, **packet)
+            dut_if.drive_instruction_2(valid=False)
+        else:
+            dut_if.drive_instruction(
+                valid=True,
+                instruction_operation=ADD,
+                instruction=_make_instr(dest_reg=6, opcode=OPC_OP),
+            )
+            dut_if.drive_instruction_2(valid=True, rs1_addr=0, **packet)
+        await dut_if.step()
+
+        req = (
+            dut_if.read_rob_alloc_req() if slot == 1 else dut_if.read_rob_alloc_req_2()
+        )
+        case = f"slot {slot}, {name}"
+        assert req["alloc_valid"] == 1, f"{case}: no allocation"
+        assert req["is_csr"] == 0, f"{case}: marked as a CSR"
+        assert req["csr_op"] == 0b111, (
+            f"{case}: csr_op={req['csr_op']:03b}, want funct3 111"
+        )
 
 
 # =============================================================================
