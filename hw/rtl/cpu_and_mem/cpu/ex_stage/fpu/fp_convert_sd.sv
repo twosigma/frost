@@ -64,6 +64,7 @@ module fp_convert_sd #(
   logic                                round_work_s2a;
   logic                                sticky_work_s2a;
   logic signed          [         9:0] exp_work_s2a;
+  logic                                tiny_s2a;
 
   // Stage 3 registers (rounder outputs), then stage 2 registers (D->S sign and
   // special cases, S->D result fields and special cases)
@@ -198,6 +199,19 @@ module fp_convert_sd #(
   assign sticky_bit_s1 = round_s_s1 | sticky_s_s1;
   assign round_exp_s1 = exp_s_biased_s1[9:0];
 
+  // Tininess is detected after rounding, as if the exponent range were
+  // unbounded: a value below 2^-126 is tiny unless rounding it to 24 bits,
+  // before the subnormal shift, carries it up to 2^-126. A subnormal that the
+  // coarser subnormal rounding lifts to the minimum normal can still be tiny.
+  logic rounds_to_min_normal_s1_comb;
+  logic tiny_s1_comb;
+  assign rounds_to_min_normal_s1_comb =
+      (exp_s_biased_s1 == 13'sd0) && (&mantissa_retained_s1) &&
+      riscv_pkg::fp_compute_round_up(
+      rm_reg_s2, guard_bit_s1, round_bit_s1, sticky_bit_s1, 1'b1, sign_d_s1
+  );
+  assign tiny_s1_comb = (exp_s_biased_s1 <= 13'sd0) && !rounds_to_min_normal_s1_comb;
+
   fp_subnorm_shift #(
       .MANT_BITS(24),
       .EXP_EXT_BITS(10)
@@ -241,6 +255,10 @@ module fp_convert_sd #(
       if (exp_work_s2a == 10'sd0) adjusted_exponent_s2_comb = 10'sd1;
       else adjusted_exponent_s2_comb = exp_work_s2a + 10'sd1;
       final_mantissa_s2_comb = rounded_mantissa_s2_comb[23:1];
+    end else if ((exp_work_s2a == 10'sd0) && rounded_mantissa_s2_comb[23]) begin
+      // A subnormal that rounds up into the hidden bit is the minimum normal.
+      adjusted_exponent_s2_comb = 10'sd1;
+      final_mantissa_s2_comb = rounded_mantissa_s2_comb[22:0];
     end else begin
       adjusted_exponent_s2_comb = exp_work_s2a;
       final_mantissa_s2_comb = rounded_mantissa_s2_comb[22:0];
@@ -270,6 +288,8 @@ module fp_convert_sd #(
       round_flags_s2_comb.nx = is_inexact_s2_comb;
       round_result_s2_comb   = {sign_d_s2, 8'b0, final_mantissa_s2_comb};
     end else begin
+      // Only the minimum normal reached by rounding a subnormal can be tiny here.
+      round_flags_s2_comb.uf = is_inexact_s2_comb & tiny_s2a;
       round_flags_s2_comb.nx = is_inexact_s2_comb;
       round_result_s2_comb   = {sign_d_s2, adjusted_exponent_s2_comb[7:0], final_mantissa_s2_comb};
     end
@@ -476,6 +496,7 @@ module fp_convert_sd #(
       round_work_s2a <= round_work_s1_comb;
       sticky_work_s2a <= sticky_work_s1_comb;
       exp_work_s2a <= exp_work_s1_comb;
+      tiny_s2a <= tiny_s1_comb;
       sign_d_s2 <= sign_d_s1;
       d_is_zero_s2 <= d_is_zero_s1;
       d_is_inf_s2 <= d_is_inf_s1;

@@ -736,3 +736,53 @@ async def test_fcvt_s_d_tiny_directed_rounding(dut: Any) -> None:
                 src = magnitude | (INT64_MIN if negative else 0)
                 vectors.append(("FCVT_S_D", src, rm, expected, FFLAG_UF | FFLAG_NX))
     await _run_vectors(dut, vectors)
+
+
+@cocotb.test()
+async def test_fcvt_s_d_rounds_up_to_min_normal(dut: Any) -> None:
+    """FCVT.S.D just below 2^-126 can round up to the smallest normal, tiny or not.
+
+    Underflow is decided after rounding as if the exponent range were
+    unbounded, so 2^-126 - 2^-150 (24 significant bits) is tiny even when its
+    subnormal rounding gives 2^-126.
+    """
+    min_normal, max_subnormal = 0x0080_0000, 0x007F_FFFF
+    uf_nx = FFLAG_UF | FFLAG_NX
+    # (magnitude, {rounding mode: (magnitude of result, flags)}) for a positive
+    # operand; RDN and RUP swap for a negative one.
+    cases = [
+        (  # 2^-126 - 2^-179: not tiny after rounding to 24 bits
+            0x380F_FFFF_FFFF_FFFF,
+            {
+                RM_RNE: (min_normal, FFLAG_NX),
+                RM_RTZ: (max_subnormal, uf_nx),
+                RM_RDN: (max_subnormal, uf_nx),
+                RM_RUP: (min_normal, FFLAG_NX),
+                RM_RMM: (min_normal, FFLAG_NX),
+            },
+        ),
+        (  # 2^-126 - 2^-150: tiny, and a tie at subnormal precision
+            0x380F_FFFF_E000_0000,
+            {
+                RM_RNE: (min_normal, uf_nx),
+                RM_RTZ: (max_subnormal, uf_nx),
+                RM_RDN: (max_subnormal, uf_nx),
+                RM_RUP: (min_normal, uf_nx),
+                RM_RMM: (min_normal, uf_nx),
+            },
+        ),
+        (  # 2^-126 - 2^-149: the largest subnormal, exact
+            0x380F_FFFF_C000_0000,
+            {rm: (max_subnormal, 0) for rm in range(5)},
+        ),
+    ]
+    vectors = []
+    for magnitude, by_mode in cases:
+        for negative in (False, True):
+            for rm in range(5):
+                mode = {RM_RDN: RM_RUP, RM_RUP: RM_RDN}.get(rm, rm) if negative else rm
+                result, flags = by_mode[mode]
+                sign = 0x8000_0000 if negative else 0
+                src = magnitude | (INT64_MIN if negative else 0)
+                vectors.append(("FCVT_S_D", src, rm, nan_box_f32(sign | result), flags))
+    await _run_vectors(dut, vectors)
