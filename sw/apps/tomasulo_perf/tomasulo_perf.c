@@ -303,6 +303,10 @@ int main(void)
     /* Benchmark 7: Branch-heavy loop (200 iterations, 3 instrs/iter)        */
     /* Tests branch prediction integration with OOO pipeline.                */
     /* Good prediction allows the loop body to overlap across iterations.    */
+    /* The 8-byte loop starts on an 8-byte boundary, so it sits in one       */
+    /* 64-bit fetch window wherever the surrounding code lands. The padding  */
+    /* runs once, before the loop, and adds at most one to Instrs: a nop     */
+    /* retires only when a non-nop follows it in the same decoded bundle.    */
     /* ===================================================================== */
     uart_printf("Bench 7: Branch loop (200 iters, 3 instrs/iter)\n");
     BENCH_PROFILE_BEGIN();
@@ -310,6 +314,7 @@ int main(void)
     i0 = rdinstret();
     __asm__ volatile("addi t0, zero, 200\n"
                      "addi t1, zero, 0\n"
+                     ".balign 8\n"
                      "1:\n"
                      "addi t1, t1, 1\n"
                      "addi t0, t0, -1\n"
@@ -481,6 +486,7 @@ int main(void)
     /* reaches the ROB head before it can issue and waits there while the    */
     /* AMO behind it is pending in the load queue: the head-load wait split  */
     /* runs with an AMO in flight. The two words sit in different dwords.    */
+    /* The loop is 8-byte aligned, as in Bench 7.                            */
     /* ===================================================================== */
     uart_printf("Bench 14: Load + younger AMOADD.W (50 iters, 6 instrs/iter)\n");
     {
@@ -491,6 +497,7 @@ int main(void)
         __asm__ volatile("addi t0, zero, 50\n"
                          "addi t2, zero, 1\n"
                          "addi t3, zero, 0\n"
+                         ".balign 8\n"
                          "1:\n"
                          "and  t4, t3, zero\n" /* 0, available with the previous AMO */
                          "add  t4, t4, %[ld]\n"
