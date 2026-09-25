@@ -894,16 +894,25 @@ module branch_prediction_controller #(
   // ===========================================================================
   // BTB-Only Prediction Holdoff
   // ===========================================================================
-  // Track when the BTB, and not the RAS, made the prediction.  The two predict
-  // at different points:
-  //   - BTB predicts from the PC (fetch address) before the instruction arrives
-  //   - RAS predicts from instruction content after the instruction arrives
+  // Set with o_prediction_holdoff when the BTB, and not the RAS, made the
+  // prediction. The two predict at different points:
+  //   - BTB predicts from the fetch PC, before the instruction there arrives
+  //   - RAS predicts from IF's registered instruction, after IF emitted it
   //
   // So during prediction_holdoff:
-  //   - If the BTB predicted, the instruction at the predicted PC arrives and
-  //     is valid, and the RAS may push if that instruction is a call
   //   - If the RAS predicted, the next sequential instruction arrives and is
-  //     stale, so RAS detection is blocked to prevent spurious pushes
+  //     stale. IF turns it into a NOP (ras_prediction_holdoff), which also
+  //     keeps it out of RAS detection.
+  //   - If the BTB predicted with the usual one-word fetch lead, the
+  //     instruction at the lookup PC arrives now and is a real packet. IF's
+  //     RAS input exempts it from the stale-packet term, but IF registers a
+  //     packet for RAS classification only while !any_holdoff_safe, and the
+  //     control-flow holdoff raised by the same prediction is set whenever
+  //     prediction_holdoff is. So this packet never reaches the classifier and
+  //     a call in it is not pushed; the classifier still handles the older
+  //     packet registered the cycle before. With a collapsed fetch lead the
+  //     predicted instruction is emitted in the prediction cycle itself and
+  //     is classified normally.
   logic btb_only_prediction;
   assign btb_only_prediction = sel_btb_prediction && !sel_ras_prediction;
   logic btb_only_prediction_effective;
