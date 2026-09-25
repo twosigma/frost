@@ -402,8 +402,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="csr_rmw_test",
         description=(
             "CSR read-modify-write directed test "
-            "(csrrw/csrrs/csrrc; the trap-entry mscratch swap; mperfctl bank control, "
-            "so the profiling counters are present)"
+            "(csrrw/csrrs/csrrc; the same-register mscratch swap of OpenSBI's trap entry; "
+            "mperfctl bank control, so the profiling counters are present)"
         ),
         verilator_extra_args=("-GPERF_COUNTERS=1",),
     ),
