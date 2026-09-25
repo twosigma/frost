@@ -182,7 +182,7 @@ class DmaModel:
                 if kind == KIND_STATUS:
                     if self.data_inflight:
                         self.violations.append(
-                            f"status write at cycle {self.cycle} with {self.data_inflight} data writes unanswered"
+                            f"status write at cycle {self.cycle} with {self.data_inflight} data requests unanswered"
                         )
                     if self.status_inflight:
                         self.violations.append(
