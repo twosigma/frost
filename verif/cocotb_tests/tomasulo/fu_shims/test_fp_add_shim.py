@@ -779,7 +779,7 @@ async def test_fcvt_other_range_limits(dut: Any) -> None:
 async def test_fcvt_s_d_tiny_directed_rounding(dut: Any) -> None:
     """FCVT.S.D far below the smallest subnormal: RUP and RDN round away from zero."""
     magnitudes = [
-        0x0370_0000_0000_0000,  # 2^-200
+        0x3370_0000_0000_0000,  # 2^-200
         0x0000_0000_0000_0001,  # smallest double subnormal
         0x3660_0000_0000_0000,  # 2^-153
         0x366F_FFFF_FFFF_FFFF,  # just below 2^-152
