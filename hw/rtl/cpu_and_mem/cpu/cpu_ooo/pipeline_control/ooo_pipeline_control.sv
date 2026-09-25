@@ -141,8 +141,9 @@ module ooo_pipeline_control #(
   end
 
   // Unresolved branches, one bit per checkpoint. Every branch or jump saves a
-  // checkpoint when it dispatches, from either slot (at most one per bundle),
-  // and holds it until it commits or is flushed. The save marks the
+  // checkpoint when it dispatches, from either slot, and holds it until it
+  // commits, its own misprediction recovery frees it (an early recovery does
+  // so before the branch commits), or a flush frees it. The save marks the
   // checkpoint unresolved for a conditional branch or JALR (a JAL resolves at
   // allocation), and a correct resolution clears it. A mispredicted branch
   // keeps its bit until its recovery frees the checkpoint (a JALR recovers
@@ -150,22 +151,43 @@ module ooo_pipeline_control #(
   // with checkpoint_in_use drops flushed branches, so an early recovery keeps
   // the older unresolved branches it does not flush. The mask trails a
   // partial flush by a few cycles, while the flushed front end refills.
-  // TIMING: the late correct-resolution pulse only clears a bit, so no
-  // counter arithmetic sits behind it; the checkpoint ids and the save come
-  // from dispatch and the issue payload.
+  // TIMING: the correct-resolution pulse arrives late (INT-RS issue -> branch
+  // compare -> resolved-correct), and so does the save, because
+  // rob_checkpoint_valid comes from dispatch_fire. The per-checkpoint id
+  // decodes come from earlier signals, the checkpoint allocator's id and the
+  // resolving branch's registered id, so they and the save's class are
+  // computed first and kept as nets. Each bit's next value is then one
+  // six-input function of the two late strobes, the two decodes, the class,
+  // and the bit itself. The dont_touch attributes stop synthesis from folding
+  // those nets back into it; a keep attribute alone does not survive
+  // opt_design Explore.
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_unresolved_q;
-  logic checkpoint_save_unresolved;
+  (* dont_touch = "true" *) logic checkpoint_save_unresolved;
+  (* dont_touch = "true" *) logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_save_hit;
+  (* dont_touch = "true" *) logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_resolve_hit;
   logic branch_unresolved;
-  // A bundle holds at most one branch, so slot 1's class picks the saver.
+  // A bundle holds at most one branch or jump (dispatch's slot2_resources_ok),
+  // so slot 1's class picks the saver.
   assign checkpoint_save_unresolved =
       rob_alloc_req.is_branch ? !rob_alloc_req.is_jal : !rob_alloc_req_2.is_jal;
+  always_comb begin
+    for (int i = 0; i < riscv_pkg::NumCheckpoints; i++) begin
+      checkpoint_save_hit[i] = rob_checkpoint_id == riscv_pkg::CheckpointIdWidth'(i);
+      checkpoint_resolve_hit[i] = branch_resolved_checkpoint_id == riscv_pkg::CheckpointIdWidth'(i);
+    end
+  end
+  // A save takes a free checkpoint and a resolution names a live one, so the
+  // two never meet on one bit; the save wins anyway.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       checkpoint_unresolved_q <= '0;
     end else begin
-      if (branch_resolved_correct) checkpoint_unresolved_q[branch_resolved_checkpoint_id] <= 1'b0;
-      if (rob_checkpoint_valid)
-        checkpoint_unresolved_q[rob_checkpoint_id] <= checkpoint_save_unresolved;
+      for (int i = 0; i < riscv_pkg::NumCheckpoints; i++) begin
+        if (rob_checkpoint_valid && checkpoint_save_hit[i])
+          checkpoint_unresolved_q[i] <= checkpoint_save_unresolved;
+        else if (branch_resolved_correct && checkpoint_resolve_hit[i])
+          checkpoint_unresolved_q[i] <= 1'b0;
+      end
     end
   end
   assign branch_unresolved = |(checkpoint_unresolved_q & checkpoint_in_use);
