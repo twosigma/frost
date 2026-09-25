@@ -65,7 +65,7 @@ async def _start(dut: Any) -> None:
 
 @cocotb.test()
 async def test_quiet_console_starts_a_snapshot(dut: Any) -> None:
-    """After QUIET_CYCLES without a CPU byte the block takes over and prints "\\n!!HANG"."""
+    """After QUIET_CYCLES without a CPU byte the block takes over and prints a newline, then "!!HANG"."""
     await _start(dut)
     emitted: list[int] = []
     for _ in range(QUIET_CYCLES + 40):
