@@ -69,19 +69,19 @@ int main(void)
 
     uart_puts("=== Spanning Instruction Test ===\n");
 
-    uart_puts("Test 1: printf with string... ");
+    uart_puts("Test 1: snprintf with string... ");
     snprintf(buf, sizeof buf, "%s", "Hello");
     check_text(buf, "Hello");
 
     /* The loop repeats the call, covering PC handling across iterations. */
-    uart_puts("Test 2: printf in loop... ");
+    uart_puts("Test 2: snprintf in loop... ");
     len = 0;
     for (int i = 0; i < 3; i++) {
         len += snprintf(buf + len, sizeof buf - (size_t) len, "%d", i);
     }
     check_text(buf, "012");
 
-    uart_puts("Test 3: complex printf... ");
+    uart_puts("Test 3: complex snprintf... ");
     snprintf(buf, sizeof buf, "%s=%d", "val", 42);
     check_text(buf, "val=42");
 
