@@ -148,8 +148,7 @@ module branch_prediction_controller #(
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic                               i_dir_update_taken,
 
-    // Combinational prediction outputs (for pc_controller next_pc selection)
-    output logic                       o_predicted_taken,
+    // Combinational prediction target (for pc_controller next_pc selection)
     output logic [riscv_pkg::XLEN-1:0] o_predicted_target,
 
     // Registered prediction outputs (for pipeline stage alignment)
@@ -719,7 +718,6 @@ module branch_prediction_controller #(
   // control result, and consumers ignore the target while prediction_used is
   // low.  Every used prediction gets the same target as the gated select
   // (checked below), and the late controls stay off the wide target path.
-  assign o_predicted_taken = sel_ras_prediction || dir_predicted_taken;
   assign o_predicted_target = ras_target_candidate ? ras_target : btb_predicted_target;
   assign o_prediction_used = prediction_used_effective;
   assign o_prediction_used_for_pc = prediction_used_for_pc;

@@ -48,8 +48,6 @@ module prediction_release_formal #(
   (* anyseq *) logic i_is_compressed;
   (* anyseq *) logic i_is_compressed_fast;
   (* anyseq *) logic i_slot2_valid;
-  (* anyseq *) logic i_slot2_valid_for_pc;
-  (* anyseq *) logic i_slot2_is_compressed;
   (* anyseq *) logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel;
   (* anyseq *) logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel;
   (* anyseq *) logic i_prediction_request;
@@ -188,7 +186,6 @@ module prediction_release_formal #(
       .i_clk,
       .i_reset,
       .i_stall,
-      .i_stall_registered(stall_registered),
       .i_fetch_progress,
       .i_flush,
       .i_fence_i_flush,
@@ -202,12 +199,10 @@ module prediction_release_formal #(
       .i_trap_taken,
       .i_mret_taken,
       .i_trap_target,
-      // IF gives pc_controller its own fast size, PC squash, and replay-aware
-      // slot-2 valid, which can differ from the c_ext_state inputs, so each
-      // pair is an independent input here.
+      // IF gives pc_controller its own fast size and PC squash, which can
+      // differ from the c_ext_state inputs, so each pair is an independent
+      // input here.
       .i_is_compressed(i_is_compressed_fast),
-      .i_slot2_valid(i_slot2_valid_for_pc),
-      .i_slot2_is_compressed,
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
       // The per-i_sel_nop copies of the selects (_run, _nop) only reach the
@@ -216,7 +211,6 @@ module prediction_release_formal #(
       .i_pc_fetch_advance_sel_nop(i_pc_fetch_advance_sel),
       .i_pc_reg_advance_sel_run(i_pc_reg_advance_sel),
       .i_pc_reg_advance_sel_nop(i_pc_reg_advance_sel),
-      .i_predicted_taken(prediction_used_for_pc),
       .i_predicted_target,
       .i_predicted_target_r(predicted_target_r),
       .i_prediction_used(prediction_used),
@@ -254,7 +248,6 @@ module prediction_release_formal #(
       .o_reset_holdoff(),
       .o_any_holdoff(),
       .o_any_holdoff_safe(any_holdoff_safe),
-      .o_mid_32bit_correction(),
       .o_pending_prediction_active(pending_prediction_active),
       .o_pending_prediction_pc(pending_prediction_pc),
       .o_pending_prediction_prev_pc(pending_prediction_prev_pc),
@@ -278,7 +271,6 @@ module prediction_release_formal #(
       .o_npc_sel(),
       .o_npc_seq(),
       .o_npc_cmp_val(),
-      .o_npc_seq_verdict(),
       .o_npc_val()
   );
 

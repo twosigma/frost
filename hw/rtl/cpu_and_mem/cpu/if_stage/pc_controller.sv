@@ -40,7 +40,6 @@ module pc_controller #(
     // Pipeline control
     input logic i_reset,
     input logic i_stall,
-    input logic i_stall_registered,
     // Fetch progress: the live window is valid, or the stall-replay bundle is
     // being presented (see if_stage). When low, the fetch PC freezes through
     // its mux hold arm, pc_reg through its load enable, and the pending-
@@ -78,10 +77,7 @@ module pc_controller #(
     input logic i_is_compressed,  // Slot-1 size; used by the halfword catch-up arm
 
     // Bundle advance: +2 or +4 for one instruction, +4, +6, or +8 for two.
-    // i_slot2_valid and i_slot2_is_compressed are not used; if_stage folds
-    // them into the advance selects.
-    input logic i_slot2_valid,
-    input logic i_slot2_is_compressed,
+    // if_stage folds the slot-2 valid and size into these selects.
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
     // The two selects above for i_sel_nop = 0 and 1, which
@@ -93,7 +89,6 @@ module pc_controller #(
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_nop,
 
     // Branch prediction (from branch_prediction_controller)
-    input logic i_predicted_taken,  // BTB predicts taken (not used)
     input logic [XLEN-1:0] i_predicted_target,  // Predicted target address (combinational)
     input logic [XLEN-1:0] i_predicted_target_r,  // Predicted target address (registered)
     input logic i_prediction_used,  // Prediction consumed this cycle
@@ -157,7 +152,6 @@ module pc_controller #(
     output logic o_reset_holdoff,
     output logic o_any_holdoff,
     output logic o_any_holdoff_safe,
-    output logic o_mid_32bit_correction,
     output logic o_pending_prediction_active,
     // PC of the branch the pending prediction belongs to. IF compares packets
     // with it, so the older predecessor released early (see pim_base) cannot
@@ -209,8 +203,8 @@ module pc_controller #(
     // requests and o_npc_seq to tell provider retargets from sequential
     // advances; taking the raw requests lets its registered classifier finish
     // the prediction cases before the late prediction requests settle.
-    // o_npc_cmp_val, o_npc_val, and o_npc_seq_verdict are observation outputs
-    // for tests and the simulation checks below.
+    // o_npc_cmp_val and o_npc_val are observation outputs for tests and the
+    // simulation checks below.
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_cond,
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_sel,
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_seq,
@@ -218,9 +212,7 @@ module pc_controller #(
     // either sequential or not always shows its non-sequential operand.
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_cmp_val,
     // Every arm's value. next_pc is their one-hot selection.
-    output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_val,
-    // For the o_npc_seq arms: the riscv_pkg::fetch_verdict of the arm's value.
-    output riscv_pkg::fetch_verdict_t [riscv_pkg::PcNextArms-1:0] o_npc_seq_verdict
+    output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_val
 );
 
   // ===========================================================================
@@ -291,7 +283,6 @@ module pc_controller #(
 
   logic [XLEN-1:0] seq_next_pc, seq_next_pc_plus_2, seq_next_pc_reg;
   logic seq_next_pc_reg_neq_pc;
-  riscv_pkg::fetch_verdict_t seq_next_pc_verdict, seq_next_pc_plus_2_verdict;
 
   pc_increment_calculator #(
       .XLEN(XLEN)
@@ -300,8 +291,6 @@ module pc_controller #(
       .i_pc(o_pc),
       .i_pc_reg(o_pc_reg),
 
-      // C-extension state signals
-      .i_is_compressed,
       .i_sel_nop,
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
@@ -322,27 +311,13 @@ module pc_controller #(
       .i_prediction_holdoff,
       .i_prediction_from_buffer_holdoff,
       .i_control_flow_to_halfword_r(o_control_flow_to_halfword_r),
-      .i_stall_registered,
-
-      // Mid-32bit correction
-      .i_mid_32bit_correction(o_mid_32bit_correction),
 
       // Outputs
       .o_seq_next_pc(seq_next_pc),
       .o_seq_next_pc_plus_2(seq_next_pc_plus_2),
-      .o_seq_next_pc_verdict(seq_next_pc_verdict),
-      .o_seq_next_pc_plus_2_verdict(seq_next_pc_plus_2_verdict),
       .o_seq_next_pc_reg(seq_next_pc_reg),
       .o_seq_next_pc_reg_neq_pc(seq_next_pc_reg_neq_pc)
   );
-
-  // ===========================================================================
-  // Mid-32bit Correction Detection: disabled with 64-bit fetch
-  // ===========================================================================
-  // With 64-bit fetch, 32-bit instructions at PC[1]=1 are assembled
-  // immediately from both words. There is no "landing in the middle" of a
-  // 32-bit instruction, so the mid-32bit correction is never needed.
-  assign o_mid_32bit_correction = 1'b0;
 
   // ===========================================================================
   // Final PC Selection - Priority Muxes
@@ -967,14 +942,10 @@ module pc_controller #(
   logic [NPcArms-1:0] npc_cond;  // raw arm conditions, priority order
   logic [NPcArms-1:0] npc_sel;  // one-hot winner
   logic [XLEN-1:0] npc_val[NPcArms];
-  // Which arms are o_pc + d, each arm's early operand, and the fetch_verdict
-  // of each sequential arm (see the o_npc_* port comments).
+  // Which arms are o_pc + d, and each arm's early operand (see the o_npc_*
+  // port comments).
   logic [NPcArms-1:0] npc_seq;
   logic [NPcArms-1:0][XLEN-1:0] npc_cmp_val;
-  riscv_pkg::fetch_verdict_t [NPcArms-1:0] npc_seq_verdict;
-  // fetch_verdict of o_pc itself, for the arms that hold at it.
-  riscv_pkg::fetch_verdict_t pc_verdict;
-  assign pc_verdict = riscv_pkg::fetch_verdict(o_pc);
 
   // The pending consume arm's value, computed here so the arm value is a
   // single signal like every other arm's. npc_consume_is_seq names its
@@ -1033,8 +1004,7 @@ module pc_controller #(
     // (d = 0), the target-holdoff arm when it holds at o_pc, the consume
     // arm's sequential case, the pending-hold arm's raw-WCS override, and the
     // catch-up and sequential arms (seq_next_pc and seq_next_pc_plus_2 are
-    // o_pc + 2 to o_pc + 10; the mid-32-bit correction, which is not relative
-    // to o_pc, is tied off). Every other arm is represented by its early
+    // o_pc + 2 to o_pc + 10). Every other arm is represented by its early
     // operand: a redirect target, pc_reg's word, or a registered pending
     // address. Arms 9, 10, and 12 are sequential only in the cases listed,
     // and their npc_cmp_val entry is always the pending operand.
@@ -1053,14 +1023,6 @@ module pc_controller #(
     // operand of the non-sequential case.
     npc_cmp_val[12] = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
         pending_prediction_pc;
-    // fetch_verdict of each sequential arm (don't-care elsewhere).
-    npc_seq_verdict = '0;
-    npc_seq_verdict[6] = pc_verdict;
-    npc_seq_verdict[9] = pc_verdict;
-    npc_seq_verdict[10] = seq_next_pc_verdict;
-    npc_seq_verdict[11] = seq_next_pc_plus_2_verdict;
-    npc_seq_verdict[12] = seq_next_pc_verdict;
-    npc_seq_verdict[13] = seq_next_pc_verdict;
   end
   assign o_npc_cond = npc_cond;
   assign o_npc_sel = npc_sel;
@@ -1069,7 +1031,6 @@ module pc_controller #(
   always_comb begin
     for (int unsigned k = 0; k < NPcArms; k++) o_npc_val[k] = npc_val[k];
   end
-  assign o_npc_seq_verdict = npc_seq_verdict;
 
   // One-hot: arm k wins when it asks and no higher-priority arm does. The
   // kill term is a plain OR reduce of the strictly-higher-priority bits, so
@@ -1670,8 +1631,6 @@ module pc_controller #(
       for (int unsigned k = 0; k < NPcArms; k++) begin
         if (npc_seq[k]) begin
           p_npc_seq_arm_is_pc_plus_small : assert ((npc_val[k] - o_pc) < 64'd16);
-          p_npc_seq_verdict_exact :
-          assert (npc_seq_verdict[k] == riscv_pkg::fetch_verdict(npc_val[k]));
         end else begin
           p_npc_cmp_val_is_arm_value : assert (npc_cmp_val[k] == npc_val[k]);
         end

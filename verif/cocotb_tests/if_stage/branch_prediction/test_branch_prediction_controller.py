@@ -242,7 +242,7 @@ async def test_direction_update_trains_registered_slot1_metadata(dut: Any) -> No
     dut.i_pc_2.value = SLOT2_PC
     await _settle()
 
-    assert not dut.o_predicted_taken.value
+    assert not dut.dir_predicted_taken.value
     assert not dut.o_prediction_used.value
     assert int(dut.o_dir_idx_2.value) == _dir_idx(SLOT2_PC)
 
@@ -292,7 +292,7 @@ async def test_slot1_btb_prediction_registers_metadata_and_holdoffs(dut: Any) ->
     dut.i_pc.value = PC_A
     await _settle()
 
-    assert dut.o_predicted_taken.value
+    assert dut.dir_predicted_taken.value
     assert int(dut.o_predicted_target.value) == TARGET_A
     assert dut.o_prediction_used.value
     assert dut.o_prediction_used_for_pc.value
@@ -488,7 +488,7 @@ async def test_slot1_btb_prediction_blockers_suppress_effective_use(dut: Any) ->
             dut.i_disable_branch_prediction_wcs.value = value
         await _settle()
 
-        assert dut.o_predicted_taken.value
+        assert dut.dir_predicted_taken.value
         assert int(dut.o_predicted_target.value) == TARGET_A
         _assert_no_effective_slot1_prediction(dut)
 
@@ -528,7 +528,7 @@ async def test_late_branch_and_spanning_gates_suppress_prediction_use(
         getattr(dut, signal_name).value = 1
         await _settle()
 
-        assert dut.o_predicted_taken.value
+        assert dut.dir_predicted_taken.value
         assert int(dut.o_predicted_target.value) == TARGET_A
         _assert_no_effective_slot1_prediction(dut)
 
@@ -547,7 +547,7 @@ async def test_halfword_slot1_btb_requires_compressed_entry(dut: Any) -> None:
     dut.i_pc.value = PC_HALFWORD
     await _settle()
 
-    assert dut.o_predicted_taken.value
+    assert dut.dir_predicted_taken.value
     _assert_no_effective_slot1_prediction(dut)
 
     await _btb_update(
@@ -581,7 +581,6 @@ async def test_ras_return_prediction_takes_priority_over_btb(dut: Any) -> None:
 
     assert dut.o_ras_predicted.value
     assert int(dut.o_ras_predicted_target.value) == TARGET_RAS_RETURN
-    assert dut.o_predicted_taken.value
     assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
     assert dut.o_prediction_used.value
     assert dut.o_prediction_used_for_pc.value
@@ -866,7 +865,6 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert dut.o_slot1_aliases_slot2_candidate.value
     assert not dut.o_slot2_staged_prediction_used_for_pc.value
     assert dut.o_slot2_live_target_used_for_pc_cofactor.value
-    assert dut.o_predicted_taken.value
     assert int(dut.o_predicted_target.value) == TARGET_SLOT2
     assert dut.o_slot2_btb_hit.value
     assert dut.o_slot2_predicted_taken.value

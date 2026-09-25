@@ -2053,10 +2053,6 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.prev_was_32bit",
         )
-        pc_mid_32bit_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.o_mid_32bit_correction",
-        )
         ras_tos_sig = _get_signal(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.tos",
@@ -3498,7 +3494,6 @@ async def run_until_complete(
                     f"use_buf={_read_bool(if_use_instr_buffer_sig)} "
                     f"prev_lo={_read_bool(if_prev_compressed_lo_sig)} "
                     f"prev32={_read_bool(pc_prev_was_32bit_sig)} "
-                    f"mid32={_read_bool(pc_mid_32bit_sig)} "
                     f"seq_next_pc_reg=0x{(_read_int(pc_seq_next_pc_reg_sig) or 0):08x} "
                     f"next_pc_reg=0x{(_read_int(pc_next_pc_reg_sig) or 0):08x} "
                     f"pred_off={_read_bool(branch_pred_off_sig)} "

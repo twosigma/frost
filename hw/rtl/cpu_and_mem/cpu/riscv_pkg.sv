@@ -1496,19 +1496,13 @@ package riscv_pkg;
   // the next page's base when straddling), and whether the line after word
   // 0's line stays in-page (1 when word 1 starts the next line, where the
   // fetch provider uses word 1's own fault flag instead). The IMMU evaluates
-  // this directly on registered i_pc for its Bare bypass. pc_controller also
-  // exports each sequential arm's copy on its o_npc_seq_verdict observation
-  // output.
+  // this directly on registered i_pc for its Bare bypass.
   typedef struct packed {
     logic straddle;
     logic bare_fault0;
     logic bare_fault1;
     logic line_after_in_page;
   } fetch_verdict_t;
-  // Yosys cannot evaluate $bits on a package-scoped type name, so the width
-  // is spelled out; pc_increment_calculator checks it against the struct in
-  // simulation.
-  localparam int unsigned FetchVerdictBits = 4;  // straddle, bare_fault0/1, line_after_in_page
 
   function automatic fetch_verdict_t fetch_verdict(input logic [XLEN-1:0] va);
     fetch_verdict_t v;

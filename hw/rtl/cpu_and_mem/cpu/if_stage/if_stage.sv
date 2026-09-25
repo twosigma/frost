@@ -194,7 +194,6 @@ module if_stage #(
   // ---------------------------------------------------------------------------
   // Branch Prediction Controller Interface (branch_prediction_controller)
   // ---------------------------------------------------------------------------
-  logic btb_predicted_taken;  // Combinational: RAS prediction or taken BTB hit
   logic [XLEN-1:0] btb_predicted_target;  // Combinational: Predicted target address
   logic prediction_used_r;  // Registered: Prediction was applied
   logic [XLEN-1:0] btb_predicted_target_r;  // Registered: Target for pipeline alignment
@@ -257,7 +256,6 @@ module if_stage #(
   logic reset_holdoff;  // Wait cycle after reset
   logic any_holdoff;  // Any holdoff condition active
   logic any_holdoff_safe;  // Safe holdoff (registered signals only)
-  logic mid_32bit_correction;  // Mid-instruction correction; always 0 with 64-bit fetch
   logic pending_prediction_active;  // A slot-1 prediction waits for pc_reg to reach its branch
   logic [XLEN-1:0] pending_prediction_pc;  // PC of the branch the prediction belongs to
   logic pending_prediction_target_handoff;  // Pending branch consumed; pc_reg moves to target
@@ -339,10 +337,6 @@ module if_stage #(
   logic slot2_is_compressed_plus4_for_btb;
   logic slot2_plus2_candidate_valid;
   logic slot2_plus4_candidate_valid;
-  logic slot2_valid_for_pc_saved;
-  logic slot2_is_compressed_for_pc_saved;
-  logic slot2_valid_for_pc;
-  logic slot2_is_compressed_for_pc;
   logic pending_prediction_owns_live_slot1;
   logic pending_prediction_owns_live_slot2;
   logic pending_prediction_kills_live_slot2;
@@ -807,8 +801,7 @@ module if_stage #(
       .i_dir_update_idx  (i_dir_update_idx),
       .i_dir_update_taken(i_dir_update_taken),
 
-      // Combinational prediction outputs (for pc_controller)
-      .o_predicted_taken (btb_predicted_taken),
+      // Combinational prediction target (for pc_controller)
       .o_predicted_target(btb_predicted_target),
 
       // Registered prediction outputs (for pipeline alignment)
@@ -871,7 +864,6 @@ module if_stage #(
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
       .i_stall(pc_controller_stall),
-      .i_stall_registered(if_stage_stall_registered),
       .i_fetch_progress(fetch_progress),
       // Flush with registered trap and xRET terms; see flush_for_c_ext_safe.
       .i_flush(flush_for_c_ext_safe),
@@ -891,12 +883,9 @@ module if_stage #(
       .i_trap_target(i_trap_ctrl.trap_target),
 
       .i_is_compressed(is_compressed_fast),
-      // Two-wide bundle advance. pc_controller does not read the slot-2 valid
-      // and size; the advance selects below already fold them in. The selects
-      // switch to their stall-captured copies during replay, so the PC
+      // Two-wide bundle advance. The selects fold in the slot-2 valid and size
+      // and switch to their stall-captured copies during replay, so the PC
       // advance stays consistent with what dispatch sees.
-      .i_slot2_valid(slot2_valid_for_pc),
-      .i_slot2_is_compressed(slot2_is_compressed_for_pc),
       .i_pc_fetch_advance_sel(pc_fetch_advance_sel),
       .i_pc_reg_advance_sel(pc_reg_advance_sel),
       .i_pc_fetch_advance_sel_run(pc_fetch_advance_sel_run),
@@ -905,7 +894,6 @@ module if_stage #(
       .i_pc_reg_advance_sel_nop(pc_reg_advance_sel_nop),
 
       // Branch prediction (from branch_prediction_controller)
-      .i_predicted_taken(btb_predicted_taken),
       .i_predicted_target(btb_predicted_target),
       .i_predicted_target_r(btb_predicted_target_r),
       .i_prediction_used(prediction_used),
@@ -941,7 +929,6 @@ module if_stage #(
       .o_reset_holdoff(reset_holdoff),
       .o_any_holdoff(any_holdoff),
       .o_any_holdoff_safe(any_holdoff_safe),
-      .o_mid_32bit_correction(mid_32bit_correction),
       .o_pending_prediction_active(pending_prediction_active),
       .o_pending_prediction_pc(pending_prediction_pc),
       .o_pending_prediction_prev_pc(pending_prediction_prev_pc),
@@ -962,8 +949,7 @@ module if_stage #(
       .o_npc_cond(npc_cond),
       .o_npc_seq(npc_seq),
       .o_npc_cmp_val(),
-      .o_npc_val(),
-      .o_npc_seq_verdict()
+      .o_npc_val()
   );
 
   // ===========================================================================
@@ -1143,7 +1129,6 @@ module if_stage #(
 
       .i_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
 
-      .i_mid_32bit_correction(mid_32bit_correction),
       // RAS predicts after the instruction arrives, so the next cycle's
       // instruction is stale.  BTB predicts before the instruction arrives, so
       // that cycle must not be suppressed.
@@ -2601,23 +2586,14 @@ module if_stage #(
   // arm is inactive.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
-      slot2_valid_for_pc_saved         <= 1'b0;
-      slot2_is_compressed_for_pc_saved <= 1'b0;
-      pc_fetch_advance_sel_saved       <= riscv_pkg::PcAdvancePlus2;
-      pc_reg_advance_sel_saved         <= riscv_pkg::PcAdvancePlus2;
+      pc_fetch_advance_sel_saved <= riscv_pkg::PcAdvancePlus2;
+      pc_reg_advance_sel_saved   <= riscv_pkg::PcAdvancePlus2;
     end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      slot2_valid_for_pc_saved         <= !sel_nop && slot2_valid_for_pc_live_effective;
-      slot2_is_compressed_for_pc_saved <= slot2_is_compressed_for_pc_live;
-      pc_fetch_advance_sel_saved       <= pc_fetch_advance_sel_live;
-      pc_reg_advance_sel_saved         <= pc_reg_advance_sel_live;
+      pc_fetch_advance_sel_saved <= pc_fetch_advance_sel_live;
+      pc_reg_advance_sel_saved   <= pc_reg_advance_sel_live;
     end
   end
 
-  assign slot2_valid_for_pc = replay_saved_if_outputs ? slot2_valid_for_pc_saved :
-                              (!sel_nop && slot2_valid_for_pc_live_effective);
-  assign slot2_is_compressed_for_pc =
-      replay_saved_if_outputs ? slot2_is_compressed_for_pc_saved :
-                                slot2_is_compressed_for_pc_live;
   assign pc_fetch_advance_sel =
       replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_fetch_advance_sel_live;
   assign pc_reg_advance_sel =

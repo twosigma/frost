@@ -64,7 +64,6 @@ module instruction_aligner #(
     input logic i_prev_was_compressed_at_lo,  // Previous was compressed at lo
 
     // Control signals
-    input logic i_mid_32bit_correction,  // Landed mid-instruction; 0 with 64-bit fetch
     input logic i_prediction_holdoff,  // Stale cycle after RAS prediction
     input logic i_prediction_from_buffer_holdoff,  // Stale cycle after predicting from buffer
 
@@ -491,10 +490,8 @@ module instruction_aligner #(
   // Instruction Selection Signals
   // ===========================================================================
   // A spanning instruction is assembled in the same cycle, so only the holdoff
-  // and correction cases NOP slot 1 here. IF adds its other bubble conditions.
-  assign o_sel_nop = i_mid_32bit_correction ||
-      i_prediction_holdoff ||
-      i_prediction_from_buffer_holdoff;
+  // cases NOP slot 1 here. IF adds its other bubble conditions.
+  assign o_sel_nop = i_prediction_holdoff || i_prediction_from_buffer_holdoff;
 
   // The size bit is not qualified with o_sel_nop: PD selects the final
   // instruction with the priority NOP > compressed > 32-bit.

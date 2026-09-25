@@ -1834,7 +1834,7 @@ async def test_noncovering_window_cannot_seed_branch_prediction(dut: Any) -> Non
     assert dut.disable_branch_prediction_effective.value
     assert not dut.disable_branch_prediction_effective_wcs0.value
     assert dut.disable_branch_prediction_effective_wcs.value
-    assert bpc.o_predicted_taken.value
+    assert bpc.btb_predicted_taken.value
     assert int(bpc.o_predicted_target.value) == target
     assert not bpc.o_prediction_used.value
     assert not bpc.o_prediction_used_for_pc.value

@@ -38,7 +38,6 @@ PC_ADV_PLUS6 = 2
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs except reset to idle values."""
     dut.i_stall.value = 0
-    dut.i_stall_registered.value = 0
     dut.i_fetch_progress.value = 1
     dut.i_flush.value = 0
     dut.i_fence_i_flush.value = 0
@@ -53,15 +52,12 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_mret_taken.value = 0
     dut.i_trap_target.value = 0
     dut.i_is_compressed.value = 0
-    dut.i_slot2_valid.value = 0
-    dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
     dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4
     dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS4
-    dut.i_predicted_taken.value = 0
     dut.i_predicted_target.value = 0
     dut.i_predicted_target_r.value = 0
     dut.i_prediction_used.value = 0
@@ -137,7 +133,6 @@ def _assert_pc(dut: Any, *, pc: int, pc_reg: int) -> None:
 
 def _drive_slot1_prediction(dut: Any, *, target: int) -> None:
     """Drive a slot-1 prediction redirect."""
-    dut.i_predicted_taken.value = 1
     dut.i_predicted_target.value = target
     dut.i_prediction_used.value = 1
     dut.i_prediction_used_for_pc.value = 1
@@ -387,14 +382,12 @@ async def test_pc_reg_clock_enable_factors_fetch_holds_and_preserves_priority(
 async def test_two_wide_bundle_inputs_advance_pc_controller_outputs(
     dut: Any,
 ) -> None:
-    """The controller forwards slot-2 bundle size to the sequential PC calculator."""
+    """The two-wide advance selects move both PCs by the bundle size."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
 
-    dut.i_slot2_valid.value = 1
     dut.i_is_compressed.value = 1
-    dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
     dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS6
     dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS6
