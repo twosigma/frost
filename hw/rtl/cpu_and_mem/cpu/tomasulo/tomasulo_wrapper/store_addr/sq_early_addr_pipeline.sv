@@ -97,10 +97,6 @@ module sq_early_addr_pipeline (
     output logic o_sq_early_addr_capture_valid_2
 );
 
-  // MMIO base, the same value as the tomasulo_wrapper localparam. Unused: the
-  // is_mmio flags below decode address bits [31:30].
-  localparam logic [riscv_pkg::XLEN-1:0] MmioBase = 64'h4000_0000;
-
   // ---------------------------------------------------------------------------
   // Input aliases with the wrapper's signal names (i_clk, i_rst_n, i_flush_*,
   // and i_bypass_tag_* already match).

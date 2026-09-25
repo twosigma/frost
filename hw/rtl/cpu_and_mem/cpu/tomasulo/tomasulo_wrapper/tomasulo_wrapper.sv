@@ -4164,10 +4164,10 @@ module tomasulo_wrapper #(
   // exact xtval.
   assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
-  // MMIO detection: the 01 address quadrant [0x4000_0000, 0x8000_0000).
-  // The cached (DDR) region is the 10 quadrant [0x8000_0000, 0xC000_0000)
-  // and must not be flagged MMIO, so a ">= MmioBase" test would be wrong.
-  localparam logic [riscv_pkg::XLEN-1:0] MmioBase = 64'h4000_0000;
+  // MMIO detection: the 01 address quadrant [0x4000_0000, 0x8000_0000),
+  // decoded from bits [31:30]. The cached (DDR) region is the 10 quadrant
+  // [0x8000_0000, 0xC000_0000) and must not be flagged MMIO, so a lower-bound
+  // test alone would be wrong.
   logic lq_addr_is_mmio;
   assign lq_addr_is_mmio = (lq_effective_addr[31:30] == 2'b01);
 
