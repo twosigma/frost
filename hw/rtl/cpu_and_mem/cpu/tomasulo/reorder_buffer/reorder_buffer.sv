@@ -249,6 +249,12 @@ module reorder_buffer #(
     // Dirty-setting only moves FS away from Off.
     input logic i_mstatus_fs_off,
 
+    // frm from csr_file. An FP instruction whose rm field selects the dynamic
+    // rounding mode reads it, and frm values 5 to 7 are reserved: the
+    // allocation legality snapshot marks such an instruction illegal. Only
+    // CSR writes change frm, and they serialize.
+    input logic [2:0] i_frm,
+
     // =========================================================================
     // Pipeline Flush Control
     // =========================================================================
@@ -463,11 +469,20 @@ module reorder_buffer #(
     fs_gated_op = is_fp || (is_csr && (addr[11:2] == 10'b0) && (addr[1:0] != 2'b00));
   endfunction
 
+  // Dynamic rounding-mode pre-decode. Dispatch passes every instruction's
+  // funct3 in csr_op. An F/D instruction with funct3 111 selects the dynamic
+  // rounding mode: the instructions with an rm field hold it there, and
+  // every other legal F/D instruction has a funct3 of 011 or less.
+  function automatic logic fp_dyn_rm_op(input logic is_fp, input logic [2:0] funct3);
+    fp_dyn_rm_op = is_fp && (funct3 == 3'b111);
+  endfunction
+
   // Complete allocation-time legality check. The live CSR-file inputs are a
   // cycle-exact snapshot for every instruction that can survive to the head:
   // a CSR instruction keeps younger instructions out of dispatch until its
   // CSR write is done, and trap/xRET and Debug-Mode transitions flush every
-  // younger entry. Hardware FS Dirty-setting only moves FS away from Off.
+  // younger entry. Hardware FS Dirty-setting only moves FS away from Off, and
+  // only CSR writes change frm.
   // Recording the result in rob_exception keeps the live privilege/CSR-state
   // cone off the commit path without changing which instruction traps.
   function automatic logic alloc_legality_fault(input riscv_pkg::reorder_buffer_alloc_req_t req);
@@ -499,7 +514,8 @@ module reorder_buffer #(
           ((req.is_sfence_vma || is_satp_csr) && i_sfence_illegal) ||
           (req.is_wfi && i_wfi_illegal) ||
           csr_static_illegal(req.is_csr, req.csr_addr, req.csr_write_intent) ||
-          (fs_gated_op(req.is_fp_instruction, req.is_csr, req.csr_addr) && i_mstatus_fs_off);
+          (fs_gated_op(req.is_fp_instruction, req.is_csr, req.csr_addr) && i_mstatus_fs_off) ||
+          (fp_dyn_rm_op(req.is_fp_instruction, req.csr_op) && (i_frm > riscv_pkg::FRM_RMM));
     end
   endfunction
 

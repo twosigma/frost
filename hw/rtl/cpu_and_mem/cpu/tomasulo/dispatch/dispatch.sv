@@ -1358,6 +1358,8 @@ module dispatch #(
         (i_from_id_to_ex.instruction.funct3[1:0] == 2'b01) ||
         (i_from_id_to_ex.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req.csr_addr = i_from_id_to_ex.csr_address;
+    // funct3 for every instruction: the ROB also reads it as an F/D
+    // instruction's rm field (reserved-frm legality check).
     o_rob_alloc_req.csr_op = i_from_id_to_ex.instruction.funct3;
     // CSR write data: the zero-extended immediate for immediate forms, else 0.
     // A register form's rs1 value is not known until its source operand

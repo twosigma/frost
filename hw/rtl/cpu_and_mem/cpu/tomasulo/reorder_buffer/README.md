@@ -79,13 +79,18 @@ The ROB decides at allocation whether an instruction is illegal and records
 it as an exception with cause `ExcIllegalInstr`. The check covers privilege
 level, counter enables, `mstatus` TVM, TW, and TSR, S-mode `stimecmp` access
 without `menvcfg.STCE`, Debug-only instructions and CSRs, unimplemented CSRs,
-writes to read-only CSRs, and FP use while `mstatus.FS` is Off.
+writes to read-only CSRs, FP use while `mstatus.FS` is Off, and an FP
+instruction with the dynamic rounding mode (rm = 111) while `frm` holds a
+reserved value (5 to 7), which traps like the reserved static modes do.
+Dispatch passes every instruction's funct3 in the request's `csr_op` field;
+for an F/D instruction it is 111 exactly when the instruction has an rm field
+set to dynamic.
 
 Deciding at allocation is exact because that state cannot change under a
 live entry: every CSR instruction keeps younger instructions out of dispatch
-until its CSR write is done, traps, xRETs, and Debug Mode transitions flush
-younger work, and hardware never sets `mstatus.FS` to Off (it only sets
-Dirty).
+until its CSR write is done (only CSR writes change `frm`), traps, xRETs, and
+Debug Mode transitions flush younger work, and hardware never sets
+`mstatus.FS` to Off (it only sets Dirty).
 
 A normal CDB completion leaves an allocation-time fault in place, while an
 exceptional one sets the exception and replaces the cause. ID marks F/D

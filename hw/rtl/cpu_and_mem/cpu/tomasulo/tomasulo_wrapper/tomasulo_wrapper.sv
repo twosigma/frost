@@ -55,7 +55,8 @@ module tomasulo_wrapper #(
     input logic i_rst_n,
 
     // =========================================================================
-    // FRM CSR (dynamic rounding-mode resolution at dispatch)
+    // FRM CSR (dynamic rounding-mode resolution at dispatch, and the ROB's
+    // reserved-frm legality check)
     // =========================================================================
     input logic [2:0] i_frm_csr,
 
@@ -2683,6 +2684,7 @@ module tomasulo_wrapper #(
       .i_debug_mode                   (i_debug_mode),
       .i_mcounteren                   (i_mcounteren),
       .i_mstatus_fs_off               (i_mstatus_fs_off),
+      .i_frm                          (i_frm_csr),
       .i_commit_hold                  (i_commit_hold),
 
       // Flush
@@ -3317,8 +3319,13 @@ module tomasulo_wrapper #(
   assign o_mem_rs_issue = mem_rs_issue_w;
 
   // ---------------------------------------------------------------------------
-  // Resolve FRM_DYN at dispatch time (shared by all FP RS).
-  // Reserved frm CSR values (5 to 7) clamp to RNE.
+  // Resolve FRM_DYN at dispatch time (shared by all FP RS). In the full core
+  // dispatch has already replaced DYN with frm, so DYN arrives here only when
+  // frm holds 7. An FP instruction that reads a reserved frm (5 to 7) through
+  // DYN is illegal: the ROB records the fault at allocation and the
+  // instruction traps at the head, so no result or flag it computes
+  // retires. The clamp to RNE only keeps DYN out of the FP stations (checked
+  // in simulation below); frm values 5 and 6 pass through unchanged.
   // ---------------------------------------------------------------------------
   wire [2:0] frm_safe = (i_frm_csr > riscv_pkg::FRM_RMM) ? riscv_pkg::FRM_RNE : i_frm_csr;
   function automatic logic [2:0] resolve_dispatch_rm(input logic [2:0] rm);

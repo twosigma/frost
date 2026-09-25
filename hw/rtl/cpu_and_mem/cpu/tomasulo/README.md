@@ -184,7 +184,10 @@ If an FP instruction's `rm` field is DYN, dispatch substitutes the current
 `frm` value into the RS entry. The front end holds younger instructions while
 any CSR instruction is in flight, so the substituted value is always the one
 in program order, and a later `frm` write cannot affect an FP operation
-already dispatched.
+already dispatched. A DYN instruction that finds a reserved `frm` (5 to 7) is
+illegal: the ROB records the fault at allocation (see its
+[README](reorder_buffer/README.md#legality-checks-at-allocation)), so the
+instruction traps and its result never retires.
 
 ### 2-wide dispatch
 

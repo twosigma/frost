@@ -2380,6 +2380,98 @@ async def test_fs_off_slot2_blocks_widen_commit_then_traps(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_dyn_rm_with_reserved_frm_is_illegal(dut: Any) -> None:
+    """An FP op with rm = DYN is illegal at allocation while frm is 5, 6, or 7.
+
+    For each reserved frm the DYN op allocates in slot 1, then in slot 2
+    beside an ordinary instruction. frm returns to RNE right after
+    allocation, and the op must still trap with IllegalInstr at the head
+    while the slot-1 instruction retires alone. DYN with a valid frm, a
+    static rounding mode under a reserved frm, and a non-FP instruction with
+    funct3 111 all retire normally.
+    """
+    dut_if, _ = await setup_test(dut)
+    frm_dyn = 0b111
+
+    def fp_request(pc: int, rm: int) -> AllocationRequest:
+        return AllocationRequest(
+            pc=pc,
+            rs_type=RS_FP,
+            dest_rf=1,
+            dest_reg=3,
+            dest_valid=True,
+            is_fp_instruction=True,
+            has_fp_flags=True,
+            csr_op=rm,
+        )
+
+    async def complete(tag: int) -> None:
+        dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0x3F80_0000))
+        await dut_if.step()
+        dut_if.clear_cdb_write()
+
+    async def expect_illegal_head(pc: int) -> None:
+        await RisingEdge(dut_if.clock)
+        assert dut_if.trap_pending, f"DYN op at {pc:#x} did not trap"
+        assert dut_if.trap_pc == pc
+        assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
+        await FallingEdge(dut_if.clock)
+        dut_if.set_trap_taken(True)
+        dut_if.drive_full_flush()
+        await dut_if.step()
+        dut_if.set_trap_taken(False)
+        dut_if.clear_full_flush()
+        assert dut_if.empty
+
+    for frm in (5, 6, 7):
+        pc = 0x6000 + 0x100 * frm
+        dut.i_frm.value = frm
+        tag = await drive_single_alloc(dut_if, fp_request(pc, frm_dyn))
+        dut.i_frm.value = 0
+        await complete(tag)
+        await expect_illegal_head(pc)
+
+        dut.i_frm.value = frm
+        (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(
+            dut_if,
+            make_simple_alloc_request(pc=pc + 0x10, rd=4),
+            fp_request(pc + 0x14, frm_dyn),
+        )
+        dut.i_frm.value = 0
+        await complete(tag_2)
+        dut_if.drive_cdb_write(CDBWrite(tag=tag_1, value=0x1111))
+        await RisingEdge(dut_if.clock)
+        commit = dut_if.read_commit()
+        assert commit["valid"] and commit["tag"] == tag_1
+        assert not dut_if.read_commit_2()["valid"], "Illegal slot-2 DYN op retired"
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_cdb_write()
+        await expect_illegal_head(pc + 0x14)
+
+    legal_cases = (
+        ("DYN with frm=RMM", 4, fp_request(0x7000, frm_dyn)),
+        ("static RNE with frm=7", 7, fp_request(0x7004, 0b000)),
+        (
+            "non-FP funct3 111 with frm=5",
+            5,
+            AllocationRequest(pc=0x7008, dest_reg=5, dest_valid=True, csr_op=frm_dyn),
+        ),
+    )
+    for name, frm, req in legal_cases:
+        dut.i_frm.value = frm
+        tag = await drive_single_alloc(dut_if, req)
+        dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0x2222))
+        await RisingEdge(dut_if.clock)
+        commit = dut_if.read_commit()
+        assert commit["valid"] and commit["tag"] == tag, f"{name}: did not retire"
+        assert not commit["exception"], f"{name}: marked illegal"
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_cdb_write()
+        assert not dut_if.trap_pending
+    dut.i_frm.value = 0
+
+
+@cocotb.test()
 async def test_same_cycle_stale_exception_does_not_override_alloc_illegal(
     dut: Any,
 ) -> None:

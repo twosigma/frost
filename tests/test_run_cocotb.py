@@ -762,6 +762,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="fpu_assembly_test",
         description="FPU assembly hazard tests",
     ),
+    "fp_dyn_rm_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fp_dyn_rm_test",
+        description=(
+            "FP instructions with rm=DYN trap as illegal while frm is 5-7; static "
+            "rounding modes and a valid frm are unaffected"
+        ),
+    ),
     "hello_world": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

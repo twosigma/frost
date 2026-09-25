@@ -384,6 +384,9 @@ class ReorderBufferInterface:
         # FS not Off (the reset value is Initial), so the allocation-time
         # FS-Off check never marks an FP instruction illegal.
         self.dut.i_mstatus_fs_off.value = 0
+        # frm = RNE (the reset value), so the reserved-frm check never marks a
+        # dynamic-rounding FP instruction illegal.
+        self.dut.i_frm.value = 0
         self.dut.i_interrupt_pending.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0

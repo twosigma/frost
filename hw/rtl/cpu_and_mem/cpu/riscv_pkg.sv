@@ -2299,7 +2299,9 @@ package riscv_pkg;
     // allocation.
     logic csr_write_intent;
     logic [11:0] csr_addr;
-    logic [2:0] csr_op;  // funct3 for CSR operation
+    // funct3 of every instruction: the CSR operation, and for an F/D
+    // instruction the rm field the ROB's reserved-frm check reads.
+    logic [2:0] csr_op;
     logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
     // FP flags validity
     logic has_fp_flags;  // Instruction produces FP flags
