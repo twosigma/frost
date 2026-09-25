@@ -26,9 +26,11 @@
  * per-entry LVT decode.
  *
  * Ports [NUM_NARROW_WRITE_PORTS-1:0] store only NARROW_DATA_WIDTH low bits;
- * their checked-zero upper bits are reconstructed on read. The ROB's
- * allocation ports use this for zero-extended XLEN link addresses, which
- * saves bits only when FLEN > XLEN.
+ * their checked-zero upper bits are reconstructed on read. The ROB's value
+ * RAMs declare their allocation ports narrow (XLEN) for zero-extended link
+ * addresses. With FLEN == XLEN, as in the RV64 core, those banks are full
+ * width: the option changes nothing and g_narrow_write_check, the zero
+ * check on the upper bits, does not elaborate.
  *
  * Staged ports must have the lowest indices. Their collision rules differ:
  *   - A same-cycle staged/live collision is legal and the staged write wins.

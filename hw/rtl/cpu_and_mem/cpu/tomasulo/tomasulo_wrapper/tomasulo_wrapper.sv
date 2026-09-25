@@ -5988,8 +5988,9 @@ module tomasulo_wrapper #(
   // value is stored at alloc and done comes from branch_update, so the commit
   // can beat the CDB wakeup broadcast by a cycle when the ALU adapter is
   // contended.  With a full ROB the committed entry can be reallocated inside
-  // this window, so the filter can also hide a stray write to the new entry.
-  // Later deliveries stay loud.
+  // this window, so the filter can also hide a stray write in that
+  // reallocation cycle, which the ROB's allocation absorbs.  Deliveries to a
+  // free entry outside the window stay loud.
   logic [3:0] dbg_recent_commit_valid;
   logic [3:0][riscv_pkg::ReorderBufferTagWidth-1:0] dbg_recent_commit_tag;
   always @(posedge i_clk) begin

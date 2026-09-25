@@ -277,11 +277,12 @@ the drain and the flush.
 An xRET enters MRET_EXEC and requests the return with `o_mret_start`
 (`o_mret_start_is_sret` and `o_mret_start_is_dret` say which). The trap unit
 takes it only in a cycle where committed stores have drained, so the ROB
-raises `o_mret_start` only while they have, and keeps raising it in MRET_EXEC
-until the return is taken; a single pulse could meet a draining store and be
-lost, leaving the FSM stuck. The trap unit redirects to `mepc`, `sepc`, or
-`dpc`, and its full flush, which arrives with `i_mret_done`, clears the ROB,
-xRET included.
+raises `o_mret_start` only while they have. It can rise in MRET_EXEC as well
+as in IDLE: an xRET that reaches the head while stores are still draining
+enters MRET_EXEC first and raises the start once they finish. A start that
+could rise only on entry would never rise then, leaving the FSM stuck. The
+trap unit redirects to `mepc`, `sepc`, or `dpc`, and its full flush, which
+arrives with `i_mret_done`, clears the ROB, xRET included.
 
 WFI holds the head until an interrupt is pending. `o_head_is_wfi` lets
 cpu_ooo use the instruction after the WFI as the interrupt return address,

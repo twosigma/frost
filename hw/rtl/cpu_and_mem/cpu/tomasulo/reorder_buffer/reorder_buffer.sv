@@ -2401,11 +2401,10 @@ module reorder_buffer #(
   // mirrors o_trap_pending (below).
   //
   // The i_sq_committed_empty gate keeps o_mret_start (hence i_mret_start ->
-  // trap_drain_wait -> i_commit_hold) low during the drain wait, which (a)
-  // prevents o_mret_start and the commit hold from toggling each other every
-  // cycle and (b) keeps mret_taken a single-cycle pulse so flush_all fires
-  // exactly once. It costs nothing on the common path, where a retiring MRET
-  // finds the committed SQ already empty.
+  // trap_drain_wait -> i_commit_hold) low during the drain wait, so
+  // o_mret_start and the commit hold do not toggle each other every cycle.
+  // It costs nothing on the common path, where a retiring MRET finds the
+  // committed SQ already empty.
   assign o_mret_start = ((serial_state == riscv_pkg::SERIAL_IDLE) ||
                          (serial_state == riscv_pkg::SERIAL_MRET_EXEC)) &&
                         head_valid && head_done &&
@@ -2909,7 +2908,8 @@ module reorder_buffer #(
   // CSR/xRET starts: allocation records the class bits and CDB-bypass
   // eligibility together, so no live CSR or xRET entry is bypass-eligible.
   // That makes the stored-done start equations equal to their head_ready
-  // reference forms, including xRET's sustained SQ-drain handshake.
+  // reference forms, including the xRET start's MRET_EXEC and
+  // committed-stores-drained terms.
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
     if (i_rst_n) begin
@@ -3260,7 +3260,10 @@ module reorder_buffer #(
   // tag committed within the last two cycles is taken to be a JALR wakeup
   // broadcast trailing its branch_update-driven commit. A JALR is marked done
   // by its branch update and its link value is stored at allocation, so it
-  // can commit before its wakeup broadcast arrives.
+  // can commit before its wakeup broadcast arrives. With a full ROB the
+  // committed entry can be reallocated inside this window, so the filter also
+  // hides a stray write in that reallocation cycle, which the allocation
+  // absorbs.
   logic [3:0] dbg_recent_commit_valid;
   logic [3:0][ReorderBufferTagWidth-1:0] dbg_recent_commit_tag;
   always @(posedge i_clk) begin
