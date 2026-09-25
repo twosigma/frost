@@ -22,8 +22,8 @@
 #   3. C.FLD / C.FSD using compressed registers (f8-f15, x8-x15 base)
 #   4. C.FLDSP / C.FSDSP using stack-pointer base
 #
-# Prints <<PASS>> on success. A failing subtest prints FAIL and its name, then
-# hangs without printing <<FAIL>>, so the harness catches it by timeout.
+# Prints <<PASS>> on success. A failing subtest prints FAIL with its name and
+# then <<FAIL>>, and stops.
 
     .section .init
     .option push
@@ -41,10 +41,6 @@ _start:
     # Data base in s1 = x9, inside the register range the compressed
     # loads and stores can encode.
     la      s1, data_base
-    # Seed the scratch words: data_base is in .bss and nothing zeroes it here.
-    li      t0, 0x00000001
-    sw      t0, 0(s1)
-    sw      x0, 4(s1)
 
     la      a0, msg_header
     jal     ra, print_string
@@ -114,10 +110,14 @@ fail_test3:
     .option norvc
     la      a0, msg_fail3
     jal     ra, print_string
-    j       done
+    j       fail_marker
 
 fail_test4:
     la      a0, msg_fail4
+    jal     ra, print_string
+
+fail_marker:
+    la      a0, msg_fail_marker
     jal     ra, print_string
     j       done
 
@@ -162,6 +162,8 @@ msg_pass:
     .asciz "\n=== All Tests Passed ===\n"
 msg_marker:
     .asciz "<<PASS>>\n"
+msg_fail_marker:
+    .asciz "<<FAIL>>\n"
 
 # =========================================
 # Test data
