@@ -6,9 +6,10 @@
  * the 160 KiB RAM; a test whose image exceeds the low BRAM is covered by the
  * ddr tier (link_arch_test.ld) instead. This suite runs only in simulation.
  *
- * The .data load image sits in ROM directly after .rodata and crt0 copies it
- * into RAM. Near-capacity tests place that load image just below RAM with a
- * small overlap into the destination range, so crt0 copies backward
+ * The .data load image sits directly after .rodata and crt0 copies it into
+ * RAM. A load image that does not fit in the rest of the ROM continues across
+ * the debug slice (nothing writes it without a debugger attached) into RAM,
+ * where it can overlap its own destination, so crt0 copies backward
  * (memmove-safe for dest > src).
  */
 

@@ -5,8 +5,8 @@
 // copies .data/.sdata from ROM to RAM, zeroes .sbss/.bss, and jumps to the
 // framework's rvtest_init entry point.
 //
-// Some near-capacity tests place the .data load image just below RAM with a
-// small overlap into the destination range. Copy backward so the startup
+// A large .data load image can run past the ROM into RAM and overlap its
+// destination (see link_arch_test_bram.ld). Copy backward so the startup
 // behaves like memmove when dest > src.
 
     .section .init
