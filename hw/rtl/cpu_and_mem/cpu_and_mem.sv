@@ -426,8 +426,8 @@ module cpu_and_mem #(
   logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable;
   // Copy with MMIO and cached-tier writes masked, routed straight to the BRAM
-  // WEA pins. Generated in cpu_ooo from the SQ/AMO-side registered is_mmio and
-  // is_cached flags, so the BRAM write enable does not depend on a late
+  // WEA pins. Generated in cpu_ooo from the registered tier flags of the SQ
+  // and AMO writes, so the BRAM write enable does not depend on a late
   // address-range compare, which would pull the data_memory_address mux, and
   // with it the LQ issue cone, onto the WEA pins.
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_bram_byte_write_enable;

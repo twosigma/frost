@@ -55,7 +55,6 @@ shim and adapter wiring.
 | `PREPARE_LOAD_WHILE_BUSY` | 1 (`riscv_pkg::PrepareLoadWhileBusy`) | LQ: start a load's store-queue check while the memory port is busy |
 | `L0_CACHE_DEPTH` | 128 (`riscv_pkg::LqL0Depth`) | LQ L0 cache entries |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, `0x4000_0000` | Cached (DDR) region, for LQ and SQ tier tagging |
-| `MMIO_ADDR`, `MMIO_SIZE_BYTES` | `0x4000_0000`, `0x2C` | Served MMIO window, for tagging AMO writes |
 | `PERF_COUNTERS` | 1 | 0 leaves out `tomasulo_perf_counters`; `o_perf_counter_data` then reads zero |
 
 `cpu_ooo` sets `SPLIT_RS_DISPATCH=1` and `ENABLE_DISPATCH_DONE_REPAIR=1` and

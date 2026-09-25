@@ -44,12 +44,7 @@ module load_queue #(
     // snapshot); a device handoff first waits in the router's pending
     // register, which reaches i_mem_bus_busy through the wrapper.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
-    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
-    // Served MMIO register window (the router's AMO BRAM-mask decode,
-    // riscv_pkg::mmio_window_hit). Only the AMO write tier flags use it here;
-    // the LQ's own device ordering keeps the broader quadrant is_mmio class.
-    parameter int unsigned MMIO_ADDR = 32'h4000_0000,
-    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C
+    parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -191,12 +186,12 @@ module load_queue #(
     // router derives the word-lane strobes from o_amo_mem_write_addr[2].
     output logic [riscv_pkg::MemDataBits-1:0] o_amo_mem_write_data,
     output logic                              o_amo_mem_write_is_dword,
-    // Tier flags of o_amo_mem_write_addr (served MMIO window / cached range),
-    // captured on the same edge from the same address and gated by the same
-    // state, so each equals its decode of o_amo_mem_write_addr every cycle.
-    // TIMING: the router masks its BRAM write enables with them; decoding
-    // here keeps the 32-bit range compares off the amo_state -> WEA cone.
-    output logic                              o_amo_mem_write_is_mmio,
+    // Cached-tier flag of o_amo_mem_write_addr, captured on the same edge
+    // from the same address and gated by the same state, so it equals the
+    // address's decode every cycle. The staged PMA check keeps AMOs out of
+    // the device quadrant, so the flag alone picks the cached tier or low
+    // BRAM. TIMING: the router masks its BRAM write enables with it; decoding
+    // here keeps the 32-bit range compare off the amo_state -> WEA cone.
     output logic                              o_amo_mem_write_is_cached,
     input  logic                              i_amo_mem_write_done,
 
@@ -556,8 +551,7 @@ module load_queue #(
   logic                                    amo_response_is_minmax;
   logic       [    XLEN-1:0]               amo_old_value;
   logic       [    XLEN-1:0]               amo_write_addr_q;
-  // Tier flags of amo_write_addr_q, captured beside it (see the port note).
-  logic                                    amo_write_is_mmio_q;
+  // Tier flag of amo_write_addr_q, captured beside it (see the port note).
   logic                                    amo_write_is_cached_q;
   logic       [    XLEN-1:0]               amo_write_data_q;
   logic       [    XLEN-1:0]               amo_minmax_rs2_q;
@@ -2296,7 +2290,6 @@ module load_queue #(
     o_amo_mem_write_addr      = '0;
     o_amo_mem_write_data      = '0;
     o_amo_mem_write_is_dword  = 1'b0;
-    o_amo_mem_write_is_mmio   = 1'b0;
     o_amo_mem_write_is_cached = 1'b0;
 
     if (amo_state == AMO_WRITE_ACTIVE) begin
@@ -2310,7 +2303,6 @@ module load_queue #(
       o_amo_mem_write_is_dword = amo_is_d_q;
       // Gated like the address: idle presents zero, active presents the
       // decode of the held address (the router qualifies every use with en).
-      o_amo_mem_write_is_mmio = amo_write_is_mmio_q;
       o_amo_mem_write_is_cached = amo_write_is_cached_q;
     end
   end
@@ -3620,11 +3612,8 @@ module load_queue #(
       amo_old_value <= amo_response_old_value;
       amo_entry_idx <= issued_idx;
       amo_write_addr_q <= issued_addr;
-      // Same source, same edge, same enable as the address: the flags are
-      // its decode for as long as it is held (the write-active hold included).
-      amo_write_is_mmio_q <= riscv_pkg::mmio_window_hit(
-          issued_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)
-      );
+      // Same source, same edge, same enable as the address: the flag is its
+      // decode for as long as it is held (the write-active hold included).
       amo_write_is_cached_q <= is_cached_addr(issued_addr);
       amo_kind_q <= issued_amo_kind;
       amo_minmax_rs2_q <= issued_amo_rs2;
@@ -3927,23 +3916,27 @@ module load_queue #(
   ) && $stable(
       o_amo_mem_write_is_dword
   ) && $stable(
-      o_amo_mem_write_is_mmio
-  ) && $stable(
       o_amo_mem_write_is_cached
   ))))
   else $error("LQ: AMO write payload changed while memory withheld write_done");
 
-  // The registered tier flags are, on every write-active cycle, the decode of
-  // the address presented beside them. Idle forces both low with the address;
-  // the check is enable-qualified so a window that starts at address zero
+  // The registered tier flag is, on every write-active cycle, the decode of
+  // the address presented beside it. Idle forces it low with the address; the
+  // check is enable-qualified so a cached region that starts at address zero
   // cannot trip it.
   assert property (@(posedge i_clk) disable iff (!i_rst_n)
-      o_amo_mem_write_en |-> ((o_amo_mem_write_is_mmio == riscv_pkg::mmio_window_hit(
-      o_amo_mem_write_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)
-  )) && (o_amo_mem_write_is_cached == is_cached_addr(
+      o_amo_mem_write_en |-> (o_amo_mem_write_is_cached == is_cached_addr(
       o_amo_mem_write_addr
-  ))))
+  )))
   else $error("LQ: AMO write tier flag disagrees with the presented address");
+
+  // The staged PMA check faults an AMO outside BRAM and the cached tier, so
+  // no AMO write reaches a device.
+  assert property (@(posedge i_clk) disable iff (!i_rst_n)
+      o_amo_mem_write_en |-> riscv_pkg::pma_atomic_ok(
+      o_amo_mem_write_addr
+  ))
+  else $error("LQ: AMO write outside the atomic PMA map");
 
   // MIN/MAX keep next-cycle write activation; normal AMOs spend exactly one
   // intervening COMPUTE cycle with no write, completion, or dependency release.
@@ -3979,10 +3972,7 @@ module load_queue #(
   // compute boundary, including otherwise unreachable binary owner states.
   reg [1:0] f_amo_past_valid = 2'b00;
   always @(posedge i_clk) f_amo_past_valid <= {f_amo_past_valid[0], 1'b1};
-  wire [1:0] f_amo_response_tier = {
-    riscv_pkg::mmio_window_hit(issued_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)),
-    is_cached_addr(issued_addr)
-  };
+  wire f_amo_response_tier = is_cached_addr(issued_addr);
   wire [XLEN-1:0] f_amo_response_result = issued_amo_is_d ? amo_non_minmax_compute(
       issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
   ) : XLEN'(amo_non_minmax_compute32(
@@ -4015,8 +4005,7 @@ module load_queue #(
           p_local_capture_kind : assert (amo_kind_q == $past(issued_amo_kind));
           p_local_capture_width : assert (amo_is_d_q == $past(issued_amo_is_d));
           p_local_capture_addr : assert (amo_write_addr_q == $past(issued_addr));
-          p_local_capture_tier :
-          assert ({amo_write_is_mmio_q, amo_write_is_cached_q} == $past(f_amo_response_tier));
+          p_local_capture_tier : assert (amo_write_is_cached_q == $past(f_amo_response_tier));
           p_local_capture_index : assert (amo_entry_idx == $past(issued_idx));
           p_local_capture_mode : assert (amo_is_minmax_q == $past(amo_response_is_minmax));
           if ($past(amo_response_is_minmax)) begin
@@ -4029,11 +4018,11 @@ module load_queue #(
           p_local_compute_owner_hold :
           assert ({amo_old_value, amo_minmax_rs2_q,
               amo_kind_q, amo_is_d_q, amo_is_minmax_q, amo_write_addr_q,
-               amo_write_is_mmio_q, amo_write_is_cached_q, amo_entry_idx} ==
+               amo_write_is_cached_q, amo_entry_idx} ==
               $past(
               {amo_old_value, amo_minmax_rs2_q, amo_kind_q, amo_is_d_q,
               amo_is_minmax_q, amo_write_addr_q,
-               amo_write_is_mmio_q, amo_write_is_cached_q, amo_entry_idx}
+               amo_write_is_cached_q, amo_entry_idx}
           ));
           if ($past(amo_compute_owner_killed)) begin
             p_local_compute_kill : assert (amo_state == AMO_IDLE && !o_amo_mem_write_en);
@@ -4046,13 +4035,13 @@ module load_queue #(
           assert (amo_state == AMO_WRITE_ACTIVE &&
               {amo_old_value, amo_write_data_q, amo_minmax_rs2_q, amo_kind_q,
                amo_is_d_q, amo_is_minmax_q, amo_write_addr_q,
-               amo_write_is_mmio_q, amo_write_is_cached_q, amo_entry_idx,
+               amo_write_is_cached_q, amo_entry_idx,
                amo_minmax_relation_d_q, amo_minmax_relation_w_q,
                amo_minmax_is_unsigned_q, amo_minmax_is_max_q} ==
               $past(
               {amo_old_value, amo_write_data_q, amo_minmax_rs2_q, amo_kind_q,
                amo_is_d_q, amo_is_minmax_q, amo_write_addr_q,
-               amo_write_is_mmio_q, amo_write_is_cached_q, amo_entry_idx,
+               amo_write_is_cached_q, amo_entry_idx,
                amo_minmax_relation_d_q, amo_minmax_relation_w_q,
                amo_minmax_is_unsigned_q, amo_minmax_is_max_q}
           ));
@@ -4727,26 +4716,21 @@ module load_queue #(
         p_amo_stall_write_width_stable :
         assert (o_amo_mem_write_is_dword == $past(o_amo_mem_write_is_dword));
         p_amo_stall_write_tier_stable :
-        assert ({o_amo_mem_write_is_mmio, o_amo_mem_write_is_cached} == $past(
-            {o_amo_mem_write_is_mmio, o_amo_mem_write_is_cached}
-        ));
+        assert (o_amo_mem_write_is_cached == $past(o_amo_mem_write_is_cached));
       end
 
-      // The registered tier flags never disagree with the presented address
-      // while the write is active: they capture from issued_addr on the same
-      // edge, under the same enable, and are gated by the same state as
-      // o_amo_mem_write_addr (idle forces both low, whatever the windows).
+      // The registered tier flag never disagrees with the presented address
+      // while the write is active: it captures from issued_addr on the same
+      // edge, under the same enable, and is gated by the same state as
+      // o_amo_mem_write_addr (idle forces it low). The staged PMA check keeps
+      // every AMO write inside BRAM and the cached tier.
       if (o_amo_mem_write_en) begin
         p_amo_write_tier_flags_match_addr :
-        assert ((o_amo_mem_write_is_mmio == riscv_pkg::mmio_window_hit(
-            o_amo_mem_write_addr, XLEN'(MMIO_ADDR), XLEN'(MMIO_SIZE_BYTES)
-        )) && (o_amo_mem_write_is_cached == is_cached_addr(
-            o_amo_mem_write_addr
-        )));
+        assert (o_amo_mem_write_is_cached == is_cached_addr(o_amo_mem_write_addr));
+        p_amo_write_atomic_map : assert (riscv_pkg::pma_atomic_ok(o_amo_mem_write_addr));
       end
       if (!o_amo_mem_write_en) begin
-        p_amo_write_tier_flags_idle_low :
-        assert (!o_amo_mem_write_is_mmio && !o_amo_mem_write_is_cached);
+        p_amo_write_tier_flags_idle_low : assert (!o_amo_mem_write_is_cached);
       end
 
       // Allocation writes a valid entry at the target the free search chose.

@@ -1486,13 +1486,12 @@ package riscv_pkg;
     pma_atomic_ok = pma_fetch_ok(addr);
   endfunction
 
-  // Served MMIO window decode: the implemented register window
-  // [mmio_base, mmio_base + mmio_size_bytes) plus the PLIC window (a second
-  // served range in the device quadrant, addr[31:22] == 10'h110). The
-  // data_mem_request_router uses it for its pending device read, and the
-  // load queue pre-registers it beside the AMO write address (the router's
-  // AMO BRAM-mask safety), so the one decode is shared here instead of being
-  // written twice. Narrower than the LQ/SQ device-quadrant is_mmio class.
+  // Served MMIO window decode for the data_mem_request_router's pending
+  // device read: the register window [mmio_base, mmio_base +
+  // mmio_size_bytes) plus the PLIC window (addr[31:22] == 10'h110). In the
+  // core, cpu_and_mem passes the same MMIO window that pma_device_ok checks,
+  // so every device load the router sees is inside it. Narrower than the
+  // LQ/SQ device-quadrant is_mmio class.
   function automatic logic mmio_window_hit(input logic [XLEN-1:0] addr,
                                            input logic [XLEN-1:0] mmio_base,
                                            input logic [XLEN-1:0] mmio_size_bytes);

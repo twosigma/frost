@@ -40,10 +40,6 @@ module tomasulo_wrapper #(
     // their write enables to the cached tier.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,
-    // Served MMIO register window: the load queue tags AMO writes with the
-    // router's MMIO BRAM-mask decode (o_amo_mem_write_is_mmio).
-    parameter int unsigned MMIO_ADDR = 32'h4000_0000,
-    parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
     parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
     parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
     parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
@@ -550,8 +546,7 @@ module tomasulo_wrapper #(
     output logic [       riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
     output logic [riscv_pkg::MemDataBits-1:0] o_amo_mem_write_data,
     output logic                              o_amo_mem_write_is_dword,
-    // Registered tier flags of o_amo_mem_write_addr (load_queue).
-    output logic                              o_amo_mem_write_is_mmio,
+    // Registered cached-tier flag of o_amo_mem_write_addr (load_queue).
     output logic                              o_amo_mem_write_is_cached,
     input  logic                              i_amo_mem_write_done,
 
@@ -4244,8 +4239,6 @@ module tomasulo_wrapper #(
       .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
-      .MMIO_ADDR(MMIO_ADDR),
-      .MMIO_SIZE_BYTES(MMIO_SIZE_BYTES),
       .ENABLE_SQ_FORWARD_FAST_PATH(1'b1)
   ) u_lq (
       .i_clk  (i_clk),
@@ -4340,7 +4333,6 @@ module tomasulo_wrapper #(
       .o_amo_mem_write_addr(o_amo_mem_write_addr),
       .o_amo_mem_write_data(o_amo_mem_write_data),
       .o_amo_mem_write_is_dword(o_amo_mem_write_is_dword),
-      .o_amo_mem_write_is_mmio(o_amo_mem_write_is_mmio),
       .o_amo_mem_write_is_cached(o_amo_mem_write_is_cached),
       .i_amo_mem_write_done(i_amo_mem_write_done),
 

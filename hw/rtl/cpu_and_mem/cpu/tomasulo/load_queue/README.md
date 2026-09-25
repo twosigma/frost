@@ -31,7 +31,6 @@ extracts and sign-extends bytes, halfwords and words from a 64-bit beat.
 | `PREPARE_LOAD_WHILE_BUSY` | `riscv_pkg::PrepareLoadWhileBusy` (1) | Stage the next load while the memory port is busy |
 | `PREISSUE_CANDIDATES`, `PREISSUE_SEL_WIDTH` | 0, 2; 1, 3 in the core | Accept 2^`PREISSUE_SEL_WIDTH` candidate look-ahead tags instead of one (early load wakeup) |
 | `CACHED_BASE`, `CACHED_SIZE_BYTES` | `0x8000_0000`, 1 GiB | Cached (DDR) region |
-| `MMIO_ADDR`, `MMIO_SIZE_BYTES` | The core's MMIO window | Only flags an AMO write as MMIO; the LQ's device rules cover the whole device quadrant |
 
 ## Allocation and capacity
 
@@ -290,7 +289,7 @@ cached DDR. At the response, SWAP, ADD, XOR, AND and OR capture the old
 value and `rs2`, spend a cycle in `AMO_COMPUTE`, and enter
 `AMO_WRITE_ACTIVE`; MIN and MAX compare during the capture and enter
 `AMO_WRITE_ACTIVE` directly. The write uses the LQ's own port
-(`o_amo_mem_write_*`, with registered MMIO and cached-tier flags) and stays
+(`o_amo_mem_write_*`, with a registered cached-tier flag) and stays
 stable until `i_amo_mem_write_done`. Only then does the AMO complete with the
 old value, invalidate its L0 line, and release younger loads. `.W` forms
 compute on the addressed word and return it sign-extended; the write

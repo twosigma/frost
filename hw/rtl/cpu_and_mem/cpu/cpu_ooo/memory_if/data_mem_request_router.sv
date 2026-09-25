@@ -68,12 +68,12 @@ module data_mem_request_router #(
     input logic [                  XLEN-1:0] i_amo_mem_write_addr,
     input logic [riscv_pkg::MemDataBits-1:0] i_amo_mem_write_data,
     input logic                              i_amo_mem_write_is_dword,
-    // Registered tier flags for the AMO write, like the SQ pair. The load
-    // queue decodes riscv_pkg::mmio_window_hit and the cached range from the
-    // address it captures into i_amo_mem_write_addr, on the same edge, so the
-    // flags match that address on every cycle the enable is high. TIMING:
-    // keeps the range compares out of the BRAM WEA and debug-mirror cone.
-    input logic                              i_amo_mem_write_is_mmio,
+    // Registered cached-tier flag for the AMO write, like the SQ's. The load
+    // queue decodes the cached range from the address it captures into
+    // i_amo_mem_write_addr, on the same edge, so the flag matches that address
+    // on every cycle the enable is high; an AMO never targets a device (its
+    // PMA check faults first). TIMING: keeps the range compare out of the
+    // BRAM WEA and debug-mirror cone.
     input logic                              i_amo_mem_write_is_cached,
 
     // Load-queue read request. The slot id tags a cached read for the
@@ -159,7 +159,6 @@ module data_mem_request_router #(
   logic [                  XLEN-1:0] amo_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] amo_mem_write_data;
   logic                              amo_mem_write_is_dword;
-  logic                              amo_mem_write_is_mmio;
   logic                              amo_mem_write_is_cached;
   logic                              lq_mem_read_en;
   logic [                  XLEN-1:0] lq_mem_read_addr;
@@ -174,7 +173,6 @@ module data_mem_request_router #(
   assign amo_mem_write_addr      = i_amo_mem_write_addr;
   assign amo_mem_write_data      = i_amo_mem_write_data;
   assign amo_mem_write_is_dword  = i_amo_mem_write_is_dword;
-  assign amo_mem_write_is_mmio   = i_amo_mem_write_is_mmio;
   assign amo_mem_write_is_cached = i_amo_mem_write_is_cached;
   // AMO write strobes: word lanes for .W (by addr[2]); full beat for .D.
   logic [riscv_pkg::MemStrbBits-1:0] amo_write_strobes;
@@ -249,8 +247,9 @@ module data_mem_request_router #(
   // SQ or AMO, is kept off the BRAM, where it would corrupt the word its
   // address aliases, and goes to the cached tier instead; an AMO's
   // read-modify-write result is lost unless it reaches the cache hierarchy.
-  // An AMO write to the MMIO window is kept off both the BRAM and the cached
-  // tier, though like any write it still appears on o_data_mem_per_byte_wr_en.
+  // An AMO never targets a device, so a non-cached AMO write goes to the BRAM.
+  // Like any write it also appears on o_data_mem_per_byte_wr_en, where the
+  // device decodes in cpu_and_mem never match its address.
   logic lq_mem_request_is_cached;
   assign lq_mem_request_is_cached =
       (lq_mem_request_addr_eff >= XLEN'(CACHED_BASE)) &&
@@ -287,12 +286,12 @@ module data_mem_request_router #(
   assign write_port_busy = sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight;
 
   // Low-BRAM write selects. Every term is a flop (SQ outputs, the LQ's
-  // one-hot AMO state and its registered tier flags), so each select is one
-  // LUT from registered state.
+  // one-hot AMO state and its registered cached-tier flag), so each select is
+  // one LUT from registered state.
   logic sq_bram_write;
   logic amo_bram_write;
   assign sq_bram_write = sq_mem_write_en && !sq_mem_write_is_mmio && !sq_mem_write_is_cached;
-  assign amo_bram_write = amo_mem_write_en && !amo_mem_write_is_mmio && !amo_mem_write_is_cached;
+  assign amo_bram_write = amo_mem_write_en && !amo_mem_write_is_cached;
 
   // Low-BRAM and cached reads can be accepted live. Device-quadrant reads
   // never are, even with every blocker open: they are captured into the

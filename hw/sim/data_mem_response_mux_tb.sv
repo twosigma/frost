@@ -147,16 +147,12 @@ module data_mem_response_mux_tb #(
       .o_read_data(o_standalone64)
   );
 
-  // AMO write tier flags. In the core the load queue registers these beside
-  // the AMO write address from the same source, so on every cycle they equal
-  // the decode of that address; the bench derives them from the driven address
-  // with the router's own decode (default MMIO/cached windows) instead of
-  // asking the test to keep a second pair of inputs consistent.
-  logic amo_mem_write_is_mmio;
+  // AMO write tier flag. In the core the load queue registers it beside the
+  // AMO write address from the same source, so on every cycle it equals the
+  // decode of that address; the bench derives it from the driven address
+  // with the router's default cached window instead of asking the test to
+  // keep a second input consistent.
   logic amo_mem_write_is_cached;
-  assign amo_mem_write_is_mmio = riscv_pkg::mmio_window_hit(
-      i_amo_mem_write_addr, XLEN'(32'h4000_0000), XLEN'(32'h2C)
-  );
   assign amo_mem_write_is_cached = (i_amo_mem_write_addr >= XLEN'(32'h8000_0000)) &&
       (i_amo_mem_write_addr < (XLEN'(32'h8000_0000) + XLEN'(32'h4000_0000)));
 
@@ -176,7 +172,6 @@ module data_mem_response_mux_tb #(
       .i_amo_mem_write_addr(i_amo_mem_write_addr),
       .i_amo_mem_write_data(i_amo_mem_write_data),
       .i_amo_mem_write_is_dword(i_amo_mem_write_is_dword),
-      .i_amo_mem_write_is_mmio(amo_mem_write_is_mmio),
       .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_lq_mem_read_en(i_lq_mem_read_en),
       .i_lq_mem_read_addr(i_lq_mem_read_addr),
@@ -233,7 +228,6 @@ module data_mem_response_mux_tb #(
       .i_amo_mem_write_addr(i_amo_mem_write_addr),
       .i_amo_mem_write_data(i_amo_mem_write_data),
       .i_amo_mem_write_is_dword(i_amo_mem_write_is_dword),
-      .i_amo_mem_write_is_mmio(amo_mem_write_is_mmio),
       .i_amo_mem_write_is_cached(amo_mem_write_is_cached),
       .i_lq_mem_read_en(i_lq_mem_read_en),
       .i_lq_mem_read_addr(i_lq_mem_read_addr),

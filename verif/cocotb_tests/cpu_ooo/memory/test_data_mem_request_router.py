@@ -53,9 +53,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_amo_mem_write_addr.value = 0
     dut.i_amo_mem_write_data.value = 0
     dut.i_amo_mem_write_is_dword.value = 0
-    # Registered tier flags of the AMO write address (the LQ captures them
-    # beside the address); each AMO test drives the pair its address implies.
-    dut.i_amo_mem_write_is_mmio.value = 0
+    # Registered cached-tier flag of the AMO write address (the LQ captures
+    # it beside the address); each AMO test drives the flag its address implies.
     dut.i_amo_mem_write_is_cached.value = 0
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_read_addr.value = 0
@@ -1103,25 +1102,6 @@ async def test_amo_cached_write_handshake(dut: Any) -> None:
     dut.i_cached_write_done.value = 0
     await _advance_cycle(dut)
     assert int(dut.o_amo_mem_write_done.value) == 0
-
-
-@cocotb.test()
-async def test_amo_mmio_write_still_dropped(dut: Any) -> None:
-    """An AMO to the MMIO window is masked from BRAM and the cache (undefined)."""
-    await _setup_test(dut)
-    dut.i_amo_mem_write_en.value = 1
-    dut.i_amo_mem_write_addr.value = MMIO_ADDR + 0x10
-    dut.i_amo_mem_write_is_mmio.value = 1
-    dut.i_amo_mem_write_data.value = 0x55
-    await _settle()
-    assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0
-    assert int(dut.o_data_mem_bram_write_any.value) == 0
-    assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0
-    # MMIO AMO completes combinationally (it is not a cached write).
-    assert int(dut.o_amo_mem_write_done.value) == 1
-    dut.i_amo_mem_write_en.value = 0
-    dut.i_amo_mem_write_is_mmio.value = 0
-    await _advance_cycle(dut)
 
 
 @cocotb.test()
