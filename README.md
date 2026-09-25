@@ -281,9 +281,8 @@ FROST supports one board, the Alveo X3522PV, and a single hart. Planned work
 includes reaching 4 CoreMark/MHz at the same clock and a two-hart SMP
 configuration; see [ROADMAP.md](ROADMAP.md).
 
-## Contributing and License
+## Contributors and License
 
-[CONTRIBUTING.md](CONTRIBUTING.md) describes the development workflow and
-coding style, and [CONTRIBUTORS.md](CONTRIBUTORS.md) lists contributors.
-FROST is licensed under the [Apache License 2.0](LICENSE); third-party code in
-submodules keeps its own license.
+[CONTRIBUTORS.md](CONTRIBUTORS.md) lists contributors. FROST is licensed under
+the [Apache License 2.0](LICENSE); third-party code in submodules keeps its own
+license.

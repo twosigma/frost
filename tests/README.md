@@ -89,6 +89,21 @@ does, to make it fail instead. The
 [memory-response tests](../verif/cocotb_tests/cpu_ooo/memory/README.md) cover
 the portable and Xilinx builds of the load-data mux.
 
+#### Adding a target
+
+Register a bench in `TEST_REGISTRY`:
+
+```python
+"new_feature": CocotbRunConfig(
+    python_test_module="cocotb_tests.path.test_new_feature",
+    hdl_toplevel_module="new_feature",
+    description="New feature unit tests",
+),
+```
+
+Check discovery with `./scripts/frost.py cocotb --list-tests`, then run
+`./scripts/frost.py cocotb new_feature`.
+
 ### Compliance and torture runners
 
 The ISA runners below share application and simulator build directories.
@@ -272,4 +287,17 @@ FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py pytest --collect-only -q \
   -m "cocotb and cocotb_real_program and not coremark_pro" -k '[coremark]'
 ```
 
-Markers are listed in [CONTRIBUTING.md](../CONTRIBUTING.md#test-markers).
+The pytest markers:
+
+| Marker | Selects |
+| --- | --- |
+| `cocotb` | Simulation targets |
+| `cocotb_unit` | Unit benches |
+| `cocotb_real_program` | Application tests |
+| `coremark_pro` | CoreMark-PRO workloads |
+| `synthesis` | Yosys checks |
+| `formal` | SymbiYosys checks |
+| `slow` | Long-running tests |
+
+The `pytest` shortcut collects only `tests/test_run_cocotb.py`; select the
+other markers with `./scripts/frost.py run pytest tests -m <marker>`.

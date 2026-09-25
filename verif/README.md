@@ -101,5 +101,5 @@ themselves.
 - Keep shared constants in `config.py` and per-run behavior in `TestConfig`.
 - Reuse CPU port layouts from `cocotb_tests/cpu_structs.py` and serialization
   helpers from `utils/packed_structs.py`; keep stimulus defaults in each bench.
-- Register new benches as described in the
-  [contribution guide](../CONTRIBUTING.md#adding-new-components).
+- Register new benches in `TEST_REGISTRY` as described in the
+  [test guide](../tests/README.md#adding-a-target).

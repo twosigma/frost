@@ -240,8 +240,6 @@ Use the [test guide](../../tests/README.md) for simulation, formal, and Yosys
 runs in the pinned container, and the [FPGA guide](../../fpga/README.md) for
 native Vivado builds. `frost.f` is the system source list and
 `cpu_and_mem/cpu/cpu_ooo/cpu_ooo.f` the CPU's.
-[CONTRIBUTING.md](../../CONTRIBUTING.md) lists the RTL coding rules and the
-checks a change needs.
 
 Simulation sets parameters with Verilator `-G` overrides. For the `frost`
 top, `tests/Makefile` sets the low BRAM to its 256 KiB hardware size

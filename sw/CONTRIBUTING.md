@@ -1,9 +1,8 @@
 # Contributing to FROST Software
 
 This guide covers adding bare-metal applications and libraries under `sw/`.
-The [project guide](../CONTRIBUTING.md) covers style, license headers, and
-review; the [software guide](README.md) covers the libraries, build options,
-memory map, and test commands.
+The [software guide](README.md) covers the libraries, build options, memory
+map, and test commands.
 
 ## Adding a New Application
 
