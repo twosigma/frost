@@ -465,8 +465,8 @@ indexed by the `TOMASULO_PERF_*` enum.
 
 `tomasulo_profile_print_report()` prints the full breakdown: front-end
 progress, the 2-wide width funnel, dispatch stalls, retirement, back-end
-pressure, cache activity and hit rates, L1I fetch-miss stalls, average miss
-latency, diagnostics, and average occupancy, with raw hex values and
+pressure, cache activity and hit rates, L1I fetch-miss stalls, slot-cycles
+per miss, diagnostics, and average occupancy, with raw hex values and
 percentages. In the tree, `sw/apps/coremark` (`core_portme.c`) snapshots
 around the timed region and prints the full report, and `sw/apps/tomasulo_perf`
 prints a brief report for each micro-benchmark.

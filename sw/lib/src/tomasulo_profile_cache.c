@@ -45,9 +45,9 @@ static const char u64_hex_format[] CACHE_PROFILE_RODATA = "0x%08x%08x";
 static const char metric_suffix[] CACHE_PROFILE_RODATA = " (%lu.%01lu%%)\n";
 static const char no_accesses[] CACHE_PROFILE_RODATA = "  %s hit rate: n/a (no accesses)\n";
 static const char hit_rate[] CACHE_PROFILE_RODATA = "  %s hit rate: %lu.%01lu%%\n";
-static const char no_misses[] CACHE_PROFILE_RODATA = "  %s average miss latency: n/a (no misses)\n";
-static const char miss_latency[] CACHE_PROFILE_RODATA =
-    "  %s average miss latency: %lu.%02lu cycles\n";
+static const char no_misses[] CACHE_PROFILE_RODATA = "  %s slot-cycles per miss: n/a (no misses)\n";
+static const char slot_cycles_per_miss[] CACHE_PROFILE_RODATA =
+    "  %s slot-cycles per miss: %lu.%02lu\n";
 static const char cache_header[] CACHE_PROFILE_RODATA = "  Cache hierarchy:\n";
 static const char cache_absent[] CACHE_PROFILE_RODATA =
     "  Cache hierarchy: n/a (cache counters absent)\n";
@@ -161,17 +161,23 @@ print_hit_rate(const char *label, uint64_t hits, uint64_t accesses)
     }
 }
 
+/*
+ * The miss-cycle sum adds the miss-status slots in use each cycle, and the
+ * miss count includes requests that merge into or wait on an in-flight miss
+ * without taking a slot, so the quotient is slot-cycles per miss. It equals
+ * the average miss latency only when every miss takes its own slot.
+ */
 static CACHE_PROFILE_TEXT CACHE_PROFILE_FLATTEN void
-print_miss_latency(const char *label, uint64_t miss_cycles_sum, uint64_t misses)
+print_slot_cycles_per_miss(const char *label, uint64_t miss_cycles_sum, uint64_t misses)
 {
     if (misses == 0U) {
         uart_printf(no_misses, label);
     } else {
-        uint32_t latency_x100 = tomasulo_profile_ratio_scaled(miss_cycles_sum, misses, 100U);
-        uart_printf(miss_latency,
+        uint32_t per_miss_x100 = tomasulo_profile_ratio_scaled(miss_cycles_sum, misses, 100U);
+        uart_printf(slot_cycles_per_miss,
                     label,
-                    (unsigned long) (latency_x100 / 100U),
-                    (unsigned long) (latency_x100 % 100U));
+                    (unsigned long) (per_miss_x100 / 100U),
+                    (unsigned long) (per_miss_x100 % 100U));
     }
 }
 
@@ -285,8 +291,8 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     print_hit_rate(l2, l2_hit, l2_access);
 
     print_metric(l1i_stall_label, l1i_fetch_miss_stall, cycles);
-    print_miss_latency(l1d, l1d_miss_cycles, l1d_miss);
-    print_miss_latency(l2, l2_miss_cycles, l2_miss);
+    print_slot_cycles_per_miss(l1d, l1d_miss_cycles, l1d_miss);
+    print_slot_cycles_per_miss(l2, l2_miss_cycles, l2_miss);
     print_metric(l1i_hum_label, l1i_hum, l1i_hit);
     print_metric(l1d_hum_label, l1d_hum, l1d_hit);
     print_metric(l2_hum_label, l2_hum, l2_hit);
