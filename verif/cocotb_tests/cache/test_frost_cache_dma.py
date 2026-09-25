@@ -22,19 +22,16 @@ CPU's dirty neighbouring bytes); a DMA read returns the CPU's dirty data and
 leaves the line valid and clean; a probe to a line whose fill is in flight
 waits for the fill; a data-side miss issued while the sequencer holds the
 line (long load-queue invalidation) is served with the post-write line rather
-than resurrecting the pre-write one; a whole-line data-side write issued
-there installs only after the DMA write is ordered, so a walker's probe
-cannot leave the L1D a clean copy older than the L2's; same-line DMA
-requests serialize; the load-queue handshake fires admit, inval and release
-once per DMA write and never for a DMA read; a DMA write concurrent with
-fence.i's writeback-all completes with correct data; a DMA request under a
-data-side miss flood still completes; concurrent DMA and data-side traffic
-on disjoint lines stays exact, with walker reads of the data side's dirty
-lines contending with the DMA probes; a data-side reader of lines a DMA
-agent is writing sees only values written to each line, in coherence order
-(the sequence it observes per line never goes backwards); and random
-sequential CPU / DMA / walker traffic matches the model with no fence before
-any walker read.
+than resurrecting the pre-write one; same-line DMA requests serialize; the
+load-queue handshake fires admit, inval and release once per DMA write and
+never for a DMA read; a DMA write concurrent with fence.i's writeback-all
+completes with correct data; a DMA request under a data-side miss flood still
+completes; concurrent DMA and data-side traffic on disjoint lines stays exact,
+with walker reads of the data side's dirty lines contending with the DMA
+probes; a data-side reader of lines a DMA agent is writing only ever sees
+values in coherence order (the sequence it observes per line never goes
+backwards); and random sequential CPU / DMA / walker traffic matches the
+model with no fence before any walker read.
 """
 
 import random
@@ -74,7 +71,6 @@ FLOOD_BASE = BASE_ADDR + 0xA00000
 DISJOINT_BASE = BASE_ADDR + 0xA40000
 ORDER_BASE = BASE_ADDR + 0xA80000
 RANDOM_BASE = BASE_ADDR + 0xAC0000
-WHOLE_LINE_BASE = BASE_ADDR + 0xB00000
 
 L1_ALIAS = 1024  # harness L1 = 1 KiB: +1024 is the same index, another tag
 
@@ -372,58 +368,6 @@ async def test_lock_serves_post_write_line_to_racing_miss(dut: Any) -> None:
     assert data == new, "a fill held by the lock must return the post-write line"
     assert _l1d_tag_state(dut, addr) == (True, False)
     await _check_read(dut, model, addr)
-    lq.stop()
-
-
-@cocotb.test()
-async def test_whole_line_write_under_lock_installs_after_release(dut: Any) -> None:
-    """A whole-line CPU write inside a DMA write's lock installs after the release.
-
-    A whole-line write needs no fetch, so the lock's fill withholding alone
-    would not hold it back: installed inside the lock, the copy could be
-    cleaned by a walker's probe and written back before the DMA write is
-    ordered at the L2, leaving the L1D a clean copy older than the L2's. The
-    load queue is slow to complete the invalidation, so the CPU write and a
-    walker read of the line both land inside the lock. Every observer must
-    then see the CPU write, which the L1D orders after the DMA write: the
-    walk, a CPU read and a DMA read.
-    """
-    await _setup(dut)
-    lq = LoadQueueStub(dut, inval_delay=200)
-    l1 = dut.cache_hierarchy.l1_cache
-    addr = WHOLE_LINE_BASE + 6 * LINE_BYTES
-    dma_data = _pattern(90)
-    cpu_data = _pattern(91)
-
-    def _lock_held() -> bool:
-        return (int(l1.probe_valid_q.value) & int(l1.probe_inval_q.value)) != 0
-
-    write_task = cocotb.start_soon(
-        _dma(dut, write=True, addr=addr, wdata=dma_data, wstrb=FULL)
-    )
-    for _ in range(RESP_TIMEOUT_CYCLES):
-        await FallingEdge(dut.i_clk)
-        if _lock_held():
-            break
-    else:
-        raise AssertionError("the DMA write's probe never took a slot")
-    await _line_transaction(dut, write=True, addr=addr, wdata=cpu_data, wstrb=FULL)
-    assert _lock_held(), "the CPU write did not land inside the lock"
-    walk_task = cocotb.start_soon(_port_transaction(dut, "wup", write=False, addr=addr))
-    await write_task
-    walked = await walk_task
-    await _settle(dut)
-
-    cpu_view = await _line_transaction(dut, write=False, addr=addr)
-    dma_view = await _dma(dut, write=False, addr=addr)
-    assert cpu_view == dma_view, (
-        f"CPU and DMA disagree @0x{addr:08x}: CPU 0x{cpu_view:064x}, "
-        f"DMA 0x{dma_view:064x}"
-    )
-    assert cpu_view == cpu_data, (
-        "the line lost the CPU write ordered after the DMA write"
-    )
-    assert walked == cpu_data, "the walk did not see the CPU write"
     lq.stop()
 
 

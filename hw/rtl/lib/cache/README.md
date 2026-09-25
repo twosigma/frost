@@ -53,7 +53,10 @@ response: valid  id[ID_BITS]  rdata[256]
   ordering.
 - Writes carry byte strobes. A write with all 32 strobes set allocates
   without fetching the line, the usual case for an eviction from the level
-  above, unless a probe is withholding the line's fills (see Probes).
+  above. Such a write installs even while a probe withholds the line's fills
+  (see Probes), so a cache with `NUM_PROBE > 0` must not receive one on its
+  upstream port. In the hierarchy that is the L1D, whose writes come from
+  `cached_tier_adapter` and cover at most one 8-byte beat.
 - `maintenance` exists on cache and arbiter ports, not on the hierarchy's
   upstream ports or the bridge. It marks `fence.i` writeback traffic, which
   lower levels leave out of every performance event. It never changes how a
@@ -145,12 +148,13 @@ Each probe holds a probe slot from its decision until the requester releases
 it, after the level below has ordered the requester's own access. While a
 PROBE_INVAL slot is held, the cache issues no fill of that line. A miss that
 follows the invalidation waits in its miss slot and fetches the line after
-the release, instead of fetching the old data again. A whole-line write to
-the line fetches it too, so it installs only after the release: installed
-earlier, it could be cleaned by another probe and written back ahead of the
-requester's own write, leaving a clean copy older than the level below's. A
-fill of the line allocated before the probe's decision is never withheld:
-the probe waits for it and invalidates what it installs.
+the release, instead of fetching the old data again. A whole-line write
+would install without waiting for the release. If a walk's PROBE_CLEAN then
+wrote it back ahead of the DMA write, the cache would keep a clean copy older
+than the level below's, which is why a probed cache must never receive one
+(see Line protocol). A fill of the line allocated before
+the probe's decision is never withheld: the probe waits for it and
+invalidates what it installs.
 
 Pending probe acknowledgements take the response port ahead of ordinary
 acknowledgements and hold off new read hits, so a stream of hits cannot
