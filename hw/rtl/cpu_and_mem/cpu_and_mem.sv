@@ -1479,7 +1479,6 @@ module cpu_and_mem #(
       .o_port_b_slot2_start_valid_lo_by_parity(bram_fetch_slot2_start_valid_lo_by_parity),
       .o_port_b_window_overlay_hit(bram_fetch_window_overlay_hit),
       .o_port_b_response_ready(bram_fetch_response_ready),
-      .o_port_b_hi_rd_is_x2(),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
 

@@ -76,7 +76,6 @@ async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
         word = reference._make_word(
             (0x1357_9BDF ^ (case * 0x1020_4081)) & 0xFFFF_FFFF,
             fast_raw_bits=case & 7,
-            hi_rd=2 if case & 1 else 3,
             compressed_lo=bool(case & 2),
             compressed_hi=bool(case & 4),
         )

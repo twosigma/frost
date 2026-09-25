@@ -15,9 +15,9 @@
 """Programming and fetch checks for imem_predecode's replica and overlay banks.
 
 imem_predecode stores each word as 28 cold bits plus four frontend-hot bits
-``{word[15], word[10], word[7], word[6]}``, and keeps a five-lane block-RAM
-replica of high-parcel ``C[15]``, ``C[13]``, ``C[12]``, the ``rd == x2``
-predicate, and AllowsSlot2AfterHi. Each sideband predicate that the IF
+``{word[15], word[10], word[7], word[6]}``, and keeps a four-lane block-RAM
+replica of high-parcel ``C[15]``, ``C[13]``, ``C[12]``, and
+AllowsSlot2AfterHi. Each sideband predicate that the IF
 next-PC logic reads (``SCALAR_REPLICA_BITS``) comes from a per-parity LUTRAM
 overlay of the low addresses, through an output register. Outside the overlay
 the first response is withheld while those registers capture the predicates
@@ -183,12 +183,11 @@ def _expected_compressed(word: int) -> int:
 
 
 def _expected_fast_replica(word: int) -> int:
-    """Independently pack the five replica lanes used by RTL and init files."""
+    """Independently pack the four replica lanes used by RTL and init files."""
     return (
-        (_expected_allows_slot2_after_hi(word) << 4)
-        | (((word >> 28) & 0b11) << 2)
-        | (((word >> 31) & 1) << 1)
-        | int(((word >> 23) & 0x1F) == 2)
+        (_expected_allows_slot2_after_hi(word) << 3)
+        | (((word >> 28) & 0b11) << 1)
+        | ((word >> 31) & 1)
     )
 
 
@@ -256,7 +255,6 @@ def _make_word(
     payload: int,
     *,
     fast_raw_bits: int,
-    hi_rd: int,
     compressed_lo: bool,
     compressed_hi: bool,
 ) -> int:
@@ -265,7 +263,6 @@ def _make_word(
     word |= ((fast_raw_bits >> 2) & 1) << 31  # C[15]
     word |= ((fast_raw_bits >> 1) & 1) << 29  # C[13]
     word |= (fast_raw_bits & 1) << 28  # C[12]
-    word = (word & ~(0x1F << 23)) | ((hi_rd & 0x1F) << 23)
     word = (word & ~0x3) | (0b01 if compressed_lo else 0b11)
     word = (word & ~(0x3 << 16)) | ((0b01 if compressed_hi else 0b11) << 16)
     return word
@@ -366,15 +363,6 @@ def _check_fetch_window_outputs(
     assert got_data == expected_data, (
         f"{window_label}: data 0x{got_data:016x}, want 0x{expected_data:016x}"
     )
-    got_hi_rd_is_x2 = int(dut.o_port_b_hi_rd_is_x2.value)
-    expected_hi_rd_is_x2 = int(((current >> 23) & 0x1F) == 2) | (
-        int(((next_word >> 23) & 0x1F) == 2) << 1
-    )
-    assert got_hi_rd_is_x2 == expected_hi_rd_is_x2, (
-        f"{window_label}: hi-rd-x2 0b{got_hi_rd_is_x2:02b}, "
-        f"want 0b{expected_hi_rd_is_x2:02b}"
-    )
-
     got_sideband = int(dut.o_port_b_sideband.value)
     _check_sideband_word(
         got_sideband & SIDEBAND_MASK, current, f"{window_label} current"
@@ -465,14 +453,12 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
         words[even_index] = _make_word(
             0x1357_9BDF ^ (even_index * 0x0101_0101),
             fast_raw_bits=fast_raw_bits,
-            hi_rd=2 if fast_raw_bits & 1 else 3,
             compressed_lo=bool(fast_raw_bits & 1),
             compressed_hi=bool(fast_raw_bits & 2),
         )
         words[odd_index] = _make_word(
             0x2468_ACE0 ^ (odd_index * 0x0101_0101),
             fast_raw_bits=odd_fast_raw_bits,
-            hi_rd=2 if odd_fast_raw_bits & 2 else 18,
             compressed_lo=bool(odd_fast_raw_bits & 2),
             compressed_hi=bool(odd_fast_raw_bits & 4),
         )
@@ -681,7 +667,6 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             _make_word(
                 0x0BAD_C0DE,
                 fast_raw_bits=0b111,
-                hi_rd=2,
                 compressed_lo=True,
                 compressed_hi=False,
             ),
@@ -691,7 +676,6 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             _make_word(
                 0x1234_5678,
                 fast_raw_bits=0b000,
-                hi_rd=31,
                 compressed_lo=False,
                 compressed_hi=True,
             ),
@@ -701,7 +685,6 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             _make_word(
                 0x89AB_CDEF,
                 fast_raw_bits=0b000,
-                hi_rd=0,
                 compressed_lo=True,
                 compressed_hi=True,
             ),
@@ -711,7 +694,6 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             _make_word(
                 0x55AA_33CC,
                 fast_raw_bits=0b111,
-                hi_rd=2,
                 compressed_lo=False,
                 compressed_hi=False,
             ),

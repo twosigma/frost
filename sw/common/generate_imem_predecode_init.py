@@ -23,7 +23,7 @@ twelve fetch-control predicates plus, for each halfword, the full 32-bit RVC
 expansion and its illegal flag. Expansion bits [19:15] (rs1) are split between
 the source-hot lane (rs1[2:1]) and the rs1-rest lane, bits [24:20] have their
 own lane, and the RVC-extra field holds the rest, so no bit is stored twice.
-The sideband and the five-lane high-parcel block-RAM replica each get their
+The sideband and the four-lane high-parcel block-RAM replica each get their
 own image, and every sideband predicate the IF next-PC logic reads
 (``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM overlay image per parity bank.
 The generator writes the full overlay image; the RTL reads the prefix selected
@@ -55,7 +55,7 @@ OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
 SIDEBAND_WIDTH = 78
-FAST_REPLICA_WIDTH = 5
+FAST_REPLICA_WIDTH = 4
 PC_METADATA_REPLICA_WIDTH = 4
 COLD_DATA_WIDTH = 28
 FRONTEND_HOT_WIDTH = 4
@@ -545,18 +545,17 @@ def make_sideband(word: int) -> int:
 
 
 def make_fast_replica(word: int, sideband: int | None = None) -> int:
-    """Return the five-lane high-parcel block-RAM replica for one word.
+    """Return the four-lane high-parcel block-RAM replica for one word.
 
     The packed order is ``{allows-slot2-after-hi, word[29], word[28],
-    word[31], word[27:23] == x2}``.
+    word[31]}``.
     """
     if sideband is None:
         sideband = make_sideband(word)
     return (
-        (((sideband >> SB_ALLOWS_SLOT2_AFTER_HI) & 1) << 4)
-        | (((word >> 28) & 0b11) << 2)
-        | (((word >> 31) & 1) << 1)
-        | int(((word >> 23) & 0x1F) == 2)
+        (((sideband >> SB_ALLOWS_SLOT2_AFTER_HI) & 1) << 3)
+        | (((word >> 28) & 0b11) << 1)
+        | ((word >> 31) & 1)
     )
 
 
@@ -703,7 +702,7 @@ def main() -> int:
     odd_sideband = [make_sideband(word) for word in odd_words]
     write_word_file(args.even_sideband, even_sideband, sideband_hex_digits)
     write_word_file(args.odd_sideband, odd_sideband, sideband_hex_digits)
-    # Despite their name, the *_compressed.mem images hold the five-lane
+    # Despite their name, the *_compressed.mem images hold the four-lane
     # high-parcel block-RAM replica (see make_fast_replica).
     write_word_file(
         args.even_compressed,

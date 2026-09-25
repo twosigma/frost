@@ -1163,7 +1163,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     ):
         assert retired not in imem
     assert "logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];" in imem
-    assert "localparam int unsigned FastLaneWidth = 5;" in imem
+    assert "localparam int unsigned FastLaneWidth = 4;" in imem
     assert "even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];" in imem
     assert "odd_sideband_with_fast_metadata[1:0] = odd_pc_metadata[1:0];" in imem
     overwritten_predicates = {
@@ -1195,7 +1195,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
 
     generator = (REPO_ROOT / "sw/common/generate_imem_predecode_init.py").read_text()
     assert "def make_sideband_bit_replica(" in generator
-    assert "FAST_REPLICA_WIDTH = 5" in generator
+    assert "FAST_REPLICA_WIDTH = 4" in generator
     assert "make_pc_metadata_bank_replica" not in generator
     assert "make_compressed_hi_replica" not in generator
 

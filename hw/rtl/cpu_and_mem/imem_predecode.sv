@@ -151,8 +151,8 @@ endmodule : imem_sideband_scalar_bank
  * Each 32-bit half-depth data bank is split into 28 cold bits and four
  * frontend-hot bits {15,10,7,6}. At 32K entries per parity this remains 32
  * RAMB36 while making the four timing lanes independently placeable. A
- * five-lane block-RAM replica per parity carries the raw high-parcel bits
- * C[15], C[13], C[12], the rd==x2 predicate, and AllowsSlot2AfterHi. Every
+ * four-lane block-RAM replica per parity carries the raw high-parcel bits
+ * C[15], C[13], C[12], and AllowsSlot2AfterHi. Every
  * sideband predicate the IF next-PC logic reads (IsCompressedLo/Hi,
  * EvenLocalPairValid, PairableNativeLo, PairableCompressedHi,
  * PairableNativeHi, and Slot2StartValidLo) has a per-parity LUTRAM overlay of
@@ -257,9 +257,6 @@ module imem_predecode #(
     // ready only after the same complete physical-address pair is presented
     // for a second cycle, aligning the raw payload with slow predicate FFs.
     output logic o_port_b_response_ready,
-    // Per-word high-parcel predicate, ordered like o_port_b_read_data:
-    // {next_word[27:23] == x2, current_word[27:23] == x2}.
-    output logic [1:0] o_port_b_hi_rd_is_x2,
     output logic o_port_b_bank_sel_r  // Registered fetch-word parity (PC[2] from fetch cycle)
 );
 
@@ -273,12 +270,11 @@ module imem_predecode #(
   // Lane order of the narrow high-parcel block RAM (memory_*_compressed;
   // despite the name it holds no instruction-size bits, which live in the
   // scalar LUTRAM overlay).
-  localparam int unsigned FastLaneHiRdIsX2 = 0;  // word[27:23] == 5'd2
-  localparam int unsigned FastLaneC15 = 1;  // word[31]
-  localparam int unsigned FastLaneC12 = 2;  // word[28]
-  localparam int unsigned FastLaneC13 = 3;  // word[29]
-  localparam int unsigned FastLaneAllowsSlot2AfterHi = 4;
-  localparam int unsigned FastLaneWidth = 5;
+  localparam int unsigned FastLaneC15 = 0;  // word[31]
+  localparam int unsigned FastLaneC12 = 1;  // word[28]
+  localparam int unsigned FastLaneC13 = 2;  // word[29]
+  localparam int unsigned FastLaneAllowsSlot2AfterHi = 3;
+  localparam int unsigned FastLaneWidth = 4;
 
   function automatic logic pc_metadata_overlay_contains(input logic [31:0] byte_address);
     // One parity row covers two 32-bit words, hence the three low byte-address
@@ -324,9 +320,7 @@ module imem_predecode #(
 
   function automatic logic [FastLaneWidth-1:0] pack_fast_lanes(
       input logic [DataWidth-1:0] word, input logic [SidebandWidth-1:0] sideband);
-    pack_fast_lanes = {
-      sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi], word[29:28], word[31], word[27:23] == 5'd2
-    };
+    pack_fast_lanes = {sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi], word[29:28], word[31]};
   endfunction
 
   // =========================================================================
@@ -350,16 +344,15 @@ module imem_predecode #(
   // widens these arrays; it adds no memory read or pipeline stage.
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
-  // Mirror the high-parcel allows-slot-2 predicate, the high-parcel RVC
-  // rd==x2 predicate, and raw high-parcel bits C[15], C[13], and C[12]
-  // (word[31], word[29], and word[28]) in dedicated block-RAM banks. They are
-  // read at the same fetch edge as the other BRAM banks, so they add no
-  // latency. Keeping them distinct preserves independent placement of these
-  // timing-facing launches. The *_compressed.mem init files contain the packed
-  // five-bit value {allows_slot2_after_hi, word[29], word[28], word[31],
-  // word[27:23] == 5'd2}; the instruction-size bits are in the scalar LUTRAM
-  // overlay below. At 32K entries per parity bank, each bit maps to one
-  // RAMB36.
+  // Mirror the high-parcel allows-slot-2 predicate and raw high-parcel bits
+  // C[15], C[13], and C[12] (word[31], word[29], and word[28]) in dedicated
+  // block-RAM banks. They are read at the same fetch edge as the other BRAM
+  // banks, so they add no latency. Keeping them distinct preserves
+  // independent placement of these timing-facing launches. The
+  // *_compressed.mem init files contain the packed four-bit value
+  // {allows_slot2_after_hi, word[29], word[28], word[31]}; the
+  // instruction-size bits are in the scalar LUTRAM overlay below. At 32K
+  // entries per parity bank, each bit maps to one RAMB36.
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
@@ -1028,9 +1021,6 @@ module imem_predecode #(
   };
   assign o_port_b_window_overlay_hit = pc_metadata_overlay_window_hit_q;
   assign o_port_b_response_ready = pc_metadata_response_ready_q;
-  assign o_port_b_hi_rd_is_x2 = bank_sel_r ?
-      {even_compressed[FastLaneHiRdIsX2], odd_compressed[FastLaneHiRdIsX2]} :
-      {odd_compressed[FastLaneHiRdIsX2], even_compressed[FastLaneHiRdIsX2]};
   assign o_port_b_bank_sel_r = bank_sel_r;
 
 `ifndef SYNTHESIS
@@ -1069,10 +1059,6 @@ module imem_predecode #(
       assert (even_compressed[FastLaneC13:FastLaneC12] == even_read_data[29:28]);
       p_odd_fast_c13_c12_matches_bram :
       assert (odd_compressed[FastLaneC13:FastLaneC12] == odd_read_data[29:28]);
-      p_even_fast_hi_rd_is_x2_matches_bram :
-      assert (even_compressed[FastLaneHiRdIsX2] == (even_read_data[27:23] == 5'd2));
-      p_odd_fast_hi_rd_is_x2_matches_bram :
-      assert (odd_compressed[FastLaneHiRdIsX2] == (odd_read_data[27:23] == 5'd2));
       p_even_fast_allows_slot2_after_hi_matches_bram :
       assert (even_compressed[FastLaneAllowsSlot2AfterHi] ==
               even_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
