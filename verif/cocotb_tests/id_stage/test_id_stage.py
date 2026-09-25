@@ -699,6 +699,39 @@ async def test_only_exact_pause_decodes_as_pause(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_fetch_fault_with_nop_bytes_is_dispatched_in_either_slot(
+    dut: Any,
+) -> None:
+    """A fetch fault reaches dispatch even when its bytes decode as a NOP, in either slot."""
+    await _setup_test(dut)
+
+    for fault_slot2 in (False, True):
+        _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": NOP_INSTR})
+        _drive_pd_packet(
+            dut,
+            {"program_counter": BASE_PC + 4, "instruction": NOP_INSTR},
+            slot2=True,
+        )
+        _drive_pd_packet(
+            dut,
+            {
+                "program_counter": BASE_PC + (4 if fault_slot2 else 0),
+                "instruction": NOP_INSTR,
+                "fetch_fault": True,
+            },
+            slot2=fault_slot2,
+        )
+        await _advance_cycle(dut)
+
+        fault = _read_id_packet(dut, slot2=fault_slot2)
+        assert fault["is_fetch_fault"] is True
+        assert fault["is_not_nop"] is True
+        other = _read_id_packet(dut, slot2=not fault_slot2)
+        assert other["is_fetch_fault"] is False
+        assert other["is_not_nop"] is False
+
+
+@cocotb.test()
 async def test_flush_clears_control_and_stall_holds_outputs(dut: Any) -> None:
     """Flush clears decoded control fields, and stall holds registered outputs."""
     await _setup_test(dut)

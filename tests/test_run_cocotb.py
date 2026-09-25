@@ -272,6 +272,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "flush/tag reuse. Checks exact causes and mtval."
         ),
     ),
+    "slot2_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="slot2_fault_test",
+        description=(
+            "A fetch fault on the second instruction of a fetch pair, including one "
+            "whose bytes encode a NOP, traps at its own PC with exact mepc/mtval"
+        ),
+    ),
     "itlb_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

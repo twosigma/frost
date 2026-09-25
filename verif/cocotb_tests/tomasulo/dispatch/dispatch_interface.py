@@ -952,8 +952,8 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_pipelined_fp_op": 1 if op in (_RS_FMUL_OPS | _RS_FDIV_OPS) else 0,
         "is_fp_to_int": 1 if op in _FP_TO_INT_OPS else 0,
         "is_int_to_fp": 1 if op in _INT_TO_FP_OPS else 0,
-        # id_stage registers is_not_nop = (instruction != NOP), and a slot-1
-        # fetch fault also sets it. Test packets default to 1 like a real
+        # id_stage registers is_not_nop = (instruction != NOP), and a fetch
+        # fault in either slot also sets it. Test packets default to 1 like a real
         # instruction, although this bench's DUT takes slot-2 presence from
         # i_valid_2 (SLOT2_VALID_FROM_BUNDLE = 0). Pass is_not_nop=0 to model
         # a NOP bubble.

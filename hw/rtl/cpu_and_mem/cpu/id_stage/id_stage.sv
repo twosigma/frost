@@ -1263,8 +1263,10 @@ module id_stage #(
       o_from_id_to_ex_2.uses_fp_rs1 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre_2;
       o_from_id_to_ex_2.uses_fp_rs2 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre_2;
       o_from_id_to_ex_2.uses_fp_rs3 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre_2;
-      o_from_id_to_ex_2.is_not_nop   <= i_pipeline_ctrl.flush ? 1'b0 :
-                                                                (instruction_2 != riscv_pkg::NOP);
+      // As for slot 1, a fault-tagged slot dispatches even when its garbage
+      // bytes encode a NOP.
+      o_from_id_to_ex_2.is_not_nop <= i_pipeline_ctrl.flush ? 1'b0 :
+          ((instruction_2 != riscv_pkg::NOP) || is_fetch_fault_2);
     end
     if (id_advance) begin
       o_from_id_to_ex_2.program_counter <= i_from_pd_to_id_2.program_counter;
@@ -1432,7 +1434,8 @@ module id_stage #(
       id_next_2.uses_fp_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre_2;
       id_next_2.uses_fp_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre_2;
       id_next_2.uses_fp_rs3 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre_2;
-      id_next_2.is_not_nop = i_pipeline_ctrl.flush ? 1'b0 : (instruction_2 != riscv_pkg::NOP);
+      id_next_2.is_not_nop = i_pipeline_ctrl.flush ? 1'b0 :
+          ((instruction_2 != riscv_pkg::NOP) || is_fetch_fault_2);
     end
     if (id_advance) begin
       id_next_2.program_counter = i_from_pd_to_id_2.program_counter;

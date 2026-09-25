@@ -1873,7 +1873,8 @@ package riscv_pkg;
     logic uses_fp_rs3;
     // Pre-computed `instruction != NOP` flag, registered in id_stage so the
     // dispatch valid terms (cpu_ooo's id_valid/id_valid_2) test one bit
-    // instead of a 32-bit compare.
+    // instead of a 32-bit compare. A fetch fault sets it even when its
+    // garbage bytes encode a NOP, so the fault still dispatches.
     logic is_not_nop;
   } from_id_to_ex_t;
 
