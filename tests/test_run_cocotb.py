@@ -1797,7 +1797,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "compressed": CocotbRunConfig(
         python_test_module="cocotb_tests.test_compressed",
         hdl_toplevel_module="cpu_tb",
-        description="RISC-V C-extension directed tests (cpu_tb directed suite)",
+        description="RISC-V C-extension directed and random ALU tests (cpu_tb)",
         include_in_pytest=False,
     ),
     "cpu_random": CocotbRunConfig(
