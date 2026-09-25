@@ -405,7 +405,7 @@ async def test_pending_episode_cannot_be_recaptured_by_later_prediction(
 
 
 @cocotb.test()
-async def test_pending_owner_kill_dominates_recapture_and_new_episode_reuses_pc(
+async def test_pending_owner_kill_clears_saved_metadata_and_new_episode_reuses_pc(
     dut: Any,
 ) -> None:
     """A killed owner cannot leak into a later prediction at the same PC."""
