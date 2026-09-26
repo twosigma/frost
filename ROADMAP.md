@@ -3,7 +3,7 @@
 ## Single-core performance
 
 The goal is 4 CoreMark/MHz at 322.265625 MHz, or 1,289 CoreMark on one hart,
-up from 3.91 CoreMark/MHz. A score counts only from a run of at least ten
+up from 3.94 CoreMark/MHz. A score counts only from a run of at least ten
 seconds that passes the CRC checks for both official seed sets, with the
 compiler flags, the `sw.bin` hash, and memory and cache settings recorded. RTL
 changes must also keep routed timing at the target clock.

@@ -1,6 +1,6 @@
 # Single-core performance
 
-FROST runs CoreMark at 3.91 CoreMark/MHz on the X3, 1,259 CoreMark at
+FROST runs CoreMark at 3.94 CoreMark/MHz on the X3, 1,270 CoreMark at
 322.265625 MHz. This page describes the current CPU defaults and the benchmark
 configuration, how to measure the score, and how to compare changes.
 
