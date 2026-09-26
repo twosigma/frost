@@ -1050,20 +1050,23 @@ module reorder_buffer #(
   (* keep = "true", max_fanout = 16 *)logic alloc_en_2_control;
   (* keep = "true", max_fanout = 16 *)logic alloc_en_branch_bits;
   (* keep = "true", max_fanout = 16 *)logic alloc_en_2_branch_bits;
-  assign alloc_en = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  // TIMING: the allocation requests are the late inputs of every copy. The
+  // occupancy and flush terms are combined first into kept gates, so each
+  // copy is the requests ANDed with one gate.
+  (* keep = "true" *) logic alloc_gate, alloc_gate_2;
+  assign alloc_gate = !full && !i_flush_all && !i_flush_en;
+  assign alloc_gate_2 = !full_for_2 && !i_flush_all && !i_flush_en;
+  assign alloc_en = i_alloc_req.alloc_valid && alloc_gate;
   // Slot-2 alloc requires slot-1 to fire as well (slot 2 lives at tail_idx+1
   // by construction). full_for_2 covers the "only one free slot" case.
-  assign alloc_en_2 = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
-                      !full_for_2 && !i_flush_all && !i_flush_en;
-  assign alloc_en_valid = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
-  assign alloc_en_2_valid = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
-                            !full_for_2 && !i_flush_all && !i_flush_en;
-  assign alloc_en_control = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
-  assign alloc_en_2_control = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
-                              !full_for_2 && !i_flush_all && !i_flush_en;
-  assign alloc_en_branch_bits = i_alloc_req.alloc_valid && !full && !i_flush_all && !i_flush_en;
+  assign alloc_en_2 = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid && alloc_gate_2;
+  assign alloc_en_valid = i_alloc_req.alloc_valid && alloc_gate;
+  assign alloc_en_2_valid = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid && alloc_gate_2;
+  assign alloc_en_control = i_alloc_req.alloc_valid && alloc_gate;
+  assign alloc_en_2_control = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid && alloc_gate_2;
+  assign alloc_en_branch_bits = i_alloc_req.alloc_valid && alloc_gate;
   assign alloc_en_2_branch_bits = i_alloc_req_2.alloc_valid && i_alloc_req.alloc_valid &&
-                                  !full_for_2 && !i_flush_all && !i_flush_en;
+                                  alloc_gate_2;
 
   // The value and FP-flag RAMs take every CDB write outside a full flush
   // (cdb_ram_wr_en). State updates (done, exception, cause, replay) also
