@@ -380,12 +380,11 @@ def resolve_functional_build_policy(
     which is enough for a design with hundreds of picoseconds of margin.
 
     ``perf_counters`` is ``--perf-counters``/``--no-perf-counters``; ``None``
-    leaves the counters out of a full-rate build and includes them in a
-    divided-clock build.
+    leaves the counters out, whatever the divider.
     """
     if cpu_clock_div not in CPU_CLOCK_DIV_CHOICES:
         raise ValueError(f"unsupported CPU clock divider: {cpu_clock_div}")
-    include_counters = (cpu_clock_div != 1) if perf_counters is None else perf_counters
+    include_counters = bool(perf_counters)
     if cpu_clock_div == 1:
         return FunctionalBuildPolicy(
             1,
@@ -2886,9 +2885,8 @@ Examples:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Include the profiling counters (the mperf* CSRs) "
-        "through the board top's PERF_COUNTERS generic. Default: left out of a "
-        "full-rate build, included in a --cpu-clock-div N>1 build; "
-        "--no-perf-counters overrides the latter.",
+        "through the board top's PERF_COUNTERS generic. Default: left out, "
+        "at any --cpu-clock-div.",
     )
     parser.add_argument(
         "--physopt-directive",

@@ -14,11 +14,10 @@ the CSR protocol, the counter numbering, and the C API.
 ## Build option
 
 `PERF_COUNTERS=1` includes the counters and the `mperf*` CSR state. On the
-FPGA, `build.py --perf-counters` or `--no-perf-counters` chooses; the default
-is off at the rated clock and on in divided-clock builds. The setting is fixed
-at synthesis, so a resumed build keeps its checkpoint's setting. Simulation
-targets that need the counters, such as `coremark_profile` and
-`tomasulo_perf`, build with `-GPERF_COUNTERS=1`.
+FPGA, `build.py --perf-counters` includes them; by default they are left out,
+at any clock. The setting is fixed at synthesis, so a resumed build keeps its
+checkpoint's setting. Simulation targets that need the counters, such as
+`coremark_profile` and `tomasulo_perf`, build with `-GPERF_COUNTERS=1`.
 
 Without the counters, every `mperf*` CSR reads 0, `mperfsel` and `mperfctl`
 ignore writes, and writes to the read-only ones still trap. The C library then

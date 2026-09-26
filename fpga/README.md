@@ -91,9 +91,8 @@ FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 hello_world itlb_t
 
 ## Profiling counters
 
-`--perf-counters` and `--no-perf-counters` include or leave out the `mperf*`
-profiling counters. They are off by default at full rate and on in
-divided-clock builds. Without them, the counter CSRs read zero. The setting is
+`--perf-counters` includes the `mperf*` profiling counters. They are left out
+by default, at any clock, and the counter CSRs then read zero. The setting is
 fixed at synthesis. See the
 [counter reference](../hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md).
 
@@ -153,9 +152,10 @@ initramfs from the export; `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD`
 override them, and environment variables override `site.env`. Setup problems
 are reported as `ENV_FAIL` before the board is touched.
 
-The interactive `debug_target` and `nic_echo` applications are not run, and
-`perf_off_test` runs only against a full-rate bitstream. `--timeout` covers
-build and load time; some workloads need more (X3 ZIP needs 600 seconds).
+The interactive `debug_target` and `nic_echo` applications are not run.
+`perf_off_test` checks that the profiling counters are absent, so it fails
+against a bitstream built with `--perf-counters`. `--timeout` covers build and
+load time; some workloads need more (X3 ZIP needs 600 seconds).
 
 `ddr_ecc/ddr_ecc_status.py` reads the DDR controller's accumulated error
 counts; `--clear` starts a new interval. `linux_boot_soak.py` boots the

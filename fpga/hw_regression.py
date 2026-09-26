@@ -18,8 +18,9 @@
 
 Apps rebuild and load through JTAG; UART checks and score gates determine pass.
 CoreMark scores use 64-bit ticks. Apps that need a debugger or a 10G link
-partner are excluded, and ``perf_off_test`` runs only against a full-rate
-bitstream.
+partner are excluded. ``perf_off_test`` checks that the profiling counters
+are absent, as they are unless the build asked for them with
+``build.py --perf-counters``.
 
 Linux setup comes from ``fpga/site.env`` or overriding environment variables.
 Preflight validates NFS, the pinned kernel/initramfs, console autologin, and
@@ -1566,13 +1567,6 @@ DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
 # until such a partner exists.
 EXTERNAL_LINK_APPS = frozenset({"nic_echo"})
 
-# Apps that assert the production netlist's absent profiling counters
-# (PERF_COUNTERS=0, build.py's default at the rated clock). A
-# functional-validation bitstream is built with --cpu-clock-div, which turns
-# the counters on by default, so these cannot pass against one; main() drops
-# them when FROST_CPU_CLK_HZ names such a build.
-PERF_COUNTERS_ABSENT_APPS = frozenset({"perf_off_test"})
-
 
 def regression_stages() -> list[str]:
     """Return every stage in run order: apps, the PRO sweep, Linux, then ECC.
@@ -1582,9 +1576,7 @@ def regression_stages() -> list[str]:
     whole-system stage and runs after those, and ddr_ecc reads the memory
     controller's error state after all of it. Debugger-driven apps
     (DEBUGGER_DRIVEN_APPS) and apps that need an external link
-    (EXTERNAL_LINK_APPS) are excluded. Counters-absent apps
-    (PERF_COUNTERS_ABSENT_APPS) stay in: they hold for the rated-clock
-    bitstream, and main() drops them for a clock-override run.
+    (EXTERNAL_LINK_APPS) are excluded.
     """
     phase1 = [
         app
@@ -1690,12 +1682,6 @@ def main() -> int:
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[board]
 
     all_stages = regression_stages()
-    divided_clock = board_clock_freq(board)[1]
-    if divided_clock:
-        # --cpu-clock-div builds include the profiling counters by default.
-        all_stages = [
-            stage for stage in all_stages if stage not in PERF_COUNTERS_ABSENT_APPS
-        ]
 
     if args.stages:
         requested = set(args.stages)
@@ -1706,15 +1692,6 @@ def main() -> int:
                 "a debugger; nic_echo needs a link partner sending the cocotb wire "
                 "peer's frames; load_software.py can still run them)"
             )
-        if divided_clock:
-            counters_on = sorted(requested & PERF_COUNTERS_ABSENT_APPS)
-            if counters_on:
-                parser.error(
-                    f"not a regression stage under {CPU_CLK_ENV}: "
-                    f"{', '.join(counters_on)} requires the rated-clock netlist, "
-                    "whose profiling counters are absent; a --cpu-clock-div "
-                    "build includes them (see netlist_config.json)"
-                )
         unknown = sorted(requested - set(all_stages))
         if unknown:
             parser.error(

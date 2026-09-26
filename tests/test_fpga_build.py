@@ -2021,12 +2021,18 @@ def test_perf_counters_generic_reaches_synthesis_and_the_cpu() -> None:
 
 @pytest.mark.parametrize(
     "divider,override,expected",
-    ((1, None, False), (2, None, True), (1, True, True), (2, False, False)),
+    (
+        (1, None, False),
+        (2, None, False),
+        (1, True, True),
+        (2, True, True),
+        (2, False, False),
+    ),
 )
-def test_perf_counters_default_follows_the_clock_divider(
+def test_perf_counters_are_left_out_unless_requested(
     divider: int, override: bool | None, expected: bool
 ) -> None:
-    """Counters are left out at full rate and included in divided-clock builds."""
+    """Counters are in only with --perf-counters, whatever the clock divider."""
     policy = fpga_build.resolve_functional_build_policy(
         divider,
         322_265_625,

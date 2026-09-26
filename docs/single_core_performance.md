@@ -102,7 +102,7 @@ On hardware, with the [regression environment](../fpga/README.md#hardware-regres
 set up, build and test natively:
 
 ```bash
-./fpga/build/build.py x3 --no-perf-counters
+./fpga/build/build.py x3
 ./fpga/program_bitstream/program_bitstream.py x3
 ./fpga/hw_regression.py --board x3
 ```
