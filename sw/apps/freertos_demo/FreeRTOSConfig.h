@@ -16,8 +16,8 @@
 
 /*
  * FreeRTOS configuration for the FROST demo: a minimal kernel build for a
- * single RV64GCB hart (mhartid = 0) with M and U privilege modes, a
- * CLINT-style mtime/mtimecmp timer, and a 300 MHz clock.
+ * single RV64GCB hart (mhartid = 0) that runs every task in M-mode, with the
+ * tick from the native mtime/mtimecmp timer and the software build's CPU clock.
  */
 
 #ifndef FREERTOS_CONFIG_H
@@ -36,13 +36,13 @@
 #define configUSE_TICK_HOOK 0
 
 /* CPU and tick rate */
-#define configCPU_CLOCK_HZ (300000000UL) /* FROST runs at 300 MHz */
-#define configTICK_RATE_HZ (1000)        /* 1ms tick */
+#define configCPU_CLOCK_HZ (FPGA_CPU_CLK_FREQ)
+#define configTICK_RATE_HZ (1000) /* 1 ms tick */
 
 /* Memory allocation */
 #define configMINIMAL_STACK_SIZE (256) /* Idle task stack (words) */
-/* Task stacks are sized in StackType_t words, so their byte footprint
- * doubles at rv64; the heap scales to keep the same word budgets. */
+/* Stack depths count StackType_t words, 8 bytes each. Every task stack and
+ * kernel object is allocated from this heap. */
 #define configTOTAL_HEAP_SIZE (16 * 1024)
 #define configMAX_TASK_NAME_LEN (16)
 #define configUSE_16_BIT_TICKS 0
@@ -78,7 +78,8 @@
 #define configUSE_CO_ROUTINES 0
 
 /* RISC-V specific configuration */
-/* CLINT timer addresses for FROST */
+/* Native timer addresses. Only the upstream RISC-V port uses these; port_frost.c reaches the
+ * same registers through mmio.h. */
 #define configMTIME_BASE_ADDRESS (0x40000010UL)    /* mtime register */
 #define configMTIMECMP_BASE_ADDRESS (0x40000018UL) /* mtimecmp register */
 
@@ -92,7 +93,11 @@
         for (;;)                                                                                   \
             ;                                                                                      \
     }
-#define configCHECK_FOR_STACK_OVERFLOW 0 /* Disable for minimal demo */
+/* On every switch away from a task, check its saved stack pointer and the 16
+ * fill bytes at its stack limit; an overflow fails the run. There is no
+ * malloc-failed hook: the tick check retries a helper whose stack allocation
+ * fails. */
+#define configCHECK_FOR_STACK_OVERFLOW 2
 #define configGENERATE_RUN_TIME_STATS 0
 #define configUSE_TRACE_FACILITY 0
 #define configUSE_STATS_FORMATTING_FUNCTIONS 0
@@ -107,7 +112,7 @@
 #define INCLUDE_vTaskDelayUntil 1
 #define INCLUDE_vTaskDelay 1
 #define INCLUDE_xTaskGetSchedulerState 0
-#define INCLUDE_xTaskGetCurrentTaskHandle 0
+#define INCLUDE_xTaskGetCurrentTaskHandle 1
 #define INCLUDE_uxTaskGetStackHighWaterMark 0
 #define INCLUDE_xTaskGetIdleTaskHandle 0
 #define INCLUDE_eTaskGetState 0

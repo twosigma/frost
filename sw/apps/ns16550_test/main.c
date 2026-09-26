@@ -15,18 +15,25 @@
  */
 
 /*
- * ns16550a UART face directed test (Increment 1 of the no-MMU Linux glue).
+ * ns16550a UART face directed test.
  *
  * FROST presents a word-stride 16550 register face at 0x4000_1000 (DTB
  * reg-shift=2, reg-io-width=4) that aliases the native UART TX/RX, so a stock
- * Linux 8250 console driver can drive it. This test runs the 8250 init dance
- * (DLAB/baud, 8N1, FIFO, MCR), checks the register file and TX-ready status,
- * and transmits a banner through the face, which must appear on the UART TX
- * line. PASS/FAIL goes out over the known-good native UART so the verdict is
- * independent of the face under test.
+ * Linux 8250 console driver can drive it. This test runs the 8250
+ * initialization sequence (DLAB/baud, 8N1, FIFO, MCR), checks the register
+ * file and the LSR transmit bits, and transmits a banner through the face,
+ * which must appear on the UART TX line. LSR.TEMT must drop as soon as a
+ * byte is written and return only once it has been sent, while THRE (room
+ * in the transmit FIFO) stays set. PASS/FAIL goes out over the known-good
+ * native UART, so the result does not depend on the face under test.
  */
 
 #include <stdint.h>
+
+#include "csr.h"
+
+/* One UART bit time in CPU cycles (115200 baud). */
+#define UART_BIT_CYCLES (FPGA_CPU_CLK_FREQ / 115200u)
 
 /* Native FROST UART, known good. Used only for the PASS/FAIL marker. */
 #define NATIVE_TX (*(volatile uint32_t *) 0x40000000u)
@@ -53,6 +60,8 @@ static void n_puts(const char *s)
 #define NS_MCR NS(0x10)
 #define NS_LSR NS(0x14)
 #define NS_SCR NS(0x1C)
+#define LSR_THRE 0x20u
+#define LSR_TEMT 0x40u
 
 static void ns_init(void)
 {
@@ -66,9 +75,19 @@ static void ns_init(void)
 }
 static void ns_putc(char c)
 {
-    while (!(NS_LSR & 0x20u)) { /* wait for THRE */
+    while (!(NS_LSR & LSR_THRE)) {
     }
     NS_THR = (uint8_t) c;
+}
+
+/* Poll until the transmitter is empty. A frame is ten bit times, far below
+ * the poll bound. */
+static uint32_t wait_temt(void)
+{
+    uint32_t lsr = NS_LSR;
+    for (int i = 0; i < 200000 && !(lsr & LSR_TEMT); i++)
+        lsr = NS_LSR;
+    return lsr;
 }
 static void ns_puts(const char *s)
 {
@@ -82,16 +101,26 @@ int main(void)
 
     ns_init();
     ok &= ((NS_LCR & 0xFFu) == 0x03u); /* LCR readback: 8N1, DLAB clear */
-    ok &= ((NS_LSR & 0x60u) == 0x60u); /* THRE | TEMT set (TX ready) */
+    ok &= ((NS_LSR & 0x60u) == 0x60u); /* THRE | TEMT: nothing sent yet */
     ok &= ((NS_IIR & 0x01u) == 0x01u); /* no interrupt pending */
+
+    /* TEMT covers the byte from the THR write until its stop bit has been
+     * sent, at least nine bit times later; THRE stays set, since the FIFO
+     * has room. */
+    uint64_t t0 = rdcycle64();
+    NS_THR = (uint8_t) '[';
+    ok &= ((NS_LSR & 0x60u) == LSR_THRE);
+    ok &= ((wait_temt() & 0x60u) == 0x60u);
+    ok &= ((rdcycle64() - t0) >= 9u * UART_BIT_CYCLES);
 
     NS_SCR = 0xA5u; /* scratch register is read/write */
     ok &= ((NS_SCR & 0xFFu) == 0xA5u);
     NS_SCR = 0x5Au;
     ok &= ((NS_SCR & 0xFFu) == 0x5Au);
 
-    /* Transmit a banner through the ns16550 face. It must reach the UART TX. */
-    ns_puts("[ns16550 face: TX path OK]\r\n");
+    /* Transmit the rest of the banner (its '[' went out above) through the
+     * ns16550 face. It must reach the UART TX. */
+    ns_puts("ns16550 face: TX path OK]\r\n");
 
     n_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

@@ -13,10 +13,9 @@
 #    limitations under the License.
 
 # Directed "skipped fall-through fetch window" reproducer with a self-defined
-# _start (no crt0.S). Architecture strings come from arch.mk.
-# I+M+A+C+Zicsr: M for the div-backpressure variant, C for the compressed
-# save/restore epilogue. Zba+Zbb: the real-bytes longest_match lift
-# (subtest G) reproduces the wild sh1add.uw / minu byte-for-byte.
+# _start (no crt0.S). M covers the driver's remu and the divu backpressure
+# subtest, C the compressed code in every victim, and Zba+Zbb the sh1add.uw and
+# minu in subtest G, a byte-for-byte copy of compiled zlib code.
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imac_zicsr_zba_zbb
 ABI := $(FROST_INT_ABI)

@@ -17,29 +17,31 @@
 
 CoreMark's run rules allow profile-guided optimization when the profile comes
 from the official profile data set: ``TOTAL_DATA_SIZE`` 1200 with seeds
-8/8/8, which ``core_portme.h`` selects as ``PROFILE_RUN``.  This builds the
+8/8/8, which ``core_portme.h`` selects as ``PROFILE_RUN``. This builds the
 benchmark sources against the Spike port layer with ``-fprofile-arcs
 -fprofile-info-section``, runs it under Spike, streams the gcda out over the
-HTIF syscall proxy, and installs the five benchmark-source ``.gcda`` files
-next to the app Makefile.
+HTIF syscall proxy, converts the stream with ``gcov-tool merge-stream``, and
+installs the five benchmark-source ``.gcda`` files next to the app Makefile.
 
-Execution counts are architectural, so Spike and the RTL agree on them; Spike
-is used because the FROST UART would need tens of millions of simulated cycles
-to print the same bytes.  The port layer differs from the FROST one, so only
-the five benchmark translation units get a profile; ``uart.c``,
-``core_portme.c`` and ``tomasulo_profile_cache.c`` are not hot and are built
-without one.
+Edge counts are architectural, so Spike's match the RTL's, except in
+``core_main.c``'s checks of elapsed time: the Spike port's ``get_time()``
+always returns 1, while FROST's measures cycles. Spike also avoids the tens of
+millions of simulated cycles the FROST UART would need to print the profile.
+Only the five benchmark translation units get a profile; ``uart.c``,
+``core_portme.c`` and ``tomasulo_profile_cache.c`` sit outside the timed
+region and build without one.
 
 Two build details matter and are easy to get wrong:
 
 * The benchmark sources must be compiled from the app directory with the same
-  relative path spellings the app Makefile uses.  GCC folds the source path
+  relative path spellings the app Makefile uses. GCC folds the source path
   into each function's line-number checksum, so an absolute path here makes
-  every record mismatch at ``-fprofile-use``.
+  every record mismatch under ``-fbranch-probabilities``.
 * GCC derives the gcda name from the link output, so the training link writes
   to ``sw.elf`` and the installed files are ``sw.elf-<source>.gcda``.
 
-Runs inside the pinned image:
+Run it inside the pinned image:
+
     ./scripts/frost.py run sw/apps/coremark/iss/generate_profile.py
 """
 
@@ -65,8 +67,8 @@ PROFILED_SOURCES = (
     "core_state",
     "core_util",
 )
-# Matches the app Makefile's ordinary flags. APP_TUNE_FLAGS is appended last
-# there too, so the training and measured builds see the same optimizer.
+# Matches the app Makefile's ordinary flags. The tuning flags follow them, as
+# APP_TUNE_FLAGS does there.
 BASE_FLAGS = (
     "-mcmodel=medany",
     "-Wall",
@@ -86,6 +88,9 @@ BASE_FLAGS = (
     "-funroll-loops",
     "-fno-strict-aliasing",
 )
+# The Makefile's COREMARK_BASE_TUNE and COREMARK_CPU_TUNE. The PGO build reads
+# the profiles with COREMARK_PGO_CPU_TUNE (-mtune=generic-ooo) instead; with the
+# pinned GCC, the -mtune used for training does not change the counts.
 DEFAULT_TUNE_FLAGS = (
     "--param",
     "max-inline-insns-auto=200",
@@ -125,8 +130,9 @@ def build(work_dir: Path, tune_flags: list[str]) -> Path:
         "iss/link_spike_pgo.ld",
         "-Wl,--gc-sections",
         "-Wl,--no-warn-rwx-segments",
-        # The measured build consumes edge counts via -fbranch-probabilities.
-        # Value profiling adds a Linux TLS runtime to Bootlin's libgcov.
+        # The measured build reads only edge counts (-fbranch-probabilities), so
+        # train without value profiling, which would pull in libgcov's Linux TLS
+        # runtime.
         "-fprofile-arcs",
         "-fprofile-info-section",
         "-fprofile-update=single",
@@ -178,7 +184,10 @@ def main() -> int:
     parser.add_argument(
         "tune_flags",
         nargs="*",
-        help="extra compiler flags (after --) matching the measured build",
+        help=(
+            "tuning flags (after --) that replace the defaults; "
+            "match the measured build"
+        ),
     )
     arguments = parser.parse_args()
 

@@ -75,8 +75,9 @@ FP_FLAG_NV = 0x10
 FP_FLAG_DZ = 0x08
 FP_FLAG_NX = 0x01
 
-# Unit latency plus the shim's result register: the first cycle after issue on
-# which o_fu_complete can be valid.
+# First cycle o_fu_complete is valid, counted in rising edges after the edge
+# that samples the issue. The unit pulses o_valid one edge earlier, and the
+# result register presents the result from the next edge on.
 SP_VISIBLE_CYCLES = 36
 DP_VISIBLE_CYCLES = 65
 
@@ -568,7 +569,7 @@ async def test_partial_flush_inflight_older(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_held_result(dut: Any) -> None:
-    """A held result younger than the boundary is suppressed and drained."""
+    """A partial flush keeps an older held result and suppresses and clears a younger one."""
     iface = await setup(dut)
 
     # Older tag: survives the flush and is still presented.
@@ -639,7 +640,7 @@ async def test_full_flush_held_result(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 17: The credit gate refuses nothing once the result is taken
+# Test 17: The credit returns as soon as the result is taken
 # ============================================================================
 @cocotb.test()
 async def test_credit_recovers_after_accept(dut: Any) -> None:
@@ -811,3 +812,24 @@ async def test_partial_flushes_around_capture(dut: Any) -> None:
         await RisingEdge(iface.clock)
         assert not iface.read_fu_complete()["valid"], "flushed result was presented"
     assert not iface.read_busy(), "the drained result must free the credit"
+
+
+@cocotb.test()
+async def test_divide_to_min_normal_raises_uf_when_tiny(dut: Any) -> None:
+    """A quotient tiny after full-precision rounding raises UF though it rounds to the minimum normal."""
+    iface = await setup(dut)
+    rm_rup = 3
+    uf_nx = 0x03
+
+    result = await run_one(
+        iface, 24, OP_FDIV_S, NAN_BOX | 0x0080_0000, NAN_BOX | 0x3F80_0001, rm=rm_rup
+    )
+    assert result["value"] == NAN_BOX | 0x0080_0000
+    assert result["fp_flags"] == uf_nx, f"FDIV.S flags {result['fp_flags']:#04x}"
+
+    await wait_until_idle(iface)
+    result = await run_one(
+        iface, 25, OP_FDIV_D, 0x0010_0000_0000_0000, 0x3FF0_0000_0000_0001, rm=rm_rup
+    )
+    assert result["value"] == 0x0010_0000_0000_0000
+    assert result["fp_flags"] == uf_nx, f"FDIV.D flags {result['fp_flags']:#04x}"

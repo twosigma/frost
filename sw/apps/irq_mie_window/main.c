@@ -15,15 +15,15 @@
  */
 
 /*
- * Short-MIE-window lost-interrupt regression.
+ * Short-MIE-window lost-interrupt test.
  *
- * The bug sampled an eligible interrupt, then rechecked live MIE one cycle
- * later. An adjacent `csrsi mstatus,8; csrci mstatus,8` could therefore erase an
- * interrupt already eligible at the boundary after csrsi, causing lost Linux
- * timer ticks.
+ * An interrupt that becomes eligible at the boundary after
+ * `csrsi mstatus, 8` must be taken even though the next instruction,
+ * `csrci mstatus, 8`, clears MIE again.
  *
  * Hold mtip pending with mtimecmp=0 and mie.MTIE=1, then pulse mstatus.MIE for
- * one cycle. A correct core traps on the first pulse; PASS requires g_taken>0.
+ * one instruction. A correct core traps on the first pulse; PASS requires
+ * g_taken>0.
  */
 
 #include <stdint.h>
@@ -86,11 +86,11 @@ int main(void)
     MTIMECMP_LO = 0;
     enable_timer_interrupt(); /* mie.MTIE = 1 */
 
-    /* Pulse mstatus.MIE high for a single cycle, repeatedly. Each csrsi makes the
+    /* Pulse mstatus.MIE high for one instruction, repeatedly. Each csrsi makes the
      * pending timer eligible at the very next instruction boundary, and the
      * adjacent csrci must not be able to retroactively cancel it. */
     for (uint32_t i = 0; i < PULSES; i++) {
-        __asm__ volatile("csrsi mstatus, 8\n" /* mstatus.MIE = 1 (1-cycle window) */
+        __asm__ volatile("csrsi mstatus, 8\n" /* mstatus.MIE = 1 for one instruction */
                          "csrci mstatus, 8\n" /* mstatus.MIE = 0 */
                          ::
                              : "memory");

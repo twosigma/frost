@@ -15,17 +15,18 @@
  */
 
 /*
- * PLIC directed test. Exercises the register file
- * (priority/enable/threshold WARL widths), the level gateway (claim /
- * complete / re-raise / spurious claim), threshold masking, priority-0
- * never-interrupts, both contexts' EIP lines through the mip.MEIP and
- * mip.SEIP readbacks, and a full M-mode external-interrupt take that
- * claims and completes inside the handler.
+ * PLIC directed test. Exercises the register file (reset values and
+ * priority/enable/threshold WARL widths), the level gateway (claim /
+ * complete / re-raise / spurious claim), threshold masking, priority 0
+ * never interrupting, both contexts' EIP lines through the mip.MEIP and
+ * mip.SEIP readbacks, an M-mode external interrupt that the handler
+ * claims and completes, and completions from contexts that do not enable
+ * the source, which must leave the gateway closed.
  *
- * The controllable level source is the ns16550's THRE interrupt (PLIC
- * source 1): with the transmitter idle, IER[1] raises a stable high
- * level; clearing IER[1] drops it. Source 2 (the board pin) is tied low
- * in simulation and register-tested only. Self-checks over UART
+ * The level source is the ns16550 THRE interrupt (PLIC source 1): while
+ * the UART transmit FIFO has room, setting IER[1] holds the level high and
+ * clearing IER[1] drops it. Source 2 (the board pin) stays low
+ * in simulation and is only register-tested. Self-checks over UART
  * (<<PASS>> / <<FAIL>>).
  */
 
@@ -56,7 +57,7 @@ static void uart_hex(unsigned long v)
 #define REG32(a) (*(volatile uint32_t *) (a))
 #define PLIC_BASE 0x44000000UL
 /* Sources: 1 = ns16550, 2 = the board's external-interrupt pin, 3 = the DMA
- * test engine (cpu_and_mem.sv NUM_SOURCES). */
+ * test engine, 4 = the NIC (cpu_and_mem.sv NUM_SOURCES). */
 #define PLIC_NUM_SOURCES 4u
 #define PLIC_PRIO(s) REG32(PLIC_BASE + 4ul * (s))
 #define PLIC_PENDING REG32(PLIC_BASE + 0x1000ul)
@@ -68,7 +69,7 @@ static void uart_hex(unsigned long v)
 #define PLIC_CLAIM_S REG32(PLIC_BASE + 0x201004ul)
 #define NS16550_IER REG32(0x40001004UL)
 
-#define MIP_MEIP (1ul << 11)
+/* csr.h supplies MIP_MEIP. */
 #define MIP_SEIP (1ul << 9)
 
 static int report(const char *name, unsigned long got, unsigned long want)
@@ -83,9 +84,9 @@ static int report(const char *name, unsigned long got, unsigned long want)
     return got == want;
 }
 
-/* The ns16550 THRE level is ns_ier[1] && uart_tx_ready: it rises only
- * once the serializer drains this test's own prints. Wait for TX idle
- * (the same tx_ready the level uses) before expecting a raise. */
+/* The ns16550 THRE level is ns_ier[1] && i_uart_tx_ready, high while the
+ * transmit FIFO is not almost full. UART_TX_STATUS bit 0 reads the same
+ * signal, so wait for it before expecting a raise. */
 static void wait_tx_idle(void)
 {
     for (int i = 0; i < 400000; i++) {
@@ -94,9 +95,8 @@ static void wait_tx_idle(void)
     }
 }
 
-/* Bounded mip poll. The PLIC EIP and meip registrations are only a few
- * flops deep, but a poll that waits for a THRE raise has to outlast the
- * UART serializer draining this test's own prints, hence the 20000. */
+/* Bounded mip poll. The path from a PLIC source to mip is a few registers
+ * deep, so 20000 reads leave ample margin. */
 static unsigned long poll_mip(unsigned long mask, unsigned long want)
 {
     for (int i = 0; i < 20000; i++) {
@@ -104,6 +104,25 @@ static unsigned long poll_mip(unsigned long mask, unsigned long want)
             return want;
     }
     return csr_read(mip) & mask;
+}
+
+/* The mask bits of mip, or of the pending word, seen set in any of 200
+ * reads, for checks that a line or a gateway stays quiet. Both paths are a
+ * few registers deep, so 200 reads leave ample margin. */
+static unsigned long mip_seen(unsigned long mask)
+{
+    unsigned long seen = 0;
+    for (int i = 0; i < 200; i++)
+        seen |= csr_read(mip) & mask;
+    return seen;
+}
+
+static unsigned long pending_seen(unsigned long mask)
+{
+    unsigned long seen = 0;
+    for (int i = 0; i < 200; i++)
+        seen |= PLIC_PENDING & mask;
+    return seen;
 }
 
 /* ---- M external-interrupt handler (case I): records mcause, claims,
@@ -149,7 +168,7 @@ int main(void)
 
     /* B: the gateway raises on the THRE level; pending readback. */
     PLIC_PRIO(1) = 1;
-    NS16550_IER = 0x2; /* THRE enable: level high while TX is idle */
+    NS16550_IER = 0x2; /* THRE enable: level high while the TX FIFO has room */
     PLIC_EN_M = 0x2;   /* enable source 1 (bit 1 = ID 1) in context M */
     wait_tx_idle();
     ok &= report("B meip-raises", poll_mip(MIP_MEIP, MIP_MEIP), MIP_MEIP);
@@ -216,6 +235,31 @@ int main(void)
     ok &= report("I take-cause", g_irq_cause, 0x8000000000000000ul | 11ul);
     ok &= report("I take-claim", g_irq_claim, 1);
     ok &= report("I meip-clear", poll_mip(MIP_MEIP, 0), 0);
+    PLIC_EN_M = 0;
+
+    /* J: a completion counts only from a context that enables the source.
+     * Source 1 is claimed from M and its level stays high. A completion from
+     * S, which has it disabled since case H, and one from M after disabling
+     * it there must each leave the gateway closed; a completion from M with
+     * the source enabled reopens it. */
+    PLIC_EN_M = 0x2;
+    NS16550_IER = 0x2;
+    wait_tx_idle();
+    ok &= report("J meip-raises", poll_mip(MIP_MEIP, MIP_MEIP), MIP_MEIP);
+    ok &= report("J claim-id", PLIC_CLAIM_M, 1);
+    PLIC_CLAIM_S = 1;
+    ok &= report("J s-complete-ignored", pending_seen(0x2), 0);
+    PLIC_EN_M = 0;
+    PLIC_CLAIM_M = 1;
+    ok &= report("J m-disabled-complete-ignored", pending_seen(0x2), 0);
+    PLIC_EN_M = 0x2;
+    ok &= report("J meip-quiet", mip_seen(MIP_MEIP), 0);
+    PLIC_CLAIM_M = 1;
+    ok &= report("J reopened", poll_mip(MIP_MEIP, MIP_MEIP), MIP_MEIP);
+    ok &= report("J claim-again", PLIC_CLAIM_M, 1);
+    NS16550_IER = 0;
+    PLIC_CLAIM_M = 1;
+    ok &= report("J meip-clear", poll_mip(MIP_MEIP, 0), 0);
     PLIC_EN_M = 0;
 
     uart_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");

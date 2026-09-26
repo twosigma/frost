@@ -12,15 +12,42 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-SRC_C   := ../../lib/src/uart.c coremark/core_list_join.c coremark/core_main.c coremark/core_matrix.c coremark/core_state.c coremark/core_util.c core_portme.c ../../lib/src/tomasulo_profile_cache.c
+# EEMBC CoreMark: the unmodified sources in coremark/ plus FROST's port layer.
+# docs/single_core_performance.md describes the benchmark configuration.
+
+# COREMARK_SOURCE_ORDER sets the link order of the five unmodified benchmark
+# sources, for link-order sweeps.
+COREMARK_SOURCES := core_list_join core_main core_matrix core_state core_util
+COREMARK_SOURCE_ORDER ?= $(COREMARK_SOURCES)
+ifneq ($(sort $(COREMARK_SOURCE_ORDER)),$(sort $(COREMARK_SOURCES)))
+$(error COREMARK_SOURCE_ORDER must contain each benchmark source exactly once)
+endif
+ifneq ($(words $(COREMARK_SOURCE_ORDER)),5)
+$(error COREMARK_SOURCE_ORDER must contain five sources)
+endif
+SRC_C := ../../lib/src/uart.c $(addprefix coremark/,$(addsuffix .c,$(COREMARK_SOURCE_ORDER))) core_portme.c ../../lib/src/tomasulo_profile_cache.c
 INCLUDE_DIR = ./coremark
 
 # Use the RV64 hard-float ABI.
 MABI := lp64d
 
-# Disable compressed code here to avoid slot-2 losses when native pairs cross
-# the 64-bit fetch window. Other applications still exercise C instructions.
-FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+# Compressed instructions are off by default: with the 64-bit fetch window,
+# their throughput is not stable across link orders. scripts/coremark_sweep.py
+# measures both settings.
+COREMARK_COMPRESSED ?= 0
+ifeq ($(filter $(COREMARK_COMPRESSED),0 1),)
+$(error COREMARK_COMPRESSED must be 0 or 1)
+endif
+FROST_MARCH_EXTENSIONS := imafd$(if $(filter 1,$(COREMARK_COMPRESSED)),c)_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+
+COREMARK_SEED_SET ?= performance
+ifeq ($(COREMARK_SEED_SET),performance)
+COREMARK_SEED_FLAGS := -DPERFORMANCE_RUN=1
+else ifeq ($(COREMARK_SEED_SET),validation)
+COREMARK_SEED_FLAGS := -DVALIDATION_RUN=1
+else
+$(error COREMARK_SEED_SET must be performance or validation)
+endif
 
 # Compiler tuning for the pinned Bootlin toolchain. Inlining reduces hot calls;
 # CB allocation and selective scheduling control spills and instruction order.
@@ -39,18 +66,21 @@ COREMARK_STATIC_LAYOUT_TUNE := -fno-crossjumping -freorder-blocks-and-partition
 COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
                      --param max-completely-peel-times=0
 
-# Optional PGO uses the official profile data set (1200 bytes, seeds 8/8/8).
-# APP_TUNE_FLAGS discloses the profile flags in the reported compiler settings.
-# Use -fbranch-probabilities to read edge counts without enabling the extra
-# transformations in -fprofile-use.
+# The default build uses branch profiles trained on the official profile data
+# set (1200 bytes, seeds 8/8/8). Keeping the profile flags in APP_TUNE_FLAGS
+# puts them in the reported compiler flags. -fbranch-probabilities reads edge
+# counts without the extra transformations that -fprofile-use enables. The
+# PGO build uses the out-of-order cost model; its flags are the published
+# configuration (docs/single_core_performance.md). COREMARK_PGO=0 builds
+# without the profiles, with the static-layout and LTO flags instead.
 #
-# iss/generate_profile.py regenerates profiles for the five benchmark units;
-# the Spike port layer is different and has no profile here. The existence
-# check prevents missing profiles from silently changing the build. See
-# iss/README.md for generation and validation.
+# iss/generate_profile.py writes profiles for the five benchmark sources; the
+# port layer and libraries build without one. The existence check stops a
+# missing profile from silently changing the build. See iss/README.md.
 COREMARK_PGO_TUNE := -fbranch-probabilities -fprofile-correction \
                      -Wno-missing-profile
-COREMARK_PGO ?= 0
+COREMARK_PGO_CPU_TUNE := -mtune=generic-ooo
+COREMARK_PGO ?= 1
 COREMARK_PGO_PROFILES :=
 ifeq ($(COREMARK_PGO),1)
 COREMARK_PGO_PROFILES := $(addsuffix .gcda,$(addprefix sw.elf-,\
@@ -58,7 +88,7 @@ COREMARK_PGO_PROFILES := $(addsuffix .gcda,$(addprefix sw.elf-,\
 $(foreach profile,$(COREMARK_PGO_PROFILES),\
     $(if $(wildcard $(profile)),,$(error COREMARK_PGO=1 needs $(profile); run \
     ./scripts/frost.py run sw/apps/coremark/iss/generate_profile.py)))
-APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_PGO_TUNE) $(COREMARK_CPU_TUNE)
+APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_PGO_TUNE) $(COREMARK_PGO_CPU_TUNE)
 else ifeq ($(COREMARK_PGO),0)
 APP_TUNE_FLAGS ?= $(COREMARK_BASE_TUNE) $(COREMARK_STATIC_LAYOUT_TUNE) \
                   $(COREMARK_LTO_TUNE) $(COREMARK_CPU_TUNE)
@@ -66,9 +96,8 @@ else
 $(error COREMARK_PGO must be 0 or 1)
 endif
 
-# 11000 iterations is about a 10 second run on X3 at 300 MHz. Boards at a
-# different clock override this from the environment.
-ITERATIONS ?= 11000
+# At 4 CoreMark/MHz and 322.265625 MHz, 14000 iterations exceeds ten seconds.
+ITERATIONS ?= 14000
 
 # CoreMark allocates its workspace on the stack. Both settings stay
 # overridable so a targeted reproducer run can place it elsewhere.
@@ -83,11 +112,11 @@ COREMARK_EXTRA_LDFLAGS ?=
 EXTRA_CFLAGS = '-DITERATIONS=$(ITERATIONS)' -DUART_PRINTF_ENABLE_FLOAT=1 \
                -DMEM_METHOD=$(COREMARK_MEM_METHOD) \
                '-DMEM_LOCATION=$(COREMARK_MEM_LOCATION)' \
-               $(COREMARK_EXTRA_CFLAGS)
+               $(COREMARK_SEED_FLAGS) $(COREMARK_EXTRA_CFLAGS)
 EXTRA_LDFLAGS = -lgcc $(COREMARK_EXTRA_LDFLAGS)
 
 include ../../common/common.mk
 
-# A regenerated profile must relink: common.mk's build-config stamp hashes the
+# A regenerated profile must relink: common.mk's build-config stamp records the
 # flags, not the profile bytes.
 $(EXECUTABLE_ELF_FILE): $(COREMARK_PGO_PROFILES)

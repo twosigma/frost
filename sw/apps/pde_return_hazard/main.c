@@ -15,20 +15,30 @@
  */
 
 /*
- * Directed reproducer for the procfs /proc lookup failure seen on hardware.
+ * Return-value hazard in a Linux pde_subdir_find()-shaped epilogue: the
+ * function computes its result in s1 (the rb_node pointer minus the node's
+ * offset in proc_dir_entry), moves it to a0, and restores the caller's s1 right
+ * after. The caller must receive the proc_dir_entry base, never the node pointer.
  *
- * The Linux failure shows proc_get_inode() receiving a pointer that looks like
- * a proc_dir_entry.subdir_node, not the proc_dir_entry base. The hot epilogue in
- * pde_subdir_find() subtracts the rb_node offset from s1, then returns it via
- * a0 shortly before restoring the caller's s1.
+ * The test runs the bare epilogue, then fake /proc lookups: pde_subdir_find()
+ * walks a small rb-tree of proc_dir_entry-shaped records, and the result passes
+ * through a proc_lookup_de()-style reference-count AMO to a fake
+ * proc_get_inode(), which records the pointer and the fields it reads. Lookups
+ * cover a one-entry tree, a five-entry tree, and an entry written by a burst of
+ * mixed-width stores just before the lookup; the last two also run after cache
+ * churn. Halfword and word store-to-load forwarding cases, one after an AMO, run
+ * last. The Makefile forces MEM_CONFIG=ddr, so code and static data are in
+ * cached DDR.
  */
 
 #include <stdint.h>
 
 #include "uart.h"
 
-/* The gcc-epilogue-shaped naked helpers save XLEN-wide registers, return
- * addresses included. The frame is 8*XB bytes with slot k at (8-k)*XB.
+/* Save and restore macros for the naked, gcc-epilogue-shaped helpers. Saved
+ * registers, ra included, are XB = 8 bytes wide. The frame is 8*XB bytes, and
+ * the slot k*XB below the frame pointer s0 is at (8-k)*XB(sp). XLU loads the
+ * 32-bit pointer fields of the fake records.
  */
 #define XS "sd  "
 #define XL "ld  "
@@ -77,7 +87,9 @@ static volatile uint32_t observed_namelen;
 static void churn_cache(uint32_t seed);
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
-epilogue_repro(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
+epilogue_repro(uintptr_t node __attribute__((unused)),
+               uintptr_t salt2 __attribute__((unused)),
+               uintptr_t salt3 __attribute__((unused)))
 {
     __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
                      " s1, 5*" XB "(sp)\n" XS " s2, 4*" XB "(sp)\n" XS " s3, 3*" XB "(sp)\n"
@@ -97,7 +109,9 @@ epilogue_repro(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
 }
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
-epilogue_direct_a0(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
+epilogue_direct_a0(uintptr_t node __attribute__((unused)),
+                   uintptr_t salt2 __attribute__((unused)),
+                   uintptr_t salt3 __attribute__((unused)))
 {
     __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
                      " s1, 5*" XB "(sp)\n" XS " s2, 4*" XB "(sp)\n" XS " s3, 3*" XB "(sp)\n"
@@ -184,13 +198,14 @@ __attribute__((noinline, used)) static uintptr_t fake_proc_get_inode(uintptr_t s
     return 0x12345678u;
 }
 
-__attribute__((noinline, naked, used, aligned(4))) static void pde_init_version_asm(uintptr_t de)
+__attribute__((noinline, naked, used, aligned(4))) static void
+pde_init_version_asm(uintptr_t de __attribute__((unused)))
 {
     __asm__ volatile("addi t0, a0, 100\n"
                      "sw   t0, 92(a0)\n"
                      "li   t1, 0x73726576\n" /* "vers" */
                      "sw   t1, 100(a0)\n"
-                     "li   t1, 0x006e6f69\n" /* "ion\\0" */
+                     "li   t1, 0x006e6f69\n" /* "ion\0" */
                      "sw   t1, 104(a0)\n"
                      "li   t1, 1\n"
                      "sw   t1, 4(a0)\n"
@@ -209,7 +224,9 @@ __attribute__((noinline, naked, used, aligned(4))) static void pde_init_version_
 }
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
-pde_subdir_find_asm(uintptr_t de, const char *name, uint32_t len)
+pde_subdir_find_asm(uintptr_t de __attribute__((unused)),
+                    const char *name __attribute__((unused)),
+                    uint32_t len __attribute__((unused)))
 {
     __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
                      " s1, 5*" XB "(sp)\n"
@@ -244,7 +261,9 @@ pde_subdir_find_asm(uintptr_t de, const char *name, uint32_t len)
 }
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
-proc_lookup_de_asm(uintptr_t dir, uintptr_t dentry, uintptr_t de)
+proc_lookup_de_asm(uintptr_t dir __attribute__((unused)),
+                   uintptr_t dentry __attribute__((unused)),
+                   uintptr_t de __attribute__((unused)))
 {
     __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " s1, 5*" XB "(sp)\n" XS
                      " s2, 4*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n"
@@ -293,10 +312,10 @@ static int run_one(const char *name, uintptr_t (*fn)(uintptr_t, uintptr_t, uintp
     return 0;
 }
 
-/* The fake-pde layout uses 32-bit slots even at rv64: pointers are below 4G
- * and the asm walkers zero-extend them with lwu. These accessors must stay
- * 32-bit. Through uintptr_t they become 8-byte accesses at rv64 and trample
- * the neighboring field. */
+/* The fake-pde layout uses 32-bit slots, pointers included: every pointer is
+ * below 4 GiB and the asm walkers zero-extend them with lwu. These accessors
+ * must stay 32-bit; an access through uintptr_t is 8 bytes wide and would
+ * overwrite the neighboring field. */
 static void write32(uint8_t *base, uint32_t offset, uintptr_t value)
 {
     *(volatile uint32_t *) (void *) (base + offset) = (uint32_t) value;
@@ -419,11 +438,7 @@ static void setup_multi_proc_tree(void)
      * length first: a search name shorter than the node descends left, longer
      * descends right. "maps" (len 4) is shorter than every other node (len 7),
      * so it must live on the left spine to be reachable: loadavg.left=cmdline,
-     * cmdline.left=maps. It used to be meminfo.left, inside loadavg's right
-     * subtree, where a len-4 query cannot reach it: the len-7 root sends every
-     * len-4 query left into the cmdline subtree, which hits cmdline.left=NULL
-     * and returns 0. That made the "maps" lookup fail by tree construction, not
-     * by any RTL fault.
+     * cmdline.left=maps.
      */
     write32(root_pde, PDE_SUBDIR_ROOT_OFFSET, multi_node(MULTI_LOADAVG));
     set_rb_links(MULTI_LOADAVG, MULTI_MEMINFO, MULTI_CMDLINE);

@@ -18,7 +18,7 @@
  * Arena allocator and malloc/free tests. Covers arena_alloc, arena_push,
  * arena_push_zero, arena_push_align, arena_pop, and arena_clear, then malloc,
  * free, block coalescing, freelist reuse, and calloc/realloc including size
- * overflow rejection.
+ * overflow rejection and growth on a full heap.
  */
 
 #include "memory.h"
@@ -335,6 +335,40 @@ static void test_calloc_realloc(void)
     free(grown);
 }
 
+/* NOLINTNEXTLINE(bugprone-reserved-identifier) */
+char *_sbrk(int incr);
+
+/* realloc asks for twice the old payload and, when that does not fit, for
+ * exactly the requested size. With the untouched top of the heap used up, only
+ * a freed hole is left, and it fits the exact size but not the doubled one.
+ * This runs last because it leaves the heap exhausted. */
+static void test_realloc_exact_fit(void)
+{
+    uart_printf("\n=== realloc on a full heap ===\n");
+
+    unsigned char *block = malloc(2048);
+    unsigned char *hole = malloc(2064);
+    int allocated = block != NULL && hole != NULL;
+    check("full-heap blocks allocated", allocated);
+    if (!allocated)
+        return;
+    for (int i = 0; i < 2048; i++)
+        block[i] = (unsigned char) i;
+
+    for (int step = 1 << 30; step > 0; step >>= 1) {
+        while (_sbrk(step) != NULL) {
+        }
+    }
+    check("heap exhausted", _sbrk(1) == NULL);
+    free(hole);
+
+    /* Twice the old payload (4096) fits nowhere; 2064 fits the hole exactly. */
+    unsigned char *grown = realloc(block, 2064);
+    check("realloc falls back to the exact size", grown == hole);
+    check("exact-size realloc preserves data",
+          grown != NULL && grown[0] == 0 && grown[1] == 1 && grown[2047] == 0xFF);
+}
+
 int main(void)
 {
     uart_printf("Memory Library Test Suite\n");
@@ -351,6 +385,7 @@ int main(void)
     test_free();
     test_malloc_reuse();
     test_calloc_realloc();
+    test_realloc_exact_fit();
 
     uart_printf("\n=========================\n");
     uart_printf("Results: %lu passed, %lu failed\n",

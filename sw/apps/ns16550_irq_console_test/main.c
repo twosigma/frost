@@ -15,15 +15,14 @@
  */
 
 /*
- * ns16550 interrupt-driven console test (plan D11's console
- * item). The entire message is transmitted from the external-interrupt
- * handler. THRE raises PLIC source 1; the handler claims, writes exactly
- * one byte to the THR, completes, and returns. The next THRE level
- * re-raises through the level gateway for the following byte. Main only
- * arms the machinery and waits, then checks that every byte was sent from
- * the handler and that the claim count matches. The verdict (<<PASS>> /
- * <<FAIL>>) goes out over the native UART TX register after interrupts
- * are off.
+ * ns16550 interrupt-driven console test. The entire message is transmitted
+ * from the external-interrupt handler. THRE raises PLIC source 1; the handler
+ * claims, writes exactly one byte to the THR, completes, and returns. The
+ * next THRE level re-raises through the level gateway for the following
+ * byte. Main only arms the machinery and waits, then checks that every byte
+ * was sent from the handler and that the claim count matches. The result
+ * (<<PASS>> or <<FAIL>>) goes out over the native UART TX register after
+ * interrupts are off.
  */
 
 #include <stdint.h>
@@ -32,6 +31,8 @@
 
 static void uart_putc(char c)
 {
+    while (!(UART_TX_STATUS & 1u))
+        ;
     UART_TX = (uint8_t) c;
 }
 
@@ -58,9 +59,10 @@ static volatile uint32_t g_claims;
 static volatile uint32_t g_bad_claim;
 
 /* Naked M external-interrupt handler. Claim, and if bytes remain, send one
- * through the THR and complete. The still-idle transmitter re-raises for
- * the next byte. When the message is done, disable IER before completing
- * so the level drops for good. */
+ * through the THR and complete. THRE stays set while the transmit FIFO has
+ * room, so the source raises again for the next byte. When the
+ * message is done, disable IER before completing so the level drops for
+ * good. */
 __attribute__((naked, aligned(4))) static void m_irq_handler(void)
 {
     __asm__ volatile("addi sp, sp, -32\n"
@@ -118,7 +120,7 @@ int main(void)
     PLIC_PRIO1 = 1;
     PLIC_THR_M = 0;
     PLIC_EN_M = 0x2;   /* source 1 in context M */
-    NS16550_IER = 0x2; /* THRE interrupt: raises whenever TX is idle */
+    NS16550_IER = 0x2; /* THRE interrupt: raised while the TX FIFO has room */
     enable_external_interrupt();
     enable_interrupts();
 

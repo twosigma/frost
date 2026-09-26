@@ -15,44 +15,57 @@
  */
 
 /*
- * PMA access-fault directed test.
+ * PMA access-fault directed test. Out-of-map physical addresses, including
+ * any with bits [63:32] set, must raise precise access faults with exact
+ * mepc/mtval instead of aliasing onto the map. Self-checks over UART
+ * (<<PASS>>/<<FAIL>>):
  *
- * Before M2, out-of-map physical addresses aliased onto the map because bits
- * [63:32] were masked at every producer. Now they raise precise access faults
- * with exact mepc/mtval. This test pins the whole matrix, self-checking over
- * UART (<<PASS>>/<<FAIL>>):
- *
- *   Physical map: BRAM [0, 256 KiB) fetch+data; device quadrant
- *   [0x4000_0000, 0x8000_0000) data-only; cached DDR [0x8000_0000,
- *   0xC000_0000) fetch+data. Everything else faults.
+ *   Physical map: BRAM [0, 256 KiB) and cached DDR [0x8000_0000,
+ *   0xC000_0000) take fetch, loads, stores and atomics. The device windows,
+ *   the MMIO registers [0x4000_0000, 0x4003_1000) and the PLIC
+ *   [0x4400_0000, 0x4440_0000), take loads and stores only. Everything
+ *   else faults, including the rest of the device quadrant [0x4000_0000,
+ *   0x8000_0000).
  *
  *   A. Load from a wild 64-bit address        -> cause 5, mtval exact.
  *   B. Load from the BRAM hole (0x0010_0000)  -> cause 5.
  *   C. Load from above cached DDR (0xC000_0000) -> cause 5.
- *   D. Load from [63:32]-aliased BRAM address -> cause 5 (the pre-M2
- *      aliasing case: 0x1_0000_1000 must fault, not read BRAM+0x1000).
+ *   D. Load from [63:32]-aliased BRAM address -> cause 5 (0x1_0000_1000
+ *      must fault, not read BRAM+0x1000).
  *   E. Store to a wild address                -> cause 7, mtval exact.
- *   F. AMO to the BRAM hole                   -> cause 7 (store/AMO access
- *      fault outranks the load-side classification for AMOs).
+ *   F. AMO to the BRAM hole                   -> cause 7 (an AMO reports
+ *      the store/AMO access fault).
  *   G. LR from a wild address                 -> cause 5.
- *   H. Misaligned load in-map                 -> cause 4 still (baseline);
- *      misaligned and out-of-map              -> cause 5 (access fault
- *      outranks misalignment per the privileged spec).
+ *   H. Misaligned load in-map                 -> cause 4;
+ *      misaligned and out-of-map              -> cause 5 (the access fault
+ *      takes priority over misalignment).
  *   I. JALR to a wild 64-bit target           -> cause 1, mepc = mtval =
  *      the exact wild target (the jump itself must not fault; the fetch
  *      does).
  *   J. JALR into the BRAM hole                -> cause 1.
  *   K. JALR into the device quadrant          -> cause 1 (no fetch from
  *      MMIO).
- *   L. Device-quadrant data access still works (UART status read) and a
- *      DDR load/store round-trip still works: the in-map behavior is
- *      unchanged.
+ *   L. In-map accesses do not trap: device reads (UART status, a PLIC
+ *      priority, the last dwords of the MMIO and PLIC windows) and a
+ *      load/store round trip on a cached-DDR word.
+ *   M. Atomics to a device register fault before any device access: AMO
+ *      -> cause 7, LR -> cause 5, SC -> cause 7 (also while a reservation
+ *      on RAM is held), mtval exact, and the ns16550 scratch register keeps
+ *      its value. An AMO to an unserved device address that aliases a
+ *      low-BRAM word -> cause 7, and the word is unchanged.
+ *   N. Plain loads from unserved device addresses fault (lw/ld -> cause 5
+ *      at the address that aliases the low-BRAM word, and loads just past the
+ *      MMIO window, on both sides of the PLIC, and at the top of the
+ *      quadrant). With translation off, stores there issue and the device
+ *      bus ignores them: sw/sd to the aliasing address and a store whose
+ *      immediate carries it past the end of the MMIO window do not trap, and
+ *      the low-BRAM word is unchanged.
  *
- * The mechanism is umode_test's M-mode bounce. The mtvec handler records
- * mcause/mepc/mtval once per case, then returns to the continuation stashed
- * in mscratch. Every trigger sits behind a trapping instruction, so a
- * missing fault fails on the recorded sentinel values instead of hanging,
- * and a regression to aliasing shows up as the trailing ecall's cause 11.
+ * Each case uses the M-mode bounce from umode_test: the mtvec handler records
+ * mcause/mepc/mtval for the first trap of the case, then returns to the
+ * continuation stashed in mscratch. Every trigger is followed by an ecall, so
+ * a data access that does not fault records cause 11. The JALR triggers jump
+ * away from it, so they have no such fallback.
  */
 
 #include <stdint.h>
@@ -106,8 +119,9 @@ __attribute__((naked, aligned(4))) static void pma_trap_handler(void)
 }
 
 /* Run one trigger: reset the records, point the continuation past the
- * trigger, execute it. Each trigger is a naked body ending in ecall (the
- * no-fault fallback: cause 11 from M). */
+ * trigger, execute it. The ecall after the trigger is the no-fault fallback
+ * (cause 11 from M). The clobbers include every register the handler
+ * writes. */
 #define RUN_CASE(body_asm, ...)                                                                    \
     do {                                                                                           \
         g_cause = ~0ul;                                                                            \
@@ -119,7 +133,7 @@ __attribute__((naked, aligned(4))) static void pma_trap_handler(void)
                          "1:\n"                                                                    \
                          :                                                                         \
                          : __VA_ARGS__                                                             \
-                         : "t0", "t1", "t2", "memory");                                            \
+                         : "t0", "t1", "t2", "t3", "memory");                                      \
     } while (0)
 
 static int report3(const char *name,
@@ -141,7 +155,34 @@ static int report3(const char *name,
     return ok;
 }
 
-static volatile uint64_t g_ddr_word __attribute__((section(".data")));
+static int check_value(const char *name, unsigned long got, unsigned long want)
+{
+    int ok = (got == want);
+    uart_puts(ok ? "[PASS] " : "[FAIL] ");
+    uart_puts(name);
+    uart_puts(" got=");
+    uart_hex(got);
+    uart_puts(" want=");
+    uart_hex(want);
+    uart_puts("\r\n");
+    return ok;
+}
+
+/* In .ddr_data, so case L reaches the cached tier in both memory tiers. */
+static volatile uint64_t g_ddr_word __attribute__((section(".ddr_data")));
+
+/* The ns16550 scratch register: a read/write device register with no side
+ * effects. */
+#define NS16550_SCR 0x4000101Cul
+
+/* Unserved device-quadrant addresses the N loads probe: just past the MMIO
+ * window, on both sides of the PLIC, and the top of the quadrant. */
+static const unsigned long k_unserved_loads[] = {
+    0x40031000ul,
+    0x43FFFFFCul,
+    0x44400000ul,
+    0x7FFFFFFCul,
+};
 
 int main(void)
 {
@@ -171,8 +212,8 @@ int main(void)
              "r"(above));
     all_ok &= report3("C above-ddr-load", 5u, 0, above, 0);
 
-    /* D: the pre-M2 aliasing shape: BRAM+0x1000 with bit 32 set must fault
-     * with the exact 64-bit address in mtval, not read the alias. */
+    /* D: BRAM+0x1000 with bit 32 set must fault with the exact 64-bit
+     * address in mtval, not read the alias. */
     unsigned long alias = 0x100001000ul;
     RUN_CASE("mv   t1, %0\n"
              "ld   t2, 0(t1)",
@@ -199,7 +240,7 @@ int main(void)
              "r"(wild));
     all_ok &= report3("G wild-lr", 5u, 0, wild, 0);
 
-    /* H1: in-map misaligned load still raises cause 4 with the address. */
+    /* H1: an in-map misaligned load raises cause 4 with the address. */
     unsigned long mis = (unsigned long) &g_ddr_word + 1u;
     RUN_CASE("mv   t1, %0\n"
              "lw   t2, 0(t1)",
@@ -214,8 +255,7 @@ int main(void)
     all_ok &= report3("H2 wild-misaligned", 5u, 0, mis_wild, 0);
 
     /* I: JALR to a wild target: the fetch faults, and mepc and mtval are the
-     * exact wild target. The link register gives the handler nothing to
-     * return to. The bounce continuation recovers. */
+     * exact wild target. */
     unsigned long wild_jump = 0x140000200ul;
     RUN_CASE("mv   t1, %0\n"
              "jalr x0, t1, 0",
@@ -236,11 +276,17 @@ int main(void)
              "r"(mmio_jump));
     all_ok &= report3("K mmio-jump", 1u, mmio_jump, mmio_jump, 1);
 
-    /* L: in-map behavior unchanged. A device-quadrant data read and a DDR
-     * round-trip complete without traps; the case ends on the ecall. */
+    /* L: device reads and a load/store round trip on g_ddr_word complete
+     * without traps; the case ends on the ecall. */
     g_ddr_word = 0xA5A50FF012345678ull;
-    RUN_CASE("li   t1, 0x40000028\n" /* UART TX status: data-valid read */
+    RUN_CASE("li   t1, 0x40000028\n" /* UART TX status */
              "lw   t2, 0(t1)\n"
+             "li   t1, 0x40030FF8\n" /* last dword of the MMIO window (NIC) */
+             "ld   t2, 0(t1)\n"
+             "li   t1, 0x44000004\n" /* PLIC source 1 priority */
+             "lw   t2, 0(t1)\n"
+             "li   t1, 0x443FFFF8\n" /* last dword of the PLIC window */
+             "ld   t2, 0(t1)\n"
              "mv   t1, %0\n"
              "ld   t2, 0(t1)\n"
              "addi t2, t2, 1\n"
@@ -254,6 +300,91 @@ int main(void)
     uart_hex(g_ddr_word);
     uart_puts("\r\n");
     all_ok &= l_ok;
+
+    /* M1-M4: the device windows support no AMOs and no LR/SC, so each
+     * faults before the device sees a read or a write. */
+    volatile uint32_t *scr = (volatile uint32_t *) NS16550_SCR;
+    *scr = 0x5Au;
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, 0xA5\n"
+             "amoswap.w t2, t2, (t1)",
+             "r"(NS16550_SCR));
+    all_ok &= report3("M1 device-amo", 7u, 0, NS16550_SCR, 0);
+    all_ok &= check_value("M1 scr-unchanged", *scr, 0x5Au);
+
+    RUN_CASE("mv   t1, %0\n"
+             "lr.w t2, (t1)",
+             "r"(NS16550_SCR));
+    all_ok &= report3("M2 device-lr", 5u, 0, NS16550_SCR, 0);
+
+    *scr = 0x5Au;
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, 0x33\n"
+             "sc.w t2, t2, (t1)",
+             "r"(NS16550_SCR));
+    all_ok &= report3("M3 device-sc", 7u, 0, NS16550_SCR, 0);
+    all_ok &= check_value("M3 scr-unchanged", *scr, 0x5Au);
+
+    /* M4: the lr.w on g_ddr_word holds a reservation; the SC still faults. */
+    *scr = 0x5Au;
+    RUN_CASE("mv   t0, %1\n"
+             "lr.w t2, (t0)\n"
+             "mv   t1, %0\n"
+             "li   t2, 0x33\n"
+             "sc.w t2, t2, (t1)",
+             "r"(NS16550_SCR),
+             "r"((unsigned long) &g_ddr_word));
+    all_ok &= report3("M4 device-sc-reserved", 7u, 0, NS16550_SCR, 0);
+    all_ok &= check_value("M4 scr-unchanged", *scr, 0x5Au);
+
+    /* M5: an AMO to an unserved device address. The low BRAM decodes only
+     * the address bits below its size, so without the fault the address
+     * would reach bram_word, which is on the stack (low BRAM in both memory
+     * tiers). */
+    volatile uint64_t bram_word = 0x0123456789ABCDEFull;
+    unsigned long unserved = 0x40100000ul + ((unsigned long) &bram_word & 0x3FFFFul);
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, 1\n"
+             "amoadd.w t2, t2, (t1)",
+             "r"(unserved));
+    all_ok &= report3("M5 unserved-amo", 7u, 0, unserved, 0);
+    all_ok &= check_value("M5 bram-unchanged", bram_word, 0x0123456789ABCDEFull);
+
+    /* N1-N4: plain loads and stores to the same unserved address. */
+    RUN_CASE("mv   t1, %0\n"
+             "lw   t2, 0(t1)",
+             "r"(unserved));
+    all_ok &= report3("N1 unserved-lw", 5u, 0, unserved, 0);
+    RUN_CASE("mv   t1, %0\n"
+             "ld   t2, 0(t1)",
+             "r"(unserved));
+    all_ok &= report3("N2 unserved-ld", 5u, 0, unserved, 0);
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, -1\n"
+             "sw   t2, 0(t1)",
+             "r"(unserved));
+    all_ok &= report3("N3 unserved-sw-ignored", 11u, 0, 0, 0);
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, -1\n"
+             "sd   t2, 0(t1)",
+             "r"(unserved));
+    all_ok &= report3("N4 unserved-sd-ignored", 11u, 0, 0, 0);
+    all_ok &= check_value("N4 bram-unchanged", bram_word, 0x0123456789ABCDEFull);
+
+    /* N5: the base is in the MMIO window's last page and the immediate
+     * carries the store into the first unserved page, which ignores it. */
+    RUN_CASE("mv   t1, %0\n"
+             "sw   t2, 8(t1)",
+             "r"(0x40030FF8ul));
+    all_ok &= report3("N5 store-past-mmio-ignored", 11u, 0, 0, 0);
+
+    /* N6: loads at the edges of the served windows. */
+    for (unsigned i = 0; i < sizeof(k_unserved_loads) / sizeof(k_unserved_loads[0]); i++) {
+        RUN_CASE("mv   t1, %0\n"
+                 "lw   t2, 0(t1)",
+                 "r"(k_unserved_loads[i]));
+        all_ok &= report3("N6 unserved-edge-lw", 5u, 0, k_unserved_loads[i], 0);
+    }
 
     uart_puts(all_ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

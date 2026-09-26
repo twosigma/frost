@@ -1,4 +1,4 @@
-/* Linker script for riscv-torture tests on Frost
+/* Linker script for riscv-torture tests on FROST, bram memory config.
  *
  * ROM holds: code (header + test + footer) + data load image
  * RAM holds: data runtime copy (including signature area) + BSS + stack
@@ -65,7 +65,7 @@ SECTIONS
         __bss_end = .;
     } > RAM
 
-    /* tohost section (used by Spike for program termination, harmless on Frost) */
+    /* tohost section (used by Spike for program termination, harmless on FROST) */
     .tohost : {
         *(.tohost)
     } > RAM

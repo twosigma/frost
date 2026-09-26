@@ -14,9 +14,12 @@
  *    limitations under the License.
  */
 
-// Exhaustive public Bare-bypass equivalence with arbitrary address bits.
-// The width variants check only Bare behavior and package input conversion;
-// they do not claim support for translated Sv39 operation at those widths.
+// With translation off (Bare), the IMMU's ports must equal the reference for
+// every PC: PA0 is the PC's low 32 bits, PA1 the address of the next 4-byte
+// word, the fault flags come from riscv_pkg::fetch_verdict, and the remaining
+// flags are constant.
+// The XLEN 32 and 72 variants check only Bare behavior and the PC's
+// conversion to riscv_pkg::XLEN, not Sv39 translation at those widths.
 module immu_bare_formal #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (

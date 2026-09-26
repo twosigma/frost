@@ -12,8 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for FROST CPU Cocotb verification tests
-# Configures Verilator simulation with Cocotb Python testbench
+# Verilator build for the cocotb simulations that the runners in this directory
+# start. TOPLEVEL selects the RTL sources below; any other toplevel, including
+# frost and cpu_tb, compiles the full RTL list in hw/rtl/frost.f.
 
 # Simulation configuration:
 SIM             := verilator
@@ -22,7 +23,7 @@ TOPLEVEL_LANG   ?= verilog
 # Top-level module name for simulation
 TOPLEVEL        ?= cpu_tb
 # Python test module(s) to run (comma-separated for multiple)
-COCOTB_TEST_MODULES ?= cocotb_tests.test_cpu
+COCOTB_TEST_MODULES ?= cocotb_tests.test_directed_traps
 # Git repository root (with fallback for Docker/non-git contexts)
 ROOT            ?= $(shell git rev-parse --show-toplevel 2>/dev/null || echo /workspace)
 # Whether to generate a waveform file
@@ -30,11 +31,6 @@ WAVES           ?= 0
 
 # Export variables for Cocotb
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
-
-# Timer speedup meant to make FreeRTOS/timer-based tests run faster. It is not
-# plumbed through to Verilator (no -G override is passed), so sims run at the
-# RTL parameter default of 1 and this variable has no effect.
-SIM_TIMER_SPEEDUP ?= 1000
 
 # Compilation arguments - RTL file list (varies by toplevel)
 ifeq ($(TOPLEVEL),reorder_buffer)
@@ -53,7 +49,7 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),rs_issue2_selector)
-# Isolated balanced INT-RS second-port selector unit test
+# Balanced INT-RS second-port selector unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
 VERILOG_SOURCES :=
@@ -159,7 +155,8 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/branch_recovery/branch_resolution.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),data_mem_response_mux_tb)
-# Integrated response helper and actual router, legacy-versus-shared payload seam.
+# Data-memory response mux bench: a request router fed the mux's merged payload,
+# compared every cycle with a reference router fed the separate inputs
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv \
@@ -193,7 +190,8 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),perf_csr_half_test_harness)
-# Actual performance capture / commit pipeline / CSR read equivalence seam.
+# Preselected perf-counter CSR half against the full-width read (aggregator,
+# commit bus pipeline, and csr_file)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
@@ -216,12 +214,6 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/wb_stage/generic_regfile.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/register_files/ooo_register_files.sv
-VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),ras_detector)
-# IF-stage RAS instruction detector unit test
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ras_detector.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),return_address_stack)
 # IF-stage return-address stack unit test
@@ -253,7 +245,6 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ras_detector.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
 VERILOG_SOURCES :=
@@ -293,7 +284,7 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),immu_test_harness)
-# Standalone instruction-MMU seam with an upstream registered PC.
+# Instruction MMU behind a model of pc_controller's fetch-PC register
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv \
@@ -301,11 +292,9 @@ COMPILE_ARGS := \
         $(ROOT)/hw/sim/immu_test_harness.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),instruction_aligner)
-# IF-stage instruction aligner unit test (aligner instantiates the slot-2
-# per-candidate RVC decompressors)
+# IF-stage instruction aligner unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),rvc_decompressor)
@@ -362,12 +351,34 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),dtm_core)
+# Debug transport module unit bench (dtmcs/dmi registers, request handshake)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/debug/dtm_core.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),debug_module)
+# Debug module unit bench (the DMI face)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/debug/debug_module.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),async_fifo)
 # Asynchronous FIFO unit bench (Gray pointers over the dual-clock block RAM)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
         -f $(ROOT)/hw/rtl/lib/fifo/fifo.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),dc_fifo)
+# Dual-clock FIFO unit bench (related clocks, binary pointers)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc.sv \
+        $(ROOT)/hw/rtl/lib/fifo/dc_fifo.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),hang_triage)
+# Hang-triage console takeover unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/hang_triage.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),cdc_gray_count)
 # Gray-coded event counter unit bench
@@ -437,6 +448,11 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),line_port_axi_bridge)
+# Line-port AXI bridge unit bench (the bench plays an AXI slave it never resets)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),x3_ddr_init)
 # X3 power-up DDR4 region writer unit bench (AXI write master only)
 COMPILE_ARGS := \
@@ -455,7 +471,7 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),low_bram_fetch_presenter)
-# Low-BRAM slow-metadata and stall-safe publication presenter unit bench
+# Low-BRAM fetch request repeater unit bench
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
 VERILOG_SOURCES :=
@@ -486,8 +502,9 @@ export VERILOG_SOURCES
 # Add verification infrastructure to Python path so cocotb_tests modules are importable
 export PYTHONPATH := $(ROOT)/verif:$(ROOT)/tests:$(PYTHONPATH)
 
-# Detect number of CPU cores for parallel compilation
-NUMBER_OF_CPU_CORES := $(shell nproc)
+# Parallel compilation jobs: every core by default. Set NUMBER_OF_CPU_CORES in
+# the environment to share the host with other runs.
+NUMBER_OF_CPU_CORES ?= $(shell nproc)
 
 # Verilator threading: the simulation runs single-threaded (VERILATOR_THREADS=1)
 # because the VPI overhead of a multithreaded runtime costs more than it gains
@@ -497,31 +514,32 @@ NUMBER_OF_CPU_CORES := $(shell nproc)
 export VERILATOR_THREADS := 1
 export VERILATOR_MAKE_FLAGS := -j$(NUMBER_OF_CPU_CORES)
 
-# Extra verilator args: parallel verilation + optional waveforms
-# -Wno-UNOPTFLAT: Suppress circular combinational logic warnings (pre-existing
-#   in branch prediction / commit logic; not true functional loops)
-# -Wno-MODDUP: Suppress duplicate module warnings from nested file lists
+# Extra Verilator arguments: parallel verilation and optional waveforms.
+# -Wno-UNOPTFLAT: Verilator calls a signal circular when some of its bits or
+#   fields feed others, as in the priority trees of the load queue and the INT
+#   RS second-issue selector and in some IF- and PD-stage signals. None is a
+#   true combinational loop.
+# -Wno-MODDUP: suppress duplicate-module warnings from nested file lists.
 ifeq ($(WAVES),1)
 	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) --trace-fst --trace-structs -Wno-UNOPTFLAT -Wno-MODDUP
 else
 	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
 endif
 
-# Low-BRAM size: matches hardware (256 KiB, frost.sv MEM_SIZE_BYTES default).
-# Only for toplevels that have the MEM_SIZE_BYTES parameter.
+# Parameters of the frost toplevel only (the -G overrides below).
+# Low BRAM keeps its 256 KiB hardware size (the frost.sv MEM_SIZE_BYTES default).
 SIM_MEM_SIZE_BYTES ?= 262144
-# Cached memory tier (high-address region behind the X3 cache hierarchy:
-# L1 -> URAM L2 -> DDR model).
-# DDR_MODEL_LATENCY mimics main-memory access time; sweep it e.g.:
-#   DDR_MODEL_LATENCY=80 ./test_run_cocotb.py ddr_test
+# Cached memory tier: the high-address region behind the X3 cache hierarchy
+# (L1 -> URAM L2 -> DDR model). DDR_MODEL_LATENCY sets the model's access
+# latency in cycles; to sweep it:
+#   DDR_MODEL_LATENCY=80 ./scripts/frost.py cocotb ddr_test
 ENABLE_CACHED_TIER ?= 1
 DDR_MODEL_BYTES ?= 67108864
 DDR_MODEL_LATENCY ?= 30
-# Fast cache maintenance (fence.i) for simulation: invalidate-all and
-# writeback-all finish in far fewer cycles with the same functional effect, so
-# the Linux kernel's fence.i-heavy patching boots in a tractable amount of sim
-# time. On by default for sim. The RTL default is 0 for FPGA builds, and the
-# board builds never set it.
+# Fast cache maintenance for fence.i (simulation only): invalidate-all and
+# writeback-all take far fewer cycles with the same effect, so the Linux
+# kernel's frequent fence.i during code patching stays affordable in
+# simulation. The RTL default is 0, and board builds never set it.
 SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)
 	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
@@ -544,6 +562,12 @@ endif
 
 # Include Cocotb simulation makefile rules
 include $(shell cocotb-config --makefiles)/Makefile.sim
+
+# Cocotb's sim target makes result cleanup and regression sibling prerequisites.
+# With parallel make, regression can see the previous XML before cleanup and
+# skip this simulation. Make cleanup a normal prerequisite of the result itself
+# so every invocation runs the simulator, after removing the preceding report.
+$(COCOTB_RESULTS_FILE): _rm_results
 
 clean:: clean-local
 

@@ -14,18 +14,19 @@
 
 """fence.i maintenance cycle-count measurement (frost_cache_test_harness DUT).
 
-Drives the cache hierarchy at the real L1 geometry (128 KiB D-side / 16 KiB
-I-side, set via -G in the registry), dirties a handful of D-side lines, then
-issues one fence.i cache-sync handshake and counts the cycles from sync-assert
-to done. Run the two registry builds to see the speedup directly:
+Drives the cache hierarchy at the production geometry (128 KiB L1D, 16 KiB
+L1I, 2 MiB L2, set via -G in the registry), dirties a handful of D-side lines,
+then issues one fence.i cache-sync handshake and counts the cycles from
+sync-assert to done. The L1D's writebacks complete at the L2. Compare the two
+registry builds:
 
-    ./test_run_cocotb.py fence_speed_slow   # SIM_FAST_MAINT=0 (FPGA-path FSM)
-    ./test_run_cocotb.py fence_speed_fast   # SIM_FAST_MAINT=1 (fast sim path)
+    ./scripts/frost.py cocotb fence_speed_slow   # SIM_FAST_MAINT=0 (FPGA-path FSM)
+    ./scripts/frost.py cocotb fence_speed_fast   # SIM_FAST_MAINT=1 (fast sim path)
 
-The slow build walks every line (writeback-all over 4096 lines + invalidate-all
-over 512 lines, ~thousands of cycles); the fast build touches only the dirty
-lines and bulk-clears the tags (low hundreds or fewer). The measured count is
-logged as `FENCE_I_MAINT_CYCLES=<n>` for easy comparison.
+In the slow build, writeback-all walks the L1D's dirty index span and
+invalidate-all sweeps the 512 L1I tags one per cycle; the fast build visits
+only the dirty lines and clears the tags in one cycle. The count is logged as
+`FENCE_I_MAINT_CYCLES=<n>`.
 """
 
 from typing import Any
@@ -38,7 +39,8 @@ CLOCK_PERIOD_NS = 10
 LINE_BYTES = 32
 BASE_ADDR = 0x8000_0000
 
-# Generous: the slow reset sweep walks every L1 line (4096) before ready.
+# Generous: the slow reset sweep walks every L2 line (65,536) before the L2
+# takes a request.
 READY_TIMEOUT_CYCLES = 100_000
 RESP_TIMEOUT_CYCLES = 20_000
 FENCE_TIMEOUT_CYCLES = 200_000
@@ -63,7 +65,7 @@ def _clear_inputs(dut: Any) -> None:
 
 
 async def _setup(dut: Any) -> None:
-    """Start the clock, reset, and wait out the tag-invalidate sweep."""
+    """Start the clock, reset, and wait out every level's tag-invalidate sweep."""
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
     dut.i_rst.value = 1
@@ -73,7 +75,12 @@ async def _setup(dut: Any) -> None:
     dut.i_rst.value = 0
     for _ in range(READY_TIMEOUT_CYCLES):
         await FallingEdge(dut.i_clk)
-        if int(dut.o_up_req_ready.value) == 1 and int(dut.o_iup_req_ready.value) == 1:
+        # No upstream ready reflects the L2, so read its sweep state directly.
+        if (
+            int(dut.o_up_req_ready.value) == 1
+            and int(dut.o_iup_req_ready.value) == 1
+            and int(dut.cache_hierarchy.l2_cache.o_maint_busy.value) == 0
+        ):
             return
     raise AssertionError("cache never became ready after reset (sweep stuck?)")
 
@@ -134,7 +141,7 @@ async def test_fence_i_maintenance_cycles(dut: Any) -> None:
     cycles = await _measure_fence_cycles(dut)
     dut._log.info(
         f"FENCE_I_MAINT_CYCLES={cycles} (dirty_lines={NUM_DIRTY_LINES}, "
-        f"L1=128KiB/4096 lines, L1I=16KiB/512 lines)"
+        f"L1=128KiB/4096 lines, L1I=16KiB/512 lines, L2=2MiB)"
     )
 
     # Sanity only: completion within the timeout. The slow vs fast comparison is

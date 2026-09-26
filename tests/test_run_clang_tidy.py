@@ -181,7 +181,7 @@ def test_run_clang_tidy_prints_and_returns_failure(
 def test_run_clang_tidy_summarizes_non_blocking_findings(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Keep advisory checks visible even though only compiler diagnostics gate."""
+    """Report a file's advisory finding count without printing the findings or failing."""
 
     def fake_run(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         """Return a successful run containing two advisory diagnostics."""

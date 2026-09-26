@@ -14,12 +14,11 @@
  *    limitations under the License.
  */
 
-// SPDX-License-Identifier: Apache-2.0
-// Copyright 2026 Two Sigma Open Source, LLC
-
-// Reconciliation sublayer receive fault qualification. Observe both 32-bit
-// XGMII columns in order. Four equal fault sequences qualify; 128 columns
-// without a fault sequence clear both the qualification and fault status.
+// Reconciliation sublayer receive fault qualification. Both 32-bit XGMII
+// columns of each word are checked in order. Four equal fault sequences
+// qualify; 128 columns without a fault sequence clear both the qualification
+// and the fault status. The outputs are combinational, and while i_pcs_ok is
+// low the monitor reports a local fault.
 module eth10g_fault_monitor (
     input logic i_clk,
     input logic i_rst,

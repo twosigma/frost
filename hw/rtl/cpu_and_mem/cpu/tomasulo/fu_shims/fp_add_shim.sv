@@ -17,18 +17,24 @@
 /*
  * FP Add Shim (CDB slot 4, FP_RS)
  *
- * Translates rs_issue_t from FP_RS into the FPU subunits' native ports,
- * instantiates the five subunit types, and packs their results into
- * fu_complete_t for the CDB adapter.
- *
- * Subunits:
- *   - fpu_adder_unit:       FADD_S/D, FSUB_S/D (~10 cycles)
- *   - fpu_compare_unit:     FEQ/FLT/FLE/FMIN/FMAX S/D (2 cycles)
- *   - fpu_classify_unit:    FCLASS_S/D (2 cycles)
- *   - fpu_sign_inject_unit: FSGNJ/FSGNJN/FSGNJX S/D (2 cycles)
+ * Translates rs_issue_t from FP_RS into the ports of five FPU subunits and
+ * packs their results into fu_complete_t for the CDB adapter. None of the
+ * subunits is pipelined; each runs one operation at a time, with this latency
+ * from start to result:
+ *   - fpu_adder_unit:       FADD_S/D, FSUB_S/D (10 cycles)
  *   - fpu_convert_unit:     FCVT_*, FMV_* (5 cycles)
+ *   - fpu_compare_unit:     FEQ/FLT/FLE/FMIN/FMAX S/D (3 cycles)
+ *   - fpu_classify_unit:    FCLASS_S/D (1 cycle)
+ *   - fpu_sign_inject_unit: FSGNJ/FSGNJN/FSGNJX S/D (1 cycle)
  *
- * One subunit runs at a time, so a single in_flight/flushed pair tracks it.
+ * Only one operation is in flight across all five, so a single
+ * in_flight/flushed pair and one tag register track it, and o_fu_busy is
+ * in_flight. The result is presented only in the cycle the subunit produces
+ * it, with no accept handshake, so the adapter must be free then; the wrapper
+ * stops FP_RS while the adapter holds a result. A flush that covers the
+ * operation before that cycle drops the result when it emerges; a flush in
+ * that cycle itself is left to the adapter, which sees the same flush.
+ *
  * Single-precision FP results are NaN-boxed into the 64-bit carrier. Integer
  * results arrive XLEN-correct and pad to FLEN.
  */
@@ -169,6 +175,7 @@ module fp_add_shim (
   logic in_flight, flushed;
   logic fire;  // a subunit is being launched this cycle
   logic completing;  // any subunit is producing a valid output
+  logic [TagW-1:0] tag_reg;  // ROB tag of the in-flight operation
 
   // Forward declare subunit valid outputs
   logic adder_valid_out, compare_valid_out, classify_valid_out;
@@ -203,14 +210,10 @@ module fp_add_shim (
 
   assign o_fu_busy = in_flight;
 
-  // Latch ROB tag + op on fire
-  logic [TagW-1:0] tag_reg;
-  riscv_pkg::instr_op_e op_reg;
-
+  // Latch the ROB tag on fire
   always_ff @(posedge i_clk) begin
     if (fire) begin
       tag_reg <= i_rs_issue.rob_tag;
-      op_reg  <= i_rs_issue.op;
     end
   end
 

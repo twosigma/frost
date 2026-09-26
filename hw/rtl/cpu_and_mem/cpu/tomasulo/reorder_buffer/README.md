@@ -1,85 +1,203 @@
 # Reorder Buffer
 
-The ROB tracks instructions from dispatch through in-order commit, providing
-precise exceptions and branch-recovery state.
+The reorder buffer (ROB) tracks every in-flight instruction from dispatch
+until it retires. Instructions complete out of order but retire from the
+head in program order, which makes exceptions precise and lets a mispredicted
+branch discard everything younger. The ROB has 32 entries
+(`riscv_pkg::ReorderBufferDepth`), shared by integer and FP instructions, and
+allocates and retires up to two per cycle. An entry's index is its ROB tag,
+the name the rest of the back end uses for the instruction: the RAT maps
+registers to tags, reservation stations wait on tags, and the CDB broadcasts
+results by tag.
 
-## Design
+An entry's life: allocate at dispatch → complete → retire at the head.
 
-A 32-entry circular buffer with head and tail pointers. Each pointer carries
-an extra MSB wrap bit so full and empty are distinguishable. Allocation is
-in-order at dispatch, and slot 1 and slot 2 can allocate adjacent entries in
-the same cycle. Completion is out of order through the two CDB lanes, or
-direct for plain stores. Commit is in-order at the head.
+[`reorder_buffer.sv`](reorder_buffer.sv) holds the entries, and
+[`rob_serializer.sv`](rob_serializer.sv) pins the head while an instruction
+there waits on something outside the ROB. The
+[back-end overview](../README.md) shows how the ROB fits with the other
+blocks.
 
-INT and FP entries share the buffer and use `dest_rf` to select the register
-file.
+## Structure
 
-### Storage strategy
+Head and tail pointers carry an extra wrap bit to tell full from empty.
+`dest_rf` selects the register file an entry writes.
 
-Multi-bit fields live in distributed RAM: PC, dest reg, predicted target,
-checkpoint id, head metadata, value, exception cause, FP flags, branch
-target, and the CSR address, op, and write data. Allocation-only fields use
-paired allocation write ports for slot 1 and slot 2. Fields the CDB also
-updates use multi-write LUTRAMs with a Live Value Table. The value and
-FP-flag RAMs have four write ports: alloc slot 1, alloc slot 2, CDB lane 0,
-and CDB lane 1. The exception-cause RAM has the same physical ports, but
-allocation installs zero or `ExcIllegalInstr` and only a valid exceptional CDB
-completion may overwrite it. The branch target is split by producer class
-instead: JAL targets arrive on the allocation ports, and resolved
-branch/JALR targets arrive on branch update into a plain single-write-port
-`sdp_dist_ram`. The head selects between the two, which is cheaper than an
-LVT RAM on the branch-update path. The 1-bit packed flags (`valid`, `done`,
-`exception`, the branch flags) stay in flip-flops because they need
-per-entry clear on partial flush.
+Multi-bit fields live in distributed RAM: PC, destination register,
+checkpoint ID, head metadata, value, exception cause, FP flags, branch
+target, and the CSR address, op, and write data. A RAM with several
+write ports keeps one bank per port and a Live Value Table (LVT) recording
+which bank holds each entry's newest value. Allocation-only fields have two
+write ports, one per dispatch slot; the value, FP-flag, and exception-cause
+RAMs add one per CDB lane. The branch target is split by producer instead:
+JAL targets go into an allocation-written RAM, and branch and JALR targets
+into a single-port RAM written on branch update, so the branch-update path
+has no LVT. The head selects between the two. Single-bit state (`valid`,
+`done`, `exception`, the replay flag, and the branch flags) stays in
+flip-flops, so reset and flushes can clear any set of entries at once.
 
-The ROB folds the complete CSR/privilege/Debug/FS legality verdict into each
-entry's `exception` bit and cause at allocation. That snapshot is exact for
-every instruction that can survive to commit: a CSR write stops younger
-allocation until its side effect commits, trap, xRET, and Debug-Mode
-transitions flush younger work, and hardware FS Dirty-setting only moves FS
-away from Off. A normal CDB completion therefore marks the entry done without
-clearing its allocation-time exception. An exceptional CDB completion sets the
-exception and replaces the cause. Both writes are valid-tag-qualified so a
-stale CDB for an invalid tag cannot beat same-cycle reallocation in the cause
-RAM's Live Value Table.
+The value field has eight copies with identical writes and different read
+addresses: head, head+1, and six dispatch done-repair reads (three sources
+per slot).
 
-The `value` field has nine read ports: head (for commit), head+1 (for
-widen-commit), RAT bypass, and six dispatch-time bypass reads (three for
-slot-1 sources, three for slot-2 sources). They are implemented as nine
-LUTRAM instances with identical writes and different read addresses. The
-wrapper's FMUL pending queue consumes the registered slot-1 response on
-channels 1/2/3 instead of owning packet-tag-driven read replicas.
+The value copies update their LVT one cycle after an allocation
+(`NUM_STAGED_LVT_PORTS`), which keeps the late dispatch enable off the LVT;
+reads stay exact. The price is one rule: no CDB write may target an entry in
+the cycle after its allocation. In that cycle a live write would win the LVT
+over the staged allocation and corrupt the new entry. No real completion is
+that fast: dispatch, issue, execution, and the registered CDB take more than
+one cycle. A simulation check flags violations; the unit bench, which drives
+the CDB directly, disables it with `DrainWindowCheck=0`.
 
-The nine `value` instances run their two alloc write ports in the RAM
-modules' register-staged LVT mode (`NUM_STAGED_LVT_PORTS(2)`). The late
-alloc enables still write the banks in the alloc cycle, but the Live Value
-Table update runs one cycle later from staging registers. This keeps the
-dispatch-gate cone off every LVT bit of every replica, to bound allocation fanout. Reads stay cycle-exact through a per-entry effective-LVT
-correction inside the RAM modules. The load-bearing case is JAL, which is
-done at alloc and whose link value may be read at alloc+1.
+A CDB write reaches a free entry only if it is stale: a completion for a tag
+that was flushed or has already retired (a JALR's wakeup broadcast can trail
+its retirement). If it lands in the cycle that entry is reallocated, the
+allocation wins in every field. The state bits and the exception cause take
+CDB writes only for valid entries, the value copies resolve the collision in
+the staged LVT, and the FP-flag RAMs number their allocation ports above
+their CDB ports. A store or branch, which never completes on the CDB,
+therefore retires with zero FP flags.
 
-## Two-wide allocation
+## Allocation
 
-Dispatch provides a primary allocation request and an optional slot-2 request.
-Slot 2 only allocates when slot 1 also allocates, and `full_for_2` blocks the
-pair when only one ROB entry is free. Slot 1 receives the current tail tag and
-slot 2 receives `tail+1`, which preserves program order for later commit and
-checkpoint age comparisons.
+Slot 1 takes the tail entry and slot 2 the next, so ring order is program
+order, which retirement and checkpoint age comparisons rely on. Slot 2
+allocates only with slot 1, and only when two entries are free
+(`full_for_2`). Allocation is gated off in flush cycles.
 
-Dispatch-facing full flags are registered from conservative next occupancy:
-they include the current allocation width and exclude same-cycle commit
-capacity. The legal request width (zero, one, or two) selects among parallel
-current-count thresholds, which keeps the late dispatch valid off both the
-high-fanout RAM write enable and a serial add/compare cone. Flushes retain
-their exact pointer-derived survivor count. This relies on the allocation
-contract, which the RTL asserts: slot 1 is never presented while full or
-flushing, and slot 2 implies slot 1 and is never presented while
-`full_for_2`.
+Dispatch stalls on registered full flags (`o_full`, `o_full_for_2`, and the
+`full` field of each allocation response). They count this cycle's
+allocations but not its retirements, so they err toward stalling; on a flush
+they use the exact number of surviving entries. They are computed from the
+raw request valids, which is safe because dispatch obeys rules the RTL
+asserts: slot 1 is never presented while the ROB is full or flushing, and
+slot 2 only with slot 1 and never while `full_for_2` is set.
+
+### Legality checks at allocation
+
+The ROB decides at allocation whether an instruction is illegal and records
+it as an exception with cause `ExcIllegalInstr`. The check covers privilege
+level, counter enables, `mstatus` TVM, TW, and TSR, S-mode `stimecmp` access
+without `menvcfg.STCE`, Debug-only instructions and CSRs, unimplemented CSRs,
+writes to read-only CSRs, FP use while `mstatus.FS` is Off, and an FP
+instruction with the dynamic rounding mode (rm = 111) while `frm` holds a
+reserved value (5 to 7), which traps like the reserved static modes do.
+Dispatch marks such an instruction with the request's `fp_dyn_rm` bit: an F/D
+instruction whose funct3 is 111. That funct3 is always an rm field set to
+dynamic, since every F/D instruction without an rm field has a funct3 of 011
+or less.
+
+Deciding at allocation is exact because that state cannot change under a
+live entry: every CSR instruction keeps younger instructions out of dispatch
+until its CSR write is done (only CSR writes change `frm`), traps, xRETs, and
+Debug Mode transitions flush younger work, and hardware never sets
+`mstatus.FS` to Off (it only sets Dirty).
+
+A normal CDB completion leaves an allocation-time fault in place, while an
+exceptional one sets the exception and replaces the cause. ID marks F/D
+instructions illegal while `mstatus.FS` is Off, so no FP load or store
+reaches the memory pipeline and takes a memory fault. The only exceptional
+completion that can reach an entry with an allocation-time fault and name a
+different cause is an instruction fetch fault, which the privileged spec
+ranks above illegal-instruction: the fetch-fault pseudo-op carries the
+faulting fetch's bytes, and they can decode as, say, an access to a CSR that
+does not exist. Exceptional completions set the exception bit and cause only
+while the entry is valid, so a stale write for a recycled tag cannot
+overwrite the cause of the entry allocated there in the same cycle.
+
+## Completion
+
+Most entries allocate not done and become done when their result arrives on
+either CDB lane; the two lanes always carry different tags. The others:
+
+| Instruction | Becomes done |
+|-------------|--------------|
+| JAL | At allocation: ID computes its link address and target |
+| JALR, conditional branch | On its branch update |
+| FENCE, FENCE.I, SFENCE.VMA, WFI, xRET | At allocation; the serializer handles them at the head |
+| Store other than SC | When it issues without a fault, on a direct store-completion port instead of the CDB |
+
+Allocation writes the link address into the value field of every branch and
+jump, so JAL and JALR hold their register result from the start.
+
+### Same-cycle CDB bypass
+
+A CDB write sets `done` at the next clock edge, so on its own the head would
+retire a cycle after its result arrives. The bypass matches both CDB lanes
+against the head and head+1 tags and feeds a hit straight into retirement.
+At the head it applies only to ordinary completions: exceptions, branches and
+jumps, CSRs, fences, WFI, and xRETs keep their usual paths. CSRs and xRETs
+must stay excluded there, because `o_csr_start` and `o_mret_start` read the
+stored done bit (an assertion checks this). At head+1 the bypass excludes
+only exceptional completions, since the two-wide hazard gate below already
+keeps the serializing classes off slot 2.
+
+## Retirement
+
+The head retires when it is valid and done, has no exception, the serializer
+does not stall it, and retirement is permitted: no commit hold from cpu_ooo,
+no early-recovery pulse, and no flush. An exceptional head never retires; it
+traps. Nothing retires in a flush cycle, and the store queue relies on that:
+its flush logic has no guard for a store committing in the same cycle, so
+that store's write would be lost.
+
+### Two-wide commit
+
+Head and head+1 retire together when both are ready and both pass the hazard
+gate, unless cpu_ooo holds slot 2 off with `i_widen_commit_ok`. It does that
+during a debugger single step, so exactly one instruction retires before the
+halt. Slot 2 has no serializer, trap, or redirect path, so the gate keeps on
+slot 1 anything that needs one: CSRs, FENCE, FENCE.I, SFENCE.VMA, WFI, xRETs,
+AMO, LR, SC, exceptions, a mispredicted branch at the head, and a
+mispredicted or early-recovered branch at head+1.
+
+Slot 2 carries the register write, store commit, and RAT clear, plus branch
+and checkpoint fields for a correctly predicted branch; its strobe
+`o_commit_correct_branch_2_raw` frees the checkpoint and trains the
+predictors. Its `misprediction` bit is always 0, and for a branch its
+`redirect_pc` is just the next PC. Every RAM holding a field slot 2
+retires has a `_next` copy that reads head+1; slot 2 never retires an
+exception or a CSR, so the exception-cause and CSR RAMs have none.
+
+When both slots write the same register, slot 2 holds the newer value. The
+register files (two write ports merged by an LVT) give its write priority.
+The RAT cannot still map the register to slot 1, because slot 2 renamed it
+later, so only slot 2's commit can clear the mapping, and only if nothing
+younger has renamed the register since. The store queue has a second commit
+port for slot 2, which retires only plain stores.
+
+### Commit buses
+
+Each slot has a combinational commit bus (`o_commit_comb`, `o_commit_comb_2`)
+and a registered copy (`o_commit`, `o_commit_2`). The full core leaves the
+registered copies unconnected: the wrapper registers the combinational buses
+in `commit_bus_pipeline`, and the register files, RAT, store queue, SC logic,
+and CSR file use that view. The misprediction flush controller in cpu_ooo
+acts in the retirement cycle, on the combinational buses and the strobes
+`o_commit_misprediction_raw`, `o_commit_correct_branch_raw`, and
+`o_commit_correct_branch_2_raw`.
+
+The registered bus also drives `instret`, through cpu_ooo's `commit_actions`.
+A full flush masks that bus a cycle after it is raised, so three retirements
+never reach it, and cpu_ooo counts them separately: an xRET, which never
+commits; a FENCE.I or SFENCE.VMA, whose own flush masks its registered
+commit; and a WFI that a halt or interrupt takes over at the head, where the
+take saves the PC after the WFI.
+
+### Early-recovered branches
+
+[`early_misprediction_recovery`](../../cpu_ooo/branch_recovery/early_misprediction_recovery.sv)
+recovers from a mispredicted conditional branch that holds a checkpoint as
+soon as the branch resolves, without waiting for the head. It marks the
+entry `early_recovered` (`i_early_recovery_en`, `i_early_recovery_tag`) so
+that retiring it does not start a second recovery. JALR mispredictions
+recover at retirement.
 
 ## Serializing instructions
 
-[`rob_serializer.sv`](rob_serializer.sv) holds the commit head when an entry
-needs external coordination:
+[`rob_serializer.sv`](rob_serializer.sv) pins the head while it waits for a
+drained store queue, a cache sync, a CSR handshake, the trap unit, or an
+interrupt.
 
 ```mermaid
 stateDiagram-v2
@@ -102,196 +220,129 @@ stateDiagram-v2
     TRAP_WAIT --> IDLE: trap taken
 ```
 
-State names omit the RTL's `SERIAL_` prefix. In the labels, `SQ empty` means
-**committed** SQ entries have drained, `sync fence` means FENCE.I or
-SFENCE.VMA, `permit` is the normal retirement permit, and `xRET` includes
-MRET, SRET, and DRET. Commas join conditions that must both hold.
+State names omit the RTL's `SERIAL_` prefix. `SQ empty` means committed
+stores have drained (`i_sq_committed_empty`). `sync fence` is FENCE.I or
+SFENCE.VMA (the ROB treats SFENCE.VMA as a subtype of FENCE.I). `permit`
+means retirement is allowed: no commit hold, early-recovery pulse, or flush.
+`xRET` covers MRET, SRET, and DRET. A comma joins conditions that must all
+hold.
 
-CSR and xRET start outputs use the head's stored `valid` and `done` bits.
-Their allocation classes exclude same-cycle CDB bypass, so this is exactly
-the original readiness predicate for those starts while keeping the CDB
-match/exception logic off trap and CSR control. Ordinary commit and exception
-readiness still include CDB bypass. RTL assertions retain both original start
-equations; `rob_start_cofactor` proves the allocation-class exclusion,
-one-hot head selection, and output equivalence by induction.
+The FSM leaves IDLE only for a ready head with retirement permitted, and an
+exception outranks the instruction's class. Reset or a full flush returns it
+to IDLE. A plain FENCE with committed stores drained, and a WFI with an
+interrupt pending, retire straight from IDLE.
 
-Leaving IDLE requires a ready
-head and no commit hold, early recovery, or flush; exception handling has
-priority over the instruction class. Each state holds while its transition
-condition is false. Reset or a full flush returns any state to IDLE.
+The serializer has two stall outputs. Retirement uses
+`o_commit_stall_for_retire`, which in FENCE_I_SYNC and CSR_TRANSLATION_DRAIN
+omits the permit terms that every retirement condition already has.
+Performance counters and assertions must use `o_commit_stall`, which keeps
+them, so blocked cycles in those states still count.
 
-The fence class here includes FENCE, FENCE.I, and SFENCE.VMA. WAIT_SQ falls
-through to IDLE for a plain FENCE once the committed SQ entries drain.
-FENCE.I and SFENCE.VMA instead advance into FENCE_I_SYNC, or enter it directly
-from IDLE if the SQ is already committed-empty. A plain FENCE with a drained
-SQ, or WFI with an interrupt already pending, can retire without leaving IDLE.
+### CSRs
 
-Each owned state asserts `commit_stall` until its release condition is met.
-An ordinary CSR drops the stall on `i_csr_done` and retires on its
-completion cycle. Translation-class ownership is captured at allocation:
-every `satp` access qualifies conservatively, while `mstatus` and `sstatus`
-qualify only when the instruction has architectural write intent. When
-`i_csr_done` arrives, an owned CSR moves to `CSR_TRANSLATION_DRAIN`
-unconditionally, so the one-cycle done handshake is not lost when stores or
-a retirement guard still block it. It retires only after the committed SQ is
-empty and the normal retirement permit is present (`!i_commit_hold` and no
-recovery or flush guard). This drain happens before the CSR's architectural
-write and leaves ordinary CSR timing unchanged.
+Entering CSR_EXEC raises `o_csr_start`; cpu_ooo returns `i_csr_done` a cycle
+later, and an ordinary CSR retires then. The CSR file reads and writes the
+register in the next cycle, from the registered commit bus, while cpu_ooo
+holds retirement; the read value reaches the destination register a cycle
+after that.
 
-A memory-order replay flag (set through `i_replay_set_mask` by the wrapper's
-DMA coherence port for a load that observed memory before a DMA write to its
-line) sets the entry's stored exception bit, so the head cone is the same
-one-hot read as for any exception, and a `rob_replay` bit selects cause
-`ExcMemReplay` at the head; the trap unit restarts the load at its own PC
-with no CSR or privilege effect. The flag is only set on an entry without a
-stored exception and clears with the entry (allocation, commit, flush), like
-`rob_valid`.
+A CSR that may change address translation needs everything after it
+refetched. The ROB classifies these conservatively at allocation: any `satp`
+access, and any `mstatus` or `sstatus` access with write intent. On
+`i_csr_done` such a CSR moves to CSR_TRANSLATION_DRAIN unconditionally, so
+the one-cycle done pulse is never lost, and it retires once committed stores
+have drained and retirement is permitted. The drain is required because the
+recovery ends in a full flush, which empties the store queue.
 
-TRAP_WAIT never drops the stall because the trap flush takes over. FENCE.I
-holds in FENCE_I_SYNC, driving the level cache-sync request
-(`o_fence_i_sync_req` / `i_fence_i_sync_done`) until both sync completion and
-the retirement permit are present. The L1D can therefore write back and the
-L1I invalidate against post-writeback data before the instruction retires.
+### Fences and FENCE-class recovery
 
-Translation-class CSR recovery has three phases. The CSR first retires into a
-one-cycle registered shadow. In the following cycle
-`o_translation_csr_commit_shadow` and `o_fence_class_flush_event` are
-asserted while the registered commit bus writes the CSR file. The full flush
-follows one cycle after that. A native FENCE.I/SFENCE.VMA instead produces
-the serializer-owned semantic event directly on retirement. For either owner,
-`o_fence_i_flush` is the one-cycle registered image of
-`o_fence_class_flush_event`, so `o_fence_i_flush` covers
-both native fences and translation-class CSR recovery. The CSR file
-separately generates its registered TLB/PTW invalidate request for every
-enabled committed `satp` access, or for an `mstatus`/`sstatus` commit whose
-result changes SUM, MXR, or MPRV, or changes MPP while MPRV is set. The
-ROB's conservative recovery classification does not replace that check.
+FENCE, FENCE.I, and SFENCE.VMA wait at the head for committed stores to
+drain. FENCE.I and SFENCE.VMA then hold FENCE_I_SYNC, asserting
+`o_fence_i_sync_req` until the caches return `i_fence_i_sync_done`. By then
+the L1D has written back its dirty lines and the L1I has invalidated, so code
+fetched after the fence sees the stores before it. For SFENCE.VMA,
+`o_sfence_window` is high for exactly the same cycles, and the wrapper turns
+it into the TLB and page-table-walker invalidate.
 
-SFENCE.VMA uses the same cache-sync state, but the serializer also captures a
-registered `o_sfence_window` from its next state and the pinned head decode.
-That level rises and falls on exactly the same edges as the sync request for an
-SFENCE.VMA, stays low for a plain FENCE.I, and keeps the live ROB-head read out
-of the TLB/PTW invalidation cone.
+FENCE.I, SFENCE.VMA, and translation CSRs end in a full flush and refetch.
+`o_fence_class_flush_event` marks the event, and `o_fence_i_flush`, the same
+signal a cycle later, requests the flush:
 
-AMO / LR / SC have no serial state of their own. LQ issue requires LR to be
-at the ROB head, and AMO additionally waits for a committed-empty SQ. SC
-resolves through the wrapper's `sc_pending_unit`, which requires the ROB
-head and a committed-empty SQ before checking the reservation and producing
-its result. Once the CDB marks an atomic entry done, it commits through the
-ordinary completion path.
+| Retiring instruction | Cycle T | T+1 | T+2 |
+|----------------------|---------|-----|-----|
+| FENCE.I, SFENCE.VMA | Retires; `o_fence_class_flush_event` | `o_fence_i_flush` | |
+| Translation CSR | Retires | Registered commit bus writes the CSR file; `o_fence_class_flush_event`, `o_translation_csr_commit_shadow` | `o_fence_i_flush` |
 
-When the head exception fires, the ROB exports the head entry's value
-slot as `o_trap_value` alongside `o_trap_pc` / `o_trap_cause`. For a
-misaligned load/store the load_queue / SQ path parks the faulting
-address in that otherwise-unused value slot, so `cpu_ooo` can mux it
-into `mtval`.
+The extra cycle lets the CSR write land before the flush, and cpu_ooo stalls
+the trap unit from the shadow cycle through the flush. The CSR file requests
+the TLB and page-table-walker invalidate itself: for every `satp` access, and
+for an `mstatus` or `sstatus` write that changes SUM, MXR, or MPRV, or
+changes MPP while MPRV is set. The ROB's broader classification decides only
+the drain and the flush.
 
-## Two-wide commit
+### xRET, WFI, and exceptions
 
-The ROB retires up to two entries per cycle. When head and head+1 are
-both done and both pass a hazard gate, both entries retire in the
-same cycle. The hazard gate excludes anything that has to be the
-last thing to happen before its commit-time side effect: CSRs,
-FENCE / FENCE.I / SFENCE.VMA, WFI, xRET, AMO / LR / SC, exceptions, and any
-mispredicting head or head+1 branch. That leaves the common case of
-two ordinary-completion entries retiring back-to-back.
+An xRET enters MRET_EXEC and requests the return with `o_mret_start`
+(`o_mret_start_is_sret` and `o_mret_start_is_dret` say which). The trap unit
+takes it only in a cycle where committed stores have drained, so the ROB
+raises `o_mret_start` only while they have. It can rise in MRET_EXEC as well
+as in IDLE: an xRET that reaches the head while stores are still draining
+enters MRET_EXEC first and raises the start once they finish. A start that
+could rise only on entry would never rise then, leaving the FSM stuck. The
+trap unit redirects to `mepc`, `sepc`, or `dpc`, and its full flush, which
+arrives with `i_mret_done`, clears the ROB, xRET included.
 
-Slot 2 is a stripped-down sibling of slot 1. It carries the regfile
-retire, store-commit, and RAT clear payload. Because the gate admits
-correctly-predicted branches at head+1, it also carries real branch and
-checkpoint metadata plus a second correct-branch strobe
-(`o_commit_correct_branch_2_raw`) for the slot-2 checkpoint-free /
-BTB-training capture. It never drives the mispredict or redirect paths:
-the hazard gate guarantees that a mispredicting (or early-recovered)
-branch cannot retire on head+1, so slot 2's `misprediction` stays
-hardwired 0 and its `redirect_pc` only ever carries the architectural
-next-PC of a correctly-predicted branch. A `_next` replica of each head
-RAM (head-meta, pc, dest, value, predicted-target, checkpoint-id,
-branch-target, exc-cause, fp-flags, csr-*) gives slot 2 its own read
-port at `head_idx + 1`.
+WFI holds the head until an interrupt is pending. `o_head_is_wfi` lets
+cpu_ooo use the instruction after the WFI as the interrupt return address,
+even when the interrupt flushes the WFI first.
 
-The regfiles take two write ports (a 2-write-port distributed RAM
-with a Live Value Table). When both slots target the same
-architectural register, the LVT steers reads to slot 2, which holds
-the newer program-order value. The RAT relies on the same ordering:
-when both slots write the same register, the RAT holds slot 2's tag,
-so slot 1's tag compare misses and slot 2's commit clears the entry.
+An exception at the head raises `o_trap_pending` with `o_trap_pc`,
+`o_trap_cause`, and `o_trap_value`, and waits in TRAP_WAIT until the trap's
+full flush removes it. `o_trap_value` is the entry's value field, where the
+producer parks the faulting virtual address for instruction access and page
+faults (the INT ALU shim) and for misaligned, access, and page faults on
+data (the load and store paths). cpu_ooo writes it to `mtval` or `stval` for
+those causes.
 
-## Same-cycle CDB → head-done bypass
+### Memory-order replay
 
-The bypass forwards either CDB lane directly into the
-head commit mux when it targets `head_idx` (or `head_next_idx` for
-slot 2), so the head retires the same cycle the arbiter broadcast
-reaches the ROB.
+When a DMA write invalidates a line, the wrapper's
+[coherence port](../tomasulo_wrapper/coherence/lq_coherence_port.sv) flags
+every in-flight load that has already read it (`i_replay_set_mask`). A
+flagged entry becomes exceptional with cause `ExcMemReplay`, and at the head
+the trap unit restarts the load at its own PC, with no CSR or privilege
+change. Otherwise a younger load that read the line before the DMA write
+could retire after an older load that read it afterward. The flag is set
+only on a valid entry with no stored exception, and clears on allocation,
+retirement, flush, or an exceptional completion.
 
-Lane 0 and lane 1 carry distinct ROB tags. If both are valid in the same cycle,
-the ROB marks two entries done and writes both value / FP-flag payloads through
-the parallel CDB write ports. Each lane writes exception state and cause only
-when its completion is exceptional; a non-exception completion preserves any
-allocation-time legality fault.
+### Atomics
 
-Exceptions, branch / JAL / JALR, CSR, FENCE / FENCE.I / SFENCE.VMA, WFI, and xRET fall
-through to the existing serial / branch-update / trap
-paths; the bypass applies only to ordinary completions.
-
-## Commit interfaces
-
-The ROB exposes a combinational commit bus (`o_commit_comb`), a
-registered commit bus (`o_commit`), and parallel slot 2 variants
-(`o_commit_comb_2`, `o_commit_2`). The combinational view feeds the
-same-cycle misprediction detection in `cpu_ooo.sv`'s commit flush
-controller; the registered view feeds slower downstream consumers
-(RAT clear, SQ commit). Splitting them keeps the misprediction-detect
-path short without forcing every consumer onto a combinational path.
-
-## Early-recovery flag
-
-When `cpu_ooo.sv` triggers an execute-time partial flush for a
-mispredicted conditional branch, it tags the resolving ROB entry as
-`early_recovered`. When the entry later reaches the head, the commit
-logic skips re-triggering the flush, since the recovery has already
-happened. Without this flag, every fast-recovered branch would
-generate a redundant flush at commit.
-
-## Allocation special cases
-
-Most instructions allocate as not-done and become done via CDB write.
-The exceptions:
-
-- JAL is marked done at allocation. The link address is computed in ID
-  and the target is known at decode, so there is nothing to wait for.
-- JALR has its link address written at allocation but waits for
-  `branch_jump_unit` to resolve the target.
-- WFI, FENCE, FENCE.I, SFENCE.VMA, and xRET are marked done immediately. They have
-  no execution phase, only a commit-time effect handled by the
-  serializing FSM.
+AMO, LR, and SC have no serializer state. The LQ issues an LR only at the
+head, and an AMO only at the head with committed stores drained;
+`sc_pending_unit` in the wrapper fires an SC under the same two conditions.
+Once done, they retire normally.
 
 ## Performance counters
 
-The ROB drives the cycle-exact `head_wait_total` and the nine-way head-class
-partition directly. The final `head_wait_int` and `head_wait_mem_load`
-classifications are stored in per-entry FF vectors by both allocation lanes
-and selected with the registered one-hot head mask. They are bit-equivalent to
-the priority classifier (branch, then AMO/LR, then store, then RS type) while
-keeping the head-meta LVT off these high-fanout observer paths. Live
-`head_valid`, effective-done (including the same-cycle CDB bypass), and
-full-flush gating remain combinational, so the counter event cycles do not
-shift.
-
-The ROB also drives `head_and_next_done` (commit fired while head+1 was also
-done, an upper bound on widen-commit), `head_plus_one_done` (head+1 done
-whether or not commit fires, for the drain-backlog bucket),
-`commit_2_opportunity` (the hazard gate passed), and `commit_2_fire_actual`
-(the gate plus the master enable and `i_widen_commit_ok`). The gap between
-the last two measures how often 2-wide commit is blocked by downstream
-back-pressure rather than by the hazard gate.
+The ROB drives the head-wait, commit-blocked, and two-wide commit events in
+the [counter reference](../../cpu_ooo/perf/README.md): `head_wait_total` and
+per-class `head_wait_*` events, `commit_blocked_*` for cycles the serializer
+holds a ready head, and the two-wide funnel (`head_and_next_done`,
+`head_plus_one_done`, `commit_2_opportunity`, `commit_2_fire_actual`, and the
+`commit_2_blocked_*` causes). A head that completes and retires in the same
+cycle does not count as waiting.
 
 ## Verification
 
 The `reorder_buffer` cocotb target covers allocation, completion, branch
-updates, serialization, flushes, and tag reuse. Its formal target checks
-pointer/ownership, allocation/commit, store drain, and serializer event
-timing invariants.
+resolution, two-wide commit, serialization (including translation CSRs),
+allocation-time faults, flushes, and tag reuse. The `reorder_buffer` formal
+target checks pointer and occupancy invariants, allocation into free entries,
+retirement, serializer invariants, and FENCE-class event timing.
+`rob_control_next`, `rob_retire_stall`, and `rob_start_cofactor` prove the
+restructured next-state, retirement, and CSR/xRET start logic equal to
+reference equations.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

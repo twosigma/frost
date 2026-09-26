@@ -1,7 +1,7 @@
-/* Spike PGO-training image: link_spike.ld plus the .gcov_info table that
- * -fprofile-info-section emits, with the start/end symbols the freestanding
- * dumper in pgo_dump.c walks.  Measurement tooling only (README.md); no FROST
- * image is ever linked with this script. */
+/* Spike PGO-training image: link_spike.ld plus .got and the .gcov_info table
+ * that -fprofile-info-section emits, with the start/end symbols the
+ * freestanding dumper in pgo_dump.c walks. Measurement tooling only
+ * (README.md); no FROST image is linked with this script. */
 OUTPUT_ARCH(riscv)
 ENTRY(_start)
 SECTIONS

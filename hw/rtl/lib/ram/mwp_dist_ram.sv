@@ -16,8 +16,8 @@
 
 /*
  * Multi-write-port distributed RAM using a live-value table (LVT). Each write
- * port owns one RAM bank; the per-address LVT selects the newest bank for the
- * asynchronous read. Among ordinary same-cycle writes, the highest-numbered
+ * port has its own RAM bank; the per-address LVT selects the newest bank for
+ * the asynchronous read. Among ordinary same-cycle writes, the highest-numbered
  * port wins. Duplicate the module with shared writes for additional reads.
  *
  * Ports [NUM_STAGED_LVT_PORTS-1:0] may stage their LVT update by one cycle.
@@ -26,8 +26,11 @@
  * per-entry LVT decode.
  *
  * Ports [NUM_NARROW_WRITE_PORTS-1:0] store only NARROW_DATA_WIDTH low bits;
- * their checked-zero upper bits are reconstructed on read. ROB allocation
- * ports use this for zero-extended XLEN link addresses.
+ * their checked-zero upper bits are reconstructed on read. The ROB's value
+ * RAMs declare their allocation ports narrow (XLEN) for zero-extended link
+ * addresses. With FLEN == XLEN, as in the RV64 core, those banks are full
+ * width: the option changes nothing and g_narrow_write_check, the zero
+ * check on the upper bits, does not elaborate.
  *
  * Staged ports must have the lowest indices. Their collision rules differ:
  *   - A same-cycle staged/live collision is legal and the staged write wins.
@@ -98,7 +101,8 @@ module mwp_dist_ram #(
   // Live Value Table (register-based)
   //
   // Tracks which bank holds the most recent write for each address.
-  // Highest-indexed write port wins on simultaneous same-address writes.
+  // Highest-indexed write port wins on simultaneous same-address writes,
+  // except that a staged port beats a live one (see header).
   //
   // Staged ports (indices < NUM_STAGED_LVT_PORTS): the LVT update runs one
   // cycle late from the staging registers below, so the port's (late) enable
@@ -117,15 +121,10 @@ module mwp_dist_ram #(
   // 9.2.2.4 forbids an always_ff variable being written by another process but
   // permits declaration initialization (Verilator >=5.050 enforces this;
   // yosys formal needs the pinned init value either way).
-  // Timing: do not put max_fanout on these staging registers.  A 24-cap
-  // experiment made synthesis replicate them and re-expand each replica's
-  // per-entry lvt_eff override cone in every read-port instance.  The ROB
-  // value head grew 1,505 -> 4,991 cells (3.3x, +3,486 cells, the whole
-  // design's LUT delta), and that wiring sits in the operand-delivery
-  // neighborhood of the int-RS capture fabric, which collapsed the X3 placer
-  // sweep to congestion-level-5 vetoes.  The staged registers' routed-timing
-  // family sat below the WNS pin with or without the cap, so the replication
-  // bought nothing measurable.
+  // Timing: do not put max_fanout on these staging registers.  Synthesis
+  // would replicate them and rebuild each replica's per-entry lvt_eff
+  // override cone in every read-port instance, which in the ROB multiplies
+  // the value RAMs' logic and congests placement, for no timing gain.
   logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
   logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
@@ -161,8 +160,8 @@ module mwp_dist_ram #(
   // registers, so they fold into the early side of the select cone; the late
   // read address sees the same RamDepth-to-1 depth as the unstaged module.
   // The staged port's bank was written in the enable cycle, so the corrected
-  // select returns the new data.  Reads are cycle-exact against the unstaged
-  // module.
+  // select returns the new data.  Apart from a same-cycle staged/live
+  // collision (see header), reads match the unstaged module cycle for cycle.
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt_eff[RamDepth];
 
@@ -199,9 +198,9 @@ module mwp_dist_ram #(
     end
   end
 
-  // Narrow write ports must be given zero-extended data.  A nonzero upper half
-  // here would be silently dropped by the narrow bank, so treat it as an error
-  // at the write edge.
+  // Narrow write ports must be given zero-extended data.  Nonzero upper bits
+  // here would be silently dropped by the narrow bank, so treat them as an
+  // error at the write edge.
   if (NUM_NARROW_WRITE_PORTS > 0 && NARROW_DATA_WIDTH < DATA_WIDTH) begin : g_narrow_write_check
     localparam int NarrowPorts = int'(NUM_NARROW_WRITE_PORTS);
     always @(posedge i_clk) begin

@@ -3,11 +3,12 @@
     // scripts KEEP .init first in .text, so _start heads the program image.
     .section .init
     .option  push
-    .option  norelax          // la gp must stay absolute; relaxation rewrites it gp-relative
+    .option  norelax          // relaxation would make `la gp` gp-relative before gp is set
     .globl  _start
 _start:
     // sp starts at the top of the stack and grows down. gp is set 0x800 above
-    // .sdata, so gp-relative accesses cover the small-data sections.
+    // .sdata; gp-relative offsets reach 2 KiB either way, which covers the
+    // first 4 KiB of small data.
     la      sp, _stack_top
     la      gp, __global_pointer$
 
@@ -44,7 +45,7 @@ _start:
     // lp64: la (auipc+addi) cannot reach the 0x8xxx_xxxx cached region from
     // the low-BRAM .init, because the displacement exceeds PCREL_HI20's +2 GiB
     // reach. Load the bounds from a local literal pool of absolute dwords
-    // instead. Same class as the arch_test/riscv_tests boot stubs.
+    // instead, as the arch_test boot stub (crt0_arch_test.S) does.
 6:  ld      t0, ddr_bss_bounds
     ld      t1, ddr_bss_bounds+8
 8:  bgeu    t0, t1, 9f

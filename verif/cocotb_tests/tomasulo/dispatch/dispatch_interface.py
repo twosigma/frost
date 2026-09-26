@@ -33,30 +33,19 @@ from cocotb_tests.cpu_structs import (
 # Width constants from riscv_pkg
 # =============================================================================
 ROB_TAG_WIDTH = 5
-REG_ADDR_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
-RAS_PTR_BITS = 3
-BP_DIR_IDX_BITS = 10
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
 # instr_op_e: enum bit [InstrOpWidth-1:0] in riscv_pkg (8-bit, two-state, unsigned)
 OP_WIDTH = INSTR_OP_WIDTH
-MASK_OP = (1 << OP_WIDTH) - 1
 
 # rs_type_e: 3 bits
 RS_TYPE_WIDTH = 3
 
 # mem_size_e: 2 bits
 MEM_SIZE_WIDTH = 2
-
-# branch_taken_op_e: 3 bits
-BRANCH_OP_WIDTH = 3
-
-# instr_t: 32 bits packed struct
-INSTR_WIDTH = 32
 
 # =============================================================================
 # RS type constants
@@ -79,9 +68,8 @@ MEM_SIZE_DOUBLE = 3
 
 # =============================================================================
 # instr_op_e constants, parsed from riscv_pkg.sv so every value tracks the
-# RTL enum. Hardcoded indices go stale on any mid-enum insertion: the M3
-# .D-atomics insertion shifted everything after AMOMAXU_W by 11, which
-# silently invalidated the old FLW..FCLASS_D block.
+# RTL enum. Hardcoded values would go stale whenever a member is inserted
+# mid-enum.
 # =============================================================================
 _INSTR_OPS = _parse_instr_op_enum()
 # base-ISA integer ops
@@ -125,6 +113,10 @@ LHU = _INSTR_OPS["LHU"]
 SB = _INSTR_OPS["SB"]
 SH = _INSTR_OPS["SH"]
 SW = _INSTR_OPS["SW"]
+# RV64 loads/stores
+LWU = _INSTR_OPS["LWU"]
+LD = _INSTR_OPS["LD"]
+SD = _INSTR_OPS["SD"]
 # M-extension
 MUL = _INSTR_OPS["MUL"]
 MULH = _INSTR_OPS["MULH"]
@@ -134,7 +126,13 @@ DIV = _INSTR_OPS["DIV"]
 DIVU = _INSTR_OPS["DIVU"]
 REM = _INSTR_OPS["REM"]
 REMU = _INSTR_OPS["REMU"]
-# Zifencei
+# RV64 M word forms
+MULW = _INSTR_OPS["MULW"]
+DIVW = _INSTR_OPS["DIVW"]
+DIVUW = _INSTR_OPS["DIVUW"]
+REMW = _INSTR_OPS["REMW"]
+REMUW = _INSTR_OPS["REMUW"]
+# FENCE and Zifencei
 FENCE = _INSTR_OPS["FENCE"]
 FENCE_I = _INSTR_OPS["FENCE_I"]
 # Zicsr
@@ -182,6 +180,28 @@ CZERO_NEZ = _INSTR_OPS["CZERO_NEZ"]
 PACK = _INSTR_OPS["PACK"]
 PACKH = _INSTR_OPS["PACKH"]
 BREV8 = _INSTR_OPS["BREV8"]
+# RV64 word forms (RV64I, Zba, Zbb, Zbkb)
+ADDIW = _INSTR_OPS["ADDIW"]
+SLLIW = _INSTR_OPS["SLLIW"]
+SRLIW = _INSTR_OPS["SRLIW"]
+SRAIW = _INSTR_OPS["SRAIW"]
+ADDW = _INSTR_OPS["ADDW"]
+SUBW = _INSTR_OPS["SUBW"]
+SLLW = _INSTR_OPS["SLLW"]
+SRLW = _INSTR_OPS["SRLW"]
+SRAW = _INSTR_OPS["SRAW"]
+ADD_UW = _INSTR_OPS["ADD_UW"]
+SH1ADD_UW = _INSTR_OPS["SH1ADD_UW"]
+SH2ADD_UW = _INSTR_OPS["SH2ADD_UW"]
+SH3ADD_UW = _INSTR_OPS["SH3ADD_UW"]
+SLLI_UW = _INSTR_OPS["SLLI_UW"]
+ROLW = _INSTR_OPS["ROLW"]
+RORW = _INSTR_OPS["RORW"]
+RORIW = _INSTR_OPS["RORIW"]
+CLZW = _INSTR_OPS["CLZW"]
+CTZW = _INSTR_OPS["CTZW"]
+CPOPW = _INSTR_OPS["CPOPW"]
+PACKW = _INSTR_OPS["PACKW"]
 # Zihintpause
 PAUSE = _INSTR_OPS["PAUSE"]
 # Privileged
@@ -192,6 +212,10 @@ WFI = _INSTR_OPS["WFI"]
 ECALL = _INSTR_OPS["ECALL"]
 EBREAK = _INSTR_OPS["EBREAK"]
 DRET = _INSTR_OPS["DRET"]
+# Markers dispatch substitutes for an illegal instruction or a fetch fault
+ILLEGAL = _INSTR_OPS["ILLEGAL"]
+FETCH_FAULT = _INSTR_OPS["FETCH_FAULT"]
+FETCH_PAGE_FAULT = _INSTR_OPS["FETCH_PAGE_FAULT"]
 # A extension
 LR_W = _INSTR_OPS["LR_W"]
 SC_W = _INSTR_OPS["SC_W"]
@@ -204,6 +228,17 @@ AMOMIN_W = _INSTR_OPS["AMOMIN_W"]
 AMOMAX_W = _INSTR_OPS["AMOMAX_W"]
 AMOMINU_W = _INSTR_OPS["AMOMINU_W"]
 AMOMAXU_W = _INSTR_OPS["AMOMAXU_W"]
+LR_D = _INSTR_OPS["LR_D"]
+SC_D = _INSTR_OPS["SC_D"]
+AMOSWAP_D = _INSTR_OPS["AMOSWAP_D"]
+AMOADD_D = _INSTR_OPS["AMOADD_D"]
+AMOXOR_D = _INSTR_OPS["AMOXOR_D"]
+AMOAND_D = _INSTR_OPS["AMOAND_D"]
+AMOOR_D = _INSTR_OPS["AMOOR_D"]
+AMOMIN_D = _INSTR_OPS["AMOMIN_D"]
+AMOMAX_D = _INSTR_OPS["AMOMAX_D"]
+AMOMINU_D = _INSTR_OPS["AMOMINU_D"]
+AMOMAXU_D = _INSTR_OPS["AMOMAXU_D"]
 # F extension
 FLW = _INSTR_OPS["FLW"]
 FSW = _INSTR_OPS["FSW"]
@@ -258,7 +293,7 @@ FEQ_D = _INSTR_OPS["FEQ_D"]
 FLT_D = _INSTR_OPS["FLT_D"]
 FLE_D = _INSTR_OPS["FLE_D"]
 FCLASS_D = _INSTR_OPS["FCLASS_D"]
-# RV64 F/D conversions and moves (M3)
+# RV64 F/D conversions and moves
 FCVT_L_S = _INSTR_OPS["FCVT_L_S"]
 FCVT_LU_S = _INSTR_OPS["FCVT_LU_S"]
 FCVT_S_L = _INSTR_OPS["FCVT_S_L"]
@@ -293,11 +328,11 @@ assert _offset == 0, f"Offset mismatch: {_offset}"
 # =============================================================================
 # Pre-decoded operand-classification helpers
 # =============================================================================
-# These mirror the riscv_pkg.sv functions of the same names, so that
-# build_from_id_to_ex can fill the registered flags from instruction_operation
-# and tests need not set each one. The DUT's id_stage runs the same decode and
-# registers the result; dispatch reads the registered flag instead of
-# re-decoding.
+# These mirror the riscv_pkg.sv functions of the same names (has_int_dest,
+# uses_fp_rs1, ...), so build_from_id_to_ex can derive the pre-decoded flags
+# from instruction_operation and tests need not set each one. In the CPU,
+# id_stage runs the same decode and registers the flags, and dispatch reads
+# them without re-decoding. The tables cover every instr_op_e member.
 _HAS_FP_DEST_OPS: frozenset[int] = frozenset(
     {
         FLW,
@@ -403,6 +438,27 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         PACK,
         PACKH,
         BREV8,
+        ADDIW,
+        SLLIW,
+        SRLIW,
+        SRAIW,
+        ADDW,
+        SUBW,
+        SLLW,
+        SRLW,
+        SRAW,
+        ADD_UW,
+        SH1ADD_UW,
+        SH2ADD_UW,
+        SH3ADD_UW,
+        SLLI_UW,
+        ROLW,
+        RORW,
+        RORIW,
+        CLZW,
+        CTZW,
+        CPOPW,
+        PACKW,
         MUL,
         MULH,
         MULHSU,
@@ -411,11 +467,18 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         DIVU,
         REM,
         REMU,
+        MULW,
+        DIVW,
+        DIVUW,
+        REMW,
+        REMUW,
         LB,
         LH,
         LW,
         LBU,
         LHU,
+        LWU,
+        LD,
         LR_W,
         SC_W,
         AMOSWAP_W,
@@ -427,6 +490,17 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         AMOMAX_W,
         AMOMINU_W,
         AMOMAXU_W,
+        LR_D,
+        SC_D,
+        AMOSWAP_D,
+        AMOADD_D,
+        AMOXOR_D,
+        AMOAND_D,
+        AMOOR_D,
+        AMOMIN_D,
+        AMOMAX_D,
+        AMOMINU_D,
+        AMOMAXU_D,
         CSRRW,
         CSRRS,
         CSRRC,
@@ -559,7 +633,9 @@ _USES_FP_RS3_OPS: frozenset[int] = frozenset(
     }
 )
 
-# uses_int_rs1: most ops, except pure-FP-rs1 / PC-relative / system / CSR-imm.
+# Ops with no integer rs1: LUI, AUIPC, JAL, fences, system ops, CSR
+# immediates, and the illegal and fetch-fault markers. Ops that read an FP rs1
+# are excluded separately.
 _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
     {
         LUI,
@@ -578,6 +654,9 @@ _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
         CSRRWI,
         CSRRSI,
         CSRRCI,
+        ILLEGAL,
+        FETCH_FAULT,
+        FETCH_PAGE_FAULT,
     }
 )
 
@@ -607,6 +686,11 @@ _USES_INT_RS2_OPS: frozenset[int] = frozenset(
         DIVU,
         REM,
         REMU,
+        MULW,
+        DIVW,
+        DIVUW,
+        REMW,
+        REMUW,
         SH1ADD,
         SH2ADD,
         SH3ADD,
@@ -627,9 +711,22 @@ _USES_INT_RS2_OPS: frozenset[int] = frozenset(
         CZERO_NEZ,
         PACK,
         PACKH,
+        ADDW,
+        SUBW,
+        SLLW,
+        SRLW,
+        SRAW,
+        ADD_UW,
+        SH1ADD_UW,
+        SH2ADD_UW,
+        SH3ADD_UW,
+        ROLW,
+        RORW,
+        PACKW,
         SB,
         SH,
         SW,
+        SD,
         SC_W,
         AMOSWAP_W,
         AMOADD_W,
@@ -640,11 +737,21 @@ _USES_INT_RS2_OPS: frozenset[int] = frozenset(
         AMOMAX_W,
         AMOMINU_W,
         AMOMAXU_W,
+        SC_D,
+        AMOSWAP_D,
+        AMOADD_D,
+        AMOXOR_D,
+        AMOAND_D,
+        AMOOR_D,
+        AMOMIN_D,
+        AMOMAX_D,
+        AMOMINU_D,
+        AMOMAXU_D,
     }
 )
 
 _RS_MUL_OPS: frozenset[int] = frozenset(
-    {MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU}
+    {MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW}
 )
 
 _RS_MEM_OPS: frozenset[int] = frozenset(
@@ -657,6 +764,9 @@ _RS_MEM_OPS: frozenset[int] = frozenset(
         SB,
         SH,
         SW,
+        LWU,
+        LD,
+        SD,
         FLW,
         FSW,
         FLD,
@@ -672,6 +782,17 @@ _RS_MEM_OPS: frozenset[int] = frozenset(
         AMOMAX_W,
         AMOMINU_W,
         AMOMAXU_W,
+        LR_D,
+        SC_D,
+        AMOSWAP_D,
+        AMOADD_D,
+        AMOXOR_D,
+        AMOAND_D,
+        AMOOR_D,
+        AMOMIN_D,
+        AMOMAX_D,
+        AMOMINU_D,
+        AMOMAXU_D,
         FENCE,
         FENCE_I,
         SFENCE_VMA,
@@ -744,9 +865,9 @@ _RS_FMUL_OPS: frozenset[int] = frozenset(
 
 _RS_FDIV_OPS: frozenset[int] = frozenset({FDIV_S, FSQRT_S, FDIV_D, FSQRT_D})
 
-_RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, SRET, DRET, PAUSE})
+_RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, SRET, DRET})
 
-_INT_STORE_OPS: frozenset[int] = frozenset({SB, SH, SW})
+_INT_STORE_OPS: frozenset[int] = frozenset({SB, SH, SW, SD})
 
 _BRANCH_OR_JUMP_OPS: frozenset[int] = frozenset(
     {BEQ, BNE, BLT, BGE, BLTU, BGEU, JAL, JALR}
@@ -817,12 +938,8 @@ _HAS_FP_FLAGS_OPS: frozenset[int] = frozenset(
     }
 )
 
-_LOAD_OPS: frozenset[int] = frozenset({LB, LH, LW, LBU, LHU})
-_LOAD_BYTE_OPS: frozenset[int] = frozenset({LB, LBU})
-_LOAD_HALFWORD_OPS: frozenset[int] = frozenset({LH, LHU})
-_LOAD_UNSIGNED_OPS: frozenset[int] = frozenset({LBU, LHU})
-_MUL_OPS: frozenset[int] = frozenset({MUL, MULH, MULHSU, MULHU})
-_DIV_OPS: frozenset[int] = frozenset({DIV, DIVU, REM, REMU})
+_LOAD_OPS: frozenset[int] = frozenset({LB, LH, LW, LBU, LHU, LWU, LD})
+_LOAD_UNSIGNED_OPS: frozenset[int] = frozenset({LBU, LHU, LWU})
 _CSR_OPS: frozenset[int] = frozenset({CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI})
 _AMO_OPS: frozenset[int] = frozenset(
     {
@@ -837,10 +954,25 @@ _AMO_OPS: frozenset[int] = frozenset(
         AMOMAX_W,
         AMOMINU_W,
         AMOMAXU_W,
+        LR_D,
+        SC_D,
+        AMOSWAP_D,
+        AMOADD_D,
+        AMOXOR_D,
+        AMOAND_D,
+        AMOOR_D,
+        AMOMIN_D,
+        AMOMAX_D,
+        AMOMINU_D,
+        AMOMAXU_D,
     }
 )
 _FP_LOAD_OPS: frozenset[int] = frozenset({FLW, FLD})
 _FP_STORE_OPS: frozenset[int] = frozenset({FSW, FSD})
+# The operand classifier's needs_lq and needs_sq: SC takes a store-queue entry,
+# LR and every other AMO a load-queue one.
+_NEEDS_LQ_OPS: frozenset[int] = _LOAD_OPS | _FP_LOAD_OPS | (_AMO_OPS - {SC_W, SC_D})
+_NEEDS_SQ_OPS: frozenset[int] = _INT_STORE_OPS | _FP_STORE_OPS | frozenset({SC_W, SC_D})
 _FP_INSTRUCTION_OPS: frozenset[int] = frozenset(
     _FP_LOAD_OPS
     | _FP_STORE_OPS
@@ -849,35 +981,6 @@ _FP_INSTRUCTION_OPS: frozenset[int] = frozenset(
     | _USES_FP_RS1_OPS
     | _USES_FP_RS2_OPS
     | _USES_FP_RS3_OPS
-)
-_FP_COMPUTE_OPS: frozenset[int] = _HAS_FP_FLAGS_OPS
-_FP_TO_INT_OPS: frozenset[int] = frozenset(
-    {
-        FCVT_W_S,
-        FCVT_WU_S,
-        FCVT_W_D,
-        FCVT_WU_D,
-        FMV_X_W,
-        FCVT_L_S,
-        FCVT_LU_S,
-        FCVT_L_D,
-        FCVT_LU_D,
-        FMV_X_D,
-    }
-)
-_INT_TO_FP_OPS: frozenset[int] = frozenset(
-    {
-        FCVT_S_W,
-        FCVT_S_WU,
-        FCVT_D_W,
-        FCVT_D_WU,
-        FMV_W_X,
-        FCVT_S_L,
-        FCVT_S_LU,
-        FCVT_D_L,
-        FCVT_D_LU,
-        FMV_D_X,
-    }
 )
 
 
@@ -922,53 +1025,74 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_fence_i": 1 if op in {FENCE_I, SFENCE_VMA} else 0,
         "is_csr_imm": 1 if op in _CSR_IMM_OPS else 0,
         "has_fp_flags": 1 if op in _HAS_FP_FLAGS_OPS else 0,
+        "needs_lq": 1 if op in _NEEDS_LQ_OPS else 0,
+        "needs_sq": 1 if op in _NEEDS_SQ_OPS else 0,
         "is_load_instruction": 1 if op in _LOAD_OPS else 0,
-        "is_load_byte": 1 if op in _LOAD_BYTE_OPS else 0,
-        "is_load_halfword": 1 if op in _LOAD_HALFWORD_OPS else 0,
         "is_load_unsigned": 1 if op in _LOAD_UNSIGNED_OPS else 0,
         "is_jump_and_link": 1 if op == JAL else 0,
         "is_jump_and_link_register": 1 if op == JALR else 0,
-        "is_multiply": 1 if op in _MUL_OPS else 0,
-        "is_divide": 1 if op in _DIV_OPS else 0,
         "is_csr_instruction": 1 if op in _CSR_OPS else 0,
         "is_amo_instruction": 1 if op in _AMO_OPS else 0,
-        "is_lr": 1 if op == LR_W else 0,
-        "is_sc": 1 if op == SC_W else 0,
+        "is_lr": 1 if op in {LR_W, LR_D} else 0,
+        "is_sc": 1 if op in {SC_W, SC_D} else 0,
         "is_mret": 1 if op in {MRET, SRET, DRET} else 0,
         "is_sret": 1 if op == SRET else 0,
         "is_dret": 1 if op == DRET else 0,
         "is_sfence_vma": 1 if op == SFENCE_VMA else 0,
         "is_wfi": 1 if op == WFI else 0,
-        "is_ecall": 1 if op == ECALL else 0,
-        "is_ebreak": 1 if op == EBREAK else 0,
         "is_fp_instruction": 1 if op in _FP_INSTRUCTION_OPS else 0,
         "is_fp_load": 1 if op in _FP_LOAD_OPS else 0,
         "is_fp_store": 1 if op in _FP_STORE_OPS else 0,
-        "is_fp_load_double": 1 if op == FLD else 0,
-        "is_fp_store_double": 1 if op == FSD else 0,
-        "is_fp_compute": 1 if op in _FP_COMPUTE_OPS else 0,
-        "is_pipelined_fp_op": 1 if op in (_RS_FMUL_OPS | _RS_FDIV_OPS) else 0,
-        "is_fp_to_int": 1 if op in _FP_TO_INT_OPS else 0,
-        "is_int_to_fp": 1 if op in _INT_TO_FP_OPS else 0,
-        # id_stage registers is_not_nop = (instruction != NOP) on every
-        # instruction it presents; for slot 1 a fetch-fault tag also forces the
-        # flag high (id_stage.sv). Packed test packets keep that boundary even
-        # though dispatch qualifies slot-2 admission with i_valid_2. Pass
-        # is_not_nop=0 to model a NOP bubble.
-        "is_not_nop": 1,
+        # id_stage sets is_real for a real instruction and clears it for a
+        # bubble (PD's inject_nop). Test packets default to 1 like a real
+        # instruction, although this bench's DUT takes slot-2 presence from
+        # i_valid_2 (SLOT2_VALID_FROM_BUNDLE = 0). Pass is_real=0 to model a
+        # bubble.
+        "is_real": 1,
     }
+
+
+# The fields id_stage takes from instr_operand_classifier, which selects its
+# neutral class for an illegal instruction or a fetch fault.
+_CLASSIFIER_FIELDS: tuple[str, ...] = (
+    "has_int_dest",
+    "has_fp_dest",
+    "uses_int_rs1",
+    "uses_int_rs2",
+    "uses_fp_rs1",
+    "uses_fp_rs2",
+    "uses_fp_rs3",
+    "rs_type",
+    "is_int_store",
+    "is_branch_or_jump",
+    "is_fence",
+    "is_fence_i",
+    "is_sfence_vma",
+    "is_csr_imm",
+    "has_fp_flags",
+    "needs_lq",
+    "needs_sq",
+)
 
 
 def build_from_id_to_ex(**kwargs: int) -> int:
     """Pack from_id_to_ex_t fields into a single bit vector.
 
     All fields default to 0. Keyword arguments matching struct field names set
-    those fields.
+    those fields; any other name raises ValueError.
 
     Pre-decoded dispatch fields that the caller does not set are derived from
-    instruction_operation, mirroring what id_stage computes and registers.
+    instruction_operation, mirroring what id_stage computes and registers. For
+    an illegal instruction or a fetch fault, the operand-classifier fields take
+    ID's neutral class instead (INT_RS, no operands, no destination).
     """
+    unknown = sorted(set(kwargs) - set(_FROM_ID_TO_EX_OFFSETS))
+    if unknown:
+        raise ValueError(f"not from_id_to_ex_t fields: {', '.join(unknown)}")
     derived = _derive_pre_decoded_flags(int(kwargs.get("instruction_operation", 0)))
+    if kwargs.get("is_illegal_instruction") or kwargs.get("is_fetch_fault"):
+        neutral = _derive_pre_decoded_flags(ILLEGAL)
+        derived.update({name: neutral[name] for name in _CLASSIFIER_FIELDS})
     for name, value in derived.items():
         kwargs.setdefault(name, value)
 
@@ -1353,10 +1477,6 @@ class DispatchInterface:
         )
 
     # =========================================================================
-    # RAS State
-    # =========================================================================
-
-    # =========================================================================
     # Flush
     # =========================================================================
 
@@ -1479,3 +1599,8 @@ class DispatchInterface:
     def ras_valid_count_out(self) -> int:
         """Read o_ras_valid_count output."""
         return int(self.dut.o_ras_valid_count.value)
+
+    @property
+    def ras_top_out(self) -> int:
+        """Read o_ras_top output."""
+        return int(self.dut.o_ras_top.value)

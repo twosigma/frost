@@ -272,7 +272,7 @@ async def _capture_snapshot(dut: Any) -> None:
 
 
 async def _read_counter(dut: Any, index: int) -> int:
-    """Read a selected counter through the two-stage registered CSR path."""
+    """Read a counter through the aggregator's two read-path registers."""
     dut.i_perf_counter_select.value = index
     await _advance_cycle(dut)
     await _advance_cycle(dut)
@@ -287,7 +287,7 @@ async def _finish_event_pipeline(dut: Any) -> None:
 
 @cocotb.test()
 async def test_counter_count_and_idle_snapshot_are_zero(dut: Any) -> None:
-    """The aggregate exposes all counters and an idle snapshot reads as zero."""
+    """The aggregator reports the full counter count, and an idle snapshot reads zero."""
     await _setup_test(dut)
 
     await _capture_snapshot(dut)
@@ -520,7 +520,7 @@ async def test_wrapper_counter_select_and_data_path(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> None:
-    """The appended cache block counts every event/sum without shifting wrapper indices."""
+    """Cache counters accumulate; a capture freezes a snapshot and keeps the preceding one."""
     await _setup_test(dut)
 
     patterns: list[dict[str, int | bool]] = [
@@ -596,10 +596,10 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
     await _capture_snapshot(dut)
     assert await _read_counter(dut, PERF_L1D_ACCESS) == 4
 
-    # A second capture keeps the first cache snapshot in the cache-only
-    # previous bank, reached through i_perf_cache_previous_select. Software
-    # reads both ends of a timed region after timing has stopped without
-    # duplicating counter indices or disturbing the existing 0-105 read path.
+    # The second capture moved the first cache snapshot into the preceding
+    # bank, which i_perf_cache_previous_select reads, so software can read both
+    # ends of a timed region afterward. The select does not affect indices
+    # 0-105.
     dut.i_perf_cache_previous_select.value = 1
     for counter, value in expected.items():
         assert await _read_counter(dut, counter) == value
@@ -610,7 +610,7 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
 
 @cocotb.test()
 async def test_cache_block_bounds_and_out_of_range_selects(dut: Any) -> None:
-    """The third block ends at 120; every larger 8-bit selector reads zero."""
+    """A cache event stays in the cache block; selectors past the last counter read zero."""
     await _setup_test(dut)
 
     _drive_cache_perf_events(dut, {"l2_miss_outstanding": True})

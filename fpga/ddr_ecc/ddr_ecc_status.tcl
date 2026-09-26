@@ -12,16 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Read the DDR4 controller's ECC registers over the JTAG DDR-load master.
-#
-# The controller's ECC management interface is reachable only from that master,
-# at region offset 0x4000_0000 (fpga/build/x3_ddr_bd.tcl assigns it there). The
-# register offsets are the controller's own; ddr_ecc_status.py names them.
-#
-# Reading is free of side effects. Clearing is not, and only happens when the
-# caller asks. A one written to an ECC_STATUS bit clears it; CE_CNT takes
-# whatever is written, so it is cleared by writing zero. The failing-address
-# and failing-data captures reload on the next error after the status clears.
+# Read the DDR4 controller's ECC registers over the JTAG DDR-load master, the
+# only master that reaches the ECC management window (region offset
+# 0x4000_0000, assigned in fpga/build/x3_ddr_bd.tcl). ddr_ecc_status.py passes
+# the register names and offsets. Reads have no side effects; the registers
+# are written only when the caller asks to clear them.
 
 if {$argc < 3} {
     puts stderr "Usage: vivado -source ddr_ecc_status.tcl -tclargs <target> <clear> <register-list> \[remote_host\] \[hw_server_url\]"
@@ -43,9 +38,9 @@ set ECC_WINDOW_BASE 0x40000000
 
 source [file join [file dirname [info script]] .. common hw_session.tcl]
 
-# The DDR master by name, as load_software.tcl identifies it; failing that, by
-# protocol, since the DDR master is the AXI4 one and the BRAM loader is Lite.
-# No write probe here: this script must not disturb memory to find its master.
+# Find the DDR master by cell name, as load_software.tcl does, or else as the
+# only full AXI4 master (the BRAM loader is AXI4-Lite). Never probe with a
+# write: this script must not disturb memory to find its master.
 proc find_ddr_hw_axi {} {
     foreach axi [get_hw_axis] {
         set cell ""
@@ -108,10 +103,9 @@ frost_hw_session $remote_host $server_url $hw_target {
     }
 
     if {$do_clear eq "1"} {
-        # A one written to a latched status bit clears it. CE_CNT is loaded
-        # with what is written, so zero clears it. The failing captures are
-        # read-only and reload with the next error, so clearing the status is
-        # what re-arms them.
+        # A one written to a latched ECC_STATUS bit clears it, and CE_CNT takes
+        # the written value. The failing-address and data captures are
+        # read-only; clearing the status re-arms them for the next error.
         ecc_write $ddr_axi 0x00C 00000000
         ecc_write $ddr_axi 0x000 00000003
         puts "FROST_ECC_CLEARED"

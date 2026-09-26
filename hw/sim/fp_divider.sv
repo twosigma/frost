@@ -17,10 +17,11 @@
 /*
   IEEE 754 floating-point divider, fully pipelined (FP_WIDTH 32 or 64).
 
-  Simulation reference only. The core divides on fp_div_sqrt_iter, whose
-  shared iterative datapath costs a fraction of the cells this unrolled
-  pipeline does; this file stays as the model the fp_div_sqrt_equiv bench
-  compares against, and is not in any synthesis file list.
+  Simulation-only reference model, not in any synthesis file list. The core
+  divides with fp_div_sqrt_iter, which shares one iterative datapath between
+  divide and square root at a fraction of this unrolled pipeline's area. The
+  fp_div_sqrt_equiv bench checks that unit's results, flags, and latency
+  against this model.
 
   Accepts a new operation every cycle. Pipeline depth:
     SP (FP_WIDTH=32): DivCycles + 10 = 26 + 10 = 36 stages
@@ -165,7 +166,7 @@ module fp_divider #(
       .o_is_zero(mant_lzc_zero_b)
   );
 
-  // Register UNPACK outputs -> Stage 1 output registers
+  // Stage 1 output registers
   logic s1_sign_a, s1_sign_b;
   logic [ExpBits-1:0] s1_exp_a, s1_exp_b;
   logic [LzcMantBits-1:0] s1_mant_lzc_a, s1_mant_lzc_b;
@@ -495,34 +496,45 @@ module fp_divider #(
   // Stage 4+DivCycles+2: ROUND_SHIFT (fp_subnorm_shift)
   // =========================================================================
 
-  // Extract rounding bits from normalized quotient
-  logic [MantBits:0] rsh_pre_round_mant;
-  logic              rsh_guard_bit;
-  logic              rsh_round_bit;
-  logic              rsh_sticky_bit;
-  logic              rsh_is_zero;
+  // The quotient carries MantBits + 3 bits: the mantissa, then guard and round.
+  // Its last bit and a nonzero remainder set sticky.
+  logic [MantBits-1:0] rsh_mantissa;
+  logic                rsh_guard_bit;
+  logic                rsh_round_bit;
+  logic                rsh_sticky_bit;
+  logic                rsh_is_zero;
 
-  assign rsh_pre_round_mant = s_norm_quotient[DivBits-1-:(MantBits+1)];
-  assign rsh_guard_bit      = s_norm_quotient[1];
-  assign rsh_round_bit      = s_norm_quotient[0];
-  assign rsh_sticky_bit     = |s_norm_remainder;
-  assign rsh_is_zero        = (s_norm_quotient == '0) && (s_norm_remainder == '0);
-
-  logic [MantBits-1:0] rsh_mantissa_retained;
-  assign rsh_mantissa_retained = rsh_pre_round_mant[MantBits:1];
+  assign rsh_mantissa   = s_norm_quotient[DivBits-1-:MantBits];
+  assign rsh_guard_bit  = s_norm_quotient[2];
+  assign rsh_round_bit  = s_norm_quotient[1];
+  assign rsh_sticky_bit = s_norm_quotient[0] | (|s_norm_remainder);
+  assign rsh_is_zero    = (s_norm_quotient == '0) && (s_norm_remainder == '0);
 
   logic [MantBits-1:0] rsh_mantissa_out;
   logic rsh_guard_out, rsh_round_out, rsh_sticky_out;
   logic signed [ExpExtBits-1:0] rsh_exp_out;
 
+  // Tininess of the unshifted quotient, for the underflow flag.
+  logic rsh_tiny;
+  assign rsh_tiny = riscv_pkg::fp_is_tiny(
+      s_norm_result_exp <= 0,
+      s_norm_result_exp == 0,
+      &rsh_mantissa,
+      s_norm_rm,
+      rsh_guard_bit,
+      rsh_round_bit,
+      rsh_sticky_bit,
+      s_norm_result_sign
+  );
+
   fp_subnorm_shift #(
       .MANT_BITS(MantBits),
       .EXP_EXT_BITS(ExpExtBits)
   ) u_subnorm_shift (
-      .i_mantissa(rsh_mantissa_retained),
-      .i_guard(rsh_pre_round_mant[0]),
-      .i_round(rsh_guard_bit),
-      .i_sticky(rsh_round_bit | rsh_sticky_bit),
+      .i_mantissa(rsh_mantissa),
+      .i_guard(rsh_guard_bit),
+      .i_round(rsh_round_bit),
+      .i_sticky(rsh_sticky_bit),
       .i_exponent(s_norm_result_exp),
       .o_mantissa(rsh_mantissa_out),
       .o_guard(rsh_guard_out),
@@ -535,6 +547,7 @@ module fp_divider #(
   logic signed [ExpExtBits-1:0] s_rsh_exp;
   logic [MantBits-1:0] s_rsh_mantissa;
   logic s_rsh_guard, s_rsh_round, s_rsh_sticky;
+  logic s_rsh_tiny;
   logic s_rsh_is_zero;
   logic [2:0] s_rsh_rm;
   logic s_rsh_result_sign;
@@ -549,6 +562,7 @@ module fp_divider #(
     s_rsh_guard <= rsh_guard_out;
     s_rsh_round <= rsh_round_out;
     s_rsh_sticky <= rsh_sticky_out;
+    s_rsh_tiny <= rsh_tiny;
     s_rsh_is_zero <= rsh_is_zero;
     s_rsh_rm <= s_norm_rm;
     s_rsh_result_sign <= s_norm_result_sign;
@@ -577,6 +591,7 @@ module fp_divider #(
   logic [MantBits-1:0] s_rprep_mantissa;
   logic s_rprep_round_up;
   logic s_rprep_is_inexact;
+  logic s_rprep_tiny;
   logic s_rprep_is_zero;
   logic [2:0] s_rprep_rm;
   logic s_rprep_is_special;
@@ -590,6 +605,7 @@ module fp_divider #(
     s_rprep_mantissa <= s_rsh_mantissa;
     s_rprep_round_up <= rprep_round_up;
     s_rprep_is_inexact <= rprep_is_inexact;
+    s_rprep_tiny <= s_rsh_tiny;
     s_rprep_is_zero <= s_rsh_is_zero;
     s_rprep_rm <= s_rsh_rm;
     s_rprep_is_special <= s_rsh_is_special;
@@ -615,6 +631,7 @@ module fp_divider #(
       .i_mantissa_work(s_rprep_mantissa),
       .i_round_up(s_rprep_round_up),
       .i_is_inexact(s_rprep_is_inexact),
+      .i_is_tiny(s_rprep_tiny),
       .i_result_sign(s_rprep_result_sign),
       .i_rm(s_rprep_rm),
       .i_is_special(s_rprep_is_special),

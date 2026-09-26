@@ -8,6 +8,6 @@ $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 
-# Reorder Buffer module
+# Serializing-instruction FSM and the reorder buffer itself
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv

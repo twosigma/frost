@@ -19,7 +19,7 @@
  *
  * Models the Linux idle sequence `csrci MIE; fence; wfi; csrsi MIE` and the
  * CLINT handler, which clears MTIE, re-enables it, programs a future mtimecmp
- * and returns with MRET. The kernel runs in M-mode, so raw MTIP wakes WFI but
+ * and returns with MRET. The model runs in M-mode, so raw MTIP wakes WFI but
  * delivery waits for the csrsi. Re-arm periods of 24..87 cycles sweep the
  * deadline phase across WFI, csrsi, and MRET.
  *

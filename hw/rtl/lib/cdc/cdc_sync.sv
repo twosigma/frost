@@ -15,13 +15,13 @@
  */
 
 /*
- * cdc_sync: two-flop level synchronizer.
+ * cdc_sync: level synchronizer, STAGES flops deep (two by default).
  *
- * Each bit of i_async is an independent level from another clock domain,
- * never a multi-bit value that must arrive atomically (Gray coding or a
- * handshake covers those). STAGES flops carry ASYNC_REG so the tools keep
- * them adjacent; o_sync lags the input by STAGES cycles plus metastability
- * resolution. The reset is synchronous, to RESET_VALUE.
+ * Each bit of i_async is synchronized independently, so a multi-bit value
+ * must change one bit at a time (Gray code) or cross under a handshake. The
+ * STAGES flops carry ASYNC_REG so the tools keep them adjacent. A change
+ * reaches o_sync STAGES or STAGES + 1 clock edges later, depending on how the
+ * first flop resolves. The reset is synchronous, to RESET_VALUE.
  */
 module cdc_sync #(
     parameter int unsigned WIDTH = 1,

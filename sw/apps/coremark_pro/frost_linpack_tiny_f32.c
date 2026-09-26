@@ -19,7 +19,8 @@
  *
  * CoreMark-PRO's smallest upstream FP32 PGO preset is n=50, ntimes=10. This
  * local preset keeps the benchmark verified but uses n=10, ntimes=1 so the
- * cycle-accurate cocotb run stays short. Hardware builds use the official
+ * cycle-accurate cocotb run stays short. Only preset 5, the one
+ * pgo_training_run selects, is filled in. Hardware builds use the official
  * upstream reference file instead.
  */
 

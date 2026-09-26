@@ -17,7 +17,9 @@
 """Run SymbiYosys targets directly or through pytest.
 
 Runs bounded checks, unbounded proofs and cover searches. Each .sby file in
-formal/ defines its properties, assumptions and supported tasks.
+formal/ is one target and defines its tasks; the properties and assumptions
+live in the RTL (under `ifdef FORMAL` or a proof define) or in the harnesses
+in formal/.
 """
 
 import subprocess
@@ -53,6 +55,209 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "sq_live_count.sby",
+        "SQ live-count next value equals the reference arithmetic for every allocation outcome",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "sq_committed_empty.sby",
+        "SQ committed-empty next state equals the reference over reset, full flush and commits",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "pc_pending_capture.sby",
+        "Pending-prediction valid next state equals the reference clear/set/hold priority",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rs_issue_clear.sby",
+        "RS second-port one-hot entry clear equals the reference indexed clear, including the INT station's parameters",
+        tasks=("bmc", "bmc4", "bmc8", "bmc16", "bmc32"),
+    ),
+    FormalTarget(
+        "rs_dispatch_defer.sby",
+        "Dispatch's six CDB-deferral decisions equal the reference equations, with and without insertion-time repair",
+        tasks=("bmc", "bmc_repair"),
+    ),
+    FormalTarget(
+        "control_flow_holdoff.sby",
+        "Redirect/reset holdoff next state with late prediction flags equals the reference, without assumptions",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rob_retire_stall.sby",
+        "ROB retirement strobes and every perf event equal a reference built from the full serializer stall",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rob_control_next.sby",
+        "ROB per-entry done/exception/replay next state matches the reference indexed-write priority",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "csr_commit_cofactor.sby",
+        "Most CSR storage, both counters and the translation-invalidate request equal a "
+        "reference transition model (in the integrated tasks, whenever no trap or xRET "
+        "coincides with a CSR commit)",
+        tasks=("prove", "prove_integrated", "prove_perf_off"),
+    ),
+    FormalTarget(
+        "pc_increment_holdoff.sby",
+        "Both sequential fetch PCs with late redirect/reset holdoff equal the reference for arbitrary selectors",
+        tasks=("bmc", "bmc_xilinx"),
+    ),
+    FormalTarget(
+        "rs_raw_pretag.sby",
+        "Raw-wakeup pre-issue candidates match the real merged-lane reservation-station winner",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "fp_payload_read.sby",
+        "FPU payload prefetch addresses match the reference post-pop increment for arbitrary state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "lq_ram_payload.sby",
+        "Load-result RAM write enables and every enabled address/data match the reference mux",
+        tasks=("bmc", "bmc_forward", "bmc_forward_only", "cover"),
+    ),
+    FormalTarget(
+        "cache_mshr_payload.sby",
+        "Per-entry MSHR byte updates match the indexed fill/store merge for arbitrary state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "lq_alloc_mask.sby",
+        "Parallel cyclic allocation masks match the reference binary search and room checks",
+        tasks=("bmc4", "bmc8", "bmc16"),
+    ),
+    FormalTarget(
+        "lq_response_bypass.sby",
+        "Load-response bypass equals full acceptance under its partial-flush guard",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "lq_capacity.sby",
+        "Grouped free-entry capacity predicates equal the exact count comparisons",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "if_direction_payload.sby",
+        "Dropping the NOP term from the direction payload select changes no live or replayed non-NOP packet",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "mispredict_capture.sby",
+        "While recovery is pending, the captured payload equals a register loaded only on a mispredicted commit",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "line_arbiter_grant.sby",
+        "Three-port generic and Xilinx grants match starvation-bounded priority",
+        tasks=("bmc", "bmc_xilinx"),
+    ),
+    FormalTarget(
+        "lq_cached_flags.sby",
+        "Cached-slot invalidation and LR suppression match the reference next state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "lq_prematch_cofactors.sby",
+        "Registered candidate CAM results equal registering the selected-tag CAM",
+        tasks=("bmc", "prove", "bmc_raw", "prove_raw"),
+    ),
+    FormalTarget(
+        "lq_cached_hold.sby",
+        "Cached-slot hold next state matches the full slot-mask reduction",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "prediction_metadata_output.sby",
+        "Prediction taken bit equals the reference, and a saved or pending prediction never marks another packet",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "c_ext_buffer_next.sby",
+        "Compressed buffer slot-2 next-state outcomes match the reference priority",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "sq_repair_mmio.sby",
+        "Parallel store-repair MMIO classification matches full-width selected address addition",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "dmmu_mmio.sby",
+        "DMMU parallel MMIO classification and captured next bit match the reference resolution/hold",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "rs_alloc_parallel.sby",
+        "Parallel first/second free indices equal the serial search for arbitrary occupancy",
+        tasks=("bmc4", "bmc8", "bmc16", "bmc32"),
+    ),
+    FormalTarget(
+        "rs_pretag_cofactor.sby",
+        "Pre-issue ROB tag computed ahead for each CDB-valid combination equals the reference priority select",
+        tasks=("bmc", "bmc_tag_indexed"),
+    ),
+    FormalTarget(
+        "fp_fma_align.sby",
+        "FMA alignment shift amounts equal max-exponent subtraction at both precisions",
+        tasks=("bmc", "bmc_xlen32"),
+    ),
+    FormalTarget(
+        "lq_tag_order.sby",
+        "LQ tag order and full-window boundary match extended arithmetic for arbitrary tags",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "ras_checkpoint.sby",
+        "RAS next pointer, count and entry writes equal the reference for arbitrary inputs and state",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "low_bram_presenter_tier.sby",
+        "Low-BRAM fetch responses are the same with and without separate address retargeting",
+        tasks=("bmc", "prove"),
+    ),
+    FormalTarget(
+        "rvc_predecode.sby",
+        "Full RV64C sideband expansion equals the reference decoder for every parcel",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "dispatch_admission.sby",
+        "Dispatch admission factoring; queued variant assumes slot-2 valid follows the bundle bit",
+        tasks=("bmc", "bmc_queued"),
+    ),
+    FormalTarget(
+        "instr_operand_classifier.sby",
+        "ID operand classes - direct fields match classification through the operation decode for all instructions and fault overrides",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
+        "decoded_bundle_queue.sby",
+        "Decoded bundles: FIFO order against a queue model, a held input consumed once, flush, bypass and wraparound",
+        tasks=("prove", "prove_depth2", "cover"),
+    ),
+    FormalTarget(
+        "int_muldiv_shim.sby",
+        "Mixed-width MUL/DIV pipeline tracking, completion data alignment, and FIFO credits",
+        tasks=(
+            "prove",
+            "prove_alignment",
+            "prove_fallback",
+            "prove_alignment_fallback",
+            "cover",
+        ),
+    ),
+    FormalTarget(
+        "mem_wakeup_merge.sby",
+        "Early load wakeup preserves both registered broadcasts and injects at most one exact value",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "trap_unit.sby",
         "Trap unit - exception and interrupt handling",
     ),
@@ -76,7 +281,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rob_start_cofactor.sby",
-        "ROB CSR/xRET starts - allocation class exclusion and exact legacy equations",
+        "ROB CSR/xRET starts - no CSR/xRET entry is bypass-eligible, and starts equal the reference equations",
         tasks=("prove",),
     ),
     FormalTarget(
@@ -90,7 +295,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "alu_shift_hint.sby",
-        "Actual ALU - literal shift/rotate reference and captured amount equivalence",
+        "ALU - shift/rotate reference, and equivalence with the captured shift-amount hint",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -102,7 +307,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "reservation_station.sby",
         "Reservation station - dispatch, wakeup, issue, flush, at the module "
-        "defaults and in the shipped INT configuration",
+        "defaults and with INT features at eight-entry component capacity",
         tasks=("bmc", "cover", "bmc_tag_indexed", "cover_tag_indexed"),
     ),
     FormalTarget(
@@ -127,11 +332,18 @@ FORMAL_TARGETS = [
     FormalTarget(
         "load_queue.sby",
         "Load queue - allocation/back-pressure, dependency cleanup, memory issue, "
-        "router cancellation/debt, staged normal AMOs, CDB broadcast",
+        "router cancellation and owed responses, staged normal AMOs, CDB broadcast",
+        tasks=(
+            "bmc",
+            "cover",
+            "prove_pre_match",
+            "bmc_no_prepare_busy",
+            "cover_no_prepare_busy",
+        ),
     ),
     FormalTarget(
         "load_queue_amo_compute.sby",
-        "Actual LQ normal-AMO operand/compute/write transitions, original result, kill, coherence and stalled owner",
+        "LQ normal-AMO capture/compute/write transitions, reference result, kill, coherence and stalled-write hold",
         tasks=("bmc", "cover"),
     ),
     FormalTarget(
@@ -152,8 +364,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "coherence_observation.sby",
-        "Coherence observation ownership, both commit lanes, flush/reuse and "
-        "registered replay provenance under the load-to-commit timing contract",
+        "Coherence observation tracking through both commit lanes, flush and tag reuse, "
+        "and the registered replay mask, under the load-to-commit timing contract",
         tasks=("prove", "prove_unrestricted", "cover"),
     ),
     FormalTarget(
@@ -162,25 +374,33 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "line_port_axi_bridge.sby",
-        "Line-port AXI bridge - AXI handshake legality, id conservation, stale-response drop",
+        "Line-port AXI bridge - AXI handshake legality across both resets, id conservation, "
+        "stale-response drop",
     ),
     FormalTarget(
         "store_queue.sby",
-        "Store queue - commit-ordered store buffer, forwarding, MMIO, FSD two-phase",
+        "Store queue - live count, write prerequisites, in-flight bounds, forwarding, "
+        "committed stores surviving a partial flush",
     ),
     FormalTarget(
         "lq_l0_cache.sby",
-        "L0 data cache - direct-mapped word cache for load queue",
+        "L0 data cache - 128/256-entry dword cache, fill data and DMA invalidation",
+        tasks=("bmc", "cover", "bmc_256", "cover_256"),
     ),
     FormalTarget(
         "branch_prediction_alias.sby",
-        "IF branch prediction - actual RTL base+2/base+4 public alias equivalence",
+        "IF branch prediction - base-PC slot alias output equals the generic base+2/base+4 computation",
         tasks=("bmc",),
     ),
     FormalTarget(
         "c_ext_state_cofactor.sby",
-        "C-extension buffer state - handoff cofactor vs original priority for arbitrary controls",
+        "C-extension buffer state - next state with the handoff factored out equals the reference priority",
         tasks=("bmc",),
+    ),
+    FormalTarget(
+        "immu_page_offset.sby",
+        "IMMU translated PA page-offset preservation and visible-output equivalence",
+        tasks=("bmc", "prove"),
     ),
     FormalTarget(
         "immu_bare.sby",
@@ -189,27 +409,27 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "fetch_pc_mux.sby",
-        "IF fetch PC - final prediction mux matches original one-hot and serial priority equations",
-        tasks=("bmc", "bmc_integrated"),
+        "IF fetch PC - final prediction mux matches the reference one-hot and serial priority equations",
+        tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
     ),
     FormalTarget(
         "fetch_redirect.sby",
-        "IF registered provider redirect - original selector equation for arbitrary inputs/state",
+        "IF registered provider redirect - reference selector equation for arbitrary inputs/state",
         tasks=("bmc", "prove", "cover"),
     ),
     FormalTarget(
         "pc_register_mux.sby",
-        "IF architectural PC - original nested priority for arbitrary generic inputs",
-        tasks=("bmc", "bmc_integrated"),
+        "IF architectural PC - reference nested priority for arbitrary generic inputs",
+        tasks=("bmc", "bmc_integrated", "bmc_xilinx", "bmc_integrated_xilinx"),
     ),
     FormalTarget(
         "pc_holdoff_cofactor.sby",
-        "IF pending fetch holdoff - arbitrary-state effective-enable factoring matches original equations",
+        "IF pending fetch holdoff - arbitrary-state effective-enable factoring matches the reference equations",
         tasks=("bmc",),
     ),
     FormalTarget(
         "pc_holdoff_tag.sby",
-        "IF pending prediction holdoff - captured-tag producer induction and original equations",
+        "IF pending prediction holdoff - captured-tag producer induction and reference equations",
         tasks=("prove", "prove_xlen32", "prove_xlen72", "cover"),
     ),
     FormalTarget(
@@ -224,12 +444,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "prediction_handoff.sby",
-        "IF pending handoff - slot-2 veto equivalence and raw buffer-release invariants",
+        "IF pending handoff - slot-2 veto equivalence and pending-state masking",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
         "prediction_release.sby",
-        "IF pending prediction - pending-state masking and stale-buffer handoff exclusion",
+        "IF pending prediction - pending-state masking and holdoff relations",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
@@ -244,6 +464,10 @@ FORMAL_TARGETS = [
     FormalTarget(
         "fp_mul_shim.sby",
         "FP mul shim - FP multiply/FMA CDB pipeline",
+    ),
+    FormalTarget(
+        "fp_mul_shim_order.sby",
+        "FP mul shim - each operation's tag leaves its subunit queue with its own result and the ring in issue order",
     ),
     FormalTarget(
         "fp_div_shim.sby",
@@ -265,9 +489,36 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
+    ("prove_integrated", "Unbounded proof under the integrated interface contract"),
+    ("prove_perf_off", "Unbounded proof with profiling counters absent"),
+    ("bmc_raw", "Bounded equivalence with eight raw-wakeup candidates"),
+    ("prove_raw", "Unbounded equivalence with eight raw-wakeup candidates"),
+    ("bmc_forward", "Bounded equivalence with store forwarding enabled"),
+    ("bmc_forward_only", "Bounded equivalence with store forwarding and no L0"),
+    ("bmc_integrated_xilinx", "Bounded integrated equivalence with Xilinx primitives"),
+    ("bmc4", "Bounded local equivalence at depth 4"),
+    ("bmc8", "Bounded local equivalence at depth 8"),
+    ("bmc16", "Bounded local equivalence at depth 16"),
+    ("bmc32", "Bounded local equivalence at depth 32"),
+    ("bmc_xilinx", "Bounded equivalence with the Xilinx primitive implementation"),
+    ("bmc_queued", "Bounded check with decoded-queue admission contract"),
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
     ("prove", "Unbounded safety proof (ABC PDR or temporal induction)"),
+    ("prove_depth2", "Unbounded proof of the two-entry decoded bundle queue"),
+    (
+        "bmc_no_prepare_busy",
+        "Load queue component with busy-port preparation disabled",
+    ),
+    ("cover_no_prepare_busy", "Load queue reachability without busy-port preparation"),
+    ("prove_alignment", "Unbounded mixed-width tracker and physical FU alignment"),
+    ("prove_fallback", "Unbounded full-width fallback tracker and credits"),
+    ("prove_alignment_fallback", "Unbounded full-width fallback FU alignment"),
+    (
+        "prove_pre_match",
+        "Unrestricted equivalence of split LQ pre-issue match registers",
+    ),
     (
         "prove_unrestricted",
         "Unbounded observation cleanup with only the initial-reset assumption",
@@ -296,14 +547,19 @@ SBY_TASKS = [
         "fmul_repair_bmc",
         "Bounded model checking with production FMUL dispatch done repair enabled",
     ),
-    # The shipped INT reservation station: the ROB-tag-indexed branch payload
-    # (side RAM) and the rest of u_int_rs's overrides, dual issue included.
+    # INT reservation-station features at eight-entry component capacity;
+    # the wrapper target checks the production sixteen-entry station.
     (
         "bmc_tag_indexed",
-        "Bounded model checking in the shipped INT station configuration",
+        "Bounded model checking of INT station features at eight-entry capacity",
     ),
-    ("cover_tag_indexed", "Cover checking in the shipped INT station configuration"),
+    (
+        "cover_tag_indexed",
+        "Cover checking of INT station features at eight-entry capacity",
+    ),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
+    ("bmc_256", "Bounded checking with a 256-entry L0 cache"),
+    ("cover_256", "Cover checking with a 256-entry L0 cache"),
 ]
 
 
@@ -536,13 +792,13 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run SymbiYosys formal verification for Frost RISC-V CPU",
+        description="Run SymbiYosys formal verification for FROST",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s                           # Run every target's declared tasks
   %(prog)s --target trap_unit        # Run specific target
-  %(prog)s --task bmc                # Run only BMC (skip cover)
+  %(prog)s --task bmc                # Run only the bmc task
   %(prog)s --verbose                 # Show full sby output
   %(prog)s --list-targets            # List available targets/tasks and exit
 

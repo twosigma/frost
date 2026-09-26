@@ -14,12 +14,12 @@
  *    limitations under the License.
  */
 
-// Frost riscv_test.h for the riscv-tests VIRTUAL environment (the -v
-// variants): the upstream env/v header with its physical-environment
-// include redirected to Frost's own p override (UART pass/fail, no HTIF).
+// FROST riscv_test.h for the riscv-tests virtual environment (the -v
+// variants): the upstream env/v header, with its physical-environment
+// include redirected to FROST's own p override (UART pass/fail, no HTIF).
 // Every test runs as demand-paged Sv39 user code under a supervisor kernel
-// (env_v/vm.c + entry.S): fetch and data translated, page faults delegated
-// to S, the A/D bits managed by the kernel's fault handler (Svade).
+// (env_v/vm.c + entry.S): fetch and data are translated, page faults are
+// delegated to S-mode, and the kernel's fault handler sets the A/D bits (Svade).
 
 #ifndef _FROST_ENV_VIRTUAL_SINGLE_CORE_H
 #define _FROST_ENV_VIRTUAL_SINGLE_CORE_H

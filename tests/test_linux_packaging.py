@@ -12,10 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Static contracts for the Linux configurations, device trees, and boot images.
+"""Tests for the Linux configurations, device tree, and boot images.
 
-Covers the OpenSBI boot-image packer, the pinned Debian kernel and the images
-built around it.
+Covers the OpenSBI boot-image packer, linux_boot's Makefile, the pinned Debian
+kernel, and the images built around it.
 """
 
 import hashlib
@@ -108,7 +108,7 @@ def _load_script(name: str, path: Path, *import_dirs: Path) -> ModuleType:
 
 
 PMD_BYTES = 2 << 20  # the rv64 kernel's alignment
-FORMER_DTB_OFFSET = 0x100_0000  # the fixed DTB offset the layout rule replaced
+LOWEST_DTB_OFFSET = 0x100_0000  # the packer's DTB_MIN_OFFSET, +16 MiB
 
 
 def _rtl_localparam(text: str, name: str) -> int:
@@ -149,21 +149,21 @@ def test_sbi_layout_slots_are_ordered_and_aligned() -> None:
     # The rv64 kernel Image must sit on a PMD (2 MiB) boundary.
     assert packer.PMD_BYTES == PMD_BYTES
     assert packer.PAYLOAD_OFFSET % PMD_BYTES == 0
-    assert packer.DTB_MIN_OFFSET == FORMER_DTB_OFFSET
+    assert packer.DTB_MIN_OFFSET == LOWEST_DTB_OFFSET
     assert packer.PAYLOAD_OFFSET < packer.DTB_MIN_OFFSET
     assert packer.DTB_GROWTH_BYTES < packer.DTB_SLOT_BYTES
     assert packer.DTB_MIN_OFFSET + packer.DTB_SLOT_BYTES < packer.MEM_SIZE
 
 
-# The header image_size of Debian 13's riscv64 kernel Image,
-# /boot/vmlinux-6.12.107+deb13-riscv64, which FROST boots everywhere.
+# The header image_size of the pinned Debian 13 riscv64 kernel Image,
+# /boot/vmlinux-6.12.107+deb13-riscv64.
 DEBIAN_KERNEL_FOOTPRINT = 0x1E6B000
 
 
-# Payload footprints below, at and above the 14 MiB that fit under the former
-# fixed DTB offset: a small raw binary, the kernel packed when the rule came
-# in, exactly 14 MiB, one byte more, a kernel with every option Buildroot's
-# systemd package enables, and Debian's kernel.
+# Payload footprints below, at and above the 14 MiB that fit under +16 MiB: a
+# small raw binary, a 0xce7000-byte kernel, exactly 14 MiB, one byte more, a
+# kernel with every option Buildroot's systemd package enables, and Debian's
+# kernel.
 @pytest.mark.parametrize(
     "footprint",
     [0x100, 0xCE7000, 0xE00000, 0xE00001, 0xF03000, DEBIAN_KERNEL_FOOTPRINT],
@@ -175,18 +175,17 @@ def test_sbi_layout_rule_invariants(footprint: int) -> None:
     layout = packer.plan_layout(footprint)
     assert layout.footprint == footprint
     assert layout.dtb_offset % PMD_BYTES == 0
-    assert layout.dtb_offset >= FORMER_DTB_OFFSET
+    assert layout.dtb_offset >= LOWEST_DTB_OFFSET
     assert layout.dtb_offset >= packer.PAYLOAD_OFFSET + footprint
-    lowest = max(FORMER_DTB_OFFSET, packer.PAYLOAD_OFFSET + footprint)
+    lowest = max(LOWEST_DTB_OFFSET, packer.PAYLOAD_OFFSET + footprint)
     assert layout.dtb_offset < lowest + PMD_BYTES
     assert layout.initrd_offset == layout.dtb_offset + packer.DTB_SLOT_BYTES
 
 
-def test_sbi_layout_keeps_the_former_offsets_up_to_14_mib() -> None:
-    """Payloads that fit the former slot keep their addresses; larger ones move up.
+def test_sbi_layout_puts_the_dtb_at_16_mib_for_payloads_up_to_14_mib() -> None:
+    """Payloads up to 14 MiB put the DTB at +16 MiB; larger ones move it up.
 
-    0xce7000 is the image_size of the kernel packed when the rule replaced the
-    fixed offsets, so those images stay bit-identical.
+    The initramfs follows 64 KiB above the DTB in both cases.
     """
     packer = _load_module(SBI_PACKER)
     for footprint in (0x0, 0xCE7000, 0xE00000):
@@ -310,7 +309,7 @@ def test_sbi_packer_places_the_dtb_by_image_size(tmp_path: Path) -> None:
     """
     packer = _load_module(SBI_PACKER)
     image = _linux_image(packer, image_size=0xE01000, length=0xE00000)
-    assert packer.plan_layout(len(image)).dtb_offset == FORMER_DTB_OFFSET
+    assert packer.plan_layout(len(image)).dtb_offset == LOWEST_DTB_OFFSET
     dtb_offset, initrd_offset = 0x120_0000, 0x121_0000
     firmware = bytes(range(256)) * 16
     initrd = bytes(range(251)) * 17  # not a whole number of words
@@ -362,7 +361,7 @@ def test_sbi_packer_places_the_dtb_by_image_size(tmp_path: Path) -> None:
     for offset, content in regions:
         prefix = content[:0x2000]
         assert _decode_words(dense, 9 * (offset // 4), len(prefix)) == prefix
-    gap = dense[9 * (FORMER_DTB_OFFSET // 4) : 9 * (dtb_offset // 4)]
+    gap = dense[9 * (LOWEST_DTB_OFFSET // 4) : 9 * (dtb_offset // 4)]
     assert set(gap.split()) == {"00000000"}
 
 
@@ -410,7 +409,7 @@ def test_sbi_packer_nfsroot_packs_no_initramfs(
     assert f'bootargs = "{bootargs}";' in dts
     assert "initrd" not in dts
     records = re.findall(r"^@([0-9a-f]{8})$", (out / "sw_ddr.mem").read_text(), re.M)
-    offsets = (packer.FW_OFFSET, packer.PAYLOAD_OFFSET, FORMER_DTB_OFFSET)
+    offsets = (packer.FW_OFFSET, packer.PAYLOAD_OFFSET, LOWEST_DTB_OFFSET)
     assert records == [f"{offset // 4:08x}" for offset in offsets]
 
 
@@ -510,17 +509,17 @@ def test_sbi_packer_nfsroot_through_an_initramfs(
         f"nfsroot={export},vers=3,tcp,hard rw ip={ip}"
     )
     assert f'bootargs = "{bootargs}";' in dts
-    initrd_start = packer.DDR_BASE + FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES
+    initrd_start = packer.DDR_BASE + LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES
     assert f"linux,initrd-start = <0x{initrd_start:08x}>;" in dts
     assert f"linux,initrd-end = <0x{initrd_start + len(initrd):08x}>;" in dts
     records = _ddr_records(out / "sw_ddr.mem")
     assert list(records) == [
         packer.FW_OFFSET,
         packer.PAYLOAD_OFFSET,
-        FORMER_DTB_OFFSET,
-        FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES,
+        LOWEST_DTB_OFFSET,
+        LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES,
     ]
-    assert records[FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES][: len(initrd)] == initrd
+    assert records[LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES][: len(initrd)] == initrd
 
 
 @pytest.mark.parametrize(
@@ -885,8 +884,8 @@ def _linux_boot_tree(tmp_path: Path) -> Path:
     for name in ("Makefile", "frost_net10g.c"):
         (driver / name).symlink_to(DRIVER_DIR / name)
     (images / "fw_jump.bin").write_bytes(bytes(range(256)))
-    # A real newc archive, with the frost_stress the Makefile's preflight looks
-    # inside for the counter mode it has to type.
+    # A real newc archive, whose frost_stress carries the counter token that
+    # debian_kernel.py's check_base_initramfs() requires.
     (images / "rootfs.cpio").write_bytes(_newc_archive(BASE_ENTRIES))
     # A complete Debian cache entry, so no make in these tests reaches the
     # network: the helper names the directory and says what has to be in it.
@@ -1035,10 +1034,10 @@ def test_linux_boot_make_nfsroot(
     dts = (app / "frost.dts").read_text()
     bootargs = packer.nfsroot_bootargs(NFS_EXPORT, ip, initramfs)
     assert f'bootargs = "{bootargs}";' in dts
-    offsets = [packer.FW_OFFSET, packer.PAYLOAD_OFFSET, FORMER_DTB_OFFSET]
+    offsets = [packer.FW_OFFSET, packer.PAYLOAD_OFFSET, LOWEST_DTB_OFFSET]
     records = _ddr_records(app / "sw_ddr.mem")
     if initramfs:
-        offsets.append(FORMER_DTB_OFFSET + packer.DTB_SLOT_BYTES)
+        offsets.append(LOWEST_DTB_OFFSET + packer.DTB_SLOT_BYTES)
         assert records[offsets[-1]][: len(initrd)] == initrd
         assert "linux,initrd-start = <0x81010000>;" in dts
     else:
@@ -1082,10 +1081,10 @@ def test_linux_boot_make_rejects(
 def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
     tmp_path: Path,
 ) -> None:
-    """A Buildroot directory configured before the kernel removal is reported.
+    """A Buildroot directory whose .config still builds a kernel is reported.
 
-    Its .config still selects BR2_LINUX_KERNEL and points BR2_GLOBAL_PATCH_DIR at
-    board/frost/patches, which no longer exists, so Buildroot would stop with
+    Such a .config selects BR2_LINUX_KERNEL and points BR2_GLOBAL_PATCH_DIR at
+    board/frost/patches, which does not exist, so Buildroot would stop with
     "BR2_GLOBAL_PATCH_DIR contains nonexistent directory" before running any
     target. The Makefile has to catch that first and name the fix, and it must
     not invoke Buildroot: re-running the defconfig would clear the symbols but
@@ -1111,7 +1110,7 @@ def test_linux_boot_make_refuses_a_build_directory_that_built_a_kernel(
 
     result = _make_linux_boot(app)
     assert result.returncode != 0
-    assert "still built a" in result.stdout
+    assert "is configured to build a kernel" in result.stdout
     assert "make -C sw/apps/linux_boot distclean" in result.stdout
     assert "BUILDROOT_INVOKED" not in result.stdout
     assert not (app / "sw_ddr.mem").exists()
@@ -1211,7 +1210,7 @@ def test_debian_kernel_entries_are_keyed_on_their_inputs(
 # --- a cold cache, offline ------------------------------------------------------
 # The packages are rebuilt here rather than downloaded: verifying the CLI's
 # contract on a cold cache is the point (a warm one hides it), and the real .debs
-# are 128 MB and need the network.
+# are large and need the network.
 
 
 def _ar_archive(members: list[tuple[str, bytes]]) -> bytes:
@@ -1454,6 +1453,39 @@ def test_debian_kernel_revalidates_a_damaged_entry(
     assert helper.kernel_image(cache).is_file()
 
 
+def test_debian_kernel_rebuilds_an_incomplete_toolchain_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrapper directory without its completion marker is rebuilt, not trusted.
+
+    Publishing renames the new staging onto the entry, which cannot replace a
+    directory that still holds files, so the incomplete one must go first.
+    """
+    helper = _load_module(DEBIAN_KERNEL)
+    tools = tmp_path / "toolchain"
+    tools.mkdir()
+    for name in ("gcc", "objcopy", "ld"):
+        tool = tools / f"riscv64-test-linux-{name}"
+        tool.write_text("#!/bin/sh\nexit 0\n")
+        tool.chmod(0o755)
+    prefix = str(tools / "riscv64-test-linux-")
+    monkeypatch.setattr(
+        helper,
+        "toolchain_identity",
+        lambda cross=None: (tools / "riscv64-test-linux-gcc", "test toolchain"),
+    )
+    cache = tmp_path / "cache"
+    out = helper.toolchain_bin(cache, prefix)
+    objcopy = out / f"{helper.DEBIAN_CROSS_COMPILE}objcopy"
+    assert (out / ".complete").is_file() and objcopy.is_file()
+
+    (out / ".complete").unlink()  # a partial delete
+    objcopy.unlink()
+    assert helper.toolchain_bin(cache, prefix) == out
+    assert (out / ".complete").is_file() and objcopy.is_file()
+    assert list((cache / "staging").iterdir()) == []
+
+
 def test_debian_kernel_publishes_whole_entries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1600,8 +1632,8 @@ def _newc_archive(entries: list[tuple[str, int, bytes]]) -> bytes:
     return out + b"\0" * (-len(out) % helper.CPIO_BLOCK)
 
 
-# A base archive shaped like Buildroot's: the programs the gates type, one of
-# which the initramfs check looks inside.
+# A base archive shaped like Buildroot's, with the frost_stress that
+# check_base_initramfs() looks inside.
 BASE_ENTRIES = [
     ("etc", 0o040755, b""),
     ("etc/init.d", 0o040755, b""),
@@ -1708,8 +1740,8 @@ def test_debian_kernel_initramfs_rejects_an_unaligned_base(tmp_path: Path) -> No
     """A base whose length is not a multiple of four breaks the kernel's padding.
 
     init/initramfs.c's do_reset walks the NULs between two archives and then
-    requires the remainder to be four-byte aligned -- four, not the 512 GNU cpio
-    happens to pad a whole archive to.
+    requires the remainder to be four-byte aligned: four, not the 512 that GNU
+    cpio happens to pad a whole archive to.
     """
     helper = _load_module(DEBIAN_KERNEL)
     assert helper.CPIO_ALIGN == 4
@@ -1719,7 +1751,7 @@ def test_debian_kernel_initramfs_rejects_an_unaligned_base(tmp_path: Path) -> No
 
     # A complete archive with no block padding: every newc member is already
     # four-byte aligned, so this is acceptable even though 512 does not divide
-    # it. Requiring 512 would have refused an archive the kernel accepts.
+    # it. Requiring 512 would refuse an archive the kernel accepts.
     unpadded = _newc_archive(BASE_ENTRIES).rstrip(b"\0")
     unpadded += b"\0" * (-len(unpadded) % helper.CPIO_ALIGN)
     assert len(unpadded) % helper.CPIO_ALIGN == 0
@@ -1735,7 +1767,11 @@ def test_debian_kernel_initramfs_rejects_an_unaligned_base(tmp_path: Path) -> No
 
 
 def test_default_bootargs_disable_ipv6() -> None:
-    """Debian's kernel builds IPv6 in; its frames would fail frost_nettest's idle."""
+    """The default bootargs disable IPv6 and set rdinit.
+
+    Debian's kernel builds IPv6 in, and its frames would fail frost_nettest's
+    idle checks.
+    """
     packer = _load_module(SBI_PACKER)
     assert "ipv6.disable=1" in packer.DEFAULT_BOOTARGS
     assert "rdinit=/sbin/init" in packer.DEFAULT_BOOTARGS
@@ -1777,10 +1813,9 @@ def test_debian_kernel_refuses_a_base_that_cannot_drive_the_gates(
 ) -> None:
     """A base archive whose frost_stress predates the counter mode is refused.
 
-    Buildroot does not notice an edited package source, so an archive built
-    before ``--counters`` existed would pack happily, boot happily, and quietly
-    cost the board soak the counter evidence it scores. The refusal names the
-    rebuild.
+    Buildroot does not notice an edited package source, so an archive can be
+    older than the programs it should hold. The refusal names the rebuild, and a
+    base with no frost_stress is refused too.
     """
     helper = _load_module(DEBIAN_KERNEL)
     module = tmp_path / "frost_net10g.ko"
@@ -1827,9 +1862,8 @@ def test_counter_token_matches_the_program_that_prints_it() -> None:
     ).read_text()
     assert f'printf("{helper.INITRAMFS_COUNTER_TOKEN}:' in source
     assert helper.INITRAMFS_COUNTER_PROGRAM.endswith("frost_stress")
-    # The mode the stage types, and the scope it requires, are implemented.
+    # The mode the stage types is implemented, and it counts a child from its exec.
     assert '"--counters"' in source
-    assert 'scope = "exec-child"' in source
     assert "enable_on_exec = 1" in source
     assert "attr.inherit = 1" in source
 
@@ -1838,7 +1872,7 @@ def test_linux_boot_make_rebuilds_a_stale_test_userspace() -> None:
     """The Makefile names the userspace sources, so an edit rebuilds the archive.
 
     Buildroot has no idea a package source changed; without this the cached
-    rootfs.cpio keeps the old programs and a healthy boot fails the stage.
+    rootfs.cpio keeps the old programs.
     """
     text = LINUX_BOOT_MAKEFILE.read_text()
     assert "FROST_STRESS_SRC := $(wildcard" in text
@@ -1855,10 +1889,10 @@ def test_linux_boot_make_rebuilds_a_stale_test_userspace() -> None:
 
 
 def test_linux_boot_make_passes_br2_external_to_every_buildroot_call() -> None:
-    """Buildroot regenerates its record of BR2_EXTERNAL from this variable.
+    """Every Buildroot call in the linux_boot Makefile names BR2_EXTERNAL.
 
-    Omitting it on one invocation leaves the build directory with no external
-    tree at all, which breaks every later call until it is reconfigured.
+    Buildroot would reuse the value the defconfig saved, but naming it keeps
+    each call independent of that saved state.
     """
     text = LINUX_BOOT_MAKEFILE.read_text()
     calls = [line for line in text.splitlines() if '$(MAKE) -C "$(BR2_SRC)"' in line]

@@ -1,8 +1,9 @@
 # FPGA Board Support
 
-The supported board is the **Alveo X3522PV (X3)**, with a 300 MHz CPU,
+The supported board is the **Alveo X3522PV (X3)**: a 322.265625 MHz CPU,
 256 KiB BRAM, 16 KiB L1I, 128 KiB L1D, 2 MiB URAM L2, and 1 GiB DDR4.
-See the [FPGA guide](../fpga/README.md) for build, programming, and loading commands.
+See the [FPGA guide](../fpga/README.md) for build, programming, and loading
+commands.
 
 ## Architecture Overview
 
@@ -10,60 +11,69 @@ See the [FPGA guide](../fpga/README.md) for build, programming, and loading comm
 
 | Module | Role |
 |--------|------|
-| `xilinx_frost_subsystem.sv` | CPU/BRAM, JTAG software loader, BSCAN debug, reset timers |
+| `xilinx_frost_subsystem.sv` | CPU and BRAM, JTAG software loader, BSCAN debug, reset timers |
 | `x3/x3_frost.sv` | Board clocks, DDR and NIC integration, reset sequencing |
-| `x3/x3_ddr_init.sv` | Initialize the exposed DDR region with valid ECC |
-| `x3/x3_nic_gty.sv` | Ethernet transceiver, MAC clocks, reset supervisor |
-| `x3/constr/x3.xdc` | Pins and timing constraints |
+| `x3/x3_ddr_init.sv` | Initializes the exposed DDR region with valid ECC |
+| `x3/x3_nic_gty.sv` | Ethernet transceiver, MAC clocks, transceiver reset supervisor |
+| `x3/constr/x3.xdc` | Pin and timing constraints |
 
-`x3/x3_frost.f` lists board RTL. The Vivado flow generates loader, DDR, and
-transceiver IP using `fpga/build/build_step.tcl`, `x3_ddr_bd.tcl`, and
+`x3/x3_frost.f` lists the board RTL. The Vivado flow generates the loader,
+DDR, and transceiver IP from `fpga/build/build_step.tcl`, `x3_ddr_bd.tcl`, and
 `x3_gty_ip.tcl`.
 
-The cache bridge sends 256-bit AXI with region-relative addresses.
-SmartConnect combines it with the DDR JTAG master, crosses the CPU, CPU/4,
-and DDR UI clocks, and converts to the controller's 512-bit interface.
-CPU address `0x80000000` maps the first 1 GiB. Only the DDR JTAG master can
-reach ECC management, at region offset `0x40000000`.
+The cache hierarchy's bridge issues 256-bit AXI transactions with
+region-relative addresses. A SmartConnect merges them with the DDR JTAG
+master, crosses the CPU, CPU/4, and DDR clocks, and converts to the
+controller's 512-bit interface. CPU address `0x80000000` maps the first 1 GiB.
+ECC management sits at region offset `0x40000000` and is reachable only from
+the DDR JTAG master.
 
-After calibration, `x3_ddr_init` zeroes the region with full-width writes
-before reads are allowed (about 110 ms at the rated clock). Synchronized
-calibration, MMCM lock, and initialization completion release the common
-subsystem and DDR loader. DDR transport reset depends on MMCM lock;
-startup and image-load holds are separate. Inspect ECC with
-`fpga/ddr_ecc/ddr_ecc_status.py`.
+After calibration, `x3_ddr_init` zeroes the region so every word has valid ECC
+(about 0.1 seconds). It writes whole 512-bit controller words, as aligned
+two-beat bursts: a half-word write would make the controller read the
+uninitialized other half to recompute ECC. The CPU and the DDR loader leave
+reset once calibration, MMCM lock, and initialization are all complete. Check
+for ECC errors with `fpga/ddr_ecc/ddr_ecc_status.py`.
 
 ## Clock Generation
 
 | Domain | Clock |
 |--------|-------|
-| CPU | 300 MHz input × 4 / 1 / 4 = 300 MHz |
-| Loader, UART, reset timers | CPU/4 = 75 MHz |
+| CPU | 300 MHz input / 8 × 34.375 / 4 = 322.265625 MHz |
+| Loader, UART, reset timers | CPU/4 = 80.56640625 MHz |
 | DDR reference | Independent 300 MHz |
 | Ethernet TX / recovered RX | GTY user clocks, about 161.13 MHz |
-| GTY reset controller | Input/2 = 150 MHz, independent of MMCM and link |
+| GTY reset controller | Input/2 = 150 MHz, independent of the MMCM and the link |
 
-`CPU_CLK_DIV=N` divides the CPU and CPU/4 domains by N; DDR and Ethernet
-clocks are unchanged. Use `build.py --cpu-clock-div N`, and match the software
-clock when loading. `PERF_COUNTERS` is controlled by `--perf-counters` and
-`--no-perf-counters`; it defaults off at full rate and on in divided-clock builds.
+`build.py --cpu-clock-div N` sets the board top's `CPU_CLK_DIV` generic,
+which divides the CPU and CPU/4 clocks by N; the DDR and Ethernet clocks do
+not change. Load software with the matching clock. The `PERF_COUNTERS`
+generic includes the profiling counters (`--perf-counters`).
 
 ## JTAG-based software loading
 
-The loader resets the CPU with a low-BRAM write, bursts any `sw_ddr.txt`
-image through `jtag_axi_ddr`, then writes `sw.txt` to BRAM. Keepalive BRAM
-writes during DDR transfer re-arm reset. Every BRAM write restarts a 27-bit
-CPU/4 counter; execution starts about 1.8 seconds after the last write at
-300 MHz. A separate 16-bit startup counter delays programming IP and CPU
-release after board reset. `frost` synchronizes resets into both clock domains.
+The loader writes images through two JTAG-to-AXI masters, one for low BRAM
+and one for DDR (`jtag_axi_ddr`):
+
+1. A first BRAM write puts the CPU in reset.
+2. The DDR image (`sw_ddr.txt`), if any, is written to DDR. Periodic BRAM
+   writes keep the CPU in reset meanwhile.
+3. The BRAM image (`sw.txt`) is written.
+
+Every BRAM write restarts a 27-bit counter on the CPU/4 clock, and the CPU
+leaves reset when the counter runs out: about 1.67 seconds after the last
+write at 322.265625 MHz. A separate 16-bit counter holds the loader and CPU in
+reset briefly after board reset, until the clocks are stable. `frost`
+synchronizes resets into both clock domains.
 
 ## RISC-V debug over BSCAN (OpenOCD)
 
-Debug shares the FPGA TAP: BSCANE2 USER3 carries `dtmcs`, USER4 carries `dmi`,
-and the Vivado debug hub uses USER1. The subsystem selects `DEBUG_JTAG_TAP=0`.
-The six-bit IR uses IDCODE `0x09`, DTMCS `0x22`, and DMI `0x23`; configurations
-live in `fpga/debug/`. Only one process can own the cable: stop the owning
-Vivado hardware server before OpenOCD, and vice versa.
+Debug shares the FPGA's own TAP. BSCANE2 USER3 carries `dtmcs`, USER4 carries
+`dmi`, and the Vivado debug hub keeps USER1. The subsystem sets
+`DEBUG_JTAG_TAP=0`. The six-bit IR uses IDCODE `0x09`, DTMCS `0x22`, and DMI
+`0x23`; the OpenOCD configurations are in `fpga/debug/`. Only one process can
+own the cable, so stop Vivado's hardware server before starting OpenOCD, and
+the reverse.
 
 ## I/O Connections
 
@@ -83,53 +93,52 @@ The UART console uses 115200 baud, 8N1.
 
 To support another Xilinx FPGA board:
 
-1. Create a new subdirectory named after the board
-2. Start from the existing `x3_frost.sv` wrapper
-3. Adapt the clock generation:
-   - Set the MMCM parameters for the board's input clock frequency
-   - Drive the CPU clock from CLKOUT0, and derive the /4 clock with a suitable
-     global clock divider for the target family
-4. Instantiate `xilinx_frost_subsystem`. For a DDR-capable board, also
-   instantiate its `ddr_subsys` block design, wire the FROST cache-bridge AXI,
-   and hold the CPU in reset until `mem_ok` (DDR calibrated), and, on a board
-   whose memory is ECC-checked, until the region has been written. Pass
-   `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`; the full-system hierarchy
-   includes a 2 MiB UltraRAM L2, so the board must have sufficient UltraRAM.
-   A BRAM-only board leaves the cached tier disabled and needs no DDR block design
-5. Create a constraint file with the board's pin assignments. For a
-   DDR-capable board, include the DDR pins unless they come from a MIG
-   `.prj`/board interface
-6. Update the file list (`.f` file) to include the subsystem
+1. Create a subdirectory named after the board.
+2. Start from the `x3_frost.sv` wrapper.
+3. Adapt the clock generation: set the MMCM parameters for the board's input
+   clock, drive the CPU clock from CLKOUT0, and derive the /4 clock with a
+   global clock divider suitable for the FPGA family.
+4. Instantiate `xilinx_frost_subsystem`. For a board with DDR, also
+   instantiate its `ddr_subsys` block design, wire the cache bridge's AXI
+   port to it, and pass `ENABLE_CACHED_TIER=1` and `USE_BEHAVIORAL_DDR=0`.
+   Hold the CPU in reset until DDR calibration (`mem_ok`) and, if the memory
+   has ECC, until the region has been written. The cached tier includes a
+   2 MiB UltraRAM L2, so the FPGA needs enough UltraRAM. A BRAM-only board
+   leaves the cached tier off and needs no DDR block design.
+5. Write a constraint file with the board's pin assignments, including the
+   DDR pins unless a MIG `.prj` or board interface supplies them.
+6. Add the subsystem to the board's `.f` file list.
 7. Add the board's FPGA part and its `has_ddr` and `has_gty` capabilities to
-   `board_build_configs` in `fpga/build/build_step.tcl`. For a DDR-capable
-   board, add `fpga/build/<board>_ddr_bd.tcl` for its `ddr_subsys` block design.
-   The CPU port's `S00_AXI` range determines the memory advertised to Linux.
-   For a board with a NIC transceiver, add `fpga/build/<board>_gty_ip.tcl` for
-   its wizard core. The Tcl flow derives the wrapper, file-list, constraint,
-   DDR-script, DDR-creation, transceiver-script and transceiver-creation
-   procedure names from `<board>`; it skips the DDR pair for a BRAM-only board
-   and the transceiver pair for a board without a transceiver
-8. Register the board in the remaining FPGA-tool metadata:
-   - `BOARD_CONFIG` in `fpga/build/build.py` for its clock, family, and tuned
-     synthesis directive
-   - `BOARD_INFO` in `fpga/build/extract_timing_and_util_summary.py`
-   - `BOARD_CONFIG` in `fpga/load_software/load_software.py` for its clock,
-     CoreMark iterations, and DDR capability
-   - `BOARD_VENDOR_INFO` in `fpga/common/hw_target.py` and all three maps in
-     `fpga/common/hw_defaults.py` for JTAG, UART, and timeout defaults
-   - `supported_boards` in `fpga/program_bitstream/program_bitstream.tcl` for
-     direct Tcl use. The Python programmer derives its choices from
-     `BOARD_VENDOR_INFO`; the regression, soak, and sweep tools likewise derive
-     their choices from the registries above
-9. Calibrate the board's CoreMark-PRO `hardware_iterations` entries in
-   `sw/apps/software_registry.py`. Set `hardware_timeout_minimums` if untimed
-   setup exceeds the board's default timeout. Optionally record score gates
-   in `BASELINE_SCORES` in `fpga/hw_regression.py`
-10. Update this README with the new board's specifications
+   `board_build_configs` in `fpga/build/build_step.tcl`. The Tcl flow derives
+   the board's wrapper, file-list, constraint, and IP-creation procedure names
+   from its name. A board with DDR also needs `fpga/build/<board>_ddr_bd.tcl`
+   for its `ddr_subsys` block design; the CPU port's `S00_AXI` range sets the
+   memory size advertised to Linux. A board with a NIC transceiver needs
+   `fpga/build/<board>_gty_ip.tcl` for its transceiver wizard core.
+8. Register the board in the FPGA tools:
+   - `BOARD_CONFIG` in `fpga/build/build.py`: clock, family, and synthesis
+     directive.
+   - `BOARD_INFO` in `fpga/build/extract_timing_and_util_summary.py`.
+   - `BOARD_CONFIG` in `fpga/load_software/load_software.py`: clock,
+     CoreMark iterations, and DDR support.
+   - `BOARD_VENDOR_INFO` in `fpga/common/hw_target.py`, and
+     `DEFAULT_TARGETS`, `DEFAULT_SERIALS`, and `DEFAULT_TIMEOUTS` in
+     `fpga/common/hw_defaults.py`.
+   - `supported_boards` in `fpga/program_bitstream/program_bitstream.tcl`,
+     for direct Tcl use. The Python programmer, regression, soak, and sweep
+     tools take their board lists from the registries above.
+9. Calibrate the board's CoreMark-PRO `hardware_iterations` in
+   `sw/apps/software_registry.py`, and set `hardware_timeout_minimums` if
+   setup takes longer than the board's default timeout. Optionally record
+   score gates in `BASELINE_SCORES` in `fpga/hw_regression.py`.
+10. Add the board to this README.
 
-Before building, check that the MMCM VCO frequency produces the target CPU
-clock, that the timing constraints match the input clock period, that the I/O
-standards match the board's bank voltages, and that the board-appropriate DDR
-controller IP is configured for its soldered or SODIMM memory. A non-Xilinx
-FPGA (Altera, Lattice) would need a new subsystem, since
+Before the first build, check that:
+
+- the MMCM VCO frequency and dividers produce the target CPU clock;
+- the timing constraints match the input clock period;
+- the I/O standards match the board's bank voltages;
+- the DDR controller IP matches the board's soldered or SODIMM memory.
+
+A non-Xilinx FPGA would need a new subsystem, because
 `xilinx_frost_subsystem` uses Xilinx IP and `BSCANE2` primitives.

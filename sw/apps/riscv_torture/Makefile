@@ -12,13 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Builds one adapted riscv-torture test for Frost.
+# Builds one riscv-torture test for FROST.
 #
 # Usage: make TEST_SRC=tests_rv64/test_001.S
 #
-# Each torture test .S file is expected to have been adapted by adapt_test.py
-# to include frost_header.S at the top and frost_footer.S at the bottom.
-# The adapted file is self-contained: compile and link it.
+# Each test .S file includes frost_header.S at the top and frost_footer.S at
+# the bottom: generate_tests.py writes its tests that way, and adapt_test.py
+# wraps raw riscv-torture output the same way. The file is self-contained:
+# compile and link it.
 
 TEST_SRC ?=
 
@@ -27,8 +28,8 @@ include ../../common/arch.mk
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_INT_ABI)
 
-# lp64 needs PC-relative addressing for the DDR-resident image (medlow's
-# absolute lui cannot form 0x8xxx_xxxx at 64); matches the riscv_tests /
+# lp64 needs PC-relative addressing for the DDR-resident image (on RV64,
+# medlow's absolute lui cannot form 0x8xxx_xxxx); matches the riscv_tests /
 # arch_test / Spike-reference builds.
 CMODEL = -mcmodel=medany
 
@@ -67,9 +68,9 @@ endif
 # Paged environment (tests/test_riscv_torture.py passes this via PAGED):
 # PAGED=1 makes frost_header.S enter S-mode under an Sv39 identity map, so
 # the whole test, including the footer's signature dump, runs translated
-# through the ITLB/DTLB and the walker over 1 GiB leaves (Phase 3 M5). The
-# root table lives in .data, so this needs the ddr config: page tables must
-# be in cached DDR. The Spike references are unchanged, because translation
+# through the ITLB/DTLB and the walker over 1 GiB leaves. The root table
+# lives in .data, so this needs the ddr config: the page-table walker reads
+# only cached DDR. The Spike references are unchanged, because translation
 # does not alter the architectural register state the signature captures.
 PAGED ?= 0
 ifeq ($(PAGED),1)
@@ -92,7 +93,7 @@ DISASSEMBLY_FILE     = sw.S
 # Build targets
 all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
 
-# Compile the adapted torture test (header + test + footer as single .S file).
+# Compile the torture test (header + test + footer as a single .S file).
 # The ddr config also assembles the ROM boot stub ($(BOOT_STUB)); the bram
 # config leaves it empty (frost_header's _start already sits at 0x0).
 $(EXECUTABLE_ELF_FILE): $(TEST_SRC) frost_header.S frost_footer.S $(BOOT_STUB) $(LINKER_SCRIPT)
@@ -110,7 +111,7 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 
 
 # Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
-# hw/rtl/README.md "Data-tier bus contract"). Every loader keeps the 32-bit-word formats.
+# hw/rtl/README.md "Data-tier bus contract"). Every other image stays in 32-bit words.
 $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 

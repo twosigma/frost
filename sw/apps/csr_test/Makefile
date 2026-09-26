@@ -12,7 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for CSR Test application
-# Minimal test for csrw mstatus MIE issue
+# Makefile for the CSR test: mstatus.MIE writes and the M-mode counter controls
 SRC_C   := main.c
 include ../../common/common.mk

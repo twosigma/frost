@@ -15,34 +15,32 @@
  */
 
 /*
- * dtlb: fully-associative, superpage-aware Sv39 TLB. The
- * data MMU instantiates it as the 16-entry DTLB; the instruction MMU
- * (mmu/immu) instantiates the same module as the 8-entry ITLB.
+ * dtlb: fully associative Sv39 TLB with superpages. The data MMU uses it as
+ * the 16-entry DTLB and the instruction MMU (mmu/immu) as the 8-entry ITLB.
  *
- * Each of the NUM_ENTRIES flop entries holds one installed leaf PTE at its
- * own level, and the compare is level-masked: a 1 GiB entry matches on VPN2
- * alone, a 2 MiB entry on VPN2/VPN1, a 4 KiB entry on all 27 VPN bits.
- * Replacement is a rotating pointer. i_invalidate_all flash-clears every
- * valid bit; both sfence.vma and satp writes use it, because there is no
- * ASID tagging (per the phase plan).
+ * Each flop entry holds one leaf PTE at its own level, and the compare is
+ * masked by level: a 1 GiB entry matches on VPN2 alone, a 2 MiB entry on VPN2
+ * and VPN1, a 4 KiB entry on all 27 VPN bits. Replacement uses a rotating
+ * pointer. Entries carry no ASID, so SFENCE.VMA and the CSR file's
+ * translation invalidate (hw/rtl/cpu_and_mem/cpu/README.md, "CSR writes") both
+ * clear every entry through i_invalidate_all. An invalidate in the same cycle
+ * as an install wins, because the install belongs to the old address space.
  *
- * The physical map is 32-bit, so an entry keeps only PPN[19:0] plus a
- * sticky |PPN[43:20] bit. A lookup composes the 32-bit PA (for a superpage
- * the low PPN bits come from the VA) and reports hi_nonzero so the owner
- * can raise the PMA access fault for a leaf that points outside the map.
- * Launched-implies-in-map therefore extends through translation.
+ * The physical map is 32-bit, so an entry keeps only PPN[19:0] and one bit
+ * that is set when PPN[43:20] is nonzero. A lookup returns PA[31:12] and that
+ * bit, and the MMU raises an access fault for a leaf outside the map. It also
+ * returns whether PA[31:12] is in a device window
+ * (riscv_pkg::pma_device_page_ok), computed for every entry beside the
+ * compare so that the data MMU's MMIO class does not wait for the PPN mux.
+ * The MMU also checks permissions; this module only reports the stored R, W,
+ * X, U, and D bits.
  *
- * Lookups are combinational, NUM_PORTS of them: the data side's issue port
- * plus its two opportunistic early-store ports, or the instruction side's
- * word-0 and next-page ports. Permission checking is the owner's job; this
- * module only reports the stored PTE bits (RWXUD). Hardware cannot create
- * duplicate entries: the single walker installs only for a lookup that
- * missed, and installs are keyed by the walk's vpn echo. Software that
- * changes a mapping without sfence.vma sees one of the prior translations,
- * which is what the spec permits.
- *
- * Install and invalidate in the same cycle: invalidate wins, because the
- * install belonged to the old address space.
+ * Lookups are combinational, one per port: the data side's issue port and
+ * its two early-store ports, or the instruction side's current-PC and
+ * next-page ports. The hardware never creates duplicate entries: the one
+ * walker installs only for a lookup that missed, keyed by the walk's VPN
+ * echo. Software that changes a mapping without SFENCE.VMA sees one of the
+ * prior translations, which the privileged spec permits.
  */
 module dtlb #(
     parameter int unsigned NUM_ENTRIES = 16,
@@ -70,7 +68,9 @@ module dtlb #(
     // Level of the hit entry (0 = 4 KiB, 1 = 2 MiB, 2 = 1 GiB): lets the
     // ITLB derive the next page's PA inside a superpage without a second
     // lookup.
-    output logic [NUM_PORTS-1:0][                       1:0] o_level
+    output logic [NUM_PORTS-1:0][                       1:0] o_level,
+    // o_ppn20 is a device-window page (riscv_pkg::pma_device_page_ok).
+    output logic [NUM_PORTS-1:0]                             o_device_page
 );
 
   localparam int unsigned EntryIdxBits = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
@@ -106,6 +106,7 @@ module dtlb #(
     for (int p = 0; p < NUM_PORTS; p++) begin
       o_hit[p] = |match[p];
       o_ppn20[p] = '0;
+      o_device_page[p] = 1'b0;
       o_ppn_hi_nonzero[p] = 1'b0;
       o_perm_r[p] = 1'b0;
       o_perm_w[p] = 1'b0;
@@ -115,14 +116,17 @@ module dtlb #(
       o_level[p] = 2'd0;
       for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
         if (match[p][e]) begin
-          // Superpage PA composition: the entry's low PPN bits are zero by
-          // the walker's alignment check, so OR-ing the VA's index bits in
-          // is exact.
+          logic [19:0] ppn20;
+          // For a superpage the low PPN bits come from the VA, as Sv39
+          // specifies. The walker faults a misaligned superpage, so the
+          // entry's own low PPN bits are zero.
           unique case (e_level[e])
-            2'd2: o_ppn20[p] = {e_ppn20[e][19:18], i_lookup_vpn[p][17:0]};
-            2'd1: o_ppn20[p] = {e_ppn20[e][19:9], i_lookup_vpn[p][8:0]};
-            default: o_ppn20[p] = e_ppn20[e];
+            2'd2: ppn20 = {e_ppn20[e][19:18], i_lookup_vpn[p][17:0]};
+            2'd1: ppn20 = {e_ppn20[e][19:9], i_lookup_vpn[p][8:0]};
+            default: ppn20 = e_ppn20[e];
           endcase
+          o_ppn20[p] = ppn20;
+          o_device_page[p] = riscv_pkg::pma_device_page_ok(ppn20);
           o_ppn_hi_nonzero[p] = e_ppn_hi_nonzero[e];
           o_perm_r[p] = e_r[e];
           o_perm_w[p] = e_w[e];
@@ -162,11 +166,10 @@ module dtlb #(
   end
 
 `ifdef FORMAL
-  // Lookup/insert/invalidate conservation (tlb.sby). An arbitrary watched
-  // slot's contents are provably exactly what the last install wrote,
-  // until the slot is overwritten or the TLB invalidates; a valid entry
-  // that level-matches a lookup always hits; invalidate-all leaves no
-  // valid entry behind.
+  // Formal target tlb: an arbitrary watched slot holds exactly what the last
+  // install wrote until the slot is overwritten or the TLB is invalidated, a
+  // lookup that matches it at its level always hits, and invalidate-all
+  // leaves no valid entry.
   logic f_past_valid;
   initial f_past_valid = 1'b0;
   always_ff @(posedge i_clk) f_past_valid <= 1'b1;

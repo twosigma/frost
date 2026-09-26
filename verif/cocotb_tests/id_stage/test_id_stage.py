@@ -20,15 +20,13 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
-from config import FLEN, MASK_XLEN, XLEN
+from config import MASK_XLEN, XLEN
 
 
 from ..tomasulo.fu_shims.fp_add_shim_interface import _parse_instr_op_enum
 from cocotb_tests.cpu_structs import (
     PIPELINE_CTRL_FIELDS,
     PD_TO_ID_FIELDS,
-    RF_TO_FWD_FIELDS,
-    FP_RF_TO_FWD_FIELDS,
     ID_TO_EX_FIELDS,
 )
 from utils.packed_structs import (
@@ -37,9 +35,6 @@ from utils.packed_structs import (
 )
 
 CLOCK_PERIOD_NS = 10
-RAS_PTR_BITS = 3
-BP_DIR_IDX_BITS = 10
-BRANCH_OP_WIDTH = 3
 
 NOP_INSTR = 0x00000013
 BASE_PC = 0x80001000
@@ -50,13 +45,14 @@ OPC_BRANCH = 0b1100011
 OPC_AUIPC = 0b0010111
 OPC_LOAD = 0b0000011
 OPC_STORE = 0b0100011
-OPC_OP_IMM = 0b0010011
 OPC_OP = 0b0110011
 OPC_FMADD = 0b1000011
+OPC_AMO = 0b0101111
+OPC_LOAD_FP = 0b0000111
+OPC_OP_FP = 0b1010011
 
-# Parsed from riscv_pkg.sv so the values track the RTL enum. A hardcoded
-# index breaks every time a member is inserted earlier in instr_op_e: the
-# M3 .D-atomics insertion shifted everything after AMOMAXU_W by 11.
+# Parsed from riscv_pkg.sv so the values track instr_op_e. Hardcoded values
+# would go stale whenever a member is inserted earlier in the enum.
 _INSTR_OPS = _parse_instr_op_enum()
 ADD = _INSTR_OPS["ADD"]
 ADDI = _INSTR_OPS["ADDI"]
@@ -67,29 +63,16 @@ AUIPC = _INSTR_OPS["AUIPC"]
 LW = _INSTR_OPS["LW"]
 SW = _INSTR_OPS["SW"]
 FMADD_S = _INSTR_OPS["FMADD_S"]
-
-BREQ = 0
-JUMP = 6
-BR_NULL = 7
-
-STN = 0
-STW = 3
+FENCE = _INSTR_OPS["FENCE"]
+FLW = _INSTR_OPS["FLW"]
+FADD_S = _INSTR_OPS["FADD_S"]
+PAUSE = _INSTR_OPS["PAUSE"]
 
 RS_INT = 0
 RS_MEM = 2
+RS_FP = 3
 RS_FMUL = 4
 RS_NONE = 6
-
-
-FROM_MA_TO_WB_FIELDS = [
-    ("regfile_write_enable", 1),
-    ("regfile_write_data", XLEN),
-    ("instruction", 32),
-    ("fp_regfile_write_enable", 1),
-    ("fp_dest_reg", 5),
-    ("fp_regfile_write_data", FLEN),
-    ("fp_flags", 5),
-]
 
 
 def _sign_extend(value: int, width: int) -> int:
@@ -112,21 +95,6 @@ def _pack_pd_to_id(fields: Mapping[str, int | bool]) -> int:
     return _pack_struct(PD_TO_ID_FIELDS, fields)
 
 
-def _pack_rf_to_fwd(fields: Mapping[str, int | bool]) -> int:
-    """Pack an rf_to_fwd_t value."""
-    return _pack_struct(RF_TO_FWD_FIELDS, fields)
-
-
-def _pack_fp_rf_to_fwd(fields: Mapping[str, int | bool]) -> int:
-    """Pack an fp_rf_to_fwd_t value."""
-    return _pack_struct(FP_RF_TO_FWD_FIELDS, fields)
-
-
-def _pack_from_ma_to_wb(fields: Mapping[str, int | bool]) -> int:
-    """Pack a from_ma_to_wb_t value."""
-    return _pack_struct(FROM_MA_TO_WB_FIELDS, fields)
-
-
 def _drive_pipeline_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
     """Drive packed pipeline control inputs."""
     dut.i_pipeline_ctrl.value = _pack_pipeline_ctrl(fields)
@@ -145,15 +113,12 @@ def _drive_pd_packet(
         "instruction": instruction,
         "source_reg_1_early": (instruction >> 15) & 0x1F,
         "source_reg_2_early": (instruction >> 20) & 0x1F,
-        "fp_source_reg_3_early": (instruction >> 27) & 0x1F,
         "illegal_instruction": False,
-        "btb_hit": False,
         "btb_predicted_taken": False,
         "btb_predicted_target": 0,
-        "ras_predicted": False,
-        "ras_predicted_target": 0,
         "ras_checkpoint_tos": 0,
         "ras_checkpoint_valid_count": 0,
+        "ras_checkpoint_top": 0,
         "bp_dir_idx": 0,
     }
     packet.update(fields)
@@ -162,49 +127,6 @@ def _drive_pd_packet(
         dut.i_from_pd_to_id_2.value = value
     else:
         dut.i_from_pd_to_id.value = value
-
-
-def _drive_rf(
-    dut: Any,
-    fields: Mapping[str, int | bool],
-    *,
-    slot2: bool = False,
-) -> None:
-    """Drive one integer register-file read-data input bundle."""
-    value = _pack_rf_to_fwd(fields)
-    if slot2:
-        dut.i_rf_to_id_2.value = value
-    else:
-        dut.i_rf_to_id.value = value
-
-
-def _drive_fp_rf(
-    dut: Any,
-    fields: Mapping[str, int | bool],
-    *,
-    slot2: bool = False,
-) -> None:
-    """Drive one FP register-file read-data input bundle."""
-    value = _pack_fp_rf_to_fwd(fields)
-    if slot2:
-        dut.i_fp_rf_to_id_2.value = value
-    else:
-        dut.i_fp_rf_to_id.value = value
-
-
-def _drive_wb(dut: Any, fields: Mapping[str, int | bool]) -> None:
-    """Drive the packed MA-to-WB bypass input bundle."""
-    packet = {
-        "regfile_write_enable": False,
-        "regfile_write_data": 0,
-        "instruction": NOP_INSTR,
-        "fp_regfile_write_enable": False,
-        "fp_dest_reg": 0,
-        "fp_regfile_write_data": 0,
-        "fp_flags": 0,
-    }
-    packet.update(fields)
-    dut.i_from_ma_to_wb.value = _pack_from_ma_to_wb(packet)
 
 
 def _read_id_packet(dut: Any, *, slot2: bool = False) -> dict[str, int | bool]:
@@ -322,13 +244,9 @@ def _clear_inputs(dut: Any) -> None:
     _drive_pipeline_ctrl(dut, {})
     _drive_pd_packet(dut, {})
     _drive_pd_packet(dut, {}, slot2=True)
-    _drive_rf(dut, {})
-    _drive_rf(dut, {}, slot2=True)
-    _drive_fp_rf(dut, {})
-    _drive_fp_rf(dut, {}, slot2=True)
-    _drive_wb(dut, {})
     dut.i_pd_redirect.value = 0
     dut.i_pd_redirect_target.value = 0
+    dut.i_mstatus_fs_off.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -346,16 +264,12 @@ def _assert_control_nop(packet: Mapping[str, int | bool]) -> None:
     """Assert that an ID output packet has an idle decoded instruction."""
     assert packet["instruction"] == NOP_INSTR
     assert packet["instruction_operation"] == ADDI
-    assert packet["branch_operation"] == BR_NULL
-    assert packet["store_operation"] == STN
     assert packet["is_load_instruction"] is False
     assert packet["is_branch_or_jump"] is False
     assert packet["is_jump_and_link"] is False
     assert packet["is_jump_and_link_register"] is False
     assert packet["is_illegal_instruction"] is False
-    assert packet["btb_hit"] is False
     assert packet["btb_predicted_taken"] is False
-    assert packet["ras_predicted"] is False
     assert packet["has_int_dest"] is False
     assert packet["has_fp_dest"] is False
     assert packet["uses_int_rs1"] is False
@@ -363,7 +277,7 @@ def _assert_control_nop(packet: Mapping[str, int | bool]) -> None:
     assert packet["uses_fp_rs1"] is False
     assert packet["uses_fp_rs2"] is False
     assert packet["uses_fp_rs3"] is False
-    assert packet["is_not_nop"] is False
+    assert packet["is_real"] is False
 
 
 @cocotb.test()
@@ -376,8 +290,8 @@ async def test_reset_outputs_nops_and_clears_control_metadata(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_add_decodes_int_sources_and_wb_bypass(dut: Any) -> None:
-    """ADD decodes as an integer op and uses same-cycle WB bypass on rs2."""
+async def test_add_decodes_int_sources(dut: Any) -> None:
+    """ADD decodes as an integer op that reads rs1 and rs2."""
     await _setup_test(dut)
     instruction = _pack_r(funct7=0, rs2=12, rs1=11, funct3=0, rd=10, opcode=OPC_OP)
 
@@ -388,21 +302,6 @@ async def test_add_decodes_int_sources_and_wb_bypass(dut: Any) -> None:
             "instruction": instruction,
         },
     )
-    _drive_rf(
-        dut,
-        {
-            "source_reg_1_data": 0x11112222,
-            "source_reg_2_data": 0x33334444,
-        },
-    )
-    _drive_wb(
-        dut,
-        {
-            "regfile_write_enable": True,
-            "regfile_write_data": 0xA5A55A5A,
-            "instruction": _pack_i(imm=0, rs1=0, funct3=0, rd=12, opcode=OPC_OP_IMM),
-        },
-    )
     await _advance_cycle(dut)
 
     packet = _read_id_packet(dut)
@@ -410,15 +309,11 @@ async def test_add_decodes_int_sources_and_wb_bypass(dut: Any) -> None:
     assert packet["instruction"] == instruction
     assert packet["instruction_operation"] == ADD
     assert packet["rs_type"] == RS_INT
-    assert packet["source_reg_1_data"] == 0x11112222
-    assert packet["source_reg_2_data"] == 0xA5A55A5A
-    assert packet["source_reg_1_is_x0"] is False
-    assert packet["source_reg_2_is_x0"] is False
     assert packet["has_int_dest"] is True
     assert packet["has_fp_dest"] is False
     assert packet["uses_int_rs1"] is True
     assert packet["uses_int_rs2"] is True
-    assert packet["is_not_nop"] is True
+    assert packet["is_real"] is True
 
 
 @cocotb.test()
@@ -449,8 +344,6 @@ async def test_load_and_slot2_store_decode_independently(dut: Any) -> None:
     assert load_packet["instruction_operation"] == LW
     assert load_packet["immediate_i_type"] == _sign_extend(-16, 12)
     assert load_packet["is_load_instruction"] is True
-    assert load_packet["is_load_byte"] is False
-    assert load_packet["is_load_halfword"] is False
     assert load_packet["is_load_unsigned"] is False
     assert load_packet["rs_type"] == RS_MEM
     assert load_packet["has_int_dest"] is True
@@ -460,13 +353,45 @@ async def test_load_and_slot2_store_decode_independently(dut: Any) -> None:
     store_packet = _read_id_packet(dut, slot2=True)
     assert store_packet["program_counter"] == BASE_PC + 4
     assert store_packet["instruction_operation"] == SW
-    assert store_packet["store_operation"] == STW
     assert store_packet["immediate_s_type"] == 20
     assert store_packet["rs_type"] == RS_MEM
     assert store_packet["is_int_store"] is True
     assert store_packet["has_int_dest"] is False
     assert store_packet["uses_int_rs1"] is True
     assert store_packet["uses_int_rs2"] is True
+
+
+@cocotb.test()
+async def test_program_nop_is_real_and_bubble_is_not(dut: Any) -> None:
+    """A NOP in the program is a real instruction in both slots; a bubble is not.
+
+    is_real decides dispatch, so a real NOP dispatches, retires, and counts in
+    instret, while an inject_nop bubble never reaches the ROB.
+    """
+    await _setup_test(dut)
+    _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": NOP_INSTR})
+    _drive_pd_packet(
+        dut, {"program_counter": BASE_PC + 4, "instruction": NOP_INSTR}, slot2=True
+    )
+    await _advance_cycle(dut)
+    for slot2 in (False, True):
+        packet = _read_id_packet(dut, slot2=slot2)
+        assert packet["instruction"] == NOP_INSTR
+        assert packet["is_real"] is True
+
+    for slot2 in (False, True):
+        _drive_pd_packet(
+            dut,
+            {
+                "program_counter": BASE_PC + 8,
+                "instruction": NOP_INSTR,
+                "inject_nop": True,
+            },
+            slot2=slot2,
+        )
+    await _advance_cycle(dut)
+    for slot2 in (False, True):
+        assert _read_id_packet(dut, slot2=slot2)["is_real"] is False
 
 
 @cocotb.test()
@@ -483,7 +408,6 @@ async def test_inject_nop_masks_non_nop_payload_identically_in_both_slots(
         "inject_nop": True,
         "source_reg_1_early": 0,
         "source_reg_2_early": 0,
-        "fp_source_reg_3_early": 0,
     }
     _drive_pd_packet(dut, bubble)
     _drive_pd_packet(dut, bubble, slot2=True)
@@ -495,9 +419,8 @@ async def test_inject_nop_masks_non_nop_payload_identically_in_both_slots(
     assert slot2_packet["program_counter"] == BASE_PC + 4
     assert slot2_packet["instruction"] == NOP_INSTR
     assert slot2_packet["instruction_operation"] == ADDI
-    assert slot2_packet["store_operation"] == STN
     assert slot2_packet["is_int_store"] is False
-    assert slot2_packet["is_not_nop"] is False
+    assert slot2_packet["is_real"] is False
 
 
 @cocotb.test()
@@ -513,7 +436,6 @@ async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": branch,
-            "btb_hit": False,
             "btb_predicted_taken": False,
             "btb_predicted_target": 0,
         },
@@ -523,7 +445,6 @@ async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
         {
             "program_counter": BASE_PC + 4,
             "instruction": slot2_branch,
-            "btb_hit": False,
             "btb_predicted_taken": False,
             "btb_predicted_target": 0x12345678,
         },
@@ -535,11 +456,8 @@ async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
 
     packet = _read_id_packet(dut)
     assert packet["instruction_operation"] == BEQ
-    assert packet["branch_operation"] == BREQ
     assert packet["is_branch_or_jump"] is True
-    assert packet["immediate_b_type"] == _sign_extend(-8, 13)
     assert packet["branch_target_precomputed"] == redirect_target
-    assert packet["btb_hit"] is True
     assert packet["btb_predicted_taken"] is True
     assert packet["btb_predicted_target"] == redirect_target
     assert packet["btb_correct_non_jalr"] is True
@@ -547,7 +465,6 @@ async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
     slot2_packet = _read_id_packet(dut, slot2=True)
     assert slot2_packet["instruction_operation"] == BEQ
     assert slot2_packet["branch_target_precomputed"] == BASE_PC + 16
-    assert slot2_packet["btb_hit"] is False
     assert slot2_packet["btb_predicted_taken"] is False
     assert slot2_packet["btb_predicted_target"] == 0x12345678
 
@@ -559,7 +476,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
     jal = _pack_j(imm=0x100, rd=1, opcode=OPC_JAL)
     jalr_return = _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
     jal_target = BASE_PC + 0x100
-    ras_target = 0x80002000
     btb_target = 0x80003000
 
     _drive_pd_packet(
@@ -567,11 +483,11 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": jal,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": jal_target,
             "ras_checkpoint_tos": 3,
             "ras_checkpoint_valid_count": 4,
+            "ras_checkpoint_top": 0x80004004,
         },
     )
     _drive_pd_packet(
@@ -579,13 +495,11 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
         {
             "program_counter": BASE_PC + 4,
             "instruction": jalr_return,
-            "ras_predicted": True,
-            "ras_predicted_target": ras_target,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": btb_target,
             "ras_checkpoint_tos": 5,
             "ras_checkpoint_valid_count": 6,
+            "ras_checkpoint_top": 0x80005004,
         },
         slot2=True,
     )
@@ -593,7 +507,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
 
     packet = _read_id_packet(dut)
     assert packet["instruction_operation"] == JAL
-    assert packet["branch_operation"] == JUMP
     assert packet["rs_type"] == RS_NONE
     assert packet["is_jump_and_link"] is True
     assert packet["is_ras_call"] is True
@@ -601,19 +514,17 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
     assert packet["btb_correct_non_jalr"] is True
     assert packet["ras_checkpoint_tos"] == 3
     assert packet["ras_checkpoint_valid_count"] == 4
+    assert packet["ras_checkpoint_top"] == 0x80004004
 
     slot2_packet = _read_id_packet(dut, slot2=True)
     assert slot2_packet["instruction_operation"] == JALR
-    assert slot2_packet["branch_operation"] == JUMP
     assert slot2_packet["is_jump_and_link_register"] is True
     assert slot2_packet["is_ras_return"] is True
     assert slot2_packet["is_ras_call"] is False
-    assert slot2_packet["ras_predicted"] is True
-    assert slot2_packet["ras_predicted_target_nonzero"] is True
-    assert slot2_packet["ras_expected_rs1"] == ras_target
-    assert slot2_packet["btb_expected_rs1"] == btb_target
+    assert slot2_packet["btb_predicted_target"] == btb_target
     assert slot2_packet["ras_checkpoint_tos"] == 5
     assert slot2_packet["ras_checkpoint_valid_count"] == 6
+    assert slot2_packet["ras_checkpoint_top"] == 0x80005004
 
 
 @cocotb.test()
@@ -643,7 +554,265 @@ async def test_illegal_pd_input_clears_operand_classification(dut: Any) -> None:
     assert packet["uses_fp_rs1"] is False
     assert packet["uses_fp_rs2"] is False
     assert packet["uses_fp_rs3"] is False
-    assert packet["is_not_nop"] is True
+    assert packet["is_real"] is True
+
+
+# PAUSE is exactly 0x0100000F. The other words are FENCE encodings: four that
+# differ from it in one field (fence r,0 = 0x0200000F with pred=R, fence 0,0,
+# and pred=W with rd or rs1 nonzero), plus fence rw,rw and fence.tso.
+PAUSE_INSTR = 0x0100000F
+FENCE_LOOKALIKES = (
+    0x0200000F,
+    0x0330000F,
+    0x8330000F,
+    0x0000000F,
+    0x0100008F,
+    0x0100800F,
+)
+
+
+@cocotb.test()
+async def test_only_exact_pause_decodes_as_pause(dut: Any) -> None:
+    """0x0100000F is PAUSE, a no-operand INT_RS op; every other FENCE word is a FENCE."""
+    await _setup_test(dut)
+
+    for fence_word in FENCE_LOOKALIKES:
+        for pause_slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC, "instruction": PAUSE_INSTR},
+                slot2=pause_slot2,
+            )
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC + 4, "instruction": fence_word},
+                slot2=not pause_slot2,
+            )
+            await _advance_cycle(dut)
+
+            pause = _read_id_packet(dut, slot2=pause_slot2)
+            assert pause["instruction_operation"] == PAUSE
+            assert pause["rs_type"] == RS_INT
+            assert pause["is_fence"] is False
+            assert pause["is_fence_i"] is False
+            assert pause["is_illegal_instruction"] is False
+            assert pause["has_int_dest"] is False
+            assert pause["uses_int_rs1"] is False
+            assert pause["uses_int_rs2"] is False
+            assert pause["is_real"] is True
+
+            fence = _read_id_packet(dut, slot2=not pause_slot2)
+            assert fence["instruction_operation"] == FENCE, hex(fence_word)
+            assert fence["rs_type"] == RS_MEM, hex(fence_word)
+            assert fence["is_fence"] is True, hex(fence_word)
+            assert fence["is_illegal_instruction"] is False, hex(fence_word)
+
+
+@cocotb.test()
+async def test_fetch_fault_with_nop_bytes_is_dispatched_in_either_slot(
+    dut: Any,
+) -> None:
+    """A fetch fault reaches dispatch even when its bytes decode as a NOP, in either slot."""
+    await _setup_test(dut)
+
+    for fault_slot2 in (False, True):
+        _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": NOP_INSTR})
+        _drive_pd_packet(
+            dut,
+            {"program_counter": BASE_PC + 4, "instruction": NOP_INSTR},
+            slot2=True,
+        )
+        _drive_pd_packet(
+            dut,
+            {
+                "program_counter": BASE_PC + (4 if fault_slot2 else 0),
+                "instruction": NOP_INSTR,
+                "fetch_fault": True,
+            },
+            slot2=fault_slot2,
+        )
+        await _advance_cycle(dut)
+
+        fault = _read_id_packet(dut, slot2=fault_slot2)
+        assert fault["is_fetch_fault"] is True
+        assert fault["is_real"] is True
+        other = _read_id_packet(dut, slot2=not fault_slot2)
+        assert other["is_fetch_fault"] is False
+        assert other["is_real"] is True  # a NOP in the program is real
+
+
+@cocotb.test()
+async def test_fetch_fault_reads_no_source_register(dut: Any) -> None:
+    """A fetch fault's garbage rs1 field creates no INT_RS source dependency."""
+    await _setup_test(dut)
+    add = _pack_r(funct7=0, rs2=12, rs1=11, funct3=0, rd=10, opcode=OPC_OP)
+
+    for page_fault in (False, True):
+        for slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {
+                    "program_counter": BASE_PC,
+                    "instruction": add,
+                    "fetch_fault": True,
+                    "fetch_fault_page": page_fault,
+                },
+                slot2=slot2,
+            )
+            await _advance_cycle(dut)
+
+            packet = _read_id_packet(dut, slot2=slot2)
+            assert packet["is_fetch_fault"] is True
+            assert packet["rs_type"] == RS_INT
+            assert packet["has_int_dest"] is False
+            assert packet["uses_int_rs1"] is False
+            assert packet["uses_int_rs2"] is False
+            assert packet["uses_fp_rs1"] is False
+            _drive_pd_packet(dut, {}, slot2=slot2)
+
+
+@cocotb.test()
+async def test_fs_off_decodes_fp_instructions_as_illegal(dut: Any) -> None:
+    """While mstatus.FS is Off, F/D instructions in either slot take the illegal class."""
+    await _setup_test(dut)
+    flw = _pack_i(imm=8, rs1=10, funct3=0b010, rd=3, opcode=OPC_LOAD_FP)
+    fadd = _pack_r(funct7=0, rs2=2, rs1=1, funct3=0, rd=4, opcode=OPC_OP_FP)
+    fmadd = _pack_r4(rs3=7, fmt=0, rs2=6, rs1=5, rm=0, rd=4, opcode=OPC_FMADD)
+    add = _pack_r(funct7=0, rs2=12, rs1=11, funct3=0, rd=10, opcode=OPC_OP)
+
+    for fp_instr in (flw, fadd, fmadd):
+        for fp_slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC, "instruction": fp_instr},
+                slot2=fp_slot2,
+            )
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC + 4, "instruction": add},
+                slot2=not fp_slot2,
+            )
+            dut.i_mstatus_fs_off.value = 1
+            await _advance_cycle(dut)
+
+            packet = _read_id_packet(dut, slot2=fp_slot2)
+            assert packet["is_illegal_instruction"] is True, hex(fp_instr)
+            assert packet["is_fp_instruction"] is True
+            assert packet["rs_type"] == RS_INT
+            assert packet["has_int_dest"] is False
+            assert packet["has_fp_dest"] is False
+            assert packet["has_fp_flags"] is False
+            assert packet["uses_int_rs1"] is False
+            assert packet["uses_fp_rs1"] is False
+            assert packet["uses_fp_rs2"] is False
+            assert packet["uses_fp_rs3"] is False
+            assert packet["is_real"] is True
+            # The FS=Off FLW takes no load-queue entry, so dispatch never
+            # waits for one.
+            assert packet["needs_lq"] is False and packet["needs_sq"] is False
+            other = _read_id_packet(dut, slot2=not fp_slot2)
+            assert other["is_illegal_instruction"] is False
+            assert other["instruction_operation"] == ADD
+            assert other["uses_int_rs1"] is True
+
+    # FS on again: the same instructions decode normally.
+    dut.i_mstatus_fs_off.value = 0
+    _drive_pd_packet(dut, {"program_counter": BASE_PC, "instruction": flw})
+    _drive_pd_packet(
+        dut, {"program_counter": BASE_PC + 4, "instruction": fadd}, slot2=True
+    )
+    await _advance_cycle(dut)
+    load = _read_id_packet(dut)
+    assert load["is_illegal_instruction"] is False
+    assert load["instruction_operation"] == FLW
+    assert load["rs_type"] == RS_MEM
+    assert load["has_fp_dest"] is True
+    assert load["uses_int_rs1"] is True
+    assert load["needs_lq"] is True and load["needs_sq"] is False
+    compute = _read_id_packet(dut, slot2=True)
+    assert compute["is_illegal_instruction"] is False
+    assert compute["instruction_operation"] == FADD_S
+    assert compute["rs_type"] == RS_FP
+    assert compute["has_fp_flags"] is True
+
+
+@cocotb.test()
+async def test_memory_queue_needs_follow_the_operand_class(dut: Any) -> None:
+    """Loads, LR and AMOs need a load-queue entry, stores and SC a store-queue one.
+
+    An illegal instruction, a fetch fault and a bubble take no entry,
+    whatever their bytes decode as.
+    """
+    await _setup_test(dut)
+    load = _pack_i(imm=-16, rs1=8, funct3=0b011, rd=9, opcode=OPC_LOAD)
+    store = _pack_s(imm=20, rs2=6, rs1=5, funct3=0b011, opcode=OPC_STORE)
+    lr_w = _pack_r(funct7=0b0001000, rs2=0, rs1=5, funct3=0b010, rd=6, opcode=OPC_AMO)
+    sc_w = _pack_r(funct7=0b0001100, rs2=7, rs1=5, funct3=0b010, rd=6, opcode=OPC_AMO)
+    amoadd_d = _pack_r(
+        funct7=0b0000000, rs2=7, rs1=5, funct3=0b011, rd=6, opcode=OPC_AMO
+    )
+    cases: tuple[tuple[str, int, dict[str, bool], tuple[bool, bool]], ...] = (
+        ("ld", load, {}, (True, False)),
+        ("sd", store, {}, (False, True)),
+        ("lr.w", lr_w, {}, (True, False)),
+        ("sc.w", sc_w, {}, (False, True)),
+        ("amoadd.d", amoadd_d, {}, (True, False)),
+        ("illegal ld", load, {"illegal_instruction": True}, (False, False)),
+        ("faulting sd", store, {"fetch_fault": True}, (False, False)),
+        ("faulting sc.w", sc_w, {"fetch_fault": True}, (False, False)),
+        ("bubble ld", load, {"inject_nop": True}, (False, False)),
+    )
+    for name, instruction, extra, (needs_lq, needs_sq) in cases:
+        for slot2 in (False, True):
+            _drive_pd_packet(
+                dut,
+                {"program_counter": BASE_PC, "instruction": instruction, **extra},
+                slot2=slot2,
+            )
+            _drive_pd_packet(dut, {"program_counter": BASE_PC + 4}, slot2=not slot2)
+            await _advance_cycle(dut)
+            packet = _read_id_packet(dut, slot2=slot2)
+            assert packet["needs_lq"] is needs_lq, f"{name} slot2={slot2}: needs_lq"
+            assert packet["needs_sq"] is needs_sq, f"{name} slot2={slot2}: needs_sq"
+
+
+@cocotb.test()
+async def test_fs_off_leaves_bubbles_legal(dut: Any) -> None:
+    """A bubble whose raw bits are an F/D instruction decodes as the same NOP whatever FS is."""
+    await _setup_test(dut)
+    flw = _pack_i(imm=8, rs1=10, funct3=0b010, rd=3, opcode=OPC_LOAD_FP)
+    fmadd = _pack_r4(rs3=7, fmt=0, rs2=6, rs1=5, rm=0, rd=4, opcode=OPC_FMADD)
+
+    for raw in (flw, fmadd):
+        packets = {}
+        for fs_off in (1, 0):
+            bubble = {
+                "program_counter": BASE_PC,
+                "instruction": raw,
+                "inject_nop": True,
+            }
+            _drive_pd_packet(dut, bubble)
+            _drive_pd_packet(
+                dut, {**bubble, "program_counter": BASE_PC + 4}, slot2=True
+            )
+            dut.i_mstatus_fs_off.value = fs_off
+            await _advance_cycle(dut)
+            packets[fs_off] = (_read_id_packet(dut), _read_id_packet(dut, slot2=True))
+
+        for packet in packets[1]:
+            assert packet["instruction"] == NOP_INSTR, hex(raw)
+            assert packet["instruction_operation"] == ADDI
+            assert packet["is_illegal_instruction"] is False, hex(raw)
+            assert packet["is_fp_instruction"] is False
+            assert packet["is_fp_load"] is False
+            assert packet["rs_type"] == RS_INT
+            assert packet["has_int_dest"] is True
+            assert packet["has_fp_dest"] is False
+            assert packet["uses_int_rs1"] is True
+            assert packet["uses_fp_rs1"] is False
+            assert packet["is_real"] is False
+        assert packets[1] == packets[0], hex(raw)
+    dut.i_mstatus_fs_off.value = 0
 
 
 @cocotb.test()
@@ -682,8 +851,8 @@ async def test_flush_clears_control_and_stall_holds_outputs(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_fp_fma_decodes_sources_and_fp_wb_bypass(dut: Any) -> None:
-    """FMADD.S decodes FP routing and bypasses FP WB data to rs3."""
+async def test_fp_fma_decodes_fp_sources(dut: Any) -> None:
+    """FMADD.S decodes FP routing and reads three FP sources."""
     await _setup_test(dut)
     instruction = _pack_r4(
         rs3=7,
@@ -702,39 +871,18 @@ async def test_fp_fma_decodes_sources_and_fp_wb_bypass(dut: Any) -> None:
             "instruction": instruction,
         },
     )
-    _drive_fp_rf(
-        dut,
-        {
-            "fp_source_reg_1_data": 0x1111222233334444,
-            "fp_source_reg_2_data": 0x5555666677778888,
-            "fp_source_reg_3_data": 0x9999AAAABBBBCCCC,
-        },
-    )
-    _drive_wb(
-        dut,
-        {
-            "fp_regfile_write_enable": True,
-            "fp_dest_reg": 7,
-            "fp_regfile_write_data": 0xD0D1D2D3D4D5D6D7,
-        },
-    )
     await _advance_cycle(dut)
 
     packet = _read_id_packet(dut)
     assert packet["instruction_operation"] == FMADD_S
     assert packet["rs_type"] == RS_FMUL
     assert packet["is_fp_instruction"] is True
-    assert packet["is_fp_compute"] is True
-    assert packet["is_pipelined_fp_op"] is True
     assert packet["fp_rm"] == 1
     assert packet["has_fp_dest"] is True
     assert packet["has_fp_flags"] is True
     assert packet["uses_fp_rs1"] is True
     assert packet["uses_fp_rs2"] is True
     assert packet["uses_fp_rs3"] is True
-    assert packet["fp_source_reg_1_data"] == 0x1111222233334444
-    assert packet["fp_source_reg_2_data"] == 0x5555666677778888
-    assert packet["fp_source_reg_3_data"] == 0xD0D1D2D3D4D5D6D7
 
 
 @cocotb.test()
@@ -765,13 +913,12 @@ async def test_pc_relative_precompute_for_auipc_and_fetch_faults(dut: Any) -> No
         await _advance_cycle(dut)
         packet = _read_id_packet(dut)
         assert packet["is_fetch_fault"] is True
-        assert packet["is_fetch_fault_hi"] is hi
         assert packet["pc_relative_precomputed"] == expected & xlen_mask
 
 
 @cocotb.test()
-async def test_ras_and_btb_target_checks_for_direct_branches(dut: Any) -> None:
-    """Both prediction sources are compared against the precomputed direct target."""
+async def test_btb_target_check_for_direct_branches(dut: Any) -> None:
+    """The BTB prediction is compared against the precomputed direct target."""
     await _setup_test(dut)
     branch = _pack_b(imm=16, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
     target = BASE_PC + 16
@@ -781,32 +928,24 @@ async def test_ras_and_btb_target_checks_for_direct_branches(dut: Any) -> None:
         {
             "program_counter": BASE_PC,
             "instruction": branch,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": target,
-            "ras_predicted": False,
-            "ras_predicted_target": target + 4,
         },
     )
     await _advance_cycle(dut)
     packet = _read_id_packet(dut)
     assert packet["branch_target_precomputed"] == target
     assert packet["btb_correct_non_jalr"] is True
-    assert packet["ras_correct_non_jalr"] is False
 
     _drive_pd_packet(
         dut,
         {
             "program_counter": BASE_PC,
             "instruction": branch,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": target + 8,
-            "ras_predicted": True,
-            "ras_predicted_target": target,
         },
     )
     await _advance_cycle(dut)
     packet = _read_id_packet(dut)
     assert packet["btb_correct_non_jalr"] is False
-    assert packet["ras_correct_non_jalr"] is True

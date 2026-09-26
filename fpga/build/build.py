@@ -16,22 +16,18 @@
 
 """Build FPGA bitstreams through checkpointed Vivado stages.
 
-Pipeline: synth, opt, place, post-place phys-opt, route, post-route phys-opt,
-second route, post-second-route phys-opt, bitstream. Closure at route through
-second route promotes final.dcp and skips to bitstream; post-place closure
-does not. The last phys-opt stage always writes the final checkpoint.
+Stages run in order: synth, opt, place, post-place phys-opt, route, post-route
+phys-opt, second route, post-second-route phys-opt, bitstream. Closing timing
+at route, post-route phys-opt, or second route promotes that output to
+final.dcp and skips to the bitstream; the last phys-opt stage always writes
+final.dcp.
 
-Place/route sweeps promote the best qualified candidate. Phys-opt retains the
-best WNS and stops on closure. Placement scoring uses zero added uncertainty;
-resumed stages require checkpoint-bound placement and parent metadata.
-Temporary PC-tail cost groups must be removed and audited on reopen before
-scoring, including for cell-bloat variants.
-
-``--jobs`` limits concurrent Vivado jobs. ``--build-dir`` isolates outputs;
-``--snapshot-physopt-from`` copies a completed, qualified sweep for early route.
-Divided-clock builds default to RuntimeOptimized placement/route and profiling
-counters; full-rate builds default to counters off. Software must match the
-bitstream clock. ``netlist_config.json`` records synthesis-time options.
+On X3, place and both route stages are sweeps that promote the best qualified
+candidate, scored at zero added setup uncertainty. A placement guided by a
+temporary PC-tail path group is scored only if its audit on a clean reopen
+passes. Every later stage, and the bitstream, checks that its input checkpoint
+descends from the current qualified placement, using the sidecar files written
+beside each checkpoint.
 
 Run natively; see ``fpga/README.md`` and ``--help`` for commands and tuning.
 """
@@ -60,20 +56,18 @@ from riscv_toolchain import default_riscv_prefix  # noqa: E402
 
 # Configuration
 
-# Bound full-design Vivado processes independently of each process's threads.
-# The 27-job NIC-enabled placement sweep exhausted the build host's RAM.
-# Twelve leaves room for growth beyond the observed ~8 GB per worker.
+# Default cap on concurrent full-design Vivado processes, separate from each
+# process's own thread count. A worker needs about 8 GB, so launching a whole
+# placement sweep at once can exhaust the host's memory.
 DEFAULT_MAX_JOBS = 12
 
-# ``synth_directive`` is the board's default synthesis directive. On x3
-# PerformanceOptimized reaches -0.081 ns / 4 endpoints post-opt against
-# AlternateRoutability's -0.178 ns / 143, but it maps 1.6x the MUXF7/MUXF8
-# count: the placer sweep on that netlist gained only 0.07 ns (-0.372 against
-# -0.442 WNS at zero uncertainty) and its quick route fell to -0.957 ns under
-# router congestion warnings, so the routable netlist stays the default.
+# ``synth_directive`` is the board's default synthesis directive. On x3,
+# PerformanceOptimized improves post-opt timing but maps many more MUXF7/MUXF8
+# cells, which leaves little of that gain after placement and congests routing,
+# so the more routable AlternateRoutability netlist is the default.
 BOARD_CONFIG = {
     "x3": {
-        "clock_freq": 300000000,
+        "clock_freq": 322265625,
         "is_ultrascale": True,
         "synth_directive": "AlternateRoutability",
     },
@@ -117,8 +111,8 @@ PLACER_DIRECTIVES = [
     "WLDrivenBlockPlacement",
 ]
 
-# The spread directives relieve the ~93%-occupied X3 core band and its integer
-# RS East congestion hotspot.
+# The AltSpreadLogic directives spread out the densely packed X3 core region
+# and its integer-RS congestion hotspot.
 X3_PLACER_SWEEP_DIRECTIVES = [
     "ExtraNetDelay_high",
     "ExtraPostPlacementOpt",
@@ -126,19 +120,23 @@ X3_PLACER_SWEEP_DIRECTIVES = [
     "AltSpreadLogic_medium",
 ]
 
-# X3 needs pre-place setup overconstraint for 300 MHz. With no Vivado seed knob,
-# each 50 ps reduction creates another solution while easing the packing that
-# made the flat 0.5 ns flow unroutably dense. build_step.tcl reports at zero
-# added uncertainty after placement. Keep its seed-grid baseline separate
-# from the real reporting uncertainty.
+# X3 places with added setup uncertainty (overconstraint). Vivado's placer has
+# no seed option, so each 50 ps step down from the 0.5 ns baseline yields
+# another placement, and the lower values ease packing that at 0.5 ns alone
+# can be too dense to route. build_step.tcl reports at zero added uncertainty
+# after placement, so the seed-grid baseline and the reporting uncertainty are
+# separate constants.
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
 X3_PLACE_REPORT_UNCERTAINTY_NS = 0.0
 X3_POST_PLACE_GATE_NS = Decimal("-0.200")
 # Vivado reports slack and clock periods to three decimals, and the gate's
 # native queries carry more precision than the timing summary prints. Half a
 # printed digit accepts every value that displays as the expected one and
-# still rejects a different printed number (3.334 ns against 3.333 ns).
+# still rejects a different printed number (3.104 ns against 3.103 ns).
 X3_GATE_DISPLAY_TOLERANCE_NS = Decimal("0.0005")
+# XDC constrains the 300 MHz reference to 3.333 ns. Use that physical period
+# and the fixed MMCM recipe, including its rounding, for native timing evidence.
+X3_CPU_PERIOD_NS = Decimal("3.333") * 8 * 4 / Decimal("34.375")
 X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.050
 X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
@@ -158,10 +156,11 @@ X3_PC_TAIL_GUIDED_CANDIDATES = (
 # rules as grid seeds.
 X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
 
-# Keep the unbloated controls and compare only the measured integer-RS
-# spreading recipes. Narrowed grids gain a variant only beside its control.
-# An explicit bloat environment variable selects the legacy manual override
-# behavior instead, including an empty factor for no-bloat controls.
+# Integer-RS cell-bloat variants, each added beside its unbloated control; a
+# narrowed grid gets a variant only if its control is still in the grid.
+# Setting either bloat environment variable disables these variants and
+# applies the caller's setting to every candidate (an empty factor means no
+# bloat).
 X3_PLACE_INT_RS_BLOAT_CANDIDATES = (
     ("ExtraNetDelay_high", 0.350),
     ("ExtraPostPlacementOpt", 0.450),
@@ -192,7 +191,9 @@ class DirectiveSweepCandidate:
     def environment(self, inherited: Mapping[str, str]) -> dict[str, str]:
         """Copy environment settings without leaking a variant into controls."""
         environment = dict(inherited)
-        # Retired diagnostic toggles cannot re-enable production edits.
+        # Nothing reads these obsolete switches of the diagnostic flush-guidance
+        # and pin-swap helpers, which never run in production; drop them so no
+        # candidate inherits them.
         environment.pop("FROST_PLACE_FLUSH_INCREMENTAL", None)
         environment.pop("FROST_X3_PD_TARGET_PIN_SWAPS", None)
         if self.setup_uncertainty_ns is not None:
@@ -241,10 +242,10 @@ def make_x3_place_sweep_candidates(
     environment: Mapping[str, str],
     include_extra_seeds: bool = True,
 ) -> list[DirectiveSweepCandidate]:
-    """Retain the control grid and append eligible bloat variants.
+    """Return the control grid plus the off-grid seed and eligible bloat variants.
 
-    ``include_extra_seeds`` False (functional-validation builds) keeps the
-    grid exactly as requested: no off-grid seed or bloat variants.
+    With ``include_extra_seeds`` false (divided-clock builds), return the grid
+    exactly as requested.
     """
     candidates = [
         DirectiveSweepCandidate(directive, uncertainty)
@@ -262,8 +263,9 @@ def make_x3_place_sweep_candidates(
         ):
             candidates.append(DirectiveSweepCandidate(directive, uncertainty))
 
-    # Presence, rather than truthiness, lets an explicitly empty factor retain
-    # the old no-bloat sweep. A target-only override also keeps its old effect.
+    # Test presence, not truthiness: an empty factor, or a target pattern with
+    # no factor, still turns off the automatic variants and yields a sweep
+    # without bloat.
     manual_bloat = any(
         name in environment
         for name in ("FROST_PLACE_CELL_BLOAT", "FROST_PLACE_CELL_BLOAT_CELLS")
@@ -371,19 +373,18 @@ def resolve_functional_build_policy(
     """Return the flow settings for ``--cpu-clock-div``.
 
     A divider of 1 keeps every setting as resolved by the caller. A larger
-    divider builds for 300/N MHz: an explicit ``--directives`` or
-    ``--num-uncertainties`` keeps the requested placer grid, an explicit
-    ``--route-directives`` keeps the requested router list, and everything
-    else collapses to the single RuntimeOptimized runs a design with hundreds
-    of picoseconds of margin needs.
+    divider builds for the board clock divided by N. An explicit
+    ``--directives`` or ``--num-uncertainties`` keeps the requested placer
+    grid and an explicit ``--route-directives`` keeps the requested router
+    list; otherwise placement and routing each run once with RuntimeOptimized,
+    which is enough for a design with hundreds of picoseconds of margin.
 
     ``perf_counters`` is ``--perf-counters``/``--no-perf-counters``; ``None``
-    leaves the counters out of a full-rate build and includes them in a
-    divided-clock build, where they are the point.
+    leaves the counters out, whatever the divider.
     """
     if cpu_clock_div not in CPU_CLOCK_DIV_CHOICES:
         raise ValueError(f"unsupported CPU clock divider: {cpu_clock_div}")
-    include_counters = (cpu_clock_div != 1) if perf_counters is None else perf_counters
+    include_counters = bool(perf_counters)
     if cpu_clock_div == 1:
         return FunctionalBuildPolicy(
             1,
@@ -461,7 +462,7 @@ STEP_PRODUCES_CHECKPOINT = {
     "post_second_route_physopt": "final.dcp",
 }
 
-# Canonical report prefix in the main work directory.
+# Report prefix in the main work directory.
 STEP_REPORT_PREFIX = {
     "synth": "post_synth",
     "opt": "post_opt",
@@ -583,7 +584,7 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
 def x3_place_cell_bloat_override_is_valid(
     log_path: Path, expected_factor: str, expected_cells: str
 ) -> bool:
-    """Require exactly one successful match for an automatic bloat recipe."""
+    """Return whether the log shows the recipe's bloat applied to exactly one cell."""
     try:
         content = log_path.read_text(errors="replace")
     except OSError:
@@ -610,8 +611,8 @@ IMEM_SCALAR_REPLICA_NAMES = (
     "slot2_start_valid_lo",
 )
 X3_PC_TAIL_SCALAR_LAUNCH_COUNT = 2 * len(IMEM_SCALAR_REPLICA_NAMES)
-# Init images of retired timing replicas, cleared from reused build directories.
-IMEM_RETIRED_INIT_IMAGE_NAMES = (
+# Obsolete IMEM init images, deleted from reused build directories.
+IMEM_OBSOLETE_INIT_IMAGE_NAMES = (
     "sw_imem_even_pc_compressed.mem",
     "sw_imem_odd_pc_compressed.mem",
     "sw_imem_even_compressed_hi.mem",
@@ -630,14 +631,14 @@ def x3_pc_tail_group_audit_is_valid(
     expected_directive: str,
     expected_setup_uncertainty_ns: float,
 ) -> bool:
-    """Validate topology proofs and the exact guided placement seed.
+    """Return whether a guided placement's PC-tail audit passes for this seed.
 
-    Vivado physical synthesis may add, remove, or rename noncanonical register
-    replicas during placement. The audit therefore proves exact launch and
-    canonical architectural-endpoint continuity across placement, then exact
-    full endpoint-name continuity across the clean checkpoint reopen. The
-    historical ``COMPRESSED_*`` field names describe the fourteen pinned
-    scalar-overlay launches of the predecode metadata.
+    Vivado physical synthesis may add, remove, or rename register replicas
+    during placement, so the audit requires the same launch names and the same
+    canonical (non-replica) endpoint names before and after placement, then
+    the same full endpoint names across the clean checkpoint reopen. The
+    ``COMPRESSED_*`` fields cover the fourteen pinned scalar-overlay launches
+    of the predecode metadata.
     """
     if not x3_place_uses_pc_tail_guidance(
         expected_directive, expected_setup_uncertainty_ns
@@ -835,11 +836,12 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
             variable = f"IMEM_{parity.upper()}_{replica_name.upper()}_FILE"
             outputs[variable] = output_dir / f"sw_imem_{parity}_{replica_name}.mem"
 
-    # Remove retired images from reused board build directories.
-    retired_init_outputs = tuple(
-        output_dir / name for name in IMEM_RETIRED_INIT_IMAGE_NAMES
+    # Delete obsolete images left in reused build directories, and this build's
+    # outputs so the existence check below sees only files this build wrote.
+    obsolete_init_outputs = tuple(
+        output_dir / name for name in IMEM_OBSOLETE_INIT_IMAGE_NAMES
     )
-    for output_path in (*outputs.values(), *retired_init_outputs):
+    for output_path in (*outputs.values(), *obsolete_init_outputs):
         output_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
@@ -885,7 +887,7 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
 
 @dataclass(frozen=True)
 class X3PlaceGate:
-    """Native calculated-slack decision at the actual CPU clock and zero UU."""
+    """Post-place gate result at the actual CPU clock and zero added uncertainty."""
 
     passed: bool
     cpu_period_ns: Decimal
@@ -893,12 +895,14 @@ class X3PlaceGate:
 
 
 def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3PlaceGate:
-    """Reject absent, malformed, contradictory or wrong-clock native evidence.
+    """Parse and check the six-field record that x3_post_place_gate.tcl writes.
 
-    The Tcl producer checks the actual unrestricted setup control before
-    writing this six-field record. Displayed -0.200 alone never decides PASS.
-    Recorded numbers that differ only within Vivado's three-decimal display
-    rounding agree; a different printed number is still wrong evidence.
+    Raise OSError if the file is missing, and ValueError if the record is
+    malformed, contradicts itself or ``expected_wns``, or used another clock
+    period, threshold, or added setup uncertainty. PASS comes from Vivado's
+    strict search for paths below -0.200 ns, never from the printed worst
+    slack. Numbers that differ only within Vivado's three-decimal rounding
+    agree; a different printed number is wrong evidence.
     """
     values: dict[str, str] = {}
     for line in path.read_text().splitlines():
@@ -936,12 +940,14 @@ def read_x3_place_gate(path: Path, expected_wns: float | None = None) -> X3Place
     if divider not in CPU_CLOCK_DIV_CHOICES:
         raise ValueError("unsupported CPU divider for post-place gate")
     period = numbers["CPU_PERIOD_NS"]
-    expected_period = Decimal("3.333") * divider
-    # A divided clock's expectation is itself a product of the rounded base
-    # period, so it keeps the documented one-picosecond display range.
+    expected_period = X3_CPU_PERIOD_NS * divider
+    # A divided clock's expected period is a multiple of the rounded base
+    # period, so it gets a full printed digit (1 ps) of tolerance.
     tolerance = X3_GATE_DISPLAY_TOLERANCE_NS if divider == 1 else Decimal("0.001")
     if abs(period - expected_period) > tolerance:
-        raise ValueError("post-place CPU period does not match --cpu-clock-div")
+        raise ValueError(
+            "post-place CPU period does not match the selected clock and divider"
+        )
     if numbers["THRESHOLD_NS"] != X3_POST_PLACE_GATE_NS or numbers[
         "USER_SETUP_UNCERTAINTY_NS"
     ] != Decimal(str(X3_PLACE_REPORT_UNCERTAINTY_NS)):
@@ -983,7 +989,7 @@ def file_sha256(path: Path) -> str:
 
 
 def bind_x3_place_gate(work_dir: Path, expected_wns: float | None = None) -> bool:
-    """Bind valid native timing evidence, regardless of the advisory threshold."""
+    """Bind a valid gate record to post_place.dcp by hash; a failing gate only warns."""
     binding_path = work_dir / "post_place_gate_binding.json"
     binding_path.unlink(missing_ok=True)
     gate_path = work_dir / "post_place_gate.txt"
@@ -1000,7 +1006,7 @@ def bind_x3_place_gate(work_dir: Path, expected_wns: float | None = None) -> boo
     if not gate.passed:
         print(
             f"Warning: post-place WNS {gate.worst_slack_ns} ns is below "
-            "-0.200 ns; continuing with downstream optimization."
+            f"{X3_POST_PLACE_GATE_NS} ns; continuing with downstream optimization."
         )
     return True
 
@@ -1031,7 +1037,7 @@ def require_x3_post_place_gate(main_work: Path) -> bool:
     if not gate.passed:
         print(
             f"Warning: post-place WNS {gate.worst_slack_ns} ns is below "
-            "-0.200 ns; continuing with downstream optimization."
+            f"{X3_POST_PLACE_GATE_NS} ns; continuing with downstream optimization."
         )
     return True
 
@@ -1054,10 +1060,11 @@ def _x3_downstream_outputs(step: str) -> set[str]:
 def capture_x3_input_lineage(
     main_work: Path, checkpoint_name: str
 ) -> X3InputLineage | None:
-    """Validate the actual consumed checkpoint's chain to the current gate.
+    """Return the provenance of ``checkpoint_name``, or print why and return None.
 
-    Legacy or stale descendants remain on disk but cannot borrow a newer
-    placement's qualification. The existing gate binding stays version 1.
+    Follow the ``.lineage.json`` sidecars back to post_place.dcp and require
+    every recorded hash to match, so an older checkpoint left on disk cannot
+    pass as a descendant of a newer qualified placement.
     """
     if not require_x3_post_place_gate(main_work):
         return None
@@ -1194,12 +1201,13 @@ def bind_x3_output_lineage(
 
 
 def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
-    """Freeze a completed phys-opt stage or sweep for an independent route.
+    """Copy a completed post-place phys-opt result into a new build directory.
 
-    A sweep's launch manifest and completed-iteration digest replace the
-    canonical completion sidecar only while making this private copy. No
-    live file is qualified or modified, and subsequent stages verify the
-    ordinary lineage chain against the copied placement and gate.
+    The source is either a finished stage, qualified by its lineage sidecar,
+    or the latest completed sweep of an unfinished stage, qualified by its
+    launch manifest and iteration record. Nothing in the source directory
+    changes. The copy gets its own lineage sidecar, so later stages check it
+    like any other checkpoint.
     """
     source_work = source_work.resolve()
     build_dir = build_dir.resolve()
@@ -1231,9 +1239,9 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
             iteration_path = source_dir / "phys_opt_iteration.json"
             if not launch_path.exists():
                 raise ValueError(
-                    "the running phys-opt was started before snapshot support; "
-                    "its launch manifest is absent. Let that stage finish; "
-                    "no restart is needed"
+                    "phys_opt_launch.json is missing: post-place phys-opt has "
+                    "not started, or it was launched without that file and can "
+                    "be snapshotted only after it finishes; no restart is needed"
                 )
             if not iteration_path.exists():
                 raise ValueError(
@@ -1295,8 +1303,8 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
                 sources[f"post_place_physopt{suffix}"] = report
         digests = {name: file_sha256(path) for name, path in sources.items()}
 
-        # Real copies are essential: the older Tcl publisher rewrites the same
-        # inode, so a hard link or symlink would not freeze its checkpoint.
+        # Copy rather than link: the running stage may rewrite the source, and a
+        # symlink or hard link could then see the new content.
         build_dir.mkdir(parents=True, exist_ok=False)
         created = True
         work = build_dir / "work"
@@ -1355,6 +1363,41 @@ def snapshot_x3_physopt(source_work: Path, build_dir: Path) -> bool:
         return False
 
 
+def is_reference_x3_netlist(main_work: Path) -> bool:
+    """Return whether the options recorded at synthesis describe a full-rate X3 build.
+
+    Resumed runs rely on this record rather than on their own default options.
+    """
+    try:
+        config = json.loads((main_work / X3_NETLIST_CONFIG_NAME).read_text())
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(config, dict)
+        and config.get("schema") == "x3_netlist_config_v3"
+        and config.get("cpu_base_clock_hz") == BOARD_CONFIG["x3"]["clock_freq"]
+        and config.get("cpu_clock_div") == 1
+    )
+
+
+def require_x3_netlist_clock(main_work: Path, cpu_clock_div: int) -> bool:
+    """Resume only a checkpoint built for the requested X3 clock divider."""
+    try:
+        config = json.loads((main_work / X3_NETLIST_CONFIG_NAME).read_text())
+        if not isinstance(config, dict) or (
+            config.get("cpu_base_clock_hz") != BOARD_CONFIG["x3"]["clock_freq"]
+            or config.get("cpu_clock_div") != cpu_clock_div
+        ):
+            raise ValueError("checkpoint clock differs from the requested X3 clock")
+    except (OSError, ValueError) as error:
+        print(
+            f"Error: cannot resume X3 clock configuration: {error}. "
+            "Use the checkpoint's --cpu-clock-div or restart synthesis."
+        )
+        return False
+    return True
+
+
 def copy_results_to_main_work(
     work_dir: Path,
     main_work: Path,
@@ -1362,17 +1405,16 @@ def copy_results_to_main_work(
     report_prefix: str,
     source_report_prefix: str | None = None,
 ) -> None:
-    """Copy checkpoint and reports from step work dir to main work directory.
+    """Promote a step's checkpoint and reports into the main work directory.
 
-    Ad hoc ``audit_post_opt_*`` reports carry no provenance tying them to the
-    promoted checkpoint. Retired ``post_opt_fence_*`` diagnostics described a
-    setup exception that is no longer applied. Invalidate both families when
-    installing a new post-opt checkpoint so stale evidence cannot be mistaken
-    for evidence about the new DCP.
-    A promoted post-synth checkpoint also records the synthesis-time netlist
-    options (``netlist_config.json``) that nothing downstream can recover.
+    Each report name is cleared before promotion, so reports about an older
+    checkpoint never remain beside a new one. A new post-opt checkpoint also
+    deletes the ad hoc ``audit_post_opt_*`` and obsolete ``post_opt_fence_*``
+    reports, which nothing ties to a checkpoint. A new post-synth checkpoint
+    records the synthesis-time netlist options (``netlist_config.json``) that
+    nothing downstream can recover.
     """
-    # Promote the checkpoint under its canonical name.
+    # Promote the checkpoint under its main-directory name.
     checkpoint_candidates = []
     if source_report_prefix:
         checkpoint_candidates.append(work_dir / f"{source_report_prefix}.dcp")
@@ -1394,16 +1436,20 @@ def copy_results_to_main_work(
         break
 
     if checkpoint_promoted and report_prefix == "post_synth":
-        # PERF_COUNTERS is decided here and inherited by every later
-        # checkpoint and the bitstream built from them, but nothing in a
-        # netlist, report or bitstream says which way it went. Record the
-        # value synthesis actually read, beside the checkpoints it produced,
-        # so a later run can tell whether the profiling counters are present
-        # (perf_off_test expects them absent; tomasulo_perf expects them).
+        # PERF_COUNTERS is fixed at synthesis and inherited by every later
+        # checkpoint and the bitstream, but no netlist, report, or bitstream
+        # records it. Save the value synthesis read so a later run can tell
+        # whether the profiling counters are present (perf_off_test expects
+        # them absent; tomasulo_perf expects them).
         perf_counters = int(os.environ.get("FROST_PERF_COUNTERS", "0") == "1")
         (main_work / X3_NETLIST_CONFIG_NAME).write_text(
             json.dumps(
-                {"schema": "x3_netlist_config_v1", "perf_counters": perf_counters},
+                {
+                    "schema": "x3_netlist_config_v3",
+                    "perf_counters": perf_counters,
+                    "cpu_base_clock_hz": BOARD_CONFIG["x3"]["clock_freq"],
+                    "cpu_clock_div": int(os.environ.get("FROST_CPU_CLK_DIV", "1")),
+                },
                 indent=2,
             )
             + "\n"
@@ -1431,7 +1477,8 @@ def copy_results_to_main_work(
         source_gate = work_dir / "post_place_gate.txt"
         if checkpoint_promoted and source_gate.is_file():
             shutil.copy2(source_gate, destination)
-        # Retired multi-place/pin-edit audits cannot describe this candidate.
+        # Audits from the diagnostic pin-swap and flush-guidance helpers cannot
+        # describe this placement.
         for retired_audit in (
             "post_place_flush_guidance_audit.tcldict",
             "post_place_pin_swap_audit.txt",
@@ -1445,7 +1492,7 @@ def copy_results_to_main_work(
             if checkpoint_promoted and source_report.is_file():
                 shutil.copy2(source_report, destination_report)
 
-    # Promote reports under canonical names.
+    # Promote reports under the main-directory prefix.
     for suffix in [
         "_timing.rpt",
         "_util.rpt",
@@ -1539,7 +1586,7 @@ def run_x3_place_quick_route_probes(
 ) -> None:
     """Quick-route candidates at real constraints and record their timing.
 
-    The cheapest router directive scores every seed equally. Probe results fill
+    Every probe uses the same, cheapest router directive. Probe results fill
     ``quick_route_*``; promotion still uses the untouched ``post_place.dcp``.
     At most ``max_jobs`` probes run concurrently.
     """
@@ -1694,7 +1741,10 @@ def select_x3_place_best_run(
         if x3_place_gate_passes(run.work_dir / "post_place_gate.txt", run.wns)
     ]
     if not passing:
-        print("\nNo placement meets -0.200 ns; selecting the best measured result.")
+        print(
+            f"\nNo placement meets {X3_POST_PLACE_GATE_NS} ns; "
+            "selecting the best measured result."
+        )
         return min(eligible, key=directive_sweep_rank_key)
     eligible = passing
 
@@ -1923,10 +1973,9 @@ def terminate_x3_directive_sweep_runs(
 def read_log_tail(path: Path, offset: int) -> tuple[str, int]:
     """Return the text appended to ``path`` since ``offset`` and the new offset.
 
-    A missing file yields no text; a truncated one (offset past the end) is
-    read again from the beginning. Partial UTF-8 at the
-    end of a write is replaced rather than raised, since Vivado logs mix
-    encodings.
+    A missing file yields no text; a truncated one (offset past the end) is read
+    again from the beginning. Partial UTF-8 at the end of a write is replaced
+    rather than raised, since Vivado logs mix encodings.
     """
     try:
         size = path.stat().st_size
@@ -2369,7 +2418,7 @@ def run_step(
     Returns (success, wns_ns, actual_report_prefix). actual_report_prefix is
     "final" when the step's outputs were promoted to final.dcp/final_*.rpt
     (final-eligible step + WNS>=0, or post_second_route_physopt unconditionally),
-    otherwise the step's non-final canonical prefix.
+    otherwise the step's own prefix from STEP_REPORT_PREFIX.
     """
     board_build = build_dir if build_dir is not None else script_dir / board_name
     main_work = board_build / "work"
@@ -2427,9 +2476,10 @@ def run_step(
         vivado_command.append(str(software_mem_dir))
 
     if step == "post_place_physopt" and consumed_lineage is not None:
-        # The running process keeps its own captured input. A completed sweep
-        # can be forked before this process exits, without qualifying a mutable
-        # canonical checkpoint for a concurrent build in the same directory.
+        # Record the input this launch consumed. --snapshot-physopt-from uses
+        # it to copy a completed sweep while this process still runs, without
+        # qualifying the main directory's checkpoint, which the stage keeps
+        # rewriting.
         (work_dir / "phys_opt_launch.json").write_text(
             json.dumps(
                 {
@@ -2570,16 +2620,21 @@ def generate_bitstream(
 
 def main() -> None:
     """Run FPGA build."""
+    # The defaults the epilog quotes.
+    jobs = DEFAULT_MAX_JOBS
+    gate = X3_POST_PLACE_GATE_NS
+    veto = X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT
+    probes = X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT
     parser = argparse.ArgumentParser(
         description="FROST FPGA build script",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Steps (in order):
   synth                       - Synthesis
   opt                         - Opt design
   place                       - Place design (x3 sweeps selected placer
                                 directives x uncertainty seeds, up to --jobs
-                                at a time; warn below -0.200 ns,
+                                at a time; warn below {gate} ns,
                                 veto congested seeds, keep the best post-place
                                 WNS; no quick-route probe by default)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
@@ -2595,7 +2650,7 @@ Steps (in order):
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
-  * --jobs / -j limits simultaneous Vivado processes per build (default 12).
+  * --jobs / -j limits simultaneous Vivado processes per build (default {jobs}).
     This covers X3 placement, quick-route probes, and both router sweeps.
     Candidates queue and start as slots become free; every candidate still runs.
     Separate build invocations have independent limits. Vivado's per-process
@@ -2603,56 +2658,58 @@ Behavior:
   * On x3, place ignores --place-directive. By default its grid runs
     ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
     AltSpreadLogic_medium at six overconstraint seeds (0.500 down
-    to 0.250 ns pre-place setup uncertainty in 50 ps steps). The qualified
-    ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid.
-    LOW integer-RS cell-bloat variants are added beside the grid's
-    ExtraNetDelay_high/0.350 and ExtraPostPlacementOpt/0.450 controls.
-    These make 27 jobs with the original 25 controls. Every candidate runs
-    exactly one place_design; supported physical controls precede it.
-    No automatic post-place netlist or input-pin edits run.
-    Narrowed grids gain only variants whose matching control remains present.
+    to 0.250 ns pre-place setup uncertainty in 50 ps steps). The off-grid
+    ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid,
+    and LOW integer-RS cell-bloat variants are added beside the grid's
+    ExtraNetDelay_high/0.350 and ExtraPostPlacementOpt/0.450 controls. Each
+    candidate runs exactly one place_design, with any physical settings
+    applied before it and no netlist or pin edits after it.
+    A narrowed grid keeps a bloat variant only if its control is still there.
     --directives sets the grid to any nonempty unique subset of legal placer
-    directives, and --num-uncertainties changes its seed count while retaining
+    directives, and --num-uncertainties changes its seed count while keeping
     50 ps spacing. Both overrides require a run that includes place.
   * The X3 ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450, and
-    ExtraPostPlacementOpt/0.425 candidates temporarily group the fourteen
-    pinned scalar LUTRAM overlay output-FF launches of the predecode metadata to the
-    selected, state, sequential, and pending-valid PC consumers.
-    The group is removed after placement; a clean DCP reopen must prove zero
-    lingering custom paths, canonical clock_from_mmcm grouping, and the exact
-    directive/place-uncertainty identity before any candidate can be scored at
-    zero added uncertainty or promoted.
-  * X3 place-seed selection is congestion-aware: seeds whose placer
-    congestion estimate reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
-    are disqualified among native gate-passing seeds. Reports use actual
-    zero added uncertainty. FROST_PLACE_QUICK_ROUTE_COUNT defaults to 0;
-    a positive override probes only passing seeds and ranks by routed WNS.
-    Without probes, passing seeds rank by actual post-place WNS. FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH optionally
-    spreads wire-dense hierarchies (FROST_PLACE_CELL_BLOAT_CELLS, default
-    *u_tomasulo/u_int_rs). Explicitly setting either variable disables the
-    automatic LOW variants and applies the caller's environment to the original
-    control sweep. An empty FROST_PLACE_CELL_BLOAT requests no bloat. Automatic
-    LOW variants must prove exactly one integer-RS hierarchy match in their log.
-    The winning checkpoint/report have zero added setup uncertainty.
-    A native post_place_gate.txt and its checkpoint/hash binding are required
-    before quick routes or any downstream stage, including resumed builds.
-    Later input checkpoints also require their .lineage.json parent chain;
-    old or stale descendants must be rebuilt from post_place_physopt.
-    If no seed meets -0.200 ns, warn and continue with the best DCP/reports.
+    ExtraPostPlacementOpt/0.425 candidates place with a temporary path group
+    from the fourteen predecode-metadata output flops (pinned scalar LUTRAM
+    overlays) to the selected, state, sequential, and pending-valid PC
+    registers. The group is removed after placement. Before such a candidate
+    can be scored or promoted, its audit from a clean reopen of the checkpoint
+    must show no paths left in the group, all of those paths back in
+    clock_from_mmcm, and the candidate's own directive and uncertainty.
+  * X3 place-seed selection is congestion-aware. Among seeds that pass the
+    {gate} ns gate, those whose placer congestion estimate reaches
+    FROST_PLACE_CONGESTION_VETO_LEVEL (default {veto}) are dropped; if that drops
+    them all, the least congested remain. FROST_PLACE_QUICK_ROUTE_COUNT
+    (default {probes}) quick-routes that many of the best remaining seeds and ranks
+    them by routed WNS; without probes they rank by post-place WNS. Scores and
+    the promoted checkpoint and reports use zero added setup uncertainty. If
+    no seed meets {gate} ns, the build warns and continues with the best one.
+  * FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH spreads wire-dense hierarchies
+    (FROST_PLACE_CELL_BLOAT_CELLS, default *u_tomasulo/u_int_rs) in every
+    candidate. Setting either variable, even to an empty value, disables the
+    automatic LOW variants; an empty FROST_PLACE_CELL_BLOAT means no bloat.
+    Each automatic LOW variant's log must show its bloat applied to exactly
+    one cell, the integer-RS hierarchy.
+  * Quick routes and every later stage, including resumed builds, require
+    post_place_gate.txt and post_place_gate_binding.json, which ties the gate
+    to post_place.dcp by hash. Later input checkpoints also need their
+    *.lineage.json chain back to that placement; rebuild stale ones from
+    post_place_physopt.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each defaults to Explore,
     AggressiveExplore, NoTimingRelaxation, and AlternateCLBRouting, subject
     to --jobs, and promotes only the best-WNS checkpoint/reports.
     --route-directives overrides this list with any legal router directives.
     The route step still uses -tns_cleanup; second_route does not.
-  * All phys_opt stages run a hardcoded sweep, starting with AggressiveExplore
-    and ending with one retime-only pass (phys_opt_design -retime). Each sweep
-    preserves the best-WNS pass and stops early if a pass closes timing
-    (WNS>=0). Repeated sweeps write the current best checkpoint and reports
-    after every completed sweep iteration.
-  * Pipeline early-exit at route, post_route_physopt, or second_route: when
-    one of these closes timing, its outputs are promoted to final.dcp/final_*
-    and remaining stages are skipped — bitstream runs next.
+  * Every phys_opt stage runs a directive sweep that starts with
+    AggressiveExplore and ends with one retime-only pass
+    (phys_opt_design -retime). Each sweep keeps the best-WNS pass and stops
+    early if a pass closes timing (WNS>=0). Sweeps repeat while they keep
+    improving, and each completed sweep writes the current best checkpoint
+    and reports.
+  * Early exit: when route, post_route_physopt, or second_route closes timing,
+    its outputs are promoted to final.dcp/final_*, the remaining stages are
+    skipped, and the bitstream runs next.
 
 Each non-sweep step uses a tuned default directive unless overridden with --*-directive.
 --route-directive controls the first route on non-x3 boards (default AggressiveExplore);
@@ -2692,7 +2749,8 @@ Examples:
         "--build-dir",
         type=Path,
         help="Board build directory containing work/ and per-stage workers "
-        "(default: fpga/build/<board>). Custom directories leave README alone.",
+        "(default: fpga/build/<board>). Builds in a custom directory do not "
+        "update the README utilization table.",
     )
     parser.add_argument(
         "--snapshot-physopt-from",
@@ -2800,11 +2858,12 @@ Examples:
     parser.add_argument(
         "--debug-ila",
         action="store_true",
-        help="Instrument the fetch seam with a Vivado ILA (x3): synthesis "
-        "compiles the FROST_DEBUG_FETCH_ILA mirrors in and inserts one ILA on "
-        "the CPU clock over every marked net; the bitstream step writes the "
-        "probes file beside the bitstream. Takes effect only when the run "
-        "includes synthesis. Capture with fpga/debug/capture_fetch_ila.py.",
+        help="Add the fetch debug ILA (x3): synthesis compiles in the "
+        "FROST_DEBUG_FETCH_ILA mirrors of fetch, translation, commit, and trap "
+        "signals and inserts one ILA on the CPU clock over every marked net; "
+        "the bitstream step writes the probes file beside the bitstream. Takes "
+        "effect only when the run includes synthesis. Capture with "
+        "fpga/debug/capture_fetch_ila.py.",
     )
     parser.add_argument(
         "--cpu-clock-div",
@@ -2812,7 +2871,7 @@ Examples:
         choices=CPU_CLOCK_DIV_CHOICES,
         default=1,
         metavar="N",
-        help="Functional-validation build at 300/N MHz (x3): the board top's "
+        help="Functional-validation build at 322265625 Hz divided by N (x3): the board top's "
         "CPU_CLK_DIV generic divides the MMCM output, the DDR block design "
         "declares the divided clocks, and hello_world is compiled for it. "
         "Unless --directives/--num-uncertainties/--route-directives say "
@@ -2825,21 +2884,25 @@ Examples:
         "--perf-counters",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Include the profiling counters (the mperf* CSRs, about 24k cells) "
-        "through the board top's PERF_COUNTERS generic. Default: left out of a "
-        "full-rate build, included in a --cpu-clock-div N>1 build; "
-        "--no-perf-counters overrides the latter.",
+        help="Include the profiling counters (the mperf* CSRs) "
+        "through the board top's PERF_COUNTERS generic. Default: left out, "
+        "at any --cpu-clock-div.",
     )
     parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
-        help="Currently ignored — all phys_opt stages (post_place, post_route, "
-        "post_second_route) run a hardcoded directive sweep plus a retime-only "
-        "pass. Kept for backward compatibility.",
+        help="Ignored: every phys_opt stage (post_place, post_route, "
+        "post_second_route) runs a directive sweep plus a retime-only pass. "
+        "Kept for backward compatibility.",
     )
     args = parser.parse_args()
 
+    if os.environ.get("FROST_CPU_BASE_CLK_HZ"):
+        parser.error(
+            "FROST_CPU_BASE_CLK_HZ is no longer supported; X3 uses 322265625 Hz. "
+            "Unset it and use --cpu-clock-div for a divided-clock build."
+        )
     if args.jobs < 1:
         parser.error("--jobs must be positive")
     if args.snapshot_physopt_from is not None and (
@@ -2932,7 +2995,7 @@ Examples:
         os.environ["FROST_DEBUG_ILA"] = "1"
     if board_name == "x3":
         # The CLI is authoritative even at divider 1; an inherited override
-        # must not silently change synthesis/BD clocks while software says 300 MHz.
+        # must not silently change synthesis/BD clocks away from the board rate.
         os.environ["FROST_CPU_CLK_DIV"] = str(functional_policy.cpu_clock_div)
     # The CLI is authoritative for the counters as well: synthesis reads
     # FROST_PERF_COUNTERS, and an inherited value must not change the netlist.
@@ -2954,7 +3017,8 @@ Examples:
         route_directive = args.route_directive
         second_route_directive = args.second_route_directive
 
-    # Tcl owns the phys-opt sweeps; ``Sweep`` labels their banners and work dirs.
+    # build_step.tcl runs the phys-opt sweeps itself; ``Sweep`` only labels their
+    # banners and work directories.
     step_directives = {
         "synth": args.synth_directive or board_config["synth_directive"],
         "opt": args.opt_directive,
@@ -2983,7 +3047,7 @@ Examples:
     elif functional_policy.perf_counters:
         print("# Profiling counters included (PERF_COUNTERS generic)")
     if args.debug_ila:
-        print("# Fetch-seam ILA: FROST_DEBUG_FETCH_ILA mirrors + one ILA on main_clock")
+        print("# Fetch ILA: FROST_DEBUG_FETCH_ILA mirrors + one ILA on main_clock")
     print(f"# UltraScale: {'Yes' if is_ultrascale else 'No'}")
     directives_summary = [
         f"{s}={d}" for s, d in step_directives.items() if d != "Default"
@@ -3059,6 +3123,10 @@ Examples:
             print(f"Required checkpoint not found: {checkpoint_path}")
             sys.exit(1)
         print(f"Starting from checkpoint: {checkpoint_path}")
+        if board_name == "x3" and not require_x3_netlist_clock(
+            main_work, functional_policy.cpu_clock_div
+        ):
+            sys.exit(1)
 
     # Execute the requested pipeline range.
     final_produced = False
@@ -3124,7 +3192,7 @@ Examples:
             remaining = steps_to_run[steps_to_run.index(step) + 1 :]
             if remaining:
                 print(
-                    f"\nTiming met at {step} — skipping subsequent stages: "
+                    f"\nTiming met at {step}; skipping the remaining stages: "
                     f"{', '.join(remaining)}"
                 )
             break
@@ -3143,7 +3211,8 @@ Examples:
         update_readme_utilization,
     )
 
-    if functional_policy.update_readme and args.build_dir is None:
+    reference_netlist = board_name != "x3" or is_reference_x3_netlist(main_work)
+    if functional_policy.update_readme and args.build_dir is None and reference_netlist:
         all_util = collect_all_board_utilization(
             script_dir,
             stage_overrides={board_name: last_report_prefix}
@@ -3154,8 +3223,9 @@ Examples:
             update_readme_utilization(script_dir, all_util)
     else:
         print(
-            "\nREADME utilization table left alone: custom-directory and "
-            "divided-clock builds are not the reference implementation."
+            "\nREADME utilization table not updated: it tracks only full-rate "
+            "builds in the default build directory whose netlist_config.json "
+            "records the reference configuration."
         )
 
     # Summarize the last completed step, including partial/resumed runs.

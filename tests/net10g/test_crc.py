@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# SPDX-License-Identifier: Apache-2.0
-# Copyright 2026 Two Sigma Open Source, LLC
-
-"""Check the parallel CRC against Python's independently implemented zlib."""
+"""Check the parallel CRC-32 against zlib."""
 
 import random
 from typing import Any
@@ -27,7 +24,7 @@ from cocotb.triggers import Timer
 
 @cocotb.test()
 async def crc_reference(dut: Any) -> None:
-    """Exercise arbitrary seeds and sparse byte enables."""
+    """Check random seeds and byte-enable masks."""
     rng = random.Random(1001)
     for _ in range(1500):
         seed = rng.getrandbits(32)

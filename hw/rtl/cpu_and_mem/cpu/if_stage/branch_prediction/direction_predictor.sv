@@ -15,34 +15,26 @@
  */
 
 /*
- * Direction predictor - PC-indexed bimodal (2-bit saturating counters).
+ * Bimodal direction predictor: 2-bit saturating counters indexed by fetch PC
+ * bits [BIM_BITS:1]. Its only consumer is the PD redirect (carried to PD as
+ * bp_dir_taken): when a slot-1 conditional branch reaches PD without a taken
+ * BTB prediction (a BTB miss or a not-taken hit) and this predicts taken, PD
+ * computes PC + offset and redirects fetch. A taken BTB prediction supplies
+ * its own target and direction.
  *
- * Supplies a taken/not-taken direction prediction decoupled from the 256-entry
- * BTB, so a conditional branch that misses the BTB still has a trained
- * direction to act on.  Its only consumer is the PD computed-target redirect,
- * carried to PD as bp_dir_taken: when a conditional branch misses the BTB and
- * this predicts taken, PD computes PC+imm and redirects rather than stalling to
- * an EX-stage misprediction.  The BTB supplies both the target and the
- * direction for branches that hit it.
+ * Training writes the entry at i_update_idx. IF normally carries the
+ * predict-time index (o_pred_idx) with the branch to commit, so training
+ * updates the entry the prediction read; the branch's own PC would name the
+ * wrong entry when the fetch PC that read the predictor differs from it, after
+ * a stall replay or at a halfword boundary. For a slot-2 branch, the owner of
+ * a pending prediction, and a high-half served-window retry, IF carries the
+ * index of the branch's own PC instead. PC[1] is part of the index, so
+ * halfword addresses get their own entries.
  *
- * Why bimodal rather than gshare or a tournament predictor: a correlating
- * gshare plus chooser variant was implemented and measured on CoreMark.
- * Decoupling direction from the BTB is what matters here; gshare added only
- * ~1% over plain bimodal for this redirect use, too little to justify its
- * global-history register, extra RAM, and fetch->commit carry plumbing.
- *
- * Indexing: the prediction reads bim_idx(i_pc) = i_pc[BIM_BITS:1] at fetch.
- * Training updates the same entry the prediction read, so the predict-time
- * index is carried with the branch through the pipeline and handed back at
- * commit as i_update_idx.  Training from the commit PC instead would misalign
- * the ~5% of branches whose predict-time fetch PC differs from the commit PC,
- * which happens on front-end stall, replay, and halfword edge cases.  That
- * misalignment costs ~2.7% CoreMark.  PC[0] is dropped (branches are at least
- * 2-byte aligned); PC[1] is kept to distinguish halfword (compressed)
- * addresses.  Training fires only for committed conditional branches.  Lookups
- * are combinational, updates synchronous.  The two read ports (predict,
- * update-read) are separate RAM copies sharing one write, since sdp_dist_ram is
- * 1R1W.  The RAMs zero-initialize, so counters start weakly not-taken.
+ * Lookups are combinational and updates synchronous. The predict and
+ * update-read ports are separate RAM copies sharing one write, since
+ * sdp_dist_ram has one read port. The counters start at 00 (strongly
+ * not-taken) from RAM initialization; reset does not clear them.
  */
 module direction_predictor #(
     parameter int unsigned XLEN     = riscv_pkg::XLEN,
@@ -56,9 +48,8 @@ module direction_predictor #(
     output logic                o_taken,
     output logic [BIM_BITS-1:0] o_pred_idx, // predict-time index (carry for training)
 
-    // Commit-time training (one committed conditional branch per assertion).
-    // i_update_idx is the predict-time index this branch carried from fetch, so
-    // the entry trained is exactly the entry the prediction read.
+    // Commit-time training: at most one committed conditional branch per cycle,
+    // at the predict-time index it carried from fetch.
     input logic                i_update_valid,
     input logic [BIM_BITS-1:0] i_update_idx,
     input logic                i_update_taken
@@ -111,8 +102,7 @@ module direction_predictor #(
 
   assign o_taken = bim_rd1[1];
 
-  // i_rst retained for interface uniformity; the distributed-RAM counters
-  // zero-initialize, so no explicit reset is needed.
+  // i_rst is unused; it is kept for a uniform interface.
   wire _unused = &{1'b0, i_rst};
 
 endmodule : direction_predictor

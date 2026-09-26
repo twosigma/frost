@@ -1,11 +1,14 @@
 # Standalone 10GBASE-R MAC/PCS
 
-Portable, single-port, full-duplex Ethernet MAC and normal-operation
-10GBASE-R PCS. The [FROST NIC](../peripherals/nic/README.md) connects it to
-the CPU, coherent DMA, and Linux. It also supports standalone use and testing.
+A portable, single-port, full-duplex Ethernet MAC and 10GBASE-R PCS for
+normal operation. Packets enter and leave as 64-bit AXI-Stream. The line side
+is a raw 64-bit word interface for a transceiver, with 64b/66b coding,
+scrambling, the gearboxes, and block lock all in soft logic. The
+[FROST NIC](../peripherals/nic/README.md) connects it to the CPU, coherent
+DMA, and Linux; it also builds and tests on its own.
 
-The top is `eth10g_mac_pcs`. The `net10g.f` manifest lists these modules
-with paths relative to the repository root. Their one outside dependency is
+The top is `eth10g_mac_pcs`, and `net10g.f` lists its modules with paths
+relative to the repository root. Their one outside dependency is
 the two-flop synchronizer `cdc_sync` from `hw/rtl/lib/cdc`, which the
 including file list supplies (`cdc.f`). All datapaths are native 64-bit,
 with separate transmit and receive clock domains and a raw parallel interface
@@ -52,13 +55,13 @@ correct FCS alone cannot publish a frame with an invalid termination sequence.
 
 ## Raw interface and clocks
 
-`i_tx_clk` and `i_rx_clk` are independent, nominally **161.1328125 MHz**.
+`i_tx_clk` and `i_rx_clk` are independent, nominally 161.1328125 MHz.
 Each raw word carries 64 consecutive bits of the 10.3125 Gb/s encoded line.
 The receive clock comes from the transceiver's receive clocking path (on the
 X3, the recovered clock).
 There is no clock crossing of packet data inside this top.
 
-| Interface | Clock | Contract |
+| Interface | Clock | Behavior |
 | --- | --- | --- |
 | `s_axis_*` | `i_tx_clk` | Ordinary valid/ready packet input; ready includes link readiness and gearbox cadence |
 | `m_axis_*` | `i_rx_clk` | Ordinary valid/ready packet output; can drain on every clock, including PCS block pauses |
@@ -79,7 +82,7 @@ and enable gaps are intentional; no clock is gated. A conventional
 The scrambler state advances only with accepted blocks, including idles
 and faults, and is never reset at frame boundaries.
 
-**Bit order is explicit:** lane zero is bits `[7:0]`; bit zero is transmitted
+Bit order is explicit: lane zero is bits `[7:0]`; bit zero is transmitted
 first. A block is `{payload[63:0], header[1:0]}`. IEEE prints sync bits in
 transmission order, so in these packed vectors:
 
@@ -88,16 +91,16 @@ transmission order, so in these packed vectors:
 | Data | `0`, `1` | `2'b10` |
 | Control | `1`, `0` | `2'b01` |
 
-Headers bypass scrambling. A board wrapper must honor this bit contract;
-the interface is not an implicit mapping to GTY `TXHEADER`/`RXHEADER` ports.
+Headers bypass scrambling. A board wrapper must honor this bit order; the
+interface is not an implicit mapping to GTY `TXHEADER`/`RXHEADER` ports.
 With a raw bypass configuration, the soft gearboxes own block packing and
 alignment. Using a GTY hard gearbox instead would require a separate adapter.
 
-## Packet contract
+## Packets
 
 Packets begin with the destination MAC address. TX excludes preamble and FCS;
 RX strips them. VLAN tags and other Ethernet payload bytes are transported
-without interpretation. `MAX_FRAME_BYTES` defaults to **9216** and counts
+without interpretation. `MAX_FRAME_BYTES` defaults to 9216 and counts
 destination address through payload/padding, excluding FCS. Supported shared
 MAC configurations require a limit of at least 60 bytes.
 
@@ -126,8 +129,9 @@ MAC configurations require a limit of at least 60 bytes.
   Storage and descriptors freed by an AXIS handshake serve XGMII words sampled
   on later clocks, not a word sampled on the handshake's own clock.
 
-Default TX storage is two 9216-byte buffers; RX has a 32 KiB circular data
-buffer and 512 descriptors. Both data stores use synchronous reads suitable
+By default TX holds two complete frames of up to 9216 bytes each, in the two
+16 KiB halves of one RAM; RX has a 32 KiB circular data buffer and 512
+descriptors. Both data stores use synchronous reads suitable
 for block RAM. RX frame starts are word-aligned, and FCS bytes consume
 storage until the frame drains. A two-entry output register decouples the
 RX storage from AXIS backpressure.
@@ -142,16 +146,14 @@ belong to the receive clock domain. `o_tx_link_ready` belongs to TX and
 includes synchronized fault status plus recovery to a complete idle boundary.
 TX ingress is backpressured until it is ready, including during startup.
 
-The fault status is the only signal that crosses between the two domains.
-The fault monitor computes it combinationally, so an RX-clock register holds
-it first and the synchronizer's first stage sees one flop. `cdc_sync` then
-carries it into TX through two `ASYNC_REG` stages named `stage_q`, the
-synchronizer naming the board constraints match, and resets them to a local
-fault. TX therefore sees a fault change one RX clock plus two TX clocks after
-the fault monitor. While the RX clock is stopped the register holds its last
-value. The transmitter then keeps the last fault state until the RX clock
-returns, for example across a transceiver RX reset, even though the fault
-monitor's output follows `i_rx_signal_ok` combinationally.
+The fault status is the only signal that crosses between the two domains:
+an RX-clock register, then a two-flop `cdc_sync` into TX that resets to a
+local fault. The register is required because the fault monitor's output is
+combinational, and a synchronizer must be fed from a flop. TX sees a fault
+change one RX clock plus two TX clocks after the fault monitor. While the RX
+clock is stopped (across a transceiver RX reset, for example), the register
+cannot update: TX keeps the last fault state until the clock returns,
+whatever `i_rx_signal_ok` does meanwhile.
 
 A local receive fault causes remote-fault ordered sets on TX; a received
 remote fault causes idles. A fault interrupts any packet already on the
@@ -191,7 +193,7 @@ Verilator/cocotb and checks the resulting XML for actual passing tests. See
 [the verification README](../../../tests/net10g/README.md) for targets,
 coverage, artifact paths, and the extra pinned synthesis frontend.
 
-On X3, the MAC/PCS runs at the transceiver word rate alongside the 300 MHz
+On X3, the MAC/PCS runs at the transceiver word rate alongside the 322.265625 MHz
 CPU and carries Debian's NFS root over fiber. Board transceiver control,
 packet CDC, DMA, registers, interrupts, and the Linux driver are provided by
 the surrounding NIC and board integration.

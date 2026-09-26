@@ -17,11 +17,26 @@
 /*
  * FP Multiply Shim (CDB Slot 5, FMUL_RS)
  *
- * Translates rs_issue_t from FMUL_RS into FPU subunit native ports.
+ * Translates rs_issue_t from FMUL_RS into FPU subunit native ports and packs
+ * their results into fu_complete_t for the CDB adapter. Both subunits are
+ * fully pipelined and accept one operation per cycle:
+ *   - fpu_mult_unit: FMUL_S/D (11 cycles)
+ *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (16 cycles)
  *
- * Subunits:
- *   - fpu_mult_unit: FMUL_S/D (11-cycle native completion)
- *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (16-cycle native completion)
+ * Each subunit completes in issue order, so its ROB tags wait in a 16-entry
+ * circular queue. Completions enter a shared 16-entry ordering ring (the
+ * fifo_* arrays: tag, source subunit, flush state) that presents its head
+ * until the adapter takes it; each subunit's value and flags wait in its own
+ * block-RAM FIFO. o_fu_busy rises when the tag queues and the ring together
+ * reach 14 entries, which keeps each queue and the ring at 14 entries or
+ * fewer, so nothing can overflow.
+ *
+ * A squashed operation still runs to the end of its subunit and is dropped
+ * there. A full flush empties the ring; a partial flush marks the squashed
+ * ring entries, which are skipped when they reach the head.
+ *
+ * The wrapper feeds this shim a flush registered one cycle late; its adapter
+ * covers the flush cycle itself (fu_shims README, "Flushes").
  *
  * FMA operand mapping: a=src1, b=src2, c=src3
  *   FMADD:  negate_product=0, negate_c=0  → a*b + c
@@ -151,8 +166,10 @@ module fp_mul_shim (
   // ===========================================================================
   // Multi-in-flight metadata and result FIFO
   // ===========================================================================
-  localparam int unsigned QueueDepth = 32;
+  // mul_busy caps the tag queues plus the ring at ResultFifoDepth - 2
+  // entries, so a tag queue as deep as the ring never fills.
   localparam int unsigned ResultFifoDepth = 16;
+  localparam int unsigned QueueDepth = ResultFifoDepth;
   localparam int unsigned QueuePtrW = $clog2(QueueDepth);
   localparam int unsigned QueueCountW = $clog2(QueueDepth + 1);
   localparam int unsigned FifoPtrW = $clog2(ResultFifoDepth);
@@ -173,10 +190,10 @@ module fp_mul_shim (
   logic [       TagW-1:0] mult_tag_q        [     QueueDepth];
   logic                   mult_flushed_q    [     QueueDepth];
   logic                   mult_valid_q      [     QueueDepth];
-  // The head pointers front the tag read, the partial-flush age compare, and
-  // the completion-valid cone that gates the whole result FIFO. That self-cone
-  // was a 1332-path post-place failing family over ~200-fanout nets, so the
-  // fanout cap lets the small counters replicate per consumer group.
+  // The head pointers drive the tag read, the partial-flush age compare, and
+  // the completion-valid logic that gates the whole result FIFO, so they fan
+  // out widely. The fanout cap lets synthesis replicate these small counters
+  // per consumer group.
   (* max_fanout = 32 *)logic [  QueuePtrW-1:0] mult_rd_ptr;
   logic [  QueuePtrW-1:0] mult_wr_ptr;
   logic [QueueCountW-1:0] mult_count;
@@ -199,8 +216,8 @@ module fp_mul_shim (
 
   // The shared ring above holds only ordering and flush metadata. Payloads are
   // kept in one block-RAM FIFO per producer, so neither 69-bit result bus has
-  // to route into every slot of a shared flip-flop array. The shared source bit
-  // selects the matching producer head at retirement.
+  // to route into every slot of a shared flip-flop array. The ring head's
+  // source bit selects which producer's payload head to present.
   logic [FifoPtrW-1:0] mult_payload_rd_ptr, mult_payload_wr_ptr;
   logic [FifoPtrW-1:0] fma_payload_rd_ptr, fma_payload_wr_ptr;
   logic [FifoPtrW-1:0] mult_payload_read_addr, fma_payload_read_addr;
@@ -212,9 +229,7 @@ module fp_mul_shim (
   logic [CreditCountW-1:0] total_occupancy;
   assign total_occupancy = CreditCountW'(mult_count) + CreditCountW'(fma_count) +
                            CreditCountW'(fifo_count);
-  assign mul_busy = (total_occupancy >= CreditCountW'(ResultFifoDepth - 2)) ||
-                    (mult_count >= QueueCountW'(QueueDepth - 1)) ||
-                    (fma_count >= QueueCountW'(QueueDepth - 1));
+  assign mul_busy = total_occupancy >= CreditCountW'(ResultFifoDepth - 2);
   assign o_fu_busy = mul_busy;
 
   // ===========================================================================
@@ -321,9 +336,29 @@ module fp_mul_shim (
 
   // Prefetch the post-pop producer heads. The block-RAM output registers load
   // these addresses on the same edge that advances the local read pointers,
-  // which permits one shared result to retire every cycle.
-  assign mult_payload_read_addr = mult_payload_rd_ptr + FifoPtrW'(mult_payload_pop);
-  assign fma_payload_read_addr = fma_payload_rd_ptr + FifoPtrW'(fma_payload_pop);
+  // which lets one result leave the ring every cycle.
+  // Compute the increment before the late acceptance/flush result. Each final
+  // address bit uses just the two precomputed pointer bits, producer
+  // permission, acceptance and flush: at most one LUT5 after either late event.
+  (* keep = "true" *) logic [FifoPtrW-1:0] mult_payload_next_ptr, fma_payload_next_ptr;
+  (* keep = "true" *) logic mult_payload_pop_permission, fma_payload_pop_permission;
+  assign mult_payload_next_ptr = mult_payload_rd_ptr + FifoPtrW'(1);
+  assign fma_payload_next_ptr = fma_payload_rd_ptr + FifoPtrW'(1);
+  assign mult_payload_pop_permission = (fifo_count != '0) && !fifo_source_is_fma[fifo_rd_ptr];
+  assign fma_payload_pop_permission = (fifo_count != '0) && fifo_source_is_fma[fifo_rd_ptr];
+  assign mult_payload_read_addr =
+      ((i_mul_accepted || fifo_head_flushed) && mult_payload_pop_permission) ?
+      mult_payload_next_ptr : mult_payload_rd_ptr;
+  assign fma_payload_read_addr =
+      ((i_mul_accepted || fifo_head_flushed) && fma_payload_pop_permission) ?
+      fma_payload_next_ptr : fma_payload_rd_ptr;
+
+`ifdef FP_PAYLOAD_READ_LOCAL_PROOF
+  always_comb begin
+    assert (mult_payload_read_addr == mult_payload_rd_ptr + FifoPtrW'(mult_payload_pop));
+    assert (fma_payload_read_addr == fma_payload_rd_ptr + FifoPtrW'(fma_payload_pop));
+  end
+`endif
 
   // A synchronous RAM cannot expose an empty-queue push on the write edge, and
   // its read-during-write value is primitive-dependent. Bypass the first push
@@ -552,6 +587,7 @@ module fp_mul_shim (
   // Formal Verification
   // ===========================================================================
 `ifdef FORMAL
+`ifndef FP_PAYLOAD_READ_LOCAL_PROOF
 
   initial assume (!i_rst_n);
 
@@ -621,6 +657,91 @@ module fp_mul_shim (
     end
   end
 
+`ifdef FP_MUL_SHIM_TAG_ORDER_PROOF
+  // Tag order. f_pick (a free input) selects one issued operation, and the
+  // ghost state below follows it: first through its subunit's tag queue, then,
+  // if it completes, through the shared ring. f_queue_ahead and f_ring_ahead
+  // count the older entries in front of it. When everything older has left a
+  // queue or the ring, its tag must be at the head: the subunit queue pops it
+  // in the cycle its own result leaves the subunit (f_age, at the fixed
+  // latencies in the fp_multiplier and fp_fma headers), and the ring presents
+  // it with its tag and source. Since f_pick is arbitrary, this holds for every
+  // operation. A full flush empties the ring; in the tag queue the operation
+  // still pops in order, marked flushed.
+  localparam int unsigned FMultCycles = 11;
+  localparam int unsigned FFmaCycles  = 16;
+  (* anyseq *) logic f_pick;
+  logic f_armed, f_in_queue, f_in_ring, f_fma;
+  logic [TagW-1:0] f_tag;
+  logic [4:0] f_age;
+  logic [QueueCountW-1:0] f_queue_ahead;
+  logic [FifoCountW-1:0] f_ring_ahead;
+  logic f_queue_pop;
+
+  assign f_queue_pop = f_in_queue && (f_fma ? fma_pop : mult_pop);
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      f_armed    <= 1'b0;
+      f_in_queue <= 1'b0;
+      f_in_ring  <= 1'b0;
+    end else begin
+      if (!f_armed && f_pick && fire) begin
+        f_armed <= 1'b1;
+        f_in_queue <= 1'b1;
+        f_fma <= use_fma;
+        f_tag <= i_rs_issue.rob_tag;
+        f_age <= 5'd1;
+        f_queue_ahead <= use_fma ? fma_count - QueueCountW'(fma_pop) :
+                                   mult_count - QueueCountW'(mult_pop);
+      end
+      if (f_in_queue) f_age <= f_age + 5'd1;
+      if (f_queue_pop) begin
+        if (f_queue_ahead == '0) begin
+          f_in_queue <= 1'b0;
+          if (f_fma ? fma_completion_valid : mult_completion_valid) begin
+            f_in_ring <= 1'b1;
+            f_ring_ahead <= fifo_count - FifoCountW'(fifo_pop) +
+                FifoCountW'(f_fma && mult_completion_valid);
+          end
+        end else begin
+          f_queue_ahead <= f_queue_ahead - 1'b1;
+        end
+      end
+      if (f_in_ring) begin
+        if (i_flush || (fifo_pop && (f_ring_ahead == '0))) f_in_ring <= 1'b0;
+        else if (fifo_pop) f_ring_ahead <= f_ring_ahead - 1'b1;
+      end
+    end
+  end
+
+  always_comb begin
+    if (i_rst_n && f_queue_pop && (f_queue_ahead == '0)) begin
+      p_tracked_queue_head :
+      assert ((f_fma ? fma_tag_q[fma_rd_ptr] : mult_tag_q[mult_rd_ptr]) == f_tag);
+      p_tracked_pop_at_own_result : assert (f_age == 5'(f_fma ? FFmaCycles : FMultCycles));
+    end
+    if (i_rst_n && f_in_ring && (f_ring_ahead == '0)) begin
+      p_tracked_ring_head :
+      assert (fifo_count != '0 && fifo_tag[fifo_rd_ptr] == f_tag &&
+              fifo_source_is_fma[fifo_rd_ptr] == f_fma);
+      if (!fifo_head_flushed) begin
+        p_tracked_ring_head_presents : assert (o_fu_complete.valid && o_fu_complete.tag == f_tag);
+      end
+    end
+  end
+
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      cover_tracked_mult_leaves_ring :
+      cover (f_in_ring && !f_fma && (f_ring_ahead == '0) && fifo_pop && !fifo_head_flushed);
+      cover_tracked_fma_leaves_ring :
+      cover (f_in_ring && f_fma && (f_ring_ahead == '0) && fifo_pop && !fifo_head_flushed);
+      cover_tracked_behind_older : cover (f_in_ring && (f_ring_ahead != '0) && fifo_pop);
+    end
+  end
+`endif
+
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       cover_fire_mult : cover (fire && use_mult);
@@ -630,6 +751,7 @@ module fp_mul_shim (
     end
   end
 
+`endif  // FP_PAYLOAD_READ_LOCAL_PROOF
 `endif  // FORMAL
 
 endmodule : fp_mul_shim

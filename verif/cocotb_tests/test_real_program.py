@@ -21,26 +21,51 @@ The test watches the CPU's UART output for success and failure markers:
 
 By default each program runs twice with a reset between runs to check that it
 tolerates reset and reinitializes all state.
+
+With FROST_UART_LINE_CHECK=1, each run also decodes the serial TX pin and
+requires it to carry exactly the bytes the CPU wrote, which checks the TX
+FIFO's clock crossing and the transmitter. The registry sets it, together
+with a lower CLK_FREQ_HZ that shortens the bit time, for a few programs.
 """
 
+import importlib.util
 import os
 import random
 from pathlib import Path
 import re
 from collections import Counter
+from collections.abc import Callable
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge, Timer
+from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 from cocotb.utils import get_sim_time
-from typing import Any
+from typing import Any, TextIO
+
+from config import XLEN
+from cocotb_tests.cpu_structs import (
+    COMMIT_FIELDS,
+    FROM_EX_FIELDS,
+    ID_TO_EX_FIELDS,
+    IF_TO_PD_FIELDS,
+    PD_TO_ID_FIELDS,
+)
 
 CLK_PERIOD_NS = 3
 UART_BAUD_RATE = 115200
 UART_DATA_BITS = 8
 CHECKPOINT_TRACE_WIDTH = 8
-UART_CLK_FREQ_HZ_DEFAULT = 300_000_000
+UART_CLK_FREQ_HZ_DEFAULT = 322_265_625
 UART_RX_DATA_MMIO_ADDR = 0x4000_0004
 UART_RX_STATUS_MMIO_ADDR = 0x4000_0024
+# mcause bit XLEN-1 marks an interrupt.
+MCAUSE_INTERRUPT_BIT = 1 << (XLEN - 1)
+# High in the cycle a mispredicted branch retires at the ROB head and starts
+# commit-time recovery; a branch that early recovery already redirected at
+# execute does not raise it.
+COMMIT_MISPREDICTION_PATH = (
+    "cpu_and_memory_subsystem.cpu_inst.misprediction_flush_controller_inst."
+    "commit_is_misprediction"
+)
 
 # Success/failure markers that programs print
 PASS_MARKER = "<<PASS>>"
@@ -163,8 +188,7 @@ async def generate_divided_clock(dut: Any) -> None:
 
 # The NIC's MAC clock period (frost.sv i_nic_tx_clk and i_nic_rx_clk): 1.75
 # core periods (5.25 ns against the 3 ns core clock), unrelated to the core
-# clock and near the ratio of the 10GBASE-R word clock (161.13 MHz) to the
-# rated 300 MHz core clock. The X3 build clocks the MAC from its transceiver.
+# clock. The X3 build clocks the MAC from its transceiver at 161.13 MHz.
 NIC_MAC_CLK_PERIOD_PS = 2 * int(CLK_PERIOD_NS * 875)
 
 
@@ -225,16 +249,16 @@ MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
 NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 
 # CoreMark-style benchmarks run the real benchmark body even with ITERATIONS=1.
-# The memory-heavy list and matrix phases exceed the generic program budget on
-# the OOO core, so they get a larger default with an env override.
+# The memory-heavy list and matrix phases exceed the generic program budget,
+# so they get a larger default with an env override.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
-# nic_loopback (and nic_echo): bring-ups waiting out the PCS's BER window
-# before CARRIER (about 35k cycles at the simulated clock ratio), frames
-# checked or copied byte by byte, and a RESET with traffic in flight.
+# nic_loopback and nic_echo share this budget. Each bring-up waits out the
+# PCS's BER window before CARRIER (about 35k cycles at the simulated clock
+# ratio), frames are checked or copied byte by byte, and nic_loopback also
+# resets the NIC with traffic in flight.
 NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 1500000))
 
-# sprintf_test runs ~200 test cases with heavy FP formatting, so it needs
-# more than the generic budget.
+# sprintf_test's FP formatting cases need more than the generic budget.
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
 # Cover the complete lookup/cache-churn and store-forwarding sweep.
@@ -262,8 +286,10 @@ MEM_DIVERGENCE_PROBE_MAX_CYCLES = int(
     os.environ.get("COCOTB_MEM_DIVERGENCE_PROBE_MAX_CYCLES", 20000000)
 )
 
-# Number of clock cycles to hold reset between runs
-RESET_CYCLES = 10
+# i_clk cycles to hold i_rst_n low, before the first run and between runs.
+# frost.sv needs at least 20 (five i_clk_div4 cycles) so that each dual-clock
+# FIFO applies reset on its i_clk_div4 side while its i_clk side is still held.
+RESET_CYCLES = 20
 
 
 class UartMonitor:
@@ -312,6 +338,126 @@ class UartMonitor:
         return self.output_buffer
 
 
+def _uart_bit_cycles(dut: Any) -> int:
+    """Return i_clk_div4 cycles per UART bit, as uart_tx and uart_rx compute it.
+
+    Both run on clk_div4 with CLK_FREQ_HZ/4 as their clock, so a bit lasts
+    (CLK_FREQ_HZ/4) / BAUD_RATE cycles.
+    """
+    clk_freq = _read_u64(getattr(dut, "CLK_FREQ_HZ", None))
+    if clk_freq is None:
+        clk_freq = UART_CLK_FREQ_HZ_DEFAULT
+    return max(1, (clk_freq // 4) // UART_BAUD_RATE)
+
+
+class UartLineMonitor:
+    """Decode the serial TX pin (o_uart_tx, 8N1) into bytes.
+
+    UartMonitor reads the CPU's UART writes ahead of the TX FIFO. This decoder
+    reads what leaves frost after the FIFO's clock crossing and the
+    transmitter, sampling each bit in its middle on i_clk_div4, the
+    transmitter's clock. A frame starts only where the line falls after
+    being high, so the low level before reset is not taken for a start bit.
+    A stop bit that reads low is a framing error.
+    """
+
+    def __init__(self, dut: Any) -> None:
+        """Bind the TX pin and take the bit time from CLK_FREQ_HZ."""
+        self.dut = dut
+        self.bit_cycles = _uart_bit_cycles(dut)
+        self.decoded = bytearray()
+        self.framing_errors = 0
+        self._running = True
+        self._generation = 0
+
+    async def start(self) -> None:
+        """Start decoding in the background."""
+        cocotb.start_soon(self._decode())
+
+    def stop(self) -> None:
+        """Stop decoding."""
+        self._running = False
+
+    def clear(self) -> None:
+        """Forget what was decoded, and drop a frame in flight (a reset follows)."""
+        self.decoded = bytearray()
+        self.framing_errors = 0
+        self._generation += 1
+
+    async def _wait(self, cycles: int) -> None:
+        """Wait a number of i_clk_div4 cycles."""
+        for _ in range(cycles):
+            await RisingEdge(self.dut.i_clk_div4)
+
+    def _level(self) -> int:
+        """Sample the TX pin; an unresolvable value reads as low."""
+        value = self.dut.o_uart_tx.value
+        return int(value) if value.is_resolvable else 0
+
+    async def _decode(self) -> None:
+        """Wait for each start bit, then sample the data and stop bits."""
+        idle = False
+        while self._running:
+            await RisingEdge(self.dut.i_clk_div4)
+            if not idle:
+                idle = self._level() == 1
+                continue
+            if self._level() != 0:
+                continue
+            generation = self._generation
+            await self._wait(self.bit_cycles // 2)
+            value = 0
+            for bit in range(UART_DATA_BITS):
+                await self._wait(self.bit_cycles)
+                value |= self._level() << bit
+            await self._wait(self.bit_cycles)
+            stop = self._level()
+            idle = False
+            if generation != self._generation:
+                continue
+            if stop != 1:
+                self.framing_errors += 1
+            self.decoded.append(value)
+
+
+async def check_uart_line(
+    dut: Any, uart_monitor: UartMonitor, line_monitor: UartLineMonitor
+) -> None:
+    """Require the TX pin to carry exactly the bytes the CPU wrote this run.
+
+    The transmitter lags the CPU, so wait until the line has carried as many
+    bytes as the CPU had written when the run finished, allowing twelve bit
+    times per byte still owed.
+    """
+    expected = bytes(ord(char) for char in uart_monitor.get_output())
+    owed = len(expected) - len(line_monitor.decoded)
+    budget = (owed + 2) * 12 * line_monitor.bit_cycles * 4 + 1000
+    for _ in range(budget):
+        if len(line_monitor.decoded) >= len(expected):
+            break
+        await RisingEdge(dut.i_clk)
+    decoded = bytes(line_monitor.decoded[: len(expected)])
+    assert line_monitor.framing_errors == 0, (
+        f"UART TX line: {line_monitor.framing_errors} framing error(s)"
+    )
+    if decoded != expected:
+        mismatch = next(
+            (
+                i
+                for i, (a, b) in enumerate(zip(decoded, expected, strict=False))
+                if a != b
+            ),
+            min(len(decoded), len(expected)),
+        )
+        raise AssertionError(
+            f"UART TX line carried {len(decoded)} of {len(expected)} bytes and "
+            f"differs from the CPU's writes at byte {mismatch}: "
+            f"line {decoded[mismatch : mismatch + 16]!r}, "
+            f"CPU {expected[mismatch : mismatch + 16]!r}"
+        )
+    cocotb.log.info(f"UART TX line matches the CPU's {len(expected)} bytes")
+
+
 def _get_signal(dut: Any, path: str) -> Any | None:
     """Get a nested signal by dotted path, or None if not found."""
     obj = dut
@@ -331,12 +477,34 @@ def _first_signal(dut: Any, paths: list[str]) -> Any | None:
     return None
 
 
+def _load_rvc_expand() -> Callable[[int], tuple[int, bool]]:
+    """Return rvc_expand from sw/common/generate_imem_predecode_init.py.
+
+    The offline IMEM predecode generator holds the RVC expansion model that
+    the decompressor bench checks the RTL against.
+    """
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "sw"
+        / "common"
+        / "generate_imem_predecode_init.py"
+    )
+    spec = importlib.util.spec_from_file_location("generate_imem_predecode_init", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    rvc_expand: Callable[[int], tuple[int, bool]] = module.rvc_expand
+    return rvc_expand
+
+
 def _read_int(signal: Any) -> int | None:
     """Read a signal as int, return None if not resolvable."""
     if signal is None:
         return None
     if isinstance(signal, int):
         return signal
+    if isinstance(signal, _StructField):
+        return signal.read()
     try:
         value = signal.value
     except AttributeError:
@@ -354,6 +522,102 @@ def _read_bool(signal: Any) -> bool | None:
     return bool(value)
 
 
+def _require_signals(check: str, handles: dict[str, Any]) -> None:
+    """Fail an opt-in check whose signal handles did not all resolve.
+
+    Args:
+        check: The environment variable that enabled the check
+        handles: Signal path to the handle _get_signal returned for it
+
+    Raises:
+        AssertionError: If any handle is None.
+    """
+    missing = sorted(path for path, handle in handles.items() if handle is None)
+    if missing:
+        raise AssertionError(
+            f"{check} needs signals this build does not expose: {', '.join(missing)}"
+        )
+
+
+class _PackedStruct:
+    """Named fields of a packed struct, read through its whole-vector handle.
+
+    Verilator's VPI exposes a packed struct as one vector, with no handles for
+    its members. The layout is a cocotb_tests.cpu_structs list of (name,
+    width) pairs, MSB first, and its widths must add up to the vector's width.
+    """
+
+    def __init__(self, handle: Any, layout: list[tuple[str, int]], path: str) -> None:
+        """Map each field to its bit slice, checking the layout's total width."""
+        total = sum(width for _, width in layout)
+        if len(handle) != total:
+            raise AssertionError(
+                f"{path} is {len(handle)} bits wide, but its cpu_structs layout "
+                f"adds up to {total}"
+            )
+        self.handle = handle
+        self.slices: dict[str, tuple[int, int]] = {}
+        for name, width in layout:
+            total -= width
+            self.slices[name] = (total, (1 << width) - 1)
+
+    def read(self) -> int | None:
+        """Return the whole struct as an int, or None if unresolvable."""
+        return _read_int(self.handle)
+
+    def field(self, packed: int, name: str) -> int:
+        """Extract one field from a value that read() returned."""
+        lsb, mask = self.slices[name]
+        return (packed >> lsb) & mask
+
+
+def _packed_struct(
+    dut: Any, path: str, layout: list[tuple[str, int]], check: str
+) -> _PackedStruct:
+    """Look up a packed-struct signal that an opt-in check needs.
+
+    Raises:
+        AssertionError: If the signal is missing or its width does not
+            match the layout.
+    """
+    handle = _get_signal(dut, path)
+    _require_signals(check, {path: handle})
+    return _PackedStruct(handle, layout, path)
+
+
+class _StructField:
+    """One member of a packed struct, which _read_int and _read_bool accept.
+
+    Verilator's VPI has no handles for packed-struct members, so this reads
+    the whole vector through _PackedStruct and extracts the member.
+    """
+
+    def __init__(self, struct: _PackedStruct, name: str) -> None:
+        """Bind the struct and the member's name."""
+        self.struct = struct
+        self.name = name
+
+    def read(self) -> int | None:
+        """Return the member, or None if the struct is unresolvable."""
+        packed = self.struct.read()
+        return None if packed is None else self.struct.field(packed, self.name)
+
+
+def _struct_field(
+    dut: Any, path: str, layout: list[tuple[str, int]], name: str
+) -> _StructField | None:
+    """Look up one member of a packed-struct signal for a diagnostic.
+
+    Returns None when the struct is missing, as _get_signal does. A struct
+    whose width differs from its layout raises, since every member would read
+    wrong.
+    """
+    handle = _get_signal(dut, path)
+    if handle is None:
+        return None
+    return _StructField(_PackedStruct(handle, layout, path), name)
+
+
 async def ddr_write_watch(dut: Any) -> None:
     """Log every behavioral-DDR line write landing in a watched window.
 
@@ -361,10 +625,9 @@ async def ddr_write_watch(dut: Any) -> None:
     model addresses: absolute 0x8xxxxxxx minus 0x80000000). Each AW address is
     queued on the AW handshake and paired with the next W beat; in-window beats
     log sim time, the line address (relative and absolute), the strobe mask,
-    and the full line data. Instrumentation only, built for the rv64 Linux
-    top-of-RAM corruption hunt: the write that mangles the unflattened device
-    tree names itself here, and the retire trace at the same timestamp names
-    the culprit.
+    and the full line data. Debug instrumentation only: match a logged
+    timestamp against a retire trace to see what the core was running when
+    the line reached DDR.
     """
     lo = int(os.environ.get("FROST_DDR_WATCH_LO", "0"), 16)
     hi = int(os.environ.get("FROST_DDR_WATCH_HI", "0"), 16)
@@ -409,9 +672,9 @@ async def l0_hit_watch(dut: Any) -> None:
     """Log every L0 fast-path hit served inside a watched absolute window.
 
     Enabled by FROST_L0_WATCH_LO/FROST_L0_WATCH_HI (hex, absolute addresses).
-    Pairs with ddr_write_watch: joining the two streams offline reconstructs
-    the window's ground truth over time and exposes any hit that served stale
-    data (the rv64 device-tree corruption signature).
+    Pairs with ddr_write_watch: joining the two logs offline tracks the
+    window's DDR contents over time and can expose a hit that returned stale
+    data.
     """
     lo = int(os.environ.get("FROST_L0_WATCH_LO", "0"), 16)
     hi = int(os.environ.get("FROST_L0_WATCH_HI", "0"), 16)
@@ -441,20 +704,112 @@ async def l0_hit_watch(dut: Any) -> None:
                     return
 
 
+class WfiRecoveryWatch:
+    """Check the resume PC around a wrong-path WFI at the ROB head.
+
+    For the wfi_seed_recovery app. In a cycle where commit-time recovery is
+    pending and the ROB head is a legal WFI, that WFI is on the wrong path, and
+    the recovery flush removes it at the end of the cycle. cpu_ooo must not
+    seed interrupt_resume_pc from it, so the next cycle's resume PC must not
+    be the WFI's PC + 4. The program's jump targets are further on, so the
+    resume PC left by the jump never equals it.
+    """
+
+    SIGNALS = (
+        "rob_head_is_wfi",
+        "head_valid",
+        "rob_trap_cause",
+        "mispredict_recovery_pending",
+        "rob_trap_pc",
+        "interrupt_resume_pc",
+    )
+
+    def __init__(self, dut: Any) -> None:
+        """Resolve the cpu_ooo signals the check reads."""
+        self.dut = dut
+        cpu = "cpu_and_memory_subsystem.cpu_inst"
+        self.sig = {name: _get_signal(dut, f"{cpu}.{name}") for name in self.SIGNALS}
+        missing = [name for name, sig in self.sig.items() if sig is None]
+        assert not missing, f"WfiRecoveryWatch: unresolvable {missing}"
+        self.hits = 0
+
+    async def run(self) -> None:
+        """Watch every cycle; fail at once on a seeded resume PC."""
+        seeded_pc = None
+        while True:
+            await RisingEdge(self.dut.i_clk)
+            await ReadOnly()
+            if seeded_pc is not None:
+                resume = _read_int(self.sig["interrupt_resume_pc"])
+                assert resume != seeded_pc, (
+                    f"interrupt_resume_pc was seeded from the wrong-path WFI at "
+                    f"{seeded_pc - 4:#x}"
+                )
+                seeded_pc = None
+            if (
+                _read_bool(self.sig["rob_head_is_wfi"])
+                and _read_bool(self.sig["head_valid"])
+                and _read_int(self.sig["rob_trap_cause"]) == 0
+                and _read_bool(self.sig["mispredict_recovery_pending"])
+            ):
+                self.hits += 1
+                seeded_pc = (_read_int(self.sig["rob_trap_pc"]) or 0) + 4
+
+
+class CoverageCounter:
+    """Count the cycles a one-bit signal is high while the core is out of reset.
+
+    For an app listed in COVERAGE_POINTS: the test fails if the count stays
+    at zero, so the program cannot stop producing the case it exists for
+    without the bench noticing.
+    """
+
+    def __init__(self, dut: Any, path: str, label: str) -> None:
+        """Resolve the signal and the core's reset."""
+        self.dut = dut
+        self.label = label
+        self.signal = _get_signal(dut, path)
+        self.reset = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.i_rst")
+        _require_signals(
+            f"coverage of {label}",
+            {path: self.signal, "cpu_inst.i_rst": self.reset},
+        )
+        self.hits = 0
+
+    async def run(self) -> None:
+        """Sample every cycle."""
+        while True:
+            await RisingEdge(self.dut.i_clk)
+            await ReadOnly()
+            if _read_bool(self.signal) and _read_bool(self.reset) is False:
+                self.hits += 1
+
+
+# App name -> (signal path, label) for CoverageCounter.
+COVERAGE_POINTS: dict[str, tuple[str, str]] = {
+    # if_stage's resteer to pc_reg's word when the fetch window cannot hold
+    # pc_reg's packet; reached only under the fetch-latency fuzz.
+    "served_window_resteer": (
+        "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.window_resteer_pc_reg",
+        "served-window resteer",
+    ),
+}
+
+
 async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
-    """Observe a trap/MRET deadlock wedge by sampling ground-truth signals.
+    """Sample trap, MRET, flush, IRQ, and store-drain state to debug a hang.
 
-    Enabled with FROST_WEDGE_MONITOR=1. Samples the trap/MRET/flush/IRQ/store-
-    drain state every clock and emits an aggregated snapshot every
-    FROST_WEDGE_DUMP_INTERVAL cycles (default 2000). It also raises a one-shot
-    "STALL DETECTED" banner once UART output stops advancing for
-    FROST_WEDGE_STALL_CYCLES cycles (default 20000) and then emits up to
-    FROST_WEDGE_POST_STALL_DUMPS (default 16) full snapshots before it stops
-    logging (the simulation keeps running to the cycle cap).
+    Enabled with FROST_WEDGE_MONITOR=1. Samples the state every clock and
+    emits an aggregated snapshot every FROST_WEDGE_DUMP_INTERVAL cycles
+    (default 2000). It also logs a one-shot "STALL DETECTED" banner once UART
+    output stops advancing for FROST_WEDGE_STALL_CYCLES cycles (default 20000),
+    and it stops logging after FROST_WEDGE_POST_STALL_DUMPS (default 16)
+    snapshots taken while UART is stalled (the simulation keeps running to the
+    cycle cap).
 
-    Every tap is None-safe: signals that do not resolve are reported once in the
-    "missing_taps" list and counted as 0. The monitor drives no signals and
-    changes no behaviour.
+    Taps whose signals do not resolve read as 0 (1-bit) or print as None
+    (multi-bit), and the armed log line names the missing bool_sig and val_sig
+    taps. The monitor drives no signals.
     """
     dump_interval = int(os.environ.get("FROST_WEDGE_DUMP_INTERVAL", "2000"))
     stall_cycles = int(os.environ.get("FROST_WEDGE_STALL_CYCLES", "20000"))
@@ -493,8 +848,8 @@ async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
         "mtimecmp_write_pulse": g(f"{mem}.mtimecmp_write_pulse"),
         "cached_write_inflight": g(f"{mem}.data_memory_cached_write_inflight"),
     }
-    # Load-address taps: prove which address the spin-loop load targets
-    # (decisive for distinguishing a clobbered base register from a lost store).
+    # Load-address taps: show which addresses the core reads while it spins,
+    # which separates a clobbered base register from a lost store.
     mem_addr_sig = g(f"{cpu}.o_data_mem_addr")
     mem_rd_en_sig = g(f"{cpu}.o_data_mem_read_enable")
     mem_cached_rd_en_sig = g(f"{cpu}.o_data_mem_cached_read_enable")
@@ -665,21 +1020,10 @@ class UartRxDriver:
         self.dut.i_uart_rx.value = 1
 
     def _compute_bit_cycles(self) -> int:
-        """Match uart_rx.sv prescaler math to compute cycles per bit.
-
-        uart_rx uses CLK_FREQ_HZ/4 (since it runs on clk_div4) and computes:
-        ClockCyclesPerBit = (CLK_FREQ_HZ/4) / BAUD_RATE.
-        """
-        clk_freq = _read_u64(getattr(self.dut, "CLK_FREQ_HZ", None))
-        if clk_freq is None:
-            clk_freq = UART_CLK_FREQ_HZ_DEFAULT
-        uart_clk_freq = clk_freq // 4
-        bit_cycles = uart_clk_freq // UART_BAUD_RATE
-        cocotb.log.info(
-            f"UartRxDriver: clk_freq={clk_freq}, uart_clk_freq={uart_clk_freq}, "
-            f"bit_cycles={bit_cycles}"
-        )
-        return max(1, bit_cycles)
+        """Return uart_rx's i_clk_div4 cycles per bit."""
+        bit_cycles = _uart_bit_cycles(self.dut)
+        cocotb.log.info(f"UartRxDriver: bit_cycles={bit_cycles}")
+        return bit_cycles
 
     async def _wait_cycles(self, cycles: int) -> None:
         """Wait for a number of i_clk_div4 cycles."""
@@ -812,15 +1156,18 @@ class UartMmioDebugMonitor:
         )
         # dc_fifo pointers and state
         self.fifo_read_ptr = _get_signal(
-            dut, "uart_rx_cdc_fifo.read_pointer_in_output_domain"
+            dut, "uart_receive_clock_domain_crossing_fifo.read_pointer_in_output_domain"
         )
         self.fifo_write_ptr_synced = _get_signal(
-            dut, "uart_rx_cdc_fifo.write_pointer_synchronized_stage2"
+            dut,
+            "uart_receive_clock_domain_crossing_fifo.write_pointer_synchronized_stage2",
         )
         self.fifo_valid_reg = _get_signal(
-            dut, "uart_rx_cdc_fifo.read_data_valid_registered"
+            dut, "uart_receive_clock_domain_crossing_fifo.read_data_valid_registered"
         )
-        self.fifo_o_data = _get_signal(dut, "uart_rx_cdc_fifo.o_data")
+        self.fifo_o_data = _get_signal(
+            dut, "uart_receive_clock_domain_crossing_fifo.o_data"
+        )
 
     async def start(self) -> None:
         """Start the background monitoring coroutine."""
@@ -946,54 +1293,6 @@ class UartMmioDebugMonitor:
             prev_uart_valid = bool(uart_valid)
 
 
-def read_ras_stats(dut: Any) -> dict[str, int] | None:
-    """Read RAS stats counters from the DUT if available."""
-    try:
-        cpu = dut.cpu_and_memory_subsystem.cpu_inst
-    except AttributeError:
-        return None
-
-    ras_predicted = _read_u64(getattr(cpu, "ras_predicted_count", None))
-    if ras_predicted is None:
-        return None
-    ras_return = _read_u64(getattr(cpu, "ras_return_count", None))
-    if ras_return is None:
-        return None
-    ras_correct = _read_u64(getattr(cpu, "ras_correct_count", None))
-    if ras_correct is None:
-        return None
-    ras_mispred = _read_u64(getattr(cpu, "ras_mispred_count", None))
-    if ras_mispred is None:
-        return None
-
-    return {
-        "ras_predicted": ras_predicted,
-        "ras_return": ras_return,
-        "ras_correct": ras_correct,
-        "ras_mispred": ras_mispred,
-    }
-
-
-def log_ras_stats(run_number: int, stats: dict[str, int] | None) -> None:
-    """Log RAS stats in a compact format."""
-    if stats is None:
-        return
-
-    predicted = stats["ras_predicted"]
-    returns = stats["ras_return"]
-    correct = stats["ras_correct"]
-    mispred = stats["ras_mispred"]
-
-    acc = (correct / predicted) if predicted else 0.0
-    use = (predicted / returns) if returns else 0.0
-
-    cocotb.log.info(
-        f"Run {run_number} RAS stats: predicted={predicted}, returns={returns}, "
-        f"correct={correct}, mispred={mispred}, "
-        f"predicted/returns={use:.3f}, correct/predicted={acc:.3f}"
-    )
-
-
 class NicEchoPeer:
     """The wire-side peer of the NIC for the nic_echo app.
 
@@ -1001,11 +1300,11 @@ class NicEchoPeer:
     scrambler state for the run) into the raw RX interface on the RX MAC
     clock, decodes the raw TX stream on the TX MAC clock with the net10g
     software receiver (restarted at every gap in valid: the PCS TX emits
-    continuously once out of reset),
-    and checks that every frame the app should echo comes back intact. The
-    plan is fixed and known to the app (sw/apps/nic_echo/main.c): 24 frames
-    that land in the ring, two of them longer than the buffers (truncated,
-    not echoed), plus two frames for another station (filtered).
+    continuously once out of reset), and checks that every frame the app
+    should echo comes back intact. The plan is fixed and known to the app
+    (sw/apps/nic_echo/main.c): 24 frames that land in the ring, two of them
+    longer than the buffers (truncated, not echoed), plus two frames for
+    another station (filtered).
     """
 
     STATION = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
@@ -1217,6 +1516,12 @@ async def run_until_complete(
         progress_interval = int(
             os.environ.get("COCOTB_COREMARK_PROGRESS_INTERVAL", 500_000)
         )
+    # FROST_IRQ_PRECISION_CHECK logs each interrupt take (up to
+    # FROST_IRQ_PRECISION_EVENT_LIMIT) and fails a run that takes none.
+    # FROST_IRQ_PRECISION_STRICT also fails a take in whose cycle the
+    # registered commit bus writes x1 or x2 at the saved PC, and a take inside
+    # FROST_IRQ_CALLEE_SYMBOL (default irq_stack_slot_callee), past its first
+    # instruction, while x2 was last written outside that function.
     irq_precision_check = os.environ.get("FROST_IRQ_PRECISION_CHECK") == "1"
     irq_precision_strict = os.environ.get("FROST_IRQ_PRECISION_STRICT") == "1"
     irq_low_ra_assert = os.environ.get("FROST_IRQ_LOW_RA_ASSERT") == "1"
@@ -1224,6 +1529,7 @@ async def run_until_complete(
         os.environ.get("FROST_IRQ_PRECISION_EVENT_LIMIT", "64")
     )
     irq_precision_events: list[str] = []
+    irq_take_count = 0
     external_irq_symbol = os.environ.get("FROST_EXTERNAL_IRQ_SYMBOL")
     external_irq_enabled = bool(external_irq_symbol)
     external_irq_offset = int(os.environ.get("FROST_EXTERNAL_IRQ_OFFSET", "0"), 0)
@@ -1232,6 +1538,9 @@ async def run_until_complete(
         os.environ.get("FROST_EXTERNAL_IRQ_HOLD_CYCLES", "1")
     )
     retire_sig = None
+    # Slot 2 of the combinational commit bus, read wherever retire_sig is.
+    retire_2_sig = None
+    retire_2_pc_sig = None
     pc_sig = None
     pc_vld_sig = None
     mem_rd_en_sig = None
@@ -1244,17 +1553,9 @@ async def run_until_complete(
     retire_pc_sig = None
     retire_mispredict_sig = None
     branch_pred_off_sig = None
-    branch_in_flight_count_sig = None
-    fe_cf_pending_sig = None
-    if_cf_pending_sig = None
-    pd_cf_pending_sig = None
-    id_cf_pending_sig = None
     if_btb_pred_sig = None
-    if_ras_pred_sig = None
     pd_btb_pred_sig = None
-    pd_ras_pred_sig = None
     id_btb_pred_sig = None
-    id_ras_pred_sig = None
     lq_issue_mem_found_sig = None
     lq_sq_check_valid_sig = None
     lq_sq_can_issue_sig = None
@@ -1265,9 +1566,6 @@ async def run_until_complete(
     btb_pred_taken_sig = None
     pred_used_sig = None
     pred_holdoff_sig = None
-    if_ras_pred_sig = None
-    pd_ras_pred_sig = None
-    id_ras_pred_sig = None
     if_pc_sig = None
     if_sel_nop_sig = None
     if_sel_compressed_sig = None
@@ -1276,10 +1574,9 @@ async def run_until_complete(
     pd_pc_sig = None
     pd_instr_sig = None
     id_pc_sig = None
+    id_instr_sig = None
     id_op_sig = None
-    int_rf_write_enable_sig = None
-    int_rf_write_addr_sig = None
-    int_rf_write_data_sig = None
+    int_rf_write_ports: list[tuple[Any, Any, Any, Any]] = []
     issue_valid_sig = None
     issue_pc_sig = None
     issue_pred_taken_sig = None
@@ -1428,26 +1725,37 @@ async def run_until_complete(
     )
     coremark_matrix_expected: dict[int, tuple[int, int]] = {}
     coremark_symbol_ranges: dict[str, tuple[int, int]] = {}
-    # core_bench_matrix, not matrix_test: the tuned coremark build raises GCC's
-    # auto-inline budget (sw/apps/coremark/Makefile), so matrix_test -- like
-    # core_state_transition and cmp_complex -- no longer exists as a symbol and a
-    # default naming it would silently disable these opt-in checks. The symbol
-    # range list below still asks for the inlined names so an untuned A/B build
-    # (APP_TUNE_FLAGS=) resolves them; missing names are simply absent.
+    # The IF check and the retire trace each cover one function, found by
+    # name in sw.S; a name missing from sw.S fails the run. The default,
+    # calc_func, holds the matrix and state kernels in the default build,
+    # whose LTO inlines core_bench_matrix and core_bench_state into it. An
+    # untuned build (APP_TUNE_FLAGS=) keeps core_bench_matrix as a function of
+    # its own. The range list below also asks for kernel names that inlining
+    # removes; missing names there are skipped.
     coremark_if_check_symbol = os.environ.get(
-        "FROST_COREMARK_IF_CHECK_SYMBOL", "core_bench_matrix"
+        "FROST_COREMARK_IF_CHECK_SYMBOL", "calc_func"
     )
+    coremark_if_check_count = 0
+    coremark_if_check_alloc_sig = None
+    coremark_if_check_slot2: _PackedStruct | None = None
+    coremark_if_check_rvc_expand: Callable[[int], tuple[int, bool]] | None = None
+    coremark_if_check_compressed = 0
+    coremark_if_check_lo = 0
+    coremark_if_check_hi = 0
     coremark_retire_trace_path = (
         os.environ.get("FROST_COREMARK_RETIRE_TRACE_PATH") if is_coremark_like else None
     )
-    coremark_retire_trace_symbol = (
-        os.environ.get("FROST_COREMARK_RETIRE_TRACE_SYMBOL", "core_bench_matrix")
-        if is_coremark_like
-        else None
+    coremark_retire_trace_symbol = os.environ.get(
+        "FROST_COREMARK_RETIRE_TRACE_SYMBOL", "calc_func"
     )
     coremark_matrix_base_pc: int | None = None
     coremark_matrix_last_pc: int | None = None
-    coremark_matrix_retire_trace: list[str] = []
+    coremark_retire_trace_file: TextIO | None = None
+    coremark_retire_trace_count = 0
+    coremark_retire_trace_limit = 20000
+    coremark_retire_commits: tuple[_PackedStruct, _PackedStruct] | None = None
+    coremark_retire_slot2_valid_sig = None
+    coremark_retire_slot2_pc_sig = None
     if control_flow_trace_env:
         parsed_ranges: list[tuple[int, int]] = []
         for raw_range in control_flow_trace_env.split(","):
@@ -1464,16 +1772,26 @@ async def run_until_complete(
         control_flow_trace_label = os.environ.get(
             "FROST_CONTROL_FLOW_TRACE_LABEL", f"{app_name or 'program'} trace"
         )
-    if progress_interval or irq_precision_check or external_irq_enabled:
+    if (
+        progress_interval
+        or irq_precision_check
+        or external_irq_enabled
+        or coremark_if_check_enabled
+        or coremark_retire_trace_path is not None
+    ):
         retire_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
         )
         retire_pc_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
         )
-        retire_mispredict_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.commit_is_misprediction"
+        retire_2_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
         )
+        retire_2_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+        )
+        retire_mispredict_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc")
         pc_vld_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc_vld")
         mem_rd_en_sig = _get_signal(
@@ -1582,12 +1900,6 @@ async def run_until_complete(
         branch_pred_off_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.disable_branch_prediction_ooo"
         )
-        branch_in_flight_count_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_branch_in_flight_count"
-        )
-        fe_cf_pending_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.front_end_control_flow_pending"
-        )
         if_stall_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pipeline_stall"
         )
@@ -1604,35 +1916,23 @@ async def run_until_complete(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_dispatch_stall_q"
         )
         if coremark_cf_debug_enabled:
-            if_cf_pending_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.if_unpredicted_control_flow"
-            )
-            pd_cf_pending_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.pd_unpredicted_control_flow"
-            )
-            id_cf_pending_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.id_unpredicted_control_flow"
-            )
-            if_btb_pred_sig = _get_signal(
+            if_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.btb_predicted_taken",
+                "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+                IF_TO_PD_FIELDS,
+                "btb_predicted_taken",
             )
-            if_ras_pred_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_predicted"
-            )
-            pd_btb_pred_sig = _get_signal(
+            pd_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id.btb_predicted_taken",
+                "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+                PD_TO_ID_FIELDS,
+                "btb_predicted_taken",
             )
-            pd_ras_pred_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_predicted"
-            )
-            id_btb_pred_sig = _get_signal(
+            id_btb_pred_sig = _struct_field(
                 dut,
-                "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.btb_predicted_taken",
-            )
-            id_ras_pred_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_predicted"
+                "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+                ID_TO_EX_FIELDS,
+                "btb_predicted_taken",
             )
         lq_issue_mem_found_sig = _get_signal(
             dut,
@@ -1658,29 +1958,49 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq.mem_outstanding",
         )
-        if_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.program_counter"
+        if_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "program_counter",
         )
-        if_sel_nop_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_nop"
+        if_sel_nop_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "sel_nop",
         )
-        if_sel_compressed_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_compressed"
+        if_sel_compressed_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "sel_compressed",
         )
-        if_raw_parcel_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.raw_parcel"
+        if_raw_parcel_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "raw_parcel",
         )
-        if_effective_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.effective_instr"
+        if_effective_instr_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "effective_instr",
         )
         pd_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_pc")
         pd_instr_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_instr"
         )
         id_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_pc")
-        id_op_sig = _get_signal(
+        id_instr_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_instr"
+        )
+        id_op_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.instruction_operation",
+            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            ID_TO_EX_FIELDS,
+            "instruction_operation",
         )
         issue_valid_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_valid"
@@ -1692,16 +2012,35 @@ async def run_until_complete(
             coremark_matrix_expected = _load_symbol_machine_code(
                 coremark_if_check_symbol, app_name
             )
-        elif coremark_retire_trace_path is not None:
-            coremark_matrix_expected = _load_symbol_machine_code(
-                coremark_if_check_symbol, app_name
+            if not coremark_matrix_expected:
+                raise AssertionError(
+                    f"FROST_COREMARK_IF_CHECK_SYMBOL={coremark_if_check_symbol!r} "
+                    "has no code in sw.S; name a function this build contains"
+                )
+            coremark_if_check_lo = min(coremark_matrix_expected)
+            coremark_if_check_hi = max(coremark_matrix_expected) + 4
+            coremark_if_check_alloc_sig = _get_signal(
+                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_alloc_valid"
             )
-        if coremark_matrix_expected:
-            coremark_matrix_base_pc = min(coremark_matrix_expected)
-            coremark_matrix_last_pc = max(coremark_matrix_expected)
+            _require_signals(
+                "FROST_COREMARK_IF_CHECK",
+                {
+                    "cpu_inst.dbg_rob_alloc_valid": coremark_if_check_alloc_sig,
+                    "cpu_inst.dbg_id_pc": id_pc_sig,
+                    "cpu_inst.dbg_id_instr": id_instr_sig,
+                },
+            )
+            coremark_if_check_slot2 = _packed_struct(
+                dut,
+                "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex_2",
+                ID_TO_EX_FIELDS,
+                "FROST_COREMARK_IF_CHECK",
+            )
+            coremark_if_check_rvc_expand = _load_rvc_expand()
         coremark_symbol_ranges = _load_symbol_ranges(
             [
                 "core_bench_list",
+                "calc_func",
                 "matrix_test",
                 "core_bench_matrix",
                 "core_state_transition",
@@ -1711,34 +2050,76 @@ async def run_until_complete(
             ],
             app_name,
         )
-        if (
-            coremark_retire_trace_path is not None
-            and coremark_retire_trace_symbol is not None
-            and coremark_retire_trace_symbol in coremark_symbol_ranges
-        ):
-            coremark_matrix_base_pc, coremark_matrix_last_pc = coremark_symbol_ranges[
-                coremark_retire_trace_symbol
-            ]
-            coremark_matrix_last_pc -= 1
+        if coremark_retire_trace_path is not None:
+            retire_trace_range = _load_symbol_ranges(
+                [coremark_retire_trace_symbol], app_name
+            ).get(coremark_retire_trace_symbol)
+            if retire_trace_range is None:
+                raise AssertionError(
+                    "FROST_COREMARK_RETIRE_TRACE_SYMBOL="
+                    f"{coremark_retire_trace_symbol!r} is not in sw.S; name a "
+                    "function this build contains"
+                )
+            coremark_matrix_base_pc = retire_trace_range[0]
+            coremark_matrix_last_pc = retire_trace_range[1] - 1
+            coremark_retire_slot2_valid_sig = _get_signal(
+                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+            )
+            coremark_retire_slot2_pc_sig = _get_signal(
+                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+            )
+            _require_signals(
+                "FROST_COREMARK_RETIRE_TRACE_PATH",
+                {
+                    "cpu_inst.dbg_commit_valid": retire_sig,
+                    "cpu_inst.dbg_commit_pc": retire_pc_sig,
+                    "cpu_inst.dbg_commit_2_valid": coremark_retire_slot2_valid_sig,
+                    "cpu_inst.dbg_commit_2_pc": coremark_retire_slot2_pc_sig,
+                },
+            )
+            coremark_retire_commits = (
+                _packed_struct(
+                    dut,
+                    "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb",
+                    COMMIT_FIELDS,
+                    "FROST_COREMARK_RETIRE_TRACE_PATH",
+                ),
+                _packed_struct(
+                    dut,
+                    "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb_2",
+                    COMMIT_FIELDS,
+                    "FROST_COREMARK_RETIRE_TRACE_PATH",
+                ),
+            )
+            # Every run appends its samples under a "# run N" line; the first
+            # run starts a new file. Line buffering keeps the samples a
+            # failing run wrote.
+            coremark_retire_trace_file = Path(coremark_retire_trace_path).open(
+                "w" if run_number == 1 else "a", buffering=1
+            )
+            coremark_retire_trace_file.write(f"# run {run_number}\n")
     elif (
         app_name in {"branch_pred_test", "ras_stress_test"}
         or control_flow_trace_ranges
         or os.environ.get("FROST_CHECKPOINT_TRACE") == "1"
     ):
-        retire_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_vld")
+        retire_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
+        )
         retire_pc_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
         )
-        retire_mispredict_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.commit_is_misprediction"
+        retire_2_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
         )
+        retire_2_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+        )
+        retire_mispredict_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc")
         pc_vld_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.o_pc_vld")
         branch_pred_off_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.disable_branch_prediction_ooo"
-        )
-        fe_cf_pending_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.front_end_control_flow_pending"
         )
         dispatch_stall_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_dispatch_stall"
@@ -1761,9 +2142,6 @@ async def run_until_complete(
         replay_after_serialize_stall_q_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_replay_after_serialize_stall_q"
         )
-        branch_in_flight_count_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_branch_in_flight_count"
-        )
         btb_hit_sig = _get_signal(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.btb_hit",
@@ -1780,23 +2158,23 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.o_prediction_holdoff",
         )
-        if_ras_pred_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_predicted"
+        if_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "program_counter",
         )
-        pd_ras_pred_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_predicted"
+        if_sel_nop_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "sel_nop",
         )
-        id_ras_pred_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_predicted"
-        )
-        if_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.program_counter"
-        )
-        if_sel_nop_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_nop"
-        )
-        if_raw_parcel_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.raw_parcel"
+        if_raw_parcel_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
+            IF_TO_PD_FIELDS,
+            "raw_parcel",
         )
         if_ras_ckpt_tos_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_checkpoint_tos"
@@ -1805,11 +2183,17 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_checkpoint_valid_count",
         )
-        pd_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id.program_counter"
+        pd_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+            PD_TO_ID_FIELDS,
+            "program_counter",
         )
-        pd_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id.instruction"
+        pd_instr_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
+            PD_TO_ID_FIELDS,
+            "instruction",
         )
         pd_ras_ckpt_tos_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_checkpoint_tos"
@@ -1818,8 +2202,11 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_checkpoint_valid_count",
         )
-        id_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.program_counter"
+        id_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            ID_TO_EX_FIELDS,
+            "program_counter",
         )
         id_ras_ckpt_tos_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_checkpoint_tos"
@@ -1828,19 +2215,33 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_checkpoint_valid_count",
         )
-        id_op_sig = _get_signal(
+        id_op_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex.instruction_operation",
+            "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
+            ID_TO_EX_FIELDS,
+            "instruction_operation",
         )
-        int_rf_write_enable_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.int_rf_write_enable"
-        )
-        int_rf_write_addr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.int_rf_write_addr"
-        )
-        int_rf_write_data_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.int_rf_write_data"
-        )
+        # Integer register writes at commit, from the registered commit bus:
+        # port 0 (slot 1 and the CSR writeback), then port 1 (slot 2), each
+        # with its commit's PC.
+        int_rf_write_ports = [
+            (
+                _get_signal(
+                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_we"
+                ),
+                _get_signal(
+                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_addr"
+                ),
+                _get_signal(
+                    dut, f"cpu_and_memory_subsystem.cpu_inst.dbg_port{port}_int_data"
+                ),
+                _get_signal(dut, f"cpu_and_memory_subsystem.cpu_inst.{pc_tap}"),
+            )
+            for port, pc_tap in (
+                (0, "dbg_rob_commit_reg_pc"),
+                (1, "dbg_rob_commit_2_reg_pc"),
+            )
+        ]
         # tomasulo_wrapper exposes the issue payload as one packed `o_rs_issue`
         # struct, so use the flat debug taps cpu_ooo maintains for it. There is
         # no debug tap for the issue source operands, so src1/src2 are not
@@ -1854,8 +2255,11 @@ async def run_until_complete(
         issue_pred_taken_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_predicted_taken"
         )
-        redirect_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.misprediction_redirect_pc"
+        redirect_pc_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.rob_commit_comb",
+            COMMIT_FIELDS,
+            "redirect_pc",
         )
         btb_update_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_btb_update"
@@ -1898,25 +2302,8 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pending_prediction_fetch_holdoff",
         )
-        if_is_compressed_for_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.is_compressed_for_pc"
-        )
-        if_is_32bit_spanning_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.is_32bit_spanning"
-        )
-        if_spanning_wait_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.spanning_wait_for_fetch",
-        )
-        if_spanning_in_progress_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.spanning_in_progress"
-        )
         if_use_instr_buffer_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.use_instr_buffer"
-        )
-        if_use_buffer_after_prediction_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.use_buffer_after_prediction",
         )
         if_prev_compressed_lo_sig = _get_signal(
             dut,
@@ -1929,14 +2316,6 @@ async def run_until_complete(
         pc_next_pc_reg_sig = _get_signal(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.next_pc_reg",
-        )
-        pc_prev_was_32bit_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.prev_was_32bit",
-        )
-        pc_mid_32bit_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.pc_controller_inst.o_mid_32bit_correction",
         )
         ras_tos_sig = _get_signal(
             dut,
@@ -1962,40 +2341,43 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.do_push",
         )
-        ras_capture_inputs_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.capture_op_inputs",
-        )
         ras_target_live_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_target",
+            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_top",
         )
+        # IF's push and pop for the packet PD takes this cycle.
         ras_is_call_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_is_call",
+            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_push"
         )
         ras_is_return_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_is_return",
+            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_pop"
         )
         ras_link_address_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.i_link_address",
+            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_push_address"
         )
-        ras_misprediction_live_sig = _get_signal(
+        ras_misprediction_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.ras_misprediction",
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "ras_misprediction",
         )
-        ras_restore_tos_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.ras_restore_tos"
-        )
-        ras_restore_valid_count_live_sig = _get_signal(
+        ras_restore_tos_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.ras_restore_valid_count",
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "ras_restore_tos",
         )
-        ras_pop_after_restore_live_sig = _get_signal(
+        ras_restore_valid_count_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.ras_pop_after_restore",
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "ras_restore_valid_count",
+        )
+        ras_pop_after_restore_live_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "ras_pop_after_restore",
         )
         commit_valid_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
@@ -2096,15 +2478,23 @@ async def run_until_complete(
         flush_tag_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.flush_tag"
         )
-        commit_is_mret_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.rob_commit.is_mret"
-        )
-        branch_taken_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.branch_taken"
-        )
-        branch_target_live_sig = _get_signal(
+        commit_is_mret_live_sig = _struct_field(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth.branch_target_address",
+            "cpu_and_memory_subsystem.cpu_inst.rob_commit",
+            COMMIT_FIELDS,
+            "is_mret",
+        )
+        branch_taken_live_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "branch_taken",
+        )
+        branch_target_live_sig = _struct_field(
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.from_ex_comb_synth",
+            FROM_EX_FIELDS,
+            "branch_target_address",
         )
         trap_taken_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.trap_taken"
@@ -2238,9 +2628,7 @@ async def run_until_complete(
         flush_pipeline_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.flush_pipeline"
         )
-        commit_is_misprediction_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.commit_is_misprediction"
-        )
+        commit_is_misprediction_live_sig = _get_signal(dut, COMMIT_MISPREDICTION_PATH)
         pd_final_instruction_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_instr"
         )
@@ -2333,6 +2721,50 @@ async def run_until_complete(
     if irq_precision_check:
         trap_taken_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.trap_taken"
+        )
+        trap_taken_reg_dbg_sig = _first_signal(
+            dut,
+            [
+                "cpu_and_memory_subsystem.cpu_inst.dbg_trap_taken_q",
+                "cpu_and_memory_subsystem.cpu_inst.trap_taken_reg",
+            ],
+        )
+        # The unregistered commit bus, for the event log.
+        commit_valid_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_valid"
+        )
+        commit_pc_live_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_pc"
+        )
+        commit0_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_valid"
+        )
+        commit0_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_rf"
+        )
+        commit0_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_dest_reg"
+        )
+        commit0_value_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_value"
+        )
+        commit1_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_valid"
+        )
+        commit1_pc_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_pc"
+        )
+        commit1_dest_valid_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_valid"
+        )
+        commit1_dest_rf_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_rf"
+        )
+        commit1_dest_reg_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_dest_reg"
+        )
+        commit1_value_sig = _get_signal(
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_commit_2_value"
         )
         trap_cause_internal_live_sig = _first_signal(
             dut,
@@ -2435,6 +2867,48 @@ async def run_until_complete(
         rob_commit1_reg_dest_reg_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_rob_commit_2_reg_dest_reg"
         )
+        _require_signals(
+            "FROST_IRQ_PRECISION_CHECK",
+            {
+                "trap_taken": trap_taken_live_sig,
+                "dbg_trap_taken_q": trap_taken_reg_dbg_sig,
+                "dbg_trap_cause_internal": trap_cause_internal_live_sig,
+                "dbg_trap_pc_internal": trap_pc_internal_live_sig,
+                "rob_trap_pc": rob_trap_pc_live_sig,
+                "dbg_interrupt_resume_pc": interrupt_resume_pc_live_sig,
+                "csr_commit_fire": csr_commit_fire_live_sig,
+                "csr_mepc": csr_mepc_live_sig,
+                "flush_all": flush_all_live_sig,
+                "dbg_commit_valid": commit_valid_live_sig,
+                "dbg_commit_pc": commit_pc_live_sig,
+                "dbg_commit_dest_valid": commit0_dest_valid_sig,
+                "dbg_commit_dest_rf": commit0_dest_rf_sig,
+                "dbg_commit_dest_reg": commit0_dest_reg_sig,
+                "dbg_commit_value": commit0_value_sig,
+                "dbg_commit_2_valid": commit1_valid_sig,
+                "dbg_commit_2_pc": commit1_pc_sig,
+                "dbg_commit_2_dest_valid": commit1_dest_valid_sig,
+                "dbg_commit_2_dest_rf": commit1_dest_rf_sig,
+                "dbg_commit_2_dest_reg": commit1_dest_reg_sig,
+                "dbg_commit_2_value": commit1_value_sig,
+                "dbg_port0_int_we": port0_int_we_sig,
+                "dbg_port0_int_addr": port0_int_addr_sig,
+                "dbg_port0_int_data": port0_int_data_sig,
+                "dbg_port1_int_we": port1_int_we_sig,
+                "dbg_port1_int_addr": port1_int_addr_sig,
+                "dbg_port1_int_data": port1_int_data_sig,
+                "dbg_rob_commit_reg_valid": rob_commit0_reg_valid_sig,
+                "dbg_rob_commit_reg_pc": rob_commit0_reg_pc_sig,
+                "dbg_rob_commit_reg_dest_valid": rob_commit0_reg_dest_valid_sig,
+                "dbg_rob_commit_reg_dest_rf": rob_commit0_reg_dest_rf_sig,
+                "dbg_rob_commit_reg_dest_reg": rob_commit0_reg_dest_reg_sig,
+                "dbg_rob_commit_2_reg_valid": rob_commit1_reg_valid_sig,
+                "dbg_rob_commit_2_reg_pc": rob_commit1_reg_pc_sig,
+                "dbg_rob_commit_2_reg_dest_valid": rob_commit1_reg_dest_valid_sig,
+                "dbg_rob_commit_2_reg_dest_rf": rob_commit1_reg_dest_rf_sig,
+                "dbg_rob_commit_2_reg_dest_reg": rob_commit1_reg_dest_reg_sig,
+            },
+        )
 
     retired_pc_hist: Counter[int] = Counter()
     retired_mispredicts = 0
@@ -2480,6 +2954,7 @@ async def run_until_complete(
     retire_only_trace = os.environ.get("FROST_CONTROL_FLOW_RETIRE_ONLY") == "1"
     ras_transition_trace_active = True
     irq_precision_callee_range: tuple[int, int] | None = None
+    irq_precision_callee_body = 0
     external_irq_range: tuple[int, int] | None = None
     external_irq_active = False
     external_irq_hold_remaining = 0
@@ -2493,9 +2968,14 @@ async def run_until_complete(
         irq_precision_callee_range = irq_symbol_ranges.get(irq_callee_symbol)
         if irq_precision_callee_range is not None:
             lo, hi = irq_precision_callee_range
+            # The stack-pointer rule starts after the callee's first
+            # instruction, its sp adjustment, which may be compressed.
+            callee_code = _load_symbol_machine_code(irq_callee_symbol, app_name)
+            irq_precision_callee_body = lo + callee_code.get(lo, (0, 32))[1] // 8
             cocotb.log.info(
                 f"IRQ precision callee window {irq_callee_symbol}: "
-                f"[0x{lo:08x}, 0x{hi:08x})"
+                f"[0x{lo:08x}, 0x{hi:08x}), body from "
+                f"0x{irq_precision_callee_body:08x}"
             )
     if external_irq_enabled and external_irq_symbol is not None:
         external_symbol_ranges = _load_symbol_ranges([external_irq_symbol], app_name)
@@ -2548,41 +3028,60 @@ async def run_until_complete(
             and _read_int(pc_sig) == trap_pc
         )
 
-    def format_coremark_if_mismatch(
-        *,
-        stage: str,
-        pc: int,
-        expected_bits: int,
-        expected_width: int,
-        raw: int,
-        sel_nop: bool,
-        sel_compressed: bool,
-        effective_instr: int,
-        pd_pc: int | None,
-        pd_instr: int | None,
-        id_pc: int | None,
-        retire_pc: int | None,
-    ) -> str:
-        return (
-            f"CoreMark matrix IF mismatch at cycle={cycle + 1} "
-            f"stage={stage} pc=0x{pc:08x} "
-            f"expected_width={expected_width} expected=0x{expected_bits:0{expected_width // 4}x} "
-            f"sel_nop={int(sel_nop)} "
-            f"sel_comp={int(sel_compressed)} raw=0x{raw:04x} "
-            f"eff=0x{effective_instr:08x} "
-            f"pd_pc=0x{(pd_pc or 0):08x} pd_instr=0x{(pd_instr or 0):08x} "
-            f"id_pc=0x{(id_pc or 0):08x} retire_pc=0x{(retire_pc or 0):08x}"
-        )
+    def sample_coremark_retire_trace(cycle_number: int, slot1_pc: int) -> None:
+        """Write one line per commit this cycle inside the traced function.
 
-    def dump_coremark_retire_trace() -> None:
-        if (
-            coremark_retire_trace_path is None
-            or coremark_matrix_base_pc is None
-            or not coremark_matrix_retire_trace
-        ):
+        Slot 1 is the ROB head, and slot 2 (head+1) retires only together with
+        it. mispred marks a mispredicted branch, whichever recovery redirected
+        it, and early marks one that early recovery redirected at execute.
+        Slot 2 never holds a mispredicted branch, so the ROB zeroes its
+        misprediction and predicted_taken fields; a slot-2 branch went the way
+        it was predicted, so its pred_taken is its branch_taken.
+        """
+        nonlocal coremark_retire_trace_count
+        assert coremark_retire_trace_file is not None
+        assert coremark_retire_commits is not None
+        assert coremark_matrix_base_pc is not None
+        assert coremark_matrix_last_pc is not None
+        commits = [(1, slot1_pc)]
+        if _read_bool(coremark_retire_slot2_valid_sig):
+            slot2_pc = _read_int(coremark_retire_slot2_pc_sig)
+            if slot2_pc is not None:
+                commits.append((2, slot2_pc))
+        for slot, pc in commits:
+            if (
+                not coremark_matrix_base_pc <= pc <= coremark_matrix_last_pc
+                or coremark_retire_trace_count >= coremark_retire_trace_limit
+            ):
+                continue
+            commit = coremark_retire_commits[slot - 1]
+            packed = commit.read()
+            if packed is None:
+                raise AssertionError(
+                    f"Retire trace: the slot-{slot} commit bus is unresolvable "
+                    f"at cycle={cycle_number}"
+                )
+            branch_taken = commit.field(packed, "branch_taken")
+            predicted_taken = (
+                commit.field(packed, "predicted_taken") if slot == 1 else branch_taken
+            )
+            coremark_retire_trace_file.write(
+                f"cycle={cycle_number} slot={slot} pc=0x{pc:08x} "
+                f"off=0x{(pc - coremark_matrix_base_pc):04x} "
+                f"mispred={commit.field(packed, 'misprediction')} "
+                f"early={commit.field(packed, 'early_recovered')} "
+                f"pred_taken={predicted_taken} branch_taken={branch_taken}\n"
+            )
+            coremark_retire_trace_count += 1
+
+    def close_coremark_retire_trace() -> None:
+        if coremark_retire_trace_file is None:
             return
-        trace_path = Path(coremark_retire_trace_path)
-        trace_path.write_text("\n".join(coremark_matrix_retire_trace) + "\n")
+        coremark_retire_trace_file.close()
+        cocotb.log.info(
+            f"Run {run_number}: wrote {coremark_retire_trace_count} retire samples "
+            f"of {coremark_retire_trace_symbol} to {coremark_retire_trace_path}"
+        )
 
     for cycle in range(max_cycles):
         await RisingEdge(dut.i_clk)
@@ -2700,63 +3199,51 @@ async def run_until_complete(
                         f"{port_name}=0x{(value or 0):08x}@0x{(pc or 0):08x}"
                     )
 
+            # The take-cycle state is read only when an interrupt is taken,
+            # which keeps the check's per-cycle cost to a few handles.
             trap = bool(_read_bool(trap_taken_live_sig))
-            trap_q = bool(_read_bool(trap_taken_reg_dbg_sig))
-            flush_all = bool(_read_bool(flush_all_live_sig))
-            trap_cause = _read_int(trap_cause_internal_live_sig)
-            is_irq = bool((trap_cause or 0) & 0x8000_0000)
-            trap_pc = _read_int(trap_pc_internal_live_sig)
-            rob_trap_pc = _read_int(rob_trap_pc_live_sig)
-            interrupt_resume_pc = _read_int(interrupt_resume_pc_live_sig)
-            c0_valid = bool(_read_bool(commit_valid_live_sig))
-            c1_valid = bool(_read_bool(commit1_valid_sig))
-            c0_pc = _read_int(commit_pc_live_sig)
-            c1_pc = _read_int(commit1_pc_sig)
-            reg0_sensitive = commit_writes_x1_x2_at_pc(
-                rob_commit0_reg_valid_sig,
-                rob_commit0_reg_pc_sig,
-                rob_commit0_reg_dest_valid_sig,
-                rob_commit0_reg_dest_rf_sig,
-                rob_commit0_reg_dest_reg_sig,
-                trap_pc,
-            )
-            reg1_sensitive = commit_writes_x1_x2_at_pc(
-                rob_commit1_reg_valid_sig,
-                rob_commit1_reg_pc_sig,
-                rob_commit1_reg_dest_valid_sig,
-                rob_commit1_reg_dest_rf_sig,
-                rob_commit1_reg_dest_reg_sig,
-                trap_pc,
-            )
-            raw0_sensitive = commit_writes_x1_x2_at_pc(
-                commit_valid_live_sig,
-                commit_pc_live_sig,
-                commit0_dest_valid_sig,
-                commit0_dest_rf_sig,
-                commit0_dest_reg_sig,
-                trap_pc,
-            )
-            raw1_sensitive = commit_writes_x1_x2_at_pc(
-                commit1_valid_sig,
-                commit1_pc_sig,
-                commit1_dest_valid_sig,
-                commit1_dest_rf_sig,
-                commit1_dest_reg_sig,
-                trap_pc,
-            )
-
-            stale_sp_body = False
-            if trap and is_irq and trap_pc is not None and irq_precision_callee_range:
-                callee_lo, callee_hi = irq_precision_callee_range
-                x2_from_callee = (
-                    current_x2_commit_pc is not None
-                    and callee_lo <= current_x2_commit_pc < callee_hi
+            trap_cause = _read_int(trap_cause_internal_live_sig) if trap else None
+            is_irq = bool((trap_cause or 0) & MCAUSE_INTERRUPT_BIT)
+            if is_irq:
+                irq_take_count += 1
+                trap_q = bool(_read_bool(trap_taken_reg_dbg_sig))
+                flush_all = bool(_read_bool(flush_all_live_sig))
+                trap_pc = _read_int(trap_pc_internal_live_sig)
+                rob_trap_pc = _read_int(rob_trap_pc_live_sig)
+                interrupt_resume_pc = _read_int(interrupt_resume_pc_live_sig)
+                c0_valid = bool(_read_bool(commit_valid_live_sig))
+                c1_valid = bool(_read_bool(commit1_valid_sig))
+                c0_pc = _read_int(commit_pc_live_sig)
+                c1_pc = _read_int(commit1_pc_sig)
+                reg0_sensitive = commit_writes_x1_x2_at_pc(
+                    rob_commit0_reg_valid_sig,
+                    rob_commit0_reg_pc_sig,
+                    rob_commit0_reg_dest_valid_sig,
+                    rob_commit0_reg_dest_rf_sig,
+                    rob_commit0_reg_dest_reg_sig,
+                    trap_pc,
                 )
-                stale_sp_body = (
-                    callee_lo + 4 <= trap_pc < callee_hi and not x2_from_callee
+                reg1_sensitive = commit_writes_x1_x2_at_pc(
+                    rob_commit1_reg_valid_sig,
+                    rob_commit1_reg_pc_sig,
+                    rob_commit1_reg_dest_valid_sig,
+                    rob_commit1_reg_dest_rf_sig,
+                    rob_commit1_reg_dest_reg_sig,
+                    trap_pc,
                 )
 
-            if trap and is_irq:
+                stale_sp_body = False
+                if trap_pc is not None and irq_precision_callee_range:
+                    callee_lo, callee_hi = irq_precision_callee_range
+                    x2_from_callee = (
+                        current_x2_commit_pc is not None
+                        and callee_lo <= current_x2_commit_pc < callee_hi
+                    )
+                    stale_sp_body = (
+                        irq_precision_callee_body <= trap_pc < callee_hi
+                        and not x2_from_callee
+                    )
+
                 event = (
                     f"IRQ precision event cycle={cycle + 1} "
                     f"cause=0x{(trap_cause or 0):08x} trap_pc=0x{(trap_pc or 0):08x} "
@@ -2788,42 +3275,43 @@ async def run_until_complete(
                     irq_precision_events.append(event)
                     cocotb.log.info(event)
 
-                raw_commit_collision = c0_valid or c1_valid
-                sensitive_pc_write = (
-                    raw0_sensitive or raw1_sensitive or reg0_sensitive or reg1_sensitive
-                )
-                if irq_precision_strict and (
-                    raw_commit_collision or sensitive_pc_write or stale_sp_body
-                ):
+                # Only the registered commit bus counts. An unregistered
+                # commit can share the take cycle; the full flush that follows
+                # masks it on the registered bus (commit_bus_pipeline), and
+                # the instruction at the saved PC runs again after the handler.
+                # A registered commit has already advanced
+                # interrupt_resume_pc, so the rule also flags a correct take
+                # inside a one- or two-instruction loop whose first
+                # instruction writes x1 or x2.
+                sensitive_pc_write = reg0_sensitive or reg1_sensitive
+                if irq_precision_strict and (sensitive_pc_write or stale_sp_body):
                     raise AssertionError(
                         "IRQ precision violation: "
-                        f"raw_commit={raw_commit_collision} "
                         f"x1_x2_same_pc={sensitive_pc_write} "
                         f"stale_sp_body={stale_sp_body}; {event}"
                     )
 
-            low_ra_events = []
-            for port_name, we_sig, addr_sig, data_sig in (
-                ("p0", port0_int_we_sig, port0_int_addr_sig, port0_int_data_sig),
-                ("p1", port1_int_we_sig, port1_int_addr_sig, port1_int_data_sig),
-            ):
-                data_value = _read_int(data_sig)
-                if (
-                    bool(_read_bool(we_sig))
-                    and _read_int(addr_sig) == 1
-                    and data_value is not None
-                    and data_value < 0x1000
+            if irq_low_ra_assert:
+                low_ra_events = []
+                for port_name, we_sig, addr_sig, data_sig in (
+                    ("p0", port0_int_we_sig, port0_int_addr_sig, port0_int_data_sig),
+                    ("p1", port1_int_we_sig, port1_int_addr_sig, port1_int_data_sig),
                 ):
-                    low_ra_events.append(f"{port_name}=0x{data_value:08x}")
-            if irq_low_ra_assert and low_ra_events:
-                raise AssertionError(
-                    "Low RA writeback under IRQ monitor: "
-                    f"cycle={cycle + 1} {' '.join(low_ra_events)} "
-                    f"trap={int(trap)} irq={int(is_irq)} "
-                    f"cause=0x{(trap_cause or 0):08x} "
-                    f"trap_pc=0x{(trap_pc or 0):08x} "
-                    f"mepc=0x{(_read_int(csr_mepc_live_sig) or 0):08x}"
-                )
+                    if bool(_read_bool(we_sig)) and _read_int(addr_sig) == 1:
+                        data_value = _read_int(data_sig)
+                        if data_value is not None and data_value < 0x1000:
+                            low_ra_events.append(f"{port_name}=0x{data_value:08x}")
+                if low_ra_events:
+                    cause_now = _read_int(trap_cause_internal_live_sig) or 0
+                    raise AssertionError(
+                        "Low RA writeback under IRQ monitor: "
+                        f"cycle={cycle + 1} {' '.join(low_ra_events)} "
+                        f"trap={int(trap)} "
+                        f"irq={int(bool(cause_now & MCAUSE_INTERRUPT_BIT))} "
+                        f"cause=0x{cause_now:08x} "
+                        f"trap_pc=0x{(_read_int(trap_pc_internal_live_sig) or 0):08x} "
+                        f"mepc=0x{(_read_int(csr_mepc_live_sig) or 0):08x}"
+                    )
 
         for we_sig, addr_sig, data_sig, pc_sig in (
             (
@@ -2843,9 +3331,16 @@ async def run_until_complete(
                 last_x2_commit = _read_int(data_sig)
                 last_x2_commit_pc = _read_int(pc_sig)
 
-        if _read_bool(int_rf_write_enable_sig):
-            commit_addr = _read_int(int_rf_write_addr_sig)
-            commit_data = _read_int(int_rf_write_data_sig)
+        for (
+            write_we_sig,
+            write_addr_sig,
+            write_data_sig,
+            write_pc_sig,
+        ) in int_rf_write_ports:
+            if not _read_bool(write_we_sig):
+                continue
+            commit_addr = _read_int(write_addr_sig)
+            commit_data = _read_int(write_data_sig)
             if commit_addr == 2:
                 last_x2_commit = commit_data
             elif commit_addr == 5:
@@ -2867,35 +3362,31 @@ async def run_until_complete(
                 and commit_addr == 13
                 and len(control_flow_debug_events) < control_flow_debug_limit
             ):
-                commit_pc = _read_int(commit_pc_live_sig)
+                commit_pc = _read_int(write_pc_sig)
                 if in_trace_window(commit_pc):
                     control_flow_debug_events.append(
                         "wrx13  "
                         f"cycle={cycle + 1} "
                         f"data=0x{(commit_data or 0):08x} "
-                        f"commit_pc=0x{(commit_pc or 0):08x} "
-                        f"commit_v={int(bool(_read_bool(commit_valid_live_sig)))}"
+                        f"commit_pc=0x{(commit_pc or 0):08x}"
                     )
+        # Slot 2 commits only beside slot 1. It counts toward the progress
+        # line and the PC histogram; the traces below follow slot 1.
+        if _read_bool(retire_2_sig):
+            retired_count += 1
+            retire_2_pc = _read_int(retire_2_pc_sig)
+            if retire_2_pc is not None:
+                retired_pc_hist[retire_2_pc] += 1
         if _read_bool(retire_sig):
             retired_count += 1
             retire_pc = _read_int(retire_pc_sig)
             if retire_pc is not None:
                 retired_pc_hist[retire_pc] += 1
                 if (
-                    coremark_retire_trace_path is not None
-                    and coremark_matrix_base_pc is not None
-                    and coremark_matrix_last_pc is not None
-                    and coremark_matrix_base_pc <= retire_pc <= coremark_matrix_last_pc
-                    and len(coremark_matrix_retire_trace) < 20000
+                    coremark_retire_trace_file is not None
+                    and coremark_retire_trace_count < coremark_retire_trace_limit
                 ):
-                    coremark_matrix_retire_trace.append(
-                        f"cycle={cycle + 1} "
-                        f"pc=0x{retire_pc:08x} "
-                        f"off=0x{(retire_pc - coremark_matrix_base_pc):04x} "
-                        f"mispred={int(bool(_read_bool(retire_mispredict_sig)))} "
-                        f"pred_taken={int(bool(_read_bool(commit_predicted_taken_live_sig)))} "
-                        f"branch_taken={int(bool(_read_bool(commit_branch_taken_live_sig)))}"
-                    )
+                    sample_coremark_retire_trace(cycle + 1, retire_pc)
                 if (
                     is_coremark_like
                     and len(coremark_return_events) < coremark_return_limit
@@ -2953,7 +3444,6 @@ async def run_until_complete(
                     f"retire_pc=0x{retire_pc:08x} "
                     f"fetch_pc=0x{(pc or 0):08x} "
                     f"pred_off={_read_bool(branch_pred_off_sig)} "
-                    f"fe_cf_pending={_read_bool(fe_cf_pending_sig)} "
                     f"cf_hold={_read_bool(if_control_flow_holdoff_sig)} "
                     f"br_taken={_read_bool(branch_taken_live_sig)} "
                     f"br_target=0x{(_read_int(branch_target_live_sig) or 0):08x} "
@@ -2961,9 +3451,6 @@ async def run_until_complete(
                     f"btb_pred_taken={_read_bool(btb_pred_taken_sig)} "
                     f"pred_used={_read_bool(pred_used_sig)} "
                     f"pred_holdoff={_read_bool(pred_holdoff_sig)} "
-                    f"if_ras={_read_bool(if_ras_pred_sig)} "
-                    f"pd_ras={_read_bool(pd_ras_pred_sig)} "
-                    f"id_ras={_read_bool(id_ras_pred_sig)} "
                     f"mispredict={_read_bool(retire_mispredict_sig)} "
                     f"redirect_pc=0x{(_read_int(redirect_pc_sig) or 0):08x}"
                 )
@@ -3030,65 +3517,63 @@ async def run_until_complete(
                         f"a0_tag={_read_int(rat_a0_tag_sig)}"
                     )
 
-        if coremark_if_check_enabled and coremark_matrix_expected:
-            if_pc = _read_int(if_pc_sig)
-            pd_pc = _read_int(pd_pc_sig)
-            pd_instr = _read_int(pd_instr_sig)
-            id_pc = _read_int(id_pc_sig)
-            retire_pc = _read_int(retire_pc_sig) if _read_bool(retire_sig) else None
-            if if_pc in coremark_matrix_expected:
-                expected_bits, expected_width = coremark_matrix_expected[if_pc]
-                sel_nop = bool(_read_bool(if_sel_nop_sig))
-                sel_compressed = bool(_read_bool(if_sel_compressed_sig))
-                raw = _read_int(if_raw_parcel_sig) or 0
-                effective_instr = _read_int(if_effective_instr_sig) or 0
-
-                if not sel_nop:
-                    mismatch = False
-                    if expected_width == 16:
-                        mismatch = (not sel_compressed) or (raw != expected_bits)
-                    else:
-                        # 64-bit fetch assembles spanning instructions inside IF,
-                        # so effective_instr carries the whole 32-bit word at both
-                        # word- and halfword-aligned PCs.
-                        mismatch = sel_compressed or (effective_instr != expected_bits)
-
-                    if mismatch:
-                        raise AssertionError(
-                            format_coremark_if_mismatch(
-                                stage="if",
-                                pc=if_pc,
-                                expected_bits=expected_bits,
-                                expected_width=expected_width,
-                                raw=raw,
-                                sel_nop=sel_nop,
-                                sel_compressed=sel_compressed,
-                                effective_instr=effective_instr,
-                                pd_pc=pd_pc,
-                                pd_instr=pd_instr,
-                                id_pc=id_pc,
-                                retire_pc=retire_pc,
-                            )
-                        )
-
-            if pd_pc in coremark_matrix_expected and pd_instr not in {None, 0x00000013}:
-                expected_bits, expected_width = coremark_matrix_expected[pd_pc]
-                if expected_width == 32 and pd_instr != expected_bits:
+        if (
+            coremark_if_check_enabled
+            and coremark_if_check_slot2 is not None
+            and coremark_if_check_rvc_expand is not None
+            and _read_bool(coremark_if_check_alloc_sig)
+        ):
+            # Compare each instruction as it dispatches: the decoded bundle
+            # queue pops its head bundle when ROB allocation fires, and slot
+            # 2 dispatches with slot 1 exactly when its is_real bit is set.
+            # A slot-2 instruction follows slot 1 sequentially (a slot-1
+            # branch ends the bundle), so slot 2 is read only near the
+            # function. A compressed instruction reaches decode expanded, so a
+            # 16-bit parcel is compared with its expansion by rvc_expand, the
+            # offline predecode generator's model. CoreMark takes no fetch
+            # faults, so every dispatched packet holds the word fetched from
+            # its PC.
+            slot1_pc = _read_int(id_pc_sig)
+            dispatched = [(1, slot1_pc, _read_int(id_instr_sig))]
+            if (
+                slot1_pc is not None
+                and coremark_if_check_lo - 4 <= slot1_pc < coremark_if_check_hi
+            ):
+                slot2 = coremark_if_check_slot2
+                packet_2 = slot2.read()
+                if packet_2 is None:
                     raise AssertionError(
-                        format_coremark_if_mismatch(
-                            stage="pd",
-                            pc=pd_pc,
-                            expected_bits=expected_bits,
-                            expected_width=expected_width,
-                            raw=_read_int(if_raw_parcel_sig) or 0,
-                            sel_nop=bool(_read_bool(if_sel_nop_sig)),
-                            sel_compressed=bool(_read_bool(if_sel_compressed_sig)),
-                            effective_instr=_read_int(if_effective_instr_sig) or 0,
-                            pd_pc=pd_pc,
-                            pd_instr=pd_instr,
-                            id_pc=id_pc,
-                            retire_pc=retire_pc,
+                        f"CoreMark IF check: from_id_to_ex_2 is unresolvable at "
+                        f"cycle={cycle + 1}"
+                    )
+                if slot2.field(packet_2, "is_real"):
+                    dispatched.append(
+                        (
+                            2,
+                            slot2.field(packet_2, "program_counter"),
+                            slot2.field(packet_2, "instruction"),
                         )
+                    )
+            for slot, dispatch_pc, dispatch_instr in dispatched:
+                if dispatch_pc is None:
+                    continue
+                expected = coremark_matrix_expected.get(dispatch_pc)
+                if expected is None:
+                    continue
+                word, width = expected
+                if width == 16:
+                    expected_instr = coremark_if_check_rvc_expand(word)[0]
+                    sw_s_text = f"0x{word:04x}, which expands to 0x{expected_instr:08x}"
+                    coremark_if_check_compressed += 1
+                else:
+                    expected_instr = word
+                    sw_s_text = f"0x{word:08x}"
+                coremark_if_check_count += 1
+                if dispatch_instr != expected_instr:
+                    raise AssertionError(
+                        f"CoreMark IF check mismatch at cycle={cycle + 1}: "
+                        f"dispatch slot {slot} pc=0x{dispatch_pc:08x} holds "
+                        f"0x{(dispatch_instr or 0):08x}, sw.S has {sw_s_text}"
                     )
 
         if is_coremark_like and len(coremark_matrix_events) < coremark_matrix_limit:
@@ -3298,19 +3783,11 @@ async def run_until_complete(
                     f"eff=0x{(_read_int(if_effective_instr_sig) or 0):08x} "
                     f"sel_nop={_read_bool(if_sel_nop_live_sig)} "
                     f"sel_comp={_read_bool(if_sel_compressed_sig)} "
-                    f"is_comp_pc={_read_bool(if_is_compressed_for_pc_sig)} "
-                    f"is32span={_read_bool(if_is_32bit_spanning_sig)} "
-                    f"span_wait={_read_bool(if_spanning_wait_sig)} "
-                    f"span_run={_read_bool(if_spanning_in_progress_sig)} "
                     f"use_buf={_read_bool(if_use_instr_buffer_sig)} "
-                    f"use_buf_pred={_read_bool(if_use_buffer_after_prediction_sig)} "
                     f"prev_lo={_read_bool(if_prev_compressed_lo_sig)} "
-                    f"prev32={_read_bool(pc_prev_was_32bit_sig)} "
-                    f"mid32={_read_bool(pc_mid_32bit_sig)} "
                     f"seq_next_pc_reg=0x{(_read_int(pc_seq_next_pc_reg_sig) or 0):08x} "
                     f"next_pc_reg=0x{(_read_int(pc_next_pc_reg_sig) or 0):08x} "
                     f"pred_off={_read_bool(branch_pred_off_sig)} "
-                    f"fe_cf_pending={_read_bool(fe_cf_pending_sig)} "
                     f"stall={_read_bool(if_stall_sig)} "
                     f"stall_r={_read_bool(if_stall_registered_sig)} "
                     f"dispatch_stall={_read_bool(dispatch_stall_sig)} "
@@ -3318,7 +3795,6 @@ async def run_until_complete(
                     f"stall_q={_read_bool(front_end_stall_q_sig)} "
                     f"replay_q={_read_bool(replay_after_dispatch_stall_q_sig)} "
                     f"replay_ser_q={_read_bool(replay_after_serialize_stall_q_sig)} "
-                    f"br_inflight={_read_int(branch_in_flight_count_sig)} "
                     f"cf_hold={_read_bool(if_control_flow_holdoff_sig)} "
                     f"br_taken={_read_bool(branch_taken_live_sig)} "
                     f"br_target=0x{(_read_int(branch_target_live_sig) or 0):08x} "
@@ -3328,18 +3804,16 @@ async def run_until_complete(
                     f"pred_holdoff={_read_bool(pred_holdoff_sig)} "
                     f"pend_active={_read_bool(pending_prediction_active_sig)} "
                     f"pend_fetch_hold={_read_bool(pending_prediction_fetch_holdoff_sig)} "
-                    f"if_ras={_read_bool(if_ras_pred_sig)} "
                     f"if_ckpt={_read_int(if_ras_ckpt_tos_sig)}/{_read_int(if_ras_ckpt_vc_sig)} "
                     f"pd_ckpt={_read_int(pd_ras_ckpt_tos_sig)}/{_read_int(pd_ras_ckpt_vc_sig)} "
                     f"id_ckpt={_read_int(id_ras_ckpt_tos_sig)}/{_read_int(id_ras_ckpt_vc_sig)} "
-                    f"ras_call={_read_bool(ras_is_call_sig)} "
-                    f"ras_ret={_read_bool(ras_is_return_sig)} "
+                    f"ras_push={_read_bool(ras_is_call_sig)} "
+                    f"ras_pop={_read_bool(ras_is_return_sig)} "
                     f"ras_tgt=0x{(_read_int(ras_target_live_sig) or 0):08x} "
                     f"ras_tos={_read_int(ras_tos_sig)} "
                     f"ras_vc={_read_int(ras_valid_count_sig)} "
                     f"ras_do_pop={_read_bool(ras_do_pop_sig)} "
                     f"ras_do_push={_read_bool(ras_do_push_sig)} "
-                    f"ras_cap={_read_bool(ras_capture_inputs_sig)} "
                     f"ras_wen={_read_bool(ras_write_enable_sig)} "
                     f"ras_wdata=0x{(_read_int(ras_write_data_sig) or 0):08x} "
                     f"link=0x{(_read_int(ras_link_address_sig) or 0):08x} "
@@ -3408,8 +3882,7 @@ async def run_until_complete(
                     f"x19={last_x19_commit} "
                     f"if_pc=0x{if_pc:08x} "
                     f"sel_nop={_read_bool(if_sel_nop_sig)} "
-                    f"raw=0x{(_read_int(if_raw_parcel_sig) or 0):04x} "
-                    f"ras={_read_bool(if_ras_pred_sig)}"
+                    f"raw=0x{(_read_int(if_raw_parcel_sig) or 0):04x}"
                 )
             pd_pc = _read_int(pd_pc_sig)
             if in_trace_window(pd_pc):
@@ -3422,8 +3895,7 @@ async def run_until_complete(
                     f"x10={last_x10_commit} "
                     f"x19={last_x19_commit} "
                     f"pd_pc=0x{pd_pc:08x} "
-                    f"instr=0x{(_read_int(pd_instr_sig) or 0):08x} "
-                    f"ras={_read_bool(pd_ras_pred_sig)}"
+                    f"instr=0x{(_read_int(pd_instr_sig) or 0):08x}"
                 )
             id_pc = _read_int(id_pc_sig)
             if in_trace_window(id_pc):
@@ -3436,8 +3908,7 @@ async def run_until_complete(
                     f"x10={last_x10_commit} "
                     f"x19={last_x19_commit} "
                     f"id_pc=0x{id_pc:08x} "
-                    f"op={_read_int(id_op_sig)} "
-                    f"ras={_read_bool(id_ras_pred_sig)}"
+                    f"op={_read_int(id_op_sig)}"
                 )
             issue_pc = _read_int(issue_pc_sig)
             if _read_bool(issue_valid_sig) and in_trace_window(issue_pc):
@@ -3463,8 +3934,6 @@ async def run_until_complete(
             rob_count = _read_int(rob_count_sig)
             dispatch_stall = _read_bool(dispatch_stall_sig)
             branch_pred_off = _read_bool(branch_pred_off_sig)
-            branch_in_flight_count = _read_int(branch_in_flight_count_sig)
-            fe_cf_pending = _read_bool(fe_cf_pending_sig)
             lq_issue_mem_found = _read_bool(lq_issue_mem_found_sig)
             lq_sq_check_valid = _read_bool(lq_sq_check_valid_sig)
             lq_sq_can_issue = _read_bool(lq_sq_can_issue_sig)
@@ -3476,30 +3945,18 @@ async def run_until_complete(
                 if_pc = _read_int(if_pc_sig)
                 pd_pc = _read_int(pd_pc_sig)
                 id_pc = _read_int(id_pc_sig)
-                if_cf_pending = _read_bool(if_cf_pending_sig)
-                pd_cf_pending = _read_bool(pd_cf_pending_sig)
-                id_cf_pending = _read_bool(id_cf_pending_sig)
                 if_btb_pred = _read_bool(if_btb_pred_sig)
-                if_ras_pred = _read_bool(if_ras_pred_sig)
                 pd_btb_pred = _read_bool(pd_btb_pred_sig)
-                pd_ras_pred = _read_bool(pd_ras_pred_sig)
                 id_btb_pred = _read_bool(id_btb_pred_sig)
-                id_ras_pred = _read_bool(id_ras_pred_sig)
                 pd_instr = _read_int(pd_instr_sig)
                 id_op = _read_int(id_op_sig)
                 cf_debug_suffix = (
-                    f" if_cf_pending={if_cf_pending}"
-                    f" pd_cf_pending={pd_cf_pending}"
-                    f" id_cf_pending={id_cf_pending}"
                     f" if_pc=0x{(if_pc or 0):08x}"
                     f" pd_pc=0x{(pd_pc or 0):08x}"
                     f" id_pc=0x{(id_pc or 0):08x}"
                     f" if_btb={if_btb_pred}"
-                    f" if_ras={if_ras_pred}"
                     f" pd_btb={pd_btb_pred}"
-                    f" pd_ras={pd_ras_pred}"
                     f" id_btb={id_btb_pred}"
-                    f" id_ras={id_ras_pred}"
                     f" pd_instr=0x{(pd_instr or 0):08x}"
                     f" id_op={id_op}"
                 )
@@ -3525,8 +3982,6 @@ async def run_until_complete(
                 f"issue_pc=0x{(_read_int(issue_pc_live_sig) or 0):08x} "
                 f"ckpt_avail={_read_bool(checkpoint_available_live_sig)} "
                 f"branch_pred_off={branch_pred_off} "
-                f"branch_in_flight_count={branch_in_flight_count} "
-                f"fe_cf_pending={fe_cf_pending} "
                 f"lq_issue_mem_found={lq_issue_mem_found} "
                 f"lq_sq_check_valid={lq_sq_check_valid} "
                 f"lq_sq_can_issue={lq_sq_can_issue} "
@@ -3575,7 +4030,7 @@ async def run_until_complete(
                     await RisingEdge(dut.i_clk)
                 break
 
-    dump_coremark_retire_trace()
+    close_coremark_retire_trace()
     print("\n")  # Newline after UART output
     cocotb.log.info(f"Run {run_number} completed after {cycle + 1} cycles")
 
@@ -3598,7 +4053,7 @@ async def run_until_complete(
                 "Coremark retire samples captured for "
                 + str(coremark_retire_trace_symbol)
                 + ": "
-                + str(len(coremark_matrix_retire_trace))
+                + str(coremark_retire_trace_count)
             )
         if is_coremark_like and coremark_matrix_events:
             cocotb.log.error(
@@ -3685,6 +4140,28 @@ async def run_until_complete(
                 f"Run {run_number} failed: program did not print expected text "
                 f"'{initial_text}' within {max_cycles} cycles"
             )
+
+    if coremark_if_check_enabled:
+        if coremark_if_check_count == 0:
+            raise AssertionError(
+                f"Run {run_number}: FROST_COREMARK_IF_CHECK=1 compared no "
+                f"instructions of {coremark_if_check_symbol}"
+            )
+        cocotb.log.info(
+            f"Run {run_number}: CoreMark IF check compared "
+            f"{coremark_if_check_count} dispatched instructions of "
+            f"{coremark_if_check_symbol} with sw.S "
+            f"({coremark_if_check_compressed} of them compressed)"
+        )
+    if irq_precision_check:
+        if irq_take_count == 0:
+            raise AssertionError(
+                f"Run {run_number}: FROST_IRQ_PRECISION_CHECK=1 saw no interrupt taken"
+            )
+        cocotb.log.info(
+            f"Run {run_number}: IRQ precision check saw {irq_take_count} "
+            f"interrupt{'' if irq_take_count == 1 else 's'} taken"
+        )
 
 
 async def run_uart_echo_interaction(
@@ -3793,8 +4270,8 @@ async def test_real_program(dut: Any) -> None:
     elif app_name == "mem_divergence_probe":
         max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
     elif app_name == "linux_irq_active_ddr_test":
-        # 72 swept ticks with 30k-iteration sentinel spin-waits: ~510k cycles
-        # at rv64, just over the generic default.
+        # 72 timer ticks and the 30k-iteration sentinel spin-waits run just
+        # past the generic budget.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
     else:
         max_cycles = MAX_CYCLES
@@ -3808,6 +4285,10 @@ async def test_real_program(dut: Any) -> None:
     # Start UART monitor (runs across every program run)
     uart_monitor = UartMonitor(dut)
     await uart_monitor.start()
+    line_monitor = None
+    if os.environ.get("FROST_UART_LINE_CHECK") == "1":
+        line_monitor = UartLineMonitor(dut)
+        await line_monitor.start()
 
     # Optional trap/MRET deadlock wedge observer (pure instrumentation).
     if os.environ.get("FROST_WEDGE_MONITOR") == "1":
@@ -3821,13 +4302,29 @@ async def test_real_program(dut: Any) -> None:
         uart_driver = UartRxDriver(dut)
         debug_monitor = UartMmioDebugMonitor(dut)
         await debug_monitor.start()
+    elif app_name == "fs_off_test":
+        # fs_off_test checks that a trapping FS=Off FP load leaves a waiting
+        # UART RX byte unread; the bench sends it (0x5A) once per run.
+        uart_driver = UartRxDriver(dut)
     nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
+    wfi_watch = WfiRecoveryWatch(dut) if app_name == "wfi_seed_recovery" else None
+    if wfi_watch is not None:
+        cocotb.start_soon(wfi_watch.run())
+    coverage = (
+        CoverageCounter(dut, *COVERAGE_POINTS[app_name])
+        if app_name in COVERAGE_POINTS
+        else None
+    )
+    if coverage is not None:
+        cocotb.start_soon(coverage.run())
 
     for run_number in range(1, NUM_RUNS + 1):
         if run_number > 1:
             # Reset between runs
             cocotb.log.info(f"=== Asserting reset for {RESET_CYCLES} cycles ===")
             uart_monitor.clear()
+            if line_monitor is not None:
+                line_monitor.clear()
             dut.i_rst_n.value = 0
             if hasattr(dut, "i_uart_rx"):
                 dut.i_uart_rx.value = 1
@@ -3844,8 +4341,8 @@ async def test_real_program(dut: Any) -> None:
                 dut.i_uart_rx.value = 1
             if hasattr(dut, "i_external_interrupt"):
                 dut.i_external_interrupt.value = 0
-            await Timer(2 * CLK_PERIOD_NS, unit="ns")
-            await RisingEdge(dut.i_clk)
+            for _ in range(RESET_CYCLES):
+                await RisingEdge(dut.i_clk)
             dut.i_rst_n.value = 1
 
         cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
@@ -3863,6 +4360,9 @@ async def test_real_program(dut: Any) -> None:
         else:
             if nic_peer is not None:
                 nic_peer.start_run()
+            if app_name == "fs_off_test":
+                assert uart_driver is not None
+                cocotb.start_soon(uart_driver.send(b"\x5a"))
             await run_until_complete(
                 dut,
                 uart_monitor,
@@ -3875,10 +4375,24 @@ async def test_real_program(dut: Any) -> None:
             )
             if nic_peer is not None:
                 nic_peer.verify()
-        log_ras_stats(run_number, read_ras_stats(dut))
+        if line_monitor is not None:
+            await check_uart_line(dut, uart_monitor, line_monitor)
 
     uart_monitor.stop()
+    if line_monitor is not None:
+        line_monitor.stop()
     if debug_monitor:
         debug_monitor.stop()
+
+    if wfi_watch is not None:
+        # Without a hit the program no longer produces the case under test.
+        assert wfi_watch.hits > 0, "no wrong-path WFI reached the ROB head in recovery"
+        cocotb.log.info(
+            f"wrong-path WFI at the ROB head in recovery: {wfi_watch.hits} cycles"
+        )
+
+    if coverage is not None:
+        assert coverage.hits > 0, f"the program never reached a {coverage.label}"
+        cocotb.log.info(f"{coverage.label}: {coverage.hits} cycles")
 
     cocotb.log.info(f"=== All {NUM_RUNS} run(s) completed successfully ===")

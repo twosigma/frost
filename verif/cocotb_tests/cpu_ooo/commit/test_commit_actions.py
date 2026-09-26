@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for the extracted CPU OOO commit action block."""
+"""Unit tests for commit_actions: commit register writes, delayed CSR writeback, and instret."""
 
 from collections.abc import Mapping
 from typing import Any
@@ -46,7 +46,7 @@ async def setup_test(dut: Any) -> None:
     dut.i_rob_commit_2.value = 0
     dut.i_rob_commit_valid.value = 0
     dut.i_csr_read_data.value = 0
-    dut.i_trap_taken.value = 0
+    dut.i_retired_without_commit.value = 0
     await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
     dut.i_rst.value = 0
@@ -198,8 +198,12 @@ async def test_slot2_fp_commit_writes_port1_fp(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_exception_and_trap_suppress_retire_count(dut: Any) -> None:
-    """Exceptions and trap-taken cycles do not increment instret."""
+async def test_exception_suppresses_and_retire_without_commit_adds(dut: Any) -> None:
+    """An exception does not increment instret; a retirement without commit adds one.
+
+    A registered commit counts whatever the trap unit does in its cycle: it
+    retired a cycle earlier, and the flush masks the bus only after a take.
+    """
     await setup_test(dut)
 
     drive_commit(
@@ -219,12 +223,21 @@ async def test_exception_and_trap_suppress_retire_count(dut: Any) -> None:
     assert int(dut.o_instruction_retired_count.value) == 0
     assert_port0_idle(dut)
 
-    drive_commit(dut, slot1={"valid": True})
-    dut.i_trap_taken.value = 1
+    clear_commit(dut)
+    dut.i_retired_without_commit.value = 1
+    await Timer(1, unit="ns")
+
+    assert not dut.o_vld.value
+    assert int(dut.o_instruction_retired_count.value) == 1
+    assert_port0_idle(dut)
+    assert_port1_idle(dut)
+
+    dut.i_retired_without_commit.value = 0
+    drive_commit(dut, slot1={"valid": True}, slot2={"valid": True})
     await Timer(1, unit="ns")
 
     assert dut.o_vld.value
-    assert int(dut.o_instruction_retired_count.value) == 0
+    assert int(dut.o_instruction_retired_count.value) == 2
 
 
 @cocotb.test()

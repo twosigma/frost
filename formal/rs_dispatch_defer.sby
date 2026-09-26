@@ -1,0 +1,28 @@
+[tasks]
+bmc
+bmc_repair
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv sdp_dist_ram.sv mwp_dist_ram.sv mwp_dist_ram_ohread.sv rs_issue2_selector.sv
+read -formal -D SYNTHESIS -D RS_PRETAG_LOCAL_PROOF -D RS_DISPATCH_DEFER_LOCAL_PROOF -sv reservation_station.sv
+bmc: chparam -set DISPATCH_REPAIR_BYPASS 0 reservation_station
+bmc_repair: chparam -set DISPATCH_REPAIR_BYPASS 1 reservation_station
+prep -top reservation_station
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 7 t:$check
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram.sv
+../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv

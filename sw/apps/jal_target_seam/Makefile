@@ -12,7 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Fetch-seam directed reproducer with a self-defined _start (no crt0.S).
+# Directed test: a jal entered as a taken-branch target at dword offset 4.
+# The source defines its own _start (no crt0.S).
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imac_zicsr
 ABI := $(FROST_INT_ABI)

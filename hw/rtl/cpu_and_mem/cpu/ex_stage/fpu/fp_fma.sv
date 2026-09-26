@@ -41,7 +41,7 @@
     Stage 5A: add/subtract
     Stage 5B: leading zero count on the sum
     Stage 6:  normalize the sum
-    Stage 7A: subnormal shift, rounding-bit extraction
+    Stage 7A: subnormal shift, rounding-bit extraction, tininess
     Stage 7B: round-up decision
     Stage 8:  rounding increment and result formatting (fp_result_assembler)
     Stage 9:  output register
@@ -78,16 +78,9 @@ module fp_fma #(
   localparam logic [ExpBits-1:0] ExpMax = {ExpBits{1'b1}};
   localparam logic [FP_WIDTH-1:0] CanonicalNan = {1'b0, ExpMax, 1'b1, {FracBits - 1{1'b0}}};
 
-  localparam int unsigned MultATileWidth = 27;
-  localparam int unsigned MultBTileWidth = 35;
-  localparam int unsigned MultNumATiles = (MantBits + MultATileWidth - 1) / MultATileWidth;
-  localparam int unsigned MultNumBTiles = (MantBits + MultBTileWidth - 1) / MultBTileWidth;
-  localparam int unsigned MultNumTerms = MultNumATiles * MultNumBTiles;
-  localparam int unsigned MultReduceStages = (MultNumTerms <= 1) ? 0 : $clog2(MultNumTerms);
-  localparam int unsigned MultMinLatency = 3;
-  localparam int unsigned MultReduceLatency = MultReduceStages + 1;
-  localparam int unsigned MultLatency =
-      (MultReduceLatency < MultMinLatency) ? MultMinLatency : MultReduceLatency;
+  // Depth of dsp_tiled_multiplier_unsigned at its default 27x35 tiling. The
+  // metadata shift chain is this long, so it must match the multiplier's depth.
+  localparam int unsigned MultLatency = riscv_pkg::dsp_tiled_stages(MantBits, MantBits, 27, 35);
   // Input registers
   logic [FP_WIDTH-1:0] operand_a_reg;
   logic [FP_WIDTH-1:0] operand_b_reg;
@@ -167,6 +160,9 @@ module fp_fma #(
   logic                is_special;
   logic [FP_WIDTH-1:0] special_result;
   logic                special_invalid;
+  logic                inf_times_zero;
+
+  assign inf_times_zero = (is_inf_a && is_zero_b) || (is_zero_a && is_inf_b);
 
   always_comb begin
     is_special = 1'b0;
@@ -176,8 +172,9 @@ module fp_fma #(
     if (is_nan_a || is_nan_b || is_nan_c) begin
       is_special = 1'b1;
       special_result = CanonicalNan;
-      special_invalid = is_snan_a | is_snan_b | is_snan_c;
-    end else if ((is_inf_a && is_zero_b) || (is_zero_a && is_inf_b)) begin
+      // Infinity times zero is invalid even when the addend is a quiet NaN.
+      special_invalid = is_snan_a | is_snan_b | is_snan_c | inf_times_zero;
+    end else if (inf_times_zero) begin
       is_special = 1'b1;
       special_result = CanonicalNan;
       special_invalid = 1'b1;
@@ -255,7 +252,7 @@ module fp_fma #(
   logic                          mult_special_invalid[MultLatency];
 
   // =========================================================================
-  // Stage 2B -> Stage 3 Pipeline Registers (after DSP pipeline, before LZC)
+  // Stage 2 -> Stage 3 Pipeline Registers (after DSP pipeline, before LZC)
   // =========================================================================
 
   logic        [   ProdBits-1:0] prod_mant_s3;
@@ -357,9 +354,14 @@ module fp_fma #(
   always_comb begin
     exp_large = (prod_exp_s4 >= c_exp_s4) ? prod_exp_s4 : c_exp_s4;
 
-    shift_prod_signed = $signed({exp_large[ExpExtBits-1], exp_large}) -
+    // Align only the operand with the smaller exponent. Each shift amount is
+    // the signed difference of the two exponents, clamped to [0, ProdBits].
+    // That equals exp_large minus the operand's exponent, clamped the same
+    // way, without a max-exponent mux in front of the subtractors; the
+    // fp_fma_align formal target checks the equality.
+    shift_prod_signed = $signed({c_exp_s4[ExpExtBits-1], c_exp_s4}) -
         $signed({prod_exp_s4[ExpExtBits-1], prod_exp_s4});
-    shift_c_signed = $signed({exp_large[ExpExtBits-1], exp_large}) -
+    shift_c_signed = $signed({prod_exp_s4[ExpExtBits-1], prod_exp_s4}) -
         $signed({c_exp_s4[ExpExtBits-1], c_exp_s4});
 
     if (shift_prod_signed < 0) shift_prod_amt = '0;
@@ -370,6 +372,27 @@ module fp_fma #(
     else if (shift_c_signed >= ProdBitsSigned) shift_c_amt = ShiftBits'(ProdBits);
     else shift_c_amt = shift_c_signed[ShiftBits-1:0];
   end
+
+`ifdef FP_FMA_ALIGN_LOCAL_PROOF
+  // fp_fma_align: the shift amounts equal the reference form, which subtracts
+  // each exponent from exp_large.
+  logic signed [ExpExtBits:0] f_shift_prod, f_shift_c;
+  logic [ShiftBits-1:0] f_amt_prod, f_amt_c;
+  always_comb begin
+    f_shift_prod = $signed({exp_large[ExpExtBits-1], exp_large}) -
+        $signed({prod_exp_s4[ExpExtBits-1], prod_exp_s4});
+    f_shift_c = $signed({exp_large[ExpExtBits-1], exp_large}) -
+        $signed({c_exp_s4[ExpExtBits-1], c_exp_s4});
+    if (f_shift_prod < 0) f_amt_prod = '0;
+    else if (f_shift_prod >= ProdBitsSigned) f_amt_prod = ShiftBits'(ProdBits);
+    else f_amt_prod = f_shift_prod[ShiftBits-1:0];
+    if (f_shift_c < 0) f_amt_c = '0;
+    else if (f_shift_c >= ProdBitsSigned) f_amt_c = ShiftBits'(ProdBits);
+    else f_amt_c = f_shift_c[ShiftBits-1:0];
+    assert (shift_prod_amt == f_amt_prod);
+    assert (shift_c_amt == f_amt_c);
+  end
+`endif
 
   // =========================================================================
   // Stage 4 -> Stage 4b Pipeline Registers (after shift amount calc)
@@ -549,7 +572,7 @@ module fp_fma #(
     end else if (sum_s6[SumBits-1]) begin
       normalized_sum_s6_comb = sum_s6 >> 1;
       normalized_exp_s6_comb = exp_large_s6 + 1;
-      // Capture the bit shifted out - it contributes to sticky for rounding
+      // The bit shifted out feeds the sticky bit
       norm_sticky_s6_comb = sum_s6[0];
     end else if (lzc_s6 > 0) begin
       normalized_sum_s6_comb = sum_s6 << norm_shift;
@@ -605,12 +628,10 @@ module fp_fma #(
 
   assign mantissa_retained_s7 = pre_round_mant_s7[MantBits:1];
   assign guard_bit_raw_s7 = pre_round_mant_s7[0];
-  // No guard-bit correction here. The effective-subtraction path in
+  // The guard bit needs no correction: the effective-subtraction path in
   // sum_s5a_comb already subtracts the smaller operand's shifted-out residual
   // (sticky_c_sub_s5) as a borrow, so the normalized mantissa and its guard bit
-  // are exact. An earlier special case at this point patched only the
-  // round-to-nearest tie and left RTZ/RDN/RUP rounding 1 ULP high, which
-  // failed the F/D arch-test FMA b4-b7 cases.
+  // are exact.
   assign guard_bit_s7 = guard_bit_raw_s7;
   assign round_bit_s7 = normalized_sum_s7[FracBits-1];
   assign sticky_bit_s7 = normalized_sum_s7[FracBits-2] | final_sticky_s7;
@@ -636,6 +657,19 @@ module fp_fma #(
       .o_exponent(exp_work_s7a_comb)
   );
 
+  // Tininess of the unshifted sum, for the underflow flag.
+  logic tiny_s7a_comb;
+  assign tiny_s7a_comb = riscv_pkg::fp_is_tiny(
+      normalized_exp_s7 <= 0,
+      normalized_exp_s7 == 0,
+      &mantissa_retained_s7,
+      rm_s7,
+      guard_bit_s7,
+      round_bit_s7,
+      sticky_bit_s7,
+      fp_round_sign_s7a_comb
+  );
+
   // =========================================================================
   // Stage 7A -> Stage 7B Pipeline Register (after subnormal handling)
   // =========================================================================
@@ -643,6 +677,7 @@ module fp_fma #(
   logic [MantBits-1:0] mantissa_work_s7b;
   logic guard_work_s7b, round_work_s7b, sticky_work_s7b;
   logic signed [ExpExtBits-1:0] exp_work_s7b;
+  logic tiny_s7b;
   logic fp_round_sign_s7b;
   logic is_zero_result_s7b;
   logic [2:0] rm_s7b;
@@ -673,6 +708,7 @@ module fp_fma #(
   logic                 [  MantBits-1:0] mantissa_work_s8;
   logic                                  round_up_s8;
   logic                                  is_inexact_s8;
+  logic                                  tiny_s8;
   logic                                  is_zero_result_s8;
   logic                 [           2:0] rm_s8;
   logic                                  is_special_s8;
@@ -698,6 +734,7 @@ module fp_fma #(
       .i_mantissa_work   (mantissa_work_s8),
       .i_round_up        (round_up_s8),
       .i_is_inexact      (is_inexact_s8),
+      .i_is_tiny         (tiny_s8),
       .i_result_sign     (result_sign_s8),
       .i_rm              (rm_s8),
       .i_is_special      (is_special_s8),
@@ -762,6 +799,16 @@ module fp_fma #(
       end
     end
   end
+
+`ifndef SYNTHESIS
+  // The metadata chain's valid bit leaves the chain in the same cycle as the
+  // multiplier's product, so each product pairs with its own metadata.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      p_mult_meta_aligned : assert (mult_meta_valid[MultLatency-1] == prod_mant_s2_tiled_valid);
+    end
+  end
+`endif
 
   always_ff @(posedge i_clk) begin
     if (i_valid) begin
@@ -913,6 +960,7 @@ module fp_fma #(
     round_work_s7b <= round_work_s7a_comb;
     sticky_work_s7b <= sticky_work_s7a_comb;
     exp_work_s7b <= exp_work_s7a_comb;
+    tiny_s7b <= tiny_s7a_comb;
     fp_round_sign_s7b <= fp_round_sign_s7a_comb;
     is_zero_result_s7b <= sum_is_zero_s7 && !sum_sticky_s7;
     rm_s7b <= rm_s7;
@@ -925,6 +973,7 @@ module fp_fma #(
     mantissa_work_s8 <= mantissa_work_s7b;
     round_up_s8 <= round_up_s7b_comb;
     is_inexact_s8 <= is_inexact_s7b;
+    tiny_s8 <= tiny_s7b;
     is_zero_result_s8 <= is_zero_result_s7b;
     rm_s8 <= rm_s7b;
     is_special_s8 <= is_special_s7b;

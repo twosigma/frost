@@ -14,14 +14,14 @@
  *    limitations under the License.
  */
 
-// Formal integration harness for IF pending-prediction invariants: an atomic
-// target handoff suppresses stale old-path buffer validity, and every
-// pending-state consumer is masked outside a live episode. It keeps the
-// production pc_controller and c_ext_state state machines intact. Predictor
-// lookup details are conservatively abstracted to arbitrary requests. The
-// omitted lookup, buffer, and progress blockers admit extra requests. The
-// modeled prediction registers retain the production delivery enables and
-// matching-target PD-redirect exception.
+// Integration harness for the fetch stage's pending-prediction rules: every
+// consumer of pending-prediction state is masked while nothing is pending,
+// and the holdoff outputs and captured predecessor tags keep their reference
+// relations. The real pc_controller and c_ext_state run together. Predictor
+// requests are arbitrary, and the lookup, buffer, and progress conditions
+// that would block some of them are omitted, which only admits more
+// requests. The modeled prediction registers keep the real update enables
+// and the matching-target PD-redirect exception.
 module prediction_release_formal #(
     parameter bit PENDING_HANDOFF_EXCLUDES_SLOT2 = 1'b0
 ) (
@@ -46,17 +46,13 @@ module prediction_release_formal #(
   (* anyseq *) logic i_mret_taken;
   (* anyseq *) logic [XLEN-1:0] i_trap_target;
   (* anyseq *) logic i_is_compressed;
-  (* anyseq *) logic i_is_compressed_for_pc;
+  (* anyseq *) logic i_is_compressed_fast;
   (* anyseq *) logic i_slot2_valid;
-  (* anyseq *) logic i_slot2_valid_for_pc;
-  (* anyseq *) logic i_slot2_is_compressed;
   (* anyseq *) logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel;
   (* anyseq *) logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel;
   (* anyseq *) logic i_prediction_request;
   (* anyseq *) logic [XLEN-1:0] i_predicted_target;
-  (* anyseq *) logic i_ras_predicted;
   (* anyseq *) logic i_prediction_requires_pc_reg_handoff;
-  (* anyseq *) logic i_use_instr_buffer;
   (* anyseq *) logic i_prediction_already_emitted;
   (* anyseq *) logic i_sel_nop;
   (* anyseq *) logic i_sel_nop_for_pc;
@@ -67,9 +63,7 @@ module prediction_release_formal #(
   logic stall_registered;
   logic prediction_used;
   logic prediction_used_for_pc;
-  logic prediction_used_from_buffer;
   logic prediction_holdoff;
-  logic prediction_from_buffer_holdoff;
   logic prediction_reset_state;
   logic prediction_used_r;
   logic sel_prediction_r;
@@ -100,10 +94,6 @@ module prediction_release_formal #(
 
   logic [31:0] instr_buffer;
   logic prev_was_compressed_at_lo;
-  logic is_compressed_for_buffer;
-  logic is_compressed_for_pc;
-  logic use_buffer_after_prediction;
-  logic use_buffer_after_prediction_timing;
   logic is_compressed_saved;
   logic saved_values_valid;
   logic [riscv_pkg::ImemSidebandWidth-1:0] instr_buffer_sideband;
@@ -120,19 +110,19 @@ module prediction_release_formal #(
   assign i_flush = i_frontend_flush_request || i_fence_i_flush;
   assign i_window_cannot_serve = i_window_cannot_serve_raw && i_window_resteer_qualifier;
 
-  // Conservatively model the IF-stage boundary without importing the BTB, RAS,
-  // or instruction aligner.  The request remains arbitrary and production-only
-  // blockers are omitted. The integrated-handoff variant restores IF's WCS=0
-  // pending-holdoff mask. WCS=1 uses its pending-holdoff cofactor here, which
-  // admits extra requests compared with IF's unconditional prediction disable.
-  // All other omitted blockers also conservatively admit extra requests.
-  // branch_prediction_disable separately proves that
-  // the production predictor applies this mask to every slot-2 source.
+  // Model the IF-stage boundary conservatively, without the BTB, RAS, or
+  // instruction aligner: the request is arbitrary and IF's other blockers are
+  // omitted, which only admits extra requests. With
+  // PENDING_HANDOFF_EXCLUDES_SLOT2, the slot-2 request gets IF's
+  // pending-holdoff mask when the window can serve (WCS=0; WCS is
+  // i_window_cannot_serve_raw). When it cannot (WCS=1), IF disables
+  // prediction outright; the harness applies the WCS=1 pending holdoff
+  // instead, which admits more requests. branch_prediction_disable separately
+  // proves that the real predictor applies this mask to every slot-2 source.
   assign prediction_used_for_pc =
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff;
   assign prediction_used = prediction_used_for_pc && !i_branch_taken && !i_stall;
-  assign prediction_used_from_buffer = prediction_used && i_use_instr_buffer;
   assign slot2_prediction_used_for_pc =
       i_slot2_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff &&
@@ -156,12 +146,6 @@ module prediction_release_formal #(
       prediction_holdoff <= 1'b0;
     end else if (!i_stall && i_fetch_progress) begin
       prediction_holdoff <= prediction_used;
-    end
-
-    if (i_reset || i_flush) begin
-      prediction_from_buffer_holdoff <= 1'b0;
-    end else if (!i_stall && i_fetch_progress) begin
-      prediction_from_buffer_holdoff <= prediction_used_from_buffer;
     end
 
     if (i_reset) prediction_reset_state <= 1'b0;
@@ -190,7 +174,6 @@ module prediction_release_formal #(
       .i_clk,
       .i_reset,
       .i_stall,
-      .i_stall_registered(stall_registered),
       .i_fetch_progress,
       .i_flush,
       .i_fence_i_flush,
@@ -204,41 +187,35 @@ module prediction_release_formal #(
       .i_trap_taken,
       .i_mret_taken,
       .i_trap_target,
-      // IF's fast size, PC squash, and replay-aware slot-2 validity differ
-      // from the canonical C-extension inputs. Keep each pair independent.
-      .i_is_compressed(i_is_compressed_for_pc),
-      .i_is_compressed_for_pc(is_compressed_for_pc),
-      .i_slot2_valid(i_slot2_valid_for_pc),
-      .i_slot2_is_compressed,
+      // IF gives pc_controller its own fast size and PC squash, which can
+      // differ from the c_ext_state inputs, so each pair is an independent
+      // input here.
+      .i_is_compressed(i_is_compressed_fast),
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
-      // The selects' i_sel_nop cofactors only reach the abstracted
-      // calculator; the merged selects stand in for both.
+      // The per-i_sel_nop copies of the selects (_run, _nop) only reach the
+      // abstracted calculator, so the merged selects stand in for both.
       .i_pc_fetch_advance_sel_run(i_pc_fetch_advance_sel),
       .i_pc_fetch_advance_sel_nop(i_pc_fetch_advance_sel),
       .i_pc_reg_advance_sel_run(i_pc_reg_advance_sel),
       .i_pc_reg_advance_sel_nop(i_pc_reg_advance_sel),
-      .i_predicted_taken(prediction_used_for_pc),
       .i_predicted_target,
       .i_predicted_target_r(predicted_target_r),
       .i_prediction_used(prediction_used),
       .i_prediction_used_for_pc(prediction_used_for_pc),
-      .i_ras_predicted,
       .i_sel_prediction_r(sel_prediction_r),
       .i_prediction_requires_pc_reg_handoff,
       .i_prediction_holdoff(prediction_holdoff),
-      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
-      .i_prediction_used_from_buffer(prediction_used_from_buffer),
       .i_prediction_already_emitted,
       .i_sel_nop(i_sel_nop_for_pc),
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target,
-      // This harness abstracts every slot-2 request as the staged image. That
-      // is an exact member of the production split interface and preserves
-      // the original arbitrary combined request/target state space; live
-      // alias decomposition is proved at its producer and in pc_controller's
-      // simulation oracle.
+      // Every slot-2 request enters as a staged prediction, with the
+      // live-alias selects tied low. That is a legal use of the split
+      // interface and leaves the request and target arbitrary. The live-alias
+      // split is checked at its producer and by pc_controller's simulation
+      // assertions.
       .i_slot2_staged_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot1_aliases_slot2_candidate(1'b0),
       .i_slot2_live_target_used_for_pc_cofactor(1'b0),
@@ -256,7 +233,6 @@ module prediction_release_formal #(
       .o_reset_holdoff(),
       .o_any_holdoff(),
       .o_any_holdoff_safe(any_holdoff_safe),
-      .o_mid_32bit_correction(),
       .o_pending_prediction_active(pending_prediction_active),
       .o_pending_prediction_pc(pending_prediction_pc),
       .o_pending_prediction_prev_pc(pending_prediction_prev_pc),
@@ -270,9 +246,9 @@ module prediction_release_formal #(
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(),
-      // Translation starts from registered o_pc. The next-PC value and the
-      // retained selector-observation ports are irrelevant to this release
-      // proof, so they stay unconnected.
+      // Translation starts from the registered o_pc, so the next-PC value and
+      // the next-PC selector observation ports do not matter here and stay
+      // unconnected.
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(),
@@ -280,7 +256,6 @@ module prediction_release_formal #(
       .o_npc_sel(),
       .o_npc_seq(),
       .o_npc_cmp_val(),
-      .o_npc_seq_verdict(),
       .o_npc_val()
   );
 
@@ -291,7 +266,6 @@ module prediction_release_formal #(
       .i_reset,
       .i_stall,
       .i_flush,
-      .i_fence_i_flush,
       .i_stall_registered(stall_registered),
       .i_control_flow_holdoff(control_flow_holdoff),
       .i_any_holdoff_safe(any_holdoff_safe),
@@ -300,10 +274,7 @@ module prediction_release_formal #(
       .i_pending_prediction_active(pending_prediction_active),
       .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .i_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
-      .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_effective_instr('0),
-      .i_fetch_word_swapped(1'b0),
-      .i_pc(pc),
       .i_pc_reg(pc_reg),
       .i_is_compressed,
       .i_sel_nop,
@@ -313,10 +284,6 @@ module prediction_release_formal #(
       .i_slot2_valid,
       .o_instr_buffer(instr_buffer),
       .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
-      .o_is_compressed_for_buffer(is_compressed_for_buffer),
-      .o_is_compressed_for_pc(is_compressed_for_pc),
-      .o_use_buffer_after_prediction(use_buffer_after_prediction),
-      .o_use_buffer_after_prediction_timing(use_buffer_after_prediction_timing),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid),
       .o_instr_buffer_sideband(instr_buffer_sideband),

@@ -14,19 +14,16 @@
 .extern vPortTimerTickHandler
 .extern freertos_risc_v_application_exception_handler
 .extern freertos_risc_v_application_interrupt_handler
-.extern vPortDebugTrap
-.extern vPortDebugRestore
-.extern vPortDebugTCB
-.extern vPortDebugRA
 
 /* Critical section nesting counter */
 .extern uxCriticalNesting
 
 /* Context size: 28 GPRs + mepc + mstatus + uxCriticalNesting = 31 XLEN-wide
- * slots, rounded up to 16-byte alignment (248->256 bytes).
- * STORE/LOAD/XB select the register-width access; pointer-holding
- * globals (pxCurrentTCB->pxTopOfStack, uxCriticalNesting = UBaseType_t) are
- * XLEN-wide too and use the same macros. */
+ * slots, plus a padding slot so the frame is 16-byte aligned (256 bytes).
+ * pxPortInitialiseStack builds a new task's frame to the same size.
+ * STORE/LOAD/XB select the register-width access. pxCurrentTCB->pxTopOfStack
+ * and uxCriticalNesting (a UBaseType_t) are XLEN-wide too and use the same
+ * macros. */
 #define STORE sd
 #define LOAD ld
 #define XB 8
@@ -36,7 +33,7 @@
 /*-----------------------------------------------------------*/
 /* freertos_risc_v_trap_handler
  *
- * Trap entry (mtvec) for exceptions and interrupts. Saves the full context on
+ * Trap entry (mtvec) for exceptions and interrupts. Saves the integer context on
  * the interrupted task's stack, dispatches on mcause, and returns through
  * whichever context pxCurrentTCB selects afterwards.
  */
@@ -45,7 +42,7 @@ freertos_risc_v_trap_handler:
     /* Save context on current stack */
     addi sp, sp, -portCONTEXT_SIZE
 
-    /* Save all registers */
+    /* Save x1 and x5-x31 */
     STORE x1,  0*XB(sp)
     STORE x5,  1*XB(sp)
     STORE x6,  2*XB(sp)
@@ -162,13 +159,11 @@ handle_timer:
     la t0, pxCurrentTCB
     LOAD s1, 0(t0)
 
-    /* C tick handler; may call vTaskSwitchContext */
+    /* C tick handler, given the interrupted code's saved uxCriticalNesting. It
+     * calls vTaskSwitchContext only when that nesting is 0, so a task
+     * interrupted inside a critical section always resumes. */
+    LOAD a0, 30*XB(sp)
     call vPortTimerTickHandler
-
-    /* If the interrupted code was inside a critical section (saved nesting > 0),
-     * do not switch */
-    LOAD t1, 30*XB(sp)
-    bnez t1, timer_same_task
 
     /* Check if pxCurrentTCB changed */
     la t0, pxCurrentTCB
@@ -199,7 +194,7 @@ trap_exit:
     LOAD t0, 28*XB(sp)
     csrw mepc, t0
 
-    /* Restore all registers */
+    /* Restore x1 and x5-x31 */
     LOAD x31, 27*XB(sp)
     LOAD x30, 26*XB(sp)
     LOAD x29, 25*XB(sp)
@@ -236,8 +231,9 @@ trap_exit:
 /*-----------------------------------------------------------*/
 /* xPortStartFirstTask
  *
- * Called from xPortStartScheduler. Loads the first task's saved context from
- * pxCurrentTCB and enters it with mret; never returns.
+ * Called from xPortStartScheduler with interrupts disabled. Loads the first
+ * task's saved context from pxCurrentTCB and enters it with mret, which sets
+ * mstatus.MIE from the frame's MPIE (1 in a new task's frame); never returns.
  */
 xPortStartFirstTask:
     /* Load stack pointer from pxCurrentTCB */
@@ -258,7 +254,7 @@ xPortStartFirstTask:
     LOAD t0, 28*XB(sp)
     csrw mepc, t0
 
-    /* Restore all registers */
+    /* Restore x1 and x5-x31 */
     LOAD x31, 27*XB(sp)
     LOAD x30, 26*XB(sp)
     LOAD x29, 25*XB(sp)

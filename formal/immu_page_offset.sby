@@ -1,0 +1,26 @@
+[tasks]
+bmc
+prove
+
+[options]
+bmc: mode bmc
+prove: mode prove
+depth 8
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D IMMU_PAGE_OFFSET_LOCAL_PROOF -sv immu.sv
+# Page-offset preservation is independent of the ITLB contents: allow arbitrary
+# answers on every cycle, including responses a real ITLB could not produce.
+delete t:dtlb
+proc
+setundef -undriven -anyseq
+opt
+prep -top immu
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/immu.sv

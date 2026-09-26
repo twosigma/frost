@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# GitHub CI environment. Core tools below use pinned upstream stable releases.
+# Development and CI image. The core tools use pinned upstream releases.
 FROM ubuntu:26.04
 
 # Disable interactive package prompts.
@@ -190,10 +190,10 @@ RUN git clone https://github.com/Z3Prover/z3.git /tmp/z3 \
     && make install \
     && rm -rf /tmp/z3
 
-# Lingeling needs -Wno-error=incompatible-pointer-types with GCC 14+, so build
-# it directly instead of using contrib/setup-lingeling.sh, with C17 rather
-# than GCC 15+'s C23 default. Boolector and its
-# bundled btor2tools predate CMake 4; scope the policy compatibility to them.
+# Build Lingeling directly rather than through contrib/setup-lingeling.sh, so
+# it gets -Wno-error=incompatible-pointer-types (needed with GCC 14+) and C17
+# instead of GCC 15+'s C23 default. Boolector and its bundled btor2tools
+# predate CMake 4, so the policy-compatibility setting applies only to them.
 RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
     && cd /tmp/boolector \
     && git checkout ${BOOLECTOR_VERSION} \
@@ -218,13 +218,17 @@ RUN git clone https://github.com/Boolector/boolector.git /tmp/boolector \
 # Permit a bind-mounted checkout owned by the invoking host user.
 RUN git config --global --add safe.directory /workspace
 
+# OpenOCD is Ubuntu's package (apt layer below). That layer fails unless the
+# package reports this upstream release, and ``frost.py doctor`` checks it too.
 ARG OPENOCD_VERSION=0.12.0
 
-# Buildroot host dependencies for the Linux image build (OpenSBI, the
-# test userspace and the NIC module built against Debian's kernel headers -- no
-# kernel is compiled here) and the QEMU boot lane. This also supports
-# ``load_software.py <board> linux_boot``. Keep the layer late to preserve the
-# expensive tool-build cache above.
+# Host packages for the Buildroot Linux image build (OpenSBI, the test
+# userspace, and the NIC module built against Debian's kernel headers; no
+# kernel is compiled here), the QEMU boot check, and the OpenOCD debug tests.
+# The same packages serve ``load_software.py <board> linux_boot``. liblz4-dev
+# supplies lz4.h for Verilator's FST trace writer, which WAVES=1 compiles into
+# every model. Keep the layer late to preserve the expensive tool-build cache
+# above.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     patch \
@@ -241,18 +245,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libncurses-dev \
     device-tree-compiler \
     libfdt-dev \
+    liblz4-dev \
     openocd \
     libslirp-dev \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && openocd_banner="$(openocd --version 2>&1)" \
+    && printf '%s\n' "$openocd_banner" | grep -Fx "Open On-Chip Debugger ${OPENOCD_VERSION}"
 
-# Python's ensurepip no longer supplies setuptools or wheel. QEMU's offline
-# build environment needs them to install its bundled qemu.qmp wheel.
+# Python's ensurepip does not install setuptools or wheel, and QEMU's offline
+# build environment needs both to install its bundled qemu.qmp wheel.
 ARG SETUPTOOLS_VERSION=84.0.0
 ARG WHEEL_VERSION=0.48.0
 RUN python3 -m pip install --no-cache-dir \
     "setuptools==${SETUPTOOLS_VERSION}" "wheel==${WHEEL_VERSION}"
 
-# QEMU's RISC-V system emulator and bundled firmware for the Debian boot gate.
+# QEMU's RISC-V system emulator and its bundled OpenSBI, for CI's Linux boot check.
 ARG QEMU_VERSION=11.1.1
 ARG QEMU_SHA256=079ffbff8a7111bbc89022107cbabf3bbfd614d5fc9d7cc675991196aca12482
 RUN curl -fL -o /tmp/qemu.tar.xz https://download.qemu.org/qemu-${QEMU_VERSION}.tar.xz \
@@ -282,10 +289,10 @@ RUN python3 -m pip install --no-cache-dir \
     "pre-commit==${PRE_COMMIT_VERSION}" \
     "click==${CLICK_VERSION}"
 
-# Spike's bundled libfdt needs C17: C23 makes memchr preserve const qualifiers.
-# Pinned Spike generates reproducible architecture-test signatures. ``dtc``
-# comes from the apt layer. Keep this late
-# to preserve earlier tool-build caches.
+# Spike is pinned so architecture-test reference signatures are reproducible.
+# Its bundled libfdt needs C17: C23 makes memchr preserve const qualifiers.
+# ``dtc`` comes from the apt layer. Keep this late to preserve earlier
+# tool-build caches.
 ARG SPIKE_VERSION=02b1dc182164bb73b19b050676dd89f0834f8b2e
 RUN git clone https://github.com/riscv-software-src/riscv-isa-sim.git /tmp/riscv-isa-sim \
     && cd /tmp/riscv-isa-sim \
@@ -301,12 +308,12 @@ RUN git clone https://github.com/riscv-software-src/riscv-isa-sim.git /tmp/riscv
         /usr/local/lib/libsoftfloat.so \
     && rm -rf /tmp/riscv-isa-sim
 
-# SystemVerilog conversion for the portable Ethernet synthesis check, which
-# uses Yosys's read_verilog frontend. Keep this release
-# identical to the pin in tests/net10g/synthesize.py, which prefers this binary
-# and only downloads the same archive when an older image lacks it. ``unzip``
-# comes from the apt layer above. Keep this late to preserve earlier
-# tool-build caches.
+# sv2v converts SystemVerilog for the portable Ethernet synthesis check, which
+# uses Yosys's read_verilog frontend. Keep this release identical to the pin in
+# tests/net10g/synthesize.py, which uses this binary only when its version
+# matches that pin and otherwise downloads the pinned archive. ``unzip`` comes
+# from the apt layer above. Keep this late to preserve earlier tool-build
+# caches.
 ARG SV2V_VERSION=0.0.13
 ARG SV2V_SHA256=552799a1d76cd177b9b4cc63a3e77823a3d2a6eb4ec006569288abeff28e1ff8
 RUN curl -fL -o /tmp/sv2v-Linux.zip https://github.com/zachjs/sv2v/releases/download/v${SV2V_VERSION}/sv2v-Linux.zip \

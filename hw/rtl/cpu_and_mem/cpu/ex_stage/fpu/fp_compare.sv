@@ -32,7 +32,8 @@
     FMIN: fd = min(fs1, fs2)
     FMAX: fd = max(fs1, fs2)
 
-  NaN handling per IEEE 754-2008 minNum/maxNum:
+  Min/max follow IEEE 754-2019 minimumNumber/maximumNumber, as the F extension
+  specifies, with -0 ordered below +0:
     - If exactly one operand is NaN, return the other operand
     - If both operands are NaN, return canonical NaN
     - Signaling NaN always raises invalid exception

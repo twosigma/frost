@@ -16,14 +16,8 @@
 
 The byte-level invariant: input byte j of the frame lands at address A + j
 for j below min(frame length, limit), and no other strobe is set; every
-line is issued once. Swept over every start offset in a two-line window,
-frame lengths 1..100 and a set of long ones, a byte limit below the length
-(truncation), random stalls on the write output, and the review's
-falsifiers: offset 31 with length 2 (two one-byte writes), a limit of 1
-under a 60-byte frame, length 33, offset 63 with length 2, and a stall at a
-line crossing that coincides with the last beat.
-The input queue must sustain one beat per cycle and discard queued beats
-along with a stalled write on flush or reset.
+line is issued once. The input queue must sustain one beat per cycle and
+discard queued beats along with a stalled write on flush or reset.
 """
 
 import random
@@ -169,7 +163,7 @@ def _check(
 
 @cocotb.test()
 async def test_every_offset_short_lengths(dut: Any) -> None:
-    """Every start offset in the two-line window with lengths 1..100."""
+    """Every start offset in a two-line window, lengths 1-19 and selected ones up to 100."""
     await _setup(dut)
     rng = random.Random(1)
     for offset in range(64):
@@ -184,7 +178,7 @@ async def test_every_offset_short_lengths(dut: Any) -> None:
 
 @cocotb.test()
 async def test_long_frames_with_stalls(dut: Any) -> None:
-    """Jumbo-sized frames at odd offsets under heavy output stalls."""
+    """Long frames, up to a 9216-byte jumbo, under heavy output stalls."""
     await _setup(dut)
     rng = random.Random(2)
     for offset, length in [(2, 1518), (31, 1500), (17, 9216), (0, 4096)]:
@@ -216,7 +210,11 @@ async def test_truncation(dut: Any) -> None:
 
 @cocotb.test()
 async def test_review_falsifiers(dut: Any) -> None:
-    """Offset 31 length 2, length 33, offset 63 length 2, a stall at the crossing with last."""
+    """Line-boundary cases under heavy output stalls.
+
+    Offset 31 length 2 (two one-byte writes), offset 31 length 33, offset 63
+    length 2, and line crossings that coincide with the last beat.
+    """
     await _setup(dut)
     rng = random.Random(4)
     cases = [(31, 2), (31, 33), (63, 2), (24, 9), (25, 8), (57, 8), (56, 8)]

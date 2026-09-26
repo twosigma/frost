@@ -38,7 +38,6 @@ PC_ADV_PLUS6 = 2
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs except reset to idle values."""
     dut.i_stall.value = 0
-    dut.i_stall_registered.value = 0
     dut.i_fetch_progress.value = 1
     dut.i_flush.value = 0
     dut.i_fence_i_flush.value = 0
@@ -53,26 +52,19 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_mret_taken.value = 0
     dut.i_trap_target.value = 0
     dut.i_is_compressed.value = 0
-    dut.i_is_compressed_for_pc.value = 0
-    dut.i_slot2_valid.value = 0
-    dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
     dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4
     dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS4
-    dut.i_predicted_taken.value = 0
     dut.i_predicted_target.value = 0
     dut.i_predicted_target_r.value = 0
     dut.i_prediction_used.value = 0
     dut.i_prediction_used_for_pc.value = 0
-    dut.i_ras_predicted.value = 0
     dut.i_sel_prediction_r.value = 0
     dut.i_prediction_requires_pc_reg_handoff.value = 0
     dut.i_prediction_holdoff.value = 0
-    dut.i_prediction_from_buffer_holdoff.value = 0
-    dut.i_prediction_used_from_buffer.value = 0
     dut.i_prediction_already_emitted.value = 0
     dut.i_sel_nop.value = 0
     dut.i_slot2_prediction_used.value = 0
@@ -138,14 +130,13 @@ def _assert_pc(dut: Any, *, pc: int, pc_reg: int) -> None:
 
 def _drive_slot1_prediction(dut: Any, *, target: int) -> None:
     """Drive a slot-1 prediction redirect."""
-    dut.i_predicted_taken.value = 1
     dut.i_predicted_target.value = target
     dut.i_prediction_used.value = 1
     dut.i_prediction_used_for_pc.value = 1
 
 
 def _drive_staged_slot2_prediction(dut: Any, *, target: int) -> None:
-    """Drive a canonical slot-2 redirect sourced by the staged BTB image."""
+    """Drive a slot-2 prediction redirect from the staged BTB lookup."""
     dut.i_slot2_prediction_used.value = 1
     dut.i_slot2_prediction_used_for_pc.value = 1
     dut.i_slot2_predicted_target.value = target
@@ -154,7 +145,7 @@ def _drive_staged_slot2_prediction(dut: Any, *, target: int) -> None:
 
 
 def _drive_live_slot2_fallback(dut: Any, *, target: int) -> None:
-    """Drive the exact alias/cofactor representation of a live fallback."""
+    """Drive a slot-2 prediction from the live fallback, with the alias check true."""
     dut.i_slot2_prediction_used.value = 1
     dut.i_slot2_prediction_used_for_pc.value = 1
     dut.i_slot2_predicted_target.value = target
@@ -164,7 +155,7 @@ def _drive_live_slot2_fallback(dut: Any, *, target: int) -> None:
 
 
 def _assert_pending_predecessor_relation(dut: Any) -> None:
-    """Check both registered predecessor tags and retired-adder equivalents."""
+    """Check that the predecessor tags equal the pending PC minus 2 and minus 4."""
     width_mask = (1 << len(dut.o_pc)) - 1
     pending_pc = int(dut.pending_prediction_pc.value)
     compressed_predecessor_pc = int(dut.pending_prediction_prev_pc.value)
@@ -309,13 +300,14 @@ async def test_stall_holds_sequential_state_and_trap_overrides_stall(
 async def test_pc_reg_clock_enable_factors_fetch_holds_and_preserves_priority(
     dut: Any,
 ) -> None:
-    """The pc_reg CE exactly replaces the window/progress self-hold mux arms."""
+    """The pc_reg load enable applies both fetch holds and keeps redirect priority."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
 
-    # Sensitize a low-priority load datum which differs from the current
-    # pc_reg. The datum stays independent of W/F; only the new CE changes.
+    # Offer a low-priority load value (the registered prediction target) that
+    # differs from pc_reg. That value does not depend on the resteer or on
+    # fetch progress; only the load enable does.
     for window_cannot_serve, fetch_progress in (
         (1, 1),
         (0, 0),
@@ -340,9 +332,9 @@ async def test_pc_reg_clock_enable_factors_fetch_holds_and_preserves_priority(
         assert int(dut.o_pc_reg.value) == expected_pc_reg
         assert int(dut.o_pc_reg_high_for_coverage.value) == ((expected_pc_reg >> 1) & 1)
 
-    # Every redirect above the retired hold arms still wins with both holds
-    # asserted. Trap/xRET/FENCE retain their outer stall override; branch and
-    # PD retain their historical requirement that the pipeline is unstalled.
+    # Trap, xRET, FENCE-class, branch, and PD redirects still load with both
+    # holds asserted. The first three also load during a stall; branch and PD
+    # redirects need the pipeline unstalled.
     redirect_cases = (
         ("i_trap_taken", "i_trap_target", TRAP_TARGET, True),
         ("i_mret_taken", "i_trap_target", TRAP_TARGET + 4, True),
@@ -365,8 +357,8 @@ async def test_pc_reg_clock_enable_factors_fetch_holds_and_preserves_priority(
         await _advance_cycle(dut)
         assert int(dut.o_pc_reg.value) == target
 
-    # Branch/PD are high in the data priority but do not newly override the
-    # pre-existing outer stall gate as a side effect of the CE refactor.
+    # A branch redirect has priority in next_pc_reg but still does not load
+    # during a stall.
     _clear_inputs(dut)
     dut.i_stall.value = 1
     dut.i_window_cannot_serve.value = 1
@@ -387,14 +379,12 @@ async def test_pc_reg_clock_enable_factors_fetch_holds_and_preserves_priority(
 async def test_two_wide_bundle_inputs_advance_pc_controller_outputs(
     dut: Any,
 ) -> None:
-    """The controller forwards slot-2 bundle size to the sequential PC calculator."""
+    """The two-wide advance selects move both PCs by the bundle size."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
 
-    dut.i_slot2_valid.value = 1
     dut.i_is_compressed.value = 1
-    dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
     dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS6
     dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS6
@@ -432,41 +422,39 @@ async def test_slot2_prediction_redirects_immediately_and_pulses_bubble(
 async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
     dut: Any,
 ) -> None:
-    """Late live permission and alias retain exact architectural PC priority."""
+    """The alias check picks the live slot-2 target last, below reset and redirects."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
 
-    # With the alias removed, its otherwise-complete cofactor cannot redirect
-    # pc_reg. The staged arm is independently clear, so sequential advance is
-    # the selected no-live candidate.
+    # Without the alias, the live select alone cannot redirect pc_reg. The
+    # staged select is clear too, so pc_reg advances sequentially.
     dut.i_slot2_live_target_used_for_pc_cofactor.value = 1
     dut.i_slot2_live_predicted_target.value = SLOT2_TARGET
     await _settle()
     assert dut.pc_reg_live_redirect_permission.value
-    assert not dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == BASE_PC + 4
 
-    # Restore the exact alias and canonical combined interface. The live target
-    # now wins in the same cycle, without a registered handoff.
+    # Drive the alias and the combined slot-2 inputs too. The live target now
+    # wins in the same cycle, without a registered handoff.
     _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
     await _settle()
-    assert dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == SLOT2_TARGET
 
-    # The producer's one-hot candidate contract makes a staged/live overlap
-    # unreachable architecturally, but the decomposition remains exact for
-    # that binary input shape: the canonical target mux gives the live image
-    # priority, while the alias-zero candidate still carries the staged image.
+    # With one-hot slot-2 candidate valids, IF never sets the staged and live
+    # selects together, but if both are set the live target still wins, as in
+    # the combined target mux. Without the alias, the staged target wins.
     dut.i_slot2_staged_prediction_used_for_pc.value = 1
     dut.i_slot2_staged_predicted_target.value = PRED_TARGET
     await _settle()
-    assert int(dut.pc_reg_nonseq_without_live_slot2.value) == PRED_TARGET
-    assert dut.live_slot2_pc_reg_override.value
     assert int(dut.next_pc_reg.value) == SLOT2_TARGET
+    dut.i_slot1_aliases_slot2_candidate.value = 0
+    dut.i_slot2_predicted_target.value = PRED_TARGET
+    await _settle()
+    assert int(dut.next_pc_reg.value) == PRED_TARGET
 
-    # Every older architectural redirect still outranks the final live mux,
-    # including reset and the redirects which override an outer stall.
+    # Reset and the trap, xRET, FENCE-class, branch, and PD redirects still
+    # outrank the live slot-2 target.
     redirect_cases = (
         ("i_reset", None, 0),
         ("i_trap_taken", "i_trap_target", TRAP_TARGET),
@@ -486,11 +474,10 @@ async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
 
         if active_name != "i_reset":
             assert not dut.pc_reg_live_redirect_permission.value
-            assert not dut.live_slot2_pc_reg_override.value
         assert int(dut.next_pc_reg.value) == target
 
-    # Sample one overlapping redirect through the register as well as the
-    # combinational priority oracle above.
+    # Check one overlapping redirect through the register too, not just
+    # next_pc_reg.
     _clear_inputs(dut)
     dut.i_reset.value = 0
     _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
@@ -526,13 +513,13 @@ async def test_registered_slot1_prediction_handoff_updates_pc_reg(
 async def test_already_emitted_prediction_uses_registered_halfword_target_handoff(
     dut: Any,
 ) -> None:
-    """A no-lead branch cannot leave an orphan pending halfword episode."""
+    """A prediction on an already-emitted branch does not pend for a halfword target."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
 
-    # Collapse fetch onto pc_reg, as a variable-latency response does before
-    # the predicted packet is emitted directly from the live lookup.
+    # Close the gap between fetch and pc_reg, as a slow fetch response does, so
+    # the predicted packet is emitted in the cycle of its own lookup.
     dut.i_window_cannot_serve.value = 1
     dut.i_window_cannot_serve_raw.value = 1
     await _advance_cycle(dut)
@@ -552,8 +539,8 @@ async def test_already_emitted_prediction_uses_registered_halfword_target_handof
     _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=BASE_PC + 2)
     assert not dut.o_pending_prediction_active.value
 
-    # A delayed target response holds the registered handoff, then applies it
-    # on the first progress cycle without any pending-state intervention.
+    # While the target response is late, the registered handoff waits; it
+    # applies on the first cycle with fetch progress, and nothing pends.
     _clear_inputs(dut)
     dut.i_fetch_progress.value = 0
     dut.i_sel_prediction_r.value = 1
@@ -633,8 +620,8 @@ async def test_pending_target_response_mismatch_retries_branch_handoff(
     _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=branch_pc)
     assert dut.o_pending_prediction_active.value
 
-    # Let the pending controller bring fetch back to the branch and register
-    # that pc_reg is ready for the non-cross target handoff.
+    # Let the pending logic bring fetch back to the branch and register that
+    # pc_reg is ready for the non-crossing target handoff.
     _clear_inputs(dut)
     await _advance_cycle(dut)
     _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
@@ -642,8 +629,9 @@ async def test_pending_target_response_mismatch_retries_branch_handoff(
     _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
     assert dut.pending_prediction_target_handoff.value
 
-    # The provider instead publishes the already-requested target. WCS has
-    # priority, so neither PC can take the pending target on this edge.
+    # The provider instead returns the already-requested target. The
+    # served-window resteer (WCS) has priority, so neither PC can take the
+    # pending target on this edge.
     dut.i_window_cannot_serve.value = 1
     dut.i_window_cannot_serve_raw.value = 1
     await _settle()
@@ -657,8 +645,8 @@ async def test_pending_target_response_mismatch_retries_branch_handoff(
     assert dut.pending_prediction_pc_ready_q.value
     assert not dut.o_pending_prediction_target_holdoff.value
 
-    # Once the covering branch response arrives, the preserved handoff applies
-    # exactly once and enters the normal target lead-restoring bubble.
+    # Once the window covering the branch arrives, the handoff applies exactly
+    # once and takes the usual one-cycle target bubble.
     dut.i_window_cannot_serve.value = 0
     dut.i_window_cannot_serve_raw.value = 0
     await _settle()
@@ -673,11 +661,11 @@ async def test_pending_target_response_mismatch_retries_branch_handoff(
 
 @cocotb.test()
 async def test_generic_slot2_prediction_vetoes_ready_pending_handoff(dut: Any) -> None:
-    """The standalone default preserves slot-2 priority for arbitrary callers.
+    """With the default parameter, a slot-2 prediction blocks a ready pending handoff.
 
-    Integrated IF cannot present both requests because pending readiness
-    disables its predictor. The generic controller still accepts independent
-    inputs, so its default parameter must retain the explicit slot-2 veto.
+    if_stage never presents both, because a ready handoff disables prediction,
+    and it sets PENDING_HANDOFF_EXCLUDES_SLOT2. The default (0) keeps the
+    slot-2 check for standalone use.
     """
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
@@ -708,14 +696,15 @@ async def test_generic_slot2_prediction_vetoes_ready_pending_handoff(dut: Any) -
 
 
 async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
-    """Verify that a served-window retry returns fetch to the saved target.
+    """Check that a served-window retry returns fetch to the saved target.
 
-    A variable-latency provider can publish the prediction target while
-    ``pc_reg`` reaches a compressed predicted owner in a word's upper half.
-    WCS resteers fetch to the owner's containing word. When that covering
-    response arrives, the atomic owner handoff must send both PCs to the
-    saved target; advancing fetch sequentially from the containing word
-    would request the owner again and repeat the prediction forever.
+    A variable-latency provider can return the prediction target's window
+    while ``pc_reg`` reaches a compressed predicted branch in the upper half
+    of a word. The served-window resteer sends fetch back to the branch's
+    word. When the window covering the branch arrives, the handoff must move
+    both PCs to the saved target; advancing fetch sequentially from the
+    branch's word would fetch the branch again and repeat the prediction
+    forever.
     """
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
@@ -723,8 +712,8 @@ async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
 
     owner_pc = BASE_PC + 6
 
-    # Move the one-word lookahead onto an upper-half owner while pc_reg is two
-    # compressed parcels behind it.
+    # Move fetch, one word ahead, onto the upper-half branch while pc_reg is
+    # two compressed parcels behind it.
     _clear_inputs(dut)
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
@@ -735,8 +724,8 @@ async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
     await _advance_cycle(dut)
     _assert_pc(dut, pc=owner_pc, pc_reg=owner_pc - 4)
 
-    # The prediction edge redirects fetch and advances pc_reg directly onto
-    # the exact owner, as a two-instruction predecessor bundle does.
+    # The prediction edge redirects fetch and advances pc_reg straight onto
+    # the branch, as a two-instruction bundle before it would.
     _clear_inputs(dut)
     _drive_slot1_prediction(dut, target=target)
     await _advance_cycle(dut)
@@ -744,8 +733,8 @@ async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
     assert dut.o_pending_prediction_active.value
     assert dut.pending_prediction_allow_cross.value
 
-    # The first published response belongs to the already-requested target,
-    # so WCS wins and fetch retries the owner's containing word.
+    # The first window to arrive is the already-requested target's, so the
+    # served-window resteer wins and fetch retries the branch's word.
     _clear_inputs(dut)
     dut.i_prediction_holdoff.value = 1
     dut.i_window_cannot_serve.value = 1
@@ -758,9 +747,9 @@ async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
     _assert_pc(dut, pc=owner_pc - 2, pc_reg=owner_pc)
     assert dut.o_pending_prediction_active.value
 
-    # The covering owner response now consumes the pending handoff. Fetch is
-    # sitting on the containing word, not on the target, so sequential advance
-    # would refetch the owner and start the same episode again.
+    # The window covering the branch now arrives and the pending handoff
+    # applies. Fetch sits on the branch's word, not on the target, so a
+    # sequential advance would refetch the branch and repeat the prediction.
     _clear_inputs(dut)
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
@@ -779,7 +768,7 @@ async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
 
 @cocotb.test()
 async def test_high_half_pending_retry_returns_fetch_to_word_target(dut: Any) -> None:
-    """A high-half owner retry restores a word-aligned prediction target."""
+    """A retry at an upper-half branch returns fetch to a word-aligned target."""
     await _exercise_high_half_pending_retry(dut, target=PRED_TARGET)
 
 
@@ -787,87 +776,22 @@ async def test_high_half_pending_retry_returns_fetch_to_word_target(dut: Any) ->
 async def test_high_half_pending_retry_returns_fetch_to_halfword_target(
     dut: Any,
 ) -> None:
-    """A high-half owner retry restores a halfword-aligned prediction target."""
+    """A retry at an upper-half branch returns fetch to a halfword-aligned target."""
     await _exercise_high_half_pending_retry(dut, target=HALFWORD_PRED_TARGET)
-
-
-@cocotb.test()
-async def test_first_exact_owner_from_buffer_holdoff_defers_handoff(
-    dut: Any,
-) -> None:
-    """A stale instruction-buffer packet cannot consume an exact owner.
-
-    The normal registered prediction holdoff makes an unbuffered first-cycle
-    owner ready for an atomic target handoff. A prediction sourced from the
-    instruction buffer is still a NOP during its separate buffer holdoff, so
-    it must wait for the ordinary served-owner readiness handshake instead.
-    """
-    await _setup_test(dut)
-    await _clear_reset_holdoff(dut)
-    await _start_word_stream_at(dut, BASE_PC)
-
-    branch_pc = BASE_PC + 4
-    dut.i_prediction_used_from_buffer.value = 1
-    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
-    await _advance_cycle(dut)
-
-    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=branch_pc)
-    assert dut.o_pending_prediction_active.value
-    assert dut.pending_prediction_valid.value
-    assert dut.pending_prediction_from_buffer.value
-    assert not dut.pending_prediction_pc_ready_q.value
-
-    # The first exact-owner cycle still describes a stale buffered packet.
-    # prediction_holdoff alone must not make that NOP eligible to consume.
-    _clear_inputs(dut)
-    dut.i_prediction_holdoff.value = 1
-    dut.i_prediction_from_buffer_holdoff.value = 1
-    dut.i_sel_nop.value = 1
-    await _settle()
-
-    assert not dut.pending_prediction_target_handoff.value
-    assert not dut.pending_prediction_target_handoff_applies.value
-    assert not dut.o_pending_prediction_target_handoff.value
-    assert dut.o_pending_prediction_fetch_holdoff.value
-
-    await _advance_cycle(dut)
-    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
-    assert dut.o_pending_prediction_active.value
-    assert not dut.o_pending_prediction_target_holdoff.value
-
-    # Once the stale-buffer phase ends, use the existing registered readiness
-    # handshake. The first covering cycle arms pc_ready_q; only the following
-    # cycle is allowed to consume the saved owner and target.
-    _clear_inputs(dut)
-    await _settle()
-    assert not dut.pending_prediction_pc_ready_q.value
-    assert not dut.pending_prediction_target_handoff.value
-
-    await _advance_cycle(dut)
-    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
-    assert dut.pending_prediction_pc_ready_q.value
-    assert dut.pending_prediction_target_handoff.value
-    assert dut.pending_prediction_target_handoff_applies.value
-    assert dut.o_pending_prediction_target_handoff.value
-
-    await _advance_cycle(dut)
-    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=HALFWORD_PRED_TARGET)
-    assert not dut.o_pending_prediction_active.value
-    assert dut.o_pending_prediction_target_holdoff.value
 
 
 @cocotb.test()
 async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
     dut: Any,
 ) -> None:
-    """A released pending predecessor advances atomically and cannot replay.
+    """A released predecessor advances pc_reg on the same edge and never replays.
 
-    A taken prediction registers a control-flow holdoff at the same time that
-    the pending controller still owes the compressed instruction immediately
-    before the predicted owner.  That predecessor is released during
-    ``i_prediction_holdoff``.  Its packet and ``pc_reg`` advance must happen
-    on the same edge; leaving ``pc_reg`` behind lets a later DDR served-window
-    retry dispatch the predecessor a second time.
+    A taken prediction registers a control-flow holdoff while the compressed
+    instruction just before the pending branch has not been emitted yet. That
+    predecessor is released during ``i_prediction_holdoff``, and its packet
+    and the ``pc_reg`` advance must happen on the same edge; leaving
+    ``pc_reg`` behind lets a later served-window retry dispatch the
+    predecessor a second time.
     """
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
@@ -875,8 +799,9 @@ async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
 
     owner_pc = BASE_PC + 4
 
-    # Arm a pending owner one compressed parcel beyond the next pc_reg. The
-    # prediction edge advances pc_reg only onto the immediate predecessor.
+    # Make a prediction pend for a branch one compressed parcel past the next
+    # pc_reg. The prediction edge advances pc_reg only onto the branch's
+    # immediate predecessor.
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
@@ -890,7 +815,7 @@ async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
 
     # The first post-prediction cycle releases that predecessor even though
     # the registered control-flow holdoff is active. The sequential pc_reg
-    # result must advance to the owner on this same edge.
+    # result must advance to the branch on this same edge.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
@@ -908,8 +833,8 @@ async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
     assert dut.o_pending_prediction_active.value
     assert not dut.pim_base.value
 
-    # A subsequent variable-latency mismatch can retry the owner, but the
-    # predecessor identity is now behind pc_reg and cannot reopen its carve.
+    # A later served-window mismatch can retry the branch, but the predecessor
+    # is now behind pc_reg and cannot be released again.
     _clear_inputs(dut)
     dut.i_window_cannot_serve.value = 1
     dut.i_window_cannot_serve_raw.value = 1
@@ -924,14 +849,15 @@ async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
 
 @cocotb.test()
 async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> None:
-    """A failed release cannot leave a false halfword-crossing witness.
+    """A blocked predecessor release must not make the pending branch look crossed.
 
-    The WCS=0 predecessor-release cofactor does not depend on the raw
-    served-window verdict.  If the architectural WCS arm wins on that
-    nominal release cycle, ``pc_reg`` must remain at P-2 and the registered
-    crossing witness must remain there with it.  Once the covering window
-    arrives, the predecessor emits and advances exactly once before the
-    halfword-aligned owner can consume its pending prediction.
+    The raw-WCS = 0 version of the predecessor release ignores the raw
+    served-window mismatch. If the served-window resteer wins in the cycle
+    the release would happen, ``pc_reg`` must stay at P-2, and so must the
+    registered sequential pc_reg that the crossing check reads
+    (``seq_next_pc_reg_hw_q``). Once the covering window arrives, the
+    predecessor emits and advances exactly once before the halfword-aligned
+    branch at P can take its pending prediction.
     """
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
@@ -939,8 +865,8 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
 
     owner_pc = BASE_PC + 6
 
-    # Create the normal one-word fetch lead with a halfword owner at BASE+6
-    # and pc_reg two compressed parcels behind it.
+    # Set up the usual one-word fetch lead, with fetch at the upper-half
+    # branch at BASE+6 and pc_reg two compressed parcels behind it.
     _clear_inputs(dut)
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
@@ -951,8 +877,8 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
     await _advance_cycle(dut)
     _assert_pc(dut, pc=owner_pc, pc_reg=owner_pc - 4)
 
-    # Arm the halfword owner while pc_reg advances only onto its immediate
-    # predecessor.
+    # Predict the branch at BASE+6 while pc_reg advances only onto its
+    # immediate predecessor.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
@@ -965,9 +891,9 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
     assert dut.pending_prediction_allow_cross.value
     assert dut.pim_base.value
 
-    # The raw cofactor says this would be a predecessor release, but the
-    # higher-priority architectural WCS arm means no packet is delivered and
-    # neither the architectural PC nor its crossing witness may advance.
+    # The raw-WCS = 0 release term is set, but the higher-priority
+    # served-window resteer delivers no packet, so neither pc_reg nor
+    # seq_next_pc_reg_hw_q may advance.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
@@ -986,9 +912,9 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
     assert int(dut.seq_next_pc_reg_hw_q.value) == (owner_pc - 2) >> 1
     assert dut.carve_out_engaged_q.value
 
-    # The covering cycle releases the real predecessor.  It must not be
-    # mistaken for an already-completed crossing only because the failed
-    # cycle's combinational sequential candidate reached the owner.
+    # The covering cycle releases the real predecessor.  It must not look
+    # like a completed crossing just because the blocked cycle's sequential
+    # pc_reg candidate reached the branch.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
@@ -1012,13 +938,13 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
 async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     dut: Any,
 ) -> None:
-    """A pending episode uses a stable tag across a stall and predecessor emit."""
+    """The pending PC and tags hold through a stall and the predecessor's emit."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
 
-    # Capture a prediction at BASE+4 while pc_reg advances by one compressed
-    # parcel to BASE+2.  This is the exact immediate-predecessor carve-out.
+    # Predict a branch at BASE+4 while pc_reg advances by one compressed
+    # parcel to BASE+2, the branch's immediate predecessor.
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
@@ -1036,10 +962,10 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     captured_pending_pc = int(dut.pending_prediction_pc.value)
     captured_predecessor = int(dut.pending_prediction_prev_pc.value)
 
-    # Sensitize the W=0 cofactor without taking an edge. With the carve latch
-    # still clear, removing raw WCS restores the predecessor hold. The
-    # companion must equal that canonical value while the W=1 companion keeps
-    # the opposite cofactor computed in parallel.
+    # Check the raw-WCS = 0 version without taking an edge. With
+    # carve_out_engaged_q still clear, dropping raw WCS restores the
+    # predecessor hold, so the live output must equal the WCS = 0 version,
+    # while the WCS = 1 version, computed in parallel, stays clear.
     dut.i_window_cannot_serve_raw.value = 0
     await Timer(1, unit="ns")
     assert dut.o_pending_prediction_fetch_holdoff.value
@@ -1049,7 +975,7 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     await Timer(1, unit="ns")
     assert not dut.o_pending_prediction_fetch_holdoff.value
 
-    # Fetch stalls freeze the speculative payload together with valid state.
+    # A stall freezes the pending PC and tags along with the valid bit.
     _clear_inputs(dut)
     dut.i_stall.value = 1
     await _advance_cycle(dut)
@@ -1060,8 +986,8 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     assert int(dut.pending_prediction_prev_pc.value) == captured_predecessor
     _assert_pending_predecessor_relation(dut)
 
-    # Resume the exact raw-WCS episode.  The registered post-prediction holdoff
-    # drains first, while the raw condition engages the carve-out latch.
+    # Resume with raw WCS still set.  The registered post-prediction holdoff
+    # drains first, and raw WCS sets carve_out_engaged_q.
     dut.i_stall.value = 0
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
@@ -1075,8 +1001,8 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     assert int(dut.pending_prediction_prev_pc.value) == captured_predecessor
     _assert_pending_predecessor_relation(dut)
 
-    # On the following cycle the carve-out emits the predecessor and advances
-    # pc_reg onto the pending branch without changing its captured payload.
+    # On the next cycle the predecessor is released: it emits, pc_reg advances
+    # onto the pending branch, and the captured pending state does not change.
     await _advance_cycle(dut)
 
     assert int(dut.o_pc_reg.value) == BASE_PC + 4
@@ -1088,7 +1014,7 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
 
 @cocotb.test()
 async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> None:
-    """Redirect kills valid state; the next invalid cycle recaptures a fresh tag."""
+    """A redirect clears the pending valid bit; the next edge recaptures the PC and tags."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
@@ -1113,16 +1039,16 @@ async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> 
     _assert_pc(dut, pc=BRANCH_TARGET, pc_reg=BRANCH_TARGET)
     assert not dut.pending_prediction_valid.value
     assert not dut.o_pending_prediction_active.value
-    # The payload is a don't-care while invalid. The redirect edge does not
-    # overwrite it because the old pending-valid episode still owns it.
+    # The tags are don't-care while invalid. The redirect edge does not
+    # overwrite them, because the valid bit was still set on that edge.
     assert int(dut.pending_prediction_prev_pc.value) == killed_compressed_tag
     assert int(dut.pending_prediction_prev_native_pc.value) == killed_native_tag
 
     _clear_inputs(dut)
     await _advance_cycle(dut)
 
-    # Speculative capture resumes once valid is low.  The redirect target was
-    # o_pc at this edge, so the pending PC and both predecessor tags retag
+    # Capture resumes once the valid bit is low.  o_pc held the redirect
+    # target at this edge, so the pending PC and both predecessor tags update
     # together.
     assert not dut.pending_prediction_valid.value
     assert int(dut.pending_prediction_pc.value) == BRANCH_TARGET

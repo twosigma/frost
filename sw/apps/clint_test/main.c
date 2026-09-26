@@ -15,12 +15,12 @@
  */
 
 /*
- * SiFive CLINT alias directed test (Increment 2 of the no-MMU Linux glue).
+ * SiFive CLINT alias directed test.
  *
  * FROST exposes a sifive,clint0-compatible window at 0x4001_0000 (msip @ +0,
  * mtimecmp @ +0x4000, mtime @ +0xBFF8) that aliases the native FROST timer
  * registers, so a stock Linux CLINT driver can deliver the timer tick. This
- * test proves the alias two ways:
+ * test checks the alias two ways:
  *   1. writes through the CLINT addresses are observable at the native timer
  *      addresses (same physical registers);
  *   2. a machine timer interrupt set up through the CLINT window alone
@@ -59,7 +59,7 @@ static void puts_(const char *s)
 static volatile unsigned long g_cause;
 
 /* Machine trap handler. GCC's "interrupt" attribute emits the register
- * save/restore and MRET, so it is safe as a normal C function. */
+ * save/restore and MRET, so mtvec can point straight at it. */
 __attribute__((interrupt("machine"), aligned(4))) static void mtrap(void)
 {
     unsigned long mc;
@@ -80,7 +80,7 @@ static void put_hex_(unsigned long v, int nibbles)
 
 int main(void)
 {
-    unsigned bad = 0; /* bit per failed check, for forensics */
+    unsigned bad = 0; /* one bit per failed check, printed on failure */
 
     __asm__ volatile("csrw mtvec, %0" ::"r"(&mtrap)); /* direct mode */
 
@@ -98,7 +98,7 @@ int main(void)
 
     /* 1c. CLINT mtime and native mtime read the same advancing counter. */
     uint32_t t_clint = CLINT_MTIME_LO;
-    uint32_t t_nat = NAT_MTIME_LO; /* read after -> >= */
+    uint32_t t_nat = NAT_MTIME_LO; /* read second, so t_nat >= t_clint */
     bad |= (t_nat >= t_clint) ? 0u : (1u << 4);
 
     /* 2. A machine timer interrupt set up entirely through the CLINT window. */

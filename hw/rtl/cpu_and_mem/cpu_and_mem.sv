@@ -15,12 +15,13 @@
  */
 
 /*
-  CPU and memory integration: Tomasulo core, separate instruction/data
-  dual-port RAMs, the cached memory tier, the RISC-V debug module, and the
-  MMIO block. Programming uses port A on i_clk_div4; runtime fetch and data
-  access use port B on i_clk. The MMIO block carries mtime/mtimecmp, msip,
-  the UART, two general-purpose FIFOs, an ns16550 face and CLINT alias for
-  Linux, and the PLIC.
+  CPU and memory integration: the Tomasulo core, the low BRAM's separate
+  instruction and data dual-port RAMs, the cached memory tier (cache hierarchy
+  and DDR bridge), the RISC-V debug module, the NIC, the DMA test engine, and
+  the MMIO block. Programming uses port A on i_clk_div4; runtime fetch and
+  data access use port B on i_clk. The MMIO block carries mtime/mtimecmp,
+  msip, the UART, two general-purpose FIFOs, an ns16550 face and CLINT alias
+  for Linux, the PLIC, and the DMA test engine and NIC register windows.
 */
 module cpu_and_mem #(
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
@@ -28,14 +29,15 @@ module cpu_and_mem #(
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier parameters (see frost.sv). High-address region backed
     // by the cache hierarchy (L1 BRAM plus L2 URAM) over main memory;
-    // accesses there have handshake (variable) latency. Low-BRAM fetches in
-    // the pinned metadata overlay stay 1-cycle; other windows repeat once.
-    // Every MMIO handoff adds one mandatory router stage, may then
-    // wait for committed-store drain, and returns one cycle after terminal
-    // accept.
+    // accesses there have handshake (variable) latency.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
     parameter int unsigned ENABLE_CACHED_TIER = 1,
+    parameter int unsigned L0_CACHE_DEPTH = riscv_pkg::LqL0Depth,
+    parameter bit EARLY_LOAD_WAKEUP = riscv_pkg::EarlyLoadWakeup,
+    parameter bit PREPARE_LOAD_WHILE_BUSY = riscv_pkg::PrepareLoadWhileBusy,
+    parameter int unsigned INT_RS_DEPTH = riscv_pkg::IntRsDepth,
+    parameter int unsigned DECODED_QUEUE_DEPTH = riscv_pkg::DecodedQueueDepth,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
@@ -56,20 +58,20 @@ module cpu_and_mem #(
     // 1 = cached tier ends in the behavioral DDR model; 0 = it ends at the
     // o_ddr_axi_*/i_ddr_axi_* ports (hardware DDR controller).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
-    // Simulation-only fetch-latency fuzz: LFSR-gated response gaps composed
-    // with the low instruction BRAM's native overlay/fallback readiness and
-    // owed-ask tracking. Exercises the core's fetch-invalid machinery without
-    // the L1I provider in the loop; hardware keeps 0.
+    // Simulation-only fetch-latency fuzz: LFSR-gated gaps in low-BRAM fetch
+    // responses, on top of the low BRAM's own overlay/fallback readiness.
+    // Exercises the core's handling of invalid fetch cycles without the L1I
+    // provider in the loop; hardware keeps 0.
     parameter int unsigned FETCH_VALID_FUZZ = 0,
     // Fuzz LFSR reset value: each nonzero seed is a distinct gap pattern.
     parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // On-silicon boot-hang classifier that can take over the console UART.
     // Keep it default-off for normal interactive software and Linux bring-up.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
-    // Triage pacing. Silicon defaults (~3 s / ~1 s @300 MHz); simulation runs
+    // Triage pacing. Silicon defaults (~2.8 s / ~1 s at 322 MHz); simulation runs
     // arm the classifier with thresholds sized to the sim budget instead.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
-    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd300_000_000,
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd322_265_625,
     // RISC-V debug transport: 1 = the generic 5-bit-IR JTAG TAP
     // inside this module drives the DTM from the i_jtag_* pins (simulation,
     // portable synthesis); 0 = the DTM's BSCAN-style bundle comes from the
@@ -79,26 +81,30 @@ module cpu_and_mem #(
     // Profiling counters in the CPU (see cpu_ooo): 0 = absent, the production
     // build; 1 for analysis builds and the cocotb entries that read them.
     parameter int unsigned PERF_COUNTERS = 0,
-    // Core clock frequency: the NIC's TICK default (one microsecond).
-    parameter int unsigned CLK_FREQ_HZ = 300000000,
+    // Core clock frequency; sets the NIC's default TICK (cycles per
+    // microsecond).
+    parameter int unsigned CLK_FREQ_HZ = 322265625,
     // The NIC's raw TX-to-RX loopback (see frost.sv): 1 for one MAC clock
     // shared by both directions, 0 for independent TX and RX clocks.
     parameter int unsigned RAW_LOOPBACK = 1
 ) (
     input logic i_clk,
-    input logic i_clk_div4,  // Divided clock for instruction memory programming
+    input logic i_clk_div4,  // Divided clock for the low-BRAM programming port
     input logic i_rst,
 
-    // Instruction memory programming interface (directly on div4 clock domain)
-    input  logic        i_instr_mem_en,
-    input  logic [ 3:0] i_instr_mem_we,
-    input  logic [31:0] i_instr_mem_addr,
-    input  logic [31:0] i_instr_mem_wrdata,
-    output logic [31:0] o_instr_mem_rddata,
+    // Low-BRAM programming interface (div4 clock domain); writes go to both the
+    // instruction and data copies
+    input logic        i_instr_mem_en,
+    input logic [ 3:0] i_instr_mem_we,
+    input logic [31:0] i_instr_mem_addr,
+    input logic [31:0] i_instr_mem_wrdata,
 
     output logic       o_uart_wr_en,
     output logic [7:0] o_uart_wr_data,
+    // TX status from frost.sv: room for a burst (the transmit FIFO is not
+    // almost full), and transmitter empty (nothing queued or being sent).
     input  logic       i_uart_tx_ready,
+    input  logic       i_uart_tx_empty,
 
     // UART RX interface - received data from UART
     input  logic [7:0] i_uart_rx_data,
@@ -142,6 +148,9 @@ module cpu_and_mem #(
     // DDR AXI master (cache-hierarchy bridge). Quiescent when
     // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled. Transaction ids
     // are the line-protocol ids (DdrAxiIdBits wide, board-fixed).
+    // i_ddr_axi_rst (i_clk domain) is the reset of the interconnect behind
+    // these ports; the behavioral memory uses the CPU reset instead.
+    input  logic         i_ddr_axi_rst,
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
     output logic [  4:0] o_ddr_axi_awid,
@@ -211,11 +220,10 @@ module cpu_and_mem #(
   // Data-memory rows are MemDataBits dwords (hw/rtl/README.md, "Data-tier bus contract").
   localparam int unsigned MemDwordAddrWidth = MemByteAddrWidth - 3;
 
-  // Memory-mapped I/O addresses for peripherals. Keep them in step with
-  // sw/common/link.ld and sw/common/link_ddr.ld (MMIO memory region and
-  // PROVIDE statements; both scripts carry the same addresses) and with the
-  // request router, which derives the UART RX and FIFO addresses as fixed
-  // offsets from the MMIO_ADDR parameter passed to cpu_ooo.
+  // Memory-mapped I/O addresses for peripherals. Keep them in step with every
+  // copy listed in hw/rtl/README.md, "Memory Map". The request router derives
+  // the UART RX and FIFO addresses as fixed offsets from the MMIO_ADDR
+  // parameter passed to cpu_ooo.
   localparam int unsigned MmioAddr = 32'h4000_0000;
   // ns16550 @ +0x1000, CLINT @ +0x10000, DMA test engine @ +0x20000, NIC @
   // +0x30000 (a 4 KiB window).
@@ -223,7 +231,7 @@ module cpu_and_mem #(
   localparam int unsigned UartMmioAddr = 32'h4000_0000;  // UART TX (write-only)
   localparam int unsigned UartRxDataMmioAddr = 32'h4000_0004;  // UART RX data (read consumes byte)
   localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024;  // RX status (bit0: data available)
-  localparam int unsigned UartTxStatusMmioAddr = 32'h4000_0028; // TX status (bit0: can accept byte)
+  localparam int unsigned UartTxStatusMmioAddr = 32'h4000_0028;  // TX status (bit0: TX ready)
   localparam int unsigned Fifo0MmioAddr = 32'h4000_0008;
   localparam int unsigned Fifo1MmioAddr = 32'h4000_000C;
   // Timer registers (CLINT-compatible layout)
@@ -255,8 +263,9 @@ module cpu_and_mem #(
   localparam int unsigned ClintMtimeHi = 32'h4001_BFFC;  // mtime[63:32]
 
   // DMA test engine @ 0x4002_0000, a 256-byte window of
-  // 32-bit registers (dma_test_engine.sv). Its DMA port is the cache
-  // hierarchy's coherent DMA port; its completion interrupt is PLIC source 3.
+  // 32-bit registers (dma_test_engine.sv). It reaches the cache hierarchy's
+  // coherent DMA port through the line-port arbiter it shares with the NIC;
+  // its completion interrupt is PLIC source 3.
   localparam int unsigned DmaEngineBase = 32'h4002_0000;
   // NIC @ 0x4003_0000, a 4 KiB window of 32-bit registers
   // (hw/rtl/peripherals/nic/nic_pkg.sv). It shares the coherent DMA port with
@@ -268,17 +277,39 @@ module cpu_and_mem #(
   // programs it.
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
 
-  // PLIC @ 0x4400_0000, a 4 MiB device-quadrant
-  // window (addr[31:22] == 10'h110). Sources: 1 = ns16550 irq, 2 =
-  // i_external_interrupt, 3 = the DMA test engine's completion. Contexts:
-  // 0 = hart0 M, 1 = hart0 S. The claim
-  // read (0x20_0004 + 0x1000*ctx) is destructive; its consume pulse rides
-  // mmio_read_capture, the router-shielded beat that fires once per
-  // performed read, as the UART RX consume does. 32-bit registers, 32-bit
-  // accesses.
+  // PLIC @ 0x4400_0000, a 4 MiB device-quadrant window
+  // (addr[31:22] == 10'h110) of 32-bit registers. Sources: 1 = ns16550 irq,
+  // 2 = i_external_interrupt, 3 = the DMA test engine's completion, 4 = the
+  // NIC. Contexts: 0 = hart0 M, 1 = hart0 S. The claim read
+  // (0x20_0004 + 0x1000*ctx) is destructive, so its consume pulse is decoded
+  // from mmio_read_capture, which the router fires once per performed read.
   localparam logic [9:0] PlicWindowSel = 10'h110;
   localparam int unsigned PlicClaimM = 32'h4420_0004;
   localparam int unsigned PlicClaimS = 32'h4420_1004;
+
+  // The data PMA accepts device accesses only in riscv_pkg's device-window
+  // pages, so they must be exactly the MMIO and PLIC windows decoded here: a
+  // page only the PMA had would reach no register, and one it lacked would
+  // fault. The pages must also keep the layout their decodes assume: both
+  // windows inside the device quadrant, which the load and store queues order
+  // as devices; the MMIO window inside one aligned 64-page block
+  // (riscv_pkg::pma_device_page_ok); and each window nonempty with an
+  // unmapped page on both sides (the store-issue page split in
+  // tomasulo_wrapper).
+  initial begin
+    if ((MmioAddr != {riscv_pkg::MmioFirstPage, 12'h000}) ||
+        ((MmioAddr + MmioSizeBytes) != {riscv_pkg::MmioLastPage + 20'd1, 12'h000}) ||
+        ({PlicWindowSel, 22'h00_0000} != {riscv_pkg::PlicFirstPage, 12'h000}) ||
+        ({PlicWindowSel, 22'h3F_FFFF} != {riscv_pkg::PlicLastPage, 12'hFFF}))
+      $fatal(1, "cpu_and_mem: MMIO or PLIC window differs from the riscv_pkg device-window pages");
+    if ((riscv_pkg::MmioFirstPage[19:18] != 2'b01) || (riscv_pkg::PlicFirstPage[19:18] != 2'b01) ||
+        (riscv_pkg::MmioLastPage[19:6] != riscv_pkg::MmioFirstPage[19:6]) ||
+        (riscv_pkg::MmioFirstPage > riscv_pkg::MmioLastPage) ||
+        (riscv_pkg::MmioLastPage == 20'h7_FFFF) || (riscv_pkg::PlicLastPage == 20'h7_FFFF) ||
+        ((riscv_pkg::MmioLastPage + 20'd1 >= riscv_pkg::PlicFirstPage) &&
+         (riscv_pkg::PlicLastPage + 20'd1 >= riscv_pkg::MmioFirstPage)))
+      $fatal(1, "cpu_and_mem: riscv_pkg device-window pages break the layout their decodes assume");
+  end
 
   // CPU interface signals
   logic [31:0] program_counter;
@@ -286,13 +317,12 @@ module cpu_and_mem #(
   // CPU-side UART write, muxed against the hang-triage byte stream further down.
   logic cpu_uart_wr_en;
   logic [7:0] cpu_uart_wr_data;
-  logic [31:0] fetch_address;  // imem port B address (the presented fetch ask)
+  logic [31:0] fetch_address;  // VA of the presented fetch ask (low-BRAM served tags)
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
   // Dedicated PC-metadata copy for the IF PC-advance selector. Each word is
   // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
   logic [7:0] instruction_pc_metadata;
-  logic [1:0] instruction_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic instruction_valid;  // Fetch window valid
   // Provider-local served-window word tags. IF compares both providers in
@@ -303,7 +333,7 @@ module cpu_and_mem #(
   logic [29:0] instruction_served_word_high, instruction_served_last_word_high;
   logic [29:0] instruction_served_prev_word_high;
   logic instruction_served_prev_word_valid_high;
-  // Phase 3 M5 fetch seam, physical side. From the core: its current physical
+  // Physical side of the fetch interface. From the core: its current physical
   // result for the presented ask, which is word 0 and word 1 of the window,
   // their validity, per-word fault flags, next-line prefetch permission, the
   // registered low-presenter retarget, and the cached provider's
@@ -326,14 +356,14 @@ module cpu_and_mem #(
   logic fetch_word0_fault, fetch_word0_fault_page, fetch_word1_fault, fetch_word1_fault_page;
   // Low-BRAM tags (fetch_address delayed one cycle to match the 1-cycle imem
   // read latency). S+1/S-1 and predecessor validity register on the same edge,
-  // as do the ask's validity and fault flags.
+  // as do the ask's fault flags.
   logic [29:0] bram_fetch_served_word_q;
   logic [29:0] bram_fetch_served_last_word_q;
   logic [29:0] bram_fetch_served_prev_word_q;
   logic bram_fetch_served_prev_word_valid_q;
   logic
       bram_fetch_fault0_q, bram_fetch_fault0_page_q, bram_fetch_fault1_q, bram_fetch_fault1_page_q;
-  logic fetch_replay_consume;  // CPU consumed the stall-replay bundle this cycle
+  logic fetch_replay_consume;  // registered: the CPU consumed the stall-replay bundle last cycle
   logic fetch_live_claim;  // IF consumed/captured the provider's live response this cycle
   logic pipeline_stall;  // front-end stall; holds slow publication, not overlay bypass
   logic fence_i_sync_req;  // ROB serializer holding commit for a fence.i cache sync
@@ -364,7 +394,6 @@ module cpu_and_mem #(
   logic [15:0] fetch_pc_metadata_by_provider_parity;
   logic [7:0] fetch_pc_pairability_by_provider_parity;
   logic [3:0] fetch_slot2_start_valid_lo_by_provider_parity;
-  logic [1:0] bram_fetch_hi_rd_is_x2;
   logic bram_fetch_bank_sel_r;
   (* keep = "true", max_fanout = 16 *) logic bram_fetch_bank_sel_cpu_r;
 
@@ -379,7 +408,8 @@ module cpu_and_mem #(
   };
 
   // Instruction-side line port into the cache hierarchy: driven by the fetch
-  // provider when the cached tier is enabled, tied off otherwise.
+  // provider when the cached tier is enabled (and the fetch fuzz is off), tied
+  // off otherwise.
   // Line-protocol id widths: the L1 upstream ports carry LineIdBits, the
   // hierarchy's downstream port two more (the top arbiter's port bits over
   // L1D / walker+L1I / DMA), and the board AXI id is fixed at DdrAxiIdBits
@@ -422,16 +452,16 @@ module cpu_and_mem #(
   logic [riscv_pkg::MemDataBits-1:0] data_memory_read_data;  // From RAM only
   logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable;
-  // MMIO-pre-masked copy routed straight to the BRAM WEA pins. Generated in
-  // cpu_ooo using the SQ/AMO-side registered is_mmio flags so the BRAM
-  // write-enable no longer depends on the late combinational
-  // data_memory_address-range test.
+  // Copy with MMIO and cached-tier writes masked, routed straight to the BRAM
+  // WEA pins. Generated in cpu_ooo from the registered tier flags of the SQ
+  // and AMO writes, so the BRAM write enable does not depend on a late
+  // address-range compare, which would pull the data_memory_address mux, and
+  // with it the LQ issue cone, onto the WEA pins.
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_bram_byte_write_enable;
   logic data_memory_read_enable;
   // Cached tier (high-address region). The router drives these tier-routed
   // requests (already qualified by is_cached); the cached_tier_adapter
-  // completes them with handshake pulses. The BRAM keeps reading/writing the
-  // low range unchanged.
+  // completes them with handshake pulses.
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_cached_byte_write_enable;
   logic data_memory_cached_read_enable;
   logic [riscv_pkg::CachedLoadSlotBits-1:0] data_memory_cached_read_id;
@@ -442,8 +472,8 @@ module cpu_and_mem #(
   logic data_memory_cached_write_done;
   logic data_memory_cached_write_inflight;
   // Source-registered cache events cross into cpu_ooo as one packed observer
-  // bundle. The hierarchy owns the per-level fields; the fetch provider adds
-  // the front-end-progress qualifier for the L1I miss-stall counter.
+  // bundle. The hierarchy supplies the per-level fields; the fetch provider
+  // adds the front-end-progress qualifier for the L1I miss-stall counter.
   cache_perf_pkg::cache_hierarchy_perf_events_t cache_hierarchy_perf_events;
   cache_perf_pkg::cache_perf_events_t cache_perf_events;
   logic l1i_fetch_miss_stall;
@@ -479,38 +509,37 @@ module cpu_and_mem #(
     else ns_iir = 8'hC1;  // FIFO enabled, no interrupt pending.
   end
 
+  logic [1:0] plic_eip;
+
   // Interrupt signals to CPU
   riscv_pkg::interrupt_t interrupts;
-  // External interrupt: meip is registered from the PLIC's M-context line to
-  // break the dominant post-opt timing spine (uart TX-FIFO CDC read pointer
-  // -> occupancy carry compare -> i_uart_tx_ready -> ns16550 THRE irq ->
-  // PLIC source 1 -> meip -> trap_unit / ROB-serializer WFI wake ->
-  // commit_en -> retire/trap/SQ endpoints; ~1256 failing paths, WNS -1.09 at
-  // 300 MHz). The whole combinational compare cone terminates at this flop's
-  // D. mtip_registered below is registered for the same reason.
+  // External interrupt: meip is registered from the PLIC's M-context line. The
+  // register breaks a long combinational path: UART TX-FIFO read pointer ->
+  // occupancy compare -> i_uart_tx_ready -> ns16550 THRE irq -> PLIC source 1
+  // -> meip -> trap_unit / ROB-serializer WFI wake -> commit_en -> retire,
+  // trap, and SQ endpoints.
   //
-  // The extra cycle of interrupt-delivery latency was accepted 2026-07-01:
-  // meip, THRE and RX are level conditions, a level delayed one cycle is
-  // architecturally benign, and interrupt delivery is not on the
-  // CoreMark-scored path. Only the interrupt view is registered. The MMIO
-  // store-drain handshake on i_uart_tx_ready is untouched, and the ns_iir
-  // readback stays combinational, as a real 8250's IIR reflects current
-  // conditions when the handler reads it.
+  // meip, THRE and RX are level conditions, so delaying the level one cycle is
+  // architecturally harmless. Only the interrupt view is registered: the UART
+  // status reads use i_uart_tx_ready directly, and the ns_iir readback stays
+  // combinational, as a real 8250's IIR reflects current conditions when the
+  // handler reads it.
   logic meip_registered;
   always_ff @(posedge i_clk) begin
     if (rst_core) meip_registered <= 1'b0;
-    else meip_registered <= plic_eip[0];  // PLIC M-context line (M6)
+    else meip_registered <= plic_eip[0];  // PLIC M-context line
   end
   assign interrupts.meip = meip_registered;
 
+  logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable_registered;
+
   // ---------------------------------------------------------------------------
-  // PLIC (M6). Register writes ride the registered MMIO write bus like the
+  // PLIC. Register writes ride the registered MMIO write bus like the
   // ns16550 block; the byte enables select the 32-bit lane. The spec requires
   // 32-bit accesses, so an out-of-spec 64-bit store lands only its high lane
-  // (plic_wr_hi wins). Claim consumes decode the exact word address from the
-  // architecturally-performed read beat.
+  // (plic_wr_hi wins). Claim pulses decode the exact word address of the
+  // performed read.
   // ---------------------------------------------------------------------------
-  logic [1:0] plic_eip;
   logic [1:0] plic_claim_pulse;
   // The register-bus window selects are registered beside the address they
   // decode (the same unconditional capture as data_memory_address_registered),
@@ -585,15 +614,14 @@ module cpu_and_mem #(
   logic [31:0] cpu_debug_commit_2_pc;
   logic [1:0] cpu_debug_commit_valid;
 
-  // RISC-V OOO CPU core: Tomasulo out-of-order, RV64IMACBFD + Zicsr, M/S/U
-  // privilege. D3 boundary: the physical map is 32-bit
-  // (riscv_pkg::PhysAddrBits), so this level keeps 32-bit address/PC signals.
-  // The core's XLEN-wide ports carry structurally-zero upper bits
-  // (producer-side canonicalization); they are dropped or zero-filled at
-  // these pins. The fetch PC is the exception: it is a virtual address whose
-  // low 32 bits are the window identity, and the core's physical fetch
-  // results (o_fetch_pa0/pa1) carry the addresses the memories are read at
-  //.
+  // RISC-V OOO CPU core: Tomasulo out-of-order, RV64GCB, M/S/U privilege.
+  // The physical map is 32-bit (riscv_pkg::PhysAddrBits), so this level keeps
+  // 32-bit address/PC signals. The core's XLEN-wide physical address ports
+  // carry upper bits that are zero by construction; they are dropped or
+  // zero-filled at these pins. The PCs are virtual addresses and keep only
+  // their low 32 bits here: for the fetch PC those are the window identity,
+  // and the core's physical fetch results (o_fetch_pa0/pa1) carry the
+  // addresses the memories are read at.
   logic [riscv_pkg::XLEN-1:0] cpu_pc_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_data_mem_addr_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_mmio_load_addr_xlen;
@@ -605,13 +633,25 @@ module cpu_and_mem #(
   assign cpu_debug_commit_pc = cpu_debug_commit_pc_xlen[31:0];
   assign cpu_debug_commit_2_pc = cpu_debug_commit_2_pc_xlen[31:0];
 
+  // Hart interface (cpu_ooo <-> debug module).
+  logic dbg_haltreq, dbg_go, dbg_data_we, dbg_debug_mode, dbg_parked, dbg_cmd_err, dbg_go_taken;
+  logic [31:0] dbg_go_addr;
+  logic [63:0] dbg_data, dbg_data_wdata;
+  logic dbg_bram_store;
+  logic [31:0] dbg_bram_store_addr;
+  logic [7:0] dbg_bram_store_strb;
+
   cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
-      .MMIO_SIZE_BYTES(MmioSizeBytes),
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
-      .PERF_COUNTERS(PERF_COUNTERS)
+      .PERF_COUNTERS(PERF_COUNTERS),
+      .L0_CACHE_DEPTH(L0_CACHE_DEPTH),
+      .EARLY_LOAD_WAKEUP(EARLY_LOAD_WAKEUP),
+      .PREPARE_LOAD_WHILE_BUSY(PREPARE_LOAD_WHILE_BUSY),
+      .INT_RS_DEPTH(INT_RS_DEPTH),
+      .DECODED_QUEUE_DEPTH(DECODED_QUEUE_DEPTH)
   ) cpu_inst (
       .i_clk,
       .i_rst(rst_core),
@@ -625,7 +665,6 @@ module cpu_and_mem #(
           fetch_slot2_start_valid_lo_by_provider_parity
       ),
       .i_instr_pc_metadata_served_high(instruction_pc_metadata_served_high),
-      .i_instr_hi_rd_is_x2(instruction_hi_rd_is_x2),
       .i_instr_bank_sel_r(instruction_bank_sel_r),
       .i_served_word_low(instruction_served_word_low),
       .i_served_last_word_low(instruction_served_last_word_low),
@@ -711,7 +750,7 @@ module cpu_and_mem #(
       .o_debug_commit_valid(cpu_debug_commit_valid),
       // Branch prediction enabled by default in production
       .i_disable_branch_prediction(1'b0),
-      // Debug module seam
+      // Debug module interface
       .i_dbg_haltreq(dbg_haltreq),
       .i_dbg_go(dbg_go),
       .i_dbg_go_addr(dbg_go_addr),
@@ -726,11 +765,6 @@ module cpu_and_mem #(
       .o_dbg_bram_store_addr(dbg_bram_store_addr),
       .o_dbg_bram_store_strb(dbg_bram_store_strb)
   );
-
-  // MMIO mask now lives in cpu_ooo at the SQ/AMO source; the BRAM consumes
-  // data_memory_bram_byte_write_enable directly. The old address-range check
-  // pulled the full data_memory_address mux (and therefore the LQ issue
-  // cone) onto the BRAM WEA pin (-1.045 ns WNS path).
 
   // Two memories, instruction and data. Both receive the programming writes
   // (fanned out) on port A (div4 clock).
@@ -748,7 +782,7 @@ module cpu_and_mem #(
   // correspond to the owed fetch address, the o_pc value of the last served
   // cycle, retargeted when o_pc moves during an invalid period. Only backend
   // redirects move it then; the core holds o_pc while invalid. A variable-
-  // latency provider therefore owns a 1-deep owed-ask register and keeps
+  // latency provider therefore has a 1-deep owed-ask register and keeps
   // serving it. The low presenter has no independent PC-movement detector and
   // takes a registered stale-request retarget. A leading slot-1 prediction is
   // excluded because its branch response is still owed; slot 2 and no-lead
@@ -803,6 +837,7 @@ module cpu_and_mem #(
         .i_publish_hold(fuzz_publish_hold),
         .i_owner_low(1'b1),
         .i_retarget(fetch_redirect),
+        .i_address_retarget(fetch_redirect),
         .i_pc(program_counter),
         .i_pa0(fetch_pa0),
         .i_pa1(fetch_pa1),
@@ -827,7 +862,6 @@ module cpu_and_mem #(
     assign high_fetch_pc_metadata_by_parity = '0;
     assign high_fetch_pc_pairability_by_parity = '0;
     assign high_fetch_slot2_start_valid_lo_by_parity = '0;
-    assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
 
     // No instruction-side cache traffic in fuzz mode (low-BRAM programs).
@@ -855,18 +889,16 @@ module cpu_and_mem #(
     // Hardware fast path: low instruction BRAM fetches stay cycle-equivalent
     // to the direct build. The source select is registered from the address
     // presented last cycle, matching imem_predecode's registered read latency;
-    // overlay-hit low windows remain always-valid, out-of-overlay low windows
+    // overlay-hit low windows are always valid, out-of-overlay low windows
     // repeat once, and high windows wait for the L1I provider.
     (* keep = "true", max_fanout = 16 *) logic fetch_high_valid_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_instr_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_sideband_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_pc_metadata_q;
-    (* keep = "true", max_fanout = 16 *) logic fetch_high_rdx2_q;
     logic fetch_high_transition;
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
     logic [7:0] cached_fetch_pc_metadata;
-    logic [1:0] cached_fetch_hi_rd_is_x2;
     logic cached_fetch_bank_sel_r;
     logic [29:0] cached_fetch_served_word;
     logic [29:0] cached_fetch_served_last_word;
@@ -895,7 +927,14 @@ module cpu_and_mem #(
       else cached_fetch_valid_local_q <= cached_fetch_valid_next;
     end
 
-    low_bram_fetch_presenter u_low_bram_fetch_presenter (
+    // The low address pins (PA bits [15:0], retargeted only by
+    // i_address_retarget) may finish a held low request on a low-to-high
+    // crossing. The upper PA bits take the full retarget and mark that read
+    // high, so it can neither hit the low overlay nor match a later low
+    // response identity.
+    low_bram_fetch_presenter #(
+        .SEPARATE_ADDRESS_RETARGET(1'b1)
+    ) u_low_bram_fetch_presenter (
         .i_clk(i_clk),
         .i_rst(rst_core),
         .i_response_ready(bram_fetch_response_ready),
@@ -904,6 +943,7 @@ module cpu_and_mem #(
         .i_publish_hold(low_bram_pipeline_stall_q),
         .i_owner_low(!fetch_pa0[31]),
         .i_retarget(fetch_redirect || fetch_high_transition),
+        .i_address_retarget(fetch_redirect),
         .i_pc(program_counter),
         .i_pa0(fetch_pa0),
         .i_pa1(fetch_pa1),
@@ -922,9 +962,6 @@ module cpu_and_mem #(
         .o_fetch_fault1_page(fetch_word1_fault_page),
         .o_response_valid(low_bram_response_valid)
     );
-    assign cached_fetch_hi_rd_is_x2 = {
-      cached_fetch_instr[59:55] == 5'd2, cached_fetch_instr[27:23] == 5'd2
-    };
     assign cached_fetch_pc_metadata = {
       cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
       cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableCompressedHi],
@@ -941,24 +978,22 @@ module cpu_and_mem #(
         fetch_high_instr_q       <= 1'b0;
         fetch_high_sideband_q    <= 1'b0;
         fetch_high_pc_metadata_q <= 1'b0;
-        fetch_high_rdx2_q        <= 1'b0;
       end else begin
-        // The tier is a property of the physical address (M5).
+        // The tier is a property of the physical address.
         fetch_high_valid_q       <= fetch_pa0[31];
         fetch_high_instr_q       <= fetch_pa0[31];
         fetch_high_sideband_q    <= fetch_pa0[31];
         fetch_high_pc_metadata_q <= fetch_pa0[31];
-        fetch_high_rdx2_q        <= fetch_pa0[31];
       end
     end
 
     // The source select is registered to match the fetch payload latency. On
     // a low<->high tier crossing, one delivery cycle is suppressed until the
-    // select matches the live PC; otherwise a stale low-BRAM valid can advance
-    // the front end while the high-cache provider still owes the branch
-    // target. The metadata selector is phase-identical with the payload
-    // selector and selects only one-bit timing results inside IF.
-    // Provider-local word tags remain unmuxed across this boundary.
+    // select matches the live fetch PA (fetch_pa0[31]); otherwise a stale
+    // low-BRAM valid can advance the front end while the high-cache provider
+    // still owes the branch target. The metadata selector switches on the
+    // same cycle as the payload selector and selects only one-bit timing
+    // results inside IF. Provider-local word tags are not muxed here.
     assign fetch_high_transition = fetch_high_valid_q ^ fetch_pa0[31];
     assign instruction_valid = fetch_high_transition ? 1'b0 :
                                (fetch_high_valid_q ? cached_fetch_valid_local_q :
@@ -976,8 +1011,6 @@ module cpu_and_mem #(
                                   bram_fetch_sideband;
     assign instruction_pc_metadata = fetch_high_pc_metadata_q ?
         cached_fetch_pc_metadata : bram_fetch_pc_metadata;
-    assign instruction_hi_rd_is_x2 = fetch_high_rdx2_q ? cached_fetch_hi_rd_is_x2 :
-                                                        bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = fetch_high_valid_q ? cached_fetch_bank_sel_r :
                                                          bram_fetch_bank_sel_cpu_r;
     assign instruction_served_word_low = bram_fetch_served_word_q;
@@ -996,16 +1029,15 @@ module cpu_and_mem #(
       if (!rst_core) begin
         p_cached_fetch_valid_timing_twin_exact :
         assert (cached_fetch_valid_local_q == cached_fetch_valid);
-        p_fetch_high_rdx2_select_aligned : assert (fetch_high_rdx2_q == fetch_high_valid_q);
         p_fetch_high_pc_metadata_select_aligned :
         assert (fetch_high_pc_metadata_q == fetch_high_valid_q);
       end
     end
 `endif
 
-    // High-address provider: two-line L1I fetch buffer for cached/DDR code.
-    // It no longer drives the low-BRAM address pins; that path stays direct
-    // above for timing and IPC.
+    // High-address provider: the fetch buffer (two window slots and a victim
+    // store) in front of the L1I, for cached/DDR code. It does not drive the
+    // low-BRAM address pins; that path stays direct, above, for timing and IPC.
     fetch_provider #(
         .LINE_BYTES  (32),
         .LINE_ID_BITS(LineIdBits)
@@ -1052,8 +1084,9 @@ module cpu_and_mem #(
         .i_line_resp_valid(iup_resp_valid),
         .i_line_resp_id(iup_resp_id),
         .i_line_resp_rdata(iup_resp_rdata),
-        // FENCE-class retirement: drop both buffer lines (and any landing
-        // fill) the same cycle the pipeline flushes, before refetch arrives.
+        // FENCE-class retirement: drop both buffer lines, the victim store,
+        // and any landing fill the same cycle the pipeline flushes, before
+        // refetch arrives.
         .i_invalidate(fence_i_flush)
     );
   end else begin : gen_fetch_direct
@@ -1088,6 +1121,7 @@ module cpu_and_mem #(
         .i_publish_hold(low_bram_pipeline_stall_q),
         .i_owner_low(1'b1),
         .i_retarget(fetch_redirect),
+        .i_address_retarget(fetch_redirect),
         .i_pc(program_counter),
         .i_pa0(fetch_pa0),
         .i_pa1(fetch_pa1),
@@ -1112,7 +1146,6 @@ module cpu_and_mem #(
     assign high_fetch_pc_metadata_by_parity = '0;
     assign high_fetch_pc_pairability_by_parity = '0;
     assign high_fetch_slot2_start_valid_lo_by_parity = '0;
-    assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
     assign iup_req_valid = 1'b0;
     assign iup_req_write = 1'b0;
@@ -1211,7 +1244,7 @@ module cpu_and_mem #(
 
 `ifndef SYNTHESIS
   // Every generate mode keeps both provider-local tag sets internally
-  // consistent, including modulo wrap at the 30-bit word seam.
+  // consistent, including modulo wrap of the 30-bit word index.
   logic served_contract_check_valid_q;
   always_ff @(posedge i_clk) begin
     if (rst_core) served_contract_check_valid_q <= 1'b0;
@@ -1313,18 +1346,10 @@ module cpu_and_mem #(
       .i_dmi_resp_op(dmi_resp_op)
   );
 
-  // Hart seam (cpu_ooo <-> debug module).
-  logic dbg_haltreq, dbg_go, dbg_data_we, dbg_debug_mode, dbg_parked, dbg_cmd_err, dbg_go_taken;
-  logic [31:0] dbg_go_addr;
-  logic [63:0] dbg_data, dbg_data_wdata;
-  logic dbg_bram_store;
-  logic [31:0] dbg_bram_store_addr;
-  logic [7:0] dbg_bram_store_strb;
-
   // Slice writer requests: the Debug-Mode store mirror has priority over the
   // debug module's own word writes. The mirror cannot wait (a refused push is
   // a sticky command error); the module's writes can. A dword store mirrors
-  // both words: word 0 now, word 1 from a one-deep hold on the next cycle.
+  // both words: word 0 this cycle, word 1 from a one-deep hold on the next.
   logic slice_req_valid, slice_req_mirror, slice_req_ready, slice_all_done;
   logic [MemByteAddrWidth-1:2] slice_req_word_addr;
   logic [31:0] slice_req_data;
@@ -1335,11 +1360,17 @@ module cpu_and_mem #(
   logic [MemByteAddrWidth-1:2] mirror_hold_addr_q;
   logic mirror_now_valid, mirror_lo, mirror_hi, mirror_overflow;
   logic [MemByteAddrWidth-1:2] mirror_now_addr;
-  assign mirror_lo = dbg_debug_mode && dbg_bram_store && (|dbg_bram_store_strb[3:0]);
-  assign mirror_hi = dbg_debug_mode && dbg_bram_store && (|dbg_bram_store_strb[7:4]);
+  // dbg_bram_store is |dbg_bram_store_strb (cpu_ooo), so it is implied by
+  // either half's strobes and is left out of the per-word terms. TIMING: the
+  // word terms sit on the slice-writer FIFO data/address, the valid below on
+  // its write enable; neither re-reduces the strobe cone.
+  assign mirror_lo = dbg_debug_mode && (|dbg_bram_store_strb[3:0]);
+  assign mirror_hi = dbg_debug_mode && (|dbg_bram_store_strb[7:4]);
   // This cycle's mirror: the held word 1 first, else the new store's word 0
-  // (or its word 1 alone).
-  assign mirror_now_valid = mirror_hold_valid_q || mirror_lo || mirror_hi;
+  // (or its word 1 alone). mirror_lo || mirror_hi is exactly
+  // dbg_debug_mode && dbg_bram_store; the router's structural any-byte flag
+  // keeps the FIFO write enable two LUT levels from the store-source flops.
+  assign mirror_now_valid = mirror_hold_valid_q || (dbg_debug_mode && dbg_bram_store);
   assign mirror_now_addr = mirror_hold_valid_q ? mirror_hold_addr_q :
       mirror_lo ? {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b0} :
                   {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};
@@ -1351,8 +1382,8 @@ module cpu_and_mem #(
       (mirror_lo && mirror_hi && !slice_req_ready);
   // The overflow pulse sits at the end of the BRAM write-port cone (the
   // store/AMO write-enable decision), so it is registered here. The debug
-  // module only needs it as a sticky flag and as the verdict on a finished
-  // command, which it takes one cycle after the re-park.
+  // module only needs it as a sticky flag and to judge a finished command,
+  // which it does one cycle after the re-park.
   logic mirror_overflow_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) mirror_overflow_q <= 1'b0;
@@ -1477,7 +1508,6 @@ module cpu_and_mem #(
       .o_port_b_slot2_start_valid_lo_by_parity(bram_fetch_slot2_start_valid_lo_by_parity),
       .o_port_b_window_overlay_hit(bram_fetch_window_overlay_hit),
       .o_port_b_response_ready(bram_fetch_response_ready),
-      .o_port_b_hi_rd_is_x2(bram_fetch_hi_rd_is_x2),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
 
@@ -1485,10 +1515,10 @@ module cpu_and_mem #(
   // address bit, on the same edge, as imem_predecode.bank_sel_r, but keeps
   // the instruction-memory mux control from becoming a long-distance IF
   // control net. The served tags stay virtual (the window's identity); the
-  // ask's fault flags register beside them while the presenter owns PA
-  // validity.
+  // ask's fault flags register beside them, and PA validity stays with the
+  // presenter.
   always_ff @(posedge i_clk) begin
-    // the parity is that of the word imem reads (fetch_pa_word0),
+    // The parity is that of the word imem reads (fetch_pa_word0),
     // not of the virtual fetch address. A visible result shares bit 2 with
     // its VA because the page offset is common to both; while a tagged Sv39
     // result is invisible, fetch_pa_ok keeps that transient address from
@@ -1529,9 +1559,9 @@ module cpu_and_mem #(
   // port) and the debug slice writer's mirror reads
   // Port B: Data access (main clock, loads/stores from CPU)
 
-  // Port A keeps its 32-bit programming face: the word write is steered into
+  // Port A keeps a 32-bit programming face: the word write is steered into
   // the addressed half of the dword row (addr[2] selects the strobe nibble),
-  // so the JTAG/loader flow stays untouched.
+  // so the JTAG loader and the slice writer write plain 32-bit words.
   logic [riscv_pkg::MemStrbBits-1:0] instr_mem_dword_we;
   assign instr_mem_dword_we =
       prog_port_addr[2] ? {prog_port_dmem_we, 4'b0000} : {4'b0000, prog_port_dmem_we};
@@ -1557,11 +1587,10 @@ module cpu_and_mem #(
       .i_port_b_byte_write_enable(data_memory_bram_byte_write_enable),
       .o_port_b_read_data(data_memory_read_data)
   );
-  assign o_instr_mem_rddata = instruction[31:0];  // Current word only for programming readback
 
   // Cached tier: high-address region behind the cache hierarchy. The router
   // only asserts the cached read/write requests for addresses inside the
-  // cached range; the adapter serializes them into line transactions through
+  // cached range; the adapter turns them into line requests through
   // frost_cache_hierarchy (L1 BRAM plus L2 URAM) and the AXI bridge into
   // main memory. In simulation the main memory is the behavioral DDR model
   // (initialized from sw_ddr.mem, persistent across CPU resets like real
@@ -1642,7 +1671,6 @@ module cpu_and_mem #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
         .UP_ID_BITS(LineIdBits),
-        .HAS_L2(1),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES),
@@ -1682,8 +1710,8 @@ module cpu_and_mem #(
         .o_wup_resp_valid(walk_line_resp_valid),
         .o_wup_resp_id(walk_line_resp_id),
         .o_wup_resp_rdata(walk_line_resp_rdata),
-        // DMA port: the DMA test engine. The load-queue
-        // coherence handshake is tied off until the core-side interface lands.
+        // DMA port: the NIC and the DMA test engine through dma_arbiter below.
+        // The coherence handshake runs to the core's lq_coherence_port.
         .i_dma_req_valid(dma_req_valid),
         .o_dma_req_ready(dma_req_ready),
         .i_dma_req_write(dma_req_write),
@@ -1830,6 +1858,11 @@ module cpu_and_mem #(
     logic [31:0] axi_wstrb;
     logic [DdrAxiIdBits-1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
+    // The AXI slave's reset: the behavioral memory resets with the CPU, the
+    // board's interconnect with its own reset.
+    logic ddr_axi_rst;
+    assign ddr_axi_rst = (USE_BEHAVIORAL_DDR != 0) ? rst_core : i_ddr_axi_rst;
+
     line_port_axi_bridge #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
@@ -1839,6 +1872,7 @@ module cpu_and_mem #(
     ) ddr_bridge (
         .i_clk(i_clk),
         .i_rst(rst_core),
+        .i_axi_rst(ddr_axi_rst),
         .i_req_valid(down_req_valid),
         .o_req_ready(down_req_ready),
         .i_req_write(down_req_write),
@@ -2054,8 +2088,7 @@ module cpu_and_mem #(
   end
 
   // Pipeline registers for memory access signals (accounts for RAM read latency)
-  logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable_registered;
-  logic                              data_memory_read_enable_registered;
+  logic data_memory_read_enable_registered;
   always_ff @(posedge i_clk) begin
     data_memory_address_registered <= data_memory_address;
     data_memory_read_enable_registered <= rst_core ? 1'b0 : data_memory_read_enable;
@@ -2075,12 +2108,12 @@ module cpu_and_mem #(
   // The bus carries the aligned-dword view (hw/rtl/README.md, "Data-tier bus
   // contract"): each case arm is a dword address composing {word at +4, word
   // at +0}, so a 32-bit load extracts its word by addr[2] downstream and the
-  // legacy hi/lo aliases fall out of the same arm (ClintMtimeHi is the upper
+  // 32-bit hi/lo aliases fall out of the same arm (ClintMtimeHi is the upper
   // lane of ClintMtimeLo's dword). The 64-bit CLINT registers read
-  // single-copy atomically as one beat. Word-decoded destructive side effects
-  // (UART RX consume, FIFO pops) are pulsed per word address in the request
-  // router, so a neighboring value appearing in the other lane consumes
-  // nothing.
+  // single-copy atomically as one beat. Destructive side effects are decoded
+  // per word address (the native UART RX and FIFO pops in the request router,
+  // the ns16550 RBR pop and the PLIC claims here), so a neighboring value
+  // appearing in the other lane consumes nothing.
   always_comb begin
     logic [31:0] ns_thr_rbr_word;
     logic [31:0] ns_ier_dlm_word;
@@ -2103,7 +2136,7 @@ module cpu_and_mem #(
         MsipMmioAddr[31:3], 3'b000
       } :
       mmio_read_data_comb = {{31'b0, i_uart_rx_valid}, {31'b0, msip}};
-      // {-, UART TX status (bit 0: can accept byte)}
+      // {-, UART TX status (bit 0: TX ready, the transmit FIFO not almost full)}
       {
         UartTxStatusMmioAddr[31:3], 3'b000
       } :
@@ -2111,12 +2144,13 @@ module cpu_and_mem #(
       // ns16550a UART face (aliases native UART TX/RX). DLAB selects DLL/DLM.
       {Ns16550ThrRbr[31:3], 3'b000} : mmio_read_data_comb = {ns_ier_dlm_word, ns_thr_rbr_word};
       {Ns16550IirFcr[31:3], 3'b000} : mmio_read_data_comb = {{24'b0, ns_lcr}, {24'b0, ns_iir}};
-      // LSR: TEMT|THRE from TX-ready (bits 6,5); DR from RX-valid (bit 0).
+      // LSR: TEMT from transmitter-empty (bit 6), THRE from TX-ready (bit 5),
+      // DR from RX-valid (bit 0).
       {
         Ns16550Mcr[31:3], 3'b000
       } :
       mmio_read_data_comb = {
-        {24'b0, 1'b0, i_uart_tx_ready, i_uart_tx_ready, 4'b0, i_uart_rx_valid}, {24'b0, ns_mcr}
+        {24'b0, 1'b0, i_uart_tx_empty, i_uart_tx_ready, 4'b0, i_uart_rx_valid}, {24'b0, ns_mcr}
       };
       {
         Ns16550Msr[31:3], 3'b000
@@ -2128,7 +2162,7 @@ module cpu_and_mem #(
       {ClintMtimeLo[31:3], 3'b000} : mmio_read_data_comb = mtime;
       default: ;
     endcase
-    // PLIC window (M6): range-decoded outside the exact-address case; the
+    // PLIC window: range-decoded outside the exact-address case; the
     // PLIC returns the addressed 64-bit register pair.
     if (mmio_load_addr[31:22] == PlicWindowSel) mmio_read_data_comb = plic_rd_pair;
     // DMA test engine window: the addressed 64-bit register pair.
@@ -2175,13 +2209,11 @@ module cpu_and_mem #(
   end
 `endif
 
-  // Destructive MMIO read side effects are decoded and registered inside the
-  // memory router; this boundary stays direct routing to the peripherals.
-
-  // Select the complete response at this boundary, where all three payloads
-  // and the router's inverse registered fast owner are already available.
-  // Both CPU data inputs receive this value; its unchanged response mux thus
-  // selects identical payloads while retaining every valid/ready/ID decision.
+  // Select the complete response here, where all three payloads and the
+  // router's cached-read-ready (its inverted registered fast-response valid)
+  // are available. Both CPU data inputs (i_data_mem_rd_data and
+  // i_cached_read_data) receive this value, so the router's own response mux
+  // selects identical payloads while keeping every valid/ready/ID decision.
   data_mem_response_mux #(
       .DATA_WIDTH(riscv_pkg::MemDataBits)
   ) data_mem_response_mux_inst (
@@ -2195,11 +2227,13 @@ module cpu_and_mem #(
 
   // UART write: the native TX at 0x4000_0000, or the ns16550 THR at
   // 0x4000_1000 when DLAB is clear. Both funnel into the same TX byte stream.
+  logic cpu_uart_wr_en_next;
+  assign cpu_uart_wr_en_next = |data_memory_byte_write_enable_registered &&
+      ((data_memory_address_registered == UartMmioAddr) ||
+       (data_memory_address_registered == Ns16550ThrRbr && !ns_lcr[7]));
   always_ff @(posedge i_clk) begin
     cpu_uart_wr_data <= data_memory_write_data_registered[7:0];  // UART uses only lower byte
-    cpu_uart_wr_en   <= |data_memory_byte_write_enable_registered &&
-                       ((data_memory_address_registered == UartMmioAddr) ||
-                        (data_memory_address_registered == Ns16550ThrRbr && !ns_lcr[7]));
+    cpu_uart_wr_en   <= cpu_uart_wr_en_next;
   end
 
   generate
@@ -2266,7 +2300,9 @@ module cpu_and_mem #(
           .i_mtimecmp_hi      (triage_mtimecmp_hi),
           .i_mtimecmp_delta_lo(triage_mtimecmp_delta_lo),
           .i_irq_status       (triage_irq_status),
-          .i_uart_busy        (cpu_uart_wr_en),
+          // The byte entering cpu_uart_wr_en at the next edge: the takeover
+          // never shares an edge with one, so the mux below never drops it.
+          .i_uart_busy        (cpu_uart_wr_en_next),
           .i_uart_ready       (i_uart_tx_ready),
           .o_active           (triage_active),
           .o_wr_en            (triage_wr_en),
@@ -2355,7 +2391,7 @@ module cpu_and_mem #(
   // CLINT 64-bit registers are dword-decoded and lane-strobed
   // (hw/rtl/README.md, "Data-tier bus contract"): a 32-bit lo/hi alias write carries its word
   // replicated across the beat with only its lane's strobes set, so per-lane
-  // updates reproduce the legacy lo/hi semantics exactly, while a 64-bit
+  // updates reproduce the 32-bit lo/hi semantics exactly, while a 64-bit
   // store sets all eight strobes and lands single-copy atomically (what RV64
   // Linux does to mtimecmp; a 64-bit mtime read is likewise one beat).
   logic write_hits_mtimecmp;

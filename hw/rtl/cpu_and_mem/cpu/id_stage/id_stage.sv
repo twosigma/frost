@@ -26,27 +26,31 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
-    // Predicted-taken redirect override from pd_stage. The redirect is an FF
-    // output and the target is reconstructed only from PD's registered split
-    // banks (the same state that drives IF). Applying the override here instead
-    // of inside pd_stage's o_from_pd_to_id register keeps target arithmetic off
-    // the PD-to-ID register D path.
+    // Predicted-taken redirect override from pd_stage. The redirect and its
+    // target are formed from PD registers only (the same signals IF gets).
+    // Applying the override here, not in pd_stage's o_from_pd_to_id register,
+    // keeps target arithmetic off the PD-to-ID register D path.
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
-    input riscv_pkg::rf_to_fwd_t i_rf_to_id,  // Regfile read data (combinational from PD src regs)
-    input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id,  // FP regfile read data (F extension)
-    input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
+    // mstatus.FS == Off: every F/D instruction in either slot decodes as
+    // illegal. cpu_ooo drives a copy registered one cycle after the CSR. It is
+    // exact because FS enters or leaves Off only through a write-intending
+    // mstatus/sstatus access, which ends in the FENCE-class full flush in the
+    // cycle the new value appears: that flush discards what ID decodes then
+    // and refetches everything decoded before it (cpu_ooo asserts this).
+    input logic i_mstatus_fs_off,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
+    // Next-edge value of o_from_id_to_ex (its register D), for a consumer
+    // that keeps a registered copy of fields it selects against this output.
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next,
     // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
-    // Slot-2 does not receive the PD predicted-taken redirect override; that
-    // heuristic is slot-1 only (see pd_stage.sv).  Slot-2 carries its own BTB
-    // metadata (staged slot-2 BTB lookup) but no RAS prediction: IF ties it
-    // off because slot-1 control flow ends the bundle.  Slot-2 mispredictions
-    // recover through the EX-stage path.
+    // Slot 2 does not receive the PD predicted-taken redirect override, which
+    // covers slot 1 only (see pd_stage.sv).  Slot 2 carries its own BTB
+    // metadata (staged slot-2 BTB lookup).  A slot-2 misprediction recovers in
+    // the back end like any other.
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
-    input riscv_pkg::rf_to_fwd_t i_rf_to_id_2,
-    input riscv_pkg::fp_rf_to_fwd_t i_fp_rf_to_id_2,
-    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2,
+    output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_2
 );
 
   // Effective BTB metadata after applying the PD predicted-taken redirect override.
@@ -55,18 +59,14 @@ module id_stage #(
   // detected branch itself reaches id_stage and the override lands on that
   // instruction.
   logic [XLEN-1:0] effective_btb_predicted_target;
-  logic            effective_btb_hit;
   logic            effective_btb_predicted_taken;
   assign effective_btb_predicted_target = i_pd_redirect ? i_pd_redirect_target :
                                           i_from_pd_to_id.btb_predicted_target;
-  assign effective_btb_hit = i_pd_redirect | i_from_pd_to_id.btb_hit;
   assign effective_btb_predicted_taken = i_pd_redirect | i_from_pd_to_id.btb_predicted_taken;
 
   // Slot-1 instruction and decoder outputs
   riscv_pkg::instr_t instruction;
   riscv_pkg::instr_op_e instruction_operation;
-  riscv_pkg::branch_taken_op_e branch_operation;
-  riscv_pkg::store_op_e store_operation;
 
   // Immediate values for different instruction formats
   logic [XLEN-1:0] immediate_i_type;
@@ -77,19 +77,13 @@ module id_stage #(
 
   // Instruction type detection signals
   logic is_load_instruction;
-  logic is_load_byte_direct;
-  logic is_load_halfword_direct;
   logic is_load_unsigned_direct;
-  logic is_multiply_direct;
-  logic is_divide_direct;
   logic is_csr_instruction;
   logic [11:0] csr_address;
   logic [4:0] csr_imm;
   logic is_amo_instruction;
   logic is_lr;
   logic is_sc;
-  logic is_ecall;
-  logic is_ebreak;
   logic is_mret;
   logic is_sret;
   logic is_dret;
@@ -103,13 +97,10 @@ module id_stage #(
   logic [XLEN-1:0] branch_target_precomputed;
   logic [XLEN-1:0] jal_target_precomputed;
   logic [XLEN-1:0] link_address_precomputed;
-  logic [XLEN-1:0] ras_expected_rs1_precomputed;
-  logic [XLEN-1:0] btb_expected_rs1_precomputed;
   logic btb_correct_non_jalr_precomputed;
-  logic ras_correct_non_jalr_precomputed;
   logic [XLEN-1:0] pc_relative_precomputed;
 
-  // x3 TIMING: pd_stage passes the instruction through un-NOP'd and carries the
+  // TIMING: pd_stage passes the instruction through un-NOP'd and carries the
   // bubble in inject_nop.  The NOP is applied here, from registered inputs in
   // one LUT, so the front-end-stall-fed NOP select stays off the D path of the
   // pd_stage 32-bit instruction register.
@@ -128,20 +119,17 @@ module id_stage #(
   instr_decoder instr_decoder_inst (
       .i_instr(instruction),
       .o_instr_op(instruction_operation),
-      .o_store_op(store_operation),
-      .o_branch_taken_op(branch_operation),
       .o_illegal(decoder_illegal)
   );
 
-  logic is_illegal_instruction;
-  assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction;
-  // a fetch (PMA) fault overrides decode entirely.  The bytes are
-  // aliased garbage and may even decode as a NOP, so the dispatch-valid and
-  // op paths both key on this flag, with priority over illegal.
+  // A fetch fault (access or page fault) overrides decode entirely. The
+  // fetched bytes are garbage and may even decode as a NOP, so the
+  // dispatch-valid and operation paths both key on this flag, with priority
+  // over illegal.
   logic is_fetch_fault;
   assign is_fetch_fault = i_from_pd_to_id.fetch_fault;
-  // M5 qualifiers (meaningful only under is_fetch_fault): page fault vs
-  // access fault, and a fault on the second halfword only (xtval = PC + 2).
+  // Fetch-fault qualifiers (meaningful only with is_fetch_fault): page fault
+  // vs access fault, and a fault on the second halfword only (xtval = PC + 2).
   logic is_fetch_fault_page;
   logic is_fetch_fault_hi;
   assign is_fetch_fault_page = i_from_pd_to_id.fetch_fault_page;
@@ -165,12 +153,7 @@ module id_stage #(
       .i_immediate_i_type(immediate_i_type),
       // Load type outputs
       .o_is_load_instruction(is_load_instruction),
-      .o_is_load_byte(is_load_byte_direct),
-      .o_is_load_halfword(is_load_halfword_direct),
       .o_is_load_unsigned(is_load_unsigned_direct),
-      // M-extension outputs
-      .o_is_multiply(is_multiply_direct),
-      .o_is_divide(is_divide_direct),
       // CSR outputs
       .o_is_csr_instruction(is_csr_instruction),
       .o_csr_address(csr_address),
@@ -180,8 +163,6 @@ module id_stage #(
       .o_is_lr(is_lr),
       .o_is_sc(is_sc),
       // Privileged instruction outputs
-      .o_is_ecall(is_ecall),
-      .o_is_ebreak(is_ebreak),
       .o_is_mret(is_mret),
       .o_is_sret(is_sret),
       .o_is_dret(is_dret),
@@ -198,10 +179,8 @@ module id_stage #(
       .XLEN(XLEN)
   ) branch_target_precompute_inst (
       .i_program_counter(i_from_pd_to_id.program_counter),
-      .i_immediate_i_type(immediate_i_type),
       .i_immediate_b_type(immediate_b_type),
       .i_immediate_j_type(immediate_j_type),
-      .i_ras_predicted_target(i_from_pd_to_id.ras_predicted_target),
       .i_btb_predicted_target(effective_btb_predicted_target),
       .i_immediate_u_type(immediate_u_type),
       .i_is_jal(is_jal_direct),
@@ -211,20 +190,14 @@ module id_stage #(
       .o_branch_target_precomputed(branch_target_precomputed),
       .o_jal_target_precomputed(jal_target_precomputed),
       .o_pc_relative_precomputed(pc_relative_precomputed),
-      // Pre-computed RAS verification
-      .o_ras_expected_rs1(ras_expected_rs1_precomputed),
-      // Pre-computed BTB verification
-      .o_btb_expected_rs1(btb_expected_rs1_precomputed),
-      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed),
-      .o_ras_correct_non_jalr(ras_correct_non_jalr_precomputed)
+      // Pre-computed BTB target check
+      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed)
   );
 
   // F extension: floating-point instruction detection, decoded from the opcode
   // directly for timing.
   logic is_fp_load_direct;  // FLW/FLD
   logic is_fp_store_direct;  // FSW/FSD
-  logic is_fp_load_double_direct;  // FLD
-  logic is_fp_store_double_direct;  // FSD
   logic is_fp_compute_direct;  // All F arithmetic/compare/convert ops
   logic is_fp_fma_direct;  // FMA instructions (separate opcode)
   logic is_fp_instruction_direct;
@@ -235,10 +208,6 @@ module id_stage #(
   assign is_fp_store_direct = (instruction.opcode == riscv_pkg::OPC_STORE_FP) &&
                               ((instruction.funct3 == 3'b010) ||
                                (instruction.funct3 == 3'b011));
-  assign is_fp_load_double_direct = (instruction.opcode == riscv_pkg::OPC_LOAD_FP) &&
-                                    (instruction.funct3 == 3'b011);
-  assign is_fp_store_double_direct = (instruction.opcode == riscv_pkg::OPC_STORE_FP) &&
-                                     (instruction.funct3 == 3'b011);
   assign is_fp_compute_direct = instruction.opcode == riscv_pkg::OPC_OP_FP;
   assign is_fp_fma_direct = (instruction.opcode == riscv_pkg::OPC_FMADD) |
                             (instruction.opcode == riscv_pkg::OPC_FMSUB) |
@@ -247,134 +216,27 @@ module id_stage #(
   assign is_fp_instruction_direct = is_fp_load_direct | is_fp_store_direct |
                                    is_fp_compute_direct | is_fp_fma_direct;
 
-  // FP instructions that produce integer results (write to integer regfile)
-  // FEQ, FLT, FLE: funct7[6:2]=10100, funct3 determines compare type
-  // FCLASS.S: funct7[6:2]=11100, funct3=001
-  // FCVT.W.S, FCVT.WU.S: funct7[6:2]=11000
-  // FMV.X.W: funct7[6:2]=11100, funct3=000
-  logic is_fp_to_int_direct;
-  assign is_fp_to_int_direct = is_fp_compute_direct && (
-      (instruction.funct7[6:2] == 5'b10100) |  // FEQ/FLT/FLE
-      (instruction.funct7[6:2] == 5'b11100 && instruction.funct3 == 3'b001) |  // FCLASS
-      (instruction.funct7[6:2] == 5'b11000) |  // FCVT.W.S, FCVT.WU.S
-      (instruction.funct7[6:2] == 5'b11100 && instruction.funct3 == 3'b000)  // FMV.X.W
-      );
-
-  // FP instructions that take integer source (read from integer regfile)
-  // FCVT.S.W, FCVT.S.WU: funct7[6:2]=11010
-  // FMV.W.X: funct7[6:2]=11110, funct3=000
-  logic is_int_to_fp_direct;
-  assign is_int_to_fp_direct = is_fp_compute_direct && (
-      (instruction.funct7[6:2] == 5'b11010) |  // FCVT.S.W, FCVT.S.WU
-      (instruction.funct7[6:2] == 5'b11110 && instruction.funct3 == 3'b000)  // FMV.W.X
-      );
-
-  // Pipelined FP operations (multi-cycle ops that track in-flight destinations).
-  // Registered for downstream dispatch and issue logic without re-decoding.
-  // Includes: FADD, FSUB, FMUL, FDIV, FSQRT, and all FMA variants
-  logic is_pipelined_fp_op_direct;
-  assign is_pipelined_fp_op_direct = is_fp_fma_direct |  // All FMA ops
-      (is_fp_compute_direct && (
-          instruction.funct7[6:3] == 4'b0000 ||  // FADD.S (0000000), FSUB.S (0000100)
-      instruction.funct7[6:3] == 4'b0001 ||  // FMUL.S (0001000), FDIV.S (0001100)
-      instruction.funct7[6:2] == 5'b01011  // FSQRT.S (0101100)
-      ));
+  // Illegal: an undecodable encoding, an illegal compressed parcel (PD), or
+  // any F/D instruction while mstatus.FS is Off. An FS=Off FP op then takes
+  // the ordinary illegal path (INT_RS, op ILLEGAL), so an FP load never
+  // reaches the load queue and performs no memory or device read, and no
+  // memory fault can replace its illegal-instruction cause.
+  logic is_illegal_instruction;
+  assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction |
+                                  (i_mstatus_fs_off & is_fp_instruction_direct);
 
   // Rounding mode: for FP operations funct3 (bits [14:12]) encodes rm.
   logic [2:0] fp_rm_direct;
   assign fp_rm_direct = instruction.funct3;
 
   // ===========================================================================
-  // WB Bypass Logic
-  // ===========================================================================
-  // WB bypass for regfile data.  When WB writes a register that ID is reading
-  // in the same cycle, the asynchronous regfile read returns the stale value,
-  // so the WB write data is selected instead.  In cpu_ooo this input is tied
-  // off (write enables forced low, see from_ma_to_wb_commit there): ROB commit
-  // can write from more than one source per cycle, and i_rf_to_id already
-  // carries the resolved 3-source bypass from ooo_register_files, so this
-  // single-source bypass never fires and i_rf_to_id falls through.
-
-  logic wb_bypass_rs1;
-  logic wb_bypass_rs2;
-  logic [XLEN-1:0] source_reg_1_data_bypassed;
-  logic [XLEN-1:0] source_reg_2_data_bypassed;
-
-  assign wb_bypass_rs1 = i_from_ma_to_wb.regfile_write_enable &&
-                         |i_from_ma_to_wb.instruction.dest_reg &&
-                         (i_from_ma_to_wb.instruction.dest_reg ==
-                          i_from_pd_to_id.source_reg_1_early);
-  assign wb_bypass_rs2 = i_from_ma_to_wb.regfile_write_enable &&
-                         |i_from_ma_to_wb.instruction.dest_reg &&
-                         (i_from_ma_to_wb.instruction.dest_reg ==
-                          i_from_pd_to_id.source_reg_2_early);
-
-  assign source_reg_1_data_bypassed = wb_bypass_rs1 ? i_from_ma_to_wb.regfile_write_data :
-                                                      i_rf_to_id.source_reg_1_data;
-  assign source_reg_2_data_bypassed = wb_bypass_rs2 ? i_from_ma_to_wb.regfile_write_data :
-                                                      i_rf_to_id.source_reg_2_data;
-
-  // F extension: the same-cycle WB bypass for FP registers (also tied off in
-  // cpu_ooo).
-  logic fp_wb_bypass_rs1;
-  logic fp_wb_bypass_rs2;
-  logic fp_wb_bypass_rs3;
-  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_1_data_bypassed;
-  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_2_data_bypassed;
-  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_3_data_bypassed;
-
-  // Compare against fp_dest_reg rather than instruction.dest_reg: for pipelined
-  // FPU operations the original instruction has moved on, and fp_dest_reg tracks
-  // the destination register being written.
-  assign fp_wb_bypass_rs1 = i_from_ma_to_wb.fp_regfile_write_enable &&
-                            (i_from_ma_to_wb.fp_dest_reg ==
-                             i_from_pd_to_id.source_reg_1_early);
-  assign fp_wb_bypass_rs2 = i_from_ma_to_wb.fp_regfile_write_enable &&
-                            (i_from_ma_to_wb.fp_dest_reg ==
-                             i_from_pd_to_id.source_reg_2_early);
-  assign fp_wb_bypass_rs3 = i_from_ma_to_wb.fp_regfile_write_enable &&
-                            (i_from_ma_to_wb.fp_dest_reg ==
-                             i_from_pd_to_id.fp_source_reg_3_early);
-
-  assign fp_source_reg_1_data_bypassed = fp_wb_bypass_rs1 ? i_from_ma_to_wb.fp_regfile_write_data :
-                                                           i_fp_rf_to_id.fp_source_reg_1_data;
-  assign fp_source_reg_2_data_bypassed = fp_wb_bypass_rs2 ? i_from_ma_to_wb.fp_regfile_write_data :
-                                                           i_fp_rf_to_id.fp_source_reg_2_data;
-  assign fp_source_reg_3_data_bypassed = fp_wb_bypass_rs3 ? i_from_ma_to_wb.fp_regfile_write_data :
-                                                           i_fp_rf_to_id.fp_source_reg_3_data;
-
-  // ===========================================================================
-  // Source Register x0 Check Pre-computation
-  // ===========================================================================
-  // Pre-computed x0 flags for the source registers: registering them here keeps
-  // the ~|source_reg NOR out of the EX-stage critical path.  Nothing in the
-  // current core reads them, so today they ride the packet unused.
-
-  logic source_reg_1_is_x0;
-  logic source_reg_2_is_x0;
-  assign source_reg_1_is_x0 = ~|i_from_pd_to_id.source_reg_1_early;
-  assign source_reg_2_is_x0 = ~|i_from_pd_to_id.source_reg_2_early;
-
-  // ===========================================================================
   // Pre-decoded Operand-Classification Flags (timing optimization)
   // ===========================================================================
-  // Dispatch reads these as registered FF outputs instead of re-decoding
-  // `instruction_operation` through case statements.  This removes 3-4 LUT
-  // levels (and the fanout-57 instruction_operation[*] decode net) from the
-  // start of the worst-case path running into the FP RS write port.
-  // A fetch fault is classified as FETCH_FAULT and an illegal instruction as
-  // ILLEGAL, so all flags fall through to their defaults, matching dispatch's
-  // fetch-fault / illegal override when it constructs `op`.
-  //
-  // The case statements are inlined here (rather than calling helper functions
-  // in riscv_pkg) because the helpers are guarded by `ifndef SYNTHESIS`:
-  // Yosys cannot resolve enum values inside package functions, so synthesizable
-  // RTL must inline the equivalent logic.  These enum lists must mirror the
-  // riscv_pkg::has_*_dest / uses_*_rs* helpers.
-  riscv_pkg::instr_op_e op_for_pre_decode;
-  assign op_for_pre_decode = is_fetch_fault ? riscv_pkg::FETCH_FAULT :
-      is_illegal_instruction ? riscv_pkg::ILLEGAL : instruction_operation;
-
+  // Dispatch reads these registered flags instead of decoding the operation.
+  // The classifier reads PD's instruction bits in parallel with instr_decoder;
+  // legality, fetch-fault and injected-NOP selection qualify the finished
+  // class. This also removes operation-to-class decode from ID's D path and
+  // the decoded queue's next-state shadow. Both slots use the same classifier.
   logic has_int_dest_pre;
   logic has_fp_dest_pre;
   logic uses_int_rs1_pre;
@@ -384,6 +246,8 @@ module id_stage #(
   logic uses_fp_rs3_pre;
   logic [2:0] rs_type_pre;
   logic is_int_store_pre;
+  logic needs_lq_pre;
+  logic needs_sq_pre;
   logic is_branch_or_jump_pre;
   logic is_fence_pre;
   logic is_fence_i_pre;
@@ -391,368 +255,45 @@ module id_stage #(
   logic is_csr_imm_pre;
   logic has_fp_flags_pre;
 
-  always_comb begin
-    case (op_for_pre_decode)
-      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
-      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
-      riscv_pkg::SRL, riscv_pkg::SRA,
-      riscv_pkg::SLT, riscv_pkg::SLTU,
-      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
-      riscv_pkg::XORI, riscv_pkg::SLTI,
-      riscv_pkg::SLTIU, riscv_pkg::SLLI,
-      riscv_pkg::SRLI, riscv_pkg::SRAI,
-      riscv_pkg::LUI, riscv_pkg::AUIPC, riscv_pkg::JALR,
-      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
-      riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
-      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD,
-      riscv_pkg::SH3ADD,
-      riscv_pkg::BSET, riscv_pkg::BCLR,
-      riscv_pkg::BINV, riscv_pkg::BEXT,
-      riscv_pkg::BSETI, riscv_pkg::BCLRI,
-      riscv_pkg::BINVI, riscv_pkg::BEXTI,
-      riscv_pkg::ANDN, riscv_pkg::ORN,
-      riscv_pkg::XNOR, riscv_pkg::CLZ,
-      riscv_pkg::CTZ, riscv_pkg::CPOP,
-      riscv_pkg::MAX, riscv_pkg::MAXU,
-      riscv_pkg::MIN, riscv_pkg::MINU,
-      riscv_pkg::SEXT_B, riscv_pkg::SEXT_H,
-      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI,
-      riscv_pkg::ORC_B, riscv_pkg::REV8,
-      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
-      riscv_pkg::PACK, riscv_pkg::PACKH,
-      riscv_pkg::BREV8,
-      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
-      riscv_pkg::SLLI_UW, riscv_pkg::RORIW,
-      riscv_pkg::CLZW, riscv_pkg::CTZW, riscv_pkg::CPOPW,
-      riscv_pkg::ADDW, riscv_pkg::SUBW,
-      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
-      riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
-      riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
-      riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
-      riscv_pkg::CSRRW, riscv_pkg::CSRRS,
-      riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
-      riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
-      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL:
-      rs_type_pre = riscv_pkg::RS_INT;
-
-      riscv_pkg::MUL, riscv_pkg::MULH,
-      riscv_pkg::MULHSU, riscv_pkg::MULHU,
-      riscv_pkg::DIV, riscv_pkg::DIVU,
-      riscv_pkg::REM, riscv_pkg::REMU,
-      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
-      riscv_pkg::REMW, riscv_pkg::REMUW:
-      rs_type_pre = riscv_pkg::RS_MUL;
-
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
-      riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::LWU, riscv_pkg::LD,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
-      riscv_pkg::SD,
-      riscv_pkg::FLW, riscv_pkg::FSW,
-      riscv_pkg::FLD, riscv_pkg::FSD,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
-      riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::LR_D, riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D,
-      riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
-      riscv_pkg::FENCE, riscv_pkg::FENCE_I, riscv_pkg::SFENCE_VMA:
-      rs_type_pre = riscv_pkg::RS_MEM;
-
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S,
-      riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S,
-      riscv_pkg::FLE_S, riscv_pkg::FEQ_D,
-      riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
-      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X, riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
-      rs_type_pre = riscv_pkg::RS_FP;
-
-      riscv_pkg::FMUL_S, riscv_pkg::FMUL_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
-      riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
-      rs_type_pre = riscv_pkg::RS_FMUL;
-
-      riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
-      rs_type_pre = riscv_pkg::RS_FDIV;
-
-      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET,
-      riscv_pkg::PAUSE:
-      rs_type_pre = riscv_pkg::RS_NONE;
-
-      default: rs_type_pre = riscv_pkg::RS_INT;
-    endcase
-
-    case (op_for_pre_decode)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD: is_int_store_pre = 1'b1;
-      default: is_int_store_pre = 1'b0;
-    endcase
-
-    case (op_for_pre_decode)
-      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT, riscv_pkg::BGE,
-      riscv_pkg::BLTU, riscv_pkg::BGEU, riscv_pkg::JAL, riscv_pkg::JALR:
-      is_branch_or_jump_pre = 1'b1;
-      default: is_branch_or_jump_pre = 1'b0;
-    endcase
-
-    is_fence_pre = op_for_pre_decode == riscv_pkg::FENCE;
-    // SFENCE.VMA rides the FENCE.I machinery (plan D8): FENCE.I's backend
-    // serialization and sync are a superset of what it needs.  is_sfence_vma_pre
-    // is the qualifying sideband for the TVM/U privilege gate and the M4 TLB
-    // invalidate.
-    is_fence_i_pre = (op_for_pre_decode == riscv_pkg::FENCE_I) ||
-                     (op_for_pre_decode == riscv_pkg::SFENCE_VMA);
-    is_sfence_vma_pre = op_for_pre_decode == riscv_pkg::SFENCE_VMA;
-    is_csr_imm_pre = op_for_pre_decode == riscv_pkg::CSRRWI ||
-                     op_for_pre_decode == riscv_pkg::CSRRSI ||
-                     op_for_pre_decode == riscv_pkg::CSRRCI;
-
-    case (op_for_pre_decode)
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
-      riscv_pkg::FSQRT_S, riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMUL_D, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S,
-      riscv_pkg::FNMSUB_S, riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W,
-      riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L,
-      riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
-      riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X:
-      has_fp_flags_pre = 1'b1;
-      default: has_fp_flags_pre = 1'b0;
-    endcase
-
-    case (op_for_pre_decode)
-      riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
-      riscv_pkg::FMUL_S, riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMUL_D, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X:
-      has_fp_dest_pre = 1'b1;
-      default: has_fp_dest_pre = 1'b0;
-    endcase
-
-    case (op_for_pre_decode)
-      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
-      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
-      riscv_pkg::SRL, riscv_pkg::SRA,
-      riscv_pkg::SLT, riscv_pkg::SLTU,
-      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
-      riscv_pkg::XORI, riscv_pkg::SLTI,
-      riscv_pkg::SLTIU, riscv_pkg::SLLI,
-      riscv_pkg::SRLI, riscv_pkg::SRAI,
-      riscv_pkg::LUI, riscv_pkg::AUIPC,
-      riscv_pkg::JAL, riscv_pkg::JALR,
-      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD, riscv_pkg::SH3ADD,
-      riscv_pkg::BSET, riscv_pkg::BCLR, riscv_pkg::BINV, riscv_pkg::BEXT,
-      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI,
-      riscv_pkg::ANDN, riscv_pkg::ORN, riscv_pkg::XNOR,
-      riscv_pkg::CLZ, riscv_pkg::CTZ, riscv_pkg::CPOP,
-      riscv_pkg::MAX, riscv_pkg::MAXU, riscv_pkg::MIN, riscv_pkg::MINU,
-      riscv_pkg::SEXT_B, riscv_pkg::SEXT_H,
-      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI,
-      riscv_pkg::ORC_B, riscv_pkg::REV8,
-      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
-      riscv_pkg::PACK, riscv_pkg::PACKH,
-      riscv_pkg::BREV8,
-      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
-      riscv_pkg::SLLI_UW, riscv_pkg::RORIW,
-      riscv_pkg::CLZW, riscv_pkg::CTZW, riscv_pkg::CPOPW,
-      riscv_pkg::ADDW, riscv_pkg::SUBW,
-      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
-      riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
-      riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
-      riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
-      riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
-      riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
-      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
-      riscv_pkg::REMW, riscv_pkg::REMUW,
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::LWU, riscv_pkg::LD,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::LR_D, riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
-      riscv_pkg::CSRRW, riscv_pkg::CSRRS, riscv_pkg::CSRRC,
-      riscv_pkg::CSRRWI, riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
-      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D:
-      has_int_dest_pre = 1'b1;
-      default: has_int_dest_pre = 1'b0;
-    endcase
-
-    case (op_for_pre_decode)
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
-      riscv_pkg::FMUL_S, riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMUL_D, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
-      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S:
-      uses_fp_rs1_pre = 1'b1;
-      default: uses_fp_rs1_pre = 1'b0;
-    endcase
-
-    case (op_for_pre_decode)
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D, riscv_pkg::FMUL_D, riscv_pkg::FDIV_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FSW, riscv_pkg::FSD:
-      uses_fp_rs2_pre = 1'b1;
-      default: uses_fp_rs2_pre = 1'b0;
-    endcase
-
-    case (op_for_pre_decode)
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
-      riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
-      uses_fp_rs3_pre = 1'b1;
-      default: uses_fp_rs3_pre = 1'b0;
-    endcase
-
-    // INT rs1: most ops, except pure-FP-rs1 / PC-relative / system / CSR-imm.
-    uses_int_rs1_pre = !uses_fp_rs1_pre && (
-      op_for_pre_decode != riscv_pkg::LUI &&
-      op_for_pre_decode != riscv_pkg::AUIPC &&
-      op_for_pre_decode != riscv_pkg::JAL &&
-      op_for_pre_decode != riscv_pkg::ECALL &&
-      op_for_pre_decode != riscv_pkg::EBREAK &&
-      op_for_pre_decode != riscv_pkg::FENCE &&
-      op_for_pre_decode != riscv_pkg::FENCE_I &&
-      op_for_pre_decode != riscv_pkg::WFI &&
-      op_for_pre_decode != riscv_pkg::MRET &&
-      op_for_pre_decode != riscv_pkg::SRET &&
-      op_for_pre_decode != riscv_pkg::DRET &&
-      op_for_pre_decode != riscv_pkg::SFENCE_VMA &&
-      op_for_pre_decode != riscv_pkg::PAUSE &&
-      op_for_pre_decode != riscv_pkg::CSRRWI &&
-      op_for_pre_decode != riscv_pkg::CSRRSI &&
-      op_for_pre_decode != riscv_pkg::CSRRCI &&
-      op_for_pre_decode != riscv_pkg::ILLEGAL);
-
-    // INT rs2: branches, R-type ALU, integer stores, AMO/SC.
-    case (op_for_pre_decode)
-      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
-      riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
-      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
-      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
-      riscv_pkg::SRL, riscv_pkg::SRA,
-      riscv_pkg::SLT, riscv_pkg::SLTU,
-      riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
-      riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
-      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
-      riscv_pkg::REMW, riscv_pkg::REMUW,
-      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD, riscv_pkg::SH3ADD,
-      riscv_pkg::BSET, riscv_pkg::BCLR, riscv_pkg::BINV, riscv_pkg::BEXT,
-      riscv_pkg::ANDN, riscv_pkg::ORN, riscv_pkg::XNOR,
-      riscv_pkg::MAX, riscv_pkg::MAXU, riscv_pkg::MIN, riscv_pkg::MINU,
-      riscv_pkg::ROL, riscv_pkg::ROR,
-      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
-      riscv_pkg::PACK, riscv_pkg::PACKH,
-      riscv_pkg::ADDW, riscv_pkg::SUBW,
-      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
-      riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
-      riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
-      riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
-      uses_int_rs2_pre = !uses_fp_rs2_pre;
-      default: uses_int_rs2_pre = 1'b0;
-    endcase
-  end
+  instr_operand_classifier operand_classifier (
+      .i_instr(i_from_pd_to_id.instruction),
+      .i_inject_nop(i_from_pd_to_id.inject_nop),
+      .i_illegal(is_illegal_instruction),
+      .i_fetch_fault(is_fetch_fault),
+      .o_has_int_dest(has_int_dest_pre),
+      .o_has_fp_dest(has_fp_dest_pre),
+      .o_uses_int_rs1(uses_int_rs1_pre),
+      .o_uses_int_rs2(uses_int_rs2_pre),
+      .o_uses_fp_rs1(uses_fp_rs1_pre),
+      .o_uses_fp_rs2(uses_fp_rs2_pre),
+      .o_uses_fp_rs3(uses_fp_rs3_pre),
+      .o_rs_type(rs_type_pre),
+      .o_is_int_store(is_int_store_pre),
+      .o_is_branch_or_jump(is_branch_or_jump_pre),
+      .o_is_fence(is_fence_pre),
+      .o_is_fence_i(is_fence_i_pre),
+      .o_is_sfence_vma(is_sfence_vma_pre),
+      .o_is_csr_imm(is_csr_imm_pre),
+      .o_has_fp_flags(has_fp_flags_pre),
+      .o_needs_lq(needs_lq_pre),
+      .o_needs_sq(needs_sq_pre)
+  );
 
   // ===========================================================================
   // Pipeline Register
   // ===========================================================================
-  // Latch decoded values and pass to Execute stage
+  // Register the decoded packet, which reaches dispatch through the decoded
+  // bundle queue (directly when DECODED_QUEUE_DEPTH is 0).
 
   // TIMING: every o_from_id_to_ex/o_from_id_to_ex_2 payload register's clock
-  // enable is this one advance term.  Left unnamed, synthesis shares a single
-  // inverter of the stall for all of them (measured post-place: one LUT1
-  // driving 1232 CE pins, on the failing dispatch-stall path family).  Name
-  // the advance and cap its fanout so the inverter replicates per register
-  // region.  Pure fanout splitting; the stall itself is unchanged.
-  // keep is load-bearing: without it synthesis flattens the inverter into a
-  // wider CE LUT and the cap is dropped with it (measured: a 1003-load CE
-  // LUT6 survived the first cap-only attempt).
+  // enable is this one advance term.  Left unnamed, synthesis drives all of
+  // them from a single inverter of the stall.  Naming the advance and capping
+  // its fanout lets the inverter replicate per register region; logically it
+  // is just ~stall.  keep is required: without it synthesis folds the
+  // inverter into a wider clock-enable LUT and drops the fanout cap with it.
   (* keep = "true", max_fanout = 64 *) logic id_advance;
   assign id_advance = ~i_pipeline_ctrl.stall;
+
 
   always_ff @(posedge i_clk) begin
     // Reset loads a NOP into the pipeline register.
@@ -761,15 +302,11 @@ module id_stage #(
       o_from_id_to_ex.is_compressed             <= 1'b0;
       o_from_id_to_ex.instruction_operation     <= riscv_pkg::ADDI;  // ADDI x0, x0, 0 (NOP)
       o_from_id_to_ex.is_load_instruction       <= 1'b0;
-      o_from_id_to_ex.is_load_byte              <= 1'b0;
-      o_from_id_to_ex.is_load_halfword          <= 1'b0;
       o_from_id_to_ex.is_load_unsigned          <= 1'b0;
-      o_from_id_to_ex.is_multiply               <= 1'b0;
-      o_from_id_to_ex.is_divide                 <= 1'b0;
-      o_from_id_to_ex.branch_operation          <= riscv_pkg::NULL;
-      o_from_id_to_ex.store_operation           <= riscv_pkg::STN;  // Store nothing
       o_from_id_to_ex.rs_type                   <= riscv_pkg::RS_INT;
       o_from_id_to_ex.is_int_store              <= 1'b0;
+      o_from_id_to_ex.needs_lq                  <= 1'b0;
+      o_from_id_to_ex.needs_sq                  <= 1'b0;
       o_from_id_to_ex.is_branch_or_jump         <= 1'b0;
       o_from_id_to_ex.is_fence                  <= 1'b0;
       o_from_id_to_ex.is_fence_i                <= 1'b0;
@@ -788,33 +325,20 @@ module id_stage #(
       o_from_id_to_ex.is_dret                   <= 1'b0;
       o_from_id_to_ex.is_sfence_vma             <= 1'b0;
       o_from_id_to_ex.is_wfi                    <= 1'b0;
-      o_from_id_to_ex.is_ecall                  <= 1'b0;
-      o_from_id_to_ex.is_ebreak                 <= 1'b0;
       o_from_id_to_ex.is_illegal_instruction    <= 1'b0;
       o_from_id_to_ex.is_fetch_fault            <= 1'b0;
       o_from_id_to_ex.is_fetch_fault_page       <= 1'b0;
-      o_from_id_to_ex.is_fetch_fault_hi         <= 1'b0;
       // Branch prediction metadata
-      o_from_id_to_ex.btb_hit                   <= 1'b0;
       o_from_id_to_ex.btb_predicted_taken       <= 1'b0;
-      // RAS prediction metadata
-      o_from_id_to_ex.ras_predicted             <= 1'b0;
       // Pre-computed RAS instruction type flags
       o_from_id_to_ex.is_ras_return             <= 1'b0;
       o_from_id_to_ex.is_ras_call               <= 1'b0;
       // Pre-computed BTB verification
       o_from_id_to_ex.btb_correct_non_jalr      <= 1'b0;
-      o_from_id_to_ex.ras_correct_non_jalr      <= 1'b0;
       // F extension
       o_from_id_to_ex.is_fp_instruction         <= 1'b0;
       o_from_id_to_ex.is_fp_load                <= 1'b0;
       o_from_id_to_ex.is_fp_store               <= 1'b0;
-      o_from_id_to_ex.is_fp_load_double         <= 1'b0;
-      o_from_id_to_ex.is_fp_store_double        <= 1'b0;
-      o_from_id_to_ex.is_fp_compute             <= 1'b0;
-      o_from_id_to_ex.is_pipelined_fp_op        <= 1'b0;
-      o_from_id_to_ex.is_fp_to_int              <= 1'b0;
-      o_from_id_to_ex.is_int_to_fp              <= 1'b0;
       // Pre-decoded operand-classification flags
       o_from_id_to_ex.has_int_dest              <= 1'b0;
       o_from_id_to_ex.has_fp_dest               <= 1'b0;
@@ -823,7 +347,7 @@ module id_stage #(
       o_from_id_to_ex.uses_fp_rs1               <= 1'b0;
       o_from_id_to_ex.uses_fp_rs2               <= 1'b0;
       o_from_id_to_ex.uses_fp_rs3               <= 1'b0;
-      o_from_id_to_ex.is_not_nop                <= 1'b0;
+      o_from_id_to_ex.is_real                   <= 1'b0;
     end else if (id_advance) begin
       // While the pipeline advances, pass the decoded instruction on, or a NOP
       // when flushing.
@@ -832,17 +356,12 @@ module id_stage #(
       o_from_id_to_ex.instruction_operation <= i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
                                                                        instruction_operation;
       o_from_id_to_ex.is_load_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction;
-      // Load size and sign extension, from direct decode for timing
-      o_from_id_to_ex.is_load_byte <= i_pipeline_ctrl.flush ? 1'b0 : is_load_byte_direct;
-      o_from_id_to_ex.is_load_halfword <= i_pipeline_ctrl.flush ? 1'b0 : is_load_halfword_direct;
+      // Load sign extension, from direct decode for timing
       o_from_id_to_ex.is_load_unsigned <= i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
-      o_from_id_to_ex.is_multiply <= i_pipeline_ctrl.flush ? 1'b0 : is_multiply_direct;
-      o_from_id_to_ex.is_divide <= i_pipeline_ctrl.flush ? 1'b0 : is_divide_direct;
-      o_from_id_to_ex.branch_operation <= i_pipeline_ctrl.flush ? riscv_pkg::NULL :
-                                                                  branch_operation;
-      o_from_id_to_ex.store_operation <= i_pipeline_ctrl.flush ? riscv_pkg::STN : store_operation;
       o_from_id_to_ex.rs_type <= i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre;
       o_from_id_to_ex.is_int_store <= i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre;
+      o_from_id_to_ex.needs_lq <= i_pipeline_ctrl.flush ? 1'b0 : needs_lq_pre;
+      o_from_id_to_ex.needs_sq <= i_pipeline_ctrl.flush ? 1'b0 : needs_sq_pre;
       o_from_id_to_ex.is_branch_or_jump <= i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre;
       o_from_id_to_ex.is_fence <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre;
       o_from_id_to_ex.is_fence_i <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre;
@@ -864,43 +383,26 @@ module id_stage #(
       o_from_id_to_ex.is_dret <= i_pipeline_ctrl.flush ? 1'b0 : is_dret;
       o_from_id_to_ex.is_sfence_vma <= i_pipeline_ctrl.flush ? 1'b0 : is_sfence_vma_pre;
       o_from_id_to_ex.is_wfi <= i_pipeline_ctrl.flush ? 1'b0 : is_wfi;
-      o_from_id_to_ex.is_ecall <= i_pipeline_ctrl.flush ? 1'b0 : is_ecall;
-      o_from_id_to_ex.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak;
       o_from_id_to_ex.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                                 is_illegal_instruction;
       o_from_id_to_ex.is_fetch_fault <= i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault;
       o_from_id_to_ex.is_fetch_fault_page <= is_fetch_fault_page;
-      o_from_id_to_ex.is_fetch_fault_hi <= is_fetch_fault_hi;
       // Branch prediction metadata, cleared on flush (it belongs to a flushed instruction)
-      o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : effective_btb_hit;
       o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                               effective_btb_predicted_taken;
-      // RAS prediction metadata, cleared on flush for the same reason
-      o_from_id_to_ex.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
-      // Pre-computed RAS instruction type flags; they keep the comparisons off
-      // the EX-stage critical path.
+      // Pre-computed RAS call/return flags, cleared on flush for the same
+      // reason; dispatch passes them to the ROB for RAS recovery.
       o_from_id_to_ex.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
       o_from_id_to_ex.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
-      // Pre-computed BTB verification.  For non-JALR the target comparison is
-      // done here in ID (no forwarding dependency); JALR compares
-      // btb_expected_rs1 in EX, the same algebraic transformation as RAS.
+      // Pre-computed target checks.  A branch or JAL has a PC-relative target,
+      // so ID compares it with the predicted target; a JALR is checked at
+      // resolution.
       o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                               btb_correct_non_jalr_precomputed;
-      o_from_id_to_ex.ras_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              ras_correct_non_jalr_precomputed;
       // F extension, cleared on flush
       o_from_id_to_ex.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
       o_from_id_to_ex.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
       o_from_id_to_ex.is_fp_store <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct;
-      o_from_id_to_ex.is_fp_load_double <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_double_direct;
-      o_from_id_to_ex.is_fp_store_double <= i_pipeline_ctrl.flush ? 1'b0 :
-                                            is_fp_store_double_direct;
-      o_from_id_to_ex.is_fp_compute <= i_pipeline_ctrl.flush ? 1'b0 :
-                                       (is_fp_compute_direct | is_fp_fma_direct);
-      o_from_id_to_ex.is_pipelined_fp_op <= i_pipeline_ctrl.flush ? 1'b0 :
-                                            is_pipelined_fp_op_direct;
-      o_from_id_to_ex.is_fp_to_int <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_to_int_direct;
-      o_from_id_to_ex.is_int_to_fp <= i_pipeline_ctrl.flush ? 1'b0 : is_int_to_fp_direct;
       // Pre-decoded operand-classification flags, cleared on flush
       o_from_id_to_ex.has_int_dest <= i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre;
       o_from_id_to_ex.has_fp_dest <= i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre;
@@ -909,14 +411,12 @@ module id_stage #(
       o_from_id_to_ex.uses_fp_rs1 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre;
       o_from_id_to_ex.uses_fp_rs2 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre;
       o_from_id_to_ex.uses_fp_rs3 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre;
-      // Registered NOP detect.  After a flush or reset the register holds the
-      // NOP pattern, so is_not_nop is 0 there too, which matches NOP semantics.
-      // A fault-tagged bundle must dispatch even when its garbage bytes happen
-      // to encode a NOP.
-      o_from_id_to_ex.is_not_nop <= i_pipeline_ctrl.flush ? 1'b0 :
-          ((instruction != riscv_pkg::NOP) || is_fetch_fault);
+      // A real instruction rather than a bubble: reset, flush, and PD's
+      // inject_nop (flush, PD redirect, or sel_nop) clear it. A NOP in the
+      // program is real, so it dispatches, retires, and counts in instret.
+      o_from_id_to_ex.is_real <= i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id.inject_nop;
     end
-    // Datapath payload (immediates, targets, regfile data): not reset, only stalled.
+    // Datapath payload (immediates and targets): not reset, only stalled.
     if (id_advance) begin
       o_from_id_to_ex.program_counter <= i_from_pd_to_id.program_counter;
       o_from_id_to_ex.csr_address <= csr_address;
@@ -924,92 +424,222 @@ module id_stage #(
       // Compute link address from registered PD inputs instead of the live IF
       // sideband path.
       o_from_id_to_ex.link_address <= link_address_precomputed;
-      // Pre-computed branch/jump targets (computed here, used by EX stage)
+      // Pre-computed targets (see branch_target_precompute)
       o_from_id_to_ex.branch_target_precomputed <= branch_target_precomputed;
       o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
       o_from_id_to_ex.pc_relative_precomputed <= pc_relative_precomputed;
       o_from_id_to_ex.btb_predicted_target <= effective_btb_predicted_target;
-      o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
       o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
       o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
+      o_from_id_to_ex.ras_checkpoint_top <= i_from_pd_to_id.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_id_to_ex.bp_dir_idx <= i_from_pd_to_id.bp_dir_idx;
-      o_from_id_to_ex.ras_predicted_target_nonzero <= |i_from_pd_to_id.ras_predicted_target;
-      // Pre-computed expected rs1 values for branch/RAS verification.
-      o_from_id_to_ex.ras_expected_rs1 <= ras_expected_rs1_precomputed;
-      o_from_id_to_ex.btb_expected_rs1 <= btb_expected_rs1_precomputed;
       o_from_id_to_ex.fp_rm <= fp_rm_direct;
       o_from_id_to_ex.immediate_u_type <= immediate_u_type;
       o_from_id_to_ex.immediate_s_type <= immediate_s_type;
       o_from_id_to_ex.immediate_i_type <= immediate_i_type;
-      o_from_id_to_ex.immediate_b_type <= immediate_b_type;
-      o_from_id_to_ex.immediate_j_type <= immediate_j_type;
-      // Regfile read data (read in ID stage, with WB bypass, registered here for EX stage)
-      o_from_id_to_ex.source_reg_1_data <= source_reg_1_data_bypassed;
-      o_from_id_to_ex.source_reg_2_data <= source_reg_2_data_bypassed;
-      // Pre-computed x0 check flags
-      o_from_id_to_ex.source_reg_1_is_x0 <= source_reg_1_is_x0;
-      o_from_id_to_ex.source_reg_2_is_x0 <= source_reg_2_is_x0;
-      // F extension: FP register file read data (with WB bypass)
-      o_from_id_to_ex.fp_source_reg_1_data <= fp_source_reg_1_data_bypassed;
-      o_from_id_to_ex.fp_source_reg_2_data <= fp_source_reg_2_data_bypassed;
-      o_from_id_to_ex.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed;
     end
   end
 
+  // Next-edge value of o_from_id_to_ex: the always_ff update above, repeated
+  // with a hold default. Change both together; the assertion below checks
+  // that the register matches.
+  riscv_pkg::from_id_to_ex_t id_next;
+  assign o_from_id_to_ex_next = id_next;
+  always_comb begin
+    id_next = o_from_id_to_ex;
+    // Reset loads a NOP into the pipeline register.
+    if (i_pipeline_ctrl.reset) begin
+      id_next.instruction = riscv_pkg::NOP;
+      id_next.is_compressed = 1'b0;
+      id_next.instruction_operation = riscv_pkg::ADDI;  // ADDI x0, x0, 0 (NOP)
+      id_next.is_load_instruction = 1'b0;
+      id_next.is_load_unsigned = 1'b0;
+      id_next.rs_type = riscv_pkg::RS_INT;
+      id_next.is_int_store = 1'b0;
+      id_next.needs_lq = 1'b0;
+      id_next.needs_sq = 1'b0;
+      id_next.is_branch_or_jump = 1'b0;
+      id_next.is_fence = 1'b0;
+      id_next.is_fence_i = 1'b0;
+      id_next.is_csr_imm = 1'b0;
+      id_next.has_fp_flags = 1'b0;
+      id_next.is_jump_and_link = 1'b0;
+      id_next.is_jump_and_link_register = 1'b0;
+      id_next.is_csr_instruction = 1'b0;
+      // A extension (atomics)
+      id_next.is_amo_instruction = 1'b0;
+      id_next.is_lr = 1'b0;
+      id_next.is_sc = 1'b0;
+      // Privileged instructions (trap handling)
+      id_next.is_mret = 1'b0;
+      id_next.is_sret = 1'b0;
+      id_next.is_dret = 1'b0;
+      id_next.is_sfence_vma = 1'b0;
+      id_next.is_wfi = 1'b0;
+      id_next.is_illegal_instruction = 1'b0;
+      id_next.is_fetch_fault = 1'b0;
+      id_next.is_fetch_fault_page = 1'b0;
+      // Branch prediction metadata
+      id_next.btb_predicted_taken = 1'b0;
+      // Pre-computed RAS instruction type flags
+      id_next.is_ras_return = 1'b0;
+      id_next.is_ras_call = 1'b0;
+      // Pre-computed BTB verification
+      id_next.btb_correct_non_jalr = 1'b0;
+      // F extension
+      id_next.is_fp_instruction = 1'b0;
+      id_next.is_fp_load = 1'b0;
+      id_next.is_fp_store = 1'b0;
+      // Pre-decoded operand-classification flags
+      id_next.has_int_dest = 1'b0;
+      id_next.has_fp_dest = 1'b0;
+      id_next.uses_int_rs1 = 1'b0;
+      id_next.uses_int_rs2 = 1'b0;
+      id_next.uses_fp_rs1 = 1'b0;
+      id_next.uses_fp_rs2 = 1'b0;
+      id_next.uses_fp_rs3 = 1'b0;
+      id_next.is_real = 1'b0;
+    end else if (id_advance) begin
+      // While the pipeline advances, pass the decoded instruction on, or a NOP
+      // when flushing.
+      id_next.instruction = i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction;
+      id_next.is_compressed = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.is_compressed;
+      id_next.instruction_operation = i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
+                                                                       instruction_operation;
+      id_next.is_load_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction;
+      // Load sign extension, from direct decode for timing
+      id_next.is_load_unsigned = i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct;
+      id_next.rs_type = i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre;
+      id_next.is_int_store = i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre;
+      id_next.needs_lq = i_pipeline_ctrl.flush ? 1'b0 : needs_lq_pre;
+      id_next.needs_sq = i_pipeline_ctrl.flush ? 1'b0 : needs_sq_pre;
+      id_next.is_branch_or_jump = i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre;
+      id_next.is_fence = i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre;
+      id_next.is_fence_i = i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre;
+      id_next.is_csr_imm = i_pipeline_ctrl.flush ? 1'b0 : is_csr_imm_pre;
+      id_next.has_fp_flags = i_pipeline_ctrl.flush ? 1'b0 : has_fp_flags_pre;
+      id_next.is_jump_and_link = i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct;
+      id_next.is_jump_and_link_register = i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct;
+      // CSR instruction fields (Zicsr extension)
+      id_next.is_csr_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction;
+      // A extension (atomics)
+      id_next.is_amo_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction;
+      id_next.is_lr = i_pipeline_ctrl.flush ? 1'b0 : is_lr;
+      id_next.is_sc = i_pipeline_ctrl.flush ? 1'b0 : is_sc;
+      // Privileged instructions (trap handling)
+      // is_mret carries any xRET (SRET and DRET ride the MRET machinery); is_sret
+      // qualifies which one for the trap-unit/CSR side and the priv gates.
+      id_next.is_mret = i_pipeline_ctrl.flush ? 1'b0 : (is_mret || is_sret || is_dret);
+      id_next.is_sret = i_pipeline_ctrl.flush ? 1'b0 : is_sret;
+      id_next.is_dret = i_pipeline_ctrl.flush ? 1'b0 : is_dret;
+      id_next.is_sfence_vma = i_pipeline_ctrl.flush ? 1'b0 : is_sfence_vma_pre;
+      id_next.is_wfi = i_pipeline_ctrl.flush ? 1'b0 : is_wfi;
+      id_next.is_illegal_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_illegal_instruction;
+      id_next.is_fetch_fault = i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault;
+      id_next.is_fetch_fault_page = is_fetch_fault_page;
+      // Branch prediction metadata, cleared on flush (it belongs to a flushed instruction)
+      id_next.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 : effective_btb_predicted_taken;
+      // Pre-computed RAS call/return flags, cleared on flush for the same
+      // reason; dispatch passes them to the ROB for RAS recovery.
+      id_next.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
+      id_next.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
+      // Pre-computed target checks.  A branch or JAL has a PC-relative target,
+      // so ID compares it with the predicted target; a JALR is checked at
+      // resolution.
+      id_next.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
+                                              btb_correct_non_jalr_precomputed;
+      // F extension, cleared on flush
+      id_next.is_fp_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
+      id_next.is_fp_load = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
+      id_next.is_fp_store = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct;
+      // Pre-decoded operand-classification flags, cleared on flush
+      id_next.has_int_dest = i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre;
+      id_next.has_fp_dest = i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre;
+      id_next.uses_int_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs1_pre;
+      id_next.uses_int_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs2_pre;
+      id_next.uses_fp_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre;
+      id_next.uses_fp_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre;
+      id_next.uses_fp_rs3 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre;
+      // A real instruction rather than a bubble (see o_from_id_to_ex.is_real).
+      id_next.is_real = i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id.inject_nop;
+    end
+    // Datapath payload (immediates and targets): not reset, only stalled.
+    if (id_advance) begin
+      id_next.program_counter = i_from_pd_to_id.program_counter;
+      id_next.csr_address = csr_address;
+      id_next.csr_imm = csr_imm;
+      // Compute link address from registered PD inputs instead of the live IF
+      // sideband path.
+      id_next.link_address = link_address_precomputed;
+      // Pre-computed targets (see branch_target_precompute)
+      id_next.branch_target_precomputed = branch_target_precomputed;
+      id_next.jal_target_precomputed = jal_target_precomputed;
+      id_next.pc_relative_precomputed = pc_relative_precomputed;
+      id_next.btb_predicted_target = effective_btb_predicted_target;
+      id_next.ras_checkpoint_tos = i_from_pd_to_id.ras_checkpoint_tos;
+      id_next.ras_checkpoint_valid_count = i_from_pd_to_id.ras_checkpoint_valid_count;
+      id_next.ras_checkpoint_top = i_from_pd_to_id.ras_checkpoint_top;
+      // Carry the predict-time bimodal index through to commit.
+      id_next.bp_dir_idx = i_from_pd_to_id.bp_dir_idx;
+      id_next.fp_rm = fp_rm_direct;
+      id_next.immediate_u_type = immediate_u_type;
+      id_next.immediate_s_type = immediate_s_type;
+      id_next.immediate_i_type = immediate_i_type;
+    end
+  end
+`ifndef SYNTHESIS
+  logic o_from_id_to_ex_next_checks_armed = 1'b0;
+  riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_q;
+  always_ff @(posedge i_clk) begin
+    o_from_id_to_ex_next_q <= o_from_id_to_ex_next;
+    o_from_id_to_ex_next_checks_armed <= 1'b1;
+    if (o_from_id_to_ex_next_checks_armed && !$isunknown(o_from_id_to_ex_next_q)) begin
+      p_next_state_matches_register : assert (o_from_id_to_ex == o_from_id_to_ex_next_q);
+    end
+  end
+`endif
+
   // ===========================================================================
-  // Slot-2: Decoders + FP Detect + WB Bypass + x0 Check + Pipeline Register
+  // Slot-2: Decoders + FP Detect + Pipeline Register
   // ===========================================================================
-  // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2's real
-  // second instruction. PD keeps the late bubble controls off the instruction
-  // register D path and carries them in inject_nop, so apply the registered
-  // marker before every slot-2 decoder. Slot 2 does not get the PD
-  // predicted-taken redirect override; its BTB/RAS metadata is whatever PD
-  // passed through from IF.
+  // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2. As for
+  // slot 1, PD carries the bubble in inject_nop, and the NOP is applied here
+  // before the slot-2 decoders (the operand classifier applies it itself).
+  // Slot 2 does not get the PD predicted-taken redirect override; its BTB/RAS
+  // metadata is whatever PD passed through from IF.
 
-  riscv_pkg::instr_t                      instruction_2;
-  riscv_pkg::instr_op_e                   instruction_operation_2;
-  riscv_pkg::branch_taken_op_e            branch_operation_2;
-  riscv_pkg::store_op_e                   store_operation_2;
+  riscv_pkg::instr_t               instruction_2;
+  riscv_pkg::instr_op_e            instruction_operation_2;
 
-  logic                        [XLEN-1:0] immediate_i_type_2;
-  logic                        [XLEN-1:0] immediate_s_type_2;
-  logic                        [XLEN-1:0] immediate_b_type_2;
-  logic                        [XLEN-1:0] immediate_u_type_2;
-  logic                        [XLEN-1:0] immediate_j_type_2;
+  logic                 [XLEN-1:0] immediate_i_type_2;
+  logic                 [XLEN-1:0] immediate_s_type_2;
+  logic                 [XLEN-1:0] immediate_b_type_2;
+  logic                 [XLEN-1:0] immediate_u_type_2;
+  logic                 [XLEN-1:0] immediate_j_type_2;
 
-  logic                                   is_load_instruction_2;
-  logic                                   is_load_byte_direct_2;
-  logic                                   is_load_halfword_direct_2;
-  logic                                   is_load_unsigned_direct_2;
-  logic                                   is_multiply_direct_2;
-  logic                                   is_divide_direct_2;
-  logic                                   is_csr_instruction_2;
-  logic                        [    11:0] csr_address_2;
-  logic                        [     4:0] csr_imm_2;
-  logic                                   is_amo_instruction_2;
-  logic                                   is_lr_2;
-  logic                                   is_sc_2;
-  logic                                   is_ecall_2;
-  logic                                   is_ebreak_2;
-  logic                                   is_mret_2;
-  logic                                   is_sret_2;
-  logic                                   is_dret_2;
-  logic                                   is_wfi_2;
-  logic                                   is_jal_direct_2;
-  logic                                   is_jalr_direct_2;
-  logic                                   is_ras_return_precomputed_2;
-  logic                                   is_ras_call_precomputed_2;
+  logic                            is_load_instruction_2;
+  logic                            is_load_unsigned_direct_2;
+  logic                            is_csr_instruction_2;
+  logic                 [    11:0] csr_address_2;
+  logic                 [     4:0] csr_imm_2;
+  logic                            is_amo_instruction_2;
+  logic                            is_lr_2;
+  logic                            is_sc_2;
+  logic                            is_mret_2;
+  logic                            is_sret_2;
+  logic                            is_dret_2;
+  logic                            is_wfi_2;
+  logic                            is_jal_direct_2;
+  logic                            is_jalr_direct_2;
+  logic                            is_ras_return_precomputed_2;
+  logic                            is_ras_call_precomputed_2;
 
-  logic                        [XLEN-1:0] branch_target_precomputed_2;
-  logic                        [XLEN-1:0] jal_target_precomputed_2;
-  logic                        [XLEN-1:0] link_address_precomputed_2;
-  logic                        [XLEN-1:0] ras_expected_rs1_precomputed_2;
-  logic                        [XLEN-1:0] btb_expected_rs1_precomputed_2;
-  logic                                   btb_correct_non_jalr_precomputed_2;
-
-  logic                                   ras_correct_non_jalr_precomputed_2;
-  logic                        [XLEN-1:0] pc_relative_precomputed_2;
+  logic                 [XLEN-1:0] branch_target_precomputed_2;
+  logic                 [XLEN-1:0] jal_target_precomputed_2;
+  logic                 [XLEN-1:0] link_address_precomputed_2;
+  logic                            btb_correct_non_jalr_precomputed_2;
+  logic                 [XLEN-1:0] pc_relative_precomputed_2;
   assign instruction_2 = i_from_pd_to_id_2.inject_nop ? riscv_pkg::NOP :
                                                         i_from_pd_to_id_2.instruction;
   assign link_address_precomputed_2 =
@@ -1022,13 +652,9 @@ module id_stage #(
   instr_decoder instr_decoder_inst_2 (
       .i_instr(instruction_2),
       .o_instr_op(instruction_operation_2),
-      .o_store_op(store_operation_2),
-      .o_branch_taken_op(branch_operation_2),
       .o_illegal(decoder_illegal_2)
   );
 
-  logic is_illegal_instruction_2;
-  assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction;
   logic is_fetch_fault_2;
   assign is_fetch_fault_2 = i_from_pd_to_id_2.fetch_fault;
   logic is_fetch_fault_page_2;
@@ -1053,19 +679,13 @@ module id_stage #(
       .i_instruction(instruction_2),
       .i_immediate_i_type(immediate_i_type_2),
       .o_is_load_instruction(is_load_instruction_2),
-      .o_is_load_byte(is_load_byte_direct_2),
-      .o_is_load_halfword(is_load_halfword_direct_2),
       .o_is_load_unsigned(is_load_unsigned_direct_2),
-      .o_is_multiply(is_multiply_direct_2),
-      .o_is_divide(is_divide_direct_2),
       .o_is_csr_instruction(is_csr_instruction_2),
       .o_csr_address(csr_address_2),
       .o_csr_imm(csr_imm_2),
       .o_is_amo_instruction(is_amo_instruction_2),
       .o_is_lr(is_lr_2),
       .o_is_sc(is_sc_2),
-      .o_is_ecall(is_ecall_2),
-      .o_is_ebreak(is_ebreak_2),
       .o_is_mret(is_mret_2),
       .o_is_sret(is_sret_2),
       .o_is_dret(is_dret_2),
@@ -1080,10 +700,8 @@ module id_stage #(
       .XLEN(XLEN)
   ) branch_target_precompute_inst_2 (
       .i_program_counter(i_from_pd_to_id_2.program_counter),
-      .i_immediate_i_type(immediate_i_type_2),
       .i_immediate_b_type(immediate_b_type_2),
       .i_immediate_j_type(immediate_j_type_2),
-      .i_ras_predicted_target(i_from_pd_to_id_2.ras_predicted_target),
       .i_btb_predicted_target(i_from_pd_to_id_2.btb_predicted_target),
       .i_immediate_u_type(immediate_u_type_2),
       .i_is_jal(is_jal_direct_2),
@@ -1092,17 +710,12 @@ module id_stage #(
       .o_branch_target_precomputed(branch_target_precomputed_2),
       .o_jal_target_precomputed(jal_target_precomputed_2),
       .o_pc_relative_precomputed(pc_relative_precomputed_2),
-      .o_ras_expected_rs1(ras_expected_rs1_precomputed_2),
-      .o_btb_expected_rs1(btb_expected_rs1_precomputed_2),
-      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed_2),
-      .o_ras_correct_non_jalr(ras_correct_non_jalr_precomputed_2)
+      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed_2)
   );
 
   // F extension: slot-2 floating-point instruction detection
   logic is_fp_load_direct_2;
   logic is_fp_store_direct_2;
-  logic is_fp_load_double_direct_2;
-  logic is_fp_store_double_direct_2;
   logic is_fp_compute_direct_2;
   logic is_fp_fma_direct_2;
   logic is_fp_instruction_direct_2;
@@ -1113,10 +726,6 @@ module id_stage #(
   assign is_fp_store_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_STORE_FP) &&
                                 ((instruction_2.funct3 == 3'b010) ||
                                  (instruction_2.funct3 == 3'b011));
-  assign is_fp_load_double_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_LOAD_FP) &&
-                                      (instruction_2.funct3 == 3'b011);
-  assign is_fp_store_double_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_STORE_FP) &&
-                                       (instruction_2.funct3 == 3'b011);
   assign is_fp_compute_direct_2 = instruction_2.opcode == riscv_pkg::OPC_OP_FP;
   assign is_fp_fma_direct_2 = (instruction_2.opcode == riscv_pkg::OPC_FMADD) |
                               (instruction_2.opcode == riscv_pkg::OPC_FMSUB) |
@@ -1125,91 +734,14 @@ module id_stage #(
   assign is_fp_instruction_direct_2 = is_fp_load_direct_2 | is_fp_store_direct_2 |
                                      is_fp_compute_direct_2 | is_fp_fma_direct_2;
 
-  logic is_fp_to_int_direct_2;
-  assign is_fp_to_int_direct_2 = is_fp_compute_direct_2 && (
-      (instruction_2.funct7[6:2] == 5'b10100) |
-      (instruction_2.funct7[6:2] == 5'b11100 && instruction_2.funct3 == 3'b001) |
-      (instruction_2.funct7[6:2] == 5'b11000) |
-      (instruction_2.funct7[6:2] == 5'b11100 && instruction_2.funct3 == 3'b000)
-      );
-
-  logic is_int_to_fp_direct_2;
-  assign is_int_to_fp_direct_2 = is_fp_compute_direct_2 && (
-      (instruction_2.funct7[6:2] == 5'b11010) |
-      (instruction_2.funct7[6:2] == 5'b11110 && instruction_2.funct3 == 3'b000)
-      );
-
-  logic is_pipelined_fp_op_direct_2;
-  assign is_pipelined_fp_op_direct_2 = is_fp_fma_direct_2 |
-      (is_fp_compute_direct_2 && (
-          instruction_2.funct7[6:3] == 4'b0000 ||
-      instruction_2.funct7[6:3] == 4'b0001 ||
-      instruction_2.funct7[6:2] == 5'b01011
-      ));
+  logic is_illegal_instruction_2;
+  assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction |
+                                    (i_mstatus_fs_off & is_fp_instruction_direct_2);
 
   logic [2:0] fp_rm_direct_2;
   assign fp_rm_direct_2 = instruction_2.funct3;
 
-  // Slot-2 WB Bypass
-  logic wb_bypass_rs1_2;
-  logic wb_bypass_rs2_2;
-  logic [XLEN-1:0] source_reg_1_data_bypassed_2;
-  logic [XLEN-1:0] source_reg_2_data_bypassed_2;
-
-  assign wb_bypass_rs1_2 = i_from_ma_to_wb.regfile_write_enable &&
-                           |i_from_ma_to_wb.instruction.dest_reg &&
-                           (i_from_ma_to_wb.instruction.dest_reg ==
-                            i_from_pd_to_id_2.source_reg_1_early);
-  assign wb_bypass_rs2_2 = i_from_ma_to_wb.regfile_write_enable &&
-                           |i_from_ma_to_wb.instruction.dest_reg &&
-                           (i_from_ma_to_wb.instruction.dest_reg ==
-                            i_from_pd_to_id_2.source_reg_2_early);
-
-  assign source_reg_1_data_bypassed_2 = wb_bypass_rs1_2 ? i_from_ma_to_wb.regfile_write_data :
-                                                          i_rf_to_id_2.source_reg_1_data;
-  assign source_reg_2_data_bypassed_2 = wb_bypass_rs2_2 ? i_from_ma_to_wb.regfile_write_data :
-                                                          i_rf_to_id_2.source_reg_2_data;
-
-  logic fp_wb_bypass_rs1_2;
-  logic fp_wb_bypass_rs2_2;
-  logic fp_wb_bypass_rs3_2;
-  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_1_data_bypassed_2;
-  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_2_data_bypassed_2;
-  logic [riscv_pkg::FpWidth-1:0] fp_source_reg_3_data_bypassed_2;
-
-  assign fp_wb_bypass_rs1_2 = i_from_ma_to_wb.fp_regfile_write_enable &&
-                              (i_from_ma_to_wb.fp_dest_reg ==
-                               i_from_pd_to_id_2.source_reg_1_early);
-  assign fp_wb_bypass_rs2_2 = i_from_ma_to_wb.fp_regfile_write_enable &&
-                              (i_from_ma_to_wb.fp_dest_reg ==
-                               i_from_pd_to_id_2.source_reg_2_early);
-  assign fp_wb_bypass_rs3_2 = i_from_ma_to_wb.fp_regfile_write_enable &&
-                              (i_from_ma_to_wb.fp_dest_reg ==
-                               i_from_pd_to_id_2.fp_source_reg_3_early);
-
-  assign fp_source_reg_1_data_bypassed_2 = fp_wb_bypass_rs1_2 ?
-                                           i_from_ma_to_wb.fp_regfile_write_data :
-                                           i_fp_rf_to_id_2.fp_source_reg_1_data;
-  assign fp_source_reg_2_data_bypassed_2 = fp_wb_bypass_rs2_2 ?
-                                           i_from_ma_to_wb.fp_regfile_write_data :
-                                           i_fp_rf_to_id_2.fp_source_reg_2_data;
-  assign fp_source_reg_3_data_bypassed_2 = fp_wb_bypass_rs3_2 ?
-                                           i_from_ma_to_wb.fp_regfile_write_data :
-                                           i_fp_rf_to_id_2.fp_source_reg_3_data;
-
-  // Slot-2 x0 check
-  logic source_reg_1_is_x0_2;
-  logic source_reg_2_is_x0_2;
-  assign source_reg_1_is_x0_2 = ~|i_from_pd_to_id_2.source_reg_1_early;
-  assign source_reg_2_is_x0_2 = ~|i_from_pd_to_id_2.source_reg_2_early;
-
-  // Slot-2 pre-decoded operand-classification flags (mirror of slot-1).
-  // Inlined for the same `ifndef SYNTHESIS` reason as slot-1 above.
-  riscv_pkg::instr_op_e op_for_pre_decode_2;
-  assign op_for_pre_decode_2 = is_fetch_fault_2 ? riscv_pkg::FETCH_FAULT :
-                               is_illegal_instruction_2 ? riscv_pkg::ILLEGAL :
-                                                          instruction_operation_2;
-
+  // Slot-2 pre-decoded operand-classification flags (mirror of slot 1).
   logic has_int_dest_pre_2;
   logic has_fp_dest_pre_2;
   logic uses_int_rs1_pre_2;
@@ -1219,6 +751,8 @@ module id_stage #(
   logic uses_fp_rs3_pre_2;
   logic [2:0] rs_type_pre_2;
   logic is_int_store_pre_2;
+  logic needs_lq_pre_2;
+  logic needs_sq_pre_2;
   logic is_branch_or_jump_pre_2;
   logic is_fence_pre_2;
   logic is_fence_i_pre_2;
@@ -1226,345 +760,30 @@ module id_stage #(
   logic is_csr_imm_pre_2;
   logic has_fp_flags_pre_2;
 
-  always_comb begin
-    case (op_for_pre_decode_2)
-      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
-      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
-      riscv_pkg::SRL, riscv_pkg::SRA,
-      riscv_pkg::SLT, riscv_pkg::SLTU,
-      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
-      riscv_pkg::XORI, riscv_pkg::SLTI,
-      riscv_pkg::SLTIU, riscv_pkg::SLLI,
-      riscv_pkg::SRLI, riscv_pkg::SRAI,
-      riscv_pkg::LUI, riscv_pkg::AUIPC, riscv_pkg::JALR,
-      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
-      riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
-      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD,
-      riscv_pkg::SH3ADD,
-      riscv_pkg::BSET, riscv_pkg::BCLR,
-      riscv_pkg::BINV, riscv_pkg::BEXT,
-      riscv_pkg::BSETI, riscv_pkg::BCLRI,
-      riscv_pkg::BINVI, riscv_pkg::BEXTI,
-      riscv_pkg::ANDN, riscv_pkg::ORN,
-      riscv_pkg::XNOR, riscv_pkg::CLZ,
-      riscv_pkg::CTZ, riscv_pkg::CPOP,
-      riscv_pkg::MAX, riscv_pkg::MAXU,
-      riscv_pkg::MIN, riscv_pkg::MINU,
-      riscv_pkg::SEXT_B, riscv_pkg::SEXT_H,
-      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI,
-      riscv_pkg::ORC_B, riscv_pkg::REV8,
-      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
-      riscv_pkg::PACK, riscv_pkg::PACKH,
-      riscv_pkg::BREV8,
-      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
-      riscv_pkg::SLLI_UW, riscv_pkg::RORIW,
-      riscv_pkg::CLZW, riscv_pkg::CTZW, riscv_pkg::CPOPW,
-      riscv_pkg::ADDW, riscv_pkg::SUBW,
-      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
-      riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
-      riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
-      riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
-      riscv_pkg::CSRRW, riscv_pkg::CSRRS,
-      riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
-      riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
-      riscv_pkg::ECALL, riscv_pkg::EBREAK, riscv_pkg::ILLEGAL:
-      rs_type_pre_2 = riscv_pkg::RS_INT;
+  instr_operand_classifier operand_classifier_2 (
+      .i_instr(i_from_pd_to_id_2.instruction),
+      .i_inject_nop(i_from_pd_to_id_2.inject_nop),
+      .i_illegal(is_illegal_instruction_2),
+      .i_fetch_fault(is_fetch_fault_2),
+      .o_has_int_dest(has_int_dest_pre_2),
+      .o_has_fp_dest(has_fp_dest_pre_2),
+      .o_uses_int_rs1(uses_int_rs1_pre_2),
+      .o_uses_int_rs2(uses_int_rs2_pre_2),
+      .o_uses_fp_rs1(uses_fp_rs1_pre_2),
+      .o_uses_fp_rs2(uses_fp_rs2_pre_2),
+      .o_uses_fp_rs3(uses_fp_rs3_pre_2),
+      .o_rs_type(rs_type_pre_2),
+      .o_is_int_store(is_int_store_pre_2),
+      .o_is_branch_or_jump(is_branch_or_jump_pre_2),
+      .o_is_fence(is_fence_pre_2),
+      .o_is_fence_i(is_fence_i_pre_2),
+      .o_is_sfence_vma(is_sfence_vma_pre_2),
+      .o_is_csr_imm(is_csr_imm_pre_2),
+      .o_has_fp_flags(has_fp_flags_pre_2),
+      .o_needs_lq(needs_lq_pre_2),
+      .o_needs_sq(needs_sq_pre_2)
+  );
 
-      riscv_pkg::MUL, riscv_pkg::MULH,
-      riscv_pkg::MULHSU, riscv_pkg::MULHU,
-      riscv_pkg::DIV, riscv_pkg::DIVU,
-      riscv_pkg::REM, riscv_pkg::REMU,
-      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
-      riscv_pkg::REMW, riscv_pkg::REMUW:
-      rs_type_pre_2 = riscv_pkg::RS_MUL;
-
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
-      riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::LWU, riscv_pkg::LD,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
-      riscv_pkg::SD,
-      riscv_pkg::FLW, riscv_pkg::FSW,
-      riscv_pkg::FLD, riscv_pkg::FSD,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
-      riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::LR_D, riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D,
-      riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
-      riscv_pkg::FENCE, riscv_pkg::FENCE_I, riscv_pkg::SFENCE_VMA:
-      rs_type_pre_2 = riscv_pkg::RS_MEM;
-
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S,
-      riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S,
-      riscv_pkg::FLE_S, riscv_pkg::FEQ_D,
-      riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
-      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X, riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
-      rs_type_pre_2 = riscv_pkg::RS_FP;
-
-      riscv_pkg::FMUL_S, riscv_pkg::FMUL_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
-      riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
-      rs_type_pre_2 = riscv_pkg::RS_FMUL;
-
-      riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
-      rs_type_pre_2 = riscv_pkg::RS_FDIV;
-
-      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET,
-      riscv_pkg::PAUSE:
-      rs_type_pre_2 = riscv_pkg::RS_NONE;
-
-      default: rs_type_pre_2 = riscv_pkg::RS_INT;
-    endcase
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD: is_int_store_pre_2 = 1'b1;
-      default: is_int_store_pre_2 = 1'b0;
-    endcase
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT, riscv_pkg::BGE,
-      riscv_pkg::BLTU, riscv_pkg::BGEU, riscv_pkg::JAL, riscv_pkg::JALR:
-      is_branch_or_jump_pre_2 = 1'b1;
-      default: is_branch_or_jump_pre_2 = 1'b0;
-    endcase
-
-    is_fence_pre_2 = op_for_pre_decode_2 == riscv_pkg::FENCE;
-    is_fence_i_pre_2 = (op_for_pre_decode_2 == riscv_pkg::FENCE_I) ||
-                       (op_for_pre_decode_2 == riscv_pkg::SFENCE_VMA);
-    is_sfence_vma_pre_2 = op_for_pre_decode_2 == riscv_pkg::SFENCE_VMA;
-    is_csr_imm_pre_2 = op_for_pre_decode_2 == riscv_pkg::CSRRWI ||
-                       op_for_pre_decode_2 == riscv_pkg::CSRRSI ||
-                       op_for_pre_decode_2 == riscv_pkg::CSRRCI;
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
-      riscv_pkg::FSQRT_S, riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMUL_D, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S,
-      riscv_pkg::FNMSUB_S, riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W,
-      riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L,
-      riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
-      riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X:
-      has_fp_flags_pre_2 = 1'b1;
-      default: has_fp_flags_pre_2 = 1'b0;
-    endcase
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::FLW, riscv_pkg::FLD,
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
-      riscv_pkg::FMUL_S, riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMUL_D, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
-      riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X:
-      has_fp_dest_pre_2 = 1'b1;
-      default: has_fp_dest_pre_2 = 1'b0;
-    endcase
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
-      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
-      riscv_pkg::SRL, riscv_pkg::SRA,
-      riscv_pkg::SLT, riscv_pkg::SLTU,
-      riscv_pkg::ADDI, riscv_pkg::ANDI, riscv_pkg::ORI,
-      riscv_pkg::XORI, riscv_pkg::SLTI,
-      riscv_pkg::SLTIU, riscv_pkg::SLLI,
-      riscv_pkg::SRLI, riscv_pkg::SRAI,
-      riscv_pkg::LUI, riscv_pkg::AUIPC,
-      riscv_pkg::JAL, riscv_pkg::JALR,
-      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD, riscv_pkg::SH3ADD,
-      riscv_pkg::BSET, riscv_pkg::BCLR, riscv_pkg::BINV, riscv_pkg::BEXT,
-      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI,
-      riscv_pkg::ANDN, riscv_pkg::ORN, riscv_pkg::XNOR,
-      riscv_pkg::CLZ, riscv_pkg::CTZ, riscv_pkg::CPOP,
-      riscv_pkg::MAX, riscv_pkg::MAXU, riscv_pkg::MIN, riscv_pkg::MINU,
-      riscv_pkg::SEXT_B, riscv_pkg::SEXT_H,
-      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI,
-      riscv_pkg::ORC_B, riscv_pkg::REV8,
-      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
-      riscv_pkg::PACK, riscv_pkg::PACKH,
-      riscv_pkg::BREV8,
-      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
-      riscv_pkg::SLLI_UW, riscv_pkg::RORIW,
-      riscv_pkg::CLZW, riscv_pkg::CTZW, riscv_pkg::CPOPW,
-      riscv_pkg::ADDW, riscv_pkg::SUBW,
-      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
-      riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
-      riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
-      riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
-      riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
-      riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
-      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
-      riscv_pkg::REMW, riscv_pkg::REMUW,
-      riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
-      riscv_pkg::LWU, riscv_pkg::LD,
-      riscv_pkg::LR_W, riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::LR_D, riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
-      riscv_pkg::CSRRW, riscv_pkg::CSRRS, riscv_pkg::CSRRC,
-      riscv_pkg::CSRRWI, riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
-      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D:
-      has_int_dest_pre_2 = 1'b1;
-      default: has_int_dest_pre_2 = 1'b0;
-    endcase
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S,
-      riscv_pkg::FMUL_S, riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D,
-      riscv_pkg::FMUL_D, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
-      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
-      riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S:
-      uses_fp_rs1_pre_2 = 1'b1;
-      default: uses_fp_rs1_pre_2 = 1'b0;
-    endcase
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::FADD_S, riscv_pkg::FSUB_S, riscv_pkg::FMUL_S, riscv_pkg::FDIV_S,
-      riscv_pkg::FADD_D, riscv_pkg::FSUB_D, riscv_pkg::FMUL_D, riscv_pkg::FDIV_D,
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S, riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D, riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
-      riscv_pkg::FMIN_S, riscv_pkg::FMAX_S, riscv_pkg::FMIN_D, riscv_pkg::FMAX_D,
-      riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
-      riscv_pkg::FEQ_D, riscv_pkg::FLT_D, riscv_pkg::FLE_D,
-      riscv_pkg::FSW, riscv_pkg::FSD:
-      uses_fp_rs2_pre_2 = 1'b1;
-      default: uses_fp_rs2_pre_2 = 1'b0;
-    endcase
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
-      riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
-      riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
-      uses_fp_rs3_pre_2 = 1'b1;
-      default: uses_fp_rs3_pre_2 = 1'b0;
-    endcase
-
-    uses_int_rs1_pre_2 = !uses_fp_rs1_pre_2 && (
-      op_for_pre_decode_2 != riscv_pkg::LUI &&
-      op_for_pre_decode_2 != riscv_pkg::AUIPC &&
-      op_for_pre_decode_2 != riscv_pkg::JAL &&
-      op_for_pre_decode_2 != riscv_pkg::ECALL &&
-      op_for_pre_decode_2 != riscv_pkg::EBREAK &&
-      op_for_pre_decode_2 != riscv_pkg::FENCE &&
-      op_for_pre_decode_2 != riscv_pkg::FENCE_I &&
-      op_for_pre_decode_2 != riscv_pkg::WFI &&
-      op_for_pre_decode_2 != riscv_pkg::MRET &&
-      op_for_pre_decode_2 != riscv_pkg::SRET &&
-      op_for_pre_decode_2 != riscv_pkg::DRET &&
-      op_for_pre_decode_2 != riscv_pkg::SFENCE_VMA &&
-      op_for_pre_decode_2 != riscv_pkg::PAUSE &&
-      op_for_pre_decode_2 != riscv_pkg::CSRRWI &&
-      op_for_pre_decode_2 != riscv_pkg::CSRRSI &&
-      op_for_pre_decode_2 != riscv_pkg::CSRRCI &&
-      op_for_pre_decode_2 != riscv_pkg::ILLEGAL);
-
-    case (op_for_pre_decode_2)
-      riscv_pkg::BEQ, riscv_pkg::BNE, riscv_pkg::BLT,
-      riscv_pkg::BGE, riscv_pkg::BLTU, riscv_pkg::BGEU,
-      riscv_pkg::ADD, riscv_pkg::SUB, riscv_pkg::AND,
-      riscv_pkg::OR, riscv_pkg::XOR, riscv_pkg::SLL,
-      riscv_pkg::SRL, riscv_pkg::SRA,
-      riscv_pkg::SLT, riscv_pkg::SLTU,
-      riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
-      riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
-      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
-      riscv_pkg::REMW, riscv_pkg::REMUW,
-      riscv_pkg::SH1ADD, riscv_pkg::SH2ADD, riscv_pkg::SH3ADD,
-      riscv_pkg::BSET, riscv_pkg::BCLR, riscv_pkg::BINV, riscv_pkg::BEXT,
-      riscv_pkg::ANDN, riscv_pkg::ORN, riscv_pkg::XNOR,
-      riscv_pkg::MAX, riscv_pkg::MAXU, riscv_pkg::MIN, riscv_pkg::MINU,
-      riscv_pkg::ROL, riscv_pkg::ROR,
-      riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
-      riscv_pkg::PACK, riscv_pkg::PACKH,
-      riscv_pkg::ADDW, riscv_pkg::SUBW,
-      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
-      riscv_pkg::ADD_UW, riscv_pkg::SH1ADD_UW,
-      riscv_pkg::SH2ADD_UW, riscv_pkg::SH3ADD_UW,
-      riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
-      riscv_pkg::SC_W,
-      riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
-      riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
-      riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
-      riscv_pkg::SC_D,
-      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
-      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
-      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
-      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
-      uses_int_rs2_pre_2 = !uses_fp_rs2_pre_2;
-      default: uses_int_rs2_pre_2 = 1'b0;
-    endcase
-  end
 
   // Slot-2 Pipeline Register
   always_ff @(posedge i_clk) begin
@@ -1573,15 +792,11 @@ module id_stage #(
       o_from_id_to_ex_2.is_compressed             <= 1'b0;
       o_from_id_to_ex_2.instruction_operation     <= riscv_pkg::ADDI;
       o_from_id_to_ex_2.is_load_instruction       <= 1'b0;
-      o_from_id_to_ex_2.is_load_byte              <= 1'b0;
-      o_from_id_to_ex_2.is_load_halfword          <= 1'b0;
       o_from_id_to_ex_2.is_load_unsigned          <= 1'b0;
-      o_from_id_to_ex_2.is_multiply               <= 1'b0;
-      o_from_id_to_ex_2.is_divide                 <= 1'b0;
-      o_from_id_to_ex_2.branch_operation          <= riscv_pkg::NULL;
-      o_from_id_to_ex_2.store_operation           <= riscv_pkg::STN;
       o_from_id_to_ex_2.rs_type                   <= riscv_pkg::RS_INT;
       o_from_id_to_ex_2.is_int_store              <= 1'b0;
+      o_from_id_to_ex_2.needs_lq                  <= 1'b0;
+      o_from_id_to_ex_2.needs_sq                  <= 1'b0;
       o_from_id_to_ex_2.is_branch_or_jump         <= 1'b0;
       o_from_id_to_ex_2.is_fence                  <= 1'b0;
       o_from_id_to_ex_2.is_fence_i                <= 1'b0;
@@ -1598,28 +813,16 @@ module id_stage #(
       o_from_id_to_ex_2.is_dret                   <= 1'b0;
       o_from_id_to_ex_2.is_sfence_vma             <= 1'b0;
       o_from_id_to_ex_2.is_wfi                    <= 1'b0;
-      o_from_id_to_ex_2.is_ecall                  <= 1'b0;
-      o_from_id_to_ex_2.is_ebreak                 <= 1'b0;
       o_from_id_to_ex_2.is_illegal_instruction    <= 1'b0;
       o_from_id_to_ex_2.is_fetch_fault            <= 1'b0;
       o_from_id_to_ex_2.is_fetch_fault_page       <= 1'b0;
-      o_from_id_to_ex_2.is_fetch_fault_hi         <= 1'b0;
-      o_from_id_to_ex_2.btb_hit                   <= 1'b0;
       o_from_id_to_ex_2.btb_predicted_taken       <= 1'b0;
-      o_from_id_to_ex_2.ras_predicted             <= 1'b0;
       o_from_id_to_ex_2.is_ras_return             <= 1'b0;
       o_from_id_to_ex_2.is_ras_call               <= 1'b0;
       o_from_id_to_ex_2.btb_correct_non_jalr      <= 1'b0;
-      o_from_id_to_ex_2.ras_correct_non_jalr      <= 1'b0;
       o_from_id_to_ex_2.is_fp_instruction         <= 1'b0;
       o_from_id_to_ex_2.is_fp_load                <= 1'b0;
       o_from_id_to_ex_2.is_fp_store               <= 1'b0;
-      o_from_id_to_ex_2.is_fp_load_double         <= 1'b0;
-      o_from_id_to_ex_2.is_fp_store_double        <= 1'b0;
-      o_from_id_to_ex_2.is_fp_compute             <= 1'b0;
-      o_from_id_to_ex_2.is_pipelined_fp_op        <= 1'b0;
-      o_from_id_to_ex_2.is_fp_to_int              <= 1'b0;
-      o_from_id_to_ex_2.is_int_to_fp              <= 1'b0;
       // Pre-decoded operand-classification flags
       o_from_id_to_ex_2.has_int_dest              <= 1'b0;
       o_from_id_to_ex_2.has_fp_dest               <= 1'b0;
@@ -1628,7 +831,7 @@ module id_stage #(
       o_from_id_to_ex_2.uses_fp_rs1               <= 1'b0;
       o_from_id_to_ex_2.uses_fp_rs2               <= 1'b0;
       o_from_id_to_ex_2.uses_fp_rs3               <= 1'b0;
-      o_from_id_to_ex_2.is_not_nop                <= 1'b0;
+      o_from_id_to_ex_2.is_real                   <= 1'b0;
     end else if (id_advance) begin
       o_from_id_to_ex_2.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction_2;
       o_from_id_to_ex_2.is_compressed <= i_pipeline_ctrl.flush ? 1'b0 :
@@ -1636,19 +839,12 @@ module id_stage #(
       o_from_id_to_ex_2.instruction_operation <= i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
                                                                          instruction_operation_2;
       o_from_id_to_ex_2.is_load_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction_2;
-      o_from_id_to_ex_2.is_load_byte <= i_pipeline_ctrl.flush ? 1'b0 : is_load_byte_direct_2;
-      o_from_id_to_ex_2.is_load_halfword <= i_pipeline_ctrl.flush ? 1'b0 :
-                                            is_load_halfword_direct_2;
       o_from_id_to_ex_2.is_load_unsigned <= i_pipeline_ctrl.flush ? 1'b0 :
                                             is_load_unsigned_direct_2;
-      o_from_id_to_ex_2.is_multiply <= i_pipeline_ctrl.flush ? 1'b0 : is_multiply_direct_2;
-      o_from_id_to_ex_2.is_divide <= i_pipeline_ctrl.flush ? 1'b0 : is_divide_direct_2;
-      o_from_id_to_ex_2.branch_operation <= i_pipeline_ctrl.flush ? riscv_pkg::NULL :
-                                                                    branch_operation_2;
-      o_from_id_to_ex_2.store_operation <= i_pipeline_ctrl.flush ? riscv_pkg::STN :
-                                                                   store_operation_2;
       o_from_id_to_ex_2.rs_type <= i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre_2;
       o_from_id_to_ex_2.is_int_store <= i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre_2;
+      o_from_id_to_ex_2.needs_lq <= i_pipeline_ctrl.flush ? 1'b0 : needs_lq_pre_2;
+      o_from_id_to_ex_2.needs_sq <= i_pipeline_ctrl.flush ? 1'b0 : needs_sq_pre_2;
       o_from_id_to_ex_2.is_branch_or_jump <= i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre_2;
       o_from_id_to_ex_2.is_fence <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre_2;
       o_from_id_to_ex_2.is_fence_i <= i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre_2;
@@ -1667,38 +863,20 @@ module id_stage #(
       o_from_id_to_ex_2.is_dret <= i_pipeline_ctrl.flush ? 1'b0 : is_dret_2;
       o_from_id_to_ex_2.is_sfence_vma <= i_pipeline_ctrl.flush ? 1'b0 : is_sfence_vma_pre_2;
       o_from_id_to_ex_2.is_wfi <= i_pipeline_ctrl.flush ? 1'b0 : is_wfi_2;
-      o_from_id_to_ex_2.is_ecall <= i_pipeline_ctrl.flush ? 1'b0 : is_ecall_2;
-      o_from_id_to_ex_2.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak_2;
       o_from_id_to_ex_2.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                                   is_illegal_instruction_2;
       o_from_id_to_ex_2.is_fetch_fault <= i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault_2;
       o_from_id_to_ex_2.is_fetch_fault_page <= is_fetch_fault_page_2;
-      o_from_id_to_ex_2.is_fetch_fault_hi <= is_fetch_fault_hi_2;
-      o_from_id_to_ex_2.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.btb_hit;
       o_from_id_to_ex_2.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                                i_from_pd_to_id_2.btb_predicted_taken;
-      o_from_id_to_ex_2.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 :
-                                         i_from_pd_to_id_2.ras_predicted;
       o_from_id_to_ex_2.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed_2;
       o_from_id_to_ex_2.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
       o_from_id_to_ex_2.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                                 btb_correct_non_jalr_precomputed_2;
-      o_from_id_to_ex_2.ras_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
-                                                ras_correct_non_jalr_precomputed_2;
       o_from_id_to_ex_2.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                              is_fp_instruction_direct_2;
       o_from_id_to_ex_2.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
       o_from_id_to_ex_2.is_fp_store <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct_2;
-      o_from_id_to_ex_2.is_fp_load_double <= i_pipeline_ctrl.flush ? 1'b0 :
-                                             is_fp_load_double_direct_2;
-      o_from_id_to_ex_2.is_fp_store_double <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              is_fp_store_double_direct_2;
-      o_from_id_to_ex_2.is_fp_compute <= i_pipeline_ctrl.flush ? 1'b0 :
-                                         (is_fp_compute_direct_2 | is_fp_fma_direct_2);
-      o_from_id_to_ex_2.is_pipelined_fp_op <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              is_pipelined_fp_op_direct_2;
-      o_from_id_to_ex_2.is_fp_to_int <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_to_int_direct_2;
-      o_from_id_to_ex_2.is_int_to_fp <= i_pipeline_ctrl.flush ? 1'b0 : is_int_to_fp_direct_2;
       // Pre-decoded operand-classification flags, cleared on flush
       o_from_id_to_ex_2.has_int_dest <= i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre_2;
       o_from_id_to_ex_2.has_fp_dest <= i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre_2;
@@ -1707,8 +885,8 @@ module id_stage #(
       o_from_id_to_ex_2.uses_fp_rs1 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre_2;
       o_from_id_to_ex_2.uses_fp_rs2 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre_2;
       o_from_id_to_ex_2.uses_fp_rs3 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre_2;
-      o_from_id_to_ex_2.is_not_nop   <= i_pipeline_ctrl.flush ? 1'b0 :
-                                                                (instruction_2 != riscv_pkg::NOP);
+      // A real instruction rather than a bubble, as for slot 1.
+      o_from_id_to_ex_2.is_real <= i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id_2.inject_nop;
     end
     if (id_advance) begin
       o_from_id_to_ex_2.program_counter <= i_from_pd_to_id_2.program_counter;
@@ -1719,28 +897,149 @@ module id_stage #(
       o_from_id_to_ex_2.jal_target_precomputed <= jal_target_precomputed_2;
       o_from_id_to_ex_2.pc_relative_precomputed <= pc_relative_precomputed_2;
       o_from_id_to_ex_2.btb_predicted_target <= i_from_pd_to_id_2.btb_predicted_target;
-      o_from_id_to_ex_2.ras_predicted_target <= i_from_pd_to_id_2.ras_predicted_target;
       o_from_id_to_ex_2.ras_checkpoint_tos <= i_from_pd_to_id_2.ras_checkpoint_tos;
       o_from_id_to_ex_2.ras_checkpoint_valid_count <= i_from_pd_to_id_2.ras_checkpoint_valid_count;
+      o_from_id_to_ex_2.ras_checkpoint_top <= i_from_pd_to_id_2.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_id_to_ex_2.bp_dir_idx <= i_from_pd_to_id_2.bp_dir_idx;
-      o_from_id_to_ex_2.ras_predicted_target_nonzero <= |i_from_pd_to_id_2.ras_predicted_target;
-      o_from_id_to_ex_2.ras_expected_rs1 <= ras_expected_rs1_precomputed_2;
-      o_from_id_to_ex_2.btb_expected_rs1 <= btb_expected_rs1_precomputed_2;
       o_from_id_to_ex_2.fp_rm <= fp_rm_direct_2;
       o_from_id_to_ex_2.immediate_u_type <= immediate_u_type_2;
       o_from_id_to_ex_2.immediate_s_type <= immediate_s_type_2;
       o_from_id_to_ex_2.immediate_i_type <= immediate_i_type_2;
-      o_from_id_to_ex_2.immediate_b_type <= immediate_b_type_2;
-      o_from_id_to_ex_2.immediate_j_type <= immediate_j_type_2;
-      o_from_id_to_ex_2.source_reg_1_data <= source_reg_1_data_bypassed_2;
-      o_from_id_to_ex_2.source_reg_2_data <= source_reg_2_data_bypassed_2;
-      o_from_id_to_ex_2.source_reg_1_is_x0 <= source_reg_1_is_x0_2;
-      o_from_id_to_ex_2.source_reg_2_is_x0 <= source_reg_2_is_x0_2;
-      o_from_id_to_ex_2.fp_source_reg_1_data <= fp_source_reg_1_data_bypassed_2;
-      o_from_id_to_ex_2.fp_source_reg_2_data <= fp_source_reg_2_data_bypassed_2;
-      o_from_id_to_ex_2.fp_source_reg_3_data <= fp_source_reg_3_data_bypassed_2;
     end
   end
+
+  // Next-edge value of o_from_id_to_ex_2: the always_ff update above,
+  // repeated with a hold default. Change both together; the assertion below
+  // checks that the register matches.
+  riscv_pkg::from_id_to_ex_t id_next_2;
+  assign o_from_id_to_ex_next_2 = id_next_2;
+  always_comb begin
+    id_next_2 = o_from_id_to_ex_2;
+    if (i_pipeline_ctrl.reset) begin
+      id_next_2.instruction = riscv_pkg::NOP;
+      id_next_2.is_compressed = 1'b0;
+      id_next_2.instruction_operation = riscv_pkg::ADDI;
+      id_next_2.is_load_instruction = 1'b0;
+      id_next_2.is_load_unsigned = 1'b0;
+      id_next_2.rs_type = riscv_pkg::RS_INT;
+      id_next_2.is_int_store = 1'b0;
+      id_next_2.needs_lq = 1'b0;
+      id_next_2.needs_sq = 1'b0;
+      id_next_2.is_branch_or_jump = 1'b0;
+      id_next_2.is_fence = 1'b0;
+      id_next_2.is_fence_i = 1'b0;
+      id_next_2.is_csr_imm = 1'b0;
+      id_next_2.has_fp_flags = 1'b0;
+      id_next_2.is_jump_and_link = 1'b0;
+      id_next_2.is_jump_and_link_register = 1'b0;
+      id_next_2.is_csr_instruction = 1'b0;
+      id_next_2.is_amo_instruction = 1'b0;
+      id_next_2.is_lr = 1'b0;
+      id_next_2.is_sc = 1'b0;
+      id_next_2.is_mret = 1'b0;
+      id_next_2.is_sret = 1'b0;
+      id_next_2.is_dret = 1'b0;
+      id_next_2.is_sfence_vma = 1'b0;
+      id_next_2.is_wfi = 1'b0;
+      id_next_2.is_illegal_instruction = 1'b0;
+      id_next_2.is_fetch_fault = 1'b0;
+      id_next_2.is_fetch_fault_page = 1'b0;
+      id_next_2.btb_predicted_taken = 1'b0;
+      id_next_2.is_ras_return = 1'b0;
+      id_next_2.is_ras_call = 1'b0;
+      id_next_2.btb_correct_non_jalr = 1'b0;
+      id_next_2.is_fp_instruction = 1'b0;
+      id_next_2.is_fp_load = 1'b0;
+      id_next_2.is_fp_store = 1'b0;
+      // Pre-decoded operand-classification flags
+      id_next_2.has_int_dest = 1'b0;
+      id_next_2.has_fp_dest = 1'b0;
+      id_next_2.uses_int_rs1 = 1'b0;
+      id_next_2.uses_int_rs2 = 1'b0;
+      id_next_2.uses_fp_rs1 = 1'b0;
+      id_next_2.uses_fp_rs2 = 1'b0;
+      id_next_2.uses_fp_rs3 = 1'b0;
+      id_next_2.is_real = 1'b0;
+    end else if (id_advance) begin
+      id_next_2.instruction = i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction_2;
+      id_next_2.is_compressed = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.is_compressed;
+      id_next_2.instruction_operation = i_pipeline_ctrl.flush ? riscv_pkg::ADDI :
+                                                                         instruction_operation_2;
+      id_next_2.is_load_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_load_instruction_2;
+      id_next_2.is_load_unsigned = i_pipeline_ctrl.flush ? 1'b0 : is_load_unsigned_direct_2;
+      id_next_2.rs_type = i_pipeline_ctrl.flush ? riscv_pkg::RS_INT : rs_type_pre_2;
+      id_next_2.is_int_store = i_pipeline_ctrl.flush ? 1'b0 : is_int_store_pre_2;
+      id_next_2.needs_lq = i_pipeline_ctrl.flush ? 1'b0 : needs_lq_pre_2;
+      id_next_2.needs_sq = i_pipeline_ctrl.flush ? 1'b0 : needs_sq_pre_2;
+      id_next_2.is_branch_or_jump = i_pipeline_ctrl.flush ? 1'b0 : is_branch_or_jump_pre_2;
+      id_next_2.is_fence = i_pipeline_ctrl.flush ? 1'b0 : is_fence_pre_2;
+      id_next_2.is_fence_i = i_pipeline_ctrl.flush ? 1'b0 : is_fence_i_pre_2;
+      id_next_2.is_csr_imm = i_pipeline_ctrl.flush ? 1'b0 : is_csr_imm_pre_2;
+      id_next_2.has_fp_flags = i_pipeline_ctrl.flush ? 1'b0 : has_fp_flags_pre_2;
+      id_next_2.is_jump_and_link = i_pipeline_ctrl.flush ? 1'b0 : is_jal_direct_2;
+      id_next_2.is_jump_and_link_register = i_pipeline_ctrl.flush ? 1'b0 : is_jalr_direct_2;
+      id_next_2.is_csr_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_csr_instruction_2;
+      id_next_2.is_amo_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction_2;
+      id_next_2.is_lr = i_pipeline_ctrl.flush ? 1'b0 : is_lr_2;
+      id_next_2.is_sc = i_pipeline_ctrl.flush ? 1'b0 : is_sc_2;
+      id_next_2.is_mret = i_pipeline_ctrl.flush ? 1'b0 : (is_mret_2 || is_sret_2 || is_dret_2);
+      id_next_2.is_sret = i_pipeline_ctrl.flush ? 1'b0 : is_sret_2;
+      id_next_2.is_dret = i_pipeline_ctrl.flush ? 1'b0 : is_dret_2;
+      id_next_2.is_sfence_vma = i_pipeline_ctrl.flush ? 1'b0 : is_sfence_vma_pre_2;
+      id_next_2.is_wfi = i_pipeline_ctrl.flush ? 1'b0 : is_wfi_2;
+      id_next_2.is_illegal_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_illegal_instruction_2;
+      id_next_2.is_fetch_fault = i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault_2;
+      id_next_2.is_fetch_fault_page = is_fetch_fault_page_2;
+      id_next_2.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 :
+                                               i_from_pd_to_id_2.btb_predicted_taken;
+      id_next_2.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed_2;
+      id_next_2.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
+      id_next_2.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
+                                                btb_correct_non_jalr_precomputed_2;
+      id_next_2.is_fp_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct_2;
+      id_next_2.is_fp_load = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
+      id_next_2.is_fp_store = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct_2;
+      // Pre-decoded operand-classification flags, cleared on flush
+      id_next_2.has_int_dest = i_pipeline_ctrl.flush ? 1'b0 : has_int_dest_pre_2;
+      id_next_2.has_fp_dest = i_pipeline_ctrl.flush ? 1'b0 : has_fp_dest_pre_2;
+      id_next_2.uses_int_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs1_pre_2;
+      id_next_2.uses_int_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_int_rs2_pre_2;
+      id_next_2.uses_fp_rs1 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs1_pre_2;
+      id_next_2.uses_fp_rs2 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs2_pre_2;
+      id_next_2.uses_fp_rs3 = i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre_2;
+      id_next_2.is_real = i_pipeline_ctrl.flush ? 1'b0 : !i_from_pd_to_id_2.inject_nop;
+    end
+    if (id_advance) begin
+      id_next_2.program_counter = i_from_pd_to_id_2.program_counter;
+      id_next_2.csr_address = csr_address_2;
+      id_next_2.csr_imm = csr_imm_2;
+      id_next_2.link_address = link_address_precomputed_2;
+      id_next_2.branch_target_precomputed = branch_target_precomputed_2;
+      id_next_2.jal_target_precomputed = jal_target_precomputed_2;
+      id_next_2.pc_relative_precomputed = pc_relative_precomputed_2;
+      id_next_2.btb_predicted_target = i_from_pd_to_id_2.btb_predicted_target;
+      id_next_2.ras_checkpoint_tos = i_from_pd_to_id_2.ras_checkpoint_tos;
+      id_next_2.ras_checkpoint_valid_count = i_from_pd_to_id_2.ras_checkpoint_valid_count;
+      id_next_2.ras_checkpoint_top = i_from_pd_to_id_2.ras_checkpoint_top;
+      // Carry the predict-time bimodal index through to commit.
+      id_next_2.bp_dir_idx = i_from_pd_to_id_2.bp_dir_idx;
+      id_next_2.fp_rm = fp_rm_direct_2;
+      id_next_2.immediate_u_type = immediate_u_type_2;
+      id_next_2.immediate_s_type = immediate_s_type_2;
+      id_next_2.immediate_i_type = immediate_i_type_2;
+    end
+  end
+`ifndef SYNTHESIS
+  logic o_from_id_to_ex_next_2_checks_armed = 1'b0;
+  riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_2_q;
+  always_ff @(posedge i_clk) begin
+    o_from_id_to_ex_next_2_q <= o_from_id_to_ex_next_2;
+    o_from_id_to_ex_next_2_checks_armed <= 1'b1;
+    if (o_from_id_to_ex_next_2_checks_armed && !$isunknown(o_from_id_to_ex_next_2_q)) begin
+      p_slot2_next_state_matches_register : assert (o_from_id_to_ex_2 == o_from_id_to_ex_next_2_q);
+    end
+  end
+`endif
 
 endmodule : id_stage

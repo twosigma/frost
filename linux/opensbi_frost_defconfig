@@ -5,8 +5,8 @@
 # enables beyond these (platform overrides for other SoCs, RPMI mailboxes,
 # regmaps, GPIO, I2C, resets, HSM/suspend/CPPC/MPXY) is left disabled, which
 # also shortens OpenSBI's device-tree probing at boot: each driver phase walks
-# the tree, and in RTL simulation that walking dominated the firmware's boot
-# time. The generic platform still selects FDT, FDT_DOMAIN and FDT_PMU.
+# the tree, which is slow in RTL simulation. The generic platform still selects
+# FDT, FDT_DOMAIN and FDT_PMU.
 CONFIG_FDT_IPI=y
 CONFIG_FDT_IPI_MSWI=y
 CONFIG_FDT_IRQCHIP=y

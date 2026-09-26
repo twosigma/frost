@@ -15,26 +15,26 @@
  */
 
 /*
-  Equivalence bench for fp_div_sqrt_iter against the units it replaced.
-
-  The four reference pipelines (fp_divider and fp_sqrt at both widths) sit
-  beside the iterative unit. One operation runs at a time: the sequencer starts
-  the unit and the reference the operation selects on the same cycle, waits for
-  both completions, and compares result and flags bit for bit.
+  Equivalence bench for fp_div_sqrt_iter against the unrolled reference
+  pipelines in hw/sim, fp_divider and fp_sqrt, each instantiated at both
+  widths. One operation runs at a time: the sequencer starts the unit and the
+  reference the operation selects on the same cycle, waits for both
+  completions, and compares result and flags bit for bit.
 
   Stimulus comes from two places. i_ext_valid injects a directed vector while
   o_ext_ready is high, which is how the test drives its corner list. With
   i_gen_enable high the internal generator supplies vectors instead: three
-  xorshift chains pick an operation, a rounding mode, and an operand class per
-  operand, so subnormals, zeros, infinities, quiet and signalling NaNs, exact
-  powers of two, tie patterns and the exponent extremes all appear at a useful
-  rate alongside uniformly random bit patterns.
+  xorshift chains supply the raw operand bits and pick the operation, the
+  rounding mode, and a class for each operand, so subnormals, zeros,
+  infinities, quiet and signalling NaNs, exact powers of two, tie patterns and
+  the exponent extremes all appear at a useful rate alongside uniformly random
+  bit patterns.
 
   With i_kill_enable high the sequencer runs each vector twice. The first run
   is killed: i_kill is pulsed i_kill_delay cycles after the launch (clamped
   below the operation's completion cycle), the unit must produce no result and
-  must be idle again on the next cycle, and the reference -- which has no kill
-  input -- is left to finish and is discarded. The second run is the whole
+  must be idle again on the next cycle, and the reference (which has no kill
+  input) is left to finish and is discarded. The second run is the whole
   vector, compared against the reference the ordinary way, so a kill that left
   residue behind shows up as a mismatch. Only that second run counts as a
   vector.
@@ -42,8 +42,9 @@
   Counters are the interface to the test: o_vectors, o_mismatches, o_skews (a
   completion pair that did not land on the same cycle, which the matched
   latency rules out), o_timeouts, and for the kill mode o_kills, o_kill_leaks
-  (a completion after the kill) and o_kill_stuck (the unit not idle again).
-  The first mismatch is latched in the o_fail_* outputs.
+  (a unit completion during a killed run) and o_kill_stuck (the unit not idle
+  on the cycle after the kill). The first mismatch is latched in the o_fail_*
+  outputs.
 */
 module fp_div_sqrt_equiv_harness #(
     // Vectors the internal generator produces before it stops and raises

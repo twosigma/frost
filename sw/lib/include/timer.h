@@ -21,7 +21,7 @@
 #include <stdint.h>
 
 #ifndef FPGA_CPU_CLK_FREQ
-#define FPGA_CPU_CLK_FREQ 100000000 /* Default 100MHz, override in makefile */
+#define FPGA_CPU_CLK_FREQ 100000000 /* 100 MHz fallback; common.mk passes -DFPGA_CPU_CLK_FREQ */
 #endif
 
 /**
@@ -39,7 +39,7 @@ static inline __attribute__((always_inline)) uint32_t read_timer(void)
  * Read full 64-bit cycle count from CSR (Zicntr extension)
  *
  * Use this for long-running benchmarks to avoid 32-bit overflow.
- * At 300 MHz, 32-bit overflows in ~14 seconds; 64-bit lasts ~1900 years.
+ * At 322.265625 MHz, 32-bit overflows in ~13.3 seconds; 64-bit lasts ~1800 years.
  */
 static inline __attribute__((always_inline)) uint64_t read_timer64(void)
 {

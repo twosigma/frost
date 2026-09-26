@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from cocotb.triggers import FallingEdge, RisingEdge
-from config import FLEN, INSTR_OP_WIDTH, XLEN
+from config import FLEN, INSTR_OP_WIDTH, MASK32, MASK_XLEN, XLEN
 
 # =============================================================================
 # Width constants from riscv_pkg
@@ -32,7 +32,6 @@ from config import FLEN, INSTR_OP_WIDTH, XLEN
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1  # 0x1F
-MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
 # instr_op_e: 8-bit two-state unsigned enum in riscv_pkg
@@ -112,8 +111,9 @@ def pack_rs_issue(
     link_addr(XLEN) | pc(XLEN) | csr_imm(5) | csr_addr(12) | mem_signed(1) |
     mem_size(2) | mem_needs_sq(1) | mem_needs_lq(1) | is_fp_mem(1) |
     is_compressed(1) | predicted_target_ok(1) | predicted_target(XLEN) |
-    predicted_taken(1) | rm(3) | jalr_imm(12) | use_imm(1) | imm(XLEN) | src3_value(FLEN) | src2_value(FLEN) |
-    src1_value(FLEN) | op(INSTR_OP_WIDTH) | rob_tag(5) | valid(1)
+    predicted_taken(1) | rm(3) | jalr_imm(12) | use_imm(1) | imm(XLEN) |
+    src3_value(FLEN) | src2_value(FLEN) | src1_value(FLEN) |
+    op(INSTR_OP_WIDTH) | rob_tag(5) | valid(1)
     """
     val = 0
     bit = 0
@@ -134,9 +134,9 @@ def pack_rs_issue(
     bit += CHECKPOINT_ID_WIDTH
     val |= (1 if has_checkpoint else 0) << bit
     bit += 1
-    val |= (link_addr & MASK32) << bit
+    val |= (link_addr & MASK_XLEN) << bit
     bit += XLEN
-    val |= (pc & MASK32) << bit
+    val |= (pc & MASK_XLEN) << bit
     bit += XLEN
     val |= (csr_imm & 0x1F) << bit
     bit += 5
@@ -156,7 +156,7 @@ def pack_rs_issue(
     bit += 1
     val |= (1 if predicted_target_ok else 0) << bit
     bit += 1
-    val |= (predicted_target & MASK32) << bit
+    val |= (predicted_target & MASK_XLEN) << bit
     bit += XLEN
     val |= (1 if predicted_taken else 0) << bit
     bit += 1
@@ -166,7 +166,7 @@ def pack_rs_issue(
     bit += 12
     val |= (1 if use_imm else 0) << bit
     bit += 1
-    val |= (imm & MASK32) << bit
+    val |= (imm & MASK_XLEN) << bit
     bit += XLEN
     val |= (src3_value & MASK64) << bit
     bit += FLEN
@@ -360,8 +360,9 @@ class FpAddShimInterface:
     ) -> None:
         """Pack and drive an rs_issue_t onto i_rs_issue.
 
-        Fields not passed here pack as zero. rs_issue_t carries operand
-        values rather than tags, so there is no readiness to drive.
+        Other fields take pack_rs_issue's defaults (zero, except branch_op =
+        NULL). rs_issue_t carries operand values rather than tags, so there is
+        no readiness to drive.
         """
         packed = pack_rs_issue(
             valid=valid,

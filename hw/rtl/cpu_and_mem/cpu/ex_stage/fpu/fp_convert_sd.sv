@@ -21,8 +21,8 @@
     FCVT.S.D: Convert double to single (rounded per rounding mode)
     FCVT.D.S: Convert single to double (exact)
 
-  Latency:
-    5-cycle (register inputs, pipeline conversion, output) to ease timing.
+  Latency: 5 cycles from i_valid to o_valid, one operation at a time. The
+  conversion is split over registered stages to ease timing.
 */
 module fp_convert_sd #(
     parameter int unsigned FP_WIDTH = 64
@@ -64,8 +64,10 @@ module fp_convert_sd #(
   logic                                round_work_s2a;
   logic                                sticky_work_s2a;
   logic signed          [         9:0] exp_work_s2a;
+  logic                                tiny_s2a;
 
-  // Stage 3 pipeline registers (post-rounder)
+  // Stage 3 registers (rounder outputs), then stage 2 registers (D->S sign and
+  // special cases, S->D result fields and special cases)
   logic                 [        31:0] round_result_s2;
   riscv_pkg::fp_flags_t                round_flags_s2;
   logic                                sign_d_s2;
@@ -129,9 +131,9 @@ module fp_convert_sd #(
 
   // Normalize the double's mantissa.
   // TIMING: the LZC, the subnormal flag and the normal-case biased exponent are
-  // computed from i_operand_d and registered at capture (IDLE branch of the data
-  // block), so stage 1 starts from the registered LZC. Computing it from op_d_reg
-  // here put the LZC on the critical path to sticky_s.
+  // computed from i_operand_d and registered at capture (the i_valid branch of
+  // the data block), so stage 1 starts from the registered LZC and the LZC stays
+  // off the stage-1 path to sticky_s.
   logic        [52:0] mant_norm_d;
   logic signed [12:0] exp_unbiased_d;
   logic        [ 5:0] lzc_d;
@@ -197,6 +199,19 @@ module fp_convert_sd #(
   assign sticky_bit_s1 = round_s_s1 | sticky_s_s1;
   assign round_exp_s1 = exp_s_biased_s1[9:0];
 
+  // Tininess is detected after rounding, as if the exponent range were
+  // unbounded: a value below 2^-126 is tiny unless rounding it to 24 bits,
+  // before the subnormal shift, carries it up to 2^-126. A subnormal that the
+  // coarser subnormal rounding lifts to the minimum normal can still be tiny.
+  logic rounds_to_min_normal_s1_comb;
+  logic tiny_s1_comb;
+  assign rounds_to_min_normal_s1_comb =
+      (exp_s_biased_s1 == 13'sd0) && (&mantissa_retained_s1) &&
+      riscv_pkg::fp_compute_round_up(
+      rm_reg_s2, guard_bit_s1, round_bit_s1, sticky_bit_s1, 1'b1, sign_d_s1
+  );
+  assign tiny_s1_comb = (exp_s_biased_s1 <= 13'sd0) && !rounds_to_min_normal_s1_comb;
+
   fp_subnorm_shift #(
       .MANT_BITS(24),
       .EXP_EXT_BITS(10)
@@ -240,6 +255,10 @@ module fp_convert_sd #(
       if (exp_work_s2a == 10'sd0) adjusted_exponent_s2_comb = 10'sd1;
       else adjusted_exponent_s2_comb = exp_work_s2a + 10'sd1;
       final_mantissa_s2_comb = rounded_mantissa_s2_comb[23:1];
+    end else if ((exp_work_s2a == 10'sd0) && rounded_mantissa_s2_comb[23]) begin
+      // A subnormal that rounds up into the hidden bit is the minimum normal.
+      adjusted_exponent_s2_comb = 10'sd1;
+      final_mantissa_s2_comb = rounded_mantissa_s2_comb[22:0];
     end else begin
       adjusted_exponent_s2_comb = exp_work_s2a;
       final_mantissa_s2_comb = rounded_mantissa_s2_comb[22:0];
@@ -269,12 +288,18 @@ module fp_convert_sd #(
       round_flags_s2_comb.nx = is_inexact_s2_comb;
       round_result_s2_comb   = {sign_d_s2, 8'b0, final_mantissa_s2_comb};
     end else begin
+      // Only the minimum normal reached by rounding a subnormal can be tiny here.
+      round_flags_s2_comb.uf = is_inexact_s2_comb & tiny_s2a;
       round_flags_s2_comb.nx = is_inexact_s2_comb;
       round_result_s2_comb   = {sign_d_s2, adjusted_exponent_s2_comb[7:0], final_mantissa_s2_comb};
     end
   end
 
-  // Overflow/underflow handling for D->S
+  // Overflow/underflow handling for D->S. Both cases bypass the rounder, whose
+  // exponent (round_exp_s1) is only 10 bits wide. d_underflow_too_small marks a
+  // magnitude below 2^-152, less than half the smallest subnormal. Zero also sets
+  // it, and infinities and NaNs set d_overflow; the result mux handles those
+  // operands first.
   logic d_overflow;
   logic d_underflow_too_small;
   assign d_overflow = (exp_s_biased >= 13'sd255);
@@ -293,6 +318,13 @@ module fp_convert_sd #(
   logic [FP_WIDTH-1:0] d2s_result_s3;
   riscv_pkg::fp_flags_t d2s_flags_s3;
 
+  // A nonzero d_underflow_too_small value rounds to zero, or to the smallest
+  // subnormal when the rounding direction is away from zero (RUP for a positive
+  // value, RDN for a negative one).
+  logic d_tiny_round_away;
+  assign d_tiny_round_away = (rm_reg_s2 == riscv_pkg::FRM_RUP && !sign_d_s2) ||
+                             (rm_reg_s2 == riscv_pkg::FRM_RDN && sign_d_s2);
+
   always_comb begin
     d2s_result_s3 = '0;
     d2s_flags_s3  = '0;
@@ -308,7 +340,7 @@ module fp_convert_sd #(
       d2s_flags_s3.of = 1'b1;
       d2s_flags_s3.nx = 1'b1;
     end else if (d_underflow_too_small_s2) begin
-      d2s_result_s3   = box32({sign_d_s2, 31'b0});
+      d2s_result_s3   = box32({sign_d_s2, 30'b0, d_tiny_round_away});
       d2s_flags_s3.uf = 1'b1;
       d2s_flags_s3.nx = 1'b1;
     end else begin
@@ -466,6 +498,7 @@ module fp_convert_sd #(
       round_work_s2a <= round_work_s1_comb;
       sticky_work_s2a <= sticky_work_s1_comb;
       exp_work_s2a <= exp_work_s1_comb;
+      tiny_s2a <= tiny_s1_comb;
       sign_d_s2 <= sign_d_s1;
       d_is_zero_s2 <= d_is_zero_s1;
       d_is_inf_s2 <= d_is_inf_s1;
@@ -510,8 +543,8 @@ module fp_convert_sd #(
       op_d_reg <= i_operand_d;
       op_reg <= i_operation;
       rm_reg <= i_rounding_mode;
-      // Registered from i_operand_d rather than derived from op_d_reg next cycle,
-      // which put the LZC on the critical path to sticky_s (see the D->S block)
+      // Registered from i_operand_d so the LZC stays off the stage-1 path to
+      // sticky_s (see the TIMING note at the D->S normalize)
       frac_d_reg <= i_operand_d[51:0];
       d_is_subnormal_reg <= (i_operand_d[62:52] == 11'b0) && (i_operand_d[51:0] != 52'b0);
       exp_s_biased_normal <= $signed({2'b0, i_operand_d[62:52]}) - 13'sd1023 + 13'sd127;

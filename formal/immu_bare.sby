@@ -16,8 +16,9 @@ read -formal -sv immu_bare_formal.sv
 bmc_xlen32: chparam -set XLEN 32 immu_bare_formal
 bmc_xlen72: chparam -set XLEN 72 immu_bare_formal
 hierarchy -check -top immu_bare_formal
-# Bare outputs are combinational. Remove physical-preservation attributes
-# and prune translation state; the oracle still observes actual IMMU ports.
+# With translation off (Bare) the outputs are combinational. Drop the keep
+# attributes so opt can prune the unused translation state; the assertions
+# still read the real IMMU ports.
 setattr -unset keep
 setattr -unset keep_hierarchy
 setattr -mod -unset keep

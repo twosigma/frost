@@ -86,7 +86,7 @@ class ReorderBufferEntry:
     branch_target: int = 0
     predicted_taken: bool = False
     predicted_target: int = 0
-    mispredicted: bool = False  # Authoritative misprediction flag from branch unit
+    mispredicted: bool = False  # From branch_update(), or from allocate() for JAL
     is_call: bool = False
     is_return: bool = False
     is_jal: bool = False
@@ -120,7 +120,11 @@ class ReorderBufferEntry:
 
     @property
     def csr_may_change_translation(self) -> bool:
-        """Match the ROB's conservative allocation-time translation class."""
+        """Mirror the ROB's allocation-time class of translation CSRs.
+
+        The class is any satp access, and any mstatus or sstatus access with
+        write intent.
+        """
         return self.is_csr and (
             self.csr_addr == 0x180
             or (self.csr_write_intent and self.csr_addr in (0x100, 0x300))
@@ -139,6 +143,7 @@ class AllocationRequest:
     is_store: bool = False
     is_fp_store: bool = False
     is_fp_instruction: bool = False
+    fp_dyn_rm: bool = False
     is_branch: bool = False
     predicted_taken: bool = False
     predicted_target: int = 0
@@ -446,7 +451,10 @@ class ReorderBufferModel:
         entry.value = write.value & MASK64
         # Allocation-time legality is already a precise exception. A normal
         # FU completion supplies value/done but must not erase that fault or
-        # its cause. A real CDB exception has priority and replaces the cause.
+        # its cause. An exceptional completion replaces the cause; in the core
+        # the only one that can reach an entry with an allocation-time fault
+        # and name a different cause is an instruction fetch fault, which
+        # ranks above illegal-instruction.
         if write.exception:
             entry.exception = True
             entry.exc_cause = write.exc_cause
@@ -480,9 +488,7 @@ class ReorderBufferModel:
 
         entry.branch_taken = update.taken
         entry.branch_target = update.target & MASK_XLEN
-        entry.mispredicted = (
-            update.mispredicted
-        )  # Store authoritative flag from branch unit
+        entry.mispredicted = update.mispredicted
 
         # Mark done (for conditional branches and JALR)
         # JAL is already done from allocation
@@ -498,7 +504,11 @@ class ReorderBufferModel:
 
     @property
     def retire_permit(self) -> bool:
-        """Match the serializer's head-independent retirement guards."""
+        """Return whether retirement is permitted.
+
+        Mirrors the serializer's head-independent guards: no commit hold,
+        early-recovery pulse, or flush.
+        """
         return not (
             self.commit_hold
             or self.early_recovery_en
@@ -508,7 +518,7 @@ class ReorderBufferModel:
         )
 
     def _check_serial_stall(self) -> bool:
-        """Check if head entry requires serialization stall.
+        """Advance the serializer for a valid, done head entry.
 
         Returns True if commit should stall.
         """
@@ -540,9 +550,9 @@ class ReorderBufferModel:
                     self.serial_state = SerialState.FENCE_I_SYNC
                     return True
             elif entry.is_amo or entry.is_lr:
-                # AMO/LR: ordering enforced at LQ issue time (waits for ROB
-                # head + SQ committed-empty). Once CDB arrives (done=1),
-                # commit normally. No stall here.
+                # The LQ orders these at issue: an LR issues only at the ROB
+                # head, and an AMO only at the head with committed stores
+                # drained. Once done, they commit normally.
                 pass
             elif entry.is_mret:
                 self.serial_state = SerialState.MRET_EXEC
@@ -600,10 +610,11 @@ class ReorderBufferModel:
         if not entry.valid or not entry.done:
             return False
 
-        # In IDLE the RTL does not enter a serializer-owned state while a
-        # global retirement guard is active. Already-owned ordinary CSR/xRET/
-        # WFI states may still finish their handshake and return to IDLE, but
-        # the common commit gate below prevents retirement on that cycle.
+        # The serializer leaves IDLE only while retirement is permitted. Any
+        # other state except FENCE_I_SYNC and CSR_TRANSLATION_DRAIN can return
+        # to IDLE without the permit (for example CSR_EXEC when an ordinary CSR
+        # finishes its handshake), but the retire_permit check below blocks
+        # retirement in that cycle.
         if self.serial_state == SerialState.IDLE and not self.retire_permit:
             return False
 

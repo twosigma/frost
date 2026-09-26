@@ -23,7 +23,8 @@
  *
  * Lookup is combinational, so a hit lands in the same cycle as the address.
  * A line holds the whole aligned dword and consumers extract by addr[2:0].
- * Each fill writes one full memory-response beat.
+ * Each fill writes one full memory-response beat; a lookup sees it from the
+ * next cycle.
  *
  * MMIO addresses always miss (the addr[31:30] == 2'b01 quadrant; DDR at
  * 0x8000_0000+ is cacheable).
@@ -33,13 +34,13 @@
  * flushes.
  *
  * Invalidation has two per-address ports, one for SQ store-write launch and
- * one for AMO completion. A store invalidates the whole dword line that
- * contains it, which is conservative for sub-dword stores. That is the policy
- * the word-granule version used, one granule coarser.
+ * one for AMO completion, plus a tag-blind line port for DMA writes. A store
+ * invalidates the whole dword line that contains it, which is conservative
+ * for sub-dword stores.
  */
 
 module lq_l0_cache #(
-    parameter int unsigned DEPTH = 128,
+    parameter int unsigned DEPTH = riscv_pkg::LqL0Depth,
     parameter int unsigned XLEN  = riscv_pkg::XLEN
 ) (
     input logic i_clk,
@@ -61,10 +62,9 @@ module lq_l0_cache #(
 
     // Second invalidate port (AMO write completion).  It is structurally
     // independent from port 1 so the LQ never muxes the two sources'
-    // addresses in front of the tag read + compare.  That mux put the late
-    // AMO write-done acknowledge in series with the whole invalidate cone,
-    // amo_state -> L0 valid, which became the X3 rv64 post-opt WNS pin after
-    // the convert/covers fixes.  AMO serialization keeps the two sources
+    // addresses in front of the tag read + compare, which would put the late
+    // AMO write-done acknowledge in series with the whole invalidate cone
+    // (amo_state -> L0 valid).  AMO serialization keeps the two sources
     // mutually exclusive (asserted in load_queue), but nothing here relies
     // on that.
     input logic            i_invalidate2_valid,
@@ -72,7 +72,7 @@ module lq_l0_cache #(
 
     // Same-cycle lookup-hit suppression for stores.  AMO write completion is
     // serialized by the LQ, so it can use the sequential invalidation above
-    // without feeding its AMO-address LUTRAM read into the lookup-hit cone.
+    // and keep the AMO write address out of the lookup-hit cone.
     input logic            i_lookup_invalidate_valid,
     input logic [XLEN-1:0] i_lookup_invalidate_addr,
     // Line invalidate (DMA coherence): clear the four dword entries of a
@@ -89,11 +89,20 @@ module lq_l0_cache #(
   // ===========================================================================
   localparam int unsigned IndexWidth = $clog2(DEPTH);
   // Tags cover the physical address above the dword index: bits
-  // [31 : 3+IndexWidth].  The sub-4-GiB map makes bits above 31 dead weight
-  // in a compare that sits on the historically critical lookup-hit cone, so
-  // the tag stays 32-bit-relative at any XLEN (D3: producers canonicalize
-  // bits [XLEN-1:32] to zero before addresses reach the memory tier).
+  // [31 : 3+IndexWidth], at any XLEN.  The physical map is 32-bit
+  // (riscv_pkg::PhysAddrBits), and the LQ never uses a hit for an address
+  // outside it (such a load takes an access fault), so higher bits would only
+  // lengthen the lookup-hit compare, which feeds the LQ's memory-launch
+  // decision.
   localparam int unsigned TagWidth   = 32 - 3 - IndexWidth;
+
+  // Four adjacent dwords form one DMA line. The index needs at least one
+  // bit above that line, and at least one physical tag bit must remain.
+  initial begin
+    if (DEPTH < 8 || DEPTH > 2 ** 28 || (DEPTH & (DEPTH - 1)) != 0)
+      $fatal(1, "L0 DEPTH must be a power of two in [8, 2**28]");
+    if (XLEN < 32) $fatal(1, "L0 requires at least 32 physical address bits");
+  end
 
   // ===========================================================================
   // Storage
@@ -215,20 +224,12 @@ module lq_l0_cache #(
       (tag_inv2_rd == inv2_tag) &&
       !(i_fill_valid && (fill_index == inv2_index) && (fill_tag != inv2_tag));
   assign lookup_hit_array = valid[lookup_index] && (tag_lookup_rd == lookup_tag);
-  // lookup_fill_bypass (same-cycle fill/lookup forwarding) used to be part of
-  // o_lookup_hit. That created a long combinational chain
-  //   i_flush_en (← mispredict_recovery_pending) → accept_mem_response
-  //   → cache_fill_valid → lookup_fill_bypass → o_lookup_hit
-  //   → cache_hit_fast_path → o_mem_read_en → o_mmio_load_valid (wrapper FIFO)
-  //   → data_memory ADDRARDADDR
-  // that became the new -0.944 ns critical path once the issued_idx →
-  // lq_*_rd cone was removed. The bypass helps only when a load is staged for
-  // lookup in the exact cycle a sibling load's response fills its address. In
-  // every other case the LUTRAM is already updated by the next cycle and the
-  // normal lookup_hit_array path wins. Tying the bypass to 0 leaves
-  // o_lookup_hit dependent only on registered signals (sq_check_addr_q,
-  // valid[], tag LUTRAM, i_lookup_invalidate_valid). Cost: the same-cycle
-  // case takes one extra memory cycle.
+  // lookup_fill_bypass (same-cycle fill-to-lookup forwarding) is tied to 0.
+  // Forwarding the fill would put the response-accept and flush logic
+  // (cache_fill_valid in load_queue) in front of o_lookup_hit, and from there
+  // on the path to the data-memory read address. Without it o_lookup_hit does
+  // not depend on the fill inputs. It would only help a load looked up in the
+  // exact cycle another load's response fills its line, which misses instead.
   assign lookup_fill_bypass = 1'b0;
   assign lookup_invalidated =
       i_lookup_invalidate_valid &&
@@ -320,8 +321,9 @@ module lq_l0_cache #(
 
   // A fill followed by a lookup at the same dword-aligned address hits.
   // The fill address is tracked across one cycle so the assertion can name it.
-  reg [XLEN-1:0] f_fill_addr_q;
-  reg            f_fill_valid_q;
+  reg [                  XLEN-1:0] f_fill_addr_q;
+  reg [riscv_pkg::MemDataBits-1:0] f_fill_data_q;
+  reg                              f_fill_valid_q;
   always @(posedge i_clk) begin
     if (!i_rst_n) begin
       f_fill_valid_q <= 1'b0;
@@ -333,6 +335,7 @@ module lq_l0_cache #(
                           (i_invalidate_line_addr[5+:(IndexWidth-2)] ==
                            i_fill_addr[5+:(IndexWidth-2)]));
       f_fill_addr_q <= i_fill_addr;
+      f_fill_data_q <= i_fill_data;
     end
   end
 
@@ -353,6 +356,24 @@ module lq_l0_cache #(
              && i_fill_addr[(3+IndexWidth)+:TagWidth]
                 != f_fill_addr_q[(3+IndexWidth)+:TagWidth])) begin
       p_fill_then_hit : assert (o_lookup_hit);
+      p_fill_data_preserved : assert (o_lookup_data == f_fill_data_q);
+    end
+  end
+
+  // DMA invalidation is tag-blind and wins even over a simultaneous fill.
+  // Check each dword independently at every supported capacity.
+  for (genvar k = 0; k < 4; k++) begin : gen_formal_line_invalidate
+    always @(posedge i_clk) begin
+      if (f_past_valid && $past(i_rst_n && i_invalidate_line_valid)) begin
+        assert (!valid[{$past(i_invalidate_line_addr[5+:(IndexWidth-2)]), 2'(k)}]);
+      end
+    end
+  end
+
+  always_comb begin
+    if (i_invalidate_line_valid &&
+        (i_lookup_addr[5+:(IndexWidth-2)] == i_invalidate_line_addr[5+:(IndexWidth-2)])) begin
+      p_dma_suppresses_same_cycle_lookup : assert (!o_lookup_hit);
     end
   end
 

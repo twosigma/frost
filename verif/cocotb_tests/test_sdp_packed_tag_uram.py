@@ -12,12 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Direct tests for the width-generic packed tag UltraRAM wrapper.
+"""Tests for sdp_packed_tag_uram, the width-generic packed tag UltraRAM.
 
-The registry runs this bench at the two integration-relevant widths: 13-bit
-entries packed four per row through both storage branches (including the exact
-production address geometry), and 22-bit entries packed two per row through
-the ordinary portable hardware branch.
+The registry runs this bench with 13-bit entries (four per row) in the
+hardware branch at the production address width and in the bulk-clear
+branch, and with 22-bit entries (two per row) in the hardware branch.
 """
 
 import os

@@ -20,11 +20,10 @@
  * instruction_operation, so the two decodes run in parallel.
  *
  * Decoded instruction types:
- *   - Load types (byte, halfword, unsigned)
- *   - M-extension (multiply, divide)
+ *   - Loads (any load, unsigned)
  *   - CSR instructions (address extraction)
  *   - A-extension atomics (LR, SC)
- *   - Privileged instructions (ECALL, EBREAK, MRET, SRET, DRET, WFI)
+ *   - Privileged instructions (MRET, SRET, DRET, WFI)
  *   - JAL/JALR detection
  *   - RAS returns and calls, including the coroutine swap encoding
  */
@@ -36,13 +35,7 @@ module instruction_type_decoder #(
 
     // Load type detection
     output logic o_is_load_instruction,
-    output logic o_is_load_byte,
-    output logic o_is_load_halfword,
     output logic o_is_load_unsigned,
-
-    // M-extension detection
-    output logic o_is_multiply,
-    output logic o_is_divide,
 
     // CSR instruction fields
     output logic        o_is_csr_instruction,
@@ -55,8 +48,6 @@ module instruction_type_decoder #(
     output logic o_is_sc,
 
     // Privileged instruction detection
-    output logic o_is_ecall,
-    output logic o_is_ebreak,
     output logic o_is_mret,
     output logic o_is_sret,
     output logic o_is_dret,
@@ -73,21 +64,10 @@ module instruction_type_decoder #(
 
   assign o_is_load_instruction = i_instruction.opcode == riscv_pkg::OPC_LOAD;
 
-  // Load width comes straight from funct3, avoiding the serial chain
+  // Load signedness comes straight from funct3, avoiding the serial chain
   // instruction -> instruction_operation -> is_load_*.
   // Load funct3: 000=LB, 001=LH, 010=LW, 011=LD, 100=LBU, 101=LHU, 110=LWU
-  assign o_is_load_byte = o_is_load_instruction &&
-                          (i_instruction.funct3 == 3'b000 || i_instruction.funct3 == 3'b100);
-  assign o_is_load_halfword = o_is_load_instruction &&
-                              (i_instruction.funct3 == 3'b001 || i_instruction.funct3 == 3'b101);
   assign o_is_load_unsigned = o_is_load_instruction && i_instruction.funct3[2];
-
-  // M-extension uses opcode=OP (0110011), funct7=0000001
-  logic is_m_extension;
-  assign is_m_extension = (i_instruction.opcode == riscv_pkg::OPC_OP) &&
-                          (i_instruction.funct7 == 7'b0000001);
-  assign o_is_multiply = is_m_extension && !i_instruction.funct3[2];  // funct3[2]=0 for MUL*
-  assign o_is_divide = is_m_extension && i_instruction.funct3[2];  // funct3[2]=1 for DIV/REM
 
   // Zicsr: CSR instructions use OPC_CSR (SYSTEM) with funct3 != 000. The
   // privileged instructions share that opcode with funct3=000, so the funct3
@@ -101,11 +81,10 @@ module instruction_type_decoder #(
 
   assign o_is_amo_instruction = i_instruction.opcode == riscv_pkg::OPC_AMO;
   // LR: funct7[6:2]=00010; SC: funct7[6:2]=00011. funct3 selects the width:
-  // 010 = .W (both XLENs), 011 = .D (rv64 only). At rv64 the width term has to
-  // accept both. A funct3==010-only decode leaves is_lr/is_sc low for LR.D and
-  // SC.D, which then route as generic AMOs: SC.D completes with the loaded data
-  // as its "success code" and writes memory with no reservation check.
-  // rv64_amo_test test 6 caught that, with sc.d returning the old dword.
+  // 010 = .W (both XLENs), 011 = .D (rv64 only), so at rv64 the width term
+  // accepts both. If LR.D and SC.D missed is_lr/is_sc they would route as
+  // ordinary AMOs, and SC.D would write memory with no reservation check and
+  // return the loaded data as its success code.
   logic amo_width_valid;
   assign amo_width_valid = (i_instruction.funct3 == 3'b010) || (i_instruction.funct3 == 3'b011);
   assign o_is_lr = o_is_amo_instruction && amo_width_valid &&
@@ -117,14 +96,6 @@ module instruction_type_decoder #(
   logic is_priv_instruction;
   assign is_priv_instruction = (i_instruction.opcode == riscv_pkg::OPC_CSR) &&
                                (i_instruction.funct3 == 3'b000);
-  // ECALL: funct7=0000000, rs2=00000
-  assign o_is_ecall = is_priv_instruction &&
-                      (i_instruction.funct7 == 7'b0000000) &&
-                      (i_instruction.source_reg_2 == 5'b00000);
-  // EBREAK: funct7=0000000, rs2=00001
-  assign o_is_ebreak = is_priv_instruction &&
-                       (i_instruction.funct7 == 7'b0000000) &&
-                       (i_instruction.source_reg_2 == 5'b00001);
   // MRET: funct7=0011000, rs2=00010
   assign o_is_mret = is_priv_instruction &&
                      (i_instruction.funct7 == 7'b0011000) &&
@@ -153,30 +124,25 @@ module instruction_type_decoder #(
   // ===========================================================================
   // RAS call/return classification
   // ===========================================================================
-  // Computed here in ID from registered inputs and passed to EX, which keeps
-  // these comparisons off the critical ras_correct path.
-  //
   // is_ras_return: JALR with rs1 = x1, rd = x0, imm = 0
   // is_ras_call: JAL/JALR with rd in {x1, x5}
   //
-  // These have to match if_stage/branch_prediction/ras_detector.sv. The front
-  // end uses that detector to drive the RAS, and these flags ride the ROB so
-  // commit-time recovery can replay the same push/pop after restoring a
-  // checkpoint. Any divergence desynchronizes the RAS from the real call stack.
-  // In particular, the return test is rs1 == x1 alone. ras_detector.sv excludes
-  // x5/t0, a common indirect-jump scratch register, from the return
-  // classification, so `jr t0` must not be treated as a return here. That costs
-  // a pop for a genuine x5-linked return, which is the accepted trade: the
-  // encoding cannot distinguish the two, and a false pop is worse.
+  // These flags drive every return address stack operation. Dispatch passes
+  // them to the ROB, commit-time recovery replays the same push or pop after
+  // restoring a checkpoint (ex_comb_synthesizer), and a mispredicted call or
+  // return trains its BTB entry with them, which is what makes the front end
+  // push or pop for that entry later. The return test is rs1 == x1 alone:
+  // x5/t0 is a common indirect-jump scratch register, so `jr t0` must not be
+  // a return. A genuine return through x5 is therefore not popped: the
+  // encoding cannot tell it from `jr t0`, and a false pop is worse.
   //
-  // ras_detector also classifies a coroutine (`jalr x5, x1, 0`, where rd and
-  // rs1 are both link registers but different) as pop-then-push.  A plain
-  // return needs rd == x0 and a plain call needs rd in {x1, x5}, so the two
-  // flags can never both be set by those two cases; {is_ras_return, is_ras_call}
-  // = 2'b11 is therefore a free encoding, and it is what carries the coroutine
-  // downstream.  This keeps the ROB entry, the commit bus and the recovery
-  // registers exactly as wide as before.  ex_comb_synthesizer decodes it back
-  // into a swap; return_address_stack replays it.
+  // A coroutine (`jalr x5, x1, 0`, where rd and rs1 are both link registers
+  // but different) pops then pushes.  A plain return needs rd == x0 and a
+  // plain call needs rd in {x1, x5}, so no plain call or return sets both
+  // flags, and {is_ras_return, is_ras_call} = 2'b11 carries the coroutine
+  // downstream without widening the ROB entry, the commit bus, or the
+  // recovery registers.  ex_comb_synthesizer decodes it back into a swap;
+  // return_address_stack replays it.
 
   logic rs1_is_return_link;
   logic rd_is_link_reg;
@@ -186,7 +152,7 @@ module instruction_type_decoder #(
   assign rd_is_link_reg = (i_instruction.dest_reg == 5'd1) || (i_instruction.dest_reg == 5'd5);
 
   // Coroutine (swap): JALR with rd and rs1 both link registers but different,
-  // imm = 0.  Mirrors ras_detector.sv's is_coroutine_32 exactly.
+  // imm = 0.
   assign is_ras_coroutine = o_is_jalr &&
                             rd_is_link_reg &&
                             rs1_is_return_link &&

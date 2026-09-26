@@ -30,6 +30,7 @@ PC_A_ODD_ALIAS = PC_A | 0x1
 PC_A_HALFWORD = PC_A | 0x2
 PC_B = 0x80000120
 PC_C = 0x80000240
+PC_D = 0x80000360
 
 
 def _idx(pc: int) -> int:
@@ -90,14 +91,22 @@ async def _train_pc(dut: Any, pc: int, *, taken: bool, count: int = 1) -> None:
 
 
 @cocotb.test()
-async def test_initial_state_is_weak_not_taken_and_exports_pc_index(dut: Any) -> None:
-    """Initial zeroed counters predict not-taken and expose pc[BIM_BITS:1]."""
+async def test_initial_state_is_strongly_not_taken_and_exports_pc_index(
+    dut: Any,
+) -> None:
+    """Counters start at 00, and a lookup exposes pc[BIM_BITS:1] as its index."""
     await _setup_test(dut)
 
     await _lookup(dut, PC_A)
 
     assert not dut.o_taken.value
     assert int(dut.o_pred_idx.value) == _idx(PC_A)
+
+    # From 01 (weakly not-taken), one taken update would predict taken. The
+    # entry is one no other test trains.
+    await _train_pc(dut, PC_D, taken=True)
+    await _lookup(dut, PC_D)
+    assert not dut.o_taken.value
 
 
 @cocotb.test()
@@ -120,7 +129,7 @@ async def test_pc_bit_zero_is_ignored_but_bit_one_selects_distinct_index(
 
 @cocotb.test()
 async def test_taken_training_requires_two_updates_then_saturates(dut: Any) -> None:
-    """The 2-bit counter starts weak-not-taken and saturates at strongly taken."""
+    """A counter starting strongly not-taken needs two taken updates, then saturates."""
     await _setup_test(dut)
 
     await _train_pc(dut, PC_A, taken=True)

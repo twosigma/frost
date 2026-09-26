@@ -15,12 +15,10 @@
  */
 
 /*
- * Machine-timer/MRET deadlock stress for the no-MMU Linux boot hang.
- *
- * A frequently preempted M-mode loop and real MRET return reduce linux_boot to
- * its trap/flush core. Re-arming at mtime + 512..575 sweeps timer phase across
- * the loop and MRET. A deadlock stops progress and the harness times out before
- * <<PASS>>.
+ * Machine-timer/MRET deadlock stress: frequent timer interrupts preempt an
+ * M-mode loop, and each handler returns with a real MRET. Re-arming at
+ * mtime + 512..575 sweeps timer phase across the loop and MRET. A deadlock
+ * stops progress and the harness times out before <<PASS>>.
  */
 
 #include <stdint.h>
@@ -52,9 +50,8 @@ static volatile uint32_t buf[64];
  * Re-arm for 512 + (g_irq & 0x3f) cycles, increment g_irq, and MRET. Trap entry
  * clears MIE and MRET restores it from MPIE. Only touched registers are saved.
  *
- * The period must exceed the ~90-cycle trap round trip. An earlier 24..87 range
- * kept the timer overdue and starved main despite continued retirement. 512
- * preserves foreground progress while sweeping phase.
+ * The period must exceed the trap round trip: a shorter one keeps the timer
+ * overdue and starves main even though instructions keep retiring.
  */
 __attribute__((naked, aligned(4))) static void mtimer_handler(void)
 {

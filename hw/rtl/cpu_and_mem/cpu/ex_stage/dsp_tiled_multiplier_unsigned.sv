@@ -17,16 +17,16 @@
 /*
  * DSP-tiled unsigned multiplier.
  *
- * Decomposes a wide unsigned multiply into {27x35} tile multiplies so synthesis
- * can infer DSP48E2-friendly cascaded implementations (27x(18+17)
- * decomposition). A registered binary adder tree reduces the partial products:
- * each stage adds pairs of full PaddedWidth-wide terms, so the tree is
- * ceil(log2(num_terms)) deep.
+ * Decomposes a wide unsigned multiply into 27x35 tile multiplies (the default
+ * A_TILE_WIDTH x B_TILE_WIDTH) so synthesis can infer DSP48E2-friendly
+ * cascaded implementations (27x(18+17) decomposition). A registered binary
+ * adder tree reduces the partial products: each stage adds pairs of full
+ * PaddedWidth-wide terms, so the tree is ceil(log2(num_terms)) deep.
  *
- * ADD_CHUNK_WIDTH only rounds the term width up to a multiple of itself
- * (PaddedWidth, 32 by default). It does not bound the adder width. Total
- * pipeline depth is max(ceil(log2(num_terms)) + 1, 3). The floor of 3 keeps
- * single- and double-precision multiplies at matched latency.
+ * PaddedWidth is the product width rounded up to a multiple of
+ * ADD_CHUNK_WIDTH (32 by default); the adders are not split into chunks.
+ * Total pipeline depth is max(ceil(log2(num_terms)) + 1, 3). The floor of 3
+ * keeps single- and double-precision multiplies at matched latency.
  *
  * o_valid_output pulses when the product is ready, and o_completing_next_cycle
  * pulses one cycle before it.
@@ -56,12 +56,12 @@ module dsp_tiled_multiplier_unsigned #(
   localparam int unsigned PaddedWidth = NumChunks * ADD_CHUNK_WIDTH;
   localparam int unsigned PartialWidth = A_TILE_WIDTH + B_TILE_WIDTH;
 
-  // Depth comes from the shared staging formula in riscv_pkg, the single
-  // source for it: int_muldiv_shim sizes its tracker from the same function
-  // via riscv_pkg::MulPipeDepth (plan decision D7). The formula keeps the FP
-  // S/D multiply latency matched. SP has only one tile, but it still flows
-  // through padding registers so single- and double-precision results retire
-  // in issue order when a wrapper alternates between them.
+  // Depth comes from riscv_pkg::dsp_tiled_stages, the single source for it:
+  // int_muldiv_shim sizes its MUL tracker from the same function through
+  // riscv_pkg::MulPipeDepth. A single-precision mantissa multiply is one tile
+  // but passes through padding stages to the double-precision depth, so a
+  // wrapper that alternates the two precisions gets its results in issue
+  // order.
   localparam int unsigned PipelineStages = riscv_pkg::dsp_tiled_stages(
       A_WIDTH, B_WIDTH, A_TILE_WIDTH, B_TILE_WIDTH
   );

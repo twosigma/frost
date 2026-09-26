@@ -14,14 +14,15 @@
  *    limitations under the License.
  */
 
-// Frost RISC-V target model_test.h for riscv-arch-test (dev branch)
+// FROST target model_test.h for riscv-arch-test
 //
 // Defines the RVMODEL_* macros the riscv-arch-test framework requires.
 // UART output at 0x40000000, MSIP at 0x40000020.
 //
-// On the dev branch, RVMODEL_BOOT is commented out in arch_test.h, so the
-// startup code (data copy, bss zero) is in the crt0_arch_test*.S files
-// instead. The framework's own RVTEST_TRAP_PROLOG sets up mtvec.
+// The pinned arch_test.h never invokes RVMODEL_BOOT, so the startup code
+// (data copy, bss zero) is in the crt0_arch_test*.S files instead. In tests
+// that define rvtest_mtrap_routine, the framework's RVTEST_TRAP_PROLOG sets
+// up mtvec; the other tests leave it at 0.
 
 #ifndef _FROST_MODEL_TEST_H
 #define _FROST_MODEL_TEST_H
@@ -37,7 +38,6 @@
 
 //-----------------------------------------------------------------------
 // RVMODEL_BOOT: empty; the crt0_arch_test*.S startup files do the work.
-// (The dev branch arch_test.h has RVMODEL_BOOT commented out anyway.)
 //-----------------------------------------------------------------------
 #define RVMODEL_BOOT
 
@@ -48,6 +48,12 @@
 // word as 8 lowercase hex characters followed by a newline.
 // After the signature, prints "<<PASS>>" so the cocotb test_real_program
 // harness terminates the simulation.
+//
+// The dump does not check UART_TX_STATUS, so on the serial line a dump
+// larger than the 16 KiB transmit FIFO loses bytes. The suite runs only in
+// simulation, where the runner reads the dump from the CPU's UART writes,
+// ahead of the FIFO, and turns off frost.sv's dropped-byte check
+// (+uart_tx_drop_check=0).
 //-----------------------------------------------------------------------
 #define RVMODEL_HALT                                                                               \
     la a0, begin_signature;                                                                        \
@@ -106,7 +112,7 @@
 // [begin_signature, end_signature) includes the trailing .align padding,
 // so a mismatched end alignment shows up as missing/extra zero words in
 // the signature compare. The env uses the riscof convention's 16-byte
-// bounds.
+// bounds; generate_references.py stops with an error if the two differ.
 //-----------------------------------------------------------------------
 #define FROST_SIG_ALIGN 4
 
@@ -121,7 +127,7 @@
     end_signature:
 
 //-----------------------------------------------------------------------
-// I/O macros (optional debug hooks, no-ops for Frost)
+// I/O macros (optional debug hooks, no-ops for FROST)
 //-----------------------------------------------------------------------
 #define RVMODEL_IO_INIT
 #define RVMODEL_IO_WRITE_STR(_R, _STR)
@@ -132,7 +138,7 @@
 
 //-----------------------------------------------------------------------
 // Interrupt control macros
-// MSIP is memory-mapped at 0x40000020 on Frost.
+// MSIP is memory-mapped at 0x40000020 on FROST.
 //-----------------------------------------------------------------------
 #define RVMODEL_SET_MSW_INT                                                                        \
     li t0, 0x40000020;                                                                             \

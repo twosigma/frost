@@ -2,75 +2,87 @@
 
 ## Single-core performance
 
-Target **4 CoreMark/MHz at 322.265625 MHz**: 1289 CoreMark on one X3 hart.
-The target clock is twice the MAC word clock; its MMCM recipe is documented
-in [x3_frost.sv](boards/x3/x3_frost.sv).
-Measure an official-length run of at least ten seconds, meet routed timing,
-and validate both required CoreMark seed sets and CRCs. Report compiler and
-flags, ELF hash, memory/cache settings, and inputs with each result.
+The goal is 4 CoreMark/MHz at 322.265625 MHz, or 1,289 CoreMark on one hart,
+up from 3.94 CoreMark/MHz. A score counts only from a run of at least ten
+seconds that passes the CRC checks for both official seed sets, with the
+compiler flags, the `sw.bin` hash, and memory and cache settings recorded. RTL
+changes must also keep routed timing at the target clock.
 
-The RV64 build must also meet or beat a locked, equally tuned RV32 reference
-in cycle-exact simulation. Archive its source revision, tools/image, binaries,
-commands, and timing evidence, and reproduce it before comparison. If using
-a model, validate it against retained measurements and state its uncertainty
-and pass criterion. Use link-order ensembles with compressed instructions.
+The RV64 core must also match or beat FROST's earlier RV32 configuration,
+tuned the same way, in cycle-exact simulation. The
+[performance guide](docs/single_core_performance.md#comparing-changes)
+describes the reference and the comparison method.
 
-Priorities, guided by counters and post-route timing:
+Priorities, guided by the performance counters and timing reports:
 
-1. Reduce front-end bubbles beyond the 64 KiB BRAM predecode overlay. Compare
-   more overlay capacity with a tagged predecode cache or stream buffer and a
-   decoded-instruction queue; preserve variable-latency fetch behavior.
-2. Remove the fixed 64-bit fetch-window limit so any two consecutive legal
-   instructions can issue, including a pair crossing the window. Evaluate
-   compressed-code throughput across placements. CoreMark currently disables C;
-   re-enable it only after a link-order ensemble shows stable throughput.
-3. Reduce RV64 overhead for 32-bit operations. Use instruction traces to guide
-   general fusion or rename-time elimination, and evaluate dedicated 32-bit
-   multiply/divide paths. Preserve precise exceptions, retirement counts,
-   and debug single-step semantics; formally verify transformations.
-4. Improve pointer-chase capacity and latency. Evaluate a 256-entry LQ L0,
-   associativity if conflict counters justify it, and CDB-to-memory wakeup/AGU
-   bypass. Consider dependent-load prefetching only after measuring these changes.
-5. Increase ROB, reservation-station, or LQ capacity separately where counters
-   justify it. Consider a third lane only if front-end and memory improvements
-   leave a measured throughput limit.
+1. Fewer front-end bubbles. Beyond the four-bundle decoded queue and the
+   64 KiB predecoded region of BRAM, compare a larger predecoded region with a
+   tagged predecode cache or a stream buffer. Fetch must keep working with
+   variable-latency memory.
+2. Pairing across fetch windows. The front end pairs two instructions only
+   when both fit in one 64-bit fetch window. Removing that limit lets any two
+   consecutive instructions pair. Then measure compressed code across
+   different code layouts: CoreMark runs without compressed instructions for
+   now, and should use them again once throughput is stable across link
+   orders.
+3. Cheaper 32-bit operations on RV64. `MULW` takes three cycles and word
+   division or remainder seventeen. Use instruction traces to evaluate fusion
+   or elimination at rename. Any such transformation must keep precise
+   exceptions, retirement counts, and debug single-step behavior, and be
+   formally verified.
+4. Lower pointer-chasing latency. Response bypass, early wakeup of
+   dependent loads, and load preparation while the memory port is busy are in
+   place. Next, try associativity in the load queue's L0 cache if its conflict
+   counters justify it, then prefetching for dependent loads. A 256-entry L0
+   added little over the default 128 entries.
+5. Queue capacity where counters show pressure. Sixteen INT
+   reservation-station entries capture the measured benefit; larger INT RS,
+   ROB, and load-queue sizes currently show little gain. A third lane is worth
+   considering only if front-end and memory work leave issue width as the
+   limit.
 
-Changes must improve general workloads without recognizing benchmark code,
-PCs, or data patterns. Run the full regression matrix in both memory tiers,
-preserve DMA coherence and portable core RTL, meet the target clock, and avoid
-material CoreMark-PRO or Linux regressions. LQ/L0 and capacity changes must
-record coherence parameter bounds and admission/service dependencies as part
-of that change, including coverage of loads through retirement.
+Performance changes must improve general workloads, never by recognizing
+benchmark code, PCs, or data patterns. They must pass the full regression in
+both memory tiers, keep DMA coherent and the core RTL portable, meet the
+target clock, and not materially slow CoreMark-PRO or Linux. Changes to the
+load queue, its L0 cache, or queue capacities must also update the DMA
+coherence argument: the parameter bounds, and why DMA admission and service
+still make progress, including for loads that have not yet retired.
 
 ## SMP
 
-Add two X3 harts sharing an L2 coherence point, IPIs, per-hart PLIC contexts,
-and RVWMO litmus tests. Revalidate single-hart capacity and lane choices
-against the timing and memory-traffic cost of the second hart.
+Two X3 harts sharing the L2 as their coherence point, with inter-processor
+interrupts, per-hart PLIC contexts, and RVWMO litmus tests. The single-hart
+queue sizes and lane choices will need revisiting against the timing and
+memory-traffic cost of the second hart.
 
-Before implementation, define coherence coverage for LQ L0 data, outstanding
-fills, executed-but-unretired loads, AMOs, LR/SC reservations, and DMA.
-LQ entries are freed at CDB capture, so snooping live entries alone does not
-cover all unretired loads. Extend the DMA observation-table contract, which
-tracks loads through retirement. Specify parameter bounds and admission/service
-rules that let probe data and acknowledgements progress under saturation.
-Review these obligations whenever transaction semantics or capacity changes.
+Before implementation, the coherence design has to cover everything a hart
+can hold: L0 data, outstanding fills, executed but unretired loads, AMOs,
+LR/SC reservations, and DMA. Snooping live load-queue entries is not enough,
+because an entry is freed as soon as its result is staged for the common data
+bus, before the load retires. The DMA observation table, which tracks loads
+until they retire, is the starting point. Probe data and acknowledgements must
+keep making progress when every queue is full.
 
-Exit criteria: two-hart Debian, measured scaling reported separately from
-single-hart performance, routed timing met, and hours of sustained-load testing
-that repeatedly exercises recovery paths.
+Done means Debian running on both harts, multi-hart scaling reported
+separately from single-hart performance, routed timing met, and hours of
+sustained-load testing that repeatedly exercise the recovery paths.
 
 ## Memory error handling
 
-Connect DDR ECC reporting and propagate AXI error responses to software.
-The current controller interrupt is unconnected, `ECC_EN_IRQ` is clear, and
-the bridge checks AXI errors only in simulation. Add scrubbing and periodic
-reporting: `CE_CNT` saturates at 255 and must be read and cleared. The hardware
-regression's end-of-run ECC check catches errors but is not continuous monitoring.
+The DDR controller counts ECC errors, but nothing reports them to software:
+its interrupt is unconnected and `ECC_EN_IRQ` is clear. The cache hierarchy's
+AXI bridge checks error responses only in simulation. The plan is to connect
+ECC reporting, propagate AXI errors to software, and add scrubbing and
+periodic reporting (`CE_CNT` saturates at 255, so it must be read and
+cleared). The hardware
+regression checks ECC once at the end of a run, which catches errors but is
+not continuous monitoring.
 
 ## Deferred
 
-A general three-wide redesign, ASIC implementation, V/H/full crypto extensions,
-and Sv32 depend on demand after the work above. Optional storage paths are
-iSCSI with ext4 and host-backed PCIe/virtio block storage; NFS remains the
-supported root filesystem.
+These wait for demand: a general three-wide redesign, an ASIC
+implementation, the V and H extensions, the full crypto extensions, and Sv32.
+Storage beyond the NFS root, such as iSCSI with ext4 or host-backed
+PCIe/virtio block devices, is possible; NFS remains the supported root
+filesystem.

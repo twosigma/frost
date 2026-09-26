@@ -49,7 +49,7 @@ RS_NONE = 6
 
 # RS depths (mirrors riscv_pkg parameters)
 RS_DEPTHS = {
-    RS_INT: 8,
+    RS_INT: 16,
     RS_MUL: 4,
     RS_MEM: 8,
     RS_FP: 6,
@@ -83,7 +83,7 @@ class TomasuloModel:
             RS_FDIV: self.fdiv_rs,
         }
 
-        # Backward compat: self.rs aliases INT_RS
+        # Shorthand: self.rs is INT_RS.
         self.rs = self.int_rs
 
     def _all_rs(self) -> list[RSModel]:
@@ -189,12 +189,12 @@ class TomasuloModel:
                 )
             )
         except ValueError:
-            pass  # RTL silently ignores CDB to invalid ROB entries
+            pass  # the RTL ignores CDB writes to invalid ROB entries
         for rs in self._all_rs():
             rs.cdb_snoop(tag, value)
 
-    # Backward-compat methods route through fu_complete. The model does not
-    # read the slot index, so FU_MEM is only a placeholder.
+    # Shorthands that route through fu_complete. The model ignores the slot
+    # index, so FU_MEM is only a placeholder.
     def cdb_write(self, write: CDBWrite) -> None:
         """CDB write to ROB + snoop all RS (arbiter always broadcasts both)."""
         self.fu_complete(
@@ -218,7 +218,7 @@ class TomasuloModel:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Write CDB to ROB and snoop to all RS (backward compat)."""
+        """Write CDB to ROB and snoop to all RS."""
         self.fu_complete(
             FU_MEM,
             tag=tag,

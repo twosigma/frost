@@ -213,7 +213,6 @@ def _imm_sdsp(raw: int) -> int:
 def _drive(dut: Any, raw: int) -> None:
     """Drive one compressed instruction parcel."""
     dut.i_instr_compressed.value = raw
-    dut.i_rd_is_x2.value = ((raw >> 7) & 0x1F) == 2
 
 
 def _assert_decode(
@@ -230,101 +229,8 @@ def _assert_decode(
 
 
 @cocotb.test()
-async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
-    """All 131,072 parcel/predicate combinations have exact fast cofactors.
-
-    Covers the slot-2 bit cofactors, the illegal flag and the PD field
-    cofactors (bits 31:28, 26, 24:20, 19:18 and 14:12).
-    """
-    for raw in range(1 << 16):
-        dut.i_instr_compressed.value = raw
-        for rd_is_x2 in (0, 1):
-            # Exercise both values independently of raw[11:7]. The inconsistent
-            # cases matter because the fast cofactor promises equality over the
-            # decompressor's complete input domain, not only the system-level
-            # predecode invariant.
-            dut.i_rd_is_x2.value = rd_is_x2
-            await _settle()
-
-            expanded_bit8 = (int(dut.o_instr_expanded.value) >> 8) & 1
-            fast_bit8 = int(dut.o_instr_expanded_bit8_fast.value)
-            assert fast_bit8 == expanded_bit8, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast bit 8={fast_bit8}, expanded bit 8={expanded_bit8}"
-            )
-
-            expanded_bit15 = (int(dut.o_instr_expanded.value) >> 15) & 1
-            fast_bit15 = int(dut.o_instr_expanded_bit15_fast.value)
-            assert fast_bit15 == expanded_bit15, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast bit 15={fast_bit15}, expanded bit 15={expanded_bit15}"
-            )
-
-            expanded_bits20_9 = (((int(dut.o_instr_expanded.value) >> 20) & 1) << 1) | (
-                (int(dut.o_instr_expanded.value) >> 9) & 1
-            )
-            fast_bits20_9 = int(dut.o_instr_expanded_bits20_9_fast.value)
-            assert fast_bits20_9 == expanded_bits20_9, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast bits {{20,9}}=0b{fast_bits20_9:02b}, "
-                f"expanded bits {{20,9}}=0b{expanded_bits20_9:02b}"
-            )
-
-            expanded_bits27_25 = (
-                ((int(dut.o_instr_expanded.value) >> 27) & 1) << 1
-            ) | ((int(dut.o_instr_expanded.value) >> 25) & 1)
-            fast_bits27_25 = int(dut.o_instr_expanded_bits27_25_fast.value)
-            assert fast_bits27_25 == expanded_bits27_25, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast bits {{27,25}}=0b{fast_bits27_25:02b}, "
-                f"expanded bits {{27,25}}=0b{expanded_bits27_25:02b}"
-            )
-
-            expanded = int(dut.o_instr_expanded.value)
-            field_cofactors = (
-                (
-                    "bits 24:20",
-                    (expanded >> 20) & 0x1F,
-                    int(dut.o_instr_expanded_bits24_20_fast.value),
-                ),
-                (
-                    "bits 31:28",
-                    (expanded >> 28) & 0xF,
-                    int(dut.o_instr_expanded_bits31_28_fast.value),
-                ),
-                (
-                    "bit 26",
-                    (expanded >> 26) & 1,
-                    int(dut.o_instr_expanded_bit26_fast.value),
-                ),
-                (
-                    "bits 19:18",
-                    (expanded >> 18) & 0x3,
-                    int(dut.o_instr_expanded_bits19_18_fast.value),
-                ),
-                (
-                    "bits 14:12",
-                    (expanded >> 12) & 0x7,
-                    int(dut.o_instr_expanded_bits14_12_fast.value),
-                ),
-            )
-            for name, expected_bits, fast_bits in field_cofactors:
-                assert fast_bits == expected_bits, (
-                    f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                    f"fast {name}=0b{fast_bits:b}, expanded {name}=0b{expected_bits:b}"
-                )
-
-            canonical_illegal = int(dut.o_illegal.value)
-            fast_illegal = int(dut.o_illegal_fast.value)
-            assert fast_illegal == canonical_illegal, (
-                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
-                f"fast illegal={fast_illegal}, canonical illegal={canonical_illegal}"
-            )
-
-
-@cocotb.test()
-async def test_all_rvc_source_hot_metadata_matches_decompressor(dut: Any) -> None:
-    """All 49,152 RVC parcels produce the sideband's exact three hot bits."""
+async def test_all_rvc_source_metadata_matches_decompressor(dut: Any) -> None:
+    """All 49,152 RVC parcels match the predecode model's expansion and source bits."""
     for raw in range(1 << 16):
         if raw & 0x3 == 0x3:
             continue
@@ -333,11 +239,36 @@ async def test_all_rvc_source_hot_metadata_matches_decompressor(dut: Any) -> Non
         await _settle()
 
         expanded = int(dut.o_instr_expanded.value)
+        assert (expanded, bool(int(dut.o_illegal.value))) == _PREDECODE.rvc_expand(
+            raw
+        ), f"expanded sideband: RVC 0x{raw:04x}"
         got = (((expanded >> 21) & 1) << 2) | ((expanded >> 16) & 0x3)
+        rs1_rest = ((expanded >> 17) & 0x6) | ((expanded >> 15) & 1)
+        assert rs1_rest == _PREDECODE.rvc_rs1_rest(raw), (
+            f"rs1 sideband: RVC 0x{raw:04x}"
+        )
         expected = _PREDECODE.rvc_source_hot(raw)
         assert got == expected, (
             f"RVC 0x{raw:04x}: decompressor source-hot 0b{got:03b}, "
             f"sideband model 0b{expected:03b}"
+        )
+
+
+@cocotb.test()
+async def test_all_rvc_bits24_20_metadata_matches_decompressor(dut: Any) -> None:
+    """All 49,152 RVC parcels produce the sideband's exact expanded bits [24:20]."""
+    for raw in range(1 << 16):
+        if raw & 0x3 == 0x3:
+            continue
+
+        _drive(dut, raw)
+        await _settle()
+
+        got = (int(dut.o_instr_expanded.value) >> 20) & 0x1F
+        expected = _PREDECODE.rvc_bits24_20(raw)
+        assert got == expected, (
+            f"RVC 0x{raw:04x}: decompressor bits[24:20] 0b{got:05b}, "
+            f"sideband model 0b{expected:05b}"
         )
 
 
@@ -699,11 +630,9 @@ async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
 
 @cocotb.test()
 async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
-    """rd=x0 forms of C.ADD/C.MV/C.LUI/C.SLLI are HINTs that must nop.
+    """rd=x0 forms of C.ADD/C.MV/C.LUI/C.SLLI are HINTs that execute as NOPs.
 
-    They expand to a write of x0 (an architectural nop) and must not raise
-    illegal. Regression for the cadd arch-test livelock: these were wrongly
-    flagged illegal, and with no trap handler the trap looped to mtvec=0.
+    They expand to a write of x0 and must not be flagged illegal.
     """
     for raw, name in (
         (0x900A, "c.add x0,x2"),  # C.ADD rd=0 (rs2!=0)
@@ -724,10 +653,9 @@ async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
 
 
 # ============================================================================
-# RV64C vectors (M4): the reinterpreted slots expand to their RV64 meanings.
-# The all-parcels cross-check above compares only the three source-hot bits
-# of every expansion against the offline model; these tests pin the full
-# architectural expansions.
+# RV64C: the slots that RV64 reinterprets expand to their RV64 meanings. These
+# directed vectors check against hand-packed encodings, independent of the
+# offline predecode model used above.
 # ============================================================================
 @cocotb.test()
 async def test_rv64_c_addiw_expands_and_rd0_is_reserved(dut: Any) -> None:

@@ -44,8 +44,25 @@ from .dispatch_interface import (
     AUIPC,
     JALR,
     FADD_S,
+    FLW,
     FMUL_S,
     FDIV_S,
+    LD,
+    LWU,
+    SD,
+    ADDW,
+    ADDIW,
+    MULW,
+    LR_D,
+    SC_D,
+    AMOADD_D,
+    FCVT_S_W,
+    ANDI,
+    CSRRS,
+    CSRRC,
+    CSRRWI,
+    CSRRSI,
+    CSRRCI,
     CSRRW,
     RS_INT,
     RS_MUL,
@@ -55,12 +72,17 @@ from .dispatch_interface import (
     RS_FDIV,
     RS_NONE,
     MEM_SIZE_BYTE,
+    MEM_SIZE_WORD,
+    MEM_SIZE_DOUBLE,
 )
 
 # Major opcodes (instruction bits [6:0]), values from opc_e in riscv_pkg.
 # OPC_OP is the R-type integer form, OPC_OP_IMM the I-type immediate form.
 OPC_OP = 0b0110011
 OPC_OP_IMM = 0b0010011
+OPC_OP_32 = 0b0111011
+OPC_OP_IMM_32 = 0b0011011
+OPC_AMO = 0b0101111
 OPC_LOAD = 0b0000011
 OPC_STORE = 0b0100011
 OPC_BRANCH = 0b1100011
@@ -183,6 +205,41 @@ async def test_stall_when_lq_full(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_illegal_memory_ops_take_no_queue_entry(dut: Any) -> None:
+    """An illegal or fetch-faulting memory op dispatches with the LQ and SQ full.
+
+    It routes to INT_RS and never takes a queue entry, so it must not wait for
+    one. A legal load still waits.
+    """
+    dut_if = await _setup(dut)
+    dut_if.set_lq_full(True)
+    dut_if.set_sq_full(True)
+    for name, operation, flag in (
+        ("FS=Off flw", FLW, "is_illegal_instruction"),
+        ("illegal lw", LW, "is_illegal_instruction"),
+        ("faulting sc.d", SC_D, "is_fetch_fault"),
+        ("faulting amoadd.d", AMOADD_D, "is_fetch_fault"),
+    ):
+        dut_if.drive_instruction(
+            valid=True,
+            instruction_operation=operation,
+            instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+            **{flag: 1},
+        )
+        await dut_if.step()
+        assert not dut_if.stall, f"{name} waited for a full load or store queue"
+        assert dut_if.read_rs_dispatch()["rs_type"] == RS_INT, name
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=LW,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD),
+    )
+    await dut_if.step()
+    assert dut_if.stall, "a legal load must wait for a full load queue"
+
+
+@cocotb.test()
 async def test_stall_when_sq_full(dut: Any) -> None:
     """Store instruction + SQ full should stall."""
     dut_if = await _setup(dut)
@@ -294,7 +351,6 @@ async def test_fadd_dispatches_to_fp_rs(dut: Any) -> None:
         valid=True,
         instruction_operation=FADD_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -313,7 +369,6 @@ async def test_fmul_dispatches_to_fmul_rs(dut: Any) -> None:
         valid=True,
         instruction_operation=FMUL_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -332,7 +387,6 @@ async def test_fdiv_dispatches_to_fdiv_rs(dut: Any) -> None:
         valid=True,
         instruction_operation=FDIV_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -662,6 +716,9 @@ async def test_slot2_branch_saves_slot2_checkpoint(dut: Any) -> None:
         valid=True,
         instruction_operation=ADD,
         instruction=_make_instr(dest_reg=8, opcode=OPC_OP),
+        ras_checkpoint_tos=1,
+        ras_checkpoint_valid_count=2,
+        ras_checkpoint_top=0x1111_0000_0000_1000,
     )
     dut_if.drive_instruction_2(
         valid=True,
@@ -674,6 +731,7 @@ async def test_slot2_branch_saves_slot2_checkpoint(dut: Any) -> None:
         btb_predicted_target=0x2070,
         ras_checkpoint_tos=6,
         ras_checkpoint_valid_count=7,
+        ras_checkpoint_top=0x2222_0000_0000_2000,
         instruction=_make_instr(
             opcode=OPC_BRANCH,
             source_reg_1=1,
@@ -696,6 +754,7 @@ async def test_slot2_branch_saves_slot2_checkpoint(dut: Any) -> None:
     assert dut_if.checkpoint_branch_tag == 3
     assert dut_if.ras_tos_out == 6
     assert dut_if.ras_valid_count_out == 7
+    assert dut_if.ras_top_out == 0x2222_0000_0000_2000
     assert dut_if.rob_checkpoint_valid
     assert dut_if.rob_checkpoint_id == 5
 
@@ -832,7 +891,6 @@ async def test_fp_dest_rename(dut: Any) -> None:
         valid=True,
         instruction_operation=FADD_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -888,12 +946,19 @@ async def test_branch_saves_checkpoint(dut: Any) -> None:
         valid=True,
         instruction_operation=BEQ,
         instruction=_make_instr(opcode=OPC_BRANCH),
+        ras_checkpoint_tos=3,
+        ras_checkpoint_valid_count=4,
+        ras_checkpoint_top=0x8000_0000_0000_1234,
     )
     await dut_if.step()
 
     assert dut_if.checkpoint_save, "BEQ should save checkpoint"
     assert dut_if.checkpoint_id == 2
     assert dut_if.checkpoint_branch_tag == 7
+    # The RAS state saved with it is the branch's own recovery point.
+    assert dut_if.ras_tos_out == 3
+    assert dut_if.ras_valid_count_out == 4
+    assert dut_if.ras_top_out == 0x8000_0000_0000_1234
 
 
 @cocotb.test()
@@ -1011,6 +1076,82 @@ async def test_memory_signed(dut: Any) -> None:
     assert rs["mem_signed"] == 0, "LBU should have mem_signed=0"
 
 
+@cocotb.test()
+async def test_rv64_ops_dispatch_with_decoded_flags(dut: Any) -> None:
+    """RV64-only ops get their station, destination, sources and memory size.
+
+    The packets carry the flags id_stage registers for each op, as
+    build_from_id_to_ex derives them.
+    """
+    dut_if = await _setup(dut)
+    # Both INT sources are renamed, so a source the op reads is not ready.
+    dut_if.drive_int_src1(renamed=1, tag=7, value=0)
+    dut_if.drive_int_src2(renamed=1, tag=9, value=0)
+
+    # name, op, opcode, funct3, station, writes rd, reads rs2, memory size
+    cases = (
+        ("LD", LD, OPC_LOAD, 0b011, RS_MEM, True, False, MEM_SIZE_DOUBLE),
+        ("LWU", LWU, OPC_LOAD, 0b110, RS_MEM, True, False, MEM_SIZE_WORD),
+        ("SD", SD, OPC_STORE, 0b011, RS_MEM, False, True, MEM_SIZE_DOUBLE),
+        ("ADDW", ADDW, OPC_OP_32, 0b000, RS_INT, True, True, None),
+        ("ADDIW", ADDIW, OPC_OP_IMM_32, 0b000, RS_INT, True, False, None),
+        ("MULW", MULW, OPC_OP_32, 0b000, RS_MUL, True, True, None),
+        ("LR_D", LR_D, OPC_AMO, 0b011, RS_MEM, True, False, MEM_SIZE_DOUBLE),
+        ("SC_D", SC_D, OPC_AMO, 0b011, RS_MEM, True, True, MEM_SIZE_DOUBLE),
+        ("AMOADD_D", AMOADD_D, OPC_AMO, 0b011, RS_MEM, True, True, MEM_SIZE_DOUBLE),
+    )
+    for name, op, opcode, funct3, station, writes_rd, reads_rs2, size in cases:
+        dut_if.drive_instruction(
+            valid=True,
+            rs1_addr=1,
+            rs2_addr=2,
+            instruction_operation=op,
+            instruction=_make_instr(
+                dest_reg=5, opcode=opcode, funct3=funct3, source_reg_1=1, source_reg_2=2
+            ),
+        )
+        await dut_if.step()
+
+        rs = dut_if.read_rs_dispatch()
+        assert rs["valid"] == 1, name
+        assert rs["rs_type"] == station, f"{name}: rs_type {rs['rs_type']}"
+        assert dut_if.rat_alloc_valid == writes_rd, f"{name}: RAT rename"
+        assert rs["src1_ready"] == 0 and rs["src1_tag"] == 7, f"{name}: src1"
+        assert rs["src2_ready"] == (0 if reads_rs2 else 1), f"{name}: src2"
+        if size is not None:
+            assert rs["mem_size"] == size, f"{name}: mem_size {rs['mem_size']}"
+
+    # LWU zero-extends; LD needs no extension.
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=LWU,
+        instruction=_make_instr(dest_reg=5, opcode=OPC_LOAD, funct3=0b110),
+    )
+    await dut_if.step()
+    assert dut_if.read_rs_dispatch()["mem_signed"] == 0, "LWU should zero-extend"
+
+    # An illegal instruction and a fetch fault take ID's neutral class: INT_RS,
+    # no destination, and no source to wait for.
+    for flag in ("is_illegal_instruction", "is_fetch_fault"):
+        dut_if.drive_instruction(
+            valid=True,
+            rs1_addr=1,
+            rs2_addr=2,
+            instruction_operation=ADD,
+            instruction=_make_instr(
+                dest_reg=5, opcode=OPC_OP, source_reg_1=1, source_reg_2=2
+            ),
+            **{flag: 1},
+        )
+        await dut_if.step()
+
+        rs = dut_if.read_rs_dispatch()
+        assert rs["valid"] == 1, flag
+        assert rs["rs_type"] == RS_INT, flag
+        assert not dut_if.rat_alloc_valid, f"{flag}: no destination"
+        assert rs["src1_ready"] == 1 and rs["src2_ready"] == 1, f"{flag}: sources"
+
+
 # =============================================================================
 # Flush Test
 # =============================================================================
@@ -1018,7 +1159,7 @@ async def test_memory_signed(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_prevents_dispatch(dut: Any) -> None:
-    """Flush dominates valid preflush candidates and every dispatch side effect."""
+    """A flush blocks every dispatch output of a valid bundle without stalling."""
     dut_if = await _setup(dut)
 
     dut_if.set_flush(True)
@@ -1076,6 +1217,110 @@ async def test_csr_info_in_rob_alloc(dut: Any) -> None:
     assert req["csr_op"] == funct3_val, f"csr_op mismatch: {req['csr_op']}"
 
 
+@cocotb.test()
+async def test_csr_write_intent_from_encoding(dut: Any) -> None:
+    """A set or clear form with rs1/uimm = 0 reaches the ROB as a pure read.
+
+    Its csr_op keeps funct3[2] with bits [1:0] cleared and csr_write_intent is
+    0. A nonzero rs1 field writes whatever the register holds, and
+    CSRRW/CSRRWI always write; both keep funct3. Checked on both slots.
+    """
+    dut_if = await _setup(dut)
+
+    forms = [
+        (CSRRW, 0b001),
+        (CSRRS, 0b010),
+        (CSRRC, 0b011),
+        (CSRRWI, 0b101),
+        (CSRRSI, 0b110),
+        (CSRRCI, 0b111),
+    ]
+    for slot in (1, 2):
+        for op, funct3 in forms:
+            for rs1 in (0, 7):
+                writes = (funct3 & 0b011) == 0b001 or rs1 != 0
+                want_op = funct3 if writes else funct3 & 0b100
+                csr = {
+                    "instruction_operation": op,
+                    "csr_address": 0xB02,  # minstret
+                    "csr_imm": rs1,
+                    "instruction": _make_instr(
+                        dest_reg=5, opcode=0b1110011, funct3=funct3, source_reg_1=rs1
+                    ),
+                }
+                if slot == 1:
+                    dut_if.drive_instruction(valid=True, rs1_addr=rs1, **csr)
+                    dut_if.drive_instruction_2(valid=False)
+                else:
+                    dut_if.drive_instruction(
+                        valid=True,
+                        instruction_operation=ADD,
+                        instruction=_make_instr(dest_reg=6, opcode=OPC_OP),
+                    )
+                    dut_if.drive_instruction_2(valid=True, rs1_addr=rs1, **csr)
+                await dut_if.step()
+
+                req = (
+                    dut_if.read_rob_alloc_req()
+                    if slot == 1
+                    else dut_if.read_rob_alloc_req_2()
+                )
+                case = f"slot {slot}, funct3={funct3:03b}, rs1/uimm={rs1}"
+                assert req["alloc_valid"] == 1, f"{case}: no allocation"
+                assert req["is_csr"] == 1, f"{case}: not marked as a CSR"
+                assert req["csr_write_intent"] == int(writes), (
+                    f"{case}: csr_write_intent={req['csr_write_intent']}, want {int(writes)}"
+                )
+                assert req["csr_op"] == want_op, (
+                    f"{case}: csr_op={req['csr_op']:03b}, want {want_op:03b}"
+                )
+
+
+@cocotb.test()
+async def test_non_csr_instruction_keeps_funct3_in_csr_op(dut: Any) -> None:
+    """A non-CSR instruction reaches the ROB with its funct3 unchanged in csr_op.
+
+    Only a CSR with no write intent has csr_op[1:0] cleared. FP ops with
+    rm = DYN (111) and an f0 or x0 rs1, and ANDI from x0, keep 111.
+    """
+    dut_if = await _setup(dut)
+
+    cases = [
+        (1, "fadd.s rm=dyn, rs1=f0", FADD_S, OPC_OP_FP),
+        (1, "fcvt.s.w rm=dyn, rs1=x0", FCVT_S_W, OPC_OP_FP),
+        (1, "andi rs1=x0", ANDI, OPC_OP_IMM),
+        (2, "andi rs1=x0", ANDI, OPC_OP_IMM),
+    ]
+    for slot, name, op, opcode in cases:
+        packet = {
+            "instruction_operation": op,
+            "instruction": _make_instr(
+                dest_reg=5, opcode=opcode, funct3=0b111, source_reg_1=0
+            ),
+        }
+        if slot == 1:
+            dut_if.drive_instruction(valid=True, rs1_addr=0, **packet)
+            dut_if.drive_instruction_2(valid=False)
+        else:
+            dut_if.drive_instruction(
+                valid=True,
+                instruction_operation=ADD,
+                instruction=_make_instr(dest_reg=6, opcode=OPC_OP),
+            )
+            dut_if.drive_instruction_2(valid=True, rs1_addr=0, **packet)
+        await dut_if.step()
+
+        req = (
+            dut_if.read_rob_alloc_req() if slot == 1 else dut_if.read_rob_alloc_req_2()
+        )
+        case = f"slot {slot}, {name}"
+        assert req["alloc_valid"] == 1, f"{case}: no allocation"
+        assert req["is_csr"] == 0, f"{case}: marked as a CSR"
+        assert req["csr_op"] == 0b111, (
+            f"{case}: csr_op={req['csr_op']:03b}, want funct3 111"
+        )
+
+
 # =============================================================================
 # FP Flags Test
 # =============================================================================
@@ -1090,7 +1335,6 @@ async def test_fp_flags_for_compute(dut: Any) -> None:
         valid=True,
         instruction_operation=FADD_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
     await dut_if.step()
@@ -1142,7 +1386,6 @@ async def test_dynamic_rounding_mode(dut: Any) -> None:
         valid=True,
         instruction_operation=FADD_S,
         is_fp_instruction=1,
-        is_fp_compute=1,
         fp_rm=0b111,  # DYN
         instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
     )
@@ -1152,8 +1395,47 @@ async def test_dynamic_rounding_mode(dut: Any) -> None:
     assert rs["rm"] == 0b010, f"Expected resolved rm=0b010 (RDN), got {rs['rm']:#05b}"
 
 
+@cocotb.test()
+async def test_fp_dyn_rm_predecode(dut: Any) -> None:
+    """Both slots flag exactly the F/D instructions whose rm field (funct3) is DYN.
+
+    The flag depends on funct3 alone, so a DYN op whose rs1 field is 0 is
+    flagged. A static rounding mode and an integer instruction with funct3
+    111 are not. Slot 2 never allocates an FP compute op, but its request
+    carries the same pre-decode.
+    """
+    dut_if = await _setup(dut)
+
+    cases = (
+        ("fadd.s dyn", FADD_S, 1, 0b111, 1, 1),
+        ("fadd.s dyn, rs1 field 0", FADD_S, 1, 0b111, 0, 1),
+        ("fadd.s rmm", FADD_S, 1, 0b100, 1, 0),
+        ("integer op with funct3 111", ADDI, 0, 0b111, 1, 0),
+    )
+    for name, op, is_fp, funct3, rs1_field, expected in cases:
+        instruction = _make_instr(
+            dest_reg=3,
+            opcode=OPC_OP_FP if is_fp else OPC_OP_IMM,
+            funct3=funct3,
+            source_reg_1=rs1_field,
+            source_reg_2=2,
+        )
+        for drive in (dut_if.drive_instruction, dut_if.drive_instruction_2):
+            drive(
+                valid=True,
+                instruction_operation=op,
+                is_fp_instruction=is_fp,
+                fp_rm=funct3,
+                instruction=instruction,
+            )
+        await dut_if.step()
+
+        assert dut_if.read_rob_alloc_req()["fp_dyn_rm"] == expected, f"slot 1: {name}"
+        assert dut_if.read_rob_alloc_req_2()["fp_dyn_rm"] == expected, f"slot 2: {name}"
+
+
 # =============================================================================
-# Immediate reuse: PC-relative values precomputed in ID ride the RS immediate
+# PC-derived immediates: values ID precomputes from the PC travel in the RS imm
 # =============================================================================
 
 
@@ -1183,8 +1465,8 @@ async def test_branch_target_rides_immediate(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
-    """predicted_target_ok picks the RAS compare over the BTB compare, like predicted_target."""
+async def test_predicted_target_ok_follows_the_btb_compare(dut: Any) -> None:
+    """predicted_target_ok forwards ID's compare of the BTB target."""
     dut_if = await _setup(dut)
 
     # BTB-predicted branch whose BTB target is stale: the bit is clear.
@@ -1195,7 +1477,6 @@ async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
         btb_predicted_taken=1,
         btb_predicted_target=0x8000_2070,
         btb_correct_non_jalr=0,
-        ras_correct_non_jalr=1,
         instruction=_make_instr(opcode=OPC_BRANCH),
     )
     await dut_if.step()
@@ -1203,7 +1484,7 @@ async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
     assert rs["predicted_target"] == 0x8000_2070
     assert rs["predicted_target_ok"] == 0, "a stale BTB target must clear the bit"
 
-    # RAS prediction wins the selection, so the RAS compare supplies the bit.
+    # A matching BTB target sets it.
     dut_if.drive_instruction(
         valid=True,
         instruction_operation=BEQ,
@@ -1211,17 +1492,12 @@ async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
         btb_predicted_taken=1,
         btb_predicted_target=0x8000_2080,
         btb_correct_non_jalr=1,
-        ras_predicted=1,
-        ras_predicted_target=0x8000_3000,
-        ras_correct_non_jalr=0,
         instruction=_make_instr(opcode=OPC_BRANCH),
     )
     await dut_if.step()
     rs = dut_if.read_rs_dispatch()
-    assert rs["predicted_target"] == 0x8000_3000, "RAS prediction selected"
-    assert rs["predicted_target_ok"] == 0, (
-        "the RAS compare, not the BTB compare, is forwarded"
-    )
+    assert rs["predicted_target"] == 0x8000_2080
+    assert rs["predicted_target_ok"] == 1
 
 
 @cocotb.test()
@@ -1271,7 +1547,6 @@ async def test_auipc_and_fetch_fault_immediates_are_precomputed(dut: Any) -> Non
         valid=True,
         instruction_operation=ADD,
         is_fetch_fault=1,
-        is_fetch_fault_hi=1,
         pc_relative_precomputed=0x8000_1002,
         instruction=_make_instr(opcode=OPC_OP),
     )

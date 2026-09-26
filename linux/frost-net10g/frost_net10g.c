@@ -13,24 +13,18 @@
  * Every register access is readl() or writel() at a 4-aligned offset. The
  * register bus replicates an 8- or 16-bit store over the whole 32-bit
  * register (writeb(1, CTRL) would issue RESET), and a 64-bit store writes
- * only the upper half.
+ * only the upper register of its dword.
  *
  * The loopback feature is the NIC's MAC loopback (its raw transmit stream
  * into its own receiver) on a build whose two MAC directions share one clock,
  * and the transceiver's near-end PMA loopback otherwise. Open applies it
- * through RESET, so it changes only while the interface is down. A PMA
- * loopback change restarts the transceiver's receiver on the transceiver's
- * own schedule, which can take READY down after open has waited for it, so
- * open retries a refused enable once READY is back.
+ * through RESET, so it changes only while the interface is down.
  *
  * A MAC direction whose clock domain restarts outside RESET (its clock was
  * lost, or the transceiver reset) drops READY, and the NIC disables that
- * direction with no interrupt of its own: a frame still being passed to or
- * from the MAC completes with ABORT, and the ring registers and HEAD are
- * kept. The restart drops the carrier, and the LINK event for the
- * carrier's return comes only after READY has returned, so the poll that
- * handles that event re-enables every such direction, and the NIC resumes at
- * the ring's HEAD.
+ * direction with no interrupt of its own; a frame still being passed to or
+ * from the MAC completes with ABORT. The poll re-enables the direction at the
+ * LINK event for the carrier's return (frost_reenable()).
  *
  * The driver assumes one CPU, the SoC's single hart, whether the kernel is
  * built uniprocessor or SMP: xmit and NAPI never interleave, and open and stop
@@ -234,11 +228,12 @@ static void frost_refill_timer(struct timer_list *t)
 }
 
 /*
- * Post RX buffers at rx_tail until 127 are posted or an allocation or mapping
- * fails; returns how many were posted. Only the slot at rx_tail is written,
- * never a descriptor the NIC may already hold. The NIC uses a descriptor only
- * from a read accepted after TAIL covered it, and dma_wmb() orders the four
- * word stores ahead of the doorbell store, so that read sees the posted words.
+ * Post RX buffers at rx_tail until 127 are outstanding or an allocation or
+ * mapping fails; return how many this call posted. Only the slot at rx_tail
+ * is written, never a descriptor the NIC may already hold. The NIC uses a
+ * descriptor only from a read accepted after TAIL covered it, and dma_wmb()
+ * orders the four word stores ahead of the doorbell store, so that read sees
+ * the posted words.
  */
 static unsigned int frost_rx_fill(struct frost_priv *priv, gfp_t gfp)
 {

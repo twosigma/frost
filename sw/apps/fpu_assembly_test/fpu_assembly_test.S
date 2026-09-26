@@ -1,10 +1,10 @@
 # FPU assembly test
 #
-# Directed FP hazard corner cases, each looped 256 times for amplification:
-#   1A) FLD squashed by a taken branch must not update f1 or forward stale data.
-#   1B) FLD squashed by a JAL must not update f1 or forward stale data.
-#   2A) FP load-use hazard overlapping a forward stall from FSGNJ.D.
-#   2B) FP load-use hazard overlapping a forward stall from pipelined FADD.D with deps.
+# Directed FP hazard cases, each repeated 256 times:
+#   1A) An FLD squashed by a taken branch must not update f1 or pass its value on.
+#   1B) An FLD squashed by a JAL must not update f1 or pass its value on.
+#   2A) FLD immediately followed by a dependent FADD.D, right after a single-cycle FSGNJ.D.
+#   2B) Two dependent FADD.D operations and a check of their result, then the same load-use pair.
 
     .section .init
     .option push
@@ -138,7 +138,7 @@ test2a_loop:
     la      t2, data_minus_two_point_five
     fld     f4, 0(t2)
 
-    # FSGNJ.D writes f8 in one cycle, which triggers the forward stall
+    # Single-cycle FSGNJ.D writes f8 just before the load-use pair
     fsgnj.d f8, f3, f4
 
     # Load-use hazard (FLD immediately followed by FADD.D)
@@ -178,13 +178,13 @@ test2b_loop:
     la      t0, data_four
     fld     f1, 0(t0)
 
-    # Pipelined FP op with interleaved dependencies
+    # Operands for two dependent FADD.D operations
     la      t1, data_one
     fld     f3, 0(t1)
     la      t2, data_two
     fld     f4, 0(t2)
 
-    # f8 = 1.0 + 2.0 = 3.0 (pipelined), f9 = f8 + 1.0 = 4.0
+    # f8 = 1.0 + 2.0 = 3.0, then f9 = f8 + 1.0 = 4.0
     fadd.d  f8, f3, f4
     fadd.d  f9, f8, f3
 

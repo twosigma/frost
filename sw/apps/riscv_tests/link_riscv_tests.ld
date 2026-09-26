@@ -1,4 +1,4 @@
-/* Linker script for riscv-tests on Frost
+/* Linker script for riscv-tests on FROST, bram memory config.
  *
  * ROM holds: code + data load image.
  * RAM holds: data runtime copy + BSS + heap + stack.
@@ -24,10 +24,9 @@ PROVIDE(_stack_top = _end_of_stack);
 
 SECTIONS
 {
-    /* ISA tests define _start in .text.init; crt0 uses .init.
-     * Both are placed first in ROM. */
+    /* _start comes first in ROM: ISA tests and crt0_bench.S define it in
+     * .text.init. */
     .text : {
-        KEEP(*(.init))
         KEEP(*(.text.init))
         *(.text*)
         *(.text.*)

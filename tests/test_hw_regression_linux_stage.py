@@ -23,6 +23,8 @@ probe line, the IP configuration, the mount, systemd's greeting, the console
 autologin) and with the CRLF pairs the getty and bash emit. The counts and the
 ``findmnt`` line are written in each program's output format rather than
 captured, since nothing in this repository can boot that root without hardware.
+Other tests check the stage against a real board capture from
+``tests/fixtures``.
 
 The preflight is exercised against a tree under ``tmp_path``: a stub RPC server
 answers the NFSv3 probe, and a stub compiler stands in for the cross toolchain,
@@ -144,7 +146,7 @@ SYSTEMD_DEGRADED = (
 STRESS_ECHO = hw.LINUX_STRESS_COMMAND + "\r\r\n"
 STRESS_OUT = (
     "FROST_USERSPACE_STRESS: starting\r\r\n"
-    "FROST_USERSPACE_STRESS: forks=2 pages=256 ticks=60 vforks=12 futex=64 "
+    "FROST_USERSPACE_STRESS: forks=2 pages=256 ticks=60 execs=12 futex=64 "
     "atomics=40000 cycles=4764560 instret=3473800 time=7499 ipc_x1000=729 "
     "verdict=PASS\r\r\n"
     f"{hw.LINUX_TOKEN}\r\r\n{PROMPT}"
@@ -267,10 +269,10 @@ def test_requires_the_drivers_probe_line_before_the_login_prompt() -> None:
 def test_requires_the_pinned_kernel_banner(banner: str) -> None:
     """Booting any kernel but the pinned one fails, userspace markers or not.
 
-    The marker ends in a space, so a release the pinned one is a prefix of --
-    a -debug build of the same version, say -- does not satisfy it. The root's
-    kernel is kept at the pin, and the preflight checks the packed file for
-    exactly this release before the load.
+    The marker ends in a space, so a release that merely starts with the pinned
+    one (a -debug build of the same version, say) does not satisfy it. The
+    root's kernel must stay at the pin, and the preflight checks the packed file
+    for exactly this release before the load.
     """
     linux = stage()
     assert hw.KERNEL_BANNER == f"Linux version {hw.KERNEL_RELEASE} "
@@ -281,7 +283,7 @@ def test_requires_the_pinned_kernel_banner(banner: str) -> None:
 
 
 def test_requires_the_export_to_be_a_debian_root() -> None:
-    """Another distribution's root boots this kernel but is not what we ship."""
+    """A root from another distribution fails, even though it boots this kernel."""
     linux = stage()
     transcript = FULL_TRANSCRIPT.replace(hw.DEBIAN_OS_NAME, "Alpine Linux")
     assert not linux.success_done(transcript)
@@ -332,11 +334,11 @@ def test_a_trailing_slash_on_the_export_still_matches() -> None:
 
 
 def test_the_same_export_under_another_server_name_says_so() -> None:
-    """A hostname in the variable against the address the mount used.
+    """A server name that differs from the mount's address gets its own message.
 
     The initramfs mounts whatever ``nfsroot=`` gave it, and ``findmnt`` reports
-    what it used, so the message points at the one field that differs rather
-    than reading as a wrong export.
+    the address it used, so the message points at the one field that differs
+    instead of reading as a wrong export.
     """
     ok, note = hw.root_mount_verdict(MOUNT_LINE, "server.example:/srv/nfs/debian")
     assert not ok
@@ -385,10 +387,10 @@ def test_the_systemd_state_is_not_read_out_of_the_typed_command() -> None:
 def test_a_line_still_arriving_is_not_read_as_a_finished_one(line: str) -> None:
     """The predicates run on a capture that grows byte by byte.
 
-    A read that stops inside ``state=running`` used to match the state ``r`` and
-    fail a healthy boot on the spot, because ``$`` matches at the end of the
-    buffer as well as before a newline. Every value the stage reads out of a line
-    now waits for that line's newline.
+    The mount fields, the systemd state, and the root-alive status each wait for
+    their line's newline. ``$`` also matches at the end of the buffer, so a read
+    that stopped inside ``state=running`` would otherwise see the state ``r``
+    and fail a healthy boot.
     """
     linux = stage()
     for length in range(1, len(line)):
@@ -406,10 +408,10 @@ def test_a_line_still_arriving_is_not_read_as_a_finished_one(line: str) -> None:
 
 
 def test_the_stress_token_must_follow_the_login() -> None:
-    """The payload is typed now, so a token before the prompt cannot stand in.
+    """The stage types the stress run, so a token before the prompt cannot stand in.
 
-    On the test initramfs an inittab entry printed it before the getty; if such
-    a line ever appeared on this root it would not be the run the stage typed.
+    The Buildroot test initramfs prints the token from inittab, before the
+    getty; a line like that on this root would not be the run the stage typed.
     """
     linux = stage()
     before_prompt = BOOT_TO_LOGIN[: -len(hw.LINUX_LOGIN_PROMPT)]
@@ -450,11 +452,11 @@ def test_rejects_a_zero_count() -> None:
 
 
 def test_ends_the_capture_on_an_unavailable_counter_run() -> None:
-    """A failed counter verdict is terminal, not something to wait out.
+    """A failed counter run ends the capture instead of waiting out the deadline.
 
-    It matches no success predicate, so without being a failure predicate too it
-    ran the stage to its whole deadline and then reported nothing terminal. The
-    capture predicates are what this checks, not only the judge.
+    It matches no success predicate, so a failure predicate has to match it, or
+    the stage would run to its deadline. This checks the capture predicates, not
+    only the judge.
     """
     linux = stage()
     transcript = TO_STRESS + COUNTER_ECHO + COUNTER_FAIL_LINE
@@ -463,20 +465,6 @@ def test_ends_the_capture_on_an_unavailable_counter_run() -> None:
     ok, note = linux.judge(transcript)
     assert not ok
     assert "counters=unavailable" in note and "verdict=FAIL" in note
-
-
-def test_requires_the_child_through_exec_scope() -> None:
-    """The counters must cover a child measured from its exec, as perf stat did.
-
-    A narrower measurement is a failure rather than a silent loss of coverage.
-    """
-    linux = stage()
-    assert hw.LINUX_COUNTER_SCOPE == "exec-child"
-    assert hw.counter_values(FULL_TRANSCRIPT)["scope"] == "exec-child"
-    transcript = FULL_TRANSCRIPT.replace("scope=exec-child", "scope=self")
-    assert linux.success_done(transcript)  # the counts are there ...
-    ok, note = linux.judge(transcript)  # ... but not the scope
-    assert not ok and "scope: self is not exec-child" in note
 
 
 def test_counters_are_not_matched_in_the_echo_or_the_stress_summary() -> None:
@@ -632,12 +620,12 @@ def test_nettest_runs_from_tmpfs_and_gives_the_roots_link_back() -> None:
     """frost_nettest takes down the interface the root is mounted over.
 
     It runs from a tmpfs copy, so a page fault on its own text cannot block on
-    the hard mount it has just cut; IPv6 is off over the test, because the
+    the hard mount it has just cut. IPv6 is off during the test, because the
     autoconfiguration frames a link-up sends come back through the loopback and
-    fail its idle checks; the MTU, flags and that setting are restored from what
-    the line read first, through sysfs with shell built-ins, so nothing has to be
-    paged in from the root before the link is up; and the bounded sync at the end
-    reports whether the root really came back.
+    fail its idle checks. Shell built-ins then restore the MTU and flags the line
+    read first and turn IPv6 back on, so nothing has to be paged in from the root
+    before the link is up. The bounded sync at the end reports whether the root
+    really came back.
     """
     command = hw.nettest_command("enp1s0")
     sysfs = "/sys/class/net/enp1s0"
@@ -669,8 +657,9 @@ def test_a_root_that_does_not_come_back_is_a_failure_not_a_pass() -> None:
     """The pass token is printed with the root's link still down.
 
     The program leaves the interface down, so a stage that ended at that token
-    would report PASS over a root that never came back -- a link, route or server
-    that stays away, which on this board is the NIC's own recovery path.
+    would report PASS for a root that never came back because a link, route, or
+    server stayed away. On this board, bringing the root back exercises the
+    NIC's own recovery path.
     """
     linux = stage()
     stranded = COUNTER_TRANSCRIPT + NET_ECHO + NET_START + NET_PASS + NET_STRANDED
@@ -724,7 +713,10 @@ def _no_site_values(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_only_the_site_variables_are_required_and_are_named_when_unset() -> None:
-    """A guess at the site would boot a board against somebody else's export."""
+    """The NFS root and IP settings have no default; an error names each one missing.
+
+    A guess at the site would boot a board against somebody else's export.
+    """
     with pytest.raises(hw.LinuxEnvironmentError) as unset:
         hw.linux_root_from_env({}, site={})
     message = str(unset.value)
@@ -997,7 +989,10 @@ def _fake_root(export: Path) -> Any:
 
 
 def _fake_cross(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-    """Return a stub cross prefix whose gcc writes an empty output file."""
+    """Return a stub cross gcc and an environment that selects its prefix.
+
+    The stub writes ``stub`` to its ``-o`` file.
+    """
     binary_dir = tmp_path / "toolchain"
     binary_dir.mkdir()
     gcc = binary_dir / "stub-gcc"
@@ -1121,7 +1116,7 @@ def test_the_banner_is_found_across_a_read_boundary(tmp_path: Path) -> None:
 
 
 def test_the_banner_of_the_pinned_kernel_reads_as_the_pin() -> None:
-    """Against the real Image, when this checkout has fetched it."""
+    """The real pinned Image reads as the pin (skipped until it is fetched)."""
     images = sorted(
         (REPO_ROOT / "linux/debian-kernel").glob(f"*/boot/vmlinux-{hw.KERNEL_RELEASE}")
     )
@@ -1158,7 +1153,7 @@ def test_the_preflight_requires_a_console_autologin(
 def test_the_preflight_notes_the_drivers_module_and_the_servers_subnet(
     prepared: tuple[Any, dict[str, str]],
 ) -> None:
-    """Two notes that say what the run is up against, neither of them a gate.
+    """The preflight notes the module and the server's subnet but fails on neither.
 
     An initramfs that names the module is evidence it is there; a server outside
     the board's subnet is the case where the root's route may not come back after
@@ -1245,10 +1240,9 @@ def test_the_programs_are_built_from_this_checkouts_sources() -> None:
     Debian root cannot run, and frost_nettest has to be static to survive the
     link it takes down.
     """
-    for name, _ in hw.ROOT_PROGRAMS:
+    for name in hw.ROOT_PROGRAMS:
         assert (REPO_ROOT / hw.ROOT_PROGRAM_SRC / f"{name}.c").is_file()
     assert "-static" in hw.ROOT_PROGRAM_CFLAGS
-    assert ("frost_stress", ("-DFROST_STRESS_MMU=1",)) in hw.ROOT_PROGRAMS
 
 
 def _stub_board(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -1339,14 +1333,13 @@ def test_the_regression_does_not_touch_the_board_when_the_root_is_unset(
 
 # --- The console a board really sends ----------------------------------------
 
-# The UART capture of an X3 board run at 300 MHz, byte for byte: the loader's
-# interleaved stdout lines are removed and nothing else is touched, so every CR
-# and every escape sequence is the board's. The run it comes from reported
-# TIMEOUT with all of its checks printed and correct, because Debian's bash
-# turns bracketed paste off as it starts each command -- the first line of that
-# command's output arrives as ``ESC[?2004l CR <output>``, with the escape where
-# the anchored patterns look for the line to start. A synthesized transcript
-# cannot be trusted to carry that, so the judge is measured against this one.
+# The UART capture of an X3 board run at 300 MHz, byte for byte: only the
+# loader's interleaved stdout lines are removed, so every CR and every escape
+# sequence is the board's. Debian's bash turns bracketed paste off as it starts
+# each command, so the first line of each command's output arrives as
+# ``ESC[?2004l CR <output>``, with the escape where the anchored patterns look
+# for the line to start. A synthesized transcript cannot be trusted to carry
+# that, so the judge is also checked against this one.
 BOARD_CONSOLE = REPO_ROOT / "tests/fixtures/x3_linux_boot_console.log"
 # The site that run used, as its own log shows it.
 BOARD_NFSROOT = "192.168.77.1:/srv/frost/debian"
@@ -1366,12 +1359,12 @@ def board_console() -> str:
     return BOARD_CONSOLE.read_bytes().decode("utf-8", errors="replace")
 
 
-def test_the_board_run_that_timed_out_now_passes() -> None:
+def test_the_real_board_capture_ends_and_passes_the_stage() -> None:
     """The real capture ends the stage and passes the judge.
 
-    Every check in that run printed and was correct, and the stage still sat out
-    its 1200 s deadline: the mount line and the systemd state were unreadable
-    behind a bracketed-paste escape, so no predicate ever became true.
+    Every check in it printed and was correct, but the mount line and the
+    systemd state sit behind a bracketed-paste escape, which the predicates must
+    see past.
     """
     console = board_console()
     linux = hw.linux_stage(BOARD_ROOT)
@@ -1387,7 +1380,7 @@ def test_the_board_run_that_timed_out_now_passes() -> None:
 
 
 def test_the_fixture_still_carries_the_escapes_it_is_here_for() -> None:
-    """Cleaning the escapes out of the fixture would retire its coverage.
+    """The fixture keeps the escapes it exists to cover.
 
     The bracketed-paste sequences, the coloured systemd greeting and the CRs are
     the whole reason this file is a fixture rather than a transcript written here.
@@ -1401,7 +1394,7 @@ def test_the_fixture_still_carries_the_escapes_it_is_here_for() -> None:
 
 
 def test_the_anchored_patterns_need_the_escapes_removed() -> None:
-    """Why ``console_text`` exists, measured on the real capture.
+    """The anchored patterns read the real capture only after ``console_text``.
 
     Raw, the mount line and the state line match nothing, because the escape sits
     where the line starts; the same patterns read them once it is gone.
@@ -1451,9 +1444,9 @@ def test_the_real_prompts_fire_every_stimulus_in_order() -> None:
     into that buffer, so the triggers have to survive what the board sends: the
     prompt arrives as ``ESC[?2004h root@frost:~# `` and the getty's line as
     ``frost login: root (automatic login)``, which is what an autologin console
-    prints and what the login marker matches -- there is no prompt to answer, and
-    the answer the stage types is discarded by ``login``, which is why this
-    capture holds no stray command.
+    prints and what the login marker matches. There is no prompt to answer, and
+    ``login`` discards the answer the stage types, which is why this capture
+    holds no stray command.
     """
     raw = board_console()
     linux = hw.linux_stage(BOARD_ROOT)
@@ -1540,7 +1533,7 @@ def test_ecc_stage_verdict_follows_the_script_exit(monkeypatch: Any) -> None:
 
 
 def test_uart_echo_stage_keeps_its_single_probe() -> None:
-    """uart_echo still types its one probe at the prompt."""
+    """uart_echo types its one probe at the prompt."""
     echo = hw.build_stage("uart_echo", "x3", 1.0)
     assert echo.stimuli == ((hw.ECHO_PROMPT, hw.ECHO_PROBE + "\r"),)
     assert hw.next_stimulus(echo, "boot\r\nfrost> ", 0, 0) == (
@@ -1553,13 +1546,13 @@ def test_cpu_clock_override_reaches_the_loader_and_skips_score_checks() -> None:
     """FROST_CPU_CLK_HZ names a functional-validation bitstream's clock.
 
     The loader builds apps for it and the regression skips the CoreMark
-    baseline check, whose scores are recorded at the rated clock.
+    full-rate baseline check.
     """
     local = _load_hw_regression()
     rated, overridden = local.board_clock_freq("x3", {})
-    assert (rated, overridden) == (300_000_000, False)
-    assert local.board_clock_freq("x3", {"FROST_CPU_CLK_HZ": "150000000"}) == (
-        150_000_000,
+    assert (rated, overridden) == (322_265_625, False)
+    assert local.board_clock_freq("x3", {"FROST_CPU_CLK_HZ": "161132812"}) == (
+        161_132_812,
         True,
     )
     with pytest.raises(ValueError):
@@ -1574,7 +1567,7 @@ def test_cpu_clock_override_reaches_the_loader_and_skips_score_checks() -> None:
     assert not ok
     old = dict(local.os.environ)
     try:
-        local.os.environ["FROST_CPU_CLK_HZ"] = "150000000"
+        local.os.environ["FROST_CPU_CLK_HZ"] = "161132812"
         ok, note = local.check_score("x3", "coremark", baseline * 0.4, 5.0)
         assert ok
         assert "clock override" in note
@@ -1583,23 +1576,27 @@ def test_cpu_clock_override_reaches_the_loader_and_skips_score_checks() -> None:
         local.os.environ.update(old)
 
 
-def test_counters_absent_stage_follows_the_bitstream_perf_configuration(
+def test_counters_absent_stage_runs_at_every_clock(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """perf_off_test is loadable and a stage, but only at the rated clock.
+    """perf_off_test is a stage under a clock override too.
 
-    The production netlist leaves the profiling counters out, which is what
-    the app checks; a ``--cpu-clock-div`` bitstream includes them by default,
-    so the stage is dropped rather than failed there.
+    build.py leaves the profiling counters out unless --perf-counters asks for
+    them, at any clock, so the regression assumes them absent. Naming the
+    stage next to an unknown one shows it is accepted: only the unknown name
+    is rejected, and the valid list includes perf_off_test.
     """
     assert "perf_off_test" in hw.VALID_APPS
     assert "perf_off_test" in hw.regression_stages()
-    assert hw.PERF_COUNTERS_ABSENT_APPS == frozenset({"perf_off_test"})
-    monkeypatch.setenv("FROST_CPU_CLK_HZ", "150000000")
+    monkeypatch.setenv("FROST_CPU_CLK_HZ", "161132812")
     monkeypatch.setattr(
-        hw.sys, "argv", ["hw_regression.py", "--board", "x3", "perf_off_test"]
+        hw.sys,
+        "argv",
+        ["hw_regression.py", "--board", "x3", "perf_off_test", "no_such_stage"],
     )
     with pytest.raises(SystemExit) as rejected:
         hw.main()
     assert rejected.value.code == 2
-    assert "requires the rated-clock netlist" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "unknown stage(s): no_such_stage\n" in err
+    assert "perf_off_test" in err.split("valid stages:", 1)[1]

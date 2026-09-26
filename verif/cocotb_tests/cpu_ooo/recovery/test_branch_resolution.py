@@ -20,7 +20,6 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 from cocotb_tests.cpu_structs import (
-    MISPREDICT_COMMIT_FIELDS,
     BRANCH_UPDATE_FIELDS,
     RS_ISSUE_FIELDS,
 )
@@ -89,11 +88,6 @@ def _pack_rs_issue(fields: Mapping[str, int | bool]) -> int:
     return _pack_struct(RS_ISSUE_FIELDS, fields)
 
 
-def _pack_mispredict_commit(fields: Mapping[str, int | bool]) -> int:
-    """Pack a mispredict_commit_capture_t value."""
-    return _pack_struct(MISPREDICT_COMMIT_FIELDS, fields)
-
-
 def _read_branch_update(dut: Any) -> dict[str, Any]:
     """Read and unpack the branch update output."""
     return _unpack_struct(BRANCH_UPDATE_FIELDS, int(dut.o_branch_update.value))
@@ -122,7 +116,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_mispredict_active.value = 0
     dut.i_early_backend_recovery_pending.value = 0
     dut.i_mispredict_recovery_pending.value = 0
-    dut.i_mispredict_commit_q.value = 0
     dut.i_flush_for_trap.value = 0
     dut.i_flush_for_mret.value = 0
     dut.i_fence_i_flush.value = 0
@@ -170,7 +163,7 @@ def _drive_issue(dut: Any, fields: Mapping[str, int | bool]) -> None:
             "pc", int(issue["link_addr"]) - (2 if issue.get("is_compressed") else 4)
         )
     dut.i_rs_issue_int.value = _pack_rs_issue(issue)
-    # In production this is a same-edge FF twin of the INT stage2 rob_tag. Its
+    # In the core this is a same-edge FF twin of the INT stage2 rob_tag. Its
     # keep/dont_touch attributes stop synthesis from merging the two back.
     dut.i_branch_predicate_tag.value = int(issue["rob_tag"])
 
@@ -181,12 +174,11 @@ def _assert_no_branch_update(dut: Any) -> None:
     assert not update["valid"]
     assert not update["mispredicted"]
     assert not dut.o_branch_resolved_correct.value
-    assert not dut.o_branch_unresolved_decrement.value
 
 
 @cocotb.test()
-async def test_correct_beq_branch_updates_rob_and_decrements(dut: Any) -> None:
-    """A correctly predicted BEQ writes a resolved branch update."""
+async def test_correct_beq_branch_updates_rob_and_reports_correct(dut: Any) -> None:
+    """A correctly predicted BEQ writes a resolved branch update and reports it correct."""
     await _setup_test(dut)
 
     _drive_issue(
@@ -211,7 +203,6 @@ async def test_correct_beq_branch_updates_rob_and_decrements(dut: Any) -> None:
     assert update["target"] == 0x80000180
     assert not update["mispredicted"]
     assert dut.o_branch_resolved_correct.value
-    assert dut.o_branch_unresolved_decrement.value
     assert not dut.o_is_jalr_issue.value
     assert dut.o_branch_taken_resolved.value
     assert int(dut.o_branch_target_resolved.value) == 0x80000180
@@ -219,7 +210,7 @@ async def test_correct_beq_branch_updates_rob_and_decrements(dut: Any) -> None:
 
 @cocotb.test()
 async def test_direction_and_target_mispredictions_are_flagged(dut: Any) -> None:
-    """Direction and taken-target mismatches set the authoritative flag."""
+    """Direction and taken-target mismatches set the misprediction flag."""
     await _setup_test(dut)
 
     cases = [
@@ -259,7 +250,6 @@ async def test_direction_and_target_mispredictions_are_flagged(dut: Any) -> None
         assert update["target"] == case["expected_target"]
         assert update["mispredicted"]
         assert not dut.o_branch_resolved_correct.value
-        assert not dut.o_branch_unresolved_decrement.value
 
 
 @cocotb.test()
@@ -349,7 +339,7 @@ async def test_checkpoint_owner_validation_filters_stale_branches(dut: Any) -> N
 
 @cocotb.test()
 async def test_checkpoint_qualification_is_late_to_raw_resolution(dut: Any) -> None:
-    """A stale checkpoint masks the update, not the registered resolution inputs."""
+    """A stale checkpoint masks the update and JALR flag, not the raw condition and target."""
     await _setup_test(dut)
 
     _drive_issue(
@@ -371,7 +361,7 @@ async def test_checkpoint_qualification_is_late_to_raw_resolution(dut: Any) -> N
 
     # Owner validation runs in parallel with target selection, so the raw
     # stage2 JALR bit still selects the computed target. A stale checkpoint
-    # owner suppresses only the architecturally observed qualifiers.
+    # owner suppresses only the qualified outputs.
     _assert_no_branch_update(dut)
     assert not dut.o_is_jalr_issue.value
     assert dut.o_branch_taken_resolved.value
@@ -390,7 +380,7 @@ async def test_checkpoint_qualification_is_late_to_raw_resolution(dut: Any) -> N
 
 @cocotb.test()
 async def test_prediction_wrong_is_masked_only_at_branch_update(dut: Any) -> None:
-    """Raw direction mismatch stays parallel while stale-owner output is inert."""
+    """A stale checkpoint owner masks a direction mismatch only at the branch update."""
     await _setup_test(dut)
 
     _drive_issue(
@@ -427,12 +417,12 @@ async def test_prediction_wrong_is_masked_only_at_branch_update(dut: Any) -> Non
 
 @cocotb.test()
 async def test_predicate_anchor_is_local_to_qualification(dut: Any) -> None:
-    """The anchor qualifies resolution while the architectural tag writes ROB."""
+    """The predicate tag qualifies resolution; the issue's rob_tag goes to the ROB."""
     await _setup_test(dut)
 
     _drive_issue(dut, {"rob_tag": 7, "has_checkpoint": True, "checkpoint_id": 3})
     # Drive the two tag inputs apart to show which consumer each one feeds.
-    # Production asserts that the INT-stage2 copies are identical.
+    # In the core, reservation_station asserts that the two copies are equal.
     dut.i_branch_predicate_tag.value = 11
     dut.i_checkpoint_in_use.value = 1 << 3
     dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({3: 11})
@@ -493,12 +483,11 @@ async def test_partial_recovery_suppresses_only_flushed_entries(dut: Any) -> Non
 
 @cocotb.test()
 async def test_commit_recovery_suppresses_all_branch_resolution(dut: Any) -> None:
-    """Commit-time recovery suppresses all one-cycle stale branch issues."""
+    """Commit-time recovery suppresses every branch issue; its branch was the oldest."""
     await _setup_test(dut)
 
     _drive_issue(dut, {"rob_tag": 3})
     dut.i_mispredict_recovery_pending.value = 1
-    dut.i_mispredict_commit_q.value = _pack_mispredict_commit({"tag": 2})
     await _settle()
 
     _assert_no_branch_update(dut)
@@ -539,7 +528,8 @@ async def test_direct_branch_target_check_is_the_forwarded_bit(dut: Any) -> None
     """A direct branch's taken-target check is the one-bit ID compare, not an XLEN compare here."""
     await _setup_test(dut)
 
-    # Same instruction, same prediction: the forwarded bit alone decides.
+    # The forwarded bit decides the target check. predicted_target changes
+    # with it only because branch_resolution asserts that the two agree.
     for ok, mispredicted in ((True, False), (False, True)):
         _clear_inputs(dut)
         predicted = 0x80000180 if ok else 0x80000184
@@ -599,9 +589,9 @@ async def test_jalr_side_ram_row_agrees_with_the_packet(dut: Any) -> None:
     """A JALR's row link address matches imm and its own PC, mispredicted or not."""
     await _setup_test(dut)
 
-    # Uncompressed JALR at 0x80000100, predicted somewhere else entirely: the
-    # target compare is a legitimate misprediction and the row checks still
-    # hold, which is the case a target-equality oracle would have rejected.
+    # Uncompressed JALR at 0x80000100 predicted to an unrelated target: the
+    # target compare reports a misprediction and the row checks still hold. A
+    # wrong JALR prediction is an ordinary misprediction, not a row mismatch.
     _drive_issue(
         dut,
         {

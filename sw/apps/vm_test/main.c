@@ -15,25 +15,24 @@
  */
 
 /*
- * Sv39 data-translation directed test. Phase 3 M4 (plan D15).
+ * Sv39 data-translation directed test.
  *
- * The fetch side is untranslated until M5, so every translated access runs
- * through an MPRV window: M-mode sets mstatus.MPP to S or U and MPRV=1,
- * performs exactly the accesses under test, and drops MPRV. Code fetch and
- * the checker stay physical throughout. All traps come to M (medeleg=0) and
+ * Every translated access runs through an MPRV window: M-mode sets
+ * mstatus.MPP to S or U and MPRV=1, performs exactly the accesses under test,
+ * and drops MPRV. Code fetch and the checker stay physical throughout
+ * (itlb_test covers fetch translation). All traps come to M (medeleg=0) and
  * are recorded by the pma_fault_test-style bounce handler. The first fault
  * in a case wins; a case that does not fault falls through to an ecall,
  * which records cause 11. A trap inside a window is benign: the trap sets
- * MPP=M, so the handler and the continuation run untranslated even with
- * MPRV still up, and the case epilogue clears MPRV.
+ * MPP=M, so the handler runs untranslated even with MPRV still up. Its MRET
+ * back to M leaves MPRV set with MPP=U, so the continuation must make no data
+ * access before the case epilogue clears MPRV.
  *
- * Page tables live in cached DDR. The walker reads through the shared level,
- * never the L1D, so table stores become visible only through SFENCE.VMA's
- * L1D writeback-all. The test builds every table up front and publishes them
- * with one sfence, which is the software contract. Case K rewrites a PTE
- * mid-test and issues its own sfence. Data seeds need no publishing:
- * translated loads and stores use the same PA-indexed L1D that the M-mode
- * seeds dirtied.
+ * Page tables live in cached DDR. The test builds every table up front and
+ * publishes them with one sfence, which is the software contract. Case K
+ * rewrites a PTE mid-test and issues its own sfence. Data seeds need no
+ * publishing: translated loads and stores use the same PA-indexed L1D that
+ * the M-mode seeds dirtied.
  *
  * Matrix (fault cases check cause and mtval; loads also check the value):
  *   Q. M-mode accesses stay untranslated while satp holds Sv39 (MPRV=0).
@@ -54,24 +53,32 @@
  *      the original access type (page tables must live in cached DDR).
  *   J. Non-canonical VA -> 13 without walking, mtval = the full VA.
  *   K. sfence.vma visibility: PTE rewritten to a new frame, sfence, next
- *      access sees the new frame (the dirty-PTE writeback-all property).
- *   L. satp switch (D10): writing satp to a second pre-built root
- *      retargets the same VA with no explicit sfence.
+ *      access sees the new frame.
+ *   L. satp switch: writing satp to a second pre-built root retargets the
+ *      same VA with no explicit sfence (a satp write flushes the TLBs).
  *   W. Wrong-path loads and stores under translation: a loop that walks a
  *      NULL-terminated pointer list (the kernel's zonelist shape) exits on a
  *      mispredicted branch, so the squashed iteration's loads/stores from
  *      NULL+offset miss the DTLB and start walks that refuse. Neither a
  *      fault nor a stale address may reach the correct-path accesses that
- *      reuse the squashed ROB tags (the M7 Linux boot died here: a memory
- *      op that issued in the flush cycle survived in the translation stage).
+ *      reuse the squashed ROB tags; a squashed memory op that issues in the
+ *      flush cycle must not survive in the translation stage.
  *   M. LR/SC translated: LR+SC round-trip on R/W succeeds (rd=0); a bare
  *      SC to an R-only page -> 15 (SC must translate and fault; the
  *      may-fail-for-any-reason allowance never suppresses exceptions).
  *   N. AMO translated: amoadd round-trip on R/W; AMO to R-only -> 15.
- *   O. Device page: mtime readable through a mapped device-quadrant page.
- *   P. Bare-domain compliance (translation off, M-mode): misaligned SC ->
- *      6 (was silent failure) and misaligned AMO -> 6 (was 4), mtval
- *      exact.
+ *   O. Device page: mtime readable through a page mapped onto MMIO.
+ *   P. Translation off (M-mode): misaligned SC -> 6 and misaligned AMO -> 6,
+ *      mtval exact.
+ *   R. Atomics through device mappings: AMO -> 7, LR -> 5, SC -> 7 through
+ *      the 4 KiB device page, on the walk and on a DTLB hit, and AMOs
+ *      through a 2 MiB and a 1 GiB leaf over the device quadrant; mtval is
+ *      the VA.
+ *   X. Leaves onto unserved device addresses: loads -> 5 and stores -> 7
+ *      with the VA in mtval, through a 4 KiB page (on the walk), a 2 MiB
+ *      leaf (on a DTLB hit), and a 1 GiB leaf (on the walk and on a DTLB
+ *      hit). Served addresses in the same superpages (mtime, a PLIC
+ *      priority) still load without a trap.
  */
 
 #include <stdint.h>
@@ -216,9 +223,11 @@ static int report_val(const char *name, unsigned long got, unsigned long want)
  *   4K frames 0x8110_0000 + n*4K   2M frame 0x8120_0000
  *   1G-case touch offset 0x8300_0000 (inside the identity leaf)
  * Virtual layout: 4 KiB pages at 0x0040_0000 + n*4K (vpn2=0, vpn1=2,
- * vpn0=n); 2 MiB leaves at vpn1=16/17 (VA 0x0200_0000 / 0x0220_0000); the
- * 1 GiB identity leaf at vpn2=2 (VA 0x8000_0000); the bad-pointer subtree
- * at vpn2=1 (VA 0x4000_0000).
+ * vpn0=n); 2 MiB leaves at vpn1=16/17 (VA 0x0200_0000 / 0x0220_0000) and
+ * vpn1=18 (VA 0x0240_0000, onto PA 0x4000_0000); the 1 GiB identity leaf at
+ * vpn2=2 (VA 0x8000_0000); the bad-pointer subtree at vpn2=1 (VA
+ * 0x4000_0000); a 1 GiB leaf over the device quadrant at vpn2=3 (VA
+ * 0xC000_0000).
  * -------------------------------------------------------------------------- */
 #define PT_ROOT_A 0x81000000ul
 #define PT_ROOT_B 0x81001000ul
@@ -234,6 +243,8 @@ static int report_val(const char *name, unsigned long got, unsigned long want)
 #define VA_2M_MISALIGNED 0x02200000ul
 #define VA_1G_TOUCH 0x83000000ul
 #define VA_BADPTR 0x40000000ul
+#define VA_2M_DEVICE 0x02400000ul
+#define VA_1G_DEVICE 0xC0000000ul
 
 #define PTE_V (1ul << 0)
 #define PTE_R (1ul << 1)
@@ -276,16 +287,19 @@ static void build_tables(void)
 
     /* Root A: [0] -> L1 A; [1] -> pointer aimed at BRAM (walker PMA
      * refusal: page tables must live in cached DDR); [2] -> 1 GiB DDR
-     * identity leaf. */
+     * identity leaf; [3] -> 1 GiB leaf over the device quadrant. */
     root_a[0] = PTE_PPN(PT_L1_A) | PTE_V;
     root_a[1] = PTE_PPN(0x0ul) | PTE_V;
     root_a[2] = PTE_PPN(0x80000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    root_a[3] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
 
     /* L1 A: [2] -> L0 A (the VA_4K window); [16] -> 2 MiB leaf; [17] ->
-     * misaligned 2 MiB leaf (its PPN low bits are nonzero). */
+     * misaligned 2 MiB leaf (its PPN low bits are nonzero); [18] -> 2 MiB
+     * leaf over the start of the device quadrant. */
     l1_a[2] = PTE_PPN(PT_L0_A) | PTE_V;
     l1_a[16] = PTE_PPN(FRAME_2M) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
     l1_a[17] = PTE_PPN(FRAME(0)) | PTE_V | PTE_R | PTE_A;
+    l1_a[18] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
 
     /* L0 A permission flavors: VA_4K(n) -> FRAME(n). */
     l0_a[0] = PTE_PPN(FRAME(0)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
@@ -302,6 +316,7 @@ static void build_tables(void)
     l0_a[11] = PTE_PPN(0x40000000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* device */
     l0_a[12] = PTE_PPN(FRAME(12)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* K rewrite */
     l0_a[13] = PTE_PPN(FRAME(13)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;       /* LR/SC ok */
+    l0_a[14] = PTE_PPN(0x40100000ul) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;    /* unserved */
 
     /* Root B: same VA_4K(0) window backed by FRAME(14) (satp-switch). */
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
@@ -336,7 +351,7 @@ int main(void)
         ((volatile unsigned long *) (FRAME(0) + 0x800))[i] =
             0x2000000000000000ul + (unsigned long) i;
 
-    /* Publish the tables to the shared level, then enable Sv39. */
+    /* Publish the tables with an sfence, then enable Sv39. */
     sfence_vma();
     write_satp(SATP_SV39 | (PT_ROOT_A >> 12));
 
@@ -532,23 +547,24 @@ int main(void)
              "sc.w t3, t2, (t1)");
     all_ok &= report3("P1 misaligned-sc", 6, 0x81103002ul, 0, 0);
 
-    /* P2: misaligned AMO (translation off) -> 6 (was 4), mtval exact. */
+    /* P2: misaligned AMO (translation off) -> 6, mtval exact. */
     RUN_CASE("li  t1, 0x81103002\n"
              "amoadd.w t3, t2, (t1)");
     all_ok &= report3("P2 misaligned-amo", 6, 0x81103002ul, 0, 0);
 
     /* W: wrong-path NULL-pointer loads/stores under translation. The list
-     * has n live zonerefs then a NULL; the exit branch is mispredicted taken
-     * on the last iteration after n iterations trained it. The squashed
-     * iteration's loads at 16/32/136(NULL) (store variant: a store at
-     * 16(NULL)) miss the DTLB (VA 0 is unmapped in root A) and start walks
-     * that refuse. The correct path continues with loads (stores) that take
-     * the very ROB tags the squashed accesses held, with their base register
-     * set before the loop so no other instruction sits between the branch
-     * and them; they must complete unfaulted with their own addresses and
-     * data. Several list lengths and repeats vary the issue timing against
-     * the recovery flush. Expected cause: 11 (the trailing ecall). A capped
-     * walk (64 steps) records its cursor in g_val instead of running away. */
+     * has n live zonerefs then a NULL; the loop branch, trained taken by
+     * earlier iterations, is mispredicted at the exit. The squashed
+     * iteration's accesses from NULL (loads at 16/32/136; store variant: a
+     * load at 16 and a store at 32) miss the DTLB (VA 0 is unmapped in root
+     * A) and start walks that refuse. The correct path continues with loads
+     * (stores) that take the very ROB tags the squashed accesses held, with
+     * their base register set before the loop so no other instruction sits
+     * between the branch and them; they must complete unfaulted with their
+     * own addresses and data. Several list lengths and repeats vary the issue
+     * timing against the recovery flush. Expected cause: 11 (the trailing
+     * ecall). A 64-step cap stops a runaway loop and records its cursor in
+     * g_val. */
     for (int n = 1; n <= 6; n++) {
         for (int rep = 0; rep < 3; rep++) {
             volatile unsigned long *zl = (volatile unsigned long *) (FRAME(0) + 0x100);
@@ -604,17 +620,17 @@ int main(void)
             /* Store variant. The squashed iteration's accesses are a load
              * from 16(NULL), which occupies the translation stage with its
              * walk, then a store to 32(NULL), which issues in the recovery
-             * cycle and was the phantom. The correct path's second
-             * instruction after the branch is a store on that same tag: the
-             * cursor to VA_4K(13)+0x108 (a load from +0x100 takes the first
-             * tag), then t1 (0 at exit) to +0x110. The early store ports
-             * would prefill the correct-path store's address from a DTLB hit
-             * two cycles after dispatch, ahead of the squashed store's
-             * refused walk, so the target page is one the loop never touches
-             * and the DTLB is flushed first: the prefill drops, the issue
-             * port translates the store behind the squashed one, and the
-             * squashed store's fault reached the correct-path store on the
-             * unfixed RTL (cause 15, mtval 0x20). */
+             * cycle. The correct path's second instruction after the branch
+             * is a store on that same tag: the cursor to VA_4K(13)+0x108 (a
+             * load from +0x100 takes the first tag), then t1 (0 at exit) to
+             * +0x110. The early store ports would otherwise prefill the
+             * correct-path store's address from a DTLB hit, three cycles
+             * after dispatch and ahead of the squashed store's refused walk,
+             * so the target page is one the loop never touches and the DTLB
+             * is flushed first: the prefill drops, and the issue port
+             * translates the store behind the squashed one. The squashed
+             * store's fault leaking onto the correct-path store shows as
+             * cause 15, mtval 0x20. */
             g_val = 0;
             *(volatile unsigned long *) (FRAME(13) + 0x100) = 0x0D0D0D0D0D0D0D0Dul;
             *(volatile unsigned long *) (FRAME(13) + 0x108) = 0;
@@ -670,6 +686,70 @@ int main(void)
     }
     uart_puts(all_ok ? "[PASS] W wrong-path translated loads/stores\r\n"
                      : "[FAIL] W wrong-path translated loads/stores (see above)\r\n");
+
+    /* R: atomics through device mappings fault with the VA in mtval. The
+     * target is the UART RX status word (+0x24), which a read does not
+     * change. The walk cases start with an sfence. Setting MPRV also
+     * invalidates the DTLB, so the hit cases load through the leaf first,
+     * inside the same window. */
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040B024\n"
+             "amoor.w t3, zero, (t1)");
+    all_ok &= report3("R1 device-amo-walk", 7, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x0040B024\n"
+                   "lw   t2, 0(t1)\n"
+                   "amoor.w t3, zero, (t1)");
+    all_ok &= report3("R2 device-amo-hit", 7, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040B024\n"
+             "lr.w t3, (t1)");
+    all_ok &= report3("R3 device-lr-walk", 5, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x0040B024\n"
+                   "lw   t2, 0(t1)\n"
+                   "lr.w t3, (t1)");
+    all_ok &= report3("R4 device-lr-hit", 5, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040B024\n"
+             "sc.w t3, t2, (t1)");
+    all_ok &= report3("R5 device-sc-walk", 7, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x0040B024\n"
+                   "lw   t2, 0(t1)\n"
+                   "sc.w t3, t2, (t1)");
+    all_ok &= report3("R6 device-sc-hit", 7, VA_4K(11) + 0x24, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x02400024\n"
+             "amoor.w t3, zero, (t1)");
+    all_ok &= report3("R7 device-amo-2m", 7, VA_2M_DEVICE + 0x24, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0xC0000024\n"
+                   "lw   t2, 0(t1)\n"
+                   "amoor.w t3, zero, (t1)");
+    all_ok &= report3("R8 device-amo-1g-hit", 7, VA_1G_DEVICE + 0x24, 0, 0);
+
+    /* X: leaves onto unserved device addresses. The 4 KiB page at
+     * VA_4K(14) maps PA 0x4010_0000, where every access faults, so it is
+     * checked on the walk only. The superpage cases load a served register
+     * through the leaf first (mtime, a PLIC priority), so the faulting
+     * access hits the DTLB. */
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040E000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("X1 unserved-4k-load", 5, VA_4K(14), 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0x0040E008\n" SREG " t2, 0(t1)");
+    all_ok &= report3("X2 unserved-4k-store", 7, VA_4K(14) + 8, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x02400010\n"
+                   "lw   t2, 0(t1)\n"
+                   "li   t1, 0x02431000\n" LREG " t2, 0(t1)");
+    all_ok &= report3("X3 unserved-2m-load-hit", 5, VA_2M_DEVICE + 0x31000, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0x02400010\n"
+                   "lw   t2, 0(t1)\n"
+                   "li   t1, 0x02500000\n" SREG " t2, 0(t1)");
+    all_ok &= report3("X4 unserved-2m-store-hit", 7, VA_2M_DEVICE + 0x100000, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0xC4000004\n"
+                   "lw   t2, 0(t1)\n"
+                   "li   t1, 0xC4400000\n"
+                   "lw   t2, 0(t1)");
+    all_ok &= report3("X5 unserved-1g-load-hit", 5, VA_1G_DEVICE + 0x4400000, 0, 0);
+    RUN_CASE(WIN_S "li   t1, 0xC0000010\n"
+                   "lw   t2, 0(t1)\n"
+                   "li   t1, 0xC0031000\n"
+                   "sw   t2, 0(t1)");
+    all_ok &= report3("X6 unserved-1g-store-hit", 7, VA_1G_DEVICE + 0x31000, 0, 0);
+    RUN_CASE("sfence.vma\n" WIN_S "li   t1, 0xFFFFFFF8\n" LREG " t2, 0(t1)");
+    all_ok &= report3("X7 unserved-1g-load-walk", 5, 0xFFFFFFF8ul, 0, 0);
 
     /* Turn translation off before the exit path. */
     write_satp(0);

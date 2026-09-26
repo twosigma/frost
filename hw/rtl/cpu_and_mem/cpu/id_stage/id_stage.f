@@ -4,6 +4,9 @@
 # Instruction decoder - determines operation type from opcode/funct fields
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/id_stage/instr_decoder.sv
 
+# Dispatch operand classes - parallel to operation decode
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/id_stage/instr_operand_classifier.sv
+
 # Immediate value decoder - extracts I/S/B/U/J type immediates
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/id_stage/immediate_decoder.sv
 

@@ -32,11 +32,12 @@
  * reported absent, simply keeps the request up: the far side holds the
  * domain in reset asynchronously and answers when the clock returns), then
  * drops the request and waits for the domain to report itself out of reset.
- * o_*_ready is that state: a generation applied at least once since the
- * core's reset and current, domain out of reset, clock present. o_*_core_rst holds this domain's core-side FIFO half and
- * the engines' MAC-facing state until then. A clock loss in operation
- * starts a new generation by itself, so nothing resumes on stale state
- * when the clock returns; the CSR block refuses an enable while not ready.
+ * o_ready[d] is that state: a generation applied since the core's reset and
+ * equal to the current one, the domain out of reset, its clock present. Until
+ * then the domain's core-side FIFO half and the engines' MAC-facing state are
+ * held (o_core_rst_dom[d] is the inverse of o_ready[d]), and the CSR block
+ * refuses an enable. A clock loss in operation starts a new generation by
+ * itself, so nothing resumes on stale state when the clock returns.
  *
  * The far side's levels are synchronized here; the request and generation
  * levels toward it are registers.

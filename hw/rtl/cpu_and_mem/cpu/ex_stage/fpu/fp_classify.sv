@@ -31,7 +31,8 @@
     bit 8: rs1 is a signaling NaN
     bit 9: rs1 is a quiet NaN
 
-  Latency: 1 cycle (registered output to break timing path through FP forwarding)
+  Latency: 1 cycle. The output is registered to break the timing path from the
+  operand, which the reservation station can issue straight from the CDB.
 */
 module fp_classify #(
     parameter int unsigned FP_WIDTH = 32

@@ -18,20 +18,35 @@
  * Valid/ready FIFO between clocks with a fixed phase relationship, such as
  * MMCM-related main and divided clocks. Binary pointers cross through two-flop
  * synchronizers; storage is dual-clock block RAM. This is not a general
- * asynchronous FIFO: unrelated clocks require Gray-coded pointers.
+ * asynchronous FIFO: unrelated clocks require Gray-coded pointers
+ * (async_fifo).
  *
- * A consumer must not pop in the cycle right after o_valid rose, and must not
- * pop in two consecutive cycles. Either one re-pops the entry just presented
- * and skips its successor. The reason is that the storage read is registered
- * and lags the read pointer by one o_clk cycle, and o_data is loaded from
- * that registered read on the pop edge, so o_data is correct only two o_clk
- * cycles after the pointer last moved. Every consumer here complies: UART
- * byte rate, MMIO reads, and the debug slice writer's paced engine.
+ * The RAM holds up to DEPTH - 1 entries, besides the one in the output
+ * register. The write side sees the read pointer through its synchronizer, so
+ * its occupancy is never below the true one and its status outputs are
+ * conservative: o_ready (room for this write; the write is i_valid &&
+ * o_ready), o_almost_full (fewer than ALMOST_FULL_MARGIN more writes fit),
+ * and o_empty (every entry written has left the RAM for the output
+ * register). o_almost_full is an early warning for a writer that cannot check
+ * o_ready on every write, such as software that polls a status bit and then
+ * writes a burst.
+ *
+ * The storage read is registered and lags the read pointer by one o_clk
+ * cycle, so after o_data loads an entry the next load waits a cycle for that
+ * read. A consumer may take o_data in any cycle o_valid is high; one that
+ * takes it right after a load sees o_valid low for a cycle.
+ *
+ * Each side resets in its own domain, at its own clock edges, and a write
+ * during the write-side reset is dropped. Each side must apply its reset at
+ * one of its clock edges while the other side is still held in reset, so the
+ * resets must span several cycles of the slower clock. Otherwise one side
+ * works from the other side's old pointer: the status is wrong, stale entries
+ * can come out, and the pointers can stay out of step.
  */
 module dc_fifo #(
     parameter int unsigned DATA_WIDTH = 8,
     parameter int unsigned DEPTH = 4096,
-    parameter int unsigned READY_MARGIN = 1
+    parameter int unsigned ALMOST_FULL_MARGIN = 1
 ) (
     // Input (write) interface
     input  logic                  i_clk,
@@ -39,6 +54,8 @@ module dc_fifo #(
     input  logic [DATA_WIDTH-1:0] i_data,
     input  logic                  i_valid,
     output logic                  o_ready,
+    output logic                  o_almost_full,
+    output logic                  o_empty,
 
     // Output (read) interface
     input  logic                  o_clk,
@@ -50,11 +67,12 @@ module dc_fifo #(
 
 
   localparam int unsigned AddressWidth = $clog2(DEPTH);
-  localparam int unsigned EffectiveReadyMargin = (READY_MARGIN == 0) ? 1 : READY_MARGIN;
-  localparam int unsigned ReadyThresholdInt = (DEPTH > EffectiveReadyMargin) ?
-                                              (DEPTH - EffectiveReadyMargin) :
-                                              0;
-  localparam logic [AddressWidth:0] ReadyThreshold = (AddressWidth + 1)'(ReadyThresholdInt);
+
+  initial begin
+    if ((1 << AddressWidth) != DEPTH) $fatal(1, "dc_fifo: DEPTH must be a power of two");
+    if (ALMOST_FULL_MARGIN == 0 || ALMOST_FULL_MARGIN >= DEPTH)
+      $fatal(1, "dc_fifo: ALMOST_FULL_MARGIN must be in 1..DEPTH-1");
+  end
 
   // Dual-clock block RAM for crossing between clock domains
   logic [DATA_WIDTH-1:0] memory_read_data;
@@ -117,29 +135,36 @@ module dc_fifo #(
     end
   end
 
-  // FIFO is ready when there is enough free space for one write plus a small
-  // caller-selected margin for upstream pipeline delay.
-  logic [AddressWidth:0] write_occupancy_after_next;
-  assign write_occupancy_after_next = write_pointer_next - read_pointer_synchronized_stage2;
-  assign o_ready = write_occupancy_after_next <= ReadyThreshold;
+  // Write-side status from the occupancy seen through the synchronizer.
+  logic [AddressWidth:0] write_occupancy;
+  assign write_occupancy = write_pointer_in_input_domain - read_pointer_synchronized_stage2;
+  assign o_ready = write_occupancy < (AddressWidth + 1)'(DEPTH - 1);
+  assign o_almost_full = write_occupancy >= (AddressWidth + 1)'(DEPTH - ALMOST_FULL_MARGIN);
+  assign o_empty = write_pointer_in_input_domain == read_pointer_synchronized_stage2;
 
-  // Read clock domain logic (output side)
+  // Read clock domain logic (output side). memory_read_data holds the entry
+  // at the read pointer only if the pointer did not move at the last edge.
   logic read_data_valid_registered;
+  logic read_data_fresh;
+  logic take, load;
+  assign take = read_data_valid_registered && i_ready;
+  assign load = (!read_data_valid_registered || take) && read_data_fresh &&
+      (read_pointer_in_output_domain != write_pointer_synchronized_stage2);
 
   always @(posedge o_clk) begin
     if (o_rst) begin
       read_pointer_in_output_domain <= 0;
       read_data_valid_registered <= 0;
+      read_data_fresh <= 0;
     end else begin
-      // Pop when the output register is free and the FIFO is not empty.
-      if ((!read_data_valid_registered || i_ready) &&
-          (read_pointer_in_output_domain != write_pointer_synchronized_stage2)) begin
-        // Read data from memory (already registered in sdp_block_ram_dc)
+      read_data_fresh <= !load;
+      if (load) begin
+        // Load the next entry once the output register is free.
         o_data <= memory_read_data;
         read_pointer_in_output_domain <= read_pointer_next;
         read_data_valid_registered <= 1;
-      end else if (i_ready) begin
-        // FIFO is empty, so valid drops once the consumer takes what is here.
+      end else if (take) begin
+        // The consumer took the entry and no next one is ready yet.
         read_data_valid_registered <= 0;
       end
     end

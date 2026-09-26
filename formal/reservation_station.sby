@@ -10,14 +10,13 @@ bmc: depth 12
 cover: mode cover
 cover: depth 20
 bmc_tag_indexed: mode bmc
-# Shallower than the default-parameter bmc on purpose. The shipped INT_RS
-# configuration roughly doubles the model - a second payload bank, a second
-# stage2 bank and the balanced second-port selector - and boolector's per-step
-# cost grows steeply with it. On a fast desktop depth 7 is about 1.5 minutes;
-# step 8 alone then costs 6 more and step 9 another 6, so depth 12 runs past
-# the ceiling in tests/test_run_formal.py. The properties this task adds over
-# the default run bind within a few edges (dispatch, the two-cycle deferred
-# CDB delivery, tag ownership), and the default-parameter bmc still runs to 12.
+# Shallower than the default-parameter bmc on purpose. The INT_RS features
+# roughly double the model (a second payload bank, a second stage2 bank, and
+# the balanced second-port selector), and boolector's per-step cost grows
+# steeply with it, so depth 12 would run past the per-task timeout in
+# tests/test_run_formal.py. The properties this task adds over the default
+# run resolve within a few cycles (dispatch, the two-cycle deferred CDB
+# delivery, tag ownership), and the default-parameter bmc still runs to 12.
 bmc_tag_indexed: depth 7
 cover_tag_indexed: mode cover
 cover_tag_indexed: depth 20
@@ -33,20 +32,22 @@ read -sv mwp_dist_ram.sv
 read -sv mwp_dist_ram_ohread.sv
 read -formal -sv rs_issue2_selector.sv
 read -formal -sv reservation_station.sv
-# The tag_indexed tasks build the shipped INT_RS configuration, not just its
-# side RAM: u_int_rs in tomasulo_wrapper.sv is the only instance that enables
-# TAG_INDEXED_BRANCH_PAYLOAD, and it does so beside dual issue, the
+# The tag_indexed tasks check the INT_RS features at eight entries;
+# tomasulo_wrapper.sby checks the real sixteen-entry instance. u_int_rs in
+# tomasulo_wrapper.sv is the only instance that enables
+# TAG_INDEXED_BRANCH_PAYLOAD, together with dual issue, the
 # allocation-indexed repair, speculative and broadcast data writes, the issue
-# tag shadows and meta anchors, the branch predicate tag anchor and trusted
-# dispatch valid.  Every -set below is one of that instance's overrides; DEPTH,
+# tag shadows and meta anchors, the branch predicate tag anchor, and trusted
+# dispatch valid. Every -set below is one of that instance's overrides;
 # LANE1_ISSUE_BYPASS and DISPATCH_STATUS_RESERVE already match it at their
-# defaults.  One chparam call: yosys cannot reprocess a hierarchy once its top
-# has been chparam'd.
+# defaults. DEPTH stays at eight, with both ports scanning the whole station.
+# All overrides go in one chparam call, because yosys cannot reprocess a
+# hierarchy once its top has been chparam'd.
 #
-# The plain bmc/cover tasks stay on the module defaults.  That is the shape the
-# other five stations elaborate - src3 operands, the generic repair tag CAM,
-# a single issue port - and the INT configuration does not subsume it, so both
-# runs are kept.
+# The plain bmc/cover tasks keep the module defaults (src3 operands, the
+# generic repair tag CAM, a single issue port). No production station uses
+# exactly that set, but the INT configuration does not cover it, so both runs
+# are kept.
 tag_indexed: chparam -set TAG_INDEXED_BRANCH_PAYLOAD 1 -set DUAL_ISSUE 1 -set HAS_SRC3 0 -set DISPATCH_REPAIR_BYPASS 0 -set ISSUE_REPAIR_BYPASS 0 -set ALLOC_INDEXED_REPAIR 1 -set TRACK_INT_WRITEBACK_HINT 1 -set SPECULATIVE_DATA_WRITES 1 -set BROADCAST_FREE_SOURCE_VALUES 1 -set ISSUE_CDB_TAG_SHADOW 1 -set ISSUE_CDB_META_ANCHORS 1 -set CAPTURE_PRIMARY_EFFECTIVE_OPERANDS 1 -set BRANCH_PREDICATE_TAG_ANCHOR 1 -set TRUST_DISPATCH_VALID 1 reservation_station
 prep -top reservation_station
 

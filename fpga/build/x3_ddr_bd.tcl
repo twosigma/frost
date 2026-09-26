@@ -14,30 +14,33 @@
 
 # X3 (X3522PV, UltraScale+) DDR4 subsystem block design.
 #
-# DDR4 uses the card's MT40A1G16RC-062E memory, a dedicated 300 MHz AN27/AN28
-# clock, 72 physical bits, and 512-bit AXI. The proven 72-bit ECC configuration
-# requires S_AXI_CTRL, exposed only to JTAG at region offset 0x4000_0000.
-# ui_clk_sync_rst drives inverted c0_ddr4_aresetn; calibration drives mem_ok.
-# The external CPU bridge is 256-bit at core clock with 5-bit transaction
-# ids; JTAG loads DDR images. ECC also means the array has to be written
-# before it is read, which boards/x3/x3_ddr_init.sv does through S00_AXI
-# after calibration.
-# boards/x3/constr/x3.xdc constrains matching external interface names.
+# The controller drives the card's MT40A1G16RC-062E memory over a 72-bit ECC
+# interface, from a dedicated 300 MHz clock on AN27/AN28, and has a 512-bit AXI
+# port. With ECC the controller requires its S_AXI_CTRL management port, which
+# only the JTAG master reaches, at region offset 0x4000_0000. The inverted
+# ui_clk_sync_rst drives c0_ddr4_aresetn; calibration drives mem_ok. The CPU
+# bridge port is 256 bits wide on the CPU clock with 5-bit ids, and the JTAG
+# master loads DDR images. With ECC, every location must be written before it
+# is read; boards/x3/x3_ddr_init.sv writes the region through S00_AXI after
+# calibration. boards/x3/constr/x3.xdc constrains the external interface names.
 #
 # build_step.tcl creates the design; x3_frost.sv instantiates its wrapper.
 
 proc create_x3_ddr_bd {} {
+  if {[info exists ::env(FROST_CPU_BASE_CLK_HZ)] && $::env(FROST_CPU_BASE_CLK_HZ) ne ""} {
+    error "FROST_CPU_BASE_CLK_HZ is no longer supported; X3 uses 322265625 Hz"
+  }
   create_bd_design "ddr_subsys"
 
-  # CPU and JTAG/div4 clocks; DDR4 has a dedicated 300 MHz input below. Both
-  # rates follow build.py --cpu-clock-div (FROST_CPU_CLK_DIV, default 1:
-  # 300 MHz and 75 MHz) so SmartConnect's clock converters see the real
-  # ratio to the DDR4 UI clock.
+  # CPU and JTAG (CPU/4) clocks; the DDR4 controller has its own 300 MHz input
+  # below. Both rates follow build.py --cpu-clock-div (FROST_CPU_CLK_DIV,
+  # default 1: 322.265625 MHz and 80.56640625 MHz), so SmartConnect sees the
+  # real ratio to the DDR4 UI clock.
   set cpu_clk_div 1
   if {[info exists ::env(FROST_CPU_CLK_DIV)] && $::env(FROST_CPU_CLK_DIV) ne ""} {
     set cpu_clk_div $::env(FROST_CPU_CLK_DIV)
   }
-  set cpu_clk_hz [expr {300000000 / $cpu_clk_div}]
+  set cpu_clk_hz [expr {322265625 / $cpu_clk_div}]
   set cpu_clk [create_bd_port -dir I -type clk -freq_hz $cpu_clk_hz cpu_clk]
   set jtag_clk [create_bd_port -dir I -type clk -freq_hz [expr {$cpu_clk_hz / 4}] jtag_clk]
 
@@ -50,13 +53,13 @@ proc create_x3_ddr_bd {} {
   set_property CONFIG.POLARITY ACTIVE_LOW $jtag_aresetn
   create_bd_port -dir O mem_ok
 
-  # External 256-bit CPU bridge; 5-bit ids carry the cache hierarchy's
-  # line-transaction tags (L1D / walker+L1I / DMA under the top arbiter) so
-  # several transactions can be in flight and complete in any order across
-  # ids. The cache bridge issues single beats; two is for the power-up region
-  # writer (boards/x3/x3_ddr_init.sv), whose two beats are one 512-bit
-  # controller word, so its writes are whole words and the controller never
-  # reads the uninitialized array to recompute a check code.
+  # The 256-bit CPU bridge port. Its 5-bit ids carry the cache hierarchy's
+  # transaction ids (L1D, walker and L1I, DMA, below the top arbiter), so
+  # several transactions can be in flight and complete out of order across
+  # ids. The cache bridge issues single beats. The burst limit of two is for
+  # the power-up writer (boards/x3/x3_ddr_init.sv): its two beats form one
+  # 512-bit controller word, so the controller never reads the uninitialized
+  # array to recompute ECC for a partial write.
   set s00 [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 S00_AXI]
   set_property -dict [list \
     CONFIG.PROTOCOL {AXI4} \

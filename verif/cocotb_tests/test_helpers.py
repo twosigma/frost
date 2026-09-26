@@ -22,12 +22,11 @@ test never spells out the hierarchy itself. It also wraps the operations every
 bench needs: reset, waiting for ready, and register-file reads and writes.
 """
 
-import random
 from typing import Any
 from dataclasses import dataclass, field
 from cocotb.triggers import FallingEdge
 
-from config import DUTSignalPaths, MASK64
+from config import DUTSignalPaths
 from encoders.op_tables import LOADS, STORES
 from utils.validation import HardwareAssertions
 
@@ -57,7 +56,6 @@ def read_port_ram_entry(ram: Any, index: int) -> int:
 class TestStatistics:
     """Track instruction, branch, and memory-operation counts for a test."""
 
-    cycles_executed: int = 0
     instructions_executed: int = 0
     branches_taken: int = 0
     branches_not_taken: int = 0
@@ -92,7 +90,6 @@ class TestStatistics:
         """Generate statistics report."""
         lines = [
             "\n=== Test Statistics ===",
-            f"Total cycles: {self.cycles_executed}",
             f"Instructions executed: {self.instructions_executed}",
             f"Branches: {self.branches_taken} taken, {self.branches_not_taken} not taken",
             f"Memory ops: {self.loads_executed} loads, {self.stores_executed} stores",
@@ -108,8 +105,7 @@ class TestStatistics:
     def check_coverage(self, minimum_execution_count: int = 50) -> list[str]:
         """Check which instructions didn't meet minimum coverage threshold.
 
-        An instruction passes only on a strictly-greater-than check
-        (count > minimum_execution_count).
+        An instruction passes once it has run minimum_execution_count times.
 
         Args:
             minimum_execution_count: Minimum times each instruction should execute
@@ -119,7 +115,7 @@ class TestStatistics:
         """
         issues = []
         for operation, execution_count in self.coverage.items():
-            if execution_count <= minimum_execution_count:
+            if execution_count < minimum_execution_count:
                 issues.append(
                     f"{operation}: only {execution_count} executions (min: {minimum_execution_count})"
                 )
@@ -140,8 +136,8 @@ class DUTInterface:
         self.dut = dut
         self.paths = signal_paths or DUTSignalPaths()
 
-        # Random instruction tests drive instructions in directly, bypassing
-        # fetch, but the PC still flows through the IF stage and its branch
+        # The cpu_tb tests drive instructions in directly, bypassing fetch,
+        # but the PC still flows through the IF stage and its branch
         # prediction. Once the BTB has accumulated entries, predictions
         # redirect the PC and it no longer matches the sequential PC the test
         # expects, so prediction stays off.
@@ -221,10 +217,9 @@ class DUTInterface:
             path = self.paths.regfile_ram_rs2_path
         return self._navigate_signal_path(path)
 
-    # Number of read ports on the architectural register files
-    # (generic_regfile instances in the current cpu_ooo).
-    _INT_RF_READ_PORTS = 8
-    _FP_RF_READ_PORTS = 12
+    # Read ports on the architectural integer register file (NUM_READ_PORTS of
+    # its generic_regfile instance in ooo_register_files).
+    _INT_RF_READ_PORTS = 4
 
     def _int_regfile_inst(self) -> Any | None:
         """Return the architectural integer register-file instance for the cpu_ooo DUT.
@@ -233,16 +228,6 @@ class DUTInterface:
         """
         try:
             return self.dut.device_under_test.ooo_register_files_inst.regfile_inst
-        except Exception:
-            return None
-
-    def _fp_regfile_inst(self) -> Any | None:
-        """Return the architectural FP register-file instance for the cpu_ooo DUT.
-
-        Returns None when the hierarchy does not expose it (other toplevels).
-        """
-        try:
-            return self.dut.device_under_test.ooo_register_files_inst.fp_regfile_inst
         except Exception:
             return None
 
@@ -285,7 +270,7 @@ class DUTInterface:
 
         Args:
             reg: Register index (0-31)
-            ram_index: Legacy RAM-instance selector (only used by the fallback)
+            ram_index: Configured RAM path the fallback reads (0 = rs1, 1 = rs2)
 
         Returns:
             Register value
@@ -299,7 +284,7 @@ class DUTInterface:
             # Committed value = the bank chosen by the live-value table
             # (banked RAM) or the flat RAM contents (single-write RAM).
             return read_port_ram_entry(ram, reg)
-        # Fallback: legacy regfile RAM via the configured signal path.
+        # Fallback for a DUT without the cpu_ooo hierarchy: the configured path.
         ram = self._get_regfile_ram(ram_index)
         return read_port_ram_entry(ram, reg)
 
@@ -323,96 +308,12 @@ class DUTInterface:
                 regfile_inst, self._INT_RF_READ_PORTS, reg, value
             )
             return
-        # Fallback: legacy flat regfile RAM (rs1 + rs2 instances).
+        # Fallback for a DUT without the cpu_ooo hierarchy: flat rs1 and rs2
+        # RAMs at the configured paths.
         ram_rs1 = self._get_regfile_ram(0)
         ram_rs2 = self._get_regfile_ram(1)
         ram_rs1[reg].value = value
         ram_rs2[reg].value = value
-
-    def initialize_registers(self, seed_value: int | None = None) -> list[int]:
-        """Initialize all registers randomly and return the values."""
-        if seed_value is not None:
-            random.seed(seed_value)
-
-        values = [0] * 32
-        for i in range(1, 32):  # x0 always 0
-            values[i] = random.randint(0, 2**32 - 1)
-            self.write_register(i, values[i])
-
-        return values
-
-    def _get_fp_regfile_ram(self, ram_index: int = 0) -> Any:
-        """Get FP register file RAM instance.
-
-        Args:
-            ram_index: 0 for fs1 RAM, 1 for fs2 RAM, 2 for fs3 RAM
-
-        Returns:
-            FP register file RAM array
-        """
-        if ram_index == 0:
-            path = self.paths.fp_regfile_ram_fs1_path
-        elif ram_index == 1:
-            path = self.paths.fp_regfile_ram_fs2_path
-        else:
-            path = self.paths.fp_regfile_ram_fs3_path
-        return self._navigate_signal_path(path)
-
-    def read_fp_register(self, reg: int) -> int:
-        """Read an architectural FP register value (as raw bits) from hardware.
-
-        Args:
-            reg: FP register index (0-31)
-
-        Returns:
-            FP register raw bit value
-        """
-        HardwareAssertions.assert_register_valid(reg)
-        regfile_inst = self._fp_regfile_inst()
-        if regfile_inst is not None:
-            ram, _ = self._read_port_ram(regfile_inst, 0)
-            return read_port_ram_entry(ram, reg)
-        # Fallback: legacy FP regfile RAM via the configured signal path.
-        ram = self._get_fp_regfile_ram(0)
-        return read_port_ram_entry(ram, reg)
-
-    def write_fp_register(self, reg: int, value: int) -> None:
-        """Deposit an architectural FP register value into hardware.
-
-        Unlike integer registers where x0 is hardwired to zero,
-        all FP registers f0-f31 are writable.
-
-        Args:
-            reg: FP register index (0-31)
-            value: Value to write
-        """
-        HardwareAssertions.assert_register_valid(reg)
-        masked_value = value & MASK64
-        regfile_inst = self._fp_regfile_inst()
-        if regfile_inst is not None:
-            self._deposit_regfile_value(
-                regfile_inst, self._FP_RF_READ_PORTS, reg, masked_value
-            )
-            return
-        # Fallback: legacy flat FP regfile RAM (fs1 + fs2 + fs3 instances).
-        ram_fs1 = self._get_fp_regfile_ram(0)
-        ram_fs2 = self._get_fp_regfile_ram(1)
-        ram_fs3 = self._get_fp_regfile_ram(2)
-        ram_fs1[reg].value = masked_value
-        ram_fs2[reg].value = masked_value
-        ram_fs3[reg].value = masked_value
-
-    def initialize_fp_registers(self) -> list[int]:
-        """Initialize all FP registers to zero and return the values.
-
-        FP registers start at 0 to match the RTL reset state, so tests that
-        run back to back in one simulation start from the same values.
-        """
-        values = [0] * 32
-        for i in range(32):  # All FP registers are writable (unlike x0)
-            self.write_fp_register(i, 0)
-
-        return values
 
     async def wait_ready(self) -> int:
         """Wait for DUT to be ready.
@@ -429,8 +330,10 @@ class DUTInterface:
     async def reset_dut(self, cycles: int = 3) -> int:
         """Reset the DUT and return the number of clock cycles elapsed.
 
-        The cycle count is needed to synchronize CSR counter tracking,
-        since the RTL cycle counter runs during reset/cache-clear.
+        The count covers the ``cycles`` reset cycles and the wait for
+        o_rst_done. The RTL cycle counter holds at zero during reset and runs
+        during the wait, so a CSR counter model starts from the count minus
+        ``cycles``.
 
         Returns:
             Number of clock cycles elapsed during reset sequence

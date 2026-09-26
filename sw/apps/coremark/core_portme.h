@@ -55,8 +55,8 @@ Original Author: Shay Gal-on
 #define HAS_TIME_H 0
 #endif
 /* Configuration : USE_CLOCK
-        Define to 1 if platform has the time.h header file,
-        and implementation of functions thereof.
+        Define to 1 to time with clock() from time.h. This port times with the
+        cycle counter and ignores it.
 */
 #ifndef USE_CLOCK
 #define USE_CLOCK 0
@@ -68,8 +68,8 @@ Original Author: Shay Gal-on
 #define HAS_STDIO 0
 #endif
 /* Configuration : HAS_PRINTF
-        Define to 1 if the platform has stdio.h and implements the printf
-   function.
+        Define to 1 if the platform implements printf. This port maps it to
+   uart_printf.
 */
 #ifndef HAS_PRINTF
 #define HAS_PRINTF 1
@@ -102,12 +102,12 @@ typedef uint64_t CORE_TICKS;
 #endif
 
 /* Data Types :
-        To avoid compiler issues, define the data types that need ot be used for
+        To avoid compiler issues, define the data types that need to be used for
    8b, 16b and 32b in <core_portme.h>.
 
-        *Imprtant* :
+        *Important* :
         ee_ptr_int needs to be the data type used to hold pointers, otherwise
-   coremark may fail!!!
+   coremark may fail.
 */
 typedef signed short ee_s16;
 typedef unsigned short ee_u16;
@@ -138,33 +138,21 @@ typedef size_t ee_size_t;
 #endif
 
 /* Configuration : MEM_METHOD
-        Defines method to get a block of memry.
+        Defines method to get a block of memory.
 
         Valid values :
         MEM_MALLOC - for platforms that implement malloc and have malloc.h.
         MEM_STATIC - to use a static memory array.
-        MEM_STACK - to allocate the data block on the stack (NYI).
+        MEM_STACK - to allocate the data block on the stack.
 */
 #ifndef MEM_METHOD
 #define MEM_METHOD MEM_STACK
 #endif
 
 /* Configuration : MULTITHREAD
-        Define for parallel execution
-
-        Valid values :
-        1 - only one context (default).
-        N>1 - will execute N copies in parallel.
-
-        Note :
-        If this flag is defined to more then 1, an implementation for launching
-   parallel contexts must be defined.
-
-        Two sample implementations are provided. Use <USE_PTHREAD> or <USE_FORK>
-   to enable them.
-
-        It is valid to have a different implementation of <core_start_parallel>
-   and <core_end_parallel> in <core_portme.c>, to fit a particular architecture.
+        Number of contexts to run in parallel. This port supports only 1: a
+   larger value needs <core_start_parallel> and <core_stop_parallel>, which
+   <core_portme.c> does not provide.
 */
 #ifndef MULTITHREAD
 #define MULTITHREAD 1
@@ -179,10 +167,6 @@ typedef size_t ee_size_t;
         Valid values :
         0 - argc/argv to main is supported
         1 - argc/argv to main is not supported
-
-        Note :
-        This flag only matters if MULTITHREAD has been defined to a value
-   greater then 1.
 */
 #ifndef MAIN_HAS_NOARGC
 #define MAIN_HAS_NOARGC 1
@@ -200,7 +184,7 @@ typedef size_t ee_size_t;
 #endif
 
 /* Variable : default_num_contexts
-        Not used for this simple port, must contain the value 1.
+        Number of contexts; must be 1 for this port.
 */
 extern ee_u32 default_num_contexts;
 

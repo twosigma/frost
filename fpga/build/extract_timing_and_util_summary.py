@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Extract Vivado metrics and update the README utilization tables."""
+"""Refresh the root README's FPGA utilization table from the latest-stage Vivado reports."""
 
 import re
 from pathlib import Path
@@ -38,7 +38,8 @@ def extract_timing_summary(timing_rpt: str) -> dict[str, Any]:
     """Extract WNS, TNS, WHS, THS from timing report."""
     result: dict[str, Any] = {}
 
-    # Design Timing Summary begins with WNS, TNS, and setup endpoint counts.
+    # The Design Timing Summary row: WNS, TNS, and the setup endpoint counts,
+    # then WHS, THS, and the hold endpoint counts.
     pattern = r"WNS\(ns\)\s+TNS\(ns\).*?\n\s*-+\s*-+.*?\n\s*([-\d.]+)\s+([-\d.]+)\s+(\d+)\s+(\d+)\s+([-\d.]+)\s+([-\d.]+)\s+(\d+)\s+(\d+)"
     match = re.search(pattern, timing_rpt)
     if match:
@@ -51,7 +52,7 @@ def extract_timing_summary(timing_rpt: str) -> dict[str, Any]:
         result["ths_failing_endpoints"] = int(match.group(7))
         result["ths_total_endpoints"] = int(match.group(8))
 
-    # Success is setup-only; the extracted hold metrics remain diagnostic.
+    # timing_met reflects setup slack only; the hold numbers are informational.
     result["timing_met"] = result.get("wns_ns", float("-inf")) >= 0
 
     return result
@@ -94,8 +95,9 @@ def extract_x3_place_provenance(vivado_log: str) -> str | None:
         uncertainty = float(uncertainty_match.group(1))
         provenance += f"/{uncertainty:.3f}"
 
-    # Tcl records applied factors and their hierarchy patterns. Preserve them
-    # so a LOW variant is not described as its otherwise-identical control.
+    # build_step.tcl logs each applied cell-bloat factor with its hierarchy
+    # pattern. Include them, so a LOW-bloat variant is not described as the
+    # same recipe without bloat.
     bloat_matches = re.findall(
         r"^Set CELL_BLOAT_FACTOR (LOW|MEDIUM|HIGH) on ([1-9]\d*) cell\(s\) "
         r"matching '([^']+)'$",
@@ -104,8 +106,9 @@ def extract_x3_place_provenance(vivado_log: str) -> str | None:
     )
     for factor, _count, pattern in bloat_matches:
         provenance += f" + {factor} CELL_BLOAT_FACTOR on `{pattern}`"
-    # Match the helper's completed validation message, never a Tcl source echo
-    # or an environment request that may have failed before either pin swap.
+    # Match only the pin-swap helper's final success line, which it prints after
+    # validating both swaps. A Tcl source echo, or a request that failed before
+    # either swap, does not count.
     if re.search(
         r"^Applied two X3 PD target physical pin maps; logical function, "
         r"location and fixed flags unchanged$",
@@ -318,7 +321,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
     board_order = list(BOARD_INFO)
 
     def fmt_used(val: Any) -> str:
-        """Format a 'used' value with commas if integer, one decimal if float."""
+        """Format a used count with thousands separators, one decimal if fractional."""
         if val is None or val == "—":
             return "—"
         if isinstance(val, float):
@@ -390,7 +393,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
 
         for name, used_key, avail_key, pct_key in resources:
             used = util.get(used_key)
-            # Omit missing and zero-valued subresources.
+            # Skip rows with no value, and subresource rows whose count is zero.
             is_main = not name.startswith("  ")
             if used is None:
                 continue
@@ -400,7 +403,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
             avail = util.get(avail_key) if avail_key else None
             pct = util.get(pct_key) if pct_key else None
 
-            # Subresources without capacity data show only usage.
+            # Rows without capacity data show only usage.
             if avail is None:
                 lines.append(f"| {name} | {fmt_used(used)} | — | — |")
             else:
@@ -417,7 +420,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
 def update_readme_utilization(
     script_dir: Path, all_util: dict[str, dict[str, Any]]
 ) -> bool:
-    """Update the main README; return whether it changed successfully."""
+    """Write the utilization section to README.md; return whether it was written."""
     # The script lives under fpga/build/.
     repo_root = script_dir.parent.parent
     readme_path = repo_root / "README.md"

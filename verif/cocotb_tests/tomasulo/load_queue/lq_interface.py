@@ -27,17 +27,17 @@ from .lq_model import FuComplete
 from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
 from config import FLEN, INSTR_OP_WIDTH, MASK32, MASK64, MASK_XLEN, XLEN
 
-# Loads at or above this address ride the cached tier (slots); below it the
-# fast tier (BRAM/MMIO). Mirrors the LQ's CACHED_BASE default.
+# A launched load at or above this address uses the cached tier (a cs_* slot);
+# one below it uses the fast tier (low BRAM or device). Matches the LQ's
+# CACHED_BASE default.
 CACHED_BASE = 0x8000_0000
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-# instr_op_e values for atomics, parsed from riscv_pkg.sv by name so an
-# enum-membership edit cannot skew these ordinals. Hardcoded copies were
-# bitten by exactly that when ZIP/UNZIP were removed.
+# instr_op_e values for atomics, parsed from riscv_pkg.sv by name so adding or
+# removing an enum member cannot skew these ordinals.
 _INSTR_OPS = _parse_instr_op_enum()
 OP_WIDTH = INSTR_OP_WIDTH
 LR_W = _INSTR_OPS["LR_W"]
@@ -63,19 +63,22 @@ AMOMAX_D = _INSTR_OPS["AMOMAX_D"]
 AMOMINU_D = _INSTR_OPS["AMOMINU_D"]
 AMOMAXU_D = _INSTR_OPS["AMOMAXU_D"]
 
-# lq_alloc_req_t packed layout (MSB-first in SV):
+# Packed struct layouts, MSB first (the first declared field is the top bit).
+# The pack/unpack helpers walk them from the LSB.
+
+# lq_alloc_req_t:
 # valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1)
 # | amo_op(8) = 20 bits
 
-# lq_addr_update_t packed layout:
+# lq_addr_update_t:
 # valid(1) | rob_tag(5) | address(XLEN) | is_mmio(1) | fault_kind(2) | amo_rs2(XLEN)
 # = 137 bits at RV64 (fault_kind: riscv_pkg::data_fault_kind_e)
 
-# sq_forward_result_t packed layout:
-# data(64) | can_forward(1) | match(1) = 66 bits
+# sq_forward_result_t:
+# match(1) | can_forward(1) | data(64) = 66 bits
 
-# fu_complete_t packed layout:
-# fp_flags(5) | exc_cause(5) | exception(1) | value(64) | tag(5) | valid(1) = 81 bits
+# fu_complete_t:
+# valid(1) | tag(5) | value(64) | exception(1) | exc_cause(5) | fp_flags(5) = 81 bits
 
 
 def pack_lq_alloc(
@@ -220,9 +223,7 @@ class LQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
-        # Slot-2 alloc (2-wide dispatch plumbing). Verilator zero-inits
-        # top-module inputs, but initializing here, as for i_alloc, keeps
-        # the test independent of that and avoids X-propagation surprises.
+        # Second dispatch slot's allocation port.
         self.dut.i_alloc_2.value = 0
         self.dut.i_addr_update.value = 0
         self.dut.i_pre_issue_rob_tag.value = 0
@@ -434,7 +435,7 @@ class LQInterface:
         self.dut.i_mem_bus_busy.value = 1 if busy else 0
 
     def drive_mem_request_pending(self, pending: bool = True) -> None:
-        """Drive the router's exact staged-but-unaccepted request status."""
+        """Drive the router's pending bit (a request handed off but not yet accepted)."""
         self.dut.i_mem_request_pending.value = 1 if pending else 0
 
     def drive_cached_resp_held(self, held: bool = True) -> None:
@@ -504,7 +505,7 @@ class LQInterface:
         self.dut.i_flush_all.value = 0
 
     def drive_partial_flush(self, flush_tag: int, early_recovery: bool = False) -> None:
-        """Drive a partial flush, optionally from the early-recovery phase."""
+        """Drive a partial flush, optionally marked as early branch recovery."""
         self.dut.i_flush_en.value = 1
         self.dut.i_flush_tag.value = flush_tag & MASK_TAG
         self.dut.i_early_recovery_flush.value = 1 if early_recovery else 0
@@ -540,7 +541,12 @@ class LQInterface:
 
     @property
     def mem_outstanding(self) -> bool:
-        """Return whether the LQ is tracking a live memory response owner."""
+        """Return o_mem_outstanding: a fast-tier load or cached slot awaits a response.
+
+        A fast-tier load stops counting once a flush kills it, even if its response
+        is still owed and will be drained. A cached slot counts until it is freed,
+        even after a flush kills its load.
+        """
         return bool(self.dut.o_mem_outstanding.value)
 
     # =========================================================================

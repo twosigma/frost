@@ -1,5 +1,4 @@
-# Peripheral modules file list
-# Communication interfaces and I/O controllers
+# Peripheral modules file list. The NIC under nic/ has its own list, nic.f.
 
 # UART transmitter and receiver
 $(ROOT)/hw/rtl/peripherals/uart_tx.sv

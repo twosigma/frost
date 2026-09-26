@@ -14,13 +14,12 @@
 
 """Monitors for Reorder Buffer verification.
 
-Monitors run as background coroutines that continuously verify hardware
-outputs against expected values from the software model.
+Monitors run as background coroutines that check DUT outputs every cycle.
 
 Monitors:
-- CommitMonitor: Verifies commit outputs match expected values
-- AllocationMonitor: Verifies allocation responses
-- StatusMonitor: Verifies status signals (full, empty, count)
+- CommitMonitor: Verifies commit outputs against queued expected commits
+- AllocationMonitor: Verifies allocation responses against queued expectations
+- StatusMonitor: Checks that the status signals (full, empty, count) agree
 """
 
 import cocotb
@@ -31,6 +30,7 @@ from typing import Any
 from .reorder_buffer_model import ExpectedCommit
 from .reorder_buffer_interface import (
     unpack_alloc_response,
+    unpack_commit,
     read_commit_output,
     ALLOC_REQ_WIDTH,
 )
@@ -39,8 +39,11 @@ from .reorder_buffer_interface import (
 class CommitMonitor:
     """Monitor for commit output verification.
 
-    Checks every cycle for a commit. When the DUT commits an entry, the
-    monitor pops the expected commit from the queue and compares all fields.
+    Checks the slot-1 commit bus every cycle. When the DUT commits an entry,
+    the monitor pops the next expected commit and compares the fields listed
+    in _check_commit_dict, some only when they apply: value only with a
+    destination, exc_cause only on an exception, redirect_pc only on a
+    misprediction or MRET, and so on.
 
     Usage:
         expected_commits = deque()
@@ -239,7 +242,8 @@ class CommitMonitor:
 class AllocationMonitor:
     """Monitor for allocation response verification.
 
-    Verifies that allocation responses (ready, tag) match expected values.
+    Verifies that slot-1 allocation responses (ready, tag) match expected
+    values.
 
     Usage:
         expected_allocs = deque()
@@ -332,6 +336,13 @@ class StatusMonitor:
     """Monitor for status signal verification.
 
     Continuously checks that full, empty, and count signals are consistent.
+    o_full is the registered dispatch flag. It is set when the previous
+    cycle's occupancy plus its allocations filled the ROB (after a flush,
+    when the surviving entries do), with no credit for that cycle's
+    retirements. It therefore equals whether count plus the previous cycle's
+    retirements (the registered o_commit and o_commit_2 valids) reaches the
+    depth. The check relies on the dispatch contract that no allocation is
+    requested while the ROB is full.
 
     Usage:
         monitor = StatusMonitor(dut)
@@ -367,6 +378,10 @@ class StatusMonitor:
         full = bool(self.dut.o_full.value)
         empty = bool(self.dut.o_empty.value)
         count = int(self.dut.o_count.value)
+        retired = sum(
+            unpack_commit(int(commit.value))["valid"]
+            for commit in (self.dut.o_commit, self.dut.o_commit_2)
+        )
 
         errors = []
 
@@ -374,14 +389,14 @@ class StatusMonitor:
         if empty and count != 0:
             errors.append(f"empty=True but count={count}")
 
-        if full and count != self.depth:
-            errors.append(f"full=True but count={count} (expected {self.depth})")
+        if full != (count + retired == self.depth):
+            errors.append(
+                f"full={full} but count={count} with {retired} retirements "
+                f"in the previous cycle (depth {self.depth})"
+            )
 
-        if not full and not empty:
-            if count == 0:
-                errors.append("count=0 but empty=False")
-            if count == self.depth:
-                errors.append(f"count={self.depth} but full=False")
+        if not full and not empty and count == 0:
+            errors.append("count=0 but empty=False")
 
         # Can't be both full and empty
         if full and empty:

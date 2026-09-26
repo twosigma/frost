@@ -34,7 +34,6 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_stall.value = 0
     dut.i_flush.value = 0
-    dut.i_fence_i_flush.value = 0
     dut.i_stall_registered.value = 0
     dut.i_control_flow_holdoff.value = 0
     dut.i_any_holdoff_safe.value = 0
@@ -43,10 +42,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pending_prediction_active.value = 0
     dut.i_pending_prediction_target_handoff.value = 0
     dut.i_pending_prediction_target_holdoff.value = 0
-    dut.i_prediction_from_buffer_holdoff.value = 0
     dut.i_effective_instr.value = 0
-    dut.i_fetch_word_swapped.value = 0
-    dut.i_pc.value = PC_LO
     dut.i_pc_reg.value = PC_LO
     dut.i_is_compressed.value = 0
     dut.i_sel_nop.value = 0
@@ -110,11 +106,8 @@ async def test_reset_clears_registered_control_state(dut: Any) -> None:
     await _setup_test(dut)
 
     assert not dut.o_prev_was_compressed_at_lo.value
-    assert not dut.o_is_compressed_for_pc.value
     assert not dut.o_is_compressed_saved.value
     assert not dut.o_saved_values_valid.value
-    assert not dut.o_use_buffer_after_prediction.value
-    assert not dut.o_use_buffer_after_prediction_timing.value
 
 
 @cocotb.test()
@@ -126,8 +119,7 @@ async def test_compressed_low_half_arms_buffer_and_captures_words(dut: Any) -> N
     await _advance_cycle(dut)
 
     assert dut.o_prev_was_compressed_at_lo.value
-    assert dut.o_is_compressed_for_pc.value
-    assert dut.o_is_compressed_for_buffer.value
+    assert dut.is_compressed_for_buffer.value
     _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
 
@@ -141,26 +133,21 @@ async def test_slot2_valid_consumes_high_half_without_arming_buffer(dut: Any) ->
     await _advance_cycle(dut)
 
     assert not dut.o_prev_was_compressed_at_lo.value
-    assert dut.o_is_compressed_for_pc.value
 
 
 @cocotb.test()
-async def test_control_flow_holdoff_clears_buffer_state_and_pc_compression(
-    dut: Any,
-) -> None:
-    """Registered control-flow holdoff clears buffer state and PC-size metadata."""
+async def test_control_flow_holdoff_clears_buffer_state(dut: Any) -> None:
+    """A registered control-flow holdoff clears the buffer state."""
     await _setup_test(dut)
 
     _drive_instruction(dut, compressed=True)
     await _advance_cycle(dut)
     assert dut.o_prev_was_compressed_at_lo.value
-    assert dut.o_is_compressed_for_pc.value
 
     dut.i_control_flow_holdoff.value = 1
     await _advance_cycle(dut)
 
     assert not dut.o_prev_was_compressed_at_lo.value
-    assert not dut.o_is_compressed_for_pc.value
 
 
 @cocotb.test()
@@ -174,7 +161,6 @@ async def test_stall_start_saves_and_restores_instruction_metadata(dut: Any) -> 
 
     assert dut.o_saved_values_valid.value
     assert dut.o_is_compressed_saved.value
-    assert dut.o_is_compressed_for_pc.value
 
     dut.i_stall.value = 0
     dut.i_stall_registered.value = 1
@@ -186,7 +172,7 @@ async def test_stall_start_saves_and_restores_instruction_metadata(dut: Any) -> 
     )
     await _settle()
 
-    assert dut.o_is_compressed_for_buffer.value
+    assert dut.is_compressed_for_buffer.value
 
     await _advance_cycle(dut)
 
@@ -206,7 +192,6 @@ async def test_nop_at_stall_start_does_not_create_saved_values(dut: Any) -> None
 
     assert not dut.o_saved_values_valid.value
     assert not dut.o_is_compressed_saved.value
-    assert not dut.o_is_compressed_for_pc.value
 
 
 @cocotb.test()
@@ -246,64 +231,6 @@ async def test_prediction_reset_preserves_low_compressed_buffer_once(dut: Any) -
 
 
 @cocotb.test()
-async def test_prediction_from_buffer_holdoff_pulses_use_buffer_afterwards(
-    dut: Any,
-) -> None:
-    """Prediction release sets both use-buffer outputs.
-
-    Only the canonical output takes the registered flush, holdoff, and reset
-    masks. The timing cofactor keeps the pre-mask value, and the live
-    prediction_holdoff masks both.
-    """
-    await _setup_test(dut)
-
-    dut.i_prediction_from_buffer_holdoff.value = 1
-    await _advance_cycle(dut)
-
-    dut.i_prediction_from_buffer_holdoff.value = 0
-    await _settle()
-
-    assert dut.o_use_buffer_after_prediction.value
-    assert dut.o_use_buffer_after_prediction_timing.value
-
-    dut.i_fence_i_flush.value = 1
-    await _settle()
-
-    assert not dut.o_use_buffer_after_prediction.value
-    assert dut.o_use_buffer_after_prediction_timing.value, (
-        "FENCE-free timing cofactor must retain the pre-mask value while "
-        "the canonical aligner selection stays suppressed"
-    )
-    dut.i_fence_i_flush.value = 0
-    dut.i_control_flow_holdoff.value = 1
-    await _settle()
-
-    assert not dut.o_use_buffer_after_prediction.value
-    assert dut.o_use_buffer_after_prediction_timing.value, (
-        "holdoff-free timing cofactor must retain the pre-mask value while "
-        "the canonical aligner selection stays suppressed"
-    )
-    dut.i_control_flow_holdoff.value = 0
-    dut.i_prediction_reset_state.value = 1
-    await _settle()
-
-    assert not dut.o_use_buffer_after_prediction.value
-    assert dut.o_use_buffer_after_prediction_timing.value, (
-        "prediction-reset-free timing cofactor must retain the pre-mask value "
-        "while the canonical aligner selection stays suppressed"
-    )
-    # prediction_holdoff is not peeled out of the timing cofactor. It marks a
-    # live prediction-delivery cycle, not a registered redirect squash, so it
-    # still masks the timing-only consumers.
-    dut.i_prediction_reset_state.value = 0
-    dut.i_prediction_holdoff.value = 1
-    await _settle()
-
-    assert not dut.o_use_buffer_after_prediction.value
-    assert not dut.o_use_buffer_after_prediction_timing.value
-
-
-@cocotb.test()
 async def test_pending_prediction_target_holdoff_preserves_needed_buffer(
     dut: Any,
 ) -> None:
@@ -327,12 +254,6 @@ async def test_pending_prediction_target_holdoff_preserves_needed_buffer(
     assert dut.o_prev_was_compressed_at_lo.value
     _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
-    dut.i_pending_prediction_target_holdoff.value = 0
-    await _settle()
-
-    assert dut.o_use_buffer_after_prediction.value
-    assert dut.o_use_buffer_after_prediction_timing.value
-
 
 @cocotb.test()
 async def test_pending_prediction_capture_overrides_prediction_holdoff(
@@ -347,7 +268,6 @@ async def test_pending_prediction_capture_overrides_prediction_holdoff(
     await _advance_cycle(dut)
 
     assert dut.o_prev_was_compressed_at_lo.value
-    assert not dut.o_is_compressed_for_pc.value
     _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
 
@@ -355,7 +275,7 @@ async def test_pending_prediction_capture_overrides_prediction_holdoff(
 async def test_pending_handoff_dominates_compressed_buffer_valid_state(
     dut: Any,
 ) -> None:
-    """An atomic owner cannot make its captured wrong-path high half selectable."""
+    """A same-cycle target handoff never lets the captured wrong-path half be selected."""
     await _setup_test(dut)
 
     _drive_instruction(dut, compressed=True, pc_reg=PC_LO)
@@ -376,33 +296,3 @@ async def test_pending_handoff_dominates_compressed_buffer_valid_state(
     await _advance_cycle(dut)
 
     assert not dut.o_prev_was_compressed_at_lo.value
-    dut.i_pending_prediction_target_holdoff.value = 0
-    await _settle()
-    assert not dut.o_use_buffer_after_prediction.value
-
-
-@cocotb.test()
-async def test_is_compressed_for_pc_ignores_nops_and_pending_predictions(
-    dut: Any,
-) -> None:
-    """Registered PC compression metadata ignores NOP and pending-prediction cycles."""
-    await _setup_test(dut)
-
-    _drive_instruction(dut, compressed=True)
-    await _advance_cycle(dut)
-    assert dut.o_is_compressed_for_pc.value
-
-    _drive_instruction(dut, compressed=False)
-    dut.i_sel_nop.value = 1
-    await _advance_cycle(dut)
-    assert dut.o_is_compressed_for_pc.value
-
-    dut.i_sel_nop.value = 0
-    dut.i_pending_prediction_active.value = 1
-    await _advance_cycle(dut)
-    assert dut.o_is_compressed_for_pc.value
-
-    dut.i_pending_prediction_active.value = 0
-    dut.i_control_flow_holdoff.value = 1
-    await _advance_cycle(dut)
-    assert not dut.o_is_compressed_for_pc.value

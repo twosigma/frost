@@ -14,25 +14,24 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-r"""Capture the fetch-seam ILA of a ``build.py --debug-ila`` bitstream.
+r"""Capture the fetch ILA of a ``build.py --debug-ila`` bitstream.
 
-The debug core samples the IF stage, the fetch provider, the immu, the PD
-packet and the commit/trap pulses on the CPU clock. The trigger is the IF
-stage's fetch-fault packet at a page offset. Arming, waiting and collecting
-must share one Hardware Manager session, because the device refresh every new
-session performs resets the core; and the software loader's own refresh
-would reset a capture armed before it. So ``hook`` writes two scripts that
-``load_software.py`` (hence ``hw_regression.py``) sources through
+The ILA samples the IF stage, the fetch provider, the instruction MMU, the PD
+packet, and the commit and trap pulses on the CPU clock. It triggers on the IF
+stage's fetch-fault packet at a given page offset. Arming, waiting, and
+collecting must share one Hardware Manager session, because the device refresh
+that every new session performs resets the ILA, and the software loader's own
+refresh would reset a capture armed before it. So ``hook`` writes two scripts
+that the loader (``load_software.py``, and so ``hw_regression.py``) sources:
 ``FROST_ILA_ARM_HOOK`` right after its refresh, before the CPU is released,
-and through ``FROST_ILA_COLLECT_HOOK`` after the load, where it waits for the
-trigger and writes the CSV. ``capture`` is the standalone form for a program
-that is already running.
+and ``FROST_ILA_COLLECT_HOOK`` after the load, to wait for the trigger and
+write the CSV. ``capture`` is the standalone form for a program that is
+already running.
 
     ./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4
     FROST_ILA_ARM_HOOK=fpga/build/x3/work/ila_arm_hook.tcl \\
         FROST_ILA_COLLECT_HOOK=fpga/build/x3/work/ila_collect_hook.tcl \\
-        FROST_CPU_CLK_HZ=150000000 FROST_LINUX_LANE=mmu \\
-        ./fpga/hw_regression.py --board x3 linux_boot
+        FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 linux_boot
     ./fpga/debug/fetch_ila_report.py fpga/build/x3/work/fetch_ila.csv
 """
 
@@ -52,10 +51,10 @@ PC_PROBE_GLOB = "*dbg_ila_if_pd_pc*"
 
 
 def pc_trigger_value(offset_hex: str, width: int = 16) -> str:
-    """Return the ILA compare value for a page offset: the upper nibble is don't-care.
+    """Return the ILA compare value for a page offset, with higher digits don't-care.
 
-    The probes carry the PC's low 16 bits; a page offset is 12 of them, so
-    ``5e4`` becomes ``eq16'hX5E4``.
+    The PC probe carries the PC's low 16 bits and a page offset is the low 12,
+    so ``5e4`` becomes ``eq16'hX5E4``.
     """
     offset = int(offset_hex, 16)
     if not 0 <= offset < 0x1000:
@@ -93,13 +92,17 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("board", choices=["x3"], help="Target board")
     parser.add_argument(
-        "action", nargs="?", choices=["hook", "capture"], help="capture action"
+        "action",
+        nargs="?",
+        choices=["hook", "capture"],
+        help="hook: write the loader's arm and collect scripts; capture: run a "
+        "standalone capture",
     )
     parser.add_argument(
         "--offset",
         default="5e4",
         help="Page offset (hex, 12 bits) of the fetch-fault packet that triggers "
-        "(default: 5e4, the word after the vDSO sigreturn stub)",
+        "the capture (default: 5e4)",
     )
     parser.add_argument(
         "--trigger-position",

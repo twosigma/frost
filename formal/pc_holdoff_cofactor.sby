@@ -11,15 +11,19 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv
 read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_FETCH_HOLDOFF_ONLY -sv pc_controller.sv
-# Check all three actual fetch-holdoff equations for arbitrary state and
-# inputs. Prediction holdoffs use the captured-tag producer invariant and are
-# independently proved by pc_holdoff_tag.sby. Downstream arithmetic/tracker
-# leaves do not constrain these combinational fetch identities.
+# Check the three fetch-holdoff outputs against their reference equations
+# from arbitrary state and inputs. The prediction holdoffs rely on the
+# captured predecessor-PC tag invariant, so pc_holdoff_tag.sby proves them.
+# Cutting the control-flow tracker and PC-increment calculator leaves their
+# outputs arbitrary, which these combinational identities do not depend on.
 delete t:control_flow_tracker t:pc_increment_calculator
 proc
 setundef -undriven -anyseq
 opt
 prep -top pc_controller
+select -assert-count 3 t:$check
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

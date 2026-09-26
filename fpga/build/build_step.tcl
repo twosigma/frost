@@ -12,7 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Run one Vivado build step and directive; build.py uses this for parallel sweeps.
+# Run one Vivado build step with one directive, using the current directory as
+# its work directory. build.py runs the candidates of a place or route sweep as
+# separate Vivado processes, up to --jobs at a time.
 
 # Utilities
 
@@ -165,9 +167,9 @@ proc getenv_default {name default_value} {
 }
 
 # build.py --debug-ila: gather every MARK_DEBUG net (the FROST_DEBUG_FETCH_ILA
-# mirrors in the fetch seam) into one ILA on the CPU clock, one probe per
-# bus, bit 0 first. Runs on the synthesized design before the checkpoint is
-# written; write_bitstream then also writes the probes file.
+# mirrors) into one ILA on the CPU clock, one probe per bus, bit 0 first. Runs
+# on the synthesized design before the checkpoint is written; the bitstream
+# step then also writes the probes file.
 proc frost_insert_fetch_ila {clock_net_name depth} {
     set marked [get_nets -hierarchical -filter {MARK_DEBUG == 1}]
     if {[llength $marked] == 0} {
@@ -213,7 +215,7 @@ proc frost_insert_fetch_ila {clock_net_name depth} {
     # The core is implemented when the opt step reopens the checkpoint in
     # non-project mode; here (project mode) implement_debug_core insists on
     # a saved design. The definitions travel in the checkpoint's constraints.
-    puts "Fetch-seam ILA: $probe_index probes, depth $depth, clock $clock_net_name"
+    puts "Fetch ILA: $probe_index probes, depth $depth, clock $clock_net_name"
 }
 
 proc split_env_list {value} {
@@ -257,11 +259,10 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
     puts "Set x3 CPU setup clock uncertainty to $uncertainty ns ($reason)"
 }
 
-# Validate the selected-PC endpoint family of the X3 metadata-to-PC cost group:
-# one canonical FD* selected-PC endpoint per bit [63:0] (the PC carries the
-# full architectural width since Phase 3 M2 retired the producer-side 32-bit
-# masking), all on clock_from_mmcm, and no unexpected o_pc_reg* D-pin family
-# beyond selected PC and the excluded o_pc_reg_reg state family.
+# Validate the selected-PC endpoint family of the X3 metadata-to-PC path group:
+# one canonical (non-replica) FD* endpoint per PC bit [63:0], all clocked by
+# clock_from_mmcm, and no o_pc_reg* D pins outside the selected family and the
+# o_pc_reg_reg state family, which is validated separately.
 proc validate_x3_pc_tail_scope {scope_label} {
     set selected_end_re {^.*/pc_controller_inst/o_pc_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
@@ -484,11 +485,12 @@ proc validate_x3_pc_tail_start_connectivity {
     return $connected
 }
 
-# Discover the X3 metadata-to-PC cost group: the fourteen pinned scalar LUTRAM
-# overlay output-FF launches of the predecode metadata (seven sideband
+# Discover the X3 metadata-to-PC path group: the fourteen output-FF launches of
+# the pinned scalar LUTRAM overlays of the predecode metadata (seven sideband
 # predicates on both IMEM parities, imem_predecode.sv) feeding four disjoint PC
-# state/control families. Historical ``compressed`` procedure, key, group,
-# audit, and report names remain part of the artifact schema.
+# state/control families. The ``compressed`` in the procedure, key, group,
+# audit, and report names covers all fourteen launches; build.py reads the
+# audit keys and the report name.
 proc validate_x3_pc_compressed_tail_scope {scope_label} {
     set compressed_start_re {^.*/instruction_memory/u_(even|odd)_(is_compressed_lo|is_compressed_hi|even_local_pair_valid|pairable_native_lo|pairable_compressed_hi|pairable_native_hi|slot2_start_valid_lo)_bank/read_q_reg/C$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
@@ -616,11 +618,12 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
         file copy -force [file join $work_directory "phys_opt$suffix"] [file join $main_work_directory "$main_report_prefix$suffix"]
     }
 
-    # A running post-place sweep may be forked into a separate build directory.
-    # Publish its exact completed checkpoint identity only after all reports
-    # are written. The launch token prevents an earlier run's iteration record
-    # from authorizing a reused worker directory. Canonical lineage is still
-    # written by Python only when the entire stage exits successfully.
+    # build.py --snapshot-physopt-from can copy a completed post-place sweep
+    # while the stage is still running. Record the checkpoint's hash only after
+    # all reports are written. The launch token keeps an earlier run's
+    # iteration record from vouching for a reused worker directory. build.py
+    # still writes the stage's lineage sidecar, and only when the whole stage
+    # succeeds.
     set launch_file [file join $work_directory phys_opt_launch.json]
     if {$board_name eq "x3" && $step eq "post_place_physopt" && [file exists $launch_file]} {
         set launch_handle [open $launch_file r]
@@ -775,7 +778,7 @@ if {$step eq "synth"} {
             lappend current_verilog_defines $define_name
         }
     }
-    # build.py --debug-ila compiles the fetch-seam ILA mirrors in.
+    # build.py --debug-ila compiles the fetch ILA mirrors in.
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1" &&
         [lsearch -exact $current_verilog_defines FROST_DEBUG_FETCH_ILA] < 0} {
         lappend current_verilog_defines FROST_DEBUG_FETCH_ILA
@@ -825,6 +828,10 @@ if {$step eq "synth"} {
         lappend synth_args -generic PERF_COUNTERS=1
         puts "Profiling counters included (generic PERF_COUNTERS)"
     }
+    # A late module-level declaration can leave generated primitive inputs
+    # attached to separate, undriven implicit nets. Reject that ambiguity before
+    # Vivado ties those inputs to constants and reports timing on the wrong logic.
+    set_msg_config -id {Synth 8-605} -new_severity ERROR
     synth_design {*}$synth_args
 
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1"} {
@@ -847,14 +854,13 @@ if {$step eq "synth"} {
     }
     open_checkpoint $checkpoint_path
 
-    # build.py --debug-ila: the synthesis step defined the fetch-seam ILA;
+    # build.py --debug-ila: the synthesis step defined the fetch ILA;
     # instantiate it (and the debug hub) before optimization.
     if {[getenv_default FROST_DEBUG_ILA 0] eq "1" && [llength [get_debug_cores -quiet]] > 0} {
         implement_debug_core
-        puts "Fetch-seam ILA implemented: [llength [get_debug_cores]] debug core(s)"
+        puts "Fetch ILA implemented: [llength [get_debug_cores]] debug core(s)"
     }
 
-    # opt_design -merge_equivalent_drivers -hier_fanout_limit 512
     opt_design -directive $directive
 
     write_checkpoint -force $work_directory/post_opt.dcp
@@ -871,8 +877,8 @@ if {$step eq "synth"} {
         puts "Error: place step requires checkpoint_path"
         exit 1
     }
-    # These diagnostics belonged to retired multi-place/pin-edit recipes.
-    # No environment toggle can enable them in a production placement.
+    # Delete audits written by the diagnostic pin-swap and flush-guidance
+    # helpers; the production place step never runs those helpers.
     file delete $work_directory/post_place_pin_swap_audit.txt
     file delete $work_directory/post_place_flush_guidance_audit.tcldict
     open_checkpoint $checkpoint_path
@@ -898,26 +904,23 @@ if {$step eq "synth"} {
         }
     }
 
-    # X3 needs setup overconstraint for 300 MHz. build.py varies it downward
-    # from 0.500 ns in 0.050 ns steps as surrogate seeds and to ease packing.
-    # Guidance seeds retain their 0.500 ns starting point. Published checkpoints
-    # and scores use zero added uncertainty (X3_PLACE_REPORT_UNCERTAINTY_NS).
+    # X3 places with added setup uncertainty (overconstraint). build.py steps it
+    # down from 0.500 ns in 0.050 ns steps, as substitute seeds and to ease
+    # packing; 0.500 ns is also the default here. Published checkpoints and
+    # scores use zero added uncertainty (X3_PLACE_REPORT_UNCERTAINTY_NS).
     set x3_place_seed_baseline_uncertainty 0.5
     set x3_place_baseline_uncertainty 0.0
     set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_seed_baseline_uncertainty]
     set_x3_setup_uncertainty $board_name $x3_place_uncertainty "place overconstraint"
 
-    # Qualified X3 seeds use one PC-tail placer cost group, not timing
-    # exceptions: the fourteen predecode-metadata scalar launches to selected,
-    # state, sequential, and pending-valid consumers. Remove it after placement
-    # and verify all paths return to clock_from_mmcm on a clean reopen.
-    # Qualified solutions: ExtraNetDelay_high/0.500 (the accepted control),
-    # ExtraPostPlacementOpt/0.450, and ExtraPostPlacementOpt/0.425. The 0.425
-    # seed is the phase11 off-grid seed that first passed the post-demolition
-    # gate under the then-active fetch pblock (score -0.699, raw -0.199;
-    # 2026-08-20) and routed to closure. It remains competitive after that
-    # pblock's retirement, so build.py appends 0.425 through
-    # X3_PLACE_EXTRA_SEED_CANDIDATES.
+    # The guided X3 seeds (ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450,
+    # and ExtraPostPlacementOpt/0.425) place with one temporary path group, not
+    # a timing exception, from the fourteen predecode-metadata scalar launches
+    # to their selected, state, sequential, and pending-valid PC consumers. The
+    # group is removed after placement, and a clean reopen must show all of
+    # those paths back in clock_from_mmcm. This list must match
+    # X3_PC_TAIL_GUIDED_CANDIDATES in build.py; the 0.425 seed is off the 50 ps
+    # grid, so build.py adds it through X3_PLACE_EXTRA_SEED_CANDIDATES.
     set use_x3_pc_tail_group [expr {
         $board_name eq "x3" &&
         (($directive eq "ExtraNetDelay_high" &&
@@ -1005,8 +1008,8 @@ if {$step eq "synth"} {
     set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "real post-place scoring"
 
     if {$use_x3_pc_tail_group} {
-        # At the clean-reopen scoring boundary, test path ownership because
-        # Vivado may retain empty group objects.
+        # After the clean reopen, check which group the paths belong to: Vivado
+        # may keep an empty group object, so its existence proves nothing.
         write_checkpoint -force $work_directory/post_place.dcp
         close_design
         open_checkpoint $work_directory/post_place.dcp
@@ -1127,8 +1130,8 @@ if {$step eq "synth"} {
     write_failing_paths_csv $work_directory/post_place_failing_paths.csv $work_directory/post_place_timing.rpt
     # build.py vetoes seeds at the configured congestion level (default 5),
     # because overconstrained post-place WNS can favor unroutable density.
-    # This report also defaults to threshold 5. No listed windows does not
-    # measure zero congestion or exclude smaller congestion windows.
+    # This report lists only windows at its default threshold of 5 or above,
+    # so an empty list does not mean zero congestion.
     report_design_analysis -congestion -file $work_directory/post_place_congestion.rpt
     if {$use_x3_pc_tail_group} {
         report_timing -from $x3_pc_compressed_tail_starts_score -to $x3_pc_compressed_tail_ends_score -delay_type max -max_paths 1000 -nworst 10 -file $work_directory/post_place_pc_compressed_tail_timing.rpt
@@ -1142,8 +1145,9 @@ if {$step eq "synth"} {
     puts "** DONE — place_design complete with directive: $directive"
 
 } elseif {$step eq "quick_route"} {
-    # X3 seed-ranking probe, not a pipeline step. Clear overconstraint and run
-    # the cheapest route; emit reports but promote the original post_place.dcp.
+    # X3 seed-ranking probe, not a pipeline step. Clear the overconstraint and
+    # run the cheapest route for its reports only; build.py still promotes the
+    # unrouted post_place.dcp.
     if {$checkpoint_path eq ""} {
         puts "Error: quick_route step requires checkpoint_path"
         exit 1
@@ -1171,15 +1175,13 @@ if {$step eq "synth"} {
     }
     open_checkpoint $checkpoint_path
 
-    # The added setup uncertainty is stage-scoped. Post-place phys-opt sweeps
-    # under 0.5 ns, the overconstraint the placed checkpoint carried until it
-    # began to be written at zero (2026-09-11), so its initial and per-pass
-    # probe reports read pessimistic. The post-route sweeps run at 0.000 ns,
-    # the uncertainty route_design leaves in the checkpoint it writes, so the
-    # WNS driving their early exit and their promoted final.dcp decision is
-    # the real one. Every promoted report and every checkpoint handed on is
-    # taken at 0.000 ns either way. FROST_PHYSOPT_SETUP_UNCERTAINTY overrides
-    # the stage default.
+    # The added setup uncertainty depends on the stage. Post-place phys-opt
+    # sweeps under 0.5 ns of added setup uncertainty, so its initial and
+    # per-pass probe reports are pessimistic. The post-route sweeps run at
+    # 0.000 ns, the uncertainty the routed checkpoint already carries, so the
+    # WNS that drives their early exit and the final.dcp decision is the real
+    # one. Promoted reports and checkpoints are always taken at 0.000 ns.
+    # FROST_PHYSOPT_SETUP_UNCERTAINTY overrides the stage default.
     if {$step eq "post_place_physopt"} {
         set physopt_uncertainty_default 0.5
     } else {
@@ -1476,7 +1478,7 @@ if {$step eq "synth"} {
     }
     open_checkpoint $checkpoint_path
 
-    # Remove X3's placement overconstraint.
+    # Route X3 at zero added setup uncertainty, whatever the input carries.
     if {$board_name eq "x3"} {
         set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup
     }

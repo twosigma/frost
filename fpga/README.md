@@ -1,30 +1,22 @@
 # FPGA Build and Deployment
 
-Run these tools natively on the Linux host with Vivado (validated with 2025.2),
-Python 3.12+, a JTAG cable, and the [RISC-V toolchain](../docs/tooling.md#shared-risc-v-toolchain)
-on PATH. The supported target is the Alveo X3522PV at 300 MHz.
+These tools run natively on the Linux host, not in Docker. They need Vivado
+(validated with 2025.2), Python 3.12+, a JTAG cable, and the
+[RISC-V toolchain](../docs/tooling.md#shared-risc-v-toolchain) on PATH or in
+`linux/build-mmu/host/bin`. The supported target is the Alveo X3522PV at
+322.265625 MHz.
 
 ## Quick Start
 
 ```bash
-./fpga/build/build.py x3
-./fpga/program_bitstream/program_bitstream.py x3
-./fpga/load_software/load_software.py x3 coremark
+./fpga/build/build.py x3                            # build the bitstream (30-90 min)
+./fpga/program_bitstream/program_bitstream.py x3    # program the FPGA
+./fpga/load_software/load_software.py x3 coremark   # build and load an application
 ```
 
-The bitstream includes Hello World. Loading a new app rebuilds it by default
-and replaces BRAM/DDR contents without rebuilding the bitstream. Read the
-UART console at **115200 baud, 8N1**.
-
-```mermaid
-flowchart LR
-    RTL[RTL + board configuration] --> Build[Vivado build]
-    Build --> Bitstream[Program FPGA]
-    App[Application source] --> Compile[Build for board and clock]
-    Compile --> Load[Load DDR and BRAM]
-    Bitstream --> Load
-    Load --> Run[CPU starts after reset delay]
-```
+The bitstream boots Hello World. Loading an application rebuilds it and
+replaces the BRAM and DDR contents without touching the bitstream. The UART
+console runs at **115200 baud, 8N1**.
 
 ## Programming the FPGA
 
@@ -34,20 +26,20 @@ flowchart LR
 ./fpga/program_bitstream/program_bitstream.py x3 --bitstream path/to/image.bit
 ```
 
-Both programmer and loader accept:
+The programmer and the loader share these options:
 
 | Option | Behavior |
 |--------|----------|
-| `--list-targets` | List targets matching the board vendor; no app required |
+| `--list-targets` | List targets matching the board vendor |
 | `--target PATTERN` | Select by list index or case-insensitive name/serial substring |
-| `--target-exact NAME` | Require the full case-sensitive target name |
-| `--non-interactive` | Fail instead of prompting for ambiguous targets |
-| Positional remote hostname | Connect to remote `hw_server` on port 3121 |
-| `--hw-server-url HOST:PORT` | Use an existing caller-owned server; excludes the positional hostname |
+| `--target-exact NAME` | Require the full, case-sensitive target name |
+| `--non-interactive` | Fail instead of prompting when the target is ambiguous |
+| Positional hostname | Connect to `hw_server` on that host, port 3121 |
+| `--hw-server-url HOST:PORT` | Use an already running server instead of starting one |
 
-A unique target is selected automatically; it must contain exactly one FPGA.
-For remote use, start `hw_server -d` on that host first. Closing a Vivado
-client connection does not stop the server or release its cable.
+With a single target, it is selected automatically; it must contain exactly
+one FPGA. For a remote host, start `hw_server -d` there first. Closing a
+Vivado connection does not stop the server or release the cable.
 
 ## Loading Software
 
@@ -58,85 +50,90 @@ client connection does not stop the server or release its cable.
 ./fpga/load_software/load_software.py x3 coremark_pro_radix2 -v0
 ```
 
-Use `--help` for supported apps. CoreMark-PRO requires `-v1` (validation) or
-`-v0` (performance with board-calibrated iterations). The loader sets the app
-clock, loads DDR while holding the CPU in reset, then loads low BRAM. See the
-[board guide](../boards/README.md#jtag-based-software-loading) for reset timing.
+Run with `--help` for the list of applications. CoreMark-PRO needs `-v1`
+(validation) or `-v0` (performance, with board-calibrated iterations). The
+loader holds the CPU in reset while it loads DDR, then loads low BRAM; the
+CPU starts about 1.7 seconds after the last write (see the
+[board guide](../boards/README.md#jtag-based-software-loading)).
 
 | Option | Behavior |
 |--------|----------|
-| `--debug` | Source-debug build (`-Og -g3` for C); supports single-ELF apps |
-| `--build-only` | Compile without cable access; report `FROST_ELF` and `FROST_BUILD_COMPLETE` |
-| `--skip-build` | Validate and load existing single-ELF artifacts |
-| `--expected-build-config-sha256 HASH` | With `--skip-build`, require the earlier debug build's configuration hash |
+| `--ddr` | Build the application to run from cached DDR |
+| `--debug` | Debug build (`-Og -g3` for C) |
+| `--build-only` | Build and validate the images without touching the cable |
+| `--skip-build` | Load the existing build after checking its images and build settings |
+| `--expected-build-config-sha256 HASH` | With `--skip-build`, require the configuration hash reported by `--build-only --debug` |
 
-`--debug --build-only` also emits `FROST_DEBUG_BUILD` JSON for tool integration.
-`--skip-build` checks ELF/images, requested debug sections, and build settings;
-it does not establish source freshness. Keep build files unchanged until the
-load finishes, and use that ELF in GDB. CoreMark-PRO aliases share a build
-directory. `linux_boot` and `opensbi_smoke` are composite, load-only images.
+`--debug` and `--skip-build` apply to single-ELF applications, not the
+composite `linux_boot` and `opensbi_smoke` images. `--skip-build` does not
+check that the build matches the sources. Leave the build files alone until
+the load finishes and debug with that same ELF; the CoreMark-PRO workloads
+share one build directory, so building another one meanwhile replaces them.
 
-## Functional-validation builds
+## Divided-clock builds
 
-`--cpu-clock-div N` runs the CPU at 300/N MHz and adjusts UART, timers, loader,
-and initial software. DDR and Ethernet clocks remain unchanged. These builds
-use one `RuntimeOptimized` placement/route unless overridden and do not update
-the reference utilization table.
+`--cpu-clock-div N` divides the CPU clock by N for functional testing. UART,
+timers, the loader, and Hello World follow the divided clock; DDR and
+Ethernet keep their own clocks. Unless you pass sweep options, these builds
+place and route once, with `RuntimeOptimized`, so they finish much sooner.
+They don't update the utilization table in the root README.
 
-Set `FROST_CPU_CLK_HZ` to the actual bitstream clock for subsequent loads and
-regressions; this also adjusts the Linux device tree and disables rated-clock
-benchmark score gates.
+Loading and hardware regression assume the full-rate clock. For a divided
+build, set `FROST_CPU_CLK_HZ` to the actual clock; this also sets the clock in
+the Linux device tree and turns off the full-rate benchmark score gates.
 
 ```bash
 ./fpga/build/build.py x3 --cpu-clock-div 2
 ./fpga/program_bitstream/program_bitstream.py x3
-FROST_CPU_CLK_HZ=150000000 ./fpga/load_software/load_software.py x3 hello_world
-FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_test
+FROST_CPU_CLK_HZ=161132812 ./fpga/load_software/load_software.py x3 hello_world
+FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 hello_world itlb_test
 ```
 
 ## Profiling counters
 
-Counters default off at full rate and on in divided-clock builds.
-`--perf-counters` / `--no-perf-counters` select the `mperf*` hardware; absent
-counters read zero. The build CLI sets clock/counter values regardless of
-inherited `FROST_CPU_CLK_DIV` / `FROST_PERF_COUNTERS`. Resuming after synthesis
-retains the checkpoint's counter setting. See the
+`--perf-counters` includes the `mperf*` profiling counters. They are left out
+by default, at any clock, and the counter CSRs then read zero. The setting is
+fixed at synthesis. See the
 [counter reference](../hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/README.md).
 
 ## VS Code debugging
 
-The [FROST extension](../tools/vscode-frost/README.md) manages programming,
-loading, debugging, the serial console, and cable handoff. Run **FROST:
-Configure Target** after installation.
+The [FROST extension](../tools/vscode-frost/README.md) handles programming,
+loading, debugging, the serial console, and handing the cable between Vivado
+and OpenOCD. Run **FROST: Configure Target** after installing it.
 
-For command-line debugging, load a matching debug ELF, wait for image reset,
-stop the owning Vivado `hw_server`, then run:
+To debug from the command line, load a `--debug` build and wait for the image
+reset to release the CPU (1.9 s at full rate, 3.6 s at half rate). Stop the
+Vivado `hw_server` that owns the cable, then run:
 
 ```bash
 openocd -f fpga/debug/openocd_x3.cfg
-riscv64-linux-gdb sw/apps/hello_world/sw.elf -ex 'target extended-remote :3333'
+riscv64-linux-gdb sw/apps/hello_world/sw.elf \
+  -ex 'mem 0 0x40000 rw' -ex 'mem 0x80000000 0xc0000000 rw' \
+  -ex 'set mem inaccessible-by-default on' \
+  -ex 'target extended-remote :3333'
 ```
 
-The reset wait including guard is `ceil(4 * 2^27 * 1000 / CPU_clock_Hz) + 250`
-ms: 2040 ms at 300 MHz, 3830 ms at 150 MHz. Whole images use the JTAG loader;
-program-buffer memory access is slower. Software breakpoints work in BRAM
-and DDR; hardware breakpoints and data watchpoints are unavailable.
+The `mem` commands limit GDB to BRAM and DDR, so it never reads a device
+register that has read side effects, such as the UART receive register.
+Software breakpoints work in BRAM and DDR; hardware breakpoints and
+watchpoints are not available. Debugger memory access is slow, so load whole
+images with the JTAG loader rather than through GDB. See the
+[debugger limits](../tools/vscode-frost/README.md#debugger-scope).
 
-The manual [.vscode launch configuration](../.vscode/launch.json) attaches to
-an already loaded image using **FROST: X3 loaded hello_world (Phase A)** and
-the matching OpenOCD task. It attaches at the current PC without reset or a
-`main` stop. Check `.vscode/openocd-phase-a.log` before retrying failures.
-Finish by pausing, entering `-exec detach`, stopping the session, and terminating
-the OpenOCD task before returning to Vivado. Reload after a debugger crash or
-when initialized DDR data must be restored. GDB excludes device registers
-with read side effects; see [debugger limits](../tools/vscode-frost/README.md#debugger-scope).
+[`.vscode/launch.json`](../.vscode/launch.json) also has a manual
+configuration, **FROST: X3 loaded hello_world**, that attaches to an already
+loaded image at its current PC, with a matching OpenOCD task that logs to
+`.vscode/openocd.log`. To give the cable back to Vivado, pause,
+enter `-exec detach`, stop the session, and end the OpenOCD task. Reload the
+image after a debugger crash, or when initialized DDR data must be restored.
 
 ## Hardware regression
 
-`hw_regression.py` runs bare-metal apps, all nine CoreMark-PRO workloads,
-Debian from NFS, and an end-of-run ECC check. Prepare the
-[Debian export](../docs/debian_nfsroot.md#hardware-regression) and set the
-Git-ignored `fpga/site.env`:
+`hw_regression.py` runs the bare-metal applications, all nine CoreMark-PRO
+workloads, and Debian from an NFS root, then checks for DDR ECC errors.
+Prepare the [Debian export](../docs/debian_nfsroot.md#hardware-regression) and
+describe it in the Git-ignored `fpga/site.env`:
 
 ```text
 FROST_LINUX_NFSROOT=192.0.2.1:/srv/nfs/debian
@@ -144,93 +141,68 @@ FROST_LINUX_IP=192.0.2.2::192.0.2.1:255.255.255.0:frost:eth0:off
 ```
 
 ```bash
-./fpga/hw_regression.py --board x3
+./fpga/hw_regression.py --board x3                # every stage
+./fpga/hw_regression.py --board x3 linux_boot     # selected stages
 ```
 
 The runner needs local access to the export, write access to its
 `usr/local/bin`, and a Linux cross compiler (`FROST_LINUX_CROSS_COMPILE`
-overrides discovery). It uses the pinned kernel and matching initramfs; `FROST_LINUX_KERNEL` and
-`FROST_LINUX_INITRD` override them. Environment values override `site.env`.
-Preflight reports `ENV_FAIL` before board access. Interactive `debug_target`
-and `nic_echo` are excluded; `perf_off_test` is skipped on profiled divided-clock
-builds. `--timeout` includes build/load time, with workload-specific minimums
-(X3 ZIP needs 600 seconds).
+overrides discovery). It boots the pinned Debian kernel with the matching
+initramfs from the export; `FROST_LINUX_KERNEL` and `FROST_LINUX_INITRD`
+override them, and environment variables override `site.env`. Setup problems
+are reported as `ENV_FAIL` before the board is touched.
 
-`ddr_ecc/ddr_ecc_status.py` reads accumulated controller errors; `--clear`
-starts a new measurement interval. `linux_boot_soak.py` repeats boots of the
-smaller test image.
+The interactive `debug_target` and `nic_echo` applications are not run.
+`perf_off_test` checks that the profiling counters are absent, so it fails
+against a bitstream built with `--perf-counters`. `--timeout` covers build and
+load time; some workloads need more (X3 ZIP needs 600 seconds).
+
+`ddr_ecc/ddr_ecc_status.py` reads the DDR controller's accumulated error
+counts; `--clear` starts a new interval. `linux_boot_soak.py` boots the
+Buildroot test image repeatedly.
 
 ## Building
 
-`build/build.py` compiles `hello_world` into the board's initial BRAM
-contents, then runs the Vivado pipeline. Every step writes a checkpoint, so
-`--start-at` and `--stop-after` can resume from or stop after any step.
-Non-sweep steps use their defaults unless a `--*-directive` flag overrides
-them.
+`build/build.py` compiles `hello_world` into the initial BRAM contents, then
+runs Vivado: `synth`, `opt`, `place`, `post_place_physopt`, `route`,
+`post_route_physopt`, `second_route`, and `post_second_route_physopt`, then
+the bitstream. Each step saves a checkpoint, so `--start-at` and
+`--stop-after` can resume or stop at any step. Resuming keeps the synthesized
+design; RTL changes need a new synthesis.
 
-`--jobs N` (or `-j N`, default 12) limits concurrent Vivado sweep jobs per
-invocation. It does not change each process's thread count. Account for
-combined memory use when running multiple builds on one host.
+On X3, placement and routing are sweeps. Placement runs several directives,
+each at several setup-uncertainty values, and keeps the best result; both
+route steps try several directives. `--jobs N` (default 12) limits how many
+Vivado processes run at once, so watch memory when running several builds.
+`--directives`, `--num-uncertainties`, and `--route-directives` narrow the
+sweeps. `build.py --help` describes every step and default.
 
-X3 placement uses a sweep; `--place-directive` is ignored. Defaults are:
+If no placement reaches −0.200 ns setup slack, the build warns and continues
+with the best one. The X3 CPU datapath has no false-path or multicycle
+exceptions.
 
-- Four directives: `ExtraNetDelay_high`, `ExtraPostPlacementOpt`,
-  `AltSpreadLogic_high`, and `AltSpreadLogic_medium`.
-- Six setup uncertainties from 0.500 to 0.250 ns, plus an off-grid
-  `ExtraPostPlacementOpt`/0.425 seed.
-- Two integer-RS `CELL_BLOAT_FACTOR=LOW` variants at
-  `ExtraNetDelay_high`/0.350 and `ExtraPostPlacementOpt`/0.450: 27 jobs total.
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `FROST_PLACE_CONGESTION_VETO_LEVEL` | `5` | Among placements that meet timing, drop those whose congestion estimate reaches this level; if that drops them all, keep the least congested |
+| `FROST_PLACE_QUICK_ROUTE_COUNT` | `0` | Quick-route this many passing placements and choose by routed slack |
+| `FROST_PLACE_CELL_BLOAT` | unset | `LOW`, `MEDIUM`, or `HIGH` cell bloat for every placement, or empty for none. Setting this or the next variable turns off the automatic `LOW` variants |
+| `FROST_PLACE_CELL_BLOAT_CELLS` | `*u_tomasulo/u_int_rs` | Hierarchy patterns to bloat |
+| `FROST_PHYSOPT_SETUP_UNCERTAINTY` | 0.5 ns after placement, 0 after routing | Added setup uncertainty for every phys_opt step |
+| `FROST_GTY_RX_EQ` | `LPM` | NIC transceiver receive equalizer (`LPM` or `DFE`) |
 
-Use `--directives` to choose directives and `--num-uncertainties` for 1–10
-values in 50 ps steps from 0.500 ns. The off-grid seed is included once;
-LOW variants are included only when their base recipe is selected.
-Divided-clock builds omit the extra variants.
+Promoted reports and checkpoints always use zero added uncertainty.
 
-Set `FROST_PLACE_CELL_BLOAT` to `LOW`, `MEDIUM`, `HIGH`, or empty for none.
-`FROST_PLACE_CELL_BLOAT_CELLS` accepts comma- or space-separated hierarchy
-patterns, defaulting to `*u_tomasulo/u_int_rs`. Setting either variable
-disables the automatic LOW variants.
+Resumed steps check the metadata files saved beside each checkpoint, so copy
+a build directory as a whole. A new synthesis or `opt` result invalidates the
+placement: rerun placement before resuming later steps. Only full-rate builds
+update the utilization table in the root README;
+`./fpga/build/extract_timing_and_util_summary.py` refreshes it from the most
+advanced stage with a utilization report in the build directory, trying
+`final`, `post_route`, `post_place_physopt`, `post_place`, `post_opt`, then
+`post_synth`.
 
-Both route stages sweep `Explore`, `AggressiveExplore`, `NoTimingRelaxation`,
-and `AlternateCLBRouting`. Override with `--route-directives`; a single
-directive runs once and streams output to the terminal. Divided-clock builds
-use one `RuntimeOptimized` route by default.
-
-Placement below −0.200 ns setup slack at the actual CPU clock with zero added
-setup uncertainty produces a warning. If no candidate meets that threshold,
-the build continues with the best checkpoint and reports into post-place
-phys-opt. The X3 CPU datapath uses no false-path or multicycle timing exceptions.
-
-Passing candidates are ranked by congestion and timing:
-
-- `FROST_PLACE_CONGESTION_VETO_LEVEL` defaults to 5. If every candidate is
-  vetoed, those with the lowest congestion survive. In reports, `none` means
-  no windows reached the reporting threshold; `N/A` means the report was unreadable.
-- `FROST_PLACE_QUICK_ROUTE_COUNT` defaults to 0. A positive value probes
-  leading candidates and selects by routed WNS; otherwise post-place WNS wins.
-- Post-place phys-opt runs with 0.500 ns added setup uncertainty; routing and
-  post-route phys-opt use 0.000 ns. Promoted reports and checkpoints always
-  use 0.000 ns. `FROST_PHYSOPT_SETUP_UNCERTAINTY` overrides all three phys-opt
-  stages, so it also affects post-route sweeps.
-
-Keep `post_place_gate.txt`, `post_place_gate_binding.json`, and
-`*.lineage.json` alongside their checkpoints when copying a build directory.
-Resumed stages verify this metadata against their inputs. A new synthesis or
-optimization result invalidates the previous placement approval, so rerun
-placement before resuming downstream stages. Missing or stale downstream
-lineage requires `--start-at post_place_physopt` from a qualified placement.
-`netlist_config.json` records whether the netlist includes profiling counters.
-
-Promoting a new post-opt checkpoint removes `audit_post_opt_*` and
-`post_opt_fence_*` reports from the work directory. Save any reports you need
-before rerunning optimization.
-
-The build updates the root README's utilization table from its last completed
-stage. The standalone `build/extract_timing_and_util_summary.py` instead uses
-the most advanced available reports.
-
-To route a completed phys-opt sweep while further sweeps continue, fork it
-into a separate board build directory:
+To route a finished phys_opt sweep while the original build keeps going, fork
+it into a new build directory:
 
 ```bash
 ./fpga/build/build.py x3 --start-at route --stop-after route \
@@ -238,65 +210,45 @@ into a separate board build directory:
   --build-dir fpga/build/x3/work_early_route --jobs 2
 ```
 
-The destination must be new. The snapshot copies a completed sweep with its
-placement, reports, and metadata, and verifies that the source stays unchanged
-during the copy. A running sweep needs a launch manifest; otherwise wait for
-the stage to finish before taking the snapshot.
+The destination must not exist yet. The fork keeps its reports and bitstream
+in its own directory and leaves the README alone; resume it with `--build-dir`
+alone. If routing closes timing, the fork writes `final.dcp` and a bitstream
+even with `--stop-after route`.
 
-`--build-dir` selects the directory containing `work/` and all per-stage
-worker directories. The fork's reports and bitstream stay there, and it leaves
-the reference README utilization table alone. Resume
-the fork with `--build-dir` alone; omit `--snapshot-physopt-from` once it exists.
-As in the normal flow, closing route timing promotes `final.dcp` and generates
-a bitstream even with `--stop-after route`. The source build continues its
-own requested pipeline independently.
+## ILA captures
 
-Run `./fpga/build/build.py --help` for directive and stage options.
-
-## Fetch-seam ILA captures
-
-`--debug-ila` adds a Vivado ILA for fetch, translation, commit, and trap
-signals, including the low 16 PC bits, and writes a probes file beside the
-bitstream. Combine it with `--cpu-clock-div 2` for a faster build.
+`--debug-ila` adds a Vivado ILA on fetch, translation, commit, and trap
+signals, and writes a probes file beside the bitstream. Combine it with
+`--cpu-clock-div 2` for a faster build.
 
 ```bash
 ./fpga/build/build.py x3 --cpu-clock-div 2 --debug-ila
 ./fpga/program_bitstream/program_bitstream.py x3
-./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4   # trigger: fetch-fault packet at that page offset
+./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4   # trigger: fetch fault at this page offset
 FROST_ILA_ARM_HOOK=fpga/build/x3/work/ila_arm_hook.tcl \
   FROST_ILA_COLLECT_HOOK=fpga/build/x3/work/ila_collect_hook.tcl \
-  FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 linux_boot
+  FROST_CPU_CLK_HZ=161132812 ./fpga/hw_regression.py --board x3 linux_boot
 ./fpga/debug/fetch_ila_report.py fpga/build/x3/work/fetch_ila.csv --before 200 --only if_ fp_
 ```
 
-Use `hook` for a load-triggered capture: the loader arms after its device
-refresh and collects in the same Hardware Manager session. A new session's
-refresh resets the core and would lose a previously armed capture. `capture`
-is the standalone form; `fetch_ila_report.py` decodes the CSV. The default
-trigger matches a fetch fault at the page offset, with 3072 pre-trigger
-samples out of 4096.
+`hook` arms the capture inside the loader's own Hardware Manager session;
+opening a separate session would reset the core and lose the armed trigger.
+`capture` is the standalone form. The default trigger keeps 3072 of 4096
+samples before the fetch fault.
 
-## NIC transceiver
+## Troubleshooting
 
-The X3 uses GTY X0Y28, QPLL0, and a 161.1328125 MHz reference. The build creates
-`x3_nic_gty_wiz` from `build/x3_gty_ip.tcl`. LPM equalization is the default;
-`FROST_GTY_RX_EQ=DFE` selects DFE during synthesis. Loopback uses near-end PMA.
-Without block lock, RX PCS reset retries every 100 ms and a full RX reset
-occurs every tenth retry. Full reset drops RX READY; the driver re-enables
-receive when carrier returns.
+| Symptom | What to check |
+|---------|---------------|
+| No target found | Power, the cable, `hw_server`, and `--list-targets` |
+| Wrong or ambiguous target | Select one with `--target` or `--target-exact` |
+| Timing failure | `build/<board>/work/final_timing.rpt`; try other directives. Changing the CPU clock also means updating the board's MMCM settings and the build and loader clock settings |
+| `Synth 8-605` error | The build treats this Vivado warning as an error. Declare each signal before any generated primitive instance that uses it; a later declaration can leave the primitive on an undriven implicit net |
+| Application does not run | The CPU clock setting (`FROST_CPU_CLK_HZ`), that the program fits in low BRAM, and that any DDR image was loaded |
 
-## Customization and troubleshooting
-
-For new boards, use the [board checklist](../boards/README.md#adding-support-for-new-boards).
-For applications, use [sw/CONTRIBUTING.md](../sw/CONTRIBUTING.md#adding-a-new-application).
-
-- **No target:** check power, cable, server, and `--list-targets`.
-- **Wrong/ambiguous target:** select `--target` or `--target-exact`.
-- **Timing failure:** inspect `build/<board>/work/final_timing.rpt` and try the
-  relevant directive options. Changing the rated clock also requires board
-  MMCM and build/loader clock metadata updates.
-- **App does not run:** check the actual CPU clock, low-BRAM capacity, and that
-  any required DDR image was loaded.
+To add a board, follow the
+[board checklist](../boards/README.md#adding-support-for-new-boards). To add an
+application, see [sw/CONTRIBUTING.md](../sw/CONTRIBUTING.md#adding-a-new-application).
 
 ## License
 

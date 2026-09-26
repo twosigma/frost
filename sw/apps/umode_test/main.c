@@ -22,10 +22,10 @@
  *
  *   A. ECALL from U-mode            -> mcause = 8  (ExcEcallUmode; 11 is M-mode)
  *   B. Machine timer interrupt while in U-mode with mstatus.MIE = 0
- *                                   -> trap taken, mcause = 0x8000_0007.
- *      Proves that machine interrupts fire while running below M regardless
+ *                                   -> trap taken, mcause = interrupt bit | 7.
+ *      Checks that machine interrupts fire while running below M regardless
  *      of MIE, so the timer can preempt user code, and that the interrupt
- *      mcause carries both the interrupt bit and the code.
+ *      mcause carries both the interrupt bit (bit 63) and the code.
  *   C. Reading an M-mode CSR from U -> illegal instruction (mcause = 2).
  *      Requires the U-mode CSR-permission check. If that check is absent the
  *      trailing ECALL traps instead (mcause = 8), so the test fails rather
@@ -36,17 +36,19 @@
  *   E-K. mcounteren gating of the Zicntr counter CSRs from U-mode, both
  *      polarities and per-bit: with a counter's enable bit set the U-mode
  *      read succeeds (first trap is the trailing ECALL, mcause = 8); with it
- *      clear the read is an illegal instruction (mcause = 2). Setting only
- *      some bits proves selectivity: TM-only allows time but still blocks
- *      cycle, and each of CY/TM/IR is exercised blocked while the others are
- *      set. The RV32 high-half CSR addresses do not exist at RV64, and K
- *      proves cycleh traps illegal even with every mcounteren bit set, so E
- *      reads only the three low forms.
+ *      clear the read is an illegal instruction (mcause = 2). U-mode access
+ *      also needs the scounteren bit, which stays at its reset value (0x7),
+ *      so mcounteren alone decides here. Setting only some bits checks
+ *      selectivity: TM-only allows time but still blocks cycle, and each of
+ *      CY/TM/IR is exercised blocked while another bit is set. The RV32
+ *      high-half CSR addresses do not exist at RV64, and K checks that
+ *      cycleh traps illegal even with every mcounteren bit set, so E reads
+ *      only the three low forms.
  *   L. mcounteren is WARL: only CY/TM/IR (bits [2:0]) are implemented; a
  *      write of all-ones reads back as 0x7 (also exercises the csrrs RMW
  *      current-value path).
- *   M. M-mode counter reads are never gated (mcounteren scopes the
- *      next-lower privilege only), even with mcounteren = 0.
+ *   M. M-mode counter reads are never gated (mcounteren gates only the
+ *      privilege levels below M), even with mcounteren = 0.
  *
  * Each case drops to U-mode via MRET (mstatus.MPP = U) into a small naked
  * U-mode function that triggers the trap. A naked M-mode handler records

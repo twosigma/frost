@@ -15,11 +15,15 @@
  */
 
 /*
- * Aligns branch-prediction metadata with the IF output across stalls,
- * inserted NOPs, and the pending-prediction handoff. Validity is saved when a
- * stall begins, restored with the held instruction, and cleared for bubbles.
- * The target payload follows its own source provenance and is meaningful only
- * when the packet is predicted-taken.
+ * Aligns slot-1 prediction metadata (taken, target, and the call and return
+ * types of the BTB entry behind the target) with the packet IF emits,
+ * across stalls, NOP bubbles, and the pending-prediction handoff
+ * (hw/rtl/cpu_and_mem/cpu/README.md, "Pending-prediction handoff"). Validity
+ * is saved when a stall begins, restored with the held instruction, and
+ * cleared for bubbles. A pending prediction belongs to the packet at its saved
+ * PC, its owner; no other packet may carry or consume it. The target and its
+ * types are selected separately from validity and are meaningful only when the
+ * packet is predicted taken.
  */
 module prediction_metadata_tracker #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -28,23 +32,22 @@ module prediction_metadata_tracker #(
     input logic i_reset,
     input logic i_stall,
     input logic i_flush,
-    // Pending-prediction fetch state killed by a redirect (or the stale
-    // walk-past) in pc_controller this cycle. The pending-saved metadata below
-    // is the carried twin of that fetch state and dies with it. See
-    // o_pending_prediction_redirect_kill in pc_controller.
+    // pc_controller killed its pending-prediction state this cycle, by a
+    // redirect or by pc_reg stepping past the pending PC
+    // (o_pending_prediction_redirect_kill). The saved pending metadata below
+    // describes that state and dies with it.
     input logic i_pending_prediction_kill,
-    // Legacy observation retained for the standalone/formal seam. Metadata
-    // validity and payload routing no longer depend on this late signal.
-    input logic i_prediction_holdoff,
     input logic i_stall_registered,
 
     // Current registered prediction from branch_prediction_controller
     input logic            i_prediction_used_r,
     input logic [XLEN-1:0] i_predicted_target_r,
-    // Exact owner of a prediction that pc_controller has deferred while
-    // pc_reg walks older instructions, and the PC of the packet IF is
-    // presenting now. i_output_pc must follow the same live/stall-replay mux
-    // as the rest of the IF->PD packet.
+    input logic            i_predicted_is_call_r,
+    input logic            i_predicted_is_return_r,
+    // Whether pc_controller holds a prediction deferred while pc_reg walks
+    // older instructions, that prediction's owner PC, and the PC of the packet
+    // IF presents now. i_output_pc must come through the same live/stall-replay
+    // mux as the rest of the IF->PD packet.
     input logic            i_pending_prediction_active,
     input logic [XLEN-1:0] i_pending_prediction_pc,
     input logic [XLEN-1:0] i_output_pc,
@@ -53,16 +56,18 @@ module prediction_metadata_tracker #(
     // That packet must carry the live prediction instead of the preceding
     // cycle's registered metadata.
     input logic            i_live_prediction_for_output,
-    // Assertion-only provenance oracle for the same collapsed-lead case. The
-    // synthesized wide target route is independent of prediction enable, NOP,
-    // and combinational stall controls: an invalid packet may carry arbitrary
-    // target data, while a valid packet carries the target from the lookup
-    // whose PC is aligned with that packet.
+    // Used only by assertions, for the same collapsed-lead case: the live
+    // lookup's PC matches the output packet's PC. The target mux does not
+    // depend on prediction enable, NOPs, or the live stall; an invalid packet
+    // may carry any target, and a valid packet carries the target of the
+    // lookup at its own PC.
     input logic            i_live_target_aligned_with_output,
     input logic [XLEN-1:0] i_live_predicted_target,
+    input logic            i_live_predicted_is_call,
+    input logic            i_live_predicted_is_return,
     input logic            i_pending_prediction_fetch_holdoff,
-    // Exact pc_controller consume/apply pulse for the pending target arm.
-    // Metadata stays saved unless that same owner handoff wins.
+    // pc_controller's pulse that applies the pending target. Saved metadata is
+    // consumed only when this fires while its owner is the unstalled output.
     input logic            i_pending_prediction_target_handoff,
 
     // Instruction type signals (determine which metadata source to use)
@@ -71,9 +76,8 @@ module prediction_metadata_tracker #(
     input logic i_use_saved_values, // Use stall-saved values
 
 `ifdef FORMAL
-    // Formal observation seam. Yosys does not resolve hierarchical references
-    // from the standalone harness into this instance, so the lifecycle state
-    // is exposed as ports in formal builds only.
+    // Formal-only observation ports: Yosys does not resolve hierarchical
+    // references from the standalone harness into this instance.
     output logic            o_formal_pending_valid,
     output logic            o_formal_pending_owner_match,
     output logic            o_formal_pending_consume,
@@ -82,9 +86,12 @@ module prediction_metadata_tracker #(
 `endif
 
     // Outputs to PD stage
-    output logic            o_btb_hit,
     output logic            o_btb_predicted_taken,
-    output logic [XLEN-1:0] o_btb_predicted_target
+    output logic [XLEN-1:0] o_btb_predicted_target,
+    // Types of the entry behind o_btb_predicted_target, which drive IF's
+    // return address stack operation for the packet
+    output logic            o_btb_predicted_is_call,
+    output logic            o_btb_predicted_is_return
 );
 
   // ===========================================================================
@@ -92,15 +99,12 @@ module prediction_metadata_tracker #(
   // ===========================================================================
   // Save prediction metadata when stall begins for restoration after unstall.
 
-  logic prediction_hit_saved;
   logic prediction_taken_saved;
 
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush) begin
-      prediction_hit_saved   <= 1'b0;
       prediction_taken_saved <= 1'b0;
     end else if (i_stall & ~i_stall_registered) begin
-      prediction_hit_saved   <= i_prediction_used_r;
       prediction_taken_saved <= i_prediction_used_r;
     end
   end
@@ -113,9 +117,10 @@ module prediction_metadata_tracker #(
   // disappear before the predicted branch itself arrives. The state below
   // carries it until that branch reaches the output.
 
-  logic            prediction_hit_pending_saved;
   logic            prediction_taken_pending_saved;
   logic [XLEN-1:0] prediction_target_pending_saved;
+  logic            prediction_is_call_pending_saved;
+  logic            prediction_is_return_pending_saved;
   logic [XLEN-1:0] prediction_pc_pending_saved;
   logic            prediction_pending_saved_valid;
 
@@ -139,11 +144,11 @@ module prediction_metadata_tracker #(
   assign effective_pending_prediction_consume =
       effective_pending_prediction_replay && !i_stall &&
       i_pending_prediction_target_handoff;
-  // The normal registered metadata can reach its exact owner on the first
-  // pending-active cycle. If that packet is consumable now, attach it directly
-  // and do not create a replay entry that would outlive pc_controller's
-  // handoff. A NOP, held-off packet, non-owner predecessor, or stalled owner
-  // must instead preserve the packet for a later exact-owner release.
+  // On the first pending cycle the registered metadata may already be at its
+  // owner. If the owner consumes it now, attach it directly and save nothing:
+  // a saved copy would outlive pc_controller's handoff. In every other case (a
+  // NOP, a held-off packet, an older packet, or an owner that is stalled or
+  // not handed off this cycle) save it for a later release to the owner.
   assign effective_pending_prediction_direct =
       !prediction_pending_saved_valid &&
       i_pending_prediction_active &&
@@ -154,12 +159,13 @@ module prediction_metadata_tracker #(
       effective_pending_prediction_direct && !i_stall &&
       i_pending_prediction_target_handoff;
 
-  // One capture per pending episode. Capture keys off the episode, not its
-  // fetch-holdoff output: the immediate-predecessor carve-out opens that
-  // holdoff on the first cycle the registered prediction exists. Capture is
-  // also stall-independent because both pc_controller and the registered
-  // target hold their owner/payload throughout a stall. Never overwrite the
-  // first capture while the response is owed.
+  // Capture once per pending prediction. Capture follows
+  // i_pending_prediction_active, not the fetch holdoff, because
+  // pc_controller's immediate-predecessor exception releases that holdoff on
+  // the first cycle the registered prediction exists. Capture ignores stalls
+  // because pc_controller's pending state and the registered target both hold
+  // through a stall. The saved copy is never overwritten before it is
+  // consumed or killed.
   assign pending_prediction_capture =
       !prediction_pending_saved_valid &&
       i_pending_prediction_active &&
@@ -173,36 +179,31 @@ module prediction_metadata_tracker #(
   assign o_formal_pending_target      = prediction_target_pending_saved;
 `endif
 
-  // The kill dominates the same-cycle capture: a PD redirect lands on exactly
-  // the cycle the capture predicate still reads pre-kill pending episode
-  // state. Without the kill, the saved metadata outlives the pending fetch
-  // state it describes, and the replay below attaches "front-end already
-  // redirected" to a re-fetched instruction whose redirect was lost. For a
-  // predicted jal at a taken-branch target, the ROB then retires it with no
-  // recovery and the callee is skipped. The kill is not stall-gated, matching
-  // the pending-valid clear in pc_controller.
+  // The kill beats a same-cycle capture: a PD redirect lands on the cycle the
+  // capture predicate still sees the pre-kill pending state. Without the kill,
+  // the saved metadata would outlive the pending fetch state it describes, and
+  // the replay below would mark a re-fetched instruction whose redirect was
+  // lost as already redirected. A predicted JAL would then retire with no
+  // recovery although fetch never went to its target. Like pc_controller's
+  // pending-valid clear, the kill ignores stalls.
   //
-  // The kill is an edge-clear only: on the kill cycle itself the pre-edge
-  // saved state can still drive the combinational replay output below. That
-  // window is closed downstream for every redirect term. The PD->ID register
-  // zeroes btb_hit/btb_predicted_taken on flush and pd_redirect_r, and
-  // trap/mret/branch_taken assert the flush, so a same-cycle replayed output
-  // is never consumed. The stale walk-past term has no downstream scrub, but
-  // it cannot coincide with a live saved replay: the pending land-on-branch
-  // and immediate-predecessor pc_reg arms stop the walk on the pending PC, so
-  // nothing steps over it while the pending state is effective, and the
-  // unguided post-redirect cycle that could step past has already cleared the
-  // saved state via the same-cycle redirect term above.
+  // The kill clears state at the edge only, so on the kill cycle the saved
+  // state can still drive the replay output below. For every redirect term
+  // that output is never consumed: trap, xRET, and branch_taken assert the
+  // flush, and the PD->ID register clears btb_predicted_taken on flush and
+  // on pd_redirect_r. The walk-past term (pc_reg stepping past the
+  // pending PC) has no such scrub, but it cannot coincide with a saved replay:
+  // while the pending state is in effect, pc_controller's land-on-branch and
+  // immediate-predecessor pc_reg arms stop pc_reg at the pending PC, and the
+  // unguided cycle after a redirect, which could step past it, has already
+  // cleared the saved state through the redirect term.
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush || i_pending_prediction_kill) begin
-      prediction_hit_pending_saved   <= 1'b0;
       prediction_taken_pending_saved <= 1'b0;
       prediction_pending_saved_valid <= 1'b0;
     end else if (pending_prediction_capture) begin
-      // A live pc_controller pending episode is proof that a taken prediction
-      // redirected fetch, so the separately registered used bit is not needed
-      // as a capture qualifier.
-      prediction_hit_pending_saved   <= 1'b1;
+      // An active pending prediction means a taken prediction redirected
+      // fetch, so i_prediction_used_r is not needed to qualify the capture.
       prediction_taken_pending_saved <= 1'b1;
       prediction_pending_saved_valid <= 1'b1;
     end else if (effective_pending_prediction_consume) begin
@@ -212,155 +213,181 @@ module prediction_metadata_tracker #(
 
   always_ff @(posedge i_clk) begin
     if (pending_prediction_capture) begin
-      prediction_target_pending_saved <= i_predicted_target_r;
-      prediction_pc_pending_saved     <= i_pending_prediction_pc;
+      prediction_target_pending_saved    <= i_predicted_target_r;
+      prediction_is_call_pending_saved   <= i_predicted_is_call_r;
+      prediction_is_return_pending_saved <= i_predicted_is_return_r;
+      prediction_pc_pending_saved        <= i_pending_prediction_pc;
     end
   end
 
   // ===========================================================================
   // Output Selection
   // ===========================================================================
-  // Select prediction validity based on instruction type:
-  //   1. sel_nop = 1: Clear prediction (NOP has no valid prediction)
-  //   2. pending-saved owner: replay saved metadata for its exact branch
-  //   3. first-cycle pending owner: attach registered metadata directly
-  //   4. pending non-owner: clear metadata without consuming it
-  //   5. same-cycle prediction: attach live metadata to the emitted branch
-  //   6. Otherwise: use normal registered metadata (with stall handling)
+  // Validity, in priority order:
+  //   1. NOP or pending fetch holdoff: no prediction. Stale metadata on a NOP
+  //      would cause a false misprediction in EX.
+  //   2. Saved pending prediction at its owner: replay the saved metadata.
+  //   3. First pending cycle at the owner: attach the registered metadata.
+  //   4. Any other packet while a prediction is saved or pending: no
+  //      prediction, and nothing is consumed.
+  //   5. Collapsed lead: attach the live prediction to the emitted packet.
+  //   6. Otherwise: the registered metadata, or its stall-saved copy.
   //
-  // A NOP carries no prediction metadata, because stale metadata would trigger
-  // a false misprediction in EX.
-  //
-  // The same-cycle live prediction (arm 5) arrives last: it is the BTB lookup
-  // on the current PC, the prediction controls and the IF output match. Every
-  // other select is registered state or a compare of registered PCs. The
-  // validity is therefore expanded over that term: arms 1-4 form a prefix
-  // that decides regardless of it, and the two cofactors (prefix else 1 when
-  // live, prefix else the registered metadata when not) are kept as nets so
-  // the outputs are one select of the late term against them. The legacy
-  // priority chain below is the simulation oracle.
+  // Ownership depends on saved state and PC equality. Select those sources
+  // before the late NOP and fetch-holdoff controls qualify the final validity.
+  (* keep = "true" *)logic owner_taken_live;
+  (* keep = "true" *)logic owner_taken_registered;
+  logic output_prediction_allowed;
+  always_comb begin
+    if (prediction_pending_saved_valid) begin
+      owner_taken_live = pending_prediction_owner_matches_output && prediction_taken_pending_saved;
+      owner_taken_registered = owner_taken_live;
+    end else if (i_pending_prediction_active) begin
+      owner_taken_live = pending_prediction_live_owner_matches_output;
+      owner_taken_registered = pending_prediction_live_owner_matches_output;
+    end else begin
+      owner_taken_live = 1'b1;
+      owner_taken_registered = i_use_saved_values ? prediction_taken_saved : i_prediction_used_r;
+    end
+  end
+  assign output_prediction_allowed = !effective_sel_nop && !i_pending_prediction_fetch_holdoff;
+  assign o_btb_predicted_taken = output_prediction_allowed &&
+      (i_live_prediction_for_output ? owner_taken_live : owner_taken_registered);
+
+`ifdef PRED_METADATA_OUTPUT_LOCAL_PROOF
+  logic f_btb_taken;
   logic validity_prefix_decides;
-  logic validity_prefix_hit;
   logic validity_prefix_taken;
-  logic registered_hit;
   logic registered_taken;
-  (* keep = "true" *)logic hit_when_live;
   (* keep = "true" *)logic taken_when_live;
-  (* keep = "true" *)logic hit_when_not_live;
   (* keep = "true" *)logic taken_when_not_live;
   always_comb begin
     validity_prefix_decides = 1'b1;
-    validity_prefix_hit     = 1'b0;
     validity_prefix_taken   = 1'b0;
     if (effective_sel_nop) begin
-      validity_prefix_hit   = 1'b0;
       validity_prefix_taken = 1'b0;
     end else if (effective_pending_prediction_replay) begin
-      // The exact predicted branch/jump is finally reaching IF/PD after the
-      // pending old-path handoff. Replay the saved BTB metadata only here.
-      validity_prefix_hit   = prediction_hit_pending_saved;
+      // The owner reaches the output after the older packets: replay the saved
+      // metadata, and only here.
       validity_prefix_taken = prediction_taken_pending_saved;
     end else if (effective_pending_prediction_direct) begin
-      // The exact owner arrived before a side-buffer capture was necessary.
-      // pc_controller's active episode proves this registered packet is a
-      // taken prediction; a concurrent stall captures it for release.
-      validity_prefix_hit   = 1'b1;
+      // The owner arrives on the first pending cycle, before any capture. An
+      // active pending prediction means the registered prediction was taken;
+      // a coinciding stall also captures it for a later release.
       validity_prefix_taken = 1'b1;
     end else if (prediction_pending_saved_valid || i_pending_prediction_active ||
                  i_pending_prediction_fetch_holdoff) begin
-      // During the old-path handoff, registered BTB metadata belongs to a
-      // younger predicted branch. The served-window immediate-predecessor
-      // carve-out releases a real older packet with the fetch holdoff low, and
-      // its PC mismatch neither stamps nor consumes the saved branch metadata.
-      validity_prefix_hit   = 1'b0;
+      // While older packets drain, the registered metadata belongs to a
+      // younger predicted branch. pc_controller's immediate-predecessor
+      // exception can emit a real older packet with the fetch holdoff low; its
+      // PC does not match, so it neither carries nor consumes the saved
+      // metadata.
       validity_prefix_taken = 1'b0;
     end else begin
       validity_prefix_decides = 1'b0;
     end
   end
-  assign registered_hit = i_use_saved_values ? prediction_hit_saved : i_prediction_used_r;
   assign registered_taken = i_use_saved_values ? prediction_taken_saved : i_prediction_used_r;
   // Normal BRAM timing predicts one request ahead and uses the registered
   // metadata. A delayed response can instead put lookup PC and emitted
   // instruction PC on the same packet; using i_prediction_used_r there would
   // record not-taken after the fetch stream already redirected, so the live
-  // term marks the packet hit and taken.
-  assign hit_when_live = validity_prefix_decides ? validity_prefix_hit : 1'b1;
+  // term marks the packet taken.
   assign taken_when_live = validity_prefix_decides ? validity_prefix_taken : 1'b1;
-  assign hit_when_not_live = validity_prefix_decides ? validity_prefix_hit : registered_hit;
   assign taken_when_not_live = validity_prefix_decides ? validity_prefix_taken : registered_taken;
-  assign o_btb_hit = i_live_prediction_for_output ? hit_when_live : hit_when_not_live;
-  assign o_btb_predicted_taken =
-      i_live_prediction_for_output ? taken_when_live : taken_when_not_live;
+  assign f_btb_taken = i_live_prediction_for_output ? taken_when_live : taken_when_not_live;
 
-  // Target payload routing is separate from prediction validity: the
-  // current-cycle stall/dispatch cone may clear hit/taken, but it does not
-  // select or zero 64 target bits on their way to the PD register. The
-  // registered target holds throughout an IF stall, so the old stall-saved
-  // target replica was redundant, and pending replay has its own registered
-  // provenance. Existing or stall-replayed metadata keeps its target, even a
-  // self-targeting prediction whose live RAS state has already popped.
-  // Otherwise the target is the live lookup payload. The raw PC-alignment
-  // comparison is a validity and proof input only, and never selects these
-  // 64 bits.
+  always_comb begin
+    assert (o_btb_predicted_taken == f_btb_taken);
+    // Ownership remains a combinational safety property in formal, where
+    // all derived nets are settled; simulation samples it at packet capture.
+    assert (!prediction_pending_saved_valid || pending_prediction_owner_matches_output ||
+        !o_btb_predicted_taken);
+    assert (!i_pending_prediction_active || prediction_pending_saved_valid ||
+        pending_prediction_live_owner_matches_output || !o_btb_predicted_taken);
+  end
+`endif
+
+  // The target is selected separately from validity, so the late controls
+  // that clear taken never select or zero the 64 target bits on their way
+  // to the PD register. There is no stall-saved target copy: the registered
+  // target holds through an IF stall, and a pending prediction has its own
+  // saved target. Registered or stall-replayed metadata keeps the registered
+  // target, even for a self-targeting prediction whose live lookup now names
+  // the same PC again; otherwise the target is the live lookup's. The
+  // PC-alignment input is used only by assertions and never selects these
+  // bits.
   //
-  // The payload is architecturally meaningful only when o_btb_predicted_taken
-  // is high, so an invalid packet carrying any of these provenance-selected
-  // values is cycle-exact at every consumer.
+  // Consumers use the target only when o_btb_predicted_taken is set, so the
+  // value on an invalid packet does not matter.
+  // The types follow the target.
   always_comb begin
     if (prediction_pending_saved_valid) begin
-      o_btb_predicted_target = prediction_target_pending_saved;
+      o_btb_predicted_target    = prediction_target_pending_saved;
+      o_btb_predicted_is_call   = prediction_is_call_pending_saved;
+      o_btb_predicted_is_return = prediction_is_return_pending_saved;
     end else if (i_use_saved_values || i_prediction_used_r) begin
-      o_btb_predicted_target = i_predicted_target_r;
+      o_btb_predicted_target    = i_predicted_target_r;
+      o_btb_predicted_is_call   = i_predicted_is_call_r;
+      o_btb_predicted_is_return = i_predicted_is_return_r;
     end else begin
-      o_btb_predicted_target = i_live_predicted_target;
+      o_btb_predicted_target    = i_live_predicted_target;
+      o_btb_predicted_is_call   = i_live_predicted_is_call;
+      o_btb_predicted_is_return = i_live_predicted_is_return;
     end
   end
 
 `ifndef SYNTHESIS
-  // Preserve the retired validity-qualified target mux as an oracle.  The
-  // observable packet is {hit, taken, taken ? target : don't-care}: validity
-  // must remain bit-exact, and every valid target must match.  This also pins
-  // the contract that a changed target on an invalid bubble is ignored.
+  // Reference model: a target mux qualified by validity, with a stall-saved
+  // target copy. The observable packet is {taken, taken ? target :
+  // don't-care}: validity must match exactly and every valid target must
+  // match. The checks also pin the contract that the target of an invalid
+  // packet is ignored.
   logic [XLEN-1:0] prediction_target_saved_legacy;
-  logic            btb_hit_legacy;
+  logic [     1:0] prediction_kind_saved_legacy;
   logic            btb_predicted_taken_legacy;
   logic [XLEN-1:0] btb_predicted_target_legacy;
+  // The call and return types, selected with the target.
+  logic [     1:0] btb_predicted_kind_legacy;
 
   always_ff @(posedge i_clk) begin
     if (i_stall & ~i_stall_registered) begin
       prediction_target_saved_legacy <= i_predicted_target_r;
+      prediction_kind_saved_legacy   <= {i_predicted_is_call_r, i_predicted_is_return_r};
     end
   end
 
   always_comb begin
+    btb_predicted_kind_legacy = '0;
     if (effective_sel_nop) begin
-      btb_hit_legacy              = 1'b0;
       btb_predicted_taken_legacy  = 1'b0;
       btb_predicted_target_legacy = '0;
     end else if (effective_pending_prediction_replay) begin
-      btb_hit_legacy              = prediction_hit_pending_saved;
-      btb_predicted_taken_legacy  = prediction_taken_pending_saved;
+      btb_predicted_taken_legacy = prediction_taken_pending_saved;
       btb_predicted_target_legacy = prediction_target_pending_saved;
+      btb_predicted_kind_legacy = {
+        prediction_is_call_pending_saved, prediction_is_return_pending_saved
+      };
     end else if (effective_pending_prediction_direct) begin
-      btb_hit_legacy              = 1'b1;
       btb_predicted_taken_legacy  = 1'b1;
       btb_predicted_target_legacy = i_predicted_target_r;
+      btb_predicted_kind_legacy   = {i_predicted_is_call_r, i_predicted_is_return_r};
     end else if (prediction_pending_saved_valid || i_pending_prediction_active ||
                  i_pending_prediction_fetch_holdoff) begin
-      btb_hit_legacy              = 1'b0;
       btb_predicted_taken_legacy  = 1'b0;
       btb_predicted_target_legacy = '0;
     end else if (i_live_prediction_for_output) begin
-      btb_hit_legacy              = 1'b1;
       btb_predicted_taken_legacy  = 1'b1;
       btb_predicted_target_legacy = i_live_predicted_target;
+      btb_predicted_kind_legacy   = {i_live_predicted_is_call, i_live_predicted_is_return};
     end else begin
-      btb_hit_legacy = i_use_saved_values ? prediction_hit_saved : i_prediction_used_r;
       btb_predicted_taken_legacy =
           i_use_saved_values ? prediction_taken_saved : i_prediction_used_r;
       btb_predicted_target_legacy =
           i_use_saved_values ? prediction_target_saved_legacy : i_predicted_target_r;
+      btb_predicted_kind_legacy =
+          i_use_saved_values ? prediction_kind_saved_legacy :
+                               {i_predicted_is_call_r, i_predicted_is_return_r};
     end
   end
 
@@ -370,11 +397,9 @@ module prediction_metadata_tracker #(
   // selector before the other during Verilator's delta-cycle convergence even
   // though the stable packet is identical.
   always_ff @(posedge i_clk) begin
-    if (!$isunknown(
-            {o_btb_hit, o_btb_predicted_taken, btb_hit_legacy, btb_predicted_taken_legacy}
-        )) begin
+    if (!$isunknown({o_btb_predicted_taken, btb_predicted_taken_legacy})) begin
       p_prediction_validity_matches_legacy :
-      assert ({o_btb_hit, o_btb_predicted_taken} == {btb_hit_legacy, btb_predicted_taken_legacy});
+      assert (o_btb_predicted_taken == btb_predicted_taken_legacy);
     end
 
     if (!$isunknown(
@@ -388,6 +413,28 @@ module prediction_metadata_tracker #(
       p_valid_prediction_target_matches_legacy :
       assert (!btb_predicted_taken_legacy ||
               (o_btb_predicted_target == btb_predicted_target_legacy));
+    end
+    if (!$isunknown(
+            {
+              btb_predicted_taken_legacy,
+              o_btb_predicted_is_call,
+              o_btb_predicted_is_return,
+              btb_predicted_kind_legacy
+            }
+        )) begin
+      p_valid_prediction_types_match_legacy :
+      assert (!btb_predicted_taken_legacy ||
+              ({o_btb_predicted_is_call, o_btb_predicted_is_return} ==
+               btb_predicted_kind_legacy));
+    end
+    if (!$isunknown(
+            {
+              o_btb_predicted_taken,
+              o_btb_predicted_target,
+              btb_predicted_taken_legacy,
+              btb_predicted_target_legacy
+            }
+        )) begin
       p_invalid_prediction_payload_is_ignored :
       assert (({XLEN{o_btb_predicted_taken}} & o_btb_predicted_target) ==
               ({XLEN{btb_predicted_taken_legacy}} & btb_predicted_target_legacy));
@@ -408,14 +455,19 @@ module prediction_metadata_tracker #(
       p_live_valid_has_live_payload_provenance :
       assert (!i_live_prediction_for_output ||
               (i_live_target_aligned_with_output && !i_stall_registered));
-      // Away from a pending episode, the collapsed-lead live lookup is the
-      // unique metadata source. During a pending episode the owner/replay
-      // priority above is authoritative even if a younger lookup appears.
+      // Outside a pending prediction, the collapsed-lead live lookup is the
+      // only metadata source. While a prediction is pending, the owner and
+      // replay priority above decides, even if a younger lookup appears.
       p_unowned_live_prediction_excludes_registered_metadata :
       assert (!i_live_prediction_for_output || i_pending_prediction_active ||
               prediction_pending_saved_valid || !i_prediction_used_r);
     end
+  end
 
+  // Ownership flags, equality results and output validity settle through
+  // separate combinational processes after an edge. Check their relationship
+  // at packet capture, like the validity and target reference checks above.
+  always_ff @(posedge i_clk) begin
     if (!$isunknown(
             {
               prediction_pending_saved_valid,
@@ -429,7 +481,6 @@ module prediction_metadata_tracker #(
               pending_prediction_live_owner_matches_output,
               effective_sel_nop,
               i_pending_prediction_fetch_holdoff,
-              o_btb_hit,
               o_btb_predicted_taken
             }
         )) begin
@@ -443,7 +494,7 @@ module prediction_metadata_tracker #(
                i_pending_prediction_target_handoff));
       p_pending_nonowner_carries_no_valid_metadata :
       assert (!prediction_pending_saved_valid || pending_prediction_owner_matches_output ||
-              (!o_btb_hit && !o_btb_predicted_taken));
+              !o_btb_predicted_taken);
       p_direct_pending_metadata_has_exact_owner :
       assert (!effective_pending_prediction_direct || pending_prediction_live_owner_matches_output);
       p_pending_capture_is_not_direct_consume :
@@ -452,8 +503,7 @@ module prediction_metadata_tracker #(
       assert (!effective_pending_prediction_direct_consume || i_pending_prediction_target_handoff);
       p_active_pending_nonowner_carries_no_valid_metadata :
       assert (!i_pending_prediction_active || prediction_pending_saved_valid ||
-              pending_prediction_live_owner_matches_output ||
-              (!o_btb_hit && !o_btb_predicted_taken));
+              pending_prediction_live_owner_matches_output || !o_btb_predicted_taken);
     end
   end
 `endif

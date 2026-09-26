@@ -30,7 +30,7 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
 @cocotb.test()
 async def test_streaming_division(dut: Any) -> None:
-    """Preserve DIV/REM results and WIDTH/2+1 latency for a mixed input stream."""
+    """Check DIV/REM results and the WIDTH/2 + 1 latency over a mixed input stream."""
     width = len(dut.i_dividend)
     mask = (1 << width) - 1
     sign_bit = 1 << (width - 1)

@@ -15,59 +15,62 @@
  */
 
 /*
- * OOO pipeline control.
+ * Front-end pipeline control for the out-of-order core.
  *
- * The OOO back-end stalls almost exclusively at dispatch, so this block
- * aggregates the front-end stall/serialization sources and the registered
- * trap/MRET recovery state into the pipeline_ctrl_t the IF/PD/ID stages
- * consume. It owns:
- *   - the in-flight bookkeeping counters (csr_in_flight, branch_in_flight,
- *     branch_unresolved, serializing_alloc_fire);
- *   - the CSR-serialization / control-flow-serialization front-end stalls and
- *     their registered replay pulses (stall_q / id_stall_q / replay_*);
+ * The back end stalls the pipeline almost entirely at dispatch, so this block
+ * combines the front-end stall and serialization sources and the registered
+ * trap and xRET state into the pipeline_ctrl_t that IF, PD, and ID consume.
+ * It holds:
+ *   - the CSR in-flight state (csr_in_flight, serializing_alloc_fire) and
+ *     the per-checkpoint unresolved-branch bits;
+ *   - the CSR and control-flow serialization stalls and their registered
+ *     stall and replay signals (stall_q, id_stall_q, replay_*);
  *   - the post-flush BRAM holdoff;
- *   - the registered trap/MRET pulse and trap target;
- *   - the prediction-disable gate and pipeline_ctrl assembly.
+ *   - the registered trap and xRET pulses and trap target;
+ *   - the prediction-disable gate and the pipeline_ctrl assembly.
  */
 
 module ooo_pipeline_control #(
+    parameter bit QUEUED_FRONTEND = 1'b0,
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input logic i_rst,
 
     input riscv_pkg::reorder_buffer_alloc_req_t i_rob_alloc_req,
+    // Slot 2's allocation request. With slot 1's, it tells whether the
+    // checkpoint saved this cycle belongs to a conditional branch or JALR.
+    input riscv_pkg::reorder_buffer_alloc_req_t i_rob_alloc_req_2,
+    // Checkpoint save from dispatch (either slot) and its checkpoint id.
     input logic i_rob_checkpoint_valid,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_rob_checkpoint_id,
+    // Checkpoints held by in-flight branches (cpu_ooo's checkpoint_in_use).
+    input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_in_use,
     input logic i_csr_commit_fire,
-    input logic i_correct_branch_commit_pending,
-    input logic i_mispredict_recovery_pending,
-    input riscv_pkg::mispredict_commit_capture_t i_mispredict_commit_q,
     input riscv_pkg::reorder_buffer_commit_t i_rob_commit,
     input logic i_trap_taken,
     input logic i_mret_taken,
     input logic [XLEN-1:0] i_trap_target,
     input logic i_dispatch_stall,
+    input logic i_frontend_resource_stall,
     input logic i_csr_wb_pending,
-    input logic i_branch_unresolved_decrement,
+    // A branch resolved as correctly predicted, and its checkpoint id.
+    input logic i_branch_resolved_correct,
+    input logic [riscv_pkg::CheckpointIdWidth-1:0] i_branch_resolved_checkpoint_id,
     input logic i_front_end_indirect_control_flow_pending,
-    input logic i_pd_unpredicted_control_flow,
-    input logic i_id_unpredicted_control_flow,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
-    // Phase 3 M5. High while the selected fetch VA has no visible translated
-    // result: the normal post-movement bubble, a page-crossing second-page
-    // bubble, or an ITLB miss. It behaves as an ordinary front-end stall. IF
-    // captures the presented bundle and replays it, the fetch provider parks
-    // its owed ask, and the fetch lead the front end's lockstep relies on is
-    // untouched. The name comes from selected-VA tag/result validity. A flush
-    // clears it like the other stalls so trap, xret, and mispredict redirects
-    // land.
+    // High while the translation of the fetch PC is not yet visible: the Sv39
+    // bubble after the fetch PC moves, a second bubble on a page crossing, or
+    // an ITLB miss. It is an ordinary front-end stall: IF captures the
+    // presented bundle and replays it, and the fetch provider keeps its
+    // outstanding request. A flush overrides it like the other stalls, so
+    // trap, xRET, and misprediction redirects land.
     input logic i_fetch_pa_hold,
 
     output riscv_pkg::pipeline_ctrl_t o_pipeline_ctrl,
     output logic o_serializing_alloc_fire,
     output logic o_csr_in_flight,
-    output logic [$clog2(riscv_pkg::ReorderBufferDepth+1)-1:0] o_branch_in_flight_count,
     output logic o_disable_branch_prediction_ooo,
     output logic o_front_end_cf_serialize_stall,
     output logic o_stall_q,
@@ -80,55 +83,46 @@ module ooo_pipeline_control #(
     output logic [XLEN-1:0] o_trap_target_reg
 );
 
-  localparam int unsigned BranchInFlightCountWidth = $clog2(riscv_pkg::ReorderBufferDepth + 1);
-
-  // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
+  // --- Port aliases.
   riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req;
+  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
   logic rob_checkpoint_valid;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
   logic csr_commit_fire;
-  logic correct_branch_commit_pending;
-  logic mispredict_recovery_pending;
-  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   riscv_pkg::reorder_buffer_commit_t rob_commit;
   logic trap_taken;
   logic mret_taken;
   logic [XLEN-1:0] trap_target;
   logic dispatch_stall;
   logic csr_wb_pending;
-  logic branch_unresolved_decrement;
+  logic branch_resolved_correct;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] branch_resolved_checkpoint_id;
   logic front_end_indirect_control_flow_pending;
-  logic pd_unpredicted_control_flow;
-  logic id_unpredicted_control_flow;
   logic flush_pipeline;
   assign rob_alloc_req                           = i_rob_alloc_req;
+  assign rob_alloc_req_2                         = i_rob_alloc_req_2;
   assign rob_checkpoint_valid                    = i_rob_checkpoint_valid;
+  assign rob_checkpoint_id                       = i_rob_checkpoint_id;
+  assign checkpoint_in_use                       = i_checkpoint_in_use;
   assign csr_commit_fire                         = i_csr_commit_fire;
-  assign correct_branch_commit_pending           = i_correct_branch_commit_pending;
-  assign mispredict_recovery_pending             = i_mispredict_recovery_pending;
-  assign mispredict_commit_q                     = i_mispredict_commit_q;
   assign rob_commit                              = i_rob_commit;
   assign trap_taken                              = i_trap_taken;
   assign mret_taken                              = i_mret_taken;
   assign trap_target                             = i_trap_target;
   assign dispatch_stall                          = i_dispatch_stall;
   assign csr_wb_pending                          = i_csr_wb_pending;
-  assign branch_unresolved_decrement             = i_branch_unresolved_decrement;
+  assign branch_resolved_correct                 = i_branch_resolved_correct;
+  assign branch_resolved_checkpoint_id           = i_branch_resolved_checkpoint_id;
   assign front_end_indirect_control_flow_pending = i_front_end_indirect_control_flow_pending;
-  assign pd_unpredicted_control_flow             = i_pd_unpredicted_control_flow;
-  assign id_unpredicted_control_flow             = i_id_unpredicted_control_flow;
   assign flush_pipeline                          = i_flush_pipeline;
 
   // Signals produced here (also read internally); wired to o_* at the end.
   riscv_pkg::pipeline_ctrl_t pipeline_ctrl;
   (* max_fanout = 32 *) logic frontend_stall;
   logic csr_in_flight;
-  logic branch_in_flight;
-  logic [BranchInFlightCountWidth-1:0] branch_in_flight_count;
-  logic front_end_prediction_fence_pending;
   logic disable_branch_prediction_ooo;
   (* max_fanout = 32 *) logic serializing_alloc_fire;
-  logic branch_alloc_fire;
-  logic branch_commit_fire;
 
   // CSR results are only architecturally available at commit, so hold the
   // front-end after dispatching a CSR until it completes.  serializing_alloc_fire
@@ -139,14 +133,6 @@ module ooo_pipeline_control #(
     if (i_rst || flush_pipeline) serializing_alloc_fire <= 1'b0;
     else serializing_alloc_fire <= serializing_alloc_fire_comb;
   end
-  // Keep the in-flight counter aligned to the same predicate that allocates
-  // speculative checkpoints so commit-time free/recovery bookkeeping balances.
-  assign branch_alloc_fire = rob_checkpoint_valid;
-  logic branch_unresolved_alloc_fire;
-  assign branch_unresolved_alloc_fire =
-      rob_alloc_req.alloc_valid && rob_alloc_req.is_branch && !rob_alloc_req.is_jal;
-  assign branch_commit_fire = correct_branch_commit_pending ||
-                             (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint);
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) csr_in_flight <= 1'b0;
@@ -154,88 +140,88 @@ module ooo_pipeline_control #(
     else if (csr_commit_fire) csr_in_flight <= 1'b0;
   end
 
-  // The counter is balanced at commit time to keep the ROB / RS / LQ / SQ
-  // resource accounting correct for back-to-back branches that slip through the
-  // 1-cycle stall propagation window.
-  always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) begin
-      branch_in_flight_count <= '0;
-    end else begin
-      case ({
-        branch_alloc_fire, branch_commit_fire
-      })
-        2'b10: branch_in_flight_count <= branch_in_flight_count + 1'b1;
-        2'b01:
-        if (branch_in_flight_count != '0) branch_in_flight_count <= branch_in_flight_count - 1'b1;
-        default: branch_in_flight_count <= branch_in_flight_count;
-      endcase
+  // Unresolved branches, one bit per checkpoint. Every branch or jump saves a
+  // checkpoint when it dispatches, from either slot, and holds it until it
+  // commits, its own misprediction recovery frees it (an early recovery does
+  // so before the branch commits), or a flush frees it. The save marks the
+  // checkpoint unresolved for a conditional branch or JALR (a JAL resolves at
+  // allocation), and a correct resolution clears it. A mispredicted branch
+  // keeps its bit until its recovery frees the checkpoint (a JALR recovers
+  // only at commit), since everything younger is on the wrong path. Masking
+  // with checkpoint_in_use drops flushed branches, so an early recovery keeps
+  // the older unresolved branches it does not flush. The mask trails a
+  // partial flush by a few cycles, while the flushed front end refills.
+  // TIMING: the correct-resolution pulse arrives late (INT-RS issue -> branch
+  // compare -> resolved-correct), and so does the save, because
+  // rob_checkpoint_valid comes from dispatch_fire. The per-checkpoint id
+  // decodes come from earlier signals, the checkpoint allocator's id and the
+  // resolving branch's registered id, so they and the save's class are
+  // computed first and kept as nets. Each bit's next value is then one
+  // six-input function of the two late strobes, the two decodes, the class,
+  // and the bit itself. The dont_touch attributes stop synthesis from folding
+  // those nets back into it; a keep attribute alone does not survive
+  // opt_design Explore.
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_unresolved_q;
+  (* dont_touch = "true" *) logic checkpoint_save_unresolved;
+  (* dont_touch = "true" *) logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_save_hit;
+  (* dont_touch = "true" *) logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_resolve_hit;
+  logic branch_unresolved;
+  // A bundle holds at most one branch or jump (dispatch's slot2_resources_ok),
+  // so slot 1's class picks the saver.
+  assign checkpoint_save_unresolved =
+      rob_alloc_req.is_branch ? !rob_alloc_req.is_jal : !rob_alloc_req_2.is_jal;
+  always_comb begin
+    for (int i = 0; i < riscv_pkg::NumCheckpoints; i++) begin
+      checkpoint_save_hit[i] = rob_checkpoint_id == riscv_pkg::CheckpointIdWidth'(i);
+      checkpoint_resolve_hit[i] = branch_resolved_checkpoint_id == riscv_pkg::CheckpointIdWidth'(i);
     end
   end
-
-  assign branch_in_flight = (branch_in_flight_count != '0);
-
-  // Track the number of branches that have dispatched but not yet resolved.
-  logic [BranchInFlightCountWidth-1:0] branch_unresolved_count;
-  logic branch_unresolved;
-  logic branch_unresolved_is_one;
-  // branch_unresolved_decrement arrives late: INT-RS issue -> branch
-  // resolution age compare -> resolved-correct. Precompute both update arms
-  // from early signals only, so the late decrement steers a single 2:1 mux in
-  // front of the flops instead of re-deriving the whole update case. The
-  // dont_touch attributes stop the arm nets from being flattened back into
-  // the late select cone. A keep attribute alone does not survive opt_design
-  // Explore. Behavior matches the previous alloc/decrement case statement,
-  // where alloc and decrement in the same cycle net out to a hold.
-  (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_dec;
-  (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_not_dec;
-  (* dont_touch = "true" *) logic unresolved_is_one_if_dec;
-  (* dont_touch = "true" *) logic unresolved_is_one_if_not_dec;
-  always_comb begin
-    if (branch_unresolved_alloc_fire) begin
-      unresolved_count_if_not_dec  = branch_unresolved_count + 1'b1;
-      unresolved_is_one_if_not_dec = (branch_unresolved_count == '0);
-      // alloc and decrement together net out to a hold
-      unresolved_count_if_dec      = branch_unresolved_count;
-      unresolved_is_one_if_dec     = branch_unresolved_is_one;
+  // A save takes a free checkpoint and a resolution names a live one, so the
+  // two never meet on one bit; the save wins anyway.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      checkpoint_unresolved_q <= '0;
     end else begin
-      unresolved_count_if_not_dec  = branch_unresolved_count;
-      unresolved_is_one_if_not_dec = branch_unresolved_is_one;
-      if (branch_unresolved_count != '0) begin
-        unresolved_count_if_dec  = branch_unresolved_count - 1'b1;
-        unresolved_is_one_if_dec = (branch_unresolved_count == BranchInFlightCountWidth'(2));
-      end else begin
-        unresolved_count_if_dec  = branch_unresolved_count;
-        unresolved_is_one_if_dec = branch_unresolved_is_one;
+      for (int i = 0; i < riscv_pkg::NumCheckpoints; i++) begin
+        if (rob_checkpoint_valid && checkpoint_save_hit[i])
+          checkpoint_unresolved_q[i] <= checkpoint_save_unresolved;
+        else if (branch_resolved_correct && checkpoint_resolve_hit[i])
+          checkpoint_unresolved_q[i] <= 1'b0;
       end
     end
   end
+  assign branch_unresolved = |(checkpoint_unresolved_q & checkpoint_in_use);
+
+`ifndef SYNTHESIS
+  // The bits rely on a save taking a free checkpoint and a resolution
+  // naming a live one.
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) begin
-      branch_unresolved_count  <= '0;
-      branch_unresolved_is_one <= 1'b0;
-    end else if (branch_unresolved_decrement) begin
-      branch_unresolved_count  <= unresolved_count_if_dec;
-      branch_unresolved_is_one <= unresolved_is_one_if_dec;
-    end else begin
-      branch_unresolved_count  <= unresolved_count_if_not_dec;
-      branch_unresolved_is_one <= unresolved_is_one_if_not_dec;
+    if (!i_rst && !$isunknown(
+            {rob_checkpoint_valid, branch_resolved_correct, checkpoint_in_use}
+        )) begin
+      p_unresolved_save_takes_free_checkpoint :
+      assert (!rob_checkpoint_valid || !checkpoint_in_use[rob_checkpoint_id]);
+      p_unresolved_clear_names_live_checkpoint :
+      assert (!branch_resolved_correct || checkpoint_in_use[branch_resolved_checkpoint_id]);
     end
   end
-  assign branch_unresolved = (branch_unresolved_count != '0);
+`endif
 
-  // front_end_prediction_fence_pending once suppressed new predictions after
-  // an unpredicted control-flow op reached PD/ID. That gate is off: the term
-  // is still computed but has no consumer, and it is not folded into
-  // disable_branch_prediction_ooo below.
-  assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
-                                              id_unpredicted_control_flow;
   assign disable_branch_prediction_ooo = i_disable_branch_prediction ||
                                          csr_in_flight ||
                                          serializing_alloc_fire;
 
-  // If an older unresolved branch/jump is still in flight, the shared in-order
-  // front-end cannot safely march a younger *unpredicted* indirect control-flow
-  // instruction through IF/PD/ID.
+  // Control-flow serialization. While a conditional branch or JALR is
+  // unresolved, hold IF, PD, and ID once an unpredicted indirect jump shows up
+  // in slot 1 of IF (under a stall), PD, or ID, or in either slot of a bundle
+  // in the decoded queue. Fetch runs on sequentially past such a jump: a JALR
+  // fetched without a prediction always resolves as mispredicted and recovers
+  // when it commits. The hold limits that wrong-path fetch. It is a
+  // performance measure: recovery squashes everything younger than a
+  // mispredicted branch or jump, so architectural state does not depend on it.
+  // The stall is registered and does not gate queued dispatch. ID keeps
+  // showing a held jump after dispatch takes it, so the jump's own unresolved
+  // bit can keep the hold until the jump recovers.
   logic front_end_cf_serialize_stall_comb;
   logic front_end_cf_serialize_stall  /* verilator isolate_assignments */;
   assign front_end_cf_serialize_stall_comb =
@@ -248,13 +234,10 @@ module ooo_pipeline_control #(
 
   // Registered stall for IF stage stall-capture registers.
   logic stall_q;
-  // TIMING: cap the replicated fanout of the registered ID stall. Its net
-  // reached fanout ~853, covering the dispatch/alloc CE cones designwide plus
-  // the width-funnel observer replay bits, and Vivado's replication heuristic
-  // was unstable there. A handful of added observer loads swung the id_stall
-  // -> ROB-alloc LVT cone from marginal to the post-opt WNS, -0.233 to
-  // -0.363. Bounded replicas make the split deterministic, matching the
-  // max_fanout treatment on other 1-bit control nets.
+  // TIMING: the registered ID stall drives the dispatch and allocation clock
+  // enables across the design plus the width-funnel observer replay bits.
+  // max_fanout bounds its replicas so the split is deterministic rather than
+  // left to Vivado's replication heuristic, as on other 1-bit control nets.
   (* max_fanout = 64 *)logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
@@ -262,13 +245,14 @@ module ooo_pipeline_control #(
   // Normally a CSR allocation advances ID before csr_in_flight raises, so the
   // image held through serialization is the younger instruction that must be
   // replayed on release. An independent front-end stall can already be high
-  // on the allocation cycle, most often the Sv39 selected-VA translation
-  // bubble, and ID then still holds the CSR itself. Remember that episode so
-  // release gives ID one advance-only cycle instead of allocating the same
-  // CSR twice.
+  // on the allocation cycle, most often the Sv39 translation bubble
+  // (i_fetch_pa_hold), and ID then still holds the CSR itself. Remember that
+  // case so release gives ID one advance-only cycle instead of allocating the
+  // same CSR twice.
   logic csr_alloc_held_id_q;
   assign frontend_stall =
-      (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
+      ((QUEUED_FRONTEND ? i_frontend_resource_stall : dispatch_stall) ||
+       csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
        front_end_cf_serialize_stall || i_fetch_pa_hold) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
@@ -279,12 +263,12 @@ module ooo_pipeline_control #(
   // A successful CSR allocation is the one cycle in which the ordinary
   // frontend_stall register chain has not caught up yet: csr_in_flight and
   // serializing_alloc_fire rise only after the allocating edge. Capture that
-  // successful fire directly into this LOCAL register so the held ID image is
+  // successful fire directly into this local register so the held ID image is
   // suppressed immediately without carrying csr_in_flight through every
   // dispatch/RS/LSQ allocation enable. Do not put the combinational fire into
-  // frontend_stall itself; that would restore the dispatch->stall->IF->dispatch
-  // combinational loop which serializing_alloc_fire was introduced to break.
-  // If allocation and release overlap, the new owner wins: a newly allocated
+  // frontend_stall itself; that would create the dispatch->stall->IF->dispatch
+  // combinational loop that registering serializing_alloc_fire avoids. If
+  // allocation and release coincide, the allocation wins: a newly allocated
   // CSR must not lose its first-cycle dispatch shield.
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) id_stall_q <= 1'b0;
@@ -298,7 +282,8 @@ module ooo_pipeline_control #(
     else replay_after_dispatch_stall_q <= dispatch_stall && !flush_pipeline;
   end
 
-  // CSR serialization release replay (see cpu_ooo history for mret-after-csrw).
+  // Serialization release: the CSR's delayed register-writeback cycle
+  // (csr_wb_pending), or its commit cycle if it writes no register.
   assign replay_after_serialize_stall_next =
       (csr_wb_pending || (csr_commit_fire && !rob_commit.dest_valid)) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
@@ -317,9 +302,9 @@ module ooo_pipeline_control #(
   end
 
 `ifndef SYNTHESIS
-  // Preserve the exact pre-cut ID-stall state as a simulation/formal oracle.
-  // The optimized owner may differ only by absorbing csr_in_flight locally;
-  // retain the newer held-CSR release exception in both implementations.
+  // Reference ID-stall register without the local CSR-allocation term, for
+  // simulation and formal checks. id_stall_q may differ from it only by
+  // including csr_in_flight; both apply the held-CSR release exception.
   logic id_stall_legacy_q;
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) id_stall_legacy_q <= 1'b0;
@@ -327,10 +312,10 @@ module ooo_pipeline_control #(
     else id_stall_legacy_q <= frontend_stall;
   end
 
-  // The local CSR owner replaces the former live !csr_in_flight term on ID
-  // validity. Pin the state relation and the complete validity predicate so
-  // allocation, held-ID release, ordinary replay, and release collisions stay
-  // cycle-identical to the former two-signal implementation.
+  // id_stall_q stands in for a live !csr_in_flight term on ID validity. Check
+  // the state relation, and that the ID-valid gate equals the reference gate
+  // ANDed with !csr_in_flight, through allocation, held-ID release, ordinary
+  // replay, and release collisions.
   always_ff @(posedge i_clk) begin
     if (!i_rst && !flush_pipeline && !$isunknown(
             {serializing_alloc_fire_comb, dispatch_stall, csr_in_flight,
@@ -349,12 +334,16 @@ module ooo_pipeline_control #(
 
 `ifndef FORMAL
   // A CSR allocated while ID was independently held must get one release
-  // cycle in which ID advances but dispatch remains invalid. Pin that exact
-  // contract so a later id_stall priority change cannot duplicate the CSR.
-  p_held_csr_release_is_advance_only :
-  assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
+  // cycle in which ID advances but dispatch remains invalid; otherwise a
+  // change to id_stall_q's priority could dispatch the CSR twice. Queued
+  // dispatch removes a CSR immediately, independently of ID advance, and its
+  // consumed-image guard covers this case instead.
+  if (!QUEUED_FRONTEND) begin : gen_direct_csr_release
+    p_held_csr_release_is_advance_only :
+    assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
       (replay_after_serialize_stall_next && csr_alloc_held_id_q)
       |=> (id_stall_q && !serializing_alloc_fire_comb));
+  end
 `endif
 `endif
 
@@ -368,13 +357,11 @@ module ooo_pipeline_control #(
       else if (post_flush_holdoff_q != 2'd0) post_flush_holdoff_q <= post_flush_holdoff_q - 2'd1;
   end
 
-  // Delay the IF/backend-visible trap/MRET recovery pulse by one cycle.
-  // trap_taken_reg and mret_taken_reg fan out to the same redirect/flush
-  // selects across IF and the recovery/flush units, ~200 leaf loads
-  // post-synthesis each. Cap the fanout so synthesis replicates the registers
-  // instead of routing one copy everywhere. Both need the cap: mret only
-  // surfaced as a failing startpoint once trap was replicated, because the
-  // two mask each other in per-endpoint timing reports.
+  // Delay the trap and xRET (mret_taken) recovery pulses seen by IF and the
+  // back end by one cycle. trap_taken_reg and mret_taken_reg both fan out to
+  // the same redirect and flush selects across IF and the recovery and flush
+  // units, so both carry a fanout cap and synthesis replicates them instead of
+  // routing one copy everywhere.
   (* max_fanout = 32 *) logic trap_taken_reg;
   (* max_fanout = 32 *) logic mret_taken_reg;
   logic [XLEN-1:0] trap_target_reg;
@@ -407,7 +394,6 @@ module ooo_pipeline_control #(
   assign o_pipeline_ctrl                  = pipeline_ctrl;
   assign o_serializing_alloc_fire         = serializing_alloc_fire;
   assign o_csr_in_flight                  = csr_in_flight;
-  assign o_branch_in_flight_count         = branch_in_flight_count;
   assign o_disable_branch_prediction_ooo  = disable_branch_prediction_ooo;
   assign o_front_end_cf_serialize_stall   = front_end_cf_serialize_stall;
   assign o_stall_q                        = stall_q;

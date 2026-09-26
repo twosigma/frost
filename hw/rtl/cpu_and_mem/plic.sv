@@ -26,8 +26,9 @@
  *
  * Gateways carry level semantics: a source is requestable while its level
  * is high and it has no claim in flight; the claim clears its pending bit,
- * and completion re-opens the gateway so a still-high level re-raises on
- * the next cycle (the "level-gateway re-raise" directed case).
+ * and completion re-opens the gateway, so a level that is still high becomes
+ * pending again. A completion counts only from a context that has the source
+ * enabled; any other completion write is ignored (PLIC 1.0).
  *
  * Register map (offsets inside the PLIC window; 32-bit registers, 32-bit
  * accesses):
@@ -39,9 +40,10 @@
  * Everything else in the window reads zero and ignores writes.
  *
  * The claim read is destructive, which is why the PLIC lives in the device
- * quadrant: the router's device-read interrupt shield and drain ordering
- * make the read-beat unique and architecturally performed before the
- * consume pulse fires (see data_mem_request_router's UART-RX precedent).
+ * quadrant (addr[31:30] == 2'b01). data_mem_request_router holds a
+ * device-quadrant read until committed stores have drained and cpu_ooo's
+ * device-read interrupt shield is armed, as for the UART RX pop, so each
+ * claim read is performed exactly once before its pulse fires.
  * i_claim_pulse[c] must be exactly that once-per-performed-read pulse; the
  * register read data itself is combinational and captured by the MMIO beat
  * in the same cycle the pulse is decoded from.
@@ -124,6 +126,11 @@ module plic #(
     end
   endfunction
 
+  // The source ID a claim/complete write names (valid when 1..NUM_SOURCES).
+  localparam int unsigned IdBits = $clog2(NUM_SOURCES + 1);
+  logic [IdBits-1:0] wr_id;
+  assign wr_id = i_wr_data[IdBits-1:0];
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       claimed <= '0;
@@ -158,12 +165,13 @@ module plic #(
           if (i_wr_offset == 22'h20_0000 + 22'h1000 * c[21:0]) begin
             threshold[c] <= i_wr_data[PRIO_BITS-1:0];
           end
-          // Complete: re-open the gateway for the written source ID. A
-          // completion for a source that was never claimed is silently
-          // ignored (spec allows it).
+          // Complete: re-open the gateway for the written source ID if that
+          // source is enabled for this context. The ID is not checked against
+          // this context's claims: completing a source with no claim in
+          // flight changes nothing.
           if (i_wr_offset == 22'h20_0004 + 22'h1000 * c[21:0]) begin
-            if (i_wr_data >= 1 && i_wr_data <= NUM_SOURCES) begin
-              claimed[i_wr_data[$clog2(NUM_SOURCES+1)-1:0]-1] <= 1'b0;
+            if (i_wr_data >= 1 && i_wr_data <= NUM_SOURCES && enable[c][wr_id-1]) begin
+              claimed[wr_id-1] <= 1'b0;
             end
           end
         end

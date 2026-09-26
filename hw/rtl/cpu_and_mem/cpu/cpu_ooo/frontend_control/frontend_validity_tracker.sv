@@ -15,21 +15,20 @@
  */
 
 /*
- * Front-end instruction-validity and control-flow tracker.
+ * Validity and control-flow tracker for the in-order IF/PD/ID front end.
  *
- * Two jobs, both about the shared in-order IF/PD/ID front-end that feeds the
- * OOO back-end:
- *   1. Valid tracking. The staged if_valid_q/pd_valid_q chain and the post-flush
- *      holdoff keep the NOP bubbles inserted on flush and reset from being
- *      dispatched. From that chain come the preflush 2-wide dispatch candidates
- *      and the recovery-qualified companions used for debug and invariants.
- *   2. Control-flow detection. Classify the IF/PD/ID instructions as control
- *      flow, as indirect control flow, and whether they are unpredicted. That
- *      produces the front-end serialization and prediction-fence hints consumed
- *      by the pipeline control logic and the perf counters.
+ * Valid tracking: the if_valid_q/pd_valid_q chain follows IF's sel_nop and
+ * the post-flush holdoff, so the NOP bubbles inserted on flush and reset are
+ * never dispatched. It yields the preflush two-wide dispatch candidates, which
+ * carry no recovery kill (dispatch applies it), and flush-qualified copies
+ * (o_id_valid, o_id_valid_2) for debug and assertions. cpu_ooo uses these
+ * four outputs only without a decoded queue (DECODED_QUEUE_DEPTH = 0); the
+ * queued build derives dispatch validity from o_pd_valid_q and the queue.
  *
- * dbg_* mirrors remain in cpu_ooo. PD bubbles arrive through
- * from_pd_to_id.inject_nop rather than a rewritten instruction.
+ * Control-flow detection: finds unpredicted indirect jumps in slot 1 of IF,
+ * PD, and ID for ooo_pipeline_control's control-flow serialization stall, and
+ * classifies unpredicted control flow in PD and ID for the perf counters. PD
+ * bubbles arrive as from_pd_to_id.inject_nop, not as a rewritten instruction.
  */
 
 module frontend_validity_tracker (
@@ -38,8 +37,8 @@ module frontend_validity_tracker (
 
     input riscv_pkg::pipeline_ctrl_t       i_pipeline_ctrl,
     input riscv_pkg::from_if_to_pd_t       i_from_if_to_pd,
-    // Exact, bubble-gated, replay-aligned slot-1 class from IF's existing
-    // native/compressed predecode.
+    // Slot-1 control-flow class from IF's native/compressed predecode, gated
+    // by bubbles and aligned with stall replay.
     input logic                            i_if_has_control_flow,
     input riscv_pkg::from_pd_to_id_t       i_from_pd_to_id,
     input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex,
@@ -49,10 +48,6 @@ module frontend_validity_tracker (
     input logic                            i_id_stall_q,
     input logic                            i_replay_after_dispatch_stall_q,
     input logic                            i_flush_pipeline,
-    // Debug Mode single step: allocate user NOP bundles too, so
-    // a step over a nop retires exactly that nop. Outside stepping FROST
-    // drops all-NOP bundles at ID and never retires them.
-    input logic                            i_keep_nops,
 
     output logic o_if_valid_q,
     output logic o_pd_valid_q,
@@ -60,15 +55,13 @@ module frontend_validity_tracker (
     output logic o_id_valid_2_preflush,
     output logic o_id_valid,
     output logic o_id_valid_2,
-    output logic o_pd_unpredicted_control_flow,
-    output logic o_id_unpredicted_control_flow,
     output logic o_front_end_indirect_control_flow_pending,
     output logic o_prediction_fence_branch,
     output logic o_prediction_fence_jal,
     output logic o_prediction_fence_indirect
 );
 
-  // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
+  // --- Port aliases: local names for the inputs.
   riscv_pkg::pipeline_ctrl_t       pipeline_ctrl;
   riscv_pkg::from_if_to_pd_t       from_if_to_pd;
   riscv_pkg::from_pd_to_id_t       from_pd_to_id;
@@ -82,10 +75,9 @@ module frontend_validity_tracker (
   assign pipeline_ctrl = i_pipeline_ctrl;
   assign from_if_to_pd = i_from_if_to_pd;
   assign from_pd_to_id = i_from_pd_to_id;
-  // x3 timing: pd_stage passes the instruction un-NOP'd with a registered
-  // inject_nop bubble marker. Mask the opcode to the NOP opcode (OP_IMM) for
-  // bubble slots so the control-flow detection below stays bit-identical to the
-  // old in-register NOP injection.
+  // TIMING: pd_stage does not rewrite a bubble's instruction into a NOP; it
+  // passes a registered inject_nop marker. Substitute the NOP opcode (OP_IMM)
+  // for bubbles so the control-flow detection below treats them as NOPs.
   wire [6:0] pd_effective_opcode =
       from_pd_to_id.inject_nop ? riscv_pkg::OPC_OP_IMM : from_pd_to_id.instruction[6:0];
   assign from_id_to_ex                 = i_from_id_to_ex;
@@ -116,31 +108,27 @@ module frontend_validity_tracker (
   // The preflush candidates read the registered stall directly instead of
   // pipeline_ctrl fields. This breaks a false Verilator UNOPTFLAT cycle
   // (pipeline_ctrl.stall depends on dispatch_stall, which depends on these
-  // candidates). The dispatch block owns the sole architectural recovery gate;
-  // the qualified companions below retain the existing debug/invariant view.
-  // Reset clears pd_valid_q in the IF/PD valid tracker and has priority in the
-  // stateful consumers, so keep i_rst out of the dispatch allocation cone.
+  // candidates). Dispatch applies the recovery kill itself (its i_flush);
+  // id_valid and id_valid_2 below are flush-qualified copies for debug and
+  // assertions. Reset clears pd_valid_q above and has priority in the
+  // stateful consumers, so i_rst stays out of the dispatch allocation logic.
   logic id_valid_preflush;
   logic id_valid_2_preflush;
   logic id_valid;
   logic id_valid_2;
-  // 2-wide: the NOP filter must consider both slots.  A bundle whose slot-1
-  // is a user-written c.nop (decompressed to `addi x0, x0, 0`) but whose slot-2
-  // carries a real instruction must still dispatch. Otherwise the front-end
-  // has already advanced PC by +4, because slot2_valid was 1 in IF, and the
-  // slot-2 instruction is silently dropped. Treat the bundle as valid when
-  // either slot has a non-NOP instruction. Dispatch handles a slot-1 c.nop
-  // harmlessly: alloc to ROB, no dest, no rename, silent retire.
-  // The NOP-presence check uses the registered `is_not_nop` flag computed in
-  // id_stage instead of a 32-bit instruction-vs-NOP compare here.  Without
-  // that, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
-  // dispatch_stall and the RS-write CE cone (post-synth WNS=-1.523ns).
+  // 2-wide: a bundle is valid when either slot holds a real instruction
+  // (id_stage's registered is_real, clear for PD's inject_nop bubbles). The
+  // base below excludes the bubbles after a flush, reset, or sel_nop; is_real
+  // also excludes the PD-redirect bubbles, which kill both slots. A NOP in
+  // the program is a real instruction: it dispatches and retires like any
+  // other, so instret counts it.
   logic id_valid_base_preflush;
-  // id_stall_q owns the complete dispatch-valid serialization window. Pipeline
-  // control captures a successful CSR allocation into it on the allocating
-  // edge, then the ordinary registered frontend stall holds it until the
-  // existing release behavior. This keeps the live csr_in_flight bit out of
-  // every downstream allocation plane without changing the valid waveform.
+  // id_stall_q covers the whole CSR serialization window for the dispatch
+  // valid: pipeline control sets it on the edge where a CSR allocates, and the
+  // registered front-end stall keeps it high until the release. This keeps
+  // the live csr_in_flight bit out of every allocation enable;
+  // ooo_pipeline_control asserts that the result equals gating on
+  // csr_in_flight directly.
   assign id_valid_base_preflush = pd_valid_q &&
       // Re-dispatch the held ID image after real backpressure stalls,
       // and after CSR serialization fences. The CSR itself has already
@@ -154,16 +142,14 @@ module frontend_validity_tracker (
       // Dispatch-stall replay still needs an explicit pulse because the
       // resource stall's release cannot be known until this cycle.
       (!id_stall_q || replay_after_dispatch_stall_q);
-  // i_keep_nops (single step) keeps a real all-NOP bundle: the base has already
-  // excluded injected bubbles, so only user NOPs get through.
   assign id_valid_preflush = id_valid_base_preflush &&
-      (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop || i_keep_nops);
+      (from_id_to_ex.is_real || from_id_to_ex_2.is_real);
 
-  // Slot-2 always requires a valid slot-1 candidate this cycle (bundle
-  // constraint, monolithic bundle stall). It stays low only when IF supplied no
-  // real second instruction. Recovery qualification is applied separately, in
+  // Slot 2 is a candidate only when the bundle's base candidate is (the
+  // bundle stalls and dispatches as a unit) and slot 2 holds a real
+  // instruction. The recovery kill is applied separately, by dispatch and in
   // id_valid_2 below.
-  assign id_valid_2_preflush = id_valid_base_preflush && from_id_to_ex_2.is_not_nop;
+  assign id_valid_2_preflush = id_valid_base_preflush && from_id_to_ex_2.is_real;
 
   assign id_valid = id_valid_preflush && !dispatch_flush;
   assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
@@ -188,6 +174,8 @@ module frontend_validity_tracker (
   logic id_has_control_flow;
   logic id_has_indirect_control_flow;
 
+  // JALR, or C.JR/C.JALR (quadrant 2, funct4 100x, rs1 != 0, rs2 = 0), from
+  // IF's raw slot-1 parcel; never for a bubble.
   function automatic logic if_stage_has_indirect_control_flow(
       input riscv_pkg::from_if_to_pd_t if_pkt);
     logic [15:0] parcel;
@@ -233,48 +221,49 @@ module frontend_validity_tracker (
   assign id_has_indirect_control_flow = pd_valid_q &&
                                         (from_id_to_ex.instruction_operation == riscv_pkg::JALR);
 
-  // Only unpredicted front-end control flow needs the extra prediction fence.
-  // Once an older branch/return has already redirected fetch onto its predicted
-  // path, later predictions on that same path are expected and required for
-  // tight loops. Treating already-predicted IF/PD/ID control-flow ops as
-  // "pending" shuts prediction back off and creates a second unpredicted copy
-  // of the same branch, which is what breaks compressed back-edge loops.
-  // IF-stage control flow detection is registered to break a combinational
-  // loop: pipeline_ctrl.stall → IF stage (c_ext_state, aligner, prediction
-  // metadata) → from_if_to_pd → front_end_control_flow_pending →
-  // front_end_cf_serialize_stall → pipeline_ctrl.stall.  One cycle of latency
-  // is harmless: the serialization fence is a performance hint.
-  // Keep the late BTB metadata bit out of the control-flow qualifier's D
-  // cone. Both factors sample every edge, so their conjunction is exactly the
-  // original registered predicate, including reset/flush and stalled cycles.
-  // The qualifier clears on reset/flush; the BTB factor needs no reset because
-  // it is masked while the qualifier is clear. Only synchronous pipeline
-  // control consumes the reconstructed predicate.
-  (* keep = "true" *)logic if_control_flow_without_btb_q;
+  // Only unpredicted control flow is flagged: control flow for which fetch did
+  // not follow a taken prediction (btb_predicted_taken clear). A branch
+  // predicted not taken is therefore flagged. An unpredicted
+  // indirect jump in slot 1 of IF, PD, or ID feeds the control-flow
+  // serialization stall, and the prediction-fence classes below (unpredicted
+  // branch, JAL, or indirect jump in PD or ID) feed the perf counters.
+  // The IF term is registered for timing. Its indirect class and both
+  // prediction bits are sampled together from IF's output, so it describes
+  // the packet IF presented in the previous cycle. After an unstalled edge PD
+  // has taken that packet and the PD term covers it, so the IF term is masked
+  // unless stall_registered shows that a stall kept the packet in IF.
+  // TIMING: the late BTB-prediction bit is registered separately, off the
+  // indirect qualifier's D input. Both registers load every edge, so their
+  // conjunction equals a single register of the whole predicate, including
+  // reset/flush and stalled cycles (checked below). The qualifier clears on
+  // reset/flush; the BTB register needs no reset because it is masked while
+  // the qualifier is clear. Only synchronous pipeline control consumes the
+  // result.
+  (* keep = "true" *)logic if_indirect_q;
   (* keep = "true" *)logic if_btb_predicted_taken_q;
-  logic if_unpredicted_control_flow_q;
+  logic if_unpredicted_indirect_q;
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) if_control_flow_without_btb_q <= 1'b0;
-    else if_control_flow_without_btb_q <= if_has_control_flow && !from_if_to_pd.ras_predicted;
+    if (i_rst || flush_pipeline) if_indirect_q <= 1'b0;
+    else if_indirect_q <= if_has_control_flow && if_has_indirect_control_flow;
     if_btb_predicted_taken_q <= from_if_to_pd.btb_predicted_taken;
   end
-  assign if_unpredicted_control_flow_q = if_control_flow_without_btb_q && !if_btb_predicted_taken_q;
+  assign if_unpredicted_indirect_q = if_indirect_q && !if_btb_predicted_taken_q;
 
 `ifndef SYNTHESIS
-  // Retain the original single-register update as a settled-edge oracle.
-  logic if_unpredicted_control_flow_legacy_q;
+  // Reference: the whole predicate in one register, compared with the split
+  // form on every edge.
+  logic if_unpredicted_indirect_reference_q;
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) if_unpredicted_control_flow_legacy_q <= 1'b0;
+    if (i_rst || flush_pipeline) if_unpredicted_indirect_reference_q <= 1'b0;
     else
-      if_unpredicted_control_flow_legacy_q <= if_has_control_flow &&
-          !(from_if_to_pd.btb_predicted_taken || from_if_to_pd.ras_predicted);
-    if (!$isunknown({if_unpredicted_control_flow_q, if_unpredicted_control_flow_legacy_q})) begin
-      p_split_unpredicted_control_flow_matches_original :
-      assert (if_unpredicted_control_flow_q == if_unpredicted_control_flow_legacy_q);
+      if_unpredicted_indirect_reference_q <= if_has_control_flow && if_has_indirect_control_flow &&
+          !from_if_to_pd.btb_predicted_taken;
+    if (!$isunknown({if_unpredicted_indirect_q, if_unpredicted_indirect_reference_q})) begin
+      p_split_if_unpredicted_indirect_matches_reference :
+      assert (if_unpredicted_indirect_q == if_unpredicted_indirect_reference_q);
     end
   end
 `endif
-  logic if_unpredicted_control_flow;
   logic if_unpredicted_indirect_control_flow;
   logic pd_unpredicted_control_flow;
   logic pd_unpredicted_indirect_control_flow;
@@ -284,30 +273,22 @@ module frontend_validity_tracker (
   logic id_unpredicted_indirect_control_flow;
   logic id_unpredicted_branch;
   logic id_unpredicted_jal;
-  logic front_end_control_flow_pending;
   logic front_end_indirect_control_flow_pending;
   logic prediction_fence_branch;
   logic prediction_fence_jal;
   logic prediction_fence_indirect;
-  assign if_unpredicted_control_flow = if_unpredicted_control_flow_q;
-  assign if_unpredicted_indirect_control_flow = if_unpredicted_control_flow_q &&
-                                                if_has_indirect_control_flow;
-  assign pd_unpredicted_control_flow = pd_has_control_flow &&
-                                       !(from_pd_to_id.btb_predicted_taken ||
-                                         from_pd_to_id.ras_predicted);
+  assign if_unpredicted_indirect_control_flow = if_unpredicted_indirect_q &&
+                                                pipeline_ctrl.stall_registered;
+  assign pd_unpredicted_control_flow = pd_has_control_flow && !from_pd_to_id.btb_predicted_taken;
   assign pd_unpredicted_indirect_control_flow = pd_has_indirect_control_flow &&
-                                                !(from_pd_to_id.btb_predicted_taken ||
-                                                  from_pd_to_id.ras_predicted);
+                                                !from_pd_to_id.btb_predicted_taken;
   assign pd_unpredicted_branch = pd_unpredicted_control_flow &&
                                  (pd_effective_opcode == riscv_pkg::OPC_BRANCH);
   assign pd_unpredicted_jal = pd_unpredicted_control_flow &&
                               (pd_effective_opcode == riscv_pkg::OPC_JAL);
-  assign id_unpredicted_control_flow = id_has_control_flow &&
-                                       !(from_id_to_ex.btb_predicted_taken ||
-                                         from_id_to_ex.ras_predicted);
+  assign id_unpredicted_control_flow = id_has_control_flow && !from_id_to_ex.btb_predicted_taken;
   assign id_unpredicted_indirect_control_flow = id_has_indirect_control_flow &&
-                                                !(from_id_to_ex.btb_predicted_taken ||
-                                                  from_id_to_ex.ras_predicted);
+                                                !from_id_to_ex.btb_predicted_taken;
   assign id_unpredicted_branch = id_unpredicted_control_flow && (
       from_id_to_ex.instruction_operation == riscv_pkg::BEQ ||
       from_id_to_ex.instruction_operation == riscv_pkg::BNE ||
@@ -318,9 +299,6 @@ module frontend_validity_tracker (
   );
   assign id_unpredicted_jal = id_unpredicted_control_flow &&
                               (from_id_to_ex.instruction_operation == riscv_pkg::JAL);
-  assign front_end_control_flow_pending = if_unpredicted_control_flow ||
-                                          pd_unpredicted_control_flow ||
-                                          id_unpredicted_control_flow;
   assign front_end_indirect_control_flow_pending = if_unpredicted_indirect_control_flow ||
                                                    pd_unpredicted_indirect_control_flow ||
                                                    id_unpredicted_indirect_control_flow;
@@ -350,8 +328,6 @@ module frontend_validity_tracker (
   assign o_id_valid_2_preflush                     = id_valid_2_preflush;
   assign o_id_valid                                = id_valid;
   assign o_id_valid_2                              = id_valid_2;
-  assign o_pd_unpredicted_control_flow             = pd_unpredicted_control_flow;
-  assign o_id_unpredicted_control_flow             = id_unpredicted_control_flow;
   assign o_front_end_indirect_control_flow_pending = front_end_indirect_control_flow_pending;
   assign o_prediction_fence_branch                 = prediction_fence_branch;
   assign o_prediction_fence_jal                    = prediction_fence_jal;

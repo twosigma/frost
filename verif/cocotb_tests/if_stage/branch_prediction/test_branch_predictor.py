@@ -45,7 +45,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_update_target.value = 0
     dut.i_update_taken.value = 0
     dut.i_update_compressed.value = 0
-    dut.i_update_requires_pc_reg_handoff.value = 0
+    dut.i_update_call.value = 0
+    dut.i_update_return.value = 0
     dut.i_early_update_active.value = 0
     dut.i_early_update_pc.value = 0
     dut.i_early_update_taken.value = 0
@@ -82,7 +83,8 @@ async def _update(
     target: int,
     taken: bool,
     compressed: bool = False,
-    handoff: bool = False,
+    call: bool = False,
+    ret: bool = False,
     early_active: bool = False,
     early_pc: int | None = None,
     early_taken: bool | None = None,
@@ -97,8 +99,9 @@ async def _update(
     selected_late_pc = pc if late_pc is None else late_pc
     selected_late_taken = taken if late_taken is None else late_taken
     if early_active:
-        # The update-priority mux guarantees that the sideband chooses an RMW
-        # candidate, never a different write.
+        # Upstream, the update-priority mux guarantees that the active
+        # candidate (early when early_active, else late) carries the selected
+        # write's PC and outcome.
         assert selected_early_pc == pc
         assert selected_early_taken is taken
     else:
@@ -110,7 +113,8 @@ async def _update(
     dut.i_update_target.value = target
     dut.i_update_taken.value = int(taken)
     dut.i_update_compressed.value = int(compressed)
-    dut.i_update_requires_pc_reg_handoff.value = int(handoff)
+    dut.i_update_call.value = int(call)
+    dut.i_update_return.value = int(ret)
     dut.i_early_update_active.value = int(early_active)
     dut.i_early_update_pc.value = selected_early_pc
     dut.i_early_update_taken.value = int(selected_early_taken)
@@ -118,6 +122,8 @@ async def _update(
     dut.i_late_update_taken.value = int(selected_late_taken)
     await _advance_cycle(dut)
     dut.i_update.value = 0
+    dut.i_update_call.value = 0
+    dut.i_update_return.value = 0
     dut.i_early_update_active.value = 0
     await _settle()
 
@@ -125,7 +131,7 @@ async def _update(
 async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
     """Drive one lookup PC, including the slot-2 synchronous read stage."""
     if slot2:
-        # The normal shifted replica stores the entry for U under predecessor U-2.
+        # T2 stores the entry for PC U under the key U-2.
         base_pc = (pc - 2) & MASK_XLEN
         dut.i_pc_2_lookup_base.value = base_pc
         await _advance_cycle(dut)
@@ -137,7 +143,7 @@ async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
 
 
 async def _lookup_slot2_alt(dut: Any, base_pc: int) -> None:
-    """Stage and select the base_pc+4 entry from the ALT replica."""
+    """Stage and select the base_pc+4 entry from T4."""
     dut.i_pc_2_lookup_base.value = base_pc & MASK_XLEN
     await _advance_cycle(dut)
     dut.i_pc_2_base.value = base_pc & MASK_XLEN
@@ -158,14 +164,12 @@ def _assert_slot1(
     taken: bool,
     target: int,
     compressed: bool = False,
-    handoff: bool = False,
 ) -> None:
     """Assert slot-1 lookup outputs."""
     assert bool(dut.o_btb_hit.value) is hit
     assert bool(dut.o_predicted_taken.value) is taken
     assert int(dut.o_predicted_target.value) == target
     assert bool(dut.o_btb_compressed.value) is compressed
-    assert bool(dut.o_btb_requires_pc_reg_handoff.value) is handoff
 
 
 def _assert_slot2(
@@ -175,14 +179,12 @@ def _assert_slot2(
     taken: bool,
     target: int,
     compressed: bool = False,
-    handoff: bool = False,
 ) -> None:
     """Assert slot-2 lookup outputs."""
     assert bool(dut.o_btb_hit_2.value) is hit
     assert bool(dut.o_predicted_taken_2.value) is taken
     assert int(dut.o_predicted_target_2.value) == target
     assert bool(dut.o_btb_compressed_2.value) is compressed
-    assert bool(dut.o_btb_requires_pc_reg_handoff_2.value) is handoff
 
 
 @cocotb.test()
@@ -212,7 +214,6 @@ async def test_first_taken_update_creates_weak_taken_hit_with_metadata(
         target=TARGET_A,
         taken=True,
         compressed=True,
-        handoff=True,
     )
     await _lookup(dut, PC_A)
 
@@ -222,7 +223,6 @@ async def test_first_taken_update_creates_weak_taken_hit_with_metadata(
         taken=True,
         target=TARGET_A,
         compressed=True,
-        handoff=True,
     )
 
 
@@ -274,11 +274,11 @@ async def test_two_bit_counter_hysteresis_and_saturation(dut: Any) -> None:
 async def test_parallel_early_and_late_rmw_share_exact_counter_history(
     dut: Any,
 ) -> None:
-    """Alternating candidate selection preserves one cycle-exact hysteresis stream."""
+    """Alternating early and late updates to one entry step a single 2-bit counter."""
     await _setup_test(dut)
 
-    # Build StronglyTaken through the late candidate only.  The inactive early
-    # sideband points at unrelated state so it cannot supply the selected result.
+    # Build StronglyTaken through the late candidate only. The inactive early
+    # inputs point at PC_B so they cannot supply the selected result.
     for _ in range(3):
         await _update(
             dut,
@@ -289,9 +289,9 @@ async def test_parallel_early_and_late_rmw_share_exact_counter_history(
             early_taken=False,
         )
 
-    # The early canonical replica must have received those late-selected writes.
-    # One not-taken update therefore moves StronglyTaken -> WeaklyTaken and must
-    # keep predicting taken.
+    # The early candidate's RAM copies must have received those late-selected
+    # writes. One not-taken update therefore moves StronglyTaken -> WeaklyTaken
+    # and must keep predicting taken.
     await _update(
         dut,
         pc=PC_A,
@@ -309,7 +309,7 @@ async def test_parallel_early_and_late_rmw_share_exact_counter_history(
     await _lookup_slot2_alt(dut, PC_A - 4)
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_B)
 
-    # Consecutive early writes exercise same-index next-edge visibility.
+    # A second early write to the same index must see the first.
     await _update(
         dut,
         pc=PC_A,
@@ -322,8 +322,8 @@ async def test_parallel_early_and_late_rmw_share_exact_counter_history(
     await _lookup(dut, PC_A)
     _assert_slot1(dut, hit=True, taken=False, target=TARGET_A)
 
-    # Switch straight back to late.  Its canonical state must include both
-    # early-selected writes: WeaklyNotTaken + taken = WeaklyTaken.
+    # Switch straight back to the late candidate. Its RAM copies must include
+    # both early-selected writes: WeaklyNotTaken + taken = WeaklyTaken.
     await _update(
         dut,
         pc=PC_A,
@@ -340,7 +340,7 @@ async def test_parallel_early_and_late_rmw_share_exact_counter_history(
 async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies(
     dut: Any,
 ) -> None:
-    """An early-selected replacement initializes weakly and updates all replicas."""
+    """An early-selected replacement starts WeaklyTaken in the slot-1 table, T2, and T4."""
     await _setup_test(dut)
 
     for _ in range(3):
@@ -353,8 +353,8 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
             early_taken=True,
         )
 
-    # PC_A_INDEX_ALIAS collides in the canonical table but has a different tag.
-    # A taken replacement must initialize WeaklyTaken, not increment PC_A's
+    # PC_A_INDEX_ALIAS has PC_A's index but a different tag. A taken
+    # replacement must start at WeaklyTaken, not increment PC_A's
     # StronglyNotTaken counter.
     await _update(
         dut,
@@ -362,7 +362,6 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
         target=TARGET_B,
         taken=True,
         compressed=True,
-        handoff=True,
         early_active=True,
         late_pc=PC_A,
         late_taken=False,
@@ -377,7 +376,6 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
         taken=True,
         target=TARGET_B,
         compressed=True,
-        handoff=True,
     )
     await _lookup(dut, PC_A_INDEX_ALIAS, slot2=True)
     _assert_slot2(
@@ -386,7 +384,6 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
         taken=True,
         target=TARGET_B,
         compressed=True,
-        handoff=True,
     )
     await _lookup_slot2_alt(dut, PC_A_INDEX_ALIAS - 4)
     _assert_slot2(
@@ -395,7 +392,6 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
         taken=True,
         target=TARGET_B,
         compressed=True,
-        handoff=True,
     )
 
     # A lower-priority update on the immediately following edge observes the
@@ -431,7 +427,6 @@ async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
     dut.i_update_target.value = TARGET_B
     dut.i_update_taken.value = 0
     dut.i_update_compressed.value = 1
-    dut.i_update_requires_pc_reg_handoff.value = 1
     dut.i_early_update_active.value = 1
     dut.i_early_update_pc.value = PC_A
     dut.i_early_update_taken.value = 0
@@ -453,7 +448,6 @@ async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
         taken=False,
         target=TARGET_B,
         compressed=True,
-        handoff=True,
     )
     _assert_slot2(
         dut,
@@ -461,7 +455,6 @@ async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
         taken=False,
         target=TARGET_B,
         compressed=True,
-        handoff=True,
     )
 
     dut.i_update.value = 0
@@ -483,7 +476,6 @@ async def test_tag_includes_pc_bit_one_for_halfword_aligned_aliases(dut: Any) ->
     assert not dut.o_btb_hit.value
     assert not dut.o_predicted_taken.value
     assert not dut.o_btb_compressed.value
-    assert not dut.o_btb_requires_pc_reg_handoff.value
 
 
 @cocotb.test()
@@ -503,7 +495,7 @@ async def test_tag_mismatch_replaces_direct_mapped_entry(dut: Any) -> None:
 
 @cocotb.test()
 async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
-    """The shifted normal slot-2 replica returns the entry's own metadata."""
+    """A slot-2 lookup through T2 returns the entry's own metadata."""
     await _setup_test(dut)
 
     await _update(
@@ -512,7 +504,6 @@ async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
         target=TARGET_A,
         taken=True,
         compressed=True,
-        handoff=True,
     )
 
     await _lookup(dut, PC_A, slot2=True)
@@ -523,8 +514,52 @@ async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
         taken=True,
         target=TARGET_A,
         compressed=True,
-        handoff=True,
     )
+
+
+@cocotb.test()
+async def test_call_and_return_types_follow_their_entry(dut: Any) -> None:
+    """Each lookup port reports the call and return types its hit entry was trained with.
+
+    Types come only with a hit, and retraining the entry replaces them. The
+    slot-2 payload drops target bit 0 to make room for the types, so a
+    target that uses every other bit must still come back whole.
+    """
+    await _setup_test(dut)
+
+    cases = (
+        ("call", True, False),
+        ("return", False, True),
+        ("coroutine swap", True, True),
+        ("plain branch", False, False),
+    )
+    for name, call, ret in cases:
+        target = 0x8FFF_FFFE
+        await _update(dut, pc=PC_A, target=target, taken=True, call=call, ret=ret)
+
+        await _lookup(dut, PC_A)
+        _assert_slot1(dut, hit=True, taken=True, target=target)
+        assert bool(dut.o_btb_is_call.value) is call, name
+        assert bool(dut.o_btb_is_return.value) is ret, name
+
+        await _lookup(dut, PC_A, slot2=True)
+        _assert_slot2(dut, hit=True, taken=True, target=target)
+        assert bool(dut.o_btb_is_call_2.value) is call, name
+        assert bool(dut.o_btb_is_return_2.value) is ret, name
+
+        await _lookup_slot2_alt(dut, PC_A - 4)
+        _assert_slot2(dut, hit=True, taken=True, target=target)
+        assert bool(dut.o_btb_is_call_2.value) is call, name
+        assert bool(dut.o_btb_is_return_2.value) is ret, name
+        dut.i_pc_2_use_alt.value = 0
+
+    # A miss reports no type on either port.
+    await _lookup(dut, PC_B)
+    assert not dut.o_btb_hit.value
+    assert not dut.o_btb_is_call.value and not dut.o_btb_is_return.value
+    await _lookup(dut, PC_B, slot2=True)
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_btb_is_call_2.value and not dut.o_btb_is_return_2.value
 
 
 @cocotb.test()
@@ -540,7 +575,6 @@ async def test_narrow_target_payload_restores_high_canonical_branch_region(
         target=HIGH_CANONICAL_TARGET,
         taken=True,
         compressed=True,
-        handoff=True,
     )
 
     await _lookup(dut, HIGH_CANONICAL_PC)
@@ -550,7 +584,6 @@ async def test_narrow_target_payload_restores_high_canonical_branch_region(
         taken=True,
         target=HIGH_CANONICAL_TARGET,
         compressed=True,
-        handoff=True,
     )
 
     await _lookup(dut, HIGH_CANONICAL_PC, slot2=True)
@@ -560,7 +593,6 @@ async def test_narrow_target_payload_restores_high_canonical_branch_region(
         taken=True,
         target=HIGH_CANONICAL_TARGET,
         compressed=True,
-        handoff=True,
     )
 
     await _lookup_slot2_alt(dut, HIGH_CANONICAL_PC - 4)
@@ -570,7 +602,6 @@ async def test_narrow_target_payload_restores_high_canonical_branch_region(
         taken=True,
         target=HIGH_CANONICAL_TARGET,
         compressed=True,
-        handoff=True,
     )
 
 
@@ -578,7 +609,7 @@ async def test_narrow_target_payload_restores_high_canonical_branch_region(
 async def test_cross_region_target_update_invalidates_all_target_rows(
     dut: Any,
 ) -> None:
-    """A cross-region JALR becomes a miss instead of a truncated prediction."""
+    """A cross-region update invalidates the entry instead of truncating its target."""
     await _setup_test(dut)
 
     # First allocate every image so the cross-region update has to invalidate
@@ -597,7 +628,6 @@ async def test_cross_region_target_update_invalidates_all_target_rows(
         target=HIGH_CANONICAL_TARGET,
         taken=True,
         compressed=True,
-        handoff=True,
     )
 
     await _lookup(dut, PC_A)
@@ -628,7 +658,6 @@ async def test_staged_slot2_lookup_covers_same_index_halfword_base(
         target=TARGET_A,
         taken=True,
         compressed=True,
-        handoff=True,
     )
     await _update(dut, pc=plus4_pc, target=TARGET_B, taken=True)
 
@@ -642,7 +671,6 @@ async def test_staged_slot2_lookup_covers_same_index_halfword_base(
         taken=True,
         target=TARGET_A,
         compressed=True,
-        handoff=True,
     )
 
     dut.i_pc_2_use_alt.value = 1
@@ -668,8 +696,8 @@ async def test_staged_slot2_lookup_covers_next_index_and_rejects_later_index(
     await _settle()
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
 
-    # A current base outside the early request's base/successor coverage must
-    # not consume any of the three images' registered data.
+    # A served base whose index is neither the staged index nor the next one
+    # must not use any of the three images' registered rows.
     dut.i_pc_2_base.value = lookup_base + 8
     await _settle()
     assert not dut.o_btb_hit_2.value
@@ -677,28 +705,26 @@ async def test_staged_slot2_lookup_covers_next_index_and_rejects_later_index(
     assert not dut.o_predicted_taken_2_plus2.value
     assert not dut.o_predicted_taken_2_plus4.value
     assert not dut.o_btb_compressed_2.value
-    assert not dut.o_btb_requires_pc_reg_handoff_2.value
 
 
 @cocotb.test()
 async def test_staged_slot2_t4_safely_misses_at_successor_index(dut: Any) -> None:
-    """T4 is unavailable at A's successor even when its raw row tag aliases."""
+    """T4 misses for a base in the next word even when the staged row's tag matches."""
     await _setup_test(dut)
 
     lookup_base = PC_A
     current_base = lookup_base + 4
 
-    # This entry puts a valid T4 row at lookup_base's physical read index.
-    # Because the direct-mapped index is excluded from the tag, that raw tag
-    # also matches current_base.  Coverage, rather than tag mismatch, must keep
-    # the successor-word ALT candidate from consuming the stale row.
+    # This update writes a valid T4 row at lookup_base's read index. The tag
+    # leaves out the index bits, so that row's tag also matches current_base.
+    # Only the coverage check (RT2 alone serves the next index) keeps the +4
+    # candidate in the next word from using that row.
     await _update(
         dut,
         pc=lookup_base + 4,
         target=TARGET_A,
         taken=True,
         compressed=True,
-        handoff=True,
     )
 
     await _stage_slot2_images(dut, lookup_base)
@@ -727,7 +753,6 @@ async def test_staged_slot2_next_index_wraps_without_losing_the_full_tag(
         target=TARGET_A,
         taken=True,
         compressed=True,
-        handoff=True,
     )
 
     await _stage_slot2_images(dut, lookup_base)
@@ -740,7 +765,6 @@ async def test_staged_slot2_next_index_wraps_without_losing_the_full_tag(
         taken=True,
         target=TARGET_A,
         compressed=True,
-        handoff=True,
     )
 
 
@@ -763,16 +787,15 @@ async def test_staged_slot2_same_edge_write_forwards_full_replacement_row(
     await _settle()
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
 
-    # The replacement collides with the old predecessor index.  The lookup
-    # stage reads that index on the write edge, so every row field must bypass
-    # the RAM's implementation-defined read-during-write result.
+    # The replacement's T2 key has the old key's index, and the lookup reads
+    # that index on the write edge, so every row field must bypass the RAM's
+    # implementation-defined read-during-write result.
     dut.i_pc_2_lookup_base.value = new_normal_base
     dut.i_update.value = 1
     dut.i_update_pc.value = new_pc
     dut.i_update_target.value = TARGET_B
     dut.i_update_taken.value = 1
     dut.i_update_compressed.value = 1
-    dut.i_update_requires_pc_reg_handoff.value = 1
     dut.i_early_update_active.value = 0
     dut.i_late_update_pc.value = new_pc
     dut.i_late_update_taken.value = 1
@@ -788,11 +811,10 @@ async def test_staged_slot2_same_edge_write_forwards_full_replacement_row(
         taken=True,
         target=TARGET_B,
         compressed=True,
-        handoff=True,
     )
 
-    # The ALT predecessor is in the same word index, so its row was staged and
-    # forwarded on that edge too.
+    # The T4 key (new_pc - 4) is in the same word index, so its row was staged
+    # and forwarded on that edge too.
     dut.i_pc_2_base.value = new_alt_base
     dut.i_pc_2_use_alt.value = 1
     await _settle()
@@ -802,11 +824,10 @@ async def test_staged_slot2_same_edge_write_forwards_full_replacement_row(
         taken=True,
         target=TARGET_B,
         compressed=True,
-        handoff=True,
     )
 
-    # Switching the current tag back to the evicted predecessor is now a miss
-    # without another RAM read edge.
+    # Switching the served base back to the evicted key misses without
+    # another RAM read edge.
     dut.i_pc_2_base.value = old_base
     dut.i_pc_2_use_alt.value = 0
     await _settle()
@@ -826,9 +847,9 @@ async def test_slot2_rotated_image_same_edge_write_forwards_wrapped_replacement(
     lookup_base = (MASK_XLEN - 3) & MASK_XLEN
     current_base = 0
 
-    # Both updates use RT2 physical index 255, but their authoritative T2 tags
-    # differ.  The old row makes a read-first RAM result distinguishable from
-    # the replacement that must be forwarded on the colliding edge.
+    # Both updates land at RT2 index 255 with different T2 tags. The old row
+    # makes a read-first RAM result distinguishable from the replacement that
+    # must be forwarded on the colliding edge.
     await _update(dut, pc=old_pc, target=TARGET_A, taken=False)
 
     dut.i_pc_2_lookup_base.value = lookup_base
@@ -837,15 +858,14 @@ async def test_slot2_rotated_image_same_edge_write_forwards_wrapped_replacement(
     dut.i_update_target.value = TARGET_B
     dut.i_update_taken.value = 1
     dut.i_update_compressed.value = 1
-    dut.i_update_requires_pc_reg_handoff.value = 1
     dut.i_early_update_active.value = 0
     dut.i_late_update_pc.value = new_pc
     dut.i_late_update_taken.value = 1
     await _advance_cycle(dut)
     dut.i_update.value = 0
 
-    # The early read address wrapped at the top of XLEN, while the served base
-    # is logical index zero.  Selecting normal +2 therefore consumes RT2.
+    # The staged read is at the top of the address space and the served base
+    # wraps to index zero, the next index, so the +2 selection uses RT2.
     dut.i_pc_2_base.value = current_base
     dut.i_pc_2_use_alt.value = 0
     await _settle()
@@ -855,7 +875,6 @@ async def test_slot2_rotated_image_same_edge_write_forwards_wrapped_replacement(
         taken=True,
         target=TARGET_B,
         compressed=True,
-        handoff=True,
     )
 
 
@@ -863,7 +882,7 @@ async def test_slot2_rotated_image_same_edge_write_forwards_wrapped_replacement(
 async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
     dut: Any,
 ) -> None:
-    """The U-2 replica preserves counters, tags, and safe key replacement."""
+    """T2 (key U-2) follows the entry's counter and tag, and a cross-region key misses."""
     await _setup_test(dut)
 
     actual_pc = PC_A
@@ -873,7 +892,6 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
         target=TARGET_A,
         taken=True,
         compressed=True,
-        handoff=True,
     )
     await _lookup(dut, actual_pc, slot2=True)
     _assert_slot2(
@@ -882,19 +900,18 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
         taken=True,
         target=TARGET_A,
         compressed=True,
-        handoff=True,
     )
 
-    # Counter evolution is calculated from the conventional update replica and
-    # written identically to the shifted lookup replica.
+    # The next counter value is computed from the update-side RAM copies and
+    # written unchanged to the slot-2 images.
     await _update(dut, pc=actual_pc, target=TARGET_B, taken=False)
     await _lookup(dut, actual_pc, slot2=True)
     _assert_slot2(dut, hit=True, taken=False, target=TARGET_B)
 
-    # Both entries occupy conventional index zero and shifted index 255. The
-    # second branch's predecessor crosses a 4-GiB region boundary, so it must
-    # invalidate that shifted target row rather than reconstruct upper target
-    # bits from the predecessor's different region. Slot 1 remains trainable.
+    # Both entries use slot-1 index 0 and T2 index 255. The second branch's T2
+    # key (U-2) is in a different 4-GiB region, so its write must invalidate
+    # that T2 row rather than restore the target's upper bits from the key's
+    # region. Slot 1 still trains.
     first_pc = 0x80000400
     second_pc = 0x00000000
     await _update(dut, pc=first_pc, target=TARGET_A, taken=True)
@@ -918,7 +935,6 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
         target=TARGET_A + 2,
         taken=True,
         compressed=True,
-        handoff=True,
     )
     await _lookup(dut, halfword_pc, slot2=True)
     _assert_slot2(
@@ -927,7 +943,6 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
         taken=True,
         target=TARGET_A + 2,
         compressed=True,
-        handoff=True,
     )
 
 
@@ -935,16 +950,16 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
 async def test_shifted_slot2_lookup_uses_predecessor_key_collision_topology(
     dut: Any,
 ) -> None:
-    """The U-2 replica is direct-mapped by predecessor PC, including PC[1]."""
+    """T2 is direct-mapped by its key U-2, including the key's PC[1]."""
     await _setup_test(dut)
 
     word_pc = PC_A
     halfword_pc = PC_A + 2
     next_word_pc = PC_A + 4
 
-    # These two PCs collide in the canonical table, but their U-2 predecessor
-    # keys land at adjacent shifted indices. The shifted replica can retain the
-    # older word-aligned entry after the canonical table replaces it.
+    # These two PCs share a slot-1 index, but their U-2 keys land at adjacent
+    # T2 indices, so T2 keeps the older word-aligned entry after the slot-1
+    # table replaces it.
     await _update(dut, pc=word_pc, target=TARGET_A, taken=True)
     await _update(
         dut,
@@ -958,9 +973,9 @@ async def test_shifted_slot2_lookup_uses_predecessor_key_collision_topology(
     await _lookup(dut, word_pc, slot2=True)
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
 
-    # Conversely, these canonical entries use adjacent indices, while their
-    # predecessor keys share one shifted index. Updating the next word evicts
-    # only the halfword entry from the normal shifted replica.
+    # Conversely, these entries use adjacent slot-1 indices while their U-2
+    # keys share one T2 index, so updating the next word evicts only the
+    # halfword entry from T2.
     await _update(dut, pc=next_word_pc, target=TARGET_A + 4, taken=True)
     await _lookup(dut, halfword_pc)
     _assert_slot1(
@@ -980,7 +995,7 @@ async def test_shifted_slot2_lookup_uses_predecessor_key_collision_topology(
 async def test_shifted_slot2_alt_lookup_preserves_metadata_and_counter(
     dut: Any,
 ) -> None:
-    """The shifted alternate replica behaves exactly like a lookup at base+4."""
+    """T4 returns the base+4 entry's metadata and follows its counter updates."""
     await _setup_test(dut)
 
     actual_pc = PC_A
@@ -991,7 +1006,6 @@ async def test_shifted_slot2_alt_lookup_preserves_metadata_and_counter(
         target=TARGET_A,
         taken=True,
         compressed=True,
-        handoff=True,
     )
     await _lookup_slot2_alt(dut, base_pc)
     _assert_slot2(
@@ -1000,7 +1014,6 @@ async def test_shifted_slot2_alt_lookup_preserves_metadata_and_counter(
         taken=True,
         target=TARGET_A,
         compressed=True,
-        handoff=True,
     )
 
     await _update(dut, pc=actual_pc, target=TARGET_B, taken=False)
@@ -1014,11 +1027,11 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
     await _setup_test(dut)
 
     cases = [
-        # update index 0 maps to shifted index 255 and borrows into the tag
+        # update index 0 maps to T4 index 255 and borrows into the tag
         (0x80000400, 0x800003FC, TARGET_A, False, True),
         # full XLEN wrap: the entry at zero is keyed by 0xffffffff_fffffffc.
-        # That different-region predecessor must not allocate a target-valid
-        # shifted row.
+        # That key is in a different region, so it must not allocate a
+        # target-valid T4 row.
         (0x00000000, 0xFFFFFFFF_FFFFFFFC, TARGET_B, False, False),
         # the same index borrow preserves PC[1] for a halfword-aligned entry
         (0x00000402, 0x000003FE, TARGET_A + 2, True, True),
@@ -1032,7 +1045,6 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
             target=target,
             taken=True,
             compressed=compressed,
-            handoff=compressed,
         )
         await _lookup_slot2_alt(dut, base_pc)
         if shifted_predictable:
@@ -1042,16 +1054,14 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
                 taken=True,
                 target=target,
                 compressed=compressed,
-                handoff=compressed,
             )
         else:
             assert not dut.o_btb_hit_2.value
             assert not dut.o_predicted_taken_2.value
 
-        # All cases collide at direct-mapped index zero in the canonical
-        # table and therefore at shifted index 255.  Replacement must
-        # invalidate the prior shifted tag just as it invalidates the
-        # conventional one.
+        # All cases share slot-1 index 0 and therefore T4 index 255. Each
+        # replacement must evict the previous T4 row just as it replaces the
+        # slot-1 entry.
         if previous_base is not None:
             await _lookup_slot2_alt(dut, previous_base)
             assert not dut.o_btb_hit_2.value
@@ -1065,10 +1075,10 @@ async def test_independent_indices_do_not_poison_each_other(dut: Any) -> None:
     await _setup_test(dut)
 
     await _update(dut, pc=PC_A, target=TARGET_A, taken=True, compressed=True)
-    await _update(dut, pc=PC_B, target=TARGET_B, taken=False, handoff=True)
+    await _update(dut, pc=PC_B, target=TARGET_B, taken=False)
 
     await _lookup(dut, PC_A)
     _assert_slot1(dut, hit=True, taken=True, target=TARGET_A, compressed=True)
 
     await _lookup(dut, PC_B)
-    _assert_slot1(dut, hit=True, taken=False, target=TARGET_B, handoff=True)
+    _assert_slot1(dut, hit=True, taken=False, target=TARGET_B)

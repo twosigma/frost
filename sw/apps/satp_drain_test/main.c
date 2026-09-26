@@ -15,21 +15,20 @@
  */
 
 /*
- * Pre-retirement committed-store drain for translation-class CSRs.
+ * Committed-store drain before translation CSR writes.
  *
- * A store committed immediately before a translation-relevant CSR write must
- * drain before that CSR retires and triggers the full recovery flush. The
- * flush resets the store queue, so retiring first would lose a store that is
- * architecturally committed but still undrained in the cached tier. That is
- * the shape of page-table setup (sd PTE; csrw satp). The env_v demand pager
- * lost its UART megapage PTE this way and livelocked. Every iteration stores
+ * A store committed immediately before a write to satp, mstatus, or sstatus
+ * must drain before that CSR retires and triggers its full flush. The flush
+ * empties the store queue, so retiring first would lose a store that is
+ * architecturally committed but not yet written to the cached tier. That is
+ * the shape of page-table setup (sd PTE; csrw satp). Every iteration stores
  * to cached DDR, which drains slowly, and writes the CSR in the next few
  * instructions.
  *
- * Case 1: sd to cached DDR; csrw satp (Bare->Bare rewrites still flush per
- *         D10); ld back and compare.
+ * Case 1: sd to cached DDR; csrw satp (any satp write flushes, even Bare to
+ *         Bare); ld back and compare.
  * Case 2: the same with an mstatus.SUM value toggle, read back after the
- *         recovery flush, then restored and read back after the second flush.
+ *         flush, then restored and read back after the second flush.
  */
 
 #include <stdint.h>
@@ -52,7 +51,7 @@ int main(void)
     for (int i = 0; i < N / 2; i++) {
         ddr_slots[2 * i] = 0xA5A5000000000000ULL + (uint64_t) (2 * i);
         ddr_slots[2 * i + 1] = 0xA5A5000000000000ULL + (uint64_t) (2 * i + 1);
-        csr_write(satp, 0); /* Bare->Bare: still a D10 flush */
+        csr_write(satp, 0); /* Bare->Bare: still a full flush */
         for (int k = 2 * i; k <= 2 * i + 1; k++) {
             uint64_t got = ddr_slots[k];
             if (got != 0xA5A5000000000000ULL + (uint64_t) k) {

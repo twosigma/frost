@@ -120,7 +120,13 @@ def select_target(
     target_exact: str | None = None,
     non_interactive: bool = False,
 ) -> str | None:
-    """Select a board target; managed callers can require exact, prompt-free selection."""
+    """Return the selected target name, or None after listing targets.
+
+    ``board`` limits the choice to its vendor's targets. ``target_exact``
+    requires the full name, and ``non_interactive`` fails instead of prompting
+    when the choice is ambiguous. Selection errors print a message and exit
+    with status 1.
+    """
     if remote_host and hw_server_url:
         raise ValueError("remote_host and hw_server_url are mutually exclusive")
     if target_pattern is not None and target_exact is not None:
@@ -134,7 +140,7 @@ def select_target(
 
     if not all_targets:
         print("Error: No hardware targets found", file=sys.stderr)
-        print("  - Ensure JTAG cable is connected", file=sys.stderr)
+        print("  - Check that the JTAG cable is connected", file=sys.stderr)
         print("  - Check that the board is powered on", file=sys.stderr)
         if remote_host:
             print(f"  - Verify hw_server is running on {remote_host}", file=sys.stderr)
@@ -237,8 +243,8 @@ def add_target_args(parser: argparse.ArgumentParser, *, managed: bool = False) -
     selection.add_argument(
         "--target",
         metavar="PATTERN",
-        help="Hardware target to use - index (0,1,2..) or pattern to match "
-        "(e.g., 'Xilinx' or a serial number)",
+        help="Hardware target: list index, or case-insensitive substring of the "
+        "target name or serial",
     )
     parser.add_argument(
         "--list-targets",

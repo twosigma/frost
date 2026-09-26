@@ -25,8 +25,8 @@
   FMV, FNEG, and FABS are assembler pseudo-instructions for FSGNJ, FSGNJN, and
   FSGNJX with rs1 = rs2, so they land here too, for both S and D.
 
-  Latency: 1 cycle. The output is registered to break the timing path through
-  FP forwarding.
+  Latency: 1 cycle. The output is registered to break the timing path from the
+  operands, which the reservation station can issue straight from the CDB.
 */
 module fp_sign_inject #(
     parameter int unsigned FP_WIDTH = 32
@@ -70,7 +70,7 @@ module fp_sign_inject #(
 
   assign result_comb = {result_sign, magnitude_a};
 
-  // Pipeline register - adds 1 cycle latency
+  // Output register: one cycle of latency
   logic started;
   logic [FP_WIDTH-1:0] result_reg;
 

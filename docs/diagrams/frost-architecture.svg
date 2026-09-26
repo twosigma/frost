@@ -131,7 +131,7 @@
     <path d="M 288 280 H 312" class="flow" marker-end="url(#flow-arrow)"/>
     <rect x="312" y="230" width="208" height="100" rx="12" class="front"/>
     <text x="336" y="261" class="heading">PD / Predecode</text>
-    <text x="336" y="288" class="body">RVC decompression</text>
+    <text x="336" y="288" class="body">RVC expansion select</text>
     <text x="336" y="313" class="body">Early branch redirect</text>
     <path d="M 520 280 H 544" class="flow" marker-end="url(#flow-arrow)"/>
     <rect x="544" y="230" width="208" height="100" rx="12" class="front"/>

@@ -14,12 +14,17 @@
  *    limitations under the License.
  */
 
-// The same registered low-provider retarget pulse formerly computed in IF.
-// Complete the priority classification for neither prediction, slot 1, and
-// slot 2 in parallel. Late prediction permission then selects only among three
-// scalar values. Reset remains outside the kept values; there is no new cycle.
-// Arm zero is reset and is supplied separately. Every remaining condition and
-// sequence flag is generic, including simultaneous requests and no winner.
+// Registered retarget pulse for the low-BRAM fetch presenter (if_stage's
+// o_fetch_redirect). It is high the cycle after a PC update whose winning
+// pc_controller next-PC arm is not sequential (its i_npc_seq bit is clear),
+// except when the winner is a slot-1 prediction whose branch packet was not
+// emitted in the same cycle (i_live_prediction_emits_with_output low): the
+// presenter still owes that packet and must deliver it before the target.
+//
+// The priority select is completed in parallel for each prediction outcome
+// (neither, slot 1, slot 2), so the late prediction flags only pick one of
+// three finished bits. Arm 0 (reset) is not an input; reset forces the pulse
+// low instead.
 module fetch_redirect (
     input logic i_clk,
     input logic i_reset,
@@ -65,9 +70,9 @@ module fetch_redirect (
   end
 
 `ifdef FORMAL
-  // Independent original selector and IF output equation. No assumptions on
-  // inputs, sequence classifications, initial output state, or relationships
-  // among simultaneous requests are needed. The reset arm is explicit above.
+  // Reference: the plain priority select over every arm, reset included, and
+  // IF's redirect equation. The proof needs no assumptions on the inputs, the
+  // sequential flags, the initial output, or simultaneous requests.
   logic [Arms-1:0] original_cond;
   logic [Arms-1:0] original_sel;
   logic original_d;

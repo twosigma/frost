@@ -59,7 +59,6 @@ module cpu_tb
   logic [7:0] i_pc_pairability_by_provider_parity;
   logic [3:0] i_slot2_start_valid_lo_by_provider_parity;
   logic i_instr_pc_metadata_served_high;
-  logic [1:0] i_instr_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
   logic [29:0] i_served_word_low;
@@ -113,12 +112,12 @@ module cpu_tb
   logic i_cached_write_done;
   logic i_cached_write_inflight;
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
-  // Translated-fetch seam. This bench models the production
-  // low-BRAM overlay fast path with a fixed 1-cycle response, so the served
-  // window is never the high tier. The fault verdict the core computes for an
-  // ask comes back registered with the window one cycle later. Translation
-  // stays in Bare mode, so the PA is the VA's low bits. The directed programs
-  // never fetch out of map, so the verdict is always clean.
+  // Translated-fetch ports. This bench models the one-cycle low-BRAM fetch
+  // path, so the served window never comes from the high (cached) provider.
+  // The fault flags the core computes for a fetch address come back registered
+  // with that window one cycle later. Translation stays in Bare mode, so the PA
+  // is the VA's low bits. The directed programs never fetch outside the memory
+  // map, so the fault flags stay clear.
   logic [31:0] o_fetch_pa0;
   logic [31:0] o_fetch_pa1;
   logic o_fetch_pa_valid;
@@ -146,8 +145,8 @@ module cpu_tb
   logic i_walk_line_resp_valid;
   logic [1:0] i_walk_line_resp_id;
   logic [255:0] i_walk_line_resp_rdata;
-  // Debug module seam: no debugger in this bench; the request
-  // inputs idle low and the status outputs are unobserved.
+  // Debug module ports: no debugger in this bench, so the request inputs idle
+  // low and the status outputs are unobserved.
   logic i_dbg_haltreq;
   logic i_dbg_go;
   logic [31:0] i_dbg_go_addr;
@@ -166,9 +165,9 @@ module cpu_tb
   assign i_dbg_go_addr = '0;
   assign i_dbg_data = '0;
 
-  // Coherence seam: no DMA agent in this bench, so the
-  // sequencer's admit / inval / release handshake stays idle and the core's
-  // answers are left unconnected.
+  // DMA coherence ports: no DMA agent in this bench, so the sequencer's
+  // admit/inval/release handshake stays idle and the core's answers are
+  // unobserved.
   logic i_coh_admit_valid;
   logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot;
   logic [riscv_pkg::XLEN-1:0] i_coh_admit_addr;
@@ -198,7 +197,7 @@ module cpu_tb
   logic [63:0] i_mtime_reg;
   interrupt_t i_interrupts;
   logic [63:0] i_mtime;
-  // PLIC S-context line (M6): quiet in the direct bench.
+  // PLIC S-context interrupt line: held low in this bench.
   logic i_plic_seip;
   assign i_plic_seip = 1'b0;
 
@@ -222,7 +221,7 @@ module cpu_tb
     tb_served_last_word_q <= o_pc[31:2] + 1'b1;
     tb_served_prev_word_q <= o_pc[31:2] - 1'b1;
     tb_served_prev_word_valid_q <= |o_pc[31:2];
-    // Fault verdict of the ask, registered with the window (see above).
+    // Fetch fault flags, registered with the window (see above).
     tb_fault0_q <= o_fetch_fault0;
     tb_fault0_page_q <= o_fetch_fault0_page;
     tb_fault1_q <= o_fetch_fault1;
@@ -230,14 +229,14 @@ module cpu_tb
   end
 
   // 64-bit fetch window {next_word, current_word}. The testbench feeds
-  // exactly one instruction per cycle, so the "next word" half must never be
-  // consumed. With 32b-led bundle formation, a plain NOP there would form a
-  // 2-wide bundle behind any pairable 32-bit slot-1 and advance the PC by +8,
-  // desynchronizing this bench's one-instruction-per-step model. Drive a
-  // SYSTEM encoding instead: its slot-2-start-valid class is 0, so the aligner
-  // class-kills slot-2 and the PC steps +4 as this bench expects. The blocker
-  // word itself never executes. The bench serves every architectural PC's
-  // instruction through tb_cur_word.
+  // exactly one instruction per cycle, so the next-word half must never be
+  // consumed. A NOP there would pair with any pairable 32-bit slot-1
+  // instruction and advance the PC by 8, breaking this bench's
+  // one-instruction-per-step model. ECALL cannot be slot 2 (a native SYSTEM
+  // instruction; its slot-2-start-valid predecode bit is 0), so the aligner
+  // emits slot 1 alone and the PC steps by 4 as this bench expects. The ECALL
+  // never executes: the bench serves every executed instruction through
+  // tb_cur_word.
   localparam logic [31:0] TbSlot2Blocker = 32'h0000_0073;  // ecall (SYSTEM)
   assign i_instr = {TbSlot2Blocker, tb_cur_word};
   // Per-word predecode sideband, computed by the same pure function the RTL
@@ -298,7 +297,6 @@ module cpu_tb
           i_instr_sideband[riscv_pkg::ImemSbSlot2StartValidLo]
         }
   };
-  assign i_instr_hi_rd_is_x2 = {TbSlot2Blocker[27:23] == 5'd2, tb_cur_word[27:23] == 5'd2};
   // bank_sel_r == pc_reg[2] => aligned: current word taken from i_instr[31:0].
   assign i_instr_bank_sel_r = tb_bank_sel_q;
   // This fixed one-cycle provider is the low lane. All arithmetic tags are
@@ -355,8 +353,8 @@ module cpu_tb
       .i_port_a_write_data('0),
       .i_port_a_byte_write_enable('0),
       .o_port_a_read_data(  /*not connected*/),
-      // Port B: CPU data memory access. Use the BRAM-specific byte-write-enable
-      // so the testbench mirrors the production MMIO-pre-mask behavior.
+      // Port B: CPU data memory access, written with the BRAM-only byte enables
+      // (MMIO and cached-tier stores masked off), as in cpu_and_mem.
       .i_port_b_byte_address(riscv_pkg::MemDataBits'(o_data_mem_addr)),
       .i_port_b_write_data(o_data_mem_wr_data),
       .i_port_b_byte_write_enable(o_data_mem_bram_byte_wr_en),

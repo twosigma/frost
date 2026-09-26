@@ -20,8 +20,8 @@
  * The official cjpeg-rose7-preset workload uses the Rose256 image and seven
  * work items. Score and certification builds need that, but it is far too
  * large for routine cycle-accurate simulation. This wrapper keeps the upstream
- * cjpeg kernel and MITH reporting path but feeds it a tiny generated BMP and
- * verifies the resulting JPEG by CRC.
+ * cjpeg kernel and MITH reporting path but feeds it a generated 8x8 BMP and
+ * checks the resulting JPEG's size and CRC.
  */
 
 #include "al_smp.h"

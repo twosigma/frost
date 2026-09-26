@@ -16,7 +16,8 @@
 
 // IEEE 802.3 Clause 49: Figure 49-7 and Table 49-1.
 // The standard prints sync headers in wire order. Packed vectors below put
-// the FIRST transmitted bit in bit zero: data serial 01, control serial 10.
+// the first transmitted bit in bit zero, so data (serial 01) is 2'b10 and
+// control (serial 10) is 2'b01.
 package eth10g_pcs_pkg;
   localparam logic [1:0] SyncData = 2'b10;
   localparam logic [1:0] SyncCtrl = 2'b01;

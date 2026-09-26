@@ -15,17 +15,15 @@
  */
 
 /*
- * frost_mith_main.c
- *
  * PASS/FAIL bridge for running CoreMark-PRO workloads on FROST.
  *
  * The CoreMark-PRO workload entry (e.g. workloads/core/core.c) calls
- * mith_main(), which runs and CRC-verifies the workload, prints the score, and
+ * mith_main(), which runs and verifies the workload, prints the score, and
  * returns. The workload's main() then returns 0 unconditionally (it discards
  * the harness result) and never calls exit(). Some workloads also print error
  * lines without incrementing MITH's per-item ->failed counter. On FROST, crt0
- * spins after main() returns, so nothing would ever signal pass/fail to the
- * simulation UART harness, which watches for "<<PASS>>" / "<<FAIL>>".
+ * spins after main() returns, so nothing would ever print the "<<PASS>>" or
+ * "<<FAIL>>" marker that the simulation and board harnesses watch for.
  *
  * Interposing the harness entry point avoids forking the upstream
  * (EEMBC-licensed) workload source. mith_lib.c is compiled with
@@ -75,8 +73,8 @@ int mith_main(ee_workload *workload,
     int result =
         mith_main_real(workload, num_iterations, num_contexts, oversubscribe_allowed, num_workers);
 
-    /* A workload passes only if every work item's CRC verification succeeded
-     * and no benchmark error was printed. */
+    /* A workload passes only if no work item recorded a failure and no
+     * benchmark error was printed. */
     int failed = 0;
     for (unsigned int i = 0; i < workload->max_idx; i++) {
         if (workload->load[i]->failed > 0) {
@@ -107,22 +105,24 @@ int mith_main(ee_workload *workload,
  * "training" path selects each benchmark's smallest preset, each of which has
  * its own known-good expected CRC / reference data. pgo_training_run != 0 makes
  * every benchmark's define_params_*() pick that small preset and skip the
- * command-line dataset overrides, which this build does not use. Verification
- * remains a true end-to-end correctness check, run on the small dataset.
+ * command-line dataset overrides, which simulation builds do not use.
+ * Verification remains an end-to-end correctness check on the small dataset.
  *
  * CMP_PGO_TRAINING is set per workload by the Makefile (WL_PGO):
- *   1 -> enable pgo_training_run. Seven of the nine workloads take this path
- *        in simulation builds and pick their smallest preset.
- *   0 -> leave it 0; the workload then uses its default preset index.
- *        cjpeg-rose7-preset needs this because its smallest compiled preset
- *        (Rose256, index 0) is the default; enabling pgo there would select
- *        index 1 (goose), whose data is not compiled into the Rose256 build.
- *        zip-test also uses 0: its simulation shim (frost_zip_darkmark_sim.c)
- *        selects its own generated input.
+ *   1 -> enable pgo_training_run, so the workload picks its smallest preset.
+ *        Simulation builds of every workload except cjpeg-rose7-preset and
+ *        zip-test take this path.
+ *   0 -> leave it 0. Official builds use 0 and run each workload's default
+ *        preset. The cjpeg and zip simulation builds also use 0; their FROST
+ *        wrappers (frost_cjpeg_tiny.c, frost_zip_darkmark_sim.c) supply their
+ *        own generated input. Upstream cjpeg must not enable it:
+ *        pgo_training_run selects index 1 (goose), whose data the Rose256
+ *        build does not compile.
  *
- * Hardware performance builds compile with CMP_PGO_TRAINING=0 and pass an argv
- * string such as COREMARK_PRO_RUN_ARGS="-v0 -i100" at build time. Without -v0,
- * verify_output remains enabled and mith_main_loop() forces num_iterations to 1.
+ * Hardware builds compile with CMP_PGO_TRAINING=0 and pass an argv string at
+ * build time, such as COREMARK_PRO_RUN_ARGS="-v0 -i100" for a score run.
+ * Without -v0, verify_output remains enabled and mith_main_loop() forces
+ * num_iterations to 1.
  */
 #ifndef CMP_PGO_TRAINING
 #define CMP_PGO_TRAINING 1
@@ -142,7 +142,7 @@ int main(void)
     frost_coremark_pro_trace("<<CMP_MAIN>>\n");
 #endif
 
-    /* Select the small verified preset unless argv overrides it. */
+    /* A -pgo= run argument, parsed by the workload's main(), overrides this. */
     pgo_training_run = CMP_PGO_TRAINING;
 
     static char arg_storage[] = COREMARK_PRO_RUN_ARGS;

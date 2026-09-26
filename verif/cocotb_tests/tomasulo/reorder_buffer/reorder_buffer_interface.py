@@ -15,13 +15,14 @@
 """Typed ROB DUT access and packed-struct conversion helpers.
 
 Verilator flattens packed structs into bit vectors, so this interface packs
-and unpacks their fields. The six independent dispatch-bypass value reads
-have dedicated accessors, separate from the RAT-style entry read.
+and unpacks their fields. Entry done bits come from o_entry_valid and
+o_entry_done; entry values are read through the six dispatch done-repair
+read ports (i_bypass_tag_*).
 """
 
 from typing import Any
 
-from cocotb.triggers import RisingEdge, FallingEdge
+from cocotb.triggers import RisingEdge, FallingEdge, Timer
 from config import FLEN, MASK64, MASK_XLEN, XLEN
 
 from .reorder_buffer_model import (
@@ -42,9 +43,9 @@ from cocotb_tests.cpu_structs import (
 
 # reorder_buffer_alloc_req_t contains five XLEN fields: pc,
 # predicted_target, branch_target, link_addr, and csr_write_data. The other
-# fields occupy 49 bits, so the complete width is 369 (49 + 5*64).
+# fields occupy 50 bits, so the complete width is 370 (50 + 5*64).
 # alloc_valid is always the MSB (ALLOC_REQ_WIDTH - 1).
-ALLOC_REQ_WIDTH = 49 + (5 * XLEN)
+ALLOC_REQ_WIDTH = 50 + (5 * XLEN)
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -107,6 +108,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     val |= (1 if req.predicted_taken else 0) << bit
     bit += 1
     val |= (1 if req.is_branch else 0) << bit
+    bit += 1
+    val |= (1 if req.fp_dyn_rm else 0) << bit
     bit += 1
     val |= (1 if req.is_fp_instruction else 0) << bit
     bit += 1
@@ -355,9 +358,9 @@ class ReorderBufferInterface:
         self.dut.i_checkpoint_valid.value = 0
         self.dut.i_checkpoint_id.value = 0
         self.dut.i_sq_committed_empty.value = 1
-        # Zero-latency cache sync by default (mirrors the no-cached-tier
-        # shape's done=req): FENCE.I spends exactly one cycle in
-        # SERIAL_FENCE_I_SYNC before committing.
+        # Zero-latency cache sync by default, as in a build without the cached
+        # tier (done tied to req): FENCE.I retires in its first
+        # SERIAL_FENCE_I_SYNC cycle.
         self.dut.i_fence_i_sync_done.value = 1
         self.dut.i_widen_commit_ok.value = 1
         self.dut.i_commit_hold.value = 0
@@ -377,20 +380,23 @@ class ReorderBufferInterface:
         self.dut.i_wfi_illegal.value = 0
         self.dut.i_priv_is_u.value = 0
         self.dut.i_debug_mode.value = 0
-        # All counters enabled (the reset value); the mcounteren gate is
-        # inert in PrivM anyway.
+        # All counters enabled (the reset value). The ROB does not use this
+        # input; allocation legality reads i_counter_blocked.
         self.dut.i_mcounteren.value = 0b111
-        # FS not Off (the reset value is Initial): the D15 FP gate is inert.
+        # FS not Off (the reset value is Initial), so the allocation-time
+        # FS-Off check never marks an FP instruction illegal.
         self.dut.i_mstatus_fs_off.value = 0
+        # frm = RNE (the reset value), so the reserved-frm check never marks a
+        # dynamic-rounding FP instruction illegal.
+        self.dut.i_frm.value = 0
         self.dut.i_interrupt_pending.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
         self.dut.i_flush_after_head_commit.value = 0
-        self.dut.i_early_recovery_flush.value = 0
+        self.dut.i_replay_set_mask.value = 0
         self.dut.i_early_recovery_en.value = 0
         self.dut.i_early_recovery_tag.value = 0
-        self.dut.i_read_tag.value = 0
         self.set_bypass_tags((0,) * 6)
 
     # =========================================================================
@@ -641,12 +647,16 @@ class ReorderBufferInterface:
 
     @property
     def sfence_window(self) -> bool:
-        """True only while an SFENCE.VMA owns the serializer sync window."""
+        """True while an SFENCE.VMA at the head is in the cache-sync state."""
         return bool(self.dut.o_sfence_window.value)
 
     @property
     def fence_class_flush_event(self) -> bool:
-        """Serializer-owned native-fence or translation-CSR retirement event."""
+        """FENCE-class flush event (FENCE.I, SFENCE.VMA, or a translation CSR).
+
+        High in the cycle a FENCE.I or SFENCE.VMA retires, and one cycle after a
+        translation CSR retires.
+        """
         return bool(self.dut.o_fence_class_flush_event.value)
 
     @property
@@ -660,7 +670,7 @@ class ReorderBufferInterface:
 
     @property
     def fence_i_flush(self) -> bool:
-        """Registered native-fence or translation-CSR frontend flush."""
+        """FENCE-class flush request: the flush event delayed one cycle."""
         return bool(self.dut.o_fence_i_flush.value)
 
     # =========================================================================
@@ -750,20 +760,24 @@ class ReorderBufferInterface:
         return int(self.dut.dbg_tail_ptr.value)
 
     # =========================================================================
-    # Entry Read Interface
+    # Entry Reads
     # =========================================================================
 
-    def set_read_tag(self, tag: int) -> None:
-        """Set the tag for entry reads. Call on falling edge."""
-        self.dut.i_read_tag.value = tag
+    def entry_done(self, tag: int) -> bool:
+        """Return whether entry tag is valid and done."""
+        valid = int(self.dut.o_entry_valid.value)
+        done = int(self.dut.o_entry_done.value)
+        return bool((valid & done) >> tag & 1)
 
-    def read_entry_done(self) -> bool:
-        """Read entry done status. Call after setting tag and rising edge."""
-        return bool(self.dut.o_read_done.value)
+    async def read_entry_value(self, tag: int) -> int:
+        """Read entry tag's value through done-repair read port 1.
 
-    def read_entry_value(self) -> int:
-        """Read entry value. Call after setting tag and rising edge."""
-        return int(self.dut.o_read_value.value)
+        Drives i_bypass_tag_1 and waits 1 ps for the asynchronous read, so
+        call it away from a rising edge. The other read ports keep their tags.
+        """
+        self.dut.i_bypass_tag_1.value = tag
+        await Timer(1, unit="ps")
+        return int(self.dut.o_bypass_value_1.value)
 
     def set_bypass_tags(self, tags: tuple[int, ...]) -> None:
         """Drive all six asynchronous dispatch-bypass read addresses."""

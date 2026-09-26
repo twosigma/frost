@@ -15,7 +15,7 @@
  */
 
 /*
- * frost_nettest: the frost,net10g driver through its loopback feature.
+ * frost_nettest: tests the frost,net10g driver through its loopback feature.
  *
  * The hardware regression's Linux stage types this at the root shell. It
  * uses the interface whose ETHTOOL_GDRVINFO driver is frost_net10g. The
@@ -41,21 +41,22 @@
  *      and 5's last burst, no frame is counted while none is being sent, and
  *      rx_errors and tx_errors are unchanged. The loopback-off interval is
  *      left out of both the idle and the error checks.
- *   7. Down with loopback off (also after a failure), then the verdict:
+ *   7. Down with loopback off (also after a failure), then the result:
  *
  *   FROST_NET_LOOPBACK_PASS
  *   FROST_NET_LOOPBACK_FAIL <reason>
  *
  * Frames go from the interface's own address to itself with ethertype 0x88B5
- * over an AF_PACKET socket that is opened again after every up (a down
- * leaves ENETDOWN pending on a bound socket). Each frame carries a tag: a
- * sequence number that is never reused within the run, a run identifier and
- * its length, so a lost, duplicated, reordered, stale (sent before a down or,
- * unless the identifiers collide, by an earlier run) or corrupted frame fails
- * the step. A frame shorter than the 24 bytes of header and tag holds only
- * part of the tag (a 14-byte frame none of it); for those the bytes sent and
- * the padded length are checked. After each verified burst, no further frame
- * may arrive for half a second.
+ * over an AF_PACKET socket. A down leaves ENETDOWN pending on a bound socket,
+ * so no socket is used across a down: a new one is bound after each up that
+ * precedes sending. Each frame carries a tag: a sequence number that is never
+ * reused within the run, a run identifier and its length, so a lost,
+ * duplicated, reordered, stale (sent before a down or, unless the identifiers
+ * collide, by an earlier run) or corrupted frame fails the step. A frame
+ * shorter than the 24 bytes of header and tag holds only part of the tag (a
+ * 14-byte frame none of it); for those the bytes sent and the padded length
+ * are checked. After each verified burst, no further frame may arrive for half
+ * a second.
  *
  * Every wait the program makes is bounded (one step's frames get 10 s); a
  * system call that never returns is left to the caller's timeout. The test

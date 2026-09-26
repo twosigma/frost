@@ -18,12 +18,13 @@
  * x3_nic_gty_supervisor: the transceiver supervisor of x3_nic_gty, without
  * vendor primitives.
  *
- * Everything but the receive signal-OK register runs on the free-running
- * clock. Every input is a level from another domain or from the transceiver
- * and is synchronized here: the QPLL0 lock, power good and raw RX reset done
- * (transceiver outputs), the reset helper's TX and RX reset done and the user
- * clocking helpers' active flags (their USRCLK2 domains), the PCS block lock
- * and the PHY_RESET and PMA_LOOPBACK bits (the NIC's core domain).
+ * Everything but the receive signal-OK path (its synchronizer and register)
+ * runs on the free-running clock. Every input is a level from another domain
+ * or from the transceiver and is synchronized here: the QPLL0 lock, power
+ * good and raw RX reset done (transceiver outputs), the reset helper's TX and
+ * RX reset done and the user clocking helpers' active flags (their USRCLK2
+ * domains), the PCS block lock and the PHY_RESET and PMA_LOOPBACK bits (the
+ * NIC's core domain).
  *
  * The states:
  * - POWERUP: nothing is asserted, so the reset helper runs its own start-up
@@ -31,20 +32,20 @@
  *   sequence.
  * - RUN: the only state with receive signal allowed. A PHY_RESET, a PLL lock
  *   loss or a TX or RX reset done that drops unasked starts a full reset; a
- *   PMA_LOOPBACK change starts an RX datapath reset (a loopback change);
- *   block lock absent for LOCK_RETRY_MS starts a lock retry, and again every
- *   LOCK_RETRY_MS while it stays absent. A lock retry is an RX PCS reset,
- *   except that every LOCK_RETRIES_PER_RX_RESET-th retry in a row is an RX
- *   datapath reset: UG578 Table 2-34 asks for GTRXRESET after RXP/RXN are
- *   connected or the remote end powers up, which a PCS reset does not do,
- *   so a link partner that arrives after start-up may otherwise never lock.
- *   Block lock, or any reset other than the PCS reset, restarts the count.
+ *   PMA_LOOPBACK change starts an RX datapath reset; block lock absent for
+ *   LOCK_RETRY_MS starts a lock retry, and again every LOCK_RETRY_MS while it
+ *   stays absent. A lock retry is an RX PCS reset, except that every
+ *   LOCK_RETRIES_PER_RX_RESET-th retry in a row is an RX datapath reset:
+ *   UG578 Table 2-34 asks for GTRXRESET after RXP/RXN are connected or the
+ *   remote end powers up, which a PCS reset does not do, so a link partner
+ *   that arrives after start-up may otherwise never lock. Block lock, or any
+ *   reset other than the PCS reset, restarts the count.
  * - DRAIN: the receive signal permission and the clock-OK of every direction
  *   the coming reset stops are withdrawn, and held for one millisecond while
- *   the clocks still run. The NIC's MAC receive domain registers signal-OK
- *   low (its status register has no reset and would otherwise keep a stale
- *   carrier through a stopped clock), and its core side starts a new reset
- *   generation for each affected domain.
+ *   the clocks still run. In that time the NIC's MAC receive domain registers
+ *   signal-OK low (its status register has no reset and would otherwise keep
+ *   a stale carrier through a stopped clock), and its core side starts a new
+ *   reset generation for each affected domain.
  * - SETTLE (RX datapath reset only): LOOPBACK takes the requested value
  *   (3'b010 near-end PMA or 3'b000; a lock retry keeps the current one unless
  *   PMA_LOOPBACK changed during its drain), then a short settle before the
@@ -265,7 +266,7 @@ module x3_nic_gty_supervisor #(
       end
       S_DRAIN: begin
         if (act_q != A_ALL && phy_reset) begin
-          // Now both directions stop: restart the drain for the TX side.
+          // A PHY_RESET stops both directions: restart the drain for the TX side.
           act_d   = A_ALL;
           timer_d = '0;
         end else if (act_q == A_PCS && loop_change) begin
@@ -438,37 +439,17 @@ endmodule : x3_nic_gty_supervisor
  * helper resets, the supervisor above, a register on each raw data path and
  * the NIC's PHY status.
  *
- * Free-running clock: a BUFGCE_DIV halves the 300 MHz system clock input
- * (the IBUFDS output the board top also feeds its MMCM with, both in the
- * input's clock region), so the reset controller's clock runs from
- * configuration and depends neither on the MMCM nor on the transceiver.
- *
- * User clocking helper resets: each BUFG_GT pair is held clear until its
- * source's reset is done: TXPRGDIVRESETDONE for TXOUTCLK from the TX
- * programmable divider (whose reset the helper already asserts on a PLL lock
- * loss) and RXPMARESETDONE for the recovered RXOUTCLKPMA. The PLL lock is
- * deliberately not a term: an unplanned lock loss then leaves the recovered
- * clock toggling, so the NIC's receive domain still registers signal-OK low
- * when the reset helper drops RX reset done, instead of keeping a stale
- * carrier behind a stopped clock; and a short lock glitch cannot stop the
- * user clocks unseen by the synchronizers. Every reset that interrupts these
- * clocks on purpose is drained first.
- *
  * Toward the NIC: o_tx_clk and o_rx_clk are TX and RX USRCLK2 (161.13 MHz,
- * the RX one recovered from the line); clock-OK, signal-OK and PHY_STATUS
- * come from the supervisor. The raw TX word goes to TXDATA every TX clock,
- * RXDATA comes back as a raw word that is valid every RX clock; both are
- * registered once, bit 0 first on the line. PHY_STATUS: LOS 0 and
- * MODULE_PRESENT 1 (no module status reaches the FPGA on this card),
- * CDR_LOCK = RX reset done (RXCDRLOCK is reserved in UG578), GT_RESET_DONE =
- * TX and RX reset done, CLK_SHARED 0. PHY_CTRL: while PHY_RESET is set the
- * reset controller's reset-all input is held and the NIC sees both MAC clocks
- * absent and no receive signal (the transceiver itself keeps running), and
- * clearing it runs the full reset sequence;
- * PMA_LOOPBACK selects near-end PMA loopback (the line TX still transmits);
- * TX_DISABLE has no effect, since the module's transmit disable is not an
- * FPGA pin on this card and electrical idle does not turn off an optical
- * module's laser.
+ * the RX one recovered from the line); clock-OK, signal-OK, CDR_LOCK and
+ * GT_RESET_DONE come from the supervisor. The raw TX word goes to TXDATA
+ * every TX clock, and RXDATA comes back as a raw word that is valid every RX
+ * clock; both are registered once, bit 0 first on the line. While
+ * PHY_CTRL.PHY_RESET is set, the reset controller's reset-all input is held
+ * and the NIC sees both MAC clocks absent and no receive signal. The
+ * transceiver itself keeps running, because the reset controller starts its
+ * sequence when reset-all falls; clearing PHY_RESET therefore runs the full
+ * reset sequence. PMA_LOOPBACK selects near-end PMA loopback (the line TX
+ * still transmits).
  */
 module x3_nic_gty (
     input logic i_sysclk_300,  // the board's buffered 300 MHz system clock input
@@ -496,6 +477,10 @@ module x3_nic_gty (
     input  logic        i_rx_block_lock  // core-clock register
 );
   // ---- clocks ------------------------------------------------------------------------------
+  // The free-running clock halves the 300 MHz system clock input (the IBUFDS
+  // output the board top also feeds its MMCM with, both in the input's clock
+  // region), so the reset controller's clock runs from configuration and
+  // depends neither on the MMCM nor on the transceiver.
   logic freerun_clk, refclk;
   BUFGCE_DIV #(
       .BUFGCE_DIVIDE  (2),
@@ -522,6 +507,16 @@ module x3_nic_gty (
   );
 
   // ---- the wizard core -----------------------------------------------------------------------
+  // Each user clocking helper's BUFG_GT pair is held clear until its source's
+  // reset is done: TXPRGDIVRESETDONE for TXOUTCLK from the TX programmable
+  // divider (whose reset the helper already asserts on a PLL lock loss) and
+  // RXPMARESETDONE for the recovered RXOUTCLKPMA. The PLL lock is deliberately
+  // not a term. An unplanned lock loss then leaves the recovered clock
+  // toggling, so the NIC's receive domain still registers signal-OK low when
+  // the reset helper drops RX reset done, instead of keeping a stale carrier
+  // behind a stopped clock; and a short lock glitch cannot stop the user
+  // clocks unseen by the synchronizers. Every reset that interrupts these
+  // clocks on purpose is drained first.
   logic tx_usrclk2, rx_usrclk2, tx_active, rx_active, tx_done, rx_done;
   logic power_good, pll_lock, rx_pcs_done, tx_prgdiv_done, rx_pma_done;
   logic reset_all, reset_rx_datapath, rx_pcs_reset, pma_loopback;
@@ -596,7 +591,9 @@ module x3_nic_gty (
   // ---- raw data ------------------------------------------------------------------------------
   // The raw TX stream is continuous once the MAC's gearbox has started; the
   // word it presents before that (zero in reset) is sent as it is, so its
-  // valid is not needed here.
+  // valid is not needed here. PHY_CTRL.TX_DISABLE has no effect: the module's
+  // transmit disable is not an FPGA pin on this card, and electrical idle
+  // does not turn off an optical module's laser.
   /* verilator lint_off UNUSEDSIGNAL */
   logic tx_raw_valid_unused;
   logic tx_disable_unused;
@@ -612,6 +609,9 @@ module x3_nic_gty (
   assign o_rx_raw_data = rx_word_q;
   assign o_rx_raw_valid = 1'b1;
 
+  // PHY_STATUS: LOS is 0 and MODULE_PRESENT 1 because no module status
+  // reaches the FPGA on this card. CDR_LOCK is the RX reset done (RXCDRLOCK is
+  // reserved in UG578), and GT_RESET_DONE is the TX and RX reset done.
   always_comb begin
     o_phy_status = '0;
     o_phy_status[nic_pkg::PhyStatusBitClkShared] = 1'b0;

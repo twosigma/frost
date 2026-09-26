@@ -16,23 +16,20 @@
 
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbkb, Zicsr,
-  and M/S/U-mode privileged instructions. Outputs select the operation, branch
-  condition, and store size.
+  and M/S/U-mode privileged instructions. Compressed instructions arrive
+  already expanded. o_instr_op selects the operation; o_illegal flags any
+  encoding not decoded here, including reserved FP rounding modes.
  */
 module instr_decoder (
     input  riscv_pkg::instr_t    i_instr,
     output riscv_pkg::instr_op_e o_instr_op,
-    output riscv_pkg::store_op_e o_store_op,
-    output riscv_pkg::branch_taken_op_e o_branch_taken_op,
-    output logic o_illegal
+    output logic                 o_illegal
 );
 
   always_comb begin
     // default values
     o_instr_op = riscv_pkg::ADDI;
-    o_branch_taken_op = riscv_pkg::NULL;
-    o_store_op = riscv_pkg::STN;
-    o_illegal = 1'b0;
+    o_illegal  = 1'b0;
 
     unique case (i_instr.opcode)
       // Register-register operations (R-type format)
@@ -80,8 +77,7 @@ module instr_decoder (
         10'b0110000_001: o_instr_op = riscv_pkg::ROL;
         10'b0110000_101: o_instr_op = riscv_pkg::ROR;
         // Zbkb extension (bit manipulation for crypto)
-        10'b0000100_100:
-        o_instr_op = riscv_pkg::PACK;  // Pack halfwords (zext.h is pack with rs2=0)
+        10'b0000100_100: o_instr_op = riscv_pkg::PACK;  // Pack the low XLEN/2-bit halves
         10'b0000100_111: o_instr_op = riscv_pkg::PACKH;  // Pack bytes
         // Zicond extension (conditional operations)
         10'b0000111_101: o_instr_op = riscv_pkg::CZERO_EQZ;
@@ -170,45 +166,22 @@ module instr_decoder (
       riscv_pkg::OPC_AUIPC: o_instr_op = riscv_pkg::AUIPC;
 
       // Jump and link (J-type) - unconditional jump, save return address
-      riscv_pkg::OPC_JAL: begin
-        o_instr_op = riscv_pkg::JAL;
-        o_branch_taken_op = riscv_pkg::JUMP;
-      end
+      riscv_pkg::OPC_JAL: o_instr_op = riscv_pkg::JAL;
 
       // Jump and link register (I-type) - jump to register value + offset
       riscv_pkg::OPC_JALR:
-      if (i_instr.funct3 == 3'b000) begin
-        o_instr_op = riscv_pkg::JALR;
-        o_branch_taken_op = riscv_pkg::JUMP;
-      end else o_illegal = 1'b1;
+      if (i_instr.funct3 == 3'b000) o_instr_op = riscv_pkg::JALR;
+      else o_illegal = 1'b1;
 
       // Branch instructions (B-type) - conditional branches
       riscv_pkg::OPC_BRANCH:
       unique case (i_instr.funct3)
-        3'b000: begin  // Branch if equal
-          o_instr_op = riscv_pkg::BEQ;
-          o_branch_taken_op = riscv_pkg::BREQ;
-        end
-        3'b001: begin  // Branch if not equal
-          o_instr_op = riscv_pkg::BNE;
-          o_branch_taken_op = riscv_pkg::BRNE;
-        end
-        3'b100: begin  // Branch if less than (signed)
-          o_instr_op = riscv_pkg::BLT;
-          o_branch_taken_op = riscv_pkg::BRLT;
-        end
-        3'b101: begin  // Branch if greater or equal (signed)
-          o_instr_op = riscv_pkg::BGE;
-          o_branch_taken_op = riscv_pkg::BRGE;
-        end
-        3'b110: begin  // Branch if less than (unsigned)
-          o_instr_op = riscv_pkg::BLTU;
-          o_branch_taken_op = riscv_pkg::BRLTU;
-        end
-        3'b111: begin  // Branch if greater or equal (unsigned)
-          o_instr_op = riscv_pkg::BGEU;
-          o_branch_taken_op = riscv_pkg::BRGEU;
-        end
+        3'b000:  o_instr_op = riscv_pkg::BEQ;  // Branch if equal
+        3'b001:  o_instr_op = riscv_pkg::BNE;  // Branch if not equal
+        3'b100:  o_instr_op = riscv_pkg::BLT;  // Branch if less than (signed)
+        3'b101:  o_instr_op = riscv_pkg::BGE;  // Branch if greater or equal (signed)
+        3'b110:  o_instr_op = riscv_pkg::BLTU;  // Branch if less than (unsigned)
+        3'b111:  o_instr_op = riscv_pkg::BGEU;  // Branch if greater or equal (unsigned)
         default: o_illegal = 1'b1;
       endcase
 
@@ -228,22 +201,10 @@ module instr_decoder (
       // Store instructions (S-type) - write from register to memory
       riscv_pkg::OPC_STORE:
       unique case (i_instr.funct3)
-        3'b000: begin  // Store byte (8 bits)
-          o_instr_op = riscv_pkg::SB;
-          o_store_op = riscv_pkg::STB;
-        end
-        3'b001: begin  // Store halfword (16 bits)
-          o_instr_op = riscv_pkg::SH;
-          o_store_op = riscv_pkg::STH;
-        end
-        3'b010: begin  // Store word (32 bits)
-          o_instr_op = riscv_pkg::SW;
-          o_store_op = riscv_pkg::STW;
-        end
-        3'b011: begin  // Store doubleword (64 bits)
-          o_instr_op = riscv_pkg::SD;
-          o_store_op = riscv_pkg::STD;
-        end
+        3'b000:  o_instr_op = riscv_pkg::SB;  // Store byte (8 bits)
+        3'b001:  o_instr_op = riscv_pkg::SH;  // Store halfword (16 bits)
+        3'b010:  o_instr_op = riscv_pkg::SW;  // Store word (32 bits)
+        3'b011:  o_instr_op = riscv_pkg::SD;  // Store doubleword (64 bits)
         default: o_illegal = 1'b1;
       endcase
 
@@ -307,18 +268,19 @@ module instr_decoder (
         endcase
       end
 
-      // Memory ordering instructions (Zifencei extension)
-      // FENCE.I is architecturally visible: the decoder emits FENCE_I here, and at
-      // commit it flushes the front end and Tomasulo state, requests the cache-
-      // hierarchy sync (L1D writeback-all + L1I invalidate-all), invalidates the
-      // fetch_provider buffer (i_invalidate), and redirects the PC to the
+      // Memory ordering: FENCE and FENCE.I (Zifencei). At commit, FENCE.I has
+      // the ROB request the cache-hierarchy sync (L1D writeback-all + L1I
+      // invalidate-all); its full flush then clears the front end, the Tomasulo
+      // state, and the fetch_provider buffer (i_invalidate), and redirects to the
       // fall-through address.
       riscv_pkg::OPC_MISC_MEM:
       unique case (i_instr.funct3)
         3'b000:
-        // PAUSE is encoded as FENCE with pred=W (0001), succ=0, all other fields 0
-        // Full encoding: 0x0100000F, funct7=0b0000001
-        if (i_instr.funct7 == 7'b0000001 && i_instr.source_reg_2 == 5'b0 &&
+        // PAUSE is FENCE with fm=0, pred=W, succ=0 and rd=rs1=x0, which is
+        // exactly 0x0100000F: pred=W is instruction bit 24, so funct7=0 and
+        // rs2=5'b10000. Every other encoding, fence r,0 (0x0200000F)
+        // included, is a FENCE.
+        if (i_instr.funct7 == 7'b0000000 && i_instr.source_reg_2 == 5'b10000 &&
             i_instr.source_reg_1 == 5'b0 && i_instr.dest_reg == 5'b0)
           o_instr_op = riscv_pkg::PAUSE;  // Zihintpause: hint to pause
         else o_instr_op = riscv_pkg::FENCE;  // FENCE (memory ordering)
@@ -331,9 +293,9 @@ module instr_decoder (
       riscv_pkg::OPC_CSR:
       unique case (i_instr.funct3)
         3'b000:  // PRIV - privileged system instructions
-        // SFENCE.VMA (funct7 0x09) encodes live rs1/rs2 selectors, so it is
-        // matched on funct7 alone. FROST ignores the operands, since flush-all
-        // is a legal implementation of every filtered form (plan D8).
+        // SFENCE.VMA (funct7 0x09) uses rs1 and rs2 as its address and ASID
+        // filters, so it is matched on funct7 alone. FROST ignores the filters:
+        // flushing everything is a legal implementation of every form.
         if (i_instr.funct7 == 7'b0001001)
           o_instr_op = riscv_pkg::SFENCE_VMA;
         else
@@ -416,10 +378,8 @@ module instr_decoder (
       riscv_pkg::OPC_STORE_FP:
       if (i_instr.funct3 == 3'b010) begin  // width=W (32-bit)
         o_instr_op = riscv_pkg::FSW;
-        o_store_op = riscv_pkg::STW;  // 32-bit store
       end else if (i_instr.funct3 == 3'b011) begin  // width=D (64-bit)
         o_instr_op = riscv_pkg::FSD;
-        o_store_op = riscv_pkg::STN;  // Handled by FP64 store unit
       end else o_illegal = 1'b1;
 
       // Fused multiply-add variants (R4-type format)
@@ -619,8 +579,8 @@ module instr_decoder (
           7'b0001000, 7'b0001001,  // FMUL.S/D
           7'b0001100, 7'b0001101,  // FDIV.S/D
           7'b0101100, 7'b0101101,  // FSQRT.S/D
-          7'b1100000, 7'b1100001,  // FCVT.W[U].S/D
-          7'b1101000, 7'b1101001,  // FCVT.S/D.W[U]
+          7'b1100000, 7'b1100001,  // FCVT.{W,WU,L,LU}.S/D
+          7'b1101000, 7'b1101001,  // FCVT.S/D.{W,WU,L,LU}
           7'b0100000, 7'b0100001:  // FCVT.S.D / FCVT.D.S
           o_illegal = 1'b1;
           default: ;  // Other OPC_OP_FP ops use funct3 for sub-op, already checked

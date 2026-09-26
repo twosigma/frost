@@ -18,13 +18,13 @@
  * nic_irq: the NIC's interrupt status, mask and completion moderation.
  *
  * IRQ_STATUS is sticky: bits set by events, cleared by writing 1 (W1C); a
- * set in the same cycle as a clear wins. IRQ_MASK gates the level output,
- * o_irq = |(status & mask), and has atomic IRQ_MASK_SET / IRQ_MASK_CLR
- * views so two contexts never read-modify-write it. Masking never loses an
- * event: counting, timing and latching go on while masked.
+ * set in the same cycle as a clear wins. IRQ_MASK gates the level output
+ * (o_irq is |(status & mask), registered) and has atomic IRQ_MASK_SET /
+ * IRQ_MASK_CLR views so two contexts never read-modify-write it. Masking
+ * never loses an event: counting, timing and latching go on while masked.
  *
- * The RX and TX bits are moderated notifications, not "unreaped descriptors
- * exist". Per direction, an acknowledgement (W1C of the bit, effective even
+ * The RX and TX bits are moderated notifications, not "descriptors are
+ * waiting". Per direction, an acknowledgement (W1C of the bit, effective even
  * when it reads 0) starts a new interval: it clears the notification, the
  * completion count and the timer. Within an interval every completion
  * (i_rx_done / i_tx_done, one pulse per DD write response) counts,
@@ -38,8 +38,9 @@
  * cycle of the acknowledgement belongs to the new interval. TICK = 0 counts
  * as 1. Configuration changes apply from the next interval.
  *
- * The driver's rule that makes this lossless: acknowledge BEFORE scanning
- * the rings (flushed by a status read), never after the final scan.
+ * The driver's rule that makes this lossless: acknowledge before scanning
+ * the rings (flushing the acknowledgement with a register read), never
+ * after the final scan.
  *
  * RX_DROP, LINK and DESC_ERR are plain event latches (pulse in, W1C out).
  */

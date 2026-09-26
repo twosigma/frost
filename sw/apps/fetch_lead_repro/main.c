@@ -16,12 +16,13 @@
 
 /*
  * Fetch-lead repro: a redirect into a cold cached line whose first bundle
- * advances by 6 ({32-bit, RVC}) and is followed by a 32-bit instruction at
- * the upper halfword of the served window's second word. If the front end
- * resumes from the line miss with its fetch lead collapsed (the same window
- * presented twice), the second presentation covers the new pc_reg through
- * the S+1 arm and the instruction's second half is taken from the wrong
- * word. Cold and warm calls are both checked.
+ * (one 32-bit and one RVC instruction) advances by 6 and is followed by a
+ * 32-bit instruction at the upper halfword of the served window's second
+ * word. If the front end resumes from the line miss with its fetch lead
+ * collapsed (the same window presented twice), the second presentation
+ * covers the new pc_reg through the S+1 arm and the instruction's second half
+ * is taken from the wrong word. A first pass that starts cold and a warm
+ * second pass are both checked.
  */
 
 #include <stdint.h>

@@ -12,6 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Committed-store drain across the D10 translation flush.
+# A committed store must drain before a satp or mstatus write retires and
+# flushes the pipeline.
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

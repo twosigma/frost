@@ -16,126 +16,30 @@
 
 /*
   Iterative IEEE 754 divide and square root: FDIV.S, FDIV.D, FSQRT.S, FSQRT.D
-  on one shared datapath.
+  on one shared datapath. FP divide and square root are rare, so the unit runs
+  one operation at a time.
 
-  This unit replaces four fully unrolled digit-recurrence pipelines (fp_divider
-  and fp_sqrt, single and double precision) that together cost about 44k cells.
-  FP divide and square root are rare, so one operation at a time is enough.
-
-  Handshake: o_ready is high only in the idle state. An operation starts on the
-  cycle i_valid and o_ready are both high, and o_valid pulses for one cycle when
-  the result is ready. i_kill drops the operation in progress; the unit returns
-  to idle and produces no completion. Single-precision results appear in
-  o_result[31:0]; the caller NaN-boxes them.
+  Handshake: o_ready is high only in the idle state. An operation starts on a
+  cycle with i_valid and o_ready high (and i_kill low), and o_valid pulses for
+  one cycle when the result is ready. i_kill drops the operation in progress:
+  the unit returns to idle and produces no later completion. o_valid is not
+  gated by i_kill, so the caller must drop a result that completes in the kill
+  cycle. Single-precision results appear in o_result[31:0]; the caller
+  NaN-boxes them.
 
   Latency from the accepted i_valid cycle to the o_valid cycle:
     single precision  36 cycles
     double precision  65 cycles
-  the same counts the unrolled pipelines had, because the state sequence walks
-  one state per reference pipeline stage.
 
-  ==========================================================================
-  Bit-exactness argument
-  ==========================================================================
-  The requirement is that o_result and o_flags equal fp_divider's and fp_sqrt's
-  outputs for every operand, rounding mode and precision. The structure of the
-  proof is induction over the stage sequence: state k here computes the same
-  function of the same values that reference stage k computes, so the register
-  contents after state k are equal, and equality at the last stage is equality
-  of the result.
-
-  1. Stage-for-stage correspondence.
-
-     fp_divider stages    : capture, unpack, init, setup, DivCycles divide
-                            steps, normalize-prep, normalize, round-shift,
-                            round-prep, round-apply, output.
-     fp_sqrt stages       : capture, unpack, setup, prep, RootBits compute
-                            steps, normalize, round-shift, round-prep,
-                            round-apply, output.
-     States here          : ST_IDLE (capture), ST_UNPACK, ST_INIT, ST_SETUP,
-                            ST_ITERATE (looped), ST_NORM_PREP (divide only),
-                            ST_NORM, ST_ROUND_SHIFT, ST_ROUND_PREP,
-                            ST_ROUND_APPLY, ST_RESULT_REG, ST_OUTPUT.
-
-     ST_INIT is fp_divider's init and fp_sqrt's setup; ST_SETUP is fp_divider's
-     setup and fp_sqrt's prep. Each state's combinational expressions are the
-     reference stage's expressions, so the per-stage logic depth is unchanged
-     as well. DivCycles = MantBits + 2 and RootBits = MantBits + 3, so both
-     operations reach ST_OUTPUT at MantBits + 12 cycles.
-
-  2. Shared registers are wider than the reference registers, and carry the
-     same integers with zero above.
-
-     Divide. Both mantissas are normalized into [2^(MantBits-1), 2^MantBits),
-     so mant_a < 2*mant_b, and the setup step therefore leaves
-     0 <= rem < mant_b. Every later step keeps r <- 2r - d*q_bit with
-     r < d = mant_b <= 2^MantBits - 1, so the remainder never reaches bit
-     MantBits and the reference's `{rem[DivBits-2:0], 1'b0}` drops only a zero.
-     The quotient holds one bit after setup and one more per step, so before
-     each shift it is below 2^(DivBits-1) and the reference's
-     `{quo[DivBits-2:0], 1'b0}` also drops only a zero.
-
-     Square root. The restoring step keeps rem_k <= 2*root_k, and root_k
-     < 2^k, so before the candidate of step k (k <= RootBits-1 = 55) the
-     remainder is below 2^56: the two bits dropped from rem_q in
-     `{rem_q[55:0], radicand pair}` are zero, and so are the ones the
-     reference's own two-bit truncation drops. Only the final remainder, after
-     the last step, can reach 2^57. It is never shifted again, only OR-reduced
-     into the sticky bit, and 58 bits hold it.
-
-     Widening a register whose dropped bits are zero, and shifting the full
-     width instead, gives the same integer, so the low DivBits (RootBits) bits
-     agree with the reference at every step.
-
-     Single-precision values sit right-justified in the same registers. Every
-     operator involved (add, subtract, compare, shift left, shift right, OR
-     reduction) agrees with its narrow counterpart when the operands are
-     zero-extended, so the single-precision datapath is the double-precision
-     one restricted to its low bits.
-
-  3. Working exponents are 15-bit signed here, 10-bit (single) or 13-bit
-     (double) in the reference. Over every operand class, the post-normalize
-     decrement included, the values stay inside [-1075, 3121] at double and
-     [-150, 404] at single, well inside the reference's own 13-bit and 10-bit
-     ranges as well as this one, so neither wraps and both hold the same
-     integer. Truncating back to 10 or 13 bits at fp_result_assembler is
-     therefore exact: what reaches it is either zero, because fp_subnorm_shift
-     replaces every non-positive exponent, or a positive value bounded by those
-     same numbers.
-
-  4. The quotient normalize shift is one bit, not a leading-zero count.
-     fp_divider runs fp_lzc over the finished quotient and shifts by it. In the
-     non-special path both mantissas are normalized, so mant_a/mant_b lies in
-     (1/2, 2) and the quotient lies in [2^(DivBits-2), 2^DivBits - 1]: the
-     leading-zero count is 0 or 1 and the shift is the same as the `if the top
-     bit is clear, shift left one and decrement the exponent` that fp_sqrt
-     already uses. In the special path fp_result_assembler ignores the
-     datapath, so the difference is unobservable. ST_NORM_PREP carries no work
-     for that reason, and ST_RESULT_REG stands in for the reference's output
-     register, whose value is already in a register here. Both states are kept
-     so the latency stays at the reference's 36/65.
-
-  5. Sub-unit reuse. fp_operand_unpacker, fp_lzc, fp_subnorm_shift,
-     fp_result_assembler and riscv_pkg::fp_compute_round_up are the same
-     instances the reference uses, at the same point in the sequence, so
-     classification, subnormal input normalization, tininess handling,
-     rounding, overflow/underflow and flag generation are identical by
-     construction rather than by argument. One fp_subnorm_shift serves both
-     precisions: its input is {mantissa, guard, round, sticky} right-justified,
-     a right shift of a right-justified value keeps the low bits and the
-     shifted-out sticky, and the clamp at 56 positions agrees with the clamp at
-     27 for every shift amount that can reach it.
-
-  6. Square-root radicand. The reference holds a 2*RootBits-bit radicand whose
-     top MantBits+1 bits are the mantissa and whose remaining bits are zero,
-     and consumes two bits per step. The register here holds only those top 54
-     bits and shifts zeros in, which delivers the same bit pairs in the same
-     order.
-
-  What this leaves to testing rather than construction are the invariants in
-  point 2 and the exponent range in point 3. Both are covered by the
-  fp_div_sqrt_equiv bench, which compares this unit against the reference units
-  cycle for cycle over random and directed operands.
+  Results, flags, and latency must match the unrolled reference pipelines in
+  hw/sim (fp_divider and fp_sqrt) for every operand, rounding mode, and
+  precision; the fp_div_sqrt_equiv bench tests this over directed and random
+  operands. Each state computes one reference stage's expressions with the same
+  helper modules, so the register values match the reference's after every
+  state, except in the datapath of a special case, which fp_result_assembler
+  ignores (see ST_NORM). The shared registers differ in width from the
+  reference's; the comments below give the bounds that make them hold the same
+  values.
 */
 module fp_div_sqrt_iter (
     input logic i_clk,
@@ -159,7 +63,11 @@ module fp_div_sqrt_iter (
 );
 
   // Widest of the two precisions. Single-precision values are right-justified
-  // in the same registers.
+  // in the same registers. Every operator involved (add, subtract, compare,
+  // shift left, shift right, OR reduction) agrees with its narrow counterpart
+  // on zero-extended operands as long as the bits a narrow shift would drop are
+  // zero (see the bounds at ST_SETUP and ST_ITERATE), so the single-precision
+  // datapath is the double-precision one restricted to its low bits.
   localparam int unsigned FracW = 52;  // fraction field
   localparam int unsigned MantW = 53;  // mantissa including the implicit bit
   localparam int unsigned QuotW = 56;  // MantW + 3 guard positions
@@ -182,6 +90,12 @@ module fp_div_sqrt_iter (
   localparam logic [31:0] InfS = 32'h7F80_0000;
   localparam logic [63:0] InfD = 64'h7FF0_0000_0000_0000;
 
+  // One state per reference stage, so the latency matches: ST_IDLE captures,
+  // ST_INIT is fp_divider's init and fp_sqrt's setup, ST_SETUP is fp_divider's
+  // setup and fp_sqrt's prep, ST_ITERATE runs the DivCycles divide steps or
+  // RootBits root steps, ST_NORM_PREP is divide only, and ST_RESULT_REG is the
+  // reference's output stage. Both operations reach ST_OUTPUT, the o_valid
+  // cycle, MantBits + 12 cycles after the start.
   typedef enum logic [3:0] {
     ST_IDLE,
     ST_UNPACK,
@@ -207,14 +121,14 @@ module fp_div_sqrt_iter (
   logic is_sqrt_q, is_double_q;
   logic [2:0] rm_q;
 
-  // Unpack results held across ST_UNPACK.
+  // Unpack results, registered in ST_UNPACK.
   logic [LzcW-1:0] lzc_a_q, lzc_b_q;
   logic zero_a_q, sub_a_q, inf_a_q, nan_a_q, snan_a_q;
   logic zero_b_q, sub_b_q, inf_b_q, nan_b_q, snan_b_q;
 
   // Datapath. Each register carries several stage values in sequence:
   //   rem_q     mantissa A / square-root radicand, then the partial remainder
-  //   quo_q     quotient or root, then the rounded mantissa
+  //   quo_q     quotient or root, then the mantissa to be rounded
   //   div_q     divisor / square-root radicand feed
   //   exp_q     operand A exponent, then the result exponent
   //   special_q the special-case result, then the assembled result
@@ -226,7 +140,7 @@ module fp_div_sqrt_iter (
   logic [63:0] special_q;
   logic is_special_q, special_nv_q, special_dz_q, sign_q;
   logic guard_q, round_q, sticky_q, zero_result_q;
-  logic round_up_q, inexact_q;
+  logic round_up_q, inexact_q, tiny_q;
   riscv_pkg::fp_flags_t flags_q;
 
   assign o_ready  = (state_q == ST_IDLE);
@@ -497,6 +411,21 @@ module fp_div_sqrt_iter (
   // ===========================================================================
   // The divide setup is the same step with no pre-shift: quotient bit
   // (mant_a >= mant_b) and remainder mant_a - mant_b or mant_a.
+  //
+  // rem_q and quo_q differ in width from the reference's registers but hold
+  // the same integers, because every bit that a shift drops, here or in the
+  // reference, is zero:
+  //   Divide: both mantissas are normalized into [2^(MantBits-1), 2^MantBits),
+  //   so mant_a < 2*mant_b and setup leaves 0 <= rem < mant_b. Each later step
+  //   keeps r < d = mant_b <= 2^MantBits - 1, so the remainder never reaches
+  //   bit MantBits. The quotient gains one bit in setup and one per step, so
+  //   before each shift it is below 2^(DivBits-1), where DivBits = MantBits + 3
+  //   is the reference's quotient width.
+  //   Square root: each step keeps rem_k <= 2*root_k with root_k < 2^k, so
+  //   before step k (k <= RootBits-1, at most 55) the remainder is below 2^56
+  //   and {rem_q[55:0], radicand pair} drops only zeros. Only the final
+  //   remainder can reach 2^56; it is only OR-reduced into the sticky bit, and
+  //   RemW = 58 bits hold it.
   logic setup_step;  // divide setup: shift the remainder by zero
   logic [RemW-1:0] step_minuend, step_subtrahend;
   logic [RemW:0] step_diff;
@@ -520,6 +449,11 @@ module fp_div_sqrt_iter (
   // ===========================================================================
   // ST_NORM: normalize by at most one position
   // ===========================================================================
+  // fp_divider normalizes its quotient by a full leading-zero count. Outside
+  // the special cases both mantissas are normalized, so mant_a/mant_b lies in
+  // (1/2, 2) and the quotient in [2^(DivBits-2), 2^DivBits - 1]: the count is 0
+  // or 1, the same one-bit shift fp_sqrt uses. For special cases
+  // fp_result_assembler ignores the datapath, so the difference is not visible.
   logic norm_needs_shift;
   assign norm_needs_shift = is_double_q ? ~quo_q[MantBitsD+2] : ~quo_q[MantBitsS+2];
 
@@ -532,16 +466,37 @@ module fp_div_sqrt_iter (
   logic rsh_guard_out, rsh_round_out, rsh_sticky_out;
   logic signed [ExpW-1:0] rsh_exp_out;
 
-  // The retained mantissa is the top MantBits bits of the quotient, the guard
-  // is the next bit down, and the reference's round and sticky inputs are the
-  // last two quotient bits ORed with the remainder. Those three positions are
-  // the same at both precisions.
+  // The retained mantissa is the top MantBits bits of the quotient and the
+  // guard is the next bit down. As in the reference, round is the next bit and
+  // sticky is the last quotient bit ORed with the remainder. The guard, round,
+  // and sticky positions are the same at both precisions.
   assign rsh_mantissa_in = is_double_q ? {quo_q[QuotW-1:3]} :
       {{(MantW - MantBitsS) {1'b0}}, quo_q[MantBitsS+2:3]};
   assign rsh_guard_in = quo_q[2];
   assign rsh_round_in = quo_q[1];
   assign rsh_sticky_in = quo_q[0] | (|rem_q);
 
+  // Tininess of the unshifted quotient or root, for the underflow flag. A
+  // single-precision mantissa sits in the low MantBitsS bits. A root is never
+  // tiny: even the smallest subnormal's (2^-537 in double precision) is far
+  // above the minimum normal.
+  logic rsh_tiny;
+  assign rsh_tiny = riscv_pkg::fp_is_tiny(
+      exp_q <= 0,
+      exp_q == 0,
+      is_double_q ? (&rsh_mantissa_in) : (&rsh_mantissa_in[MantBitsS-1:0]),
+      rm_q,
+      rsh_guard_in,
+      rsh_round_in,
+      rsh_sticky_in,
+      sign_q
+  );
+
+  // One fp_subnorm_shift serves both precisions: a right shift of the
+  // right-justified {mantissa, guard, round, sticky} keeps the same low bits
+  // and shifted-out sticky, and its clamp at 56 positions agrees with the
+  // single-precision reference's clamp at 27 for every shift amount that can
+  // reach it.
   fp_subnorm_shift #(
       .MANT_BITS(MantW),
       .EXP_EXT_BITS(ExpW)
@@ -569,6 +524,12 @@ module fp_div_sqrt_iter (
   // ===========================================================================
   // ST_ROUND_APPLY: assemble the result at the operation's width
   // ===========================================================================
+  // exp_q is truncated to the reference's 10- or 13-bit width here, which is
+  // exact: fp_subnorm_shift has turned every non-positive exponent into 0,
+  // and over every operand class, the post-normalize decrement included, the
+  // working exponent stays within [-1076, 3121] at double and [-151, 404] at
+  // single. That is inside this 15-bit register and the reference's 13- and
+  // 10-bit ones, so neither wraps.
   logic [31:0] assembled_s;
   logic [63:0] assembled_d;
   riscv_pkg::fp_flags_t flags_s, flags_d;
@@ -584,6 +545,7 @@ module fp_div_sqrt_iter (
       .i_mantissa_work(quo_q[MantBitsS-1:0]),
       .i_round_up(round_up_q),
       .i_is_inexact(inexact_q),
+      .i_is_tiny(tiny_q),
       .i_result_sign(sign_q),
       .i_rm(rm_q),
       .i_is_special(is_special_q),
@@ -607,6 +569,7 @@ module fp_div_sqrt_iter (
       .i_mantissa_work(quo_q[MantBitsD-1:0]),
       .i_round_up(round_up_q),
       .i_is_inexact(inexact_q),
+      .i_is_tiny(tiny_q),
       .i_result_sign(sign_q),
       .i_rm(rm_q),
       .i_is_special(is_special_q),
@@ -686,6 +649,10 @@ module fp_div_sqrt_iter (
           state_q <= ST_ITERATE;
           if (is_sqrt_q) begin
             // Left-justify the radicand so each step consumes its top two bits.
+            // The reference's 2*RootBits-bit radicand has the mantissa in its
+            // top MantBits+1 bits and zeros below; this register holds only
+            // those bits and shifts zeros in, so it feeds the same bit pairs in
+            // the same order.
             div_q <= is_double_q ? rem_q[MantW:0] : {rem_q[MantBitsS:0], 29'b0};
             rem_q <= '0;
             quo_q <= '0;
@@ -706,8 +673,8 @@ module fp_div_sqrt_iter (
         end
 
         // The divide reference spends this cycle on a leading-zero count of the
-        // quotient. Section 4 of the header shows the count is one bit, taken
-        // in ST_NORM; the state stays so the divide latency is unchanged.
+        // quotient, which here is the one-bit shift in ST_NORM (see there); the
+        // state keeps the divide latency equal to the reference's.
         ST_NORM_PREP: begin
           state_q <= ST_NORM;
         end
@@ -728,6 +695,7 @@ module fp_div_sqrt_iter (
           round_q <= rsh_round_out;
           sticky_q <= rsh_sticky_out;
           exp_q <= rsh_exp_out;
+          tiny_q <= rsh_tiny;
         end
 
         ST_ROUND_PREP: begin

@@ -1,0 +1,19 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv rvc_decompressor.sv
+read -formal -sv rvc_predecode_equiv.sv
+prep -top rvc_predecode_equiv
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
+rvc_predecode_equiv.sv

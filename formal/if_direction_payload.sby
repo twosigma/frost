@@ -1,0 +1,22 @@
+[tasks]
+bmc
+prove
+
+[options]
+bmc: mode bmc
+bmc: depth 8
+prove: mode prove
+prove: depth 2
+
+[engines]
+bmc: smtbmc boolector
+prove: abc pdr
+
+[script]
+read -formal -sv stall_capture_reg.sv if_direction_payload_equiv.sv
+prep -top if_direction_payload_equiv -flatten
+select -assert-count 2 t:$check
+
+[files]
+../hw/rtl/lib/stall_capture_reg.sv
+if_direction_payload_equiv.sv

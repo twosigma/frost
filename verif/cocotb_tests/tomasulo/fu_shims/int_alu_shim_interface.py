@@ -16,10 +16,10 @@
 
 pack_rs_issue and unpack_fu_complete come from fp_add_shim_interface.
 
-The ALU shim is single-cycle and has no flush ports. It exposes
-i_csr_read_data for CSR read operations and i_issue_writes_cdb_hint,
-which gates o_fu_complete.valid. The RS predecodes the hint low for
-branches.
+The ALU shim is combinational and has no flush ports. Besides rs_issue_t,
+drive_issue drives the two RS-side hints: i_issue_writes_cdb_hint, which
+gates o_fu_complete.valid and is low for conditional branches, and
+i_shift_amount_hint, which only shifts and rotates use.
 """
 
 from typing import Any
@@ -43,8 +43,9 @@ _BRANCH_OPS = {
 }
 
 
-# Independent symbolic operation domain: values outside this set do not use
-# the shared amount's immediate arm in any observed barrel result.
+# Barrel-shifter ops that take their amount from the immediate, listed by
+# name independently of riscv_pkg::projected_shift_controls. Every other op
+# either shifts by rs2 or does not use the barrel shifter, so its hint can be rs2.
 _IMMEDIATE_BARREL_OPS = {
     _INSTR_OP[name]
     for name in ("SLLI", "SRLI", "SRAI", "RORI", "SLLIW", "SRLIW", "SRAIW", "RORIW")
@@ -67,7 +68,6 @@ class IntAluShimInterface:
         """Drive all inputs to zero / inactive."""
         self.dut.i_rs_issue.value = 0
         self.dut.i_issue_writes_cdb_hint.value = 0
-        self.dut.i_csr_read_data.value = 0
         self.dut.i_shift_amount_hint.value = 0
 
     async def reset(self, cycles: int = 3) -> None:
@@ -103,13 +103,14 @@ class IntAluShimInterface:
         pc: int = 0,
         link_addr: int = 0,
     ) -> None:
-        """Pack and drive an rs_issue_t onto i_rs_issue.
+        """Pack and drive an rs_issue_t onto i_rs_issue, with both RS-side hints.
 
-        Exposes imm, use_imm, pc, and link_addr. The shim consumes imm and
-        use_imm; imm also carries the dispatch-precomputed AUIPC value and the
-        JAL/JALR link address. pc and link_addr are packed for completeness
-        only (the shim and ALU take no PC and read the link from imm). The CDB
-        hint is driven low for branch ops and high otherwise, as the RS would.
+        The shim consumes imm and use_imm; imm also carries the precomputed
+        AUIPC value and the link address. pc and link_addr are packed for
+        completeness only (the shim and ALU take no PC and read the link from
+        imm). The CDB hint is low for conditional branches and high otherwise,
+        as the RS predecodes it. The shift-amount hint is imm for
+        _IMMEDIATE_BARREL_OPS and src2_value otherwise.
         """
         packed = pack_rs_issue(
             valid=valid,
@@ -129,7 +130,7 @@ class IntAluShimInterface:
         self.dut.i_issue_writes_cdb_hint.value = 0 if op in _BRANCH_OPS else 1
 
     def clear_issue(self) -> None:
-        """Clear i_rs_issue (drive to zero / invalid)."""
+        """Clear i_rs_issue (drive to zero / invalid) and the CDB hint."""
         self.dut.i_rs_issue.value = 0
         self.dut.i_issue_writes_cdb_hint.value = 0
 

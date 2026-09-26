@@ -68,15 +68,18 @@ sw_ddr.txt
 sw_ddr.bin
 sw_imem_*.mem
 sw/apps/*/sw.S
-# The test initramfs with the NIC module appended, composed for each pack.
+# The arch-test build's copy of the test source with its constants repaired.
+sw/apps/arch_test/test_src_repaired.S
+# Buildroot's test initramfs with the NIC module appended, rebuilt by
+# sw/apps/linux_boot/Makefile.
 /sw/apps/linux_boot/rootfs.cpio
 
-# FROST MMU Linux: out-of-tree Buildroot build output (firmware + test
-# userspace; no kernel is built) + download/ccache caches. Regenerated from the
-# linux/buildroot submodule + linux/buildroot-external tree by
-# `make -C sw/apps/linux_boot` (and the CI build-frost-linux-mmu job).
-# /linux/build/ was the retired rv32 lane's output dir; the entry stays so
-# checkouts that still carry that local tree keep a quiet git status.
+# FROST MMU Linux: out-of-tree Buildroot build output (firmware and test
+# userspace; no kernel is built) and the download and ccache caches.
+# `make -C sw/apps/linux_boot` (and the CI build-frost-linux-mmu job) regenerate
+# them from the linux/buildroot submodule and the linux/buildroot-external tree.
+# /linux/build/ and /linux/build-rv64/ come from removed Linux builds; they stay
+# ignored so checkouts that still have them keep a clean git status.
 /linux/build/
 /linux/build-rv64/
 /linux/build-mmu/

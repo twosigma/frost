@@ -21,9 +21,9 @@ tests (allocation in one and two lanes, CDB completion, in-order and 2-wide
 commit, branches and checkpoints, the serializing classes FENCE, FENCE.I,
 SFENCE.VMA, CSR, WFI and MRET, flushes, and allocation-time legality faults),
 constrained random tests, error-condition tests, coverage-gap tests,
-non-interference tests, and atomics. Six-port bypass coverage checks fresh
-staged allocations, independent subcycle address changes, circular tag reuse,
-and legal same-cycle stale-CDB collisions on both allocation/CDB lanes.
+non-interference tests, and atomics. The six dispatch done-repair read ports
+(i_bypass_tag_*) are checked across staged LVT updates, tag wrap and reuse,
+and legal same-cycle stale CDB writes on every allocation slot and CDB lane.
 
 Clocked requests are driven while the clock is low and take effect on the
 next rising edge.
@@ -32,9 +32,6 @@ until the falling edge after that rising edge, while combinational outputs
 (alloc_ready, alloc_tag, and the o_commit_comb mirror that read_commit
 returns) can be read right after the edge. reset_dut returns at a falling
 edge, so a test can drive its first request immediately.
-
-Bypass read-address permutations also run within one low clock phase to check
-the asynchronous interface without accidentally advancing the staged LVT.
 
 Usage (from repository root, through the pinned tools):
     ./scripts/frost.py cocotb reorder_buffer
@@ -77,7 +74,9 @@ RS_MEM = 2
 RS_FP = 3
 PRIV_U = 0
 PRIV_M = 3
+EXC_INSTR_ACCESS_FAULT = 1
 EXC_ILLEGAL_INSTR = 2
+EXC_INSTR_PAGE_FAULT = 12
 CSR_MSTATUS = 0x300
 CSR_SSTATUS = 0x100
 CSR_SATP = 0x180
@@ -354,13 +353,15 @@ async def test_slot2_dual_allocation_adjacent_tags(dut: Any) -> None:
 
 @cocotb.test()
 async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> None:
-    """All six async reads preserve allocation/CDB priority across tag reuse.
+    """The six done-repair reads keep allocation/CDB write priority across tag reuse.
 
-    Sample both allocation banks before and after their staged LVT drain,
-    rotating six addresses within one low clock phase. Reuse a 31/0 bundle
-    with each allocation-port/CDB-lane collision pairing, then deliver a legal
-    later completion. No CDB targets an allocation in its next-cycle drain
-    window, and every bundle contains at most one branch.
+    Values written by both allocation ports are read before and after the
+    staged LVT update that follows allocation, rotating the six read addresses
+    within one low clock phase. A bundle at tags 31 and 0 is then reallocated
+    while a stale CDB write targets one of its tags in the same cycle, for
+    every allocation-port and CDB-lane pairing: the allocation must win, and a
+    later legal completion must land. No CDB write targets an entry in the
+    cycle after its allocation, and no bundle holds more than one branch.
     """
     dut_if, _ = await setup_test(dut)
     dut.i_commit_hold.value = 1
@@ -464,9 +465,9 @@ async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> Non
 
     await flush_held_entries()
 
-    # Retire two laps minus one entry. Both tags31 and0 have old CDB values,
-    # and the next legal pair straddles31->0. Full flushes in the subcases
-    # return the tail to this held head, preserving those RAM contents.
+    # Retire two laps minus one entry, so tags 31 and 0 both hold old CDB
+    # values and the next legal pair straddles 31 -> 0. Full flushes in the
+    # subcases return the tail to this held head and leave the RAM contents.
     for sequence in range(2 * REORDER_BUFFER_DEPTH - 1):
         tag = await drive_single_alloc(
             dut_if, make_simple_alloc_request(pc=0x6000 + 4 * sequence, rd=9)
@@ -515,7 +516,8 @@ async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> Non
             await flush_held_entries()
 
             # Across four cases each allocation port collides with each CDB
-            # lane; the collided allocation value is both nonzero JAL and zero.
+            # lane; the collided entry is the JAL (nonzero value) in two cases
+            # and the ordinary instruction (zero) in the other two.
             requests = link_pair(0x8000 + 0x100 * case, jal_slot=cdb_lane)
             stale = CDBWrite(
                 tag=tags[allocation_slot], value=0xE000_0000_0000_0000 | case
@@ -535,8 +537,9 @@ async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> Non
             await dut_if.step()
             await check_queries(tags * 3, new_values, f"collision drain case {case}")
 
-            # Only the ordinary instruction completes later; JAL was done at
-            # allocation. Use the opposite live lane after the protected drain.
+            # Only the ordinary instruction completes later (the JAL was done
+            # at allocation), on the other CDB lane and after the staged LVT
+            # update.
             plain_tag = tags[1 - cdb_lane]
             completion = CDBWrite(
                 tag=plain_tag, value=0xF000_0000_0000_0000 | (case + 1)
@@ -554,7 +557,7 @@ async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> Non
 
 @cocotb.test()
 async def test_head_wait_fast_perf_classes_dual_lane(dut: Any) -> None:
-    """Keep fast INT/load perf classes cycle-exact across both alloc lanes."""
+    """Check that head-wait class events are cycle-exact for both allocation slots."""
     cocotb.log.info("=== Test: Head-Wait Fast Perf Classes Dual Lane ===")
 
     dut_if, _ = await setup_test(dut)
@@ -909,13 +912,12 @@ async def test_cdb_write(dut: Any) -> None:
     # Entry 2 is not at the head: it becomes done but does not commit.
     cdb = CDBWrite(tag=2, value=0xAAAA)
     dut_if.drive_cdb_write(cdb)
-    dut_if.set_read_tag(2)
     model.cdb_write(cdb)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    done = dut_if.read_entry_done()
-    value = dut_if.read_entry_value()
+    done = dut_if.entry_done(2)
+    value = await dut_if.read_entry_value(2)
     assert done, "Entry 2 should be done after CDB write"
     assert value == 0xAAAA, f"Entry 2 value mismatch: {value:x}"
 
@@ -923,13 +925,12 @@ async def test_cdb_write(dut: Any) -> None:
 
     cdb = CDBWrite(tag=3, value=0xBBBB)
     dut_if.drive_cdb_write(cdb)
-    dut_if.set_read_tag(3)
     model.cdb_write(cdb)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    done = dut_if.read_entry_done()
-    value = dut_if.read_entry_value()
+    done = dut_if.entry_done(3)
+    value = await dut_if.read_entry_value(3)
     assert done, "Entry 3 should be done after CDB write"
     assert value == 0xBBBB, f"Entry 3 value mismatch: {value:x}"
 
@@ -937,13 +938,12 @@ async def test_cdb_write(dut: Any) -> None:
 
     cdb = CDBWrite(tag=1, value=0xCCCC)
     dut_if.drive_cdb_write(cdb)
-    dut_if.set_read_tag(1)
     model.cdb_write(cdb)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    done = dut_if.read_entry_done()
-    value = dut_if.read_entry_value()
+    done = dut_if.entry_done(1)
+    value = await dut_if.read_entry_value(1)
     assert done, "Entry 1 should be done after CDB write"
     assert value == 0xCCCC, f"Entry 1 value mismatch: {value:x}"
 
@@ -1512,7 +1512,10 @@ async def test_fence_i_sync_handshake(dut: Any) -> None:
 
 @cocotb.test()
 async def test_sfence_window_matches_sync_edges(dut: Any) -> None:
-    """Registered SFENCE window has the original sync-state phase exactly."""
+    """o_sfence_window rises and falls with SFENCE.VMA's sync request.
+
+    A plain FENCE.I enters the same sync state but never opens the window.
+    """
     dut_if, model = await setup_test(dut)
     dut_if.set_fence_i_sync_done(False)
 
@@ -1944,11 +1947,10 @@ async def test_csr_serialization(dut: Any) -> None:
     dut_if, model = await setup_test(dut)
 
     await FallingEdge(dut_if.clock)
-    # csr_addr must name an implemented CSR. Since Phase 3 M1 the ROB's
-    # allocation-time existence map turns an unimplemented address (such as
-    # the dataclass default 0x000) into an illegal-instruction trap at the
-    # head instead of a serialized csr_start. mscratch (0x340) is a harmless
-    # target.
+    # csr_addr must name an implemented CSR. The ROB's allocation-time
+    # legality check turns an unimplemented address (such as the dataclass
+    # default 0x000) into an illegal-instruction trap at the head, with no
+    # csr_start. mscratch (0x340) is a harmless target.
     req = AllocationRequest(
         pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
     )
@@ -1990,12 +1992,11 @@ async def test_csr_serialization(dut: Any) -> None:
 
 @cocotb.test()
 async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
-    """A translation CSR remembers its one-cycle done pulse until SQ drain.
+    """A translation CSR keeps its one-cycle done pulse until the SQ drains.
 
-    The semantic fence-class event is delayed one cycle from retirement, and
-    the final frontend flush follows one cycle after that. This is the phase
-    relationship that lets the registered commit bus update csr_file before
-    the refetch begins.
+    o_fence_class_flush_event follows retirement by one cycle and
+    o_fence_i_flush by two, so the registered commit bus writes csr_file
+    before the refetch begins.
     """
     dut_if, model = await setup_test(dut)
     dut_if.set_sq_committed_empty(False)
@@ -2011,7 +2012,7 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
         # is kept for satp regardless of write intent.
         csr_write_intent=False,
         csr_addr=CSR_SATP,
-        csr_op=0b010,
+        csr_op=0b000,  # csrr: dispatch clears [1:0] of a CSR with no write intent
     )
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -2028,11 +2029,11 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
 
     assert dut_if.csr_start, "translation CSR did not start at the ready head"
 
-    # Mimic cpu_ooo's registered csr_done_q: high for one full cycle while
-    # CSR_EXEC owns the head, then low for good. The serializer has to capture
-    # that pulse into the dedicated drain state; it cannot ask for it again
-    # when the SQ drains. Let the first edge move the serializer into
-    # CSR_EXEC, then present the single completion sample.
+    # Mimic cpu_ooo's registered csr_done_q: high for one cycle while the
+    # serializer is in CSR_EXEC, then low. The serializer must record the
+    # pulse by moving to CSR_TRANSLATION_DRAIN, because the pulse does not
+    # repeat when the SQ drains. The first edge moves the serializer into
+    # CSR_EXEC; the single done cycle follows.
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(True)
@@ -2144,7 +2145,7 @@ async def test_nontranslation_csrs_do_not_wait_for_sq(dut: Any) -> None:
     dut_if.set_sq_committed_empty(False)
 
     cases = (
-        (CSR_MSTATUS, False, 0b010),
+        (CSR_MSTATUS, False, 0b000),  # csrr
         (CSR_MIE, True, 0b001),
     )
     for case_index, (csr_addr, write_intent, csr_op) in enumerate(cases):
@@ -2266,39 +2267,63 @@ async def test_alloc_priv_fault_survives_nonexception_cdb(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_cdb_exception_overrides_alloc_illegal_cause(dut: Any) -> None:
-    """A real execution exception replaces a stored IllegalInstr cause."""
+async def test_fetch_fault_replaces_alloc_illegal_cause(dut: Any) -> None:
+    """A fetch fault's completion replaces the IllegalInstr cause of its garbage decode.
+
+    A fetch-fault pseudo-op carries the faulting fetch's bytes, and they can
+    decode as a CSR access. Here they name CSR 0x000, which does not exist,
+    so allocation records IllegalInstr. The INT ALU shim then completes the
+    entry with the fetch fault (access fault 1 on one CDB lane, page fault 12
+    on the other), which the privileged spec ranks above illegal-instruction,
+    and the trap must report the fetch fault and its address.
+    """
     dut_if, model = await setup_test(dut)
 
-    dut.i_priv.value = PRIV_U
-    dut.i_priv_is_u.value = 1
-    req = AllocationRequest(
-        pc=0x2200,
-        dest_reg=6,
-        dest_valid=True,
-        is_csr=True,
-        csr_addr=CSR_MSTATUS,
-    )
-    tag = await drive_single_alloc(dut_if, req)
-    model_tag = model.allocate(req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
-    assert tag == model_tag
-    dut.i_priv.value = PRIV_M
-    dut.i_priv_is_u.value = 0
+    for lane, cause in ((0, EXC_INSTR_ACCESS_FAULT), (1, EXC_INSTR_PAGE_FAULT)):
+        # A 4-byte instruction straddling a page boundary: the fault address
+        # is the second page.
+        pc = 0x2FFE + 0x1000 * lane
+        fault_addr = pc + 2
+        req = AllocationRequest(
+            pc=pc,
+            rs_type=RS_INT,
+            is_csr=True,
+            csr_addr=0x000,
+            csr_op=0b001,
+            csr_write_intent=True,
+        )
+        tag = await drive_single_alloc(dut_if, req)
+        assert model.allocate(req, exception=True, exc_cause=EXC_ILLEGAL_INSTR) == tag
 
-    cdb_cause = 5
-    cdb = CDBWrite(tag=tag, value=0, exception=True, exc_cause=cdb_cause)
-    dut_if.drive_cdb_write_2(cdb)
-    model.cdb_write(cdb)
-    await RisingEdge(dut_if.clock)
-    await FallingEdge(dut_if.clock)
-    dut_if.clear_cdb_write_2()
+        cdb = CDBWrite(tag=tag, value=fault_addr, exception=True, exc_cause=cause)
+        if lane:
+            dut_if.drive_cdb_write_2(cdb)
+        else:
+            dut_if.drive_cdb_write(cdb)
+        model.cdb_write(cdb)
+        await dut_if.step()
+        dut_if.clear_cdb_writes()
+        assert model.entries[tag].exc_cause == cause
 
-    assert model.entries[tag].exception
-    assert model.entries[tag].exc_cause == cdb_cause
-    await RisingEdge(dut_if.clock)
-    assert dut_if.trap_pending
-    assert not dut_if.csr_start
-    assert dut_if.trap_cause == cdb_cause, "CDB exception must override IllegalInstr"
+        await RisingEdge(dut_if.clock)
+        assert dut_if.trap_pending
+        assert not dut_if.csr_start, "Faulting CSR decode must not start serialization"
+        assert dut_if.trap_pc == pc
+        assert dut_if.trap_cause == cause, (
+            f"lane {lane}: fetch fault {cause} did not replace IllegalInstr "
+            f"(trap cause {dut_if.trap_cause})"
+        )
+        assert int(dut.o_trap_value.value) == fault_addr
+
+        # Take the trap; its full flush empties the ROB for the next case.
+        await FallingEdge(dut_if.clock)
+        dut_if.set_trap_taken(True)
+        dut_if.drive_full_flush()
+        await dut_if.step()
+        dut_if.set_trap_taken(False)
+        dut_if.clear_full_flush()
+        model.flush_all()
+        assert dut_if.empty
 
 
 @cocotb.test()
@@ -2355,6 +2380,99 @@ async def test_fs_off_slot2_blocks_widen_commit_then_traps(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_dyn_rm_with_reserved_frm_is_illegal(dut: Any) -> None:
+    """An FP op flagged fp_dyn_rm is illegal at allocation while frm is 5, 6, or 7.
+
+    For each reserved frm the op allocates in slot 1, then in slot 2 beside
+    an ordinary instruction. frm returns to RNE right after allocation, and
+    the op must still trap with IllegalInstr at the head while the slot-1
+    instruction retires alone. The trapping requests carry csr_op values
+    other than 111, so the check depends on fp_dyn_rm alone. fp_dyn_rm with
+    a valid frm, a static rounding mode under a reserved frm, and a non-FP
+    instruction with funct3 111 all retire normally.
+    """
+    dut_if, _ = await setup_test(dut)
+
+    def fp_request(pc: int, dyn: bool, csr_op: int) -> AllocationRequest:
+        return AllocationRequest(
+            pc=pc,
+            rs_type=RS_FP,
+            dest_rf=1,
+            dest_reg=3,
+            dest_valid=True,
+            is_fp_instruction=True,
+            fp_dyn_rm=dyn,
+            has_fp_flags=True,
+            csr_op=csr_op,
+        )
+
+    async def complete(tag: int) -> None:
+        dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0x3F80_0000))
+        await dut_if.step()
+        dut_if.clear_cdb_write()
+
+    async def expect_illegal_head(pc: int) -> None:
+        await RisingEdge(dut_if.clock)
+        assert dut_if.trap_pending, f"DYN op at {pc:#x} did not trap"
+        assert dut_if.trap_pc == pc
+        assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
+        await FallingEdge(dut_if.clock)
+        dut_if.set_trap_taken(True)
+        dut_if.drive_full_flush()
+        await dut_if.step()
+        dut_if.set_trap_taken(False)
+        dut_if.clear_full_flush()
+        assert dut_if.empty
+
+    for frm in (5, 6, 7):
+        pc = 0x6000 + 0x100 * frm
+        dut.i_frm.value = frm
+        tag = await drive_single_alloc(dut_if, fp_request(pc, True, 0b100))
+        dut.i_frm.value = 0
+        await complete(tag)
+        await expect_illegal_head(pc)
+
+        dut.i_frm.value = frm
+        (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(
+            dut_if,
+            make_simple_alloc_request(pc=pc + 0x10, rd=4),
+            fp_request(pc + 0x14, True, 0b000),
+        )
+        dut.i_frm.value = 0
+        await complete(tag_2)
+        dut_if.drive_cdb_write(CDBWrite(tag=tag_1, value=0x1111))
+        await RisingEdge(dut_if.clock)
+        commit = dut_if.read_commit()
+        assert commit["valid"] and commit["tag"] == tag_1
+        assert not dut_if.read_commit_2()["valid"], "Illegal slot-2 DYN op retired"
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_cdb_write()
+        await expect_illegal_head(pc + 0x14)
+
+    legal_cases = (
+        ("DYN with frm=RMM", 4, fp_request(0x7000, True, 0b111)),
+        ("static RNE with frm=7", 7, fp_request(0x7004, False, 0b000)),
+        (
+            "non-FP funct3 111 with frm=5",
+            5,
+            AllocationRequest(pc=0x7008, dest_reg=5, dest_valid=True, csr_op=0b111),
+        ),
+    )
+    for name, frm, req in legal_cases:
+        dut.i_frm.value = frm
+        tag = await drive_single_alloc(dut_if, req)
+        dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0x2222))
+        await RisingEdge(dut_if.clock)
+        commit = dut_if.read_commit()
+        assert commit["valid"] and commit["tag"] == tag, f"{name}: did not retire"
+        assert not commit["exception"], f"{name}: marked illegal"
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_cdb_write()
+        assert not dut_if.trap_pending
+    dut.i_frm.value = 0
+
+
+@cocotb.test()
 async def test_same_cycle_stale_exception_does_not_override_alloc_illegal(
     dut: Any,
 ) -> None:
@@ -2394,6 +2512,93 @@ async def test_same_cycle_stale_exception_does_not_override_alloc_illegal(
     assert dut_if.trap_pending
     assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
     assert dut_if.trap_cause != stale_cause
+
+
+@cocotb.test()
+async def test_stale_cdb_fp_flags_lose_to_reallocation(dut: Any) -> None:
+    """A stale CDB write in a tag's reallocation cycle leaves no FP flags behind.
+
+    A store or a conditional branch never completes on the CDB, so the flags
+    it retires with are the zero that allocation writes. A stale completion
+    with every flag set lands on each allocation slot's tag, from each CDB
+    lane, in the cycle that tag is reallocated to a store or a branch; the
+    pair then retires two-wide, which reads the head and head+1 FP-flag RAMs,
+    and both commits must carry zero flags. Legal completions on later tags
+    must still retire their flags through both commit slots.
+    """
+    dut_if, _ = await setup_test(dut)
+    dut.i_commit_hold.value = 1
+    tag_mask = REORDER_BUFFER_DEPTH - 1
+    all_flags = 0b11111
+
+    async def retire_pair(tags: tuple[int, int]) -> tuple[dict, dict]:
+        """Release the commit hold for one edge and return both commit slots."""
+        dut.i_commit_hold.value = 0
+        await RisingEdge(dut_if.clock)
+        commits = (dut_if.read_commit(), dut_if.read_commit_2())
+        await FallingEdge(dut_if.clock)
+        dut.i_commit_hold.value = 1
+        for commit, tag in zip(commits, tags, strict=True):
+            assert commit["valid"] and commit["tag"] == tag, (
+                f"expected a two-wide retirement of tags {tags}, got "
+                f"{[(c['valid'], c['tag']) for c in commits]}"
+            )
+        assert dut_if.empty
+        return commits
+
+    for case in range(8):
+        stale_slot = case & 1
+        stale_lane = (case >> 1) & 1
+        store_first = not (case >> 2) & 1
+        pc = 0x9000 + 0x40 * case
+        store = make_store_request(pc=pc if store_first else pc + 4)
+        branch = make_branch_request(pc=pc + 4 if store_first else pc)
+        requests = (store, branch) if store_first else (branch, store)
+
+        head = dut_if.tail_ptr & tag_mask
+        tags = (head, (head + 1) & tag_mask)
+        stale = CDBWrite(tag=tags[stale_slot], value=0xBAD0 | case, fp_flags=all_flags)
+        if stale_lane:
+            dut_if.drive_cdb_write_2(stale)
+        else:
+            dut_if.drive_cdb_write(stale)
+        responses = await drive_dual_alloc(dut_if, *requests)
+        dut_if.clear_cdb_writes()
+        assert tuple(tag for _, tag, _ in responses) == tags
+
+        store_tag, branch_tag = tags if store_first else tags[::-1]
+        dut_if.drive_store_complete(store_tag)
+        dut_if.drive_branch_update(
+            BranchUpdate(tag=branch_tag, taken=False, target=0, mispredicted=False)
+        )
+        await dut_if.step()
+        dut_if.clear_store_complete()
+        dut_if.clear_branch_update()
+
+        commits = await retire_pair(tags)
+        for slot, commit in enumerate(commits):
+            assert commit["fp_flags"] == 0, (
+                f"case {case} (stale write on slot {stale_slot + 1}, lane "
+                f"{stale_lane}): commit slot {slot + 1} retired tag {commit['tag']} "
+                f"with fp_flags {commit['fp_flags']:05b}"
+            )
+
+    head = dut_if.tail_ptr & tag_mask
+    tags = (head, (head + 1) & tag_mask)
+    fp_ops = tuple(
+        make_simple_alloc_request(pc=0xA000 + 4 * slot, rd=slot + 1, is_fp=True)
+        for slot in range(2)
+    )
+    responses = await drive_dual_alloc(dut_if, *fp_ops)
+    assert tuple(tag for _, tag, _ in responses) == tags
+    await dut_if.step()  # No completion in the cycle after allocation.
+    flags = (0b00101, 0b11000)
+    dut_if.drive_cdb_write_2(CDBWrite(tag=tags[0], value=0x1111, fp_flags=flags[0]))
+    dut_if.drive_cdb_write(CDBWrite(tag=tags[1], value=0x2222, fp_flags=flags[1]))
+    await dut_if.step()
+    dut_if.clear_cdb_writes()
+    commits = await retire_pair(tags)
+    assert tuple(commit["fp_flags"] for commit in commits) == flags
 
 
 @cocotb.test()
@@ -2632,11 +2837,18 @@ async def test_random_branch_flush(dut: Any) -> None:
 
 @cocotb.test()
 async def test_stress_full_empty(dut: Any) -> None:
-    """Stress test buffer boundaries (full/empty transitions)."""
+    """Fill the buffer and drain it repeatedly, checking the status outputs.
+
+    StatusMonitor checks o_full against o_count every cycle, including the
+    cycles after a retirement from a full buffer, where the registered
+    o_full still reads 1.
+    """
     cocotb.log.info("=== Test: Stress Full/Empty ===")
     log_random_seed()
 
     dut_if, _ = await setup_test(dut)
+    status_mon = StatusMonitor(dut)
+    cocotb.start_soon(status_mon.run())
 
     num_cycles = 100
 
@@ -2675,6 +2887,7 @@ async def test_stress_full_empty(dut: Any) -> None:
 
         assert dut_if.empty, f"Cycle {cycle}: DUT should be empty"
 
+    status_mon.check_complete()
     cocotb.log.info("=== Test Passed ===")
 
 
@@ -3091,7 +3304,8 @@ async def test_amo_commits_normally(dut: Any) -> None:
 
     AMO ordering is enforced at LQ issue, which waits for the AMO to reach
     the ROB head with the SQ committed-empty. The ROB itself does not
-    consult i_sq_committed_empty for AMO commit.
+    consult i_sq_committed_empty for AMO commit, so the AMO retires while
+    the input reports committed stores still draining.
     """
     cocotb.log.info("=== Test: AMO Commits Normally ===")
 
@@ -3107,6 +3321,8 @@ async def test_amo_commits_normally(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
 
     # Queue the expected commit before the CDB write: commit fires on the
     # same rising edge that registers done=1, so the monitor needs the
@@ -3354,11 +3570,10 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
 
     assert dut_if.count == 4, f"Should have 4 entries, got {dut_if.count}"
 
-    dut_if.set_read_tag(1)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
-    done = dut_if.read_entry_done()
-    value = dut_if.read_entry_value()
+    done = dut_if.entry_done(1)
+    value = await dut_if.read_entry_value(1)
     assert done, "Entry 1 should be done after CDB write"
     assert value == 0xBBBB, f"Entry 1 value mismatch: {value:#x}"
 
@@ -3443,7 +3658,8 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     """LR commits once done; SC is resolved by the wrapper and completes over the CDB.
 
     Neither consults the SQ in the ROB: LR ordering is enforced at LQ issue,
-    and the SC result (0 for success) arrives as an ordinary CDB value.
+    and the SC result (0 for success) arrives as an ordinary CDB value. Both
+    retire while i_sq_committed_empty reports committed stores draining.
     """
     cocotb.log.info("=== Test: LR/SC Commit Behavior ===")
 
@@ -3467,6 +3683,8 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
 
     expected_lr = ExpectedCommit(
         valid=True,
@@ -3862,7 +4080,10 @@ async def test_sc_commits_via_cdb(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lr_commits_normally(dut: Any) -> None:
-    """LR at the head with done=1 commits; the ROB does not gate LR on the SQ."""
+    """An LR at the head commits once done, even with committed stores draining.
+
+    The serializer has no LR state, so i_sq_committed_empty does not hold it.
+    """
     cocotb.log.info("=== Test: LR Commits Normally ===")
 
     dut_if, model = await setup_test(dut)
@@ -3873,6 +4094,8 @@ async def test_lr_commits_normally(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
 
     cdb = CDBWrite(tag=0, value=0xFEEDFACE)
     dut_if.drive_cdb_write(cdb)
@@ -3883,7 +4106,7 @@ async def test_lr_commits_normally(dut: Any) -> None:
 
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
-    assert dut_if.empty, "LR should commit even with SQ not empty"
+    assert dut_if.empty, "LR should commit once done"
 
     cocotb.log.info("=== Test Passed ===")
 

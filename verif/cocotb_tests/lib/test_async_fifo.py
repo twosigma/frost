@@ -15,13 +15,9 @@
 """Unit tests for async_fifo (hw/rtl/lib/fifo/async_fifo.sv).
 
 Two free-running clocks of arbitrary ratio and phase; a writer with random
-valid gaps and a reader with random ready gaps; every word pushed must come
-out once, in order, with no extra word. Checked: fast-to-slow, slow-to-fast,
-equal periods with a phase offset, incommensurate periods, a continuous
-writer against a stalled reader (full, then ready margin), a reader that
-outruns the writer (empty, output stable while stalled), and a reset of
-both sides mid-stream (nothing from before the reset reappears; the stream
-restarts empty).
+valid gaps and a reader with random ready gaps. Every word pushed must come
+out once, in order, with no extra word, and the output must hold while the
+reader stalls. A reset of both sides mid-stream must leave the FIFO empty.
 """
 
 import random
@@ -71,7 +67,7 @@ async def _start_delayed(dut: Any, period_ps: int, phase_ps: int) -> None:
 async def _writer(
     dut: Any, words: list[int], gap_prob: float, rng: random.Random
 ) -> None:
-    """Push every word, honouring ready, with random idle cycles."""
+    """Push every word, honoring ready, with random idle cycles."""
     for w in words:
         while rng.random() < gap_prob:
             await FallingEdge(dut.i_clk)

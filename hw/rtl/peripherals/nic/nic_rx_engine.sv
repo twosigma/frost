@@ -31,15 +31,16 @@
  * is reported. One status write is in flight at a time, so DD becomes
  * visible in ring order; the next frame's data may start meanwhile.
  *
- * i_abort (the MAC domain is resetting: the stream epoch changes) abandons
- * a frame still owed beats: no more are taken, the packer is flushed and
- * its held write withdrawn, the outstanding writes are awaited and the
- * descriptor completes with DD|ERR|ABORT; a frame whose last beat is in
- * completes normally. i_stop (the RESET drain) abandons it with no completion and
- * waits for the responses owed; o_idle then says nothing is in flight.
- * i_enable low stops admission and descriptor fetching only. The CSR block
- * changes BASE/SIZE (i_restart) only while the direction is disabled and
- * idle, so a status write never targets a stale ring.
+ * i_abort (the MAC domain is resetting) abandons a frame still owed beats:
+ * no more are taken, the packer is flushed and its held write withdrawn, the
+ * outstanding writes are awaited, and the descriptor completes with
+ * DD|ERR|ABORT; a frame whose last beat is in completes normally. i_stop (the
+ * RESET drain) abandons it with no completion and waits for the responses
+ * owed; o_idle then says nothing is in flight. i_enable low stops admission
+ * (including one about to act) and descriptor fetching only; a frame already
+ * admitted finishes. The CSR block changes BASE/SIZE (i_restart)
+ * only while the direction is disabled and idle, so a status write never
+ * targets a stale ring.
  */
 module nic_rx_engine #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -195,14 +196,17 @@ module nic_rx_engine #(
   // Admission takes two cycles: S_IDLE registers the filter and descriptor
   // decisions from the head descriptor and the FIFO's first beat (both
   // stable until taken), S_ADMIT acts on them, so the packer's start and
-  // the descriptor take come from registers.
+  // the descriptor take come from registers. S_ADMIT requires i_enable as
+  // well: nic_desc_fetch ignores a take while the direction is disabled, so
+  // a disable in that cycle cancels the admission instead of admitting a
+  // frame whose descriptor HEAD never passes.
   logic accept, desc_ok;
   assign accept  = i_promisc || i_fifo_data[0] || (i_fifo_data[47:0] == i_mac);
   assign desc_ok = (df_word1[15:0] != 16'd0) && in_aperture(df_word0, df_word1[15:0]);
   logic consider, admit;
   assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && i_fifo_valid &&
       df_desc_valid;
-  assign admit = (state_q == S_ADMIT) && !i_stop && !i_abort && df_desc_valid;
+  assign admit = (state_q == S_ADMIT) && i_enable && !i_stop && !i_abort && df_desc_valid;
   assign df_take = admit && accept_q;
   assign pk_start = admit && accept_q && desc_ok_q;
 
@@ -338,7 +342,8 @@ module nic_rx_engine #(
           end
         end
         S_ADMIT: begin
-          // The descriptor may have gone (a disable or the drain): back to idle.
+          // A disable, the drain, a MAC-domain reset, or df_desc_valid
+          // falling cancels the admission.
           if (!admit) begin
             state_q <= S_IDLE;
           end else if (!accept_q) begin

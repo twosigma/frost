@@ -15,9 +15,12 @@
  */
 
 /*
-  Result assembler shared by fp_adder, fp_multiplier, fp_divider, fp_sqrt, and
-  fp_fma. Purely combinational: applies the rounding increment, detects
+  Result assembler shared by fp_adder, fp_multiplier, fp_fma, and
+  fp_div_sqrt_iter, and by the fp_divider and fp_sqrt reference models in
+  hw/sim. Purely combinational: applies the rounding increment, detects
   overflow and underflow, and packs the final FP result and exception flags.
+  Underflow needs tininess after rounding, which the caller computes before
+  its subnormal shift (riscv_pkg::fp_is_tiny) and passes in as i_is_tiny.
 
   Priority: special -> zero -> overflow -> underflow -> normal
 */
@@ -33,6 +36,7 @@ module fp_result_assembler #(
     input  logic                 [  MantBits-1:0] i_mantissa_work,
     input  logic                                  i_round_up,
     input  logic                                  i_is_inexact,
+    input  logic                                  i_is_tiny,
     // Result metadata
     input  logic                                  i_result_sign,
     input  logic                 [           2:0] i_rm,
@@ -75,8 +79,8 @@ module fp_result_assembler #(
       end
       final_mantissa = rounded_mantissa[MantBits-1:1];
     end else if ((i_exp_work <= '0) && rounded_mantissa[MantBits-1]) begin
-      // Tininess is detected after rounding. A subnormal-path value that rounds
-      // up into the hidden bit is the minimum normal, not an underflowed zero.
+      // A subnormal-path value that rounds up into the hidden bit is the
+      // minimum normal, not an underflowed zero.
       adjusted_exponent = {{(ExpExtBits - 1) {1'b0}}, 1'b1};
       final_mantissa = rounded_mantissa[FracBits-1:0];
     end else begin
@@ -116,6 +120,10 @@ module fp_result_assembler #(
       o_flags.nx = i_is_inexact;
       o_result   = {i_result_sign, {ExpBits{1'b0}}, final_mantissa};
     end else begin
+      // A result that the subnormal rounding lifts to the minimum normal is
+      // still tiny, and raises UF, when its full-precision rounding stays
+      // below the minimum normal.
+      o_flags.uf = i_is_inexact && i_is_tiny;
       o_flags.nx = i_is_inexact;
       o_result   = {i_result_sign, adjusted_exponent[ExpBits-1:0], final_mantissa};
     end

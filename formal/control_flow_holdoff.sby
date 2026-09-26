@@ -1,0 +1,21 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv
+read_verilog -formal -D SYNTHESIS -D CONTROL_FLOW_HOLDOFF_LOCAL_PROOF -sv control_flow_tracker.sv
+prep -top control_flow_tracker
+select -assert-count 2 t:$check
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv

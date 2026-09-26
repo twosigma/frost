@@ -4,16 +4,10 @@
 # Simple dual-port distributed RAM (async read, sync write)
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 
-# Two-read-port variant of sdp_dist_ram (shared backing array, two async reads)
-$(ROOT)/hw/rtl/lib/ram/sdp_dist_ram_2r.sv
-
 # Multi-write-port distributed RAM using Live Value Table (async read, sync write)
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram.sv
 
-# Two-read-port variant of mwp_dist_ram (shared LVT + banks, two async reads)
-$(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_2r.sv
-
-# One-hot-read-select variant of mwp_dist_ram (LVT select via registered one-hot)
+# One-hot-read-select variant of mwp_dist_ram (LVT select from a one-hot read address)
 $(ROOT)/hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 
 # Simple dual-port block RAM (sync read, sync write)
@@ -24,9 +18,6 @@ $(ROOT)/hw/rtl/lib/ram/sdp_block_ram_dc.sv
 
 # True dual-port block RAM with dual clocks and byte enables
 $(ROOT)/hw/rtl/lib/ram/tdp_bram_dc_byte_en.sv
-
-# True dual-port block RAM with dual clocks (simple, no byte enables or write-first)
-$(ROOT)/hw/rtl/lib/ram/tdp_bram_dc.sv
 
 # Row-granular simple dual-port RAM with selectable primitive (block/ultra).
 # Backs the frost_cache data arrays.

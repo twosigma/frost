@@ -80,7 +80,7 @@ async function harness(t: TestContext) {
         repoRoot: root, pythonPath: 'fixture-python', openocdPath: 'fixture-openocd',
         gdbPath: 'fixture-gdb', vivadoPath: 'fixture-vivado', hwServerPath: 'fixture-hw-server',
         jtagSerial: 'FIXTURE', vivadoTarget: '127.0.0.1:3121/xilinx_tcf/Xilinx/FIXTURE',
-        app: 'hello_world', memory: 'bram', cpuClockHz: 300000000,
+        app: 'hello_world', memory: 'bram', cpuClockHz: 322265625,
         bitstream: path.join(root, 'design.bit'), elf: path.join(app, 'sw.elf'),
         elfExplicit: false,
         startupTimeoutMs: 100, toolTimeoutMs: 1000, registerDescription: 'default',
@@ -127,7 +127,7 @@ async function harness(t: TestContext) {
         loadError: undefined as Error | undefined,
         readinessError: undefined as Error | undefined,
         launch: undefined as ((config: Config) => Promise<boolean>) | undefined,
-        selection: { app: 'coremark', memory: 'bram', cpuClockHz: 150000000 } as PlainLoadSelection | undefined,
+        selection: { app: 'coremark', memory: 'bram', cpuClockHz: 161132812 } as PlainLoadSelection | undefined,
         pickerUi: undefined as PlainLoadUi | undefined,
         debugPickerUi: undefined as PlainLoadUi | undefined,
         debugSelection: undefined as PlainLoadSelection | null | undefined,
@@ -302,8 +302,9 @@ async function harness(t: TestContext) {
         },
     };
 
-    // Isolate the VS Code host boundary, not the controller implementation.
-    // Every test exercises activate's real commands, provider and event handlers.
+    // Fake the vscode API and the modules that reach hardware, the UART,
+    // settings, and repository metadata. The controller itself is real: every
+    // test drives the commands, provider, and event handlers activate() registers.
     const Module = require('node:module') as {
         _load(request: string, parent: NodeModule | undefined, isMain: boolean): unknown;
     };
@@ -413,13 +414,13 @@ async function noSymbolCopies(root: string): Promise<void> {
     assert.deepEqual(files, [], 'Failed/finished sessions must remove their private ELF copies');
 }
 
-function selectionUi(answers: Array<string | undefined>, clock = '150000000'): PlainLoadUi {
+function selectionUi(answers: Array<string | undefined>): PlainLoadUi {
     return {
         async showQuickPick(items) {
             const next = answers.shift();
             return items.find(item => (item as typeof item & { value: string }).value === next);
         },
-        showInputBox: async () => clock,
+        showInputBox: async () => assert.fail('CPU clock is already configured'),
     };
 }
 
@@ -552,8 +553,8 @@ for (const memory of ['bram', 'ddr'] as const) {
         const h = await harness(t);
         h.control.selection!.memory = memory;
         h.control.loadTimeout = 8100000;
-        // A plain application does not need a debug ELF or even the configured
-        // debugger application's directory. The native loader owns its build.
+        // A plain load needs neither a debug ELF nor the configured debug app's
+        // directory: the native loader builds the selected app itself.
         await fs.rm(path.join(h.root, 'sw/apps/hello_world'), { recursive: true });
         const prior = Object.fromEntries(['MEM_CONFIG', 'FROST_DEBUG', 'FROST_ILA_ARM_HOOK', 'FROST_ILA_COLLECT_HOOK']
             .map(key => [key, process.env[key]]));
@@ -577,7 +578,7 @@ for (const memory of ['bram', 'ddr'] as const) {
         assert.equal(loader.args.includes('--ddr'), memory === 'ddr');
         assert.equal(loader.env?.FROST_DEBUG, '0');
         assert.equal(loader.env?.MEM_CONFIG, memory === 'ddr' ? 'ddr' : undefined);
-        assert.equal(loader.env?.FROST_CPU_CLK_HZ, '150000000');
+        assert.equal(loader.env?.FROST_CPU_CLK_HZ, '161132812');
         assert.equal(loader.env?.FROST_ILA_ARM_HOOK, undefined);
         assert.equal(loader.env?.FROST_ILA_COLLECT_HOOK, undefined);
         assert.equal(loader.settings.toolTimeoutMs, 8100000);
@@ -586,7 +587,7 @@ for (const memory of ['bram', 'ddr'] as const) {
         assert.equal(h.calls.includes('openocd:start'), false);
         assert.equal(h.launches.length, 0);
         assert.equal(h.owned.size, 0);
-        assert.deepEqual(h.delays, [3830]);
+        assert.deepEqual(h.delays, [3582]);
         const loaderStopped = h.calls.indexOf('loader:stopped');
         assert.equal(h.calls[loaderStopped + 1], 'serial:reassert');
         assert.equal(h.calls[loaderStopped + 2], 'image-reset:waiting');
@@ -598,21 +599,22 @@ for (const memory of ['bram', 'ddr'] as const) {
 
 test('CoreMark debug selection persists before handoff and loads its own ELF and verified build configuration', async t => {
     const h = await harness(t);
+    h.settings.cpuClockHz = 161132812;
     await h.command('attach');
     const old = h.sessions[0];
     h.control.debugPickerUi = selectionUi(['coremark', 'bram']);
     await h.command('loadAndDebug');
     assert.deepEqual(h.errors, []);
-    assert.deepEqual(h.savedSelections, [{ app: 'coremark', memory: 'bram', cpuClockHz: 150000000 }]);
+    assert.deepEqual(h.savedSelections, [{ app: 'coremark', memory: 'bram', cpuClockHz: 161132812 }]);
     assert.ok(h.calls.indexOf('settings:saved') < h.calls.indexOf(`session:disconnect:${old.id}`));
     assert.equal(h.settings.app, 'coremark');
-    assert.equal(h.settings.cpuClockHz, 150000000);
+    assert.equal(h.settings.cpuClockHz, 161132812);
     const build = h.toolRuns.find(run => run.args.includes('--build-only'))!;
     const loader = h.nativeStarts[0];
     for (const invocation of [build, loader]) {
         assert.equal(invocation.args[2], 'coremark');
         assert.ok(invocation.args.includes('--debug'));
-        assert.equal(invocation.env?.FROST_CPU_CLK_HZ, '150000000');
+        assert.equal(invocation.env?.FROST_CPU_CLK_HZ, '161132812');
     }
     const stamp = await fs.readFile(path.join(h.root, 'sw/apps/coremark/.frost-build-config.bin'));
     assert.equal(loader.args[loader.args.indexOf('--expected-build-config-sha256') + 1],
@@ -625,7 +627,7 @@ test('CoreMark debug selection persists before handoff and loads its own ELF and
 
 test('assembly builds use the loader reset strategy without a nonexistent main breakpoint', async t => {
     const h = await harness(t);
-    h.control.debugSelection = { app: 'csr_test', memory: 'bram', cpuClockHz: 300000000 };
+    h.control.debugSelection = { app: 'csr_test', memory: 'bram', cpuClockHz: 322265625 };
     h.control.buildOverrides.startStrategy = 'reset';
     await h.command('loadAndDebug');
     assert.deepEqual(h.errors, []);
@@ -640,7 +642,7 @@ test('assembly builds use the loader reset strategy without a nonexistent main b
 
 test('a default-layout app actually built in DDR attaches at its current PC', async t => {
     const h = await harness(t);
-    h.control.debugSelection = { app: 'ddr_exec_test', memory: 'bram', cpuClockHz: 150000000 };
+    h.control.debugSelection = { app: 'ddr_exec_test', memory: 'bram', cpuClockHz: 161132812 };
     h.control.buildOverrides = { effectiveMemory: 'ddr', startStrategy: 'attach' };
     await h.command('loadAndDebug');
     assert.deepEqual(h.errors, []);
@@ -907,12 +909,12 @@ test('manual serial commands reach the console without acquiring JTAG', async t 
     assert.equal(h.owned.size, 0);
 });
 
-test('image-reset hold times cover the supported 150 MHz and 300 MHz board clocks', () => {
+test('image-reset hold times cover the half-rate and full-rate X3 board clocks', () => {
     // Contract from xilinx_frost_subsystem.sv: a 27-bit inactivity counter on
     // CPU/4, plus the extension's 250 ms reset-synchronization margin.
-    assert.equal(imageResetDelayMs(150000000), 3830);
-    assert.equal(imageResetDelayMs(300000000), 2040);
-    for (const invalid of [0, -150000000, Number.NaN, 1]) {
+    assert.equal(imageResetDelayMs(161132812), 3582);
+    assert.equal(imageResetDelayMs(322265625), 1916);
+    for (const invalid of [0, -161132812, Number.NaN, 1]) {
         assert.throws(() => imageResetDelayMs(invalid), /supported image-reset wait/);
     }
 });
@@ -921,12 +923,12 @@ for (const memory of ['bram', 'ddr'] as const) {
     test(`${memory} load holds the cable until image-reset release before starting OpenOCD`, async t => {
         const h = await harness(t);
         h.settings.memory = memory;
-        h.settings.cpuClockHz = 150000000;
+        h.settings.cpuClockHz = 161132812;
         h.control.imageResetWait = deferred<void>();
         const loading = h.command('loadAndDebug');
         await eventually(() => h.calls.includes('image-reset:waiting'),
             'Software load did not reach its image-reset wait');
-        assert.deepEqual(h.delays, [3830]);
+        assert.deepEqual(h.delays, [3582]);
         assert.ok(h.calls.indexOf('tool:load') < h.calls.indexOf('image-reset:waiting'));
         assert.ok(h.calls.indexOf('loader:stopped') < h.calls.indexOf('image-reset:waiting'));
         assert.equal(h.calls.includes('hw_server:stop-requested'), false,
@@ -951,7 +953,7 @@ test('cancelling the image-reset wait blocks immediate Attach until settling fin
     const loading = h.command('loadAndDebug').then(() => { settled = true; });
     await eventually(() => h.calls.includes('image-reset:waiting'),
         'Software load did not reach its image-reset wait');
-    assert.deepEqual(h.delays, [2040]);
+    assert.deepEqual(h.delays, [1916]);
     h.cancel();
     await h.command('attach');
     assert.equal(h.warnings.length, 1);

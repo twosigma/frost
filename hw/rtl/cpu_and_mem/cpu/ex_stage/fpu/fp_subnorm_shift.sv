@@ -19,8 +19,8 @@
 
   Pure combinational module. When i_exponent <= 0, right-shifts
   {mantissa, guard, round, sticky} by (1 - exponent) positions,
-  accumulating a sticky bit from all shifted-out positions.
-  When i_exponent > 0, passes through unchanged.
+  accumulating a sticky bit from all shifted-out positions, and outputs
+  exponent 0. When i_exponent > 0, passes through unchanged.
 */
 module fp_subnorm_shift #(
     parameter int unsigned MANT_BITS    = 24,

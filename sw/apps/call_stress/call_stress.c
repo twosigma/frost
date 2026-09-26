@@ -17,32 +17,44 @@
 /**
  * Call stress: repeated and nested calls, built with the C extension.
  *
- * Compressed JAL/JALR carry their own encodings and PC-relative offset
- * fields, so this runs loops of calls and returns up to three frames deep
- * and prints the total call count at the end. The printf loops add calls
- * into the UART library on top of the local ones.
+ * The source loops over calls up to three frames deep and checks the call
+ * count after each loop. Tests 4 and 5 make printf calls into the UART
+ * library, and nothing checks their output. noinline keeps the local
+ * functions real calls at -O3, and each one counts itself after its inner
+ * calls, so none of those calls becomes a tail call.
  */
 
 #include "uart.h"
 
 volatile int call_count = 0;
+static int failures = 0;
 
-void simple_func(void)
+__attribute__((noinline)) void simple_func(void)
 {
     call_count++;
 }
 
-void nested_func(void)
+__attribute__((noinline)) void nested_func(void)
 {
-    call_count++;
     simple_func();
+    call_count++;
 }
 
-void multi_nested(void)
+__attribute__((noinline)) void multi_nested(void)
 {
-    call_count++;
     simple_func();
     nested_func();
+    call_count++;
+}
+
+static void check_count(int want)
+{
+    if (call_count == want) {
+        uart_puts("OK\n");
+    } else {
+        uart_printf("FAIL (count %d, want %d)\n", call_count, want);
+        failures++;
+    }
 }
 
 int main(void)
@@ -53,35 +65,37 @@ int main(void)
     for (int i = 0; i < 10; i++) {
         simple_func();
     }
-    uart_puts("OK\n");
+    check_count(10);
 
     uart_puts("Test 2: 10 nested calls...");
     for (int i = 0; i < 10; i++) {
         nested_func();
     }
-    uart_puts("OK\n");
+    check_count(10 + 10 * 2);
 
     uart_puts("Test 3: 10 multi-nested calls...");
     for (int i = 0; i < 10; i++) {
         multi_nested();
     }
-    uart_puts("OK\n");
+    check_count(10 + 10 * 2 + 10 * 4);
 
     uart_puts("Test 4: printf calls...\n");
     for (int i = 0; i < 5; i++) {
         uart_printf("  iteration %d\n", i);
     }
-    uart_puts("OK\n");
 
     uart_puts("Test 5: format specifiers...\n");
     uart_printf("  int: %d\n", 12345);
     uart_printf("  hex: 0x%08x\n", 0xDEADBEEF);
     uart_printf("  str: %s\n", "hello");
-    uart_puts("OK\n");
 
     uart_printf("\nTotal calls: %d\n", call_count);
-    uart_puts("\n*** ALL TESTS PASSED ***\n");
-    uart_puts("<<PASS>>\n");
+    if (failures == 0) {
+        uart_puts("\n*** ALL TESTS PASSED ***\n");
+        uart_puts("<<PASS>>\n");
+    } else {
+        uart_puts("<<FAIL>>\n");
+    }
 
     for (;;)
         ;

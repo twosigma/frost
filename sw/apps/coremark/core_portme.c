@@ -55,21 +55,10 @@ volatile ee_s32 seed3_volatile = 0x8;
 #endif
 volatile ee_s32 seed4_volatile = ITERATIONS;
 volatile ee_s32 seed5_volatile = 0;
-/* Porting : Timing functions
-        How to capture time and convert to seconds must be ported to whatever is
-   supported by the platform. e.g. Read value from on board RTC, read value from
-   cpu clock cycles performance counter etc. Sample implementation for standard
-   time.h and windows.h definitions included.
-*/
-/* Define : TIMER_RES_DIVIDER
-        Divider to trade off timer resolution and total time that can be
-   measured.
-
-        Use lower values to increase resolution, but make sure that overflow
-   does not occur. If there are issues with the return value overflowing,
-   increase this value.
-        */
-#define NSECS_PER_SEC FPGA_CPU_CLK_FREQ * 1ULL
+/* Timing: ticks are CPU cycles from the cycle counter, and EE_TICKS_PER_SEC is
+ * FPGA_CPU_CLK_FREQ. TIMER_RES_DIVIDER must stay 1: GETMYTIME returns undivided
+ * cycles, and only EE_TICKS_PER_SEC is divided by it. */
+#define NSECS_PER_SEC (FPGA_CPU_CLK_FREQ * 1ULL)
 #define CORETIMETYPE uint64_t
 #define GETMYTIME(_t) (*_t = read_timer64())
 #define MYTIMEDIFF(fin, ini) ((fin) - (ini))
@@ -77,67 +66,41 @@ volatile ee_s32 seed5_volatile = 0;
 #define SAMPLE_TIME_IMPLEMENTATION 1
 #define EE_TICKS_PER_SEC (NSECS_PER_SEC / TIMER_RES_DIVIDER)
 
-/** Define Host specific (POSIX), or target specific global time variables. */
+/* Cycle counts at the start and end of the timed region, and the profiling
+ * snapshots taken around them. */
 static CORETIMETYPE start_time_val, stop_time_val;
 tomasulo_profile_snapshot_t tomasulo_profile_default_report_start;
 tomasulo_profile_snapshot_t tomasulo_profile_default_report_end;
 
-/* Function : start_time
-        This function will be called right before starting the timed portion of
-   the benchmark.
-
-        Implementation may be capturing a system timer (as implemented in the
-   example code) or zeroing some system parameters - e.g. setting the cpu clocks
-   cycles to 0.
-*/
+/* Called right before the timed region. The profiling snapshot is taken before
+ * the cycle read here and after it in stop_time(), so neither snapshot counts
+ * toward the timed cycles. */
 void start_time(void)
 {
     tomasulo_profile_take_snapshot(&tomasulo_profile_default_report_start);
     GETMYTIME(&start_time_val);
 }
-/* Function : stop_time
-        This function will be called right after ending the timed portion of the
-   benchmark.
-
-        Implementation may be capturing a system timer (as implemented in the
-   example code) or other system parameters - e.g. reading the current value of
-   cpu cycles counter.
-*/
+/* Called right after the timed region. */
 void stop_time(void)
 {
     GETMYTIME(&stop_time_val);
     tomasulo_profile_take_snapshot(&tomasulo_profile_default_report_end);
 }
-/* Function : get_time
-        Return an abstract "ticks" number that signifies time on the system.
-
-        Actual value returned may be cpu cycles, milliseconds or any other
-   value, as long as it can be converted to seconds by <time_in_secs>. This
-   methodology is taken to accommodate any hardware or simulated platform. The
-   sample implementation returns millisecs by default, and the resolution is
-   controlled by <TIMER_RES_DIVIDER>
-*/
+/* Return the timed region's length in CPU cycles. */
 CORE_TICKS
 get_time(void)
 {
     CORE_TICKS elapsed = (CORE_TICKS) (MYTIMEDIFF(stop_time_val, start_time_val));
     return elapsed;
 }
-/* Function : time_in_secs
-        Convert the value returned by get_time to seconds.
-
-        The <secs_ret> type is used to accommodate systems with no support for
-   floating point. Default implementation implemented by the EE_TICKS_PER_SEC
-   macro above.
-*/
+/* Convert cycles to seconds at FPGA_CPU_CLK_FREQ. */
 secs_ret time_in_secs(CORE_TICKS ticks)
 {
 #if HAS_FLOAT
     uint64_t ticks_per_sec = EE_TICKS_PER_SEC;
     if (ticks_per_sec == 0)
-        ticks_per_sec = 1; /* Prevent div-by-zero for very low clocks */
+        ticks_per_sec = 1; /* Guard against FPGA_CPU_CLK_FREQ=0 */
 
-    /* Use integer division for whole seconds to avoid 64-bit float conversion. */
     uint64_t whole_secs = ticks / ticks_per_sec;
     uint32_t rem_ticks = (uint32_t) (ticks % ticks_per_sec);
     uint32_t denom_ticks = (uint32_t) ticks_per_sec;
@@ -151,8 +114,8 @@ secs_ret time_in_secs(CORE_TICKS ticks)
 
     return (secs_ret) whole_secs + (secs_ret) frac;
 #else
-    /* Shift both values right to avoid 64-bit division (no libgcc needed) */
-    /* Shifting by 20 bits preserves enough precision for seconds calculation */
+    /* Divide in 32 bits: shifting both values right by 20 bits keeps enough
+     * precision for whole seconds. */
     ee_u32 ticks_shifted = (ee_u32) (ticks >> 20);
     ee_u32 divisor_shifted = (ee_u32) (EE_TICKS_PER_SEC >> 20);
     if (divisor_shifted == 0)
@@ -163,15 +126,12 @@ secs_ret time_in_secs(CORE_TICKS ticks)
 
 ee_u32 default_num_contexts = 1;
 
-/* Function : portable_init
-        Target specific initialization code
-        Test for some common mistakes.
-*/
+/* Print the run configuration and check the port's type sizes. */
 void portable_init(core_portable *p, int *argc, char *argv[])
 {
     ee_printf("\nBaremetal Coremark %d iterations, assuming %d Hz FPGA clock.\n",
               ITERATIONS,
-              NSECS_PER_SEC);
+              (int) NSECS_PER_SEC);
     ee_printf("Adjust FPGA_CPU_CLK_FREQ in Makefile if clock frequency differs.\n");
     ee_printf("Expect a run time of at least 10 seconds before result printed.\n");
     ee_printf("Increase ITERATIONS in the Makefile if CPU is too fast.\n");
@@ -188,16 +148,15 @@ void portable_init(core_portable *p, int *argc, char *argv[])
     }
     p->portable_id = 1;
 }
-/* Function : portable_fini
-        Target specific final code
-*/
+/* Print the tick count and the profiling report, then <<PASS>> if no CRC check
+ * failed or <<FAIL>> otherwise. */
 void portable_fini(core_portable *p)
 {
     /* Get back to the containing core_results struct to check err field */
     core_results *res = (core_results *) ((char *) p - offsetof(core_results, port));
 
     p->portable_id = 0;
-    /* Print correct 64-bit total ticks (core_main.c truncates to 32-bit) */
+    /* fpga/hw_regression.py computes the score from this line; keep its format. */
     ee_printf("Total 64-bit ticks : %llu\n", (unsigned long long) (stop_time_val - start_time_val));
     ee_printf("To calculate Coremark score: ITERATIONS*FPGA_CPU_CLK_FREQ/(Total 64-bit ticks)\n");
     tomasulo_profile_print_report("CoreMark timed region",

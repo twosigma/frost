@@ -12,20 +12,22 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Write dense 32-bit ``sw_ddr.txt`` words from region offset zero through the
-# dedicated JTAG-AXI master. AXI4 INCR bursts avoid about 200k single-word
-# transactions for the ~800 KiB radix2 image.
+# Write the 32-bit words of sw_ddr.txt, one per line, to consecutive DDR
+# addresses from region offset zero through the DDR JTAG-AXI master, in AXI4
+# INCR bursts of up to burst_words words rather than one transaction per word.
 #
 # Addresses are region-relative: zero maps to CPU address 0x8000_0000, the
-# 1 GiB cached-region base. Low-BRAM writes hold the CPU in image reset and
-# invalidate caches, preventing stale lines from hiding new DDR data.
+# 1 GiB cached-region base. Low-BRAM writes hold the CPU in image reset, and
+# the reset clears the caches, so no stale line hides the new DDR data.
 #
-# The image reset is a ~4 s one-shot re-armed by low-BRAM writes. Multi-MB loads
-# exceed it, so ``bram_axi_name`` triggers a dummy write every
-# ``poke_interval`` bursts. This prevents partial-image execution while the
-# independent S01 DDR master continues loading.
+# The image reset releases the CPU a fixed time after the last low-BRAM write
+# (about 1.7 s at full rate), and a multi-MB DDR load takes longer. So a write
+# through bram_axi_name re-arms the reset before each batch of bursts, and the
+# CPU never runs a partial image while the DDR master (SmartConnect S01) is
+# still loading.
 
-# Re-arm the ~4 s image-reset counter before each blocking DDR batch.
+# Re-arm the image reset by writing rearm_word to BRAM address zero. Does
+# nothing without a BRAM master.
 proc _rearm_image_load_reset {bram_axi_name rearm_word} {
     if {$bram_axi_name eq ""} return
     create_hw_axi_txn rstkeep [get_hw_axis $bram_axi_name] \
@@ -38,15 +40,15 @@ proc file2ddr {firmware_filename {axi_interface_name hw_axi_2} {burst_words 256}
 
     set file_descriptor [open $firmware_filename r]
 
-    # Stream small lists: per-word lindex on one multi-MB Tcl list made a ~6 MB
-    # Linux load take ~17 minutes, versus ~15 seconds for ~8.8k AXI bursts.
-    # Batch run/delete also bounds the live transaction set.
+    # Read one burst of words at a time: indexing word by word into a list of
+    # the whole multi-MB file is far slower. Running and deleting transactions
+    # in batches also bounds how many exist at once.
     set axi [get_hw_axis $axi_interface_name]
     set current_address 0
     set transaction_number 0
     set total_words 0
     set batch 0
-    set batch_limit 128  ;# small batches so each blocking run_hw_axi stays well under the ~4 s reset counter
+    set batch_limit 128  ;# keeps each blocking run_hw_axi well under the image-reset interval
 
     while {1} {
         # Skip blanks so nonblank word N remains at offset N.
@@ -71,7 +73,7 @@ proc file2ddr {firmware_filename {axi_interface_name hw_axi_2} {burst_words 256}
         incr total_words $beats
         incr current_address [expr {4 * $beats}]
         if {$batch >= $batch_limit} {
-            # Re-arm immediately before the only potentially >4 s operation.
+            # Re-arm right before the blocking run_hw_axi, the only slow step.
             _rearm_image_load_reset $bram_axi_name $rearm_word
             run_hw_axi [get_hw_axi_txns ddrwr*]
             delete_hw_axi_txn [get_hw_axi_txns ddrwr*]

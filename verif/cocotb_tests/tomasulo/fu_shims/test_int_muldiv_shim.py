@@ -16,16 +16,20 @@
 
 Covers MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, divide-by-zero,
 signed overflow, result acceptance, busy signalling, and full/partial flush
-behavior. MUL has the configured ``riscv_pkg::MulPipeDepth`` latency (6 cycles
-currently); DIV latency is XLEN/2 + 1 cycles (33 currently), so tests poll for
-completion.
+behavior. Full-width MUL/DIV take 6/33 cycles; the dedicated word pipes take
+3/17. Mixed-width tests exercise shared completion slots, backpressure, and
+flushes at every word-pipeline position. FROST_TEST_SHORT_WORD_OPS=0 selects
+the expectations for a DUT built with SHORT_WORD_OPS=0, which runs word ops
+through the full-width units.
 """
 
+import os
+import random
 from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 from config import XLEN
 
@@ -37,6 +41,14 @@ CLOCK_PERIOD_NS = 10
 
 MAX_LATENCY = 50
 DIV_PIPELINE_LATENCY = XLEN // 2 + 1
+SHORT_WORD_OPS = os.environ.get("FROST_TEST_SHORT_WORD_OPS", "1") == "1"
+WORD_MUL_LATENCY = 3 if SHORT_WORD_OPS else 6
+WORD_DIV_LATENCY = 17 if SHORT_WORD_OPS else DIV_PIPELINE_LATENCY
+WORD_LATENCIES = (
+    ("MULW", WORD_MUL_LATENCY),
+    ("DIVW", WORD_DIV_LATENCY),
+    ("REMUW", WORD_DIV_LATENCY),
+)
 
 # ---------------------------------------------------------------------------
 # Parse instr_op_e from riscv_pkg.sv so op values track the RTL source.
@@ -671,7 +683,7 @@ async def test_rem_signed_overflow(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_suppresses_younger(dut: Any) -> None:
-    """Partial flush with flush_tag younger than in-flight op suppresses result."""
+    """A partial flush suppresses an in-flight MUL younger than the flush tag."""
     iface = await setup(dut)
 
     iface.drive_issue(
@@ -704,7 +716,7 @@ async def test_partial_flush_suppresses_younger(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_keeps_older(dut: Any) -> None:
-    """Partial flush with flush_tag older than in-flight op keeps result."""
+    """A partial flush keeps an in-flight MUL older than the flush tag."""
     iface = await setup(dut)
 
     rob_tag = 3
@@ -736,7 +748,7 @@ async def test_partial_flush_keeps_older(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
-    """Partial flush with flush_tag younger than in-flight DIV suppresses result."""
+    """A partial flush suppresses an in-flight DIV younger than the flush tag."""
     iface = await setup(dut)
 
     iface.drive_issue(
@@ -769,7 +781,7 @@ async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_keeps_older_div(dut: Any) -> None:
-    """Partial flush with flush_tag older than in-flight DIV keeps result."""
+    """A partial flush keeps an in-flight DIV older than the flush tag."""
     iface = await setup(dut)
 
     rob_tag = 3
@@ -1004,25 +1016,25 @@ async def test_fifo_backpressure(dut: Any) -> None:
     await FallingEdge(iface.clock)
 
     assert iface.read_busy(), (
-        "busy should be 1 with 4 DIVs in-flight (FIFO_DEPTH reached)"
+        "busy should be 1 with 4 DIVs in flight (DIV FIFO depth reached)"
     )
 
     result = await wait_for_div_complete(iface)
     assert result["valid"], "Expected valid completion"
     await FallingEdge(iface.clock)
 
-    # After popping one, inflight + fifo < FIFO_DEPTH, busy should drop
+    # After popping one, in-flight + FIFO occupancy < FifoDepth, so busy drops
     assert not iface.read_busy(), "busy should be 0 after popping one result"
 
 
 # ============================================================================
-# Test 29: Partial flush on same cycle as DIV completion suppresses result
+# Test 29: Partial flush as a younger DIV reaches the tracker tail
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_at_completion(dut: Any) -> None:
-    """Partial flush arriving on the same cycle the divider completes.
+    """A partial flush on the edge that shifts a younger DIV into the tracker tail drops it.
 
-    Must suppress the result (not leak it into the FIFO).
+    The divider result appears on that same edge; it must not enter the FIFO.
     """
     iface = await setup(dut)
 
@@ -1037,12 +1049,12 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Wait until one cycle before the divider output is expected. One edge was
-    # consumed above; the flush edge below is the final latency cycle.
+    # The issue edge above put the DIV in tracker stage 0. These edges move it
+    # to stage DivPipeDepth-2, one short of the tail.
     for _ in range(DIV_PIPELINE_LATENCY - 2):
         await RisingEdge(iface.clock)
 
-    # Assert the partial flush on the same cycle the tail valid goes high.
+    # The partial flush is sampled on the edge that shifts the DIV into the tail.
     # flush_tag=5, head=0  =>  tag 10 is younger, should be squashed.
     iface.drive_partial_flush(flush_tag=5, head_tag=0)
     await RisingEdge(iface.clock)
@@ -1064,9 +1076,9 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_fifo_head(dut: Any) -> None:
-    """Partial flush must suppress a valid FIFO head on the same cycle.
+    """A partial flush hides a younger FIFO head from the next cycle on and drains it.
 
-    Prevents the adapter from latching a younger result.
+    On the flush cycle itself the adapter's own partial-flush check drops the result.
     """
     iface = await setup(dut)
 
@@ -1114,7 +1126,7 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
 
 
 # ============================================================================
-# RV64 W-form vectors (M3 rung 2).
+# RV64 vectors: word forms and 64-bit corner cases.
 # ============================================================================
 async def _check_muldiv_op(
     dut: Any, op_name: str, src1: int, src2: int, expected: int, is_div: bool
@@ -1190,3 +1202,184 @@ async def test_rv64_div64_overflow(dut: Any) -> None:
     a = 0x8000_0000_0000_0000
     b = 0xFFFF_FFFF_FFFF_FFFF
     await _check_muldiv_op(dut, "DIV", a, b, alu_model.div(a, b), is_div=True)
+
+
+@cocotb.test()
+async def test_word_latency_and_hold(dut: Any) -> None:
+    """Word results arrive at the selected latency and stay stable until accepted."""
+    iface = await setup(dut)
+    for name, latency in WORD_LATENCIES:
+        await iface.reset()
+        a, b = 0x1234_5678_8000_0003, 0xDEAD_BEEF_FFFF_FFFE
+        expected = getattr(alu_model, name.lower())(a, b)
+        read = (
+            iface.read_mul_fu_complete if name == "MULW" else iface.read_div_fu_complete
+        )
+        iface.drive_issue(True, 7, _op(name), a, b)
+        await iface.step()
+        iface.clear_issue()
+        assert not read()["valid"]
+        for elapsed in range(1, latency + 1):
+            await iface.step()
+            result = read()
+            assert result["valid"] == (elapsed == latency), (name, elapsed, result)
+        assert (result["tag"], result["value"]) == (7, expected)
+        for _ in range(8):
+            await iface.step()
+            assert read() == result
+        if name == "MULW":
+            iface.drive_mul_accepted()
+        else:
+            iface.drive_div_accepted()
+        await iface.step()
+        assert not read()["valid"]
+
+
+@cocotb.test()
+async def test_word_completion_slot_collision(dut: Any) -> None:
+    """A word operation waits only when it shares a full-width completion cycle."""
+    iface = await setup(dut)
+    for full, word, gap in (("MULH", "MULW", 3), ("DIVU", "DIVUW", 16)):
+        await iface.reset()
+        a, b = 0xFFFF_FFFF_8000_0005, 0x1234_5678_0000_0003
+        read = (
+            iface.read_mul_fu_complete if word == "MULW" else iface.read_div_fu_complete
+        )
+        iface.drive_issue(True, 1, _op(full), a, b)
+        await iface.step()
+        iface.clear_issue()
+        for _ in range(gap - 1):
+            await iface.step()
+        # The RS holds its registered opcode even when ready masks valid.
+        iface.drive_issue(False, 2, _op(word), a, b)
+        await Timer(1, unit="ns")
+        assert iface.read_busy() == SHORT_WORD_OPS, (
+            full,
+            word,
+            "wrong collision stall",
+        )
+        await iface.step()
+        assert not iface.read_busy(), (full, word, "collision did not clear")
+        iface.drive_issue(True, 2, _op(word), a, b)
+        await iface.step()
+        iface.clear_issue()
+        received = []
+        for _ in range(MAX_LATENCY):
+            result = read()
+            if result["valid"]:
+                name = full if result["tag"] == 1 else word
+                assert result["value"] == getattr(alu_model, name.lower())(a, b)
+                received.append(result["tag"])
+                if word == "MULW":
+                    iface.drive_mul_accepted()
+                else:
+                    iface.drive_div_accepted()
+            else:
+                iface.clear_mul_accepted()
+                iface.clear_div_accepted()
+            await iface.step()
+        assert received == [1, 2], (full, word, received)
+
+
+@cocotb.test()
+async def test_mixed_word_full_random_backpressure(dut: Any) -> None:
+    """Random mixed-width ops match the model under random back-pressure.
+
+    Each op completes exactly once, on its own port, with the model's value.
+    Until every op has issued, each presented result is accepted with probability 1/4.
+    """
+    iface = await setup(dut)
+    rng = random.Random(0x6432)
+    names = (
+        "MUL",
+        "MULH",
+        "MULHSU",
+        "MULHU",
+        "MULW",
+        "DIV",
+        "DIVU",
+        "REM",
+        "REMU",
+        "DIVW",
+        "DIVUW",
+        "REMW",
+        "REMUW",
+    )
+    corners = (0, 1, 0xFFFF_FFFF, 0x8000_0000, (1 << 64) - 1, 1 << 63)
+    for _batch in range(24):
+        expected: dict[int, tuple[bool, int]] = {}
+        pending = []
+        for tag in range(16):
+            name = rng.choice(names)
+            a, b = (
+                rng.choice(corners) if rng.randrange(3) == 0 else rng.getrandbits(64)
+                for _ in range(2)
+            )
+            pending.append((tag, name, a, b))
+        for cycle in range(1600):
+            iface.clear_mul_accepted()
+            iface.clear_div_accepted()
+            for is_mul, read, accept in (
+                (True, iface.read_mul_fu_complete, iface.drive_mul_accepted),
+                (False, iface.read_div_fu_complete, iface.drive_div_accepted),
+            ):
+                result = read()
+                if result["valid"]:
+                    tag = result["tag"]
+                    assert tag in expected, ("duplicate or unissued", result)
+                    assert (is_mul, result["value"]) == expected[tag], (tag, result)
+                    if rng.randrange(4) == 0 or not pending:
+                        del expected[tag]
+                        accept()
+            iface.clear_issue()
+            if pending:
+                tag, name, a, b = pending[0]
+                iface.drive_issue(False, tag, _op(name), a, b)
+                await Timer(1, unit="ns")
+                if not iface.read_busy():
+                    expected[tag] = (
+                        name.startswith("MUL"),
+                        getattr(alu_model, name.lower())(a, b),
+                    )
+                    iface.drive_issue(True, tag, _op(name), a, b)
+                    pending.pop(0)
+            await iface.step()
+            if not expected and not pending:
+                break
+        else:
+            raise AssertionError(("lost completion", pending, expected, cycle))
+        iface.clear_mul_accepted()
+        iface.clear_div_accepted()
+        for _ in range(MAX_LATENCY):
+            await iface.step()
+            assert not iface.read_mul_fu_complete()["valid"]
+            assert not iface.read_div_fu_complete()["valid"]
+
+
+@cocotb.test()
+async def test_word_flush_every_pipeline_position(dut: Any) -> None:
+    """Kill a word operation at insertion, in flight, at FIFO push, or held in FIFO."""
+    iface = await setup(dut)
+    for name, latency in WORD_LATENCIES:
+        for full_flush in (False, True):
+            for flush_delay in range(latency + 3):
+                await iface.reset()
+                iface.drive_issue(True, 10, _op(name), 0xDEAD_BEEF_8000_0000, 3)
+                if flush_delay:
+                    await iface.step()
+                    iface.clear_issue()
+                    for _ in range(flush_delay - 1):
+                        await iface.step()
+                if full_flush:
+                    iface.drive_flush()
+                else:
+                    iface.drive_partial_flush(flush_tag=5, head_tag=0)
+                await iface.step()
+                iface.clear_issue()
+                iface.clear_flush()
+                iface.clear_partial_flush()
+                for _ in range(MAX_LATENCY):
+                    assert not iface.read_mul_fu_complete()["valid"]
+                    assert not iface.read_div_fu_complete()["valid"]
+                    await iface.step()
+                assert not iface.read_busy()

@@ -41,7 +41,7 @@ module load_unit #(
     // Load type flags (from instruction decode)
     input logic i_is_load_byte,      // LB or LBU instruction
     input logic i_is_load_halfword,  // LH or LHU instruction
-    input logic i_is_load_unsigned,  // LBU or LHU (zero-extend instead of sign-extend)
+    input logic i_is_load_unsigned,  // LBU, LHU or LWU (zero-extend instead of sign-extend)
 
     // Memory interface
     input logic [XLEN-1:0] i_data_memory_address,  // Address for lane selection
@@ -57,9 +57,8 @@ module load_unit #(
   //
   // Beat layout (little-endian): byte lane i is byte address {addr[31:3], i}.
   //
-  // Every lane's extended result is computed in parallel, so the late-arriving
-  // address (from a CARRY8 chain) controls only the final muxes and not the
-  // sign-extension logic. This shape carries over from the 32-bit version.
+  // Every lane's extended result is computed in parallel, so the address
+  // controls only the final muxes and not the sign-extension logic.
 
   localparam int unsigned BeatBytes  = riscv_pkg::MemStrbBits;
   localparam int unsigned BeatHalves = riscv_pkg::MemDataBits / 16;
@@ -94,7 +93,7 @@ module load_unit #(
     };
   end
 
-  // Final muxes: the late-arriving address selects pre-computed results.
+  // Final muxes: the address selects pre-computed results.
   logic [XLEN-1:0] byte_result;
   logic [XLEN-1:0] halfword_result;
   logic [XLEN-1:0] word_result;
@@ -103,7 +102,8 @@ module load_unit #(
   assign halfword_result = half_ext[i_data_memory_address[2:1]];
   assign word_result = word_ext[i_data_memory_address[2]];
 
-  // Type selection: is_load_byte and is_load_halfword are registered (early)
+  // Type selection: is_load_byte and is_load_halfword come from the load's
+  // stored size.
   assign o_data_loaded_from_memory =
       i_is_load_byte     ? byte_result :
       i_is_load_halfword ? halfword_result :

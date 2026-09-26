@@ -427,7 +427,8 @@ async def test_registers_and_bringup(dut: Any) -> None:
     )
     assert await nic.rd(IRQ_STATUS) & IRQ_DESC_ERR
     await nic.wr(IRQ_STATUS, IRQ_DESC_ERR)
-    # A ring outside the aperture or misaligned is refused too.
+    # A ring outside the aperture or with SIZE out of range is refused too;
+    # BASE drops its low five bits.
     await nic.wr(RX_BASE, 0x1000_0000)
     await nic.wr(RX_SIZE, 4)
     await nic.wr(CTRL, CTRL_RX_EN)
@@ -533,7 +534,12 @@ async def test_loopback_frames(dut: Any) -> None:
 @cocotb.skipif(not RAW_LOOPBACK, reason="runs in the RAW_LOOPBACK = 1 build")
 @cocotb.test()
 async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
-    """Frames from the software wire: station and group taken, another unicast filtered, a bad FCS and a runt counted by the MAC; TX seen on the wire."""
+    """Frames from the software wire: the filter, the MAC drop counters, and TX capture.
+
+    Station and group frames are taken and another unicast is filtered until
+    PROMISC is set; a bad FCS and a runt are counted by the MAC; a TX frame is
+    seen on the wire.
+    """
     nic = await _start(dut, 3, loopback=False)
     await nic.program_rings()
     await nic.post_rx(6)
@@ -603,7 +609,10 @@ async def test_wire_rx_filter_and_tx_capture(dut: Any) -> None:
 @cocotb.skipif(not RAW_LOOPBACK, reason="needs the raw loopback")
 @cocotb.test()
 async def test_reset_mid_traffic(dut: Any) -> None:
-    """RESET while frames are in flight and the RX ring is empty: busy clears, state returns to defaults, the NIC works again."""
+    """RESET while frames are in flight and the RX ring is empty.
+
+    Busy clears, state returns to defaults, and the NIC works again.
+    """
     nic = await _start(dut, 4, loopback=True)
     await nic.program_rings()
     await nic.post_rx(1)
@@ -643,7 +652,11 @@ async def test_reset_mid_traffic(dut: Any) -> None:
 @cocotb.skipif(RAW_LOOPBACK, reason="needs RAW_LOOPBACK = 0")
 @cocotb.test()
 async def test_unrelated_mac_clocks(dut: Any) -> None:
-    """No raw loopback, unrelated TX and RX clocks: no shared clock reported, MAC_LOOPBACK selects nothing, frames cross the wire both ways at once."""
+    """No raw loopback, with unrelated TX and RX clocks.
+
+    No shared clock is reported, MAC_LOOPBACK selects nothing, and frames cross
+    the wire both ways at once.
+    """
     nic = await _start(
         dut,
         5,

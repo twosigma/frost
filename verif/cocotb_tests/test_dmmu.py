@@ -12,10 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Data-MMU checks through its issue, walker, and registered result ports.
+"""Data-MMU checks through its issue, walker, early-store, and registered result ports.
 
-The reference resolves Sv39 leaves and the architectural fault priorities in
-Python. Protocol checks pin the two-cycle latency, one-result-per-cycle hit
+The reference resolves Sv39 leaves, the PMA map (the device windows take loads
+and stores but no atomics), and the architectural fault priorities in Python.
+Protocol checks pin the two-cycle latency, one-result-per-cycle hit
 throughput, miss skid, and recovery behavior without inspecting internal RTL.
 """
 
@@ -47,7 +48,7 @@ class Leaf:
     fault: int = NONE
 
     def packed(self) -> int:
-        """Encode the public riscv_pkg::ptw_resp_t seam."""
+        """Pack the leaf as a riscv_pkg::ptw_resp_t."""
         fields = (
             (self.fault, 2),
             (self.vpn, 27),
@@ -75,12 +76,18 @@ class Op:
     needs_sq: int = 0
     store: int = 0
     is_sc: int = 0
+    atomic: int = 0
     data: int = 0xFEDC_BA98_7654_3210
     amo_rs2: int = 0x1234_5678_9ABC_DEF0
     priv_u: int = 0
     sum_: int = 0
     mxr: int = 0
     trap_misaligned: int = 1
+
+
+def _device_ok(pa: int) -> bool:
+    """Return whether a PA is in a device window (MMIO registers or PLIC)."""
+    return 0x4000_0000 <= pa < 0x4003_1000 or 0x4400_0000 <= pa < 0x4440_0000
 
 
 def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
@@ -103,10 +110,14 @@ def _expected(op: Op, leaf: Leaf) -> tuple[int, int, int]:
     pa = ((leaf.ppn << 12) & ~((1 << offset_bits) - 1)) | (
         va & ((1 << offset_bits) - 1)
     )
-    mapped = pa < 0x40000 or 0x4000_0000 <= pa < 0xC000_0000
+    mapped = (
+        pa < 0x40000
+        or 0x8000_0000 <= pa < 0xC000_0000
+        or (not op.atomic and _device_ok(pa))
+    )
     if not mapped:
         return va, ACCESS, 0
-    return pa, NONE, int(0x4000_0000 <= pa < 0x8000_0000)
+    return pa, NONE, int(_device_ok(pa))
 
 
 async def _cycle(dut: Any) -> None:
@@ -133,6 +144,7 @@ async def _setup(dut: Any) -> None:
         "i_iss_needs_sq",
         "i_iss_store_perms",
         "i_iss_is_sc",
+        "i_iss_atomic",
         "i_iss_store_data",
         "i_iss_amo_rs2",
         "i_early_valid",
@@ -180,6 +192,7 @@ def _issue(dut: Any, op: Op) -> None:
     dut.i_iss_needs_sq.value = op.needs_sq
     dut.i_iss_store_perms.value = op.store
     dut.i_iss_is_sc.value = op.is_sc
+    dut.i_iss_atomic.value = op.atomic
     dut.i_iss_store_data.value = op.data
     dut.i_iss_amo_rs2.value = op.amo_rs2
     dut.i_eff_priv_u.value = op.priv_u
@@ -212,7 +225,13 @@ def _check(dut: Any, op: Op, leaf: Leaf) -> None:
 
 @cocotb.test()
 async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
-    """Both sources preserve fault priority, full fault VA, PA, and MMIO."""
+    """DTLB hits and walk responses match the reference fault, address, and MMIO.
+
+    The reference applies the architectural fault priority, and a faulting op
+    must return its full VA (for xtval) in place of the PA. The device cases
+    cover each window edge, atomics (LR, AMO, SC) onto the windows, and 2 MiB
+    and 1 GiB leaves whose VA offset lands inside or outside a window.
+    """
     await _setup(dut)
     base_op = Op()
     base_leaf = Leaf(vpn=base_op.va >> 12)
@@ -240,6 +259,31 @@ async def test_hit_and_walk_resolution_matrix(dut: Any) -> None:
         (replace(base_op, va=base_op.va + 1, trap_misaligned=0), base_leaf),
         (replace(base_op, va=0x0123_4568), replace(base_leaf, level=1, ppn=0x80200)),
         (replace(base_op, va=0x1234_5678), replace(base_leaf, level=2)),
+        # Device windows: loads and stores only, whole pages.
+        (base_op, replace(base_leaf, ppn=0x40030)),
+        (base_op, replace(base_leaf, ppn=0x40031)),
+        (base_op, replace(base_leaf, ppn=0x43FFF)),
+        (base_op, replace(base_leaf, ppn=0x44000)),
+        (base_op, replace(base_leaf, ppn=0x443FF)),
+        (base_op, replace(base_leaf, ppn=0x44400)),
+        (replace(base_op, store=1), replace(base_leaf, ppn=0x7FFFF)),
+        (replace(base_op, atomic=1), replace(base_leaf, ppn=0x40000)),
+        (replace(base_op, store=1, atomic=1), replace(base_leaf, ppn=0x44000)),
+        (
+            replace(base_op, needs_sq=1, store=1, is_sc=1, atomic=1),
+            replace(base_leaf, ppn=0x40030),
+        ),
+        (replace(base_op, store=1, atomic=1), base_leaf),
+        # Superpages over the device quadrant: the VA offset picks the page.
+        (replace(base_op, va=0x0120_0010), replace(base_leaf, level=1, ppn=0x40000)),
+        (replace(base_op, va=0x0123_1000), replace(base_leaf, level=1, ppn=0x40000)),
+        (replace(base_op, va=0x0121_0000), replace(base_leaf, level=1, ppn=0x44200)),
+        (replace(base_op, va=0xC400_0008), replace(base_leaf, level=2, ppn=0x40000)),
+        (replace(base_op, va=0xC440_0000), replace(base_leaf, level=2, ppn=0x40000)),
+        (
+            replace(base_op, va=0xC000_0018, store=1, atomic=1),
+            replace(base_leaf, level=2, ppn=0x40000),
+        ),
     ]
     for via_walk in (False, True):
         for op, leaf in cases:
@@ -391,3 +435,38 @@ async def test_flush_drops_phantom_issue_and_tag_reuse(dut: Any) -> None:
             dut.i_iss_valid.value = 0
             await _cycle(dut)
             _check(dut, correct, leaf)
+
+
+@cocotb.test()
+async def test_early_port_needs_store_permission_and_a_data_page(dut: Any) -> None:
+    """The early store port returns a PA only for a writable hit on a data page.
+
+    Anything else drops the prefill: a page outside the map, a device-quadrant
+    page outside the device windows, or a leaf without W or without D.
+    """
+    await _setup(dut)
+    va = 0x0040_0128
+    # (ppn, w, d, expected_ok)
+    cases = [
+        (0x80000, 1, 1, True),
+        (0x40000, 1, 1, True),
+        (0x443FF, 1, 1, True),
+        (0x40031, 1, 1, False),
+        (0x7FFFF, 1, 1, False),
+        (0xC0000, 1, 1, False),
+        (0x80000, 1, 0, False),
+        (0x80000, 0, 1, False),
+    ]
+    for ppn, w, d, expected_ok in cases:
+        await _clear(dut)
+        await _install(dut, Leaf(vpn=va >> 12, ppn=ppn, w=w, d=d))
+        dut.i_early_valid.value = 1
+        dut.i_early_va.value = va
+        await _cycle(dut)
+        dut.i_early_valid.value = 0
+        await _cycle(dut)
+        pa = (ppn << 12) | (va & 0xFFF)
+        assert int(dut.o_early_ok.value) == int(expected_ok), f"{ppn=:#x} {w=} {d=}"
+        if expected_ok:
+            assert int(dut.o_early_pa.value) == pa
+            assert int(dut.o_early_is_mmio.value) == int(_device_ok(pa))

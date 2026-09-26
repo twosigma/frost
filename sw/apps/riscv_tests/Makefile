@@ -12,13 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Builds one riscv-tests ISA test for Frost.
+# Builds one riscv-tests ISA test for FROST.
 #
 # Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S
 #
-# ISA tests define their own _start via RVTEST_CODE_BEGIN, so no crt0 is
-# needed. The riscv_test.h in this directory overrides the upstream env
-# header: -I. takes precedence over -Iriscv-tests/env/p.
+# ISA tests define their own _start via RVTEST_CODE_BEGIN (env_v/entry.S
+# supplies it for ENV=v), so no crt0 is needed. The riscv_test.h in this
+# directory overrides the upstream env header: -I. takes precedence over
+# -Iriscv-tests/env/p.
 
 TEST_SRC ?=
 
@@ -26,9 +27,9 @@ TEST_SRC ?=
 include ../../common/arch.mk
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_INT_ABI)
-# lp64 needs PC-relative addressing for the DDR-resident test image: medlow's
-# absolute lui cannot form 0x8xxx_xxxx addresses at 64, so the ddr links fail
-# with relocation truncation (same fix as sw/apps/arch_test).
+# medany, as in sw/apps/arch_test: on RV64, medlow's sign-extended lui cannot
+# form the 0x8xxx_xxxx addresses of the DDR-resident image, so ddr links would
+# fail with truncated relocations.
 CMODEL = -mcmodel=medany
 
 # Tools - use same prefix as common.mk
@@ -38,20 +39,21 @@ OBJCOPY = $(RISCV_PREFIX)objcopy
 OBJDUMP = $(RISCV_PREFIX)objdump
 
 # Test environment (tests/test_riscv_tests.py passes this via ENV):
-#   p (default): physical environment. The test runs bare in M-mode, using
-#                Frost's riscv_test.h override for UART pass/fail.
+#   p (default): physical environment. The test runs without a kernel, in the
+#                mode its RVTEST_RV64* macro selects (U for rv64u*), using
+#                FROST's riscv_test.h override for UART pass/fail.
 #   v:           virtual environment (the upstream -v variants). The test
 #                runs as demand-paged Sv39 user code under the env_v/
-#                supervisor kernel (Phase 3 M5). DDR-only: the kernel's
-#                page tables and the user frames live in cached DDR.
+#                supervisor kernel. DDR only: the kernel's page tables and
+#                the user frames live in cached DDR.
 ENV ?= p
 
 # Include paths:
 #   -Ienv_v (v only)                  picks up the virtual-env riscv_test.h
-#   -I.                               picks up Frost's riscv_test.h (overrides upstream)
+#   -I.                               picks up FROST's riscv_test.h (overrides upstream)
 #   -Iriscv-tests/isa/macros/scalar   picks up test_macros.h
-#   -Iriscv-tests/env/p               picks up encoding.h (riscv_test.h #includes it)
-#   -Iriscv-tests/env                 fallback for encoding.h
+#   -Iriscv-tests/env/p               upstream's p env (-I. shadows its riscv_test.h)
+#   -Iriscv-tests/env                 picks up encoding.h (riscv_test.h #includes it)
 ifeq ($(ENV),v)
 INCLUDES = -Ienv_v -I. -Iriscv-tests/isa/macros/scalar -Iriscv-tests/env/p -Iriscv-tests/env
 # The kernel: entry (reset, trap frame), the demand pager, freestanding
@@ -106,9 +108,8 @@ DISASSEMBLY_FILE     = sw.S
 # Build targets
 all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
 
-# Compile and link .S test file via gcc (handles #include).
-# ISA tests provide their own _start; the ddr config additionally links a ROM
-# boot stub ($(BOOT_STUB)) that far-jumps to it.
+# Compile and link the .S test with gcc, which runs the preprocessor. The ddr
+# config also links a ROM boot stub ($(BOOT_STUB)) that far-jumps to _start.
 $(EXECUTABLE_ELF_FILE): $(TEST_SRC) riscv_test.h $(BOOT_STUB) $(LINKER_SCRIPT) $(ENV_SRC)
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S)
@@ -124,7 +125,7 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 
 
 # Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
-# hw/rtl/README.md "Data-tier bus contract"). Every loader keeps the 32-bit-word formats.
+# hw/rtl/README.md "Data-tier bus contract"). Every other image stays in 32-bit words.
 $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 

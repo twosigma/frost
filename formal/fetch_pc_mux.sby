@@ -1,6 +1,8 @@
 [tasks]
 bmc
 bmc_integrated
+bmc_xilinx
+bmc_integrated_xilinx
 
 [options]
 mode bmc
@@ -11,13 +13,24 @@ smtbmc boolector
 
 [script]
 read -sv riscv_pkg.sv
-read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_FETCH_HOLDOFF_ONLY -D FETCH_MUX_LOCAL_PROOF -sv pc_controller.sv
+bmc: read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_FETCH_HOLDOFF_ONLY -D FETCH_MUX_LOCAL_PROOF -sv pc_controller.sv
+bmc_integrated: read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_FETCH_HOLDOFF_ONLY -D FETCH_MUX_LOCAL_PROOF -sv pc_controller.sv
+bmc_xilinx: read_verilog -formal +/xilinx/cells_sim.v
+bmc_xilinx: read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_FETCH_HOLDOFF_ONLY -D FETCH_MUX_LOCAL_PROOF -D FROST_XILINX_PRIMS -sv pc_controller.sv
+bmc_integrated_xilinx: read_verilog -formal +/xilinx/cells_sim.v
+bmc_integrated_xilinx: read_verilog -formal -D SYNTHESIS -D PC_HOLDOFF_LOCAL_PROOF -D PC_FETCH_HOLDOFF_ONLY -D FETCH_MUX_LOCAL_PROOF -D FROST_XILINX_PRIMS -sv pc_controller.sv
 bmc_integrated: chparam -set PENDING_HANDOFF_EXCLUDES_SLOT2 1 pc_controller
+bmc_integrated_xilinx: chparam -set PENDING_HANDOFF_EXCLUDES_SLOT2 1 pc_controller
+hierarchy -top pc_controller
+rename -top pc_controller
 delete t:control_flow_tracker t:pc_increment_calculator
 proc
 setundef -undriven -anyseq
 opt
-prep -top pc_controller
+prep -top pc_controller -flatten
+select -assert-count 7 t:$check
+select -assert-none t:$assume
+select -assert-none t:$check r:FLAVOR=assume %i
 
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

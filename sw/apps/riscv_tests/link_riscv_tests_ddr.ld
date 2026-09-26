@@ -1,12 +1,11 @@
-/* Linker script for riscv-tests on Frost, DDR memory config.
+/* Linker script for riscv-tests on FROST, DDR memory config.
  *
  * A minimal boot stub (crt0_riscv_tests_ddr.S, .boot) runs from the low BRAM
- * ROM and far-jumps to the DDR-resident _start. The test (code, data and, for
- * ISA tests, the tohost area) lives in the cached DDR region, fetched through
- * the L1I and loaded/stored through the L1D. DDR sections load in place
- * (LMA == VMA): the simulator preloads the behavioral DDR from sw_ddr.mem, so
- * the startup's data-copy loop is a no-op (load address == store address).
- * The stack stays in low BRAM for fast access.
+ * ROM and far-jumps to the DDR-resident _start. The test's code and data
+ * (including BSS and the heap) live in the cached DDR region, so fetches go
+ * through the L1I and loads and stores through the L1D. DDR sections load in
+ * place (LMA == VMA): the simulator preloads the behavioral DDR from
+ * sw_ddr.mem. The stack stays in low BRAM for fast access.
  */
 
 ENTRY(_start)
@@ -33,7 +32,6 @@ SECTIONS
     } > ROM
 
     .text : {
-        KEEP(*(.init))
         KEEP(*(.text.init))
         *(.text*)
         *(.text.*)
@@ -46,8 +44,8 @@ SECTIONS
         . = ALIGN(4);
     } > DDR
 
-    /* Loaded in place from sw_ddr.mem (LMA == VMA), so the startup copy loop
-     * is a no-op. */
+    /* Loaded in place from sw_ddr.mem (LMA == VMA), so the startup's data-copy
+     * loop is a no-op (load address == store address). */
     .data : {
         __data_load_start = .;
         __data_start      = .;
@@ -77,8 +75,9 @@ SECTIONS
         __bss_end = .;
     } > DDR
 
-    /* ISA tests emit a tohost section (harmless on Frost, which signals via
-     * UART); keep it in DDR so it does not orphan into the low BRAM image. */
+    /* .tohost is upstream's HTIF mailbox. Neither FROST's riscv_test.h nor
+     * syscalls_frost.c emits one (both report over the UART), but any .tohost
+     * input stays in DDR so it cannot orphan into the low BRAM image. */
     .tohost : {
         *(.tohost)
     } > DDR
@@ -107,3 +106,7 @@ SECTIONS
     PROVIDE(MTIMECMP_HI_ADDR = 0x4000001C);
     PROVIDE(MSIP_ADDR        = 0x40000020);
 }
+
+/* crt0_riscv_tests_ddr.S jumps to the constant 0x8000_0000, which is correct
+ * only while _start sits at the DDR origin. */
+ASSERT(_start == ORIGIN(DDR), "link_riscv_tests_ddr.ld: _start must sit at ORIGIN(DDR) (the boot stub jumps to the constant 0x80000000)")

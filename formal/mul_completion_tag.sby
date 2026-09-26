@@ -12,8 +12,8 @@ cover: depth 8
 smtbmc boolector
 
 [script]
-# Read the production adapter without FORMAL: its temporal harness must not
-# constrain the miter's arbitrary grant, flush, and payload inputs.
+# Read the adapter without -formal: its own FORMAL assumptions must not
+# constrain the harness's arbitrary grant, flush, and payload inputs.
 read -sv riscv_pkg.sv fu_cdb_adapter.sv
 read -formal -sv mul_completion_tag.sv
 prep -top mul_completion_tag

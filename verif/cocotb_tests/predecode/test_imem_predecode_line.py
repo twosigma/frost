@@ -57,8 +57,8 @@ SPECIAL_OPCODES = (
     OPC_OP_FP,
 )
 NEAR_MISS_OPCODES = (
-    0b0000011,  # LOAD (one bit from MISC_MEM)
-    0b0001011,  # custom-0 (one bit from MISC_MEM/AMO)
+    0b0000011,  # LOAD (one bit from FMADD, two from MISC_MEM)
+    0b0001011,  # custom-0 (one bit from MISC_MEM)
     0b0110011,  # OP
     0b1110111,  # one bit from CSR
     0b1010111,  # one bit from OP_FP (V-extension space)
@@ -166,8 +166,9 @@ async def test_directed_encodings(dut: Any) -> None:
     parcels: list[int] = [
         0x0000,  # all zeros (illegal, but compressed quadrant 00)
         0xFFFF,  # quadrant 11 (looks like a 32-bit instruction start)
-        # Quadrant-01 control flow: C.JAL, C.J, C.BEQZ, C.BNEZ.
+        # Quadrant 01, funct3=001: C.ADDIW on RV64 (C.JAL on RV32), not control.
         _rvc_quadrant_01(0b001, 0x2A5),
+        # Quadrant-01 control flow: C.J, C.BEQZ, C.BNEZ.
         _rvc_quadrant_01(0b101, 0x0FF),
         _rvc_quadrant_01(0b110, 0x31C),
         _rvc_quadrant_01(0b111, 0x123),
@@ -185,7 +186,7 @@ async def test_directed_encodings(dut: Any) -> None:
         _rvc_quadrant_10(0b1000, 1, 2),  # c.mv: rs2!=0
         _rvc_quadrant_10(0b1001, 1, 2),  # c.add: rs2!=0
         _rvc_quadrant_10(0b0000, 1, 0),  # c.slli shape
-        _rvc_quadrant_10(0b1010, 1, 0),  # c.swsp shape
+        _rvc_quadrant_10(0b1010, 1, 0),  # c.fsdsp shape
     ]
 
     words: list[int] = []

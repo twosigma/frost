@@ -14,8 +14,10 @@
  *    limitations under the License.
  */
 
-// FPU Adder Unit Wrapper
-// Wraps S and D fp_adder instances with tracking FSM, NaN-boxing, and dest reg capture.
+// FP add/subtract unit: single- and double-precision fp_adder instances for
+// FADD and FSUB. fp_adder takes one operation at a time, so a started flag
+// blocks a new start until the result is valid. Single-precision results are
+// NaN-boxed, and o_dest_reg returns the i_dest_reg captured at the start.
 module fpu_adder_unit #(
     parameter int unsigned FP_WIDTH_D = 64
 ) (

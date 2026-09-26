@@ -1,10 +1,45 @@
 # CDB Arbiter
 
-A combinational fixed-priority arbiter selecting up to two of eight FU
-completions per cycle for the two CDB lanes.
+The common data bus (CDB) broadcasts finished results to the ROB and every
+reservation station. It has two lanes. Each cycle, `cdb_arbiter` chooses up to
+two of the eight functional-unit (FU) completions to put on them. It is purely
+combinational and adds no latency; its clock and reset exist only for the
+formal harness.
 
-One balanced merge tree computes both winners together. Its first stage
-merges four contiguous priority pairs; every merge keeps up to two results:
+## Priority
+
+```
+MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
+```
+
+Lane 0 carries the highest-priority valid completion and lane 1 the next, so
+`o_grant` is 0-, 1-, or 2-hot. Inputs `i_fu_complete_0` to `_7` and the grant
+bits are numbered by `riscv_pkg::fu_type_e` (ALU, MUL, DIV, MEM, FP_ADD,
+FP_MUL, FP_DIV, ALU2), which is not the priority order.
+
+ALU and ALU2 are the two single-cycle integer pipes fed by the dual-issue INT
+reservation station. Either can win either lane, so a stream of pure ALU work
+can broadcast two results per cycle.
+
+A completion that is not granted stays in its
+[`fu_cdb_adapter`](../fu_cdb_adapter/README.md) and competes again the next
+cycle. The pipelined MUL, DIV, and FP multiply shims also queue results in
+FIFOs; the FP divider runs one operation at a time and holds its single
+result.
+
+The order matters for the MEM slot. Store faults, SC results, and loads share
+it, and the fault and SC registers present each result for only one cycle.
+Because only MUL outranks MEM, a MEM result that reaches the arbiter always
+wins one of the two lanes outside a full flush, so the MEM adapter is never
+left holding a result when the next one arrives. See
+[tag reuse](../README.md#cdb-priority-and-tag-reuse) in the back-end overview.
+
+## Structure
+
+One balanced tree computes both winners at once. It merges the eight inputs in
+priority-ordered pairs, then fours, then a root. Each merge lists its
+higher-priority input's packets before its lower one's and keeps the first two
+valid packets, so three levels give exactly the fixed-priority result.
 
 ```mermaid
 flowchart TB
@@ -22,86 +57,53 @@ flowchart TB
     R1 --> C1["CDB lane 1"]
 ```
 
-Solid arrows carry selected packets; dashed arrows bypass the payload tree
-with live ALU values. Both lanes use the root's source selects for value
-restoration. Full-flush kill suppresses broadcast validity and grants; it
-does not change the selected payloads.
+Solid arrows carry packets. Dashed arrows carry live ALU values around the
+tree.
 
-Each node carries the highest two valid packets and their one-hot source IDs.
-Each merge concatenates the higher-priority list before the lower and keeps its
-first two valid packets. The pair, four-entry, and root merges bound both
-selection cones to three stages. Both lanes are selected in parallel.
+## Live ALU values
 
-Live, non-pending results from the two single-cycle integer ALUs take a
-different value path. Their valid, tag, exception metadata, and one-hot
-identities go through the tree like every other packet, but their raw shim
-values bypass it and are restored at each lane output, selected by the
-valid-qualified raw grants. The stage2 -> ALU -> CDB live-value path is
-timing-dominant, and this keeps it to one final three-arm value mux per lane.
-Held adapter values and test-injected ALU values remain ordinary tree
-payloads. Priority and packet contents are unchanged.
+The path from the INT RS through an ALU to the CDB is timing-critical, so the
+value of a live ALU result (one passing straight through its adapter) skips
+the tree. Its valid bit, tag, and other fields go through the tree like any
+packet, and each lane output restores the value with a small mux
+(`cdb_live_value_restore`) selected by the grants. Held and test-injected ALU
+values go through the tree normally.
 
-Each ALU slot therefore has three auxiliary inputs beside its effective
-`i_fu_complete_N` packet: `value_is_live`, `live_value`, and
-`tree_fallback_value`. The interface contract is
-`value_is_live -> live_value == packet.value`; otherwise
-`tree_fallback_value == packet.value`. A live flag is legal only for a valid
-packet. For a held packet the wrapper sources `tree_fallback_value` from the
-adapter's payload-register Q (`o_held_value`) rather than from the adapter's
-pending/live output mux. The two are equal while the adapter is pending, but
-taking Q directly keeps current live-shim data out of the tree's fallback
-cone. The wrapper asserts this partition from its adapter and shim state. The
-standalone arbiter formal harness assumes it instead. Each lane's restore mux
-is a `cdb_live_value_restore` instance marked `keep_hierarchy` and
-`dont_touch`, so synthesis cannot fold a second copy of the live value back
-through the tree.
+For each ALU slot the wrapper supplies three extra inputs and must keep this
+rule:
 
-For registered consumers the arbiter also exports each lane's pre-restore tree
-value (`o_lane0_tree_fallback_value`, `o_lane1_tree_fallback_value`) and the
-four qualified live selects (`o_lane{0,1}_select_alu_live`,
-`o_lane{0,1}_select_alu2_live`). They are aliases of the restore-mux inputs
-and carry no second arbitration result. The wrapper registers them at the CDB
-edge and repeats the restore after Q, taking the live values from the ALU
-adapters' existing payload registers, so the registered CDB value D pins never
-see the pre-Q restore mux.
+- When `i_alu*_value_is_live` is set, the packet is valid and
+  `i_alu*_live_value` equals its value.
+- Otherwise `i_alu*_tree_fallback_value` equals its value.
 
-The resulting `o_grant` vector can be 0-, 1-, or 2-hot. Priority, highest
-first:
+The `tomasulo_wrapper` formal target proves the rule; the standalone arbiter
+proof assumes it (`FORMAL_ASSUME_VALUE_SOURCE_CONTRACT`, which the wrapper
+sets to 0).
 
-```
-MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
-```
-
-`ALU` and `ALU2` are the two single-cycle integer pipes fed by the
-dual-issue INT reservation station; either can win either lane, so a
-pure-ALU instruction stream can broadcast two results per cycle.
-
-FUs not selected by either lane are held in their per-FU `fu_cdb_adapter` and
-re-presented the next cycle. The deeply-pipelined units (MUL, DIV, FMUL) have
-additional internal result FIFOs to absorb multi-cycle contention. FDIV runs
-one operation at a time and holds its single result instead.
+The arbiter also exports each lane's pre-restore value
+(`o_lane*_tree_fallback_value`) and live selects (`o_lane*_select_alu*_live`).
+The wrapper registers these with the CDB and repeats the restore after the
+register. It reads the live value from the ALU adapter's `held_result`, which
+captures every result that passes through the adapter, so it needs no second
+wide register for the value.
 
 ## Full-flush kill
 
-The arbiter has an `i_kill` input that suppresses both CDB broadcasts
-(`o_cdb.valid` and `o_cdb_2.valid`) and the `o_grant` vector during
-speculative full-flush recovery. The wrapper drives it from a local `cdb_kill`
-copy of `speculative_flush_all`. The kill is applied here once rather than
-inside every `fu_cdb_adapter` output cone, so the high-fanout flush signal
-does not route through each adapter's critical path.
-
-`o_grant_raw` exposes the top-two grants before kill but is unused by the
-wrapper. Shims pop when the adapter's registered pending bit is clear and
-auto-drain flushed FIFO heads. Kill affects that pending state one cycle
-before it can affect shim pop logic.
+`i_kill` clears `valid` on both lanes and clears `o_grant`. It does not change
+which packets are selected; `o_grant_raw` shows the grants before the kill,
+and the wrapper leaves it unconnected. The wrapper drives `i_kill` on every
+full flush, including commit-time misprediction recovery
+(`speculative_flush_all`). The same signal clears every adapter, so a
+completion the kill suppresses is discarded, not retried. Applying the kill
+once here keeps the widely fanned flush signal out of the eight adapters'
+output logic.
 
 ## Verification
 
-The `cdb_arbiter` cocotb and formal targets check grant priority, payload
-selection, and flush kills against an independent reference. Wrapper tests
-also check live, held, and injected ALU packets. The wrapper formal target
-asserts the value-source contract with
-`FORMAL_ASSUME_VALUE_SOURCE_CONTRACT=0`, rather than assuming it.
+The `cdb_arbiter` cocotb and formal targets check priority, grants, payload
+selection, and the kill against reference models; the formal target compares
+the tree with an independent flat priority encoder. Wrapper tests cover live,
+held, and injected ALU packets.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

@@ -56,7 +56,7 @@ def main() -> None:
         "--bitstream",
         type=Path,
         metavar="PATH",
-        help="Selected .bit file (default: fpga/build/<board>/work/<board>_frost.bit)",
+        help="Bitstream to program (default: fpga/build/<board>/work/<board>_frost.bit)",
     )
     add_target_args(parser, managed=True)
     args = parser.parse_args()
@@ -113,7 +113,6 @@ def main() -> None:
         **target_options,
     )
 
-    # Resolve the generated bitstream and programming script.
     tcl_script = script_dir / "program_bitstream.tcl"
 
     # Vivado options must precede -tclargs or Tcl receives them as arguments.

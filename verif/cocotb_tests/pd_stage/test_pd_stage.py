@@ -15,6 +15,8 @@
 """Top-level unit tests for the pre-decode stage."""
 
 from collections.abc import Mapping
+import importlib.util
+from pathlib import Path
 from typing import Any
 
 import cocotb
@@ -56,6 +58,22 @@ def _pack_if_to_pd(fields: Mapping[str, int | bool]) -> int:
     return _pack_struct(IF_TO_PD_FIELDS, fields)
 
 
+def _rvc_rs1_rest(parcel: int, *, extra: bool = False) -> int:
+    """Return the offline model's rs1_rest (or, with extra, rvc_extra) for a parcel.
+
+    _drive_if_packet uses it for RVC sideband fields that a test leaves out.
+    """
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "sw/common/generate_imem_predecode_init.py"
+    )
+    spec = importlib.util.spec_from_file_location("pd_predecode_model", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return int(module.rvc_extra(parcel) if extra else module.rvc_rs1_rest(parcel))
+
+
 def _source_hot(instruction: int) -> int:
     """Return packed {rs2[1], rs1[2:1]} from a 32-bit instruction."""
     return (((instruction >> 21) & 1) << 2) | ((instruction >> 16) & 0x3)
@@ -79,19 +97,30 @@ def _drive_if_packet(
         "sel_nop": True,
         "sel_compressed": False,
         "effective_instr": NOP_INSTR,
-        "btb_hit": False,
         "btb_predicted_taken": False,
         "btb_predicted_target": 0,
-        "ras_predicted": False,
-        "ras_predicted_target": 0,
         "ras_checkpoint_tos": 0,
         "ras_checkpoint_valid_count": 0,
+        "ras_checkpoint_top": 0,
         "bp_dir_taken": False,
         "bp_dir_idx": 0,
     }
     packet.update(fields)
+    packet.setdefault(
+        "rvc_extra_predecoded", _rvc_rs1_rest(int(packet["raw_parcel"]), extra=True)
+    )
     if "source_hot_predecoded" not in fields:
         packet["source_hot_predecoded"] = _source_hot(int(packet["effective_instr"]))
+    if "bits24_20_predecoded" not in fields:
+        packet["bits24_20_predecoded"] = (int(packet["effective_instr"]) >> 20) & 0x1F
+    if "rs1_rest_predecoded" not in fields:
+        instr = int(packet["effective_instr"])
+        parcel = int(packet["raw_parcel"])
+        packet["rs1_rest_predecoded"] = (
+            _rvc_rs1_rest(parcel)
+            if parcel & 3 != 3 and not slot2
+            else ((instr >> 17) & 0x6) | ((instr >> 15) & 1)
+        )
     value = _pack_if_to_pd(packet)
     if slot2:
         dut.i_from_if_to_pd_2.value = value
@@ -203,18 +232,16 @@ async def _setup_test(dut: Any) -> None:
 def _assert_nop_slot(packet: Mapping[str, int | bool]) -> None:
     """Assert that a PD output packet contains an idle instruction slot.
 
-    Both slots mark a bubble with inject_nop=1: their timing-facing instruction
-    bits pass through un-NOP'd and ID applies the NOP from the registered marker.
+    Both slots mark a bubble with inject_nop=1, and ID applies the NOP from
+    that registered marker; except under reset, PD does not rewrite the
+    instruction to a NOP.
     """
     assert packet["inject_nop"] == 1
     assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
-    assert packet["fp_source_reg_3_early"] == 0
     assert packet["illegal_instruction"] is False
-    assert packet["btb_hit"] is False
     assert packet["btb_predicted_taken"] is False
-    assert packet["ras_predicted"] is False
     assert packet["bp_dir_idx"] == 0
 
 
@@ -249,13 +276,11 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
             "sel_nop": False,
             "sel_compressed": False,
             "effective_instr": instruction,
-            "btb_hit": True,
             "btb_predicted_taken": True,
             "btb_predicted_target": BASE_PC + 0x40,
-            "ras_predicted": True,
-            "ras_predicted_target": BASE_PC + 0x80,
             "ras_checkpoint_tos": 5,
             "ras_checkpoint_valid_count": 6,
+            "ras_checkpoint_top": BASE_PC + 0x104,
             "bp_dir_idx": 0x155,
         },
     )
@@ -267,21 +292,18 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
     assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 11
     assert packet["source_reg_2_early"] == 12
-    assert packet["fp_source_reg_3_early"] == 0
     assert packet["illegal_instruction"] is False
-    assert packet["btb_hit"] is True
     assert packet["btb_predicted_taken"] is True
     assert packet["btb_predicted_target"] == BASE_PC + 0x40
-    assert packet["ras_predicted"] is True
-    assert packet["ras_predicted_target"] == BASE_PC + 0x80
     assert packet["ras_checkpoint_tos"] == 5
     assert packet["ras_checkpoint_valid_count"] == 6
+    assert packet["ras_checkpoint_top"] == BASE_PC + 0x104
     assert packet["bp_dir_idx"] == 0x155
 
 
 @cocotb.test()
-async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> None:
-    """PD derives compressed selection locally and expands the raw parcel."""
+async def test_compressed_parcel_registers_its_predecoded_expansion(dut: Any) -> None:
+    """PD classifies the raw parcel itself and registers its predecoded expansion."""
     await _setup_test(dut)
     raw = _pack_compressed(
         funct3=0b000,
@@ -299,6 +321,8 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
             "sel_compressed": False,
             "effective_instr": 0xDEADBEEF,
             "source_hot_predecoded": _source_hot(expected),
+            "bits24_20_predecoded": (expected >> 20) & 0x1F,
+            "rs1_rest_predecoded": ((expected >> 17) & 0x6) | ((expected >> 15) & 1),
         },
     )
     await _advance_cycle(dut)
@@ -308,16 +332,22 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
     assert packet["is_compressed"] is True
     assert packet["source_reg_1_early"] == 3
     assert packet["source_reg_2_early"] == 1
-    assert packet["fp_source_reg_3_early"] == 0
     assert packet["illegal_instruction"] is False
 
 
 @cocotb.test()
-async def test_field_cofactors_preserve_selection_and_lifecycle(dut: Any) -> None:
-    """Compressed field cofactors preserve native selection and packet ownership."""
+async def test_rvc_fields_come_from_predecode_through_packet_lifecycle(
+    dut: Any,
+) -> None:
+    """Slot 1 takes an RVC expansion from its predecoded fields, not effective_instr.
+
+    IF's sel_compressed is ignored in both directions. The test then checks
+    stall hold, flush, a sel_nop bubble, and reset under stall on these packets.
+    """
     await _setup_test(dut)
-    # Independent complete instruction encodings, including the bit-20 special
-    # cases where EBREAK is one, ADDI16SP is zero, and reserved arithmetic is zero.
+    # Expected expansions are written out by hand, independent of the model.
+    # They include the bit-20 special cases: 1 for C.EBREAK, 0 for C.ADDI16SP
+    # and for the reserved arithmetic encoding.
     compressed_cases = (
         (0x0185, 0x00118193, False),  # C.ADDI x3, 1
         (0x0189, 0x00218193, False),  # C.ADDI x3, 2
@@ -348,6 +378,9 @@ async def test_field_cofactors_preserve_selection_and_lifecycle(dut: Any) -> Non
                 "sel_nop": bubble,
                 "sel_compressed": False,  # PD must use its local raw classifier.
                 "source_hot_predecoded": _source_hot(expected),
+                "bits24_20_predecoded": (expected >> 20) & 0x1F,
+                "rs1_rest_predecoded": ((expected >> 17) & 0x6)
+                | ((expected >> 15) & 1),
             },
         )
 
@@ -413,8 +446,9 @@ async def test_field_cofactors_preserve_selection_and_lifecycle(dut: Any) -> Non
     packet = _read_pd_packet(dut)
     assert packet["instruction"] == NOP_INSTR
     assert packet["inject_nop"] is True
-    # Existing early-source FFs hold during stall even when reset clears the
-    # architectural packet. Their value is ignored under the bubble marker.
+    # Slot 1's early source registers have no reset, so a stall holds them even
+    # while reset writes the NOP and sets inject_nop. Their value is ignored
+    # while inject_nop marks the bubble.
     assert packet["source_reg_2_early"] == 1
     _drive_pipeline_ctrl(dut, {})
     await _advance_cycle(dut)
@@ -457,7 +491,6 @@ async def test_sel_nop_overrides_instruction_and_sources(dut: Any) -> None:
     assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
-    assert packet["fp_source_reg_3_early"] == 0
     assert packet["illegal_instruction"] is False
 
 
@@ -477,6 +510,8 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
             "sel_compressed": False,
             "effective_instr": 0,
             "source_hot_predecoded": _source_hot(expanded),
+            "bits24_20_predecoded": (expanded >> 20) & 0x1F,
+            "rs1_rest_predecoded": ((expanded >> 17) & 0x6) | ((expanded >> 15) & 1),
         },
     )
     await _advance_cycle(dut)
@@ -509,8 +544,15 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_illegal_cofactor_preserves_qualification_and_lifecycle(dut: Any) -> None:
-    """The exact illegal cofactor retains PD's existing capture and clear rules."""
+async def test_rvc_illegal_flag_comes_from_predecode_through_packet_lifecycle(
+    dut: Any,
+) -> None:
+    """Slot 1's illegal flag comes from the predecoded RVC illegal bit.
+
+    PD's own compressed classifier qualifies it. IF's sel_compressed and the
+    decomp_illegal field, which only slot 2 uses, do not affect it, and it
+    follows the packet's stall, flush, bubble, and reset rules.
+    """
     await _setup_test(dut)
 
     def drive(raw: int, expected: int, *, bubble: bool = False) -> None:
@@ -523,6 +565,9 @@ async def test_illegal_cofactor_preserves_qualification_and_lifecycle(dut: Any) 
                 "sel_compressed": raw & 3 == 3,  # Oppose the local classifier.
                 "decomp_illegal": True,  # Slot 1 must not use slot 2's sideband.
                 "source_hot_predecoded": _source_hot(expected),
+                "bits24_20_predecoded": (expected >> 20) & 0x1F,
+                "rs1_rest_predecoded": ((expected >> 17) & 0x6)
+                | ((expected >> 15) & 1),
             },
         )
 
@@ -601,8 +646,7 @@ async def test_slot2_registers_independently_and_flush_marks_both_slots(
         rd=12,
         opcode=OPC_OP,
     )
-    # Give every reconstructed field a distinctive value, including [31:27],
-    # which shares the canonical fp_source_reg_3_early register bank.
+    # Give every field of the reassembled slot-2 instruction a distinct value.
     slot2_instr = _pack_r(
         funct7=0b1011010,
         rs2=7,
@@ -628,9 +672,7 @@ async def test_slot2_registers_independently_and_flush_marks_both_slots(
             "raw_parcel": slot2_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": slot2_instr,
-            "btb_hit": True,
             "btb_predicted_taken": True,
-            "ras_predicted": True,
         },
         slot2=True,
     )
@@ -646,24 +688,17 @@ async def test_slot2_registers_independently_and_flush_marks_both_slots(
     assert packet2["inject_nop"] == 0
     assert packet2["source_reg_1_early"] == 11
     assert packet2["source_reg_2_early"] == 7
-    assert packet2["fp_source_reg_3_early"] == 0b10110
-    assert packet2["btb_hit"] is True
     assert packet2["btb_predicted_taken"] is True
-    assert packet2["ras_predicted"] is True
 
     _drive_pipeline_ctrl(dut, {"flush": True})
-    _drive_if_packet(
-        dut, {"btb_hit": True, "btb_predicted_taken": True, "ras_predicted": True}
-    )
+    _drive_if_packet(dut, {"btb_predicted_taken": True})
     _drive_if_packet(
         dut,
         {
             "raw_parcel": slot2_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": slot2_instr,
-            "btb_hit": True,
             "btb_predicted_taken": True,
-            "ras_predicted": True,
         },
         slot2=True,
     )
@@ -672,8 +707,8 @@ async def test_slot2_registers_independently_and_flush_marks_both_slots(
     _assert_nop_slot(_read_pd_packet(dut))
     packet2 = _read_pd_packet(dut, slot2=True)
     _assert_nop_slot(packet2)
-    # Flush is carried only by inject_nop. The non-source payload remains on
-    # the timing-facing data FFs while the separately cleared source FFs read x0.
+    # The flush does not rewrite the instruction to a NOP: its non-source bits
+    # keep the payload, and only the separately cleared source fields read x0.
     assert (
         int(packet2["instruction"]) & INSTRUCTION_NON_SOURCE_MASK
         == slot2_instr & INSTRUCTION_NON_SOURCE_MASK
@@ -719,8 +754,8 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
     assert packet["source_reg_2_early"] == 19
     assert packet["illegal_instruction"] is True
 
-    # A bubble that arrives during a held cycle cannot clear the replayed
-    # source addresses. The same bubble clears them when the bundle advances.
+    # A bubble that arrives during a held cycle cannot clear the held source
+    # addresses. The same bubble clears them when the bundle advances.
     _drive_pipeline_ctrl(dut, {"stall": True})
     _drive_if_packet(
         dut,
@@ -750,7 +785,6 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
     )
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
-    assert packet["fp_source_reg_3_early"] == 0
     assert packet["illegal_instruction"] is False
 
 
@@ -788,7 +822,6 @@ async def test_stall_holds_pd_to_id_outputs(dut: Any) -> None:
             "raw_parcel": second_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": second_instr,
-            "btb_hit": True,
         },
     )
     await _advance_cycle(dut)
@@ -800,7 +833,7 @@ async def test_stall_holds_pd_to_id_outputs(dut: Any) -> None:
 async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stall(
     dut: Any,
 ) -> None:
-    """A redirect's bubble masks a raw wrong-path branch while both FF banks stall."""
+    """The redirect's bubble masks a wrong-path branch candidate, even under stall."""
     await _setup_test(dut)
     branch_instr = _pack_b(
         imm=-4,
@@ -832,10 +865,10 @@ async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stal
     assert bool(dut.o_pd_redirect.value) is True
     assert int(dut.o_pd_redirect_target.value) == (BASE_PC - 4) & MASK_XLEN
 
-    # Make the wrong-path payload another predicted-taken branch. The timing
-    # candidate intentionally captures this raw branch/direction pair, while
-    # the same edge records the older redirect in inject_nop. That registered
-    # bubble must suppress the raw candidate, including while both banks hold.
+    # Make the wrong-path payload another predicted-taken branch. The candidate
+    # register captures its branch && direction with no vetoes, and the same
+    # edge records the older redirect in inject_nop. That registered bubble
+    # must mask the candidate, including while a stall holds both.
     wrong_path_instr = _pack_b(
         imm=8,
         rs2=16,
@@ -860,9 +893,7 @@ async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stal
             "raw_parcel": wrong_path_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": wrong_path_instr,
-            "btb_hit": True,
             "btb_predicted_taken": True,
-            "ras_predicted": True,
         },
         slot2=True,
     )
@@ -892,8 +923,8 @@ async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stal
     _assert_nop_slot(_read_pd_packet(dut, slot2=True))
     assert bool(dut.o_pd_redirect.value) is False
 
-    # Releasing the shared stall replaces candidate and mask atomically. A real
-    # branch at the redirect target must therefore remain eligible immediately.
+    # Releasing the stall replaces the candidate and the mask on the same edge,
+    # so the predicted-taken branch at the redirect target redirects at once.
     _drive_pipeline_ctrl(dut, {})
     await _advance_cycle(dut)
     assert bool(dut.o_pd_redirect.value) is True
@@ -906,7 +937,7 @@ async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stal
 async def test_unqualified_redirect_candidate_keeps_all_visible_vetoes(
     dut: Any,
 ) -> None:
-    """Registered packet vetoes, flush, and reset mask the raw timing payload."""
+    """Each registered packet veto, flush, and reset suppresses the PD redirect."""
     await _setup_test(dut)
     branch_instr = _pack_b(
         imm=8,
@@ -917,11 +948,10 @@ async def test_unqualified_redirect_candidate_keeps_all_visible_vetoes(
     )
     valid_nonbranch = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
 
-    # Each late input is deliberately paired with a true raw branch/direction
-    # candidate. Its registered copy alone must veto the visible redirect.
+    # Each veto arrives with a predicted-taken branch, so only the veto's
+    # registered copy in the packet can suppress the redirect.
     vetoes = [
-        {"btb_hit": True, "btb_predicted_taken": True},
-        {"ras_predicted": True},
+        {"btb_predicted_taken": True},
         {"sel_nop": True},
         {"fetch_fault": True},
     ]
@@ -951,9 +981,9 @@ async def test_unqualified_redirect_candidate_keeps_all_visible_vetoes(
         await _advance_cycle(dut)
         assert bool(dut.o_pd_redirect.value) is False
 
-    # Flush and reset have priority over the candidate FF's normal capture and
-    # stall hold. Drive a true raw candidate in both cases so stale state cannot
-    # hide behind an idle input.
+    # Flush and reset clear the candidate even during a stall. Keep a
+    # predicted-taken branch on the input in both cases so an idle input cannot
+    # hide stale state.
     _drive_pipeline_ctrl(dut, {"flush": True, "stall": True})
     _drive_if_packet(
         dut,
@@ -985,7 +1015,7 @@ async def test_unqualified_redirect_candidate_keeps_all_visible_vetoes(
 
 @cocotb.test()
 async def test_direction_redirect_target_split_boundary_cases(dut: Any) -> None:
-    """Split targets remain exact across correction, format, and stall boundaries."""
+    """The split redirect target stays exact across carry, sign, format, and stall."""
     await _setup_test(dut)
 
     pc_chunk_base = 0x123456789ABC0000 & MASK_XLEN
@@ -1056,10 +1086,10 @@ async def test_direction_redirect_target_split_boundary_cases(dut: Any) -> None:
         await _advance_cycle(dut)
         assert bool(dut.o_pd_redirect.value) is False
 
-    # Exercise the boundary on consecutive format selections. The native
-    # packet computes a target without requesting a redirect; the compressed
-    # packet on the very next edge requests one. This catches a low/raw-state
-    # bank skew without relying on a bubble between formats.
+    # Switch formats on consecutive edges, with no bubble between them: a native
+    # branch computes a target without redirecting, then a compressed branch
+    # redirects. This catches the low-result and {sign, carry} registers
+    # capturing on different edges.
     native_pc = pc_chunk_base + 0x1FFE
     native_offset = 2
     native_instruction = _pack_b(
@@ -1109,9 +1139,9 @@ async def test_direction_redirect_target_split_boundary_cases(dut: Any) -> None:
     await _advance_cycle(dut)
     assert not dut.o_pd_redirect.value
 
-    # The redirect bit and target banks retain the former register's exact
-    # nonstall enable: a predicted branch presented during stall cannot alter
-    # either output, and both are captured together on the first released edge.
+    # The redirect and target registers share the !stall enable: a predicted
+    # branch presented during a stall changes neither output, and both capture
+    # it on the first edge after the stall.
     held_pc = pc_chunk_base + 0x1FFE
     held_offset = 2
     held_instruction = _pack_b(

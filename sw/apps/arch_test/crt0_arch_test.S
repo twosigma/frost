@@ -1,8 +1,8 @@
-// Frost minimal startup for riscv-arch-test (dev branch)
+// FROST startup for riscv-arch-test, ddr and icache configs
 //
-// On the dev branch, RVMODEL_BOOT is commented out in arch_test.h.
-// _start lives in the .init section, the only code in the low BRAM ROM; the
-// test itself lives in the cached DDR region. The DDR image loads in place
+// The pinned arch_test.h never invokes RVMODEL_BOOT, so this stub does the
+// startup work. _start lives in .init, the only code in the low BRAM ROM; the
+// test code runs from the cached DDR region. Every section loads in place
 // (LMA == VMA), so there is no data copy: the stub zeroes .sbss/.bss and
 // far-jumps to the framework's rvtest_init entry point, which is beyond JAL
 // range, hence the register jump.

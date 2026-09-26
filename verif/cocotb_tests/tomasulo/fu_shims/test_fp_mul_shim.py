@@ -14,11 +14,14 @@
 
 """Cocotb tests for the fp_mul_shim module.
 
-Verifies arithmetic and the producer-local payload queues, including ordered
-dual completion, synchronous-RAM collision bypass, sustained mixed-producer
-drain, wraparound, back-pressure, and partial/full flush behavior.
+Covers the arithmetic, each unit's tag queue, and the result queues (the
+shared ordering ring and each unit's payload RAM FIFO): simultaneous FMUL and
+FMA completion, the head bypass for a push that becomes the head at once,
+back-to-back drain of alternating units, pointer wraparound, the busy bound,
+back-pressure, and partial and full flushes.
 """
 
+import struct
 from typing import Any
 
 import cocotb
@@ -73,6 +76,10 @@ FP_FLAG_NV = 0x10
 MAX_LATENCY = 20
 FMA_EXTRA_LATENCY = 5
 
+# o_fu_busy rises once the tag queues and the ordering ring hold this many
+# operations in total (ResultFifoDepth - 2).
+BUSY_BOUND = 14
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -100,6 +107,7 @@ async def issue_once(
     src1_value: int,
     src2_value: int,
     src3_value: int = 0,
+    rm: int = 0,
 ) -> None:
     """Issue one operation for exactly one cycle."""
     iface.drive_issue(
@@ -109,6 +117,7 @@ async def issue_once(
         src1_value=src1_value,
         src2_value=src2_value,
         src3_value=src3_value,
+        rm=rm,
     )
     await clock_cycle(dut)
     iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
@@ -165,6 +174,55 @@ async def wait_for_completions(
             if len(results) == count:
                 return results
     raise AssertionError(f"only saw {len(results)} of {count} expected completions")
+
+
+def boxed_f32(value: float) -> int:
+    """Return *value* as a NaN-boxed single-precision operand."""
+    return NAN_BOX | struct.unpack("<I", struct.pack("<f", value))[0]
+
+
+def drive_tagged_op(iface: FpMulShimInterface, tag: int, op: int) -> None:
+    """Drive a valid FMUL_S (tag * 2) or FMADD_S (tag * 2 + 1) for *tag*.
+
+    The result encodes the tag, so a tag queue and payload FIFO that fall out
+    of step show up as a value mismatch.
+    """
+    iface.drive_issue(
+        valid=True,
+        rob_tag=tag,
+        op=op,
+        src1_value=boxed_f32(tag),
+        src2_value=SRC_2_0,
+        src3_value=SRC_1_0,
+    )
+
+
+def tagged_result(tag: int, op: int) -> int:
+    """Return the exact NaN-boxed result of drive_tagged_op(tag, op)."""
+    return boxed_f32(2.0 * tag + (1.0 if op == OP_FMADD_S else 0.0))
+
+
+def drive_idle(iface: FpMulShimInterface) -> None:
+    """Drive no issue."""
+    iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+
+
+async def issue_until_busy(
+    dut: Any, iface: FpMulShimInterface, ops: list[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Offer (tag, op) pairs one per cycle while o_fu_busy is low.
+
+    Returns the pairs the shim accepted. The last pair stays driven; the
+    caller replaces or clears it.
+    """
+    accepted: list[tuple[int, int]] = []
+    for tag, op in ops:
+        if iface.read_busy():
+            break
+        drive_tagged_op(iface, tag, op)
+        await clock_cycle(dut)
+        accepted.append((tag, op))
+    return accepted
 
 
 # ============================================================================
@@ -586,29 +644,23 @@ async def test_continuous_alternating_producer_drain(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_fmul_payload_and_ordering_ring_wraparound(dut: Any) -> None:
-    """Twenty-four accepted FMULs wrap both 16-entry rings without reordering."""
+    """Twenty-four FMULs wrap the FMUL tag queue, the ring and the payload FIFO in order."""
     iface = await setup(dut)
 
     issued = 0
     results: list[dict] = []
     while issued < 24:
         if iface.read_busy():
-            iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+            drive_idle(iface)
         else:
             issued += 1
-            iface.drive_issue(
-                valid=True,
-                rob_tag=issued,
-                op=OP_FMUL_S,
-                src1_value=SRC_2_0,
-                src2_value=SRC_3_0,
-            )
+            drive_tagged_op(iface, issued, OP_FMUL_S)
         await clock_cycle(dut)
         result = iface.read_fu_complete()
         if result["valid"]:
             results.append(result)
 
-    iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
+    drive_idle(iface)
     for _ in range(MAX_LATENCY + 24):
         if len(results) == 24:
             break
@@ -619,14 +671,123 @@ async def test_fmul_payload_and_ordering_ring_wraparound(dut: Any) -> None:
     assert len(results) == 24, f"only saw {len(results)} of 24 completions"
 
     for expected_tag, result in enumerate(results, start=1):
-        assert_completion(result, tag=expected_tag, value=RES_6_0)
+        assert_completion(
+            result, tag=expected_tag, value=tagged_result(expected_tag, OP_FMUL_S)
+        )
 
-    # The last sampled result is accepted on the following edge.
+    # The last sampled result is accepted on the following edge. All three
+    # structures are 16 entries deep, so 24 pushes leave each pointer at 8.
     await clock_cycle(dut)
+    assert int(dut.mult_rd_ptr.value) == 8
+    assert int(dut.mult_wr_ptr.value) == 8
+    assert int(dut.mult_count.value) == 0
     assert int(dut.fifo_rd_ptr.value) == 8
     assert int(dut.fifo_wr_ptr.value) == 8
     assert int(dut.mult_payload_rd_ptr.value) == 8
     assert int(dut.mult_payload_wr_ptr.value) == 8
+
+
+# ============================================================================
+# Back-pressure: 14 FMAs at the busy bound, in the tag queue and then the ring
+# ============================================================================
+@cocotb.test()
+async def test_busy_bound_fma_tag_queue_and_ring(dut: Any) -> None:
+    """Busy stops issue at 14 FMAs, which keep issue order in the FMA tag queue and ring."""
+    iface = await setup(dut)
+    iface.set_accepted(False)
+
+    # The 16-cycle FMA latency outlasts 14 issue cycles, so every accepted FMA
+    # is still in the FMA tag queue when busy rises.
+    ops = [(tag, OP_FMADD_S) for tag in range(1, BUSY_BOUND + 3)]
+    accepted = await issue_until_busy(dut, iface, ops)
+    assert len(accepted) == BUSY_BOUND, (
+        f"busy rose after {len(accepted)} FMAs, expected {BUSY_BOUND}"
+    )
+    assert int(dut.fma_count.value) == BUSY_BOUND
+
+    # Keep offering one more FMA while busy: the shim must not take it. The
+    # results move from the tag queue into the stalled ring, so the total,
+    # and with it busy, holds.
+    refused_tag = 31
+    drive_tagged_op(iface, refused_tag, OP_FMADD_S)
+    await wait_for_fifo_count(dut, BUSY_BOUND)
+    assert int(dut.fma_count.value) == 0
+    assert iface.read_busy(), "busy dropped while the stalled ring held the bound"
+    drive_idle(iface)
+
+    iface.set_accepted(True)
+    for tag, op in accepted:
+        assert_completion(
+            iface.read_fu_complete(), tag=tag, value=tagged_result(tag, op)
+        )
+        await clock_cycle(dut)
+    assert not iface.read_fu_complete()["valid"], "the refused FMA completed"
+    assert not iface.read_busy()
+
+    # A second batch wraps the FMA tag queue while it holds the bound
+    # (entries 14, 15, then 0 through 11).
+    ops = [(tag, OP_FMADD_S) for tag in range(15, 15 + BUSY_BOUND + 2)]
+    accepted = await issue_until_busy(dut, iface, ops)
+    drive_idle(iface)
+    assert len(accepted) == BUSY_BOUND, (
+        f"busy rose after {len(accepted)} FMAs, expected {BUSY_BOUND}"
+    )
+    results = await wait_for_completions(dut, iface, BUSY_BOUND)
+    for (tag, op), result in zip(accepted, results, strict=True):
+        assert_completion(result, tag=tag, value=tagged_result(tag, op))
+    await clock_cycle(dut)
+    assert int(dut.fma_rd_ptr.value) == (2 * BUSY_BOUND) % 16
+    assert int(dut.fma_wr_ptr.value) == (2 * BUSY_BOUND) % 16
+    assert int(dut.fma_count.value) == 0
+    assert not iface.read_fu_complete()["valid"]
+
+
+# ============================================================================
+# Back-pressure: mixed FMUL/FMA occupancy at the busy bound
+# ============================================================================
+@cocotb.test()
+async def test_busy_bound_mixed_units_keep_unit_order(dut: Any) -> None:
+    """Busy counts both tag queues and the ring; results keep each unit's issue order."""
+    iface = await setup(dut)
+    iface.set_accepted(False)
+
+    # M = FMUL_S, A = FMADD_S. Busy must stop issue before the last two.
+    unit_op = {"M": OP_FMUL_S, "A": OP_FMADD_S}
+    ops = [(tag, unit_op[unit]) for tag, unit in enumerate("MAAMMAMAAAMMAMAM", start=1)]
+    accepted = await issue_until_busy(dut, iface, ops)
+    drive_idle(iface)
+    assert len(accepted) == BUSY_BOUND, (
+        f"busy rose after {len(accepted)} operations, expected {BUSY_BOUND}"
+    )
+    # The first FMUL (11-cycle latency) is already in the ring when busy rises.
+    mult_count = int(dut.mult_count.value)
+    fma_count = int(dut.fma_count.value)
+    fifo_count = int(dut.fifo_count.value)
+    assert fifo_count >= 1, "expected an FMUL result in the ring at the bound"
+    assert mult_count + fma_count + fifo_count == BUSY_BOUND
+
+    await wait_for_fifo_count(dut, BUSY_BOUND)
+    iface.set_accepted(True)
+    results: list[dict] = []
+    for _ in range(BUSY_BOUND):
+        results.append(iface.read_fu_complete())
+        await clock_cycle(dut)
+    assert not iface.read_fu_complete()["valid"]
+    assert not iface.read_busy()
+
+    op_of = dict(accepted)
+    for result in results:
+        assert result["valid"], "expected a valid completion"
+        assert result["tag"] in op_of, f"unexpected tag {result['tag']}"
+        tag = result["tag"]
+        assert_completion(result, tag=tag, value=tagged_result(tag, op_of[tag]))
+    seen = [result["tag"] for result in results]
+    for op in unit_op.values():
+        issued_order = [tag for tag, unit in accepted if unit == op]
+        completed_order = [tag for tag in seen if op_of[tag] == op]
+        assert completed_order == issued_order, (
+            f"completion order {completed_order} differs from issue order {issued_order}"
+        )
 
 
 # ============================================================================
@@ -735,7 +896,7 @@ async def test_full_flush_reuses_payload_ram_entries(dut: Any) -> None:
     await wait_for_fifo_count(dut, 2)
 
     # Wait beyond the one-cycle bypass: this value must now come from the RAM
-    # location that contained the pre-flush invalid result.
+    # location that held the flushed NaN result.
     for _ in range(3):
         await clock_cycle(dut)
         assert_completion(iface.read_fu_complete(), tag=3, value=RES_6_0)
@@ -745,3 +906,184 @@ async def test_full_flush_reuses_payload_ram_entries(dut: Any) -> None:
     assert_completion(iface.read_fu_complete(), tag=4, value=RES_7_0)
     await clock_cycle(dut)
     assert not iface.read_fu_complete()["valid"]
+
+
+# ============================================================================
+# FMA special cases: infinity times zero is invalid even with a NaN addend
+# ============================================================================
+F32_NEG_ZERO = 0x8000_0000
+F32_NEG_INF = 0xFF80_0000
+F32_QNAN_PAYLOAD = 0x7FC0_0001
+F32_NEG_QNAN = 0xFFC0_0000
+F32_SNAN = 0x7F80_0001
+
+F64_POS_ZERO = 0x0000_0000_0000_0000
+F64_NEG_ZERO = 0x8000_0000_0000_0000
+F64_POS_INF = 0x7FF0_0000_0000_0000
+F64_NEG_INF = 0xFFF0_0000_0000_0000
+F64_1_0 = 0x3FF0_0000_0000_0000
+F64_CANONICAL_NAN = 0x7FF8_0000_0000_0000
+F64_QNAN_PAYLOAD = 0x7FF8_0000_0000_0001
+F64_NEG_QNAN = 0xFFF8_0000_0000_0000
+F64_SNAN = 0x7FF0_0000_0000_0001
+
+FMA_VARIANTS = ("FMADD", "FMSUB", "FNMSUB", "FNMADD")
+
+
+def _nan_addend_vectors(
+    zero: int,
+    neg_zero: int,
+    inf: int,
+    neg_inf: int,
+    one: int,
+    qnan: int,
+    qnan_payload: int,
+    neg_qnan: int,
+    snan: int,
+) -> list[tuple[int, int, int, int]]:
+    """Return (a, b, c, expected flags) with NaN addends; every result is the canonical NaN."""
+    return [
+        # a * b is infinity times zero: invalid whatever the NaN addend.
+        (inf, zero, qnan, FP_FLAG_NV),
+        (zero, inf, qnan, FP_FLAG_NV),
+        (neg_inf, zero, qnan_payload, FP_FLAG_NV),
+        (inf, neg_zero, neg_qnan, FP_FLAG_NV),
+        (neg_zero, neg_inf, qnan, FP_FLAG_NV),
+        (zero, inf, snan, FP_FLAG_NV),
+        # A valid product with a quiet-NaN addend raises nothing.
+        (inf, one, qnan, 0),
+        (zero, one, qnan, 0),
+        (one, one, neg_qnan, 0),
+    ]
+
+
+async def _check_nan_addend_vectors(
+    dut: Any,
+    precision: str,
+    vectors: list[tuple[int, int, int, int]],
+    box: int,
+    canonical_nan: int,
+) -> None:
+    """Run every FMA variant over *vectors* and check the result and flags."""
+    iface = await setup(dut)
+    failures: list[str] = []
+    tag = 0
+    for variant in FMA_VARIANTS:
+        op = _INSTR_OPS[f"{variant}_{precision}"]
+        for a, b, c, flags in vectors:
+            tag = (tag + 1) % 32
+            await issue_once(
+                dut,
+                iface,
+                rob_tag=tag,
+                op=op,
+                src1_value=box | a,
+                src2_value=box | b,
+                src3_value=box | c,
+            )
+            result = await wait_for_complete(dut, iface)
+            if result["value"] != box | canonical_nan or result["fp_flags"] != flags:
+                failures.append(
+                    f"{variant}_{precision}({a:#x}, {b:#x}, {c:#x}): got "
+                    f"{result['value']:#018x} flags {result['fp_flags']:#04x}, expected "
+                    f"{box | canonical_nan:#018x} flags {flags:#04x}"
+                )
+            await clock_cycle(dut)
+    assert not failures, "\n".join(failures)
+
+
+@cocotb.test()
+async def test_fma_s_inf_times_zero_with_nan_addend(dut: Any) -> None:
+    """Single FMA of infinity times zero raises NV even when the addend is a quiet NaN."""
+    vectors = _nan_addend_vectors(
+        F32_POS_ZERO,
+        F32_NEG_ZERO,
+        F32_POS_INF,
+        F32_NEG_INF,
+        F32_1_0,
+        F32_CANONICAL_NAN,
+        F32_QNAN_PAYLOAD,
+        F32_NEG_QNAN,
+        F32_SNAN,
+    )
+    await _check_nan_addend_vectors(dut, "S", vectors, NAN_BOX, F32_CANONICAL_NAN)
+
+
+@cocotb.test()
+async def test_fma_d_inf_times_zero_with_nan_addend(dut: Any) -> None:
+    """Double FMA of infinity times zero raises NV even when the addend is a quiet NaN."""
+    vectors = _nan_addend_vectors(
+        F64_POS_ZERO,
+        F64_NEG_ZERO,
+        F64_POS_INF,
+        F64_NEG_INF,
+        F64_1_0,
+        F64_CANONICAL_NAN,
+        F64_QNAN_PAYLOAD,
+        F64_NEG_QNAN,
+        F64_SNAN,
+    )
+    await _check_nan_addend_vectors(dut, "D", vectors, 0, F64_CANONICAL_NAN)
+
+
+FP_FLAG_UF = 0x02
+FP_FLAG_NX = 0x01
+RM_RNE = 0
+RM_RUP = 3
+F32_MIN_NORMAL = 0x0080_0000
+F64_MIN_NORMAL = 0x0010_0000_0000_0000
+
+# (op, a, b, c, rm, expected flags). Each result is the minimum normal, reached
+# by the subnormal rounding. The first three are tiny after rounding to full
+# precision with an unbounded exponent, so they raise UF; the last two round
+# up to the minimum normal at full precision too, so they do not.
+MIN_NORMAL_VECTORS = (
+    ("FMUL_S", 0x3F7F_FFFF, F32_MIN_NORMAL, None, RM_RNE, FP_FLAG_UF | FP_FLAG_NX),
+    (
+        "FMADD_S",
+        0x3F7F_FFFF,
+        F32_MIN_NORMAL,
+        F32_POS_ZERO,
+        RM_RNE,
+        FP_FLAG_UF | FP_FLAG_NX,
+    ),
+    (
+        "FMUL_D",
+        0x3FEF_FFFF_FFFF_FFFF,
+        F64_MIN_NORMAL,
+        None,
+        RM_RUP,
+        FP_FLAG_UF | FP_FLAG_NX,
+    ),
+    ("FMUL_S", 0x3F7F_FFFE, 0x0080_0001, None, RM_RNE, FP_FLAG_NX),
+    ("FMUL_D", 0x3FEF_FFFF_FFFF_FFFE, 0x0010_0000_0000_0001, None, RM_RNE, FP_FLAG_NX),
+)
+
+
+@cocotb.test()
+async def test_min_normal_result_raises_uf_only_when_tiny(dut: Any) -> None:
+    """UF follows tininess after rounding when the subnormal rounding reaches the minimum normal."""
+    iface = await setup(dut)
+    failures: list[str] = []
+    for tag, (name, a, b, c, rm, flags) in enumerate(MIN_NORMAL_VECTORS):
+        single = name.endswith("_S")
+        box = NAN_BOX if single else 0
+        expected = box | (F32_MIN_NORMAL if single else F64_MIN_NORMAL)
+        await issue_once(
+            dut,
+            iface,
+            rob_tag=tag,
+            op=_INSTR_OPS[name],
+            src1_value=box | a,
+            src2_value=box | b,
+            src3_value=box | (c or 0),
+            rm=rm,
+        )
+        result = await wait_for_complete(dut, iface)
+        if result["value"] != expected or result["fp_flags"] != flags:
+            failures.append(
+                f"{name}({a:#x}, {b:#x}) rm={rm}: got {result['value']:#018x} flags "
+                f"{result['fp_flags']:#04x}, expected {expected:#018x} flags {flags:#04x}"
+            )
+        await clock_cycle(dut)
+    assert not failures, "\n".join(failures)

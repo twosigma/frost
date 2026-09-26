@@ -15,28 +15,21 @@
  */
 
 /*
-  Pre-Decode (PD) stage: second stage of the in-order front-end.
+  Pre-Decode (PD) stage: second stage of the in-order front end.
 
-  PD expands the slot-1 compressed parcel (16-bit to 32-bit) and selects the
-  final instruction for each slot. IF supplies the slot-1 raw parcel and the
-  selection signals; the live instruction-memory selection and replay path can
-  precede decompression. Slot 1 uses exact instruction-field and illegal
-  cofactors beside the complete expansion. Slot 2 arrives already decompressed: the instruction
-  aligner expands the candidate parcels beside its position select (see
-  instruction_aligner.sv), so PD takes slot 2's effective_instr and
-  decomp_illegal as they stand. Both slots register the un-NOP'd instruction
-  payload and carry invalidation in a separate inject_nop marker that ID applies
-  before decode; a local slot-1 NOP selection still supplies x0 early-source
-  fields for bubbles. Spanning instructions are assembled back in IF.
+  PD forms slot 1's 32-bit instruction: the native word (IF assembles one that
+  spans two words), or for a compressed parcel the RV64C expansion that IF
+  selected from the predecode sideband. Slot 2 arrives already expanded by
+  the instruction aligner (see instruction_aligner.sv). In simulation only,
+  local rvc_decompressors expand both slots' raw parcels as the reference for
+  the checks below. PD also registers early source-register fields, from
+  which it reassembles slot 2's instruction, and raises the PD redirect for a
+  predicted-taken slot-1 branch (see that section).
 
-  PD also extracts the source registers early for forwarding and hazard
-  detection, with narrow source-hot bypasses on the bits that set the timing,
-  and builds the predicted-branch redirect target from protected native and
-  compressed 13-bit candidates split across the redirect register.
-
-  The selected instruction is registered and passed to ID, which does the full
-  decode and immediate extraction. PD observes flush, along with ID, during
-  branch, trap, MRET, and FENCE-class recovery.
+  Both slots register the instruction without rewriting it to a NOP. A bubble
+  (flush, PD redirect, or sel_nop) rides in inject_nop, which ID applies before
+  decode, and a bubble's early source fields are x0. PD, like ID, is flushed on
+  branch, trap, xRET, and FENCE-class recovery.
 */
 module pd_stage #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -47,59 +40,50 @@ module pd_stage #(
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id,
     // Slot-2 instruction (2-wide dispatch). IF supplies a real second
     // instruction whenever the bundle has one and raises sel_nop only when it
-    // does not. The aligner has already decompressed it: effective_instr holds
-    // the finished instruction and decomp_illegal the selected candidate's
-    // illegal-RVC flag. PD extracts its source fields and carries invalidation
-    // separately in inject_nop. The predicted-taken redirect stays slot-1 only.
+    // does not. The aligner has already expanded it from the predecode
+    // sideband: effective_instr holds the finished instruction and
+    // decomp_illegal the selected candidate's illegal-RVC flag. PD extracts
+    // its source fields and carries invalidation separately in inject_nop.
+    // The PD redirect is slot-1 only.
     input riscv_pkg::from_if_to_pd_t i_from_if_to_pd_2,
     output riscv_pkg::from_pd_to_id_t o_from_pd_to_id_2,
-    // Redirect to IF for a branch of either offset sign that the BTB missed and
-    // the trained direction predictor calls taken. See the section below.
+    // Redirect to IF for a slot-1 conditional branch that nothing has
+    // redirected yet and the bimodal predictor calls taken, for either offset
+    // sign. See the PD redirect section below.
     output logic o_pd_redirect,
     output logic [XLEN-1:0] o_pd_redirect_target
 );
 
   // ===========================================================================
-  // RVC Decompressor
+  // Compressed Select and Illegal Flag
   // ===========================================================================
-  // Expand the selected raw 16-bit parcel from IF. Its live path can include
-  // BRAM selection and stall replay before this combinational expansion.
+  // Take slot 1's compressed select from the raw parcel's low bits, not IF's
+  // sideband sel_compressed (which IF still uses for PC and buffer timing).
+  // That keeps the BRAM sideband out of PD's instruction and branch-target
+  // muxes, so no path runs from it through the instruction select into the
+  // target carry chain. The illegal-RVC flag is the predecoded one.
+  logic pd_sel_compressed;
+  logic decomp_illegal;
+  assign pd_sel_compressed = (i_from_if_to_pd.raw_parcel[1:0] != 2'b11);
+  assign decomp_illegal = i_from_if_to_pd.rvc_extra_predecoded[22];
 
+`ifndef SYNTHESIS
+  // Reference expansion of slot 1's raw parcel, which the checks below compare
+  // with IF's predecoded fields. instruction_non_nop is the instruction PD
+  // would register if it decoded the parcel itself.
   logic [31:0] decompressed_instr;
-  logic        decompressed_instr_bit15_fast;
-  logic [ 4:0] decompressed_instr_bits24_20_fast;
-  logic [ 1:0] decompressed_instr_bits27_25_fast;
-  logic [ 3:0] decompressed_instr_bits31_28_fast;
-  logic        decompressed_instr_bit26_fast;
-  logic [ 1:0] decompressed_instr_bits19_18_fast;
-  logic [ 2:0] decompressed_instr_bits14_12_fast;
-  logic        decomp_is_compressed;
-  logic        decomp_illegal;
+  logic        decomp_illegal_reference;
+  logic [31:0] instruction_non_nop;
 
   rvc_decompressor decompressor_inst (
       .i_instr_compressed(i_from_if_to_pd.raw_parcel),
-      .i_rd_is_x2(i_from_if_to_pd.raw_parcel[11:7] == 5'd2),
       .o_instr_expanded(decompressed_instr),
-      .o_instr_expanded_bit8_fast(),
-      .o_instr_expanded_bit15_fast(decompressed_instr_bit15_fast),
-      .o_instr_expanded_bits20_9_fast(),
-      .o_instr_expanded_bits27_25_fast(decompressed_instr_bits27_25_fast),
-      .o_instr_expanded_bits31_28_fast(decompressed_instr_bits31_28_fast),
-      .o_instr_expanded_bit26_fast(decompressed_instr_bit26_fast),
-      .o_instr_expanded_bits19_18_fast(decompressed_instr_bits19_18_fast),
-      .o_instr_expanded_bits14_12_fast(decompressed_instr_bits14_12_fast),
-      .o_instr_expanded_bits24_20_fast(decompressed_instr_bits24_20_fast),
-      .o_is_compressed(decomp_is_compressed),
-      .o_illegal(),
-      .o_illegal_fast(decomp_illegal)
+      .o_is_compressed(),
+      .o_illegal(decomp_illegal_reference)
   );
-
-  // Derive the PD-local compressed select from the raw parcel bits instead of
-  // using the IF sideband select. The sideband remains useful for PC/buffer
-  // timing in IF, but keeping it out of PD's instruction/target muxes avoids a
-  // BRAM sideband -> final-instruction -> branch-target carry-chain path.
-  logic pd_sel_compressed;
-  assign pd_sel_compressed = decomp_is_compressed;
+  assign instruction_non_nop = pd_sel_compressed ? decompressed_instr :
+                                                   i_from_if_to_pd.effective_instr;
+`endif
 
   // ===========================================================================
   // Final Instruction Selection
@@ -108,79 +92,60 @@ module pd_stage #(
   // muxes, so nothing here depends on the sel_* signals being one-hot.
 
   logic [31:0] final_instruction;
-  logic [31:0] instruction_non_nop;
-  logic [31:0] instruction_non_nop_with_hot_rs1;
 
+  // TIMING: the registered slot-1 instruction is built from IF's predecoded
+  // fields, with no decoder of its own. Bits [24:15] come from IF's
+  // predecoded source fields (the IMEM sideband's RVC expansion or the native
+  // word, already selected), and a compressed parcel's other bits come from
+  // rvc_extra_predecoded. The checks below compare the result with the
+  // reference expansion.
+  logic [31:0] instruction_non_nop_predecoded_rs2;
   always_comb begin
+    instruction_non_nop_predecoded_rs2 = i_from_if_to_pd.effective_instr;
     if (pd_sel_compressed) begin
-      instruction_non_nop = decompressed_instr;
-      // The rs2, funct7, funct3 and rs1 fields (rs1[2:1] come from the
-      // source-hot sideband below) use the decompressor's exact standalone
-      // cofactors; the remaining immediate and rd bits keep the full expansion and
-      // the same compressed/native selection.
-      instruction_non_nop[24:20] = decompressed_instr_bits24_20_fast;
-      instruction_non_nop[31:28] = decompressed_instr_bits31_28_fast;
-      instruction_non_nop[27]    = decompressed_instr_bits27_25_fast[1];
-      instruction_non_nop[26]    = decompressed_instr_bit26_fast;
-      instruction_non_nop[25]    = decompressed_instr_bits27_25_fast[0];
-      instruction_non_nop[19:18] = decompressed_instr_bits19_18_fast;
-      instruction_non_nop[15]    = decompressed_instr_bit15_fast;
-      instruction_non_nop[14:12] = decompressed_instr_bits14_12_fast;
-    end else instruction_non_nop = i_from_if_to_pd.effective_instr;
+      instruction_non_nop_predecoded_rs2[31:25] = i_from_if_to_pd.rvc_extra_predecoded[21:15];
+      instruction_non_nop_predecoded_rs2[14:0]  = i_from_if_to_pd.rvc_extra_predecoded[14:0];
+    end
+    instruction_non_nop_predecoded_rs2[24:20] = i_from_if_to_pd.bits24_20_predecoded;
+    instruction_non_nop_predecoded_rs2[19:15] = {
+      i_from_if_to_pd.rs1_rest_predecoded[2:1],
+      i_from_if_to_pd.source_hot_predecoded[1:0],
+      i_from_if_to_pd.rs1_rest_predecoded[0]
+    };
   end
-
-  // The two slot-1 instruction endpoints in the current low-IMEM set are
-  // rs1[2:1], instruction bits [17:16]. Drive those two D inputs from the
-  // source-hot metadata IF carries instead. Every other instruction bit, and
-  // all early-source bits, keep their existing cones.
-  assign instruction_non_nop_with_hot_rs1 = {
-    instruction_non_nop[31:18],
-    i_from_if_to_pd.source_hot_predecoded[1:0],
-    instruction_non_nop[15:0]
-  };
 
   always_comb begin
     if (i_from_if_to_pd.sel_nop) final_instruction = riscv_pkg::NOP;
-    else final_instruction = instruction_non_nop;
+    else final_instruction = instruction_non_nop_predecoded_rs2;
   end
 
   // ===========================================================================
   // Early Source Register Extraction
   // ===========================================================================
-  // Extract the source registers beside decompression, for forwarding and
-  // hazard detection. Timing includes the live IF parcel path. A compressed
-  // instruction takes its fields from the decompressor
-  // output, a 32-bit instruction from effective_instr (spanning words are
-  // assembled in IF), and a NOP reads x0. An earlier version extracted in IF
-  // instead and was reverted; extracting from the already selected instruction
-  // here preserves that interface. The architectural rs2 field uses exact
-  // quadrant cofactors to avoid the full expansion dependency.
+  // Early source registers, taken from final_instruction: the predecoded
+  // fields above, or x0 for a NOP. No logic reads slot 1's copies; slot 2's
+  // rs1 and rs2 copies hold its instruction bits (see below).
 
   logic [4:0] source_reg_1;
   logic [4:0] source_reg_2;
-  logic [4:0] fp_source_reg_3;  // F extension: rs3 for FMA instructions
 
   assign source_reg_1 = final_instruction[19:15];
   assign source_reg_2 = final_instruction[24:20];
-  // F extension: rs3 for FMA is in bits [31:27] (R4-type format)
-  assign fp_source_reg_3 = final_instruction[31:27];
 
   // ===========================================================================
   // Slot-2: Instruction Selection and Source Extraction
   // ===========================================================================
-  // Mirror of the slot-1 logic above, driven from i_from_if_to_pd_2. Slot 2
-  // sits out the predicted-taken redirect, which is slot-1 only: a slot-1
-  // branch terminates the bundle back in the aligner (decision #1 there), so
-  // slot 2 is already invalid on any cycle the redirect can fire.
+  // Driven from i_from_if_to_pd_2. The PD redirect is slot-1 only, and a slot-1
+  // branch ends its bundle in the aligner, so the branch's packet never has a
+  // valid slot 2.
 
-  // Slot 2 arrives already decompressed. The aligner expands the three
-  // candidate parcels beside its position select and delivers the finished
-  // instruction in effective_instr for both the RVC and native cases, plus the
-  // selected candidate's illegal-RVC flag in decomp_illegal. That removes the
-  // serial position-mux -> RVC expander cone which put the o_from_pd_to_id_2
-  // instruction in the post-opt WNS group on x3. sel_compressed carries the
-  // sideband compressed flag, bit-identical to the parcel-derived
-  // o_is_compressed that a local decompressor produced.
+  // Slot 2 arrives already expanded. The aligner takes each of its three
+  // candidates' RVC expansion from the predecode sideband in parallel with its
+  // position select, so no RVC expander follows the position mux.
+  // effective_instr holds the finished instruction for both RVC and native
+  // cases, and decomp_illegal the selected candidate's illegal-RVC flag.
+  // sel_compressed is the sideband compressed flag, which equals
+  // raw_parcel[1:0] != 2'b11.
   logic pd_sel_compressed_2;
   assign pd_sel_compressed_2 = i_from_if_to_pd_2.sel_compressed;
 
@@ -188,41 +153,34 @@ module pd_stage #(
   logic [21:0] slot2_instruction_non_source_q;
   logic [21:0] slot2_instruction_non_source;
 
-  // The architectural instruction and the early hazard metadata used to
-  // duplicate the same rs1/rs2 state in two FF banks. Keep one canonical
-  // registered copy in the early fields and register only the remaining
-  // instruction bits here. This removes the deeper duplicate source-field D
-  // cone without changing the PD->ID boundary or adding a cycle.
+  // Slot 2's rs1 and rs2 are registered once, in the early source fields.
+  // slot2_instruction_non_source_q holds the other 22 instruction bits, and
+  // o_from_pd_to_id_2.instruction is reassembled from both. This avoids a
+  // second, deeper D path for the same bits.
   localparam logic [21:0] Slot2NopNonSource = {7'b0000000, 15'h0013};
 
   assign instruction_non_nop_2 = i_from_if_to_pd_2.effective_instr;
 
   logic [4:0] source_reg_1_2;
   logic [4:0] source_reg_2_2;
-  logic [4:0] fp_source_reg_3_2;
 
-  // Extract the payload bits before NOP injection.  The dedicated registered
-  // clear below carries slot invalidation on the FDRE reset pin, keeping the
-  // final bubble/flush mux off these 15 timing-facing D inputs.
-  // The three slot-2 low-IMEM endpoints are early rs1[2:1] and rs2[1].
-  // The early fields are slot 2's canonical instruction-source
-  // registers, so this also keeps its reconstructed instruction coherent.
+  // Source fields before NOP injection. The synchronous clear below
+  // (slot2_early_source_clear) applies slot invalidation through the FDRE
+  // reset pin, keeping the bubble and flush mux off these 10 D inputs. rs1[2:1]
+  // come from the source-hot sideband bits, the rest of rs1 from
+  // rs1_rest_predecoded, and all of rs2 from IF's predecoded bits [24:20].
+  // These registers supply rs1 and rs2 of the reassembled instruction.
   assign source_reg_1_2 = {
-    instruction_non_nop_2[19:18],
+    i_from_if_to_pd_2.rs1_rest_predecoded[2:1],
     i_from_if_to_pd_2.source_hot_predecoded[1:0],
-    instruction_non_nop_2[15]
+    i_from_if_to_pd_2.rs1_rest_predecoded[0]
   };
-  assign source_reg_2_2 = {
-    instruction_non_nop_2[24:22],
-    i_from_if_to_pd_2.source_hot_predecoded[2],
-    instruction_non_nop_2[20]
-  };
-  assign fp_source_reg_3_2 = instruction_non_nop_2[31:27];
-  // Keep the bubble select off the remaining 22 instruction D inputs, just as
-  // slot 1 does for its full instruction register.  The registered
-  // o_from_pd_to_id_2.inject_nop bit tells ID when to substitute the NOP.  The
-  // source fields retain their dedicated clear below so register-file lookup
-  // addresses stay x0 for an invalid slot.
+  assign source_reg_2_2 = i_from_if_to_pd_2.bits24_20_predecoded;
+  // Keep the bubble select off the remaining 22 instruction D inputs, as slot 1
+  // does for its full instruction register. The registered
+  // o_from_pd_to_id_2.inject_nop bit tells ID when to substitute the NOP. The
+  // source fields keep their own clear below, so they read x0 for an invalid
+  // slot.
   assign slot2_instruction_non_source = {instruction_non_nop_2[31:25], instruction_non_nop_2[14:0]};
   assign o_from_pd_to_id_2.instruction = {
     slot2_instruction_non_source_q[21:15],
@@ -232,13 +190,23 @@ module pd_stage #(
   };
 
 `ifndef SYNTHESIS
-  // This metadata is a physical bypass of instruction bits that already exist.
-  // Check the packet contract wherever both representations are available, so
-  // the overridden instruction and the early-source registers cannot diverge
-  // from the architectural instruction. The IF packet registers hold nothing
-  // meaningful until their first reset edge, and cocotb can start the clock
-  // before it drives top-level reset, so arm these checks only once a reset has
-  // been seen at a clock edge.
+  // Reference expansion of slot 2's raw parcel, for the checks below.
+  logic [31:0] decompressed_instr_2;
+  logic        decomp_illegal_reference_2;
+  rvc_decompressor decompressor_2_inst (
+      .i_instr_compressed(i_from_if_to_pd_2.raw_parcel),
+      .o_instr_expanded(decompressed_instr_2),
+      .o_is_compressed(),
+      .o_illegal(decomp_illegal_reference_2)
+  );
+
+  // The predecoded fields are a second copy of instruction bits. Check them
+  // against the instruction wherever both are available, so the registered
+  // instruction and the early source registers cannot diverge from the
+  // architectural instruction. The IF packet registers hold nothing meaningful
+  // until their first reset edge, and cocotb can start the clock before it
+  // drives top-level reset, so arm these checks only once a reset has been seen
+  // at a clock edge.
   logic source_hot_checks_armed = 1'b0;
   always @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) source_hot_checks_armed <= 1'b1;
@@ -253,6 +221,8 @@ module pd_stage #(
               i_from_if_to_pd.sel_nop,
               i_from_if_to_pd.fetch_fault,
               i_from_if_to_pd.source_hot_predecoded,
+              i_from_if_to_pd.bits24_20_predecoded,
+              i_from_if_to_pd.rs1_rest_predecoded,
               instruction_non_nop
             }
         ) && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault) begin
@@ -261,15 +231,35 @@ module pd_stage #(
           i_from_if_to_pd.source_hot_predecoded ==
           {instruction_non_nop[21], instruction_non_nop[17:16]}
       );
+      p_slot1_rvc_expansion_matches_instruction :
+      assert (!pd_sel_compressed ||
+              (instruction_non_nop_predecoded_rs2 == instruction_non_nop &&
+               decomp_illegal == decomp_illegal_reference));
+      p_slot1_rs1_rest_match_instruction :
+      assert (i_from_if_to_pd.rs1_rest_predecoded ==
+          {instruction_non_nop[19:18], instruction_non_nop[15]});
+      p_slot1_bits24_20_match_instruction :
+      assert (i_from_if_to_pd.bits24_20_predecoded == instruction_non_nop[24:20]);
     end
     if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
             {
               i_from_if_to_pd_2.sel_nop,
               i_from_if_to_pd_2.fetch_fault,
               i_from_if_to_pd_2.source_hot_predecoded,
+              i_from_if_to_pd_2.bits24_20_predecoded,
+              i_from_if_to_pd_2.rs1_rest_predecoded,
+              i_from_if_to_pd_2.raw_parcel,
+              i_from_if_to_pd_2.decomp_illegal,
+              pd_sel_compressed_2,
               instruction_non_nop_2
             }
         ) && !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault) begin
+      p_slot2_sel_compressed_matches_parcel :
+      assert (pd_sel_compressed_2 == (i_from_if_to_pd_2.raw_parcel[1:0] != 2'b11));
+      p_slot2_rvc_expansion_matches_reference :
+      assert (!pd_sel_compressed_2 ||
+              (instruction_non_nop_2 == decompressed_instr_2 &&
+               i_from_if_to_pd_2.decomp_illegal == decomp_illegal_reference_2));
       p_slot2_source_hot_matches_instruction :
       assert (
           i_from_if_to_pd_2.source_hot_predecoded ==
@@ -277,6 +267,8 @@ module pd_stage #(
       );
       p_slot2_early_rs1_matches_instruction :
       assert (source_reg_1_2 == instruction_non_nop_2[19:15]);
+      p_slot2_early_rs2_matches_instruction :
+      assert (source_reg_2_2 == instruction_non_nop_2[24:20]);
       p_slot2_early_rs1_hot_bits_are_direct :
       assert (source_reg_1_2[2:1] == i_from_if_to_pd_2.source_hot_predecoded[1:0]);
     end
@@ -284,34 +276,27 @@ module pd_stage #(
 `endif
 
   // ===========================================================================
-  // Predicted-Taken Redirect on BTB Miss
-  // (generalized from the former backward-branch static heuristic)
+  // PD Redirect: Predicted-Taken Branch With No BTB Prediction
   // ===========================================================================
-  // Detect conditional branches of either offset sign that the BTB missed and
-  // that the decoupled direction predictor calls taken, then redirect IF to the
-  // computed PC+imm target. That saves ~4-5 cycles against waiting for EX-stage
-  // misprediction recovery. This once fired only for backward offsets under a
-  // static "backward => taken" rule. It now follows the trained direction
-  // predictor (carried as bp_dir_taken), so forward taken branches that thrash
-  // the 256-entry BTB also redirect here instead of mispredicting.
+  // A slot-1 conditional branch that nothing has redirected yet (no taken BTB
+  // prediction) and that the bimodal direction predictor calls taken
+  // (bp_dir_taken) redirects IF to PC + offset, for either offset sign, instead
+  // of waiting to resolve as a misprediction.
   //
-  // Compute native B-type and compressed C.BEQZ/C.BNEZ branch targets in two
-  // protected, format-specific 13-bit carry-select candidates. Both
-  // immediates fit after sign-extending the compressed 9-bit offset to 13
-  // bits. If s is that 13-bit immediate's sign and c is the low-add carry,
-  // the high result is exactly PC_high+c-s: unchanged for {s,c}=00/11, +1
-  // for 01, and -1 for 10.
+  // Native B-type and compressed C.BEQZ/C.BNEZ targets are computed in two
+  // protected, format-specific 13-bit carry-select candidates. Both immediates
+  // fit after sign-extending the compressed 9-bit offset to 13 bits. If s is
+  // that 13-bit immediate's sign and c is the low-add carry, the high result is
+  // exactly PC_high+c-s: unchanged for {s,c}=00/11, +1 for 01, and -1 for 10.
   //
-  // The PC-high +/-1 candidates depend only on the registered PC and settle
-  // before the instruction BRAM responds. Protected candidate boundaries keep
-  // the compressed/native mode select after both low carry cones. Without them
-  // Vivado folds the candidates algebraically into one selected-immediate
-  // adder. At the existing redirect register edge, PD captures the selected low
-  // result, the raw {sign, carry} state, and three PC-high banks. The following
-  // redirect-to-IF cycle decodes that registered state in the existing shallow
-  // high-bank mux, which keeps the correction encoder out of the late
-  // carry-to-D cone. The full target stays modulo-XLEN exact and redirect
-  // latency is unchanged.
+  // The PC-high +/-1 values depend only on the registered PC and settle before
+  // the instruction BRAM responds. The protected candidate boundaries keep the
+  // compressed/native select after both low carry chains; without them Vivado
+  // folds the candidates into one selected-immediate adder. The redirect
+  // register captures the selected low result, the raw {sign, carry} select,
+  // and all three PC-high values, and the next cycle's shallow high-part mux
+  // decodes the select. That keeps the correction decode out of the late
+  // carry-to-D path. The full target is exact modulo 2^XLEN.
 
   logic [XLEN-1:0] pd_imm_b_native;
   assign pd_imm_b_native = {
@@ -458,20 +443,16 @@ module pd_stage #(
   end
 `endif
 
-  // Fire the PD redirect for any conditional branch, native B-type or
-  // compressed C.BEQZ/C.BNEZ, that the front-end has not already redirected and
-  // that the decoupled bimodal predicts taken (carried from IF as
-  // bp_dir_taken). The target pieces above cover both offset signs, so forward
-  // taken branches that miss the BTB redirect here instead of stalling to an
-  // EX-stage misprediction.
+  // Fire the PD redirect for a conditional branch, native B-type or compressed
+  // C.BEQZ/C.BNEZ, that the front end has not already redirected and that the
+  // bimodal predictor calls taken (bp_dir_taken, carried from IF).
   //
-  // x3 TIMING: capture only the early branch/direction payload, independently
-  // from every late veto and from the previous qualified redirect. The four
-  // packet vetoes already cross this same edge in the slot-1 PD->ID packet, so
-  // the visible redirect qualifies the candidate with those registered copies
-  // in one LUT. This cuts the 16-level served-window metadata cone and the
-  // redirect-feedback route off the candidate D input without adding state or
-  // latency.
+  // TIMING: the candidate register captures only branch && direction,
+  // independent of every late veto and of the previous qualified redirect. The
+  // four vetoes cross the same edge in the slot-1 PD-to-ID packet, so
+  // pd_redirect_r qualifies the candidate with those registered copies in one
+  // LUT. This keeps the served-window metadata path and the redirect feedback
+  // off the candidate's D input.
   logic pd_backward_branch;
   logic pd_redirect_candidate_r;
   logic pd_redirect_r;
@@ -479,27 +460,26 @@ module pd_stage #(
       (pd_native_branch || pd_compressed_branch) &&  // conditional branch (any offset)
       i_from_if_to_pd.bp_dir_taken;  // decoupled bimodal predicts TAKEN
 
-  // These packet fields are the registered, same-packet copies of the terms
-  // removed from pd_backward_branch. inject_nop carries sel_nop on an ordinary
-  // edge. When a qualified redirect fires, that same edge records inject_nop,
-  // so a raw branch-shaped wrong-path payload captured beside it stays masked
-  // on the following cycle. Candidate and packet FFs share the stall enable,
-  // hence that mask remains aligned while held. Reset/flush clear the candidate
-  // directly; fetch_fault is gated by !sel_nop in the packet, which is
+  // These packet fields are the registered copies, from the same packet, of the
+  // vetoes that pd_backward_branch leaves out. inject_nop carries sel_nop on an
+  // ordinary edge. When a qualified redirect fires, that same edge records
+  // inject_nop, so a branch-shaped wrong-path payload captured beside it stays
+  // masked on the following cycle. Candidate and packet FFs share the stall
+  // enable, so that mask stays aligned while held. Reset and flush clear the
+  // candidate directly. The packet's fetch_fault is gated by !sel_nop, which is
   // equivalent here because inject_nop already vetoes sel_nop.
   assign pd_redirect_r = pd_redirect_candidate_r &&
       !o_from_pd_to_id.btb_predicted_taken &&
-      !o_from_pd_to_id.ras_predicted &&
       !o_from_pd_to_id.inject_nop &&
       !o_from_pd_to_id.fetch_fault;
 
-  // The redirect output to IF is formed only from state captured at the PD
-  // boundary: one candidate FF plus one LUT over existing PD->ID FFs. That
-  // removes the old cross-module combinational target path into IF's PC mux,
-  // which cost ~1 ns, while retaining the same two redirect bubbles. The extra
-  // bubble is the wrong-path instruction that enters PD before the qualified
-  // redirect fires. It is squashed at the PD→ID register: both slots flag it
-  // in inject_nop for their consumers to apply.
+  // The redirect to IF comes only from registers at the PD boundary: the
+  // candidate FF plus one LUT over PD-to-ID packet FFs, and the split target
+  // registers below. No combinational path runs from PD's inputs into IF's PC
+  // mux. The redirect costs two bubbles, one of them the wrong-path packet that
+  // enters PD before the registered redirect fires. That packet is squashed at
+  // the PD-to-ID register: both slots flag it in inject_nop for their consumers
+  // to apply.
   (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_low_r;
   (* keep = "true" *) logic [1:0] pd_redirect_target_high_select_r;
   (* keep = "true", equivalent_register_removal = "no" *)
@@ -513,7 +493,6 @@ module pd_stage #(
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_redirect_candidate_r <= 1'b0;
     else if (!i_pipeline_ctrl.stall) pd_redirect_candidate_r <= pd_backward_branch;
-    // Hold during stall (implicit)
   end
 
   always_ff @(posedge i_clk) begin
@@ -537,10 +516,9 @@ module pd_stage #(
   assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low_r};
 
 `ifndef SYNTHESIS
-  // Independently model the timing payload FF itself. This pins down the
-  // structural contract: reset/flush clear even through stall, an ordinary
-  // stall holds, and every enabled edge captures branch&&direction without
-  // qualified-redirect feedback.
+  // Reference model of the candidate FF: reset and flush clear it even during a
+  // stall, a stall holds it, and every enabled edge captures branch &&
+  // direction with no feedback from the qualified redirect.
   logic pd_redirect_candidate_payload_reference_q;
   logic pd_redirect_candidate_payload_reference_armed = 1'b0;
   always @(posedge i_clk) begin
@@ -565,17 +543,18 @@ module pd_stage #(
     end
   end
 
-  // Replay the former monolithic redirect FF as an independent oracle. On a
-  // nonstall edge with no reset/flush, the candidate captures only
+  // Reference model: a single redirect FF with the full next-state equation
+  // (branch, direction, the four vetoes, and !redirect). On an enabled edge
+  // with no reset or flush, the candidate captures only
   //   branch && direction
-  // while the existing packet FFs capture the four raw vetoes. If a redirect
-  // is already qualified, the packet captures inject_nop on that same edge;
-  // this masks any raw wrong-path candidate exactly where the former equation
-  // used !qualified_redirect. Reset/flush clear the candidate, and stall holds
-  // candidate and packet (including that redirect mask), so the post-edge LUT
-  // remains exactly the former full next-state equation across every control
-  // sequence. Compare at the clock boundary before nonblocking updates to
-  // avoid delta-cycle races between the independently updated banks.
+  // while the packet FFs capture the four vetoes. If a redirect is already
+  // qualified, the packet captures inject_nop on that same edge, which masks a
+  // wrong-path candidate exactly where the reference uses !redirect. Reset and
+  // flush clear the candidate, and a stall holds candidate and packet
+  // (including that mask), so the one-LUT redirect equals the reference across
+  // every control sequence. Compare at the clock edge, before the nonblocking
+  // updates, to avoid delta-cycle races between the independently updated
+  // registers.
   logic pd_redirect_reference_q;
   logic pd_redirect_reference_armed = 1'b0;
   logic pd_backward_branch_reference;
@@ -583,7 +562,6 @@ module pd_stage #(
       (pd_native_branch || pd_compressed_branch) &&
       i_from_if_to_pd.bp_dir_taken &&
       !i_from_if_to_pd.btb_predicted_taken &&
-      !i_from_if_to_pd.ras_predicted &&
       !i_from_if_to_pd.sel_nop &&
       !i_from_if_to_pd.fetch_fault &&
       !pd_redirect_reference_q;
@@ -608,10 +586,10 @@ module pd_stage #(
     end
   end
 
-  // Preserve the former full-target register as a simulation-only oracle. It
-  // samples on exactly the same nonstall edges as the split banks, so this one
-  // check covers boundary alignment, stall hold, format alternation, and the
-  // post-boundary high-bank mux without adding hardware to the timing cone.
+  // Reference model: a full-width target register, sampled on the same enabled
+  // edges as the split registers. This one check covers register alignment,
+  // stall hold, alternating branch formats, and the high-part mux after the
+  // register.
   logic [XLEN-1:0] pd_redirect_target_reference_q;
   logic pd_redirect_target_reference_armed = 1'b0;
   always @(posedge i_clk) begin
@@ -647,25 +625,17 @@ module pd_stage #(
       o_from_pd_to_id.fetch_fault_page    <= 1'b0;
       o_from_pd_to_id.fetch_fault_hi      <= 1'b0;
       // Branch prediction metadata
-      o_from_pd_to_id.btb_hit             <= 1'b0;
       o_from_pd_to_id.btb_predicted_taken <= 1'b0;
-      // RAS prediction metadata
-      o_from_pd_to_id.ras_predicted       <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
-      // A flush, or the registered-state PD redirect squashing the wrong-path
-      // instruction that entered PD one cycle after detection, marks the bubble
-      // in inject_nop. Otherwise the values come from decompression.
-      // pd_redirect_r is one LUT over same-edge FFs, so no live IF cone enters
-      // this mux.
-      //
-      // The instruction passes through without being rewritten to a NOP. The
-      // bubble (flush, qualified PD redirect, or sel_nop) rides in the
-      // registered inject_nop bit and the consumers apply it: id_stage decode
-      // and frontend_validity_tracker. That takes the deep frontend-stall-fed
-      // sel_nop select off the 32-bit instruction D-mux, which is what x3
-      // timing needs. final_instruction still provides bubble-qualified early
-      // source fields below; their timing depends on the selected IF parcel.
-      o_from_pd_to_id.instruction <= instruction_non_nop_with_hot_rs1;
+      // The instruction is registered without being rewritten to a NOP. A
+      // bubble (flush, the PD redirect squashing the wrong-path packet that
+      // entered PD behind the branch, or sel_nop) rides in inject_nop, and its
+      // consumers apply it: id_stage decode and frontend_validity_tracker. That
+      // keeps the deep, stall-fed sel_nop select off the 32-bit instruction D
+      // inputs. pd_redirect_r is one LUT over registers, so no live IF path
+      // enters these muxes. The early source fields below still come from
+      // final_instruction and read x0 for a bubble.
+      o_from_pd_to_id.instruction <= instruction_non_nop_predecoded_rs2;
       o_from_pd_to_id.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r ||
                                     i_from_if_to_pd.sel_nop;
       o_from_pd_to_id.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
@@ -674,58 +644,41 @@ module pd_stage #(
       // Illegal compressed indication is only valid when compressed decode path is selected.
       o_from_pd_to_id.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                               (!i_from_if_to_pd.sel_nop &&
-                                              pd_sel_compressed &&
-                                              decomp_is_compressed && decomp_illegal);
-      // the fetch PMA fault rides the illegal-instruction shape,
-      // with the same flush/redirect clears and the same !sel_nop gate. Decode
-      // overrides the garbage bytes with the FETCH_FAULT pseudo-op.
+                                              pd_sel_compressed && decomp_illegal);
+      // The fetch fault has the same flush/redirect clear and !sel_nop gate as
+      // the illegal flag. Decode replaces the instruction's garbage bytes with
+      // a fetch-fault pseudo-op.
       o_from_pd_to_id.fetch_fault <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                       (!i_from_if_to_pd.sel_nop &&
                                        i_from_if_to_pd.fetch_fault);
-      // Fault kind / faulting-halfword qualifiers (M5): meaningful only
-      // under fetch_fault, so they ride through unqualified.
+      // Fault kind and faulting-halfword qualifiers: meaningful only under
+      // fetch_fault, so they pass through unqualified.
       o_from_pd_to_id.fetch_fault_page <= i_from_if_to_pd.fetch_fault_page;
       o_from_pd_to_id.fetch_fault_hi <= i_from_if_to_pd.fetch_fault_hi;
-      // Branch prediction metadata - clear on flush/pd_redirect.
-      //
-      // The PD redirect override, marking direction-predicted conditional BTB
-      // misses taken with the +imm target, used to be applied here. It
-      // created a long combinational chain
-      //   BRAM out → c_ext_state mux → assembled_instr → final_instruction
-      //   → pd_imm_b → +PC carry chain → o_from_pd_to_id_reg[btb_predicted_target]/D
-      // which became the worst path (-0.469 ns) once the LQ → data_memory cone
-      // closed. This register now passes the BTB metadata through unchanged, and
-      // id_stage applies the override on the consumer side from the already
-      // registered-state pd_redirect_r and split target-bank outputs, the same
-      // signals that drive the IF redirect. Both arrive through only shallow
-      // LUTs over FF outputs, so the consumer mux replaces the old 12-level
-      // cone with a short registered-data path.
-      o_from_pd_to_id.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                  i_from_if_to_pd.btb_hit;
+      // Branch prediction metadata, cleared on flush or PD redirect. The BTB
+      // fields pass through unchanged: id_stage marks a PD-redirected branch
+      // taken, with the PD target, from pd_redirect_r and the split target
+      // registers (the same signals that drive the IF redirect). Both are
+      // shallow logic over registers, which keeps the PC + offset carry chain
+      // off these D inputs.
       o_from_pd_to_id.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                               i_from_if_to_pd.btb_predicted_taken;
-      // RAS prediction metadata - clear on flush/pd_redirect
-      o_from_pd_to_id.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                        i_from_if_to_pd.ras_predicted;
     end
 
     if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id.program_counter <= i_from_if_to_pd.program_counter;
-      // Early source registers for forwarding/hazard timing
+      // Early source registers, x0 for a bubble
       o_from_pd_to_id.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                              5'd0 : source_reg_1;
       o_from_pd_to_id.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                              5'd0 : source_reg_2;
-      o_from_pd_to_id.fp_source_reg_3_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                                5'd0 : fp_source_reg_3;
       o_from_pd_to_id.btb_predicted_target <= i_from_if_to_pd.btb_predicted_target;
-      o_from_pd_to_id.ras_predicted_target <= i_from_if_to_pd.ras_predicted_target;
       o_from_pd_to_id.ras_checkpoint_tos <= i_from_if_to_pd.ras_checkpoint_tos;
       o_from_pd_to_id.ras_checkpoint_valid_count <= i_from_if_to_pd.ras_checkpoint_valid_count;
+      o_from_pd_to_id.ras_checkpoint_top <= i_from_if_to_pd.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id.bp_dir_idx <= i_from_if_to_pd.bp_dir_idx;
     end
-    // When stalled, hold current values (implicit - no else clause)
   end
 
   // ===========================================================================
@@ -735,7 +688,7 @@ module pd_stage #(
   // pd_sel_compressed_2 / instruction_non_nop_2 / source_reg_*_2. Stall and flush
   // gating apply to both slots alike, since a bundle advances as a whole.
   // pd_redirect_r squashes both slots: when the slot-1 redirect fires, the
-  // wrong-path instruction in PD that cycle covers slot 2 too.
+  // wrong-path packet in PD that cycle includes slot 2.
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
@@ -746,13 +699,11 @@ module pd_stage #(
       o_from_pd_to_id_2.fetch_fault         <= 1'b0;
       o_from_pd_to_id_2.fetch_fault_page    <= 1'b0;
       o_from_pd_to_id_2.fetch_fault_hi      <= 1'b0;
-      o_from_pd_to_id_2.btb_hit             <= 1'b0;
       o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
-      o_from_pd_to_id_2.ras_predicted       <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
-      // Register payload and bubble control independently.  Applying the
-      // registered marker in ID removes sel_nop/flush/pd_redirect_r from the
-      // BRAM-to-slot2-instruction D cone without changing the PD→ID latency.
+      // Register payload and bubble control independently. Applying the
+      // registered marker in ID keeps sel_nop, flush, and pd_redirect_r off the
+      // BRAM-to-slot-2-instruction D path, with no added PD-to-ID latency.
       slot2_instruction_non_source_q <= slot2_instruction_non_source;
       o_from_pd_to_id_2.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r ||
                                       i_from_if_to_pd_2.sel_nop;
@@ -768,56 +719,49 @@ module pd_stage #(
                                          i_from_if_to_pd_2.fetch_fault);
       o_from_pd_to_id_2.fetch_fault_page <= i_from_if_to_pd_2.fetch_fault_page;
       o_from_pd_to_id_2.fetch_fault_hi <= i_from_if_to_pd_2.fetch_fault_hi;
-      o_from_pd_to_id_2.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                    i_from_if_to_pd_2.btb_hit;
       o_from_pd_to_id_2.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                                 i_from_if_to_pd_2.btb_predicted_taken;
-      o_from_pd_to_id_2.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                          i_from_if_to_pd_2.ras_predicted;
     end
 
     if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id_2.program_counter <= i_from_if_to_pd_2.program_counter;
       o_from_pd_to_id_2.btb_predicted_target <= i_from_if_to_pd_2.btb_predicted_target;
-      o_from_pd_to_id_2.ras_predicted_target <= i_from_if_to_pd_2.ras_predicted_target;
       o_from_pd_to_id_2.ras_checkpoint_tos <= i_from_if_to_pd_2.ras_checkpoint_tos;
       o_from_pd_to_id_2.ras_checkpoint_valid_count <= i_from_if_to_pd_2.ras_checkpoint_valid_count;
+      o_from_pd_to_id_2.ras_checkpoint_top <= i_from_if_to_pd_2.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id_2.bp_dir_idx <= i_from_if_to_pd_2.bp_dir_idx;
     end
   end
 
-  // Keep the old source-field behavior exactly, but make invalidation a
-  // synchronous register clear rather than a LUT on every data bit. The clear
-  // includes !stall because a bubble or flush arriving during a held cycle must
-  // not overwrite the replayed source addresses until the bundle advances.
-  // Vivado can then map payload to D, !stall to CE, and this term to R, and the
-  // residual IMEM-data -> slot-2 early-source paths lose their final LUT
-  // without retiming the instruction or adding latency.
+  // Slot 2's early source fields behave like slot 1's, but apply invalidation
+  // as a synchronous register clear instead of a mux on every data bit. The
+  // clear includes !stall because a bubble or flush arriving during a held
+  // cycle must not overwrite the held source addresses before the bundle
+  // advances. Vivado can then map the payload to D, !stall to CE, and this term
+  // to R, which takes the last LUT off the IMEM-data-to-source-field paths with
+  // no added latency.
   logic slot2_early_source_clear;
   assign slot2_early_source_clear = !i_pipeline_ctrl.stall &&
       (i_pipeline_ctrl.flush || pd_redirect_r || i_from_if_to_pd_2.sel_nop);
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
-      o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
-      o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
-      o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;
+      o_from_pd_to_id_2.source_reg_1_early <= 5'd0;
+      o_from_pd_to_id_2.source_reg_2_early <= 5'd0;
     end else if (slot2_early_source_clear) begin
-      o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
-      o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
-      o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;
+      o_from_pd_to_id_2.source_reg_1_early <= 5'd0;
+      o_from_pd_to_id_2.source_reg_2_early <= 5'd0;
     end else if (!i_pipeline_ctrl.stall) begin
-      o_from_pd_to_id_2.source_reg_1_early    <= source_reg_1_2;
-      o_from_pd_to_id_2.source_reg_2_early    <= source_reg_2_2;
-      o_from_pd_to_id_2.fp_source_reg_3_early <= fp_source_reg_3_2;
+      o_from_pd_to_id_2.source_reg_1_early <= source_reg_1_2;
+      o_from_pd_to_id_2.source_reg_2_early <= source_reg_2_2;
     end
   end
 
 `ifdef FROST_DEBUG_FETCH_ILA
-  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
-  // core probes; nothing here feeds the design. Low address bits suffice:
-  // the capture is keyed on a page offset.
+  // Fetch ILA probes (build.py --debug-ila): marked copies that the debug core
+  // samples. Nothing here feeds the design. The low 16 PC bits suffice because
+  // the capture triggers on a page offset.
   (* mark_debug = "true" *) logic [15:0] dbg_ila_pd_id_pc;
   (* mark_debug = "true" *) logic [31:0] dbg_ila_pd_id_instr;
   (* mark_debug = "true" *) logic dbg_ila_pd_id_inject_nop;

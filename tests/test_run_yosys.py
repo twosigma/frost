@@ -72,9 +72,10 @@ def _hierarchy_command(synth_command: str) -> str:
     model is simulation-only. Other targets keep the module defaults.
 
     Apply the parameters with `chparam -set`, rather than `hierarchy -chparam`:
-    the latter triggers a duplicate-module assertion in Yosys 0.64 when the
-    cache/walker hierarchy is reprocessed. Yosys may still specialize
-    and rename this top, so later checks must follow its top attribute.
+    in Yosys 0.69 the latter fails a duplicate-module assertion
+    (`modules_.count(module->name) == 0`) when the cache/walker hierarchy is
+    reprocessed. Yosys may still specialize and rename this top, so later
+    checks must follow its top attribute.
     """
     family = _xilinx_family(synth_command)
     commands = []
@@ -91,8 +92,8 @@ def _get_timeout_seconds(synth_command: str) -> int:
     Defaults:
       - Generic target (synth): 1800s
       - Other non-Xilinx targets: 7200s
-      - Xilinx targets (synth_xilinx*): 7200s (the full CPU/NIC target takes
-        about 50 minutes locally; allow margin for CI host variation)
+      - Xilinx targets (synth_xilinx*): 7200s (full CPU and NIC synthesis can
+        take close to an hour; the rest is margin for slower CI hosts)
 
     Environment overrides:
       - FROST_YOSYS_GENERIC_TIMEOUT_SEC
@@ -143,7 +144,7 @@ SYNTHESIS_TARGETS = [
     ("xilinx_ultrascale_plus", "synth_xilinx -family xcup", "Xilinx UltraScale+"),
 ]
 
-# Use the complete integration filelist even though cpu_and_mem remains the
+# Use the complete integration filelist even though cpu_and_mem is the
 # synthesis top: its cached tier instantiates the NIC and MAC/PCS, whose
 # dependencies are listed before cpu_and_mem.f in frost.f.
 DESIGN_FILELISTS = {
@@ -172,7 +173,7 @@ class YosysRunner:
 
         self.filelist = self.root_dir / DESIGN_FILELISTS[filelist_key]
 
-        # Create symlink to sw.mem only for designs that need it (frost has BRAM init)
+        # Only designs with BRAM init (frost) need the sw.mem/sw64.mem symlinks.
         if filelist_key == "frost":
             self.setup_sw_mem()
 
@@ -241,7 +242,7 @@ class YosysRunner:
         Yosys read_verilog cannot parse the MAC's package imports/function
         returns or the NIC's packed multidimensional ports. Convert this
         subtree together so packages resolve; the CPU and library sources
-        continue through the existing Yosys frontend. Lower always_comb to
+        go through Yosys's own frontend. Lower always_comb to
         always @* ourselves: sv2v's explicit sensitivity list can contain a
         whole unpacked array, which read_verilog rejects. Keeping always_comb
         instead makes Yosys reject sv2v's otherwise unused loop-index latches.
@@ -318,6 +319,11 @@ class YosysRunner:
                 verilog_files, Path(temp_dir), defines, timeout_sec
             )
             yosys_script = []
+            if synth_command.startswith("synth_xilinx"):
+                # Load primitive ports before parameter elaboration. Loading
+                # them only inside synth_xilinx can rederive a parent after
+                # hierarchy has discarded its unspecialized child modules.
+                yosys_script.append("read_verilog -lib +/xilinx/cells_sim.v")
             for vfile in verilog_files:
                 yosys_script.append(f"read_verilog -sv {defines} {vfile}")
 
@@ -543,13 +549,50 @@ def test_synthesis_accepts_specialized_top(
     assert not has_error, errors
 
 
+@pytest.mark.synthesis
+def test_xilinx_pc_hierarchy_keeps_parameterized_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Late primitive loading must not rederive a parent after child pruning."""
+    monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
+    runner = YosysRunner()
+    rtl = runner.root_dir / "hw/rtl/cpu_and_mem/cpu"
+    runner.root_dir = tmp_path
+    runner.test_dir = tmp_path
+    runner.filelist = tmp_path / "design.f"
+    top = tmp_path / "cpu_and_mem.sv"
+    top.write_text(
+        "module cpu_and_mem #(parameter ENABLE_CACHED_TIER=1, "
+        "USE_BEHAVIORAL_DDR=1)(input reset, output [63:0] value);\n"
+        "  pc_controller #(.PENDING_HANDOFF_EXCLUDES_SLOT2(1)) pc "
+        "(.i_reset(reset), .o_pc(value));\n"
+        "endmodule\n"
+    )
+    sources = [
+        rtl / "riscv_pkg.sv",
+        rtl / "if_stage/control_flow_tracker.sv",
+        rtl / "if_stage/pc_reg_precompute.sv",
+        rtl / "if_stage/pc_increment_calculator.sv",
+        rtl / "if_stage/pc_controller.sv",
+        top,
+    ]
+    runner.filelist.write_text("\n".join(map(str, sources)) + "\n")
+    # A parent rederived after child pruning fails during hierarchy
+    # elaboration, before logic mapping, so the begin step is enough.
+    result = runner.run_synthesis(
+        synth_command="synth_xilinx -family xcup -run begin:begin"
+    )
+    has_error, errors = runner.check_for_errors(result)
+    assert not has_error, errors
+
+
 # Command-line interface for standalone execution
 def main() -> int:
     """Run Yosys synthesis from command line."""
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Run Yosys synthesis for Frost RISC-V CPU",
+        description="Run Yosys synthesis for FROST",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

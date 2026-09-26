@@ -17,20 +17,18 @@
 Packs fu_complete_t requests, unpacks cdb_broadcast_t outputs, and drives or
 reads the DUT ports.
 
-The RTL exposes one completion port per FU (i_fu_complete_0 .. i_fu_complete_7)
-plus live/fallback value inputs for the two integer ALUs. The _get_fu_signal
-helper also accepts an indexable array-style handle so older local wrappers
-keep working.
+The RTL has one completion port per FU (i_fu_complete_0 .. i_fu_complete_7)
+plus live and fallback value inputs for the two integer ALUs.
 """
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
+from config import FLEN
 
 from .cdb_arbiter_model import CdbBroadcast, FuComplete, FU_ALU, FU_ALU2, NUM_FUS
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-FLEN = 64
 EXC_CAUSE_WIDTH = 5
 FP_FLAGS_WIDTH = 5
 FU_TYPE_WIDTH = 3
@@ -38,12 +36,12 @@ FU_TYPE_WIDTH = 3
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK64 = (1 << FLEN) - 1
 
-# fu_complete_t bit layout (packed, MSB-first in SV, pack from LSB):
+# fu_complete_t layout, listed from the LSB (SV declares the fields MSB first):
 # fp_flags(5) | exc_cause(5) | exception(1) | value(64) | tag(5) | valid(1)
 # Total: 81 bits
 FU_COMPLETE_WIDTH = FP_FLAGS_WIDTH + EXC_CAUSE_WIDTH + 1 + FLEN + ROB_TAG_WIDTH + 1
 
-# cdb_broadcast_t bit layout (packed, MSB-first in SV, pack from LSB):
+# cdb_broadcast_t layout, listed from the LSB (SV declares the fields MSB first):
 # fu_type(3) | fp_flags(5) | exc_cause(5) | exception(1) | value(64) | tag(5) | valid(1)
 # Total: 84 bits
 
@@ -98,10 +96,7 @@ def unpack_cdb_broadcast(raw: int) -> CdbBroadcast:
 
 
 class CdbArbiterInterface:
-    """Interface to the CDB arbiter DUT.
-
-    Handles both individual FU ports and older array-style wrappers.
-    """
+    """Interface to the CDB arbiter DUT."""
 
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
@@ -131,16 +126,8 @@ class CdbArbiterInterface:
         await FallingEdge(self.clock)
 
     def _get_fu_signal(self, fu_index: int) -> Any:
-        """Get the DUT signal for a specific FU complete slot.
-
-        Older wrappers may expose an indexable array handle:
-          dut.i_fu_complete[index]
-        The current RTL exposes individual ports:
-          dut.i_fu_complete_0 .. dut.i_fu_complete_7
-        """
-        if hasattr(self.dut, "i_fu_complete_0"):
-            return getattr(self.dut, f"i_fu_complete_{fu_index}")
-        return self.dut.i_fu_complete[fu_index]
+        """Return the DUT handle for one FU completion input (i_fu_complete_N)."""
+        return getattr(self.dut, f"i_fu_complete_{fu_index}")
 
     def drive_fu_complete(
         self,
@@ -154,8 +141,9 @@ class CdbArbiterInterface:
     ) -> None:
         """Drive a single FU completion request.
 
-        ALU/ALU2 requests default to the ordinary fallback value path. Set
-        ``value_is_live`` to exercise the protected live-shim restore path.
+        ALU and ALU2 values take the fallback (merge-tree) path by default.
+        Set ``value_is_live`` to send the value on the live path, which skips
+        the tree and is restored at the lane output.
         """
         req = FuComplete(
             valid=True,
@@ -180,10 +168,10 @@ class CdbArbiterInterface:
         effective_value: int,
         value_is_live: bool,
     ) -> None:
-        """Drive one legal ALU live/fallback interface partition.
+        """Drive one ALU's value-source inputs within the live/fallback contract.
 
-        The inactive source carries the bitwise complement of the effective
-        value, so a test cannot pass by selecting the wrong arm.
+        The unused source carries the bitwise complement of the effective
+        value, so a test cannot pass by selecting the wrong one.
         """
         if fu_index == FU_ALU:
             prefix = "alu"

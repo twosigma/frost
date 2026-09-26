@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Typed stimulus and result helpers for the FP divide/sqrt shim.
+"""DUT interface for fp_div_shim verification.
 
 pack_rs_issue, unpack_fu_complete, and _parse_instr_op_enum come from
 fp_add_shim_interface.
@@ -87,7 +87,7 @@ class FpDivShimInterface:
         """Drive an rs_issue_t onto i_rs_issue.
 
         For FP div/sqrt the only meaningful fields are valid, rob_tag, op,
-        src1_value, src2_value, and rm.  All other fields are driven as 0.
+        src1_value, src2_value, and rm. The rest take pack_rs_issue's defaults.
         """
         self.dut.i_rs_issue.value = pack_rs_issue(
             valid=valid,
@@ -132,7 +132,7 @@ class FpDivShimInterface:
         self.dut.i_rob_head_tag.value = 0
 
     def drive_div_accepted(self) -> None:
-        """Assert i_div_accepted for one cycle (pop FIFO head)."""
+        """Assert i_div_accepted; the shim clears its held result on the next edge."""
         self.dut.i_div_accepted.value = 1
 
     def clear_div_accepted(self) -> None:

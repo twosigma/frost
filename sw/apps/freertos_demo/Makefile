@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# FreeRTOS demo on FROST. The kernel is the vendored FreeRTOS-Kernel tree, built
+# FreeRTOS demo on FROST. The kernel is the sw/FreeRTOS-Kernel submodule, built
 # unmodified. The port layer (port_frost.c, port_frost_asm.S) is FROST-specific.
 
 # MEM_CONFIG selects the FreeRTOS linker script. common.mk then supplies the ROM
@@ -31,7 +31,6 @@ else
 LINKER_SCRIPT := link_freertos.ld
 endif
 
-# Third-party kernel tree, used as vendored.
 FREERTOS_DIR := ../../FreeRTOS-Kernel
 
 FREERTOS_SRC := $(FREERTOS_DIR)/tasks.c \
@@ -52,7 +51,7 @@ EXTRA_ASM_SRC := port_frost_asm.S
 
 SRC_C := $(APP_SRC) $(FROST_PORT_C) $(FREERTOS_SRC) $(FREERTOS_HEAP)
 
-# -I. is for this app's FreeRTOSConfig.h.
+# -I. finds this app's FreeRTOSConfig.h and portmacro.h.
 FREERTOS_INCLUDES := -I$(FREERTOS_DIR)/include \
                      -I.
 

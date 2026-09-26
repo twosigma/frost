@@ -1,4 +1,4 @@
-# Floating-Point Unit (FPU) file list - F and D extension support
+# Floating-point unit (FPU) file list for the F and D extensions:
 # IEEE 754 single- and double-precision operations (FP_WIDTH 32 or 64)
 
 # Shared utilities used by all FP arithmetic operations
@@ -16,19 +16,20 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_compare.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_convert_sd.sv
 
-# Add (non-pipelined, 10 cycles) and multiply (fully pipelined)
+# Add (non-pipelined, 10 cycles) and multiply (fully pipelined, 11 cycles)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_adder.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_multiplier.sv
 
 # Divide and square root on one iterative datapath, 36 cycles at SP and 65 at
-# DP, one operation at a time. The fully unrolled fp_divider and fp_sqrt it
-# replaced live in hw/sim as the equivalence bench's reference.
+# DP, one operation at a time. Its reference models, the fully unrolled
+# fp_divider and fp_sqrt, are simulation-only files in hw/sim.
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_sqrt_iter.sv
 
 # Fused multiply-add (fully pipelined, 16 cycles)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_fma.sv
 
-# FPU sub-unit wrappers (S+D with tracking FSM, NaN-boxing, dest reg)
+# Wrappers that pair each unit's single- and double-precision instances and
+# NaN-box single-precision FP results
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_adder_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_mult_unit.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_fma_unit.sv

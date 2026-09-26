@@ -12,11 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Fetch-seam ILA procedures (build.py --debug-ila), shared by the standalone
+# Fetch ILA procedures (build.py --debug-ila), shared by the standalone
 # capture script and the loader's hooks. They act on an open hardware
-# target: the caller has connected and selected the device. Arming, waiting
-# and collecting must share one session: refresh_hw_device (which every new
-# session performs to see the core) resets an armed ILA.
+# target: the caller has connected and selected the device. Arming, waiting,
+# and collecting must share one session: refresh_hw_device, which every new
+# session performs to see the ILA, resets an armed ILA.
 
 proc frost_ila_attach {ltx_file} {
     # Attach the probes file and return the ILA (error if none).
@@ -46,8 +46,8 @@ proc frost_ila_status {ila} {
 }
 
 proc frost_ila_arm {ila fault_probe_glob pc_probe_glob pc_value trigger_position} {
-    # A fresh refresh leaves every probe comparing against don't-care; the
-    # fault probe and the PC probe carry the trigger.
+    # After a refresh every probe compares against don't-care; only the fault
+    # and PC probes are set.
     set fault_probe [frost_ila_find_probe $ila $fault_probe_glob]
     set pc_probe [frost_ila_find_probe $ila $pc_probe_glob]
     set_property TRIGGER_COMPARE_VALUE eq1'b1 $fault_probe
@@ -66,10 +66,8 @@ proc frost_ila_arm {ila fault_probe_glob pc_probe_glob pc_value trigger_position
 }
 
 proc frost_ila_wait_and_collect {ila csv_file timeout_minutes} {
-    # Block in this session until the trigger fires (or the timeout), then
-    # write the samples. A fresh Hardware Manager session cannot do this:
-    # its device refresh resets the core, so arming, waiting and collecting
-    # share one session.
+    # Wait until the trigger fires or the timeout expires, then write the
+    # samples. This must run in the session that armed the ILA.
     if {[catch {wait_on_hw_ila -timeout $timeout_minutes $ila} note]} {
         puts "wait_on_hw_ila: $note"
     }

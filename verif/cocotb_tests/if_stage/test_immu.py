@@ -12,13 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Standalone instruction-MMU tests at the registered selected-PC seam.
+"""Instruction MMU tests, driven through immu_test_harness's registered fetch PC.
 
-The reference helpers below derive Sv39 matching, physical-page composition,
-permissions, PMA faults, and fetch-window formation in Python without
-inspecting implementation state.  Directed protocol tests separately pin the
-visible-key rule: translated payload is usable only after the state is tagged
-with the live registered PC, privilege, and address-space mode.
+The reference helpers compute Sv39 matching, the physical page, permissions,
+PMA faults, and the two-word fetch window in Python without reading RTL
+state. The directed tests check the visibility rule: a translated result is
+visible only while its tag matches the live registered PC and privilege, and
+turning translation off or an invalidate clears the tag.
 """
 
 from dataclasses import dataclass
@@ -41,7 +41,7 @@ DFAULT_ACCESS = 3
 
 @dataclass(frozen=True)
 class Leaf:
-    """Independent description of one walked Sv39 leaf."""
+    """One Sv39 leaf as the page-table walker returns it."""
 
     vpn: int
     ppn: int
@@ -55,7 +55,7 @@ class Leaf:
 
 @dataclass(frozen=True)
 class Window:
-    """Architecturally visible IMMU fetch-window result."""
+    """Expected IMMU outputs for one two-word fetch window."""
 
     pa0: int
     pa1: int
@@ -287,7 +287,7 @@ async def _accept_request(dut: Any, vpn: int) -> None:
 
 
 async def _return_leaf(dut: Any, leaf: Leaf) -> None:
-    """Complete the currently owned walk with ``leaf``."""
+    """Answer the outstanding walk with ``leaf``."""
     await _pulse_response(
         dut,
         vpn=leaf.vpn,
@@ -303,7 +303,7 @@ async def _return_leaf(dut: Any, leaf: Leaf) -> None:
 
 @cocotb.test()
 async def test_bare_exact_selected_pc_window(dut: Any) -> None:
-    """Bare mode is direct, bubble-free, and exact at every PMA seam."""
+    """Bare mode passes the PC through with no bubble and exact faults at PMA edges."""
     await _setup(dut)
 
     cases = (
@@ -320,14 +320,14 @@ async def test_bare_exact_selected_pc_window(dut: Any) -> None:
         _assert_window(dut, _bare_window(pc))
         assert int(dut.o_walk_req_valid.value) == 0
 
-        # A held selected PC is still a direct result, not a shadow replay.
+        # Holding the PC for another cycle still gives the direct result.
         await _cycle(dut)
         _assert_window(dut, _bare_window(pc))
 
 
 @cocotb.test()
 async def test_warm_translation_retags_once_per_pc_movement(dut: Any) -> None:
-    """Warm same-page/different-page motion gets one invisible retag cycle."""
+    """With the pages in the ITLB, each of these PC changes costs one invisible retag cycle."""
     await _setup(dut)
     leaves = (
         Leaf(vpn=0x4, ppn=0x20),
@@ -360,12 +360,12 @@ async def test_warm_translation_retags_once_per_pc_movement(dut: Any) -> None:
     await _return_leaf(dut, leaves[1])
     _assert_window(dut, _translated_window(pc_b, leaves[1]))
 
-    # Loading the same selected value does not invalidate an exact live tag.
+    # Reloading the same PC keeps the tag matching, so there is no bubble.
     await _move_pc(dut, pc_b)
     _assert_window(dut, _translated_window(pc_b, leaves[1]))
 
-    # Populate C, then return to A so the consecutive movement below is warm
-    # at every intermediate and final page.
+    # Walk C, then return to A, so every page the back-to-back moves below
+    # visit is already in the ITLB.
     await _move_pc(dut, pc_c)
     _assert_invisible(dut)
     await _cycle(dut)
@@ -377,8 +377,8 @@ async def test_warm_translation_retags_once_per_pc_movement(dut: Any) -> None:
     await _cycle(dut)
     _assert_window(dut, _translated_window(pc_a, leaves[0]))
 
-    # A -> B -> C on consecutive edges may never publish the intermediate
-    # key after the upstream register already names C.
+    # A -> B -> C on consecutive edges: B's result must never appear once the
+    # registered PC holds C, and C resolves a cycle later without a walk.
     dut.i_pc_d.value = pc_b
     dut.i_pc_update_en.value = 1
     await _cycle(dut)
@@ -395,7 +395,7 @@ async def test_warm_translation_retags_once_per_pc_movement(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mode_privilege_and_invalidate_mask_stale_state(dut: Any) -> None:
-    """Mode/privilege/flush changes cannot expose an old tagged payload."""
+    """Privilege, mode, and invalidate changes never expose a stale result."""
     await _setup(dut)
     pc = 0x0000_8040
     leaf = Leaf(vpn=pc >> 12, ppn=0x30, perm_u=1)
@@ -409,8 +409,8 @@ async def test_mode_privilege_and_invalidate_mask_stale_state(dut: Any) -> None:
     await _return_leaf(dut, leaf)
     _assert_window(dut, _translated_window(pc, leaf, priv_u=1))
 
-    # Permission state is part of the visible identity.  The S-mode retag
-    # resolves as a page fault because this leaf is user-only.
+    # Privilege is part of the tag.  The S-mode retag resolves as a page
+    # fault because this leaf is user-only.
     dut.i_priv_u.value = 0
     await _settle()
     _assert_invisible(dut)
@@ -419,8 +419,8 @@ async def test_mode_privilege_and_invalidate_mask_stale_state(dut: Any) -> None:
     _assert_window(dut, expected_s)
     assert expected_s.fault0_page == 1
 
-    # Bare is direct immediately.  Holding Bare across an edge retires the
-    # translated tag, so re-entering translation cannot resurrect it.
+    # Bare applies at once.  A clock edge in Bare clears the translated tag,
+    # so re-entering Sv39 must retag before anything is visible.
     dut.i_active.value = 0
     await _settle()
     _assert_window(dut, _bare_window(pc))
@@ -431,7 +431,7 @@ async def test_mode_privilege_and_invalidate_mask_stale_state(dut: Any) -> None:
     await _cycle(dut)
     _assert_window(dut, expected_s)
 
-    # Invalidate masks the result in its assertion cycle.
+    # An invalidate hides the result in the same cycle.
     dut.i_tlb_invalidate.value = 1
     await _settle()
     _assert_invisible(dut)
@@ -440,8 +440,9 @@ async def test_mode_privilege_and_invalidate_mask_stale_state(dut: Any) -> None:
     await _settle()
     _assert_invisible(dut)
 
-    # Re-establish an accepted owner, then prove invalidate wins over its
-    # simultaneous clean response rather than merely ignoring an unowned one.
+    # With a walk outstanding, an invalidate in the same cycle as its clean
+    # response wins: nothing becomes visible or installs, so the walk is
+    # requested again.
     await _cycle(dut)
     await _accept_request(dut, leaf.vpn)
     dut.i_tlb_invalidate.value = 1
@@ -482,9 +483,9 @@ async def test_walk_backpressure_and_retarget_edge_races(dut: Any) -> None:
     await _wait_for_request(dut, vpn_b)
     await _accept_request(dut, vpn_b)
 
-    # B's owned response and the upstream B -> A PC load share an edge.  The
-    # resolver is allowed to consume/install B, but exact post-edge tag matching
-    # must hide every bit of B's result while the registered PC names A.
+    # B's response and the B -> A PC load share an edge.  The IMMU may install
+    # B, but the tag compare after the edge must hide every bit of B's result
+    # while the registered PC is A.
     dut.i_pc_d.value = pc_a
     dut.i_pc_update_en.value = 1
     _drive_response(dut, vpn=vpn_b, ppn=leaf_b.ppn)
@@ -495,9 +496,9 @@ async def test_walk_backpressure_and_retarget_edge_races(dut: Any) -> None:
     _assert_invisible(dut)
     assert int(dut.o_walk_req_valid.value) == 0
 
-    # The response recheck expires while A is captured.  Its miss request must
-    # remain asserted even when the harness independently arms an A -> C PC
-    # load; accepting that edge records A as the stale owner.
+    # The recheck cycle ends on the edge that captures A.  A's walk request
+    # must stay asserted while the harness sets up an A -> C PC load for the
+    # same edge, which accepts A's walk; that walk is stale once the PC is C.
     await _cycle(dut)
     await _wait_for_request(dut, vpn_a)
     dut.i_pc_d.value = pc_c
@@ -513,8 +514,9 @@ async def test_walk_backpressure_and_retarget_edge_races(dut: Any) -> None:
     _assert_invisible(dut)
     assert int(dut.o_walk_req_valid.value) == 0
 
-    # C can be captured while A owns the response slot, but cannot issue until
-    # A's late result has drained and the mandatory install/recheck cycle ends.
+    # C's tag is captured while A's walk is outstanding, but C cannot request
+    # a walk until A's late response arrives and the recheck cycle after it
+    # ends.
     await _cycle(dut)
     assert int(dut.o_walk_req_valid.value) == 0
 
@@ -529,7 +531,7 @@ async def test_walk_backpressure_and_retarget_edge_races(dut: Any) -> None:
 
 @cocotb.test()
 async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
-    """Pin noncanonical, permission, PMA, and memoized walk refusals."""
+    """Check noncanonical, permission, and PMA faults, and the refused-walk memo."""
     await _setup(dut)
 
     # Non-canonical VAs resolve to an instruction page fault without walking.
@@ -618,8 +620,8 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
     )
     _assert_window(dut, expected_access_refusal)
 
-    # ACCESS refusals use the same memo path but preserve their distinct
-    # non-page classification on a later revisit.
+    # An access-fault refusal uses the same memo and still reports an access
+    # fault, not a page fault, on a later revisit.
     other_noncanon = (1 << 39) | 0x2000
     await _move_pc(dut, other_noncanon)
     await _cycle(dut)
@@ -631,7 +633,7 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cross_page_resolution_and_exact_successor_vpn(dut: Any) -> None:
-    """Resolve unrelated 4K pages, refusals, and superpage crossings."""
+    """Check page crossings: separate 4 KiB leaves, a refused next page, superpages."""
     await _setup(dut)
     pc = 0x0020_1FFC
     vpn0 = pc >> 12
@@ -692,23 +694,24 @@ async def test_cross_page_resolution_and_exact_successor_vpn(dut: Any) -> None:
     _assert_window(dut, _translated_window(pc_super, leaf_super))
     assert int(dut.o_walk_req_valid.value) == 0
 
-    # At the end of that superpage, the exact successor VPN is independent
-    # and must be walked rather than derived through the leaf boundary.
+    # At the end of that superpage the next VPN is outside the leaf, so it
+    # needs its own walk.
     pc_super_end = 0x005F_FFFC
     vpn_super_end = pc_super_end >> 12
     next_leaf = Leaf(vpn=vpn_super_end + 1, ppn=0x12)
     await _move_pc(dut, pc_super_end)
     _assert_invisible(dut)
     await _cycle(dut)
-    # The installed level-1 leaf covers word 0, so only the successor asks.
+    # The installed level-1 leaf covers word 0, so the only walk is for the
+    # next VPN.
     await _wait_for_request(dut, vpn_super_end + 1)
     await _accept_request(dut, vpn_super_end + 1)
     await _pulse_response(dut, vpn=next_leaf.vpn, ppn=next_leaf.ppn)
     _assert_window(dut, _translated_window(pc_super_end, leaf_super, leaf1=next_leaf))
 
-    # The same derivation rule applies to a 1 GiB interior crossing: the
-    # response's aligned PPN supplies the high bits and the VA supplies both
-    # lower VPN fields, with no independent successor walk.
+    # A 1 GiB interior crossing works like the 2 MiB one: the leaf's aligned PPN
+    # supplies the high bits and the VA supplies both lower VPN fields, so no
+    # second walk is needed.
     pc_giga = 0x4000_1FFC
     vpn_giga = pc_giga >> 12
     leaf_giga = Leaf(vpn=vpn_giga, ppn=0x80000, level=2)

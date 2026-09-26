@@ -21,9 +21,10 @@ both CDB broadcast results plus the per-FU grant vector (up to 2-hot).
 
 from dataclasses import dataclass
 
+from config import FLEN
+
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-FLEN = 64
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK64 = (1 << FLEN) - 1
@@ -40,7 +41,7 @@ FU_ALU2 = 7
 
 NUM_FUS = 8
 
-# Priority order: highest priority first (CoreMark-relevant traffic first)
+# Arbitration priority, highest first. It differs from the fu_type_e numbering.
 PRIORITY_ORDER = [
     FU_MUL,
     FU_MEM,

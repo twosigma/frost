@@ -17,22 +17,20 @@
 // =============================================================================
 // lq_issue_selector
 // =============================================================================
-// Load-queue issue selection, all of it parallel: the oldest CDB-ready entry,
-// memory-issue eligibility with MMIO/LR/AMO head gates and older-AMO blocking,
-// and a separate ROB-head priority path. Per-entry masks and tree encoders
-// replace a serial scan. issue_cdb_idx drives the LQ data LUTRAM read in
-// load_queue.
+// Load-queue issue selection, all of it parallel: the first CDB-ready entry
+// in ring order from head_idx, memory-issue eligibility with MMIO/LR/AMO head
+// gates and older-AMO blocking, and a separate ROB-head priority path. Ring
+// order is not age order, because allocation refills holes. issue_cdb_idx
+// drives the LQ data LUTRAM read in load_queue.
 //
 // Combinational, with no state of its own. load_queue owns the registered
-// older-AMO block vector, in physical entry order, derived from each live
-// entry's exact allocation-time AMO dependencies. This module rotates that
-// vector into head-relative scan order. A killed identity can keep a
-// conservative block bit through its one invalid cleanup cycle, but lq_valid
-// masks it here and the state drains before the slot is reused. Keeping the
-// dependency state in load_queue takes the ROB-age subtract/min/compare logic
-// out of the issue-selector capture-enable cone. A head AMO enters the
-// head-priority scans on i_sq_committed_empty alone, which subsumed the old
-// 512-cycle deadlock breaker (since removed).
+// older-AMO block vector, in physical entry order, built from each entry's
+// older-AMO dependency row. This module rotates that vector into scan order.
+// A freed or flushed entry can keep a stale block bit during its first invalid
+// cycle; lq_valid masks it here, and load_queue clears it before the entry is
+// reused. Keeping the dependency state in load_queue takes the
+// ROB-age compare logic out of the issue-selector capture-enable cone. A head
+// AMO enters the head-priority path once i_sq_committed_empty is set.
 // =============================================================================
 module lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
@@ -110,7 +108,7 @@ module lq_issue_selector #(
     end
   end
 
-  // Phase A: tree priority encoder for the oldest CDB-ready entry
+  // Phase A: priority encoder for the first CDB-ready entry in ring order
   always_comb begin
     issue_cdb_found = 1'b0;
     issue_cdb_idx   = '0;
@@ -122,11 +120,10 @@ module lq_issue_selector #(
     end
   end
 
-  // Mask of the entry already claimed by the sq_check staging register.  Keep
-  // this as registered one-hot state instead of deriving it from sq_check_idx
-  // with a live equality compare.  The derived compare put sq_check_idx on the
-  // issue-selection -> sq_check_payload_en control path, which is exactly the
-  // post-synth WNS limiter on x3.
+  // Mask of the entry already claimed by the sq_check staging register.  It is
+  // registered one-hot state in load_queue rather than a live compare against
+  // sq_check_idx, which keeps sq_check_idx off the timing-critical
+  // issue-selection -> sq_check_payload_en control path.
   logic [DEPTH-1:0] in_flight_mask;
   assign in_flight_mask = sq_check_in_flight_mask;
 
@@ -142,11 +139,9 @@ module lq_issue_selector #(
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       // An MMIO entry is eligible here only at the ROB head.  The dedicated
-      // head path below admits that same entry with unconditional priority, so
-      // this normal-scan admission is redundant at the LQ boundary.  It is kept
-      // to preserve the pre-MMIO-order Boolean shape.  The downstream
-      // data-memory router enforces drain ordering at its irreversible
-      // read-accept boundary.
+      // head path below admits that same entry and takes priority, so
+      // admitting it in this scan never changes the selection.  The data-memory
+      // router enforces the committed-store drain before it accepts a device read.
       mem_eligible_stored_phys[i] =
           lq_valid[i] &&
           lq_addr_valid[i] &&
@@ -172,7 +167,7 @@ module lq_issue_selector #(
 
   // Rotate the parent's registered older-AMO block vector, which arrives in
   // physical entry order, into scan order alongside the eligibility masks.
-  // The module header covers its exactness and the stale-invalid-row case.
+  // The module header covers how it is built and the stale-bit case.
   logic [DEPTH-1:0] blocked_by_amo;
   assign blocked_by_amo = rotate_mask_from_head(blocked_by_amo_phys_q, head_idx);
 
@@ -182,7 +177,7 @@ module lq_issue_selector #(
   assign mem_issue_stored_mask = mem_eligible_stored_mask & ~blocked_by_amo;
   assign mem_issue_update_mask = mem_eligible_update_mask & ~blocked_by_amo;
 
-  // Encode the oldest normal stored-address and current-update candidates here
+  // Encode the first normal stored-address and current-update candidates here
   // while scan_idx is already local. Exporting encoded candidates avoids
   // re-scanning the masks in load_queue on the SQ-check payload enable path.
   logic stored_scan_found;
@@ -230,10 +225,10 @@ module lq_issue_selector #(
     end
   end
 
-  // The sparse queue can reuse reclaimed holes after flushes, so physical
-  // queue order is not always identical to ROB age.  To keep the oldest
-  // architectural load from starving behind a younger blocked entry, an
-  // eligible ROB-head load takes priority over the normal physical-order scan.
+  // Allocation refills the holes that completed and flushed entries leave, so
+  // ring order is not always ROB age.  To keep the oldest load from starving
+  // behind a younger blocked entry, an eligible ROB-head load takes priority
+  // over the normal ring-order scan.
   logic head_mem_stored_found;
   logic [IdxWidth-1:0] head_mem_stored_idx;
   logic [DEPTH-1:0] head_mem_stored_onehot;
@@ -247,43 +242,37 @@ module lq_issue_selector #(
 
   // rob_head_match_q is one-hot by construction: live LQ entries carry
   // distinct ROB tags, so the registered compare matches at most one physical
-  // entry.  The head-eligibility gates keep that one-hot form rather than
-  // serially scanning all entries to recover a found/index tuple.  It is the
-  // natural representation of the unique ROB-head load, and it is a timing
-  // cut: lq_addr_valid now reaches head_mem_stored_found through a per-entry
-  // eligibility LUT plus an OR reduction, and reaches issue_mem_onehot
-  // directly.  The old !head_mem_stored_found loop made each physical entry
-  // depend on every earlier entry and placed a long priority ripple on every
+  // entry.  The head-eligibility gates keep that one-hot form instead of
+  // scanning entries in priority order, so lq_addr_valid reaches
+  // head_mem_stored_found through a per-entry eligibility LUT plus an OR
+  // reduction, and reaches issue_mem_onehot directly.  A priority scan would
+  // make each entry depend on every earlier one and put a long ripple on every
   // sq_check capture and feedback bit.  Index and tag are parallel OR encoders
   // of rob_head_match_q itself, so the eligibility signals, lq_addr_valid in
   // particular, affect found and onehot but not the selected payload identity,
-  // which is consumed only when the corresponding found bit is true.  Selection and
-  // cycle latency are unchanged.
+  // which is consumed only when the corresponding found bit is true.
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
       // The ROB-head load takes head-priority for the single sq_check staging
       // slot in every load class, MMIO and LR included.  The sparse LQ scans in
       // ring order from head_idx (= head_ptr, not the ROB-head entry's physical
-      // slot), so without this an eligible ROB-head MMIO/LR load can lose the
-      // slot to a ring-earlier younger load.  If that younger load is fenced
-      // behind an un-drainable older store (uncommitted, non-forwardable) it
-      // camps there forever and starves the head: the call_stress UART
-      // poll-load wedge.  Admitting the head is safe and live.  The head is the
-      // oldest architectural load (age 0), so only committed, and therefore
-      // draining, older stores can fence it, never the younger wrong-path
-      // stores that create the hog.  sq_check_replace then evicts the younger
-      // staged entry.  Store->load ordering stays correct through the
-      // downstream sq_check_entry_issueable / sq_can_issue gates, which let
-      // MMIO and LR leave the LQ only at the ROB head (asserted by
-      // p_mmio_only_at_head), together with the router's MMIO drain guard on
-      // irreversible effects.  A head AMO stays gated on i_sq_committed_empty:
-      // its RMW write lives in the LQ, invisible to SQ disambiguation, so it
-      // has to see an empty committed queue.  That gating subsumed the old
-      // force_head_amo deadlock breaker, since removed.  head_mem_update
-      // already admitted MMIO and excluded only LR, so this also removes the
-      // stored-vs-update asymmetry: a head MMIO load used to keep priority only
-      // on the cycle its address arrived, then lose it once it sat with
-      // lq_addr_valid=1.
+      // slot), so a younger load earlier in ring order can win that scan every
+      // cycle without being able to evict a staged load older than itself.  If
+      // that staged load waits on a store younger than the head, it never
+      // leaves, because the store cannot commit until the head retires, and
+      // without this priority the head would starve (load queue README,
+      // "ROB-head priority").
+      //
+      // Admitting the head is safe: it is the oldest load, so only committed,
+      // and therefore draining, stores can hold it back, and sq_check_replace
+      // then evicts the younger staged entry.  Store->load ordering stays
+      // correct through the downstream sq_check_entry_issueable / sq_can_issue
+      // gates, which let MMIO and LR leave the LQ only at the ROB head
+      // (p_mmio_only_at_head asserts that an MMIO load probes the SQ only
+      // there), and the router holds a device read until every committed store
+      // is written.  A head AMO stays gated on i_sq_committed_empty: its RMW
+      // write lives in the LQ, invisible to SQ disambiguation, so it has to see
+      // an empty committed queue.
       head_mem_stored_onehot[i] =
           lq_valid[i] &&
           rob_head_match_q[i] &&

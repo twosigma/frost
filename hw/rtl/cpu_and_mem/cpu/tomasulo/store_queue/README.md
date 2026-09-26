@@ -1,265 +1,142 @@
 # Store Queue
 
-The SQ holds stores until ROB commit, then writes them to memory in order. It
-has two allocation ports; no store reaches the bus speculatively.
+The SQ holds stores from dispatch until they are written to memory. It has
+eight entries (`riscv_pkg::SqDepth`) and two allocation ports. Stores write
+memory only after they commit, in program order, so no store reaches the bus
+speculatively. The SQ also answers the load queue's store-to-load forwarding
+checks.
 
-## Design overview
+An entry's life: allocate at dispatch → receive address and data → commit →
+write memory → free.
 
-A younger load may need data from an older store that is still in the SQ.
-When the LQ asks the SQ to disambiguate a load address, the SQ scans all
-entries combinationally for a matching older store. Conflicts use dword
-granularity, following the data-tier bus contract in
-[hw/rtl/README.md](../../../../README.md): no access crosses its aligned
-8-byte beat, so two accesses conflict exactly when they share a dword address
-and their 8-lane byte masks intersect. A load forwards when the newest
-conflicting store's lane mask covers every lane the load reads (FLD from an
-exact-dword FSD is the all-lanes case). For a covered load the SQ delivers
-the aligned-dword memory image, the store data shifted to its byte lanes
-within the beat, and the LQ applies the load's own word/half/byte extraction
-and sign extension (FLD consumes the image whole). If the newest conflicting
-store does not cover the load's bytes, or some older store address is not
-known yet, the SQ tells the LQ to wait. The scan is combinational but the
-result (`match`, `can_forward`, `data`, and `o_sq_all_older_addrs_known`) is
-registered, so the LQ sees it one cycle after raising `i_sq_check_valid`.
-That register breaks the MEM_RS → SQ scan → LQ → BRAM path.
+## Store-to-load forwarding
 
-The forwarding scan itself (per-entry qualification, newest-match priority
-select, and the output register) lives in
-[`sq_forwarding_unit.sv`](sq_forwarding_unit.sv). It reads the SQ entry-array
-state plus a per-entry forwarding-data mirror from `store_queue.sv`. The scan
-registers the winning entry index, extraction mode, and byte offset alongside
-`match` / `can_forward`; the mirrored payload is selected and formatted after
-that boundary during the LQ's existing consume cycle. This preserves the
-one-cycle probe result while keeping the address CAM and winner tree off the 64
-payload D-pins. The drain side still reads the canonical `sq_data` LUTRAM at
-`drain_idx_q`.
+Before a load reads memory, the LQ asks the SQ whether an older store overlaps
+it. The scan, in [`sq_forwarding_unit.sv`](sq_forwarding_unit.sv), works at
+dword granularity, following the
+[data-tier bus contract](../../../../README.md#data-tier-bus-contract): two
+accesses conflict when they fall in the same aligned dword and their byte
+masks intersect.
 
-The scan's same-cycle committed-store guard consumes the trap-cone-free
-`i_commit_valid_scan/_scan_2` pulses instead of the architectural commit
-pulses. The wrapper builds them from the commit-bus pipeline's pre-flush-mask
-valids. They differ from the architectural pulses only on the full-flush
-cycle, and the probe result captured on that cycle is unconsumable under the
-capture-then-kill contract (see the load_queue README). Keeping the flush mask
-off the scan keeps the registered trap/MRET pulse off the forwarding capture's
-D-pins. The architectural consumers (`sq_committed`, the committed-empty view
-shared by trap/MMIO/fence/atomic ordering, and the flush-exemption mask) keep
-the masked pulses, because a squashed store must never latch committed state.
+| Outcome | When | The load then |
+|---------|------|---------------|
+| Forward | The newest conflicting older store covers every byte the load reads | Takes the store's aligned-dword image and extracts its bytes, as for a memory response |
+| Wait | That store covers only some of the bytes, or an older store's address is unknown | Checks again later |
+| No conflict | No older store overlaps | Reads the L0 cache or memory |
 
-Two ordering subtleties in the scan:
+The result is registered: the LQ sees it one cycle after presenting the
+check (`i_sq_check_capture_valid`).
 
-- Older-than-load qualification uses ROB-tag age (`tag − head`, valid across
-  the live 32-entry window) with a committed override: a committed store is
-  older than any executing load by construction.
-- Newest-match winner selection ranks conflicting entries by SQ ring-slot
-  distance from `head_idx`, not by ROB-tag age. Committed entries can sit
-  undrained after their ROB tag has been reused by a younger lap, and
-  tag-based age would then rank them as youngest when they are in fact the
-  oldest, so the load would forward a stale value. Slot order is allocation
-  order (program order) and never wraps.
+Two ordering rules decide which stores count:
 
-`can_forward` is refused for MMIO stores and for store-conditionals: an SC
-may fail at drain time and write nothing, so its data must never reach a
-younger load early. The load then waits for the SC to drain and reads
-memory.
+- A store is older than the load by ROB-tag age, and a committed store is
+  always older.
+- Among conflicting stores, the newest is decided by ring position (allocation
+  order), not by ROB-tag age. A committed store can still be waiting to drain
+  after its ROB tag has been reused, and tag age would then rank it newest and
+  forward stale data.
 
-Address and data packet payloads have capture enables separate from their
-architectural `valid` bits. The early-address repair pipeline can therefore
-refresh a waiting store's address and MMIO classification while its source
-is unresolved, without setting `sq_addr_valid`; translated early updates use
-only the phase-aligned successful translation pulse. A translated ordinary
-update uses the DMMU's raw store-S2 capture pulse before recovery/full-flush
-kills; the canonical killed pulse still controls address/data validity,
-faults, completion, and SC side effects. The ordinary MEM-RS address update
-appears later in the SQ payload block and retains priority on a coincident
-write. Forwarding and drain consume the payload only after the corresponding
-valid bit is set, so a provisional, fault-qualified-off, or kill-edge value
-is unobservable.
+MMIO stores and store-conditionals never forward. An SC can fail and write
+nothing, so a load behind it waits for the SC to drain and then reads memory.
 
-Stores drain to memory in program order. A registered drain cursor
-(`drain_idx_q`) points at the first entry in ring order that is valid and not
-yet launched (`!sq_sent`). It fires when that entry is committed by the ROB
-and has its address and data ready. The cursor never skips program order: if
-the oldest undrained entry is not ready, nothing fires. Every store size
-drains in a single beat on the 64-bit data tier. FSD writes its aligned dword
-with an all-lanes strobe (the old two-phase lo/hi drain and its phase bit are
-gone), and sub-dword stores replicate their data across the beat with the
-strobe selecting the addressed lanes.
+On a full-flush cycle the scan can treat a squashed store's commit as visible.
+This is harmless because the LQ discards any forwarding result captured on a
+full-flush cycle (see the [load queue](../load_queue/README.md)). Committed-state
+tracking uses the flush-masked commit pulses.
 
-## Registered memory-write outputs
+## Allocation and capacity
 
-The memory-write outputs (`o_mem_write_en`, `_addr`, `_data`, `_byte_en`,
-`_is_mmio`, `_is_cached`) are registered. This bounds the critical
-`head_ptr → drain_ready → BRAM address` path at the SQ source.
+Stores always allocate at the tail: slot 1, or slot 2 on its own, takes the
+tail entry, and slot 2 takes the next one when both slots allocate. Ring order
+is therefore program order. The SQ never refills a hole left by a discarded
+SC, because a younger store would then drain before an older one. The hole
+holds its capacity until the head passes it.
 
-## Pipelined drain
+Dispatch uses the registered `o_dispatch_full` and `o_dispatch_full_for_2`
+flags. They count this cycle's allocations but give no credit for this cycle's
+drains, flushes, or SC discards, so they err only on the side of stalling;
+early credit would let dispatch send a store the SQ cannot accept. `o_full`
+and `o_full_for_2` give the exact combinational status, and a separate counter
+drives `o_count` and `o_empty`.
 
-Plain fast-tier stores (BRAM, non-MMIO, single-beat FSD included) complete
-exactly one cycle after their bus cycle: the router's `sq_write_done_fast` is
-the write-enable delayed one cycle. Consecutive plain drains therefore
-overlap. A new launch is allowed while the previous write's done is still in
-flight, which sustains one store per cycle through a committed backlog. The
-next-cursor logic runs two complete priority scans in parallel, one over the
-current valid-and-unsent mask and one over that mask with the firing entry
-removed. The late fire signal selects only between the two 3-bit scan
-results, which preserves the exact cursor semantics without putting a second
-priority scan behind the launch decision.
+Addresses arrive from the early-address pipeline or from MEM_RS issue, and
+data from MEM_RS issue, matched to entries by ROB tag. If both address sources
+update an entry in the same cycle, the MEM_RS update wins. With translation on,
+an early address is captured only together with a successful translation.
 
-The bookkeeping:
+A payload can be written before its valid bit is set: the early-address
+pipeline keeps refreshing a waiting store's address until its base register
+resolves. Forwarding and the drain read a payload only after its valid bit is
+set.
 
-- `sq_sent` is set at launch (the fire cycle) for completing writes, so the
-  drain cursor moves to the next entry immediately; the done side only frees
-  entries (`sq_valid` clear).
-- A 2-bit in-flight counter and 2-deep in-order metadata FIFO track entry
-  index and completion, popping once per done. Dones arrive in launch order
-  on the single write
-  port, so FIFO slot 0 is always the oldest in-flight write. The launch gate
-  credits a coincident done before deciding whether the next plain write
-  fits, so a simultaneous FIFO pop/push can sustain one launch per cycle. If
-  a done stalls, the same occupancy bound throttles the drain instead of
-  overflowing the FIFO.
-- Cached / MMIO writes stay strictly single-outstanding
-  (`write_inflight_special`): they launch only through the serial
-  gate, and nothing else launches until their done. A cached write's done
-  means the L1D has ordered the store (a hit applied, or a miss absorbed into
-  a miss-status slot that merges it into the fill), so a store miss does not
-  hold the drain for its fill round trip.
-- `head_ptr` keeps its freed-at-done semantics. Capacity is the ring window
-  (`tail_ptr - head_ptr`), so the head may only pass entries whose writes
-  have fully completed. The drain cursor exists so that launches can run
-  ahead of frees without touching the capacity model. Entries stay valid
-  (and visible to load disambiguation) until their done.
+## Draining to memory
 
-The registered `o_mem_write_is_mmio` flag lets `data_mem_request_router.sv`
-(under `cpu_ooo/memory_if/`) gate the BRAM byte-write-enable at the SQ source
-instead of recomputing the MMIO address range on the muxed data-memory
-address. This keeps the LQ address cone off BRAM write enable when no store
-fires. The parallel
-`o_mem_write_is_cached` flag (set when the committed store's address falls in
-the cached DDR region `[0x8000_0000, 0xC000_0000)`) is registered the same
-way, so the router can steer the store's byte-write enables to the cached
-tier and mask them off the BRAM without the late address-range test reaching
-the BRAM write-enable cone. Cached drains take the serial arm of the launch
-gate described above and hold it until the router pulses `i_mem_write_done`,
-so a multi-cycle cached write back-pressures the drain without a separate
-busy-stretch.
+A drain cursor points at the oldest entry not yet sent. It launches when that
+entry is committed and has its address and data, and it never skips ahead.
+Every store is a single 64-bit beat: sub-dword data is replicated across the
+beat and the byte strobe selects the lanes. The write outputs are registered,
+including `is_mmio` and `is_cached` flags that let the memory router steer the
+write without decoding the address again. Launching a write also invalidates
+the store's line in the load queue's L0 cache.
 
-## 2-wide allocation: pure ring tail
+Plain BRAM stores complete one cycle after launch, so a backlog of them drains
+at one per cycle, with up to two writes in flight. Completions carry no tag,
+so the memory side must return them in launch order: each one frees the
+oldest in-flight write. A cached or MMIO store
+launches only when no other write is in flight, and nothing else launches until
+it completes. A cached write completes once the L1D has ordered it, so a store
+miss does not hold up the drain for the line fill.
 
-Allocation is strictly at the ring tail: slot 1 takes `tail_ptr`, slot 2 takes
-`tail_ptr + 1`, and the tail advances past them. Ring position therefore
-preserves program order. Searching for holes would let a younger store occupy
-a position drained before an older live entry. The registered
-`o_dispatch_full_for_2` back-pressure (see below) lets dispatch block a
-two-store bundle when only one slot remains while still allowing a
-single-store dispatch to proceed.
+An entry is freed when its write completes, not when it launches, and stays
+visible to forwarding until then.
 
-The per-entry allocation pulses are expanded over the two dispatch valids,
-which arrive last through the dispatch fire tree: the tail entry is written
-when either slot allocates and the entry after it only when both do, with the
-room terms (flush gate, and occupancy when dispatch is not trusted) kept as
-request-independent nets, so each pulse is one gate of the valids against
-them. Slot 1's own pulse selects the request. Simulation and formal compare
-the expanded pulses against the enable-then-steer form they replace.
+## Commit and flush
 
-A partial flush kills a program-order suffix. The flush cycle clears valid
-bits while pointers hold; one cycle later the tail returns to just past the
-youngest survivor by rotating valid state around the head, selecting the
-highest live offset, and adding the head back. Retiming avoids an 18-LUT path
-at 300 MHz on the pointer D/CE pins. Flush-cycle allocations are suppressed
-structurally: the slot alloc enables carry the ROB's flush gate
-(`!i_flush_all && !i_flush_en`), so a dispatch presented on the pulse cycle
-(the trap-cycle straggler handshake) is rejected by the SQ on the same cycle
-the ROB rejects it, which prevents a valid entry outside the ring window. The
-deferred pullback cycle is safe: dispatch cannot allocate again that soon
-after a flush (an `$error` tripwire in the RTL checks it), and capacity reads
-conservatively in the meantime. Head advancement uses the same rotate →
-tree-encode → add-back form over `sq_valid` to skip-advance past freed
-entries, collapsing onto the tail when the window empties.
+Stores commit through two ports, one per ROB commit slot. Slot 2 retires only
+plain stores; the ROB keeps SCs and AMOs on slot 1. The committed-empty
+status is a register. Each commit port has a combinational twin
+(`i_commit_valid_comb*`) that feeds it directly, so the status turns
+non-empty at the edge that ends the commit cycle, when the registered commit
+arrives, and a fence, SC, trap, or device read never sees an empty committed
+queue while a just-committed store is still on its way in.
 
-Capacity is the ring window (`tail_ptr - head_ptr`), not the live popcount:
-with pure tail allocation a slot is reusable only once the head has passed
-it, so rare mid-window holes (failed-SC discards) keep consuming capacity
-until the head walks over them. `o_full` and `o_full_for_2` are exact
-combinational window-capacity status. The CPU dispatch path instead consumes
-the registered `o_dispatch_full` / `o_dispatch_full_for_2` back-pressure,
-which adds same-cycle allocations to the window but takes no same-cycle
-credit for drains, flushes, or SC discards. The head advances the cycle after
-a drain completes, so an early credit would let dispatch send a store the SQ
-must refuse (a silently lost store). Back-pressure is therefore only ever
-conservatively long, never short.
+A partial flush removes uncommitted stores younger than the flush point; the
+commit-time recovery flush removes all uncommitted stores. Committed stores
+survive both, and the tail moves back over the removed entries one cycle
+later. The flush also spares entries that match the registered commit ports,
+whose committed bits are not yet set. The core does not depend on that guard:
+no store retires in the cycle before either flush, and the ROB never commits
+in a flush cycle.
 
-Live occupancy is maintained separately in an exact event counter. Accepted
-slot-1/slot-2 allocations increment it; a union of partial-flush, failed-SC,
-and completed-drain removal masks decrements it, so overlapping removal causes
-cannot double-count an entry. The counter updates on the same edge as
-`sq_valid`, making `o_count` / `o_dispatch_count` and `o_empty` /
-`o_dispatch_empty` exact immediately after that edge with no added issue
-latency. This registered status boundary keeps the `sq_valid` reduction tree
-out of the LQ empty-bypass and cache-read launch cone.
+A full flush (trap, xRET, or FENCE-class recovery) empties the SQ. Those events
+first wait for committed stores to drain, so no committed write is lost.
 
-## Widen-commit slot 2
+Allocation requests in a flush cycle are dropped, as the ROB drops them.
+Dispatch can present one on a trap cycle because the front-end kill arrives a
+cycle late; accepting it would leave an entry for a ROB tag that was never
+allocated. In the following cycle, while the tail moves back, dispatch must
+not allocate at all. The SQ does not block this itself; the front end's
+refill delay after a flush guarantees it, and a simulation check flags any
+violation.
 
-The SQ accepts a parallel slot-2 commit port (`i_commit_valid_2`,
-`i_commit_rob_tag_2`, plus a combinational twin used only for the
-architectural committed-empty view; see "Same-cycle commit hazard" below).
-Slot 2 only ever retires plain stores: the ROB's widen-commit hazard gate
-forces SC / AMO onto slot 1, so no SC-discard path is shared with slot 2.
-Forwarding scans both slot 1 and slot 2 commits in the same cycle.
-The wrapper drives the combinational twin (`i_commit_valid_comb_2` /
-`i_commit_rob_tag_comb_2`). Without this guard, an architectural drain consumer
-(for example a machine-timer trap or a
-terminally accepted MMIO read) could then observe committed-empty before the
-SQ saw a head+1 store on the registered commit path.
+When a store-conditional fails, the ROB signals an SC discard and the SQ drops
+the entry without writing memory. The LR reservation lives in the LQ.
 
-## Same-cycle commit hazard
+## Storage
 
-A flush can arrive one cycle after a store's raw commit pulse, for
-partial-flush misprediction recovery and full-flush trap / xRET / FENCE-class
-recovery alike. The SQ then sees the registered commit view in the flush cycle
-while `sq_committed` is still one NBA behind, so the flush could otherwise
-wipe out a store that just committed. The partial-flush kill
-(`flush_kill_base`) therefore excludes entries matching the registered commit
-ports.
-
-A commit pulse cannot land in the flush cycle itself: the ROB gates
-`commit_ready_early` with `!i_flush_en && !i_flush_all` on the same flush nets
-used by this kill, and with it the raw store-commit pulses that drive
-`i_commit_valid_comb/_comb_2`. The kill needs no combinational commit guard; a
-simulation assertion and a formal assumption pin the invariant. The
-combinational commit ports remain in use for the architectural
-committed-empty view shared by trap/MRET, fence/atomic, and router
-device-read ordering (see "Widen-commit slot 2" above).
-
-## SC discard
-
-If a store-conditional fails (the LR reservation was lost), the ROB
-sends an SC discard signal to the SQ to drop the SC's entry without
-writing memory. The reservation register itself lives in the LQ.
-
-## Storage strategy
-
-Hybrid FF + LUTRAM, same idea as the LQ. Control fields stay in flip-flops
-for parallel CAM-style scan; the 64-bit data payload lives in a single LUTRAM
-instance read by the drain side at `drain_idx_q`, plus a per-entry flip-flop
-mirror written in parallel for forwarding. The scan qualifies entries from
-the FF fields and registers only compact winner metadata. The next cycle
-selects the write-once mirror while the LQ consumes the registered result, so
-there is no LUTRAM read and no extra cycle on the forwarding path.
-
-The forwarding-check address arrives on four functionally identical ports:
-`i_sq_check_addr` plus the `b`/`c`/`d` copies driven by `dont_touch`'d LQ-side
-replica registers. Entries 0..1, 2..3, 4..5, and 6..7 respectively compare
-against those four anchors. The quarter selects are elaboration constants, so
-they synthesize as wiring rather than a runtime mux. This keeps each two-entry
-compare cluster local instead of making the address bit traverse all four
-lower- or upper-half compares before the winner tree.
+Control fields are flip-flops, because the address CAM, the forwarding scan,
+and flushes read every entry at once. Store data lives in a LUTRAM read by the
+drain, plus a per-entry flip-flop copy read by the forwarding path. The LQ
+sends four identical copies of the check address (`i_sq_check_addr` and its
+`_b`, `_c`, `_d` twins), each compared against two entries, to keep the compare
+logic local.
 
 ## Verification
 
 The `store_queue` cocotb target covers two-wide allocation, updates,
-forwarding, pipelined drain, flushes, and SC discard. Inline formal
-properties check live-count consistency, write prerequisites, in-flight
-bounds, forwarding, and that committed stores survive a flush.
+forwarding, pipelined drain, flushes, and SC discard. Inline formal properties
+check live-count consistency, write prerequisites, in-flight bounds,
+forwarding, and that committed stores survive a partial flush.
 
 See the [test runner](../../../../../../tests/README.md) for commands and the
 [formal guide](../../../../../../formal/README.md) for proof scope and assumptions.

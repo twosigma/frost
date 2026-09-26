@@ -15,11 +15,16 @@
  */
 
 /*
- * Line-aligned DDR-resident targets: a {32-bit, RVC} bundle (advance 6)
- * followed by a 32-bit instruction at the upper halfword of the window's
- * second word, so its second half lives in the word after the served
- * window. Reached by a call into a cold L1I line (first call) and a warm
- * one (second call). Fixed encodings, no relaxation.
+ * Line-aligned DDR-resident targets. Each starts with a 6-byte bundle
+ * ({32-bit, RVC} in A, {RVC, 32-bit} in B) followed by a 32-bit instruction
+ * at the upper halfword of the window's second word, so its second half lives
+ * in the word after the served window. main calls both from a first pass,
+ * which starts with neither line fetched, and again from a warm second pass.
+ * B starts four lines past A. The fetch provider fills the line after a
+ * missed window line along with it, and the wrong path fetched after A's
+ * return can reach that line and start fills of the next two, so a B any
+ * closer could already be resident on its first call. Fixed encodings, no
+ * relaxation.
  */
     .option norelax
     .section .ddr_text, "ax", @progbits
@@ -31,6 +36,7 @@ lead_target_a:
     .word 0x02200513            /* addi a0, zero, 0x22 (at +6: spans words 1 and 2) */
     .half 0x8082                /* c.ret */
     .balign 32
+    .fill 24, 4, 0x00000013     /* nops: the three lines after A's */
     .globl lead_target_b
 lead_target_b:
     .half 0x0001                /* c.nop */

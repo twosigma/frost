@@ -1,0 +1,22 @@
+[tasks]
+bmc
+
+[options]
+mode bmc
+depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv dtlb.sv
+read -formal -D SYNTHESIS -D DMMU_MMIO_LOCAL_PROOF -sv dmmu.sv
+prep -top dmmu
+select -assert-none t:$assume a:init
+select -assert-none t:$check r:FLAVOR=assume %i
+select -assert-count 3 t:$check r:FLAVOR=assert %i
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv

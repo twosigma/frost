@@ -1,6 +1,7 @@
-# The development image installs its toolchain from pinned upstream releases.
-# Source and build products enter only through the runtime /workspace mount;
-# Dockerfile and docker_entrypoint.py are embedded for doctor fingerprints.
+# The image installs its core tools from pinned upstream releases; source and
+# build products reach the container only through the /workspace mount at run
+# time. The image copies in Dockerfile and docker_entrypoint.py, which
+# `frost.py doctor` compares with the checkout.
 **
 !Dockerfile
 !docker_entrypoint.py

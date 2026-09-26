@@ -31,16 +31,17 @@
     STAGE6:  apply the rounding increment and format the result into result_s7
     STAGE7:  hold; o_valid is registered from this state and asserts the next cycle
 
-  fpu_adder_unit holds its started flag until o_valid, back-pressuring the FP add shim
-  and FP_RS instead of stalling the pipeline. Operand stability comes from this module's
-  own capture registers, so no capture bypass is needed.
+  i_valid is sampled only in IDLE, so the caller must not start another operation
+  before o_valid; fpu_adder_unit's started flag enforces this. Operands are captured
+  on the start cycle and need not be held.
 
   Special cases:
     - NaN inputs produce the canonical quiet NaN; a signaling NaN also raises NV
-    - Infinities of opposite sign give NaN and raise NV; otherwise an infinite
-      operand passes through
+    - Infinities of opposite sign (after the FSUB negation of B) give NaN and raise
+      NV; otherwise the infinite operand passes through
     - Signed-zero rules for a zero result
-    - Subnormal inputs are normalized by fp_operand_unpacker (exp_adj)
+    - Subnormal inputs enter with exponent 1 and a zero implicit bit
+      (fp_operand_unpacker's exp_adj)
 */
 module fp_adder #(
     parameter int unsigned FP_WIDTH = 32
@@ -52,7 +53,7 @@ module fp_adder #(
     input logic [FP_WIDTH-1:0] i_operand_b,
     input logic i_is_subtract,  // 1 for FSUB, 0 for FADD
     input logic [2:0] i_rounding_mode,
-    input logic i_stall,  // Pipeline stall (unused in non-pipelined mode)
+    input logic i_stall,  // Unused; tied off by the caller
     output logic [FP_WIDTH-1:0] o_result,
     output logic o_valid,
     output riscv_pkg::fp_flags_t o_flags
@@ -504,6 +505,9 @@ module fp_adder #(
       .i_mantissa_work   (mantissa_work_s6),
       .i_round_up        (round_up_s6),
       .i_is_inexact      (is_inexact_s6),
+      // A sum or difference below the minimum normal is exact, so an inexact
+      // result is never tiny.
+      .i_is_tiny         (1'b0),
       .i_result_sign     (result_sign_s6),
       .i_rm              (rm_s6),
       .i_is_special      (is_special_s6),

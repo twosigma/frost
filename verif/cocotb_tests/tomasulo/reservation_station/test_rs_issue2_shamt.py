@@ -12,7 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Exercise actual dual-issue RS amount capture, not a substitute stage model."""
+"""Tests for the port-1 shift amount of a dual-issue reservation station.
+
+o_issue_shift_amount_2 is registered with port 1's operands. For a shift or
+rotate that uses the ALU barrel shifter, it holds the immediate's low six bits
+for an immediate form and the low six bits of the final src2 value for a
+register form. The DUT is the reservation_station module itself.
+"""
 
 from typing import Any
 
@@ -48,14 +54,18 @@ BARREL_OPS = (
 
 
 def issue2(dut: Any) -> dict:
-    """Read the real secondary packet, including payload during ready-low hold."""
+    """Unpack o_issue_2, including its payload while i_fu_ready_2 is low."""
     return unpack_rs_issue(int(dut.o_issue_2.value))
 
 
 async def dispatch_pair(
     iface: RSInterface, name: str, amount: int, *, waiting: bool = False
 ) -> None:
-    """Leave lowest ready entry for port0 and the tested entry for port1."""
+    """Dispatch an ADD for port 0 and the tested operation for port 1.
+
+    src2 carries amount and imm carries 63 - amount, while use_imm follows
+    amount's low bit, so the captured amount shows which source was chosen.
+    """
     iface.drive_dispatch(
         rob_tag=1,
         op=OPS["ADD"],
@@ -83,7 +93,10 @@ async def dispatch_pair(
 
 
 async def capture(iface: RSInterface) -> dict:
-    """Issue2 must capture on the next edge, with port0 held independently."""
+    """Raise i_fu_ready_2 and return the packet port 1 issues on the next edge.
+
+    Port 0's i_fu_ready stays low, so port 1 issues on its own.
+    """
     iface.dut.i_fu_ready_2.value = 1
     await iface.step()
     value = issue2(iface.dut)
@@ -93,7 +106,7 @@ async def capture(iface: RSInterface) -> dict:
 
 @cocotb.test()
 async def test_every_barrel_amount_and_operation(dut: Any) -> None:
-    """All 18 consuming operations ×64 amounts, conflicting imm/use_imm."""
+    """Check every shift and rotate that uses the barrel shifter at all 64 amounts."""
     Clock(dut.i_clk, 10, unit="ns").start()
     iface = RSInterface(dut)
     for name in BARREL_OPS:
@@ -110,7 +123,10 @@ async def test_every_barrel_amount_and_operation(dut: Any) -> None:
 
 @cocotb.test()
 async def test_live_cdb_hold_refill_and_flush(dut: Any) -> None:
-    """Both live lanes, changing inputs under hold, same-edge refill and kills."""
+    """Check CDB capture on both lanes, a held packet, refill, flushes, and reset.
+
+    While port 1 is held, CDB traffic must not change its packet or amount.
+    """
     Clock(dut.i_clk, 10, unit="ns").start()
     iface = RSInterface(dut)
     for lane in (0, 1):
@@ -132,7 +148,7 @@ async def test_live_cdb_hold_refill_and_flush(dut: Any) -> None:
             assert int(dut.o_issue_shift_amount_2.value) == 41 + lane
         iface.clear_cdb()
         iface.clear_cdb_2()
-        # A second secondary candidate waits while the existing bank is held.
+        # A second port-1 candidate waits while port 1's stage 2 is held.
         iface.drive_dispatch(
             rob_tag=3,
             op=OPS["SRLI"],
@@ -147,7 +163,7 @@ async def test_live_cdb_hold_refill_and_flush(dut: Any) -> None:
         await iface.step()
         dut.i_fu_ready_2.value = 1
         await Timer(1, unit="ns")
-        assert issue2(dut)["rob_tag"] == 2  # retiring pre-edge packet
+        assert issue2(dut)["rob_tag"] == 2  # held packet, accepted at the next edge
         await iface.step()
         assert issue2(dut)["valid"] and issue2(dut)["rob_tag"] == 3
         assert int(dut.o_issue_shift_amount_2.value) == 57
@@ -168,7 +184,7 @@ async def test_live_cdb_hold_refill_and_flush(dut: Any) -> None:
         await iface.reset_dut()
         await dispatch_pair(iface, "SRAW", 35)
         await capture(iface)
-        # Reset an occupied bank; stale unreset amount must never issue.
+        # Reset while port 1's stage 2 is full: its packet must not issue.
         await iface.reset_dut()
         dut.i_fu_ready_2.value = 1
         await Timer(1, unit="ns")

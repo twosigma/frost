@@ -17,10 +17,10 @@
 """Run clang-tidy with each RISC-V source file's build flags.
 
 Make supplies the ABI, defines, and include paths. Compiler diagnostics are
-errors; the existing bugprone, misc, performance, and readability findings in
-``.clang-tidy`` remain advisory until the repository has a clean baseline.
-Advisory counts are always reported; ``FROST_CLANG_TIDY_SHOW_ADVISORIES=1``
-prints the findings themselves.
+errors. Findings from the bugprone, misc, performance, and readability checks
+in ``.clang-tidy`` are advisory until the repository is clean of them: the
+count is reported for each file that has any, and
+``FROST_CLANG_TIDY_SHOW_ADVISORIES=1`` prints the findings themselves.
 """
 
 import os
@@ -119,8 +119,8 @@ __frost_clang_tidy_config:
 def extract_flags_from_common_mk(root_dir: Path) -> tuple[str, str]:
     """Evaluate RISCV_FLAGS and FPGA_CPU_CLK_FREQ from common.mk.
 
-    Make expansion preserves ``?=``, recursive variables such as ``$(MABI)``,
-    and environment overrides; text parsing previously produced ``-mabi=``.
+    Make itself expands the file, so ``?=`` defaults, recursive variables such
+    as ``$(MABI)``, and environment overrides all apply.
 
     Returns:
         Tuple of (riscv_flags, fpga_clk_freq)
@@ -143,7 +143,7 @@ def extract_flags_from_common_mk(root_dir: Path) -> tuple[str, str]:
 
 
 def _resolve_include_paths(flags: str, working_directory: Path) -> str:
-    """Make relative compiler include paths absolute for a repository-root run."""
+    """Drop flags clang does not support and make relative -I paths absolute."""
     tokens = shlex.split(flags)
     resolved: list[str] = []
     index = 0
@@ -176,7 +176,7 @@ def extract_flags_for_file(
     default_flags: str,
     default_clock: str,
 ) -> tuple[str, str]:
-    """Evaluate the compile flags of the app that owns the file."""
+    """Return a file's flags and clock from its app's Makefile or common.mk."""
     path = Path(file_path)
     if path.is_absolute():
         try:

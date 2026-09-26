@@ -17,12 +17,14 @@
 /*
   IEEE 754 floating-point square root, fully pipelined.
 
-  Simulation reference only. The core takes square roots on fp_div_sqrt_iter,
-  whose shared iterative datapath costs a fraction of the cells this unrolled
-  pipeline does; this file stays as the model the fp_div_sqrt_equiv bench
-  compares against, and is not in any synthesis file list.
+  Simulation-only reference model, not in any synthesis file list. The core
+  takes square roots with fp_div_sqrt_iter, which shares one iterative
+  datapath between divide and square root at a fraction of this unrolled
+  pipeline's area. The fp_div_sqrt_equiv bench checks that unit's results,
+  flags, and latency against this model.
 
-  Accepts a new operation every cycle. Pipeline depth:
+  Accepts a new operation every cycle. The depth is MantBits + 12 stages, the
+  same as fp_divider's:
     SP (FP_WIDTH=32): RootBits + 9 = 27 + 9 = 36 stages
     DP (FP_WIDTH=64): RootBits + 9 = 56 + 9 = 65 stages
 
@@ -108,9 +110,7 @@ module fp_sqrt #(
 
   // =========================================================================
   // Stage 1: UNPACK (unpack, classify, count leading fraction zeros)
-  // Combinational from s0, registered into s1. This register is the former
-  // post-compute PAD stage, moved ahead of the setup barrel-shift and
-  // exponent-adjust cone.
+  // Combinational from s0, registered into s1.
   // =========================================================================
   logic                unpack_sign;
   logic [ ExpBits-1:0] unpack_exp;
@@ -375,20 +375,19 @@ module fp_sqrt #(
   // =========================================================================
   // Stage 4+RootBits+1: ROUND_SHIFT (fp_subnorm_shift)
   // =========================================================================
-  logic [MantBits:0] rsh_pre_round_mant;
-  logic              rsh_guard_bit;
-  logic              rsh_round_bit;
-  logic              rsh_sticky_bit;
-  logic              rsh_is_zero;
+  // The root carries MantBits + 3 bits: the mantissa, then guard and round.
+  // Its last bit and a nonzero remainder set sticky.
+  logic [MantBits-1:0] rsh_mantissa;
+  logic                rsh_guard_bit;
+  logic                rsh_round_bit;
+  logic                rsh_sticky_bit;
+  logic                rsh_is_zero;
 
-  assign rsh_pre_round_mant = s_norm_root[RootBits-1-:(MantBits+1)];
-  assign rsh_guard_bit      = s_norm_root[1];
-  assign rsh_round_bit      = s_norm_root[0];
-  assign rsh_sticky_bit     = |s_norm_remainder;
-  assign rsh_is_zero        = (s_norm_root == '0) && (s_norm_remainder == '0);
-
-  logic [MantBits-1:0] rsh_mantissa_retained;
-  assign rsh_mantissa_retained = rsh_pre_round_mant[MantBits:1];
+  assign rsh_mantissa   = s_norm_root[RootBits-1-:MantBits];
+  assign rsh_guard_bit  = s_norm_root[2];
+  assign rsh_round_bit  = s_norm_root[1];
+  assign rsh_sticky_bit = s_norm_root[0] | (|s_norm_remainder);
+  assign rsh_is_zero    = (s_norm_root == '0) && (s_norm_remainder == '0);
 
   logic [MantBits-1:0] rsh_mantissa_out;
   logic rsh_guard_out, rsh_round_out, rsh_sticky_out;
@@ -398,10 +397,10 @@ module fp_sqrt #(
       .MANT_BITS(MantBits),
       .EXP_EXT_BITS(ExpExtBits)
   ) u_subnorm_shift (
-      .i_mantissa(rsh_mantissa_retained),
-      .i_guard(rsh_pre_round_mant[0]),
-      .i_round(rsh_guard_bit),
-      .i_sticky(rsh_round_bit | rsh_sticky_bit),
+      .i_mantissa(rsh_mantissa),
+      .i_guard(rsh_guard_bit),
+      .i_round(rsh_round_bit),
+      .i_sticky(rsh_sticky_bit),
       .i_exponent(s_norm_result_exp),
       .o_mantissa(rsh_mantissa_out),
       .o_guard(rsh_guard_out),
@@ -441,7 +440,7 @@ module fp_sqrt #(
   logic rprep_is_inexact;
 
   assign rprep_lsb = s_rsh_mantissa[0];
-  // sqrt result is always positive (sign=0)
+  // Non-special results are positive; sqrt(-0) = -0 is a special case.
   assign rprep_round_up = riscv_pkg::fp_compute_round_up(
       s_rsh_rm, s_rsh_guard, s_rsh_round, s_rsh_sticky, rprep_lsb, 1'b0
   );
@@ -487,7 +486,10 @@ module fp_sqrt #(
       .i_mantissa_work(s_rprep_mantissa),
       .i_round_up(s_rprep_round_up),
       .i_is_inexact(s_rprep_is_inexact),
-      .i_result_sign(1'b0),  // sqrt result is always positive
+      // A root is never tiny: even the smallest subnormal's (2^-537 in double
+      // precision) is far above the minimum normal.
+      .i_is_tiny(1'b0),
+      .i_result_sign(1'b0),  // non-special results are positive
       .i_rm(s_rprep_rm),
       .i_is_special(s_rprep_is_special),
       .i_special_result(s_rprep_special_result),
