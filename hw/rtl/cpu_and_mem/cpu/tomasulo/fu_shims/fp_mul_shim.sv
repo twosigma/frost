@@ -565,17 +565,20 @@ module fp_mul_shim (
     end
   end
 
+  // The tag is not qualified with valid: the adapter uses it only with valid,
+  // and its partial-flush compare must not wait for the head-valid logic,
+  // which includes this shim's own flush compare. The tag is unspecified
+  // while valid is low.
   always_comb begin
+    o_fu_complete.tag = fifo_tag[fifo_rd_ptr];
     if ((fifo_count != '0) && !fifo_flushed[fifo_rd_ptr] && !fifo_head_partial_flushing) begin
       o_fu_complete.valid     = 1'b1;
-      o_fu_complete.tag       = fifo_tag[fifo_rd_ptr];
       o_fu_complete.value     = fifo_head_payload[FLEN-1:0];
       o_fu_complete.exception = 1'b0;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
       o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'(fifo_head_payload[PayloadW-1:FLEN]);
     end else begin
       o_fu_complete.valid     = 1'b0;
-      o_fu_complete.tag       = '0;
       o_fu_complete.value     = '0;
       o_fu_complete.exception = 1'b0;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
