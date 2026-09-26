@@ -3521,6 +3521,14 @@ module load_queue #(
 `endif
   end
 
+  // An AMO never takes the L0 fast path (cache_hit_fast_path excludes it), so
+  // its launch is o_mem_read_en without the L0 lookup. TIMING: the AMO payload
+  // snapshots below use this form, which keeps the L0 tag compare off their
+  // enables (it equals o_mem_read_en && sq_check_is_amo_q, checked below).
+  logic amo_launch;
+  assign amo_launch = sq_check_is_amo_q && !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
+                      sq_can_issue && !cached_launch_hold_q;
+
   always_ff @(posedge i_clk) begin
     // Snapshot every request handed to the router: a fast-tier (BRAM/MMIO)
     // launch into the single fast snapshot, a cached launch into its slot.
@@ -3537,10 +3545,10 @@ module load_queue #(
       fast_is_mmio  <= sq_check_is_mmio_q;
       fast_sign_ext <= sq_check_sign_ext_q;
       fast_rob_tag  <= sq_check_rob_tag_q;
-      if (sq_check_is_amo_q) begin
-        fast_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
-        fast_amo_rs2  <= lq_amo_rs2_rd;
-      end
+    end
+    if (amo_launch && !launching_is_cached) begin
+      fast_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
+      fast_amo_rs2  <= lq_amo_rs2_rd;
     end
     if (o_mem_read_en && launching_is_cached) begin
       cs_idx[cs_alloc_idx]      <= launch_mem_issue_idx;
@@ -3551,12 +3559,19 @@ module load_queue #(
       cs_is_amo[cs_alloc_idx]   <= sq_check_is_amo_q;
       cs_sign_ext[cs_alloc_idx] <= sq_check_sign_ext_q;
       cs_rob_tag[cs_alloc_idx]  <= sq_check_rob_tag_q;
-      if (sq_check_is_amo_q) begin
-        cs_amo_kind[cs_alloc_idx] <= lq_amo_kind[launch_mem_issue_idx];
-        cs_amo_rs2[cs_alloc_idx]  <= lq_amo_rs2_rd;
-      end
+    end
+    if (amo_launch && launching_is_cached) begin
+      cs_amo_kind[cs_alloc_idx] <= lq_amo_kind[launch_mem_issue_idx];
+      cs_amo_rs2[cs_alloc_idx]  <= lq_amo_rs2_rd;
     end
   end
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown({amo_launch, o_mem_read_en, sq_check_is_amo_q})) begin
+      p_amo_launch_is_the_amo_launch : assert (amo_launch == (o_mem_read_en && sq_check_is_amo_q));
+    end
+  end
+`endif
 
   // -----------------------------------------------------------------
   // Internal data: registered AMO write payload and completion identity.
