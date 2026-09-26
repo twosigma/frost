@@ -2342,10 +2342,19 @@ module reorder_buffer #(
   assign o_commit_valid_raw = commit_en;
   assign commit_store_like_early = commit_ready_early && head_f_store_like;
   assign o_commit_store_like_raw = commit_store_like_early && !commit_stall_for_retire;
+  // TIMING: allocation records the branch class and CDB-bypass eligibility
+  // together, and no branch is bypass-eligible, so a branch head is ready
+  // exactly when its stored done bit is set. The branch strobes read that bit,
+  // which keeps the head's CDB match out of the misprediction and
+  // correct-branch captures; their head_ready forms are checked below.
+  logic commit_branch_ready_early;
+  assign commit_branch_ready_early = head_valid && head_done && !head_exception &&
+                                     !i_commit_hold && !i_early_recovery_en && !i_flush_en &&
+                                     !i_flush_all && !flush_after_head_commit;
   assign commit_mispredict_early =
-      commit_ready_early && commit_misprediction && !head_early_recovered;
+      commit_branch_ready_early && commit_misprediction && !head_early_recovered;
   assign o_commit_misprediction_raw = commit_mispredict_early && !commit_stall_for_retire;
-  assign commit_correct_branch_early = commit_ready_early && head_f_has_checkpoint &&
+  assign commit_correct_branch_early = commit_branch_ready_early && head_f_has_checkpoint &&
                                        !commit_misprediction && !head_early_recovered;
   assign o_commit_correct_branch_raw = commit_correct_branch_early && !commit_stall_for_retire;
   // Slot-2 correct-branch strobe: qualified on the full widen-commit fire
@@ -2362,7 +2371,7 @@ module reorder_buffer #(
   // Same factoring; unlike commit_ready_early, the conjunct set has no
   // !head_exception.
   assign head_mispredict_candidate_early =
-      head_ready && !i_commit_hold && !i_early_recovery_en &&
+      head_valid && head_done && !i_commit_hold && !i_early_recovery_en &&
       !i_flush_en && !i_flush_all && !flush_after_head_commit &&
       commit_misprediction && !head_early_recovered;
   assign o_head_commit_misprediction_candidate =
@@ -2902,16 +2911,28 @@ module reorder_buffer #(
         head_next_is_branch && !head_next_mispredicted && !head_next_ok_2wide;
   end
 
-  // CSR/xRET starts: allocation records the class bits and CDB-bypass
-  // eligibility together, so no live CSR or xRET entry is bypass-eligible.
-  // That makes the stored-done start equations equal to their head_ready
-  // reference forms, including the xRET start's MRET_EXEC and
+  // CSR/xRET starts and branch strobes: allocation records the class bits and
+  // CDB-bypass eligibility together, so no live CSR, xRET or branch entry is
+  // bypass-eligible. That makes the stored-done equations equal to their
+  // head_ready reference forms, including the xRET start's MRET_EXEC and
   // committed-stores-drained terms.
 `ifndef SYNTHESIS
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       p_start_class_excludes_bypass :
       assert ((rob_valid & rob_f_cdb_bypass_ok & (rob_f_is_csr | rob_f_is_mret)) == '0);
+      p_branch_class_excludes_bypass :
+      assert ((rob_valid & rob_f_cdb_bypass_ok & (rob_f_is_branch | rob_f_has_checkpoint)) == '0);
+      p_branch_strobes_legacy_equiv :
+      assert ((commit_mispredict_early ==
+               (commit_ready_early && commit_misprediction && !head_early_recovered)) &&
+              (commit_correct_branch_early ==
+               (commit_ready_early && head_f_has_checkpoint && !commit_misprediction &&
+                !head_early_recovered)) &&
+              (head_mispredict_candidate_early ==
+               (head_ready && !i_commit_hold && !i_early_recovery_en && !i_flush_en &&
+                !i_flush_all && !flush_after_head_commit && commit_misprediction &&
+                !head_early_recovered)));
       p_csr_start_legacy_equiv :
       assert (o_csr_start == ((serial_state == riscv_pkg::SERIAL_IDLE) && head_ready &&
               !i_commit_hold && !i_early_recovery_en && head_f_is_csr &&

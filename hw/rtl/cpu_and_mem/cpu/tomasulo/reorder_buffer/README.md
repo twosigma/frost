@@ -126,8 +126,9 @@ A CDB write sets `done` at the next clock edge, so on its own the head would
 retire a cycle after its result arrives. The bypass matches both CDB lanes
 against the head and head+1 tags and feeds a hit straight into retirement.
 At the head it applies only to ordinary completions: exceptions, branches and
-jumps, CSRs, fences, WFI, and xRETs keep their usual paths. CSRs and xRETs
-must stay excluded there, because `o_csr_start` and `o_mret_start` read the
+jumps, CSRs, fences, WFI, and xRETs keep their usual paths. CSRs, xRETs,
+branches and jumps must stay excluded there, because `o_csr_start`,
+`o_mret_start` and the misprediction and correct-branch strobes read the
 stored done bit (an assertion checks this). At head+1 the bypass excludes
 only exceptional completions, since the two-wide hazard gate below already
 keeps the serializing classes off slot 2.
