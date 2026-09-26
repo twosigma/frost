@@ -669,7 +669,7 @@ module fp_mul_shim (
   // operation. A full flush empties the ring; in the tag queue the operation
   // still pops in order, marked flushed.
   localparam int unsigned FMultCycles = 11;
-  localparam int unsigned FFmaCycles = 16;
+  localparam int unsigned FFmaCycles  = 16;
   (* anyseq *) logic f_pick;
   logic f_armed, f_in_queue, f_in_ring, f_fma;
   logic [TagW-1:0] f_tag;
@@ -719,8 +719,7 @@ module fp_mul_shim (
     if (i_rst_n && f_queue_pop && (f_queue_ahead == '0)) begin
       p_tracked_queue_head :
       assert ((f_fma ? fma_tag_q[fma_rd_ptr] : mult_tag_q[mult_rd_ptr]) == f_tag);
-      p_tracked_pop_at_own_result :
-      assert (f_age == 5'(f_fma ? FFmaCycles : FMultCycles));
+      p_tracked_pop_at_own_result : assert (f_age == 5'(f_fma ? FFmaCycles : FMultCycles));
     end
     if (i_rst_n && f_in_ring && (f_ring_ahead == '0)) begin
       p_tracked_ring_head :
