@@ -37,8 +37,9 @@ The tuning flags are:
 --param max-inline-insns-auto=200 -fira-algorithm=CB -fstrict-aliasing -fselective-scheduling -fbranch-probabilities -fprofile-correction -Wno-missing-profile -mtune=generic-ooo
 ```
 
-These are the CoreMark Makefile's defaults for `COREMARK_PGO=1`. Its defaults
-without PGO use `-mtune=sifive-7-series` and add static-layout and LTO flags.
+These are the CoreMark Makefile's defaults. `COREMARK_PGO=0` builds without
+the profiles instead, with `-mtune=sifive-7-series` and static-layout and LTO
+flags.
 
 PGO training uses the official profile data set (1,200 bytes, seeds 8/8/8).
 Generate the profiles in the pinned image:
@@ -54,7 +55,7 @@ gives the same counts and the same benchmark image.
 
 | Build variable | Purpose |
 | --- | --- |
-| `COREMARK_PGO=1` | Use the generated branch profiles and the tuning flags above |
+| `COREMARK_PGO=0` | Build without the branch profiles (the default, `1`, uses them and the tuning flags above) |
 | `APP_TUNE_FLAGS` | Replace the default tuning flags |
 | `COREMARK_SEED_SET=performance` or `validation` | Select the official seed set |
 | `COREMARK_COMPRESSED=0` or `1` | Disable or enable compressed instructions |
@@ -88,7 +89,7 @@ builds, because its symbol table names a temporary `ccXXXXXX.o` object file.
 python3 scripts/coremark_sweep.py --output /absolute/new/coremark-results --orders 1 --compressed 0 --memory bram --seeds performance validation --runs 1 --pgo 1
 
 # Compressed code and link order in both memory tiers, without PGO
-python3 scripts/coremark_sweep.py --output /absolute/new/layout-results --orders 4 --compressed 0 1 --memory bram ddr --seeds performance validation --runs 2
+python3 scripts/coremark_sweep.py --output /absolute/new/layout-results --orders 4 --compressed 0 1 --memory bram ddr --seeds performance validation --runs 2 --pgo 0
 ```
 
 BRAM runs honor `--runs`; DDR runs once per invocation. Predictors and
@@ -106,10 +107,10 @@ set up, build and test natively:
 ./fpga/hw_regression.py --board x3
 ```
 
-The hardware regression uses the standard application builds, not the tuned
-PGO build. When reporting a tuned score, keep the benchmark ELF, load images,
-and flags with the result, along with the source revision, tool versions,
-bitstream, UART output, and final timing reports.
+The hardware regression runs this same CoreMark build. When reporting a
+score, keep the benchmark ELF, load images, and flags with the result, along
+with the source revision, tool versions, bitstream, UART output, and final
+timing reports.
 
 ## Comparing changes
 

@@ -66,12 +66,13 @@ COREMARK_STATIC_LAYOUT_TUNE := -fno-crossjumping -freorder-blocks-and-partition
 COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
                      --param max-completely-peel-times=0
 
-# Optional PGO trains on the official profile data set (1200 bytes, seeds
-# 8/8/8). Keeping the profile flags in APP_TUNE_FLAGS puts them in the reported
-# compiler flags. -fbranch-probabilities reads edge counts without the extra
-# transformations that -fprofile-use enables. The PGO build uses the
-# out-of-order cost model; its default flags are the published configuration
-# (docs/single_core_performance.md).
+# The default build uses branch profiles trained on the official profile data
+# set (1200 bytes, seeds 8/8/8). Keeping the profile flags in APP_TUNE_FLAGS
+# puts them in the reported compiler flags. -fbranch-probabilities reads edge
+# counts without the extra transformations that -fprofile-use enables. The
+# PGO build uses the out-of-order cost model; its flags are the published
+# configuration (docs/single_core_performance.md). COREMARK_PGO=0 builds
+# without the profiles, with the static-layout and LTO flags instead.
 #
 # iss/generate_profile.py writes profiles for the five benchmark sources; the
 # port layer and libraries build without one. The existence check stops a
@@ -79,7 +80,7 @@ COREMARK_LTO_TUNE := -flto --param max-completely-peeled-insns=0 \
 COREMARK_PGO_TUNE := -fbranch-probabilities -fprofile-correction \
                      -Wno-missing-profile
 COREMARK_PGO_CPU_TUNE := -mtune=generic-ooo
-COREMARK_PGO ?= 0
+COREMARK_PGO ?= 1
 COREMARK_PGO_PROFILES :=
 ifeq ($(COREMARK_PGO),1)
 COREMARK_PGO_PROFILES := $(addsuffix .gcda,$(addprefix sw.elf-,\

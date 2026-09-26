@@ -137,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         default=1,
         help="runs per BRAM configuration, with a reset between runs; DDR runs once",
     )
-    parser.add_argument("--pgo", choices=("0", "1"), default="0")
+    parser.add_argument("--pgo", choices=("0", "1"), default="1")
     parser.add_argument(
         "--tune-flags",
         help="APP_TUNE_FLAGS for every build, recorded with each result",

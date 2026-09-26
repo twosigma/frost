@@ -8,8 +8,8 @@ the RISC-V reference simulator, and runs these tools on the result:
   retires, which separates "the compiler emits more instructions" from "the
   core retires them more slowly". Nothing else depends on it.
 - `generate_profile.py` trains the profile-guided optimization (PGO) data
-  that `../Makefile` uses when `COREMARK_PGO=1`. Its output is committed and
-  is a build input.
+  that `../Makefile` builds with by default (`COREMARK_PGO=1`). Its output is
+  committed and is a build input.
 
 The tools run only on demand and need the pinned toolchain and Spike, so run
 them inside the image. Spike counts retired instructions; it does not model FROST's
