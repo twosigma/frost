@@ -3,13 +3,10 @@
 ## Single-core performance
 
 The goal is 4 CoreMark/MHz at 322.265625 MHz, or 1,289 CoreMark on one hart,
-up from 3.91 CoreMark/MHz. That rate was measured on the board at 161 MHz, on
-a build whose second integer issue port scanned all 16 reservation-station
-entries; the default scans eight, which in simulation takes about 0.5% more
-cycles. A score counts only from a run of at least ten seconds that passes
-the CRC checks for both official seed sets, with the compiler flags, the
-`sw.bin` hash, and memory and cache settings recorded. RTL changes must also
-keep routed timing at the target clock.
+up from 3.91 CoreMark/MHz. A score counts only from a run of at least ten
+seconds that passes the CRC checks for both official seed sets, with the
+compiler flags, the `sw.bin` hash, and memory and cache settings recorded. RTL
+changes must also keep routed timing at the target clock.
 
 The RV64 core must also match or beat FROST's earlier RV32 configuration,
 tuned the same way, in cycle-exact simulation. The

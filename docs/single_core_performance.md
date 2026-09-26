@@ -1,13 +1,8 @@
 # Single-core performance
 
-FROST runs CoreMark at 3.91 CoreMark/MHz on the X3, measured on the board at
-161.1328125 MHz. The score at the full 322.265625 MHz clock, 1,259 CoreMark,
-is that rate times the clock in MHz, not a separate measurement. The measured
-build's second INT issue port scanned all 16 reservation-station entries. The
-current default scans the lowest eight, which in simulation takes about 0.5%
-more cycles per CoreMark iteration.
-This page describes the current CPU defaults and the benchmark configuration,
-how to measure the score, and how to compare changes.
+FROST runs CoreMark at 3.91 CoreMark/MHz on the X3, 1,259 CoreMark at
+322.265625 MHz. This page describes the current CPU defaults and the benchmark
+configuration, how to measure the score, and how to compare changes.
 
 ## CPU configuration
 
