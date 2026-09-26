@@ -1059,11 +1059,97 @@ module pc_controller #(
   // apply the resteer, the no-progress hold, and both predictions, each only
   // when no redirect is present, and reset. npc_sel and the observation
   // outputs are unaffected.
+  // TIMING: the pending arms' selects are the late part. pc_reg's relations
+  // to the pending branch (at, before, after, at the predecessor) and
+  // seq_reaches_pending come from wide compares, so the selects are written
+  // flat over those compares instead of through the arm priority chain
+  // (use, then hold, then the one-hot winner). The registered terms are
+  // folded first, so each select sees the compares and a few folded terms.
+  // Simulation checks them against the chain (pending_mux_* and
+  // npc_sel_without_prediction below), and fetch_pc_mux checks next_pc.
+  logic [NPcArms-1:0] npc_cond_redirect_or_holdoff;
+  logic [XLEN-1:0] next_pc_redirect_or_holdoff;
+  logic npc_no_redirect_or_holdoff;
+  (* keep = "true" *) logic [XLEN-1:0] next_pc_without_prediction_or_sequential;
+  (* keep = "true" *) logic [XLEN-1:0] next_pc_sequential_target;
+  // The redirect arms and the target-holdoff arm. Their selects do not use
+  // pc_reg's pending compares.
+  always_comb begin
+    npc_cond_redirect_or_holdoff = '0;
+    npc_cond_redirect_or_holdoff[4:1] = npc_cond[4:1];
+    npc_cond_redirect_or_holdoff[9] = npc_cond[9];
+    next_pc_redirect_or_holdoff = '0;
+    for (int unsigned k = 0; k < NPcArms; k++) begin
+      next_pc_redirect_or_holdoff |=
+          {XLEN{npc_cond_redirect_or_holdoff[k] &&
+                !(|(npc_cond_redirect_or_holdoff & ((1 << k) - 1)))}} & npc_val[k];
+    end
+  end
+  assign npc_no_redirect_or_holdoff = !(|npc_cond_redirect_or_holdoff);
+  // Registered pending terms: a valid pending branch that may cross, one
+  // that may not, one whose landing on pc_reg hands off, and the two forms
+  // of the handoff readiness used by the predecessor release.
+  (* keep = "true" *)logic fetch_pending_cross_ok;
+  (* keep = "true" *)logic fetch_pending_no_cross;
+  (* keep = "true" *)logic fetch_pending_at_ok;
+  (* keep = "true" *)logic fetch_pending_ready_at_ok;
+  (* keep = "true" *)logic fetch_pending_release_ok;
+  assign fetch_pending_cross_ok = pending_mux_valid && pending_prediction_allow_cross_pc_mux_q;
+  assign fetch_pending_no_cross = pending_mux_valid && !pending_prediction_allow_cross_pc_mux_q;
+  assign fetch_pending_at_ok = pending_mux_valid &&
+      (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q ||
+       i_prediction_holdoff);
+  assign fetch_pending_ready_at_ok =
+      pending_prediction_allow_cross || pending_prediction_pc_ready_q || i_prediction_holdoff;
+  assign fetch_pending_release_ok = carve_out_engaged_q || i_prediction_holdoff;
+  // First level over the compares: the pending use (pending_mux_use), and the
+  // predecessor release's readiness term with and without the release
+  // condition. With R the readiness (pending_prediction_ready_without_effective)
+  // and C the release condition, the predecessor is released when
+  // at_predecessor && C && !R, and held for the raw-WCS override when
+  // at_predecessor && !C && !R.
+  (* keep = "true" *)logic fetch_pending_use;
+  (* keep = "true" *)logic fetch_pending_not_released;
+  (* keep = "true" *)logic fetch_pending_ready_or_released;
+  assign fetch_pending_use =
+      (fetch_pending_cross_ok && pc_reg_before_pending && seq_reaches_pending) ||
+      (fetch_pending_at_ok && pc_reg_at_pending);
+  assign fetch_pending_not_released = !fetch_pending_release_ok ||
+      (pending_prediction_allow_cross && pc_reg_before_pending && seq_reaches_pending) ||
+      (fetch_pending_ready_at_ok && pc_reg_at_pending);
+  assign fetch_pending_ready_or_released = fetch_pending_release_ok ||
+      (pending_prediction_allow_cross && pc_reg_before_pending && seq_reaches_pending) ||
+      (fetch_pending_ready_at_ok && pc_reg_at_pending);
+  // Second level: the pending-target data (the consume arm, or the hold arm
+  // of a crossing branch), the pending-PC data (the hold arm of a
+  // non-crossing branch), the sequential arm, and the hold arm's raw-WCS
+  // override.
+  (* keep = "true" *)logic fetch_pending_select_target;
+  (* keep = "true" *)logic fetch_pending_select_pc;
+  (* keep = "true" *)logic fetch_pending_select_sequential;
+  (* keep = "true" *)logic fetch_pending_hold_at_predecessor;
+  assign fetch_pending_select_target = npc_no_redirect_or_holdoff &&
+      (fetch_pending_use ||
+       (fetch_pending_cross_ok && !pc_reg_after_pending &&
+        (!pc_reg_at_pending_predecessor || fetch_pending_not_released)));
+  assign fetch_pending_select_pc = npc_no_redirect_or_holdoff && fetch_pending_no_cross &&
+      !fetch_pending_use && !pc_reg_after_pending &&
+      (!pc_reg_at_pending_predecessor || fetch_pending_not_released);
+  assign fetch_pending_select_sequential = npc_no_redirect_or_holdoff && !fetch_pending_use &&
+      !(pending_mux_valid && !pc_reg_after_pending &&
+        (!pc_reg_at_pending_predecessor || fetch_pending_not_released));
+  assign fetch_pending_hold_at_predecessor = npc_no_redirect_or_holdoff && pending_mux_valid &&
+      !fetch_pending_use && !pc_reg_after_pending && pc_reg_at_pending_predecessor &&
+      !fetch_pending_ready_or_released;
+  assign next_pc_without_prediction_or_sequential = next_pc_redirect_or_holdoff |
+      ({XLEN{fetch_pending_select_target}} & pending_prediction_target) |
+      ({XLEN{fetch_pending_select_pc}} & pending_prediction_pc);
+`ifndef SYNTHESIS
+  // Reference: the arm priority chain over the pending terms.
   logic [NPcArms-1:0] npc_cond_without_prediction;
   logic [NPcArms-1:0] npc_sel_without_prediction;
   logic [XLEN-1:0] npc_val_without_sequential[NPcArms];
-  (* keep = "true" *) logic [XLEN-1:0] next_pc_without_prediction_or_sequential;
-  (* keep = "true" *) logic [XLEN-1:0] next_pc_sequential_target;
+  logic [XLEN-1:0] next_pc_without_prediction_or_sequential_ref;
   always_comb begin
     npc_cond_without_prediction = npc_cond;
     npc_cond_without_prediction[0] = 1'b0;
@@ -1080,24 +1166,48 @@ module pc_controller #(
     npc_val_without_sequential[12] = pending_prediction_allow_cross_pc_mux_q ?
         pending_prediction_target : pending_prediction_pc;
     npc_val_without_sequential[13] = '0;
-    next_pc_without_prediction_or_sequential = '0;
+    next_pc_without_prediction_or_sequential_ref = '0;
     for (int unsigned k = 0; k < NPcArms; k++) begin
       npc_sel_without_prediction[k] = npc_cond_without_prediction[k] &&
           !(|(npc_cond_without_prediction & ((1 << k) - 1)));
-      next_pc_without_prediction_or_sequential |=
+      next_pc_without_prediction_or_sequential_ref |=
           {XLEN{npc_sel_without_prediction[k]}} & npc_val_without_sequential[k];
     end
   end
+  always_comb begin
+    if (!$isunknown(
+            {
+              npc_cond_without_prediction,
+              pending_mux_consume_is_seq,
+              pending_mux_predecessor,
+              next_pc_without_prediction_or_sequential,
+              next_pc_without_prediction_or_sequential_ref
+            }
+        )) begin
+      p_fetch_pending_selects_match_chain :
+      assert (fetch_pending_select_sequential == npc_sel_without_prediction[13] &&
+              fetch_pending_hold_at_predecessor ==
+              (npc_sel_without_prediction[12] && pending_mux_predecessor) &&
+              (npc_sel_without_prediction[10] && pending_mux_consume_is_seq) ==
+              (npc_no_redirect_or_holdoff && fetch_pending_cross_ok && pc_reg_at_pending &&
+               pending_prediction_fetch_at_target));
+      p_fetch_pending_data_matches_chain :
+      assert (next_pc_without_prediction_or_sequential ==
+              next_pc_without_prediction_or_sequential_ref);
+    end
+  end
+`endif
   // The catch-up arm ranks below every earlier arm, including slot 1 and the
   // pending consume. Its permission is computed without the late NOP,
   // served-window, and slot-1 terms, which are applied after it. Slot 2 wins
   // at the final mux anyway, so it is left out too. Reset is applied only at
-  // the final mux.
+  // the final mux. The pending consume arm needs no term of its own here: it
+  // asks only while pending_prediction_effective, which already blocks
+  // catch-up.
   (* keep = "true" *)logic npc_catchup_permission_without_nop_or_wcs;
   (* keep = "true" *)logic npc_catchup_request_without_slot1;
   assign npc_catchup_permission_without_nop_or_wcs =
-      !(|npc_cond[4:1]) && !(|npc_cond[10:9]) &&
-      !pending_prediction_effective &&
+      !(|npc_cond[4:1]) && !npc_cond[9] && !pending_prediction_effective &&
       (o_fetch_lookup_is_lower_parcel ||
        (pending_prediction_target_holdoff_prev_q &&
         !pending_prediction_target_holdoff_q && i_is_compressed && o_pc_reg[1] &&
@@ -1111,10 +1221,10 @@ module pc_controller #(
   (* keep = "true" *)logic npc_base_sequential_request;
   (* keep = "true" *)logic npc_raw_wcs_sequential_permission;
   assign npc_base_sequential_request =
-      (npc_sel_without_prediction[10] && pending_mux_consume_is_seq) ||
-      npc_sel_without_prediction[13] || npc_catchup_request_without_slot1;
-  assign npc_raw_wcs_sequential_permission =
-      npc_sel_without_prediction[12] && pending_mux_predecessor;
+      (npc_no_redirect_or_holdoff && fetch_pending_cross_ok && pc_reg_at_pending &&
+       pending_prediction_fetch_at_target) ||
+      fetch_pending_select_sequential || npc_catchup_request_without_slot1;
+  assign npc_raw_wcs_sequential_permission = fetch_pending_hold_at_predecessor;
   assign next_pc_sequential_target =
       npc_catchup_request_without_slot1 ? seq_next_pc_plus_2 : seq_next_pc;
   // Per bit: the redirect, resteer, and progress-hold data first, then slot 1
