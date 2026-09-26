@@ -130,12 +130,16 @@ unexport FROST_INITRD
 # sw/apps/compile_app.py keeps simulation builds from inheriting a board's size.
 PACK_ARGS += $(if $(FROST_LINUX_MEM_SIZE),--mem-size "$(FROST_LINUX_MEM_SIZE)")
 
-# Cross prefix for the tiny boot shim. frost_boot_image.py defaults to
-# riscv64-linux-, the shared Bootlin toolchain. The shim explicitly disables
-# PIE. RISCV_PREFIX from the environment overrides the compiler prefix.
-ifdef RISCV_PREFIX
-SHIM_CROSS := FROST_CROSS_COMPILE=$(RISCV_PREFIX)
-endif
+# Cross prefix for the tiny boot shim, which disables PIE itself: the first
+# of RISCV_PREFIX, riscv64-linux- on PATH, and Buildroot's toolchain whose gcc
+# exists. load_software.py picks RISCV_PREFIX before a cold build has installed
+# Buildroot's toolchain, so the prefix it passes can name nothing yet. Expanded
+# when the recipe runs, like MODULE_CROSS above. With none of them,
+# frost_boot_image.py's default, riscv64-linux-, reports the missing compiler.
+resolves   = $(if $(shell command -v "$(1)gcc" 2>/dev/null),$(1))
+SHIM_PREFIX = $(or $(if $(RISCV_PREFIX),$(call resolves,$(RISCV_PREFIX))),\
+  $(call resolves,riscv64-linux-),$(if $(wildcard $(BR2_CROSS)gcc),$(BR2_CROSS)))
+SHIM_CROSS = $(if $(SHIM_PREFIX),FROST_CROSS_COMPILE=$(SHIM_PREFIX))
 
 .PHONY: all clean distclean
 
