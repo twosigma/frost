@@ -2047,7 +2047,9 @@ module reorder_buffer #(
   // ExcMemReplay cause at the head; the entry's exceptional state itself is
   // the shared rob_exception bit above.
   // TIMING: as for done/exception, each entry's next bit is computed for all
-  // four allocation cases before the late allocation enables select one.
+  // four allocation cases before the late allocation enables select one. The
+  // commit clear, whose enables come off the head's CDB bypass and the
+  // serializer stall, applies after that select, as it does for rob_valid.
   // Every update after the set only clears, so their order is immaterial;
   // each keeps the enable of the indexed-write reference below.
   logic [ReorderBufferDepth-1:0] replay_next;
@@ -2065,7 +2067,7 @@ module reorder_buffer #(
     wire commit_clear = !i_flush_all &&
         ((commit_en && head_clear_mask[entry]) ||
          (commit_2_fire && head_next_clear_mask[entry]));
-    wire replay_without_alloc = i_rst_n && !cdb_clear && !flush_clear && !commit_clear &&
+    wire replay_without_alloc = i_rst_n && !cdb_clear && !flush_clear &&
         (rob_replay[entry] ||
          (i_replay_set_mask[entry] && rob_valid[entry] && !rob_exception[entry]));
     (* keep = "true" *) logic [3:0] replay_alloc_cases;
@@ -2075,9 +2077,11 @@ module reorder_buffer #(
       assign replay_alloc_cases[choice] = replay_without_alloc &&
           !(Alloc1 && alloc_here) && !(Alloc2 && alloc_here_2);
     end
-    assign replay_next[entry] = alloc_en_2_valid ?
+    (* keep = "true" *) logic replay_after_alloc;
+    assign replay_after_alloc = alloc_en_2_valid ?
         (alloc_en_valid ? replay_alloc_cases[3] : replay_alloc_cases[2]) :
         (alloc_en_valid ? replay_alloc_cases[1] : replay_alloc_cases[0]);
+    assign replay_next[entry] = replay_after_alloc && !commit_clear;
   end
   always_ff @(posedge i_clk) begin
     rob_replay <= replay_next;
