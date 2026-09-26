@@ -46,8 +46,8 @@ module id_stage #(
     // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
     // Slot 2 does not receive the PD predicted-taken redirect override, which
     // covers slot 1 only (see pd_stage.sv).  Slot 2 carries its own BTB
-    // metadata (staged slot-2 BTB lookup) but no RAS prediction; IF ties that
-    // off.  A slot-2 misprediction recovers in the back end like any other.
+    // metadata (staged slot-2 BTB lookup).  A slot-2 misprediction recovers in
+    // the back end like any other.
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2,
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_next_2
@@ -98,7 +98,6 @@ module id_stage #(
   logic [XLEN-1:0] jal_target_precomputed;
   logic [XLEN-1:0] link_address_precomputed;
   logic btb_correct_non_jalr_precomputed;
-  logic ras_correct_non_jalr_precomputed;
   logic [XLEN-1:0] pc_relative_precomputed;
 
   // TIMING: pd_stage passes the instruction through un-NOP'd and carries the
@@ -182,7 +181,6 @@ module id_stage #(
       .i_program_counter(i_from_pd_to_id.program_counter),
       .i_immediate_b_type(immediate_b_type),
       .i_immediate_j_type(immediate_j_type),
-      .i_ras_predicted_target(i_from_pd_to_id.ras_predicted_target),
       .i_btb_predicted_target(effective_btb_predicted_target),
       .i_immediate_u_type(immediate_u_type),
       .i_is_jal(is_jal_direct),
@@ -192,9 +190,8 @@ module id_stage #(
       .o_branch_target_precomputed(branch_target_precomputed),
       .o_jal_target_precomputed(jal_target_precomputed),
       .o_pc_relative_precomputed(pc_relative_precomputed),
-      // Pre-computed BTB and RAS target checks
-      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed),
-      .o_ras_correct_non_jalr(ras_correct_non_jalr_precomputed)
+      // Pre-computed BTB target check
+      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed)
   );
 
   // F extension: floating-point instruction detection, decoded from the opcode
@@ -333,14 +330,11 @@ module id_stage #(
       o_from_id_to_ex.is_fetch_fault_page       <= 1'b0;
       // Branch prediction metadata
       o_from_id_to_ex.btb_predicted_taken       <= 1'b0;
-      // RAS prediction metadata
-      o_from_id_to_ex.ras_predicted             <= 1'b0;
       // Pre-computed RAS instruction type flags
       o_from_id_to_ex.is_ras_return             <= 1'b0;
       o_from_id_to_ex.is_ras_call               <= 1'b0;
       // Pre-computed BTB verification
       o_from_id_to_ex.btb_correct_non_jalr      <= 1'b0;
-      o_from_id_to_ex.ras_correct_non_jalr      <= 1'b0;
       // F extension
       o_from_id_to_ex.is_fp_instruction         <= 1'b0;
       o_from_id_to_ex.is_fp_load                <= 1'b0;
@@ -396,19 +390,15 @@ module id_stage #(
       // Branch prediction metadata, cleared on flush (it belongs to a flushed instruction)
       o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                               effective_btb_predicted_taken;
-      // RAS prediction metadata, cleared on flush for the same reason
-      o_from_id_to_ex.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
-      // Pre-computed RAS call/return flags; dispatch passes them to the ROB for
-      // RAS recovery.
+      // Pre-computed RAS call/return flags, cleared on flush for the same
+      // reason; dispatch passes them to the ROB for RAS recovery.
       o_from_id_to_ex.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
       o_from_id_to_ex.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
       // Pre-computed target checks.  A branch or JAL has a PC-relative target,
-      // so ID compares it with both predictions; a JALR is checked at
+      // so ID compares it with the predicted target; a JALR is checked at
       // resolution.
       o_from_id_to_ex.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                               btb_correct_non_jalr_precomputed;
-      o_from_id_to_ex.ras_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
-                                              ras_correct_non_jalr_precomputed;
       // F extension, cleared on flush
       o_from_id_to_ex.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
       o_from_id_to_ex.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
@@ -439,7 +429,6 @@ module id_stage #(
       o_from_id_to_ex.jal_target_precomputed <= jal_target_precomputed;
       o_from_id_to_ex.pc_relative_precomputed <= pc_relative_precomputed;
       o_from_id_to_ex.btb_predicted_target <= effective_btb_predicted_target;
-      o_from_id_to_ex.ras_predicted_target <= i_from_pd_to_id.ras_predicted_target;
       o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
       o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
       // Carry the predict-time bimodal index through to commit.
@@ -492,14 +481,11 @@ module id_stage #(
       id_next.is_fetch_fault_page = 1'b0;
       // Branch prediction metadata
       id_next.btb_predicted_taken = 1'b0;
-      // RAS prediction metadata
-      id_next.ras_predicted = 1'b0;
       // Pre-computed RAS instruction type flags
       id_next.is_ras_return = 1'b0;
       id_next.is_ras_call = 1'b0;
       // Pre-computed BTB verification
       id_next.btb_correct_non_jalr = 1'b0;
-      id_next.ras_correct_non_jalr = 1'b0;
       // F extension
       id_next.is_fp_instruction = 1'b0;
       id_next.is_fp_load = 1'b0;
@@ -553,19 +539,15 @@ module id_stage #(
       id_next.is_fetch_fault_page = is_fetch_fault_page;
       // Branch prediction metadata, cleared on flush (it belongs to a flushed instruction)
       id_next.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 : effective_btb_predicted_taken;
-      // RAS prediction metadata, cleared on flush for the same reason
-      id_next.ras_predicted = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id.ras_predicted;
-      // Pre-computed RAS call/return flags; dispatch passes them to the ROB for
-      // RAS recovery.
+      // Pre-computed RAS call/return flags, cleared on flush for the same
+      // reason; dispatch passes them to the ROB for RAS recovery.
       id_next.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed;
       id_next.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed;
       // Pre-computed target checks.  A branch or JAL has a PC-relative target,
-      // so ID compares it with both predictions; a JALR is checked at
+      // so ID compares it with the predicted target; a JALR is checked at
       // resolution.
       id_next.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
                                               btb_correct_non_jalr_precomputed;
-      id_next.ras_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
-                                              ras_correct_non_jalr_precomputed;
       // F extension, cleared on flush
       id_next.is_fp_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct;
       id_next.is_fp_load = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct;
@@ -594,7 +576,6 @@ module id_stage #(
       id_next.jal_target_precomputed = jal_target_precomputed;
       id_next.pc_relative_precomputed = pc_relative_precomputed;
       id_next.btb_predicted_target = effective_btb_predicted_target;
-      id_next.ras_predicted_target = i_from_pd_to_id.ras_predicted_target;
       id_next.ras_checkpoint_tos = i_from_pd_to_id.ras_checkpoint_tos;
       id_next.ras_checkpoint_valid_count = i_from_pd_to_id.ras_checkpoint_valid_count;
       // Carry the predict-time bimodal index through to commit.
@@ -656,8 +637,6 @@ module id_stage #(
   logic                 [XLEN-1:0] jal_target_precomputed_2;
   logic                 [XLEN-1:0] link_address_precomputed_2;
   logic                            btb_correct_non_jalr_precomputed_2;
-
-  logic                            ras_correct_non_jalr_precomputed_2;
   logic                 [XLEN-1:0] pc_relative_precomputed_2;
   assign instruction_2 = i_from_pd_to_id_2.inject_nop ? riscv_pkg::NOP :
                                                         i_from_pd_to_id_2.instruction;
@@ -721,7 +700,6 @@ module id_stage #(
       .i_program_counter(i_from_pd_to_id_2.program_counter),
       .i_immediate_b_type(immediate_b_type_2),
       .i_immediate_j_type(immediate_j_type_2),
-      .i_ras_predicted_target(i_from_pd_to_id_2.ras_predicted_target),
       .i_btb_predicted_target(i_from_pd_to_id_2.btb_predicted_target),
       .i_immediate_u_type(immediate_u_type_2),
       .i_is_jal(is_jal_direct_2),
@@ -730,8 +708,7 @@ module id_stage #(
       .o_branch_target_precomputed(branch_target_precomputed_2),
       .o_jal_target_precomputed(jal_target_precomputed_2),
       .o_pc_relative_precomputed(pc_relative_precomputed_2),
-      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed_2),
-      .o_ras_correct_non_jalr(ras_correct_non_jalr_precomputed_2)
+      .o_btb_correct_non_jalr(btb_correct_non_jalr_precomputed_2)
   );
 
   // F extension: slot-2 floating-point instruction detection
@@ -838,11 +815,9 @@ module id_stage #(
       o_from_id_to_ex_2.is_fetch_fault            <= 1'b0;
       o_from_id_to_ex_2.is_fetch_fault_page       <= 1'b0;
       o_from_id_to_ex_2.btb_predicted_taken       <= 1'b0;
-      o_from_id_to_ex_2.ras_predicted             <= 1'b0;
       o_from_id_to_ex_2.is_ras_return             <= 1'b0;
       o_from_id_to_ex_2.is_ras_call               <= 1'b0;
       o_from_id_to_ex_2.btb_correct_non_jalr      <= 1'b0;
-      o_from_id_to_ex_2.ras_correct_non_jalr      <= 1'b0;
       o_from_id_to_ex_2.is_fp_instruction         <= 1'b0;
       o_from_id_to_ex_2.is_fp_load                <= 1'b0;
       o_from_id_to_ex_2.is_fp_store               <= 1'b0;
@@ -892,14 +867,10 @@ module id_stage #(
       o_from_id_to_ex_2.is_fetch_fault_page <= is_fetch_fault_page_2;
       o_from_id_to_ex_2.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                                i_from_pd_to_id_2.btb_predicted_taken;
-      o_from_id_to_ex_2.ras_predicted <= i_pipeline_ctrl.flush ? 1'b0 :
-                                         i_from_pd_to_id_2.ras_predicted;
       o_from_id_to_ex_2.is_ras_return <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed_2;
       o_from_id_to_ex_2.is_ras_call <= i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
       o_from_id_to_ex_2.btb_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
                                                 btb_correct_non_jalr_precomputed_2;
-      o_from_id_to_ex_2.ras_correct_non_jalr <= i_pipeline_ctrl.flush ? 1'b0 :
-                                                ras_correct_non_jalr_precomputed_2;
       o_from_id_to_ex_2.is_fp_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                              is_fp_instruction_direct_2;
       o_from_id_to_ex_2.is_fp_load <= i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
@@ -924,7 +895,6 @@ module id_stage #(
       o_from_id_to_ex_2.jal_target_precomputed <= jal_target_precomputed_2;
       o_from_id_to_ex_2.pc_relative_precomputed <= pc_relative_precomputed_2;
       o_from_id_to_ex_2.btb_predicted_target <= i_from_pd_to_id_2.btb_predicted_target;
-      o_from_id_to_ex_2.ras_predicted_target <= i_from_pd_to_id_2.ras_predicted_target;
       o_from_id_to_ex_2.ras_checkpoint_tos <= i_from_pd_to_id_2.ras_checkpoint_tos;
       o_from_id_to_ex_2.ras_checkpoint_valid_count <= i_from_pd_to_id_2.ras_checkpoint_valid_count;
       // Carry the predict-time bimodal index through to commit.
@@ -973,11 +943,9 @@ module id_stage #(
       id_next_2.is_fetch_fault = 1'b0;
       id_next_2.is_fetch_fault_page = 1'b0;
       id_next_2.btb_predicted_taken = 1'b0;
-      id_next_2.ras_predicted = 1'b0;
       id_next_2.is_ras_return = 1'b0;
       id_next_2.is_ras_call = 1'b0;
       id_next_2.btb_correct_non_jalr = 1'b0;
-      id_next_2.ras_correct_non_jalr = 1'b0;
       id_next_2.is_fp_instruction = 1'b0;
       id_next_2.is_fp_load = 1'b0;
       id_next_2.is_fp_store = 1'b0;
@@ -1022,13 +990,10 @@ module id_stage #(
       id_next_2.is_fetch_fault_page = is_fetch_fault_page_2;
       id_next_2.btb_predicted_taken = i_pipeline_ctrl.flush ? 1'b0 :
                                                i_from_pd_to_id_2.btb_predicted_taken;
-      id_next_2.ras_predicted = i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.ras_predicted;
       id_next_2.is_ras_return = i_pipeline_ctrl.flush ? 1'b0 : is_ras_return_precomputed_2;
       id_next_2.is_ras_call = i_pipeline_ctrl.flush ? 1'b0 : is_ras_call_precomputed_2;
       id_next_2.btb_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
                                                 btb_correct_non_jalr_precomputed_2;
-      id_next_2.ras_correct_non_jalr = i_pipeline_ctrl.flush ? 1'b0 :
-                                                ras_correct_non_jalr_precomputed_2;
       id_next_2.is_fp_instruction = i_pipeline_ctrl.flush ? 1'b0 : is_fp_instruction_direct_2;
       id_next_2.is_fp_load = i_pipeline_ctrl.flush ? 1'b0 : is_fp_load_direct_2;
       id_next_2.is_fp_store = i_pipeline_ctrl.flush ? 1'b0 : is_fp_store_direct_2;
@@ -1051,7 +1016,6 @@ module id_stage #(
       id_next_2.jal_target_precomputed = jal_target_precomputed_2;
       id_next_2.pc_relative_precomputed = pc_relative_precomputed_2;
       id_next_2.btb_predicted_target = i_from_pd_to_id_2.btb_predicted_target;
-      id_next_2.ras_predicted_target = i_from_pd_to_id_2.ras_predicted_target;
       id_next_2.ras_checkpoint_tos = i_from_pd_to_id_2.ras_checkpoint_tos;
       id_next_2.ras_checkpoint_valid_count = i_from_pd_to_id_2.ras_checkpoint_valid_count;
       // Carry the predict-time bimodal index through to commit.

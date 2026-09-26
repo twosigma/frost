@@ -1293,54 +1293,6 @@ class UartMmioDebugMonitor:
             prev_uart_valid = bool(uart_valid)
 
 
-def read_ras_stats(dut: Any) -> dict[str, int] | None:
-    """Read RAS stats counters from the DUT if available."""
-    try:
-        cpu = dut.cpu_and_memory_subsystem.cpu_inst
-    except AttributeError:
-        return None
-
-    ras_predicted = _read_u64(getattr(cpu, "ras_predicted_count", None))
-    if ras_predicted is None:
-        return None
-    ras_return = _read_u64(getattr(cpu, "ras_return_count", None))
-    if ras_return is None:
-        return None
-    ras_correct = _read_u64(getattr(cpu, "ras_correct_count", None))
-    if ras_correct is None:
-        return None
-    ras_mispred = _read_u64(getattr(cpu, "ras_mispred_count", None))
-    if ras_mispred is None:
-        return None
-
-    return {
-        "ras_predicted": ras_predicted,
-        "ras_return": ras_return,
-        "ras_correct": ras_correct,
-        "ras_mispred": ras_mispred,
-    }
-
-
-def log_ras_stats(run_number: int, stats: dict[str, int] | None) -> None:
-    """Log RAS stats in a compact format."""
-    if stats is None:
-        return
-
-    predicted = stats["ras_predicted"]
-    returns = stats["ras_return"]
-    correct = stats["ras_correct"]
-    mispred = stats["ras_mispred"]
-
-    acc = (correct / predicted) if predicted else 0.0
-    use = (predicted / returns) if returns else 0.0
-
-    cocotb.log.info(
-        f"Run {run_number} RAS stats: predicted={predicted}, returns={returns}, "
-        f"correct={correct}, mispred={mispred}, "
-        f"predicted/returns={use:.3f}, correct/predicted={acc:.3f}"
-    )
-
-
 class NicEchoPeer:
     """The wire-side peer of the NIC for the nic_echo app.
 
@@ -1602,11 +1554,8 @@ async def run_until_complete(
     retire_mispredict_sig = None
     branch_pred_off_sig = None
     if_btb_pred_sig = None
-    if_ras_pred_sig = None
     pd_btb_pred_sig = None
-    pd_ras_pred_sig = None
     id_btb_pred_sig = None
-    id_ras_pred_sig = None
     lq_issue_mem_found_sig = None
     lq_sq_check_valid_sig = None
     lq_sq_can_issue_sig = None
@@ -1617,9 +1566,6 @@ async def run_until_complete(
     btb_pred_taken_sig = None
     pred_used_sig = None
     pred_holdoff_sig = None
-    if_ras_pred_sig = None
-    pd_ras_pred_sig = None
-    id_ras_pred_sig = None
     if_pc_sig = None
     if_sel_nop_sig = None
     if_sel_compressed_sig = None
@@ -1976,26 +1922,17 @@ async def run_until_complete(
                 IF_TO_PD_FIELDS,
                 "btb_predicted_taken",
             )
-            if_ras_pred_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_predicted"
-            )
             pd_btb_pred_sig = _struct_field(
                 dut,
                 "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id",
                 PD_TO_ID_FIELDS,
                 "btb_predicted_taken",
             )
-            pd_ras_pred_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_predicted"
-            )
             id_btb_pred_sig = _struct_field(
                 dut,
                 "cpu_and_memory_subsystem.cpu_inst.from_id_to_ex",
                 ID_TO_EX_FIELDS,
                 "btb_predicted_taken",
-            )
-            id_ras_pred_sig = _get_signal(
-                dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_predicted"
             )
         lq_issue_mem_found_sig = _get_signal(
             dut,
@@ -2221,15 +2158,6 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.o_prediction_holdoff",
         )
-        if_ras_pred_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_predicted"
-        )
-        pd_ras_pred_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_ras_predicted"
-        )
-        id_ras_pred_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_id_ras_predicted"
-        )
         if_pc_sig = _struct_field(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd",
@@ -2413,25 +2341,19 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.do_push",
         )
-        ras_capture_inputs_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.capture_op_inputs",
-        )
         ras_target_live_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_target",
+            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_top",
         )
+        # IF's push and pop for the packet PD takes this cycle.
         ras_is_call_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_is_call",
+            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_push"
         )
         ras_is_return_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_is_return",
+            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_pop"
         )
         ras_link_address_sig = _get_signal(
-            dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.i_link_address",
+            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_push_address"
         )
         ras_misprediction_live_sig = _struct_field(
             dut,
@@ -3529,9 +3451,6 @@ async def run_until_complete(
                     f"btb_pred_taken={_read_bool(btb_pred_taken_sig)} "
                     f"pred_used={_read_bool(pred_used_sig)} "
                     f"pred_holdoff={_read_bool(pred_holdoff_sig)} "
-                    f"if_ras={_read_bool(if_ras_pred_sig)} "
-                    f"pd_ras={_read_bool(pd_ras_pred_sig)} "
-                    f"id_ras={_read_bool(id_ras_pred_sig)} "
                     f"mispredict={_read_bool(retire_mispredict_sig)} "
                     f"redirect_pc=0x{(_read_int(redirect_pc_sig) or 0):08x}"
                 )
@@ -3885,18 +3804,16 @@ async def run_until_complete(
                     f"pred_holdoff={_read_bool(pred_holdoff_sig)} "
                     f"pend_active={_read_bool(pending_prediction_active_sig)} "
                     f"pend_fetch_hold={_read_bool(pending_prediction_fetch_holdoff_sig)} "
-                    f"if_ras={_read_bool(if_ras_pred_sig)} "
                     f"if_ckpt={_read_int(if_ras_ckpt_tos_sig)}/{_read_int(if_ras_ckpt_vc_sig)} "
                     f"pd_ckpt={_read_int(pd_ras_ckpt_tos_sig)}/{_read_int(pd_ras_ckpt_vc_sig)} "
                     f"id_ckpt={_read_int(id_ras_ckpt_tos_sig)}/{_read_int(id_ras_ckpt_vc_sig)} "
-                    f"ras_call={_read_bool(ras_is_call_sig)} "
-                    f"ras_ret={_read_bool(ras_is_return_sig)} "
+                    f"ras_push={_read_bool(ras_is_call_sig)} "
+                    f"ras_pop={_read_bool(ras_is_return_sig)} "
                     f"ras_tgt=0x{(_read_int(ras_target_live_sig) or 0):08x} "
                     f"ras_tos={_read_int(ras_tos_sig)} "
                     f"ras_vc={_read_int(ras_valid_count_sig)} "
                     f"ras_do_pop={_read_bool(ras_do_pop_sig)} "
                     f"ras_do_push={_read_bool(ras_do_push_sig)} "
-                    f"ras_cap={_read_bool(ras_capture_inputs_sig)} "
                     f"ras_wen={_read_bool(ras_write_enable_sig)} "
                     f"ras_wdata=0x{(_read_int(ras_write_data_sig) or 0):08x} "
                     f"link=0x{(_read_int(ras_link_address_sig) or 0):08x} "
@@ -3965,8 +3882,7 @@ async def run_until_complete(
                     f"x19={last_x19_commit} "
                     f"if_pc=0x{if_pc:08x} "
                     f"sel_nop={_read_bool(if_sel_nop_sig)} "
-                    f"raw=0x{(_read_int(if_raw_parcel_sig) or 0):04x} "
-                    f"ras={_read_bool(if_ras_pred_sig)}"
+                    f"raw=0x{(_read_int(if_raw_parcel_sig) or 0):04x}"
                 )
             pd_pc = _read_int(pd_pc_sig)
             if in_trace_window(pd_pc):
@@ -3979,8 +3895,7 @@ async def run_until_complete(
                     f"x10={last_x10_commit} "
                     f"x19={last_x19_commit} "
                     f"pd_pc=0x{pd_pc:08x} "
-                    f"instr=0x{(_read_int(pd_instr_sig) or 0):08x} "
-                    f"ras={_read_bool(pd_ras_pred_sig)}"
+                    f"instr=0x{(_read_int(pd_instr_sig) or 0):08x}"
                 )
             id_pc = _read_int(id_pc_sig)
             if in_trace_window(id_pc):
@@ -3993,8 +3908,7 @@ async def run_until_complete(
                     f"x10={last_x10_commit} "
                     f"x19={last_x19_commit} "
                     f"id_pc=0x{id_pc:08x} "
-                    f"op={_read_int(id_op_sig)} "
-                    f"ras={_read_bool(id_ras_pred_sig)}"
+                    f"op={_read_int(id_op_sig)}"
                 )
             issue_pc = _read_int(issue_pc_sig)
             if _read_bool(issue_valid_sig) and in_trace_window(issue_pc):
@@ -4032,11 +3946,8 @@ async def run_until_complete(
                 pd_pc = _read_int(pd_pc_sig)
                 id_pc = _read_int(id_pc_sig)
                 if_btb_pred = _read_bool(if_btb_pred_sig)
-                if_ras_pred = _read_bool(if_ras_pred_sig)
                 pd_btb_pred = _read_bool(pd_btb_pred_sig)
-                pd_ras_pred = _read_bool(pd_ras_pred_sig)
                 id_btb_pred = _read_bool(id_btb_pred_sig)
-                id_ras_pred = _read_bool(id_ras_pred_sig)
                 pd_instr = _read_int(pd_instr_sig)
                 id_op = _read_int(id_op_sig)
                 cf_debug_suffix = (
@@ -4044,11 +3955,8 @@ async def run_until_complete(
                     f" pd_pc=0x{(pd_pc or 0):08x}"
                     f" id_pc=0x{(id_pc or 0):08x}"
                     f" if_btb={if_btb_pred}"
-                    f" if_ras={if_ras_pred}"
                     f" pd_btb={pd_btb_pred}"
-                    f" pd_ras={pd_ras_pred}"
                     f" id_btb={id_btb_pred}"
-                    f" id_ras={id_ras_pred}"
                     f" pd_instr=0x{(pd_instr or 0):08x}"
                     f" id_op={id_op}"
                 )
@@ -4469,7 +4377,6 @@ async def test_real_program(dut: Any) -> None:
                 nic_peer.verify()
         if line_monitor is not None:
             await check_uart_line(dut, uart_monitor, line_monitor)
-        log_ras_stats(run_number, read_ras_stats(dut))
 
     uart_monitor.stop()
     if line_monitor is not None:

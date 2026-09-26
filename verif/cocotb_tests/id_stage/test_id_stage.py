@@ -116,8 +116,6 @@ def _drive_pd_packet(
         "illegal_instruction": False,
         "btb_predicted_taken": False,
         "btb_predicted_target": 0,
-        "ras_predicted": False,
-        "ras_predicted_target": 0,
         "ras_checkpoint_tos": 0,
         "ras_checkpoint_valid_count": 0,
         "bp_dir_idx": 0,
@@ -271,7 +269,6 @@ def _assert_control_nop(packet: Mapping[str, int | bool]) -> None:
     assert packet["is_jump_and_link_register"] is False
     assert packet["is_illegal_instruction"] is False
     assert packet["btb_predicted_taken"] is False
-    assert packet["ras_predicted"] is False
     assert packet["has_int_dest"] is False
     assert packet["has_fp_dest"] is False
     assert packet["uses_int_rs1"] is False
@@ -478,7 +475,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
     jal = _pack_j(imm=0x100, rd=1, opcode=OPC_JAL)
     jalr_return = _pack_i(imm=0, rs1=1, funct3=0, rd=0, opcode=OPC_JALR)
     jal_target = BASE_PC + 0x100
-    ras_target = 0x80002000
     btb_target = 0x80003000
 
     _drive_pd_packet(
@@ -497,8 +493,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
         {
             "program_counter": BASE_PC + 4,
             "instruction": jalr_return,
-            "ras_predicted": True,
-            "ras_predicted_target": ras_target,
             "btb_predicted_taken": True,
             "btb_predicted_target": btb_target,
             "ras_checkpoint_tos": 5,
@@ -523,8 +517,6 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
     assert slot2_packet["is_jump_and_link_register"] is True
     assert slot2_packet["is_ras_return"] is True
     assert slot2_packet["is_ras_call"] is False
-    assert slot2_packet["ras_predicted"] is True
-    assert slot2_packet["ras_predicted_target"] == ras_target
     assert slot2_packet["btb_predicted_target"] == btb_target
     assert slot2_packet["ras_checkpoint_tos"] == 5
     assert slot2_packet["ras_checkpoint_valid_count"] == 6
@@ -920,8 +912,8 @@ async def test_pc_relative_precompute_for_auipc_and_fetch_faults(dut: Any) -> No
 
 
 @cocotb.test()
-async def test_ras_and_btb_target_checks_for_direct_branches(dut: Any) -> None:
-    """Both prediction sources are compared against the precomputed direct target."""
+async def test_btb_target_check_for_direct_branches(dut: Any) -> None:
+    """The BTB prediction is compared against the precomputed direct target."""
     await _setup_test(dut)
     branch = _pack_b(imm=16, rs2=2, rs1=1, funct3=0, opcode=OPC_BRANCH)
     target = BASE_PC + 16
@@ -933,15 +925,12 @@ async def test_ras_and_btb_target_checks_for_direct_branches(dut: Any) -> None:
             "instruction": branch,
             "btb_predicted_taken": True,
             "btb_predicted_target": target,
-            "ras_predicted": False,
-            "ras_predicted_target": target + 4,
         },
     )
     await _advance_cycle(dut)
     packet = _read_id_packet(dut)
     assert packet["branch_target_precomputed"] == target
     assert packet["btb_correct_non_jalr"] is True
-    assert packet["ras_correct_non_jalr"] is False
 
     _drive_pd_packet(
         dut,
@@ -950,11 +939,8 @@ async def test_ras_and_btb_target_checks_for_direct_branches(dut: Any) -> None:
             "instruction": branch,
             "btb_predicted_taken": True,
             "btb_predicted_target": target + 8,
-            "ras_predicted": True,
-            "ras_predicted_target": target,
         },
     )
     await _advance_cycle(dut)
     packet = _read_id_packet(dut)
     assert packet["btb_correct_non_jalr"] is False
-    assert packet["ras_correct_non_jalr"] is True

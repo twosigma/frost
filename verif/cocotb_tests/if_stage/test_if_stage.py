@@ -1067,7 +1067,6 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
     )
     assert packet2["source_hot_predecoded"] == 0b010
     assert not packet2["btb_predicted_taken"]
-    assert not packet2["ras_predicted"]
 
 
 @cocotb.test()

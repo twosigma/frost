@@ -483,10 +483,7 @@ module dispatch #(
   logic [riscv_pkg::XLEN-1:0] predicted_target;
 
   always_comb begin
-    if (i_from_id_to_ex.ras_predicted) begin
-      predicted_taken  = 1'b1;
-      predicted_target = i_from_id_to_ex.ras_predicted_target;
-    end else if (i_from_id_to_ex.btb_predicted_taken) begin
+    if (i_from_id_to_ex.btb_predicted_taken) begin
       predicted_taken  = 1'b1;
       predicted_target = i_from_id_to_ex.btb_predicted_target;
     end else begin
@@ -495,12 +492,10 @@ module dispatch #(
     end
   end
 
-  // Direct-branch target check, selected from the same prediction source as
-  // predicted_target above.  ID compared its precomputed PC-relative target
-  // against both predictions; JALR resolves its own target at execute.
+  // Direct-branch target check: ID compared its precomputed PC-relative target
+  // with the BTB prediction; JALR resolves its own target at execute.
   logic predicted_target_ok;
-  assign predicted_target_ok = i_from_id_to_ex.ras_predicted ?
-      i_from_id_to_ex.ras_correct_non_jalr : i_from_id_to_ex.btb_correct_non_jalr;
+  assign predicted_target_ok = i_from_id_to_ex.btb_correct_non_jalr;
 
   // Branch target (pre-computed in ID stage)
   logic [riscv_pkg::XLEN-1:0] branch_target;
@@ -700,10 +695,7 @@ module dispatch #(
   logic [riscv_pkg::XLEN-1:0] predicted_target_2;
 
   always_comb begin
-    if (i_from_id_to_ex_2.ras_predicted) begin
-      predicted_taken_2  = 1'b1;
-      predicted_target_2 = i_from_id_to_ex_2.ras_predicted_target;
-    end else if (i_from_id_to_ex_2.btb_predicted_taken) begin
+    if (i_from_id_to_ex_2.btb_predicted_taken) begin
       predicted_taken_2  = 1'b1;
       predicted_target_2 = i_from_id_to_ex_2.btb_predicted_target;
     end else begin
@@ -714,8 +706,7 @@ module dispatch #(
 
   // Slot-2 direct-branch target check (see slot 1).
   logic predicted_target_ok_2;
-  assign predicted_target_ok_2 = i_from_id_to_ex_2.ras_predicted ?
-      i_from_id_to_ex_2.ras_correct_non_jalr : i_from_id_to_ex_2.btb_correct_non_jalr;
+  assign predicted_target_ok_2 = i_from_id_to_ex_2.btb_correct_non_jalr;
 
   // Slot-2 branch target.
   logic [riscv_pkg::XLEN-1:0] branch_target_2;

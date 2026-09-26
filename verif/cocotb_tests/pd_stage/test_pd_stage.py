@@ -99,8 +99,6 @@ def _drive_if_packet(
         "effective_instr": NOP_INSTR,
         "btb_predicted_taken": False,
         "btb_predicted_target": 0,
-        "ras_predicted": False,
-        "ras_predicted_target": 0,
         "ras_checkpoint_tos": 0,
         "ras_checkpoint_valid_count": 0,
         "bp_dir_taken": False,
@@ -243,7 +241,6 @@ def _assert_nop_slot(packet: Mapping[str, int | bool]) -> None:
     assert packet["source_reg_2_early"] == 0
     assert packet["illegal_instruction"] is False
     assert packet["btb_predicted_taken"] is False
-    assert packet["ras_predicted"] is False
     assert packet["bp_dir_idx"] == 0
 
 
@@ -280,8 +277,6 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
             "effective_instr": instruction,
             "btb_predicted_taken": True,
             "btb_predicted_target": BASE_PC + 0x40,
-            "ras_predicted": True,
-            "ras_predicted_target": BASE_PC + 0x80,
             "ras_checkpoint_tos": 5,
             "ras_checkpoint_valid_count": 6,
             "bp_dir_idx": 0x155,
@@ -298,8 +293,6 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
     assert packet["illegal_instruction"] is False
     assert packet["btb_predicted_taken"] is True
     assert packet["btb_predicted_target"] == BASE_PC + 0x40
-    assert packet["ras_predicted"] is True
-    assert packet["ras_predicted_target"] == BASE_PC + 0x80
     assert packet["ras_checkpoint_tos"] == 5
     assert packet["ras_checkpoint_valid_count"] == 6
     assert packet["bp_dir_idx"] == 0x155
@@ -677,7 +670,6 @@ async def test_slot2_registers_independently_and_flush_marks_both_slots(
             "sel_nop": False,
             "effective_instr": slot2_instr,
             "btb_predicted_taken": True,
-            "ras_predicted": True,
         },
         slot2=True,
     )
@@ -694,10 +686,9 @@ async def test_slot2_registers_independently_and_flush_marks_both_slots(
     assert packet2["source_reg_1_early"] == 11
     assert packet2["source_reg_2_early"] == 7
     assert packet2["btb_predicted_taken"] is True
-    assert packet2["ras_predicted"] is True
 
     _drive_pipeline_ctrl(dut, {"flush": True})
-    _drive_if_packet(dut, {"btb_predicted_taken": True, "ras_predicted": True})
+    _drive_if_packet(dut, {"btb_predicted_taken": True})
     _drive_if_packet(
         dut,
         {
@@ -705,7 +696,6 @@ async def test_slot2_registers_independently_and_flush_marks_both_slots(
             "sel_nop": False,
             "effective_instr": slot2_instr,
             "btb_predicted_taken": True,
-            "ras_predicted": True,
         },
         slot2=True,
     )
@@ -901,7 +891,6 @@ async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stal
             "sel_nop": False,
             "effective_instr": wrong_path_instr,
             "btb_predicted_taken": True,
-            "ras_predicted": True,
         },
         slot2=True,
     )
@@ -960,7 +949,6 @@ async def test_unqualified_redirect_candidate_keeps_all_visible_vetoes(
     # registered copy in the packet can suppress the redirect.
     vetoes = [
         {"btb_predicted_taken": True},
-        {"ras_predicted": True},
         {"sel_nop": True},
         {"fetch_fault": True},
     ]

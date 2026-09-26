@@ -222,8 +222,8 @@ module frontend_validity_tracker (
                                         (from_id_to_ex.instruction_operation == riscv_pkg::JALR);
 
   // Only unpredicted control flow is flagged: control flow for which fetch did
-  // not follow a taken prediction (btb_predicted_taken and ras_predicted both
-  // clear). A branch predicted not taken is therefore flagged. An unpredicted
+  // not follow a taken prediction (btb_predicted_taken clear). A branch
+  // predicted not taken is therefore flagged. An unpredicted
   // indirect jump in slot 1 of IF, PD, or ID feeds the control-flow
   // serialization stall, and the prediction-fence classes below (unpredicted
   // branch, JAL, or indirect jump in PD or ID) feed the perf counters.
@@ -239,17 +239,15 @@ module frontend_validity_tracker (
   // reset/flush; the BTB register needs no reset because it is masked while
   // the qualifier is clear. Only synchronous pipeline control consumes the
   // result.
-  (* keep = "true" *)logic if_indirect_without_ras_q;
+  (* keep = "true" *)logic if_indirect_q;
   (* keep = "true" *)logic if_btb_predicted_taken_q;
   logic if_unpredicted_indirect_q;
   always_ff @(posedge i_clk) begin
-    if (i_rst || flush_pipeline) if_indirect_without_ras_q <= 1'b0;
-    else
-      if_indirect_without_ras_q <= if_has_control_flow && if_has_indirect_control_flow &&
-                                   !from_if_to_pd.ras_predicted;
+    if (i_rst || flush_pipeline) if_indirect_q <= 1'b0;
+    else if_indirect_q <= if_has_control_flow && if_has_indirect_control_flow;
     if_btb_predicted_taken_q <= from_if_to_pd.btb_predicted_taken;
   end
-  assign if_unpredicted_indirect_q = if_indirect_without_ras_q && !if_btb_predicted_taken_q;
+  assign if_unpredicted_indirect_q = if_indirect_q && !if_btb_predicted_taken_q;
 
 `ifndef SYNTHESIS
   // Reference: the whole predicate in one register, compared with the split
@@ -259,7 +257,7 @@ module frontend_validity_tracker (
     if (i_rst || flush_pipeline) if_unpredicted_indirect_reference_q <= 1'b0;
     else
       if_unpredicted_indirect_reference_q <= if_has_control_flow && if_has_indirect_control_flow &&
-          !(from_if_to_pd.btb_predicted_taken || from_if_to_pd.ras_predicted);
+          !from_if_to_pd.btb_predicted_taken;
     if (!$isunknown({if_unpredicted_indirect_q, if_unpredicted_indirect_reference_q})) begin
       p_split_if_unpredicted_indirect_matches_reference :
       assert (if_unpredicted_indirect_q == if_unpredicted_indirect_reference_q);
@@ -281,22 +279,16 @@ module frontend_validity_tracker (
   logic prediction_fence_indirect;
   assign if_unpredicted_indirect_control_flow = if_unpredicted_indirect_q &&
                                                 pipeline_ctrl.stall_registered;
-  assign pd_unpredicted_control_flow = pd_has_control_flow &&
-                                       !(from_pd_to_id.btb_predicted_taken ||
-                                         from_pd_to_id.ras_predicted);
+  assign pd_unpredicted_control_flow = pd_has_control_flow && !from_pd_to_id.btb_predicted_taken;
   assign pd_unpredicted_indirect_control_flow = pd_has_indirect_control_flow &&
-                                                !(from_pd_to_id.btb_predicted_taken ||
-                                                  from_pd_to_id.ras_predicted);
+                                                !from_pd_to_id.btb_predicted_taken;
   assign pd_unpredicted_branch = pd_unpredicted_control_flow &&
                                  (pd_effective_opcode == riscv_pkg::OPC_BRANCH);
   assign pd_unpredicted_jal = pd_unpredicted_control_flow &&
                               (pd_effective_opcode == riscv_pkg::OPC_JAL);
-  assign id_unpredicted_control_flow = id_has_control_flow &&
-                                       !(from_id_to_ex.btb_predicted_taken ||
-                                         from_id_to_ex.ras_predicted);
+  assign id_unpredicted_control_flow = id_has_control_flow && !from_id_to_ex.btb_predicted_taken;
   assign id_unpredicted_indirect_control_flow = id_has_indirect_control_flow &&
-                                                !(from_id_to_ex.btb_predicted_taken ||
-                                                  from_id_to_ex.ras_predicted);
+                                                !from_id_to_ex.btb_predicted_taken;
   assign id_unpredicted_branch = id_unpredicted_control_flow && (
       from_id_to_ex.instruction_operation == riscv_pkg::BEQ ||
       from_id_to_ex.instruction_operation == riscv_pkg::BNE ||

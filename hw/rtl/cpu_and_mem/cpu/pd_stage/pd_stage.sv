@@ -276,10 +276,10 @@ module pd_stage #(
 `endif
 
   // ===========================================================================
-  // PD Redirect: Predicted-Taken Branch With No BTB or RAS Prediction
+  // PD Redirect: Predicted-Taken Branch With No BTB Prediction
   // ===========================================================================
   // A slot-1 conditional branch that nothing has redirected yet (no taken BTB
-  // or RAS prediction) and that the bimodal direction predictor calls taken
+  // prediction) and that the bimodal direction predictor calls taken
   // (bp_dir_taken) redirects IF to PC + offset, for either offset sign, instead
   // of waiting to resolve as a misprediction.
   //
@@ -470,7 +470,6 @@ module pd_stage #(
   // equivalent here because inject_nop already vetoes sel_nop.
   assign pd_redirect_r = pd_redirect_candidate_r &&
       !o_from_pd_to_id.btb_predicted_taken &&
-      !o_from_pd_to_id.ras_predicted &&
       !o_from_pd_to_id.inject_nop &&
       !o_from_pd_to_id.fetch_fault;
 
@@ -563,7 +562,6 @@ module pd_stage #(
       (pd_native_branch || pd_compressed_branch) &&
       i_from_if_to_pd.bp_dir_taken &&
       !i_from_if_to_pd.btb_predicted_taken &&
-      !i_from_if_to_pd.ras_predicted &&
       !i_from_if_to_pd.sel_nop &&
       !i_from_if_to_pd.fetch_fault &&
       !pd_redirect_reference_q;
@@ -628,8 +626,6 @@ module pd_stage #(
       o_from_pd_to_id.fetch_fault_hi      <= 1'b0;
       // Branch prediction metadata
       o_from_pd_to_id.btb_predicted_taken <= 1'b0;
-      // RAS prediction metadata
-      o_from_pd_to_id.ras_predicted       <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
       // The instruction is registered without being rewritten to a NOP. A
       // bubble (flush, the PD redirect squashing the wrong-path packet that
@@ -667,9 +663,6 @@ module pd_stage #(
       // off these D inputs.
       o_from_pd_to_id.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                               i_from_if_to_pd.btb_predicted_taken;
-      // RAS prediction metadata - clear on flush/pd_redirect
-      o_from_pd_to_id.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                        i_from_if_to_pd.ras_predicted;
     end
 
     if (~i_pipeline_ctrl.stall) begin
@@ -680,7 +673,6 @@ module pd_stage #(
       o_from_pd_to_id.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                              5'd0 : source_reg_2;
       o_from_pd_to_id.btb_predicted_target <= i_from_if_to_pd.btb_predicted_target;
-      o_from_pd_to_id.ras_predicted_target <= i_from_if_to_pd.ras_predicted_target;
       o_from_pd_to_id.ras_checkpoint_tos <= i_from_if_to_pd.ras_checkpoint_tos;
       o_from_pd_to_id.ras_checkpoint_valid_count <= i_from_if_to_pd.ras_checkpoint_valid_count;
       // Carry the predict-time bimodal index through to commit.
@@ -707,7 +699,6 @@ module pd_stage #(
       o_from_pd_to_id_2.fetch_fault_page    <= 1'b0;
       o_from_pd_to_id_2.fetch_fault_hi      <= 1'b0;
       o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
-      o_from_pd_to_id_2.ras_predicted       <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
       // Register payload and bubble control independently. Applying the
       // registered marker in ID keeps sel_nop, flush, and pd_redirect_r off the
@@ -729,14 +720,11 @@ module pd_stage #(
       o_from_pd_to_id_2.fetch_fault_hi <= i_from_if_to_pd_2.fetch_fault_hi;
       o_from_pd_to_id_2.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                                 i_from_if_to_pd_2.btb_predicted_taken;
-      o_from_pd_to_id_2.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
-                                          i_from_if_to_pd_2.ras_predicted;
     end
 
     if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id_2.program_counter <= i_from_if_to_pd_2.program_counter;
       o_from_pd_to_id_2.btb_predicted_target <= i_from_if_to_pd_2.btb_predicted_target;
-      o_from_pd_to_id_2.ras_predicted_target <= i_from_if_to_pd_2.ras_predicted_target;
       o_from_pd_to_id_2.ras_checkpoint_tos <= i_from_if_to_pd_2.ras_checkpoint_tos;
       o_from_pd_to_id_2.ras_checkpoint_valid_count <= i_from_if_to_pd_2.ras_checkpoint_valid_count;
       // Carry the predict-time bimodal index through to commit.

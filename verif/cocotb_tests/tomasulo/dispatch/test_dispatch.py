@@ -1453,8 +1453,8 @@ async def test_branch_target_rides_immediate(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
-    """predicted_target_ok picks the RAS compare over the BTB compare, like predicted_target."""
+async def test_predicted_target_ok_follows_the_btb_compare(dut: Any) -> None:
+    """predicted_target_ok forwards ID's compare of the BTB target."""
     dut_if = await _setup(dut)
 
     # BTB-predicted branch whose BTB target is stale: the bit is clear.
@@ -1465,7 +1465,6 @@ async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
         btb_predicted_taken=1,
         btb_predicted_target=0x8000_2070,
         btb_correct_non_jalr=0,
-        ras_correct_non_jalr=1,
         instruction=_make_instr(opcode=OPC_BRANCH),
     )
     await dut_if.step()
@@ -1473,7 +1472,7 @@ async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
     assert rs["predicted_target"] == 0x8000_2070
     assert rs["predicted_target_ok"] == 0, "a stale BTB target must clear the bit"
 
-    # RAS prediction wins the selection, so the RAS compare supplies the bit.
+    # A matching BTB target sets it.
     dut_if.drive_instruction(
         valid=True,
         instruction_operation=BEQ,
@@ -1481,17 +1480,12 @@ async def test_predicted_target_ok_follows_prediction_source(dut: Any) -> None:
         btb_predicted_taken=1,
         btb_predicted_target=0x8000_2080,
         btb_correct_non_jalr=1,
-        ras_predicted=1,
-        ras_predicted_target=0x8000_3000,
-        ras_correct_non_jalr=0,
         instruction=_make_instr(opcode=OPC_BRANCH),
     )
     await dut_if.step()
     rs = dut_if.read_rs_dispatch()
-    assert rs["predicted_target"] == 0x8000_3000, "RAS prediction selected"
-    assert rs["predicted_target_ok"] == 0, (
-        "the RAS compare, not the BTB compare, is forwarded"
-    )
+    assert rs["predicted_target"] == 0x8000_2080
+    assert rs["predicted_target_ok"] == 1
 
 
 @cocotb.test()

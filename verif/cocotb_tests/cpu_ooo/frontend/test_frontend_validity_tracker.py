@@ -286,11 +286,10 @@ async def test_if_unpredicted_jalr_held_by_stall_sets_indirect_pending(
     held = {"stall": True, "stall_registered": True}
     jalr = {"sel_nop": False, "effective_instr": JALR_INSTR, "has_control_flow": True}
 
-    for prediction in ("btb_predicted_taken", "ras_predicted"):
-        _drive_pipeline_ctrl(dut, held)
-        _drive_if(dut, {**jalr, prediction: True})
-        await _advance_cycle(dut)
-        assert not dut.o_front_end_indirect_control_flow_pending.value, prediction
+    _drive_pipeline_ctrl(dut, held)
+    _drive_if(dut, {**jalr, "btb_predicted_taken": True})
+    await _advance_cycle(dut)
+    assert not dut.o_front_end_indirect_control_flow_pending.value
 
     _drive_if(dut, jalr)
     await _advance_cycle(dut)
@@ -324,9 +323,9 @@ async def test_if_unpredicted_jalr_held_by_stall_sets_indirect_pending(
 
 @cocotb.test()
 async def test_if_term_takes_class_and_prediction_from_one_packet(dut: Any) -> None:
-    """A BTB-missed branch followed by a RAS-predicted return raises nothing.
+    """A BTB-missed branch followed by a predicted return raises nothing.
 
-    The IF term samples the indirect class and both prediction bits from the
+    The IF term samples the indirect class and the prediction bit from the
     same IF packet. Pairing the branch's missing prediction with the next
     packet's indirect class would flag the predicted return. The sequence runs
     once with IF advancing and once with both stall inputs held high, so the
@@ -352,7 +351,7 @@ async def test_if_term_takes_class_and_prediction_from_one_packet(dut: Any) -> N
                 "sel_nop": False,
                 "effective_instr": RETURN_INSTR,
                 "has_control_flow": True,
-                "ras_predicted": True,
+                "btb_predicted_taken": True,
             },
         )
         await _settle()
@@ -444,7 +443,7 @@ async def test_id_prediction_fence_priority_and_prediction_suppression(
         {
             "instruction_operation": OP_JALR,
             "is_real": True,
-            "ras_predicted": True,
+            "btb_predicted_taken": True,
         },
     )
     await _settle()

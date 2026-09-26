@@ -24,7 +24,7 @@
  *   - PC-relative result for AUIPC (PC + U-type immediate) and the xtval of a
  *     fetch-fault pseudo-op (PC + faulting-halfword offset); dispatch carries
  *     it in the RS immediate so those ops need no PC at execute
- *   - BTB and RAS correct flags for non-JALR instructions
+ *   - BTB correct flag for non-JALR instructions
  *
  * A JALR target needs rs1, so branch resolution computes it and compares it
  * with the predicted target directly.
@@ -37,8 +37,7 @@ module branch_target_precompute #(
     input  logic [XLEN-1:0] i_immediate_b_type,
     input  logic [XLEN-1:0] i_immediate_j_type,
     input  logic [XLEN-1:0] i_immediate_u_type,
-    // Branch prediction inputs
-    input  logic [XLEN-1:0] i_ras_predicted_target,
+    // Branch prediction input
     input  logic [XLEN-1:0] i_btb_predicted_target,
     // Instruction type (for selecting precomputed target)
     input  logic            i_is_jal,
@@ -52,9 +51,7 @@ module branch_target_precompute #(
     // pseudo-op's xtval (PC, or PC + 2 when only the second halfword faulted)
     output logic [XLEN-1:0] o_pc_relative_precomputed,
     // Non-JALR: the precomputed target equals btb_predicted_target
-    output logic            o_btb_correct_non_jalr,
-    // Same compare against the RAS prediction, for non-JALR instructions
-    output logic            o_ras_correct_non_jalr
+    output logic            o_btb_correct_non_jalr
 );
 
   // PC-relative targets. Only the JALR target is left to branch resolution,
@@ -71,12 +68,10 @@ module branch_target_precompute #(
 
   // JAL and branches have PC-relative targets, so the whole prediction
   // comparison fits in ID, and branch resolution sees only its one-bit result
-  // (the ROB checks a JAL's full target itself at allocation).  Both
-  // prediction sources are checked; dispatch forwards the one it selected.
+  // (the ROB checks a JAL's full target itself at allocation).
   logic [XLEN-1:0] precomputed_target_for_btb;
   assign precomputed_target_for_btb = i_is_jal ? o_jal_target_precomputed :
                                                  o_branch_target_precomputed;
   assign o_btb_correct_non_jalr = (precomputed_target_for_btb == i_btb_predicted_target);
-  assign o_ras_correct_non_jalr = (precomputed_target_for_btb == i_ras_predicted_target);
 
 endmodule : branch_target_precompute

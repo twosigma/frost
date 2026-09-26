@@ -1707,16 +1707,13 @@ package riscv_pkg;
     // carry whatever target was selected rather than zero, so late front-end
     // validity controls stay out of this wide datapath.
     logic [XLEN-1:0] btb_predicted_target;
-    // RAS (Return Address Stack) prediction metadata
-    logic ras_predicted;  // RAS prediction was used
-    logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
     // Return address stack state for this packet: after every older push and
     // pop and before this packet's own, for recovery.
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
     // Bimodal branch-direction prediction, not gated by a BTB hit, carried
-    // to PD.  PD uses it to redirect a branch without a taken BTB or RAS
-    // prediction when the direction predicts taken, whatever the offset sign.
+    // to PD.  PD uses it to redirect a branch without a taken BTB prediction
+    // when the direction predicts taken, whatever the offset sign.
     // Consumed only in PD (slot-1); not carried past PD.
     logic bp_dir_taken;
     // Predict-time bimodal index this op carried from fetch, handed back at
@@ -1768,9 +1765,7 @@ package riscv_pkg;
     // Branch prediction metadata (passed through from IF)
     logic btb_predicted_taken;
     logic [XLEN-1:0] btb_predicted_target;  // Valid only with btb_predicted_taken
-    // RAS prediction metadata (passed through from IF)
-    logic ras_predicted;
-    logic [XLEN-1:0] ras_predicted_target;
+    // Return address stack recovery point (passed through from IF)
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
     // Predict-time bimodal index carried to commit for training.
@@ -1839,9 +1834,7 @@ package riscv_pkg;
     // Branch prediction metadata (passed through from IF via PD/ID)
     logic btb_predicted_taken;
     logic [XLEN-1:0] btb_predicted_target;  // Valid only with btb_predicted_taken
-    // RAS prediction metadata (passed through from IF via PD/ID)
-    logic ras_predicted;
-    logic [XLEN-1:0] ras_predicted_target;
+    // Return address stack recovery point (passed through from IF via PD/ID)
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
     // Predict-time bimodal index carried to commit for training.
@@ -1860,10 +1853,6 @@ package riscv_pkg;
     // BTB check for JAL and branches: their target is PC-relative and known
     // in ID, so ID compares it with btb_predicted_target directly.
     logic btb_correct_non_jalr;  // True if non-JALR target matches BTB prediction
-    // The same PC-relative target check against the RAS prediction, so
-    // dispatch can forward the bit that matches its selected prediction
-    // source (rs_dispatch_t.predicted_target_ok).
-    logic ras_correct_non_jalr;
     // PC-relative value for the ops whose execute-time result is a pure
     // function of the PC and the instruction: PC + imm_u for AUIPC, PC + the
     // faulting-halfword offset (the xtval) for the fetch-fault pseudo-ops.
@@ -1929,11 +1918,9 @@ package riscv_pkg;
     logic is_compressed;
     instr_t instruction;
     logic btb_predicted_taken;
-    logic ras_predicted;
     logic is_ras_return;
     logic is_ras_call;
     logic btb_correct_non_jalr;
-    logic ras_correct_non_jalr;
     logic has_int_dest;
     logic has_fp_dest;
     logic uses_int_rs1;

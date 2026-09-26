@@ -2156,11 +2156,8 @@ module if_stage #(
       .o_data(bp_dir_idx_2_sc)
   );
 
-  // The RAS prediction flag is cleared for a NOP; the target and checkpoint
-  // payloads are not. Stall replay selects the saved copies.
-  // A return predicted from the stack is an ordinary taken BTB prediction.
-  assign o_from_if_to_pd.ras_predicted = 1'b0;
-  assign o_from_if_to_pd.ras_predicted_target = '0;
+  // Recovery point: the registered stack state (see the stack operation
+  // block above).
   assign o_from_if_to_pd.ras_checkpoint_tos = ras_checkpoint_tos;
   assign o_from_if_to_pd.ras_checkpoint_valid_count = ras_checkpoint_valid_count;
   // Bimodal direction carried with the slot-1 instruction (replay-aware). A
@@ -2354,10 +2351,9 @@ module if_stage #(
   // Slot-2 IF→PD packet.
   // ===========================================================================
   // Slot 2 follows slot 1 sequentially in program order: its PC is slot 1's
-  // plus the slot-1 size. Slot 2 never carries a RAS prediction: only slot 1
-  // is classified for the RAS, and a slot-1 call or return ends the bundle.
-  // An older pipelined RAS operation can still land on this edge; the packet
-  // metadata below forwards its post-operation state to both younger slots.
+  // plus the slot-1 size. A slot-2 prediction from a BTB entry typed as a
+  // call or return moves the return address stack like a slot-1 one, and
+  // both slots share one recovery point (see below).
   //
   // Stall handling mirrors slot 1's stall_capture_reg pattern: during a stall
   // the window moves on, so the values captured at stall entry are replayed
@@ -2628,8 +2624,6 @@ module if_stage #(
   // Return address stack metadata: slot 2 shares slot 1's recovery point.
   // Slot 1 cannot push or pop when slot 2 is valid: an instruction predicted
   // taken ends the bundle.
-  assign o_from_if_to_pd_2.ras_predicted = 1'b0;
-  assign o_from_if_to_pd_2.ras_predicted_target = '0;
   assign o_from_if_to_pd_2.ras_checkpoint_tos = o_from_if_to_pd.ras_checkpoint_tos;
   assign o_from_if_to_pd_2.ras_checkpoint_valid_count = o_from_if_to_pd.ras_checkpoint_valid_count;
   // The PD redirect heuristic does not use slot 2, so its direction bit is a

@@ -43,10 +43,10 @@ module control_flow_tracker #(
     input logic            i_trap_taken,
     input logic            i_mret_taken,
     input logic            i_branch_taken,
-    // PD redirect: a bimodal-taken branch without a taken BTB or RAS prediction
+    // PD redirect: a bimodal-taken branch without a taken BTB prediction
     input logic            i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
-    input logic            i_prediction_used,         // Slot-1 BTB or RAS prediction used
+    input logic            i_prediction_used,         // Slot-1 BTB prediction used
     // Slot-2 BTB prediction. Fetch had already requested the next sequential
     // window, so the window after the redirect is stale; this input joins
     // control_flow_change so control_flow_holdoff covers that window.

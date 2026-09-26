@@ -59,8 +59,8 @@ module pc_controller #(
     input logic            i_branch_taken,
     input logic [XLEN-1:0] i_branch_target,
 
-    // PD redirect: a bimodal-taken branch without a taken BTB or RAS
-    // prediction (from pd_stage)
+    // PD redirect: a bimodal-taken branch without a taken BTB prediction
+    // (from pd_stage)
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic i_window_cannot_serve,  // Served window cannot hold pc_reg -> resteer+hold
@@ -1185,10 +1185,10 @@ module pc_controller #(
 `endif
 
   // The pc_reg priority mux without reset, the slot-2 arms, and the
-  // sequential arm, which the muxes below add. Slot-1 BTB and RAS predictions
-  // both reach pc_reg through the registered handoff (sel_prediction_r; see
-  // the timeline above it), which keeps the current fetch response off the
-  // pc_reg data path.
+  // sequential arm, which the muxes below add. Slot-1 BTB predictions,
+  // including returns that take the stack top, reach pc_reg through the
+  // registered handoff (sel_prediction_r; see the timeline above it), which
+  // keeps the current fetch response off the pc_reg data path.
   always_comb begin
     if (trap_or_mret) pc_reg_nonseq_without_slot2 = i_trap_target;
     else if (i_fence_i_flush) pc_reg_nonseq_without_slot2 = i_fence_i_target;

@@ -362,9 +362,6 @@ module cpu_ooo #(
   riscv_pkg::from_id_to_ex_t from_id_to_ex_2;
 
   // Debug mirrors that the cocotb tests read.
-  logic dbg_if_ras_predicted  /* verilator public_flat_rd */;
-  logic dbg_pd_ras_predicted  /* verilator public_flat_rd */;
-  logic dbg_id_ras_predicted  /* verilator public_flat_rd */;
   logic [riscv_pkg::RasPtrBits-1:0] dbg_if_ras_checkpoint_tos  /* verilator public_flat_rd */;
   logic [riscv_pkg::RasPtrBits:0] dbg_if_ras_checkpoint_valid_count  /* verilator public_flat_rd */;
   logic [riscv_pkg::RasPtrBits-1:0] dbg_pd_ras_checkpoint_tos  /* verilator public_flat_rd */;
@@ -459,9 +456,6 @@ module cpu_ooo #(
   // verilog_lint: waive-stop line-length
 `endif
 
-  assign dbg_if_ras_predicted = from_if_to_pd.ras_predicted;
-  assign dbg_pd_ras_predicted = from_pd_to_id.ras_predicted;
-  assign dbg_id_ras_predicted = from_id_to_ex.ras_predicted;
   assign dbg_if_ras_checkpoint_tos = from_if_to_pd.ras_checkpoint_tos;
   assign dbg_if_ras_checkpoint_valid_count = from_if_to_pd.ras_checkpoint_valid_count;
   assign dbg_pd_ras_checkpoint_tos = from_pd_to_id.ras_checkpoint_tos;
@@ -868,11 +862,9 @@ module cpu_ooo #(
         producer_ctrl.is_compressed = decoded_packet.is_compressed;
         producer_ctrl.instruction = decoded_packet.instruction;
         producer_ctrl.btb_predicted_taken = decoded_packet.btb_predicted_taken;
-        producer_ctrl.ras_predicted = decoded_packet.ras_predicted;
         producer_ctrl.is_ras_return = decoded_packet.is_ras_return;
         producer_ctrl.is_ras_call = decoded_packet.is_ras_call;
         producer_ctrl.btb_correct_non_jalr = decoded_packet.btb_correct_non_jalr;
-        producer_ctrl.ras_correct_non_jalr = decoded_packet.ras_correct_non_jalr;
         producer_ctrl.has_int_dest = decoded_packet.has_int_dest;
         producer_ctrl.has_fp_dest = decoded_packet.has_fp_dest;
         producer_ctrl.uses_int_rs1 = decoded_packet.uses_int_rs1;
@@ -913,11 +905,9 @@ module cpu_ooo #(
         producer_ctrl_2.is_compressed = decoded_packet_2.is_compressed;
         producer_ctrl_2.instruction = decoded_packet_2.instruction;
         producer_ctrl_2.btb_predicted_taken = decoded_packet_2.btb_predicted_taken;
-        producer_ctrl_2.ras_predicted = decoded_packet_2.ras_predicted;
         producer_ctrl_2.is_ras_return = decoded_packet_2.is_ras_return;
         producer_ctrl_2.is_ras_call = decoded_packet_2.is_ras_call;
         producer_ctrl_2.btb_correct_non_jalr = decoded_packet_2.btb_correct_non_jalr;
-        producer_ctrl_2.ras_correct_non_jalr = decoded_packet_2.ras_correct_non_jalr;
         producer_ctrl_2.has_int_dest = decoded_packet_2.has_int_dest;
         producer_ctrl_2.has_fp_dest = decoded_packet_2.has_fp_dest;
         producer_ctrl_2.uses_int_rs1 = decoded_packet_2.uses_int_rs1;
@@ -959,11 +949,9 @@ module cpu_ooo #(
         producer_ctrl_next.is_compressed = decoded_packet_next.is_compressed;
         producer_ctrl_next.instruction = decoded_packet_next.instruction;
         producer_ctrl_next.btb_predicted_taken = decoded_packet_next.btb_predicted_taken;
-        producer_ctrl_next.ras_predicted = decoded_packet_next.ras_predicted;
         producer_ctrl_next.is_ras_return = decoded_packet_next.is_ras_return;
         producer_ctrl_next.is_ras_call = decoded_packet_next.is_ras_call;
         producer_ctrl_next.btb_correct_non_jalr = decoded_packet_next.btb_correct_non_jalr;
-        producer_ctrl_next.ras_correct_non_jalr = decoded_packet_next.ras_correct_non_jalr;
         producer_ctrl_next.has_int_dest = decoded_packet_next.has_int_dest;
         producer_ctrl_next.has_fp_dest = decoded_packet_next.has_fp_dest;
         producer_ctrl_next.uses_int_rs1 = decoded_packet_next.uses_int_rs1;
@@ -1005,11 +993,9 @@ module cpu_ooo #(
         producer_ctrl_next_2.is_compressed = decoded_packet_next_2.is_compressed;
         producer_ctrl_next_2.instruction = decoded_packet_next_2.instruction;
         producer_ctrl_next_2.btb_predicted_taken = decoded_packet_next_2.btb_predicted_taken;
-        producer_ctrl_next_2.ras_predicted = decoded_packet_next_2.ras_predicted;
         producer_ctrl_next_2.is_ras_return = decoded_packet_next_2.is_ras_return;
         producer_ctrl_next_2.is_ras_call = decoded_packet_next_2.is_ras_call;
         producer_ctrl_next_2.btb_correct_non_jalr = decoded_packet_next_2.btb_correct_non_jalr;
-        producer_ctrl_next_2.ras_correct_non_jalr = decoded_packet_next_2.ras_correct_non_jalr;
         producer_ctrl_next_2.has_int_dest = decoded_packet_next_2.has_int_dest;
         producer_ctrl_next_2.has_fp_dest = decoded_packet_next_2.has_fp_dest;
         producer_ctrl_next_2.uses_int_rs1 = decoded_packet_next_2.uses_int_rs1;
@@ -1022,10 +1008,9 @@ module cpu_ooo #(
       // An unpredicted JALR in either slot. While it is queued it counts as
       // pending for the control-flow serialization stall.
       assign input_indirect =
-          (decoded_packet.is_jump_and_link_register &&
-           !(decoded_packet.ras_predicted || decoded_packet.btb_predicted_taken)) ||
+          (decoded_packet.is_jump_and_link_register && !decoded_packet.btb_predicted_taken) ||
           (decoded_packet_2.is_real && decoded_packet_2.is_jump_and_link_register &&
-           !(decoded_packet_2.ras_predicted || decoded_packet_2.btb_predicted_taken));
+           !decoded_packet_2.btb_predicted_taken);
       decoded_bundle_queue #(
           .DEPTH(DECODED_QUEUE_DEPTH),
           .WIDTH(2 * $bits(decoded_packet)),
@@ -1087,11 +1072,9 @@ module cpu_ooo #(
         from_id_to_ex.is_compressed = queue_ctrl.is_compressed;
         from_id_to_ex.instruction = queue_ctrl.instruction;
         from_id_to_ex.btb_predicted_taken = queue_ctrl.btb_predicted_taken;
-        from_id_to_ex.ras_predicted = queue_ctrl.ras_predicted;
         from_id_to_ex.is_ras_return = queue_ctrl.is_ras_return;
         from_id_to_ex.is_ras_call = queue_ctrl.is_ras_call;
         from_id_to_ex.btb_correct_non_jalr = queue_ctrl.btb_correct_non_jalr;
-        from_id_to_ex.ras_correct_non_jalr = queue_ctrl.ras_correct_non_jalr;
         from_id_to_ex.has_int_dest = queue_ctrl.has_int_dest;
         from_id_to_ex.has_fp_dest = queue_ctrl.has_fp_dest;
         from_id_to_ex.uses_int_rs1 = queue_ctrl.uses_int_rs1;
@@ -1132,11 +1115,9 @@ module cpu_ooo #(
         from_id_to_ex_2.is_compressed = queue_ctrl_2.is_compressed;
         from_id_to_ex_2.instruction = queue_ctrl_2.instruction;
         from_id_to_ex_2.btb_predicted_taken = queue_ctrl_2.btb_predicted_taken;
-        from_id_to_ex_2.ras_predicted = queue_ctrl_2.ras_predicted;
         from_id_to_ex_2.is_ras_return = queue_ctrl_2.is_ras_return;
         from_id_to_ex_2.is_ras_call = queue_ctrl_2.is_ras_call;
         from_id_to_ex_2.btb_correct_non_jalr = queue_ctrl_2.btb_correct_non_jalr;
-        from_id_to_ex_2.ras_correct_non_jalr = queue_ctrl_2.ras_correct_non_jalr;
         from_id_to_ex_2.has_int_dest = queue_ctrl_2.has_int_dest;
         from_id_to_ex_2.has_fp_dest = queue_ctrl_2.has_fp_dest;
         from_id_to_ex_2.uses_int_rs1 = queue_ctrl_2.uses_int_rs1;
