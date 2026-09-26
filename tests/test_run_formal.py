@@ -268,7 +268,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "tlb.sby",
-        "TLB - lookup/insert/invalidate conservation in DTLB (16x3) and ITLB (8x2) shapes",
+        "TLB - lookup/insert/invalidate conservation and lookup-select equivalence in DTLB (16x3) and ITLB (8x2) shapes",
         tasks=("bmc", "cover", "bmc_itlb", "cover_itlb"),
     ),
     FormalTarget(

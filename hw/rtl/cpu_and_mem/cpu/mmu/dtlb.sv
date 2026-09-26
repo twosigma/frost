@@ -85,19 +85,29 @@ module dtlb #(
   // ---------------------------------------------------------------------------
   // Lookup: level-masked compare, lowest matching index wins.
   // ---------------------------------------------------------------------------
+  // TIMING: each entry's three VPN chunk compares are kept as nets, and the
+  // lowest match is found as a one-hot select before an AND-OR mux, so the
+  // lookup is a shallow tree instead of a compare chain feeding a priority
+  // chain.
+  (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn2_eq;
+  (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn1_eq;
+  (* keep = "true" *)logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] vpn0_eq;
   logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] match;
+  logic [NUM_PORTS-1:0][NUM_ENTRIES-1:0] lowest_match;
   always_comb begin
     for (int p = 0; p < NUM_PORTS; p++) begin
       for (int e = 0; e < NUM_ENTRIES; e++) begin
-        logic vpn2_eq, vpn1_eq, vpn0_eq;
-        vpn2_eq = (i_lookup_vpn[p][26:18] == e_vpn[e][26:18]);
-        vpn1_eq = (i_lookup_vpn[p][17:9] == e_vpn[e][17:9]);
-        vpn0_eq = (i_lookup_vpn[p][8:0] == e_vpn[e][8:0]);
+        vpn2_eq[p][e] = (i_lookup_vpn[p][26:18] == e_vpn[e][26:18]);
+        vpn1_eq[p][e] = (i_lookup_vpn[p][17:9] == e_vpn[e][17:9]);
+        vpn0_eq[p][e] = (i_lookup_vpn[p][8:0] == e_vpn[e][8:0]);
         unique case (e_level[e])
-          2'd2:    match[p][e] = e_valid[e] && vpn2_eq;
-          2'd1:    match[p][e] = e_valid[e] && vpn2_eq && vpn1_eq;
-          default: match[p][e] = e_valid[e] && vpn2_eq && vpn1_eq && vpn0_eq;
+          2'd2:    match[p][e] = e_valid[e] && vpn2_eq[p][e];
+          2'd1:    match[p][e] = e_valid[e] && vpn2_eq[p][e] && vpn1_eq[p][e];
+          default: match[p][e] = e_valid[e] && vpn2_eq[p][e] && vpn1_eq[p][e] && vpn0_eq[p][e];
         endcase
+      end
+      for (int e = 0; e < NUM_ENTRIES; e++) begin
+        lowest_match[p][e] = match[p][e] && !(|(match[p] & ((NUM_ENTRIES'(1) << e) - 1'b1)));
       end
     end
   end
@@ -114,27 +124,25 @@ module dtlb #(
       o_perm_u[p] = 1'b0;
       o_perm_d[p] = 1'b0;
       o_level[p] = 2'd0;
-      for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
-        if (match[p][e]) begin
-          logic [19:0] ppn20;
-          // For a superpage the low PPN bits come from the VA, as Sv39
-          // specifies. The walker faults a misaligned superpage, so the
-          // entry's own low PPN bits are zero.
-          unique case (e_level[e])
-            2'd2: ppn20 = {e_ppn20[e][19:18], i_lookup_vpn[p][17:0]};
-            2'd1: ppn20 = {e_ppn20[e][19:9], i_lookup_vpn[p][8:0]};
-            default: ppn20 = e_ppn20[e];
-          endcase
-          o_ppn20[p] = ppn20;
-          o_device_page[p] = riscv_pkg::pma_device_page_ok(ppn20);
-          o_ppn_hi_nonzero[p] = e_ppn_hi_nonzero[e];
-          o_perm_r[p] = e_r[e];
-          o_perm_w[p] = e_w[e];
-          o_perm_x[p] = e_x[e];
-          o_perm_u[p] = e_u[e];
-          o_perm_d[p] = e_d[e];
-          o_level[p] = e_level[e];
-        end
+      for (int e = 0; e < NUM_ENTRIES; e++) begin
+        logic [19:0] ppn20;
+        // For a superpage the low PPN bits come from the VA, as Sv39
+        // specifies. The walker faults a misaligned superpage, so the
+        // entry's own low PPN bits are zero.
+        unique case (e_level[e])
+          2'd2: ppn20 = {e_ppn20[e][19:18], i_lookup_vpn[p][17:0]};
+          2'd1: ppn20 = {e_ppn20[e][19:9], i_lookup_vpn[p][8:0]};
+          default: ppn20 = e_ppn20[e];
+        endcase
+        o_ppn20[p] |= {20{lowest_match[p][e]}} & ppn20;
+        o_device_page[p] |= lowest_match[p][e] && riscv_pkg::pma_device_page_ok(ppn20);
+        o_ppn_hi_nonzero[p] |= lowest_match[p][e] && e_ppn_hi_nonzero[e];
+        o_perm_r[p] |= lowest_match[p][e] && e_r[e];
+        o_perm_w[p] |= lowest_match[p][e] && e_w[e];
+        o_perm_x[p] |= lowest_match[p][e] && e_x[e];
+        o_perm_u[p] |= lowest_match[p][e] && e_u[e];
+        o_perm_d[p] |= lowest_match[p][e] && e_d[e];
+        o_level[p] |= {2{lowest_match[p][e]}} & e_level[e];
       end
     end
   end
@@ -164,6 +172,42 @@ module dtlb #(
       repl_ptr_q <= repl_ptr_q + 1'b1;
     end
   end
+
+`ifndef SYNTHESIS
+  // Reference lookup: the priority chain in which the lowest matching index
+  // wins. The select tree above must give the same result for every lookup.
+  for (genvar gp = 0; gp < NUM_PORTS; gp++) begin : gen_lookup_reference
+    logic [19:0] ref_ppn20;
+    logic ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d;
+    logic [1:0] ref_level;
+    always_comb begin
+      ref_ppn20 = '0;
+      ref_device_page = 1'b0;
+      ref_ppn_hi_nonzero = 1'b0;
+      {ref_r, ref_w, ref_x, ref_u, ref_d} = '0;
+      ref_level = 2'd0;
+      for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
+        if (match[gp][e]) begin
+          unique case (e_level[e])
+            2'd2: ref_ppn20 = {e_ppn20[e][19:18], i_lookup_vpn[gp][17:0]};
+            2'd1: ref_ppn20 = {e_ppn20[e][19:9], i_lookup_vpn[gp][8:0]};
+            default: ref_ppn20 = e_ppn20[e];
+          endcase
+          ref_device_page = riscv_pkg::pma_device_page_ok(ref_ppn20);
+          ref_ppn_hi_nonzero = e_ppn_hi_nonzero[e];
+          {ref_r, ref_w, ref_x, ref_u, ref_d} = {e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]};
+          ref_level = e_level[e];
+        end
+      end
+    end
+    always_ff @(posedge i_clk) begin
+      assert ({o_ppn20[gp], o_device_page[gp], o_ppn_hi_nonzero[gp], o_perm_r[gp], o_perm_w[gp],
+               o_perm_x[gp], o_perm_u[gp], o_perm_d[gp], o_level[gp]} ==
+              {ref_ppn20, ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d,
+               ref_level});
+    end
+  end
+`endif
 
 `ifdef FORMAL
   // Formal target tlb: an arbitrary watched slot holds exactly what the last

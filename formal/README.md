@@ -252,7 +252,7 @@ after reset need not satisfy the bound, because reset clears every valid bit.
 | `low_bram_presenter_tier` | `low_bram_fetch_presenter` presents the same low-BRAM fetch responses with and without separate address retargeting. Assumes reset on the first two cycles; see below |
 | `ptw` | Page-table walker against a reference PTE classification: one outstanding read, always to DDR, the right result for a valid leaf, a page fault only for a reason the PTEs give, never a misalignment fault, and no response for a discarded walk. The cause of an access fault is not checked. Assumes a response arrives only for an outstanding read |
 | `sc_head_query` | The coherence match for the store-conditional at the ROB head, built from parallel per-entry compares, equals a direct 32-byte-line compare of its address, from arbitrary table state |
-| `tlb` | Lookup, insert, and invalidate-all: a watched entry stays intact and every matching lookup hits it, no port hits while no entry is valid, and invalidate-all clears everything, in the DTLB shape (16 entries, 3 ports) and the ITLB shape (8 entries, 2 ports) |
+| `tlb` | Lookup, insert, and invalidate-all: a watched entry stays intact and every matching lookup hits it, no port hits while no entry is valid, invalidate-all clears everything, and the lookup's one-hot select returns the same fields as a priority chain in which the lowest matching entry wins, in the DTLB shape (16 entries, 3 ports) and the ITLB shape (8 entries, 2 ports) |
 
 `coherence_observation` follows an arbitrary ROB tag, so it covers all 32 at
 XLEN 64: the pending observation, its table entry and line, cleanup on
