@@ -188,7 +188,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "dmmu_mmio.sby",
-        "DMMU parallel MMIO classification and captured next bit match the reference resolution/hold",
+        "DMMU parallel MMIO classification, captured next bit, and DTLB per-entry leaf checks match the reference",
         tasks=("bmc",),
     ),
     FormalTarget(

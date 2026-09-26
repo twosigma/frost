@@ -70,7 +70,20 @@ module dtlb #(
     // lookup.
     output logic [NUM_PORTS-1:0][                       1:0] o_level,
     // o_ppn20 is a device-window page (riscv_pkg::pma_device_page_ok).
-    output logic [NUM_PORTS-1:0]                             o_device_page
+    output logic [NUM_PORTS-1:0]                             o_device_page,
+    // The data MMU's leaf checks of each port's hit, formed per entry before
+    // the select so that no permission or PMA logic follows it. o_perm_ok is
+    // the permission check: i_perm_store asks for W and D, otherwise R, or X
+    // with i_perm_mxr; a U page needs U mode (i_perm_priv_u) or i_perm_sum, and
+    // an S page needs S mode. o_atomic_page is riscv_pkg::pma_atomic_ok of the
+    // hit's zero-extended PA. The ITLB ties the inputs off and leaves these
+    // outputs open.
+    input  logic [NUM_PORTS-1:0]                             i_perm_store,
+    input  logic                                             i_perm_priv_u,
+    input  logic                                             i_perm_sum,
+    input  logic                                             i_perm_mxr,
+    output logic [NUM_PORTS-1:0]                             o_perm_ok,
+    output logic [NUM_PORTS-1:0]                             o_atomic_page
 );
 
   localparam int unsigned EntryIdxBits = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
@@ -112,11 +125,20 @@ module dtlb #(
     end
   end
 
+  function automatic logic leaf_perm_ok(input logic store, input logic r, input logic w,
+                                        input logic x, input logic u, input logic d);
+    logic priv_ok;
+    priv_ok = u ? (i_perm_priv_u || i_perm_sum) : !i_perm_priv_u;
+    leaf_perm_ok = priv_ok && (store ? (w && d) : (r || (i_perm_mxr && x)));
+  endfunction
+
   always_comb begin
     for (int p = 0; p < NUM_PORTS; p++) begin
       o_hit[p] = |match[p];
       o_ppn20[p] = '0;
       o_device_page[p] = 1'b0;
+      o_perm_ok[p] = 1'b0;
+      o_atomic_page[p] = 1'b0;
       o_ppn_hi_nonzero[p] = 1'b0;
       o_perm_r[p] = 1'b0;
       o_perm_w[p] = 1'b0;
@@ -136,6 +158,10 @@ module dtlb #(
         endcase
         o_ppn20[p] |= {20{lowest_match[p][e]}} & ppn20;
         o_device_page[p] |= lowest_match[p][e] && riscv_pkg::pma_device_page_ok(ppn20);
+        o_perm_ok[p] |= lowest_match[p][e] && leaf_perm_ok(
+            i_perm_store[p], e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]
+        );
+        o_atomic_page[p] |= lowest_match[p][e] && riscv_pkg::pma_atomic_ok({32'b0, ppn20, 12'h000});
         o_ppn_hi_nonzero[p] |= lowest_match[p][e] && e_ppn_hi_nonzero[e];
         o_perm_r[p] |= lowest_match[p][e] && e_r[e];
         o_perm_w[p] |= lowest_match[p][e] && e_w[e];
@@ -179,12 +205,15 @@ module dtlb #(
   for (genvar gp = 0; gp < NUM_PORTS; gp++) begin : gen_lookup_reference
     logic [19:0] ref_ppn20;
     logic ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d;
+    logic ref_perm_ok, ref_atomic_page;
     logic [1:0] ref_level;
     always_comb begin
       ref_ppn20 = '0;
       ref_device_page = 1'b0;
       ref_ppn_hi_nonzero = 1'b0;
       {ref_r, ref_w, ref_x, ref_u, ref_d} = '0;
+      ref_perm_ok = 1'b0;
+      ref_atomic_page = 1'b0;
       ref_level = 2'd0;
       for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
         if (match[gp][e]) begin
@@ -196,15 +225,19 @@ module dtlb #(
           ref_device_page = riscv_pkg::pma_device_page_ok(ref_ppn20);
           ref_ppn_hi_nonzero = e_ppn_hi_nonzero[e];
           {ref_r, ref_w, ref_x, ref_u, ref_d} = {e_r[e], e_w[e], e_x[e], e_u[e], e_d[e]};
+          ref_perm_ok = (e_u[e] ? (i_perm_priv_u || i_perm_sum) : !i_perm_priv_u) &&
+              (i_perm_store[gp] ? (e_w[e] && e_d[e]) : (e_r[e] || (i_perm_mxr && e_x[e])));
+          ref_atomic_page = riscv_pkg::pma_atomic_ok({32'b0, ref_ppn20, 12'h000});
           ref_level = e_level[e];
         end
       end
     end
     always_ff @(posedge i_clk) begin
       assert ({o_ppn20[gp], o_device_page[gp], o_ppn_hi_nonzero[gp], o_perm_r[gp], o_perm_w[gp],
-               o_perm_x[gp], o_perm_u[gp], o_perm_d[gp], o_level[gp]} ==
+               o_perm_x[gp], o_perm_u[gp], o_perm_d[gp], o_level[gp], o_perm_ok[gp],
+               o_atomic_page[gp]} ==
               {ref_ppn20, ref_device_page, ref_ppn_hi_nonzero, ref_r, ref_w, ref_x, ref_u, ref_d,
-               ref_level});
+               ref_level, ref_perm_ok, ref_atomic_page});
     end
   end
 `endif

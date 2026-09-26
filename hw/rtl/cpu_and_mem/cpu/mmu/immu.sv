@@ -211,7 +211,14 @@ module immu #(
       .o_perm_u(tlb_u),
       .o_perm_d(tlb_d),
       .o_level(tlb_level),
-      .o_device_page()  // fetch never reaches a device window
+      .o_device_page(),  // fetch never reaches a device window
+      // The data MMU's leaf checks; fetch uses its own.
+      .i_perm_store('0),
+      .i_perm_priv_u(1'b0),
+      .i_perm_sum(1'b0),
+      .i_perm_mxr(1'b0),
+      .o_perm_ok(),
+      .o_atomic_page()
   );
 
   // ---------------------------------------------------------------------------
