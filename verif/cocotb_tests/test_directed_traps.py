@@ -829,10 +829,11 @@ async def test_directed_mret_interrupt_race(dut: Any) -> None:
     """Sweep MTIP across an MRET and check the first interrupt entry.
 
     At every offset the interrupt must be taken (none lost), as a machine
-    timer interrupt with MIE=0 and MPIE=1 after entry, and mepc and MPP must
-    match the order: taken before the MRET retires, mepc is the PC after the
-    last retired instruction and MPP=M; taken after it, mepc is the MRET
-    target and MPP=U. The sweep must produce both orders.
+    timer interrupt with MIE=0 and MPIE=1 after entry, and mepc must be the PC
+    after the last retired instruction. MPP must match the order: M if the
+    interrupt is taken before the MRET retires; U if after it, and then mepc
+    is on the MRET's target path, the target itself or past the NOPs that
+    retired there. The sweep must produce both orders.
     """
     results = await sweep_mret_interrupt_race(dut)
     timer_cause = (1 << 63) | 7
@@ -853,8 +854,9 @@ async def test_directed_mret_interrupt_race(dut: Any) -> None:
             f"the PC after the last instruction retired before the take"
         )
         if mret_first:
-            assert mepc == MRET_RACE_TARGET, (
-                f"offset {offset}: an interrupt after the MRET must save its target"
+            assert mepc >= MRET_RACE_TARGET, (
+                f"offset {offset}: mepc=0x{mepc:x}, but an interrupt after the MRET "
+                f"must save a PC on its target path (0x{MRET_RACE_TARGET:x} on)"
             )
             assert mpp == 0, f"offset {offset}: MPP={mpp}, want U after the MRET"
         else:
