@@ -1387,6 +1387,59 @@ module reservation_station #(
     end
   end
 
+  // The issued entry's CDB bypass flags. With CAPTURE_PRIMARY_EFFECTIVE_OPERANDS
+  // they select the stage-2 operand D inputs, and they come after the CDB tag
+  // match, readiness, and issue selection. TIMING: that form reads them with
+  // the one-hot lowest ready entry instead of through issue_idx, which keeps
+  // the binary encode and its wide decode off the operand selects. Whenever an
+  // entry is ready they equal src*_cdb_bypass*[issue_idx] (checked below).
+  logic issue_src1_bypass, issue_src1_bypass_l1, issue_src2_bypass, issue_src2_bypass_l1;
+  if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin : gen_issue_bypass_onehot
+    logic [DEPTH-1:0] issue_onehot;
+    (* keep = "true" *) logic src1_bypass, src1_bypass_l1, src2_bypass, src2_bypass_l1;
+    always_comb begin
+      for (int i = 0; i < DEPTH; i++) begin
+        issue_onehot[i] = entry_ready[i] && !(|(entry_ready & ((DEPTH'(1) << i) - 1'b1)));
+      end
+    end
+    assign src1_bypass = |(issue_onehot & src1_cdb_bypass);
+    assign src1_bypass_l1 = |(issue_onehot & src1_cdb_bypass_l1);
+    assign src2_bypass = |(issue_onehot & src2_cdb_bypass);
+    assign src2_bypass_l1 = |(issue_onehot & src2_cdb_bypass_l1);
+    assign issue_src1_bypass = src1_bypass;
+    assign issue_src1_bypass_l1 = src1_bypass_l1;
+    assign issue_src2_bypass = src2_bypass;
+    assign issue_src2_bypass_l1 = src2_bypass_l1;
+  end else begin : gen_issue_bypass_indexed
+    assign issue_src1_bypass = src1_cdb_bypass[issue_idx];
+    assign issue_src1_bypass_l1 = src1_cdb_bypass_l1[issue_idx];
+    assign issue_src2_bypass = src2_cdb_bypass[issue_idx];
+    assign issue_src2_bypass_l1 = src2_cdb_bypass_l1[issue_idx];
+  end
+`ifndef SYNTHESIS
+  always_comb begin
+    if (any_ready && !$isunknown(
+            {
+              issue_idx,
+              src1_cdb_bypass,
+              src1_cdb_bypass_l1,
+              src2_cdb_bypass,
+              src2_cdb_bypass_l1,
+              issue_src1_bypass,
+              issue_src1_bypass_l1,
+              issue_src2_bypass,
+              issue_src2_bypass_l1
+            }
+        )) begin
+      p_issue_bypass_flags_match_index :
+      assert (issue_src1_bypass == src1_cdb_bypass[issue_idx] &&
+              issue_src1_bypass_l1 == src1_cdb_bypass_l1[issue_idx] &&
+              issue_src2_bypass == src2_cdb_bypass[issue_idx] &&
+              issue_src2_bypass_l1 == src2_cdb_bypass_l1[issue_idx]);
+    end
+  end
+`endif
+
   // --- Head-wait diagnostic observation ---
   // Scan for an entry whose rob_tag matches the query tag. At most one entry
   // can match by construction (each in-flight rob_tag is unique).
@@ -2679,16 +2732,14 @@ module reservation_station #(
         // inputs contribute valid/tag comparisons only.
         stage2_src1_value <= (((src1_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
             src1_repair_sel[issue_idx]
-        ) : rs_src1_value[issue_idx]) &
-            {FLEN{!src1_cdb_bypass[issue_idx] && !src1_cdb_bypass_l1[issue_idx]}}) |
-            (i_cdb.value & {FLEN{src1_cdb_bypass[issue_idx]}}) |
-            (i_cdb_2.value & {FLEN{src1_cdb_bypass_l1[issue_idx]}});
+        ) : rs_src1_value[issue_idx]) & {FLEN{!issue_src1_bypass && !issue_src1_bypass_l1}}) |
+            (i_cdb.value & {FLEN{issue_src1_bypass}}) |
+            (i_cdb_2.value & {FLEN{issue_src1_bypass_l1}});
         stage2_src2_value <= (((src2_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
             src2_repair_sel[issue_idx]
-        ) : rs_src2_value[issue_idx]) &
-            {FLEN{!src2_cdb_bypass[issue_idx] && !src2_cdb_bypass_l1[issue_idx]}}) |
-            (i_cdb.value & {FLEN{src2_cdb_bypass[issue_idx]}}) |
-            (i_cdb_2.value & {FLEN{src2_cdb_bypass_l1[issue_idx]}});
+        ) : rs_src2_value[issue_idx]) & {FLEN{!issue_src2_bypass && !issue_src2_bypass_l1}}) |
+            (i_cdb.value & {FLEN{issue_src2_bypass}}) |
+            (i_cdb_2.value & {FLEN{issue_src2_bypass_l1}});
       end else begin
         // For CDB-bypassed sources, store the stale rs_src_value here and set the
         // bypass flag; the output mux substitutes stage2_cdb_value /
