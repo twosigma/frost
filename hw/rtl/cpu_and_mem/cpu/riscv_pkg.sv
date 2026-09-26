@@ -19,11 +19,12 @@
  *
  * Contents:
  * =========
+ *   XLEN, ahead of the sections, which use it
  *   Section 1: Instruction Opcodes (opc_e) and the IMEM predecode sideband
  *   Section 2: Instruction Operations (instr_op_e)
  *   Section 3: CSR Definitions (addresses, bit positions, cause codes)
  *   Section 4: Control Enumerations (branch_taken_op_e)
- *   Section 5: Instruction Format (instr_t), XLEN, memory map, PMA, Sv39, constants
+ *   Section 5: Instruction Format (instr_t), memory map, PMA, Sv39, constants
  *   Section 6: Pipeline Control (pipeline_ctrl_t)
  *   Section 7: Inter-Stage Data Structures (from_*_to_*_t)
  *   Section 8: Trap/Exception Handling
@@ -50,6 +51,12 @@
  * in one package.
  */
 package riscv_pkg;
+
+  // The core is RV64GCB, and this localparam is the one definition of its
+  // width: module-level XLEN parameters default to it and exist only so unit
+  // benches can elaborate standalone. It comes first because the sections
+  // below use it.
+  localparam int unsigned XLEN = 64;
 
   // ===========================================================================
   // Section 1: Instruction Opcodes
@@ -1348,11 +1355,6 @@ package riscv_pkg;
   } instr_t;
 
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
-
-  // The core is RV64GCB, and this localparam is the one definition of its
-  // width: module-level XLEN parameters default to it and exist only so unit
-  // benches can elaborate standalone.
-  localparam int unsigned XLEN = 64;
 
   // Physical-map geometry. The entire physical map lives below 4 GiB
   // (256 KiB low BRAM at 0, MMIO in the 01 quadrant at 0x4000_0000, 1 GiB

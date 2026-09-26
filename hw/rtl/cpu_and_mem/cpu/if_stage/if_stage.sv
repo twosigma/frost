@@ -406,6 +406,8 @@ module if_stage #(
   // gate.
   assign slot2_prediction_valid = !sel_nop_2;
 
+  (* keep = "true", max_fanout = 32 *) logic if_stage_stall_registered;
+
 `ifndef SYNTHESIS
   logic [7:0] instr_pc_metadata_canonical;
   logic [7:0] active_pc_metadata_by_parity;
@@ -524,8 +526,9 @@ module if_stage #(
   // ---------------------------------------------------------------------------
   logic prev_was_compressed_at_lo_saved;  // Saved for stall recovery
   (* keep = "true", max_fanout = 32 *)logic if_stage_stall;
-  (* keep = "true", max_fanout = 32 *)logic if_stage_stall_registered;
   (* keep = "true" *)logic pc_controller_stall;
+
+  logic window_cannot_serve_pc_reg;
 
   // The aligner receives the raw instruction, not a flush-gated copy, which
   // keeps flush off the path is_compressed -> pc_increment -> PC. On a flush
@@ -794,6 +797,12 @@ module if_stage #(
       .o_dir_idx_live(bp_dir_idx_live),
       .o_dir_idx_2(bp_dir_idx_2)
   );
+
+  logic live_prediction_emits_with_output;
+  logic window_resteer_pc_reg;
+  logic pc_control_sel_nop;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_run, pc_fetch_advance_sel_nop;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_run, pc_reg_advance_sel_nop;
 
   // ===========================================================================
   // PC Controller
@@ -1143,7 +1152,6 @@ module if_stage #(
   // fetch progress.
   logic prediction_already_emitted_q;
   logic lookup_pc_matches_packet_pc;
-  logic live_prediction_emits_with_output;
   assign lookup_pc_matches_packet_pc = pc == pc_reg;
   assign live_prediction_emits_with_output = prediction_used_live_cofactor && !sel_nop &&
                                              !if_stage_stall_registered &&
@@ -1385,7 +1393,6 @@ module if_stage #(
   end
 `endif
 
-  logic window_cannot_serve_pc_reg;
   // Declared here for the low-BRAM arm below, which excludes saved-replay
   // cycles; defined with the stall-capture logic.
   logic replay_saved_if_outputs;
@@ -1463,7 +1470,6 @@ module if_stage #(
   // holdoff release with the window still stale (fetch ran ahead during the
   // redirect bubble), this fires on the cycle the wrong-word decode would
   // otherwise advance pc_reg onto a mid-instruction byte.
-  logic window_resteer_pc_reg;
   assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing_wcs;
 
   assign sel_nop = sel_nop_existing_wcs0 || window_cannot_serve_pc_reg;
@@ -1478,7 +1484,6 @@ module if_stage #(
   // sequential PC logic. The packet-side consumers keep the complete squash.
   logic flush_pc_control;
   logic sel_nop_existing_pc_control;
-  logic pc_control_sel_nop;
   assign flush_pc_control = (i_pipeline_ctrl.flush || flush_for_c_ext_safe) && !i_flush_all;
   assign sel_nop_existing_pc_control = flush_pc_control || !fetch_progress ||
                    reset_holdoff ||
@@ -2482,8 +2487,6 @@ module if_stage #(
   // The run and nop selects under the same replay select: on a replay cycle
   // both equal the saved select, so the final squash 2:1 does not matter
   // there.
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_run, pc_fetch_advance_sel_nop;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_run, pc_reg_advance_sel_nop;
   assign pc_fetch_advance_sel_run =
       replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_advance_sel_run_live;
   assign pc_fetch_advance_sel_nop =

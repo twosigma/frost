@@ -792,6 +792,9 @@ module dispatch #(
   assign lq_full_for_slot2 = need_lq ? i_lq_full_for_2 : i_lq_full;
   assign sq_full_for_slot2 = need_sq ? i_sq_full_for_2 : i_sq_full;
 
+  (* max_fanout = 64 *)logic bundle_fire_ok;  // Whole bundle fires (slot-1 + optional slot-2)
+  logic slot2_only_block;
+
   // Stall: back-pressure when any needed resource is full
   always_comb begin
     o_status = '0;
@@ -861,7 +864,6 @@ module dispatch #(
   (* keep = "true", max_fanout = 64 *)logic slot2_can_fire;
   logic slot2_resources_ok;
   (* max_fanout = 64 *)logic slot2_bundle_ok;
-  (* max_fanout = 64 *)logic bundle_fire_ok;  // Whole bundle fires (slot-1 + optional slot-2)
   logic int_rs_dispatch_fire;
   logic mul_rs_dispatch_fire;
   logic mem_rs_dispatch_fire;
@@ -909,7 +911,6 @@ module dispatch #(
   assign slot2_bundle_ok = !slot2_present_for_admission || slot2_resources_ok;
   // Width-funnel profiling: cycles where a valid slot-2 alone holds the
   // bundle (slot-1 could have fired).  Decomposed per cause into o_status.
-  logic slot2_only_block;
   assign slot2_only_block = dispatch_valid_2 && slot1_can_fire && !slot2_resources_ok;
   // The whole bundle fires together: either both slots fire or neither.
   // When slot-2 isn't valid the OR collapses to 1 and the bundle gate
@@ -1062,6 +1063,13 @@ module dispatch #(
     end
   end
 
+  // Effective slot-2 lookup results after intra-bundle RAW override.
+  riscv_pkg::rat_lookup_t int_src1_2_eff;
+  riscv_pkg::rat_lookup_t int_src2_2_eff;
+  riscv_pkg::rat_lookup_t fp_src1_2_eff;
+  riscv_pkg::rat_lookup_t fp_src2_2_eff;
+  riscv_pkg::rat_lookup_t fp_src3_2_eff;
+
   // Slot-2 done-repair channels (4/5/6), mirror of slot-1.  Use the
   // intra-bundle-RAW-resolved `*_2_eff` views: when slot-2 reads slot-1's
   // dest the eff tag is slot-1's just-allocated ROB tag (not yet done at
@@ -1202,13 +1210,6 @@ module dispatch #(
   assign intra_bundle_fp_src1_2 = slot1_dest_fp && (dest_reg == i_rs1_addr_2);
   assign intra_bundle_fp_src2_2 = slot1_dest_fp && (dest_reg == i_rs2_addr_2);
   assign intra_bundle_fp_src3_2 = slot1_dest_fp && (dest_reg == i_fp_rs3_addr_2);
-
-  // Effective slot-2 lookup results after intra-bundle RAW override.
-  riscv_pkg::rat_lookup_t int_src1_2_eff;
-  riscv_pkg::rat_lookup_t int_src2_2_eff;
-  riscv_pkg::rat_lookup_t fp_src1_2_eff;
-  riscv_pkg::rat_lookup_t fp_src2_2_eff;
-  riscv_pkg::rat_lookup_t fp_src3_2_eff;
 
   always_comb begin
     if (intra_bundle_int_src1_2) begin

@@ -509,6 +509,8 @@ module cpu_and_mem #(
     else ns_iir = 8'hC1;  // FIFO enabled, no interrupt pending.
   end
 
+  logic [1:0] plic_eip;
+
   // Interrupt signals to CPU
   riscv_pkg::interrupt_t interrupts;
   // External interrupt: meip is registered from the PLIC's M-context line. The
@@ -529,6 +531,8 @@ module cpu_and_mem #(
   end
   assign interrupts.meip = meip_registered;
 
+  logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable_registered;
+
   // ---------------------------------------------------------------------------
   // PLIC. Register writes ride the registered MMIO write bus like the
   // ns16550 block; the byte enables select the 32-bit lane. The spec requires
@@ -536,7 +540,6 @@ module cpu_and_mem #(
   // (plic_wr_hi wins). Claim pulses decode the exact word address of the
   // performed read.
   // ---------------------------------------------------------------------------
-  logic [1:0] plic_eip;
   logic [1:0] plic_claim_pulse;
   // The register-bus window selects are registered beside the address they
   // decode (the same unconditional capture as data_memory_address_registered),
@@ -629,6 +632,14 @@ module cpu_and_mem #(
   assign mmio_load_addr = cpu_mmio_load_addr_xlen[31:0];
   assign cpu_debug_commit_pc = cpu_debug_commit_pc_xlen[31:0];
   assign cpu_debug_commit_2_pc = cpu_debug_commit_2_pc_xlen[31:0];
+
+  // Hart interface (cpu_ooo <-> debug module).
+  logic dbg_haltreq, dbg_go, dbg_data_we, dbg_debug_mode, dbg_parked, dbg_cmd_err, dbg_go_taken;
+  logic [31:0] dbg_go_addr;
+  logic [63:0] dbg_data, dbg_data_wdata;
+  logic dbg_bram_store;
+  logic [31:0] dbg_bram_store_addr;
+  logic [7:0] dbg_bram_store_strb;
 
   cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
@@ -1334,14 +1345,6 @@ module cpu_and_mem #(
       .i_dmi_resp_data(dmi_resp_data),
       .i_dmi_resp_op(dmi_resp_op)
   );
-
-  // Hart interface (cpu_ooo <-> debug module).
-  logic dbg_haltreq, dbg_go, dbg_data_we, dbg_debug_mode, dbg_parked, dbg_cmd_err, dbg_go_taken;
-  logic [31:0] dbg_go_addr;
-  logic [63:0] dbg_data, dbg_data_wdata;
-  logic dbg_bram_store;
-  logic [31:0] dbg_bram_store_addr;
-  logic [7:0] dbg_bram_store_strb;
 
   // Slice writer requests: the Debug-Mode store mirror has priority over the
   // debug module's own word writes. The mirror cannot wait (a refused push is
@@ -2085,8 +2088,7 @@ module cpu_and_mem #(
   end
 
   // Pipeline registers for memory access signals (accounts for RAM read latency)
-  logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable_registered;
-  logic                              data_memory_read_enable_registered;
+  logic data_memory_read_enable_registered;
   always_ff @(posedge i_clk) begin
     data_memory_address_registered <= data_memory_address;
     data_memory_read_enable_registered <= rst_core ? 1'b0 : data_memory_read_enable;

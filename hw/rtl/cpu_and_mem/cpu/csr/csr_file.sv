@@ -531,6 +531,8 @@ module csr_file #(
   logic perf_cache_previous_select;
   localparam bit PerfCountersPresent = (PERF_COUNTERS != 0);
 
+  logic menvcfg_stce;
+
   // Supervisor trap CSRs.
   logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
   logic [2:0] scounteren_q;  // WARL CY/TM/IR like mcounteren; reset 0x7 (see header)
@@ -576,7 +578,6 @@ module csr_file #(
   // o_s_pending) and the software STIP bit is ignored; with STCE=0 STIP is
   // the software bit. The compare is registered to keep the 64-bit
   // magnitude compare off the interrupt-arming cones.
-  logic menvcfg_stce;
   logic [63:0] stimecmp;
   logic stimecmp_pending_q;
   always_ff @(posedge i_clk) begin

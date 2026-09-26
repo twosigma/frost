@@ -288,6 +288,39 @@ module cpu_ooo #(
   logic trap_drain_wait;
   logic [XLEN-1:0] trap_target_reg;
 
+  logic fetch_pa_hold;  // if_stage: no visible result for the selected fetch VA yet
+
+  // Trap control
+  riscv_pkg::trap_ctrl_t trap_ctrl;
+  logic trap_taken, mret_taken;
+  logic sret_taken;  // SRET pulse from the trap unit (rides the MRET machinery)
+  logic trap_to_s;  // Trap targets S (delegated): steers csr_file's entry side
+  // Any xRET (MRET, SRET, or DRET). Pipeline control, recovery, and the ROB
+  // acknowledge treat the three alike; csr_file, the resume-PC seed, and the
+  // debug logic use the separate pulses.
+  logic xret_taken;
+  logic [XLEN-1:0] trap_target;
+
+  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req;
+  riscv_pkg::reorder_buffer_commit_t rob_commit;  // registered: drives CSR/regfile/bypass
+
+  // Slot-2 ROB allocation request + response.
+  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2_raw;
+  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
+  riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp_2;
+
+  logic rob_checkpoint_valid;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
+
+  // Track checkpoint → ROB tag mapping for flush-time reclaim.
+  // When a partial flush fires, checkpoints belonging to younger-than-flush-tag
+  // branches must be freed to prevent checkpoint slot exhaustion.
+  // Packed 2D (not unpacked) so it can cross module ports to branch_resolution /
+  // misprediction_flush_controller (yosys read_verilog -sv rejects unpacked-array
+  // ports).
+  logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
+
   ooo_pipeline_control #(
       .QUEUED_FRONTEND(DECODED_QUEUE_DEPTH != 0),
       .XLEN(XLEN)
@@ -336,7 +369,6 @@ module cpu_ooo #(
   // instruction MMU's walker port, muxed onto the shared ptw with the data
   // MMU's port (declared with the CSR wiring below).
   logic csr_fetch_translation_active, csr_fetch_priv_u;
-  logic fetch_pa_hold;  // if_stage: no visible result for the selected fetch VA yet
   logic iwalk_req_valid, iwalk_req_ready;
   logic [riscv_pkg::Sv39VpnBits-1:0] iwalk_vpn;
   logic iwalk_resp_valid;
@@ -456,6 +488,30 @@ module cpu_ooo #(
   // verilog_lint: waive-stop line-length
 `endif
 
+  // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
+  riscv_pkg::from_ex_comb_t                     from_ex_comb_synth;
+  logic                              [XLEN-1:0] btb_late_update_pc;
+  logic                                         btb_late_update_taken;
+
+  riscv_pkg::reorder_buffer_commit_t            rob_commit_comb;  // combinational from ROB
+
+  // RS dispatch
+  riscv_pkg::rs_dispatch_t                      int_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                      mul_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                      mem_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                      fp_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                      fmul_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                      fdiv_rs_dispatch;
+  riscv_pkg::rs_dispatch_t                      split_rs_dispatch_dbg;
+
+  // RS issue. Exposed but not externally driven: the FU shims are inside the wrapper.
+  riscv_pkg::rs_issue_t rs_issue_int, rs_issue_mul, rs_issue_mem;
+  riscv_pkg::rs_issue_t rs_issue_fp, rs_issue_fmul, rs_issue_fdiv;
+  // Duplicate register of rs_issue_int.rob_tag, loaded on the same edge and
+  // used only by the branch-resolution predicates; branch_update.tag and
+  // every ROB, recovery, and FU consumer use rs_issue_int.rob_tag itself.
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rs_issue_int_branch_predicate_tag;
+
   assign dbg_if_ras_checkpoint_tos = from_if_to_pd.ras_checkpoint_tos;
   assign dbg_if_ras_checkpoint_valid_count = from_if_to_pd.ras_checkpoint_valid_count;
   assign dbg_pd_ras_checkpoint_tos = from_pd_to_id.ras_checkpoint_tos;
@@ -517,6 +573,14 @@ module cpu_ooo #(
   assign dbg_rs_dispatch_src1_tag = split_rs_dispatch_dbg.src1_tag;
   assign dbg_rs_dispatch_src2_ready = split_rs_dispatch_dbg.src2_ready;
   assign dbg_rs_dispatch_src2_tag = split_rs_dispatch_dbg.src2_tag;
+
+  // RAT rename - slot 1
+  logic                                        rat_alloc_valid_raw;
+  logic                                        rat_alloc_valid;
+  logic                                        rat_alloc_dest_rf;
+  logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
+
 `ifndef SYNTHESIS
   assign dbg_rat_alloc_valid = rat_alloc_valid;
   assign dbg_rat_alloc_dest_rf = rat_alloc_dest_rf;
@@ -534,22 +598,6 @@ module cpu_ooo #(
   end
 `endif
 
-  // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
-  riscv_pkg::from_ex_comb_t            from_ex_comb_synth;
-  logic                     [XLEN-1:0] btb_late_update_pc;
-  logic                                btb_late_update_taken;
-
-  // Trap control
-  riscv_pkg::trap_ctrl_t               trap_ctrl;
-  logic trap_taken, mret_taken;
-  logic sret_taken;  // SRET pulse from the trap unit (rides the MRET machinery)
-  logic trap_to_s;  // Trap targets S (delegated): steers csr_file's entry side
-  // Any xRET (MRET, SRET, or DRET). Pipeline control, recovery, and the ROB
-  // acknowledge treat the three alike; csr_file, the resume-PC seed, and the
-  // debug logic use the separate pulses.
-  logic xret_taken;
-  logic [XLEN-1:0] trap_target;
-
   assign trap_ctrl.trap_taken  = trap_taken_reg;
   assign trap_ctrl.mret_taken  = mret_taken_reg;
   assign trap_ctrl.trap_target = trap_target_reg;
@@ -560,6 +608,70 @@ module cpu_ooo #(
 
   // 2-wide width-funnel profiling events (IF→PD boundary → perf counters).
   riscv_pkg::if_width_events_t if_width_events;
+
+  logic dir_update_valid;
+  logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx;
+  logic dir_update_taken;
+  logic flush_all;
+  logic frontend_state_flush;
+  logic fence_i_flush;
+  logic [XLEN-1:0] fence_i_target_pc;
+
+  logic early_mispredict_active;
+  logic early_mispredict_pending;
+  logic early_backend_recovery_pending;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;
+  logic [XLEN-1:0] early_mispredict_redirect_pc;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] early_mispredict_checkpoint_id;
+  logic early_mispredict_is_compressed;
+  logic [XLEN-1:0] early_mispredict_pc;
+  logic [XLEN-1:0] early_mispredict_branch_target;
+  logic early_mispredict_branch_taken;
+  logic early_recovery_en;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
+  logic early_backend_recovery_hold;
+  (* keep = "true", dont_touch = "true", max_fanout = 16 *)
+  logic early_recovery_trap_taken_reg;
+  (* keep = "true", dont_touch = "true", max_fanout = 16 *)
+  logic early_recovery_mret_taken_reg;
+
+  // csr_file's outputs, and the translation, walker and Debug Mode nets wired
+  // with them (see CSR File below).
+  logic [XLEN-1:0] csr_mstatus, csr_mie, csr_mepc;
+  logic [XLEN-1:0] csr_stvec, csr_sepc;
+  logic csr_sstatus_sie_direct;
+  logic [15:0] csr_medeleg;
+  logic [2:0] csr_mideleg_s;
+  logic [2:0] csr_s_pending;
+  logic [2:0] csr_scounteren;
+  logic [2:0] csr_counter_blocked;
+  logic csr_stimecmp_blocked;
+  logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
+  // Registered translation-invalidate pulse from csr_file: every satp access,
+  // and an mstatus/sstatus write only when it changes translation. Through
+  // tlb_invalidate it clears both TLBs and discards the walk in flight; the
+  // ROB serializer handles pipeline recovery separately.
+  logic csr_translation_flush_req;
+  // Registered translation state from csr_file, and the data MMU's walker
+  // port between the wrapper and the ptw below.
+  logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
+  logic [43:0] csr_satp_root_ppn;
+  logic tlb_invalidate;
+  logic walk_req_valid, walk_req_ready;
+  logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn;
+  logic walk_resp_valid;
+  riscv_pkg::ptw_resp_t walk_resp;
+  logic mret_start_is_sret;
+  logic mret_start_is_dret;
+  // Debug Mode state exports and the single-step engine.
+  logic csr_debug_mode, csr_dcsr_step;
+  logic [2:0] csr_dcsr_ebreak;
+  logic [XLEN-1:0] csr_dpc;
+  logic dret_taken;
+  logic trap_to_d, trap_no_csr, dbg_go_taken, dbg_park_entry, dbg_park_exception;
+  logic [2:0] trap_dbg_cause;
+  logic csr_mstatus_mie_direct;
 
   if_stage #(
       .XLEN(XLEN)
@@ -689,6 +801,25 @@ module cpu_ooo #(
   logic            bypass_p1_fp_we_q;
   logic [     4:0] bypass_p0_addr_q;
   logic [     4:0] bypass_p1_addr_q;
+
+  // Regfile write ports (driven by commit_actions, consumed by
+  // ooo_register_files) and retire status.
+  logic            port0_int_we;
+  logic [     4:0] port0_int_addr;
+  logic [XLEN-1:0] port0_int_data;
+  logic            port0_fp_we;
+  logic [     4:0] port0_fp_addr;
+  logic [ FpW-1:0] port0_fp_data;
+  logic            port1_int_we;
+  logic [     4:0] port1_int_addr;
+  logic [XLEN-1:0] port1_int_data;
+  logic            port1_fp_we;
+  logic [     4:0] port1_fp_addr;
+  logic [ FpW-1:0] port1_fp_data;
+  logic [     1:0] instruction_retired_count;
+  // An instruction retired without a ROB commit in the previous cycle: an
+  // xRET, or a WFI that a trap took over (set with the resume PC below).
+  logic            retired_without_commit_q;
 
   ooo_register_files #(
       .XLEN(XLEN)
@@ -1176,14 +1307,11 @@ module cpu_ooo #(
 
   // ROB interface
   riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req_raw;
-  riscv_pkg::reorder_buffer_alloc_req_t  rob_alloc_req;
   riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp;
   assign dbg_rob_alloc_valid = rob_alloc_req.alloc_valid;
   assign dbg_rob_alloc_pc = rob_alloc_req.pc;
   assign dbg_rob_alloc_is_csr = rob_alloc_req.is_csr;
   assign dbg_rob_alloc_is_mret = rob_alloc_req.is_mret;
-  riscv_pkg::reorder_buffer_commit_t rob_commit_comb;  // combinational from ROB
-  riscv_pkg::reorder_buffer_commit_t rob_commit;  // registered: drives CSR/regfile/bypass
   logic rob_commit_valid;
   logic rob_commit_valid_raw;
 
@@ -1226,13 +1354,6 @@ module cpu_ooo #(
   riscv_pkg::rat_lookup_t fp_src1_lookup_2, fp_src2_lookup_2, fp_src3_lookup_2;
   /* verilator lint_on UNUSEDSIGNAL */
 
-  // RAT rename - slot 1
-  logic                                        rat_alloc_valid_raw;
-  logic                                        rat_alloc_valid;
-  logic                                        rat_alloc_dest_rf;
-  logic [         riscv_pkg::RegAddrWidth-1:0] rat_alloc_dest_reg;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rat_alloc_rob_tag;
-
   // RAT rename - slot 2 (2-wide dispatch).  Dispatch drives these when slot-2
   // fires with a register destination.
   logic                                        rat_alloc_valid_2_raw;
@@ -1274,6 +1395,10 @@ module cpu_ooo #(
     end
   end
 
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
+  logic                                        rob_head_dir_train_early;
+  logic                                        rob_head_branch_taken_early;
+
   // ===========================================================================
   // Direction Predictor Commit-Time Training (bimodal)
   // ===========================================================================
@@ -1286,9 +1411,9 @@ module cpu_ooo #(
   // the branch's predict-time bimodal index, read from branch_dir_idx_table
   // at the committing tag, so training updates the exact entry the
   // prediction read.
-  logic                               dir_update_valid_comb;
-  logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_comb;
-  logic                               dir_update_taken_comb;
+  logic                                        dir_update_valid_comb;
+  logic [         riscv_pkg::BpDirIdxBits-1:0] dir_update_idx_comb;
+  logic                                        dir_update_taken_comb;
   // TIMING: the conditional-branch class and taken direction come from the
   // ROB's early field pre-decodes ANDed with the 1-bit raw fire, not from the
   // combinational commit structs, which would put the whole field mux behind
@@ -1307,6 +1432,8 @@ module cpu_ooo #(
   assign dir_update_idx_comb   = branch_dir_idx_table[head_tag];
   assign dir_update_taken_comb = rob_head_branch_taken_early;
 
+  logic                               rob_head_next_dir_train_early;
+
   // Slot-2 training goes straight through when slot 1 is not training and
   // nothing is held. Otherwise it waits in a one-deep hold (a newer slot-2
   // commit overwrites it) that drains on the next cycle in which slot 1 does
@@ -1321,6 +1448,8 @@ module cpu_ooo #(
   assign dir_update_idx_2_comb = branch_dir_idx_table[head_tag_p1];
   assign dir_slot2_pass = dir_update_valid_2_comb && !dir_update_valid_comb &&
                           !dir_update_held_valid;
+
+  logic rob_head_next_branch_taken_early;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1347,9 +1476,6 @@ module cpu_ooo #(
   // Register the predictor update before it enters IF. This removes the
   // ROB-head/serializer path from the distributed-RAM read-modify-write timing
   // arc; training is still in commit order, one cycle later.
-  logic dir_update_valid;
-  logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx;
-  logic dir_update_taken;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       dir_update_valid <= 1'b0;
@@ -1365,15 +1491,6 @@ module cpu_ooo #(
     end
   end
 
-  // RS dispatch
-  riscv_pkg::rs_dispatch_t int_rs_dispatch;
-  riscv_pkg::rs_dispatch_t mul_rs_dispatch;
-  riscv_pkg::rs_dispatch_t mem_rs_dispatch;
-  riscv_pkg::rs_dispatch_t fp_rs_dispatch;
-  riscv_pkg::rs_dispatch_t fmul_rs_dispatch;
-  riscv_pkg::rs_dispatch_t fdiv_rs_dispatch;
-  riscv_pkg::rs_dispatch_t split_rs_dispatch_dbg;
-
   // Slot-2 RS dispatch packets (2-wide dispatch, back-end side).
   // Driven by dispatch and consumed by the wrapper.  A packet's valid asserts
   // when slot-2 fires and routes to that RS family.
@@ -1383,11 +1500,6 @@ module cpu_ooo #(
   riscv_pkg::rs_dispatch_t fp_rs_dispatch_2;
   riscv_pkg::rs_dispatch_t fmul_rs_dispatch_2;
   riscv_pkg::rs_dispatch_t fdiv_rs_dispatch_2;
-
-  // Slot-2 ROB allocation request + response.
-  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2_raw;
-  riscv_pkg::reorder_buffer_alloc_req_t rob_alloc_req_2;
-  riscv_pkg::reorder_buffer_alloc_resp_t rob_alloc_resp_2;
 
   always_comb begin
     rob_alloc_req_2 = rob_alloc_req_2_raw;
@@ -1407,8 +1519,6 @@ module cpu_ooo #(
   logic [riscv_pkg::RasPtrBits:0] dispatch_ras_valid_count;
   logic [XLEN-1:0] dispatch_ras_top;
   logic rob_checkpoint_valid_raw;
-  logic rob_checkpoint_valid;
-  logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
 
   assign checkpoint_save = checkpoint_save_raw && !full_flush_side_effect_kill;
   assign checkpoint_save_for_slot2 = checkpoint_save_for_slot2_raw && !full_flush_side_effect_kill;
@@ -1444,7 +1554,6 @@ module cpu_ooo #(
   // Flush
   logic flush_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
-  logic flush_all;
   logic commit_recovery_flush_after_head;
   // The flush that clears the LQ: a full flush, or commit-time recovery,
   // which the LQ also treats as a full flush. The router must cancel a held,
@@ -1453,7 +1562,6 @@ module cpu_ooo #(
   logic lq_router_flush_all;
   (* max_fanout = 32 *) logic mispredict_recovery_pending;
   riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
-  logic frontend_state_flush;
 
   // CDB
   riscv_pkg::cdb_broadcast_t cdb_out;
@@ -1462,9 +1570,7 @@ module cpu_ooo #(
 
   // ROB status
   logic [riscv_pkg::ReorderBufferTagWidth:0] rob_count;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
-  logic fence_i_flush;
   logic fence_class_flush_event;
   logic translation_csr_commit_shadow;
   // Quiet window for the trap unit (its i_pipeline_stall, below): a
@@ -1473,7 +1579,6 @@ module cpu_ooo #(
   logic fence_class_quiesce;
   assign fence_class_quiesce = translation_csr_commit_shadow || fence_i_flush;
   assign o_fence_i_flush = fence_i_flush;
-  logic [XLEN-1:0] fence_i_target_pc;
 
   // CSR coordination
   logic csr_start, csr_done_ack;
@@ -1488,10 +1593,6 @@ module cpu_ooo #(
   logic rob_head_bypass_fp_we_early;
   logic rob_head_next_bypass_int_we_early;
   logic rob_head_next_bypass_fp_we_early;
-  logic rob_head_dir_train_early;
-  logic rob_head_branch_taken_early;
-  logic rob_head_next_dir_train_early;
-  logic rob_head_next_branch_taken_early;
   // AMO interrupt shield (see trap_unit.i_amo_at_head): registered image of
   // "a valid AMO occupies the ROB head", off the take_trap timing cone. The
   // 1-cycle lag is covered by the AMO's >=3-cycle head-to-write-launch delay.
@@ -1560,14 +1661,6 @@ module cpu_ooo #(
   // Router-derived |o_data_mem_bram_byte_wr_en for the debug store mirror.
   logic data_mem_bram_write_any;
 
-  // RS issue. Exposed but not externally driven: the FU shims are inside the wrapper.
-  riscv_pkg::rs_issue_t rs_issue_int, rs_issue_mul, rs_issue_mem;
-  riscv_pkg::rs_issue_t rs_issue_fp, rs_issue_fmul, rs_issue_fdiv;
-  // Duplicate register of rs_issue_int.rob_tag, loaded on the same edge and
-  // used only by the branch-resolution predicates; branch_update.tag and
-  // every ROB, recovery, and FU consumer use rs_issue_int.rob_tag itself.
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rs_issue_int_branch_predicate_tag;
-
   // Slot-1 done-repair channels.
   logic dispatch_bypass_valid_1, dispatch_bypass_valid_2, dispatch_bypass_valid_3;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0]
@@ -1589,14 +1682,7 @@ module cpu_ooo #(
   logic checkpoint_free;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_free_id;
 
-  // Track checkpoint → ROB tag mapping for flush-time reclaim.
-  // When a partial flush fires, checkpoints belonging to younger-than-flush-tag
-  // branches must be freed to prevent checkpoint slot exhaustion.
-  // Packed 2D (not unpacked) so it can cross module ports to branch_resolution /
-  // misprediction_flush_controller (yosys read_verilog -sv rejects unpacked-array
-  // ports).
-  logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
-  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
+  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_flush_free_mask;
 
   // Next checkpoint_in_use, with the same update priorities as the RAT's
   // checkpoint_valid
@@ -1641,6 +1727,8 @@ module cpu_ooo #(
                                           (ckpt_owner_age[i] > ckpt_flush_age);
     end
   end
+
+  logic flush_after_head;
 
   // Debug view, read by cocotb checkpoint traces: the checkpoints a partial
   // flush targeted, for the cycle after it. Functional reclaim happens through
@@ -2421,25 +2509,6 @@ module cpu_ooo #(
   //              hold dispatch and issue (early_backend_recovery_hold)
   //   Cycle N+2: early_backend_recovery_pending: back-end partial flush
 
-  logic                                        early_mispredict_active;
-  logic                                        early_mispredict_pending;
-  logic                                        early_backend_recovery_pending;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;
-  logic [                            XLEN-1:0] early_mispredict_redirect_pc;
-  logic [    riscv_pkg::CheckpointIdWidth-1:0] early_mispredict_checkpoint_id;
-  logic                                        early_mispredict_is_compressed;
-  logic [                            XLEN-1:0] early_mispredict_pc;
-  logic [                            XLEN-1:0] early_mispredict_branch_target;
-  logic                                        early_mispredict_branch_taken;
-  logic                                        early_recovery_en;
-  logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_recovery_tag;
-  logic                                        early_backend_recovery_hold;
-  (* keep = "true", dont_touch = "true", max_fanout = 16 *)
-  logic                                        early_recovery_trap_taken_reg;
-  (* keep = "true", dont_touch = "true", max_fanout = 16 *)
-  logic                                        early_recovery_mret_taken_reg;
-
   // Local copies of the registered trap and xRET pulses, equal cycle for
   // cycle to trap_taken_reg and mret_taken_reg in ooo_pipeline_control. Those
   // also drive IF and the global flush; these low-fanout copies feed only
@@ -2497,25 +2566,6 @@ module cpu_ooo #(
   // ===========================================================================
   // Commit-Time Actions
   // ===========================================================================
-
-  // Regfile write ports (driven by commit_actions, consumed by
-  // ooo_register_files), CSR serialization handshakes, and retire status.
-  logic            port0_int_we;
-  logic [     4:0] port0_int_addr;
-  logic [XLEN-1:0] port0_int_data;
-  logic            port0_fp_we;
-  logic [     4:0] port0_fp_addr;
-  logic [ FpW-1:0] port0_fp_data;
-  logic            port1_int_we;
-  logic [     4:0] port1_int_addr;
-  logic [XLEN-1:0] port1_int_data;
-  logic            port1_fp_we;
-  logic [     4:0] port1_fp_addr;
-  logic [ FpW-1:0] port1_fp_data;
-  logic [     1:0] instruction_retired_count;
-  // An instruction retired without a ROB commit in the previous cycle: an
-  // xRET, or a WFI that a trap took over (set with the resume PC below).
-  logic            retired_without_commit_q;
 
   commit_actions #(
       .XLEN(XLEN)
@@ -2634,6 +2684,15 @@ module cpu_ooo #(
   // logic.
   assign rob_commit_valid = rob_commit.valid;
 
+  logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
+  logic [XLEN-1:0] trap_value_internal;
+  logic [XLEN-1:0] interrupt_resume_pc;
+  // A legal WFI waits at the ROB head (see the seed arm below).
+  logic            wfi_resume_seed;
+  // The seed arm was the last to write interrupt_resume_pc, so a take now
+  // saves wfi_pc+4: the WFI retires with it.
+  logic            resume_pc_past_wfi_q;
+
 `ifndef SYNTHESIS
   assign dbg_trap_taken_raw = trap_taken;
   assign dbg_trap_taken_q = trap_taken_reg;
@@ -2683,8 +2742,6 @@ module cpu_ooo #(
   // controls are declared near the top).
   logic correct_branch_commit_pending;
   riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
-  logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_flush_free_mask;
-  logic flush_after_head;
 
   misprediction_flush_controller #(
       .XLEN(XLEN)
@@ -2903,41 +2960,6 @@ module cpu_ooo #(
   // holds the CSR at the head and raises csr_start, csr_done_ack answers a
   // cycle later (below), and the ROB retires the CSR. csr_file then reads and
   // writes the CSR from the registered commit bus (csr_commit_fire).
-
-  logic [XLEN-1:0] csr_mstatus, csr_mie, csr_mepc;
-  logic [XLEN-1:0] csr_stvec, csr_sepc;
-  logic csr_sstatus_sie_direct;
-  logic [15:0] csr_medeleg;
-  logic [2:0] csr_mideleg_s;
-  logic [2:0] csr_s_pending;
-  logic [2:0] csr_scounteren;
-  logic [2:0] csr_counter_blocked;
-  logic csr_stimecmp_blocked;
-  logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
-  // Registered translation-invalidate pulse from csr_file: every satp access,
-  // and an mstatus/sstatus write only when it changes translation. Through
-  // tlb_invalidate it clears both TLBs and discards the walk in flight; the
-  // ROB serializer handles pipeline recovery separately.
-  logic csr_translation_flush_req;
-  // Registered translation state from csr_file, and the data MMU's walker
-  // port between the wrapper and the ptw below.
-  logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
-  logic [43:0] csr_satp_root_ppn;
-  logic tlb_invalidate;
-  logic walk_req_valid, walk_req_ready;
-  logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn;
-  logic walk_resp_valid;
-  riscv_pkg::ptw_resp_t walk_resp;
-  logic mret_start_is_sret;
-  logic mret_start_is_dret;
-  // Debug Mode state exports and the single-step engine.
-  logic csr_debug_mode, csr_dcsr_step;
-  logic [2:0] csr_dcsr_ebreak;
-  logic [XLEN-1:0] csr_dpc;
-  logic dret_taken;
-  logic trap_to_d, trap_no_csr, dbg_go_taken, dbg_park_entry, dbg_park_exception;
-  logic [2:0] trap_dbg_cause;
-  logic csr_mstatus_mie_direct;
 
   // CSR write data: for register ops (CSRRW/CSRRS/CSRRC), the ALU shim
   // stored rs1 in rob_commit.value. For immediate ops (CSRRWI/CSRRSI/CSRRCI),
@@ -3235,15 +3257,6 @@ module cpu_ooo #(
   // separately decides whether to take the interrupt.
   assign interrupt_pending = i_interrupts.meip || i_interrupts.mtip || i_interrupts.msip ||
       (|csr_s_pending);
-
-  logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
-  logic [XLEN-1:0] trap_value_internal;
-  logic [XLEN-1:0] interrupt_resume_pc;
-  // A legal WFI waits at the ROB head (see the seed arm below).
-  logic            wfi_resume_seed;
-  // The seed arm was the last to write interrupt_resume_pc, so a take now
-  // saves wfi_pc+4: the WFI retires with it.
-  logic            resume_pc_past_wfi_q;
 
   function automatic logic [XLEN-1:0] retired_next_pc(
       input riscv_pkg::reorder_buffer_commit_t commit);

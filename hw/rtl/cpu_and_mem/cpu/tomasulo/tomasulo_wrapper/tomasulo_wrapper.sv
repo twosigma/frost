@@ -2121,6 +2121,8 @@ module tomasulo_wrapper #(
 `endif
 `endif
 
+  riscv_pkg::fu_complete_t store_misalign_fu_complete_reg;
+
   // TIMING: register SC completion to keep the fence/flush/fire cone off the
   // MEM adapter and CDB. SC pays one cycle; plain loads keep their bypass.
   // A presenting registered store fault takes priority because it cannot hold
@@ -2200,7 +2202,6 @@ module tomasulo_wrapper #(
       is_younger(
       store_misalign_fu_complete.tag, i_flush_tag, head_tag
   );
-  riscv_pkg::fu_complete_t store_misalign_fu_complete_reg;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || speculative_flush_all) begin
       store_misalign_fu_complete_reg.valid <= 1'b0;

@@ -282,6 +282,8 @@ module pc_controller #(
   logic [XLEN-1:0] seq_next_pc, seq_next_pc_plus_2, seq_next_pc_reg;
   logic seq_next_pc_reg_neq_pc;
 
+  logic pending_predecessor_release_wcs0;
+
   pc_increment_calculator #(
       .XLEN(XLEN)
   ) pc_increment_calculator_inst (
@@ -325,6 +327,9 @@ module pc_controller #(
   // path. The fetch-PC mux applies its late terms, including both current
   // predictions, last (see next_pc below).
 
+  logic pending_prediction_valid;
+  logic redirect_kill_pending_q;
+
   // pc_reg lags o_pc by a cycle, so it takes a slot-1 prediction from the
   // registered prediction. For a taken prediction made in cycle N:
   //   - next_pc is the target in N (fetch from the target in N+1);
@@ -357,7 +362,6 @@ module pc_controller #(
                             !pending_prediction_valid && !redirect_kill_pending_q &&
                             !o_slot2_redirect_q;
 
-  logic            pending_prediction_valid;
   logic [XLEN-1:0] pending_prediction_pc;
   // Capture both possible slot-1 predecessors beside pending_prediction_pc so
   // the pc_reg control logic needs only parallel equality compares. The keep
@@ -369,7 +373,6 @@ module pc_controller #(
   logic [XLEN-1:0] pending_prediction_target;
   logic            pending_prediction_effective;
   logic            pending_imm_pred_emit;
-  logic            pending_predecessor_release_wcs0;
   logic            pim_base;  // pending, not ready, and pc_reg at the branch's predecessor
   logic            carve_out_engaged_q;  // raw WCS seen while pim_base held
   logic            prediction_needs_pending;
@@ -391,7 +394,6 @@ module pc_controller #(
   logic            pending_prediction_target_holdoff_q;
   logic            pending_prediction_target_holdoff_prev_q;
   logic            pending_prediction_pc_ready_q;
-  logic            redirect_kill_pending_q;
   logic [XLEN-2:0] pending_prediction_pc_hw;
   logic [XLEN-1:0] pending_prediction_target_next_word;
   logic [XLEN-2:0] pc_reg_hw;
@@ -889,6 +891,8 @@ module pc_controller #(
   logic trap_or_mret;
   assign trap_or_mret = i_trap_taken || i_mret_taken;
 
+  logic pending_prediction_fetch_at_target;
+
   // The pending terms for the fetch-PC data (pending_mux_*) ignore this
   // cycle's redirects. The higher-priority redirect arms still win, so their
   // late qualifiers need not pass through the pending logic first.
@@ -946,7 +950,6 @@ module pc_controller #(
   // would fetch the branch again and repeat the same prediction forever. So
   // the sequential form is used only while fetch is still at the saved
   // target; otherwise the handoff moves fetch to the target too.
-  logic pending_prediction_fetch_at_target;
   logic npc_consume_is_seq;
   logic [XLEN-1:0] npc_consume_val;
   assign pending_prediction_fetch_at_target = o_pc == pending_prediction_target;
