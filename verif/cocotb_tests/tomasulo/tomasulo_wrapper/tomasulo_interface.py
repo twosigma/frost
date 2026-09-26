@@ -446,6 +446,7 @@ class TomasuloInterface:
         self.dut.i_checkpoint_branch_tag.value = 0
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
+        self.dut.i_ras_top.value = 0
         # Slot-2-branch checkpoint flag.
         self.dut.i_checkpoint_save_for_slot2.value = 0
 
@@ -964,6 +965,7 @@ class TomasuloInterface:
         ras_tos: int = 0,
         ras_valid_count: int = 0,
         for_slot2: bool = False,
+        ras_top: int = 0,
     ) -> None:
         """Drive RAT checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
@@ -971,6 +973,7 @@ class TomasuloInterface:
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
+        self.dut.i_ras_top.value = ras_top & ((1 << 64) - 1)
         self.dut.i_checkpoint_save_for_slot2.value = 1 if for_slot2 else 0
 
     def clear_checkpoint_save(self) -> None:

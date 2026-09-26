@@ -363,6 +363,7 @@ async def drive_dual_alloc(
     slot2_checkpoint_id: int | None = None,
     ras_tos: int = 0,
     ras_valid_count: int = 0,
+    ras_top: int = 0,
 ) -> tuple[int, int]:
     """Allocate a 2-wide bundle through the wrapper and drive matching RAT writes."""
     dut_if.drive_alloc_request(req_1)
@@ -385,6 +386,7 @@ async def drive_dual_alloc(
             ras_tos,
             ras_valid_count,
             for_slot2=True,
+            ras_top=ras_top,
         )
         dut_if.drive_rob_checkpoint(slot2_checkpoint_id)
 
@@ -1372,6 +1374,7 @@ async def test_slot2_branch_checkpoint_overlay_through_wrapper(dut: Any) -> None
         slot2_checkpoint_id=cp_id,
         ras_tos=2,
         ras_valid_count=3,
+        ras_top=0x4208,
     )
     dut_if.add_rob_entry_epoch_bits(1 << tag_1)
 
@@ -1386,6 +1389,13 @@ async def test_slot2_branch_checkpoint_overlay_through_wrapper(dut: Any) -> None
     dut_if.drive_flush_en(tag_branch)
     dut_if.drive_checkpoint_restore(cp_id)
     await dut_if.step()
+    # The branch's saved RAS state reaches the wrapper's restore outputs.
+    restored_ras = (
+        int(dut.o_ras_tos.value),
+        int(dut.o_ras_valid_count.value),
+        int(dut.o_ras_top.value),
+    )
+    assert restored_ras == (2, 3, 0x4208), restored_ras
     dut_if.clear_flush_en()
     dut_if.clear_checkpoint_restore()
 

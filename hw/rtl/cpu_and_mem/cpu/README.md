@@ -332,10 +332,20 @@ typed BTB entry: a packet squashed in IF, dropped by a flush or a PD redirect,
 or held by a stall never pushes or pops, and a stall replay pushes or pops
 once. At most one packet of a bundle can, because an instruction predicted
 taken ends the bundle. The operation lands on the edge that hands PD the
-packet, so the registered state (top of stack and valid count) is the
-recovery point that packet and its bundle partner carry. Restoring it keeps
-every older call pushed and every older return popped, and recovery then
-replays the mispredicted instruction's own push or pop.
+packet, so the registered state (top-of-stack pointer, valid count, and the
+top entry) is the recovery point that packet and its bundle partner carry.
+Restoring it keeps every older call pushed and every older return popped,
+and recovery then replays the mispredicted instruction's own push or pop.
+
+The restore also writes the recovery point's top entry back. A wrong path
+that pops and then pushes overwrites that entry: a mispredicted branch just
+before a return, whose wrong path returns and runs into the caller's next
+call, would otherwise leave the correct path's return predicting that call's
+link address. An entry below the top that a deeper wrong path overwrites (two
+pops, then a push) stays damaged. A restore that replays a call writes two
+neighboring entries on one edge, the restored top and the pushed link address
+above it, so the entries alternate between two distributed-RAM banks by
+pointer parity.
 
 A typed lookup reads the top of the stack before any operation in the same
 cycle. That is safe because no younger lookup's prediction survives a cycle
@@ -345,9 +355,10 @@ replay comes with the registered stall, a slot-2 prediction kills the
 same-cycle slot-1 prediction, and a collapsed-lead packet carries its own
 lookup. if_stage asserts this, and branch_prediction_controller asserts that
 no operation arrives with a recovery restore. `ras_checkpoint` checks the
-next-state equations; the `return_address_stack`, `branch_prediction_controller`
-and `if_stage` benches and the `ras_slot_bench`, `ras_test` and
-`ras_stress_test` programs check the behavior.
+next-state equations and the entry writes; the `return_address_stack`,
+`branch_prediction_controller` and `if_stage` benches and the `ras_slot_bench`,
+`ras_repair_bench`, `ras_test` and `ras_stress_test` programs check the
+behavior.
 
 ### BTB training order
 

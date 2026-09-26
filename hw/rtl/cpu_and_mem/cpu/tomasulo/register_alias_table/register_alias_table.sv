@@ -128,6 +128,7 @@ module register_alias_table (
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_checkpoint_branch_tag,
     input logic [           riscv_pkg::RasPtrBits-1:0] i_ras_tos,
     input logic [             riscv_pkg::RasPtrBits:0] i_ras_valid_count,
+    input logic [                 riscv_pkg::XLEN-1:0] i_ras_top,
     // 2-wide dispatch: asserted with checkpoint_save when slot 2 is the
     // branch.  If slot 1 is a non-branch with a destination, the snapshot
     // must include slot 1's same-cycle rename so recovery from a slot-2
@@ -142,6 +143,7 @@ module register_alias_table (
     input logic i_checkpoint_restore_reclaim_all,
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [riscv_pkg::RasPtrBits:0] o_ras_valid_count,
+    output logic [riscv_pkg::XLEN-1:0] o_ras_top,
 
     // =========================================================================
     // Checkpoint Free Interface (from flush controller on branch commit or early recovery)
@@ -200,9 +202,10 @@ module register_alias_table (
   localparam int unsigned FpRatSnapshotWidth = NumFpRegs * RatEntryWidth;
   // Combined RAT snapshot for single wide RAM
   localparam int unsigned RatSnapshotWidth = IntRatSnapshotWidth + FpRatSnapshotWidth;
-  // Metadata: branch_tag(5) + branch_epoch(1) + ras_tos(3) + ras_valid_count(4) = 13
+  // Metadata: branch_tag(5) + branch_epoch(1) + ras_tos(3) + ras_valid_count(4)
+  // + ras_top(64) = 77
   localparam int unsigned CheckpointMetaWidth =
-      ReorderBufferTagWidth + 1 + RasPtrBits + (RasPtrBits + 1);
+      ReorderBufferTagWidth + 1 + RasPtrBits + (RasPtrBits + 1) + XLEN;
 
   // ===========================================================================
   // Active RAT Storage (FF-based, plain arrays for Yosys compatibility)
@@ -275,7 +278,8 @@ module register_alias_table (
   );
 
   // Checkpoint metadata in distributed RAM:
-  // branch_tag(5) + branch_epoch(1) + ras_tos(3) + ras_valid_count(4) = 13 bits
+  // branch_tag(5) + branch_epoch(1) + ras_tos(3) + ras_valid_count(4)
+  // + ras_top(64) = 77 bits
   logic                           ckpt_meta_wr_en;
   logic [  CheckpointIdWidth-1:0] ckpt_meta_wr_addr;
   logic [CheckpointMetaWidth-1:0] ckpt_meta_wr_data;
@@ -361,7 +365,7 @@ module register_alias_table (
   logic checkpoint_branch_epoch_next;
   assign checkpoint_branch_epoch_next = ~i_rob_entry_epoch[i_checkpoint_branch_tag];
   assign ckpt_meta_wr_data = {
-    i_ras_valid_count, i_ras_tos, checkpoint_branch_epoch_next, i_checkpoint_branch_tag
+    i_ras_top, i_ras_valid_count, i_ras_tos, checkpoint_branch_epoch_next, i_checkpoint_branch_tag
   };
 
   // Read side: checkpoint restore
@@ -397,12 +401,15 @@ module register_alias_table (
   logic                             restored_branch_epoch;
   logic [           RasPtrBits-1:0] restored_ras_tos;
   logic [             RasPtrBits:0] restored_ras_valid_count;
+  logic [                 XLEN-1:0] restored_ras_top;
 
   assign restored_branch_tag = ckpt_meta_rd_data[0+:ReorderBufferTagWidth];
   assign restored_branch_epoch = ckpt_meta_rd_data[ReorderBufferTagWidth];
   assign restored_ras_tos = ckpt_meta_rd_data[ReorderBufferTagWidth+1+:RasPtrBits];
   assign restored_ras_valid_count =
       ckpt_meta_rd_data[ReorderBufferTagWidth+1+RasPtrBits+:(RasPtrBits+1)];
+  assign restored_ras_top =
+      ckpt_meta_rd_data[ReorderBufferTagWidth+1+RasPtrBits+(RasPtrBits+1)+:XLEN];
 
   function automatic logic restored_tag_still_live(
       input logic [ReorderBufferTagWidth-1:0] restored_tag, input logic restored_epoch);
@@ -430,6 +437,7 @@ module register_alias_table (
   // Restored RAS state, meaningful only during the restore cycle.
   assign o_ras_tos = restored_ras_tos;
   assign o_ras_valid_count = restored_ras_valid_count;
+  assign o_ras_top = restored_ras_top;
 
   // ===========================================================================
   // Source Lookup (Combinational)

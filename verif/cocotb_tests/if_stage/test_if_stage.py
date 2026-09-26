@@ -871,7 +871,9 @@ async def test_typed_return_predicts_the_stack_top_and_pops_on_acceptance(
     assert packet["program_counter"] == return_pc
     assert packet["btb_predicted_taken"]
     assert packet["btb_predicted_target"] == call_pc + 4
+    # The recovery point is the state before the pop, top entry included.
     assert packet["ras_checkpoint_valid_count"] == 1
+    assert packet["ras_checkpoint_top"] == call_pc + 4
     assert dut.ras_pop.value
     assert not dut.ras_push.value
 

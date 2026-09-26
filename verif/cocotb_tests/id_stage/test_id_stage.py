@@ -118,6 +118,7 @@ def _drive_pd_packet(
         "btb_predicted_target": 0,
         "ras_checkpoint_tos": 0,
         "ras_checkpoint_valid_count": 0,
+        "ras_checkpoint_top": 0,
         "bp_dir_idx": 0,
     }
     packet.update(fields)
@@ -486,6 +487,7 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
             "btb_predicted_target": jal_target,
             "ras_checkpoint_tos": 3,
             "ras_checkpoint_valid_count": 4,
+            "ras_checkpoint_top": 0x80004004,
         },
     )
     _drive_pd_packet(
@@ -497,6 +499,7 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
             "btb_predicted_target": btb_target,
             "ras_checkpoint_tos": 5,
             "ras_checkpoint_valid_count": 6,
+            "ras_checkpoint_top": 0x80005004,
         },
         slot2=True,
     )
@@ -511,6 +514,7 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
     assert packet["btb_correct_non_jalr"] is True
     assert packet["ras_checkpoint_tos"] == 3
     assert packet["ras_checkpoint_valid_count"] == 4
+    assert packet["ras_checkpoint_top"] == 0x80004004
 
     slot2_packet = _read_id_packet(dut, slot2=True)
     assert slot2_packet["instruction_operation"] == JALR
@@ -520,6 +524,7 @@ async def test_jal_and_slot2_jalr_ras_precompute(dut: Any) -> None:
     assert slot2_packet["btb_predicted_target"] == btb_target
     assert slot2_packet["ras_checkpoint_tos"] == 5
     assert slot2_packet["ras_checkpoint_valid_count"] == 6
+    assert slot2_packet["ras_checkpoint_top"] == 0x80005004
 
 
 @cocotb.test()

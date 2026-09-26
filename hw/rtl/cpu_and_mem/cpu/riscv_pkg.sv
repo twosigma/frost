@@ -1708,9 +1708,11 @@ package riscv_pkg;
     // validity controls stay out of this wide datapath.
     logic [XLEN-1:0] btb_predicted_target;
     // Return address stack state for this packet: after every older push and
-    // pop and before this packet's own, for recovery.
+    // pop and before this packet's own, for recovery. The top entry lets the
+    // restore undo a wrong-path overwrite of it.
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    logic [XLEN-1:0] ras_checkpoint_top;
     // Bimodal branch-direction prediction, not gated by a BTB hit, carried
     // to PD.  PD uses it to redirect a branch without a taken BTB prediction
     // when the direction predicts taken, whatever the offset sign.
@@ -1768,6 +1770,7 @@ package riscv_pkg;
     // Return address stack recovery point (passed through from IF)
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    logic [XLEN-1:0] ras_checkpoint_top;
     // Predict-time bimodal index carried to commit for training.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
   } from_pd_to_id_t;
@@ -1837,6 +1840,7 @@ package riscv_pkg;
     // Return address stack recovery point (passed through from IF via PD/ID)
     logic [RasPtrBits-1:0] ras_checkpoint_tos;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
+    logic [XLEN-1:0] ras_checkpoint_top;
     // Predict-time bimodal index carried to commit for training.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
     // Pre-computed RAS instruction type flags, which keep the register
@@ -1947,9 +1951,10 @@ package riscv_pkg;
     logic btb_update_call;
     logic btb_update_return;
     // RAS misprediction recovery signals
-    logic ras_misprediction;  // RAS prediction was wrong, need to restore
+    logic ras_misprediction;  // Restore the mispredicted instruction's recovery point
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
     logic [RasPtrBits:0] ras_restore_valid_count;  // Valid count to restore
+    logic [XLEN-1:0] ras_restore_top;  // Top entry to write back at the restored TOS
     // Both bits set == coroutine swap replay (pop then push): replaces the
     // restored top entry and leaves the depth unchanged.  Mirrors the
     // {is_ras_return, is_ras_call} == 2'b11 encoding that carries it here.

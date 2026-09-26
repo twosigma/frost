@@ -716,6 +716,9 @@ async def test_slot2_branch_saves_slot2_checkpoint(dut: Any) -> None:
         valid=True,
         instruction_operation=ADD,
         instruction=_make_instr(dest_reg=8, opcode=OPC_OP),
+        ras_checkpoint_tos=1,
+        ras_checkpoint_valid_count=2,
+        ras_checkpoint_top=0x1111_0000_0000_1000,
     )
     dut_if.drive_instruction_2(
         valid=True,
@@ -728,6 +731,7 @@ async def test_slot2_branch_saves_slot2_checkpoint(dut: Any) -> None:
         btb_predicted_target=0x2070,
         ras_checkpoint_tos=6,
         ras_checkpoint_valid_count=7,
+        ras_checkpoint_top=0x2222_0000_0000_2000,
         instruction=_make_instr(
             opcode=OPC_BRANCH,
             source_reg_1=1,
@@ -750,6 +754,7 @@ async def test_slot2_branch_saves_slot2_checkpoint(dut: Any) -> None:
     assert dut_if.checkpoint_branch_tag == 3
     assert dut_if.ras_tos_out == 6
     assert dut_if.ras_valid_count_out == 7
+    assert dut_if.ras_top_out == 0x2222_0000_0000_2000
     assert dut_if.rob_checkpoint_valid
     assert dut_if.rob_checkpoint_id == 5
 
@@ -941,12 +946,19 @@ async def test_branch_saves_checkpoint(dut: Any) -> None:
         valid=True,
         instruction_operation=BEQ,
         instruction=_make_instr(opcode=OPC_BRANCH),
+        ras_checkpoint_tos=3,
+        ras_checkpoint_valid_count=4,
+        ras_checkpoint_top=0x8000_0000_0000_1234,
     )
     await dut_if.step()
 
     assert dut_if.checkpoint_save, "BEQ should save checkpoint"
     assert dut_if.checkpoint_id == 2
     assert dut_if.checkpoint_branch_tag == 7
+    # The RAS state saved with it is the branch's own recovery point.
+    assert dut_if.ras_tos_out == 3
+    assert dut_if.ras_valid_count_out == 4
+    assert dut_if.ras_top_out == 0x8000_0000_0000_1234
 
 
 @cocotb.test()

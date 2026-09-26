@@ -101,6 +101,7 @@ def _drive_if_packet(
         "btb_predicted_target": 0,
         "ras_checkpoint_tos": 0,
         "ras_checkpoint_valid_count": 0,
+        "ras_checkpoint_top": 0,
         "bp_dir_taken": False,
         "bp_dir_idx": 0,
     }
@@ -279,6 +280,7 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
             "btb_predicted_target": BASE_PC + 0x40,
             "ras_checkpoint_tos": 5,
             "ras_checkpoint_valid_count": 6,
+            "ras_checkpoint_top": BASE_PC + 0x104,
             "bp_dir_idx": 0x155,
         },
     )
@@ -295,6 +297,7 @@ async def test_native_instruction_registers_sources_and_metadata(dut: Any) -> No
     assert packet["btb_predicted_target"] == BASE_PC + 0x40
     assert packet["ras_checkpoint_tos"] == 5
     assert packet["ras_checkpoint_valid_count"] == 6
+    assert packet["ras_checkpoint_top"] == BASE_PC + 0x104
     assert packet["bp_dir_idx"] == 0x155
 
 

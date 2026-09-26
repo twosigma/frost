@@ -141,6 +141,7 @@ module branch_prediction_controller #(
     input logic                             i_ras_misprediction,
     input logic [riscv_pkg::RasPtrBits-1:0] i_ras_restore_tos,
     input logic [  riscv_pkg::RasPtrBits:0] i_ras_restore_valid_count,
+    input logic [      riscv_pkg::XLEN-1:0] i_ras_restore_top,
     input logic                             i_ras_pop_after_restore,
     input logic                             i_ras_push_after_restore,
     input logic [      riscv_pkg::XLEN-1:0] i_ras_push_address_after_restore,
@@ -204,6 +205,7 @@ module branch_prediction_controller #(
     // this cycle, before that packet's own push or pop.
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_checkpoint_tos,
     output logic [  riscv_pkg::RasPtrBits:0] o_ras_checkpoint_valid_count,
+    output logic [      riscv_pkg::XLEN-1:0] o_ras_checkpoint_top,
 
     // Decoupled bimodal direction, not gated by btb_hit, registered to align
     // with the prediction metadata carried to PD.  PD redirects a conditional
@@ -487,6 +489,7 @@ module branch_prediction_controller #(
   logic                  ras_misprediction_r;
   logic [RasPtrBits-1:0] ras_restore_tos_r;
   logic [  RasPtrBits:0] ras_restore_valid_count_r;
+  logic [      XLEN-1:0] ras_restore_top_r;
   logic                  ras_pop_after_restore_r;
   logic                  ras_push_after_restore_r;
   logic [      XLEN-1:0] ras_push_address_after_restore_r;
@@ -506,6 +509,7 @@ module branch_prediction_controller #(
   always_ff @(posedge i_clk) begin
     ras_restore_tos_r <= i_ras_restore_tos;
     ras_restore_valid_count_r <= i_ras_restore_valid_count;
+    ras_restore_top_r <= i_ras_restore_top;
     ras_push_address_after_restore_r <= i_ras_push_address_after_restore;
   end
 
@@ -600,6 +604,7 @@ module branch_prediction_controller #(
       .i_misprediction(ras_misprediction_r),
       .i_restore_tos(ras_restore_tos_r),
       .i_restore_valid_count(ras_restore_valid_count_r),
+      .i_restore_top(ras_restore_top_r),
       .i_pop_after_restore(ras_pop_after_restore_r),
       .i_push_after_restore(ras_push_after_restore_r),
       .i_push_address_after_restore(ras_push_address_after_restore_r),
@@ -690,9 +695,11 @@ module branch_prediction_controller #(
                                            predicted_target_is_halfword;
 
   // The registered stack state is the recovery point of every packet IF hands
-  // PD this cycle: their own push or pop lands on this cycle's edge.
+  // PD this cycle: their own push or pop lands on this cycle's edge. The top
+  // entry goes with it, for the restore to write back.
   assign o_ras_checkpoint_tos = ras_tos;
   assign o_ras_checkpoint_valid_count = ras_valid_count;
+  assign o_ras_checkpoint_top = ras_top;
 
   // ===========================================================================
   // Prediction Registration

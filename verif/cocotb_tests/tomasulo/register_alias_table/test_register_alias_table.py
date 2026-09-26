@@ -653,11 +653,20 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
     # Save checkpoint with specific RAS state
     ras_tos = 5
     ras_valid_count = 7
+    ras_top = 0xFEDC_BA98_7654_3210
     await dut_if.checkpoint_save(
-        checkpoint_id=1, branch_tag=2, ras_tos=ras_tos, ras_valid_count=ras_valid_count
+        checkpoint_id=1,
+        branch_tag=2,
+        ras_tos=ras_tos,
+        ras_valid_count=ras_valid_count,
+        ras_top=ras_top,
     )
     model.checkpoint_save(
-        checkpoint_id=1, branch_tag=2, ras_tos=ras_tos, ras_valid_count=ras_valid_count
+        checkpoint_id=1,
+        branch_tag=2,
+        ras_tos=ras_tos,
+        ras_valid_count=ras_valid_count,
+        ras_top=ras_top,
     )
 
     # Restore and check RAS state
@@ -667,6 +676,7 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
     # RAS outputs are combinational from the checkpoint RAM read
     actual_tos = dut_if.ras_tos
     actual_count = dut_if.ras_valid_count
+    actual_top = dut_if.ras_top
     await FallingEdge(dut_if.clock)
     dut_if.clear_checkpoint_restore()
 
@@ -675,6 +685,9 @@ async def test_checkpoint_restore_ras_state(dut: Any) -> None:
     )
     assert actual_count == ras_valid_count, (
         f"RAS valid count mismatch: got {actual_count}, expected {ras_valid_count}"
+    )
+    assert actual_top == ras_top, (
+        f"RAS top mismatch: got {actual_top:#x}, expected {ras_top:#x}"
     )
 
     cocotb.log.info("=== Test Passed ===")
@@ -1760,13 +1773,17 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
                 branch_tag = random.randint(0, 31)
                 ras_tos = random.randint(0, 7)
                 ras_count = random.randint(0, 8)
-                dut_if.drive_checkpoint_save(slot_id, branch_tag, ras_tos, ras_count)
+                ras_top = random.getrandbits(64)
+                dut_if.drive_checkpoint_save(
+                    slot_id, branch_tag, ras_tos, ras_count, ras_top=ras_top
+                )
                 model.checkpoint_save(
                     slot_id,
                     branch_tag,
                     ras_tos,
                     ras_count,
                     rob_entry_epoch=dut_if.rob_entry_epoch_mask,
+                    ras_top=ras_top,
                 )
                 await RisingEdge(dut_if.clock)
                 await FallingEdge(dut_if.clock)
@@ -1795,13 +1812,18 @@ async def test_random_checkpoint_operations(dut: Any) -> None:
             if valid_slots:
                 slot_id = random.choice(valid_slots)
                 dut_if.drive_checkpoint_restore(slot_id)
-                model.checkpoint_restore(
+                expected_ras = model.checkpoint_restore(
                     slot_id,
                     dut_if.rob_entry_valid_mask,
                     dut_if.rob_entry_epoch_mask,
                     dut_if.rob_head_tag,
                 )
                 await RisingEdge(dut_if.clock)
+                actual_ras = (dut_if.ras_tos, dut_if.ras_valid_count, dut_if.ras_top)
+                assert actual_ras == expected_ras, (
+                    f"Restored RAS state of checkpoint {slot_id}: "
+                    f"got {actual_ras}, expected {expected_ras}"
+                )
                 await FallingEdge(dut_if.clock)
                 dut_if.clear_checkpoint_restore()
 

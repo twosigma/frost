@@ -377,6 +377,7 @@ module tomasulo_wrapper #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_checkpoint_branch_tag,
     input logic [           riscv_pkg::RasPtrBits-1:0] i_ras_tos,
     input logic [             riscv_pkg::RasPtrBits:0] i_ras_valid_count,
+    input logic [                 riscv_pkg::XLEN-1:0] i_ras_top,
     // Slot-2-branch checkpoint flag: RAT overlays
     // slot-1's same-cycle rename onto the snapshot when this asserts.
     input logic                                        i_checkpoint_save_for_slot2,
@@ -390,6 +391,7 @@ module tomasulo_wrapper #(
     input  logic [   riscv_pkg::NumCheckpoints-1:0] i_checkpoint_flush_free_mask,
     output logic [       riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [         riscv_pkg::RasPtrBits:0] o_ras_valid_count,
+    output logic [             riscv_pkg::XLEN-1:0] o_ras_top,
 
     // =========================================================================
     // RAT Checkpoint Free (from the flush controller, when a branch releases
@@ -2783,6 +2785,7 @@ module tomasulo_wrapper #(
       .i_checkpoint_branch_tag    (i_checkpoint_branch_tag),
       .i_ras_tos                  (i_ras_tos),
       .i_ras_valid_count          (i_ras_valid_count),
+      .i_ras_top                  (i_ras_top),
       .i_checkpoint_save_for_slot2(i_checkpoint_save_for_slot2),
 
       // Checkpoint restore
@@ -2792,6 +2795,7 @@ module tomasulo_wrapper #(
       .i_checkpoint_flush_free_mask    (i_checkpoint_flush_free_mask),
       .o_ras_tos                       (o_ras_tos),
       .o_ras_valid_count               (o_ras_valid_count),
+      .o_ras_top                       (o_ras_top),
 
       // Checkpoint free
       .i_checkpoint_free   (i_checkpoint_free),

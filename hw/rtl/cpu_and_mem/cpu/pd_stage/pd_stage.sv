@@ -675,6 +675,7 @@ module pd_stage #(
       o_from_pd_to_id.btb_predicted_target <= i_from_if_to_pd.btb_predicted_target;
       o_from_pd_to_id.ras_checkpoint_tos <= i_from_if_to_pd.ras_checkpoint_tos;
       o_from_pd_to_id.ras_checkpoint_valid_count <= i_from_if_to_pd.ras_checkpoint_valid_count;
+      o_from_pd_to_id.ras_checkpoint_top <= i_from_if_to_pd.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id.bp_dir_idx <= i_from_if_to_pd.bp_dir_idx;
     end
@@ -727,6 +728,7 @@ module pd_stage #(
       o_from_pd_to_id_2.btb_predicted_target <= i_from_if_to_pd_2.btb_predicted_target;
       o_from_pd_to_id_2.ras_checkpoint_tos <= i_from_if_to_pd_2.ras_checkpoint_tos;
       o_from_pd_to_id_2.ras_checkpoint_valid_count <= i_from_if_to_pd_2.ras_checkpoint_valid_count;
+      o_from_pd_to_id_2.ras_checkpoint_top <= i_from_if_to_pd_2.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id_2.bp_dir_idx <= i_from_if_to_pd_2.bp_dir_idx;
     end

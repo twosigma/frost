@@ -55,6 +55,7 @@ IF_TO_PD_FIELDS = [
     ("btb_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("ras_checkpoint_top", XLEN),
     ("bp_dir_taken", 1),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
     ("fetch_fault", 1),
@@ -79,6 +80,7 @@ PD_TO_ID_FIELDS = [
     ("btb_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("ras_checkpoint_top", XLEN),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
 ]
 
@@ -129,6 +131,7 @@ ID_TO_EX_FIELDS = [
     ("btb_predicted_target", XLEN),
     ("ras_checkpoint_tos", RAS_PTR_BITS),
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
+    ("ras_checkpoint_top", XLEN),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
     ("is_ras_return", 1),
     ("is_ras_call", 1),
@@ -159,6 +162,7 @@ FROM_EX_FIELDS = [
     ("ras_misprediction", 1),
     ("ras_restore_tos", RAS_PTR_BITS),
     ("ras_restore_valid_count", RAS_PTR_BITS + 1),
+    ("ras_restore_top", XLEN),
     ("ras_pop_after_restore", 1),
     ("ras_push_after_restore", 1),
     ("ras_push_address_after_restore", XLEN),

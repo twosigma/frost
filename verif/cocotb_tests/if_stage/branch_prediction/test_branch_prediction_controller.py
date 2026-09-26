@@ -96,6 +96,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_ras_misprediction.value = 0
     dut.i_ras_restore_tos.value = 0
     dut.i_ras_restore_valid_count.value = 0
+    dut.i_ras_restore_top.value = 0
     dut.i_ras_pop_after_restore.value = 0
     dut.i_ras_push_after_restore.value = 0
     dut.i_ras_push_address_after_restore.value = 0
@@ -646,6 +647,7 @@ async def test_ras_operations_move_the_checkpoint_on_the_edge(dut: Any) -> None:
     await _settle()
     assert int(dut.o_ras_checkpoint_valid_count.value) == 1
     assert int(dut.o_ras_checkpoint_tos.value) == 1
+    assert int(dut.o_ras_checkpoint_top.value) == TARGET_RAS_RETURN
     assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
 
     dut.i_ras_pop.value = 1
@@ -680,6 +682,44 @@ async def test_ras_recovery_inputs_are_registered_before_restore(dut: Any) -> No
     await _advance_cycle(dut)
     assert int(dut.o_ras_checkpoint_valid_count.value) == 1
     assert int(dut.o_predicted_target.value) == TARGET_RAS_RECOVERY
+
+
+@cocotb.test()
+async def test_ras_restore_writes_back_the_checkpoint_top(dut: Any) -> None:
+    """The registered restore writes the recovery point's top entry back.
+
+    A wrong-path pop and push overwrite the entry that was on top when the
+    mispredicted branch was fetched. Without the write-back, the return after
+    recovery would predict the wrong-path call's link address.
+    """
+    await _setup_test(dut)
+    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN, ret=True)
+    await _ras_push(dut, TARGET_RAS_RETURN)
+    tos = int(dut.o_ras_checkpoint_tos.value)
+    count = int(dut.o_ras_checkpoint_valid_count.value)
+    top = int(dut.o_ras_checkpoint_top.value)
+    assert top == TARGET_RAS_RETURN
+
+    dut.i_ras_pop.value = 1
+    await _advance_cycle(dut)
+    dut.i_ras_pop.value = 0
+    await _ras_push(dut, TARGET_RAS_RECOVERY)
+    dut.i_pc.value = RETURN_PC
+    await _settle()
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RECOVERY
+
+    dut.i_ras_misprediction.value = 1
+    dut.i_ras_restore_tos.value = tos
+    dut.i_ras_restore_valid_count.value = count
+    dut.i_ras_restore_top.value = top
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+    dut.i_pc.value = RETURN_PC
+    await _advance_cycle(dut)
+    assert int(dut.o_ras_checkpoint_tos.value) == tos
+    assert int(dut.o_ras_checkpoint_valid_count.value) == count
+    assert int(dut.o_ras_checkpoint_top.value) == TARGET_RAS_RETURN
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
 
 
 @cocotb.test()

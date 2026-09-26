@@ -66,6 +66,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_mispredict_is_compressed.value = 0
     dut.i_restored_ras_tos.value = 0
     dut.i_restored_ras_valid_count.value = 0
+    dut.i_restored_ras_top.value = 0
     dut.i_mispredict_recovery_pending.value = 0
     dut.i_mispredict_commit_q.value = 0
     dut.i_correct_branch_commit_pending.value = 0
@@ -153,6 +154,7 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
     dut.i_early_mispredict_is_compressed.value = 1
     dut.i_restored_ras_tos.value = 3
     dut.i_restored_ras_valid_count.value = 5
+    dut.i_restored_ras_top.value = 0x8000_0000_0000_0104
     _drive_mispredict_commit(
         dut,
         {
@@ -188,6 +190,7 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
     assert output["ras_misprediction"]
     assert output["ras_restore_tos"] == 3
     assert output["ras_restore_valid_count"] == 5
+    assert output["ras_restore_top"] == 0x8000_0000_0000_0104
     assert not output["ras_pop_after_restore"]
     assert not output["ras_push_after_restore"]
     # The bus selects the early transaction. The late candidate is formed
@@ -325,6 +328,7 @@ async def test_commit_mispredict_return_restores_and_pops_ras(dut: Any) -> None:
 
     dut.i_restored_ras_tos.value = 6
     dut.i_restored_ras_valid_count.value = 7
+    dut.i_restored_ras_top.value = 0x904
     _drive_mispredict_commit(
         dut,
         {
@@ -346,6 +350,7 @@ async def test_commit_mispredict_return_restores_and_pops_ras(dut: Any) -> None:
     assert output["ras_misprediction"]
     assert output["ras_restore_tos"] == 6
     assert output["ras_restore_valid_count"] == 7
+    assert output["ras_restore_top"] == 0x904
     assert output["ras_pop_after_restore"]
     assert not output["ras_push_after_restore"]
     # The return trains its BTB entry as a return, with the target it took.
@@ -361,6 +366,7 @@ async def test_commit_mispredict_call_restores_and_pushes_link(dut: Any) -> None
 
     dut.i_restored_ras_tos.value = 1
     dut.i_restored_ras_valid_count.value = 2
+    dut.i_restored_ras_top.value = 0xA04
     _drive_mispredict_commit(
         dut,
         {
@@ -381,6 +387,7 @@ async def test_commit_mispredict_call_restores_and_pushes_link(dut: Any) -> None
     assert output["ras_misprediction"]
     assert output["ras_restore_tos"] == 1
     assert output["ras_restore_valid_count"] == 2
+    assert output["ras_restore_top"] == 0xA04
     assert not output["ras_pop_after_restore"]
     assert output["ras_push_after_restore"]
     assert output["ras_push_address_after_restore"] == 0xA82

@@ -214,6 +214,7 @@ module dispatch #(
     input  logic [  riscv_pkg::RasPtrBits:0] i_ras_valid_count,
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_tos,
     output logic [  riscv_pkg::RasPtrBits:0] o_ras_valid_count,
+    output logic [      riscv_pkg::XLEN-1:0] o_ras_top,
 
     // ROB checkpoint recording
     output logic                                    o_rob_checkpoint_valid,
@@ -1817,9 +1818,11 @@ module dispatch #(
     if (checkpoint_save_slot2) begin
       o_ras_tos         = i_from_id_to_ex_2.ras_checkpoint_tos;
       o_ras_valid_count = i_from_id_to_ex_2.ras_checkpoint_valid_count;
+      o_ras_top         = i_from_id_to_ex_2.ras_checkpoint_top;
     end else begin
       o_ras_tos         = i_from_id_to_ex.ras_checkpoint_tos;
       o_ras_valid_count = i_from_id_to_ex.ras_checkpoint_valid_count;
+      o_ras_top         = i_from_id_to_ex.ras_checkpoint_top;
     end
 
     // ROB checkpoint recording (separate from the RAT checkpoint).  The ROB's

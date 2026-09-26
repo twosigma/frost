@@ -16,10 +16,11 @@
 
 IF drives one operation per cycle for the packet it hands PD: a push for a
 call, a pop for a return, both for a coroutine swap. Misprediction recovery
-restores a checkpoint and replays the mispredicted instruction's own operation.
+restores a checkpoint (pointer, count, and top entry) and replays the
+mispredicted instruction's own operation.
 """
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import cocotb
 from cocotb.clock import Clock
@@ -30,6 +31,14 @@ CLOCK_PERIOD_NS = 10
 RAS_DEPTH = 8
 
 
+class Checkpoint(NamedTuple):
+    """A packet's recovery point: the registered state before its operation."""
+
+    tos: int
+    valid_count: int
+    top: int
+
+
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_push.value = 0
@@ -38,6 +47,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_misprediction.value = 0
     dut.i_restore_tos.value = 0
     dut.i_restore_valid_count.value = 0
+    dut.i_restore_top.value = 0
     dut.i_pop_after_restore.value = 0
     dut.i_push_after_restore.value = 0
     dut.i_push_address_after_restore.value = 0
@@ -91,11 +101,19 @@ async def _swap(dut: Any, address: int) -> None:
     await _operate(dut, push=True, pop=True, address=address)
 
 
+def _checkpoint(dut: Any) -> Checkpoint:
+    """Capture the recovery point IF would attach to a packet this cycle."""
+    return Checkpoint(
+        tos=int(dut.o_tos.value),
+        valid_count=int(dut.o_valid_count.value),
+        top=int(dut.o_top.value),
+    )
+
+
 async def _restore(
     dut: Any,
+    checkpoint: Checkpoint,
     *,
-    tos: int,
-    count: int,
     pop: bool = False,
     push: bool = False,
     address: int = 0,
@@ -103,8 +121,9 @@ async def _restore(
     """Apply a misprediction restore on the next edge."""
     _clear_inputs(dut)
     dut.i_misprediction.value = 1
-    dut.i_restore_tos.value = tos
-    dut.i_restore_valid_count.value = count
+    dut.i_restore_tos.value = checkpoint.tos
+    dut.i_restore_valid_count.value = checkpoint.valid_count
+    dut.i_restore_top.value = checkpoint.top
     dut.i_pop_after_restore.value = int(pop)
     dut.i_push_after_restore.value = int(push)
     dut.i_push_address_after_restore.value = address
@@ -199,13 +218,12 @@ async def test_restore_discards_speculative_pushes(dut: Any) -> None:
     """A restore returns the stack to an older checkpoint."""
     await _setup_test(dut)
     await _push(dut, 0x8004)
-    saved_tos = int(dut.o_tos.value)
-    saved_count = int(dut.o_valid_count.value)
+    saved = _checkpoint(dut)
 
     await _push(dut, 0x9004)
     _assert_state(dut, tos=2, count=2)
 
-    await _restore(dut, tos=saved_tos, count=saved_count)
+    await _restore(dut, saved)
     _assert_state(dut, tos=1, count=1, top=0x8004)
 
 
@@ -216,7 +234,7 @@ async def test_restore_then_pop_replays_a_return(dut: Any) -> None:
     await _push(dut, 0xA004)
     await _push(dut, 0xB004)
 
-    await _restore(dut, tos=2, count=2, pop=True)
+    await _restore(dut, _checkpoint(dut), pop=True)
     _assert_state(dut, tos=1, count=1, top=0xA004)
 
 
@@ -224,7 +242,7 @@ async def test_restore_then_pop_replays_a_return(dut: Any) -> None:
 async def test_restore_then_push_replays_a_call(dut: Any) -> None:
     """Recovery restores a checkpoint and pushes the call's link address."""
     await _setup_test(dut)
-    await _restore(dut, tos=0, count=0, push=True, address=0xC004)
+    await _restore(dut, _checkpoint(dut), push=True, address=0xC004)
     _assert_state(dut, tos=1, count=1, top=0xC004)
 
 
@@ -235,7 +253,7 @@ async def test_restore_then_swap_replays_a_coroutine(dut: Any) -> None:
     await _push(dut, 0xA004)
     await _push(dut, 0xB004)
 
-    await _restore(dut, tos=2, count=2, pop=True, push=True, address=0xD004)
+    await _restore(dut, _checkpoint(dut), pop=True, push=True, address=0xD004)
     # Treating the pair as a plain push would leave the pointer and count at 3.
     _assert_state(dut, tos=2, count=2, top=0xD004)
     await _pop(dut)
@@ -246,7 +264,7 @@ async def test_restore_then_swap_replays_a_coroutine(dut: Any) -> None:
 async def test_restore_swap_on_an_empty_stack_changes_nothing(dut: Any) -> None:
     """With nothing to pop, the front end performs neither half, so recovery matches."""
     await _setup_test(dut)
-    await _restore(dut, tos=0, count=0, pop=True, push=True, address=0xE004)
+    await _restore(dut, _checkpoint(dut), pop=True, push=True, address=0xE004)
     _assert_state(dut, tos=0, count=0)
 
 
@@ -260,6 +278,7 @@ async def test_restore_takes_priority_over_an_operation(dut: Any) -> None:
     dut.i_misprediction.value = 1
     dut.i_restore_tos.value = 1
     dut.i_restore_valid_count.value = 1
+    dut.i_restore_top.value = 0xF004
     dut.i_push.value = 1
     dut.i_push_address.value = 0xF104
     await _advance_cycle(dut)
@@ -267,3 +286,62 @@ async def test_restore_takes_priority_over_an_operation(dut: Any) -> None:
     await _settle()
 
     _assert_state(dut, tos=1, count=1, top=0xF004)
+
+
+async def _overwrite_top_on_a_wrong_path(dut: Any, address: int) -> Checkpoint:
+    """Checkpoint, then pop and push as a wrong path would.
+
+    The push lands where the popped entry was, so the checkpoint's top entry
+    now holds address. Returns the checkpoint.
+    """
+    saved = _checkpoint(dut)
+    await _pop(dut)
+    await _push(dut, address)
+    _assert_state(dut, tos=saved.tos, count=saved.valid_count, top=address)
+    return saved
+
+
+@cocotb.test()
+async def test_restore_writes_back_a_top_the_wrong_path_overwrote(dut: Any) -> None:
+    """Recovery writes the checkpoint's top entry back after a wrong-path pop and push.
+
+    The top sits at an odd pointer, then at an even one: the entries alternate
+    between two banks.
+    """
+    await _setup_test(dut)
+    await _push(dut, 0xA004)
+    saved = await _overwrite_top_on_a_wrong_path(dut, 0x1004)
+    await _restore(dut, saved)
+    _assert_state(dut, tos=1, count=1, top=0xA004)
+
+    await _push(dut, 0xB004)
+    saved = await _overwrite_top_on_a_wrong_path(dut, 0x2004)
+    await _restore(dut, saved)
+    _assert_state(dut, tos=2, count=2, top=0xB004)
+    await _pop(dut)
+    _assert_state(dut, tos=1, count=1, top=0xA004)
+
+
+@cocotb.test()
+async def test_restore_then_push_also_writes_back_the_top(dut: Any) -> None:
+    """A mispredicted call's recovery repairs the top and pushes above it.
+
+    Both entries are written on the same edge, one in each bank; the top sits
+    at an odd pointer, then at an even one.
+    """
+    await _setup_test(dut)
+    await _push(dut, 0xA004)
+    saved = await _overwrite_top_on_a_wrong_path(dut, 0x1004)
+    await _restore(dut, saved, push=True, address=0xC004)
+    _assert_state(dut, tos=2, count=2, top=0xC004)
+    await _pop(dut)
+    _assert_state(dut, tos=1, count=1, top=0xA004)
+
+    await _push(dut, 0xB004)
+    saved = await _overwrite_top_on_a_wrong_path(dut, 0x2004)
+    await _restore(dut, saved, push=True, address=0xD004)
+    _assert_state(dut, tos=3, count=3, top=0xD004)
+    await _pop(dut)
+    _assert_state(dut, tos=2, count=2, top=0xB004)
+    await _pop(dut)
+    _assert_state(dut, tos=1, count=1, top=0xA004)

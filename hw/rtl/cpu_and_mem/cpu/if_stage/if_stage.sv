@@ -234,6 +234,7 @@ module if_stage #(
   // packet ("Return address stack" in the CPU README).
   logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos;
   logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count;
+  logic [XLEN-1:0] ras_checkpoint_top;
   logic ras_push;
   logic ras_pop;
   logic [XLEN-1:0] ras_push_address;
@@ -736,6 +737,7 @@ module if_stage #(
       .i_ras_misprediction(i_from_ex_comb.ras_misprediction),
       .i_ras_restore_tos(i_from_ex_comb.ras_restore_tos),
       .i_ras_restore_valid_count(i_from_ex_comb.ras_restore_valid_count),
+      .i_ras_restore_top(i_from_ex_comb.ras_restore_top),
       .i_ras_pop_after_restore(i_from_ex_comb.ras_pop_after_restore),
       .i_ras_push_after_restore(i_from_ex_comb.ras_push_after_restore),
       .i_ras_push_address_after_restore(i_from_ex_comb.ras_push_address_after_restore),
@@ -782,6 +784,7 @@ module if_stage #(
       // PD this cycle, before their own push or pop.
       .o_ras_checkpoint_tos(ras_checkpoint_tos),
       .o_ras_checkpoint_valid_count(ras_checkpoint_valid_count),
+      .o_ras_checkpoint_top(ras_checkpoint_top),
 
       // Bimodal direction and predict-time index, carried to PD
       .o_dir_predicted_taken(bp_dir_taken),
@@ -2160,6 +2163,7 @@ module if_stage #(
   // block above).
   assign o_from_if_to_pd.ras_checkpoint_tos = ras_checkpoint_tos;
   assign o_from_if_to_pd.ras_checkpoint_valid_count = ras_checkpoint_valid_count;
+  assign o_from_if_to_pd.ras_checkpoint_top = ras_checkpoint_top;
   // Bimodal direction carried with the slot-1 instruction (replay-aware). A
   // collapsed-lead delivery (pc == pc_reg) uses the live lookup, including
   // for a branch without a taken BTB prediction that PD may then redirect on.
@@ -2626,6 +2630,7 @@ module if_stage #(
   // taken ends the bundle.
   assign o_from_if_to_pd_2.ras_checkpoint_tos = o_from_if_to_pd.ras_checkpoint_tos;
   assign o_from_if_to_pd_2.ras_checkpoint_valid_count = o_from_if_to_pd.ras_checkpoint_valid_count;
+  assign o_from_if_to_pd_2.ras_checkpoint_top = o_from_if_to_pd.ras_checkpoint_top;
   // The PD redirect heuristic does not use slot 2, so its direction bit is a
   // benign 0.  Its predict-time index is carried, so a slot-2-fetched branch
   // trains the entry it predicted.

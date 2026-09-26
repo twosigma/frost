@@ -906,6 +906,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("-GPERF_COUNTERS=1",),
     ),
+    "ras_repair_bench": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ras_repair_bench",
+        description=(
+            "Return address stack repair: a wrong path that pops and then pushes "
+            "must not cost the correct-path return a misprediction (profiling "
+            "counters)"
+        ),
+        verilator_extra_args=("-GPERF_COUNTERS=1",),
+    ),
     "tomasulo_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

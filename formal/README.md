@@ -84,7 +84,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `prediction_metadata_output` | Each packet's BTB-taken bit equals the reference priority, and while a prediction is saved or pending, a packet it does not belong to never reports taken. `prediction_metadata_tracker` checks the sequential behavior |
 | `prediction_metadata_tracker` | A pending prediction's saved PC and target stay unchanged until their packet consumes them or a reset or redirect kills them, the call and return types always leave with their target, plus the tracker's own validity and payload checks. See below |
 | `prediction_release` | Pending-prediction outputs are masked while nothing is pending, a ready handoff raises both prediction holdoffs, and the holdoff outputs, predecessor-PC tags, `pc_reg[1]` replica, and lower-parcel lookup geometry match their reference relations. See below |
-| `ras_checkpoint` | The return-address stack's next pointer and count equal the reference equations, and a push or swap writes where the reference puts its entry |
+| `ras_checkpoint` | The return-address stack's next pointer and count equal the reference equations, and every entry write matches the reference: a push or swap writes its link address where the reference puts it, a restore writes the saved top entry back, and no other entry changes |
 | `rvc_predecode` | The fill-time RV64C expansion and illegal flag equal the reference decompressor (`rvc_decompressor`) for all 65,536 16-bit parcels |
 
 `prediction_release` runs the real `pc_controller` and `c_ext_state`

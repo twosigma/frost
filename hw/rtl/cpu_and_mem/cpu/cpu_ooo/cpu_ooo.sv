@@ -1405,6 +1405,7 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_branch_tag;
   logic [riscv_pkg::RasPtrBits-1:0] dispatch_ras_tos;
   logic [riscv_pkg::RasPtrBits:0] dispatch_ras_valid_count;
+  logic [XLEN-1:0] dispatch_ras_top;
   logic rob_checkpoint_valid_raw;
   logic rob_checkpoint_valid;
   logic [riscv_pkg::CheckpointIdWidth-1:0] rob_checkpoint_id;
@@ -1582,6 +1583,7 @@ module cpu_ooo #(
   logic checkpoint_restore_reclaim_all;
   logic [riscv_pkg::RasPtrBits-1:0] restored_ras_tos;
   logic [riscv_pkg::RasPtrBits:0] restored_ras_valid_count;
+  logic [XLEN-1:0] restored_ras_top;
 
   // Checkpoint free (from commit or flush-time reclaim)
   logic checkpoint_free;
@@ -1913,6 +1915,7 @@ module cpu_ooo #(
       .i_checkpoint_branch_tag(checkpoint_branch_tag),
       .i_ras_tos(dispatch_ras_tos),
       .i_ras_valid_count(dispatch_ras_valid_count),
+      .i_ras_top(dispatch_ras_top),
       .i_checkpoint_save_for_slot2(checkpoint_save_for_slot2),
 
       // RAT checkpoint restore
@@ -1922,6 +1925,7 @@ module cpu_ooo #(
       .i_checkpoint_flush_free_mask(checkpoint_flush_free_mask),
       .o_ras_tos(restored_ras_tos),
       .o_ras_valid_count(restored_ras_valid_count),
+      .o_ras_top(restored_ras_top),
 
       // RAT checkpoint free
       .i_checkpoint_free(checkpoint_free),
@@ -2248,6 +2252,7 @@ module cpu_ooo #(
       .i_ras_valid_count(from_if_to_pd.ras_checkpoint_valid_count),
       .o_ras_tos(dispatch_ras_tos),
       .o_ras_valid_count(dispatch_ras_valid_count),
+      .o_ras_top(dispatch_ras_top),
       .o_rob_checkpoint_valid(rob_checkpoint_valid_raw),
       .o_rob_checkpoint_id(rob_checkpoint_id),
 
@@ -2794,6 +2799,7 @@ module cpu_ooo #(
       .i_early_mispredict_is_compressed(early_mispredict_is_compressed),
       .i_restored_ras_tos(restored_ras_tos),
       .i_restored_ras_valid_count(restored_ras_valid_count),
+      .i_restored_ras_top(restored_ras_top),
       .i_mispredict_recovery_pending(mispredict_recovery_pending),
       .i_mispredict_commit_q(mispredict_commit_q),
       .i_correct_branch_commit_pending(correct_branch_commit_pending),

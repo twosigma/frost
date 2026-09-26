@@ -431,6 +431,7 @@ module id_stage #(
       o_from_id_to_ex.btb_predicted_target <= effective_btb_predicted_target;
       o_from_id_to_ex.ras_checkpoint_tos <= i_from_pd_to_id.ras_checkpoint_tos;
       o_from_id_to_ex.ras_checkpoint_valid_count <= i_from_pd_to_id.ras_checkpoint_valid_count;
+      o_from_id_to_ex.ras_checkpoint_top <= i_from_pd_to_id.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_id_to_ex.bp_dir_idx <= i_from_pd_to_id.bp_dir_idx;
       o_from_id_to_ex.fp_rm <= fp_rm_direct;
@@ -578,6 +579,7 @@ module id_stage #(
       id_next.btb_predicted_target = effective_btb_predicted_target;
       id_next.ras_checkpoint_tos = i_from_pd_to_id.ras_checkpoint_tos;
       id_next.ras_checkpoint_valid_count = i_from_pd_to_id.ras_checkpoint_valid_count;
+      id_next.ras_checkpoint_top = i_from_pd_to_id.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       id_next.bp_dir_idx = i_from_pd_to_id.bp_dir_idx;
       id_next.fp_rm = fp_rm_direct;
@@ -897,6 +899,7 @@ module id_stage #(
       o_from_id_to_ex_2.btb_predicted_target <= i_from_pd_to_id_2.btb_predicted_target;
       o_from_id_to_ex_2.ras_checkpoint_tos <= i_from_pd_to_id_2.ras_checkpoint_tos;
       o_from_id_to_ex_2.ras_checkpoint_valid_count <= i_from_pd_to_id_2.ras_checkpoint_valid_count;
+      o_from_id_to_ex_2.ras_checkpoint_top <= i_from_pd_to_id_2.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       o_from_id_to_ex_2.bp_dir_idx <= i_from_pd_to_id_2.bp_dir_idx;
       o_from_id_to_ex_2.fp_rm <= fp_rm_direct_2;
@@ -1018,6 +1021,7 @@ module id_stage #(
       id_next_2.btb_predicted_target = i_from_pd_to_id_2.btb_predicted_target;
       id_next_2.ras_checkpoint_tos = i_from_pd_to_id_2.ras_checkpoint_tos;
       id_next_2.ras_checkpoint_valid_count = i_from_pd_to_id_2.ras_checkpoint_valid_count;
+      id_next_2.ras_checkpoint_top = i_from_pd_to_id_2.ras_checkpoint_top;
       // Carry the predict-time bimodal index through to commit.
       id_next_2.bp_dir_idx = i_from_pd_to_id_2.bp_dir_idx;
       id_next_2.fp_rm = fp_rm_direct_2;

@@ -30,16 +30,27 @@
  *   push+pop   a coroutine swap: replace the top entry
  *
  * A pop or swap on an empty stack changes nothing. The operation updates the
- * state on the clock edge, so the registered state (o_tos, o_valid_count) is
- * the state before the accepted packet's own operation, which is the recovery
- * point IF attaches to that packet.
+ * state on the clock edge, so the registered state (o_tos, o_valid_count, and
+ * the entry o_top reads) is the state before the accepted packet's own
+ * operation, which is the recovery point IF attaches to that packet.
  *
  * Misprediction recovery restores a packet's recovery point and then applies
  * the mispredicted instruction's own operation (i_pop_after_restore for a
  * return, i_push_after_restore for a call, both for a coroutine swap). It takes
  * priority over an operation in the same cycle; IF never accepts a packet then.
+ * The recovery point includes its top entry (i_restore_top), which the restore
+ * writes back: a wrong-path pop followed by a push overwrites that entry. An
+ * entry below the top that a deeper wrong path overwrites (two pops, then a
+ * push) stays damaged.
+ *
+ * A restore that pushes writes two neighboring entries, the restored top and
+ * the entry above it. The entries alternate between two banks by pointer
+ * parity, so neighbors are in different banks and each bank takes at most one
+ * write per cycle.
  */
 module return_address_stack #(
+    // A power of two, at least 4: the pointers wrap at 2^RAS_PTR_BITS, and the
+    // low pointer bit selects the bank.
     parameter int unsigned RAS_DEPTH = 8,
     parameter int unsigned RAS_PTR_BITS = $clog2(RAS_DEPTH)
 ) (
@@ -55,6 +66,7 @@ module return_address_stack #(
     input logic i_misprediction,
     input logic [RAS_PTR_BITS-1:0] i_restore_tos,
     input logic [RAS_PTR_BITS:0] i_restore_valid_count,
+    input logic [riscv_pkg::XLEN-1:0] i_restore_top,  // The recovery point's top entry
     input logic i_pop_after_restore,  // Pop after restoring (for returns that triggered restore)
     input logic i_push_after_restore,  // Push after restoring (for calls that triggered restore)
     input logic [riscv_pkg::XLEN-1:0] i_push_address_after_restore,
@@ -102,28 +114,52 @@ module return_address_stack #(
   // ===========================================================================
   // Storage
   // ===========================================================================
-  // A swap writes at the top, a push above it. A restore swap or push writes
-  // the same way relative to the restored top.
-  logic ras_write_enable;
-  logic [RAS_PTR_BITS-1:0] ras_write_address;
-  logic [riscv_pkg::XLEN-1:0] ras_write_data;
-  assign ras_write_enable = !i_rst && (do_restore_push || do_restore_swap || do_push || do_swap);
-  assign ras_write_address = do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
-                             do_restore_swap ? i_restore_tos :
-                             do_swap ? tos : (tos + RAS_PTR_BITS'(1));
-  assign ras_write_data = i_misprediction ? i_push_address_after_restore : i_push_address;
+  // Two writes, relative to the top (the restored top during recovery):
+  //   at the top    a restore writes the saved top entry back, or its swap's
+  //                 link address; a swap writes its link address
+  //   above it      a push or a restore push writes its link address
+  logic [RAS_PTR_BITS-1:0] write_base;
+  logic [riscv_pkg::XLEN-1:0] link_address;
+  logic top_write, above_write;
+  logic [RAS_PTR_BITS-1:0] above_address;
+  logic [riscv_pkg::XLEN-1:0] top_write_data;
+  assign write_base = i_misprediction ? i_restore_tos : tos;
+  assign link_address = i_misprediction ? i_push_address_after_restore : i_push_address;
+  assign top_write = !i_rst && (i_misprediction || do_swap);
+  assign above_write = !i_rst && (do_restore_push || do_push);
+  assign above_address = write_base + RAS_PTR_BITS'(1);
+  assign top_write_data = (do_restore_swap || do_swap) ? link_address : i_restore_top;
 
-  sdp_dist_ram #(
-      .ADDR_WIDTH(RAS_PTR_BITS),
-      .DATA_WIDTH(riscv_pkg::XLEN)
-  ) ras_ram (
-      .i_clk,
-      .i_write_enable(ras_write_enable),
-      .i_write_address(ras_write_address),
-      .i_write_data(ras_write_data),
-      .i_read_address(tos),
-      .o_read_data(o_top)
-  );
+  // Bank b holds the entries whose pointer has low bit b, at the pointer's
+  // upper bits. The two writes are neighbors, so they never share a bank.
+  localparam int unsigned BankAddrBits = RAS_PTR_BITS - 1;
+  logic [1:0] bank_write_enable;
+  logic [1:0][BankAddrBits-1:0] bank_write_address;
+  logic [1:0][riscv_pkg::XLEN-1:0] bank_write_data;
+  logic [1:0][riscv_pkg::XLEN-1:0] bank_read_data;
+
+  for (genvar b = 0; b < 2; b++) begin : gen_bank
+    logic top_here;
+    assign top_here = top_write && (write_base[0] == 1'(b));
+    assign bank_write_enable[b] = top_here || (above_write && (above_address[0] == 1'(b)));
+    assign bank_write_address[b] = top_here ? write_base[RAS_PTR_BITS-1:1] :
+                                              above_address[RAS_PTR_BITS-1:1];
+    assign bank_write_data[b] = top_here ? top_write_data : link_address;
+
+    sdp_dist_ram #(
+        .ADDR_WIDTH(BankAddrBits),
+        .DATA_WIDTH(riscv_pkg::XLEN)
+    ) ras_bank_ram (
+        .i_clk,
+        .i_write_enable(bank_write_enable[b]),
+        .i_write_address(bank_write_address[b]),
+        .i_write_data(bank_write_data[b]),
+        .i_read_address(tos[RAS_PTR_BITS-1:1]),
+        .o_read_data(bank_read_data[b])
+    );
+  end
+
+  assign o_top = bank_read_data[tos[0]];
 
   assign o_nonempty = stack_not_empty;
   assign o_tos = tos;
@@ -209,10 +245,33 @@ module return_address_stack #(
   end
   always_comb begin
     assert ({tos_next, valid_count_next} == {tos_next_reference, valid_count_next_reference});
-    // The write lands where the reference operation puts its entry.
-    if (!i_rst && push_req && !(pop_req && base_count == '0)) begin
-      assert (ras_write_enable);
-      assert (ras_write_address == (pop_req ? base_tos : base_tos + RAS_PTR_BITS'(1)));
+  end
+
+  // Entry writes: a restore writes the saved top entry back at the restored
+  // top unless its swap replaces that entry, a swap on a non-empty stack
+  // writes its link address at the top, and a push writes it above the top.
+  // Every other entry keeps its value.
+  logic reference_swap, reference_top_write, reference_above_write;
+  logic [riscv_pkg::XLEN-1:0] reference_link, reference_top_data;
+  always_comb begin
+    reference_swap = pop_req && push_req && (base_count != '0);
+    reference_link = i_misprediction ? i_push_address_after_restore : i_push_address;
+    reference_top_write = !i_rst && (i_misprediction || reference_swap);
+    reference_top_data = reference_swap ? reference_link : i_restore_top;
+    reference_above_write = !i_rst && push_req && !pop_req;
+  end
+  for (genvar i = 0; i < RAS_DEPTH; i++) begin : gen_entry_write_reference
+    logic entry_written;
+    assign entry_written = bank_write_enable[i%2] &&
+                           (bank_write_address[i%2] == BankAddrBits'(i / 2));
+    always_comb begin
+      if (reference_top_write && (base_tos == RAS_PTR_BITS'(i))) begin
+        assert (entry_written && (bank_write_data[i%2] == reference_top_data));
+      end else if (reference_above_write && (base_tos + RAS_PTR_BITS'(1) == RAS_PTR_BITS'(i))) begin
+        assert (entry_written && (bank_write_data[i%2] == reference_link));
+      end else begin
+        assert (!entry_written);
+      end
     end
   end
 `endif

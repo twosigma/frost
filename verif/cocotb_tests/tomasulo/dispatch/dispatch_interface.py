@@ -1599,3 +1599,8 @@ class DispatchInterface:
     def ras_valid_count_out(self) -> int:
         """Read o_ras_valid_count output."""
         return int(self.dut.o_ras_valid_count.value)
+
+    @property
+    def ras_top_out(self) -> int:
+        """Read o_ras_top output."""
+        return int(self.dut.o_ras_top.value)

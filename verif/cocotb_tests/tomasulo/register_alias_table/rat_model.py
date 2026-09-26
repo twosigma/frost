@@ -70,6 +70,7 @@ class CheckpointSlot:
     branch_epoch: int = 0
     ras_tos: int = 0
     ras_valid_count: int = 0
+    ras_top: int = 0
     int_rat: list[RATEntry] = field(default_factory=list)
     fp_rat: list[RATEntry] = field(default_factory=list)
 
@@ -207,6 +208,7 @@ class RATModel:
         ras_valid_count: int,
         overlay_rename: tuple[int, int, int] | None = None,
         rob_entry_epoch: int = 0,
+        ras_top: int = 0,
     ) -> None:
         """Save current RAT state into a checkpoint slot.
 
@@ -220,6 +222,7 @@ class RATModel:
             rob_entry_epoch: Current ROB epoch bitmask. Checkpoint snapshots
                 store producer epochs and the checkpoint branch's post-alloc
                 epoch so restore can reject recycled tags.
+            ras_top: RAS top entry.
         """
         slot = self.checkpoints[checkpoint_id]
         slot.valid = True
@@ -227,6 +230,7 @@ class RATModel:
         slot.branch_epoch = ((rob_entry_epoch >> slot.branch_tag) & 1) ^ 1
         slot.ras_tos = ras_tos
         slot.ras_valid_count = ras_valid_count
+        slot.ras_top = ras_top
         int_snapshot = [
             RATEntry(valid=e.valid, tag=e.tag, epoch=(rob_entry_epoch >> e.tag) & 1)
             for e in self.int_rat
@@ -287,7 +291,7 @@ class RATModel:
         rob_entry_valid: int | None = None,
         rob_entry_epoch: int = 0,
         rob_head_tag: int = 0,
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, int]:
         """Restore RAT state from a checkpoint slot.
 
         Args:
@@ -299,7 +303,7 @@ class RATModel:
             rob_head_tag: Current ROB head tag for modulo age comparison.
 
         Returns:
-            Tuple of (ras_tos, ras_valid_count).
+            Tuple of (ras_tos, ras_valid_count, ras_top).
         """
         slot = self.checkpoints[checkpoint_id]
         assert slot.valid, f"Restoring from invalid checkpoint {checkpoint_id}"
@@ -343,7 +347,7 @@ class RATModel:
             )
             for e in slot.fp_rat
         ]
-        return slot.ras_tos, slot.ras_valid_count
+        return slot.ras_tos, slot.ras_valid_count, slot.ras_top
 
     def checkpoint_free(self, checkpoint_id: int) -> None:
         """Free a checkpoint slot.

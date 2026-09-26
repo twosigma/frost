@@ -75,7 +75,9 @@ class RATInterface:
         self._pending_rename_2: tuple[int, int, int] | None = None
         self._pending_commit: tuple[int, int, int, bool] | None = None
         self._pending_commit_2: tuple[int, int, int, bool] | None = None
-        self._pending_checkpoint_save: tuple[int, int, int, int, bool] | None = None
+        self._pending_checkpoint_save: tuple[int, int, int, int, int, bool] | None = (
+            None
+        )
         self._pending_checkpoint_restore: int | None = None
         self._pending_checkpoint_free: int | None = None
         self._pending_checkpoint_free_2: int | None = None
@@ -200,6 +202,7 @@ class RATInterface:
         self.dut.i_checkpoint_branch_tag.value = 0
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
+        self.dut.i_ras_top.value = 0
         # Slot-2-branch checkpoint flag: selects the snapshot overlay of
         # slot-1's same-cycle rename.
         self.dut.i_checkpoint_save_for_slot2.value = 0
@@ -302,9 +305,14 @@ class RATInterface:
                 self._shadow_rat.checkpoint_free(self._pending_checkpoint_free_2)
 
             if self._pending_checkpoint_save is not None:
-                checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2 = (
-                    self._pending_checkpoint_save
-                )
+                (
+                    checkpoint_id,
+                    branch_tag,
+                    ras_tos,
+                    ras_valid_count,
+                    ras_top,
+                    for_slot2,
+                ) = self._pending_checkpoint_save
                 overlay_rename = self._pending_rename if for_slot2 else None
                 self._shadow_rat.checkpoint_save(
                     checkpoint_id,
@@ -313,6 +321,7 @@ class RATInterface:
                     ras_valid_count,
                     overlay_rename,
                     rob_entry_epoch=self.rob_entry_epoch_mask,
+                    ras_top=ras_top,
                 )
                 self._mark_checkpoint_owner_allocated(branch_tag)
 
@@ -621,6 +630,7 @@ class RATInterface:
         ras_tos: int = 0,
         ras_valid_count: int = 0,
         for_slot2: bool = False,
+        ras_top: int = 0,
     ) -> None:
         """Drive checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 1
@@ -628,12 +638,14 @@ class RATInterface:
         self.dut.i_checkpoint_branch_tag.value = branch_tag & MASK_TAG
         self.dut.i_ras_tos.value = ras_tos & 0x7
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
+        self.dut.i_ras_top.value = ras_top & MASK_XLEN
         self.dut.i_checkpoint_save_for_slot2.value = 1 if for_slot2 else 0
         self._pending_checkpoint_save = (
             checkpoint_id & 0x7,
             branch_tag & MASK_TAG,
             ras_tos & 0x7,
             ras_valid_count & 0xF,
+            ras_top & MASK_XLEN,
             for_slot2,
         )
 
@@ -650,11 +662,12 @@ class RATInterface:
         ras_tos: int = 0,
         ras_valid_count: int = 0,
         for_slot2: bool = False,
+        ras_top: int = 0,
     ) -> None:
         """Perform checkpoint save transaction."""
         await FallingEdge(self.clock)
         self.drive_checkpoint_save(
-            checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2
+            checkpoint_id, branch_tag, ras_tos, ras_valid_count, for_slot2, ras_top
         )
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
@@ -678,17 +691,19 @@ class RATInterface:
         self.dut.i_checkpoint_restore_reclaim_all.value = 0
         self._apply_pending_cycle_updates()
 
-    async def checkpoint_restore(self, checkpoint_id: int) -> tuple[int, int]:
+    async def checkpoint_restore(self, checkpoint_id: int) -> tuple[int, int, int]:
         """Perform checkpoint restore transaction.
 
-        Returns (ras_tos, ras_valid_count).
+        Returns (ras_tos, ras_valid_count, ras_top), read in the restore
+        cycle: the outputs follow the restore ID combinationally.
         """
         await FallingEdge(self.clock)
         self.drive_checkpoint_restore(checkpoint_id)
         await RisingEdge(self.clock)
+        restored = (self.ras_tos, self.ras_valid_count, self.ras_top)
         await FallingEdge(self.clock)
         self.clear_checkpoint_restore()
-        return self.ras_tos, self.ras_valid_count
+        return restored
 
     # =========================================================================
     # Checkpoint Free Interface
@@ -791,3 +806,8 @@ class RATInterface:
     def ras_valid_count(self) -> int:
         """Get restored RAS valid count."""
         return int(self.dut.o_ras_valid_count.value)
+
+    @property
+    def ras_top(self) -> int:
+        """Get restored RAS top entry."""
+        return int(self.dut.o_ras_top.value)

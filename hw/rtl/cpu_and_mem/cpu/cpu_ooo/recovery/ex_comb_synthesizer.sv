@@ -39,6 +39,7 @@ module ex_comb_synthesizer #(
     input logic                             i_early_mispredict_is_compressed,
     input logic [riscv_pkg::RasPtrBits-1:0] i_restored_ras_tos,
     input logic [  riscv_pkg::RasPtrBits:0] i_restored_ras_valid_count,
+    input logic [                 XLEN-1:0] i_restored_ras_top,
 
     // Commit-time misprediction recovery path.
     input logic                                  i_mispredict_recovery_pending,
@@ -72,6 +73,7 @@ module ex_comb_synthesizer #(
   logic early_mispredict_is_compressed;
   logic [riscv_pkg::RasPtrBits-1:0] restored_ras_tos;
   logic [riscv_pkg::RasPtrBits:0] restored_ras_valid_count;
+  logic [XLEN-1:0] restored_ras_top;
   logic mispredict_recovery_pending;
   riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   logic correct_branch_commit_pending;
@@ -84,6 +86,7 @@ module ex_comb_synthesizer #(
   assign early_mispredict_is_compressed = i_early_mispredict_is_compressed;
   assign restored_ras_tos               = i_restored_ras_tos;
   assign restored_ras_valid_count       = i_restored_ras_valid_count;
+  assign restored_ras_top               = i_restored_ras_top;
   assign mispredict_recovery_pending    = i_mispredict_recovery_pending;
   assign mispredict_commit_q            = i_mispredict_commit_q;
   assign correct_branch_commit_pending  = i_correct_branch_commit_pending;
@@ -132,6 +135,7 @@ module ex_comb_synthesizer #(
         late_from_ex_comb.ras_misprediction       = 1'b1;
         late_from_ex_comb.ras_restore_tos         = restored_ras_tos;
         late_from_ex_comb.ras_restore_valid_count = restored_ras_valid_count;
+        late_from_ex_comb.ras_restore_top         = restored_ras_top;
         if (mispredict_commit_q.is_return && mispredict_commit_q.is_call) begin
           // Coroutine: the 2'b11 swap encoding, see riscv_pkg. IF did
           // pop-then-push, so recovery replays both halves. A plain push would
@@ -197,6 +201,7 @@ module ex_comb_synthesizer #(
       from_ex_comb_synth.ras_misprediction       = 1'b1;
       from_ex_comb_synth.ras_restore_tos         = restored_ras_tos;
       from_ex_comb_synth.ras_restore_valid_count = restored_ras_valid_count;
+      from_ex_comb_synth.ras_restore_top         = restored_ras_top;
     end
 
     // These two redirect fields have a much smaller exact priority function

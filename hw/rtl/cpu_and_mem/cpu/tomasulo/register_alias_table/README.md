@@ -24,15 +24,15 @@ sees that case.
 ## Branch checkpoints
 
 Every branch, JAL, or JALR reserves a checkpoint at dispatch. The checkpoint
-snapshots the full INT and FP RATs, the RAS state (top-of-stack pointer and
-valid count), and the owning branch's ROB tag and generation bit (see
-below). On misprediction, the snapshot replaces the active RAT in a single
+snapshots the full INT and FP RATs, the RAS state (top-of-stack pointer,
+valid count, and top entry), and the owning branch's ROB tag and generation
+bit (see below). On misprediction, the snapshot replaces the active RAT in a single
 cycle.
 
 There are eight checkpoint slots. While all are occupied, a bundle that
 contains a branch or jump waits at dispatch; other bundles still dispatch.
-Snapshots live in distributed RAM: 8 slots × (64 entries × 7 bits + 13
-metadata bits), 3,688 bits that would otherwise be flip-flops. An entry is a
+Snapshots live in distributed RAM: 8 slots × (64 entries × 7 bits + 77
+metadata bits), 4,200 bits that would otherwise be flip-flops. An entry is a
 valid bit, a generation bit, and the 5-bit tag. The active RATs stay in
 flip-flops because they need parallel lookup, per-entry commit clear, and a
 bulk overwrite on restore.
