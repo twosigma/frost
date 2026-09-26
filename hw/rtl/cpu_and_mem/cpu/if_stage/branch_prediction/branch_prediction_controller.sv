@@ -20,8 +20,8 @@
  * metadata, and the C-extension holdoff. A BTB hit typed as a return (or a
  * coroutine swap) takes its target from the top of the return address stack
  * while the stack is not empty, and the BTB target otherwise. IF drives the
- * stack's pushes and pops when it hands PD a packet whose used prediction came
- * from a typed entry.
+ * stack's pushes and pops, a cycle after PD takes a packet whose used
+ * prediction came from a typed entry.
  *
  * The shared enable (prediction_common) takes the stall and holdoffs in
  * registered form, and the PC-mux select (o_prediction_used_for_pc) adds no
@@ -131,8 +131,9 @@ module branch_prediction_controller #(
     input logic [riscv_pkg::XLEN-1:0] i_btb_late_update_pc,
     input logic                       i_btb_late_update_taken,
 
-    // Return address stack operation for the packet IF hands PD this cycle:
-    // a push for a call, a pop for a return, both for a coroutine swap.
+    // Return address stack operation for the packet IF handed PD in the cycle
+    // before, registered by IF: a push for a call, a pop for a return, both
+    // for a coroutine swap. The stack outputs include it at once.
     input logic                       i_ras_push,
     input logic                       i_ras_pop,
     input logic [riscv_pkg::XLEN-1:0] i_ras_push_address,
@@ -201,8 +202,8 @@ module branch_prediction_controller #(
     output logic                       o_slot2_predicted_is_call,
     output logic                       o_slot2_predicted_is_return,
 
-    // The registered stack state: the recovery point of a packet IF hands PD
-    // this cycle, before that packet's own push or pop.
+    // The stack state before this cycle's push or pop: the recovery point of a
+    // packet IF hands PD this cycle.
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_checkpoint_tos,
     output logic [  riscv_pkg::RasPtrBits:0] o_ras_checkpoint_valid_count,
     output logic [      riscv_pkg::XLEN-1:0] o_ras_checkpoint_top,
@@ -472,9 +473,9 @@ module branch_prediction_controller #(
   // RAS (Return Address Stack) Instance
   // ===========================================================================
   // The top entry is the target of a BTB hit typed as a return. IF drives the
-  // pushes and pops (i_ras_push, i_ras_pop) when it hands PD a packet whose
-  // used prediction came from a typed entry, so the stack moves only with
-  // packets that continue down the pipeline.
+  // pushes and pops (i_ras_push, i_ras_pop), registered, for the packets PD
+  // takes whose used prediction came from a typed entry, so the stack moves
+  // only with packets that continue down the pipeline.
   logic                  ras_nonempty;
   logic [      XLEN-1:0] ras_top;
   logic [RasPtrBits-1:0] ras_tos;
@@ -694,9 +695,9 @@ module branch_prediction_controller #(
   assign o_control_flow_to_halfword_pred = prediction_used_effective &&
                                            predicted_target_is_halfword;
 
-  // The registered stack state is the recovery point of every packet IF hands
-  // PD this cycle: their own push or pop lands on this cycle's edge. The top
-  // entry goes with it, for the restore to write back.
+  // The stack outputs are the recovery point of every packet IF hands PD this
+  // cycle: the state before their own push or pop. The top entry goes with
+  // it, for the restore to write back.
   assign o_ras_checkpoint_tos = ras_tos;
   assign o_ras_checkpoint_valid_count = ras_valid_count;
   assign o_ras_checkpoint_top = ras_top;
@@ -1057,6 +1058,12 @@ module branch_prediction_controller #(
        (i_slot2_is_compressed == btb_compressed_2)) &&
       dir_predicted_taken_2;
 
+  // The registered restore a cycle later, for the stack-operation check below.
+  logic ras_restore_prev_q;
+  always_ff @(posedge i_clk) begin
+    ras_restore_prev_q <= !i_reset && ras_misprediction_r;
+  end
+
   // These state implications make the slot-2 metadata kill above exact (no
   // target compare needed).  They also guard the timing split: slot 2 must
   // never use a prediction while either holdoff or registered slot-1
@@ -1095,11 +1102,15 @@ module branch_prediction_controller #(
       p_lower_parcel_lookup_never_owns_btb_prediction :
       assert (!i_fetch_lookup_is_lower_parcel || !sel_btb_prediction);
       // A recovery restore follows the flush that squashed every packet in
-      // flight, and IF hands PD no packet in the redirect bubble, so no push
-      // or pop can be dropped by the restore's priority.
-      if (!$isunknown({ras_misprediction_r, i_ras_push, i_ras_pop})) begin
+      // flight, and IF hands PD no packet in the redirect bubble. IF's
+      // operations arrive a cycle after PD takes their packets, so none
+      // arrives with the registered restore (which would replace it) or in
+      // the cycle after it.
+      if (!$isunknown({ras_misprediction_r, ras_restore_prev_q, i_ras_push, i_ras_pop})) begin
         p_no_ras_operation_during_restore :
         assert (!ras_misprediction_r || (!i_ras_push && !i_ras_pop));
+        p_no_ras_operation_after_restore :
+        assert (!ras_restore_prev_q || (!i_ras_push && !i_ras_pop));
       end
       p_registered_metadata_implies_prediction_holdoff :
       assert (!o_prediction_used_r || o_prediction_holdoff);

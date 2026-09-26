@@ -229,15 +229,18 @@ module if_stage #(
   logic slot2_predicted_is_call;
   logic slot2_predicted_is_return;
 
-  // Return address stack: the registered top of stack and valid count, the
-  // recovery point of the packet leaving IF now, and the push or pop for that
-  // packet ("Return address stack" in the CPU README).
+  // Return address stack: the top of stack, valid count and top entry, the
+  // recovery point of the packet leaving IF now, the push or pop for that
+  // packet, and the push or pop of the packet PD took last cycle, which the
+  // stack applies now ("Return address stack" in the CPU README).
   logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos;
   logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count;
   logic [XLEN-1:0] ras_checkpoint_top;
   logic ras_push;
   logic ras_pop;
-  logic [XLEN-1:0] ras_push_address;
+  logic ras_push_q;
+  logic ras_pop_q;
+  logic [XLEN-1:0] ras_pending_push_address;
   // Types of the BTB entry behind each output packet's prediction, through the
   // same live, registered, pending, and stall-replay selection as its target.
   logic slot1_packet_is_call;
@@ -731,10 +734,10 @@ module if_stage #(
       .i_btb_late_update_pc,
       .i_btb_late_update_taken,
 
-      // Return address stack operation for the packet handed to PD this cycle
-      .i_ras_push(ras_push),
-      .i_ras_pop(ras_pop),
-      .i_ras_push_address(ras_push_address),
+      // Return address stack operation for the packet PD took last cycle
+      .i_ras_push(ras_push_q),
+      .i_ras_pop(ras_pop_q),
+      .i_ras_push_address(ras_pending_push_address),
 
       // RAS misprediction recovery (from branch recovery)
       .i_ras_misprediction(i_from_ex_comb.ras_misprediction),
@@ -783,8 +786,8 @@ module if_stage #(
       .o_slot2_predicted_is_call(slot2_predicted_is_call),
       .o_slot2_predicted_is_return(slot2_predicted_is_return),
 
-      // The registered stack state: the recovery point of the packets IF hands
-      // PD this cycle, before their own push or pop.
+      // The stack state before this cycle's push or pop: the recovery point of
+      // the packets IF hands PD this cycle.
       .o_ras_checkpoint_tos(ras_checkpoint_tos),
       .o_ras_checkpoint_valid_count(ras_checkpoint_valid_count),
       .o_ras_checkpoint_top(ras_checkpoint_top),
@@ -1977,8 +1980,8 @@ module if_stage #(
   // prediction, and a collapsed-lead packet carries its own lookup (checked
   // below).
   //
-  // The stack's registered state is both packets' recovery point: their own
-  // operation lands on this edge. It does not change while IF stalls, so a
+  // The stack's outputs, the state before their own operation, are both
+  // packets' recovery point. They do not change while IF stalls, so a
   // stall-replayed packet carries the state it was first presented with.
   logic ras_packet_accepted;
   logic ras_op_slot1;
@@ -1996,7 +1999,39 @@ module if_stage #(
                     (ras_op_slot2 && slot2_packet_is_call);
   assign ras_pop = (ras_op_slot1 && slot1_packet_is_return) ||
                    (ras_op_slot2 && slot2_packet_is_return);
-  assign ras_push_address = ras_op_slot2 ? slot2_link_address : link_address_sc;
+
+  // TIMING: the operation depends on the same-cycle slot-2 and collapsed-lead
+  // predictions and on the stall, so its parts are registered as they are and
+  // combined the next cycle, when the stack applies the operation (see
+  // return_address_stack). The late inputs reach only flip-flop D pins, and
+  // the late slot select stays off the slot-2 link adder. A reset drops the
+  // operation of its own cycle.
+  logic ras_packet_accepted_q;
+  logic ras_slot1_taken_q, ras_slot1_call_q, ras_slot1_return_q;
+  logic ras_slot2_taken_q, ras_slot2_call_q, ras_slot2_return_q;
+  logic [XLEN-1:0] ras_link_address_q;
+  logic [XLEN-1:0] ras_link_address_2_q;
+  logic ras_op_slot1_q;
+  logic ras_op_slot2_q;
+  always_ff @(posedge i_clk) begin
+    ras_packet_accepted_q <= !i_pipeline_ctrl.reset && ras_packet_accepted;
+    ras_slot1_taken_q     <= o_from_if_to_pd.btb_predicted_taken;
+    ras_slot1_call_q      <= slot1_packet_is_call;
+    ras_slot1_return_q    <= slot1_packet_is_return;
+    ras_slot2_taken_q     <= o_from_if_to_pd_2.btb_predicted_taken;
+    ras_slot2_call_q      <= slot2_packet_is_call;
+    ras_slot2_return_q    <= slot2_packet_is_return;
+    ras_link_address_q    <= link_address_sc;
+    ras_link_address_2_q  <= slot2_link_address;
+  end
+  assign ras_op_slot1_q = ras_packet_accepted_q && ras_slot1_taken_q &&
+                          (ras_slot1_call_q || ras_slot1_return_q);
+  assign ras_op_slot2_q = ras_packet_accepted_q && ras_slot2_taken_q &&
+                          (ras_slot2_call_q || ras_slot2_return_q);
+  assign ras_push_q = (ras_op_slot1_q && ras_slot1_call_q) || (ras_op_slot2_q && ras_slot2_call_q);
+  assign ras_pop_q = (ras_op_slot1_q && ras_slot1_return_q) ||
+                     (ras_op_slot2_q && ras_slot2_return_q);
+  assign ras_pending_push_address = ras_op_slot2_q ? ras_link_address_2_q : ras_link_address_q;
 
 `ifndef SYNTHESIS
   always_ff @(posedge i_clk) begin
@@ -2164,8 +2199,8 @@ module if_stage #(
       .o_data(bp_dir_idx_2_sc)
   );
 
-  // Recovery point: the registered stack state (see the stack operation
-  // block above).
+  // Recovery point: the stack state before this bundle's operation (see the
+  // stack operation block above).
   assign o_from_if_to_pd.ras_checkpoint_tos = ras_checkpoint_tos;
   assign o_from_if_to_pd.ras_checkpoint_valid_count = ras_checkpoint_valid_count;
   assign o_from_if_to_pd.ras_checkpoint_top = ras_checkpoint_top;

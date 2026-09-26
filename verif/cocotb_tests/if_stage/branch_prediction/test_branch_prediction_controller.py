@@ -170,7 +170,7 @@ async def _dir_update(dut: Any, *, idx: int, taken: bool) -> None:
 
 
 def _drive_ras_push(dut: Any, address: int) -> None:
-    """Drive IF's push for an accepted call packet."""
+    """Drive IF's registered push for the call packet PD took the cycle before."""
     dut.i_ras_push.value = 1
     dut.i_ras_push_address.value = address
 
@@ -633,15 +633,22 @@ async def test_typed_return_obeys_the_btb_prediction_gates(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_ras_operations_move_the_checkpoint_on_the_edge(dut: Any) -> None:
-    """IF's push and pop land on the edge; the checkpoint shows the state before them."""
+async def test_ras_operations_show_at_once_and_land_on_the_edge(dut: Any) -> None:
+    """IF's registered push and pop show in the checkpoint and the typed target at once.
+
+    IF presents them the cycle after PD takes their packets, so the checkpoint
+    is already the state after them; the edge stores the same state.
+    """
     await _setup_test(dut)
     await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN, ret=True)
     dut.i_pc.value = RETURN_PC
 
     _drive_ras_push(dut, TARGET_RAS_RETURN)
     await _settle()
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+    assert int(dut.o_ras_checkpoint_tos.value) == 1
+    assert int(dut.o_ras_checkpoint_top.value) == TARGET_RAS_RETURN
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
     await _advance_cycle(dut)
     dut.i_ras_push.value = 0
     await _settle()
@@ -652,7 +659,8 @@ async def test_ras_operations_move_the_checkpoint_on_the_edge(dut: Any) -> None:
 
     dut.i_ras_pop.value = 1
     await _settle()
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert int(dut.o_predicted_target.value) == TARGET_BTB_RETURN
     await _advance_cycle(dut)
     dut.i_ras_pop.value = 0
     await _settle()
@@ -867,6 +875,9 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert not dut.o_prediction_requires_pc_reg_handoff.value
 
     await _advance_cycle(dut)
+    # The push was presented for one cycle; the edge stored it.
+    dut.i_ras_push.value = 0
+    await _settle()
 
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
@@ -949,6 +960,9 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     assert not dut.o_prediction_requires_pc_reg_handoff.value
 
     await _advance_cycle(dut)
+    # The push was presented for one cycle; the edge stored it.
+    dut.i_ras_push.value = 0
+    await _settle()
 
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
@@ -1019,6 +1033,9 @@ async def test_slot2_candidate_owner_blocks_slot1_when_full_slot2_valid_is_low(
     assert not dut.o_prediction_requires_pc_reg_handoff.value
 
     await _advance_cycle(dut)
+    # The push was presented for one cycle; the edge stored it.
+    dut.i_ras_push.value = 0
+    await _settle()
 
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value
@@ -1106,6 +1123,9 @@ async def test_collapsed_fetch_lead_transfers_live_not_taken_hit_metadata(
     assert not dut.o_prediction_requires_pc_reg_handoff.value
 
     await _advance_cycle(dut)
+    # The push was presented for one cycle; the edge stored it.
+    dut.i_ras_push.value = 0
+    await _settle()
 
     assert not dut.o_prediction_used_r.value
     assert not dut.o_sel_prediction_r.value

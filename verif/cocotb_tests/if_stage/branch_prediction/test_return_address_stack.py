@@ -14,10 +14,11 @@
 
 """Unit tests for the IF-stage return address stack.
 
-IF drives one operation per cycle for the packet it hands PD: a push for a
-call, a pop for a return, both for a coroutine swap. Misprediction recovery
-restores a checkpoint (pointer, count, and top entry) and replays the
-mispredicted instruction's own operation.
+IF presents one operation per cycle, registered, for the packet PD took the
+cycle before: a push for a call, a pop for a return, both for a coroutine
+swap. The outputs include the operation at once and the edge stores it.
+Misprediction recovery restores a checkpoint (pointer, count, and top entry)
+and replays the mispredicted instruction's own operation.
 """
 
 from typing import Any, NamedTuple
@@ -211,6 +212,61 @@ async def test_push_onto_a_full_stack_overwrites_the_oldest_entry(dut: Any) -> N
         _assert_state(dut, tos=i - (RAS_DEPTH - 1), count=i, top=0x9000 + 4 * i)
         await _pop(dut)
     _assert_state(dut, tos=1, count=0)
+
+
+@cocotb.test()
+async def test_an_operation_shows_at_once_and_the_edge_stores_it(dut: Any) -> None:
+    """The outputs include the presented operation, and the edge stores the same state.
+
+    Each operation is checked while it is presented and again after the edge,
+    with the top at both pointer parities.
+    """
+    await _setup_test(dut)
+    steps = [
+        ("push", 0x5004, 1, 1, 0x5004),
+        ("push", 0x5104, 2, 2, 0x5104),
+        ("swap", 0x5204, 2, 2, 0x5204),
+        ("push", 0x5304, 3, 3, 0x5304),
+        ("pop", 0, 2, 2, 0x5204),
+        ("pop", 0, 1, 1, 0x5004),
+        ("swap", 0x5404, 1, 1, 0x5404),
+        ("pop", 0, 0, 0, None),
+    ]
+    for kind, address, tos, count, top in steps:
+        _clear_inputs(dut)
+        dut.i_push.value = int(kind != "pop")
+        dut.i_pop.value = int(kind != "push")
+        dut.i_push_address.value = address
+        await _settle()
+        _assert_state(dut, tos=tos, count=count, top=top)
+        await _advance_cycle(dut)
+        _clear_inputs(dut)
+        await _settle()
+        _assert_state(dut, tos=tos, count=count, top=top)
+
+
+@cocotb.test()
+async def test_reset_keeps_the_entry_write_of_its_operation(dut: Any) -> None:
+    """A push presented with a reset still writes its entry.
+
+    The presented operation belongs to the cycle before the reset, so it
+    lands in entry 1 even though the reset empties the stack; a later restore
+    that exposes entry 1 finds it.
+    """
+    await _setup_test(dut)
+    _clear_inputs(dut)
+    dut.i_push.value = 1
+    dut.i_push_address.value = 0xE104
+    dut.i_rst.value = 1
+    await _advance_cycle(dut)
+    dut.i_rst.value = 0
+    _clear_inputs(dut)
+    await _settle()
+    _assert_state(dut, tos=0, count=0)
+
+    await _restore(dut, Checkpoint(tos=2, valid_count=2, top=0xE204))
+    await _pop(dut)
+    _assert_state(dut, tos=1, count=1, top=0xE104)
 
 
 @cocotb.test()

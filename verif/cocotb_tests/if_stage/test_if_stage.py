@@ -803,7 +803,8 @@ async def test_typed_call_pushes_once_when_its_packet_is_accepted(dut: Any) -> N
     """A call predicted from a typed entry pushes its link when PD takes the packet.
 
     Presented under a stall it does not push; its stall replay pushes once.
-    The packet carries the stack state before its own push.
+    The packet carries the stack state before its own push, and the stack
+    applies the registered push from the next cycle.
     """
     await _setup_test(dut)
     bpc = dut.branch_prediction_controller_inst
@@ -834,11 +835,13 @@ async def test_typed_call_pushes_once_when_its_packet_is_accepted(dut: Any) -> N
     assert packet["ras_checkpoint_valid_count"] == 0
     assert dut.ras_push.value
     assert not dut.ras_pop.value
-    assert int(dut.ras_push_address.value) == call_pc + 4
 
+    # The stack sees the registered push a cycle later and shows it at once.
     await _advance_cycle(dut)
     _drive_pipeline_ctrl(dut, {})
     await _settle()
+    assert dut.ras_push_q.value
+    assert int(dut.ras_pending_push_address.value) == call_pc + 4
     assert int(bpc.o_ras_checkpoint_valid_count.value) == 1
     assert int(bpc.ras_inst.o_top.value) == call_pc + 4
     assert not dut.ras_push.value

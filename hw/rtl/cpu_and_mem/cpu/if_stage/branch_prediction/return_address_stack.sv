@@ -22,23 +22,29 @@
  * a full stack overwrites the oldest entry.
  *
  * branch_prediction_controller reads the top entry as the target of a BTB hit
- * typed as a return, and IF drives the operations when it hands PD a packet
+ * typed as a return, and IF drives the operations for the packets PD takes
  * whose used prediction came from a typed entry:
  *
  *   push       a call: write the link address above the top
  *   pop        a return: drop the top entry
  *   push+pop   a coroutine swap: replace the top entry
  *
- * A pop or swap on an empty stack changes nothing. The operation updates the
- * state on the clock edge, so the registered state (o_tos, o_valid_count, and
- * the entry o_top reads) is the state before the accepted packet's own
- * operation, which is the recovery point IF attaches to that packet.
+ * A pop or swap on an empty stack changes nothing. IF registers each
+ * operation, because it depends on same-cycle predictions, and presents it
+ * the cycle after PD takes the packet. The outputs (o_tos, o_valid_count,
+ * o_nonempty, o_top) apply that pending operation to the stored pointer,
+ * count and entries (a pending push or swap supplies the top entry itself),
+ * so they are the state after every operation IF has accepted: the recovery
+ * point of the packet PD takes this cycle. The edge stores the pending
+ * operation, its entry write even when the edge resets the stack.
  *
  * Misprediction recovery restores a packet's recovery point and then applies
  * the mispredicted instruction's own operation (i_pop_after_restore for a
- * return, i_push_after_restore for a call, both for a coroutine swap). It takes
- * priority over an operation in the same cycle; IF never accepts a packet then.
- * The recovery point includes its top entry (i_restore_top), which the restore
+ * return, i_push_after_restore for a call, both for a coroutine swap). It
+ * replaces the pending operation; IF accepts no packet in the cycle before a
+ * restore or in the restore cycle (the misprediction flush and the redirect
+ * bubble), so no operation is pending then or in the cycle after. The
+ * recovery point includes its top entry (i_restore_top), which the restore
  * writes back: a wrong-path pop followed by a push overwrites that entry. An
  * entry below the top that a deeper wrong path overwrites (two pops, then a
  * push) stays damaged.
@@ -57,7 +63,8 @@ module return_address_stack #(
     input logic i_clk,
     input logic i_rst,
 
-    // Operation for the packet IF hands to PD this cycle
+    // The pending operation: IF's registered operation for the packet PD took
+    // in the cycle before
     input logic i_push,
     input logic i_pop,
     input logic [riscv_pkg::XLEN-1:0] i_push_address,
@@ -75,7 +82,7 @@ module return_address_stack #(
     output logic o_nonempty,
     output logic [riscv_pkg::XLEN-1:0] o_top,
 
-    // Registered state: the recovery point of the packet accepted this cycle
+    // The recovery point of the packet accepted this cycle
     output logic [RAS_PTR_BITS-1:0] o_tos,
     output logic [  RAS_PTR_BITS:0] o_valid_count
 );
@@ -99,17 +106,26 @@ module return_address_stack #(
   // ===========================================================================
   // Operations
   // ===========================================================================
+  // The pending operation's effect on the stored state, and the part of it
+  // this edge applies: a restore replaces it. A reset overrides a restore but
+  // not the pending operation's entry write, which belongs to the cycle
+  // before the reset.
   // {pop, push} after restore == 2'b11 is the swap encoding
   // (ex_comb_synthesizer). An empty restored stack has nothing to pop, so the
   // swap does nothing then and the state stays as restored.
+  logic restore;
+  logic pending_swap, pending_push, pending_pop;
   logic restore_swap_req, do_restore_swap, do_restore_push;
-  logic do_swap, do_push, do_pop;
+  logic do_swap, do_push;
+  assign restore = i_misprediction && !i_rst;
+  assign pending_swap = i_push && i_pop && stack_not_empty;
+  assign pending_push = i_push && !i_pop;
+  assign pending_pop = i_pop && !i_push && stack_not_empty;
   assign restore_swap_req = i_pop_after_restore && i_push_after_restore;
-  assign do_restore_swap = i_misprediction && restore_swap_req && (i_restore_valid_count != '0);
-  assign do_restore_push = i_misprediction && i_push_after_restore && !restore_swap_req;
-  assign do_swap = !i_misprediction && i_push && i_pop && stack_not_empty;
-  assign do_push = !i_misprediction && i_push && !i_pop;
-  assign do_pop = !i_misprediction && i_pop && !i_push && stack_not_empty;
+  assign do_restore_swap = restore && restore_swap_req && (i_restore_valid_count != '0);
+  assign do_restore_push = restore && i_push_after_restore && !restore_swap_req;
+  assign do_swap = !restore && pending_swap;
+  assign do_push = !restore && pending_push;
 
   // ===========================================================================
   // Storage
@@ -123,20 +139,27 @@ module return_address_stack #(
   logic top_write, above_write;
   logic [RAS_PTR_BITS-1:0] above_address;
   logic [riscv_pkg::XLEN-1:0] top_write_data;
-  assign write_base = i_misprediction ? i_restore_tos : tos;
-  assign link_address = i_misprediction ? i_push_address_after_restore : i_push_address;
-  assign top_write = !i_rst && (i_misprediction || do_swap);
-  assign above_write = !i_rst && (do_restore_push || do_push);
+  assign write_base = restore ? i_restore_tos : tos;
+  assign link_address = restore ? i_push_address_after_restore : i_push_address;
+  assign top_write = restore || do_swap;
+  assign above_write = do_restore_push || do_push;
   assign above_address = write_base + RAS_PTR_BITS'(1);
   assign top_write_data = (do_restore_swap || do_swap) ? link_address : i_restore_top;
 
   // Bank b holds the entries whose pointer has low bit b, at the pointer's
   // upper bits. The two writes are neighbors, so they never share a bank.
+  // The reads cover the stored top and the entry below it, one in each bank:
+  // bank 0 reads at the upper bits of tos, bank 1 at those of tos - 1.
   localparam int unsigned BankAddrBits = RAS_PTR_BITS - 1;
   logic [1:0] bank_write_enable;
   logic [1:0][BankAddrBits-1:0] bank_write_address;
   logic [1:0][riscv_pkg::XLEN-1:0] bank_write_data;
+  logic [1:0][BankAddrBits-1:0] bank_read_address;
   logic [1:0][riscv_pkg::XLEN-1:0] bank_read_data;
+  logic [RAS_PTR_BITS-1:0] below_tos;
+  assign below_tos = tos - RAS_PTR_BITS'(1);
+  assign bank_read_address[0] = tos[RAS_PTR_BITS-1:1];
+  assign bank_read_address[1] = below_tos[RAS_PTR_BITS-1:1];
 
   for (genvar b = 0; b < 2; b++) begin : gen_bank
     logic top_here;
@@ -154,23 +177,47 @@ module return_address_stack #(
         .i_write_enable(bank_write_enable[b]),
         .i_write_address(bank_write_address[b]),
         .i_write_data(bank_write_data[b]),
-        .i_read_address(tos[RAS_PTR_BITS-1:1]),
+        .i_read_address(bank_read_address[b]),
         .o_read_data(bank_read_data[b])
     );
   end
 
-  assign o_top = bank_read_data[tos[0]];
-
-  assign o_nonempty = stack_not_empty;
-  assign o_tos = tos;
-  assign o_valid_count = valid_count;
+  // The top after the pending operation: its link address for a push or a
+  // swap, the entry below the stored top for a pop, and the stored top
+  // otherwise.
+  logic [riscv_pkg::XLEN-1:0] stored_top;
+  logic [riscv_pkg::XLEN-1:0] below_top;
+  assign stored_top = bank_read_data[tos[0]];
+  assign below_top = bank_read_data[below_tos[0]];
+  assign o_top = (pending_push || pending_swap) ? i_push_address :
+                 pending_pop ? below_top : stored_top;
 
   // ===========================================================================
   // Pointer Update
   // ===========================================================================
+  // The pointer and count after the pending operation, which the outputs
+  // show and the next edge stores unless a restore replaces them.
+  logic [RAS_PTR_BITS-1:0] tos_after_pending;
+  logic [  RAS_PTR_BITS:0] valid_count_after_pending;
   always_comb begin
-    tos_next = tos;
-    valid_count_next = valid_count;
+    tos_after_pending = tos;
+    valid_count_after_pending = valid_count;
+    if (pending_push) begin
+      tos_after_pending = tos + RAS_PTR_BITS'(1);
+      valid_count_after_pending = count_after_push;
+    end else if (pending_pop) begin
+      tos_after_pending = tos - RAS_PTR_BITS'(1);
+      valid_count_after_pending = valid_count - (RAS_PTR_BITS + 1)'(1);
+    end
+  end
+
+  assign o_nonempty = (valid_count_after_pending != '0);
+  assign o_tos = tos_after_pending;
+  assign o_valid_count = valid_count_after_pending;
+
+  always_comb begin
+    tos_next = tos_after_pending;
+    valid_count_next = valid_count_after_pending;
     if (i_rst) begin
       tos_next = '0;
       valid_count_next = '0;
@@ -192,12 +239,6 @@ module return_address_stack #(
         tos_next = i_restore_tos;
         valid_count_next = i_restore_valid_count;
       end
-    end else if (do_push) begin
-      tos_next = tos + RAS_PTR_BITS'(1);
-      valid_count_next = count_after_push;
-    end else if (do_pop) begin
-      tos_next = tos - RAS_PTR_BITS'(1);
-      valid_count_next = valid_count - (RAS_PTR_BITS + 1)'(1);
     end
   end
 
@@ -207,44 +248,67 @@ module return_address_stack #(
   end
 
 `ifdef RAS_CHECKPOINT_LOCAL_PROOF
-  // Reference next state for the ras_checkpoint formal target, written as one
-  // case over the operation instead of the priority chain above.
-  logic [RAS_PTR_BITS-1:0] tos_next_reference;
-  logic [  RAS_PTR_BITS:0] valid_count_next_reference;
-  logic [RAS_PTR_BITS-1:0] base_tos;
-  logic [  RAS_PTR_BITS:0] base_count;
-  logic pop_req, push_req;
-  always_comb begin
-    base_tos   = i_misprediction ? i_restore_tos : tos;
-    base_count = i_misprediction ? i_restore_valid_count : valid_count;
-    pop_req    = i_misprediction ? i_pop_after_restore : i_pop;
-    push_req   = i_misprediction ? i_push_after_restore : i_push;
-    tos_next_reference = base_tos;
-    valid_count_next_reference = base_count;
-    unique case ({
-      pop_req, push_req
+  // Reference equations for the ras_checkpoint formal target, written as one
+  // case over the operation instead of the priority chains above. The same
+  // step gives the outputs (the pending operation on the stored state) and
+  // the next state (the restore and its operation, or the pending one).
+  function automatic logic [2*RAS_PTR_BITS:0] reference_step(
+      input logic [RAS_PTR_BITS-1:0] from_tos, input logic [RAS_PTR_BITS:0] from_count,
+      input logic pop, input logic push);
+    logic [RAS_PTR_BITS-1:0] step_tos;
+    logic [  RAS_PTR_BITS:0] step_count;
+    step_tos   = from_tos;
+    step_count = from_count;
+    case ({
+      pop, push
     })
       2'b10: begin  // pop
-        if (base_count != '0) begin
-          tos_next_reference = base_tos - RAS_PTR_BITS'(1);
-          valid_count_next_reference = base_count - (RAS_PTR_BITS + 1)'(1);
+        if (from_count != '0) begin
+          step_tos   = from_tos - RAS_PTR_BITS'(1);
+          step_count = from_count - (RAS_PTR_BITS + 1)'(1);
         end
       end
       2'b01: begin  // push
-        tos_next_reference = base_tos + RAS_PTR_BITS'(1);
-        valid_count_next_reference =
-            (base_count == RAS_DEPTH[RAS_PTR_BITS:0]) ? base_count :
-                                                         base_count + (RAS_PTR_BITS + 1)'(1);
+        step_tos = from_tos + RAS_PTR_BITS'(1);
+        step_count = (from_count == RAS_DEPTH[RAS_PTR_BITS:0]) ?
+            from_count : from_count + (RAS_PTR_BITS + 1)'(1);
       end
       default: ;  // no operation, or a swap, which keeps both pointers
     endcase
+    reference_step = {step_tos, step_count};
+  endfunction
+
+  // A restore counts only without a reset; the pending operation's entry
+  // write happens either way.
+  logic reference_restore;
+  logic [RAS_PTR_BITS-1:0] base_tos;
+  logic [RAS_PTR_BITS:0] base_count;
+  logic pop_req, push_req;
+  always_comb begin
+    reference_restore = i_misprediction && !i_rst;
+    base_tos = reference_restore ? i_restore_tos : tos;
+    base_count = reference_restore ? i_restore_valid_count : valid_count;
+    pop_req = reference_restore ? i_pop_after_restore : i_pop;
+    push_req = reference_restore ? i_push_after_restore : i_push;
+    assert ({o_tos, o_valid_count} == reference_step(tos, valid_count, i_pop, i_push));
+    assert (o_nonempty == (o_valid_count != '0));
     if (i_rst) begin
-      tos_next_reference = '0;
-      valid_count_next_reference = '0;
+      assert ({tos_next, valid_count_next} == '0);
+    end else begin
+      assert ({tos_next, valid_count_next} ==
+              reference_step(base_tos, base_count, pop_req, push_req));
     end
   end
+
+  // o_top is the entry at o_tos, or the pending link address when a pending
+  // push or a swap on a non-empty stack has not written it yet.
   always_comb begin
-    assert ({tos_next, valid_count_next} == {tos_next_reference, valid_count_next_reference});
+    if (i_push && (!i_pop || valid_count != '0)) begin
+      assert (o_top == i_push_address);
+    end else begin
+      assert (bank_read_address[o_tos[0]] == o_tos[RAS_PTR_BITS-1:1]);
+      assert (o_top == bank_read_data[o_tos[0]]);
+    end
   end
 
   // Entry writes: a restore writes the saved top entry back at the restored
@@ -255,10 +319,10 @@ module return_address_stack #(
   logic [riscv_pkg::XLEN-1:0] reference_link, reference_top_data;
   always_comb begin
     reference_swap = pop_req && push_req && (base_count != '0);
-    reference_link = i_misprediction ? i_push_address_after_restore : i_push_address;
-    reference_top_write = !i_rst && (i_misprediction || reference_swap);
+    reference_link = reference_restore ? i_push_address_after_restore : i_push_address;
+    reference_top_write = reference_restore || reference_swap;
     reference_top_data = reference_swap ? reference_link : i_restore_top;
-    reference_above_write = !i_rst && push_req && !pop_req;
+    reference_above_write = push_req && !pop_req;
   end
   for (genvar i = 0; i < RAS_DEPTH; i++) begin : gen_entry_write_reference
     logic entry_written;

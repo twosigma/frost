@@ -2333,9 +2333,9 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.ras_write_data",
         )
-        ras_do_pop_sig = _get_signal(
+        ras_pending_pop_sig = _get_signal(
             dut,
-            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.do_pop",
+            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_inst.pending_pop",
         )
         ras_do_push_sig = _get_signal(
             dut,
@@ -2345,7 +2345,8 @@ async def run_until_complete(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.branch_prediction_controller_inst.ras_top",
         )
-        # IF's push and pop for the packet PD takes this cycle.
+        # IF's push and pop for the packet PD takes this cycle, and the link
+        # address of the registered push the stack applies now.
         ras_is_call_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_push"
         )
@@ -2353,7 +2354,8 @@ async def run_until_complete(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_pop"
         )
         ras_link_address_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_push_address"
+            dut,
+            "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.ras_pending_push_address",
         )
         ras_misprediction_live_sig = _struct_field(
             dut,
@@ -3812,7 +3814,7 @@ async def run_until_complete(
                     f"ras_tgt=0x{(_read_int(ras_target_live_sig) or 0):08x} "
                     f"ras_tos={_read_int(ras_tos_sig)} "
                     f"ras_vc={_read_int(ras_valid_count_sig)} "
-                    f"ras_do_pop={_read_bool(ras_do_pop_sig)} "
+                    f"ras_pending_pop={_read_bool(ras_pending_pop_sig)} "
                     f"ras_do_push={_read_bool(ras_do_push_sig)} "
                     f"ras_wen={_read_bool(ras_write_enable_sig)} "
                     f"ras_wdata=0x{(_read_int(ras_write_data_sig) or 0):08x} "

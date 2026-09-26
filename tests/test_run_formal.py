@@ -213,7 +213,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "ras_checkpoint.sby",
-        "RAS next pointer, count and entry writes equal the reference for arbitrary inputs and state",
+        "RAS outputs, next pointer, count and entry writes equal the reference for arbitrary inputs and state",
         tasks=("bmc",),
     ),
     FormalTarget(
