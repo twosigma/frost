@@ -521,16 +521,22 @@ module immu #(
   // address.
   assign o_pa0 = {i_active ? pa0_q[31:12] : i_pc[31:12], i_pc[11:0]};
   assign o_pa1 = {i_active ? pa1_q[31:12] : bare_pa1[31:12], pc_plus4_lo, 2'b00};
+  // TIMING: o_pa_valid feeds the front-end stall, and the compare of the live
+  // PC with the key is its latest term, so the other terms of
+  // translated_visible are finished first and the compare meets them in the
+  // last LUT.
+  (* keep = "true" *) logic visible_before_pc_compare;
+  assign visible_before_pc_compare = !i_tlb_invalidate && key_valid_q &&
+                                     (key_priv_u_q == i_priv_u) && resolved_q;
+  assign o_pa_valid = !i_active || (visible_before_pc_compare && (key_va_q == i_pc));
   always_comb begin
     if (!i_active) begin
-      o_pa_valid = 1'b1;
       o_fault0 = bare_verdict.bare_fault0;
       o_fault0_page = 1'b0;
       o_fault1 = bare_verdict.bare_fault1;
       o_fault1_page = 1'b0;
       o_line_after_ok = 1'b1;
     end else begin
-      o_pa_valid = translated_visible;
       o_fault0 = translated_visible && f0_q;
       o_fault0_page = translated_visible && f0p_q;
       o_fault1 = translated_visible && f1_q;
@@ -567,6 +573,8 @@ module immu #(
         p_invisible_invalid : assert (!o_pa_valid);
         p_invisible_faults_zero :
         assert (!o_fault0 && !o_fault0_page && !o_fault1 && !o_fault1_page);
+      end else begin
+        p_visible_valid : assert (o_pa_valid);
       end
     end
   end

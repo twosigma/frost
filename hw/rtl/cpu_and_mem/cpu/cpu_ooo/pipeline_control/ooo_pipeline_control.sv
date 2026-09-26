@@ -250,10 +250,14 @@ module ooo_pipeline_control #(
   // case so release gives ID one advance-only cycle instead of allocating the
   // same CSR twice.
   logic csr_alloc_held_id_q;
-  assign frontend_stall =
-      ((QUEUED_FRONTEND ? i_frontend_resource_stall : dispatch_stall) ||
-       csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
-       front_end_cf_serialize_stall || i_fetch_pa_hold) && !flush_pipeline;
+  // TIMING: the fetch translation hold is the latest stall term (it ends in
+  // the IMMU's live PC compare), so the other terms are finished first and
+  // the hold meets them in the last LUT before the stall's wide fanout.
+  (* keep = "true" *)logic frontend_stall_without_pa_hold;
+  assign frontend_stall_without_pa_hold =
+      (QUEUED_FRONTEND ? i_frontend_resource_stall : dispatch_stall) ||
+      csr_in_flight || csr_wb_pending || serializing_alloc_fire || front_end_cf_serialize_stall;
+  assign frontend_stall = (frontend_stall_without_pa_hold || i_fetch_pa_hold) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
     else stall_q <= frontend_stall;
