@@ -994,8 +994,20 @@ module branch_prediction_controller #(
       i_lookup_lead_collapsed && slot1_prediction_owned_by_slot2 && !btb_hit_2 && btb_hit;
   assign slot2_target_without_valid =
       slot2_live_entry_selected ? slot1_typed_target : slot2_staged_typed_target;
-  assign o_slot2_predicted_target =
-      i_slot2_valid ? slot2_target_without_valid : slot2_staged_typed_target;
+  // TIMING: bit 1, the halfword flag the control-flow tracker reads, is taken
+  // from each entry's finished typed target, so the late live-entry select
+  // is the last step before it rather than coming ahead of the typed-target
+  // mux.
+  (* keep = "true" *)logic slot1_typed_target_halfword;
+  (* keep = "true" *)logic slot2_staged_typed_target_halfword;
+  assign slot1_typed_target_halfword = slot1_typed_target[1];
+  assign slot2_staged_typed_target_halfword = slot2_staged_typed_target[1];
+  assign o_slot2_predicted_target = {
+    i_slot2_valid ? slot2_target_without_valid[XLEN-1:2] : slot2_staged_typed_target[XLEN-1:2],
+    (i_slot2_valid && slot2_live_entry_selected) ? slot1_typed_target_halfword :
+                                                   slot2_staged_typed_target_halfword,
+    i_slot2_valid ? slot2_target_without_valid[0] : slot2_staged_typed_target[0]
+  };
   // The type follows the entry the target came from.
   assign o_slot2_predicted_is_call =
       (i_slot2_valid && slot2_live_entry_selected) ? btb_is_call : btb_is_call_2;
