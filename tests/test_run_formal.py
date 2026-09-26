@@ -91,7 +91,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "rob_control_next.sby",
-        "ROB per-entry done/exception/replay next state matches the reference indexed-write priority",
+        "ROB per-entry valid/done/exception/replay next state matches the reference indexed-write priority",
         tasks=("bmc",),
     ),
     FormalTarget(

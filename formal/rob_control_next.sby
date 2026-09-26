@@ -16,7 +16,7 @@ proc
 setundef -undriven -anyseq
 opt
 prep -top reorder_buffer
-select -assert-count 3 t:$check
+select -assert-count 4 t:$check
 select -assert-none t:$assume
 select -assert-none t:$check r:FLAVOR=assume %i
 select -assert-none a:init=*

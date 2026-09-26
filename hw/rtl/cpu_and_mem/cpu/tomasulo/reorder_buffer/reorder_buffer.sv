@@ -2132,52 +2132,80 @@ module reorder_buffer #(
 
   // Keep rob_valid separate so full-flush does not share a single next-state
   // cone with unrelated ROB done/exception updates.
+  // TIMING: as for the replay flag, each entry's next valid bit is computed
+  // for all four allocation cases before the late allocation enables select
+  // one, and the commit clear applies after that select. The flushes clear
+  // first, an allocation sets the entry over a flush, and a commit clears it
+  // over an allocation, the order of the indexed-write reference below.
+  logic [ReorderBufferDepth-1:0] valid_next;
+  for (genvar entry = 0; entry < ReorderBufferDepth; entry++) begin : gen_valid_next
+    wire alloc_here = tail_idx == ReorderBufferTagWidth'(entry);
+    wire alloc_here_2 = tail_idx_2 == ReorderBufferTagWidth'(entry);
+    wire flush_clear = i_flush_all || (i_flush_en && (flush_after_head_commit || should_flush_entry(
+        ReorderBufferTagWidth'(entry), i_flush_tag, head_idx
+    )));
+    wire commit_clear = !i_flush_all &&
+        ((commit_en && head_clear_mask[entry]) ||
+         (commit_2_fire && head_next_clear_mask[entry]));
+    wire valid_without_alloc = rob_valid[entry] && !flush_clear;
+    (* keep = "true" *) logic [3:0] valid_alloc_cases;
+    for (genvar choice = 0; choice < 4; choice++) begin : gen_alloc_case
+      localparam bit Alloc1 = (choice & 1) != 0;
+      localparam bit Alloc2 = (choice & 2) != 0;
+      assign valid_alloc_cases[choice] = valid_without_alloc ||
+          (Alloc1 && alloc_here) || (Alloc2 && alloc_here_2);
+    end
+    (* keep = "true" *) logic valid_after_alloc;
+    assign valid_after_alloc = alloc_en_2_valid ?
+        (alloc_en_valid ? valid_alloc_cases[3] : valid_alloc_cases[2]) :
+        (alloc_en_valid ? valid_alloc_cases[1] : valid_alloc_cases[0]);
+    assign valid_next[entry] = i_rst_n && valid_after_alloc && !commit_clear;
+  end
   always_ff @(posedge i_clk) begin
+    rob_valid <= valid_next;
+  end
+
+`ifdef ROB_CONTROL_NEXT_LOCAL_PROOF
+  logic [ReorderBufferDepth-1:0] f_valid_next;
+  always_comb begin
+    f_valid_next = rob_valid;
     if (!i_rst_n) begin
-      rob_valid <= '0;
+      f_valid_next = '0;
     end else begin
       if (i_flush_all) begin
-        // Full flush: invalidate all entries
-        rob_valid <= '0;
+        f_valid_next = '0;
       end else if (i_flush_en) begin
         if (flush_after_head_commit) begin
-          // Head-driven recovery leaves no architecturally-live entries in the
-          // ROB after the branch boundary.
-          rob_valid <= '0;
+          f_valid_next = '0;
         end else begin
-          // Partial flush: invalidate entries after flush_tag
           for (int i = 0; i < ReorderBufferDepth; i++) begin
             if (rob_valid[i] && should_flush_entry(
                     i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx
                 )) begin
-              rob_valid[i] <= 1'b0;
+              f_valid_next[i] = 1'b0;
             end
           end
         end
       end
-
-      if (alloc_en_valid) begin
-        rob_valid[tail_idx] <= 1'b1;
-      end
-      if (alloc_en_2_valid) begin
-        rob_valid[tail_idx_2] <= 1'b1;
-      end
-
-      // Commit deallocation: invalidate the committed entry (the head pointer
-      // advances separately). Widen-commit also clears head+1 when the 2-wide
-      // gate (commit_2_fire) fires.
+      if (alloc_en_valid) f_valid_next[tail_idx] = 1'b1;
+      if (alloc_en_2_valid) f_valid_next[tail_idx_2] = 1'b1;
       if (commit_en && !i_flush_all) begin
         for (int i = 0; i < ReorderBufferDepth; i++) begin
-          if (head_clear_mask[i]) rob_valid[i] <= 1'b0;
+          if (head_clear_mask[i]) f_valid_next[i] = 1'b0;
         end
       end
       if (commit_2_fire && !i_flush_all) begin
         for (int i = 0; i < ReorderBufferDepth; i++) begin
-          if (head_next_clear_mask[i]) rob_valid[i] <= 1'b0;
+          if (head_next_clear_mask[i]) f_valid_next[i] = 1'b0;
         end
       end
     end
   end
+
+  always_comb begin
+    assert (valid_next == f_valid_next);
+  end
+`endif
 
   // -------------------------------------------------------------------------
   // Data signals: no reset needed, gated by alloc_en / branch_wr_en
