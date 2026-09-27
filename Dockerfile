@@ -290,6 +290,8 @@ RUN python3 -m pip install --no-cache-dir \
     "click==${CLICK_VERSION}"
 
 # Spike is pinned so architecture-test reference signatures are reproducible.
+# The fp_engine_equiv bench links the SoftFloat library it installs
+# (libsoftfloat.so and include/softfloat).
 # Its bundled libfdt needs C17: C23 makes memchr preserve const qualifiers.
 # ``dtc`` comes from the apt layer. Keep this late to preserve earlier
 # tool-build caches.

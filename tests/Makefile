@@ -98,6 +98,17 @@ else ifeq ($(TOPLEVEL),fp_div_shim)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
 VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+else ifeq ($(TOPLEVEL),fp_engine_equiv_harness)
+# FP engine against Berkeley SoftFloat: Spike's build of the library, installed
+# in the frost image, supplies the reference through DPI-C.
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_engine.sv \
+        $(ROOT)/hw/sim/fp_engine_equiv_harness.sv \
+        $(ROOT)/hw/sim/fp_softfloat_ref.c \
+        -CFLAGS -I/usr/local/include \
+        -LDFLAGS '-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lsoftfloat'
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),fp_div_sqrt_equiv_harness)
 # Iterative FP divide/sqrt unit against the fully unrolled reference pipelines
 COMPILE_ARGS := \

@@ -1234,6 +1234,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "credit gate, full and partial flush)"
         ),
     ),
+    "fp_engine_equiv": CocotbRunConfig(
+        python_test_module="cocotb_tests.ex_stage.test_fp_engine",
+        hdl_toplevel_module="fp_engine_equiv_harness",
+        description=(
+            "FP engine against Berkeley SoftFloat for every F and D compute op: "
+            "directed corners, cancellation, conversion limits, a random sweep, "
+            "and kills at arbitrary cycles, results and flags compared bit for bit"
+        ),
+    ),
     "fp_div_sqrt_equiv": CocotbRunConfig(
         python_test_module="cocotb_tests.ex_stage.test_fp_div_sqrt_equiv",
         hdl_toplevel_module="fp_div_sqrt_equiv_harness",
