@@ -205,7 +205,8 @@ so a dependency inside the pair behaves like any other renamed dependency.
 
 A renamed source whose producer has already completed has missed that
 producer's CDB broadcast. Dispatch therefore registers a done-repair query for
-each renamed source (channels 1 to 3 for slot 1, 4 to 6 for slot 2). One cycle
+each renamed source (channels 1 to 3 for slot 1, 4 and 5 for slot 2; channel 6
+stays idle because slot 2 never carries an FP compute op). One cycle
 later the wrapper checks the ROB and, if the producer is done, wakes the RS
 entry with its value.
 

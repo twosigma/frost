@@ -483,5 +483,8 @@ module instr_operand_classifier_equiv (
     p_has_fp_flags : assert (has_fp_flags_direct == has_fp_flags_pre);
     p_needs_lq : assert (needs_lq_direct == needs_lq_pre);
     p_needs_sq : assert (needs_sq_direct == needs_sq_pre);
+    // Dispatch relies on this contract: only FMA ops, which go to FMUL_RS,
+    // read FP source 3, so slot 2 (which takes no FP compute op) never does.
+    p_fp_rs3_only_fmul : assert (!uses_fp_rs3_direct || (rs_type_direct == riscv_pkg::RS_FMUL));
   end
 endmodule : instr_operand_classifier_equiv

@@ -228,12 +228,14 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "dispatch_admission.sby",
-        "Dispatch admission factoring; queued variant assumes slot-2 valid follows the bundle bit",
+        "Dispatch admission factoring and no slot-2 FP source 3; queued variant assumes "
+        "slot-2 valid follows the bundle bit",
         tasks=("bmc", "bmc_queued"),
     ),
     FormalTarget(
         "instr_operand_classifier.sby",
-        "ID operand classes - direct fields match classification through the operation decode for all instructions and fault overrides",
+        "ID operand classes - direct fields match classification through the operation decode "
+        "for all instructions and fault overrides; only FMUL_RS ops read FP source 3",
         tasks=("bmc",),
     ),
     FormalTarget(

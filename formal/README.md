@@ -112,8 +112,8 @@ selected from a different source than its target would show at the output.
 | Target | Checks |
 | --- | --- |
 | `decoded_bundle_queue` | FIFO order and payload preservation against an independent queue model, unbounded, at depths 4 and 2 (`prove_depth2`), with covers for empty bypass, full, wraparound, simultaneous push and pop, and flush of a nonempty queue. See below |
-| `dispatch_admission` | Bundle and slot-2 admission equal the reference equations. `bmc_queued` checks the CPU's setting (`SLOT2_VALID_FROM_BUNDLE=1`) and assumes the decoded-bundle queue's guarantee that slot-2 valid equals the packet's not-NOP bit whenever dispatch is valid |
-| `instr_operand_classifier` | Decode's direct operand-class fields equal classification through the instruction decoder's operation enum, for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults |
+| `dispatch_admission` | Bundle and slot-2 admission equal the reference equations, and a firing slot 2 never reads FP source 3 (so done-repair channel 6 stays idle), assuming the operand classifier's contract that only FMUL_RS ops read it. `bmc_queued` checks the CPU's setting (`SLOT2_VALID_FROM_BUNDLE=1`) and assumes the decoded-bundle queue's guarantee that slot-2 valid equals the packet's not-NOP bit whenever dispatch is valid |
+| `instr_operand_classifier` | Decode's direct operand-class fields equal classification through the instruction decoder's operation enum, for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults; only FMUL_RS ops read FP source 3 |
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
 
 `decoded_bundle_queue` uses an 8-bit symbolic payload, so the check does not

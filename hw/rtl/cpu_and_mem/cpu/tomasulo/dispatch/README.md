@@ -56,9 +56,10 @@ flags from ID select, and becomes an RS operand:
   part in wakeup or done repair.
 - A renamed source carries the producer's ROB tag and waits for the CDB. The
   producer may have broadcast already, so dispatch also sends a registered
-  done-repair request (channels 1 to 3 for slot 1, 4 to 6 for slot 2). One
-  cycle later the wrapper checks whether that ROB entry is done and, if so,
-  wakes the RS entry with the ROB's value.
+  done-repair request (channels 1 to 3 for slot 1, 4 and 5 for slot 2;
+  channel 6, slot 2's FP source 3, stays idle because slot 2 never carries
+  an FP compute op). One cycle later the wrapper checks whether that ROB
+  entry is done and, if so, wakes the RS entry with the ROB's value.
 - A slot-2 source that reads slot 1's destination gets slot 1's new ROB tag,
   because the RAT lookup ran before slot 1's rename.
 

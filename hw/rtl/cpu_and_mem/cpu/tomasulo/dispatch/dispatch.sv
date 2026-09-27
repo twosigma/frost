@@ -895,7 +895,7 @@ module dispatch #(
   // encode this).
   //
   // A slot-2 source whose producer is already done needs no gate here: done
-  // repair channels 4 to 6 (to the wrapper and the RS's i_repair_valid_4/5/6)
+  // repair channels 4 and 5 (to the wrapper and the RS's i_repair_valid_4/5)
   // wake it the cycle after dispatch, as channels 1 to 3 do for slot 1.
 
   assign slot2_resources_ok = !is_branch_flag &&  // slot-1 not a branch
@@ -934,6 +934,11 @@ module dispatch #(
 `ifdef DISPATCH_ADMISSION_LOCAL_PROOF
   always_comb begin
     if (SLOT2_VALID_FROM_BUNDLE && dispatch_valid) assume (i_valid_2 == i_from_id_to_ex_2.is_real);
+    // The operand classifier's contract (instr_operand_classifier target):
+    // only FMUL_RS ops read FP source 3. ID and the decoded queue carry both
+    // fields together, resetting and flushing them to RS_INT without it.
+    if (i_from_id_to_ex_2.uses_fp_rs3) assume (rs_type_2 == riscv_pkg::RS_FMUL);
+    p_slot2_no_fp_source3 : assert (!(slot2_can_fire && uses_fp_rs3_flag_2));
     p_bundle_admission_formal :
     assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
     p_slot2_admission_formal :
@@ -1070,7 +1075,7 @@ module dispatch #(
   riscv_pkg::rat_lookup_t fp_src2_2_eff;
   riscv_pkg::rat_lookup_t fp_src3_2_eff;
 
-  // Slot-2 done-repair channels (4/5/6), mirror of slot-1.  Use the
+  // Slot-2 done-repair channels (4 and 5), mirror of slot-1.  Use the
   // intra-bundle-RAW-resolved `*_2_eff` views: when slot-2 reads slot-1's
   // dest the eff tag is slot-1's just-allocated ROB tag (not yet done at
   // T+1, so the bypass channel produces no spurious wake), and when not
@@ -1096,17 +1101,27 @@ module dispatch #(
       bypass_tag_5_next   = int_src2_2_eff.tag;
     end
 
+    // Channel 6 would carry slot 2's FP source 3, which only the FMA ops
+    // read. Those are FMUL_RS ops, and slot 2 never dispatches an FP compute
+    // op (slot2_fp_compute_serialized), so the channel is never valid. It
+    // stays tied off, which lets synthesis drop its ROB value copy and every
+    // consumer's channel-6 repair logic.
     bypass_valid_6_next = 1'b0;
     bypass_tag_6_next   = '0;
-    if (uses_fp_rs3_flag_2) begin
-      bypass_valid_6_next = fp_src3_2_eff.renamed;
-      bypass_tag_6_next   = fp_src3_2_eff.tag;
-    end
   end
+
+`ifndef SYNTHESIS
+  // The tie-off above is exact: a firing slot 2 never reads FP source 3.
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n)
+      assert (!(slot2_can_fire && uses_fp_rs3_flag_2))
+      else $error("dispatch: slot 2 fired with an FP source 3");
+  end
+`endif
 
   // Register the repair-read addresses so the ROB done/value lookup stays out
   // of the dispatch source-ready/value cone. The tags need no reset; the valid
-  // bits qualify them. Slot-2 channels (4/5/6) gate on slot2_can_fire rather
+  // bits qualify them. Slot-2 channels (4 and 5) gate on slot2_can_fire rather
   // than dispatch_fire alone: slot 2's bypass valid means something only when
   // slot 2 itself fires, not just when slot 1 does.
   always_ff @(posedge i_clk) begin
