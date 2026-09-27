@@ -25,9 +25,9 @@ can broadcast two results per cycle.
 
 A completion that is not granted stays in its
 [`fu_cdb_adapter`](../fu_cdb_adapter/README.md) and competes again the next
-cycle. The pipelined MUL and DIV paths also queue results in FIFOs; the FP
-engine runs one operation at a time and issues no more until its adapter is
-free.
+cycle. The pipelined MUL path also queues results in a FIFO, and the divider
+holds its result until its adapter is free; the FP engine runs one operation
+at a time and issues no more until its adapter is free.
 
 The order matters for the MEM slot. Store faults, SC results, and loads share
 it, and the fault and SC registers present each result for only one cycle.

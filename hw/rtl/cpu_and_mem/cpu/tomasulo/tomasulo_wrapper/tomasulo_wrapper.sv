@@ -1504,17 +1504,20 @@ module tomasulo_wrapper #(
   logic                    mul_adapter_result_pending;
   logic                    div_adapter_result_pending;
   logic                    muldiv_busy;
+  logic                    div_busy;
   logic                    mul_rs_fu_ready;
 
-  // Pipelined MUL + DIV: back-pressure is governed by muldiv_busy (credit-based
-  // FIFO occupancy in the shim). Adapter-pending bits do not gate new issues,
-  // since the shim FIFOs absorb transient CDB stalls.
+  // muldiv_busy is the multiplier path's credit-based back-pressure (FIFO
+  // occupancy in the shim). Adapter-pending bits do not gate new issues: the
+  // MUL FIFO absorbs transient CDB stalls, and the divider holds its result
+  // until the DIV adapter is free. Divides do not lower this ready: MUL_RS
+  // holds them back itself while div_busy is high.
   assign mul_rs_fu_ready = i_mul_rs_fu_ready & ~muldiv_busy & ~i_backend_recovery_hold;
 
-  // FIFO-backed shims only pop when their adapter is idle.  If an adapter is
-  // pending and receives a CDB grant, it drains first; the shim head is consumed
-  // on the following cycle.  That avoids feeding the cross-FU CDB priority
-  // encoder back into FIFO count CEs.
+  // The shim hands a result over only when its adapter is idle.  If an adapter
+  // is pending and receives a CDB grant, it drains first; the MUL FIFO head or
+  // the divider's held result is taken on the following cycle.  That keeps the
+  // cross-FU CDB priority encoder out of the FIFO count and divider state CEs.
   logic mul_result_accepted;
   assign mul_result_accepted = !mul_adapter_result_pending && mul_shim_out.valid;
 
@@ -2705,6 +2708,7 @@ module tomasulo_wrapper #(
       // Issue (to internal wire for ALU shim)
       .o_issue(int_rs_issue_raw),
       .i_fu_ready(int_rs_fu_ready),
+      .i_divider_busy(1'b0),
       .o_issue_writes_cdb_hint(int_rs_issue_writes_cdb_hint),
       .o_branch_predicate_tag(int_rs_branch_predicate_tag),
       .o_issue_2(int_rs_issue_2_raw),
@@ -2772,7 +2776,10 @@ module tomasulo_wrapper #(
       // dispatch_fire chain (same rationale as INT_RS / MEM_RS).
       // Proved, not assumed, at this level (see u_int_rs).
       .FORMAL_STANDALONE_ENV(1'b0),
-      .SPECULATIVE_DATA_WRITES(1'b1)
+      .SPECULATIVE_DATA_WRITES(1'b1),
+      // The divider takes one divide at a time: divides wait in the station
+      // while it is busy, and multiplies issue past them.
+      .DIVIDE_ISSUE_GATE(1'b1)
   ) u_mul_rs (
       .i_clk(i_clk),
       .i_rst_n(i_rst_n),
@@ -2807,6 +2814,7 @@ module tomasulo_wrapper #(
       .i_repair_value_6(bypass_value_6),
       .o_issue(mul_rs_issue_raw),
       .i_fu_ready(mul_rs_fu_ready),
+      .i_divider_busy(div_busy),
       .o_issue_writes_cdb_hint(),
       .o_branch_predicate_tag(),
       .o_issue_2(),
@@ -2979,6 +2987,7 @@ module tomasulo_wrapper #(
       .i_repair_value_6(bypass_value_6),
       .o_issue(mem_rs_issue_raw),
       .i_fu_ready(mem_rs_fu_ready),
+      .i_divider_busy(1'b0),
       .o_issue_writes_cdb_hint(),
       .o_branch_predicate_tag(),
       .o_issue_2(),
@@ -3241,6 +3250,7 @@ module tomasulo_wrapper #(
       .i_repair_value_6           ('0),
       .o_issue                    (fp_rs_issue_raw),
       .i_fu_ready                 (fp_rs_fu_ready),
+      .i_divider_busy             (1'b0),
       .o_issue_writes_cdb_hint    (),
       .o_branch_predicate_tag     (),
       .o_issue_2                  (),
@@ -3370,6 +3380,7 @@ module tomasulo_wrapper #(
       .o_mul_fu_complete(mul_shim_out),
       .o_div_fu_complete(div_shim_out),
       .o_fu_busy        (muldiv_busy),
+      .o_div_busy       (div_busy),
       .i_flush          (speculative_flush_all),
       .i_flush_en       (speculative_flush_en),
       .i_flush_tag      (i_flush_tag),

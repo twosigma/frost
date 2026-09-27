@@ -112,6 +112,25 @@ moves into stage 2 and its slot frees; the functional unit sees it on
 `o_issue` in the next cycle, with `o_issue.valid = stage2_valid && i_fu_ready`.
 If `i_fu_ready` drops, stage 2 holds the packet.
 
+## Divide gate (MUL_RS)
+
+MUL_RS feeds a pipelined multiplier and a divider that takes one operation at
+a time. `i_fu_ready` covers only the multiplier. Lowering it for a waiting
+divide would stop the multiplies behind it too, and a stale divide opcode left
+in an empty stage 2 would stop them for a whole divide. MUL_RS
+(`DIVIDE_ISSUE_GATE=1`) instead keeps a divide pre-decode bit per entry,
+which stage 2 takes along, and treats a divide entry as not ready while
+`i_divider_busy` is high or stage 2 holds a divide. Multiplies issue past the
+waiting divides.
+
+A presented divide therefore always finds the divider idle: a divide enters
+stage 2 only while the divider is idle and no other divide is in stage 2, and
+the divider leaves idle only by starting the divide stage 2 presents. The
+stage-2 term matters in the cycle a divide leaves stage 2 for the divider,
+when the busy input is still low. The gate requires `DUAL_ISSUE=0`. Waiting
+divides still hold station entries, so a station full of divides stops
+dispatch.
+
 ## Dual issue (INT_RS)
 
 INT_RS is built with `DUAL_ISSUE=1`, which adds a second issue port
@@ -240,6 +259,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
 | `LANE1_ISSUE_BYPASS` | 1 | Default everywhere | CDB lane 1 feeds the same-cycle issue bypass; off, a lane-1 result wakes consumers a cycle later |
 | `TAG_INDEXED_BRANCH_PAYLOAD` | 0 | 1 on INT | Branch side RAM; off, port 0 drives `pc`, `link_addr`, and `predicted_target` to zero |
+| `DIVIDE_ISSUE_GATE` | 0 | 1 on MUL | A divide entry is not ready while `i_divider_busy` is high or stage 2 holds a divide (see [Divide gate](#divide-gate-mul_rs)); requires `DUAL_ISSUE=0` |
 | `TRACK_INT_WRITEBACK_HINT` | 0 | 1 on INT | Drives `o_issue_writes_cdb_hint`, set for every op except conditional branches; `int_alu_shim` raises a completion only when the hint is set |
 | `ALLOC_INDEXED_REPAIR` | 0 | 1 on INT, MUL, MEM | Done repair by allocation instead of tag match |
 | `DISPATCH_REPAIR_BYPASS` | 1 | 0 on INT, MUL, MEM | Tag-matched repair applies as the entry is written |
@@ -279,7 +299,8 @@ what the station does.
   `cover`) and the INT configuration at eight entries without the port-1
   window (`bmc_tag_indexed`, `cover_tag_indexed`, which assume the side-RAM tag
   rule). The `tomasulo_wrapper` formal target checks the 16-entry INT station
-  and its eight-entry window against the real allocator.
+  and its eight-entry window against the real allocator. `rs_divide_gate`
+  proves MUL_RS's divide gate against a model of the divider.
 - Small formal targets check restructured logic against a plain reference:
   `rs_alloc_parallel`, `rs_issue_clear`, `rs_dispatch_defer`,
   `rs_pretag_cofactor`, and `rs_raw_pretag`.

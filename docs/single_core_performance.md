@@ -16,8 +16,8 @@ defaults:
 | Early load wakeup | A load's result wakes dependent memory operations a cycle early, through an idle result-bus lane |
 | Load preparation while the memory port is busy | The next load's address is staged; its store-queue check, use of an L0 hit, and memory request wait for the port |
 | Load-queue L0 cache | 128 entries |
-| Word multiply / divide latency | 3 / 17 cycles |
-| Full-width multiply / divide latency | 6 / 33 cycles |
+| Word multiply / divide latency | 3 / 33 cycles |
+| Full-width multiply / divide latency | 6 / 65 cycles |
 
 The decoded queue absorbs front-end stalls. Early wakeup shortens chains of
 dependent loads, and busy-port preparation overlaps a load's address staging

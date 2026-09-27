@@ -103,8 +103,12 @@ class IntMulDivShimInterface:
         return unpack_fu_complete(raw)
 
     def read_busy(self) -> bool:
-        """Read o_fu_busy."""
+        """Read o_fu_busy (the multiplier path's credits are exhausted)."""
         return bool(int(self.dut.o_fu_busy.value))
+
+    def read_div_busy(self) -> bool:
+        """Read o_div_busy (the divider holds an operation or its result)."""
+        return bool(int(self.dut.o_div_busy.value))
 
     def drive_flush(self) -> None:
         """Assert i_flush (full pipeline flush)."""
@@ -135,7 +139,7 @@ class IntMulDivShimInterface:
         self.dut.i_mul_accepted.value = 0
 
     def drive_div_accepted(self) -> None:
-        """Assert i_div_accepted; each edge it is high pops the DIV FIFO head."""
+        """Assert i_div_accepted; an edge it is high takes the divider's result."""
         self.dut.i_div_accepted.value = 1
 
     def clear_div_accepted(self) -> None:

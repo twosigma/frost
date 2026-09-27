@@ -132,6 +132,7 @@ the next cycle. In simulation the last three are assertions.
 | `mem_wakeup_merge` | An early load wakeup keeps both registered CDB broadcasts and puts the load on at most one idle lane. Assumes the load's tag is not on a valid registered lane; `tomasulo_wrapper` asserts that instead, after its initial reset. Whether the load is accepted and broadcast later is the caller's responsibility |
 | `reservation_station` | Dispatch, wakeup, issue, and flush properties at the module defaults and with the INT station's features. See below |
 | `rs_alloc_parallel` | The parallel search for the first and second free entries equals the reference serial search at depths 4, 8, 16, and 32, including zero or one free entry |
+| `rs_divide_gate` | MUL_RS's divide gate, against a model of the divider that is busy from the cycle after a presented divide that no same-cycle flush squashes (when the shim starts one) until an arbitrary later cycle: a divide in stage 2 never coexists with a busy divider, so a presented divide always finds it idle; unbounded. The payload RAMs are free, and stage 2's divide bit stands for its opcode, which the station's simulation checks and the `tomasulo_wrapper` proof compare. The cover reaches a multiply issuing past a waiting divide |
 | `rs_dispatch_defer` | Dispatch's six CDB-deferral decisions (three sources in each of two slots) equal the reference equations, with and without insertion-time repair (`bmc_repair`) |
 | `rs_issue2_selector` | The INT station's balanced second-issue-port selector (the lowest ready non-branch entry other than the first ready entry) equals a serial reference scan at 16 entries |
 | `rs_issue_clear` | The second issue port's one-hot entry clear equals the reference indexed clear: single issue at depth 16, dual issue at depths 4 and 32, and the INT station's parameters at depth 8 and at depth 16 with an 8-entry window |
@@ -216,19 +217,19 @@ count, while other assertions in `load_queue.sv` do not affect it.
 | --- | --- |
 | `alu_shift_hint` | An ALU given the precomputed shift-amount hint matches one without it, and both match an independent shift and rotate reference. `rs_issue2_shamt` simulation covers how the station captures and holds the hint |
 | `cdb_arbiter` | The two-lane grant tree equals a reference priority scan. Grants are one-hot per lane, disjoint, at most two, and only to valid requesters, and a kill clears both CDB valid bits and the visible grants. Assumes each ALU's early value equals its completion value |
-| `divider_prefix` | Each divider stage equals two steps of full-width restoring division, at 64 and 32 bits. Assumes a bound on each stage's incoming remainder; see below |
+| `divider` | The iterative divider: every result equals the RISC-V result of its operation for all operands (quotient and remainder, signed and unsigned, divide by zero, overflow, and W forms), a result appears exactly one cycle after the last step and stays until taken, a kill frees the divider on the next cycle, and only a start leaves idle, at 8 bits (`bmc_width8`). `prove_width64` is an unbounded proof at 64 bits of the step count and of a remainder that stays below a nonzero divisor, without the result reference. See below |
 | `fp_shim` | FP shim control: busy exactly while the engine holds an operation, results only while busy and with the tag of the operation that started last, a kill frees the engine on the next cycle, and no result appears for an operation after a full or partial flush squashes it, until its tag starts again (a flush on the result cycle leaves that cycle's result to the CDB adapter). The engine is replaced by a model with arbitrary latency, results, and flags; the `fp_engine_equiv` simulation checks its arithmetic against Berkeley SoftFloat. Assumes FP_RS issues only while the shim is not busy |
 | `fu_cdb_adapter` | The FU-to-CDB holding register: pass-through, hold under back-pressure with a stable payload, a clear on a grant with no new result behind it, on a full flush, or on a partial flush that squashes the held result, and no stale output after a squash. Checks the default combinational output, not the registered output (`REGISTER_OUTPUT=1`) of the DIV and FP adapters. Assumes full and partial flushes never coincide |
 | `fu_cdb_adapter_payload_no_refill` | The adapter with `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`, as the two ALU adapters use it. Assumes the FU never presents a result while one is held; the wrapper guarantees this by gating issue |
-| `int_muldiv_shim` | Every tracked MUL or DIV operation sits in the pipeline for its width (full or short word), the shared FIFO credits hold under back-pressure and flushes, and each surviving completion takes its result from the matching pipeline (`prove_alignment*`). Runs with short word paths on and off (`*_fallback`). Assumes a reset on the first cycle only. Arithmetic values and liveness are out of scope |
+| `int_muldiv_shim` | Every tracked MUL operation sits in the pipeline for its width (full or short word), the MUL FIFO credits hold under back-pressure and flushes, and each surviving completion takes its product from the matching multiplier (`prove_alignment*`). For the divider: `o_div_busy` is high exactly while it is not idle, a DIV completion carries the tag of the divide that started last, a kill frees the divider on the next cycle, and a divide a full or partial flush squashes never completes, until its tag starts again. Runs with the word multiplier on and off (`*_fallback`). Assumes a reset on the first cycle only, and that a divide is presented only while the divider is idle (MUL_RS's divide gate, which `reservation_station` checks). Arithmetic values and liveness are out of scope |
 | `mul_completion_tag` | Passing the MUL result's tag through unqualified on invalid cycles, instead of zeroing it, changes no adapter state, valid result, or arbiter input. Assumes one initial reset |
 
-`divider_prefix` proves the narrowed divider stage by stage. Each stage
-assumes that its incoming remainder fits in the bits consumed so far and
-proves the same bound for its outgoing remainder. Every transaction starts
-with a zero remainder, including division by zero, so the per-stage results
-chain into a proof for every valid result. Stale data left in the pipeline
-after reset need not satisfy the bound, because reset clears every valid bit.
+`divider` compares results with Verilog division at 8 bits, where division is
+cheap for the solver; the divider is the same RTL at every width. A start
+reloads all of the divider's state, so an operation behaves the same whatever
+came before it, and the 14-cycle bound, one complete operation with arbitrary
+operands, kills and accept delays, covers every operation. The 64-bit divider
+runs in the `divider` simulation, against Python integer division.
 
 ### Memory system and coherence
 

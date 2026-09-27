@@ -26,7 +26,7 @@ Priorities, guided by the performance counters and timing reports:
    now, and should use them again once throughput is stable across link
    orders.
 3. Cheaper 32-bit operations on RV64. `MULW` takes three cycles and word
-   division or remainder seventeen. Use instruction traces to evaluate fusion
+   division or remainder thirty-three. Use instruction traces to evaluate fusion
    or elimination at rename. Any such transformation must keep precise
    exceptions, retirement counts, and debug single-step behavior, and be
    formally verified.

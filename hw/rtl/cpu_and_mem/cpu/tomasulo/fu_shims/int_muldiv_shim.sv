@@ -18,8 +18,8 @@
  * Integer MUL/DIV shim
  *
  * Translates rs_issue_t from the MUL reservation station into the multiplier
- * and divider native port interfaces, instantiates both FUs, and packs their
- * results into fu_complete_t for the CDB adapters and arbiter.
+ * and divider ports and packs their results into fu_complete_t for the CDB
+ * adapters and arbiter.
  *
  * Signal flow:  MUL_RS -> int_muldiv_shim -> multiplier -> fu_complete_t (slot 1)
  *                                         -> divider    -> fu_complete_t (slot 2)
@@ -27,20 +27,26 @@
  * Op decode:
  *   MUL, MULH, MULHSU, MULHU -> full-width multiplier path
  *     (riscv_pkg::MulPipeDepth-cycle latency, pipelined)
- *   DIV, DIVU, REM, REMU -> full-width divider path
- *     (XLEN/2 + 1 cycles of latency, 33 at XLEN=64, pipelined)
  *   MULW -> dedicated unsigned 32-bit multiplier (3 cycles)
- *   DIVW, DIVUW, REMW, REMUW -> dedicated 32-bit divider (17 cycles)
- * SHORT_WORD_OPS=0 sends word operations through the full-width pipelines.
+ *   DIV, DIVU, REM, REMU and their W forms -> iterative divider, one
+ *     operation at a time (result after XLEN + 1 cycles, XLEN/2 + 1 for a W
+ *     form)
+ * SHORT_WORD_OPS=0 sends MULW through the full-width multiplier.
  *
- * Both paths are fully pipelined and have the same shape. A shift register as
- * deep as the full-width unit tracks the path's in-flight operations, carrying
- * each one's ROB tag and result-select flags, and a 4-entry result FIFO holds
- * completions waiting for the CDB adapter. Credit-based back-pressure at issue
- * keeps unflushed operations in flight plus FIFO occupancy within the FIFO
- * depth, so neither FIFO can overflow. A word operation enters the tracker
- * partway down, at the stage that lines up with its shorter unit, and waits
- * while a live operation is about to move into that stage.
+ * The multiplier path is pipelined. A shift register as deep as the
+ * full-width unit tracks its in-flight operations, carrying each one's ROB
+ * tag and result select, and a 4-entry result FIFO holds completions waiting
+ * for the CDB adapter. Credit-based back-pressure (o_fu_busy) keeps unflushed
+ * operations in flight plus FIFO occupancy within the FIFO depth, so the FIFO
+ * cannot overflow. A MULW enters the tracker partway down, at the stage that
+ * lines up with the word multiplier, and waits while a live operation is
+ * about to move into that stage.
+ *
+ * The divider holds one operation, and then its result until the DIV adapter
+ * takes it; o_div_busy is high from the start until then. MUL_RS
+ * (DIVIDE_ISSUE_GATE) presents a divide only while the divider is idle, so
+ * every divide issue starts unless a flush in the same cycle squashes it, and
+ * the multiplies in the station keep issuing while divides wait there.
  */
 module int_muldiv_shim #(
     parameter bit SHORT_WORD_OPS = 1'b1
@@ -55,8 +61,12 @@ module int_muldiv_shim #(
     output riscv_pkg::fu_complete_t o_mul_fu_complete,  // -> adapter -> arbiter slot 1
     output riscv_pkg::fu_complete_t o_div_fu_complete,  // -> adapter -> arbiter slot 2
 
-    // Back-pressure: MUL or DIV FIFO full prevents new issue
+    // Back-pressure: MUL path credits exhausted, MUL_RS must not issue
     output logic o_fu_busy,
+
+    // The divider holds an operation or an untaken result, so MUL_RS must not
+    // present a divide
+    output logic o_div_busy,
 
     // Pipeline flush (full)
     input logic i_flush,
@@ -131,15 +141,12 @@ module int_muldiv_shim #(
   // ---------------------------------------------------------------------------
   // MUL path: MulPipeDepth-stage pipeline plus a 4-entry result FIFO
   // ---------------------------------------------------------------------------
-  // Forward declarations for valid signals from FUs
+  // Forward declarations for valid signals from the multipliers
   logic multiplier_valid_input;
   logic multiplier_valid_output;
-  logic divider_valid_input;
-  logic divider_valid_output;
 
   // Credit-based busy (defined later, used here)
   logic mul_busy;
-  logic div_busy;
 
   assign multiplier_valid_input = is_mul & i_rs_issue.valid & ~mul_busy;
 
@@ -457,406 +464,91 @@ module int_muldiv_shim #(
        !mul_trk_flushed[WordMulInsert-1]);
 
   // ---------------------------------------------------------------------------
-  // Divider path: fully pipelined, with a shift register and a result FIFO
+  // Divider path: one iterative divider, one operation at a time
   // ---------------------------------------------------------------------------
-  logic div_is_signed;
+  logic div_is_signed, div_is_w, div_is_rem;
   assign div_is_signed = (i_rs_issue.op == riscv_pkg::DIV) || (i_rs_issue.op == riscv_pkg::REM) ||
       (i_rs_issue.op == riscv_pkg::DIVW) || (i_rs_issue.op == riscv_pkg::REMW);
-
-  // The dedicated word divider ignores the high operand words. The optional
-  // full-width fallback instead sign/zero-extends them at issue. Both paths
-  // sign-extend the low result word, including unsigned forms and divide by zero.
-  logic div_is_w;
   assign div_is_w = (i_rs_issue.op == riscv_pkg::DIVW) || (i_rs_issue.op == riscv_pkg::DIVUW) ||
       (i_rs_issue.op == riscv_pkg::REMW) || (i_rs_issue.op == riscv_pkg::REMUW);
-  logic div_is_short_word;
-  assign div_is_short_word = SHORT_WORD_OPS && div_is_w;
+  assign div_is_rem = (i_rs_issue.op == riscv_pkg::REM) || (i_rs_issue.op == riscv_pkg::REMU) ||
+      (i_rs_issue.op == riscv_pkg::REMW) || (i_rs_issue.op == riscv_pkg::REMUW);
 
-  localparam int unsigned DivXlen = riscv_pkg::XLEN;
-  logic [DivXlen-1:0] div_dividend;
-  logic [DivXlen-1:0] div_divisor;
-  always_comb begin
-    div_dividend = i_rs_issue.src1_value[DivXlen-1:0];
-    div_divisor  = i_rs_issue.src2_value[DivXlen-1:0];
-    if (div_is_w && !SHORT_WORD_OPS) begin
-      if (div_is_signed) begin
-        div_dividend = {{(DivXlen - 32) {i_rs_issue.src1_value[31]}}, i_rs_issue.src1_value[31:0]};
-        div_divisor  = {{(DivXlen - 32) {i_rs_issue.src2_value[31]}}, i_rs_issue.src2_value[31:0]};
-      end else begin
-        div_dividend = DivXlen'(i_rs_issue.src1_value[31:0]);
-        div_divisor  = DivXlen'(i_rs_issue.src2_value[31:0]);
-      end
-    end
+  logic div_idle, div_done;
+  logic [riscv_pkg::XLEN-1:0] div_result;
+  logic [TagW-1:0] div_tag_q;
+
+  // The RS still presents an instruction that a flush squashes in the same
+  // cycle, so a divide issue covered by that flush does not start.
+  logic div_start;
+  assign div_start = is_div && i_rs_issue.valid && !(i_flush || (i_flush_en && is_younger(
+      i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+  )));
+
+  // A full flush, or a partial flush that covers the operation, kills it, and
+  // the divider is idle on the next cycle. A result presented in the flush
+  // cycle itself is also dropped by the adapter, which sees the same flush.
+  logic div_kill;
+  assign div_kill = !div_idle && (i_flush || (i_flush_en && is_younger(
+      div_tag_q, i_flush_tag, i_rob_head_tag
+  )));
+
+  // Loads while the divider is idle, as the divider's operand registers do,
+  // so the start condition stays off its enable.
+  always_ff @(posedge i_clk) begin
+    if (div_idle) div_tag_q <= i_rs_issue.rob_tag;
   end
-
-  assign divider_valid_input = is_div & i_rs_issue.valid & ~div_busy;
-
-  logic [DivXlen-1:0] div_quotient;
-  logic [DivXlen-1:0] div_remainder;
 
   divider #(
       .WIDTH(riscv_pkg::XLEN)
   ) u_divider (
-      .i_clk                (i_clk),
-      .i_rst                (~i_rst_n),
-      .i_valid_input        (divider_valid_input && !div_is_short_word),
-      .i_is_signed_operation(div_is_signed),
-      .i_dividend           (div_dividend),
-      .i_divisor            (div_divisor),
-      .o_valid_output       (divider_valid_output),
-      .o_quotient           (div_quotient),
-      .o_remainder          (div_remainder)
+      .i_clk      (i_clk),
+      .i_rst      (~i_rst_n),
+      .i_start    (div_start),
+      .i_kill     (div_kill),
+      .i_accept   (i_div_accepted),
+      .i_is_signed(div_is_signed),
+      .i_is_word  (div_is_w),
+      .i_is_rem   (div_is_rem),
+      .i_dividend (i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
+      .i_divisor  (i_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
+      .o_idle     (div_idle),
+      .o_done     (div_done),
+      .o_result   (div_result)
   );
 
-  // ---------------------------------------------------------------------------
-  // DIV inflight shift register (DivPipeDepth entries, matching the divider)
-  // ---------------------------------------------------------------------------
-  localparam int unsigned DivPipeDepth = riscv_pkg::XLEN / 2 + 1;  // 17 at 32, 33 at 64
-  localparam int unsigned WordDivDepth = 32 / 2 + 1;
-  localparam int unsigned WordDivInsert = DivPipeDepth - WordDivDepth;
-  logic [31:0] word_div_quotient, word_div_remainder;
-  logic word_div_valid;
-  if (SHORT_WORD_OPS) begin : gen_word_divider
-    divider #(
-        .WIDTH(32)
-    ) u_word_divider (
-        .i_clk,
-        .i_rst(~i_rst_n),
-        .i_valid_input(divider_valid_input && div_is_short_word),
-        .i_is_signed_operation(div_is_signed),
-        .i_dividend(i_rs_issue.src1_value[31:0]),
-        .i_divisor(i_rs_issue.src2_value[31:0]),
-        .o_valid_output(word_div_valid),
-        .o_quotient(word_div_quotient),
-        .o_remainder(word_div_remainder)
-    );
-  end else begin : gen_no_word_divider
-    assign word_div_valid = 1'b0;
-    assign word_div_quotient = '0;
-    assign word_div_remainder = '0;
-  end
-
-  // Individual flat arrays avoid less portable unpacked-array-of-packed-struct storage.
-  logic            div_trk_valid  [DivPipeDepth];
-  logic [TagW-1:0] div_trk_tag    [DivPipeDepth];
-  logic            div_trk_is_rem [DivPipeDepth];  // 1 = REM forms, 0 = DIV forms
-  logic            div_trk_sext_w [DivPipeDepth];  // 1 = W form: sext32 the result
-  logic            div_trk_flushed[DivPipeDepth];
-
-  always_ff @(posedge i_clk) begin
-    // --- Control: valid + flushed (with reset) ---
-    if (!i_rst_n) begin
-      for (int i = 0; i < DivPipeDepth; i++) begin
-        div_trk_valid[i]   <= 1'b0;
-        div_trk_flushed[i] <= 1'b0;
-      end
-    end else if (i_flush) begin
-      for (int i = 0; i < DivPipeDepth; i++) begin
-        div_trk_valid[i] <= 1'b0;
-      end
-    end else begin
-      // Shift control stages
-      for (int i = DivPipeDepth - 1; i >= 1; i--) begin
-        div_trk_valid[i] <= div_trk_valid[i-1];
-        if (div_trk_valid[i-1] && i_flush_en && is_younger(
-                div_trk_tag[i-1], i_flush_tag, i_rob_head_tag
-            ))
-          div_trk_flushed[i] <= 1'b1;
-        else div_trk_flushed[i] <= div_trk_flushed[i-1];
-      end
-      // Stage 0 control
-      if (divider_valid_input && !div_is_short_word) begin
-        div_trk_valid[0] <= 1'b1;
-        if (i_flush_en && is_younger(i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag))
-          div_trk_flushed[0] <= 1'b1;
-        else div_trk_flushed[0] <= 1'b0;
-      end else begin
-        div_trk_valid[0]   <= 1'b0;
-        div_trk_flushed[0] <= 1'b0;
-      end
-      if (divider_valid_input && div_is_short_word) begin
-        div_trk_valid[WordDivInsert] <= 1'b1;
-        div_trk_flushed[WordDivInsert] <= i_flush_en && is_younger(
-            i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
-        );
-      end
-    end
-  end
-
-  // --- Data: tag + is_rem + sext_w shift register (no reset) ---
-  always_ff @(posedge i_clk) begin
-    for (int i = DivPipeDepth - 1; i >= 1; i--) begin
-      div_trk_tag[i]    <= div_trk_tag[i-1];
-      div_trk_is_rem[i] <= div_trk_is_rem[i-1];
-      div_trk_sext_w[i] <= div_trk_sext_w[i-1];
-    end
-    if (divider_valid_input && !div_is_short_word) begin
-      div_trk_tag[0] <= i_rs_issue.rob_tag;
-      div_trk_is_rem[0] <= (i_rs_issue.op == riscv_pkg::REM) ||
-                           (i_rs_issue.op == riscv_pkg::REMU) ||
-                           (i_rs_issue.op == riscv_pkg::REMW) ||
-                           (i_rs_issue.op == riscv_pkg::REMUW);
-      div_trk_sext_w[0] <= div_is_w;
-    end
-    if (divider_valid_input && div_is_short_word) begin
-      div_trk_tag[WordDivInsert] <= i_rs_issue.rob_tag;
-      div_trk_is_rem[WordDivInsert] <= (i_rs_issue.op == riscv_pkg::REMW) ||
-                                      (i_rs_issue.op == riscv_pkg::REMUW);
-      div_trk_sext_w[WordDivInsert] <= 1'b1;
-    end
-  end
-
-  // Direct occupancy count, read only by the checks below; synthesis removes
-  // it. The busy path uses the registered next-state count instead.
-  logic [$clog2(DivPipeDepth+1)-1:0] div_inflight_count;
+  // The divider holds its result until the adapter takes it (i_div_accepted).
+  // Tag and value are not qualified with valid: the DIV adapter registers its
+  // output and captures its input only with valid.
   always_comb begin
-    div_inflight_count = '0;
-    for (int i = 0; i < DivPipeDepth; i++) begin
-      if (div_trk_valid[i] && !div_trk_flushed[i]) div_inflight_count = div_inflight_count + 1;
-    end
+    o_div_fu_complete.valid     = div_done;
+    o_div_fu_complete.tag       = div_tag_q;
+    o_div_fu_complete.value     = riscv_pkg::FLEN'(div_result);
+    o_div_fu_complete.exception = 1'b0;
+    o_div_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
+    o_div_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
   end
 
-  // ---------------------------------------------------------------------------
-  // DIV result FIFO (4 entries, FF control with LUTRAM payload)
-  // ---------------------------------------------------------------------------
-  localparam int unsigned FifoDepth = 4;
-
-  // Individual flat arrays for FIFO data; no struct arrays in the storage path.
-  logic [               TagW-1:0] div_fifo_tag           [FifoDepth];
-  logic [    riscv_pkg::FLEN-1:0] div_fifo_value_rd;
-  logic [    riscv_pkg::FLEN-1:0] div_fifo_value_wr_data;
-  logic [          FifoDepth-1:0] div_fifo_valid;
-  logic [          FifoDepth-1:0] div_fifo_flushed;
-  logic [$clog2(FifoDepth+1)-1:0] fifo_count;
-  logic                           fifo_push;
-
-  logic [  $clog2(FifoDepth)-1:0] fifo_wr_ptr;
-  logic [  $clog2(FifoDepth)-1:0] fifo_rd_ptr;
-
-  sdp_dist_ram #(
-      .ADDR_WIDTH($clog2(FifoDepth)),
-      .DATA_WIDTH(riscv_pkg::FLEN)
-  ) u_div_fifo_value (
-      .i_clk,
-      .i_write_enable (fifo_push),
-      .i_write_address(fifo_wr_ptr),
-      .i_write_data   (div_fifo_value_wr_data),
-      .i_read_address (fifo_rd_ptr),
-      .o_read_data    (div_fifo_value_rd)
-  );
-
-  // Divider completion: build fu_complete_t from tracker tail + divider outputs.
-  // Same strategy as mul_completing above: no combinational tail partial flush.
-  logic div_completing;
-  assign div_completing = div_trk_valid[DivPipeDepth-1] && !div_trk_flushed[DivPipeDepth-1];
-
-  // Result selection from tracker tail
-  logic [DivXlen-1:0] div_result_sel;
-  logic [DivXlen-1:0] div_result_xlen;
-  assign div_result_sel = SHORT_WORD_OPS && div_trk_sext_w[DivPipeDepth-1] ?
-      DivXlen'(div_trk_is_rem[DivPipeDepth-1] ? word_div_remainder : word_div_quotient) :
-      (div_trk_is_rem[DivPipeDepth-1] ? div_remainder : div_quotient);
-  // W forms sign-extend the low result word.
-  assign div_result_xlen = div_trk_sext_w[DivPipeDepth-1] ?
-      {{(DivXlen - 32) {div_result_sel[31]}}, div_result_sel[31:0]} : div_result_sel;
-  assign div_fifo_value_wr_data = riscv_pkg::FLEN'(div_result_xlen);
-
-  // Same-cycle flush of a young entry being pushed to the div FIFO.
-  logic div_push_entry_flush_young;
-  assign div_push_entry_flush_young = i_flush_en && is_younger(
-      div_trk_tag[DivPipeDepth-1], i_flush_tag, i_rob_head_tag
-  );
-
-  // FIFO pop: adapter consumed, or head is already marked flushed (auto-drain).
-  logic fifo_pop;
-  logic fifo_head_flushed;
-  assign fifo_head_flushed = div_fifo_valid[fifo_rd_ptr] && div_fifo_flushed[fifo_rd_ptr];
-  assign fifo_pop = (fifo_count != '0) && (i_div_accepted || fifo_head_flushed);
-
-  // FIFO push: divider completes with non-flushed entry
-  assign fifo_push = div_completing;
-
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      for (int i = 0; i < FifoDepth; i++) begin
-        div_fifo_valid[i]   <= 1'b0;
-        div_fifo_flushed[i] <= 1'b0;
-      end
-      fifo_wr_ptr <= '0;
-      fifo_rd_ptr <= '0;
-      fifo_count  <= '0;
-    end else if (i_flush) begin
-      for (int i = 0; i < FifoDepth; i++) begin
-        div_fifo_valid[i]   <= 1'b0;
-        div_fifo_flushed[i] <= 1'b0;
-      end
-      fifo_wr_ptr <= '0;
-      fifo_rd_ptr <= '0;
-      fifo_count  <= '0;
-    end else begin
-      // Partial flush: mark younger FIFO entries as flushed
-      if (i_flush_en) begin
-        for (int i = 0; i < FifoDepth; i++) begin
-          if (div_fifo_valid[i] && !div_fifo_flushed[i] && is_younger(
-                  div_fifo_tag[i], i_flush_tag, i_rob_head_tag
-              )) begin
-            div_fifo_flushed[i] <= 1'b1;
-          end
-        end
-      end
-
-      // Push. The new entry inherits the tracker tail's flushed bit and picks
-      // up a same-cycle partial flush against its own tag.
-      if (fifo_push) begin
-        div_fifo_tag[fifo_wr_ptr] <= div_trk_tag[DivPipeDepth-1];
-        div_fifo_valid[fifo_wr_ptr] <= 1'b1;
-        div_fifo_flushed[fifo_wr_ptr] <=
-            div_trk_flushed[DivPipeDepth-1] || div_push_entry_flush_young;
-        fifo_wr_ptr <= fifo_wr_ptr + 1;
-      end
-
-      // Pop advances rd_ptr only. div_fifo_valid and div_fifo_flushed stay
-      // set: every read of them is gated by fifo_count, which is the occupancy
-      // of record, and the next push to this slot overwrites them. Clearing
-      // them here would only drag i_div_accepted into the FIFO registers'
-      // next-state.
-      if (fifo_pop) begin
-        fifo_rd_ptr <= fifo_rd_ptr + 1;
-      end
-
-      case ({
-        fifo_push, fifo_pop
-      })
-        2'b10:   fifo_count <= fifo_count + 1;
-        2'b01:   fifo_count <= fifo_count - 1;
-        default: fifo_count <= fifo_count;  // 2'b00 or 2'b11
-      endcase
-    end
-  end
-
-  // FIFO head output drives o_div_fu_complete (registered flushed bit only).
-  always_comb begin
-    if (fifo_count != '0 && !div_fifo_flushed[fifo_rd_ptr]) begin
-      o_div_fu_complete.valid     = 1'b1;
-      o_div_fu_complete.tag       = div_fifo_tag[fifo_rd_ptr];
-      o_div_fu_complete.value     = div_fifo_value_rd;
-      o_div_fu_complete.exception = 1'b0;
-      o_div_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-      o_div_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
-    end else begin
-      o_div_fu_complete.valid     = 1'b0;
-      o_div_fu_complete.tag       = '0;
-      o_div_fu_complete.value     = '0;
-      o_div_fu_complete.exception = 1'b0;
-      o_div_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-      o_div_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
-    end
-  end
-
-  // ---------------------------------------------------------------------------
-  // Busy signal: credit-based to prevent FIFO overflow (MUL or DIV)
-  // ---------------------------------------------------------------------------
-  // Timing: div_busy_q is a register, so the MUL RS issue gate
-  // (mul_rs_fu_ready) sees a flop instead of a popcount over every divider
-  // tracker stage plus an add and a compare. The blocks below evaluate, one cycle
-  // early, the same next-state expressions the tracker and FIFO registers
-  // use, so div_busy_q always equals (fifo_count + div_inflight_count >=
-  // FifoDepth) for the current state. A simulation check and a formal
-  // assertion compare the two every cycle.
-  //
-  // Stages 0..D-2 are the entries that shift up. Stage D-1 exits to the FIFO.
-  // A survivor stays countable unless it was already flushed or is being
-  // flush-marked this cycle. A new full-width or word entry counts unless it
-  // is flush-marked at entry. Word insertion can replace only an invalid or
-  // already-flushed entry, so it never subtracts a live survivor from the sum.
-  // The FIFO count mirrors its push/pop case.
-  logic [$clog2(DivPipeDepth+1)-1:0] div_inflight_count_next;
-  always_comb begin
-    div_inflight_count_next = '0;
-    for (int i = 0; i < DivPipeDepth - 1; i++) begin
-      if (div_trk_valid[i] && !div_trk_flushed[i] && !(i_flush_en && is_younger(
-              div_trk_tag[i], i_flush_tag, i_rob_head_tag
-          )))
-        div_inflight_count_next = div_inflight_count_next + 1;
-    end
-    if (divider_valid_input && !(i_flush_en && is_younger(
-            i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
-        )))
-      div_inflight_count_next = div_inflight_count_next + 1;
-  end
-
-  logic [$clog2(FifoDepth+1)-1:0] fifo_count_next;
-  always_comb begin
-    unique case ({
-      fifo_push, fifo_pop
-    })
-      2'b10:   fifo_count_next = fifo_count + 1;
-      2'b01:   fifo_count_next = fifo_count - 1;
-      default: fifo_count_next = fifo_count;
-    endcase
-  end
-
-  // TIMING: the new-entry term of div_inflight_count_next is the late MUL RS
-  // issue valid. Evaluate the compare for both of its values from the
-  // survivor count and select last; the result equals the expression above.
-  logic [$clog2(DivPipeDepth+1)-1:0] div_survivor_count_next;
-  logic div_new_entry_counts;
-  logic div_busy_if_new, div_busy_if_none;
-  always_comb begin
-    div_survivor_count_next = '0;
-    for (int i = 0; i < DivPipeDepth - 1; i++) begin
-      if (div_trk_valid[i] && !div_trk_flushed[i] && !(i_flush_en && is_younger(
-              div_trk_tag[i], i_flush_tag, i_rob_head_tag
-          )))
-        div_survivor_count_next = div_survivor_count_next + 1;
-    end
-  end
-  assign div_new_entry_counts = divider_valid_input && !(i_flush_en && is_younger(
-      i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
-  ));
-  assign div_busy_if_new =
-      (6'(fifo_count_next) + 6'(div_survivor_count_next) + 6'd1) >= 6'(FifoDepth);
-  assign div_busy_if_none = (6'(fifo_count_next) + 6'(div_survivor_count_next)) >= 6'(FifoDepth);
-
-  logic div_busy_q;
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush) div_busy_q <= 1'b0;
-    else div_busy_q <= div_new_entry_counts ? div_busy_if_new : div_busy_if_none;
-  end
-`ifndef SYNTHESIS
-  always_comb begin
-    if (!$isunknown({div_new_entry_counts, div_busy_if_new, div_busy_if_none})) begin
-      assert ((div_new_entry_counts ? div_busy_if_new : div_busy_if_none) ==
-              ((6'(fifo_count_next) + 6'(div_inflight_count_next)) >= 6'(FifoDepth)));
-    end
-  end
-`endif
-  assign div_busy  = div_busy_q ||
-      (div_is_short_word && div_trk_valid[WordDivInsert-1] &&
-       !div_trk_flushed[WordDivInsert-1]);
-  assign o_fu_busy = mul_busy | div_busy;
+  // A divide never raises o_fu_busy: MUL_RS keeps divides back while
+  // o_div_busy is high, so the multiplier never waits for the divider.
+  assign o_div_busy = !div_idle;
+  assign o_fu_busy  = mul_busy;
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Simulation checks: each tracker tail must line up with its unit's output
-  // valid, and the registered credit gate must match the direct occupancy
-  // count on every cycle after reset.
-  logic [5:0] div_total_occupancy;
-  assign div_total_occupancy = 6'(fifo_count) + 6'(div_inflight_count);
+  // Simulation checks: the MUL tracker tail must line up with its unit's
+  // output valid, and a divide may only be presented while the divider is
+  // idle. The RS retires its entry on the issue cycle, so a divide presented
+  // while the divider is busy would be lost.
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       if (mul_completing && !(SHORT_WORD_OPS &&
           mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?
           word_mul_valid : multiplier_valid_output))
         $error("int_muldiv_shim: MUL tracker/data pipeline mismatch");
-      if (div_completing && !(SHORT_WORD_OPS && div_trk_sext_w[DivPipeDepth-1] ?
-          word_div_valid : divider_valid_output))
-        $error("int_muldiv_shim: DIV tracker/data pipeline mismatch");
-      if (div_busy_q != (div_total_occupancy >= 6'(FifoDepth)))
+      if (is_div && i_rs_issue.valid && !div_idle)
         $error(
-            "int_muldiv_shim: registered div_busy diverged (occ=%0d q=%b)",
-            div_total_occupancy,
-            div_busy_q
+            "int_muldiv_shim: divide issue of tag %0d while the divider is busy", i_rs_issue.rob_tag
         );
     end
   end
@@ -865,24 +557,18 @@ module int_muldiv_shim #(
 
 `ifdef FORMAL
   logic f_past_valid = 1'b0;
-  // Valid histories of the four physical units, which flushes do not affect.
-  // The per-stage assertions below tie each live tracker entry to the unit
+  // Valid histories of the two multipliers, which flushes do not affect. The
+  // per-stage assertions below tie each live tracker entry to the unit
   // holding its operation, which makes tail/data alignment inductive.
   logic [MulPipeDepth-1:0] f_full_mul;
   logic [WordMulDepth-1:0] f_word_mul;
-  logic [DivPipeDepth-1:0] f_full_div;
-  logic [WordDivDepth-1:0] f_word_div;
   always @(posedge i_clk) begin
     if (!i_rst_n) begin
       f_full_mul <= '0;
       f_word_mul <= '0;
-      f_full_div <= '0;
-      f_word_div <= '0;
     end else begin
       f_full_mul <= {f_full_mul[MulPipeDepth-2:0], multiplier_valid_input && !mul_is_short_word};
       f_word_mul <= {f_word_mul[WordMulDepth-2:0], multiplier_valid_input && mul_is_short_word};
-      f_full_div <= {f_full_div[DivPipeDepth-2:0], divider_valid_input && !div_is_short_word};
-      f_word_div <= {f_word_div[WordDivDepth-2:0], divider_valid_input && div_is_short_word};
     end
   end
   for (genvar stage = 0; stage < MulPipeDepth; stage++) begin : gen_f_mul_owner
@@ -896,17 +582,32 @@ module int_muldiv_shim #(
       end
     end
   end
-  for (genvar stage = 0; stage < DivPipeDepth; stage++) begin : gen_f_div_owner
-    always @(posedge i_clk) begin
-      if (f_past_valid && i_rst_n && div_trk_valid[stage] && !div_trk_flushed[stage]) begin
-        if (SHORT_WORD_OPS && div_trk_sext_w[stage]) begin
-          if (stage >= WordDivInsert)
-            assert (f_word_div[stage-WordDivInsert]);
-            else assert (1'b0);
-        end else assert (f_full_div[stage]);
-      end
-    end
+
+  // The issue contract MUL_RS's divide gate provides: a divide is presented
+  // only while the divider is idle.
+  always_comb begin
+    if (f_past_valid && i_rst_n) assume (!(is_div && i_rs_issue.valid) || div_idle);
   end
+
+  // Divider flushed-tag discipline: once a flush squashes the watched divide,
+  // held or issuing, its tag does not appear on a valid DIV completion again
+  // until a new divide starts with the same tag value (a reallocated ROB
+  // entry). The proof tracks one arbitrary (anyconst) tag.
+  (* anyconst *) logic [TagW-1:0] f_watch_tag;
+  logic f_watch_squashed_now, f_watch_dead_q;
+  assign f_watch_squashed_now = ((!div_idle && div_tag_q == f_watch_tag) ||
+      (is_div && i_rs_issue.valid && i_rs_issue.rob_tag == f_watch_tag)) &&
+      (i_flush || (i_flush_en && is_younger(
+      f_watch_tag, i_flush_tag, i_rob_head_tag
+  )));
+  logic [TagW-1:0] f_started_tag;
+  always @(posedge i_clk) begin
+    if (!i_rst_n) f_watch_dead_q <= 1'b0;
+    else if (f_watch_squashed_now) f_watch_dead_q <= 1'b1;
+    else if (div_start && i_rs_issue.rob_tag == f_watch_tag) f_watch_dead_q <= 1'b0;
+    if (div_start && div_idle) f_started_tag <= i_rs_issue.rob_tag;
+  end
+
   always @(posedge i_clk) begin
     f_past_valid <= 1'b1;
     if (!f_past_valid)
@@ -914,42 +615,36 @@ module int_muldiv_shim #(
       else assume (i_rst_n);
     if (f_past_valid && i_rst_n) begin
 `ifndef F_MULDIV_ALIGNMENT
-      // These cardinality invariants are inductive at shallow depth. Keep
-      // their SMT task separate from physical FU alignment: unrolling a
-      // 33-cycle divider adds no information to a completion-credit proof.
-      if ($past(i_rst_n && !i_flush)) begin
-        assert (div_inflight_count == $past(div_inflight_count_next));
-        assert (fifo_count == $past(fifo_count_next));
-      end
-      // Shared credits cover both widths, including arbitrary backpressure
-      // and full/partial flushes. Arithmetic is checked in the FU proofs/tests.
+      // The MUL credit bound is inductive at shallow depth. Keep its SMT task
+      // separate from physical FU alignment: unrolling the multiplier adds no
+      // information to a completion-credit proof.
       assert (mul_total_occupancy <= 6'(MulFifoDepth));
-      assert (6'(fifo_count) + 6'(div_inflight_count) <= 6'(FifoDepth));
-      assert (div_busy_q == (6'(fifo_count) + 6'(div_inflight_count) >= 6'(FifoDepth)));
       if (multiplier_valid_input && mul_is_short_word)
         assert (!mul_trk_valid[WordMulInsert-1] || mul_trk_flushed[WordMulInsert-1]);
-      if (divider_valid_input && div_is_short_word)
-        assert (!div_trk_valid[WordDivInsert-1] || div_trk_flushed[WordDivInsert-1]);
+      // Divider: busy until its result is taken, a completion carries the tag
+      // of the divide that started last, and a squashed divide never completes.
+      assert (o_div_busy == !div_idle);
+      assert (!o_div_fu_complete.valid || o_div_busy);
+      if ($past(i_rst_n) && $past(div_kill)) assert (div_idle);
+      if (!div_idle) assert (div_tag_q == f_started_tag);
+      if (f_watch_dead_q && !div_idle) assert (div_tag_q != f_watch_tag);
+      if (f_watch_dead_q && o_div_fu_complete.valid) assert (o_div_fu_complete.tag != f_watch_tag);
 `else
-      // This task keeps the real unit valid pipelines. With the per-stage
-      // assertions above and the physical histories, it proves that each
-      // surviving completion selects its result from the right width's unit.
+      // This task keeps the real multiplier valid pipelines. With the
+      // per-stage assertions above and the physical histories, it proves that
+      // each surviving completion selects its result from the right width's
+      // unit.
       assert (f_full_mul[MulPipeDepth-1] == multiplier_valid_output);
       assert (f_word_mul[WordMulDepth-1] == word_mul_valid);
-      assert (f_full_div[DivPipeDepth-1] == divider_valid_output);
-      assert (f_word_div[WordDivDepth-1] == word_div_valid);
       if (mul_completing)
         assert (SHORT_WORD_OPS && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W ?
             word_mul_valid : multiplier_valid_output);
-      if (div_completing)
-        assert (SHORT_WORD_OPS && div_trk_sext_w[DivPipeDepth-1] ?
-            word_div_valid : divider_valid_output);
 `endif
       cover (mul_completing && mul_trk_rsel[MulPipeDepth-1] == MUL_SEL_SEXT_W);
-      cover (div_completing && div_trk_sext_w[DivPipeDepth-1]);
-      cover (div_completing && !div_trk_sext_w[DivPipeDepth-1]);
       cover (mul_is_short_word && mul_busy && mul_total_occupancy < 4);
-      cover (div_is_short_word && div_busy && !div_busy_q);
+      cover (o_div_fu_complete.valid && !i_div_accepted);
+      cover (div_kill && !o_div_fu_complete.valid);
+      cover (multiplier_valid_input && o_div_busy);
     end
   end
 `endif

@@ -242,7 +242,7 @@ Sources: RS `fu_ready` and `empty` status and the MEM `fu_cdb_adapter`.
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
 | 57 | 15 | `INT_BACKPRESSURE` | cycle | The INT RS is not empty while its FU is not ready (issue blocked downstream) |
-| 58 | 16 | `MUL_BACKPRESSURE` | cycle | Same, MUL RS. MUL and DIV share the muldiv shim, so there is no separate DIV counter |
+| 58 | 16 | `MUL_BACKPRESSURE` | cycle | Same, MUL RS. A divide waiting for the busy divider does not count: the station holds it back itself, without lowering its FU ready |
 | 59 | 17 | `MEM_RESULT_BACKPRESSURE` | cycle | The MEM FU has a valid result while the MEM CDB adapter still holds an earlier one awaiting a CDB grant |
 | 60 | 18 | `FP_BACKPRESSURE` | cycle | Same as 57, FP RS. Older reports name it `FP_ADD_BACKPRESSURE` |
 | 61 | 19 | (reserved) | n/a | Reads 0. Older reports show it as `FMUL_BACKPRESSURE`, for a separate FP multiply station |

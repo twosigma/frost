@@ -235,7 +235,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "int_muldiv_shim.sby",
-        "Mixed-width MUL/DIV pipeline tracking, completion data alignment, and FIFO credits",
+        "Mixed-width MUL pipeline tracking, completion data alignment, and FIFO credits; "
+        "divider busy, completion tag, and flush control",
         tasks=(
             "prove",
             "prove_alignment",
@@ -291,16 +292,23 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
-        "divider_prefix.sby",
-        "Divider - each narrowed stage equals full-width restoring division and "
-        "preserves the consumed-prefix bound, at 64 and 32 bits",
-        tasks=("bmc", "bmc_xlen32"),
+        "divider.sby",
+        "Iterative divider - every result equals the RISC-V DIV/REM result for all "
+        "operands and all eight forms, with exact latency, kills and held results, "
+        "at 8 bits; step count and remainder bound unbounded at 64 bits",
+        tasks=("bmc_width8", "prove_width64", "cover_width8"),
     ),
     FormalTarget(
         "reservation_station.sby",
         "Reservation station - dispatch, wakeup, issue, flush, at the module "
         "defaults and with INT features at eight-entry component capacity",
         tasks=("bmc", "cover", "bmc_tag_indexed", "cover_tag_indexed"),
+    ),
+    FormalTarget(
+        "rs_divide_gate.sby",
+        "MUL_RS divide gate - against a model of the one-at-a-time divider, a "
+        "presented divide always finds it idle; unbounded, with the payload RAMs free",
+        tasks=("prove", "cover"),
     ),
     FormalTarget(
         "cdb_arbiter.sby",
@@ -539,6 +547,9 @@ SBY_TASKS = [
         "Cover checking of INT station features at eight-entry capacity",
     ),
     ("bmc_perf_off", "Bounded model checking with the profiling counters left out"),
+    ("bmc_width8", "Bounded checking against a reference model at 8 bits"),
+    ("cover_width8", "Cover checking at 8 bits"),
+    ("prove_width64", "Unbounded invariant proof at 64 bits"),
     ("bmc_256", "Bounded checking with a 256-entry L0 cache"),
     ("cover_256", "Cover checking with a 256-entry L0 cache"),
 ]

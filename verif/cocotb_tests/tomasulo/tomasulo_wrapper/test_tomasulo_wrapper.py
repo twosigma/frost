@@ -67,10 +67,10 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
 
 NUM_CHECKPOINTS = 8
 
-# The integer divider has XLEN/2 stages (two radix-2 iterations each) plus its
-# input stage. The timeout adds an eight-cycle margin for the wrapper and CDB.
-DIV_PIPELINE_LATENCY = XLEN // 2 + 1
-DIV_CDB_TIMEOUT_CYCLES = DIV_PIPELINE_LATENCY + 8
+# The iterative divider produces one quotient bit per cycle, XLEN steps for a
+# full-width divide. The timeout adds a margin for issue, the DIV adapter and
+# the CDB.
+DIV_CDB_TIMEOUT_CYCLES = XLEN + 16
 
 
 # ---------------------------------------------------------------------------
@@ -3725,7 +3725,7 @@ async def test_div_shim_end_to_end(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # The divider takes XLEN/2 + 1 cycles (33 at XLEN=64).
+    # The divider takes XLEN steps (64 at XLEN=64).
     cdb = await wait_for_cdb(dut_if, max_cycles=DIV_CDB_TIMEOUT_CYCLES)
     assert cdb.tag == tag, f"CDB tag mismatch: got {cdb.tag}, expected {tag}"
     assert cdb.value == expected_quotient, (
@@ -4878,14 +4878,14 @@ async def test_lq_cdb_arbitration(dut: Any) -> None:
 
 
 # =============================================================================
-# Pipelined DIV Adapter Contention Tests
+# DIV Tests: one divide at a time, adapter contention
 # =============================================================================
 
 
 @cocotb.test()
-async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
-    """Two DIVs traverse the XLEN-scaled pipeline and commit in order."""
-    cocotb.log.info("=== Test: DIV Pipeline Back-to-Back Commit ===")
+async def test_div_back_to_back_commit(dut: Any) -> None:
+    """Two DIVs run one after the other on the divider and commit in order."""
+    cocotb.log.info("=== Test: DIV Back-to-Back Commit ===")
     dut_if, model = await setup_test(dut)
     dut_if.set_fu_ready(RS_MUL, True)
     dut_if.set_commit_hold(True)
@@ -4946,15 +4946,14 @@ async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # The first result waits for the full XLEN-scaled pipeline latency.
+    # tag_b waits in MUL_RS while tag_a divides, then takes a full divide of
+    # its own.
     cdb_a = await wait_for_cdb(dut_if, max_cycles=DIV_CDB_TIMEOUT_CYCLES)
     assert cdb_a.tag == tag_a, f"Expected tag_a={tag_a}, got {cdb_a.tag}"
     assert cdb_a.value == 10, f"Expected 10, got {cdb_a.value}"
     model.fu_complete(FU_DIV, tag=tag_a, value=10)
 
-    # The fully pipelined divider produces the back-to-back result next, so
-    # this window covers only CDB/FIFO handoff rather than another DIV latency.
-    cdb_b = await wait_for_cdb(dut_if, max_cycles=10)
+    cdb_b = await wait_for_cdb(dut_if, max_cycles=DIV_CDB_TIMEOUT_CYCLES)
     assert cdb_b.tag == tag_b, f"Expected tag_b={tag_b}, got {cdb_b.tag}"
     assert cdb_b.value == 20, f"Expected 20, got {cdb_b.value}"
     model.fu_complete(FU_DIV, tag=tag_b, value=20)
@@ -4976,17 +4975,91 @@ async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
+async def test_mul_issues_past_waiting_div(dut: Any) -> None:
+    """A MUL behind a divide that waits for the busy divider still issues at once.
+
+    All three ops are resident and ready before MUL_RS may issue, so the second
+    DIV is ready in the cycle the first one leaves stage2 for the divider.
+    MUL_RS must hold it back then and for the whole divide, and never present
+    it to the busy divider (the shim's simulation check would stop the run).
+    The MUL, dispatched after both, completes long before either divide.
+    """
+    cocotb.log.info("=== Test: MUL Issues Past a Waiting DIV ===")
+    dut_if, model = await setup_test(dut)
+    dut_if.set_fu_ready(RS_MUL, False)
+    dut_if.set_commit_hold(True)
+
+    ops = [
+        (OP_DIVU, 1000, 10, 100),
+        (OP_DIVU, 2000, 10, 200),
+        (OP_MUL, 6, 7, 42),
+    ]
+    tags = []
+    for index, (op, src1, src2, _) in enumerate(ops):
+        req = make_int_req(pc=0xC000 + 4 * index, rd=index + 1)
+        tag = await dut_if.dispatch(req)
+        model.dispatch(req)
+        tags.append(tag)
+        fields = {
+            "rob_tag": tag,
+            "op": op,
+            "src1_ready": True,
+            "src1_value": src1,
+            "src2_ready": True,
+            "src2_value": src2,
+            "src3_ready": True,
+        }
+        dut_if.drive_rs_dispatch(rs_type=RS_MUL, **fields)
+        model.rs_dispatch(rs_type=RS_MUL, **fields)
+        await dut_if.step()
+        dut_if.clear_rs_dispatch()
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_MUL, True)
+
+    raw = dut_if.dut
+    order = []
+    for _ in range(3 * DIV_CDB_TIMEOUT_CYCLES):
+        await dut_if.step()
+        cdb = dut_if.read_cdb_output()
+        if cdb.valid:
+            index = tags.index(cdb.tag)
+            assert cdb.value == ops[index][3], (index, cdb)
+            model.fu_complete(
+                FU_MUL if ops[index][0] == OP_MUL else FU_DIV,
+                tag=cdb.tag,
+                value=cdb.value,
+            )
+            order.append(index)
+            if index == 2:
+                # The MUL finished while the first DIV still divides and the
+                # second waits in MUL_RS.
+                assert int(raw.u_muldiv_shim.div_idle.value) == 0
+                assert int(raw.u_muldiv_shim.div_tag_q.value) == tags[0]
+        if len(order) == 3:
+            break
+    assert order == [2, 0, 1], f"completion order {order}"
+
+    dut_if.set_commit_hold(False)
+    for index in range(3):
+        commit = await wait_for_commit(dut_if)
+        model.try_commit()
+        assert (commit["tag"], commit["value"]) == (tags[index], ops[index][3])
+    assert dut_if.rob_empty
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_div_adapter_contention_partial_flush(dut: Any) -> None:
     """CDB contention forces DIV adapter pending; partial flush suppresses younger.
 
-    Exercises the fu_cdb_adapter pending+grant path under partial flush with
-    the pipelined divider FIFO. Two higher-priority injected completions fill
-    both lanes of the 2-wide arbiter, forcing the older DIV result to
-    remain pending while the younger result queues behind it. Releasing both
-    lanes with simultaneous partial flush verifies that the older result
-    broadcasts and the younger one is suppressed.
+    Exercises the fu_cdb_adapter pending+grant path under partial flush. Two
+    higher-priority injected completions fill both lanes of the 2-wide
+    arbiter, forcing the older DIV result to remain pending in the adapter
+    while the younger DIV's result waits in the divider. Releasing both lanes
+    with simultaneous partial flush verifies that the older result broadcasts
+    and the younger one is dropped.
     """
-    cocotb.log.info("=== Test: DIV Pipeline Adapter Contention + Partial Flush ===")
+    cocotb.log.info("=== Test: DIV Adapter Contention + Partial Flush ===")
     dut_if, model = await setup_test(dut)
     dut_if.set_fu_ready(RS_MUL, True)
 
@@ -5071,20 +5144,21 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     dut_if.drive_fu_complete(FU_MEM, tag=tag_e, value=0)
     model.fu_complete(FU_MEM, tag=tag_e, value=0)
 
-    # Wait for the XLEN-scaled divider latency and require the exact staging
-    # this test needs: tag_b held by the adapter, with tag_c still in the FIFO.
+    # Wait for both divides and require the exact staging this test needs:
+    # tag_b held by the adapter, with tag_c's result held in the divider.
     raw = dut_if.dut
-    for _ in range(DIV_CDB_TIMEOUT_CYCLES):
+    for _ in range(2 * DIV_CDB_TIMEOUT_CYCLES):
         await dut_if.step()
         if (
             int(raw.div_adapter_result_pending.value) == 1
-            and int(raw.u_muldiv_shim.fifo_count.value) == 1
+            and int(raw.u_muldiv_shim.div_done.value) == 1
         ):
             break
     else:
         raise AssertionError(
-            "DIV contention never reached adapter-pending + queued-result state"
+            "DIV contention never reached adapter-pending + held-result state"
         )
+    assert int(raw.u_muldiv_shim.div_tag_q.value) == tag_c
 
     # Both higher-priority lanes are still occupied, so DIV must be denied.
     grant = dut_if.read_cdb_grant()
@@ -5095,8 +5169,7 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     # Release contention + partial flush simultaneously.
     # flush_tag = tag_b: tag_c, tag_d, and tag_e (younger) are flushed.
     # Adapter is pending with tag_b (not younger, survives).
-    # The flush marks tag_c's FIFO entry flushed (div_fifo_flushed), which
-    # gates the FIFO output.
+    # The flush kills tag_c in the divider.
     dut_if.clear_fu_complete(FU_MUL)
     dut_if.clear_fu_complete(FU_MEM)
     dut_if.drive_flush_en(flush_tag=tag_b)
@@ -5128,24 +5201,21 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
         "DIV adapter still pending after flush+release"
     )
 
-    # The FIFO records the partial-flush mark at the release edge, then its
-    # registered flushed-head auto-drain removes tag_c on the following edge.
-    assert int(raw.u_muldiv_shim.fifo_count.value) == 1
+    # The kill leaves the divider idle after the release edge.
+    assert int(raw.u_muldiv_shim.div_idle.value) == 1
+    assert not int(raw.u_muldiv_shim.div_done.value)
     await dut_if.step()
-    assert int(raw.u_muldiv_shim.fifo_count.value) == 0
     assert not dut_if.read_cdb_output().valid
     assert not unpack_cdb_broadcast(int(dut.o_cdb_2.value)).valid
 
-    # Confirm quiescence persists: no stale pipeline activity can re-arm
-    # the adapter or refill the FIFO.
+    # Confirm quiescence persists: nothing stale can re-arm the adapter or
+    # restart the divider.
     for _ in range(5):
         await dut_if.step()
         assert int(raw.div_adapter_result_pending.value) == 0, (
             "DIV adapter became pending unexpectedly"
         )
-        assert int(raw.u_muldiv_shim.fifo_count.value) == 0, (
-            f"DIV FIFO count rose to {int(raw.u_muldiv_shim.fifo_count.value)}"
-        )
+        assert int(raw.u_muldiv_shim.div_idle.value) == 1, "divider restarted"
 
     # Complete tag_a via FP_ADD and verify both commit in ROB order.
     # If the adapter failed to deliver tag_b, commit_b will time out.

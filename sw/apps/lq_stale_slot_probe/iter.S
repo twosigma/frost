@@ -21,11 +21,13 @@
  * memory bus while they launch:
  *
  *   B1 (its condition is rnd bit 0 behind STALE_B1_DIV_CHAIN dependent
- *       divides, 33 cycles each, so it resolves late and at a known time)
- *     arm X: STALE_A_DIV_CHAIN divides and STALE_A_MUL_CHAIN multiplies
- *            delay A1..A3, three loads of untouched lines that launch to
- *            the cached tier and miss before B1 resolves, so their
- *            responses are still in flight well after the recovery.
+ *       divides, 65 cycles each, so it resolves late and at a known time)
+ *     arm X: STALE_A_MUL_CHAIN dependent multiplies (and STALE_A_DIV_CHAIN
+ *            divides, none by default: the divider takes one divide at a
+ *            time, so a divide here would wait for B1's chain) delay
+ *            A1..A3, three loads of untouched lines that launch to the
+ *            cached tier and miss before B1 resolves, so their responses
+ *            are still in flight well after the recovery.
  *            STALE_A_FILLERS independent fillers in front of them give
  *            A1..A3 ROB tags beyond the ones arm Y allocates up to B2, so
  *            once the recovery reuses the tags, the drained slots' stale
@@ -62,16 +64,16 @@
  */
 
 #ifndef STALE_B1_DIV_CHAIN
-#define STALE_B1_DIV_CHAIN 3
+#define STALE_B1_DIV_CHAIN 2
 #endif
 #ifndef STALE_A_DIV_CHAIN
-#define STALE_A_DIV_CHAIN 1
+#define STALE_A_DIV_CHAIN 0
 #endif
 #ifndef STALE_A_MUL_CHAIN
-#define STALE_A_MUL_CHAIN 0
+#define STALE_A_MUL_CHAIN 8
 #endif
 #ifndef STALE_A_FILLERS
-#define STALE_A_FILLERS 12
+#define STALE_A_FILLERS 6
 #endif
 #ifndef STALE_ADD_CHAIN
 #define STALE_ADD_CHAIN 4

@@ -1184,32 +1184,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.ex_stage.test_divider",
         hdl_toplevel_module="divider",
         description=(
-            "64-bit pipelined DIV/REM: prefix-width boundaries, signed corners, "
-            "consecutive inputs, bubbles, exact latency, and reset in flight"
+            "Iterative divider, every cycle against a control model: all eight DIV/REM "
+            "forms at corner and random operands, exact latency, held results, kills, "
+            "and reset in flight"
         ),
         verilator_extra_args=("-GWIDTH=64",),
-    ),
-    "divider_rv32": CocotbRunConfig(
-        python_test_module="cocotb_tests.ex_stage.test_divider",
-        hdl_toplevel_module="divider",
-        description=(
-            "32-bit pipelined DIV/REM: prefix-width boundaries, signed corners, "
-            "consecutive inputs, bubbles, exact latency, and reset in flight"
-        ),
-        verilator_extra_args=("-GWIDTH=32",),
     ),
     "int_muldiv_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",
         description=(
-            "Integer MUL/DIV shim: mixed 32/64-bit arithmetic, short word latency, "
-            "completion collisions, credits, backpressure, and flushes"
+            "Integer MUL/DIV shim: mixed 32/64-bit arithmetic, latencies, MULW "
+            "completion collisions, MUL credits, the divider's busy and held result, "
+            "backpressure, and flushes"
         ),
     ),
     "int_muldiv_shim_full_width": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",
-        description="Full-width word-op fallback: arithmetic, latency, credits, and recovery",
+        description="MULW on the full-width multiplier: arithmetic, latency, credits, and recovery",
         verilator_extra_args=("-GSHORT_WORD_OPS=0",),
         extra_env=(("FROST_TEST_SHORT_WORD_OPS", "0"),),
     ),

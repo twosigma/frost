@@ -125,6 +125,12 @@ module reservation_station #(
     // the three fields.  Contract: a dispatched ROB tag is never live in the
     // station (resident or in stage2), as ROB allocation guarantees.
     parameter bit TAG_INDEXED_BRANCH_PAYLOAD = 1'b0,
+    // MUL_RS only: its divides go to a divider that takes one at a time. A
+    // divide entry is not ready while i_divider_busy is high or stage2 holds a
+    // divide, so a divide reaches o_issue only while the divider is idle, and
+    // the multiplies behind a waiting divide still issue. Requires
+    // DUAL_ISSUE=0.
+    parameter bit DIVIDE_ISSUE_GATE = 1'b0,
     // The standalone formal top (formal/reservation_station.sby) drives this
     // station's inputs freely, so its `ifdef FORMAL` block assumes the
     // dispatch contract the core guarantees and carries the station's own
@@ -227,6 +233,8 @@ module reservation_station #(
     // =========================================================================
     output riscv_pkg::rs_issue_t                                        o_issue,
     input  logic                                                        i_fu_ready,
+    // DIVIDE_ISSUE_GATE only: the divider holds an operation or its result.
+    input  logic                                                        i_divider_busy,
     output logic                                                        o_issue_writes_cdb_hint,
     // Same-edge copy of the stage2 ROB tag used only by branch-resolution
     // predicates (BRANCH_PREDICATE_TAG_ANCHOR). Off, it aliases stage2_rob_tag.
@@ -618,6 +626,7 @@ module reservation_station #(
   // The issued op fans out widely into the FU shim's operation decode.  The
   // cap makes synthesis replicate the narrow op bits per region.
   (* max_fanout = 48 *) riscv_pkg::instr_op_e stage2_op;
+  logic stage2_is_divide;  // DIVIDE_ISSUE_GATE: the entry's divide bit, loaded with stage2
   logic stage2_is_sc;
   logic [FLEN-1:0] stage2_src1_value;
   logic [FLEN-1:0] stage2_src2_value;
@@ -711,6 +720,8 @@ module reservation_station #(
   // DUAL_ISSUE port-1 select must skip branch-class entries before the
   // payload read, so the class bit needs a parallel-scan copy.
   logic [DEPTH-1:0] rs_is_branch_class;
+  // Integer divide pre-decode in FFs, for the DIVIDE_ISSUE_GATE ready scan.
+  logic [DEPTH-1:0] rs_is_divide;
 
   // Multi-bit FF arrays (need parallel CDB snoop / flush compare)
   logic [ReorderBufferTagWidth-1:0] rs_rob_tag[DEPTH];
@@ -859,6 +870,19 @@ module reservation_station #(
       default:                         rs_branch_op_of = riscv_pkg::NULL;
     endcase
   endfunction
+
+  function automatic logic rs_is_divide_op(riscv_pkg::instr_op_e op);
+    case (op)
+      riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
+      riscv_pkg::DIVW, riscv_pkg::DIVUW, riscv_pkg::REMW, riscv_pkg::REMUW:
+      rs_is_divide_op = 1'b1;
+      default: rs_is_divide_op = 1'b0;
+    endcase
+  endfunction
+
+  logic dispatch_is_divide, dispatch_is_divide_2;
+  assign dispatch_is_divide   = DIVIDE_ISSUE_GATE && rs_is_divide_op(dispatch_op);
+  assign dispatch_is_divide_2 = DIVIDE_ISSUE_GATE && rs_is_divide_op(dispatch_op_2);
 
   logic dispatch_is_branch_class, dispatch_is_branch_class_2;
   logic dispatch_is_jal, dispatch_is_jal_2;
@@ -1357,10 +1381,21 @@ module reservation_station #(
     end
   end
 
+  // --- Divide gate (DIVIDE_ISSUE_GATE) ---
+  // A divide may enter stage2 only while the divider is idle and stage2 holds
+  // no divide. The divider leaves idle only by starting the divide that
+  // stage2 presents, so a divide loaded here still finds it idle when
+  // presented, however long it waits in stage2 for i_fu_ready. stage2's
+  // divide bit is a flop loaded from the entry's pre-decode; it equals the
+  // decode of stage2_op (checked in simulation and formal).
+  logic divide_blocked;
+  assign divide_blocked = DIVIDE_ISSUE_GATE &&
+      (i_divider_busy || (stage2_valid && stage2_is_divide));
+
   // --- Ready check per entry ---
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      entry_ready[i] = rs_valid[i] &&
+      entry_ready[i] = rs_valid[i] && !(rs_is_divide[i] && divide_blocked) &&
           (rs_src1_ready[i] || src1_cdb_bypass[i] || src1_cdb_bypass_l1[i] ||
            (src1_repair_sel[i] != 3'd0))
       // Even when an instruction uses an immediate, issue still
@@ -2373,6 +2408,39 @@ module reservation_station #(
   end
 `endif
 
+`ifdef RS_DIVIDE_GATE_LOCAL_PROOF
+  // formal/rs_divide_gate.sby: the divide gate against a model of the
+  // divider, busy from the cycle after a presented divide that no same-cycle
+  // flush squashes (the shim's start condition, with the same age compare)
+  // until an arbitrary later cycle. The payload RAMs and all other inputs are
+  // free. stage2_is_divide stands for the decode of stage2_op; the wrapper
+  // proof and a simulation check compare the two. The first assertion is
+  // inductive; the second, the shim's requirement, follows from it.
+  initial assume (!i_rst_n);
+  logic f_gate_past_valid = 1'b0;
+  (* anyseq *)logic f_divider_finish;
+  logic f_divider_busy;
+  always @(posedge i_clk) begin
+    f_gate_past_valid <= 1'b1;
+    if (f_gate_past_valid) assume (i_rst_n);
+    if (!i_rst_n) f_divider_busy <= 1'b0;
+    else if (o_issue.valid && stage2_is_divide && !stage2_should_flush) f_divider_busy <= 1'b1;
+    else if (f_divider_finish) f_divider_busy <= 1'b0;
+  end
+  always_comb begin
+    assume (i_divider_busy == f_divider_busy);
+    if (i_rst_n) begin
+      assert (!(stage2_valid && stage2_is_divide && f_divider_busy));
+      assert (!(o_issue.valid && stage2_is_divide && i_divider_busy));
+    end
+  end
+  always @(posedge i_clk) begin
+    // A multiply issues while a divide waits behind the busy divider.
+    if (i_rst_n)
+      cover (i_divider_busy && |(rs_valid & rs_is_divide) && o_issue.valid && !stage2_is_divide);
+  end
+`endif
+
   // --- Control signals (with reset) ---
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -2593,6 +2661,7 @@ module reservation_station #(
     if (data_write_1_en) begin
       rs_rob_tag[free_idx] <= dispatch_rob_tag;
       rs_is_branch_class[free_idx] <= dispatch_is_branch_class;
+      rs_is_divide[free_idx] <= dispatch_is_divide;
 
       // Source 1
       rs_src1_tag[free_idx] <= dispatch_src1_tag;
@@ -2615,6 +2684,7 @@ module reservation_station #(
     if (data_write_2_en) begin
       rs_rob_tag[alloc_idx_2] <= dispatch_rob_tag_2;
       rs_is_branch_class[alloc_idx_2] <= dispatch_is_branch_class_2;
+      rs_is_divide[alloc_idx_2] <= dispatch_is_divide_2;
 
       rs_src1_tag[alloc_idx_2] <= dispatch_src1_tag_2;
       if (!BROADCAST_FREE_SOURCE_VALUES) rs_src1_value[alloc_idx_2] <= dispatch_src1_stored_value_2;
@@ -2726,6 +2796,7 @@ module reservation_station #(
       stage2_valid <= 1'b1;
       stage2_rob_tag <= rs_rob_tag[issue_idx];
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
+      stage2_is_divide <= rs_is_divide[issue_idx];
       if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
         // Fold the three-arm CDB bypass mux into the operand FF D inputs.
         // Values come from the complete CDB packets; the optional issue-only
@@ -2861,6 +2932,7 @@ module reservation_station #(
       $error("BROADCAST_FREE_SOURCE_VALUES requires SPECULATIVE_DATA_WRITES");
     if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS && HAS_SRC3)
       $error("CAPTURE_PRIMARY_EFFECTIVE_OPERANDS requires HAS_SRC3=0");
+    if (DIVIDE_ISSUE_GATE && DUAL_ISSUE) $error("DIVIDE_ISSUE_GATE requires DUAL_ISSUE=0");
   end
 
   always @(posedge i_clk) begin
@@ -2889,6 +2961,10 @@ module reservation_station #(
       // Checks stage1 issue_fire (RS→stage2), not stage2 output.
       if (issue_fire && !entry_ready[issue_idx])
         $error("RS: issue fired for non-ready entry %0d", issue_idx);
+
+      // The divide gate reads stage2's divide bit in place of its opcode.
+      if (DIVIDE_ISSUE_GATE && stage2_valid && (stage2_is_divide != rs_is_divide_op(stage2_op)))
+        $error("RS: stage2 divide bit %0d disagrees with its opcode", stage2_is_divide);
 
       if (ALLOC_INDEXED_REPAIR) begin
         assert ($onehot0(repair_slot1_target_q))
@@ -3051,6 +3127,27 @@ module reservation_station #(
       // contract to choose the second free entry when both slots target this RS.
       always_comb begin
         assume (i_intent_1 == dispatch_valid);
+      end
+    end
+  endgenerate
+
+  // DIVIDE_ISSUE_GATE: stage2's divide bit equals the decode of its opcode.
+  // In the wrapper proof, where the real divider drives i_divider_busy, a
+  // presented divide must also find the divider idle, since the shim cannot
+  // hold one back. formal/rs_divide_gate.sby proves the gate itself against a
+  // model of the divider (RS_DIVIDE_GATE_LOCAL_PROOF).
+  generate
+    if (DIVIDE_ISSUE_GATE) begin : gen_formal_divide_gate
+      always_comb begin
+        if (i_rst_n) begin
+          p_stage2_divide_bit :
+          assert (!stage2_valid || (stage2_is_divide == rs_is_divide_op(stage2_op)));
+          if (!FORMAL_STANDALONE_ENV) begin
+            p_divide_issue_finds_divider_idle :
+            assert (!(o_issue.valid && rs_is_divide_op(o_issue.op) && i_divider_busy));
+          end
+          p_divide_gate_requires_single_issue : assert (!DUAL_ISSUE);
+        end
       end
     end
   endgenerate

@@ -53,8 +53,12 @@
 
     .equ GOOD_S0, 0x000600D0
     .equ GOOD_S1, 0x000600D1
-    .equ V1_CALLS, 1200            # calls per subtest A/B/C, kept low to leave
+    .equ V1_CALLS, 1200            # calls per subtest A/B, kept low to leave
                                    # cycle budget for D-G
+    .equ DIV_CALLS, 400            # calls for subtest C: the divider runs one
+                                   # divide at a time, so every iteration of
+                                   # victim_div's loop costs a whole divide;
+                                   # 400 calls walk the sweep 7 times
     .equ V2_CALLS, 800             # calls per subtest D/E/F/G; the exit
                                    # iteration N sweeps 57 values, so 800 calls
                                    # walk the whole sweep 14 times
@@ -169,6 +173,7 @@ subB_loop:
     blt     s3, s4, subB_loop
 
     # ============ Subtest C: BRAM array + divu backpressure ===============
+    li      s4, DIV_CALLS
     la      s2, victim_div
     li      s7, 'C'
     li      s3, 0
