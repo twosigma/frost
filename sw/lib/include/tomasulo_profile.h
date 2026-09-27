@@ -54,8 +54,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_STALL_MUL_RS_FULL = 9,
     TOMASULO_PERF_DISPATCH_STALL_MEM_RS_FULL = 10,
     TOMASULO_PERF_DISPATCH_STALL_FP_RS_FULL = 11,
-    TOMASULO_PERF_DISPATCH_STALL_FMUL_RS_FULL = 12,
-    TOMASULO_PERF_DISPATCH_STALL_FDIV_RS_FULL = 13,
+    /* 12 and 13 are reserved and read 0. */
     TOMASULO_PERF_DISPATCH_STALL_LQ_FULL = 14,
     TOMASULO_PERF_DISPATCH_STALL_SQ_FULL = 15,
     TOMASULO_PERF_DISPATCH_STALL_CHECKPOINT_FULL = 16,
@@ -97,8 +96,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_WAIT_MEM_STORE = 47,
     TOMASULO_PERF_HEAD_WAIT_MEM_AMO = 48,
     TOMASULO_PERF_HEAD_WAIT_FP = 49,
-    TOMASULO_PERF_HEAD_WAIT_FMUL = 50,
-    TOMASULO_PERF_HEAD_WAIT_FDIV = 51,
+    /* 50 and 51 are reserved and read 0. */
     TOMASULO_PERF_COMMIT_BLOCKED_CSR = 52,
     TOMASULO_PERF_COMMIT_BLOCKED_FENCE = 53,
     TOMASULO_PERF_COMMIT_BLOCKED_WFI = 54,
@@ -107,9 +105,8 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_INT_BACKPRESSURE = 57,
     TOMASULO_PERF_MUL_BACKPRESSURE = 58,
     TOMASULO_PERF_MEM_RESULT_BACKPRESSURE = 59,
-    TOMASULO_PERF_FP_ADD_BACKPRESSURE = 60,
-    TOMASULO_PERF_FMUL_BACKPRESSURE = 61,
-    TOMASULO_PERF_FDIV_BACKPRESSURE = 62,
+    TOMASULO_PERF_FP_BACKPRESSURE = 60,
+    /* 61 and 62 are reserved and read 0. */
     TOMASULO_PERF_MEM_DISAMBIGUATION_WAIT = 63,
     TOMASULO_PERF_SQ_COMMITTED_PENDING = 64,
     TOMASULO_PERF_SQ_MEM_WRITE_FIRE = 65,
@@ -121,8 +118,7 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_MUL_RS_OCCUPANCY_SUM = 71,
     TOMASULO_PERF_MEM_RS_OCCUPANCY_SUM = 72,
     TOMASULO_PERF_FP_RS_OCCUPANCY_SUM = 73,
-    TOMASULO_PERF_FMUL_RS_OCCUPANCY_SUM = 74,
-    TOMASULO_PERF_FDIV_RS_OCCUPANCY_SUM = 75,
+    /* 74 and 75 are reserved and read 0. */
     TOMASULO_PERF_LQ_L0_HIT = 76,
     TOMASULO_PERF_LQ_L0_FILL = 77,
     TOMASULO_PERF_HEAD_AND_NEXT_DONE = 78,
@@ -470,16 +466,6 @@ tomasulo_profile_pick_top_dispatch_cause(const tomasulo_profile_snapshot_t *star
     tomasulo_profile_consider_top(
         label,
         value,
-        "fmul_rs",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FMUL_RS_FULL));
-    tomasulo_profile_consider_top(
-        label,
-        value,
-        "fdiv_rs",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FDIV_RS_FULL));
-    tomasulo_profile_consider_top(
-        label,
-        value,
         "lq",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_LQ_FULL));
     tomasulo_profile_consider_top(
@@ -516,10 +502,6 @@ static inline void tomasulo_profile_pick_top_retire_cause(const tomasulo_profile
         label, value, "amo", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_MEM_AMO));
     tomasulo_profile_consider_top(
         label, value, "fp", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FP));
-    tomasulo_profile_consider_top(
-        label, value, "fmul", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FMUL));
-    tomasulo_profile_consider_top(
-        label, value, "fdiv", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FDIV));
     tomasulo_profile_consider_top(
         label, value, "csr", tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_BLOCKED_CSR));
     tomasulo_profile_consider_top(
@@ -559,20 +541,7 @@ static inline void tomasulo_profile_pick_top_backend_cause(const tomasulo_profil
         "mem_bp",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_RESULT_BACKPRESSURE));
     tomasulo_profile_consider_top(
-        label,
-        value,
-        "fp_bp",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_ADD_BACKPRESSURE));
-    tomasulo_profile_consider_top(
-        label,
-        value,
-        "fmul_bp",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FMUL_BACKPRESSURE));
-    tomasulo_profile_consider_top(
-        label,
-        value,
-        "fdiv_bp",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FDIV_BACKPRESSURE));
+        label, value, "fp_bp", tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_BACKPRESSURE));
     tomasulo_profile_consider_top(
         label,
         value,
@@ -857,14 +826,6 @@ static inline void tomasulo_profile_print_report(const char *label,
         tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FP_RS_FULL),
         cycles);
     tomasulo_profile_print_metric(
-        "FMUL RS full",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FMUL_RS_FULL),
-        cycles);
-    tomasulo_profile_print_metric(
-        "FDIV RS full",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_FDIV_RS_FULL),
-        cycles);
-    tomasulo_profile_print_metric(
         "LQ full",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_DISPATCH_STALL_LQ_FULL),
         cycles);
@@ -903,11 +864,7 @@ static inline void tomasulo_profile_print_report(const char *label,
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_MEM_AMO),
         cycles);
     tomasulo_profile_print_metric(
-        "Head wait FP add", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FP), cycles);
-    tomasulo_profile_print_metric(
-        "Head wait FMUL", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FMUL), cycles);
-    tomasulo_profile_print_metric(
-        "Head wait FDIV", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FDIV), cycles);
+        "Head wait FP", tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_WAIT_FP), cycles);
     tomasulo_profile_print_metric(
         "Commit blocked CSR",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_COMMIT_BLOCKED_CSR),
@@ -942,18 +899,9 @@ static inline void tomasulo_profile_print_report(const char *label,
         "MEM result backpressure",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_RESULT_BACKPRESSURE),
         cycles);
-    tomasulo_profile_print_metric(
-        "FP add downstream block",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_ADD_BACKPRESSURE),
-        cycles);
-    tomasulo_profile_print_metric(
-        "FMUL downstream block",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FMUL_BACKPRESSURE),
-        cycles);
-    tomasulo_profile_print_metric(
-        "FDIV downstream block",
-        tomasulo_profile_delta(start, end, TOMASULO_PERF_FDIV_BACKPRESSURE),
-        cycles);
+    tomasulo_profile_print_metric("FP downstream block",
+                                  tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_BACKPRESSURE),
+                                  cycles);
     tomasulo_profile_print_metric(
         "Load disambiguation wait",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_DISAMBIGUATION_WAIT),
@@ -1101,10 +1049,6 @@ static inline void tomasulo_profile_print_report(const char *label,
         "MEM RS", tomasulo_profile_delta(start, end, TOMASULO_PERF_MEM_RS_OCCUPANCY_SUM), cycles);
     tomasulo_profile_print_average(
         "FP RS", tomasulo_profile_delta(start, end, TOMASULO_PERF_FP_RS_OCCUPANCY_SUM), cycles);
-    tomasulo_profile_print_average(
-        "FMUL RS", tomasulo_profile_delta(start, end, TOMASULO_PERF_FMUL_RS_OCCUPANCY_SUM), cycles);
-    tomasulo_profile_print_average(
-        "FDIV RS", tomasulo_profile_delta(start, end, TOMASULO_PERF_FDIV_RS_OCCUPANCY_SUM), cycles);
 }
 
 #endif /* TOMASULO_PROFILE_H */
