@@ -334,6 +334,14 @@ class YosysRunner:
             yosys_script.append(
                 'setattr -set fsm_encoding "none" *eth10g_mac_rx*/w:state'
             )
+            if synth_command.startswith("synth_xilinx"):
+                # Vivado implements a rom_style="distributed" ROM in LUT
+                # logic. Yosys's UltraScale+ LUTRAM library cannot hold every
+                # such ROM (fp_engine's registered op decode has no valid
+                # mapping), so give it the equivalent style: logic.
+                yosys_script.append(
+                    'setattr -set rom_style "logic" a:rom_style=distributed'
+                )
             yosys_script.append(synth_command)
             # Coarse generic synthesis does not reject unresolved modules on
             # its own. Check after synthesis so Xilinx primitive definitions
