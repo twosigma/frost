@@ -3390,8 +3390,13 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // MUL CDB Adapter: result holding register → CDB arbiter slot 1
+  // MUL CDB Adapter: result pass-through → CDB arbiter slot 1
   // ===========================================================================
+  // MUL always wins lane 0 when valid. Use that local grant at the adapter:
+  // when the arbiter's full-flush kill suppresses its actual grant, the same
+  // flush clears the adapter regardless of grant. mul_adapter_grant proves
+  // this feedback preserves the completion packet and keeps the adapter idle, even
+  // with partial flushes and test-injected completions.
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0)
   ) u_mul_adapter (
@@ -3400,7 +3405,7 @@ module tomasulo_wrapper #(
       .i_fu_result     (mul_shim_out),
       .o_fu_complete   (mul_adapter_to_arbiter),
       .o_held_value    (),
-      .i_grant         (o_cdb_grant[1]),
+      .i_grant         (mul_adapter_to_arbiter.valid),
       .o_result_pending(mul_adapter_result_pending),
       .i_flush         (speculative_flush_all),
       .i_flush_en      (speculative_flush_en),

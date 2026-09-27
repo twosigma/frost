@@ -515,11 +515,14 @@ module pc_controller #(
   // handoff asserts both prediction holdoff outputs, so if_stage disables the
   // staged and live slot-2 predictions, and leaving the check out keeps the
   // prediction and PMA logic from feeding back into the pending-state update.
-  assign pending_prediction_target_handoff_applies =
-      pending_prediction_target_handoff && !fetch_stall &&
+  logic pending_prediction_target_handoff_ready;
+  assign pending_prediction_target_handoff_ready =
+      pending_prediction_target_handoff &&
       !i_window_cannot_serve &&
       (PENDING_HANDOFF_EXCLUDES_SLOT2 || !i_slot2_prediction_used_for_pc) &&
       !o_pending_prediction_target_holdoff;
+  assign pending_prediction_target_handoff_applies =
+      pending_prediction_target_handoff_ready && !fetch_stall;
   assign use_pending_prediction_for_pc_reg =
       pending_prediction_effective && pending_prediction_ready_without_effective;
   assign pending_prediction_ready_without_effective =
@@ -830,28 +833,38 @@ module pc_controller #(
   end
 `endif
 
-  // The pending-valid next state is computed for both values of the late
+  // The running pending-valid next state is computed for both values of the late
   // miss compare (pc_reg_next_misses_fetch_pc_for_prediction) and of the
-  // slot-1 prediction-used flag from the BTB lookup, which then select one bit
-  // without passing through the prediction qualification and the
-  // clear/set/hold priority. pc_pending_capture checks it against the
-  // reference below.
+  // qualified slot-1 prediction flag, which then select one bit
+  // without passing through the capture data and the
+  // clear/set/hold priority. The late fetch stall selects the completed
+  // running or stalled state last: a stall blocks capture and target handoff,
+  // but not reset, redirects, or stale-state clearing. pc_pending_capture
+  // checks the complete update against the reference below.
   (* keep = "true" *) logic [1:0][1:0] pending_valid_by_miss;  // [miss][used]
-  logic pending_valid_next;
+  (* keep = "true" *) logic pending_valid_when_stalled;
+  logic pending_clear_without_handoff;
+  logic pending_capture_eligible;
+  logic pending_valid_when_running, pending_valid_next;
+  assign pending_capture_eligible =
+      i_prediction_used && !i_prediction_already_emitted && !i_slot2_prediction_used;
+  assign pending_clear_without_handoff =
+      i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+      i_pd_redirect || i_fence_i_flush || redirect_kill_pending_q || stale_pending_prediction;
+  assign pending_valid_when_stalled = !pending_clear_without_handoff && pending_prediction_valid;
   for (genvar miss = 0; miss < 2; miss++) begin : gen_pending_valid_by_miss
     for (genvar used = 0; used < 2; used++) begin : gen_used
-      wire capture = (used != 0) && !fetch_stall &&
-          !i_prediction_already_emitted && !i_slot2_prediction_used &&
+      wire capture = (used != 0) &&
           (o_pc[1] || i_predicted_target[1] ||
            ((miss != 0) && i_prediction_requires_pc_reg_handoff));
       assign pending_valid_by_miss[miss][used] =
-          !(i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
-            i_pd_redirect || i_fence_i_flush || clear_pending_prediction_state) &&
+          !(pending_clear_without_handoff || pending_prediction_target_handoff_ready) &&
           (pending_prediction_valid || capture);
     end
   end
-  assign pending_valid_next =
-      pending_valid_by_miss[pc_reg_next_misses_fetch_pc_for_prediction][i_prediction_used];
+  assign pending_valid_when_running =
+      pending_valid_by_miss[pc_reg_next_misses_fetch_pc_for_prediction][pending_capture_eligible];
+  assign pending_valid_next = fetch_stall ? pending_valid_when_stalled : pending_valid_when_running;
   always_ff @(posedge i_clk) begin
     pending_prediction_valid <= pending_valid_next;
   end

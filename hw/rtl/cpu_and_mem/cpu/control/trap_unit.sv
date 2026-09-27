@@ -155,11 +155,15 @@ module trap_unit #(
     input logic            i_dret_start,
 
     // Trap control outputs
-    output logic            o_trap_taken,  // Trap is being taken this cycle
-    output logic            o_trap_to_s,   // ...targeting S (delegated); else M
-    output logic            o_mret_taken,  // MRET is being executed
-    output logic            o_sret_taken,  // SRET is being executed
-    output logic [XLEN-1:0] o_trap_target, // Trap vector, xRET/replay PC, or Debug Mode address
+    output logic o_trap_taken,  // Trap is being taken this cycle
+    output logic o_trap_to_s,  // ...targeting S (delegated); else M
+    output logic o_mret_taken,  // MRET is being executed
+    output logic o_sret_taken,  // SRET is being executed
+    // Same-cycle OR of trap and all xRET takes, factored before arbitration.
+    output logic o_trap_or_xret_taken,
+    output logic [XLEN-1:0] o_trap_target,  // Trap vector, xRET/replay PC, or Debug Mode address
+    // Trap-entry target before xRET selection; meaningful on o_trap_taken.
+    output logic [XLEN-1:0] o_trap_entry_target,
 
     // To CSR file for trap entry (written to the o_trap_to_s side)
     output logic [XLEN-1:0] o_trap_pc,     // PC to save to mepc/sepc
@@ -658,11 +662,10 @@ module trap_unit #(
   assign exception_to_s = (i_priv != riscv_pkg::PrivM) && i_medeleg[exception_cause_q[3:0]] &&
       !exception_ebreak_to_d && !exception_replay;
 
-  logic take_trap;
-  assign take_trap = (d_int_take_ready || m_int_take_ready || s_int_take_ready ||
-                      exception_pending) &&
-      !i_pipeline_stall &&
-      i_sq_committed_empty;
+  logic trap_requested, take_trap;
+  assign trap_requested =
+      d_int_take_ready || m_int_take_ready || s_int_take_ready || exception_pending;
+  assign take_trap = trap_requested && !i_pipeline_stall && i_sq_committed_empty;
   // Interrupt-only take strobes for the per-class latch guards: the take
   // gate on a class latch fires only when its own interrupt is the one being
   // taken. An exception take does not gate off a held interrupt (eligibility
@@ -713,6 +716,13 @@ module trap_unit #(
   assign take_dret = i_dret_start && !i_pipeline_stall && !take_trap && !trap_taken_prev &&
       i_sq_committed_empty;
 
+  // The resume-PC write enable needs the union, so compute it before the
+  // trap-vs-xRET arbitration. Going through take_xret would first exclude a
+  // trap and then OR that same trap back in, extending the trap-to-enable path.
+  assign o_trap_or_xret_taken = !i_pipeline_stall && i_sq_committed_empty &&
+      (trap_requested ||
+       (!trap_taken_prev && (i_mret_start || i_sret_start || i_dret_start)));
+
   // Hold commit while a trap/xRET waits out the store drain, so the
   // committed set shrinks monotonically and the wait is bounded. The
   // interrupt arming windows also hold commit (see *_take_armed_q): by the
@@ -741,52 +751,49 @@ module trap_unit #(
   logic [XLEN-1:0] trap_target_selected;
   logic interrupt_wins;
   assign interrupt_wins = m_int_take_ready || s_int_take_ready;
+  // Decode trap-entry data independently of the xRET take strobes. The
+  // resume-PC register consumes this output only on a trap take, so a late
+  // ROB-head xRET start cannot traverse the xRET mux and then its trap arm.
   always_comb begin
-    if (take_mret) begin
-      trap_target_selected = i_mepc;
-    end else if (take_sret) begin
-      trap_target_selected = i_sepc;
-    end else if (take_dret) begin
-      trap_target_selected = i_dpc;
-    end else if (take_trap) begin
-      if (d_int_take_ready) begin
-        // Debug Mode: a halt entry parks the hart; go redirects where the
-        // debug module asked.
-        trap_target_selected = i_debug_mode ? i_dbg_go_target : XLEN'(riscv_pkg::DebugParkAddr);
-      end else if (exception_take && exception_replay) begin
-        // Only when the replay is the trap being taken: an interrupt that
-        // wins arbitration over a pending replay enters its vector (the
-        // load re-executes after the handler, its PC is the epc).
-        trap_target_selected = exception_pc_q;
-      end else if (exception_ebreak_to_d || exception_in_debug) begin
-        trap_target_selected = XLEN'(riscv_pkg::DebugParkAddr);
-      end else if (trap_to_s) begin
-        if (i_stvec[1:0] == 2'b01 && interrupt_wins) begin
-          trap_target_selected =
-              {i_stvec[XLEN-1:2], 2'b00} + {{(XLEN - 6) {1'b0}}, s_vectored_offset};
-        end else begin
-          trap_target_selected = {i_stvec[XLEN-1:2], 2'b00};
-        end
+    if (d_int_take_ready) begin
+      // Debug Mode: a halt entry parks the hart; go redirects where the
+      // debug module asked.
+      o_trap_entry_target = i_debug_mode ? i_dbg_go_target : XLEN'(riscv_pkg::DebugParkAddr);
+    end else if (exception_take && exception_replay) begin
+      // Only when the replay is the trap being taken: an interrupt that
+      // wins arbitration over a pending replay enters its vector (the
+      // load re-executes after the handler, its PC is the epc).
+      o_trap_entry_target = exception_pc_q;
+    end else if (exception_ebreak_to_d || exception_in_debug) begin
+      o_trap_entry_target = XLEN'(riscv_pkg::DebugParkAddr);
+    end else if (trap_to_s) begin
+      if (i_stvec[1:0] == 2'b01 && interrupt_wins) begin
+        o_trap_entry_target = {i_stvec[XLEN-1:2], 2'b00} + {{(XLEN - 6) {1'b0}}, s_vectored_offset};
       end else begin
-        if (i_mtvec[1:0] == 2'b01 && interrupt_wins) begin
-          // Vectored mode for interrupts: BASE + 4*cause_code. The
-          // pre-computed 6-bit offset is faster here than extracting the code
-          // from the full cause.
-          trap_target_selected =
-              {i_mtvec[XLEN-1:2], 2'b00} + {{(XLEN - 6) {1'b0}}, m_vectored_offset};
-        end else begin
-          // Direct mode: all traps go to BASE (aligned to 4 bytes)
-          trap_target_selected = {i_mtvec[XLEN-1:2], 2'b00};
-        end
+        o_trap_entry_target = {i_stvec[XLEN-1:2], 2'b00};
       end
     end else begin
-      trap_target_selected = '0;
+      if (i_mtvec[1:0] == 2'b01 && interrupt_wins) begin
+        // Vectored mode for interrupts: BASE + 4*cause_code. The
+        // pre-computed 6-bit offset is faster here than extracting the code
+        // from the full cause.
+        o_trap_entry_target = {i_mtvec[XLEN-1:2], 2'b00} + {{(XLEN - 6) {1'b0}}, m_vectored_offset};
+      end else begin
+        // Direct mode: all traps go to BASE (aligned to 4 bytes)
+        o_trap_entry_target = {i_mtvec[XLEN-1:2], 2'b00};
+      end
     end
+  end
 
-    // The redirect is full width. A wild xtvec or xepc reaches the PC
-    // unchanged and raises a precise instruction access fault at fetch (a
-    // wild trap vector then loops on that fault, which is the architecturally
-    // correct outcome of the software bug).
+  always_comb begin
+    if (take_mret) trap_target_selected = i_mepc;
+    else if (take_sret) trap_target_selected = i_sepc;
+    else if (take_dret) trap_target_selected = i_dpc;
+    else if (take_trap) trap_target_selected = o_trap_entry_target;
+    else trap_target_selected = '0;
+
+    // Both target outputs retain the full address, including faulting high
+    // bits; fetch raises the same precise access fault for a wild target.
     o_trap_target = trap_target_selected;
   end
 
@@ -859,6 +866,11 @@ module trap_unit #(
     if (!i_rst) begin
       // Trap/xRET mutex: cannot fire simultaneously.
       p_trap_mret_mutex : assert (!(o_trap_taken && o_mret_taken));
+      p_combined_take_matches_individual_takes :
+      assert (o_trap_or_xret_taken ==
+              (o_trap_taken || o_mret_taken || o_sret_taken || o_dret_taken));
+      p_entry_target_matches_redirect :
+      assert (!o_trap_taken || o_trap_entry_target == o_trap_target);
       p_trap_dret_mutex : assert (!(o_trap_taken && o_dret_taken));
       p_dret_mret_mutex : assert (!(o_dret_taken && (o_mret_taken || o_sret_taken)));
       p_trap_sret_mutex : assert (!(o_trap_taken && o_sret_taken));

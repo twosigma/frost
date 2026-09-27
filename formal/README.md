@@ -78,7 +78,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `pc_holdoff_cofactor` | The three fetch-holdoff outputs equal their reference equations. `pc_holdoff_tag` covers the prediction holdoffs |
 | `pc_holdoff_tag` | While a prediction is pending, its captured predecessor-PC tag equals its PC minus 2, and outside reset the prediction holdoffs equal their reference equations; unbounded, at XLEN 32, 64, and 72, including address wraparound. Assumes only that the pending-prediction valid bit starts clear, its reset value |
 | `pc_increment_holdoff` | Both sequential next PCs equal the reference per-size candidates with holdoff and NOP selection, for portable and Xilinx-primitive builds |
-| `pc_pending_capture` | The pending-prediction valid bit's next state equals the reference clear/set/hold priority |
+| `pc_pending_capture` | The pending-prediction valid bit's next state, including the final selection between running and stalled cases, equals the reference clear/set/hold priority. Covers both values of `PENDING_HANDOFF_EXCLUDES_SLOT2` |
 | `pc_register_mux` | The architectural-PC mux equals the reference nested priority, in the same configurations as `fetch_pc_mux` |
 | `prediction_handoff` | `prediction_release` with `PENDING_HANDOFF_EXCLUDES_SLOT2=1`, the setting the fetch stage uses |
 | `prediction_metadata_output` | Each packet's BTB-taken bit equals the reference priority, and while a prediction is saved or pending, a packet it does not belong to never reports taken. `prediction_metadata_tracker` checks the sequential behavior |
@@ -209,7 +209,7 @@ count, while other assertions in `load_queue.sv` do not affect it.
 | `rob_control_next` | Per-entry valid, done, exception, and replay next state equals the reference indexed writes, including reset, allocation coinciding with completion or commit, and stale tags |
 | `rob_retire_stall` | Retirement strobes and every performance event equal a reference built from the serializer's full commit stall, with the real serializer wiring |
 | `rob_start_cofactor` | CSR and xRET start signals equal the reference equations, the head mask stays one-hot, and CSR and xRET entries are never marked for CDB bypass; unbounded. Assumes an initial reset, with arbitrary payload RAM and serializer outputs |
-| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain. Assumes the start events are mutually exclusive |
+| `trap_unit` | Traps, interrupts, xRETs, and debug entry: mutual exclusion, priority (debug over M over S), targets, nothing taken while the pipeline is stalled, and waiting for committed stores to drain. The separate trap-entry target and combined trap/xRET take match the original target and take outputs. Assumes the start events are mutually exclusive |
 
 ### Execution units and CDB
 
@@ -223,6 +223,7 @@ count, while other assertions in `load_queue.sv` do not affect it.
 | `fu_cdb_adapter_payload_no_refill` | The adapter with `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`, as the two ALU adapters use it. Assumes the FU never presents a result while one is held; the wrapper guarantees this by gating issue |
 | `int_muldiv_shim` | Every tracked MUL operation sits in the pipeline for its width (full or short word), the MUL FIFO credits hold under back-pressure and flushes, and each surviving completion takes its product from the matching multiplier (`prove_alignment*`). For the divider: `o_div_busy` is high exactly while it is not idle, a DIV completion carries the tag of the divide that started last, a kill frees the divider on the next cycle, and a divide a full or partial flush squashes never completes, until its tag starts again. Runs with the word multiplier on and off (`*_fallback`). Assumes a reset on the first cycle only, and that a divide is presented only while the divider is idle (MUL_RS's divide gate, which `reservation_station` checks). Arithmetic values and liveness are out of scope |
 | `mul_completion_tag` | Passing the MUL result's tag through unqualified on invalid cycles, instead of zeroing it, changes no adapter state, valid result, or arbiter input. Assumes one initial reset |
+| `mul_adapter_grant` | The MUL adapter's local valid-feedback grant preserves every completion bit and the pending bit against an adapter driven by the actual CDB arbiter. Both adapters always remain idle. Competing completions, injected test results, flushes, and tags are arbitrary; only an initial reset is assumed. Unbounded |
 
 `divider` compares results with Verilog division at 8 bits, where division is
 cheap for the solver; the divider is the same RTL at every width. A start

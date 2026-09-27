@@ -66,8 +66,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "pc_pending_capture.sby",
-        "Pending-prediction valid next state equals the reference clear/set/hold priority",
-        tasks=("bmc",),
+        "Pending-prediction valid next state equals the reference clear/set/hold priority, for standalone and integrated handoff settings",
+        tasks=("bmc", "bmc_integrated"),
     ),
     FormalTarget(
         "rs_issue_clear.sby",
@@ -327,6 +327,11 @@ FORMAL_TARGETS = [
         "mul_completion_tag.sby",
         "MUL completion tag - unqualified invalid tag preserves adapter state, "
         "valid results, and exact wrapper arbiter input",
+        tasks=("prove", "cover"),
+    ),
+    FormalTarget(
+        "mul_adapter_grant.sby",
+        "MUL adapter local grant preserves every completion bit and pending state against the actual arbiter; unbounded",
         tasks=("prove", "cover"),
     ),
     FormalTarget(

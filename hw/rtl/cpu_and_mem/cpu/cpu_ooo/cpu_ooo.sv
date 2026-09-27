@@ -2651,6 +2651,8 @@ module cpu_ooo #(
   logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
   logic [XLEN-1:0] trap_value_internal;
   logic [XLEN-1:0] interrupt_resume_pc;
+  logic [XLEN-1:0] trap_entry_target;
+  logic            trap_or_xret_taken;
   // A legal WFI waits at the ROB head (see the seed arm below).
   logic            wfi_resume_seed;
   // The seed arm was the last to write interrupt_resume_pc, so a take now
@@ -3238,7 +3240,10 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       interrupt_resume_pc <= '0;
-    end else if (xret_taken) begin
+    end else if (trap_or_xret_taken) begin
+      // The ROB head's return flavor selects the data before the late take
+      // strobe. On an xRET it equals the taken flavor (checked below), so
+      // the register keeps the same update cycle and priority.
       // An xRET never appears on rob_commit_valid_raw, so the arms below never
       // see it: it retires through the full flush that follows it (flush_all,
       // from mret_taken_reg, clears the ROB head and gates commit_en). Without
@@ -3250,8 +3255,7 @@ module cpu_ooo #(
       // the lower privilege. The seed is the xRET target (mepc, sepc, or dpc),
       // which is the redirect target. csr_mepc is stable here: MRET does not
       // write mepc and cannot coincide with a trap entry that would.
-      interrupt_resume_pc <= dret_taken ? csr_dpc : sret_taken ? csr_sepc : csr_mepc;
-    end else if (trap_taken) begin
+      //
       // Every trap take also seeds the resume PC with its redirect target, for
       // two cases that arise before the handler's first instruction retires:
       //  - an M-level interrupt taken just after a trap delegated to S
@@ -3263,7 +3267,13 @@ module cpu_ooo #(
       //    handler's first instruction, as the debug spec requires.
       // Debug Mode entries and redirects also land here; nothing uses the
       // value then, because interrupts are masked in Debug Mode.
-      interrupt_resume_pc <= trap_target;
+      // trap_entry_target is trap_target before its xRET mux; the unit proves that
+      // the two targets match on a trap take.
+      // The trap unit also supplies the combined write enable before its
+      // trap-vs-xRET arbitration. The two takes are mutually exclusive.
+      interrupt_resume_pc <= trap_taken ? trap_entry_target :
+                             mret_start_is_dret ? csr_dpc :
+                             mret_start_is_sret ? csr_sepc : csr_mepc;
     end else if (rob_commit_2_valid_raw) begin
       // Timing: identical value to retired_next_pc(rob_commit_comb_2) in every
       // cycle this arm is taken (checked below in simulation), but the ROB
@@ -3348,6 +3358,17 @@ module cpu_ooo #(
   // (gated) commit payload.
   always @(posedge i_clk) begin
     if (!i_rst) begin
+      if (trap_or_xret_taken != (trap_taken || xret_taken)) begin
+        $error("cpu_ooo: combined trap/xRET take differs from individual takes");
+      end
+      if (xret_taken &&
+          (mret_start_is_dret ? csr_dpc : mret_start_is_sret ? csr_sepc : csr_mepc) !=
+          (dret_taken ? csr_dpc : sret_taken ? csr_sepc : csr_mepc)) begin
+        $error("cpu_ooo: ROB head return flavor differs from the taken xRET");
+      end
+      if (trap_taken && trap_entry_target != trap_target) begin
+        $error("cpu_ooo: trap-entry target differs from its redirect");
+      end
       if (rob_commit_valid_raw && rob_head_retired_next_pc != retired_next_pc(
               rob_commit_comb
           )) begin
@@ -3505,7 +3526,9 @@ module cpu_ooo #(
       .o_trap_to_s(trap_to_s),
       .o_mret_taken(mret_taken),
       .o_sret_taken(sret_taken),
+      .o_trap_or_xret_taken(trap_or_xret_taken),
       .o_trap_target(trap_target),
+      .o_trap_entry_target(trap_entry_target),
       .o_trap_pc(trap_pc_internal),
       .o_trap_cause(trap_cause_internal),
       .o_trap_value(trap_value_internal),

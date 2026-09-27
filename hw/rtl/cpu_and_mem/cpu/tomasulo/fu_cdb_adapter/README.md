@@ -58,6 +58,13 @@ The MEM slot's store-fault and SC registers do not wait; they rely on the MEM
 adapter never being pending (see the
 [CDB arbiter](../cdb_arbiter/README.md#priority)).
 
+The MUL adapter uses its output valid bit as a local grant. A valid MUL
+result always wins lane 0, and a full flush that suppresses the arbiter's
+grant also clears the adapter regardless of grant. This preserves the
+completion packet and its always-idle pending state while removing the arbiter
+tree from that feedback path. The `mul_adapter_grant` formal target proves
+the equivalence against the actual arbiter, including test-injected results.
+
 The ALU adapters keep refill enabled, but a pending ALU adapter deasserts its
 INT RS ready, so the combinational ALU shim never presents a result while the
 adapter is pending; the wrapper asserts this. The same guarantee makes
