@@ -252,6 +252,11 @@ NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 # The memory-heavy list and matrix phases exceed the generic program budget,
 # so they get a larger default with an env override.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
+# coremark_pro_loops spends most of its cycles in single-precision loops on the
+# iterative FP engine and outruns the CoreMark budget in the DDR tier.
+COREMARK_PRO_LOOPS_MAX_CYCLES = int(
+    os.environ.get("COCOTB_COREMARK_PRO_LOOPS_MAX_CYCLES", 30000000)
+)
 # nic_loopback and nic_echo share this budget. Each bring-up waits out the
 # PCS's BER window before CARRIER (about 35k cycles at the simulated clock
 # ratio), frames are checked or copied byte by byte, and nic_loopback also
@@ -4242,8 +4247,10 @@ async def test_real_program(dut: Any) -> None:
 
     # Per-app cycle budgets. Match the is_coremark_like convention (startswith)
     # so coremark_pro workloads get the CoreMark budget too, not just the exact
-    # "coremark" app.
-    if app_name is not None and app_name.startswith("coremark"):
+    # "coremark" app; coremark_pro_loops has its own, larger one.
+    if app_name == "coremark_pro_loops":
+        max_cycles = COREMARK_PRO_LOOPS_MAX_CYCLES
+    elif app_name is not None and app_name.startswith("coremark"):
         max_cycles = COREMARK_MAX_CYCLES
     elif app_name == "sprintf_test":
         max_cycles = SPRINTF_TEST_MAX_CYCLES
