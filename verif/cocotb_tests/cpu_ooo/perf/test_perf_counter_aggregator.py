@@ -56,8 +56,9 @@ PERF_DISPATCH_STALL_INT_RS_FULL = 8
 PERF_DISPATCH_STALL_MUL_RS_FULL = 9
 PERF_DISPATCH_STALL_MEM_RS_FULL = 10
 PERF_DISPATCH_STALL_FP_RS_FULL = 11
-PERF_DISPATCH_STALL_FMUL_RS_FULL = 12
-PERF_DISPATCH_STALL_FDIV_RS_FULL = 13
+# 12 and 13 are reserved and read 0.
+PERF_RESERVED_12 = 12
+PERF_RESERVED_13 = 13
 PERF_DISPATCH_STALL_LQ_FULL = 14
 PERF_DISPATCH_STALL_SQ_FULL = 15
 PERF_DISPATCH_STALL_CHECKPOINT_FULL = 16
@@ -111,8 +112,6 @@ DISPATCH_STATUS_FIELDS = [
     ("mul_rs_full", 1),
     ("mem_rs_full", 1),
     ("fp_rs_full", 1),
-    ("fmul_rs_full", 1),
-    ("fdiv_rs_full", 1),
     ("lq_full", 1),
     ("sq_full", 1),
     ("checkpoint_full", 1),
@@ -325,8 +324,6 @@ async def test_dispatch_activity_and_resource_stall_counters(dut: Any) -> None:
             "stall": True,
             "mem_rs_full": True,
             "fp_rs_full": True,
-            "fmul_rs_full": True,
-            "fdiv_rs_full": True,
             "lq_full": True,
             "sq_full": True,
             "checkpoint_full": True,
@@ -345,8 +342,8 @@ async def test_dispatch_activity_and_resource_stall_counters(dut: Any) -> None:
         PERF_DISPATCH_STALL_MUL_RS_FULL: 0,
         PERF_DISPATCH_STALL_MEM_RS_FULL: 1,
         PERF_DISPATCH_STALL_FP_RS_FULL: 1,
-        PERF_DISPATCH_STALL_FMUL_RS_FULL: 1,
-        PERF_DISPATCH_STALL_FDIV_RS_FULL: 1,
+        PERF_RESERVED_12: 0,
+        PERF_RESERVED_13: 0,
         PERF_DISPATCH_STALL_LQ_FULL: 1,
         PERF_DISPATCH_STALL_SQ_FULL: 1,
         PERF_DISPATCH_STALL_CHECKPOINT_FULL: 1,

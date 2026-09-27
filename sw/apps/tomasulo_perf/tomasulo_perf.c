@@ -30,9 +30,9 @@
  *
  * Benchmarks (floating-point, double-precision):
  *   8. Dependent FADD.D chain   (FP ALU serialized)
- *   9. Independent FADD.D chains (FP adder takes one at a time)
+ *   9. Independent FADD.D chains (FP engine takes one at a time)
  *  10. Dependent FMUL.D chain   (FP MUL serialized)
- *  11. Independent FMUL.D chains (FP MUL parallel)
+ *  11. Independent FMUL.D chains (FP engine takes one at a time)
  *  12. Dependent FMADD.D chain  (fused multiply-add serialized)
  *  13. Mixed FP + INT           (cross-unit parallelism)
  *
@@ -42,8 +42,8 @@
  * With TOMASULO_PERF_ENABLE_PROFILE=1 and the counters present, each report
  * also checks that the hardware reports every snapshot counter (0-105), that
  * the head-load wait split adds up (counters 90, 92 and 93 sum to 86; 102, 103
- * and 105 sum to 93) and that the reserved counters 89, 91 and 104 read 0. A
- * failed check ends the run with <<FAIL>>.
+ * and 105 sum to 93) and that the reserved counters (12, 13, 50, 51, 61, 62,
+ * 74, 75, 89, 91 and 104) read 0. A failed check ends the run with <<FAIL>>.
  */
 
 #include "csr.h"
@@ -64,8 +64,9 @@ static tomasulo_profile_snapshot_t bench_profile_end;
 
 static uint32_t bench_profile_failures;
 
-/* Wrapper counters with no source; they must read 0 (perf README). */
-static const uint32_t bench_profile_reserved[] = {89U, 91U, 104U};
+/* Counters with no source; they must read 0 (perf README). */
+static const uint32_t bench_profile_reserved[] = {
+    12U, 13U, 50U, 51U, 61U, 62U, 74U, 75U, 89U, 91U, 104U};
 
 /*
  * Print the head-load wait split and check that it adds up and that the
@@ -369,8 +370,8 @@ int main(void)
     /* ===================================================================== */
     /* Benchmark 9: Independent FADD.D chains (4 x 25 = 100 instructions)    */
     /* 4 chains with no cross-dependencies, ideal for OOO execution.         */
-    /* FP analogue of Bench 2. fp_add_shim has one operation in flight at    */
-    /* a time, so the chains cannot overlap in the FP adder.                 */
+    /* FP analogue of Bench 2. The FP engine runs one operation at a time,   */
+    /* so the chains cannot overlap.                                         */
     /* ===================================================================== */
     uart_printf("Bench 9: Independent FADD.D chains (4x25 = 100 instrs)\n");
     {
@@ -417,7 +418,8 @@ int main(void)
 
     /* ===================================================================== */
     /* Benchmark 11: Independent FMUL.D chains (4 x 12 = 48 instructions)    */
-    /* 4 independent FMUL.D chains. FP analogue of Bench 4.                  */
+    /* 4 independent FMUL.D chains. FP analogue of Bench 4. The FP engine    */
+    /* runs one operation at a time, so the chains cannot overlap.           */
     /* ===================================================================== */
     uart_printf("Bench 11: Independent FMUL.D chains (4x12 = 48 instrs)\n");
     {
@@ -533,8 +535,8 @@ int main(void)
     uart_printf("  Performance measurement complete.\n");
     uart_printf("  Compare these pairs for the IPC gain of out-of-order execution:\n");
     uart_printf("  INT: Bench 1 vs 2 (ADD) and Bench 3 vs 4 (MUL)\n");
-    uart_printf("  FP:  Bench 10 vs 11 (FMUL). Bench 8 vs 9 (FADD) show about the\n");
-    uart_printf("       same IPC: the FP adder takes one operation at a time.\n");
+    uart_printf("  FP:  Bench 8 vs 9 (FADD) and Bench 10 vs 11 (FMUL) show about the\n");
+    uart_printf("       same IPC: the FP engine runs one operation at a time.\n");
     uart_printf("============================================================\n\n");
 
 #if TOMASULO_PERF_ENABLE_PROFILE

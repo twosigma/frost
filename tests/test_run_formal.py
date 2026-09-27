@@ -112,11 +112,6 @@ FORMAL_TARGETS = [
         tasks=("bmc",),
     ),
     FormalTarget(
-        "fp_payload_read.sby",
-        "FPU payload prefetch addresses match the reference post-pop increment for arbitrary state",
-        tasks=("bmc",),
-    ),
-    FormalTarget(
         "lq_ram_payload.sby",
         "Load-result RAM write enables and every enabled address/data match the reference mux",
         tasks=("bmc", "bmc_forward", "bmc_forward_only", "cover"),
@@ -202,11 +197,6 @@ FORMAL_TARGETS = [
         tasks=("bmc", "bmc_tag_indexed"),
     ),
     FormalTarget(
-        "fp_fma_align.sby",
-        "FMA alignment shift amounts equal max-exponent subtraction at both precisions",
-        tasks=("bmc", "bmc_xlen32"),
-    ),
-    FormalTarget(
         "lq_tag_order.sby",
         "LQ tag order and full-window boundary match extended arithmetic for arbitrary tags",
         tasks=("bmc",),
@@ -235,7 +225,7 @@ FORMAL_TARGETS = [
     FormalTarget(
         "instr_operand_classifier.sby",
         "ID operand classes - direct fields match classification through the operation decode "
-        "for all instructions and fault overrides; only FMUL_RS ops read FP source 3",
+        "for all instructions and fault overrides; only FP_RS ops read FP source 3",
         tasks=("bmc",),
     ),
     FormalTarget(
@@ -460,20 +450,9 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
-        "fp_add_shim.sby",
-        "FP add shim - FP add/compare/classify/sgnj/convert CDB pipeline",
-    ),
-    FormalTarget(
-        "fp_mul_shim.sby",
-        "FP mul shim - FP multiply/FMA CDB pipeline",
-    ),
-    FormalTarget(
-        "fp_mul_shim_order.sby",
-        "FP mul shim - each operation's tag leaves its subunit queue with its own result and the ring in issue order",
-    ),
-    FormalTarget(
-        "fp_div_shim.sby",
-        "FP div shim - FP divide/sqrt CDB pipeline",
+        "fp_shim.sby",
+        "FP shim - busy tracks the engine, completions carry the started tag, "
+        "and a flushed operation never completes",
     ),
     FormalTarget(
         "async_fifo.sby",
@@ -484,8 +463,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo integration wrapper (ROB + RAT + RS + CDB arbiter) - commit propagation, "
-        "flush composition, FMUL registered done repair",
-        tasks=("bmc", "cover", "fmul_repair_bmc"),
+        "flush composition, FP registered done repair",
+        tasks=("bmc", "cover", "fp_repair_bmc"),
     ),
 ]
 
@@ -546,8 +525,8 @@ SBY_TASKS = [
     ),
     ("prove_xlen72", "Unbounded captured-tag checking with local XLEN 72"),
     (
-        "fmul_repair_bmc",
-        "Bounded model checking with production FMUL dispatch done repair enabled",
+        "fp_repair_bmc",
+        "Bounded model checking with production FP dispatch done repair enabled",
     ),
     # INT reservation-station features at eight-entry component capacity;
     # the wrapper target checks the production sixteen-entry station.

@@ -112,8 +112,8 @@ selected from a different source than its target would show at the output.
 | Target | Checks |
 | --- | --- |
 | `decoded_bundle_queue` | FIFO order and payload preservation against an independent queue model, unbounded, at depths 4 and 2 (`prove_depth2`), with covers for empty bypass, full, wraparound, simultaneous push and pop, and flush of a nonempty queue. See below |
-| `dispatch_admission` | Bundle and slot-2 admission equal the reference equations, and a firing slot 2 never reads FP source 3 (so done-repair channel 6 stays idle), assuming the operand classifier's contract that only FMUL_RS ops read it. `bmc_queued` checks the CPU's setting (`SLOT2_VALID_FROM_BUNDLE=1`) and assumes the decoded-bundle queue's guarantee that slot-2 valid equals the packet's not-NOP bit whenever dispatch is valid |
-| `instr_operand_classifier` | Decode's direct operand-class fields equal classification through the instruction decoder's operation enum, for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults; only FMUL_RS ops read FP source 3 |
+| `dispatch_admission` | Bundle and slot-2 admission equal the reference equations, and a firing slot 2 never reads FP source 3 (so done-repair channel 6 stays idle), assuming the operand classifier's contract that only FP_RS ops read it. `bmc_queued` checks the CPU's setting (`SLOT2_VALID_FROM_BUNDLE=1`) and assumes the decoded-bundle queue's guarantee that slot-2 valid equals the packet's not-NOP bit whenever dispatch is valid |
+| `instr_operand_classifier` | Decode's direct operand-class fields equal classification through the instruction decoder's operation enum, for every instruction bit pattern, injected NOPs, illegal flags, and fetch faults; only FP_RS ops read FP source 3 |
 | `register_alias_table` | x0 is never renamed; a rename records its ROB tag; an INT commit clears a mapping only if the mapping still holds the committing tag; reset clears mappings and checkpoints; a full flush clears the checkpoints and, unless a checkpoint restore coincides, the mappings; a reclaim-all restore frees every checkpoint |
 
 `decoded_bundle_queue` uses an 8-bit symbolic payload, so the check does not
@@ -137,11 +137,11 @@ the next cycle. In simulation the last three are assertions.
 | `rs_issue_clear` | The second issue port's one-hot entry clear equals the reference indexed clear: single issue at depth 16, dual issue at depths 4 and 32, and the INT station's parameters at depth 8 and at depth 16 with an 8-entry window |
 | `rs_pretag_cofactor` | The pre-issue ROB tag, computed ahead for each of the four combinations of the two CDB valid bits, equals the reference priority select, including the idle case, in two station configurations (`bmc`, `bmc_tag_indexed`). The MEM station, its only production user, adds raw-wakeup candidates; `rs_raw_pretag` checks that form |
 | `rs_raw_pretag` | With the real early-wakeup merger in front, the pre-issue tag selected from eight raw-wakeup candidates equals the MEM station's reference winner |
-| `tomasulo_wrapper` | The back end together (ROB, RAT, six stations, CDB arbiter, and memory queues): commit clears a rename only if no newer write renamed the register, a full flush or reset empties every structure, each station's copy of the CDB matches the bus, and the stations' ROB-tag rule holds with the real ROB allocator. See below |
+| `tomasulo_wrapper` | The back end together (ROB, RAT, four stations, CDB arbiter, and memory queues): commit clears a rename only if no newer write renamed the register, a full flush or reset empties every structure, each station's copy of the CDB matches the bus, and the stations' ROB-tag rule holds with the real ROB allocator. See below |
 
 `reservation_station` checks the module's default parameters at BMC depth
 12. No production station uses exactly those defaults; `tomasulo_wrapper`
-checks all six stations with their production parameters. The `*_tag_indexed`
+checks all four stations with their production parameters. The `*_tag_indexed`
 tasks turn on the INT station's features at 8 entries, with BMC depth 7;
 that enables properties the defaults leave inactive. Both have depth-20 cover
 tasks. Standalone, the station assumes a reset, a legal dispatch environment
@@ -165,9 +165,9 @@ assumes that dispatch comes with an allocation and uses that cycle's
 allocated ROB tag, that a partial flush names a live ROB entry, and that
 address translation is off; the `tlb` and `ptw` targets and the `vm_test`
 simulation cover translation. At depth 4 the proof does not reach ROB tag
-wraparound; simulation covers tag reuse. `fmul_repair_bmc` enables the FMUL
+wraparound; simulation covers tag reuse. `fp_repair_bmc` enables the FP
 dispatch done repair, as the CPU does (`ENABLE_DISPATCH_DONE_REPAIR=1`), and
-assumes that dispatch's repair channels carry the pending FMUL instruction's
+assumes that dispatch's repair channels carry the pending FP instruction's
 source readiness and tags.
 
 ### Load and store queues
@@ -217,12 +217,7 @@ count, while other assertions in `load_queue.sv` do not affect it.
 | `alu_shift_hint` | An ALU given the precomputed shift-amount hint matches one without it, and both match an independent shift and rotate reference. `rs_issue2_shamt` simulation covers how the station captures and holds the hint |
 | `cdb_arbiter` | The two-lane grant tree equals a reference priority scan. Grants are one-hot per lane, disjoint, at most two, and only to valid requesters, and a kill clears both CDB valid bits and the visible grants. Assumes each ALU's early value equals its completion value |
 | `divider_prefix` | Each divider stage equals two steps of full-width restoring division, at 64 and 32 bits. Assumes a bound on each stage's incoming remainder; see below |
-| `fp_add_shim` | FP add, compare, classify, sign-inject, and convert pipeline: busy only while an operation is in flight, results carry their tag, and an operation flushed before its completion cycle produces no output |
-| `fp_div_shim` | FP divide and square-root control: busy tracks occupancy, results carry their tag, a new operation never overwrites a held result, and a squashed operation never completes, except on the full-flush cycle itself, where the CDB arbiter's kill suppresses it. The arithmetic unit is replaced by a model with arbitrary latency, results, and flags |
-| `fp_fma_align` | FMA alignment shift amounts equal max-exponent subtraction for all exponents, at single and double precision |
-| `fp_mul_shim` | FP multiply and FMA pipeline: queue and result-FIFO counts stay in range, credits are conservative, and each payload FIFO's count matches its source |
-| `fp_mul_shim_order` | The FP multiply shim with the tag-order proof: an arbitrary operation's tag leaves its subunit's tag queue in the cycle its own result leaves the subunit (11 cycles for a multiply, 16 for an FMA), after every older one, and the result ring presents it with its tag and source after every older entry |
-| `fp_payload_read` | The FP multiply shim's two payload-RAM prefetch addresses equal the reference pointer-plus-pop expressions, including pointer wraparound |
+| `fp_shim` | FP shim control: busy exactly while the engine holds an operation, results only while busy and with the tag of the operation that started last, a kill frees the engine on the next cycle, and no result appears for an operation after a full or partial flush squashes it, until its tag starts again (a flush on the result cycle leaves that cycle's result to the CDB adapter). The engine is replaced by a model with arbitrary latency, results, and flags; the `fp_engine_equiv` simulation checks its arithmetic against Berkeley SoftFloat. Assumes FP_RS issues only while the shim is not busy |
 | `fu_cdb_adapter` | The FU-to-CDB holding register: pass-through, hold under back-pressure with a stable payload, a clear on a grant with no new result behind it, on a full flush, or on a partial flush that squashes the held result, and no stale output after a squash. Checks the default combinational output, not the registered output (`REGISTER_OUTPUT=1`) of the DIV and FP adapters. Assumes full and partial flushes never coincide |
 | `fu_cdb_adapter_payload_no_refill` | The adapter with `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`, as the two ALU adapters use it. Assumes the FU never presents a result while one is held; the wrapper guarantees this by gating issue |
 | `int_muldiv_shim` | Every tracked MUL or DIV operation sits in the pipeline for its width (full or short word), the shared FIFO credits hold under back-pressure and flushes, and each surviving completion takes its result from the matching pipeline (`prove_alignment*`). Runs with short word paths on and off (`*_fallback`). Assumes a reset on the first cycle only. Arithmetic values and liveness are out of scope |

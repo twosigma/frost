@@ -33,7 +33,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 from config import XLEN
 
-from .fp_add_shim_interface import _parse_instr_op_enum
+from .fp_shim_interface import _parse_instr_op_enum
 from .int_muldiv_shim_interface import IntMulDivShimInterface
 from models import alu_model
 

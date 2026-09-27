@@ -69,8 +69,6 @@ RS_INT = 0
 RS_MUL = 1
 RS_MEM = 2
 RS_FP = 3
-RS_FMUL = 4
-RS_FDIV = 5
 
 
 def _parse_instr_op_enum() -> dict[str, int]:
@@ -244,20 +242,6 @@ _RS_SIGNAL_MAP = {
         "empty": "o_fp_rs_empty",
         "count": "o_fp_rs_count",
     },
-    RS_FMUL: {
-        "issue": "o_fmul_rs_issue",
-        "fu_ready": "i_fmul_rs_fu_ready",
-        "full": "o_fmul_rs_full",
-        "empty": "o_fmul_rs_empty",
-        "count": "o_fmul_rs_count",
-    },
-    RS_FDIV: {
-        "issue": "o_fdiv_rs_issue",
-        "fu_ready": "i_fdiv_rs_fu_ready",
-        "full": "o_fdiv_rs_full",
-        "empty": "o_fdiv_rs_empty",
-        "count": "o_fdiv_rs_count",
-    },
 }
 
 _RS_DISPATCH_INPUT_MAP = {
@@ -265,8 +249,6 @@ _RS_DISPATCH_INPUT_MAP = {
     RS_MUL: ("i_mul_rs_dispatch", "i_mul_rs_dispatch_2"),
     RS_MEM: ("i_mem_rs_dispatch", "i_mem_rs_dispatch_2"),
     RS_FP: ("i_fp_rs_dispatch", "i_fp_rs_dispatch_2"),
-    RS_FMUL: ("i_fmul_rs_dispatch", "i_fmul_rs_dispatch_2"),
-    RS_FDIV: ("i_fdiv_rs_dispatch", "i_fdiv_rs_dispatch_2"),
 }
 
 
@@ -507,8 +489,6 @@ class TomasuloInterface:
         self.dut.i_mul_rs_fu_ready.value = 0
         self.dut.i_mem_rs_fu_ready.value = 0
         self.dut.i_fp_rs_fu_ready.value = 0
-        self.dut.i_fmul_rs_fu_ready.value = 0
-        self.dut.i_fdiv_rs_fu_ready.value = 0
 
     # =========================================================================
     # ROB Allocation
@@ -563,12 +543,14 @@ class TomasuloInterface:
         The arbiter broadcasts to both the ROB (cdb_write) and all RS (cdb
         broadcast for wakeup).
 
-        Every slot has an internal adapter (0-3: ALU, MUL, DIV, MEM; 4-6:
-        FP_ADD, FP_MUL, FP_DIV; 7: ALU2), and the wrapper's ``cdb_arb_in_*``
-        muxes give it priority: an injection on ``i_fu_complete_N`` reaches the
-        arbiter only in cycles when that slot's adapter presents nothing. On
-        the two ALU slots, an injected value goes through the arbiter tree, not
-        the live-value bypass (CDB arbiter README, "Live ALU values").
+        Slots 0-4 and 7 have an internal adapter (0-3: ALU, MUL, DIV, MEM;
+        4: FP; 7: ALU2), and the wrapper's ``cdb_arb_in_*`` muxes give it
+        priority: an injection on ``i_fu_complete_N`` reaches the arbiter only
+        in cycles when that slot's adapter presents nothing. Slots 5 and 6
+        have no unit behind them, so an injection there always reaches the
+        arbiter. On the two ALU slots, an injected value goes through the
+        arbiter tree, not the live-value bypass (CDB arbiter README, "Live ALU
+        values").
         """
         req = FuComplete(
             valid=True,
@@ -603,9 +585,9 @@ class TomasuloInterface:
         return int(self.dut.o_cdb_grant.value)
 
     # CDB shorthands. They inject on FU_FP_ADD (slot 4) rather than slots 0-3,
-    # which the ALU, MUL, DIV, and MEM adapters drive. Slot 4 has its own
-    # FP_ADD adapter, so an injection lands only while that adapter is idle
-    # (see drive_fu_complete).
+    # which the ALU, MUL, DIV, and MEM adapters drive. Slot 4 has the FP
+    # adapter, so an injection lands only while that adapter is idle (see
+    # drive_fu_complete).
     def drive_cdb(
         self,
         tag: int,

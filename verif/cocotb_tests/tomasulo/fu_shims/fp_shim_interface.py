@@ -12,11 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for fp_add_shim verification.
+"""DUT interface for fp_shim verification.
 
 Packs rs_issue_t, unpacks fu_complete_t, and wraps the DUT handles for
-driving stimulus and reading results. The other shim interfaces import
-the packing helpers from here.
+driving stimulus and reading results. The other shim interfaces and several
+other benches import the packing helpers and the instr_op_e parser from here.
 """
 
 import re
@@ -303,8 +303,8 @@ def _parse_instr_op_enum() -> dict[str, int]:
 # =============================================================================
 
 
-class FpAddShimInterface:
-    """Interface to the fp_add_shim DUT.
+class FpShimInterface:
+    """Interface to the fp_shim DUT.
 
     Drives rs_issue_t input, reads fu_complete_t output, and controls the
     flush and reset signals.

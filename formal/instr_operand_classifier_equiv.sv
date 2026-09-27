@@ -148,18 +148,14 @@ module instr_operand_classifier_equiv (
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X, riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
-      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
-      rs_type_pre = riscv_pkg::RS_FP;
-
+      riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
       riscv_pkg::FMUL_S, riscv_pkg::FMUL_D,
       riscv_pkg::FMADD_S, riscv_pkg::FMSUB_S,
       riscv_pkg::FNMADD_S, riscv_pkg::FNMSUB_S,
       riscv_pkg::FMADD_D, riscv_pkg::FMSUB_D,
-      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D:
-      rs_type_pre = riscv_pkg::RS_FMUL;
-
+      riscv_pkg::FNMADD_D, riscv_pkg::FNMSUB_D,
       riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
-      rs_type_pre = riscv_pkg::RS_FDIV;
+      rs_type_pre = riscv_pkg::RS_FP;
 
       riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET:
       rs_type_pre = riscv_pkg::RS_NONE;
@@ -483,8 +479,8 @@ module instr_operand_classifier_equiv (
     p_has_fp_flags : assert (has_fp_flags_direct == has_fp_flags_pre);
     p_needs_lq : assert (needs_lq_direct == needs_lq_pre);
     p_needs_sq : assert (needs_sq_direct == needs_sq_pre);
-    // Dispatch relies on this contract: only FMA ops, which go to FMUL_RS,
-    // read FP source 3, so slot 2 (which takes no FP compute op) never does.
-    p_fp_rs3_only_fmul : assert (!uses_fp_rs3_direct || (rs_type_direct == riscv_pkg::RS_FMUL));
+    // Dispatch relies on this contract: only FMA ops, which go to FP_RS, read
+    // FP source 3, so slot 2 (which takes no FP compute op) never does.
+    p_fp_rs3_only_fp_rs : assert (!uses_fp_rs3_direct || (rs_type_direct == riscv_pkg::RS_FP));
   end
 endmodule : instr_operand_classifier_equiv

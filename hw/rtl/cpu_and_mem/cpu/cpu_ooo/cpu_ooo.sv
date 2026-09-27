@@ -500,13 +500,11 @@ module cpu_ooo #(
   riscv_pkg::rs_dispatch_t                      mul_rs_dispatch;
   riscv_pkg::rs_dispatch_t                      mem_rs_dispatch;
   riscv_pkg::rs_dispatch_t                      fp_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                      fmul_rs_dispatch;
-  riscv_pkg::rs_dispatch_t                      fdiv_rs_dispatch;
   riscv_pkg::rs_dispatch_t                      split_rs_dispatch_dbg;
 
   // RS issue. Exposed but not externally driven: the FU shims are inside the wrapper.
   riscv_pkg::rs_issue_t rs_issue_int, rs_issue_mul, rs_issue_mem;
-  riscv_pkg::rs_issue_t rs_issue_fp, rs_issue_fmul, rs_issue_fdiv;
+  riscv_pkg::rs_issue_t rs_issue_fp;
   // Duplicate register of rs_issue_int.rob_tag, loaded on the same edge and
   // used only by the branch-resolution predicates; branch_update.tag and
   // every ROB, recovery, and FU consumer use rs_issue_int.rob_tag itself.
@@ -559,10 +557,6 @@ module cpu_ooo #(
       split_rs_dispatch_dbg = mem_rs_dispatch;
     end else if (fp_rs_dispatch.valid) begin
       split_rs_dispatch_dbg = fp_rs_dispatch;
-    end else if (fmul_rs_dispatch.valid) begin
-      split_rs_dispatch_dbg = fmul_rs_dispatch;
-    end else if (fdiv_rs_dispatch.valid) begin
-      split_rs_dispatch_dbg = fdiv_rs_dispatch;
     end
   end
 
@@ -1498,8 +1492,6 @@ module cpu_ooo #(
   riscv_pkg::rs_dispatch_t mul_rs_dispatch_2;
   riscv_pkg::rs_dispatch_t mem_rs_dispatch_2;
   riscv_pkg::rs_dispatch_t fp_rs_dispatch_2;
-  riscv_pkg::rs_dispatch_t fmul_rs_dispatch_2;
-  riscv_pkg::rs_dispatch_t fdiv_rs_dispatch_2;
 
   always_comb begin
     rob_alloc_req_2 = rob_alloc_req_2_raw;
@@ -1527,14 +1519,14 @@ module cpu_ooo #(
   // Resource status
   logic rob_full, rob_empty;
   logic int_rs_full, mul_rs_full, mem_rs_full;
-  logic fp_rs_full, fmul_rs_full, fdiv_rs_full;
+  logic fp_rs_full;
   logic lq_full, sq_full;
 
   // Slot-2 "room for 2" status from the wrapper.  Used by dispatch to gate
   // slot-2 fire when slot-1 is also targeting the same structure.
   logic rob_full_for_2;
   logic int_rs_full_for_2, mul_rs_full_for_2, mem_rs_full_for_2;
-  logic fp_rs_full_for_2, fmul_rs_full_for_2, fdiv_rs_full_for_2;
+  logic fp_rs_full_for_2;
   logic lq_full_for_2, sq_full_for_2;
 
   // Branch update
@@ -2031,16 +2023,12 @@ module cpu_ooo #(
       .i_mul_rs_dispatch(mul_rs_dispatch),
       .i_mem_rs_dispatch(mem_rs_dispatch),
       .i_fp_rs_dispatch(fp_rs_dispatch),
-      .i_fmul_rs_dispatch(fmul_rs_dispatch),
-      .i_fdiv_rs_dispatch(fdiv_rs_dispatch),
       // Slot-2 RS dispatch, driven by the dispatch unit. The wrapper
       // forwards what dispatch produces; valids assert when slot-2 fires.
       .i_int_rs_dispatch_2(int_rs_dispatch_2),
       .i_mul_rs_dispatch_2(mul_rs_dispatch_2),
       .i_mem_rs_dispatch_2(mem_rs_dispatch_2),
       .i_fp_rs_dispatch_2(fp_rs_dispatch_2),
-      .i_fmul_rs_dispatch_2(fmul_rs_dispatch_2),
-      .i_fdiv_rs_dispatch_2(fdiv_rs_dispatch_2),
       .o_rs_full(),
 
       // RS issue + status (INT_RS)
@@ -2075,22 +2063,6 @@ module cpu_ooo #(
       .o_fp_rs_full_for_2(fp_rs_full_for_2),
       .o_fp_rs_empty(),
       .o_fp_rs_count(),
-
-      // FMUL_RS
-      .o_fmul_rs_issue(rs_issue_fmul),
-      .i_fmul_rs_fu_ready(1'b1),
-      .o_fmul_rs_full(fmul_rs_full),
-      .o_fmul_rs_full_for_2(fmul_rs_full_for_2),
-      .o_fmul_rs_empty(),
-      .o_fmul_rs_count(),
-
-      // FDIV_RS
-      .o_fdiv_rs_issue(rs_issue_fdiv),
-      .i_fdiv_rs_fu_ready(1'b1),
-      .o_fdiv_rs_full(fdiv_rs_full),
-      .o_fdiv_rs_full_for_2(fdiv_rs_full_for_2),
-      .o_fdiv_rs_empty(),
-      .o_fdiv_rs_count(),
 
       // Store queue memory interface
       .o_sq_mem_write_en(sq_mem_write_en),
@@ -2317,17 +2289,13 @@ module cpu_ooo #(
       .o_mul_rs_dispatch(mul_rs_dispatch),
       .o_mem_rs_dispatch(mem_rs_dispatch),
       .o_fp_rs_dispatch(fp_rs_dispatch),
-      .o_fmul_rs_dispatch(fmul_rs_dispatch),
-      .o_fdiv_rs_dispatch(fdiv_rs_dispatch),
 
       // Slot-2 RS dispatch (2-wide dispatch). At most one packet has .valid=1
       // per cycle: the RS family slot-2 routes to when it fires.
-      .o_int_rs_dispatch_2 (int_rs_dispatch_2),
-      .o_mul_rs_dispatch_2 (mul_rs_dispatch_2),
-      .o_mem_rs_dispatch_2 (mem_rs_dispatch_2),
-      .o_fp_rs_dispatch_2  (fp_rs_dispatch_2),
-      .o_fmul_rs_dispatch_2(fmul_rs_dispatch_2),
-      .o_fdiv_rs_dispatch_2(fdiv_rs_dispatch_2),
+      .o_int_rs_dispatch_2(int_rs_dispatch_2),
+      .o_mul_rs_dispatch_2(mul_rs_dispatch_2),
+      .o_mem_rs_dispatch_2(mem_rs_dispatch_2),
+      .o_fp_rs_dispatch_2 (fp_rs_dispatch_2),
 
       // Checkpoint management
       .i_checkpoint_available(checkpoint_available),
@@ -2350,8 +2318,6 @@ module cpu_ooo #(
       .i_mul_rs_full(mul_rs_full),
       .i_mem_rs_full(mem_rs_full),
       .i_fp_rs_full(fp_rs_full),
-      .i_fmul_rs_full(fmul_rs_full),
-      .i_fdiv_rs_full(fdiv_rs_full),
       .i_lq_full(lq_full),
       .i_sq_full(sq_full),
 
@@ -2361,8 +2327,6 @@ module cpu_ooo #(
       .i_mul_rs_full_for_2(mul_rs_full_for_2),
       .i_mem_rs_full_for_2(mem_rs_full_for_2),
       .i_fp_rs_full_for_2(fp_rs_full_for_2),
-      .i_fmul_rs_full_for_2(fmul_rs_full_for_2),
-      .i_fdiv_rs_full_for_2(fdiv_rs_full_for_2),
       .i_lq_full_for_2(lq_full_for_2),
       .i_sq_full_for_2(sq_full_for_2),
 

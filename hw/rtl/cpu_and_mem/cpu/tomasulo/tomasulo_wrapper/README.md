@@ -2,11 +2,11 @@
 
 `tomasulo_wrapper.sv` assembles the out-of-order back-end. `cpu_ooo`
 instantiates it once. It contains the reorder buffer (ROB), register alias
-table (RAT), six reservation stations, the load and store queues (LQ, SQ), the
-data MMU, the two-lane CDB arbiter, and the functional-unit shims and CDB
+table (RAT), four reservation stations, the load and store queues (LQ, SQ),
+the data MMU, the two-lane CDB arbiter, and the functional-unit shims and CDB
 adapters, plus the logic that connects them: commit and CDB registration,
-flush distribution, store-conditional resolution, dispatch buffers for the FP
-stations, and the early store-address path. The
+flush distribution, store-conditional resolution, the dispatch buffer for the
+FP station, and the early store-address path. The
 [back-end overview](../README.md) explains how the pieces fit together.
 
 ## What it instantiates
@@ -15,12 +15,12 @@ stations, and the early store-address path. The
 |-------|-------|-------|
 | [`reorder_buffer`](../reorder_buffer/README.md) | 1 | |
 | [`register_alias_table`](../register_alias_table/README.md) | 1 | |
-| [`reservation_station`](../reservation_station/README.md) | 6 | INT, MUL, MEM, FP, FMUL, FDIV |
+| [`reservation_station`](../reservation_station/README.md) | 4 | INT, MUL, MEM, FP |
 | [`load_queue`](../load_queue/README.md), [`store_queue`](../store_queue/README.md) | 1 each | |
 | [`dmmu`](../../mmu/dmmu.sv) | 1 | Sv39 data translation between MEM_RS issue and the LQ/SQ address updates, bypassed while translation is off. The page-table walker lives in `cpu_ooo`, reached through the `*_walk_*` ports. |
 | [`cdb_arbiter`](../cdb_arbiter/README.md) | 1 | Two lanes |
-| [`fu_cdb_adapter`](../fu_cdb_adapter/README.md) | 8 | One per CDB slot |
-| [FU shims](../fu_shims/README.md) | 6 | `int_alu_shim` ×2, `int_muldiv_shim` (feeds both the MUL and DIV slots), `fp_add_shim`, `fp_mul_shim`, `fp_div_shim` |
+| [`fu_cdb_adapter`](../fu_cdb_adapter/README.md) | 6 | One per CDB slot with a unit behind it |
+| [FU shims](../fu_shims/README.md) | 4 | `int_alu_shim` ×2, `int_muldiv_shim` (feeds both the MUL and DIV slots), `fp_shim` |
 
 The MEM slot's adapter has no shim: its input is a mux of the registered store
 fault, the registered SC result, and the LQ result. INT_RS's port-0 issue
@@ -41,8 +41,8 @@ Glue that is large enough to stand alone lives in submodules:
 | `tomasulo_perf_counters` | `perf/` | The back-end profiling counters |
 
 The rest stays in `tomasulo_wrapper.sv`: CDB registration, flush
-distribution, the MEM-slot input mux, the FP-family dispatch buffers, and the
-shim and adapter wiring.
+distribution, the MEM-slot input mux, the FP dispatch buffer, and the shim and
+adapter wiring.
 
 ## Parameters
 
@@ -66,8 +66,8 @@ builds choose it with `build.py --perf-counters`.
 `dispatch_rs_router` turns the dispatch packets into a valid bit per station
 and slot, and a slot-1 intent bit per station that each station uses to pick
 slot 2's entry early. All of them are gated by `i_backend_recovery_hold`. Each
-station reports full and full-for-2 status to dispatch; for the FP-family
-stations the wrapper adds its one-entry dispatch buffer to that count. The LQ
+station reports full and full-for-2 status to dispatch; for FP_RS the
+wrapper adds its one-entry dispatch buffer to that count. The LQ
 and SQ allocate from the MEM_RS packets of both slots, slot 1 first.
 
 ## Flush coordination
@@ -83,7 +83,7 @@ tag for age comparisons, to every block.
 | `i_early_recovery_flush` | Execute-time (early) branch recovery | The LQ's partial-flush input |
 
 The speculative blocks (the stations, adapters, FU shims, data MMU, SC table,
-FP-family buffers, coherence port, and the CDB arbiter's `i_kill`, which
+FP dispatch buffer, coherence port, and the CDB arbiter's `i_kill`, which
 suppresses both lanes on a full flush) use two derived terms:
 `speculative_flush_all = i_flush_all || i_flush_after_head_commit` and
 `speculative_flush_en = i_flush_en && !i_flush_after_head_commit`. The LQ takes
@@ -100,7 +100,7 @@ whenever `speculative_flush_all` is low. When they differ, the LQ's full-flush
 input is also high and clears everything visible.
 
 `i_backend_recovery_hold` is not a flush. While it is high, the wrapper blocks
-dispatch into every station, blocks issue, and holds the FP-family buffers.
+dispatch into every station, blocks issue, and holds the FP dispatch buffer.
 
 Some wide payload registers are written even when the write will be
 discarded. The SQ writes a store's address and data payload even if the store
@@ -169,16 +169,14 @@ every valid ALU result, which follows from the rule in the next section. The
 | 1 | MUL | 0 | 0 | |
 | 2 | DIV | 0 | 1 | |
 | 3 | MEM | 0 | 0 | |
-| 4 | FP_ADD | 0 | 1 | |
-| 5 | FP_MUL | 0 | 1 | Full flush held for one extra cycle |
-| 6 | FP_DIV | 0 | 1 | Full flush held for one extra cycle |
+| 4 | FP | 0 | 1 | |
+
+Slots 5 and 6 (`FU_FP_MUL`, `FU_FP_DIV`) have no unit behind them; only their
+test inputs drive them.
 
 With refill off, a granted adapter always returns to idle, which keeps the
 grant out of the FU result FIFO and issue logic. `REGISTER_OUTPUT=1` removes
-the same-cycle pass-through, adding a cycle to every DIV and FP result. The FP
-multiply and divide shims act on a registered snapshot of the flush (pulse,
-flush tag, and head tag), one cycle late, so their adapters treat the cycle
-after a full flush as a flush too. The
+the same-cycle pass-through, adding a cycle to every DIV and FP result. The
 [adapter README](../fu_cdb_adapter/README.md) describes each parameter.
 
 A pending ALU adapter deasserts its INT_RS port's `fu_ready`, so no ALU result
@@ -189,16 +187,16 @@ the result's valid bit alone as its write enable
 result for the CDB value restore above.
 
 Test inputs `i_fu_complete_0` to `i_fu_complete_7` feed the same slots in any
-cycle the slot's adapter presents nothing. `cpu_ooo` ties them to zero.
+cycle the slot's adapter presents nothing (always, for slots 5 and 6).
+`cpu_ooo` ties them to zero.
 
-## FP-family dispatch buffers
+## FP dispatch buffer
 
-FP_RS, FMUL_RS, and FDIV_RS do not take dispatch packets directly. Each has a
-one-entry buffer in the wrapper that captures the packet, applies done repair
-to it, and then passes it to the station, so the stations tie their own repair
-inputs to zero. Only slot 1 carries FP compute ops, so FP and FDIV use repair
-channels 1 and 2, and FMUL, whose FMA takes three sources, uses channels 1
-to 3.
+FP_RS does not take dispatch packets directly. A one-entry buffer in the
+wrapper captures the packet, applies done repair to it, and then passes it to
+the station, so the station ties its own repair inputs to zero. Only slot 1
+carries FP compute ops, so the buffer uses repair channels 1 to 3, one per
+source (an FMA takes three).
 
 Call the cycle after capture E1. The repair response for a newly captured
 packet arrives in E1, marked by `*_pending_repair_capture_q`:
@@ -211,11 +209,10 @@ packet arrives in E1, marked by `*_pending_repair_capture_q`:
 - Repair responses are accepted only in E1, so a packet held longer by
   recovery or a full station cannot take a later query's response for the
   same tag.
-- FMUL decides at capture whether to hold in E1, from its unresolved-source
-  bits alone. That relies on dispatch querying every unresolved source, which
-  production dispatch does. FMUL can take a new packet in the cycle it passes
-  one on, except during the repair window; FP and FDIV wait for the buffer to
-  empty.
+- The buffer decides at capture whether to hold in E1, from its
+  unresolved-source bits alone. That relies on dispatch querying every
+  unresolved source, which production dispatch does. It can take a new packet
+  in the cycle it passes one on, except during the repair window.
 - A full flush empties the buffer, and so does a partial flush when the
   buffered packet is younger than the flush tag. No packet passes during a
   flush or `i_backend_recovery_hold`.
@@ -340,7 +337,7 @@ top-level and cache counter blocks. See the
 ## Verification
 
 - `tomasulo_wrapper` (cocotb) runs the integration tests with done repair
-  enabled: FP-family buffer repair timing, CDB contention, SC flows and
+  enabled: FP buffer repair timing, CDB contention, SC flows and
   store-fault collisions, flushes, and stale-tag probes.
   `tomasulo_wrapper_no_early_load` runs the same suite with early load wakeup
   off. `tomasulo_wrapper_split_rs` tests per-station dispatch as the CPU uses
@@ -350,8 +347,8 @@ top-level and cache counter blocks. See the
   DMA coherence races.
 - The `tomasulo_wrapper` formal target checks commit propagation, flush
   composition, INT_RS's side-RAM tag rule against the real ROB, and the SC and
-  CDB-copy assertions above, with translation off. Its `fmul_repair_bmc` task
-  enables done repair and checks FMUL buffer repair timing and values for all
+  CDB-copy assertions above, with translation off. Its `fp_repair_bmc` task
+  enables done repair and checks FP buffer repair timing and values for all
   three sources.
 - In Verilator simulation, the wrapper logs CDB broadcasts that target a free
   ROB entry, naming the FU that produced each, to help track down results that

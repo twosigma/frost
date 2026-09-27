@@ -14,7 +14,7 @@
 
 """DUT interface for int_muldiv_shim verification.
 
-pack_rs_issue and unpack_fu_complete come from fp_add_shim_interface.
+pack_rs_issue and unpack_fu_complete come from fp_shim_interface.
 
 The MUL/DIV shim has two result ports (o_mul_fu_complete, o_div_fu_complete)
 and supports full and partial flush.
@@ -24,7 +24,7 @@ from typing import Any
 
 from cocotb.triggers import FallingEdge, RisingEdge
 
-from .fp_add_shim_interface import pack_rs_issue, unpack_fu_complete, MASK_TAG
+from .fp_shim_interface import pack_rs_issue, unpack_fu_complete, MASK_TAG
 
 
 class IntMulDivShimInterface:

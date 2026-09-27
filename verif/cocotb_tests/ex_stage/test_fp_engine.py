@@ -30,7 +30,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
 
-from ..tomasulo.fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+from ..tomasulo.fu_shims.fp_shim_interface import _parse_instr_op_enum
 
 CLOCK_PERIOD_NS = 10
 

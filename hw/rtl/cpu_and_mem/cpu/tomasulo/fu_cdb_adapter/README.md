@@ -2,10 +2,11 @@
 
 `fu_cdb_adapter` is a one-entry holding register between a functional unit
 (FU) and the [CDB arbiter](../cdb_arbiter/README.md). The wrapper instantiates
-one per FU slot, eight in all. If the arbiter grants a result on either lane in
-the cycle it arrives, the adapter passes it straight through with no added
-latency. Otherwise the adapter latches it and presents it every cycle until it
-is granted. `o_result_pending` tells the wrapper a result is waiting.
+one per FU slot that has a unit, six in all. If the arbiter grants a result on
+either lane in the cycle it arrives, the adapter passes it straight through
+with no added latency. Otherwise the adapter latches it and presents it every
+cycle until it is granted. `o_result_pending` tells the wrapper a result is
+waiting.
 
 ## Behavior
 
@@ -41,22 +42,17 @@ The wrapper's settings:
 |----------|-------------------|----------------------|------------------------------------|
 | ALU, ALU2 | 0 | 1 | 0 |
 | MUL, MEM | 0 | 0 | 1 |
-| DIV, FP_ADD, FP_MUL, FP_DIV | 1 | 0 | 1 |
+| DIV, FP | 1 | 0 | 1 |
 
 `REGISTER_OUTPUT` suits the long-latency units, where one more cycle costs
-little and the pass-through valid path hurts timing. On the FP_MUL and FP_DIV
-adapters it is also needed for correctness: their shims see flushes a cycle
-late, and these adapters keep a squashed result off the CDB by never passing a
-result straight through and by holding their full flush one extra cycle (see
-[fu_shims](../fu_shims/README.md#flushes)).
+little and the pass-through valid path hurts timing.
 
 Disabling refill keeps the arbiter's grant out of the producers' FIFO and
 issue logic. The producers follow a matching rule: a result counts as taken
-only when the adapter is idle. The MUL, DIV, FP_MUL, and FP_DIV shims and the
-LQ hand over a result only while their adapter is idle (a squashed result is
-dropped without waiting), and the FP stations stop issuing while it is
-pending. A granted adapter therefore drains first and takes the next result
-the following cycle. The two sides must change together: an adapter that
+only when the adapter is idle. The MUL and DIV paths and the LQ hand over a
+result only while their adapter is idle (a squashed result is dropped without
+waiting), and FP_RS stops issuing while the FP adapter is pending. A granted
+adapter therefore drains first and takes the next result the following cycle. The two sides must change together: an adapter that
 refilled while its producer waited for idle would take the same result twice.
 The MEM slot's store-fault and SC registers do not wait; they rely on the MEM
 adapter never being pending (see the
@@ -80,7 +76,7 @@ an invalid input. This keeps the age compare off the wide value path.
 
 A full flush (`i_flush`) clears `result_pending` on the next edge but leaves
 the output alone in the flush cycle. The arbiter's `i_kill` suppresses the
-broadcast instead, once for all eight adapters.
+broadcast instead, once for all six adapters.
 
 ## Held payload
 

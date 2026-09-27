@@ -126,20 +126,16 @@ module instr_operand_classifier (
         raw_class.uses_fp_rs2 = 1'b1;
         raw_class.uses_fp_rs3 = 1'b1;
         raw_class.has_fp_flags = 1'b1;
-        raw_class.rs_type = riscv_pkg::RS_FMUL;
+        raw_class.rs_type = riscv_pkg::RS_FP;
       end
       riscv_pkg::OPC_OP_FP: begin
         raw_class.has_int_dest = fp_int_output;
-        raw_class.has_fp_dest  = !fp_int_output;
+        raw_class.has_fp_dest = !fp_int_output;
         raw_class.uses_int_rs1 = fp_int_input;
-        raw_class.uses_fp_rs1  = !fp_int_input;
-        raw_class.uses_fp_rs2  = fp_two_sources;
+        raw_class.uses_fp_rs1 = !fp_int_input;
+        raw_class.uses_fp_rs2 = fp_two_sources;
         raw_class.has_fp_flags = 1'b1;
-        case (i_instr.funct7[6:1])
-          6'b000100: raw_class.rs_type = riscv_pkg::RS_FMUL;
-          6'b000110, 6'b010110: raw_class.rs_type = riscv_pkg::RS_FDIV;
-          default: raw_class.rs_type = riscv_pkg::RS_FP;
-        endcase
+        raw_class.rs_type = riscv_pkg::RS_FP;
       end
       riscv_pkg::OPC_MISC_MEM: begin
         // PAUSE (exactly 0x0100000F, matching instr_decoder's PAUSE arm) is a

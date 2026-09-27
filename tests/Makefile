@@ -83,18 +83,8 @@ else ifeq ($(TOPLEVEL),int_muldiv_shim)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
 VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-else ifeq ($(TOPLEVEL),fp_add_shim)
-# FP add shim unit test
-COMPILE_ARGS := \
-        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
-VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-else ifeq ($(TOPLEVEL),fp_mul_shim)
-# FP mul shim unit test
-COMPILE_ARGS := \
-        -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
-VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
-else ifeq ($(TOPLEVEL),fp_div_shim)
-# FP div shim unit test
+else ifeq ($(TOPLEVEL),fp_shim)
+# FP shim unit test, with the FP engine behind it
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fu_shims.f
 VERILOG_SOURCES := $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
@@ -108,20 +98,6 @@ COMPILE_ARGS := \
         $(ROOT)/hw/sim/fp_softfloat_ref.c \
         -CFLAGS -I/usr/local/include \
         -LDFLAGS '-L/usr/local/lib -Wl,-rpath,/usr/local/lib -lsoftfloat'
-VERILOG_SOURCES :=
-else ifeq ($(TOPLEVEL),fp_div_sqrt_equiv_harness)
-# Iterative FP divide/sqrt unit against the fully unrolled reference pipelines
-COMPILE_ARGS := \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_lzc.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_classify_operand.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_operand_unpacker.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_result_assembler.sv \
-        $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_div_sqrt_iter.sv \
-        $(ROOT)/hw/sim/fp_divider.sv \
-        $(ROOT)/hw/sim/fp_sqrt.sv \
-        $(ROOT)/hw/sim/fp_div_sqrt_equiv_harness.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),dispatch)
 # Dispatch unit test

@@ -36,42 +36,30 @@ module dispatch_rs_router #(
     input riscv_pkg::rs_dispatch_t i_mul_rs_dispatch,
     input riscv_pkg::rs_dispatch_t i_mem_rs_dispatch,
     input riscv_pkg::rs_dispatch_t i_fp_rs_dispatch,
-    input riscv_pkg::rs_dispatch_t i_fmul_rs_dispatch,
-    input riscv_pkg::rs_dispatch_t i_fdiv_rs_dispatch,
     input riscv_pkg::rs_dispatch_t i_int_rs_dispatch_2,
     input riscv_pkg::rs_dispatch_t i_mul_rs_dispatch_2,
     input riscv_pkg::rs_dispatch_t i_mem_rs_dispatch_2,
     input riscv_pkg::rs_dispatch_t i_fp_rs_dispatch_2,
-    input riscv_pkg::rs_dispatch_t i_fmul_rs_dispatch_2,
-    input riscv_pkg::rs_dispatch_t i_fdiv_rs_dispatch_2,
     input logic i_backend_recovery_hold,
 
     output logic o_int_rs_dispatch_valid,
     output logic o_mul_rs_dispatch_valid,
     output logic o_mem_rs_dispatch_valid,
     output logic o_fp_rs_dispatch_valid,
-    output logic o_fmul_rs_dispatch_valid,
-    output logic o_fdiv_rs_dispatch_valid,
     output logic o_int_rs_dispatch_valid_2,
     output logic o_mul_rs_dispatch_valid_2,
     output logic o_mem_rs_dispatch_valid_2,
     output logic o_fp_rs_dispatch_valid_2,
-    output logic o_fmul_rs_dispatch_valid_2,
-    output logic o_fdiv_rs_dispatch_valid_2,
     output logic o_int_rs_intent_1,
     output logic o_mul_rs_intent_1,
     output logic o_mem_rs_intent_1,
-    output logic o_fp_rs_intent_1,
-    output logic o_fmul_rs_intent_1,
-    output logic o_fdiv_rs_intent_1
+    output logic o_fp_rs_intent_1
 );
 
   (* max_fanout = 32 *) logic int_rs_dispatch_valid;
   (* max_fanout = 32 *) logic mul_rs_dispatch_valid;
   (* max_fanout = 32 *) logic mem_rs_dispatch_valid;
   (* max_fanout = 32 *) logic fp_rs_dispatch_valid;
-  (* max_fanout = 32 *) logic fmul_rs_dispatch_valid;
-  (* max_fanout = 32 *) logic fdiv_rs_dispatch_valid;
 
   // Slot-2 per-RS dispatch valid signals (2-wide dispatch plumbing).
   // The dispatch unit drives only one of the slot-2 inputs (the one for slot-2's
@@ -80,8 +68,6 @@ module dispatch_rs_router #(
   (* max_fanout = 32 *) logic mul_rs_dispatch_valid_2;
   (* max_fanout = 32 *) logic mem_rs_dispatch_valid_2;
   (* max_fanout = 32 *) logic fp_rs_dispatch_valid_2;
-  (* max_fanout = 32 *) logic fmul_rs_dispatch_valid_2;
-  (* max_fanout = 32 *) logic fdiv_rs_dispatch_valid_2;
 
   wire [2:0] dispatch_rs_type = i_rs_dispatch.rs_type;
   (* max_fanout = 32 *) logic single_bus_dispatch_valid;
@@ -89,21 +75,15 @@ module dispatch_rs_router #(
 
   always_comb begin
     if (SPLIT_RS_DISPATCH) begin
-      int_rs_dispatch_valid  = i_int_rs_dispatch.valid && !i_backend_recovery_hold;
-      mul_rs_dispatch_valid  = i_mul_rs_dispatch.valid && !i_backend_recovery_hold;
-      mem_rs_dispatch_valid  = i_mem_rs_dispatch.valid && !i_backend_recovery_hold;
-      fp_rs_dispatch_valid   = i_fp_rs_dispatch.valid && !i_backend_recovery_hold;
-      fmul_rs_dispatch_valid = i_fmul_rs_dispatch.valid && !i_backend_recovery_hold;
-      fdiv_rs_dispatch_valid = i_fdiv_rs_dispatch.valid && !i_backend_recovery_hold;
+      int_rs_dispatch_valid = i_int_rs_dispatch.valid && !i_backend_recovery_hold;
+      mul_rs_dispatch_valid = i_mul_rs_dispatch.valid && !i_backend_recovery_hold;
+      mem_rs_dispatch_valid = i_mem_rs_dispatch.valid && !i_backend_recovery_hold;
+      fp_rs_dispatch_valid  = i_fp_rs_dispatch.valid && !i_backend_recovery_hold;
     end else begin
       int_rs_dispatch_valid = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_INT);
       mul_rs_dispatch_valid = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_MUL);
       mem_rs_dispatch_valid = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_MEM);
-      fp_rs_dispatch_valid = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FP);
-      fmul_rs_dispatch_valid = single_bus_dispatch_valid &&
-                               (dispatch_rs_type == riscv_pkg::RS_FMUL);
-      fdiv_rs_dispatch_valid = single_bus_dispatch_valid &&
-                               (dispatch_rs_type == riscv_pkg::RS_FDIV);
+      fp_rs_dispatch_valid  = single_bus_dispatch_valid && (dispatch_rs_type == riscv_pkg::RS_FP);
     end
   end
 
@@ -113,19 +93,15 @@ module dispatch_rs_router #(
   // slot-2 valids are zero there.
   always_comb begin
     if (SPLIT_RS_DISPATCH) begin
-      int_rs_dispatch_valid_2  = i_int_rs_dispatch_2.valid && !i_backend_recovery_hold;
-      mul_rs_dispatch_valid_2  = i_mul_rs_dispatch_2.valid && !i_backend_recovery_hold;
-      mem_rs_dispatch_valid_2  = i_mem_rs_dispatch_2.valid && !i_backend_recovery_hold;
-      fp_rs_dispatch_valid_2   = i_fp_rs_dispatch_2.valid && !i_backend_recovery_hold;
-      fmul_rs_dispatch_valid_2 = i_fmul_rs_dispatch_2.valid && !i_backend_recovery_hold;
-      fdiv_rs_dispatch_valid_2 = i_fdiv_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      int_rs_dispatch_valid_2 = i_int_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      mul_rs_dispatch_valid_2 = i_mul_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      mem_rs_dispatch_valid_2 = i_mem_rs_dispatch_2.valid && !i_backend_recovery_hold;
+      fp_rs_dispatch_valid_2  = i_fp_rs_dispatch_2.valid && !i_backend_recovery_hold;
     end else begin
-      int_rs_dispatch_valid_2  = 1'b0;
-      mul_rs_dispatch_valid_2  = 1'b0;
-      mem_rs_dispatch_valid_2  = 1'b0;
-      fp_rs_dispatch_valid_2   = 1'b0;
-      fmul_rs_dispatch_valid_2 = 1'b0;
-      fdiv_rs_dispatch_valid_2 = 1'b0;
+      int_rs_dispatch_valid_2 = 1'b0;
+      mul_rs_dispatch_valid_2 = 1'b0;
+      mem_rs_dispatch_valid_2 = 1'b0;
+      fp_rs_dispatch_valid_2  = 1'b0;
     end
   end
 
@@ -136,7 +112,6 @@ module dispatch_rs_router #(
   // It comes from the registered rs_type field on the slot-1 dispatch packet,
   // gated only by !i_backend_recovery_hold.  These signals carry no RS-full,
   // bundle_fire_ok, rob_full, lq_full or sq_full term, so they never pull nets
-  // like fdiv_rs/count_reg or rob/tail_ptr into another RS's alloc_idx_2 /
   // rs_valid commit cone.  Inside each RS, alloc_idx_2 selects off i_intent_1
   // instead of the slow dispatch_fire.  That is safe because a bundle is
   // atomic: whenever dispatch_fire_2 commits a slot-2 entry, i_intent_1 ==
@@ -147,42 +122,30 @@ module dispatch_rs_router #(
   logic mul_rs_intent_1;
   logic mem_rs_intent_1;
   logic fp_rs_intent_1;
-  logic fmul_rs_intent_1;
-  logic fdiv_rs_intent_1;
   assign int_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_INT) && !i_backend_recovery_hold;
   assign mul_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_MUL) && !i_backend_recovery_hold;
   assign mem_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_MEM) && !i_backend_recovery_hold;
-  // FP-family slot-2 dispatch is held off by dispatch.sv
-  // (slot2_fp_compute_serialized), so dispatch_fire_2 is always 0 in these RSes
-  // and alloc_idx_2 never affects a real commit.  The intent is computed anyway
-  // to keep all six RS ports uniform.
+  // Slot-2 FP dispatch is held off by dispatch.sv
+  // (slot2_fp_compute_serialized), so dispatch_fire_2 is always 0 in FP_RS and
+  // alloc_idx_2 never affects a real commit.  The intent is computed anyway to
+  // keep all four RS ports uniform.
   assign fp_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_FP) && !i_backend_recovery_hold;
-  assign fmul_rs_intent_1 =
-      (dispatch_slot1_rs_type_w == riscv_pkg::RS_FMUL) && !i_backend_recovery_hold;
-  assign fdiv_rs_intent_1 =
-      (dispatch_slot1_rs_type_w == riscv_pkg::RS_FDIV) && !i_backend_recovery_hold;
 
   assign o_int_rs_dispatch_valid = int_rs_dispatch_valid;
   assign o_mul_rs_dispatch_valid = mul_rs_dispatch_valid;
   assign o_mem_rs_dispatch_valid = mem_rs_dispatch_valid;
   assign o_fp_rs_dispatch_valid = fp_rs_dispatch_valid;
-  assign o_fmul_rs_dispatch_valid = fmul_rs_dispatch_valid;
-  assign o_fdiv_rs_dispatch_valid = fdiv_rs_dispatch_valid;
   assign o_int_rs_dispatch_valid_2 = int_rs_dispatch_valid_2;
   assign o_mul_rs_dispatch_valid_2 = mul_rs_dispatch_valid_2;
   assign o_mem_rs_dispatch_valid_2 = mem_rs_dispatch_valid_2;
   assign o_fp_rs_dispatch_valid_2 = fp_rs_dispatch_valid_2;
-  assign o_fmul_rs_dispatch_valid_2 = fmul_rs_dispatch_valid_2;
-  assign o_fdiv_rs_dispatch_valid_2 = fdiv_rs_dispatch_valid_2;
   assign o_int_rs_intent_1 = int_rs_intent_1;
   assign o_mul_rs_intent_1 = mul_rs_intent_1;
   assign o_mem_rs_intent_1 = mem_rs_intent_1;
   assign o_fp_rs_intent_1 = fp_rs_intent_1;
-  assign o_fmul_rs_intent_1 = fmul_rs_intent_1;
-  assign o_fdiv_rs_intent_1 = fdiv_rs_intent_1;
 
 endmodule

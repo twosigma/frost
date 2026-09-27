@@ -28,7 +28,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 
-from .fp_add_shim_interface import _parse_instr_op_enum
+from .fp_shim_interface import _parse_instr_op_enum
 from .int_alu_shim_interface import IntAluShimInterface
 from config import MASK_XLEN
 from models import alu_model

@@ -569,8 +569,6 @@ async def test_head_wait_fast_perf_classes_dual_lane(dut: Any) -> None:
         "head_wait_mem_store",
         "head_wait_mem_amo",
         "head_wait_fp",
-        "head_wait_fmul",
-        "head_wait_fdiv",
     )
 
     # Positive classes: INT enters through slot 1 and MEM-load through slot 2.

@@ -130,8 +130,8 @@ extension and privilege mode.
 
 - Tomasulo out-of-order execution with two-wide decode, rename, and commit, a
   32-entry reorder buffer, and precise exceptions.
-- Six reservation stations, two integer ALUs, and hardware single- and
-  double-precision floating point.
+- Four reservation stations, two integer ALUs, and an iterative single- and
+  double-precision floating-point unit.
 - Branch prediction with a 256-entry BTB, a 1024-entry direction predictor,
   and an 8-entry return stack. A mispredicted conditional branch recovers in
   about two cycles.

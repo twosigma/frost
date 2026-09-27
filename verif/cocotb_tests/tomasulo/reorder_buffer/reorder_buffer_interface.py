@@ -218,8 +218,6 @@ ROB_PERF_EVENT_FIELDS = (
     "head_wait_mem_store",
     "head_wait_mem_amo",
     "head_wait_fp",
-    "head_wait_fmul",
-    "head_wait_fdiv",
     "commit_blocked_csr",
     "commit_blocked_fence",
     "commit_blocked_wfi",
@@ -234,7 +232,7 @@ ROB_PERF_EVENT_FIELDS = (
     "commit_2_blocked_next_branch_mispred",
     "commit_2_blocked_next_branch_correct",
 )
-ROB_PERF_EVENT_WIDTH = 24
+ROB_PERF_EVENT_WIDTH = 22
 assert len(ROB_PERF_EVENT_FIELDS) == ROB_PERF_EVENT_WIDTH
 
 

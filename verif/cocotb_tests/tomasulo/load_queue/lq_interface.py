@@ -24,7 +24,7 @@ from typing import Any
 from cocotb.triggers import FallingEdge, RisingEdge
 
 from .lq_model import FuComplete
-from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+from ..fu_shims.fp_shim_interface import _parse_instr_op_enum
 from config import FLEN, INSTR_OP_WIDTH, MASK32, MASK64, MASK_XLEN, XLEN
 
 # A launched load at or above this address uses the cached tier (a cs_* slot);

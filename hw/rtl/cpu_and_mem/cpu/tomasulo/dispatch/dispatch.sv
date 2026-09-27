@@ -181,8 +181,6 @@ module dispatch #(
     output riscv_pkg::rs_dispatch_t o_mul_rs_dispatch,
     output riscv_pkg::rs_dispatch_t o_mem_rs_dispatch,
     output riscv_pkg::rs_dispatch_t o_fp_rs_dispatch,
-    output riscv_pkg::rs_dispatch_t o_fmul_rs_dispatch,
-    output riscv_pkg::rs_dispatch_t o_fdiv_rs_dispatch,
 
     // Slot-2 per-RS dispatch packets (2-wide dispatch).  The dispatch unit
     // routes slot-2 to the RS family matching its rs_type and asserts
@@ -191,8 +189,6 @@ module dispatch #(
     output riscv_pkg::rs_dispatch_t o_mul_rs_dispatch_2,
     output riscv_pkg::rs_dispatch_t o_mem_rs_dispatch_2,
     output riscv_pkg::rs_dispatch_t o_fp_rs_dispatch_2,
-    output riscv_pkg::rs_dispatch_t o_fmul_rs_dispatch_2,
-    output riscv_pkg::rs_dispatch_t o_fdiv_rs_dispatch_2,
 
     // =========================================================================
     // Checkpoint Management (to/from tomasulo_wrapper)
@@ -228,8 +224,6 @@ module dispatch #(
     input logic i_mul_rs_full,
     input logic i_mem_rs_full,
     input logic i_fp_rs_full,
-    input logic i_fmul_rs_full,
-    input logic i_fdiv_rs_full,
     input logic i_lq_full,
     input logic i_sq_full,
 
@@ -241,8 +235,6 @@ module dispatch #(
     input logic i_mul_rs_full_for_2,
     input logic i_mem_rs_full_for_2,
     input logic i_fp_rs_full_for_2,
-    input logic i_fmul_rs_full_for_2,
-    input logic i_fdiv_rs_full_for_2,
     input logic i_lq_full_for_2,
     input logic i_sq_full_for_2,
 
@@ -727,8 +719,6 @@ module dispatch #(
       riscv_pkg::RS_MUL: rs_full = i_mul_rs_full;
       riscv_pkg::RS_MEM: rs_full = i_mem_rs_full;
       riscv_pkg::RS_FP: rs_full = i_fp_rs_full;
-      riscv_pkg::RS_FMUL: rs_full = i_fmul_rs_full;
-      riscv_pkg::RS_FDIV: rs_full = i_fdiv_rs_full;
       riscv_pkg::RS_NONE: rs_full = 1'b0;  // No RS needed
       default: rs_full = 1'b0;
     endcase
@@ -759,10 +749,7 @@ module dispatch #(
 
   logic dispatch_valid_2;
   logic slot2_fp_compute_serialized;
-  assign slot2_fp_compute_serialized =
-      (rs_type_2 == riscv_pkg::RS_FP) ||
-      (rs_type_2 == riscv_pkg::RS_FMUL) ||
-      (rs_type_2 == riscv_pkg::RS_FDIV);
+  assign slot2_fp_compute_serialized = (rs_type_2 == riscv_pkg::RS_FP);
   assign dispatch_valid_2 = i_valid_2 && !i_flush && !slot2_fp_compute_serialized;
 
   // Slot-2's RS-room check.  Same-RS-as-slot-1 needs room for 2; otherwise
@@ -777,10 +764,10 @@ module dispatch #(
       riscv_pkg::RS_MEM:
       rs_full_for_slot2 = (rs_type == riscv_pkg::RS_MEM) ? i_mem_rs_full_for_2 : i_mem_rs_full;
       // An FP-compute slot 2 is treated as absent before the bundle gate
-      // (dispatch_valid_2=0), so these fullness inputs are don't-cares for
-      // slot 2. Keeping them out of the slot-2 room mux stops FP RS fullness
-      // from gating unrelated integer and memory dispatch packets.
-      riscv_pkg::RS_FP, riscv_pkg::RS_FMUL, riscv_pkg::RS_FDIV: rs_full_for_slot2 = 1'b0;
+      // (dispatch_valid_2=0), so FP_RS fullness is a don't-care for slot 2.
+      // Keeping it out of the slot-2 room mux stops it from gating unrelated
+      // integer and memory dispatch packets.
+      riscv_pkg::RS_FP: rs_full_for_slot2 = 1'b0;
       riscv_pkg::RS_NONE: rs_full_for_slot2 = 1'b0;
       default: rs_full_for_slot2 = 1'b0;
     endcase
@@ -804,8 +791,6 @@ module dispatch #(
     o_status.mul_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_MUL) && i_mul_rs_full;
     o_status.mem_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_MEM) && i_mem_rs_full;
     o_status.fp_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FP) && i_fp_rs_full;
-    o_status.fmul_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FMUL) && i_fmul_rs_full;
-    o_status.fdiv_rs_full = dispatch_valid && (rs_type == riscv_pkg::RS_FDIV) && i_fdiv_rs_full;
     o_status.lq_full = dispatch_valid && need_lq && i_lq_full;
     o_status.sq_full = dispatch_valid && need_sq && i_sq_full;
     o_status.checkpoint_full = dispatch_valid && need_checkpoint && !i_checkpoint_available;
@@ -868,16 +853,12 @@ module dispatch #(
   logic mul_rs_dispatch_fire;
   logic mem_rs_dispatch_fire;
   logic fp_rs_dispatch_fire;
-  logic fmul_rs_dispatch_fire;
-  logic fdiv_rs_dispatch_fire;
   // Slot-2 per-RS fire signals.  Each independently requires the bundle to
   // fire and routes slot-2's packet into exactly one RS family.
   logic int_rs_dispatch_fire_2;
   logic mul_rs_dispatch_fire_2;
   logic mem_rs_dispatch_fire_2;
   logic fp_rs_dispatch_fire_2;
-  logic fmul_rs_dispatch_fire_2;
-  logic fdiv_rs_dispatch_fire_2;
 
   assign dispatch_common_ready =
       dispatch_valid &&
@@ -935,9 +916,10 @@ module dispatch #(
   always_comb begin
     if (SLOT2_VALID_FROM_BUNDLE && dispatch_valid) assume (i_valid_2 == i_from_id_to_ex_2.is_real);
     // The operand classifier's contract (instr_operand_classifier target):
-    // only FMUL_RS ops read FP source 3. ID and the decoded queue carry both
-    // fields together, resetting and flushing them to RS_INT without it.
-    if (i_from_id_to_ex_2.uses_fp_rs3) assume (rs_type_2 == riscv_pkg::RS_FMUL);
+    // only FMA ops, which go to FP_RS, read FP source 3. ID and the decoded
+    // queue carry both fields together, resetting and flushing them to RS_INT
+    // without it.
+    if (i_from_id_to_ex_2.uses_fp_rs3) assume (rs_type_2 == riscv_pkg::RS_FP);
     p_slot2_no_fp_source3 : assert (!(slot2_can_fire && uses_fp_rs3_flag_2));
     p_bundle_admission_formal :
     assert (bundle_fire_ok == (slot1_can_fire && (!dispatch_valid_2 || slot2_resources_ok)));
@@ -959,12 +941,6 @@ module dispatch #(
   assign fp_rs_dispatch_fire =
       dispatch_common_ready && (rs_type == riscv_pkg::RS_FP) && !i_fp_rs_full &&
       slot2_bundle_ok;
-  assign fmul_rs_dispatch_fire =
-      dispatch_common_ready && (rs_type == riscv_pkg::RS_FMUL) && !i_fmul_rs_full &&
-      slot2_bundle_ok;
-  assign fdiv_rs_dispatch_fire =
-      dispatch_common_ready && (rs_type == riscv_pkg::RS_FDIV) && !i_fdiv_rs_full &&
-      slot2_bundle_ok;
 
   // Slot-2 per-RS dispatch fire signals use the direct two-slot admission
   // gate rather than passing valid_2 through slot2_bundle_ok and back out.
@@ -974,8 +950,6 @@ module dispatch #(
   assign mul_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_MUL);
   assign mem_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_MEM);
   assign fp_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_FP);
-  assign fmul_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_FMUL);
-  assign fdiv_rs_dispatch_fire_2 = slot2_can_fire && (rs_type_2 == riscv_pkg::RS_FDIV);
 
   // ===========================================================================
   // RAT Source Address Outputs
@@ -1102,7 +1076,7 @@ module dispatch #(
     end
 
     // Channel 6 would carry slot 2's FP source 3, which only the FMA ops
-    // read. Those are FMUL_RS ops, and slot 2 never dispatches an FP compute
+    // read. Those are FMA ops, and slot 2 never dispatches an FP compute
     // op (slot2_fp_compute_serialized), so the channel is never valid. It
     // stays tied off, which lets synthesis drop its ROB value copy and every
     // consumer's channel-6 repair logic.
@@ -1536,15 +1510,11 @@ module dispatch #(
     o_mul_rs_dispatch = rs_dispatch_base;
     o_mem_rs_dispatch = rs_dispatch_base;
     o_fp_rs_dispatch = rs_dispatch_base;
-    o_fmul_rs_dispatch = rs_dispatch_base;
-    o_fdiv_rs_dispatch = rs_dispatch_base;
 
     o_int_rs_dispatch.valid = int_rs_dispatch_fire;
     o_mul_rs_dispatch.valid = mul_rs_dispatch_fire;
     o_mem_rs_dispatch.valid = mem_rs_dispatch_fire;
     o_fp_rs_dispatch.valid = fp_rs_dispatch_fire;
-    o_fmul_rs_dispatch.valid = fmul_rs_dispatch_fire;
-    o_fdiv_rs_dispatch.valid = fdiv_rs_dispatch_fire;
 
     // INT_RS: integer-only sources.  LUI/AUIPC/JAL-like operations keep the
     // default ready constants for unused slots.
@@ -1585,7 +1555,8 @@ module dispatch #(
     end
 
     // FP_RS: most operations use FP rs1; int-to-FP moves/conversions use INT
-    // rs1.  Source 2, when present, is always FP for this RS.
+    // rs1.  Sources 2 and 3, when present, are always FP (source 3 only for
+    // the FMA ops).
     if (uses_fp_rs1_flag) begin
       o_fp_rs_dispatch.src1_ready = fp_src1_ready;
       o_fp_rs_dispatch.src1_tag   = fp_src1_tag;
@@ -1600,28 +1571,10 @@ module dispatch #(
       o_fp_rs_dispatch.src2_tag   = fp_src2_tag;
       o_fp_rs_dispatch.src2_value = fp_src2_value;
     end
-
-    // FMUL_RS: FP multiply/FMA.  FMUL uses src1/src2; FMA also uses src3.
-    o_fmul_rs_dispatch.src1_ready = fp_src1_ready;
-    o_fmul_rs_dispatch.src1_tag   = fp_src1_tag;
-    o_fmul_rs_dispatch.src1_value = fp_src1_value;
-    o_fmul_rs_dispatch.src2_ready = fp_src2_ready;
-    o_fmul_rs_dispatch.src2_tag   = fp_src2_tag;
-    o_fmul_rs_dispatch.src2_value = fp_src2_value;
     if (uses_fp_rs3_flag) begin
-      o_fmul_rs_dispatch.src3_ready = fp_src3_ready;
-      o_fmul_rs_dispatch.src3_tag   = fp_src3_tag;
-      o_fmul_rs_dispatch.src3_value = fp_src3_value;
-    end
-
-    // FDIV_RS: FDIV uses src1/src2; FSQRT uses only src1.
-    o_fdiv_rs_dispatch.src1_ready = fp_src1_ready;
-    o_fdiv_rs_dispatch.src1_tag   = fp_src1_tag;
-    o_fdiv_rs_dispatch.src1_value = fp_src1_value;
-    if (uses_fp_rs2_flag) begin
-      o_fdiv_rs_dispatch.src2_ready = fp_src2_ready;
-      o_fdiv_rs_dispatch.src2_tag   = fp_src2_tag;
-      o_fdiv_rs_dispatch.src2_value = fp_src2_value;
+      o_fp_rs_dispatch.src3_ready = fp_src3_ready;
+      o_fp_rs_dispatch.src3_tag   = fp_src3_tag;
+      o_fp_rs_dispatch.src3_value = fp_src3_value;
     end
 
     // Combined dispatch packet, read by the dispatch unit tests; cpu_ooo leaves
@@ -1712,15 +1665,11 @@ module dispatch #(
     o_mul_rs_dispatch_2 = rs_dispatch_base_2;
     o_mem_rs_dispatch_2 = rs_dispatch_base_2;
     o_fp_rs_dispatch_2 = rs_dispatch_base_2;
-    o_fmul_rs_dispatch_2 = rs_dispatch_base_2;
-    o_fdiv_rs_dispatch_2 = rs_dispatch_base_2;
 
     o_int_rs_dispatch_2.valid = int_rs_dispatch_fire_2;
     o_mul_rs_dispatch_2.valid = mul_rs_dispatch_fire_2;
     o_mem_rs_dispatch_2.valid = mem_rs_dispatch_fire_2;
     o_fp_rs_dispatch_2.valid = fp_rs_dispatch_fire_2;
-    o_fmul_rs_dispatch_2.valid = fmul_rs_dispatch_fire_2;
-    o_fdiv_rs_dispatch_2.valid = fdiv_rs_dispatch_fire_2;
 
     // INT_RS slot-2: integer-only sources.
     if (uses_int_rs1_2) begin
@@ -1772,29 +1721,6 @@ module dispatch #(
       o_fp_rs_dispatch_2.src2_ready = fp_src2_2_ready;
       o_fp_rs_dispatch_2.src2_tag   = fp_src2_2_tag;
       o_fp_rs_dispatch_2.src2_value = fp_src2_2_value;
-    end
-
-    // FMUL_RS slot-2: FP multiply / FMA.
-    o_fmul_rs_dispatch_2.src1_ready = fp_src1_2_ready;
-    o_fmul_rs_dispatch_2.src1_tag   = fp_src1_2_tag;
-    o_fmul_rs_dispatch_2.src1_value = fp_src1_2_value;
-    o_fmul_rs_dispatch_2.src2_ready = fp_src2_2_ready;
-    o_fmul_rs_dispatch_2.src2_tag   = fp_src2_2_tag;
-    o_fmul_rs_dispatch_2.src2_value = fp_src2_2_value;
-    if (uses_fp_rs3_flag_2) begin
-      o_fmul_rs_dispatch_2.src3_ready = fp_src3_2_ready;
-      o_fmul_rs_dispatch_2.src3_tag   = fp_src3_2_tag;
-      o_fmul_rs_dispatch_2.src3_value = fp_src3_2_value;
-    end
-
-    // FDIV_RS slot-2: FDIV uses src1/src2; FSQRT uses only src1.
-    o_fdiv_rs_dispatch_2.src1_ready = fp_src1_2_ready;
-    o_fdiv_rs_dispatch_2.src1_tag   = fp_src1_2_tag;
-    o_fdiv_rs_dispatch_2.src1_value = fp_src1_2_value;
-    if (uses_fp_rs2_flag_2) begin
-      o_fdiv_rs_dispatch_2.src2_ready = fp_src2_2_ready;
-      o_fdiv_rs_dispatch_2.src2_tag   = fp_src2_2_tag;
-      o_fdiv_rs_dispatch_2.src2_value = fp_src2_2_value;
     end
   end
 
@@ -1904,14 +1830,10 @@ module dispatch #(
               o_mul_rs_dispatch.valid,
               o_mem_rs_dispatch.valid,
               o_fp_rs_dispatch.valid,
-              o_fmul_rs_dispatch.valid,
-              o_fdiv_rs_dispatch.valid,
               o_int_rs_dispatch_2.valid,
               o_mul_rs_dispatch_2.valid,
               o_mem_rs_dispatch_2.valid,
-              o_fp_rs_dispatch_2.valid,
-              o_fmul_rs_dispatch_2.valid,
-              o_fdiv_rs_dispatch_2.valid
+              o_fp_rs_dispatch_2.valid
             }
         )) begin
       p_flush_blocks_dispatch_side_effects :
@@ -1922,11 +1844,9 @@ module dispatch #(
                !o_checkpoint_save_for_slot2 && !o_rob_checkpoint_valid &&
                !o_rs_dispatch.valid && !o_int_rs_dispatch.valid &&
                !o_mul_rs_dispatch.valid && !o_mem_rs_dispatch.valid &&
-               !o_fp_rs_dispatch.valid && !o_fmul_rs_dispatch.valid &&
-               !o_fdiv_rs_dispatch.valid && !o_int_rs_dispatch_2.valid &&
+               !o_fp_rs_dispatch.valid && !o_int_rs_dispatch_2.valid &&
                !o_mul_rs_dispatch_2.valid && !o_mem_rs_dispatch_2.valid &&
-               !o_fp_rs_dispatch_2.valid && !o_fmul_rs_dispatch_2.valid &&
-               !o_fdiv_rs_dispatch_2.valid));
+               !o_fp_rs_dispatch_2.valid));
     end
   end
 `endif

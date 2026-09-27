@@ -3,11 +3,11 @@
   <desc id="desc">
     RV64GCB out-of-order CPU. IF, PD and ID feed two-wide dispatch and INT/FP
     register renaming with eight branch checkpoints. Dispatch allocates the
-    32-entry reorder buffer, six reservation stations, and memory queues.
-    The INT, MUL, FP, FMUL, FDIV and MEM stations have 8, 4, 6, 4, 2 and 8
-    entries. INT issues to two ALUs; pipe 0 resolves branches. Other stations
-    serve integer multiply/divide, floating-point add/compare/convert,
-    multiply/FMA, divide/square root, and memory operations. Two CDB lanes
+    32-entry reorder buffer, four reservation stations, and memory queues.
+    The INT, MUL, FP and MEM stations have 16, 4, 2 and 8 entries. INT issues
+    to two ALUs; pipe 0 resolves branches. Other stations serve integer
+    multiply/divide, every floating-point compute operation (on one iterative
+    engine), and memory operations. Two CDB lanes
     broadcast results to the reservation stations and ROB. The ROB commits
     up to two instructions in order to INT/FP register files and releases
     stores. CSR accesses execute at commit; traps support M/S/U delegation.
@@ -148,16 +148,14 @@
     <text x="64" y="294" class="port-text">I</text>
   </g>
 
-  <text x="80" y="373" class="section">6 RESERVATION STATIONS</text>
+  <text x="80" y="373" class="section">4 RESERVATION STATIONS</text>
   <text x="856" y="373" class="small" text-anchor="end">Independent issue</text>
   <path d="M 884 330 V 391 H 138" class="flow"/>
   <path d="M 1031 330 V 398" class="flow" marker-end="url(#flow-arrow)"/>
   <g class="flow" marker-end="url(#flow-arrow)">
     <path d="M 138 391 V 416"/>
     <path d="M 270 391 V 416"/>
-    <path d="M 402 391 V 416"/>
     <path d="M 534 391 V 416"/>
-    <path d="M 666 391 V 416"/>
     <path d="M 798 391 V 416"/>
   </g>
   <!-- The enclosing bank is the destination of the CDB wakeup arrow. -->
@@ -165,19 +163,13 @@
   <g id="reservation-stations" class="center">
     <rect x="80" y="416" width="116" height="68" rx="10" class="station"/>
     <text x="138" y="445" class="heading">INT</text>
-    <text x="138" y="471" class="small">8 entries</text>
+    <text x="138" y="471" class="small">16 entries</text>
     <rect x="212" y="416" width="116" height="68" rx="10" class="station"/>
     <text x="270" y="445" class="heading">MUL</text>
     <text x="270" y="471" class="small">4 entries</text>
-    <rect x="344" y="416" width="116" height="68" rx="10" class="station"/>
-    <text x="402" y="445" class="heading">FP</text>
-    <text x="402" y="471" class="small">6 entries</text>
-    <rect x="476" y="416" width="116" height="68" rx="10" class="station"/>
-    <text x="534" y="445" class="heading">FMUL</text>
-    <text x="534" y="471" class="small">4 entries</text>
-    <rect x="608" y="416" width="116" height="68" rx="10" class="station"/>
-    <text x="666" y="445" class="heading">FDIV</text>
-    <text x="666" y="471" class="small">2 entries</text>
+    <rect x="344" y="416" width="380" height="68" rx="10" class="station"/>
+    <text x="534" y="445" class="heading">FP</text>
+    <text x="534" y="471" class="small">2 entries</text>
     <rect x="740" y="416" width="116" height="68" rx="10" class="station"/>
     <text x="798" y="445" class="heading">MEM</text>
     <text x="798" y="471" class="small">8 entries</text>
@@ -185,9 +177,7 @@
   <g class="flow" marker-end="url(#flow-arrow)">
     <path d="M 138 484 V 510"/>
     <path d="M 270 484 V 510"/>
-    <path d="M 402 484 V 510"/>
     <path d="M 534 484 V 510"/>
-    <path d="M 666 484 V 510"/>
     <path d="M 798 484 V 510"/>
   </g>
 
@@ -200,18 +190,10 @@
     <text x="270" y="545" class="label">MUL / DIV</text>
     <text x="270" y="575" class="small">Multiply</text>
     <text x="270" y="600" class="small">Divide / rem.</text>
-    <rect x="344" y="510" width="116" height="126" rx="10" class="execution"/>
-    <text x="402" y="545" class="label">FP add</text>
-    <text x="402" y="575" class="small">Compare</text>
-    <text x="402" y="600" class="small">Convert</text>
-    <rect x="476" y="510" width="116" height="126" rx="10" class="execution"/>
-    <text x="534" y="545" class="label">FP mul</text>
-    <text x="534" y="575" class="small">Multiply</text>
-    <text x="534" y="600" class="small">FMA</text>
-    <rect x="608" y="510" width="116" height="126" rx="10" class="execution"/>
-    <text x="666" y="545" class="label">FP div</text>
-    <text x="666" y="575" class="small">Divide</text>
-    <text x="666" y="600" class="small">Square root</text>
+    <rect x="344" y="510" width="380" height="126" rx="10" class="execution"/>
+    <text x="534" y="545" class="label">FP engine</text>
+    <text x="534" y="575" class="small">Add · multiply · FMA · divide · square root</text>
+    <text x="534" y="600" class="small">Convert · compare · one operation at a time</text>
     <rect x="740" y="510" width="116" height="220" rx="10" class="memory"/>
     <text x="798" y="543" class="label">DMMU</text>
     <text x="798" y="571" class="small">DTLB · 16</text>
@@ -229,9 +211,7 @@
   <g class="broadcast" marker-end="url(#result-arrow)">
     <path d="M 138 636 V 664"/>
     <path d="M 270 636 V 664"/>
-    <path d="M 402 636 V 664"/>
     <path d="M 534 636 V 664"/>
-    <path d="M 666 636 V 664"/>
   </g>
   <rect x="80" y="664" width="644" height="66" rx="10" class="result"/>
   <text x="402" y="692" class="label center">FU completion buffers / adapters</text>

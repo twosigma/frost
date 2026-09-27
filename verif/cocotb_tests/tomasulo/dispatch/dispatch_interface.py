@@ -23,7 +23,7 @@ from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
 from config import FLEN, INSTR_OP_WIDTH, XLEN
 
-from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+from ..fu_shims.fp_shim_interface import _parse_instr_op_enum
 from cocotb_tests.cpu_structs import (
     ID_TO_EX_FIELDS as FROM_ID_TO_EX_FIELDS,
     ROB_ALLOC_REQ_FIELDS as ROB_ALLOC_REQ_FIELDS,
@@ -54,8 +54,6 @@ RS_INT = 0
 RS_MUL = 1
 RS_MEM = 2
 RS_FP = 3
-RS_FMUL = 4
-RS_FDIV = 5
 RS_NONE = 6
 
 # =============================================================================
@@ -803,8 +801,22 @@ _RS_FP_OPS: frozenset[int] = frozenset(
     {
         FADD_S,
         FSUB_S,
+        FMUL_S,
+        FDIV_S,
+        FSQRT_S,
         FADD_D,
         FSUB_D,
+        FMUL_D,
+        FDIV_D,
+        FSQRT_D,
+        FMADD_S,
+        FMSUB_S,
+        FNMADD_S,
+        FNMSUB_S,
+        FMADD_D,
+        FMSUB_D,
+        FNMADD_D,
+        FNMSUB_D,
         FMIN_S,
         FMAX_S,
         FMIN_D,
@@ -847,23 +859,6 @@ _RS_FP_OPS: frozenset[int] = frozenset(
         FSGNJX_D,
     }
 )
-
-_RS_FMUL_OPS: frozenset[int] = frozenset(
-    {
-        FMUL_S,
-        FMUL_D,
-        FMADD_S,
-        FMSUB_S,
-        FNMADD_S,
-        FNMSUB_S,
-        FMADD_D,
-        FMSUB_D,
-        FNMADD_D,
-        FNMSUB_D,
-    }
-)
-
-_RS_FDIV_OPS: frozenset[int] = frozenset({FDIV_S, FSQRT_S, FDIV_D, FSQRT_D})
 
 _RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, SRET, DRET})
 
@@ -994,10 +989,6 @@ def _derive_rs_type(op: int) -> int:
         return RS_MEM
     if op in _RS_FP_OPS:
         return RS_FP
-    if op in _RS_FMUL_OPS:
-        return RS_FMUL
-    if op in _RS_FDIV_OPS:
-        return RS_FDIV
     return RS_INT
 
 
@@ -1330,8 +1321,6 @@ class DispatchInterface:
         self.dut.i_mul_rs_full.value = 0
         self.dut.i_mem_rs_full.value = 0
         self.dut.i_fp_rs_full.value = 0
-        self.dut.i_fmul_rs_full.value = 0
-        self.dut.i_fdiv_rs_full.value = 0
         self.dut.i_lq_full.value = 0
         self.dut.i_sq_full.value = 0
         # Slot-2 "room for 2" status inputs. Default to room available.
@@ -1340,8 +1329,6 @@ class DispatchInterface:
         self.dut.i_mul_rs_full_for_2.value = 0
         self.dut.i_mem_rs_full_for_2.value = 0
         self.dut.i_fp_rs_full_for_2.value = 0
-        self.dut.i_fmul_rs_full_for_2.value = 0
-        self.dut.i_fdiv_rs_full_for_2.value = 0
         self.dut.i_lq_full_for_2.value = 0
         self.dut.i_sq_full_for_2.value = 0
         self.dut.i_flush.value = 0
@@ -1429,6 +1416,15 @@ class DispatchInterface:
         """Drive slot-2 integer source 1 RAT lookup result."""
         self.dut.i_int_src1_2.value = pack_rat_lookup(renamed, tag, value)
 
+    def drive_fp_src(
+        self, index: int, renamed: int = 0, tag: int = 0, value: int = 0
+    ) -> None:
+        """Drive FP source 1, 2, or 3's RAT lookup result."""
+        signal = {1: self.dut.i_fp_src1, 2: self.dut.i_fp_src2, 3: self.dut.i_fp_src3}[
+            index
+        ]
+        signal.value = pack_rat_lookup(renamed, tag, value)
+
     # =========================================================================
     # Resource Status
     # =========================================================================
@@ -1499,6 +1495,10 @@ class DispatchInterface:
     def read_rs_dispatch(self) -> dict[str, int]:
         """Read and unpack o_rs_dispatch."""
         return unpack_rs_dispatch(int(self.dut.o_rs_dispatch.value))
+
+    def read_fp_rs_dispatch(self) -> dict[str, int]:
+        """Read and unpack o_fp_rs_dispatch."""
+        return unpack_rs_dispatch(int(self.dut.o_fp_rs_dispatch.value))
 
     def read_int_rs_dispatch(self) -> dict[str, int]:
         """Read and unpack o_int_rs_dispatch."""

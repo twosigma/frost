@@ -1213,25 +1213,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GSHORT_WORD_OPS=0",),
         extra_env=(("FROST_TEST_SHORT_WORD_OPS", "0"),),
     ),
-    "fp_add_shim": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_add_shim",
-        hdl_toplevel_module="fp_add_shim",
-        description="FP add shim unit tests (FADD, FSUB, compare, classify, sgnj, convert)",
-    ),
-    "fp_mul_shim": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_mul_shim",
-        hdl_toplevel_module="fp_mul_shim",
+    "fp_shim": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_shim",
+        hdl_toplevel_module="fp_shim",
         description=(
-            "FP mul shim tests (FMUL and FMA arithmetic; payload queues, "
-            "collision, wraparound, back-pressure, flush)"
-        ),
-    ),
-    "fp_div_shim": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_div_shim",
-        hdl_toplevel_module="fp_div_shim",
-        description=(
-            "FP div shim unit tests (FDIV, FSQRT, one-at-a-time occupancy, "
-            "credit gate, full and partial flush)"
+            "FP shim with the FP engine: operand, rounding-mode and tag hand-off, "
+            "busy window, back-to-back issue, and full and partial flush at launch, "
+            "mid-operation, and on the result cycle"
         ),
     ),
     "fp_engine_equiv": CocotbRunConfig(
@@ -1241,16 +1229,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "FP engine against Berkeley SoftFloat for every F and D compute op: "
             "directed corners, cancellation, conversion limits, a random sweep, "
             "and kills at arbitrary cycles, results and flags compared bit for bit"
-        ),
-    ),
-    "fp_div_sqrt_equiv": CocotbRunConfig(
-        python_test_module="cocotb_tests.ex_stage.test_fp_div_sqrt_equiv",
-        hdl_toplevel_module="fp_div_sqrt_equiv_harness",
-        description=(
-            "Iterative FP divide/sqrt unit against the unrolled fp_divider and "
-            "fp_sqrt references: directed corners plus a random sweep, result "
-            "and flags compared bit for bit, and a kill at every stage of the "
-            "sequence followed by the same vector replayed whole"
         ),
     ),
     "dispatch": CocotbRunConfig(

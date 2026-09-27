@@ -14,7 +14,7 @@
 
 """DUT interface for int_alu_shim verification.
 
-pack_rs_issue and unpack_fu_complete come from fp_add_shim_interface.
+pack_rs_issue and unpack_fu_complete come from fp_shim_interface.
 
 The ALU shim is combinational and has no flush ports. Besides rs_issue_t,
 drive_issue drives the two RS-side hints: i_issue_writes_cdb_hint, which
@@ -26,7 +26,7 @@ from typing import Any
 
 from cocotb.triggers import FallingEdge, RisingEdge
 
-from .fp_add_shim_interface import (
+from .fp_shim_interface import (
     _parse_instr_op_enum,
     pack_rs_issue,
     unpack_fu_complete,

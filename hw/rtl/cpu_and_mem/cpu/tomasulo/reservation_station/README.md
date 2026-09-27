@@ -3,7 +3,7 @@
 A reservation station holds renamed instructions until their source operands
 are available, then issues them to a functional unit. `reservation_station.sv`
 is one parameterized module; the
-[Tomasulo wrapper](../tomasulo_wrapper/README.md) instantiates it six times.
+[Tomasulo wrapper](../tomasulo_wrapper/README.md) instantiates it four times.
 Each instance accepts up to two instructions per cycle from dispatch, wakes
 waiting operands from both lanes of the common data bus (CDB), and issues the
 lowest-index ready entry through a stage-2 register. The integer station has a
@@ -14,9 +14,7 @@ second issue port that feeds a second ALU.
 | INT_RS | 16 (`INT_RS_DEPTH`) | `int_alu_shim` on port 0, a second `int_alu_shim` (ALU2) on port 1 |
 | MUL_RS | 4 | `int_muldiv_shim` |
 | MEM_RS | 8 | Address generation for the LQ and SQ, through the data MMU when translation is on |
-| FP_RS | 6 | `fp_add_shim` |
-| FMUL_RS | 4 | `fp_mul_shim` (three sources, for FMA) |
-| FDIV_RS | 2 | `fp_div_shim` |
+| FP_RS | 2 (`riscv_pkg::FpRsDepth`) | `fp_shim` (three sources, for FMA) |
 
 The [routing table](../README.md#instruction--reservation-station-routing)
 lists which instructions go to which station.
@@ -29,8 +27,8 @@ unit takes it from stage 2.
 
 Each instance has two dispatch ports, one per dispatch slot. Slot 1 takes the
 lowest-index free entry. Slot 2 takes the next free entry, or the lowest one
-when slot 1 is not using this station. The FP-family stations tie slot 2 off,
-because dispatch never puts an FP compute op in slot 2.
+when slot 1 is not using this station. FP_RS ties slot 2 off, because
+dispatch never puts an FP compute op in slot 2.
 
 `o_full` and `o_full_for_2` are registered. `o_full_for_2` means at most one
 entry is free; dispatch checks it when both slots target the same station.
@@ -91,10 +89,10 @@ A station can consume the channels in three ways:
   Tokens are taken only on dispatches that commit an entry and are dropped on
   any flush. This mode requires both bypass parameters off, which a simulation
   check and a formal assertion enforce.
-- Not at all. FP_RS, FMUL_RS, and FDIV_RS tie the channels to zero. Their
-  packets wait in a one-entry buffer in the wrapper, which applies the repair
-  before the packet enters the station (see
-  [FP-family dispatch buffers](../tomasulo_wrapper/README.md#fp-family-dispatch-buffers)).
+- Not at all. FP_RS ties the channels to zero. Its packets wait in a
+  one-entry buffer in the wrapper, which applies the repair before the packet
+  enters the station (see
+  [FP dispatch buffer](../tomasulo_wrapper/README.md#fp-dispatch-buffer)).
 
 No production instance uses the tag-match form.
 
@@ -237,7 +235,7 @@ issued while another entry was also ready; the wrapper exports it for MEM_RS.
 | Parameter | Default | Wrapper setting | Effect |
 |-----------|---------|-----------------|--------|
 | `DEPTH` | 8 | Per instance (table above) | Number of entries |
-| `HAS_SRC3` | 1 | 1 on FMUL, 0 elsewhere | Third source operand, for FMA |
+| `HAS_SRC3` | 1 | 1 on FP, 0 elsewhere | Third source operand, for FMA |
 | `DUAL_ISSUE` | 0 | 1 on INT | Second issue port |
 | `ISSUE2_WINDOW` | 0 (all entries) | 8 on INT | Port 1 considers only entries below this index |
 | `LANE1_ISSUE_BYPASS` | 1 | Default everywhere | CDB lane 1 feeds the same-cycle issue bypass; off, a lane-1 result wakes consumers a cycle later |

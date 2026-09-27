@@ -137,8 +137,8 @@ Sources: `dispatch.sv` (`o_status`), `ooo_pipeline_control.sv`,
 | 9 | `DISPATCH_STALL_MUL_RS_FULL` | cycle | Same, MUL RS |
 | 10 | `DISPATCH_STALL_MEM_RS_FULL` | cycle | Same, MEM RS |
 | 11 | `DISPATCH_STALL_FP_RS_FULL` | cycle | Same, FP RS |
-| 12 | `DISPATCH_STALL_FMUL_RS_FULL` | cycle | Same, FMUL RS |
-| 13 | `DISPATCH_STALL_FDIV_RS_FULL` | cycle | Same, FDIV RS |
+| 12 | (reserved) | n/a | Reads 0. Older reports show it as `DISPATCH_STALL_FMUL_RS_FULL`, from a separate FP multiply station; FP multiplies and FMAs now go to the FP RS (11) |
+| 13 | (reserved) | n/a | Reads 0. Older reports show it as `DISPATCH_STALL_FDIV_RS_FULL`, from a separate FP divide station; FP divides and square roots now go to the FP RS (11) |
 | 14 | `DISPATCH_STALL_LQ_FULL` | cycle | A valid slot-1 instruction needs an LQ entry and the LQ is full |
 | 15 | `DISPATCH_STALL_SQ_FULL` | cycle | A valid slot-1 instruction needs an SQ entry and the SQ is full |
 | 16 | `DISPATCH_STALL_CHECKPOINT_FULL` | cycle | A valid slot-1 instruction needs a branch checkpoint and none is free |
@@ -149,9 +149,9 @@ Sources: `dispatch.sv` (`o_status`), `ooo_pipeline_control.sv`,
 | 21 | `PRED_FENCE_JAL` | cycle | Same, a JAL |
 | 22 | `PRED_FENCE_INDIRECT` | cycle | Same, an indirect jump (JALR) |
 
-Counters 7–16 each require a valid slot-1 instruction that needs the resource
-in question. Several can fire in the same cycle, so they overlap rather than
-partition counter 1. A cycle in which only slot 2 blocks the bundle counts in
+Counters 7–11 and 14–16 each require a valid slot-1 instruction that needs the
+resource in question. Several can fire in the same cycle, so they overlap
+rather than partition counter 1. A cycle in which only slot 2 blocks the bundle counts in
 1 but in none of 7–16; it lands in 35–39 instead.
 
 Counters 20–22 are one-hot: each cycle counts at most one instruction,
@@ -182,7 +182,7 @@ same-cycle alignment with other counters shifts.
 | 31 | `IF_SLOT2_PRED_TAKEN` | event | A slot-2 BTB taken prediction was accepted. Each costs one fetch bubble, because fetch has already requested the next sequential window |
 | 32 | `DISPATCH_FIRE_2` | event | Slot 2 dispatched (`rob_alloc_req_2.alloc_valid`): one per instruction dispatched through slot 2 |
 | 33 | `DISPATCH_SLOT2_PRESENT` | cycle | A real slot-2 instruction is at the dispatch input |
-| 34 | `DISPATCH_SLOT2_FP_SERIALIZED` | cycle | A slot-2 instruction targets an FP-compute RS (FP, FMUL, or FDIV); these never dispatch in slot 2 |
+| 34 | `DISPATCH_SLOT2_FP_SERIALIZED` | cycle | A slot-2 instruction targets the FP RS (an FP compute operation); these never dispatch in slot 2 |
 | 35 | `DISPATCH_SLOT2_BLOCK_S1_BRANCH` | cycle | Slot 2 alone holds the bundle: slot 1 is a branch or jump |
 | 36 | `DISPATCH_SLOT2_BLOCK_ROB_FULL2` | cycle | Slot 2 alone holds the bundle: no ROB room for two |
 | 37 | `DISPATCH_SLOT2_BLOCK_RS_FULL2` | cycle | Slot 2 alone holds the bundle: slot 2's RS room check failed |
@@ -205,7 +205,7 @@ several room checks fail at once.
 ### Wrapper 42–51: ROB head-wait
 
 Source: `reorder_buffer.sv` `o_perf_events`. All count cycles in which the ROB
-head is valid but not done and no full flush is active. Counters 43–51
+head is valid but not done and no full flush is active. Counters 43–49
 partition 42 by the head's class, in priority order: branch, AMO or LR,
 store, then RS type.
 
@@ -218,9 +218,9 @@ store, then RS type.
 | 46 | 4 | `HEAD_WAIT_MEM_LOAD` | cycle | …and the head is a load (INT or FP): a MEM-RS operation that is not a store or AMO |
 | 47 | 5 | `HEAD_WAIT_MEM_STORE` | cycle | …and the head is a store (including FP stores and SC) |
 | 48 | 6 | `HEAD_WAIT_MEM_AMO` | cycle | …and the head is an AMO or LR |
-| 49 | 7 | `HEAD_WAIT_FP` | cycle | …and the head is an FP-RS (FP add class) operation |
-| 50 | 8 | `HEAD_WAIT_FMUL` | cycle | …and the head is an FMUL-RS operation |
-| 51 | 9 | `HEAD_WAIT_FDIV` | cycle | …and the head is an FDIV-RS operation |
+| 49 | 7 | `HEAD_WAIT_FP` | cycle | …and the head is an FP compute operation (FP RS) |
+| 50 | 8 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_WAIT_FMUL`, for a separate FP multiply station; 49 now counts those operations |
+| 51 | 9 | (reserved) | n/a | Reads 0. Older reports show it as `HEAD_WAIT_FDIV`, for a separate FP divide station; 49 now counts those operations |
 
 ### Wrapper 52–56: commit blocked in the serializing FSM
 
@@ -244,9 +244,9 @@ Sources: RS `fu_ready` and `empty` status and the MEM `fu_cdb_adapter`.
 | 57 | 15 | `INT_BACKPRESSURE` | cycle | The INT RS is not empty while its FU is not ready (issue blocked downstream) |
 | 58 | 16 | `MUL_BACKPRESSURE` | cycle | Same, MUL RS. MUL and DIV share the muldiv shim, so there is no separate DIV counter |
 | 59 | 17 | `MEM_RESULT_BACKPRESSURE` | cycle | The MEM FU has a valid result while the MEM CDB adapter still holds an earlier one awaiting a CDB grant |
-| 60 | 18 | `FP_ADD_BACKPRESSURE` | cycle | Same as 57, FP RS |
-| 61 | 19 | `FMUL_BACKPRESSURE` | cycle | Same as 57, FMUL RS |
-| 62 | 20 | `FDIV_BACKPRESSURE` | cycle | Same as 57, FDIV RS |
+| 60 | 18 | `FP_BACKPRESSURE` | cycle | Same as 57, FP RS. Older reports name it `FP_ADD_BACKPRESSURE` |
+| 61 | 19 | (reserved) | n/a | Reads 0. Older reports show it as `FMUL_BACKPRESSURE`, for a separate FP multiply station |
+| 62 | 20 | (reserved) | n/a | Reads 0. Older reports show it as `FDIV_BACKPRESSURE`, for a separate FP divide station |
 
 ### Wrapper 63–66: memory / queue activity
 
@@ -273,8 +273,8 @@ is the delta divided by the elapsed cycles.
 | 71 | 29 | `MUL_RS_OCCUPANCY_SUM` | sum | MUL RS entry count |
 | 72 | 30 | `MEM_RS_OCCUPANCY_SUM` | sum | MEM RS entry count |
 | 73 | 31 | `FP_RS_OCCUPANCY_SUM` | sum | FP RS entry count |
-| 74 | 32 | `FMUL_RS_OCCUPANCY_SUM` | sum | FMUL RS entry count |
-| 75 | 33 | `FDIV_RS_OCCUPANCY_SUM` | sum | FDIV RS entry count |
+| 74 | 32 | (reserved) | n/a | Reads 0. Older reports show it as `FMUL_RS_OCCUPANCY_SUM`, for a separate FP multiply station |
+| 75 | 33 | (reserved) | n/a | Reads 0. Older reports show it as `FDIV_RS_OCCUPANCY_SUM`, for a separate FP divide station |
 
 ### Wrapper 76–83: L0 cache, widen-commit, head-load split
 
@@ -467,8 +467,8 @@ per miss, diagnostics, and average occupancy, with raw hex values and
 percentages. In the tree, `sw/apps/coremark` (`core_portme.c`) snapshots
 around the timed region and prints the full report, and `sw/apps/tomasulo_perf`
 prints a brief report for each micro-benchmark and checks that the head-load
-split (86 and 93 above) adds up and that the reserved counters 89, 91 and 104
-read 0.
+split (86 and 93 above) adds up and that the reserved counters (12, 13, 50,
+51, 61, 62, 74, 75, 89, 91 and 104) read 0.
 
 ## Verification
 

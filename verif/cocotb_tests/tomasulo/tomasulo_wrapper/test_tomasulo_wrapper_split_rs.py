@@ -17,7 +17,7 @@
 Directed coverage of per-station routing for both dispatch slots, INT_RS's
 16-entry capacity and eight-entry second-issue window, port 0's same-cycle
 CDB bypass capture from each lane, store-address repair timing through the
-SQ's local CDB copies, FP-family done repair under recovery hold, the LQ's
+SQ's local CDB copies, FP done repair under recovery hold, the LQ's
 partial-flush input, and the ALU and ALU2 CDB packets from test injection, a
 live adapter, and a held adapter.
 """
@@ -45,8 +45,6 @@ from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
     CDBWrite,
 )
 from .tomasulo_interface import (
-    RS_FDIV,
-    RS_FMUL,
     RS_FP,
     RS_INT,
     RS_MEM,
@@ -55,14 +53,12 @@ from .tomasulo_interface import (
     instr_op_value,
 )
 
-ALL_RS_TYPES = [RS_INT, RS_MUL, RS_MEM, RS_FP, RS_FMUL, RS_FDIV]
+ALL_RS_TYPES = [RS_INT, RS_MUL, RS_MEM, RS_FP]
 RS_NAMES = {
     RS_INT: "INT_RS",
     RS_MUL: "MUL_RS",
     RS_MEM: "MEM_RS",
     RS_FP: "FP_RS",
-    RS_FMUL: "FMUL_RS",
-    RS_FDIV: "FDIV_RS",
 }
 OP_SW = instr_op_value("SW")
 OP_LW = instr_op_value("LW")
@@ -738,9 +734,9 @@ async def test_split_fp_pending_done_repair_survives_recovery_hold(dut: Any) -> 
 
 
 @cocotb.test()
-async def test_split_fmul_pending_done_repair_uses_three_channels(dut: Any) -> None:
-    """Production split routing stores three FMUL repair responses before RS entry."""
-    cocotb.log.info("=== Test: Split FMUL Three-Source Pending Repair ===")
+async def test_split_fp_pending_done_repair_uses_three_channels(dut: Any) -> None:
+    """Production split routing stores three FMA repair responses before RS entry."""
+    cocotb.log.info("=== Test: Split FP Three-Source Pending Repair ===")
     dut_if = await setup_test(dut)
     dut_if.set_commit_hold(True)
 
@@ -776,7 +772,7 @@ async def test_split_fmul_pending_done_repair_uses_three_channels(dut: Any) -> N
         AllocationRequest(pc=0x702C, dest_rf=1, dest_reg=6, dest_valid=True)
     )
     dut_if.drive_split_rs_dispatch(
-        RS_FMUL,
+        RS_FP,
         rob_tag=consumer_tag,
         op=OP_FMADD_D,
         src1_ready=False,
@@ -786,33 +782,33 @@ async def test_split_fmul_pending_done_repair_uses_three_channels(dut: Any) -> N
         src3_ready=False,
         src3_tag=producer_tags[2],
     )
-    dut_if.set_fu_ready(RS_FMUL, True)
+    dut_if.set_fu_ready(RS_FP, True)
     await step_and_clear_dispatch(dut_if)
-    assert int(dut.fmul_pending_repair_capture_q.value)
-    assert int(dut.fmul_pending_repair_wait_q.value)
+    assert int(dut.fp_pending_repair_capture_q.value)
+    assert int(dut.fp_pending_repair_wait_q.value)
 
     for channel, tag in enumerate(producer_tags, start=1):
         dut_if.drive_dispatch_bypass(channel, tag)
     await Timer(1, unit="ps")
-    assert int(dut.fmul_repair_window_block.value)
-    assert not int(dut.fmul_dispatch_dequeue.value)
+    assert int(dut.fp_repair_window_block.value)
+    assert not int(dut.fp_dispatch_dequeue.value)
     await dut_if.step()
     dut_if.clear_dispatch_bypasses()
 
     await Timer(1, unit="ps")
-    assert not int(dut.fmul_pending_repair_wait_q.value)
-    assert int(dut.fmul_dispatch_dequeue.value)
+    assert not int(dut.fp_pending_repair_wait_q.value)
+    assert int(dut.fp_dispatch_dequeue.value)
     await dut_if.step()
 
     issue = None
     for _ in range(5):
         await Timer(1, unit="ps")
-        candidate = dut_if.read_rs_issue_for(RS_FMUL)
+        candidate = dut_if.read_rs_issue_for(RS_FP)
         if candidate["valid"]:
             issue = candidate
             break
         await dut_if.step()
-    assert issue is not None, "Split-routed FMUL packet never issued"
+    assert issue is not None, "Split-routed FMA packet never issued"
     assert issue["rob_tag"] == consumer_tag
     assert issue["src1_value"] == producer_values[0]
     assert issue["src2_value"] == producer_values[1]

@@ -47,6 +47,8 @@ from .dispatch_interface import (
     FLW,
     FMUL_S,
     FDIV_S,
+    FMADD_S,
+    FSQRT_S,
     LD,
     LWU,
     SD,
@@ -68,8 +70,6 @@ from .dispatch_interface import (
     RS_MUL,
     RS_MEM,
     RS_FP,
-    RS_FMUL,
-    RS_FDIV,
     RS_NONE,
     MEM_SIZE_BYTE,
     MEM_SIZE_WORD,
@@ -361,8 +361,8 @@ async def test_fadd_dispatches_to_fp_rs(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_fmul_dispatches_to_fmul_rs(dut: Any) -> None:
-    """FMUL_S instruction should route to FMUL_RS."""
+async def test_fmul_dispatches_to_fp_rs(dut: Any) -> None:
+    """FMUL_S instruction should route to FP_RS."""
     dut_if = await _setup(dut)
 
     dut_if.drive_instruction(
@@ -375,12 +375,12 @@ async def test_fmul_dispatches_to_fmul_rs(dut: Any) -> None:
 
     rs = dut_if.read_rs_dispatch()
     assert rs["valid"] == 1
-    assert rs["rs_type"] == RS_FMUL, f"Expected RS_FMUL, got {rs['rs_type']}"
+    assert rs["rs_type"] == RS_FP, f"Expected RS_FP, got {rs['rs_type']}"
 
 
 @cocotb.test()
-async def test_fdiv_dispatches_to_fdiv_rs(dut: Any) -> None:
-    """FDIV_S instruction should route to FDIV_RS."""
+async def test_fdiv_dispatches_to_fp_rs(dut: Any) -> None:
+    """FDIV_S instruction should route to FP_RS."""
     dut_if = await _setup(dut)
 
     dut_if.drive_instruction(
@@ -393,7 +393,49 @@ async def test_fdiv_dispatches_to_fdiv_rs(dut: Any) -> None:
 
     rs = dut_if.read_rs_dispatch()
     assert rs["valid"] == 1
-    assert rs["rs_type"] == RS_FDIV, f"Expected RS_FDIV, got {rs['rs_type']}"
+    assert rs["rs_type"] == RS_FP, f"Expected RS_FP, got {rs['rs_type']}"
+
+
+@cocotb.test()
+async def test_fp_rs_packet_carries_fma_source3(dut: Any) -> None:
+    """FP_RS takes all three FMA sources and leaves an unused source ready.
+
+    FMADD_S reads FP rs1, rs2, and rs3; FSQRT_S reads only rs1, so its
+    sources 2 and 3 must dispatch ready whatever the RAT reports for them.
+    """
+    dut_if = await _setup(dut)
+
+    dut_if.drive_fp_src(1, renamed=0, value=0x1111)
+    dut_if.drive_fp_src(2, renamed=1, tag=5)
+    dut_if.drive_fp_src(3, renamed=1, tag=9, value=0x3333)
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=FMADD_S,
+        is_fp_instruction=1,
+        instruction=_make_instr(dest_reg=3, opcode=OPC_OP_FP),
+    )
+    await dut_if.step()
+
+    fp = dut_if.read_fp_rs_dispatch()
+    assert fp["valid"] == 1
+    assert fp["rs_type"] == RS_FP, f"Expected RS_FP, got {fp['rs_type']}"
+    assert (fp["src1_ready"], fp["src1_value"]) == (1, 0x1111)
+    assert (fp["src2_ready"], fp["src2_tag"]) == (0, 5)
+    assert (fp["src3_ready"], fp["src3_tag"]) == (0, 9)
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=FSQRT_S,
+        is_fp_instruction=1,
+        instruction=_make_instr(dest_reg=4, opcode=OPC_OP_FP),
+    )
+    await dut_if.step()
+
+    fp = dut_if.read_fp_rs_dispatch()
+    assert fp["valid"] == 1
+    assert (fp["src1_ready"], fp["src1_value"]) == (1, 0x1111)
+    assert fp["src2_ready"] == 1, "FSQRT_S source 2 must dispatch ready"
+    assert fp["src3_ready"] == 1, "FSQRT_S source 3 must dispatch ready"
 
 
 @cocotb.test()

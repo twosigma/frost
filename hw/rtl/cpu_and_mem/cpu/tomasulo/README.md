@@ -8,10 +8,10 @@ reorder buffer (ROB), so exceptions stay precise. The core implements RV64GCB
 plus Zicntr, Zicond, Zbkb, and Zihintpause (see the
 [ISA table](../../../../../README.md#supported-risc-v-extensions)).
 
-Dispatch, rename, the common data bus (CDB), and commit are all two wide. Six
-reservation stations feed eight functional-unit (FU) slots. The integer
-station issues two operations per cycle to two ALUs, with branches and JALR
-only on the first; every other station issues one. Up to seven operations can
+Dispatch, rename, the common data bus (CDB), and commit are all two wide. Four
+reservation stations feed six functional-unit (FU) slots. The integer station
+issues two operations per cycle to two ALUs, with branches and JALR only on
+the first; every other station issues one. Up to five operations can
 therefore start in one cycle. A result on either CDB lane can wake a waiting
 RS entry and let it issue in the same cycle.
 
@@ -34,7 +34,7 @@ badges identify allocation and store-retirement connections.
 | [`dispatch/`](dispatch/README.md) | Two-wide rename and resource allocation |
 | [`reorder_buffer/`](reorder_buffer/README.md) | In-order commit, precise exceptions, serializing instructions |
 | [`register_alias_table/`](register_alias_table/README.md) | INT and FP rename tables, branch checkpoints |
-| [`reservation_station/`](reservation_station/README.md) | Generic RS, instantiated six times |
+| [`reservation_station/`](reservation_station/README.md) | Generic RS, instantiated four times |
 | [`load_queue/`](load_queue/README.md) | Loads, L0 cache, MMIO, LR/AMO |
 | [`store_queue/`](store_queue/README.md) | Stores, store-to-load forwarding, drain to memory |
 | [`cdb_arbiter/`](cdb_arbiter/README.md) | Two-lane CDB priority arbiter |
@@ -115,16 +115,17 @@ effect. See the [load queue](load_queue/README.md) for the details.
 
 ### CDB priority and tag reuse
 
-Up to eight completions compete for the two CDB lanes each cycle, and
+Up to six completions compete for the two CDB lanes each cycle, and
 [`cdb_arbiter`](cdb_arbiter/README.md) grants them in fixed priority:
 
 ```
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
-A completion that loses waits in its [`fu_cdb_adapter`](fu_cdb_adapter/README.md)
-and competes again the next cycle; the pipelined MUL, DIV, and FP multiply
-shims also queue results in FIFOs. On a full flush the arbiter's `i_kill`
+The FP engine completes on the `FP_ADD` slot; the `FP_DIV` and `FP_MUL` slots
+have no unit behind them. A completion that loses waits in its
+[`fu_cdb_adapter`](fu_cdb_adapter/README.md) and competes again the next
+cycle; the pipelined MUL and DIV paths also queue results in FIFOs. On a full flush the arbiter's `i_kill`
 suppresses both lanes, which keeps the widely fanned flush signal out of the
 adapters' output logic.
 
@@ -134,9 +135,9 @@ cannot reliably tell a late completion for a squashed instruction from the
 result of the new instruction holding that tag. Every producer therefore
 drops squashed work at its own boundary:
 
-- The shims mark squashed operations in their trackers, queues, and result
-  registers, and drop them when they emerge. The FP multiply and divide shims
-  do this a cycle late; see [fu_shims](fu_shims/README.md#flushes).
+- The shims mark squashed operations in their trackers and queues and drop
+  them when they emerge, or, for the FP engine, kill them in the unit; see
+  [fu_shims](fu_shims/README.md#flushes).
 - The adapters compare held and passing results against the flush point by
   age.
 - The LQ drops memory responses and staged CDB results for squashed loads.
@@ -167,9 +168,7 @@ unless a flush squashes it.
 | `INT_RS`   | 16 (`INT_RS_DEPTH`) | ALU ops including LUI and AUIPC, shifts, Zba/Zbb/Zbs/Zbkb, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK, PAUSE (a NOP with no operands), and the illegal-instruction and fetch-fault markers |
 | `MUL_RS`   | 4     | MUL/MULW/MULH\*/DIV\*/REM\* |
 | `MEM_RS`   | 8     | All loads and stores (INT and FP), AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I, SFENCE.VMA |
-| `FP_RS`    | 6     | FADD/FSUB, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
-| `FMUL_RS`  | 4     | FMUL, FMA (3-source) |
-| `FDIV_RS`  | 2     | FDIV, FSQRT (a separate RS so these long operations cannot block FP_RS) |
+| `FP_RS`    | 2     | Every F and D compute instruction: FADD/FSUB, FMUL, FMA (3-source), FDIV, FSQRT, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
 | (none)     | n/a   | JAL, WFI, MRET, SRET, DRET: ROB only, no operands to wait for |
 
 `INT_RS_DEPTH` must be a power of two from 2 to 32. The INT RS's second issue

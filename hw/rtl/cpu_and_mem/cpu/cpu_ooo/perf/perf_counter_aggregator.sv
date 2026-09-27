@@ -109,8 +109,7 @@ module perf_counter_aggregator #(
   localparam int unsigned PerfDispatchStallMulRsFull = 9;
   localparam int unsigned PerfDispatchStallMemRsFull = 10;
   localparam int unsigned PerfDispatchStallFpRsFull = 11;
-  localparam int unsigned PerfDispatchStallFmulRsFull = 12;
-  localparam int unsigned PerfDispatchStallFdivRsFull = 13;
+  // 12 and 13 are reserved: nothing drives them, so they read 0.
   localparam int unsigned PerfDispatchStallLqFull = 14;
   localparam int unsigned PerfDispatchStallSqFull = 15;
   localparam int unsigned PerfDispatchStallCheckpointFull = 16;
@@ -307,8 +306,6 @@ module perf_counter_aggregator #(
     perf_top_inc[PerfDispatchStallMulRsFull] = {{63{1'b0}}, dispatch_status.mul_rs_full};
     perf_top_inc[PerfDispatchStallMemRsFull] = {{63{1'b0}}, dispatch_status.mem_rs_full};
     perf_top_inc[PerfDispatchStallFpRsFull] = {{63{1'b0}}, dispatch_status.fp_rs_full};
-    perf_top_inc[PerfDispatchStallFmulRsFull] = {{63{1'b0}}, dispatch_status.fmul_rs_full};
-    perf_top_inc[PerfDispatchStallFdivRsFull] = {{63{1'b0}}, dispatch_status.fdiv_rs_full};
     perf_top_inc[PerfDispatchStallLqFull] = {{63{1'b0}}, dispatch_status.lq_full};
     perf_top_inc[PerfDispatchStallSqFull] = {{63{1'b0}}, dispatch_status.sq_full};
     perf_top_inc[PerfDispatchStallCheckpointFull] = {{63{1'b0}}, dispatch_status.checkpoint_full};

@@ -23,7 +23,7 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from config import MASK_XLEN, XLEN
 
 
-from ..tomasulo.fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+from ..tomasulo.fu_shims.fp_shim_interface import _parse_instr_op_enum
 from cocotb_tests.cpu_structs import (
     PIPELINE_CTRL_FIELDS,
     PD_TO_ID_FIELDS,
@@ -71,7 +71,6 @@ PAUSE = _INSTR_OPS["PAUSE"]
 RS_INT = 0
 RS_MEM = 2
 RS_FP = 3
-RS_FMUL = 4
 RS_NONE = 6
 
 
@@ -875,7 +874,7 @@ async def test_fp_fma_decodes_fp_sources(dut: Any) -> None:
 
     packet = _read_id_packet(dut)
     assert packet["instruction_operation"] == FMADD_S
-    assert packet["rs_type"] == RS_FMUL
+    assert packet["rs_type"] == RS_FP
     assert packet["is_fp_instruction"] is True
     assert packet["fp_rm"] == 1
     assert packet["has_fp_dest"] is True

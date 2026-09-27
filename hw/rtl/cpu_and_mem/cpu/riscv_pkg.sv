@@ -2194,9 +2194,7 @@ package riscv_pkg;
   localparam int unsigned IntRsIssue2Window = 8;
   localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
   localparam int unsigned MemRsDepth = 8;  // Load/store operations
-  localparam int unsigned FpRsDepth = 6;  // FP add/sub/cmp/cvt/classify/sgnj
-  localparam int unsigned FmulRsDepth = 4;  // FP multiply/FMA (3 sources)
-  localparam int unsigned FdivRsDepth = 2;  // FP divide/sqrt (long latency)
+  localparam int unsigned FpRsDepth = 2;  // Every FP compute operation (3 sources)
 
   // Memory queue depths
   localparam int unsigned LqDepth = 8;  // Load queue entries
@@ -2215,7 +2213,7 @@ package riscv_pkg;
   localparam int unsigned FLEN = FpWidth;  // 64 bits for D extension
 
   // CDB parameters
-  localparam int unsigned NumFus = 8;  // ALU, MUL, DIV, MEM, FP_ADD, FP_MUL, FP_DIV, ALU2
+  localparam int unsigned NumFus = 8;  // ALU, MUL, DIV, MEM, FP, two spare slots, ALU2
 
   // ---------------------------------------------------------------------------
   // Functional Unit Enumeration and RS Assignment
@@ -2229,9 +2227,9 @@ package riscv_pkg;
     FU_MUL    = 3'd1,  // Integer multiplier
     FU_DIV    = 3'd2,  // Integer divider
     FU_MEM    = 3'd3,  // Load/store unit (both INT and FP)
-    FU_FP_ADD = 3'd4,  // FP adder (add/sub/cmp/cvt/classify/sgnj)
-    FU_FP_MUL = 3'd5,  // FP multiplier (mul/FMA)
-    FU_FP_DIV = 3'd6,  // FP divider/sqrt (long latency)
+    FU_FP_ADD = 3'd4,  // FP engine (every FP compute operation)
+    FU_FP_MUL = 3'd5,  // Spare: only the wrapper's test-injection input
+    FU_FP_DIV = 3'd6,  // Spare: only the wrapper's test-injection input
     FU_ALU2   = 3'd7   // Integer ALU pipe 1 (plain ALU ops only; branches stay on pipe 0)
   } fu_type_e;
 
@@ -2240,9 +2238,7 @@ package riscv_pkg;
     RS_INT  = 3'd0,  // INT_RS: Integer ALU ops, branches, CSR
     RS_MUL  = 3'd1,  // MUL_RS: MUL/DIV
     RS_MEM  = 3'd2,  // MEM_RS: All loads/stores (INT and FP)
-    RS_FP   = 3'd3,  // FP_RS: FP add/sub/cmp/cvt/classify/sgnj
-    RS_FMUL = 3'd4,  // FMUL_RS: FP mul/FMA (3 sources)
-    RS_FDIV = 3'd5,  // FDIV_RS: FP div/sqrt
+    RS_FP   = 3'd3,  // FP_RS: every FP compute operation (3 sources)
     RS_NONE = 3'd6   // No RS needed (JAL, WFI, MRET/SRET/DRET; ROB only)
   } rs_type_e;
 
@@ -2422,8 +2418,6 @@ package riscv_pkg;
     logic head_wait_mem_store;
     logic head_wait_mem_amo;
     logic head_wait_fp;
-    logic head_wait_fmul;
-    logic head_wait_fdiv;
     logic commit_blocked_csr;
     logic commit_blocked_fence;
     logic commit_blocked_wfi;
@@ -2727,8 +2721,6 @@ package riscv_pkg;
     logic mul_rs_full;
     logic mem_rs_full;
     logic fp_rs_full;
-    logic fmul_rs_full;
-    logic fdiv_rs_full;
     logic lq_full;
     logic sq_full;
     logic checkpoint_full;        // All checkpoints in use (branch)
@@ -2737,7 +2729,7 @@ package riscv_pkg;
     // attributing those whole-bundle stall cycles to slot-2 causes; several
     // can fire together when more than one room check fails.
     logic slot2_present;          // Real slot-2 instruction at the dispatch input
-    logic slot2_fp_serialized;    // Slot-2 targets an FP RS (FP-compute never dispatches as slot-2)
+    logic slot2_fp_serialized;    // Slot-2 targets FP_RS (FP compute never dispatches as slot-2)
     logic slot2_block_s1_branch;  // Slot-2 refused: slot-1 is a branch/jump (bundle terminates)
     logic slot2_block_rob_full2;  // Slot-2 refused: no ROB room for 2
     logic slot2_block_rs_full2;   // Slot-2 refused: slot-2's RS room check failed
@@ -2816,8 +2808,10 @@ package riscv_pkg;
       FENCE, FENCE_I, SFENCE_VMA:
       get_rs_type = RS_MEM;
 
-      // FP add/sub/cmp/cvt/classify/sgnj -> FP_RS
+      // Every FP compute operation -> FP_RS
       FADD_S, FSUB_S, FADD_D, FSUB_D,
+      FMUL_S, FMUL_D, FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S, FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D,
+      FDIV_S, FSQRT_S, FDIV_D, FSQRT_D,
       FMIN_S, FMAX_S, FMIN_D, FMAX_D,
       FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
       FCVT_W_S, FCVT_WU_S, FCVT_S_W, FCVT_S_WU,
@@ -2830,13 +2824,6 @@ package riscv_pkg;
       FSGNJ_S, FSGNJN_S, FSGNJX_S,
       FSGNJ_D, FSGNJN_D, FSGNJX_D:
       get_rs_type = RS_FP;
-
-      // FP multiply/FMA -> FMUL_RS (3 sources for FMA)
-      FMUL_S, FMUL_D, FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S, FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D:
-      get_rs_type = RS_FMUL;
-
-      // FP divide/sqrt -> FDIV_RS (long latency)
-      FDIV_S, FSQRT_S, FDIV_D, FSQRT_D: get_rs_type = RS_FDIV;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET and DRET ride the MRET machinery.

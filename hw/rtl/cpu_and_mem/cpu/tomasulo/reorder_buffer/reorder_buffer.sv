@@ -2878,8 +2878,6 @@ module reorder_buffer #(
           riscv_pkg::RS_MUL: o_perf_events.head_wait_mul = 1'b1;
           riscv_pkg::RS_MEM: ;
           riscv_pkg::RS_FP: o_perf_events.head_wait_fp = 1'b1;
-          riscv_pkg::RS_FMUL: o_perf_events.head_wait_fmul = 1'b1;
-          riscv_pkg::RS_FDIV: o_perf_events.head_wait_fdiv = 1'b1;
           default: ;
         endcase
       end
@@ -3007,8 +3005,6 @@ module reorder_buffer #(
           riscv_pkg::RS_MUL: f_perf_events.head_wait_mul = 1'b1;
           riscv_pkg::RS_MEM: ;
           riscv_pkg::RS_FP: f_perf_events.head_wait_fp = 1'b1;
-          riscv_pkg::RS_FMUL: f_perf_events.head_wait_fmul = 1'b1;
-          riscv_pkg::RS_FDIV: f_perf_events.head_wait_fdiv = 1'b1;
           default: ;
         endcase
       end
@@ -3256,7 +3252,7 @@ module reorder_buffer #(
   //     accepted as genuine at this boundary; only the producer kill and
   //     single-delivery disciplines rule it out.
   // The producer side is covered by the directed stale-CDB/single-delivery
-  // tests in the tomasulo_wrapper bench, the fp_div_shim formal flushed-tag
+  // tests in the tomasulo_wrapper bench, the fp_shim formal flushed-tag
   // assert, and the wrapper's stale-delivery diagnostics, which name the
   // producing FU.
   logic dbg_flush_prev_cycle;
@@ -3528,7 +3524,7 @@ module reorder_buffer #(
   // Stale writes >=2 cycles after reallocation (tag ABA) are not excluded by
   // this contract; the producer-side kill discipline and the MEM
   // single-delivery discipline rule them out, pinned by the tomasulo_wrapper
-  // stale-CDB/single-delivery tests and the fp_div_shim FORMAL flushed-tag
+  // stale-CDB/single-delivery tests and the fp_shim FORMAL flushed-tag
   // assert.
   logic [1:0] f_prev_alloc_valid;
   logic [1:0][ReorderBufferTagWidth-1:0] f_prev_alloc_idx;

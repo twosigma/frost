@@ -1652,8 +1652,6 @@ async def run_until_complete(
     mul_rs_full_live_sig = None
     mem_rs_full_live_sig = None
     fp_rs_full_live_sig = None
-    fmul_rs_full_live_sig = None
-    fdiv_rs_full_live_sig = None
     lq_full_live_sig = None
     sq_full_live_sig = None
     head_tag_live_sig = None
@@ -2681,12 +2679,6 @@ async def run_until_complete(
         )
         fp_rs_full_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.fp_rs_full"
-        )
-        fmul_rs_full_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.fmul_rs_full"
-        )
-        fdiv_rs_full_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.fdiv_rs_full"
         )
         lq_full_live_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.lq_full")
         sq_full_live_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.sq_full")
@@ -3862,8 +3854,6 @@ async def run_until_complete(
                     f"mul_full={_read_bool(mul_rs_full_live_sig)} "
                     f"mem_full={_read_bool(mem_rs_full_live_sig)} "
                     f"fp_full={_read_bool(fp_rs_full_live_sig)} "
-                    f"fmul_full={_read_bool(fmul_rs_full_live_sig)} "
-                    f"fdiv_full={_read_bool(fdiv_rs_full_live_sig)} "
                     f"lq_full={_read_bool(lq_full_live_sig)} "
                     f"sq_full={_read_bool(sq_full_live_sig)} "
                     f"ckpt_avail={_read_bool(checkpoint_available_sig)} "

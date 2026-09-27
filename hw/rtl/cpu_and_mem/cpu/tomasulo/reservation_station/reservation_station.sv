@@ -17,7 +17,7 @@
 /*
  * Parameterized reservation station. The wrapper's instances use these depths:
  *   INT_RS=16 (riscv_pkg::IntRsDepth; port 1 considers only the lowest 8),
- *   MUL_RS=4, MEM_RS=8, FP_RS=6, FMUL_RS=4, FDIV_RS=2
+ *   MUL_RS=4, MEM_RS=8, FP_RS=2 (riscv_pkg::FpRsDepth)
  *
  * Sources wake from either CDB lane or from done repair. A CDB match in the
  * dispatch cycle is delivered one cycle later from registered lane values,

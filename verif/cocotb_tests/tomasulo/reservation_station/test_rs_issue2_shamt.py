@@ -27,7 +27,7 @@ from cocotb.clock import Clock
 from cocotb.triggers import Timer
 
 from .rs_interface import RSInterface, unpack_rs_issue
-from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+from ..fu_shims.fp_shim_interface import _parse_instr_op_enum
 
 OPS = _parse_instr_op_enum()
 IMMEDIATE_OPS = {"SLLI", "SRLI", "SRAI", "RORI", "SLLIW", "SRLIW", "SRAIW", "RORIW"}

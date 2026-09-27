@@ -22,7 +22,7 @@ an L0 hit with cache_hit_complete.
 
 from dataclasses import dataclass
 from config import MASK32, MASK64, MASK_XLEN, XLEN
-from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+from ..fu_shims.fp_shim_interface import _parse_instr_op_enum
 
 _INSTR_OPS = _parse_instr_op_enum()
 _MINMAX_OPS = {

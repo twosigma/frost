@@ -27,7 +27,7 @@ instruction behind a slot-1 branch or jump, and dispatch refuses such a slot 2
 as well. A bundle therefore holds at most one branch or jump, and only slot 2
 of a pair can be one.
 
-FP-compute ops (bound for the FP, FMUL, or FDIV station) stay out of slot 2;
+FP-compute ops (bound for FP_RS) stay out of slot 2;
 FP loads and stores go to MEM_RS and may use either slot. The instruction
 aligner advances past slot 1 alone when the next instruction is an
 FP-compute op, so that op arrives later as slot 1. Dispatch backs this up by
