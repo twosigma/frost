@@ -669,10 +669,12 @@ module fetch_provider #(
     end
   end
 
-  // Victim store bookkeeping. A slot write, either an installed fill response
-  // or a store copy, shadows the slot's previous content with the same enable
-  // the slot registers use. A registered pending bit writes the shadow into
-  // the store on a later cycle, one write per cycle with slot 0 first. A slot
+  // Victim store bookkeeping. A free shadow tracks its slot's old contents
+  // every cycle. A slot write (an installed response or victim copy) marks
+  // that captured value pending, and the shadow then holds until it drains.
+  // This keeps the late slot-write decision off the wide payload enables.
+  // The registered pending bit writes the shadow into the store on a later
+  // cycle, one write per cycle with slot 0 first. A slot
   // whose shadow is still pending is not copied into (copy_now), and
   // consecutive responses to one slot are impossible because the engine has to
   // be re-issued, so a shadow is never overwritten before it is stored. A
@@ -697,11 +699,11 @@ module fetch_provider #(
     end else begin
       if (ev_write) ev_pending_q[ev_sel] <= 1'b0;
       for (int p = 0; p < 2; p++) begin
-        if (slot_write[p]) begin
-          ev_pending_q[p] <= slot_valid_q[p];
-          ev_line_q[p]    <= slot_line_q[p];
-          ev_data_q[p]    <= slot_data_q[p];
-          ev_sb_q[p]      <= slot_sb_q[p];
+        if (slot_write[p]) ev_pending_q[p] <= slot_valid_q[p];
+        if (!ev_pending_q[p]) begin
+          ev_line_q[p] <= slot_line_q[p];
+          ev_data_q[p] <= slot_data_q[p];
+          ev_sb_q[p]   <= slot_sb_q[p];
         end
       end
     end
@@ -790,6 +792,13 @@ module fetch_provider #(
         $error("fetch_provider: line response id %0d (expected 0 or 1)", i_line_resp_id);
       if (i_line_resp_valid && !(fill_busy_q[resp_slot] && fill_sent_q[resp_slot]))
         $error("fetch_provider: line response for slot %0d with no fill in flight", resp_slot);
+      if (!i_invalidate) begin
+        for (int p = 0; p < 2; p++) begin
+          if (slot_write[p])
+            assert (!ev_pending_q[p])
+            else $error("fetch_provider: slot %0d overwrote a pending eviction shadow", p);
+        end
+      end
     end
   end
 
@@ -805,6 +814,36 @@ module fetch_provider #(
   always_ff @(posedge i_clk) begin
     if (!i_rst && !i_invalidate && ev_write && (VICTIM_LINES > 0)) begin
       p_victim_store_write_is_unique : assert (!vs_write_line_stored);
+    end
+  end
+`endif
+
+`ifdef FETCH_SHADOW_CAPTURE_PROOF
+  // Reference captures only on the original slot-write enable. While a
+  // shadow is pending, every tag/data/predecode bit must equal that reference.
+  // All architectural consumers of the shadow are gated by its pending bit.
+  localparam int unsigned ShadowPayloadBits = LineAddrBits + LineBits + LineSbBits;
+  logic [1:0][ShadowPayloadBits-1:0] f_shadow_ref;
+  logic f_shadow_past_valid = 1'b0;
+  always_ff @(posedge i_clk) begin
+    f_shadow_past_valid <= 1'b1;
+    if (!f_shadow_past_valid) assume (i_rst);
+    if (!i_rst && i_line_resp_valid) begin
+      assume (i_line_resp_id <= LINE_ID_BITS'(1));
+      assume (fill_busy_q[resp_slot] && fill_sent_q[resp_slot]);
+    end
+    for (int p = 0; p < 2; p++) begin
+      if (!i_rst && !i_invalidate && slot_write[p])
+        f_shadow_ref[p] <= {slot_line_q[p], slot_data_q[p], slot_sb_q[p]};
+      if (f_shadow_past_valid) begin
+        if (!i_rst && !i_invalidate && slot_write[p]) assert (!ev_pending_q[p]);
+        if (ev_pending_q[p]) assert ({ev_line_q[p], ev_data_q[p], ev_sb_q[p]} == f_shadow_ref[p]);
+      end
+    end
+    if (f_shadow_past_valid && !i_rst) begin
+      cover (!i_invalidate && ev_pending_q[0] && slot_write[1]);
+      cover (!i_invalidate && ev_pending_q[1] && slot_write[0]);
+      cover (i_invalidate && (|ev_pending_q));
     end
   end
 `endif

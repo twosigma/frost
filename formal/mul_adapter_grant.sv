@@ -14,23 +14,31 @@
  *    limitations under the License.
  */
 
-// Compare the wrapper's local MUL grant with the actual arbiter grant.
+// Compare a local MUL grant or constant-idle MUL/MEM adapter with the actual
+// arbiter-granted stateful adapter. The two highest priorities always fit
+// on the two-lane bus unless full flush discards the result.
 // The reference includes arbitrary competing and injected completions; all
 // flush controls, tags, and input payloads are free. Only an initial reset
 // is assumed. The adapters must match on every completion bit (even invalid
 // payloads) and pending state, and neither adapter may ever hold a result.
-// The MUL wrapper leaves the unqualified o_held_value output unused.
-module mul_adapter_grant (
+// Both wrapper instances leave the unqualified o_held_value output unused.
+module mul_adapter_grant #(
+    parameter bit MEM_SLOT = 1'b0,
+    parameter bit ALWAYS_GRANTED = 1'b0
+) (
     input logic i_clk
 );
   (* anyseq *) logic rst_n, flush, flush_en;
   (* anyseq *) riscv_pkg::fu_complete_t
-      incoming, injected, alu, mem, div_req, fp_add, fp_mul, fp_div, alu2;
+      incoming, injected, alu, mul, mem, div_req, fp_add, fp_mul, fp_div, alu2;
   (* anyseq *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag, head_tag;
-  riscv_pkg::fu_complete_t reference_out, direct_out, arb_mul;
+  localparam int Slot = MEM_SLOT ? riscv_pkg::FU_MEM : riscv_pkg::FU_MUL;
+  riscv_pkg::fu_complete_t reference_out, direct_out, arb_selected, arb_mul, arb_mem;
   logic reference_pending, direct_pending;
   logic [riscv_pkg::NumFus-1:0] grants;
-  assign arb_mul = reference_out.valid ? reference_out : injected;
+  assign arb_selected = reference_out.valid ? reference_out : injected;
+  assign arb_mul = MEM_SLOT ? mul : arb_selected;
+  assign arb_mem = MEM_SLOT ? arb_selected : mem;
 
   fu_cdb_adapter #(
       .ALLOW_GRANT_REFILL(1'b0)
@@ -39,7 +47,7 @@ module mul_adapter_grant (
       .i_rst_n(rst_n),
       .i_fu_result(incoming),
       .o_fu_complete(reference_out),
-      .i_grant(grants[riscv_pkg::FU_MUL]),
+      .i_grant(grants[Slot]),
       .o_held_value(),
       .o_result_pending(reference_pending),
       .i_flush(flush),
@@ -48,13 +56,14 @@ module mul_adapter_grant (
       .i_rob_head_tag(head_tag)
   );
   fu_cdb_adapter #(
-      .ALLOW_GRANT_REFILL(1'b0)
+      .ALLOW_GRANT_REFILL(1'b0),
+      .ALWAYS_GRANTED(ALWAYS_GRANTED)
   ) direct_adapter (
       .i_clk(i_clk),
       .i_rst_n(rst_n),
       .i_fu_result(incoming),
       .o_fu_complete(direct_out),
-      .i_grant(direct_out.valid),
+      .i_grant(ALWAYS_GRANTED ? grants[Slot] : direct_out.valid),
       .o_held_value(),
       .o_result_pending(direct_pending),
       .i_flush(flush),
@@ -68,7 +77,7 @@ module mul_adapter_grant (
       .i_fu_complete_0(alu),
       .i_fu_complete_1(arb_mul),
       .i_fu_complete_2(div_req),
-      .i_fu_complete_3(mem),
+      .i_fu_complete_3(arb_mem),
       .i_fu_complete_4(fp_add),
       .i_fu_complete_5(fp_mul),
       .i_fu_complete_6(fp_div),
@@ -101,10 +110,14 @@ module mul_adapter_grant (
       assert (reference_pending == direct_pending);
       assert (!reference_pending && !direct_pending);
       assert (reference_out == direct_out);
+      assert (!reference_out.valid || flush || grants[Slot]);
       cover (incoming.valid && reference_out.valid && !flush);
       cover (incoming.valid && flush_en && !reference_out.valid);
       cover (incoming.valid && flush);
-      cover (!reference_out.valid && injected.valid && grants[riscv_pkg::FU_MUL]);
+      cover (!reference_out.valid && injected.valid && grants[Slot]);
+      if (MEM_SLOT)
+        cover (reference_out.valid && mul.valid && grants[Slot] &&
+          grants[riscv_pkg::FU_MUL] && !flush);
     end
   end
 endmodule

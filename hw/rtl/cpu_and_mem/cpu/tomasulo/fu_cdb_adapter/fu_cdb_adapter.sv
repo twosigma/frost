@@ -56,7 +56,11 @@ module fu_cdb_adapter #(
     // register can use i_fu_result.valid directly as its write enable, while
     // ALLOW_GRANT_REFILL still controls result_pending.
     parameter bit ALLOW_GRANT_REFILL_PAYLOAD_WRITE = 1'b1,
-    parameter bit REGISTER_OUTPUT = 1'b0
+    parameter bit REGISTER_OUTPUT = 1'b0,
+    // The arbiter must grant every valid output unless i_flush discards it.
+    // With a pass-through output this makes PENDING unreachable after reset.
+    // The wrapper uses this only for the two highest-priority CDB sources.
+    parameter bit ALWAYS_GRANTED = 1'b0
 ) (
     input logic i_clk,
     input logic i_rst_n,
@@ -160,21 +164,38 @@ module fu_cdb_adapter #(
   // ---------------------------------------------------------------------------
   // Register logic
   // ---------------------------------------------------------------------------
-  // Control: result_pending (with reset)
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      result_pending <= 1'b0;
-    end else if (i_flush || partial_flush_held) begin
-      result_pending <= 1'b0;
-    end else if (result_pending && i_grant) begin
-      // Grant-refill must apply the same partial-flush input filter as the
-      // idle capture below: without it a flushed-younger result issued on
-      // the flush cycle survives as held state past the flush.
-      result_pending <= ALLOW_GRANT_REFILL && i_fu_result.valid && !partial_flush_input;
-    end else if (!result_pending && i_fu_result.valid && !partial_flush_input) begin
-      result_pending <= REGISTER_OUTPUT || !i_grant;
+  // Control: the top two arbiter priorities never need holding state. Keeping
+  // their pending flag constant also removes the held/input payload muxes.
+  generate
+    if (ALWAYS_GRANTED) begin : gen_always_granted
+      assign result_pending = 1'b0;
+`ifndef SYNTHESIS
+      initial begin
+        assert (!REGISTER_OUTPUT && !ALLOW_GRANT_REFILL);
+      end
+      always_ff @(posedge i_clk) begin
+        if (i_rst_n && o_fu_complete.valid && !i_flush) begin
+          p_valid_result_is_granted : assert (i_grant);
+        end
+      end
+`endif
+    end else begin : gen_pending_state
+      always_ff @(posedge i_clk) begin
+        if (!i_rst_n) begin
+          result_pending <= 1'b0;
+        end else if (i_flush || partial_flush_held) begin
+          result_pending <= 1'b0;
+        end else if (result_pending && i_grant) begin
+          // Grant-refill must apply the same partial-flush input filter as the
+          // idle capture below: without it a flushed-younger result issued on
+          // the flush cycle survives as held state past the flush.
+          result_pending <= ALLOW_GRANT_REFILL && i_fu_result.valid && !partial_flush_input;
+        end else if (!result_pending && i_fu_result.valid && !partial_flush_input) begin
+          result_pending <= REGISTER_OUTPUT || !i_grant;
+        end
+      end
     end
-  end
+  endgenerate
 
   // Data: held_result (no reset; result_pending gates its visibility).
   // Writing the pass-through payload even on same-cycle grant/flush is safe:

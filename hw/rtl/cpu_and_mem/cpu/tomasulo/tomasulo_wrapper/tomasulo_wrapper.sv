@@ -3392,20 +3392,20 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // MUL CDB Adapter: result pass-through → CDB arbiter slot 1
   // ===========================================================================
-  // MUL always wins lane 0 when valid. Use that local grant at the adapter:
-  // when the arbiter's full-flush kill suppresses its actual grant, the same
-  // flush clears the adapter regardless of grant. mul_adapter_grant proves
-  // this feedback preserves the completion packet and keeps the adapter idle, even
-  // with partial flushes and test-injected completions.
+  // MUL always wins lane 0 when valid. A full-flush kill is the only reason
+  // it can lose its grant, and that flush discards the result on the same
+  // edge. Its pending state is therefore unreachable; mul_adapter_grant
+  // proves the constant-idle implementation against the actual arbiter.
   fu_cdb_adapter #(
-      .ALLOW_GRANT_REFILL(1'b0)
+      .ALLOW_GRANT_REFILL(1'b0),
+      .ALWAYS_GRANTED(1'b1)
   ) u_mul_adapter (
       .i_clk           (i_clk),
       .i_rst_n         (i_rst_n),
       .i_fu_result     (mul_shim_out),
       .o_fu_complete   (mul_adapter_to_arbiter),
       .o_held_value    (),
-      .i_grant         (mul_adapter_to_arbiter.valid),
+      .i_grant         (o_cdb_grant[1]),
       .o_result_pending(mul_adapter_result_pending),
       .i_flush         (speculative_flush_all),
       .i_flush_en      (speculative_flush_en),
@@ -3677,10 +3677,14 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
-  // MEM CDB Adapter: result holding register → CDB arbiter slot 3
+  // MEM CDB Adapter: result pass-through → CDB arbiter slot 3
   // ===========================================================================
+  // Only MUL outranks MEM on the two-lane bus, so MEM also always receives a
+  // grant unless full flush discards it. The MEM variant of mul_adapter_grant
+  // proves that removing its pending state preserves every output bit.
   fu_cdb_adapter #(
-      .ALLOW_GRANT_REFILL(1'b0)
+      .ALLOW_GRANT_REFILL(1'b0),
+      .ALWAYS_GRANTED(1'b1)
   ) u_mem_adapter (
       .i_clk           (i_clk),
       .i_rst_n         (i_rst_n),

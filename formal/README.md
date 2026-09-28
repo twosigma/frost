@@ -72,6 +72,7 @@ Grouped by area; `--list-targets` shows each target's tasks.
 | `c_ext_buffer_next` | The compressed-instruction buffer's next state equals the reference clear/capture/hold priority |
 | `c_ext_state_cofactor` | The same next state with the pending-prediction handoff factored out equals the reference, and a handoff never keeps old-path buffer state. `prediction_release` checks the real producers of these inputs |
 | `control_flow_holdoff` | Redirect and reset holdoff next state equals the reference equations |
+| `fetch_shadow_capture` | Free shadows may track their slots continuously: every pending tag and full-width payload equals capture on the original slot-write enable. Checks default, one-entry, and disabled victim stores; assumes an initial reset and responses matching sent, outstanding fills |
 | `fetch_pc_mux` | The next-fetch-PC mux equals the reference priority and one-hot expressions, for portable and Xilinx-primitive builds, standalone and with `PENDING_HANDOFF_EXCLUDES_SLOT2=1` (`bmc_integrated*`) |
 | `fetch_redirect` | The registered fetch-redirect pulse, computed ahead for each prediction outcome, equals the reference priority equation; bounded and unbounded |
 | `if_direction_payload` | Dropping the NOP term from the branch-direction payload select changes no non-NOP packet, including stall replay through the real `stall_capture_reg`. Assumes a flush on the first cycle, which initializes the saved-NOP bit |
@@ -223,7 +224,7 @@ count, while other assertions in `load_queue.sv` do not affect it.
 | `fu_cdb_adapter_payload_no_refill` | The adapter with `ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`, as the two ALU adapters use it. Assumes the FU never presents a result while one is held; the wrapper guarantees this by gating issue |
 | `int_muldiv_shim` | Every tracked MUL operation sits in the pipeline for its width (full or short word), the MUL FIFO credits hold under back-pressure and flushes, and each surviving completion takes its product from the matching multiplier (`prove_alignment*`). For the divider: `o_div_busy` is high exactly while it is not idle, a DIV completion carries the tag of the divide that started last, a kill frees the divider on the next cycle, and a divide a full or partial flush squashes never completes, until its tag starts again. Runs with the word multiplier on and off (`*_fallback`). Assumes a reset on the first cycle only, and that a divide is presented only while the divider is idle (MUL_RS's divide gate, which `reservation_station` checks). Arithmetic values and liveness are out of scope |
 | `mul_completion_tag` | Passing the MUL result's tag through unqualified on invalid cycles, instead of zeroing it, changes no adapter state, valid result, or arbiter input. Assumes one initial reset |
-| `mul_adapter_grant` | The MUL adapter's local valid-feedback grant preserves every completion bit and the pending bit against an adapter driven by the actual CDB arbiter. Both adapters always remain idle. Competing completions, injected test results, flushes, and tags are arbitrary; only an initial reset is assumed. Unbounded |
+| `mul_adapter_grant` | The MUL adapter's local valid-feedback grant and constant-idle (`ALWAYS_GRANTED`) MUL/MEM adapters preserve every completion bit and the pending bit against stateful adapters driven by the actual CDB arbiter. Competing completions, injected test results, flushes, and tags are arbitrary; only an initial reset is assumed. The MEM covers include simultaneous MUL and MEM grants. Unbounded |
 
 `divider` compares results with Verilog division at 8 bits, where division is
 cheap for the solver; the divider is the same RTL at every width. A start
@@ -237,7 +238,7 @@ runs in the `divider` simulation, against Python integer division.
 | Target | Checks |
 | --- | --- |
 | `cache_mshr_payload` | Per-entry MSHR data and byte-strobe next state equals the reference indexed fill and store merge, including fills that coincide with W-stage stores, in a 256-byte cache with 8-byte lines |
-| `coherence_observation` | The load queue's coherence port tracks one arbitrary ROB tag's observations through retirement, flush, and tag reuse, and replays it when DMA invalidates its line. See below |
+| `coherence_observation` | The load queue's coherence port tracks one arbitrary ROB tag's observations through retirement, flush, and tag reuse, and replays it when DMA invalidates its line. Valid table payloads equal the original reset/flush-qualified writes. See below |
 | `coherence_replay_compare` | DMA-invalidation replay masks, computed with chunked compares against local copies of the invalidated line, equal full-width line equality, at XLEN 32, 64, and 66. Assumes one initial reset |
 | `data_mem_request_router` | Device reads are staged and accepted only after committed stores drain, a flush cancels an unaccepted device read, read enables match acceptances, and a blocked request keeps its address. Assumes the load queue presents no new read while one is held |
 | `data_mem_response_mux` | Load data selected among BRAM, MMIO, and cached DDR equals the reference selection at 32 and 64 bits, for portable and Xilinx LUT5 builds |
@@ -265,7 +266,10 @@ tag's next user. That integration, DMA progress, and atomic exclusion are
 outside this target. `prove_unrestricted` drops the timing assumption,
 keeping only the initial reset, and still proves flush cleanup, commit
 cleanup when no observation overlaps, and that a pending write takes priority
-over a coinciding commit. The covers reach both commit lanes, full and
+over a coinciding commit. Both proof variants also compare each valid table
+payload with the original reset/flush-qualified write: speculative writes to
+killed entries stay invisible, including through subsequent tag reuse. The
+covers reach both commit lanes, full and
 partial flushes, circular tag order, a long-lived observation, tag reuse with
 a changed line, and replay from both the pending register and the table.
 

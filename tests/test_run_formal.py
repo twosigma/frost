@@ -55,6 +55,11 @@ class FormalTarget:
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
     FormalTarget(
+        "fetch_shadow_capture.sby",
+        "Tracking free fetch shadows preserves every pending tag and payload bit under legal responses",
+        tasks=("prove", "cover", "prove_victim0", "prove_victim1"),
+    ),
+    FormalTarget(
         "sq_live_count.sby",
         "SQ live-count next value equals the reference arithmetic for every allocation outcome",
         tasks=("bmc",),
@@ -331,8 +336,16 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "mul_adapter_grant.sby",
-        "MUL adapter local grant preserves every completion bit and pending state against the actual arbiter; unbounded",
-        tasks=("prove", "cover"),
+        "MUL local grant and constant-idle MUL/MEM adapters preserve every completion "
+        "bit and pending state against the actual arbiter; unbounded",
+        tasks=(
+            "prove",
+            "cover",
+            "prove_always_mul",
+            "cover_always_mul",
+            "prove_always_mem",
+            "cover_always_mem",
+        ),
     ),
     FormalTarget(
         "load_queue.sby",
@@ -370,7 +383,8 @@ FORMAL_TARGETS = [
     FormalTarget(
         "coherence_observation.sby",
         "Coherence observation tracking through both commit lanes, flush and tag reuse, "
-        "and the registered replay mask, under the load-to-commit timing contract",
+        "and the registered replay mask under the load-to-commit timing contract; "
+        "valid-payload equivalence also without that contract",
         tasks=("prove", "prove_unrestricted", "cover"),
     ),
     FormalTarget(
@@ -483,6 +497,11 @@ FORMAL_TARGETS = [
 
 # SymbiYosys task types (for CLI --task filter and pytest parametrize)
 SBY_TASKS = [
+    (
+        "prove_victim0",
+        "Unbounded fetch-shadow equivalence with the victim store disabled",
+    ),
+    ("prove_victim1", "Unbounded fetch-shadow equivalence with one victim entry"),
     ("bmc_repair", "Bounded equivalence with insertion-time repair enabled"),
     ("prove_integrated", "Unbounded proof under the integrated interface contract"),
     ("prove_perf_off", "Unbounded proof with profiling counters absent"),
@@ -517,6 +536,10 @@ SBY_TASKS = [
         "prove_unrestricted",
         "Unbounded observation cleanup with only the initial-reset assumption",
     ),
+    ("prove_always_mul", "Unbounded constant-idle MUL adapter equivalence"),
+    ("cover_always_mul", "MUL grant, flush and injection reachability"),
+    ("prove_always_mem", "Unbounded constant-idle MEM adapter equivalence"),
+    ("cover_always_mem", "MEM grant, contention, flush and injection reachability"),
     ("generic32", "Arbitrary-input portable response-mux equivalence at 32 bits"),
     ("generic64", "Arbitrary-input portable response-mux equivalence at 64 bits"),
     ("xilinx32", "Arbitrary-input LUT5 response-mux equivalence at 32 bits"),

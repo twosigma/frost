@@ -324,6 +324,15 @@ module lq_coherence_port #(
   wire f_replay_expected = (inval_phase_q == 2'd2) &&
       ((f_accepted_q && f_latest_line_q == inval_line_q) ||
        (f_table_expected && f_table_line == inval_line_q));
+  // Reference the original payload write, including its reset/flush gates.
+  // The implementation may overwrite a killed row, but that row must remain
+  // invisible until a later accepted observation replaces its payload.
+  logic [LineBits-1:0] f_payload_reference_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && f_pending && !f_kill) f_payload_reference_q <= obs_pend_line_q;
+    if (f_observation_past_valid && obs_valid_q[f_observation_tag])
+      assert (obs_line_q[f_observation_tag] == f_payload_reference_q);
+  end
 
   always_ff @(posedge i_clk) begin
     f_observation_past_valid <= 1'b1;
@@ -540,8 +549,9 @@ module lq_coherence_port #(
 
       // Validation table: pipeline register, then the table.
       // An observation of a load a flush kills in this same cycle is dropped
-      // here: its tag is free for reuse, and the table must never carry an
-      // entry for an instruction other than the load that observed.
+      // from the valid state here: its tag is free for reuse, and the table
+      // must never expose an entry for a different load. Payload writes are
+      // handled separately below; only obs_valid_q makes them observable.
       obs_pend_valid_q <= i_observe_valid && !i_flush_all && !(i_flush_en && is_younger(
           i_observe_rob_tag, i_flush_tag, i_head_tag
       ));
@@ -563,10 +573,18 @@ module lq_coherence_port #(
                 obs_pend_tag_q, i_flush_tag, i_head_tag
             ))) begin
           obs_valid_q[obs_pend_tag_q] <= 1'b1;
-          obs_line_q[obs_pend_tag_q]  <= obs_pend_line_q;
         end
       end
     end
+  end
+
+  // A killed pending observation may still write its hidden line. The same
+  // reset/flush clears that row's valid bit, and every later valid insertion
+  // overwrites the line on the same edge. Keeping the registered pending bit
+  // as the payload enable removes the current-cycle age/flush comparison
+  // from all of the wide table's clock enables without adding a cycle.
+  always_ff @(posedge i_clk) begin
+    if (obs_pend_valid_q) obs_line_q[obs_pend_tag_q] <= obs_pend_line_q;
   end
 
 `ifndef SYNTHESIS

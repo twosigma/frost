@@ -6,11 +6,12 @@ one per FU slot that has a unit, six in all. If the arbiter grants a result on
 either lane in the cycle it arrives, the adapter passes it straight through
 with no added latency. Otherwise the adapter latches it and presents it every
 cycle until it is granted. `o_result_pending` tells the wrapper a result is
-waiting.
+waiting. The MUL and MEM instances use `ALWAYS_GRANTED` to keep the pending
+flag constant and remove unreachable holding logic.
 
 ## Behavior
 
-`result_pending` is the only state bit. With the default parameters:
+`result_pending` is the control-state bit in the default configuration:
 
 | State | Input and grant | Action |
 |-------|-----------------|--------|
@@ -35,14 +36,15 @@ cycle is not taken.
 | `REGISTER_OUTPUT` | 0 | 1: no pass-through; every result spends a cycle in the register. |
 | `ALLOW_GRANT_REFILL` | 1 | 0: a granted pending adapter goes idle and does not take a new input in the same cycle. |
 | `ALLOW_GRANT_REFILL_PAYLOAD_WRITE` | 1 | 0: `held_result` is written on every valid input, a simpler write enable. Legal only if a valid input never arrives while the adapter is pending. |
+| `ALWAYS_GRANTED` | 0 | 1: pending is constant zero. Requires `REGISTER_OUTPUT=0`, `ALLOW_GRANT_REFILL=0`, and a grant for every valid output except when full flush discards it. Simulation asserts that grant contract. |
 
 The wrapper's settings:
 
-| Adapters | `REGISTER_OUTPUT` | `ALLOW_GRANT_REFILL` | `ALLOW_GRANT_REFILL_PAYLOAD_WRITE` |
-|----------|-------------------|----------------------|------------------------------------|
-| ALU, ALU2 | 0 | 1 | 0 |
-| MUL, MEM | 0 | 0 | 1 |
-| DIV, FP | 1 | 0 | 1 |
+| Adapters | `REGISTER_OUTPUT` | `ALLOW_GRANT_REFILL` | `ALLOW_GRANT_REFILL_PAYLOAD_WRITE` | `ALWAYS_GRANTED` |
+|----------|-------------------|----------------------|------------------------------------|------------------|
+| ALU, ALU2 | 0 | 1 | 0 | 0 |
+| MUL, MEM | 0 | 0 | 1 | 1 |
+| DIV, FP | 1 | 0 | 1 | 0 |
 
 `REGISTER_OUTPUT` suits the long-latency units, where one more cycle costs
 little and the pass-through valid path hurts timing.
@@ -58,12 +60,16 @@ The MEM slot's store-fault and SC registers do not wait; they rely on the MEM
 adapter never being pending (see the
 [CDB arbiter](../cdb_arbiter/README.md#priority)).
 
-The MUL adapter uses its output valid bit as a local grant. A valid MUL
-result always wins lane 0, and a full flush that suppresses the arbiter's
-grant also clears the adapter regardless of grant. This preserves the
-completion packet and its always-idle pending state while removing the arbiter
-tree from that feedback path. The `mul_adapter_grant` formal target proves
-the equivalence against the actual arbiter, including test-injected results.
+MUL and MEM are the two highest priorities on the two-lane CDB. Every valid
+result from either gets a grant, except on a full flush that discards it.
+Their stateful adapters therefore never leave idle after reset. Setting
+`ALWAYS_GRANTED` makes that pending bit a constant, removing the holding-state
+feedback and held/input payload muxes without changing latency. Both still
+apply the same partial-flush age check to incoming results and connect to the
+actual grant for the simulation assertion. The `mul_adapter_grant` formal
+target proves both instances against the actual arbiter with arbitrary
+competing and test-injected results, flushes, and tags. It also retains the
+earlier MUL local-grant equivalence check.
 
 The ALU adapters keep refill enabled, but a pending ALU adapter deasserts its
 INT RS ready, so the combinational ALU shim never presents a result while the

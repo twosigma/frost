@@ -194,6 +194,11 @@ window's physical address:
 | Low BRAM (`imem_predecode.sv` through `low_bram_fetch_presenter.sv`) | The 256 KiB low BRAM at address 0 | Without stalls, one cycle for a window entirely inside `[0, 64 KiB)` and two cycles for any other window |
 | `fetch_provider.sv` | Cached DDR from `0x8000_0000` | Variable. Two line buffers over the L1I, filled in parallel with next-line prefetch, plus a six-line victim store that returns an evicted line in one cycle instead of an L1I round trip, so short loops re-enter without L1I accesses |
 
+The DDR fetch buffer's eviction shadows track their slots while free and hold
+while pending. This removes the late fill/victim-copy decision from their wide
+payload enables while preserving the original one-cycle shadow capture and
+victim-store write timing.
+
 Only the first 64 KiB of low BRAM keeps a LUTRAM copy of the predecode bits
 that feed the next-PC logic; elsewhere those bits are recomputed from the
 fetched words, which takes the second cycle.

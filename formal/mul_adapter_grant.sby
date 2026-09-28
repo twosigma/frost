@@ -1,12 +1,16 @@
 [tasks]
-prove
-cover
+prove proof
+cover reach
+prove_always_mul proof always
+cover_always_mul reach always
+prove_always_mem proof always mem
+cover_always_mem reach always mem
 
 [options]
-prove: mode prove
-prove: depth 3
-cover: mode cover
-cover: depth 4
+proof: mode prove
+proof: depth 3
+reach: mode cover
+reach: depth 4
 
 [engines]
 smtbmc boolector
@@ -14,6 +18,8 @@ smtbmc boolector
 [script]
 read -sv riscv_pkg.sv fu_cdb_adapter.sv cdb_arbiter.sv
 read -formal -sv mul_adapter_grant.sv
+always: chparam -set ALWAYS_GRANTED 1 mul_adapter_grant
+mem: chparam -set MEM_SLOT 1 mul_adapter_grant
 prep -top mul_adapter_grant
 
 [files]
