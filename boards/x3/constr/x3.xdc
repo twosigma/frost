@@ -1,5 +1,5 @@
 # Xilinx Design Constraints (XDC) for X3 board
-# Pin assignments, I/O standards, timing constraints, and NIC placement fences
+# Pin assignments, I/O standards, and timing constraints
 
 # ================================================================
 # BITSTREAM GENERATION CONFIGURATION
@@ -411,46 +411,3 @@ set_max_delay -datapath_only 3.0 -from $nic_rx_clk      -to $nic_sync_d
 set_max_delay -datapath_only 3.0 -from $nic_freerun_clk -to $nic_sync_d
 # The asynchronous assertion of the MAC-domain resets (cdc_reset_sync).
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]
-
-# ---------------------------------------------------------------------------
-# NIC placement fences (X3 CPU timing).
-#
-# Left free, the placer spreads the NIC's CPU-clock logic (register block, DMA
-# front end, RX/TX engines and their byte packers) over four clock regions
-# of the CPU's core band, among the DDR interconnect, the L2, the L1D and the
-# fetch logic: the packer's issue cone then spans long routes and the CPU's
-# cache cluster is displaced. The regions below the cache/arbiter row are
-# otherwise nearly empty. These are soft fences (no routing containment, no
-# exclusivity): they bias the initial placement and cannot make it
-# infeasible.
-#
-# The CPU-clock NIC logic and the DMA test engine share one region so the
-# packers stay compact; the MAC (its transceiver clock domains plus the packet
-# FIFOs) takes the next one, whose 48 RAMB36 sites have room for its frame
-# buffers. The MAC fence stays beside the NIC core rather than beside the
-# transceiver (quad 231, CLOCKREGION_X4Y7): u_mac also holds the packet FIFOs'
-# core-clock halves and the event totals, whose CPU-clock paths to the RX and
-# TX engines would otherwise cross three columns and three rows of clock
-# regions, while the MAC's own path to the transceiver is one register hop at
-# 161 MHz (the wrapper's raw data registers, which are free to sit beside the
-# transceiver).
-create_pblock frost_nic_core
-resize_pblock [get_pblocks frost_nic_core] -add CLOCKREGION_X1Y4:CLOCKREGION_X1Y4
-set_property IS_SOFT true [get_pblocks frost_nic_core]
-set_property CONTAIN_ROUTING false [get_pblocks frost_nic_core]
-set_property EXCLUDE_PLACEMENT false [get_pblocks frost_nic_core]
-add_cells_to_pblock [get_pblocks frost_nic_core] [get_cells -quiet [list \
-    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_rx \
-    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_tx \
-    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_front \
-    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_csr \
-    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_irq \
-    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_reset \
-    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.dma_engine]]
-create_pblock frost_nic_mac
-resize_pblock [get_pblocks frost_nic_mac] -add CLOCKREGION_X2Y4:CLOCKREGION_X2Y4
-set_property IS_SOFT true [get_pblocks frost_nic_mac]
-set_property CONTAIN_ROUTING false [get_pblocks frost_nic_mac]
-set_property EXCLUDE_PLACEMENT false [get_pblocks frost_nic_mac]
-add_cells_to_pblock [get_pblocks frost_nic_mac] [get_cells -quiet \
-    subsystem/frost_processor/cpu_and_memory_subsystem/gen_cached_tier.nic/u_mac]

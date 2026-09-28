@@ -1438,39 +1438,6 @@ def test_x3_constraints_define_no_fetch_cluster_pblock() -> None:
     assert "frost_fetch_cluster" not in xdc
 
 
-def test_x3_nic_fences_are_soft_and_cover_the_nic() -> None:
-    """The NIC pblocks are soft fences that bias placement only.
-
-    One holds the NIC's CPU-clock blocks and the DMA test engine, the other the
-    MAC.
-    """
-    xdc = (REPO_ROOT / "boards/x3/constr/x3.xdc").read_text()
-    for pblock, region in (
-        ("frost_nic_core", "CLOCKREGION_X1Y4:CLOCKREGION_X1Y4"),
-        ("frost_nic_mac", "CLOCKREGION_X2Y4:CLOCKREGION_X2Y4"),
-    ):
-        block = xdc[xdc.index(f"create_pblock {pblock}") :]
-        block = block[: block.index("add_cells_to_pblock") + 400]
-        assert f"resize_pblock [get_pblocks {pblock}] -add {region}" in block
-        assert f"set_property IS_SOFT true [get_pblocks {pblock}]" in block
-        assert f"set_property CONTAIN_ROUTING false [get_pblocks {pblock}]" in block
-        assert f"set_property EXCLUDE_PLACEMENT false [get_pblocks {pblock}]" in block
-    core = xdc[
-        xdc.index("create_pblock frost_nic_core") : xdc.index(
-            "create_pblock frost_nic_mac"
-        )
-    ]
-    for child in ("u_rx", "u_tx", "u_front", "u_csr", "u_irq", "u_reset"):
-        assert (
-            f"gen_cached_tier.nic/{child} " in core
-            or f"gen_cached_tier.nic/{child}]" in core
-        )
-    assert "gen_cached_tier.dma_engine" in core
-    assert (
-        "gen_cached_tier.nic/u_mac" in xdc[xdc.index("create_pblock frost_nic_mac") :]
-    )
-
-
 def test_board_ddr_generation_is_capability_gated() -> None:
     """A future BRAM-only board must not require a DDR block-design script."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()

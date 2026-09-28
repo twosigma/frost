@@ -170,6 +170,10 @@ the bitstream. Each step saves a checkpoint, so `--start-at` and
 `--stop-after` can resume or stop at any step. Resuming keeps the synthesized
 design; RTL changes need a new synthesis.
 
+X3's board constraints leave the NIC core and MAC unfenced. Even soft pblocks
+can change the CPU's placement and local congestion as the design evolves;
+evaluate any new floorplan against an unfenced placement of the current netlist.
+
 On X3, placement and routing are sweeps. Placement runs several directives,
 each at several setup-uncertainty values, and keeps the best result; both
 route steps try several directives. `--jobs N` (default 12) limits how many
