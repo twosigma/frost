@@ -52,10 +52,13 @@ module decoded_bundle_queue #(
   // Mirror of packet_q[head_q] whenever the queue is nonempty. TIMING:
   // dispatch sees this flop (or the producer's register on the empty bypass)
   // behind one 2:1 mux with a registered select, not a LUTRAM read addressed
-  // by head_q. The mirror's D mux is selected by the pop, whose other inputs
-  // are registered state and the producer register.
+  // by head_q. The mirror loads on a pop and whenever the queue is empty,
+  // and its load data does not depend on the pop (see gen_head_mirror), so
+  // the late pop reaches only the load enables.
+  localparam int unsigned MirrorGroupBits = 128;
+  localparam int unsigned MirrorGroups = (WIDTH + MirrorGroupBits - 1) / MirrorGroupBits;
   logic [WIDTH-1:0] head_packet_q;
-  logic [WIDTH-1:0] head_packet_if_pop, head_packet_if_hold;
+  logic [WIDTH-1:0] head_packet_load_data;
   (* max_fanout = 64 *) logic nonempty_q;
   logic nonempty_next;
   // TIMING: out_shadow_q (o_shadow) goes further than the packet mirror: the
@@ -86,10 +89,11 @@ module decoded_bundle_queue #(
   // After a pop the next entry is live in the RAM, or it is this cycle's
   // push (count 1), or the queue empties (count 0: the pop consumed the
   // bypassed input, which is not stored, so the mirror is unused). Without
-  // a pop, an empty queue can only receive this cycle's push at the head.
-  assign head_packet_if_pop = (count_q > (PtrBits + 1)'(1)) ? packet_q[PtrBits'(head_q + 1'b1)] :
-      i_packet;
-  assign head_packet_if_hold = (count_q == '0) ? i_packet : head_packet_q;
+  // a pop, an empty queue can only receive this cycle's push at the head,
+  // and a nonempty queue holds its mirror. Both loads take the same data:
+  // with count 0 or 1 it is the producer's image.
+  assign head_packet_load_data = (count_q > (PtrBits + 1)'(1)) ?
+      packet_q[PtrBits'(head_q + 1'b1)] : i_packet;
   // The same selection for the shadow slice, then the output-side bypass
   // select one edge early: nonempty_next is nonempty_q's D.
   assign head_shadow_next = i_pop ?
@@ -127,17 +131,46 @@ module decoded_bundle_queue #(
         live_q[tail_q] <= 1'b1;
       end
     end
-    if (push) begin
+    // Rows are written on the registered not-full condition rather than on
+    // push, which depends on this cycle's pop (the dispatch decision). The
+    // tail row is dead whenever the queue is not full, so a row written
+    // without a push stays dead until the next push overwrites it.
+    if (!o_full) begin
       packet_q[tail_q]   <= i_packet;
       shadow_q[tail_q]   <= i_shadow;
       indirect_q[tail_q] <= i_indirect;
     end
-    // Payload only: nonempty_q qualifies every use, so reset/flush need not.
-    head_packet_q <= i_pop ? head_packet_if_pop : head_packet_if_hold;
     head_shadow_q <= head_shadow_next;
     // Unconditional: after reset/flush the queue is empty and the shadow
     // follows the producer register.
     out_shadow_q  <= nonempty_next ? head_shadow_next : i_shadow_next;
+  end
+
+  // Head mirror load, one group of MirrorGroupBits per same-edge copy of
+  // nonempty_q (equal to it on every cycle: both take nonempty_next), so each
+  // group's enable LUT sits beside its registers instead of one enable
+  // driving the whole mirror. DONT_TOUCH keeps synthesis from merging the
+  // copies. Payload only: nonempty_q qualifies every use, so reset/flush
+  // need not.
+  for (genvar g = 0; g < MirrorGroups; g++) begin : gen_head_mirror
+    localparam int unsigned Lo = g * MirrorGroupBits;
+    localparam int unsigned Bits = ((WIDTH - Lo) < MirrorGroupBits) ? (WIDTH - Lo) :
+        MirrorGroupBits;
+    (* dont_touch = "true" *) logic nonempty_copy_q;
+    always_ff @(posedge i_clk) begin
+      nonempty_copy_q <= nonempty_next;
+      if (i_pop || !nonempty_copy_q) head_packet_q[Lo+:Bits] <= head_packet_load_data[Lo+:Bits];
+    end
+`ifndef SYNTHESIS
+    // Both registers take nonempty_next, so they agree from the first edge.
+    logic copy_armed_q = 1'b0;
+    always_ff @(posedge i_clk) begin
+      copy_armed_q <= 1'b1;
+      if (copy_armed_q) begin
+        p_mirror_nonempty_copy_match : assert (nonempty_copy_q == nonempty_q);
+      end
+    end
+`endif
   end
 
 `ifndef SYNTHESIS
