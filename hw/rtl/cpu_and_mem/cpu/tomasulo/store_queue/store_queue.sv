@@ -203,9 +203,15 @@ module store_queue #(
     // =========================================================================
     // Exact registered live status. Both change on the same edge as sq_valid;
     // the dispatch aliases exist for interface symmetry with registered full.
-    output logic                       o_empty,
-    output logic                       o_dispatch_empty,
-    output logic                       o_committed_empty,  // No committed entries pending write
+    output logic o_empty,
+    output logic o_dispatch_empty,
+    output logic o_committed_empty,  // No committed entries pending write
+    // Placement copies of o_committed_empty for its far consumers: the ROB
+    // (fence and xRET drain), the trap unit, and the LQ (head AMO and device
+    // read permits). Each equals o_committed_empty on every cycle.
+    output logic o_committed_empty_rob,
+    output logic o_committed_empty_trap,
+    output logic o_committed_empty_lq,
     output logic [$clog2(DEPTH+1)-1:0] o_count,
     output logic [$clog2(DEPTH+1)-1:0] o_dispatch_count
 );
@@ -642,8 +648,18 @@ module store_queue #(
   assign no_registered_committed_work = !any_committed && !i_commit_valid && !i_commit_valid_2;
   assign committed_empty_next = !i_rst_n || i_flush_all ||
       (no_registered_committed_work && !i_commit_valid_comb && !i_commit_valid_comb_2);
+  // TIMING: same-edge copies of committed_empty_q, one per far consumer, so
+  // each can place beside its loads. They sample the same next-state value,
+  // so each equals committed_empty_q on every cycle; DONT_TOUCH keeps
+  // synthesis from merging them back into one register.
+  (* dont_touch = "true" *)logic committed_empty_rob_q;
+  (* dont_touch = "true" *)logic committed_empty_trap_q;
+  (* dont_touch = "true" *)logic committed_empty_lq_q;
   always_ff @(posedge i_clk) begin
-    committed_empty_q <= committed_empty_next;
+    committed_empty_q      <= committed_empty_next;
+    committed_empty_rob_q  <= committed_empty_next;
+    committed_empty_trap_q <= committed_empty_next;
+    committed_empty_lq_q   <= committed_empty_next;
   end
 
 `ifdef SQ_COMMITTED_EMPTY_LOCAL_PROOF
@@ -654,7 +670,23 @@ module store_queue #(
   end
 `endif
 
+`ifndef SYNTHESIS
+  // Every copy takes committed_empty_next, so they agree from the first edge.
+  logic committed_empty_copies_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    committed_empty_copies_armed_q <= 1'b1;
+    if (committed_empty_copies_armed_q) begin
+      p_committed_empty_copies_match :
+      assert ({committed_empty_rob_q, committed_empty_trap_q, committed_empty_lq_q} ==
+              {3{committed_empty_q}});
+    end
+  end
+`endif
+
   assign o_committed_empty = committed_empty_q;
+  assign o_committed_empty_rob = committed_empty_rob_q;
+  assign o_committed_empty_trap = committed_empty_trap_q;
+  assign o_committed_empty_lq = committed_empty_lq_q;
 
   logic [DEPTH*ReorderBufferTagWidth-1:0] sq_rob_tag_flat;
   logic [DEPTH*XLEN-1:0] sq_address_flat;

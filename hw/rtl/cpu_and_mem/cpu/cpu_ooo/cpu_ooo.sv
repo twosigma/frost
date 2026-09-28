@@ -1320,6 +1320,9 @@ module cpu_ooo #(
   logic rob_commit_2_valid;
   assign rob_commit_2_valid = rob_commit_2.valid;
   logic sq_committed_empty_for_trap;
+  // The store queue's placement copy of sq_committed_empty for the trap unit
+  // (equal on every cycle).
+  logic sq_committed_empty_trap;
   logic widen_commit_ok;
   assign widen_commit_ok = 1'b1;
   logic [riscv_pkg::ReorderBufferDepth-1:0] rob_entry_epoch;
@@ -1895,6 +1898,7 @@ module cpu_ooo #(
       .o_fence_class_flush_event(fence_class_flush_event),
       .o_translation_csr_commit_shadow(translation_csr_commit_shadow),
       .o_sq_committed_empty(sq_committed_empty),
+      .o_sq_committed_empty_trap(sq_committed_empty_trap),
       .i_fence_i_sync_done(i_fence_i_sync_done),
       .o_fence_i_sync_req(o_fence_i_sync_req),
       .i_translation_active(csr_translation_active),
@@ -3437,8 +3441,10 @@ module cpu_ooo #(
   // an interrupt shield deferred the take; a raw commit in that cycle is
   // masked on the registered commit bus by the full flush that follows, so it
   // never reaches the SQ. Leaving the guard out keeps the ROB head-commit
-  // logic out of the take_trap -> trap_target/CSR-write timing.
-  assign sq_committed_empty_for_trap = sq_committed_empty;
+  // logic out of the take_trap -> trap_target/CSR-write timing. It uses the
+  // store queue's trap copy of the register, which can place beside the trap
+  // unit.
+  assign sq_committed_empty_for_trap = sq_committed_empty_trap;
 
   // AMO interrupt shield register (see trap_unit.i_amo_at_head port comment
   // for the hazard and the lag-safety argument).

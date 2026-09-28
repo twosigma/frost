@@ -270,8 +270,10 @@ module tomasulo_wrapper #(
     output logic o_translation_csr_commit_shadow,
 
     // Shared committed-store drain status for trap/xRET, fence/AMO, and
-    // router-accepted device reads.
+    // router-accepted device reads, plus the store queue's copy of it for the
+    // trap unit (equal on every cycle).
     output logic                                        o_sq_committed_empty,
+    output logic                                        o_sq_committed_empty_trap,
     output logic                                        o_rob_full,
     output logic                                        o_rob_full_for_2,
     output logic                                        o_rob_empty,
@@ -1595,9 +1597,12 @@ module tomasulo_wrapper #(
   logic lq_reservation_valid;
   logic [riscv_pkg::XLEN-1:0] lq_reservation_addr;
 
-  // SQ committed-empty (SQ → LQ, ROB, SC resolution, coherence port, and
-  // o_sq_committed_empty)
+  // SQ committed-empty (SQ → SC resolution, coherence port, and
+  // o_sq_committed_empty). The ROB, the LQ, and the trap unit take the store
+  // queue's placement copies of the same register.
   logic sq_committed_empty;
+  logic sq_committed_empty_rob;
+  logic sq_committed_empty_lq;
   assign o_sq_committed_empty = sq_committed_empty;
 
   // Any SC commit, success or failure, clears the reservation.
@@ -1926,6 +1931,36 @@ module tomasulo_wrapper #(
     end
   end
 
+  // TIMING: same-edge copies of sc_fu_complete_reg.valid, one per consumer
+  // group (the MEM presentation mux, LQ result acceptance, MEM_RS issue
+  // readiness, and the early-wakeup enable), so each copy can launch beside
+  // its own loads instead of one register reaching all of them. A copy has
+  // the owner's reset and transition function and holds on its own state, so
+  // every copy equals sc_fu_complete_reg.valid on every cycle
+  // (p_sc_valid_copies_match below). DONT_TOUCH keeps synthesis from merging
+  // them back into one register.
+  (* dont_touch = "true" *)logic sc_valid_adapter_q;
+  (* dont_touch = "true" *)logic sc_valid_lq_q;
+  (* dont_touch = "true" *)logic sc_valid_issue_q;
+  (* dont_touch = "true" *)logic sc_valid_wakeup_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || speculative_flush_all) begin
+      sc_valid_adapter_q <= 1'b0;
+      sc_valid_lq_q      <= 1'b0;
+      sc_valid_issue_q   <= 1'b0;
+      sc_valid_wakeup_q  <= 1'b0;
+    end else begin
+      sc_valid_adapter_q <= sc_fu_complete.valid ||
+          (sc_valid_adapter_q && store_misalign_fu_complete_reg.valid);
+      sc_valid_lq_q <= sc_fu_complete.valid ||
+          (sc_valid_lq_q && store_misalign_fu_complete_reg.valid);
+      sc_valid_issue_q <= sc_fu_complete.valid ||
+          (sc_valid_issue_q && store_misalign_fu_complete_reg.valid);
+      sc_valid_wakeup_q <= sc_fu_complete.valid ||
+          (sc_valid_wakeup_q && store_misalign_fu_complete_reg.valid);
+    end
+  end
+
   // Fault-kind echo and address from the dmmu (driven in its section below).
   riscv_pkg::data_fault_kind_e dmmu_out_fault;
   logic [riscv_pkg::XLEN-1:0] dmmu_out_addr;
@@ -2002,9 +2037,14 @@ module tomasulo_wrapper #(
   // occupy the CDB.
   riscv_pkg::fu_complete_t mem_fu_to_adapter;
   always_comb begin
-    if (store_misalign_fu_complete_reg.valid) mem_fu_to_adapter = store_misalign_fu_complete_reg;
-    else if (sc_fu_complete_reg.valid) mem_fu_to_adapter = sc_fu_complete_reg;
-    else mem_fu_to_adapter = lq_fu_complete;
+    if (store_misalign_fu_complete_reg.valid) begin
+      mem_fu_to_adapter = store_misalign_fu_complete_reg;
+    end else if (sc_valid_adapter_q) begin
+      mem_fu_to_adapter = sc_fu_complete_reg;
+      mem_fu_to_adapter.valid = 1'b1;
+    end else begin
+      mem_fu_to_adapter = lq_fu_complete;
+    end
   end
 
   // LQ yields MEM to a registered SC completion. SC fires only while the LQ
@@ -2017,7 +2057,7 @@ module tomasulo_wrapper #(
   // a tag that may be recycled. A live store fault needs no yield: its register
   // takes the MEM slot on the next cycle.
   assign lq_result_accepted = lq_fu_complete.valid &&
-                              !sc_fu_complete_reg.valid &&
+                              !sc_valid_lq_q &&
                               !store_misalign_fu_complete_reg.valid &&
                               !mem_adapter_result_pending;
 
@@ -2131,6 +2171,11 @@ module tomasulo_wrapper #(
       assert (sc_fu_complete_reg.valid ==
               (!sc_completion_flush_all_q &&
                (sc_completion_fire_q || (sc_completion_valid_q && !sc_cdb_transfer_q))));
+
+      // 6. Every placement copy of the completion valid matches the owner.
+      p_sc_valid_copies_match :
+      assert ({sc_valid_adapter_q, sc_valid_lq_q, sc_valid_issue_q, sc_valid_wakeup_q} ==
+              {4{sc_fu_complete_reg.valid}});
     end
   end
 `endif
@@ -2256,7 +2301,7 @@ module tomasulo_wrapper #(
   // is inactive.
   logic dmmu_stall;
   assign mem_rs_fu_ready_base = i_mem_rs_fu_ready &&
-                                !sc_fu_complete_reg.valid &&
+                                !sc_valid_issue_q &&
                                 !mem_adapter_result_pending &&
                                 !i_backend_recovery_hold &&
                                 !dmmu_stall;
@@ -2339,7 +2384,7 @@ module tomasulo_wrapper #(
       .i_widen_commit_ok        (i_widen_commit_ok),
 
       // External coordination
-      .i_sq_committed_empty           (sq_committed_empty),
+      .i_sq_committed_empty           (sq_committed_empty_rob),
       .i_fence_i_sync_done            (i_fence_i_sync_done),
       .o_fence_i_sync_req             (o_fence_i_sync_req),
       .o_sfence_window                (rob_sfence_window),
@@ -2862,7 +2907,7 @@ module tomasulo_wrapper #(
   logic mem_rs_early_load_injected;
   logic mem_rs_early_wakeup_enable;
   logic [2:0] mem_rs_pre_issue_raw_valid;
-  assign mem_rs_early_wakeup_enable = EARLY_LOAD_WAKEUP && !sc_fu_complete_reg.valid &&
+  assign mem_rs_early_wakeup_enable = EARLY_LOAD_WAKEUP && !sc_valid_wakeup_q &&
       !store_misalign_fu_complete_reg.valid && !mem_adapter_result_pending;
   assign mem_rs_pre_issue_raw_valid = {
     mem_rs_early_wakeup_enable && lq_fu_complete_staged && !lq_fu_complete.exception,
@@ -3616,7 +3661,7 @@ module tomasulo_wrapper #(
 
       // SQ empty / committed-empty (for issue gating)
       .i_sq_empty(o_sq_empty),
-      .i_sq_committed_empty(sq_committed_empty),
+      .i_sq_committed_empty(sq_committed_empty_lq),
       .i_trap_misaligned_accesses(i_trap_misaligned_accesses),
 
       // AMO memory write interface
@@ -4193,11 +4238,14 @@ module tomasulo_wrapper #(
       .i_flush_after_head_commit(i_flush_after_head_commit),
 
       // Status
-      .o_empty          (sq_empty_exact),
-      .o_dispatch_empty (o_sq_empty),
-      .o_committed_empty(sq_committed_empty),
-      .o_count          (sq_count_exact),
-      .o_dispatch_count (o_sq_count)
+      .o_empty               (sq_empty_exact),
+      .o_dispatch_empty      (o_sq_empty),
+      .o_committed_empty     (sq_committed_empty),
+      .o_committed_empty_rob (sq_committed_empty_rob),
+      .o_committed_empty_trap(o_sq_committed_empty_trap),
+      .o_committed_empty_lq  (sq_committed_empty_lq),
+      .o_count               (sq_count_exact),
+      .o_dispatch_count      (o_sq_count)
   );
 
   // ===========================================================================

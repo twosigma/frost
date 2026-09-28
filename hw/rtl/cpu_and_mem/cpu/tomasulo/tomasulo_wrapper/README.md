@@ -281,7 +281,10 @@ since an older SC may still be waiting for the head; a full flush clears the
 table.
 
 The MEM adapter's input gives priority to the registered store fault, then the
-registered SC result, then the LQ result. The fault register cannot wait,
+registered SC result, then the LQ result. The SC result's valid bit has
+same-edge copies for the adapter mux, LQ result acceptance, MEM_RS issue
+readiness, and the early-wakeup enable, so each can sit beside its consumers;
+an assertion checks that they always match the original. The fault register cannot wait,
 because another store fault can arrive the next cycle, so a colliding SC
 result waits behind it. An SC that faults completes through the fault path: the
 registered fault strobe kills its table entry before it can fire. Each SC

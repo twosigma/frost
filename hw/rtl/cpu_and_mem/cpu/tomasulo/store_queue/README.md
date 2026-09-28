@@ -94,7 +94,8 @@ visible to forwarding until then.
 
 Stores commit through two ports, one per ROB commit slot. Slot 2 retires only
 plain stores; the ROB keeps SCs and AMOs on slot 1. The committed-empty
-status is a register. Each commit port has a combinational twin
+status is a register, with same-edge copies for its distant consumers (the
+ROB, the trap unit, and the LQ). Each commit port has a combinational twin
 (`i_commit_valid_comb*`) that feeds it directly, so the status turns
 non-empty at the edge that ends the commit cycle, when the registered commit
 arrives, and a fence, SC, trap, or device read never sees an empty committed
