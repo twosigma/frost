@@ -130,7 +130,7 @@ and flushes read every entry at once. Store data lives in a LUTRAM read by the
 drain, plus a per-entry flip-flop copy read by the forwarding path. The LQ
 sends four identical copies of the check address (`i_sq_check_addr` and its
 `_b`, `_c`, `_d` twins), each compared against two entries, to keep the compare
-logic local.
+logic local. Each copy is loaded by its own copy of the capture enable.
 
 ## Verification
 

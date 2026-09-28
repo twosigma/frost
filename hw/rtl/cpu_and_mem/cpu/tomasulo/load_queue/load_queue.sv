@@ -646,6 +646,11 @@ module load_queue #(
   // while an older read is outstanding so the next load can launch as soon as
   // the memory slot opens, instead of paying a fresh capture + SQ phase first.
   logic sq_check_pending;
+  // Same-edge copies of sq_check_pending, one per port-split address copy's
+  // payload enable (see sq_check_payload_en_b..d). Each has the original's
+  // reset and next state, so each equals sq_check_pending on every cycle;
+  // DONT_TOUCH keeps synthesis from merging them back.
+  (* dont_touch = "true" *) logic [2:0] sq_check_pending_copy;
   logic [IdxWidth-1:0] sq_check_idx;
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_q;
   // max_fanout: this staged address has both local LQ consumers and the SQ
@@ -2747,6 +2752,24 @@ module load_queue #(
   // completion only needs to clear sq_check_pending; stale sideband values are
   // overwritten on the next capture.
   logic sq_check_pending_next;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) sq_check_pending_copy <= '0;
+    else sq_check_pending_copy <= {3{sq_check_pending_next}};
+  end
+`ifndef SYNTHESIS
+  // The copies take the original's next state, so they agree from the first
+  // edge.
+  logic sq_check_pending_copies_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    sq_check_pending_copies_armed_q <= 1'b1;
+    if (sq_check_pending_copies_armed_q) begin
+      p_sq_check_pending_copies_match : assert (sq_check_pending_copy == {3{sq_check_pending}});
+      p_sq_check_payload_en_copies_match :
+      assert ({sq_check_payload_en_b, sq_check_payload_en_c, sq_check_payload_en_d} ==
+              {3{sq_check_payload_en}});
+    end
+  end
+`endif
   logic sq_check_no_older_store_next;
   logic sq_check_phase2_next;
   logic sq_check_flushed;
@@ -3267,7 +3290,19 @@ module load_queue #(
   logic issue_mem_is_lr;
   logic issue_mem_is_amo;
   riscv_pkg::data_fault_kind_e issue_mem_fault_kind;
-  (* keep = "true", max_fanout = 32 *) logic sq_check_payload_en;
+  // The capture/replace enable: one for the control fields and the primary
+  // address (with the replicas synthesis makes of it), and one copy per
+  // port-split address copy. keep on a single net blocks max_fanout
+  // replication, so one shared enable used to drive every bank from a single
+  // LUT, and opt_design merges identical copies back into one driver. Each
+  // port-split copy therefore takes the capture term from its own same-edge
+  // copy of sq_check_pending (sq_check_pending_copy below), which makes the
+  // copies structurally distinct while keeping the original capture ||
+  // replace structure, with the late terms entering through the final gates.
+  logic sq_check_payload_en;
+  logic sq_check_payload_en_b;
+  logic sq_check_payload_en_c;
+  logic sq_check_payload_en_d;
   logic [IdxWidth-1:0] sq_check_idx_next;
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_next;
   logic [XLEN-1:0] sq_check_addr_next;
@@ -3279,6 +3314,14 @@ module load_queue #(
   logic sq_check_is_amo_next;
   logic [1:0] sq_check_fault_kind_next;
   assign sq_check_payload_en = sq_check_capture || sq_check_replace;
+  // sq_check_capture with the pending bit taken from one copy.
+  function automatic logic sq_check_capture_on(input logic pending);
+    sq_check_capture_on = (!pending || sq_check_will_clear) && issue_mem_found &&
+        sq_check_gate_early;
+  endfunction
+  assign sq_check_payload_en_b = sq_check_capture_on(sq_check_pending_copy[0]) || sq_check_replace;
+  assign sq_check_payload_en_c = sq_check_capture_on(sq_check_pending_copy[1]) || sq_check_replace;
+  assign sq_check_payload_en_d = sq_check_capture_on(sq_check_pending_copy[2]) || sq_check_replace;
   assign issue_mem_uses_addr_update = issue_mem_from_update;
   assign issue_mem_addr = issue_mem_uses_addr_update ? i_addr_update.address
                                                      : lq_address_issue_mem_rd;
@@ -3348,18 +3391,19 @@ module load_queue #(
     if (sq_check_payload_en) sq_check_addr_q <= sq_check_addr_next;
   end
 
-  // Port-split replicas: same D/CE/timing as sq_check_addr_q. dont_touch on
-  // their declarations prevents opt_design from re-merging the four anchors.
+  // Port-split replicas: same D/timing as sq_check_addr_q, each with its own
+  // copy of the enable. dont_touch on their declarations prevents opt_design
+  // from re-merging the four anchors.
   always_ff @(posedge i_clk) begin
-    if (sq_check_payload_en) sq_check_addr_q_b <= sq_check_addr_next;
+    if (sq_check_payload_en_b) sq_check_addr_q_b <= sq_check_addr_next;
   end
 
   always_ff @(posedge i_clk) begin
-    if (sq_check_payload_en) sq_check_addr_q_c <= sq_check_addr_next;
+    if (sq_check_payload_en_c) sq_check_addr_q_c <= sq_check_addr_next;
   end
 
   always_ff @(posedge i_clk) begin
-    if (sq_check_payload_en) sq_check_addr_q_d <= sq_check_addr_next;
+    if (sq_check_payload_en_d) sq_check_addr_q_d <= sq_check_addr_next;
   end
 
   for (genvar g_sq_size = 0; g_sq_size < MemSizeWidth; g_sq_size++) begin : gen_sq_check_size_ff
@@ -3437,13 +3481,13 @@ module load_queue #(
   end
 `else
   always_ff @(posedge i_clk) begin
+    if (sq_check_payload_en) sq_check_addr_q <= sq_check_addr_next;
+    if (sq_check_payload_en_b) sq_check_addr_q_b <= sq_check_addr_next;
+    if (sq_check_payload_en_c) sq_check_addr_q_c <= sq_check_addr_next;
+    if (sq_check_payload_en_d) sq_check_addr_q_d <= sq_check_addr_next;
     if (sq_check_payload_en) begin
       sq_check_idx          <= sq_check_idx_next;
       sq_check_rob_tag_q    <= sq_check_rob_tag_next;
-      sq_check_addr_q       <= sq_check_addr_next;
-      sq_check_addr_q_b     <= sq_check_addr_next;
-      sq_check_addr_q_c     <= sq_check_addr_next;
-      sq_check_addr_q_d     <= sq_check_addr_next;
       sq_check_size_q       <= sq_check_size_next;
       sq_check_is_fp_q      <= sq_check_is_fp_next;
       sq_check_sign_ext_q   <= sq_check_sign_ext_next;
