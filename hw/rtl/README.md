@@ -88,7 +88,8 @@ one set raises a page fault. TLB entries carry no ASID, so `sfence.vma` and
 Every other address, including the rest of the device quadrant
 `[0x4000_0000, 0x8000_0000)` and any address with bits 63:32 set, is
 unmapped: a fetch, load, store, or AMO there raises a precise access fault
-(cause 1, 5, or 7) and never aliases onto the map. The one exception is a
+(cause 1, 5, or 7) and never aliases onto the map. Fetch also faults in the
+low BRAM above its 128 KiB code region `[0, 0x2_0000)`. The one exception is a
 store to the rest of the device quadrant with translation off: the
 store-issue check covers the whole quadrant (it has no time for the exact
 window compares at 322 MHz), so the store issues and the device bus ignores
@@ -98,11 +99,14 @@ over misalignment.
 
 The ROM, DEBUG, and RAM regions divide the 256 KiB low BRAM as the unified
 linker script (`sw/common/link.ld`) does. Low BRAM holds separate instruction
-and data copies. The JTAG loader writes both, but outside Debug Mode CPU
-stores reach only the data copy, so code in low BRAM cannot be modified at
-run time; put self-modifying code in DDR. Low-BRAM data accesses take one
-cycle. Fetch windows wholly below 64 KiB also take one cycle; later windows
-repeat once for predecode metadata.
+and data copies. The data copy covers all 256 KiB; the instruction copy
+covers only the first 128 KiB, the code region, which holds ROM, DEBUG, and
+the first 32 KiB of RAM. The JTAG loader writes both copies (the instruction
+copy only below 128 KiB), but outside Debug Mode CPU stores reach only the
+data copy, so code in low BRAM cannot be modified at run time; put
+self-modifying code in DDR. Low-BRAM data accesses take one cycle. Fetch
+windows wholly below 64 KiB also take one cycle; later windows repeat once
+for predecode metadata.
 
 Instruction fetch and data accesses both reach the cached region. The
 hierarchy has a 128 KiB L1D, a 16 KiB L1I, and a shared 2 MiB L2. All three
@@ -256,9 +260,9 @@ the core. A DMI access that arrives while the system reset is held waits, with
 the DTM reporting busy, and is handled when the reset ends, with `dmactive` 0.
 
 `debug_slice_writer` writes the module's words into the slice through the
-BRAM programming port. It also mirrors Debug-Mode stores to low BRAM into the
-instruction copy, so software breakpoints and debugger writes to BRAM code
-are fetched. For code in DDR, OpenOCD executes `fence.i`, which publishes its
+BRAM programming port. It also mirrors Debug-Mode stores to the low BRAM's
+code region into the instruction copy, so software breakpoints and debugger
+writes to BRAM code are fetched. For code in DDR, OpenOCD executes `fence.i`, which publishes its
 writes. Debug CSRs and `dret` are illegal outside Debug Mode.
 
 For OpenOCD, GDB, and VS Code use, see the
@@ -288,7 +292,7 @@ The main parameters; `frost.sv` documents the rest.
 | Module | Parameter | Default | Description |
 |--------|-----------|---------|-------------|
 | `frost.sv` | `CLK_FREQ_HZ` | `322265625` | CPU clock frequency |
-| `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 18` | Low BRAM size (256 KiB) |
+| `frost.sv` | `MEM_SIZE_BYTES` | `2 ** 18` | Low BRAM size (256 KiB); instruction fetch reaches its first 128 KiB (`riscv_pkg::LowBramCodeAddrBits`) |
 | `frost.sv` | `SIM_TIMER_SPEEDUP` | `1` | `mtime` increment per cycle (simulation) |
 | `frost.sv` | `CACHED_BASE` | `32'h8000_0000` | Cached-region base address |
 | `frost.sv` | `CACHED_SIZE_BYTES` | `32'h4000_0000` | Cached-region size (1 GiB) |

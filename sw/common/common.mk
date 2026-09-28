@@ -318,6 +318,8 @@ $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
 
 # Generate direct Vivado init files for the split instruction memory banks.
+# The instruction memory holds the first 128 KiB (32768 words) of the 256 KiB
+# low-BRAM image; words above that reach only the data memory.
 ifeq ($(GENERATE_IMEM_INIT),1)
 $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
 $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
@@ -325,7 +327,8 @@ $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
 $(IMEM_SCALAR_INIT_FILES): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 	python3 $(IMEM_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
-		--depth-words 65536 \
+		--depth-words 32768 \
+		--image-words 65536 \
 		--even-cold $(IMEM_EVEN_COLD_INIT_FILE) \
 		--odd-cold $(IMEM_ODD_COLD_INIT_FILE) \
 		--even-frontend-hot $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) \

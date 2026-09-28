@@ -282,10 +282,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pma_fault_test",
         description=(
-            "PMA faults for out-of-map fetch/load/store/AMO/LR (loads from unserved "
-            "device addresses included; untranslated stores there are ignored) and "
-            "for AMO/LR/SC to devices; exact mepc/mtval and access-fault priority "
-            "over misalignment."
+            "PMA faults for out-of-map fetch/load/store/AMO/LR (fetch from the low "
+            "BRAM above its 128 KiB code region and loads from unserved device "
+            "addresses included; untranslated stores there are ignored) and for "
+            "AMO/LR/SC to devices; exact mepc/mtval and access-fault priority over "
+            "misalignment."
         ),
     ),
     "fs_off_test": CocotbRunConfig(
@@ -1716,10 +1717,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.predecode.test_imem_predecode_capacity",
         hdl_toplevel_module="imem_predecode",
         description=(
-            "Production IMEM default predecode coverage, streaming latency, "
+            "Production 128 KiB IMEM default predecode coverage, streaming latency, "
             "programming and boundary aliases"
         ),
-        verilator_extra_args=("-GADDR_WIDTH=16", "-GUSE_INIT_FILE=0"),
+        verilator_extra_args=("-GADDR_WIDTH=15", "-GUSE_INIT_FILE=0"),
     ),
     "low_bram_fetch_presenter": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_low_bram_fetch_presenter",

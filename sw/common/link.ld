@@ -2,7 +2,9 @@
  *
  * Memory model shared by hardware and simulation (the cache hierarchy is opaque):
  *   [0x00000000, 0x00040000)  256KiB uncached, JTAG-loadable low BRAM
- *       Data accesses take 1 cycle. Fetch windows wholly below 64KiB also
+ *       Data accesses take 1 cycle. Fetch reaches only the first 128KiB
+ *       (ROM, DEBUG, and the start of RAM); above that it raises an
+ *       instruction access fault. Fetch windows wholly below 64KiB also
  *       take 1 cycle; later fetch windows repeat once for registered
  *       predecode metadata.
  *       ROM  95KiB: .text + small .rodata (+ .data/.sdata load image)
@@ -24,6 +26,8 @@
  * Hardware coupling:
  *   - 256KiB low region must match MEM_SIZE_BYTES (hw/rtl/frost.sv) and the
  *     axi_bram_ctrl MEM_DEPTH in fpga/build/build_step.tcl (65536 words).
+ *   - ROM must end below 0x20000, the code region the instruction copy holds
+ *     (riscv_pkg::LowBramCodeAddrBits).
  *   - The DEBUG slice must match riscv_pkg::DebugSliceBase/DebugSliceBytes;
  *     every other linker script under sw/ that uses low BRAM reserves the
  *     same region.

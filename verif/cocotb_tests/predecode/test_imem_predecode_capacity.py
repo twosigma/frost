@@ -15,8 +15,8 @@
 """Check the full-size IMEM's predecode overlay coverage and one-cycle fetch rate.
 
 Unlike the small fast-replica bench, this target keeps the default overlay
-width, so the 256 KiB IMEM must return one-cycle metadata for every window in
-its low 64 KiB. The test streams windows across each 16 KiB boundary and the
+width, so the production 128 KiB IMEM must return one-cycle metadata for every
+window in its low 64 KiB. The test streams windows across each 16 KiB boundary and the
 64 KiB overlay boundary, varies the high row-address bits, reprograms words,
 and fetches an address that aliases word 0 on the IMEM's address pins. The
 fast-replica bench covers live-write quarantine and the variable-latency
@@ -31,7 +31,7 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
 from cocotb_tests.predecode import test_imem_predecode_fast_replica as reference
 
-IMEM_BYTES = 256 * 1024
+IMEM_BYTES = 128 * 1024
 FAST_BYTES = 64 * 1024
 
 

@@ -20,12 +20,13 @@
  * mepc/mtval instead of aliasing onto the map. Self-checks over UART
  * (<<PASS>>/<<FAIL>>):
  *
- *   Physical map: BRAM [0, 256 KiB) and cached DDR [0x8000_0000,
- *   0xC000_0000) take fetch, loads, stores and atomics. The device windows,
- *   the MMIO registers [0x4000_0000, 0x4003_1000) and the PLIC
- *   [0x4400_0000, 0x4440_0000), take loads and stores only. Everything
- *   else faults, including the rest of the device quadrant [0x4000_0000,
- *   0x8000_0000).
+ *   Physical map: the BRAM code region [0, 128 KiB) and cached DDR
+ *   [0x8000_0000, 0xC000_0000) take fetch, loads, stores and atomics. The
+ *   rest of the BRAM, [128 KiB, 256 KiB), takes loads, stores and atomics
+ *   but no fetch. The device windows, the MMIO registers [0x4000_0000,
+ *   0x4003_1000) and the PLIC [0x4400_0000, 0x4440_0000), take loads and
+ *   stores only. Everything else faults, including the rest of the device
+ *   quadrant [0x4000_0000, 0x8000_0000).
  *
  *   A. Load from a wild 64-bit address        -> cause 5, mtval exact.
  *   B. Load from the BRAM hole (0x0010_0000)  -> cause 5.
@@ -43,11 +44,15 @@
  *      the exact wild target (the jump itself must not fault; the fetch
  *      does).
  *   J. JALR into the BRAM hole                -> cause 1.
+ *   J2. JALR into BRAM above the code region  -> cause 1, mepc = mtval =
+ *      0x0002_0000 (data accesses reach it; fetch does not).
  *   K. JALR into the device quadrant          -> cause 1 (no fetch from
  *      MMIO).
  *   L. In-map accesses do not trap: device reads (UART status, a PLIC
  *      priority, the last dwords of the MMIO and PLIC windows) and a
  *      load/store round trip on a cached-DDR word.
+ *   L2. An AMO on a stack word, in the BRAM above the code region, does not
+ *      trap and updates the word.
  *   M. Atomics to a device register fault before any device access: AMO
  *      -> cause 7, LR -> cause 5, SC -> cause 7 (also while a reservation
  *      on RAM is held), mtval exact, and the ns16550 scratch register keeps
@@ -269,6 +274,14 @@ int main(void)
              "r"(hole_jump));
     all_ok &= report3("J hole-jump", 1u, hole_jump, hole_jump, 1);
 
+    /* J2: JALR into low BRAM above the 128 KiB code region: the stack lives
+     * there, but fetch does not reach it. */
+    unsigned long data_jump = 0x00020000ul;
+    RUN_CASE("mv   t1, %0\n"
+             "jalr x0, t1, 0",
+             "r"(data_jump));
+    all_ok &= report3("J2 bram-data-jump", 1u, data_jump, data_jump, 1);
+
     /* K: JALR into the device quadrant: no fetch from MMIO. */
     unsigned long mmio_jump = 0x40000000ul;
     RUN_CASE("mv   t1, %0\n"
@@ -300,6 +313,25 @@ int main(void)
     uart_hex(g_ddr_word);
     uart_puts("\r\n");
     all_ok &= l_ok;
+
+    /* L2: the stack starts at the top of low BRAM, above the code region,
+     * where atomics still reach memory. The case ends on the ecall. */
+    volatile uint64_t stack_word = 41u;
+    RUN_CASE("mv   t1, %0\n"
+             "li   t2, 1\n"
+             "amoadd.d t2, t2, (t1)",
+             "r"((unsigned long) &stack_word));
+    int l2_ok =
+        (g_cause == 11u) && (stack_word == 42u) && ((unsigned long) &stack_word >= 0x00020000ul);
+    uart_puts(l2_ok ? "[PASS] " : "[FAIL] ");
+    uart_puts("L2 bram-data-amo cause=");
+    uart_hex(g_cause);
+    uart_puts(" addr=");
+    uart_hex((unsigned long) &stack_word);
+    uart_puts(" word=");
+    uart_hex(stack_word);
+    uart_puts("\r\n");
+    all_ok &= l2_ok;
 
     /* M1-M4: the device windows support no AMOs and no LR/SC, so each
      * faults before the device sees a read or a write. */

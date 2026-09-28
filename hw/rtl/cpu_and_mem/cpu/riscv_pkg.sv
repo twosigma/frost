@@ -1369,6 +1369,13 @@ package riscv_pkg;
   // producer-side masking.
   localparam int unsigned PhysAddrBits = 32;
   localparam int unsigned CachedRegionBit = 31;
+  // Low BRAM: loads, stores and atomics reach all 2**LowBramAddrBits bytes;
+  // instruction fetch reaches only the first 2**LowBramCodeAddrBits, the
+  // code region the instruction memory holds (cpu_and_mem sizes it from
+  // this constant). Fetch above the code region raises an instruction
+  // access fault.
+  localparam int unsigned LowBramAddrBits = 18;
+  localparam int unsigned LowBramCodeAddrBits = 17;
 
   // Debug-module execution slice: the top 1 KiB of the first 96 KiB of low
   // BRAM, between the linker scripts' ROM and RAM regions. Every linker
@@ -1446,7 +1453,8 @@ package riscv_pkg;
   endfunction
 
   // PMA region checks. The physical map:
-  //   [0x0000_0000, 0x0004_0000)  256 KiB BRAM      fetch, loads, stores, atomics
+  //   [0x0000_0000, 0x0002_0000)  128 KiB BRAM code fetch, loads, stores, atomics
+  //   [0x0002_0000, 0x0004_0000)  128 KiB BRAM      loads, stores, atomics
   //   [0x4000_0000, 0x4003_1000)  MMIO registers    loads and stores
   //   [0x4400_0000, 0x4440_0000)  PLIC              loads and stores
   //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR  fetch, loads, stores, atomics
@@ -1478,8 +1486,19 @@ package riscv_pkg;
   localparam logic [19:0] PlicFirstPage = 20'h4_4000;
   localparam logic [19:0] PlicLastPage  = 20'h4_43FF;
 
+  // Cached DDR, the same for fetch and data.
+  function automatic logic pma_cached_ok(input logic [XLEN-1:0] addr);
+    pma_cached_ok = (addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b10);
+  endfunction
+
+  // Instruction fetch: the low BRAM's code region and cached DDR.
   function automatic logic pma_fetch_ok(input logic [XLEN-1:0] addr);
-    pma_fetch_ok = (addr[XLEN-1:18] == '0) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b10));
+    pma_fetch_ok = (addr[XLEN-1:LowBramCodeAddrBits] == '0) || pma_cached_ok(addr);
+  endfunction
+
+  // Memory for data accesses: all of the low BRAM and cached DDR.
+  function automatic logic pma_memory_ok(input logic [XLEN-1:0] addr);
+    pma_memory_ok = (addr[XLEN-1:LowBramAddrBits] == '0) || pma_cached_ok(addr);
   endfunction
 
   // A physical page number (PA[31:12]) inside a device window. The MMIO
@@ -1501,7 +1520,7 @@ package riscv_pkg;
 
   // Loads and stores.
   function automatic logic pma_data_ok(input logic [XLEN-1:0] addr);
-    pma_data_ok = pma_fetch_ok(addr) || pma_device_ok(addr);
+    pma_data_ok = pma_memory_ok(addr) || pma_device_ok(addr);
   endfunction
 
   // Stores at the untranslated store-issue check: BRAM, cached DDR and the
@@ -1509,12 +1528,12 @@ package riscv_pkg;
   // timing, so a store to an unserved device address issues and the device bus
   // ignores it. Translated stores use the data MMU's exact check.
   function automatic logic pma_store_ok(input logic [XLEN-1:0] addr);
-    pma_store_ok = pma_fetch_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
+    pma_store_ok = pma_memory_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
   endfunction
 
   // AMO, LR and SC: BRAM and cached DDR only.
   function automatic logic pma_atomic_ok(input logic [XLEN-1:0] addr);
-    pma_atomic_ok = pma_fetch_ok(addr);
+    pma_atomic_ok = pma_memory_ok(addr);
   endfunction
 
   // The MMIO window base: the default MMIO_ADDR of cpu_ooo and
@@ -1523,15 +1542,15 @@ package riscv_pkg;
 
   // pma_fetch_ok of the page after va's, {va[63:12] + 1, 12'h0} (a 52-bit
   // wrapping increment), without the incrementer: the fetchable regions are
-  // [0, 2^18) and [2^31, 3*2^30), so the next page's result can differ from
-  // va's own only where the increment carries out of the region index bits;
-  // the wrap term keeps the all-ones VA's next page at 0. fetch_verdict uses
-  // this for Bare word 1.
+  // [0, 2^LowBramCodeAddrBits) and [2^31, 3*2^30), so the next page's result
+  // can differ from va's own only where the increment carries out of the
+  // region index bits; the wrap term keeps the all-ones VA's next page at 0.
+  // fetch_verdict uses this for Bare word 1.
   function automatic logic pma_fetch_next_page_ok(input logic [XLEN-1:0] va);
-    logic z18, z32;
-    z18 = (va[XLEN-1:18] == '0);
+    logic z_code, z32;
+    z_code = (va[XLEN-1:LowBramCodeAddrBits] == '0);
     z32 = (va[XLEN-1:32] == '0);
-    pma_fetch_next_page_ok = (z18 && !(&va[17:12])) || (&va[XLEN-1:12]) ||
+    pma_fetch_next_page_ok = (z_code && !(&va[LowBramCodeAddrBits-1:12])) || (&va[XLEN-1:12]) ||
         (z32 && (((va[31:30] == 2'b10) && !(&va[29:12])) ||
                  ((va[31:30] == 2'b01) && (&va[29:12]))));
   endfunction

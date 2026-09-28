@@ -103,7 +103,8 @@ module immu #(
     assign bare_pma_high_zero_chunk[k] = (bare_pma_pc[32+6*k+:ChunkBits] == '0);
   end
   assign bare_pma_high_zero = &bare_pma_high_zero_chunk;
-  assign bare_pma_low_ok = (bare_pma_pc[31:18] == '0) || (bare_pma_pc[31:30] == 2'b10);
+  assign bare_pma_low_ok = (bare_pma_pc[31:riscv_pkg::LowBramCodeAddrBits] == '0) ||
+      (bare_pma_pc[31:30] == 2'b10);
   assign bare_verdict.straddle = &bare_pma_pc[11:2];
   assign bare_verdict.bare_fault0 = !(bare_pma_high_zero && bare_pma_low_ok);
   assign bare_verdict.bare_fault1 = bare_verdict.straddle ? !riscv_pkg::pma_fetch_next_page_ok(

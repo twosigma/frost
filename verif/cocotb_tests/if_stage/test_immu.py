@@ -74,8 +74,9 @@ def _canonical(va: int) -> bool:
 
 
 def _fetch_pma_ok(address: int) -> bool:
+    # Fetch reaches the low BRAM's 128 KiB code region, not the rest of it.
     address &= XLEN_MASK
-    return address < 0x0004_0000 or 0x8000_0000 <= address < 0xC000_0000
+    return address < 0x0002_0000 or 0x8000_0000 <= address < 0xC000_0000
 
 
 def _next_page_va(va: int) -> int:
@@ -309,6 +310,8 @@ async def test_bare_exact_selected_pc_window(dut: Any) -> None:
     cases = (
         0,
         0x0000_0002,
+        0x0001_FFFC,
+        0x0002_0000,
         0x0003_FFFC,
         0x7FFF_FFFC,
         0xBFFF_FFFC,
@@ -330,9 +333,9 @@ async def test_warm_translation_retags_once_per_pc_movement(dut: Any) -> None:
     """With the pages in the ITLB, each of these PC changes costs one invisible retag cycle."""
     await _setup(dut)
     leaves = (
-        Leaf(vpn=0x4, ppn=0x20),
-        Leaf(vpn=0x5, ppn=0x21),
-        Leaf(vpn=0x6, ppn=0x22),
+        Leaf(vpn=0x4, ppn=0x0C),
+        Leaf(vpn=0x5, ppn=0x0D),
+        Leaf(vpn=0x6, ppn=0x0E),
     )
     pc_a = 0x0000_4040
     pc_a_same_page = 0x0000_4FE2
@@ -398,7 +401,7 @@ async def test_mode_privilege_and_invalidate_mask_stale_state(dut: Any) -> None:
     """Privilege, mode, and invalidate changes never expose a stale result."""
     await _setup(dut)
     pc = 0x0000_8040
-    leaf = Leaf(vpn=pc >> 12, ppn=0x30, perm_u=1)
+    leaf = Leaf(vpn=pc >> 12, ppn=0x18, perm_u=1)
     await _move_pc(dut, pc)
     dut.i_priv_u.value = 1
     dut.i_active.value = 1
@@ -446,7 +449,7 @@ async def test_mode_privilege_and_invalidate_mask_stale_state(dut: Any) -> None:
     await _cycle(dut)
     await _accept_request(dut, leaf.vpn)
     dut.i_tlb_invalidate.value = 1
-    _drive_response(dut, vpn=leaf.vpn, ppn=0x31, perm_u=0)
+    _drive_response(dut, vpn=leaf.vpn, ppn=0x19, perm_u=0)
     await _settle()
     _assert_invisible(dut)
     await _cycle(dut)
@@ -467,9 +470,9 @@ async def test_walk_backpressure_and_retarget_edge_races(dut: Any) -> None:
     vpn_a = pc_a >> 12
     vpn_b = pc_b >> 12
     vpn_c = pc_c >> 12
-    leaf_a = Leaf(vpn=vpn_a, ppn=0x31)
-    leaf_b = Leaf(vpn=vpn_b, ppn=0x32)
-    leaf_c = Leaf(vpn=vpn_c, ppn=0x33)
+    leaf_a = Leaf(vpn=vpn_a, ppn=0x19)
+    leaf_b = Leaf(vpn=vpn_b, ppn=0x1A)
+    leaf_c = Leaf(vpn=vpn_c, ppn=0x1B)
 
     # With request backpressure, retargeting before acceptance replaces A;
     # the first transaction the walker accepts must belong to B.
@@ -556,6 +559,7 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
     assert int(dut.o_walk_req_valid.value) == 0
 
     episodes = (
+        (0x0001_2040, Leaf(vpn=0x12, ppn=0x20), 0),  # BRAM above the code region
         (0x0001_4040, Leaf(vpn=0x14, ppn=0x50, perm_x=0), 1),
         (0x0001_6040, Leaf(vpn=0x16, ppn=0x51, perm_u=1), 1),
         (0x0001_8040, Leaf(vpn=0x18, ppn=0x40000), 0),
@@ -578,7 +582,7 @@ async def test_translation_faults_and_refusal_memo(dut: Any) -> None:
     refused_pc = 0x0001_C040
     other_pc = 0x0001_E040
     refused_vpn = refused_pc >> 12
-    other_leaf = Leaf(vpn=other_pc >> 12, ppn=0x34)
+    other_leaf = Leaf(vpn=other_pc >> 12, ppn=0x1C)
     await _move_pc(dut, refused_pc)
     await _cycle(dut)
     await _accept_request(dut, refused_vpn)

@@ -628,20 +628,34 @@ def join_data_banks(cold: int, frontend_hot: int) -> int:
     )
 
 
-def split_words(words: dict[int, int], depth_words: int) -> tuple[list[int], list[int]]:
-    """Split full word-addressed memory contents into even and odd banks."""
+def split_words(
+    words: dict[int, int], depth_words: int, image_words: int | None = None
+) -> tuple[list[int], list[int]]:
+    """Split word-addressed memory contents into even and odd banks.
+
+    The instruction memory holds the first ``depth_words`` words of a low-BRAM
+    image of ``image_words`` words (default ``depth_words``). Words between the
+    two belong to the data memory alone and are dropped; words past the image
+    are an error.
+    """
     if depth_words <= 0 or depth_words % 2 != 0:
         raise ValueError("--depth-words must be a positive even integer")
+    if image_words is None:
+        image_words = depth_words
+    if image_words < depth_words:
+        raise ValueError("--image-words must be at least --depth-words")
 
     highest_word = max(words, default=-1)
-    if highest_word >= depth_words:
+    if highest_word >= image_words:
         raise ValueError(
-            f"input word address 0x{highest_word:X} exceeds depth 0x{depth_words:X}"
+            f"input word address 0x{highest_word:X} exceeds image size 0x{image_words:X}"
         )
 
     even_words = [0] * (depth_words // 2)
     odd_words = [0] * (depth_words // 2)
     for address, word in words.items():
+        if address >= depth_words:
+            continue
         bank_index = address >> 1
         if address & 1:
             odd_words[bank_index] = word
@@ -656,7 +670,21 @@ def main() -> int:
         description="Generate split instruction-memory init files"
     )
     parser.add_argument("sw_mem", type=Path)
-    parser.add_argument("--depth-words", type=int, default=32768)
+    parser.add_argument(
+        "--depth-words",
+        type=int,
+        default=32768,
+        help="instruction-memory depth in 32-bit words (the 128 KiB code region)",
+    )
+    parser.add_argument(
+        "--image-words",
+        type=int,
+        default=None,
+        help=(
+            "low-BRAM image size in words; words from --depth-words up to it are "
+            "data only and skipped (default: --depth-words)"
+        ),
+    )
     parser.add_argument("--even-cold", type=Path, required=True)
     parser.add_argument("--odd-cold", type=Path, required=True)
     parser.add_argument("--even-frontend-hot", type=Path, required=True)
@@ -672,7 +700,7 @@ def main() -> int:
     args = parser.parse_args()
 
     words = parse_verilog_hex(args.sw_mem)
-    even_words, odd_words = split_words(words, args.depth_words)
+    even_words, odd_words = split_words(words, args.depth_words, args.image_words)
 
     cold_hex_digits = (COLD_DATA_WIDTH + 3) // 4
     frontend_hot_hex_digits = (FRONTEND_HOT_WIDTH + 3) // 4

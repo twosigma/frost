@@ -423,7 +423,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "immu_bare.sby",
-        "IMMU Bare bypass - exact PMA/output equivalence at local XLEN 64, 32, and 72",
+        "IMMU Bare bypass - exact PMA/output equivalence at local XLEN 64, 32, and 72; "
+        "word 1's fault against the next page's PMA",
         tasks=("bmc", "bmc_xlen32", "bmc_xlen72"),
     ),
     FormalTarget(

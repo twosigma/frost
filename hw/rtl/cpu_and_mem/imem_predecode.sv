@@ -20,7 +20,7 @@
  * covering only the low overlay range ([0, 64 KiB) by default). The IF
  * next-PC logic reads these predicates; for code in the overlay they launch
  * from a fabric flop instead of a RAMB36E2 clock-to-output, without copying
- * the metadata of the whole 256 KiB IMEM into LUTRAM. The full-depth sideband
+ * the metadata of the whole IMEM into LUTRAM. The full-depth sideband
  * block RAM still supplies the noncritical lanes and is the simulation
  * reference for this copy. The asynchronous LUTRAM read lands in a local
  * output register with the same one-cycle latency and read-enable hold as the
@@ -44,6 +44,8 @@ module imem_sideband_scalar_bank #(
     parameter int unsigned STORAGE_ADDR_WIDTH = ADDR_WIDTH,
     parameter bit USE_INIT_FILE = 1'b1,
     parameter bit [47:0] INIT_FILE = "sw.mem",
+    // Word-address width of INIT_FILE's image (the parent's INIT_ADDR_WIDTH).
+    parameter int unsigned INIT_ADDR_WIDTH = ADDR_WIDTH + 1,
     parameter bit [319:0] BANK_INIT_FILE = "sw_imem_even_is_compressed_lo.mem",
     parameter bit IS_ODD_BANK = 1'b0
 ) (
@@ -61,9 +63,9 @@ module imem_sideband_scalar_bank #(
 
   localparam int unsigned BankDepth = 2 ** STORAGE_ADDR_WIDTH;
   // Simulation's combined init file may contain sparse addresses anywhere in
-  // the parent IMEM, so retain the full temporary image even though only the
-  // low overlay prefix is copied into this bank.
-  localparam int unsigned FullDepth = 2 ** (ADDR_WIDTH + 1);
+  // the low BRAM image, so retain the full temporary image even though only
+  // the low overlay prefix is copied into this bank.
+  localparam int unsigned FullDepth = 2 ** INIT_ADDR_WIDTH;
 
   function automatic logic sideband_bit_from_word(input logic [31:0] word);
     logic [riscv_pkg::ImemSidebandWidth-1:0] sideband;
@@ -149,10 +151,12 @@ endmodule : imem_sideband_scalar_bank
  * L1I fill path uses the same function.
  *
  * Each 32-bit half-depth data bank is split into 28 cold bits and four
- * frontend-hot bits {15,10,7,6}. At 32K entries per parity this remains 32
- * RAMB36 while making the four timing lanes independently placeable. A
- * four-lane block-RAM replica per parity carries the raw high-parcel bits
- * C[15], C[13], C[12], and AllowsSlot2AfterHi. Every
+ * frontend-hot bits {15,10,7,6}. The production IMEM holds the 128 KiB code
+ * region, 16K entries per parity, where each RAMB36 holds two lanes
+ * (16Kx2); the split keeps the four timing lanes out of the cold arrays
+ * without adding block RAM. A four-lane block-RAM replica per parity
+ * carries the raw high-parcel bits C[15], C[13], C[12], and
+ * AllowsSlot2AfterHi. Every
  * sideband predicate the IF next-PC logic reads (IsCompressedLo/Hi,
  * EvenLocalPairValid, PairableNativeLo, PairableCompressedHi,
  * PairableNativeHi, and Slot2StartValidLo) has a per-parity LUTRAM overlay of
@@ -181,6 +185,10 @@ module imem_predecode #(
     parameter int unsigned PC_METADATA_OVERLAY_ADDR_WIDTH = (ADDR_WIDTH > 14) ? 13 : ADDR_WIDTH - 1,
     parameter bit USE_INIT_FILE = 1'b1,
     parameter bit [47:0] INIT_FILE = "sw.mem",
+    // Word-address width of INIT_FILE's image, the whole low BRAM. This
+    // memory takes the image's first 2**ADDR_WIDTH words; the rest belong to
+    // the data memory alone. Only simulation reads INIT_FILE.
+    parameter int unsigned INIT_ADDR_WIDTH = ADDR_WIDTH,
     parameter bit [255:0] INIT_FILE_EVEN_COLD = "sw_imem_even_cold.mem",
     parameter bit [255:0] INIT_FILE_ODD_COLD = "sw_imem_odd_cold.mem",
     parameter bit [255:0] INIT_FILE_EVEN_FRONTEND_HOT = "sw_imem_even_frontend_hot.mem",
@@ -286,6 +294,7 @@ module imem_predecode #(
   initial begin
     p_pc_metadata_overlay_width_valid :
     assert (PC_METADATA_OVERLAY_ADDR_WIDTH > 0 && PC_METADATA_OVERLAY_ADDR_WIDTH <= ADDR_WIDTH - 1);
+    p_init_image_covers_memory : assert (INIT_ADDR_WIDTH >= ADDR_WIDTH);
   end
 `endif
 
@@ -332,8 +341,7 @@ module imem_predecode #(
   (* ram_style = "block" *) logic [ColdDataWidth-1:0] memory_even_cold[HalfDepth];
   (* ram_style = "block" *) logic [ColdDataWidth-1:0] memory_odd_cold[HalfDepth];
   // Keep the timing-facing four-bit slices distinct from the cold arrays.
-  // Their 32Kx4 shape maps to four RAMB36 per parity bank (32K depth caps a
-  // RAMB36 at 32Kx1).
+  // Their 16Kx4 shape maps to two RAMB36 per parity bank, two lanes each.
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [FrontendHotWidth-1:0] memory_even_frontend_hot[HalfDepth];
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
@@ -347,12 +355,12 @@ module imem_predecode #(
   // Mirror the high-parcel allows-slot-2 predicate and raw high-parcel bits
   // C[15], C[13], and C[12] (word[31], word[29], and word[28]) in dedicated
   // block-RAM banks. They are read at the same fetch edge as the other BRAM
-  // banks, so they add no latency. Keeping them distinct preserves
-  // independent placement of these timing-facing launches. The
+  // banks, so they add no latency. Keeping them distinct keeps these
+  // timing-facing launches out of the wide sideband arrays. The
   // *_compressed.mem init files contain the packed four-bit value
   // {allows_slot2_after_hi, word[29], word[28], word[31]}; the
-  // instruction-size bits are in the scalar LUTRAM overlay below. At 32K
-  // entries per parity bank, each bit maps to one RAMB36.
+  // instruction-size bits are in the scalar LUTRAM overlay below. At 16K
+  // entries per parity bank, each RAMB36 holds two of these bits.
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
@@ -368,7 +376,7 @@ module imem_predecode #(
   // split init files directly so every synthesized memory has an explicit
   // power-up image.
 `ifndef FROST_VIVADO_SYNTH
-  logic [DataWidth-1:0] init_mem[FullDepth];
+  logic [DataWidth-1:0] init_mem[2**INIT_ADDR_WIDTH];
 `endif
 
   initial begin
@@ -587,6 +595,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_EVEN_IS_COMPRESSED_LO),
       .IS_ODD_BANK(1'b0)
   ) u_even_is_compressed_lo_bank (
@@ -608,6 +617,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_ODD_IS_COMPRESSED_LO),
       .IS_ODD_BANK(1'b1)
   ) u_odd_is_compressed_lo_bank (
@@ -629,6 +639,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_EVEN_IS_COMPRESSED_HI),
       .IS_ODD_BANK(1'b0)
   ) u_even_is_compressed_hi_bank (
@@ -650,6 +661,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_ODD_IS_COMPRESSED_HI),
       .IS_ODD_BANK(1'b1)
   ) u_odd_is_compressed_hi_bank (
@@ -671,6 +683,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_EVEN_EVEN_LOCAL_PAIR_VALID),
       .IS_ODD_BANK(1'b0)
   ) u_even_even_local_pair_valid_bank (
@@ -692,6 +705,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_ODD_EVEN_LOCAL_PAIR_VALID),
       .IS_ODD_BANK(1'b1)
   ) u_odd_even_local_pair_valid_bank (
@@ -713,6 +727,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_NATIVE_LO),
       .IS_ODD_BANK(1'b0)
   ) u_even_pairable_native_lo_bank (
@@ -734,6 +749,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_NATIVE_LO),
       .IS_ODD_BANK(1'b1)
   ) u_odd_pairable_native_lo_bank (
@@ -755,6 +771,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_COMPRESSED_HI),
       .IS_ODD_BANK(1'b0)
   ) u_even_pairable_compressed_hi_bank (
@@ -776,6 +793,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_COMPRESSED_HI),
       .IS_ODD_BANK(1'b1)
   ) u_odd_pairable_compressed_hi_bank (
@@ -797,6 +815,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_NATIVE_HI),
       .IS_ODD_BANK(1'b0)
   ) u_even_pairable_native_hi_bank (
@@ -818,6 +837,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_NATIVE_HI),
       .IS_ODD_BANK(1'b1)
   ) u_odd_pairable_native_hi_bank (
@@ -839,6 +859,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_EVEN_SLOT2_START_VALID_LO),
       .IS_ODD_BANK(1'b0)
   ) u_even_slot2_start_valid_lo_bank (
@@ -860,6 +881,7 @@ module imem_predecode #(
       .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
+      .INIT_ADDR_WIDTH(INIT_ADDR_WIDTH),
       .BANK_INIT_FILE(INIT_FILE_ODD_SLOT2_START_VALID_LO),
       .IS_ODD_BANK(1'b1)
   ) u_odd_slot2_start_valid_lo_bank (

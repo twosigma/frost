@@ -101,7 +101,9 @@ Simulation and the board use the same address map. The default
 | RAM | `0x00018000` | 160 KiB | Data, BSS, and stack |
 | DDR | `0x80000000` | 1 GiB | Cached code and data, then the heap |
 
-ROM, DEBUG, and RAM make up the 256 KiB low BRAM, which is uncached. The
+ROM, DEBUG, and RAM make up the 256 KiB low BRAM, which is uncached.
+Instruction fetch reaches only its first 128 KiB, which holds ROM and DEBUG;
+a fetch above that raises an instruction access fault. The
 linker reserves 112 KiB of RAM for the stack and fails the link if data and
 BSS reach into it. DDR holds `.ddr_text`, `.ddr_rodata`, `.ddr_data`, and
 `.ddr_bss`, followed by the heap, which runs to the end of the region. The
@@ -295,7 +297,7 @@ can be debugged and where each one first stops.
 | `pde_return_hazard/` | A return value computed from `s1` just before the epilogue restores `s1` (Linux `pde_subdir_find` shape) |
 | `perf_off_test/` | Core built without profiling counters: `mperf*` CSRs read zero and ignore writes, while `cycle` and `instret` count |
 | `plic_test/` | PLIC registers, level gateway, claim and complete, threshold, both contexts, an M-mode external interrupt, and completions from contexts that do not enable the source |
-| `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map (loads from device-quadrant addresses outside the device windows included; untranslated stores there are ignored) and for AMO, LR, and SC to device registers, with exact `mepc` and `mtval` |
+| `pma_fault_test/` | Access faults for fetch, load, store, AMO, and LR outside the physical map (fetch from the low BRAM above its 128 KiB code region and loads from device-quadrant addresses outside the device windows included; untranslated stores there are ignored) and for AMO, LR, and SC to device registers, with exact `mepc` and `mtval` |
 | `print_clock_speed/` | Prints the `FPGA_CPU_CLK_FREQ` it was built with |
 | `ptw_coherence_test/` | Sv39 walks must see page tables still dirty in the L1D, without `sfence.vma` |
 | `ras_repair_bench/` | Return address stack repair: a mispredicted branch whose wrong path returns and then calls, overwriting the entry the correct path's return needs; the flush-recovery cycles must match a control phase's (`PERF_COUNTERS=1`) |

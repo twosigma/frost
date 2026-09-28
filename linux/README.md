@@ -69,7 +69,7 @@ The board and simulation share one physical map.
 
 | Range | Contents |
 |---|---|
-| `[0x0000_0000, 256 KiB)` | Uncached boot BRAM, outside Linux's memory node. `[0x17C00, 0x18000)` is reserved for the debug module. |
+| `[0x0000_0000, 256 KiB)` | Uncached boot BRAM, outside Linux's memory node. Code runs only from its first 128 KiB. `[0x17C00, 0x18000)` is reserved for the debug module. |
 | `[0x4000_0000, 0x4003_1000)` | Native MMIO: UART, FIFOs, timer, DMA test engine, and NIC. See `sw/lib/include/mmio.h`. |
 | `[0x4000_1000, +0x100)` | ns16550a UART alias, PLIC source 1, with `reg-shift=2` and `reg-io-width=4` |
 | `[0x4001_0000, +0xC000)` | SiFive CLINT alias: `msip` at `+0`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8` |

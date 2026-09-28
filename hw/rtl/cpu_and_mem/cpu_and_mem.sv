@@ -217,6 +217,13 @@ module cpu_and_mem #(
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
   // (MEM_SIZE_BYTES/(4 bytes per word)) words; e.g. 256 KiB -> 64k words = 16 word address bits
   localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
+  // The instruction copy holds only the low BRAM's code region, the part
+  // instruction fetch can reach (riscv_pkg::pma_fetch_ok): 128 KiB, or all of
+  // a smaller low BRAM.
+  localparam int unsigned ImemByteAddrWidth =
+      (MemByteAddrWidth < riscv_pkg::LowBramCodeAddrBits) ?
+      MemByteAddrWidth : riscv_pkg::LowBramCodeAddrBits;
+  localparam int unsigned ImemWordAddrWidth = ImemByteAddrWidth - 2;
   // Data-memory rows are MemDataBits dwords (hw/rtl/README.md, "Data-tier bus contract").
   localparam int unsigned MemDwordAddrWidth = MemByteAddrWidth - 3;
 
@@ -1469,23 +1476,37 @@ module cpu_and_mem #(
       .i_dmem_rd_data(dmem_port_a_rd_data)
   );
   logic [31:0] prog_port_addr, prog_port_data;
+  logic prog_port_in_imem;
   logic prog_port_imem_we;
   logic [3:0] prog_port_dmem_we;
   assign prog_port_addr = i_instr_mem_en ? i_instr_mem_addr : slice_port_a_addr;
   assign prog_port_data = i_instr_mem_en ? i_instr_mem_wrdata : slice_port_a_data;
-  assign prog_port_imem_we = i_instr_mem_en ? (|i_instr_mem_we) : slice_imem_we;
+  // A word above the code region (a data image word, or a Debug-Mode store
+  // mirror there) goes to the data copy alone instead of aliasing onto a code
+  // word. The check covers the data copy's address bits, so the instruction
+  // copy stays an exact image of the data copy's first ImemByteAddrWidth bytes.
+  if (ImemByteAddrWidth < MemByteAddrWidth) begin : gen_prog_port_code_region
+    assign prog_port_in_imem = (prog_port_addr[MemByteAddrWidth-1:ImemByteAddrWidth] == '0);
+  end else begin : gen_prog_port_whole_bram
+    assign prog_port_in_imem = 1'b1;
+  end
+  assign prog_port_imem_we = prog_port_in_imem &&
+      (i_instr_mem_en ? (|i_instr_mem_we) : slice_imem_we);
   assign prog_port_dmem_we = i_instr_mem_en ? i_instr_mem_we : {4{slice_dmem_we}};
 
   // Memory 0: Instruction memory with predecode sideband
-  // Stores 32-bit instruction data plus a small predecode sideband per word.
+  // Stores 32-bit instruction data plus a small predecode sideband per word
+  // for the code region only (ImemByteAddrWidth); a fetch above it carries
+  // an access fault, so the aliased word it reads is never executed.
   // Sideband bits are computed at write time and keep common IF classification
   // checks off the raw instruction-data -> PC critical path.
   // Port A: Instruction programming only (div4 clock, write only)
   // Port B: Instruction fetch (main clock, read only)
   imem_predecode #(
-      .ADDR_WIDTH(MemWordAddrWidth),
+      .ADDR_WIDTH(ImemWordAddrWidth),
       .USE_INIT_FILE(1'b1),
-      .INIT_FILE("sw.mem")
+      .INIT_FILE("sw.mem"),
+      .INIT_ADDR_WIDTH(MemWordAddrWidth)
   ) instruction_memory (
       .i_port_a_clk(i_clk_div4),
       .i_port_a_enable(1'b1),
