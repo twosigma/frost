@@ -620,54 +620,120 @@ module fetch_provider #(
       .o_sideband(fill_sideband)
   );
 
+  // Engine next state, shared by the engine registers and the per-group
+  // copies of busy and discard below. A response ends its engine's fill. An
+  // invalidate marks in-flight fills discarded: the line port has no abort,
+  // so they complete, but their pre-invalidate data must not re-validate a
+  // slot.
+  logic [1:0] resp_for_slot;
+  logic [1:0] fill_busy_next;
+  logic [1:0] fill_discard_next;
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      resp_for_slot[p] = i_line_resp_valid && (resp_slot == 1'(p));
+      if (i_rst) begin
+        fill_busy_next[p]    = 1'b0;
+        fill_discard_next[p] = 1'b0;
+      end else begin
+        fill_busy_next[p] = fill_busy_q[p] ? !resp_for_slot[p] : want_fill[p];
+        fill_discard_next[p] = (fill_busy_q[p] && resp_for_slot[p]) ? 1'b0 :
+            (fill_discard_q[p] || (i_invalidate && fill_busy_q[p]));
+      end
+    end
+  end
+
   always_ff @(posedge i_clk) begin
+    fill_busy_q    <= fill_busy_next;
+    fill_discard_q <= fill_discard_next;
     if (i_rst) begin
-      fill_busy_q     <= '0;
       fill_sent_q     <= '0;
-      fill_discard_q  <= '0;
       slot_valid_q[0] <= 1'b0;
       slot_valid_q[1] <= 1'b0;
     end else begin
       if (i_invalidate) begin
         slot_valid_q[0] <= 1'b0;
         slot_valid_q[1] <= 1'b0;
-        // In-flight fills have to complete, because the line port has no
-        // abort, but their pre-invalidate data must not re-validate a slot.
-        fill_discard_q  <= fill_discard_q | fill_busy_q;
       end
 
       for (int p = 0; p < 2; p++) begin
         if (!fill_busy_q[p]) begin
           if (want_fill[p]) begin
-            fill_busy_q[p] <= 1'b1;
             fill_sent_q[p] <= 1'b0;
             fill_line_q[p] <= cand_line[p];
           end
         end else begin
           if (o_line_req_valid && i_line_req_ready && (req_sel == 1'(p))) fill_sent_q[p] <= 1'b1;
-          if (i_line_resp_valid && (resp_slot == 1'(p))) begin
-            fill_busy_q[p] <= 1'b0;
+          if (resp_for_slot[p]) begin
             fill_sent_q[p] <= 1'b0;
-            if (!fill_discard_q[p] && !i_invalidate) begin
-              slot_valid_q[p] <= 1'b1;
-              slot_line_q[p]  <= fill_line_q[p];
-              slot_data_q[p]  <= i_line_resp_rdata;
-              slot_sb_q[p]    <= fill_sideband;
-            end
-            fill_discard_q[p] <= 1'b0;
+            if (!fill_discard_q[p] && !i_invalidate) slot_valid_q[p] <= 1'b1;
           end
         end
-        // Copy from the victim store into the slot. copy_now is built to
-        // exclude cycles carrying a response or an invalidate.
-        if (copy_now[p]) begin
-          slot_valid_q[p] <= 1'b1;
-          slot_line_q[p]  <= cand_line[p];
-          slot_data_q[p]  <= vs_data_q[vs_hit_idx[p]];
-          slot_sb_q[p]    <= vs_sb_q[vs_hit_idx[p]];
-        end
+        // A copy from the victim store validates the slot. copy_now is built
+        // to exclude cycles carrying a response or an invalidate.
+        if (copy_now[p]) slot_valid_q[p] <= 1'b1;
       end
     end
   end
+
+  // Slot payload install. A response installs only while its engine is
+  // busy, and a victim copy only while it is idle (copy_now requires
+  // !fill_busy_q), so the registered busy bit selects the payload source
+  // whenever a write happens and the late copy decision reaches only the
+  // write enables. Each slot's payload is split into one group per word (its
+  // data word and sideband) plus the line tag. Every group has same-edge
+  // copies of its engine's busy and discard bits (equal to fill_busy_q and
+  // fill_discard_q on every cycle) and so its own write-enable LUT, placed
+  // beside its registers instead of one LUT driving the whole line.
+  // DONT_TOUCH keeps synthesis from merging the copies back.
+  localparam int unsigned SlotGroups = WordsPerLine + 1;  // the words, then the tag
+  localparam int unsigned TagGroup   = WordsPerLine;
+  (* dont_touch = "true" *)logic [1:0][SlotGroups-1:0] grp_busy_q;
+  (* dont_touch = "true" *)logic [1:0][SlotGroups-1:0] grp_discard_q;
+  logic [1:0][SlotGroups-1:0] grp_install;
+  always_ff @(posedge i_clk) begin
+    for (int p = 0; p < 2; p++) begin
+      grp_busy_q[p]    <= {SlotGroups{fill_busy_next[p]}};
+      grp_discard_q[p] <= {SlotGroups{fill_discard_next[p]}};
+    end
+  end
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      for (int g = 0; g < SlotGroups; g++) begin
+        grp_install[p][g] = !i_rst && (copy_now[p] ||
+            (grp_busy_q[p][g] && resp_for_slot[p] && !grp_discard_q[p][g] && !i_invalidate));
+      end
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    for (int p = 0; p < 2; p++) begin
+      for (int w = 0; w < WordsPerLine; w++) begin
+        if (grp_install[p][w]) begin
+          slot_data_q[p][w*32+:32] <= grp_busy_q[p][w] ?
+              i_line_resp_rdata[w*32+:32] : vs_data_q[vs_hit_idx[p]][w*32+:32];
+          slot_sb_q[p][w*SbWidth+:SbWidth] <= grp_busy_q[p][w] ?
+              fill_sideband[w*SbWidth+:SbWidth] : vs_sb_q[vs_hit_idx[p]][w*SbWidth+:SbWidth];
+        end
+      end
+      if (grp_install[p][TagGroup]) begin
+        slot_line_q[p] <= grp_busy_q[p][TagGroup] ? fill_line_q[p] : cand_line[p];
+      end
+    end
+  end
+
+`ifndef SYNTHESIS
+  // The copies take the engine's next state, so they agree from the first
+  // edge.
+  logic grp_copies_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    grp_copies_armed_q <= 1'b1;
+    if (grp_copies_armed_q) begin
+      for (int p = 0; p < 2; p++) begin
+        p_group_busy_copies_match : assert (grp_busy_q[p] == {SlotGroups{fill_busy_q[p]}});
+        p_group_discard_copies_match : assert (grp_discard_q[p] == {SlotGroups{fill_discard_q[p]}});
+      end
+    end
+  end
+`endif
 
   // Victim store bookkeeping. A free shadow tracks its slot's old contents
   // every cycle. A slot write (an installed response or victim copy) marks
@@ -844,6 +910,31 @@ module fetch_provider #(
       cover (!i_invalidate && ev_pending_q[0] && slot_write[1]);
       cover (!i_invalidate && ev_pending_q[1] && slot_write[0]);
       cover (i_invalidate && (|ev_pending_q));
+    end
+  end
+
+  // The grouped slot install writes exactly what a whole-slot install on the
+  // original conditions writes: a reference that takes those writes matches
+  // every slot register once the slot has been written, and every group's
+  // busy and discard copies match the engine's.
+  logic [1:0][ShadowPayloadBits-1:0] f_slot_ref;
+  logic [1:0] f_slot_ref_valid = 2'b00;
+  always_ff @(posedge i_clk) begin
+    for (int p = 0; p < 2; p++) begin
+      if (!i_rst && fill_busy_q[p] && resp_for_slot[p] && !fill_discard_q[p] && !i_invalidate) begin
+        f_slot_ref[p] <= {fill_line_q[p], i_line_resp_rdata, fill_sideband};
+        f_slot_ref_valid[p] <= 1'b1;
+      end
+      if (!i_rst && copy_now[p]) begin
+        f_slot_ref[p] <= {cand_line[p], vs_data_q[vs_hit_idx[p]], vs_sb_q[vs_hit_idx[p]]};
+        f_slot_ref_valid[p] <= 1'b1;
+      end
+      if (f_shadow_past_valid) begin
+        assert (grp_busy_q[p] == {SlotGroups{fill_busy_q[p]}});
+        assert (grp_discard_q[p] == {SlotGroups{fill_discard_q[p]}});
+        if (f_slot_ref_valid[p])
+          assert ({slot_line_q[p], slot_data_q[p], slot_sb_q[p]} == f_slot_ref[p]);
+      end
     end
   end
 `endif

@@ -56,7 +56,8 @@ class FormalTarget:
 FORMAL_TARGETS = [
     FormalTarget(
         "fetch_shadow_capture.sby",
-        "Tracking free fetch shadows preserves every pending tag and payload bit under legal responses",
+        "Tracking free fetch shadows preserves every pending tag and payload bit under legal "
+        "responses; the per-word slot install matches a whole-slot install",
         tasks=("prove", "cover", "prove_victim0", "prove_victim1"),
     ),
     FormalTarget(
