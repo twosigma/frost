@@ -357,10 +357,9 @@ module misprediction_flush_controller #(
   // the commit bus. It is a register fed by the trap, xRET, and FENCE-class
   // events rather than the OR of their three registered pulses, because
   // synthesis cannot replicate that OR (only registers survive replication
-  // through opt); the fanout cap replicates the register per consumer region.
-  // keep would hold it to one register. It equals the OR on every cycle,
-  // which p_flush_all_is_the_pulse_or checks.
-  (* equivalent_register_removal = "no", max_fanout = 64 *)
+  // through opt); the register can replicate per consumer region. It equals
+  // the OR on every cycle, which p_flush_all_is_the_pulse_or checks.
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)
   logic full_flush_side_effect_kill_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) full_flush_side_effect_kill_q <= 1'b0;
