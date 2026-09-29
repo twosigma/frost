@@ -368,6 +368,18 @@ module misprediction_flush_controller #(
   assign full_flush_side_effect_kill = full_flush_side_effect_kill_q;
   assign flush_all                   = full_flush_side_effect_kill_q;
 
+  // TIMING: the checkpoint restore enable and id reach every checkpoint
+  // LUTRAM address pin and the RAT restore muxes, so they take the full-flush
+  // term from their own same-edge copy of the kill register, placed near
+  // them, rather than from its 400-load net. DONT_TOUCH keeps synthesis from
+  // merging the copy back. Both sample the same next state, so they agree
+  // from the first edge (p_restore_flush_copy_matches).
+  (* dont_touch = "true" *) logic restore_flush_all_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) restore_flush_all_q <= 1'b0;
+    else restore_flush_all_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event;
+  end
+
   // early_mispredict_active without its trap/MRET terms: identical whenever
   // flush_all is low, and every use below is dominated by flush_all.
   logic early_redirect_fast;
@@ -425,11 +437,11 @@ module misprediction_flush_controller #(
   // on the full-flush pulse, else the early id unless commit-time recovery is
   // pending. It differs from the reference priority chain only where nothing
   // reads it.
-  assign checkpoint_restore = !flush_all &&
+  assign checkpoint_restore = !restore_flush_all_q &&
       (early_redirect_fast ||
        (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint));
   assign checkpoint_restore_id =
-      flush_all ? '0 :
+      restore_flush_all_q ? '0 :
       (early_mispredict_pending && !mispredict_recovery_pending) ? early_mispredict_checkpoint_id :
       mispredict_commit_q.checkpoint_id;
   assign checkpoint_restore_reclaim_all = 1'b0;
@@ -547,6 +559,14 @@ module misprediction_flush_controller #(
       assert (!(ref_checkpoint_restore || early_mispredict_active ||
                 (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint)) ||
               checkpoint_restore_id == ref_checkpoint_restore_id);
+    end
+  end
+
+  logic restore_flush_copy_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    restore_flush_copy_armed_q <= 1'b1;
+    if (restore_flush_copy_armed_q) begin
+      p_restore_flush_copy_matches : assert (restore_flush_all_q == full_flush_side_effect_kill_q);
     end
   end
 `endif
