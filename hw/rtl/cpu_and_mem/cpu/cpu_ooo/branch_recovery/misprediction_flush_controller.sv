@@ -380,6 +380,16 @@ module misprediction_flush_controller #(
     else restore_flush_all_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event;
   end
 
+  // TIMING: likewise, the front-end flushes (flush_pipeline and
+  // frontend_state_flush) reach the IF state and the fetch-PC mux, so they
+  // take the full-flush term from a same-edge copy placed near the front end
+  // (p_frontend_flush_copy_matches).
+  (* dont_touch = "true" *) logic frontend_flush_all_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) frontend_flush_all_q <= 1'b0;
+    else frontend_flush_all_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event;
+  end
+
   // early_mispredict_active without its trap/MRET terms: identical whenever
   // flush_all is low, and every use below is dominated by flush_all.
   logic early_redirect_fast;
@@ -389,7 +399,8 @@ module misprediction_flush_controller #(
   // Flush the pipeline on the redirecting early-recovery phase, registered
   // misprediction recovery, trap, xRET, or FENCE-class recovery. The delayed
   // backend recovery phase is not a second front-end flush.
-  assign flush_pipeline = flush_all || mispredict_recovery_pending || early_redirect_fast;
+  assign flush_pipeline = frontend_flush_all_q || mispredict_recovery_pending ||
+                          early_redirect_fast;
 
   // IF's internal-state flush is flush_pipeline itself. It follows a trap or
   // xRET take by one cycle, which IF's internal-state cleanup tolerates.
@@ -567,6 +578,8 @@ module misprediction_flush_controller #(
     restore_flush_copy_armed_q <= 1'b1;
     if (restore_flush_copy_armed_q) begin
       p_restore_flush_copy_matches : assert (restore_flush_all_q == full_flush_side_effect_kill_q);
+      p_frontend_flush_copy_matches :
+      assert (frontend_flush_all_q == full_flush_side_effect_kill_q);
     end
   end
 `endif
