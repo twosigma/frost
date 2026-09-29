@@ -97,6 +97,8 @@ module sdp_ram_byte_en #(
     assign wbyte_en_q = wbyte_en_pipe[WriteRegStages-1];
   end
 
+  // A row is written on this edge. The XPM's port enable stays high (see
+  // u_xpm_ram), so only the collision check at the end of the module uses it.
   logic row_write_en;
   assign row_write_en = |wbyte_en_q;
 
@@ -159,7 +161,11 @@ module sdp_ram_byte_en #(
       .sbiterrb      (),
       .clka          (i_clk),
       .clkb          (i_clk),
-      .ena           (row_write_en),
+      // The byte enables alone gate the write: the XPM writes byte k when
+      // ena && wea[k], and ena would be |wea. Tied high, the enable carries
+      // no OR-reduction of the byte enables to the head of every cascade in
+      // a wide array.
+      .ena           (1'b1),
       .wea           (wbyte_en_q),
       .addra         (waddr_q),
       .dina          (wdata_q),
