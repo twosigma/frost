@@ -292,6 +292,10 @@ module fetch_provider #(
   // until the selected-VA result is visible. The core holds o_pc at the ask
   // until then, so the live pair is the ask's.
   logic [31:0] ask_pa0_q, ask_pa1_q;
+  // The line after ask_pa0_q's, loaded with it, so the window-slot and
+  // victim-store lookups compare against a register instead of an adder
+  // (p_ask_line_next_matches).
+  logic [LineAddrBits-1:0] ask_line_next_q;
   logic ask_pa_valid_q;
   logic ask_fault0_q, ask_fault0_page_q, ask_fault1_q, ask_fault1_page_q;
   logic ask_after_ok_q;
@@ -302,6 +306,7 @@ module fetch_provider #(
     if (i_rst) begin
       ask_pa0_q         <= '0;
       ask_pa1_q         <= 32'd4;
+      ask_line_next_q   <= LineAddrBits'(1);
       ask_pa_valid_q    <= 1'b0;
       ask_fault0_q      <= 1'b0;
       ask_fault0_page_q <= 1'b0;
@@ -311,6 +316,7 @@ module fetch_provider #(
     end else if (ask_pa_load) begin
       ask_pa0_q         <= i_pa0;
       ask_pa1_q         <= i_pa1;
+      ask_line_next_q   <= i_pa0[31:OffsetBits] + 1'b1;
       ask_pa_valid_q    <= i_pa_valid;
       ask_fault0_q      <= i_fault0;
       ask_fault0_page_q <= i_fault0_page;
@@ -499,7 +505,17 @@ module fetch_provider #(
   logic fill_straddle;
   assign fill_line0 = ask_pa0_q[31:OffsetBits];
   assign fill_straddle = &ask_pa0_q[OffsetBits-1:2];
-  assign fill_line_after = fill_straddle ? ask_pa1_q[31:OffsetBits] : fill_line0 + 1'b1;
+  assign fill_line_after = fill_straddle ? ask_pa1_q[31:OffsetBits] : ask_line_next_q;
+
+`ifndef SYNTHESIS
+  logic ask_line_next_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) ask_line_next_armed_q <= 1'b1;
+    if (ask_line_next_armed_q) begin
+      p_ask_line_next_matches : assert (ask_line_next_q == fill_line0 + 1'b1);
+    end
+  end
+`endif
 
   // Candidate line per slot parity, its presence, and whether it may be
   // fetched at all. A faulted word's line is never fetchable, and the prefetch
