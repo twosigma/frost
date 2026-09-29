@@ -260,10 +260,13 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
 }
 
 # Validate the selected-PC endpoint family of the X3 metadata-to-PC path group:
-# one canonical (non-replica) FD* endpoint per PC bit [63:0], all clocked by
-# clock_from_mmcm, and no o_pc_reg* D pins outside the selected family and the
-# o_pc_reg_reg state family, which is validated separately.
-proc validate_x3_pc_tail_scope {scope_label} {
+# at least one FD* endpoint per PC bit [63:0], all clocked by clock_from_mmcm,
+# and no o_pc_reg* D pins outside the selected family and the o_pc_reg_reg
+# state family, which is validated separately. Before placement each bit has
+# exactly one canonical (non-replica) endpoint. Placement's equivalent-driver
+# rewiring may move all of a register's loads to its replicas and remove it,
+# so with require_canonical 0 a bit may have no canonical endpoint left.
+proc validate_x3_pc_tail_scope {scope_label {require_canonical 1}} {
     set selected_end_re {^.*/pc_controller_inst/o_pc_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
     set broad_end_re {^.*/pc_controller_inst/o_pc_reg[^/]*/D$}
@@ -331,8 +334,13 @@ proc validate_x3_pc_tail_scope {scope_label} {
         if {![dict exists $selected_bit_counts $bit_index]} {
             error "$scope_label X3 PC-tail selected endpoint family is missing PC bit $bit_index"
         }
-        if {![dict exists $canonical_bit_counts $bit_index] || [dict get $canonical_bit_counts $bit_index] != 1} {
+        set canonical_count [expr {[dict exists $canonical_bit_counts $bit_index] ?
+            [dict get $canonical_bit_counts $bit_index] : 0}]
+        if {$require_canonical && $canonical_count != 1} {
             error "$scope_label X3 PC-tail PC bit $bit_index does not have exactly one canonical non-replica endpoint"
+        }
+        if {$canonical_count > 1} {
+            error "$scope_label X3 PC-tail PC bit $bit_index has more than one canonical non-replica endpoint"
         }
     }
 
@@ -344,9 +352,10 @@ proc validate_x3_pc_tail_scope {scope_label} {
 }
 
 # Validate an indexed PC-state family, accepting placer replicas but no other
-# namespace members. Each bit retains one canonical FD* CPU-clock endpoint.
+# namespace members. Each bit keeps at least one FD* CPU-clock endpoint, and
+# exactly one canonical one unless require_canonical is 0 (after placement).
 proc validate_x3_pc_tail_indexed_family {
-    scope_label family_label endpoint_re broad_end_re last_bit
+    scope_label family_label endpoint_re broad_end_re last_bit {require_canonical 1}
 } {
     set endpoints [get_pins -quiet -hierarchical -regexp $endpoint_re]
     set broad_ends [get_pins -quiet -hierarchical -regexp $broad_end_re]
@@ -400,8 +409,13 @@ proc validate_x3_pc_tail_indexed_family {
         if {![dict exists $bit_counts $bit_index]} {
             error "$scope_label X3 $family_label endpoint family is missing bit $bit_index"
         }
-        if {![dict exists $canonical_bit_counts $bit_index] || [dict get $canonical_bit_counts $bit_index] != 1} {
+        set canonical_count [expr {[dict exists $canonical_bit_counts $bit_index] ?
+            [dict get $canonical_bit_counts $bit_index] : 0}]
+        if {$require_canonical && $canonical_count != 1} {
             error "$scope_label X3 $family_label bit $bit_index does not have exactly one canonical non-replica endpoint"
+        }
+        if {$canonical_count > 1} {
+            error "$scope_label X3 $family_label bit $bit_index has more than one canonical non-replica endpoint"
         }
     }
 
@@ -412,10 +426,11 @@ proc validate_x3_pc_tail_indexed_family {
         bits [dict size $bit_counts]]
 }
 
-# Validate a scalar PC-control family: one canonical endpoint plus optional
-# placer replicas, with no unmatched suffix family.
+# Validate a scalar PC-control family: at least one endpoint, of which one is
+# canonical (at most one when require_canonical is 0, after placement), plus
+# optional placer replicas, with no unmatched suffix family.
 proc validate_x3_pc_tail_scalar_family {
-    scope_label family_label endpoint_re broad_end_re
+    scope_label family_label endpoint_re broad_end_re {require_canonical 1}
 } {
     set endpoints [get_pins -quiet -hierarchical -regexp $endpoint_re]
     set broad_ends [get_pins -quiet -hierarchical -regexp $broad_end_re]
@@ -455,8 +470,11 @@ proc validate_x3_pc_tail_scalar_family {
             error "$scope_label X3 $family_label endpoint is not clocked exactly by clock_from_mmcm ($endpoint_clock_names): $endpoint_name"
         }
     }
-    if {[llength $endpoints] < 1 || $canonical_count != 1} {
+    if {[llength $endpoints] < 1 || ($require_canonical && $canonical_count != 1)} {
         error "$scope_label X3 $family_label expected at least one endpoint and exactly one canonical endpoint: total=[llength $endpoints] canonical=$canonical_count"
+    }
+    if {$canonical_count > 1} {
+        error "$scope_label X3 $family_label has more than one canonical endpoint: canonical=$canonical_count"
     }
 
     return [dict create \
@@ -464,6 +482,32 @@ proc validate_x3_pc_tail_scalar_family {
         end_names $endpoint_names \
         canonical_end_names [lsort -unique $canonical_end_names] \
         canonical $canonical_count]
+}
+
+# Placement may merge a canonical endpoint into its replicas, which removes the
+# canonical name, but it never creates one. Require the post-place canonical
+# names to be pre-place canonical names and log any that were merged away.
+proc require_x3_pc_tail_canonical_names_within {family_label post_names pre_names} {
+    set pre_dict [dict create]
+    foreach name $pre_names {
+        dict set pre_dict $name 1
+    }
+    set post_dict [dict create]
+    foreach name $post_names {
+        if {![dict exists $pre_dict $name]} {
+            error "post-place X3 $family_label canonical endpoint is not a pre-place canonical endpoint: $name"
+        }
+        dict set post_dict $name 1
+    }
+    set merged [list]
+    foreach name $pre_names {
+        if {![dict exists $post_dict $name]} {
+            lappend merged $name
+        }
+    }
+    if {[llength $merged] > 0} {
+        puts "FROST_PC_TAIL_MERGED_CANONICAL family=$family_label count=[llength $merged] names=$merged"
+    }
 }
 
 # Existence and namespace checks alone cannot distinguish a preserved but
@@ -491,7 +535,7 @@ proc validate_x3_pc_tail_start_connectivity {
 # state/control families. The ``compressed`` in the procedure, key, group,
 # audit, and report names covers all fourteen launches; build.py reads the
 # audit keys and the report name.
-proc validate_x3_pc_compressed_tail_scope {scope_label} {
+proc validate_x3_pc_compressed_tail_scope {scope_label {require_canonical 1}} {
     set compressed_start_re {^.*/instruction_memory/u_(even|odd)_(is_compressed_lo|is_compressed_hi|even_local_pair_valid|pairable_native_lo|pairable_compressed_hi|pairable_native_hi|slot2_start_valid_lo)_bank/read_q_reg/C$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_broad_end_re {^.*/pc_controller_inst/o_pc_reg_reg[^/]*/D$}
@@ -500,7 +544,7 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
     set pending_end_re {^.*/pc_controller_inst/pending_prediction_valid_reg(_rep.*)?/D$}
     set pending_broad_end_re {^.*/pc_controller_inst/pending_prediction_valid_reg[^/]*/D$}
 
-    set selected_scope [validate_x3_pc_tail_scope $scope_label]
+    set selected_scope [validate_x3_pc_tail_scope $scope_label $require_canonical]
     set expected_compressed_start_keys [list]
     foreach predicate [list is_compressed_lo is_compressed_hi even_local_pair_valid \
                            pairable_native_lo pairable_compressed_hi pairable_native_hi \
@@ -529,11 +573,12 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
     }
 
     set state_scope [validate_x3_pc_tail_indexed_family \
-        $scope_label o_pc_reg_reg $state_end_re $state_broad_end_re 63]
+        $scope_label o_pc_reg_reg $state_end_re $state_broad_end_re 63 $require_canonical]
     set seq_scope [validate_x3_pc_tail_indexed_family \
-        $scope_label seq_next_pc_reg_hw_q $seq_end_re $seq_broad_end_re 62]
+        $scope_label seq_next_pc_reg_hw_q $seq_end_re $seq_broad_end_re 62 $require_canonical]
     set pending_scope [validate_x3_pc_tail_scalar_family \
-        $scope_label pending_prediction_valid $pending_end_re $pending_broad_end_re]
+        $scope_label pending_prediction_valid $pending_end_re $pending_broad_end_re \
+        $require_canonical]
 
     set compressed_start_names [lsort -unique [get_property NAME $compressed_starts]]
 
@@ -960,8 +1005,10 @@ if {$step eq "synth"} {
 
     if {$use_x3_pc_tail_group} {
         # Reacquire PSIP-created/removed/renamed replicas before restoring the
-        # clock group. Canonical endpoints remain exact; replica names may vary.
-        set x3_pc_tail_scope_after [validate_x3_pc_compressed_tail_scope "post-place"]
+        # clock group. Replica names may vary, and equivalent-driver rewiring
+        # may merge a canonical endpoint into its replicas, but every bit keeps
+        # an endpoint and no canonical name is new.
+        set x3_pc_tail_scope_after [validate_x3_pc_compressed_tail_scope "post-place" 0]
         set x3_pc_compressed_tail_starts_after [dict get $x3_pc_tail_scope_after compressed_starts]
         set x3_pc_tail_ends_after [dict get $x3_pc_tail_scope_after selected_ends]
         set x3_pc_compressed_tail_ends_after [dict get $x3_pc_tail_scope_after union_ends]
@@ -988,18 +1035,14 @@ if {$step eq "synth"} {
         if {$x3_pc_compressed_tail_post_start_names ne $x3_pc_compressed_tail_pre_start_names} {
             error "post-place X3 PC-metadata tail start names differ from the pre-place scope"
         }
-        if {$x3_pc_tail_post_canonical_end_names ne $x3_pc_tail_pre_canonical_end_names} {
-            error "post-place X3 selected PC-tail canonical endpoint names differ from the pre-place scope"
-        }
-        if {$x3_pc_tail_post_state_canonical_end_names ne $x3_pc_tail_pre_state_canonical_end_names} {
-            error "post-place X3 state PC-tail canonical endpoint names differ from the pre-place scope"
-        }
-        if {$x3_pc_tail_post_seq_canonical_end_names ne $x3_pc_tail_pre_seq_canonical_end_names} {
-            error "post-place X3 sequential PC-tail canonical endpoint names differ from the pre-place scope"
-        }
-        if {$x3_pc_tail_post_pending_canonical_end_names ne $x3_pc_tail_pre_pending_canonical_end_names} {
-            error "post-place X3 pending PC-tail canonical endpoint names differ from the pre-place scope"
-        }
+        require_x3_pc_tail_canonical_names_within "selected PC-tail" \
+            $x3_pc_tail_post_canonical_end_names $x3_pc_tail_pre_canonical_end_names
+        require_x3_pc_tail_canonical_names_within "state PC-tail" \
+            $x3_pc_tail_post_state_canonical_end_names $x3_pc_tail_pre_state_canonical_end_names
+        require_x3_pc_tail_canonical_names_within "sequential PC-tail" \
+            $x3_pc_tail_post_seq_canonical_end_names $x3_pc_tail_pre_seq_canonical_end_names
+        require_x3_pc_tail_canonical_names_within "pending PC-tail" \
+            $x3_pc_tail_post_pending_canonical_end_names $x3_pc_tail_pre_pending_canonical_end_names
         group_path -default -from $x3_pc_compressed_tail_starts_after -to $x3_pc_compressed_tail_ends_after
     }
 
@@ -1015,7 +1058,7 @@ if {$step eq "synth"} {
         open_checkpoint $work_directory/post_place.dcp
         set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "clean-reopen place scoring"
 
-        set x3_pc_tail_scope_score [validate_x3_pc_compressed_tail_scope "clean-reopen"]
+        set x3_pc_tail_scope_score [validate_x3_pc_compressed_tail_scope "clean-reopen" 0]
         set x3_pc_compressed_tail_starts_score [dict get $x3_pc_tail_scope_score compressed_starts]
         set x3_pc_tail_ends_score [dict get $x3_pc_tail_scope_score selected_ends]
         set x3_pc_compressed_tail_ends_score [dict get $x3_pc_tail_scope_score union_ends]
@@ -1100,10 +1143,10 @@ if {$step eq "synth"} {
         puts $x3_pc_tail_audit "POST_PENDING_CANONICAL=$x3_pc_tail_post_pending_canonical"
         puts $x3_pc_tail_audit "POST_UNION_ENDS=$x3_pc_tail_post_union_end_count"
         puts $x3_pc_tail_audit "PRE_COMPRESSED_START_NAMES_MATCH_POST=1"
-        puts $x3_pc_tail_audit "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1"
-        puts $x3_pc_tail_audit "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1"
-        puts $x3_pc_tail_audit "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1"
-        puts $x3_pc_tail_audit "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1"
+        puts $x3_pc_tail_audit "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE=1"
+        puts $x3_pc_tail_audit "POST_STATE_CANONICAL_NAMES_WITHIN_PRE=1"
+        puts $x3_pc_tail_audit "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE=1"
+        puts $x3_pc_tail_audit "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE=1"
         puts $x3_pc_tail_audit "SCORE_COMPRESSED_STARTS=$x3_pc_compressed_tail_score_start_count"
         puts $x3_pc_tail_audit "SCORE_ENDS=$x3_pc_tail_score_end_count"
         puts $x3_pc_tail_audit "SCORE_PC_BITS=$x3_pc_tail_score_bit_count"

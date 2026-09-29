@@ -634,11 +634,14 @@ def x3_pc_tail_group_audit_is_valid(
     """Return whether a guided placement's PC-tail audit passes for this seed.
 
     Vivado physical synthesis may add, remove, or rename register replicas
-    during placement, so the audit requires the same launch names and the same
-    canonical (non-replica) endpoint names before and after placement, then
-    the same full endpoint names across the clean checkpoint reopen. The
-    ``COMPRESSED_*`` fields cover the fourteen pinned scalar-overlay launches
-    of the predecode metadata.
+    during placement, and its equivalent-driver rewiring may merge a canonical
+    (non-replica) endpoint into its replicas. So the audit requires the same
+    launch names before and after placement, a canonical endpoint for every
+    bit before placement, an endpoint for every bit after it, and no canonical
+    name after placement that was not there before; then the same full
+    endpoint names across the clean checkpoint reopen. The ``COMPRESSED_*``
+    fields cover the fourteen pinned scalar-overlay launches of the predecode
+    metadata.
     """
     if not x3_place_uses_pc_tail_guidance(
         expected_directive, expected_setup_uncertainty_ns
@@ -680,10 +683,10 @@ def x3_pc_tail_group_audit_is_valid(
             "POST_PENDING_CANONICAL",
             "POST_UNION_ENDS",
             "PRE_COMPRESSED_START_NAMES_MATCH_POST",
-            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST",
-            "PRE_STATE_CANONICAL_NAMES_MATCH_POST",
-            "PRE_SEQ_CANONICAL_NAMES_MATCH_POST",
-            "PRE_PENDING_CANONICAL_NAMES_MATCH_POST",
+            "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE",
+            "POST_STATE_CANONICAL_NAMES_WITHIN_PRE",
+            "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE",
+            "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE",
             "SCORE_COMPRESSED_STARTS",
             "SCORE_ENDS",
             "SCORE_PC_BITS",
@@ -710,6 +713,7 @@ def x3_pc_tail_group_audit_is_valid(
             and not field_name.endswith(
                 (
                     "NAMES_MATCH_POST",
+                    "NAMES_WITHIN_PRE",
                     "ENDPOINT_NAMES_MATCH_POST",
                     "SCORED_GROUPS",
                     "UNCERTAINTY_NS",
@@ -731,7 +735,11 @@ def x3_pc_tail_group_audit_is_valid(
             return False
         if counts[f"{phase}_SEQ_PC_BITS"] != 63:
             return False
-        if counts[f"{phase}_PENDING_CANONICAL"] != 1:
+        # Placement may merge the canonical pending-valid register into a
+        # replica, so only the pre-place scope must still have it.
+        if counts[f"{phase}_PENDING_CANONICAL"] not in (
+            (1,) if phase == "PRE" else (0, 1)
+        ):
             return False
         if counts[f"{phase}_ENDS"] < 64:
             return False
@@ -752,7 +760,13 @@ def x3_pc_tail_group_audit_is_valid(
 
     # Replica counts may change during placement, but the audited clean reopen
     # must preserve the complete post-place topology.
-    for endpoint_field in ("ENDS", "STATE_ENDS", "SEQ_ENDS", "PENDING_ENDS"):
+    for endpoint_field in (
+        "ENDS",
+        "STATE_ENDS",
+        "SEQ_ENDS",
+        "PENDING_ENDS",
+        "PENDING_CANONICAL",
+    ):
         if counts[f"SCORE_{endpoint_field}"] != counts[f"POST_{endpoint_field}"]:
             return False
     if counts["SCORE_UNION_ENDS"] != counts["POST_UNION_ENDS"]:
@@ -760,10 +774,10 @@ def x3_pc_tail_group_audit_is_valid(
 
     proof_fields = (
         "PRE_COMPRESSED_START_NAMES_MATCH_POST",
-        "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST",
-        "PRE_STATE_CANONICAL_NAMES_MATCH_POST",
-        "PRE_SEQ_CANONICAL_NAMES_MATCH_POST",
-        "PRE_PENDING_CANONICAL_NAMES_MATCH_POST",
+        "POST_SELECTED_CANONICAL_NAMES_WITHIN_PRE",
+        "POST_STATE_CANONICAL_NAMES_WITHIN_PRE",
+        "POST_SEQ_CANONICAL_NAMES_WITHIN_PRE",
+        "POST_PENDING_CANONICAL_NAMES_WITHIN_PRE",
         "SCORE_COMPRESSED_START_NAMES_MATCH_POST",
         "SCORE_ENDPOINT_NAMES_MATCH_POST",
         "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST",
