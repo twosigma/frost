@@ -187,10 +187,12 @@ module reorder_buffer #(
     // TIMING: architectural next PC of the head and head+1 entries, for
     // cpu_ooo's interrupt resume PC (the head value is also the FENCE-class
     // refetch target). Whenever o_commit_valid_raw (o_commit_2_valid_raw) is
-    // high, it equals cpu_ooo's retired_next_pc() of o_commit_comb
-    // (o_commit_comb_2), which cpu_ooo checks in simulation; otherwise it is
-    // unused. Computed from ungated head fields so the RAM reads run in
-    // parallel with the late commit gate.
+    // high and the entry is not an xRET, it equals cpu_ooo's retired_next_pc()
+    // of o_commit_comb (o_commit_comb_2), which cpu_ooo checks in simulation;
+    // otherwise it is unused. In the full core an xRET never retires on
+    // o_commit_valid_raw, so neither output has an xRET arm. Computed from
+    // ungated head fields so the RAM reads run in parallel with the late
+    // commit gate.
     output logic [riscv_pkg::XLEN-1:0] o_head_retired_next_pc,
     output logic [riscv_pkg::XLEN-1:0] o_head_next_retired_next_pc,
     output riscv_pkg::exc_cause_t o_trap_cause,  // Exception cause
@@ -2537,13 +2539,17 @@ module reorder_buffer #(
   assign o_head_next_branch_taken_early = head_next_branch_taken;
 
   // TIMING: retired-next-PC precompute (see port comment). Equivalent to
-  // cpu_ooo's retired_next_pc(o_commit_comb) whenever o_commit_comb.valid:
-  //  - head xRET: retired_next_pc returns redirect_pc, and the o_commit_comb
-  //    redirect chain puts xret_return_pc there for xRET (highest priority);
+  // cpu_ooo's retired_next_pc(o_commit_comb) whenever o_commit_comb.valid
+  // and the head is not an xRET:
   //  - head branch: retired_next_pc returns redirect_pc = taken ?
   //    head_branch_target : head_fallthrough_pc;
   //  - otherwise: retired_next_pc returns pc + (is_compressed ? 2 : 4), which
   //    is head_fallthrough_pc.
+  // Its consumers sample it only on a raw commit (the interrupt resume PC) or
+  // a FENCE.I/CSR commit (the FENCE-class refetch target), and an xRET is
+  // neither: it retires through the full flush that follows it. Leaving out
+  // an xRET arm keeps the head's return flavor and the xepc mux off those
+  // paths; the commit bus still redirects an xRET to xret_return_pc.
   // Slot 2 may retire a correctly-predicted branch but never an xRET (serial
   // class); its next-PC arm below mirrors the head's taken-branch handling.
   // xRET return PC: mepc for MRET, sepc for SRET, dpc for DRET (the is_sret/
@@ -2551,9 +2557,7 @@ module reorder_buffer #(
   logic [XLEN-1:0] xret_return_pc;
   assign xret_return_pc = head_f_is_dret ? i_dpc : head_f_is_sret ? i_sepc : i_mepc;
   assign o_head_retired_next_pc =
-      head_f_is_mret ? xret_return_pc :
-      (head_f_is_branch && head_branch_taken) ? head_branch_target :
-      head_fallthrough_pc;
+      (head_f_is_branch && head_branch_taken) ? head_branch_target : head_fallthrough_pc;
   // A correctly-predicted taken branch may retire at head+1; the
   // architectural next-PC (interrupt resume point after a dual commit) must
   // then be the branch target, mirroring the head slot above. An xRET cannot

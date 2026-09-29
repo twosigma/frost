@@ -3401,6 +3401,11 @@ module cpu_ooo #(
         $error("cpu_ooo: rob_head_next_retired_next_pc %08x != retired_next_pc(commit_2) %08x",
                rob_head_next_retired_next_pc, retired_next_pc(rob_commit_comb_2));
       end
+      // An xRET retires through the full flush that follows it, never on the
+      // raw commit path, so the ROB's retired next-PC outputs need no xRET arm.
+      if (rob_commit_valid_raw && rob_commit_comb.is_mret) begin
+        $error("cpu_ooo: an xRET retired on the raw commit path");
+      end
     end
   end
 
