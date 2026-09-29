@@ -619,6 +619,11 @@ module reorder_buffer #(
   // select into per-entry registered one-hot bits.
   (* max_fanout = 16 *) logic [ReorderBufferDepth-1:0] head_clear_mask;
   (* max_fanout = 16 *) logic [ReorderBufferDepth-1:0] head_next_clear_mask;
+  // Binary head+1 index, written with the masks under the same rule (reset
+  // 1, commit advances it by the same 1 or 2), so it equals head_idx + 1.
+  // TIMING: every head+1 RAM read address comes straight from this register
+  // instead of from an increment of head_ptr.
+  (* max_fanout = 96 *) logic [ReorderBufferTagWidth-1:0] head_next_idx_q;
 
   // Status signals (full and empty are declared above, forward reference)
   logic [ReorderBufferTagWidth:0] count;
@@ -890,7 +895,7 @@ module reorder_buffer #(
   // retires an exception or a CSR, so exc_cause and csr_* have no head+1
   // copy. The 1-bit packed-vector fields share the existing FF storage and
   // are indexed at head_next_idx for free.
-  assign head_next_idx = head_idx + 1'b1;
+  assign head_next_idx = head_next_idx_q;
   // TIMING: same one-hot substitution as the head fields, using the
   // registered head_next_clear_mask (== 1 << head_next_idx by construction).
   assign head_next_valid = onehot_read(rob_valid, head_next_clear_mask);
@@ -2305,6 +2310,7 @@ module reorder_buffer #(
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       head_ptr             <= '0;
+      head_next_idx_q      <= ReorderBufferTagWidth'(1);
       head_clear_mask      <= ReorderBufferDepth'(1);
       head_next_clear_mask <= ReorderBufferDepth'(2);
     end else if (i_flush_all) begin
@@ -2314,6 +2320,8 @@ module reorder_buffer #(
       // otherwise by 1. commit_2_fire is a strict subset of commit_en so the
       // OR is implicit.
       head_ptr <= head_ptr + ({{ReorderBufferTagWidth - 1{1'b0}}, commit_2_fire, !commit_2_fire});
+      head_next_idx_q <= head_next_idx_q +
+          ({{ReorderBufferTagWidth - 2{1'b0}}, commit_2_fire, !commit_2_fire});
       head_clear_mask <= advance_onehot_mask(head_clear_mask, commit_2_fire);
       head_next_clear_mask <= advance_onehot_mask(head_next_clear_mask, commit_2_fire);
     end
@@ -3179,6 +3187,10 @@ module reorder_buffer #(
         $error("Reorder Buffer: head_clear_mask (0x%08x) != 1 << head_idx (%0d)", head_clear_mask,
                head_idx);
       end
+      if (head_next_idx_q != head_idx + 1'b1) begin
+        $error("Reorder Buffer: head_next_idx_q (%0d) != head_idx + 1 (%0d)", head_next_idx_q,
+               head_idx);
+      end
       if (head_next_clear_mask != (ReorderBufferDepth'(1) << head_next_idx)) begin
         $error("Reorder Buffer: head_next_clear_mask (0x%08x) != 1 << head_next_idx (%0d)",
                head_next_clear_mask, head_next_idx);
@@ -3670,6 +3682,7 @@ module reorder_buffer #(
       p_head_mask_onehot : assert (head_clear_mask == (ReorderBufferDepth'(1) << head_idx));
       p_head_next_mask_onehot :
       assert (head_next_clear_mask == (ReorderBufferDepth'(1) << head_next_idx));
+      p_head_next_idx_matches : assert (head_next_idx_q == head_idx + 1'b1);
 
       // The alloc-time final perf classes are equivalent to the head-meta
       // priority classifier for every live entry.
