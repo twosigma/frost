@@ -226,12 +226,14 @@ A store's address can reach the SQ before MEM_RS issues the store. When a store
 dispatches with its base register ready, `sq_early_addr_pipeline` registers the
 base and immediate, adds them in the next cycle, and writes the address into
 the store's SQ entry, matched by ROB tag. Each dispatch slot has its own
-registers, adder, and SQ update port.
+registers, adders, and SQ update port.
 
 A store whose base is not ready becomes the slot's repair candidate. It waits
 for its base tag on the done-repair channels or either CDB lane, then writes
-its address. If a fresh store holds the slot's SQ port that cycle, the
-candidate keeps the base and writes on the next free cycle. A candidate is
+its address. The immediate is added to every candidate base in parallel with
+the tag match, which then selects a finished address. If a fresh store holds
+the slot's SQ port that cycle, the candidate keeps that address and writes it
+on the next free cycle. A candidate is
 replaced by a newer unready store on the same slot (the old store then gets its
 address at MEM_RS issue), cancelled when MEM_RS issues the store (the issue
 delivers the address anyway), and cleared by any flush. Cancelling at issue

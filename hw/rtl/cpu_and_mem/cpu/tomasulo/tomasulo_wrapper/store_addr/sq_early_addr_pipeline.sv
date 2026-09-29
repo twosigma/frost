@@ -28,9 +28,11 @@
 // done-repair channels, which cover a base already done at dispatch, or on
 // either live CDB lane, which covers any later completion. The channel match
 // runs one cycle after the channels pulse, against captured copies, so such a
-// repair fires at dispatch+2 (see the capture below). A matched candidate
-// sends its SQ update in the same cycle if the slot's port is free, and
-// otherwise holds the repaired base and sends it on the next free cycle.
+// repair fires at dispatch+2 (see the capture below). Every candidate base is
+// added to the immediate in parallel with the match, which then selects a
+// finished address. A matched candidate sends its SQ update in the same cycle
+// if the slot's port is free, and otherwise holds the repaired address and
+// sends it on the next free cycle.
 //
 // A newer unready store on the same slot replaces the candidate; the old
 // store then gets its address at MEM_RS issue. A candidate is cancelled when
@@ -207,21 +209,21 @@ module sq_early_addr_pipeline (
     done_repair_base_6_q <= bypass_value_6[riscv_pkg::XLEN-1:0];
   end
 
+  // Repaired addresses, selected by the match trees (see the adders below).
+  logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr;
+  logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr_2;
   logic sq_early_addr_repair_match;
-  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base;
   logic sq_early_addr_repair_fire;
   logic [7:0] sq_early_addr_repair_cond;
   logic [3:0] sq_early_addr_repair_pair_match;
-  logic [3:0][riscv_pkg::XLEN-1:0] sq_early_addr_repair_pair_base;
   logic [1:0] sq_early_addr_repair_half_match;
-  logic [1:0][riscv_pkg::XLEN-1:0] sq_early_addr_repair_half_base;
   always_comb begin
     // Lowest-index priority (channels 1-6, then i_cdb, then i_cdb_2) as a
-    // balanced three-level tree. Every node carries {match, base}; the left
-    // child wins whenever it contains a match. It covers all six dispatch
-    // channels and both live CDB lanes, including the legal early match of a
-    // new candidate whose tag occurs in the preceding dispatch bundle's
-    // channels.
+    // balanced three-level tree: the left child wins whenever it contains a
+    // match. It covers all six dispatch channels and both live CDB lanes,
+    // including the legal early match of a new candidate whose tag occurs in
+    // the preceding dispatch bundle's channels. The same tree selects the
+    // repaired address below.
     sq_early_addr_repair_cond[0] = done_repair_valid_1_q &&
         (sq_early_addr_repair_src1_tag_q == done_repair_tag_1_q);
     sq_early_addr_repair_cond[1] = done_repair_valid_2_q &&
@@ -242,26 +244,9 @@ module sq_early_addr_pipeline (
     sq_early_addr_repair_pair_match[1] = |sq_early_addr_repair_cond[3:2];
     sq_early_addr_repair_pair_match[2] = |sq_early_addr_repair_cond[5:4];
     sq_early_addr_repair_pair_match[3] = |sq_early_addr_repair_cond[7:6];
-    sq_early_addr_repair_pair_base[0] = sq_early_addr_repair_cond[0] ?
-        done_repair_base_1_q : done_repair_base_2_q;
-    sq_early_addr_repair_pair_base[1] = sq_early_addr_repair_cond[2] ?
-        done_repair_base_3_q : done_repair_base_4_q;
-    sq_early_addr_repair_pair_base[2] = sq_early_addr_repair_cond[4] ?
-        done_repair_base_5_q : done_repair_base_6_q;
-    sq_early_addr_repair_pair_base[3] = sq_early_addr_repair_cond[6] ?
-        i_cdb.value[riscv_pkg::XLEN-1:0] :
-        sq_early_addr_repair_cond[7] ? i_cdb_2.value[riscv_pkg::XLEN-1:0] : '0;
-
     sq_early_addr_repair_half_match[0] = |sq_early_addr_repair_pair_match[1:0];
     sq_early_addr_repair_half_match[1] = |sq_early_addr_repair_pair_match[3:2];
-    sq_early_addr_repair_half_base[0] = sq_early_addr_repair_pair_match[0] ?
-        sq_early_addr_repair_pair_base[0] : sq_early_addr_repair_pair_base[1];
-    sq_early_addr_repair_half_base[1] = sq_early_addr_repair_pair_match[2] ?
-        sq_early_addr_repair_pair_base[2] : sq_early_addr_repair_pair_base[3];
-
     sq_early_addr_repair_match = |sq_early_addr_repair_half_match;
-    sq_early_addr_repair_base = sq_early_addr_repair_half_match[0] ?
-        sq_early_addr_repair_half_base[0] : sq_early_addr_repair_half_base[1];
   end
 
   assign sq_early_addr_repair_fire = sq_early_addr_repair_valid_q &&
@@ -274,13 +259,10 @@ module sq_early_addr_pipeline (
   // the same arch reg with no intervening write.  Each slot then computes its
   // own address, since the base is shared but the imm differs.
   logic sq_early_addr_repair_match_2;
-  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_2;
   logic sq_early_addr_repair_fire_2;
   logic [7:0] sq_early_addr_repair_cond_2;
   logic [3:0] sq_early_addr_repair_pair_match_2;
-  logic [3:0][riscv_pkg::XLEN-1:0] sq_early_addr_repair_pair_base_2;
   logic [1:0] sq_early_addr_repair_half_match_2;
-  logic [1:0][riscv_pkg::XLEN-1:0] sq_early_addr_repair_half_base_2;
   always_comb begin
     sq_early_addr_repair_cond_2[0] = done_repair_valid_1_q &&
         (sq_early_addr_repair_src1_tag_2_q == done_repair_tag_1_q);
@@ -303,26 +285,9 @@ module sq_early_addr_pipeline (
     sq_early_addr_repair_pair_match_2[1] = |sq_early_addr_repair_cond_2[3:2];
     sq_early_addr_repair_pair_match_2[2] = |sq_early_addr_repair_cond_2[5:4];
     sq_early_addr_repair_pair_match_2[3] = |sq_early_addr_repair_cond_2[7:6];
-    sq_early_addr_repair_pair_base_2[0] = sq_early_addr_repair_cond_2[0] ?
-        done_repair_base_1_q : done_repair_base_2_q;
-    sq_early_addr_repair_pair_base_2[1] = sq_early_addr_repair_cond_2[2] ?
-        done_repair_base_3_q : done_repair_base_4_q;
-    sq_early_addr_repair_pair_base_2[2] = sq_early_addr_repair_cond_2[4] ?
-        done_repair_base_5_q : done_repair_base_6_q;
-    sq_early_addr_repair_pair_base_2[3] = sq_early_addr_repair_cond_2[6] ?
-        i_cdb.value[riscv_pkg::XLEN-1:0] :
-        sq_early_addr_repair_cond_2[7] ? i_cdb_2.value[riscv_pkg::XLEN-1:0] : '0;
-
     sq_early_addr_repair_half_match_2[0] = |sq_early_addr_repair_pair_match_2[1:0];
     sq_early_addr_repair_half_match_2[1] = |sq_early_addr_repair_pair_match_2[3:2];
-    sq_early_addr_repair_half_base_2[0] = sq_early_addr_repair_pair_match_2[0] ?
-        sq_early_addr_repair_pair_base_2[0] : sq_early_addr_repair_pair_base_2[1];
-    sq_early_addr_repair_half_base_2[1] = sq_early_addr_repair_pair_match_2[2] ?
-        sq_early_addr_repair_pair_base_2[2] : sq_early_addr_repair_pair_base_2[3];
-
     sq_early_addr_repair_match_2 = |sq_early_addr_repair_half_match_2;
-    sq_early_addr_repair_base_2 = sq_early_addr_repair_half_match_2[0] ?
-        sq_early_addr_repair_half_base_2[0] : sq_early_addr_repair_half_base_2[1];
   end
 
   assign sq_early_addr_repair_fire_2 = sq_early_addr_repair_valid_2_q &&
@@ -343,12 +308,14 @@ module sq_early_addr_pipeline (
                                     !o_sq_full_for_2 : !o_sq_full);
 
   // Repair hold state. A matched candidate whose SQ update port is taken by a
-  // fresh (ready-base) update latches its repaired base in these registers and
-  // sends it on the next free-port cycle.
+  // fresh (ready-base) update latches its repaired address in these registers
+  // and sends it on the next free-port cycle. The candidate's immediate cannot
+  // change while it is held: only a newer unready store writes it, and that
+  // store evicts the held candidate on the same edge.
   logic sq_early_addr_repair_ready_q;
-  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_hold_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_addr_hold_q;
   logic sq_early_addr_repair_ready_2_q;
-  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_hold_2_q;
+  logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_addr_hold_2_q;
 
   logic slot1_new_ready_store, slot1_new_unready_store;
   logic slot2_new_ready_store, slot2_new_unready_store;
@@ -401,7 +368,7 @@ module sq_early_addr_pipeline (
           sq_early_addr_repair_valid_q <= 1'b0;
           if (slot1_port_taken_by_fresh) begin
             sq_early_addr_repair_ready_q <= 1'b1;
-            sq_early_addr_repair_base_hold_q <= sq_early_addr_repair_base;
+            sq_early_addr_repair_addr_hold_q <= sq_early_repair_effective_addr;
           end
         end
         if (sq_early_addr_repair_ready_q && !slot1_port_taken_by_fresh) begin
@@ -429,7 +396,7 @@ module sq_early_addr_pipeline (
           sq_early_addr_repair_valid_2_q <= 1'b0;
           if (slot2_port_taken_by_fresh) begin
             sq_early_addr_repair_ready_2_q <= 1'b1;
-            sq_early_addr_repair_base_hold_2_q <= sq_early_addr_repair_base_2;
+            sq_early_addr_repair_addr_hold_2_q <= sq_early_repair_effective_addr_2;
           end
         end
         if (sq_early_addr_repair_ready_2_q && !slot2_port_taken_by_fresh) begin
@@ -440,85 +407,86 @@ module sq_early_addr_pipeline (
   end
 
   // The adders run on registered inputs, off the dispatch critical path. The
-  // six XLEN-wide address sums below are full width and unmasked. An
-  // out-of-map store faults once MEM_RS issues it (at the wrapper's issue-time
-  // PMA check, or from the data MMU under translation), so its entry never
+  // XLEN-wide address sums below are full width and unmasked. An out-of-map
+  // store faults once MEM_RS issues it (at the wrapper's issue-time PMA
+  // check, or from the data MMU under translation), so its entry never
   // drains, and downstream consumers only ever act on launched, in-map
   // addresses.
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr;
-  logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr;
-  assign sq_early_effective_addr = (sq_early_addr_base_q + sq_early_addr_imm_q);
-  assign sq_early_repair_effective_addr = (sq_early_addr_repair_base + sq_early_addr_repair_imm_q);
-
-  // Slot-2 adder
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr_2;
-  logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr_2;
+  assign sq_early_effective_addr   = (sq_early_addr_base_q + sq_early_addr_imm_q);
   assign sq_early_effective_addr_2 = (sq_early_addr_base_2_q + sq_early_addr_imm_2_q);
-  assign sq_early_repair_effective_addr_2 = (
-      sq_early_addr_repair_base_2 + sq_early_addr_repair_imm_2_q
-  );
 
-  // Held-candidate adders: run on the latched repaired base (registered), so
-  // the drain path stays off the CDB/bypass comb cone.
+  // A held candidate drains its latched address.
   logic [riscv_pkg::XLEN-1:0] sq_early_hold_effective_addr;
   logic [riscv_pkg::XLEN-1:0] sq_early_hold_effective_addr_2;
-  assign sq_early_hold_effective_addr = (
-      sq_early_addr_repair_base_hold_q + sq_early_addr_repair_imm_q
-  );
-  assign sq_early_hold_effective_addr_2 = (
-      sq_early_addr_repair_base_hold_2_q + sq_early_addr_repair_imm_2_q
-  );
+  assign sq_early_hold_effective_addr   = sq_early_addr_repair_addr_hold_q;
+  assign sq_early_hold_effective_addr_2 = sq_early_addr_repair_addr_hold_2_q;
 
-  // Classify each repair source in parallel with tag matching. Only bits
-  // [31:30] select the MMIO quadrant, so each candidate needs a 32-bit sum.
-  // The selected address remains full width; the kept flags prevent late
-  // match/priority selection from moving back ahead of these adders.
-  logic [7:0][31:0] repair_bases_low;
-  logic [1:0][31:0] repair_immediates_low;
+  // Repaired addresses. Each slot adds its immediate to all eight candidate
+  // bases in parallel with the tag match, and the match tree then selects a
+  // finished sum, so no adder follows the match. With no match the base is
+  // zero and the sum is the immediate. The MMIO flag is classified per sum
+  // and selected by the same tree; the kept flags keep synthesis from
+  // folding that selection back into the address.
+  logic [7:0][riscv_pkg::XLEN-1:0] repair_bases;
+  logic [1:0][riscv_pkg::XLEN-1:0] repair_immediates;
   logic [1:0][7:0] repair_conditions;
   logic [1:0][3:0] repair_pair_matches;
   logic [1:0][1:0] repair_half_matches;
+  logic [1:0][7:0][riscv_pkg::XLEN-1:0] repair_sums;
+  logic [1:0][3:0][riscv_pkg::XLEN-1:0] repair_pair_sums;
+  logic [1:0][1:0][riscv_pkg::XLEN-1:0] repair_half_sums;
+  logic [1:0][riscv_pkg::XLEN-1:0] repair_addresses;
   (* keep = "true" *) logic [1:0][7:0] repair_mmio_candidates;
   logic [1:0][3:0] repair_mmio_pairs;
   logic [1:0][1:0] repair_mmio_halves;
   logic [1:0] repair_is_mmio;
-  assign repair_bases_low = {
-    i_cdb_2.value[31:0],
-    i_cdb.value[31:0],
-    done_repair_base_6_q[31:0],
-    done_repair_base_5_q[31:0],
-    done_repair_base_4_q[31:0],
-    done_repair_base_3_q[31:0],
-    done_repair_base_2_q[31:0],
-    done_repair_base_1_q[31:0]
+  assign repair_bases = {
+    i_cdb_2.value[riscv_pkg::XLEN-1:0],
+    i_cdb.value[riscv_pkg::XLEN-1:0],
+    done_repair_base_6_q,
+    done_repair_base_5_q,
+    done_repair_base_4_q,
+    done_repair_base_3_q,
+    done_repair_base_2_q,
+    done_repair_base_1_q
   };
-  assign repair_immediates_low = {
-    sq_early_addr_repair_imm_2_q[31:0], sq_early_addr_repair_imm_q[31:0]
-  };
+  assign repair_immediates = {sq_early_addr_repair_imm_2_q, sq_early_addr_repair_imm_q};
   assign repair_conditions = {sq_early_addr_repair_cond_2, sq_early_addr_repair_cond};
   assign repair_pair_matches = {sq_early_addr_repair_pair_match_2, sq_early_addr_repair_pair_match};
   assign repair_half_matches = {sq_early_addr_repair_half_match_2, sq_early_addr_repair_half_match};
-  for (genvar slot = 0; slot < 2; slot++) begin : gen_repair_mmio
+  for (genvar slot = 0; slot < 2; slot++) begin : gen_repair
     for (genvar source = 0; source < 8; source++) begin : gen_source
-      logic [31:0] candidate_sum;
-      assign candidate_sum = repair_bases_low[source] + repair_immediates_low[slot];
-      assign repair_mmio_candidates[slot][source] = (candidate_sum[31:30] == 2'b01);
+      assign repair_sums[slot][source] = repair_bases[source] + repair_immediates[slot];
+      assign repair_mmio_candidates[slot][source] = (repair_sums[slot][source][31:30] == 2'b01);
     end
     for (genvar pair = 0; pair < 3; pair++) begin : gen_pair
+      assign repair_pair_sums[slot][pair] = repair_conditions[slot][2*pair] ?
+          repair_sums[slot][2*pair] : repair_sums[slot][2*pair+1];
       assign repair_mmio_pairs[slot][pair] = repair_conditions[slot][2*pair] ?
           repair_mmio_candidates[slot][2*pair] : repair_mmio_candidates[slot][2*pair+1];
     end
-    // With no matching source the base is zero, as in the address priority tree.
+    assign repair_pair_sums[slot][3] = repair_conditions[slot][6] ? repair_sums[slot][6] :
+        repair_conditions[slot][7] ? repair_sums[slot][7] : repair_immediates[slot];
     assign repair_mmio_pairs[slot][3] = repair_conditions[slot][6] ?
         repair_mmio_candidates[slot][6] : repair_conditions[slot][7] ?
-        repair_mmio_candidates[slot][7] : (repair_immediates_low[slot][31:30] == 2'b01);
+        repair_mmio_candidates[slot][7] : (repair_immediates[slot][31:30] == 2'b01);
+    assign repair_half_sums[slot][0] = repair_pair_matches[slot][0] ?
+        repair_pair_sums[slot][0] : repair_pair_sums[slot][1];
+    assign repair_half_sums[slot][1] = repair_pair_matches[slot][2] ?
+        repair_pair_sums[slot][2] : repair_pair_sums[slot][3];
     assign repair_mmio_halves[slot][0] = repair_pair_matches[slot][0] ?
         repair_mmio_pairs[slot][0] : repair_mmio_pairs[slot][1];
     assign repair_mmio_halves[slot][1] = repair_pair_matches[slot][2] ?
         repair_mmio_pairs[slot][2] : repair_mmio_pairs[slot][3];
+    assign repair_addresses[slot] = repair_half_matches[slot][0] ?
+        repair_half_sums[slot][0] : repair_half_sums[slot][1];
     assign repair_is_mmio[slot] = repair_half_matches[slot][0] ?
         repair_mmio_halves[slot][0] : repair_mmio_halves[slot][1];
   end
+  assign sq_early_repair_effective_addr   = repair_addresses[0];
+  assign sq_early_repair_effective_addr_2 = repair_addresses[1];
 `ifdef SQ_REPAIR_MMIO_LOCAL_PROOF
   always_comb begin
     p_repair_mmio_exact :
@@ -551,8 +519,8 @@ module sq_early_addr_pipeline (
     end else if (sq_early_addr_repair_valid_q) begin
       // While unmatched, only the payload-only sideband below is high, and
       // the provisional value stays hidden behind sq_addr_valid.  On the match
-      // edge this same arm carries the selected base, and packet.valid makes
-      // it architecturally visible.
+      // edge this same arm carries the repaired address, and packet.valid
+      // makes it architecturally visible.
       sq_early_addr_update.valid   = sq_early_addr_repair_fire;
       sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
       sq_early_addr_update.address = sq_early_repair_effective_addr;
@@ -590,11 +558,12 @@ module sq_early_addr_pipeline (
       sq_early_addr_repair_ready_2_q || sq_early_addr_repair_valid_2_q;
 
 `ifndef SYNTHESIS
-  // For known inputs, the balanced tree equals the serial priority chain
+  // For known inputs, the balanced trees equal the serial priority chain
   // below (the reference): simultaneous matches resolve as channel 1..6,
-  // i_cdb, i_cdb_2, in that order. Reachable valid/tag inputs are known after
-  // reset, so the checks sit under an $isunknown guard and skip four-state X
-  // cases.
+  // i_cdb, i_cdb_2, in that order, and the repaired address is the chosen
+  // base (zero with no match) plus the candidate's immediate. Reachable
+  // valid/tag inputs are known after reset, so the checks sit under an
+  // $isunknown guard and skip four-state X cases.
   logic sq_early_addr_repair_match_reference;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_reference;
   logic sq_early_addr_repair_match_2_reference;
@@ -646,12 +615,36 @@ module sq_early_addr_pipeline (
     if (!$isunknown(sq_early_addr_repair_cond)) begin
       p_repair_priority_exact :
       assert (sq_early_addr_repair_match == sq_early_addr_repair_match_reference &&
-              (sq_early_addr_repair_base === sq_early_addr_repair_base_reference));
+              (sq_early_repair_effective_addr ===
+               (sq_early_addr_repair_base_reference + sq_early_addr_repair_imm_q)));
     end
     if (!$isunknown(sq_early_addr_repair_cond_2)) begin
       p_repair_priority_2_exact :
       assert (sq_early_addr_repair_match_2 == sq_early_addr_repair_match_2_reference &&
-              (sq_early_addr_repair_base_2 === sq_early_addr_repair_base_2_reference));
+              (sq_early_repair_effective_addr_2 ===
+               (sq_early_addr_repair_base_2_reference + sq_early_addr_repair_imm_2_q)));
+    end
+  end
+
+  // A held address is the reference base captured on the fire edge plus the
+  // candidate's immediate, which cannot change while the candidate is held.
+  logic [riscv_pkg::XLEN-1:0] f_hold_base, f_hold_base_2;
+  always @(posedge i_clk) begin
+    if (i_rst_n && !slot1_new_unready_store && !slot1_mem_rs_issue_kill &&
+        sq_early_addr_repair_fire && slot1_port_taken_by_fresh)
+      f_hold_base <= sq_early_addr_repair_base_reference;
+    if (i_rst_n && !slot2_new_unready_store && !slot2_mem_rs_issue_kill &&
+        sq_early_addr_repair_fire_2 && slot2_port_taken_by_fresh)
+      f_hold_base_2 <= sq_early_addr_repair_base_2_reference;
+    if (i_rst_n && sq_early_addr_repair_ready_q) begin
+      p_repair_hold_exact :
+      assert (sq_early_addr_repair_addr_hold_q ==
+              riscv_pkg::XLEN'(f_hold_base + sq_early_addr_repair_imm_q));
+    end
+    if (i_rst_n && sq_early_addr_repair_ready_2_q) begin
+      p_repair_hold_2_exact :
+      assert (sq_early_addr_repair_addr_hold_2_q ==
+              riscv_pkg::XLEN'(f_hold_base_2 + sq_early_addr_repair_imm_2_q));
     end
   end
 `endif
