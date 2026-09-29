@@ -210,7 +210,9 @@ module cpu_and_mem #(
   // reset register can fan out locally and still stay in step with rst_core.
   logic rst_core_next;
   assign rst_core_next = i_rst || dbg_ndmreset;
-  (* max_fanout = 1000 *) logic rst_core;
+  // Each synthesis replica of rst_core drives at most 256 loads, so the reset
+  // reaches the logic it gates from a nearby copy.
+  (* max_fanout = 256 *) logic rst_core;
   always_ff @(posedge i_clk) rst_core <= rst_core_next;
 
   // Memory addressing parameters
