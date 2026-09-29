@@ -292,10 +292,12 @@ module fetch_provider #(
   // until the selected-VA result is visible. The core holds o_pc at the ask
   // until then, so the live pair is the ask's.
   logic [31:0] ask_pa0_q, ask_pa1_q;
-  // The line after ask_pa0_q's, loaded with it, so the window-slot and
-  // victim-store lookups compare against a register instead of an adder
-  // (p_ask_line_next_matches).
+  // The line after ask_pa0_q's and whether the window straddles a line,
+  // loaded with it, so the window-slot and victim-store lookups start from
+  // registers instead of an adder and a reduction of ask_pa0_q
+  // (p_ask_line_next_matches, p_ask_straddle_matches).
   logic [LineAddrBits-1:0] ask_line_next_q;
+  (* max_fanout = 64 *) logic ask_straddle_q;
   logic ask_pa_valid_q;
   logic ask_fault0_q, ask_fault0_page_q, ask_fault1_q, ask_fault1_page_q;
   logic ask_after_ok_q;
@@ -307,6 +309,7 @@ module fetch_provider #(
       ask_pa0_q         <= '0;
       ask_pa1_q         <= 32'd4;
       ask_line_next_q   <= LineAddrBits'(1);
+      ask_straddle_q    <= 1'b0;
       ask_pa_valid_q    <= 1'b0;
       ask_fault0_q      <= 1'b0;
       ask_fault0_page_q <= 1'b0;
@@ -317,6 +320,7 @@ module fetch_provider #(
       ask_pa0_q         <= i_pa0;
       ask_pa1_q         <= i_pa1;
       ask_line_next_q   <= i_pa0[31:OffsetBits] + 1'b1;
+      ask_straddle_q    <= &i_pa0[OffsetBits-1:2];
       ask_pa_valid_q    <= i_pa_valid;
       ask_fault0_q      <= i_fault0;
       ask_fault0_page_q <= i_fault0_page;
@@ -504,7 +508,7 @@ module fetch_provider #(
   logic [LineAddrBits-1:0] fill_line0, fill_line_after;
   logic fill_straddle;
   assign fill_line0 = ask_pa0_q[31:OffsetBits];
-  assign fill_straddle = &ask_pa0_q[OffsetBits-1:2];
+  assign fill_straddle = ask_straddle_q;
   assign fill_line_after = fill_straddle ? ask_pa1_q[31:OffsetBits] : ask_line_next_q;
 
 `ifndef SYNTHESIS
@@ -513,6 +517,7 @@ module fetch_provider #(
     if (i_rst) ask_line_next_armed_q <= 1'b1;
     if (ask_line_next_armed_q) begin
       p_ask_line_next_matches : assert (ask_line_next_q == fill_line0 + 1'b1);
+      p_ask_straddle_matches : assert (ask_straddle_q == &ask_pa0_q[OffsetBits-1:2]);
     end
   end
 `endif
