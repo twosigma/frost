@@ -86,6 +86,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_mispredict_active.value = 0
     dut.i_early_mispredict_pending.value = 0
     dut.i_early_backend_recovery_pending.value = 0
+    dut.i_early_backend_recovery_pending_next.value = 0
     dut.i_head_tag.value = 0
     dut.i_early_mispredict_tag.value = 0
     dut.i_early_backend_flush_tag.value = 0
@@ -300,6 +301,12 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
     assert int(dut.o_checkpoint_restore_id.value) == 6
     assert not dut.o_checkpoint_free.value
 
+    # The backend phase follows the redirect by one edge, as in the core: the
+    # early recovery unit's next state is high while active, and the
+    # controller registers flush_en from it.
+    dut.i_early_backend_recovery_pending_next.value = 1
+    await _advance_cycle(dut)
+    dut.i_early_backend_recovery_pending_next.value = 0
     _drive_early_recovery(dut, False)
     dut.i_early_backend_recovery_pending.value = 1
     dut.i_early_backend_flush_tag.value = 12
@@ -314,6 +321,7 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
     assert not dut.o_checkpoint_restore.value
 
     await _advance_cycle(dut)
+    dut.i_early_backend_recovery_pending.value = 0
 
     assert int(dut.o_checkpoint_flush_free_mask.value) == 0b01010010
 
@@ -325,6 +333,10 @@ async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
 
     for source in ("trap", "mret", "fence"):
         _clear_inputs(dut)
+        # The backend recovery stays pending across the flush edge, so its
+        # next state is high on the edge before it and on that edge.
+        dut.i_early_backend_recovery_pending_next.value = 1
+        await _advance_cycle(dut)
         dut.i_early_backend_recovery_pending.value = 1
         dut.i_early_backend_flush_tag.value = 8
         dut.i_early_mispredict_checkpoint_id.value = 2
@@ -343,7 +355,9 @@ async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
         assert not dut.o_checkpoint_restore.value
         assert not dut.o_checkpoint_free.value
 
+        dut.i_early_backend_recovery_pending_next.value = 0
         await _lower_full_flush(dut)
+        dut.i_early_backend_recovery_pending.value = 0
 
 
 @cocotb.test()

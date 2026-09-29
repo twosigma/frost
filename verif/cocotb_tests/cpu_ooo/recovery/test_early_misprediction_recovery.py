@@ -142,6 +142,7 @@ def _assert_idle(dut: Any) -> None:
     """Assert that no recovery phase is active."""
     assert not dut.o_early_mispredict_active.value
     assert not dut.o_early_backend_recovery_pending.value
+    assert not dut.o_early_backend_recovery_pending_next.value
     assert not dut.o_early_recovery_en.value
     assert not dut.o_early_backend_recovery_hold.value
 
@@ -166,6 +167,7 @@ async def test_taken_mispredict_redirects_then_flushes_backend(dut: Any) -> None
     assert dut.o_early_recovery_en.value
     assert dut.o_early_backend_recovery_hold.value
     assert not dut.o_early_backend_recovery_pending.value
+    assert dut.o_early_backend_recovery_pending_next.value
     assert int(dut.o_early_mispredict_tag.value) == 9
     assert int(dut.o_early_mispredict_redirect_pc.value) == 0x80000200
     assert int(dut.o_early_mispredict_checkpoint_id.value) == 5
@@ -402,6 +404,39 @@ async def test_backend_phase_blocks_new_capture(dut: Any) -> None:
     await _settle_after_edge(dut)
 
     _assert_idle(dut)
+
+
+@cocotb.test()
+async def test_backend_pending_next_state_matches_register(dut: Any) -> None:
+    """The exported next state is what the backend-pending register loads.
+
+    The flush controller registers flush_en from it, so it must drop with a
+    trap cancellation and with reset, and the register must follow it.
+    """
+    await _setup_test(dut)
+
+    _drive_mispredict(dut, tag=7)
+    await _settle_after_edge(dut)
+    assert dut.o_early_mispredict_active.value
+    assert dut.o_early_backend_recovery_pending_next.value
+
+    dut.i_flush_for_trap.value = 1
+    await Timer(1, unit="ns")
+    assert not dut.o_early_backend_recovery_pending_next.value
+    await _settle_after_edge(dut)
+    assert not dut.o_early_backend_recovery_pending.value
+
+    _clear_inputs(dut)
+    _drive_mispredict(dut, tag=8)
+    await _settle_after_edge(dut)
+    assert dut.o_early_backend_recovery_pending_next.value
+    dut.i_rst.value = 1
+    await Timer(1, unit="ns")
+    assert not dut.o_early_backend_recovery_pending_next.value
+    await _settle_after_edge(dut)
+    assert not dut.o_early_backend_recovery_pending.value
+    dut.i_rst.value = 0
+    _clear_inputs(dut)
 
 
 @cocotb.test()

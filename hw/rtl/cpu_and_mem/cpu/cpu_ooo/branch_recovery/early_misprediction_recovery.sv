@@ -58,6 +58,9 @@ module early_misprediction_recovery #(
     output logic                                        o_early_mispredict_active,
     output logic                                        o_early_mispredict_pending,
     output logic                                        o_early_backend_recovery_pending,
+    // Next state of o_early_backend_recovery_pending, for the flush
+    // controller's registered flush_en.
+    output logic                                        o_early_backend_recovery_pending_next,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_early_backend_flush_tag,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_early_mispredict_tag,
     output logic [                            XLEN-1:0] o_early_mispredict_redirect_pc,
@@ -110,11 +113,11 @@ module early_misprediction_recovery #(
   (* max_fanout = 32 *) logic early_mispredict_pending;
   // TIMING: the derived active qualifier broadcasts too: it drives the
   // redirect select, the BTB training mux select, and the flush controller's
-  // arms. Cap its combinational driver so it replicates per region, like
-  // flush_en in the flush controller.
+  // arms. Cap its combinational driver so it replicates per region.
   (* max_fanout = 64 *) logic early_mispredict_active;
-  // TIMING: this register broadcasts through flush_en into the RS/LQ/SQ/ROB
-  // kill and capture gating. The fanout cap makes synthesis replicate it per
+  // TIMING: this register broadcasts into the flush controller's decode, and
+  // its next state loads the controller's flush_en register, which drives the
+  // RS/LQ/SQ/ROB kill and capture gating. The fanout cap makes synthesis replicate it per
   // consumer region; the D input, reset, and recovery conditions are
   // unchanged.
   (* max_fanout = 48 *) logic early_backend_recovery_pending;
@@ -163,13 +166,15 @@ module early_misprediction_recovery #(
 
   // Delay the high-fanout backend partial flush one cycle behind the fast
   // frontend redirect and RAT restore.
+  logic early_backend_recovery_pending_next;
+  always_comb begin
+    if (i_rst) early_backend_recovery_pending_next = 1'b0;
+    else if (flush_for_trap || flush_for_mret || fence_i_flush)
+      early_backend_recovery_pending_next = 1'b0;
+    else early_backend_recovery_pending_next = early_mispredict_active;
+  end
   always_ff @(posedge i_clk) begin
-    if (i_rst) early_backend_recovery_pending <= 1'b0;
-    else if (flush_for_trap || flush_for_mret || fence_i_flush) begin
-      early_backend_recovery_pending <= 1'b0;
-    end else begin
-      early_backend_recovery_pending <= early_mispredict_active;
-    end
+    early_backend_recovery_pending <= early_backend_recovery_pending_next;
   end
 
   // The backend partial flush already trails the fast redirect by one cycle,
@@ -225,6 +230,7 @@ module early_misprediction_recovery #(
   assign o_early_mispredict_active = early_mispredict_active;
   assign o_early_mispredict_pending = early_mispredict_pending;
   assign o_early_backend_recovery_pending = early_backend_recovery_pending;
+  assign o_early_backend_recovery_pending_next = early_backend_recovery_pending_next;
   assign o_early_backend_flush_tag = early_backend_flush_tag;
   assign o_early_mispredict_tag = early_mispredict_tag;
   assign o_early_mispredict_redirect_pc = early_mispredict_redirect_pc;

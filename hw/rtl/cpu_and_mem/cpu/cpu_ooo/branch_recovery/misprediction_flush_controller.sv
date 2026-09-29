@@ -29,9 +29,11 @@
  *
  * Every broadcast (flush_all, flush_pipeline, frontend_state_flush,
  * flush_en/flush_tag, checkpoint_restore/_id) decodes from registered state:
- * the registered full-flush pulse and the pending flags. None of them reads the
- * raw trap/xRET takes or the FENCE-class event combinationally. Simulation
- * assertions check each of them against a reference priority chain.
+ * the registered full-flush pulse and the pending flags; flush_en is itself a
+ * register, loaded on the same edge from their next states. None of them
+ * reads the raw trap/xRET takes or the FENCE-class event combinationally.
+ * Simulation assertions check each of them against a reference priority
+ * chain.
  */
 
 module misprediction_flush_controller #(
@@ -49,6 +51,9 @@ module misprediction_flush_controller #(
     input logic i_early_mispredict_active,
     input logic i_early_mispredict_pending,
     input logic i_early_backend_recovery_pending,
+    // Next state of i_early_backend_recovery_pending: the input equals this
+    // one cycle later (the early recovery unit's register input).
+    input logic i_early_backend_recovery_pending_next,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_mispredict_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_backend_flush_tag,
@@ -171,10 +176,11 @@ module misprediction_flush_controller #(
   (* max_fanout = 64 *) logic full_flush_side_effect_kill;
   (* max_fanout = 64 *) logic frontend_state_flush;
   // TIMING: flush_en, flush_tag and flush_all broadcast into the whole backend:
-  // the ROB commit gate, the RS/LQ/SQ kills and the RAT. They are shallow
-  // functions of registered recovery state, so cap the fanout and let synthesis
-  // replicate the driver LUTs per consumer region. This splits fanout only; it
-  // does not change the logic.
+  // the ROB commit gate, the RS/LQ/SQ kills and the RAT. flush_en is a
+  // register and flush_tag and flush_all are shallow functions of registered
+  // recovery state, so cap the fanout and let synthesis replicate the drivers
+  // per consumer region. This splits fanout only; it does not change the
+  // logic.
   (* max_fanout = 64 *) logic flush_en;
   (* max_fanout = 64 *) logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
   (* max_fanout = 64 *) logic flush_all;
@@ -345,8 +351,8 @@ module misprediction_flush_controller #(
   assign o_checkpoint_free_id_2 = correct_branch_commit_q_2.checkpoint_id;
 
   // ---------------------------------------------------------------------
-  // Broadcast decode. Every flush and restore broadcast below is one LUT of
-  // registered state: the registered full-flush pulse (trap, xRET, or
+  // Broadcast decode. Every flush and restore broadcast below is a register
+  // or one LUT of registered state: the registered full-flush pulse (trap, xRET, or
   // FENCE-class recovery), the recovery-pending flags, and the early-recovery
   // pending flag. The raw trap/xRET takes and the serializer's FENCE-class
   // event feed only that register's D input, never a broadcast net. The
@@ -419,7 +425,18 @@ module misprediction_flush_controller #(
   // prefers the fence target over the branch redirect, and the
   // partial-recovery pending flags tolerate being superseded by flush_all
   // exactly as they do when a trap wins this arbitration.
-  assign flush_en = !flush_all && (early_backend_recovery_pending || mispredict_recovery_pending);
+  // flush_en is !flush_all && (early_backend_recovery_pending ||
+  // mispredict_recovery_pending), registered on the edge that loads those
+  // three registers, from their next states (p_flush_en_exact checks it
+  // against the combinational form). TIMING: its fanout then starts at a
+  // register that can replicate, rather than at the full-flush kill's
+  // 400-load net through a LUT.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) flush_en <= 1'b0;
+    else
+      flush_en <= !(i_trap_taken || i_mret_taken || i_fence_class_flush_event) &&
+          (i_early_backend_recovery_pending_next || (!flush_all && commit_is_misprediction));
+  end
   // Only an enabled partial flush reads the tag, and a full flush wins in
   // every consumer, including the LQ's early-recovery input, which flush_all
   // does not gate. So the tag ignores flush_all, which keeps the full-flush
