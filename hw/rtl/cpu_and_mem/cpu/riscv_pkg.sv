@@ -2152,9 +2152,10 @@ package riscv_pkg;
     dsp_tiled_stages = (staged < 3) ? 3 : staged;
   endfunction
 
-  // Integer multiplier wrapper latency: sign-magnitude stage + tiled unit +
-  // sign-correction stage, at (XLEN+1)-bit operands with the default tiling.
-  localparam int unsigned MulAWidth = XLEN + 1;
+  // Integer multiplier wrapper latency: operand stage + tiled unit + signed
+  // correction stage. The core multiplies the operands' low XLEN bits with the
+  // default tiling.
+  localparam int unsigned MulAWidth = XLEN;
   localparam int unsigned MulPipeDepth = 1 + dsp_tiled_stages(MulAWidth, MulAWidth, 27, 35) + 1;
 
   // 64-bit CTZ using tree of 8-bit CTZ operations (mirror of clz64,

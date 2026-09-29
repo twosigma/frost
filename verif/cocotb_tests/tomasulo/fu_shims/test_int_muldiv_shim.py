@@ -15,8 +15,9 @@
 """Unit tests for the int_muldiv_shim module.
 
 Covers MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU and the word forms,
-divide by zero, signed overflow, result acceptance, busy signalling, and full
-and partial flushes. Full-width MUL takes 6 cycles and MULW 3 on the word
+every pair of corner operands for the full-width multiplies, divide by zero,
+signed overflow, result acceptance, busy signalling, and full and partial
+flushes. Full-width MUL takes 6 cycles and MULW 3 on the word
 multiplier. The divider takes one operation at a time and holds its result
 until accepted: 64 cycles for DIV and REM, 32 for the word forms. Tests present
 a divide only while o_div_busy is low, as MUL_RS's divide gate does.
@@ -1211,6 +1212,75 @@ async def test_rv64_mulh_64(dut: Any) -> None:
     a = 0x7FFF_FFFF_FFFF_FFFF
     b = 0x7FFF_FFFF_FFFF_FFFF
     await _check_muldiv_op(dut, "MULH", a, b, alu_model.mulh(a, b), is_div=False)
+
+
+@cocotb.test()
+async def test_full_width_mul_corner_cross_product(dut: Any) -> None:
+    """MUL, MULH, MULHSU and MULHU match the model on every pair of corner operands.
+
+    The operands cover each sign combination, the most negative and most
+    positive values, all ones, and carries across the 27- and 35-bit tile
+    boundaries. Ops issue back to back whenever the multiplier has a credit
+    and every result is accepted at once, so neighbouring products move
+    through the pipeline together.
+    """
+    iface = await setup(dut)
+    rng = random.Random(0x5167)
+    corners = (
+        0,
+        1,
+        2,
+        3,
+        (1 << 64) - 1,
+        (1 << 64) - 2,
+        1 << 63,
+        (1 << 63) + 1,
+        (1 << 63) - 1,
+        0x8000_0000,
+        0xFFFF_FFFF,
+        1 << 32,
+        (1 << 27) - 1,
+        1 << 27,
+        (1 << 35) - 1,
+        1 << 54,
+        rng.getrandbits(64) | (1 << 63),
+        rng.getrandbits(63),
+    )
+    pending = [
+        (name, a, b)
+        for name in ("MUL", "MULH", "MULHSU", "MULHU")
+        for a in corners
+        for b in corners
+    ]
+    expected: dict[int, tuple[str, int, int, int]] = {}
+    tag = 0
+    for _cycle in range(8 * len(pending)):
+        iface.clear_mul_accepted()
+        result = iface.read_mul_fu_complete()
+        if result["valid"]:
+            assert result["tag"] in expected, ("unissued completion", result)
+            name, a, b, want = expected.pop(result["tag"])
+            assert result["value"] == want, (
+                f"{name} 0x{a:X} * 0x{b:X}: expected 0x{want:X}, "
+                f"got 0x{result['value']:X}"
+            )
+            iface.drive_mul_accepted()
+        iface.clear_issue()
+        if pending:
+            name, a, b = pending[0]
+            iface.drive_issue(False, tag, _op(name), a, b)
+            await Timer(1, unit="ns")
+            if not iface.read_busy():
+                assert tag not in expected
+                expected[tag] = (name, a, b, getattr(alu_model, name.lower())(a, b))
+                iface.drive_issue(True, tag, _op(name), a, b)
+                pending.pop(0)
+                tag = (tag + 1) % 16
+        await iface.step()
+        if not pending and not expected:
+            break
+    else:
+        raise AssertionError(("lost completion", len(pending), expected))
 
 
 @cocotb.test()

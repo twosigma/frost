@@ -15,25 +15,36 @@
  */
 
 /*
- * Integer multiplier for the RISC-V M-extension: a sign-correction wrapper
- * around the shared dsp_tiled_multiplier_unsigned core, run at (XLEN+1)-bit
- * operands. One operation may enter every cycle, and latency is the same for
- * every op sent here: MUL, MULH, MULHSU and MULHU. With int_muldiv_shim's
- * SHORT_WORD_OPS=0 it also runs MULW; by default MULW uses a separate 32-bit
- * tiled core. There are no early-outs in this full-width path.
+ * Integer multiplier for the RISC-V M-extension. The shared
+ * dsp_tiled_multiplier_unsigned core multiplies the operands' low XLEN bits,
+ * and one subtraction in the upper half turns that product into the product
+ * of the (XLEN+1)-bit signed operands. One operation may enter every cycle,
+ * and latency is the same for every op sent here: MUL, MULH, MULHSU and
+ * MULHU. With int_muldiv_shim's SHORT_WORD_OPS=0 it also runs MULW; by
+ * default MULW uses a separate 32-bit tiled core. There are no early-outs in
+ * this full-width path.
+ *
+ * Each operand is a = lo_a - sa*2^XLEN, where lo_a is its low XLEN bits and
+ * sa its sign bit, so
+ *   a*b = lo_a*lo_b - 2^XLEN*(sa*lo_b + sb*lo_a) + sa*sb*2^(2*XLEN).
+ * The last term vanishes modulo 2^(2*XLEN): the 2*XLEN-bit result is the
+ * unsigned product of the low parts with (sa*lo_b + sb*lo_a) subtracted from
+ * its upper half.
  *
  * Pipeline:
- *   S0:         convert the signed operands to (XLEN+1)-bit magnitudes and
- *               capture the result-sign XOR (registered).
+ *   S0:         register the low parts, which the core's DSP input registers
+ *               absorb, and the correction terms sb*lo_a and sa*lo_b in
+ *               fabric. Only the terms depend on the sign bits, so no logic
+ *               sits between the operands and the DSPs.
  *   tiled core: dsp_tiled_multiplier_unsigned, DSP48E2-shaped 27x35 tiles
  *               with a pipelined pairwise reduction tree. Its depth comes
  *               from riscv_pkg::dsp_tiled_stages, the single source of the
- *               staging formula.
- *   S_final:    fused two's-complement sign correction of the unsigned
- *               product via the XOR/carry-in identity -(u) = (u ^ mask) + neg,
- *               one wide add (registered).
+ *               staging formula. Beside it, the correction terms are summed
+ *               in the first cycle and the sum rides a shift register.
+ *   S_final:    subtract the correction from the product's upper half
+ *               (registered).
  *
- * Total latency = 1 + dsp_tiled_stages(XLEN+1, XLEN+1, 27, 35) + 1 cycles,
+ * Total latency = 1 + dsp_tiled_stages(XLEN, XLEN, 27, 35) + 1 cycles,
  * exported to the shim as riscv_pkg::MulPipeDepth. The time-zero check at
  * the bottom of this file stops simulation if the two differ.
  *
@@ -56,19 +67,14 @@ module multiplier #(
     output logic o_completing_next_cycle  // 1 cycle before o_valid_output
 );
 
-  localparam int unsigned OpW = XLEN + 1;
-  localparam int unsigned ProdW = 2 * OpW;
-  localparam int unsigned TiledStages = riscv_pkg::dsp_tiled_stages(OpW, OpW, 27, 35);
+  localparam int unsigned ProdW = 2 * XLEN;
+  localparam int unsigned TiledStages = riscv_pkg::dsp_tiled_stages(XLEN, XLEN, 27, 35);
 
   // ---------------------------------------------------------------------------
-  // Stage S0: capture magnitudes and sign
+  // Stage S0: low parts and correction terms
   // ---------------------------------------------------------------------------
-  function automatic logic [OpW-1:0] abs_op(input logic signed [OpW-1:0] value);
-    abs_op = value[OpW-1] ? (~value + 1'b1) : value;
-  endfunction
-
-  logic [OpW-1:0] a_mag_s0_reg, b_mag_s0_reg;
-  logic neg_s0_reg;
+  logic [XLEN-1:0] a_lo_s0_reg, b_lo_s0_reg;
+  logic [XLEN-1:0] corr_a_s0_reg, corr_b_s0_reg;  // sb*lo_a and sa*lo_b
   logic vld_s0_reg;
 
   always_ff @(posedge i_clk) begin
@@ -77,9 +83,10 @@ module multiplier #(
   end
 
   always_ff @(posedge i_clk) begin
-    a_mag_s0_reg <= abs_op(i_operand_a);
-    b_mag_s0_reg <= abs_op(i_operand_b);
-    neg_s0_reg   <= i_operand_a[OpW-1] ^ i_operand_b[OpW-1];
+    a_lo_s0_reg   <= i_operand_a[XLEN-1:0];
+    b_lo_s0_reg   <= i_operand_b[XLEN-1:0];
+    corr_a_s0_reg <= i_operand_b[XLEN] ? i_operand_a[XLEN-1:0] : '0;
+    corr_b_s0_reg <= i_operand_a[XLEN] ? i_operand_b[XLEN-1:0] : '0;
   end
 
   // ---------------------------------------------------------------------------
@@ -89,34 +96,34 @@ module multiplier #(
   logic uprod_valid;
 
   dsp_tiled_multiplier_unsigned #(
-      .A_WIDTH(OpW),
-      .B_WIDTH(OpW)
+      .A_WIDTH(XLEN),
+      .B_WIDTH(XLEN)
   ) u_tiled (
       .i_clk,
       .i_rst,
       .i_valid_input(vld_s0_reg),
-      .i_operand_a(a_mag_s0_reg),
-      .i_operand_b(b_mag_s0_reg),
+      .i_operand_a(a_lo_s0_reg),
+      .i_operand_b(b_lo_s0_reg),
       .o_product_result(uprod),
       .o_valid_output(uprod_valid),
       .o_completing_next_cycle()
   );
 
-  // The sign bit rides its own shift register beside the tiled core.
-  logic [TiledStages-1:0] neg_pipe;
+  // The correction is summed on the edge that starts the core and then rides
+  // its own shift register beside it. Only its low XLEN bits reach the result.
+  logic [XLEN-1:0] corr_pipe[TiledStages];
   always_ff @(posedge i_clk) begin
-    neg_pipe <= {neg_pipe[TiledStages-2:0], neg_s0_reg};
+    corr_pipe[0] <= corr_a_s0_reg + corr_b_s0_reg;
+    for (int s = 1; s < TiledStages; s++) begin
+      corr_pipe[s] <= corr_pipe[s-1];
+    end
   end
-  logic neg_at_output;
-  assign neg_at_output = neg_pipe[TiledStages-1];
+  logic [XLEN-1:0] corr_at_output;
+  assign corr_at_output = corr_pipe[TiledStages-1];
 
   // ---------------------------------------------------------------------------
-  // Stage S_final: fused sign correction, one wide add
-  //   -(u) = ~u + 1 = (u ^ mask) + neg   with mask = {ProdW{neg}}
+  // Stage S_final: subtract the correction from the upper half
   // ---------------------------------------------------------------------------
-  logic [ProdW-1:0] signed_prod_comb;
-  assign signed_prod_comb = (uprod ^ {ProdW{neg_at_output}}) + ProdW'(neg_at_output);
-
   logic [ProdW-1:0] prod_final_reg;
   logic vld_final_reg;
 
@@ -126,10 +133,10 @@ module multiplier #(
   end
 
   always_ff @(posedge i_clk) begin
-    prod_final_reg <= signed_prod_comb;
+    prod_final_reg <= {uprod[ProdW-1:XLEN] - corr_at_output, uprod[XLEN-1:0]};
   end
 
-  assign o_product_result        = prod_final_reg[2*XLEN-1:0];
+  assign o_product_result        = prod_final_reg;
   assign o_valid_output          = vld_final_reg;
   assign o_completing_next_cycle = uprod_valid;
 
