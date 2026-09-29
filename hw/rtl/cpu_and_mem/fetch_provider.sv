@@ -525,19 +525,38 @@ module fetch_provider #(
   // Candidate line per slot parity, its presence, and whether it may be
   // fetched at all. A faulted word's line is never fetchable, and the prefetch
   // line only inside the page.
+  // TIMING: a line lookup compares against each of the three registered
+  // sources of the candidate (fill_line0, ask_pa1_q's line, ask_line_next_q)
+  // and then selects the result by the same registered bits that select
+  // cand_line, so the comparators start from registers. cand_pick(...) of the
+  // three comparisons equals comparing against cand_line.
+  logic [LineAddrBits-1:0] line_pa1;
+  logic [1:0] cand_is_line0;
   logic [1:0][LineAddrBits-1:0] cand_line;
   logic [1:0] cand_present;
   logic [1:0] cand_fetchable;
+  assign line_pa1 = ask_pa1_q[31:OffsetBits];
+  function automatic logic cand_pick(input logic is_line0, input logic straddle,
+                                     input logic eq_line0, input logic eq_pa1, input logic eq_next);
+    cand_pick = is_line0 ? eq_line0 : (straddle ? eq_pa1 : eq_next);
+  endfunction
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      if (fill_line0[0] == 1'(p)) begin
+      cand_is_line0[p] = (fill_line0[0] == 1'(p));
+      if (cand_is_line0[p]) begin
         cand_line[p] = fill_line0;
         cand_fetchable[p] = !ask_fault0_q;
       end else begin
         cand_line[p] = fill_line_after;
         cand_fetchable[p] = !ask_fault0_q && (fill_straddle ? !ask_fault1_q : ask_after_ok_q);
       end
-      cand_present[p] = slot_valid_q[p] && (slot_line_q[p] == cand_line[p]);
+      cand_present[p] = slot_valid_q[p] && cand_pick(
+        cand_is_line0[p],
+        fill_straddle,
+        slot_line_q[p] == fill_line0,
+        slot_line_q[p] == line_pa1,
+        slot_line_q[p] == ask_line_next_q
+      );
     end
   end
 
@@ -576,7 +595,13 @@ module fetch_provider #(
       vs_hit[p] = 1'b0;
       vs_hit_idx[p] = '0;
       for (int v = 0; v < int'(VictimLines); v++) begin
-        if ((VICTIM_LINES > 0) && vs_valid_q[v] && (vs_line_q[v] == cand_line[p])) begin
+        if ((VICTIM_LINES > 0) && vs_valid_q[v] && cand_pick(
+                cand_is_line0[p],
+                fill_straddle,
+                vs_line_q[v] == fill_line0,
+                vs_line_q[v] == line_pa1,
+                vs_line_q[v] == ask_line_next_q
+            )) begin
           vs_hit[p] = 1'b1;
           vs_hit_idx[p] = VictimPtrBits'(v);
         end
@@ -598,7 +623,13 @@ module fetch_provider #(
       want_cand[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !cand_present[p] &&
           !fill_busy_q[p];
       want_fill[p] = want_cand[p] && !vs_hit[p] &&
-          !((VICTIM_LINES > 0) && ev_pending_q[p] && (ev_line_q[p] == cand_line[p]));
+          !((VICTIM_LINES > 0) && ev_pending_q[p] && cand_pick(
+        cand_is_line0[p],
+        fill_straddle,
+        ev_line_q[p] == fill_line0,
+        ev_line_q[p] == line_pa1,
+        ev_line_q[p] == ask_line_next_q
+      ));
     end
     copy_now = '0;
     if (!i_line_resp_valid && !i_invalidate) begin
