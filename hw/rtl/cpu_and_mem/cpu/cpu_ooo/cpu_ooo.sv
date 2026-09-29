@@ -1508,6 +1508,12 @@ module cpu_ooo #(
   logic checkpoint_save;
   logic checkpoint_save_for_slot2_raw;
   logic checkpoint_save_for_slot2;
+  // Dispatch's early allocation candidates (see dispatch.sv o_alloc_*). The
+  // RAT builds its write selects from them and applies the bundle fire
+  // (rob_alloc_req.alloc_valid) last.
+  logic alloc_has_dest;
+  logic alloc_has_dest_2;
+  logic checkpoint_slot2_candidate;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_id;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_branch_tag;
   logic [riscv_pkg::RasPtrBits-1:0] dispatch_ras_tos;
@@ -2002,6 +2008,12 @@ module cpu_ooo #(
       .i_ras_top(dispatch_ras_top),
       .i_checkpoint_save_for_slot2(checkpoint_save_for_slot2),
 
+      // Early allocation candidates and the bundle fire they combine with
+      .i_alloc_fire(rob_alloc_req.alloc_valid),
+      .i_alloc_has_dest(alloc_has_dest),
+      .i_alloc_has_dest_2(alloc_has_dest_2),
+      .i_checkpoint_slot2_candidate(checkpoint_slot2_candidate),
+
       // RAT checkpoint restore
       .i_checkpoint_restore(checkpoint_restore),
       .i_checkpoint_restore_id(checkpoint_restore_id),
@@ -2306,6 +2318,9 @@ module cpu_ooo #(
       .i_checkpoint_alloc_id(checkpoint_alloc_id),
       .o_checkpoint_save(checkpoint_save_raw),
       .o_checkpoint_save_for_slot2(checkpoint_save_for_slot2_raw),
+      .o_alloc_has_dest(alloc_has_dest),
+      .o_alloc_has_dest_2(alloc_has_dest_2),
+      .o_checkpoint_slot2_candidate(checkpoint_slot2_candidate),
       .o_checkpoint_id(checkpoint_id),
       .o_checkpoint_branch_tag(checkpoint_branch_tag),
       .i_ras_tos(from_if_to_pd.ras_checkpoint_tos),

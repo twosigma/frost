@@ -204,6 +204,16 @@ module dispatch #(
     // Slot-2-branch flag: when slot-2 is the branch the snapshot must
     // overlay slot-1's same-cycle rename.
     output logic                                        o_checkpoint_save_for_slot2,
+    // Early candidates for the RAT's writes, not qualified by the dispatch
+    // decision. A bundle fires whole, so slot 2 fires exactly when the bundle
+    // does and slot 2 is present: o_rat_alloc_valid is the fire and
+    // o_alloc_has_dest, o_rat_alloc_valid_2 the fire and o_alloc_has_dest_2,
+    // and o_checkpoint_save_for_slot2 equals o_checkpoint_slot2_candidate
+    // whenever o_checkpoint_save asserts. The RAT builds its write selects from
+    // these and applies the late fire last.
+    output logic                                        o_alloc_has_dest,
+    output logic                                        o_alloc_has_dest_2,
+    output logic                                        o_checkpoint_slot2_candidate,
 
     // RAS state to save with checkpoint
     input  logic [riscv_pkg::RasPtrBits-1:0] i_ras_tos,
@@ -1742,14 +1752,27 @@ module dispatch #(
   assign checkpoint_save_slot1 = dispatch_fire && need_checkpoint;
   assign checkpoint_save_slot2 = slot2_can_fire && need_checkpoint_2;
 
+  // Early form of checkpoint_save_slot2 for the saved data (branch tag and
+  // RAS state), which matters only in a cycle with a save. A slot-1 branch
+  // ends the bundle, so a bundle that saves either has slot 1 as the branch
+  // and no slot 2, or has slot 2 as the branch; either way this equals
+  // checkpoint_save_slot2 in every saving cycle.
+  logic checkpoint_slot2_candidate;
+  assign checkpoint_slot2_candidate = slot2_present_for_admission && need_checkpoint_2;
+  assign o_checkpoint_slot2_candidate = checkpoint_slot2_candidate;
+  assign o_alloc_has_dest = has_dest;
+  assign o_alloc_has_dest_2 = slot2_present_for_admission && has_dest_2;
+
   always_comb begin
     // Single save signal: slot-1 or slot-2, never both (one branch per bundle).
     o_checkpoint_save = checkpoint_save_slot1 || checkpoint_save_slot2;
     o_checkpoint_save_for_slot2 = checkpoint_save_slot2;
     o_checkpoint_id = i_checkpoint_alloc_id;
     // branch_tag selects which ROB entry the checkpoint protects.  When
-    // slot-2 is the branch, the ROB allocates it at tail+1.
-    o_checkpoint_branch_tag = checkpoint_save_slot2 ?
+    // slot-2 is the branch, the ROB allocates it at tail+1. The branch tag
+    // and the RAS state below are saved only with a checkpoint, so they
+    // select on the early candidate.
+    o_checkpoint_branch_tag = checkpoint_slot2_candidate ?
                               i_rob_alloc_resp_2.alloc_tag :
                               i_rob_alloc_resp.alloc_tag;
 
@@ -1757,7 +1780,7 @@ module dispatch #(
     // includes every older pipelined RAS operation, but precedes this
     // instruction's own push or pop. Use slot 2's IF capture when slot 2 is the
     // branch.
-    if (checkpoint_save_slot2) begin
+    if (checkpoint_slot2_candidate) begin
       o_ras_tos         = i_from_id_to_ex_2.ras_checkpoint_tos;
       o_ras_valid_count = i_from_id_to_ex_2.ras_checkpoint_valid_count;
       o_ras_top         = i_from_id_to_ex_2.ras_checkpoint_top;
@@ -1836,6 +1859,14 @@ module dispatch #(
               o_fp_rs_dispatch_2.valid
             }
         )) begin
+      // The early allocation candidates, qualified by the bundle fire, are
+      // the allocation outputs themselves (see the o_alloc_* ports).
+      p_alloc_candidates_match_fire :
+      assert ((o_rat_alloc_valid == (dispatch_fire && o_alloc_has_dest)) &&
+              (o_rat_alloc_valid_2 == (dispatch_fire && o_alloc_has_dest_2)) &&
+              (slot2_can_fire == (dispatch_fire && slot2_present_for_admission)) &&
+              (!o_checkpoint_save ||
+               (o_checkpoint_save_for_slot2 == o_checkpoint_slot2_candidate)));
       p_flush_blocks_dispatch_side_effects :
       assert (!i_flush ||
               (!dispatch_valid && !dispatch_valid_2 && !dispatch_fire && !o_stall &&

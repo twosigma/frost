@@ -258,6 +258,13 @@ class TomasuloInterface:
     def __init__(self, dut: Any) -> None:
         """Initialize interface with DUT handle."""
         self.dut = dut
+        # Driven allocation valids, mirrored onto dispatch's candidate inputs.
+        self._alloc_drv: dict[str, int] = {
+            "rat": 0,
+            "rat_2": 0,
+            "save": 0,
+            "save_slot2": 0,
+        }
         self._rob_entry_epoch_mask = 0
         # Tier/slot of the most recent LQ memory launch, for response tagging.
         self.last_lq_launch_cached = False
@@ -302,11 +309,34 @@ class TomasuloInterface:
             self.last_lq_launch_cached = addr >= CACHED_BASE
             self.last_lq_launch_slot = int(self.dut.o_lq_mem_read_id.value)
 
+    def _drive_alloc_candidates(self) -> None:
+        """Drive dispatch's early candidate inputs to match the valid drives.
+
+        In the core, the RAT's rename valids are the bundle fire and each
+        slot's destination, a checkpoint save implies the fire, and a save's
+        slot-2 flag equals the slot-2 checkpoint candidate.
+        """
+        drv = self._alloc_drv
+        self.dut.i_alloc_has_dest.value = drv["rat"]
+        self.dut.i_alloc_has_dest_2.value = drv["rat_2"]
+        self.dut.i_alloc_fire.value = int(
+            bool(drv["rat"] or drv["rat_2"] or drv["save"])
+        )
+        self.dut.i_checkpoint_slot2_candidate.value = drv["save_slot2"]
+
+    def _set_alloc_drv(self, **values: int) -> None:
+        """Record driven allocation valids and refresh the candidates."""
+        self._alloc_drv.update(values)
+        self._drive_alloc_candidates()
+
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         # ROB allocation
         self.dut.i_alloc_req.value = 0
         self.dut.i_alloc_req_2.value = 0
+        # Dispatch's early allocation candidates follow the valid drives.
+        self._alloc_drv = dict.fromkeys(self._alloc_drv, 0)
+        self._drive_alloc_candidates()
 
         # FU completion requests (to CDB arbiter)
         self.clear_all_fu_completes()
@@ -920,10 +950,12 @@ class TomasuloInterface:
         self.dut.i_rat_alloc_dest_rf.value = dest_rf & 1
         self.dut.i_rat_alloc_dest_reg.value = dest_reg & MASK_REG
         self.dut.i_rat_alloc_rob_tag.value = rob_tag & MASK_TAG
+        self._set_alloc_drv(rat=1)
 
     def clear_rat_rename(self) -> None:
         """Clear RAT rename signals."""
         self.dut.i_rat_alloc_valid.value = 0
+        self._set_alloc_drv(rat=0)
 
     def drive_rat_rename_2(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
         """Drive slot-2 RAT rename signals."""
@@ -931,10 +963,12 @@ class TomasuloInterface:
         self.dut.i_rat_alloc_dest_rf_2.value = dest_rf & 1
         self.dut.i_rat_alloc_dest_reg_2.value = dest_reg & MASK_REG
         self.dut.i_rat_alloc_rob_tag_2.value = rob_tag & MASK_TAG
+        self._set_alloc_drv(rat_2=1)
 
     def clear_rat_rename_2(self) -> None:
         """Clear slot-2 RAT rename signals."""
         self.dut.i_rat_alloc_valid_2.value = 0
+        self._set_alloc_drv(rat_2=0)
 
     # =========================================================================
     # RAT Checkpoint Save/Restore/Free
@@ -957,11 +991,13 @@ class TomasuloInterface:
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
         self.dut.i_ras_top.value = ras_top & ((1 << 64) - 1)
         self.dut.i_checkpoint_save_for_slot2.value = 1 if for_slot2 else 0
+        self._set_alloc_drv(save=1, save_slot2=1 if for_slot2 else 0)
 
     def clear_checkpoint_save(self) -> None:
         """Deassert checkpoint save."""
         self.dut.i_checkpoint_save.value = 0
         self.dut.i_checkpoint_save_for_slot2.value = 0
+        self._set_alloc_drv(save=0, save_slot2=0)
 
     def drive_checkpoint_restore(self, checkpoint_id: int) -> None:
         """Drive RAT checkpoint restore signals."""

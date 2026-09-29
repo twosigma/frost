@@ -41,6 +41,12 @@ If slot 2 is the control-flow instruction that owns the checkpoint, the
 snapshot includes slot 1's same-cycle rename, so recovery returns to the
 state just before slot 2.
 
+Rename writes and the snapshot overlay are built from dispatch's early
+candidates (see the [dispatch guide](../dispatch/README.md)): each
+register's write select decodes the destinations, and the bundle fire
+(`i_alloc_fire`) enters its write enable last. The overlay needs no fire,
+because the snapshot is written only in a cycle that saves.
+
 ## Stale rename detection
 
 A lookup reports a register as renamed only if its tag points at a valid ROB

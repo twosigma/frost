@@ -46,6 +46,16 @@ and dispatch takes slot 2's presence from the bundle's `is_real` bit (a real
 instruction rather than a bubble) instead of `i_valid_2`. The queue drives
 `i_valid_2 == i_valid && is_real`, and an assertion checks it.
 
+Because a bundle fires as a unit, slot 2 fires exactly when the bundle does
+and slot 2 is present. Dispatch exports each slot's destination and slot 2's
+checkpoint need as early candidates (`o_alloc_has_dest`,
+`o_alloc_has_dest_2`, `o_checkpoint_slot2_candidate`), not qualified by the
+fire decision. The RAT decodes its per-register write selects from them and
+applies the late fire last; each qualified output equals its candidate ANDed
+with the fire, which an assertion checks. The saved checkpoint's branch tag
+and RAS state select on the candidate too, since they matter only in a cycle
+that saves.
+
 ## Source operands
 
 Each source reads the INT or FP RAT, as the `uses_int_rs*` and `uses_fp_rs*`

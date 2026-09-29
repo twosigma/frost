@@ -83,6 +83,11 @@ class RATInterface:
         self._pending_checkpoint_free_2: int | None = None
         self._pending_checkpoint_bulk_free_mask = 0
         self._pending_flush_all = False
+        # Driven rename/save valids, mirrored onto dispatch's candidate inputs.
+        self._alloc_valid_drv = 0
+        self._alloc_valid_2_drv = 0
+        self._checkpoint_save_drv = 0
+        self._checkpoint_save_for_slot2_drv = 0
 
     # =========================================================================
     # Clock and Reset
@@ -206,6 +211,14 @@ class RATInterface:
         # Slot-2-branch checkpoint flag: selects the snapshot overlay of
         # slot-1's same-cycle rename.
         self.dut.i_checkpoint_save_for_slot2.value = 0
+
+        # Dispatch's early allocation candidates and the bundle fire, kept
+        # consistent with the drives above by _drive_alloc_candidates.
+        self._alloc_valid_drv = 0
+        self._alloc_valid_2_drv = 0
+        self._checkpoint_save_drv = 0
+        self._checkpoint_save_for_slot2_drv = 0
+        self._drive_alloc_candidates()
 
         # Checkpoint restore
         self.dut.i_checkpoint_restore.value = 0
@@ -499,9 +512,31 @@ class RATInterface:
     # Rename Write Interface
     # =========================================================================
 
+    def _drive_alloc_candidates(self) -> None:
+        """Drive dispatch's candidate inputs to match the rename and save drives.
+
+        In the core, i_alloc_valid is the bundle fire and slot 1's destination,
+        i_alloc_valid_2 the fire and slot 2's, a save implies the fire, and a
+        save's slot-2 flag equals the slot-2 checkpoint candidate.
+        """
+        self.dut.i_alloc_has_dest.value = self._alloc_valid_drv
+        self.dut.i_alloc_has_dest_2.value = self._alloc_valid_2_drv
+        self.dut.i_alloc_fire.value = int(
+            bool(
+                self._alloc_valid_drv
+                or self._alloc_valid_2_drv
+                or self._checkpoint_save_drv
+            )
+        )
+        self.dut.i_checkpoint_slot2_candidate.value = (
+            self._checkpoint_save_for_slot2_drv
+        )
+
     def drive_rename(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
         """Drive rename write signals."""
         self.dut.i_alloc_valid.value = 1
+        self._alloc_valid_drv = 1
+        self._drive_alloc_candidates()
         self.dut.i_alloc_dest_rf.value = dest_rf & 1
         self.dut.i_alloc_dest_reg.value = dest_reg & MASK_REG
         self.dut.i_alloc_rob_tag.value = rob_tag & MASK_TAG
@@ -510,11 +545,15 @@ class RATInterface:
     def clear_rename(self) -> None:
         """Clear rename write signals."""
         self.dut.i_alloc_valid.value = 0
+        self._alloc_valid_drv = 0
+        self._drive_alloc_candidates()
         self._apply_pending_cycle_updates()
 
     def drive_rename_2(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
         """Drive slot-2 rename write signals."""
         self.dut.i_alloc_valid_2.value = 1
+        self._alloc_valid_2_drv = 1
+        self._drive_alloc_candidates()
         self.dut.i_alloc_dest_rf_2.value = dest_rf & 1
         self.dut.i_alloc_dest_reg_2.value = dest_reg & MASK_REG
         self.dut.i_alloc_rob_tag_2.value = rob_tag & MASK_TAG
@@ -527,6 +566,8 @@ class RATInterface:
     def clear_rename_2(self) -> None:
         """Clear slot-2 rename write signals."""
         self.dut.i_alloc_valid_2.value = 0
+        self._alloc_valid_2_drv = 0
+        self._drive_alloc_candidates()
         self._apply_pending_cycle_updates()
 
     async def rename(self, dest_rf: int, dest_reg: int, rob_tag: int) -> None:
@@ -640,6 +681,9 @@ class RATInterface:
         self.dut.i_ras_valid_count.value = ras_valid_count & 0xF
         self.dut.i_ras_top.value = ras_top & MASK_XLEN
         self.dut.i_checkpoint_save_for_slot2.value = 1 if for_slot2 else 0
+        self._checkpoint_save_drv = 1
+        self._checkpoint_save_for_slot2_drv = 1 if for_slot2 else 0
+        self._drive_alloc_candidates()
         self._pending_checkpoint_save = (
             checkpoint_id & 0x7,
             branch_tag & MASK_TAG,
@@ -653,6 +697,9 @@ class RATInterface:
         """Clear checkpoint save signals."""
         self.dut.i_checkpoint_save.value = 0
         self.dut.i_checkpoint_save_for_slot2.value = 0
+        self._checkpoint_save_drv = 0
+        self._checkpoint_save_for_slot2_drv = 0
+        self._drive_alloc_candidates()
         self._apply_pending_cycle_updates()
 
     async def checkpoint_save(

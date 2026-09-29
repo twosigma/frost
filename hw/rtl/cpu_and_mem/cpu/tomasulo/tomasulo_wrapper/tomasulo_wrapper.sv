@@ -385,6 +385,18 @@ module tomasulo_wrapper #(
     // slot-1's same-cycle rename onto the snapshot when this asserts.
     input logic                                        i_checkpoint_save_for_slot2,
 
+    // Early allocation candidates from dispatch (see dispatch.sv o_alloc_*)
+    // and the bundle fire they combine with. A bundle fires whole, so
+    // i_rat_alloc_valid is i_alloc_fire && i_alloc_has_dest,
+    // i_rat_alloc_valid_2 is i_alloc_fire && i_alloc_has_dest_2, and a
+    // checkpoint save's slot-2 flag equals i_checkpoint_slot2_candidate. The
+    // RAT builds its write selects from the candidates and applies the fire
+    // last.
+    input logic i_alloc_fire,
+    input logic i_alloc_has_dest,
+    input logic i_alloc_has_dest_2,
+    input logic i_checkpoint_slot2_candidate,
+
     // =========================================================================
     // RAT Checkpoint Restore (from flush controller on misprediction)
     // =========================================================================
@@ -2547,13 +2559,17 @@ module tomasulo_wrapper #(
       .i_commit_tag_2       (commit_q_2_tag),
 
       // Checkpoint save
-      .i_checkpoint_save          (i_checkpoint_save),
-      .i_checkpoint_id            (i_checkpoint_id),
-      .i_checkpoint_branch_tag    (i_checkpoint_branch_tag),
-      .i_ras_tos                  (i_ras_tos),
-      .i_ras_valid_count          (i_ras_valid_count),
-      .i_ras_top                  (i_ras_top),
-      .i_checkpoint_save_for_slot2(i_checkpoint_save_for_slot2),
+      .i_checkpoint_save           (i_checkpoint_save),
+      .i_checkpoint_id             (i_checkpoint_id),
+      .i_checkpoint_branch_tag     (i_checkpoint_branch_tag),
+      .i_ras_tos                   (i_ras_tos),
+      .i_ras_valid_count           (i_ras_valid_count),
+      .i_ras_top                   (i_ras_top),
+      .i_checkpoint_save_for_slot2 (i_checkpoint_save_for_slot2),
+      .i_alloc_fire                (i_alloc_fire),
+      .i_alloc_has_dest            (i_alloc_has_dest),
+      .i_alloc_has_dest_2          (i_alloc_has_dest_2),
+      .i_checkpoint_slot2_candidate(i_checkpoint_slot2_candidate),
 
       // Checkpoint restore
       .i_checkpoint_restore            (i_checkpoint_restore),
@@ -4723,6 +4739,15 @@ module tomasulo_wrapper #(
 
   // Slot-2 RAT alloc can fire without slot-1 RAT alloc when slot-1 has no
   // destination (no formal assumption needed).
+
+  // Dispatch's early candidates, qualified by the bundle fire, are the
+  // allocation requests (dispatch.sv p_alloc_candidates_match_fire).
+  always_comb begin
+    assume (i_alloc_fire == i_alloc_req.alloc_valid);
+    assume (i_rat_alloc_valid == (i_alloc_fire && i_alloc_has_dest));
+    assume (i_rat_alloc_valid_2 == (i_alloc_fire && i_alloc_has_dest_2));
+    if (i_checkpoint_save) assume (i_checkpoint_save_for_slot2 == i_checkpoint_slot2_candidate);
+  end
 
   // Checkpoint save and restore are mutually exclusive
   always_comb assume (!(i_checkpoint_save && i_checkpoint_restore));

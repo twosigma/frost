@@ -135,6 +135,18 @@ module register_alias_table (
     // misprediction restores slot 1's mapping.
     input logic                                        i_checkpoint_save_for_slot2,
 
+    // Dispatch's early allocation candidates and the bundle fire (see
+    // dispatch.sv o_alloc_*): i_alloc_valid is i_alloc_fire && i_alloc_has_dest,
+    // i_alloc_valid_2 is i_alloc_fire && i_alloc_has_dest_2, a save implies the
+    // fire, and a save's i_checkpoint_save_for_slot2 equals
+    // i_checkpoint_slot2_candidate. The rename writes and the snapshot overlay
+    // are built from the candidates, so the late fire enters each register's
+    // write enable last and never reaches the snapshot data.
+    input logic i_alloc_fire,
+    input logic i_alloc_has_dest,
+    input logic i_alloc_has_dest_2,
+    input logic i_checkpoint_slot2_candidate,
+
     // =========================================================================
     // Checkpoint Restore Interface (from flush controller on misprediction)
     // =========================================================================
@@ -319,16 +331,19 @@ module register_alias_table (
   // built from FF values that do not yet reflect this cycle's slot-1 write,
   // so the entry slot 1 is renaming is overlaid with slot 1's tag and the
   // post-toggle epoch.  Slot 2's own rename stays out of the snapshot, since
-  // a restore must roll it back.  The overlay is gated on i_alloc_valid
-  // because slot 1 may have no destination (a store) when slot 2 is the
-  // branch.
+  // a restore must roll it back.  The overlay is gated on slot 1 having a
+  // destination because slot 1 may have none (a store) when slot 2 is the
+  // branch. The snapshot is written only with a save, which implies the
+  // bundle fire, so the overlay uses the early candidates: then
+  // i_checkpoint_slot2_candidate is i_checkpoint_save_for_slot2 and
+  // i_alloc_has_dest is i_alloc_valid.
   logic                             slot2_overlay_int;
   logic                             slot2_overlay_fp;
   logic [ReorderBufferTagWidth-1:0] slot2_overlay_tag;
   logic                             slot2_overlay_epoch_next;
-  assign slot2_overlay_int = i_checkpoint_save_for_slot2 && i_alloc_valid &&
+  assign slot2_overlay_int = i_checkpoint_slot2_candidate && i_alloc_has_dest &&
                              !i_alloc_dest_rf && (i_alloc_dest_reg != '0);
-  assign slot2_overlay_fp = i_checkpoint_save_for_slot2 && i_alloc_valid && i_alloc_dest_rf;
+  assign slot2_overlay_fp = i_checkpoint_slot2_candidate && i_alloc_has_dest && i_alloc_dest_rf;
   assign slot2_overlay_tag = i_alloc_rob_tag;
   // cpu_ooo flips rob_entry_epoch[slot1_tag] at this cycle's posedge, when
   // slot 1's ROB entry allocates.  The snapshot is the next-cycle restore
@@ -579,6 +594,45 @@ module register_alias_table (
   // Sequential Logic: Active RAT Updates
   // ===========================================================================
 
+  // Rename write selects per register, decoded from each slot's destination
+  // and the early candidates. A register renamed by both slots takes slot 2's
+  // tag (slot 2 is younger). The late bundle fire enters each register's
+  // write enable last. Given the candidate contract on the ports, the writes
+  // equal renaming on i_alloc_valid / i_alloc_valid_2.
+  logic [NumIntRegs-1:0] int_rename_sel_1, int_rename_sel_2;
+  logic [NumFpRegs-1:0] fp_rename_sel_1, fp_rename_sel_2;
+  always_comb begin
+    for (int i = 0; i < NumIntRegs; i++) begin
+      // x0 is never renamed.
+      int_rename_sel_1[i] = (i != 0) && i_alloc_has_dest && !i_alloc_dest_rf &&
+          (i_alloc_dest_reg == RegAddrWidth'(i));
+      int_rename_sel_2[i] = (i != 0) && i_alloc_has_dest_2 && !i_alloc_dest_rf_2 &&
+          (i_alloc_dest_reg_2 == RegAddrWidth'(i));
+    end
+    for (int i = 0; i < NumFpRegs; i++) begin
+      fp_rename_sel_1[i] = i_alloc_has_dest && i_alloc_dest_rf &&
+          (i_alloc_dest_reg == RegAddrWidth'(i));
+      fp_rename_sel_2[i] = i_alloc_has_dest_2 && i_alloc_dest_rf_2 &&
+          (i_alloc_dest_reg_2 == RegAddrWidth'(i));
+    end
+  end
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Dispatch's candidate contract on the rename and save inputs (the formal
+  // block assumes it).
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n) begin
+      p_alloc_candidates_contract :
+      assert ((i_alloc_valid == (i_alloc_fire && i_alloc_has_dest)) &&
+              (i_alloc_valid_2 == (i_alloc_fire && i_alloc_has_dest_2)) &&
+              (!i_checkpoint_save ||
+               (i_alloc_fire && (i_checkpoint_save_for_slot2 == i_checkpoint_slot2_candidate))));
+    end
+  end
+`endif
+`endif
+
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       // Reset: all entries not renamed
@@ -653,36 +707,19 @@ module register_alias_table (
       // ---------------------------------------------------------------
       // Rename write: new instruction's destination mapping.
       // Rename takes priority over commit to the same register.
-      // When both slots write the same register, slot 1's write is
-      // suppressed and slot 2's write below installs the newer mapping.
+      // When both slots write the same register, slot 2's newer mapping
+      // wins (see int_rename_sel_1/2).
       // ---------------------------------------------------------------
-      if (i_alloc_valid && !slot1_collides_with_slot2) begin
-        if (!i_alloc_dest_rf) begin
-          // INT rename (x0 writes are ignored)
-          if (i_alloc_dest_reg != '0) begin
-            int_rat_valid[i_alloc_dest_reg] <= 1'b1;
-            int_rat_tag[i_alloc_dest_reg]   <= i_alloc_rob_tag;
-          end
-        end else begin
-          // FP rename
-          fp_rat_valid[i_alloc_dest_reg] <= 1'b1;
-          fp_rat_tag[i_alloc_dest_reg]   <= i_alloc_rob_tag;
+      for (int i = 0; i < NumIntRegs; i++) begin
+        if (i_alloc_fire && (int_rename_sel_1[i] || int_rename_sel_2[i])) begin
+          int_rat_valid[i] <= 1'b1;
+          int_rat_tag[i]   <= int_rename_sel_2[i] ? i_alloc_rob_tag_2 : i_alloc_rob_tag;
         end
       end
-
-      // Slot-2 rename write.  No collision check is needed here: slot 1's
-      // write above already yields on a same-register collision.
-      if (i_alloc_valid_2) begin
-        if (!i_alloc_dest_rf_2) begin
-          // INT rename (x0 writes are ignored)
-          if (i_alloc_dest_reg_2 != '0) begin
-            int_rat_valid[i_alloc_dest_reg_2] <= 1'b1;
-            int_rat_tag[i_alloc_dest_reg_2]   <= i_alloc_rob_tag_2;
-          end
-        end else begin
-          // FP rename
-          fp_rat_valid[i_alloc_dest_reg_2] <= 1'b1;
-          fp_rat_tag[i_alloc_dest_reg_2]   <= i_alloc_rob_tag_2;
+      for (int i = 0; i < NumFpRegs; i++) begin
+        if (i_alloc_fire && (fp_rename_sel_1[i] || fp_rename_sel_2[i])) begin
+          fp_rat_valid[i] <= 1'b1;
+          fp_rat_tag[i]   <= fp_rename_sel_2[i] ? i_alloc_rob_tag_2 : i_alloc_rob_tag;
         end
       end
     end
@@ -880,6 +917,16 @@ module register_alias_table (
 
   // Slot-2 RAT alloc can fire without slot-1 RAT alloc when slot-1 has no
   // destination (no formal assumption needed).
+
+  // Dispatch's candidate contract (dispatch.sv p_alloc_candidates_match_fire).
+  always_comb begin
+    assume (i_alloc_valid == (i_alloc_fire && i_alloc_has_dest));
+    assume (i_alloc_valid_2 == (i_alloc_fire && i_alloc_has_dest_2));
+    if (i_checkpoint_save) begin
+      assume (i_alloc_fire);
+      assume (i_checkpoint_save_for_slot2 == i_checkpoint_slot2_candidate);
+    end
+  end
 
   // Checkpoint save and restore not simultaneous
   always_comb begin
