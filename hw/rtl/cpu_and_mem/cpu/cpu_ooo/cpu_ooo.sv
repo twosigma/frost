@@ -3296,8 +3296,9 @@ module cpu_ooo #(
     end else if (rob_commit_2_valid_raw) begin
       // Timing: identical value to retired_next_pc(rob_commit_comb_2) in every
       // cycle this arm is taken (checked below in simulation), but the ROB
-      // precomputes it from ungated head+1 fields so the PC RAM read and add
-      // do not sit behind the late commit gating.
+      // precomputes it from ungated head+1 fields (the stored fall-through PC
+      // and branch target) so its RAM reads do not sit behind the late commit
+      // gating.
       interrupt_resume_pc <= rob_head_next_retired_next_pc;
     end else if (rob_commit_valid_raw) begin
       // Timing: identical value to retired_next_pc(rob_commit_comb); see above.

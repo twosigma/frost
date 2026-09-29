@@ -1845,7 +1845,8 @@ package riscv_pkg;
     logic is_fp_load;  // FLW or FLD: data goes to the FP regfile
     logic is_fp_store;  // FSW or FSD
     logic [2:0] fp_rm;  // Rounding mode from instruction (funct3)
-    // Pre-computed link address for JAL/JALR (PC+2 or PC+4 based on compression)
+    // Pre-computed link address, PC+2 or PC+4 by compression: rd for
+    // JAL/JALR, and the ROB's fall-through PC for every instruction
     logic [XLEN-1:0] link_address;
     // Original instruction size before RVC decompression.
     logic is_compressed;
@@ -2302,10 +2303,11 @@ package riscv_pkg;
     logic [XLEN-1:0] branch_target;  // Architectural taken target when known at dispatch
     logic is_call;
     logic is_return;
-    // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd. The
-    // ROB writes it, zero-extended to FLEN, as the entry's value at
-    // allocation for both. JAL is marked done=1 at allocation (target
-    // known); JALR is done=0 until execute resolves the target.
+    // link_addr is the pre-computed PC+2/PC+4 for every instruction. The ROB
+    // stores it as the entry's fall-through PC, and for JAL/JALR it is the
+    // result for rd: the ROB also writes it, zero-extended to FLEN, as the
+    // entry's value at allocation. JAL is marked done=1 at allocation
+    // (target known); JALR is done=0 until execute resolves the target.
     logic [XLEN-1:0] link_addr;
     logic is_jal;  // JAL: can mark done=1 at dispatch
     logic is_jalr;  // JALR: must wait for execute to resolve target

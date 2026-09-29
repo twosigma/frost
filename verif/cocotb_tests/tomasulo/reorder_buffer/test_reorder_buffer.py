@@ -49,6 +49,7 @@ from config import MASK_XLEN
 from .reorder_buffer_model import (
     ReorderBufferModel,
     AllocationRequest,
+    FALLTHROUGH_LINK,
     CDBWrite,
     BranchUpdate,
     ExpectedCommit,
@@ -148,7 +149,7 @@ def make_branch_request(
     branch_target: int | None = None,
     is_jal: bool = False,
     is_jalr: bool = False,
-    link_addr: int = 0,
+    link_addr: int = FALLTHROUGH_LINK,
     is_call: bool = False,
     is_return: bool = False,
 ) -> AllocationRequest:

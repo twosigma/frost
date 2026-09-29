@@ -131,6 +131,12 @@ class ReorderBufferEntry:
         )
 
 
+# AllocationRequest.link_addr default: take the fall-through PC. id_stage
+# computes link_address = pc + (is_compressed ? 2 : 4) for every instruction,
+# and the ROB stores it as the entry's fall-through PC.
+FALLTHROUGH_LINK = -1
+
+
 @dataclass
 class AllocationRequest:
     """Allocation request from dispatch."""
@@ -150,7 +156,7 @@ class AllocationRequest:
     branch_target: int = 0
     is_call: bool = False
     is_return: bool = False
-    link_addr: int = 0
+    link_addr: int = FALLTHROUGH_LINK
     is_jal: bool = False
     is_jalr: bool = False
     is_csr: bool = False
@@ -170,6 +176,11 @@ class AllocationRequest:
     csr_op: int = 0
     csr_write_data: int = 0
     has_fp_flags: bool = False
+
+    def __post_init__(self) -> None:
+        """Derive the default link_addr from pc and is_compressed."""
+        if self.link_addr == FALLTHROUGH_LINK:
+            self.link_addr = (self.pc + (2 if self.is_compressed else 4)) & MASK_XLEN
 
 
 @dataclass

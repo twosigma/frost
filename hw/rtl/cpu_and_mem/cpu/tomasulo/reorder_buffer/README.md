@@ -23,9 +23,9 @@ blocks.
 Head and tail pointers carry an extra wrap bit to tell full from empty.
 `dest_rf` selects the register file an entry writes.
 
-Multi-bit fields live in distributed RAM: PC, destination register,
-checkpoint ID, head metadata, value, exception cause, FP flags, branch
-target, and the CSR address, op, and write data. A RAM with several
+Multi-bit fields live in distributed RAM: PC, fall-through PC, destination
+register, checkpoint ID, head metadata, value, exception cause, FP flags,
+branch target, and the CSR address, op, and write data. A RAM with several
 write ports keeps one bank per port and a Live Value Table (LVT) recording
 which bank holds each entry's newest value. Allocation-only fields have two
 write ports, one per dispatch slot; the value, FP-flag, and exception-cause
@@ -118,7 +118,12 @@ either CDB lane; the two lanes always carry different tags. The others:
 | Store other than SC | When it issues without a fault, on a direct store-completion port instead of the CDB |
 
 Allocation writes the link address into the value field of every branch and
-jump, so JAL and JALR hold their register result from the start.
+jump, so JAL and JALR hold their register result from the start. It also
+writes every entry's link address, which ID computes as pc + 2 or pc + 4, into
+a fall-through PC RAM. Commit reads that RAM for the not-taken redirect and
+for the next-PC outputs (the interrupt resume PC and the FENCE.I target), so
+no adder sits after the head's PC read. A simulation check compares each
+allocation's link address with its PC and size.
 
 ### Same-cycle CDB bypass
 

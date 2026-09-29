@@ -189,8 +189,8 @@ module reorder_buffer #(
     // refetch target). Whenever o_commit_valid_raw (o_commit_2_valid_raw) is
     // high, it equals cpu_ooo's retired_next_pc() of o_commit_comb
     // (o_commit_comb_2), which cpu_ooo checks in simulation; otherwise it is
-    // unused. Computed from ungated head fields so the RAM read and the add
-    // run in parallel with the late commit gate.
+    // unused. Computed from ungated head fields so the RAM reads run in
+    // parallel with the late commit gate.
     output logic [riscv_pkg::XLEN-1:0] o_head_retired_next_pc,
     output logic [riscv_pkg::XLEN-1:0] o_head_next_retired_next_pc,
     output riscv_pkg::exc_cause_t o_trap_cause,  // Exception cause
@@ -683,6 +683,7 @@ module reorder_buffer #(
   logic head_next_is_branch;
   logic head_next_branch_taken;
   logic [XLEN-1:0] head_next_pc;
+  logic [XLEN-1:0] head_next_fallthrough_pc;
   logic [XLEN-1:0] head_next_branch_target;
   logic [XLEN-1:0] head_next_branch_target_jal;
   logic [XLEN-1:0] head_next_branch_target_resolved;
@@ -878,7 +879,7 @@ module reorder_buffer #(
   } = head_meta_rd_data;
   assign head_rs_type = riscv_pkg::rs_type_e'(head_rs_type_bits);
   assign head_branch_target = head_is_jal ? head_branch_target_jal : head_branch_target_resolved;
-  assign head_fallthrough_pc = head_pc + (head_is_compressed ? 64'd2 : 64'd4);
+  // head_fallthrough_pc (pc + 2 or pc + 4) comes from u_rob_fallthrough_pc.
 
   // Head+1 entry fields from FF-backed packed vectors / distributed RAM.
   // Dedicated read-port replicas, instantiated alongside the head RAMs below,
@@ -1319,6 +1320,41 @@ module reorder_buffer #(
       .i_read_address (head_next_idx),
       .i_read_onehot  (head_next_clear_mask),
       .o_read_data    (head_next_pc)
+  );
+
+  // TIMING: the fall-through PC, pc + (is_compressed ? 2 : 4), stored at
+  // allocation. The allocation's link_addr is that sum: id_stage computes it
+  // from the same pc and is_compressed that this entry stores (checked at
+  // allocation below). Reading it keeps a 64-bit add off the commit-time
+  // next-PC paths: the interrupt resume PC, the FENCE.I target, and the
+  // not-taken commit redirect.
+  mwp_dist_ram_ohread #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_fallthrough_pc (
+      .i_clk,
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+      .i_read_address (head_idx),
+      .i_read_onehot  (head_clear_mask),
+      .o_read_data    (head_fallthrough_pc)
+  );
+
+  // Widen-commit replica: head+1 read port for the fall-through PC.
+  mwp_dist_ram_ohread #(
+      .ADDR_WIDTH     (ReorderBufferTagWidth),
+      .DATA_WIDTH     (XLEN),
+      .NUM_WRITE_PORTS(2)
+  ) u_rob_fallthrough_pc_next (
+      .i_clk,
+      .i_write_enable ({alloc_en_2, alloc_en}),
+      .i_write_address({tail_idx_2, tail_idx}),
+      .i_write_data   ({i_alloc_req_2.link_addr, i_alloc_req.link_addr}),
+      .i_read_address (head_next_idx),
+      .i_read_onehot  (head_next_clear_mask),
+      .o_read_data    (head_next_fallthrough_pc)
   );
 
   mwp_dist_ram_ohread #(
@@ -2524,7 +2560,7 @@ module reorder_buffer #(
   // sit at head+1 (serial class), so no xepc arm is needed.
   assign o_head_next_retired_next_pc =
       (head_next_f_is_branch && head_next_branch_taken) ? head_next_branch_target :
-      head_next_pc + (head_next_is_compressed ? 64'd2 : 64'd4);
+      head_next_fallthrough_pc;
 
   // FENCE-class flush signal. The serializer derives both FENCE-class events
   // from its registered states (FENCE_I_SYNC for FENCE.I/SFENCE.VMA,
@@ -2654,6 +2690,53 @@ module reorder_buffer #(
         );
     end
   end
+
+  // The fall-through RAMs hold pc + (is_compressed ? 2 : 4) for every entry:
+  // each allocation's link_addr must equal that sum, and a valid head or
+  // head+1 entry must read it back.
+  function automatic logic [XLEN-1:0] expected_fallthrough(input logic [XLEN-1:0] pc,
+                                                           input logic is_compressed);
+    expected_fallthrough = XLEN'(pc + (is_compressed ? XLEN'(2) : XLEN'(4)));
+  endfunction
+
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      if (alloc_en && i_alloc_req.link_addr != expected_fallthrough(
+              i_alloc_req.pc, i_alloc_req.is_compressed
+          ))
+        $error(
+            "reorder_buffer: slot-1 link_addr %h is not the fall-through of pc %h (c=%b)",
+            i_alloc_req.link_addr,
+            i_alloc_req.pc,
+            i_alloc_req.is_compressed
+        );
+      if (alloc_en_2 && i_alloc_req_2.link_addr != expected_fallthrough(
+              i_alloc_req_2.pc, i_alloc_req_2.is_compressed
+          ))
+        $error(
+            "reorder_buffer: slot-2 link_addr %h is not the fall-through of pc %h (c=%b)",
+            i_alloc_req_2.link_addr,
+            i_alloc_req_2.pc,
+            i_alloc_req_2.is_compressed
+        );
+      if (head_valid && head_fallthrough_pc != expected_fallthrough(head_pc, head_is_compressed))
+        $error(
+            "reorder_buffer: head fall-through %h is not pc %h + 2/4 (c=%b)",
+            head_fallthrough_pc,
+            head_pc,
+            head_is_compressed
+        );
+      if (head_next_valid && head_next_fallthrough_pc != expected_fallthrough(
+              head_next_pc, head_next_is_compressed
+          ))
+        $error(
+            "reorder_buffer: head+1 fall-through %h is not pc %h + 2/4 (c=%b)",
+            head_next_fallthrough_pc,
+            head_next_pc,
+            head_next_is_compressed
+        );
+    end
+  end
 `endif
 `endif
 
@@ -2745,8 +2828,7 @@ module reorder_buffer #(
       // if taken, fall-through otherwise), which is the retired_next_pc()
       // contract. An xRET never sits at head+1, so no xepc arm is needed.
       o_commit_comb_2.redirect_pc     = head_next_f_is_branch ?
-          (head_next_branch_taken ? head_next_branch_target :
-           head_next_pc + (head_next_is_compressed ? 64'd2 : 64'd4)) : '0;
+          (head_next_branch_taken ? head_next_branch_target : head_next_fallthrough_pc) : '0;
       o_commit_comb_2.predicted_taken = 1'b0;
       o_commit_comb_2.branch_taken = head_next_branch_taken;
       o_commit_comb_2.branch_target = head_next_branch_target;
