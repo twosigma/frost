@@ -219,6 +219,10 @@ module tomasulo_wrapper #(
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic                                        i_flush_all,
+    // Same-edge copies of i_flush_all, equal to it on every cycle, from which
+    // the LQ and the FP station build their full flush.
+    input logic                                        i_flush_all_lq,
+    input logic                                        i_flush_all_fp,
     input logic                                        i_flush_after_head_commit,
     input logic                                        i_backend_recovery_hold,
     // A slow-tier (cached-region) store is in flight between the memory
@@ -739,6 +743,9 @@ module tomasulo_wrapper #(
   (* keep = "true" *)logic cdb_kill;
   assign full_flush_all = i_flush_all;
   assign speculative_flush_all = full_flush_all || i_flush_after_head_commit;
+  logic speculative_flush_all_lq, speculative_flush_all_fp;
+  assign speculative_flush_all_lq = i_flush_all_lq || i_flush_after_head_commit;
+  assign speculative_flush_all_fp = i_flush_all_fp || i_flush_after_head_commit;
   assign speculative_flush_en = i_flush_en && !i_flush_after_head_commit;
   // TIMING: every partial flush that reaches the LQ is an early-recovery
   // flush, because commit-time recovery and architectural full flushes both
@@ -3330,7 +3337,7 @@ module tomasulo_wrapper #(
       .i_flush_en                 (speculative_flush_en),
       .i_flush_tag                (i_flush_tag),
       .i_rob_head_tag             (head_tag),
-      .i_flush_all                (speculative_flush_all),
+      .i_flush_all                (speculative_flush_all_fp),
       .o_empty                    (fp_rs_empty_raw),
       .o_count                    (fp_rs_count_raw),
       .i_head_query_tag           (head_tag),
@@ -3707,7 +3714,7 @@ module tomasulo_wrapper #(
       // Flush
       .i_flush_en(lq_partial_flush_en),
       .i_flush_tag(i_flush_tag),
-      .i_flush_all(speculative_flush_all),
+      .i_flush_all(speculative_flush_all_lq),
       .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
@@ -4728,6 +4735,9 @@ module tomasulo_wrapper #(
   always_comb begin
     assume (!(i_alloc_req.alloc_valid && (i_flush_en || i_flush_all)));
   end
+
+  // The LQ's and FP station's flush inputs are same-edge copies of i_flush_all.
+  always_comb assume (i_flush_all_lq == i_flush_all && i_flush_all_fp == i_flush_all);
 
   // No rename during full flush
   always_comb assume (!(i_rat_alloc_valid && i_flush_all));

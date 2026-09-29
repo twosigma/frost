@@ -389,7 +389,7 @@ class TomasuloInterface:
         # Flush
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
-        self.dut.i_flush_all.value = 0
+        self._set_flush_all(0)
         self.dut.i_flush_after_head_commit.value = 0
         self.dut.i_backend_recovery_hold.value = 0
         self.dut.i_early_recovery_flush.value = 0
@@ -838,13 +838,19 @@ class TomasuloInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_early_recovery_flush.value = 0
 
+    def _set_flush_all(self, value: int) -> None:
+        """Drive i_flush_all and its LQ and FP-station copies together."""
+        self.dut.i_flush_all.value = value
+        self.dut.i_flush_all_lq.value = value
+        self.dut.i_flush_all_fp.value = value
+
     def drive_flush_all(self) -> None:
         """Assert flush_all signal."""
-        self.dut.i_flush_all.value = 1
+        self._set_flush_all(1)
 
     def clear_flush_all(self) -> None:
         """Deassert flush_all signal."""
-        self.dut.i_flush_all.value = 0
+        self._set_flush_all(0)
 
     # =========================================================================
     # RAT Source Lookups

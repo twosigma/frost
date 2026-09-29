@@ -607,6 +607,8 @@ module cpu_ooo #(
   logic [riscv_pkg::BpDirIdxBits-1:0] dir_update_idx;
   logic dir_update_taken;
   logic flush_all;
+  // Same-edge copies of flush_all for the LQ and the FP station.
+  logic flush_all_lq, flush_all_fp;
   logic frontend_state_flush;
   logic fence_i_flush;
   logic [XLEN-1:0] fence_i_target_pc;
@@ -1879,6 +1881,8 @@ module cpu_ooo #(
       .i_flush_en(flush_en),
       .i_flush_tag(flush_tag),
       .i_flush_all(flush_all),
+      .i_flush_all_lq(flush_all_lq),
+      .i_flush_all_fp(flush_all_fp),
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(early_backend_recovery_hold),
       .i_slow_write_inflight(i_cached_write_inflight),
@@ -2774,6 +2778,8 @@ module cpu_ooo #(
       .o_flush_en(flush_en),
       .o_flush_tag(flush_tag),
       .o_flush_all(flush_all),
+      .o_flush_all_lq(flush_all_lq),
+      .o_flush_all_fp(flush_all_fp),
       .o_commit_recovery_flush_after_head(commit_recovery_flush_after_head),
       .o_flush_after_head(flush_after_head),
       .o_checkpoint_restore(checkpoint_restore),
