@@ -381,10 +381,10 @@ module dmmu (
           s1_walk_asked_q <= 1'b0;
         end
       end else begin
-        // S1 held (unresolved): one op may slip in behind it.
+        // S1 held (unresolved): one op may slip in behind it. s0_q already
+        // holds it (see below).
         if (i_iss_valid && i_active && !s0_valid_q && !iss_killed) begin
           s0_valid_q <= 1'b1;
-          s0_q <= iss_in;
         end else if (s0_killed) begin
           s0_valid_q <= 1'b0;
         end
@@ -397,6 +397,29 @@ module dmmu (
       end
     end
   end
+
+  // The skid's payload is read only while s0_valid_q is set, so it takes the
+  // issue port on every cycle the skid is empty, and it holds the op that
+  // slipped in once s0_valid_q sets. The load enable of every payload bit is
+  // then !s0_valid_q, a register, instead of S1's resolution through the
+  // DTLB compare.
+  always_ff @(posedge i_clk) begin
+    if (!s0_valid_q) s0_q <= iss_in;
+  end
+
+`ifndef SYNTHESIS
+  // Reference payload loaded only when an op slips in behind a held S1. Both
+  // hold the same op whenever the skid is valid.
+  iss_payload_t s0_ref_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && !i_flush_all && !s1_can_load && i_iss_valid && i_active && !s0_valid_q &&
+        !iss_killed)
+      s0_ref_q <= iss_in;
+    if (i_rst_n && s0_valid_q) begin
+      p_s0_payload_matches_slip_in : assert (s0_q == s0_ref_q);
+    end
+  end
+`endif
 
   // The skid's valid bit holds MEM_RS issue, so the MEM_RS ready logic sees
   // one register and nothing of the TLB.

@@ -201,6 +201,20 @@ def _issue(dut: Any, op: Op) -> None:
     dut.i_trap_misaligned.value = op.trap_misaligned
 
 
+def _present_payload(dut: Any, op: Op) -> None:
+    """Drive op's issue payload with valid low, as a held MEM_RS may present."""
+    dut.i_iss_valid.value = 0
+    dut.i_iss_va.value = op.va
+    dut.i_iss_rob_tag.value = op.tag
+    dut.i_iss_size.value = op.size
+    dut.i_iss_needs_sq.value = op.needs_sq
+    dut.i_iss_store_perms.value = op.store
+    dut.i_iss_is_sc.value = op.is_sc
+    dut.i_iss_atomic.value = op.atomic
+    dut.i_iss_store_data.value = op.data
+    dut.i_iss_amo_rs2.value = op.amo_rs2
+
+
 def _check(dut: Any, op: Op, leaf: Leaf) -> None:
     expected_addr, expected_fault, expected_mmio = _expected(op, leaf)
     outputs = {
@@ -366,7 +380,11 @@ async def test_hit_stream_has_no_bubbles(dut: Any) -> None:
 
 @cocotb.test()
 async def test_miss_skid_and_response_matching(dut: Any) -> None:
-    """A miss waits for its VPN once; its skid successor follows without a bubble."""
+    """A miss waits for its VPN once; its skid successor follows without a bubble.
+
+    While the skid is full the issue port carries other ops' payloads with
+    valid low, and the held op keeps its own.
+    """
     await _setup(dut)
     first, second = Op(), Op(va=0x500120, tag=4, needs_sq=1, store=1)
     second_leaf = Leaf(vpn=second.va >> 12, ppn=0x40000)
@@ -382,7 +400,19 @@ async def test_miss_skid_and_response_matching(dut: Any) -> None:
         dut.i_iss_valid.value = 0
         assert int(dut.o_stall.value), "second op did not occupy the skid"
         _response(dut, Leaf(vpn=0x777, fault=PAGE))
-        for _ in range(3):
+        for step in range(3):
+            _present_payload(
+                dut,
+                Op(
+                    va=0x0060_0000 + (step << 12) + 8 * step,
+                    tag=9 + step,
+                    size=step,
+                    needs_sq=1 - second.needs_sq,
+                    store=1 - second.store,
+                    data=~second.data & XLEN_MASK,
+                    amo_rs2=~second.amo_rs2 & XLEN_MASK,
+                ),
+            )
             await _cycle(dut)
             assert not int(dut.o_iss_out_valid.value), "unrelated VPN resolved held op"
             assert not int(dut.o_walk_req_valid.value), "accepted request repeated"
