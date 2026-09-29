@@ -88,11 +88,7 @@ suppresses both lanes on a full flush) use two derived terms:
 `speculative_flush_all = i_flush_all || i_flush_after_head_commit` and
 `speculative_flush_en = i_flush_en && !i_flush_after_head_commit`. The LQ takes
 `speculative_flush_all` as its full flush and `i_early_recovery_flush` as its
-partial flush. The LQ and the FP station build their `speculative_flush_all`
-from `i_flush_all_lq` and `i_flush_all_fp`, same-edge register copies of
-`i_flush_all` that the flush controller keeps so that each of these large
-consumers has its own driver; the copies equal `i_flush_all` on every cycle.
-The ROB, the SQ, and the store early-address path take the raw
+partial flush. The ROB, the SQ, and the store early-address path take the raw
 inputs; the ROB and SQ handle commit-time recovery themselves, and the SQ keeps
 committed stores through it. The RAT takes `i_flush_all` only, because
 misprediction recovery restores a RAT checkpoint through its own interface.

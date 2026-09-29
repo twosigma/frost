@@ -82,11 +82,6 @@ module misprediction_flush_controller #(
     output logic o_flush_en,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_flush_tag,
     output logic o_flush_all,
-    // Same-edge copies of o_flush_all for the LQ and the FP station, each
-    // placed near its consumer (p_lq_flush_copy_matches,
-    // p_fp_flush_copy_matches).
-    output logic o_flush_all_lq,
-    output logic o_flush_all_fp,
     output logic o_commit_recovery_flush_after_head,
     output logic o_flush_after_head,
     output logic o_checkpoint_restore,
@@ -395,20 +390,6 @@ module misprediction_flush_controller #(
     else frontend_flush_all_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event;
   end
 
-  // TIMING: two more copies for the LQ's capture stage and the FP station,
-  // which the kill register's 400-load net reached from across the core.
-  (* dont_touch = "true" *)logic lq_flush_all_q;
-  (* dont_touch = "true" *)logic fp_flush_all_q;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      lq_flush_all_q <= 1'b0;
-      fp_flush_all_q <= 1'b0;
-    end else begin
-      lq_flush_all_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event;
-      fp_flush_all_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event;
-    end
-  end
-
   // early_mispredict_active without its trap/MRET terms: identical whenever
   // flush_all is low, and every use below is dominated by flush_all.
   logic early_redirect_fast;
@@ -537,8 +518,6 @@ module misprediction_flush_controller #(
   assign o_flush_en                            = flush_en;
   assign o_flush_tag                           = flush_tag;
   assign o_flush_all                           = flush_all;
-  assign o_flush_all_lq                        = lq_flush_all_q;
-  assign o_flush_all_fp                        = fp_flush_all_q;
 
 `ifndef SYNTHESIS
   // Reference decode: plain priority chains built from the individual
@@ -601,8 +580,6 @@ module misprediction_flush_controller #(
       p_restore_flush_copy_matches : assert (restore_flush_all_q == full_flush_side_effect_kill_q);
       p_frontend_flush_copy_matches :
       assert (frontend_flush_all_q == full_flush_side_effect_kill_q);
-      p_lq_flush_copy_matches : assert (lq_flush_all_q == full_flush_side_effect_kill_q);
-      p_fp_flush_copy_matches : assert (fp_flush_all_q == full_flush_side_effect_kill_q);
     end
   end
 `endif
