@@ -3256,76 +3256,124 @@ module cpu_ooo #(
     end
   endfunction
 
+  // TIMING: the resume PC is formed after registers. Its arm selects (the
+  // trap and xRET takes, the raw commit valids, and the WFI seed) are late,
+  // so instead of steering four 64-bit values into one register under them,
+  // each arm's value is registered on every cycle, each select is registered
+  // on its own, and the priority mux runs after the registers.
+  // interrupt_resume_prev_q holds the mux output for the cycles no arm
+  // fires, so interrupt_resume_pc equals, on every cycle, the register this
+  // replaces (checked below against a reference copy of that register).
+  logic resume_take_q, resume_commit_2_q, resume_commit_q, resume_wfi_q;
+  logic [XLEN-1:0] resume_take_pc_q, resume_commit_2_pc_q, resume_commit_pc_q, resume_wfi_pc_q;
+  logic [XLEN-1:0] interrupt_resume_prev_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      interrupt_resume_pc <= '0;
-    end else if (trap_or_xret_taken) begin
-      // The ROB head's return flavor selects the data before the late take
-      // strobe. On an xRET it equals the taken flavor (checked below), so
-      // the register keeps the same update cycle and priority.
-      // An xRET never appears on rob_commit_valid_raw, so the arms below never
-      // see it: it retires through the full flush that follows it (flush_all,
-      // from mret_taken_reg, clears the ROB head and gates commit_en). Without
-      // this seed the resume PC would stay at the xRET's own PC until the
-      // first instruction at the target commits. An M-level interrupt taken
-      // in that window (possible once privilege has dropped and the trap
-      // unit's inhibit lifts, a few cycles after the xRET) would then save the
-      // xRET's PC as mepc, and the handler's MRET would re-execute the xRET at
-      // the lower privilege. The seed is the xRET target (mepc, sepc, or dpc),
-      // which is the redirect target. csr_mepc is stable here: MRET does not
-      // write mepc and cannot coincide with a trap entry that would.
-      //
-      // Every trap take also seeds the resume PC with its redirect target, for
-      // two cases that arise before the handler's first instruction retires:
-      //  - an M-level interrupt taken just after a trap delegated to S
-      //    (privilege is now S, so M interrupts are enabled regardless of
-      //    MIE, and the take can arm a few cycles after the entry) would
-      //    otherwise save the trapping instruction's PC as mepc and, after
-      //    the MRET, re-execute it in S;
-      //  - a single step whose instruction traps must halt with dpc at the
-      //    handler's first instruction, as the debug spec requires.
-      // Debug Mode entries and redirects also land here; nothing uses the
-      // value then, because interrupts are masked in Debug Mode.
-      // trap_entry_target is trap_target before its xRET mux; the unit proves that
-      // the two targets match on a trap take.
-      // The trap unit also supplies the combined write enable before its
-      // trap-vs-xRET arbitration. The two takes are mutually exclusive.
-      interrupt_resume_pc <= trap_taken ? trap_entry_target :
-                             mret_start_is_dret ? csr_dpc :
-                             mret_start_is_sret ? csr_sepc : csr_mepc;
-    end else if (rob_commit_2_valid_raw) begin
-      // Timing: identical value to retired_next_pc(rob_commit_comb_2) in every
-      // cycle this arm is taken (checked below in simulation), but the ROB
-      // precomputes it from ungated head+1 fields (the stored fall-through PC
-      // and branch target) so its RAM reads do not sit behind the late commit
-      // gating.
-      interrupt_resume_pc <= rob_head_next_retired_next_pc;
-    end else if (rob_commit_valid_raw) begin
-      // Timing: identical value to retired_next_pc(rob_commit_comb); see above.
-      interrupt_resume_pc <= rob_head_retired_next_pc;
-    end else if (wfi_resume_seed) begin
-      // While a WFI waits at the ROB head, the architectural resume PC is
-      // wfi_pc+4 (WFI never redirects). Seed it so that an interrupt taken at
-      // the WFI saves the spec-required wfi_pc+4 rather than the pre-WFI
-      // instruction's next-PC (== wfi_pc). That includes the narrow window
-      // where a committed store finishes draining and take_trap fires the
-      // same cycle, before the WFI's own commit can advance
-      // interrupt_resume_pc. Lowest priority: a real commit always wins, and
-      // WFI is never compressed, so +4 is exact.
-      //
-      // Only a legal WFI that stays in the ROB seeds. A WFI's cause is zero
-      // unless allocation marked it illegal; an illegal WFI has not executed,
-      // so an interrupt taken there must not resume past it (it traps once
-      // the handler returns). A full flush (after a trap taken at the WFI, or
-      // a FENCE-class retirement) and commit-time recovery (a wrong-path
-      // head) remove the head at the end of the cycle; seeding then would
-      // overwrite the resume PC installed by the take or by the last
-      // retirement. A WFI never waits in Debug Mode or while a single step is
-      // armed (it runs as a nop there), so it gets no seed: a step that
-      // retires the instruction before it must halt with dpc at the WFI.
-      interrupt_resume_pc <= rob_trap_pc + 64'd4;
+      resume_take_q           <= 1'b0;
+      resume_commit_2_q       <= 1'b0;
+      resume_commit_q         <= 1'b0;
+      resume_wfi_q            <= 1'b0;
+      interrupt_resume_prev_q <= '0;
+    end else begin
+      resume_take_q           <= trap_or_xret_taken;
+      resume_commit_2_q       <= rob_commit_2_valid_raw;
+      resume_commit_q         <= rob_commit_valid_raw;
+      resume_wfi_q            <= wfi_resume_seed;
+      interrupt_resume_prev_q <= interrupt_resume_pc;
+    end
+    // Take arm (highest priority).
+    // The ROB head's return flavor selects the data before the late take
+    // strobe. On an xRET it equals the taken flavor (checked below), so
+    // the register keeps the same update cycle and priority.
+    // An xRET never appears on rob_commit_valid_raw, so the arms below never
+    // see it: it retires through the full flush that follows it (flush_all,
+    // from mret_taken_reg, clears the ROB head and gates commit_en). Without
+    // this seed the resume PC would stay at the xRET's own PC until the
+    // first instruction at the target commits. An M-level interrupt taken
+    // in that window (possible once privilege has dropped and the trap
+    // unit's inhibit lifts, a few cycles after the xRET) would then save the
+    // xRET's PC as mepc, and the handler's MRET would re-execute the xRET at
+    // the lower privilege. The seed is the xRET target (mepc, sepc, or dpc),
+    // which is the redirect target. csr_mepc is stable here: MRET does not
+    // write mepc and cannot coincide with a trap entry that would.
+    //
+    // Every trap take also seeds the resume PC with its redirect target, for
+    // two cases that arise before the handler's first instruction retires:
+    //  - an M-level interrupt taken just after a trap delegated to S
+    //    (privilege is now S, so M interrupts are enabled regardless of
+    //    MIE, and the take can arm a few cycles after the entry) would
+    //    otherwise save the trapping instruction's PC as mepc and, after
+    //    the MRET, re-execute it in S;
+    //  - a single step whose instruction traps must halt with dpc at the
+    //    handler's first instruction, as the debug spec requires.
+    // Debug Mode entries and redirects also land here; nothing uses the
+    // value then, because interrupts are masked in Debug Mode.
+    // trap_entry_target is trap_target before its xRET mux; the unit proves that
+    // the two targets match on a trap take.
+    // The trap unit also supplies the combined write enable before its
+    // trap-vs-xRET arbitration. The two takes are mutually exclusive.
+    resume_take_pc_q <= trap_taken ? trap_entry_target :
+                        mret_start_is_dret ? csr_dpc :
+                        mret_start_is_sret ? csr_sepc : csr_mepc;
+    // Slot-2 commit arm.
+    // Timing: identical value to retired_next_pc(rob_commit_comb_2) in every
+    // cycle this arm is taken (checked below in simulation), but the ROB
+    // precomputes it from ungated head+1 fields (the stored fall-through PC
+    // and branch target) so its RAM reads do not sit behind the late commit
+    // gating.
+    resume_commit_2_pc_q <= rob_head_next_retired_next_pc;
+    // Slot-1 commit arm.
+    // Timing: identical value to retired_next_pc(rob_commit_comb); see above.
+    resume_commit_pc_q <= rob_head_retired_next_pc;
+    // WFI seed arm (lowest priority).
+    // While a WFI waits at the ROB head, the architectural resume PC is
+    // wfi_pc+4 (WFI never redirects). Seed it so that an interrupt taken at
+    // the WFI saves the spec-required wfi_pc+4 rather than the pre-WFI
+    // instruction's next-PC (== wfi_pc). That includes the narrow window
+    // where a committed store finishes draining and take_trap fires the
+    // same cycle, before the WFI's own commit can advance
+    // interrupt_resume_pc. Lowest priority: a real commit always wins, and
+    // WFI is never compressed, so +4 is exact.
+    //
+    // Only a legal WFI that stays in the ROB seeds. A WFI's cause is zero
+    // unless allocation marked it illegal; an illegal WFI has not executed,
+    // so an interrupt taken there must not resume past it (it traps once
+    // the handler returns). A full flush (after a trap taken at the WFI, or
+    // a FENCE-class retirement) and commit-time recovery (a wrong-path
+    // head) remove the head at the end of the cycle; seeding then would
+    // overwrite the resume PC installed by the take or by the last
+    // retirement. A WFI never waits in Debug Mode or while a single step is
+    // armed (it runs as a nop there), so it gets no seed: a step that
+    // retires the instruction before it must halt with dpc at the WFI.
+    resume_wfi_pc_q <= rob_trap_pc + 64'd4;
+  end
+  assign interrupt_resume_pc = resume_take_q ? resume_take_pc_q :
+      resume_commit_2_q ? resume_commit_2_pc_q :
+      resume_commit_q ? resume_commit_pc_q :
+      resume_wfi_q ? resume_wfi_pc_q : interrupt_resume_prev_q;
+
+`ifndef SYNTHESIS
+  // Reference: the single register the arms used to write directly.
+  logic [XLEN-1:0] resume_pc_reference_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) resume_pc_reference_q <= '0;
+    else if (trap_or_xret_taken)
+      resume_pc_reference_q <= trap_taken ? trap_entry_target :
+                               mret_start_is_dret ? csr_dpc :
+                               mret_start_is_sret ? csr_sepc : csr_mepc;
+    else if (rob_commit_2_valid_raw) resume_pc_reference_q <= rob_head_next_retired_next_pc;
+    else if (rob_commit_valid_raw) resume_pc_reference_q <= rob_head_retired_next_pc;
+    else if (wfi_resume_seed) resume_pc_reference_q <= rob_trap_pc + 64'd4;
+  end
+  logic resume_pc_reference_armed_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) resume_pc_reference_armed_q <= 1'b1;
+    if (resume_pc_reference_armed_q && !i_rst && interrupt_resume_pc != resume_pc_reference_q) begin
+      $error("cpu_ooo: interrupt_resume_pc %08x != reference %08x", interrupt_resume_pc,
+             resume_pc_reference_q);
     end
   end
+`endif
 
   assign wfi_resume_seed = rob_head_is_wfi && head_valid && (rob_trap_cause == '0) &&
       !flush_all && !mispredict_recovery_pending && !csr_debug_mode && !step_armed_q;
