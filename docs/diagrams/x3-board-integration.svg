@@ -2,8 +2,10 @@
   <title id="title">X3 FPGA board integration</title>
   <desc id="desc">
     The X3 integrates a CPU/BRAM/debug subsystem, a DDR4 block design, and an
-    Ethernet GTY transceiver. The CPU runs at 322.265625/N MHz and UART/loaders at
-    80.56640625/N MHz; DDR and Ethernet clocks are independent. SmartConnect merges CPU
+    Ethernet GTY transceiver. The CPU runs at 322.265625/N MHz from its own GTY
+    transmitter on the Ethernet reference clock, and UART/loaders at
+    80.56640625/N MHz; the DDR and Ethernet MAC clocks are separate domains.
+    SmartConnect merges CPU
     and JTAG memory traffic across clock and width boundaries. DDR calibration
     and an ECC-initialization write pass complete before CPU and DDR-loader
     release. BSCAN shares the FPGA TAP with Vivado. Module boxes can span clock
@@ -12,7 +14,8 @@
   <!--
     Self-contained SVG; editable text, shapes and paths, without external assets.
     Source map (paths relative to the repository root):
-      boards/x3/x3_frost.sv: MMCM/BUFGCE_DIV, mem_ok synchronizer, board resets,
+      boards/x3/x3_frost.sv: CPU clock source (x3_cpu_clock_gty, or MMCM/BUFGCE_DIV
+        at N = 3, 4), mem_ok synchronizer, board resets,
         common subsystem and ddr_subsys_wrapper instantiation, DDR AXI wiring.
       boards/xilinx_frost_subsystem.sv: low-BRAM JTAG-AXI and AXI-BRAM IP,
         16-bit startup timer, 27-bit image-load timer, BSCAN USER3/4, frost.
@@ -89,22 +92,22 @@
   <g id="clock-generation">
     <rect x="52" y="176" width="1096" height="210" rx="14" class="panel"/>
     <text x="76" y="208" class="section">CLOCK GENERATION</text>
-    <text x="1124" y="208" class="body" text-anchor="end">N = CPU_CLK_DIV · default N = 1</text>
+    <text x="1124" y="208" class="body" text-anchor="end">N = CPU_CLK_DIV · default N = 1 · N = 3, 4: MMCM</text>
     <rect x="76" y="248" width="178" height="92" rx="12" class="signal"/>
-    <text x="165" y="278" class="label center">System ref.</text>
-    <text x="165" y="304" class="body center">300 MHz · diff.</text>
-    <text x="165" y="328" class="small center">i_sysclk_p/n</text>
+    <text x="165" y="278" class="label center">Ethernet ref.</text>
+    <text x="165" y="304" class="body center">161.13 MHz · diff.</text>
+    <text x="165" y="328" class="small center">i_nic_refclk_p/n</text>
     <path d="M 254 294 H 286" class="clock" marker-end="url(#control-arrow)"/>
     <rect x="286" y="248" width="224" height="92" rx="12" class="control"/>
-    <text x="398" y="278" class="label center">IBUFDS + MMCM</text>
-    <text x="398" y="304" class="body center">VCO 1289.0625 MHz</text>
-    <text x="398" y="328" class="small center">output divide = 4 × N</text>
+    <text x="398" y="278" class="label center">GTY X0Y29 CPLL</text>
+    <text x="398" y="304" class="body center">VCO 3222.66 MHz</text>
+    <text x="398" y="328" class="small center">TXOUTCLK = CPLL ÷ 10</text>
     <path d="M 510 294 H 536 V 259 H 562" class="clock" marker-end="url(#control-arrow)"/>
     <path d="M 536 294 V 337 H 562" class="clock" marker-end="url(#control-arrow)"/>
     <rect x="562" y="230" width="250" height="58" rx="10" class="control"/>
-    <text x="687" y="266" class="label center">BUFGCE_DIV / 1</text>
+    <text x="687" y="266" class="label center">BUFG_GT / N</text>
     <rect x="562" y="308" width="250" height="58" rx="10" class="control"/>
-    <text x="687" y="344" class="label center">BUFGCE_DIV / 4</text>
+    <text x="687" y="344" class="label center">BUFG_GT / 4N</text>
     <path d="M 812 259 H 842" class="clock" marker-end="url(#control-arrow)"/>
     <path d="M 812 337 H 842" class="clock" marker-end="url(#control-arrow)"/>
     <text x="858" y="254" class="label">CPU · 322.27/N MHz</text>
@@ -216,7 +219,7 @@
   <text x="76" y="1372" class="body">Release CPU after lock, calibration, and x3_ddr_init done</text>
   <text x="76" y="1402" class="small">The common subsystem adds startup and software-image reset holds.</text>
   <text x="754" y="1296" class="small">DDR transport reset:</text>
-  <text x="754" y="1324" class="body">MMCM lock: DDR transport</text>
+  <text x="754" y="1324" class="body">CPU clock lock: DDR transport</text>
   <text x="754" y="1350" class="body">DDR JTAG additionally waits</text>
   <text x="754" y="1376" class="body">for x3_ddr_init completion.</text>
   <path d="M 1094 1208 V 1232 H 1156 V 1688 H 1094 V 1710" class="memlink" marker-end="url(#memory-arrow)"/>

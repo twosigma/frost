@@ -787,9 +787,10 @@ if {$step eq "synth"} {
     ] [get_ips axi_bram_ctrl_0]
 
     if {$board_has_gty} {
-        # The NIC's transceiver wizard core; the board top's transceiver
-        # wrapper instantiates it. FROST_GTY_RX_EQ selects the receive
-        # equalizer (LPM by default, or DFE).
+        # The board's transceiver wizard cores (on X3 the NIC's and the CPU
+        # clock's); the board top's transceiver wrappers instantiate them.
+        # FROST_GTY_RX_EQ selects the NIC's receive equalizer (LPM by
+        # default, or DFE).
         source [file join [file dirname [info script]] ${board_name}_gty_ip.tcl]
         set create_gty_ip_proc create_${board_name}_gty_ip
         $create_gty_ip_proc [getenv_default FROST_GTY_RX_EQ LPM]

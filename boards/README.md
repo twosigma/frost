@@ -15,6 +15,7 @@ commands.
 | `x3/x3_frost.sv` | Board clocks, DDR and NIC integration, reset sequencing |
 | `x3/x3_ddr_init.sv` | Initializes the exposed DDR region with valid ECC |
 | `x3/x3_nic_gty.sv` | Ethernet transceiver, MAC clocks, transceiver reset supervisor |
+| `x3/x3_cpu_clock_gty.sv` | CPU clock from a dedicated GTY transmitter |
 | `x3/constr/x3.xdc` | Pin and timing constraints |
 
 `x3/x3_frost.f` lists the board RTL. The Vivado flow generates the loader,
@@ -32,24 +33,39 @@ After calibration, `x3_ddr_init` zeroes the region so every word has valid ECC
 (about 0.1 seconds). It writes whole 512-bit controller words, as aligned
 two-beat bursts: a half-word write would make the controller read the
 uninitialized other half to recompute ECC. The CPU and the DDR loader leave
-reset once calibration, MMCM lock, and initialization are all complete; the
-loader, which runs on the CPU/4 clock, takes that reset through a synchronizer
-on it. Check for ECC errors with `fpga/ddr_ecc/ddr_ecc_status.py`.
+reset once the CPU clock runs and calibration and initialization are complete;
+the loader, which runs on the CPU/4 clock, takes that reset through a
+synchronizer on it. Check for ECC errors with `fpga/ddr_ecc/ddr_ecc_status.py`.
 
 ## Clock Generation
 
 | Domain | Clock |
 |--------|-------|
-| CPU | 300 MHz input / 8 × 34.375 / 4 = 322.265625 MHz |
+| CPU | 161.1328125 MHz Ethernet reference × 2 = 322.265625 MHz (GTY X0Y29 TXOUTCLK) |
 | Loader, UART, reset timers | CPU/4 = 80.56640625 MHz |
 | DDR reference | Independent 300 MHz |
 | Ethernet TX / recovered RX | GTY user clocks, about 161.13 MHz |
-| GTY reset controller | Input/2 = 150 MHz, independent of the MMCM and the link |
+| GTY reset controllers | 300 MHz input / 2 = 150 MHz, independent of both transceivers and the link |
+
+The CPU clock comes from its own GTY channel, X0Y29 in the NIC's quad: a
+CPLL at 3.22265625 GHz from the Ethernet reference clock, a 6.4453125 Gb/s
+transmitter that carries no data (held in electrical idle), and TXOUTCLK from
+the transmitter's programmable divider (the CPLL clock ÷ 10). Two BUFG_GTs
+make the CPU and CPU/4 clocks, rooted at X2Y7 by the XDC (Vivado would
+otherwise root them at the transceiver, on the device's right edge). The
+channel shares only the reference clock buffer with the NIC, so a NIC PHY
+reset, which resets the NIC's QPLL0 and channel, leaves the CPU clock
+running. A small supervisor on the 150 MHz clock restarts the channel's reset
+sequence if it has not finished 100 ms after power good or if the CPLL loses
+lock, and holds the CPU in reset until the clock is back.
 
 `build.py --cpu-clock-div N` sets the board top's `CPU_CLK_DIV` generic,
 which divides the CPU and CPU/4 clocks by N; the DDR and Ethernet clocks do
-not change. Load software with the matching clock. The `PERF_COUNTERS`
-generic includes the profiling counters (`--perf-counters`).
+not change. N = 2 divides in the BUFG_GTs. N = 3 and 4 need CPU/4 dividers of
+12 and 16, beyond a BUFG_GT's 8, so those builds take the CPU clock from an
+MMCM on the 300 MHz input instead (300 MHz / 8 × 34.375 / 4N); the CPU clock
+channel still runs. Load software with the matching clock. The
+`PERF_COUNTERS` generic includes the profiling counters (`--perf-counters`).
 
 ## JTAG-based software loading
 
@@ -89,6 +105,8 @@ the reverse.
 | `i_nic_refclk_p` / `i_nic_refclk_n` | Input | P9 / P8 | 161.1328125 MHz Ethernet reference clock (MGTREFCLK0, quad 231) |
 | `o_nic_txp` / `o_nic_txn` | Output | J7 / J6 | NIC transceiver TX (GTY X0Y28, DSFP28 cage labelled 2, lane 1) |
 | `i_nic_rxp` / `i_nic_rxn` | Input | K4 / K3 | NIC transceiver RX (GTY X0Y28) |
+| `o_cpu_clock_txp` / `o_cpu_clock_txn` | Output | H5 / H4 | CPU clock transceiver TX (GTY X0Y29), electrical idle |
+| `i_cpu_clock_rxp` / `i_cpu_clock_rxn` | Input | J2 / J1 | CPU clock transceiver RX (GTY X0Y29), unused |
 
 The UART console uses 115200 baud, 8N1.
 

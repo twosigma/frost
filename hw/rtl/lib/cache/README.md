@@ -259,7 +259,7 @@ land before the loader's first DDR write.
 The interconnect's own reset is different. While it is in reset, AXI
 requires every VALID low, so the bridge takes that reset as a second input
 (`frost`'s `i_ddr_axi_rst_n`, which X3 drives from the SmartConnect's
-CPU-side reset, the MMCM lock). It gates the held VALIDs off in the cycle
+CPU-side reset, the CPU clock's lock). It gates the held VALIDs off in the cycle
 the reset arrives and drops those beats, so none is presented after the
 interconnect restarts. The behavioral DDR model in simulation resets with
 the CPU, so there the CPU reset serves as both.

@@ -14,10 +14,11 @@
  *    limitations under the License.
  */
 
-// X3 board top level: UltraScale+ clock generation, the DDR4 memory subsystem
-// (the ddr_subsys block design, holding the DDR4 controller, a SmartConnect
-// and the JTAG DDR loader), the NIC's GTY transceiver (x3_nic_gty) and the
-// common FROST subsystem.
+// X3 board top level: UltraScale+ clock generation (the CPU clock's GTY
+// transmitter, x3_cpu_clock_gty, or an MMCM in slow functional builds), the
+// DDR4 memory subsystem (the ddr_subsys block design, holding the DDR4
+// controller, a SmartConnect and the JTAG DDR loader), the NIC's GTY
+// transceiver (x3_nic_gty) and the common FROST subsystem.
 module x3_frost #(
     // CPU clock divider for functional-testing builds (build.py
     // --cpu-clock-div exports it as FROST_CPU_CLK_DIV and synthesis passes
@@ -65,15 +66,30 @@ module x3_frost #(
     input  logic i_nic_rxp,
     input  logic i_nic_rxn,
     output logic o_nic_txp,
-    output logic o_nic_txn
+    output logic o_nic_txn,
+
+    // CPU clock transceiver, GTY channel X0Y29 of quad 231 (TX H5/H4, RX
+    // J2/J1). It carries no data: TX is held in electrical idle.
+    input  logic i_cpu_clock_rxp,
+    input  logic i_cpu_clock_rxn,
+    output logic o_cpu_clock_txp,
+    output logic o_cpu_clock_txn
 );
 
-  // Clock generation: 300 MHz / 8 * 34.375 / (4 * CPU_CLK_DIV).
-  localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;
+  // Clock generation. Full- and half-rate builds (CPU_CLK_DIV 1 and 2) take
+  // the CPU clock from a GTY transmitter (x3_cpu_clock_gty): TXOUTCLK at
+  // 322.265625 MHz from the Ethernet reference clock, divided by BUFG_GTs.
+  // The slower functional builds keep the MMCM on the 300 MHz system clock,
+  // 300 MHz / 8 * 34.375 / (4 * CPU_CLK_DIV), because a BUFG_GT divides by at
+  // most 8 and their CPU/4 clocks need 12 and 16. The CPU clock channel runs
+  // in every build: its pins are board pins.
+  localparam bit CpuClockFromGty = CPU_CLK_DIV <= 2;
   localparam int unsigned CpuClkHz = 322_265_625 / CPU_CLK_DIV;
   logic main_clock, divided_clock_by_4;
-  logic mmcm_locked;
-  logic differential_clock_300mhz_buffered, clock_feedback, clock_from_mmcm;
+  // The CPU clock is running and stable: from the transceiver's supervisor
+  // (falls without a clock edge, rises on main_clock), or the MMCM lock.
+  logic cpu_clock_locked;
+  logic differential_clock_300mhz_buffered;
 
   // Convert differential clock input to single-ended
   IBUFDS differential_input_buffer_300mhz (
@@ -82,56 +98,119 @@ module x3_frost #(
       .O (differential_clock_300mhz_buffered)
   );
 
-  // Mixed-Mode Clock Manager (MMCM) for PLL-based clock generation.
-  // VCO: 300 MHz / 8 * 34.375 = 1289.0625 MHz.
-  // CPU: 1289.0625 MHz / (4 * CPU_CLK_DIV).
-  MMCME2_ADV #(
-      .CLKIN1_PERIOD   (3.333),           // Input period: 1/300MHz = 3.333ns
-      .DIVCLK_DIVIDE   (8),
-      .CLKFBOUT_MULT_F (34.375),
-      .CLKOUT0_DIVIDE_F(CpuClkOutDivide)
-  ) mixed_mode_clock_manager (
-      .CLKIN1  (differential_clock_300mhz_buffered),
-      .CLKFBIN (clock_feedback),
-      .CLKFBOUT(clock_feedback),
-      .CLKOUT0 (clock_from_mmcm),
-      .RST     (1'b0),                                // Don't reset MMCM
-      .PWRDWN  (1'b0),                                // Don't power down
-      .CLKIN2  (1'b0),
-      .CLKINSEL(1'b1),                                // Select CLKIN1
-      .LOCKED  (mmcm_locked)
+  // The two transceivers' shared clocks: quad 231's reference clock buffer,
+  // for the NIC's QPLL0 and the CPU clock channel's CPLL, and the
+  // free-running clock of both reset controllers. The free-running clock
+  // halves the 300 MHz input (in the input's clock region), so it runs from
+  // configuration and depends on neither transceiver nor the MMCM.
+  logic gty_refclk, freerun_clk;
+  IBUFDS_GTE4 #(
+      .REFCLK_EN_TX_PATH (1'b0),
+      .REFCLK_HROW_CK_SEL(2'b00),
+      .REFCLK_ICNTL_RX   (2'b00)
+  ) gty_refclk_buffer (
+      .I    (i_nic_refclk_p),
+      .IB   (i_nic_refclk_n),
+      .CEB  (1'b0),
+      .O    (gty_refclk),
+      .ODIV2()
   );
 
-  // Global clock buffer for the undivided main clock.
-  // BUFGCE_DIV is an UltraScale+ primitive.
   BUFGCE_DIV #(
-      .BUFGCE_DIVIDE  (1),
+      .BUFGCE_DIVIDE  (2),
       .IS_CE_INVERTED (1'b0),
       .IS_CLR_INVERTED(1'b0),
       .IS_I_INVERTED  (1'b0)
-  ) main_clock_buffer (
-      .O(main_clock),
-      .CE(1'b1),  // Clock enable always active
-      .CLR(1'b0),  // Clear never active
-      .I(clock_from_mmcm)
+  ) freerun_clock_buffer (
+      .O  (freerun_clk),
+      .CE (1'b1),
+      .CLR(1'b0),
+      .I  (differential_clock_300mhz_buffered)
   );
 
-  // Global clock buffer for the divide-by-4 JTAG/UART clock.
-  BUFGCE_DIV #(
-      .BUFGCE_DIVIDE  (4),
-      .IS_CE_INVERTED (1'b0),
-      .IS_CLR_INVERTED(1'b0),
-      .IS_I_INVERTED  (1'b0)
-  ) divided_clock_buffer (
-      .O(divided_clock_by_4),
-      .CE(1'b1),  // Clock enable always active
-      .CLR(1'b0),  // Clear never active
-      .I(clock_from_mmcm)
-  );
+  if (CpuClockFromGty) begin : gen_gty_cpu_clock
+    x3_cpu_clock_gty #(
+        .CPU_CLK_DIV(CPU_CLK_DIV)
+    ) cpu_clock_source (
+        .i_refclk     (gty_refclk),
+        .i_freerun_clk(freerun_clk),
+        .i_rxp        (i_cpu_clock_rxp),
+        .i_rxn        (i_cpu_clock_rxn),
+        .o_txp        (o_cpu_clock_txp),
+        .o_txn        (o_cpu_clock_txn),
+        .o_clk        (main_clock),
+        .o_clk_div4   (divided_clock_by_4),
+        .o_locked     (cpu_clock_locked)
+    );
+  end else begin : gen_mmcm_cpu_clock
+    /* verilator lint_off UNUSEDSIGNAL */
+    logic gty_clock_unused, gty_clock_div4_unused, gty_clock_locked_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
+    x3_cpu_clock_gty #(
+        .CPU_CLK_DIV(CPU_CLK_DIV)
+    ) cpu_clock_source (
+        .i_refclk     (gty_refclk),
+        .i_freerun_clk(freerun_clk),
+        .i_rxp        (i_cpu_clock_rxp),
+        .i_rxn        (i_cpu_clock_rxn),
+        .o_txp        (o_cpu_clock_txp),
+        .o_txn        (o_cpu_clock_txn),
+        .o_clk        (gty_clock_unused),
+        .o_clk_div4   (gty_clock_div4_unused),
+        .o_locked     (gty_clock_locked_unused)
+    );
 
-  // The NIC's 10GBASE-R transceiver. Its reset controller runs on a divided
-  // copy of the 300 MHz input taken before the MMCM, and it supplies both MAC
-  // clocks (TX and recovered RX USRCLK2, 161.13 MHz), their clock-OK levels,
+    // VCO: 300 MHz / 8 * 34.375 = 1289.0625 MHz.
+    // CPU: 1289.0625 MHz / (4 * CPU_CLK_DIV).
+    localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;
+    logic clock_feedback, clock_from_mmcm, mmcm_locked;
+    MMCME2_ADV #(
+        .CLKIN1_PERIOD   (3.333),           // Input period: 1/300MHz = 3.333ns
+        .DIVCLK_DIVIDE   (8),
+        .CLKFBOUT_MULT_F (34.375),
+        .CLKOUT0_DIVIDE_F(CpuClkOutDivide)
+    ) mixed_mode_clock_manager (
+        .CLKIN1  (differential_clock_300mhz_buffered),
+        .CLKFBIN (clock_feedback),
+        .CLKFBOUT(clock_feedback),
+        .CLKOUT0 (clock_from_mmcm),
+        .RST     (1'b0),                                // Don't reset MMCM
+        .PWRDWN  (1'b0),                                // Don't power down
+        .CLKIN2  (1'b0),
+        .CLKINSEL(1'b1),                                // Select CLKIN1
+        .LOCKED  (mmcm_locked)
+    );
+    assign cpu_clock_locked = mmcm_locked;
+
+    // Global clock buffer for the undivided main clock.
+    BUFGCE_DIV #(
+        .BUFGCE_DIVIDE  (1),
+        .IS_CE_INVERTED (1'b0),
+        .IS_CLR_INVERTED(1'b0),
+        .IS_I_INVERTED  (1'b0)
+    ) main_clock_buffer (
+        .O(main_clock),
+        .CE(1'b1),  // Clock enable always active
+        .CLR(1'b0),  // Clear never active
+        .I(clock_from_mmcm)
+    );
+
+    // Global clock buffer for the divide-by-4 JTAG/UART clock.
+    BUFGCE_DIV #(
+        .BUFGCE_DIVIDE  (4),
+        .IS_CE_INVERTED (1'b0),
+        .IS_CLR_INVERTED(1'b0),
+        .IS_I_INVERTED  (1'b0)
+    ) divided_clock_buffer (
+        .O(divided_clock_by_4),
+        .CE(1'b1),  // Clock enable always active
+        .CLR(1'b0),  // Clear never active
+        .I(clock_from_mmcm)
+    );
+  end
+
+  // The NIC's 10GBASE-R transceiver. Its reset controller runs on the
+  // free-running clock above, and it supplies both MAC clocks (TX and recovered RX USRCLK2, 161.13 MHz), their clock-OK levels,
   // the raw words, the receive signal-OK and the PHY status.
   logic nic_tx_clk, nic_rx_clk, nic_tx_clk_ok, nic_rx_clk_ok, nic_rx_signal_ok, nic_rx_raw_valid;
   logic nic_tx_raw_valid, nic_rx_block_lock;
@@ -139,9 +218,8 @@ module x3_frost #(
   logic [3:1] nic_phy_ctrl;
   logic [4:0] nic_phy_status;
   x3_nic_gty nic_transceiver (
-      .i_sysclk_300   (differential_clock_300mhz_buffered),
-      .i_refclk_p     (i_nic_refclk_p),
-      .i_refclk_n     (i_nic_refclk_n),
+      .i_freerun_clk  (freerun_clk),
+      .i_refclk       (gty_refclk),
       .i_rxp          (i_nic_rxp),
       .i_rxn          (i_nic_rxn),
       .o_txp          (o_nic_txp),
@@ -188,7 +266,7 @@ module x3_frost #(
   assign mem_ok_synced = mem_ok_synchronizer[1];
 
   logic cpu_side_aresetn;
-  assign cpu_side_aresetn = mmcm_locked;
+  assign cpu_side_aresetn = cpu_clock_locked;
 
   // Power-up DDR4 initialization. The array is ECC-checked, so a read of a
   // location nothing has written since power-up reports an error against a
@@ -213,7 +291,7 @@ module x3_frost #(
       .ID_BITS  (5)
   ) ddr_initializer (
       .i_clk    (main_clock),
-      .i_rst_n  (mmcm_locked),
+      .i_rst_n  (cpu_clock_locked),
       .i_start  (mem_ok_synced),
       .o_busy   (ddr_init_busy),
       .o_done   (ddr_init_done),
@@ -272,13 +350,13 @@ module x3_frost #(
   // a SmartConnect whose S00 is the FROST bridge below (its write channels
   // through the mux above) and whose S01 is the JTAG DDR-image loader.
   // Addresses are region-relative. The X3 has no push-button reset, so the
-  // controller is held in reset until the board MMCM locks.
+  // controller is held in reset until the CPU clock is running.
   ddr_subsys_wrapper ddr_subsystem (
       .cpu_clk(main_clock),
       .jtag_clk(divided_clock_by_4),
       .default_300mhz_clk0_clk_p(default_300mhz_clk0_clk_p),
       .default_300mhz_clk0_clk_n(default_300mhz_clk0_clk_n),
-      .sys_reset(~mmcm_locked),
+      .sys_reset(~cpu_clock_locked),
       .cpu_aresetn(cpu_side_aresetn),
       .jtag_aresetn(jtag_aresetn_synchronizer[1]),
       .mem_ok(mem_ok),
@@ -330,7 +408,7 @@ module x3_frost #(
   // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU).
   // Clock: 322.265625 MHz / CPU_CLK_DIV.
   // X3 has no push-button reset, so the subsystem stays in reset until the
-  // MMCM locks, DDR4 calibrates, and ECC initialization completes. The
+  // CPU clock runs, DDR4 calibrates, and ECC initialization completes. The
   // cached tier is ready for the first instruction.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(CpuClkHz),
@@ -346,7 +424,7 @@ module x3_frost #(
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
-      .i_rst_n(mmcm_locked & mem_ok_synced & ddr_init_done),
+      .i_rst_n(cpu_clock_locked & mem_ok_synced & ddr_init_done),
       // The SmartConnect's CPU-side reset.
       .i_ddr_axi_rst_n(cpu_side_aresetn),
       .o_uart_tx,

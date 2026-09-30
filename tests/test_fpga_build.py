@@ -1533,8 +1533,29 @@ def test_board_gty_generation_is_capability_gated() -> None:
     ):
         assert setting in gty
 
+    # The CPU clock's core: a CPLL-only channel (no COMMON, so the NIC core
+    # keeps the quad's QPLL0) whose TXOUTCLK is 322.265625 MHz.
+    assert "proc create_x3_cpu_clock_gty_ip {}" in gty
+    assert gty.index("proc create_x3_cpu_clock_gty_ip") > gty.index(
+        "  create_x3_cpu_clock_gty_ip\n"
+    )
+    for setting in (
+        "CONFIG.CHANNEL_ENABLE {X0Y29}",
+        "CONFIG.TX_REFCLK_SOURCE {X0Y29 clk0}",
+        "CONFIG.TX_PLL_TYPE {CPLL}",
+        "CONFIG.RX_PLL_TYPE {CPLL}",
+        "CONFIG.TX_LINE_RATE {6.4453125}",
+        "CONFIG.TX_INT_DATA_WIDTH {20}",
+        "CONFIG.TX_OUTCLK_SOURCE {TXPROGDIVCLK}",
+        "CONFIG.LOCATE_TX_USER_CLOCKING {EXAMPLE_DESIGN}",
+    ):
+        assert setting in gty
+
     files = (REPO_ROOT / "boards/x3/x3_frost.f").read_text()
     assert files.index("boards/x3/x3_nic_gty.sv") < files.index("boards/x3/x3_frost.sv")
+    assert files.index("boards/x3/x3_cpu_clock_gty.sv") < files.index(
+        "boards/x3/x3_frost.sv"
+    )
     top = (REPO_ROOT / "boards/x3/x3_frost.sv").read_text()
     assert ".RAW_LOOPBACK(0)" in top
     assert "CLKOUT1" not in top

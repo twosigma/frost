@@ -434,10 +434,11 @@ endmodule : x3_nic_gty_supervisor
  *
  * The wizard core x3_nic_gty_wiz (fpga/build/x3_gty_ip.tcl) holds one channel
  * at GTYE4_CHANNEL_X0Y28 with QPLL0 from quad 231's MGTREFCLK0 (161.1328125
- * MHz), its reset controller and its TX and RX user clocking helpers. This
- * wrapper adds the refclk buffer, the free-running clock, the user clocking
- * helper resets, the supervisor above, a register on each raw data path and
- * the NIC's PHY status.
+ * MHz), its reset controller and its TX and RX user clocking helpers. The
+ * board top supplies the refclk buffer and the free-running clock, which the
+ * CPU clock's transceiver (x3_cpu_clock_gty) shares. This wrapper adds the
+ * user clocking helper resets, the supervisor above, a register on each raw
+ * data path and the NIC's PHY status.
  *
  * Toward the NIC: o_tx_clk and o_rx_clk are TX and RX USRCLK2 (161.13 MHz,
  * the RX one recovered from the line); clock-OK, signal-OK, CDR_LOCK and
@@ -452,11 +453,10 @@ endmodule : x3_nic_gty_supervisor
  * still transmits).
  */
 module x3_nic_gty (
-    input logic i_sysclk_300,  // the board's buffered 300 MHz system clock input
+    input logic i_freerun_clk,  // 150 MHz, runs from configuration
+    input logic i_refclk,       // quad 231 MGTREFCLK0 (IBUFDS_GTE4 O)
 
     // Board pins (quad 231).
-    input  logic i_refclk_p,
-    input  logic i_refclk_n,
     input  logic i_rxp,
     input  logic i_rxn,
     output logic o_txp,
@@ -476,36 +476,6 @@ module x3_nic_gty (
     output logic [ 4:0] o_phy_status,    // nic_pkg PhyStatusBit* order
     input  logic        i_rx_block_lock  // core-clock register
 );
-  // ---- clocks ------------------------------------------------------------------------------
-  // The free-running clock halves the 300 MHz system clock input (the IBUFDS
-  // output the board top also feeds its MMCM with, both in the input's clock
-  // region), so the reset controller's clock runs from configuration and
-  // depends neither on the MMCM nor on the transceiver.
-  logic freerun_clk, refclk;
-  BUFGCE_DIV #(
-      .BUFGCE_DIVIDE  (2),
-      .IS_CE_INVERTED (1'b0),
-      .IS_CLR_INVERTED(1'b0),
-      .IS_I_INVERTED  (1'b0)
-  ) freerun_clock_buffer (
-      .O  (freerun_clk),
-      .CE (1'b1),
-      .CLR(1'b0),
-      .I  (i_sysclk_300)
-  );
-
-  IBUFDS_GTE4 #(
-      .REFCLK_EN_TX_PATH (1'b0),
-      .REFCLK_HROW_CK_SEL(2'b00),
-      .REFCLK_ICNTL_RX   (2'b00)
-  ) refclk_buffer (
-      .I    (i_refclk_p),
-      .IB   (i_refclk_n),
-      .CEB  (1'b0),
-      .O    (refclk),
-      .ODIV2()
-  );
-
   // ---- the wizard core -----------------------------------------------------------------------
   // Each user clocking helper's BUFG_GT pair is held clear until its source's
   // reset is done: TXPRGDIVRESETDONE for TXOUTCLK from the TX programmable
@@ -532,7 +502,7 @@ module x3_nic_gty (
       .gtwiz_userclk_rx_usrclk_out       (),
       .gtwiz_userclk_rx_usrclk2_out      (rx_usrclk2),
       .gtwiz_userclk_rx_active_out       (rx_active),
-      .gtwiz_reset_clk_freerun_in        (freerun_clk),
+      .gtwiz_reset_clk_freerun_in        (i_freerun_clk),
       .gtwiz_reset_all_in                (reset_all),
       .gtwiz_reset_tx_pll_and_datapath_in(1'b0),
       .gtwiz_reset_tx_datapath_in        (1'b0),
@@ -543,7 +513,7 @@ module x3_nic_gty (
       .gtwiz_reset_rx_done_out           (rx_done),
       .gtwiz_userdata_tx_in              (tx_word_q),
       .gtwiz_userdata_rx_out             (rx_word),
-      .gtrefclk00_in                     (refclk),
+      .gtrefclk00_in                     (i_refclk),
       .qpll0lock_out                     (pll_lock),
       .qpll0outclk_out                   (),
       .qpll0outrefclk_out                (),
@@ -565,7 +535,7 @@ module x3_nic_gty (
   // ---- supervisor ----------------------------------------------------------------------------
   logic cdr_lock, gt_reset_done;
   x3_nic_gty_supervisor u_supervisor (
-      .i_clk              (freerun_clk),
+      .i_clk              (i_freerun_clk),
       .i_rx_clk           (rx_usrclk2),
       .i_power_good       (power_good),
       .i_pll_lock         (pll_lock),
