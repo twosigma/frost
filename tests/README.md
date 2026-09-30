@@ -271,8 +271,7 @@ Each target and task is a separate pytest case with a 40-minute timeout;
 | `WAVES=1` | Write `dump.fst` waveforms |
 | `NUMBER_OF_CPU_CORES` | Parallel Verilator build jobs (default: every core) |
 | `COCOTB_MAX_CYCLES` | Cycle budget per application run (default 500,000); some targets set their own |
-| `COCOTB_COREMARK_MAX_CYCLES` | CoreMark cycle budget (default 15,000,000) |
-| `COCOTB_COREMARK_PRO_LOOPS_MAX_CYCLES` | coremark_pro_loops cycle budget (default 30,000,000) |
+| `COCOTB_COREMARK_MAX_CYCLES` | CoreMark and CoreMark-PRO cycle budget (default 15,000,000; coremark_pro_loops sets 20,000,000 in the test registry) |
 | `COCOTB_NUM_RUNS` | Runs per application, with a reset between them (default 2; always 1 in the DDR tier) |
 
 Build products go to `tests/sim_build/`, and cocotb writes JUnit results to

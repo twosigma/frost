@@ -89,6 +89,19 @@ MAKEFILE_BUILD_VARIABLES = (
     "SIM_FAST_MAINT",
 )
 
+# Per-workload simulation settings. test_real_program sees every CoreMark-PRO
+# workload under its build directory's name, coremark_pro, so a workload's own
+# cycle budget has to come from its registry entry. loops runs its
+# single-precision loops on the iterative FP engine: 14.9M cycles from BRAM
+# and 15.3M in the DDR tier. It runs once in both tiers, since a second BRAM
+# run would double a CI job that already approaches the six-hour job limit.
+COREMARK_PRO_SIMULATION_ENV: dict[str, tuple[tuple[str, str], ...]] = {
+    "coremark_pro_loops": (
+        ("COCOTB_COREMARK_MAX_CYCLES", "20000000"),
+        ("COCOTB_NUM_RUNS", "1"),
+    ),
+}
+
 COREMARK_PRO_TESTS = {
     program.app_name: CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -98,6 +111,7 @@ COREMARK_PRO_TESTS = {
         # Simulation runs each workload in its minimal CRC-verified
         # configuration. Hardware runs use the official datasets, with the
         # per-board iteration counts in software_registry.py.
+        extra_env=COREMARK_PRO_SIMULATION_ENV.get(program.app_name, ()),
     )
     for program in COREMARK_PRO_PROGRAMS
 }
