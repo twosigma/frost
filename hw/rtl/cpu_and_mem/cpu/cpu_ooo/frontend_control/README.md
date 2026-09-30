@@ -21,7 +21,9 @@ The tracker also finds unpredicted control flow. An unpredicted indirect jump
 in slot 1 of IF (while a stall holds it there), PD, or ID feeds the
 control-flow serialization stall in `ooo_pipeline_control`, which holds the
 front end while a conditional branch or JALR is unresolved. That stall only
-limits wrong-path fetch past the jump; recovery does not depend on it. The PD
+limits wrong-path fetch past the jump; recovery does not depend on it. IF
+supplies slot 1's indirect class from the instruction memory's predecode
+metadata, so the tracker does not decode the fetched parcel. The PD
 and ID per-class signals (conditional branch, JAL, indirect) feed only
 [profiling counters](../perf/README.md) 20–22.
 

@@ -180,6 +180,9 @@ module if_stage #(
     // aligner's exact native/compressed predecode rather than decoding the raw
     // instruction-memory parcel again in frontend_validity_tracker.
     output logic o_slot1_has_control_flow,
+    // Replay-aligned slot-1 indirect-jump class, from the predecode sideband:
+    // riscv_pkg::imem_indirect_parcel of o_from_if_to_pd.raw_parcel.
+    output logic o_slot1_is_indirect,
     // Two-wide profiling events at the IF→PD boundary (perf counters only;
     // see if_width_events_t). Each pulses at most once per accepted handoff,
     // and the slot-2 kill causes follow stall replay. Registered one cycle
@@ -332,6 +335,7 @@ module if_stage #(
   logic [4:0] rvc_bits24_20;
   logic [2:0] rvc_rs1_rest;
   logic [22:0] rvc_extra;
+  logic is_indirect;
 
   // Slot-2 outputs from instruction_aligner (2-wide dispatch).
   logic [15:0] raw_parcel_2;
@@ -1099,6 +1103,7 @@ module if_stage #(
       .o_rvc_bits24_20(rvc_bits24_20),
       .o_rvc_rs1_rest(rvc_rs1_rest),
       .o_rvc_extra(rvc_extra),
+      .o_is_indirect(is_indirect),
 
       // Slot-2 outputs. sel_nop_2 is the aligner's live pairing decision;
       // this module adds the slot-1 holdoffs and flushes.
@@ -1602,6 +1607,21 @@ module if_stage #(
       .i_stall_registered(if_stage_stall_registered),
       .i_data(raw_parcel),
       .o_data(raw_parcel_sc)
+  );
+
+  // The parcel's indirect-jump class takes the same capture and replay as
+  // raw_parcel, so it always describes the parcel PD receives.
+  logic is_indirect_sc;
+  stall_capture_reg #(
+      .WIDTH(1)
+  ) u_is_indirect_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(is_indirect),
+      .o_data(is_indirect_sc)
   );
 
   // ===========================================================================
@@ -2719,6 +2739,7 @@ module if_stage #(
   logic slot1_compressed_control_flow_effective;
   assign slot1_native_control_flow_effective = slot2_kill_causes_effective[0];
   assign slot1_compressed_control_flow_effective = slot2_kill_causes_effective[2];
+  assign o_slot1_is_indirect = replay_saved_if_outputs ? is_indirect_sc : is_indirect;
   assign o_slot1_has_control_flow = !o_from_if_to_pd.sel_nop &&
                                     (slot1_native_control_flow_effective ||
                                      slot1_compressed_control_flow_effective);

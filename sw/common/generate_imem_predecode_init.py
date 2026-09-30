@@ -18,9 +18,9 @@
 
 The instruction memory is split into even and odd word banks, and each bank's
 data into a 28-bit cold block-RAM image and a four-bit frontend-hot image of
-word bits ``{15, 10, 7, 6}``. Each word also has a 78-bit predecode sideband:
+word bits ``{15, 10, 7, 6}``. Each word also has an 80-bit predecode sideband:
 twelve fetch-control predicates plus, for each halfword, the full 32-bit RVC
-expansion and its illegal flag. Expansion bits [19:15] (rs1) are split between
+expansion and its illegal flag and whether an indirect jump starts there. Expansion bits [19:15] (rs1) are split between
 the source-hot lane (rs1[2:1]) and the rs1-rest lane, bits [24:20] have their
 own lane, and the RVC-extra field holds the rest, so no bit is stored twice.
 The sideband and the four-lane high-parcel block-RAM replica each get their
@@ -32,7 +32,8 @@ by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
 Simulation derives all of these memories from sw.mem inside SystemVerilog.
 Vivado initializes each synthesized memory more reliably from its own file,
 which is why this generator exists. The predecode functions below mirror their
-riscv_pkg counterparts (``imem_compressed_control``, ``imem_native_*``,
+riscv_pkg counterparts (``imem_compressed_control``, ``imem_indirect_parcel``,
+``imem_native_*``,
 ``imem_rvc_expand``, ``imem_rvc_source_hot``, ``imem_rvc_rs1_rest``,
 ``imem_rvc_bits24_20``, and ``imem_make_sideband``); the imem_predecode_line
 cocotb bench cross-checks the RTL against this script.
@@ -54,7 +55,7 @@ OPC_OP_FP = 0b1010011
 OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
-SIDEBAND_WIDTH = 78
+SIDEBAND_WIDTH = 80
 FAST_REPLICA_WIDTH = 4
 PC_METADATA_REPLICA_WIDTH = 4
 COLD_DATA_WIDTH = 28
@@ -77,6 +78,8 @@ SB_RVC_BITS24_20_LO_LSB = 16
 SB_RVC_BITS24_20_HI_LSB = 21
 SB_RVC_RS1_REST_LO_LSB = 26
 SB_RVC_RS1_REST_HI_LSB = 29
+SB_IS_INDIRECT_LO = 78
+SB_IS_INDIRECT_HI = 79
 # Sideband predicates mirrored into per-parity scalar LUTRAM overlays
 # (imem_sideband_scalar_bank); the image is ``sw_imem_<parity>_<name>.mem``.
 SCALAR_REPLICA_BITS = (
@@ -124,6 +127,16 @@ def compressed_control(parcel: int) -> bool:
     q01_control = {0b101, 0b110, 0b111}
     return (op == 0b01 and funct3 in q01_control) or (
         op == 0b10 and rs2 == 0 and rs1 != 0 and funct4 in {0b1000, 0b1001}
+    )
+
+
+def indirect_parcel(parcel: int) -> bool:
+    """Return whether an indirect jump (JALR, C.JR, C.JALR) starts at a parcel."""
+    rs1 = (parcel >> 7) & 0x1F
+    rs2 = (parcel >> 2) & 0x1F
+    funct4 = (parcel >> 12) & 0xF
+    return (parcel & 0x7F) == OPC_JALR or (
+        (parcel & 0x3) == 0b10 and rs2 == 0 and rs1 != 0 and funct4 in {0b1000, 0b1001}
     )
 
 
@@ -541,6 +554,8 @@ def make_sideband(word: int) -> int:
 
     sideband |= rvc_extra(lo) << 32
     sideband |= rvc_extra(hi) << 55
+    sideband |= int(indirect_parcel(lo)) << SB_IS_INDIRECT_LO
+    sideband |= int(indirect_parcel(hi)) << SB_IS_INDIRECT_HI
     return sideband
 
 

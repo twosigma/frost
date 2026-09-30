@@ -40,6 +40,9 @@ module frontend_validity_tracker (
     // Slot-1 control-flow class from IF's native/compressed predecode, gated
     // by bubbles and aligned with stall replay.
     input logic                            i_if_has_control_flow,
+    // Slot-1 indirect-jump class (JALR, C.JR, C.JALR) from IF's predecode
+    // sideband, aligned with stall replay; not gated by bubbles.
+    input logic                            i_if_is_indirect,
     input riscv_pkg::from_pd_to_id_t       i_from_pd_to_id,
     input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex,
     input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex_2,
@@ -174,8 +177,10 @@ module frontend_validity_tracker (
   logic id_has_control_flow;
   logic id_has_indirect_control_flow;
 
+`ifndef SYNTHESIS
   // JALR, or C.JR/C.JALR (quadrant 2, funct4 100x, rs1 != 0, rs2 = 0), from
-  // IF's raw slot-1 parcel; never for a bubble.
+  // IF's raw slot-1 parcel; never for a bubble. Simulation reference for the
+  // predecoded i_if_is_indirect.
   function automatic logic if_stage_has_indirect_control_flow(
       input riscv_pkg::from_if_to_pd_t if_pkt);
     logic [15:0] parcel;
@@ -200,9 +205,23 @@ module frontend_validity_tracker (
       end
     end
   endfunction
+`endif
 
   assign if_has_control_flow = i_if_has_control_flow;
-  assign if_has_indirect_control_flow = if_stage_has_indirect_control_flow(from_if_to_pd);
+  // IF predecodes the parcel's indirect class into its sideband, so the fetched
+  // parcel is not decoded here.
+  assign if_has_indirect_control_flow = !from_if_to_pd.sel_nop && i_if_is_indirect;
+`ifndef SYNTHESIS
+  // Sampled at the clock so the check sees settled values.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !$isunknown(
+            {from_if_to_pd.sel_nop, from_if_to_pd.raw_parcel, i_if_is_indirect}
+        )) begin
+      p_if_indirect_predecode_exact :
+      assert (if_has_indirect_control_flow == if_stage_has_indirect_control_flow(from_if_to_pd));
+    end
+  end
+`endif
   assign pd_has_control_flow = if_valid_q &&
                                ((pd_effective_opcode == riscv_pkg::OPC_BRANCH) ||
                                 (pd_effective_opcode == riscv_pkg::OPC_JAL) ||

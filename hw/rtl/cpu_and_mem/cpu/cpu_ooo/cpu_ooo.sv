@@ -269,6 +269,7 @@ module cpu_ooo #(
   logic prediction_fence_indirect;
   logic disable_branch_prediction_ooo;
   logic if_slot1_has_control_flow;
+  logic if_slot1_is_indirect;
   (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // driven by commit_actions below
   logic branch_resolved_correct;  // branch resolved correctly at execute time
@@ -744,6 +745,7 @@ module cpu_ooo #(
       .o_from_if_to_pd(from_if_to_pd),
       .o_from_if_to_pd_2(from_if_to_pd_2),
       .o_slot1_has_control_flow(if_slot1_has_control_flow),
+      .o_slot1_is_indirect(if_slot1_is_indirect),
       .o_width_events(if_width_events)
   );
 
@@ -921,6 +923,7 @@ module cpu_ooo #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_if_to_pd(from_if_to_pd),
       .i_if_has_control_flow(if_slot1_has_control_flow),
+      .i_if_is_indirect(if_slot1_is_indirect),
       .i_from_pd_to_id(from_pd_to_id),
       .i_from_id_to_ex(decoded_packet),
       .i_from_id_to_ex_2(decoded_packet_2),

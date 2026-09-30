@@ -93,7 +93,7 @@ package riscv_pkg;
   // Instruction-memory predecode sideband bits, stored per 32-bit word.
   // The fetch interface returns two words, so its sideband bus is twice this
   // width: {next_word_sideband, current_word_sideband}.
-  localparam int unsigned ImemSidebandWidth = 78;
+  localparam int unsigned ImemSidebandWidth = 80;
   // {illegal, expanded[31:25], expanded[14:0]}; source fields are stored below.
   localparam int unsigned ImemSbRvcExtraLoLsb = 32;
   localparam int unsigned ImemSbRvcExtraHiLsb = 55;
@@ -125,6 +125,10 @@ package riscv_pkg;
   // The other three rs1 bits; rs1[2:1] already live in SourceHot.
   localparam int unsigned ImemSbRvcRs1RestLoLsb = 26;
   localparam int unsigned ImemSbRvcRs1RestHiLsb = 29;
+  // Each halfword start's indirect-jump class (imem_indirect_parcel), read by
+  // the frontend validity tracker instead of decoding the fetched parcel.
+  localparam int unsigned ImemSbIsIndirectLo = 78;
+  localparam int unsigned ImemSbIsIndirectHi = 79;
 
   // Predecode sideband generation: one sideband value per 32-bit
   // instruction-memory word, a pure function of that word (no lookahead:
@@ -162,6 +166,19 @@ package riscv_pkg;
            (rs2 == 5'b00000) &&
            (rs1 != 5'b00000) &&
            ((funct4 == 4'b1000) || (funct4 == 4'b1001)));
+    end
+  endfunction
+
+  // Indirect jump starting at this halfword: native JALR (the low 7 bits are
+  // the JALR opcode) or C.JR/C.JALR (quadrant 10, funct4 100x, rs1 != 0,
+  // rs2 = 0).
+  function automatic logic imem_indirect_parcel(input logic [15:0] parcel);
+    begin
+      imem_indirect_parcel = (parcel[6:0] == 7'b1100111) ||
+          ((parcel[1:0] == 2'b10) &&
+           (parcel[6:2] == 5'b00000) &&
+           (parcel[11:7] != 5'b00000) &&
+           ((parcel[15:12] == 4'b1000) || (parcel[15:12] == 4'b1001)));
     end
   endfunction
 
@@ -804,6 +821,8 @@ package riscv_pkg;
       expanded_hi = imem_rvc_expand(word[31:16]);
       sb[ImemSbRvcExtraLoLsb+:23] = {expanded_lo[32:25], expanded_lo[14:0]};
       sb[ImemSbRvcExtraHiLsb+:23] = {expanded_hi[32:25], expanded_hi[14:0]};
+      sb[ImemSbIsIndirectLo] = imem_indirect_parcel(word[15:0]);
+      sb[ImemSbIsIndirectHi] = imem_indirect_parcel(word[31:16]);
       imem_make_sideband = sb;
     end
   endfunction

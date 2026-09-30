@@ -89,6 +89,9 @@ module instruction_aligner #(
     // rs1[0]}, and {illegal, bits [31:25], bits [14:0]}.
     output logic [2:0] o_rvc_rs1_rest,
     output logic [22:0] o_rvc_extra,
+    // The selected parcel's indirect-jump class (riscv_pkg::imem_indirect_parcel
+    // of o_raw_parcel), selected like o_rvc_source_hot.
+    output logic o_is_indirect,
 
     // ===========================================================================
     // Slot-2 outputs for two-wide dispatch.
@@ -381,6 +384,18 @@ module instruction_aligner #(
       2'b10:   o_rvc_rs1_rest = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcRs1RestLoLsb+:3];
       2'b11:   o_rvc_rs1_rest = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcRs1RestHiLsb+:3];
       default: o_rvc_rs1_rest = 3'd0;
+    endcase
+  end
+
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00:   o_is_indirect = aligned_current_sb[riscv_pkg::ImemSbIsIndirectLo];
+      2'b01:   o_is_indirect = aligned_current_sb[riscv_pkg::ImemSbIsIndirectHi];
+      2'b10:   o_is_indirect = i_instr_buffer_sideband[riscv_pkg::ImemSbIsIndirectLo];
+      2'b11:   o_is_indirect = i_instr_buffer_sideband[riscv_pkg::ImemSbIsIndirectHi];
+      default: o_is_indirect = 1'b0;
     endcase
   end
 

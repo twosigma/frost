@@ -209,9 +209,10 @@ working on the owed request. Redirects retarget the provider, except a slot-1
 prediction made before the branch itself reached IF: that branch's window is
 still owed and must arrive first.
 
-Every 32-bit word carries 78 bits of predecode metadata: 12 fetch-control
+Every 32-bit word carries 80 bits of predecode metadata: 12 fetch-control
 bits (instruction size, pairing, and slot-2 eligibility) and, for each
-halfword, the full RV64C expansion with its illegal flag. The expansion's
+halfword, the full RV64C expansion with its illegal flag and whether an
+indirect jump (JALR, C.JR, C.JALR) starts there. The expansion's
 source-register fields are stored separately, and PD takes a compressed
 instruction's register fields from them. Low-BRAM initialization, debugger
 and loader writes, and L1I fills all compute the metadata with

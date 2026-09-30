@@ -63,6 +63,16 @@ def _pack_id_to_ex(fields: Mapping[str, int | bool]) -> int:
     return _pack_struct(ID_TO_EX_FIELDS, fields)
 
 
+def _indirect_parcel(parcel: int) -> bool:
+    """Mirror riscv_pkg::imem_indirect_parcel: JALR, C.JR, or C.JALR."""
+    rs1 = (parcel >> 7) & 0x1F
+    rs2 = (parcel >> 2) & 0x1F
+    funct4 = (parcel >> 12) & 0xF
+    return (parcel & 0x7F) == 0b1100111 or (
+        (parcel & 0x3) == 0b10 and rs2 == 0 and rs1 != 0 and funct4 in {0b1000, 0b1001}
+    )
+
+
 def _drive_pipeline_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
     """Drive pipeline control inputs."""
     dut.i_pipeline_ctrl.value = _pack_pipeline_ctrl(fields)
@@ -82,6 +92,8 @@ def _drive_if(dut: Any, fields: Mapping[str, int | bool]) -> None:
         packet["raw_parcel"] = int(packet_fields["effective_instr"]) & 0xFFFF
     dut.i_from_if_to_pd.value = _pack_if_to_pd(packet)
     dut.i_if_has_control_flow.value = has_control_flow
+    # IF's predecoded indirect class of the same parcel.
+    dut.i_if_is_indirect.value = _indirect_parcel(int(packet["raw_parcel"]))
 
 
 def _drive_pd(dut: Any, fields: Mapping[str, int | bool]) -> None:
