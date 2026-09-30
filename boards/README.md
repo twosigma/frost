@@ -63,8 +63,10 @@ and one for DDR (`jtag_axi_ddr`):
 Every BRAM write restarts a 27-bit counter on the CPU/4 clock, and the CPU
 leaves reset when the counter runs out: about 1.67 seconds after the last
 write at 322.265625 MHz. A separate 16-bit counter holds the loader and CPU in
-reset briefly after board reset, until the clocks are stable. `frost`
-synchronizes resets into both clock domains.
+reset briefly after board reset, until the clocks are stable. The board reset
+reaches the loader, its counters, and the BRAM programming port through a
+synchronizer on the CPU/4 clock, and `frost` synchronizes resets into both
+clock domains.
 
 ## RISC-V debug over BSCAN (OpenOCD)
 
