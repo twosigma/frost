@@ -16,11 +16,12 @@
 
 /*
  * One format-specific PC-relative branch-target candidate. The late branch
- * immediate drives only a narrow low add. PD captures the low result and the
- * raw {immediate sign, low-add carry} select in its redirect register, and the
- * next cycle decodes that select into a choice among the three precomputed
- * PC-high values. Decoding after the register keeps a logic level out of the
- * late carry path, and the full-width PC-high values stay outside it.
+ * immediate drives only a narrow low add. PD captures each candidate's low
+ * result and raw {immediate sign, low-add carry} select in its redirect
+ * register, and the next cycle picks the format and decodes that select into a
+ * choice among the three precomputed PC-high values. Selecting and decoding
+ * after the register keeps logic levels out of the late carry path, and the
+ * full-width PC-high values stay outside it.
  */
 (* keep_hierarchy = "yes" *)
 module pd_target_candidate #(

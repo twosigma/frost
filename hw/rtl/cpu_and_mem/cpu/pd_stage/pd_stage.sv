@@ -293,9 +293,10 @@ module pd_stage #(
   // the instruction BRAM responds. The protected candidate boundaries keep the
   // compressed/native select after both low carry chains; without them Vivado
   // folds the candidates into one selected-immediate adder. The redirect
-  // register captures the selected low result, the raw {sign, carry} select,
-  // and all three PC-high values, and the next cycle's shallow high-part mux
-  // decodes the select. That keeps the correction decode out of the late
+  // register captures both candidates' low results and raw {sign, carry}
+  // selects, the format bit, and all three PC-high values; the next cycle
+  // picks the format and its shallow high-part mux decodes the select. That
+  // keeps the format mux and the correction decode out of the late
   // carry-to-D path. The full target is exact modulo 2^XLEN.
 
   logic [XLEN-1:0] pd_imm_b_native;
@@ -480,8 +481,15 @@ module pd_stage #(
   // enters PD before the registered redirect fires. That packet is squashed at
   // the PD-to-ID register: both slots flag it in inject_nop for their consumers
   // to apply.
-  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_low_r;
-  (* keep = "true" *) logic [1:0] pd_redirect_target_high_select_r;
+  // Both format candidates and the format bit load on the same enabled edge,
+  // so the mux after them equals one register of the selected candidate.
+  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_native_low_r;
+  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_compressed_low_r;
+  (* keep = "true" *) logic [1:0] pd_redirect_target_native_high_select_r;
+  (* keep = "true" *) logic [1:0] pd_redirect_target_compressed_high_select_r;
+  (* keep = "true" *) logic pd_redirect_target_compressed_r;
+  logic [PdTargetSplit-1:0] pd_redirect_target_low;
+  logic [1:0] pd_redirect_target_high_select;
   (* keep = "true", equivalent_register_removal = "no" *)
   logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_r;
   (* keep = "true", equivalent_register_removal = "no" *)
@@ -497,23 +505,58 @@ module pd_stage #(
 
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
-      pd_redirect_target_low_r <= pd_target_selected_low;
-      pd_redirect_target_high_select_r <= pd_target_selected_high_select;
+      pd_redirect_target_native_low_r <= pd_target_native_low_candidate;
+      pd_redirect_target_compressed_low_r <= pd_target_compressed_low_candidate;
+      pd_redirect_target_native_high_select_r <= pd_target_native_high_select;
+      pd_redirect_target_compressed_high_select_r <= pd_target_compressed_high_select;
+      pd_redirect_target_compressed_r <= pd_compressed_branch;
       pd_redirect_pc_high_r <= i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit];
       pd_redirect_pc_high_plus_one_r <= pd_pc_high_plus_one;
       pd_redirect_pc_high_minus_one_r <= pd_pc_high_minus_one;
     end
   end
 
+  assign pd_redirect_target_low = pd_redirect_target_compressed_r ?
+      pd_redirect_target_compressed_low_r : pd_redirect_target_native_low_r;
+  assign pd_redirect_target_high_select = pd_redirect_target_compressed_r ?
+      pd_redirect_target_compressed_high_select_r : pd_redirect_target_native_high_select_r;
   assign pd_redirect_target_high = select_pd_target_high(
-      pd_redirect_target_high_select_r,
+      pd_redirect_target_high_select,
       pd_redirect_pc_high_r,
       pd_redirect_pc_high_plus_one_r,
       pd_redirect_pc_high_minus_one_r
   );
 
   assign o_pd_redirect = pd_redirect_r;
-  assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low_r};
+  assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low};
+
+`ifndef SYNTHESIS
+  // Reference: one register of the selected candidate, as PD captured it
+  // before the format mux moved after the register.
+  logic [PdTargetSplit-1:0] pd_redirect_target_low_reference_r;
+  logic [1:0] pd_redirect_target_high_select_reference_r;
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.stall) begin
+      pd_redirect_target_low_reference_r <= pd_target_selected_low;
+      pd_redirect_target_high_select_reference_r <= pd_target_selected_high_select;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (!$isunknown(
+            {
+              pd_redirect_target_low_reference_r,
+              pd_redirect_target_low,
+              pd_redirect_target_high_select_reference_r,
+              pd_redirect_target_high_select
+            }
+        )) begin
+      p_pd_redirect_target_low_capture_exact :
+      assert (pd_redirect_target_low == pd_redirect_target_low_reference_r);
+      p_pd_redirect_target_high_select_capture_exact :
+      assert (pd_redirect_target_high_select == pd_redirect_target_high_select_reference_r);
+    end
+  end
+`endif
 
 `ifndef SYNTHESIS
   // Reference model of the candidate FF: reset and flush clear it even during a
