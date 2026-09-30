@@ -256,7 +256,16 @@ def _drive_fetch(
     """Drive instruction data and its predecode sideband and PC metadata."""
     current_sb |= _rvc_sideband(current_word)
     next_sb |= _rvc_sideband(next_word)
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    fetch = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = fetch
+    # The window's two sources kept apart: the low BRAM's words in physical
+    # bank order ({odd, even}), or the cached provider's {next, current} window.
+    fetch_by_parity = (
+        ((fetch & 0xFFFF_FFFF) << 32) | (fetch >> 32) if bank_sel else fetch
+    )
+    dut.i_instr_low_by_parity.value = 0 if served_high else fetch_by_parity
+    dut.i_instr_high.value = fetch if served_high else 0
+    dut.i_instr_window_high.value = served_high
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb, next_sb=next_sb)
     positional_metadata = _pc_metadata(current_sb=current_sb, next_sb=next_sb)
     dut.i_instr_pc_metadata.value = positional_metadata

@@ -255,12 +255,19 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     current_word = _word(lo=COMPRESSED_NOP, hi=0x0013)
     next_word = _word(lo=0x0023, hi=0x0033)
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=next_word
+    )
     fetch_sideband = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True),
     )
     dut.i_instr_sideband.value = fetch_sideband
     dut.i_instr_bank_sel_r.value = 0
+    # The bench presents i_instr as the cached provider's window (i_instr_high),
+    # which the aligner treats exactly as before; IF's benches and cpu_tb drive
+    # the low BRAM's physical-order words.
+    dut.i_instr_window_high.value = 1
+    dut.i_instr_low_by_parity.value = 0
     dut.i_instr_pc_metadata_served_high.value = 0
     _drive_timing_replicas(dut, fetch_sideband=fetch_sideband)
     dut.i_instr_buffer.value = 0
@@ -491,7 +498,9 @@ async def test_high_pairability_uses_pc_metadata_replica(dut: Any) -> None:
     ) in cases:
         _clear_inputs(dut)
         dut.i_pc_reg.value = PC_HI
-        dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+        dut.i_instr.value = dut.i_instr_high.value = _fetch(
+            current_word=current_word, next_word=next_word
+        )
         dut.i_instr_sideband.value = _fetch_sideband(
             current_sb=current_sb,
             next_sb=next_sb,
@@ -554,7 +563,9 @@ async def test_buffered_high_pairability_stays_on_buffer_sideband(dut: Any) -> N
         dut.i_prev_was_compressed_at_lo.value = 1
         dut.i_instr_buffer.value = buffer_word
         dut.i_instr_buffer_sideband.value = buffer_sb
-        dut.i_instr.value = _fetch(current_word=0, next_word=next_word)
+        dut.i_instr.value = dut.i_instr_high.value = _fetch(
+            current_word=0, next_word=next_word
+        )
         dut.i_instr_sideband.value = _fetch_sideband(next_sb=next_sb)
         await _settle(dut)
 
@@ -583,7 +594,9 @@ async def test_low_parcel_selects_current_word_and_current_hi_slot2(dut: Any) ->
 
     current_word = _word(lo=COMPRESSED_NOP, hi=0x2223)
     next_word = _word(lo=0x3333, hi=0x4444)
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=next_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True),
     )
@@ -617,7 +630,9 @@ async def test_high_parcel_selects_current_hi_and_next_lo_slot2(dut: Any) -> Non
     current_word = _word(lo=0x1111, hi=COMPRESSED_NOP)
     next_word = _word(lo=0x3331, hi=0x4444)
     dut.i_pc_reg.value = PC_HI
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=next_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_hi=True, rvc_source_hot_hi=0),
         next_sb=_sideband(compressed_lo=True, rvc_source_hot_lo=3)
@@ -653,7 +668,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     # A: compressed slot-1 at even -> same-word CURRENT_HI slot-2.
     current_word = _word(lo=COMPRESSED_NOP, hi=0x2223)
     next_word = _word(lo=0x3333, hi=0x4444)
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=next_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True),
     )
@@ -671,7 +688,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     _clear_inputs(dut)
     current_word = 0x00B50533  # add a0,a0,a1
     next_word = _word(lo=COMPRESSED_NOP, hi=0x5555)
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=next_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(native_pairable_lo=True),
         next_sb=_sideband(compressed_lo=True),
@@ -691,7 +710,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
 
     # The same B qualifier also permits a native NEXT_LO, the +8 bundle.
     next_word = 0x00C585B3  # add a1,a1,a2
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=next_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(native_pairable_lo=True),
         next_sb=_sideband(),
@@ -714,7 +735,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     current_word = _word(lo=0x1111, hi=COMPRESSED_NOP)
     next_word = 0x00C585B3  # add a1,a1,a2
     dut.i_pc_reg.value = PC_HI
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=next_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_hi=True),
         next_sb=_sideband(),
@@ -738,7 +761,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     current_word = _word(lo=0x1111, hi=0x0533)
     next_word = _word(lo=0x00B5, hi=COMPRESSED_NOP)
     dut.i_pc_reg.value = PC_HI
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=next_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(native_pairable_hi=True),
         next_sb=_sideband(compressed_hi=True),
@@ -775,7 +800,9 @@ async def test_bank_swapped_fetch_realigns_current_word_and_sideband(dut: Any) -
     upper_word = _word(lo=COMPRESSED_NOP, hi=0xCCCC)
     dut.i_pc_reg.value = PC_LO
     dut.i_instr_bank_sel_r.value = 1
-    dut.i_instr.value = _fetch(current_word=lower_word, next_word=upper_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=lower_word, next_word=upper_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(),
         next_sb=_sideband(
@@ -842,7 +869,9 @@ async def test_buffer_is_never_used_at_low_half_pc(dut: Any) -> None:
     next_word = _word(lo=COMPRESSED_NOP, hi=0x7777)
     dut.i_pc_reg.value = PC_LO
     dut.i_prev_was_compressed_at_lo.value = 1
-    dut.i_instr.value = _fetch(current_word=live_word, next_word=next_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=live_word, next_word=next_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(native_pairable_lo=True),
         next_sb=_sideband(compressed_lo=True),
@@ -898,7 +927,9 @@ async def test_slot1_control_flow_ends_the_bundle(dut: Any) -> None:
     await _setup_test(dut)
 
     current_word = _word(lo=COMPRESSED_J, hi=0x2222)
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=0)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=0
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True, compressed_control_lo=True),
     )
@@ -912,7 +943,9 @@ async def test_slot1_control_flow_ends_the_bundle(dut: Any) -> None:
     _clear_inputs(dut)
     current_word = _word(lo=0x1111, hi=OPC_JAL)
     dut.i_pc_reg.value = PC_HI
-    dut.i_instr.value = _fetch(current_word=current_word, next_word=0)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=current_word, next_word=0
+    )
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=_sideband())
     await _settle(dut)
 
@@ -932,7 +965,7 @@ async def test_slot2_sideband_blocks_serialize_and_fp_compute_ops(dut: Any) -> N
         _sideband(compressed_lo=True, native_fp_compute_hi=True),
     ):
         _clear_inputs(dut)
-        dut.i_instr.value = _fetch(
+        dut.i_instr.value = dut.i_instr_high.value = _fetch(
             current_word=_word(lo=COMPRESSED_NOP, hi=OPC_BRANCH),
             next_word=0,
         )
@@ -955,7 +988,9 @@ async def test_bram_unsafe_swap_only_allows_current_hi_compressed_slot2(
     upper_word = _word(lo=COMPRESSED_NOP, hi=0xCCCC)
     dut.i_pc_reg.value = PC_BANK1_LO
     dut.i_instr_bank_sel_r.value = 0
-    dut.i_instr.value = _fetch(current_word=lower_word, next_word=upper_word)
+    dut.i_instr.value = dut.i_instr_high.value = _fetch(
+        current_word=lower_word, next_word=upper_word
+    )
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(),
         next_sb=_sideband(
@@ -1021,7 +1056,7 @@ async def test_high_parcel_c_addi16sp_expansion_follows_fetch_word_swap(
             current_sb = _sideband(compressed_lo=True, compressed_hi=True)
             next_sb = _sideband(compressed_hi=True)
 
-        dut.i_instr.value = _fetch(
+        dut.i_instr.value = dut.i_instr_high.value = _fetch(
             current_word=physical_current,
             next_word=physical_next,
         )
@@ -1068,7 +1103,7 @@ async def test_high_parcel_c_lui_expansion_follows_fetch_word_swap(dut: Any) -> 
             physical_current, physical_next = logical_current, logical_next
             current_sb, next_sb = logical_current_sb, logical_next_sb
 
-        dut.i_instr.value = _fetch(
+        dut.i_instr.value = dut.i_instr_high.value = _fetch(
             current_word=physical_current,
             next_word=physical_next,
         )
@@ -1140,7 +1175,7 @@ async def test_slot2_expansion_and_illegal_flag_cover_all_candidate_positions(
                 )
                 dut.i_pc_reg.value = PC_HI
 
-            dut.i_instr.value = _fetch(
+            dut.i_instr.value = dut.i_instr_high.value = _fetch(
                 current_word=current_word,
                 next_word=next_word,
             )
@@ -1190,7 +1225,7 @@ async def test_next_high_c_addi16sp_expansion_follows_fetch_word_swap(dut: Any) 
             physical_current, physical_next = logical_current, logical_next
             current_sb, next_sb = logical_current_sb, logical_next_sb
 
-        dut.i_instr.value = _fetch(
+        dut.i_instr.value = dut.i_instr_high.value = _fetch(
             current_word=physical_current,
             next_word=physical_next,
         )
@@ -1240,7 +1275,9 @@ async def test_rs1_metadata_follows_parcel_and_bank_selection(dut: Any) -> None:
                 rvc_rs1_rest_lo=3,
                 rvc_rs1_rest_hi=4,
             )
-            dut.i_instr.value = _fetch(current_word=0x00010001, next_word=0x00010001)
+            dut.i_instr.value = dut.i_instr_high.value = _fetch(
+                current_word=0x00010001, next_word=0x00010001
+            )
             dut.i_instr_sideband.value = _fetch_sideband(
                 current_sb=other_sb if swapped else live_sb,
                 next_sb=live_sb if swapped else other_sb,
@@ -1309,7 +1346,7 @@ async def test_rs1_metadata_follows_parcel_and_bank_selection(dut: Any) -> None:
             _clear_inputs(dut)
             dut.i_pc_reg.value = pc
             dut.i_instr_bank_sel_r.value = int(swapped)
-            dut.i_instr.value = _fetch(
+            dut.i_instr.value = dut.i_instr_high.value = _fetch(
                 current_word=next_word if swapped else current,
                 next_word=current if swapped else next_word,
             )

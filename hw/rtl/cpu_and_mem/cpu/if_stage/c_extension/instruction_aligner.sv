@@ -32,6 +32,12 @@ module instruction_aligner #(
 ) (
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
     input logic [63:0] i_instr,
+    // i_instr's sources kept apart: the low BRAM's words in physical bank
+    // order ({odd, even}), the cached provider's {next, current} window, and
+    // which of the two i_instr carries (1: the cached window).
+    input logic [63:0] i_instr_low_by_parity,
+    input logic [63:0] i_instr_high,
+    input logic i_instr_window_high,
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     // Timing copies of the predecode bits that the PC and pairing logic read,
     // per word in {provider, word parity} order:
@@ -201,8 +207,21 @@ module instruction_aligner #(
   logic [31:0] bram_current_word;  // Window word aligned to pc_reg
   assign bram_current_word = fetch_word_swapped_word ? i_instr[63:32] : i_instr[31:0];
 
+  // current_word is the buffer or bram_current_word. From the low BRAM,
+  // bram_current_word is bank[pc_reg[2]] whatever the fetch-lead parity:
+  // IMEM's {next, current} swap and the one above cancel (IMEM's bank select
+  // equals i_instr_bank_sel_r for low-BRAM windows). Taking that word from
+  // the physical banks, with the buffer and the cached window chosen first,
+  // puts one LUT between the block RAM and current_word.
+  (* keep = "true" *) logic [31:0] current_word_early;
+  logic current_word_from_low;
+  assign current_word_early = o_use_instr_buffer ? i_instr_buffer :
+      (fetch_word_swapped_word ? i_instr_high[63:32] : i_instr_high[31:0]);
+  assign current_word_from_low = !o_use_instr_buffer && !i_instr_window_high;
   logic [31:0] current_word;
-  assign current_word = o_use_instr_buffer ? i_instr_buffer : bram_current_word;
+  assign current_word = current_word_from_low ?
+      (i_pc_reg[2] ? i_instr_low_by_parity[63:32] : i_instr_low_by_parity[31:0]) :
+      current_word_early;
 
   // The C-extension state machine, the buffer capture, and IF's spanning
   // assembly all read this word.

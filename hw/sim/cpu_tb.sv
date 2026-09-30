@@ -239,6 +239,15 @@ module cpu_tb
   // tb_cur_word.
   localparam logic [31:0] TbSlot2Blocker = 32'h0000_0073;  // ecall (SYSTEM)
   assign i_instr = {TbSlot2Blocker, tb_cur_word};
+  // The same window in physical bank order, {odd, even}, as the low BRAM
+  // presents it: the current word sits in the bank its address parity names.
+  logic [63:0] i_instr_low_by_parity;
+  logic [63:0] i_instr_high;
+  logic i_instr_window_high;
+  assign i_instr_low_by_parity = tb_bank_sel_q ? {tb_cur_word, TbSlot2Blocker} :
+                                                 {TbSlot2Blocker, tb_cur_word};
+  assign i_instr_high = '0;
+  assign i_instr_window_high = 1'b0;
   // Per-word predecode sideband, computed by the same pure function the RTL
   // fetch path uses (riscv_pkg::imem_make_sideband; no lookahead).
   assign i_instr_sideband = {

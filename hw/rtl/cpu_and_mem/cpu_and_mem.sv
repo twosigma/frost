@@ -328,6 +328,13 @@ module cpu_and_mem #(
   logic [7:0] cpu_uart_wr_data;
   logic [31:0] fetch_address;  // VA of the presented fetch ask (low-BRAM served tags)
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
+  // instruction's sources kept apart for IF's current-word and spanning-half
+  // selects: the low BRAM's words in physical bank order ({odd, even}), the
+  // cached provider's {next, current} window, and the instruction mux's
+  // provider select (1: the cached window).
+  logic [63:0] bram_fetch_instr_by_parity;
+  logic [63:0] instruction_high;
+  logic instruction_window_high;
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
   // Dedicated PC-metadata copy for the IF PC-advance selector. Each word is
   // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
@@ -666,6 +673,9 @@ module cpu_and_mem #(
       .i_rst(rst_core),
       .o_pc(cpu_pc_xlen),
       .i_instr(instruction),
+      .i_instr_low_by_parity(bram_fetch_instr_by_parity),
+      .i_instr_high(instruction_high),
+      .i_instr_window_high(instruction_window_high),
       .i_instr_sideband(instruction_sideband),
       .i_instr_pc_metadata(instruction_pc_metadata),
       .i_instr_pc_metadata_by_provider_parity(fetch_pc_metadata_by_provider_parity),
@@ -866,6 +876,8 @@ module cpu_and_mem #(
         .o_response_valid(low_bram_response_valid)
     );
     assign instruction = bram_fetch_instr;
+    assign instruction_high = '0;
+    assign instruction_window_high = 1'b0;
     assign instruction_sideband = bram_fetch_sideband;
     assign instruction_pc_metadata = bram_fetch_pc_metadata;
     assign high_fetch_pc_metadata_by_parity = '0;
@@ -1016,6 +1028,8 @@ module cpu_and_mem #(
     assign instruction_served_high = fetch_high_valid_q;
     assign instruction_pc_metadata_served_high = fetch_high_pc_metadata_q;
     assign instruction = fetch_high_instr_q ? cached_fetch_instr : bram_fetch_instr;
+    assign instruction_high = cached_fetch_instr;
+    assign instruction_window_high = fetch_high_instr_q;
     assign instruction_sideband = fetch_high_sideband_q ? cached_fetch_sideband :
                                   bram_fetch_sideband;
     assign instruction_pc_metadata = fetch_high_pc_metadata_q ?
@@ -1150,6 +1164,8 @@ module cpu_and_mem #(
         .o_response_valid(low_bram_response_valid)
     );
     assign instruction = bram_fetch_instr;
+    assign instruction_high = '0;
+    assign instruction_window_high = 1'b0;
     assign instruction_sideband = bram_fetch_sideband;
     assign instruction_pc_metadata = bram_fetch_pc_metadata;
     assign high_fetch_pc_metadata_by_parity = '0;
@@ -1524,6 +1540,7 @@ module cpu_and_mem #(
       .i_port_b_byte_address(fetch_pa_word0),
       .i_port_b_next_byte_address(fetch_pa_word1),
       .o_port_b_read_data(bram_fetch_instr),
+      .o_port_b_read_data_by_parity(bram_fetch_instr_by_parity),
       .o_port_b_sideband(bram_fetch_sideband),
       .o_port_b_pc_metadata(bram_fetch_pc_metadata),
       .o_port_b_pc_metadata_by_parity(bram_fetch_pc_metadata_by_parity),

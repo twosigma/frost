@@ -48,6 +48,12 @@ module if_stage #(
     input logic [XLEN-1:0] i_btb_late_update_pc,
     input logic i_btb_late_update_taken,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
+    // i_instr's sources kept apart: the low BRAM's words in physical bank
+    // order ({odd, even}), the cached provider's {next, current} window, and
+    // which of the two i_instr carries (1: the cached window).
+    input logic [63:0] i_instr_low_by_parity,
+    input logic [63:0] i_instr_high,
+    input logic i_instr_window_high,
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     // Replica of the size and pairing predecode bits, per fetched word, ordered
     // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
@@ -1071,6 +1077,9 @@ module if_stage #(
       .XLEN(XLEN)
   ) instruction_aligner_inst (
       .i_instr(i_instr),
+      .i_instr_low_by_parity(i_instr_low_by_parity),
+      .i_instr_high(i_instr_high),
+      .i_instr_window_high(i_instr_window_high),
       .i_instr_sideband(i_instr_sideband),
       .i_instr_pc_metadata_by_provider_parity(i_instr_pc_metadata_by_provider_parity),
       .i_pc_pairability_by_provider_parity(i_pc_pairability_by_provider_parity),
@@ -1656,7 +1665,39 @@ module if_stage #(
   //
   // Parity: bank_sel_r == pc_reg[2] → next word at [63:32], bits at [47:32].
   //         bank_sel_r != pc_reg[2] → next word at [31:0],  bits at [15:0].
-  assign spanning_second_half = fetch_word_swapped_for_spanning ? i_instr[15:0] : i_instr[47:32];
+  // From the low BRAM the next word is the other bank's, word(W+1) =
+  // bank[!pc_reg[2]], whatever the fetch-lead parity: IMEM's {next, current}
+  // swap and this one cancel (IMEM's bank select equals
+  // i_instr_bank_sel_r for low-BRAM windows). Taking it from the physical
+  // banks puts one LUT between the block RAM and the assembled word; the
+  // cached window keeps the swap, settled well before.
+  (* keep = "true" *)logic [15:0] spanning_second_half_high;
+  logic [15:0] spanning_second_half_low;
+  assign spanning_second_half_high = fetch_word_swapped_for_spanning ? i_instr_high[15:0] :
+                                                                        i_instr_high[47:32];
+  assign spanning_second_half_low = pc_reg[2] ? i_instr_low_by_parity[15:0] :
+                                                i_instr_low_by_parity[47:32];
+  assign spanning_second_half = i_instr_window_high ? spanning_second_half_high :
+                                                      spanning_second_half_low;
+`ifndef SYNTHESIS
+  // Sampled at the clock so the check sees settled values; a valid window has
+  // the two bank selects equal (checked in cpu_and_mem).
+  always_ff @(posedge i_clk) begin
+    if (i_instr_valid && !$isunknown(
+            {i_instr, i_instr_bank_sel_r, pc_reg[2], spanning_second_half}
+        )) begin
+      p_spanning_second_half_exact :
+      assert (spanning_second_half ==
+              (fetch_word_swapped_for_spanning ? i_instr[15:0] : i_instr[47:32]));
+      // The aligner's current word, taken from the physical banks, equals
+      // the buffer or the swapped window it replaced.
+      p_current_word_exact :
+      assert (effective_instr == (use_instr_buffer ? instr_buffer :
+                                  ((i_instr_bank_sel_r ^ pc_reg[2]) ? i_instr[63:32] :
+                                                                     i_instr[31:0])));
+    end
+  end
+`endif
   assign assembled_instr = pc_reg[1] ?
       {spanning_second_half, effective_instr[31:16]} : effective_instr;
 

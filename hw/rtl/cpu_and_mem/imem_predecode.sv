@@ -238,6 +238,10 @@ module imem_predecode #(
     // second word can come from anywhere and the address pins see no adder.
     input logic [31:0] i_port_b_next_byte_address,
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
+    // The same two words in physical bank order, {odd, even}, before the
+    // {next, current} swap. IF selects the current word by pc_reg[2], which
+    // skips this swap and IF's own cancelling one.
+    output logic [63:0] o_port_b_read_data_by_parity,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
     // Copy of the PC-advance bits, ordered like o_port_b_read_data. Each
     // word is {pairable_native_hi, pairable_compressed_hi,
@@ -1028,6 +1032,9 @@ module imem_predecode #(
                                            odd_sideband_with_fast_metadata;
 
   assign o_port_b_read_data = {next_word_wide, current_word_wide};
+  assign o_port_b_read_data_by_parity = {
+    odd_read_data_with_fast_rvc_fields, even_read_data_with_fast_rvc_fields
+  };
   assign o_port_b_sideband = {next_sideband, current_sideband};
   assign o_port_b_pc_metadata = bank_sel_r ?
       {even_pc_metadata, odd_pc_metadata} : {odd_pc_metadata, even_pc_metadata};

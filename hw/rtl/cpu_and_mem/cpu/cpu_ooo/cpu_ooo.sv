@@ -64,6 +64,12 @@ module cpu_ooo #(
     output logic o_fetch_redirect,  // registered: retarget the low-BRAM presenter's stale request
     output logic o_fetch_cached_retarget,  // registered: redirect or FENCE-class flush
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
+    // i_instr's sources kept apart: the low BRAM's words in physical bank
+    // order ({odd, even}), the cached provider's {next, current} window, and
+    // which of the two i_instr carries (1: the cached window).
+    input logic [63:0] i_instr_low_by_parity,
+    input logic [63:0] i_instr_high,
+    input logic i_instr_window_high,
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     // PC-only metadata replica. Each fetched word is ordered as
     // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
@@ -675,6 +681,9 @@ module cpu_ooo #(
       .i_clk,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_instr,
+      .i_instr_low_by_parity,
+      .i_instr_high,
+      .i_instr_window_high,
       .i_instr_sideband,
       .i_instr_pc_metadata,
       .i_instr_pc_metadata_by_provider_parity,
