@@ -2516,6 +2516,21 @@ module load_queue #(
       sq_do_forward ? fwd_bypass_value :
       cache_hit_bypass_value;
 
+  // The staged value takes the late memory response at its last mux. Every
+  // other source (a Phase-A completion, the fault address, an SQ forward, an
+  // L0 hit) is chosen first into cdb_stage_value_early, in the order the
+  // capture below and bypass_value give them: a Phase-A completion outranks a
+  // response, which outranks the others. misalign_bypass_data_sel excludes a
+  // response, so the early mux can test sq_check_misaligned itself.
+  logic take_resp_value;
+  (* keep = "true" *) logic [FLEN-1:0] cdb_stage_value_early;
+  assign take_resp_value = !issue_cdb_found && resp_bypass_data_sel;
+  assign cdb_stage_value_early =
+      issue_cdb_found ? issue_cdb_result.value :
+      sq_check_misaligned ? {{(FLEN - XLEN) {1'b0}}, sq_check_addr_q} :
+      sq_do_forward ? fwd_bypass_value :
+      cache_hit_bypass_value;
+
   // Entry freeing: once the result is captured into the stage, the queue slot
   // can be released. The staged copy now owns the completion payload.  The
   // bypass path frees the entry the same cycle it completes (no intervening
@@ -3742,15 +3757,14 @@ module load_queue #(
   // grant loop off the payload D cone.
   always_ff @(posedge i_clk) begin
     if (issue_cdb_fire || bypass_fire) begin
+      cdb_stage_data.value <= take_resp_value ? resp_bypass_value : cdb_stage_value_early;
       if (issue_cdb_found) begin
         cdb_stage_data.tag       <= issue_cdb_result.tag;
-        cdb_stage_data.value     <= issue_cdb_result.value;
         cdb_stage_data.exception <= issue_cdb_result.exception;
         cdb_stage_data.exc_cause <= issue_cdb_result.exc_cause;
         cdb_stage_data.fp_flags  <= issue_cdb_result.fp_flags;
       end else begin
         cdb_stage_data.tag <= bypass_tag;
-        cdb_stage_data.value <= bypass_value;
         cdb_stage_data.exception <= misalign_bypass_data_sel;
         // Cause select. A parked translation-stage kind wins:
         // {MISALIGN, PAGE, ACCESS} map to load causes {4, 13, 5}, promoted
@@ -3770,6 +3784,19 @@ module load_queue #(
       end
     end
   end
+
+`ifndef SYNTHESIS
+  // The split capture equals the single priority mux it replaced.
+  always_ff @(posedge i_clk) begin
+    if ((issue_cdb_fire || bypass_fire) && !$isunknown(
+            {issue_cdb_found, resp_bypass_data_sel}
+        )) begin
+      p_cdb_stage_value_split_exact :
+      assert ((take_resp_value ? resp_bypass_value : cdb_stage_value_early) ===
+              (issue_cdb_found ? issue_cdb_result.value : bypass_value));
+    end
+  end
+`endif
 
   // ===========================================================================
   // Simulation Assertions
