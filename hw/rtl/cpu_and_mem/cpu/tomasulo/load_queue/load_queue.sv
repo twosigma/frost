@@ -3659,8 +3659,31 @@ module load_queue #(
   // encoder is permitted between the wide comparison and its capture FF.
   assign amo_response_minmax_relation_d[1] = (XLEN'(i_mem_read_data) == issued_amo_rs2);
   assign amo_response_minmax_relation_d[0] = (XLEN'(i_mem_read_data) < issued_amo_rs2);
-  assign amo_response_minmax_relation_w[1] = (amo_beat_word[31:0] == issued_amo_rs2[31:0]);
-  assign amo_response_minmax_relation_w[0] = (amo_beat_word[31:0] < issued_amo_rs2[31:0]);
+  // .W compares both words of the beat and then takes the addressed word's
+  // relation by issued_addr[2], so the word select no longer sits between the
+  // memory data and the comparators. That select, which settles well before
+  // the data, is the only logic between a comparison and its capture FF.
+  logic [1:0] amo_response_minmax_relation_w_lo;
+  logic [1:0] amo_response_minmax_relation_w_hi;
+  assign amo_response_minmax_relation_w_lo[1] = (i_mem_read_data[31:0] == issued_amo_rs2[31:0]);
+  assign amo_response_minmax_relation_w_lo[0] = (i_mem_read_data[31:0] < issued_amo_rs2[31:0]);
+  assign amo_response_minmax_relation_w_hi[1] = (i_mem_read_data[63:32] == issued_amo_rs2[31:0]);
+  assign amo_response_minmax_relation_w_hi[0] = (i_mem_read_data[63:32] < issued_amo_rs2[31:0]);
+  assign amo_response_minmax_relation_w = issued_addr[2] ? amo_response_minmax_relation_w_hi :
+                                                           amo_response_minmax_relation_w_lo;
+`ifndef SYNTHESIS
+  // The selected relation equals comparing the addressed word itself.
+  always_ff @(posedge i_clk) begin
+    if (amo_response_capture && !$isunknown(
+            {i_mem_read_data, issued_amo_rs2[31:0], issued_addr[2]}
+        )) begin
+      p_amo_relation_w_select_exact :
+      assert (amo_response_minmax_relation_w ==
+              {amo_beat_word[31:0] == issued_amo_rs2[31:0],
+               amo_beat_word[31:0] < issued_amo_rs2[31:0]});
+    end
+  end
+`endif
   assign amo_response_minmax_is_unsigned =
       (issued_amo_kind == AMO_KIND_MINU) || (issued_amo_kind == AMO_KIND_MAXU);
   assign amo_response_minmax_is_max =
