@@ -32,8 +32,9 @@ After calibration, `x3_ddr_init` zeroes the region so every word has valid ECC
 (about 0.1 seconds). It writes whole 512-bit controller words, as aligned
 two-beat bursts: a half-word write would make the controller read the
 uninitialized other half to recompute ECC. The CPU and the DDR loader leave
-reset once calibration, MMCM lock, and initialization are all complete. Check
-for ECC errors with `fpga/ddr_ecc/ddr_ecc_status.py`.
+reset once calibration, MMCM lock, and initialization are all complete; the
+loader, which runs on the CPU/4 clock, takes that reset through a synchronizer
+on it. Check for ECC errors with `fpga/ddr_ecc/ddr_ecc_status.py`.
 
 ## Clock Generation
 

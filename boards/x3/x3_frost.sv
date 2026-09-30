@@ -259,6 +259,15 @@ module x3_frost #(
   assign s00_wlast = ddr_init_busy ? init_wlast : ddr_axi_wlast;
   assign s00_bready = ddr_init_busy ? init_bready : ddr_axi_bready;
 
+  // The JTAG DDR loader runs on the CPU/4 clock, and ddr_init_done is a main
+  // clock register, so the loader's reset goes through this synchronizer and
+  // the crossing ends at one register pair instead of fanning combinationally
+  // into the loader's resets.
+  (* ASYNC_REG = "TRUE" *) logic [1:0] jtag_aresetn_synchronizer = '0;
+  always_ff @(posedge divided_clock_by_4) begin
+    jtag_aresetn_synchronizer <= {jtag_aresetn_synchronizer[0], cpu_side_aresetn & ddr_init_done};
+  end
+
   // DDR4 subsystem block design (fpga/build/x3_ddr_bd.tcl): the controller and
   // a SmartConnect whose S00 is the FROST bridge below (its write channels
   // through the mux above) and whose S01 is the JTAG DDR-image loader.
@@ -271,7 +280,7 @@ module x3_frost #(
       .default_300mhz_clk0_clk_n(default_300mhz_clk0_clk_n),
       .sys_reset(~mmcm_locked),
       .cpu_aresetn(cpu_side_aresetn),
-      .jtag_aresetn(cpu_side_aresetn & ddr_init_done),
+      .jtag_aresetn(jtag_aresetn_synchronizer[1]),
       .mem_ok(mem_ok),
       .S00_AXI_awvalid(s00_awvalid),
       .S00_AXI_awready(ddr_axi_awready),
