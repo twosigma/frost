@@ -73,7 +73,10 @@
  * fires, so the core may take several cycles to answer; the hierarchy
  * captures the probe in a register stage; the downstream request is a
  * register loaded from the issuing entry; the downstream response is
- * registered before it is decoded; the release pulses are registered.
+ * registered before it is decoded; the release pulses are registered. The
+ * two inputs decoded live, the L1D's probe acknowledgement and the
+ * presented request's same-line check, enter each entry's state enable at
+ * its last level.
  */
 module dma_coherence_sequencer #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -261,21 +264,18 @@ module dma_coherence_sequencer #(
   logic probe_fire;
   assign probe_fire = probe_any && i_probe_req_ready;
 
-  // Probe acknowledgement decode: the id names the entry.
+  // Probe acknowledgement decode: the id names the entry. Only entry k
+  // probes with id probe_id_of(k), so at most one entry matches, and each
+  // match is its entry's enable term directly (see "Entry state").
+  (* keep = "true" *) logic [NUM_LOCK-1:0] ack_match;
   logic ack_hit;
-  logic [LockBits-1:0] ack_sel;
   always_comb begin
-    ack_hit = 1'b0;
-    ack_sel = '0;
     for (int k = 0; k < int'(NUM_LOCK); k++) begin
-      if (i_probe_ack_valid && (state_q[k] == E_PROBE_WAIT) && (i_probe_ack_id == probe_id_of(
-              LockBits'(k)
-          ))) begin
-        ack_hit = 1'b1;
-        ack_sel = LockBits'(k);
-      end
+      ack_match[k] = i_probe_ack_valid && (state_q[k] == E_PROBE_WAIT) &&
+          (i_probe_ack_id == probe_id_of(LockBits'(k)));
     end
   end
+  assign ack_hit = |ack_match;
 
   // Registered downstream request. The lowest entry in E_ISSUE is copied
   // here when the register is empty and moves to E_RESP at the copy. The
@@ -335,8 +335,39 @@ module dma_coherence_sequencer #(
   end
 
   // ---------------------------------------------------------------------------
-  // Entry state
+  // Entry state. Each event names one entry: the admit and inval fires their
+  // latched slots, the probe fire probe_sel, an acknowledgement its match,
+  // the request register's load issue_sel, a response resp_sel, and an
+  // accepted request free_idx. An entry named by several takes the last in
+  // that order (an entry is in one state, so at most one applies). The
+  // events that depend only on registered state and the handshakes merge
+  // into one kept net per entry, as does the request's valid and free-entry
+  // half, so the acknowledgement match and the same-line check, the latest
+  // inputs, reach each entry's enable through a single level.
   // ---------------------------------------------------------------------------
+  logic [NUM_LOCK-1:0] take_admit, take_inval, take_probe, take_issue, take_resp, take_req;
+  (* keep = "true" *) logic [NUM_LOCK-1:0] state_early_en, req_free;
+  logic [NUM_LOCK-1:0] state_en;
+  entry_state_e state_low_d[NUM_LOCK], state_rest_d[NUM_LOCK], state_d[NUM_LOCK];
+  always_comb begin
+    for (int k = 0; k < int'(NUM_LOCK); k++) begin
+      take_admit[k] = admit_fire && (admit_slot_q == LockBits'(k));
+      take_inval[k] = inval_fire && (inval_slot_q == LockBits'(k));
+      take_probe[k] = probe_fire && (probe_sel == LockBits'(k));
+      take_issue[k] = issue_load && (issue_sel == LockBits'(k));
+      take_resp[k] = resp_hit && (resp_sel == LockBits'(k));
+      req_free[k] = i_dma_req_valid && free_any && (free_idx == LockBits'(k));
+      take_req[k] = req_free[k] && !same_line_active;
+      state_early_en[k] = take_admit[k] || take_inval[k] || take_probe[k] ||
+          take_issue[k] || take_resp[k];
+      state_en[k] = state_early_en[k] || ack_match[k] || take_req[k];
+      state_low_d[k] = take_probe[k] ? E_PROBE_WAIT : take_inval[k] ? E_ISSUE : E_PROBE;
+      state_rest_d[k] = take_resp[k] ? E_FREE : take_issue[k] ? E_RESP :
+          ack_match[k] ? (write_q[k] ? E_INVAL : E_ISSUE) : state_low_d[k];
+      state_d[k] = take_req[k] ? (i_dma_req_write ? E_ADMIT : E_PROBE) : state_rest_d[k];
+    end
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int k = 0; k < int'(NUM_LOCK); k++) state_q[k] <= E_FREE;
@@ -351,24 +382,24 @@ module dma_coherence_sequencer #(
       o_coh_release_valid   <= 1'b0;
       o_probe_release_valid <= 1'b0;
 
+      for (int k = 0; k < int'(NUM_LOCK); k++) begin
+        if (state_en[k]) state_q[k] <= state_d[k];
+      end
+
       // Latch the admit and inval presentations until they fire.
       if (admit_fire) begin
-        admit_active_q        <= 1'b0;
-        state_q[admit_slot_q] <= E_PROBE;
+        admit_active_q <= 1'b0;
       end else if (!admit_active_q && admit_any) begin
         admit_active_q <= 1'b1;
         admit_slot_q   <= admit_sel;
       end
       if (inval_fire) begin
-        inval_active_q        <= 1'b0;
-        state_q[inval_slot_q] <= E_ISSUE;
+        inval_active_q <= 1'b0;
       end else if (!inval_active_q && inval_any) begin
         inval_active_q <= 1'b1;
         inval_slot_q   <= inval_sel;
       end
 
-      if (probe_fire) state_q[probe_sel] <= E_PROBE_WAIT;
-      if (ack_hit) state_q[ack_sel] <= write_q[ack_sel] ? E_INVAL : E_ISSUE;
       if (out_fire) begin
         out_valid_q           <= 1'b0;
         o_probe_release_valid <= 1'b1;
@@ -379,23 +410,20 @@ module dma_coherence_sequencer #(
         end
       end
       if (issue_load) begin
-        state_q[issue_sel] <= E_RESP;
-        out_valid_q        <= 1'b1;
-        out_slot_q         <= issue_sel;
-        out_write_q        <= write_q[issue_sel];
-        out_line_q         <= line_q[issue_sel];
-        out_wdata_q        <= wdata_q[issue_sel];
-        out_wstrb_q        <= write_q[issue_sel] ? wstrb_q[issue_sel] : '0;
-        out_id_q           <= id_q[issue_sel];
+        out_valid_q <= 1'b1;
+        out_slot_q  <= issue_sel;
+        out_write_q <= write_q[issue_sel];
+        out_line_q  <= line_q[issue_sel];
+        out_wdata_q <= wdata_q[issue_sel];
+        out_wstrb_q <= write_q[issue_sel] ? wstrb_q[issue_sel] : '0;
+        out_id_q    <= id_q[issue_sel];
       end
       if (resp_hit) begin
-        state_q[resp_sel] <= E_FREE;
-        o_dma_resp_valid  <= 1'b1;
-        o_dma_resp_id     <= id_q[resp_sel];
-        o_dma_resp_rdata  <= down_resp_rdata_q;
+        o_dma_resp_valid <= 1'b1;
+        o_dma_resp_id    <= id_q[resp_sel];
+        o_dma_resp_rdata <= down_resp_rdata_q;
       end
       if (dma_req_fire) begin
-        state_q[free_idx] <= i_dma_req_write ? E_ADMIT : E_PROBE;
         line_q[free_idx]  <= in_line;
         write_q[free_idx] <= i_dma_req_write;
         wdata_q[free_idx] <= i_dma_req_wdata;
