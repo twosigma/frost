@@ -1927,6 +1927,14 @@ module tomasulo_wrapper #(
   // p_sc_completion_release_adapter_idle, p_sc_completion_release_is_granted,
   // and p_sc_completion_token_conserved check exactly one CDB delivery.
   // test_sc_completion_release_under_cdb_contention checks contended release.
+  //
+  // TIMING: the payload loads in every cycle no completion waits, not only
+  // on the fire, so the head-tag match and fire cone stay off the payload
+  // enables.  The payload is read only while sc_fu_complete_reg.valid, and
+  // valid rises only on a fire (the unit never fires while a completion
+  // waits, p_sc_fire_needs_free_completion_reg), so every payload read is the
+  // firing SC's; a waiting completion holds exactly as before.
+  // p_sc_completion_payload_exact checks this against the fire-enabled copy.
   riscv_pkg::fu_complete_t sc_fu_complete_reg;
   logic sc_completion_held;
   assign sc_completion_held = sc_fu_complete_reg.valid && store_misalign_fu_complete_reg.valid;
@@ -1934,7 +1942,7 @@ module tomasulo_wrapper #(
     if (!i_rst_n || speculative_flush_all) sc_fu_complete_reg.valid <= 1'b0;
     else sc_fu_complete_reg.valid <= sc_fu_complete.valid || sc_completion_held;
 
-    if (sc_fu_complete.valid) begin
+    if (!sc_fu_complete_reg.valid) begin
       sc_fu_complete_reg.tag <= sc_fu_complete.tag;
       sc_fu_complete_reg.value <= sc_fu_complete.value;
       sc_fu_complete_reg.exception <= sc_fu_complete.exception;
@@ -1942,6 +1950,15 @@ module tomasulo_wrapper #(
       sc_fu_complete_reg.fp_flags <= sc_fu_complete.fp_flags;
     end
   end
+
+`ifndef SYNTHESIS
+  // Reference payload with the fire enable, for p_sc_completion_payload_exact
+  // in the SC completion checks below.
+  riscv_pkg::fu_complete_t sc_fu_complete_payload_ref_q;
+  always_ff @(posedge i_clk) begin
+    if (sc_fu_complete.valid) sc_fu_complete_payload_ref_q <= sc_fu_complete;
+  end
+`endif
 
   // TIMING: same-edge copies of sc_fu_complete_reg.valid, one per consumer
   // group (the MEM presentation mux, LQ result acceptance, MEM_RS issue
@@ -2188,6 +2205,18 @@ module tomasulo_wrapper #(
       p_sc_valid_copies_match :
       assert ({sc_valid_adapter_q, sc_valid_lq_q, sc_valid_issue_q, sc_valid_wakeup_q} ==
               {4{sc_fu_complete_reg.valid}});
+
+      // 7. A waiting completion carries the firing SC's payload: the payload
+      //    register, which loads whenever no completion waits, equals the
+      //    copy loaded only on the fire.
+      if (sc_fu_complete_reg.valid) begin
+        p_sc_completion_payload_exact :
+        assert (sc_fu_complete_reg.tag == sc_fu_complete_payload_ref_q.tag &&
+                sc_fu_complete_reg.value == sc_fu_complete_payload_ref_q.value &&
+                sc_fu_complete_reg.exception == sc_fu_complete_payload_ref_q.exception &&
+                sc_fu_complete_reg.exc_cause == sc_fu_complete_payload_ref_q.exc_cause &&
+                sc_fu_complete_reg.fp_flags == sc_fu_complete_payload_ref_q.fp_flags);
+      end
     end
   end
 `endif

@@ -140,15 +140,32 @@ module sc_pending_unit (
     end
   endfunction
 
+  // Per-entry reservation compare, from registers.  TIMING: compare, then
+  // select.  The SC result needs only whether the head entry's address hits
+  // the reservation granule, so each entry is compared before the head
+  // select, which then picks one bit instead of a wide address feeding the
+  // compare (the old path ran head_tag -> tag match -> address mux ->
+  // granule compare).  The no-hit default compares the zero address, exactly
+  // what the zero sct_hit_addr gave.
+  logic [ScTableDepth-1:0] sct_resv_match;
+  always_comb begin
+    for (int i = 0; i < ScTableDepth; i++) begin
+      sct_resv_match[i] = (lq_reservation_addr[riscv_pkg::XLEN-1:3] ==
+                           sct_addr[i][riscv_pkg::XLEN-1:3]);
+    end
+  end
+
   // Head match: an in-flight SC sits at the ROB head.
   logic                       sct_hit;
   logic                       sct_hit_addr_valid;
   logic [riscv_pkg::XLEN-1:0] sct_hit_addr;
+  logic                       sct_hit_resv_match;
   logic [   ScTableDepth-1:0] sct_hit_oh;
   always_comb begin
     sct_hit               = 1'b0;
     sct_hit_addr_valid    = 1'b0;
     sct_hit_addr          = '0;
+    sct_hit_resv_match    = (lq_reservation_addr[riscv_pkg::XLEN-1:3] == '0);
     sct_hit_oh            = '0;
     o_sc_head_query_match = 1'b0;
     for (int i = 0; i < ScTableDepth; i++) begin
@@ -156,6 +173,7 @@ module sc_pending_unit (
         sct_hit = 1'b1;
         sct_hit_addr_valid = sct_addr_valid[i];
         sct_hit_addr = sct_addr[i];
+        sct_hit_resv_match = sct_resv_match[i];
         sct_hit_oh[i] = 1'b1;
         // Same highest-index priority as sct_hit_addr, including an
         // address-invalid winning entry. Coherence compares whole lines, not
@@ -219,10 +237,10 @@ module sc_pending_unit (
   // PA-domain reservation, and it would beat the MMU's fault delivery for an
   // SC whose translation is refused.
   assign sc_can_fire = sct_hit && sct_hit_addr_valid && sq_committed_empty;
-  assign sc_success = lq_reservation_valid
-      // The SC matches a reservation anywhere in the reserved doubleword
-      // (FROST's reservation granule).
-      && (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_hit_addr[riscv_pkg::XLEN-1:3]);
+  // The SC matches a reservation anywhere in the reserved doubleword
+  // (FROST's reservation granule): sct_hit_resv_match is
+  // lq_reservation_addr[XLEN-1:3] == sct_hit_addr[XLEN-1:3].
+  assign sc_success = lq_reservation_valid && sct_hit_resv_match;
   // Fire only when the coherence port is not holding SCs and the MEM adapter
   // has no competing producer: no result pending, no live LQ result, no
   // registered store fault presenting, and no earlier SC completion still
