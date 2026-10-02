@@ -198,9 +198,13 @@ module int_muldiv_shim #(
   logic [63:0] word_mul_product;
   logic word_mul_valid;
   if (SHORT_WORD_OPS) begin : gen_word_multiplier
+    // The word multiply needs two of its three stages, so it registers its
+    // operands in the spare one: the DSPs start from their input registers
+    // rather than from the station's issue operand select, at unchanged latency.
     dsp_tiled_multiplier_unsigned #(
         .A_WIDTH(32),
-        .B_WIDTH(32)
+        .B_WIDTH(32),
+        .INPUT_REGISTER(1'b1)
     ) u_word_multiplier (
         .i_clk,
         .i_rst(~i_rst_n),

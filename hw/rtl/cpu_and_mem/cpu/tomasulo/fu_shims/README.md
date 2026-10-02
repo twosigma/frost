@@ -53,7 +53,9 @@ hint must equal the amount the ALU would have selected.
 One MUL_RS issue port drives the multipliers and the divider. The multiplier
 is pipelined and accepts one operation per cycle; it takes
 `riscv_pkg::MulPipeDepth` cycles (6 at XLEN=64), and a dedicated 32-bit unit
-cuts MULW to 3. The multiply path has one tag tracker, a shift register as
+cuts MULW to 3. The 32-bit unit's two-tile product needs two of its three
+stages, so it registers its operands in the third (`INPUT_REGISTER`): its DSPs
+start from registers rather than from the RS operand select. The multiply path has one tag tracker, a shift register as
 deep as the full-width unit, and one 4-entry result FIFO, both shared by the
 two widths. A MULW enters the tracker partway down, at the stage that lines up
 with the word multiplier, so both widths leave through the same tail. If a
