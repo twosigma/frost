@@ -458,43 +458,42 @@ module register_alias_table (
   // Source Lookup (Combinational)
   // ===========================================================================
 
+  // INT lookup views: entry 0 reads as a constant {not valid, tag 0}, the
+  // lookup result x0 must give, so the source muxes need no separate x0 test
+  // on the renamed bit or the tag.  The active x0 entry itself is never
+  // renamed (p_x0_never_valid); the views make the constant structural.
+  // TIMING: the source address then reaches the renamed bit and the tag
+  // through the 32:1 selects alone, without an x0 qualifier LUT after them.
+  logic [NumIntRegs-1:0] int_lookup_valid;
+  logic [ReorderBufferTagWidth-1:0] int_lookup_tag[NumIntRegs];
+  always_comb begin
+    int_lookup_valid    = int_rat_valid;
+    int_lookup_valid[0] = 1'b0;
+    for (int i = 0; i < NumIntRegs; i++) int_lookup_tag[i] = int_rat_tag[i];
+    int_lookup_tag[0] = '0;
+  end
+
   // INT source 1
   // rat_lookup_t = {renamed, tag[4:0], value[63:0]}. The tag is meaningful
   // only when renamed is set. Expose it directly so CDB comparators can run
   // beside the ROB-valid lookup; readiness/repair-valid qualify their use.
   // Unrenamed tags may be stale or uninitialized. INT x0 remains all zero.
+  // Renamed means mapped to an in-flight ROB entry. If that entry is already
+  // done, done repair after dispatch supplies the value, for INT and FP alike.
   always_comb begin
-    if (i_int_src1_addr == '0) begin
-      // x0 hardwired to zero
-      o_int_src1 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
-    end else if (int_rat_valid[i_int_src1_addr] &&
-                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr]]) begin
-      // Renamed to an in-flight ROB entry. If that entry is already done,
-      // done repair after dispatch supplies the value, for INT and FP alike.
-      o_int_src1 = {
-        1'b1, int_rat_tag[i_int_src1_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1}
-      };
-    end else begin
-      o_int_src1 = {
-        1'b0, int_rat_tag[i_int_src1_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1}
-      };
-    end
+    o_int_src1.renamed = int_lookup_valid[i_int_src1_addr] &&
+                         i_rob_entry_valid[int_lookup_tag[i_int_src1_addr]];
+    o_int_src1.tag = int_lookup_tag[i_int_src1_addr];
+    // x0 hardwired to zero
+    o_int_src1.value = (i_int_src1_addr == '0) ? '0 : {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1};
   end
 
   // INT source 2
   always_comb begin
-    if (i_int_src2_addr == '0) begin
-      o_int_src2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
-    end else if (int_rat_valid[i_int_src2_addr] &&
-                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr]]) begin
-      o_int_src2 = {
-        1'b1, int_rat_tag[i_int_src2_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2}
-      };
-    end else begin
-      o_int_src2 = {
-        1'b0, int_rat_tag[i_int_src2_addr], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2}
-      };
-    end
+    o_int_src2.renamed = int_lookup_valid[i_int_src2_addr] &&
+                         i_rob_entry_valid[int_lookup_tag[i_int_src2_addr]];
+    o_int_src2.tag = int_lookup_tag[i_int_src2_addr];
+    o_int_src2.value = (i_int_src2_addr == '0) ? '0 : {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2};
   end
 
   // FP source 1
@@ -533,34 +532,20 @@ module register_alias_table (
 
   // INT source 1 (slot 2)
   always_comb begin
-    if (i_int_src1_addr_2 == '0) begin
-      o_int_src1_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
-    end else if (int_rat_valid[i_int_src1_addr_2] &&
-                 i_rob_entry_valid[int_rat_tag[i_int_src1_addr_2]]) begin
-      o_int_src1_2 = {
-        1'b1, int_rat_tag[i_int_src1_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
-      };
-    end else begin
-      o_int_src1_2 = {
-        1'b0, int_rat_tag[i_int_src1_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2}
-      };
-    end
+    o_int_src1_2.renamed = int_lookup_valid[i_int_src1_addr_2] &&
+                           i_rob_entry_valid[int_lookup_tag[i_int_src1_addr_2]];
+    o_int_src1_2.tag = int_lookup_tag[i_int_src1_addr_2];
+    o_int_src1_2.value = (i_int_src1_addr_2 == '0) ? '0 :
+        {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data1_2};
   end
 
   // INT source 2 (slot 2)
   always_comb begin
-    if (i_int_src2_addr_2 == '0) begin
-      o_int_src2_2 = {1'b0, {ReorderBufferTagWidth{1'b0}}, {FLEN{1'b0}}};
-    end else if (int_rat_valid[i_int_src2_addr_2] &&
-                 i_rob_entry_valid[int_rat_tag[i_int_src2_addr_2]]) begin
-      o_int_src2_2 = {
-        1'b1, int_rat_tag[i_int_src2_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
-      };
-    end else begin
-      o_int_src2_2 = {
-        1'b0, int_rat_tag[i_int_src2_addr_2], {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2}
-      };
-    end
+    o_int_src2_2.renamed = int_lookup_valid[i_int_src2_addr_2] &&
+                           i_rob_entry_valid[int_lookup_tag[i_int_src2_addr_2]];
+    o_int_src2_2.tag = int_lookup_tag[i_int_src2_addr_2];
+    o_int_src2_2.value = (i_int_src2_addr_2 == '0) ? '0 :
+        {{(FLEN - XLEN) {1'b0}}, i_int_regfile_data2_2};
   end
 
   // FP source 1 (slot 2)
