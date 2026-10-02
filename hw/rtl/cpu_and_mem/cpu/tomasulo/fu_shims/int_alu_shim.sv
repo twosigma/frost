@@ -43,7 +43,8 @@
  * resolution runs on its own path. JALR does complete here, so its link
  * address wakes dependents. ECALL, EBREAK, illegal instructions and fetch
  * faults complete as exceptions. A CSR instruction sends its write operand to
- * the CDB; the CSR itself is read and written at commit.
+ * the CDB; the CSR itself is read and written at commit. The CSR operand and
+ * the fetch-fault value enter the result through the ALU's i_side_result.
  */
 module int_alu_shim #(
     parameter bit USE_SHIFT_AMOUNT_HINT = 1'b0
@@ -84,28 +85,7 @@ module int_alu_shim #(
   end
 
   // ---------------------------------------------------------------------------
-  // ALU instantiation
-  // ---------------------------------------------------------------------------
-  logic [riscv_pkg::XLEN-1:0] alu_result;
-
-  alu #(
-      .XLEN(riscv_pkg::XLEN),
-      .USE_SHIFT_AMOUNT_HINT(USE_SHIFT_AMOUNT_HINT)
-  ) u_alu (
-      .i_instruction(alu_instruction),
-      .i_instruction_operation(i_rs_issue.op),
-      .i_operand_a(i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
-      .i_operand_b(i_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
-      .i_shift_amount_hint(i_shift_amount_hint),
-      .i_immediate_u_type(i_rs_issue.imm),
-      .i_immediate_i_type(i_rs_issue.imm),
-      // JALR's link address rides the immediate word (dispatch puts it there).
-      .i_link_address(i_rs_issue.imm),
-      .o_result(alu_result)
-  );
-
-  // ---------------------------------------------------------------------------
-  // Pack output into fu_complete_t
+  // Operation classes the ALU has no result group for
   // ---------------------------------------------------------------------------
   // Conditional branches complete only through branch_update. JALR completes
   // here, so its link address wakes dependents. CSR ops pass through the rs1
@@ -119,9 +99,6 @@ module int_alu_shim #(
   assign is_csr_reg_op = (i_rs_issue.op == riscv_pkg::CSRRW) ||
                           (i_rs_issue.op == riscv_pkg::CSRRS) ||
                           (i_rs_issue.op == riscv_pkg::CSRRC);
-
-  logic is_any_csr_op;
-  assign is_any_csr_op = is_csr_imm_op || is_csr_reg_op;
 
   // ECALL, EBREAK, ILLEGAL and the fetch-fault pseudo-ops flow through INT_RS
   // like any other op, but the ALU produces no result for them. This shim
@@ -142,11 +119,51 @@ module int_alu_shim #(
   assign is_fetch_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_FAULT);
   assign is_fetch_page_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_PAGE_FAULT);
 
+  // The value these operations complete with: a CSR instruction's write
+  // operand (rs1 or the zero-extended immediate) and a fetch fault's xtval
+  // (imm); ECALL, EBREAK and ILLEGAL leave it zero. The ALU ORs it into its
+  // result (alu.sv header). Every other operation contributes zero here, and
+  // no ALU result group selects these operations, so the completed value is
+  // the ALU result for an ALU operation and exactly this value otherwise.
+  // TIMING: entering in the ALU's early bus keeps these cases off the last
+  // LUT level of the result.
+  logic [riscv_pkg::XLEN-1:0] side_result;
+  assign side_result =
+      ({riscv_pkg::XLEN{is_fetch_fault_op || is_fetch_page_fault_op}} & i_rs_issue.imm) |
+      ({riscv_pkg::XLEN{is_csr_imm_op}} & riscv_pkg::XLEN'(i_rs_issue.csr_imm)) |
+      ({riscv_pkg::XLEN{is_csr_reg_op}} & i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]);
+
+  // ---------------------------------------------------------------------------
+  // ALU instantiation
+  // ---------------------------------------------------------------------------
+  logic [riscv_pkg::XLEN-1:0] alu_result;
+
+  alu #(
+      .XLEN(riscv_pkg::XLEN),
+      .USE_SHIFT_AMOUNT_HINT(USE_SHIFT_AMOUNT_HINT)
+  ) u_alu (
+      .i_instruction(alu_instruction),
+      .i_instruction_operation(i_rs_issue.op),
+      .i_operand_a(i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
+      .i_operand_b(i_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
+      .i_shift_amount_hint(i_shift_amount_hint),
+      .i_immediate_u_type(i_rs_issue.imm),
+      .i_immediate_i_type(i_rs_issue.imm),
+      // JALR's link address rides the immediate word (dispatch puts it there).
+      .i_link_address(i_rs_issue.imm),
+      .i_side_result(side_result),
+      .o_result(alu_result)
+  );
+
+  // ---------------------------------------------------------------------------
+  // Pack output into fu_complete_t
+  // ---------------------------------------------------------------------------
   always_comb begin
     o_fu_complete.tag       = i_rs_issue.rob_tag;
     // Branch/no-branch is predecoded in the INT RS so ROB done does not need
     // the ALU's live op decode or CSR/exception compares on this path.
     o_fu_complete.valid     = i_rs_issue.valid & i_issue_writes_cdb_hint;
+    // CSR operands and fetch-fault values are already in alu_result (above).
     o_fu_complete.value     = riscv_pkg::FLEN'(alu_result);
     o_fu_complete.exception = 1'b0;
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
@@ -155,10 +172,6 @@ module int_alu_shim #(
     if (is_ecall_op || is_ebreak_op || is_illegal_op || is_fetch_fault_op ||
         is_fetch_page_fault_op) begin
       // Synchronous traps complete on CDB so the ROB can take them precisely at commit.
-      // Fetch faults park their precomputed xtval (imm) in the value slot;
-      // the others leave it zero.
-      o_fu_complete.value = (is_fetch_fault_op || is_fetch_page_fault_op) ?
-          riscv_pkg::FLEN'(i_rs_issue.imm) : '0;
       o_fu_complete.exception = 1'b1;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
           is_fetch_page_fault_op ? riscv_pkg::ExcInstrPageFault[riscv_pkg::ExcCauseWidth-1:0] :
@@ -166,11 +179,6 @@ module int_alu_shim #(
           is_illegal_op ? riscv_pkg::ExcIllegalInstr[riscv_pkg::ExcCauseWidth-1:0] :
           is_ecall_op ? riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0] :
           riscv_pkg::ExcBreakpoint[riscv_pkg::ExcCauseWidth-1:0]);
-    end else if (is_any_csr_op) begin
-      // CSR: pass through the write operand (rs1 or zero-extended imm).
-      // Actual CSR read/write is serialized at ROB commit time.
-      if (is_csr_imm_op) o_fu_complete.value = {{(riscv_pkg::FLEN - 5) {1'b0}}, i_rs_issue.csr_imm};
-      else o_fu_complete.value = riscv_pkg::FLEN'(i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]);
     end
   end
 

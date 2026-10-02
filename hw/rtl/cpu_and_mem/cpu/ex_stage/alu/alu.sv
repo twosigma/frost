@@ -24,15 +24,34 @@
  * PC + imm_u and dispatch passes it in the U-immediate, so the unit has no PC
  * input). M-extension operations never execute here; they run in the
  * multiplier and divider behind int_muldiv_shim. Zicsr operations have no
- * result here either: int_alu_shim completes them with the CSR write operand,
- * and the CSR is read and written at commit.
+ * result of their own here either: int_alu_shim supplies the CSR write operand
+ * through i_side_result (below), and the CSR is read and written at commit.
  *
  * At XLEN=64, the base shifts and the Zbb rotates of each width share one
  * left and one right funnel shifter. Their controls come from
  * riscv_pkg::projected_shift_controls, where each control reads at most four
  * operation-enum bits instead of decoding the full enum; the assertions at
  * the bottom check the controls this unit uses for each of those operations.
+ *
+ * Result selection. Each operation group (logic, Zbs, immediates and links,
+ * byte and pack, ORC.B, base and W add/sub, Zba, shifts and rotates, min/max
+ * and CZERO, counts, set-less-than and BEXT) forms its own result bus, masked
+ * to zero unless the operation is one of the group's. The shallow groups and
+ * i_side_result pre-merge into result_early and the deep ones join it at the
+ * final OR, so each result bit ends in one OR of at most six buses instead of
+ * a wide per-bit case mux. An operation no group lists, PAUSE among them,
+ * returns i_side_result, which the caller drives to zero for every operation
+ * that has a group.
+ *
+ * i_side_result is the caller's own value for operations without a group
+ * (int_alu_shim: the CSR write operand and the fetch-fault value). Taking it
+ * into result_early, instead of muxing it in after o_result, keeps the
+ * caller's override off the result's last LUT level. keep_hierarchy keeps
+ * that boundary and the group buses intact in the core, where synthesis would
+ * otherwise re-factor them with the shim and the reservation station.
  */
+
+(* keep_hierarchy = "yes" *)
 module alu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
     // 1: shift by i_shift_amount_hint, which the caller computes with its
@@ -48,6 +67,9 @@ module alu #(
     input logic [XLEN-1:0] i_immediate_u_type,  // Upper immediate for LUI/AUIPC
     input logic [XLEN-1:0] i_immediate_i_type,  // I-type immediate
     input logic [XLEN-1:0] i_link_address,  // Pre-computed link address (PC+2 or PC+4)
+    // OR'ed into the result; zero for every operation that has a group (see
+    // the header). Callers without such operations tie it to zero.
+    input logic [XLEN-1:0] i_side_result,
     output logic [XLEN-1:0] o_result
 );
 
@@ -120,7 +142,7 @@ module alu #(
   logic [31:0] shared_word_rotate_result;
 
   // Only the nine full-width and nine word shift/rotate operations in the
-  // result case consume the barrel results. On those operations the
+  // result selection consume the barrel results. On those operations the
   // projected controls equal the symbolic operation tests; for any other
   // operation their values are unobserved. The checks below tie this to the
   // current enum encoding. The RS computes the INT port-1 shift-amount hint
@@ -195,125 +217,303 @@ module alu #(
   assign shared_word_arithmetic_right_result = word_barrel_result;
   assign shared_word_rotate_result = word_barrel_result;
 
-  always_comb begin
-    o_result = '0;
-    unique case (i_instruction_operation)
-      // Base ISA R-type (register-register) arithmetic and logical operations
-      riscv_pkg::ADD: o_result = i_operand_a + operand_b;
-      riscv_pkg::SUB: o_result = difference[XLEN-1:0];
-      riscv_pkg::AND: o_result = i_operand_a & operand_b;
-      riscv_pkg::OR: o_result = i_operand_a | operand_b;
-      riscv_pkg::XOR: o_result = i_operand_a ^ operand_b;
-      riscv_pkg::SLL: o_result = shared_left_result;
-      riscv_pkg::SRL: o_result = shared_right_result;
-      riscv_pkg::SRA:  // Shift right arithmetic (sign-extend)
-      o_result = shared_arithmetic_right_result;
-      riscv_pkg::SLT: o_result = XLEN'(difference[XLEN]);
-      riscv_pkg::SLTU: o_result = XLEN'(sltu);
-      // Base ISA I-type (immediate) operations
-      riscv_pkg::ADDI: o_result = i_operand_a + operand_b;
-      riscv_pkg::ANDI: o_result = i_operand_a & operand_b;
-      riscv_pkg::ORI: o_result = i_operand_a | operand_b;
-      riscv_pkg::XORI: o_result = i_operand_a ^ operand_b;
-      riscv_pkg::SLTI: o_result = XLEN'(difference[XLEN]);
-      riscv_pkg::SLTIU: o_result = XLEN'(sltu);
-      // Shift immediate operations - shamt in rs2 field (+bit 25 on RV64)
-      riscv_pkg::SLLI: o_result = shared_left_result;
-      riscv_pkg::SRLI: o_result = shared_right_result;
-      riscv_pkg::SRAI: o_result = shared_arithmetic_right_result;
-      // RV64 W-form ALU ops: 32-bit operation, result sign-extended to XLEN.
-      riscv_pkg::ADDW, riscv_pkg::ADDIW: o_result = w_result(i_operand_a[31:0] + operand_b[31:0]);
-      riscv_pkg::SUBW: o_result = w_result(i_operand_a[31:0] - operand_b[31:0]);
-      riscv_pkg::SLLW: o_result = w_result(shared_word_left_result);
-      riscv_pkg::SRLW: o_result = w_result(shared_word_right_result);
-      riscv_pkg::SRAW: o_result = w_result(shared_word_arithmetic_right_result);
-      riscv_pkg::SLLIW: o_result = w_result(shared_word_left_result);
-      riscv_pkg::SRLIW: o_result = w_result(shared_word_right_result);
-      riscv_pkg::SRAIW: o_result = w_result(shared_word_arithmetic_right_result);
-      // Base ISA U-type (upper immediate) operations
-      riscv_pkg::LUI: o_result = XLEN'(signed'(i_immediate_u_type));
-      // AUIPC: the U-immediate slot already holds PC + imm_u.
-      riscv_pkg::AUIPC: o_result = XLEN'(signed'(i_immediate_u_type));
-      // Jumps write the link address the ID stage precomputed: PC+2 for a
-      // compressed instruction, PC+4 otherwise.
-      riscv_pkg::JAL: o_result = i_link_address;
-      riscv_pkg::JALR: o_result = i_link_address;
-      // Zba extension - address generation (shift-and-add)
-      riscv_pkg::SH1ADD: o_result = (i_operand_a << 1) + i_operand_b;
-      riscv_pkg::SH2ADD: o_result = (i_operand_a << 2) + i_operand_b;
-      riscv_pkg::SH3ADD: o_result = (i_operand_a << 3) + i_operand_b;
-      // Zba extension - RV64 unsigned-word address forms (zext32(rs1) base)
-      riscv_pkg::ADD_UW: o_result = uw_operand(i_operand_a) + i_operand_b;
-      riscv_pkg::SH1ADD_UW: o_result = (uw_operand(i_operand_a) << 1) + i_operand_b;
-      riscv_pkg::SH2ADD_UW: o_result = (uw_operand(i_operand_a) << 2) + i_operand_b;
-      riscv_pkg::SH3ADD_UW: o_result = (uw_operand(i_operand_a) << 3) + i_operand_b;
-      riscv_pkg::SLLI_UW: o_result = uw_operand(i_operand_a) << shamt_imm;
-      // Zbs extension - single-bit operations (register form, rs2 index)
-      riscv_pkg::BSET: o_result = i_operand_a | (XLEN'(1) << i_operand_b[ShamtMsb:0]);
-      riscv_pkg::BCLR: o_result = i_operand_a & ~(XLEN'(1) << i_operand_b[ShamtMsb:0]);
-      riscv_pkg::BINV: o_result = i_operand_a ^ (XLEN'(1) << i_operand_b[ShamtMsb:0]);
-      riscv_pkg::BEXT: o_result = XLEN'(i_operand_a[i_operand_b[ShamtMsb:0]]);
-      // Zbs extension - single-bit operations (immediate form, 6-bit index on RV64)
-      riscv_pkg::BSETI: o_result = i_operand_a | (XLEN'(1) << shamt_imm);
-      riscv_pkg::BCLRI: o_result = i_operand_a & ~(XLEN'(1) << shamt_imm);
-      riscv_pkg::BINVI: o_result = i_operand_a ^ (XLEN'(1) << shamt_imm);
-      riscv_pkg::BEXTI: o_result = XLEN'(i_operand_a[shamt_imm]);
-      // Zbb extension - logical with complement
-      riscv_pkg::ANDN: o_result = i_operand_a & ~i_operand_b;
-      riscv_pkg::ORN: o_result = i_operand_a | ~i_operand_b;
-      riscv_pkg::XNOR: o_result = ~(i_operand_a ^ i_operand_b);
-      // Zbb extension - min/max comparisons
-      riscv_pkg::MAX:
-      o_result = ($signed(i_operand_a) > $signed(i_operand_b)) ? i_operand_a : i_operand_b;
-      riscv_pkg::MAXU: o_result = (i_operand_a > i_operand_b) ? i_operand_a : i_operand_b;
-      riscv_pkg::MIN:
-      o_result = ($signed(i_operand_a) < $signed(i_operand_b)) ? i_operand_a : i_operand_b;
-      riscv_pkg::MINU: o_result = (i_operand_a < i_operand_b) ? i_operand_a : i_operand_b;
-      // Zbb extension - rotations on the funnel shifters (no OR of two shifts)
-      // ROR: {a,a} >> shamt gives lower XLEN bits as rotated result
-      riscv_pkg::ROR: o_result = shared_rotate_result;
-      // ROL uses the full-width left funnel at XLEN=64.
-      riscv_pkg::ROL: o_result = shared_rotate_left_result;
-      // RORI: rotate right immediate using funnel shifter (6-bit shamt on RV64)
-      riscv_pkg::RORI: o_result = shared_rotate_result;
-      // Zbb extension - RV64 word rotates (32-bit funnel, sext32 result)
-      riscv_pkg::RORW: o_result = w_result(shared_word_rotate_result);
-      riscv_pkg::ROLW: o_result = w_result(shared_word_left_result);
-      riscv_pkg::RORIW: o_result = w_result(shared_word_rotate_result);
-      // Zbb extension - count operations (trees defined in riscv_pkg)
-      riscv_pkg::CLZ: o_result = XLEN'(riscv_pkg::clz64(64'(i_operand_a)));
-      riscv_pkg::CTZ: o_result = XLEN'(riscv_pkg::ctz64(64'(i_operand_a)));
-      riscv_pkg::CPOP: o_result = XLEN'(riscv_pkg::cpop64(64'(i_operand_a)));
-      // Zbb extension - RV64 word counts (counts are <= 32, so sext == zext)
-      riscv_pkg::CLZW: o_result = w_result(riscv_pkg::clz32(i_operand_a[31:0]));
-      riscv_pkg::CTZW: o_result = w_result(riscv_pkg::ctz32(i_operand_a[31:0]));
-      riscv_pkg::CPOPW: o_result = w_result(riscv_pkg::cpop32(i_operand_a[31:0]));
-      // Zbb extension - sign extension
-      riscv_pkg::SEXT_B: o_result = {{(XLEN - 8) {i_operand_a[7]}}, i_operand_a[7:0]};
-      riscv_pkg::SEXT_H: o_result = {{(XLEN - 16) {i_operand_a[15]}}, i_operand_a[15:0]};
-      // Zbb extension - byte operations (XLEN-parametric local helpers)
-      riscv_pkg::ORC_B: o_result = orc_b_x(i_operand_a);
-      riscv_pkg::REV8: o_result = rev8_x(i_operand_a);
-      // Zicond extension - conditional zero
-      riscv_pkg::CZERO_EQZ: o_result = (i_operand_b == 0) ? '0 : i_operand_a;
-      riscv_pkg::CZERO_NEZ: o_result = (i_operand_b != 0) ? '0 : i_operand_a;
-      // Zbkb extension - bit manipulation for crypto
-      // PACK: pack low XLEN/2 halves from rs1 and rs2
-      riscv_pkg::PACK: o_result = {i_operand_b[XLEN/2-1:0], i_operand_a[XLEN/2-1:0]};
-      // PACKH: pack low bytes from rs1 and rs2 (zero-extended)
-      riscv_pkg::PACKH: o_result = {{(XLEN - 16) {1'b0}}, i_operand_b[7:0], i_operand_a[7:0]};
-      // PACKW: RV64 pack low halfwords into a sext32 word (zext.h at RV64)
-      riscv_pkg::PACKW: o_result = w_result({i_operand_b[15:0], i_operand_a[15:0]});
-      // Zbkb extension - bit permutation (local XLEN-parametric helper)
-      riscv_pkg::BREV8: o_result = brev8_x(i_operand_a);
-      // Anything not listed above returns 0, PAUSE (a hint) among them. The
-      // M-extension ops have no arm here: they execute in the multiplier and
-      // divider behind int_muldiv_shim, and a simulation assert in
-      // int_alu_shim catches any that issue here. The Zicsr ops have no arm
-      // either (see the header).
-      default: ;
-    endcase
+  // Explicit masks make unselected leaves zero, even when their data is X.
+  // Passing each value as a function argument evaluates it at XLEN bits.
+  function automatic logic [XLEN-1:0] mask_result(input logic enable, input logic [XLEN-1:0] value);
+    mask_result = {XLEN{enable}} & value;
+  endfunction
+
+  // Base logic uses opcode-selected operand_b; complemented logic uses raw rs2.
+  logic [5:0] select_logic;
+  (* keep = "true" *) logic [XLEN-1:0] result_logic;
+  assign select_logic[0] = (i_instruction_operation == riscv_pkg::AND) ||
+      (i_instruction_operation == riscv_pkg::ANDI);
+  assign select_logic[1] = (i_instruction_operation == riscv_pkg::OR) ||
+      (i_instruction_operation == riscv_pkg::ORI);
+  assign select_logic[2] = (i_instruction_operation == riscv_pkg::XOR) ||
+      (i_instruction_operation == riscv_pkg::XORI);
+  assign select_logic[3] = (i_instruction_operation == riscv_pkg::ANDN);
+  assign select_logic[4] = (i_instruction_operation == riscv_pkg::ORN);
+  assign select_logic[5] = (i_instruction_operation == riscv_pkg::XNOR);
+  // Truth-table order is {a,b} = 00, 01, 10, 11. Every inactive
+  // operation supplies four zeros, so this LUT also masks the result.
+  logic [3:0] logic_truth;
+  logic [XLEN-1:0] logic_operand_b;
+  assign logic_operand_b = ((|select_logic[2:0]) && op_is_imm_not_reg(
+      i_instruction.opcode
+  )) ? i_immediate_i_type : i_operand_b;
+  assign logic_truth[0] = select_logic[4] | select_logic[5];
+  assign logic_truth[1] = select_logic[1] | select_logic[2];
+  assign logic_truth[2] = select_logic[1] | select_logic[2] | select_logic[3] | select_logic[4];
+  assign logic_truth[3] = select_logic[0] | select_logic[1] | select_logic[4] | select_logic[5];
+  for (genvar bit_index = 0; bit_index < XLEN; bit_index++) begin : gen_logic_truth
+    assign result_logic[bit_index] = i_operand_a[bit_index] ?
+        (logic_operand_b[bit_index] ? logic_truth[3] : logic_truth[2]) :
+        (logic_operand_b[bit_index] ? logic_truth[1] : logic_truth[0]);
   end
+
+  // Zbs register forms index with rs2[5:0], immediate forms with the shamt field.
+  logic [5:0] select_zbs;
+  (* keep = "true" *) logic [XLEN-1:0] result_zbs;
+  assign select_zbs[0] = (i_instruction_operation == riscv_pkg::BSET);
+  assign select_zbs[1] = (i_instruction_operation == riscv_pkg::BSETI);
+  assign select_zbs[2] = (i_instruction_operation == riscv_pkg::BCLR);
+  assign select_zbs[3] = (i_instruction_operation == riscv_pkg::BCLRI);
+  assign select_zbs[4] = (i_instruction_operation == riscv_pkg::BINV);
+  assign select_zbs[5] = (i_instruction_operation == riscv_pkg::BINVI);
+  // Each update has one enabled mask. With bit m selected:
+  // BSET preserves a and sets m; BCLR removes m; BINV toggles m.
+  logic [XLEN-1:0] zbs_register_mask, zbs_immediate_mask;
+  logic [XLEN-1:0] zbs_set_mask, zbs_clear_mask, zbs_invert_mask;
+  assign zbs_register_mask = XLEN'(1) << i_operand_b[ShamtMsb:0];
+  assign zbs_immediate_mask = XLEN'(1) << shamt_imm;
+  assign zbs_set_mask = mask_result(
+      select_zbs[0], zbs_register_mask
+  ) | mask_result(
+      select_zbs[1], zbs_immediate_mask
+  );
+  assign zbs_clear_mask = mask_result(
+      select_zbs[2], zbs_register_mask
+  ) | mask_result(
+      select_zbs[3], zbs_immediate_mask
+  );
+  assign zbs_invert_mask = mask_result(
+      select_zbs[4], zbs_register_mask
+  ) | mask_result(
+      select_zbs[5], zbs_immediate_mask
+  );
+  assign result_zbs = (mask_result(
+      |select_zbs, i_operand_a
+  ) & ~(zbs_clear_mask | zbs_invert_mask)) | (~i_operand_a & zbs_invert_mask) | zbs_set_mask;
+
+  // AUIPC is already PC + imm_u; JAL/JALR use the supplied link address.
+  logic [1:0] select_immediate;
+  (* keep = "true" *) logic [XLEN-1:0] result_immediate;
+  assign select_immediate[0] = (i_instruction_operation == riscv_pkg::LUI) ||
+      (i_instruction_operation == riscv_pkg::AUIPC);
+  assign select_immediate[1] = (i_instruction_operation == riscv_pkg::JAL) ||
+      (i_instruction_operation == riscv_pkg::JALR);
+  assign result_immediate = mask_result(
+      select_immediate[0], XLEN'(signed'(i_immediate_u_type))
+  ) | mask_result(
+      select_immediate[1], i_link_address
+  );
+
+  // Byte permutations, sign extensions, and packs.
+  logic [6:0] select_byte;
+  (* keep = "true" *) logic [XLEN-1:0] result_byte;
+  assign select_byte[0] = (i_instruction_operation == riscv_pkg::SEXT_B);
+  assign select_byte[1] = (i_instruction_operation == riscv_pkg::SEXT_H);
+  assign select_byte[2] = (i_instruction_operation == riscv_pkg::REV8);
+  assign select_byte[3] = (i_instruction_operation == riscv_pkg::PACK);
+  assign select_byte[4] = (i_instruction_operation == riscv_pkg::PACKH);
+  assign select_byte[5] = (i_instruction_operation == riscv_pkg::PACKW);
+  assign select_byte[6] = (i_instruction_operation == riscv_pkg::BREV8);
+  assign result_byte = mask_result(
+      select_byte[0], {{(XLEN - 8) {i_operand_a[7]}}, i_operand_a[7:0]}
+  ) | mask_result(
+      select_byte[1], {{(XLEN - 16) {i_operand_a[15]}}, i_operand_a[15:0]}
+  ) | mask_result(
+      select_byte[2], rev8_x(i_operand_a)
+  ) | mask_result(
+      select_byte[3], {i_operand_b[XLEN/2-1:0], i_operand_a[XLEN/2-1:0]}
+  ) | mask_result(
+      select_byte[4], {{(XLEN - 16) {1'b0}}, i_operand_b[7:0], i_operand_a[7:0]}
+  ) | mask_result(
+      select_byte[5], w_result({i_operand_b[15:0], i_operand_a[15:0]})
+  ) | mask_result(
+      select_byte[6], brev8_x(i_operand_a)
+  );
+
+  // Keep byte OR-reduction out of the byte/pack selection tree.
+  logic [0:0] select_orc;
+  (* keep = "true" *) logic [XLEN-1:0] result_orc;
+  assign select_orc[0] = (i_instruction_operation == riscv_pkg::ORC_B);
+  assign result_orc = mask_result(select_orc[0], orc_b_x(i_operand_a));
+
+  // Base and W add/sub results run in parallel on the shared operand_b.
+  logic [3:0] select_arithmetic;
+  (* keep = "true" *) logic [XLEN-1:0] result_arithmetic;
+  assign select_arithmetic[0] = (i_instruction_operation == riscv_pkg::ADD) ||
+      (i_instruction_operation == riscv_pkg::ADDI);
+  assign select_arithmetic[1] = (i_instruction_operation == riscv_pkg::SUB);
+  assign select_arithmetic[2] = (i_instruction_operation == riscv_pkg::ADDW) ||
+      (i_instruction_operation == riscv_pkg::ADDIW);
+  assign select_arithmetic[3] = (i_instruction_operation == riscv_pkg::SUBW);
+  assign result_arithmetic = mask_result(
+      select_arithmetic[0], i_operand_a + operand_b
+  ) | mask_result(
+      select_arithmetic[1], difference[XLEN-1:0]
+  ) | mask_result(
+      select_arithmetic[2], w_result(i_operand_a[31:0] + operand_b[31:0])
+  ) | mask_result(
+      select_arithmetic[3], w_result(i_operand_a[31:0] - operand_b[31:0])
+  );
+
+  // Zba adders have a separate late result bus.
+  logic [6:0] select_zba;
+  (* keep = "true" *) logic [XLEN-1:0] result_zba;
+  assign select_zba[0] = (i_instruction_operation == riscv_pkg::SH1ADD);
+  assign select_zba[1] = (i_instruction_operation == riscv_pkg::SH2ADD);
+  assign select_zba[2] = (i_instruction_operation == riscv_pkg::SH3ADD);
+  assign select_zba[3] = (i_instruction_operation == riscv_pkg::ADD_UW);
+  assign select_zba[4] = (i_instruction_operation == riscv_pkg::SH1ADD_UW);
+  assign select_zba[5] = (i_instruction_operation == riscv_pkg::SH2ADD_UW);
+  assign select_zba[6] = (i_instruction_operation == riscv_pkg::SH3ADD_UW);
+  assign result_zba = mask_result(
+      select_zba[0], (i_operand_a << 1) + i_operand_b
+  ) | mask_result(
+      select_zba[1], (i_operand_a << 2) + i_operand_b
+  ) | mask_result(
+      select_zba[2], (i_operand_a << 3) + i_operand_b
+  ) | mask_result(
+      select_zba[3], uw_operand(i_operand_a) + i_operand_b
+  ) | mask_result(
+      select_zba[4], (uw_operand(i_operand_a) << 1) + i_operand_b
+  ) | mask_result(
+      select_zba[5], (uw_operand(i_operand_a) << 2) + i_operand_b
+  ) | mask_result(
+      select_zba[6], (uw_operand(i_operand_a) << 3) + i_operand_b
+  );
+
+  // Shifts and rotates take their results from the shared funnels above.
+  logic [9:0] select_shift;
+  (* keep = "true" *) logic [XLEN-1:0] result_shift;
+  assign select_shift[0] = (i_instruction_operation == riscv_pkg::SLL) ||
+      (i_instruction_operation == riscv_pkg::SLLI);
+  assign select_shift[1] = (i_instruction_operation == riscv_pkg::SRL) ||
+      (i_instruction_operation == riscv_pkg::SRLI);
+  assign select_shift[2] = (i_instruction_operation == riscv_pkg::SRA) ||
+      (i_instruction_operation == riscv_pkg::SRAI);
+  assign select_shift[3] = (i_instruction_operation == riscv_pkg::ROL);
+  assign select_shift[4] = (i_instruction_operation == riscv_pkg::ROR) ||
+      (i_instruction_operation == riscv_pkg::RORI);
+  assign select_shift[5] = (i_instruction_operation == riscv_pkg::SLLW) ||
+      (i_instruction_operation == riscv_pkg::SLLIW) ||
+      (i_instruction_operation == riscv_pkg::ROLW);
+  assign select_shift[6] = (i_instruction_operation == riscv_pkg::SRLW) ||
+      (i_instruction_operation == riscv_pkg::SRLIW);
+  assign select_shift[7] = (i_instruction_operation == riscv_pkg::SRAW) ||
+      (i_instruction_operation == riscv_pkg::SRAIW);
+  assign select_shift[8] = (i_instruction_operation == riscv_pkg::RORW) ||
+      (i_instruction_operation == riscv_pkg::RORIW);
+  assign select_shift[9] = (i_instruction_operation == riscv_pkg::SLLI_UW);
+  // Each width selects its direction first, so the group combines three buses.
+  logic [XLEN-1:0] selected_full_shift;
+  logic [XLEN-1:0] selected_word_shift;
+  generate
+    if (XLEN == 64) begin : gen_select_full_shift64
+      assign selected_full_shift = mask_result(
+          |select_shift[4:0],
+          (select_shift[0] | select_shift[3]) ? shared_left_result : shared_right_result
+      );
+    end else begin : gen_select_legacy_full_shift
+      assign selected_full_shift = mask_result(
+          select_shift[0], shared_left_result
+      ) | mask_result(
+          select_shift[1], shared_right_result
+      ) | mask_result(
+          select_shift[2], shared_arithmetic_right_result
+      ) | mask_result(
+          select_shift[3], shared_rotate_left_result
+      ) | mask_result(
+          select_shift[4], shared_rotate_result
+      );
+    end
+  endgenerate
+  assign selected_word_shift = mask_result(
+      |select_shift[8:5],
+      w_result(
+          select_shift[5] ? shared_word_left_result : shared_word_right_result)
+  );
+  assign result_shift = selected_full_shift | selected_word_shift | mask_result(
+      select_shift[9], uw_operand(i_operand_a) << shamt_imm
+  );
+
+  // Min/max and CZERO select raw rs1/rs2 data.
+  logic [5:0] select_minmax;
+  (* keep = "true" *) logic [XLEN-1:0] result_minmax;
+  assign select_minmax[0] = (i_instruction_operation == riscv_pkg::MAX);
+  assign select_minmax[1] = (i_instruction_operation == riscv_pkg::MAXU);
+  assign select_minmax[2] = (i_instruction_operation == riscv_pkg::MIN);
+  assign select_minmax[3] = (i_instruction_operation == riscv_pkg::MINU);
+  assign select_minmax[4] = (i_instruction_operation == riscv_pkg::CZERO_EQZ);
+  assign select_minmax[5] = (i_instruction_operation == riscv_pkg::CZERO_NEZ);
+  assign result_minmax = mask_result(
+      select_minmax[0], ($signed(i_operand_a) > $signed(i_operand_b)) ? i_operand_a : i_operand_b
+  ) | mask_result(
+      select_minmax[1], (i_operand_a > i_operand_b) ? i_operand_a : i_operand_b
+  ) | mask_result(
+      select_minmax[2], ($signed(i_operand_a) < $signed(i_operand_b)) ? i_operand_a : i_operand_b
+  ) | mask_result(
+      select_minmax[3], (i_operand_a < i_operand_b) ? i_operand_a : i_operand_b
+  ) | mask_result(
+      select_minmax[4], (i_operand_b == 0) ? '0 : i_operand_a
+  ) | mask_result(
+      select_minmax[5], (i_operand_b != 0) ? '0 : i_operand_a
+  );
+
+  // Counts use the package trees; the W forms sign-extend their 32-bit counts.
+  logic [5:0] select_count;
+  (* keep = "true" *) logic [XLEN-1:0] result_count;
+  assign select_count[0] = (i_instruction_operation == riscv_pkg::CLZ);
+  assign select_count[1] = (i_instruction_operation == riscv_pkg::CTZ);
+  assign select_count[2] = (i_instruction_operation == riscv_pkg::CPOP);
+  assign select_count[3] = (i_instruction_operation == riscv_pkg::CLZW);
+  assign select_count[4] = (i_instruction_operation == riscv_pkg::CTZW);
+  assign select_count[5] = (i_instruction_operation == riscv_pkg::CPOPW);
+  // Keep each full/word count pair local before the three-way merge.
+  (* keep = "true" *) logic [XLEN-1:0] result_clz, result_ctz, result_cpop;
+  assign result_clz = mask_result(
+      select_count[0], XLEN'(riscv_pkg::clz64(64'(i_operand_a)))
+  ) | mask_result(
+      select_count[3], w_result(riscv_pkg::clz32(i_operand_a[31:0]))
+  );
+  assign result_ctz = mask_result(
+      select_count[1], XLEN'(riscv_pkg::ctz64(64'(i_operand_a)))
+  ) | mask_result(
+      select_count[4], w_result(riscv_pkg::ctz32(i_operand_a[31:0]))
+  );
+  assign result_cpop = mask_result(
+      select_count[2], XLEN'(riscv_pkg::cpop64(64'(i_operand_a)))
+  ) | mask_result(
+      select_count[5], w_result(riscv_pkg::cpop32(i_operand_a[31:0]))
+  );
+  assign result_count = result_clz | result_ctz | result_cpop;
+
+  // SLT and SLTU use difference (operand_b); BEXT indexes with raw i_operand_b.
+  logic [3:0] select_condition;
+  (* keep = "true" *) logic [XLEN-1:0] result_condition;
+  assign select_condition[0] = (i_instruction_operation == riscv_pkg::SLT) ||
+      (i_instruction_operation == riscv_pkg::SLTI);
+  assign select_condition[1] = (i_instruction_operation == riscv_pkg::SLTU) ||
+      (i_instruction_operation == riscv_pkg::SLTIU);
+  assign select_condition[2] = (i_instruction_operation == riscv_pkg::BEXT);
+  assign select_condition[3] = (i_instruction_operation == riscv_pkg::BEXTI);
+  assign result_condition = mask_result(
+      select_condition[0], XLEN'(difference[XLEN])
+  ) | mask_result(
+      select_condition[1], XLEN'(sltu)
+  ) | mask_result(
+      select_condition[2], XLEN'(i_operand_a[i_operand_b[ShamtMsb:0]])
+  ) | mask_result(
+      select_condition[3], XLEN'(i_operand_a[shamt_imm])
+  );
+
+  // The count bus is zero above bit 6; the predicate bus is zero above bit 0.
+  // Arithmetic bit zero has no carry propagation: pre-merge just its two
+  // groups, allowing every other group to enter the final OR directly. The
+  // caller's side result is shallow too and fills result_early's sixth input.
+  (* keep = "true" *) logic [XLEN-1:0] result_early;
+  (* keep = "true" *) logic result_low_arithmetic;
+  assign result_early = result_logic | result_zbs | result_immediate | result_byte | result_orc |
+      i_side_result;
+  assign result_low_arithmetic = result_arithmetic[0] | result_zba[0];
+  assign o_result[0] = result_early[0] | result_low_arithmetic | result_shift[0] |
+      result_minmax[0] | result_count[0] | result_condition[0];
+  assign o_result[XLEN-1:1] = result_early[XLEN-1:1] | result_arithmetic[XLEN-1:1] |
+      result_zba[XLEN-1:1] | result_shift[XLEN-1:1] |
+      result_minmax[XLEN-1:1] | result_count[XLEN-1:1];
 
 `ifndef SYNTHESIS
   // These checks name each consuming operation by its enum member, so an enum

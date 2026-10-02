@@ -39,7 +39,10 @@ allocation.
 
 The shim also completes ECALL, EBREAK, illegal instructions, and fetch faults
 as exceptions, and sends a CSR instruction's write operand to the CDB; the CSR
-itself is read and written at commit.
+itself is read and written at commit. The CSR operand and the fetch-fault
+`xtval` reach the CDB value through the ALU's `i_side_result` input, which
+the ALU ORs into its early result bus; no ALU result group selects those
+operations, so the value is exact without a mux after the ALU.
 
 `u_alu2_shim` sets `USE_SHIFT_AMOUNT_HINT`: the RS precomputes the shift
 amount for port 1, and the ALU uses it instead of selecting one itself. The

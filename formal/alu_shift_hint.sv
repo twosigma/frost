@@ -51,6 +51,7 @@ module alu_shift_hint (
       .i_immediate_u_type(imm_u),
       .i_immediate_i_type(imm_i),
       .i_link_address(link),
+      .i_side_result('0),
       .o_result(generic_result)
   );
   alu #(
@@ -65,6 +66,7 @@ module alu_shift_hint (
       .i_immediate_u_type(imm_u),
       .i_immediate_i_type(imm_i),
       .i_link_address(link),
+      .i_side_result('0),
       .o_result(hinted_result)
   );
   logic [ 5:0] oracle_amount;
