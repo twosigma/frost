@@ -187,7 +187,10 @@ module misprediction_flush_controller #(
   (* max_fanout = 64 *) logic flush_all;
   logic commit_recovery_flush_after_head;
   logic checkpoint_restore;
-  logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_restore_id;
+  // TIMING: the restore id addresses every checkpoint LUTRAM read port (about
+  // 270 address pins spread over the RAT); the cap replicates its one-LUT
+  // driver per region (see the restore id below).
+  (* max_fanout = 48 *) logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_restore_id;
   logic checkpoint_restore_reclaim_all;
   logic checkpoint_free;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_free_id;
@@ -473,14 +476,17 @@ module misprediction_flush_controller #(
   // is taken, that is, commit-time recovery with a checkpoint or
   // early_mispredict_active. So the id is one LUT of registered state: zero
   // on the full-flush pulse, else the early id unless commit-time recovery is
-  // pending. It differs from the reference priority chain only where nothing
-  // reads it.
+  // pending. Early recovery is active only with commit-time recovery not
+  // pending, so the select needs no early_mispredict_pending term: the id
+  // differs from the reference priority chain only where nothing reads it
+  // (p_checkpoint_restore_id_exact_where_observed). TIMING: that keeps the
+  // widely replicated early_mispredict_pending out of the address LUT.
   assign checkpoint_restore = !restore_flush_all_q &&
       (early_redirect_fast ||
        (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint));
   assign checkpoint_restore_id =
       restore_flush_all_q ? '0 :
-      (early_mispredict_pending && !mispredict_recovery_pending) ? early_mispredict_checkpoint_id :
+      !mispredict_recovery_pending ? early_mispredict_checkpoint_id :
       mispredict_commit_q.checkpoint_id;
   assign checkpoint_restore_reclaim_all = 1'b0;
 
