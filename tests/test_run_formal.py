@@ -124,7 +124,8 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "cache_mshr_payload.sby",
-        "Per-entry MSHR byte updates match the indexed fill/store merge for arbitrary state",
+        "Per-entry MSHR byte updates match the indexed fill/store merge for arbitrary state, "
+        "on every byte that can be read",
         tasks=("bmc",),
     ),
     FormalTarget(

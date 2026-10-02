@@ -28,23 +28,38 @@
  *     internally to meet READ_LATENCY_B.
  *   - else (Yosys, Verilator): behavioral memory with a matching read pipeline.
  *
- * On the read path, i_re/i_raddr are registered once at the module boundary
- * and then spend READ_LATENCY-1 cycles in the memory read pipeline, so the
- * total i_re->o_rdata latency is READ_LATENCY. Writes are byte writes with
- * WRITE_LATENCY-1 input-register stages (1 = single-cycle write). There is no
- * power-up init: contents are don't-care until written, and the cache's tag
- * sweep makes them unreachable.
+ * The read path has one of two forms with the same total i_re->o_rdata
+ * latency, READ_LATENCY:
+ *   - REGISTER_READ_INPUT=1: i_re/i_raddr are registered once at the module
+ *     boundary and then spend READ_LATENCY-1 cycles in the memory read
+ *     pipeline. A read samples the array one cycle after i_re, so it sees a
+ *     write presented in the i_re cycle.
+ *   - REGISTER_READ_INPUT=0: i_raddr goes straight to the array, which reads
+ *     every cycle, and READ_LATENCY counts the array's own output register
+ *     (block RAM: DOB_REG), so o_rdata comes from a register instead of the
+ *     RAM's slower unregistered output. A read samples the array in the i_re
+ *     cycle and does not see a write presented in that cycle (read-first), so
+ *     the user must not read a row in the cycle it is written; frost_cache's
+ *     raw_hazard stall guarantees this. i_re qualifies nothing here and is
+ *     used only by the collision check. o_rdata changes every cycle, so it is
+ *     valid only READ_LATENCY cycles after a read.
+ * Writes are byte writes with WRITE_LATENCY-1 input-register stages (1 =
+ * single-cycle write). There is no power-up init: contents are don't-care
+ * until written, and the cache's tag sweep makes them unreachable.
  */
 module sdp_ram_byte_en #(
-    parameter int unsigned DATA_WIDTH       = 256,     // bits per row (multiple of 8)
-    parameter int unsigned ADDR_WIDTH       = 12,      // row-address bits
-    parameter int unsigned READ_LATENCY     = 2,       // total cycles i_re->o_rdata (>= 2)
-    parameter int unsigned WRITE_LATENCY    = 1,       // total cycles i_w*->array updated (>= 1)
+    parameter int unsigned DATA_WIDTH = 256,  // bits per row (multiple of 8)
+    parameter int unsigned ADDR_WIDTH = 12,  // row-address bits
+    parameter int unsigned READ_LATENCY = 2,  // total cycles i_re->o_rdata (>= 2)
+    parameter int unsigned WRITE_LATENCY = 1,  // total cycles i_w*->array updated (>= 1)
     // Untyped because Vivado fails to resolve a string-typed parameter
     // propagated into xpm_memory_sdpram's MEMORY_PRIMITIVE.
     // verilog_lint: waive-start explicit-parameter-storage-type
-    parameter              MEMORY_PRIMITIVE = "block"  // "block" | "ultra" | "auto"
+    parameter MEMORY_PRIMITIVE = "block",  // "block" | "ultra" | "auto"
     // verilog_lint: waive-end explicit-parameter-storage-type
+    // 1 = register i_re/i_raddr at the boundary; 0 = present i_raddr to the
+    // array directly and count its output register (see the header).
+    parameter bit REGISTER_READ_INPUT = 1'b1
 ) (
     input logic i_clk,
 
@@ -67,7 +82,9 @@ module sdp_ram_byte_en #(
 
   localparam int unsigned NumBytes = DATA_WIDTH / 8;
   localparam int unsigned Depth = 2 ** ADDR_WIDTH;
-  localparam int unsigned XpmReadLatency = READ_LATENCY - 1;  // 1 cycle = read-input reg
+  // The cycles spent in the memory read pipeline: one fewer than the total
+  // when the read inputs are registered at the boundary.
+  localparam int unsigned XpmReadLatency = REGISTER_READ_INPUT ? READ_LATENCY - 1 : READ_LATENCY;
 
   // ---- Write-port input register pipeline (WRITE_LATENCY-1 stages) ---------
   localparam int unsigned WriteRegStages = WRITE_LATENCY - 1;
@@ -105,15 +122,26 @@ module sdp_ram_byte_en #(
   // ---- Read-port input register --------------------------------------------
   // Ends the request cone at a register before the memory and lets the tool
   // replicate it across the wide array.
-  logic                  re_in_reg;
-  logic [ADDR_WIDTH-1:0] raddr_reg;
-  always_ff @(posedge i_clk) begin
-    re_in_reg <= i_re;
-    raddr_reg <= i_raddr;
+  // The array's read enable and address: the boundary registers, or the
+  // inputs themselves with the enable held high.
+  logic                  array_re;
+  logic [ADDR_WIDTH-1:0] array_raddr;
+  if (REGISTER_READ_INPUT) begin : gen_read_input_reg
+    logic                  re_in_reg;
+    logic [ADDR_WIDTH-1:0] raddr_reg;
+    always_ff @(posedge i_clk) begin
+      re_in_reg <= i_re;
+      raddr_reg <= i_raddr;
+    end
+    assign array_re    = re_in_reg;
+    assign array_raddr = raddr_reg;
+  end else begin : gen_read_input_direct
+    assign array_re    = 1'b1;
+    assign array_raddr = i_raddr;
   end
 
   // ---- Storage: DATA_WIDTH x Depth, byte-write, deep read pipeline ---------
-  logic [DATA_WIDTH-1:0] row_dout;  // valid XpmReadLatency cycles after re_in_reg
+  logic [DATA_WIDTH-1:0] row_dout;  // valid XpmReadLatency cycles after array_re
 
 `ifdef FROST_XILINX_PRIMS
 `ifdef FROST_VIVADO_SYNTH
@@ -169,8 +197,8 @@ module sdp_ram_byte_en #(
       .wea           (wbyte_en_q),
       .addra         (waddr_q),
       .dina          (wdata_q),
-      .enb           (re_in_reg),
-      .addrb         (raddr_reg),
+      .enb           (array_re),
+      .addrb         (array_raddr),
       .regceb        (1'b1),
       .rstb          (1'b0),
       .sleep         (1'b0),
@@ -192,7 +220,7 @@ module sdp_ram_byte_en #(
     end
     logic [DATA_WIDTH-1:0] rd_pipe[XpmReadLatency];
     always_ff @(posedge i_clk) begin
-      if (re_in_reg) rd_pipe[0] <= memory[raddr_reg];
+      if (array_re) rd_pipe[0] <= memory[array_raddr];
       for (int unsigned k = 1; k < XpmReadLatency; k++) rd_pipe[k] <= rd_pipe[k-1];
     end
     assign row_dout = rd_pipe[XpmReadLatency-1];
@@ -205,7 +233,7 @@ module sdp_ram_byte_en #(
     end
     logic [DATA_WIDTH-1:0] rd_pipe[XpmReadLatency];
     always_ff @(posedge i_clk) begin
-      if (re_in_reg) rd_pipe[0] <= memory[raddr_reg];
+      if (array_re) rd_pipe[0] <= memory[array_raddr];
       for (int unsigned k = 1; k < XpmReadLatency; k++) rd_pipe[k] <= rd_pipe[k-1];
     end
     assign row_dout = rd_pipe[XpmReadLatency-1];
@@ -221,9 +249,20 @@ module sdp_ram_byte_en #(
 `ifndef FORMAL
   // The write mode never decides a read's data: the memory is never asked to
   // read and write one row at the same edge (see WRITE_MODE_B).
+  // A read and a write of one row at the same array edge: the read returns
+  // the old row.
+  logic                  check_re;
+  logic [ADDR_WIDTH-1:0] check_raddr;
+  if (REGISTER_READ_INPUT) begin : gen_check_registered
+    assign check_re    = array_re;
+    assign check_raddr = array_raddr;
+  end else begin : gen_check_direct
+    assign check_re    = i_re;
+    assign check_raddr = i_raddr;
+  end
   always @(posedge i_clk) begin
-    if (re_in_reg && row_write_en && (raddr_reg == waddr_q)) begin
-      $error("sdp_ram_byte_en: row %0d read and written at the same edge", raddr_reg);
+    if (check_re && row_write_en && (check_raddr == waddr_q)) begin
+      $error("sdp_ram_byte_en: row %0d read and written at the same edge", check_raddr);
     end
   end
 `endif

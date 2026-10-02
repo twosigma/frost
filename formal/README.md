@@ -237,7 +237,7 @@ runs in the `divider` simulation, against Python integer division.
 
 | Target | Checks |
 | --- | --- |
-| `cache_mshr_payload` | Per-entry MSHR data and byte-strobe next state equals the reference indexed fill and store merge, including fills that coincide with W-stage stores, in a 256-byte cache with 8-byte lines |
+| `cache_mshr_payload` | Per-entry MSHR data and byte-strobe next state equals the reference indexed fill and store merge, including fills that coincide with W-stage stores, on every byte that can be read (a slot waiting for its fill takes the response into its unwritten bytes every cycle), in a 256-byte cache with 8-byte lines |
 | `coherence_observation` | The load queue's coherence port tracks one arbitrary ROB tag's observations through retirement, flush, and tag reuse, and replays it when DMA invalidates its line. Valid table payloads equal the original reset/flush-qualified writes. See below |
 | `coherence_replay_compare` | DMA-invalidation replay masks, computed with chunked compares against local copies of the invalidated line, equal full-width line equality, at XLEN 32, 64, and 66. Assumes one initial reset |
 | `data_mem_request_router` | Device reads are staged and accepted only after committed stores drain, a flush cancels an unaccepted device read, read enables match acceptances, and a blocked request keeps its address. Assumes the load queue presents no new read while one is held |

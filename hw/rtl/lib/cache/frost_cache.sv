@@ -308,12 +308,21 @@ module frost_cache #(
   logic [LINE_BYTES-1:0] data_wbyte_en;
   logic [  LineBits-1:0] data_wdata;
 
+  // A block RAM array with single-cycle writes (the L1s) takes T's read
+  // address directly and counts the RAM's output register in its read
+  // latency, so the read data leaves a register rather than the RAM's slower
+  // unregistered output. The read then samples the array in T's decision
+  // cycle and does not see a write in that cycle, and raw_hazard stalls every
+  // read of a row written in the decision cycle (the flush walk reads while
+  // no data write can happen). The latency is unchanged.
+  localparam bit DataReadDirect = (DATA_MEMORY_PRIMITIVE == "block") && (DATA_WRITE_LATENCY == 1);
   sdp_ram_byte_en #(
       .DATA_WIDTH(LineBits),
       .ADDR_WIDTH(IndexBits),
       .READ_LATENCY(DATA_READ_LATENCY),
       .WRITE_LATENCY(DATA_WRITE_LATENCY),
-      .MEMORY_PRIMITIVE(DATA_MEMORY_PRIMITIVE)
+      .MEMORY_PRIMITIVE(DATA_MEMORY_PRIMITIVE),
+      .REGISTER_READ_INPUT(!DataReadDirect)
   ) data_array (
       .i_clk(i_clk),
       .i_waddr(data_waddr),
@@ -591,7 +600,8 @@ module frost_cache #(
     localparam int unsigned Hi = (Lo + 3 <= TagBits) ? Lo + 3 : TagBits;
     assign tag_match_group[gg] = (tag_rdata_tag[Hi-1:Lo] == t_tag[Hi-1:Lo]);
   end
-  logic hit;
+  // Kept as a net so the decision below can select on it last.
+  (* dont_touch = "true" *) logic hit;
   assign hit = tag_rdata_valid && (&tag_match_group);
 
   // ---- Slot availability (a W-stage allocation is not yet in the valid bits).
@@ -663,7 +673,7 @@ module frost_cache #(
   logic t_tag_write_collision, t_tag_response, t_tag_retry;
   logic t_is_read_hit, t_is_write_hit, t_is_alloc, t_is_merge, t_is_waiter;
   logic t_plain, t_wb_pending, t_is_probe_hit, t_is_probe_miss, t_probe_dirty;
-  logic stall_conflict, stall_full, stall_wb_snapshot;
+  logic stall_conflict, stall_conflict_any, stall_full, stall_wb_snapshot;
 
   // A delayed tag response is usable only if no write to this exact logical
   // index crossed the request, including a fill's tag install in the response
@@ -691,7 +701,6 @@ module frost_cache #(
     match_waitable = !mshr_waiter_valid_q[match_mshr] &&
         ((mshr_state_q[match_mshr] == MS_PEND) || (mshr_state_q[match_mshr] == MS_SENT));
     victim_dirty = tag_rdata_valid && tag_rdata_dirty;
-    raw_hazard = data_row_we && (data_waddr == t_index);
 
     t_plain = !t_probe_q;
     t_is_read_hit = decide && t_plain && !conflict && hit && !t_write_q;
@@ -715,9 +724,10 @@ module frost_cache #(
     t_is_probe_miss = decide && t_probe_q && !conflict && !t_wb_pending && !hit;
     t_probe_dirty = t_is_probe_hit && victim_dirty;
 
-    stall_conflict = decide && (t_plain ?
+    stall_conflict_any = t_plain ?
         (conflict && (!same_line || (t_write_q ? !match_mergeable : !match_waitable))) :
-        (conflict || t_wb_pending));
+        (conflict || t_wb_pending);
+    stall_conflict = decide && stall_conflict_any;
     stall_full = (t_is_alloc && (!mshr_free_any || (victim_dirty && !wb_free_any))) ||
         ((t_is_probe_hit || t_is_probe_miss) && !probe_free_any) ||
         (t_probe_dirty && !wb_free_any);
@@ -728,7 +738,54 @@ module frost_cache #(
     t_stall = stall_conflict || stall_full || stall_wb_snapshot ||
         ((t_is_read_hit || (t_is_alloc && victim_dirty) || t_probe_dirty) && raw_hazard) ||
         (t_is_read_hit && probe_ack_any);
-    t_done = decide && !t_stall;
+  end
+
+  // t_done = decide && !t_stall. With one-cycle block RAM tags (the L1s) the
+  // tag read is the last term of the decision to settle: the RAM's output is
+  // not registered, and hit (the compare groups and their reduce) follows
+  // it. There t_done is factored by the read. Every stall term is qualified
+  // by decide, so for each value of hit, t_ok_hit and t_ok_miss hold
+  // !t_stall without decide, each also selected by the victim's dirty state.
+  // The raw hazard term, an index compare of the write port's registers,
+  // enters them last. hit selects between them and decide gates the result,
+  // so the tag read reaches t_done in three LUT levels and t_done's
+  // consumers (the T and W enables, the slot and queue captures and the
+  // accept) one level later. On a hit the tag is valid, so the hit case
+  // selects on the dirty bit alone. A delayed-tag cache (the L2) keeps the
+  // plain form: its tag response leaves a register, and its decide carries
+  // the tag-write collision compare. p_t_done_factored checks the form
+  // against decide && !t_stall every cycle.
+  if (TrackDelayedTagWrites) begin : gen_t_done_direct
+    assign t_done = decide && !t_stall;
+  end else begin : gen_t_done_factored
+    // Per {hit, victim_dirty} case: the stall terms other than the raw
+    // hazard (case_clear) and the decisions the raw hazard stalls (case_raw).
+    logic [3:0] case_clear, case_raw;
+    for (genvar gc = 0; gc < 4; gc++) begin : gen_case
+      localparam bit CaseHit   = (gc / 2) != 0;
+      localparam bit CaseDirty = (gc % 2) != 0;
+      logic c_read_hit, c_write_hit, c_alloc, c_probe_hit, c_probe_miss, c_probe_dirty;
+      always_comb begin
+        c_read_hit = t_plain && !conflict && CaseHit && !t_write_q;
+        c_write_hit = t_plain && !conflict && CaseHit && t_write_q;
+        c_alloc = t_plain && !conflict && !CaseHit;
+        c_probe_hit = t_probe_q && !conflict && !t_wb_pending && CaseHit;
+        c_probe_miss = t_probe_q && !conflict && !t_wb_pending && !CaseHit;
+        c_probe_dirty = c_probe_hit && CaseDirty;
+        case_clear[gc] = !(stall_conflict_any ||
+                           (c_alloc && (!mshr_free_any || (CaseDirty && !wb_free_any))) ||
+                           ((c_probe_hit || c_probe_miss) && !probe_free_any) ||
+                           (c_probe_dirty && !wb_free_any) || (c_write_hit && t_wb_pending) ||
+                           (c_read_hit && probe_ack_any));
+        case_raw[gc] = c_read_hit || (c_alloc && CaseDirty) || c_probe_dirty;
+      end
+    end
+    (* dont_touch = "true" *) logic t_ok_hit, t_ok_miss;
+    assign t_ok_hit = tag_rdata_dirty ? (case_clear[3] && !(case_raw[3] && raw_hazard)) :
+        (case_clear[2] && !(case_raw[2] && raw_hazard));
+    assign t_ok_miss = victim_dirty ? (case_clear[1] && !(case_raw[1] && raw_hazard)) :
+        (case_clear[0] && !(case_raw[0] && raw_hazard));
+    assign t_done = decide && (hit ? t_ok_hit : t_ok_miss);
   end
 
   // T accepts the presented request when it is empty or completing, i.e.
@@ -827,42 +884,59 @@ module frost_cache #(
   // ===========================================================================
   // At most one push per cycle; never deeper than the upstream's id space,
   // which bounds its outstanding requests.
-  // The small ID queue uses flops so the late tag-hit decision drives a
-  // register enable instead of a distributed-RAM write-enable setup path.
+  // The small ID queue uses flops. The entry at the write pointer is not in
+  // the queue unless the queue is full, so it takes T's id every cycle the
+  // queue is not full, and a push only advances the pointer: the entry
+  // enables are the pointer decode, and the tag decision reaches only the
+  // pointer. ack_nonempty is a flop kept equal to (ack_wr_q != ack_rd_q)
+  // (p_ack_nonempty_exact), so the response port's valid and id do not wait
+  // for the pointer compare; p_ack_head_exact checks the head entry against a
+  // queue written only on a push.
   (* ram_style = "registers" *) logic [UP_ID_BITS-1:0] ack_id_q[AckDepth];
   logic [AckPtrBits-1:0] ack_wr_q, ack_rd_q;
-  logic ack_nonempty, ack_push, ack_pop;
-  assign ack_nonempty = (ack_wr_q != ack_rd_q);
+  logic ack_nonempty, ack_push, ack_pop, ack_full, ack_last;
   assign ack_push = t_done && (t_is_write_hit || (t_is_alloc && t_write_q) || t_is_merge);
+  assign ack_full = (ack_wr_q[AckPtrBits-1] != ack_rd_q[AckPtrBits-1]) &&
+      (ack_wr_q[UP_ID_BITS-1:0] == ack_rd_q[UP_ID_BITS-1:0]);
+  // One entry queued: a pop without a push empties the queue.
+  assign ack_last = (ack_wr_q == ack_rd_q + 1'b1);
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      ack_wr_q <= '0;
-      ack_rd_q <= '0;
+      ack_wr_q     <= '0;
+      ack_rd_q     <= '0;
+      ack_nonempty <= 1'b0;
     end else begin
-      if (ack_push) begin
-        ack_id_q[ack_wr_q[UP_ID_BITS-1:0]] <= t_id_q;
-        ack_wr_q <= ack_wr_q + 1'b1;
-      end
+      if (ack_push) ack_wr_q <= ack_wr_q + 1'b1;
       if (ack_pop) ack_rd_q <= ack_rd_q + 1'b1;
+      ack_nonempty <= ack_push || (ack_nonempty && !(ack_pop && ack_last));
     end
+  end
+  always_ff @(posedge i_clk) begin
+    if (!ack_full) ack_id_q[ack_wr_q[UP_ID_BITS-1:0]] <= t_id_q;
   end
 
   // ===========================================================================
   // Response port: hit data (cannot wait) > probe acknowledgements >
   // acknowledgements > fill responses
   // ===========================================================================
+  // The response port's MSHR source is the lowest slot in MS_RESP. Which
+  // slots are in MS_RESP next cycle is known this cycle (a slot enters it when
+  // its install fires and leaves it when its last response fires), so the
+  // lowest one is registered as a one-hot, mshr_resp_onehot_q, and the MSHR
+  // id and data reach the response port without a state decode or priority
+  // encode. mshr_in_resp_next mirrors the slot state machine below;
+  // p_mshr_resp_onehot_exact checks the register against the lowest MS_RESP
+  // slot every cycle.
   logic                mshr_resp_any;
   logic [MshrBits-1:0] mshr_resp_sel;
   logic                mshr_resp_fire;
+  logic [NUM_MSHR-1:0] mshr_resp_onehot_q, mshr_in_resp_next;
   always_comb begin
-    mshr_resp_any = 1'b0;
+    mshr_resp_any = |mshr_resp_onehot_q;
     mshr_resp_sel = '0;
-    for (int i = int'(NUM_MSHR) - 1; i >= 0; i--) begin
-      if (mshr_state_q[i] == MS_RESP) begin
-        mshr_resp_any = 1'b1;
-        mshr_resp_sel = MshrBits'(i);
-      end
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      if (mshr_resp_onehot_q[i]) mshr_resp_sel = mshr_resp_sel | MshrBits'(i);
     end
   end
 
@@ -1062,27 +1136,64 @@ module frost_cache #(
     end
   end
 
+  // The row written this cycle (the write-port arbitration below) is T's row.
+  assign raw_hazard = data_row_we && (data_waddr == t_index);
+
+  // Next cycle's MS_RESP slots and the registered responder (see the
+  // response port).
+  always_comb begin
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      mshr_in_resp_next[i] =
+          !(w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(i))) &&
+          (((mshr_state_q[i] == MS_WRITING) && mshr_write_fire && (fw_sel_q == MshrBits'(i)) &&
+            (!mshr_write_q[i] || mshr_waiter_valid_q[i])) ||
+           ((mshr_state_q[i] == MS_RESP) &&
+            !(mshr_resp_fire && (mshr_resp_sel == MshrBits'(i)) &&
+              (mshr_resp_is_waiter || !mshr_waiter_valid_q[i]))));
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      mshr_resp_onehot_q <= '0;
+    end else begin
+      // The lowest slot of the next cycle's MS_RESP set.
+      mshr_resp_onehot_q <= mshr_in_resp_next & ~(mshr_in_resp_next - 1'b1);
+    end
+  end
+
   // Each MSHR merges response bytes with its own stored data. The response id
   // only selects which slot updates, so no slot's whole line passes through
   // an id-indexed mux on its way back to the same slot. Bytes from W (an
   // allocation's line, or a merge's strobed bytes) win over a fill landing in
   // the same cycle.
+  //
+  // A slot waiting for its fill (MS_SENT) takes the response data into every
+  // byte its own store has not written, on every cycle, not only when its
+  // fill lands. Nothing reads those bytes before the fill: a slot's line is
+  // read only by its install (MS_WRITING) and its response (MS_RESP), and a
+  // slot leaves MS_SENT on the edge that captures its fill, so the bytes end
+  // up holding exactly the fill's data. The byte enables are then registered
+  // slot and W state, and the downstream response, whose valid and id come
+  // out of the level below's response selection, reaches only the byte data
+  // inputs and the slot's state. The strobes, read only while the fill is
+  // outstanding, no longer record the captured fill. p_mshr_payload_exact
+  // checks every byte that can be read against a copy that captures the fill
+  // on its response, as this logic did before.
   logic [  LineBits-1:0] mshr_data_d [NUM_MSHR];
   logic [LINE_BYTES-1:0] mshr_wstrb_d[NUM_MSHR];
   for (genvar gm = 0; gm < int'(NUM_MSHR); gm++) begin : gen_mshr_payload
-    logic alloc_here, merge_here, fill_here, capture_fill;
-    assign alloc_here = w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(gm));
-    assign merge_here = w_valid_q && (w_op_q == W_MERGE) && (w_mshr_q == MshrBits'(gm));
-    assign fill_here = resp_is_fill && (resp_fill_slot == MshrBits'(gm));
-    assign capture_fill = fill_here && ((mshr_state_q[gm] == MS_SENT) || merge_here);
+    logic alloc_here, merge_here, fill_window;
+    assign alloc_here  = w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(gm));
+    assign merge_here  = w_valid_q && (w_op_q == W_MERGE) && (w_mshr_q == MshrBits'(gm));
+    assign fill_window = (mshr_state_q[gm] == MS_SENT);
     for (genvar gb = 0; gb < int'(LINE_BYTES); gb++) begin : gen_byte
       logic take_store_byte, take_fill_byte;
       assign take_store_byte = alloc_here || (merge_here && w_wstrb_q[gb]);
-      assign take_fill_byte = capture_fill && !(mshr_write_q[gm] && mshr_wstrb_q[gm][gb]);
+      assign take_fill_byte = fill_window && !(mshr_write_q[gm] && mshr_wstrb_q[gm][gb]);
       assign mshr_data_d[gm][gb*8+:8] = take_store_byte ? w_wdata_q[gb*8+:8] :
           (take_fill_byte ? i_down_resp_rdata[gb*8+:8] : mshr_data_q[gm][gb*8+:8]);
       assign mshr_wstrb_d[gm][gb] = alloc_here ? (w_write_q && w_wstrb_q[gb]) :
-          (capture_fill || (merge_here && w_wstrb_q[gb]) || mshr_wstrb_q[gm][gb]);
+          ((merge_here && w_wstrb_q[gb]) || mshr_wstrb_q[gm][gb]);
     end
     always_ff @(posedge i_clk) begin
       if (!i_rst) begin
@@ -1093,9 +1204,13 @@ module frost_cache #(
   end
 
 `ifdef CACHE_MSHR_PAYLOAD_PROOF
-  // Reference next state in the id-indexed form. The formal target
-  // cache_mshr_payload checks the per-slot logic above against it from an
-  // arbitrary state.
+  // Reference next state in the id-indexed form, with the fill captured on
+  // its response. The formal target cache_mshr_payload checks the per-slot
+  // logic above against it from an arbitrary state, on every byte that can be
+  // read: the per-slot logic differs only on the unwritten bytes of a slot
+  // still waiting for its fill (they take the response data every cycle), on
+  // the strobes once the fill lands, and for a response to a slot that is not
+  // waiting for one.
   logic [LineBits-1:0] fill_merged;
   for (genvar gb = 0; gb < int'(LINE_BYTES); gb++) begin : gen_fill_merge
     assign fill_merged[gb*8+:8] =
@@ -1115,23 +1230,40 @@ module frost_cache #(
   for (genvar gm = 0; gm < int'(NUM_MSHR); gm++) begin : gen_payload_reference
     logic [  LineBits-1:0] data_ref;
     logic [LINE_BYTES-1:0] strb_ref;
+    logic fill_lands, waiting, ref_alloc, ref_merge, data_ok;
     always_comb begin
       data_ref = mshr_data_q[gm];
       strb_ref = mshr_wstrb_q[gm];
-      if ((mshr_state_q[gm] == MS_SENT) && resp_is_fill && (resp_fill_slot == MshrBits'(gm))) begin
+      fill_lands = resp_is_fill && (resp_fill_slot == MshrBits'(gm));
+      waiting = (mshr_state_q[gm] == MS_SENT);
+      ref_alloc = w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(gm));
+      ref_merge = w_valid_q && (w_op_q == W_MERGE) && (w_mshr_q == MshrBits'(gm));
+      if (waiting && fill_lands) begin
         data_ref = fill_merged;
         strb_ref = '1;
       end
-      if (w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(gm))) begin
+      if (ref_alloc) begin
         data_ref = w_wdata_q;
         strb_ref = w_write_q ? w_wstrb_q : '0;
       end
-      if (w_valid_q && (w_op_q == W_MERGE) && (w_mshr_q == MshrBits'(gm))) begin
+      if (ref_merge) begin
         data_ref = merge_data;
         strb_ref = (w_merge_on_fill ? {LINE_BYTES{1'b1}} : mshr_wstrb_q[gm]) | w_wstrb_q;
       end
-      assert (mshr_data_d[gm] == data_ref);
-      assert (mshr_wstrb_d[gm] == strb_ref);
+      // A byte is compared unless a response lands on a slot that is not
+      // waiting for one, or the slot is still waiting and the byte holds
+      // neither its store's data nor a store written this cycle.
+      data_ok = 1'b1;
+      for (int b = 0; b < int'(LINE_BYTES); b++) begin
+        if (!(fill_lands && !waiting) &&
+            !(waiting && !fill_lands && !ref_alloc && !(ref_merge && w_wstrb_q[b]) &&
+              !(mshr_write_q[gm] && mshr_wstrb_q[gm][b])) &&
+            (mshr_data_d[gm][b*8+:8] != data_ref[b*8+:8])) begin
+          data_ok = 1'b0;
+        end
+      end
+      assert (data_ok);
+      assert (fill_lands || (mshr_wstrb_d[gm] == strb_ref));
     end
   end
 `endif
@@ -1244,7 +1376,8 @@ module frost_cache #(
         t_line_match_q <= t_line_live_match;
         t_wb_match_q   <= t_wb_live_match;
       end
-      reread_q <= t_tag_retry || (decide && t_stall);
+      // decide && !t_done is decide && t_stall.
+      reread_q <= t_tag_retry || (decide && !t_done);
 
       // T's request fields are read only while T holds a valid entry: every
       // decision is qualified by t_valid_q (decide, a_hold, the retry and
@@ -1286,25 +1419,36 @@ module frost_cache #(
             t_is_alloc ? W_ALLOC : t_is_merge ? W_MERGE : t_is_waiter ? W_WAITER :
             (t_is_probe_hit && t_probe_inval_q) ? W_PROBE_INVAL :
             t_probe_dirty ? W_PROBE_CLEAN : W_NONE;
-        w_index_q <= t_index;
-        w_tag_q <= t_tag;
-        w_line_q <= t_line;
-        w_write_q <= t_write_q;
-        w_wdata_q <= t_wdata_q;
-        w_wstrb_q <= t_wstrb_q;
-        w_id_q <= t_id_q;
-        w_maint_q <= t_maint_q;
-        w_mshr_q <= t_is_alloc ? mshr_free_idx : match_mshr;
-        w_wb_q <= wb_free_idx;
-        w_has_victim_q <= (t_is_alloc || t_is_probe_hit) && victim_dirty;
-        w_probe_slot_q <= probe_free_idx;
-        w_victim_tag_q <= tag_rdata_tag;
-        w_needs_fill_q <= !(t_write_q && (&t_wstrb_q));
-        w_wb_wait_q <= t_wb_match_q & wb_valid;
       end else begin
         w_op_q <= W_NONE;
       end
     end
+  end
+
+  // W's payload is read only while w_valid_q is set: every W effect, the
+  // RAM write controls (which also need a W op or an MSHR install), and the
+  // index holds and slot forwarding are qualified by w_valid_q or a W op
+  // (w_op_q is W_NONE whenever W is empty). It therefore loads T's fields
+  // every cycle, with no enable, and is dead after any cycle in which T did
+  // not complete. That keeps the tag decision (t_done) off every payload
+  // clock enable; p_w_payload_exact checks the payload against a copy loaded
+  // only on t_done whenever W is valid.
+  always_ff @(posedge i_clk) begin
+    w_index_q <= t_index;
+    w_tag_q <= t_tag;
+    w_line_q <= t_line;
+    w_write_q <= t_write_q;
+    w_wdata_q <= t_wdata_q;
+    w_wstrb_q <= t_wstrb_q;
+    w_id_q <= t_id_q;
+    w_maint_q <= t_maint_q;
+    w_mshr_q <= t_is_alloc ? mshr_free_idx : match_mshr;
+    w_wb_q <= wb_free_idx;
+    w_has_victim_q <= (t_is_alloc || t_is_probe_hit) && victim_dirty;
+    w_probe_slot_q <= probe_free_idx;
+    w_victim_tag_q <= tag_rdata_tag;
+    w_needs_fill_q <= !(t_write_q && (&t_wstrb_q));
+    w_wb_wait_q <= t_wb_match_q & wb_valid;
   end
 
   // ===========================================================================
@@ -1364,12 +1508,10 @@ module frost_cache #(
       if (resp_is_wb && wb_probe_q[resp_wb_slot]) begin
         probe_ack_q[wb_probe_slot_q[resp_wb_slot]] <= 1'b1;
       end
+      // The slot's line, id and kind are captured below while it is free.
       if (t_done && t_probe_q) begin
         probe_valid_q[probe_free_idx] <= 1'b1;
         probe_ack_q[probe_free_idx]   <= !t_probe_dirty;
-        probe_inval_q[probe_free_idx] <= t_probe_inval_q;
-        probe_line_q[probe_free_idx]  <= t_line;
-        probe_id_q[probe_free_idx]    <= t_id_q;
       end
 
       // ---- MSHRs ------------------------------------------------------------
@@ -1426,6 +1568,24 @@ module frost_cache #(
       if (w_valid_q && (w_op_q == W_WAITER)) begin
         mshr_waiter_valid_q[w_mshr_q] <= 1'b1;
         mshr_waiter_id_q[w_mshr_q]    <= w_id_q;
+      end
+    end
+  end
+
+  // A probe slot's line, id and kind are read only while the slot is held:
+  // the fill withholding and the release compare test probe_valid_q, and the
+  // acknowledgement (probe_ack_q) implies a held slot. A free slot therefore
+  // captures T's fields every cycle, so the slot a probe decision takes holds
+  // that probe's fields from the decision edge on, as when they were written
+  // on the decision, and its enable is the slot's own valid flop instead of
+  // the tag decision. p_probe_slot_exact checks the held slots against a copy
+  // written only on the decision.
+  always_ff @(posedge i_clk) begin
+    for (int k = 0; k < int'(ProbeSlots); k++) begin
+      if (!probe_valid_q[k]) begin
+        probe_inval_q[k] <= t_probe_inval_q;
+        probe_line_q[k]  <= t_line;
+        probe_id_q[k]    <= t_id_q;
       end
     end
   end
@@ -1597,6 +1757,133 @@ module frost_cache #(
   assign o_perf_events = perf_events_q;
 
 `ifndef SYNTHESIS
+  // ---- Exactness of the enable-free captures (simulation only). Each
+  // reference below is loaded with the enable the capture replaced, and every
+  // field a reader can see must match it.
+  localparam int unsigned WPayloadBits = IndexBits + TagBits + LineAddrBits + 1 + LineBits +
+      LINE_BYTES + UP_ID_BITS + 1 + MshrBits + WbBits + 1 + ProbeBits + TagBits + 1 + NUM_WB;
+  logic [WPayloadBits-1:0] ref_w_payload_q;
+  logic [ProbeSlots-1:0] ref_probe_inval_q;
+  logic [LineAddrBits-1:0] ref_probe_line_q[ProbeSlots];
+  logic [UP_ID_BITS-1:0] ref_probe_id_q[ProbeSlots];
+  logic [UP_ID_BITS-1:0] ref_ack_id_q[AckDepth];
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && t_done) begin
+      ref_w_payload_q <= {
+        t_index,
+        t_tag,
+        t_line,
+        t_write_q,
+        t_wdata_q,
+        t_wstrb_q,
+        t_id_q,
+        t_maint_q,
+        (t_is_alloc ? mshr_free_idx : match_mshr),
+        wb_free_idx,
+        ((t_is_alloc || t_is_probe_hit) && victim_dirty),
+        probe_free_idx,
+        tag_rdata_tag,
+        !(t_write_q && (&t_wstrb_q)),
+        (t_wb_match_q & wb_valid)
+      };
+    end
+    if (!i_rst && t_done && t_probe_q) begin
+      ref_probe_inval_q[probe_free_idx] <= t_probe_inval_q;
+      ref_probe_line_q[probe_free_idx]  <= t_line;
+      ref_probe_id_q[probe_free_idx]    <= t_id_q;
+    end
+    if (!i_rst && ack_push) ref_ack_id_q[ack_wr_q[UP_ID_BITS-1:0]] <= t_id_q;
+  end
+
+  // MSHR payload with the fill captured on its response.
+  logic [LineBits-1:0] ref_mshr_data_q[NUM_MSHR];
+  logic [LINE_BYTES-1:0] ref_mshr_wstrb_q[NUM_MSHR];
+  logic [NUM_MSHR-1:0] mshr_payload_mismatch;
+  for (genvar gm = 0; gm < int'(NUM_MSHR); gm++) begin : gen_mshr_payload_reference
+    logic ref_alloc, ref_merge, ref_capture;
+    logic [  LineBits-1:0] ref_data_d;
+    logic [LINE_BYTES-1:0] ref_wstrb_d;
+    always_comb begin
+      ref_alloc = w_valid_q && (w_op_q == W_ALLOC) && (w_mshr_q == MshrBits'(gm));
+      ref_merge = w_valid_q && (w_op_q == W_MERGE) && (w_mshr_q == MshrBits'(gm));
+      ref_capture = resp_is_fill && (resp_fill_slot == MshrBits'(gm)) &&
+          ((mshr_state_q[gm] == MS_SENT) || ref_merge);
+      for (int b = 0; b < int'(LINE_BYTES); b++) begin
+        ref_data_d[b*8+:8] = (ref_alloc || (ref_merge && w_wstrb_q[b])) ? w_wdata_q[b*8+:8] :
+            ((ref_capture && !(mshr_write_q[gm] && ref_mshr_wstrb_q[gm][b])) ?
+             i_down_resp_rdata[b*8+:8] : ref_mshr_data_q[gm][b*8+:8]);
+        ref_wstrb_d[b] = ref_alloc ? (w_write_q && w_wstrb_q[b]) :
+            (ref_capture || (ref_merge && w_wstrb_q[b]) || ref_mshr_wstrb_q[gm][b]);
+      end
+      // Before the fill (MS_PEND, MS_SENT) only the store's bytes are read.
+      mshr_payload_mismatch[gm] = 1'b0;
+      if ((mshr_state_q[gm] == MS_PEND) || (mshr_state_q[gm] == MS_SENT)) begin
+        if (mshr_wstrb_q[gm] != ref_mshr_wstrb_q[gm]) mshr_payload_mismatch[gm] = 1'b1;
+        for (int b = 0; b < int'(LINE_BYTES); b++) begin
+          if (mshr_write_q[gm] && ref_mshr_wstrb_q[gm][b] &&
+              (mshr_data_q[gm][b*8+:8] != ref_mshr_data_q[gm][b*8+:8])) begin
+            mshr_payload_mismatch[gm] = 1'b1;
+          end
+        end
+      end else if (mshr_state_q[gm] != MS_FREE) begin
+        if (mshr_data_q[gm] != ref_mshr_data_q[gm]) mshr_payload_mismatch[gm] = 1'b1;
+      end
+    end
+    always_ff @(posedge i_clk) begin
+      if (!i_rst) begin
+        ref_mshr_data_q[gm]  <= ref_data_d;
+        ref_mshr_wstrb_q[gm] <= ref_wstrb_d;
+      end
+    end
+  end
+
+  // The slots in MS_RESP, decoded from the state.
+  logic [NUM_MSHR-1:0] mshr_in_resp_ref;
+  always_comb begin
+    for (int i = 0; i < int'(NUM_MSHR); i++) mshr_in_resp_ref[i] = (mshr_state_q[i] == MS_RESP);
+  end
+
+  logic probe_slot_mismatch, ack_queue_mismatch;
+  always_comb begin
+    probe_slot_mismatch = 1'b0;
+    for (int k = 0; k < int'(ProbeSlots); k++) begin
+      if ((NUM_PROBE > 0) && probe_valid_q[k] &&
+          ({probe_inval_q[k], probe_line_q[k], probe_id_q[k]} !=
+           {ref_probe_inval_q[k], ref_probe_line_q[k], ref_probe_id_q[k]})) begin
+        probe_slot_mismatch = 1'b1;
+      end
+      // The acknowledgement implies a held slot (its id is read then).
+      if ((NUM_PROBE > 0) && probe_ack_q[k] && !probe_valid_q[k]) probe_slot_mismatch = 1'b1;
+    end
+    ack_queue_mismatch = 1'b0;
+    for (int unsigned n = 0; n < AckDepth; n++) begin
+      logic [AckPtrBits-1:0] slot_ptr;
+      slot_ptr = ack_rd_q + AckPtrBits'(n);
+      if ((AckPtrBits'(n) < AckPtrBits'(ack_wr_q - ack_rd_q)) &&
+          (ack_id_q[slot_ptr[UP_ID_BITS-1:0]] != ref_ack_id_q[slot_ptr[UP_ID_BITS-1:0]])) begin
+        ack_queue_mismatch = 1'b1;
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst) begin
+      p_t_done_factored : assert (t_done == (decide && !t_stall));
+      p_mshr_resp_onehot_exact :
+      assert (mshr_resp_onehot_q == (mshr_in_resp_ref & ~(mshr_in_resp_ref - 1'b1)));
+      if (w_valid_q) begin
+        p_w_payload_exact :
+        assert ({w_index_q, w_tag_q, w_line_q, w_write_q, w_wdata_q, w_wstrb_q, w_id_q,
+                 w_maint_q, w_mshr_q, w_wb_q, w_has_victim_q, w_probe_slot_q, w_victim_tag_q,
+                 w_needs_fill_q, w_wb_wait_q} == ref_w_payload_q);
+      end
+      p_probe_slot_exact : assert (!probe_slot_mismatch);
+      p_ack_nonempty_exact : assert (ack_nonempty == (ack_wr_q != ack_rd_q));
+      p_ack_queue_exact : assert (!ack_queue_mismatch);
+      p_mshr_payload_exact : assert (mshr_payload_mismatch == '0);
+    end
+  end
+
   // Protocol checks (simulation only).
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
