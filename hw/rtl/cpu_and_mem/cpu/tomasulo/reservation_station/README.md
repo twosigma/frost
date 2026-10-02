@@ -104,7 +104,14 @@ simulation asserts.
 
 A station's issue port (port 0 on INT_RS) takes the lowest-index ready entry,
 chosen by a priority encoder. Index is not age: allocation reuses the lowest
-free entry, so a younger instruction can sit below an older one.
+free entry, so a younger instruction can sit below an older one. With
+`CAPTURE_PRIMARY_EFFECTIVE_OPERANDS` (INT_RS) the choice is made in two steps:
+each group of four entries picks its own lowest ready entry from its four
+ready bits, and the lowest group with a ready entry picks among the groups.
+The issue index, the selected entry's resident operands and its CDB bypass
+flags all come from those two steps; the index equals the serial priority
+encoder's for every ready vector (checked in simulation, and proven for the
+INT_RS parameters).
 
 An entry issues when it is ready, `i_fu_ready` is high, and the stage-2
 register is empty or being emptied this cycle. At the clock edge the entry

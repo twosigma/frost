@@ -1411,45 +1411,110 @@ module reservation_station #(
   end
 
   // --- Issue selection (priority encoder: lowest ready index) ---
+  // With CAPTURE_PRIMARY_EFFECTIVE_OPERANDS, issue_idx comes from the grouped
+  // select below, which equals this scan for every ready vector.
+  logic [$clog2(DEPTH)-1:0] issue_idx_scan;
   always_comb begin
-    issue_idx = '0;
+    issue_idx_scan = '0;
     any_ready = 1'b0;
     for (int i = 0; i < DEPTH; i++) begin
       if (entry_ready[i] && !any_ready) begin
-        issue_idx = $clog2(DEPTH)'(i);
+        issue_idx_scan = $clog2(DEPTH)'(i);
         any_ready = 1'b1;
       end
     end
   end
 
-  // The issued entry's CDB bypass flags. With CAPTURE_PRIMARY_EFFECTIVE_OPERANDS
-  // they select the stage-2 operand D inputs, and they come after the CDB tag
-  // match, readiness, and issue selection. TIMING: that form reads them with
-  // the one-hot lowest ready entry instead of through issue_idx, which keeps
-  // the binary encode and its wide decode off the operand selects. Whenever an
-  // entry is ready they equal src*_cdb_bypass*[issue_idx] (checked below).
+  // The issued entry's CDB bypass flags and its resident (or repair) source
+  // values. With CAPTURE_PRIMARY_EFFECTIVE_OPERANDS they form the stage-2
+  // operand D inputs, and they come after the CDB tag match, readiness, and
+  // issue selection. TIMING: that form selects the lowest ready entry in two
+  // steps. Each group of four entries takes its own lowest ready entry from
+  // its four ready bits, and the lowest group with a ready entry then picks
+  // among the groups. The first step's select needs only its group's ready
+  // bits, not a priority encoder over every ready bit, and the two 4:1 steps
+  // each fit one LUT per bit. issue_idx comes from the same two steps. The
+  // results equal the serial scan's selection (checked below; the flags and
+  // values whenever an entry is ready, the index always).
   logic issue_src1_bypass, issue_src1_bypass_l1, issue_src2_bypass, issue_src2_bypass_l1;
-  if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin : gen_issue_bypass_onehot
-    logic [DEPTH-1:0] issue_onehot;
+  logic [FLEN-1:0] issue_src1_resident, issue_src2_resident;
+  logic [FLEN-1:0] src1_resident[DEPTH];
+  logic [FLEN-1:0] src2_resident[DEPTH];
+  always_comb begin
+    for (int i = 0; i < DEPTH; i++) begin
+      src1_resident[i] = (src1_repair_sel[i] != 3'd0) ? repair_value_for_sel(src1_repair_sel[i]) :
+          rs_src1_value[i];
+      src2_resident[i] = (src2_repair_sel[i] != 3'd0) ? repair_value_for_sel(src2_repair_sel[i]) :
+          rs_src2_value[i];
+    end
+  end
+  if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin : gen_issue_group_select
+    localparam int unsigned NumGroups = (DEPTH + 3) / 4;
+    localparam int unsigned GroupIdxWidth = (NumGroups > 1) ? $clog2(NumGroups) : 1;
+    localparam int unsigned NumGroupSlots = 1 << GroupIdxWidth;
+    logic [3:0] group_ready[NumGroupSlots];
+    // The group picks and the group index are kept so they stay functions of
+    // their own ready bits: group_idx equals issue_idx's upper bits, and
+    // without the keep synthesis derives it from issue_idx's deeper encoder.
+    (* keep = "true" *) logic [NumGroupSlots-1:0] group_any;
+    (* keep = "true" *) logic [1:0] group_pick[NumGroupSlots];
+    (* keep = "true" *) logic [GroupIdxWidth-1:0] group_idx;
+    // Per-group selections: the step-one outputs, kept as their own nets so
+    // the step-two LUT reads them rather than re-deriving a global index.
+    (* keep = "true" *) logic [FLEN-1:0] group_src1_resident[NumGroupSlots];
+    (* keep = "true" *) logic [FLEN-1:0] group_src2_resident[NumGroupSlots];
+    (* keep = "true" *) logic [3:0] group_bypass[NumGroupSlots];
     (* keep = "true" *) logic src1_bypass, src1_bypass_l1, src2_bypass, src2_bypass_l1;
     always_comb begin
-      for (int i = 0; i < DEPTH; i++) begin
-        issue_onehot[i] = entry_ready[i] && !(|(entry_ready & ((DEPTH'(1) << i) - 1'b1)));
+      for (int g = 0; g < int'(NumGroupSlots); g++) begin
+        group_src1_resident[g] = '0;
+        group_src2_resident[g] = '0;
+        group_bypass[g] = '0;
+        for (int j = 0; j < 4; j++) begin
+          group_ready[g][j] = ((4 * g + j) < int'(DEPTH)) ? entry_ready[4*g+j] : 1'b0;
+        end
+        group_any[g] = |group_ready[g];
+        // Zero when the group has no ready entry, so the issue index below
+        // is zero with no entry ready, like the scan.
+        group_pick[g] = group_ready[g][0] ? 2'd0 : group_ready[g][1] ? 2'd1 :
+            group_ready[g][2] ? 2'd2 : group_ready[g][3] ? 2'd3 : 2'd0;
+        for (int j = 0; j < 4; j++) begin
+          if (((4 * g + j) < int'(DEPTH)) && (group_pick[g] == 2'(j))) begin
+            group_src1_resident[g] = src1_resident[4*g+j];
+            group_src2_resident[g] = src2_resident[4*g+j];
+            group_bypass[g] = {
+              src2_cdb_bypass_l1[4*g+j],
+              src2_cdb_bypass[4*g+j],
+              src1_cdb_bypass_l1[4*g+j],
+              src1_cdb_bypass[4*g+j]
+            };
+          end
+        end
+      end
+      group_idx = '0;
+      for (int g = int'(NumGroupSlots) - 1; g >= 0; g--) begin
+        if (group_any[g]) group_idx = GroupIdxWidth'(g);
       end
     end
-    assign src1_bypass = |(issue_onehot & src1_cdb_bypass);
-    assign src1_bypass_l1 = |(issue_onehot & src1_cdb_bypass_l1);
-    assign src2_bypass = |(issue_onehot & src2_cdb_bypass);
-    assign src2_bypass_l1 = |(issue_onehot & src2_cdb_bypass_l1);
+    // The issue index from the same two steps: the payload RAM read and the
+    // per-entry tag and valid updates use it, so it shares the group picks
+    // instead of a second priority encoder over the ready bits.
+    assign issue_idx = $clog2(DEPTH)'({group_idx, group_pick[group_idx]});
+    assign issue_src1_resident = group_src1_resident[group_idx];
+    assign issue_src2_resident = group_src2_resident[group_idx];
+    assign {src2_bypass_l1, src2_bypass, src1_bypass_l1, src1_bypass} = group_bypass[group_idx];
     assign issue_src1_bypass = src1_bypass;
     assign issue_src1_bypass_l1 = src1_bypass_l1;
     assign issue_src2_bypass = src2_bypass;
     assign issue_src2_bypass_l1 = src2_bypass_l1;
   end else begin : gen_issue_bypass_indexed
+    assign issue_idx = issue_idx_scan;
     assign issue_src1_bypass = src1_cdb_bypass[issue_idx];
     assign issue_src1_bypass_l1 = src1_cdb_bypass_l1[issue_idx];
     assign issue_src2_bypass = src2_cdb_bypass[issue_idx];
     assign issue_src2_bypass_l1 = src2_cdb_bypass_l1[issue_idx];
+    assign issue_src1_resident = src1_resident[issue_idx];
+    assign issue_src2_resident = src2_resident[issue_idx];
   end
 `ifndef SYNTHESIS
   always_comb begin
@@ -1471,6 +1536,14 @@ module reservation_station #(
               issue_src1_bypass_l1 == src1_cdb_bypass_l1[issue_idx] &&
               issue_src2_bypass == src2_cdb_bypass[issue_idx] &&
               issue_src2_bypass_l1 == src2_cdb_bypass_l1[issue_idx]);
+      // Case equality: a source the CDB bypass supplies may not have a
+      // resident value yet, and both selections then return the same unknown.
+      p_issue_resident_values_match_index :
+      assert (issue_src1_resident === src1_resident[issue_idx] &&
+              issue_src2_resident === src2_resident[issue_idx]);
+    end
+    if (!$isunknown(entry_ready)) begin
+      p_issue_idx_matches_scan : assert (issue_idx == issue_idx_scan);
     end
   end
 `endif
@@ -2800,15 +2873,14 @@ module reservation_station #(
       if (CAPTURE_PRIMARY_EFFECTIVE_OPERANDS) begin
         // Fold the three-arm CDB bypass mux into the operand FF D inputs.
         // Values come from the complete CDB packets; the optional issue-only
-        // inputs contribute valid/tag comparisons only.
-        stage2_src1_value <= (((src1_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
-            src1_repair_sel[issue_idx]
-        ) : rs_src1_value[issue_idx]) & {FLEN{!issue_src1_bypass && !issue_src1_bypass_l1}}) |
+        // inputs contribute valid/tag comparisons only. The resident (or
+        // repair) value and the flags come from the grouped select above.
+        stage2_src1_value <= (issue_src1_resident &
+            {FLEN{!issue_src1_bypass && !issue_src1_bypass_l1}}) |
             (i_cdb.value & {FLEN{issue_src1_bypass}}) |
             (i_cdb_2.value & {FLEN{issue_src1_bypass_l1}});
-        stage2_src2_value <= (((src2_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
-            src2_repair_sel[issue_idx]
-        ) : rs_src2_value[issue_idx]) & {FLEN{!issue_src2_bypass && !issue_src2_bypass_l1}}) |
+        stage2_src2_value <= (issue_src2_resident &
+            {FLEN{!issue_src2_bypass && !issue_src2_bypass_l1}}) |
             (i_cdb.value & {FLEN{issue_src2_bypass}}) |
             (i_cdb_2.value & {FLEN{issue_src2_bypass_l1}});
       end else begin
