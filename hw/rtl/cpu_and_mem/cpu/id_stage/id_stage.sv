@@ -103,7 +103,9 @@ module id_stage #(
   // TIMING: pd_stage passes the instruction through un-NOP'd and carries the
   // bubble in inject_nop.  The NOP is applied here, from registered inputs in
   // one LUT, so the front-end-stall-fed NOP select stays off the D path of the
-  // pd_stage 32-bit instruction register.
+  // pd_stage 32-bit instruction register.  instr_decoder and the operand
+  // classifier take the un-NOP'd instruction and apply the bubble at their
+  // outputs (see below).
   assign instruction = i_from_pd_to_id.inject_nop ? riscv_pkg::NOP : i_from_pd_to_id.instruction;
   assign link_address_precomputed =
       i_from_pd_to_id.program_counter +
@@ -116,11 +118,20 @@ module id_stage #(
 
   logic decoder_illegal;
 
+  // TIMING: instr_decoder decodes PD's instruction as registered, not the
+  // NOP-substituted one, and the bubble's decode (ADDI, legal: the NOP's own
+  // decode) is selected at its outputs. inject_nop then enters the
+  // operation and legality cones at their last LUT instead of masking every
+  // instruction bit ahead of the decoder.
+  riscv_pkg::instr_op_e decoded_operation;
+  logic decoded_illegal;
   instr_decoder instr_decoder_inst (
-      .i_instr(instruction),
-      .o_instr_op(instruction_operation),
-      .o_illegal(decoder_illegal)
+      .i_instr(i_from_pd_to_id.instruction),
+      .o_instr_op(decoded_operation),
+      .o_illegal(decoded_illegal)
   );
+  assign instruction_operation = i_from_pd_to_id.inject_nop ? riscv_pkg::ADDI : decoded_operation;
+  assign decoder_illegal = !i_from_pd_to_id.inject_nop && decoded_illegal;
 
   // A fetch fault (access or page fault) overrides decode entirely. The
   // fetched bytes are garbage and may even decode as a NOP, so the
@@ -605,7 +616,8 @@ module id_stage #(
   // ===========================================================================
   // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2. As for
   // slot 1, PD carries the bubble in inject_nop, and the NOP is applied here
-  // before the slot-2 decoders (the operand classifier applies it itself).
+  // before the slot-2 immediate and type decoders; instr_decoder and the
+  // operand classifier apply it at their outputs.
   // Slot 2 does not get the PD predicted-taken redirect override; its BTB/RAS
   // metadata is whatever PD passed through from IF.
 
@@ -649,11 +661,18 @@ module id_stage #(
 
   logic decoder_illegal_2;
 
+  // As for slot 1: decode PD's instruction and select the bubble's decode at
+  // the decoder outputs.
+  riscv_pkg::instr_op_e decoded_operation_2;
+  logic decoded_illegal_2;
   instr_decoder instr_decoder_inst_2 (
-      .i_instr(instruction_2),
-      .o_instr_op(instruction_operation_2),
-      .o_illegal(decoder_illegal_2)
+      .i_instr(i_from_pd_to_id_2.instruction),
+      .o_instr_op(decoded_operation_2),
+      .o_illegal(decoded_illegal_2)
   );
+  assign instruction_operation_2 = i_from_pd_to_id_2.inject_nop ? riscv_pkg::ADDI :
+                                                                  decoded_operation_2;
+  assign decoder_illegal_2 = !i_from_pd_to_id_2.inject_nop && decoded_illegal_2;
 
   logic is_fetch_fault_2;
   assign is_fetch_fault_2 = i_from_pd_to_id_2.fetch_fault;
