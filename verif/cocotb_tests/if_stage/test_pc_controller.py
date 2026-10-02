@@ -53,10 +53,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_trap_target.value = 0
     dut.i_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
-    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4
-    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_one.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_predicted_target.value = 0
     dut.i_predicted_target_r.value = 0
@@ -67,6 +68,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_prediction_holdoff.value = 0
     dut.i_prediction_already_emitted.value = 0
     dut.i_sel_nop.value = 0
+    dut.i_slot2_valid.value = 0
     dut.i_slot2_prediction_used.value = 0
     dut.i_slot2_prediction_used_for_pc.value = 0
     dut.i_slot2_predicted_target.value = 0
@@ -386,10 +388,11 @@ async def test_two_wide_bundle_inputs_advance_pc_controller_outputs(
 
     dut.i_is_compressed.value = 1
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
-    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS6
-    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS6
+    dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS6
+    dut.i_pc_fetch_advance_sel_one.value = PC_ADV_PLUS6
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS6
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS6
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS6
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS6
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS6
     await _advance_cycle(dut)
 
@@ -527,10 +530,11 @@ async def test_already_emitted_prediction_uses_registered_halfword_target_handof
 
     _clear_inputs(dut)
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
-    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_one.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_prediction_already_emitted.value = 1
     _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
@@ -716,10 +720,11 @@ async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
     # two compressed parcels behind it.
     _clear_inputs(dut)
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
-    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_one.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     await _advance_cycle(dut)
     _assert_pc(dut, pc=owner_pc, pc_reg=owner_pc - 4)
@@ -752,8 +757,8 @@ async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
     # sequential advance would refetch the branch and repeat the prediction.
     _clear_inputs(dut)
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
-    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_one.value = PC_ADV_PLUS2
     await _settle()
     assert dut.pending_prediction_target_handoff_applies.value
     assert dut.o_pending_prediction_target_handoff.value
@@ -803,7 +808,8 @@ async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
     # pc_reg. The prediction edge advances pc_reg only onto the branch's
     # immediate predecessor.
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
     await _advance_cycle(dut)
@@ -818,7 +824,8 @@ async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
     # result must advance to the branch on this same edge.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_prediction_holdoff.value = 1
     await _settle()
@@ -869,10 +876,11 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
     # branch at BASE+6 and pc_reg two compressed parcels behind it.
     _clear_inputs(dut)
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
-    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_two.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_one.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     await _advance_cycle(dut)
     _assert_pc(dut, pc=owner_pc, pc_reg=owner_pc - 4)
@@ -881,7 +889,8 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
     # immediate predecessor.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
     await _advance_cycle(dut)
@@ -896,7 +905,8 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
     # seq_next_pc_reg_hw_q may advance.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_prediction_holdoff.value = 1
     dut.i_window_cannot_serve.value = 1
@@ -917,7 +927,8 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
     # pc_reg candidate reached the branch.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     await _settle()
 
@@ -946,7 +957,8 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     # Predict a branch at BASE+4 while pc_reg advances by one compressed
     # parcel to BASE+2, the branch's immediate predecessor.
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_window_cannot_serve_raw.value = 1
     _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
@@ -990,7 +1002,8 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     # drains first, and raw WCS sets carve_out_engaged_q.
     dut.i_stall.value = 0
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_window_cannot_serve_raw.value = 1
     await _advance_cycle(dut)
@@ -1020,7 +1033,8 @@ async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> 
     await _start_word_stream_at(dut, BASE_PC)
 
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
-    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_one.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_two.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_window_cannot_serve_raw.value = 1
     _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)

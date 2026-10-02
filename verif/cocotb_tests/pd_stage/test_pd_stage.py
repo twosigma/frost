@@ -24,9 +24,10 @@ from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from config import MASK_XLEN
 from cocotb_tests.cpu_structs import (
-    PIPELINE_CTRL_FIELDS,
     IF_TO_PD_FIELDS,
+    PD_TARGET_SPLIT,
     PD_TO_ID_FIELDS,
+    PIPELINE_CTRL_FIELDS,
 )
 from utils.packed_structs import (
     pack_struct as _pack_struct,
@@ -79,6 +80,37 @@ def _source_hot(instruction: int) -> int:
     return (((instruction >> 21) & 1) << 2) | ((instruction >> 16) & 0x3)
 
 
+def _native_branch_imm_low(instruction: int) -> int:
+    """Return the low PD_TARGET_SPLIT bits of a B-type offset."""
+    return (
+        (((instruction >> 31) & 1) << 12)
+        | (((instruction >> 7) & 1) << 11)
+        | (((instruction >> 25) & 0x3F) << 5)
+        | (((instruction >> 8) & 0xF) << 1)
+    )
+
+
+def _compressed_branch_imm_low(parcel: int) -> int:
+    """Return the low PD_TARGET_SPLIT bits of a sign-extended C.BEQZ/C.BNEZ offset."""
+    sign = (parcel >> 12) & 1
+    return (
+        (sign * 0x1F) << 8
+        | (((parcel >> 5) & 0x3) << 6)
+        | (((parcel >> 2) & 1) << 5)
+        | (((parcel >> 10) & 0x3) << 3)
+        | (((parcel >> 3) & 0x3) << 1)
+    )
+
+
+def _target_candidate(pc: int, imm_low: int) -> tuple[int, int]:
+    """Return IF's (low sum, {sign, carry} select) target candidate for pc + offset."""
+    low_sum = (pc & ((1 << PD_TARGET_SPLIT) - 1)) + imm_low
+    high_select = (((imm_low >> (PD_TARGET_SPLIT - 1)) & 1) << 1) | (
+        (low_sum >> PD_TARGET_SPLIT) & 1
+    )
+    return low_sum & ((1 << PD_TARGET_SPLIT) - 1), high_select
+
+
 def _drive_pipeline_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
     """Drive the packed pipeline control bundle."""
     dut.i_pipeline_ctrl.value = _pack_pipeline_ctrl(fields)
@@ -121,6 +153,21 @@ def _drive_if_packet(
             if parcel & 3 != 3 and not slot2
             else ((instr >> 17) & 0x6) | ((instr >> 15) & 1)
         )
+    # IF carries the PD redirect's target candidates for slot 1 (0 for slot 2).
+    if not slot2:
+        pc = int(packet["program_counter"])
+        if "pd_target_native_low" not in fields:
+            low, select = _target_candidate(
+                pc, _native_branch_imm_low(int(packet["effective_instr"]))
+            )
+            packet["pd_target_native_low"] = low
+            packet["pd_target_native_high_select"] = select
+        if "pd_target_compressed_low" not in fields:
+            low, select = _target_candidate(
+                pc, _compressed_branch_imm_low(int(packet["raw_parcel"]))
+            )
+            packet["pd_target_compressed_low"] = low
+            packet["pd_target_compressed_high_select"] = select
     value = _pack_if_to_pd(packet)
     if slot2:
         dut.i_from_if_to_pd_2.value = value

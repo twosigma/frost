@@ -814,8 +814,9 @@ module if_stage #(
   logic live_prediction_emits_with_output;
   logic window_resteer_pc_reg;
   logic pc_control_sel_nop;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_run, pc_fetch_advance_sel_nop;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_run, pc_reg_advance_sel_nop;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_one, pc_fetch_advance_sel_two;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_one, pc_reg_advance_sel_two;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_nop;
 
   // ===========================================================================
   // PC Controller
@@ -855,10 +856,12 @@ module if_stage #(
       // advance stays consistent with what dispatch sees.
       .i_pc_fetch_advance_sel(pc_fetch_advance_sel),
       .i_pc_reg_advance_sel(pc_reg_advance_sel),
-      .i_pc_fetch_advance_sel_run(pc_fetch_advance_sel_run),
-      .i_pc_fetch_advance_sel_nop(pc_fetch_advance_sel_nop),
-      .i_pc_reg_advance_sel_run(pc_reg_advance_sel_run),
+      .i_pc_fetch_advance_sel_one(pc_fetch_advance_sel_one),
+      .i_pc_fetch_advance_sel_two(pc_fetch_advance_sel_two),
+      .i_pc_reg_advance_sel_one(pc_reg_advance_sel_one),
+      .i_pc_reg_advance_sel_two(pc_reg_advance_sel_two),
       .i_pc_reg_advance_sel_nop(pc_reg_advance_sel_nop),
+      .i_slot2_valid(slot2_valid_for_pc_live_effective),
 
       // Branch prediction (from branch_prediction_controller)
       .i_predicted_target(btb_predicted_target),
@@ -1700,6 +1703,120 @@ module if_stage #(
 `endif
   assign assembled_instr = pc_reg[1] ?
       {spanning_second_half, effective_instr[31:16]} : effective_instr;
+
+  // PD redirect-target candidates (see pd_target_candidate): the low add of
+  // the packet's PC and branch offset, for a native B-type and a compressed
+  // C.BEQZ/C.BNEZ offset, carried to PD in the packet. Each candidate gets
+  // the live offset in both pc_reg[1] forms (the current word, and the
+  // spanning assembly or upper parcel) and the stall-captured offset, and
+  // applies pc_reg[1] and the replay select inside its adder's propagate
+  // LUTs, so the block RAM reaches its carry chain through the word select
+  // and one more LUT. The selected operands equal the packet's
+  // program_counter and effective_instr/raw_parcel, which PD checks against
+  // PC + offset every cycle (p_pd_target_split_exact).
+  function automatic logic [riscv_pkg::PdTargetSplit-1:0] native_branch_imm_low(
+      input logic [31:0] instr);
+    native_branch_imm_low = {instr[31], instr[7], instr[30:25], instr[11:8], 1'b0};
+  endfunction
+  function automatic logic [riscv_pkg::PdTargetSplit-1:0] compressed_branch_imm_low(
+      input logic [15:0] parcel);
+    compressed_branch_imm_low = {
+      {(riscv_pkg::PdTargetSplit - 9) {parcel[12]}},
+      parcel[12],
+      parcel[6:5],
+      parcel[2],
+      parcel[11:10],
+      parcel[4:3],
+      1'b0
+    };
+  endfunction
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_native_low;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_compressed_low;
+  logic [1:0] pd_target_native_high_select;
+  logic [1:0] pd_target_compressed_high_select;
+  // The stall-captured operands, held in registers of their own: a
+  // stall_capture_reg output is its live input outside a registered stall,
+  // so taking the saved offsets from assembled_instr_sc or raw_parcel_sc
+  // would put the live instruction on the adder's saved input too. These
+  // capture and clear on the same conditions as u_assembled_instr_sc,
+  // u_raw_parcel_sc, and u_instruction_pc_sc, so under replay they equal the
+  // offsets and PC of the packet those replay.
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_native_imm_saved_q;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_compressed_imm_saved_q;
+  logic [riscv_pkg::PdTargetSplit-1:0] pd_target_pc_low_saved_q;
+  always_ff @(posedge i_clk) begin
+    if (flush_for_c_ext_safe) begin
+      pd_target_native_imm_saved_q     <= '0;
+      pd_target_compressed_imm_saved_q <= '0;
+      pd_target_pc_low_saved_q         <= '0;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      pd_target_native_imm_saved_q     <= native_branch_imm_low(assembled_instr);
+      pd_target_compressed_imm_saved_q <= compressed_branch_imm_low(raw_parcel);
+      pd_target_pc_low_saved_q         <= instruction_pc[riscv_pkg::PdTargetSplit-1:0];
+    end
+  end
+  (* dont_touch = "yes" *) pd_target_candidate #(
+      .SPLIT(riscv_pkg::PdTargetSplit)
+  ) u_pd_target_native_candidate (
+      .i_pc_low       (pc_reg[riscv_pkg::PdTargetSplit-1:0]),
+      .i_pc_low_saved (pd_target_pc_low_saved_q),
+      .i_imm_low_lo   (native_branch_imm_low(effective_instr)),
+      .i_imm_low_hi   (native_branch_imm_low({spanning_second_half, effective_instr[31:16]})),
+      .i_imm_low_saved(pd_target_native_imm_saved_q),
+      .i_pc_high      (pc_reg[1]),
+      .i_replay       (replay_saved_if_outputs),
+      .o_target_low   (pd_target_native_low),
+      .o_high_select  (pd_target_native_high_select)
+  );
+  (* dont_touch = "yes" *) pd_target_candidate #(
+      .SPLIT(riscv_pkg::PdTargetSplit)
+  ) u_pd_target_compressed_candidate (
+      .i_pc_low       (pc_reg[riscv_pkg::PdTargetSplit-1:0]),
+      .i_pc_low_saved (pd_target_pc_low_saved_q),
+      .i_imm_low_lo   (compressed_branch_imm_low(effective_instr[15:0])),
+      .i_imm_low_hi   (compressed_branch_imm_low(effective_instr[31:16])),
+      .i_imm_low_saved(pd_target_compressed_imm_saved_q),
+      .i_pc_high      (pc_reg[1]),
+      .i_replay       (replay_saved_if_outputs),
+      .o_target_low   (pd_target_compressed_low),
+      .o_high_select  (pd_target_compressed_high_select)
+  );
+  assign o_from_if_to_pd.pd_target_native_low = pd_target_native_low;
+  assign o_from_if_to_pd.pd_target_native_high_select = pd_target_native_high_select;
+  assign o_from_if_to_pd.pd_target_compressed_low = pd_target_compressed_low;
+  assign o_from_if_to_pd.pd_target_compressed_high_select = pd_target_compressed_high_select;
+`ifndef SYNTHESIS
+  // The candidate operands are the packet's PC and instruction.
+  always_comb begin
+    if (!$isunknown(
+            {
+              o_from_if_to_pd.program_counter,
+              o_from_if_to_pd.effective_instr,
+              o_from_if_to_pd.raw_parcel,
+              pd_target_native_low,
+              pd_target_compressed_low,
+              pd_target_native_high_select,
+              pd_target_compressed_high_select
+            }
+        )) begin
+      p_if_pd_target_candidates_exact :
+      assert ({pd_target_native_high_select[1], pd_target_native_high_select[0],
+               pd_target_native_low} ==
+              {o_from_if_to_pd.effective_instr[31],
+               (riscv_pkg::PdTargetSplit + 1)'(
+                   o_from_if_to_pd.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+                   native_branch_imm_low(
+          o_from_if_to_pd.effective_instr
+      ))} && {pd_target_compressed_high_select[1], pd_target_compressed_high_select[0],
+              pd_target_compressed_low} ==
+          {o_from_if_to_pd.raw_parcel[12], (riscv_pkg::PdTargetSplit + 1)
+           '(o_from_if_to_pd.program_counter[riscv_pkg::PdTargetSplit-1:0] +
+             compressed_branch_imm_low(
+          o_from_if_to_pd.raw_parcel
+      ))});
+    end
+  end
+`endif
 
   // Carry only three source bits, {rs2[1], rs1[2:1]}, on the timing-critical
   // low-IMEM/RVC paths. Slot 1 joins the RVC sideband values with the
@@ -2547,11 +2664,14 @@ module if_stage #(
     endcase
   end
 
-  // The squash (pc_control_sel_nop) is the latest input of these selects (it
-  // carries the flush, the holdoffs, and the served-window check), so the
-  // selects are also exported for squash = 0 ("run") and squash = 1 ("nop").
-  // pc_increment_calculator steers every candidate mux with both and applies
-  // the squash as its final 2:1, keeping it out of the value path; the merged
+  // The squash (pc_control_sel_nop) and the slot-2 validity
+  // (slot2_valid_for_pc_live_effective, which carries the pending-prediction
+  // kill and the aligner's pairing decision) are the latest inputs of these
+  // selects, so the selects are also exported by bundle shape: one-wide
+  // (the slot-1 size alone, also the fetch PC's NOP select), two-wide (both
+  // sizes), and pc_reg's NOP select. pc_increment_calculator steers a
+  // candidate mux with each and applies the squash and the slot-2 validity
+  // as its final selection, keeping both out of the value path; the merged
   // selects feed the stall captures and the simulation reference.
   assign pc_advance_sel_base_live = is_compressed_for_pc_advance ? riscv_pkg::PcAdvancePlus2 :
                                                                    riscv_pkg::PcAdvancePlus4;
@@ -2580,15 +2700,17 @@ module if_stage #(
       replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_fetch_advance_sel_live;
   assign pc_reg_advance_sel =
       replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_reg_advance_sel_live;
-  // The run and nop selects under the same replay select: on a replay cycle
-  // both equal the saved select, so the final squash 2:1 does not matter
-  // there.
-  assign pc_fetch_advance_sel_run =
-      replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_advance_sel_run_live;
-  assign pc_fetch_advance_sel_nop =
+  // The shape selects under the same replay select: on a replay cycle every
+  // shape equals the saved select, so the final squash and slot-2 choice do
+  // not matter there.
+  assign pc_fetch_advance_sel_one =
       replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_advance_sel_base_live;
-  assign pc_reg_advance_sel_run =
-      replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_advance_sel_run_live;
+  assign pc_fetch_advance_sel_two =
+      replay_saved_if_outputs ? pc_fetch_advance_sel_saved : bundle_advance_sel_live;
+  assign pc_reg_advance_sel_one =
+      replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_advance_sel_base_live;
+  assign pc_reg_advance_sel_two =
+      replay_saved_if_outputs ? pc_reg_advance_sel_saved : bundle_advance_sel_live;
   assign pc_reg_advance_sel_nop =
       replay_saved_if_outputs ? pc_reg_advance_sel_saved : riscv_pkg::PcAdvancePlus2;
 
@@ -2608,6 +2730,11 @@ module if_stage #(
   assign o_from_if_to_pd_2.raw_parcel = replay_saved_if_outputs ? raw_parcel_2_saved : raw_parcel_2;
   assign o_from_if_to_pd_2.decomp_illegal = replay_saved_if_outputs ? slot2_decomp_illegal_sc :
                                             slot2_decomp_illegal;
+  // The PD redirect is slot-1 only.
+  assign o_from_if_to_pd_2.pd_target_native_low = '0;
+  assign o_from_if_to_pd_2.pd_target_native_high_select = '0;
+  assign o_from_if_to_pd_2.pd_target_compressed_low = '0;
+  assign o_from_if_to_pd_2.pd_target_compressed_high_select = '0;
   assign o_from_if_to_pd_2.sel_nop = replay_saved_if_outputs ? sel_nop_2_saved : sel_nop_2;
   assign o_from_if_to_pd_2.sel_compressed = replay_saved_if_outputs ? sel_compressed_2_sc :
                                             sel_compressed_2;

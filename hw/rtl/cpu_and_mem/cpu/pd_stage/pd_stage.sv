@@ -283,22 +283,25 @@ module pd_stage #(
   // (bp_dir_taken) redirects IF to PC + offset, for either offset sign, instead
   // of waiting to resolve as a misprediction.
   //
-  // Native B-type and compressed C.BEQZ/C.BNEZ targets are computed in two
-  // protected, format-specific 13-bit carry-select candidates. Both immediates
-  // fit after sign-extending the compressed 9-bit offset to 13 bits. If s is
-  // that 13-bit immediate's sign and c is the low-add carry, the high result is
-  // exactly PC_high+c-s: unchanged for {s,c}=00/11, +1 for 01, and -1 for 10.
+  // Native B-type and compressed C.BEQZ/C.BNEZ targets are computed as two
+  // format-specific 13-bit carry-select candidates. Both immediates fit after
+  // sign-extending the compressed 9-bit offset to 13 bits. If s is that 13-bit
+  // immediate's sign and c is the low-add carry, the high result is exactly
+  // PC_high+c-s: unchanged for {s,c}=00/11, +1 for 01, and -1 for 10.
   //
-  // The PC-high +/-1 values depend only on the registered PC and settle before
-  // the instruction BRAM responds. The protected candidate boundaries keep the
-  // compressed/native select after both low carry chains; without them Vivado
-  // folds the candidates into one selected-immediate adder. The redirect
-  // register captures both candidates' low results and raw {sign, carry}
-  // selects, the format bit, and all three PC-high values; the next cycle
-  // picks the format and its shallow high-part mux decodes the select. That
-  // keeps the format mux and the correction decode out of the late
-  // carry-to-D path. The full target is exact modulo 2^XLEN.
+  // IF computes the candidates (pd_target_candidate, with the offset selected
+  // inside the adder's propagate LUTs) and carries them in the packet. The
+  // PC-high +/-1 values depend only on the registered PC and settle before
+  // the instruction BRAM responds. The redirect register captures both
+  // candidates' low results and raw {sign, carry} selects, the format bit,
+  // and all three PC-high values; the next cycle picks the format and its
+  // shallow high-part mux decodes the select. That keeps the format mux and
+  // the correction decode out of the late carry-to-D path. The full target
+  // is exact modulo 2^XLEN. The simulation checks below compare the carried
+  // candidates with PC + offset.
 
+`ifndef SYNTHESIS
+  // The two branch immediates, for the candidate checks below.
   logic [XLEN-1:0] pd_imm_b_native;
   assign pd_imm_b_native = {
     {(XLEN - 13) {i_from_if_to_pd.effective_instr[31]}},  // sign-extend bits [XLEN-1:13]
@@ -319,6 +322,7 @@ module pd_stage #(
     i_from_if_to_pd.raw_parcel[4:3],  // imm[2:1]
     1'b0  // imm[0] always zero
   };
+`endif
 
   logic pd_native_branch;
   logic pd_compressed_branch;
@@ -329,15 +333,15 @@ module pd_stage #(
       ((i_from_if_to_pd.raw_parcel[15:13] == 3'b110) ||
        (i_from_if_to_pd.raw_parcel[15:13] == 3'b111));
 
-  localparam int unsigned PdTargetSplit = 13;
+  localparam int unsigned PdTargetSplit = riscv_pkg::PdTargetSplit;
   localparam int unsigned PdTargetHighWidth = XLEN - PdTargetSplit;
 
   (* keep = "true" *) logic [PdTargetHighWidth-1:0] pd_pc_high_plus_one;
   (* keep = "true" *) logic [PdTargetHighWidth-1:0] pd_pc_high_minus_one;
-  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_target_native_low_candidate;
-  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_target_compressed_low_candidate;
-  (* keep = "true" *) logic [1:0] pd_target_native_high_select;
-  (* keep = "true" *) logic [1:0] pd_target_compressed_high_select;
+  logic [PdTargetSplit-1:0] pd_target_native_low_candidate;
+  logic [PdTargetSplit-1:0] pd_target_compressed_low_candidate;
+  logic [1:0] pd_target_native_high_select;
+  logic [1:0] pd_target_compressed_high_select;
   logic [PdTargetSplit-1:0] pd_target_selected_low;
   logic [1:0] pd_target_selected_high_select;
 
@@ -349,23 +353,11 @@ module pd_stage #(
       .o_pc_high_minus_one(pd_pc_high_minus_one)
   );
 
-  (* dont_touch = "yes" *) pd_target_candidate #(
-      .SPLIT(PdTargetSplit)
-  ) u_pd_target_native_candidate (
-      .i_pc_low     (i_from_if_to_pd.program_counter[PdTargetSplit-1:0]),
-      .i_imm_low    (pd_imm_b_native[PdTargetSplit-1:0]),
-      .o_target_low (pd_target_native_low_candidate),
-      .o_high_select(pd_target_native_high_select)
-  );
-
-  (* dont_touch = "yes" *) pd_target_candidate #(
-      .SPLIT(PdTargetSplit)
-  ) u_pd_target_compressed_candidate (
-      .i_pc_low     (i_from_if_to_pd.program_counter[PdTargetSplit-1:0]),
-      .i_imm_low    (pd_imm_b_compressed[PdTargetSplit-1:0]),
-      .o_target_low (pd_target_compressed_low_candidate),
-      .o_high_select(pd_target_compressed_high_select)
-  );
+  // The candidates arrive in the packet (see pd_target_candidate).
+  assign pd_target_native_low_candidate = i_from_if_to_pd.pd_target_native_low;
+  assign pd_target_native_high_select = i_from_if_to_pd.pd_target_native_high_select;
+  assign pd_target_compressed_low_candidate = i_from_if_to_pd.pd_target_compressed_low;
+  assign pd_target_compressed_high_select = i_from_if_to_pd.pd_target_compressed_high_select;
 
   assign pd_target_selected_low = pd_compressed_branch ?
       pd_target_compressed_low_candidate : pd_target_native_low_candidate;

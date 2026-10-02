@@ -193,12 +193,15 @@ module prediction_release_formal #(
       .i_is_compressed(i_is_compressed_fast),
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
-      // The per-i_sel_nop copies of the selects (_run, _nop) only reach the
-      // abstracted calculator, so the merged selects stand in for both.
-      .i_pc_fetch_advance_sel_run(i_pc_fetch_advance_sel),
-      .i_pc_fetch_advance_sel_nop(i_pc_fetch_advance_sel),
-      .i_pc_reg_advance_sel_run(i_pc_reg_advance_sel),
+      // The per-shape copies of the selects and the slot-2 validity only
+      // reach the abstracted calculator, so the merged selects stand in for
+      // every shape.
+      .i_pc_fetch_advance_sel_one(i_pc_fetch_advance_sel),
+      .i_pc_fetch_advance_sel_two(i_pc_fetch_advance_sel),
+      .i_pc_reg_advance_sel_one(i_pc_reg_advance_sel),
+      .i_pc_reg_advance_sel_two(i_pc_reg_advance_sel),
       .i_pc_reg_advance_sel_nop(i_pc_reg_advance_sel),
+      .i_slot2_valid,
       .i_predicted_target,
       .i_predicted_target_r(predicted_target_r),
       .i_prediction_used(prediction_used),

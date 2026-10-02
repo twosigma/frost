@@ -26,6 +26,9 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/served_window_coverage.sv
 # Fetch redirect - registered retarget pulse for the low-BRAM fetch presenter
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/fetch_redirect.sv
 
+# PD redirect-target candidates - the low target adds carried to PD in the packet
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pd_target_candidate.sv
+
 # Instruction MMU - Bare-mode pass-through and Sv39 translation of the fetch PC;
 # its TLB module (mmu/dtlb.sv) is listed in tomasulo_wrapper.f
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/immu.sv

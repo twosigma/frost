@@ -28,6 +28,7 @@ CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
 MEM_SIZE_WIDTH = 2
+PD_TARGET_SPLIT = 13
 
 # pipeline_ctrl_t
 PIPELINE_CTRL_FIELDS = [
@@ -62,6 +63,10 @@ IF_TO_PD_FIELDS = [
     ("fetch_fault_page", 1),
     ("fetch_fault_hi", 1),
     ("decomp_illegal", 1),
+    ("pd_target_native_low", PD_TARGET_SPLIT),
+    ("pd_target_native_high_select", 2),
+    ("pd_target_compressed_low", PD_TARGET_SPLIT),
+    ("pd_target_compressed_high_select", 2),
 ]
 
 # from_pd_to_id_t

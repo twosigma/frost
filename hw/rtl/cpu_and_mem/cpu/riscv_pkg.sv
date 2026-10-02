@@ -1715,6 +1715,11 @@ package riscv_pkg;
   // builds a compressed slot 1's 32-bit instruction from the predecode
   // sideband's expansion that IF selected (the *_predecoded fields); IF's
   // aligner expands slot 2 (see decomp_illegal).
+  // Width of the PD redirect's low target add (pd_target_candidate): the PC
+  // and offset bits below it are added, the bits above select among PC-high,
+  // PC-high + 1, and PC-high - 1. Both branch immediates fit in it.
+  localparam int unsigned PdTargetSplit = 13;
+
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
     // Raw 16-bit parcel at the instruction's start. PD takes slot 1's size and
@@ -1782,6 +1787,17 @@ package riscv_pkg;
     // instruction_aligner). 0 for slot 1, whose illegal flag PD takes from
     // rvc_extra_predecoded.
     logic decomp_illegal;
+    // Slot 1 only (0 for slot 2): the PD redirect's target candidates, formed
+    // in IF from this packet's program_counter and instruction
+    // (pd_target_candidate): the low PdTargetSplit bits of PC + offset for a
+    // native B-type offset and for a compressed C.BEQZ/C.BNEZ offset, each
+    // with its raw {offset sign, low-add carry} select of the PC-high value.
+    // PD registers them with its redirect and decodes the select after the
+    // register; it checks them against PC + offset in simulation.
+    logic [PdTargetSplit-1:0] pd_target_native_low;
+    logic [1:0] pd_target_native_high_select;
+    logic [PdTargetSplit-1:0] pd_target_compressed_low;
+    logic [1:0] pd_target_compressed_high_select;
   } from_if_to_pd_t;
 
   // Clocked signals passed from Pre-Decode (PD) stage to Instruction Decode (ID) stage

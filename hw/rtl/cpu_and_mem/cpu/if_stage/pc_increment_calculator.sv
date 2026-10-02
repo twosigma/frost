@@ -24,9 +24,12 @@
   The pc_reg sums come from pc_reg_precompute, a separate module that keeps
   its adders apart from the bundle-size mux. The fetch candidates apply the
   prediction-holdoff and halfword-target choices before the bundle-size mux.
-  Each result is computed for both values of i_sel_nop, which picks last. For
-  the fetch PC and fetch PC + 2, the redirect/reset holdoff, also a late
-  input, joins that final pick.
+  The bundle advance arrives as three selects, for a one-wide bundle, a
+  two-wide bundle, and the squashed (NOP) packet; each result is computed for
+  all three, and the two late controls, the slot-2 validity (which chooses
+  the two-wide select) and i_sel_nop, pick last. For the fetch PC and fetch
+  PC + 2, the redirect/reset holdoff, also a late input, joins that final
+  pick.
 */
 module pc_increment_calculator #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -38,17 +41,24 @@ module pc_increment_calculator #(
     input logic i_sel_nop,  // IF emits a NOP: the window may be stale, so its sizes are unreliable
 
     // Encoded instruction-bundle advance: +2/+4 one-wide, +4/+6/+8 for
-    // two-wide bundles (RVC+RVC, RVC+32b / 32b+RVC, 32b+32b).
+    // two-wide bundles (RVC+RVC, RVC+32b / 32b+RVC, 32b+32b). These merged
+    // selects feed only the simulation reference.
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
-    // The two selects above for i_sel_nop = 0 ("run") and i_sel_nop = 1
-    // ("nop"). Every candidate mux below is built for both, and i_sel_nop, the
-    // latest control in the front end, picks between the finished results
-    // last. The merged selects above feed only the simulation reference.
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,
+    // The advance selects by bundle shape: for a one-wide bundle (the slot-1
+    // size alone), for a two-wide bundle (both sizes), and for a NOP packet.
+    // The slot-2 validity (i_slot2_valid) and i_sel_nop, the latest controls
+    // in the front end, pick between the finished results last:
+    //   merged = i_sel_nop ? nop : (i_slot2_valid ? two : one).
+    // The fetch PC's NOP select equals its one-wide select, so it has no
+    // separate port. During stall replay IF drives every select from the
+    // same saved value, so the two controls do not matter then.
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_one,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_two,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_one,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_two,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_nop,
+    input logic i_slot2_valid,
 
     // Holdoff and control signals
     input logic i_any_holdoff_safe,
@@ -115,14 +125,21 @@ module pc_increment_calculator #(
 
   // Default-case bundle advance. if_stage reduces the predecode metadata to
   // the 2-bit advance selects, so the wide PC muxes here have narrow selects.
-  // Index 0 is i_sel_nop = 0 ("run"), index 1 is i_sel_nop = 1 ("nop").
-  localparam int unsigned NCof = 2;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] fetch_advance_sel_cof[NCof];
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] reg_advance_sel_cof  [NCof];
-  assign fetch_advance_sel_cof[0] = i_pc_fetch_advance_sel_run;
-  assign fetch_advance_sel_cof[1] = i_pc_fetch_advance_sel_nop;
-  assign reg_advance_sel_cof[0]   = i_pc_reg_advance_sel_run;
-  assign reg_advance_sel_cof[1]   = i_pc_reg_advance_sel_nop;
+  // The fetch PC has two shapes (index 0 one-wide, which is also its NOP
+  // select, and index 1 two-wide); pc_reg has three (index 2 is the NOP
+  // select).
+  localparam int unsigned NFetchShapes = 2;
+  localparam int unsigned NRegShapes = 3;
+  localparam int unsigned ShapeOne = 0;
+  localparam int unsigned ShapeTwo = 1;
+  localparam int unsigned ShapeNop = 2;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] fetch_advance_sel_shape[NFetchShapes];
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] reg_advance_sel_shape  [  NRegShapes];
+  assign fetch_advance_sel_shape[ShapeOne] = i_pc_fetch_advance_sel_one;
+  assign fetch_advance_sel_shape[ShapeTwo] = i_pc_fetch_advance_sel_two;
+  assign reg_advance_sel_shape[ShapeOne]   = i_pc_reg_advance_sel_one;
+  assign reg_advance_sel_shape[ShapeTwo]   = i_pc_reg_advance_sel_two;
+  assign reg_advance_sel_shape[ShapeNop]   = i_pc_reg_advance_sel_nop;
 
   // ===========================================================================
   // Parallel Adders for PC_reg (Instruction Address)
@@ -147,8 +164,9 @@ module pc_increment_calculator #(
       .o_pc_reg_plus_8       (pc_reg_plus_8)
   );
 
-  // The only wide mux that uses the late pc_reg advance select. Its result
-  // feeds pc_controller's final priority mux.
+  // The only wide muxes that use the pc_reg advance selects, one per bundle
+  // shape. Their results feed pc_controller's final priority mux through the
+  // shape selection below.
   //
   // Under i_sel_nop the window may be stale (the wrong address after a
   // redirect), so its size bits are unreliable. Outside stall replay, if_stage
@@ -157,8 +175,8 @@ module pc_increment_calculator #(
   //
   // With a valid slot 2, the bundle advance is RVC+RVC = +4
   // (pc_reg_if_32bit), RVC+32b or 32b+RVC = +6, and 32b+32b = +8.
-  logic [XLEN-1:0] pc_reg_normal_cof[NCof];
-  for (genvar c = 0; c < NCof; c++) begin : gen_pc_reg_advance_cof
+  logic [XLEN-1:0] pc_reg_normal_shape[NRegShapes];
+  for (genvar c = 0; c < NRegShapes; c++) begin : gen_pc_reg_advance_shape
     pc_reg_advance_mux #(
         .XLEN(XLEN)
     ) u_pc_reg_advance_mux (
@@ -166,8 +184,8 @@ module pc_increment_calculator #(
         .i_pc_reg_if_32bit(pc_reg_if_32bit),
         .i_pc_reg_plus_6(pc_reg_plus_6),
         .i_pc_reg_plus_8(pc_reg_plus_8),
-        .i_advance_sel(reg_advance_sel_cof[c]),
-        .o_pc_reg_normal(pc_reg_normal_cof[c])
+        .i_advance_sel(reg_advance_sel_shape[c]),
+        .o_pc_reg_normal(pc_reg_normal_shape[c])
     );
   end
 
@@ -181,10 +199,10 @@ module pc_increment_calculator #(
 
   // For each bundle size, apply the prediction-holdoff and halfword-target
   // choices first, without the redirect/reset holdoff. The advance mux then
-  // picks a finished value, and the holdoff joins i_sel_nop only at the final
-  // selection. The keep attributes stop synthesis from moving the holdoff
-  // muxes after the size selection. Both values of a pair reuse the existing
-  // fixed-increment adders, including their wraparound at XLEN bits.
+  // picks a finished value, and the holdoff joins the late controls only at
+  // the final selection. The keep attributes stop synthesis from moving the
+  // holdoff muxes after the size selection. Both values of a pair reuse the
+  // existing fixed-increment adders, including their wraparound at XLEN bits.
   localparam int unsigned NAdvance = 4;
   logic [XLEN-1:0] fetch_advance_pc[NAdvance];
   logic [XLEN-1:0] fetch_advance_pc_plus_2[NAdvance];
@@ -213,49 +231,63 @@ module pc_increment_calculator #(
     end
   end
 
-  (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_cof[NCof];
-  (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_plus_2_cof[NCof];
-  logic [XLEN-1:0] seq_next_pc_reg_cof[NCof];
+  // The size selection per bundle shape.
+  (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_shape[NFetchShapes];
+  (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_plus_2_shape[NFetchShapes];
   always_comb begin
-    for (int unsigned c = 0; c < NCof; c++) begin
-      unique case (fetch_advance_sel_cof[c])
+    for (int unsigned c = 0; c < NFetchShapes; c++) begin
+      unique case (fetch_advance_sel_shape[c])
         riscv_pkg::PcAdvancePlus4: begin
-          seq_next_pc_cof[c] = seq_pc_candidate[1];
-          seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[1];
+          seq_next_pc_shape[c] = seq_pc_candidate[1];
+          seq_next_pc_plus_2_shape[c] = seq_pc_plus_2_candidate[1];
         end
         riscv_pkg::PcAdvancePlus6: begin
-          seq_next_pc_cof[c] = seq_pc_candidate[2];
-          seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[2];
+          seq_next_pc_shape[c] = seq_pc_candidate[2];
+          seq_next_pc_plus_2_shape[c] = seq_pc_plus_2_candidate[2];
         end
         riscv_pkg::PcAdvancePlus8: begin
-          seq_next_pc_cof[c] = seq_pc_candidate[3];
-          seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[3];
+          seq_next_pc_shape[c] = seq_pc_candidate[3];
+          seq_next_pc_plus_2_shape[c] = seq_pc_plus_2_candidate[3];
         end
         default: begin
-          seq_next_pc_cof[c] = seq_pc_candidate[0];
-          seq_next_pc_plus_2_cof[c] = seq_pc_plus_2_candidate[0];
+          seq_next_pc_shape[c] = seq_pc_candidate[0];
+          seq_next_pc_plus_2_shape[c] = seq_pc_plus_2_candidate[0];
         end
       endcase
-      if (seq_sel_holdoff) seq_next_pc_reg_cof[c] = i_pc_reg;
-      else seq_next_pc_reg_cof[c] = pc_reg_normal_cof[c];
     end
   end
 
-  // The predecessor release makes i_any_holdoff_safe a late input too, so it
-  // is applied with i_sel_nop after both size results settle. Each bit uses
-  // the holdoff, i_sel_nop, and three finished data bits (one LUT5).
+  // The late controls pick last. The two-wide value is used only for a real
+  // two-wide packet; a NOP packet and a one-wide packet both take the one-wide
+  // value, so i_sel_nop and i_slot2_valid form one two-wide permission. The
+  // predecessor release makes i_any_holdoff_safe a late input too, so it is
+  // applied in the same selection. Each bit uses the holdoff, the permission,
+  // and three finished data bits (one LUT5).
+  (* keep = "true" *) logic fetch_two_wide;
+  assign fetch_two_wide = !i_sel_nop && i_slot2_valid;
   assign o_seq_next_pc = i_any_holdoff_safe ? next_pc_plus_4 :
-      i_sel_nop ? seq_next_pc_cof[1] : seq_next_pc_cof[0];
+      fetch_two_wide ? seq_next_pc_shape[ShapeTwo] : seq_next_pc_shape[ShapeOne];
   assign o_seq_next_pc_plus_2 = i_any_holdoff_safe ? next_pc_plus_6 :
-      i_sel_nop ? seq_next_pc_plus_2_cof[1] : seq_next_pc_plus_2_cof[0];
-  assign o_seq_next_pc_reg = i_sel_nop ? seq_next_pc_reg_cof[1] : seq_next_pc_reg_cof[0];
+      fetch_two_wide ? seq_next_pc_plus_2_shape[ShapeTwo] : seq_next_pc_plus_2_shape[ShapeOne];
+
+  // pc_reg: the holdoff holds it, a NOP packet takes the NOP shape, and the
+  // slot-2 validity picks between the two bundle shapes. The hold and the NOP
+  // shape are merged first, so the final selection is one LUT6 of the two
+  // late controls, that value, the slot-2 validity, and the two bundle
+  // values.
+  (* keep = "true" *) logic [XLEN-1:0] seq_next_pc_reg_hold_or_nop;
+  (* keep = "true" *) logic seq_next_pc_reg_hold_or_nop_sel;
+  assign seq_next_pc_reg_hold_or_nop = seq_sel_holdoff ? i_pc_reg : pc_reg_normal_shape[ShapeNop];
+  assign seq_next_pc_reg_hold_or_nop_sel = seq_sel_holdoff || i_sel_nop;
+  assign o_seq_next_pc_reg = seq_next_pc_reg_hold_or_nop_sel ? seq_next_pc_reg_hold_or_nop :
+      i_slot2_valid ? pc_reg_normal_shape[ShapeTwo] : pc_reg_normal_shape[ShapeOne];
 
 `ifdef PC_INCREMENT_HOLDOFF_PROOF
   // Reference for the pc_increment_holdoff formal target: the holdoff applied
-  // inside each size candidate, then the same size and i_sel_nop selection,
-  // with every input free (including the run and nop selects).
+  // inside each size candidate, then the same size selection by the merged
+  // shape, with every input free (including the shape selects and controls).
   logic [XLEN-1:0] f_seq_candidate[NAdvance], f_seq_plus_2_candidate[NAdvance];
-  logic [XLEN-1:0] f_seq_result[NCof], f_seq_plus_2_result[NCof];
+  logic [XLEN-1:0] f_seq_result[NFetchShapes], f_seq_plus_2_result[NFetchShapes];
   always_comb begin
     for (int unsigned k = 0; k < NAdvance; k++) begin
       if (seq_sel_holdoff) begin
@@ -275,8 +307,8 @@ module pc_increment_calculator #(
   end
 
   always_comb begin
-    for (int c = 0; c < NCof; c++) begin
-      case (fetch_advance_sel_cof[c])
+    for (int c = 0; c < NFetchShapes; c++) begin
+      case (fetch_advance_sel_shape[c])
         riscv_pkg::PcAdvancePlus4: begin
           f_seq_result[c] = f_seq_candidate[1];
           f_seq_plus_2_result[c] = f_seq_plus_2_candidate[1];
@@ -295,8 +327,9 @@ module pc_increment_calculator #(
         end
       endcase
     end
-    assert (o_seq_next_pc == (i_sel_nop ? f_seq_result[1] : f_seq_result[0]));
-    assert (o_seq_next_pc_plus_2 == (i_sel_nop ? f_seq_plus_2_result[1] : f_seq_plus_2_result[0]));
+    assert (o_seq_next_pc == (fetch_two_wide ? f_seq_result[ShapeTwo] : f_seq_result[ShapeOne]));
+    assert (o_seq_next_pc_plus_2 ==
+            (fetch_two_wide ? f_seq_plus_2_result[ShapeTwo] : f_seq_plus_2_result[ShapeOne]));
   end
 `endif
 
@@ -352,20 +385,24 @@ module pc_increment_calculator #(
     if (!$isunknown(
             {
               i_sel_nop,
+              i_slot2_valid,
               i_pc_fetch_advance_sel,
-              i_pc_fetch_advance_sel_run,
-              i_pc_fetch_advance_sel_nop,
+              i_pc_fetch_advance_sel_one,
+              i_pc_fetch_advance_sel_two,
               i_pc_reg_advance_sel,
-              i_pc_reg_advance_sel_run,
+              i_pc_reg_advance_sel_one,
+              i_pc_reg_advance_sel_two,
               i_pc_reg_advance_sel_nop
             }
         )) begin
-      // The run and nop selects agree with the merged selects ...
-      p_advance_sel_cofactors_exact :
+      // The shape selects agree with the merged selects ...
+      p_advance_sel_shapes_exact :
       assert ((i_pc_fetch_advance_sel ==
-               (i_sel_nop ? i_pc_fetch_advance_sel_nop : i_pc_fetch_advance_sel_run)) &&
+               (i_sel_nop ? i_pc_fetch_advance_sel_one :
+                i_slot2_valid ? i_pc_fetch_advance_sel_two : i_pc_fetch_advance_sel_one)) &&
               (i_pc_reg_advance_sel ==
-               (i_sel_nop ? i_pc_reg_advance_sel_nop : i_pc_reg_advance_sel_run)));
+               (i_sel_nop ? i_pc_reg_advance_sel_nop :
+                i_slot2_valid ? i_pc_reg_advance_sel_two : i_pc_reg_advance_sel_one)));
       // ... and the split selection equals the reference every cycle.
       p_seq_next_pc_split_exact :
       assert ((o_seq_next_pc == seq_next_pc_ref) &&
@@ -395,19 +432,21 @@ module pc_increment_calculator #(
   assign neq_plus4 = (pc_reg_if_32bit != i_pc);
   assign neq_plus6 = (pc_reg_plus_6 != i_pc);
   assign neq_plus8 = (pc_reg_plus_8 != i_pc);
-  // Split by i_sel_nop as for o_seq_next_pc_reg: i_sel_nop picks last.
-  logic neq_advance_sel_cof[NCof];
+  // Split by bundle shape as for o_seq_next_pc_reg: the late controls pick
+  // last.
+  logic neq_advance_sel_shape[NRegShapes];
   always_comb begin
-    for (int unsigned c = 0; c < NCof; c++) begin
-      unique case (reg_advance_sel_cof[c])
-        riscv_pkg::PcAdvancePlus2: neq_advance_sel_cof[c] = neq_plus2;
-        riscv_pkg::PcAdvancePlus4: neq_advance_sel_cof[c] = neq_plus4;
-        riscv_pkg::PcAdvancePlus6: neq_advance_sel_cof[c] = neq_plus6;
-        riscv_pkg::PcAdvancePlus8: neq_advance_sel_cof[c] = neq_plus8;
-        default:                   neq_advance_sel_cof[c] = neq_plus2;
+    for (int unsigned c = 0; c < NRegShapes; c++) begin
+      unique case (reg_advance_sel_shape[c])
+        riscv_pkg::PcAdvancePlus2: neq_advance_sel_shape[c] = neq_plus2;
+        riscv_pkg::PcAdvancePlus4: neq_advance_sel_shape[c] = neq_plus4;
+        riscv_pkg::PcAdvancePlus6: neq_advance_sel_shape[c] = neq_plus6;
+        riscv_pkg::PcAdvancePlus8: neq_advance_sel_shape[c] = neq_plus8;
+        default:                   neq_advance_sel_shape[c] = neq_plus2;
       endcase
     end
-    neq_advance_sel = i_sel_nop ? neq_advance_sel_cof[1] : neq_advance_sel_cof[0];
+    neq_advance_sel = i_sel_nop ? neq_advance_sel_shape[ShapeNop] :
+        i_slot2_valid ? neq_advance_sel_shape[ShapeTwo] : neq_advance_sel_shape[ShapeOne];
   end
   always_comb begin
     if (seq_sel_holdoff) o_seq_next_pc_reg_neq_pc = neq_hold;

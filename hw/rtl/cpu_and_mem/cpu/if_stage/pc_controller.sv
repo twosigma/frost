@@ -81,13 +81,16 @@ module pc_controller #(
     // if_stage folds the slot-2 valid and size into these selects.
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
-    // The two selects above for i_sel_nop = 0 and 1, which
-    // pc_increment_calculator uses; the merged selects feed only its
-    // simulation reference.
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,
+    // The selects by bundle shape (one-wide, two-wide, NOP packet) and the
+    // slot-2 validity that chooses the two-wide shape, which
+    // pc_increment_calculator uses: it selects by i_slot2_valid and i_sel_nop
+    // last. The merged selects feed only its simulation reference.
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_one,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_two,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_one,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_two,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_nop,
+    input logic i_slot2_valid,
 
     // Branch prediction (from branch_prediction_controller)
     input logic [XLEN-1:0] i_predicted_target,  // Predicted target address (combinational)
@@ -294,10 +297,12 @@ module pc_controller #(
       .i_sel_nop,
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
-      .i_pc_fetch_advance_sel_run,
-      .i_pc_fetch_advance_sel_nop,
-      .i_pc_reg_advance_sel_run,
+      .i_pc_fetch_advance_sel_one,
+      .i_pc_fetch_advance_sel_two,
+      .i_pc_reg_advance_sel_one,
+      .i_pc_reg_advance_sel_two,
       .i_pc_reg_advance_sel_nop,
+      .i_slot2_valid,
 
       // Holdoff and control signals
       // The pending branch's immediate predecessor is the one packet allowed
@@ -903,7 +908,7 @@ module pc_controller #(
   end
 
   logic [XLEN-1:0] next_pc, next_pc_reg;
-  (* keep = "true" *) logic [XLEN-1:0] pc_reg_nonseq_without_slot2;
+  (* keep = "true" *) logic [XLEN-1:0] pc_reg_nonseq_wcs0_without_slot2;
   logic trap_or_mret;
   assign trap_or_mret = i_trap_taken || i_mret_taken;
 
@@ -1069,9 +1074,10 @@ module pc_controller #(
   // next_pc_sequential_target below instead, so no consume or raw-WCS term
   // needs a wide mux here.
   // The winners among these arms, with the catch-up request, also decide when
-  // the sequential value is used: npc_base_sequential_request, which includes
-  // the consume arm's sequential case, and npc_raw_wcs_sequential_permission
-  // for the pending-hold arm's raw-WCS override. The final muxes below then
+  // the sequential value is used: npc_base_sequential_request_without_catchup,
+  // which includes the consume arm's sequential case, the catch-up
+  // permission with the NOP, and npc_raw_wcs_sequential_permission for the
+  // pending-hold arm's raw-WCS override. The final muxes below then
   // apply the resteer, the no-progress hold, and both predictions, each only
   // when no redirect is present, and reset. npc_sel and the observation
   // outputs are unaffected.
@@ -1219,9 +1225,11 @@ module pc_controller #(
   // at the final mux anyway, so it is left out too. Reset is applied only at
   // the final mux. The pending consume arm needs no term of its own here: it
   // asks only while pending_prediction_effective, which already blocks
-  // catch-up.
+  // catch-up. The NOP, the latest of the squash terms, joins the permission
+  // only inside its two consumers, the final sequential request and the
+  // sequential data select, so each is one LUT from the squash.
   (* keep = "true" *)logic npc_catchup_permission_without_nop_or_wcs;
-  (* keep = "true" *)logic npc_catchup_request_without_slot1;
+  logic npc_catchup_request_without_slot1;
   assign npc_catchup_permission_without_nop_or_wcs =
       !(|npc_cond[4:1]) && !npc_cond[9] && !pending_prediction_effective &&
       (o_fetch_lookup_is_lower_parcel ||
@@ -1230,19 +1238,26 @@ module pc_controller #(
         fetch_is_halfword_ahead));
   assign npc_catchup_request_without_slot1 =
       npc_catchup_permission_without_nop_or_wcs && !i_sel_nop;
-  // The raw-WCS term stays separate from the rest of the sequential request.
-  // The final muxes apply slot-1 priority, fetch progress, and the qualified
-  // resteer. When catch-up and an ordinary sequential request both fire,
-  // catch-up picks the sequential value; slot 2 still wins at the final mux.
-  (* keep = "true" *)logic npc_base_sequential_request;
+  // The sequential request without the catch-up arm and without raw WCS: the
+  // consume arm's sequential case and the pending-select sequential case.
+  // The raw-WCS term stays separate too. Both late terms and the catch-up
+  // request join it only in npc_final_sequential_request below. The final
+  // muxes apply slot-1 priority, fetch progress, and the qualified resteer.
+  // When catch-up and an ordinary sequential request both fire, catch-up
+  // picks the sequential value; slot 2 still wins at the final mux.
+  (* keep = "true" *)logic npc_base_sequential_request_without_catchup;
   (* keep = "true" *)logic npc_raw_wcs_sequential_permission;
-  assign npc_base_sequential_request =
+  (* keep = "true" *)logic npc_raw_wcs_sequential_request;
+  assign npc_base_sequential_request_without_catchup =
       (npc_no_redirect_or_holdoff && fetch_pending_cross_ok && pc_reg_at_pending &&
        pending_prediction_fetch_at_target) ||
-      fetch_pending_select_sequential || npc_catchup_request_without_slot1;
+      fetch_pending_select_sequential;
   assign npc_raw_wcs_sequential_permission = fetch_pending_hold_at_predecessor;
+  assign npc_raw_wcs_sequential_request =
+      npc_raw_wcs_sequential_permission && i_window_cannot_serve_raw;
   assign next_pc_sequential_target =
-      npc_catchup_request_without_slot1 ? seq_next_pc_plus_2 : seq_next_pc;
+      (npc_catchup_permission_without_nop_or_wcs && !i_sel_nop) ? seq_next_pc_plus_2 :
+                                                                  seq_next_pc;
   // Per bit: the redirect, resteer, and progress-hold data first, then slot 1
   // in a one-bit mux, then a final mux that takes reset, slot 2, the
   // sequential value, or that result. The sequential value enters only the
@@ -1263,8 +1278,9 @@ module pc_controller #(
       i_fetch_progress && !i_window_cannot_serve;
   assign npc_final_slot2_request = npc_prediction_permission && npc_cond[7];
   assign npc_final_sequential_request = npc_prediction_permission && !npc_cond[8] &&
-      (npc_base_sequential_request ||
-       (npc_raw_wcs_sequential_permission && i_window_cannot_serve_raw));
+      (npc_base_sequential_request_without_catchup ||
+       (npc_catchup_permission_without_nop_or_wcs && !i_sel_nop) ||
+       npc_raw_wcs_sequential_request);
 `ifdef FROST_XILINX_PRIMS
   for (genvar bit_idx = 0; bit_idx < XLEN; bit_idx++) begin : gen_fetch_pc_bit_mux
     (* dont_touch = "true" *)
@@ -1318,32 +1334,53 @@ module pc_controller #(
   // including returns that take the stack top, reach pc_reg through the
   // registered handoff (sel_prediction_r; see the timeline above it), which
   // keeps the current fetch response off the pc_reg data path.
+  //
+  // The land arm (pc_reg_land_on_pending_wcs0) is built with raw WCS forced
+  // to 0: the predecessor release it checks is then the registered-state
+  // form, pending_predecessor_release_wcs0. Raw WCS cancels the arm only at
+  // the predecessor (pim_base), and under the arm's own conditions every
+  // lower arm is off: the cross arm needs allow_cross, the target-handoff
+  // arm is part of use_pending_prediction_for_pc_reg_pc_mux, and
+  // sel_prediction_r needs no pending prediction. A cancelled land arm
+  // therefore means the sequential value wins, so raw WCS joins the
+  // sequential select (pc_reg_seq_candidate) through one gate with the
+  // registered permission below, instead of passing through this 64-bit
+  // priority mux. The data mux keeps the raw-WCS = 0 arm: when raw WCS
+  // cancels it, the sequential select masks this value at the final muxes.
+  // The simulation reference next_pc_reg_priority_ref and the formal
+  // pc_register_mux target keep the land arm with the full release.
+  (* keep = "true" *)logic pc_reg_land_on_pending_wcs0;
+  (* keep = "true" *)logic pc_reg_wcs_seq_permission;
+  assign pc_reg_land_on_pending_wcs0 =
+      pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
+      !use_pending_prediction_for_pc_reg_pc_mux && !pending_predecessor_release_wcs0;
+  assign pc_reg_wcs_seq_permission =
+      pc_reg_land_on_pending_wcs0 && pim_base && !o_pending_prediction_target_holdoff;
   always_comb begin
-    if (trap_or_mret) pc_reg_nonseq_without_slot2 = i_trap_target;
-    else if (i_fence_i_flush) pc_reg_nonseq_without_slot2 = i_fence_i_target;
-    else if (i_branch_taken) pc_reg_nonseq_without_slot2 = i_branch_target;
-    else if (i_pd_redirect) pc_reg_nonseq_without_slot2 = i_pd_redirect_target;
+    if (trap_or_mret) pc_reg_nonseq_wcs0_without_slot2 = i_trap_target;
+    else if (i_fence_i_flush) pc_reg_nonseq_wcs0_without_slot2 = i_fence_i_target;
+    else if (i_branch_taken) pc_reg_nonseq_wcs0_without_slot2 = i_branch_target;
+    else if (i_pd_redirect) pc_reg_nonseq_wcs0_without_slot2 = i_pd_redirect_target;
     // After a non-crossing pending handoff, the first target cycle is a bubble
     // while the target word arrives. pc_reg holds on the target then;
     // advancing would pair the arriving target word with the next halfword PC
     // and break compressed-instruction alignment on loop back-edges.
-    else if (o_pending_prediction_target_holdoff) pc_reg_nonseq_without_slot2 = o_pc_reg;
+    else if (o_pending_prediction_target_holdoff) pc_reg_nonseq_wcs0_without_slot2 = o_pc_reg;
     // Land on the pending branch PC, except when the predecessor is released
     // (pending_imm_pred_emit): pc_reg then advances sequentially, to
     // seq_next_pc_reg, which equals pending_prediction_pc here, so the
     // predecessor emits first. The prediction stays pending, so the target
-    // handoff below still fires when pc_reg reaches the branch.
-    else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
-             !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
-      pc_reg_nonseq_without_slot2 = pending_prediction_pc;
+    // handoff below still fires when pc_reg reaches the branch. The raw-WCS
+    // part of the release is applied in pc_reg_seq_candidate (see above).
+    else if (pc_reg_land_on_pending_wcs0) pc_reg_nonseq_wcs0_without_slot2 = pending_prediction_pc;
     else if (pending_prediction_cross_handoff_pc_mux)
-      pc_reg_nonseq_without_slot2 = pending_prediction_pc;
+      pc_reg_nonseq_wcs0_without_slot2 = pending_prediction_pc;
     else if (pending_prediction_target_handoff_pc_mux)
-      pc_reg_nonseq_without_slot2 = pending_prediction_target;
-    else if (sel_prediction_r) pc_reg_nonseq_without_slot2 = i_predicted_target_r;
+      pc_reg_nonseq_wcs0_without_slot2 = pending_prediction_target;
+    else if (sel_prediction_r) pc_reg_nonseq_wcs0_without_slot2 = i_predicted_target_r;
     // This value is unused when the final sequential arm wins.
     else
-      pc_reg_nonseq_without_slot2 = o_pc_reg;
+      pc_reg_nonseq_wcs0_without_slot2 = o_pc_reg;
   end
 
   // Finish the staged/sequential/base value before the live slot-2 choice.
@@ -1351,20 +1388,53 @@ module pc_controller #(
   // reset > redirect > aliased live slot 2 > that value. Slot-2 validity
   // never gates the sequential select ahead of the data mux. The redirect
   // check is needed only in the final LUT: when a redirect is present,
-  // pc_reg_nonseq_without_slot2 already holds its target.
+  // pc_reg_nonseq_wcs0_without_slot2 already holds its target.
   (* keep = "true" *) logic pc_reg_live_candidate;
   (* keep = "true" *) logic pc_reg_seq_candidate;
+  (* keep = "true" *) logic pc_reg_seq_candidate_wcs0;
   (* keep = "true" *) logic [XLEN-1:0] pc_reg_staged_or_sequential;
   assign pc_reg_live_redirect_permission =
       !trap_or_mret && !i_fence_i_flush && !i_branch_taken && !i_pd_redirect;
   assign pc_reg_live_candidate = i_slot1_aliases_slot2_candidate &&
       i_slot2_live_target_used_for_pc_cofactor;
-  assign pc_reg_seq_candidate =
-      !o_pending_prediction_target_holdoff &&
-      !(pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
-        !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit) &&
+  // The sequential select with raw WCS forced to 0, then raw WCS applied as
+  // the cancelled land arm (see pc_reg_land_on_pending_wcs0).
+  assign pc_reg_seq_candidate_wcs0 =
+      !o_pending_prediction_target_holdoff && !pc_reg_land_on_pending_wcs0 &&
       !pending_prediction_cross_handoff_pc_mux && !pending_prediction_target_handoff_pc_mux &&
       !sel_prediction_r;
+  assign pc_reg_seq_candidate = pc_reg_seq_candidate_wcs0 ||
+      (i_window_cannot_serve_raw && pc_reg_wcs_seq_permission);
+`ifndef SYNTHESIS
+  // The sequential select equals the one built from the full land arm, and
+  // the data mux differs from one built with the full land arm only where
+  // the sequential select masks it.
+  logic pc_reg_land_on_pending_ref;
+  logic pc_reg_seq_candidate_ref;
+  assign pc_reg_land_on_pending_ref =
+      pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
+      !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit;
+  assign pc_reg_seq_candidate_ref =
+      !o_pending_prediction_target_holdoff && !pc_reg_land_on_pending_ref &&
+      !pending_prediction_cross_handoff_pc_mux && !pending_prediction_target_handoff_pc_mux &&
+      !sel_prediction_r;
+  always_comb begin
+    if (!$isunknown(
+            {
+              pc_reg_seq_candidate,
+              pc_reg_seq_candidate_ref,
+              pc_reg_land_on_pending_wcs0,
+              pc_reg_land_on_pending_ref,
+              o_pending_prediction_target_holdoff
+            }
+        )) begin
+      p_pc_reg_seq_candidate_wcs_exact : assert (pc_reg_seq_candidate == pc_reg_seq_candidate_ref);
+      p_pc_reg_land_arm_wcs_masked_exact :
+      assert (pc_reg_land_on_pending_wcs0 == pc_reg_land_on_pending_ref ||
+              pc_reg_seq_candidate || o_pending_prediction_target_holdoff);
+    end
+  end
+`endif
 `ifdef FROST_XILINX_PRIMS
   for (genvar bit_idx = 0; bit_idx < XLEN; bit_idx++) begin : gen_arch_pc_bit_mux
     LUT5 #(
@@ -1374,7 +1444,7 @@ module pc_controller #(
         .I1(pc_reg_seq_candidate),
         .I2(i_slot2_staged_predicted_target[bit_idx]),
         .I3(seq_next_pc_reg[bit_idx]),
-        .I4(pc_reg_nonseq_without_slot2[bit_idx]),
+        .I4(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
         .O (pc_reg_staged_or_sequential[bit_idx])
     );
     LUT6 #(
@@ -1385,16 +1455,16 @@ module pc_controller #(
         .I2(pc_reg_live_candidate),
         .I3(i_slot2_live_predicted_target[bit_idx]),
         .I4(pc_reg_staged_or_sequential[bit_idx]),
-        .I5(pc_reg_nonseq_without_slot2[bit_idx]),
+        .I5(pc_reg_nonseq_wcs0_without_slot2[bit_idx]),
         .O (next_pc_reg[bit_idx])
     );
   end
 `else
   assign pc_reg_staged_or_sequential = i_slot2_staged_prediction_used_for_pc ?
       i_slot2_staged_predicted_target :
-      pc_reg_seq_candidate ? seq_next_pc_reg : pc_reg_nonseq_without_slot2;
+      pc_reg_seq_candidate ? seq_next_pc_reg : pc_reg_nonseq_wcs0_without_slot2;
   assign next_pc_reg = i_reset ? '0 : !pc_reg_live_redirect_permission ?
-      pc_reg_nonseq_without_slot2 : pc_reg_live_candidate ?
+      pc_reg_nonseq_wcs0_without_slot2 : pc_reg_live_candidate ?
       i_slot2_live_predicted_target : pc_reg_staged_or_sequential;
 `endif
 
@@ -1767,7 +1837,7 @@ module pc_controller #(
     // the target window arrives the cycle after that.
     else if (i_slot2_staged_prediction_used_for_pc)
       pc_mux_nested_reference_without_live_slot2 = i_slot2_staged_predicted_target;
-    // The next two arms match pc_reg_nonseq_without_slot2 (see the comments
+    // The next two arms match pc_reg_nonseq_wcs0_without_slot2 (see the comments
     // there).
     else if (o_pending_prediction_target_holdoff)
       pc_mux_nested_reference_without_live_slot2 = o_pc_reg;

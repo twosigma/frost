@@ -1820,7 +1820,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "pc_increment_calculator": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_pc_increment_calculator",
         hdl_toplevel_module="pc_increment_calculator",
-        description="IF-stage PC increment calculator tests, including overlapping holdoffs, all run/NOP advance selects and XLEN wraparound",
+        description="IF-stage PC increment calculator tests, including overlapping holdoffs, all bundle-shape advance selects with the slot-2 and NOP controls, and XLEN wraparound",
     ),
     "pc_controller": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_pc_controller",

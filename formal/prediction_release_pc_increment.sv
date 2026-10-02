@@ -29,13 +29,15 @@ module pc_increment_calculator #(
     input logic i_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
-    // The real module's copies of the two selects for i_sel_nop = 0 (_run)
-    // and 1 (_nop), between which i_sel_nop picks last. Unused here, like the
-    // selects.
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
-    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,
+    // The real module's selects by bundle shape and the slot-2 validity that
+    // picks the two-wide shape, between which i_sel_nop and i_slot2_valid
+    // pick last. Unused here, like the merged selects.
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_one,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_two,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_one,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_two,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_nop,
+    input logic i_slot2_valid,
     input logic i_any_holdoff_safe,
     input logic i_prediction_holdoff,
     input logic i_control_flow_to_halfword_r,
