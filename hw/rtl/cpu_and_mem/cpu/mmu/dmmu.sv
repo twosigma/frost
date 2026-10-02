@@ -348,6 +348,19 @@ module dmmu (
     end
   end
 
+  // The resolution returns the PA (rather than the VA) exactly when the op
+  // resolves cleanly from the TLB or from a walk response: resolve_addr is
+  // resolve_pa ? {32'b0, resolve_ppn, va[11:0]} : va. S2 stores the VA, the
+  // PPN and this bit separately, so the late TLB verdict reaches one flop
+  // instead of selecting (or, for the zero upper half, resetting) the 64
+  // address bits; p_resolve_addr_exact checks the identity.
+  logic resolve_pa;
+  logic [19:0] resolve_ppn;
+  assign resolve_pa = s1_valid_q && !(i_trap_misaligned && s1_misaligned) && !s1_noncanonical &&
+      (tlb_hit[0] ? (tlb_fault == riscv_pkg::DFAULT_NONE) :
+                    (walk_resp_for_s1 && (walk_fault == riscv_pkg::DFAULT_NONE)));
+  assign resolve_ppn = tlb_hit[0] ? tlb_ppn20[0] : walk_ppn20;
+
   // ---------------------------------------------------------------------------
   // Pipe advance
   // ---------------------------------------------------------------------------
@@ -430,7 +443,9 @@ module dmmu (
   // ---------------------------------------------------------------------------
   logic s2_valid_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] s2_tag_q;
-  logic [riscv_pkg::XLEN-1:0] s2_addr_q;
+  logic [riscv_pkg::XLEN-1:0] s2_va_q;
+  logic [19:0] s2_ppn_q;
+  logic s2_pa_q;
   logic s2_is_mmio_q;
   riscv_pkg::data_fault_kind_e s2_fault_q;
   logic s2_needs_sq_q, s2_is_sc_q;
@@ -438,7 +453,8 @@ module dmmu (
 
   // tlb_is_mmio arrives after the resolution qualifiers, so the next S2 MMIO
   // bit is computed for both of its values (including the hold when nothing
-  // resolves) and tlb_is_mmio selects last. The other S2 fields use enables.
+  // resolves) and tlb_is_mmio selects last. The other S2 fields load every
+  // cycle (see the S2 registers).
   (* keep = "true" *) logic [1:0] s2_mmio_cases;
   logic s2_mmio_next;
   for (genvar mmio = 0; mmio < 2; mmio++) begin : gen_s2_mmio_cases
@@ -463,19 +479,50 @@ module dmmu (
     end else begin
       s2_valid_q <= s1_move;
     end
-    // A killed resolution leaves s2_valid_q clear, so its payload is never
-    // seen. Capturing it anyway keeps the flush age compare off every S2
-    // payload enable.
+    // The S2 payload is read only while s2_valid_q is set (every consumer is
+    // qualified by an S2 pulse or by o_iss_out_valid), and s2_valid_q is set
+    // only after a resolution. The payload therefore loads S1's resolution
+    // every cycle, with no enable: the resolution, its flush kill and the
+    // TLB lookup behind them reach no payload enable. p_s2_payload_exact
+    // checks it against a copy loaded only on a resolution.
+    s2_tag_q <= s1_q.tag;
+    s2_va_q <= s1_q.va;
+    s2_ppn_q <= resolve_ppn;
+    s2_pa_q <= resolve_pa;
+    s2_fault_q <= resolve_fault;
+    s2_needs_sq_q <= s1_q.needs_sq;
+    s2_is_sc_q <= s1_q.is_sc;
+    s2_store_data_q <= s1_q.store_data;
+    s2_amo_rs2_q <= s1_q.amo_rs2;
+  end
+
+`ifndef SYNTHESIS
+  // Reference S2 payload, loaded only on a resolution with the resolved
+  // address itself. Every field a consumer reads matches it while S2 is
+  // valid.
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] ref_s2_tag_q;
+  logic [riscv_pkg::XLEN-1:0] ref_s2_addr_q, ref_s2_store_data_q, ref_s2_amo_rs2_q;
+  riscv_pkg::data_fault_kind_e ref_s2_fault_q;
+  logic ref_s2_needs_sq_q, ref_s2_is_sc_q;
+  always_ff @(posedge i_clk) begin
     if (s1_resolved) begin
-      s2_tag_q <= s1_q.tag;
-      s2_addr_q <= resolve_addr;
-      s2_fault_q <= resolve_fault;
-      s2_needs_sq_q <= s1_q.needs_sq;
-      s2_is_sc_q <= s1_q.is_sc;
-      s2_store_data_q <= s1_q.store_data;
-      s2_amo_rs2_q <= s1_q.amo_rs2;
+      ref_s2_tag_q <= s1_q.tag;
+      ref_s2_addr_q <= resolve_addr;
+      ref_s2_fault_q <= resolve_fault;
+      ref_s2_needs_sq_q <= s1_q.needs_sq;
+      ref_s2_is_sc_q <= s1_q.is_sc;
+      ref_s2_store_data_q <= s1_q.store_data;
+      ref_s2_amo_rs2_q <= s1_q.amo_rs2;
+    end
+    if (i_rst_n && s2_valid_q) begin
+      p_s2_payload_exact :
+      assert ({s2_tag_q, o_iss_out_addr, s2_fault_q, s2_needs_sq_q, s2_is_sc_q, s2_store_data_q,
+               s2_amo_rs2_q} ==
+              {ref_s2_tag_q, ref_s2_addr_q, ref_s2_fault_q, ref_s2_needs_sq_q, ref_s2_is_sc_q,
+               ref_s2_store_data_q, ref_s2_amo_rs2_q});
     end
   end
+`endif
 
   logic s2_killed;
   assign s2_killed = i_flush_en && s2_valid_q && is_younger(s2_tag_q, i_flush_tag, i_head_tag);
@@ -484,7 +531,7 @@ module dmmu (
   assign o_iss_out_lq_capture_valid = s2_valid_q && !s2_needs_sq_q;
   assign o_iss_out_sq_capture_valid = s2_valid_q && s2_needs_sq_q;
   assign o_iss_out_rob_tag = s2_tag_q;
-  assign o_iss_out_addr = s2_addr_q;
+  assign o_iss_out_addr = s2_pa_q ? {32'b0, s2_ppn_q, s2_va_q[11:0]} : s2_va_q;
   assign o_iss_out_is_mmio = s2_is_mmio_q;
   assign o_iss_out_fault = s2_fault_q;
   assign o_iss_out_needs_sq = s2_needs_sq_q;
@@ -644,6 +691,9 @@ module dmmu (
     p_resolve_mmio_exact :
     assert (resolve_is_mmio ==
         ((resolve_fault == riscv_pkg::DFAULT_NONE) && (resolve_addr[31:30] == 2'b01)));
+    // S2's split address rebuilds the resolution's address.
+    p_resolve_addr_exact :
+    assert ((resolve_pa ? {32'b0, resolve_ppn, s1_q.va[11:0]} : s1_q.va) == resolve_addr);
   end
 `endif
 
